@@ -1,0 +1,14 @@
+{
+  "name": "cc-context",
+  "version": "0.1.0",
+  "description": "Compact codebase-context tools — a facade MCP + ccx CLI proxying semble (NL search) and tilth (symbol/outline/diff), with capt-hook enforcement.",
+  "author": {
+    "name": "Yasyf Mohamedali",
+    "url": "https://github.com/yasyf"
+  },
+  "homepage": "https://github.com/yasyf/cc-context",
+  "repository": "https://github.com/yasyf/cc-context",
+  "license": "MIT",
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills"
+}

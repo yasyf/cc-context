@@ -1,13 +1,17 @@
 # cc-context Development Guide
 
-Tools & skills for keeping Claude's context minimal. Published to PyPI as `cc-context`; the CLI is `cc-context`, run as `uvx cc-context`.
+Tools for keeping Claude's context minimal: a single Go binary exposing the `ccx` CLI plus the `cc-context` facade MCP. Distributed via goreleaser → Homebrew: `brew install yasyf/tap/cc-context`.
 
 ## Repository Structure
 
 ```
 cc-context/
-├── cc_context/      # The package — CLI entrypoint (cli.py) and context tools
-├── tests/            # Pytest suite
+├── cmd/cc-context/   # main package — the CLI entry point
+├── internal/
+│   ├── cli/          # cobra command tree (ccx subcommands)
+│   ├── mcp/          # the cc-context facade MCP server
+│   ├── version/      # build version, stamped via -ldflags
+│   └── log/          # slog setup
 ├── .github/          # GitHub Actions workflows
 ├── AGENTS.md         # This file — shared conventions
 └── README.md         # Project overview
@@ -61,33 +65,29 @@ When you write a plan — in plan mode, or any "here's what I'll do" before you 
 - **Workflow Plan** — required in every plan; a plan without it is incomplete. One line on what the main agent alone does (track state, dispatch, decide, report), then a `Phase | Shape | Agents | Verification` table covering every fan-out the plan anticipates: Shape is `pipeline` / `parallel` / `loop`; Verification names the check that gates each phase's output. When nothing fans out, one line saying everything stays at the main-agent level replaces the table.
 - **Verification** — how to prove it works end to end: the exact commands to run, tests to add, and behavior to observe.
 
-## Code Search
+## Compact Context (ccx)
 
-`semble` is wired up via `.mcp.json` (project-scoped MCP server, runs via `uvx` — nothing to install). It's the default tool for any "find code by intent or symbol" question:
+`cc-context` — the `ccx` CLI and the `cc-context` MCP (its `mcp__cc-context__*` tools mirror the CLI 1:1) — is the DEFAULT for reading code, finding symbols, searching, and reviewing diffs. It returns token-bounded output (signatures + line numbers, explicit overflow, never silent truncation) instead of raw dumps, and the capt-hook `ccx` guard pack BLOCKS the token-heavy primitives — so reach for ccx first.
 
-1. **"How do we do X?" / "Where is the code that does Y?"** → `semble.search("...")`
-2. **"Where is `Foo` defined?"** → `semble.search("Foo")` (or `search("class Foo")` for a relevance boost)
-3. **"Show me other code like this"** → `semble.find_related` on a prior hit
-4. **Cross-repo lookup** → pass an `https://...git` URL as `repo`
+1. **Orient a repo** → `ccx overview`
+2. **"How does X work / where is Y" (intent)** → `ccx search "<question>"` (semantic, semble-backed)
+3. **A specific symbol (def + callers + callees)** → `ccx symbol <name>` (alias `ccx grok`)
+4. **Literal / structural text** → `ccx grep <text> [--glob G]`
+5. **List files** → `ccx find "<glob>"`
+6. **Read a file** → `ccx outline <file>` first, then `ccx read <file> --section A-B` for the part you need (whole file: `ccx read <file> --full`)
+7. **Review changes** → `ccx diff [src]` (structural, jj-aware; exact hunks: `git diff -- <file>`)
 
-`repo` defaults to the current project root for local searches. Semble is purely semantic — it ranks by meaning, not substring, so it won't find literal strings that don't appear in nearby code.
+Reach for your **LSP** when the answer must be exhaustive/structural (findReferences, rename, goToImplementation). Use **Grep/Glob** only for literal content in non-source files (logs, JSON, YAML).
 
-Reach for your **LSP** when the answer must be *exhaustive* or *structural*:
+## Go Style
 
-1. **"Who calls X?" / "find every reference"** → `findReferences` / `incomingCalls`
-2. **"Rename X → Y"** → `findReferences` first to enumerate every call site
-3. **"What's the type of X?"** → `hover`
-4. **"What implements Protocol P?"** → `goToImplementation`
+Target Go 1.23+. Run `task build`, `task test` (`go test -race`), and `task lint`.
 
-Reach for **`Grep`** only for material neither tool indexes: literal *content* of strings/comments/docstrings (error messages, hard-coded URLs, env-var names, TODOs) and non-source files (logs, JSON, YAML, fixtures). File-pattern questions ("all `*.json` under `src/`") go through `Glob`.
+**Doc comments on exported identifiers only.** Exported types, funcs, and the package itself carry a doc comment that starts with the identifier name (`// NewRootCmd builds …`). Unexported helpers get none. No other comments except TODOs, non-obvious workarounds, or disabled code.
 
-## Python Style
+**Errors wrap with `%w`.** Return failures up the stack with `fmt.Errorf("…: %w", err)` and inspect them with `errors.Is` / `errors.As`, never string matching. See STYLEGUIDE.md § Error Handling.
 
-Target Python 3.13+. Run `uv sync --extra dev`, `uv run pytest`, and `uv build`.
-
-**Docstrings on the public API only.** User-facing surfaces carry Google-style docstrings; they render into the docs site via Great Docs. Internal helpers get none. No comments except TODOs, non-obvious workarounds, or disabled code.
-
-**Async-native from day 1.** Anything that touches I/O is `async def`, backed by a library with a native async API (e.g. `aiosqlite`) rather than a blocking call wrapped in `asyncio.to_thread`. Concurrency and tests run through `anyio`. See STYLEGUIDE.md § Async.
+**Structured logging via `log/slog`.** Diagnostics go through the configured default logger (`slog.Info`, `slog.Debug`) with key-value attrs — never `fmt.Println` for logging. See `internal/log`.
 
 @STYLEGUIDE.md
 
@@ -99,34 +99,32 @@ Target Python 3.13+. Run `uv sync --extra dev`, `uv run pytest`, and `uv build`.
 
 **No defensive coding.** No fallbacks, shims, or backwards-compat layers; no guards against impossible states. If unused, delete it. Crash on the unexpected.
 
-**Search before writing.** Before creating a helper, query the codebase via `semble.search` (intent or symbol queries both work). Sibling modules and base classes win over re-implementation.
+**Search before writing.** Before creating a helper, query the codebase via `ccx search` (intent or symbol queries both work). Sibling packages win over re-implementation.
 
-**Code stewardship.** When you touch a file, fix nearby bugs, style violations, and broken tests; don't wave them off as pre-existing or out of scope. Trivial type-checker noise is the exception (see § Python Style).
+**Code stewardship.** When you touch a file, fix nearby bugs, style violations, and broken tests; don't wave them off as pre-existing or out of scope.
 
-**Observe, don't infer.** Inspect actual data — read fixtures, dump objects, run the code — before reasoning from assumption.
+**Observe, don't infer.** Inspect actual data — read fixtures, dump structs, run the code — before reasoning from assumption.
 
 **Don't use external failures as an excuse to stop.** API quota, rate-limit, and outage errors rarely block the whole task; trace the catch sites and confirm a failure actually stops you before claiming it does.
 
 **Verify before asserting.** Don't report something as working, fixed, blocked, or impossible until you've checked — run it, read the output, reproduce the failure. "It should work" is not "it works."
 
-**Reproduce before fixing.** When something breaks, isolate the smallest failing case before editing or re-running. Re-running the whole command while changing code between runs hides the root cause; narrow to the one failing call, payload, or test first.
+**Reproduce before fixing.** When something breaks, isolate the smallest failing case before editing or re-running. Re-running the whole command while changing code between runs hides the root cause; narrow to the one failing test or input first.
 
 **Research after repeated failure.** After ~2 failed approaches, stop guessing and gather evidence — search the web, read the docs and source — before a third attempt.
 
 **Get a second opinion on a plateau.** On a debugging plateau (2 failed attempts before a 3rd), a non-trivial architectural decision, or algorithmic/security-sensitive code, get an outside check (e.g. `/codex`) before committing to the approach.
 
-**Don't contort code to satisfy a checker.** The type checker and linter serve the code, not the other way around. Don't reshape a data model, widen a type, or bolt on a `cast(...)` / narrowing-only `assert isinstance(...)` / blanket ignore just to silence a diagnostic. If a clean fix isn't obvious, leave the diagnostic — a visible diagnostic is preferable to scar tissue. (Most checker noise isn't worth acting on at all; act only when it flags a real bug.)
+**Don't contort code to satisfy a linter.** The compiler and `golangci-lint` serve the code, not the other way around. Don't widen a type to `any`, bolt on a needless type assertion, or sprinkle `//nolint` just to silence a diagnostic. If a clean fix isn't obvious, leave the diagnostic — a visible one is preferable to scar tissue.
 
-**Mechanical linting.** The pre-commit hooks (prek: ruff + ty) auto-format, fix import order, and print whole-project type warnings on every `git commit` (ty never blocks a commit) — run `uvx prek install` once to activate them. Leave `ruff` to the hook and fix only what needs human judgment; clean everything up-front with `uvx prek run --all-files` if you want. When reviewing code, don't flag mechanical lint violations (line length, whitespace, import order, trailing commas).
+**Mechanical linting.** The pre-commit hooks (prek: gofumpt + goimports + golangci-lint) format and lint on every `git commit` — run `uvx prek install` once to activate them. Leave formatting and linting to the hook; never run `gofumpt` or `golangci-lint` by hand (the `go` capt-hook pack blocks it). When reviewing code, don't flag mechanical lint violations (gofmt, import order, line length).
 
-**Testing.** The suite lives in `tests/`; run it with `uv run pytest`. Use strict assertions and mock external dependencies while leaving the code under test real. Databases and other stateful services are not mock boundaries — when a test needs one, run a real ephemeral instance via `testcontainers` instead of mocking the driver.
+**Testing.** Tests live beside the code as `*_test.go`; run them with `task test` (`go test -race ./...`). Write table-driven tests with strict assertions against specific values, mock the boundaries your code talks to (network, filesystem, clock), and leave the code under test real.
 
-**Writing docs.** When writing or revising docs, a README, a tutorial, a how-to, or reference, use the `writing-docs` skill (Diataxis modes, voice rules, and runnable code-sample rules) and run `slop-cop check <file> --lang=markdown` before you finish.
-
-**Docs.** Any public API change must keep `uv run great-docs build` green; run `uv sync --group docs` first.
+**Writing docs.** When writing or revising docs, a README, a tutorial, a how-to, or reference, use the `writing-docs` skill (Diataxis modes, voice rules, and runnable code-sample rules) and run `slop-cop check <file> --lang=markdown` before you finish (slop-cop is a Go binary; if it's not on PATH, run the `/slop-cop-check` skill — never `uvx slop-cop`).
 
 **Version control.** This repo is a colocated `jj` repo over git — prefer `jj` (`jj describe` / `jj commit`, `jj git push`) over raw `git` for day-to-day work. Commits stay atomic and scoped: one logical change each. A dirty tree is just the working-copy commit `@` — to land work on an updated remote, `jj git fetch` then `jj rebase` (your in-flight `@` rides along untouched); never `git stash` or a worktree + cherry-pick dance.
 
 **Watch CI after every push.** A push that kicks off CI isn't done until the run is green. After `jj git push` (or `git push`), watch the run to completion before you stop — `gh run watch "$(gh run list -L1 --json databaseId -q '.[0].databaseId')" --exit-status` — and never walk away from a red run: fix it or report it. (`--exit-status` exits non-zero when the run fails; give the run a moment to register before watching.)
 
-**Releases.** Tagging `v*` triggers `.github/workflows/release-pypi.yml`, which builds, publishes to PyPI via trusted publishing, and cuts a GitHub release. The version comes from the tag. The release refuses to run unless the tagged commit is on `main` — tag a merged commit (e.g. `git tag vX.Y.Z origin/main`), not a feature branch.
+**Releases.** Tagging `v*` triggers `.github/workflows/release.yml`, which runs goreleaser to build the binaries, cut a GitHub release, and push the Homebrew cask to `yasyf/homebrew-tap`. The version comes from the tag. The release refuses to run unless the tagged commit is on `main` — tag a merged commit (e.g. `git tag vX.Y.Z origin/main`), not a feature branch. One-time setup: a `HOMEBREW_TAP_TOKEN` repo secret with push access to the tap.
