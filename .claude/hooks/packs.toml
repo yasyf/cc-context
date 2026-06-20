@@ -1,0 +1,8 @@
+[packs.cc-notes]
+source = "github:yasyf/cc-notes@v0.7.5"
+commit = "4f3a3dd4a02ede7210810939e5392c6217da8e92"
+
+[packs.general]
+
+[packs.python]
+
