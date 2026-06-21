@@ -1,0 +1,27 @@
+{
+  "id": "intent-2",
+  "category": "intent_search",
+  "repo": "fixture",
+  "prompt": "Which single file contains the code that converts arbitrary text into a url-safe dashed identifier? Respond with the file path relative to the repo root.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "file": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "file"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "file_match",
+    "spec": {}
+  },
+  "gold": {
+    "file": "pysrc/util.py"
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

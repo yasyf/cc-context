@@ -1,0 +1,13 @@
+[project]
+name = "ccxbench"
+version = "0.1.0"
+description = "Cache-aware cost-per-correct-answer benchmark for cc-context (ccx)."
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["ccxbench*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

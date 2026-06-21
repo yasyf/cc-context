@@ -1,0 +1,50 @@
+{
+  "id": "diff-greet-compute",
+  "category": "diff_review",
+  "repo": "fixture",
+  "prompt": "The working tree has uncommitted changes. Which top-level functions were modified relative to HEAD? List their names.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "symbols": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "symbols"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "symbols",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "symbols": [
+      "salutation",
+      "Max"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {
+    "edits": [
+      {
+        "file": "internal/greet/greet.go",
+        "find": "return \"Hello\"",
+        "replace": "return \"Hi\""
+      },
+      {
+        "file": "internal/calc/calc.go",
+        "find": "best := 0",
+        "replace": "best := xs[0]\n\t_ = best"
+      }
+    ]
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "id": "nonreg-bigo",
+  "category": "non_regression",
+  "repo": "fixture",
+  "prompt": "In one sentence, what does Big-O notation describe about an algorithm?",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "answer": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "answer"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "keywords",
+    "spec": {
+      "field": "answer"
+    }
+  },
+  "gold": {
+    "groups": [
+      [
+        "time",
+        "operation",
+        "step",
+        "memory",
+        "space",
+        "resource"
+      ],
+      [
+        "grow",
+        "scale",
+        "input",
+        "size"
+      ]
+    ]
+  },
+  "ccx_helps": false,
+  "setup": {}
+}

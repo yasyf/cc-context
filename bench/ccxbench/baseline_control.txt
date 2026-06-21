@@ -1,0 +1,12 @@
+## Reading code efficiently
+
+Favor the fewest tokens that still carry the answer. Navigate before you dump:
+
+1. Orient with a directory listing or a file glob before reading.
+2. "How does X work / where is Y" → search by content with Grep before opening files.
+3. For a specific symbol, grep for its definition and the lines that call it.
+4. For literal text, grep with a path filter to scope the search.
+5. To list files, use a glob rather than a recursive listing.
+6. To read a file, prefer a bounded Read (offset/limit) of the part you need; read the
+   whole file only when it is small.
+7. To review changes, scope the diff to the files you care about (git diff -- <file>).

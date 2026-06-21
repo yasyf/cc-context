@@ -1,0 +1,44 @@
+{
+  "id": "diff-slugify",
+  "category": "diff_review",
+  "repo": "fixture",
+  "prompt": "The working tree has uncommitted changes. Which top-level functions were modified relative to HEAD? List their names.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "symbols": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "symbols"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "symbols",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "symbols": [
+      "slugify"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {
+    "edits": [
+      {
+        "file": "pysrc/util.py",
+        "find": ".replace(\" \", \"-\")",
+        "replace": ".replace(\" \", \"_\")"
+      }
+    ]
+  }
+}

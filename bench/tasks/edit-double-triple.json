@@ -1,0 +1,40 @@
+{
+  "id": "edit-double-triple",
+  "category": "targeted_edit",
+  "repo": "fixture",
+  "prompt": "In internal/calc/calc.go, change the `Double` function so it returns three times n instead of twice n. Keep the function name and signature unchanged.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "changed_file": {
+        "type": "string"
+      },
+      "summary": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "changed_file"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "test_run",
+    "spec": {
+      "cmd": "printf 'package calc\\nimport \"testing\"\\nfunc TestD(t *testing.T){ if Double(4)!=12 { t.Fatal(Double(4)) } }' > internal/calc/zz_bench_test.go && go test ./internal/calc/ >/dev/null 2>&1; rc=$?; rm -f internal/calc/zz_bench_test.go; exit $rc",
+      "timeout_s": 180
+    }
+  },
+  "gold": {
+    "check": "Double(4) == 12",
+    "solution_edits": [
+      {
+        "file": "internal/calc/calc.go",
+        "find": "return Add(n, n)",
+        "replace": "return Add(n, Add(n, n))"
+      }
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

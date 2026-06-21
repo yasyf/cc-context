@@ -1,0 +1,27 @@
+{
+  "id": "intent-0",
+  "category": "intent_search",
+  "repo": "fixture",
+  "prompt": "Which single file contains the code that produces the welcome line shown to a user, addressing them by name? Respond with the file path relative to the repo root.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "file": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "file"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "file_match",
+    "spec": {}
+  },
+  "gold": {
+    "file": "internal/greet/greet.go"
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

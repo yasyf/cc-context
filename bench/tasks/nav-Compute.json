@@ -1,0 +1,34 @@
+{
+  "id": "nav-Compute",
+  "category": "navigation",
+  "repo": "fixture",
+  "prompt": "In this repository, where is the function `Compute` declared? Respond with the file path relative to the repo root and the 1-based line number of its declaration.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "file": {
+        "type": "string"
+      },
+      "line": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "file",
+      "line"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "file_line",
+    "spec": {
+      "line_tolerance": 2
+    }
+  },
+  "gold": {
+    "file": "internal/calc/calc.go",
+    "line": 25
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

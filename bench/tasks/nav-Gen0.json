@@ -1,0 +1,34 @@
+{
+  "id": "nav-Gen0",
+  "category": "navigation",
+  "repo": "fixture",
+  "prompt": "In this repository, where is the function `Gen0` declared? Respond with the file path relative to the repo root and the 1-based line number of its declaration.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "file": {
+        "type": "string"
+      },
+      "line": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "file",
+      "line"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "file_line",
+    "spec": {
+      "line_tolerance": 2
+    }
+  },
+  "gold": {
+    "file": "internal/gen/generated.go",
+    "line": 5
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

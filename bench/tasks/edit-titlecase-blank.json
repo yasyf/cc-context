@@ -1,0 +1,39 @@
+{
+  "id": "edit-titlecase-blank",
+  "category": "targeted_edit",
+  "repo": "fixture",
+  "prompt": "In pysrc/util.py, add a new function `is_long(s)` that returns True when the normalized string has more than 10 characters, reusing the existing `normalize` helper. Do not change existing functions.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "changed_file": {
+        "type": "string"
+      },
+      "summary": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "changed_file"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "test_run",
+    "spec": {
+      "cmd": "python3 -c \"import sys; sys.path.insert(0,'pysrc'); import util; assert util.is_long('a'*11) is True and util.is_long('a b') is False and util.is_long('a   b   c   d') is False\""
+    }
+  },
+  "gold": {
+    "check": "is_long longer-than-10 via normalize",
+    "solution_edits": [
+      {
+        "file": "pysrc/util.py",
+        "find": "    return normalize(s) == \"\"",
+        "replace": "    return normalize(s) == \"\"\n\n\ndef is_long(s):\n    \"\"\"Report whether the normalized string is longer than ten characters.\"\"\"\n    return len(normalize(s)) > 10"
+      }
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

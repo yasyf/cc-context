@@ -1,0 +1,61 @@
+# cc-context benchmark configuration.
+#
+# Cache-aware cost-per-correct-answer harness. The metric is the real API bill
+# (cache_create + cache_read + input + output) per correct answer, with accuracy
+# reported alongside. See README.md for the rtk gate this satisfies.
+
+[run]
+# Models to benchmark, as `claude --model` aliases or full IDs.
+# Pilot defaults to haiku (cheap); the real run that docs may cite is ["opus", "sonnet"].
+models = ["haiku"]
+# Repeats per (task, arm, model). Agents are stochastic; R>=3 gives a paired delta + stdev.
+repeats = 3
+# Hard ceiling on total measured spend. The runner aborts before a run would exceed it.
+budget_usd = 5.0
+# Headless autonomy. Identical for both arms. capt-hook guard hooks still fire under bypass
+# (they are a hook decision, not a permission); the pilot integrity check proves it.
+permission_mode = "bypassPermissions"
+timeout_s = 900
+# Applied identically to BOTH arms so the only tool-surface difference is ccx itself.
+strip_mcp = true
+disallowed_tools = ["WebSearch", "WebFetch", "Task"]
+
+[paths]
+# All paths are resolved relative to the bench/ directory.
+ccx_bin = "../bin/ccx"            # local HEAD build: the facade MCP (`ccx mcp`) and the Bash `ccx`
+plugin_hooks = "../plugin/hooks"  # the ccx capt-hook guard pack (local, benchmarks HEAD)
+work_root = ".work"               # ephemeral per-run checkouts (git-ignored)
+fixtures_root = ".fixtures"       # generated fixture repos (git-ignored)
+results_dir = "results"           # JSONL run records + RESULTS.md
+
+[prices]
+# Universal prompt-cache multipliers (x base input price).
+# Source: platform.claude.com/docs/en/docs/about-claude/pricing (verified 2026-06-21).
+cache_write_5m = 1.25
+cache_write_1h = 2.0
+cache_read = 0.1
+# Cross-check tolerance: |recomputed - total_cost_usd| / total_cost_usd must stay under this.
+tolerance = 0.02
+
+# Per-model base $/MTok, matched to a run's modelUsage key by `match` substring.
+# Verified 2026-06-21. NOTE: assumes current models (Opus 4.5+, Sonnet 4.x, Haiku 4.5);
+# deprecated Opus 4.1/4 use legacy prices and would need their own entries.
+[prices.models.opus]
+match = "opus"
+input = 5.0
+output = 25.0
+
+[prices.models.sonnet]
+match = "sonnet"
+input = 3.0
+output = 15.0
+
+[prices.models.haiku]
+match = "haiku"
+input = 1.0
+output = 5.0
+
+[prices.models.fable]
+match = "fable"
+input = 10.0
+output = 50.0

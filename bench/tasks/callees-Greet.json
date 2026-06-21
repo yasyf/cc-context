@@ -1,0 +1,36 @@
+{
+  "id": "callees-Greet",
+  "category": "callees",
+  "repo": "fixture",
+  "prompt": "Within this repository's own code, which functions does `Greet` call directly? List only functions defined in this repository; ignore standard-library or built-in calls.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "callees": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "callees"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "callees",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "callees": [
+      "salutation"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

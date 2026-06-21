@@ -1,0 +1,16 @@
+## Compact Context (ccx)
+
+`ccx` is the DEFAULT for reading code, finding symbols, searching, and reviewing
+diffs. It returns token-bounded output (signatures + line numbers, explicit overflow,
+never silent truncation). Its MCP tools (`mcp__cc-context__*`) mirror the CLI 1:1.
+Reach for ccx before Read, cat, sed, git diff, ls -R, or find — the guard hooks block
+those on anything token-heavy.
+
+1. Orient a repo → `ccx overview`
+2. "How does X work / where is Y" (intent) → `ccx search "<question>"`
+3. A specific symbol (def + callers + callees) → `ccx symbol <name>` (alias `ccx grok`)
+4. Literal / structural text → `ccx grep <text> [--glob G]`
+5. List files → `ccx find "<glob>"`
+6. Read a file → `ccx outline <file>` first, then `ccx read <file> --section A-B` for the
+   part you need (whole file: `ccx read <file> --full`)
+7. Review changes → `ccx diff [src]` (structural, jj-aware; exact hunks: `git diff -- <file>`)
