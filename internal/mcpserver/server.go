@@ -13,6 +13,10 @@ import (
 	"github.com/yasyf/cc-context/internal/version"
 )
 
+// defaultSnippetLines bounds ccx_search result snippets when the caller gives no
+// explicit max — semble's own default returns the whole chunk.
+const defaultSnippetLines = 10
+
 // SearchIn is the input for ccx_search.
 type SearchIn struct {
 	Query           string `json:"query" jsonschema:"natural-language or symbol query"`
@@ -98,7 +102,12 @@ func register(s *mcp.Server, p *proxy.Proxy) {
 		Name:        "ccx_search",
 		Description: "Semantic code search by intent or symbol — prefer over grep for \"where/how do we do X\" questions.",
 	}, handler(p, backend.OpSearch, func(in SearchIn) backend.Args {
-		return backend.Args{Query: in.Query, Path: in.Repo, K: in.K, MaxSnippetLines: in.MaxSnippetLines}
+		// Default to a compact snippet; semble's own default dumps the full chunk.
+		snippet := in.MaxSnippetLines
+		if snippet == 0 {
+			snippet = defaultSnippetLines
+		}
+		return backend.Args{Query: in.Query, Path: in.Repo, K: in.K, MaxSnippetLines: snippet}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{

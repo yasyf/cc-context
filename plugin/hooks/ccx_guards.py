@@ -44,9 +44,10 @@ from captain_hook import (
 )
 
 # A Read with neither offset nor limit pulls the whole file into context. Past this
-# size the dump is a token-bomb; below it the cost is negligible, so the block only
-# bites large files. Tuned to the task spec's ~50 KB threshold.
-LARGE_READ_BYTES = 50_000
+# size (~5k tokens) the dump is a token-bomb worth steering to an outline; below it
+# the cost is negligible, so the block only bites genuinely large files. (50 KB was
+# too lenient — a ~32 KB / 8k-token source file slipped through unblocked.)
+LARGE_READ_BYTES = 20_000
 
 # `git diff` is allowed when scoped (a pathspec after `--`) or summarized (one of
 # these stat-only flags). A bare/range diff with no such narrowing is the bomb.
@@ -116,7 +117,7 @@ class GitDiffPager(CustomCondition):
 )
 def block_unbounded_large_read(evt: BaseHookEvent) -> object:
     return evt.block(
-        "BLOCKED: unbounded Read of a large file (>50KB) floods context. "
+        "BLOCKED: unbounded Read of a large file (>20KB) floods context. "
         "Map it first: `ccx outline <path>` (or mcp__cc-context__outline), then "
         "`ccx read <path> --section A-B` (or mcp__cc-context__read) for the part you need. "
         "Escape hatch — whole file: `ccx read <path> --full`, or re-run Read with offset/limit."

@@ -81,8 +81,8 @@ func TestTilthMCPSpec(t *testing.T) {
 	if cmd != fakeTilth {
 		t.Errorf("cmd = %q, want %q", cmd, fakeTilth)
 	}
-	if !reflect.DeepEqual(argv, []string{"--mcp"}) {
-		t.Errorf("argv = %v, want [--mcp]", argv)
+	if !reflect.DeepEqual(argv, []string{"--mcp", "--no-overview"}) {
+		t.Errorf("argv = %v, want [--mcp --no-overview]", argv)
 	}
 }
 
@@ -95,8 +95,8 @@ func TestTilthMCPTool(t *testing.T) {
 		tool   string
 		params map[string]any
 	}{
-		{"outline", OpOutline, Args{Path: "a.go", Budget: 500}, "tilth_read", map[string]any{"path": "a.go", "budget": 500}},
-		{"outline no budget", OpOutline, Args{Path: "a.go"}, "tilth_read", map[string]any{"path": "a.go"}},
+		{"outline", OpOutline, Args{Path: "a.go", Budget: 500}, "tilth_read", map[string]any{"path": "a.go", "mode": "signature", "budget": 500}},
+		{"outline no budget", OpOutline, Args{Path: "a.go"}, "tilth_read", map[string]any{"path": "a.go", "mode": "signature"}},
 		{"read full", OpRead, Args{Path: "a.go", Full: true}, "tilth_read", map[string]any{"path": "a.go", "full": true}},
 		{"read section", OpRead, Args{Path: "a.go", Section: "## H", Budget: 9}, "tilth_read", map[string]any{"path": "a.go", "section": "## H", "budget": 9}},
 		{"symbol", OpSymbol, Args{Query: "Foo", Scope: "pkg", Full: true}, "tilth_grok", map[string]any{"target": "Foo", "scope": "pkg", "full": true}},
@@ -139,7 +139,7 @@ func TestSembleCLIArgv(t *testing.T) {
 		{"search", OpSearch, Args{Query: "auth flow"}, []string{"search", "auth flow"}},
 		{"search path k", OpSearch, Args{Query: "auth", Path: "src", K: 5}, []string{"search", "auth", "src", "-k", "5"}},
 		{"search all flags", OpSearch, Args{Query: "auth", Path: "src", K: 3, MaxSnippetLines: 8, Kind: "code"}, []string{"search", "auth", "src", "-k", "3", "--max-snippet-lines", "8", "--content", "code"}},
-		{"related", OpRelated, Args{Query: "a.go:42"}, []string{"find-related", "a.go:42"}},
+		{"related", OpRelated, Args{Query: "a.go:42"}, []string{"find-related", "a.go", "42"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

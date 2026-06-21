@@ -10,7 +10,7 @@ func newDepsCmd() *cobra.Command {
 	var a backend.Args
 	cmd := &cobra.Command{
 		Use:   "deps <path>",
-		Short: "Dependencies of a file",
+		Short: "Symbol dependencies and dependents of a file (sparse for entry points)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a.Path = args[0]

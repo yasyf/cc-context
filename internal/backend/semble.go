@@ -54,7 +54,13 @@ func (s Semble) CLIArgv(_ context.Context, op Op, a Args) (bin string, argv []st
 			argv = append(argv, "--content", a.Kind)
 		}
 	case OpRelated:
-		argv = append(argv, "find-related", a.Query)
+		// semble's find-related CLI takes file and line as two positional args,
+		// not a single "file:line" token.
+		file, line, lerr := splitLoc(a.Query)
+		if lerr != nil {
+			return "", nil, lerr
+		}
+		argv = append(argv, "find-related", file, strconv.Itoa(line))
 	default:
 		return "", nil, fmt.Errorf("semble: unsupported op %q", op)
 	}

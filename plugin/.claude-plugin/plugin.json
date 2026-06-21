@@ -1,6 +1,6 @@
 {
   "name": "cc-context",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Compact codebase-context tools — a facade MCP + ccx CLI proxying semble (NL search) and tilth (symbol/outline/diff), with capt-hook enforcement.",
   "author": {
     "name": "Yasyf Mohamedali",

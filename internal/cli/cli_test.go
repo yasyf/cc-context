@@ -69,7 +69,7 @@ func TestSearchCommandInvokesBackend(t *testing.T) {
 	}
 
 	got := strings.TrimSpace(out.String())
-	want := "search auth flow src -k 3"
+	want := "search auth flow src -k 3 --max-snippet-lines 10"
 	if got != want {
 		t.Errorf("backend argv = %q, want %q", got, want)
 	}

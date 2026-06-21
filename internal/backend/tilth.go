@@ -140,15 +140,22 @@ func (t Tilth) MCPSpec(ctx context.Context) (cmd string, argv []string, err erro
 	if err != nil {
 		return "", nil, fmt.Errorf("tilth: resolve binary: %w", err)
 	}
-	return bin, []string{"--mcp"}, nil
+	// --no-overview skips tilth's init project-fingerprint scan: the facade
+	// re-exposes overview as its own op, so the auto-injection is wasted work
+	// (and a per-call cost for one-shot CLI outline reads).
+	return bin, []string{"--mcp", "--no-overview"}, nil
 }
 
 // MCPTool translates op into a tilth MCP tool name and its params.
 func (t Tilth) MCPTool(op Op, a Args) (tool string, params map[string]any, err error) {
 	switch op {
 	case OpOutline:
+		// signature mode = hash-prefixed declarations only (bodies elided), the
+		// real token-saving outline. tilth's default "auto" mode returns full or
+		// near-full content; only signature reliably elides.
 		return "tilth_read", omitEmpty(map[string]any{
 			"path":   a.Path,
+			"mode":   "signature",
 			"budget": a.Budget,
 		}), nil
 	case OpRead:
