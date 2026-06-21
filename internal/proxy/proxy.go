@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -17,55 +18,30 @@ import (
 	"github.com/yasyf/cc-context/internal/version"
 )
 
-// Proxy holds the long-lived child MCP sessions, one per backend engine. Each
-// session opens once in New and stays resident until Close.
+// Proxy fronts the bundled engines behind the stable op surface. Each engine's
+// child MCP session opens lazily on first use and stays resident until Close, so
+// the facade starts serving immediately instead of blocking on a cold engine.
 type Proxy struct {
-	sessions map[backend.Engine]*mcp.ClientSession
+	mu      sync.Mutex
+	engines map[backend.Engine]*engineSession
 }
 
-// New spawns the tilth and semble MCP servers and opens a persistent client
-// session to each, keyed by engine. Each backend resolves its own launch spec
-// via MCPSpec, so provisioning failures surface here. Connect performs the MCP
-// initialize handshake implicitly.
-func New(ctx context.Context) (*Proxy, error) {
-	tilth := backend.Tilth{}
-	tilthCmd, tilthArgv, err := tilth.MCPSpec(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("proxy: resolve tilth: %w", err)
-	}
-	tilthSession, err := connect(ctx, tilthCmd, tilthArgv...)
-	if err != nil {
-		return nil, fmt.Errorf("proxy: connect tilth: %w", err)
-	}
-
-	semble := backend.Semble{}
-	sembleCmd, sembleArgv, err := semble.MCPSpec(ctx)
-	if err != nil {
-		_ = tilthSession.Close()
-		return nil, fmt.Errorf("proxy: resolve semble: %w", err)
-	}
-	sembleSession, err := connect(ctx, sembleCmd, sembleArgv...)
-	if err != nil {
-		_ = tilthSession.Close()
-		return nil, fmt.Errorf("proxy: connect semble: %w", err)
-	}
-
-	return &Proxy{sessions: map[backend.Engine]*mcp.ClientSession{
-		tilth.Engine():  tilthSession,
-		semble.Engine(): sembleSession,
-	}}, nil
+// engineSession guards one engine's resident session. Its own mutex serializes
+// that engine's first connect without blocking a different engine's.
+type engineSession struct {
+	mu      sync.Mutex
+	session *mcp.ClientSession
 }
 
-// connect spawns the named child as a stdio MCP server and returns its session.
-func connect(ctx context.Context, bin string, argv ...string) (*mcp.ClientSession, error) {
-	client := mcp.NewClient(&mcp.Implementation{Name: "cc-context-proxy", Version: version.String()}, nil)
-	return client.Connect(ctx, &mcp.CommandTransport{Command: exec.Command(bin, argv...)}, nil) //nolint:gosec // bin/argv come from trusted backend resolution (vendored tilth path, fixed semble MCPSpec), not user free-text
+// New returns a proxy with no child sessions yet; each connects on first use.
+func New() *Proxy {
+	return &Proxy{engines: map[backend.Engine]*engineSession{}}
 }
 
 // Call routes op through its backend and returns budget-capped output. The diff
-// and overview ops run as child-process CLI invocations to keep the jj-aware
-// VCS translation and fallback that CLIArgv performs; every other op is a child
-// MCP tool call against the resident session.
+// and overview ops run as child-process CLI invocations to keep the jj-aware VCS
+// translation and fallback that CLIArgv performs; every other op is a child MCP
+// tool call against the engine's resident (lazily opened) session.
 func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 	b := router.For(op)
 
@@ -87,7 +63,12 @@ func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string
 		return "", err
 	}
 
-	res, err := p.sessions[b.Engine()].CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: params})
+	session, err := p.session(ctx, b)
+	if err != nil {
+		return "", err
+	}
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: params})
 	if err != nil {
 		return "", fmt.Errorf("proxy: call %q: %w", tool, err)
 	}
@@ -99,11 +80,59 @@ func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string
 	return render.Cap(text, a.Budget), nil
 }
 
-// Close shuts down every child session, joining any close errors.
+// session returns b's engine session, connecting it on first use. The connection
+// outlives the triggering call (context.WithoutCancel) so it stays resident for
+// the proxy's lifetime; a failed connect is not cached, so the next call retries.
+func (p *Proxy) session(ctx context.Context, b backend.Backend) (*mcp.ClientSession, error) {
+	es := p.engineSlot(b.Engine())
+
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	if es.session != nil {
+		return es.session, nil
+	}
+
+	cmd, argv, err := b.MCPSpec(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("proxy: resolve %s: %w", b.Engine(), err)
+	}
+	session, err := connect(context.WithoutCancel(ctx), cmd, argv...)
+	if err != nil {
+		return nil, fmt.Errorf("proxy: connect %s: %w", b.Engine(), err)
+	}
+	es.session = session
+	return session, nil
+}
+
+// engineSlot returns the per-engine session guard, creating it once.
+func (p *Proxy) engineSlot(eng backend.Engine) *engineSession {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	es, ok := p.engines[eng]
+	if !ok {
+		es = &engineSession{}
+		p.engines[eng] = es
+	}
+	return es
+}
+
+// connect spawns the named child as a stdio MCP server and returns its session.
+func connect(ctx context.Context, bin string, argv ...string) (*mcp.ClientSession, error) {
+	client := mcp.NewClient(&mcp.Implementation{Name: "cc-context-proxy", Version: version.String()}, nil)
+	return client.Connect(ctx, &mcp.CommandTransport{Command: exec.Command(bin, argv...)}, nil) //nolint:gosec // bin/argv come from trusted backend resolution (vendored tilth path, fixed semble MCPSpec), not user free-text
+}
+
+// Close shuts down every opened child session, joining any close errors.
 func (p *Proxy) Close() error {
-	errs := make([]error, 0, len(p.sessions))
-	for _, s := range p.sessions {
-		errs = append(errs, s.Close())
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	errs := make([]error, 0, len(p.engines))
+	for _, es := range p.engines {
+		es.mu.Lock()
+		if es.session != nil {
+			errs = append(errs, es.session.Close())
+		}
+		es.mu.Unlock()
 	}
 	return errors.Join(errs...)
 }

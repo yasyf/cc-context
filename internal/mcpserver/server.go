@@ -78,13 +78,11 @@ type DiffIn struct {
 // OverviewIn is the input for ccx_overview.
 type OverviewIn struct{}
 
-// Serve opens the proxy, registers the static ccx_* tools, and serves them over
-// stdio until ctx is cancelled or the transport closes.
+// Serve creates the proxy (engines connect lazily on first use), registers the
+// static ccx_* tools, and serves them over stdio until ctx is cancelled or the
+// transport closes.
 func Serve(ctx context.Context) error {
-	p, err := proxy.New(ctx)
-	if err != nil {
-		return err
-	}
+	p := proxy.New()
 	defer func() { _ = p.Close() }()
 
 	s := mcp.NewServer(&mcp.Implementation{Name: "cc-context", Version: version.String()}, nil)
