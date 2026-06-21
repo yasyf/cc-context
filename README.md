@@ -17,7 +17,7 @@ Reading entire files is the largest single drain on a coding agent's context, so
 - `ccx symbol NewRootCmd` (alias `ccx grok`) returns a symbol's definition, doc, body, callers, callees, siblings, and tests in one call, in place of a dozen greps.
 - `ccx diff` reviews changes structurally and reads both git and jj history.
 
-To make an agent actually reach for these, the bundled [capt-hook](https://github.com/yasyf/capt-hook) guard pack blocks `cat`, raw `grep`, and full-file reads, then points it at the `ccx` equivalent.
+To make an agent actually reach for these, the bundled [capt-hook](https://github.com/yasyf/captain-hook) guard pack blocks `cat`, raw `grep`, and full-file reads, then points it at the `ccx` equivalent.
 
 ## Install
 
@@ -33,7 +33,7 @@ Or with the Go toolchain:
 go install github.com/yasyf/cc-context/cmd/ccx@latest
 ```
 
-The semantic commands (`search`, `related`) shell out to [semble](https://github.com/yasyf/semble) through `uvx`, so they need [uv](https://docs.astral.sh/uv/) on `PATH`. The structural commands download a pinned [tilth](https://github.com/jahala/tilth) binary on first use. Nothing else to configure.
+The semantic commands (`search`, `related`) shell out to [semble](https://github.com/MinishLab/semble) through `uvx`, so they need [uv](https://docs.astral.sh/uv/) on `PATH`. The structural commands download a pinned [tilth](https://github.com/jahala/tilth) binary on first use. Nothing else to configure.
 
 ## Quickstart
 
