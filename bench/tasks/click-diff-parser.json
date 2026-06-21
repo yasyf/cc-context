@@ -1,0 +1,50 @@
+{
+  "id": "click-diff-parser",
+  "category": "diff_review",
+  "repo": "click",
+  "prompt": "The working tree has uncommitted changes, possibly across multiple files. Which top-level functions or methods were modified relative to HEAD? List their names.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "symbols": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "symbols"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "symbols",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "symbols": [
+      "split_opt",
+      "normalize_opt"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {
+    "edits": [
+      {
+        "file": "src/click/parser.py",
+        "find": "    first = opt[:1]",
+        "replace": "    first = opt[:1]  # nolint"
+      },
+      {
+        "file": "src/click/parser.py",
+        "find": "    if ctx is None or ctx.token_normalize_func is None:",
+        "replace": "    if ctx is None or ctx.token_normalize_func is None:  # nolint"
+      }
+    ]
+  }
+}

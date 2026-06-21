@@ -23,10 +23,24 @@ disallowed_tools = ["WebSearch", "WebFetch", "Task"]
 [paths]
 # All paths are resolved relative to the bench/ directory.
 ccx_bin = "../bin/ccx"            # local HEAD build: the facade MCP (`ccx mcp`) and the Bash `ccx`
-plugin_hooks = "../plugin/hooks"  # the ccx capt-hook guard pack (local, benchmarks HEAD)
+plugin_hooks = "./guards"         # ccx guard pack, extracted by build-corpus from guards_ref (no leading dot: capt-hook imports it as a package)
+guards_ref = "v0.1.1"             # git ref to source the guard pack from (HEAD's in-flight pack is broken)
 work_root = ".work"               # ephemeral per-run checkouts (git-ignored)
-fixtures_root = ".fixtures"       # generated fixture repos (git-ignored)
+fixtures_root = ".fixtures"       # generated fixture + cloned OSS repos (git-ignored)
 results_dir = "results"           # JSONL run records + RESULTS.md
+
+# Real OSS repos, pinned at a tag, for complex large-context tasks. Cloned by build-corpus.
+[[repos]]
+name = "gorilla-mux"
+url = "https://github.com/gorilla/mux"
+ref = "v1.8.1"
+kind = "go"
+
+[[repos]]
+name = "click"
+url = "https://github.com/pallets/click"
+ref = "8.1.7"
+kind = "python"
 
 [prices]
 # Universal prompt-cache multipliers (x base input price).

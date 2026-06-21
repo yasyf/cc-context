@@ -1,0 +1,35 @@
+{
+  "id": "mux-nav-router-match",
+  "category": "navigation",
+  "repo": "gorilla-mux",
+  "prompt": "In this repository, on which file and 1-based line is the `Match` method of the `*Router` type declared (the router's Match, not `*Route`'s)? Respond with the repo-relative file path and the line of its declaration.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "file": {
+        "type": "string"
+      },
+      "line": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "file",
+      "line"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "file_line",
+    "spec": {
+      "line_tolerance": 2
+    }
+  },
+  "gold": {
+    "file": "mux.go",
+    "line": 138,
+    "verify_decl": "func (r *Router) Match("
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

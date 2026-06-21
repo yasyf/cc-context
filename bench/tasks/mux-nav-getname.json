@@ -1,0 +1,35 @@
+{
+  "id": "mux-nav-getname",
+  "category": "navigation",
+  "repo": "gorilla-mux",
+  "prompt": "In this repository, where is the `GetName` method of the `*Route` type declared? Respond with the repo-relative file path and the 1-based declaration line.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "file": {
+        "type": "string"
+      },
+      "line": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "file",
+      "line"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "file_line",
+    "spec": {
+      "line_tolerance": 2
+    }
+  },
+  "gold": {
+    "file": "route.go",
+    "line": 162,
+    "verify_decl": "func (r *Route) GetName("
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

@@ -10,6 +10,16 @@ BENCH_DIR = Path(__file__).resolve().parent.parent
 
 
 @dataclass(frozen=True)
+class Repo:
+    """A pinned OSS repo cloned for complex large-context tasks."""
+
+    name: str
+    url: str
+    ref: str
+    kind: str
+
+
+@dataclass(frozen=True)
 class ModelPrice:
     """Base $/MTok for one model family, matched to a modelUsage key by `match`."""
 
@@ -45,6 +55,8 @@ class Config:
     strip_mcp: bool
     disallowed_tools: tuple[str, ...]
     prices: Prices
+    repos: tuple[Repo, ...]
+    guards_ref: str
     ccx_bin: Path
     plugin_hooks: Path
     work_root: Path
@@ -77,6 +89,10 @@ def load(path: Path | None = None) -> Config:
         models=models,
     )
 
+    repos = tuple(
+        Repo(name=r["name"], url=r["url"], ref=r["ref"], kind=r["kind"]) for r in data.get("repos", [])
+    )
+
     return Config(
         models=tuple(run["models"]),
         repeats=int(run["repeats"]),
@@ -86,6 +102,8 @@ def load(path: Path | None = None) -> Config:
         strip_mcp=bool(run["strip_mcp"]),
         disallowed_tools=tuple(run["disallowed_tools"]),
         prices=prices,
+        repos=repos,
+        guards_ref=paths["guards_ref"],
         ccx_bin=resolve_path(BENCH_DIR, paths["ccx_bin"]),
         plugin_hooks=resolve_path(BENCH_DIR, paths["plugin_hooks"]),
         work_root=resolve_path(BENCH_DIR, paths["work_root"]),

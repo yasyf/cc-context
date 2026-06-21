@@ -56,6 +56,13 @@ ANSWER_SCHEMA = {
 
 REPO = "fixture"
 
+MUX_ROUTECOUNT_TEST = (
+    "printf 'package mux\\nimport \"testing\"\\n"
+    "func TestRouteCountBench(t *testing.T){ r:=NewRouter(); r.NewRoute(); r.NewRoute(); "
+    "if r.RouteCount()!=2 { t.Fatal(r.RouteCount()) } }' > zz_routecount_test.go && "
+    "go test -run TestRouteCountBench . >/dev/null 2>&1; rc=$?; rm -f zz_routecount_test.go; exit $rc"
+)
+
 
 def nav_tasks(manifest: dict) -> list[Task]:
     tasks = []
@@ -288,6 +295,129 @@ def non_regression_tasks() -> list[Task]:
             )
         )
     return tasks
+
+
+def nav_oss(tid: str, repo: str, prompt: str, file: str, line: int, decl: str) -> Task:
+    return Task(
+        id=tid,
+        category="navigation",
+        repo=repo,
+        prompt=prompt,
+        schema=NAV_SCHEMA,
+        grader=Grader("file_line", {"line_tolerance": 2}),
+        gold={"file": file, "line": line, "verify_decl": decl},
+    )
+
+
+def intent_oss(tid: str, repo: str, prompt: str, file: str) -> Task:
+    return Task(
+        id=tid,
+        category="intent_search",
+        repo=repo,
+        prompt=prompt + " Respond with the file path relative to the repo root.",
+        schema=FILE_SCHEMA,
+        grader=Grader("file_match", {}),
+        gold={"file": file},
+    )
+
+
+def oss_tasks() -> list[Task]:
+    """Complex, large-context tasks over pinned real repos (gold verified at build time).
+
+    These are where ccx's value should show: big-file navigation (click core.py is 3k lines),
+    semantic intent search across many files, and multi-file diff review.
+    """
+    diff_prompt = (
+        "The working tree has uncommitted changes, possibly across multiple files. Which "
+        "top-level functions or methods were modified relative to HEAD? List their names."
+    )
+    return [
+        nav_oss("mux-nav-router-match", "gorilla-mux",
+                "In this repository, on which file and 1-based line is the `Match` method of the "
+                "`*Router` type declared (the router's Match, not `*Route`'s)? Respond with the "
+                "repo-relative file path and the line of its declaration.",
+                "mux.go", 138, "func (r *Router) Match("),
+        nav_oss("mux-nav-getname", "gorilla-mux",
+                "In this repository, where is the `GetName` method of the `*Route` type declared? "
+                "Respond with the repo-relative file path and the 1-based declaration line.",
+                "route.go", 162, "func (r *Route) GetName("),
+        nav_oss("click-nav-command", "click",
+                "In this repository, where is the `Command` class declared? Respond with the "
+                "repo-relative file path and the 1-based line of its declaration.",
+                "src/click/core.py", 1160, "class Command("),
+        nav_oss("click-nav-option", "click",
+                "In this repository, where is the `Option` class declared? Respond with the "
+                "repo-relative file path and the 1-based line of its declaration.",
+                "src/click/core.py", 2449, "class Option("),
+        nav_oss("click-nav-split-opt", "click",
+                "In this repository, where is the `split_opt` function declared? Respond with the "
+                "repo-relative file path and the 1-based line of its declaration.",
+                "src/click/parser.py", 109, "def split_opt("),
+        intent_oss("mux-intent-dispatch", "gorilla-mux",
+                   "Which file contains the code that dispatches an incoming HTTP request to the "
+                   "matching route's handler (the http.Handler entry point of the router)?",
+                   "mux.go"),
+        intent_oss("mux-intent-regexp", "gorilla-mux",
+                   "Which file implements the regular-expression machinery that compiles and "
+                   "matches route path patterns and their variables?",
+                   "regexp.go"),
+        intent_oss("click-intent-parser", "click",
+                   "Which file implements the parser that turns raw command-line argument strings "
+                   "into parsed options and arguments?",
+                   "src/click/parser.py"),
+        intent_oss("click-intent-decorators", "click",
+                   "Which file defines the decorators used to declare commands and options "
+                   "(for example the @command and @option decorators)?",
+                   "src/click/decorators.py"),
+        Task(
+            id="mux-diff-multifile",
+            category="diff_review",
+            repo="gorilla-mux",
+            prompt=diff_prompt,
+            schema=SYMBOLS_SCHEMA,
+            grader=Grader("set_match", {"field": "symbols", "mode": "equal", "lower": True}),
+            gold={"symbols": ["NewRouter", "GetName"]},
+            setup={
+                "edits": [
+                    {"file": "mux.go", "find": "return &Router{namedRoutes: make(map[string]*Route)}", "replace": "return &Router{namedRoutes: make(map[string]*Route)} //nolint"},
+                    {"file": "route.go", "find": "return r.name", "replace": "return r.name //nolint"},
+                ]
+            },
+        ),
+        Task(
+            id="click-diff-parser",
+            category="diff_review",
+            repo="click",
+            prompt=diff_prompt,
+            schema=SYMBOLS_SCHEMA,
+            grader=Grader("set_match", {"field": "symbols", "mode": "equal", "lower": True}),
+            gold={"symbols": ["split_opt", "normalize_opt"]},
+            setup={
+                "edits": [
+                    {"file": "src/click/parser.py", "find": "    first = opt[:1]", "replace": "    first = opt[:1]  # nolint"},
+                    {"file": "src/click/parser.py", "find": "    if ctx is None or ctx.token_normalize_func is None:", "replace": "    if ctx is None or ctx.token_normalize_func is None:  # nolint"},
+                ]
+            },
+        ),
+        Task(
+            id="mux-edit-routecount",
+            category="targeted_edit",
+            repo="gorilla-mux",
+            prompt=(
+                "Add a method `func (r *Router) RouteCount() int` that returns the number of "
+                "routes registered on the router (the length of its internal routes slice). Keep "
+                "all existing behavior unchanged."
+            ),
+            schema=EDIT_SCHEMA,
+            grader=Grader("test_run", {"cmd": MUX_ROUTECOUNT_TEST, "timeout_s": 180}),
+            gold={
+                "check": "RouteCount() == len(routes)",
+                "solution_edits": [
+                    {"file": "mux.go", "find": "func NewRouter() *Router {", "replace": "func (r *Router) RouteCount() int { return len(r.routes) }\n\nfunc NewRouter() *Router {"}
+                ],
+            },
+        ),
+    ]
 
 
 def generate(manifest: dict) -> list[Task]:

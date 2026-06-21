@@ -20,7 +20,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import fixtures, report, taskgen
+from . import fixtures, report, repos, taskgen
 from .arms import apply_edits
 from .config import Config, load
 from .cost import crosscheck
@@ -30,7 +30,8 @@ from .graders import GradeContext, grade_test_run
 from .runner import Session, run_corpus
 from .types import Task
 
-TASKS_DIR = Path(__file__).resolve().parent.parent / "tasks"
+BENCH_DIR = Path(__file__).resolve().parent.parent
+TASKS_DIR = BENCH_DIR / "tasks"
 
 
 def needs_go(task: Task) -> bool:
@@ -42,18 +43,46 @@ def available(task: Task) -> bool:
 
 
 def build_corpus(cfg: Config) -> list[Task]:
+    repos.clone_all(cfg)
+    repos.extract_guards(cfg)
     cfg.fixtures_root.mkdir(parents=True, exist_ok=True)
     fixture_dir = cfg.fixtures_root / fixtures.FIXTURE_NAME
     if fixture_dir.exists():
         shutil.rmtree(fixture_dir)
     manifest = fixtures.build(fixture_dir)
-    tasks = [t for t in taskgen.generate(manifest) if available(t)]
+    oss = [t for t in taskgen.oss_tasks() if available(t)]
+    verify_oss(cfg, oss)
+    tasks = [t for t in taskgen.generate(manifest) if available(t)] + oss
     if TASKS_DIR.exists():
         shutil.rmtree(TASKS_DIR)
     TASKS_DIR.mkdir(parents=True)
     for t in tasks:
         (TASKS_DIR / f"{t.id}.json").write_text(json.dumps(t.to_dict(), indent=2))
     return tasks
+
+
+def verify_oss(cfg: Config, tasks: list[Task]) -> None:
+    """Fail loudly at build time if any OSS gold disagrees with its pinned checkout."""
+    for t in tasks:
+        checkout = cfg.fixtures_root / t.repo
+        if not checkout.exists():
+            sys.exit(f"OSS task {t.id}: checkout missing {checkout}")
+        if t.grader.kind in ("file_line", "file_match"):
+            gold_file = checkout / t.gold["file"]
+            if not gold_file.exists():
+                sys.exit(f"OSS task {t.id}: gold file {t.gold['file']} absent from {t.repo}")
+            decl = t.gold.get("verify_decl")
+            if t.grader.kind == "file_line" and decl:
+                lines = gold_file.read_text().splitlines()
+                tol = int(t.grader.spec.get("line_tolerance", 2))
+                lo, hi = max(0, t.gold["line"] - 1 - tol), min(len(lines), t.gold["line"] + tol)
+                if not any(decl in ln for ln in lines[lo:hi]):
+                    sys.exit(f"OSS task {t.id}: decl {decl!r} not within ±{tol} of line {t.gold['line']} in {t.gold['file']}")
+        for edits in (t.setup.get("edits", []), t.gold.get("solution_edits", [])):
+            for e in edits:
+                text = (checkout / e["file"]).read_text()
+                if e["find"] not in text:
+                    sys.exit(f"OSS task {t.id}: edit find {e['find']!r} absent from {e['file']}")
 
 
 def load_corpus() -> list[Task]:
@@ -94,15 +123,18 @@ def wrong_answer(task: Task) -> dict[str, object]:
     return {"unexpected": True}
 
 
+def checkout_dir(cfg: Config, task: Task) -> Path:
+    return cfg.fixtures_root / (fixtures.FIXTURE_NAME if task.repo == "fixture" else task.repo)
+
+
 def selftest(cfg: Config) -> int:
     tasks = build_corpus(cfg)
-    fixture_dir = cfg.fixtures_root / fixtures.FIXTURE_NAME
     fails: list[str] = []
     by_cat: Counter[str] = Counter()
     for t in tasks:
         by_cat[t.category] += 1
         if t.grader.kind == "test_run":
-            ok = selftest_edit(t, fixture_dir)
+            ok = selftest_edit(t, checkout_dir(cfg, t))
         else:
             good = grade(t, Envelope.synthetic(correct_answer(t)), None)
             bad = grade(t, Envelope.synthetic(wrong_answer(t)), None)
@@ -126,7 +158,7 @@ def selftest(cfg: Config) -> int:
     return 0
 
 
-def selftest_edit(task: Task, fixture_dir: Path) -> bool:
+def selftest_edit(task: Task, src_dir: Path) -> bool:
     """Apply the task's known solution to a fresh checkout; the test_run grader must pass,
     and an unmodified checkout must fail."""
     solution = task.gold.get("solution_edits", [])
@@ -136,8 +168,8 @@ def selftest_edit(task: Task, fixture_dir: Path) -> bool:
     with tempfile.TemporaryDirectory() as tmp:
         good_dir = Path(tmp) / "good"
         bad_dir = Path(tmp) / "bad"
-        shutil.copytree(fixture_dir, good_dir)
-        shutil.copytree(fixture_dir, bad_dir)
+        shutil.copytree(src_dir, good_dir)
+        shutil.copytree(src_dir, bad_dir)
         for e in solution:
             p = good_dir / e["file"]
             p.write_text(p.read_text().replace(e["find"], e["replace"], 1))

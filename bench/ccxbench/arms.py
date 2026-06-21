@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from .config import Config
@@ -33,35 +34,31 @@ def guard_command(cfg: Config) -> str:
 
 
 def guards_available(cfg: Config) -> bool:
-    """Probe once whether the ccx guard pack loads and blocks a large Read."""
+    """Probe once whether the ccx guard pack loads and its guards pass on current capt-hook.
+
+    Uses `capt-hook test` (run in a neutral cwd so only --hooks is loaded): the large-Read
+    guard's own inline test passing proves the pack is loadable and functional. If it fails
+    to import, that test never runs and the probe returns False.
+    """
     key = str(cfg.plugin_hooks)
     if key in GUARD_PROBE:
         return GUARD_PROBE[key]
-    big = cfg.fixtures_root / FIXTURE_NAME / "internal" / "gen" / "generated.go"
-    if not big.exists():
+    if not (cfg.plugin_hooks / "ccx_guards.py").exists():
         GUARD_PROBE[key] = False
         return False
-    payload = json.dumps(
-        {
-            "hook_event_name": "PreToolUse",
-            "tool_name": "Read",
-            "tool_input": {"file_path": str(big)},
-            "cwd": str(cfg.fixtures_root / FIXTURE_NAME),
-        }
-    )
     try:
         proc = subprocess.run(
-            ["uvx", "capt-hook", "--hooks", str(cfg.plugin_hooks), "run", "PreToolUse"],
-            input=payload,
+            ["uvx", "capt-hook", "--hooks", str(cfg.plugin_hooks), "test"],
+            cwd=tempfile.gettempdir(),
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=180,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         GUARD_PROBE[key] = False
         return False
-    out = (proc.stdout + proc.stderr).lower()
-    available = ("deny" in out or "block" in out) and "ccx" in out
+    out = proc.stdout + proc.stderr
+    available = "block_unbounded_large_read" in out and "0 failed" in out and "0 errors" in out
     GUARD_PROBE[key] = available
     return available
 
@@ -77,9 +74,9 @@ def apply_edits(workdir: Path, task: Task) -> None:
 
 def prepare_workdir(cfg: Config, task: Task, arm: str, run_id: str) -> Path:
     """Create a fresh fixture checkout for one run and apply the task's setup edits."""
-    src = cfg.fixtures_root / FIXTURE_NAME
+    src = cfg.fixtures_root / (FIXTURE_NAME if task.repo == "fixture" else task.repo)
     if not src.exists():
-        raise FileNotFoundError(f"fixture not built: {src} (run `build-corpus` first)")
+        raise FileNotFoundError(f"repo not staged: {src} (run `build-corpus` first)")
     workdir = cfg.work_root / run_id
     if workdir.exists():
         shutil.rmtree(workdir)
