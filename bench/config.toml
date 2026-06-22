@@ -11,7 +11,7 @@ models = ["haiku"]
 # Repeats per (task, arm, model). Agents are stochastic; R>=3 gives a paired delta + stdev.
 repeats = 3
 # Hard ceiling on total measured spend. The runner aborts before a run would exceed it.
-budget_usd = 5.0
+budget_usd = 15.0
 # Headless autonomy. Identical for both arms. capt-hook guard hooks still fire under bypass
 # (they are a hook decision, not a permission); the pilot integrity check proves it.
 permission_mode = "bypassPermissions"
