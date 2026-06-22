@@ -1,20 +1,27 @@
-"""cc-context guard pack — hard blocks on token-bomb tool calls, with escape hatches.
+"""cc-context guard pack — token-bomb tool calls rewritten to ``ccx`` or blocked.
 
 These hooks steer Claude away from the handful of tool invocations that reliably
 flood the context window — an unbounded ``Read`` of a huge file, a full ``git
-diff``, ``sed -n A,Bp`` / ``cat`` line dumps, recursive ``ls``/``find`` trees — and
-toward the ``ccx`` tools that return the same information compactly (``ccx outline``,
-``ccx read --section``, ``ccx diff``, ``ccx find``, ``ccx symbol``, ``ccx grep``).
-The MCP tools (``mcp__cc-context__outline`` and friends) mirror every command.
+diff``, raw ``grep`` file searches, ``sed -n A,Bp`` / ``cat`` line dumps, recursive
+``ls``/``find`` trees — and toward the ``ccx`` tools that return the same
+information compactly (``ccx outline``, ``ccx read --section``, ``ccx diff``, ``ccx
+find``, ``ccx symbol``, ``ccx grep``). The MCP tools (``mcp__cc-context__outline``
+and friends) mirror every command.
 
 Tiering:
 
-  * BLOCK the clear token-bombs (guards 1-6). Every block message names a concrete
-    ``ccx`` replacement *and* an escape hatch for the rare case where the raw dump
-    is actually wanted (``ccx read --full``, ``git diff -- <file>``, the action
-    forms of ``find``, ...).
-  * WARN the judgment calls (guard 7): a ``rg``/``grep -r`` over an identifier
-    alternation usually wants ``ccx symbol`` or ``ccx grep``, but it still runs.
+  * BLOCK the token-bombs with no information-equivalent rewrite: an unbounded
+    large ``Read``, a full ``git diff``, and raw ``grep`` file search. Every block
+    message names a concrete ``ccx`` replacement *and* an escape hatch for the rare
+    case where the raw form is actually wanted (``ccx read --full``, ``git diff --
+    <file>``, ``… | grep``, ...).
+  * REWRITE the token-bombs that map cleanly to a ``ccx`` command: ``sed -n A,Bp
+    <file>``, a bare single-file ``cat``, ``ls -R``, and ``find -name`` enumeration
+    each become the equivalent ``ccx`` call in place (with a ``note`` back to the
+    model). When ``ccx`` cannot be resolved on disk the rewrite falls back to the
+    same hard block, so the guard never emits a broken ``ccx: command not found``.
+  * WARN the judgment calls: an ``rg`` over an identifier alternation usually wants
+    ``ccx symbol`` or ``ccx grep``, but it still runs.
 
 All guards live in this one file so they share a single import-time registration
 pass and never race each other across files. Per-repo opt-in is the pack's presence
@@ -24,7 +31,10 @@ unconditional once the pack is enabled.
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -35,6 +45,7 @@ from captain_hook import (
     CustomCondition,
     Event,
     Input,
+    Rewrite,
     Tool,
     Warn,
     block_command,
@@ -72,6 +83,26 @@ def is_large(path: Path) -> bool:
     and never reaches a token budget worth guarding.
     """
     return path.is_file() and path.stat().st_size > LARGE_READ_BYTES
+
+
+def ccx_bin() -> str | None:
+    """Resolve an absolute, executable ``ccx`` path for the rewrite guards, or ``None``.
+
+    Tries, in order: ``$CLAUDE_PLUGIN_ROOT/bin/ccx`` (wins in installed plugins),
+    the ``plugin/bin/ccx`` shim relative to this file (``Path(__file__).parents[1]``
+    — deterministic, and the candidate that lets inline tests resolve ``ccx`` while
+    ``CLAUDE_PLUGIN_ROOT`` is unset), then ``shutil.which("ccx")``. Returns the first
+    candidate that is a file and executable; ``None`` if none is, so the caller can
+    fall back to a hard block instead of emitting a broken command.
+    """
+    candidates: list[Path] = []
+    if root := os.environ.get("CLAUDE_PLUGIN_ROOT"):
+        candidates.append(Path(root) / "bin" / "ccx")
+    candidates.append(Path(__file__).resolve().parents[1] / "bin" / "ccx")
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return shutil.which("ccx")
 
 
 class UnboundedLargeRead(CustomCondition):
@@ -152,10 +183,10 @@ class SedLineRange(CustomCondition):
 
     Allows sed in a pipe (it consumes a stream, not a named file) and allows
     substitution (`sed 's/.../.../'`); only the standalone numeric-range print of a
-    file argument is the `ccx read --section` case this blocks.
+    file argument is the `ccx read --section` case this rewrites.
     """
 
-    PATTERN = re.compile(r"sed\s+(?:-[a-zA-Z]+\s+)*-n\s+['\"]?\d+,\d+p['\"]?\s+\S")
+    PATTERN = re.compile(r"sed\s+(?:-[a-zA-Z]+\s+)*-n\s+['\"]?(\d+),(\d+)p['\"]?\s+(\S+)")
 
     def check(self, evt: BaseHookEvent) -> bool:
         if not (cl := evt.command_line):
@@ -164,30 +195,37 @@ class SedLineRange(CustomCondition):
         return not cl.q.uses_redirect() and bool(self.PATTERN.search(evt.command or ""))
 
 
-hook(
+@on(
     Event.PreToolUse,
     only_if=[Tool("Bash"), SedLineRange()],
-    message=(
-        "BLOCKED: `sed -n A,Bp <file>` is a line-range dump. "
-        "Use `ccx read <file> --section A-B` (or mcp__cc-context__read) — it returns the "
-        "same lines with structure. Escape hatch: pipe it (`cat <file> | sed -n 'A,Bp'`)."
-    ),
-    block=True,
     tests={
-        Input(command="sed -n '10,40p' f.go"): Block(pattern="ccx read"),
-        Input(command="sed -n 10,40p f.go"): Block(),
+        Input(command="sed -n '10,40p' f.go"): Rewrite(pattern="read f.go --section 10-40"),
+        Input(command="sed -n 10,40p f.go"): Rewrite(pattern="--section 10-40"),
         Input(command="cat f | sed -n '1,2p'"): Allow(),
         Input(command="sed 's/a/b/' f"): Allow(),
         Input(command="sed -n '/start/,/end/p' f"): Allow(),  # non-numeric range
     },
 )
+def rewrite_sed_line_range(evt: BaseHookEvent) -> object:
+    m = SedLineRange.PATTERN.search(evt.command or "")
+    start, end, file = m.group(1), m.group(2), m.group(3).strip("'\"")
+    if ccx := ccx_bin():
+        new = f"{ccx} read {shlex.quote(file)} --section {start}-{end}"
+        return evt.rewrite_command(new, note=f"Rewrote `sed -n {start},{end}p {file}` → `ccx read --section`: same lines, token-bounded.")
+    return evt.block(
+        "BLOCKED: `sed -n A,Bp <file>` is a line-range dump. "
+        "Use `ccx read <file> --section A-B` (or mcp__cc-context__read) — it returns the "
+        "same lines with structure. Escape hatch: pipe it (`cat <file> | sed -n 'A,Bp'`)."
+    )
 
 
 class BareCat(CustomCondition):
-    """Matches ``cat <file>...`` with no pipe, redirect, or heredoc.
+    """Matches ``cat <file>...`` with no pipe, redirect, heredoc, or flag.
 
     `cat f | cmd`, `cat > f`, and `cat << EOF` all use cat for streaming/writing,
-    not for dumping a file's contents into context — only the bare read is blocked.
+    not for dumping a file's contents into context — only the bare read matches. A
+    single file argument is rewritten to `ccx read --full`; multiple files (no
+    single `--full` target) stay a hard block.
     """
 
     def check(self, evt: BaseHookEvent) -> bool:
@@ -200,19 +238,12 @@ class BareCat(CustomCondition):
         return cl.q.runs("cat") and bool(re.search(r"^\s*cat\s+\S", cmd)) and not re.search(r"^\s*cat\s+-\b", cmd)
 
 
-hook(
+@on(
     Event.PreToolUse,
     only_if=[Tool("Bash"), BareCat()],
-    message=(
-        "BLOCKED: bare `cat <file>` dumps the whole file into context. "
-        "Use `ccx outline <file>` to map it, then `ccx read <file> --section A-B` for the part "
-        "you need (or the mcp__cc-context__ outline/read tools). "
-        "Escape hatch — whole file: `ccx read <file> --full`."
-    ),
-    block=True,
     tests={
-        Input(command="cat main.go"): Block(pattern="ccx outline"),
-        Input(command="cat a.go b.go"): Block(),
+        Input(command="cat main.go"): Rewrite(pattern="read main.go --full"),
+        Input(command="cat a.go b.go"): Block(pattern="ccx outline"),
         Input(command="cat f | grep x"): Allow(),
         Input(command="cat <<EOF"): Allow(),
         Input(command="cat << EOF"): Allow(),
@@ -220,24 +251,57 @@ hook(
         Input(command="cat >> f"): Allow(),
     },
 )
+def rewrite_bare_cat(evt: BaseHookEvent) -> object:
+    files = evt.command_line.primary.args
+    if len(files) == 1 and (ccx := ccx_bin()):
+        file = files[0]
+        new = f"{ccx} read {shlex.quote(file)} --full"
+        return evt.rewrite_command(new, note=f"Rewrote `cat {file}` → `ccx read --full`: same content, token-bounded.")
+    return evt.block(
+        "BLOCKED: bare `cat <file>` dumps the whole file into context. "
+        "Use `ccx outline <file>` to map it, then `ccx read <file> --section A-B` for the part "
+        "you need (or the mcp__cc-context__ outline/read tools). "
+        "Escape hatch — whole file: `ccx read <file> --full`."
+    )
 
 
-block_command(
-    r"ls\s+(?:-\w*R\w*|--recursive)\b|ls\s+(?:-\w+\s+)*-\w*R",
-    reason="`ls -R` walks the whole tree into context",
-    hint=(
-        'Use `ccx find "<glob>"` (or mcp__cc-context__find), or the built-in Glob tool, '
-        "to find paths by pattern. Plain `ls` and `ls -la` stay allowed"
-    ),
+class LsRecursive(CustomCondition):
+    """Matches ``ls -R [dir]`` — a recursive listing that walks the whole tree.
+
+    Plain `ls` and `ls -la` stay allowed; only a recursive flag (`-R`, bundled like
+    `-laR`, or `--recursive`) matches. The optional directory argument becomes the
+    `ccx find "<dir>/**"` glob root, defaulting to `**`.
+    """
+
+    PATTERN = re.compile(r"ls\s+(?:-\w*R\w*|--recursive)\b|ls\s+(?:-\w+\s+)*-\w*R")
+
+    def check(self, evt: BaseHookEvent) -> bool:
+        return bool(self.PATTERN.search(evt.command or ""))
+
+
+@on(
+    Event.PreToolUse,
+    only_if=[Tool("Bash"), LsRecursive()],
     tests={
-        Input(command="ls -R"): Block(pattern="ccx find"),
-        Input(command="ls -laR src"): Block(),
-        Input(command="ls -R src"): Block(),
-        Input(command="ls --recursive"): Block(),
+        Input(command="ls -R"): Rewrite(pattern='find "**"'),
+        Input(command="ls -laR src"): Rewrite(pattern='find "src/**"'),
+        Input(command="ls -R src"): Rewrite(pattern='find "src/**"'),
+        Input(command="ls --recursive"): Rewrite(pattern='find "**"'),
         Input(command="ls -la"): Allow(),
         Input(command="ls"): Allow(),
     },
 )
+def rewrite_ls_recursive(evt: BaseHookEvent) -> object:
+    dirs = [a for a in evt.command_line.primary.args if not a.startswith("-")]
+    glob = f"{dirs[0].rstrip('/')}/**" if dirs else "**"
+    if ccx := ccx_bin():
+        new = f'{ccx} find "{glob}"'
+        return evt.rewrite_command(new, note=f'Rewrote `ls -R` → `ccx find "{glob}"`: same paths, token-bounded.')
+    return evt.block(
+        "BLOCKED: `ls -R` walks the whole tree into context. "
+        'Use `ccx find "<glob>"` (or mcp__cc-context__find), or the built-in Glob tool, '
+        "to find paths by pattern. Plain `ls` and `ls -la` stay allowed."
+    )
 
 
 class FindEnumeration(CustomCondition):
@@ -249,6 +313,7 @@ class FindEnumeration(CustomCondition):
     """
 
     ACTIONS = ("-exec", "-execdir", "-delete", "-print0", "-ok")
+    NAME_FLAGS = ("-name", "-iname")
 
     def check(self, evt: BaseHookEvent) -> bool:
         if not (cl := evt.command_line):
@@ -262,37 +327,48 @@ class FindEnumeration(CustomCondition):
         )
 
 
-hook(
+@on(
     Event.PreToolUse,
     only_if=[Tool("Bash"), FindEnumeration()],
-    message=(
-        "BLOCKED: `find ... -name` enumeration floods context. "
-        'Use `ccx find "<glob>"` (or mcp__cc-context__find), or the built-in Glob tool. '
-        "Escape hatch — need an action: keep the `-exec`/`-delete`/`-print0 | xargs` form."
-    ),
-    block=True,
     tests={
-        Input(command="find . -name '*.go'"): Block(pattern="ccx find"),
-        Input(command="find src -iname '*.PY'"): Block(),
+        Input(command="find . -name '*.go'"): Rewrite(pattern='find "**/*.go"'),
+        Input(command="find src -iname '*.PY'"): Rewrite(pattern='find "src/**/*.PY"'),
+        Input(command="find . -path '*/gen/*'"): Block(pattern="ccx find"),  # -path stays a block
+        Input(command="find . -regex '.*\\.go'"): Block(),  # -regex stays a block
         Input(command="find . -name '*.go' -exec rm {} +"): Allow(),
         Input(command="find . -name '*.go' -delete"): Allow(),
         Input(command="find . -name '*.go' -print0 | xargs rm"): Allow(),
         Input(command="find . -type d"): Allow(),  # no -name, not an enumeration we steer
     },
 )
+def rewrite_find_enumeration(evt: BaseHookEvent) -> object:
+    args = evt.command_line.primary.args
+    flag = next((a for a in args if a in FindEnumeration.NAME_FLAGS), None)
+    if flag and (ccx := ccx_bin()):
+        path = args[0] if args and not args[0].startswith("-") else "."
+        glob = args[args.index(flag) + 1]
+        prefix = "" if path == "." else f"{path.rstrip('/')}/"
+        new = f'{ccx} find "{prefix}**/{glob}"'
+        return evt.rewrite_command(new, note=f'Rewrote `find {path} {flag} {glob}` → `ccx find "{prefix}**/{glob}"`: same paths, token-bounded.')
+    return evt.block(
+        "BLOCKED: `find ... -name` enumeration floods context. "
+        'Use `ccx find "<glob>"` (or mcp__cc-context__find), or the built-in Glob tool. '
+        "Escape hatch — need an action: keep the `-exec`/`-delete`/`-print0 | xargs` form."
+    )
 
 
 class RgIdentAlternation(CustomCondition):
-    """Matches an ``rg``/``grep -r`` whose pattern is an identifier alternation.
+    """Matches an ``rg`` whose pattern is an identifier alternation.
 
     `rg 'fooBar|bazQux' src/` is almost always "find these symbols" — `ccx symbol`
     resolves a definition and its callers in one shot, and `ccx grep` groups hits
     compactly. A single-term search carries no such signal, so it does not match.
+    The `grep -r` case is owned by the grep block, not this nudge.
     """
 
     def check(self, evt: BaseHookEvent) -> bool:
         cmd = evt.command or ""
-        if not re.search(r"^\s*(?:rg\b|grep\s+(?:-\w*r|-\w*\s+-\w*r|--recursive))", cmd):
+        if not re.search(r"^\s*rg\b", cmd):
             return False
         return bool(IDENT_ALT.search(cmd))
 
@@ -305,8 +381,45 @@ nudge(
     events=Event.PreToolUse,
     tests={
         Input(command="rg 'fooBar|bazQux' src/"): Warn(pattern="ccx symbol"),
-        Input(command="grep -r 'Foo|Bar' ."): Warn(),
+        Input(command="rg 'Foo|Bar|Baz' ."): Warn(),
         Input(command="rg TODO"): Allow(),
         Input(command="rg 'just one term' src/"): Allow(),
+    },
+)
+
+
+class UnpipedGrep(CustomCondition):
+    """Matches a ``grep`` that does not consume piped input.
+
+    Allows the stream-filter idiom (`… | grep`) while still matching grep used for
+    file searching, whether standalone, heading a pipe, or in a `&&`/`;` chain.
+    """
+
+    def check(self, evt: BaseHookEvent) -> bool:
+        if not (cl := evt.command_line):
+            return False
+        return any(
+            cmd.matches(r"^grep\b") and (i == 0 or cl.parts[i - 1][1] != "|") for i, (cmd, _) in enumerate(cl.parts)
+        )
+
+
+hook(
+    Event.PreToolUse,
+    only_if=[Tool("Bash"), UnpipedGrep()],
+    message=(
+        "BLOCKED: raw `grep` for file search floods context. "
+        "Use `ccx grep <text>` (or mcp__cc-context__grep) / `ccx search` for code; the "
+        "built-in Grep tool or `rg` for literal content in non-source files. "
+        "Escape hatch: pipe it (`… | grep`)."
+    ),
+    block=True,
+    tests={
+        Input(command="grep -rn foo src/"): Block(pattern="ccx grep"),
+        Input(command="ls | grep foo"): Allow(),
+        Input(command="cat x | grep foo | sort"): Allow(),
+        Input(command="grep foo file.py | wc -l"): Block(),
+        Input(command="grep foo a && echo done"): Block(),
+        Input(command="git log --grep=fix"): Allow(),
+        Input(command='git log --grep "fix bug"'): Allow(),
     },
 )

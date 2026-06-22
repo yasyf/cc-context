@@ -6,8 +6,8 @@ description: >-
   a file, locating a symbol or definition, searching code by intent or text, listing
   files, or reviewing changes. Triggers on "read this file", "where is X", "find the
   Y function", "how does Z work", "search the code for", "show me the diff", "what
-  calls this". Reach for ccx before Read, cat, sed, git diff, ls -R, or find, since the
-  guard hooks block those on anything token-heavy.
+  calls this". Reach for ccx before Read, cat, sed, grep, git diff, ls -R, or find, since
+  the guard hooks block those on anything token-heavy.
 ---
 
 # ccx — compact codebase context
@@ -107,7 +107,7 @@ These hold for every command, which is what makes ccx safe to trust over a raw r
 ## Why ccx first
 
 The guard hooks block token-heavy primitives: a full-file `Read` of a large file, a
-broad `git diff`, `sed -n`, a bare `cat`, `ls -R`, and `find` enumeration. Each has a
-ccx equivalent that returns the same answer in a fraction of the tokens. Reach for
-ccx and you stay inside the budget by default; reach for the raw tool and the hook
-turns you back to ccx anyway.
+broad `git diff`, raw `grep`, `sed -n`, a bare `cat`, `ls -R`, and `find` enumeration.
+Each has a ccx equivalent that returns the same answer in a fraction of the tokens.
+Reach for ccx and you stay inside the budget by default; reach for the raw tool and the
+hook turns you back to ccx anyway.
