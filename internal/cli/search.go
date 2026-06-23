@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/internal/backend"
@@ -39,7 +37,7 @@ func newSearchCmd() *cobra.Command {
 				return err
 			}
 			if explain {
-				fmt.Fprintf(cmd.ErrOrStderr(), "explain: query %q → %s (mode %q)\n", a.Query, kind, a.Mode)
+				cmd.PrintErrf("explain: query %q → %s (mode %q)\n", a.Query, kind, a.Mode)
 			}
 			if op == backend.OpStructural && a.Path != "" {
 				a.Paths = []string{a.Path}

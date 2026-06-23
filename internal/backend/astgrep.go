@@ -33,8 +33,7 @@ func (g AstGrep) bin(ctx context.Context) (string, error) {
 func (g AstGrep) CLIArgv(ctx context.Context, op Op, a Args) (bin string, argv []string, err error) {
 	switch op {
 	case OpStructural:
-		argv = []string{"run", "-p", a.Query, "--json=stream"}
-		argv = append(argv, g.scopeArgs(a)...)
+		argv = g.appendScope([]string{"run", "-p", a.Query, "--json=stream"}, a)
 	case OpReplace:
 		argv = []string{"run", "-p", a.Pattern, "-r", a.Rewrite}
 		// --json=stream and -U are mutually exclusive in ast-grep: with the stream
@@ -45,7 +44,7 @@ func (g AstGrep) CLIArgv(ctx context.Context, op Op, a Args) (bin string, argv [
 		} else {
 			argv = append(argv, "--json=stream")
 		}
-		argv = append(argv, g.scopeArgs(a)...)
+		argv = g.appendScope(argv, a)
 	default:
 		return "", nil, fmt.Errorf("ast-grep: unsupported op %q", op)
 	}
@@ -56,11 +55,10 @@ func (g AstGrep) CLIArgv(ctx context.Context, op Op, a Args) (bin string, argv [
 	return bin, argv, nil
 }
 
-// scopeArgs assembles the lang/glob/paths tail shared by both ops. Language is
+// appendScope appends the lang/glob/paths tail shared by both ops. Language is
 // passed only when set (ast-grep infers it per file from the extension); the
 // paths default to the repo root when none are given.
-func (g AstGrep) scopeArgs(a Args) []string {
-	var argv []string
+func (g AstGrep) appendScope(argv []string, a Args) []string {
 	if a.Lang != "" {
 		argv = append(argv, "-l", a.Lang)
 	}
