@@ -33,24 +33,32 @@ class SedLineRange(CustomCommandLineCondition):
     file argument is the `ccx read --section` case this rewrites.
     """
 
-    PATTERN = re.compile(r"sed\s+(?:-[a-zA-Z]+\s+)*-n\s+['\"]?(\d+),(\d+)p['\"]?\s+(\S+)")
+    RANGE = re.compile(r"^(\d+),(\d+)p$")
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
         # A piped sed reads a stream, not the trailing file token — leave it alone.
-        return not cl.q.uses_redirect() and bool(self.PATTERN.search(evt.command or ""))
+        return not cl.q.uses_redirect() and _sed_parts(cl) is not None
+
+
+def _sed_parts(cl: CommandLine) -> tuple[str, str, str] | None:
+    cap = cl.capture("sed -n $R $F")
+    if not cap:
+        return None
+    m = SedLineRange.RANGE.match(cap["R"].strip("'\""))
+    if not m:
+        return None
+    return m.group(1), m.group(2), cap["F"]
 
 
 def _sed_to(evt: BaseHookEvent) -> str | None:
-    m = SedLineRange.PATTERN.search(evt.command or "")
-    start, end, file = m.group(1), m.group(2), m.group(3).strip("'\"")
+    start, end, file = _sed_parts(evt.command_line)
     if ccx := ccx_bin():
         return f"{ccx} read {shlex.quote(file)} --section {start}-{end}"
     return None
 
 
 def _sed_note(evt: BaseHookEvent) -> str:
-    m = SedLineRange.PATTERN.search(evt.command or "")
-    start, end, file = m.group(1), m.group(2), m.group(3).strip("'\"")
+    start, end, file = _sed_parts(evt.command_line)
     return f"Rewrote `sed -n {start},{end}p {file}` → `ccx read --section`: same lines, token-bounded."
 
 
@@ -83,11 +91,10 @@ class BareCat(CustomCommandLineCondition):
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        cmd = evt.command or ""
         # Heredocs (`cat << EOF`) and redirects/pipes are streaming/writing uses.
-        if "<<" in cmd or cl.q.uses_redirect():
+        if "<<" in (evt.command or "") or cl.q.uses_redirect():
             return False
-        return cl.q.runs("cat") and bool(re.search(r"^\s*cat\s+\S", cmd)) and not re.search(r"^\s*cat\s+-\b", cmd)
+        return cl.q.runs("cat") and bool(a := cl.primary.args) and not a[0].startswith("-")
 
 
 def _cat_to(evt: BaseHookEvent) -> str | None:
@@ -132,10 +139,11 @@ class LsRecursive(CustomCommandLineCondition):
     `ccx find "<dir>/**"` glob root, defaulting to `**`.
     """
 
-    PATTERN = re.compile(r"ls\s+(?:-\w*R\w*|--recursive)\b|ls\s+(?:-\w+\s+)*-\w*R")
-
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        return bool(self.PATTERN.search(evt.command or ""))
+        return cl.q.runs("ls") and any(
+            x == "--recursive" or (x.startswith("-") and not x.startswith("--") and "R" in x)
+            for x in cl.primary.args
+        )
 
 
 def _ls_glob(evt: BaseHookEvent) -> str:
@@ -186,10 +194,9 @@ class FindEnumeration(CustomCommandLineCondition):
     NAME_FLAGS = ("-name", "-iname")
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        cmd = evt.command or ""
         return (
             cl.q.runs("find")
-            and bool(re.search(r"\bfind\b.*\s-(?:name|iname|path|regex)\b", cmd))
+            and any(cl.q.contains_token(f) for f in ("-name", "-iname", "-path", "-regex"))
             and not any(cl.q.contains_token(a) for a in self.ACTIONS)
             and not cl.q.uses_redirect()
         )

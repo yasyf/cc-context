@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-
 from captain_hook import (
     Allow,
     BaseHookEvent,
@@ -31,10 +29,7 @@ class RgIdentAlternation(CustomCommandLineCondition):
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        cmd = evt.command or ""
-        if not re.search(r"^\s*rg\b", cmd):
-            return False
-        return bool(IDENT_ALT.search(cmd))
+        return cl.q.runs("rg") and any(IDENT_ALT.search(a) for a in cl.primary.args)
 
 
 nudge(
@@ -61,7 +56,7 @@ class UnpipedGrep(CustomCommandLineCondition):
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
         return any(
-            cmd.matches(r"^grep\b") and (i == 0 or cl.parts[i - 1][1] != "|") for i, (cmd, _) in enumerate(cl.parts)
+            cmd.executable == "grep" and (i == 0 or cl.parts[i - 1][1] != "|") for i, (cmd, _) in enumerate(cl.parts)
         )
 
 
