@@ -6,19 +6,13 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/yasyf/cc-context/ci.yml?branch=main&label=ci)](https://github.com/yasyf/cc-context/actions/workflows/ci.yml)
 [![License: PolyForm-Noncommercial-1.0.0](https://img.shields.io/badge/License-PolyForm--Noncommercial--1.0.0-blue.svg)](https://github.com/yasyf/cc-context/blob/main/LICENSE)
 
-`cc-context` is a single Go binary — the `ccx` CLI and the `cc-context` MCP server — that feeds a coding agent the slice of a codebase it needs while spending as few tokens as it can. Its commands return compact, line-numbered views capped to a token budget, with an explicit marker when output is trimmed, so the context window goes to reasoning instead of re-reading whole files.
+The `ccx` CLI and `cc-context` MCP — feed a coding agent only the codebase slice it needs, on a token budget.
+
+`cc-context` is a single Go binary. Its commands return compact, line-numbered views capped to a token budget and print an explicit marker when they trim, so an agent's context window goes to reasoning instead of re-reading whole files.
 
 ## Why
 
-Reading entire files is the largest single drain on a coding agent's context, so `cc-context` swaps the token-heavy primitives for budgeted equivalents:
-
-- `ccx outline` and `ccx read --section` return a file's structure or a single section, capped to a token budget, and print an explicit marker for whatever they drop instead of truncating in silence.
-- `ccx search` is one front door that routes by query kind: a natural-language question runs a semantic search, a code pattern with metavars like `$A` or `$$$` runs a structural one. You don't need the identifier up front, or a second command to switch modes.
-- `ccx replace 'Add($A, $B)' 'Sum($A, $B)'` edits by structure and returns a diff — so an agent mutates code without first reading the file into context.
-- `ccx symbol NewRootCmd` (alias `ccx grok`) returns a symbol's definition, doc, body, callers, callees, siblings, and tests in one call, in place of a dozen greps.
-- `ccx diff` reviews changes structurally and reads both git and jj history.
-
-To make an agent actually reach for these, the bundled [capt-hook](https://github.com/yasyf/captain-hook) guard pack blocks `cat`, raw `grep`, and full-file reads, then points it at the `ccx` equivalent.
+Reading whole files is the largest single drain on a coding agent's context. `cc-context` swaps the token-heavy primitives — full-file reads, `cat`, raw `grep` — for budgeted equivalents that return a file's structure, a single section, or a symbol with its callers and callees, never more than a `--budget` of tokens. To make an agent reach for them, the bundled [capt-hook](https://github.com/yasyf/captain-hook) guard pack blocks `cat`, raw `grep`, and full-file reads, then points it at the `ccx` equivalent.
 
 ## Install
 
@@ -34,41 +28,31 @@ Or build it with the Go toolchain:
 go install github.com/yasyf/cc-context/cmd/ccx@latest
 ```
 
-The semantic commands (`search`, `related`) shell out to [semble](https://github.com/MinishLab/semble) through `uvx`; structural search and `ccx replace` run on [ast-grep](https://ast-grep.github.io/). The Homebrew formula installs both [uv](https://docs.astral.sh/uv/) and ast-grep as dependencies; off Homebrew, `ccx` finds ast-grep on `PATH` or downloads a pinned build on first use, and uv must be on `PATH`. The other structural commands use a pinned [tilth](https://github.com/jahala/tilth) binary, downloaded the same way. Nothing else to configure.
+The semantic commands (`search`, `related`) shell out to [semble](https://github.com/MinishLab/semble) through `uvx`; structural search and `ccx replace` run on [ast-grep](https://ast-grep.github.io/). The Homebrew formula installs both [uv](https://docs.astral.sh/uv/) and ast-grep as dependencies; off Homebrew, uv must be on `PATH` and `ccx` finds ast-grep there or downloads a pinned build on first use — the same as the pinned [tilth](https://github.com/jahala/tilth) binary it uses for everything else. Nothing else to configure.
 
 ## Quickstart
 
-Orient in a repository, search it by intent, then grok a result:
+Orient in a repo, find code by intent, then grok the result:
 
 ```console
 $ ccx overview
 [tilth] Go project — 45 source files, 8 directories
-  dirs: cli/ backend/ astgrep/ vcs/ querykind/ mcpserver/ render/ search/
-  deps: asm, cobra, encoding, go-sdk, jsonschema-go, mousetrap, oauth2, pflag, sys, v3
-  hot (× = importers): bench/ccxbench/types.py ×8, bench/ccxbench/config.py ×5, bench/ccxbench/envelope.py ×5, plugin/hooks/common.py ×4, bench/ccxbench/__init__.py ×2
-  git: branch 5403478, clean
-  tests: tests/, _test.go, test_*.py
+  dirs: cli/ backend/ astgrep/ render/ querykind/ vcs/ mcpserver/ search/
+  hot (× = importers): bench/ccxbench/types.py ×8, plugin/hooks/common.py ×4
+  git: branch d6c15a5, clean
   manifest: go.mod (github.com/yasyf/cc-context)
 
-languages: go (45), py (23), md (10), sh (2)
-
-$ ccx search "how is the mcp server started" -k 1
+$ ccx search "how is the mcp server started" -k 1 --max-snippet-lines 1
 # semantic (semble)
-{"query": "how is the mcp server started", "results": [{"file_path": "internal/mcpserver/server.go", "start_line": 103, "end_line": 115, "score": 0.032266458495966696, "content": "func Serve(ctx context.Context) error {\n\tp := proxy.New()\n\tdefer func() { _ = p.Close() }()\n\n\ts := mcp.NewServer(&mcp.Implementation{Name: \"cc-context\", Version: version.String()}, nil)\n\tregister(s, p)\n\n\treturn s.Run(ctx, &mcp.StdioTransport{})\n}\n"}]}
+{"query": "how is the mcp server started", "results": [{"file_path": "internal/mcpserver/server.go", "start_line": 103, "end_line": 115, "score": 0.032, "content": "func Serve(ctx context.Context) error {"}]}
 
 $ ccx symbol NewRootCmd
 # grok: NewRootCmd [internal/cli/root.go:11]
-
-## signature
 func NewRootCmd() *cobra.Command
-
-## doc
-// NewRootCmd builds the root command and registers its subcommands.
-
-# plus body, callees (13 internal, 3 external), and callers
+# plus doc, body, callees (13 internal, 3 external), and callers (5)
 ```
 
-The structural commands cap their output at `--budget` tokens. When one trims, it cuts on a line boundary and says how much it dropped:
+Every structural command caps its output at `--budget` tokens, cuts on a line boundary, and says how much it dropped:
 
 ```console
 $ ccx outline internal/mcpserver/server.go --budget 100
@@ -82,17 +66,7 @@ $ ccx outline internal/mcpserver/server.go --budget 100
 ... truncated (77 tokens omitted, budget: 100)
 ```
 
-### Search and edit by structure
-
-A query that carries an ast-grep metavar (`$A`, `$$$`) routes to a structural search, which matches by shape and prints `file:line` per hit under a `# structural (ast-grep)` header:
-
-```console
-$ ccx search 'newReplaceCmd($$$)' internal/cli
-# structural (ast-grep)
-internal/cli/root.go:L29  newReplaceCmd()
-```
-
-`ccx replace` takes the same pattern plus a rewrite and previews the diff — it writes nothing until you add `--apply`. Try it on a throwaway file:
+A query carrying an ast-grep metavar (`$A`, `$$$`) routes to structural search; `ccx replace` rewrites the matches and previews a diff, writing nothing until `--apply` and stopping at 20 files unless you pass `--force`. An agent edits code it never read into context:
 
 ```console
 $ printf 'package demo\n\nfunc f() { Add(1, 2) }\n' > /tmp/demo.go
@@ -103,9 +77,9 @@ $ ccx replace 'Add($A, $B)' 'Sum($A, $B)' /tmp/demo.go
 + Sum(1, 2)
 ```
 
-Re-run with `--apply` to write the change, `--force` to bypass the 20-file safety cap. These three compose into a blind edit loop: `ccx symbol` to find a symbol, `ccx search` to locate its call sites by shape, `ccx replace` to rewrite them, all without reading a file into context.
-
 ## Commands
+
+Eleven commands, each a token-bounded stand-in for a primitive an agent would otherwise reach for:
 
 | Command | What it does |
 | --- | --- |
@@ -121,25 +95,25 @@ Re-run with `--apply` to write the change, `--force` to bypass the 20-file safet
 | `ccx find <glob>` | List files matching a glob, with per-file token counts |
 | `ccx diff [uncommitted\|staged\|<ref>]` | VCS-aware structural diff; defaults to uncommitted |
 
-`search` picks its engine automatically, but `--semantic`, `--structural`, or `--literal` force one and `--explain` prints the routing decision to stderr. `replace` takes `--apply` to write, `--force` to bypass its file-count cap, and `--lang`/`--glob` to scope. `outline`, `read`, `deps`, `grep`, `diff`, and `replace` take `--budget N` to cap output; `search` uses `-k` and `--max-snippet-lines` instead. Run `ccx <command> --help` for the full flag set, and `ccx --version` for the build version.
+Run `ccx <command> --help` for the full flag set, and `ccx --version` for the build version.
 
 ## Use it from Claude Code
 
-The same commands are exposed as an MCP server. Register it with Claude Code, available in every project:
+The same commands are exposed as an MCP server, one tool per command. Register it once, available in every project:
 
 ```bash
 claude mcp add --scope user --transport stdio cc-context -- ccx mcp
 ```
 
-Claude Code then sees eleven tools, one per command above: `mcp__cc-context__ccx_overview`, `mcp__cc-context__ccx_search`, `mcp__cc-context__ccx_symbol`, and the rest. `ccx_replace` previews by default, so an agent that omits `apply` gets a diff back and edits by structure without ever reading the file into context. Installed as a Claude Code plugin instead, the server runs `${CLAUDE_PLUGIN_ROOT}/bin/ccx mcp` and ships the capt-hook guard pack with it.
+The tools mirror the CLI 1:1 (`mcp__cc-context__ccx_overview` and the rest). `ccx_replace` previews by default, so an agent that omits `apply` gets a diff back and edits by structure without reading the file. Installed as a Claude Code plugin instead, the server runs `${CLAUDE_PLUGIN_ROOT}/bin/ccx mcp` and ships the capt-hook guard pack with it.
 
 ## How it works
 
-Three engines sit behind one surface. semble answers the semantic ops (`search`, `related`); ast-grep answers structural search and `replace`; tilth answers the rest. `ccx search` classifies the query and routes it; every other command maps to a fixed engine, so there is nothing to select at runtime. Every result then passes through a render layer that estimates roughly four characters per token, trims on a line boundary when the output exceeds `--budget`, and appends the overflow marker. Output is never cut without saying so.
+Three engines sit behind one surface: [semble](https://github.com/MinishLab/semble) answers the semantic ops (`search`, `related`), [ast-grep](https://ast-grep.github.io/) answers structural search and `replace`, and [tilth](https://github.com/jahala/tilth) answers the rest. `ccx search` classifies the query and routes it; every other command maps to a fixed engine. Each result then passes through a render layer that estimates roughly four characters per token, trims on a line boundary when the output exceeds `--budget`, and appends the overflow marker. Output is never cut without saying so.
 
 ## Configuration
 
-`ccx` reads no config file. Behavior is tuned through environment variables:
+`ccx` reads no config file; behavior is tuned through environment variables:
 
 | Variable | Effect |
 | --- | --- |
