@@ -20,6 +20,14 @@ linters:
     - revive
     - staticcheck
     - unused
+  exclusions:
+    rules:
+      # G304 (file inclusion via variable) targets production code handling
+      # untrusted input, not test helpers reading fixtures from testdata/.
+      - path: _test\.go
+        text: G304
+        linters:
+          - gosec
 
 formatters:
   enable:
