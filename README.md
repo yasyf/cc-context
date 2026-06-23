@@ -22,12 +22,6 @@ Install with Homebrew (recommended):
 brew install yasyf/tap/ccx
 ```
 
-Or build it with the Go toolchain:
-
-```bash
-go install github.com/yasyf/cc-context/cmd/ccx@latest
-```
-
 The semantic commands (`search`, `related`) shell out to [semble](https://github.com/MinishLab/semble) through `uvx`; structural search and `ccx replace` run on [ast-grep](https://ast-grep.github.io/). The Homebrew formula installs both [uv](https://docs.astral.sh/uv/) and ast-grep as dependencies; off Homebrew, uv must be on `PATH` and `ccx` finds ast-grep there or downloads a pinned build on first use — the same as the pinned [tilth](https://github.com/jahala/tilth) binary it uses for everything else. Nothing else to configure.
 
 ## Quickstart
