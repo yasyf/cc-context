@@ -26,6 +26,7 @@ func NewRootCmd() *cobra.Command {
 		newSymbolCmd(),
 		newDepsCmd(),
 		newGrepCmd(),
+		newReplaceCmd(),
 		newFindCmd(),
 		newDiffCmd(),
 		newOverviewCmd(),

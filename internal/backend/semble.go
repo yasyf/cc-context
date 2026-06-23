@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/yasyf/cc-context/internal/vendor"
 )
 
 // Semble translates ops onto the semble engine. Resolution order is "semble" on
@@ -28,7 +29,7 @@ func (s Semble) resolve() (bin string, prefix []string) {
 	switch {
 	case s.Bin != "":
 		return s.Bin, nil
-	case lookPath("semble") != "":
+	case vendor.LookPath("semble") != "":
 		return "semble", nil
 	default:
 		return "uvx", []string{"--from", "semble[mcp]", "semble"}
@@ -130,14 +131,4 @@ func splitLoc(loc string) (file string, line int, err error) {
 		return "", 0, fmt.Errorf("semble: location %q has non-numeric line: %w", loc, err)
 	}
 	return loc[:i], line, nil
-}
-
-// lookPath wraps exec.LookPath, returning "" when the binary is absent. It is a
-// package var so tests can stub PATH resolution.
-var lookPath = func(name string) string {
-	p, err := exec.LookPath(name)
-	if err != nil {
-		return ""
-	}
-	return p
 }

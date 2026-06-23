@@ -13,8 +13,8 @@ import (
 // Tilth translates ops onto the tilth engine. tilth is query-dispatched: the
 // first positional selects the mode (a path, a subcommand, or a search string).
 type Tilth struct {
-	// Bin is the resolved tilth binary path. Empty triggers provisioning via
-	// vendor.EnsureTilth on first use.
+	// Bin is the resolved tilth binary path. Empty triggers resolution via
+	// vendor.Resolve (configured bin → PATH → pinned download) on first use.
 	Bin string
 }
 
@@ -24,10 +24,7 @@ func (t Tilth) Engine() Engine {
 }
 
 func (t Tilth) bin(ctx context.Context) (string, error) {
-	if t.Bin != "" {
-		return t.Bin, nil
-	}
-	return vendor.EnsureTilth(ctx)
+	return vendor.Resolve(ctx, vendor.Tilth, t.Bin)
 }
 
 // CLIArgv translates op into a tilth child-process invocation.

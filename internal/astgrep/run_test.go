@@ -1,0 +1,125 @@
+package astgrep
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+
+	"github.com/yasyf/cc-context/internal/backend"
+)
+
+// fakeAstGrep installs an executable named "ast-grep" on PATH that emits canned
+// --json=stream output. The script emits one JSON match per file in $AG_FILES
+// (space-separated) on a preview run, and nothing on an apply run (argv carries
+// -U). vendor.Resolve finds it via LookPath("ast-grep").
+func fakeAstGrep(t *testing.T, files []string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake ast-grep script is POSIX-only")
+	}
+	dir := t.TempDir()
+	var lines strings.Builder
+	for i, f := range files {
+		// 0-based line i; matches the ast-grep convention the renderer shifts +1.
+		fmt.Fprintf(&lines, `{"file":"%s","text":"old%d","replacement":"new%d","range":{"start":{"line":%d},"end":{"line":%d}}}`+"\n", f, i, i, i, i)
+	}
+	script := "#!/bin/sh\n" +
+		"for a in \"$@\"; do [ \"$a\" = \"-U\" ] && exit 0; done\n" +
+		"cat <<'EOF'\n" + lines.String() + "EOF\n"
+	path := filepath.Join(dir, "ast-grep")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // fake engine must be owner-executable
+		t.Fatalf("write fake ast-grep: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func filesN(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = fmt.Sprintf("f%d.go", i)
+	}
+	return out
+}
+
+func TestRunReplacePreviewLeavesDiff(t *testing.T) {
+	fakeAstGrep(t, []string{"a.go", "b.go"})
+	got, err := Run(context.Background(), backend.OpReplace, backend.Args{Pattern: "old($A)", Rewrite: "new($A)"})
+	if err != nil {
+		t.Fatalf("Run preview: %v", err)
+	}
+	if !strings.HasPrefix(got, "# 2 matches across 2 files\n") {
+		t.Errorf("preview header wrong:\n%s", got)
+	}
+	if !strings.Contains(got, "a.go:1\n- old0\n+ new0\n") {
+		t.Errorf("preview missing first hit (1-based line):\n%s", got)
+	}
+}
+
+func TestRunReplaceNoMatch(t *testing.T) {
+	fakeAstGrep(t, nil) // empty stream → no matches
+	got, err := Run(context.Background(), backend.OpReplace, backend.Args{Pattern: "missing($A)", Rewrite: "x($A)"})
+	if err != nil {
+		t.Fatalf("Run no-match: %v", err)
+	}
+	if !strings.HasPrefix(got, "# no matches for missing($A)") {
+		t.Errorf("no-match message wrong: %q", got)
+	}
+	if !strings.Contains(got, "--debug-query=ast") {
+		t.Errorf("no-match missing debug-query hint: %q", got)
+	}
+}
+
+func TestRunReplaceApplyUnderCap(t *testing.T) {
+	fakeAstGrep(t, []string{"a.go", "b.go", "c.go"})
+	got, err := Run(context.Background(), backend.OpReplace, backend.Args{Pattern: "old($A)", Rewrite: "new($A)", Apply: true})
+	if err != nil {
+		t.Fatalf("Run apply: %v", err)
+	}
+	if got != "# applied 3 rewrites across 3 files\n" {
+		t.Errorf("apply summary wrong: %q", got)
+	}
+}
+
+func TestRunReplaceApplyOverCapBlocked(t *testing.T) {
+	fakeAstGrep(t, filesN(applyFileCap+1)) // 21 distinct files > cap 20
+	_, err := Run(context.Background(), backend.OpReplace, backend.Args{Pattern: "old($A)", Rewrite: "new($A)", Apply: true})
+	if err == nil {
+		t.Fatal("apply over cap without --force must error")
+	}
+	if !strings.Contains(err.Error(), "exceeding the cap of 20") {
+		t.Errorf("cap error wrong: %v", err)
+	}
+}
+
+func TestRunReplaceApplyOverCapForced(t *testing.T) {
+	fakeAstGrep(t, filesN(applyFileCap+1))
+	got, err := Run(context.Background(), backend.OpReplace, backend.Args{Pattern: "old($A)", Rewrite: "new($A)", Apply: true, Force: true})
+	if err != nil {
+		t.Fatalf("Run apply --force: %v", err)
+	}
+	if got != fmt.Sprintf("# applied %d rewrites across %d files\n", applyFileCap+1, applyFileCap+1) {
+		t.Errorf("forced apply summary wrong: %q", got)
+	}
+}
+
+func TestRunStructural(t *testing.T) {
+	fakeAstGrep(t, []string{"a.go", "a.go"}) // two hits, one file
+	got, err := Run(context.Background(), backend.OpStructural, backend.Args{Query: "old($A)"})
+	if err != nil {
+		t.Fatalf("Run structural: %v", err)
+	}
+	// 0-based lines 0 and 1 render as the 1-based L1 and L2.
+	if !strings.Contains(got, "a.go:L1  old0") || !strings.Contains(got, "a.go:L2  old1") {
+		t.Errorf("structural list wrong:\n%s", got)
+	}
+}
+
+func TestRunUnsupportedOp(t *testing.T) {
+	if _, err := Run(context.Background(), backend.OpGrep, backend.Args{}); err == nil {
+		t.Fatal("Run: want error for non-ast-grep op")
+	}
+}

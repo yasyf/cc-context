@@ -14,6 +14,8 @@ const (
 	EngineTilth Engine = "tilth"
 	// EngineSemble is the semble engine.
 	EngineSemble Engine = "semble"
+	// EngineAstGrep is the ast-grep engine.
+	EngineAstGrep Engine = "ast-grep"
 )
 
 // Op is a logical context operation, stable across the CLI and MCP surfaces.
@@ -31,6 +33,10 @@ const (
 	OpFind     Op = "find"
 	OpDiff     Op = "diff"
 	OpOverview Op = "overview"
+	// OpStructural is an ast-grep structural pattern search.
+	OpStructural Op = "structural"
+	// OpReplace is an ast-grep structural find-replace.
+	OpReplace Op = "replace"
 )
 
 // Args carries every flag and positional an op may consume. Each backend reads
@@ -43,8 +49,14 @@ type Args struct {
 	Scope           string
 	Source          string
 	Kind            string
+	Pattern         string
+	Rewrite         string
+	Lang            string
+	Mode            string
 	Paths           []string
 	Full            bool
+	Apply           bool
+	Force           bool
 	Budget          int
 	K               int
 	MaxSnippetLines int

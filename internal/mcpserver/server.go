@@ -10,6 +10,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/proxy"
+	"github.com/yasyf/cc-context/internal/search"
 	"github.com/yasyf/cc-context/internal/version"
 )
 
@@ -19,10 +20,24 @@ const defaultSnippetLines = 10
 
 // SearchIn is the input for ccx_search.
 type SearchIn struct {
-	Query           string `json:"query" jsonschema:"natural-language or symbol query"`
+	Query           string `json:"query" jsonschema:"natural-language intent, structural pattern, or literal text"`
 	Repo            string `json:"repo,omitempty" jsonschema:"repo root or https git URL to search; defaults to the project root"`
+	Mode            string `json:"mode,omitempty" jsonschema:"routing override: auto|semantic|structural|literal (default auto)"`
+	Lang            string `json:"lang,omitempty" jsonschema:"structural: language to parse as; inferred from extension when omitted"`
 	K               int    `json:"k,omitempty" jsonschema:"max results to return"`
 	MaxSnippetLines int    `json:"max_snippet_lines,omitempty" jsonschema:"max lines per result snippet"`
+}
+
+// ReplaceIn is the input for ccx_replace.
+type ReplaceIn struct {
+	Pattern string   `json:"pattern" jsonschema:"ast-grep structural pattern; metavars like $A and $$$ for variadic"`
+	Rewrite string   `json:"rewrite" jsonschema:"replacement template; reference the same metavars"`
+	Paths   []string `json:"paths,omitempty" jsonschema:"files or dirs to scope to; defaults to repo root"`
+	Lang    string   `json:"lang,omitempty" jsonschema:"language; inferred from extension when omitted"`
+	Glob    string   `json:"glob,omitempty" jsonschema:"gitignore-style include/exclude; ! to exclude"`
+	Apply   bool     `json:"apply,omitempty" jsonschema:"WRITE the changes; omit/false returns a preview diff only"`
+	Force   bool     `json:"force,omitempty" jsonschema:"bypass the apply file-count cap"`
+	Budget  int      `json:"budget,omitempty" jsonschema:"token budget for the preview diff"`
 }
 
 // RelatedIn is the input for ccx_related.
@@ -100,14 +115,23 @@ func Serve(ctx context.Context) error {
 func register(s *mcp.Server, p *proxy.Proxy) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_search",
-		Description: "Semantic code search by intent or symbol — prefer over grep for \"where/how do we do X\" questions.",
-	}, handler(p, backend.OpSearch, func(in SearchIn) backend.Args {
-		// Default to a compact snippet; semble's own default dumps the full chunk.
-		snippet := in.MaxSnippetLines
-		if snippet == 0 {
-			snippet = defaultSnippetLines
+		Description: "Code search routed by query kind — natural-language intent (semantic), structural pattern (ast-grep), or forced literal. Prefer over grep for \"where/how do we do X\".",
+	}, searchHandler(p))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "ccx_replace",
+		Description: "Preview (default) or apply a structural find-replace WITHOUT reading the file into context. Pattern in, diff out.",
+	}, handler(p, backend.OpReplace, func(in ReplaceIn) backend.Args {
+		return backend.Args{
+			Pattern: in.Pattern,
+			Rewrite: in.Rewrite,
+			Paths:   in.Paths,
+			Lang:    in.Lang,
+			Glob:    in.Glob,
+			Apply:   in.Apply,
+			Force:   in.Force,
+			Budget:  in.Budget,
 		}
-		return backend.Args{Query: in.Query, Path: in.Repo, K: in.K, MaxSnippetLines: snippet}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -176,6 +200,39 @@ func register(s *mcp.Server, p *proxy.Proxy) {
 	}, handler(p, backend.OpOverview, func(OverviewIn) backend.Args {
 		return backend.Args{}
 	}))
+}
+
+// searchHandler classifies the query through search.Route and dispatches the
+// routed op, mirroring the CLI so both surfaces behave identically. The semantic
+// path keeps semble's compact-snippet default; structural and literal ignore the
+// snippet knobs.
+func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, SearchIn) (*mcp.CallToolResult, any, error) {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) (*mcp.CallToolResult, any, error) {
+		snippet := in.MaxSnippetLines
+		if snippet == 0 {
+			snippet = defaultSnippetLines
+		}
+		a := backend.Args{
+			Query:           in.Query,
+			Path:            in.Repo,
+			Mode:            in.Mode,
+			Lang:            in.Lang,
+			K:               in.K,
+			MaxSnippetLines: snippet,
+		}
+		op, _, err := search.Route(a)
+		if err != nil {
+			return nil, nil, fmt.Errorf("ccx_search: %w", err)
+		}
+		if op == backend.OpStructural && in.Repo != "" {
+			a.Paths = []string{in.Repo}
+		}
+		out, err := p.Call(ctx, op, a)
+		if err != nil {
+			return nil, nil, fmt.Errorf("ccx_search: %w", err)
+		}
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
+	}
 }
 
 // handler adapts a per-tool Args builder into an MCP tool handler that proxies

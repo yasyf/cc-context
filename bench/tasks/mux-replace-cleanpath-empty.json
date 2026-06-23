@@ -1,0 +1,40 @@
+{
+  "id": "mux-replace-cleanpath-empty",
+  "category": "structural_replace",
+  "repo": "gorilla-mux",
+  "prompt": "In mux.go, the unexported `cleanPath` function maps an empty path to `\"/\"`. Perform a structural find-replace on that guard so an empty path maps to `\"/index\"` instead: rewrite the `if p == \"\" { return \"/\" }` block's returned value from `\"/\"` to `\"/index\"`. Change nothing else.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "changed_file": {
+        "type": "string"
+      },
+      "summary": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "changed_file"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "test_run",
+    "spec": {
+      "cmd": "printf 'package mux\\nimport \"testing\"\\nfunc TestCleanPathEmptyBench(t *testing.T){ if cleanPath(\"\")!=\"/index\" { t.Fatal(cleanPath(\"\")) } }' > zz_cleanpath_test.go && go test -run TestCleanPathEmptyBench . >/dev/null 2>&1; rc=$?; rm -f zz_cleanpath_test.go; exit $rc",
+      "timeout_s": 180
+    }
+  },
+  "gold": {
+    "check": "cleanPath(\"\") == \"/index\"",
+    "solution_edits": [
+      {
+        "file": "mux.go",
+        "find": "if p == \"\" {\n\t\treturn \"/\"\n\t}",
+        "replace": "if p == \"\" {\n\t\treturn \"/index\"\n\t}"
+      }
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

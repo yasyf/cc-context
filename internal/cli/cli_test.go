@@ -69,7 +69,9 @@ func TestSearchCommandInvokesBackend(t *testing.T) {
 	}
 
 	got := strings.TrimSpace(out.String())
-	want := "search auth flow src -k 3 --max-snippet-lines 10"
+	// A natural-language query routes to semble (semantic); the routing header is
+	// prepended to the backend's output on stdout.
+	want := "# semantic (semble)\nsearch auth flow src -k 3 --max-snippet-lines 10"
 	if got != want {
 		t.Errorf("backend argv = %q, want %q", got, want)
 	}

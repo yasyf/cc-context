@@ -247,7 +247,7 @@ def replace_repeats(cfg: Config, repeats: int) -> Config:
 
 
 def cmd_pilot(cfg: Config, args: argparse.Namespace) -> int:
-    args.categories = "navigation,callees,diff_review,targeted_edit,non_regression,intent_search"
+    args.categories = "navigation,callees,diff_review,targeted_edit,structural_replace,structural_search,non_regression,intent_search"
     args.sample = 1
     args.tasks = None
     args.limit = None

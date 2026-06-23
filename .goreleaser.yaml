@@ -55,23 +55,6 @@ notarize:
 checksum:
   name_template: checksums.txt
 
-homebrew_casks:
-  - name: ccx
-    binaries:
-      - ccx
-    repository:
-      owner: yasyf
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    homepage: "https://github.com/yasyf/cc-context"
-    description: "Compact codebase-context tools for AI agents"
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/ccx"]
-          end
-
 release:
   prerelease: auto
 

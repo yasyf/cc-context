@@ -14,6 +14,8 @@ CATEGORIES: tuple[str, ...] = (
     "diff_review",
     "intent_search",
     "targeted_edit",
+    "structural_replace",
+    "structural_search",
     "non_regression",
 )
 

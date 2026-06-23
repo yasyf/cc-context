@@ -1,0 +1,27 @@
+{
+  "id": "route-struct-compute-loop",
+  "category": "structural_search",
+  "repo": "fixture",
+  "prompt": "Search this repository for code matching the structural pattern `func $NAME(xs []int) int` (a function taking an int slice and returning an int). Which single file declares `Compute`, one of the functions that matches? Respond with the repo-relative file path.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "file": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "file"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "file_match",
+    "spec": {}
+  },
+  "gold": {
+    "file": "internal/calc/calc.go"
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

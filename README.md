@@ -13,7 +13,8 @@
 Reading entire files is the largest single drain on a coding agent's context, so `cc-context` swaps the token-heavy primitives for budgeted equivalents:
 
 - `ccx outline` and `ccx read --section` return a file's structure or a single section, capped to a token budget, and print an explicit `… +N lines omitted` marker instead of truncating in silence.
-- `ccx search "how does routing pick a backend"` finds code by intent, so you don't need the identifier up front.
+- `ccx search` is one front door that routes by query kind: a natural-language question runs a semantic search, a code pattern with metavars like `$A` or `$$$` runs a structural one. You don't need the identifier up front, or a second command to switch modes.
+- `ccx replace 'Add($A, $B)' 'Sum($A, $B)'` edits by structure and returns a diff — so an agent mutates code without first reading the file into context.
 - `ccx symbol NewRootCmd` (alias `ccx grok`) returns a symbol's definition, doc, body, callers, callees, siblings, and tests in one call, in place of a dozen greps.
 - `ccx diff` reviews changes structurally and reads both git and jj history.
 
@@ -33,7 +34,7 @@ Or with the Go toolchain:
 go install github.com/yasyf/cc-context/cmd/ccx@latest
 ```
 
-The semantic commands (`search`, `related`) shell out to [semble](https://github.com/MinishLab/semble) through `uvx`, so they need [uv](https://docs.astral.sh/uv/) on `PATH`. The structural commands download a pinned [tilth](https://github.com/jahala/tilth) binary on first use. Nothing else to configure.
+The semantic commands (`search`, `related`) shell out to [semble](https://github.com/MinishLab/semble) through `uvx`, so they need [uv](https://docs.astral.sh/uv/) on `PATH`. Structural search and `ccx replace` run on [ast-grep](https://ast-grep.github.io/), which the Homebrew formula installs as a dependency; off Homebrew, `ccx` finds it on `PATH` or downloads a pinned build on first use. The other structural commands use a pinned [tilth](https://github.com/jahala/tilth) binary, downloaded the same way. Nothing else to configure.
 
 ## Quickstart
 
@@ -86,12 +87,36 @@ $ ccx outline internal/cli/root.go --budget 30
 … +1 lines, ~12 tokens omitted — re-run with a larger --budget
 ```
 
+### Search and edit by structure
+
+A query that carries an ast-grep metavar (`$A`, `$$$`) routes to a structural search, which matches by shape and prints `file:line` per hit under a `# structural (ast-grep)` header:
+
+```console
+$ ccx search 'newReplaceCmd($$$)' internal/cli
+# structural (ast-grep)
+internal/cli/root.go:L29  newReplaceCmd()
+```
+
+`ccx replace` takes the same pattern plus a rewrite and previews the diff — it writes nothing until you add `--apply`. Try it on a throwaway file:
+
+```console
+$ printf 'package demo\n\nfunc f() { Add(1, 2) }\n' > /tmp/demo.go
+$ ccx replace 'Add($A, $B)' 'Sum($A, $B)' /tmp/demo.go
+# 1 matches across 1 files
+/tmp/demo.go:3
+- Add(1, 2)
++ Sum(1, 2)
+```
+
+Re-run with `--apply` to write the change, `--force` to bypass the 20-file safety cap. These three compose into a blind edit loop: `ccx symbol` to find a symbol, `ccx search` to locate its call sites by shape, `ccx replace` to rewrite them, all without reading a file into context.
+
 ## Commands
 
 | Command | What it does |
 | --- | --- |
 | `ccx overview` | Repository structure and entry points; start here |
-| `ccx search <query> [path]` | Semantic search by intent or symbol; JSON results |
+| `ccx search <query> [path]` | Search routed by query kind: natural-language runs semantic, a code pattern runs structural |
+| `ccx replace <pattern> <rewrite> [paths...]` | Structural find-replace; previews a diff, writes only with `--apply` |
 | `ccx related <file:line>` | Code semantically related to a location |
 | `ccx symbol <name>` (alias `grok`) | Definition, doc, body, callers, callees, siblings, tests |
 | `ccx outline <file>` | Token-budgeted structural outline of a file |
@@ -101,7 +126,7 @@ $ ccx outline internal/cli/root.go --budget 30
 | `ccx find <glob>` | List files matching a glob, with per-file token counts |
 | `ccx diff [uncommitted\|staged\|<ref>]` | VCS-aware structural diff; defaults to uncommitted |
 
-`outline`, `read`, `deps`, `grep`, and `diff` take `--budget N` to cap output; the semantic commands (`search`, `related`) use `-k` and `--max-snippet-lines` instead. Run `ccx <command> --help` for the full flag set, and `ccx --version` for the build version.
+`search` picks its engine automatically, but `--semantic`, `--structural`, or `--literal` force one and `--explain` prints the routing decision to stderr. `replace` takes `--apply` to write, `--force` to bypass its file-count cap, and `--lang`/`--glob` to scope. `outline`, `read`, `deps`, `grep`, `diff`, and `replace` take `--budget N` to cap output; the semantic commands (`search`, `related`) use `-k` and `--max-snippet-lines` instead. Run `ccx <command> --help` for the full flag set, and `ccx --version` for the build version.
 
 ## Use it from Claude Code
 
@@ -118,11 +143,11 @@ The same commands are exposed as an MCP server. Add it to your `.mcp.json`:
 }
 ```
 
-Claude Code then sees ten tools, one per command above: `mcp__cc-context__ccx_overview`, `mcp__cc-context__ccx_search`, `mcp__cc-context__ccx_symbol`, and the rest. Installed as a Claude Code plugin instead, the server runs `${CLAUDE_PLUGIN_ROOT}/bin/ccx mcp` and ships the capt-hook guard pack with it.
+Claude Code then sees eleven tools, one per command above: `mcp__cc-context__ccx_overview`, `mcp__cc-context__ccx_search`, `mcp__cc-context__ccx_symbol`, and the rest. `ccx_replace` previews by default, so an agent that omits `apply` gets a diff back and edits by structure without ever reading the file into context. Installed as a Claude Code plugin instead, the server runs `${CLAUDE_PLUGIN_ROOT}/bin/ccx mcp` and ships the capt-hook guard pack with it.
 
 ## How it works
 
-Two engines sit behind one surface. semble answers the semantic ops (`search`, `related`); tilth answers the structural ones (everything else). The mapping lives in `internal/router`, so there is nothing to select at runtime. Every result then passes through a render layer that estimates roughly four characters per token, trims on a line boundary when the output exceeds `--budget`, and appends the overflow marker. Output is never cut without saying so.
+Three engines sit behind one surface. semble answers the semantic ops (`search`, `related`); ast-grep answers structural search and `replace`; tilth answers the rest. `ccx search` classifies the query and routes it; every other command maps to a fixed engine. The mapping lives in `internal/router`, so there is nothing to select at runtime. Every result then passes through a render layer that estimates roughly four characters per token, trims on a line boundary when the output exceeds `--budget`, and appends the overflow marker. Output is never cut without saying so.
 
 ## Configuration
 
@@ -132,7 +157,7 @@ Two engines sit behind one surface. semble answers the semantic ops (`search`, `
 | --- | --- |
 | `LOG_LEVEL` | `debug`, `info` (default), `warn`, or `error`; logs go to stderr |
 | `LOG_FORMAT` | set to `json` for structured logs |
-| `CLAUDE_PLUGIN_DATA` | cache directory for the downloaded tilth binary |
+| `CLAUDE_PLUGIN_DATA` | cache directory for the downloaded tilth and ast-grep binaries |
 
 ## Development
 

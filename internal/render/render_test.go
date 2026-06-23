@@ -1,9 +1,71 @@
 package render
 
 import (
+	"context"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestRunCLIAllowExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh to script exit codes")
+	}
+	tests := []struct {
+		name    string
+		script  string // sh -c body
+		okCodes []int
+		want    string
+		wantErr bool
+	}{
+		{
+			"exit 0 returns stdout",
+			"printf hello",
+			[]int{1},
+			"hello",
+			false,
+		},
+		{
+			"tolerated exit 1, empty stderr → stdout (ast-grep clean no-match)",
+			"exit 1",
+			[]int{1},
+			"",
+			false,
+		},
+		{
+			"tolerated exit 1 with stdout returns it",
+			"printf 'match'; exit 1",
+			[]int{1},
+			"match",
+			false,
+		},
+		{
+			"tolerated exit 1 WITH stderr → error (real failure)",
+			"echo boom 1>&2; exit 1",
+			[]int{1},
+			"",
+			true,
+		},
+		{
+			"non-listed nonzero exit → error",
+			"echo usage 1>&2; exit 2",
+			[]int{1},
+			"",
+			true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := RunCLIAllowExit(context.Background(), "/bin/sh", []string{"-c", tt.script}, tt.okCodes...)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("RunCLIAllowExit err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("RunCLIAllowExit = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestCap(t *testing.T) {
 	tests := []struct {

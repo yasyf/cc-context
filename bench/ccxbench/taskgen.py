@@ -63,6 +63,18 @@ MUX_ROUTECOUNT_TEST = (
     "go test -run TestRouteCountBench . >/dev/null 2>&1; rc=$?; rm -f zz_routecount_test.go; exit $rc"
 )
 
+MUX_CLEANPATH_TEST = (
+    "printf 'package mux\\nimport \"testing\"\\n"
+    "func TestCleanPathEmptyBench(t *testing.T){ if cleanPath(\"\")!=\"/index\" { t.Fatal(cleanPath(\"\")) } }' "
+    "> zz_cleanpath_test.go && "
+    "go test -run TestCleanPathEmptyBench . >/dev/null 2>&1; rc=$?; rm -f zz_cleanpath_test.go; exit $rc"
+)
+
+# A structural-replace prompt deliberately states the change as a pattern→rewrite over
+# the code's shape, not "open the file and edit line N": the ccx arm can run a single
+# `ccx replace '<pattern>' '<rewrite>'` (or the ccx_replace MCP tool) without reading the
+# file, while the baseline must Read then Edit. Graded by test_run on the resulting code.
+
 
 def nav_tasks(manifest: dict) -> list[Task]:
     tasks = []
@@ -266,6 +278,141 @@ def edit_tasks() -> list[Task]:
     ]
 
 
+def replace_tasks() -> list[Task]:
+    py = "python3 -c"
+    go_test = (
+        "printf 'package calc\\nimport \"testing\"\\n{test}' > internal/calc/zz_replace_test.go && "
+        "go test ./internal/calc/ >/dev/null 2>&1; rc=$?; rm -f internal/calc/zz_replace_test.go; exit $rc"
+    )
+    return [
+        Task(
+            id="replace-slugify-underscore",
+            category="structural_replace",
+            repo=REPO,
+            prompt=(
+                "In pysrc/util.py, perform a structural find-replace: rewrite the expression "
+                '`normalize(s).replace(" ", "-")` to `normalize(s).replace(" ", "_")` so '
+                "`slugify` joins words with an underscore. Change nothing else."
+            ),
+            schema=EDIT_SCHEMA,
+            grader=Grader(
+                "test_run",
+                {"cmd": f"{py} \"import sys; sys.path.insert(0,'pysrc'); import util; assert util.slugify('a b c')=='a_b_c', util.slugify('a b c')\""},
+            ),
+            gold={
+                "check": "slugify('a b c') == 'a_b_c'",
+                "solution_edits": [{"file": "pysrc/util.py", "find": 'normalize(s).replace(" ", "-")', "replace": 'normalize(s).replace(" ", "_")'}],
+            },
+        ),
+        Task(
+            id="replace-double-thrice",
+            category="structural_replace",
+            repo=REPO,
+            prompt=(
+                "In internal/calc/calc.go, perform a structural find-replace inside `Double`: "
+                "rewrite the statement `return Add(n, n)` to `return Add(n, Add(n, n))` so it "
+                "returns three times n. Keep the signature unchanged."
+            ),
+            schema=EDIT_SCHEMA,
+            grader=Grader(
+                "test_run",
+                {"cmd": go_test.format(test='func TestDoubleBench(t *testing.T){ if Double(4)!=12 { t.Fatal(Double(4)) } }'), "timeout_s": 180},
+            ),
+            gold={
+                "check": "Double(4) == 12",
+                "solution_edits": [{"file": "internal/calc/calc.go", "find": "return Add(n, n)", "replace": "return Add(n, Add(n, n))"}],
+            },
+        ),
+        Task(
+            id="replace-triple-quad",
+            category="structural_replace",
+            repo=REPO,
+            prompt=(
+                "In internal/calc/calc.go, perform a structural find-replace inside `Triple`: "
+                "rewrite the statement `return Add(Double(n), n)` to "
+                "`return Add(Double(n), Double(n))`. Keep the signature unchanged."
+            ),
+            schema=EDIT_SCHEMA,
+            grader=Grader(
+                "test_run",
+                {"cmd": go_test.format(test='func TestTripleBench(t *testing.T){ if Triple(3)!=12 { t.Fatal(Triple(3)) } }'), "timeout_s": 180},
+            ),
+            gold={
+                "check": "Triple(3) == 12",
+                "solution_edits": [{"file": "internal/calc/calc.go", "find": "return Add(Double(n), n)", "replace": "return Add(Double(n), Double(n))"}],
+            },
+        ),
+        Task(
+            id="replace-sub-swap",
+            category="structural_replace",
+            repo=REPO,
+            prompt=(
+                "In internal/calc/calc.go, perform a structural find-replace using a pattern with "
+                "metavariables: rewrite the return statement matching `return $A - $B` to "
+                "`return $B - $A`, swapping the operands of `Sub`. Change only `Sub`."
+            ),
+            schema=EDIT_SCHEMA,
+            grader=Grader(
+                "test_run",
+                {"cmd": go_test.format(test='func TestSubSwapBench(t *testing.T){ if Sub(5,2)!=-3 { t.Fatal(Sub(5,2)) } }'), "timeout_s": 180},
+            ),
+            gold={
+                "check": "Sub(5, 2) == -3",
+                "solution_edits": [{"file": "internal/calc/calc.go", "find": "return a - b", "replace": "return b - a"}],
+            },
+        ),
+    ]
+
+
+def routing_tasks() -> list[Task]:
+    """Paired search-routing tasks: a metavar/code-pattern query (routes structural via
+    ast-grep) and a code-shape query, each answerable by locating a file/symbol. The
+    semantic (NL-intent) side of the pair is already covered by intent_tasks; these add
+    the structural-query side the router must classify as structural."""
+    return [
+        Task(
+            id="route-struct-compute-loop",
+            category="structural_search",
+            repo=REPO,
+            prompt=(
+                "Search this repository for code matching the structural pattern "
+                "`func $NAME(xs []int) int` (a function taking an int slice and returning an int). "
+                "Which single file declares `Compute`, one of the functions that matches? Respond "
+                "with the repo-relative file path."
+            ),
+            schema=FILE_SCHEMA,
+            grader=Grader("file_match", {}),
+            gold={"file": "internal/calc/calc.go"},
+        ),
+        Task(
+            id="route-struct-greet-callsite",
+            category="structural_search",
+            repo=REPO,
+            prompt=(
+                "Search this repository for the structural call pattern `greet.Greet($A)` "
+                "(a call to greet.Greet with any single argument). Which single file contains a "
+                "call site matching it? Respond with the repo-relative file path."
+            ),
+            schema=FILE_SCHEMA,
+            grader=Grader("file_match", {}),
+            gold={"file": "cmd/app/main.go"},
+        ),
+        Task(
+            id="route-nl-greeting",
+            category="intent_search",
+            repo=REPO,
+            prompt=(
+                "Using a natural-language code search, which single file contains the code that "
+                "produces the welcome line shown to a user, addressing them by name? Respond with "
+                "the repo-relative file path."
+            ),
+            schema=FILE_SCHEMA,
+            grader=Grader("file_match", {}),
+            gold={"file": "internal/greet/greet.go"},
+        ),
+    ]
+
+
 def non_regression_tasks() -> list[Task]:
     # Each task uses synonym groups: a correct answer must hit >=1 term in EVERY group, so the
     # grader rejects off-topic answers yet accepts paraphrases. These tasks need no repo access;
@@ -417,6 +564,25 @@ def oss_tasks() -> list[Task]:
                 ],
             },
         ),
+        Task(
+            id="mux-replace-cleanpath-empty",
+            category="structural_replace",
+            repo="gorilla-mux",
+            prompt=(
+                "In mux.go, the unexported `cleanPath` function maps an empty path to `\"/\"`. "
+                "Perform a structural find-replace on that guard so an empty path maps to "
+                "`\"/index\"` instead: rewrite the `if p == \"\" { return \"/\" }` block's returned "
+                "value from `\"/\"` to `\"/index\"`. Change nothing else."
+            ),
+            schema=EDIT_SCHEMA,
+            grader=Grader("test_run", {"cmd": MUX_CLEANPATH_TEST, "timeout_s": 180}),
+            gold={
+                "check": 'cleanPath("") == "/index"',
+                "solution_edits": [
+                    {"file": "mux.go", "find": 'if p == "" {\n\t\treturn "/"\n\t}', "replace": 'if p == "" {\n\t\treturn "/index"\n\t}'}
+                ],
+            },
+        ),
     ]
 
 
@@ -429,5 +595,7 @@ def generate(manifest: dict) -> list[Task]:
         *intent_tasks(manifest),
         *diff_tasks(),
         *edit_tasks(),
+        *replace_tasks(),
+        *routing_tasks(),
         *non_regression_tasks(),
     ]

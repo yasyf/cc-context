@@ -4,6 +4,7 @@ package render
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -23,6 +24,41 @@ func RunCLI(ctx context.Context, bin string, argv []string) (string, error) {
 		return "", fmt.Errorf("%s: %w: %s", bin, err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
+}
+
+// RunCLIAllowExit is RunCLI but tolerates the listed nonzero exit codes: when the
+// child exits with one of okCodes and writes nothing to stderr, its stdout is
+// returned without error (the caller interprets an empty stdout — e.g. ast-grep
+// `run` exits 1 with empty output on a clean no-match). A tolerated exit that
+// still wrote to stderr is treated as a real failure and wrapped, as is any
+// non-listed nonzero exit. The exit code is read from the process error via
+// errors.As, never by string-matching.
+func RunCLIAllowExit(ctx context.Context, bin string, argv []string, okCodes ...int) (string, error) {
+	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err == nil {
+		return stdout.String(), nil
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && tolerated(exitErr.ExitCode(), okCodes) && stderr.Len() == 0 {
+		return stdout.String(), nil
+	}
+	return "", fmt.Errorf("%s: %w: %s", bin, err, strings.TrimSpace(stderr.String()))
+}
+
+// tolerated reports whether code is one of the allowed exit codes.
+func tolerated(code int, okCodes []int) bool {
+	for _, ok := range okCodes {
+		if code == ok {
+			return true
+		}
+	}
+	return false
 }
 
 // Cap trims s to budgetTokens (estimated as len/4). When it trims, it cuts at a

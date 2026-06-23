@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/router"
@@ -40,12 +41,15 @@ func New() *Proxy {
 
 // Call routes op through its backend and returns budget-capped output. The diff
 // and overview ops run as child-process CLI invocations to keep the jj-aware VCS
-// translation and fallback that CLIArgv performs; every other op is a child MCP
-// tool call against the engine's resident (lazily opened) session.
+// translation and fallback that CLIArgv performs; the ast-grep ops run through
+// the shared astgrep orchestration (ast-grep has no MCP server); every other op
+// is a child MCP tool call against the engine's resident (lazily opened) session.
 func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 	b := router.For(op)
 
 	switch op {
+	case backend.OpStructural, backend.OpReplace:
+		return astgrep.Run(ctx, op, a)
 	case backend.OpDiff, backend.OpOverview:
 		bin, argv, err := b.CLIArgv(ctx, op, a)
 		if err != nil {

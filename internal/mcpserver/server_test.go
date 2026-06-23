@@ -1,0 +1,171 @@
+package mcpserver
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/yasyf/cc-context/internal/proxy"
+)
+
+// connectTestServer registers the ccx tools on a server and returns a connected
+// in-memory client session.
+func connectTestServer(t *testing.T) *mcp.ClientSession {
+	t.Helper()
+	ctx := context.Background()
+	s := mcp.NewServer(&mcp.Implementation{Name: "cc-context-test", Version: "test"}, nil)
+	register(s, proxy.New())
+
+	ct, st := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, st, nil); err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "test"}, nil)
+	cs, err := client.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+	return cs
+}
+
+// fakeAstGrepOnPath installs an "ast-grep" that emits one JSON match per file in
+// files on a preview run and exits 0 on an apply run (argv carries -U).
+func fakeAstGrepOnPath(t *testing.T, files []string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake ast-grep script is POSIX-only")
+	}
+	dir := t.TempDir()
+	var lines strings.Builder
+	for i, f := range files {
+		fmt.Fprintf(&lines, `{"file":"%s","text":"old%d","replacement":"new%d","range":{"start":{"line":%d},"end":{"line":%d}}}`+"\n", f, i, i, i, i)
+	}
+	script := "#!/bin/sh\n" +
+		"for a in \"$@\"; do [ \"$a\" = \"-U\" ] && exit 0; done\n" +
+		"cat <<'EOF'\n" + lines.String() + "EOF\n"
+	if err := os.WriteFile(filepath.Join(dir, "ast-grep"), []byte(script), 0o700); err != nil { //nolint:gosec // fake engine must be owner-executable
+		t.Fatalf("write fake ast-grep: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func callText(t *testing.T, cs *mcp.ClientSession, tool string, args map[string]any) (string, bool) {
+	t.Helper()
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
+	if err != nil {
+		t.Fatalf("CallTool %s: %v", tool, err)
+	}
+	var sb strings.Builder
+	for _, c := range res.Content {
+		if tc, ok := c.(*mcp.TextContent); ok {
+			sb.WriteString(tc.Text)
+		}
+	}
+	return sb.String(), res.IsError
+}
+
+func TestRegisteredToolSurface(t *testing.T) {
+	cs := connectTestServer(t)
+	want := map[string]bool{
+		"ccx_search": false, "ccx_replace": false, "ccx_related": false,
+		"ccx_outline": false, "ccx_read": false, "ccx_symbol": false,
+		"ccx_deps": false, "ccx_grep": false, "ccx_find": false,
+		"ccx_diff": false, "ccx_overview": false,
+	}
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	for _, tool := range res.Tools {
+		if _, ok := want[tool.Name]; ok {
+			want[tool.Name] = true
+		}
+	}
+	for name, seen := range want {
+		if !seen {
+			t.Errorf("tool %q not registered", name)
+		}
+	}
+}
+
+func TestReplaceToolPreviewVsApply(t *testing.T) {
+	fakeAstGrepOnPath(t, []string{"a.go", "b.go"})
+	cs := connectTestServer(t)
+
+	// Omitting apply → preview (diff, no apply summary).
+	out, isErr := callText(t, cs, "ccx_replace", map[string]any{"pattern": "old($A)", "rewrite": "new($A)"})
+	if isErr {
+		t.Fatalf("ccx_replace preview is error: %s", out)
+	}
+	if !strings.HasPrefix(out, "# 2 matches across 2 files") {
+		t.Errorf("preview wrong:\n%s", out)
+	}
+
+	// apply:true → apply summary.
+	out, isErr = callText(t, cs, "ccx_replace", map[string]any{"pattern": "old($A)", "rewrite": "new($A)", "apply": true})
+	if isErr {
+		t.Fatalf("ccx_replace apply is error: %s", out)
+	}
+	if out != "# applied 2 rewrites across 2 files\n" {
+		t.Errorf("apply summary wrong: %q", out)
+	}
+}
+
+func TestReplaceToolForceOverCap(t *testing.T) {
+	files := make([]string, 21)
+	for i := range files {
+		files[i] = fmt.Sprintf("f%d.go", i)
+	}
+	fakeAstGrepOnPath(t, files)
+	cs := connectTestServer(t)
+
+	// apply over the 20-file cap without force → tool error.
+	out, isErr := callText(t, cs, "ccx_replace", map[string]any{"pattern": "old($A)", "rewrite": "new($A)", "apply": true})
+	if !isErr {
+		t.Fatalf("over-cap apply should be a tool error, got: %s", out)
+	}
+	if !strings.Contains(out, "exceeding the cap of 20") {
+		t.Errorf("cap error text wrong: %s", out)
+	}
+
+	// force:true → applies.
+	out, isErr = callText(t, cs, "ccx_replace", map[string]any{"pattern": "old($A)", "rewrite": "new($A)", "apply": true, "force": true})
+	if isErr {
+		t.Fatalf("forced apply is error: %s", out)
+	}
+	if out != "# applied 21 rewrites across 21 files\n" {
+		t.Errorf("forced apply summary wrong: %q", out)
+	}
+}
+
+func TestSearchToolStructuralMode(t *testing.T) {
+	fakeAstGrepOnPath(t, []string{"a.go", "a.go"})
+	cs := connectTestServer(t)
+
+	// A metavar query auto-routes structural; the result is the search list.
+	out, isErr := callText(t, cs, "ccx_search", map[string]any{"query": "old($A)"})
+	if isErr {
+		t.Fatalf("ccx_search structural is error: %s", out)
+	}
+	if !strings.Contains(out, "a.go:L1  old0") {
+		t.Errorf("structural search list wrong:\n%s", out)
+	}
+}
+
+func TestSearchToolInvalidMode(t *testing.T) {
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_search", map[string]any{"query": "x", "mode": "bogus"})
+	if !isErr {
+		t.Fatalf("invalid mode should be a tool error, got: %s", out)
+	}
+	if !strings.Contains(out, "bogus") {
+		t.Errorf("invalid-mode error should name the bad mode: %s", out)
+	}
+}

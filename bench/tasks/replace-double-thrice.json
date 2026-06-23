@@ -1,0 +1,40 @@
+{
+  "id": "replace-double-thrice",
+  "category": "structural_replace",
+  "repo": "fixture",
+  "prompt": "In internal/calc/calc.go, perform a structural find-replace inside `Double`: rewrite the statement `return Add(n, n)` to `return Add(n, Add(n, n))` so it returns three times n. Keep the signature unchanged.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "changed_file": {
+        "type": "string"
+      },
+      "summary": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "changed_file"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "test_run",
+    "spec": {
+      "cmd": "printf 'package calc\\nimport \"testing\"\\nfunc TestDoubleBench(t *testing.T){ if Double(4)!=12 { t.Fatal(Double(4)) } }' > internal/calc/zz_replace_test.go && go test ./internal/calc/ >/dev/null 2>&1; rc=$?; rm -f internal/calc/zz_replace_test.go; exit $rc",
+      "timeout_s": 180
+    }
+  },
+  "gold": {
+    "check": "Double(4) == 12",
+    "solution_edits": [
+      {
+        "file": "internal/calc/calc.go",
+        "find": "return Add(n, n)",
+        "replace": "return Add(n, Add(n, n))"
+      }
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}
