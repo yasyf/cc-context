@@ -34,7 +34,7 @@ Or build it with the Go toolchain:
 go install github.com/yasyf/cc-context/cmd/ccx@latest
 ```
 
-The semantic commands (`search`, `related`) shell out to [semble](https://github.com/MinishLab/semble) through `uvx`, so they need [uv](https://docs.astral.sh/uv/) on `PATH`. Structural search and `ccx replace` run on [ast-grep](https://ast-grep.github.io/), which the Homebrew formula installs as a dependency; off Homebrew, `ccx` finds it on `PATH` or downloads a pinned build on first use. The other structural commands use a pinned [tilth](https://github.com/jahala/tilth) binary, downloaded the same way. Nothing else to configure.
+The semantic commands (`search`, `related`) shell out to [semble](https://github.com/MinishLab/semble) through `uvx`; structural search and `ccx replace` run on [ast-grep](https://ast-grep.github.io/). The Homebrew formula installs both [uv](https://docs.astral.sh/uv/) and ast-grep as dependencies; off Homebrew, `ccx` finds ast-grep on `PATH` or downloads a pinned build on first use, and uv must be on `PATH`. The other structural commands use a pinned [tilth](https://github.com/jahala/tilth) binary, downloaded the same way. Nothing else to configure.
 
 ## Quickstart
 

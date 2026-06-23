@@ -24,8 +24,10 @@ class Ccx < Formula
     depends_on "go" => :build
   end
 
-  # ast-grep powers the structural search/replace engine at runtime.
+  # ast-grep powers the structural search/replace engine; uv (via uvx) runs semble
+  # for the semantic search/related ops. Both are required at runtime.
   depends_on "ast-grep"
+  depends_on "uv"
 
   on_macos do
     on_arm do

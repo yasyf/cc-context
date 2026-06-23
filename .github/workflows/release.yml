@@ -48,7 +48,7 @@ jobs:
 
       # goreleaser v2 can only emit Homebrew casks, but the rest of the tap is
       # formulae — so render Formula/ccx.rb from the release checksums and publish
-      # it via the shared tap action. The formula carries depends_on "ast-grep".
+      # it via the shared tap action. The formula carries depends_on "ast-grep" and "uv".
       - name: Render the formula from release checksums
         run: |
           set -euo pipefail
