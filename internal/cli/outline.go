@@ -5,11 +5,12 @@ import (
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/outline"
+	"github.com/yasyf/cc-context/internal/proxy"
 )
 
 // outlineHeaders names the routing header printed on stdout for each engine, so
-// the answering engine is visible (ast-grep for supported languages and dirs,
-// tilth signature mode otherwise).
+// the answering engine is visible: ast-grep for the languages it outlines and
+// any directory, tilth signature mode otherwise.
 var outlineHeaders = map[backend.Op]string{
 	backend.OpStructOutline: "# ast-grep",
 	backend.OpOutline:       "# tilth",
@@ -27,13 +28,12 @@ func newOutlineCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if op == backend.OpStructOutline {
-				// ast-grep outline is a stateless CLI op, like search/replace.
-				return runHeadedOp(cmd, op, a)
+			out, err := outlineFor(cmd, op, a)
+			if err != nil {
+				return err
 			}
-			// tilth signature mode is reachable only over its MCP (the tilth CLI
-			// cannot elide bodies); see runViaFacade.
-			return runHeadedFacade(cmd, op, a)
+			cmd.Printf("%s\n%s", outlineHeaders[op], out)
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&a.Items, "items", "", "ast-grep: items to include (imports|exports|structure|all)")
@@ -43,20 +43,15 @@ func newOutlineCmd() *cobra.Command {
 	return cmd
 }
 
-// runHeadedOp dispatches op through the CLI path and prints the routing header
-// above the budget-capped output.
-func runHeadedOp(cmd *cobra.Command, op backend.Op, a backend.Args) error {
-	out, err := dispatchOp(cmd, op, a)
-	if err != nil {
-		return err
+// outlineFor returns op's budget-capped outline output: ast-grep's structural
+// outline through the direct CLI dispatch, or tilth signature mode through a
+// one-shot facade session — the tilth CLI cannot elide bodies, so its compact
+// form is reachable only over MCP.
+func outlineFor(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error) {
+	if op == backend.OpStructOutline {
+		return dispatchOp(cmd, op, a)
 	}
-	cmd.Printf("%s\n%s", outlineHeaders[op], out)
-	return nil
-}
-
-// runHeadedFacade dispatches op through the one-shot facade session and prints
-// the routing header above the budget-capped output.
-func runHeadedFacade(cmd *cobra.Command, op backend.Op, a backend.Args) error {
-	cmd.Printf("%s\n", outlineHeaders[op])
-	return runViaFacade(cmd, op, a)
+	p := proxy.New()
+	defer func() { _ = p.Close() }()
+	return p.Call(cmd.Context(), op, a)
 }

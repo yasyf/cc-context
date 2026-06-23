@@ -58,7 +58,7 @@ var astGrepLangs = map[string]struct{}{
 func Route(a backend.Args) (backend.Op, error) {
 	info, err := os.Stat(a.Path)
 	if err != nil {
-		return "", fmt.Errorf("outline: stat %q: %w", a.Path, err)
+		return "", fmt.Errorf("outline: %w", err)
 	}
 	if info.IsDir() {
 		return backend.OpStructOutline, nil

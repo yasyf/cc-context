@@ -18,7 +18,8 @@ type OutlineFile struct {
 }
 
 // OutlineItem is a top-level declaration or a member of one. Only the fields the
-// renderer consumes are decoded; Members nests one level (methods under a type).
+// renderer consumes are decoded; Members holds its direct members (a class's
+// methods, a struct's fields).
 type OutlineItem struct {
 	SymbolType string `json:"symbolType"`
 	Name       string `json:"name"`
