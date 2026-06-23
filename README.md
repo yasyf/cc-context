@@ -12,7 +12,7 @@
 
 Reading entire files is the largest single drain on a coding agent's context, so `cc-context` swaps the token-heavy primitives for budgeted equivalents:
 
-- `ccx outline` and `ccx read --section` return a file's structure or a single section, capped to a token budget, and print an explicit `… +N lines omitted` marker instead of truncating in silence.
+- `ccx outline` and `ccx read --section` return a file's structure or a single section, capped to a token budget, and print an explicit marker for whatever they drop instead of truncating in silence.
 - `ccx search` is one front door that routes by query kind: a natural-language question runs a semantic search, a code pattern with metavars like `$A` or `$$$` runs a structural one. You don't need the identifier up front, or a second command to switch modes.
 - `ccx replace 'Add($A, $B)' 'Sum($A, $B)'` edits by structure and returns a diff — so an agent mutates code without first reading the file into context.
 - `ccx symbol NewRootCmd` (alias `ccx grok`) returns a symbol's definition, doc, body, callers, callees, siblings, and tests in one call, in place of a dozen greps.
@@ -22,13 +22,13 @@ To make an agent actually reach for these, the bundled [capt-hook](https://githu
 
 ## Install
 
-Homebrew (macOS):
+Install with Homebrew (recommended):
 
 ```bash
 brew install yasyf/tap/ccx
 ```
 
-Or with the Go toolchain:
+Or build it with the Go toolchain:
 
 ```bash
 go install github.com/yasyf/cc-context/cmd/ccx@latest
@@ -42,26 +42,19 @@ Orient in a repository, search it by intent, then grok a result:
 
 ```console
 $ ccx overview
-[tilth] Go project — 31 source files, 4 directories
-  dirs: cli/ backend/ render/ vcs/
+[tilth] Go project — 45 source files, 8 directories
+  dirs: cli/ backend/ astgrep/ vcs/ querykind/ mcpserver/ render/ search/
   deps: asm, cobra, encoding, go-sdk, jsonschema-go, mousetrap, oauth2, pflag, sys, v3
-  git: branch f7d52ab, 3 uncommitted files
-  tests: _test.go
+  hot (× = importers): bench/ccxbench/types.py ×8, bench/ccxbench/config.py ×5, bench/ccxbench/envelope.py ×5, plugin/hooks/common.py ×4, bench/ccxbench/__init__.py ×2
+  git: branch 5403478, clean
+  tests: tests/, _test.go, test_*.py
   manifest: go.mod (github.com/yasyf/cc-context)
 
-$ ccx search "how does routing pick a backend"
-{
-  "query": "how does routing pick a backend",
-  "results": [
-    {
-      "file_path": "internal/backend/backend.go",
-      "start_line": 1,
-      "end_line": 22,
-      "score": 0.0204,
-      "content": "// Package backend defines the stable logical-op surface ..."
-    }
-  ]
-}
+languages: go (45), py (23), md (10), sh (2)
+
+$ ccx search "how is the mcp server started" -k 1
+# semantic (semble)
+{"query": "how is the mcp server started", "results": [{"file_path": "internal/mcpserver/server.go", "start_line": 103, "end_line": 115, "score": 0.032266458495966696, "content": "func Serve(ctx context.Context) error {\n\tp := proxy.New()\n\tdefer func() { _ = p.Close() }()\n\n\ts := mcp.NewServer(&mcp.Implementation{Name: \"cc-context\", Version: version.String()}, nil)\n\tregister(s, p)\n\n\treturn s.Run(ctx, &mcp.StdioTransport{})\n}\n"}]}
 
 $ ccx symbol NewRootCmd
 # grok: NewRootCmd [internal/cli/root.go:11]
@@ -72,19 +65,21 @@ func NewRootCmd() *cobra.Command
 ## doc
 // NewRootCmd builds the root command and registers its subcommands.
 
-## callees (12 internal, 3 extern)
-  internal/cli/deps.go
-    newDepsCmd   [9-23]   func newDepsCmd() *cobra.Command
-  ...
+# plus body, callees (13 internal, 3 external), and callers
 ```
 
 The structural commands cap their output at `--budget` tokens. When one trims, it cuts on a line boundary and says how much it dropped:
 
 ```console
-$ ccx outline internal/cli/root.go --budget 30
-# internal/cli/root.go (36 lines, ~184 tokens) [full]
+$ ccx outline internal/mcpserver/server.go --budget 100
+# internal/mcpserver/server.go (248 lines, ~2.6k tokens) [signature]
 
-… +1 lines, ~12 tokens omitted — re-run with a larger --budget
+5:1dc|import (
+19:d77|const defaultSnippetLines = 10
+103:021|func Serve(ctx context.Context) error {
+115:a58|func register(s *mcp.Server, p *proxy.Proxy) {
+
+... truncated (77 tokens omitted, budget: 100)
 ```
 
 ### Search and edit by structure
@@ -121,33 +116,26 @@ Re-run with `--apply` to write the change, `--force` to bypass the 20-file safet
 | `ccx symbol <name>` (alias `grok`) | Definition, doc, body, callers, callees, siblings, tests |
 | `ccx outline <file>` | Token-budgeted structural outline of a file |
 | `ccx read <file> --section A-B` | Read a line range, a `## Heading`, or the whole file with `--full` |
-| `ccx deps <file>` | A file's imports and their resolved targets |
+| `ccx deps <file>` | Symbols a file uses, and what uses it back |
 | `ccx grep <text> --glob G` | Literal text search, optionally globbed and budgeted |
 | `ccx find <glob>` | List files matching a glob, with per-file token counts |
 | `ccx diff [uncommitted\|staged\|<ref>]` | VCS-aware structural diff; defaults to uncommitted |
 
-`search` picks its engine automatically, but `--semantic`, `--structural`, or `--literal` force one and `--explain` prints the routing decision to stderr. `replace` takes `--apply` to write, `--force` to bypass its file-count cap, and `--lang`/`--glob` to scope. `outline`, `read`, `deps`, `grep`, `diff`, and `replace` take `--budget N` to cap output; the semantic commands (`search`, `related`) use `-k` and `--max-snippet-lines` instead. Run `ccx <command> --help` for the full flag set, and `ccx --version` for the build version.
+`search` picks its engine automatically, but `--semantic`, `--structural`, or `--literal` force one and `--explain` prints the routing decision to stderr. `replace` takes `--apply` to write, `--force` to bypass its file-count cap, and `--lang`/`--glob` to scope. `outline`, `read`, `deps`, `grep`, `diff`, and `replace` take `--budget N` to cap output; `search` uses `-k` and `--max-snippet-lines` instead. Run `ccx <command> --help` for the full flag set, and `ccx --version` for the build version.
 
 ## Use it from Claude Code
 
-The same commands are exposed as an MCP server. Add it to your `.mcp.json`:
+The same commands are exposed as an MCP server. Register it with Claude Code, available in every project:
 
-```json
-{
-  "mcpServers": {
-    "cc-context": {
-      "command": "ccx",
-      "args": ["mcp"]
-    }
-  }
-}
+```bash
+claude mcp add --scope user --transport stdio cc-context -- ccx mcp
 ```
 
 Claude Code then sees eleven tools, one per command above: `mcp__cc-context__ccx_overview`, `mcp__cc-context__ccx_search`, `mcp__cc-context__ccx_symbol`, and the rest. `ccx_replace` previews by default, so an agent that omits `apply` gets a diff back and edits by structure without ever reading the file into context. Installed as a Claude Code plugin instead, the server runs `${CLAUDE_PLUGIN_ROOT}/bin/ccx mcp` and ships the capt-hook guard pack with it.
 
 ## How it works
 
-Three engines sit behind one surface. semble answers the semantic ops (`search`, `related`); ast-grep answers structural search and `replace`; tilth answers the rest. `ccx search` classifies the query and routes it; every other command maps to a fixed engine. The mapping lives in `internal/router`, so there is nothing to select at runtime. Every result then passes through a render layer that estimates roughly four characters per token, trims on a line boundary when the output exceeds `--budget`, and appends the overflow marker. Output is never cut without saying so.
+Three engines sit behind one surface. semble answers the semantic ops (`search`, `related`); ast-grep answers structural search and `replace`; tilth answers the rest. `ccx search` classifies the query and routes it; every other command maps to a fixed engine, so there is nothing to select at runtime. Every result then passes through a render layer that estimates roughly four characters per token, trims on a line boundary when the output exceeds `--budget`, and appends the overflow marker. Output is never cut without saying so.
 
 ## Configuration
 
