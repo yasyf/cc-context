@@ -1,6 +1,5 @@
 [packs.cc-notes]
-source = "github:yasyf/cc-notes@v0.7.7"
-commit = "f94edf18bdcea1f4d15d86f9785caa5123283a4c"
+source = "github:yasyf/cc-notes@latest"
 
 [packs.general]
 
