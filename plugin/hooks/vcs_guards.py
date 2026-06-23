@@ -14,7 +14,7 @@ from captain_hook import (
     hook,
 )
 
-from ._common import GIT_DIFF_SUMMARY_FLAGS
+from .common import GIT_DIFF_SUMMARY_FLAGS
 
 
 class GitDiffPager(CustomCommandLineCondition):

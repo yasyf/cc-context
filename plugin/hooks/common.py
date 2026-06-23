@@ -8,8 +8,8 @@ information compactly (``ccx outline``, ``ccx read --section``, ``ccx diff``, ``
 find``, ``ccx symbol``, ``ccx grep``). The MCP tools (``mcp__cc-context__outline``
 and friends) mirror every command.
 
-This module is auto-load-skipped (leading underscore) but importable by the themed
-guard modules as ``from ._common import ...``.
+The themed guard modules import these as ``from .common import ...``. The module
+registers no hooks, so discovery loads it as a harmless no-op.
 """
 
 from __future__ import annotations

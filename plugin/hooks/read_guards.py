@@ -15,7 +15,7 @@ from captain_hook import (
     hook,
 )
 
-from ._common import LARGE_READ_BYTES, is_large
+from .common import LARGE_READ_BYTES, is_large
 
 
 class UnboundedLargeRead(CustomInputTypeCondition[ReadCall]):

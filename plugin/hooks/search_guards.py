@@ -18,7 +18,7 @@ from captain_hook import (
     nudge,
 )
 
-from ._common import IDENT_ALT
+from .common import IDENT_ALT
 
 
 class RgIdentAlternation(CustomCommandLineCondition):

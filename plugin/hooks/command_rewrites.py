@@ -22,7 +22,7 @@ from captain_hook import (
     rewrite_command,
 )
 
-from ._common import ccx_bin
+from .common import ccx_bin
 
 
 class SedLineRange(CustomCommandLineCondition):
