@@ -74,7 +74,7 @@ When you write a plan — in plan mode, or any "here's what I'll do" before you 
 3. **A specific symbol (def + callers + callees)** → `ccx symbol <name>` (alias `ccx grok`)
 4. **Literal / structural text** → `ccx grep <text> [--glob G]`
 5. **List files** → `ccx find "<glob>"`
-6. **Read a file** → `ccx outline <file>` first, then `ccx read <file> --section A-B` for the part you need (whole file: `ccx read <file> --full`)
+6. **Read a file** → `ccx outline <file-or-dir>` first (ast-grep structural map for the languages it outlines and any directory, tilth signatures otherwise), then `ccx read <file> --section A-B` for the part you need (whole file: `ccx read <file> --full`)
 7. **Review changes** → `ccx diff [src]` (structural, jj-aware; exact hunks: `git diff -- <file>`)
 
 Reach for your **LSP** when the answer must be exhaustive/structural (findReferences, rename, goToImplementation). Use **Grep/Glob** only for literal content in non-source files (logs, JSON, YAML).

@@ -26,14 +26,30 @@ func (g AstGrep) bin(ctx context.Context) (string, error) {
 	return vendor.Resolve(ctx, vendor.AstGrep, g.Bin)
 }
 
-// CLIArgv translates op into an `ast-grep run` invocation. OpStructural searches
-// for a.Query; OpReplace rewrites a.Pattern to a.Rewrite, writing in place only
-// when a.Apply is set (-U). Interactive mode is never used: it is TTY-only and
-// dead in the MCP surface.
+// CLIArgv translates op into an `ast-grep run` or `ast-grep outline` invocation.
+// OpStructural searches for a.Query; OpReplace rewrites a.Pattern to a.Rewrite,
+// writing in place only when a.Apply is set (-U); OpStructOutline outlines a.Path.
+// Interactive mode is never used: it is TTY-only and dead in the MCP surface.
 func (g AstGrep) CLIArgv(ctx context.Context, op Op, a Args) (bin string, argv []string, err error) {
 	switch op {
 	case OpStructural:
 		argv = g.appendScope([]string{"run", "-p", a.Query, "--json=stream"}, a)
+	case OpStructOutline:
+		// --view expanded carries member signatures with line numbers (a class's
+		// methods, a struct's fields) — the only view whose JSON includes members,
+		// matching ccx's signatures+line-numbers contract; budget caps the size.
+		// outline takes a single <path> positional, so it does not use the
+		// run-shaped appendScope tail.
+		argv = []string{"outline", a.Path, "--json=stream", "--view", "expanded"}
+		if a.Items != "" {
+			argv = append(argv, "--items", a.Items)
+		}
+		if a.Match != "" {
+			argv = append(argv, "--match", a.Match)
+		}
+		if a.Lang != "" {
+			argv = append(argv, "-l", a.Lang)
+		}
 	case OpReplace:
 		argv = []string{"run", "-p", a.Pattern, "-r", a.Rewrite}
 		// --json=stream and -U are mutually exclusive in ast-grep: with the stream

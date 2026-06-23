@@ -47,7 +47,12 @@ func fakeAstGrepOnPath(t *testing.T, files []string) {
 	for i, f := range files {
 		fmt.Fprintf(&lines, `{"file":"%s","text":"old%d","replacement":"new%d","range":{"start":{"line":%d},"end":{"line":%d}}}`+"\n", f, i, i, i, i)
 	}
+	const outline = `{"path":"x.go","language":"Go","items":[{"symbolType":"struct","name":"X","signature":"type X struct {","isExported":true,"range":{"start":{"line":4}},"members":[{"symbolType":"field","name":"Y","signature":"Y int","range":{"start":{"line":5}}}]}]}`
 	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = outline ]; then\n" +
+		"cat <<'EOF'\n" + outline + "\nEOF\n" +
+		"exit 0\n" +
+		"fi\n" +
 		"for a in \"$@\"; do [ \"$a\" = \"-U\" ] && exit 0; done\n" +
 		"cat <<'EOF'\n" + lines.String() + "EOF\n"
 	if err := os.WriteFile(filepath.Join(dir, "ast-grep"), []byte(script), 0o700); err != nil { //nolint:gosec // fake engine must be owner-executable
@@ -156,6 +161,20 @@ func TestSearchToolStructuralMode(t *testing.T) {
 	}
 	if !strings.Contains(out, "a.go:L1  old0") {
 		t.Errorf("structural search list wrong:\n%s", out)
+	}
+}
+
+func TestOutlineToolRoutesToAstGrep(t *testing.T) {
+	fakeAstGrepOnPath(t, nil)
+	cs := connectTestServer(t)
+
+	// A directory always routes to ast-grep; the result is the rendered outline.
+	out, isErr := callText(t, cs, "ccx_outline", map[string]any{"path": t.TempDir()})
+	if isErr {
+		t.Fatalf("ccx_outline is error: %s", out)
+	}
+	if !strings.Contains(out, "# x.go") || !strings.Contains(out, "L5  type X struct {") || !strings.Contains(out, "\n  L6  Y int") {
+		t.Errorf("outline render wrong:\n%s", out)
 	}
 }
 

@@ -48,7 +48,7 @@ func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string
 	b := router.For(op)
 
 	switch op {
-	case backend.OpStructural, backend.OpReplace:
+	case backend.OpStructural, backend.OpReplace, backend.OpStructOutline:
 		return astgrep.Run(ctx, op, a)
 	case backend.OpDiff, backend.OpOverview:
 		bin, argv, err := b.CLIArgv(ctx, op, a)

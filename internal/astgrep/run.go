@@ -17,16 +17,18 @@ const applyFileCap = 20
 // no-match; it is tolerated and distinguished from a real failure by empty stdout.
 const astGrepExitNoMatch = 1
 
-// Run executes an ast-grep op (OpStructural or OpReplace) end to end — argv
-// translation, child process, JSON parse, render, and budget cap — and returns
-// the bounded output. It is the single orchestration shared by the CLI and the
-// MCP proxy so the two surfaces behave identically.
+// Run executes an ast-grep op (OpStructural, OpReplace, or OpStructOutline) end
+// to end — argv translation, child process, JSON parse, render, and budget cap —
+// and returns the bounded output. It is the single orchestration shared by the
+// CLI and the MCP proxy so the two surfaces behave identically.
 func Run(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 	switch op {
 	case backend.OpStructural:
 		return runStructural(ctx, a)
 	case backend.OpReplace:
 		return runReplace(ctx, a)
+	case backend.OpStructOutline:
+		return runStructOutline(ctx, a)
 	default:
 		return "", fmt.Errorf("astgrep: unsupported op %q", op)
 	}
@@ -39,6 +41,19 @@ func runStructural(ctx context.Context, a backend.Args) (string, error) {
 		return "", err
 	}
 	return render.Cap(RenderSearch(matches), a.Budget), nil
+}
+
+// runStructOutline renders the structural outline of a.Path (file or directory).
+func runStructOutline(ctx context.Context, a backend.Args) (string, error) {
+	out, err := runArgv(ctx, backend.OpStructOutline, a)
+	if err != nil {
+		return "", err
+	}
+	files, err := ParseOutline([]byte(out))
+	if err != nil {
+		return "", err
+	}
+	return render.Cap(RenderOutline(files), a.Budget), nil
 }
 
 // runReplace previews a.Pattern→a.Rewrite, or applies it when a.Apply is set. An

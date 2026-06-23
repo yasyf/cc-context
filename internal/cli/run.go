@@ -26,7 +26,7 @@ func runOp(cmd *cobra.Command, op backend.Op, a backend.Args) error {
 // tolerate the clean no-match exit, so they run through the shared astgrep
 // orchestration; every other op runs as a plain capped CLI invocation.
 func dispatchOp(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error) {
-	if op == backend.OpStructural || op == backend.OpReplace {
+	if op == backend.OpStructural || op == backend.OpReplace || op == backend.OpStructOutline {
 		return astgrep.Run(cmd.Context(), op, a)
 	}
 	bin, argv, err := router.For(op).CLIArgv(cmd.Context(), op, a)

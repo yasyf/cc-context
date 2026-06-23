@@ -55,16 +55,17 @@ func NewRootCmd() *cobra.Command
 Every structural command caps its output at `--budget` tokens, cuts on a line boundary, and says how much it dropped:
 
 ```console
-$ ccx outline internal/mcpserver/server.go --budget 100
-# internal/mcpserver/server.go (248 lines, ~2.6k tokens) [signature]
-
-5:1dc|import (
-19:d77|const defaultSnippetLines = 10
-103:021|func Serve(ctx context.Context) error {
-115:a58|func register(s *mcp.Server, p *proxy.Proxy) {
-
-... truncated (77 tokens omitted, budget: 100)
+$ ccx outline internal/astgrep/run.go --budget 60
+# ast-grep
+# internal/astgrep/run.go
+L14  applyFileCap = 20
+L18  astGrepExitNoMatch = 1
+L24  func Run(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
+L38  func runStructural(ctx context.Context, a backend.Args) (string, error) {
+… +4 lines, ~85 tokens omitted — re-run with a larger --budget
 ```
+
+Point `ccx outline` at a directory for a structural map across every file. The languages ast-grep outlines route to its `outline`; everything else falls back to tilth signatures.
 
 A query carrying an ast-grep metavar (`$A`, `$$$`) routes to structural search; `ccx replace` rewrites the matches and previews a diff, writing nothing until `--apply` and stopping at 20 files unless you pass `--force`. An agent edits code it never read into context:
 
@@ -88,7 +89,7 @@ Eleven commands, each a token-bounded stand-in for a primitive an agent would ot
 | `ccx replace <pattern> <rewrite> [paths...]` | Structural find-replace; previews a diff, writes only with `--apply` |
 | `ccx related <file:line>` | Code semantically related to a location |
 | `ccx symbol <name>` (alias `grok`) | Definition, doc, body, callers, callees, siblings, tests |
-| `ccx outline <file>` | Token-budgeted structural outline of a file |
+| `ccx outline <file-or-dir>` | Token-budgeted structural outline of a file or directory |
 | `ccx read <file> --section A-B` | Read a line range, a `## Heading`, or the whole file with `--full` |
 | `ccx deps <file>` | Symbols a file uses, and what uses it back |
 | `ccx grep <text> --glob G` | Literal text search, optionally globbed and budgeted |

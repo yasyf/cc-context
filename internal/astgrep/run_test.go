@@ -13,9 +13,10 @@ import (
 )
 
 // fakeAstGrep installs an executable named "ast-grep" on PATH that emits canned
-// --json=stream output. The script emits one JSON match per file in $AG_FILES
-// (space-separated) on a preview run, and nothing on an apply run (argv carries
-// -U). vendor.Resolve finds it via LookPath("ast-grep").
+// --json=stream output. An `outline` run emits one canned outline file object; a
+// preview run emits one JSON match per file in files (space-separated); an apply
+// run (argv carries -U) emits nothing. vendor.Resolve finds it via
+// LookPath("ast-grep").
 func fakeAstGrep(t *testing.T, files []string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -27,7 +28,13 @@ func fakeAstGrep(t *testing.T, files []string) {
 		// 0-based line i; matches the ast-grep convention the renderer shifts +1.
 		fmt.Fprintf(&lines, `{"file":"%s","text":"old%d","replacement":"new%d","range":{"start":{"line":%d},"end":{"line":%d}}}`+"\n", f, i, i, i, i)
 	}
+	// 0-based struct line 4 and member line 5 render as the 1-based L5 and L6.
+	const outline = `{"path":"x.go","language":"Go","items":[{"symbolType":"struct","name":"X","signature":"type X struct {","isExported":true,"range":{"start":{"line":4}},"members":[{"symbolType":"field","name":"Y","signature":"Y int","range":{"start":{"line":5}}}]}]}`
 	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = outline ]; then\n" +
+		"cat <<'EOF'\n" + outline + "\nEOF\n" +
+		"exit 0\n" +
+		"fi\n" +
 		"for a in \"$@\"; do [ \"$a\" = \"-U\" ] && exit 0; done\n" +
 		"cat <<'EOF'\n" + lines.String() + "EOF\n"
 	path := filepath.Join(dir, "ast-grep")
@@ -115,6 +122,29 @@ func TestRunStructural(t *testing.T) {
 	// 0-based lines 0 and 1 render as the 1-based L1 and L2.
 	if !strings.Contains(got, "a.go:L1  old0") || !strings.Contains(got, "a.go:L2  old1") {
 		t.Errorf("structural list wrong:\n%s", got)
+	}
+}
+
+func TestRunStructOutline(t *testing.T) {
+	fakeAstGrep(t, nil)
+	got, err := Run(context.Background(), backend.OpStructOutline, backend.Args{Path: "x.go"})
+	if err != nil {
+		t.Fatalf("Run struct-outline: %v", err)
+	}
+	// 0-based struct line 4 and member line 5 render as L5 and the indented L6.
+	if !strings.Contains(got, "# x.go\n") || !strings.Contains(got, "L5  type X struct {\n") || !strings.Contains(got, "\n  L6  Y int\n") {
+		t.Errorf("struct-outline render wrong:\n%s", got)
+	}
+}
+
+func TestRunStructOutlineBudget(t *testing.T) {
+	fakeAstGrep(t, nil)
+	got, err := Run(context.Background(), backend.OpStructOutline, backend.Args{Path: "x.go", Budget: 1})
+	if err != nil {
+		t.Fatalf("Run struct-outline budget: %v", err)
+	}
+	if !strings.Contains(got, "omitted — re-run with a larger --budget") {
+		t.Errorf("tiny budget must show the overflow footer:\n%s", got)
 	}
 }
 

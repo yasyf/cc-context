@@ -49,6 +49,18 @@ func TestAstGrepCLIArgv(t *testing.T) {
 			Args{Pattern: "Add($A)", Rewrite: "Inc($A)", Apply: true, Lang: "go", Glob: "*.go", Paths: []string{"pkg"}},
 			[]string{"run", "-p", "Add($A)", "-r", "Inc($A)", "-U", "-l", "go", "--globs", "*.go", "pkg"},
 		},
+		{
+			"struct-outline default path",
+			OpStructOutline,
+			Args{Path: "internal/backend"},
+			[]string{"outline", "internal/backend", "--json=stream", "--view", "expanded"},
+		},
+		{
+			"struct-outline items match lang",
+			OpStructOutline,
+			Args{Path: "src", Items: "exports", Match: "^New", Lang: "go"},
+			[]string{"outline", "src", "--json=stream", "--view", "expanded", "--items", "exports", "--match", "^New", "-l", "go"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

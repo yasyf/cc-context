@@ -9,6 +9,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/outline"
 	"github.com/yasyf/cc-context/internal/proxy"
 	"github.com/yasyf/cc-context/internal/search"
 	"github.com/yasyf/cc-context/internal/version"
@@ -47,7 +48,10 @@ type RelatedIn struct {
 
 // OutlineIn is the input for ccx_outline.
 type OutlineIn struct {
-	Path   string `json:"path" jsonschema:"file to outline"`
+	Path   string `json:"path" jsonschema:"file or directory to outline"`
+	Items  string `json:"items,omitempty" jsonschema:"ast-grep: items to include (imports|exports|structure|all)"`
+	Match  string `json:"match,omitempty" jsonschema:"ast-grep: keep only items whose name/signature matches this regex"`
+	Lang   string `json:"lang,omitempty" jsonschema:"ast-grep: language to parse as; inferred from extension when omitted"`
 	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the outline"`
 }
 
@@ -143,10 +147,8 @@ func register(s *mcp.Server, p *proxy.Proxy) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_outline",
-		Description: "Compact file outline (signatures + line numbers, budget-bounded) — prefer over reading a whole file.",
-	}, handler(p, backend.OpOutline, func(in OutlineIn) backend.Args {
-		return backend.Args{Path: in.Path, Budget: in.Budget}
-	}))
+		Description: "Compact outline of a file or directory (signatures + line numbers, budget-bounded) — prefer over reading whole files. Routes to ast-grep (supports items=imports|exports and match=<regex>) or tilth by language.",
+	}, outlineHandler(p))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_read",
@@ -230,6 +232,24 @@ func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, S
 		out, err := p.Call(ctx, op, a)
 		if err != nil {
 			return nil, nil, fmt.Errorf("ccx_search: %w", err)
+		}
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
+	}
+}
+
+// outlineHandler selects the engine through outline.Route and dispatches the
+// routed op, mirroring the CLI so both surfaces behave identically: ast-grep for
+// directories and the languages it outlines, tilth signature mode otherwise.
+func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, OutlineIn) (*mcp.CallToolResult, any, error) {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in OutlineIn) (*mcp.CallToolResult, any, error) {
+		a := backend.Args{Path: in.Path, Items: in.Items, Match: in.Match, Lang: in.Lang, Budget: in.Budget}
+		op, err := outline.Route(a)
+		if err != nil {
+			return nil, nil, fmt.Errorf("ccx_outline: %w", err)
+		}
+		out, err := p.Call(ctx, op, a)
+		if err != nil {
+			return nil, nil, fmt.Errorf("ccx_outline: %w", err)
 		}
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
 	}
