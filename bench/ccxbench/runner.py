@@ -1,34 +1,27 @@
 """Execute runs: one (task, arm, model, repeat) through real `claude -p`, recorded to JSONL.
 
-Each run gets a fresh workdir, the arm's invocation, a parsed envelope, an integrity
-verdict, a cost cross-check, and a deterministic grade. Records are appended to a JSONL
-file and the raw envelope is saved for audit. The budget is a soft ceiling checked before
-each run; spend (including cost salvaged from unparseable runs) accrues after each run,
-so the next run is admitted only while the running total is under the cap.
+Each run is spawned by spawnllm (which owns transient-overload retry), parsed by
+cc-transcript into a PrintResult, then given an integrity verdict, a cost cross-check, and
+a deterministic grade. Records are appended to a JSONL file and the raw payload is saved for
+audit. The budget is a soft ceiling checked before each run; spend accrues after each run, so
+the next run is admitted only while the running total is under the cap.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+import spawnllm
+from cc_transcript import PrintResult, parse_print_result
+
 from . import arms, cost, grade, integrity
 from .config import Config
-from .envelope import Envelope, parse
 from .types import Task
-
-COST_RE = re.compile(r'"total_cost_usd"\s*:\s*([0-9.]+)')
-
-
-def salvage_cost(text: str) -> float:
-    """Best-effort extract the largest total_cost_usd from raw stdout (for unparseable runs)."""
-    vals = [float(m) for m in COST_RE.findall(text or "")]
-    return max(vals) if vals else 0.0
 
 
 def env_fingerprint() -> list[str]:
@@ -71,34 +64,37 @@ class Session:
         (self.runs_dir / "meta.json").write_text(json.dumps(meta, indent=2))
 
 
-def record_from(env: Envelope, cfg: Config, task: Task, arm: str, model: str, repeat: int, workdir: Path) -> dict:
-    integ = integrity.assess(env, arm)
-    cc = cost.crosscheck(env, cfg.prices)
-    graded = grade.grade(task, env, workdir)
-    u = env.usage
+def record_from(pr: PrintResult, cfg: Config, task: Task, arm: str, model: str, repeat: int, workdir: Path) -> dict:
+    integ = integrity.assess(pr, arm)
+    cc = cost.crosscheck(pr, model, cfg.cost_tolerance)
+    graded = grade.grade(task, pr, workdir)
+    u = pr.usage
+    cc_5m = u.cache_creation.ephemeral_5m_input_tokens if u.cache_creation else u.cache_creation_input_tokens
+    cc_1h = u.cache_creation.ephemeral_1h_input_tokens if u.cache_creation else 0
+    init = pr.init
     return {
         "task_id": task.id,
         "category": task.category,
         "arm": arm,
         "model": model,
-        "model_ids": list(env.model_usage),
+        "model_ids": list(pr.model_usage),
         "repeat": repeat,
         "ccx_helps": task.ccx_helps,
-        "is_error": env.is_error,
+        "is_error": pr.is_error,
         "correct": graded.correct,
         "grade_detail": graded.detail,
-        "total_cost_usd": env.total_cost_usd,
+        "total_cost_usd": pr.total_cost_usd,
         "cost_recomputed_usd": cc.recomputed_usd,
         "cost_rel_delta": cc.rel_delta,
         "cost_ok": cc.within_tolerance,
         "cost_note": cc.note,
-        "num_turns": env.num_turns,
+        "num_turns": pr.num_turns,
         "usage": {
-            "input": u.input,
-            "output": u.output,
-            "cache_read": u.cache_read,
-            "cache_create_5m": u.cache_create_5m,
-            "cache_create_1h": u.cache_create_1h,
+            "input": u.input_tokens,
+            "output": u.output_tokens,
+            "cache_read": u.cache_read_input_tokens,
+            "cache_create_5m": cc_5m,
+            "cache_create_1h": cc_1h,
         },
         "guards_active": arms.guards_available(cfg) if arm == "ccx" else None,
         "integrity": {
@@ -110,17 +106,17 @@ def record_from(env: Envelope, cfg: Config, task: Task, arm: str, model: str, re
             "note": integ.note,
         },
         "init": {
-            "mcp_servers": env.init.mcp_servers,
-            "plugins": sorted(env.init.plugins),
-            "n_tools": len(env.init.tools),
-            "n_skills": env.init.n_skills,
+            "mcp_servers": [s.name for s in init.mcp_servers] if init else [],
+            "plugins": sorted(p.name for p in init.plugins) if init else [],
+            "n_tools": len(init.tools) if init else 0,
+            "n_skills": len(init.skills) if init else 0,
         },
-        "session_id": env.session_id,
-        "stop_reason": env.stop_reason,
+        "session_id": str(pr.session_id),
+        "stop_reason": pr.stop_reason,
     }
 
 
-def error_record(cfg: Config, task: Task, arm: str, model: str, repeat: int, reason: str, cost_usd: float = 0.0) -> dict:
+def error_record(cfg: Config, task: Task, arm: str, model: str, repeat: int, reason: str) -> dict:
     return {
         "task_id": task.id,
         "category": task.category,
@@ -131,7 +127,7 @@ def error_record(cfg: Config, task: Task, arm: str, model: str, repeat: int, rea
         "is_error": True,
         "correct": False,
         "grade_detail": reason,
-        "total_cost_usd": cost_usd,
+        "total_cost_usd": 0.0,
         "harness_error": reason,
     }
 
@@ -144,28 +140,26 @@ def run_one(sess: Session, task: Task, arm: str, model: str, repeat: int) -> dic
 
     run_id = f"{task.id}__{arm}__{model}__r{repeat}"
     workdir = arms.prepare_workdir(cfg, task, arm, run_id)
-    argv, env, cwd = arms.build_command(cfg, task, arm, model, workdir)
+    spec = arms.build_run_spec(cfg, task, arm, model, workdir)
 
     try:
-        proc = subprocess.run(argv, env=env, cwd=str(cwd), capture_output=True, text=True, timeout=cfg.timeout_s)
+        rr = spawnllm.run_sync(spec)
     except subprocess.TimeoutExpired:
         return error_record(cfg, task, arm, model, repeat, f"timeout after {cfg.timeout_s}s")
 
-    (sess.runs_dir / "raw" / f"{run_id}.json").write_text(proc.stdout or proc.stderr or "")
-    if not proc.stdout.strip():
-        return error_record(cfg, task, arm, model, repeat, f"empty stdout (rc={proc.returncode}): {proc.stderr[:200]}")
+    (sess.runs_dir / "raw" / f"{run_id}.json").write_text(rr.stdout or rr.stderr or "")
+    if not rr.stdout.strip():
+        return error_record(cfg, task, arm, model, repeat, f"empty stdout (rc={rr.returncode}): {rr.stderr[:200]}")
 
     try:
-        envlp = parse(proc.stdout)
-    except (ValueError, json.JSONDecodeError) as e:
-        salvaged = salvage_cost(proc.stdout)
-        sess.spent_usd += salvaged
-        return error_record(cfg, task, arm, model, repeat, f"parse failed: {e}", cost_usd=salvaged)
+        pr = parse_print_result(rr.stdout.encode())
+    except (ValueError, KeyError, StopIteration) as e:
+        return error_record(cfg, task, arm, model, repeat, f"parse failed: {e}")
 
-    record = record_from(envlp, cfg, task, arm, model, repeat, workdir)
-    sess.spent_usd += envlp.total_cost_usd
+    record = record_from(pr, cfg, task, arm, model, repeat, workdir)
+    sess.spent_usd += pr.total_cost_usd
 
-    keep = (not record["integrity"]["ok"]) or (not record["cost_ok"]) or envlp.is_error
+    keep = (not record["integrity"]["ok"]) or (not record["cost_ok"]) or pr.is_error
     if not keep:
         shutil.rmtree(workdir, ignore_errors=True)
     return record

@@ -9,11 +9,13 @@ import json
 import unittest
 from pathlib import Path
 
+from cc_transcript import parse_print_result
+from cc_transcript.cost import cost_of
+
 from ccxbench import integrity
 from ccxbench.config import load
 from ccxbench.cost import crosscheck
-from ccxbench.envelope import Envelope, parse
-from ccxbench.grade import grade
+from ccxbench.grade import grade, synthetic_result
 from ccxbench.graders import GradeContext, grade_file_line, grade_keywords, grade_set_match
 from ccxbench.report import paired_task_ids, verdict
 from ccxbench.types import Grader, Task
@@ -21,8 +23,8 @@ from ccxbench.types import Grader, Task
 DATA = Path(__file__).resolve().parent / "data"
 
 
-def env_from(messages: list[dict]) -> Envelope:
-    return parse(json.dumps(messages))
+def pr_from(messages: list[dict]):
+    return parse_print_result(json.dumps(messages).encode())
 
 
 def result_msg(**over: object) -> dict:
@@ -33,6 +35,7 @@ def result_msg(**over: object) -> dict:
         "structured_output": {"file": "a"},
         "total_cost_usd": 0.01,
         "num_turns": 1,
+        "session_id": "test",
         "usage": {
             "input_tokens": 1,
             "output_tokens": 1,
@@ -51,83 +54,131 @@ def init_msg(mcp: list[str]) -> dict:
     return {
         "type": "system",
         "subtype": "init",
-        "mcp_servers": [{"name": m} for m in mcp],
+        "mcp_servers": [{"name": m, "status": "connected"} for m in mcp],
         "plugins": [],
         "tools": ["Bash", "Read"],
         "skills": [],
     }
 
 
+def tool_use(name: str, tool_input: dict, _id: str = "t1") -> dict:
+    return {
+        "type": "assistant",
+        "session_id": "test",
+        "message": {"content": [{"type": "tool_use", "id": _id, "name": name, "input": tool_input}]},
+    }
+
+
 def bash(cmd: str) -> dict:
-    return {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": cmd}}]}}
+    return tool_use("Bash", {"command": cmd})
 
 
 def mcp_call(name: str) -> dict:
-    return {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": name, "input": {}}]}}
+    return tool_use(name, {})
 
 
 def tool_err(text: str) -> dict:
-    return {"type": "user", "message": {"content": [{"type": "tool_result", "is_error": True, "content": text}]}}
+    return {
+        "type": "user",
+        "session_id": "test",
+        "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": True, "content": text}]},
+    }
 
 
-class TestEnvelope(unittest.TestCase):
+class TestPrintResult(unittest.TestCase):
     def test_parse_real_haiku_envelope(self) -> None:
-        env = parse((DATA / "haiku_envelope.json").read_text())
-        self.assertFalse(env.is_error)
-        self.assertEqual(env.structured_output, {"answer": "pong"})
-        self.assertAlmostEqual(env.total_cost_usd, 0.05759, places=5)
-        self.assertEqual(env.usage.cache_create_1h, 25605)
-        self.assertIn("claude-haiku-4-5-20251001", env.model_usage)
+        pr = parse_print_result((DATA / "haiku_envelope.json").read_bytes())
+        self.assertFalse(pr.is_error)
+        self.assertEqual(pr.structured_output, {"answer": "pong"})
+        self.assertAlmostEqual(pr.total_cost_usd, 0.05759, places=5)
+        self.assertEqual(pr.usage.cache_creation.ephemeral_1h_input_tokens, 25605)
+        self.assertIn("claude-haiku-4-5-20251001", pr.model_usage)
 
 
 class TestCost(unittest.TestCase):
-    def test_recompute_matches_real_bill(self) -> None:
+    def test_crosscheck_matches_real_bill(self) -> None:
         cfg = load()
-        env = parse((DATA / "haiku_envelope.json").read_text())
-        cc = crosscheck(env, cfg.prices)
+        pr = parse_print_result((DATA / "haiku_envelope.json").read_bytes())
+        cc = crosscheck(pr, "haiku", cfg.cost_tolerance)
         self.assertTrue(cc.within_tolerance, cc.note)
         self.assertLess(cc.rel_delta, 0.01)
+
+    def test_cost_of_exact_to_the_cent(self) -> None:
+        pr = parse_print_result((DATA / "haiku_envelope.json").read_bytes())
+        # cost_of accepts either the family alias or the full model id (it resolves the family).
+        self.assertAlmostEqual(cost_of(pr.usage, "haiku").total, 0.05759, places=5)
+        self.assertAlmostEqual(cost_of(pr.usage, "claude-haiku-4-5-20251001").total, 0.05759, places=5)
+
+    def test_no_spurious_premium_note_when_tier_geo_absent(self) -> None:
+        # service_tier / inference_geo are None when the keys are absent; a None must not be
+        # mis-attributed as a non-standard tier / inference-geo surcharge.
+        pr = synthetic_result({"a": 1})
+        cc = crosscheck(pr, "haiku", 0.02)
+        self.assertNotIn("not modeled: None", cc.note)
+        self.assertNotIn("service tier", cc.note)
+        self.assertNotIn("inference_geo", cc.note)
 
 
 class TestIntegrity(unittest.TestCase):
     def test_ccx_arm_facade_used(self) -> None:
-        env = env_from([init_msg(["cc-context"]), mcp_call("mcp__cc-context__outline"), result_msg()])
-        verdict = integrity.assess(env, "ccx")
-        self.assertTrue(verdict.ok)
-        self.assertTrue(verdict.ccx_used)
+        pr = pr_from([init_msg(["cc-context"]), mcp_call("mcp__cc-context__outline"), result_msg()])
+        v = integrity.assess(pr, "ccx")
+        self.assertTrue(v.ok)
+        self.assertTrue(v.ccx_used)
 
     def test_ccx_arm_bash_ccx_used(self) -> None:
-        env = env_from([init_msg(["cc-context"]), bash("ccx outline internal/x.go"), result_msg()])
-        verdict = integrity.assess(env, "ccx")
-        self.assertTrue(verdict.ccx_used)
-        self.assertEqual(verdict.ccx_calls, ["bash:ccx outline"])
+        pr = pr_from([init_msg(["cc-context"]), bash("ccx outline internal/x.go"), result_msg()])
+        v = integrity.assess(pr, "ccx")
+        self.assertTrue(v.ccx_used)
+        self.assertEqual(v.ccx_calls, ["bash:ccx outline"])
 
     def test_ccx_arm_guard_fired(self) -> None:
-        env = env_from([init_msg(["cc-context"]), bash("cat internal/x.go"), tool_err("Blocked: use `ccx outline` instead"), result_msg()])
-        verdict = integrity.assess(env, "ccx")
-        self.assertTrue(verdict.guard_fired)
-        self.assertTrue(verdict.ok)
+        pr = pr_from(
+            [init_msg(["cc-context"]), bash("cat internal/x.go"), tool_err("Blocked: use `ccx outline` instead"), result_msg()]
+        )
+        v = integrity.assess(pr, "ccx")
+        self.assertTrue(v.guard_fired)
+        self.assertTrue(v.ok)
 
     def test_ccx_arm_mislabeled_when_unused(self) -> None:
-        env = env_from([init_msg(["cc-context"]), bash("echo hi"), result_msg()])
-        verdict = integrity.assess(env, "ccx")
-        self.assertFalse(verdict.ok)
+        pr = pr_from([init_msg(["cc-context"]), bash("echo hi"), result_msg()])
+        v = integrity.assess(pr, "ccx")
+        self.assertFalse(v.ok)
 
     def test_baseline_clean(self) -> None:
-        env = env_from([init_msg([]), bash("rg foo"), result_msg()])
-        verdict = integrity.assess(env, "baseline")
-        self.assertTrue(verdict.ok)
-        self.assertFalse(verdict.ccx_used)
+        pr = pr_from([init_msg([]), bash("rg foo"), result_msg()])
+        v = integrity.assess(pr, "baseline")
+        self.assertTrue(v.ok)
+        self.assertFalse(v.ccx_used)
 
     def test_baseline_leak_detected(self) -> None:
-        env = env_from([init_msg(["cc-context"]), result_msg()])
-        verdict = integrity.assess(env, "baseline")
-        self.assertFalse(verdict.ok)
+        pr = pr_from([init_msg(["cc-context"]), result_msg()])
+        v = integrity.assess(pr, "baseline")
+        self.assertFalse(v.ok)
 
     def test_heavy_call_classified(self) -> None:
-        env = env_from([init_msg([]), bash("git diff HEAD~1"), result_msg()])
-        verdict = integrity.assess(env, "baseline")
-        self.assertIn("git-diff", verdict.native_heavy_calls)
+        pr = pr_from([init_msg([]), bash("git diff HEAD~1"), result_msg()])
+        v = integrity.assess(pr, "baseline")
+        self.assertIn("git-diff", v.native_heavy_calls)
+
+    def test_ccx_arm_guard_fired_via_permission_denials(self) -> None:
+        # A denied heavy primitive recorded only in permission_denials (no is_error tool_result)
+        # must still count as a ccx-navigation guard fire — detected structurally, not via the
+        # deny reason (which the denial record does not carry).
+        denial = {"tool_name": "Bash", "tool_use_id": "t1", "tool_input": {"command": "find . -name mux.go -type f"}}
+        pr = pr_from([init_msg(["cc-context"]), result_msg(permission_denials=[denial])])
+        v = integrity.assess(pr, "ccx")
+        self.assertTrue(v.guard_fired)
+        self.assertTrue(v.ok)
+
+    def test_ccx_arm_non_navigation_denial_not_a_guard_fire(self) -> None:
+        # A capt-hook built-in denial (e.g. styleguide on a Write) is NOT a ccx-navigation guard,
+        # so it must not falsely validate a ccx run where ccx was never exercised.
+        denial = {"tool_name": "Write", "tool_use_id": "t1", "tool_input": {"file_path": "m.py", "content": "x: Any = 1\n"}}
+        pr = pr_from([init_msg(["cc-context"]), result_msg(permission_denials=[denial])])
+        v = integrity.assess(pr, "ccx")
+        self.assertFalse(v.guard_fired)
+        self.assertFalse(v.ok)
 
 
 class TestGraders(unittest.TestCase):
@@ -148,8 +199,8 @@ class TestGraders(unittest.TestCase):
 
     def test_errored_run_is_incorrect(self) -> None:
         task = Task("t", "navigation", "fixture", "p", {}, Grader("file_line"), {"file": "a", "line": 1})
-        env = Envelope.synthetic({"file": "a", "line": 1}, is_error=True)
-        self.assertFalse(grade(task, env, None).correct)
+        pr = synthetic_result({"file": "a", "line": 1}, is_error=True)
+        self.assertFalse(grade(task, pr, None).correct)
 
     def test_set_match_superset(self) -> None:
         spec = {"field": "callees", "mode": "superset", "lower": True}
@@ -169,15 +220,15 @@ class TestGraders(unittest.TestCase):
 
 class TestAnswerKeyAndPairing(unittest.TestCase):
     def test_integrity_flags_answer_key_bash(self) -> None:
-        env = env_from([init_msg([]), bash("cat manifest.json"), result_msg()])
-        v = integrity.assess(env, "baseline")
+        pr = pr_from([init_msg([]), bash("cat manifest.json"), result_msg()])
+        v = integrity.assess(pr, "baseline")
         self.assertFalse(v.ok)
         self.assertIn("ANSWER KEY", v.note)
 
     def test_integrity_flags_answer_key_read_tool(self) -> None:
-        read = {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "/x/manifest.json"}}]}}
-        env = env_from([init_msg(["cc-context"]), read, mcp_call("mcp__cc-context__ccx_symbol"), result_msg()])
-        v = integrity.assess(env, "ccx")
+        read = tool_use("Read", {"file_path": "/x/manifest.json"})
+        pr = pr_from([init_msg(["cc-context"]), read, mcp_call("mcp__cc-context__ccx_symbol"), result_msg()])
+        v = integrity.assess(pr, "ccx")
         self.assertFalse(v.ok)
 
     def test_paired_task_ids(self) -> None:

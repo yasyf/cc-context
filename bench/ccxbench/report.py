@@ -278,6 +278,12 @@ def integrity_section(records: list[dict]) -> str:
         out.append("- ⚠️ capt-hook guards were INACTIVE for the ccx arm (pack failed to load); ccx was tested via the facade MCP + ladder only.")
     elif ccx_runs:
         out.append(f"- capt-hook guards active on {guards_on}/{len(ccx_runs)} ccx runs.")
+        out.append(
+            "  - the ccx arm's PreToolUse runs capt-hook: the cc-context navigation pack "
+            "(large-Read / rg / git-diff / sed → ccx) plus capt-hook's built-in guards "
+            "(styleguide, task/plan/vcs nudges). The built-ins are present but dormant for "
+            "read-only Q&A tasks — no Python edits, commits, pending tasks, or plan events fire them."
+        )
     return "\n".join(out)
 
 

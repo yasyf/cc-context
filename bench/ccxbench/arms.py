@@ -17,9 +17,13 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from spawnllm import ClaudeConfig, RunSpec
+
 from .config import Config
 from .fixtures import FIXTURE_NAME
 from .types import Task
+
+CAPT_HOOK = "capt-hook>=3.14.0"
 
 LADDER = (Path(__file__).resolve().parent / "ladder.txt").read_text()
 # Both arms get matched, length-comparable "navigate efficiently" guidance so the paired
@@ -30,25 +34,31 @@ GUARD_PROBE: dict[str, bool] = {}
 
 
 def guard_command(cfg: Config) -> str:
-    return f"uvx capt-hook --hooks {cfg.plugin_hooks} run PreToolUse"
+    return f"uvx --from '{CAPT_HOOK}' capt-hook --hooks {cfg.plugin_hooks} run PreToolUse"
 
 
 def guards_available(cfg: Config) -> bool:
-    """Probe once whether the ccx guard pack loads and its guards pass on current capt-hook.
+    """Probe once that the ccx guard pack is live: a large unbounded Read must be denied.
 
-    Uses `capt-hook test` (run in a neutral cwd so only --hooks is loaded): the large-Read
-    guard's own inline test passing proves the pack is loadable and functional. If it fails
-    to import, that test never runs and the probe returns False.
+    Drives the exact PreToolUse path the ccx arm uses (capt-hook + the canonical pack) against a
+    synthetic >20 KB file. A `deny` whose reason names `ccx` proves the cc-context navigation
+    guards loaded and fire; if the pack fails to import, the Read is allowed and the probe is False.
     """
     key = str(cfg.plugin_hooks)
     if key in GUARD_PROBE:
         return GUARD_PROBE[key]
-    if not (cfg.plugin_hooks / "ccx_guards.py").exists():
+    if not (cfg.plugin_hooks / "read_guards.py").exists():
         GUARD_PROBE[key] = False
         return False
+    probe_file = Path(tempfile.gettempdir()) / "ccx_guard_probe_large.py"
+    probe_file.write_text("# probe\n" + "x = 1\n" * 5000)
+    payload = json.dumps(
+        {"hook_event_name": "PreToolUse", "tool_name": "Read", "tool_input": {"file_path": str(probe_file)}}
+    )
     try:
         proc = subprocess.run(
-            ["uvx", "capt-hook", "--hooks", str(cfg.plugin_hooks), "test"],
+            ["uvx", "--from", CAPT_HOOK, "capt-hook", "--hooks", str(cfg.plugin_hooks), "run", "PreToolUse"],
+            input=payload,
             cwd=tempfile.gettempdir(),
             capture_output=True,
             text=True,
@@ -57,8 +67,7 @@ def guards_available(cfg: Config) -> bool:
     except (subprocess.TimeoutExpired, FileNotFoundError):
         GUARD_PROBE[key] = False
         return False
-    out = proc.stdout + proc.stderr
-    available = "block_unbounded_large_read" in out and "0 failed" in out and "0 errors" in out
+    available = '"permissionDecision": "deny"' in proc.stdout and "ccx" in proc.stdout
     GUARD_PROBE[key] = available
     return available
 
@@ -98,34 +107,34 @@ def guard_settings(cfg: Config) -> str:
     )
 
 
-def build_command(cfg: Config, task: Task, arm: str, model: str, workdir: Path) -> tuple[list[str], dict[str, str], Path]:
-    """Return (argv, env, cwd) for the headless run. No shell; the prompt is a literal arg."""
-    argv = [
-        "claude",
-        "-p",
-        task.prompt,
-        "--output-format",
-        "json",
-        "--model",
-        model,
-        "--json-schema",
-        json.dumps(task.schema),
-        "--permission-mode",
-        cfg.permission_mode,
-        "--mcp-config",
-        mcp_config(cfg, arm),
-    ]
-    if cfg.strip_mcp:
-        argv.append("--strict-mcp-config")
-    if cfg.disallowed_tools:
-        argv += ["--disallowedTools", *cfg.disallowed_tools]
+def build_run_spec(cfg: Config, task: Task, arm: str, model: str, workdir: Path) -> RunSpec:
+    """Build the spawnllm RunSpec for one headless run.
 
-    env = dict(os.environ)
-    if arm == "ccx":
-        argv += ["--append-system-prompt", LADDER]
-        if guards_available(cfg):
-            argv += ["--settings", guard_settings(cfg)]
-        env["PATH"] = f"{cfg.ccx_bin.parent}{os.pathsep}{env.get('PATH', '')}"
-    else:
-        argv += ["--append-system-prompt", BASELINE_CONTROL]
-    return argv, env, workdir
+    spawnllm delivers the prompt via stdin and owns transient-overload retry. The ONLY
+    differences between arms are the ccx arm's facade MCP, its `ccx` prepended to PATH, the
+    ccx ladder appended to the system prompt, and — when the pack loads — the guard settings.
+    """
+    ccx = arm == "ccx"
+    env = None
+    if ccx:
+        env = {"PATH": f"{cfg.ccx_bin.parent}{os.pathsep}{os.environ.get('PATH', '')}"}
+    settings = guard_settings(cfg) if (ccx and guards_available(cfg)) else None
+    return RunSpec(
+        prompt=task.prompt,
+        model=model,
+        schema=json.dumps(task.schema),
+        cwd=str(workdir),
+        env=env,
+        timeout=cfg.timeout_s,
+        provider_configs={
+            "claude": ClaudeConfig(
+                permission_mode=cfg.permission_mode,
+                mcp_config=mcp_config(cfg, arm),
+                strict_mcp=cfg.strip_mcp,
+                append_system_prompt=LADDER if ccx else BASELINE_CONTROL,
+                settings=settings,
+                disallowed_tools=tuple(cfg.disallowed_tools),
+                output_format="json",
+            )
+        },
+    )

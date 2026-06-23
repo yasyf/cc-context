@@ -1,6 +1,7 @@
 .work/
 .fixtures/
-guards/
 results/
 __pycache__/
 *.pyc
+*.egg-info/
+.venv/

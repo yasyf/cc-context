@@ -20,32 +20,6 @@ class Repo:
 
 
 @dataclass(frozen=True)
-class ModelPrice:
-    """Base $/MTok for one model family, matched to a modelUsage key by `match`."""
-
-    match: str
-    input: float
-    output: float
-
-
-@dataclass(frozen=True)
-class Prices:
-    cache_write_5m: float
-    cache_write_1h: float
-    cache_read: float
-    tolerance: float
-    models: tuple[ModelPrice, ...]
-
-    def for_model(self, model_id: str) -> ModelPrice | None:
-        """Return the price family whose `match` substring is in `model_id`, longest first."""
-        lid = model_id.lower()
-        candidates = [m for m in self.models if m.match in lid]
-        if not candidates:
-            return None
-        return max(candidates, key=lambda m: len(m.match))
-
-
-@dataclass(frozen=True)
 class Config:
     models: tuple[str, ...]
     repeats: int
@@ -54,9 +28,8 @@ class Config:
     timeout_s: int
     strip_mcp: bool
     disallowed_tools: tuple[str, ...]
-    prices: Prices
+    cost_tolerance: float
     repos: tuple[Repo, ...]
-    guards_ref: str
     ccx_bin: Path
     plugin_hooks: Path
     work_root: Path
@@ -75,19 +48,6 @@ def load(path: Path | None = None) -> Config:
 
     run = data["run"]
     paths = data["paths"]
-    pr = data["prices"]
-
-    models = tuple(
-        ModelPrice(match=m["match"], input=m["input"], output=m["output"])
-        for m in pr["models"].values()
-    )
-    prices = Prices(
-        cache_write_5m=pr["cache_write_5m"],
-        cache_write_1h=pr["cache_write_1h"],
-        cache_read=pr["cache_read"],
-        tolerance=pr["tolerance"],
-        models=models,
-    )
 
     repos = tuple(
         Repo(name=r["name"], url=r["url"], ref=r["ref"], kind=r["kind"]) for r in data.get("repos", [])
@@ -101,9 +61,8 @@ def load(path: Path | None = None) -> Config:
         timeout_s=int(run["timeout_s"]),
         strip_mcp=bool(run["strip_mcp"]),
         disallowed_tools=tuple(run["disallowed_tools"]),
-        prices=prices,
+        cost_tolerance=float(run["cost_tolerance"]),
         repos=repos,
-        guards_ref=paths["guards_ref"],
         ccx_bin=resolve_path(BENCH_DIR, paths["ccx_bin"]),
         plugin_hooks=resolve_path(BENCH_DIR, paths["plugin_hooks"]),
         work_root=resolve_path(BENCH_DIR, paths["work_root"]),

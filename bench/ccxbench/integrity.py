@@ -9,8 +9,10 @@ assume it.
 from __future__ import annotations
 
 import re
+from typing import Mapping
 
-from .envelope import Envelope
+from cc_transcript import PrintResult, ToolResultBlock, ToolUseBlock
+
 from .types import Integrity
 
 CCX_MCP = "mcp__cc-context__"
@@ -42,38 +44,63 @@ def heavy_label(cmd: str) -> str | None:
     return None
 
 
-def read_answer_key(call_input: dict) -> bool:
+def read_answer_key(call_input: Mapping[str, object]) -> bool:
     """True if a tool call references the gold-answer manifest (a cheat, not navigation)."""
     return any("manifest.json" in str(v) for v in call_input.values())
 
 
-def assess(env: Envelope, arm: str) -> Integrity:
+def denial_is_ccx_guard(denial: Mapping[str, object]) -> bool:
+    """A PreToolUse denial whose blocked tool matches a ccx-navigation guard target.
+
+    Under bypassPermissions the capt-hook pack is the only deny source, but a denial record
+    carries only the blocked tool and its input — not the deny reason — so a fired guard is
+    recognized structurally: the same heavy primitive or unbounded large Read the navigation
+    guards intercept. (The deny reason itself surfaces as an is_error tool_result, matched
+    separately via GUARD_HINT.)
+    """
+    tool = str(denial.get("tool_name", ""))
+    tool_input = denial.get("tool_input") or {}
+    if not isinstance(tool_input, Mapping):
+        return False
+    if tool == "Bash":
+        return heavy_label(str(tool_input.get("command", ""))) is not None
+    if tool == "Read":
+        return "offset" not in tool_input and "limit" not in tool_input
+    return False
+
+
+def assess(pr: PrintResult, arm: str) -> Integrity:
     """Classify the run's tool activity and judge whether it matches its arm."""
     ccx_calls: list[str] = []
     heavy: list[str] = []
     cheated = False
-    for call in env.tool_calls:
-        cmd = call.input.get("command", "") if call.name == "Bash" else ""
-        if read_answer_key(call.input):
-            cheated = True
-        if is_ccx_call(call.name, cmd):
-            if call.name.startswith(CCX_MCP):
-                ccx_calls.append(call.name)
-            else:
-                parts = cmd.split()
-                ccx_calls.append(f"bash:ccx {parts[1]}" if len(parts) > 1 else "bash:ccx")
-            continue
-        label = heavy_label(cmd)
-        if label:
-            heavy.append(label)
-        if call.name == "Read" and "offset" not in call.input and "limit" not in call.input:
-            heavy.append("read-unbounded")
+    guard_fired = False
+    for message in pr.messages:
+        for block in message.blocks:
+            if isinstance(block, ToolUseBlock):
+                cmd = str(block.input.get("command", "")) if block.name == "Bash" else ""
+                if read_answer_key(block.input):
+                    cheated = True
+                if is_ccx_call(block.name, cmd):
+                    if block.name.startswith(CCX_MCP):
+                        ccx_calls.append(block.name)
+                    else:
+                        parts = cmd.split()
+                        ccx_calls.append(f"bash:ccx {parts[1]}" if len(parts) > 1 else "bash:ccx")
+                    continue
+                label = heavy_label(cmd)
+                if label:
+                    heavy.append(label)
+                if block.name == "Read" and "offset" not in block.input and "limit" not in block.input:
+                    heavy.append("read-unbounded")
+            elif isinstance(block, ToolResultBlock):
+                if block.is_error and GUARD_HINT.search(block.content):
+                    guard_fired = True
 
-    guard_fired = any(r.is_error and GUARD_HINT.search(r.text) for r in env.tool_results)
-    guard_fired = guard_fired or any(GUARD_HINT.search(str(d)) for d in env.permission_denials)
+    guard_fired = guard_fired or any(denial_is_ccx_guard(d) for d in pr.permission_denials)
 
     ccx_used = bool(ccx_calls)
-    cc_present = "cc-context" in env.init.mcp_servers
+    cc_present = bool(pr.init) and any(s.name == "cc-context" for s in pr.init.mcp_servers)
 
     if arm == "ccx":
         if not cc_present:

@@ -2,8 +2,12 @@
 name = "ccxbench"
 version = "0.1.0"
 description = "Cache-aware cost-per-correct-answer benchmark for cc-context (ccx)."
-requires-python = ">=3.11"
-dependencies = []
+requires-python = ">=3.13"
+dependencies = [
+    "spawnllm>=0.4.0",
+    "cc-transcript>=4.2.0",
+    "capt-hook>=3.14.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["ccxbench*"]

@@ -20,12 +20,13 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from cc_transcript import parse_print_result
+
 from . import fixtures, report, repos, taskgen
 from .arms import apply_edits
 from .config import Config, load
 from .cost import crosscheck
-from .envelope import Envelope, parse
-from .grade import grade
+from .grade import grade, synthetic_result
 from .graders import GradeContext, grade_test_run
 from .runner import Session, run_corpus
 from .types import Task
@@ -44,7 +45,6 @@ def available(task: Task) -> bool:
 
 def build_corpus(cfg: Config) -> list[Task]:
     repos.clone_all(cfg)
-    repos.extract_guards(cfg)
     cfg.fixtures_root.mkdir(parents=True, exist_ok=True)
     fixture_dir = cfg.fixtures_root / fixtures.FIXTURE_NAME
     if fixture_dir.exists():
@@ -136,8 +136,8 @@ def selftest(cfg: Config) -> int:
         if t.grader.kind == "test_run":
             ok = selftest_edit(t, checkout_dir(cfg, t))
         else:
-            good = grade(t, Envelope.synthetic(correct_answer(t)), None)
-            bad = grade(t, Envelope.synthetic(wrong_answer(t)), None)
+            good = grade(t, synthetic_result(correct_answer(t)), None)
+            bad = grade(t, synthetic_result(wrong_answer(t)), None)
             ok = good.correct and not bad.correct
             if not good.correct:
                 fails.append(f"{t.id}: gold answer graded INCORRECT ({good.detail})")
@@ -185,12 +185,13 @@ def selftest_edit(task: Task, src_dir: Path) -> bool:
 
 
 def cmd_crosscheck(cfg: Config, path: Path) -> int:
-    env = parse(path.read_text())
-    cc = crosscheck(env, cfg.prices)
-    print(f"models:     {list(env.model_usage)}")
+    pr = parse_print_result(path.read_bytes())
+    model = next(iter(pr.model_usage), "")
+    cc = crosscheck(pr, model, cfg.cost_tolerance)
+    print(f"models:     {list(pr.model_usage)}")
     print(f"reported:   ${cc.reported_usd:.6f}")
     print(f"recomputed: ${cc.recomputed_usd:.6f}")
-    print(f"rel_delta:  {cc.rel_delta:.4f} (tolerance {cfg.prices.tolerance})")
+    print(f"rel_delta:  {cc.rel_delta:.4f} (tolerance {cfg.cost_tolerance})")
     print(f"within:     {cc.within_tolerance}")
     if cc.note:
         print(f"note:       {cc.note}")
