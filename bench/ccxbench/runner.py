@@ -13,11 +13,14 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import spawnllm
 from cc_transcript import PrintResult, parse_print_result
+from spawnllm.proc import RunResult, capture_cli
+from spawnllm.structured import backoff, is_transient
 
 from . import arms, cost, grade, integrity
 from .config import Config
@@ -132,6 +135,29 @@ def error_record(cfg: Config, task: Task, arm: str, model: str, repeat: int, rea
     }
 
 
+def drive(spec: spawnllm.RunSpec, schema: dict) -> RunResult:
+    """Run `spec` through the claude backend, keeping the full raw stdout the harness parses.
+
+    spawnllm's own `run_sync` collapses the run to a `Response` that exposes only the
+    extracted `result` text, dropping the ~38 KB JSON stream array `parse_print_result`
+    needs plus the returncode/stderr the error record reports. So we reuse the backend's
+    invocation (its locked-down `claude -p` flag policy) and `capture_cli` directly, inject
+    `--json-schema` for the task's plain JSON-Schema dict (no pydantic model exists), and
+    keep spawnllm's transient-overload retry by feeding `to_response` into `is_transient`.
+    """
+    backend = spawnllm.select_backend()
+    inv = backend.invocation(spec)
+    argv = [*inv.argv, "--json-schema", json.dumps(schema)]
+    env = os.environ | backend.env() | (spec.env or {})
+    for attempt in range(spec.max_attempts):
+        rr = capture_cli(argv, input=inv.stdin, env=env, cwd=spec.cwd, timeout=spec.timeout)
+        if not is_transient(backend.to_response(rr.stdout, returncode=rr.returncode, stderr=rr.stderr, spec=spec)):
+            return rr
+        if attempt + 1 < spec.max_attempts:
+            time.sleep(backoff(attempt))
+    return rr
+
+
 def run_one(sess: Session, task: Task, arm: str, model: str, repeat: int) -> dict:
     """Run one (task, arm, model, repeat). Returns the record; raises BudgetExceeded first."""
     cfg = sess.cfg
@@ -143,7 +169,7 @@ def run_one(sess: Session, task: Task, arm: str, model: str, repeat: int) -> dic
     spec = arms.build_run_spec(cfg, task, arm, model, workdir)
 
     try:
-        rr = spawnllm.run_sync(spec)
+        rr = drive(spec, task.schema)
     except subprocess.TimeoutExpired:
         return error_record(cfg, task, arm, model, repeat, f"timeout after {cfg.timeout_s}s")
 

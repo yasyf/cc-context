@@ -249,5 +249,102 @@ class TestAnswerKeyAndPairing(unittest.TestCase):
         self.assertIn("not cheaper", verdict(0.0, 5.0))
 
 
+class TestDrive(unittest.TestCase):
+    """drive must inject the task's JSON-Schema dict as --json-schema, hand back the FULL raw
+    stdout (not spawnllm's collapsed result text), and reuse spawnllm's transient retry."""
+
+    def _spec(self):
+        from spawnllm import ClaudeConfig, RunSpec
+
+        return RunSpec(
+            prompt="p",
+            model="sonnet",
+            max_attempts=3,
+            timeout=5,
+            provider_configs={"claude": ClaudeConfig(output_format="json")},
+        )
+
+    def test_injects_schema_and_returns_full_stdout(self) -> None:
+        import ccxbench.runner as runner
+        from spawnllm.backends.base import Invocation
+        from spawnllm.proc import RunResult
+        from spawnllm import Response
+
+        schema = {"type": "object", "properties": {"file": {"type": "string"}}}
+        full_stream = json.dumps([result_msg(structured_output={"file": "a"})])
+        seen: dict = {}
+
+        class FakeBackend:
+            def invocation(self, spec):
+                return Invocation(["claude", "-p", "--output-format", "json"], spec.prompt)
+
+            def env(self):
+                return {}
+
+            def to_response(self, raw, *, returncode, stderr, spec):
+                return Response(error=None, result="ok")
+
+        def fake_capture(argv, **kw):
+            seen["argv"], seen["kw"] = argv, kw
+            return RunResult(full_stream, "", 0)
+
+        orig_sel, orig_cap = runner.spawnllm.select_backend, runner.capture_cli
+        runner.spawnllm.select_backend = lambda: FakeBackend()
+        runner.capture_cli = fake_capture
+        try:
+            rr = runner.drive(self._spec(), schema)
+        finally:
+            runner.spawnllm.select_backend, runner.capture_cli = orig_sel, orig_cap
+
+        self.assertEqual(rr.stdout, full_stream)
+        self.assertIn("--json-schema", seen["argv"])
+        self.assertEqual(seen["argv"][seen["argv"].index("--json-schema") + 1], json.dumps(schema))
+        # The base argv (with its single --output-format json) is preserved, not rebuilt.
+        self.assertEqual(seen["argv"][:4], ["claude", "-p", "--output-format", "json"])
+        self.assertEqual(seen["kw"]["input"], "p")
+
+    def test_retries_transient_then_succeeds(self) -> None:
+        import ccxbench.runner as runner
+        from spawnllm.backends.base import Invocation
+        from spawnllm.proc import RunResult
+        from spawnllm import Response
+
+        outcomes = [RunResult("", "Overloaded (529)", 1), RunResult("done", "", 0)]
+
+        class FakeBackend:
+            def invocation(self, spec):
+                return Invocation(["claude", "-p"], spec.prompt)
+
+            def env(self):
+                return {}
+
+            def to_response(self, raw, *, returncode, stderr, spec):
+                return Response(error="Overloaded (529)" if returncode else None, result=raw)
+
+        def fake_capture(argv, **kw):
+            return outcomes.pop(0)
+
+        orig_sel, orig_cap, orig_sleep = (
+            runner.spawnllm.select_backend,
+            runner.capture_cli,
+            runner.time.sleep,
+        )
+        runner.spawnllm.select_backend = lambda: FakeBackend()
+        runner.capture_cli = fake_capture
+        runner.time.sleep = lambda _s: None
+        try:
+            rr = runner.drive(self._spec(), {})
+        finally:
+            (runner.spawnllm.select_backend, runner.capture_cli, runner.time.sleep) = (
+                orig_sel,
+                orig_cap,
+                orig_sleep,
+            )
+
+        self.assertEqual(rr.stdout, "done")
+        self.assertEqual(rr.returncode, 0)
+        self.assertEqual(outcomes, [])
+
+
 if __name__ == "__main__":
     unittest.main()

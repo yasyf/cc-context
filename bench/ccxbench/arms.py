@@ -122,7 +122,6 @@ def build_run_spec(cfg: Config, task: Task, arm: str, model: str, workdir: Path)
     return RunSpec(
         prompt=task.prompt,
         model=model,
-        schema=json.dumps(task.schema),
         cwd=str(workdir),
         env=env,
         timeout=cfg.timeout_s,
