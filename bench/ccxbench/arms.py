@@ -1,8 +1,8 @@
 """Build the per-(task, arm) workdir and the `claude -p` invocation.
 
-Both arms run in the default Claude config dir (auth is keychain-bound), in a fresh
-copy of the fixture repo, with ambient MCP stripped (--strict-mcp-config) and the same
-disallowed tools. The ONLY differences are the ccx arm's facade MCP, its `ccx` on PATH,
+Both arms run in the default Claude config dir (auth is keychain-bound), in a fresh copy of
+the fixture repo, with ambient settings and MCP stripped via spawnllm's flag-only isolation
+(--setting-sources "" + --strict-mcp-config) and the same disallowed tools. The ONLY differences are the ccx arm's facade MCP, its `ccx` on PATH,
 the ccx ladder appended to the system prompt, and — when the guard pack loads — the
 capt-hook PreToolUse guards. Guard availability is probed once; if the pack fails to
 load it is reported, not silently assumed active.
@@ -101,10 +101,23 @@ def mcp_config(cfg: Config, arm: str) -> str:
     return json.dumps({"mcpServers": servers})
 
 
-def guard_settings(cfg: Config) -> str:
-    return json.dumps(
-        {"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": guard_command(cfg)}]}]}}
-    )
+def run_settings(cfg: Config, with_guards: bool) -> str:
+    """Command-line --settings JSON for one spawned run.
+
+    The spawned session's cwd is a `.work/` checkout INSIDE this repo, so Claude Code loads the
+    repo's project `.claude/settings.json` (and the user settings), whose env sets
+    ENABLE_TOOL_SEARCH=true — which re-defers the cc-context MCP tools behind a ToolSearch
+    discovery turn, an asymmetric tax on the ccx arm that RunSpec.env alone cannot beat. A
+    command-line --settings env block outranks project and user settings, so force tool-search
+    off here for both arms (a no-op for the MCP-less baseline). The ccx arm additionally carries
+    the capt-hook guard PreToolUse hook.
+    """
+    settings: dict = {"env": {"ENABLE_TOOL_SEARCH": "false"}}
+    if with_guards:
+        settings["hooks"] = {
+            "PreToolUse": [{"hooks": [{"type": "command", "command": guard_command(cfg)}]}]
+        }
+    return json.dumps(settings)
 
 
 def build_run_spec(cfg: Config, task: Task, arm: str, model: str, workdir: Path) -> RunSpec:
@@ -115,13 +128,17 @@ def build_run_spec(cfg: Config, task: Task, arm: str, model: str, workdir: Path)
     ccx ladder appended to the system prompt, and — when the pack loads — the guard settings.
     """
     ccx = arm == "ccx"
-    env = None
+    # ENABLE_TOOL_SEARCH=false keeps the spawned session's tools eager: cc-context's MCP
+    # tools list up front instead of hiding behind a ToolSearch discovery turn. Set for both
+    # arms so the paired delta isolates ccx, not tool deferral; a no-op for the MCP-less baseline.
+    env: dict[str, str] = {"ENABLE_TOOL_SEARCH": "false"}
     if ccx:
-        env = {"PATH": f"{cfg.ccx_bin.parent}{os.pathsep}{os.environ.get('PATH', '')}"}
-    settings = guard_settings(cfg) if (ccx and guards_available(cfg)) else None
+        env["PATH"] = f"{cfg.ccx_bin.parent}{os.pathsep}{os.environ.get('PATH', '')}"
+    settings = run_settings(cfg, with_guards=ccx and guards_available(cfg))
     return RunSpec(
         prompt=task.prompt,
         model=model,
+        schema=task.schema,
         cwd=str(workdir),
         env=env,
         timeout=cfg.timeout_s,
@@ -133,7 +150,6 @@ def build_run_spec(cfg: Config, task: Task, arm: str, model: str, workdir: Path)
                 append_system_prompt=LADDER if ccx else BASELINE_CONTROL,
                 settings=settings,
                 disallowed_tools=tuple(cfg.disallowed_tools),
-                output_format="json",
             )
         },
     )

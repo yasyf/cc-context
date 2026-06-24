@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import shutil
 import sys
@@ -231,7 +232,7 @@ def cmd_run(cfg: Config, args: argparse.Namespace) -> int:
     runs = len(tasks) * len(cfg.models) * cfg.repeats * 2
     print(f"session {session_id}: {len(tasks)} tasks x {len(cfg.models)} models x {cfg.repeats} repeats x 2 arms = {runs} runs")
     print(f"budget cap: ${cfg.budget_usd:.2f}")
-    records = run_corpus(sess, tasks)
+    records = asyncio.run(run_corpus(sess, tasks))
     md = report.write_report(sess.jsonl_path, cfg.results_dir / session_id / "RESULTS.md")
     print(f"\nspent: ${sess.spent_usd:.4f} over {len(records)} runs")
     print(f"report: {cfg.results_dir / session_id / 'RESULTS.md'}")

@@ -1,26 +1,24 @@
 """Execute runs: one (task, arm, model, repeat) through real `claude -p`, recorded to JSONL.
 
-Each run is spawned by spawnllm (which owns transient-overload retry), parsed by
-cc-transcript into a PrintResult, then given an integrity verdict, a cost cross-check, and
-a deterministic grade. Records are appended to a JSONL file and the raw payload is saved for
-audit. The budget is a soft ceiling checked before each run; spend accrues after each run, so
-the next run is admitted only while the running total is under the cap.
+Each run is spawned by spawnllm (which owns transient-overload retry and resolves every
+operational failure into a `Response.error` rather than raising), parsed by cc-transcript into
+a PrintResult, then given an integrity verdict, a cost cross-check, and a deterministic grade.
+Records are appended to a JSONL file and the raw payload is saved for audit. The budget is a
+soft ceiling checked before each run; spend accrues after each run, so the next run is admitted
+only while the running total is under the cap.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
-import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import spawnllm
 from cc_transcript import PrintResult, parse_print_result
-from spawnllm.proc import RunResult, capture_cli
-from spawnllm.structured import backoff, is_transient
 
 from . import arms, cost, grade, integrity
 from .config import Config
@@ -135,31 +133,13 @@ def error_record(cfg: Config, task: Task, arm: str, model: str, repeat: int, rea
     }
 
 
-def drive(spec: spawnllm.RunSpec, schema: dict) -> RunResult:
-    """Run `spec` through the claude backend, keeping the full raw stdout the harness parses.
+async def run_one(sess: Session, task: Task, arm: str, model: str, repeat: int) -> dict:
+    """Run one (task, arm, model, repeat). Returns the record; raises BudgetExceeded first.
 
-    spawnllm's own `run_sync` collapses the run to a `Response` that exposes only the
-    extracted `result` text, dropping the ~38 KB JSON stream array `parse_print_result`
-    needs plus the returncode/stderr the error record reports. So we reuse the backend's
-    invocation (its locked-down `claude -p` flag policy) and `capture_cli` directly, inject
-    `--json-schema` for the task's plain JSON-Schema dict (no pydantic model exists), and
-    keep spawnllm's transient-overload retry by feeding `to_response` into `is_transient`.
+    `spawnllm.run` owns transient retry and resolves every operational failure — nonzero exit,
+    error envelope, timeout, validation — into `resp.error`, never a raise. The full raw event
+    stream `parse_print_result` needs lives in `resp.output.raw` on success and failure alike.
     """
-    backend = spawnllm.select_backend()
-    inv = backend.invocation(spec)
-    argv = [*inv.argv, "--json-schema", json.dumps(schema)]
-    env = os.environ | backend.env() | (spec.env or {})
-    for attempt in range(spec.max_attempts):
-        rr = capture_cli(argv, input=inv.stdin, env=env, cwd=spec.cwd, timeout=spec.timeout)
-        if not is_transient(backend.to_response(rr.stdout, returncode=rr.returncode, stderr=rr.stderr, spec=spec)):
-            return rr
-        if attempt + 1 < spec.max_attempts:
-            time.sleep(backoff(attempt))
-    return rr
-
-
-def run_one(sess: Session, task: Task, arm: str, model: str, repeat: int) -> dict:
-    """Run one (task, arm, model, repeat). Returns the record; raises BudgetExceeded first."""
     cfg = sess.cfg
     if sess.spent_usd >= cfg.budget_usd:
         raise BudgetExceeded(f"spent ${sess.spent_usd:.4f} >= budget ${cfg.budget_usd:.2f}")
@@ -167,18 +147,16 @@ def run_one(sess: Session, task: Task, arm: str, model: str, repeat: int) -> dic
     run_id = f"{task.id}__{arm}__{model}__r{repeat}"
     workdir = arms.prepare_workdir(cfg, task, arm, run_id)
     spec = arms.build_run_spec(cfg, task, arm, model, workdir)
+    resp = await spawnllm.run(spec)
+
+    (sess.runs_dir / "raw" / f"{run_id}.json").write_text(resp.output.raw or "")
+    if resp.error is not None and not resp.output.raw.strip():
+        return error_record(cfg, task, arm, model, repeat, resp.error.msg)
+    if not resp.output.raw.strip():
+        return error_record(cfg, task, arm, model, repeat, "empty output")
 
     try:
-        rr = drive(spec, task.schema)
-    except subprocess.TimeoutExpired:
-        return error_record(cfg, task, arm, model, repeat, f"timeout after {cfg.timeout_s}s")
-
-    (sess.runs_dir / "raw" / f"{run_id}.json").write_text(rr.stdout or rr.stderr or "")
-    if not rr.stdout.strip():
-        return error_record(cfg, task, arm, model, repeat, f"empty stdout (rc={rr.returncode}): {rr.stderr[:200]}")
-
-    try:
-        pr = parse_print_result(rr.stdout.encode())
+        pr = parse_print_result(resp.output.raw.encode())
     except (ValueError, KeyError, StopIteration) as e:
         return error_record(cfg, task, arm, model, repeat, f"parse failed: {e}")
 
@@ -191,20 +169,23 @@ def run_one(sess: Session, task: Task, arm: str, model: str, repeat: int) -> dic
     return record
 
 
-def run_corpus(
+async def run_corpus(
     sess: Session,
     tasks: list[Task],
     *,
     interleave: bool = True,
 ) -> list[dict]:
-    """Run every (task, arm, model, repeat). Arms interleave so neither rides the other's cache."""
+    """Run every (task, arm, model, repeat) round-robin: all tasks once per (model, repeat)
+    before any task repeats, so a budget halt samples every task evenly instead of clipping
+    late-alphabet tasks. Arms still interleave per repeat so neither rides the other's cache,
+    and each task's (baseline, ccx) pair stays adjacent for the paired report."""
     cfg = sess.cfg
     sess.setup()
     plan: list[tuple[Task, str, str, int]] = []
-    for task in tasks:
-        for model in cfg.models:
-            for repeat in range(cfg.repeats):
-                order = ("baseline", "ccx") if (repeat % 2 == 0 or not interleave) else ("ccx", "baseline")
+    for model in cfg.models:
+        for repeat in range(cfg.repeats):
+            order = ("baseline", "ccx") if (repeat % 2 == 0 or not interleave) else ("ccx", "baseline")
+            for task in tasks:
                 for arm in order:
                     plan.append((task, arm, model, repeat))
 
@@ -212,7 +193,7 @@ def run_corpus(
     with sess.jsonl_path.open("w") as out:
         for task, arm, model, repeat in plan:
             try:
-                rec = run_one(sess, task, arm, model, repeat)
+                rec = await run_one(sess, task, arm, model, repeat)
             except BudgetExceeded as e:
                 out.write(json.dumps({"halted": str(e)}) + "\n")
                 break

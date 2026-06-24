@@ -5,19 +5,25 @@ Run: cd bench && python -m unittest discover -s tests
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
 import json
+import re
+import tempfile
 import unittest
 from pathlib import Path
 
 from cc_transcript import parse_print_result
 from cc_transcript.cost import cost_of
 
-from ccxbench import integrity
+from ccxbench import integrity, taskgen
+from ccxbench.__main__ import recompute_lc_predicate
 from ccxbench.config import load
 from ccxbench.cost import crosscheck
 from ccxbench.grade import grade, synthetic_result
 from ccxbench.graders import GradeContext, grade_file_line, grade_keywords, grade_set_match
-from ccxbench.report import paired_task_ids, verdict
+from ccxbench.report import acc_ci_straddles_zero, paired_task_ids, render, verdict
+from ccxbench.runner import Session, run_corpus
 from ccxbench.types import Grader, Task
 
 DATA = Path(__file__).resolve().parent / "data"
@@ -242,108 +248,328 @@ class TestAnswerKeyAndPairing(unittest.TestCase):
         self.assertEqual(dropped, 1)
 
     def test_verdict_logic(self) -> None:
-        self.assertIn("inconclusive", verdict(0.0, float("nan")))
-        self.assertIn("rtk trap", verdict(-2.0, -10.0))
-        self.assertIn("equal-or-better", verdict(0.0, -10.0))
-        self.assertIn("noise floor", verdict(-0.5, -10.0))
-        self.assertIn("not cheaper", verdict(0.0, 5.0))
+        # CI that does NOT straddle 0 (accuracy difference is real) keeps the original verdicts.
+        wide_pos = (0.5, 3.0)
+        wide_neg = (-3.0, -0.5)
+        self.assertIn("inconclusive", verdict(0.0, float("nan"), wide_pos))
+        self.assertIn("rtk trap", verdict(-2.0, -10.0, wide_neg))
+        self.assertIn("equal-or-better", verdict(2.0, -10.0, wide_pos))
+        self.assertIn("noise floor", verdict(-0.5, -10.0, (-0.9, -0.1)))
+        self.assertIn("not cheaper", verdict(2.0, 5.0, wide_pos))
 
 
-class TestDrive(unittest.TestCase):
-    """drive must inject the task's JSON-Schema dict as --json-schema, hand back the FULL raw
-    stdout (not spawnllm's collapsed result text), and reuse spawnllm's transient retry."""
+def stub_task(tid: str) -> Task:
+    return Task(tid, "navigation", "fixture", "p", {}, Grader("file_line"), {"file": "a", "line": 1})
 
-    def _spec(self):
+
+class TestRoundRobinOrder(unittest.TestCase):
+    """run_corpus must visit every task once per (model, repeat) before any task repeats,
+    keeping the per-repeat arm interleave and the adjacent (baseline, ccx) pair per task."""
+
+    def _plan(self, task_ids: list[str], models: list[str], repeats: int) -> list[tuple]:
+        cfg = load()
+        recorded: list[tuple] = []
+
+        async def fake_run_one(sess, task, arm, model, repeat):
+            recorded.append((task.id, arm, model, repeat))
+            return {"task_id": task.id, "arm": arm, "model": model, "repeat": repeat}
+
+        import ccxbench.runner as runner
+
+        orig = runner.run_one
+        runner.run_one = fake_run_one
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg2 = dataclasses.replace(
+                    cfg, models=tuple(models), repeats=repeats, results_dir=Path(tmp)
+                )
+                sess = Session(cfg=cfg2, session_id="t")
+                asyncio.run(run_corpus(sess, [stub_task(t) for t in task_ids]))
+        finally:
+            runner.run_one = orig
+        return recorded
+
+    def test_all_tasks_once_per_repeat_before_repeating(self) -> None:
+        plan = self._plan(["a", "b", "c"], ["m"], repeats=2)
+        # 3 tasks x 2 arms x 2 repeats = 12 runs.
+        self.assertEqual(len(plan), 12)
+        # First 6 runs (repeat 0) must cover every task once before repeat 1 starts.
+        repeat0_tasks = [tid for (tid, _arm, _m, rep) in plan if rep == 0]
+        self.assertEqual(sorted(set(repeat0_tasks)), ["a", "b", "c"])
+        # The first time we see repeat==1 must come AFTER all repeat==0 runs.
+        first_r1 = next(i for i, (_t, _a, _m, rep) in enumerate(plan) if rep == 1)
+        self.assertTrue(all(plan[i][3] == 0 for i in range(first_r1)))
+        # Task order within a repeat is the corpus order, each task twice (its two arms).
+        self.assertEqual([t for (t, _a, _m, rep) in plan if rep == 0], ["a", "a", "b", "b", "c", "c"])
+
+    def test_arm_interleave_preserved(self) -> None:
+        plan = self._plan(["a", "b"], ["m"], repeats=2)
+        # repeat 0 leads with baseline, repeat 1 leads with ccx (cache-fairness flip).
+        r0 = [(t, a) for (t, a, _m, rep) in plan if rep == 0]
+        r1 = [(t, a) for (t, a, _m, rep) in plan if rep == 1]
+        self.assertEqual(r0, [("a", "baseline"), ("a", "ccx"), ("b", "baseline"), ("b", "ccx")])
+        self.assertEqual(r1, [("a", "ccx"), ("a", "baseline"), ("b", "ccx"), ("b", "baseline")])
+
+    def test_paired_arms_adjacent_per_task(self) -> None:
+        plan = self._plan(["a", "b", "c"], ["m"], repeats=1)
+        # Each task's baseline and ccx runs must sit next to each other.
+        for i in range(0, len(plan), 2):
+            self.assertEqual(plan[i][0], plan[i + 1][0])
+            self.assertEqual({plan[i][1], plan[i + 1][1]}, {"baseline", "ccx"})
+
+
+class TestAccuracyTiedVerdict(unittest.TestCase):
+    """When the accuracy CI straddles 0, a cheaper cost delta is demoted to an efficiency
+    note and a pure-overhead delta is never labeled a win."""
+
+    def test_straddle_detection(self) -> None:
+        self.assertTrue(acc_ci_straddles_zero((-1.0, 2.0)))
+        self.assertTrue(acc_ci_straddles_zero((0.0, 2.0)))
+        self.assertTrue(acc_ci_straddles_zero((-2.0, 0.0)))
+        self.assertFalse(acc_ci_straddles_zero((0.5, 2.0)))
+        self.assertFalse(acc_ci_straddles_zero((-2.0, -0.5)))
+
+    def test_cheaper_but_tied_is_efficiency_not_win(self) -> None:
+        v = verdict(0.0, -20.0, (-2.0, 2.0))
+        self.assertIn("efficiency, not a per-correct win", v)
+        self.assertNotIn("✅", v)
+
+    def test_overhead_and_tied_is_not_a_win(self) -> None:
+        v = verdict(0.0, 12.0, (-2.0, 2.0))
+        self.assertIn("not cheaper", v)
+        self.assertIn("pure overhead", v)
+        self.assertNotIn("✅", v)
+
+    def test_real_accuracy_gain_keeps_win(self) -> None:
+        v = verdict(3.0, -20.0, (0.5, 5.0))
+        self.assertIn("✅", v)
+        self.assertNotIn("efficiency, not a per-correct win", v)
+
+
+class TestIntegrityExclusion(unittest.TestCase):
+    """Mislabeled runs (integrity.ok == False) are dropped from the paired aggregate and the
+    headline, but still listed (and counted) in the integrity section."""
+
+    def _rec(self, tid: str, arm: str, correct: bool, cost: float, ok: bool) -> dict:
+        return {
+            "task_id": tid,
+            "category": "navigation",
+            "arm": arm,
+            "model": "m",
+            "repeat": 0,
+            "correct": correct,
+            "total_cost_usd": cost,
+            "num_turns": 1,
+            "cost_ok": True,
+            "usage": {"input": 1, "output": 1, "cache_read": 0, "cache_create_5m": 0, "cache_create_1h": 0},
+            "integrity": {"ok": ok, "note": "mislabeled" if not ok else ""},
+        }
+
+    def test_paired_task_ids_drops_mislabeled(self) -> None:
+        recs = [
+            self._rec("a", "baseline", True, 0.01, ok=True),
+            self._rec("a", "ccx", True, 0.01, ok=True),
+            self._rec("b", "baseline", True, 0.01, ok=True),
+            self._rec("b", "ccx", True, 0.01, ok=False),  # ccx side mislabeled
+        ]
+        ok_records = [r for r in recs if r["integrity"]["ok"]]
+        both, _dropped = paired_task_ids(ok_records, "m")
+        self.assertEqual(both, ["a"])  # b excluded: its only ccx run was mislabeled
+
+    def test_render_excludes_mislabeled_and_reports_count(self) -> None:
+        recs = [
+            self._rec("a", "baseline", True, 0.01, ok=True),
+            self._rec("a", "ccx", True, 0.02, ok=True),
+            self._rec("b", "baseline", True, 0.01, ok=True),
+            self._rec("b", "ccx", False, 0.50, ok=False),  # mislabeled, would skew cost
+        ]
+        md = render(recs, "sess")
+        self.assertIn("1 mislabeled run(s) excluded", md)
+        # The mislabeled run is still listed in the integrity section.
+        self.assertIn("integrity failures (arm mislabeled): **1**", md)
+        self.assertIn("`b` [ccx]", md)
+
+
+class TestLargeContextBuilder(unittest.TestCase):
+    """Every gold member of a large_context task is a real declaration in its fixture file AND
+    satisfies the task's predicate (recomputed independently, mirroring verify_oss), and the
+    naive grep a frugal baseline would run does NOT isolate the gold — the tasks are not
+    grep-defeatable."""
+
+    def test_gold_members_present_and_predicate_holds(self) -> None:
+        cfg = load()
+        tasks = taskgen.large_context_tasks()
+        self.assertEqual(
+            [t.id for t in tasks],
+            ["click-enum-get-command-classes", "mux-enum-addmatcher-callers", "mux-enum-matcher-impls"],
+        )
+        for t in tasks:
+            self.assertEqual(t.category, "large_context")
+            field = t.grader.spec["field"]
+            gold = t.gold[field]
+            self.assertEqual(len(gold), len(set(gold)), f"{t.id} gold has duplicates")
+            for rel, decl in t.gold["verify_decls"]:
+                path = cfg.fixtures_root / t.repo / rel
+                self.assertTrue(path.exists(), f"{t.id}: {rel} missing")
+                self.assertIn(decl, path.read_text(), f"{t.id}: decl {decl!r} absent from {rel}")
+            for member in gold:
+                pat = re.compile(rf"\b{re.escape(member)}\b")
+                self.assertTrue(
+                    any(pat.search(decl) for _rel, decl in t.gold["verify_decls"]),
+                    f"{t.id}: gold member {member!r} has no decl",
+                )
+            # Independently recompute the predicate from the fixtures and assert it equals gold.
+            recomputed = recompute_lc_predicate(cfg.fixtures_root / t.repo, t.gold["lc_predicate"], t.repo)
+            self.assertEqual(
+                {m.lower() for m in recomputed},
+                {m.lower() for m in gold},
+                f"{t.id}: predicate recompute {sorted(recomputed)} != gold {sorted(gold)}",
+            )
+
+    def test_builder_gold_grades_correct(self) -> None:
+        for t in taskgen.large_context_tasks():
+            field = t.grader.spec["field"]
+            ctx = GradeContext("", None)
+            good = grade_set_match({field: list(t.gold[field])}, t.gold, t.grader.spec, ctx)
+            self.assertTrue(good.correct, f"{t.id}: gold answer graded incorrect: {good.detail}")
+            bad = grade_set_match({field: ["NotAReal"]}, t.gold, t.grader.spec, ctx)
+            self.assertFalse(bad.correct, f"{t.id}: wrong answer graded correct")
+            # An incomplete answer (gold minus one member) must also grade incorrect.
+            partial = list(t.gold[field])[:-1]
+            incomplete = grade_set_match({field: partial}, t.gold, t.grader.spec, ctx)
+            self.assertFalse(incomplete.correct, f"{t.id}: incomplete answer graded correct")
+
+    def test_naive_grep_does_not_equal_gold(self) -> None:
+        """Encode un-shortcuttability as a regression: the obvious one-liner a frugal baseline
+        runs over-/under-matches, so its result is NOT the gold set."""
+        cfg = load()
+        tasks = {t.id: t for t in taskgen.large_context_tasks()}
+
+        # Flavor 1: `grep '^class '` over core.py yields ALL public classes, not just the 3
+        # that define get_command.
+        t1 = tasks["click-enum-get-command-classes"]
+        core = (cfg.fixtures_root / "click" / "src/click/core.py").read_text()
+        grep_classes = {
+            m.group(1)
+            for line in core.splitlines()
+            if (m := re.match(r"class (\w+)", line)) and not m.group(1).startswith("_")
+        }
+        gold1 = set(t1.gold["classes"])
+        self.assertNotEqual(grep_classes, gold1)
+        self.assertTrue(gold1 < grep_classes, "gold must be a strict subset the grep over-matches")
+
+        # Flavor 3: a frugal `grep matcher` scrapes interface/field/helper tokens, not the
+        # implementer type names — Go interfaces are implicit, so it both misses implementers
+        # whose name lacks "matcher" (Route, Router, routeRegexp) and over-includes non-types
+        # (addMatcher, matchers, the interface itself).
+        t3 = tasks["mux-enum-matcher-impls"]
+        muxdir = cfg.fixtures_root / "gorilla-mux"
+        grep_matcher_tokens = set()
+        for go in muxdir.glob("*.go"):
+            if go.name.endswith("_test.go"):
+                continue
+            grep_matcher_tokens |= set(re.findall(r"\b(\w*[Mm]atcher\w*)\b", go.read_text()))
+        gold3 = set(t3.gold["types"])
+        self.assertNotEqual(grep_matcher_tokens, gold3)
+        self.assertTrue(gold3 - grep_matcher_tokens, "grep `matcher` must miss some implementers")
+        self.assertTrue(grep_matcher_tokens - gold3, "grep `matcher` must over-match non-types")
+
+
+class TestStructuredRun(unittest.TestCase):
+    """spawnllm.run over a RunSpec.schema must inject the task's JSON-Schema dict as
+    --json-schema, expose the FULL raw event stream on resp.output.raw (success and failure
+    alike), and retry a transient failure before resolving — faked at the acapture_cli seam,
+    not a real CLI."""
+
+    def _spec(self, schema: dict | None = None):
         from spawnllm import ClaudeConfig, RunSpec
 
         return RunSpec(
             prompt="p",
             model="sonnet",
+            schema=schema,
             max_attempts=3,
             timeout=5,
-            provider_configs={"claude": ClaudeConfig(output_format="json")},
+            provider_configs={"claude": ClaudeConfig()},
         )
 
-    def test_injects_schema_and_returns_full_stdout(self) -> None:
-        import ccxbench.runner as runner
-        from spawnllm.backends.base import Invocation
+    def test_injects_schema_and_keeps_full_output_raw(self) -> None:
+        import spawnllm
+        from spawnllm.backends import base
+        from spawnllm.backends.claude import ClaudeCliBackend
         from spawnllm.proc import RunResult
-        from spawnllm import Response
 
         schema = {"type": "object", "properties": {"file": {"type": "string"}}}
         full_stream = json.dumps([result_msg(structured_output={"file": "a"})])
         seen: dict = {}
 
-        class FakeBackend:
-            def invocation(self, spec):
-                return Invocation(["claude", "-p", "--output-format", "json"], spec.prompt)
-
-            def env(self):
-                return {}
-
-            def to_response(self, raw, *, returncode, stderr, spec):
-                return Response(error=None, result="ok")
-
-        def fake_capture(argv, **kw):
+        async def fake_acapture(argv, **kw):
             seen["argv"], seen["kw"] = argv, kw
             return RunResult(full_stream, "", 0)
 
-        orig_sel, orig_cap = runner.spawnllm.select_backend, runner.capture_cli
-        runner.spawnllm.select_backend = lambda: FakeBackend()
-        runner.capture_cli = fake_capture
+        orig = base.acapture_cli
+        base.acapture_cli = fake_acapture
         try:
-            rr = runner.drive(self._spec(), schema)
+            resp = asyncio.run(spawnllm.run(self._spec(schema), backend=ClaudeCliBackend()))
         finally:
-            runner.spawnllm.select_backend, runner.capture_cli = orig_sel, orig_cap
+            base.acapture_cli = orig
 
-        self.assertEqual(rr.stdout, full_stream)
+        # The full event-stream array (what parse_print_result needs) survives on output.raw,
+        # not the collapsed result text.
+        self.assertEqual(resp.output.raw, full_stream)
+        self.assertIsNone(resp.error)
         self.assertIn("--json-schema", seen["argv"])
         self.assertEqual(seen["argv"][seen["argv"].index("--json-schema") + 1], json.dumps(schema))
-        # The base argv (with its single --output-format json) is preserved, not rebuilt.
-        self.assertEqual(seen["argv"][:4], ["claude", "-p", "--output-format", "json"])
+        # A schema run forces --output-format json so the result envelope is machine-readable.
+        self.assertIn("--output-format", seen["argv"])
+        self.assertEqual(seen["argv"][seen["argv"].index("--output-format") + 1], "json")
         self.assertEqual(seen["kw"]["input"], "p")
 
     def test_retries_transient_then_succeeds(self) -> None:
-        import ccxbench.runner as runner
-        from spawnllm.backends.base import Invocation
+        import sys
+
+        import spawnllm
+        from spawnllm.backends import base
+        from spawnllm.backends.claude import ClaudeCliBackend
         from spawnllm.proc import RunResult
-        from spawnllm import Response
 
-        outcomes = [RunResult("", "Overloaded (529)", 1), RunResult("done", "", 0)]
+        run_mod = sys.modules["spawnllm.run"]
+        done = json.dumps([result_msg()])
+        outcomes = [RunResult("", "Overloaded (529)", 1), RunResult(done, "", 0)]
 
-        class FakeBackend:
-            def invocation(self, spec):
-                return Invocation(["claude", "-p"], spec.prompt)
-
-            def env(self):
-                return {}
-
-            def to_response(self, raw, *, returncode, stderr, spec):
-                return Response(error="Overloaded (529)" if returncode else None, result=raw)
-
-        def fake_capture(argv, **kw):
+        async def fake_acapture(argv, **kw):
             return outcomes.pop(0)
 
-        orig_sel, orig_cap, orig_sleep = (
-            runner.spawnllm.select_backend,
-            runner.capture_cli,
-            runner.time.sleep,
-        )
-        runner.spawnllm.select_backend = lambda: FakeBackend()
-        runner.capture_cli = fake_capture
-        runner.time.sleep = lambda _s: None
+        orig_cap, orig_backoff = base.acapture_cli, run_mod.backoff
+        base.acapture_cli = fake_acapture
+        run_mod.backoff = lambda _attempt: 0.0
         try:
-            rr = runner.drive(self._spec(), {})
+            resp = asyncio.run(spawnllm.run(self._spec(), backend=ClaudeCliBackend()))
         finally:
-            (runner.spawnllm.select_backend, runner.capture_cli, runner.time.sleep) = (
-                orig_sel,
-                orig_cap,
-                orig_sleep,
-            )
+            base.acapture_cli, run_mod.backoff = orig_cap, orig_backoff
 
-        self.assertEqual(rr.stdout, "done")
-        self.assertEqual(rr.returncode, 0)
+        self.assertIsNone(resp.error)
+        self.assertEqual(resp.output.raw, done)
         self.assertEqual(outcomes, [])
+
+    def test_timeout_resolves_to_error_not_raise(self) -> None:
+        import spawnllm
+        from spawnllm.backends import base
+        from spawnllm.backends.claude import ClaudeCliBackend
+
+        async def fake_acapture(argv, **kw):
+            raise TimeoutError("slow")
+
+        orig = base.acapture_cli
+        base.acapture_cli = fake_acapture
+        try:
+            resp = asyncio.run(spawnllm.run(self._spec(), backend=ClaudeCliBackend()))
+        finally:
+            base.acapture_cli = orig
+
+        self.assertIsNone(resp.result)
+        self.assertIsNotNone(resp.error)
+        self.assertIsInstance(resp.error.ex, TimeoutError)
 
 
 if __name__ == "__main__":
