@@ -5,6 +5,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/grok"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/router"
 )
@@ -31,6 +32,12 @@ func dispatchOp(cmd *cobra.Command, op backend.Op, a backend.Args) (string, erro
 	bin, argv, err := router.For(op).CLIArgv(cmd.Context(), op, a)
 	if err != nil {
 		return "", err
+	}
+	if op == backend.OpDiff {
+		return render.RunDiffCLI(cmd.Context(), bin, argv, a.Source, a.Budget)
+	}
+	if op == backend.OpSymbol {
+		return grok.Run(cmd.Context(), bin, argv, a)
 	}
 	out, err := render.RunCLI(cmd.Context(), bin, argv)
 	if err != nil {

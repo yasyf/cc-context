@@ -68,6 +68,23 @@ func ResolveDiffSource(ctx context.Context, dir, source, scope string) (translat
 	}
 }
 
+// RawHunkArgv builds the `git diff`/`jj diff` argv that prints one file's raw textual hunk against source.
+func RawHunkArgv(ctx context.Context, dir, source, file string) ([]string, error) {
+	translated, useTilth, _, err := ResolveDiffSource(ctx, dir, source, "")
+	if err != nil {
+		return nil, fmt.Errorf("resolve diff source for raw hunk: %w", err)
+	}
+	if !useTilth {
+		return []string{"jj", "diff", "--git", "-r", source, file}, nil
+	}
+	argv := []string{"git", "-C", dir, "diff"}
+	// git has no "uncommitted"/empty ref, so a working-tree diff must omit the ref.
+	if ref := translated; ref != "" && ref != "uncommitted" {
+		argv = append(argv, ref)
+	}
+	return append(argv, "--", file), nil
+}
+
 // branchLookup resolves the repository's default branch name. It is injectable
 // so the pure translation matrix can be tested without shelling out.
 type branchLookup func(ctx context.Context, dir string) (string, error)

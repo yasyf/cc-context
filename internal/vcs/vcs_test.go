@@ -169,6 +169,54 @@ func TestJJFallbackArgv(t *testing.T) {
 	}
 }
 
+func TestRawHunkArgv(t *testing.T) {
+	root := t.TempDir()
+	gitRepo := filepath.Join(root, "git")
+	mustMkdir(t, filepath.Join(gitRepo, ".git"))
+	jjRepo := filepath.Join(root, "jj")
+	mustMkdir(t, filepath.Join(jjRepo, ".jj"))
+
+	tests := []struct {
+		id     string
+		dir    string
+		source string
+		file   string
+		want   []string
+	}{
+		{
+			id: "git working tree omits the ref", dir: gitRepo, source: "uncommitted", file: "a.go",
+			want: []string{"git", "-C", gitRepo, "diff", "--", "a.go"},
+		},
+		{
+			id: "git empty source omits the ref", dir: gitRepo, source: "", file: "a.go",
+			want: []string{"git", "-C", gitRepo, "diff", "--", "a.go"},
+		},
+		{
+			id: "git ref passes through", dir: gitRepo, source: "HEAD~1", file: "sub/b.go",
+			want: []string{"git", "-C", gitRepo, "diff", "HEAD~1", "--", "sub/b.go"},
+		},
+		{
+			id: "jj @- maps to git HEAD", dir: jjRepo, source: "@-", file: "a.go",
+			want: []string{"git", "-C", jjRepo, "diff", "HEAD", "--", "a.go"},
+		},
+		{
+			id: "jj-only revset falls back to jj diff", dir: jjRepo, source: "::@", file: "a.go",
+			want: []string{"jj", "diff", "--git", "-r", "::@", "a.go"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			got, err := RawHunkArgv(context.Background(), tt.dir, tt.source, tt.file)
+			if err != nil {
+				t.Fatalf("RawHunkArgv(%q, %q) err: %v", tt.dir, tt.source, err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("RawHunkArgv = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func mustMkdir(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o750); err != nil {

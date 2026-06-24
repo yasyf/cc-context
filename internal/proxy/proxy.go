@@ -14,6 +14,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/grok"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/router"
 	"github.com/yasyf/cc-context/internal/version"
@@ -50,7 +51,13 @@ func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string
 	switch op {
 	case backend.OpStructural, backend.OpReplace, backend.OpStructOutline:
 		return astgrep.Run(ctx, op, a)
-	case backend.OpDiff, backend.OpOverview:
+	case backend.OpDiff:
+		bin, argv, err := b.CLIArgv(ctx, op, a)
+		if err != nil {
+			return "", err
+		}
+		return render.RunDiffCLI(ctx, bin, argv, a.Source, a.Budget)
+	case backend.OpOverview:
 		bin, argv, err := b.CLIArgv(ctx, op, a)
 		if err != nil {
 			return "", err
@@ -79,6 +86,10 @@ func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string
 
 	text := textOf(res)
 	if res.IsError {
+		// On an MCP grok miss, recover via the same ast-grep fallback the CLI uses.
+		if op == backend.OpSymbol && grok.IsNotFoundText(text) {
+			return grok.FallbackTypeDecl(ctx, a, fmt.Errorf("proxy: tool %q failed: %s", tool, text))
+		}
 		return "", fmt.Errorf("proxy: tool %q failed: %s", tool, text)
 	}
 	return render.Cap(text, a.Budget), nil
