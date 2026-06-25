@@ -154,14 +154,14 @@ func initGitRepo(t *testing.T) string {
 		{"config", "user.email", "t@t.t"},
 		{"config", "user.name", "t"},
 	} {
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // fixed git argv; dir is a test TempDir, args are literals
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
 	writeFile(t, filepath.Join(dir, "a.go"), "package main\n\n// Greet greets.\nfunc Greet() {}\n")
 	for _, args := range [][]string{{"add", "-A"}, {"commit", "-qm", "init"}} {
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // fixed git argv; dir is a test TempDir, args are literals
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
