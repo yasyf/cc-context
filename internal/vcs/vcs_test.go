@@ -57,13 +57,15 @@ func TestTranslateRevset(t *testing.T) {
 		{"uncommitted is working tree", "uncommitted", translationWorkingTree},
 		{"@- maps to HEAD", "@-", translationHEAD},
 		{"bare @ is jj-only", "@", translationJJOnly},
+		{"staged maps to staged", "staged", translationStaged},
 		{"trunk()..@ is default branch", "trunk()..@", translationDefaultBranch},
 		{"main..@ is default branch", "main..@", translationDefaultBranch},
 		{"master..@ is default branch", "master..@", translationDefaultBranch},
-		{"HEAD~1 passes through", "HEAD~1", translationPassthrough},
+		{"HEAD~1 is ref vs working", "HEAD~1", translationRefVsWorking},
 		{"git range passes through", "main..feat", translationPassthrough},
-		{"sha passes through", "a1b2c3d", translationPassthrough},
-		{"branch name passes through", "feature-x", translationPassthrough},
+		{"sha is ref vs working", "a1b2c3d", translationRefVsWorking},
+		{"branch name is ref vs working", "feature-x", translationRefVsWorking},
+		{"single ref is ref vs working", "feature", translationRefVsWorking},
 		{"dag range is jj-only", "::@", translationJJOnly},
 		{"ancestors operator is jj-only", "foo::bar", translationJJOnly},
 		{"union operator is jj-only", "main | feat", translationJJOnly},
@@ -83,58 +85,82 @@ func TestTranslateRevset(t *testing.T) {
 func TestResolveJJ(t *testing.T) {
 	const dir = "/repo"
 	branch := func(context.Context, string) (string, error) { return "develop", nil }
-	boom := func(context.Context, string) (string, error) { return "", errors.New("no origin") }
+	branchBoom := func(context.Context, string) (string, error) { return "", errors.New("no origin") }
+	commit := func(_ context.Context, _, rev string) (string, error) {
+		switch rev {
+		case "@":
+			return "AAAAAAA", nil
+		case "@-":
+			return "BBBBBBB", nil
+		default:
+			return "", errors.New("unexpected rev " + rev)
+		}
+	}
+	commitBoom := func(context.Context, string, string) (string, error) { return "", errors.New("no jj") }
 
 	tests := []struct {
 		id           string
 		source       string
 		scope        string
-		lookup       branchLookup
+		branch       branchLookup
+		commit       workingCopyLookup
 		wantTrans    string
 		wantUseTilth bool
 		wantArgv     []string
 		wantErr      bool
 	}{
 		{
-			id: "working tree", source: "", lookup: branch,
-			wantTrans: "", wantUseTilth: true,
+			id: "working tree is @-..@", source: "", branch: branch, commit: commit,
+			wantTrans: "BBBBBBB..AAAAAAA", wantUseTilth: true,
 		},
 		{
-			id: "uncommitted working tree", source: "uncommitted", lookup: branch,
-			wantTrans: "", wantUseTilth: true,
+			id: "uncommitted is @-..@", source: "uncommitted", branch: branch, commit: commit,
+			wantTrans: "BBBBBBB..AAAAAAA", wantUseTilth: true,
 		},
 		{
-			id: "@- resolves to HEAD", source: "@-", lookup: branch,
-			wantTrans: "HEAD", wantUseTilth: true,
+			id: "@- (working vs @-) is @-..@", source: "@-", branch: branch, commit: commit,
+			wantTrans: "BBBBBBB..AAAAAAA", wantUseTilth: true,
 		},
 		{
-			id: "default branch resolved", source: "trunk()..@", lookup: branch,
-			wantTrans: "develop", wantUseTilth: true,
+			id: "single ref is ref..@", source: "main", branch: branch, commit: commit,
+			wantTrans: "main..AAAAAAA", wantUseTilth: true,
 		},
 		{
-			id: "default branch lookup error", source: "main..@", lookup: boom,
+			id: "staged passes through to tilth", source: "staged", branch: branch, commit: commit,
+			wantTrans: "staged", wantUseTilth: true,
+		},
+		{
+			id: "default branch is branch..@", source: "trunk()..@", branch: branch, commit: commit,
+			wantTrans: "develop..AAAAAAA", wantUseTilth: true,
+		},
+		{
+			id: "committed range passes through", source: "main..feat", branch: branch, commit: commit,
+			wantTrans: "main..feat", wantUseTilth: true,
+		},
+		{
+			id: "default branch lookup error", source: "main..@", branch: branchBoom, commit: commit,
 			wantUseTilth: false, wantErr: true,
 		},
 		{
-			id: "git ref passthrough", source: "HEAD~2", lookup: branch,
-			wantTrans: "HEAD~2", wantUseTilth: true,
+			id: "working-copy lookup error", source: "", branch: branch, commit: commitBoom,
+			wantUseTilth: false, wantErr: true,
 		},
 		{
-			id: "bare @ falls back to jj", source: "@", lookup: branch,
+			id: "bare @ falls back to jj", source: "@", branch: branch, commit: commit,
 			wantUseTilth: false, wantArgv: []string{"jj", "diff", "--stat", "-r", "@"},
 		},
 		{
-			id: "dag revset falls back to jj", source: "::@", lookup: branch,
+			id: "dag revset falls back to jj", source: "::@", branch: branch, commit: commit,
 			wantUseTilth: false, wantArgv: []string{"jj", "diff", "--stat", "-r", "::@"},
 		},
 		{
-			id: "jj fallback threads scope as path filter", source: "@", scope: "internal", lookup: branch,
+			id: "jj fallback threads scope as path filter", source: "@", scope: "internal", branch: branch, commit: commit,
 			wantUseTilth: false, wantArgv: []string{"jj", "diff", "--stat", "-r", "@", "internal"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {
-			gotTrans, gotUse, gotArgv, err := resolveJJ(context.Background(), dir, tt.source, tt.scope, tt.lookup)
+			gotTrans, gotUse, gotArgv, err := resolveJJ(context.Background(), dir, tt.source, tt.scope, tt.branch, tt.commit)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("resolveJJ(%q) err = nil, want error", tt.source)
@@ -173,8 +199,6 @@ func TestRawHunkArgv(t *testing.T) {
 	root := t.TempDir()
 	gitRepo := filepath.Join(root, "git")
 	mustMkdir(t, filepath.Join(gitRepo, ".git"))
-	jjRepo := filepath.Join(root, "jj")
-	mustMkdir(t, filepath.Join(jjRepo, ".jj"))
 
 	tests := []struct {
 		id     string
@@ -195,14 +219,6 @@ func TestRawHunkArgv(t *testing.T) {
 			id: "git ref passes through", dir: gitRepo, source: "HEAD~1", file: "sub/b.go",
 			want: []string{"git", "-C", gitRepo, "diff", "HEAD~1", "--", "sub/b.go"},
 		},
-		{
-			id: "jj @- maps to git HEAD", dir: jjRepo, source: "@-", file: "a.go",
-			want: []string{"git", "-C", jjRepo, "diff", "HEAD", "--", "a.go"},
-		},
-		{
-			id: "jj-only revset falls back to jj diff", dir: jjRepo, source: "::@", file: "a.go",
-			want: []string{"jj", "diff", "--git", "-r", "::@", "a.go"},
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {
@@ -212,6 +228,43 @@ func TestRawHunkArgv(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("RawHunkArgv = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRawHunkArgvFor(t *testing.T) {
+	const dir = "/repo"
+	tests := []struct {
+		id          string
+		source      string
+		tilthSource string
+		useTilth    bool
+		file        string
+		want        []string
+	}{
+		{
+			id: "jj uncommitted range diffs the commit range", source: "uncommitted", tilthSource: "BBBBBBB..AAAAAAA", useTilth: true, file: "a.go",
+			want: []string{"git", "-C", dir, "diff", "BBBBBBB..AAAAAAA", "--", "a.go"},
+		},
+		{
+			id: "staged diffs against the index", source: "staged", tilthSource: stagedSource, useTilth: true, file: "a.go",
+			want: []string{"git", "-C", dir, "diff", "--cached", "--", "a.go"},
+		},
+		{
+			id: "jj ref vs working diffs ref..@", source: "main", tilthSource: "main..AAAAAAA", useTilth: true, file: "sub/b.go",
+			want: []string{"git", "-C", dir, "diff", "main..AAAAAAA", "--", "sub/b.go"},
+		},
+		{
+			id: "jj-only revset falls back to jj diff", source: "::@", tilthSource: "", useTilth: false, file: "a.go",
+			want: []string{"jj", "diff", "--git", "-r", "::@", "a.go"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			got := RawHunkArgvFor(dir, tt.source, tt.tilthSource, tt.useTilth, tt.file)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("RawHunkArgvFor = %v, want %v", got, tt.want)
 			}
 		})
 	}

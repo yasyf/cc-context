@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -54,7 +55,11 @@ func TestTilthCLIArgv(t *testing.T) {
 }
 
 func TestTilthCLIArgvDiff(t *testing.T) {
-	// vcs.ResolveDiffSource passes the source through and selects tilth.
+	// In a plain-git repo vcs.ResolveDiffSource passes the source through and
+	// selects tilth. Run inside a controlled git repo so the result does not
+	// depend on the ambient VCS (the cc-context tree is itself a colocated jj
+	// repo, where a single ref resolves to a ref..@ commit range instead).
+	t.Chdir(initGitRepoForDiff(t))
 	tl := Tilth{Bin: fakeTilth}
 	bin, argv, err := tl.CLIArgv(context.Background(), OpDiff, Args{Source: "HEAD~1", Scope: "pkg", Budget: 4})
 	if err != nil {
@@ -67,6 +72,15 @@ func TestTilthCLIArgvDiff(t *testing.T) {
 	if !reflect.DeepEqual(argv, want) {
 		t.Errorf("argv = %v, want %v", argv, want)
 	}
+}
+
+func initGitRepoForDiff(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o750); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	return dir
 }
 
 func TestTilthCLIArgvUnsupported(t *testing.T) {

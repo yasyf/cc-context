@@ -10,8 +10,11 @@ import (
 	"github.com/yasyf/cc-context/internal/vcs"
 )
 
-// diffFileHeader matches a tilth structural-diff per-file header, capturing the working-side path and symbol count.
-var diffFileHeader = regexp.MustCompile(`^## c/\S+ w/(\S+) \((\d+) symbols\)$`)
+// diffFileHeader matches a tilth structural-diff per-file header, capturing the
+// working-side path and symbol count. The optional "x/… w/" prefix covers
+// working-tree output (c/ and i/ index variants); a bare path covers
+// commit-range output, where tilth emits no c//w/ prefix.
+var diffFileHeader = regexp.MustCompile(`^## (?:[a-z]/\S+ w/)?(\S+) \((\d+) symbols\)$`)
 
 // RunDiffCLI runs the tilth diff, supplements any empty-hunk section with its raw jj-aware hunk, and caps to budget.
 func RunDiffCLI(ctx context.Context, bin string, argv []string, source string, budget int) (string, error) {
@@ -23,11 +26,12 @@ func RunDiffCLI(ctx context.Context, bin string, argv []string, source string, b
 	if err != nil {
 		return "", fmt.Errorf("resolve cwd: %w", err)
 	}
+	tilthSource, useTilth, _, err := vcs.ResolveDiffSource(ctx, cwd, source, "")
+	if err != nil {
+		return "", fmt.Errorf("resolve diff source: %w", err)
+	}
 	fetch := func(workPath string) (string, error) {
-		hunkArgv, herr := vcs.RawHunkArgv(ctx, cwd, source, workPath)
-		if herr != nil {
-			return "", herr
-		}
+		hunkArgv := vcs.RawHunkArgvFor(cwd, source, tilthSource, useTilth, workPath)
 		return RunCLI(ctx, hunkArgv[0], hunkArgv[1:])
 	}
 	supplemented, err := SupplementDiff(out, fetch)

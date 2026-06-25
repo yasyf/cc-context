@@ -8,51 +8,13 @@ permissions:
   contents: write
 
 jobs:
-  verify-tag-on-main:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - uses: yasyf/homebrew-tap/.github/actions/verify-tag-on-main@v1
-
   release:
-    needs: verify-tag-on-main
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-      # goreleaser builds + quill-signs + archives + checksums. No homebrew block:
+    uses: yasyf/homebrew-tap/.github/workflows/release-go.yml@v1
+    secrets: inherit
+    with:
       # ccx ships as a formula (livecheck + `brew install --HEAD` source build +
-      # runtime depends_on ast-grep/uv that a goreleaser brews block can't express),
-      # rendered from .github/formula/ccx.rb.tmpl below.
-      - uses: goreleaser/goreleaser-action@v7
-        with:
-          version: "~> v2"
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Apple Developer signing + notarization (optional; no-op when unset).
-          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
-          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
-          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
-          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
-          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
-
-      - name: Render Formula/ccx.rb from the release checksums
-        uses: yasyf/homebrew-tap/.github/actions/render-formula@v1
-        with:
-          template: .github/formula/ccx.rb.tmpl
-          output: Formula/ccx.rb
-          name: ccx
-
-      - name: Publish the formula to the tap
-        uses: yasyf/homebrew-tap/.github/actions/publish@v1
-        with:
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          dir: tap-staging
-          message: "ccx ${{ github.ref_name }}"
+      # runtime depends_on ast-grep/uv) rendered from its template — goreleaser's
+      # brews block can't express that, so render-formula + publish handle the .rb.
+      render-formula: true
+      formula-template: .github/formula/ccx.rb.tmpl
+      formula-name: ccx
