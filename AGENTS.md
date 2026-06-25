@@ -6,7 +6,7 @@ Tools for keeping Claude's context minimal: a single Go binary exposing the `ccx
 
 ```
 cc-context/
-├── cmd/cc-context/   # main package — the CLI entry point
+├── cmd/ccx/          # main package — the CLI entry point
 ├── internal/
 │   ├── cli/          # cobra command tree (ccx subcommands)
 │   ├── mcp/          # the cc-context facade MCP server
