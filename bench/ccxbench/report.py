@@ -162,7 +162,9 @@ def render(records: list[dict], session_id: str) -> str:
         lines.append("")
         lines.append("| Arm | N | Accuracy | Cost/correct | Mean cost | Mean turns | Integrity OK | Cost-check OK |")
         lines.append("|---|---|---|---|---|---|---|---|")
-        cells = {arm: by_task(records, model, arm, None) for arm in arms}
+        ok_records = [r for r in records if r.get("integrity", {}).get("ok", True)]
+        n_excluded = len([r for r in records if r["model"] == model]) - len([r for r in ok_records if r["model"] == model])
+        cells = {arm: by_task(ok_records, model, arm, None) for arm in arms}
         all_tasks = sorted({r["task_id"] for r in records if r["model"] == model})
         for arm in arms:
             arm_recs = [r for r in records if r["model"] == model and r["arm"] == arm]
@@ -178,8 +180,13 @@ def render(records: list[dict], session_id: str) -> str:
                 f"{mean_turns:.1f} | {integ_ok * 100:.0f}% | {cost_ok * 100:.0f}% |"
             )
         lines.append("")
+        lines.append(
+            "_N counts all runs for the arm; Accuracy and Cost/correct count only integrity-OK "
+            "runs (Integrity OK shows the share), so their denominator is N minus mislabeled runs._"
+        )
+        lines.append("")
 
-        paired, dropped = paired_task_ids(records, model)
+        paired, dropped = paired_task_ids(ok_records, model)
         a_base, c_base = arm_aggregate(cells["baseline"], paired)
         a_ccx, c_ccx = arm_aggregate(cells["ccx"], paired)
         ci = bootstrap_delta(cells["baseline"], cells["ccx"], paired)
@@ -189,20 +196,32 @@ def render(records: list[dict], session_id: str) -> str:
         d_cpc = ((c_ccx - c_base) / c_base * 100.0) if c_base not in (0.0, float("inf")) else float("nan")
         lines.append("### Headline (ccx vs baseline)")
         lines.append("")
-        lines.append(f"- Paired on {len(paired)} tasks present in both arms" + (f" ({dropped} dropped for one-arm-only data)" if dropped else ""))
+        lines.append(
+            f"- Paired on {len(paired)} tasks present in both arms"
+            + (f" ({dropped} dropped for one-arm-only data)" if dropped else "")
+            + (f"; **{n_excluded} mislabeled run(s) excluded** from this aggregate (see Integrity below)" if n_excluded else "")
+        )
         lines.append(
             f"- Δ accuracy: **{d_acc:+.1f} pp** "
             f"(95% CI [{acc_ci[0]:+.1f}, {acc_ci[1]:+.1f}])"
         )
         cpc_str = f"{d_cpc:+.1f}%" if not math.isnan(d_cpc) else "undefined (baseline 0 correct)"
-        lines.append(
-            f"- Δ cost-per-correct: **{cpc_str}** "
-            f"(95% CI [{cpc_ci[0]:+.1f}, {cpc_ci[1]:+.1f}]) "
-            "(negative = ccx cheaper per correct answer)"
-        )
+        tied = acc_ci_straddles_zero(acc_ci)
+        if tied and not math.isnan(d_cpc):
+            lines.append(
+                f"- Δ cost (efficiency, not a per-correct win): **{cpc_str}** "
+                f"(95% CI [{cpc_ci[0]:+.1f}, {cpc_ci[1]:+.1f}]) — accuracy CI straddles 0, so "
+                "this is a cost-efficiency signal, NOT a cheaper-per-correct-answer claim"
+            )
+        else:
+            lines.append(
+                f"- Δ cost-per-correct: **{cpc_str}** "
+                f"(95% CI [{cpc_ci[0]:+.1f}, {cpc_ci[1]:+.1f}]) "
+                "(negative = ccx cheaper per correct answer)"
+            )
         if ci["cpc_undefined"]:
             lines.append(f"  - note: {ci['cpc_undefined']}/{BOOTSTRAP_N} bootstrap resamples had an undefined cost-per-correct (an arm drew 0 correct)")
-        lines.append(verdict(d_acc, d_cpc))
+        lines.append(verdict(d_acc, d_cpc, acc_ci))
         lines.append("")
 
         nr_base = by_task(records, model, "baseline", helps=False)
@@ -248,13 +267,33 @@ def render(records: list[dict], session_id: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def verdict(d_acc: float, d_cpc: float) -> str:
+def acc_ci_straddles_zero(acc_ci: tuple[float, float]) -> bool:
+    """True when the accuracy CI includes 0 — accuracy is statistically tied between arms."""
+    lo, hi = acc_ci
+    if math.isnan(lo) or math.isnan(hi):
+        return True
+    return lo <= 0.0 <= hi
+
+
+def verdict(d_acc: float, d_cpc: float, acc_ci: tuple[float, float]) -> str:
     if math.isnan(d_cpc):
         return "- (inconclusive — baseline had 0 correct answers)"
+    tied = acc_ci_straddles_zero(acc_ci)
     if d_cpc >= 0:
+        if tied:
+            return (
+                "- ❌ ccx is not cheaper per correct answer in this run (accuracy is tied, so "
+                "this is pure overhead — NOT a per-correct win)."
+            )
         return "- ❌ ccx is not cheaper per correct answer in this run."
-    if d_acc < -1.0:
+    if d_acc < -1.0 and not tied:
         return "- ⚠️ **rtk trap**: ccx is cheaper but less accurate — not an honest savings claim."
+    if tied:
+        return (
+            "- efficiency, not a per-correct win: ccx spends less but accuracy is statistically "
+            f"tied (accuracy CI [{acc_ci[0]:+.1f}, {acc_ci[1]:+.1f}] straddles 0), so this is a "
+            "cost-efficiency signal, not a cheaper-per-correct-answer claim."
+        )
     if d_acc >= 0:
         return "- ✅ ccx is cheaper per correct answer at equal-or-better accuracy."
     return f"- ccx is cheaper per correct answer; accuracy change {d_acc:+.1f} pp is within the 1 pp noise floor (see CI)."

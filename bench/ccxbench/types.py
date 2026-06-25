@@ -17,6 +17,7 @@ CATEGORIES: tuple[str, ...] = (
     "structural_replace",
     "structural_search",
     "non_regression",
+    "large_context",
 )
 
 

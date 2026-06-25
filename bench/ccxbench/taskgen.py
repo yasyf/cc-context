@@ -53,6 +53,18 @@ ANSWER_SCHEMA = {
     "required": ["answer"],
     "additionalProperties": False,
 }
+CLASSES_SCHEMA = {
+    "type": "object",
+    "properties": {"classes": {"type": "array", "items": {"type": "string"}}},
+    "required": ["classes"],
+    "additionalProperties": False,
+}
+TYPES_SCHEMA = {
+    "type": "object",
+    "properties": {"types": {"type": "array", "items": {"type": "string"}}},
+    "required": ["types"],
+    "additionalProperties": False,
+}
 
 REPO = "fixture"
 
@@ -580,6 +592,115 @@ def oss_tasks() -> list[Task]:
                 "check": 'cleanPath("") == "/index"',
                 "solution_edits": [
                     {"file": "mux.go", "find": 'if p == "" {\n\t\treturn "/"\n\t}', "replace": 'if p == "" {\n\t\treturn "/index"\n\t}'}
+                ],
+            },
+        ),
+    ]
+
+
+def large_context_tasks() -> list[Task]:
+    """Whole-/many-file enumeration tasks whose gold is the complete set satisfying a body-level predicate."""
+    return [
+        Task(
+            id="click-enum-get-command-classes",
+            category="large_context",
+            repo="click",
+            prompt=(
+                "In `src/click/core.py`, enumerate every public class defined at module scope "
+                "(public = name does not start with an underscore; top-level only, not nested) "
+                "whose own body defines a method named `get_command`. A class counts only if it "
+                "declares `get_command` directly in its body — not if it merely inherits it from "
+                "a base class. List each qualifying class name exactly once."
+            ),
+            schema=CLASSES_SCHEMA,
+            grader=Grader("set_match", {"field": "classes", "mode": "equal", "lower": True}),
+            gold={
+                "classes": ["MultiCommand", "Group", "CommandCollection"],
+                "lc_predicate": {"kind": "py_method", "file": "src/click/core.py", "target": "get_command"},
+                "verify_decls": [
+                    ("src/click/core.py", "class MultiCommand(Command):"),
+                    ("src/click/core.py", "class Group(MultiCommand):"),
+                    ("src/click/core.py", "class CommandCollection(MultiCommand):"),
+                ],
+            },
+        ),
+        Task(
+            id="mux-enum-addmatcher-callers",
+            category="large_context",
+            repo="gorilla-mux",
+            prompt=(
+                "Across `mux.go` and `route.go`, enumerate every top-level function or method "
+                "whose body calls the unexported `(*Route).addMatcher` method (a call of the form "
+                "`r.addMatcher(...)`). List the enclosing functions' or methods' names — each name "
+                "exactly once — and do not include `addMatcher` itself."
+            ),
+            schema=CALLERS_SCHEMA,
+            grader=Grader("set_match", {"field": "callers", "mode": "equal", "lower": True}),
+            gold={
+                "callers": [
+                    "addRegexpMatcher",
+                    "Headers",
+                    "HeadersRegexp",
+                    "MatcherFunc",
+                    "Methods",
+                    "Schemes",
+                    "Subrouter",
+                ],
+                "lc_predicate": {
+                    "kind": "go_callers",
+                    "files": ["mux.go", "route.go"],
+                    "target": "addMatcher",
+                },
+                "verify_decls": [
+                    ("route.go", "func (r *Route) addRegexpMatcher(tpl string, typ regexpType) error {"),
+                    ("route.go", "func (r *Route) Headers(pairs ...string) *Route {"),
+                    ("route.go", "func (r *Route) HeadersRegexp(pairs ...string) *Route {"),
+                    ("route.go", "func (r *Route) MatcherFunc(f MatcherFunc) *Route {"),
+                    ("route.go", "func (r *Route) Methods(methods ...string) *Route {"),
+                    ("route.go", "func (r *Route) Schemes(schemes ...string) *Route {"),
+                    ("route.go", "func (r *Route) Subrouter() *Router {"),
+                ],
+            },
+        ),
+        Task(
+            id="mux-enum-matcher-impls",
+            category="large_context",
+            repo="gorilla-mux",
+            prompt=(
+                "In this repository's non-test Go files, enumerate every type that implements the "
+                "unexported `matcher` interface — that is, every type (exported or not) that defines "
+                "a method `Match(*http.Request, *RouteMatch) bool`. Go interfaces are satisfied "
+                "implicitly, so match the method signature, not any declared `matcher` reference. "
+                "List each implementing type's name exactly once (the bare type name, without a `*`)."
+            ),
+            schema=TYPES_SCHEMA,
+            grader=Grader("set_match", {"field": "types", "mode": "equal", "lower": True}),
+            gold={
+                "types": [
+                    "Router",
+                    "Route",
+                    "MatcherFunc",
+                    "methodMatcher",
+                    "schemeMatcher",
+                    "headerMatcher",
+                    "headerRegexMatcher",
+                    "routeRegexp",
+                ],
+                "lc_predicate": {
+                    "kind": "go_iface",
+                    "method": "Match",
+                    "params": ["*http.Request", "*RouteMatch"],
+                    "ret": "bool",
+                },
+                "verify_decls": [
+                    ("mux.go", "func (r *Router) Match(req *http.Request, match *RouteMatch) bool {"),
+                    ("route.go", "func (r *Route) Match(req *http.Request, match *RouteMatch) bool {"),
+                    ("route.go", "func (m MatcherFunc) Match(r *http.Request, match *RouteMatch) bool {"),
+                    ("route.go", "func (m methodMatcher) Match(r *http.Request, match *RouteMatch) bool {"),
+                    ("route.go", "func (m schemeMatcher) Match(r *http.Request, match *RouteMatch) bool {"),
+                    ("route.go", "func (m headerMatcher) Match(r *http.Request, match *RouteMatch) bool {"),
+                    ("route.go", "func (m headerRegexMatcher) Match(r *http.Request, match *RouteMatch) bool {"),
+                    ("regexp.go", "func (r *routeRegexp) Match(req *http.Request, match *RouteMatch) bool {"),
                 ],
             },
         ),

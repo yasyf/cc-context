@@ -2,7 +2,8 @@
 
 `ccx` is the DEFAULT for reading code, finding symbols, searching, and reviewing
 diffs. It returns token-bounded output (signatures + line numbers, explicit overflow,
-never silent truncation). Its MCP tools (`mcp__cc-context__*`) mirror the CLI 1:1.
+never silent truncation). Use the `ccx` command (run it via Bash); the `mcp__cc-context__*`
+tools mirror the CLI 1:1 but the `ccx` command is preferred.
 Reach for ccx before Read, cat, sed, git diff, ls -R, or find — the guard hooks block
 those on anything token-heavy.
 

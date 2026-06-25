@@ -1,0 +1,80 @@
+{
+  "id": "mux-enum-addmatcher-callers",
+  "category": "large_context",
+  "repo": "gorilla-mux",
+  "prompt": "Across `mux.go` and `route.go`, enumerate every top-level function or method whose body calls the unexported `(*Route).addMatcher` method (a call of the form `r.addMatcher(...)`). List the enclosing functions' or methods' names \u2014 each name exactly once \u2014 and do not include `addMatcher` itself.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "callers": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "callers"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "callers",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "callers": [
+      "addRegexpMatcher",
+      "Headers",
+      "HeadersRegexp",
+      "MatcherFunc",
+      "Methods",
+      "Schemes",
+      "Subrouter"
+    ],
+    "lc_predicate": {
+      "kind": "go_callers",
+      "files": [
+        "mux.go",
+        "route.go"
+      ],
+      "target": "addMatcher"
+    },
+    "verify_decls": [
+      [
+        "route.go",
+        "func (r *Route) addRegexpMatcher(tpl string, typ regexpType) error {"
+      ],
+      [
+        "route.go",
+        "func (r *Route) Headers(pairs ...string) *Route {"
+      ],
+      [
+        "route.go",
+        "func (r *Route) HeadersRegexp(pairs ...string) *Route {"
+      ],
+      [
+        "route.go",
+        "func (r *Route) MatcherFunc(f MatcherFunc) *Route {"
+      ],
+      [
+        "route.go",
+        "func (r *Route) Methods(methods ...string) *Route {"
+      ],
+      [
+        "route.go",
+        "func (r *Route) Schemes(schemes ...string) *Route {"
+      ],
+      [
+        "route.go",
+        "func (r *Route) Subrouter() *Router {"
+      ]
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

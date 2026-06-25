@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Cache-aware cost-per-correct-answer benchmark for cc-context (ccx)."
 requires-python = ">=3.13"
 dependencies = [
-    "spawnllm>=0.5.0",
+    "spawnllm>=0.5.2",
     "cc-transcript>=7,<8",
     "capt-hook>=4,<5",
 ]

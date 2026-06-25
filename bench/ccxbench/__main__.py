@@ -12,8 +12,10 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import asyncio
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -34,6 +36,7 @@ from .types import Task
 
 BENCH_DIR = Path(__file__).resolve().parent.parent
 TASKS_DIR = BENCH_DIR / "tasks"
+GO_FUNC_RE = re.compile(r"^func (?:\(([^)]*)\)\s*)?([A-Za-z_]\w*)\s*\(")
 
 
 def needs_go(task: Task) -> bool:
@@ -51,7 +54,7 @@ def build_corpus(cfg: Config) -> list[Task]:
     if fixture_dir.exists():
         shutil.rmtree(fixture_dir)
     manifest = fixtures.build(fixture_dir)
-    oss = [t for t in taskgen.oss_tasks() if available(t)]
+    oss = [t for t in (taskgen.oss_tasks() + taskgen.large_context_tasks()) if available(t)]
     verify_oss(cfg, oss)
     tasks = [t for t in taskgen.generate(manifest) if available(t)] + oss
     if TASKS_DIR.exists():
@@ -60,6 +63,76 @@ def build_corpus(cfg: Config) -> list[Task]:
     for t in tasks:
         (TASKS_DIR / f"{t.id}.json").write_text(json.dumps(t.to_dict(), indent=2))
     return tasks
+
+
+def go_funcs(text: str) -> list[tuple[str, str]]:
+    """Brace-scan a Go file into (func_name, body_below_signature) pairs for top-level funcs."""
+    lines = text.splitlines(keepends=True)
+    out: list[tuple[str, str]] = []
+    i, n = 0, len(lines)
+    while i < n:
+        m = GO_FUNC_RE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        depth, started, body, j = 0, False, [], i
+        while j < n:
+            for ch in lines[j]:
+                if ch == "{":
+                    depth += 1
+                    started = True
+                elif ch == "}":
+                    depth -= 1
+            body.append(lines[j])
+            if started and depth == 0:
+                break
+            j += 1
+        out.append((m.group(2), "".join(body[1:])))
+        i = j + 1
+    return out
+
+
+def recompute_lc_predicate(checkout: Path, pred: dict, repo: str) -> set[str]:
+    """Independently recompute a large_context predicate's member set from the checkout."""
+    kind = pred["kind"]
+    if kind == "py_method":
+        src = (checkout / pred["file"]).read_text()
+        tree = ast.parse(src)
+        members: set[str] = set()
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
+                own = {
+                    b.name
+                    for b in node.body
+                    if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef))
+                }
+                if pred["target"] in own:
+                    members.add(node.name)
+        return members
+    if kind == "go_callers":
+        target = pred["target"]
+        call = re.compile(rf"\b{re.escape(target)}\s*\(")
+        members = set()
+        for rel in pred["files"]:
+            for name, body in go_funcs((checkout / rel).read_text()):
+                if name != target and call.search(body):
+                    members.add(name)
+        return members
+    if kind == "go_iface":
+        method = pred["method"]
+        # A param may be named (`req *http.Request`) or bare (`*http.Request`); match both.
+        params = r"\s*,\s*".join(rf"(?:\w+\s+)?{re.escape(p)}" for p in pred["params"])
+        impl = re.compile(
+            rf"func\s+\(\s*\w+\s+\*?([A-Za-z_]\w*)\s*\)\s+{re.escape(method)}\s*\(\s*{params}\s*\)\s+{re.escape(pred['ret'])}\b"
+        )
+        members = set()
+        for go in sorted(checkout.glob("*.go")):
+            if go.name.endswith("_test.go"):
+                continue
+            for m in impl.finditer(go.read_text()):
+                members.add(m.group(1))
+        return members
+    sys.exit(f"unknown lc_predicate kind {kind!r} (repo {repo})")
 
 
 def verify_oss(cfg: Config, tasks: list[Task]) -> None:
@@ -79,6 +152,28 @@ def verify_oss(cfg: Config, tasks: list[Task]) -> None:
                 lo, hi = max(0, t.gold["line"] - 1 - tol), min(len(lines), t.gold["line"] + tol)
                 if not any(decl in ln for ln in lines[lo:hi]):
                     sys.exit(f"OSS task {t.id}: decl {decl!r} not within ±{tol} of line {t.gold['line']} in {t.gold['file']}")
+        if t.grader.kind == "set_match" and "verify_decls" in t.gold:
+            field = t.grader.spec.get("field", "items")
+            decls_by_member: dict[str, str] = {}
+            for rel, decl in t.gold["verify_decls"]:
+                decl_file = checkout / rel
+                if not decl_file.exists():
+                    sys.exit(f"OSS task {t.id}: decl file {rel} absent from {t.repo}")
+                if decl not in decl_file.read_text():
+                    sys.exit(f"OSS task {t.id}: gold decl {decl!r} not found in {rel}")
+                decls_by_member[decl] = rel
+            for member in t.gold[field]:
+                pat = re.compile(rf"\b{re.escape(member)}\b")
+                if not any(pat.search(decl) for decl in decls_by_member):
+                    sys.exit(f"OSS task {t.id}: gold member {member!r} has no matching verify_decls entry")
+            if "lc_predicate" in t.gold:
+                recomputed = recompute_lc_predicate(checkout, t.gold["lc_predicate"], t.repo)
+                gold_set = {m.lower() for m in t.gold[field]}
+                if {m.lower() for m in recomputed} != gold_set:
+                    sys.exit(
+                        f"OSS task {t.id}: predicate recompute {sorted(recomputed)} "
+                        f"!= gold {sorted(t.gold[field])}"
+                    )
         for edits in (t.setup.get("edits", []), t.gold.get("solution_edits", [])):
             for e in edits:
                 text = (checkout / e["file"]).read_text()
@@ -224,6 +319,8 @@ def cmd_run(cfg: Config, args: argparse.Namespace) -> int:
         cfg = replace_models(cfg, args.models.split(","))
     if args.repeats:
         cfg = replace_repeats(cfg, args.repeats)
+    if args.budget is not None:
+        cfg = replace_budget(cfg, args.budget)
     tasks = select(load_corpus(), args)
     if not tasks:
         sys.exit("no tasks selected")
@@ -246,6 +343,10 @@ def replace_models(cfg: Config, models: list[str]) -> Config:
 
 def replace_repeats(cfg: Config, repeats: int) -> Config:
     return Config(**{**cfg.__dict__, "repeats": repeats})
+
+
+def replace_budget(cfg: Config, budget_usd: float) -> Config:
+    return Config(**{**cfg.__dict__, "budget_usd": budget_usd})
 
 
 def cmd_pilot(cfg: Config, args: argparse.Namespace) -> int:
@@ -278,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
         rp.add_argument("--limit", type=int, help="max total tasks")
         rp.add_argument("--models", help="override config models (comma-separated)")
         rp.add_argument("--repeats", type=int, help="override config repeats")
+        rp.add_argument("--budget", type=float, help="override config budget_usd ceiling")
 
     rep = sub.add_parser("report")
     rep.add_argument("session")
