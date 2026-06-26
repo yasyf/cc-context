@@ -22,7 +22,7 @@ from ccxbench.config import load
 from ccxbench.cost import crosscheck
 from ccxbench.grade import grade, synthetic_result
 from ccxbench.graders import GradeContext, grade_file_line, grade_keywords, grade_set_match
-from ccxbench.report import acc_ci_straddles_zero, paired_task_ids, render, verdict
+from ccxbench.report import paired_task_ids, render
 from ccxbench.runner import Session, run_corpus
 from ccxbench.types import Grader, Task
 
@@ -247,16 +247,6 @@ class TestAnswerKeyAndPairing(unittest.TestCase):
         self.assertEqual(both, ["a"])
         self.assertEqual(dropped, 1)
 
-    def test_verdict_logic(self) -> None:
-        # CI that does NOT straddle 0 (accuracy difference is real) keeps the original verdicts.
-        wide_pos = (0.5, 3.0)
-        wide_neg = (-3.0, -0.5)
-        self.assertIn("inconclusive", verdict(0.0, float("nan"), wide_pos))
-        self.assertIn("rtk trap", verdict(-2.0, -10.0, wide_neg))
-        self.assertIn("equal-or-better", verdict(2.0, -10.0, wide_pos))
-        self.assertIn("noise floor", verdict(-0.5, -10.0, (-0.9, -0.1)))
-        self.assertIn("not cheaper", verdict(2.0, 5.0, wide_pos))
-
 
 def stub_task(tid: str) -> Task:
     return Task(tid, "navigation", "fixture", "p", {}, Grader("file_line"), {"file": "a", "line": 1})
@@ -318,34 +308,6 @@ class TestRoundRobinOrder(unittest.TestCase):
             self.assertEqual({plan[i][1], plan[i + 1][1]}, {"baseline", "ccx"})
 
 
-class TestAccuracyTiedVerdict(unittest.TestCase):
-    """When the accuracy CI straddles 0, a cheaper cost delta is demoted to an efficiency
-    note and a pure-overhead delta is never labeled a win."""
-
-    def test_straddle_detection(self) -> None:
-        self.assertTrue(acc_ci_straddles_zero((-1.0, 2.0)))
-        self.assertTrue(acc_ci_straddles_zero((0.0, 2.0)))
-        self.assertTrue(acc_ci_straddles_zero((-2.0, 0.0)))
-        self.assertFalse(acc_ci_straddles_zero((0.5, 2.0)))
-        self.assertFalse(acc_ci_straddles_zero((-2.0, -0.5)))
-
-    def test_cheaper_but_tied_is_efficiency_not_win(self) -> None:
-        v = verdict(0.0, -20.0, (-2.0, 2.0))
-        self.assertIn("efficiency, not a per-correct win", v)
-        self.assertNotIn("✅", v)
-
-    def test_overhead_and_tied_is_not_a_win(self) -> None:
-        v = verdict(0.0, 12.0, (-2.0, 2.0))
-        self.assertIn("not cheaper", v)
-        self.assertIn("pure overhead", v)
-        self.assertNotIn("✅", v)
-
-    def test_real_accuracy_gain_keeps_win(self) -> None:
-        v = verdict(3.0, -20.0, (0.5, 5.0))
-        self.assertIn("✅", v)
-        self.assertNotIn("efficiency, not a per-correct win", v)
-
-
 class TestIntegrityExclusion(unittest.TestCase):
     """Mislabeled runs (integrity.ok == False) are dropped from the paired aggregate and the
     headline, but still listed (and counted) in the integrity section."""
@@ -384,10 +346,97 @@ class TestIntegrityExclusion(unittest.TestCase):
             self._rec("b", "ccx", False, 0.50, ok=False),  # mislabeled, would skew cost
         ]
         md = render(recs, "sess")
-        self.assertIn("1 mislabeled run(s) excluded", md)
         # The mislabeled run is still listed in the integrity section.
         self.assertIn("integrity failures (arm mislabeled): **1**", md)
         self.assertIn("`b` [ccx]", md)
+
+
+class FakeCounter:
+    """A deterministic stand-in for tokens.TokenCounter (no network)."""
+
+    def count(self, text: str) -> int:
+        return len(text) // 4
+
+
+def assistant_turn(prompt_tokens: int) -> dict:
+    """One assistant event whose usage gives the turn this prompt high-water."""
+    return {
+        "type": "assistant",
+        "message": {
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {
+                "input_tokens": prompt_tokens,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            },
+        },
+    }
+
+
+class TestHighWaterRender(unittest.TestCase):
+    """render reconstructs paired high-water savings from hand-built transcripts with known
+    per-turn usage, lists every both-correct task in the waterfall, and degrades gracefully
+    (correctness panel only) when no transcripts are available."""
+
+    H = {  # (task, arm) -> high-water prompt tokens
+        ("t1", "baseline"): 1000,
+        ("t1", "ccx"): 600,
+        ("t2", "baseline"): 2000,
+        ("t2", "ccx"): 1000,
+    }
+
+    def _rec(self, tid: str, arm: str) -> dict:
+        return {
+            "task_id": tid,
+            "category": "navigation",
+            "arm": arm,
+            "model": "m",
+            "repeat": 0,
+            "correct": True,
+            "total_cost_usd": 0.01,
+            "num_turns": 1,
+            "cost_ok": True,
+            "usage": {"input": 1, "output": 1, "cache_read": 0, "cache_create_5m": 0, "cache_create_1h": 0},
+            "integrity": {"ok": True, "note": ""},
+        }
+
+    def _setup_raw(self, raw_dir: Path) -> None:
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        for (tid, arm), hw in self.H.items():
+            events = [assistant_turn(hw)]
+            (raw_dir / f"{tid}__{arm}__m__r0.json").write_text(json.dumps(events))
+
+    def test_high_water_headline_and_waterfall(self) -> None:
+        recs = [self._rec(t, a) for t in ("t1", "t2") for a in ("baseline", "ccx")]
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp) / "raw"
+            self._setup_raw(raw)
+            md = render(
+                recs,
+                "sess",
+                raw_dir=raw,
+                prompts={"t1": "p1", "t2": "p2"},
+                counter=FakeCounter(),
+            )
+        # Both tasks save (ccx H < baseline H): savings sign is positive.
+        self.assertIn("High-water headline", md)
+        self.assertIn("Mean high-water savings: **+", md)
+        # Win/loss/tie: ccx wins both.
+        self.assertIn("**2 / 0 / 0**", md)
+        # Waterfall lists both tasks.
+        self.assertIn("`t1`", md)
+        self.assertIn("`t2`", md)
+        # Correctness panel renders with both arms at 100%.
+        self.assertIn("Correctness panel", md)
+        self.assertIn("baseline accuracy: **100.0%**", md)
+        self.assertIn("ccx accuracy: **100.0%**", md)
+
+    def test_render_without_raw_dir_degrades(self) -> None:
+        recs = [self._rec(t, a) for t in ("t1", "t2") for a in ("baseline", "ccx")]
+        md = render(recs, "sess")
+        self.assertIn("no transcripts available", md.lower())
+        self.assertIn("Correctness panel", md)
+        self.assertNotIn("High-water headline", md)
 
 
 class TestLargeContextBuilder(unittest.TestCase):

@@ -11,6 +11,34 @@ from __future__ import annotations
 
 from .types import Grader, Task
 
+# Bumped whenever the category mix changes; stamped into meta.json so old and new
+# sessions are never fused under one headline (the mix is not comparable across versions).
+TASK_MIX_VERSION = "2-real-usage"
+
+# Relative real-usage frequency per category, mined from 100 transcripts: tool-IO is
+# 67.9% of session chars, dominated by Read (33.5%), Bash grep/cat/find/git-diff (38.9%),
+# and Edit (9.9%). Read/understand and multi-file search/diff/find carry the most weight;
+# callees/callers symbol-graph queries are a small real slice and are trimmed to a
+# representative sample (see SYMBOL_GRAPH_SAMPLE). Weights sum to 1.0; the report imports
+# them to weight per-category results by how often the operation actually burns tokens.
+CATEGORY_WEIGHTS: dict[str, float] = {
+    "navigation": 0.22,
+    "intent_search": 0.18,
+    "large_context": 0.14,
+    "diff_review": 0.12,
+    "structural_search": 0.08,
+    "targeted_edit": 0.07,
+    "structural_replace": 0.06,
+    "callees": 0.04,
+    "callers": 0.04,
+    "non_regression": 0.05,
+}
+
+# Symbol-graph (callees/callers) tasks are derived one-per-manifest-symbol, which
+# over-indexes the corpus on a small real-usage slice. Cap each at this many representative
+# symbols (manifest order is stable, so the sample is deterministic).
+SYMBOL_GRAPH_SAMPLE = 3
+
 NAV_SCHEMA = {
     "type": "object",
     "properties": {"file": {"type": "string"}, "line": {"type": "integer"}},
@@ -114,6 +142,8 @@ def callees_tasks(manifest: dict) -> list[Task]:
     for s in manifest["symbols"]:
         if not s["callees"]:
             continue
+        if len(tasks) >= SYMBOL_GRAPH_SAMPLE:
+            break
         tasks.append(
             Task(
                 id=f"callees-{s['name']}",
@@ -137,6 +167,8 @@ def callers_tasks(manifest: dict) -> list[Task]:
     for s in manifest["symbols"]:
         if not s["callers"]:
             continue
+        if len(tasks) >= SYMBOL_GRAPH_SAMPLE:
+            break
         tasks.append(
             Task(
                 id=f"callers-{s['name']}",

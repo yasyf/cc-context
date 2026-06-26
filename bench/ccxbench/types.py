@@ -20,6 +20,8 @@ CATEGORIES: tuple[str, ...] = (
     "large_context",
 )
 
+DECOMP_TERMS: tuple[str, ...] = ("static_overhead", "tool_result", "history", "hook_error", "residual")
+
 
 @dataclass(frozen=True)
 class Symbol:
@@ -128,3 +130,62 @@ class Integrity:
     native_heavy_calls: list[str]
     ok: bool
     note: str
+
+
+@dataclass(frozen=True)
+class Decomposition:
+    """The prompt high-water mark split into additive, disjoint token buckets.
+
+    The five terms sum to the high-water mark exactly: `residual` closes the gap
+    between the API-reported peak prompt and our own tokenization of its parts.
+    `static_overhead` is the fixed system + tool-schema prefix, counted once (the
+    high-water mark is a single-turn snapshot), never summed across turns.
+    """
+
+    static_overhead: int
+    tool_result: int
+    history: int
+    hook_error: int
+    residual: int
+
+    @property
+    def total(self) -> int:
+        return self.static_overhead + self.tool_result + self.history + self.hook_error + self.residual
+
+    def dominant(self) -> str:
+        terms = {
+            "static_overhead": self.static_overhead,
+            "tool_result": self.tool_result,
+            "history": self.history,
+            "hook_error": self.hook_error,
+            "residual": self.residual,
+        }
+        return max(terms, key=lambda k: terms[k])
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    """One tool invocation in a trajectory: its name, an argument digest, and the
+    token size of the result it injected into context."""
+
+    name: str
+    arg_summary: str
+    output_tokens: int
+
+
+@dataclass(frozen=True)
+class TrajectoryMetrics:
+    """Per-run context accounting reconstructed from a saved stream-json transcript.
+
+    `high_water` is the largest single-turn prompt (input + cache_create + cache_read).
+    `cumulative_tool_output` is the total of every tool result injected into context —
+    the quantity ccx directly controls. `decomposition` attributes the high-water mark.
+    """
+
+    high_water: int
+    decomposition: Decomposition
+    cumulative_tool_output: int
+    turn_count: int
+    tool_call_count: int
+    peak_turn: int
+    tool_calls: tuple[ToolCall, ...]

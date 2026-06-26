@@ -89,7 +89,7 @@ def grade_set_match(answer: object, gold: dict[str, Any], spec: dict[str, Any], 
     want = to_str_set(gold.get(field, gold.get("items", [])), lower)
     got = to_str_set(d.get(field, []), lower)
     if mode == "subset":
-        ok = want.issubset(got)
+        ok = got.issubset(want)
     elif mode == "superset":
         ok = want.issubset(got)
     else:

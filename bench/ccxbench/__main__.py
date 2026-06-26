@@ -25,7 +25,7 @@ from pathlib import Path
 
 from cc_transcript import parse_print_result
 
-from . import fixtures, report, repos, taskgen
+from . import fixtures, microbench, report, repos, taskgen
 from .arms import apply_edits
 from .config import Config, load
 from .cost import crosscheck
@@ -384,6 +384,9 @@ def main(argv: list[str] | None = None) -> int:
     rep = sub.add_parser("report")
     rep.add_argument("session")
 
+    mb = sub.add_parser("microbench")
+    mb.add_argument("--repo")
+
     args = p.parse_args(argv)
 
     if args.cmd == "build-corpus":
@@ -410,6 +413,8 @@ def main(argv: list[str] | None = None) -> int:
         report.write_report(jsonl, cfg.results_dir / args.session / "RESULTS.md")
         print(f"wrote {cfg.results_dir / args.session / 'RESULTS.md'}")
         return 0
+    if args.cmd == "microbench":
+        return microbench.cmd_microbench(cfg, args)
     return 2
 
 

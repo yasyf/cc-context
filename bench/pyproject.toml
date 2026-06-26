@@ -1,9 +1,10 @@
 [project]
 name = "ccxbench"
 version = "0.1.0"
-description = "Cache-aware cost-per-correct-answer benchmark for cc-context (ccx)."
+description = "Token-savings + trajectory-attribution benchmark for cc-context (ccx)."
 requires-python = ">=3.13"
 dependencies = [
+    "anthropic>=0.111",
     "spawnllm>=0.5.2",
     "cc-transcript>=7,<8",
     "capt-hook>=4,<5",
