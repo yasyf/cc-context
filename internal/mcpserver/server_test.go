@@ -188,3 +188,77 @@ func TestSearchToolInvalidMode(t *testing.T) {
 		t.Errorf("invalid-mode error should name the bad mode: %s", out)
 	}
 }
+
+func TestBashToonRegistered(t *testing.T) {
+	cs := connectTestServer(t)
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	for _, tool := range res.Tools {
+		if tool.Name == "BashToon" {
+			return
+		}
+	}
+	t.Error("BashToon not registered")
+}
+
+func TestBashToonConvertsJSON(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh -c is POSIX-only")
+	}
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "BashToon", map[string]any{
+		"command":    []any{"sh", "-c", `printf '[{"a":1},{"a":2}]'`},
+		"force_toon": true,
+	})
+	if isErr {
+		t.Fatalf("BashToon JSON command is error: %s", out)
+	}
+	if want := "[2]{a}:\n  1\n  2"; out != want {
+		t.Errorf("BashToon out = %q, want %q", out, want)
+	}
+}
+
+func TestBashToonSurfacesStderrAndExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh -c is POSIX-only")
+	}
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "BashToon", map[string]any{
+		"command":    []any{"sh", "-c", `echo boom 1>&2; printf '[{"a":1}]'; exit 5`},
+		"force_toon": true,
+	})
+	if !isErr {
+		t.Fatalf("non-zero exit should set IsError, got: %s", out)
+	}
+	if !strings.Contains(out, "[1]{a}:") {
+		t.Errorf("converted stdout missing from output:\n%s", out)
+	}
+	if !strings.Contains(out, "\n[stderr]\nboom\n[exit 5]") {
+		t.Errorf("stderr/exit section wrong:\n%s", out)
+	}
+}
+
+func TestBashToonStderrOnSuccessIsNotAnError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh -c is POSIX-only")
+	}
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "BashToon", map[string]any{
+		"command":    []any{"sh", "-c", `echo warn 1>&2; printf '[{"a":1}]'`},
+		"force_toon": true,
+	})
+	if isErr {
+		t.Fatalf("stderr on a zero exit must not flag IsError, got: %s", out)
+	}
+	if !strings.Contains(out, "[1]{a}:") {
+		t.Errorf("converted stdout missing from output:\n%s", out)
+	}
+	if !strings.Contains(out, "\n[stderr]\nwarn") {
+		t.Errorf("informational stderr section missing:\n%s", out)
+	}
+	if strings.Contains(out, "[exit") {
+		t.Errorf("no [exit] line should appear on a successful run:\n%s", out)
+	}
+}

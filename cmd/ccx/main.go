@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -18,10 +19,15 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := cli.NewRootCmd().ExecuteContext(ctx); err != nil {
-		// Minimal error handling: report on stderr and exit non-zero. As the CLI
-		// grows, map typed errors to exit codes here (see STYLEGUIDE.md § Error Handling).
-		fmt.Fprintln(os.Stderr, "ccx:", err)
-		os.Exit(1)
+	err := cli.NewRootCmd().ExecuteContext(ctx)
+	if err == nil {
+		return
 	}
+	// A bare *ExitError only carries the child's exit code; the toon wrapper has
+	// already mirrored the child's stderr, so stay silent and just exit with it.
+	var ee *cli.ExitError
+	if !errors.As(err, &ee) {
+		fmt.Fprintln(os.Stderr, "ccx:", err)
+	}
+	os.Exit(cli.ExitCode(err))
 }

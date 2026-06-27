@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx capt-hook --hooks ${CLAUDE_PLUGIN_ROOT}/hooks run PreToolUse"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx capt-hook --hooks ${CLAUDE_PLUGIN_ROOT}/hooks run PostToolUse"
+          }
+        ]
+      }
+    ]
+  }
+}

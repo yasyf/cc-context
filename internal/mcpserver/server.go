@@ -3,15 +3,19 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/outline"
 	"github.com/yasyf/cc-context/internal/proxy"
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/search"
+	"github.com/yasyf/cc-context/internal/toon"
 	"github.com/yasyf/cc-context/internal/version"
 )
 
@@ -100,6 +104,15 @@ type DiffIn struct {
 
 // OverviewIn is the input for ccx_overview.
 type OverviewIn struct{}
+
+// BashToonIn is the input for BashToon.
+type BashToonIn struct {
+	Command   []string `json:"command" jsonschema:"argv to RUN directly (no shell); argv[0] is the program, the rest its arguments"`
+	Delimiter string   `json:"delimiter,omitempty" jsonschema:"array delimiter: comma|tab|pipe (default comma)"`
+	Indent    int      `json:"indent,omitempty" jsonschema:"spaces per indentation level (default 2)"`
+	ForceTOON bool     `json:"force_toon,omitempty" jsonschema:"always emit TOON, never compact JSON"`
+	Budget    int      `json:"budget,omitempty" jsonschema:"token budget for the output"`
+}
 
 // Serve creates the proxy (engines connect lazily on first use), registers the
 // static ccx_* tools, and serves them over stdio until ctx is cancelled or the
@@ -202,6 +215,14 @@ func register(s *mcp.Server, p *proxy.Proxy) {
 	}, handler(p, backend.OpOverview, func(OverviewIn) backend.Args {
 		return backend.Args{}
 	}))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "BashToon",
+		Description: "RUN a command (argv, no shell) and return its stdout token-compacted: JSON/NDJSON " +
+			"is re-encoded as TOON (or compact JSON when smaller), other output passes through. Use for " +
+			"commands that emit JSON (gh --json, kubectl -o json, …) so the raw JSON never enters context. " +
+			"It executes the command — it is not a passive converter and does not take a JSON string.",
+	}, bashToonHandler())
 }
 
 // searchHandler classifies the query through search.Route and dispatches the
@@ -264,5 +285,62 @@ func handler[In any](p *proxy.Proxy, op backend.Op, args func(In) backend.Args) 
 			return nil, nil, fmt.Errorf("ccx_%s: %w", op, err)
 		}
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
+	}
+}
+
+// bashToonHandler runs the supplied argv through the shared toon.Run, the
+// in-MCP equivalent of `ccx toon -- <argv>`: stdout is converted and capped. Any
+// captured stderr is appended as a neutral [stderr] section (many tools write to
+// stderr on success), [exit N] is appended only on a non-zero exit, and only a
+// non-zero exit flags the result as an error. A spawn failure is returned as an
+// error.
+func bashToonHandler() func(context.Context, *mcp.CallToolRequest, BashToonIn) (*mcp.CallToolResult, any, error) {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in BashToonIn) (*mcp.CallToolResult, any, error) {
+		delim, err := bashToonDelimiter(in.Delimiter)
+		if err != nil {
+			return nil, nil, fmt.Errorf("BashToon: %w", err)
+		}
+		opts := toon.Options{Indent: bashToonIndent(in.Indent), Delimiter: delim, ForceTOON: in.ForceTOON}
+
+		var stderr bytes.Buffer
+		out, _, code, err := toon.Run(ctx, in.Command, opts, nil, &stderr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("BashToon: %w", err)
+		}
+
+		text := render.Cap(out, in.Budget)
+		if stderr.Len() > 0 {
+			text += "\n[stderr]\n" + strings.TrimRight(stderr.String(), "\n")
+		}
+		if code != 0 {
+			text += fmt.Sprintf("\n[exit %d]", code)
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: text}},
+			IsError: code != 0,
+		}, nil, nil
+	}
+}
+
+// bashToonIndent defaults a zero indent to the spec's two spaces.
+func bashToonIndent(indent int) int {
+	if indent == 0 {
+		return 2
+	}
+	return indent
+}
+
+// bashToonDelimiter resolves a delimiter name to its TOON delimiter, defaulting
+// an empty name to comma.
+func bashToonDelimiter(name string) (toon.Delimiter, error) {
+	switch name {
+	case "", "comma":
+		return toon.DelimiterComma, nil
+	case "tab":
+		return toon.DelimiterTab, nil
+	case "pipe":
+		return toon.DelimiterPipe, nil
+	default:
+		return 0, fmt.Errorf("invalid delimiter %q: want comma|tab|pipe", name)
 	}
 }

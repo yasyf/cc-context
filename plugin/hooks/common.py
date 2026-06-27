@@ -14,10 +14,15 @@ registers no hooks, so discovery loads it as a harmless no-op.
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import tempfile
 from pathlib import Path
 
-from captain_hook import resolve_binary
+from captain_hook import CommandLine, resolve_binary
+from captain_hook.settings import resolve_state_dir
+from filelock import FileLock
 
 # A Read with neither offset nor limit pulls the whole file into context. Past this
 # size (~5k tokens) the dump is a token-bomb worth steering to an outline; below it
@@ -32,6 +37,23 @@ GIT_DIFF_SUMMARY_FLAGS = ("--stat", "--numstat", "--shortstat", "--name-only", "
 # Identifier-alternation heuristic for the rg/grep nudge: at least two terms joined
 # by `|`, each looking like a code identifier (letters/digits/underscore, no spaces).
 IDENT_ALT = re.compile(r"\b[A-Za-z_]\w*(?:\|[A-Za-z_]\w*)+\b")
+
+# JSON-output flags that mark a command as worth wrapping in `ccx toon`. The glued
+# forms (`--json`, `-ojson`, `-o=json`, `--output=json`, `--format=json`) are caught
+# by a single regex over each arg; the two-token forms (`-o json`, `--output json`,
+# `--format json`) need adjacency, handled by `has_json_output_flag`.
+JSON_FLAG_GLUED = re.compile(r"^(--json(=.*)?|-o=?json|--(output|format)=json)$")
+JSON_VALUE_FLAGS = ("-o", "--output", "--format")
+
+# Cap on the learned-shapes set: enough to cover a session's worth of distinct
+# JSON-emitting commands without the file growing unbounded. FIFO eviction.
+MAX_SHAPES = 256
+
+# A command-shape subcommand token is a lowercase command word (`view`, `get`,
+# `list`). Positional *values* (`123`, `/path`, `file.json`, `NAME=v`, uppercase
+# refs) are not, so they drop out of the shape — `gh issue view 123` and `gh issue
+# view 456` collapse to one shape, while `gh issue view` and `gh pr view` do not.
+SUBCOMMAND_TOKEN = re.compile(r"^[a-z][a-z0-9-]*$")
 
 
 def is_large(path: Path) -> bool:
@@ -51,3 +73,133 @@ def ccx_bin() -> str | None:
     a rewrite guard can fall back to a hard block instead of emitting a broken command.
     """
     return resolve_binary("ccx", extra_dirs=[Path(__file__).resolve().parents[1] / "bin"])
+
+
+def has_json_output_flag(cl: CommandLine) -> bool:
+    """Report whether the primary command carries a JSON-output flag.
+
+    Catches the glued forms (``--json``, ``-ojson``, ``-o=json``, ``--output=json``,
+    ``--format=json``) directly, and the two-token forms (``-o json``, ``--output
+    json``, ``--format json``) by scanning argument adjacency.
+    """
+    args = cl.primary.args
+    if any(JSON_FLAG_GLUED.match(a) for a in args):
+        return True
+    return any(args[i] in JSON_VALUE_FLAGS and args[i + 1] == "json" for i in range(len(args) - 1))
+
+
+def already_wrapped(cl: CommandLine) -> bool:
+    """Report whether the command line is already a ``ccx toon`` wrap."""
+    return "ccx toon" in cl.raw
+
+
+def is_single_command(cl: CommandLine) -> bool:
+    """Report whether the line is one command — no pipe, redirect, or ``&&``/``;`` chain."""
+    return len(cl.parts) == 1 and not cl.q.uses_redirect()
+
+
+def command_shape(cl: CommandLine) -> str:
+    """Return a stable identity for a command, collapsing argument *values*.
+
+    The shape is ``executable`` + subcommand tokens (lowercase command words like
+    ``view``/``get``, per :data:`SUBCOMMAND_TOKEN`) + sorted flag *names* (values
+    dropped), so ``gh issue view 123`` and ``gh issue view 456`` share one shape
+    while ``gh issue view`` and ``gh pr view`` do not. A heuristic: it ignores flag
+    *order* and positional/flag argument values, the right grain for "have I seen
+    this kind of command emit JSON before". Distinguishing a subcommand from a
+    positional value is command grammar, not syntax, so the rule errs toward
+    distinctness — an unrecognized value-shaped token drops, a word-shaped one stays.
+    """
+    cmd = cl.primary
+    subcommands: list[str] = []
+    for a in cmd.args:
+        if a.startswith("-"):
+            break  # a flag begins; everything after is a flag arg or positional value
+        if SUBCOMMAND_TOKEN.match(a):
+            subcommands.append(a)
+    flags = sorted(a.split("=", 1)[0] for a in cmd.args if a.startswith("-"))
+    return " ".join([cmd.executable, *subcommands, *flags])
+
+
+def looks_like_json(s: str) -> bool:
+    """Report whether ``s`` is JSON or NDJSON, by a real parse (never a first-char sniff).
+
+    Returns ``True`` when the trimmed text parses as a single JSON document, or when
+    it is NDJSON — every non-empty line parses on its own. A first-character check
+    would false-positive on prose that happens to start with ``[`` or ``{``, so the
+    parse is mandatory.
+    """
+    trimmed = s.strip()
+    if not trimmed:
+        return False
+    try:
+        json.loads(trimmed)
+        return True
+    except ValueError:
+        pass
+    lines = [ln for ln in trimmed.splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return False
+    try:
+        for ln in lines:
+            json.loads(ln)
+    except ValueError:
+        return False
+    return True
+
+
+def _shapes_path() -> Path:
+    return resolve_state_dir() / "ccx-json-shapes.json"
+
+
+def _shapes_lock() -> FileLock:
+    return FileLock(str(_shapes_path()) + ".lock")
+
+
+def load_shapes() -> set[str]:
+    """Load the persistent set of command shapes observed emitting JSON.
+
+    Honors ``$CAPTAIN_HOOK_STATE_DIR`` via :func:`resolve_state_dir`. A missing or
+    unreadable file yields an empty set.
+    """
+    path = _shapes_path()
+    if not path.is_file():
+        return set()
+    try:
+        data = json.loads(path.read_text())
+    except ValueError:
+        return set()
+    return set(data) if isinstance(data, list) else set()
+
+
+def record_shape(shape: str) -> None:
+    """Record ``shape`` in the persistent shapes store, bounded FIFO at :data:`MAX_SHAPES`.
+
+    The read-modify-write runs under a :class:`~filelock.FileLock` and commits via an
+    atomic ``mkstemp`` + :func:`os.replace`, so concurrent ``PostToolUse`` recorders
+    never corrupt or lose the file. Order is preserved on disk (a list) so eviction is
+    oldest-first; an already-present shape is moved to the most-recent position.
+    """
+    path = _shapes_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _shapes_lock():
+        order: list[str] = []
+        if path.is_file():
+            try:
+                loaded = json.loads(path.read_text())
+                if isinstance(loaded, list):
+                    order = [s for s in loaded if isinstance(s, str)]
+            except ValueError:
+                order = []
+        if shape in order:
+            order.remove(shape)
+        order.append(shape)
+        order = order[-MAX_SHAPES:]
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                json.dump(order, fh)
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise

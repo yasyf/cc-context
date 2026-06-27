@@ -30,6 +30,7 @@ func NewRootCmd() *cobra.Command {
 		newFindCmd(),
 		newDiffCmd(),
 		newOverviewCmd(),
+		newToonCmd(),
 		newMCPCmd(),
 	)
 	return root
