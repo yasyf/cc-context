@@ -8,6 +8,7 @@ dependencies = [
     "spawnllm>=0.5.2",
     "cc-transcript>=7,<8",
     "capt-hook>=4,<5",
+    "tiktoken>=0.13.0",
 ]
 
 [tool.setuptools.packages.find]

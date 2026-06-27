@@ -5,11 +5,12 @@ Run: cd bench && python -m unittest discover -s tests
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
-from ccxbench.tokens import TokenCounter
+from ccxbench.tokens import TokenCounter, api_count, local_count
 
 
 class TestTokenCounter(unittest.TestCase):
@@ -54,6 +55,27 @@ class TestTokenCounter(unittest.TestCase):
             TokenCounter(model="a", count_fn=fake, cache_dir=cache).count("same")
             TokenCounter(model="bb", count_fn=fake, cache_dir=cache).count("same")
             self.assertEqual(len(calls), 2)  # different models -> different keys
+
+
+class TestLocalCount(unittest.TestCase):
+    def test_offline_and_deterministic(self) -> None:
+        text = "def hello(name):\n    return f'hi {name}'\n"
+        n = local_count(text, "any-model")
+        self.assertGreater(n, 0)
+        self.assertEqual(n, local_count(text, "any-model"))  # stable
+        self.assertGreater(local_count(text * 4, "any-model"), n)  # monotonic in length
+
+    def test_default_counter_needs_no_api_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            counter = TokenCounter(cache_dir=Path(tmp))  # default count_fn = local_count
+            self.assertGreater(counter.count("hello world"), 0)
+
+    @unittest.skipUnless(os.environ.get("ANTHROPIC_API_KEY"), "no ANTHROPIC_API_KEY: skip API fidelity check")
+    def test_proxy_is_within_range_of_api(self) -> None:
+        text = "def add(a, b):\n    return a + b\n" * 20
+        proxy = local_count(text, TokenCounter().model)
+        exact = api_count(text, TokenCounter().model)
+        self.assertLess(abs(proxy - exact) / exact, 0.30)  # proxy within 30% of the API
 
 
 if __name__ == "__main__":

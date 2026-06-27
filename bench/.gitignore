@@ -1,6 +1,7 @@
 .work/
 .fixtures/
 results/
+.token-cache/
 __pycache__/
 *.pyc
 *.egg-info/
