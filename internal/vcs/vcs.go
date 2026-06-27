@@ -73,16 +73,6 @@ func ResolveDiffSource(ctx context.Context, dir, source, scope string) (translat
 	}
 }
 
-// RawHunkArgv builds the `git diff`/`jj diff` argv that prints one file's raw
-// textual hunk against source.
-func RawHunkArgv(ctx context.Context, dir, source, file string) ([]string, error) {
-	tilthSource, useTilth, _, err := ResolveDiffSource(ctx, dir, source, "")
-	if err != nil {
-		return nil, fmt.Errorf("resolve diff source for raw hunk: %w", err)
-	}
-	return RawHunkArgvFor(dir, source, tilthSource, useTilth, file), nil
-}
-
 // RawHunkArgvFor builds the raw-hunk argv from an already-resolved diff source,
 // so callers that resolve once per diff need not re-snapshot the jj working copy
 // for every supplemented file. source is the original logical source (used for

@@ -195,39 +195,42 @@ func TestJJFallbackArgv(t *testing.T) {
 	}
 }
 
-func TestRawHunkArgv(t *testing.T) {
+// TestRawHunkArgvForGitRepo exercises the plain-git path end to end: in a git repo
+// ResolveDiffSource passes the source through untouched, and RawHunkArgvFor omits
+// the ref for a working-tree diff while passing a real ref through.
+func TestRawHunkArgvForGitRepo(t *testing.T) {
 	root := t.TempDir()
 	gitRepo := filepath.Join(root, "git")
 	mustMkdir(t, filepath.Join(gitRepo, ".git"))
 
 	tests := []struct {
 		id     string
-		dir    string
 		source string
 		file   string
 		want   []string
 	}{
 		{
-			id: "git working tree omits the ref", dir: gitRepo, source: "uncommitted", file: "a.go",
+			id: "git working tree omits the ref", source: "uncommitted", file: "a.go",
 			want: []string{"git", "-C", gitRepo, "diff", "--", "a.go"},
 		},
 		{
-			id: "git empty source omits the ref", dir: gitRepo, source: "", file: "a.go",
+			id: "git empty source omits the ref", source: "", file: "a.go",
 			want: []string{"git", "-C", gitRepo, "diff", "--", "a.go"},
 		},
 		{
-			id: "git ref passes through", dir: gitRepo, source: "HEAD~1", file: "sub/b.go",
+			id: "git ref passes through", source: "HEAD~1", file: "sub/b.go",
 			want: []string{"git", "-C", gitRepo, "diff", "HEAD~1", "--", "sub/b.go"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {
-			got, err := RawHunkArgv(context.Background(), tt.dir, tt.source, tt.file)
+			tilthSource, useTilth, _, err := ResolveDiffSource(context.Background(), gitRepo, tt.source, "")
 			if err != nil {
-				t.Fatalf("RawHunkArgv(%q, %q) err: %v", tt.dir, tt.source, err)
+				t.Fatalf("ResolveDiffSource(%q) err: %v", tt.source, err)
 			}
+			got := RawHunkArgvFor(gitRepo, tt.source, tilthSource, useTilth, tt.file)
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("RawHunkArgv = %v, want %v", got, tt.want)
+				t.Errorf("RawHunkArgvFor = %v, want %v", got, tt.want)
 			}
 		})
 	}
