@@ -18,18 +18,10 @@ func NewRootCmd() *cobra.Command {
 	}
 	root.SetVersionTemplate("{{.Version}}\n")
 	root.AddCommand(
+		newVcsCmd(),
+		newCodeCmd(),
+		newRepoCmd(),
 		newHelloCmd(),
-		newSearchCmd(),
-		newRelatedCmd(),
-		newOutlineCmd(),
-		newReadCmd(),
-		newSymbolCmd(),
-		newDepsCmd(),
-		newGrepCmd(),
-		newReplaceCmd(),
-		newFindCmd(),
-		newDiffCmd(),
-		newOverviewCmd(),
 		newToonCmd(),
 		newMCPCmd(),
 	)

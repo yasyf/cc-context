@@ -19,11 +19,11 @@ import (
 	"github.com/yasyf/cc-context/internal/version"
 )
 
-// defaultSnippetLines bounds ccx_search result snippets when the caller gives no
-// explicit max — semble's own default returns the whole chunk.
+// defaultSnippetLines bounds ccx_code_search result snippets when the caller
+// gives no explicit max — semble's own default returns the whole chunk.
 const defaultSnippetLines = 10
 
-// SearchIn is the input for ccx_search.
+// SearchIn is the input for ccx_code_search.
 type SearchIn struct {
 	Query           string `json:"query" jsonschema:"natural-language intent, structural pattern, or literal text"`
 	Repo            string `json:"repo,omitempty" jsonschema:"repo root or https git URL to search; defaults to the project root"`
@@ -33,7 +33,7 @@ type SearchIn struct {
 	MaxSnippetLines int    `json:"max_snippet_lines,omitempty" jsonschema:"max lines per result snippet"`
 }
 
-// ReplaceIn is the input for ccx_replace.
+// ReplaceIn is the input for ccx_code_replace.
 type ReplaceIn struct {
 	Pattern string   `json:"pattern" jsonschema:"ast-grep structural pattern; metavars like $A and $$$ for variadic"`
 	Rewrite string   `json:"rewrite" jsonschema:"replacement template; reference the same metavars"`
@@ -45,12 +45,12 @@ type ReplaceIn struct {
 	Budget  int      `json:"budget,omitempty" jsonschema:"token budget for the preview diff"`
 }
 
-// RelatedIn is the input for ccx_related.
+// RelatedIn is the input for ccx_code_related.
 type RelatedIn struct {
 	Location string `json:"location" jsonschema:"a file:line location to find related code for"`
 }
 
-// OutlineIn is the input for ccx_outline.
+// OutlineIn is the input for ccx_code_outline.
 type OutlineIn struct {
 	Path   string `json:"path" jsonschema:"file or directory to outline"`
 	Items  string `json:"items,omitempty" jsonschema:"ast-grep: items to include (imports|exports|structure|all)"`
@@ -59,7 +59,7 @@ type OutlineIn struct {
 	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the outline"`
 }
 
-// ReadIn is the input for ccx_read.
+// ReadIn is the input for ccx_code_read.
 type ReadIn struct {
 	Path    string `json:"path" jsonschema:"file to read"`
 	Section string `json:"section,omitempty" jsonschema:"a line range (\"A-B\") or a heading (\"## Heading\")"`
@@ -67,21 +67,21 @@ type ReadIn struct {
 	Budget  int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
 }
 
-// SymbolIn is the input for ccx_symbol.
+// SymbolIn is the input for ccx_code_symbol.
 type SymbolIn struct {
 	Name  string `json:"name" jsonschema:"symbol to grok"`
 	Scope string `json:"scope,omitempty" jsonschema:"directory to scope the lookup to"`
 	Full  bool   `json:"full,omitempty" jsonschema:"include full bodies"`
 }
 
-// DepsIn is the input for ccx_deps.
+// DepsIn is the input for ccx_code_deps.
 type DepsIn struct {
 	Path   string `json:"path" jsonschema:"file to analyze"`
 	Scope  string `json:"scope,omitempty" jsonschema:"directory to scope the analysis to"`
 	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
 }
 
-// GrepIn is the input for ccx_grep.
+// GrepIn is the input for ccx_code_grep.
 type GrepIn struct {
 	Text   string `json:"text" jsonschema:"text to search for"`
 	Glob   string `json:"glob,omitempty" jsonschema:"restrict to files matching this glob"`
@@ -89,20 +89,20 @@ type GrepIn struct {
 	Expand int    `json:"expand,omitempty" jsonschema:"lines of context to expand around hits"`
 }
 
-// FindIn is the input for ccx_find.
+// FindIn is the input for ccx_repo_find.
 type FindIn struct {
 	Glob  string `json:"glob" jsonschema:"glob to match files against"`
 	Scope string `json:"scope,omitempty" jsonschema:"directory to scope the search to"`
 }
 
-// DiffIn is the input for ccx_diff.
+// DiffIn is the input for ccx_vcs_diff.
 type DiffIn struct {
 	Source string `json:"source,omitempty" jsonschema:"diff source: uncommitted|staged|<ref> (default uncommitted)"`
 	Scope  string `json:"scope,omitempty" jsonschema:"path to scope the diff to"`
 	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
 }
 
-// OverviewIn is the input for ccx_overview.
+// OverviewIn is the input for ccx_repo_overview.
 type OverviewIn struct{}
 
 // BashToonIn is the input for BashToon.
@@ -131,12 +131,12 @@ func Serve(ctx context.Context) error {
 // proxies the call to the matching engine.
 func register(s *mcp.Server, p *proxy.Proxy) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ccx_search",
+		Name:        "ccx_code_search",
 		Description: "Code search routed by query kind — natural-language intent (semantic), structural pattern (ast-grep), or forced literal. Prefer over grep for \"where/how do we do X\".",
 	}, searchHandler(p))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ccx_replace",
+		Name:        "ccx_code_replace",
 		Description: "Preview (default) or apply a structural find-replace WITHOUT reading the file into context. Pattern in, diff out.",
 	}, handler(p, backend.OpReplace, func(in ReplaceIn) backend.Args {
 		return backend.Args{
@@ -152,54 +152,54 @@ func register(s *mcp.Server, p *proxy.Proxy) {
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ccx_related",
+		Name:        "ccx_code_related",
 		Description: "Find code semantically related to a file:line location — follow-up to a prior search hit.",
 	}, handler(p, backend.OpRelated, func(in RelatedIn) backend.Args {
 		return backend.Args{Query: in.Location}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ccx_outline",
+		Name:        "ccx_code_outline",
 		Description: "Compact outline of a file or directory (signatures + line numbers, budget-bounded) — prefer over reading whole files. Routes to ast-grep (supports items=imports|exports and match=<regex>) or tilth by language.",
 	}, outlineHandler(p))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ccx_read",
+		Name:        "ccx_code_read",
 		Description: "Read a file by section, heading, or whole — pass section to avoid pulling the entire file.",
 	}, handler(p, backend.OpRead, func(in ReadIn) backend.Args {
 		return backend.Args{Path: in.Path, Section: in.Section, Full: in.Full, Budget: in.Budget}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ccx_symbol",
+		Name:        "ccx_code_symbol",
 		Description: "Grok a symbol: definition, doc, callers, callees, siblings, tests — one call beats many greps.",
 	}, handler(p, backend.OpSymbol, func(in SymbolIn) backend.Args {
 		return backend.Args{Query: in.Name, Scope: in.Scope, Full: in.Full}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ccx_deps",
+		Name:        "ccx_code_deps",
 		Description: "Dependencies of a file (imports and their resolved targets), budget-bounded.",
 	}, handler(p, backend.OpDeps, func(in DepsIn) backend.Args {
 		return backend.Args{Path: in.Path, Scope: in.Scope, Budget: in.Budget}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ccx_grep",
+		Name:        "ccx_code_grep",
 		Description: "Literal text search across code, optionally globbed and budget-bounded — for exact strings.",
 	}, handler(p, backend.OpGrep, func(in GrepIn) backend.Args {
 		return backend.Args{Query: in.Text, Glob: in.Glob, Budget: in.Budget, Expand: in.Expand}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ccx_find",
+		Name:        "ccx_repo_find",
 		Description: "List files matching a glob with per-file token counts — prefer over ls -R for enumeration.",
 	}, handler(p, backend.OpFind, func(in FindIn) backend.Args {
 		return backend.Args{Glob: in.Glob, Scope: in.Scope}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ccx_diff",
+		Name:        "ccx_vcs_diff",
 		Description: "VCS-aware diff (uncommitted|staged|<ref>), budget-bounded — prefer over a raw git diff pager.",
 	}, handler(p, backend.OpDiff, func(in DiffIn) backend.Args {
 		source := in.Source
@@ -210,7 +210,7 @@ func register(s *mcp.Server, p *proxy.Proxy) {
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ccx_overview",
+		Name:        "ccx_repo_overview",
 		Description: "Repository overview (structure and entry points) — orient here before diving into files.",
 	}, handler(p, backend.OpOverview, func(OverviewIn) backend.Args {
 		return backend.Args{}
@@ -230,7 +230,7 @@ func register(s *mcp.Server, p *proxy.Proxy) {
 // path keeps semble's compact-snippet default; structural and literal ignore the
 // snippet knobs.
 func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, SearchIn) (*mcp.CallToolResult, any, error) {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) (*mcp.CallToolResult, any, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in SearchIn) (*mcp.CallToolResult, any, error) {
 		snippet := in.MaxSnippetLines
 		if snippet == 0 {
 			snippet = defaultSnippetLines
@@ -245,14 +245,14 @@ func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, S
 		}
 		op, _, err := search.Route(a)
 		if err != nil {
-			return nil, nil, fmt.Errorf("ccx_search: %w", err)
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
 		if op == backend.OpStructural && in.Repo != "" {
 			a.Paths = []string{in.Repo}
 		}
 		out, err := p.Call(ctx, op, a)
 		if err != nil {
-			return nil, nil, fmt.Errorf("ccx_search: %w", err)
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
 	}
@@ -262,27 +262,28 @@ func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, S
 // routed op, mirroring the CLI so both surfaces behave identically: ast-grep for
 // directories and the languages it outlines, tilth signature mode otherwise.
 func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, OutlineIn) (*mcp.CallToolResult, any, error) {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in OutlineIn) (*mcp.CallToolResult, any, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in OutlineIn) (*mcp.CallToolResult, any, error) {
 		a := backend.Args{Path: in.Path, Items: in.Items, Match: in.Match, Lang: in.Lang, Budget: in.Budget}
 		op, err := outline.Route(a)
 		if err != nil {
-			return nil, nil, fmt.Errorf("ccx_outline: %w", err)
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
 		out, err := p.Call(ctx, op, a)
 		if err != nil {
-			return nil, nil, fmt.Errorf("ccx_outline: %w", err)
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
 	}
 }
 
 // handler adapts a per-tool Args builder into an MCP tool handler that proxies
-// the op and wraps the result text in a tool result.
+// the op and wraps the result text in a tool result; errors carry the called
+// tool's name as their prefix.
 func handler[In any](p *proxy.Proxy, op backend.Op, args func(In) backend.Args) func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, any, error) {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
 		out, err := p.Call(ctx, op, args(in))
 		if err != nil {
-			return nil, nil, fmt.Errorf("ccx_%s: %w", op, err)
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
 	}

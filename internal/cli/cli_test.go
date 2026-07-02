@@ -11,41 +11,57 @@ import (
 	"github.com/yasyf/cc-context/internal/cli"
 )
 
-// allOps are the logical-op subcommands the root must expose.
-var allOps = []string{
-	"search", "related", "outline", "read", "symbol",
-	"deps", "grep", "find", "diff", "overview",
-}
-
 func TestRootHelpListsAllOps(t *testing.T) {
-	var out bytes.Buffer
-	root := cli.NewRootCmd()
-	root.SetOut(&out)
-	root.SetErr(&out)
-	root.SetArgs([]string{"--help"})
-	if err := root.Execute(); err != nil {
-		t.Fatalf("Execute(--help) error = %v", err)
+	tests := []struct {
+		name string
+		args []string
+		ops  []string
+	}{
+		{"root", []string{"--help"}, []string{"vcs", "code", "repo", "hello", "toon"}},
+		{"vcs", []string{"vcs", "--help"}, []string{"diff"}},
+		{"code", []string{"code", "--help"}, []string{
+			"read", "outline", "search", "grep", "symbol", "deps", "related", "replace",
+		}},
+		{"repo", []string{"repo", "--help"}, []string{"overview", "find"}},
 	}
-	help := out.String()
-	for _, op := range append([]string{"hello"}, allOps...) {
-		if !strings.Contains(help, op) {
-			t.Errorf("--help output missing subcommand %q\n%s", op, help)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			root := cli.NewRootCmd()
+			root.SetOut(&out)
+			root.SetErr(&out)
+			root.SetArgs(tt.args)
+			if err := root.Execute(); err != nil {
+				t.Fatalf("Execute(%v) error = %v", tt.args, err)
+			}
+			help := out.String()
+			for _, op := range tt.ops {
+				if !strings.Contains(help, op) {
+					t.Errorf("%v output missing subcommand %q\n%s", tt.args, op, help)
+				}
+			}
+		})
 	}
 }
 
 func TestSymbolAliasGrokRegistered(t *testing.T) {
-	for _, c := range cli.NewRootCmd().Commands() {
-		if c.Name() == "symbol" {
-			for _, a := range c.Aliases {
-				if a == "grok" {
-					return
-				}
-			}
-			t.Fatalf("symbol command missing grok alias, aliases = %v", c.Aliases)
+	for _, group := range cli.NewRootCmd().Commands() {
+		if group.Name() != "code" {
+			continue
 		}
+		for _, c := range group.Commands() {
+			if c.Name() == "symbol" {
+				for _, a := range c.Aliases {
+					if a == "grok" {
+						return
+					}
+				}
+				t.Fatalf("symbol command missing grok alias, aliases = %v", c.Aliases)
+			}
+		}
+		t.Fatal("symbol command not registered under code group")
 	}
-	t.Fatal("symbol command not registered")
+	t.Fatal("code group not registered")
 }
 
 // TestSearchCommandInvokesBackend drives the full CLI->router->backend->render
@@ -63,7 +79,7 @@ func TestSearchCommandInvokesBackend(t *testing.T) {
 	root := cli.NewRootCmd()
 	root.SetOut(&out)
 	root.SetErr(&out)
-	root.SetArgs([]string{"search", "auth flow", "src", "-k", "3"})
+	root.SetArgs([]string{"code", "search", "auth flow", "src", "-k", "3"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("Execute(search) error = %v", err)
 	}

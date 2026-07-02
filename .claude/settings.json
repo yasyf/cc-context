@@ -85,6 +85,16 @@
         ]
       }
     ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx capt-hook --hooks $CLAUDE_PROJECT_DIR/plugin/hooks run PreCompact"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "hooks": [

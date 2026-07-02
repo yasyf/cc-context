@@ -1,4 +1,4 @@
-// Package search is the front door for `ccx search`: it classifies a query and
+// Package search is the front door for `ccx code search`: it classifies a query and
 // maps the chosen kind to the logical op that serves it. Both the CLI and the MCP
 // handler route through it so the two surfaces behave identically.
 package search

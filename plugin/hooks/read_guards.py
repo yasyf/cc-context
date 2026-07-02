@@ -35,13 +35,13 @@ hook(
     only_if=[Tool("Read"), UnboundedLargeRead()],
     message=(
         "BLOCKED: unbounded Read of a large file (>20KB) floods context. "
-        "Map it first: `ccx outline <path>` (or mcp__cc-context__outline), then "
-        "`ccx read <path> --section A-B` (or mcp__cc-context__read) for the part you need. "
-        "Escape hatch — whole file: `ccx read <path> --full`, or re-run Read with offset/limit."
+        "Map it first: `ccx code outline <path>` (or mcp__cc-context__ccx_code_outline), then "
+        "`ccx code read <path> --section A-B` (or mcp__cc-context__ccx_code_read) for the part you need. "
+        "Escape hatch — whole file: `ccx code read <path> --full`, or re-run Read with offset/limit."
     ),
     block=True,
     tests={
-        Input(tool="Read", file=FileFixture(size=LARGE_READ_BYTES + 1)): Block(pattern="ccx outline"),
+        Input(tool="Read", file=FileFixture(size=LARGE_READ_BYTES + 1)): Block(pattern="ccx code outline"),
         Input(tool="Read", file=FileFixture(size=1_024)): Allow(),
         Input(tool="Read", file=FileFixture(size=LARGE_READ_BYTES + 1), offset=1, limit=100): Allow(),
     },

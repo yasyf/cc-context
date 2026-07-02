@@ -47,18 +47,18 @@ claude mcp add --scope user --transport stdio cc-context -- ccx mcp
 Orient in a repo, find code by intent, then grok the result:
 
 ```console
-$ ccx overview
+$ ccx repo overview
 [tilth] Go project — 45 source files, 8 directories
   dirs: cli/ backend/ astgrep/ render/ querykind/ vcs/ mcpserver/ search/
   hot (× = importers): bench/ccxbench/types.py ×8, plugin/hooks/common.py ×4
   git: branch d6c15a5, clean
   manifest: go.mod (github.com/yasyf/cc-context)
 
-$ ccx search "how is the mcp server started" -k 1 --max-snippet-lines 1
+$ ccx code search "how is the mcp server started" -k 1 --max-snippet-lines 1
 # semantic (semble)
 {"query": "how is the mcp server started", "results": [{"file_path": "internal/mcpserver/server.go", "start_line": 103, "end_line": 115, "score": 0.032, "content": "func Serve(ctx context.Context) error {"}]}
 
-$ ccx symbol NewRootCmd
+$ ccx code symbol NewRootCmd
 # grok: NewRootCmd [internal/cli/root.go:11]
 func NewRootCmd() *cobra.Command
 # plus doc, body, callees (13 internal, 3 external), and callers (5)
@@ -67,7 +67,7 @@ func NewRootCmd() *cobra.Command
 Every structural command caps its output at `--budget` tokens, cuts on a line boundary, and says how much it dropped:
 
 ```console
-$ ccx outline internal/astgrep/run.go --budget 60
+$ ccx code outline internal/astgrep/run.go --budget 60
 # ast-grep
 # internal/astgrep/run.go
 L14  applyFileCap = 20
@@ -77,11 +77,11 @@ L38  func runStructural(ctx context.Context, a backend.Args) (string, error) {
 … +4 lines, ~85 tokens omitted — re-run with a larger --budget
 ```
 
-A query carrying an ast-grep metavar (`$A`, `$$$`) routes to structural search. `ccx replace` rewrites the matches and previews a diff, writing nothing until `--apply` — so an agent edits code it never read into context:
+A query carrying an ast-grep metavar (`$A`, `$$$`) routes to structural search. `ccx code replace` rewrites the matches and previews a diff, writing nothing until `--apply` — so an agent edits code it never read into context:
 
 ```console
 $ printf 'package demo\n\nfunc f() { Add(1, 2) }\n' > /tmp/demo.go
-$ ccx replace 'Add($A, $B)' 'Sum($A, $B)' /tmp/demo.go
+$ ccx code replace 'Add($A, $B)' 'Sum($A, $B)' /tmp/demo.go
 # 1 matches across 1 files
 /tmp/demo.go:3
 - Add(1, 2)
@@ -113,17 +113,21 @@ Each command is a token-bounded stand-in for a primitive an agent would otherwis
 
 | Command | What it does |
 | --- | --- |
-| `ccx overview` | Repository structure and entry points; start here |
-| `ccx search <query> [path]` | Search routed by query kind: natural-language runs semantic, a code pattern runs structural |
-| `ccx replace <pattern> <rewrite> [paths...]` | Structural find-replace; previews a diff, writes only with `--apply` |
-| `ccx related <file:line>` | Code semantically related to a location |
-| `ccx symbol <name>` (alias `grok`) | Definition, doc, body, callers, callees, siblings, tests |
-| `ccx outline <file-or-dir>` | Token-budgeted structural outline of a file or directory |
-| `ccx read <file> --section A-B` | Read a line range, a `## Heading`, or the whole file with `--full` |
-| `ccx deps <file>` | Symbols a file uses, and what uses it back |
-| `ccx grep <text> --glob G` | Literal text search, optionally globbed and budgeted |
-| `ccx find <glob>` | List files matching a glob, with per-file token counts |
-| `ccx diff [uncommitted\|staged\|<ref>]` | VCS-aware structural diff; defaults to uncommitted |
+| `ccx repo overview` | Repository structure and entry points; start here |
+| `ccx code search <query> [path]` | Search routed by query kind: natural-language runs semantic, a code pattern runs structural |
+| `ccx code replace <pattern> <rewrite> [paths...]` | Structural find-replace; previews a diff, writes only with `--apply` |
+| `ccx code related <file:line>` | Code semantically related to a location |
+| `ccx code symbol <name>` (alias `grok`) | Definition, doc, body, callers, callees, siblings, tests |
+| `ccx code outline <file-or-dir>` | Token-budgeted structural outline of a file or directory |
+| `ccx code read <file> --section A-B` | Read a line range, a `## Heading`, or the whole file with `--full` |
+| `ccx code deps <file>` | Symbols a file uses, and what uses it back |
+| `ccx code grep <text> --glob G` | Literal text search, optionally globbed and budgeted |
+| `ccx repo find <glob>` | List files matching a glob, with per-file token counts |
+| `ccx repo locate <name>` | Resolve a sibling repo, Go module, or Python package to its on-disk path; exits 3 when unresolved |
+| `ccx vcs diff [uncommitted\|staged\|<ref>]` | VCS-aware structural diff; defaults to uncommitted |
+| `ccx vcs show [ref]` | Commit message plus a structural per-file diff of one commit; defaults to the last commit |
+| `ccx vcs history <path> [-n N]` | Per-commit summary of a file's changed symbols; replaces `git log -p` |
+| `ccx vcs ship [-m <msg>]` | Commit, push, and watch CI in one call: jj-aware commit, push, `gh run watch --exit-status` |
 | `ccx toon [-- <cmd>]` | Re-encode a command's JSON/NDJSON output as TOON, or filter a pipe |
 
 Run `ccx <command> --help` for the full flag set, and `ccx --version` for the build version. Three engines sit behind the one surface — semble for semantic search, ast-grep for structural search and rewrites, tilth for the rest — and `ccx` routes each command for you.

@@ -1,4 +1,4 @@
-// Package outline is the front door for `ccx outline`: it selects the engine
+// Package outline is the front door for `ccx code outline`: it selects the engine
 // that serves a path. Both the CLI and the MCP handler route through it so the
 // two surfaces behave identically.
 package outline

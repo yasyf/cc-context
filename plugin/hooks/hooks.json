@@ -19,6 +19,16 @@
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx capt-hook --hooks ${CLAUDE_PLUGIN_ROOT}/hooks run PreCompact"
+          }
+        ]
+      }
     ]
   }
 }

@@ -6,8 +6,8 @@ replaces. No LLM, no agent — just the raw tool, its ccx equivalent, and the
 count-tokens ground truth on each output.
 
 Pairs are matched by intent: "understand a file" pits the file's full text (what a
-raw `Read` injects) against `ccx outline`; "find a pattern" pits `grep -rn` against
-`ccx grep`; and so on. Each pair asserts `ccx_tokens <= raw_tokens`; any violation
+raw `Read` injects) against `ccx code outline`; "find a pattern" pits `grep -rn` against
+`ccx code grep`; and so on. Each pair asserts `ccx_tokens <= raw_tokens`; any violation
 fails the bench, which is the CI regression guard for "strictly less at the tool
 level."
 """
@@ -152,7 +152,7 @@ def build_pairs(cfg: Config, repos: list[str] | None = None) -> list[Pair]:
                     intent="understand file",
                     target=f"{repo_name}/{rel}",
                     raw_text=text,
-                    ccx_text=_ccx(cfg, repo, ["outline", rel]),
+                    ccx_text=_ccx(cfg, repo, ["code", "outline", rel]),
                 )
             )
 
@@ -163,7 +163,7 @@ def build_pairs(cfg: Config, repos: list[str] | None = None) -> list[Pair]:
                     intent="read region",
                     target=f"{repo_name}/{rel} {section}",
                     raw_text=text,
-                    ccx_text=_ccx(cfg, repo, ["read", rel, "--section", section]),
+                    ccx_text=_ccx(cfg, repo, ["code", "read", rel, "--section", section]),
                 )
             )
 
@@ -173,7 +173,7 @@ def build_pairs(cfg: Config, repos: list[str] | None = None) -> list[Pair]:
                     intent="find pattern",
                     target=f"{repo_name}:{pattern}",
                     raw_text=_shell(["grep", "-rn", pattern, "."], repo, ok_codes=(0, 1)),
-                    ccx_text=_ccx(cfg, repo, ["grep", pattern]),
+                    ccx_text=_ccx(cfg, repo, ["code", "grep", pattern]),
                 )
             )
 
@@ -183,7 +183,7 @@ def build_pairs(cfg: Config, repos: list[str] | None = None) -> list[Pair]:
                     intent="enumerate files",
                     target=f"{repo_name}:{glob}",
                     raw_text=_shell(["find", ".", "-type", "f", "-name", glob], repo),
-                    ccx_text=_ccx(cfg, repo, ["find", glob]),
+                    ccx_text=_ccx(cfg, repo, ["repo", "find", glob]),
                 )
             )
 
@@ -193,7 +193,7 @@ def build_pairs(cfg: Config, repos: list[str] | None = None) -> list[Pair]:
                     intent="understand symbol",
                     target=f"{repo_name}:{name}",
                     raw_text=_shell(["grep", "-rn", name, "."], repo, ok_codes=(0, 1)),
-                    ccx_text=_ccx(cfg, repo, ["symbol", name]),
+                    ccx_text=_ccx(cfg, repo, ["code", "symbol", name]),
                 )
             )
 

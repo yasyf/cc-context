@@ -112,8 +112,9 @@ MUX_CLEANPATH_TEST = (
 
 # A structural-replace prompt deliberately states the change as a pattern→rewrite over
 # the code's shape, not "open the file and edit line N": the ccx arm can run a single
-# `ccx replace '<pattern>' '<rewrite>'` (or the ccx_replace MCP tool) without reading the
-# file, while the baseline must Read then Edit. Graded by test_run on the resulting code.
+# `ccx code replace '<pattern>' '<rewrite>'` (or the ccx_code_replace MCP tool) without
+# reading the file, while the baseline must Read then Edit. Graded by test_run on the
+# resulting code.
 
 
 def nav_tasks(manifest: dict) -> list[Task]:

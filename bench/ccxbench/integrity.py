@@ -28,7 +28,9 @@ HEAVY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 # Signatures of a fired ccx guard, taken from the guard pack's deny messages.
-GUARD_HINT = re.compile(r"ccx\s+(outline|read|diff|find|symbol|grok|grep|search)|use\s+`?ccx", re.IGNORECASE)
+GUARD_HINT = re.compile(
+    r"ccx\s+(code|repo|vcs)\s+(outline|read|diff|find|symbol|grok|grep|search)|use\s+`?ccx", re.IGNORECASE
+)
 
 
 def is_ccx_call(name: str, cmd: str) -> bool:
@@ -85,8 +87,9 @@ def assess(pr: PrintResult, arm: str) -> Integrity:
                     if block.name.startswith(CCX_MCP):
                         ccx_calls.append(block.name)
                     else:
-                        parts = cmd.split()
-                        ccx_calls.append(f"bash:ccx {parts[1]}" if len(parts) > 1 else "bash:ccx")
+                        rest = cmd[CCX_BASH.search(cmd).end() :].split()
+                        depth = 2 if rest and rest[0] in ("code", "repo", "vcs") else 1
+                        ccx_calls.append(" ".join(["bash:ccx", *rest[:depth]]))
                     continue
                 label = heavy_label(cmd)
                 if label:

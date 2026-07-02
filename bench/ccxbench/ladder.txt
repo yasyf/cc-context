@@ -7,11 +7,11 @@ tools mirror the CLI 1:1 but the `ccx` command is preferred.
 Reach for ccx before Read, cat, sed, git diff, ls -R, or find — the guard hooks block
 those on anything token-heavy.
 
-1. Orient a repo → `ccx overview`
-2. "How does X work / where is Y" (intent) → `ccx search "<question>"`
-3. A specific symbol (def + callers + callees) → `ccx symbol <name>` (alias `ccx grok`)
-4. Literal / structural text → `ccx grep <text> [--glob G]`
-5. List files → `ccx find "<glob>"`
-6. Read a file → `ccx outline <file>` first, then `ccx read <file> --section A-B` for the
-   part you need (whole file: `ccx read <file> --full`)
-7. Review changes → `ccx diff [src]` (structural, jj-aware; exact hunks: `git diff -- <file>`)
+1. Orient a repo → `ccx repo overview`
+2. "How does X work / where is Y" (intent) → `ccx code search "<question>"`
+3. A specific symbol (def + callers + callees) → `ccx code symbol <name>` (alias `ccx code grok`)
+4. Literal / structural text → `ccx code grep <text> [--glob G]`
+5. List files → `ccx repo find "<glob>"`
+6. Read a file → `ccx code outline <file>` first, then `ccx code read <file> --section A-B` for the
+   part you need (whole file: `ccx code read <file> --full`)
+7. Review changes → `ccx vcs diff [src]` (structural, jj-aware; exact hunks: `git diff -- <file>`)

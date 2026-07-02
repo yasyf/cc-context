@@ -127,20 +127,20 @@ class TestCost(unittest.TestCase):
 
 class TestIntegrity(unittest.TestCase):
     def test_ccx_arm_facade_used(self) -> None:
-        pr = pr_from([init_msg(["cc-context"]), mcp_call("mcp__cc-context__outline"), result_msg()])
+        pr = pr_from([init_msg(["cc-context"]), mcp_call("mcp__cc-context__ccx_code_outline"), result_msg()])
         v = integrity.assess(pr, "ccx")
         self.assertTrue(v.ok)
         self.assertTrue(v.ccx_used)
 
     def test_ccx_arm_bash_ccx_used(self) -> None:
-        pr = pr_from([init_msg(["cc-context"]), bash("ccx outline internal/x.go"), result_msg()])
+        pr = pr_from([init_msg(["cc-context"]), bash("ccx code outline internal/x.go"), result_msg()])
         v = integrity.assess(pr, "ccx")
         self.assertTrue(v.ccx_used)
-        self.assertEqual(v.ccx_calls, ["bash:ccx outline"])
+        self.assertEqual(v.ccx_calls, ["bash:ccx code outline"])
 
     def test_ccx_arm_guard_fired(self) -> None:
         pr = pr_from(
-            [init_msg(["cc-context"]), bash("cat internal/x.go"), tool_err("Blocked: use `ccx outline` instead"), result_msg()]
+            [init_msg(["cc-context"]), bash("cat internal/x.go"), tool_err("Blocked: use `ccx code outline` instead"), result_msg()]
         )
         v = integrity.assess(pr, "ccx")
         self.assertTrue(v.guard_fired)
@@ -233,7 +233,7 @@ class TestAnswerKeyAndPairing(unittest.TestCase):
 
     def test_integrity_flags_answer_key_read_tool(self) -> None:
         read = tool_use("Read", {"file_path": "/x/manifest.json"})
-        pr = pr_from([init_msg(["cc-context"]), read, mcp_call("mcp__cc-context__ccx_symbol"), result_msg()])
+        pr = pr_from([init_msg(["cc-context"]), read, mcp_call("mcp__cc-context__ccx_code_symbol"), result_msg()])
         v = integrity.assess(pr, "ccx")
         self.assertFalse(v.ok)
 

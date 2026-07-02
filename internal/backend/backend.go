@@ -38,7 +38,7 @@ const (
 	// OpReplace is an ast-grep structural find-replace.
 	OpReplace Op = "replace"
 	// OpStructOutline is an ast-grep structural outline (file or directory). It
-	// serves `ccx outline` for the languages ast-grep outlines; OpOutline keeps
+	// serves `ccx code outline` for the languages ast-grep outlines; OpOutline keeps
 	// tilth signature mode for the rest. outline.Route picks between them.
 	OpStructOutline Op = "struct-outline"
 )

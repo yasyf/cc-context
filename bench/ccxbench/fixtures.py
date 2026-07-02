@@ -166,7 +166,7 @@ SYMBOLS: tuple[Symbol, ...] = (
     Symbol("whisper", "web/app.ts", "export function whisper(", "func", (), ()),
     Symbol("announce", "web/app.ts", "export function announce(", "func", ("shout",), ()),
     # Symbols in the large generated file (>20KB): big-file nav/symbol tasks exercise
-    # ccx outline/symbol versus a full native Read, and trip the large-Read guard.
+    # ccx code outline/symbol versus a full native Read, and trip the large-Read guard.
     Symbol("Gen0", "internal/gen/generated.go", "func Gen0(", "func", (), ("GeneratedTotal",)),
     Symbol("Gen10", "internal/gen/generated.go", "func Gen10(", "func", (), ()),
     Symbol("Gen42", "internal/gen/generated.go", "func Gen42(", "func", (), ()),

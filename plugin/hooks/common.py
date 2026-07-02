@@ -4,9 +4,9 @@ The guards steer Claude away from the handful of tool invocations that reliably
 flood the context window — an unbounded ``Read`` of a huge file, a full ``git
 diff``, raw ``grep`` file searches, ``sed -n A,Bp`` / ``cat`` line dumps, recursive
 ``ls``/``find`` trees — and toward the ``ccx`` tools that return the same
-information compactly (``ccx outline``, ``ccx read --section``, ``ccx diff``, ``ccx
-find``, ``ccx symbol``, ``ccx grep``). The MCP tools (``mcp__cc-context__outline``
-and friends) mirror every command.
+information compactly (``ccx code outline``, ``ccx code read --section``, ``ccx vcs
+diff``, ``ccx repo find``, ``ccx code symbol``, ``ccx code grep``). The MCP tools
+(``mcp__cc-context__ccx_code_outline`` and friends) mirror every command.
 
 The themed guard modules import these as ``from .common import ...``. The module
 registers no hooks, so discovery loads it as a harmless no-op.

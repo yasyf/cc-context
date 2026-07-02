@@ -79,10 +79,10 @@ func callText(t *testing.T, cs *mcp.ClientSession, tool string, args map[string]
 func TestRegisteredToolSurface(t *testing.T) {
 	cs := connectTestServer(t)
 	want := map[string]bool{
-		"ccx_search": false, "ccx_replace": false, "ccx_related": false,
-		"ccx_outline": false, "ccx_read": false, "ccx_symbol": false,
-		"ccx_deps": false, "ccx_grep": false, "ccx_find": false,
-		"ccx_diff": false, "ccx_overview": false,
+		"ccx_code_search": false, "ccx_code_replace": false, "ccx_code_related": false,
+		"ccx_code_outline": false, "ccx_code_read": false, "ccx_code_symbol": false,
+		"ccx_code_deps": false, "ccx_code_grep": false, "ccx_repo_find": false,
+		"ccx_vcs_diff": false, "ccx_repo_overview": false,
 	}
 	res, err := cs.ListTools(context.Background(), nil)
 	if err != nil {
@@ -105,18 +105,18 @@ func TestReplaceToolPreviewVsApply(t *testing.T) {
 	cs := connectTestServer(t)
 
 	// Omitting apply → preview (diff, no apply summary).
-	out, isErr := callText(t, cs, "ccx_replace", map[string]any{"pattern": "old($A)", "rewrite": "new($A)"})
+	out, isErr := callText(t, cs, "ccx_code_replace", map[string]any{"pattern": "old($A)", "rewrite": "new($A)"})
 	if isErr {
-		t.Fatalf("ccx_replace preview is error: %s", out)
+		t.Fatalf("ccx_code_replace preview is error: %s", out)
 	}
 	if !strings.HasPrefix(out, "# 2 matches across 2 files") {
 		t.Errorf("preview wrong:\n%s", out)
 	}
 
 	// apply:true → apply summary.
-	out, isErr = callText(t, cs, "ccx_replace", map[string]any{"pattern": "old($A)", "rewrite": "new($A)", "apply": true})
+	out, isErr = callText(t, cs, "ccx_code_replace", map[string]any{"pattern": "old($A)", "rewrite": "new($A)", "apply": true})
 	if isErr {
-		t.Fatalf("ccx_replace apply is error: %s", out)
+		t.Fatalf("ccx_code_replace apply is error: %s", out)
 	}
 	if out != "# applied 2 rewrites across 2 files\n" {
 		t.Errorf("apply summary wrong: %q", out)
@@ -132,16 +132,19 @@ func TestReplaceToolForceOverCap(t *testing.T) {
 	cs := connectTestServer(t)
 
 	// apply over the 20-file cap without force → tool error.
-	out, isErr := callText(t, cs, "ccx_replace", map[string]any{"pattern": "old($A)", "rewrite": "new($A)", "apply": true})
+	out, isErr := callText(t, cs, "ccx_code_replace", map[string]any{"pattern": "old($A)", "rewrite": "new($A)", "apply": true})
 	if !isErr {
 		t.Fatalf("over-cap apply should be a tool error, got: %s", out)
 	}
 	if !strings.Contains(out, "exceeding the cap of 20") {
 		t.Errorf("cap error text wrong: %s", out)
 	}
+	if !strings.Contains(out, "ccx_code_replace:") {
+		t.Errorf("cap error should carry the tool-name prefix: %s", out)
+	}
 
 	// force:true → applies.
-	out, isErr = callText(t, cs, "ccx_replace", map[string]any{"pattern": "old($A)", "rewrite": "new($A)", "apply": true, "force": true})
+	out, isErr = callText(t, cs, "ccx_code_replace", map[string]any{"pattern": "old($A)", "rewrite": "new($A)", "apply": true, "force": true})
 	if isErr {
 		t.Fatalf("forced apply is error: %s", out)
 	}
@@ -155,9 +158,9 @@ func TestSearchToolStructuralMode(t *testing.T) {
 	cs := connectTestServer(t)
 
 	// A metavar query auto-routes structural; the result is the search list.
-	out, isErr := callText(t, cs, "ccx_search", map[string]any{"query": "old($A)"})
+	out, isErr := callText(t, cs, "ccx_code_search", map[string]any{"query": "old($A)"})
 	if isErr {
-		t.Fatalf("ccx_search structural is error: %s", out)
+		t.Fatalf("ccx_code_search structural is error: %s", out)
 	}
 	if !strings.Contains(out, "a.go:L1  old0") {
 		t.Errorf("structural search list wrong:\n%s", out)
@@ -169,9 +172,9 @@ func TestOutlineToolRoutesToAstGrep(t *testing.T) {
 	cs := connectTestServer(t)
 
 	// A directory always routes to ast-grep; the result is the rendered outline.
-	out, isErr := callText(t, cs, "ccx_outline", map[string]any{"path": t.TempDir()})
+	out, isErr := callText(t, cs, "ccx_code_outline", map[string]any{"path": t.TempDir()})
 	if isErr {
-		t.Fatalf("ccx_outline is error: %s", out)
+		t.Fatalf("ccx_code_outline is error: %s", out)
 	}
 	if !strings.Contains(out, "# x.go") || !strings.Contains(out, "L5  type X struct {") || !strings.Contains(out, "\n  L6  Y int") {
 		t.Errorf("outline render wrong:\n%s", out)
@@ -180,12 +183,15 @@ func TestOutlineToolRoutesToAstGrep(t *testing.T) {
 
 func TestSearchToolInvalidMode(t *testing.T) {
 	cs := connectTestServer(t)
-	out, isErr := callText(t, cs, "ccx_search", map[string]any{"query": "x", "mode": "bogus"})
+	out, isErr := callText(t, cs, "ccx_code_search", map[string]any{"query": "x", "mode": "bogus"})
 	if !isErr {
 		t.Fatalf("invalid mode should be a tool error, got: %s", out)
 	}
 	if !strings.Contains(out, "bogus") {
 		t.Errorf("invalid-mode error should name the bad mode: %s", out)
+	}
+	if !strings.Contains(out, "ccx_code_search:") {
+		t.Errorf("invalid-mode error should carry the tool-name prefix: %s", out)
 	}
 }
 

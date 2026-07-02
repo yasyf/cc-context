@@ -17,6 +17,8 @@ func TestExitCode(t *testing.T) {
 		{"exit error zero", &ExitError{Code: 0}, 0},
 		{"plain error", errors.New("boom"), 1},
 		{"wrapped exit error", fmt.Errorf("ran: %w", &ExitError{Code: 7}), 7},
+		{"not found", ErrNotFound, 3},
+		{"wrapped not found", fmt.Errorf("locate %q: %w", "nope", ErrNotFound), 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
