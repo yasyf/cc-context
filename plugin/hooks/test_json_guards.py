@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from captain_hook import CommandLine
@@ -23,7 +24,6 @@ from captain_hook.events import PreToolUseEvent
 from captain_hook.session import SessionStore
 
 from hooks.common import (
-    MAX_SHAPES,
     command_shape,
     has_json_output_flag,
     looks_like_json,
@@ -38,6 +38,11 @@ def _state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point the shapes store at an isolated temp dir for every test."""
     monkeypatch.setenv("CAPTAIN_HOOK_STATE_DIR", str(tmp_path))
     return tmp_path
+
+
+def fake_evt(repo_root: Path | None = None) -> SimpleNamespace:
+    """A minimal event for the durable store — global scope reads only ``ctx.repo_root``."""
+    return SimpleNamespace(ctx=SimpleNamespace(repo_root=repo_root))
 
 
 def shape(command: str) -> str:
@@ -134,38 +139,38 @@ class TestLooksLikeJson:
 
 class TestShapesStore:
     def test_round_trip(self) -> None:
-        assert load_shapes() == set()
-        record_shape("gh pr list --json")
-        record_shape("kubectl get pods -o")
-        assert load_shapes() == {"gh pr list --json", "kubectl get pods -o"}
+        evt = fake_evt()
+        assert load_shapes(evt) == set()
+        record_shape(evt, "gh pr list --json")
+        record_shape(evt, "kubectl get pods -o")
+        assert load_shapes(evt) == {"gh pr list --json", "kubectl get pods -o"}
 
     def test_idempotent(self) -> None:
-        record_shape("gh pr list --json")
-        record_shape("gh pr list --json")
-        assert load_shapes() == {"gh pr list --json"}
-
-    def test_atomic_write_leaves_no_temp(self, _state_dir: Path) -> None:
-        record_shape("gh pr list --json")
-        assert not list(_state_dir.glob("*.tmp"))
+        evt = fake_evt()
+        record_shape(evt, "gh pr list --json")
+        record_shape(evt, "gh pr list --json")
+        assert load_shapes(evt) == {"gh pr list --json"}
 
     def test_bound_enforced_fifo(self, _state_dir: Path) -> None:
-        for i in range(MAX_SHAPES + 10):
-            record_shape(f"tool-{i}")
-        shapes = load_shapes()
-        assert len(shapes) == MAX_SHAPES
+        evt = fake_evt()
+        for i in range(256 + 10):
+            record_shape(evt, f"tool-{i}")
+        shapes = load_shapes(evt)
+        assert len(shapes) == 256
         # oldest evicted, newest kept
         assert "tool-0" not in shapes
-        assert f"tool-{MAX_SHAPES + 9}" in shapes
+        assert "tool-265" in shapes
         # the on-disk order is oldest-first, newest-last
-        order = json.loads((_state_dir / "ccx-json-shapes.json").read_text())
-        assert order[-1] == f"tool-{MAX_SHAPES + 9}"
+        store = _state_dir / "hooks" / "durable" / "global" / "json_shapes.json"
+        assert json.loads(store.read_text())["shapes"][-1] == "tool-265"
 
     def test_rerecord_moves_to_newest(self, _state_dir: Path) -> None:
-        for i in range(MAX_SHAPES):
-            record_shape(f"tool-{i}")
-        record_shape("tool-0")  # touch the oldest
-        record_shape("fresh")  # push one over the cap
-        shapes = load_shapes()
+        evt = fake_evt()
+        for i in range(256):
+            record_shape(evt, f"tool-{i}")
+        record_shape(evt, "tool-0")  # touch the oldest
+        record_shape(evt, "fresh")  # push one over the cap
+        shapes = load_shapes(evt)
         assert "tool-0" in shapes  # survived eviction by being touched
         assert "tool-1" not in shapes  # became the new oldest, evicted
 
@@ -181,7 +186,7 @@ class TestSeenEmittingJson:
         assert not cond.check_command_line(evt, evt.command_line)
 
     def test_recorded_shape_fires_once_per_session(self, tmp_path: Path) -> None:
-        record_shape(shape("gh issue view 123"))
+        record_shape(fake_evt(), shape("gh issue view 123"))
         cond = SeenEmittingJson()
         session = tmp_path / "s1"
         first = self._event("gh issue view 123", session)
@@ -190,7 +195,7 @@ class TestSeenEmittingJson:
         assert not cond.check_command_line(second, second.command_line)  # self-gated within session
 
     def test_recorded_shape_fires_again_in_new_session(self, tmp_path: Path) -> None:
-        record_shape(shape("terraform output"))
+        record_shape(fake_evt(), shape("terraform output"))
         cond = SeenEmittingJson()
         a = self._event("terraform output", tmp_path / "sessionA")
         b = self._event("terraform output", tmp_path / "sessionB")
@@ -198,13 +203,13 @@ class TestSeenEmittingJson:
         assert cond.check_command_line(b, b.command_line)
 
     def test_already_wrapped_does_not_fire(self, tmp_path: Path) -> None:
-        record_shape(shape("terraform output"))
+        record_shape(fake_evt(), shape("terraform output"))
         cond = SeenEmittingJson()
         evt = self._event("ccx toon -- terraform output", tmp_path / "s1")
         assert not cond.check_command_line(evt, evt.command_line)
 
     def test_piped_command_does_not_fire(self, tmp_path: Path) -> None:
-        record_shape(shape("terraform output"))
+        record_shape(fake_evt(), shape("terraform output"))
         cond = SeenEmittingJson()
         evt = self._event("terraform output | jq .", tmp_path / "s1")
         assert not cond.check_command_line(evt, evt.command_line)

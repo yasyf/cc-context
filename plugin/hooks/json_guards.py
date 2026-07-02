@@ -83,7 +83,7 @@ def record_json_shape(evt: BaseHookEvent) -> None:
         return None
     if already_wrapped(cl) or has_json_output_flag(cl) or not is_single_command(cl):
         return None
-    record_shape(command_shape(cl))
+    record_shape(evt, command_shape(cl))
     return None
 
 
@@ -99,7 +99,7 @@ class SeenEmittingJson(CustomCommandLineCondition):
         if already_wrapped(cl) or not is_single_command(cl):
             return False
         shape = command_shape(cl)
-        if shape not in load_shapes():
+        if shape not in load_shapes(evt):
             return False
         return evt.ctx.s.once(shape, scope="ccx-toon")
 

@@ -15,14 +15,10 @@ registers no hooks, so discovery loads it as a harmless no-op.
 from __future__ import annotations
 
 import json
-import os
 import re
-import tempfile
 from pathlib import Path
 
-from captain_hook import CommandLine, resolve_binary
-from captain_hook.settings import resolve_state_dir
-from filelock import FileLock
+from captain_hook import BaseHookEvent, CommandLine, Deque, DurableState, resolve_binary
 
 # A Read with neither offset nor limit pulls the whole file into context. Past this
 # size (~5k tokens) the dump is a token-bomb worth steering to an outline; below it
@@ -44,10 +40,6 @@ IDENT_ALT = re.compile(r"\b[A-Za-z_]\w*(?:\|[A-Za-z_]\w*)+\b")
 # `--format json`) need adjacency, handled by `has_json_output_flag`.
 JSON_FLAG_GLUED = re.compile(r"^(--json(=.*)?|-o=?json|--(output|format)=json)$")
 JSON_VALUE_FLAGS = ("-o", "--output", "--format")
-
-# Cap on the learned-shapes set: enough to cover a session's worth of distinct
-# JSON-emitting commands without the file growing unbounded. FIFO eviction.
-MAX_SHAPES = 256
 
 # A command-shape subcommand token is a lowercase command word (`view`, `get`,
 # `list`). Positional *values* (`123`, `/path`, `file.json`, `NAME=v`, uppercase
@@ -148,58 +140,34 @@ def looks_like_json(s: str) -> bool:
     return True
 
 
-def _shapes_path() -> Path:
-    return resolve_state_dir() / "ccx-json-shapes.json"
+class JsonShapes(DurableState, scope="global"):
+    """Cross-session store of command shapes observed emitting JSON.
 
-
-def _shapes_lock() -> FileLock:
-    return FileLock(str(_shapes_path()) + ".lock")
-
-
-def load_shapes() -> set[str]:
-    """Load the persistent set of command shapes observed emitting JSON.
-
-    Honors ``$CAPTAIN_HOOK_STATE_DIR`` via :func:`resolve_state_dir`. A missing or
-    unreadable file yields an empty set.
+    The bounded deque is capped at enough shapes to cover a session's worth of distinct
+    JSON-emitting commands without growing unbounded; it auto-evicts oldest-first.
     """
-    path = _shapes_path()
-    if not path.is_file():
-        return set()
-    try:
-        data = json.loads(path.read_text())
-    except ValueError:
-        return set()
-    return set(data) if isinstance(data, list) else set()
+
+    shapes: Deque[256]
 
 
-def record_shape(shape: str) -> None:
-    """Record ``shape`` in the persistent shapes store, bounded FIFO at :data:`MAX_SHAPES`.
+def load_shapes(evt: BaseHookEvent) -> set[str]:
+    """Load the set of command shapes observed emitting JSON, empty on a cold cache.
 
-    The read-modify-write runs under a :class:`~filelock.FileLock` and commits via an
-    atomic ``mkstemp`` + :func:`os.replace`, so concurrent ``PostToolUse`` recorders
-    never corrupt or lose the file. Order is preserved on disk (a list) so eviction is
-    oldest-first; an already-present shape is moved to the most-recent position.
+    Honors ``$CAPTAIN_HOOK_STATE_DIR`` via the durable store; a missing or corrupt store
+    yields an empty set.
     """
-    path = _shapes_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with _shapes_lock():
-        order: list[str] = []
-        if path.is_file():
-            try:
-                loaded = json.loads(path.read_text())
-                if isinstance(loaded, list):
-                    order = [s for s in loaded if isinstance(s, str)]
-            except ValueError:
-                order = []
-        if shape in order:
-            order.remove(shape)
-        order.append(shape)
-        order = order[-MAX_SHAPES:]
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w") as fh:
-                json.dump(order, fh)
-            os.replace(tmp, path)
-        except BaseException:
-            Path(tmp).unlink(missing_ok=True)
-            raise
+    return set(JsonShapes.load(evt).shapes)
+
+
+def record_shape(evt: BaseHookEvent, shape: str) -> None:
+    """Record ``shape`` in the durable store, moving an already-present shape to newest.
+
+    The read-modify-write runs under the durable store's file lock and persists atomically,
+    so concurrent ``PostToolUse`` recorders never corrupt or lose the file. A plain append
+    neither dedups nor refreshes recency, so a shape already present is removed before
+    re-appending; the bounded deque then evicts oldest-first.
+    """
+    with JsonShapes.mutate(evt) as s:
+        if shape in s.shapes:
+            s.shapes.remove(shape)
+        s.shapes.append(shape)
