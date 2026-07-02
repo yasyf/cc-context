@@ -57,6 +57,8 @@ checksum:
 
 release:
   prerelease: auto
+  # Lets the shared workflow's goreleaser retry re-upload after a mid-publish failure.
+  replace_existing_artifacts: true
 
 changelog:
   use: github
