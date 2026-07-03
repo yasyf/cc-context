@@ -7,16 +7,14 @@ dependencies = [
     "anthropic>=0.111",
     "spawnllm>=0.5.2",
     "cc-transcript>=8,<9",
-    "capt-hook>=4,<5",
+    "capt-hook>=7,<8",
     "tiktoken>=0.13.0",
 ]
 
-# TEMPORARY: unreleased cc-transcript v8 from the sibling checkout, plus capt-hook's
-# cc-transcript-v8 migration worktree (released capt-hook 4.x pins cc-transcript<8) —
-# drop both before release; the real capt-hook fix ships in its wave-2 release.
-[tool.uv.sources]
-cc-transcript = { path = "../../cc-transcript", editable = true }
-capt-hook = { path = "../../captain-hook-cc-transcript-v8", editable = true }
+# cc-transcript is a Rust package with macOS/Linux wheels only (no Windows), so
+# scope lock resolution to the platforms it actually supports.
+[tool.uv]
+environments = ["sys_platform == 'darwin'", "sys_platform == 'linux'"]
 
 [tool.setuptools.packages.find]
 include = ["ccxbench*"]
