@@ -1,36 +1,33 @@
-# cc-context
+# ![cc-context](docs/assets/readme-banner.webp)
 
-![cc-context banner](https://github.com/yasyf/cc-context/raw/main/.github/assets/readme-banner.webp)
+**Take `cat` away from your agent.** Guard hooks block cat, raw grep, and full-file reads and rewrite each into a token-budgeted ccx call for an outline, a symbol with its callers, or a diff.
 
-[![Release](https://img.shields.io/github/v/release/yasyf/cc-context?sort=semver)](https://github.com/yasyf/cc-context/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/yasyf/cc-context/ci.yml?branch=main&label=ci)](https://github.com/yasyf/cc-context/actions/workflows/ci.yml)
-[![License: PolyForm-Noncommercial-1.0.0](https://img.shields.io/badge/License-PolyForm--Noncommercial--1.0.0-blue.svg)](https://github.com/yasyf/cc-context/blob/main/LICENSE)
+[![Release](https://img.shields.io/github/v/release/yasyf/cc-context?sort=semver)](https://github.com/yasyf/cc-context/releases)
+[![License: PolyForm-Noncommercial-1.0.0](https://img.shields.io/badge/License-PolyForm--Noncommercial--1.0.0-blue.svg)](LICENSE)
 
-Feed a coding agent only the codebase slice it needs, on a token budget.
-
-Reading whole files is the largest single drain on a coding agent's context window. `cc-context` — the `ccx` CLI and the `cc-context` MCP, one Go binary — swaps the token-heavy primitives (`cat`, raw `grep`, full-file reads) for commands that return a file's structure, one section, or a symbol with its callers and callees. Every result is capped to a token budget and prints an explicit marker when it trims, so the window goes to reasoning instead of re-reading files.
-
-## Install
-
-The Claude Code plugin is the whole product. Install it and everything below arrives wired together, with nothing else to set up.
+## Get started
 
 ```
 /plugin marketplace add yasyf/cc-skills
 /plugin install cc-context@skills
 ```
 
-That gets you:
+<img src="docs/assets/demo.png" alt="Terminal running 'ccx code outline internal/astgrep/run.go --budget 60' — a file outline cut at the budget, ending in '+4 lines, ~85 tokens omitted'" width="700">
 
-- **The `ccx` binary, self-provisioning.** A shim downloads the pinned release on first use and caches it in `${CLAUDE_PLUGIN_DATA}`, which survives plugin updates. No Homebrew, no manual build.
-- **The MCP server, auto-registered.** The `mcp__cc-context__ccx_*` tools (plus `BashToon`) appear the moment the plugin is enabled, and disable with it.
-- **The guard pack, wired.** `PreToolUse`/`PostToolUse` hooks that block the token-heavy primitives and rewrite them to their `ccx` equivalents. See [the guard pack](#the-guard-pack-enforces-it).
-- **The `ccx` skill.** Teaches the agent the reach-for-`ccx`-first workflow.
+The plugin arrives wired together: the `ccx` binary self-provisions (a shim downloads the pinned release on first use and caches it in `${CLAUDE_PLUGIN_DATA}`), the MCP server auto-registers its `mcp__cc-context__ccx_*` tools plus `BashToon`, the guard hooks turn on, and the `ccx` skill teaches the reach-for-`ccx`-first workflow. It needs [`uv`](https://docs.astral.sh/uv/) on `PATH` — the hooks run through `uvx capt-hook`, and semantic search shells out to [semble](https://github.com/MinishLab/semble) via `uvx`.
 
-Requires [`uv`](https://docs.astral.sh/uv/) on `PATH`: the hooks run through `uvx capt-hook`, and semantic search shells out to [semble](https://github.com/MinishLab/semble) via `uvx`. ast-grep downloads a pinned build on first use.
+Driving with an agent? Paste this:
 
-### Standalone CLI
+```
+/plugin marketplace add yasyf/cc-skills
+/plugin install cc-context@skills
+```
 
-To run `ccx` outside Claude Code, install the binary with Homebrew. The formula pulls in ast-grep and uv:
+<details>
+<summary>Using ccx outside Claude Code? Install the standalone CLI</summary>
+
+The Homebrew formula pulls in ast-grep and uv:
 
 ```bash
 brew install yasyf/tap/ccx
@@ -42,79 +39,93 @@ Without the plugin, register the MCP server by hand:
 claude mcp add --scope user --transport stdio cc-context -- ccx mcp
 ```
 
-## Quickstart
+</details>
 
-Orient in a repo, find code by intent, then grok the result:
+---
+
+## Use cases
+
+### Orient in an unfamiliar repo in one command
+
+Cold-starting in a codebase you've never seen burns the first few thousand tokens on `ls` and `cat` wandering. One command replaces the tour:
+
+```bash
+ccx repo overview
+```
 
 ```console
-$ ccx repo overview
-[tilth] Go project — 45 source files, 8 directories
-  dirs: cli/ backend/ astgrep/ render/ querykind/ vcs/ mcpserver/ search/
-  hot (× = importers): bench/ccxbench/types.py ×8, plugin/hooks/common.py ×4
-  git: branch d6c15a5, clean
+[tilth] Go project — 75 source files, 10 directories
+  dirs: cli/ backend/ astgrep/ vcs/ render/ toon/ outline/ mcpserver/ querykind/ locate/
+  deps: asm, cobra, encoding, go-sdk, jsonschema-go, mousetrap, oauth2, pflag, sys, toon-go
+  hot (× = importers): bench/ccxbench/types.py ×7, bench/ccxbench/config.py ×4, plugin/hooks/common.py ×4
+  git: branch main, clean
   manifest: go.mod (github.com/yasyf/cc-context)
+```
 
-$ ccx code search "how is the mcp server started" -k 1 --max-snippet-lines 1
-# semantic (semble)
-{"query": "how is the mcp server started", "results": [{"file_path": "internal/mcpserver/server.go", "start_line": 103, "end_line": 115, "score": 0.032, "content": "func Serve(ctx context.Context) error {"}]}
+Structure, dependencies, the hottest files by importer count, and VCS state — a few hundred tokens instead of a directory crawl.
 
-$ ccx code symbol NewRootCmd
+### Pull one symbol with its callers, not the whole file
+
+Understanding one function shouldn't cost a whole-file read plus a grep for its call sites. Ask for the symbol:
+
+```bash
+ccx code symbol NewRootCmd
+```
+
+```console
 # grok: NewRootCmd [internal/cli/root.go:11]
+
+## signature
 func NewRootCmd() *cobra.Command
-# plus doc, body, callees (13 internal, 3 external), and callers (5)
+
+## doc
+// NewRootCmd builds the root command and registers its subcommands.
+
+## body
+…
+
+## callees (4 internal, 5 extern)
+…
+
+## callers (5 of 6)
+  internal/cli/cli_test.go
+    [30]   in TestRootHelpListsAllOps()
+…
 ```
 
-Every structural command caps its output at `--budget` tokens, cuts on a line boundary, and says how much it dropped:
+Definition, doc, body, callees, and callers in one budgeted response — the agent edits code it never paged through.
+
+### Cut gh and kubectl JSON output by 40–60%
+
+`gh --json` and `kubectl -o json` dump verbose, nested JSON that floods the context window. Run the command through `ccx toon` and its JSON or NDJSON stdout comes back as TOON, a compact tabular encoding (or compact JSON when that is smaller):
+
+```bash
+ccx toon -- gh release list --limit 3 --json tagName,publishedAt,isLatest
+```
 
 ```console
-$ ccx code outline internal/astgrep/run.go --budget 60
-# ast-grep
-# internal/astgrep/run.go
-L14  applyFileCap = 20
-L18  astGrepExitNoMatch = 1
-L24  func Run(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
-L38  func runStructural(ctx context.Context, a backend.Args) (string, error) {
-… +4 lines, ~85 tokens omitted — re-run with a larger --budget
+[3]{isLatest,publishedAt,tagName}:
+  true,"2026-06-26T01:05:28Z",v0.2.1
+  false,"2026-06-23T07:52:46Z",v0.2.0
+  false,"2026-06-21T09:21:47Z",v0.1.1
 ```
 
-A query carrying an ast-grep metavar (`$A`, `$$$`) routes to structural search. `ccx code replace` rewrites the matches and previews a diff, writing nothing until `--apply` — so an agent edits code it never read into context:
-
-```console
-$ printf 'package demo\n\nfunc f() { Add(1, 2) }\n' > /tmp/demo.go
-$ ccx code replace 'Add($A, $B)' 'Sum($A, $B)' /tmp/demo.go
-# 1 matches across 1 files
-/tmp/demo.go:3
-- Add(1, 2)
-+ Sum(1, 2)
-```
+That's less than half the bytes of the raw JSON, and typically 40–60% fewer tokens on tabular data. Non-JSON output passes through verbatim, stderr streams live, the exit code is propagated, and it doubles as a pipe filter (`… | ccx toon`). The MCP `BashToon` tool is the same wrapper in tool form.
 
 ## The guard pack enforces it
 
-A budgeted command only helps if the agent reaches for it. The bundled [capt-hook](https://github.com/yasyf/captain-hook) guard pack makes that the path of least resistance. Its `PreToolUse`/`PostToolUse` hooks block the token-heavy primitives — `cat`, raw `grep`, an unbounded full-file `Read`, a `git diff` through a pager — and point the agent at the `ccx` equivalent instead. Reach for the raw tool and the hook turns you back; reach for `ccx` and you stay inside the budget by default.
+A budgeted command only helps if the agent reaches for it. The bundled [capt-hook](https://github.com/yasyf/captain-hook) guard pack makes that the path of least resistance: its `PreToolUse`/`PostToolUse` hooks block the token-heavy primitives — `cat`, raw `grep`, an unbounded full-file `Read`, a `git diff` through a pager — and point the agent at the `ccx` equivalent instead. Reach for the raw tool and the hook turns you back; reach for `ccx` and you stay inside the budget by default.
 
 The pack also watches for JSON. A command flagged for JSON output (`--json`, `-o json`) gets rewritten to run through `ccx toon`, and the pack learns which commands emit JSON so it can nudge you to wrap them next time.
 
-## Keep JSON output out of context
-
-`gh --json`, `kubectl -o json`, and friends dump verbose, nested JSON that floods the context window. `ccx toon` re-encodes it: run any command as `ccx toon -- <cmd …>` and its JSON or NDJSON stdout comes back as TOON, a compact tabular encoding (or compact JSON when that is smaller), typically 40–60% fewer tokens on tabular data. Non-JSON output passes through verbatim, stderr streams live, and the command's exit code is propagated. It also works as a pipe filter:
-
-```console
-$ echo '[{"name":"api","status":"running","replicas":3},{"name":"web","status":"running","replicas":2}]' | ccx toon
-[2]{name,status,replicas}:
-  api,running,3
-  web,running,2
-```
-
-The MCP `BashToon` tool is the same wrapper in tool form.
-
 ## Commands
 
-Each command is a token-bounded stand-in for a primitive an agent would otherwise reach for:
+Each command is a token-bounded stand-in for a primitive an agent would otherwise reach for. Structural output is capped at `--budget` tokens, cut on a line boundary, with an explicit marker saying how much was dropped:
 
 | Command | What it does |
 | --- | --- |
 | `ccx repo overview` | Repository structure and entry points; start here |
-| `ccx code search <query> [path]` | Search routed by query kind: natural-language runs semantic, a code pattern runs structural |
+| `ccx code search <query> [path]` | Search routed by query kind: natural language runs semantic, an ast-grep pattern (`$A`, `$$$`) runs structural |
 | `ccx code replace <pattern> <rewrite> [paths...]` | Structural find-replace; previews a diff, writes only with `--apply` |
 | `ccx code related <file:line>` | Code semantically related to a location |
 | `ccx code symbol <name>` (alias `grok`) | Definition, doc, body, callers, callees, siblings, tests |
@@ -142,16 +153,4 @@ Run `ccx <command> --help` for the full flag set, and `ccx --version` for the bu
 | `LOG_FORMAT` | set to `json` for structured logs |
 | `CLAUDE_PLUGIN_DATA` | cache directory for the downloaded `ccx`, tilth, and ast-grep binaries |
 
-## Development
-
-```bash
-task build   # -> bin/ccx
-task test    # go test -race ./...
-task lint    # golangci-lint
-```
-
-Conventions and architecture live in [AGENTS.md](AGENTS.md) and [STYLEGUIDE.md](STYLEGUIDE.md).
-
-## License
-
-[PolyForm Noncommercial License 1.0.0](LICENSE).
+Licensed under [PolyForm Noncommercial 1.0.0](LICENSE).
