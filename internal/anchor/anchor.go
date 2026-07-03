@@ -65,7 +65,7 @@ type Move struct {
 var (
 	numericRe   = regexp.MustCompile(`^\d+(?:-\d+)?$`)
 	anchorRe    = regexp.MustCompile(`^(?:(\d+)(?:-(\d+))?#)?([a-hjkmnp-tv-z][0-9a-hjkmnp-tv-z]{3})$`)
-	anchorishRe = regexp.MustCompile(`^\d+(?:-\d+)?#`)
+	anchorishRe = regexp.MustCompile(`^\d[\d-]*#`)
 )
 
 // Parse classifies a section string. A numeric line or range and anything not
@@ -187,11 +187,14 @@ func (f *File) Resolve(ref Ref) (Range, *Move, error) {
 
 // rangeAt builds the resolved range starting at start: a single-line ref ends
 // where it starts, a range ref shifts its end by the same distance the start
-// moved, clamped to [start, len(lines)].
+// moved. The parsed end is clamped to EOF before the shift — a grammatically
+// valid but out-of-range end can never be meaningful, and clamping first keeps
+// the shift from overflowing int — then the shifted end is re-clamped to
+// [start, len(lines)].
 func (f *File) rangeAt(ref Ref, start int) Range {
 	end := start
 	if ref.End > 0 {
-		end = ref.End + (start - ref.Line)
+		end = min(ref.End, len(f.lines)) + (start - ref.Line)
 		if end < start {
 			end = start
 		}

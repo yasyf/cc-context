@@ -1,6 +1,7 @@
 package anchor_test
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,6 +47,7 @@ func TestParse(t *testing.T) {
 		{"line", "120", anchor.Ref{}, false, false},
 		{"same-line range", "5-5", anchor.Ref{}, false, false},
 		{"range", "12-40", anchor.Ref{}, false, false},
+		{"numeric range passthrough", "5-7", anchor.Ref{}, false, false},
 		{"zero-first numeric range", "0-2", anchor.Ref{}, false, false},
 		{"reversed numeric range", "5-3", anchor.Ref{}, false, false},
 		{"anchor", "120#a3fk", anchor.Ref{Line: 120, Hash: "a3fk"}, true, false},
@@ -60,6 +62,9 @@ func TestParse(t *testing.T) {
 		{"range garbage hash", "120-180#XXXX", anchor.Ref{}, false, true},
 		{"excluded letters", "120#ilou", anchor.Ref{}, false, true},
 		{"digit-first hash", "120#1abc", anchor.Ref{}, false, true},
+		{"triple-segment range anchor", "10-20-30#a3fk", anchor.Ref{}, false, true},
+		{"dangling-dash range anchor", "10-#a3fk", anchor.Ref{}, false, true},
+		{"double-dash range anchor", "10--20#a3fk", anchor.Ref{}, false, true},
 		{"heading", "## Heading", anchor.Ref{}, false, false},
 		{"heading with anchor text", "## a3fk", anchor.Ref{}, false, false},
 		{"empty", "", anchor.Ref{}, false, false},
@@ -199,6 +204,13 @@ func TestResolve(t *testing.T) {
 			content: "alpha\nbeta\ngamma",
 			ref:     anchor.Ref{Line: 1, End: 99, Hash: anchor.Of("alpha")},
 			want:    anchor.Range{Start: 1, End: 3},
+		},
+		{
+			name:     "huge range end clamps to eof without overflow",
+			content:  "new\nalpha\nb\nc\nd\n",
+			ref:      anchor.Ref{Line: 1, End: math.MaxInt, Hash: anchor.Of("alpha")},
+			want:     anchor.Range{Start: 2, End: 5},
+			wantMove: &anchor.Move{From: 1, To: 2},
 		},
 		{
 			name:    "bare anchor unique",

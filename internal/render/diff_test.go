@@ -106,6 +106,44 @@ func TestSupplementDiff(t *testing.T) {
 	}
 }
 
+// TestSupplementDiffCRLF proves a CRLF-terminated "(0 symbols)" header is
+// recognized: the empty section fetches and injects its hunk, the CRLF
+// next-header still bounds sectionBody (so b.go's body is not swallowed into
+// a.go's), and every untouched line keeps its trailing "\r".
+func TestSupplementDiffCRLF(t *testing.T) {
+	in := "# Diff\r\n\r\n## c/a.go w/a.go (0 symbols)\r\n\r\n## c/b.go w/b.go (3 symbols)\r\n+func B() {}\r\n"
+	fetched := false
+	fetch := func(path string) (string, error) {
+		fetched = true
+		if path != "a.go" {
+			t.Errorf("fetch path = %q, want %q", path, "a.go")
+		}
+		return "@@ -1 +1 @@\n-old\n+new\n", nil
+	}
+	got, err := SupplementDiff(in, fetch)
+	if err != nil {
+		t.Fatalf("SupplementDiff() err: %v", err)
+	}
+	if !fetched {
+		t.Fatalf("fetch was never called for the CRLF (0 symbols) section\n--- got ---\n%q", got)
+	}
+	for _, sub := range []string{"-old", "+new"} {
+		if !strings.Contains(got, sub) {
+			t.Errorf("output missing injected hunk line %q\n--- got ---\n%q", sub, got)
+		}
+	}
+	// The b.go header still bounds a.go's section and every untouched CRLF line
+	// keeps its "\r"; the injected hunk must land before b.go's header.
+	for _, sub := range []string{"## c/b.go w/b.go (3 symbols)\r\n", "+func B() {}\r\n"} {
+		if !strings.Contains(got, sub) {
+			t.Errorf("untouched CRLF line lost its \\r or content: missing %q\n--- got ---\n%q", sub, got)
+		}
+	}
+	if strings.Index(got, "+new") > strings.Index(got, "## c/b.go") {
+		t.Errorf("a.go's hunk swallowed b.go's header instead of landing before it\n--- got ---\n%q", got)
+	}
+}
+
 func TestSupplementDiffFetchErrorPropagates(t *testing.T) {
 	in := "## c/a.go w/a.go (0 symbols)\n"
 	boom := errors.New("git exploded")

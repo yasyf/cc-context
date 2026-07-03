@@ -211,7 +211,7 @@ func SupplementDiff(out string, fetch func(workPath string) (string, error)) (st
 			b.WriteByte('\n')
 		}
 
-		m := diffFileHeader.FindStringSubmatch(line)
+		m := diffFileHeader.FindStringSubmatch(strings.TrimSuffix(line, "\r"))
 		if m == nil {
 			continue
 		}
@@ -240,7 +240,7 @@ func SupplementDiff(out string, fetch func(workPath string) (string, error)) (st
 // a markdown-style heading does not make a non-empty section look empty.
 func sectionBody(lines []string, start int) string {
 	next := start
-	for next < len(lines) && !diffFileHeader.MatchString(lines[next]) {
+	for next < len(lines) && !diffFileHeader.MatchString(strings.TrimSuffix(lines[next], "\r")) {
 		next++
 	}
 	return strings.Join(lines[start:next], "\n")
