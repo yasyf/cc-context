@@ -70,9 +70,10 @@ var (
 
 // Parse classifies a section string. A numeric line or range and anything not
 // anchor-shaped pass through (ok false, nil error); a well-formed anchor
-// returns its Ref (ok true); an anchor-shaped string with a malformed hash
-// errors with the expected form, so it never reaches a backend that would
-// reject it without a hint.
+// returns its Ref (ok true); an anchor-shaped string with a malformed hash or
+// an invalid line qualifier — a zero line (lines are 1-indexed) or a reversed
+// range (end before start) — errors with the expected form, so it never reaches
+// a backend that would reject it without a hint.
 func Parse(section string) (Ref, bool, error) {
 	if numericRe.MatchString(section) {
 		return Ref{}, false, nil
@@ -84,10 +85,16 @@ func Parse(section string) (Ref, bool, error) {
 			if ref.Line, err = strconv.Atoi(m[1]); err != nil {
 				return Ref{}, false, fmt.Errorf("anchor %q: line out of range: %w", section, err)
 			}
+			if ref.Line == 0 {
+				return Ref{}, false, fmt.Errorf("invalid anchor %q: line 0 is invalid — line numbers are 1-indexed (re-run ccx code outline for fresh anchors)", section)
+			}
 		}
 		if m[2] != "" {
 			if ref.End, err = strconv.Atoi(m[2]); err != nil {
 				return Ref{}, false, fmt.Errorf("anchor %q: end line out of range: %w", section, err)
+			}
+			if ref.End < ref.Line {
+				return Ref{}, false, fmt.Errorf("invalid anchor %q: end line %d before start line %d — a range needs 1-indexed start ≤ end (re-run ccx code outline for fresh anchors)", section, ref.End, ref.Line)
 			}
 		}
 		return ref, true, nil
