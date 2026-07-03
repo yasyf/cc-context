@@ -65,12 +65,22 @@
     "captain-hook@captain-hook": true
   },
   "hooks": {
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx capt-hook run PermissionRequest"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "uvx capt-hook --hooks $CLAUDE_PROJECT_DIR/plugin/hooks run PostToolUse"
+            "command": "uvx capt-hook run PostToolUse"
           }
         ]
       }
@@ -85,22 +95,12 @@
         ]
       }
     ],
-    "PreCompact": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "uvx capt-hook --hooks $CLAUDE_PROJECT_DIR/plugin/hooks run PreCompact"
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "uvx capt-hook --hooks $CLAUDE_PROJECT_DIR/plugin/hooks run PreToolUse"
+            "command": "uvx capt-hook run PreToolUse"
           }
         ]
       }
@@ -111,6 +111,17 @@
           {
             "type": "command",
             "command": "uvx capt-hook review run",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx capt-hook run SessionStart --async",
             "async": true
           }
         ]
