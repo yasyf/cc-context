@@ -67,11 +67,12 @@ func annotateGrep(out string, files *anchor.Files) string {
 	lines := strings.Split(out, "\n")
 	var file string
 	for i, line := range lines {
-		if m := grepSectionRe.FindStringSubmatch(line); m != nil {
+		match := strings.TrimSuffix(line, "\r")
+		if m := grepSectionRe.FindStringSubmatch(match); m != nil {
 			file = m[1]
 			continue
 		}
-		if m := grepFenceRe.FindStringSubmatch(line); m != nil {
+		if m := grepFenceRe.FindStringSubmatch(match); m != nil {
 			file = m[1]
 			continue
 		}
@@ -115,19 +116,20 @@ func annotateSymbol(out string, files *anchor.Files) string {
 	section := sectionOther
 	var siblingFile, callerFile string
 	for i, line := range lines {
+		match := strings.TrimSuffix(line, "\r")
 		switch {
-		case strings.HasPrefix(line, "# grok:"):
+		case strings.HasPrefix(match, "# grok:"):
 			lines[i] = anchorGrokHeader(line, files)
 			continue
-		case siblingHeadRe.MatchString(line):
-			siblingFile = siblingHeadRe.FindStringSubmatch(line)[1]
+		case siblingHeadRe.MatchString(match):
+			siblingFile = siblingHeadRe.FindStringSubmatch(match)[1]
 			section = sectionSiblings
 			continue
-		case strings.HasPrefix(line, "## callers"):
+		case strings.HasPrefix(match, "## callers"):
 			section = sectionCallers
 			callerFile = ""
 			continue
-		case strings.HasPrefix(line, "## "):
+		case strings.HasPrefix(match, "## "):
 			section = sectionOther
 			continue
 		}
@@ -135,9 +137,9 @@ func annotateSymbol(out string, files *anchor.Files) string {
 		case sectionSiblings:
 			lines[i] = anchorFrameLine(line, siblingLineRe, siblingFile, files)
 		case sectionCallers:
-			if callerLineRe.MatchString(line) {
+			if callerLineRe.MatchString(match) {
 				lines[i] = anchorFrameLine(line, callerLineRe, callerFile, files)
-			} else if trimmed := strings.TrimSpace(line); strings.HasPrefix(line, "  ") && trimmed != "" && !strings.HasPrefix(trimmed, "[") {
+			} else if trimmed := strings.TrimSpace(match); strings.HasPrefix(match, "  ") && trimmed != "" && !strings.HasPrefix(trimmed, "[") {
 				callerFile = trimmed
 			}
 		}

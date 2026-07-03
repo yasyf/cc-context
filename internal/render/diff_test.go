@@ -78,6 +78,13 @@ func TestSupplementDiff(t *testing.T) {
 			wantSub:    []string{"## c/a.go w/a.go (0 symbols)"},
 			wantAbsent: []string{"@@"},
 		},
+		{
+			name:       "zero-symbol body opening with a markdown heading is non-empty (no splice)",
+			in:         "# Diff\n\n## c/a.go w/a.go (0 symbols)\n## Existing markdown heading\nreal body content\n\n## c/b.go w/b.go (2 symbols)\n+func B() {}\n",
+			fetch:      hunk("SHOULD NOT APPEAR"),
+			wantSub:    []string{"## Existing markdown heading", "real body content", "## c/b.go w/b.go (2 symbols)"},
+			wantAbsent: []string{"SHOULD NOT APPEAR"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -443,5 +450,58 @@ func TestAnnotateDiffSymbols(t *testing.T) {
 
 	if got := annotateDiffSymbols(in, files); got != want {
 		t.Errorf("annotateDiffSymbols()\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestAnnotateDiffSymbolsSkipsHunkContent proves a supplemented hunk's context
+// line that happens to be shaped like a symbol row is left byte-identical, while
+// a genuine symbol row sitting before the hunk still anchors.
+func TestAnnotateDiffSymbolsSkipsHunkContent(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "greet.go"),
+		"package main\n\n// Greet greets the world warmly.\nfunc Greet() string {\n\treturn \"hello, friend\"\n}\n\n// Farewell says goodbye.\nfunc Farewell() string {\n\treturn \"goodbye\"\n}\nfunc extra() {}\n")
+	files := anchor.NewFiles(dir)
+	hash := string(anchor.Of("func Greet() string {"))
+
+	// L12 ("func extra() {}") resolves in greet.go, so without the in-hunk guard
+	// the context line below would corrupt into "L12#…".
+	in := "## greet.go (1 symbols)\n" +
+		"  [~]      Greet                                    L4  (body, 3→3 lines)\n" +
+		"@@ -1 +1 @@\n" +
+		" [x] task L12  (kept)\n"
+
+	want := "## greet.go (1 symbols)\n" +
+		"  [~]      Greet                                    L4#" + hash + "  (body, 3→3 lines)\n" +
+		"@@ -1 +1 @@\n" +
+		" [x] task L12  (kept)\n"
+
+	if got := annotateDiffSymbols(in, files); got != want {
+		t.Errorf("annotateDiffSymbols()\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestAnnotateDiffSymbolsCRLFHeading proves a CRLF-terminated file header still
+// switches the active file, so the following symbol row hashes the right file's
+// content (b.go's line 1, never a.go's) and its trailing "\r" survives.
+func TestAnnotateDiffSymbolsCRLFHeading(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a.go"), "package alpha\n")
+	writeFile(t, filepath.Join(dir, "b.go"), "package beta\n")
+	files := anchor.NewFiles(dir)
+	hashA := string(anchor.Of("package alpha"))
+	hashB := string(anchor.Of("package beta"))
+
+	in := "## a.go (1 symbols)\n" +
+		"  [~]      Alpha                                    L1  (body)\n" +
+		"## b.go (1 symbols)\r\n" +
+		"  [~]      Beta                                     L1  (body)\r\n"
+
+	want := "## a.go (1 symbols)\n" +
+		"  [~]      Alpha                                    L1#" + hashA + "  (body)\n" +
+		"## b.go (1 symbols)\r\n" +
+		"  [~]      Beta                                     L1#" + hashB + "  (body)\r\n"
+
+	if got := annotateDiffSymbols(in, files); got != want {
+		t.Errorf("annotateDiffSymbols()\n got:\n%q\nwant:\n%q", got, want)
 	}
 }

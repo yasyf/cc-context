@@ -103,6 +103,32 @@ func TestAnnotateSymbolInvariants(t *testing.T) {
 	}
 }
 
+// TestAnnotateGrepCRLF proves a CRLF-terminated grep section header still sets
+// the active file, so the following frame anchors against it and keeps its "\r".
+func TestAnnotateGrepCRLF(t *testing.T) {
+	hash := string(anchor.Of("func (g *Greeter) Greet(name string) string {"))
+	in := "### example.go:19\r\n" +
+		"  [19]   func (g *Greeter) Greet(name string) string {\r\n"
+	want := "### example.go:19\r\n" +
+		"  [19#" + hash + "]   func (g *Greeter) Greet(name string) string {\r\n"
+	if got := annotateGrep(in, anchor.NewFiles("testdata")); got != want {
+		t.Errorf("annotateGrep()\n got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+// TestAnnotateSymbolCRLF proves a CRLF-terminated "## siblings (path)" header
+// still enters the siblings section, so the row anchors and keeps its "\r".
+func TestAnnotateSymbolCRLF(t *testing.T) {
+	hash := string(anchor.Of("func NewGreeter(prefix string) *Greeter {"))
+	in := "## siblings (example.go)\r\n" +
+		"NewGreeter               [14-16]   func NewGreeter(prefix string) *Greeter\r\n"
+	want := "## siblings (example.go)\r\n" +
+		"NewGreeter               [14-16#" + hash + "]   func NewGreeter(prefix string) *Greeter\r\n"
+	if got := annotateSymbol(in, anchor.NewFiles("testdata")); got != want {
+		t.Errorf("annotateSymbol()\n got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
 func TestFinalizeDefaultOpPassesThrough(t *testing.T) {
 	// A non-anchoring op just caps; the payload is byte-identical below budget.
 	in := "line one\nline two\n"

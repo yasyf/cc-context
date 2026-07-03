@@ -71,7 +71,7 @@ func RunDiffCLI(ctx context.Context, bin string, argv []string, source string, b
 func shortenDiffSHAs(out string) string {
 	lines := strings.Split(out, "\n")
 	for i, line := range lines {
-		if strings.HasPrefix(line, "# Diff:") {
+		if strings.HasPrefix(strings.TrimSuffix(line, "\r"), "# Diff:") {
 			lines[i] = diffSHARe.ReplaceAllStringFunc(line, func(sha string) string { return sha[:10] })
 			break
 		}
@@ -91,14 +91,15 @@ func collapsePreambles(out string) string {
 	var heading string
 	collapsible := false
 	for _, line := range lines {
-		if m := diffFileHeader.FindStringSubmatch(line); m != nil {
+		match := strings.TrimSuffix(line, "\r")
+		if m := diffFileHeader.FindStringSubmatch(match); m != nil {
 			heading = m[1]
 			collapsible = false
 			kept = append(kept, line)
 			continue
 		}
 		if heading != "" {
-			if m := diffGitPreamble.FindStringSubmatch(line); m != nil {
+			if m := diffGitPreamble.FindStringSubmatch(match); m != nil {
 				collapsible = stripDiffPrefix(m[1]) == heading && stripDiffPrefix(m[2]) == heading
 				if collapsible {
 					continue
@@ -106,12 +107,12 @@ func collapsePreambles(out string) string {
 				kept = append(kept, line)
 				continue
 			}
-			if strings.HasPrefix(line, "@@") {
+			if strings.HasPrefix(match, "@@") {
 				collapsible = false
 				kept = append(kept, line)
 				continue
 			}
-			if collapsible && droppablePreamble(line, heading) {
+			if collapsible && droppablePreamble(match, heading) {
 				continue
 			}
 		}
@@ -147,15 +148,24 @@ func droppablePreamble(line, heading string) bool {
 func annotateDiffSymbols(out string, files *anchor.Files) string {
 	lines := strings.Split(out, "\n")
 	var heading string
+	inHunk := false
 	for i, line := range lines {
-		if m := diffFileHeader.FindStringSubmatch(line); m != nil {
+		match := strings.TrimSuffix(line, "\r")
+		if m := diffFileHeader.FindStringSubmatch(match); m != nil {
 			heading = m[1]
+			inHunk = false
 			continue
 		}
 		if heading == "" {
 			continue
 		}
-		m := diffSymbolRow.FindStringSubmatch(line)
+		if diffHunkContent(match) {
+			inHunk = true
+		}
+		if inHunk {
+			continue
+		}
+		m := diffSymbolRow.FindStringSubmatch(match)
 		if m == nil {
 			continue
 		}
@@ -164,9 +174,30 @@ func annotateDiffSymbols(out string, files *anchor.Files) string {
 		if !ok {
 			continue
 		}
-		lines[i] = m[1] + "L" + m[2] + "#" + string(anchor.Of(text)) + m[3]
+		lines[i] = m[1] + "L" + m[2] + "#" + string(anchor.Of(text)) + m[3] + line[len(match):]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// diffHunkPrefixes are the line prefixes that mark where a supplemented hunk's
+// content begins under a "## P" heading: the "@@" hunk header and every raw-diff
+// preamble line collapsePreambles may keep. Symbol rows sit directly after the
+// heading, before any of these, so annotateDiffSymbols stops anchoring once one
+// appears — a hunk context line shaped like a symbol row must never be rewritten.
+var diffHunkPrefixes = []string{
+	"@@", "diff --git", "new file mode", "deleted file mode",
+	"rename ", "similarity ", "copy ", "Binary files",
+	"index ", "--- ", "+++ ",
+}
+
+// diffHunkContent reports whether line begins a supplemented hunk's content.
+func diffHunkContent(line string) bool {
+	for _, p := range diffHunkPrefixes {
+		if strings.HasPrefix(line, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // SupplementDiff appends a raw textual hunk (via fetch) to each empty "(0 symbols)" file section in tilth's diff output.
@@ -204,10 +235,12 @@ func SupplementDiff(out string, fetch func(workPath string) (string, error)) (st
 }
 
 // sectionBody returns the lines from start up to (but not including) the next
-// "## " file header or EOF, joined as the section body.
+// per-file header or EOF, joined as the section body. The boundary is a full
+// diffFileHeader match, not a bare "## " prefix, so body content that opens with
+// a markdown-style heading does not make a non-empty section look empty.
 func sectionBody(lines []string, start int) string {
 	next := start
-	for next < len(lines) && !strings.HasPrefix(lines[next], "## ") {
+	for next < len(lines) && !diffFileHeader.MatchString(lines[next]) {
 		next++
 	}
 	return strings.Join(lines[start:next], "\n")
