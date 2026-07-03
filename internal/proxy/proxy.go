@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/yasyf/cc-context/internal/anchor"
 	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/grok"
@@ -40,12 +41,27 @@ func New() *Proxy {
 	return &Proxy{engines: map[backend.Engine]*engineSession{}}
 }
 
-// Call routes op through its backend and returns budget-capped output. The diff
+// Call resolves content anchors in a to plain line numbers, dispatches op
+// through its backend, and prepends the anchor-move note after capping so the
+// note is never truncated away.
+func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
+	a, note, err := anchor.RewriteArgs(op, a)
+	if err != nil {
+		return "", err
+	}
+	out, err := p.call(ctx, op, a)
+	if err != nil {
+		return "", err
+	}
+	return note + out, nil
+}
+
+// call routes op through its backend and returns budget-capped output. The diff
 // and overview ops run as child-process CLI invocations to keep the jj-aware VCS
 // translation and fallback that CLIArgv performs; the ast-grep ops run through
 // the shared astgrep orchestration (ast-grep has no MCP server); every other op
 // is a child MCP tool call against the engine's resident (lazily opened) session.
-func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
+func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 	b := router.For(op)
 
 	switch op {

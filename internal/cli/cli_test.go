@@ -2,12 +2,14 @@ package cli_test
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/anchor"
 	"github.com/yasyf/cc-context/internal/cli"
 )
 
@@ -72,8 +74,7 @@ func TestSearchCommandInvokesBackend(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake shell script is POSIX-only")
 	}
-	fake := writeFakeEngine(t)
-	t.Setenv("PATH", filepath.Dir(fake)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeEngine(t, "semble")
 
 	var out bytes.Buffer
 	root := cli.NewRootCmd()
@@ -93,15 +94,76 @@ func TestSearchCommandInvokesBackend(t *testing.T) {
 	}
 }
 
-// writeFakeEngine writes an executable named "semble" that echoes its arguments,
-// returning its absolute path. Stubbing PATH to its directory makes the semble
-// backend resolve to it instead of a real binary.
-func writeFakeEngine(t *testing.T) string {
+// TestReadCommandResolvesAnchor drives an anchored --section through the full
+// CLI seam: the fake tilth engine echoes its argv, proving the section reaches
+// the backend already numeric, with the move note prepended to the output.
+func TestReadCommandResolvesAnchor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell script is POSIX-only")
+	}
+	writeFakeEngine(t, "tilth")
+	file := writeAnchorFixture(t)
+	gamma := anchor.Of("gamma")
+
+	var out bytes.Buffer
+	root := cli.NewRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"code", "read", file, "--section", anchor.Format(2, gamma)})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute(read) error = %v", err)
+	}
+
+	want := fmt.Sprintf("# anchor %s: line 2 → 3\n%s --section 3-3", gamma, file)
+	if got := strings.TrimSpace(out.String()); got != want {
+		t.Errorf("read output = %q, want %q", got, want)
+	}
+}
+
+// TestRelatedCommandResolvesAnchor drives an anchored file:line#hash location
+// through the CLI seam: the fake semble engine echoes its argv, proving the
+// location reaches the backend as plain file and line positionals.
+func TestRelatedCommandResolvesAnchor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell script is POSIX-only")
+	}
+	writeFakeEngine(t, "semble")
+	file := writeAnchorFixture(t)
+	beta := anchor.Of("beta")
+
+	var out bytes.Buffer
+	root := cli.NewRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"code", "related", file + ":" + anchor.Format(2, beta)})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute(related) error = %v", err)
+	}
+
+	want := fmt.Sprintf("find-related %s 2", file)
+	if got := strings.TrimSpace(out.String()); got != want {
+		t.Errorf("related output = %q, want %q", got, want)
+	}
+}
+
+// writeAnchorFixture writes a three-line file to anchor against.
+func writeAnchorFixture(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "f.txt")
+	if err := os.WriteFile(path, []byte("alpha\nbeta\ngamma\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	return path
+}
+
+// writeFakeEngine puts an executable with the given engine name on PATH that
+// echoes its arguments, so backend resolution picks it over a real binary.
+func writeFakeEngine(t *testing.T, name string) {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "semble")
+	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte("#!/bin/sh\necho \"$@\"\n"), 0o700); err != nil { //nolint:gosec // fake engine script must be owner-executable
 		t.Fatalf("write fake engine: %v", err)
 	}
-	return path
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }

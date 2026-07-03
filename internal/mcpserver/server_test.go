@@ -11,8 +11,58 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/yasyf/cc-context/internal/anchor"
 	"github.com/yasyf/cc-context/internal/proxy"
 )
+
+// TestMain doubles as the fake tilth MCP engine: when the test binary is
+// re-executed as "tilth --mcp" (via the fakeTilthOnPath symlink), it serves a
+// stdio MCP server whose tilth_read echoes its params instead of running tests.
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == "--mcp" {
+		if err := serveFakeTilth(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+type fakeReadIn struct {
+	Path    string `json:"path"`
+	Section string `json:"section,omitempty"`
+	Full    bool   `json:"full,omitempty"`
+	Budget  int    `json:"budget,omitempty"`
+}
+
+func serveFakeTilth() error {
+	s := mcp.NewServer(&mcp.Implementation{Name: "fake-tilth", Version: "test"}, nil)
+	mcp.AddTool(s, &mcp.Tool{Name: "tilth_read", Description: "echo the read params"},
+		func(_ context.Context, _ *mcp.CallToolRequest, in fakeReadIn) (*mcp.CallToolResult, any, error) {
+			text := fmt.Sprintf("read %s section=%s", in.Path, in.Section)
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil
+		})
+	return s.Run(context.Background(), &mcp.StdioTransport{})
+}
+
+// fakeTilthOnPath symlinks the test binary onto PATH as "tilth", so the proxy's
+// engine resolution spawns the TestMain fake instead of a real engine.
+func fakeTilthOnPath(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("re-exec fake tilth is POSIX-only")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate test binary: %v", err)
+	}
+	dir := t.TempDir()
+	if err := os.Symlink(exe, filepath.Join(dir, "tilth")); err != nil {
+		t.Fatalf("symlink fake tilth: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
 
 // connectTestServer registers the ccx tools on a server and returns a connected
 // in-memory client session.
@@ -20,7 +70,9 @@ func connectTestServer(t *testing.T) *mcp.ClientSession {
 	t.Helper()
 	ctx := context.Background()
 	s := mcp.NewServer(&mcp.Implementation{Name: "cc-context-test", Version: "test"}, nil)
-	register(s, proxy.New())
+	p := proxy.New()
+	register(s, p)
+	t.Cleanup(func() { _ = p.Close() })
 
 	ct, st := mcp.NewInMemoryTransports()
 	if _, err := s.Connect(ctx, st, nil); err != nil {
@@ -192,6 +244,45 @@ func TestSearchToolInvalidMode(t *testing.T) {
 	}
 	if !strings.Contains(out, "ccx_code_search:") {
 		t.Errorf("invalid-mode error should carry the tool-name prefix: %s", out)
+	}
+}
+
+// TestReadToolResolvesAnchor proves the proxy seam: an anchored section reaches
+// the engine's tilth_read params already numeric, and the move note is
+// prepended to the tool output.
+func TestReadToolResolvesAnchor(t *testing.T) {
+	fakeTilthOnPath(t)
+	cs := connectTestServer(t)
+
+	file := filepath.Join(t.TempDir(), "f.txt")
+	if err := os.WriteFile(file, []byte("alpha\nbeta\ngamma\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	gamma := anchor.Of("gamma")
+
+	out, isErr := callText(t, cs, "ccx_code_read", map[string]any{"path": file, "section": anchor.Format(2, gamma)})
+	if isErr {
+		t.Fatalf("ccx_code_read is error: %s", out)
+	}
+	want := fmt.Sprintf("# anchor %s: line 2 → 3\nread %s section=3-3", gamma, file)
+	if out != want {
+		t.Errorf("ccx_code_read out = %q, want %q", out, want)
+	}
+}
+
+// TestReadToolRejectsMalformedAnchor proves an anchor-shaped section with a
+// garbage hash errors at the facade with the expected form instead of falling
+// through to the engine.
+func TestReadToolRejectsMalformedAnchor(t *testing.T) {
+	fakeTilthOnPath(t)
+	cs := connectTestServer(t)
+
+	out, isErr := callText(t, cs, "ccx_code_read", map[string]any{"path": "x.go", "section": "120#zz"})
+	if !isErr {
+		t.Fatalf("malformed anchor should be a tool error, got: %s", out)
+	}
+	if !strings.Contains(out, `invalid anchor "120#zz"`) || !strings.Contains(out, "120#a3fk") {
+		t.Errorf("malformed-anchor error should name the anchor and the expected form: %s", out)
 	}
 }
 
