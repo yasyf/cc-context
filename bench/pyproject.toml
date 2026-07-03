@@ -11,6 +11,13 @@ dependencies = [
     "tiktoken>=0.13.0",
 ]
 
+# TEMPORARY: unreleased cc-transcript v8 from the sibling checkout, plus capt-hook's
+# cc-transcript-v8 migration worktree (released capt-hook 4.x pins cc-transcript<8) —
+# drop both before release; the real capt-hook fix ships in its wave-2 release.
+[tool.uv.sources]
+cc-transcript = { path = "../../cc-transcript", editable = true }
+capt-hook = { path = "../../captain-hook-cc-transcript-v8", editable = true }
+
 [tool.setuptools.packages.find]
 include = ["ccxbench*"]
 
