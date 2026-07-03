@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/yasyf/cc-context/internal/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/render"
 )
@@ -53,7 +54,7 @@ func runStructOutline(ctx context.Context, a backend.Args) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return render.Cap(RenderOutline(files), a.Budget), nil
+	return render.Cap(RenderOutline(files, anchor.NewFiles(".")), a.Budget), nil
 }
 
 // runReplace previews a.Pattern→a.Rewrite, or applies it when a.Apply is set. An

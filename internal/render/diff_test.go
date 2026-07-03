@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/anchor"
 )
 
 func TestSupplementDiff(t *testing.T) {
@@ -270,5 +272,176 @@ func TestSupplementDiffNoHeadersPassesThrough(t *testing.T) {
 	}
 	if got != in {
 		t.Fatalf("passthrough mismatch: got %q want %q", got, in)
+	}
+}
+
+func TestShortenDiffSHAs(t *testing.T) {
+	const shaA = "6d67960cd834b1a9914f9e2eda5a936621a9fe61"
+	const shaB = "b2902b916deaa4c71c8bbca315b790b2da694e0f"
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "show header shortens both range SHAs and keeps the ..",
+			in:   "# Diff: " + shaA + ".." + shaB + " — 2 files, 1 modified, 1 added (~81 tokens)\n\n## greet.go (1 symbols)\n",
+			want: "# Diff: 6d67960cd8..b2902b916d — 2 files, 1 modified, 1 added (~81 tokens)\n\n## greet.go (1 symbols)\n",
+		},
+		{
+			name: "working-tree header has no SHAs and passes through",
+			in:   "# Diff: HEAD~1 — 1 file, 0 modified, 0 added (~21 tokens)\n\n## c/a.go w/a.go (0 symbols)\n",
+			want: "# Diff: HEAD~1 — 1 file, 0 modified, 0 added (~21 tokens)\n\n## c/a.go w/a.go (0 symbols)\n",
+		},
+		{
+			name: "a 40-hex in the hunk body is left untouched",
+			in:   "# Diff: " + shaA + ".." + shaB + " — 1 file\n\n## c/x.go w/x.go (0 symbols)\n+var h = \"" + shaA + "\"\n",
+			want: "# Diff: 6d67960cd8..b2902b916d — 1 file\n\n## c/x.go w/x.go (0 symbols)\n+var h = \"" + shaA + "\"\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shortenDiffSHAs(tt.in); got != tt.want {
+				t.Errorf("shortenDiffSHAs()\n got: %q\nwant: %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCollapsePreambles(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "in-place modify drops diff/index/---/+++ and keeps the hunk",
+			in: "## c/mod.go w/mod.go (0 symbols)\n\n" +
+				"diff --git c/mod.go i/mod.go\n" +
+				"index 9beff6c..7ead6cc 100644\n" +
+				"--- c/mod.go\n" +
+				"+++ i/mod.go\n" +
+				"@@ -1,3 +1,3 @@\n package main\n-func Greet() string { return \"hi\" }\n+func Greet() string { return \"yo\" }\n",
+			want: "## c/mod.go w/mod.go (0 symbols)\n\n" +
+				"@@ -1,3 +1,3 @@\n package main\n-func Greet() string { return \"hi\" }\n+func Greet() string { return \"yo\" }\n",
+		},
+		{
+			name: "new file keeps its mode line and drops the /dev/null preamble",
+			in: "## c/newfile.txt w/newfile.txt (0 symbols)\n\n" +
+				"diff --git c/newfile.txt i/newfile.txt\n" +
+				"new file mode 100644\n" +
+				"index 0000000..d5a09df\n" +
+				"--- /dev/null\n" +
+				"+++ i/newfile.txt\n" +
+				"@@ -0,0 +1 @@\n+brand new\n",
+			want: "## c/newfile.txt w/newfile.txt (0 symbols)\n\n" +
+				"new file mode 100644\n" +
+				"@@ -0,0 +1 @@\n+brand new\n",
+		},
+		{
+			name: "delete keeps its mode line and drops the /dev/null preamble",
+			in: "## c/del.txt w/del.txt (0 symbols)\n\n" +
+				"diff --git c/del.txt i/del.txt\n" +
+				"deleted file mode 100644\n" +
+				"index a0c42b6..0000000\n" +
+				"--- c/del.txt\n" +
+				"+++ /dev/null\n" +
+				"@@ -1 +0,0 @@\n-old content line\n",
+			want: "## c/del.txt w/del.txt (0 symbols)\n\n" +
+				"deleted file mode 100644\n" +
+				"@@ -1 +0,0 @@\n-old content line\n",
+		},
+		{
+			name: "mode-only change keeps old/new mode and drops just diff --git",
+			in: "## c/script.sh w/script.sh (0 symbols)\n\n" +
+				"diff --git c/script.sh i/script.sh\n" +
+				"old mode 100644\n" +
+				"new mode 100755\n",
+			want: "## c/script.sh w/script.sh (0 symbols)\n\n" +
+				"old mode 100644\n" +
+				"new mode 100755\n",
+		},
+		{
+			name: "rename keeps its full preamble because both sides differ from P",
+			in: "## c/newname.go w/newname.go (0 symbols)\n\n" +
+				"diff --git c/oldname.go i/newname.go\n" +
+				"similarity index 92%\n" +
+				"rename from oldname.go\n" +
+				"rename to newname.go\n" +
+				"--- c/oldname.go\n" +
+				"+++ i/newname.go\n" +
+				"@@ -1,2 +1,2 @@\n-// old\n+// new\n",
+			want: "## c/newname.go w/newname.go (0 symbols)\n\n" +
+				"diff --git c/oldname.go i/newname.go\n" +
+				"similarity index 92%\n" +
+				"rename from oldname.go\n" +
+				"rename to newname.go\n" +
+				"--- c/oldname.go\n" +
+				"+++ i/newname.go\n" +
+				"@@ -1,2 +1,2 @@\n-// old\n+// new\n",
+		},
+		{
+			name: "binary line is kept while diff/index are dropped",
+			in: "## c/blob.bin w/blob.bin (0 symbols)\n\n" +
+				"diff --git c/blob.bin i/blob.bin\n" +
+				"index 774cb84..6bcbf48 100644\n" +
+				"Binary files c/blob.bin and i/blob.bin differ\n",
+			want: "## c/blob.bin w/blob.bin (0 symbols)\n\n" +
+				"Binary files c/blob.bin and i/blob.bin differ\n",
+		},
+		{
+			name: "a hunk line resembling a preamble past the @@ boundary is kept",
+			in: "## c/mod.go w/mod.go (0 symbols)\n\n" +
+				"diff --git c/mod.go i/mod.go\n" +
+				"--- c/mod.go\n" +
+				"+++ i/mod.go\n" +
+				"@@ -1,2 +1,2 @@\n keep\n--- mod.go\n",
+			want: "## c/mod.go w/mod.go (0 symbols)\n\n" +
+				"@@ -1,2 +1,2 @@\n keep\n--- mod.go\n",
+		},
+		{
+			name: "commit-range bare heading collapses its prefixed preamble",
+			in: "## greet.go (1 symbols)\n\n" +
+				"diff --git a/greet.go b/greet.go\n" +
+				"index 111..222 100644\n" +
+				"--- a/greet.go\n" +
+				"+++ b/greet.go\n" +
+				"@@ -1 +1 @@\n-a\n+b\n",
+			want: "## greet.go (1 symbols)\n\n" +
+				"@@ -1 +1 @@\n-a\n+b\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := collapsePreambles(tt.in); got != tt.want {
+				t.Errorf("collapsePreambles()\n got:\n%s\nwant:\n%s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAnnotateDiffSymbols(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "greet.go"),
+		"package main\n\n// Greet greets the world warmly.\nfunc Greet() string {\n\treturn \"hello, friend\"\n}\n")
+	files := anchor.NewFiles(dir)
+	hash := string(anchor.Of("func Greet() string {"))
+
+	in := "# Diff: a..b\n\n" +
+		"## greet.go (1 symbols)\n" +
+		"  [~]      Greet                                    L4  (body, 3→3 lines)\n" +
+		"  [~]      Greet                                    L999  (body, 1→1 lines)\n\n" +
+		"## missing.go (1 symbols)\n" +
+		"  [+]      Ghost                                    L2  (new, 3 lines)\n"
+
+	want := "# Diff: a..b\n\n" +
+		"## greet.go (1 symbols)\n" +
+		"  [~]      Greet                                    L4#" + hash + "  (body, 3→3 lines)\n" +
+		"  [~]      Greet                                    L999  (body, 1→1 lines)\n\n" +
+		"## missing.go (1 symbols)\n" +
+		"  [+]      Ghost                                    L2  (new, 3 lines)\n"
+
+	if got := annotateDiffSymbols(in, files); got != want {
+		t.Errorf("annotateDiffSymbols()\n got:\n%s\nwant:\n%s", got, want)
 	}
 }

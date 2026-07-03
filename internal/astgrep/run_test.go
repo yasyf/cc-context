@@ -26,7 +26,8 @@ func fakeAstGrep(t *testing.T, files []string) {
 	var lines strings.Builder
 	for i, f := range files {
 		// 0-based line i; matches the ast-grep convention the renderer shifts +1.
-		fmt.Fprintf(&lines, `{"file":"%s","text":"old%d","replacement":"new%d","range":{"start":{"line":%d},"end":{"line":%d}}}`+"\n", f, i, i, i, i)
+		// lines carries the raw source line the anchor hashes, as real ast-grep does.
+		fmt.Fprintf(&lines, `{"file":"%s","text":"old%d","lines":"old%d","replacement":"new%d","range":{"start":{"line":%d},"end":{"line":%d}}}`+"\n", f, i, i, i, i, i)
 	}
 	// 0-based struct line 4 and member line 5 render as the 1-based L5 and L6.
 	const outline = `{"path":"x.go","language":"Go","items":[{"symbolType":"struct","name":"X","signature":"type X struct {","isExported":true,"range":{"start":{"line":4}},"members":[{"symbolType":"field","name":"Y","signature":"Y int","range":{"start":{"line":5}}}]}]}`
@@ -61,7 +62,8 @@ func TestRunReplacePreviewLeavesDiff(t *testing.T) {
 	if !strings.HasPrefix(got, "# 2 matches across 2 files\n") {
 		t.Errorf("preview header wrong:\n%s", got)
 	}
-	if !strings.Contains(got, "a.go:1\n- old0\n+ new0\n") {
+	// Line 0→1, anchored by Of("old0") = jtrj.
+	if !strings.Contains(got, "a.go:1#jtrj\n- old0\n+ new0\n") {
 		t.Errorf("preview missing first hit (1-based line):\n%s", got)
 	}
 }
@@ -119,8 +121,9 @@ func TestRunStructural(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run structural: %v", err)
 	}
-	// 0-based lines 0 and 1 render as the 1-based L1 and L2.
-	if !strings.Contains(got, "a.go:L1  old0") || !strings.Contains(got, "a.go:L2  old1") {
+	// 0-based lines 0 and 1 render as the 1-based L1 and L2, anchored by
+	// Of("old0") = jtrj and Of("old1") = rv55.
+	if !strings.Contains(got, "a.go:L1#jtrj  old0") || !strings.Contains(got, "a.go:L2#rv55  old1") {
 		t.Errorf("structural list wrong:\n%s", got)
 	}
 }

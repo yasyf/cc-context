@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/yasyf/cc-context/internal/anchor"
 )
 
 // OutlineFile is one `ast-grep outline --json=stream` record: a single source
@@ -57,10 +59,12 @@ func ParseOutline(stream []byte) ([]OutlineFile, error) {
 }
 
 // RenderOutline renders files as a `# <path>` header per file, then one
-// `L<line>  <signature>` per item with members indented one level. ast-grep
-// reports 0-based lines; oneBased shifts them to the ccx 1-based convention. A
-// run with no items anywhere collapses to a single no-symbols hint.
-func RenderOutline(files []OutlineFile) string {
+// `L<line>#<hash>  <signature>` per top-level item with members indented one
+// level and left bare (they live inside the parent's anchored span). The anchor
+// hashes the item's real source line via fs; a cache miss leaves the span bare.
+// ast-grep reports 0-based lines; oneBased shifts them to the ccx 1-based
+// convention. A run with no items anywhere collapses to a single no-symbols hint.
+func RenderOutline(files []OutlineFile, fs *anchor.Files) string {
 	var b strings.Builder
 	var items int
 	for _, f := range files {
@@ -70,7 +74,7 @@ func RenderOutline(files []OutlineFile) string {
 		fmt.Fprintf(&b, "# %s\n", f.Path)
 		for _, it := range f.Items {
 			items++
-			writeOutlineItem(&b, it, 0)
+			writeOutlineItem(&b, it, 0, f.Path, fs)
 		}
 	}
 	if items == 0 {
@@ -79,16 +83,24 @@ func RenderOutline(files []OutlineFile) string {
 	return b.String()
 }
 
-// writeOutlineItem writes one item as `<indent>L<line>  <signature>` and recurses
-// into its members at the next indent level. The signature falls back to the name
-// when ast-grep emits none (e.g. a struct field).
-func writeOutlineItem(b *strings.Builder, it OutlineItem, depth int) {
+// writeOutlineItem writes one item as `<indent>L<line>  <signature>`, anchoring
+// the depth-0 line marker with a content hash of its source line when fs can read
+// it. Members recurse at the next indent level and stay bare. The signature falls
+// back to the name when ast-grep emits none (e.g. a struct field).
+func writeOutlineItem(b *strings.Builder, it OutlineItem, depth int, path string, fs *anchor.Files) {
 	sig := it.Signature
 	if sig == "" {
 		sig = it.Name
 	}
-	fmt.Fprintf(b, "%sL%d  %s\n", strings.Repeat("  ", depth), oneBased(it.Range.Start.Line), sig)
+	line := oneBased(it.Range.Start.Line)
+	anchored := ""
+	if depth == 0 {
+		if src, ok := fs.LineAt(path, line); ok {
+			anchored = "#" + anchor.Of(src).String()
+		}
+	}
+	fmt.Fprintf(b, "%sL%d%s  %s\n", strings.Repeat("  ", depth), line, anchored, sig)
 	for _, m := range it.Members {
-		writeOutlineItem(b, m, depth+1)
+		writeOutlineItem(b, m, depth+1, path, fs)
 	}
 }

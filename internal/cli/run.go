@@ -59,5 +59,5 @@ func dispatch(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error)
 	if err != nil {
 		return "", err
 	}
-	return render.Cap(out, a.Budget), nil
+	return render.Finalize(op, out, a.Budget)
 }

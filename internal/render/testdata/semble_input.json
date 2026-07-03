@@ -1,0 +1,1 @@
+{"query": "greet the user", "results": [{"file_path": "example.go", "start_line": 19, "end_line": 21, "score": 0.48231, "content": "func (g *Greeter) Greet(name string) string {\n\treturn fmt.Sprintf(\"%s, %s!\", g.prefix, name)\n}"}, {"file_path": "remote/only.go", "start_line": 3, "end_line": 5, "score": 0.11894, "content": "package only\n\nfunc Ghost() {}"}]}

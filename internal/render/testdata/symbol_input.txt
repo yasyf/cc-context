@@ -1,0 +1,26 @@
+# grok: Greet [example.go:19]
+
+## signature
+func (g *Greeter) Greet(name string) string
+
+## body
+func (g *Greeter) Greet(name string) string {
+	parts := []string{g.prefix, name}
+	return strings.Join(parts, ", ")
+}
+  [14-16]   body bracket line, must stay bare
+
+## callees (0 internal, 1 extern)
+Sprintf              extern
+
+## callers (2 of 2)
+  example.go
+    [25]   in Shout()
+  missing.go
+    [40]   in ghost()
+... and 0 more
+
+## siblings (example.go)
+NewGreeter               [14-16]   func NewGreeter(prefix string) *Greeter
+Shout                    [24-26]   func (g *Greeter) Shout(name string) string
+helper                   [28-30]   func helper(buf [8]byte) int

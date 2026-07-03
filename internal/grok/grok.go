@@ -19,7 +19,7 @@ func Run(ctx context.Context, bin string, argv []string, a backend.Args) (string
 	out, err := render.RunCLI(ctx, bin, argv)
 	switch {
 	case err == nil && !strings.Contains(out, notFoundSentinel):
-		return render.Cap(out, a.Budget), nil
+		return render.Finalize(backend.OpSymbol, out, a.Budget)
 	case err == nil:
 		// tilth exited 0 but printed the sentinel on stdout; normalize that miss to the error path.
 		return FallbackTypeDecl(ctx, a, fmt.Errorf("tilth grok: %s %s", notFoundSentinel, a.Query))

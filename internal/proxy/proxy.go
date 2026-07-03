@@ -82,7 +82,7 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 		if err != nil {
 			return "", err
 		}
-		return render.Cap(out, a.Budget), nil
+		return render.Finalize(op, out, a.Budget)
 	}
 
 	tool, params, err := b.MCPTool(op, a)
@@ -108,7 +108,7 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 		}
 		return "", fmt.Errorf("proxy: tool %q failed: %s", tool, text)
 	}
-	return render.Cap(text, a.Budget), nil
+	return render.Finalize(op, text, a.Budget)
 }
 
 // session returns b's engine session, connecting it on first use. The connection

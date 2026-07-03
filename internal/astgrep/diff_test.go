@@ -61,10 +61,10 @@ func TestRenderSearch(t *testing.T) {
 	if len(lines) != 9 {
 		t.Fatalf("rendered %d lines, want 9:\n%s", len(lines), got)
 	}
-	// Single-line matches collapse to file:Lstart; the preview is the trimmed
+	// Single-line matches collapse to file:Lstart#hash; the preview is the trimmed
 	// match text (no leading tab, no body). ast-grep's 0-based line 24 renders as
-	// the 1-based L25.
-	want := "internal/render/render.go:L25  return stdout.String(), nil"
+	// the 1-based L25, anchored by Of("\treturn stdout.String(), nil") = mqc1.
+	want := "internal/render/render.go:L25#mqc1  return stdout.String(), nil"
 	if lines[0] != want {
 		t.Errorf("first line = %q, want %q", lines[0], want)
 	}
@@ -85,8 +85,9 @@ func TestRenderPreview(t *testing.T) {
 		t.Errorf("preview header = %q, want prefix %q", got[:len(header)], header)
 	}
 	// The first hit's anchor + diff lines come from the captured stream; ast-grep's
-	// 0-based line 24 renders as the 1-based 25.
-	wantBlock := "internal/render/render.go:25\n" +
+	// 0-based line 24 renders as the 1-based 25, anchored by
+	// Of("\treturn stdout.String(), nil") = mqc1.
+	wantBlock := "internal/render/render.go:25#mqc1\n" +
 		"- return stdout.String(), nil\n" +
 		"+ return stdout.String(), nil /* ok */\n"
 	if !strings.Contains(got, wantBlock) {

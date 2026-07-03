@@ -85,12 +85,16 @@ func TestSearchCommandInvokesBackend(t *testing.T) {
 		t.Fatalf("Execute(search) error = %v", err)
 	}
 
-	got := strings.TrimSpace(out.String())
+	got := out.String()
 	// A natural-language query routes to semble (semantic); the routing header is
-	// prepended to the backend's output on stdout.
-	want := "# semantic (semble)\nsearch auth flow src -k 3 --max-snippet-lines 10"
-	if got != want {
-		t.Errorf("backend argv = %q, want %q", got, want)
+	// prepended and the reshaped snippet carries the argv the fake engine echoed,
+	// proving both the routing decision and the argv the search command built.
+	if !strings.Contains(got, "# semantic (semble)") {
+		t.Errorf("missing routing header in %q", got)
+	}
+	wantArgv := "search auth flow src -k 3 --max-snippet-lines 10"
+	if !strings.Contains(got, wantArgv) {
+		t.Errorf("backend argv %q not in output %q", wantArgv, got)
 	}
 }
 
@@ -140,9 +144,11 @@ func TestRelatedCommandResolvesAnchor(t *testing.T) {
 		t.Fatalf("Execute(related) error = %v", err)
 	}
 
-	want := fmt.Sprintf("find-related %s 2", file)
-	if got := strings.TrimSpace(out.String()); got != want {
-		t.Errorf("related output = %q, want %q", got, want)
+	// The anchored beta#hash resolves to line 2, so the argv carries the plain "2";
+	// the fake semble engine echoes that argv into the reshaped snippet.
+	wantArgv := fmt.Sprintf("find-related %s 2", file)
+	if got := out.String(); !strings.Contains(got, wantArgv) {
+		t.Errorf("related argv %q not in output %q", wantArgv, got)
 	}
 }
 
@@ -162,7 +168,14 @@ func writeFakeEngine(t *testing.T, name string) {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\necho \"$@\"\n"), 0o700); err != nil { //nolint:gosec // fake engine script must be owner-executable
+	script := "#!/bin/sh\necho \"$@\"\n"
+	if name == "semble" {
+		// search/related output is reshaped from semble JSON, so the fake must emit
+		// valid JSON. Its argv is echoed into the snippet so the assertion can still
+		// prove which argv reached the backend.
+		script = "#!/bin/sh\n" + `printf '{"results":[{"file_path":"loc","start_line":1,"end_line":1,"score":0,"content":"%s"}]}' "$*"` + "\n"
+	}
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // fake engine script must be owner-executable
 		t.Fatalf("write fake engine: %v", err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

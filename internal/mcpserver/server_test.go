@@ -97,7 +97,8 @@ func fakeAstGrepOnPath(t *testing.T, files []string) {
 	dir := t.TempDir()
 	var lines strings.Builder
 	for i, f := range files {
-		fmt.Fprintf(&lines, `{"file":"%s","text":"old%d","replacement":"new%d","range":{"start":{"line":%d},"end":{"line":%d}}}`+"\n", f, i, i, i, i)
+		// lines carries the raw source line the anchor hashes, as real ast-grep does.
+		fmt.Fprintf(&lines, `{"file":"%s","text":"old%d","lines":"old%d","replacement":"new%d","range":{"start":{"line":%d},"end":{"line":%d}}}`+"\n", f, i, i, i, i, i)
 	}
 	const outline = `{"path":"x.go","language":"Go","items":[{"symbolType":"struct","name":"X","signature":"type X struct {","isExported":true,"range":{"start":{"line":4}},"members":[{"symbolType":"field","name":"Y","signature":"Y int","range":{"start":{"line":5}}}]}]}`
 	script := "#!/bin/sh\n" +
@@ -214,7 +215,8 @@ func TestSearchToolStructuralMode(t *testing.T) {
 	if isErr {
 		t.Fatalf("ccx_code_search structural is error: %s", out)
 	}
-	if !strings.Contains(out, "a.go:L1  old0") {
+	// 0-based line 0 renders as the 1-based L1, anchored by Of("old0") = jtrj.
+	if !strings.Contains(out, "a.go:L1#jtrj  old0") {
 		t.Errorf("structural search list wrong:\n%s", out)
 	}
 }

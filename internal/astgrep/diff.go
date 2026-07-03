@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/yasyf/cc-context/internal/anchor"
 )
 
 // Match is one ast-grep `--json=stream` record. Only the fields the renderers
@@ -73,13 +75,13 @@ func RenderSearch(matches []Match) string {
 }
 
 // RenderPreview renders a signature-grade diff: a `# N matches across M files`
-// header, then per hit a `path:line` anchor with `- <old>` / `+ <new>` lines
-// drawn from text and replacement.
+// header, then per hit a `path:line#hash` anchor with `- <old>` / `+ <new>`
+// lines drawn from text and replacement, making every preview hit addressable.
 func RenderPreview(matches []Match) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %d matches across %d files\n", len(matches), DistinctFiles(matches))
 	for _, m := range matches {
-		fmt.Fprintf(&b, "%s:%d\n", m.File, oneBased(m.Range.Start.Line))
+		fmt.Fprintf(&b, "%s:%s\n", m.File, anchor.Format(oneBased(m.Range.Start.Line), matchAnchor(m)))
 		for _, line := range strings.Split(m.Text, "\n") {
 			fmt.Fprintf(&b, "- %s\n", line)
 		}
@@ -90,15 +92,28 @@ func RenderPreview(matches []Match) string {
 	return b.String()
 }
 
-// loc formats a match's line span as file:Lstart-Lend, collapsing to file:Lstart
-// when the match is single-line. ast-grep reports 0-based lines; the ccx file:line
-// convention is 1-based, so the lines are shifted to match.
+// loc formats a match's line span as file:Lstart-Lend#hash, collapsing to
+// file:Lstart#hash when the match is single-line. The content anchor pins the
+// start line. ast-grep reports 0-based lines; the ccx file:line convention is
+// 1-based, so the lines are shifted to match.
 func loc(m Match) string {
 	start, end := oneBased(m.Range.Start.Line), oneBased(m.Range.End.Line)
+	h := matchAnchor(m)
 	if start == end {
-		return fmt.Sprintf("%s:L%d", m.File, start)
+		return fmt.Sprintf("%s:L%d#%s", m.File, start, h)
 	}
-	return fmt.Sprintf("%s:L%d-L%d", m.File, start, end)
+	return fmt.Sprintf("%s:L%d-L%d#%s", m.File, start, end, h)
+}
+
+// matchAnchor derives a match's content anchor from the first of its own source
+// lines. Match.Lines is byte-for-byte the source, so no file read is needed; Of
+// trims, so leading indentation and a trailing CR do not perturb the hash.
+func matchAnchor(m Match) anchor.Hash {
+	line := m.Lines
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	return anchor.Of(line)
 }
 
 // oneBased converts an ast-grep 0-based line number to the ccx 1-based convention.
