@@ -60,17 +60,18 @@ Pick the tool by what you know.
 
 ### 3. Read
 
-Outline before you read. The outline is the structure with line numbers, bounded to a
-token budget:
+Outline before you read. The outline is the structure with line numbers, each span
+carrying a content anchor (`L15#k2fa`), bounded to a token budget:
 
 ```
 ccx code outline internal/router/router.go
 ```
 
-Then read only the span you need, by line range or by heading:
+Then read only the span you need. Echo an anchor back from any producer command, or pass
+a plain line range or a heading:
 
 ```
-ccx code read internal/router/router.go --section 40-95
+ccx code read internal/router/router.go --section 40-95#k2fa   # anchored span from outline
 ccx code read README.md --section "## Workflow"
 ```
 
@@ -130,8 +131,11 @@ ccx vcs ship --amend                             # fold the working copy into th
 
 These hold for every command, which is what makes ccx safe to trust over a raw read:
 
-- **Line numbers stay.** Every span you get back carries its real line numbers, so a
-  follow-up `ccx code read --section A-B` or an `Edit` lands where you expect.
+- **Spans stay valid, or report they moved.** Every span you get back carries a short
+  content anchor, like `L15#k2fa`. Echo it into `ccx code read --section 15-27#k2fa` and
+  it resolves by content, not by line count. An exact hit comes back silently, a shifted
+  span re-anchors and prepends `# anchor k2fa: line 15 → 22`, and vanished content errors,
+  telling you to re-run `ccx code outline`.
 - **Token counts are shown.** Each output reports its own size — you always know what
   a result cost before deciding to read more.
 - **Overflow is explicit.** When a result exceeds the budget, ccx says so and tells

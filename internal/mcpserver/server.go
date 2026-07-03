@@ -47,7 +47,7 @@ type ReplaceIn struct {
 
 // RelatedIn is the input for ccx_code_related.
 type RelatedIn struct {
-	Location string `json:"location" jsonschema:"a file:line location to find related code for"`
+	Location string `json:"location" jsonschema:"a file:line location, or an anchor echoed from a producer tool (\"f.go:12#a3fk\"); a shifted anchor re-resolves by content and prepends a \"# anchor …\" note"`
 }
 
 // OutlineIn is the input for ccx_code_outline.
@@ -62,7 +62,7 @@ type OutlineIn struct {
 // ReadIn is the input for ccx_code_read.
 type ReadIn struct {
 	Path    string `json:"path" jsonschema:"file to read"`
-	Section string `json:"section,omitempty" jsonschema:"a line range (\"A-B\") or a heading (\"## Heading\")"`
+	Section string `json:"section,omitempty" jsonschema:"a line range (\"40-95\"), a heading (\"## Heading\"), or an anchor echoed from a producer tool (\"15-27#k2fa\", or bare \"k2fa\"); a shifted anchor re-resolves by content and prepends a \"# anchor …\" note"`
 	Full    bool   `json:"full,omitempty" jsonschema:"read the whole file"`
 	Budget  int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
 }
@@ -132,7 +132,7 @@ func Serve(ctx context.Context) error {
 func register(s *mcp.Server, p *proxy.Proxy) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_search",
-		Description: "Code search routed by query kind — natural-language intent (semantic), structural pattern (ast-grep), or forced literal. Prefer over grep for \"where/how do we do X\".",
+		Description: "Code search routed by query kind — natural-language intent (semantic), structural pattern (ast-grep), or forced literal. Prefer over grep for \"where/how do we do X\". Results are anchored (path:12-40#a3fk) — echo into ccx_code_read section or ccx_code_related.",
 	}, searchHandler(p))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -153,26 +153,26 @@ func register(s *mcp.Server, p *proxy.Proxy) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_related",
-		Description: "Find code semantically related to a file:line location — follow-up to a prior search hit.",
+		Description: "Find code semantically related to a file:line location — follow-up to a prior search hit. Takes an anchored location too (f.go:12#a3fk).",
 	}, handler(p, backend.OpRelated, func(in RelatedIn) backend.Args {
 		return backend.Args{Query: in.Location}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_outline",
-		Description: "Compact outline of a file or directory (signatures + line numbers, budget-bounded) — prefer over reading whole files. Routes to ast-grep (supports items=imports|exports and match=<regex>) or tilth by language.",
+		Description: "Compact outline of a file or directory (signatures + line numbers, budget-bounded) — prefer over reading whole files. Routes to ast-grep (supports items=imports|exports and match=<regex>) or tilth by language. Spans are anchored (L15#k2fa) — echo into ccx_code_read section.",
 	}, outlineHandler(p))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_read",
-		Description: "Read a file by section, heading, or whole — pass section to avoid pulling the entire file.",
+		Description: "Read a file by section, heading, anchor, or whole — pass section to avoid pulling the entire file.",
 	}, handler(p, backend.OpRead, func(in ReadIn) backend.Args {
 		return backend.Args{Path: in.Path, Section: in.Section, Full: in.Full, Budget: in.Budget}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_symbol",
-		Description: "Grok a symbol: definition, doc, callers, callees, siblings, tests — one call beats many greps.",
+		Description: "Grok a symbol: definition, doc, callers, callees, siblings, tests — one call beats many greps. Locations are anchored (file:67#c4bk) — echo into ccx_code_read section or ccx_code_related.",
 	}, handler(p, backend.OpSymbol, func(in SymbolIn) backend.Args {
 		return backend.Args{Query: in.Name, Scope: in.Scope, Full: in.Full}
 	}))
@@ -186,7 +186,7 @@ func register(s *mcp.Server, p *proxy.Proxy) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_grep",
-		Description: "Literal text search across code, optionally globbed and budget-bounded — for exact strings.",
+		Description: "Literal text search across code, optionally globbed and budget-bounded — for exact strings. Frames are anchored (55-66#2eak) — echo into ccx_code_read section.",
 	}, handler(p, backend.OpGrep, func(in GrepIn) backend.Args {
 		return backend.Args{Query: in.Text, Glob: in.Glob, Budget: in.Budget, Expand: in.Expand}
 	}))
@@ -200,7 +200,7 @@ func register(s *mcp.Server, p *proxy.Proxy) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_vcs_diff",
-		Description: "VCS-aware diff (uncommitted|staged|<ref>), budget-bounded — prefer over a raw git diff pager.",
+		Description: "VCS-aware diff (uncommitted|staged|<ref>), budget-bounded — prefer over a raw git diff pager. Symbol rows are anchored (L11#b3dk) — echo into ccx_code_read section.",
 	}, handler(p, backend.OpDiff, func(in DiffIn) backend.Args {
 		source := in.Source
 		if source == "" {

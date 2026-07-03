@@ -16,7 +16,9 @@ import (
 // TypeScript/TSX, JavaScript, Rust, Java, Kotlin). Verified against the vendored
 // binary; languages it merely recognizes but has no outline rules for (Ruby, C,
 // C++, C#, PHP, and the config/markup family) return empty and so route to tilth.
-// Revisit on a vendor version bump.
+// Revisit on a vendor version bump. The content-anchor rewrites in render/finalize.go
+// and render/diff.go are keyed to tilth's output grammar the same way;
+// TestContentAnchorsSurviveEngineGrammar (internal/cli) is the drift canary for both.
 var astGrepExts = map[string]struct{}{
 	".go":   {},
 	".py":   {},

@@ -10,7 +10,7 @@ func newRelatedCmd() *cobra.Command {
 	var a backend.Args
 	return &cobra.Command{
 		Use:   "related <file:line>",
-		Short: "Find code related to a location",
+		Short: "Find code related to a file:line, or an anchored f.go:12#a3fk",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a.Query = args[0]

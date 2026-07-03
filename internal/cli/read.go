@@ -17,7 +17,7 @@ func newReadCmd() *cobra.Command {
 			return runOp(cmd, backend.OpRead, a)
 		},
 	}
-	cmd.Flags().StringVar(&a.Section, "section", "", `range ("A-B") or heading ("## Heading")`)
+	cmd.Flags().StringVar(&a.Section, "section", "", `range ("40-95"), heading ("## Heading"), or anchor ("15-27#k2fa" or bare "k2fa") echoed from a producer command`)
 	cmd.Flags().BoolVar(&a.Full, "full", false, "read the whole file")
 	cmd.Flags().IntVar(&a.Budget, "budget", 0, "token budget for the output")
 	return cmd
