@@ -18,6 +18,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/cache"
 )
 
 // downloadTimeout bounds a single provisioning attempt end to end.
@@ -62,7 +64,7 @@ func Ensure(ctx context.Context, t Tool) (string, error) {
 		return "", err
 	}
 
-	dir, err := cacheDir()
+	dir, err := cache.Dir("bin")
 	if err != nil {
 		return "", err
 	}
@@ -71,24 +73,16 @@ func Ensure(ctx context.Context, t Tool) (string, error) {
 		return dst, nil
 	}
 
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return "", fmt.Errorf("create cache dir %q: %w", dir, err)
-	}
-
 	lockCtx, cancel := context.WithTimeout(ctx, downloadTimeout)
 	defer cancel()
-	unlock, err := lock(lockCtx, dir, t.Name)
+	err = cache.WithLock(lockCtx, dir, t.Name, func() error {
+		// Another holder of the lock may have provisioned it while we waited.
+		if executable(dst) {
+			return nil
+		}
+		return t.provision(ctx, asset, dst)
+	})
 	if err != nil {
-		return "", err
-	}
-	defer unlock()
-
-	// Another holder of the lock may have provisioned it while we waited.
-	if executable(dst) {
-		return dst, nil
-	}
-
-	if err := t.provision(ctx, asset, dst); err != nil {
 		return "", err
 	}
 	return dst, nil
@@ -137,7 +131,7 @@ func (t Tool) provision(ctx context.Context, asset, dst string) error {
 	if err != nil {
 		return err
 	}
-	return install(bin, dst)
+	return cache.Store(dst, bin, 0o700)
 }
 
 // download fetches url and returns its body.
@@ -238,18 +232,6 @@ func (t Tool) extractZip(archive []byte) ([]byte, error) {
 	return nil, fmt.Errorf("%s: entry %q not in zip", t.Name, t.BinInArchive)
 }
 
-// cacheDir resolves the directory holding cached binaries.
-func cacheDir() (string, error) {
-	if base := os.Getenv("CLAUDE_PLUGIN_DATA"); base != "" {
-		return filepath.Join(base, "bin"), nil
-	}
-	base, err := os.UserCacheDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve user cache dir: %w", err)
-	}
-	return filepath.Join(base, "cc-context", "bin"), nil
-}
-
 // executable reports whether path is a regular file with an owner-execute bit
 // (or any file on Windows, where the bit is meaningless).
 func executable(path string) bool {
@@ -258,51 +240,4 @@ func executable(path string) bool {
 		return false
 	}
 	return runtime.GOOS == "windows" || info.Mode().Perm()&0o100 != 0
-}
-
-// install writes bin to a sibling temp file and atomically renames it onto dst.
-func install(bin []byte, dst string) error {
-	tmp, err := os.CreateTemp(filepath.Dir(dst), ".vendor-*")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
-
-	if _, err := tmp.Write(bin); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write binary: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close binary: %w", err)
-	}
-	if err := os.Chmod(tmp.Name(), 0o700); err != nil { //nolint:gosec // the installed engine binary must be owner-executable
-		return fmt.Errorf("chmod binary: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), dst); err != nil {
-		return fmt.Errorf("install binary %q: %w", dst, err)
-	}
-	return nil
-}
-
-// lock acquires an exclusive OS advisory lock on dir/.<name>.lock, retrying until
-// it succeeds or ctx is done. The per-tool lock name keeps tilth and ast-grep
-// from serializing against each other. The lock is an advisory file lock the
-// kernel releases automatically on process death, so a SIGKILLed holder cannot
-// leave a stale lock that hangs every later provisioning attempt. The returned
-// func releases the lock and closes the fd; the lockfile itself is left in place
-// (removing a flock'd file is racy).
-func lock(ctx context.Context, dir, name string) (func(), error) {
-	path := filepath.Join(dir, "."+name+".lock")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // lockfile path is under the trusted cache dir
-	if err != nil {
-		return nil, fmt.Errorf("open download lock %q: %w", path, err)
-	}
-	if err := flockExclusive(ctx, f); err != nil {
-		_ = f.Close()
-		return nil, fmt.Errorf("acquire download lock %q: %w", path, err)
-	}
-	return func() {
-		_ = flockUnlock(f)
-		_ = f.Close()
-	}, nil
 }

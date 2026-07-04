@@ -1,6 +1,6 @@
 //go:build !windows
 
-package vendor
+package cache
 
 import (
 	"context"

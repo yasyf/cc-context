@@ -6,8 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
-	"strings"
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -16,9 +14,9 @@ import (
 	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/grok"
+	"github.com/yasyf/cc-context/internal/mcpclient"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/router"
-	"github.com/yasyf/cc-context/internal/version"
 )
 
 // Proxy fronts the bundled engines behind the stable op surface. Each engine's
@@ -100,7 +98,7 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 		return "", fmt.Errorf("proxy: call %q: %w", tool, err)
 	}
 
-	text := textOf(res)
+	text := mcpclient.TextOf(res)
 	if res.IsError {
 		// On an MCP grok miss, recover via the same ast-grep fallback the CLI uses.
 		if op == backend.OpSymbol && grok.IsNotFoundText(text) {
@@ -127,7 +125,7 @@ func (p *Proxy) session(ctx context.Context, b backend.Backend) (*mcp.ClientSess
 	if err != nil {
 		return nil, fmt.Errorf("proxy: resolve %s: %w", b.Engine(), err)
 	}
-	session, err := connect(context.WithoutCancel(ctx), cmd, argv...)
+	session, err := mcpclient.Connect(context.WithoutCancel(ctx), "cc-context-proxy", cmd, argv...)
 	if err != nil {
 		return nil, fmt.Errorf("proxy: connect %s: %w", b.Engine(), err)
 	}
@@ -147,12 +145,6 @@ func (p *Proxy) engineSlot(eng backend.Engine) *engineSession {
 	return es
 }
 
-// connect spawns the named child as a stdio MCP server and returns its session.
-func connect(ctx context.Context, bin string, argv ...string) (*mcp.ClientSession, error) {
-	client := mcp.NewClient(&mcp.Implementation{Name: "cc-context-proxy", Version: version.String()}, nil)
-	return client.Connect(ctx, &mcp.CommandTransport{Command: exec.Command(bin, argv...)}, nil) //nolint:gosec // bin/argv come from trusted backend resolution (vendored tilth path, fixed semble MCPSpec), not user free-text
-}
-
 // Close shuts down every opened child session, joining any close errors.
 func (p *Proxy) Close() error {
 	p.mu.Lock()
@@ -166,15 +158,4 @@ func (p *Proxy) Close() error {
 		es.mu.Unlock()
 	}
 	return errors.Join(errs...)
-}
-
-// textOf concatenates the text content blocks of a tool result.
-func textOf(res *mcp.CallToolResult) string {
-	var sb strings.Builder
-	for _, c := range res.Content {
-		if tc, ok := c.(*mcp.TextContent); ok {
-			sb.WriteString(tc.Text)
-		}
-	}
-	return sb.String()
 }
