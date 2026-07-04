@@ -1,1 +1,1 @@
-{"v":1,"lamport":4,"ops":[{"kind":"set_status","status":"done"},{"kind":"link_commit","sha":"361973d9d54ca682024588bce636a6d1ece5166d"}]}
+{"v":1,"lamport":5,"ops":[{"kind":"add_criterion","id":"24f395e0a60b258d6bb347cf4907a955","text":"record_json_shape (plugin/hooks/json_guards.py:95) passes evt.tool_response (a dict) to looks_like_json(s: str) — AttributeError on every Bash PostToolUse, currently masked by capt-hook fail-soft; fixed and covered by a test","script":""}]}
