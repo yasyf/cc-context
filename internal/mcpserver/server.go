@@ -11,6 +11,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/codeexec"
 	"github.com/yasyf/cc-context/internal/outline"
 	"github.com/yasyf/cc-context/internal/proxy"
 	"github.com/yasyf/cc-context/internal/render"
@@ -105,6 +106,15 @@ type DiffIn struct {
 // OverviewIn is the input for ccx_repo_overview.
 type OverviewIn struct{}
 
+// ExecIn is the input for ccx_exec.
+type ExecIn struct {
+	Script string `json:"script" jsonschema:"Python in the monty subset; host functions are async — await them; end an entrypoint with asyncio.run(main()) or use a bare final expression"`
+	Budget int    `json:"budget,omitempty" jsonschema:"max output tokens, 0 = default"`
+}
+
+// ExecToolsIn is the input for ccx_exec_tools.
+type ExecToolsIn struct{}
+
 // BashToonIn is the input for BashToon.
 type BashToonIn struct {
 	Command   []string `json:"command" jsonschema:"argv to RUN directly (no shell); argv[0] is the program, the rest its arguments"`
@@ -114,22 +124,30 @@ type BashToonIn struct {
 	Budget    int      `json:"budget,omitempty" jsonschema:"token budget for the output"`
 }
 
-// Serve creates the proxy (engines connect lazily on first use), registers the
-// static ccx_* tools, and serves them over stdio until ctx is cancelled or the
-// transport closes.
+// Serve creates the proxy (engines connect lazily on first use) and the
+// resident sandbox engine, registers the static ccx_* tools, and serves them
+// over stdio until ctx is cancelled or the transport closes.
 func Serve(ctx context.Context) error {
 	p := proxy.New()
 	defer func() { _ = p.Close() }()
 
-	s := mcp.NewServer(&mcp.Implementation{Name: "cc-context", Version: version.String()}, nil)
-	register(s, p)
+	var eng *codeexec.Engine
+	if codeexec.Supported {
+		eng = codeexec.NewEngine(p, codeexec.NewMemoryStore())
+		defer func() { _ = eng.Close() }()
+	}
+
+	s := mcp.NewServer(&mcp.Implementation{Name: "cc-context", Version: version.String()}, &mcp.ServerOptions{
+		Instructions: "Single question → the matching ccx_* tool. Pipeline, filter, fan-out, or output you would post-process → ccx_exec (get the catalog once via ccx_exec_tools).",
+	})
+	register(s, p, eng)
 
 	return s.Run(ctx, &mcp.StdioTransport{})
 }
 
 // register wires every static tool to a handler that builds backend.Args and
 // proxies the call to the matching engine.
-func register(s *mcp.Server, p *proxy.Proxy) {
+func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_search",
 		Description: "Code search routed by query kind — natural-language intent (semantic), structural pattern (ast-grep), or forced literal. Prefer over grep for \"where/how do we do X\". Results are anchored (path:12-40#a3fk) — echo into ccx_code_read section or ccx_code_related.",
@@ -217,6 +235,23 @@ func register(s *mcp.Server, p *proxy.Proxy) {
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
+		Name: "ccx_exec",
+		Description: "RUN a Python script in a sandbox whose async host functions are every ccx op, a gated sh(cmd), " +
+			"and every stateless MCP server's tools (auto-reflected) — the script awaits them, filters in-sandbox, " +
+			"and ONLY its return value comes back. Reach for it over 2+ chained tool calls or any output you'd " +
+			"post-process: project a large JSON, sweep files, fan out searches with asyncio.gather. Call " +
+			"ccx_exec_tools once first for the catalog and subset rules.",
+	}, execHandler(eng))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "ccx_exec_tools",
+		Description: "List the host functions a ccx_exec script can call — ccx ops, sh, and the auto-reflected " +
+			"tools of every stateless MCP server (mutating tools labeled, reflected servers noted) — plus the " +
+			"allowed Python subset and a worked example. Call once per session; the catalog is cached until the " +
+			"MCP inventory changes.",
+	}, execToolsHandler(eng))
+
+	mcp.AddTool(s, &mcp.Tool{
 		Name: "BashToon",
 		Description: "RUN a command (argv, no shell) and return its stdout token-compacted: JSON/NDJSON " +
 			"is re-encoded as TOON (or compact JSON when smaller), other output passes through. Use for " +
@@ -274,6 +309,46 @@ func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, 
 		}
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
 	}
+}
+
+// execHandler runs the script through the resident sandbox engine. MCP has no
+// stderr, so engine notes ride along as a trailing [notes] block.
+func execHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolRequest, ExecIn) (*mcp.CallToolResult, any, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in ExecIn) (*mcp.CallToolResult, any, error) {
+		if !codeexec.Supported {
+			return nil, nil, fmt.Errorf("%s: %s", req.Params.Name, codeexec.UnsupportedReason)
+		}
+		out, notes, err := eng.Exec(ctx, in.Script, in.Budget)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
+		}
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: withNotes(out, notes)}}}, nil, nil
+	}
+}
+
+// execToolsHandler renders the sandbox catalog — builtin plus reflected
+// signatures and the subset rules — with engine notes as a trailing [notes]
+// block.
+func execToolsHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolRequest, ExecToolsIn) (*mcp.CallToolResult, any, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, _ ExecToolsIn) (*mcp.CallToolResult, any, error) {
+		if !codeexec.Supported {
+			return nil, nil, fmt.Errorf("%s: %s", req.Params.Name, codeexec.UnsupportedReason)
+		}
+		out, notes, err := eng.Tools(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
+		}
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: withNotes(out, notes)}}}, nil, nil
+	}
+}
+
+// withNotes appends notes to text as a trailing [notes] block, one note per
+// line.
+func withNotes(text string, notes []string) string {
+	if len(notes) == 0 {
+		return text
+	}
+	return text + "\n\n[notes]\n" + strings.Join(notes, "\n")
 }
 
 // handler adapts a per-tool Args builder into an MCP tool handler that proxies

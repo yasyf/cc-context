@@ -12,6 +12,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/yasyf/cc-context/internal/anchor"
+	"github.com/yasyf/cc-context/internal/codeexec"
 	"github.com/yasyf/cc-context/internal/proxy"
 )
 
@@ -65,14 +66,20 @@ func fakeTilthOnPath(t *testing.T) {
 }
 
 // connectTestServer registers the ccx tools on a server and returns a connected
-// in-memory client session.
+// in-memory client session. Reflection is hard-off so no test shells out to
+// `claude mcp list`.
 func connectTestServer(t *testing.T) *mcp.ClientSession {
 	t.Helper()
 	ctx := context.Background()
+	t.Setenv("CCX_EXEC_MCP", "off")
 	s := mcp.NewServer(&mcp.Implementation{Name: "cc-context-test", Version: "test"}, nil)
 	p := proxy.New()
-	register(s, p)
-	t.Cleanup(func() { _ = p.Close() })
+	eng := codeexec.NewEngine(p, codeexec.NewMemoryStore())
+	register(s, p, eng)
+	t.Cleanup(func() {
+		_ = eng.Close()
+		_ = p.Close()
+	})
 
 	ct, st := mcp.NewInMemoryTransports()
 	if _, err := s.Connect(ctx, st, nil); err != nil {
@@ -136,6 +143,7 @@ func TestRegisteredToolSurface(t *testing.T) {
 		"ccx_code_outline": false, "ccx_code_read": false, "ccx_code_symbol": false,
 		"ccx_code_deps": false, "ccx_code_grep": false, "ccx_repo_find": false,
 		"ccx_vcs_diff": false, "ccx_repo_overview": false,
+		"ccx_exec": false, "ccx_exec_tools": false,
 	}
 	res, err := cs.ListTools(context.Background(), nil)
 	if err != nil {
@@ -285,6 +293,51 @@ func TestReadToolRejectsMalformedAnchor(t *testing.T) {
 	}
 	if !strings.Contains(out, `invalid anchor "120#zz"`) || !strings.Contains(out, "120#a3fk") {
 		t.Errorf("malformed-anchor error should name the anchor and the expected form: %s", out)
+	}
+}
+
+func TestExecToolRoundTrip(t *testing.T) {
+	if !codeexec.Supported {
+		t.Skip(codeexec.UnsupportedReason)
+	}
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_exec", map[string]any{"script": "40+2"})
+	if isErr {
+		t.Fatalf("ccx_exec is error: %s", out)
+	}
+	if out != "42" {
+		t.Errorf("ccx_exec out = %q, want %q", out, "42")
+	}
+}
+
+func TestExecToolsListsCatalog(t *testing.T) {
+	if !codeexec.Supported {
+		t.Skip(codeexec.UnsupportedReason)
+	}
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_exec_tools", map[string]any{})
+	if isErr {
+		t.Fatalf("ccx_exec_tools is error: %s", out)
+	}
+	if !strings.Contains(out, "search(") {
+		t.Errorf("catalog missing builtin signature:\n%s", out)
+	}
+	if !strings.Contains(out, "Allowed Python:") {
+		t.Errorf("catalog missing subset rules:\n%s", out)
+	}
+}
+
+func TestExecToolBadScript(t *testing.T) {
+	if !codeexec.Supported {
+		t.Skip(codeexec.UnsupportedReason)
+	}
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_exec", map[string]any{"script": "def f(:"})
+	if !isErr {
+		t.Fatalf("bad script should be a tool error, got: %s", out)
+	}
+	if !strings.Contains(out, "ccx_exec:") {
+		t.Errorf("bad-script error should carry the tool-name prefix: %s", out)
 	}
 }
 

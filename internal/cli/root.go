@@ -2,6 +2,8 @@
 package cli
 
 import (
+	"os"
+
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/internal/version"
@@ -16,11 +18,15 @@ func NewRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	// cobra's Print family targets OutOrStderr; without an explicit out stream
+	// every command's result lands on stderr.
+	root.SetOut(os.Stdout)
 	root.SetVersionTemplate("{{.Version}}\n")
 	root.AddCommand(
 		newVcsCmd(),
 		newCodeCmd(),
 		newRepoCmd(),
+		newExecCmd(),
 		newHelloCmd(),
 		newToonCmd(),
 		newMCPCmd(),
