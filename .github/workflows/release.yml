@@ -18,3 +18,20 @@ jobs:
       render-formula: true
       formula-template: .github/formula/ccx.rb.tmpl
       formula-name: ccx
+
+  # The disable-library-validation entitlement (gomonty's monty dylib is only
+  # ad-hoc linker-signed) can only be verified against the signed + notarized
+  # release artifact — local and CI builds are unsigned and never hit
+  # hardened-runtime library validation.
+  smoke:
+    needs: release
+    runs-on: macos-latest
+    steps:
+      - name: Run ccx exec from the released darwin_arm64 tarball
+        env:
+          # Keep the smoke test hermetic: never probe the runner for `claude`.
+          CCX_EXEC_MCP: "off"
+        run: |
+          curl -fsSL -o ccx.tgz "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/ccx_${GITHUB_REF_NAME#v}_darwin_arm64.tar.gz"
+          tar xzf ccx.tgz
+          test "$(./ccx exec '40+2')" = "42"

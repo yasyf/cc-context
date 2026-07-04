@@ -45,6 +45,10 @@ notarize:
       sign:
         certificate: "{{ .Env.MACOS_SIGN_P12 }}"
         password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+        # ccx exec dlopens gomonty's embedded monty dylib, which is only ad-hoc
+        # (linker-)signed. The hardened runtime that notarization requires would
+        # reject it via library validation, so that check must be disabled.
+        entitlements: .github/macos/entitlements.plist
       notarize:
         issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
         key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
