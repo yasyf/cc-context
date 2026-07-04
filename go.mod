@@ -12,6 +12,8 @@ require (
 	golang.org/x/sys v0.42.0
 )
 
+require golang.org/x/sync v0.21.0
+
 require (
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
