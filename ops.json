@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"add_comment","body":"Fixed in P6 (commit 361973d on main): _sed_parts ports off the removed CommandLine.capture to cmd.runs('sed','-n') + 3-arg parse. Guard suite now 381 passed, 0 errors. Also migrated cc-notes' own record.py off captain_hook.command (shipped cc-notes v0.15.1)."}]}
+{"v":1,"lamport":3,"ops":[{"kind":"set_criterion_status","id":"22ea38ece397284a346db01fc029a861","status":"met"}]}
