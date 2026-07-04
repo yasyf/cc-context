@@ -112,6 +112,33 @@ ccx toon -- gh release list --limit 3 --json tagName,publishedAt,isLatest
 
 That's less than half the bytes of the raw JSON, and typically 40–60% fewer tokens on tabular data. Non-JSON output passes through verbatim, stderr streams live, the exit code is propagated, and it doubles as a pipe filter (`… | ccx toon`). The MCP `BashToon` tool is the same wrapper in tool form.
 
+## Compose tools without their output entering context
+
+Every command above bounds or compresses the output of a single call. `ccx exec` goes one tier further: it runs a short Python script in a sandbox whose async host functions are every ccx query op, a gated `sh(cmd)`, and the tools of every stateless MCP server registered with Claude Code (auto-reflected — no flag needed). The script fans out calls, filters in the sandbox, and returns one value; only that value enters context, rendered as TOON or compact JSON and capped at `--budget`. Context cost is decoupled from work volume — a script can touch megabytes across dozens of calls and come back with a six-line answer:
+
+```bash
+ccx exec '
+import asyncio
+import re
+async def main():
+    raw = await outline("internal/cli")
+    cmds = sorted(set(re.findall(r"func (new\w+Cmd)", raw)))
+    return {"subcommands": len(cmds), "constructors": cmds}
+asyncio.run(main())
+'
+```
+
+```console
+constructors[22]: newCodeCmd,newDepsCmd,newDiffCmd,newExecCmd,newFindCmd,newGrepCmd,newHelloCmd,newHistoryCmd,newLocateCmd,newMCPCmd,newOutlineCmd,newOverviewCmd,newReadCmd,newRelatedCmd,newReplaceCmd,newRepoCmd,newSearchCmd,newShipCmd,newShowCmd,newSymbolCmd,newToonCmd,newVcsCmd
+subcommands: 22
+```
+
+The ~11,000-character outline of 38 files stayed in the sandbox; only the answer came back. In the spike's four replayed agent episodes, that pattern cut the characters entering context by 12–99× (a spike-measured character delta, not a result from the [benchmark harness](bench/README.md)).
+
+Scripts use a restricted Python subset: no classes or `match`, one module per `import` line, only `re`/`json`/`datetime`/`asyncio`, and no top-level `return` — wrap logic in `async def main()` and end with `asyncio.run(main())`. `ccx exec --list-tools` prints the host-function catalog and the full rules; scripts arrive as an argument, `--file`, or stdin. The MCP facade exposes the same surface as `ccx_exec`, with `ccx_exec_tools` for the catalog. Reflected MCP servers run as fresh instances — if one needs live session state, exclude it with `CCX_EXEC_MCP_DENY`.
+
+`ccx exec` is unavailable on Intel Macs (darwin/amd64 — the embedded Python runtime ships no library there); every other command works.
+
 ## The guard pack enforces it
 
 A budgeted command only helps if the agent reaches for it. The bundled [capt-hook](https://github.com/yasyf/captain-hook) guard pack makes that the path of least resistance: its `PreToolUse`/`PostToolUse` hooks block the token-heavy primitives — `cat`, raw `grep`, an unbounded full-file `Read`, a `git diff` through a pager — and point the agent at the `ccx` equivalent instead. Reach for the raw tool and the hook turns you back; reach for `ccx` and you stay inside the budget by default.
@@ -140,8 +167,9 @@ Each command is a token-bounded stand-in for a primitive an agent would otherwis
 | `ccx vcs history <path> [-n N]` | Per-commit summary of a file's changed symbols; replaces `git log -p` |
 | `ccx vcs ship [-m <msg>]` | Commit, push, and watch CI in one call: jj-aware commit, push, `gh run watch --exit-status` |
 | `ccx toon [-- <cmd>]` | Re-encode a command's JSON/NDJSON output as TOON, or filter a pipe |
+| `ccx exec [script]` | Run a sandboxed Python script composing ccx ops, `sh()`, and reflected MCP tools; only its return value enters context |
 
-Run `ccx <command> --help` for the full flag set, and `ccx --version` for the build version. Three engines sit behind the one surface — semble for semantic search, ast-grep for structural search and rewrites, tilth for the rest — and `ccx` routes each command for you.
+Run `ccx <command> --help` for the full flag set, and `ccx --version` for the build version. Three engines sit behind the one surface — semble for semantic search, ast-grep for structural search and rewrites, tilth for the rest — and `ccx` routes each command for you; `ccx exec` composes all of them from an embedded Python sandbox.
 
 ## Configuration
 
@@ -152,5 +180,8 @@ Run `ccx <command> --help` for the full flag set, and `ccx --version` for the bu
 | `LOG_LEVEL` | `debug`, `info` (default), `warn`, or `error`; logs go to stderr |
 | `LOG_FORMAT` | set to `json` for structured logs |
 | `CLAUDE_PLUGIN_DATA` | cache directory for the downloaded `ccx`, tilth, and ast-grep binaries |
+| `CCX_EXEC_MCP` | set to `off` to disable MCP auto-reflection in `ccx exec` |
+| `CCX_EXEC_MCP_DENY` | comma-separated MCP server names `ccx exec` must never reflect (overrides the classifier) |
+| `CCX_EXEC_MCP_ALLOW` | comma-separated MCP server names to reflect even when classified stateful |
 
 Licensed under [PolyForm Noncommercial 1.0.0](LICENSE).

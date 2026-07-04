@@ -6,7 +6,8 @@ diff``, raw ``grep`` file searches, ``sed -n A,Bp`` / ``cat`` line dumps, recurs
 ``ls``/``find`` trees — and toward the ``ccx`` tools that return the same
 information compactly (``ccx code outline``, ``ccx code read --section``, ``ccx vcs
 diff``, ``ccx repo find``, ``ccx code symbol``, ``ccx code grep``). The MCP tools
-(``mcp__cc-context__ccx_code_outline`` and friends) mirror every command.
+(``mcp__cc-context__ccx_code_outline`` and friends) mirror the query surface, plus
+``ccx_exec``/``ccx_exec_tools`` for sandboxed multi-call composition.
 
 The themed guard modules import these as ``from .common import ...``. The module
 registers no hooks, so discovery loads it as a harmless no-op.
@@ -67,6 +68,12 @@ def ccx_bin() -> str | None:
     return resolve_binary("ccx", extra_dirs=[Path(__file__).resolve().parents[1] / "bin"])
 
 
+def _json_flagged(args: tuple[str, ...]) -> bool:
+    if any(JSON_FLAG_GLUED.match(a) for a in args):
+        return True
+    return any(args[i] in JSON_VALUE_FLAGS and args[i + 1] == "json" for i in range(len(args) - 1))
+
+
 def has_json_output_flag(cl: CommandLine) -> bool:
     """Report whether the primary command carries a JSON-output flag.
 
@@ -74,10 +81,27 @@ def has_json_output_flag(cl: CommandLine) -> bool:
     ``--format=json``) directly, and the two-token forms (``-o json``, ``--output
     json``, ``--format json``) by scanning argument adjacency.
     """
-    args = cl.primary.args
-    if any(JSON_FLAG_GLUED.match(a) for a in args):
-        return True
-    return any(args[i] in JSON_VALUE_FLAGS and args[i + 1] == "json" for i in range(len(args) - 1))
+    return _json_flagged(cl.primary.args)
+
+
+def head_has_json_output_flag(cl: CommandLine) -> bool:
+    """Report whether the line's *first* command carries a JSON-output flag.
+
+    :func:`has_json_output_flag` inspects ``cl.primary`` — the line's last command,
+    the right grain for the single-command ``ccx toon`` wrap. A pipe steer cares about
+    the producer at the head of the pipeline instead (``<cmd --json> | jq``).
+    """
+    return _json_flagged(cl.head.args)
+
+
+def is_ccx_command(cl: CommandLine) -> bool:
+    """Report whether the primary command runs the ``ccx`` binary itself.
+
+    ccx output is already token-bounded (``ccx exec`` return values are budget-capped
+    and TOON-or-JSON rendered), so the JSON-shape learner must skip it — a learned
+    ``ccx exec`` shape would nudge wrapping ccx in ``ccx toon``, which is wrong advice.
+    """
+    return Path(cl.primary.executable).name == "ccx"
 
 
 def already_wrapped(cl: CommandLine) -> bool:

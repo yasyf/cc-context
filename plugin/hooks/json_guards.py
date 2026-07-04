@@ -32,6 +32,7 @@ from .common import (
     ccx_bin,
     command_shape,
     has_json_output_flag,
+    is_ccx_command,
     is_single_command,
     load_shapes,
     looks_like_json,
@@ -65,6 +66,18 @@ rewrite_command(
         Input(command="kubectl get pods -o json > pods.json"): Allow(),
         Input(command="ls -la"): Allow(),
         Input(command="ccx toon -- gh pr list --json x"): Allow(),
+        # `ccx exec` pass-through is deliberate: the script is one opaque token, so a
+        # `--json` inside it never reads as this command's own JSON-output flag.
+        Input(
+            command="ccx exec 'import json\n"
+            'async def main(): return json.loads(await sh("gh pr list --json number"))\n'
+            "asyncio.run(main())'"
+        ): Allow(),
+        Input(
+            command="ccx exec --file - <<'PY'\n"
+            'async def main(): return await sh("kubectl get pods -o json")\n'
+            "asyncio.run(main())\nPY"
+        ): Allow(),
     },
 )
 
@@ -81,7 +94,7 @@ def record_json_shape(evt: BaseHookEvent) -> None:
     cl = evt.command_line
     if not out or cl is None or not looks_like_json(out):
         return None
-    if already_wrapped(cl) or has_json_output_flag(cl) or not is_single_command(cl):
+    if already_wrapped(cl) or is_ccx_command(cl) or has_json_output_flag(cl) or not is_single_command(cl):
         return None
     record_shape(evt, command_shape(cl))
     return None
@@ -96,7 +109,9 @@ class SeenEmittingJson(CustomCommandLineCondition):
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        if already_wrapped(cl) or not is_single_command(cl):
+        # `is_ccx_command` also covers shapes learned before ccx commands were
+        # excluded from the recorder — the durable store is global and long-lived.
+        if already_wrapped(cl) or is_ccx_command(cl) or not is_single_command(cl):
             return False
         shape = command_shape(cl)
         if shape not in load_shapes(evt):

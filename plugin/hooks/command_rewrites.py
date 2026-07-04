@@ -46,13 +46,13 @@ class SedLineRange(CustomCommandLineCondition):
 
 
 def _sed_parts(cl: CommandLine) -> tuple[str, str, str] | None:
-    cap = cl.capture("sed -n $R $F")
-    if not cap:
+    cmd = cl.primary
+    if cmd is None or not cmd.runs("sed", "-n") or len(cmd.args) != 3:
         return None
-    m = SedLineRange.RANGE.match(cap["R"].strip("'\""))
+    m = SedLineRange.RANGE.match(cmd.args[1].strip("'\""))
     if not m:
         return None
-    return m.group(1), m.group(2), cap["F"]
+    return m.group(1), m.group(2), cmd.args[2]
 
 
 def _sed_to(evt: BaseHookEvent) -> str | None:
@@ -82,6 +82,11 @@ rewrite_command(
         Input(command="cat f | sed -n '1,2p'"): Allow(),
         Input(command="sed 's/a/b/' f"): Allow(),
         Input(command="sed -n '/start/,/end/p' f"): Allow(),  # non-numeric range
+        # `ccx exec` pass-through is deliberate: the script is one opaque ccx token,
+        # so a sed inside sh() never parses as this rule's sed.
+        Input(
+            command="ccx exec 'async def main(): return await sh(\"sed -n 10,40p f.go\")\nasyncio.run(main())'"
+        ): Allow(),
     },
 )
 
@@ -181,6 +186,10 @@ rewrite_command(
         Input(command="rg foo | head -5"): Allow(),  # pipe sink — sanctioned
         Input(command="cat f | tail -20"): Allow(),  # pipe sink — sanctioned
         Input(command="head -5"): Allow(),  # reads stdin, no file operand
+        # `ccx exec` pass-through is deliberate: head inside sh() is the script's business.
+        Input(
+            command="ccx exec 'async def main(): return await sh(\"head -40 f.go\")\nasyncio.run(main())'"
+        ): Allow(),
     },
 )
 
@@ -226,6 +235,13 @@ rewrite_command(
         Input(command="cat internal/go.mod"): Allow(),  # nested copy, not the root manifest
         Input(command="cat main.go"): Allow(),  # not a manifest — BareCat rewrites it
         Input(command="cat go.mod | grep module"): Allow(),  # piped, not a raw dump
+        # `ccx exec --file -` heredoc pass-through is deliberate — this rule's own
+        # `<<` short-circuit, locked here because it is per-rule, not pack-wide.
+        Input(
+            command="ccx exec --file - <<'PY'\n"
+            'async def main(): return await sh("cat go.mod")\n'
+            "asyncio.run(main())\nPY"
+        ): Allow(),
     },
 )
 
@@ -279,6 +295,16 @@ rewrite_command(
         Input(command="cat << EOF"): Allow(),
         Input(command="cat > f"): Allow(),
         Input(command="cat >> f"): Allow(),
+        # `ccx exec` pass-through is deliberate, in both the quoted-script form (the
+        # cat inside sh() is one opaque token) and this rule's `<<` short-circuit.
+        Input(
+            command="ccx exec 'async def main(): return await sh(\"cat main.go\")\nasyncio.run(main())'"
+        ): Allow(),
+        Input(
+            command="ccx exec --file - <<'PY'\n"
+            'async def main(): return await sh("cat main.go")\n'
+            "asyncio.run(main())\nPY"
+        ): Allow(),
     },
 )
 

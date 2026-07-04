@@ -26,6 +26,8 @@ from captain_hook.session import SessionStore
 from hooks.common import (
     command_shape,
     has_json_output_flag,
+    head_has_json_output_flag,
+    is_ccx_command,
     looks_like_json,
     load_shapes,
     record_shape,
@@ -100,6 +102,49 @@ class TestHasJsonOutputFlag:
     )
     def test_negative(self, command: str) -> None:
         assert not has_json_output_flag(CommandLine.parse(command))
+
+
+class TestHeadHasJsonOutputFlag:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr list --json number,title | jq '.[].title'",
+            "kubectl get pods -o json | python3 -c 'pass'",
+            # head args still carry --json after the wrap — callers must pair this
+            # helper with already_wrapped, as exec_guards' JsonPipedToFilter does.
+            "ccx toon -- gh pr list --json x | jq .",
+        ],
+    )
+    def test_positive(self, command: str) -> None:
+        assert head_has_json_output_flag(CommandLine.parse(command))
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ps aux | awk '{print $1}'",
+            "terraform output | jq .",
+            "cat pods.json | jq '.items'",
+        ],
+    )
+    def test_negative(self, command: str) -> None:
+        assert not head_has_json_output_flag(CommandLine.parse(command))
+
+
+class TestIsCcxCommand:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ccx exec 'async def main(): return 1'",
+            "bin/ccx exec --list-tools",
+            "/opt/homebrew/bin/ccx repo overview",
+        ],
+    )
+    def test_positive(self, command: str) -> None:
+        assert is_ccx_command(CommandLine.parse(command))
+
+    @pytest.mark.parametrize("command", ["gh pr list --json x", "ccxfoo bar"])
+    def test_negative(self, command: str) -> None:
+        assert not is_ccx_command(CommandLine.parse(command))
 
 
 class TestLooksLikeJson:
@@ -212,4 +257,12 @@ class TestSeenEmittingJson:
         record_shape(fake_evt(), shape("terraform output"))
         cond = SeenEmittingJson()
         evt = self._event("terraform output | jq .", tmp_path / "s1")
+        assert not cond.check_command_line(evt, evt.command_line)
+
+    def test_ccx_shape_never_fires_even_if_recorded(self, tmp_path: Path) -> None:
+        # The durable store is global and long-lived: a `ccx exec` shape recorded
+        # before ccx commands were excluded must not nudge wrapping ccx in ccx toon.
+        record_shape(fake_evt(), shape("ccx exec 'async def main(): return 1'"))
+        cond = SeenEmittingJson()
+        evt = self._event("ccx exec 'async def main(): return 2'", tmp_path / "s1")
         assert not cond.check_command_line(evt, evt.command_line)

@@ -1,12 +1,14 @@
 ---
 name: ccx
 description: >-
-  Read code, find symbols, search a codebase, and review diffs with token-bounded
-  outputs instead of raw file reads. Use whenever you need codebase context: reading
-  a file, locating a symbol or definition, searching code by intent or text, listing
-  files, or reviewing changes. Triggers on "read this file", "where is X", "find the
-  Y function", "how does Z work", "search the code for", "show me the diff", "what
-  calls this". Reach for ccx before Read, cat, sed, grep, git diff, ls -R, or find, since
+  Read code, find symbols, search a codebase, review diffs, and compose multi-call
+  pipelines with token-bounded outputs instead of raw file reads. Use whenever you
+  need codebase context: reading a file, locating a symbol or definition, searching
+  code by intent or text, listing files, reviewing changes, or chaining tool calls
+  and keeping only the distilled result. Triggers on "read this file", "where is X",
+  "find the Y function", "how does Z work", "search the code for", "show me the diff",
+  "what calls this", "filter this output", "for each file", "combine results from".
+  Reach for ccx before Read, cat, sed, grep, git diff, ls -R, or find, since
   the guard hooks block those on anything token-heavy.
 ---
 
@@ -18,7 +20,8 @@ silent truncation. Use it as the default path to any file, symbol, search, or di
 
 The MCP tools mirror the ccx query surface: `mcp__cc-context__ccx_repo_overview`,
 `mcp__cc-context__ccx_code_search`, `mcp__cc-context__ccx_code_outline`, and the rest of
-the read, search, and diff commands take the same arguments as their CLI counterparts.
+the read, search, and diff commands take the same arguments as their CLI counterparts;
+`mcp__cc-context__ccx_exec` and `mcp__cc-context__ccx_exec_tools` mirror `ccx exec`.
 Use whichever is available; the workflow is identical. `ccx vcs ship`, `ccx vcs show`,
 `ccx vcs history`, and `ccx repo locate` are CLI-only — there is no MCP tool for them.
 
@@ -127,6 +130,41 @@ ccx vcs ship -m "wip" --no-push                  # commit only, skip push and CI
 ccx vcs ship --amend                             # fold the working copy into the parent
 ```
 
+### 7. Compose
+
+One question takes one call from steps 1–6. When the work is a pipeline — two or more
+chained calls, output you'd immediately filter or project, a fan-out across files —
+write the pipeline as a script instead. `ccx exec` (MCP: `mcp__cc-context__ccx_exec`)
+runs a short Python script in a sandbox where every ccx op above is an async host
+function, alongside a gated `sh(cmd)` and the tools of every stateless MCP server,
+auto-reflected with no flag needed. Intermediate output stays in the sandbox; only the
+script's return value enters context.
+
+```
+ccx exec 'import asyncio
+async def main():
+    raw = await grep("TODO", glob="internal/**/*.go")
+    return [ln for ln in raw.splitlines() if "FIXME" not in ln]
+asyncio.run(main())'
+```
+
+The script comes in as an argument, `--file <path>`, or stdin (`--file -`); `--budget`
+caps the result size.
+
+- **Print the catalog once per session, before the first script.** `ccx exec
+  --list-tools` (MCP: `mcp__cc-context__ccx_exec_tools`) lists every host function
+  signature — ccx ops, `sh`, and the reflected MCP tools — plus the Python-subset
+  rules and a worked example. Once is enough; don't re-run it per script.
+- **The sandbox speaks a Python subset.** No classes, no `match`; imports are limited
+  to `re`, `json`, `datetime`, and `asyncio`, one module per `import` line. A top-level
+  `return` is illegal — wrap the logic in `async def main()` and end the script with
+  `asyncio.run(main())`. Every host function is async: await it, and run independent
+  calls concurrently with `asyncio.gather(...)`.
+- **Reflected servers are fresh instances.** Each stateless MCP server is spawned anew
+  for the sandbox, so a tool that needs live session state will misbehave — exclude it
+  with `CCX_EXEC_MCP_DENY=<name>` (comma-separated; `CCX_EXEC_MCP_ALLOW` overrides the
+  classifier the other way, and `CCX_EXEC_MCP=off` disables reflection entirely).
+
 ## Guarantees
 
 These hold for every command, which is what makes ccx safe to trust over a raw read:
@@ -143,6 +181,13 @@ These hold for every command, which is what makes ccx safe to trust over a raw r
 - **There is always a raw fallback.** Hit overflow or want the unabridged source and
   you have an escape hatch. Use `ccx code read --full` for a whole file, a path-scoped
   `ccx vcs diff <ref>` for changes, or `Read` with an `offset` for a known line range.
+- **Exec returns are budget-capped.** A script can touch megabytes across dozens of
+  calls; only its return value comes back, rendered as TOON or JSON and capped to the
+  token budget like any other command.
+- **`sh()` is a sanctioned bypass of the read guards.** It runs host-side inside the
+  ccx process, out of the guard hooks' sight, with its own denylist in
+  `internal/codeexec/sh.go`. That is safe because only the script's filtered return
+  enters context, never the raw command output.
 
 ## Why ccx first
 

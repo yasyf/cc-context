@@ -6,7 +6,7 @@
 # `ccx` on PATH) runs; elsewhere the pinned release is downloaded on first use.
 set -eu
 
-CCX_VERSION="v0.1.1"
+CCX_VERSION="v0.4.0"
 
 cache_dir="${CLAUDE_PLUGIN_DATA:-${XDG_CACHE_HOME:-$HOME/.cache}/cc-context}/bin"
 cached="$cache_dir/ccx-$CCX_VERSION"
@@ -39,6 +39,8 @@ esac
 
 case "$arch" in
 	arm64 | aarch64) asset_arch="arm64" ;;
+	# darwin/amd64 still ships, but `ccx exec` is unavailable on Intel macs
+	# (monty has no darwin/amd64 runtime); every other command works.
 	x86_64 | amd64) asset_arch="amd64" ;;
 	*)
 		echo "cc-context: unsupported architecture: $arch" >&2

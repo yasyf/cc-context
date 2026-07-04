@@ -61,6 +61,17 @@ nudge(
         Input(command="rg TODO"): Allow(),
         Input(command="grep TODO ."): Allow(),
         Input(command="rg 'just one term' src/"): Allow(),
+        # `ccx exec` pass-through is deliberate: the alternation inside the script
+        # matches IDENT_ALT, but the line runs ccx, not rg/grep.
+        Input(
+            command="ccx exec 'async def main(): return await sh(\"rg \\\"fooBar|bazQux\\\" src/\")\n"
+            "asyncio.run(main())'"
+        ): Allow(),
+        Input(
+            command="ccx exec --file - <<'PY'\n"
+            "async def main(): return await sh(\"rg 'fooBar|bazQux' src/\")\n"
+            "asyncio.run(main())\nPY"
+        ): Allow(),
     },
 )
 
@@ -93,6 +104,11 @@ nudge(
         Input(command="rg parseConfig"): Allow(),
         Input(command='rg "src/config" .'): Allow(),
         Input(command='rg "foo.*bar"'): Allow(),
+        # `ccx exec` pass-through is deliberate: the phrase lives inside the script token.
+        Input(
+            command="ccx exec 'async def main(): return await sh(\"rg \\\"parse the config file\\\"\")\n"
+            "asyncio.run(main())'"
+        ): Allow(),
     },
 )
 
@@ -128,5 +144,15 @@ hook(
         Input(command="grep foo a && echo done"): Block(),
         Input(command="git log --grep=fix"): Allow(),
         Input(command='git log --grep "fix bug"'): Allow(),
+        # `ccx exec` pass-through is deliberate: sh("grep …") is in-sandbox and
+        # budget-capped on return — internal/codeexec/sh.go owns its policy, not hooks.
+        Input(
+            command="ccx exec 'async def main(): return await sh(\"grep -rn foo src/\")\nasyncio.run(main())'"
+        ): Allow(),
+        Input(
+            command="ccx exec --file - <<'PY'\n"
+            'async def main(): return await sh("grep -rn foo src/")\n'
+            "asyncio.run(main())\nPY"
+        ): Allow(),
     },
 )
