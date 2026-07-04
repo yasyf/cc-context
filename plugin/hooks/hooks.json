@@ -1,11 +1,21 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx capt-hook pack attach \"${CLAUDE_PLUGIN_ROOT}/hooks\""
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "uvx capt-hook --hooks ${CLAUDE_PLUGIN_ROOT}/hooks run PreToolUse"
+            "command": "uvx capt-hook run PreToolUse"
           }
         ]
       }
@@ -15,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uvx capt-hook --hooks ${CLAUDE_PLUGIN_ROOT}/hooks run PostToolUse"
+            "command": "uvx capt-hook run PostToolUse"
           }
         ]
       }
@@ -25,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uvx capt-hook --hooks ${CLAUDE_PLUGIN_ROOT}/hooks run PreCompact"
+            "command": "uvx capt-hook run PreCompact"
           }
         ]
       }

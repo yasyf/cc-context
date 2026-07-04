@@ -57,3 +57,22 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: capt-hook pack manifests move in lockstep
+        run: |
+          python3 - <<'PY'
+          import sys, tomllib
+
+          root = tomllib.load(open(".claude/capt-hook.toml", "rb"))["version"]
+          plugin = tomllib.load(open("plugin/hooks/capt-hook.toml", "rb"))["version"]
+          if root != plugin:
+              sys.exit(
+                  f"capt-hook manifest version skew: .claude/capt-hook.toml={root} "
+                  f"!= plugin/hooks/capt-hook.toml={plugin}"
+              )
+          print(f"ok: both capt-hook manifests at {root}")
+          PY
