@@ -79,3 +79,11 @@ jobs:
               )
           print(f"ok: both capt-hook manifests at {root}")
           PY
+
+  hook-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8
+      - name: capt-hook hook tests
+        run: uvx capt-hook --hooks plugin/hooks test
