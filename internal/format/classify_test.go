@@ -169,6 +169,20 @@ func TestClassify(t *testing.T) {
 			src:  `{"body":"` + classifyTestProse(t, 512) + `"}`,
 			want: []Format{FormatProse},
 		},
+		// Regression: a single token with trailing whitespace is not prose.
+		// The encoder requires ≥2 words (proseDominantIndex); a classifier
+		// accepting whitespace-anywhere nominated a sole candidate that
+		// always errored.
+		{
+			name: "single token with trailing newline is not prose",
+			src:  `{"blob":"` + x(600) + `\n","id":"x1"}`,
+			want: []Format{FormatJSON},
+			check: func(t *testing.T, a analysis) {
+				if a.proseField != "" || a.proseFieldBytes != 0 {
+					t.Errorf("proseField = %q proseFieldBytes = %d, want none", a.proseField, a.proseFieldBytes)
+				}
+			},
+		},
 		// Branch 3 — chart steps 3+4: uniform array, small → markdown.
 		{
 			name: "uniform small table markdown",
@@ -193,6 +207,21 @@ func TestClassify(t *testing.T) {
 			check: func(t *testing.T, a analysis) {
 				if a.uniform || a.hetero {
 					t.Errorf("uniform = %v hetero = %v, want false/false", a.uniform, a.hetero)
+				}
+			},
+		},
+		// Regression: {"a\x00b","c"} and {"a","b\x00c"} are distinct
+		// key-sets; a bare NUL-join fingerprint collided them into one modal
+		// shape and misread the array as uniform.
+		{
+			name: "nul-bearing keys are distinct shapes",
+			src: classifyTestRows(append(
+				classifyTestRepeatRows(`{"a\u0000b":1,"c":"`+x(10)+`"}`, 5),
+				classifyTestRepeatRows(`{"a":1,"b\u0000c":"`+x(10)+`"}`, 5)...)...),
+			want: []Format{FormatJSON},
+			check: func(t *testing.T, a analysis) {
+				if a.uniform || a.hetero || a.modalShare != 0.5 {
+					t.Errorf("uniform = %v hetero = %v modalShare = %v, want false/false/0.5", a.uniform, a.hetero, a.modalShare)
 				}
 			},
 		},

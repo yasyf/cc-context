@@ -108,7 +108,19 @@ func TestCSVErrors(t *testing.T) {
 			fmt.Sprintf("encode csv: %T is not an array of objects", toon.NewObject()),
 		},
 		{"empty array", []any{}, "encode csv: empty array has no header"},
+		{"zero columns", []any{csvRow(t)}, "encode csv: row 0 has no keys"},
 		{"non-object first row", []any{int64(5)}, "encode csv: row 0 is int64, not an object"},
+		{
+			// A duplicate key must error, not silently keep one of the values.
+			"duplicate key in first row",
+			[]any{csvRow(t, "a", int64(1), "a", int64(101))},
+			`encode csv: row 0 duplicates key "a"`,
+		},
+		{
+			"duplicate key in later row",
+			[]any{csvRow(t, "a", int64(1), "b", int64(2)), csvRow(t, "a", int64(3), "a", int64(4))},
+			`encode csv: row 1 duplicates key "a"`,
+		},
 		{"non-object later row", []any{csvRow(t, "a", int64(1)), "x"}, "encode csv: row 1 is string, not an object"},
 		{
 			"row adds key",
@@ -228,6 +240,21 @@ func TestMarkdownEscaping(t *testing.T) {
 		t.Fatalf("encodeMarkdown() error: %v", err)
 	}
 	want := "|a|b|c|\n|---|---|---|\n|x\\|y|l1<br>l2|crlf<br>end|"
+	if got != want {
+		t.Errorf("encodeMarkdown() = %q, want %q", got, want)
+	}
+}
+
+// TestMarkdownBackslashEscaping pins the backslash escape: a cell ending in
+// \ would otherwise emit \| — an escaped literal pipe to a GFM parser — and
+// destroy the column boundary.
+func TestMarkdownBackslashEscaping(t *testing.T) {
+	v := []any{csvRow(t, "p", `C:\`, "q", `x\|y`)}
+	got, err := encodeMarkdown(v)
+	if err != nil {
+		t.Fatalf("encodeMarkdown() error: %v", err)
+	}
+	want := "|p|q|\n|---|---|\n" + `|C:\\|x\\\|y|`
 	if got != want {
 		t.Errorf("encodeMarkdown() = %q, want %q", got, want)
 	}

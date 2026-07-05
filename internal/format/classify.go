@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/toon-format/toon-go"
@@ -33,8 +34,8 @@ type analysis struct {
 
 	singleString bool // root is one JSON string
 
-	// Dominant prose field: the largest whitespace-bearing string field on a
-	// root object (raw string bytes, not their JSON-escaped length).
+	// Dominant prose field: the largest multi-word string field on a root
+	// object (raw string bytes, not their JSON-escaped length).
 	proseField      string
 	proseFieldBytes int
 	proseFieldShare float64 // proseFieldBytes / compactBytes
@@ -154,11 +155,14 @@ func classify(v any) ([]Format, analysis) {
 }
 
 // classifyProseField finds the largest string field on obj that reads as
-// prose (whitespace-separated words).
+// prose. Prose-like matches proseDominantIndex's test exactly — at least two
+// whitespace-separated words — so the classifier never nominates a field the
+// prose encoder rejects (a single token with trailing whitespace is not
+// prose).
 func classifyProseField(obj toon.Object) (key string, size int) {
 	for _, f := range obj.Fields {
 		s, ok := f.Value.(string)
-		if !ok || len(s) <= size || !strings.ContainsAny(s, " \t\n") {
+		if !ok || len(s) <= size || len(strings.Fields(s)) < 2 {
 			continue
 		}
 		key, size = f.Key, len(s)
@@ -235,14 +239,22 @@ func classifyWalk(v any, depth int, maxDepth *int, counts map[string]int) {
 }
 
 // classifyFingerprint is the order-insensitive key-set fingerprint of obj:
-// sorted keys joined with \x00 (commas can occur inside keys).
+// sorted keys emitted as self-delimiting len:key blocks, so no key content —
+// commas, NULs, any separator — can forge a block boundary and collide two
+// distinct key-sets.
 func classifyFingerprint(obj toon.Object) string {
 	keys := make([]string, len(obj.Fields))
 	for i, f := range obj.Fields {
 		keys[i] = f.Key
 	}
 	slices.Sort(keys)
-	return strings.Join(keys, "\x00")
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(strconv.Itoa(len(k)))
+		b.WriteByte(':')
+		b.WriteString(k)
+	}
+	return b.String()
 }
 
 // classifyKindFingerprint tags a non-object array element by its JSON kind so

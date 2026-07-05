@@ -47,11 +47,11 @@ func encodeTRON(v any) (string, error) {
 	return b.String(), nil
 }
 
-// tronDiscover walks v in DFS pre-order fingerprinting every non-empty object
-// (each object counted before its children), then mints the qualifying
-// key-sets — at least two keys and at least two occurrences — assigning names
-// sequentially in discovery order. It returns the minted classes keyed by
-// fingerprint and in order.
+// tronDiscover walks v in DFS pre-order fingerprinting every non-empty
+// duplicate-free object (each object counted before its children), then mints
+// the qualifying key-sets — at least two keys and at least two occurrences —
+// assigning names sequentially in discovery order. It returns the minted
+// classes keyed by fingerprint and in order.
 func tronDiscover(v any) (map[string]*tronClass, []*tronClass) {
 	counts := make(map[string]int)
 	seen := make(map[string]*tronClass)
@@ -64,16 +64,21 @@ func tronDiscover(v any) (map[string]*tronClass, []*tronClass) {
 			if len(t.Fields) == 0 {
 				return
 			}
-			fp := tronFingerprint(t)
-			counts[fp]++
-			if _, ok := seen[fp]; !ok {
-				keys := make([]string, len(t.Fields))
-				for i, f := range t.Fields {
-					keys[i] = f.Key
+			// A duplicate-key object never mints or matches a class —
+			// NAME(v1,v2,…) carries one value per declaration key — so it
+			// stays JSON with every field intact.
+			if !tronHasDuplicateKey(t) {
+				fp := tronFingerprint(t)
+				counts[fp]++
+				if _, ok := seen[fp]; !ok {
+					keys := make([]string, len(t.Fields))
+					for i, f := range t.Fields {
+						keys[i] = f.Key
+					}
+					cls := &tronClass{fp: fp, keys: keys}
+					seen[fp] = cls
+					discovered = append(discovered, cls)
 				}
-				cls := &tronClass{fp: fp, keys: keys}
-				seen[fp] = cls
-				discovered = append(discovered, cls)
 			}
 			for _, f := range t.Fields {
 				walk(f.Value)
@@ -100,17 +105,37 @@ func tronDiscover(v any) (map[string]*tronClass, []*tronClass) {
 }
 
 // tronFingerprint is the order-insensitive key-set identity of o: sorted keys
-// joined with NUL. The JS reference joins with "," which collides for
-// comma-containing keys ({"a,b","c"} vs {"a","b,c"}) and corrupts the losing
-// shape's data; the NUL join is a deliberate divergence that keeps them
-// distinct.
+// emitted as self-delimiting len:key blocks, an encoding no key content can
+// forge. The JS reference joins with "," which collides for comma-containing
+// keys ({"a,b","c"} vs {"a","b,c"}) and corrupts the losing shape's data; a
+// bare NUL join merely relocates the collision to NUL-containing keys. The
+// length prefix is a deliberate divergence that keeps every key-set distinct.
 func tronFingerprint(o toon.Object) string {
 	keys := make([]string, len(o.Fields))
 	for i, f := range o.Fields {
 		keys[i] = f.Key
 	}
 	slices.Sort(keys)
-	return strings.Join(keys, "\x00")
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(strconv.Itoa(len(k)))
+		b.WriteByte(':')
+		b.WriteString(k)
+	}
+	return b.String()
+}
+
+// tronHasDuplicateKey reports whether o repeats a field key; such objects
+// cannot round-trip through a class instance's one-value-per-key shape.
+func tronHasDuplicateKey(o toon.Object) bool {
+	seen := make(map[string]struct{}, len(o.Fields))
+	for _, f := range o.Fields {
+		if _, ok := seen[f.Key]; ok {
+			return true
+		}
+		seen[f.Key] = struct{}{}
+	}
+	return false
 }
 
 // tronClassName assigns the nth class name: A-Z, then A1-Z1, A2-Z2, ….

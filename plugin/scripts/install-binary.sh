@@ -12,7 +12,8 @@
 #   2. symlink resolves to a dev build                -> leave it alone
 #   3. binary on PATH (brew-owned or otherwise)       -> symlink it, brew upgrade when stale
 #   4. brew present, binary absent                    -> brew install, symlink
-#   5. static download into the data dir              -> sha256-verify, symlink
+#   5. durable data-dir payload at target             -> re-symlink, no re-download
+#   6. static download into the data dir              -> sha256-verify, symlink
 set -eu
 
 NAME="ccx"
@@ -40,12 +41,13 @@ if [ -f "$LINK" ] && [ ! -L "$LINK" ] && [ "$(head -c 2 "$LINK" 2>/dev/null)" = 
 fi
 rm -f "$DATA_DIR/bin/$NAME-v"* "${XDG_CACHE_HOME:-$HOME/.cache}/cc-context/bin/$NAME-v"*
 
-# Arms 1+2: exact target exits, a dev build (describe/pseudo-version suffix) is
-# never clobbered, a stale release or no version output falls through.
+# Arms 1+2: exact target exits, a dev build (describe/pseudo-version suffix, or
+# the bare "dev" of an unstamped build) is never clobbered, a stale release or
+# no version output falls through.
 if [ -x "$LINK" ]; then
   case "$("$LINK" --version 2>/dev/null | head -n 1)" in
     "$TAG" | "$BARE") exit 0 ;;
-    v[0-9]*[!0-9.]* | [0-9]*[!0-9.]*) exit 0 ;;
+    dev | v[0-9]*[!0-9.]* | [0-9]*[!0-9.]*) exit 0 ;;
     v[0-9]* | [0-9]*) ;;
     *) ;;
   esac
@@ -54,11 +56,16 @@ fi
 mkdir -p "$ROOT/bin"
 
 # Arm 3: a binary already on PATH wins (brew is authoritative even when it
-# trails the pin). Exclude bin/ or the probe finds the managed symlink itself.
+# trails the pin). Exclude bin/ or the probe finds the managed symlink itself;
+# entries are compared trailing-slash-stripped, or "$ROOT/bin/" evades the
+# exclusion and $LINK becomes a self-loop.
+# probe: PATH="$ROOT/bin/:$PATH" with a stale executable at bin/$NAME -> must
+# never symlink bin/$NAME to itself; resolve elsewhere or fall through.
 probe_path=
 IFS_SAVE="$IFS"
 IFS=:
 for dir in $PATH; do
+  dir="${dir%/}"
   if [ -n "$dir" ] && [ "$dir" != "$ROOT/bin" ]; then
     probe_path="$probe_path$dir:"
   fi
@@ -72,6 +79,11 @@ probe() {
 }
 
 found="$(probe)"
+# Belt for the exclusion above: a probe that still resolves to the managed
+# link itself must never be self-symlinked.
+if [ "$found" = "$LINK" ]; then
+  found=""
+fi
 if [ -n "$found" ]; then
   case "$("$found" --version 2>/dev/null | head -n 1)" in
     "$TAG" | "$BARE" | v[0-9]*[!0-9.]* | [0-9]*[!0-9.]*) ;;
@@ -94,8 +106,9 @@ if command -v brew >/dev/null 2>&1; then
   echo "$NAME: Homebrew unavailable or failed (e.g. tap-trust #22603); using direct download" >&2
 fi
 
-# Arm 5: static fallback — the bare per-platform release binary, verified
-# against goreleaser's checksums.txt, into the durable data dir.
+# Arms 5+6: the durable data dir — reuse a payload already at the target
+# release, else download the bare per-platform release binary, verified
+# against goreleaser's checksums.txt.
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$os" in
   darwin | linux) ;;
@@ -125,6 +138,21 @@ sha256_of() {
 asset="${NAME}_${os}_${arch}"
 url="https://github.com/$REPO/releases/download/$TAG/$asset"
 dest="$DATA_DIR/bin/$NAME"
+
+# A durable payload already at the target release is reused: post-update
+# reprovisioning (the plugin root swaps, the gitignored symlink is gone) is a
+# symlink repair, not a re-download. A stale payload falls through and is
+# overwritten by the download below.
+# probe: seed $dest with a stub printing "$TAG", rm bin/$NAME, run with a
+# brew-less curl-less PATH -> must symlink $dest and exit 0 without a fetch.
+if [ -x "$dest" ]; then
+  case "$("$dest" --version 2>/dev/null | head -n 1)" in
+    "$TAG" | "$BARE")
+      ln -sf "$dest" "$LINK"
+      exit 0
+      ;;
+  esac
+fi
 
 echo "$NAME: downloading $url" >&2
 mkdir -p "$DATA_DIR/bin"

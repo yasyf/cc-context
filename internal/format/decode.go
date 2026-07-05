@@ -80,13 +80,20 @@ func decodeFromToken(dec *json.Decoder) (any, error) {
 	}
 }
 
-// numberScalar routes an integer-valued json.Number to a native Go integer so
-// toon-go's precision-preserving integer path emits it exactly: int64 when it
-// fits, *big.Int when it does not. (toon-go's json.Number path coerces through
-// float64 and loses precision past 2^53.) Non-integers stay json.Number, which
-// toon-go canonicalizes correctly via strconv.FormatFloat.
+// numberScalar routes an integer-valued json.Number to a native Go integer —
+// int64 when it fits, *big.Int when it does not — so toon-go's safe-integer
+// path preserves every digit: within ±2^53 it emits a bare number, beyond that
+// a quoted decimal string per the TOON spec, for int64 and *big.Int alike.
+// (toon-go's json.Number path coerces through float64 and loses precision past
+// 2^53.) Non-integers stay json.Number and render verbatim through
+// writeScalar; the TOON encoder guards its own float64 handoff
+// (toonLossyNumber). "-0" also stays json.Number — ParseInt returns 0 for it,
+// silently dropping the sign.
 func numberScalar(n json.Number) any {
 	s := n.String()
+	if s == "-0" {
+		return n
+	}
 	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return i
 	}

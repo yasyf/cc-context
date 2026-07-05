@@ -128,25 +128,69 @@ func TestTronGoldens(t *testing.T) {
 	}
 }
 
-// TestTronFingerprintNoCommaCollision pins the deliberate divergence from the
-// JS reference: fingerprints join sorted keys with NUL, not ",", so
-// {"a,b","c"} and {"a","b,c"} are distinct key-sets. The JS impl merges them
-// into one class and corrupts the second shape to A(null,null).
-func TestTronFingerprintNoCommaCollision(t *testing.T) {
+// TestTronFingerprintCollisions pins the fingerprint's collision resistance,
+// a deliberate divergence from the JS reference (which joins sorted keys with
+// "," and merges {"a,b","c"} with {"a","b,c"}, corrupting the losing shape to
+// A(null,null)): keys are emitted as self-delimiting len:key blocks, so no
+// key content forges a boundary. The NUL cases regression-pin the bare NUL
+// join that merely relocated the collision — {"a\x00b","c"} vs
+// {"a","b\x00c"} fingerprinted identically and panicked on the missing key.
+func TestTronFingerprintCollisions(t *testing.T) {
 	tests := []struct {
 		name string
 		src  string
 		want string
 	}{
 		{
-			"one occurrence each mints nothing",
+			"comma keys one occurrence each mints nothing",
 			`[{"a,b":1,"c":2},{"a":1,"b,c":2}]`,
 			`[{"a,b":1,"c":2},{"a":1,"b,c":2}]`,
 		},
 		{
-			"two occurrences each mint distinct classes",
+			"comma keys two occurrences each mint distinct classes",
 			`[{"a,b":1,"c":2},{"a,b":3,"c":4},{"a":5,"b,c":6},{"a":7,"b,c":8}]`,
 			"class A: \"a,b\",c\nclass B: a,\"b,c\"\n\n[A(1,2),A(3,4),B(5,6),B(7,8)]",
+		},
+		{
+			"nul keys two occurrences each mint distinct classes",
+			`[{"a\u0000b":1,"c":2},{"a\u0000b":3,"c":4},{"a":5,"b\u0000c":6},{"a":7,"b\u0000c":8}]`,
+			"class A: \"a\\u0000b\",c\nclass B: a,\"b\\u0000c\"\n\n[A(1,2),A(3,4),B(5,6),B(7,8)]",
+		},
+		{
+			// The colliding shape occurs once: it must render as JSON, not
+			// match A's class and panic on the absent key.
+			"nul key single occurrence stays JSON",
+			`[{"a\u0000b":1,"c":2},{"a\u0000b":3,"c":4},{"a":5,"b\u0000c":6}]`,
+			"class A: \"a\\u0000b\",c\n\n[A(1,2),A(3,4),{\"a\":5,\"b\\u0000c\":6}]",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tronFromJSON(t, tt.src); got != tt.want {
+				t.Errorf("encodeTRON(%q) = %q, want %q", tt.src, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestTronDuplicateKeys pins that a duplicate-key object never mints or
+// matches a class — NAME(v1,v2,…) carries one value per declaration key, so
+// folding one would silently drop a field. It stays JSON with every value.
+func TestTronDuplicateKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			"duplicate-key rows stay JSON",
+			`[{"a":1,"a":101},{"a":2,"a":102}]`,
+			`[{"a":1,"a":101},{"a":2,"a":102}]`,
+		},
+		{
+			"duplicate-key row rides alongside a minted class",
+			`[{"x":1,"y":2},{"x":3,"y":4},{"a":5,"a":6}]`,
+			"class A: x,y\n\n[A(1,2),A(3,4),{\"a\":5,\"a\":6}]",
 		},
 	}
 	for _, tt := range tests {

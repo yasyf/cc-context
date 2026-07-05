@@ -3,6 +3,7 @@ package format
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -213,10 +214,57 @@ func TestConvert(t *testing.T) {
 			converted: true,
 		},
 		{
+			// Wider than int64: numberScalar yields *big.Int and toon-go's
+			// normalize applies the same safe-integer rule as its int64 case —
+			// a quoted decimal string, digits intact, never a float64 coercion.
+			name:      "big.Int-width integer preserved as quoted string",
+			src:       `{"n":12345678901234567890123456789}`,
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
+			want:      `n: "12345678901234567890123456789"`,
+			converted: true,
+		},
+		{
 			name:      "negative zero canonicalized",
 			src:       `{"n":-0}`,
 			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      "n: 0",
+			converted: true,
+		},
+		{
+			// 1E2 denotes exactly 100 in float64, so toon-go's round-trip is
+			// value-preserving and the lossy-number guard must let it through.
+			name:      "exponent notation canonicalized when value-exact",
+			src:       `{"n":1E2}`,
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
+			want:      "n: 100",
+			converted: true,
+		},
+		{
+			// 2.5e-3 is not exactly representable in float64, but toon-go's
+			// canonical rendering 0.0025 denotes the same decimal value — the
+			// guard must compare rendered value to source value, not the
+			// float64's binary value, or it over-rejects scientific notation.
+			name:      "exponent notation canonicalized when rendering is value-preserving",
+			src:       `{"n":2.5e-3}`,
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
+			want:      "n: 0.0025",
+			converted: true,
+		},
+		{
+			name:      "small exponent canonicalized to plain decimal",
+			src:       `{"n":1e-7}`,
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
+			want:      "n: 0.0000001",
+			converted: true,
+		},
+		{
+			// ParseInt("-0") returns 0, silently dropping the sign, so the
+			// integer fast path must skip it; json.Number renders verbatim
+			// through writeScalar.
+			name:      "compact JSON keeps negative zero and exponent verbatim",
+			src:       `{"a":-0,"b":1E2}`,
+			opts:      Options{Format: FormatJSON, Indent: 2, Delimiter: DelimiterComma},
+			want:      `{"a":-0,"b":1E2}`,
 			converted: true,
 		},
 		{
@@ -272,6 +320,88 @@ func TestConvert(t *testing.T) {
 	}
 }
 
+// TestConvertAutoRegressions pins default-auto behavior on shapes that once
+// panicked or silently corrupted data: auto never fails and never drops
+// fields.
+func TestConvertAutoRegressions(t *testing.T) {
+	dupRows := make([]string, 30)
+	for i := range dupRows {
+		dupRows[i] = fmt.Sprintf(`{"a":%d,"a":%d}`, i, i+100)
+	}
+	dupSrc := "[" + strings.Join(dupRows, ",") + "]"
+	emptySrc := "[" + strings.Repeat("{},", 399) + "{}]"
+
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			// The NUL-join fingerprint collided {"a\x00b","c"} with
+			// {"a","b\x00c"}: the fourth element matched class A and
+			// encodeTRON panicked on the missing key inside encodeAuto.
+			name: "nul key collision does not panic through auto tron",
+			src: `{"wrap":[{"a\u0000b":1,"c":2},{"a\u0000b":3,"c":4},{"a\u0000b":5,"c":6},{"a":7,"b\u0000c":8}],"pad":"` +
+				strings.Repeat("x", 120) + `"}`,
+			want: "class A: \"a\\u0000b\",c\n\n" +
+				`{"wrap":[A(1,2),A(3,4),A(5,6),{"a":7,"b\u0000c":8}],"pad":"` +
+				strings.Repeat("x", 120) + `"}`,
+		},
+		{
+			// Duplicate-key rows: the tabular encoders once emitted last-wins
+			// cells; they now error and auto keeps compact JSON, preserving
+			// both values.
+			name: "duplicate keys fall back to compact JSON",
+			src:  dupSrc,
+			want: dupSrc,
+		},
+		{
+			// Zero-column rows: csvTable once accepted an empty header and
+			// auto emitted 402 lines of bare |.
+			name: "empty-object rows fall back to compact JSON",
+			src:  emptySrc,
+			want: emptySrc,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, converted, err := Convert([]byte(tt.src), defaultOpts())
+			if err != nil {
+				t.Fatalf("Convert() error = %v", err)
+			}
+			if !converted {
+				t.Error("Convert() converted = false, want true")
+			}
+			if got != tt.want {
+				t.Errorf("Convert() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestConvertAutoSkipsLossyTOON pins the default path on a null-bearing table
+// whose classifier candidates lead with TOON (the hasNulls branch): toon-go's
+// float64 round-trip would truncate the 26-digit decimal — output shrinks, so
+// the byte-net cannot catch it — and encodeTOON must error instead, letting
+// auto fall through to a verbatim encoder.
+func TestConvertAutoSkipsLossyTOON(t *testing.T) {
+	const pi = "3.14159265358979323846264338"
+	var b strings.Builder
+	for i := range 400 {
+		fmt.Fprintf(&b, "{\"v\":%s,\"n\":null,\"id\":%d}\n", pi, i)
+	}
+	got, converted, err := Convert([]byte(b.String()), defaultOpts())
+	if err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+	if !converted {
+		t.Fatal("Convert() converted = false, want true")
+	}
+	if !strings.Contains(got, pi) {
+		t.Errorf("Convert() lost decimal precision; %q missing from output starting %q", pi, got[:200])
+	}
+}
+
 // TestConvertExplicitFormats pins the dispatch: every explicit format calls
 // its encoder and skips both classification and the byte-net, emitting even
 // when larger than compact JSON.
@@ -320,6 +450,11 @@ func TestConvertExplicitFormatShapeErrors(t *testing.T) {
 		{"markdown on object", FormatMarkdown, `{"a":1}`, "encode markdown"},
 		{"jsonl on object", FormatJSONL, `{"a":1}`, "encode jsonl"},
 		{"prose on array", FormatProse, `[1,2]`, "encode prose"},
+		// toon-go canonicalizes json.Number through a float64 round-trip: a
+		// 26-digit decimal would silently truncate and an out-of-range
+		// exponent type-flips to a quoted string, so encodeTOON errors first.
+		{"toon on excess-precision decimal", FormatTOON, `[{"a":3.14159265358979323846264338}]`, "encode toon"},
+		{"toon on out-of-range exponent", FormatTOON, `[{"a":1e999}]`, "encode toon"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

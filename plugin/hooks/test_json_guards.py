@@ -27,8 +27,10 @@ from hooks.common import (
     already_wrapped,
     command_shape,
     has_json_output_flag,
+    has_streaming_flag,
     head_has_json_output_flag,
     is_ccx_command,
+    is_plain_argv,
     looks_like_json,
     load_shapes,
     record_shape,
@@ -103,6 +105,62 @@ class TestHasJsonOutputFlag:
     )
     def test_negative(self, command: str) -> None:
         assert not has_json_output_flag(CommandLine.parse(command))
+
+
+class TestHasStreamingFlag:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "kubectl get pods -o json --watch",
+            "kubectl get pods -o json --watch=true",
+            "kubectl get pods -o json -w",
+            "docker events --format json --follow",
+            "some-tool --json -f",
+        ],
+    )
+    def test_positive(self, command: str) -> None:
+        assert has_streaming_flag(CommandLine.parse(command))
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr list --json number",
+            "kubectl get pods -o json",
+            "gh run watch 123 --json status",  # `watch` here is a subcommand, not a flag
+        ],
+    )
+    def test_negative(self, command: str) -> None:
+        assert not has_streaming_flag(CommandLine.parse(command))
+
+
+class TestIsPlainArgv:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr list --json number",
+            'gh pr list --json number --search "is:open draft:false"',
+            "gh pr list --json x --limit $N",  # bash expands $N after the wrap's --
+        ],
+    )
+    def test_positive(self, command: str) -> None:
+        assert is_plain_argv(CommandLine.parse(command))
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Env prefix: spliced after `ccx format --`, the assignment execs as
+            # argv[0] — "executable file not found in $PATH".
+            "GH_HOST=x.example.com gh pr list --json number",
+            # Subshell: bare parens after `--` are a bash syntax error.
+            "(gh pr list --json number)",
+            # Shell keyword: `time` after `--` stops being a keyword.
+            "time gh pr list --json number",
+            # Command substitution the parser folded out of args — bail conservatively.
+            "gh pr view --json x --repo $(git remote get-url origin)",
+        ],
+    )
+    def test_negative(self, command: str) -> None:
+        assert not is_plain_argv(CommandLine.parse(command))
 
 
 class TestHeadHasJsonOutputFlag:

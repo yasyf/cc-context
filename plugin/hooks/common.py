@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from pathlib import Path
 
 from captain_hook import BaseHookEvent, CommandLine, Deque, DurableState, resolve_binary
@@ -41,6 +42,16 @@ IDENT_ALT = re.compile(r"\b[A-Za-z_]\w*(?:\|[A-Za-z_]\w*)+\b")
 # `--format json`) need adjacency, handled by `has_json_output_flag`.
 JSON_FLAG_GLUED = re.compile(r"^(--json(=.*)?|-o=?json|--(output|format)=json)$")
 JSON_VALUE_FLAGS = ("-o", "--output", "--format")
+
+# Watch/follow flags mark a command that streams until killed. `ccx format`
+# buffers the child's whole stdout and converts only after exit, so wrapping a
+# never-exiting command yields zero output until the Bash tool times out.
+STREAMING_FLAGS = frozenset({"-w", "-f", "--watch", "--watch-only", "--follow"})
+
+# Shell words the parser accepts as an executable but whose meaning changes (or
+# vanishes) outside bash: `time` is a keyword, `command`/`builtin` are builtins.
+# After `ccx format --` they would exec as literal binaries, so the wrap bails.
+SHELL_WORD_EXECUTABLES = frozenset({"time", "command", "builtin"})
 
 # A command-shape subcommand token is a lowercase command word (`view`, `get`,
 # `list`). Positional *values* (`123`, `/path`, `file.json`, `NAME=v`, uppercase
@@ -118,6 +129,35 @@ def already_wrapped(cl: CommandLine) -> bool:
 def is_single_command(cl: CommandLine) -> bool:
     """Report whether the line is one command — no pipe, redirect, or ``&&``/``;`` chain."""
     return len(cl.parts) == 1 and not cl.q.uses_redirect()
+
+
+def has_streaming_flag(cl: CommandLine) -> bool:
+    """Report whether the primary command carries a watch/follow flag (:data:`STREAMING_FLAGS`).
+
+    Catches both the bare (``--watch``, ``-w``) and glued (``--watch=true``) forms.
+    """
+    return any(a.split("=", 1)[0] in STREAMING_FLAGS for a in cl.primary.args)
+
+
+def is_plain_argv(cl: CommandLine) -> bool:
+    """Report whether the raw line is exactly the primary command's argv.
+
+    The ``ccx format -- <raw>`` rewrite splices the raw text after ``--``, where
+    bash re-parses it as plain words for ccx to exec directly: an env-assignment
+    prefix becomes a bogus argv[0] (``exec`` fails), a subshell becomes a bash
+    syntax error, and a shell keyword like ``time`` stops being a keyword. Safe
+    iff the command carries no env prefix, its executable is a real word (not in
+    :data:`SHELL_WORD_EXECUTABLES`), and the raw text word-splits to exactly the
+    parsed executable + args — command substitutions and other structure the
+    parser folded away fail that comparison and bail conservatively.
+    """
+    if cl.primary.env or cl.primary.executable in SHELL_WORD_EXECUTABLES:
+        return False
+    try:
+        words = shlex.split(cl.raw)
+    except ValueError:
+        return False
+    return words == [cl.primary.executable, *cl.primary.args]
 
 
 def command_shape(cl: CommandLine) -> str:

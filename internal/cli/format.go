@@ -32,6 +32,15 @@ func newFormatCmd() *cobra.Command {
 			"than compact JSON. With `-- command …`, run the command, convert its JSON stdout in " +
 			"place, stream its stderr, and exit with its code; non-JSON output passes through " +
 			"unchanged. --format=X forces one encoder, even when larger.",
+		Args: func(cmd *cobra.Command, args []string) error {
+			// Positional args outside a `--` wrapper (a file-arg mental model,
+			// `ccx format out.json`) would be silently dropped and the stdin
+			// filter run instead — hanging on a TTY. Reject them loudly.
+			if dash := cmd.ArgsLenAtDash(); (dash < 0 && len(args) > 0) || dash > 0 {
+				return fmt.Errorf("unexpected argument %q: format reads JSON on stdin, or wraps a command after --", args[0])
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts, err := formatOptions(f)
 			if err != nil {

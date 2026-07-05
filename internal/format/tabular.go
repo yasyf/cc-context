@@ -38,8 +38,9 @@ func csvEncode(name string, comma rune, v any) (string, error) {
 
 // encodeMarkdown renders the same tabular shape as encodeCSV as a compact
 // GitHub-style markdown table: |a|b| header, |---|---| separator, one row per
-// object. Cells stay single-line and content-preserving: pipes escape to \|
-// and embedded newlines (\r\n, \n, \r) become <br>; nil is an empty cell.
+// object. Cells stay single-line and content-preserving: backslashes escape
+// to \\, pipes to \|, and embedded newlines (\r\n, \n, \r) become <br>; nil
+// is an empty cell.
 func encodeMarkdown(v any) (string, error) {
 	header, rows, err := csvTable("markdown", v)
 	if err != nil {
@@ -67,6 +68,7 @@ func mdRow(b *strings.Builder, cells []string) {
 }
 
 func mdCell(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, "|", `\|`)
 	s = strings.ReplaceAll(s, "\r\n", "<br>")
 	s = strings.ReplaceAll(s, "\n", "<br>")
@@ -75,9 +77,10 @@ func mdCell(s string) string {
 
 // csvTable validates the tabular IR shape shared by the CSV, TSV, and
 // markdown encoders and renders it to a header plus cell strings: v must be a
-// non-empty []any of toon.Object rows over one key set, scalar cells only.
-// The header is the first row's key order; later rows may reorder keys but
-// not add or drop them.
+// non-empty []any of toon.Object rows over one non-empty, duplicate-free key
+// set, scalar cells only. The header is the first row's key order; later rows
+// may reorder keys but not add or drop them. A duplicate key errors — one
+// cell per header slot cannot carry two values.
 func csvTable(name string, v any) (header []string, rows [][]string, err error) {
 	arr, ok := v.([]any)
 	if !ok {
@@ -89,6 +92,9 @@ func csvTable(name string, v any) (header []string, rows [][]string, err error) 
 	first, ok := arr[0].(toon.Object)
 	if !ok {
 		return nil, nil, fmt.Errorf("encode %s: row 0 is %T, not an object", name, arr[0])
+	}
+	if len(first.Fields) == 0 {
+		return nil, nil, fmt.Errorf("encode %s: row 0 has no keys", name)
 	}
 	header = make([]string, len(first.Fields))
 	for i, f := range first.Fields {
@@ -106,6 +112,9 @@ func csvTable(name string, v any) (header []string, rows [][]string, err error) 
 		}
 		cells := make(map[string]any, len(obj.Fields))
 		for _, f := range obj.Fields {
+			if _, dup := cells[f.Key]; dup {
+				return nil, nil, fmt.Errorf("encode %s: row %d duplicates key %q", name, i, f.Key)
+			}
 			cells[f.Key] = f.Value
 		}
 		row := make([]string, len(header))

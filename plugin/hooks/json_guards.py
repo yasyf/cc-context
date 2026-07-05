@@ -8,11 +8,15 @@ before it floods context. Commands
 *observed* emitting JSON at runtime are recorded to a persistent shapes store; next
 time a command of that shape runs, the agent gets a **nudge** to wrap it. The rewrite
 fires only on a single command (no pipe/redirect — ``--json | jq`` needs raw JSON)
-that isn't already wrapped, and emits ``permissionDecision: allow`` so it adds no
-extra prompt.
+that isn't already wrapped, is plain argv (no env prefix, subshell, or shell keyword
+— the spliced raw text must re-parse as words after ``--``), and isn't streaming
+(``--watch``/``--follow`` never exits, and the wrapper buffers stdout until exit).
+It emits ``permissionDecision: allow`` so it adds no extra prompt.
 """
 
 from __future__ import annotations
+
+import shlex
 
 from captain_hook import (
     Allow,
@@ -34,7 +38,9 @@ from .common import (
     ccx_bin,
     command_shape,
     has_json_output_flag,
+    has_streaming_flag,
     is_ccx_command,
+    is_plain_argv,
     is_single_command,
     load_shapes,
     looks_like_json,
@@ -43,14 +49,20 @@ from .common import (
 
 
 def _wraps(cl: CommandLine) -> bool:
-    return is_single_command(cl) and has_json_output_flag(cl) and not already_wrapped(cl)
+    return (
+        is_single_command(cl)
+        and has_json_output_flag(cl)
+        and not already_wrapped(cl)
+        and not has_streaming_flag(cl)
+        and is_plain_argv(cl)
+    )
 
 
 def wrap_json(evt: BaseHookEvent) -> str | None:
     cl = evt.command_line
     if cl is None or not _wraps(cl) or not (ccx := ccx_bin()):
         return None
-    return f"{ccx} format -- {evt.command}"
+    return f"{shlex.quote(ccx)} format -- {evt.command}"
 
 
 def _wrap_note(evt: BaseHookEvent) -> str:
@@ -67,6 +79,20 @@ rewrite_command(
         Input(command="gh pr list --json x | jq .[]"): Allow(),
         Input(command="kubectl get pods -o json > pods.json"): Allow(),
         Input(command="ls -la"): Allow(),
+        # A quoted argument still word-splits to the parsed argv, so the wrap fires.
+        Input(command='gh pr list --json number --search "is:open draft:false"'): Rewrite(
+            pattern="format -- gh pr list --json number --search"
+        ),
+        # Non-argv shapes: after `ccx format --` an env-assignment prefix execs as
+        # argv[0] ("executable file not found"), a subshell is a bash syntax error,
+        # and `time` stops being a shell keyword — the rewrite bails on each.
+        Input(command="GH_HOST=x.example.com gh pr list --json number"): Allow(),
+        Input(command="(gh pr list --json number)"): Allow(),
+        Input(command="time gh pr list --json number"): Allow(),
+        # Watch/follow commands never exit, but the wrapper buffers stdout and
+        # converts only after exit — wrapping one is silence until Bash times out.
+        Input(command="kubectl get pods -o json --watch"): Allow(),
+        Input(command="kubectl get pods -o json -w"): Allow(),
         # already_wrapped must recognize the ccx format wrap, or this rewrite
         # would re-wrap its own output forever (the wrapped line still has --json).
         Input(command="ccx format -- gh pr list --json x"): Allow(),

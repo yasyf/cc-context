@@ -72,6 +72,29 @@ func TestFormatFilterStrictErrors(t *testing.T) {
 	}
 }
 
+func TestFormatRejectsPositionalArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		// A file-arg mental model (`ccx format out.json`) once silently ran
+		// the stdin filter and dropped the arg — empty green run, TTY hang.
+		{"without dash", []string{"out.json"}},
+		{"before dash", []string{"stray", "--", "sh", "-c", "exit 0"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := runFormat(t, `{"a":1}`, tt.args...)
+			if err == nil {
+				t.Fatal("positional arg: want error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.args[0]) {
+				t.Errorf("error should name the stray argument: %v", err)
+			}
+		})
+	}
+}
+
 func TestFormatWrapperMode(t *testing.T) {
 	out, err := runFormat(t, "", "--format", "toon", "--", "sh", "-c", `printf '[{"a":1}]'`)
 	if err != nil {
