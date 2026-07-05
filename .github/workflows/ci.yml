@@ -84,6 +84,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The guard pack resolves ccx through plugin/bin/ccx — a gitignored
+      # symlink since the self-provisioning installer replaced the checked-in
+      # shim. Without a binary there, rewrite hooks degrade to blocks/no-ops
+      # and the rewrite-expectation tests fail. Build from this checkout.
+      - name: Build ccx and link plugin/bin
+        run: |
+          go build -o bin/ccx ./cmd/ccx
+          ln -sf ../../bin/ccx plugin/bin/ccx
       - uses: astral-sh/setup-uv@v8.2.0
         with:
           # capt-hook requires Python >=3.13; without this the runner's default
