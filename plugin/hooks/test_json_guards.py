@@ -140,6 +140,9 @@ class TestIsPlainArgv:
             "gh pr list --json number",
             'gh pr list --json number --search "is:open draft:false"',
             "gh pr list --json x --limit $N",  # bash expands $N after the wrap's --
+            # A quoted substitution survives the word-split comparison verbatim;
+            # bash expands the spliced raw text after the wrap's -- identically.
+            'gh pr list --json number --search "$(cat q.txt)"',
         ],
     )
     def test_positive(self, command: str) -> None:
@@ -155,6 +158,11 @@ class TestIsPlainArgv:
             "(gh pr list --json number)",
             # Shell keyword: `time` after `--` stops being a keyword.
             "time gh pr list --json number",
+            # Builtins with no binary counterpart fail as literal argv[0]s.
+            "exec gh pr list --json number",
+            "eval gh pr list --json number",
+            "source render.sh --json",
+            ". render.sh --json",
             # Command substitution the parser folded out of args — bail conservatively.
             "gh pr view --json x --repo $(git remote get-url origin)",
         ],

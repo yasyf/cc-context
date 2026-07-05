@@ -49,9 +49,10 @@ JSON_VALUE_FLAGS = ("-o", "--output", "--format")
 STREAMING_FLAGS = frozenset({"-w", "-f", "--watch", "--watch-only", "--follow"})
 
 # Shell words the parser accepts as an executable but whose meaning changes (or
-# vanishes) outside bash: `time` is a keyword, `command`/`builtin` are builtins.
-# After `ccx format --` they would exec as literal binaries, so the wrap bails.
-SHELL_WORD_EXECUTABLES = frozenset({"time", "command", "builtin"})
+# vanishes) outside bash: `time` is a keyword; `command`/`builtin`/`exec`/`eval`/
+# `source`/`.` are builtins with no binary counterpart. After `ccx format --`
+# they would exec as literal binaries, so the wrap bails.
+SHELL_WORD_EXECUTABLES = frozenset({"time", "command", "builtin", "exec", "eval", "source", "."})
 
 # A command-shape subcommand token is a lowercase command word (`view`, `get`,
 # `list`). Positional *values* (`123`, `/path`, `file.json`, `NAME=v`, uppercase
@@ -148,8 +149,11 @@ def is_plain_argv(cl: CommandLine) -> bool:
     syntax error, and a shell keyword like ``time`` stops being a keyword. Safe
     iff the command carries no env prefix, its executable is a real word (not in
     :data:`SHELL_WORD_EXECUTABLES`), and the raw text word-splits to exactly the
-    parsed executable + args — command substitutions and other structure the
-    parser folded away fail that comparison and bail conservatively.
+    parsed executable + args. Structure the parser folded out of the argv (a bare
+    command substitution, a redirect) fails that comparison and bails; quoted
+    substitutions and variable expansions survive it verbatim and wrap safely —
+    bash expands the spliced raw text after ``--`` exactly as it would the
+    original line.
     """
     if cl.primary.env or cl.primary.executable in SHELL_WORD_EXECUTABLES:
         return False

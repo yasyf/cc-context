@@ -57,16 +57,17 @@ mkdir -p "$ROOT/bin"
 
 # Arm 3: a binary already on PATH wins (brew is authoritative even when it
 # trails the pin). Exclude bin/ or the probe finds the managed symlink itself;
-# entries are compared trailing-slash-stripped, or "$ROOT/bin/" evades the
-# exclusion and $LINK becomes a self-loop.
-# probe: PATH="$ROOT/bin/:$PATH" with a stale executable at bin/$NAME -> must
-# never symlink bin/$NAME to itself; resolve elsewhere or fall through.
+# entries are compared by inode (-ef), or a non-canonical spelling like
+# "$ROOT/bin/", "$ROOT/bin/." or "$ROOT/bin//" evades the exclusion and $LINK
+# becomes a self-loop.
+# probe: PATH="$ROOT/bin/.:$PATH" (or bin/ or bin//) with a stale executable at
+# bin/$NAME -> must never symlink bin/$NAME to itself; resolve elsewhere or
+# fall through.
 probe_path=
 IFS_SAVE="$IFS"
 IFS=:
 for dir in $PATH; do
-  dir="${dir%/}"
-  if [ -n "$dir" ] && [ "$dir" != "$ROOT/bin" ]; then
+  if [ -n "$dir" ] && ! [ "$dir" -ef "$ROOT/bin" ]; then
     probe_path="$probe_path$dir:"
   fi
 done
@@ -79,9 +80,11 @@ probe() {
 }
 
 found="$(probe)"
-# Belt for the exclusion above: a probe that still resolves to the managed
-# link itself must never be self-symlinked.
-if [ "$found" = "$LINK" ]; then
+# Belt for the exclusion above: a probe result that is bin/$NAME's own
+# directory entry under any path spelling must never be self-symlinked. The
+# compare is on the parent directory's inode, not the resolved file — $LINK
+# legitimately points at a stale brew binary the upgrade path must still see.
+if [ -n "$found" ] && [ "$(dirname "$found")" -ef "$ROOT/bin" ]; then
   found=""
 fi
 if [ -n "$found" ]; then

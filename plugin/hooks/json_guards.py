@@ -89,6 +89,11 @@ rewrite_command(
         Input(command="GH_HOST=x.example.com gh pr list --json number"): Allow(),
         Input(command="(gh pr list --json number)"): Allow(),
         Input(command="time gh pr list --json number"): Allow(),
+        # Builtins with no binary counterpart: after `--` they exec as literal
+        # binaries ("executable file not found") — the rewrite bails on each.
+        Input(command="exec gh pr list --json number"): Allow(),
+        Input(command="eval gh pr list --json number"): Allow(),
+        Input(command="source render.sh --json"): Allow(),
         # Watch/follow commands never exit, but the wrapper buffers stdout and
         # converts only after exit — wrapping one is silence until Bash times out.
         Input(command="kubectl get pods -o json --watch"): Allow(),
