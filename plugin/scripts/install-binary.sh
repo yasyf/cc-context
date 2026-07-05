@@ -27,6 +27,10 @@ DATA_DIR="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/cc-context}"
 # Pinned mode: the target release is the plugin.json version (single source of truth).
 TAG="v$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$ROOT/.claude-plugin/plugin.json")"
 
+# Version output is compared v-stripped: goreleaser release binaries print the
+# bare tag (v0.5.0) while brew formula builds stamp their own ldflags (0.5.0).
+BARE="${TAG#v}"
+
 # migration (2026-07-04): overlay plugin updates keep the pre-v0.5.0 bootstrap
 # shim at bin/ccx; a regular file with a #! header there is that shim, not a
 # managed symlink — without this sniff its dev fallback parks it in the dev arm
@@ -36,14 +40,14 @@ if [ -f "$LINK" ] && [ ! -L "$LINK" ] && [ "$(head -c 2 "$LINK" 2>/dev/null)" = 
 fi
 rm -f "$DATA_DIR/bin/$NAME-v"* "${XDG_CACHE_HOME:-$HOME/.cache}/cc-context/bin/$NAME-v"*
 
-# Arms 1+2: exact target exits, a dev build (describe/pseudo-version suffix or
-# non-v output) is never clobbered, only a stale release falls through.
+# Arms 1+2: exact target exits, a dev build (describe/pseudo-version suffix) is
+# never clobbered, a stale release or no version output falls through.
 if [ -x "$LINK" ]; then
-  case "$("$LINK" --version 2>/dev/null || true)" in
-    "$TAG") exit 0 ;;
-    v*[!0-9.]*) exit 0 ;;
-    v[0-9]*) ;;
-    *) exit 0 ;;
+  case "$("$LINK" --version 2>/dev/null | head -n 1)" in
+    "$TAG" | "$BARE") exit 0 ;;
+    v[0-9]*[!0-9.]* | [0-9]*[!0-9.]*) exit 0 ;;
+    v[0-9]* | [0-9]*) ;;
+    *) ;;
   esac
 fi
 
@@ -69,8 +73,8 @@ probe() {
 
 found="$(probe)"
 if [ -n "$found" ]; then
-  case "$("$found" --version 2>/dev/null || true)" in
-    "$TAG" | v*[!0-9.]*) ;;
+  case "$("$found" --version 2>/dev/null | head -n 1)" in
+    "$TAG" | "$BARE" | v[0-9]*[!0-9.]* | [0-9]*[!0-9.]*) ;;
     *) brew upgrade "$BREW_PKG" >/dev/null 2>&1 || true ;;
   esac
   ln -sf "$found" "$LINK"
