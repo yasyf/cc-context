@@ -100,5 +100,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: uv run --no-project --with capt-hook python -c "from captain_hook.util.model_cache import ensure_nlp_resources; ensure_nlp_resources()"
+      - name: Install cc-notes binary onto PATH
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          gh release download -R yasyf/cc-notes --pattern cc-notes_linux_amd64 --output "$HOME/.local/bin/cc-notes" --clobber
+          chmod +x "$HOME/.local/bin/cc-notes"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: capt-hook hook tests
         run: uvx capt-hook --hooks plugin/hooks test
