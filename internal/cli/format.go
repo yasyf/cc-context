@@ -12,47 +12,49 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 )
 
-// toonFlags holds the toon command's flags before they are mapped to
+// formatFlags holds the format command's flags before they are mapped to
 // format.Options.
-type toonFlags struct {
+type formatFlags struct {
+	format    string
 	delimiter string
 	indent    int
-	forceTOON bool
 	strict    bool
 	budget    int
 }
 
-func newToonCmd() *cobra.Command {
-	var f toonFlags
+func newFormatCmd() *cobra.Command {
+	var f formatFlags
 	cmd := &cobra.Command{
-		Use:   "toon [-- command [args...]]",
-		Short: "Convert JSON/NDJSON to TOON, as a filter or by wrapping a command",
-		Long: "Without `--`, read JSON or NDJSON on stdin and emit TOON (or compact JSON when " +
-			"smaller). With `-- command …`, run the command, convert its JSON stdout in place, " +
-			"stream its stderr, and exit with its code; non-JSON output passes through unchanged.",
+		Use:   "format [-- command [args...]]",
+		Short: "Re-encode JSON/NDJSON token-lean, as a filter or by wrapping a command",
+		Long: "Without `--`, read JSON or NDJSON on stdin and emit the leanest encoding for its " +
+			"shape — prose, markdown, CSV/TSV, TOON, TRON, JSONL, or compact JSON — never larger " +
+			"than compact JSON. With `-- command …`, run the command, convert its JSON stdout in " +
+			"place, stream its stderr, and exit with its code; non-JSON output passes through " +
+			"unchanged. --format=X forces one encoder, even when larger.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts, err := toonOptions(f)
+			opts, err := formatOptions(f)
 			if err != nil {
 				return err
 			}
 
 			dash := cmd.ArgsLenAtDash()
 			if dash < 0 {
-				return runToonFilter(cmd, opts, f.budget)
+				return runFormatFilter(cmd, opts, f.budget)
 			}
-			return runToonWrapper(cmd, args[dash:], opts, f.budget)
+			return runFormatWrapper(cmd, args[dash:], opts, f.budget)
 		},
 	}
-	cmd.Flags().StringVar(&f.delimiter, "delimiter", "comma", "array delimiter: comma|tab|pipe")
-	cmd.Flags().IntVar(&f.indent, "indent", 2, "spaces per indentation level")
-	cmd.Flags().BoolVar(&f.forceTOON, "force-toon", false, "always emit TOON, never compact JSON")
+	cmd.Flags().StringVar(&f.format, "format", "auto", "output format: auto|toon|tron|csv|tsv|markdown|jsonl|prose|json")
+	cmd.Flags().StringVar(&f.delimiter, "delimiter", "comma", "array delimiter for TOON output only: comma|tab|pipe")
+	cmd.Flags().IntVar(&f.indent, "indent", 2, "spaces per indentation level, TOON output only")
 	cmd.Flags().BoolVar(&f.strict, "strict", false, "error on non-JSON input instead of passing it through")
 	cmd.Flags().IntVar(&f.budget, "budget", 0, "token budget for the output")
 	return cmd
 }
 
-// runToonFilter reads stdin and converts it.
-func runToonFilter(cmd *cobra.Command, opts format.Options, budget int) error {
+// runFormatFilter reads stdin and converts it.
+func runFormatFilter(cmd *cobra.Command, opts format.Options, budget int) error {
 	data, err := io.ReadAll(cmd.InOrStdin())
 	if err != nil {
 		return fmt.Errorf("read stdin: %w", err)
@@ -65,9 +67,9 @@ func runToonFilter(cmd *cobra.Command, opts format.Options, budget int) error {
 	return nil
 }
 
-// runToonWrapper runs argv, converts its stdout, and propagates its exit code as
-// an *ExitError so main exits with the child's code.
-func runToonWrapper(cmd *cobra.Command, argv []string, opts format.Options, budget int) error {
+// runFormatWrapper runs argv, converts its stdout, and propagates its exit code
+// as an *ExitError so main exits with the child's code.
+func runFormatWrapper(cmd *cobra.Command, argv []string, opts format.Options, budget int) error {
 	out, converted, code, err := format.Run(cmd.Context(), argv, opts, cmd.InOrStdin(), os.Stderr)
 	if err != nil {
 		return err
@@ -89,22 +91,23 @@ func terminate(out string, converted bool) string {
 	return out
 }
 
-// toonOptions maps the flags to format.Options, validating the delimiter name.
-func toonOptions(f toonFlags) (format.Options, error) {
+// formatOptions maps the flags to format.Options, validating the format and
+// delimiter names.
+func formatOptions(f formatFlags) (format.Options, error) {
+	fm, err := format.ParseFormat(f.format)
+	if err != nil {
+		return format.Options{}, err
+	}
 	delim, err := parseDelimiter(f.delimiter)
 	if err != nil {
 		return format.Options{}, err
 	}
-	opts := format.Options{
-		Format:    format.FormatAuto,
+	return format.Options{
+		Format:    fm,
 		Indent:    f.indent,
 		Delimiter: delim,
 		Strict:    f.strict,
-	}
-	if f.forceTOON {
-		opts.Format = format.FormatTOON
-	}
-	return opts, nil
+	}, nil
 }
 
 // parseDelimiter resolves a delimiter name to its TOON delimiter.

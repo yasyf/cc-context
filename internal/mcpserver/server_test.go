@@ -341,45 +341,81 @@ func TestExecToolBadScript(t *testing.T) {
 	}
 }
 
-func TestBashToonRegistered(t *testing.T) {
+func TestBashFormatRegistered(t *testing.T) {
 	cs := connectTestServer(t)
 	res, err := cs.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
+	found := false
 	for _, tool := range res.Tools {
+		if tool.Name == "BashFormat" {
+			found = true
+		}
 		if tool.Name == "BashToon" {
-			return
+			t.Error("BashToon still registered; the rename is a clean break")
 		}
 	}
-	t.Error("BashToon not registered")
+	if !found {
+		t.Error("BashFormat not registered")
+	}
 }
 
-func TestBashToonConvertsJSON(t *testing.T) {
+func TestBashFormatConvertsJSON(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("sh -c is POSIX-only")
 	}
 	cs := connectTestServer(t)
-	out, isErr := callText(t, cs, "BashToon", map[string]any{
-		"command":    []any{"sh", "-c", `printf '[{"a":1},{"a":2}]'`},
-		"force_toon": true,
+	out, isErr := callText(t, cs, "BashFormat", map[string]any{
+		"command": []any{"sh", "-c", `printf '[{"a":1},{"a":2}]'`},
+		"format":  "toon",
 	})
 	if isErr {
-		t.Fatalf("BashToon JSON command is error: %s", out)
+		t.Fatalf("BashFormat JSON command is error: %s", out)
 	}
 	if want := "[2]{a}:\n  1\n  2"; out != want {
-		t.Errorf("BashToon out = %q, want %q", out, want)
+		t.Errorf("BashFormat out = %q, want %q", out, want)
 	}
 }
 
-func TestBashToonSurfacesStderrAndExit(t *testing.T) {
+func TestBashFormatAutoFloorsToCompactJSON(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("sh -c is POSIX-only")
 	}
 	cs := connectTestServer(t)
-	out, isErr := callText(t, cs, "BashToon", map[string]any{
-		"command":    []any{"sh", "-c", `echo boom 1>&2; printf '[{"a":1}]'; exit 5`},
-		"force_toon": true,
+	out, isErr := callText(t, cs, "BashFormat", map[string]any{
+		"command": []any{"sh", "-c", `printf '[{"a": 1}, {"a": 2}]'`},
+	})
+	if isErr {
+		t.Fatalf("BashFormat JSON command is error: %s", out)
+	}
+	if want := `[{"a":1},{"a":2}]`; out != want {
+		t.Errorf("BashFormat auto out = %q, want %q", out, want)
+	}
+}
+
+func TestBashFormatInvalidFormat(t *testing.T) {
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "BashFormat", map[string]any{
+		"command": []any{"true"},
+		"format":  "yaml",
+	})
+	if !isErr {
+		t.Fatalf("invalid format should be a tool error, got: %s", out)
+	}
+	if !strings.Contains(out, "BashFormat:") || !strings.Contains(out, "yaml") {
+		t.Errorf("error should carry the tool prefix and bad name: %s", out)
+	}
+}
+
+func TestBashFormatSurfacesStderrAndExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh -c is POSIX-only")
+	}
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "BashFormat", map[string]any{
+		"command": []any{"sh", "-c", `echo boom 1>&2; printf '[{"a":1}]'; exit 5`},
+		"format":  "toon",
 	})
 	if !isErr {
 		t.Fatalf("non-zero exit should set IsError, got: %s", out)
@@ -392,14 +428,14 @@ func TestBashToonSurfacesStderrAndExit(t *testing.T) {
 	}
 }
 
-func TestBashToonStderrOnSuccessIsNotAnError(t *testing.T) {
+func TestBashFormatStderrOnSuccessIsNotAnError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("sh -c is POSIX-only")
 	}
 	cs := connectTestServer(t)
-	out, isErr := callText(t, cs, "BashToon", map[string]any{
-		"command":    []any{"sh", "-c", `echo warn 1>&2; printf '[{"a":1}]'`},
-		"force_toon": true,
+	out, isErr := callText(t, cs, "BashFormat", map[string]any{
+		"command": []any{"sh", "-c", `echo warn 1>&2; printf '[{"a":1}]'`},
+		"format":  "toon",
 	})
 	if isErr {
 		t.Fatalf("stderr on a zero exit must not flag IsError, got: %s", out)

@@ -37,8 +37,10 @@ func TestRuntimeRun(t *testing.T) {
 		{"arith", "40 + 2", "42"},
 		{"string_return", `"hello"`, "hello"},
 		{"stdout", `print("hi")`, "hi\n"},
-		{"dict_toon", `{"a": 1, "b": [2, 3]}`, "a: 1\nb[2]: 2,3"},
-		{"tabular_toon", `[{"n": 1, "s": "x"}, {"n": 2, "s": "y"}]`, "[2]{n,s}:\n  1,x\n  2,y"},
+		// Both payloads sit under FormatAuto's size floor, so the structured
+		// renderer emits compact JSON.
+		{"dict_compact_json", `{"a": 1, "b": [2, 3]}`, `{"a":1,"b":[2,3]}`},
+		{"tabular_compact_json", `[{"n": 1, "s": "x"}, {"n": 2, "s": "y"}]`, `[{"n":1,"s":"x"},{"n":2,"s":"y"}]`},
 		{"await_host", "import asyncio\nasyncio.run(slow())", "1"},
 		{"await_echo", `import asyncio` + "\n" + `asyncio.run(echo("ok"))`, "ok"},
 	}

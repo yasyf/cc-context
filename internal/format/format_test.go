@@ -44,14 +44,17 @@ func TestConvert(t *testing.T) {
 			converted: true,
 		},
 		{
-			name:      "smart fallback picks TOON when smaller",
+			// Under the old TOON-first shootout this emitted TOON; the
+			// classifier floors payloads under smallPayloadBytes to compact
+			// JSON.
+			name:      "auto floors small table to compact JSON",
 			src:       `[{"id":1,"name":"Ada"},{"id":2,"name":"Lin"}]`,
 			opts:      defaultOpts(),
-			want:      "[2]{id,name}:\n  1,Ada\n  2,Lin",
+			want:      `[{"id":1,"name":"Ada"},{"id":2,"name":"Lin"}]`,
 			converted: true,
 		},
 		{
-			name:      "smart fallback picks compact JSON when smaller",
+			name:      "auto floors deep nesting to compact JSON",
 			src:       `{"aaa":{"bbb":{"ccc":{"ddd":{"eee":1}}}}}`,
 			opts:      Options{Format: FormatAuto, Indent: 4, Delimiter: DelimiterComma},
 			want:      `{"aaa":{"bbb":{"ccc":{"ddd":{"eee":1}}}}}`,
@@ -79,7 +82,7 @@ func TestConvert(t *testing.T) {
 			converted: true,
 		},
 		{
-			name:      "auto shootout compact JSON keeps angle brackets raw",
+			name:      "auto compact JSON keeps angle brackets raw",
 			src:       `{"aaa":{"bbb":{"ccc":{"ddd":{"eee":"<&>"}}}}}`,
 			opts:      Options{Format: FormatAuto, Indent: 4, Delimiter: DelimiterComma},
 			want:      `{"aaa":{"bbb":{"ccc":{"ddd":{"eee":"<&>"}}}}}`,
@@ -269,15 +272,63 @@ func TestConvert(t *testing.T) {
 	}
 }
 
-func TestConvertUnimplementedFormat(t *testing.T) {
-	for _, f := range []Format{FormatTRON, FormatCSV, FormatTSV, FormatMarkdown, FormatJSONL} {
-		t.Run(string(f), func(t *testing.T) {
-			_, converted, err := Convert([]byte(`{"a":1}`), Options{Format: f, Indent: 2, Delimiter: DelimiterComma})
-			if err == nil || !strings.Contains(err.Error(), "not implemented yet") {
-				t.Fatalf("Convert(%s) error = %v, want not-implemented", f, err)
+// TestConvertExplicitFormats pins the dispatch: every explicit format calls
+// its encoder and skips both classification and the byte-net, emitting even
+// when larger than compact JSON.
+func TestConvertExplicitFormats(t *testing.T) {
+	rows := `[{"a":1,"b":"x"},{"a":2,"b":"y"}]`
+	tests := []struct {
+		name   string
+		format Format
+		src    string
+		want   string
+	}{
+		{"csv", FormatCSV, rows, "a,b\n1,x\n2,y"},
+		{"tsv", FormatTSV, rows, "a\tb\n1\tx\n2\ty"},
+		{"markdown", FormatMarkdown, rows, "|a|b|\n|---|---|\n|1|x|\n|2|y|"},
+		{"jsonl", FormatJSONL, rows, `{"a":1,"b":"x"}` + "\n" + `{"a":2,"b":"y"}`},
+		{"tron mints even when larger", FormatTRON, rows, "class A: a,b\n\n[A(1,\"x\"),A(2,\"y\")]"},
+		{"prose", FormatProse, `{"id":7,"body":"two words"}`, "<id>7</id>\n\ntwo words"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, converted, err := Convert([]byte(tt.src), Options{Format: tt.format, Indent: 2, Delimiter: DelimiterComma})
+			if err != nil {
+				t.Fatalf("Convert(%s) error = %v", tt.format, err)
+			}
+			if !converted {
+				t.Errorf("Convert(%s) converted = false, want true", tt.format)
+			}
+			if got != tt.want {
+				t.Errorf("Convert(%s) = %q, want %q", tt.format, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestConvertExplicitFormatShapeErrors pins the loud failure on incompatible
+// shapes: an explicit format never falls back.
+func TestConvertExplicitFormatShapeErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		format  Format
+		src     string
+		wantErr string
+	}{
+		{"csv on object", FormatCSV, `{"a":1}`, "encode csv"},
+		{"tsv on object", FormatTSV, `{"a":1}`, "encode tsv"},
+		{"markdown on object", FormatMarkdown, `{"a":1}`, "encode markdown"},
+		{"jsonl on object", FormatJSONL, `{"a":1}`, "encode jsonl"},
+		{"prose on array", FormatProse, `[1,2]`, "encode prose"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, converted, err := Convert([]byte(tt.src), Options{Format: tt.format, Indent: 2, Delimiter: DelimiterComma})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Convert(%s) error = %v, want %q", tt.format, err, tt.wantErr)
 			}
 			if converted {
-				t.Errorf("Convert(%s) converted = true, want false", f)
+				t.Errorf("Convert(%s) converted = true, want false", tt.format)
 			}
 		})
 	}

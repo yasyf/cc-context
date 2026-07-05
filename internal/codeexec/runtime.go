@@ -158,9 +158,9 @@ func rendered(val monty.Value, stdout string) string {
 	return b.String()
 }
 
-// structured renders a list/dict final value the way BashToon renders JSON
-// stdout: format.Convert emits TOON or compact JSON, whichever is smaller, with
-// BashToon's default indent and delimiter.
+// structured renders a list/dict final value the way BashFormat renders JSON
+// stdout: format.Convert picks the payload's leanest encoding via FormatAuto,
+// with BashFormat's default indent and delimiter.
 func structured(val monty.Value) string {
 	enc, err := json.Marshal(native(val))
 	if err != nil {

@@ -9,7 +9,7 @@ import (
 var ErrNotFound = errors.New("not found")
 
 // ExitError carries a process exit code up to main without a printable message;
-// it lets the toon wrapper propagate a child command's exit code intact.
+// it lets the format wrapper propagate a child command's exit code intact.
 type ExitError struct{ Code int }
 
 // Error reports the exit code; the wrapper has already mirrored the child's

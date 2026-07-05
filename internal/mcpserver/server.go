@@ -115,12 +115,12 @@ type ExecIn struct {
 // ExecToolsIn is the input for ccx_exec_tools.
 type ExecToolsIn struct{}
 
-// BashToonIn is the input for BashToon.
-type BashToonIn struct {
+// BashFormatIn is the input for BashFormat.
+type BashFormatIn struct {
 	Command   []string `json:"command" jsonschema:"argv to RUN directly (no shell); argv[0] is the program, the rest its arguments"`
-	Delimiter string   `json:"delimiter,omitempty" jsonschema:"array delimiter: comma|tab|pipe (default comma)"`
-	Indent    int      `json:"indent,omitempty" jsonschema:"spaces per indentation level (default 2)"`
-	ForceTOON bool     `json:"force_toon,omitempty" jsonschema:"always emit TOON, never compact JSON"`
+	Format    string   `json:"format,omitempty" jsonschema:"output format: auto|toon|tron|csv|tsv|markdown|jsonl|prose|json (default auto — the leanest encoding for the shape)"`
+	Delimiter string   `json:"delimiter,omitempty" jsonschema:"array delimiter, TOON output only: comma|tab|pipe (default comma)"`
+	Indent    int      `json:"indent,omitempty" jsonschema:"spaces per indentation level, TOON output only (default 2)"`
 	Budget    int      `json:"budget,omitempty" jsonschema:"token budget for the output"`
 }
 
@@ -252,12 +252,13 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 	}, execToolsHandler(eng))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "BashToon",
+		Name: "BashFormat",
 		Description: "RUN a command (argv, no shell) and return its stdout token-compacted: JSON/NDJSON " +
-			"is re-encoded as TOON (or compact JSON when smaller), other output passes through. Use for " +
-			"commands that emit JSON (gh --json, kubectl -o json, …) so the raw JSON never enters context. " +
-			"It executes the command — it is not a passive converter and does not take a JSON string.",
-	}, bashToonHandler())
+			"is re-encoded as the leanest format for its shape (prose, markdown, CSV/TSV, TOON, TRON, " +
+			"JSONL, or compact JSON — never larger than compact JSON), other output passes through. Use " +
+			"for commands that emit JSON (gh --json, kubectl -o json, …) so the raw JSON never enters " +
+			"context. It executes the command — it is not a passive converter and does not take a JSON string.",
+	}, bashFormatHandler())
 }
 
 // searchHandler classifies the query through search.Route and dispatches the
@@ -364,27 +365,28 @@ func handler[In any](p *proxy.Proxy, op backend.Op, args func(In) backend.Args) 
 	}
 }
 
-// bashToonHandler runs the supplied argv through the shared format.Run, the
-// in-MCP equivalent of `ccx toon -- <argv>`: stdout is converted and capped. Any
-// captured stderr is appended as a neutral [stderr] section (many tools write to
-// stderr on success), [exit N] is appended only on a non-zero exit, and only a
-// non-zero exit flags the result as an error. A spawn failure is returned as an
-// error.
-func bashToonHandler() func(context.Context, *mcp.CallToolRequest, BashToonIn) (*mcp.CallToolResult, any, error) {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in BashToonIn) (*mcp.CallToolResult, any, error) {
-		delim, err := bashToonDelimiter(in.Delimiter)
+// bashFormatHandler runs the supplied argv through the shared format.Run, the
+// in-MCP equivalent of `ccx format -- <argv>`: stdout is converted and capped.
+// Any captured stderr is appended as a neutral [stderr] section (many tools
+// write to stderr on success), [exit N] is appended only on a non-zero exit, and
+// only a non-zero exit flags the result as an error. A spawn failure is returned
+// as an error.
+func bashFormatHandler() func(context.Context, *mcp.CallToolRequest, BashFormatIn) (*mcp.CallToolResult, any, error) {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in BashFormatIn) (*mcp.CallToolResult, any, error) {
+		fm, err := format.ParseFormat(in.Format)
 		if err != nil {
-			return nil, nil, fmt.Errorf("BashToon: %w", err)
+			return nil, nil, fmt.Errorf("BashFormat: %w", err)
 		}
-		opts := format.Options{Format: format.FormatAuto, Indent: bashToonIndent(in.Indent), Delimiter: delim}
-		if in.ForceTOON {
-			opts.Format = format.FormatTOON
+		delim, err := bashFormatDelimiter(in.Delimiter)
+		if err != nil {
+			return nil, nil, fmt.Errorf("BashFormat: %w", err)
 		}
+		opts := format.Options{Format: fm, Indent: bashFormatIndent(in.Indent), Delimiter: delim}
 
 		var stderr bytes.Buffer
 		out, _, code, err := format.Run(ctx, in.Command, opts, nil, &stderr)
 		if err != nil {
-			return nil, nil, fmt.Errorf("BashToon: %w", err)
+			return nil, nil, fmt.Errorf("BashFormat: %w", err)
 		}
 
 		text := render.Cap(out, in.Budget)
@@ -401,17 +403,17 @@ func bashToonHandler() func(context.Context, *mcp.CallToolRequest, BashToonIn) (
 	}
 }
 
-// bashToonIndent defaults a zero indent to the spec's two spaces.
-func bashToonIndent(indent int) int {
+// bashFormatIndent defaults a zero indent to the spec's two spaces.
+func bashFormatIndent(indent int) int {
 	if indent == 0 {
 		return 2
 	}
 	return indent
 }
 
-// bashToonDelimiter resolves a delimiter name to its TOON delimiter, defaulting
-// an empty name to comma.
-func bashToonDelimiter(name string) (format.Delimiter, error) {
+// bashFormatDelimiter resolves a delimiter name to its TOON delimiter,
+// defaulting an empty name to comma.
+func bashFormatDelimiter(name string) (format.Delimiter, error) {
 	switch name {
 	case "", "comma":
 		return format.DelimiterComma, nil

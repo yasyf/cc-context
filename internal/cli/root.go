@@ -27,7 +27,7 @@ func NewRootCmd() *cobra.Command {
 		newCodeCmd(),
 		newRepoCmd(),
 		newExecCmd(),
-		newToonCmd(),
+		newFormatCmd(),
 		newMCPCmd(),
 	)
 	return root

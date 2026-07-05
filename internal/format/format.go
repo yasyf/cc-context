@@ -1,7 +1,8 @@
 // Package format converts JSON and NDJSON tool output into token-lean
-// encodings — TOON today, with TRON, CSV/TSV, markdown, JSONL, and prose
-// landing in later phases — and runs commands whose JSON stdout is converted
-// in place. FormatAuto emits whichever of TOON or compact JSON is smaller.
+// encodings — TOON, TRON, CSV/TSV, markdown tables, JSONL, prose unwrap, or
+// compact JSON — and runs commands whose JSON stdout is converted in place.
+// FormatAuto classifies the payload's shape and emits the leanest candidate
+// encoding, never exceeding compact JSON by bytes.
 package format
 
 import (
@@ -16,9 +17,9 @@ import (
 // Format names an output encoding.
 type Format string
 
-// The supported output formats. FormatAuto runs the TOON-vs-compact-JSON byte
-// shootout; FormatTRON through FormatJSONL are declared ahead of their
-// encoders and error until a later phase lands each one.
+// The supported output formats. FormatAuto classifies the payload and picks
+// the smallest candidate encoding that passes the byte-net invariant; every
+// other constant forces its encoder, emitting even when larger.
 const (
 	FormatAuto     Format = "auto"
 	FormatTOON     Format = "toon"
@@ -98,11 +99,11 @@ const (
 //
 // ## classify
 //
-// classify.go (later phase) provides analyze(v any) analysis and
-// classify(v any) ([]Format, analysis) — candidate formats in priority order
-// for the FormatAuto arm, which will encode each candidate and keep the
-// byte-net invariant len(chosen) <= len(compactJSON(v)). Until then the
-// FormatAuto arm below is the legacy TOON-vs-compact-JSON byte shootout.
+// classify.go provides analyze(v any) analysis and classify(v any)
+// ([]Format, analysis) — candidate formats in priority order for the
+// FormatAuto arm, which encodes each candidate and keeps the byte-net
+// invariant len(chosen) <= len(compactJSON(v)); compact JSON is always the
+// implicit last contender.
 
 // Options tunes a Convert or Run call. Indent and Delimiter apply only to the
 // TOON encoder.
@@ -114,9 +115,11 @@ type Options struct {
 }
 
 // Convert decodes JSON or NDJSON from src and re-encodes it per opts.Format:
-// FormatAuto emits whichever of TOON or compact JSON is smaller, FormatTOON
-// always TOON, FormatJSON always compact JSON; converted reports whether a
-// re-encoding happened. A decode failure or empty src returns src verbatim
+// FormatAuto classifies the shape and emits the smallest candidate encoding
+// that does not exceed compact JSON by bytes; an explicit format always emits
+// its encoding, even when larger, and errors loudly on an incompatible shape;
+// converted reports whether a re-encoding happened. A decode failure or empty
+// src returns src verbatim
 // with converted=false — unless opts.Strict, which returns the error. The
 // passthrough is a deliberate exception to the no-defensive-coding rule: the
 // wrapper must never corrupt non-JSON output.
@@ -139,27 +142,65 @@ func Convert(src []byte, opts Options) (out string, converted bool, err error) {
 	return out, true, nil
 }
 
-// encode renders the IR in the requested format.
+// ParseFormat resolves a format name, defaulting empty to FormatAuto.
+func ParseFormat(name string) (Format, error) {
+	if name == "" {
+		return FormatAuto, nil
+	}
+	switch f := Format(name); f {
+	case FormatAuto, FormatTOON, FormatTRON, FormatCSV, FormatTSV, FormatMarkdown, FormatJSONL, FormatProse, FormatJSON:
+		return f, nil
+	default:
+		return "", fmt.Errorf("invalid format %q: want auto|toon|tron|csv|tsv|markdown|jsonl|prose|json", name)
+	}
+}
+
+// encode renders the IR in the requested format. An explicit format emits even
+// when larger than compact JSON and errors loudly on an incompatible shape;
+// FormatAuto owns fallback policy.
 func encode(v any, opts Options) (string, error) {
 	switch opts.Format {
 	case FormatAuto:
-		toonOut, err := encodeTOON(v, opts)
-		if err != nil {
-			return "", err
-		}
-		if jsonOut := compactJSON(v); len(jsonOut) < len(toonOut) {
-			return jsonOut, nil
-		}
-		return toonOut, nil
+		return encodeAuto(v, opts), nil
 	case FormatTOON:
 		return encodeTOON(v, opts)
+	case FormatTRON:
+		return encodeTRON(v)
+	case FormatCSV:
+		return encodeCSV(v)
+	case FormatTSV:
+		return encodeTSV(v)
+	case FormatMarkdown:
+		return encodeMarkdown(v)
+	case FormatJSONL:
+		return encodeJSONL(v)
+	case FormatProse:
+		return encodeProse(v)
 	case FormatJSON:
 		return compactJSON(v), nil
-	case FormatTRON, FormatCSV, FormatTSV, FormatMarkdown, FormatJSONL, FormatProse:
-		return "", fmt.Errorf("format %s not implemented yet", opts.Format)
 	default:
 		return "", fmt.Errorf("unknown format %q", opts.Format)
 	}
+}
+
+// encodeAuto classifies v and returns the smallest candidate encoding that
+// passes the byte-net invariant len(out) <= len(compactJSON(v)); ties go to
+// the earlier candidate. Candidates that error or exceed the net are skipped,
+// and compact JSON is the implicit last contender, so auto mode never fails.
+func encodeAuto(v any, opts Options) string {
+	candidates, _ := classify(v)
+	jsonOut := compactJSON(v)
+	best, bestLen := jsonOut, len(jsonOut)+1
+	for _, f := range candidates {
+		o := opts
+		o.Format = f
+		out, err := encode(v, o)
+		if err != nil || len(out) > len(jsonOut) || len(out) >= bestLen {
+			continue
+		}
+		best, bestLen = out, len(out)
+	}
+	return best
 }
 
 // Run executes argv, capturing stdout and converting it via Convert; stderr is
