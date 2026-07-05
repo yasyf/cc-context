@@ -85,5 +85,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          # capt-hook requires Python >=3.13; without this the runner's default
+          # 3.12 makes uv resolve an old capt-hook that lacks newer hook APIs.
+          python-version: "3.13"
       - name: capt-hook hook tests
         run: uvx capt-hook --hooks plugin/hooks test
