@@ -1,4 +1,4 @@
-package toon
+package format
 
 import (
 	"bytes"
@@ -11,7 +11,7 @@ import (
 )
 
 func defaultOpts() Options {
-	return Options{Indent: 2, Delimiter: DelimiterComma}
+	return Options{Format: FormatAuto, Indent: 2, Delimiter: DelimiterComma}
 }
 
 func TestConvert(t *testing.T) {
@@ -25,21 +25,21 @@ func TestConvert(t *testing.T) {
 		{
 			name:      "tabular uniform array source-order columns",
 			src:       `[{"id":1,"name":"Ada"},{"id":2,"name":"Lin"}]`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      "[2]{id,name}:\n  1,Ada\n  2,Lin",
 			converted: true,
 		},
 		{
 			name:      "key order preserved with non-alphabetical keys",
 			src:       `{"zeta":1,"alpha":2}`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      "zeta: 1\nalpha: 2",
 			converted: true,
 		},
 		{
 			name:      "tabular columns keep non-alphabetical source order",
 			src:       `[{"zeta":1,"alpha":2},{"zeta":3,"alpha":4}]`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      "[2]{zeta,alpha}:\n  1,2\n  3,4",
 			converted: true,
 		},
@@ -53,112 +53,140 @@ func TestConvert(t *testing.T) {
 		{
 			name:      "smart fallback picks compact JSON when smaller",
 			src:       `{"aaa":{"bbb":{"ccc":{"ddd":{"eee":1}}}}}`,
-			opts:      Options{Indent: 4, Delimiter: DelimiterComma},
+			opts:      Options{Format: FormatAuto, Indent: 4, Delimiter: DelimiterComma},
 			want:      `{"aaa":{"bbb":{"ccc":{"ddd":{"eee":1}}}}}`,
 			converted: true,
 		},
 		{
-			name:      "ForceTOON always emits TOON even when larger",
+			name:      "FormatTOON always emits TOON even when larger",
 			src:       `{"aaa":{"bbb":{"ccc":{"ddd":{"eee":1}}}}}`,
-			opts:      Options{Indent: 4, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 4, Delimiter: DelimiterComma},
 			want:      "aaa:\n    bbb:\n        ccc:\n            ddd:\n                eee: 1",
+			converted: true,
+		},
+		{
+			name:      "FormatJSON always emits compact JSON even when larger",
+			src:       `[{"id":1,"name":"Ada"},{"id":2,"name":"Lin"}]`,
+			opts:      Options{Format: FormatJSON, Indent: 2, Delimiter: DelimiterComma},
+			want:      `[{"id":1,"name":"Ada"},{"id":2,"name":"Lin"}]`,
+			converted: true,
+		},
+		{
+			name:      "compact JSON does not HTML-escape",
+			src:       `{"html":"<b>&amp;</b> > <"}`,
+			opts:      Options{Format: FormatJSON, Indent: 2, Delimiter: DelimiterComma},
+			want:      `{"html":"<b>&amp;</b> > <"}`,
+			converted: true,
+		},
+		{
+			name:      "auto shootout compact JSON keeps angle brackets raw",
+			src:       `{"aaa":{"bbb":{"ccc":{"ddd":{"eee":"<&>"}}}}}`,
+			opts:      Options{Format: FormatAuto, Indent: 4, Delimiter: DelimiterComma},
+			want:      `{"aaa":{"bbb":{"ccc":{"ddd":{"eee":"<&>"}}}}}`,
+			converted: true,
+		},
+		{
+			name:      "compact JSON preserves big integer digits",
+			src:       `{"n":123456789012345678901}`,
+			opts:      Options{Format: FormatJSON, Indent: 2, Delimiter: DelimiterComma},
+			want:      `{"n":123456789012345678901}`,
 			converted: true,
 		},
 		{
 			name:      "ndjson folds into single table",
 			src:       "{\"a\":1,\"b\":2}\n{\"a\":3,\"b\":4}\n",
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      "[2]{a,b}:\n  1,2\n  3,4",
 			converted: true,
 		},
 		{
 			name:      "lone top-level array stays an array",
 			src:       `[1,2,3]`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      "[3]: 1,2,3",
 			converted: true,
 		},
 		{
 			name:      "single object",
 			src:       `{"a":1}`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      "a: 1",
 			converted: true,
 		},
 		{
 			name:      "tab delimiter",
 			src:       `[{"a":1,"b":2},{"a":3,"b":4}]`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterTab, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterTab},
 			want:      "[2\t]{a\tb}:\n  1\t2\n  3\t4",
 			converted: true,
 		},
 		{
 			name:      "pipe delimiter",
 			src:       `[{"a":1,"b":2},{"a":3,"b":4}]`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterPipe, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterPipe},
 			want:      "[2|]{a|b}:\n  1|2\n  3|4",
 			converted: true,
 		},
 		{
 			name:      "indent 4",
 			src:       `{"a":{"b":1}}`,
-			opts:      Options{Indent: 4, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 4, Delimiter: DelimiterComma},
 			want:      "a:\n    b: 1",
 			converted: true,
 		},
 		{
 			name:      "null scalar",
 			src:       `{"a":null}`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      "a: null",
 			converted: true,
 		},
 		{
 			name:      "empty array",
 			src:       `[]`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      "[0]:",
 			converted: true,
 		},
 		{
 			name:      "empty object",
 			src:       `{}`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      "",
 			converted: true,
 		},
 		{
 			name:      "nested object",
 			src:       `{"outer":{"inner":{"leaf":7}}}`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      "outer:\n  inner:\n    leaf: 7",
 			converted: true,
 		},
 		{
 			name:      "numeric-like string is quoted",
 			src:       `{"a":"42"}`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      `a: "42"`,
 			converted: true,
 		},
 		{
 			name:      "bool-like string is quoted",
 			src:       `{"a":"true"}`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      `a: "true"`,
 			converted: true,
 		},
 		{
 			name:      "leading-dash string is quoted",
 			src:       `{"a":"-x"}`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      `a: "-x"`,
 			converted: true,
 		},
 		{
 			name:      "plain string is unquoted",
 			src:       `{"a":"hello"}`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      "a: hello",
 			converted: true,
 		},
@@ -167,7 +195,7 @@ func TestConvert(t *testing.T) {
 			// precision intact — the json.Number→float64 path would round this.
 			name:      "large safe integer preserved unquoted",
 			src:       `{"n":9007199254740991}`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      "n: 9007199254740991",
 			converted: true,
 		},
@@ -177,28 +205,28 @@ func TestConvert(t *testing.T) {
 			// ...680). The digits are preserved verbatim — that is the fidelity win.
 			name:      "big integer past safe range preserved as quoted string",
 			src:       `{"n":123456789012345678}`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      `n: "123456789012345678"`,
 			converted: true,
 		},
 		{
 			name:      "negative zero canonicalized",
 			src:       `{"n":-0}`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      "n: 0",
 			converted: true,
 		},
 		{
 			name:      "float preserved",
 			src:       `{"n":1.5}`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      "n: 1.5",
 			converted: true,
 		},
 		{
 			name:      "integer stays integer not float",
 			src:       `{"n":1}`,
-			opts:      Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+			opts:      Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 			want:      "n: 1",
 			converted: true,
 		},
@@ -241,8 +269,33 @@ func TestConvert(t *testing.T) {
 	}
 }
 
+func TestConvertUnimplementedFormat(t *testing.T) {
+	for _, f := range []Format{FormatTRON, FormatCSV, FormatTSV, FormatMarkdown, FormatJSONL} {
+		t.Run(string(f), func(t *testing.T) {
+			_, converted, err := Convert([]byte(`{"a":1}`), Options{Format: f, Indent: 2, Delimiter: DelimiterComma})
+			if err == nil || !strings.Contains(err.Error(), "not implemented yet") {
+				t.Fatalf("Convert(%s) error = %v, want not-implemented", f, err)
+			}
+			if converted {
+				t.Errorf("Convert(%s) converted = true, want false", f)
+			}
+		})
+	}
+}
+
+func TestConvertUnknownFormat(t *testing.T) {
+	for _, f := range []Format{"", "bogus"} {
+		t.Run(string(f), func(t *testing.T) {
+			_, _, err := Convert([]byte(`{"a":1}`), Options{Format: f, Indent: 2, Delimiter: DelimiterComma})
+			if err == nil || !strings.Contains(err.Error(), "unknown format") {
+				t.Fatalf("Convert(%q) error = %v, want unknown-format", f, err)
+			}
+		})
+	}
+}
+
 func TestConvertStrict(t *testing.T) {
-	opts := Options{Indent: 2, Delimiter: DelimiterComma, Strict: true}
+	opts := Options{Format: FormatAuto, Indent: 2, Delimiter: DelimiterComma, Strict: true}
 	_, converted, err := Convert([]byte("not json"), opts)
 	if err == nil {
 		t.Fatal("Convert(strict) on bad JSON: want error, got nil")
@@ -266,7 +319,7 @@ func TestConvertRoundTrip(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, converted, err := Convert([]byte(tt.src), Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true})
+			out, converted, err := Convert([]byte(tt.src), Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma})
 			if err != nil {
 				t.Fatalf("Convert() error = %v", err)
 			}
@@ -290,7 +343,7 @@ func TestRunConvertsStdout(t *testing.T) {
 	out, converted, code, err := Run(
 		context.Background(),
 		[]string{"sh", "-c", `printf '[{"a":1},{"a":2}]'`},
-		Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+		Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 		nil, &bytes.Buffer{},
 	)
 	if err != nil {
@@ -349,7 +402,7 @@ func TestRunForwardsStdin(t *testing.T) {
 	out, converted, code, err := Run(
 		context.Background(),
 		[]string{"sh", "-c", "cat"},
-		Options{Indent: 2, Delimiter: DelimiterComma, ForceTOON: true},
+		Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 		in, &bytes.Buffer{},
 	)
 	if err != nil {

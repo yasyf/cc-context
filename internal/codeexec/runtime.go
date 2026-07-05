@@ -19,8 +19,8 @@ import (
 	monty "github.com/ewhauser/gomonty"
 
 	"github.com/yasyf/cc-context/internal/cache"
+	"github.com/yasyf/cc-context/internal/format"
 	"github.com/yasyf/cc-context/internal/render"
-	"github.com/yasyf/cc-context/internal/toon"
 )
 
 // hostCallValve caps a single host call's string return, so one careless call
@@ -159,14 +159,14 @@ func rendered(val monty.Value, stdout string) string {
 }
 
 // structured renders a list/dict final value the way BashToon renders JSON
-// stdout: toon.Convert emits TOON or compact JSON, whichever is smaller, with
+// stdout: format.Convert emits TOON or compact JSON, whichever is smaller, with
 // BashToon's default indent and delimiter.
 func structured(val monty.Value) string {
 	enc, err := json.Marshal(native(val))
 	if err != nil {
 		return val.String()
 	}
-	out, _, err := toon.Convert(enc, toon.Options{Indent: 2, Delimiter: toon.DelimiterComma})
+	out, _, err := format.Convert(enc, format.Options{Format: format.FormatAuto, Indent: 2, Delimiter: format.DelimiterComma})
 	if err != nil {
 		return string(enc)
 	}

@@ -12,11 +12,11 @@ import (
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/codeexec"
+	"github.com/yasyf/cc-context/internal/format"
 	"github.com/yasyf/cc-context/internal/outline"
 	"github.com/yasyf/cc-context/internal/proxy"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/search"
-	"github.com/yasyf/cc-context/internal/toon"
 	"github.com/yasyf/cc-context/internal/version"
 )
 
@@ -364,7 +364,7 @@ func handler[In any](p *proxy.Proxy, op backend.Op, args func(In) backend.Args) 
 	}
 }
 
-// bashToonHandler runs the supplied argv through the shared toon.Run, the
+// bashToonHandler runs the supplied argv through the shared format.Run, the
 // in-MCP equivalent of `ccx toon -- <argv>`: stdout is converted and capped. Any
 // captured stderr is appended as a neutral [stderr] section (many tools write to
 // stderr on success), [exit N] is appended only on a non-zero exit, and only a
@@ -376,10 +376,13 @@ func bashToonHandler() func(context.Context, *mcp.CallToolRequest, BashToonIn) (
 		if err != nil {
 			return nil, nil, fmt.Errorf("BashToon: %w", err)
 		}
-		opts := toon.Options{Indent: bashToonIndent(in.Indent), Delimiter: delim, ForceTOON: in.ForceTOON}
+		opts := format.Options{Format: format.FormatAuto, Indent: bashToonIndent(in.Indent), Delimiter: delim}
+		if in.ForceTOON {
+			opts.Format = format.FormatTOON
+		}
 
 		var stderr bytes.Buffer
-		out, _, code, err := toon.Run(ctx, in.Command, opts, nil, &stderr)
+		out, _, code, err := format.Run(ctx, in.Command, opts, nil, &stderr)
 		if err != nil {
 			return nil, nil, fmt.Errorf("BashToon: %w", err)
 		}
@@ -408,14 +411,14 @@ func bashToonIndent(indent int) int {
 
 // bashToonDelimiter resolves a delimiter name to its TOON delimiter, defaulting
 // an empty name to comma.
-func bashToonDelimiter(name string) (toon.Delimiter, error) {
+func bashToonDelimiter(name string) (format.Delimiter, error) {
 	switch name {
 	case "", "comma":
-		return toon.DelimiterComma, nil
+		return format.DelimiterComma, nil
 	case "tab":
-		return toon.DelimiterTab, nil
+		return format.DelimiterTab, nil
 	case "pipe":
-		return toon.DelimiterPipe, nil
+		return format.DelimiterPipe, nil
 	default:
 		return 0, fmt.Errorf("invalid delimiter %q: want comma|tab|pipe", name)
 	}

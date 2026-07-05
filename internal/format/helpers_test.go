@@ -1,4 +1,4 @@
-package toon
+package format
 
 import (
 	"encoding/json"

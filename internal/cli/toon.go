@@ -8,12 +8,12 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/yasyf/cc-context/internal/format"
 	"github.com/yasyf/cc-context/internal/render"
-	"github.com/yasyf/cc-context/internal/toon"
 )
 
 // toonFlags holds the toon command's flags before they are mapped to
-// toon.Options.
+// format.Options.
 type toonFlags struct {
 	delimiter string
 	indent    int
@@ -52,12 +52,12 @@ func newToonCmd() *cobra.Command {
 }
 
 // runToonFilter reads stdin and converts it.
-func runToonFilter(cmd *cobra.Command, opts toon.Options, budget int) error {
+func runToonFilter(cmd *cobra.Command, opts format.Options, budget int) error {
 	data, err := io.ReadAll(cmd.InOrStdin())
 	if err != nil {
 		return fmt.Errorf("read stdin: %w", err)
 	}
-	out, converted, err := toon.Convert(data, opts)
+	out, converted, err := format.Convert(data, opts)
 	if err != nil {
 		return err
 	}
@@ -67,8 +67,8 @@ func runToonFilter(cmd *cobra.Command, opts toon.Options, budget int) error {
 
 // runToonWrapper runs argv, converts its stdout, and propagates its exit code as
 // an *ExitError so main exits with the child's code.
-func runToonWrapper(cmd *cobra.Command, argv []string, opts toon.Options, budget int) error {
-	out, converted, code, err := toon.Run(cmd.Context(), argv, opts, cmd.InOrStdin(), os.Stderr)
+func runToonWrapper(cmd *cobra.Command, argv []string, opts format.Options, budget int) error {
+	out, converted, code, err := format.Run(cmd.Context(), argv, opts, cmd.InOrStdin(), os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -89,29 +89,33 @@ func terminate(out string, converted bool) string {
 	return out
 }
 
-// toonOptions maps the flags to toon.Options, validating the delimiter name.
-func toonOptions(f toonFlags) (toon.Options, error) {
+// toonOptions maps the flags to format.Options, validating the delimiter name.
+func toonOptions(f toonFlags) (format.Options, error) {
 	delim, err := parseDelimiter(f.delimiter)
 	if err != nil {
-		return toon.Options{}, err
+		return format.Options{}, err
 	}
-	return toon.Options{
+	opts := format.Options{
+		Format:    format.FormatAuto,
 		Indent:    f.indent,
 		Delimiter: delim,
-		ForceTOON: f.forceTOON,
 		Strict:    f.strict,
-	}, nil
+	}
+	if f.forceTOON {
+		opts.Format = format.FormatTOON
+	}
+	return opts, nil
 }
 
 // parseDelimiter resolves a delimiter name to its TOON delimiter.
-func parseDelimiter(name string) (toon.Delimiter, error) {
+func parseDelimiter(name string) (format.Delimiter, error) {
 	switch name {
 	case "comma":
-		return toon.DelimiterComma, nil
+		return format.DelimiterComma, nil
 	case "tab":
-		return toon.DelimiterTab, nil
+		return format.DelimiterTab, nil
 	case "pipe":
-		return toon.DelimiterPipe, nil
+		return format.DelimiterPipe, nil
 	default:
 		return 0, fmt.Errorf("invalid delimiter %q: want comma|tab|pipe", name)
 	}
