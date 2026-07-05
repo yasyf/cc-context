@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-07-05
 
 ### Added
 - Brew-first self-provisioning plugin installer: at session start the plugin resolves `ccx` via Homebrew when available, otherwise downloads the bare release binary and verifies its sha256 checksum. The downloaded payload lives under `CLAUDE_PLUGIN_DATA`, durable across plugin updates; `plugin/bin` holds only symlinks.
@@ -89,7 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - jj-aware diff translation.
 - Claude Code plugin: facade-only MCP registration, a bootstrap shim that provisions the `ccx` binary, a capt-hook guard pack that blocks token-heavy primitives (unbounded `Read`, bare `cat`, `ls -R`, broad `git diff`) with escape hatches, and the `ccx` skill.
 
-[Unreleased]: https://github.com/yasyf/cc-context/compare/v0.4.0...HEAD
+[0.5.0]: https://github.com/yasyf/cc-context/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/yasyf/cc-context/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/yasyf/cc-context/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/yasyf/cc-context/compare/v0.2.0...v0.2.1
