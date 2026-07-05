@@ -5,9 +5,9 @@ description = "Token-savings + trajectory-attribution benchmark for cc-context (
 requires-python = ">=3.13"
 dependencies = [
     "anthropic>=0.111",
-    "spawnllm>=0.5.2",
-    "cc-transcript>=8,<9",
-    "capt-hook>=7,<8",
+    "spawnllm>=0.5.4",
+    "cc-transcript>=8.1,<9",
+    "capt-hook>=8,<9",
     "tiktoken>=0.13.0",
 ]
 
