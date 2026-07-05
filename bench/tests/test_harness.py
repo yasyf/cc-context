@@ -18,7 +18,7 @@ from cc_transcript.cost import cost_of
 
 from ccxbench import integrity, taskgen
 from ccxbench.__main__ import recompute_lc_predicate
-from ccxbench.config import load
+from ccxbench.config import Config, load
 from ccxbench.cost import crosscheck
 from ccxbench.grade import grade, synthetic_result
 from ccxbench.graders import GradeContext, grade_file_line, grade_keywords, grade_set_match
@@ -439,6 +439,10 @@ class TestHighWaterRender(unittest.TestCase):
         self.assertNotIn("High-water headline", md)
 
 
+def large_context_corpus_present(cfg: Config) -> bool:
+    return all((cfg.fixtures_root / t.repo).is_dir() for t in taskgen.large_context_tasks())
+
+
 class TestLargeContextBuilder(unittest.TestCase):
     """Every gold member of a large_context task is a real declaration in its fixture file AND
     satisfies the task's predicate (recomputed independently, mirroring verify_oss), and the
@@ -448,6 +452,8 @@ class TestLargeContextBuilder(unittest.TestCase):
     def test_gold_members_present_and_predicate_holds(self) -> None:
         cfg = load()
         tasks = taskgen.large_context_tasks()
+        if not large_context_corpus_present(cfg):
+            self.skipTest("large_context corpus absent; run `python -m ccxbench build-corpus` first")
         self.assertEqual(
             [t.id for t in tasks],
             ["click-enum-get-command-classes", "mux-enum-addmatcher-callers", "mux-enum-matcher-impls"],
@@ -493,6 +499,8 @@ class TestLargeContextBuilder(unittest.TestCase):
         runs over-/under-matches, so its result is NOT the gold set."""
         cfg = load()
         tasks = {t.id: t for t in taskgen.large_context_tasks()}
+        if not large_context_corpus_present(cfg):
+            self.skipTest("large_context corpus absent; run `python -m ccxbench build-corpus` first")
 
         # Flavor 1: `grep '^class '` over core.py yields ALL public classes, not just the 3
         # that define get_command.
