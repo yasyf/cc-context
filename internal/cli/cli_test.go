@@ -11,6 +11,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/anchor"
 	"github.com/yasyf/cc-context/internal/cli"
+	"github.com/yasyf/cc-context/internal/version"
 )
 
 func TestRootHelpListsAllOps(t *testing.T) {
@@ -64,6 +65,26 @@ func TestSymbolAliasGrokRegistered(t *testing.T) {
 		t.Fatal("symbol command not registered under code group")
 	}
 	t.Fatal("code group not registered")
+}
+
+// TestVersionPrintsBareTag pins the version contract the plugin installer
+// depends on: a release build prints exactly the v-prefixed tag, nothing else.
+func TestVersionPrintsBareTag(t *testing.T) {
+	old := version.Version
+	version.Version = "v9.9.9"
+	t.Cleanup(func() { version.Version = old })
+
+	var out bytes.Buffer
+	root := cli.NewRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"--version"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute(--version) error = %v", err)
+	}
+	if got := out.String(); got != "v9.9.9\n" {
+		t.Errorf("--version output = %q, want %q", got, "v9.9.9\n")
+	}
 }
 
 // TestSearchCommandInvokesBackend drives the full CLI->router->backend->render

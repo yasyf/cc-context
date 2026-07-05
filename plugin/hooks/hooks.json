@@ -6,6 +6,11 @@
           {
             "type": "command",
             "command": "uvx capt-hook pack attach \"${CLAUDE_PLUGIN_ROOT}/hooks\""
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/install-binary.sh\"",
+            "async": true
           }
         ]
       }

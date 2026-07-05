@@ -61,8 +61,9 @@ def is_large(path: Path) -> bool:
 def ccx_bin() -> str | None:
     """Resolve an absolute, executable ``ccx`` path for the rewrite guards, or ``None``.
 
-    Tries ``$CLAUDE_PLUGIN_ROOT/bin/ccx``, the ``plugin/bin/ccx`` shim relative to
-    this file, then ``shutil.which("ccx")``. Returns ``None`` when none resolves, so
+    Tries ``$CLAUDE_PLUGIN_ROOT/bin/ccx``, the ``plugin/bin/ccx`` symlink relative to
+    this file (the installer points it at a brew binary, the downloaded payload, or a
+    dev build), then ``shutil.which("ccx")``. Returns ``None`` when none resolves, so
     a rewrite guard can fall back to a hard block instead of emitting a broken command.
     """
     return resolve_binary("ccx", extra_dirs=[Path(__file__).resolve().parents[1] / "bin"])

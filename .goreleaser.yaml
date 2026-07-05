@@ -21,15 +21,20 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
-      - -X github.com/yasyf/cc-context/internal/version.Version={{ .Version }}
+      - -X github.com/yasyf/cc-context/internal/version.Version={{ .Tag }}
       - -X github.com/yasyf/cc-context/internal/version.Commit={{ .Commit }}
       - -X github.com/yasyf/cc-context/internal/version.Date={{ .CommitDate }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
+# The tar.gz assets feed the Homebrew formula; the bare binaries feed the
+# plugin's install-binary.sh. Both share checksums.txt.
 archives:
-  - id: ccx
+  - id: archive
     formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: binary
+    formats: [binary]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
 
 # Sign + notarize the darwin binaries with our Apple Developer ID — but only when the
 # MACOS_* secrets are set, so repos without Apple creds still release (unsigned) unchanged.

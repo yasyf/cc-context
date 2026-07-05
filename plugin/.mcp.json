@@ -1,1 +1,1 @@
-{"mcpServers":{"cc-context":{"command":"${CLAUDE_PLUGIN_ROOT}/bin/ccx","args":["mcp"]}}}
+{"mcpServers":{"cc-context":{"command":"${CLAUDE_PLUGIN_ROOT}/scripts/mcp.sh"}}}

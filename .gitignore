@@ -29,3 +29,8 @@ coverage.txt
 
 # bootstrap verify binary smoke test
 .go-smoke/
+
+# plugin/bin is on the Bash tool's PATH; it holds only symlinks the installer
+# manages (brew binary, data-dir payload, or dev build) — never a real binary
+plugin/bin/*
+!plugin/bin/.gitkeep
