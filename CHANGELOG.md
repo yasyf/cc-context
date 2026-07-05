@@ -9,12 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Brew-first self-provisioning plugin installer: at session start the plugin resolves `ccx` via Homebrew when available, otherwise downloads the bare release binary and verifies its sha256 checksum. The downloaded payload lives under `CLAUDE_PLUGIN_DATA`, durable across plugin updates; `plugin/bin` holds only symlinks.
 - Bare per-arch binaries published on each release alongside the archives, with sha256 checksums — the artifact the installer downloads and verifies.
+- `ccx format [-- <cmd>]` re-encodes JSON/NDJSON (a wrapped command's stdout, or stdin as a pipe filter) into the leanest encoding for its shape, picked by a classifier: payloads under 200 bytes stay compact JSON; a prose-dominant payload unwraps to the prose plus XML-ish metadata tags; a uniform array of objects becomes a markdown table (small) or a CSV/TSV byte shootout (large), with TOON entering only at 100+ rows when it beats both; repeated nested shapes become TRON; heterogeneous arrays become JSONL; everything else stays compact JSON. Auto output never exceeds compact JSON by bytes; `--format=X` forces one encoder. Exposed over MCP as `BashFormat`.
+- A TRON encoder: repeated key-sets compile to class declarations (`class A: region,zone,tier`) with each instance a positional call.
 
 ### Changed
 - `ccx --version` on release builds prints the exact release tag (e.g. `v0.5.0`).
+- `ccx exec` structured returns ride the same classifier as `ccx format` instead of always rendering as TOON or compact JSON.
 
 ### Removed
 - The version-pinned bootstrap shim (`plugin/bin/ccx`); the self-provisioning installer replaces it.
+- `ccx toon`, the `BashToon` MCP tool, and `--force-toon`; `ccx format`, `BashFormat`, and `--format=toon` replace them with no back-compat alias.
+- The `ccx hello` placeholder command.
 
 ## [0.4.0] - 2026-07-03
 

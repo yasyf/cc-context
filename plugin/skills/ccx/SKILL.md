@@ -4,10 +4,11 @@ description: >-
   Read code, find symbols, search a codebase, review diffs, and compose multi-call
   pipelines with token-bounded outputs instead of raw file reads. Use whenever you
   need codebase context: reading a file, locating a symbol or definition, searching
-  code by intent or text, listing files, reviewing changes, or chaining tool calls
-  and keeping only the distilled result. Triggers on "read this file", "where is X",
-  "find the Y function", "how does Z work", "search the code for", "show me the diff",
-  "what calls this", "filter this output", "for each file", "combine results from".
+  code by intent or text, listing files, reviewing changes, re-encoding a command's
+  JSON output, or chaining tool calls and keeping only the distilled result. Triggers
+  on "read this file", "where is X", "find the Y function", "how does Z work",
+  "search the code for", "show me the diff", "what calls this", "filter this output",
+  "for each file", "combine results from", or running any command that emits JSON.
   Reach for ccx before Read, cat, sed, grep, git diff, ls -R, or find, since
   the guard hooks block those on anything token-heavy.
 ---
@@ -21,7 +22,8 @@ silent truncation. Use it as the default path to any file, symbol, search, or di
 The MCP tools mirror the ccx query surface: `mcp__cc-context__ccx_repo_overview`,
 `mcp__cc-context__ccx_code_search`, `mcp__cc-context__ccx_code_outline`, and the rest of
 the read, search, and diff commands take the same arguments as their CLI counterparts;
-`mcp__cc-context__ccx_exec` and `mcp__cc-context__ccx_exec_tools` mirror `ccx exec`.
+`mcp__cc-context__ccx_exec` and `mcp__cc-context__ccx_exec_tools` mirror `ccx exec`;
+`mcp__cc-context__BashFormat` mirrors `ccx format -- <cmd>`.
 Use whichever is available; the workflow is identical. `ccx vcs ship`, `ccx vcs show`,
 `ccx vcs history`, and `ccx repo locate` are CLI-only — there is no MCP tool for them.
 
@@ -130,9 +132,37 @@ ccx vcs ship -m "wip" --no-push                  # commit only, skip push and CI
 ccx vcs ship --amend                             # fold the working copy into the parent
 ```
 
-### 7. Compose
+### 7. Re-encode
 
-One question takes one call from steps 1–6. When the work is a pipeline — two or more
+JSON tool output enters context through `ccx format` — the default wrapper for any
+command that emits JSON or NDJSON (`gh --json`, `kubectl -o json`, `terraform output
+-json`), and a filter for pipes:
+
+```
+ccx format -- gh pr list --json number,title,author
+kubectl get pods -o json | ccx format
+```
+
+A classifier reads the payload's shape and emits the leanest accurate encoding:
+
+| Payload shape | What you get |
+| --- | --- |
+| Under 200 bytes | Compact JSON — format deltas are noise at this size |
+| Prose-dominant (one big text field) | The prose itself, other fields as XML-ish metadata tags |
+| Uniform array of objects, small | Markdown table |
+| Uniform array of objects, large | CSV/TSV byte shootout; TOON enters at 100+ rows and wins only when smaller |
+| Repeated nested shapes | TRON — class declarations for the repeated key-sets |
+| Heterogeneous or log-like array | JSONL |
+| Anything else | Compact JSON |
+
+Auto output never exceeds compact JSON by bytes; `--format=X` forces one encoder even
+when it's larger. Non-JSON output passes through verbatim and the exit code is
+propagated. Over MCP, `mcp__cc-context__BashFormat` runs the command and returns the
+compacted output — a `format` param forces an encoder.
+
+### 8. Compose
+
+One question takes one call from steps 1–7. When the work is a pipeline — two or more
 chained calls, output you'd immediately filter or project, a fan-out across files —
 write the pipeline as a script instead. `ccx exec` (MCP: `mcp__cc-context__ccx_exec`)
 runs a short Python script in a sandbox where every ccx op above is an async host
@@ -182,8 +212,8 @@ These hold for every command, which is what makes ccx safe to trust over a raw r
   you have an escape hatch. Use `ccx code read --full` for a whole file, a path-scoped
   `ccx vcs diff <ref>` for changes, or `Read` with an `offset` for a known line range.
 - **Exec returns are budget-capped.** A script can touch megabytes across dozens of
-  calls; only its return value comes back, rendered as TOON or JSON and capped to the
-  token budget like any other command.
+  calls; only its return value comes back, run through the `ccx format` shape
+  classifier and capped to the token budget like any other command.
 - **`sh()` is a sanctioned bypass of the read guards.** It runs host-side inside the
   ccx process, out of the guard hooks' sight, with its own denylist in
   `internal/codeexec/sh.go`. That is safe because only the script's filtered return

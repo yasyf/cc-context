@@ -13,7 +13,7 @@ cc-context/
 │   ├── mcpclient/    # spawns stdio MCP servers, extracts their tool inventories
 │   ├── codeexec/     # ccx exec: monty sandbox, host ops, sh(), MCP auto-reflection
 │   ├── backend/, router/, proxy/  # logical-op surface + engine routing and sessions
-│   ├── render/, toon/             # budget-capped output shaping; JSON→TOON encoding
+│   ├── render/, format/           # budget-capped output shaping; shape-classified JSON re-encoding
 │   ├── search/, outline/, grok/, …  # one package per op family
 │   ├── version/      # build version, stamped via -ldflags
 │   └── log/          # slog setup
@@ -72,7 +72,7 @@ When you write a plan — in plan mode, or any "here's what I'll do" before you 
 
 ## Compact Context (ccx)
 
-`cc-context` — the `ccx` CLI and the `cc-context` MCP (its `mcp__cc-context__*` tools mirror the query surface — read, search, symbol, outline, diff — plus `ccx_exec`/`ccx_exec_tools` for multi-call composition) — is the DEFAULT for reading code, finding symbols, searching, and reviewing diffs. It returns token-bounded output (signatures + line numbers, explicit overflow, never silent truncation) instead of raw dumps, and the capt-hook `ccx` guard pack BLOCKS the token-heavy primitives — so reach for ccx first.
+`cc-context` — the `ccx` CLI and the `cc-context` MCP (its `mcp__cc-context__*` tools mirror the query surface — read, search, symbol, outline, diff — plus `ccx_exec`/`ccx_exec_tools` for multi-call composition and `BashFormat` for JSON re-encoding) — is the DEFAULT for reading code, finding symbols, searching, and reviewing diffs. It returns token-bounded output (signatures + line numbers, explicit overflow, never silent truncation) instead of raw dumps, and the capt-hook `ccx` guard pack BLOCKS the token-heavy primitives — so reach for ccx first.
 
 1. **Orient a repo** → `ccx repo overview`
 2. **"How does X work / where is Y" (intent)** → `ccx code search "<question>"` (semantic, semble-backed)
@@ -85,9 +85,10 @@ When you write a plan — in plan mode, or any "here's what I'll do" before you 
 9. **How a file evolved** → `ccx vcs history <path> [-n N]` (per-commit sha · date · subject + changed symbols)
 10. **Locate a repo/module/package on disk** → `ccx repo locate <name>` (sibling repo, Go module, or Python package; prints tab-separated `kind`/`path`/`version`, exit 3 when unresolved)
 11. **Commit, push, watch CI** → `ccx vcs ship -m "<msg>"` (jj-aware commit + push + `gh run watch --exit-status` in one call)
-12. **Compose several calls / post-process any output** → `ccx exec '<python>'` — a sandboxed script whose async host functions are every ccx query op, a gated `sh(cmd)`, and every stateless MCP server's tools (auto-reflected, no flag needed); only the script's return value enters context. Rule of thumb: one question → one ccx call (entries 1–11); a pipeline, filter, fan-out, or any output you'd immediately post-process (project a JSON blob, sweep signatures across files, join search hits) → exec. Discover the host functions and the Python-subset rules with `ccx exec --list-tools` (MCP: `ccx_exec_tools`), once per session.
+12. **Compose several calls / post-process any output** → `ccx exec '<python>'` — a sandboxed script whose async host functions are every ccx query op, a gated `sh(cmd)`, and every stateless MCP server's tools (auto-reflected, no flag needed); only the script's return value enters context. Rule of thumb: one question → one ccx call (entries 1–11, 13); a pipeline, filter, fan-out, or any output you'd immediately post-process (project a JSON blob, sweep signatures across files, join search hits) → exec. Discover the host functions and the Python-subset rules with `ccx exec --list-tools` (MCP: `ccx_exec_tools`), once per session.
+13. **Re-encode JSON tool output** → `ccx format -- <cmd>` (or `… | ccx format`) — a shape classifier picks the leanest encoding (prose, markdown table, CSV/TSV, TOON, TRON, JSONL, or compact JSON), never larger than compact JSON by bytes; `--format=X` forces one encoder
 
-Entries 8–11 are CLI-only — the MCP mirrors the query surface (1–7) plus exec (12), not these.
+Entries 8–11 are CLI-only — the MCP mirrors the query surface (1–7) plus exec (12) and format (13, as `BashFormat`), not these.
 
 Reach for your **LSP** when the answer must be exhaustive/structural (findReferences, rename, goToImplementation). Use **Grep/Glob** only for literal content in non-source files (logs, JSON, YAML).
 

@@ -35,7 +35,7 @@ GIT_DIFF_SUMMARY_FLAGS = ("--stat", "--numstat", "--shortstat", "--name-only", "
 # by `|`, each looking like a code identifier (letters/digits/underscore, no spaces).
 IDENT_ALT = re.compile(r"\b[A-Za-z_]\w*(?:\|[A-Za-z_]\w*)+\b")
 
-# JSON-output flags that mark a command as worth wrapping in `ccx toon`. The glued
+# JSON-output flags that mark a command as worth wrapping in `ccx format`. The glued
 # forms (`--json`, `-ojson`, `-o=json`, `--output=json`, `--format=json`) are caught
 # by a single regex over each arg; the two-token forms (`-o json`, `--output json`,
 # `--format json`) need adjacency, handled by `has_json_output_flag`.
@@ -89,7 +89,7 @@ def head_has_json_output_flag(cl: CommandLine) -> bool:
     """Report whether the line's *first* command carries a JSON-output flag.
 
     :func:`has_json_output_flag` inspects ``cl.primary`` — the line's last command,
-    the right grain for the single-command ``ccx toon`` wrap. A pipe steer cares about
+    the right grain for the single-command ``ccx format`` wrap. A pipe steer cares about
     the producer at the head of the pipeline instead (``<cmd --json> | jq``).
     """
     return _json_flagged(cl.head.args)
@@ -99,15 +99,20 @@ def is_ccx_command(cl: CommandLine) -> bool:
     """Report whether the primary command runs the ``ccx`` binary itself.
 
     ccx output is already token-bounded (``ccx exec`` return values are budget-capped
-    and TOON-or-JSON rendered), so the JSON-shape learner must skip it — a learned
-    ``ccx exec`` shape would nudge wrapping ccx in ``ccx toon``, which is wrong advice.
+    and rendered in their leanest encoding), so the JSON-shape learner must skip it — a
+    learned ``ccx exec`` shape would nudge wrapping ccx in ``ccx format``, which is
+    wrong advice.
     """
     return Path(cl.primary.executable).name == "ccx"
 
 
 def already_wrapped(cl: CommandLine) -> bool:
-    """Report whether the command line is already a ``ccx toon`` wrap."""
-    return "ccx toon" in cl.raw
+    """Report whether the command line is already a ``ccx format`` wrap.
+
+    Load-bearing for the ``json_guards`` rewrite: the wrapped line still carries its
+    JSON-output flag, so failing to recognize the wrap would re-wrap it forever.
+    """
+    return "ccx format" in cl.raw
 
 
 def is_single_command(cl: CommandLine) -> bool:

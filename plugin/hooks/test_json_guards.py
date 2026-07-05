@@ -1,4 +1,4 @@
-"""Tests for the ``ccx toon`` guard helpers and the learned-nudge condition.
+"""Tests for the ``ccx format`` guard helpers and the learned-nudge condition.
 
 Run from the repo root against the captain-hook source env, with ``plugin/`` on the
 path so the ``hooks`` package (and its relative imports) resolves::
@@ -24,6 +24,7 @@ from captain_hook.events import PreToolUseEvent
 from captain_hook.session import SessionStore
 
 from hooks.common import (
+    already_wrapped,
     command_shape,
     has_json_output_flag,
     head_has_json_output_flag,
@@ -112,7 +113,7 @@ class TestHeadHasJsonOutputFlag:
             "kubectl get pods -o json | python3 -c 'pass'",
             # head args still carry --json after the wrap — callers must pair this
             # helper with already_wrapped, as exec_guards' JsonPipedToFilter does.
-            "ccx toon -- gh pr list --json x | jq .",
+            "ccx format -- gh pr list --json x | jq .",
         ],
     )
     def test_positive(self, command: str) -> None:
@@ -128,6 +129,30 @@ class TestHeadHasJsonOutputFlag:
     )
     def test_negative(self, command: str) -> None:
         assert not head_has_json_output_flag(CommandLine.parse(command))
+
+
+class TestAlreadyWrapped:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # The wrapped line still carries --json; failing to recognize the wrap
+            # would make the json_guards rewrite re-wrap its own output forever.
+            "ccx format -- gh pr list --json x",
+            "/opt/homebrew/bin/ccx format -- kubectl get pods -o json",
+        ],
+    )
+    def test_positive(self, command: str) -> None:
+        assert already_wrapped(CommandLine.parse(command))
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr list --json x",  # bare JSON-flagged command — still gets rewritten
+            "ccx repo overview",
+        ],
+    )
+    def test_negative(self, command: str) -> None:
+        assert not already_wrapped(CommandLine.parse(command))
 
 
 class TestIsCcxCommand:
@@ -250,7 +275,7 @@ class TestSeenEmittingJson:
     def test_already_wrapped_does_not_fire(self, tmp_path: Path) -> None:
         record_shape(fake_evt(), shape("terraform output"))
         cond = SeenEmittingJson()
-        evt = self._event("ccx toon -- terraform output", tmp_path / "s1")
+        evt = self._event("ccx format -- terraform output", tmp_path / "s1")
         assert not cond.check_command_line(evt, evt.command_line)
 
     def test_piped_command_does_not_fire(self, tmp_path: Path) -> None:
@@ -261,7 +286,7 @@ class TestSeenEmittingJson:
 
     def test_ccx_shape_never_fires_even_if_recorded(self, tmp_path: Path) -> None:
         # The durable store is global and long-lived: a `ccx exec` shape recorded
-        # before ccx commands were excluded must not nudge wrapping ccx in ccx toon.
+        # before ccx commands were excluded must not nudge wrapping ccx in ccx format.
         record_shape(fake_evt(), shape("ccx exec 'async def main(): return 1'"))
         cond = SeenEmittingJson()
         evt = self._event("ccx exec 'async def main(): return 2'", tmp_path / "s1")

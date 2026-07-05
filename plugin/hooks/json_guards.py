@@ -1,8 +1,10 @@
-"""Drive ``ccx toon`` usage: auto-wrap statically JSON-flagged commands, learn the rest.
+"""Drive ``ccx format`` usage: auto-wrap statically JSON-flagged commands, learn the rest.
 
 Commands carrying a JSON-output flag (``--json``, ``-o json``, ``--output=json``,
-``--format json``) are **rewritten** in place to ``ccx toon -- <cmd>`` so their JSON
-stdout is re-encoded to TOON (or compact JSON) before it floods context. Commands
+``--format json``) are **rewritten** in place to ``ccx format -- <cmd>`` so their JSON
+stdout is re-encoded to the leanest shape for its data — a table (CSV/TSV/markdown),
+TRON, JSONL, prose, or compact JSON, with TOON only for large uniform arrays —
+before it floods context. Commands
 *observed* emitting JSON at runtime are recorded to a persistent shapes store; next
 time a command of that shape runs, the agent gets a **nudge** to wrap it. The rewrite
 fires only on a single command (no pipe/redirect — ``--json | jq`` needs raw JSON)
@@ -48,24 +50,26 @@ def wrap_json(evt: BaseHookEvent) -> str | None:
     cl = evt.command_line
     if cl is None or not _wraps(cl) or not (ccx := ccx_bin()):
         return None
-    return f"{ccx} toon -- {evt.command}"
+    return f"{ccx} format -- {evt.command}"
 
 
 def _wrap_note(evt: BaseHookEvent) -> str:
-    return "Wrapped a JSON-emitting command in `ccx toon`: same data, re-encoded to TOON to save tokens."
+    return "Wrapped a JSON-emitting command in `ccx format`: same data, re-encoded to its leanest shape to save tokens."
 
 
 rewrite_command(
     to=wrap_json,
     note=_wrap_note,
     tests={
-        Input(command="gh pr list --json number"): Rewrite(pattern="toon -- gh pr list --json number"),
-        Input(command="kubectl get pods -o json"): Rewrite(pattern="toon -- kubectl get pods -o json"),
-        Input(command="terraform output --format=json"): Rewrite(pattern="toon --"),
+        Input(command="gh pr list --json number"): Rewrite(pattern="format -- gh pr list --json number"),
+        Input(command="kubectl get pods -o json"): Rewrite(pattern="format -- kubectl get pods -o json"),
+        Input(command="terraform output --format=json"): Rewrite(pattern="format --"),
         Input(command="gh pr list --json x | jq .[]"): Allow(),
         Input(command="kubectl get pods -o json > pods.json"): Allow(),
         Input(command="ls -la"): Allow(),
-        Input(command="ccx toon -- gh pr list --json x"): Allow(),
+        # already_wrapped must recognize the ccx format wrap, or this rewrite
+        # would re-wrap its own output forever (the wrapped line still has --json).
+        Input(command="ccx format -- gh pr list --json x"): Allow(),
         # `ccx exec` pass-through is deliberate: the script is one opaque token, so a
         # `--json` inside it never reads as this command's own JSON-output flag.
         Input(
@@ -116,12 +120,13 @@ class SeenEmittingJson(CustomCommandLineCondition):
         shape = command_shape(cl)
         if shape not in load_shapes(evt):
             return False
-        return evt.ctx.s.once(shape, scope="ccx-toon")
+        return evt.ctx.s.once(shape, scope="ccx-format")
 
 
 nudge(
-    "This command was seen emitting JSON before — wrap it to save tokens: `ccx toon -- <cmd>` "
-    "re-encodes JSON stdout to TOON (or mcp__cc-context__BashToon runs it and returns the compacted output).",
+    "This command was seen emitting JSON before — wrap it to save tokens: `ccx format -- <cmd>` "
+    "re-encodes JSON stdout to its leanest shape (or mcp__cc-context__BashFormat runs it and "
+    "returns the compacted output).",
     only_if=[Tool("Bash"), SeenEmittingJson()],
     events=Event.PreToolUse,
     max_fires=50,

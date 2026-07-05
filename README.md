@@ -15,7 +15,7 @@
 
 <img src="docs/assets/demo.png" alt="Terminal running 'ccx code outline internal/astgrep/run.go --budget 60' — a file outline cut at the budget, ending in '+4 lines, ~85 tokens omitted'" width="700">
 
-The plugin arrives wired together: the `ccx` binary self-provisions (brew-first: a Homebrew-installed `ccx` when present, a checksum-verified release download into `${CLAUDE_PLUGIN_DATA}` otherwise), the MCP server auto-registers its `mcp__cc-context__ccx_*` tools plus `BashToon`, the guard hooks turn on, and the `ccx` skill teaches the reach-for-`ccx`-first workflow. It needs [`uv`](https://docs.astral.sh/uv/) on `PATH` — the hooks run through `uvx capt-hook`, and semantic search shells out to [semble](https://github.com/MinishLab/semble) via `uvx`.
+The plugin arrives wired together: the `ccx` binary self-provisions (brew-first: a Homebrew-installed `ccx` when present, a checksum-verified release download into `${CLAUDE_PLUGIN_DATA}` otherwise), the MCP server auto-registers its `mcp__cc-context__ccx_*` tools plus `BashFormat`, the guard hooks turn on, and the `ccx` skill teaches the reach-for-`ccx`-first workflow. It needs [`uv`](https://docs.astral.sh/uv/) on `PATH` — the hooks run through `uvx capt-hook`, and semantic search shells out to [semble](https://github.com/MinishLab/semble) via `uvx`.
 
 Driving with an agent? Paste this:
 
@@ -54,11 +54,12 @@ ccx repo overview
 ```
 
 ```console
-[tilth] Go project — 75 source files, 10 directories
-  dirs: cli/ backend/ astgrep/ vcs/ render/ toon/ outline/ mcpserver/ querykind/ locate/
-  deps: asm, cobra, encoding, go-sdk, jsonschema-go, mousetrap, oauth2, pflag, sys, toon-go
-  hot (× = importers): bench/ccxbench/types.py ×7, bench/ccxbench/config.py ×4, plugin/hooks/common.py ×4
+[tilth] Go project — 125 source files, 10 directories
+  dirs: cli/ codeexec/ format/ render/ backend/ astgrep/ anchor/ vcs/ cache/ grok/
+  deps: asm, cobra, encoding, go-sdk, gomonty, jsonschema-go, mousetrap, oauth2, pflag, purego
+  hot (× = importers): plugin/hooks/common.py ×3
   git: branch main, clean
+  tests: tests/, _test.go, test_*.py
   manifest: go.mod (github.com/yasyf/cc-context)
 ```
 
@@ -95,26 +96,43 @@ func NewRootCmd() *cobra.Command
 
 Definition, doc, body, callees, and callers in one budgeted response — the agent edits code it never paged through.
 
-### Cut gh and kubectl JSON output by 40–60%
+### Keep JSON output out of context
 
-`gh --json` and `kubectl -o json` dump verbose, nested JSON that floods the context window. Run the command through `ccx toon` and its JSON or NDJSON stdout comes back as TOON, a compact tabular encoding (or compact JSON when that is smaller):
+`gh --json` and `kubectl -o json` dump verbose, nested JSON that floods the context window. Run the command through `ccx format` and its JSON or NDJSON stdout comes back re-encoded in the leanest accurate shape:
 
 ```bash
-ccx toon -- gh release list --limit 3 --json tagName,publishedAt,isLatest
+ccx format -- gh release list --limit 5 --json tagName,publishedAt,isLatest
 ```
 
 ```console
-[3]{isLatest,publishedAt,tagName}:
-  true,"2026-06-26T01:05:28Z",v0.2.1
-  false,"2026-06-23T07:52:46Z",v0.2.0
-  false,"2026-06-21T09:21:47Z",v0.1.1
+|isLatest|publishedAt|tagName|
+|---|---|---|
+|true|2026-07-04T02:11:12Z|v0.4.0|
+|false|2026-07-04T00:02:50Z|v0.3.0|
+|false|2026-06-26T01:05:28Z|v0.2.1|
+|false|2026-06-23T07:52:46Z|v0.2.0|
+|false|2026-06-21T09:21:47Z|v0.1.1|
 ```
 
-That's less than half the bytes of the raw JSON, and typically 40–60% fewer tokens on tabular data. Non-JSON output passes through verbatim, stderr streams live, the exit code is propagated, and it doubles as a pipe filter (`… | ccx toon`). The MCP `BashToon` tool is the same wrapper in tool form.
+That's 40% fewer bytes than the raw JSON; grow the same table to 400 rows and it comes back as CSV at 60% off. A classifier picks the encoding per payload shape:
+
+| Payload shape | What you get |
+| --- | --- |
+| Under 200 bytes | Compact JSON — format deltas are noise at this size |
+| Prose-dominant (one big text field) | The prose itself, other fields as XML-ish metadata tags |
+| Uniform array of objects, small | Markdown table |
+| Uniform array of objects, large | CSV/TSV byte shootout; TOON enters at 100+ rows and wins only when smaller |
+| Repeated nested shapes | TRON — class declarations for the repeated key-sets |
+| Heterogeneous or log-like array | JSONL |
+| Anything else | Compact JSON |
+
+A prose or null-bearing column shifts the tabular picks toward JSONL, markdown, or TOON — the encodings that survive what CSV can't. Whatever the classifier tries, auto output never exceeds compact JSON by bytes: every candidate that renders larger loses to minified JSON. `--format=X` (`toon`, `tron`, `csv`, `markdown`, …) forces one encoder even when it's larger.
+
+Non-JSON output passes through verbatim, stderr streams live, the exit code is propagated, and it doubles as a pipe filter (`… | ccx format`). The MCP `BashFormat` tool is the same wrapper in tool form, with a `format` param to force an encoder.
 
 ## Compose tools without their output entering context
 
-Every command above bounds or compresses the output of a single call. `ccx exec` goes one tier further: it runs a short Python script in a sandbox whose async host functions are every ccx query op, a gated `sh(cmd)`, and the tools of every stateless MCP server registered with Claude Code (auto-reflected — no flag needed). The script fans out calls, filters in the sandbox, and returns one value; only that value enters context, rendered as TOON or compact JSON and capped at `--budget`. Context cost is decoupled from work volume — a script can touch megabytes across dozens of calls and come back with a six-line answer:
+Every command above bounds or compresses the output of a single call. `ccx exec` goes one tier further: it runs a short Python script in a sandbox whose async host functions are every ccx query op, a gated `sh(cmd)`, and the tools of every stateless MCP server registered with Claude Code (auto-reflected — no flag needed). The script fans out calls, filters in the sandbox, and returns one value; only that value enters context, run through the same shape classifier as `ccx format` and capped at `--budget`. Context cost is decoupled from work volume — a script can touch megabytes across dozens of calls and come back with a six-line answer:
 
 ```bash
 ccx exec '
@@ -129,11 +147,10 @@ asyncio.run(main())
 ```
 
 ```console
-constructors[22]: newCodeCmd,newDepsCmd,newDiffCmd,newExecCmd,newFindCmd,newGrepCmd,newHelloCmd,newHistoryCmd,newLocateCmd,newMCPCmd,newOutlineCmd,newOverviewCmd,newReadCmd,newRelatedCmd,newReplaceCmd,newRepoCmd,newSearchCmd,newShipCmd,newShowCmd,newSymbolCmd,newToonCmd,newVcsCmd
-subcommands: 22
+{"constructors":["newCodeCmd","newDepsCmd","newDiffCmd","newExecCmd","newFindCmd","newFormatCmd","newGrepCmd","newHistoryCmd","newLocateCmd","newMCPCmd","newOutlineCmd","newOverviewCmd","newReadCmd","newRelatedCmd","newReplaceCmd","newRepoCmd","newSearchCmd","newShipCmd","newShowCmd","newSymbolCmd","newVcsCmd"],"subcommands":21}
 ```
 
-The ~11,000-character outline of 38 files stayed in the sandbox; only the answer came back. In the spike's four replayed agent episodes, that pattern cut the characters entering context by 12–99× (a spike-measured character delta, not a result from the [benchmark harness](bench/README.md)).
+The ~11,000-character outline of 35 files stayed in the sandbox; only the answer came back. In the spike's four replayed agent episodes, that pattern cut the characters entering context by 12–99× (a spike-measured character delta, not a result from the [benchmark harness](bench/README.md)).
 
 Scripts use a restricted Python subset: no classes or `match`, one module per `import` line, only `re`/`json`/`datetime`/`asyncio`, and no top-level `return` — wrap logic in `async def main()` and end with `asyncio.run(main())`. `ccx exec --list-tools` prints the host-function catalog and the full rules; scripts arrive as an argument, `--file`, or stdin. The MCP facade exposes the same surface as `ccx_exec`, with `ccx_exec_tools` for the catalog. Reflected MCP servers run as fresh instances — if one needs live session state, exclude it with `CCX_EXEC_MCP_DENY`.
 
@@ -143,7 +160,7 @@ Scripts use a restricted Python subset: no classes or `match`, one module per `i
 
 A budgeted command only helps if the agent reaches for it. The bundled [capt-hook](https://github.com/yasyf/captain-hook) guard pack makes that the path of least resistance: its `PreToolUse`/`PostToolUse` hooks block the token-heavy primitives — `cat`, raw `grep`, an unbounded full-file `Read`, a `git diff` through a pager — and point the agent at the `ccx` equivalent instead. Reach for the raw tool and the hook turns you back; reach for `ccx` and you stay inside the budget by default.
 
-The pack also watches for JSON. A command flagged for JSON output (`--json`, `-o json`) gets rewritten to run through `ccx toon`, and the pack learns which commands emit JSON so it can nudge you to wrap them next time.
+The pack also watches for JSON. A command flagged for JSON output (`--json`, `-o json`) gets rewritten to run through `ccx format`, and the pack learns which commands emit JSON so it can nudge you to wrap them next time.
 
 ## Commands
 
@@ -166,7 +183,7 @@ Each command is a token-bounded stand-in for a primitive an agent would otherwis
 | `ccx vcs show [ref]` | Commit message plus a structural per-file diff of one commit; defaults to the last commit |
 | `ccx vcs history <path> [-n N]` | Per-commit summary of a file's changed symbols; replaces `git log -p` |
 | `ccx vcs ship [-m <msg>]` | Commit, push, and watch CI in one call: jj-aware commit, push, `gh run watch --exit-status` |
-| `ccx toon [-- <cmd>]` | Re-encode a command's JSON/NDJSON output as TOON, or filter a pipe |
+| `ccx format [-- <cmd>]` | Re-encode a command's JSON/NDJSON output in the leanest shape-fit encoding, or filter a pipe |
 | `ccx exec [script]` | Run a sandboxed Python script composing ccx ops, `sh()`, and reflected MCP tools; only its return value enters context |
 
 Run `ccx <command> --help` for the full flag set, and `ccx --version` for the build version. Three engines sit behind the one surface — semble for semantic search, ast-grep for structural search and rewrites, tilth for the rest — and `ccx` routes each command for you; `ccx exec` composes all of them from an embedded Python sandbox.

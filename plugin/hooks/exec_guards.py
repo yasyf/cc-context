@@ -1,7 +1,7 @@
 """Steer shell JSON post-processing pipes toward ``ccx exec``.
 
 ``json_guards`` deliberately skips a piped JSON command — ``<cmd --json> | jq``
-needs the raw JSON on stdout, so the ``ccx toon`` wrap would break the pipe. That
+needs the raw JSON on stdout, so the ``ccx format`` wrap would break the pipe. That
 skip is this module's entry point: when a JSON-flagged head command pipes into a
 shell filter (``jq``/``awk``/``cut``/``sed``/``python3``), a non-blocking nudge
 suggests ``ccx exec`` instead — ``sh()`` the command, ``json.loads`` it
@@ -46,7 +46,7 @@ class JsonPipedToFilter(CustomCommandLineCondition):
     """Matches ``<cmd with a JSON-output flag> | jq/awk/cut/sed/python3 …``.
 
     The head command must carry a JSON-output flag and pipe (not ``&&``/``;``-chain)
-    into one of :data:`JSON_FILTERS`. An already-wrapped line is skipped — ``ccx toon
+    into one of :data:`JSON_FILTERS`. An already-wrapped line is skipped — ``ccx format
     -- <cmd --json> | jq`` still carries ``--json`` in its head args, but its output
     is already compacted, so the steer would be noise.
     """
@@ -73,10 +73,10 @@ nudge(
         Input(command="gh pr list --json number,title | jq '.[].title'"): Warn(pattern="ccx exec"),
         Input(command="kubectl get pods -o json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'"): Warn(),
         Input(command="gh pr list --json x | jq '.[]' | head -5"): Warn(pattern="ccx exec"),
-        Input(command="gh pr list --json number"): Allow(),  # unpiped — the toon rewrite owns it
+        Input(command="gh pr list --json number"): Allow(),  # unpiped — the format rewrite owns it
         Input(command="ps aux | awk '{print $1}'"): Allow(),  # non-JSON pipe
         Input(command="gh pr list --json x && echo done"): Allow(),  # chain, not a pipe
-        Input(command="ccx toon -- gh pr list --json x | jq ."): Allow(),  # already compacted
+        Input(command="ccx format -- gh pr list --json x | jq ."): Allow(),  # already compacted
         # Already ccx exec — the whole point of the steer; never nudge it about itself.
         Input(
             command="ccx exec 'import json\n"
