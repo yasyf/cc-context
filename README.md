@@ -15,7 +15,7 @@
 
 <img src="docs/assets/demo.png" alt="Terminal running 'ccx code outline internal/astgrep/run.go --budget 60' — a file outline cut at the budget, ending in '+4 lines, ~85 tokens omitted'" width="700">
 
-The plugin arrives wired together: the `ccx` binary self-provisions (a shim downloads the pinned release on first use and caches it in `${CLAUDE_PLUGIN_DATA}`), the MCP server auto-registers its `mcp__cc-context__ccx_*` tools plus `BashToon`, the guard hooks turn on, and the `ccx` skill teaches the reach-for-`ccx`-first workflow. It needs [`uv`](https://docs.astral.sh/uv/) on `PATH` — the hooks run through `uvx capt-hook`, and semantic search shells out to [semble](https://github.com/MinishLab/semble) via `uvx`.
+The plugin arrives wired together: the `ccx` binary self-provisions (brew-first: a Homebrew-installed `ccx` when present, a checksum-verified release download into `${CLAUDE_PLUGIN_DATA}` otherwise), the MCP server auto-registers its `mcp__cc-context__ccx_*` tools plus `BashToon`, the guard hooks turn on, and the `ccx` skill teaches the reach-for-`ccx`-first workflow. It needs [`uv`](https://docs.astral.sh/uv/) on `PATH` — the hooks run through `uvx capt-hook`, and semantic search shells out to [semble](https://github.com/MinishLab/semble) via `uvx`.
 
 Driving with an agent? Paste this:
 
@@ -179,7 +179,7 @@ Run `ccx <command> --help` for the full flag set, and `ccx --version` for the bu
 | --- | --- |
 | `LOG_LEVEL` | `debug`, `info` (default), `warn`, or `error`; logs go to stderr |
 | `LOG_FORMAT` | set to `json` for structured logs |
-| `CLAUDE_PLUGIN_DATA` | cache directory for the downloaded `ccx`, tilth, and ast-grep binaries |
+| `CLAUDE_PLUGIN_DATA` | home of downloaded binaries (`ccx`, tilth, ast-grep), durable across plugin updates; the plugin's `bin/` holds only symlinks |
 | `CCX_EXEC_MCP` | set to `off` to disable MCP auto-reflection in `ccx exec` |
 | `CCX_EXEC_MCP_DENY` | comma-separated MCP server names `ccx exec` must never reflect (overrides the classifier) |
 | `CCX_EXEC_MCP_ALLOW` | comma-separated MCP server names to reflect even when classified stateful |
