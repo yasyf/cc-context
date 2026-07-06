@@ -211,7 +211,7 @@ func nativeSlice(items []monty.Value) []any {
 // A returned error and an over-valve return both raise into the sandbox.
 func async(fn HostFunc) monty.ExternalFunction {
 	return func(_ context.Context, call monty.Call) (monty.Result, error) {
-		return monty.Pending(waiter(func(ctx context.Context) monty.Result {
+		return monty.Pending(newWaiter(func(ctx context.Context) monty.Result {
 			val, err := fn(ctx, call)
 			if err != nil {
 				return raise(err.Error())
@@ -240,6 +240,23 @@ func stringSize(v monty.Value) int {
 	return 0
 }
 
-type waiter func(context.Context) monty.Result
+// waiter runs fn on the first Wait and replays the memoized result on every
+// later one. gomonty's dispatch loop resumes after a partial FutureSnapshot
+// drain by re-awaiting still-pending call IDs on the same Waiter
+// (gomonty@v0.0.14 dispatch.go waitForFutureResults), so without the
+// memoization a host call — a real tool call with side effects — executes
+// again on each re-await.
+type waiter struct {
+	fn     func(context.Context) monty.Result
+	once   sync.Once
+	result monty.Result
+}
 
-func (w waiter) Wait(ctx context.Context) monty.Result { return w(ctx) }
+func newWaiter(fn func(context.Context) monty.Result) *waiter {
+	return &waiter{fn: fn}
+}
+
+func (w *waiter) Wait(ctx context.Context) monty.Result {
+	w.once.Do(func() { w.result = w.fn(ctx) })
+	return w.result
+}

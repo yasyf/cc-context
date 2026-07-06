@@ -58,14 +58,17 @@ func TestRuntimeRun(t *testing.T) {
 }
 
 // TestConcurrentAwaits is the P1 gate: host calls awaited together via
-// asyncio.gather must run concurrently. A counter records the max number of
-// host calls in flight simultaneously — deterministic proof of the
-// Pending/Waiter parallel path, where timing alone is too noisy.
+// asyncio.gather must run concurrently, and each must execute exactly once —
+// gomonty's partial FutureSnapshot resume can re-await a still-pending call
+// ID, which an unmemoized waiter would re-execute. Counters record the max
+// number of host calls in flight and the total invocations, deterministic
+// proof of the Pending/Waiter parallel path where timing alone is too noisy.
 func TestConcurrentAwaits(t *testing.T) {
 	const n = 4
-	var active, maxActive int32
+	var active, maxActive, calls int32
 	rt := NewRuntime(map[string]HostFunc{
 		"slow": func(_ context.Context, _ monty.Call) (monty.Value, error) {
+			atomic.AddInt32(&calls, 1)
 			cur := atomic.AddInt32(&active, 1)
 			for {
 				prev := atomic.LoadInt32(&maxActive)
@@ -93,6 +96,9 @@ func TestConcurrentAwaits(t *testing.T) {
 	}
 	if peak := atomic.LoadInt32(&maxActive); peak != n {
 		t.Errorf("max concurrent host calls = %d, want %d (gather did not parallelize)", peak, n)
+	}
+	if total := atomic.LoadInt32(&calls); total != n {
+		t.Errorf("total host call invocations = %d, want %d (a waiter re-executed its host call)", total, n)
 	}
 }
 

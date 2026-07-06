@@ -4,12 +4,15 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.1] - 2026-07-05
+## [0.5.1] - 2026-07-06
 
 ### Changed
 - Format classifier: a prose-like field of 2 KiB or more unwraps to prose regardless of its share of the payload — a big body (release notes, a PR description) reads better unwrapped than TRON-compressed, even when metadata rides along.
 - `ccx format` auto mode keeps the classifier's ranking on near-ties: a later candidate must beat an earlier one by more than 5% in bytes to displace it. The guard that auto output never exceeds compact JSON is unchanged.
 - The plugin installer provenance stamp points at the canonical cc-skills template.
+
+### Fixed
+- `ccx exec` host calls awaited via `asyncio.gather` could execute more than once: the embedded runtime re-awaits still-pending calls after a partial resume, re-running the host function — a duplicated side-effecting tool call (`sh()`, an MCP tool). Each waiter now memoizes its result, so every host call runs exactly once.
 
 ## [0.5.0] - 2026-07-05
 
