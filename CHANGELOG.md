@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-07-05
+
+### Changed
+- Format classifier: a prose-like field of 2 KiB or more unwraps to prose regardless of its share of the payload — a big body (release notes, a PR description) reads better unwrapped than TRON-compressed, even when metadata rides along.
+- `ccx format` auto mode keeps the classifier's ranking on near-ties: a later candidate must beat an earlier one by more than 5% in bytes to displace it. The guard that auto output never exceeds compact JSON is unchanged.
+- The plugin installer provenance stamp points at the canonical cc-skills template.
+
 ## [0.5.0] - 2026-07-05
 
 ### Added
@@ -89,6 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - jj-aware diff translation.
 - Claude Code plugin: facade-only MCP registration, a bootstrap shim that provisions the `ccx` binary, a capt-hook guard pack that blocks token-heavy primitives (unbounded `Read`, bare `cat`, `ls -R`, broad `git diff`) with escape hatches, and the `ccx` skill.
 
+[0.5.1]: https://github.com/yasyf/cc-context/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/yasyf/cc-context/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/yasyf/cc-context/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/yasyf/cc-context/compare/v0.2.1...v0.3.0

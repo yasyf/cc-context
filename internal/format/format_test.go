@@ -402,6 +402,115 @@ func TestConvertAutoSkipsLossyTOON(t *testing.T) {
 	}
 }
 
+// autoNullTable builds a uniform 200-row table over the token-pressure floor
+// whose first nullPads rows carry a null pad cell. TOON spends 4 bytes on
+// each "null" cell that markdown leaves empty, so nullPads dials the
+// TOON-vs-markdown byte gap on the hasNulls branch ([TOON, Markdown]).
+func autoNullTable(t *testing.T, nullPads int) any {
+	t.Helper()
+	var b strings.Builder
+	b.WriteByte('[')
+	for i := range 200 {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		if i < nullPads {
+			fmt.Fprintf(&b, `{"id":"a%03d","pad":null}`, i)
+		} else {
+			fmt.Fprintf(&b, `{"id":"a%03d","pad":"%s"}`, i, strings.Repeat("x", 70))
+		}
+	}
+	b.WriteByte(']')
+	v, ok, err := decodeAll([]byte(b.String()))
+	if err != nil || !ok {
+		t.Fatalf("decodeAll: ok=%v err=%v", ok, err)
+	}
+	return v
+}
+
+// TestEncodeAutoCandidateTolerance pins the tolerance pick on the null-bearing
+// pressure branch (candidates [TOON, Markdown]): the earlier TOON wins when
+// markdown's byte win is within candidateTolerance; a wider gap still picks
+// the smaller markdown. Each case first proves its premise — markdown strictly
+// smaller, gap on the intended side of the tolerance — so the fixture cannot
+// silently drift.
+func TestEncodeAutoCandidateTolerance(t *testing.T) {
+	tests := []struct {
+		name     string
+		nullPads int
+		want     Format
+	}{
+		{"markdown win within tolerance picks toon", 26, FormatTOON},
+		{"markdown win past tolerance picks markdown", 120, FormatMarkdown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := autoNullTable(t, tt.nullPads)
+			candidates, _ := classify(v)
+			if want := []Format{FormatTOON, FormatMarkdown}; !reflect.DeepEqual(candidates, want) {
+				t.Fatalf("classify() = %v, want %v", candidates, want)
+			}
+			toonOut, err := encodeTOON(v, defaultOpts())
+			if err != nil {
+				t.Fatalf("encodeTOON() error = %v", err)
+			}
+			mdOut, err := encodeMarkdown(v)
+			if err != nil {
+				t.Fatalf("encodeMarkdown() error = %v", err)
+			}
+			if len(mdOut) >= len(toonOut) || len(toonOut) > len(compactJSON(v)) {
+				t.Fatalf("premise: markdown (%d) must beat TOON (%d) and TOON must pass the byte-net (%d)",
+					len(mdOut), len(toonOut), len(compactJSON(v)))
+			}
+			withinTolerance := float64(len(toonOut)) <= (1+candidateTolerance)*float64(len(mdOut))
+			if wantWithin := tt.want == FormatTOON; withinTolerance != wantWithin {
+				t.Fatalf("premise: gap within tolerance = %v, want %v (toon %d, markdown %d)",
+					withinTolerance, wantWithin, len(toonOut), len(mdOut))
+			}
+			want := mdOut
+			if tt.want == FormatTOON {
+				want = toonOut
+			}
+			if got := encodeAuto(v, defaultOpts()); got != want {
+				t.Errorf("encodeAuto() picked %d bytes, want the %s output (%d bytes)", len(got), tt.want, len(want))
+			}
+		})
+	}
+}
+
+// TestEncodeAutoNeverExceedsCompactJSON sweeps auto over one payload per
+// classifier branch: whatever candidate wins under the tolerance rule, output
+// never exceeds compact JSON by bytes.
+func TestEncodeAutoNeverExceedsCompactJSON(t *testing.T) {
+	prose := strings.Repeat("word ", 600)
+	hetRow := func(k1, k2 string) string {
+		return `{"` + k1 + `":1,"` + k2 + `":"` + strings.Repeat("y", 40) + `"}`
+	}
+	srcs := map[string]string{
+		"tiny object":            `{"ok":true}`,
+		"prose dominant":         `{"body":"` + prose + `","id":"x1"}`,
+		"prose absolute":         `{"body":"` + prose + `","meta":"` + strings.Repeat("z", 3000) + `"}`,
+		"uniform small markdown": classifyTestUniform(t, 10, 500),
+		"uniform pressure csv":   classifyTestUniform(t, 200, 9000),
+		"null pressure toon":     classifyTestNullPressure(t),
+		"repeated nested tron":   classifyTestRows(classifyTestRepeatRows(`{"u":{"x":1,"y":"`+strings.Repeat("x", 60)+`"}}`, 3)...),
+		"heterogeneous jsonl":    classifyTestRows(hetRow("a", "b"), hetRow("a", "b"), hetRow("c", "d"), hetRow("e", "f"), hetRow("g", "h")),
+		"deep one-off json":      `{"a":{"b":{"c":{"d":"` + strings.Repeat("x", 200) + `"}}}}`,
+	}
+	for name, src := range srcs {
+		t.Run(name, func(t *testing.T) {
+			v, ok, err := decodeAll([]byte(src))
+			if err != nil || !ok {
+				t.Fatalf("decodeAll: ok=%v err=%v", ok, err)
+			}
+			out := encodeAuto(v, defaultOpts())
+			if compact := compactJSON(v); len(out) > len(compact) {
+				t.Errorf("encodeAuto() = %d bytes, exceeds compact JSON's %d", len(out), len(compact))
+			}
+		})
+	}
+}
+
 // TestConvertExplicitFormats pins the dispatch: every explicit format calls
 // its encoder and skips both classification and the byte-net, emitting even
 // when larger than compact JSON.

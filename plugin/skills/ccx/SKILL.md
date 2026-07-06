@@ -148,14 +148,16 @@ A classifier reads the payload's shape and emits the leanest accurate encoding:
 | Payload shape | What you get |
 | --- | --- |
 | Under 200 bytes | Compact JSON — format deltas are noise at this size |
-| Prose-dominant (one big text field) | The prose itself, other fields as XML-ish metadata tags |
+| Prose-dominant (one text field at ⅔ of the payload, or any 2 KiB+ prose field) | The prose itself, other fields as XML-ish metadata tags |
 | Uniform array of objects, small | Markdown table |
-| Uniform array of objects, large | CSV/TSV byte shootout; TOON enters at 100+ rows and wins only when smaller |
+| Uniform array of objects, large | CSV/TSV byte shootout; TOON enters at 100+ rows and wins only when more than 5% smaller |
 | Repeated nested shapes | TRON — class declarations for the repeated key-sets |
 | Heterogeneous or log-like array | JSONL |
 | Anything else | Compact JSON |
 
-Auto output never exceeds compact JSON by bytes; `--format=X` forces one encoder even
+Near-ties go to the classifier's preferred encoding — a later candidate must beat an
+earlier one by more than 5% in bytes to displace it. Auto output never exceeds
+compact JSON by bytes; `--format=X` forces one encoder even
 when it's larger. Non-JSON output passes through verbatim and the exit code is
 propagated. Over MCP, `mcp__cc-context__BashFormat` runs the command and returns the
 compacted output — a `format` param forces an encoder.

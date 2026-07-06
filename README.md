@@ -119,14 +119,14 @@ That's 40% fewer bytes than the raw JSON; grow the same table to 400 rows and it
 | Payload shape | What you get |
 | --- | --- |
 | Under 200 bytes | Compact JSON — format deltas are noise at this size |
-| Prose-dominant (one big text field) | The prose itself, other fields as XML-ish metadata tags |
+| Prose-dominant (one text field at ⅔ of the payload, or any 2 KiB+ prose field) | The prose itself, other fields as XML-ish metadata tags |
 | Uniform array of objects, small | Markdown table |
-| Uniform array of objects, large | CSV/TSV byte shootout; TOON enters at 100+ rows and wins only when smaller |
+| Uniform array of objects, large | CSV/TSV byte shootout; TOON enters at 100+ rows and wins only when more than 5% smaller |
 | Repeated nested shapes | TRON — class declarations for the repeated key-sets |
 | Heterogeneous or log-like array | JSONL |
 | Anything else | Compact JSON |
 
-A prose or null-bearing column shifts the tabular picks toward JSONL, markdown, or TOON — the encodings that survive what CSV can't. Whatever the classifier tries, auto output never exceeds compact JSON by bytes: every candidate that renders larger loses to minified JSON. `--format=X` (`toon`, `tron`, `csv`, `markdown`, …) forces one encoder even when it's larger.
+A prose or null-bearing column shifts the tabular picks toward JSONL, markdown, or TOON — the encodings that survive what CSV can't. Near-ties go to the classifier's preferred encoding: a later candidate must beat an earlier one by more than 5% in bytes to displace it. Whatever the classifier tries, auto output never exceeds compact JSON by bytes: every candidate that renders larger loses to minified JSON. `--format=X` (`toon`, `tron`, `csv`, `markdown`, …) forces one encoder even when it's larger.
 
 Non-JSON output passes through verbatim, stderr streams live, the exit code is propagated, and it doubles as a pipe filter (`… | ccx format`). The MCP `BashFormat` tool is the same wrapper in tool form, with a `format` param to force an encoder.
 

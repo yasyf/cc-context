@@ -1,8 +1,9 @@
 // Package format converts JSON and NDJSON tool output into token-lean
 // encodings — TOON, TRON, CSV/TSV, markdown tables, JSONL, prose unwrap, or
 // compact JSON — and runs commands whose JSON stdout is converted in place.
-// FormatAuto classifies the payload's shape and emits the leanest candidate
-// encoding, never exceeding compact JSON by bytes.
+// FormatAuto classifies the payload's shape and emits its preferred candidate
+// encoding — the earliest within candidateTolerance of the leanest — never
+// exceeding compact JSON by bytes.
 package format
 
 import (
@@ -18,8 +19,9 @@ import (
 type Format string
 
 // The supported output formats. FormatAuto classifies the payload and picks
-// the smallest candidate encoding that passes the byte-net invariant; every
-// other constant forces its encoder, emitting even when larger.
+// the earliest candidate encoding within candidateTolerance of the smallest
+// that passes the byte-net invariant; every other constant forces its
+// encoder, emitting even when larger.
 const (
 	FormatAuto     Format = "auto"
 	FormatTOON     Format = "toon"
@@ -115,8 +117,9 @@ type Options struct {
 }
 
 // Convert decodes JSON or NDJSON from src and re-encodes it per opts.Format:
-// FormatAuto classifies the shape and emits the smallest candidate encoding
-// that does not exceed compact JSON by bytes; an explicit format always emits
+// FormatAuto classifies the shape and emits its preferred candidate encoding
+// — the earliest within candidateTolerance of the smallest — never exceeding
+// compact JSON by bytes; an explicit format always emits
 // its encoding, even when larger, and errors loudly on an incompatible shape;
 // converted reports whether a re-encoding happened. A decode failure or empty
 // src returns src verbatim
@@ -183,24 +186,40 @@ func encode(v any, opts Options) (string, error) {
 	}
 }
 
-// encodeAuto classifies v and returns the smallest candidate encoding that
-// passes the byte-net invariant len(out) <= len(compactJSON(v)); ties go to
-// the earlier candidate. Candidates that error or exceed the net are skipped,
-// and compact JSON is the implicit last contender, so auto mode never fails.
+// candidateTolerance is the relative size slack within which classifier order
+// outranks a byte win: an earlier candidate beats a smaller later one unless
+// the later one is more than 5% smaller.
+const candidateTolerance = 0.05 // heuristic
+
+// encodeAuto classifies v and returns the earliest candidate encoding whose
+// size is within candidateTolerance of the smallest, among candidates that
+// pass the byte-net invariant len(out) <= len(compactJSON(v)) — classifier
+// order is a preference ranking, so a near-tie goes to the preferred format.
+// Candidates that error or exceed the net are skipped, and compact JSON is
+// the implicit last contender, so auto mode never fails.
 func encodeAuto(v any, opts Options) string {
 	candidates, _ := classify(v)
 	jsonOut := compactJSON(v)
-	best, bestLen := jsonOut, len(jsonOut)+1
+	var outs []string
+	minLen := 0
 	for _, f := range candidates {
 		o := opts
 		o.Format = f
 		out, err := encode(v, o)
-		if err != nil || len(out) > len(jsonOut) || len(out) >= bestLen {
+		if err != nil || len(out) > len(jsonOut) {
 			continue
 		}
-		best, bestLen = out, len(out)
+		if len(outs) == 0 || len(out) < minLen {
+			minLen = len(out)
+		}
+		outs = append(outs, out)
 	}
-	return best
+	for _, out := range outs {
+		if float64(len(out)) <= (1+candidateTolerance)*float64(minLen) {
+			return out
+		}
+	}
+	return jsonOut
 }
 
 // Run executes argv, capturing stdout and converting it via Convert; stderr is

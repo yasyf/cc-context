@@ -169,6 +169,45 @@ func TestClassify(t *testing.T) {
 			src:  `{"body":"` + classifyTestProse(t, 512) + `"}`,
 			want: []Format{FormatProse},
 		},
+		// Boundary proseAbsoluteBytes: below proseShare a 2047-byte field
+		// stays JSON; at 2048 the absolute rule fires regardless of share.
+		{
+			name: "prose absolute boundary 2047 without share",
+			src:  `{"body":"` + classifyTestProse(t, 2047) + `","meta":"` + x(2000) + `"}`,
+			want: []Format{FormatJSON},
+			check: func(t *testing.T, a analysis) {
+				if a.proseFieldBytes != 2047 || a.proseFieldShare >= proseShare {
+					t.Errorf("proseFieldBytes = %d share = %v, want 2047 and < %v", a.proseFieldBytes, a.proseFieldShare, proseShare)
+				}
+			},
+		},
+		{
+			name: "prose absolute boundary 2048 fires without share",
+			src:  `{"body":"` + classifyTestProse(t, 2048) + `","meta":"` + x(2000) + `"}`,
+			want: []Format{FormatProse},
+			check: func(t *testing.T, a analysis) {
+				if a.proseFieldBytes != 2048 || a.proseFieldShare >= proseShare {
+					t.Errorf("proseFieldBytes = %d share = %v, want 2048 and < %v", a.proseFieldBytes, a.proseFieldShare, proseShare)
+				}
+			},
+		},
+		// Deliberate flip: a release-shaped object — big markdown body plus
+		// repeated nested asset shapes — used to classify TRON. The absolute
+		// prose rule now outranks it: readability of the big body beats
+		// class-table compression.
+		{
+			name: "release-shaped object flips tron to prose",
+			src: `{"tag_name":"v0.5.0","body":"` + classifyTestProse(t, 2200) + `","assets":` +
+				classifyTestRows(classifyTestRepeatRows(
+					`{"name":"ccx_0.5.0_darwin_arm64.tar.gz","url":"https://github.com/yasyf/cc-context/releases/download/v0.5.0/ccx_0.5.0_darwin_arm64.tar.gz","size":4404019}`, 8)...) + `}`,
+			want: []Format{FormatProse},
+			check: func(t *testing.T, a analysis) {
+				if a.proseFieldBytes < proseAbsoluteBytes || a.proseFieldShare >= proseShare || a.maxRepeat < tronMinRepeat {
+					t.Errorf("proseFieldBytes = %d share = %v maxRepeat = %d, want >= %d, < %v, >= %d",
+						a.proseFieldBytes, a.proseFieldShare, a.maxRepeat, proseAbsoluteBytes, proseShare, tronMinRepeat)
+				}
+			},
+		},
 		// Regression: a single token with trailing whitespace is not prose.
 		// The encoder requires ≥2 words (proseDominantIndex); a classifier
 		// accepting whitespace-anywhere nominated a sole candidate that

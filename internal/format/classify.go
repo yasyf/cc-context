@@ -18,6 +18,7 @@ const (
 	smallPayloadBytes  = 200  // measured: minification alone recovers 37–46% vs pretty JSON; format deltas below benchmark noise under this size
 	proseShare         = 0.66 // heuristic: our invention — one prose field holding ≥2/3 of payload bytes marks the payload prose-dominant
 	proseMinBytes      = 512  // heuristic: a "prose" field shorter than this is not worth unwrapping
+	proseAbsoluteBytes = 2048 // heuristic: a prose field this large reads better unwrapped regardless of its share of the payload
 	proseCellChars     = 80   // heuristic: average cell length past which a column reads as prose, not tabular data
 	tableTokenPressure = 2000 // measured: markdown tables beat CSV on accuracy (+7.6pp, non-overlapping CIs) at a ~25–29% token premium that is cheap under this size (len/4 estimator)
 	toonMinRows        = 100  // measured: the only published row floor for TOON wins; independent evals report TOON underperforming with Claude models on smaller tables
@@ -84,20 +85,22 @@ func analyze(v any) analysis {
 
 // classify returns candidate formats for v in priority order — first match
 // wins — plus the analysis it branched on. The FormatAuto arm encodes the
-// candidates in order and picks the smallest that passes the byte-net
-// invariant len(out) <= len(compactJSON(v)); compact JSON is always the
-// implicit last contender. That byte-net is the chart's step-7 "avoid full
-// output compression unless benchmarked" guard — a per-payload eval standing
-// in for accuracy benchmarks we can't run inline.
+// candidates in order and picks the earliest within candidateTolerance of the
+// smallest that passes the byte-net invariant len(out) <= len(compactJSON(v));
+// compact JSON is always the implicit last contender. That byte-net is the
+// chart's step-7 "avoid full output compression unless benchmarked" guard — a
+// per-payload eval standing in for accuracy benchmarks we can't run inline.
 //
 // Branches against the user's 8-step format chart:
 //
 //  1. Size floor (pre-chart): compact JSON under smallPayloadBytes → JSON.
 //     Format deltas are below benchmark noise at this size; minification
 //     alone is the cheapest win in the whole chart.
-//  2. Prose-dominant (chart step 2): the payload is a single JSON string, or
-//     one prose-like field of ≥ proseMinBytes holds ≥ proseShare of payload
-//     bytes → prose unwrap.
+//  2. Prose-dominant (chart step 2): the payload is a single JSON string, one
+//     prose-like field of ≥ proseMinBytes holds ≥ proseShare of payload
+//     bytes, or a prose-like field reaches proseAbsoluteBytes outright — a
+//     body that big reads better unwrapped whatever rides along → prose
+//     unwrap.
 //  3. Uniform array of scalar-celled objects (chart steps 3+4): a prose
 //     column → JSONL then markdown (CSV/TOON degrade on prose cells);
 //     estimated tokens under tableTokenPressure → markdown (accuracy beats
@@ -128,7 +131,9 @@ func classify(v any) ([]Format, analysis) {
 	switch {
 	case a.compactBytes < smallPayloadBytes:
 		return []Format{FormatJSON}, a
-	case a.singleString || (a.proseFieldBytes >= proseMinBytes && a.proseFieldShare >= proseShare):
+	case a.singleString ||
+		(a.proseFieldBytes >= proseMinBytes && a.proseFieldShare >= proseShare) ||
+		a.proseFieldBytes >= proseAbsoluteBytes:
 		return []Format{FormatProse}, a
 	case a.uniform:
 		switch {
