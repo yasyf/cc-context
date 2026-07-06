@@ -1,5 +1,5 @@
 #!/bin/sh
-# canonical: cc-skills/plugins/repo-bootstrap@pending
+# canonical: cc-skills/plugins/repo-bootstrap@ed090c97704f984ff2caed8f9f224816237fe468
 # Provision the ccx binary for the cc-context plugin.
 #
 # bin/ccx is only ever a symlink — to a brew-installed binary, the
