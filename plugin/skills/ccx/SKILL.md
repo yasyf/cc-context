@@ -1,14 +1,16 @@
 ---
 name: ccx
 description: >-
-  Read code, find symbols, search a codebase, review diffs, and compose multi-call
-  pipelines with token-bounded outputs instead of raw file reads. Use whenever you
-  need codebase context: reading a file, locating a symbol or definition, searching
-  code by intent or text, listing files, reviewing changes, re-encoding a command's
+  Read code, find symbols, search a codebase, review diffs, edit a span in place,
+  and compose multi-call pipelines with token-bounded outputs instead of raw file
+  reads. Use whenever you need codebase context: reading a file, locating a symbol
+  or definition, searching code by intent or text, listing files, reviewing changes,
+  editing a line range you already have an anchor for, re-encoding a command's
   JSON output, or chaining tool calls and keeping only the distilled result. Triggers
   on "read this file", "where is X", "find the Y function", "how does Z work",
-  "search the code for", "show me the diff", "what calls this", "filter this output",
-  "for each file", "combine results from", or running any command that emits JSON.
+  "search the code for", "show me the diff", "what calls this", "change line N",
+  "replace this span", "filter this output", "for each file", "combine results
+  from", or running any command that emits JSON.
   Reach for ccx before Read, cat, sed, grep, git diff, ls -R, or find, since
   the guard hooks block those on anything token-heavy.
 ---
@@ -21,7 +23,7 @@ silent truncation. Use it as the default path to any file, symbol, search, or di
 
 The MCP tools mirror the ccx query surface: `mcp__cc-context__ccx_repo_overview`,
 `mcp__cc-context__ccx_code_search`, `mcp__cc-context__ccx_code_outline`, and the rest of
-the read, search, and diff commands take the same arguments as their CLI counterparts;
+the read, search, edit, and diff commands take the same arguments as their CLI counterparts;
 `mcp__cc-context__ccx_exec` and `mcp__cc-context__ccx_exec_tools` mirror `ccx exec`;
 `mcp__cc-context__BashFormat` mirrors `ccx format -- <cmd>`.
 Use whichever is available; the workflow is identical. `ccx vcs ship`, `ccx vcs show`,
@@ -87,7 +89,30 @@ budget:
 ccx code read internal/router/router.go --full
 ```
 
-### 4. Review
+### 4. Edit
+
+Write through the same anchor you read with. The hash is the verification: `ccx code
+edit` (MCP: `mcp__cc-context__ccx_code_edit`) refuses to write unless the anchored
+content still matches. A span that merely moved re-anchors, applies, and prepends
+`# anchor k2fa: line 40 → 44`; a vanished or ambiguous anchor errors before any write,
+leaving the file byte-identical.
+
+```
+ccx code edit internal/router/router.go --at 40-43#k2fa --content 'func route(p string) Handler {
+	return lookup(p)
+}'
+```
+
+The report maps the old cite to the new (`40-43#k2fa → 40-42#s45e`, plus a `-`/`+` diff
+of the span); the returned anchor chains into the next edit without a re-read. There is
+no preview round-trip — `code replace` previews because a structural pattern can
+over-match, but an anchor names exactly one verified site, so the edit applies
+immediately. `--content -` reads stdin (a single trailing newline terminates the last
+line); `--delete` removes the range instead; a plain numeric `--at A-B` is legal but
+unverified. Untouched lines round-trip byte-identical — CRLF and a missing trailing
+newline survive, and the file mode is preserved.
+
+### 5. Review
 
 Inspect changes without dumping the entire working tree:
 
@@ -107,7 +132,7 @@ ccx vcs history internal/cli/root.go       # per-commit sha · date · subject +
 ccx vcs history internal/cli/root.go -n 5  # cap the commit count
 ```
 
-### 5. Locate
+### 6. Locate
 
 Resolve a repo, Go module, or Python package to its on-disk path instead of scanning
 `~/Code` or the module cache by hand:
@@ -120,7 +145,7 @@ ccx repo locate github.com/spf13/cobra     # a Go module in the cache
 Each match prints a tab-separated `kind  path  version` line — one per cached module
 version — and the command exits 3 when nothing resolves.
 
-### 6. Ship
+### 7. Ship
 
 Commit, push, and watch CI in one call. `ship` runs a jj-aware commit (plain git
 otherwise), pushes, then blocks on `gh run watch --exit-status`, reporting the commit,
@@ -132,7 +157,7 @@ ccx vcs ship -m "wip" --no-push                  # commit only, skip push and CI
 ccx vcs ship --amend                             # fold the working copy into the parent
 ```
 
-### 7. Re-encode
+### 8. Re-encode
 
 JSON tool output enters context through `ccx format` — the default wrapper for any
 command that emits JSON or NDJSON (`gh --json`, `kubectl -o json`, `terraform output
@@ -162,12 +187,12 @@ when it's larger. Non-JSON output passes through verbatim and the exit code is
 propagated. Over MCP, `mcp__cc-context__BashFormat` runs the command and returns the
 compacted output — a `format` param forces an encoder.
 
-### 8. Compose
+### 9. Compose
 
-One question takes one call from steps 1–7. When the work is a pipeline — two or more
+One question takes one call from steps 1–8. When the work is a pipeline — two or more
 chained calls, output you'd immediately filter or project, a fan-out across files —
 write the pipeline as a script instead. `ccx exec` (MCP: `mcp__cc-context__ccx_exec`)
-runs a short Python script in a sandbox where every ccx op above is an async host
+runs a short Python script in a sandbox where every ccx query op above is an async host
 function, alongside a gated `sh(cmd)` and the tools of every stateless MCP server,
 auto-reflected with no flag needed. Intermediate output stays in the sandbox; only the
 script's return value enters context.
@@ -206,6 +231,12 @@ These hold for every command, which is what makes ccx safe to trust over a raw r
   it resolves by content, not by line count. An exact hit comes back silently, a shifted
   span re-anchors and prepends `# anchor k2fa: line 15 → 22`, and vanished content errors,
   telling you to re-run `ccx code outline`.
+- **Anchored cites outlive the file.** Durable prose — plans, reviews, memory files —
+  may cite code as `path:line#hash` (e.g. `internal/render/finalize.go:31#k2fa`).
+  Resolution is stateless: any later session resolves the cite, even after the file has
+  drifted, because the hash re-anchors by content — which is why anchored cites beat
+  bare line numbers in anything durable. The same check gates writes: `ccx code edit`
+  refuses to touch a span whose content no longer matches its anchor.
 - **Token counts are shown.** Each output reports its own size — you always know what
   a result cost before deciding to read more.
 - **Overflow is explicit.** When a result exceeds the budget, ccx says so and tells
