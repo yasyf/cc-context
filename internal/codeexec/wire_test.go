@@ -240,3 +240,26 @@ func TestPumpValve(t *testing.T) {
 		t.Errorf("result = ok %t error %q, want the verbatim valve message", res.OK, res.Error)
 	}
 }
+
+// TestPumpValveStructured proves the valve also catches a structured return
+// (slice/map) whose encoded size exceeds the limit — HostFunc returns any, so
+// the raw-string pre-check alone would let it through.
+func TestPumpValveStructured(t *testing.T) {
+	funcs := map[string]HostFunc{
+		"flood": func(context.Context, Call) (any, error) {
+			return []any{strings.Repeat("x", hostCallValve+1)}, nil
+		},
+	}
+	captured := make(chan resultFrame, 1)
+	if _, err := runPump(t, funcs, noStderr, func(d *fakeDriver) {
+		d.send(map[string]any{"t": "call", "id": 1, "fn": "flood"})
+		captured <- <-d.results
+		d.send(map[string]any{"t": "done", "ok": true, "value": nil})
+	}); err != nil {
+		t.Fatalf("pump error: %v", err)
+	}
+	res := <-captured
+	if res.OK || !strings.Contains(res.Error, "codeexec valve") {
+		t.Errorf("result = ok %t error %q, want the valve message", res.OK, res.Error)
+	}
+}

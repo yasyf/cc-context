@@ -29,7 +29,9 @@ jobs:
         with:
           cache-suffix: codeexec
       - name: Warm the codeexec sandbox runtime
-        run: uv run --no-project --quiet --python "3.13" --with pydantic-monty==0.0.18 python -c "import pydantic_monty"
+        # Mirror the runtime launch flags (internal/codeexec/driver.go) so a PR's
+        # checked-out uv.toml / pyproject cannot steer resolution here either.
+        run: uv run --no-project --no-config --no-build --quiet --python "3.13" --with pydantic-monty==0.0.18 python -c "import pydantic_monty"
       - name: Vet
         run: go vet ./...
       - name: Test (race)

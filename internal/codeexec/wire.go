@@ -123,16 +123,26 @@ func dispatch(ctx context.Context, funcs map[string]HostFunc, f driverFrame) res
 	if err != nil {
 		return resultFrame{ID: f.ID, Error: err.Error()}
 	}
+	// Reject an oversized raw string/[]byte before encoding it, then re-check
+	// the encoded size so structured returns (map/slice) hit the valve too —
+	// HostFunc returns any, so stringSize alone would let them through.
 	if size := stringSize(val); size > hostCallValve {
-		return resultFrame{ID: f.ID, Error: fmt.Sprintf(
-			"codeexec valve: host call returned %d bytes (per-call limit %d); narrow the call with a tighter scope, section, or glob instead of reading it whole",
-			size, hostCallValve)}
+		return valveExceeded(f.ID, size)
 	}
 	enc, err := encodeValue(val)
 	if err != nil {
 		return resultFrame{ID: f.ID, Error: fmt.Sprintf("codeexec: encode %s result: %v", f.Fn, err)}
 	}
+	if len(enc) > hostCallValve {
+		return valveExceeded(f.ID, len(enc))
+	}
 	return resultFrame{ID: f.ID, OK: true, Value: enc}
+}
+
+func valveExceeded(id int64, size int) resultFrame {
+	return resultFrame{ID: id, Error: fmt.Sprintf(
+		"codeexec valve: host call returned %d bytes (per-call limit %d); narrow the call with a tighter scope, section, or glob instead of reading it whole",
+		size, hostCallValve)}
 }
 
 func crashError(err error, tail string) error {
