@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 
-	monty "github.com/ewhauser/gomonty"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/yasyf/cc-context/internal/mcpclient"
@@ -104,27 +103,27 @@ func (r *Reflector) Funcs() map[string]HostFunc {
 // into the sandbox, and the result's text returns as a string so the per-call
 // valve applies.
 func (r *Reflector) hostFunc(t ToolInfo) HostFunc {
-	return func(ctx context.Context, call monty.Call) (monty.Value, error) {
+	return func(ctx context.Context, call Call) (any, error) {
 		if len(call.Args) > 0 {
-			return monty.None(), fmt.Errorf("codeexec: %s takes keyword arguments only — call it as %s(%s)", t.FuncName, t.FuncName, kwargHint(t.Params))
+			return nil, fmt.Errorf("codeexec: %s takes keyword arguments only — call it as %s(%s)", t.FuncName, t.FuncName, kwargHint(t.Params))
 		}
 		session, err := r.session(ctx, t.Server)
 		if err != nil {
-			return monty.None(), err
+			return nil, err
 		}
 		args := make(map[string]any, len(call.Kwargs))
-		for _, p := range call.Kwargs {
-			args[p.Key.Raw().(string)] = native(p.Value)
+		for k, v := range call.Kwargs {
+			args[k] = native(v)
 		}
 		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: t.Tool, Arguments: args})
 		if err != nil {
-			return monty.None(), fmt.Errorf("codeexec: %s: call %q on %s: %w", t.FuncName, t.Tool, t.Server, err)
+			return nil, fmt.Errorf("codeexec: %s: call %q on %s: %w", t.FuncName, t.Tool, t.Server, err)
 		}
 		text := mcpclient.TextOf(res)
 		if res.IsError {
-			return monty.None(), fmt.Errorf("codeexec: %s: tool %q on %s failed: %s", t.FuncName, t.Tool, t.Server, text)
+			return nil, fmt.Errorf("codeexec: %s: tool %q on %s failed: %s", t.FuncName, t.Tool, t.Server, text)
 		}
-		return monty.String(text), nil
+		return text, nil
 	}
 }
 

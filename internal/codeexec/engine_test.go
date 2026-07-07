@@ -6,8 +6,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	monty "github.com/ewhauser/gomonty"
 )
 
 // fakeDiscovery serves a fixed inventory and counts probes, for TTL assertions.
@@ -40,6 +38,7 @@ func newTestEngine(t *testing.T, d *fakeDiscovery) (*Engine, *fakeConnector) {
 }
 
 func TestEngineExecReflected(t *testing.T) {
+	requireUV(t)
 	ctx := context.Background()
 	d := &fakeDiscovery{inv: fakeInventory()}
 	e, conn := newTestEngine(t, d)
@@ -61,6 +60,7 @@ func TestEngineExecReflected(t *testing.T) {
 }
 
 func TestEngineExecUnscannedReflected(t *testing.T) {
+	requireUV(t)
 	ctx := context.Background()
 	d := &fakeDiscovery{inv: fakeInventory()}
 	e, conn := newTestEngine(t, d)
@@ -82,6 +82,7 @@ func TestEngineExecUnscannedReflected(t *testing.T) {
 }
 
 func TestEngineOff(t *testing.T) {
+	requireUV(t)
 	ctx := context.Background()
 	d := &fakeDiscovery{inv: fakeInventory()}
 	e, conn := newTestEngine(t, d)
@@ -110,6 +111,7 @@ func TestEngineOff(t *testing.T) {
 }
 
 func TestEngineEmptyInventory(t *testing.T) {
+	requireUV(t)
 	ctx := context.Background()
 	d := &fakeDiscovery{inv: Inventory{Notes: []string{"mcp reflection unavailable: claude not on PATH"}}}
 	e, conn := newTestEngine(t, d)
@@ -130,6 +132,7 @@ func TestEngineEmptyInventory(t *testing.T) {
 }
 
 func TestEngineInventoryTTL(t *testing.T) {
+	requireUV(t)
 	ctx := context.Background()
 	d := &fakeDiscovery{inv: fakeInventory()}
 	e, _ := newTestEngine(t, d)
@@ -184,7 +187,7 @@ func TestEngineToolsPreamble(t *testing.T) {
 
 func TestMergeBuiltinWins(t *testing.T) {
 	marker := func(out string) HostFunc {
-		return func(context.Context, monty.Call) (monty.Value, error) { return monty.String(out), nil }
+		return func(context.Context, Call) (any, error) { return out, nil }
 	}
 	builtin := map[string]HostFunc{"read": marker("builtin")}
 	reflected := map[string]HostFunc{"read": marker("reflected"), "fake_x": marker("fake_x")}
@@ -193,11 +196,11 @@ func TestMergeBuiltinWins(t *testing.T) {
 	if len(merged) != 2 {
 		t.Fatalf("merged has %d entries, want 2", len(merged))
 	}
-	val, err := merged["read"](context.Background(), monty.Call{})
+	val, err := merged["read"](context.Background(), Call{})
 	if err != nil {
 		t.Fatalf("merged read: %v", err)
 	}
-	if got := val.Raw().(string); got != "builtin" {
+	if got := val.(string); got != "builtin" {
 		t.Errorf("merged read = %q, want the builtin", got)
 	}
 	if _, ok := merged["fake_x"]; !ok {

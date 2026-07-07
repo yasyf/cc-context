@@ -7,6 +7,7 @@ import (
 )
 
 func TestSh(t *testing.T) {
+	requireUV(t)
 	tests := []struct {
 		name   string
 		script string
@@ -43,6 +44,7 @@ func TestShPolicy(t *testing.T) {
 }
 
 func TestShBlockedRaises(t *testing.T) {
+	requireUV(t)
 	rt := NewRuntime(map[string]HostFunc{"sh": Sh()})
 	_, err := rt.Run(context.Background(), "import asyncio\nasyncio.run(sh(\"rm -rf /\"))", 0)
 	if err == nil {

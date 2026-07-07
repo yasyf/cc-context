@@ -387,7 +387,7 @@ func TestEditToolRequiresExactlyOne(t *testing.T) {
 }
 
 func TestExecToolRoundTrip(t *testing.T) {
-	if !codeexec.Supported {
+	if !codeexec.Supported() {
 		t.Skip(codeexec.UnsupportedReason)
 	}
 	cs := connectTestServer(t)
@@ -401,7 +401,7 @@ func TestExecToolRoundTrip(t *testing.T) {
 }
 
 func TestExecToolsListsCatalog(t *testing.T) {
-	if !codeexec.Supported {
+	if !codeexec.Supported() {
 		t.Skip(codeexec.UnsupportedReason)
 	}
 	cs := connectTestServer(t)
@@ -418,7 +418,7 @@ func TestExecToolsListsCatalog(t *testing.T) {
 }
 
 func TestExecToolBadScript(t *testing.T) {
-	if !codeexec.Supported {
+	if !codeexec.Supported() {
 		t.Skip(codeexec.UnsupportedReason)
 	}
 	cs := connectTestServer(t)

@@ -142,7 +142,7 @@ func Serve(ctx context.Context) error {
 	defer func() { _ = p.Close() }()
 
 	var eng *codeexec.Engine
-	if codeexec.Supported {
+	if codeexec.Supported() {
 		eng = codeexec.NewEngine(p, codeexec.NewMemoryStore())
 		defer func() { _ = eng.Close() }()
 	}
@@ -351,7 +351,7 @@ func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, 
 // stderr, so engine notes ride along as a trailing [notes] block.
 func execHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolRequest, ExecIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in ExecIn) (*mcp.CallToolResult, any, error) {
-		if !codeexec.Supported {
+		if !codeexec.Supported() {
 			return nil, nil, fmt.Errorf("%s: %s", req.Params.Name, codeexec.UnsupportedReason)
 		}
 		out, notes, err := eng.Exec(ctx, in.Script, in.Budget)
@@ -367,7 +367,7 @@ func execHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolReques
 // block.
 func execToolsHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolRequest, ExecToolsIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, _ ExecToolsIn) (*mcp.CallToolResult, any, error) {
-		if !codeexec.Supported {
+		if !codeexec.Supported() {
 			return nil, nil, fmt.Errorf("%s: %s", req.Params.Name, codeexec.UnsupportedReason)
 		}
 		out, notes, err := eng.Tools(ctx)

@@ -26,7 +26,7 @@ func newExecCmd() *cobra.Command {
 		Short: "Compose ccx ops, sh, and reflected MCP tools in a sandboxed Python script, returning only the distilled result",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !codeexec.Supported {
+			if !codeexec.Supported() {
 				return errors.New(codeexec.UnsupportedReason)
 			}
 			var script string

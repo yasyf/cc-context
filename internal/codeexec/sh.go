@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
-
-	monty "github.com/ewhauser/gomonty"
 )
 
 // Sh returns a host function that runs a shell command and returns its combined
@@ -17,23 +15,23 @@ import (
 // an error — the output (including stderr) is returned so the script can inspect
 // it, matching how the model reads Bash output.
 func Sh() HostFunc {
-	return func(ctx context.Context, call monty.Call) (monty.Value, error) {
+	return func(ctx context.Context, call Call) (any, error) {
 		cmd := parse(call).str("cmd", 0)
 		if cmd == "" {
-			return monty.None(), fmt.Errorf("sh: empty command")
+			return nil, fmt.Errorf("sh: empty command")
 		}
 		if err := shPolicy(cmd); err != nil {
-			return monty.None(), err
+			return nil, err
 		}
 		out, err := exec.CommandContext(ctx, "/bin/sh", "-c", cmd).CombinedOutput() //nolint:gosec // sh is a deliberate host-trust escape hatch: the script's command runs with the caller's privileges, exactly like the Bash tool
 		if err != nil {
 			var exit *exec.ExitError
 			if errors.As(err, &exit) {
-				return monty.String(string(out)), nil
+				return string(out), nil
 			}
-			return monty.None(), fmt.Errorf("sh: %w", err)
+			return nil, fmt.Errorf("sh: %w", err)
 		}
-		return monty.String(string(out)), nil
+		return string(out), nil
 	}
 }
 

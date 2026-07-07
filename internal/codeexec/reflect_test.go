@@ -8,8 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	monty "github.com/ewhauser/gomonty"
 )
 
 func fakeCatalog() *Catalog {
@@ -25,15 +23,11 @@ func fakeCatalog() *Catalog {
 	}
 }
 
-func kwargs(pairs ...monty.Pair) monty.Call {
-	return monty.Call{Kwargs: monty.Dict(pairs)}
+func kwargs(kv map[string]any) Call {
+	return Call{Kwargs: kv}
 }
 
-func pair(key string, value monty.Value) monty.Pair {
-	return monty.Pair{Key: monty.String(key), Value: value}
-}
-
-func callTool(t *testing.T, funcs map[string]HostFunc, name string, call monty.Call) (string, error) {
+func callTool(t *testing.T, funcs map[string]HostFunc, name string, call Call) (string, error) {
 	t.Helper()
 	fn, ok := funcs[name]
 	if !ok {
@@ -43,9 +37,9 @@ func callTool(t *testing.T, funcs map[string]HostFunc, name string, call monty.C
 	if err != nil {
 		return "", err
 	}
-	text, ok := val.Raw().(string)
+	text, ok := val.(string)
 	if !ok {
-		t.Fatalf("host function %q returned %T, want monty.String", name, val.Raw())
+		t.Fatalf("host function %q returned %T, want string", name, val)
 	}
 	return text, nil
 }
@@ -77,7 +71,7 @@ func TestReflectorLazyConnect(t *testing.T) {
 	}
 
 	for range 2 {
-		out, err := callTool(t, funcs, "fake_echo", kwargs(pair("text", monty.String("hi"))))
+		out, err := callTool(t, funcs, "fake_echo", kwargs(map[string]any{"text": "hi"}))
 		if err != nil {
 			t.Fatalf("fake_echo: %v", err)
 		}
@@ -108,12 +102,12 @@ func TestReflectorConcurrentFirstCall(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			val, err := fn(context.Background(), kwargs(pair("text", monty.String("hi"))))
+			val, err := fn(context.Background(), kwargs(map[string]any{"text": "hi"}))
 			if err != nil {
 				errs[i] = err
 				return
 			}
-			outs[i], _ = val.Raw().(string)
+			outs[i], _ = val.(string)
 		}()
 	}
 	wg.Wait()
@@ -140,13 +134,10 @@ func TestReflectorKwargsNested(t *testing.T) {
 		t.Fatalf("SetCatalog: %v", err)
 	}
 
-	call := kwargs(
-		pair("text", monty.String("hi")),
-		pair("meta", monty.DictValue(monty.Dict{
-			pair("k", monty.List(monty.Int(1), monty.Int(2))),
-			pair("flag", monty.Bool(true)),
-		})),
-	)
+	call := kwargs(map[string]any{
+		"text": "hi",
+		"meta": map[string]any{"k": []any{int64(1), int64(2)}, "flag": true},
+	})
 	out, err := callTool(t, r.Funcs(), "fake_echo", call)
 	if err != nil {
 		t.Fatalf("fake_echo: %v", err)
@@ -168,19 +159,19 @@ func TestReflectorErrors(t *testing.T) {
 	tests := []struct {
 		name string
 		fn   string
-		call monty.Call
+		call Call
 		want []string
 	}{
 		{
 			"positional args rejected",
 			"fake_echo",
-			monty.Call{Args: []monty.Value{monty.String("hi")}},
+			Call{Args: []any{"hi"}},
 			[]string{"fake_echo takes keyword arguments only", "fake_echo(text=...)"},
 		},
 		{
 			"IsError raised",
 			"fake_boom",
-			kwargs(),
+			kwargs(nil),
 			[]string{`tool "boom" on fake failed`, "kaboom"},
 		},
 	}
@@ -217,7 +208,7 @@ func TestReflectorConnectErrorLabeled(t *testing.T) {
 		t.Fatalf("SetCatalog: %v", err)
 	}
 
-	_, err := callTool(t, r.Funcs(), "fake_echo", kwargs(pair("text", monty.String("x"))))
+	_, err := callTool(t, r.Funcs(), "fake_echo", kwargs(map[string]any{"text": "x"}))
 	if err == nil {
 		t.Fatal("want connect error, got nil")
 	}
@@ -246,7 +237,7 @@ func TestReflectorOrphanCleanup(t *testing.T) {
 	}
 	funcs := r.Funcs()
 	for _, fn := range []string{"fake_echo", "other_echo"} {
-		if _, err := callTool(t, funcs, fn, kwargs(pair("text", monty.String("x")))); err != nil {
+		if _, err := callTool(t, funcs, fn, kwargs(map[string]any{"text": "x"})); err != nil {
 			t.Fatalf("%s: %v", fn, err)
 		}
 	}

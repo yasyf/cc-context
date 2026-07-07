@@ -9,6 +9,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/cli"
 	"github.com/yasyf/cc-context/internal/codeexec"
+	"github.com/yasyf/cc-context/internal/vendor"
 )
 
 // executeExec runs `ccx exec` with args and the given in-stream (nil leaves the
@@ -30,7 +31,7 @@ func executeExec(t *testing.T, args []string, in string) (string, string, error)
 }
 
 func TestExecScriptSources(t *testing.T) {
-	if !codeexec.Supported {
+	if !codeexec.Supported() {
 		t.Skip(codeexec.UnsupportedReason)
 	}
 	tests := []struct {
@@ -79,7 +80,7 @@ func TestExecScriptSources(t *testing.T) {
 }
 
 func TestExecListTools(t *testing.T) {
-	if !codeexec.Supported {
+	if !codeexec.Supported() {
 		t.Skip(codeexec.UnsupportedReason)
 	}
 	out, errOut, err := executeExec(t, []string{"--list-tools"}, "")
@@ -96,8 +97,27 @@ func TestExecListTools(t *testing.T) {
 	}
 }
 
+// TestExecUnsupportedWithoutUV proves the CLI gate surfaces UnsupportedReason
+// when uv is off PATH, before any sandbox work.
+func TestExecUnsupportedWithoutUV(t *testing.T) {
+	orig := vendor.LookPath
+	vendor.LookPath = func(string) string { return "" }
+	t.Cleanup(func() { vendor.LookPath = orig })
+
+	out, _, err := executeExec(t, []string{"40+2"}, "")
+	if err == nil {
+		t.Fatal("Execute(exec) error = nil, want unsupported error")
+	}
+	if err.Error() != codeexec.UnsupportedReason {
+		t.Errorf("error = %q, want %q", err, codeexec.UnsupportedReason)
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want empty", out)
+	}
+}
+
 func TestExecMissingScript(t *testing.T) {
-	if !codeexec.Supported {
+	if !codeexec.Supported() {
 		t.Skip(codeexec.UnsupportedReason)
 	}
 	tests := []struct {

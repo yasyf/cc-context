@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	monty "github.com/ewhauser/gomonty"
-
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/outline"
 	"github.com/yasyf/cc-context/internal/search"
@@ -25,17 +23,17 @@ type Caller interface {
 // the sandbox; only the valve and the script's final value bound it.
 func Ops(c Caller) map[string]HostFunc {
 	op := func(op backend.Op, build func(*args) backend.Args) HostFunc {
-		return func(ctx context.Context, call monty.Call) (monty.Value, error) {
+		return func(ctx context.Context, call Call) (any, error) {
 			a := parse(call)
 			ba := build(a)
 			if a.err != nil {
-				return monty.None(), a.err
+				return nil, a.err
 			}
 			out, err := c.Call(ctx, op, ba)
 			if err != nil {
-				return monty.None(), err
+				return nil, err
 			}
-			return monty.String(out), nil
+			return out, nil
 		}
 	}
 	return map[string]HostFunc{
@@ -78,58 +76,52 @@ func outlineArgs(a *args) backend.Args {
 // routed builds a host function whose op is chosen at call time by a router
 // (search and outline classify their input before dispatch).
 func routed(c Caller, route func(backend.Args) (backend.Op, error), build func(*args) backend.Args) HostFunc {
-	return func(ctx context.Context, call monty.Call) (monty.Value, error) {
+	return func(ctx context.Context, call Call) (any, error) {
 		p := parse(call)
 		a := build(p)
 		if p.err != nil {
-			return monty.None(), p.err
+			return nil, p.err
 		}
 		op, err := route(a)
 		if err != nil {
-			return monty.None(), err
+			return nil, err
 		}
 		if op == backend.OpStructural && a.Path != "" {
 			a.Paths = []string{a.Path}
 		}
 		out, err := c.Call(ctx, op, a)
 		if err != nil {
-			return monty.None(), err
+			return nil, err
 		}
-		return monty.String(out), nil
+		return out, nil
 	}
 }
 
-// args reads positional and keyword arguments from a monty call, recording the
-// first mapping failure in err. A negative index means keyword-only.
+// args reads positional and keyword arguments from a sandbox call, recording
+// the first mapping failure in err. A negative index means keyword-only.
 type args struct {
-	pos []monty.Value
-	kw  map[string]monty.Value
+	pos []any
+	kw  map[string]any
 	err error
 }
 
-func parse(call monty.Call) *args {
-	kw := make(map[string]monty.Value, len(call.Kwargs))
-	for _, p := range call.Kwargs {
-		if k, ok := p.Key.Raw().(string); ok {
-			kw[k] = p.Value
-		}
-	}
-	return &args{pos: call.Args, kw: kw}
+func parse(call Call) *args {
+	return &args{pos: call.Args, kw: call.Kwargs}
 }
 
-func (a *args) val(name string, idx int) (monty.Value, bool) {
+func (a *args) val(name string, idx int) (any, bool) {
 	if v, ok := a.kw[name]; ok {
 		return v, true
 	}
 	if idx >= 0 && idx < len(a.pos) {
 		return a.pos[idx], true
 	}
-	return monty.Value{}, false
+	return nil, false
 }
 
 func (a *args) str(name string, idx int) string {
 	if v, ok := a.val(name, idx); ok {
-		if s, ok := v.Raw().(string); ok {
+		if s, ok := v.(string); ok {
 			return s
 		}
 	}
@@ -145,7 +137,7 @@ func (a *args) strOr(name string, idx int, def string) string {
 
 func (a *args) flag(name string) bool {
 	if v, ok := a.val(name, -1); ok {
-		b, _ := v.Raw().(bool)
+		b, _ := v.(bool)
 		return b
 	}
 	return false
@@ -159,13 +151,13 @@ func (a *args) num(name string) int {
 	if !ok {
 		return 0
 	}
-	switch n := v.Raw().(type) {
+	switch n := v.(type) {
 	case int64:
 		return int(n)
 	case float64:
 		return int(n)
 	default:
-		a.fail(fmt.Errorf("codeexec: argument %q must be a number, got %s", name, v.Kind()))
+		a.fail(fmt.Errorf("codeexec: argument %q must be a number, got %s", name, kindOf(v)))
 		return 0
 	}
 }

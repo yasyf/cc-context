@@ -4,8 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	monty "github.com/ewhauser/gomonty"
 )
 
 func TestPreamble(t *testing.T) {
@@ -40,9 +38,10 @@ func TestPreamble(t *testing.T) {
 // monty: extracted verbatim from the preamble, it must compile, typecheck, and
 // run against a stub grep.
 func TestPreambleExampleRuns(t *testing.T) {
+	requireUV(t)
 	rt := NewRuntime(map[string]HostFunc{
-		"grep": func(_ context.Context, _ monty.Call) (monty.Value, error) {
-			return monty.String("func RunDiffCLI() {\n\tx := 1"), nil
+		"grep": func(_ context.Context, _ Call) (any, error) {
+			return "func RunDiffCLI() {\n\tx := 1", nil
 		},
 	})
 	got, err := rt.Run(context.Background(), preambleExample(t), 0)

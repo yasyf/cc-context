@@ -25,15 +25,17 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          cache-suffix: codeexec
+      - name: Warm the codeexec sandbox runtime
+        run: uv run --no-project --quiet --python "3.13" --with pydantic-monty==0.0.18 python -c "import pydantic_monty"
       - name: Vet
         run: go vet ./...
       - name: Test (race)
         run: go test -race ./...
       - name: Build
         run: go build ./...
-      - name: Cross-compile Intel-mac stub (darwin/amd64)
-        if: matrix.os == 'ubuntu-latest'
-        run: GOOS=darwin GOARCH=amd64 go build ./...
 
   lint:
     runs-on: ubuntu-latest
