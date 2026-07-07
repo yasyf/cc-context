@@ -46,6 +46,16 @@ type ReplaceIn struct {
 	Budget  int      `json:"budget,omitempty" jsonschema:"token budget for the preview diff"`
 }
 
+// EditIn is the input for ccx_code_edit. Content is a pointer so an explicitly
+// empty replacement (blank the range) is distinct from an omitted one.
+type EditIn struct {
+	Path    string  `json:"path" jsonschema:"file to edit in place"`
+	At      string  `json:"at" jsonschema:"the span to replace: a line range (\"40-95\"), a single line, or an anchor echoed from a producer tool (\"15-27#k2fa\", or bare \"k2fa\"); a shifted anchor re-resolves by content"`
+	Content *string `json:"content,omitempty" jsonschema:"replacement text for the span; provide exactly one of content or delete"`
+	Delete  bool    `json:"delete,omitempty" jsonschema:"delete the span instead of replacing it; provide exactly one of content or delete"`
+	Budget  int     `json:"budget,omitempty" jsonschema:"token budget for the report"`
+}
+
 // RelatedIn is the input for ccx_code_related.
 type RelatedIn struct {
 	Location string `json:"location" jsonschema:"a file:line location, or an anchor echoed from a producer tool (\"f.go:12#a3fk\"); a shifted anchor re-resolves by content and prepends a \"# anchor …\" note"`
@@ -170,6 +180,11 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
+		Name:        "ccx_code_edit",
+		Description: "WRITE an in-place edit to a file: replace or delete a line range or an anchored span. Anchored 'at' forms are hash-verified — the edit refuses when the anchored content has vanished or resolves ambiguously; a bare numeric range is bounds-checked but not content-verified. Applies immediately (no preview) and reports a relocation via a \"# anchor …\" note when the anchor moved. Provide exactly one of content or delete.",
+	}, editHandler(p))
+
+	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_related",
 		Description: "Find code semantically related to a file:line location — follow-up to a prior search hit. Takes an anchored location too (f.go:12#a3fk).",
 	}, handler(p, backend.OpRelated, func(in RelatedIn) backend.Args {
@@ -287,6 +302,26 @@ func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, S
 			a.Paths = []string{in.Repo}
 		}
 		out, err := p.Call(ctx, op, a)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
+		}
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
+	}
+}
+
+// editHandler enforces the write's exactly-one-of-content-or-delete contract —
+// the presence check the CLI makes with cobra's Changed — then proxies the edit
+// op, which resolves and writes locally without touching an engine.
+func editHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, EditIn) (*mcp.CallToolResult, any, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in EditIn) (*mcp.CallToolResult, any, error) {
+		if (in.Content != nil) == in.Delete {
+			return nil, nil, fmt.Errorf("%s: provide exactly one of content or delete", req.Params.Name)
+		}
+		a := backend.Args{Path: in.Path, Section: in.At, Delete: in.Delete, Budget: in.Budget}
+		if in.Content != nil {
+			a.Content = *in.Content
+		}
+		out, err := p.Call(ctx, backend.OpEdit, a)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}

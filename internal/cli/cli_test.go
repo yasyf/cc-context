@@ -23,7 +23,7 @@ func TestRootHelpListsAllOps(t *testing.T) {
 		{"root", []string{"--help"}, []string{"vcs", "code", "repo", "exec", "format"}},
 		{"vcs", []string{"vcs", "--help"}, []string{"diff"}},
 		{"code", []string{"code", "--help"}, []string{
-			"read", "outline", "search", "grep", "symbol", "deps", "related", "replace",
+			"read", "outline", "search", "grep", "symbol", "deps", "related", "replace", "edit",
 		}},
 		{"repo", []string{"repo", "--help"}, []string{"overview", "find"}},
 	}

@@ -6,6 +6,7 @@ import (
 	"github.com/yasyf/cc-context/internal/anchor"
 	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/edit"
 	"github.com/yasyf/cc-context/internal/grok"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/router"
@@ -42,6 +43,9 @@ func dispatchOp(cmd *cobra.Command, op backend.Op, a backend.Args) (string, erro
 // tolerate the clean no-match exit, so they run through the shared astgrep
 // orchestration; every other op runs as a plain capped CLI invocation.
 func dispatch(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error) {
+	if op == backend.OpEdit {
+		return edit.Run(a)
+	}
 	if op == backend.OpStructural || op == backend.OpReplace || op == backend.OpStructOutline {
 		return astgrep.Run(cmd.Context(), op, a)
 	}

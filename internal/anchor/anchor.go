@@ -147,11 +147,24 @@ func Load(path string) (*File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load anchors: %w", err)
 	}
+	return FromBytes(path, data), nil
+}
+
+// FromBytes splits an already-read snapshot into a File, so a caller that must
+// resolve and rewrite from one atomic read shares Load's line split exactly:
+// lines keep any trailing '\r', and a final empty element from a trailing
+// newline is dropped.
+func FromBytes(path string, data []byte) *File {
 	lines := strings.Split(string(data), "\n")
 	if n := len(lines); n > 0 && lines[n-1] == "" {
 		lines = lines[:n-1]
 	}
-	return &File{path: path, lines: lines}, nil
+	return &File{path: path, lines: lines}
+}
+
+// Lines returns the file's lines, each keeping any trailing '\r'.
+func (f *File) Lines() []string {
+	return f.lines
 }
 
 // At returns the content hash of the 1-indexed line.

@@ -120,6 +120,14 @@ func TestRewriteArgs(t *testing.T) {
 			args: backend.Args{Source: "main"},
 			want: backend.Args{Source: "main"},
 		},
+		{
+			// OpEdit must NOT rewrite: edit resolves the anchor itself so it keeps the
+			// *Move and Ref. RewriteArgs would double-resolve it away.
+			name: "edit passthrough keeps anchor",
+			op:   backend.OpEdit,
+			args: backend.Args{Path: path, Section: anchor.Format(1, gamma), Content: "x"},
+			want: backend.Args{Path: path, Section: anchor.Format(1, gamma), Content: "x"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

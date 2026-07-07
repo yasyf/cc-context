@@ -140,6 +140,7 @@ func TestRegisteredToolSurface(t *testing.T) {
 	cs := connectTestServer(t)
 	want := map[string]bool{
 		"ccx_code_search": false, "ccx_code_replace": false, "ccx_code_related": false,
+		"ccx_code_edit":    false,
 		"ccx_code_outline": false, "ccx_code_read": false, "ccx_code_symbol": false,
 		"ccx_code_deps": false, "ccx_code_grep": false, "ccx_repo_find": false,
 		"ccx_vcs_diff": false, "ccx_repo_overview": false,
@@ -293,6 +294,95 @@ func TestReadToolRejectsMalformedAnchor(t *testing.T) {
 	}
 	if !strings.Contains(out, `invalid anchor "120#zz"`) || !strings.Contains(out, "120#a3fk") {
 		t.Errorf("malformed-anchor error should name the anchor and the expected form: %s", out)
+	}
+}
+
+// TestEditToolWritesFile proves the ccx_code_edit seam end to end: no engine is
+// on PATH, so a successful write also proves proxy.call short-circuits OpEdit
+// before provisioning any engine session. The anchored span is replaced in place
+// and the report carries the pre/post anchors and the mini-diff.
+func TestEditToolWritesFile(t *testing.T) {
+	cs := connectTestServer(t)
+
+	file := filepath.Join(t.TempDir(), "f.txt")
+	if err := os.WriteFile(file, []byte("alpha\nbeta\ngamma\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	beta := anchor.Of("beta")
+
+	out, isErr := callText(t, cs, "ccx_code_edit", map[string]any{
+		"path": file, "at": anchor.Format(2, beta), "content": "BETA",
+	})
+	if isErr {
+		t.Fatalf("ccx_code_edit is error: %s", out)
+	}
+	if got, _ := os.ReadFile(file); string(got) != "alpha\nBETA\ngamma\n" {
+		t.Errorf("file after edit = %q", got)
+	}
+	want := fmt.Sprintf("%s:%s → %s:%s\n- beta\n+ BETA\n", file, anchor.Format(2, beta), file, anchor.Format(2, anchor.Of("BETA")))
+	if out != want {
+		t.Errorf("ccx_code_edit out = %q, want %q", out, want)
+	}
+}
+
+// TestEditToolDeleteWritesFile proves the delete path writes and reports the line
+// now at the splice point as the new anchor.
+func TestEditToolDeleteWritesFile(t *testing.T) {
+	cs := connectTestServer(t)
+
+	file := filepath.Join(t.TempDir(), "f.txt")
+	if err := os.WriteFile(file, []byte("a\nb\nc\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	out, isErr := callText(t, cs, "ccx_code_edit", map[string]any{
+		"path": file, "at": anchor.Format(2, anchor.Of("b")), "delete": true,
+	})
+	if isErr {
+		t.Fatalf("ccx_code_edit delete is error: %s", out)
+	}
+	if got, _ := os.ReadFile(file); string(got) != "a\nc\n" {
+		t.Errorf("file after delete = %q", got)
+	}
+	want := fmt.Sprintf("%s:%s → %s:%s\n- b\n", file, anchor.Format(2, anchor.Of("b")), file, anchor.Format(2, anchor.Of("c")))
+	if out != want {
+		t.Errorf("ccx_code_edit delete out = %q, want %q", out, want)
+	}
+}
+
+// TestEditToolRequiresExactlyOne proves the facade rejects a call that supplies
+// both or neither of content and delete without touching the file.
+func TestEditToolRequiresExactlyOne(t *testing.T) {
+	cs := connectTestServer(t)
+	file := filepath.Join(t.TempDir(), "f.txt")
+	const content = "a\nb\nc\n"
+	if err := os.WriteFile(file, []byte(content), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		args map[string]any
+	}{
+		{"neither", map[string]any{"path": file, "at": "2"}},
+		{"both", map[string]any{"path": file, "at": "2", "content": "X", "delete": true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, isErr := callText(t, cs, "ccx_code_edit", tt.args)
+			if !isErr {
+				t.Fatalf("expected a tool error, got: %s", out)
+			}
+			if !strings.Contains(out, "exactly one of content or delete") {
+				t.Errorf("error text wrong: %s", out)
+			}
+			if !strings.Contains(out, "ccx_code_edit:") {
+				t.Errorf("error should carry the tool-name prefix: %s", out)
+			}
+			if got, _ := os.ReadFile(file); string(got) != content {
+				t.Errorf("file changed on rejected edit: %q", got)
+			}
+		})
 	}
 }
 

@@ -16,6 +16,7 @@ func newCodeCmd() *cobra.Command {
 		newDepsCmd(),
 		newRelatedCmd(),
 		newReplaceCmd(),
+		newEditCmd(),
 	)
 	return cmd
 }

@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -83,6 +84,47 @@ func TestParse(t *testing.T) {
 				t.Errorf("Parse(%q) = %+v, want %+v", tt.section, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestFromBytes locks the snapshot split to Load's line split: lines keep any
+// trailing '\r' and a final empty element from a trailing newline is dropped.
+func TestFromBytes(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want []string
+	}{
+		{"trailing newline", "alpha\nbeta\ngamma\n", []string{"alpha", "beta", "gamma"}},
+		{"no trailing newline", "alpha\nbeta\ngamma", []string{"alpha", "beta", "gamma"}},
+		{"crlf keeps cr", "alpha\r\nbeta\r\n", []string{"alpha\r", "beta\r"}},
+		{"empty", "", []string{}},
+		{"lone newline", "\n", []string{""}},
+		{"blank interior line", "a\n\nb\n", []string{"a", "", "b"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := anchor.FromBytes("f.txt", []byte(tt.data)).Lines()
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("FromBytes(%q).Lines() = %#v, want %#v", tt.data, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLoadDelegatesToFromBytes proves Load and FromBytes split identically.
+func TestLoadDelegatesToFromBytes(t *testing.T) {
+	const content = "alpha\r\nbeta\ngamma"
+	path := filepath.Join(t.TempDir(), "f.txt")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	loaded, err := anchor.Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got, want := loaded.Lines(), anchor.FromBytes(path, []byte(content)).Lines(); !reflect.DeepEqual(got, want) {
+		t.Errorf("Load().Lines() = %#v, want %#v", got, want)
 	}
 }
 

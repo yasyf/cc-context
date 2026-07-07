@@ -43,7 +43,7 @@ func rewriteRead(a backend.Args) (backend.Args, string, error) {
 		return a, "", err
 	}
 	a.Section = fmt.Sprintf("%d-%d", rng.Start, rng.End)
-	return a, moveNote(ref.Hash, move), nil
+	return a, MoveNote(ref.Hash, move), nil
 }
 
 func rewriteRelated(a backend.Args) (backend.Args, string, error) {
@@ -63,10 +63,12 @@ func rewriteRelated(a backend.Args) (backend.Args, string, error) {
 		return a, "", err
 	}
 	a.Query = path + ":" + strconv.Itoa(rng.Start)
-	return a, moveNote(ref.Hash, move), nil
+	return a, MoveNote(ref.Hash, move), nil
 }
 
-func moveNote(h Hash, m *Move) string {
+// MoveNote renders the one-line relocation note for a moved anchor, or "" when
+// the anchor did not move (m is nil).
+func MoveNote(h Hash, m *Move) string {
 	if m == nil {
 		return ""
 	}

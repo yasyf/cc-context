@@ -13,6 +13,7 @@ import (
 	"github.com/yasyf/cc-context/internal/anchor"
 	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/edit"
 	"github.com/yasyf/cc-context/internal/grok"
 	"github.com/yasyf/cc-context/internal/mcpclient"
 	"github.com/yasyf/cc-context/internal/render"
@@ -60,6 +61,10 @@ func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string
 // the shared astgrep orchestration (ast-grep has no MCP server); every other op
 // is a child MCP tool call against the engine's resident (lazily opened) session.
 func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
+	if op == backend.OpEdit {
+		return edit.Run(a)
+	}
+
 	b := router.For(op)
 
 	switch op {

@@ -33,6 +33,9 @@ const (
 	OpFind     Op = "find"
 	OpDiff     Op = "diff"
 	OpOverview Op = "overview"
+	// OpEdit replaces or deletes an anchored or positional line range in place. It
+	// resolves and writes locally without dispatching to any engine.
+	OpEdit Op = "edit"
 	// OpStructural is an ast-grep structural pattern search.
 	OpStructural Op = "structural"
 	// OpReplace is an ast-grep structural find-replace.
@@ -55,6 +58,7 @@ type Args struct {
 	Kind            string
 	Pattern         string
 	Rewrite         string
+	Content         string
 	Lang            string
 	Items           string
 	Match           string
@@ -63,6 +67,7 @@ type Args struct {
 	Full            bool
 	Apply           bool
 	Force           bool
+	Delete          bool
 	Budget          int
 	K               int
 	MaxSnippetLines int
