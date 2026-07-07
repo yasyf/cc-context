@@ -24,8 +24,9 @@ class Ccx < Formula
     depends_on "go" => :build
   end
 
-  # ast-grep powers the structural search/replace engine; uv (via uvx) runs semble
-  # for the semantic search/related ops. Both are required at runtime.
+  # ast-grep powers the structural search/replace engine; uv runs semble (via uvx)
+  # for the semantic search/related ops and the pydantic-monty driver for the
+  # ccx exec sandbox. Both are required at runtime.
   depends_on "ast-grep"
   depends_on "uv"
 

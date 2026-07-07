@@ -56,7 +56,7 @@ ccx repo overview
 ```console
 [tilth] Go project — 125 source files, 10 directories
   dirs: cli/ codeexec/ format/ render/ backend/ astgrep/ anchor/ vcs/ cache/ grok/
-  deps: asm, cobra, encoding, go-sdk, gomonty, jsonschema-go, mousetrap, oauth2, pflag, purego
+  deps: asm, cobra, encoding, go-sdk, jsonschema-go, mousetrap, oauth2, pflag
   hot (× = importers): plugin/hooks/common.py ×3
   git: branch main, clean
   tests: tests/, _test.go, test_*.py
@@ -154,7 +154,7 @@ The ~11,000-character outline of 35 files stayed in the sandbox; only the answer
 
 Scripts use a restricted Python subset: no classes or `match`, one module per `import` line, only `re`/`json`/`datetime`/`asyncio`, and no top-level `return` — wrap logic in `async def main()` and end with `asyncio.run(main())`. `ccx exec --list-tools` prints the host-function catalog and the full rules; scripts arrive as an argument, `--file`, or stdin. The MCP facade exposes the same surface as `ccx_exec`, with `ccx_exec_tools` for the catalog. Reflected MCP servers run as fresh instances — if one needs live session state, exclude it with `CCX_EXEC_MCP_DENY`.
 
-`ccx exec` is unavailable on Intel Macs (darwin/amd64 — the embedded Python runtime ships no library there); every other command works.
+`ccx exec` runs on every platform with `uv` installed: each run launches the sandbox in a Python subprocess via uv, which fetches the pinned runtime on first use.
 
 ## The guard pack enforces it
 
@@ -186,7 +186,7 @@ Each command is a token-bounded stand-in for a primitive an agent would otherwis
 | `ccx format [-- <cmd>]` | Re-encode a command's JSON/NDJSON output in the leanest shape-fit encoding, or filter a pipe |
 | `ccx exec [script]` | Run a sandboxed Python script composing ccx ops, `sh()`, and reflected MCP tools; only its return value enters context |
 
-Run `ccx <command> --help` for the full flag set, and `ccx --version` for the build version. Three engines sit behind the one surface — semble for semantic search, ast-grep for structural search and rewrites, tilth for the rest — and `ccx` routes each command for you; `ccx exec` composes all of them from an embedded Python sandbox.
+Run `ccx <command> --help` for the full flag set, and `ccx --version` for the build version. Three engines sit behind the one surface — semble for semantic search, ast-grep for structural search and rewrites, tilth for the rest — and `ccx` routes each command for you; `ccx exec` composes all of them from a uv-launched Python sandbox.
 
 ## Configuration
 

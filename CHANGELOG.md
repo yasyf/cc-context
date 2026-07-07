@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-07-07
+
+### Added
+- `ccx exec` works on Intel Macs (darwin/amd64) — every platform with uv now runs the sandbox.
+
+### Changed
+- The exec sandbox runs pydantic-monty 0.0.18 in a per-run Python subprocess launched via uv (already a formula runtime dependency). The pinned interpreter is 9 releases newer than the embedded binding and includes the upstream fixes for the partial-future-resolution bugs it needed a workaround for.
+- Binaries shrink from ~25–27 MB to ~11 MB with the embedded runtime gone.
+
+### Removed
+- The embedded gomonty/monty runtime and its dylib.
+- macOS notarization and the disable-library-validation entitlement (no dylib left to exempt).
+
 ## [0.5.1] - 2026-07-06
 
 ### Changed
@@ -99,6 +112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - jj-aware diff translation.
 - Claude Code plugin: facade-only MCP registration, a bootstrap shim that provisions the `ccx` binary, a capt-hook guard pack that blocks token-heavy primitives (unbounded `Read`, bare `cat`, `ls -R`, broad `git diff`) with escape hatches, and the `ccx` skill.
 
+[0.6.0]: https://github.com/yasyf/cc-context/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/yasyf/cc-context/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/yasyf/cc-context/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/yasyf/cc-context/compare/v0.3.0...v0.4.0

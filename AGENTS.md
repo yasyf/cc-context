@@ -11,7 +11,7 @@ cc-context/
 │   ├── cli/          # cobra command tree (ccx subcommands)
 │   ├── mcpserver/    # the cc-context facade MCP server
 │   ├── mcpclient/    # spawns stdio MCP servers, extracts their tool inventories
-│   ├── codeexec/     # ccx exec: monty sandbox, host ops, sh(), MCP auto-reflection
+│   ├── codeexec/     # ccx exec: uv-subprocess pydantic-monty sandbox, host ops, sh(), MCP auto-reflection
 │   ├── backend/, router/, proxy/  # logical-op surface + engine routing and sessions
 │   ├── render/, format/           # budget-capped output shaping; shape-classified JSON re-encoding
 │   ├── search/, outline/, grok/, …  # one package per op family
