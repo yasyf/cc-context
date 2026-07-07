@@ -1,1 +1,1 @@
-{"v":1,"lamport":3,"ops":[{"kind":"set_status","status":"done"},{"kind":"link_commit","sha":"8179ac0669627c854f3426409b339e726d2db998"}]}
+{"v":1,"lamport":4,"ops":[{"kind":"add_comment","body":"Shipped as 5fce6e966f8c feat(render): group deps dependents by file with anchored rows — '## Used by' rows grouped under '### path' headings with L\u003cline\u003e#hash anchors; goldens + invariants + canary deps legs in internal/render and internal/cli/anchor_canary_test.go. Verified live: internal/render/finalize.go:31#k2fa-era cites resolve statelessly."}]}
