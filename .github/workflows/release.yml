@@ -34,14 +34,13 @@ jobs:
       formula-template: .github/formula/ccx.rb.tmpl
       formula-name: ccx
 
-  # The disable-library-validation entitlement (gomonty's monty dylib is only
-  # ad-hoc linker-signed) can only be verified against the signed + notarized
-  # release artifact — local and CI builds are unsigned and never hit
-  # hardened-runtime library validation.
+  # Validates the released darwin_arm64 tarball end to end, exercising the
+  # uv-provisioned pydantic-monty sandbox driver an end user hits on `ccx exec`.
   smoke:
     needs: release
     runs-on: macos-latest
     steps:
+      - uses: astral-sh/setup-uv@v8.2.0
       - name: Run ccx exec from the released darwin_arm64 tarball
         env:
           # Keep the smoke test hermetic: never probe the runner for `claude`.
