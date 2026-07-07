@@ -81,6 +81,7 @@ func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
 	grep := runCCX(t, "code", "grep", "func")
 	symbol := runCCX(t, "code", "symbol", "Greet")
 	outline := runCCX(t, "code", "outline", "greeter.go")
+	deps := runCCX(t, "code", "deps", "greeter.go")
 	diff := runCCX(t, "vcs", "diff", sha1+".."+sha2)
 
 	// Each pattern proves one rewrite fired. A locator carries "path:line" before
@@ -94,6 +95,8 @@ func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
 		{"symbol grok locator (finalize.go)", symbol, regexp.MustCompile(`\[[^\]]+:\d+#` + hashClass + `\]`)},
 		{"symbol range frame (finalize.go)", symbol, regexp.MustCompile(`\[\d+-\d+#` + hashClass + `\]`)},
 		{"outline item anchor (outline.go)", outline, regexp.MustCompile(`(?m)^L\d+#` + hashClass + `\b`)},
+		{"deps group heading (finalize.go)", deps, regexp.MustCompile(`(?m)^### \S`)},
+		{"deps row anchor (finalize.go)", deps, regexp.MustCompile(`(?m)^L\d+#` + hashClass + `\b`)},
 		{"diff symbol-row anchor (diff.go)", diff, regexp.MustCompile(`L\d+#` + hashClass + `\b`)},
 	}
 	for _, p := range patterns {

@@ -1,0 +1,17 @@
+# Deps: example.go — 1 local, 0 external, 5 dependents
+
+## Uses (local)
+example_helper.go              helper
+
+## Used by
+### example.go
+L14#dt08 NewGreeter           → Greet
+L19#m0c7 callOnce             → Greet, Greet
+L24#x377 Shout                → Greet
+L999 phantom              → Greet
+### missing.go
+L40 ghost                → Greet
+
+... and 2 more dependents
+
+[~118 tokens]
