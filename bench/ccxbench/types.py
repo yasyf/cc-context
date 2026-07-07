@@ -18,6 +18,7 @@ CATEGORIES: tuple[str, ...] = (
     "structural_search",
     "non_regression",
     "large_context",
+    "stale_anchor",
 )
 
 DECOMP_TERMS: tuple[str, ...] = ("static_overhead", "tool_result", "history", "hook_error", "residual")

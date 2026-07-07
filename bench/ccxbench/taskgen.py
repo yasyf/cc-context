@@ -5,34 +5,20 @@ their gold answers are ground truth by construction. diff_review, targeted_edit,
 non_regression tasks are curated literals: diff tasks apply an uncommitted edit whose
 changed symbols are the gold; edit tasks are graded by running a check in the post-run
 workdir; non_regression tasks (ccx_helps=False) prove ccx adds no harm where it can't help.
+stale_anchor tasks embed a freshly captured outline of a fixture file, then shift the target
+declaration with setup edits so the captured line numbers and content anchors go stale; the
+gold is the post-edit declaration line, replayed from the fixture string at build time.
 """
 
 from __future__ import annotations
 
+import re
+import subprocess
+from pathlib import Path
+
+from . import fixtures
+from .config import Config
 from .types import Grader, Task
-
-# Bumped whenever the category mix changes; stamped into meta.json so old and new
-# sessions are never fused under one headline (the mix is not comparable across versions).
-TASK_MIX_VERSION = "2-real-usage"
-
-# Relative real-usage frequency per category, mined from 100 transcripts: tool-IO is
-# 67.9% of session chars, dominated by Read (33.5%), Bash grep/cat/find/git-diff (38.9%),
-# and Edit (9.9%). Read/understand and multi-file search/diff/find carry the most weight;
-# callees/callers symbol-graph queries are a small real slice and are trimmed to a
-# representative sample (see SYMBOL_GRAPH_SAMPLE). Weights sum to 1.0; the report imports
-# them to weight per-category results by how often the operation actually burns tokens.
-CATEGORY_WEIGHTS: dict[str, float] = {
-    "navigation": 0.22,
-    "intent_search": 0.18,
-    "large_context": 0.14,
-    "diff_review": 0.12,
-    "structural_search": 0.08,
-    "targeted_edit": 0.07,
-    "structural_replace": 0.06,
-    "callees": 0.04,
-    "callers": 0.04,
-    "non_regression": 0.05,
-}
 
 # Symbol-graph (callees/callers) tasks are derived one-per-manifest-symbol, which
 # over-indexes the corpus on a small real-usage slice. Cap each at this many representative
@@ -109,6 +95,65 @@ MUX_CLEANPATH_TEST = (
     "> zz_cleanpath_test.go && "
     "go test -run TestCleanPathEmptyBench . >/dev/null 2>&1; rc=$?; rm -f zz_cleanpath_test.go; exit $rc"
 )
+
+STALE_ANCHOR_FILE = "internal/status/status.go"
+STALE_ANCHOR_TIMEOUT_S = 30
+# A content anchor is a '#' plus 4 lowercase Crockford-base32 chars, letter first (see
+# internal/anchor). A capture without one means the ccx under test emits no anchors, so a
+# stale-anchor task would be unfalsifiable — refuse to build it.
+STALE_ANCHOR_RE = re.compile(r"#[a-hjkmnp-tv-z][0-9a-hjkmnp-tv-z]{3}")
+
+# Each stale-anchor edit shifts a target declaration without touching it: two insert unique,
+# brace-free, blank-free lines above the target (so no inserted line duplicates an existing
+# line's trimmed content, which would make a bare anchor ambiguous); one shrinks the block above.
+STALE_BANDS = (
+    "// severity thresholds used by downstream probes, ascending by band:\n"
+    "const bandOff = 0\n"
+    "const bandInfo = 5\n"
+    "const bandNotice = 10\n"
+    "const bandWarn = 20\n"
+    "const bandError = 30\n"
+    "const bandCritical = 40\n"
+    "const bandFatal = 50\n"
+    "const bandUnknown = -1\n"
+    "const bandDefault = bandInfo\n"
+    "const bandCeiling = bandFatal"
+)
+STALE_TIERS = (
+    "\t// probe latency budgets in milliseconds, one per tier:\n"
+    "\tconst tierFast = 5\n"
+    "\tconst tierBrisk = 15\n"
+    "\tconst tierSteady = 45\n"
+    "\tconst tierSlow = 90\n"
+    "\tconst tierLagging = 180\n"
+    "\tconst tierStalled = 360\n"
+    "\tconst tierFrozen = 720\n"
+    "\tconst tierTimeout = 1440\n"
+    "\tconst tierGiveUp = 2880\n"
+    "\tconst tierBudget = tierSteady\n"
+    "\tconst tierWall = tierTimeout"
+)
+STALE_SHRINK_FIND = (
+    "// Degraded reports that the service is running with reduced capacity.\n"
+    "func Degraded() State {\n"
+    "\tconst impaired = 1\n"
+    "\treturn State(impaired)\n"
+    "}"
+)
+STALE_SHRINK_REPLACE = "// Degraded reports reduced capacity.\nfunc Degraded() State { return State(1) }"
+
+# (task id, target func, its decl line, edit find, edit replace).
+STALE_SPECS = [
+    ("stale-ready-insert", "Ready", "func Ready() State {", "type State int", "type State int\n" + STALE_BANDS),
+    (
+        "stale-degraded-insert",
+        "Degraded",
+        "func Degraded() State {",
+        "\tconst healthy = 2",
+        "\tconst healthy = 2\n" + STALE_TIERS,
+    ),
+    ("stale-report-shrink", "Report", "func Report(s State) string {", STALE_SHRINK_FIND, STALE_SHRINK_REPLACE),
+]
 
 # A structural-replace prompt deliberately states the change as a pattern→rewrite over
 # the code's shape, not "open the file and edit line N": the ccx arm can run a single
@@ -484,6 +529,65 @@ def non_regression_tasks() -> list[Task]:
                 grader=Grader("keywords", {"field": "answer"}),
                 gold={"groups": groups},
                 ccx_helps=False,
+            )
+        )
+    return tasks
+
+
+def capture_status_outline(cfg: Config, fixture_dir: Path) -> str:
+    """Capture the pristine anchored outline of the status fixture file, fresh (never cached).
+
+    Fails loud if the outline carries no content anchor: a pre-anchor ccx must never silently
+    produce a hashless stale-anchor corpus.
+    """
+    proc = subprocess.run(
+        [str(cfg.ccx_bin), "code", "outline", STALE_ANCHOR_FILE],
+        cwd=fixture_dir,
+        capture_output=True,
+        text=True,
+        timeout=STALE_ANCHOR_TIMEOUT_S,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"ccx code outline {STALE_ANCHOR_FILE} (in {fixture_dir}) exited {proc.returncode}: {proc.stderr.strip()}"
+        )
+    if not STALE_ANCHOR_RE.search(proc.stdout):
+        raise RuntimeError(
+            f"ccx outline of {STALE_ANCHOR_FILE} carries no content anchor; refusing to build a "
+            f"hashless stale-anchor corpus:\n{proc.stdout}"
+        )
+    return proc.stdout
+
+
+def stale_decl_line(find: str, replace: str, decl: str) -> int:
+    """Replay one setup edit on the pristine status.go string and return the post-edit decl line."""
+    text = fixtures.FILES[STALE_ANCHOR_FILE]
+    if find not in text:
+        raise ValueError(f"stale_anchor edit find {find!r} absent from {STALE_ANCHOR_FILE}")
+    return fixtures.line_of(text.replace(find, replace, 1), decl)
+
+
+def stale_anchor_tasks(cfg: Config, fixture_dir: Path) -> list[Task]:
+    """Build stale-anchor tasks: each embeds the pristine outline as previously-captured context,
+    then a setup edit shifts the target declaration so the captured anchor/line goes stale."""
+    capture = capture_status_outline(cfg, fixture_dir)
+    tasks = []
+    for tid, func, decl, find, replace in STALE_SPECS:
+        tasks.append(
+            Task(
+                id=tid,
+                category="stale_anchor",
+                repo=REPO,
+                prompt=(
+                    f"Earlier, this outline of {STALE_ANCHOR_FILE} was captured:\n\n{capture}\n"
+                    f"The file has since been edited. Where is the function `{func}` declared NOW? "
+                    "Answer with the file path relative to the repo root and the 1-based line "
+                    "number of its declaration."
+                ),
+                schema=NAV_SCHEMA,
+                grader=Grader("file_line", {"line_tolerance": 2}),
+                gold={"file": STALE_ANCHOR_FILE, "line": stale_decl_line(find, replace, decl)},
+                setup={"edits": [{"file": STALE_ANCHOR_FILE, "find": find, "replace": replace}]},
             )
         )
     return tasks

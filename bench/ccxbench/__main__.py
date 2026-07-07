@@ -56,7 +56,8 @@ def build_corpus(cfg: Config) -> list[Task]:
     manifest = fixtures.build(fixture_dir)
     oss = [t for t in (taskgen.oss_tasks() + taskgen.large_context_tasks()) if available(t)]
     verify_oss(cfg, oss)
-    tasks = [t for t in taskgen.generate(manifest) if available(t)] + oss
+    fixture_tasks = taskgen.generate(manifest) + taskgen.stale_anchor_tasks(cfg, fixture_dir)
+    tasks = [t for t in fixture_tasks if available(t)] + oss
     if TASKS_DIR.exists():
         shutil.rmtree(TASKS_DIR)
     TASKS_DIR.mkdir(parents=True)

@@ -18,6 +18,79 @@ from .types import Symbol
 
 FIXTURE_NAME = "ccxfixture"
 
+
+def _status_filler(section: str, n: int) -> str:
+    """Deterministic const-block filler for status.go: every line trimmed-unique.
+
+    Consts do not appear in `ccx code outline` output, so the stale_anchor capture
+    stays compact while the file itself exceeds the guard pack's LARGE_READ_BYTES
+    (20 KB) — an unbounded Read in the ccx arm must trip the guard, which is what
+    makes the stale-anchor tasks exercise anchor resolution instead of a re-read.
+    """
+    lines = [f"// {section.capitalize()} thresholds tune the health probes of the {section} window."]
+    lines.append("const (")
+    for i in range(n):
+        lines.append(f"\tprobe{section.capitalize()}{i:03d} = {i * 7 + len(section)} // {section} probe slot {i:03d}")
+    lines.append(")")
+    return "\n".join(lines)
+
+
+def _status_go() -> str:
+    """Compose internal/status/status.go: the handwritten funcs (whose exact lines
+    taskgen.STALE_SPECS uses as edit anchors) interleaved with filler that pushes
+    the file past 20 KB and the target funcs deep enough that a windowed Read
+    cannot trivially reveal them."""
+    header = """// Package status reports service health as a small state machine.
+package status
+
+// State enumerates a service's health level.
+type State int
+"""
+    ready = """// Ready reports that the service is fully operational.
+func Ready() State {
+\tconst healthy = 2
+\treturn State(healthy)
+}
+"""
+    degraded = """// Degraded reports that the service is running with reduced capacity.
+func Degraded() State {
+\tconst impaired = 1
+\treturn State(impaired)
+}
+"""
+    report = """// Report renders a state as a short human-readable label.
+func Report(s State) string {
+\tswitch s {
+\tcase Ready():
+\t\treturn "ready"
+\tcase Degraded():
+\t\treturn "degraded"
+\tdefault:
+\t\treturn "offline"
+\t}
+}
+"""
+    reset = """// reset clears a probe back to the zero state.
+func reset() State {
+\tvar cleared State
+\treturn cleared
+}
+"""
+    return "\n".join(
+        [
+            header,
+            _status_filler("startup", 140),
+            ready,
+            _status_filler("steady", 120),
+            degraded,
+            _status_filler("drain", 120),
+            report,
+            _status_filler("shutdown", 80),
+            reset,
+        ]
+    )
+
+
 FILES: dict[str, str] = {
     "go.mod": """module example.com/ccxfixture
 
@@ -100,6 +173,7 @@ func Max(xs []int) int {
 \treturn best
 }
 """,
+    "internal/status/status.go": _status_go(),
     "pysrc/util.py": '''"""Text helpers."""
 
 
