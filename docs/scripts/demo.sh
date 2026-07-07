@@ -7,13 +7,14 @@ cd "$(dirname "$0")/../.."
 go build -trimpath -o bin/ccx ./cmd/ccx
 
 demo_cmd="ccx code outline internal/astgrep/run.go --budget 60"
-capture="$(mktemp)"
-trap 'rm -f "$capture"' EXIT
+capture_dir="$(mktemp -d)"
+trap 'rm -rf "$capture_dir"' EXIT
+capture="$capture_dir/demo.ansi"
 {
-  printf '$ %s\n' "$demo_cmd"
-  ./bin/$demo_cmd 2>&1
+  printf '$ %s\n' "$demo_cmd" | bat --plain --color=always --language bash
+  ./bin/$demo_cmd 2>&1 | bat --plain --color=always --language go
 } >"$capture"
 
-freeze "$capture" --language console \
+freeze "$capture" --language ansi \
   --theme github-dark --background "#0d1117" --window --padding 24 --font.size 28 \
   --output docs/assets/demo.png
