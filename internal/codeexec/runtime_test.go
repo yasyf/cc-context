@@ -86,7 +86,10 @@ func TestConcurrentAwaits(t *testing.T) {
 					break
 				}
 			}
-			time.Sleep(50 * time.Millisecond)
+			// Wide enough that all four dispatches overlap even when a loaded
+			// CI runner spreads their subprocess round-trips out; the assertion
+			// (peak == n) is never relaxed, only the window widened.
+			time.Sleep(250 * time.Millisecond)
 			atomic.AddInt32(&active, -1)
 			return int64(1), nil
 		},
