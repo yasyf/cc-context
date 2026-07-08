@@ -52,10 +52,18 @@ def _wraps(cl: CommandLine) -> bool:
     return (
         is_single_command(cl)
         and has_json_output_flag(cl)
+        and not _is_request_body_json(cl)
         and not already_wrapped(cl)
         and not has_streaming_flag(cl)
         and is_plain_argv(cl)
     )
+
+
+def _is_request_body_json(cl: CommandLine) -> bool:
+    # curl's `--json` sets the request body (and Accept/Content-Type), and wget's `-o json`
+    # names a logfile — neither is a JSON-*output* flag, so wrapping them in `ccx format` is
+    # wrong. Their responses, when actually JSON, are still steered by exec_guards' pipe nudge.
+    return cl.primary.unwrapped.executable in ("curl", "wget")
 
 
 def wrap_json(evt: BaseHookEvent) -> str | None:
@@ -79,6 +87,8 @@ rewrite_command(
         Input(command="gh pr list --json x | jq .[]"): Allow(),
         Input(command="kubectl get pods -o json > pods.json"): Allow(),
         Input(command="ls -la"): Allow(),
+        # curl's `--json` is a request-body flag, not JSON-emitting output — never rewrite it.
+        Input(command="curl --json '{}' https://api.example.com/v1"): Allow(),
         # A quoted argument still word-splits to the parsed argv, so the wrap fires.
         Input(command='gh pr list --json number --search "is:open draft:false"'): Rewrite(
             pattern="format -- gh pr list --json number --search"
