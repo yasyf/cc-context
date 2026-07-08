@@ -49,6 +49,12 @@
         "repo": "yasyf/cc-notes"
       }
     },
+    "cc-context": {
+      "source": {
+        "source": "github",
+        "repo": "yasyf/cc-context"
+      }
+    },
     "captain-hook": {
       "source": {
         "source": "github",
@@ -62,6 +68,7 @@
     "llm-prompts@skills": true,
     "writing-docs@skills": true,
     "cc-notes@cc-notes": true,
+    "cc-context@cc-context": true,
     "captain-hook@captain-hook": true
   },
   "hooks": {
