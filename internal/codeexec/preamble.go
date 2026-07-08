@@ -23,6 +23,9 @@ var staticTools = []ToolSig{
 	{"deps", `deps(path, scope=None)`, "imports of a file and their resolved targets"},
 	{"diff", `diff(source="uncommitted", scope=None)`, "VCS-aware diff (uncommitted|staged|<ref>)"},
 	{"overview", `overview()`, "repository structure and entry points"},
+	{"web_outline", `web_outline(url)`, "heading tree of a web page with stable section refs"},
+	{"web_read", `web_read(url, section=None, full=False)`, "read a web page by section ref or whole"},
+	{"web_search", `web_search(url, query, k=0)`, "top-k chunks of a page relevant to a question, with cites"},
 	{"sh", `sh(cmd)`, "run a shell command, returns combined output (host-trust, not sandboxed)"},
 }
 

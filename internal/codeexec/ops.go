@@ -53,8 +53,17 @@ func Ops(c Caller) map[string]HostFunc {
 			return backend.Args{Source: a.strOr("source", 0, "uncommitted"), Scope: a.str("scope", 1)}
 		}),
 		"overview": op(backend.OpOverview, func(*args) backend.Args { return backend.Args{} }),
-		"search":   routed(c, func(a backend.Args) (backend.Op, error) { op, _, err := search.Route(a); return op, err }, searchArgs),
-		"outline":  routed(c, outline.Route, outlineArgs),
+		"web_outline": op(backend.OpWebOutline, func(a *args) backend.Args {
+			return backend.Args{URL: a.str("url", 0)}
+		}),
+		"web_read": op(backend.OpWebRead, func(a *args) backend.Args {
+			return backend.Args{URL: a.str("url", 0), Section: a.str("section", 1), Full: a.flag("full")}
+		}),
+		"web_search": op(backend.OpWebSearch, func(a *args) backend.Args {
+			return backend.Args{URL: a.str("url", 0), Query: a.str("query", 1), K: a.num("k")}
+		}),
+		"search":  routed(c, func(a backend.Args) (backend.Op, error) { op, _, err := search.Route(a); return op, err }, searchArgs),
+		"outline": routed(c, outline.Route, outlineArgs),
 	}
 }
 

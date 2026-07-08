@@ -116,6 +116,28 @@ type DiffIn struct {
 // OverviewIn is the input for ccx_repo_overview.
 type OverviewIn struct{}
 
+// WebOutlineIn is the input for ccx_web_outline.
+type WebOutlineIn struct {
+	URL    string `json:"url" jsonschema:"web page URL to outline"`
+	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
+}
+
+// WebReadIn is the input for ccx_web_read.
+type WebReadIn struct {
+	URL     string `json:"url" jsonschema:"web page URL to read"`
+	Section string `json:"section,omitempty" jsonschema:"a section ref echoed from ccx_web_outline (\"2.3\" or \"2.3#k7fq\"); omit (or set full) to read the whole page"`
+	Full    bool   `json:"full,omitempty" jsonschema:"read the whole page"`
+	Budget  int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
+}
+
+// WebSearchIn is the input for ccx_web_search.
+type WebSearchIn struct {
+	URL    string `json:"url" jsonschema:"web page URL to search"`
+	Query  string `json:"query" jsonschema:"the question to ask of the page"`
+	K      int    `json:"k,omitempty" jsonschema:"max results to return"`
+	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
+}
+
 // ExecIn is the input for ccx_exec.
 type ExecIn struct {
 	Script string `json:"script" jsonschema:"Python in the monty subset; host functions are async — await them; end an entrypoint with asyncio.run(main()) or use a bare final expression"`
@@ -247,6 +269,27 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 		Description: "Repository overview (structure and entry points) — orient here before diving into files.",
 	}, handler(p, backend.OpOverview, func(OverviewIn) backend.Args {
 		return backend.Args{}
+	}))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "ccx_web_outline",
+		Description: "Heading tree of a web page with stable section refs, budget-bounded — orient here before reading a page. Refs echo into ccx_web_read section.",
+	}, handler(p, backend.OpWebOutline, func(in WebOutlineIn) backend.Args {
+		return backend.Args{URL: in.URL, Budget: in.Budget}
+	}))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "ccx_web_read",
+		Description: "Read a web page by section ref or whole — pass a section echoed from ccx_web_outline to avoid pulling the entire page.",
+	}, handler(p, backend.OpWebRead, func(in WebReadIn) backend.Args {
+		return backend.Args{URL: in.URL, Section: in.Section, Full: in.Full, Budget: in.Budget}
+	}))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "ccx_web_search",
+		Description: "Ask a question of a web page: top-k relevant chunks with section-ref cites, budget-bounded — prefer over reading a page top to bottom. Cites echo into ccx_web_read section.",
+	}, handler(p, backend.OpWebSearch, func(in WebSearchIn) backend.Args {
+		return backend.Args{URL: in.URL, Query: in.Query, K: in.K, Budget: in.Budget}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{

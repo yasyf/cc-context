@@ -203,3 +203,27 @@ func TestOpsThroughRuntime(t *testing.T) {
 		t.Errorf("recorded op=%q args=%+v", fake.op, fake.args)
 	}
 }
+
+// TestStaticToolsMatchOps guards the two hand-maintained catalogs from drifting:
+// every preamble staticTools entry (except sh, which has no op) must have an
+// Ops() host function, and every Ops() host function must be documented in
+// staticTools.
+func TestStaticToolsMatchOps(t *testing.T) {
+	ops := Ops(nil)
+
+	documented := make(map[string]bool, len(staticTools))
+	for _, ts := range staticTools {
+		documented[ts.Name] = true
+		if ts.Name == "sh" {
+			continue
+		}
+		if _, ok := ops[ts.Name]; !ok {
+			t.Errorf("staticTools documents %q but Ops() has no such host function", ts.Name)
+		}
+	}
+	for name := range ops {
+		if !documented[name] {
+			t.Errorf("Ops() exposes %q but staticTools does not document it", name)
+		}
+	}
+}

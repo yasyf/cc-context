@@ -144,6 +144,7 @@ func TestRegisteredToolSurface(t *testing.T) {
 		"ccx_code_outline": false, "ccx_code_read": false, "ccx_code_symbol": false,
 		"ccx_code_deps": false, "ccx_code_grep": false, "ccx_repo_find": false,
 		"ccx_vcs_diff": false, "ccx_repo_overview": false,
+		"ccx_web_outline": false, "ccx_web_read": false, "ccx_web_search": false,
 		"ccx_exec": false, "ccx_exec_tools": false,
 	}
 	res, err := cs.ListTools(context.Background(), nil)

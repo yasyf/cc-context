@@ -10,6 +10,7 @@ import (
 	"github.com/yasyf/cc-context/internal/grok"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/router"
+	"github.com/yasyf/cc-context/internal/web"
 )
 
 // runOp dispatches op through its backend and prints the budget-capped output on
@@ -48,6 +49,13 @@ func dispatch(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error)
 	}
 	if op == backend.OpStructural || op == backend.OpReplace || op == backend.OpStructOutline {
 		return astgrep.Run(cmd.Context(), op, a)
+	}
+	if op == backend.OpWebOutline || op == backend.OpWebRead || op == backend.OpWebSearch {
+		out, err := web.Run(cmd.Context(), op, a)
+		if err != nil {
+			return "", err
+		}
+		return render.Finalize(op, out, a.Budget)
 	}
 	bin, argv, err := router.For(op).CLIArgv(cmd.Context(), op, a)
 	if err != nil {

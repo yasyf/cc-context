@@ -20,12 +20,13 @@ func TestRootHelpListsAllOps(t *testing.T) {
 		args []string
 		ops  []string
 	}{
-		{"root", []string{"--help"}, []string{"vcs", "code", "repo", "exec", "format"}},
+		{"root", []string{"--help"}, []string{"vcs", "code", "repo", "web", "exec", "format"}},
 		{"vcs", []string{"vcs", "--help"}, []string{"diff"}},
 		{"code", []string{"code", "--help"}, []string{
 			"read", "outline", "search", "grep", "symbol", "deps", "related", "replace", "edit",
 		}},
 		{"repo", []string{"repo", "--help"}, []string{"overview", "find"}},
+		{"web", []string{"web", "--help"}, []string{"outline", "read", "search"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
