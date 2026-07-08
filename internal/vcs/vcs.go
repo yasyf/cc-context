@@ -67,7 +67,7 @@ func ResolveDiffSource(ctx context.Context, dir, source, scope string) (translat
 	case Git:
 		return source, true, nil, nil
 	case JJ:
-		return resolveJJ(ctx, dir, source, scope, defaultBranch, workingCopyCommit)
+		return resolveJJ(ctx, dir, source, scope, defaultBranch, workingCopyCommit, gitCommitID)
 	default:
 		return source, true, nil, nil
 	}
@@ -100,7 +100,7 @@ type branchLookup func(ctx context.Context, dir string) (string, error)
 // so the resolution matrix can be tested without a live jj repo.
 type workingCopyLookup func(ctx context.Context, dir, rev string) (string, error)
 
-func resolveJJ(ctx context.Context, dir, source, scope string, branch branchLookup, commit workingCopyLookup) (translated string, useTilth bool, fallbackArgv []string, err error) {
+func resolveJJ(ctx context.Context, dir, source, scope string, branch branchLookup, commit workingCopyLookup, resolve gitRefResolver) (translated string, useTilth bool, fallbackArgv []string, err error) {
 	switch translateRevset(source) {
 	case translationWorkingTree, translationHEAD:
 		parentID, atID, rerr := resolveAtRange(ctx, dir, commit)
@@ -109,6 +109,17 @@ func resolveJJ(ctx context.Context, dir, source, scope string, branch branchLook
 		}
 		return parentID + ".." + atID, true, nil, nil
 	case translationRefVsWorking:
+		// An embedded-@ source is the one form git and jj can both name (a git ref
+		// release@1 vs a jj bookmark@remote); only resolving it in git tells them
+		// apart, and it falls back to jj when git cannot. A bare @ never reaches
+		// here (isJJNativeRevset short-circuits it), so git is never handed the
+		// @-resolves-to-HEAD footgun. Plain refs skip the rev-parse and let tilth
+		// resolve them.
+		if strings.Contains(source, "@") {
+			if _, ok := resolve(ctx, dir, source); !ok {
+				return "", false, jjFallbackArgv(source, scope), nil
+			}
+		}
 		atID, rerr := commit(ctx, dir, "@")
 		if rerr != nil {
 			return "", false, nil, fmt.Errorf("resolve @ commit for %q: %w", dir, rerr)
@@ -180,21 +191,44 @@ func translateRevset(source string) translation {
 	case "trunk()..@", "main..@", "master..@":
 		return translationDefaultBranch
 	}
-	if strings.HasPrefix(source, "~") {
-		return translationJJOnly
-	}
-	for _, op := range jjOnlyOperators {
-		if strings.Contains(source, op) {
-			return translationJJOnly
-		}
-	}
-	if strings.Contains(source, "@") {
+	if isJJNativeRevset(source) {
 		return translationJJOnly
 	}
 	if strings.Contains(source, "..") {
+		// git cannot rev-parse a range to disambiguate, so a range with an
+		// embedded-@ endpoint (a jj bookmark@remote) stays routed to jj; a plain
+		// git range passes through to tilth.
+		if strings.Contains(source, "@") {
+			return translationJJOnly
+		}
 		return translationPassthrough
 	}
 	return translationRefVsWorking
+}
+
+// isJJNativeRevset reports whether source is a revset only jj can name and git
+// can never resolve — the exact working-copy markers @ / @- / @+, a leading ~
+// negation, and the set operators tilth's git-only diff also rejects. These
+// short-circuit to jj without a git rev-parse. The exact-@ match matters most:
+// git resolves a bare @ to HEAD (jj's @-), so @ must never be handed to git.
+// Everything else is a git candidate the resolver disambiguates — a plain ref
+// (HEAD~N, branch, sha) or an embedded-@ form that could be either a git ref
+// (release@1) or a jj bookmark@remote (main@origin), told apart only by whether
+// git actually resolves it.
+func isJJNativeRevset(source string) bool {
+	switch source {
+	case "@", "@-", "@+":
+		return true
+	}
+	if strings.HasPrefix(source, "~") {
+		return true
+	}
+	for _, op := range jjOnlyOperators {
+		if strings.Contains(source, op) {
+			return true
+		}
+	}
+	return false
 }
 
 func jjFallbackArgv(source, scope string) []string {

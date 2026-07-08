@@ -91,6 +91,58 @@ func TestParseCommit(t *testing.T) {
 	}
 }
 
+// TestJJShowRevset drives the show-ref translation with an injected resolver: git
+// symbolic refs resolve to commit ids, jj-native revsets short-circuit before the
+// resolver, and an unresolvable ref passes through for jj to interpret.
+func TestJJShowRevset(t *testing.T) {
+	const dir = "/repo"
+	const headSHA = "1111111111111111111111111111111111111111"
+	const tagSHA = "2222222222222222222222222222222222222222"
+	const relSHA = "3333333333333333333333333333333333333333"
+	resolve := func(_ context.Context, _, ref string) (string, bool) {
+		switch ref {
+		case "HEAD", "HEAD~1", "HEAD^", "main", "deadbeef":
+			return headSHA, true
+		case "v1.0":
+			return tagSHA, true
+		case "release@1":
+			return relSHA, true
+		case "@", "@-", "@+":
+			t.Fatalf("jj working-copy marker %q must not reach git rev-parse", ref)
+		}
+		return "", false
+	}
+	tests := []struct {
+		id   string
+		ref  string
+		want string
+	}{
+		{"HEAD resolves to commit id", "HEAD", headSHA},
+		{"HEAD~N resolves to commit id", "HEAD~1", headSHA},
+		{"HEAD^ resolves to commit id", "HEAD^", headSHA},
+		{"branch resolves to commit id", "main", headSHA},
+		{"tag peels to commit id", "v1.0", tagSHA},
+		{"sha resolves to commit id", "deadbeef", headSHA},
+		{"bare @ passes through", "@", "@"},
+		{"@- passes through", "@-", "@-"},
+		{"@+ passes through", "@+", "@+"},
+		{"@-- chain tries git then passes through", "@--", "@--"},
+		{"embedded-@ git ref resolves to commit id", "release@1", relSHA},
+		{"bookmark@remote falls through to jj", "main@origin", "main@origin"},
+		{"dag revset passes through", "::@", "::@"},
+		{"union revset passes through", "main | feat", "main | feat"},
+		{"negation revset passes through", "~x", "~x"},
+		{"unresolvable change id passes through", "zovstqty", "zovstqty"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			if got := jjShowRevset(context.Background(), dir, tt.ref, resolve); got != tt.want {
+				t.Errorf("jjShowRevset(%q) = %q, want %q", tt.ref, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestShowBuildsArgv drives Show against a fake git and a fake jj that record
 // their argv and print a canned NUL-separated record. It proves Show selects the
 // VCS by Detect, defaults the ref per-VCS, and builds the exact underlying argv.
@@ -142,12 +194,12 @@ func TestShowBuildsArgv(t *testing.T) {
 			},
 		},
 		{
-			name:   "jj explicit ref",
+			name:   "jj native ref passes through untranslated",
 			marker: ".jj",
 			bin:    "jj",
-			ref:    "main",
+			ref:    "@",
 			wantArgv: func(string) []string {
-				return []string{"log", "--no-graph", "-r", "main", "-T", jjShowTemplate}
+				return []string{"log", "--no-graph", "-r", "@", "-T", jjShowTemplate}
 			},
 		},
 	}

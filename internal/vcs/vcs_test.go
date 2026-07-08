@@ -66,12 +66,15 @@ func TestTranslateRevset(t *testing.T) {
 		{"sha is ref vs working", "a1b2c3d", translationRefVsWorking},
 		{"branch name is ref vs working", "feature-x", translationRefVsWorking},
 		{"single ref is ref vs working", "feature", translationRefVsWorking},
+		{"@+ marker is jj-only", "@+", translationJJOnly},
+		{"@-- chain is a git candidate", "@--", translationRefVsWorking},
 		{"dag range is jj-only", "::@", translationJJOnly},
 		{"ancestors operator is jj-only", "foo::bar", translationJJOnly},
 		{"union operator is jj-only", "main | feat", translationJJOnly},
 		{"intersection operator is jj-only", "x&y", translationJJOnly},
 		{"negation operator is jj-only", "~x", translationJJOnly},
-		{"op-log style with @ is jj-only", "show@op", translationJJOnly},
+		{"embedded-@ ref is a git candidate resolveJJ disambiguates", "show@op", translationRefVsWorking},
+		{"embedded-@ range stays jj (git cannot rev-parse a range)", "main@origin..feat", translationJJOnly},
 	}
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {
@@ -97,6 +100,14 @@ func TestResolveJJ(t *testing.T) {
 		}
 	}
 	commitBoom := func(context.Context, string, string) (string, error) { return "", errors.New("no jj") }
+	// resolve stands in for git rev-parse: release@1 is a real git ref, every
+	// other embedded-@ form (a jj bookmark@remote) is unresolvable.
+	resolve := func(_ context.Context, _, ref string) (string, bool) {
+		if ref == "release@1" {
+			return "RRRRRRR", true
+		}
+		return "", false
+	}
 
 	tests := []struct {
 		id           string
@@ -157,10 +168,22 @@ func TestResolveJJ(t *testing.T) {
 			id: "jj fallback threads scope as path filter", source: "@", scope: "internal", branch: branch, commit: commit,
 			wantUseTilth: false, wantArgv: []string{"jj", "diff", "--stat", "-r", "@", "internal"},
 		},
+		{
+			id: "embedded-@ git ref resolves to ref..@", source: "release@1", branch: branch, commit: commit,
+			wantTrans: "release@1..AAAAAAA", wantUseTilth: true,
+		},
+		{
+			id: "embedded-@ jj bookmark falls back to jj", source: "main@origin", branch: branch, commit: commit,
+			wantUseTilth: false, wantArgv: []string{"jj", "diff", "--stat", "-r", "main@origin"},
+		},
+		{
+			id: "embedded-@ range falls back to jj", source: "main@origin..feat", branch: branch, commit: commit,
+			wantUseTilth: false, wantArgv: []string{"jj", "diff", "--stat", "-r", "main@origin..feat"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {
-			gotTrans, gotUse, gotArgv, err := resolveJJ(context.Background(), dir, tt.source, tt.scope, tt.branch, tt.commit)
+			gotTrans, gotUse, gotArgv, err := resolveJJ(context.Background(), dir, tt.source, tt.scope, tt.branch, tt.commit, resolve)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("resolveJJ(%q) err = nil, want error", tt.source)
