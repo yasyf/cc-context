@@ -163,21 +163,36 @@ func (t *tiers) jina(ctx context.Context, targetURL string) (FetchResult, error)
 		return FetchResult{}, fmt.Errorf("jina: decode envelope: %w", err)
 	}
 
-	// The 200-trap: a target failure rides in data.warning, not the status line.
+	// data.warning is jina's informational channel — cache-snapshot notices, soft
+	// "maybe CAPTCHA" hints — not its error channel; a real target/service failure
+	// rides in the HTTP status (handled above). So a warning is only decisive when
+	// there is no content to serve: then a status embedded in it (the "200-trap",
+	// a target 404 relayed at HTTP 200) is classified, else it explains the miss.
+	content := strings.TrimSpace(env.Data.Content)
+	if content == "" {
+		if w := env.Data.Warning; w != "" {
+			if status := statusFromText(w); status != 0 {
+				if err := classifyTargetStatus(TierJina, status); err != nil {
+					return FetchResult{}, err
+				}
+			}
+			return FetchResult{}, fmt.Errorf("jina: no content: %s", w)
+		}
+		return FetchResult{}, errors.New("jina: empty content")
+	}
+	// Content present: a warning is a note, not a failure. An actual challenge
+	// page is caught by its content signature below, and a warning that still
+	// carries an explicit HTTP error status is honored (gone/auth abort, a
+	// 403/429/503 escalates to the stealth backstop).
 	if w := env.Data.Warning; w != "" {
 		if status := statusFromText(w); status != 0 {
 			if err := classifyTargetStatus(TierJina, status); err != nil {
 				return FetchResult{}, err
 			}
-		} else {
-			return FetchResult{}, fmt.Errorf("jina: target warning: %s", w)
 		}
 	}
 	if challengeSignature(resp.Header, env.Data.Content, challengeMarkersLoose) {
 		return FetchResult{}, fmt.Errorf("jina: %w", errStealthRequired)
-	}
-	if strings.TrimSpace(env.Data.Content) == "" {
-		return FetchResult{}, errors.New("jina: empty content")
 	}
 
 	final := env.Data.URL
@@ -379,20 +394,33 @@ func (t *tiers) browserbase(ctx context.Context, targetURL, key string) (FetchRe
 		return FetchResult{}, serviceFailure(TierBrowserbase, resp.StatusCode)
 	}
 
+	// The /v1/fetch envelope carries the markdown in "content" and the target's
+	// own status in "statusCode" (there is no title field).
 	var out struct {
-		Markdown string `json:"markdown"`
-		Title    string `json:"title"`
+		Content    string `json:"content"`
+		StatusCode int    `json:"statusCode"`
 	}
 	if err := json.Unmarshal([]byte(body), &out); err != nil {
 		return FetchResult{}, fmt.Errorf("browserbase: decode response: %w", err)
 	}
-	if challengeSignature(resp.Header, out.Markdown, challengeMarkersLoose) {
+	// browserbase is the terminal tier, so a target failure it relays is final:
+	// gone/auth abort as themselves, anything else ≥ 400 is unreachable-even-with-
+	// stealth (ErrBlocked), never errStealthRequired (there is no further tier).
+	switch sc := out.StatusCode; {
+	case sc == http.StatusNotFound, sc == http.StatusGone:
+		return FetchResult{}, fmt.Errorf("browserbase: target returned %d: %w", sc, ErrGone)
+	case sc == http.StatusUnauthorized:
+		return FetchResult{}, fmt.Errorf("browserbase: target returned 401: %w", ErrAuthRequired)
+	case sc >= 400:
+		return FetchResult{}, fmt.Errorf("browserbase: target returned %d: %w", sc, ErrBlocked)
+	}
+	if challengeSignature(resp.Header, out.Content, challengeMarkersLoose) {
 		return FetchResult{}, fmt.Errorf("browserbase: challenge persisted: %w", ErrBlocked)
 	}
-	if strings.TrimSpace(out.Markdown) == "" {
-		return FetchResult{}, errors.New("browserbase: empty markdown")
+	if strings.TrimSpace(out.Content) == "" {
+		return FetchResult{}, errors.New("browserbase: empty content")
 	}
-	return FetchResult{Tier: TierBrowserbase, FinalURL: targetURL, Title: out.Title, Markdown: out.Markdown}, nil
+	return FetchResult{Tier: TierBrowserbase, FinalURL: targetURL, Markdown: out.Content}, nil
 }
 
 // postJSON marshals body and POSTs it with the given headers, returning the live

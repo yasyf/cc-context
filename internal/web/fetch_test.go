@@ -189,6 +189,32 @@ func TestFetchJinaSuccess(t *testing.T) {
 	}
 }
 
+// TestFetchJinaBenignWarningServed pins the live finding that data.warning is
+// jina's informational channel, not its error channel: a 200 carrying content
+// alongside a status-less notice (here a cache-snapshot warning) is served, not
+// discarded. Real target failures arrive as an HTTP status, covered elsewhere.
+func TestFetchJinaBenignWarningServed(t *testing.T) {
+	isolateKeys(t)
+	ts := testTiers(t, services{jina: func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"data": map[string]any{
+				"content": "# Doc\n\nreal content",
+				"title":   "Doc",
+				"url":     "https://example.com/final",
+				"warning": "This is a cached snapshot of the original page, consider retry with caching opt-out.",
+			},
+		})
+	}})
+
+	got, err := ts.fetch(context.Background(), remoteTargetURL, nil)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if got.Tier != TierJina || got.Markdown != "# Doc\n\nreal content" {
+		t.Errorf("got tier=%q markdown=%q, want jina + the real content", got.Tier, got.Markdown)
+	}
+}
+
 func TestFetchKeyUnsetTiersSkipped(t *testing.T) {
 	isolateKeys(t) // exa and firecrawl keys stay empty
 	var exaHits, fcHits atomic.Int32
@@ -335,7 +361,7 @@ func TestFetchChallengeIn200RoutesToBrowserbase(t *testing.T) {
 	ts := testTiers(t, services{
 		jina: jinaClean(t, "Just a moment...", ""),
 		browserbase: func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(t, w, http.StatusOK, map[string]any{"markdown": "# Real\n\nunblocked content", "title": "Real"})
+			writeJSON(t, w, http.StatusOK, map[string]any{"content": "# Real\n\nunblocked content", "statusCode": 200})
 		},
 	})
 	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
@@ -356,6 +382,53 @@ func TestFetchChallengeIn200RoutesToBrowserbase(t *testing.T) {
 	// The challenge body must never surface as a successful result.
 	if strings.Contains(got.Markdown, "Just a moment") || strings.Contains(got.HTML, "Just a moment") {
 		t.Errorf("challenge body leaked into a successful FetchResult: %+v", got)
+	}
+}
+
+// bbChallengeToStealth wires jina + a target that both return a Cloudflare
+// challenge, so the cascade escalates to the browserbase handler bb.
+func bbChallengeToStealth(t *testing.T, bb http.HandlerFunc) (*tiers, string) {
+	t.Helper()
+	t.Setenv(envBrowserbaseKey, "bb-key")
+	ts := testTiers(t, services{jina: jinaClean(t, "Just a moment...", ""), browserbase: bb})
+	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "Just a moment...")
+	})
+	return ts, target
+}
+
+// TestFetchBrowserbaseContentEnvelope pins the live /v1/fetch shape: the markdown
+// rides in "content" (not "markdown") and there is no title field.
+func TestFetchBrowserbaseContentEnvelope(t *testing.T) {
+	isolateKeys(t)
+	ts, target := bbChallengeToStealth(t, func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"id": "abc", "statusCode": 200, "contentType": "text/markdown",
+			"content": "# Real\n\nunblocked content",
+		})
+	})
+
+	got, err := ts.fetch(context.Background(), target, nil)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if got.Tier != TierBrowserbase || got.Markdown != "# Real\n\nunblocked content" {
+		t.Errorf("got tier=%q markdown=%q, want browserbase + content-field markdown", got.Tier, got.Markdown)
+	}
+}
+
+// TestFetchBrowserbaseTargetStatusGone pins that a target 404 relayed in the
+// browserbase envelope's statusCode aborts the cascade with ErrGone, since
+// browserbase is terminal.
+func TestFetchBrowserbaseTargetStatusGone(t *testing.T) {
+	isolateKeys(t)
+	ts, target := bbChallengeToStealth(t, func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{"statusCode": 404, "content": "404: Not Found"})
+	})
+
+	if _, err := ts.fetch(context.Background(), target, nil); !errors.Is(err, ErrGone) {
+		t.Fatalf("want ErrGone from browserbase statusCode 404, got %v", err)
 	}
 }
 
