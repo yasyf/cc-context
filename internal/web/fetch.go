@@ -79,7 +79,13 @@ func (t *tiers) fetch(ctx context.Context, normURL string, prior *Page) (FetchRe
 			stealth = true
 			failures = append(failures, err)
 		default:
-			slog.Warn("web fetch tier failed", "tier", r.name, "url", normURL, "err", err)
+			// Keyless jina rejects with a service 401 — the expected path for
+			// users without JINA_API_KEY, not a warning-worthy failure.
+			if r.name == TierJina && os.Getenv(envJinaKey) == "" {
+				slog.Debug("web fetch tier failed", "tier", r.name, "url", normURL, "err", err)
+			} else {
+				slog.Warn("web fetch tier failed", "tier", r.name, "url", normURL, "err", err)
+			}
 			failures = append(failures, err)
 		}
 	}
