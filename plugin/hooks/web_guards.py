@@ -18,13 +18,18 @@ a deliberate re-run of the same URL passes, so an auth-walled or JS-heavy page `
 cannot serve stays reachable. The ``curl``/``wget`` guard fires only on an unpiped page GET
 to stdout with a remote ``http(s)`` URL — a pipe (``| jq``), a disk sink (``-o``/``-O``/plain
 ``wget``/redirect), a non-GET method (``-X``/``-d``/``--json``/``-T``/``-I``), a localhost
-target, and a scheme-less spelling all stay allowed by construction.
+target, and a scheme-less spelling all stay allowed by construction. When the fetch is a plain
+page GET (``curl -sL <url>`` / ``wget -qO- <url>``) it is *rewritten* to ``ccx web read <url>
+--full`` — content-preserving, token-bounded — gated on the ``ccx web`` surface being present
+(``ccx_supports``); an API/JSON URL (``api.*`` host, ``api`` path segment, ``.json`` path), an
+extra flag readability can't honor, or a wrapped/chained line falls back to the block.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import re
+import shlex
 from urllib.parse import urlsplit
 
 from captain_hook import (
@@ -39,7 +44,10 @@ from captain_hook import (
     Input,
     Tool,
     hook,
+    rewrite_command,
 )
+
+from .common import ccx_bin, ccx_supports, is_single_command
 
 # Loopback and non-routable hosts a fetch to which never floods the shared context — a
 # local dev server or private service, not a public page. Matched on the parsed hostname.
@@ -64,6 +72,17 @@ CURL_ALLOW_LONGS = frozenset(
 # the value so it is not mistaken for the target URL. (Sink/method value-longs never reach here:
 # they allow the line first.)
 CURL_VALUE_LONGS = frozenset({"--header", "--referer", "--user-agent", "--cookie", "--proxy"})
+
+# curl short chars that keep a fetch a plain page GET, safe to rewrite to ``ccx web read``:
+# silent (s), show-error (S), fail (f), location/follow (L). A bundle of only these + one remote
+# URL maps; any other char (auth, header, method, …) makes the request un-mappable → block.
+CURL_REWRITE_SHORTS = frozenset("sSLf")
+CURL_REWRITE_LONGS = frozenset({"--silent", "--show-error", "--fail", "--location", "--compressed"})
+
+# wget spellings that keep a fetch a plain quiet stdout dump, safe to rewrite. The stdout
+# output-document is handled per-token (``-O -`` / ``-qO-`` / ``--output-document=-``).
+WGET_QUIET = frozenset({"-q", "--quiet"})
+WGET_STDOUT_FLAGS = frozenset({"-O", "--output-document"})
 
 
 def _is_local_host(host: str) -> bool:
@@ -254,10 +273,140 @@ class PageDumpToStdout(CustomCommandLineCondition):
         return False
 
 
-hook(
-    Event.PreToolUse,
-    only_if=[Tool("Bash"), PageDumpToStdout()],
-    message=(
+def _curl_rewrite_url(args: tuple[str, ...]) -> str | None:
+    """The single remote URL of a rewritable ``curl`` page dump, or None to fall back to the block.
+
+    Rewritable iff every flag is a plain-GET-to-stdout spelling (:data:`CURL_REWRITE_SHORTS`
+    bundles / :data:`CURL_REWRITE_LONGS`) and exactly one remote ``http(s)`` URL is present. Any
+    other flag (``-H``/``-u``/``--retry``/``--url``…), a second URL, or a non-remote positional
+    returns None, so the guard blocks with its steer rather than drop a flag that changes the request.
+    """
+    url = None
+    for a in args:
+        if a.startswith("--"):
+            if a not in CURL_REWRITE_LONGS:
+                return None
+            continue
+        if a.startswith("-") and len(a) > 1:
+            if any(c not in CURL_REWRITE_SHORTS for c in a[1:]):
+                return None
+            continue
+        if not _is_remote_url(a) or url is not None:
+            return None
+        url = a
+    return url
+
+
+def _wget_rewrite_url(args: tuple[str, ...]) -> str | None:
+    """The single remote URL of a rewritable ``wget`` stdout dump, or None to fall back to the block.
+
+    Rewritable iff every flag is a quiet/stdout spelling (``-q``/``--quiet``, ``-O -``/``-qO-``/
+    ``-qO -``/``--output-document=-``) and exactly one remote URL is present; any other flag, a
+    non-stdout ``-O``, or a second URL returns None so the guard blocks rather than mis-rewrite.
+    """
+    url = None
+    skip_next = False
+    for i, a in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
+        if a in WGET_QUIET:
+            continue
+        if a in WGET_STDOUT_FLAGS:
+            if i + 1 < len(args) and args[i + 1] == "-":
+                skip_next = True
+                continue
+            return None
+        if a.startswith("--output-document="):
+            if a.split("=", 1)[1] != "-":
+                return None
+            continue
+        if a.startswith("-") and not a.startswith("--") and len(a) > 1:
+            ok, body, k = True, a[1:], 0
+            while k < len(body):
+                if body[k] == "q":
+                    k += 1
+                    continue
+                if body[k] == "O":
+                    rest = body[k + 1 :]
+                    if rest:
+                        ok = rest == "-"
+                    else:
+                        ok = i + 1 < len(args) and args[i + 1] == "-"
+                        skip_next = ok
+                    break
+                ok = False
+                break
+            if not ok:
+                return None
+            continue
+        if not _is_remote_url(a) or url is not None:
+            return None
+        url = a
+    return url
+
+
+def _is_api_url(url: str) -> bool:
+    """Whether ``url`` looks like a JSON/API endpoint readability extraction would mangle.
+
+    An ``api.*`` host, an ``api`` path segment, a ``.json`` or ``/graphql`` path, or a query
+    string naming ``json``/``graphql`` (case-insensitive) all signal structured data, not an
+    article — the block steers those to the pipe hatch (`… | jq`), not `ccx web read`. The
+    query string matters because ``…/data?format=json`` and a ``/graphql`` endpoint return
+    JSON that readability would shred.
+    """
+    parts = urlsplit(url)
+    if (parts.hostname or "").lower().startswith("api."):
+        return True
+    path = parts.path.rstrip("/")
+    if path.endswith(".json") or path.endswith("/graphql"):
+        return True
+    if any(kw in parts.query.lower() for kw in ("json", "graphql")):
+        return True
+    return "api" in [seg for seg in parts.path.split("/") if seg]
+
+
+def _dump_url(cl: CommandLine) -> str | None:
+    """The single remote URL of a directly-invoked ``curl``/``wget`` page dump, or None.
+
+    Only a direct ``curl``/``wget`` maps: a wrapper prefix (``timeout``/``sudo``/``env``) leaves
+    ``cl.primary`` as the wrapper, so it returns None and the guard blocks (dropping the wrapper
+    would change the command). The condition sees through wrappers to block; the rewrite does not.
+    """
+    cmd = cl.primary
+    if cmd.executable == "curl":
+        return _curl_rewrite_url(cmd.args)
+    if cmd.executable == "wget":
+        return _wget_rewrite_url(cmd.args)
+    return None
+
+
+def _page_dump_to(evt: BaseHookEvent) -> str | None:
+    cl = evt.command_line
+    if not is_single_command(cl):
+        return None
+    url = _dump_url(cl)
+    if url is None or _is_api_url(url):
+        return None
+    if not ccx_supports("web", "read") or not (ccx := ccx_bin()):
+        return None
+    return f"{shlex.quote(ccx)} web read {shlex.quote(url)} --full"
+
+
+def _page_dump_note(evt: BaseHookEvent) -> str:
+    cl = evt.command_line
+    url = _dump_url(cl)
+    return (
+        f"Rewrote `{cl.primary.executable} … {url}` → `ccx web read {url} --full`: same page "
+        "content, readability-extracted and token-bounded. Next time map its headings first with "
+        f'`ccx web outline {url}`, or ask a question with `ccx web search {url} "<question>"`.'
+    )
+
+
+rewrite_command(
+    only_if=[PageDumpToStdout()],
+    to=_page_dump_to,
+    block=(
         "BLOCKED: `curl`/`wget` dumping a page to stdout floods context. "
         "One page: `ccx web outline <url>` maps its headings, then `ccx web read <url> --section <ref>` "
         "for the part you need, or `ccx web search <url> \"<question>\"` for the top-k relevant excerpts. "
@@ -265,19 +414,27 @@ hook(
         "conclusions. Escape hatches — API/JSON: pipe it (`curl … | jq`); download: `curl -o <file>` / "
         "plain `wget`; localhost stays allowed."
     ),
-    block=True,
+    note=_page_dump_note,
+    # The rewrite itself is gated on `ccx_supports("web", "read")`, so its outcome is
+    # environment-dependent — those rows live in test_web_guards.py with ccx_supports
+    # monkeypatched. Inline coverage is the block fallbacks (`to` returns None *before* the
+    # gate, so they block regardless of the local ccx) and the Allow neighbors.
     tests={
-        Input(command="curl https://example.com"): Block(pattern="ccx web outline"),
-        Input(command="curl -sL https://example.com"): Block(),
-        Input(command="wget -qO- https://example.com"): Block(pattern="ccx web outline"),
-        Input(command="wget -O - https://example.com"): Block(),
-        Input(command="curl https://example.com && echo done"): Block(),  # stdout unconsumed
-        Input(command="curl -s https://api.example.com/v1/data"): Block(),  # raw JSON dump, deliberate
-        Input(command="curl https://example.com 2>/dev/null"): Block(),  # stderr-only redirect still floods stdout
+        Input(command="curl -s https://api.example.com/v1/data"): Block(pattern="ccx web outline"),  # api.* host
+        Input(command="curl https://example.com/data.json"): Block(),  # .json path
+        Input(command="curl https://example.com/api/v1"): Block(),  # `api` path segment
+        Input(command="curl -s 'https://example.com/data?format=json'"): Block(),  # json in query string
+        Input(command="curl 'https://example.com/report?q=graphql'"): Block(),  # graphql in query string
+        Input(command="curl https://example.com/graphql"): Block(),  # /graphql endpoint path
+        Input(command="curl -H 'X-Auth: t' https://example.com"): Block(),  # header flag → un-mappable
+        Input(command="curl -u user:pass https://example.com"): Block(),  # auth flag → un-mappable
+        Input(command="curl --retry 3 https://example.com"): Block(),  # retry flag → un-mappable
+        Input(command="curl --url=https://example.com/large.html"): Block(),  # --url long form
+        Input(command="curl --url https://example.com/large.html"): Block(),  # --url two-token form
+        Input(command="curl https://example.com && echo done"): Block(),  # multi-part line
+        Input(command="curl https://example.com 2>/dev/null"): Block(),  # redirect
         Input(command="timeout 10 curl https://example.com/big.html"): Block(),  # wrapper prefix
         Input(command="sudo curl https://example.com/page"): Block(),  # wrapper prefix
-        Input(command="curl --url=https://example.com/large.html"): Block(),  # --url= long form
-        Input(command="curl --url https://example.com/large.html"): Block(),  # --url two-token form
         Input(command="curl https://example.com | jq ."): Allow(),
         Input(command="curl https://example.com | grep -c foo"): Allow(),
         Input(command="curl -o page.html https://example.com"): Allow(),

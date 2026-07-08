@@ -27,7 +27,6 @@ from captain_hook import (
     Input,
     Rewrite,
     Tool,
-    Warn,
     nudge,
     on,
     rewrite_command,

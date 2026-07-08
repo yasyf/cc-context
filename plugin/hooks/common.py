@@ -17,9 +17,11 @@ registers no hooks, so discovery loads it as a harmless no-op.
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import shlex
+import subprocess
 from pathlib import Path
 
 from captain_hook import BaseHookEvent, CommandLine, Deque, DurableState, resolve_binary
@@ -30,6 +32,10 @@ from captain_hook import BaseHookEvent, CommandLine, Deque, DurableState, resolv
 # too lenient — a ~32 KB / 8k-token source file slipped through unblocked.)
 LARGE_READ_BYTES = 20_000
 
+# The injected `limit` for the large-file Read rewrite — a windowed head instead of a hard
+# block, with the note steering to `ccx code outline` + `--section` for the rest.
+READ_WINDOW_LINES = 100
+
 # `git diff` is allowed when scoped (a pathspec after `--`) or summarized (one of
 # these stat-only flags). A bare/range diff with no such narrowing is the bomb.
 GIT_DIFF_SUMMARY_FLAGS = ("--stat", "--numstat", "--shortstat", "--name-only", "--name-status", "--dirstat")
@@ -37,6 +43,11 @@ GIT_DIFF_SUMMARY_FLAGS = ("--stat", "--numstat", "--shortstat", "--name-only", "
 # Identifier-alternation heuristic for the rg/grep nudge: at least two terms joined
 # by `|`, each looking like a code identifier (letters/digits/underscore, no spaces).
 IDENT_ALT = re.compile(r"\b[A-Za-z_]\w*(?:\|[A-Za-z_]\w*)+\b")
+
+# Whitelist for grep patterns safe to rewrite onto ccx's literal-match engine. Raw grep
+# patterns are BRE regex, so a metachar pattern can't faithfully become a literal search,
+# and glob metachars (`*?[`) misroute tilth's query auto-dispatch — load-bearing on both paths.
+LITERAL_SAFE = re.compile(r"^[\w ./:@,=+-]+$")
 
 # JSON-output flags that mark a command as worth wrapping in `ccx format`. The glued
 # forms (`--json`, `-ojson`, `-o=json`, `--output=json`, `--format=json`) are caught
@@ -81,6 +92,26 @@ def ccx_bin() -> str | None:
     a rewrite guard can fall back to a hard block instead of emitting a broken command.
     """
     return resolve_binary("ccx", extra_dirs=[Path(__file__).resolve().parents[1] / "bin"])
+
+
+@functools.cache
+def ccx_supports(*subcmd: str, flag: str | None = None) -> bool:
+    """Report whether the local ``ccx`` binary supports ``subcmd`` (and optionally ``flag``).
+
+    Runs ``ccx <subcmd…> --help`` and reports ``True`` iff it exits 0 and — when ``flag`` is
+    given — the flag substring appears in the help text (stdout or stderr). Gates rewrites
+    that need a newer ``ccx`` than a brew-first consumer may hold: the plugin can ship ahead
+    of the binary, so a rewrite onto an unreleased subcommand or flag must probe first. An
+    unresolvable ``ccx`` (:func:`ccx_bin` returns ``None``) reports ``False``, so the caller
+    falls back to a hard block. Cached per process — the probe runs at most once per key.
+    """
+    ccx = ccx_bin()
+    if ccx is None:
+        return False
+    proc = subprocess.run([ccx, *subcmd, "--help"], capture_output=True, text=True)
+    if proc.returncode != 0:
+        return False
+    return flag is None or flag in proc.stdout + proc.stderr
 
 
 def _json_flagged(args: tuple[str, ...]) -> bool:
