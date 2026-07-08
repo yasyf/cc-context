@@ -41,6 +41,19 @@ if [ -f "$LINK" ] && [ ! -L "$LINK" ] && [ "$(head -c 2 "$LINK" 2>/dev/null)" = 
 fi
 rm -f "$DATA_DIR/bin/$NAME-v"* "${XDG_CACHE_HOME:-$HOME/.cache}/cc-context/bin/$NAME-v"*
 
+# Best-effort: ensure ripgrep is available for `ccx code grep -i/-w`. Deferred to
+# an EXIT trap and backgrounded so it never blocks session start and, on a fresh
+# machine, never races the foreground `brew install ccx` arm below on Homebrew's
+# global lock — the trap fires at exit, after whichever install arm ran, and still
+# covers every early-exit path. ccx falls back to system grep when rg is absent,
+# and no brew is not an error.
+ensure_rg() {
+  command -v rg >/dev/null 2>&1 && return 0
+  command -v brew >/dev/null 2>&1 || return 0
+  brew install ripgrep >/dev/null 2>&1 || true
+}
+trap 'ensure_rg &' EXIT
+
 # Arms 1+2: exact target exits, a dev build (describe/pseudo-version suffix, or
 # the bare "dev" of an unstamped build) is never clobbered, a stale release or
 # no version output falls through.
@@ -163,7 +176,9 @@ mkdir -p "$DATA_DIR/bin"
 # running executable fails with ETXTBSY on Linux, and the rename keeps any
 # still-executing inode alive.
 tmp="$(mktemp "$DATA_DIR/bin/.$NAME.XXXXXX")"
-trap 'rm -f "$tmp"' EXIT
+# This overwrites the top-level EXIT trap, so re-arm ensure_rg alongside the tmp
+# cleanup to keep rg provisioning on the download path too.
+trap 'rm -f "$tmp"; ensure_rg &' EXIT
 curl -fsSL --retry 2 -o "$tmp" "$url"
 
 if ! sums="$(curl -fsSL --retry 2 "https://github.com/$REPO/releases/download/$TAG/checksums.txt")"; then

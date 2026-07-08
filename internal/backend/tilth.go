@@ -70,6 +70,9 @@ func (t Tilth) CLIArgv(ctx context.Context, op Op, a Args) (bin string, argv []s
 		if a.Glob != "" {
 			argv = append(argv, "--glob", a.Glob)
 		}
+		if a.Scope != "" {
+			argv = append(argv, "--scope", a.Scope)
+		}
 		if a.Budget > 0 {
 			argv = append(argv, "--budget", strconv.Itoa(a.Budget))
 		}
@@ -183,6 +186,7 @@ func (t Tilth) MCPTool(op Op, a Args) (tool string, params map[string]any, err e
 		return "tilth_search", omitEmpty(map[string]any{
 			"query":  a.Query,
 			"glob":   a.Glob,
+			"scope":  a.Scope,
 			"kind":   a.Kind,
 			"budget": a.Budget,
 			"expand": a.Expand,

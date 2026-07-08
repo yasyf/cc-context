@@ -9,6 +9,7 @@ import (
 	"github.com/yasyf/cc-context/internal/edit"
 	"github.com/yasyf/cc-context/internal/grok"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/ripgrep"
 	"github.com/yasyf/cc-context/internal/router"
 	"github.com/yasyf/cc-context/internal/web"
 )
@@ -56,6 +57,9 @@ func dispatch(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error)
 			return "", err
 		}
 		return render.Finalize(op, out, a.Budget)
+	}
+	if op == backend.OpGrep && (a.IgnoreCase || a.Word) {
+		return ripgrep.Run(cmd.Context(), a)
 	}
 	bin, argv, err := router.For(op).CLIArgv(cmd.Context(), op, a)
 	if err != nil {

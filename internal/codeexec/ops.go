@@ -41,7 +41,7 @@ func Ops(c Caller) map[string]HostFunc {
 			return backend.Args{Path: a.str("path", 0), Section: a.str("section", 1), Full: a.flag("full")}
 		}),
 		"grep": op(backend.OpGrep, func(a *args) backend.Args {
-			return backend.Args{Query: a.str("text", 0), Glob: a.str("glob", 1), Expand: a.num("expand")}
+			return backend.Args{Query: a.str("text", 0), Glob: a.str("glob", 1), Scope: a.str("scope", 2), IgnoreCase: a.flag("ignore_case"), Word: a.flag("word"), Expand: a.num("expand")}
 		}),
 		"symbol": op(backend.OpSymbol, func(a *args) backend.Args {
 			return backend.Args{Query: a.str("name", 0), Scope: a.str("scope", 1), Full: a.flag("full")}

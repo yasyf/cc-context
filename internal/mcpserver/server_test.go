@@ -2,8 +2,10 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -160,6 +162,63 @@ func TestRegisteredToolSurface(t *testing.T) {
 		if !seen {
 			t.Errorf("tool %q not registered", name)
 		}
+	}
+}
+
+// TestGrepToolSchemaHasEngineFields proves the ripgrep-engine flags and the
+// scope filter are advertised on the ccx_code_grep input schema.
+func TestGrepToolSchemaHasEngineFields(t *testing.T) {
+	cs := connectTestServer(t)
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	var schema string
+	for _, tool := range res.Tools {
+		if tool.Name == "ccx_code_grep" {
+			raw, err := json.Marshal(tool.InputSchema)
+			if err != nil {
+				t.Fatalf("marshal input schema: %v", err)
+			}
+			schema = string(raw)
+		}
+	}
+	if schema == "" {
+		t.Fatal("ccx_code_grep not registered")
+	}
+	for _, field := range []string{`"scope"`, `"ignoreCase"`, `"word"`} {
+		if !strings.Contains(schema, field) {
+			t.Errorf("ccx_code_grep schema missing %s:\n%s", field, schema)
+		}
+	}
+}
+
+// TestGrepToolIgnoreCaseRoutesToEngine proves an MCP ccx_code_grep call with
+// ignoreCase routes through the in-process ripgrep engine (rg or system grep),
+// not tilth's MCPTool: no engine is symlinked onto PATH, yet a case-insensitive
+// query returns anchored house-format frames for the uppercase match.
+func TestGrepToolIgnoreCaseRoutesToEngine(t *testing.T) {
+	_, rgErr := exec.LookPath("rg")
+	_, grepErr := exec.LookPath("grep")
+	if rgErr != nil && grepErr != nil {
+		t.Skip("neither rg nor grep on PATH")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte("var OpGrep = 1\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	t.Chdir(dir)
+
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "opgrep", "ignoreCase": true})
+	if isErr {
+		t.Fatalf("ccx_code_grep ignoreCase is error: %s", out)
+	}
+	if !strings.Contains(out, "### sample.go:") {
+		t.Errorf("expected house-format section header for the engine match:\n%s", out)
+	}
+	if !strings.Contains(out, "OpGrep") {
+		t.Errorf("expected the case-variant match text:\n%s", out)
 	}
 }
 

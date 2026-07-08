@@ -17,6 +17,7 @@ import (
 	"github.com/yasyf/cc-context/internal/grok"
 	"github.com/yasyf/cc-context/internal/mcpclient"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/ripgrep"
 	"github.com/yasyf/cc-context/internal/router"
 	"github.com/yasyf/cc-context/internal/web"
 )
@@ -58,8 +59,10 @@ func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string
 
 // call routes op through its backend and returns budget-capped output. The edit
 // and web ops run in-process (internal/edit, internal/web) without any engine,
-// mirroring the CLI dispatch; the diff and overview ops run as child-process CLI
-// invocations to keep the jj-aware VCS translation and fallback that CLIArgv
+// mirroring the CLI dispatch; a case-insensitive or word-boundary grep runs the
+// in-process ripgrep engine (tilth cannot express -i/-w), matching the CLI
+// dispatch's OpGrep special-case; the diff and overview ops run as child-process
+// CLI invocations to keep the jj-aware VCS translation and fallback that CLIArgv
 // performs; the ast-grep ops run through the shared astgrep orchestration
 // (ast-grep has no MCP server); every other op is a child MCP tool call against
 // the engine's resident (lazily opened) session.
@@ -73,6 +76,9 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 			return "", err
 		}
 		return render.Finalize(op, out, a.Budget)
+	}
+	if op == backend.OpGrep && (a.IgnoreCase || a.Word) {
+		return ripgrep.Run(ctx, a)
 	}
 
 	b := router.For(op)

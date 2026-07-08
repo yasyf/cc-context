@@ -94,10 +94,13 @@ type DepsIn struct {
 
 // GrepIn is the input for ccx_code_grep.
 type GrepIn struct {
-	Text   string `json:"text" jsonschema:"text to search for"`
-	Glob   string `json:"glob,omitempty" jsonschema:"restrict to files matching this glob"`
-	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
-	Expand int    `json:"expand,omitempty" jsonschema:"lines of context to expand around hits"`
+	Text       string `json:"text" jsonschema:"text to search for"`
+	Glob       string `json:"glob,omitempty" jsonschema:"restrict to files matching this glob"`
+	Scope      string `json:"scope,omitempty" jsonschema:"directory to scope the search to"`
+	IgnoreCase bool   `json:"ignoreCase,omitempty" jsonschema:"case-insensitive match; runs ripgrep or system grep instead of the default engine"`
+	Word       bool   `json:"word,omitempty" jsonschema:"match whole words only; runs ripgrep or system grep instead of the default engine"`
+	Budget     int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
+	Expand     int    `json:"expand,omitempty" jsonschema:"lines of context to expand around hits"`
 }
 
 // FindIn is the input for ccx_repo_find.
@@ -243,7 +246,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 		Name:        "ccx_code_grep",
 		Description: "Literal text search across code, optionally globbed and budget-bounded — for exact strings. Frames are anchored (55-66#2eak) — echo into ccx_code_read section.",
 	}, handler(p, backend.OpGrep, func(in GrepIn) backend.Args {
-		return backend.Args{Query: in.Text, Glob: in.Glob, Budget: in.Budget, Expand: in.Expand}
+		return backend.Args{Query: in.Text, Glob: in.Glob, Scope: in.Scope, IgnoreCase: in.IgnoreCase, Word: in.Word, Budget: in.Budget, Expand: in.Expand}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{

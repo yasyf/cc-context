@@ -80,6 +80,8 @@ type Args struct {
 	Apply           bool
 	Force           bool
 	Delete          bool
+	IgnoreCase      bool
+	Word            bool
 	Budget          int
 	K               int
 	MaxSnippetLines int

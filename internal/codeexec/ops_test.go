@@ -70,6 +70,12 @@ func TestOpsArgMapping(t *testing.T) {
 			backend.Args{Query: "x", Expand: 3},
 		},
 		{
+			"grep scope + ignore_case + word", "grep",
+			Call{Kwargs: map[string]any{"text": "opgrep", "scope": "internal", "ignore_case": true, "word": true}},
+			backend.OpGrep,
+			backend.Args{Query: "opgrep", Scope: "internal", IgnoreCase: true, Word: true},
+		},
+		{
 			"grep expand float", "grep",
 			Call{Kwargs: map[string]any{"text": "x", "expand": 2.0}},
 			backend.OpGrep,
