@@ -154,10 +154,13 @@ Each command is a token-bounded stand-in for a primitive an agent would otherwis
 | `ccx code outline <file-or-dir>` | Token-budgeted structural outline of a file or directory |
 | `ccx code read <file> --section A-B` | Read a line range or a `## Heading` instead of the whole file |
 | `ccx vcs diff [uncommitted\|staged\|<ref>]` | VCS-aware structural diff; defaults to uncommitted |
+| `ccx web outline <url>` | Heading tree of a web page with stable `§` section refs |
+| `ccx web read <url> --section <ref>` | Read one section of a page, with prev/next nav, instead of the whole thing |
+| `ccx web search <url> "<question>"` | Ask a page a question; top-k relevant chunks with `§` cites |
 | `ccx format [-- <cmd>]` | Re-encode a command's JSON/NDJSON output lean, or filter a pipe |
 | `ccx exec [script]` | Compose ccx ops, `sh()`, and reflected MCP tools in a sandbox; only the return value enters context |
 
-`ccx --help` catalogs the rest, including structural find-replace with a preview-first `--apply`, dependency maps, per-commit symbol history, and `ccx vcs ship` to commit, push, and watch CI in one call; `ccx <command> --help` has the flags. Three engines sit behind the one surface. semble handles semantic search, ast-grep handles structural search and rewrites, and tilth handles everything else; `ccx` routes each command for you.
+`ccx --help` catalogs the rest, including structural find-replace with a preview-first `--apply`, dependency maps, per-commit symbol history, and `ccx vcs ship` to commit, push, and watch CI in one call; `ccx <command> --help` has the flags. Four engines sit behind the one surface. semble handles semantic search, ast-grep handles structural search and rewrites, an in-process web engine handles pages, and tilth handles everything else; `ccx` routes each command for you.
 
 ## Configuration
 

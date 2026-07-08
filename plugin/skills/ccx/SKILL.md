@@ -187,9 +187,29 @@ when it's larger. Non-JSON output passes through verbatim and the exit code is
 propagated. Over MCP, `mcp__cc-context__BashFormat` runs the command and returns the
 compacted output — a `format` param forces an encoder.
 
-### 9. Compose
+### 9. Web pages
 
-One question takes one call from steps 1–8. When the work is a pipeline — two or more
+Web pages get the file treatment: outline first, then read one section, or ask the page
+a question instead of paging through it top to bottom.
+
+```
+ccx web outline https://example.com/docs
+ccx web read https://example.com/docs --section 2.3
+ccx web search https://example.com/docs "how do I configure retries"
+```
+
+`outline` returns the heading tree with stable section refs. Echo one into `ccx web
+read --section` for that section's subtree with a `§prev`/`§next` footer, or take the
+whole page with `--full`. `search` answers with the top-k relevant chunks, each carrying
+a `<url> §2.3#k7fq` cite whose ref echoes back into `read`; ranking is hybrid BM25 +
+local embeddings, degrading to BM25-only (and saying so) when `uv` is off `PATH`.
+Fetched pages and their indexes persist in the ccx cache for 24 hours — `--refresh` on
+any of the three bypasses the TTL. The MCP mirrors are `mcp__cc-context__ccx_web_outline`,
+`ccx_web_read`, and `ccx_web_search`.
+
+### 10. Compose
+
+One question takes one call from steps 1–9. When the work is a pipeline — two or more
 chained calls, output you'd immediately filter or project, a fan-out across files —
 write the pipeline as a script instead. `ccx exec` (MCP: `mcp__cc-context__ccx_exec`)
 runs a short Python script in a sandbox where every ccx query op above is an async host
