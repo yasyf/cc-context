@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"verify_note","witness":[{"anchor":{"kind":"dir","value":"internal/vcs"},"oid":"db635dfaec720904e3e3f470bed73e5d40bfa4e5"}],"verified_commit":"50388138289b02d31b1ace2cb175c386ff8d18a1"}]}
+{"v":1,"lamport":3,"ops":[{"kind":"add_superseded_by","id":"6aa43425f5b8c0eb331c867a15c709a73b4ef0b8"}]}
