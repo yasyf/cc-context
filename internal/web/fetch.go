@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -37,6 +40,16 @@ func Fetch(ctx context.Context, normURL string, prior *Page) (FetchResult, error
 }
 
 func (t *tiers) fetch(ctx context.Context, normURL string, prior *Page) (FetchResult, error) {
+	u, err := url.Parse(normURL)
+	if err != nil {
+		return FetchResult{}, fmt.Errorf("fetch: parse url %q: %w", normURL, err)
+	}
+	// A local target is unreachable by any hosted reader; keep its URL off them
+	// entirely and use only plain HTTP, with no stealth fallthrough.
+	if localTarget(u.Hostname()) {
+		return t.plainHTTP(ctx, normURL, prior)
+	}
+
 	type tierRun struct {
 		name Tier
 		run  func() (FetchResult, error)
@@ -89,4 +102,19 @@ func (t *tiers) fetch(ctx context.Context, normURL string, prior *Page) (FetchRe
 	}
 
 	return FetchResult{}, fmt.Errorf("all fetch tiers failed for %q: %w", normURL, errors.Join(failures...))
+}
+
+// localTarget reports whether host addresses a machine only this host can reach —
+// a loopback, private, link-local, or unspecified IP, or the localhost, *.local,
+// or *.internal names. Hosted reader tiers cannot fetch such a target, so the
+// cascade must never hand them its URL.
+func localTarget(host string) bool {
+	host = strings.ToLower(host)
+	if host == "localhost" || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
+	}
+	return false
 }

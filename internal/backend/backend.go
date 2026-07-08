@@ -44,12 +44,24 @@ const (
 	// serves `ccx code outline` for the languages ast-grep outlines; OpOutline keeps
 	// tilth signature mode for the rest. outline.Route picks between them.
 	OpStructOutline Op = "struct-outline"
+	// OpWebOutline, OpWebRead, and OpWebSearch fetch, chunk, and serve a web page
+	// as a token-bounded outline, section read, or hybrid search. Like OpEdit they
+	// run in-process (internal/web) without dispatching to any engine.
+	//
+	// WARNING: never add these ops to anchor.RewriteArgs. Their section refs ride
+	// the Args field but follow web's §<id>#<hash> chunk scheme, not the
+	// filesystem line-anchor scheme RewriteArgs resolves — rewriting them would
+	// corrupt a URL section ref into a bogus file range.
+	OpWebOutline Op = "web-outline"
+	OpWebRead    Op = "web-read"
+	OpWebSearch  Op = "web-search"
 )
 
 // Args carries every flag and positional an op may consume. Each backend reads
 // only the fields relevant to the op it is asked to translate.
 type Args struct {
 	Path            string
+	URL             string
 	Query           string
 	Glob            string
 	Section         string
