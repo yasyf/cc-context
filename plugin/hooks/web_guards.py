@@ -23,6 +23,7 @@ target, and a scheme-less spelling all stay allowed by construction.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from urllib.parse import urlsplit
 
@@ -66,8 +67,19 @@ CURL_VALUE_LONGS = frozenset({"--header", "--referer", "--user-agent", "--cookie
 
 
 def _is_local_host(host: str) -> bool:
-    """Whether ``host`` (a parsed, lowercased hostname) is loopback or a private-scope name."""
-    return host in LOCAL_HOSTS or host.startswith("127.") or host.endswith((".local", ".internal"))
+    """Whether ``host`` (a parsed, lowercased hostname) is loopback or a private-scope target.
+
+    Mirrors the Go engine's ``localTarget``: named loopback (``localhost``, ``127.*``) and the
+    ``.local``/``.internal`` suffixes, plus any IP literal that is loopback, private (RFC1918),
+    link-local, or unspecified — so a target the engine fetches over plain HTTP is never guarded.
+    """
+    if host in LOCAL_HOSTS or host.startswith("127.") or host.endswith((".local", ".internal")):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
 
 
 def _is_remote_url(token: str) -> bool:
@@ -123,6 +135,8 @@ hook(
         ),
         Input(tool="WebFetch", tool_input={"url": "http://localhost:3000/health"}): Allow(),
         Input(tool="WebFetch", tool_input={"url": "http://127.0.0.1:8080/metrics"}): Allow(),
+        # Private-scope IP literals are local like the Go engine's localTarget — never guarded.
+        Input(tool="WebFetch", tool_input={"url": "http://192.168.1.1/admin"}): Allow(),
     },
 )
 
@@ -169,6 +183,14 @@ def _curl_dumps_page(args: tuple[str, ...]) -> bool:
             name = a.split("=", 1)[0]
             if name in CURL_ALLOW_LONGS or name.startswith(("--data", "--form")):
                 return False
+            if name == "--url":
+                # curl's long form for the target URL (`--url=<u>` / `--url <u>`) — scan the
+                # value like a positional, since the plain page GET can name it this way.
+                val = a.split("=", 1)[1] if "=" in a else (args[i + 1] if i + 1 < n else "")
+                if _is_remote_url(val):
+                    remote = True
+                i += 1 if "=" in a else 2
+                continue
             if "=" not in a and name in CURL_VALUE_LONGS:
                 i += 2
                 continue
@@ -222,9 +244,12 @@ class PageDumpToStdout(CustomCommandLineCondition):
         for cmd, op in cl.parts:
             if op == "|" or _sinks_stdout(cmd):
                 continue
-            if cmd.executable == "curl" and _curl_dumps_page(cmd.args):
+            # Match on the unwrapped executable so a wrapper prefix (`timeout 10 curl …`,
+            # `sudo curl …`, `env FOO=1 curl …`) can't slip the page dump past the block.
+            inner = cmd.unwrapped
+            if inner.executable == "curl" and _curl_dumps_page(inner.args):
                 return True
-            if cmd.executable == "wget" and _wget_dumps_page(cmd.args):
+            if inner.executable == "wget" and _wget_dumps_page(inner.args):
                 return True
         return False
 
@@ -249,10 +274,16 @@ hook(
         Input(command="curl https://example.com && echo done"): Block(),  # stdout unconsumed
         Input(command="curl -s https://api.example.com/v1/data"): Block(),  # raw JSON dump, deliberate
         Input(command="curl https://example.com 2>/dev/null"): Block(),  # stderr-only redirect still floods stdout
+        Input(command="timeout 10 curl https://example.com/big.html"): Block(),  # wrapper prefix
+        Input(command="sudo curl https://example.com/page"): Block(),  # wrapper prefix
+        Input(command="curl --url=https://example.com/large.html"): Block(),  # --url= long form
+        Input(command="curl --url https://example.com/large.html"): Block(),  # --url two-token form
         Input(command="curl https://example.com | jq ."): Allow(),
         Input(command="curl https://example.com | grep -c foo"): Allow(),
         Input(command="curl -o page.html https://example.com"): Allow(),
         Input(command="curl -sSfLo page.html https://example.com"): Allow(),
+        Input(command="timeout 10 curl -o f https://example.com/f"): Allow(),  # wrapped disk sink
+        Input(command="curl --url=http://localhost:8080/x"): Allow(),  # --url= localhost
         Input(command="curl https://example.com > page.html"): Allow(),
         Input(command="wget https://example.com"): Allow(),  # wget's default disk download
         Input(command="curl -X POST https://api.example.com"): Allow(),
@@ -260,6 +291,7 @@ hook(
         Input(command="curl -I https://example.com"): Allow(),  # HEAD request
         Input(command="curl http://localhost:3000/health"): Allow(),
         Input(command="curl https://127.0.0.1/metrics"): Allow(),
+        Input(command="curl http://10.0.0.5/status"): Allow(),  # RFC1918 private IP — local
         Input(command="curl localhost:8080/health"): Allow(),  # scheme-less — conservative allow
         # `ccx exec` pass-through is deliberate: the curl inside sh() is one opaque token, and
         # internal/codeexec/sh.go owns in-sandbox policy, not hooks.

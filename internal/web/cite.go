@@ -57,36 +57,63 @@ func splitSectionRef(ref string) (section, hash string, err error) {
 	return section, hash, nil
 }
 
-// DriftedCiteError reports that a cite's hash no longer matches any chunk on the
-// page: the content it pinned was removed or rewritten. It names the nearest
-// surviving section so the caller can re-orient with `ccx web outline`.
+// DriftedCiteError reports that a cite's hash no longer resolves to a single
+// chunk on the page: the content it pinned was removed or rewritten, or the same
+// hash now matches chunks in more than one distinct section. It names the nearest
+// surviving section — or, when ambiguous, the candidate sections — so the caller
+// can re-orient with `ccx web outline`.
 type DriftedCiteError struct {
-	Section string // the cited section, now unresolvable by hash
-	Hash    string // the cited hash, absent from every current chunk
-	Nearest string // the nearest section ID that still exists
+	Section    string   // the cited section, now unresolvable by hash
+	Hash       string   // the cited hash
+	Nearest    string   // the nearest section ID that still exists
+	Candidates []string // when non-empty, the distinct sections the hash matches: the ref is ambiguous
 }
 
 func (e *DriftedCiteError) Error() string {
+	if len(e.Candidates) > 0 {
+		ids := make([]string, len(e.Candidates))
+		for i, s := range e.Candidates {
+			ids[i] = "§" + s
+		}
+		return fmt.Sprintf("cite §%s#%s is ambiguous: that hash matches chunks in sections %s; re-run ccx web outline to pick one", e.Section, e.Hash, strings.Join(ids, ", "))
+	}
 	return fmt.Sprintf("cite §%s#%s drifted: no chunk carries that hash anymore; nearest surviving section is §%s (re-run ccx web outline)", e.Section, e.Hash, e.Nearest)
 }
 
 // Resolve locates the chunk a cite points at. An exact hit — a chunk in the
-// cited section carrying the hash — resolves silently. When the section moved
-// but the content survives, a hash scan across every chunk re-anchors the cite
-// and returns the chunk at its actual current section. When the hash is gone
-// entirely, it returns a *DriftedCiteError naming the nearest surviving section.
+// cited section carrying the hash — resolves silently. When the section moved but
+// the content survives in a single section, a hash scan re-anchors the cite and
+// returns the chunk at its actual current section. When the hash is gone
+// entirely, or matches chunks across more than one distinct section, it returns a
+// *DriftedCiteError — naming the nearest surviving section, or the ambiguous
+// candidates.
 func Resolve(page *Page, section, hash string) (Chunk, error) {
 	for _, c := range page.Chunks {
 		if c.Section == section && c.Hash == hash {
 			return c, nil
 		}
 	}
+	var matches []Chunk
+	var candidates []string
+	seen := map[string]bool{}
 	for _, c := range page.Chunks {
-		if c.Hash == hash {
-			return c, nil
+		if c.Hash != hash {
+			continue
+		}
+		matches = append(matches, c)
+		if !seen[c.Section] {
+			seen[c.Section] = true
+			candidates = append(candidates, c.Section)
 		}
 	}
-	return Chunk{}, &DriftedCiteError{Section: section, Hash: hash, Nearest: nearestSection(page, section)}
+	switch {
+	case len(matches) == 0:
+		return Chunk{}, &DriftedCiteError{Section: section, Hash: hash, Nearest: nearestSection(page, section)}
+	case len(candidates) > 1:
+		return Chunk{}, &DriftedCiteError{Section: section, Hash: hash, Nearest: nearestSection(page, section), Candidates: candidates}
+	default:
+		return matches[0], nil
+	}
 }
 
 // nearestSection returns the surviving section ID closest to section: the

@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -101,6 +102,60 @@ func TestResolveDrift(t *testing.T) {
 	}
 	if drift.Nearest != "1" {
 		t.Errorf("drift.Nearest = %q, want %q (the cited section still exists)", drift.Nearest, "1")
+	}
+}
+
+func TestResolveAmbiguousAcrossSections(t *testing.T) {
+	// The same 4-char hash "dupe" now lands in two distinct sections. A stale ref
+	// that matches neither exactly must surface the ambiguity, not silently pick
+	// the first match.
+	page := &Page{
+		Sections: []Section{{ID: "1"}, {ID: "2"}},
+		Chunks: []Chunk{
+			{Index: 0, Section: "1", Hash: "dupe"},
+			{Index: 1, Section: "2", Hash: "dupe"},
+		},
+	}
+	_, err := Resolve(page, "9", "dupe")
+	var drift *DriftedCiteError
+	if !errors.As(err, &drift) {
+		t.Fatalf("Resolve err = %v, want *DriftedCiteError", err)
+	}
+	wantCandidates := map[string]bool{"1": true, "2": true}
+	if len(drift.Candidates) != len(wantCandidates) {
+		t.Fatalf("Candidates = %v, want the two distinct sections", drift.Candidates)
+	}
+	for _, c := range drift.Candidates {
+		if !wantCandidates[c] {
+			t.Errorf("Candidates = %v, has unexpected section %q", drift.Candidates, c)
+		}
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("err = %q, want it to say the cite is ambiguous", err)
+	}
+	for _, want := range []string{"§1", "§2"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to name %s", err, want)
+		}
+	}
+}
+
+func TestResolveSameSectionDuplicateReAnchors(t *testing.T) {
+	// Two chunks in the SAME section share a hash: one distinct section, so the
+	// cite re-anchors (not ambiguous).
+	page := &Page{
+		Sections: []Section{{ID: "1"}},
+		Chunks: []Chunk{
+			{Index: 0, Section: "1", Hash: "dupe"},
+			{Index: 1, Section: "1", Hash: "dupe"},
+		},
+	}
+	got, err := Resolve(page, "9", "dupe")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.Section != "1" {
+		t.Errorf("Resolve section = %q, want %q", got.Section, "1")
 	}
 }
 

@@ -334,6 +334,39 @@ func TestLoadDiscardsVectorLengthMismatch(t *testing.T) {
 	}
 }
 
+func TestLoadDiscardsBadVectorDims(t *testing.T) {
+	tests := []struct {
+		name    string
+		vectors [][]float32
+	}{
+		{"ragged", [][]float32{{1, 2, 3}, {4, 5}}}, // two chunks, mismatched widths
+		{"zerowidth", [][]float32{{}, {}}},         // two chunks, zero-width vectors
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+			url := "https://example.com/" + tt.name
+			p := samplePage(url, len(tt.vectors), 0, "model-A")
+			p.Vectors = tt.vectors
+			if err := Save(p); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+			path := webPagePath(t, url)
+
+			got, err := Load(url, "model-A")
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got != nil {
+				t.Errorf("Load = %+v, want a miss", got)
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("bad-dimension entry not deleted: stat err = %v", err)
+			}
+		})
+	}
+}
+
 func TestFresh(t *testing.T) {
 	base := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
 	tests := []struct {

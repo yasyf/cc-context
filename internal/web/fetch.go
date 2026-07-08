@@ -16,6 +16,10 @@ import (
 // of the per-tier timeouts.
 const cascadeDeadline = 120 * time.Second
 
+// dnsGateTimeout bounds the best-effort split-DNS resolve that runs before the
+// hosted tiers; a slow resolver must never stall the cascade.
+const dnsGateTimeout = time.Second
+
 // ErrNotModified reports that a conditional revalidation (plain-HTTP tier, prior
 // non-nil) returned 304: the caller's cached page is still current and its
 // chunks and vectors should be kept. It is a fetch outcome, not a failure, so
@@ -45,8 +49,11 @@ func (t *tiers) fetch(ctx context.Context, normURL string, prior *Page) (FetchRe
 		return FetchResult{}, fmt.Errorf("fetch: parse url %q: %w", normURL, err)
 	}
 	// A local target is unreachable by any hosted reader; keep its URL off them
-	// entirely and use only plain HTTP, with no stealth fallthrough.
-	if localTarget(u.Hostname()) {
+	// entirely and use only plain HTTP, with no stealth fallthrough. A public
+	// hostname that resolves entirely to local addresses (split-horizon DNS) is
+	// local too, caught by a best-effort resolve before the hosted tiers run.
+	host := u.Hostname()
+	if localTarget(host) || (net.ParseIP(host) == nil && t.resolvesLocal(ctx, host)) {
 		return t.plainHTTP(ctx, normURL, prior)
 	}
 
@@ -120,7 +127,34 @@ func localTarget(host string) bool {
 		return true
 	}
 	if ip := net.ParseIP(host); ip != nil {
-		return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
+		return isLocalIP(ip)
 	}
 	return false
+}
+
+// isLocalIP reports whether ip is a loopback, private, link-local, or
+// unspecified address — one only this host can route to.
+func isLocalIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
+}
+
+// resolvesLocal reports whether host — a non-IP-literal name the literal
+// localTarget check already passed — resolves entirely to local addresses, the
+// split-horizon case where an internal name like wiki.corp.example points at
+// 10.0.0.5. It is best-effort: a resolution failure, an empty answer, or any
+// public address returns false so the hosted cascade still runs (a hosted
+// resolver may legitimately see a different, public address).
+func (t *tiers) resolvesLocal(ctx context.Context, host string) bool {
+	ctx, cancel := context.WithTimeout(ctx, dnsGateTimeout)
+	defer cancel()
+	ips, err := t.lookupIP(ctx, "ip", host)
+	if err != nil || len(ips) == 0 {
+		return false
+	}
+	for _, ip := range ips {
+		if !isLocalIP(ip) {
+			return false
+		}
+	}
+	return true
 }

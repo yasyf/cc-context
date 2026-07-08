@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -160,24 +161,78 @@ func TestStatusFromText(t *testing.T) {
 
 func TestChallengeSignature(t *testing.T) {
 	tests := []struct {
-		name   string
-		header http.Header
-		body   string
-		want   bool
+		name    string
+		header  http.Header
+		body    string
+		markers []string
+		want    bool
 	}{
-		{"clean", nil, "# A real page\n\nwith content", false},
-		{"cloudflare interstitial", nil, "<title>Just a moment...</title>", true},
-		{"cf-chl marker", nil, `<div class="cf-chl-widget"></div>`, true},
-		{"datadome", nil, "datadome captcha", true},
-		{"attention required", nil, "Attention Required! | Cloudflare", true},
-		{"cf-mitigated header", http.Header{"Cf-Mitigated": {"challenge"}}, "ok body", true},
-		{"header case-insensitive", http.Header{"Cf-Mitigated": {"CHALLENGE"}}, "ok", true},
+		{"clean tight", nil, "# A real page\n\nwith content", challengeMarkersTight, false},
+		// A genuine 200 page (walmart-style) embeds a PerimeterX sensor; the raw
+		// path must not read that as a challenge.
+		{"px sensor on a normal page", nil, "<script>window._pxAppId = 'PXabc123';</script>", challengeMarkersTight, false},
+		// A real Cloudflare interstitial is flagged on both paths, any case.
+		{"cloudflare interstitial tight", nil, "<title>Just A Moment...</title>", challengeMarkersTight, true},
+		{"cloudflare interstitial loose", nil, "<title>Just a moment...</title>", challengeMarkersLoose, true},
+		{"cf-chl uppercase tight", nil, `<div class="CF-CHL-widget"></div>`, challengeMarkersTight, true},
+		{"cf-chl uppercase loose", nil, `<div class="CF-CHL-widget"></div>`, challengeMarkersLoose, true},
+		{"attention required tight", nil, "Attention Required! | Cloudflare", challengeMarkersTight, true},
+		{"datadome delivery host tight", nil, "https://geo.captcha-delivery.com/captcha/", challengeMarkersTight, true},
+		// The bare sensor tokens flag only on the cleaned-markdown (loose) path.
+		{"datadome uppercase loose", nil, "DATADOME CAPTCHA", challengeMarkersLoose, true},
+		{"datadome uppercase not tight", nil, "DATADOME CAPTCHA", challengeMarkersTight, false},
+		{"px token loose", nil, "window._px = 1", challengeMarkersLoose, true},
+		{"cf-mitigated header authoritative on raw path", http.Header{"Cf-Mitigated": {"challenge"}}, "ok body", challengeMarkersTight, true},
+		{"cf-mitigated header case-insensitive", http.Header{"Cf-Mitigated": {"CHALLENGE"}}, "ok", challengeMarkersLoose, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := challengeSignature(tt.header, tt.body); got != tt.want {
+			if got := challengeSignature(tt.header, tt.body, tt.markers); got != tt.want {
 				t.Errorf("challengeSignature() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestPlainHTTPPxSensorNotChallenge proves the end-to-end raw-path fix: a real
+// 200 whose HTML embeds a PerimeterX sensor (window._pxAppId) is returned as
+// content, not rejected as a stealth challenge.
+func TestPlainHTTPPxSensorNotChallenge(t *testing.T) {
+	isolateKeys(t)
+	const html = `<html><head><script>window._pxAppId="PXabc";</script></head><body>real product page</body></html>`
+	target := startTarget(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, html)
+	})
+	ts := &tiers{client: &http.Client{}}
+
+	got, err := ts.plainHTTP(context.Background(), target, nil)
+	if err != nil {
+		t.Fatalf("plainHTTP: %v (a px sensor on a normal page must not trip the challenge gate)", err)
+	}
+	if got.HTML != html {
+		t.Errorf("HTML = %q, want the page body", got.HTML)
+	}
+}
+
+func TestPlainHTTPRefusesRedirectToLocal(t *testing.T) {
+	isolateKeys(t)
+	ts := testTiers(t, services{})
+	ts.client.CheckRedirect = refuseLocalRedirect
+	// A public-mapped target 302s to a loopback address; the gate must refuse the
+	// hop before it is fetched and cached under the public URL.
+	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://127.0.0.1:11434/internal", http.StatusFound)
+	})
+
+	got, err := ts.plainHTTP(context.Background(), target, nil)
+	if err == nil {
+		t.Fatalf("plainHTTP = %+v, want an error refusing the redirect to a local target", got)
+	}
+	if !strings.Contains(err.Error(), "redirect") {
+		t.Errorf("err = %v, want it to describe a refused redirect", err)
+	}
+	if got.HTML != "" {
+		t.Errorf("HTML = %q, want nothing returned on a refused redirect", got.HTML)
 	}
 }

@@ -74,8 +74,11 @@ func parseStructure(src []byte) ([]headingInfo, []byteRange) {
 				start--
 			}
 			headings = append(headings, headingInfo{
-				level:     v.Level,
-				title:     strings.TrimSpace(string(lines.Value(src))),
+				level: v.Level,
+				// A multi-line setext heading spans several source lines; collapse
+				// every interior whitespace run to one space so the title (and the
+				// breadcrumbs and outline rows built from it) stays single-line.
+				title:     strings.Join(strings.Fields(string(lines.Value(src))), " "),
 				lineStart: start,
 			})
 		case *ast.FencedCodeBlock:

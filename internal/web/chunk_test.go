@@ -342,6 +342,32 @@ func TestTableSurvivesAsOneBlock(t *testing.T) {
 	}
 }
 
+func TestSetextMultilineHeadingTitle(t *testing.T) {
+	md := loadFixture(t, "setext_multiline.md")
+	sections, chunks := ChunkPage(md)
+	assertInvariant(t, md, sections, chunks)
+
+	var h1 string
+	for _, s := range sections {
+		if s.Level == 1 {
+			h1 = s.Title
+		}
+	}
+	const want = "Introduction to the Advanced Widget API"
+	if h1 != want {
+		t.Errorf("setext H1 title = %q, want %q", h1, want)
+	}
+	if strings.ContainsRune(h1, '\n') {
+		t.Errorf("title %q retains an interior newline", h1)
+	}
+	// Every breadcrumb built from the title must stay single-line too.
+	for _, c := range chunks {
+		if strings.ContainsRune(c.Breadcrumb, '\n') {
+			t.Errorf("chunk %d breadcrumb %q spans multiple lines", c.Index, c.Breadcrumb)
+		}
+	}
+}
+
 func TestPreamblePresence(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -54,42 +55,69 @@ const maxBodyBytes = 10 << 20
 // attempt or ErrBlocked.
 var errStealthRequired = errors.New("target requires a stealth fetch")
 
-// challengeMarkers are body substrings that betray an interstitial bot/DDoS
-// challenge (Cloudflare, PerimeterX, DataDome). A body carrying any of these is
-// never a real page: it routes the fetch to the stealth tier and never persists.
-var challengeMarkers = []string{
-	"Just a moment...",
+// challengeMarkersTight are the challenge-page-specific substrings scanned
+// against raw, un-extracted HTML (the plain-HTTP and exa tiers). A genuine page
+// may embed a bot-sensor script — e.g. walmart.com carries window._pxAppId on a
+// normal 200 — so the raw path matches only strings unique to an interstitial,
+// never the bare "_px"/"datadome" sensor tokens. All markers are lowercase;
+// challengeSignature lowercases the body once so matching is case-insensitive.
+var challengeMarkersTight = []string{
+	"just a moment",
 	"challenges.cloudflare.com",
 	"cf-chl",
-	"_px",
 	"px-captcha",
-	"datadome",
-	"Attention Required!",
+	"geo.captcha-delivery.com",
+	"attention required! | cloudflare",
 }
+
+// challengeMarkersLoose adds the bare sensor tokens to the tight set for the
+// cleaned-markdown tiers (jina, firecrawl, browserbase), where extraction has
+// already stripped page scripts so a lone "_px"/"datadome" betrays a challenge.
+var challengeMarkersLoose = append([]string{"_px", "datadome"}, challengeMarkersTight...)
 
 // statusInText matches an embedded HTTP error status (4xx/5xx) inside a hosted
 // tier's free-text warning, e.g. jina's "Target URL returned error 404".
 var statusInText = regexp.MustCompile(`\b([45]\d\d)\b`)
 
-// tiers holds the shared HTTP client and the per-service base URLs. The base
-// URLs default to production and are swapped for httptest servers under test.
+// tiers holds the shared HTTP client, the per-service base URLs, and the DNS
+// resolver the split-DNS gate consults. The base URLs default to production and
+// are swapped for httptest servers under test; lookupIP defaults to the system
+// resolver and is faked in tests.
 type tiers struct {
 	client          *http.Client
 	jinaBase        string
 	exaBase         string
 	firecrawlBase   string
 	browserbaseBase string
+	lookupIP        func(ctx context.Context, network, host string) ([]net.IP, error)
 }
 
-// newTiers builds the production cascade backends.
+// newTiers builds the production cascade backends. The shared client refuses a
+// redirect onto a local target so a public URL can never be steered onto a
+// loopback/private address (see refuseLocalRedirect).
 func newTiers() *tiers {
 	return &tiers{
-		client:          &http.Client{},
+		client:          &http.Client{CheckRedirect: refuseLocalRedirect},
 		jinaBase:        jinaBaseProd,
 		exaBase:         exaBaseProd,
 		firecrawlBase:   firecrawlBaseProd,
 		browserbaseBase: browserbaseBaseProd,
+		lookupIP:        net.DefaultResolver.LookupIP,
 	}
+}
+
+// refuseLocalRedirect is the shared client's CheckRedirect policy: it follows
+// ordinary redirects but refuses a hop whose host is a local target, so a public
+// URL cannot be redirected onto a loopback/private address and cached under the
+// public key. It preserves the net/http default cap of 10 redirects.
+func refuseLocalRedirect(req *http.Request, via []*http.Request) error {
+	if localTarget(req.URL.Hostname()) {
+		return fmt.Errorf("refusing redirect to local target %q", req.URL.Host)
+	}
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	return nil
 }
 
 // jina fetches targetURL through the always-on r.jina.ai reader, returning
@@ -145,7 +173,7 @@ func (t *tiers) jina(ctx context.Context, targetURL string) (FetchResult, error)
 			return FetchResult{}, fmt.Errorf("jina: target warning: %s", w)
 		}
 	}
-	if challengeSignature(resp.Header, env.Data.Content) {
+	if challengeSignature(resp.Header, env.Data.Content, challengeMarkersLoose) {
 		return FetchResult{}, fmt.Errorf("jina: %w", errStealthRequired)
 	}
 	if strings.TrimSpace(env.Data.Content) == "" {
@@ -202,7 +230,7 @@ func (t *tiers) exa(ctx context.Context, targetURL, key string) (FetchResult, er
 	}
 
 	r := out.Results[0]
-	if challengeSignature(resp.Header, r.Text) {
+	if challengeSignature(resp.Header, r.Text, challengeMarkersTight) {
 		return FetchResult{}, fmt.Errorf("exa: %w", errStealthRequired)
 	}
 	final := r.URL
@@ -252,12 +280,15 @@ func (t *tiers) firecrawl(ctx context.Context, targetURL, key string) (FetchResu
 	if err := json.Unmarshal([]byte(body), &out); err != nil {
 		return FetchResult{}, fmt.Errorf("firecrawl: decode response: %w", err)
 	}
+	if !out.Success {
+		return FetchResult{}, errors.New("firecrawl: service reported success=false")
+	}
 	if sc := out.Data.Metadata.StatusCode; sc != 0 {
 		if err := classifyTargetStatus(TierFirecrawl, sc); err != nil {
 			return FetchResult{}, err
 		}
 	}
-	if challengeSignature(resp.Header, out.Data.Markdown) {
+	if challengeSignature(resp.Header, out.Data.Markdown, challengeMarkersLoose) {
 		return FetchResult{}, fmt.Errorf("firecrawl: %w", errStealthRequired)
 	}
 	if strings.TrimSpace(out.Data.Markdown) == "" {
@@ -304,7 +335,7 @@ func (t *tiers) plainHTTP(ctx context.Context, targetURL string, prior *Page) (F
 	if err != nil {
 		return FetchResult{}, fmt.Errorf("http: read body: %w", err)
 	}
-	if challengeSignature(resp.Header, body) {
+	if challengeSignature(resp.Header, body, challengeMarkersTight) {
 		return FetchResult{}, fmt.Errorf("http: %w", errStealthRequired)
 	}
 
@@ -355,7 +386,7 @@ func (t *tiers) browserbase(ctx context.Context, targetURL, key string) (FetchRe
 	if err := json.Unmarshal([]byte(body), &out); err != nil {
 		return FetchResult{}, fmt.Errorf("browserbase: decode response: %w", err)
 	}
-	if challengeSignature(resp.Header, out.Markdown) {
+	if challengeSignature(resp.Header, out.Markdown, challengeMarkersLoose) {
 		return FetchResult{}, fmt.Errorf("browserbase: challenge persisted: %w", ErrBlocked)
 	}
 	if strings.TrimSpace(out.Markdown) == "" {
@@ -408,14 +439,19 @@ func serviceFailure(tier Tier, status int) error {
 	return fmt.Errorf("%s: service returned status %d", tier, status)
 }
 
-// challengeSignature reports whether h or body carry a bot/DDoS challenge marker.
-// h may be nil (hosted tiers pass their service headers, which is harmless).
-func challengeSignature(h http.Header, body string) bool {
+// challengeSignature reports whether h or body carry a bot/DDoS challenge
+// marker. markers is the set for the caller's content class — challengeMarkersTight
+// for raw un-extracted HTML, challengeMarkersLoose for cleaned markdown. body is
+// matched case-insensitively (the markers are lowercase). h may be nil (hosted
+// tiers pass their service headers, which is harmless); the cf-mitigated header
+// is authoritative on every path.
+func challengeSignature(h http.Header, body string, markers []string) bool {
 	if h != nil && strings.EqualFold(h.Get("cf-mitigated"), "challenge") {
 		return true
 	}
-	for _, m := range challengeMarkers {
-		if strings.Contains(body, m) {
+	lower := strings.ToLower(body)
+	for _, m := range markers {
+		if strings.Contains(lower, m) {
 			return true
 		}
 	}

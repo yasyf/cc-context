@@ -122,6 +122,10 @@ func Load(normURL, embedModel string) (*Page, error) {
 			fmt.Errorf("%d vectors for %d chunks", len(page.Vectors), len(page.Chunks)))
 		return nil, nil
 	}
+	if err := validateVectorDims(page.Vectors); err != nil {
+		discardEntry(path, "ragged or zero-width vectors", err)
+		return nil, nil
+	}
 	if embedModel != "" && page.EmbedModel != "" && page.EmbedModel != embedModel {
 		discardEntry(path, "embed model mismatch",
 			fmt.Errorf("stored model %q != %q", page.EmbedModel, embedModel))
@@ -159,6 +163,26 @@ func decodePage(data []byte) (*Page, error) {
 		return nil, fmt.Errorf("unmarshal page json: %w", err)
 	}
 	return fromWire(&w), nil
+}
+
+// validateVectorDims reports an error when vecs is non-empty and its entries are
+// not all the same nonzero length. A ragged or zero-width embedding matrix would
+// corrupt denseOrder/dot, so a violation sends the cache entry down the discard
+// path. An empty matrix (a never-embedded page) is valid.
+func validateVectorDims(vecs [][]float32) error {
+	if len(vecs) == 0 {
+		return nil
+	}
+	dim := len(vecs[0])
+	if dim == 0 {
+		return errors.New("vector 0 has zero width")
+	}
+	for i, v := range vecs {
+		if len(v) != dim {
+			return fmt.Errorf("vector %d has width %d, want %d", i, len(v), dim)
+		}
+	}
+	return nil
 }
 
 // discardEntry deletes a poisoned cache file and logs why. A missing file (a

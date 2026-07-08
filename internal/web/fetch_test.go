@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -93,7 +94,15 @@ func testTiers(t *testing.T, svc services) *tiers {
 		exaBase:         exa,
 		firecrawlBase:   firecrawl,
 		browserbaseBase: browserbase,
+		lookupIP:        publicLookupIP,
 	}
+}
+
+// publicLookupIP is testTiers' default DNS gate resolver: it reports a public
+// address for every host so a remote test target is never diverted to plain
+// HTTP. A test exercising the split-DNS gate overrides ts.lookupIP.
+func publicLookupIP(context.Context, string, string) ([]net.IP, error) {
+	return []net.IP{net.ParseIP("93.184.216.34")}, nil
 }
 
 // serveRemoteTarget starts a target server for h, maps the non-local
@@ -514,6 +523,95 @@ func TestFetchLocalTargetBlockedNoBrowserbase(t *testing.T) {
 	}
 	if errors.Is(err, ErrBlocked) {
 		t.Errorf("err = %v, want the plain stealth failure, not a browserbase ErrBlocked verdict", err)
+	}
+}
+
+func TestFetchFirecrawlSuccessFalseCascades(t *testing.T) {
+	isolateKeys(t)
+	t.Setenv(envFirecrawlKey, "fc-key")
+	ts := testTiers(t, services{
+		jina: status(http.StatusTooManyRequests),
+		firecrawl: func(w http.ResponseWriter, _ *http.Request) {
+			// A 200 envelope with success:false carrying a quota page as markdown.
+			writeJSON(t, w, http.StatusOK, map[string]any{
+				"success": false,
+				"data":    map[string]any{"markdown": "# Quota exceeded\n\nupgrade your plan", "metadata": map[string]any{"statusCode": 200}},
+			})
+		},
+	})
+	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "<html><body>the real page</body></html>")
+	})
+
+	got, err := ts.fetch(context.Background(), target, nil)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if got.Tier != TierHTTP {
+		t.Errorf("Tier = %q, want %q (firecrawl success:false must cascade)", got.Tier, TierHTTP)
+	}
+	if strings.Contains(got.Markdown, "Quota") || strings.Contains(got.HTML, "Quota") {
+		t.Errorf("firecrawl quota page leaked into the result: %+v", got)
+	}
+}
+
+func TestFetchSplitDNSPrivateSkipsHostedTiers(t *testing.T) {
+	isolateKeys(t)
+	// Every hosted key set: only the split-DNS gate can keep them from running.
+	t.Setenv(envJinaKey, "jina-key")
+	t.Setenv(envExaKey, "exa-key")
+	t.Setenv(envFirecrawlKey, "fc-key")
+	t.Setenv(envBrowserbaseKey, "bb-key")
+
+	ts := testTiers(t, services{}) // every hosted tier is a "must not be reached" guard
+	// The public-looking name resolves entirely to a private address.
+	ts.lookupIP = func(context.Context, string, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("10.0.0.5")}, nil
+	}
+	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "<html><body>internal wiki</body></html>")
+	})
+
+	got, err := ts.fetch(context.Background(), target, nil)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if got.Tier != TierHTTP {
+		t.Errorf("Tier = %q, want %q (a private-resolving host must use plain HTTP only)", got.Tier, TierHTTP)
+	}
+}
+
+func TestFetchSplitDNSPublicUsesHostedTiers(t *testing.T) {
+	isolateKeys(t)
+	ts := testTiers(t, services{jina: jinaClean(t, "# Doc\n\nhi", "Doc")})
+	ts.lookupIP = func(context.Context, string, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("93.184.216.34"), net.ParseIP("10.0.0.5")}, nil // one public IP is enough
+	}
+
+	got, err := ts.fetch(context.Background(), remoteTargetURL, nil)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if got.Tier != TierJina {
+		t.Errorf("Tier = %q, want %q (any public address keeps the hosted cascade)", got.Tier, TierJina)
+	}
+}
+
+func TestFetchSplitDNSErrorFallsThroughToHostedTiers(t *testing.T) {
+	isolateKeys(t)
+	ts := testTiers(t, services{jina: jinaClean(t, "# Doc\n\nhi", "Doc")})
+	ts.lookupIP = func(context.Context, string, string) ([]net.IP, error) {
+		return nil, errors.New("dial udp: i/o timeout")
+	}
+
+	got, err := ts.fetch(context.Background(), remoteTargetURL, nil)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if got.Tier != TierJina {
+		t.Errorf("Tier = %q, want %q (a DNS failure must never block the hosted cascade)", got.Tier, TierJina)
 	}
 }
 
