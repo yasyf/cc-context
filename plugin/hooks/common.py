@@ -187,14 +187,18 @@ def command_shape(cl: CommandLine) -> str:
     return " ".join([cmd.executable, *subcommands, *flags])
 
 
-def looks_like_json(s: str) -> bool:
+def looks_like_json(s: object) -> bool:
     """Report whether ``s`` is JSON or NDJSON, by a real parse (never a first-char sniff).
 
     Returns ``True`` when the trimmed text parses as a single JSON document, or when
     it is NDJSON — every non-empty line parses on its own. A first-character check
     would false-positive on prose that happens to start with ``[`` or ``{``, so the
-    parse is mandatory.
+    parse is mandatory. A non-``str``/``bytes`` argument — a structured tool_response
+    mapping reaching a caller — is never JSON text, so it returns ``False`` rather than
+    raising on the missing ``.strip``.
     """
+    if not isinstance(s, (str, bytes)):
+        return False
     trimmed = s.strip()
     if not trimmed:
         return False

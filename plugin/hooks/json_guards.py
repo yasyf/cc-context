@@ -117,6 +117,21 @@ rewrite_command(
 )
 
 
+def _bash_stdout(resp: object) -> str:
+    """Extract the stdout text from a Bash ``PostToolUse`` ``tool_response``.
+
+    Claude Code delivers a Bash result as a structured mapping (``{"stdout": ...,
+    "stderr": ..., "interrupted": ...}``), despite the event's ``str | None`` typing —
+    a known upstream annotation gap — so the JSON-shape learner reads ``stdout`` from
+    it. A plain string (the declared shape, and other tools) passes through, and
+    anything else has no stdout to shape.
+    """
+    if isinstance(resp, dict):
+        stdout = resp.get("stdout")
+        return stdout if isinstance(stdout, str) else ""
+    return resp if isinstance(resp, str) else ""
+
+
 @on(
     Event.PostToolUse,
     only_if=[Tool("Bash")],
@@ -125,7 +140,7 @@ rewrite_command(
     },
 )
 def record_json_shape(evt: BaseHookEvent) -> None:
-    out = evt.tool_response
+    out = _bash_stdout(evt.tool_response)
     cl = evt.command_line
     if not out or cl is None or not looks_like_json(out):
         return None

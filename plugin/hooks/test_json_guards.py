@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import pytest
 from captain_hook import CommandLine
 from captain_hook.context import HookContext
-from captain_hook.events import PreToolUseEvent
+from captain_hook.events import PostToolUseEvent, PreToolUseEvent
 from captain_hook.session import SessionStore
 
 from hooks.common import (
@@ -35,7 +35,7 @@ from hooks.common import (
     load_shapes,
     record_shape,
 )
-from hooks.json_guards import SeenEmittingJson
+from hooks.json_guards import SeenEmittingJson, record_json_shape
 
 
 @pytest.fixture(autouse=True)
@@ -272,6 +272,16 @@ class TestLooksLikeJson:
     def test_not_json(self, text: str) -> None:
         assert not looks_like_json(text)
 
+    @pytest.mark.parametrize("value", [b'{"a": 1}', b'{"a": 1}\n{"a": 2}\n'])
+    def test_bytes_json(self, value: bytes) -> None:
+        assert looks_like_json(value)
+
+    @pytest.mark.parametrize("value", [{"stdout": "{}"}, None, 42, ["{}"], b"", b"plain log"])
+    def test_non_text_returns_false(self, value: object) -> None:
+        # A non-str/bytes argument (a structured tool_response mapping slipping
+        # through) must return False, never raise on the missing `.strip`.
+        assert not looks_like_json(value)
+
 
 class TestShapesStore:
     def test_round_trip(self) -> None:
@@ -357,3 +367,50 @@ class TestSeenEmittingJson:
         cond = SeenEmittingJson()
         evt = self._event("ccx exec 'async def main(): return 2'", tmp_path / "s1")
         assert not cond.check_command_line(evt, evt.command_line)
+
+
+class TestRecordJsonShape:
+    """`record_json_shape` reads the real Bash `tool_response`, which is a dict.
+
+    Claude Code delivers a Bash result as `{"stdout": ..., "stderr": ...,
+    "interrupted": ...}` — despite the event's `str | None` typing — so the recorder
+    must pull `stdout` from the mapping and never `.strip()` the dict itself. The
+    prior test fed no `tool_response` at all, so the crash went unseen.
+    """
+
+    # The exact shape Claude Code surfaces for a Bash tool result.
+    RESP = {"stdout": "", "stderr": "", "interrupted": False, "isImage": False, "noOutputExpected": False}
+
+    def _event(self, command: str, tool_response: object, session_dir: Path) -> PostToolUseEvent:
+        ctx = HookContext(session=SessionStore(session_dir), transcript=None, settings=None)
+        return PostToolUseEvent(
+            _raw={"tool_name": "Bash", "tool_input": {"command": command}, "tool_response": tool_response},
+            ctx=ctx,
+        )
+
+    def test_dict_json_stdout_records_shape(self, tmp_path: Path) -> None:
+        # The regression: a dict tool_response with JSON stdout used to crash on
+        # `dict.strip`; now its shape is learned.
+        evt = self._event("terraform output", {**self.RESP, "stdout": '{"a": 1}'}, tmp_path / "s1")
+        record_json_shape(evt)
+        assert load_shapes(evt) == {shape("terraform output")}
+
+    def test_dict_plain_text_stdout_records_nothing(self, tmp_path: Path) -> None:
+        # The live repro: a `which ccx`-style dict whose stdout is plain text — no
+        # crash, and nothing learned.
+        evt = self._event("which ccx", {**self.RESP, "stdout": "/opt/homebrew/bin/ccx\nv0.6.1"}, tmp_path / "s2")
+        record_json_shape(evt)
+        assert load_shapes(evt) == set()
+
+    def test_string_json_stdout_still_records_shape(self, tmp_path: Path) -> None:
+        # The declared `str` shape still works: a bare-string tool_response emitting
+        # JSON is learned.
+        evt = self._event("kubectl get pods -o wide", '[{"id": 1}, {"id": 2}]', tmp_path / "s3")
+        record_json_shape(evt)
+        assert load_shapes(evt) == {shape("kubectl get pods -o wide")}
+
+    def test_empty_dict_stdout_records_nothing(self, tmp_path: Path) -> None:
+        # Missing/empty stdout is no output to shape — the early return, never a crash.
+        evt = self._event("echo hi", self.RESP, tmp_path / "s4")
+        record_json_shape(evt)
+        assert load_shapes(evt) == set()

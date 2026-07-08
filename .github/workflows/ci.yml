@@ -126,3 +126,8 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: capt-hook hook tests
         run: uvx capt-hook --hooks plugin/hooks test
+      # The declarative harness can only inject a string tool_response; the dict
+      # shape Claude Code hands Bash (record_json_shape's real input) is covered by
+      # pytest instead. Pinned to 3.13 with published capt-hook, matching the harness.
+      - name: Guard-pack pytest
+        run: PYTHONPATH=plugin uv run --no-project --no-config --python 3.13 --with capt-hook --with pytest python -m pytest plugin/hooks/test_json_guards.py
