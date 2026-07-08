@@ -140,7 +140,7 @@ The ~11,000-character outline of 35 files stayed in the sandbox; only the answer
 
 ## The guard pack enforces it
 
-A budgeted command only helps if the agent reaches for it. The bundled [capt-hook](https://github.com/yasyf/captain-hook) guard pack makes that the path of least resistance. Its `PreToolUse`/`PostToolUse` hooks block `cat`, raw `grep`, unbounded full-file `Read`s, and pager-bound `git diff`s, then point the agent at the `ccx` equivalent. Whole-page `WebFetch`es and unpiped `curl` page dumps get the same push toward `ccx web`; a deliberate re-run of the same URL passes, so pages `ccx web` can't serve stay reachable. It also watches for JSON. A command flagged for JSON output (`--json`, `-o json`) gets rewritten to run through `ccx format`, and the pack learns which commands emit JSON so it can nudge you to wrap them next time.
+A budgeted command only helps if the agent reaches for it. The bundled [capt-hook](https://github.com/yasyf/captain-hook) guard pack makes that the path of least resistance. Its `PreToolUse`/`PostToolUse` hooks rewrite simple token-heavy commands in place — `cat` runs as `ccx code read`, a `sed` line range as `--section`, a literal `grep` as `ccx code grep`, bare `git diff`/`git show`/`git log -p` as their `ccx vcs` equivalents, an unpiped `curl` page dump as `ccx web read` — each with a note saying what ran instead. A shape with no faithful mapping (a regex pattern, an exit-code `grep -q`, an untranslatable flag) blocks with a pointer at the `ccx` equivalent, and an unbounded full-file `Read` gets a hundred-line window plus a steer to `ccx code outline`. Whole-page `WebFetch`es keep the hard block, since a hook can't swap one tool for another; a deliberate re-run of the same URL passes, so pages `ccx web` can't serve stay reachable. It also watches for JSON. A command flagged for JSON output (`--json`, `-o json`) gets rewritten to run through `ccx format`, and the pack learns which commands emit JSON so it can nudge you to wrap them next time.
 
 ## Commands
 
@@ -160,7 +160,7 @@ Each command is a token-bounded stand-in for a primitive an agent would otherwis
 | `ccx format [-- <cmd>]` | Re-encode a command's JSON/NDJSON output lean, or filter a pipe |
 | `ccx exec [script]` | Compose ccx ops, `sh()`, and reflected MCP tools in a sandbox; only the return value enters context |
 
-`ccx --help` catalogs the rest, including structural find-replace with a preview-first `--apply`, dependency maps, per-commit symbol history, and `ccx vcs ship` to commit, push, and watch CI in one call; `ccx <command> --help` has the flags. Four engines sit behind the one surface. semble handles semantic search, ast-grep handles structural search and rewrites, an in-process web engine handles pages, and tilth handles everything else; `ccx` routes each command for you.
+`ccx --help` catalogs the rest, including structural find-replace with a preview-first `--apply`, dependency maps, per-commit symbol history, and `ccx vcs ship` to commit, push, and watch CI in one call; `ccx <command> --help` has the flags. Five engines sit behind the one surface. semble handles semantic search, ast-grep handles structural search and rewrites, an in-process web engine handles pages, ripgrep takes case-insensitive and word-boundary greps (`-i`, `-w`; system `grep` fills in when `rg` is missing), and tilth handles everything else; `ccx` routes each command for you.
 
 ## Configuration
 

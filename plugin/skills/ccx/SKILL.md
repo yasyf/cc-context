@@ -63,6 +63,7 @@ Pick the tool by what you know.
   ```
   ccx code grep "RATE_LIMIT"
   ccx code grep "func New" --glob "internal/**/*.go"
+  ccx code grep -i -w "ratelimit"   # case-insensitive, whole-word (runs on ripgrep)
   ```
 - **Have a path shape.** List files with per-file token counts:
   ```
