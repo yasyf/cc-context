@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"verify_note","witness":null,"verified_commit":"0ff3157486dc0709702ed3f01ecbb5df7a3d6307"}]}
+{"v":1,"lamport":3,"ops":[{"kind":"delete_note"}]}
