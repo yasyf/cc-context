@@ -4,6 +4,26 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-07-08
+
+### Added
+- `-i`/`--ignore-case` and `-w`/`--word` on `ccx code grep`, routed to PATH-resolved ripgrep (`--json`, fixed-strings) and reshaped into the house grep format so anchors and budget capping apply unchanged. System `grep -rnFI` is the fallback when `rg` is absent, with filesystem-validated line parsing; hidden and binary files are skipped and `.gitignore` is not applied, disclosed in an engine note. Wired across the CLI, MCP (`ignoreCase`/`word`/`scope` on `ccx_code_grep`), `ccx exec`'s `grep()`, and the proxy dispatch.
+- `--scope <path>` on `ccx code grep`, passed through to tilth.
+- The plugin installer best-effort ensures ripgrep (`brew install ripgrep`, backgrounded) at session start; skipped silently without brew.
+- Guard pack: block-only hooks now rewrite mappable commands in place via `updatedInput`, each with a disclosure note — raw `grep` → `ccx code grep`, bare `git diff`/`git show`/`git log -p <path>`/`jj diff` → the `ccx vcs` equivalents, unpiped `curl`/`wget` page dumps → `ccx web read --full`, unbounded large `Read`s → a 100-line window. Unmappable shapes keep the original block message; rewrites that need a newer binary gate on a `ccx_supports` probe of the installed CLI.
+
+### Fixed
+- `ccx vcs show <ref>` resolves git symbolic refs (HEAD, HEAD~N, branches, tags) in jj-colocated repos instead of handing them to `jj log -r`; embedded-`@` sources (`release@1` vs `main@origin`) classify by attempted git resolution, consistently across the show and diff paths.
+- rg engine hardening: positional paths ride behind `--` so a flag-like scope cannot be misparsed; base64 `bytes` payloads in `rg --json` output decode instead of emitting blank match lines; the grep fallback's path validation requires regular files, so a directory named like a path prefix cannot steal the split.
+
+### Changed
+- CI builds on Go 1.26.5 (GO-2026-5856), uses `actions/cache@v5`, and runs the guard-pack pytest suite over the whole `plugin/hooks/` directory.
+
+## [0.7.0] - 2026-07-08
+
+### Added
+- `ccx web` op family: `outline <url>` (heading tree with stable `§` section refs), `read <url> --section <ref>` (budget-capped section subtree with prev/next nav; `--full` for the whole page), and `search <url> "<question>"` (top-k relevant chunks with `§` cites; hybrid BM25 + local embeddings). Pages cache for 24h; `--refresh` refetches. Mirrored over MCP as `ccx_web_outline`/`ccx_web_read`/`ccx_web_search`.
+
 ## [0.6.1] - 2026-07-07
 
 ### Fixed
@@ -117,6 +137,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - jj-aware diff translation.
 - Claude Code plugin: facade-only MCP registration, a bootstrap shim that provisions the `ccx` binary, a capt-hook guard pack that blocks token-heavy primitives (unbounded `Read`, bare `cat`, `ls -R`, broad `git diff`) with escape hatches, and the `ccx` skill.
 
+[0.8.0]: https://github.com/yasyf/cc-context/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/yasyf/cc-context/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/yasyf/cc-context/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/yasyf/cc-context/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/yasyf/cc-context/compare/v0.5.0...v0.5.1
