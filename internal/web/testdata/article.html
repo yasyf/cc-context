@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Understanding Widgets — Widget Corp Blog</title>
+</head>
+<body>
+  <nav class="site-nav">
+    <a href="/">Home</a>
+    <a href="/about">About</a>
+    <a href="/blog">Blog</a>
+    <a href="/contact">Contact</a>
+  </nav>
+  <article>
+    <h1>Understanding Widgets</h1>
+    <p>Widgets are the fundamental building blocks of every modern assembly line, and understanding how they behave under load is the first step toward a reliable system. A widget encapsulates a single unit of work, carries its own configuration, and exposes a narrow interface to the components around it. This isolation is what lets teams reason about one widget at a time.</p>
+    <p>When a widget receives a request it validates the input, performs the transformation it was configured for, and emits a result. Failures are surfaced immediately rather than swallowed, which keeps the surrounding pipeline honest. The best widgets do exactly one thing and make invalid states impossible to represent.</p>
+    <h2>How Widgets Compose</h2>
+    <p>Two widgets compose when the output of one becomes the input of the next. Because each widget is independent, you can rearrange a pipeline without rewriting its parts. Composition is associative, so grouping never changes the result — only the shape of the code that expresses it.</p>
+    <p>In practice you will build small, well-tested widgets and wire them together at the edges. Keep the exported surface small, wrap errors as they travel up, and let the data flow decide the structure.</p>
+  </article>
+  <footer class="site-footer">
+    <p>Copyright 2026 Widget Corp. All rights reserved.</p>
+    <p><a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a></p>
+  </footer>
+</body>
+</html>

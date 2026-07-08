@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Config API Reference</title>
+</head>
+<body>
+  <article>
+    <h1>Config API Reference</h1>
+    <p>The configuration API accepts a small set of typed parameters and returns a validated config object. Every parameter is checked at load time so a missing or malformed value fails loudly at startup rather than lazily on first use, which keeps long-running services predictable and easy to debug in production.</p>
+    <h2>Parameters</h2>
+    <table>
+      <thead>
+        <tr><th>Name</th><th>Type</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>id</td><td>string</td><td>Unique identifier for the record</td></tr>
+        <tr><td>count</td><td>int</td><td>Number of items to return</td></tr>
+        <tr><td>strict</td><td>bool</td><td>Fail on the first validation error</td></tr>
+      </tbody>
+    </table>
+    <h2>Example</h2>
+    <p>The snippet below loads a config and prints it:</p>
+    <pre><code>func main() {
+    cfg, err := Load("config.toml")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println(cfg)
+}</code></pre>
+    <p>The <del>legacy loader</del> new loader is the supported path going forward.</p>
+  </article>
+</body>
+</html>

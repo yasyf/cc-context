@@ -28,6 +28,12 @@ linters:
         text: G304
         linters:
           - gosec
+      # G703 (path traversal via taint) likewise: golden-file updaters write
+      # under testdata/ from table-literal names, not untrusted input.
+      - path: _test\.go
+        text: G703
+        linters:
+          - gosec
 
 formatters:
   enable:
