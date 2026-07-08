@@ -71,7 +71,7 @@ type Page struct {
 	Sections   []Section
 	Chunks     []Chunk
 	Vectors    [][]float32 // per-chunk embeddings, lazily filled on first search
-	EmbedModel string      // model that produced Vectors; a mismatch re-embeds
+	EmbedModel string      // model that produced Vectors; a mismatch discards the cache entry on load
 }
 
 // Section is one node in a page's heading tree. Start and End are byte offsets
