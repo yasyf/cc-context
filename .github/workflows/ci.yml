@@ -106,7 +106,7 @@ jobs:
           # 3.12 makes uv resolve an old capt-hook that lacks newer hook APIs.
           python-version: "3.13"
       - name: Cache NLP resources
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cache/spacy/models
