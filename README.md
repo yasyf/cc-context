@@ -140,7 +140,7 @@ The ~11,000-character outline of 35 files stayed in the sandbox; only the answer
 
 ## The guard pack enforces it
 
-A budgeted command only helps if the agent reaches for it. The bundled [capt-hook](https://github.com/yasyf/captain-hook) guard pack makes that the path of least resistance. Its `PreToolUse`/`PostToolUse` hooks block `cat`, raw `grep`, unbounded full-file `Read`s, and pager-bound `git diff`s, then point the agent at the `ccx` equivalent. It also watches for JSON. A command flagged for JSON output (`--json`, `-o json`) gets rewritten to run through `ccx format`, and the pack learns which commands emit JSON so it can nudge you to wrap them next time.
+A budgeted command only helps if the agent reaches for it. The bundled [capt-hook](https://github.com/yasyf/captain-hook) guard pack makes that the path of least resistance. Its `PreToolUse`/`PostToolUse` hooks block `cat`, raw `grep`, unbounded full-file `Read`s, and pager-bound `git diff`s, then point the agent at the `ccx` equivalent. Whole-page `WebFetch`es and unpiped `curl` page dumps get the same push toward `ccx web`; a deliberate re-run of the same URL passes, so pages `ccx web` can't serve stay reachable. It also watches for JSON. A command flagged for JSON output (`--json`, `-o json`) gets rewritten to run through `ccx format`, and the pack learns which commands emit JSON so it can nudge you to wrap them next time.
 
 ## Commands
 

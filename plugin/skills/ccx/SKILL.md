@@ -2,17 +2,21 @@
 name: ccx
 description: >-
   Read code, find symbols, search a codebase, review diffs, edit a span in place,
-  and compose multi-call pipelines with token-bounded outputs instead of raw file
-  reads. Use whenever you need codebase context: reading a file, locating a symbol
+  outline and search web pages, and compose multi-call pipelines with token-bounded
+  outputs instead of raw file reads or whole-page fetches. Use whenever you need
+  codebase context: reading a file, locating a symbol
   or definition, searching code by intent or text, listing files, reviewing changes,
   editing a line range you already have an anchor for, re-encoding a command's
-  JSON output, or chaining tool calls and keeping only the distilled result. Triggers
+  JSON output, or chaining tool calls and keeping only the distilled result — and
+  whenever you need web content: reading or fetching a web page or docs URL, or
+  asking a question of a page. Triggers
   on "read this file", "where is X", "find the Y function", "how does Z work",
   "search the code for", "show me the diff", "what calls this", "change line N",
   "replace this span", "filter this output", "for each file", "combine results
-  from", or running any command that emits JSON.
-  Reach for ccx before Read, cat, sed, grep, git diff, ls -R, or find, since
-  the guard hooks block those on anything token-heavy.
+  from", "fetch this page", "read these docs", "what does the page say about X",
+  or running any command that emits JSON.
+  Reach for ccx before Read, cat, sed, grep, git diff, ls -R, find, WebFetch, or a
+  curl page dump, since the guard hooks block those on anything token-heavy.
 ---
 
 # ccx — compact codebase context
@@ -275,7 +279,9 @@ These hold for every command, which is what makes ccx safe to trust over a raw r
 ## Why ccx first
 
 The guard hooks block token-heavy primitives: a full-file `Read` of a large file, a
-broad `git diff`, raw `grep`, `sed -n`, a bare `cat`, `ls -R`, and `find` enumeration.
+broad `git diff`, raw `grep`, `sed -n`, a bare `cat`, `ls -R`, `find` enumeration, a
+whole-page `WebFetch`, and an unpiped `curl`/`wget` page dump (a URL `ccx web` can't
+serve stays reachable — the same WebFetch passes on a deliberate re-run).
 Each has a ccx equivalent that returns the same answer in a fraction of the tokens.
 Reach for ccx and you stay inside the budget by default; reach for the raw tool and the
 hook turns you back to ccx anyway.
