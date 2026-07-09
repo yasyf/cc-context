@@ -1,26 +1,30 @@
 # cc-context benchmark configuration.
 #
-# Cache-aware cost-per-correct-answer harness. The metric is the real API bill
-# (cache_create + cache_read + input + output) per correct answer, with accuracy
-# reported alongside. See README.md for the rtk gate this satisfies.
+# Measures whether ccx reduces the token context an agent processes at equal-or-better
+# accuracy. Headline metrics: peak context and total tokens processed. Cost is not a
+# metric; the safety ceiling below only stops runaway spend.
 
 [run]
 # Models to benchmark, as `claude --model` aliases or full IDs.
-# Pilot defaults to haiku (cheap); the real run that docs may cite is ["opus", "sonnet"].
-models = ["haiku"]
+models = ["sonnet", "opus"]
 # Repeats per (task, arm, model). Agents are stochastic; R>=3 gives a paired delta + stdev.
 repeats = 3
-# Hard ceiling on total measured spend. The runner aborts before a run would exceed it.
-budget_usd = 15.0
+# Max agent turns per run; caps runaway trajectories.
+max_turns = 60
+# Runaway protection only: the runner aborts before measured spend would exceed it. Never reported.
+safety_ceiling_usd = 500.0
 # Headless autonomy. Identical for both arms. capt-hook guard hooks still fire under bypass
 # (they are a hook decision, not a permission); the pilot integrity check proves it.
 permission_mode = "bypassPermissions"
 timeout_s = 900
-# Applied identically to BOTH arms so the only tool-surface difference is ccx itself.
+# Applied identically to all arms so the only tool-surface difference is ccx itself.
 strip_mcp = true
 disallowed_tools = ["WebSearch", "WebFetch", "Task"]
-# Cross-check tolerance: |cost_of(usage) - total_cost_usd| / total_cost_usd must stay under this.
-cost_tolerance = 0.02
+
+[corpus]
+# Size floor: Σ bytes of a headline task's gold.traversal_files must exceed this, so ccx's
+# fixed overhead stays a small fraction of the naive context a baseline must traverse.
+min_traversal_bytes = 100000
 
 [paths]
 # All paths are resolved relative to the bench/ directory.
@@ -43,6 +47,8 @@ url = "https://github.com/pallets/click"
 ref = "8.1.7"
 kind = "python"
 
-# Cost is cross-checked against cc-transcript's cost_of (cc_transcript.cost), whose default
-# PRICING table (opus 5/25, sonnet 3/15, haiku 1/5, fable 10/50, with cache multipliers
-# 5m=1.25 / 1h=2.0 / read=0.1) is the single source of truth — no local price table.
+[[repos]]
+name = "tornado"
+url = "https://github.com/tornadoweb/tornado"
+ref = "v6.4.1"
+kind = "python"

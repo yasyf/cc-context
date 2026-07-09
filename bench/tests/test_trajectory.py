@@ -109,6 +109,23 @@ class TestTrajectory(unittest.TestCase):
         self.assertEqual(m.decomposition.total, m.high_water)
         self.assertGreater(m.turn_count, 0)
 
+    def test_totals_sum_per_api_call(self) -> None:
+        # Per-call prompt/output summed across the whole trajectory; the turn-settling
+        # convention (max per turn) dedupes the repeated same-usage assistant events.
+        tests = [
+            # name, events, first_prompt, total_prompt, total_output, total_tokens
+            ("synthetic", synthetic(), "P" * 4, 5500, 3, 5503),
+            ("real", trajectory.load_events(DATA / "trajectory_real.json"), "", 91917, 10, 91927),
+        ]
+        for name, events, first_prompt, total_prompt, total_output, total_tokens in tests:
+            with self.subTest(name):
+                m = trajectory.compute(events, first_prompt=first_prompt, count=fake_count)
+                assert m is not None
+                self.assertEqual(m.total_prompt, total_prompt)
+                self.assertEqual(m.total_output, total_output)
+                self.assertEqual(m.total_tokens, total_tokens)
+                self.assertEqual(m.total_tokens, m.total_prompt + m.total_output)
+
     def test_load_events_rejects_non_array(self) -> None:
         path = DATA / "_not_an_array.json"
         path.write_text(json.dumps({"type": "result"}))

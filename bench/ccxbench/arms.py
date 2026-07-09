@@ -1,9 +1,11 @@
 """Build the per-(task, arm) workdir and the `claude -p` invocation.
 
-Both arms run isolated — fresh config dir, ambient settings/MCP/plugins stripped — in a fresh
-fixture checkout with the same disallowed tools. The only differences are the ccx arm's facade
-MCP, its `ccx` on PATH, the ccx ladder appended to the system prompt, and the capt-hook
-PreToolUse guards when the pack loads.
+Three arms run isolated — fresh config dir, ambient settings/MCP/plugins stripped — in a
+fresh checkout with the same disallowed tools. `baseline` gets none of ccx. `ccx-mcp` serves
+the cc-context facade MCP; `ccx-cli` serves zero MCP servers and reaches ccx only through the
+Bash `ccx` on PATH — that zero-MCP isolation is what the cli-vs-mcp comparison leans on. Both
+ccx arms get `ccx` on PATH, the capt-hook PreToolUse guards, and a length-matched ccx ladder
+appended to the system prompt (baseline gets the matched native-tool control instead).
 """
 
 from __future__ import annotations
@@ -17,16 +19,20 @@ from pathlib import Path
 
 from spawnllm import ClaudeConfig, RunSpec
 
-from .config import Config
-from .fixtures import FIXTURE_NAME
+from .config import BENCH_DIR, Config
 from .types import Task
 
 CAPT_HOOK = "capt-hook>=3.14.0"
+CCX_ARMS = ("ccx-mcp", "ccx-cli")
+PATCHES_DIR = BENCH_DIR / "tasks" / "patches"
 
-LADDER = (Path(__file__).resolve().parent / "ladder.txt").read_text()
-# Both arms get matched, length-comparable "navigate efficiently" guidance so the paired
-# delta isolates ccx's tools/guards rather than the generic frugality advice in the ladder.
-BASELINE_CONTROL = (Path(__file__).resolve().parent / "baseline_control.txt").read_text()
+# Length-matched (±15%) addenda so the paired delta isolates ccx, not the volume of advice:
+# the MCP ladder names the mcp__cc-context__* tools, the CLI ladder the `ccx` commands.
+ADDENDA_DIR = Path(__file__).resolve().parent
+LADDER_MCP = (ADDENDA_DIR / "ladder_mcp.txt").read_text()
+LADDER_CLI = (ADDENDA_DIR / "ladder_cli.txt").read_text()
+BASELINE_CONTROL = (ADDENDA_DIR / "baseline_control.txt").read_text()
+ADDENDA: dict[str, str] = {"baseline": BASELINE_CONTROL, "ccx-mcp": LADDER_MCP, "ccx-cli": LADDER_CLI}
 
 GUARD_PROBE: dict[str, bool] = {}
 
@@ -38,7 +44,7 @@ def guard_command(cfg: Config) -> str:
 def guards_available(cfg: Config) -> bool:
     """Probe once that the ccx guard pack is live: a large unbounded Read must be denied.
 
-    Drives the exact PreToolUse path the ccx arm uses (capt-hook + the canonical pack) against a
+    Drives the exact PreToolUse path the ccx arms use (capt-hook + the canonical pack) against a
     synthetic >20 KB file. A `deny` whose reason names `ccx` proves the cc-context navigation
     guards loaded and fire; if the pack fails to import, the Read is allowed and the probe is False.
     """
@@ -79,23 +85,39 @@ def apply_edits(workdir: Path, task: Task) -> None:
         path.write_text(text.replace(edit["find"], edit["replace"], 1))
 
 
+def apply_patch(workdir: Path, task: Task) -> None:
+    """Apply the task's uncommitted-diff setup patch, if one exists, failing loud on reject."""
+    patch = PATCHES_DIR / f"{task.id}.patch"
+    if not patch.exists():
+        return
+    subprocess.run(["git", "apply", str(patch)], cwd=workdir, check=True)
+
+
 def prepare_workdir(cfg: Config, task: Task, arm: str, run_id: str) -> Path:
-    """Create a fresh fixture checkout for one run and apply the task's setup edits."""
-    src = cfg.fixtures_root / (FIXTURE_NAME if task.repo == "fixture" else task.repo)
-    if not src.exists():
-        raise FileNotFoundError(f"repo not staged: {src} (run `build-corpus` first)")
+    """Create a fresh checkout for one run and apply the task's setup edits/patch.
+
+    `repo == "empty"` yields a bare workdir with no checkout (the non_regression control family).
+    """
     workdir = cfg.work_root / run_id
     if workdir.exists():
         shutil.rmtree(workdir)
+    if task.repo == "empty":
+        workdir.mkdir(parents=True)
+        return workdir
+    src = cfg.fixtures_root / task.repo
+    if not src.exists():
+        raise FileNotFoundError(f"repo not staged: {src} (run `build-corpus` first)")
     shutil.copytree(src, workdir)
-    # Defense in depth: the answer key must never reach a run, even from a stale fixture.
+    # Defense in depth: the answer key must never reach a run, even from a stale checkout.
     (workdir / "manifest.json").unlink(missing_ok=True)
     apply_edits(workdir, task)
+    apply_patch(workdir, task)
     return workdir
 
 
 def mcp_config(cfg: Config, arm: str) -> str:
-    servers = {"cc-context": {"command": str(cfg.ccx_bin), "args": ["mcp"]}} if arm == "ccx" else {}
+    """Serve the cc-context facade MCP for ccx-mcp only; every other arm gets zero MCP servers."""
+    servers = {"cc-context": {"command": str(cfg.ccx_bin), "args": ["mcp"]}} if arm == "ccx-mcp" else {}
     return json.dumps({"mcpServers": servers})
 
 
@@ -111,7 +133,7 @@ def run_settings(cfg: Config, with_guards: bool) -> str:
 
 def build_run_spec(cfg: Config, task: Task, arm: str, model: str, workdir: Path) -> RunSpec:
     """Build the spawnllm RunSpec for one headless run."""
-    ccx = arm == "ccx"
+    ccx = arm in CCX_ARMS
     # spawnllm inherits os.environ, so force ENABLE_TOOL_SEARCH off (it leaks true from the dev shell).
     env: dict[str, str] = {"ENABLE_TOOL_SEARCH": "false"}
     if ccx:
@@ -130,9 +152,10 @@ def build_run_spec(cfg: Config, task: Task, arm: str, model: str, workdir: Path)
                 permission_mode=cfg.permission_mode,
                 mcp_config=mcp_config(cfg, arm),
                 strict_mcp=cfg.strip_mcp,
-                append_system_prompt=LADDER if ccx else BASELINE_CONTROL,
+                append_system_prompt=ADDENDA[arm],
                 settings=settings,
                 disallowed_tools=tuple(cfg.disallowed_tools),
+                max_turns=cfg.max_turns,
             )
         },
     )

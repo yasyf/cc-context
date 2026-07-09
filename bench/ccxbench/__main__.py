@@ -1,9 +1,8 @@
-"""ccxbench CLI: build the corpus, self-test graders, cross-check cost, run, report.
+"""ccxbench CLI: build the corpus, self-test graders, run, report.
 
   python -m ccxbench build-corpus      # generate fixture + tasks/*.json
   python -m ccxbench list-tasks
   python -m ccxbench selftest          # graders pass on gold, fail on wrong (no API cost)
-  python -m ccxbench crosscheck FILE   # recomputed cost vs total_cost_usd on a raw envelope
   python -m ccxbench run [filters]     # real runs -> results/<session>/{runs.jsonl,RESULTS.md}
   python -m ccxbench pilot             # tiny real run to validate the harness end to end
   python -m ccxbench report SESSION    # rebuild RESULTS.md from a session's runs.jsonl
@@ -23,16 +22,13 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from cc_transcript import parse_print_result
-
 from . import fixtures, microbench, report, repos, taskgen
 from .arms import apply_edits
 from .config import Config, load
-from .cost import crosscheck
 from .grade import grade, synthetic_result
 from .graders import GradeContext, grade_test_run
 from .runner import Session, run_corpus
-from .types import Task
+from .types import ARMS, Task
 
 BENCH_DIR = Path(__file__).resolve().parent.parent
 TASKS_DIR = BENCH_DIR / "tasks"
@@ -281,20 +277,6 @@ def selftest_edit(task: Task, src_dir: Path) -> bool:
         return good.correct and not bad.correct
 
 
-def cmd_crosscheck(cfg: Config, path: Path) -> int:
-    pr = parse_print_result(path.read_bytes())
-    model = next(iter(pr.model_usage), "")
-    cc = crosscheck(pr, model, cfg.cost_tolerance)
-    print(f"models:     {list(pr.model_usage)}")
-    print(f"reported:   ${cc.reported_usd:.6f}")
-    print(f"recomputed: ${cc.recomputed_usd:.6f}")
-    print(f"rel_delta:  {cc.rel_delta:.4f} (tolerance {cfg.cost_tolerance})")
-    print(f"within:     {cc.within_tolerance}")
-    if cc.note:
-        print(f"note:       {cc.note}")
-    return 0 if cc.within_tolerance else 1
-
-
 def select(tasks: list[Task], args: argparse.Namespace) -> list[Task]:
     if args.tasks:
         wanted = set(args.tasks.split(","))
@@ -320,17 +302,17 @@ def cmd_run(cfg: Config, args: argparse.Namespace) -> int:
         cfg = replace_models(cfg, args.models.split(","))
     if args.repeats:
         cfg = replace_repeats(cfg, args.repeats)
-    if args.budget is not None:
-        cfg = replace_budget(cfg, args.budget)
+    if args.ceiling is not None:
+        cfg = replace_ceiling(cfg, args.ceiling)
     tasks = select(load_corpus(), args)
     if not tasks:
         sys.exit("no tasks selected")
     session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     sess = Session(cfg=cfg, session_id=session_id)
-    runs = len(tasks) * len(cfg.models) * cfg.repeats * 2
-    print(f"session {session_id}: {len(tasks)} tasks x {len(cfg.models)} models x {cfg.repeats} repeats x 2 arms = {runs} runs")
-    print(f"budget cap: ${cfg.budget_usd:.2f}")
-    records = asyncio.run(run_corpus(sess, tasks))
+    runs = len(tasks) * len(cfg.models) * cfg.repeats * len(ARMS)
+    print(f"session {session_id}: {len(tasks)} tasks x {len(cfg.models)} models x {cfg.repeats} repeats x {len(ARMS)} arms = {runs} runs")
+    print(f"safety ceiling: ${cfg.safety_ceiling_usd:.2f}")
+    records = asyncio.run(run_corpus(sess, tasks, concurrency=args.concurrency))
     md = report.write_report(sess.jsonl_path, cfg.results_dir / session_id / "RESULTS.md")
     print(f"\nspent: ${sess.spent_usd:.4f} over {len(records)} runs")
     print(f"report: {cfg.results_dir / session_id / 'RESULTS.md'}")
@@ -346,8 +328,8 @@ def replace_repeats(cfg: Config, repeats: int) -> Config:
     return Config(**{**cfg.__dict__, "repeats": repeats})
 
 
-def replace_budget(cfg: Config, budget_usd: float) -> Config:
-    return Config(**{**cfg.__dict__, "budget_usd": budget_usd})
+def replace_ceiling(cfg: Config, ceiling_usd: float) -> Config:
+    return Config(**{**cfg.__dict__, "safety_ceiling_usd": ceiling_usd})
 
 
 def cmd_pilot(cfg: Config, args: argparse.Namespace) -> int:
@@ -369,9 +351,6 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("list-tasks")
     sub.add_parser("selftest")
 
-    cc = sub.add_parser("crosscheck")
-    cc.add_argument("path", type=Path)
-
     for name in ("run", "pilot"):
         rp = sub.add_parser(name)
         rp.add_argument("--tasks", help="comma-separated task ids")
@@ -380,7 +359,8 @@ def main(argv: list[str] | None = None) -> int:
         rp.add_argument("--limit", type=int, help="max total tasks")
         rp.add_argument("--models", help="override config models (comma-separated)")
         rp.add_argument("--repeats", type=int, help="override config repeats")
-        rp.add_argument("--budget", type=float, help="override config budget_usd ceiling")
+        rp.add_argument("--ceiling", type=float, help="override config safety_ceiling_usd")
+        rp.add_argument("--concurrency", type=int, default=1, help="parallel in-flight runs (default 1, serial)")
 
     rep = sub.add_parser("report")
     rep.add_argument("session")
@@ -403,8 +383,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "selftest":
         return selftest(cfg)
-    if args.cmd == "crosscheck":
-        return cmd_crosscheck(cfg, args.path)
     if args.cmd == "run":
         return cmd_run(cfg, args)
     if args.cmd == "pilot":

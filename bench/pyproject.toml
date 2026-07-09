@@ -11,6 +11,11 @@ dependencies = [
     "tiktoken>=0.13.0",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
+
 # cc-transcript is a Rust package with macOS/Linux wheels only (no Windows), so
 # scope lock resolution to the platforms it actually supports.
 [tool.uv]

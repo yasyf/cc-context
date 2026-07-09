@@ -1,9 +1,10 @@
 """Assert an arm behaved as labeled, so the comparison is not silently mislabeled.
 
-ccx arm: ccx must actually be exercised (a facade tool call or a Bash `ccx`), or a
-guard must have fired. baseline arm: no ccx tool, no guard — native tools only. The
-verdict is recorded per run so the report can prove "only ccx differs" rather than
-assume it.
+baseline: no ccx tool, no guard, no cc-context MCP — native tools only. ccx-mcp: cc-context
+loaded AND ccx exercised (a facade tool call or a Bash `ccx`) or a guard fired. ccx-cli: the
+isolation arm — cc-context MCP present or any mcp__cc-context__* call is a breach (mislabeled),
+so a genuine run reaches ccx only through the Bash `ccx` or trips a guard. The verdict is
+recorded per run so the report can prove "only ccx differs" rather than assume it.
 """
 
 from __future__ import annotations
@@ -103,16 +104,11 @@ def assess(pr: PrintResult, arm: str) -> Integrity:
     guard_fired = guard_fired or any(denial_is_ccx_guard(d) for d in pr.permission_denials)
 
     ccx_used = bool(ccx_calls)
+    mcp_ccx_used = any(c.startswith(CCX_MCP) for c in ccx_calls)
+    bash_ccx_used = any(c.startswith("bash:ccx") for c in ccx_calls)
     cc_present = bool(pr.init) and any(s.name == "cc-context" for s in pr.init.mcp_servers)
 
-    if arm == "ccx":
-        if not cc_present:
-            ok, note = False, "ccx arm but cc-context MCP not loaded"
-        elif ccx_used or guard_fired:
-            ok, note = True, "ok"
-        else:
-            ok, note = False, "ccx arm but ccx never used and no guard fired — mislabeled"
-    else:
+    if arm == "baseline":
         leaks: list[str] = []
         if ccx_used:
             leaks.append("ccx used in baseline")
@@ -122,6 +118,24 @@ def assess(pr: PrintResult, arm: str) -> Integrity:
             leaks.append("cc-context MCP present in baseline")
         ok = not leaks
         note = "ok" if ok else "; ".join(leaks)
+    elif arm == "ccx-mcp":
+        if not cc_present:
+            ok, note = False, "ccx-mcp arm but cc-context MCP not loaded"
+        elif ccx_used or guard_fired:
+            ok, note = True, "ok"
+        else:
+            ok, note = False, "ccx-mcp arm but ccx never used and no guard fired — mislabeled"
+    elif arm == "ccx-cli":
+        if cc_present:
+            ok, note = False, "ccx-cli arm but cc-context MCP loaded — isolation breach, mislabeled"
+        elif mcp_ccx_used:
+            ok, note = False, "ccx-cli arm but mcp__cc-context__ tool called — mislabeled"
+        elif bash_ccx_used or guard_fired:
+            ok, note = True, "ok"
+        else:
+            ok, note = False, "ccx-cli arm but Bash ccx never used and no guard fired — mislabeled"
+    else:
+        raise ValueError(f"unknown arm: {arm}")
 
     if cheated:
         ok, note = False, f"READ ANSWER KEY (manifest.json) — run is invalid; {note}"

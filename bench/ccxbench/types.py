@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-ARMS: tuple[str, ...] = ("baseline", "ccx")
+ARMS: tuple[str, ...] = ("baseline", "ccx-mcp", "ccx-cli")
 
 CATEGORIES: tuple[str, ...] = (
     "navigation",
@@ -97,6 +97,15 @@ class Task:
             setup=d.get("setup", {}),
         )
 
+    @property
+    def traversal_files(self) -> tuple[str, ...]:
+        """Repo-relative paths a naive baseline must traverse (size-floor metadata).
+
+        Lives inside `gold`, so the model under test never sees it. Empty for task
+        families with no traversal floor (e.g. non_regression).
+        """
+        return tuple(self.gold.get("traversal_files", ()))
+
 
 @dataclass(frozen=True)
 class Usage:
@@ -181,6 +190,8 @@ class TrajectoryMetrics:
     `high_water` is the largest single-turn prompt (input + cache_create + cache_read).
     `cumulative_tool_output` is the total of every tool result injected into context —
     the quantity ccx directly controls. `decomposition` attributes the high-water mark.
+    `total_prompt`/`total_output` sum the per-API-call prompt and output tokens across the
+    whole trajectory (the transcript-side recompute report.py cross-checks vs the envelope).
     """
 
     high_water: int
@@ -190,3 +201,9 @@ class TrajectoryMetrics:
     tool_call_count: int
     peak_turn: int
     tool_calls: tuple[ToolCall, ...]
+    total_prompt: int
+    total_output: int
+
+    @property
+    def total_tokens(self) -> int:
+        return self.total_prompt + self.total_output

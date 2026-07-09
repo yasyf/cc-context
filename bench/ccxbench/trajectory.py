@@ -41,6 +41,10 @@ def _prompt_tokens(usage: dict) -> int:
     )
 
 
+def _output_tokens(usage: dict) -> int:
+    return int(usage.get("output_tokens") or 0)
+
+
 def _block_text(block: dict) -> str:
     kind = block.get("type")
     if kind == "text":
@@ -90,11 +94,14 @@ def compute(events: list[dict], *, first_prompt: str, count: Count) -> Trajector
     """
     turns = _turns(events)
     turn_prompts = [max((_prompt_tokens(ev["message"]["usage"]) for ev in turn), default=0) for turn in turns]
+    turn_outputs = [max((_output_tokens(ev["message"]["usage"]) for ev in turn), default=0) for turn in turns]
     live = [(i, p) for i, p in enumerate(turn_prompts) if p > 0]
     if not live:
         return None
 
     peak_turn, high_water = max(live, key=lambda ip: ip[1])
+    total_prompt = sum(turn_prompts)
+    total_output = sum(turn_outputs)
 
     cumulative_tool_output = 0
     tool_calls: list[ToolCall] = []
@@ -137,6 +144,8 @@ def compute(events: list[dict], *, first_prompt: str, count: Count) -> Trajector
         tool_call_count=len(tool_calls),
         peak_turn=peak_turn,
         tool_calls=tuple(tool_calls),
+        total_prompt=total_prompt,
+        total_output=total_output,
     )
 
 

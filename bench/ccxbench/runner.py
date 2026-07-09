@@ -2,15 +2,16 @@
 
 Each run is spawned by spawnllm (which owns transient-overload retry and resolves every
 operational failure into a `Response.error` rather than raising), parsed by cc-transcript into
-a PrintResult, then given an integrity verdict, a cost cross-check, and a deterministic grade.
-Records are appended to a JSONL file and the raw payload is saved for audit. The budget is a
-soft ceiling checked before each run; spend accrues after each run, so the next run is admitted
-only while the running total is under the cap.
+a PrintResult, then given an integrity verdict and a deterministic grade. Records are appended
+to a JSONL file and the raw payload is saved for audit. The safety ceiling is the sole use of
+per-run cost: spend accrues after each run and the next run is admitted only while the running
+total is under `cfg.safety_ceiling_usd`; cost never enters the reported metrics.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -20,9 +21,11 @@ from pathlib import Path
 import spawnllm
 from cc_transcript import PrintResult, parse_print_result
 
-from . import arms, cost, grade, integrity
-from .config import Config
-from .types import Task
+from . import arms, grade, integrity
+from .config import BENCH_DIR, Config
+from .types import ARMS, Task
+
+TASKS_DIR = BENCH_DIR / "tasks"
 
 
 def env_fingerprint() -> list[str]:
@@ -32,7 +35,20 @@ def env_fingerprint() -> list[str]:
     )
 
 
-class BudgetExceeded(Exception):
+def corpus_sha(tasks_dir: Path = TASKS_DIR) -> str:
+    """SHA-256 fingerprint of the task corpus, for drift detection between build and report.
+
+    Recipe (report.py must reproduce it byte-for-byte): concatenate the raw bytes of every
+    `bench/tasks/*.json` file — non-recursive, so `tasks/patches/` is excluded — in ascending
+    filename order and hash the result. Filenames set the order but are not themselves hashed.
+    """
+    h = hashlib.sha256()
+    for p in sorted(tasks_dir.glob("*.json")):
+        h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+class CeilingExceeded(Exception):
     pass
 
 
@@ -55,8 +71,11 @@ class Session:
         meta = {
             "session_id": self.session_id,
             "models": list(self.cfg.models),
+            "arms": list(ARMS),
             "repeats": self.cfg.repeats,
-            "budget_usd": self.cfg.budget_usd,
+            "max_turns": self.cfg.max_turns,
+            "corpus_sha": corpus_sha(),
+            "safety_ceiling_usd": self.cfg.safety_ceiling_usd,
             "permission_mode": self.cfg.permission_mode,
             "strip_mcp": self.cfg.strip_mcp,
             "disallowed_tools": list(self.cfg.disallowed_tools),
@@ -67,7 +86,6 @@ class Session:
 
 def record_from(pr: PrintResult, cfg: Config, task: Task, arm: str, model: str, repeat: int, workdir: Path) -> dict:
     integ = integrity.assess(pr, arm)
-    cc = cost.crosscheck(pr, model, cfg.cost_tolerance)
     graded = grade.grade(task, pr, workdir)
     u = pr.usage
     cc_5m = u.cache_creation.ephemeral_5m_input_tokens if u.cache_creation else u.cache_creation_input_tokens
@@ -85,10 +103,6 @@ def record_from(pr: PrintResult, cfg: Config, task: Task, arm: str, model: str, 
         "correct": graded.correct,
         "grade_detail": graded.detail,
         "total_cost_usd": pr.total_cost_usd,
-        "cost_recomputed_usd": cc.recomputed_usd,
-        "cost_rel_delta": cc.rel_delta,
-        "cost_ok": cc.within_tolerance,
-        "cost_note": cc.note,
         "num_turns": pr.num_turns,
         "usage": {
             "input": u.input_tokens,
@@ -97,7 +111,7 @@ def record_from(pr: PrintResult, cfg: Config, task: Task, arm: str, model: str, 
             "cache_create_5m": cc_5m,
             "cache_create_1h": cc_1h,
         },
-        "guards_active": arms.guards_available(cfg) if arm == "ccx" else None,
+        "guards_active": arms.guards_available(cfg) if arm in arms.CCX_ARMS else None,
         "integrity": {
             "ok": integ.ok,
             "ccx_used": integ.ccx_used,
@@ -134,15 +148,15 @@ def error_record(cfg: Config, task: Task, arm: str, model: str, repeat: int, rea
 
 
 async def run_one(sess: Session, task: Task, arm: str, model: str, repeat: int) -> dict:
-    """Run one (task, arm, model, repeat). Returns the record; raises BudgetExceeded first.
+    """Run one (task, arm, model, repeat). Returns the record; raises CeilingExceeded first.
 
     `spawnllm.run` owns transient retry and resolves every operational failure — nonzero exit,
     error envelope, timeout, validation — into `resp.error`, never a raise. The full raw event
     stream `parse_print_result` needs lives in `resp.output.raw` on success and failure alike.
     """
     cfg = sess.cfg
-    if sess.spent_usd >= cfg.budget_usd:
-        raise BudgetExceeded(f"spent ${sess.spent_usd:.4f} >= budget ${cfg.budget_usd:.2f}")
+    if sess.spent_usd >= cfg.safety_ceiling_usd:
+        raise CeilingExceeded(f"spent ${sess.spent_usd:.4f} >= ceiling ${cfg.safety_ceiling_usd:.2f}")
 
     run_id = f"{task.id}__{arm}__{model}__r{repeat}"
     workdir = arms.prepare_workdir(cfg, task, arm, run_id)
@@ -163,41 +177,80 @@ async def run_one(sess: Session, task: Task, arm: str, model: str, repeat: int) 
     record = record_from(pr, cfg, task, arm, model, repeat, workdir)
     sess.spent_usd += pr.total_cost_usd
 
-    keep = (not record["integrity"]["ok"]) or (not record["cost_ok"]) or pr.is_error
+    keep = (not record["integrity"]["ok"]) or pr.is_error
     if not keep:
         shutil.rmtree(workdir, ignore_errors=True)
     return record
 
 
-async def run_corpus(
-    sess: Session,
-    tasks: list[Task],
-    *,
-    interleave: bool = True,
-) -> list[dict]:
-    """Run every (task, arm, model, repeat) round-robin: all tasks once per (model, repeat)
-    before any task repeats, so a budget halt samples every task evenly instead of clipping
-    late-alphabet tasks. Arms still interleave per repeat so neither rides the other's cache,
-    and each task's (baseline, ccx) pair stays adjacent for the paired report."""
-    cfg = sess.cfg
-    sess.setup()
+def _build_plan(cfg: Config, tasks: list[Task]) -> list[tuple[Task, str, str, int]]:
+    """Round-robin every (task, arm, model, repeat): all tasks once per (model, repeat) before
+    any task repeats, so a ceiling halt samples every task evenly. The arm order rotates by
+    repeat — `ARMS[r:] + ARMS[:r]` — so no arm is systematically first and each leads once per
+    len(ARMS) repeats; a task's arms stay adjacent for the paired report."""
+    n = len(ARMS)
     plan: list[tuple[Task, str, str, int]] = []
     for model in cfg.models:
         for repeat in range(cfg.repeats):
-            order = ("baseline", "ccx") if (repeat % 2 == 0 or not interleave) else ("ccx", "baseline")
+            order = ARMS[repeat % n :] + ARMS[: repeat % n]
             for task in tasks:
                 for arm in order:
                     plan.append((task, arm, model, repeat))
+    return plan
 
+
+async def _run_serial(sess: Session, plan: list[tuple[Task, str, str, int]]) -> list[dict]:
     records: list[dict] = []
     with sess.jsonl_path.open("w") as out:
         for task, arm, model, repeat in plan:
             try:
                 rec = await run_one(sess, task, arm, model, repeat)
-            except BudgetExceeded as e:
+            except CeilingExceeded as e:
                 out.write(json.dumps({"halted": str(e)}) + "\n")
                 break
             records.append(rec)
             out.write(json.dumps(rec) + "\n")
             out.flush()
     return records
+
+
+async def _run_bounded(sess: Session, plan: list[tuple[Task, str, str, int]], concurrency: int) -> list[dict]:
+    sem = asyncio.Semaphore(concurrency)
+    write_lock = asyncio.Lock()
+    records: list[dict] = []
+    halted: list[str] = []
+
+    with sess.jsonl_path.open("w") as out:
+
+        async def worker(item: tuple[Task, str, str, int]) -> None:
+            task, arm, model, repeat = item
+            async with sem:
+                if halted:
+                    return
+                try:
+                    rec = await run_one(sess, task, arm, model, repeat)
+                except CeilingExceeded as e:
+                    halted.append(str(e))
+                    return
+            async with write_lock:
+                records.append(rec)
+                out.write(json.dumps(rec) + "\n")
+                out.flush()
+
+        await asyncio.gather(*(worker(item) for item in plan))
+        if halted:
+            out.write(json.dumps({"halted": halted[0]}) + "\n")
+    return records
+
+
+async def run_corpus(sess: Session, tasks: list[Task], *, concurrency: int = 1) -> list[dict]:
+    """Execute the round-robin plan (see `_build_plan`), appending each record to runs.jsonl.
+
+    `concurrency == 1` (the default) runs strictly serial, byte-identical to the historical
+    single-worker loop. `concurrency > 1` bounds in-flight runs with a semaphore; records are
+    written as they complete."""
+    sess.setup()
+    plan = _build_plan(sess.cfg, tasks)
+    if concurrency == 1:
+        return await _run_serial(sess, plan)
+    return await _run_bounded(sess, plan, concurrency)

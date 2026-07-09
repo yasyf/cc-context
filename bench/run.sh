@@ -12,6 +12,5 @@ cd "$(dirname "$0")"
 
 python3 -m ccxbench build-corpus
 python3 -m ccxbench selftest
-python3 -m ccxbench crosscheck tests/data/haiku_envelope.json
 
 exec python3 -m ccxbench "${@:-pilot}"
