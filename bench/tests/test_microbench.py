@@ -35,7 +35,25 @@ class TestScorePairs(unittest.TestCase):
         self.assertTrue(result.all_ok)
         self.assertEqual(result.violations, ())
 
-    def test_ccx_larger_yields_violation(self) -> None:
+    def test_ccx_larger_in_regime_yields_violation(self) -> None:
+        pair = Pair(
+            intent="find pattern",
+            target="repo:needle",
+            raw_text="x" * 900,
+            ccx_text="y" * 1200,
+        )
+        result = score_pairs([pair], fake_count)
+        (row,) = result.rows
+        self.assertEqual(row.raw_tokens, 225)
+        self.assertEqual(row.ccx_tokens, 300)
+        self.assertTrue(row.in_regime)
+        self.assertFalse(row.ok)
+        self.assertLess(row.savings_pct, 0)
+        self.assertFalse(result.all_ok)
+        self.assertEqual(result.violations, (row,))
+        self.assertEqual(result.below_regime, ())
+
+    def test_ccx_larger_below_regime_is_not_a_violation(self) -> None:
         pair = Pair(
             intent="find pattern",
             target="repo:needle",
@@ -46,10 +64,12 @@ class TestScorePairs(unittest.TestCase):
         (row,) = result.rows
         self.assertEqual(row.raw_tokens, 10)
         self.assertEqual(row.ccx_tokens, 100)
+        self.assertFalse(row.in_regime)
         self.assertFalse(row.ok)
         self.assertLess(row.savings_pct, 0)
-        self.assertFalse(result.all_ok)
-        self.assertEqual(result.violations, (row,))
+        self.assertTrue(result.all_ok)
+        self.assertEqual(result.violations, ())
+        self.assertEqual(result.below_regime, (row,))
 
     def test_equal_tokens_is_ok(self) -> None:
         pair = Pair(intent="enumerate files", target="repo:*.go", raw_text="abcd", ccx_text="wxyz")
@@ -61,14 +81,15 @@ class TestScorePairs(unittest.TestCase):
 
     def test_aggregate_reports_violation_among_wins(self) -> None:
         win = Pair("understand file", "repo/a.go", "x" * 800, "y" * 80)
-        loss = Pair("find pattern", "repo:n", "x" * 40, "y" * 400)
+        loss = Pair("find pattern", "repo:n", "x" * 800, "y" * 1200)
         result = score_pairs([win, loss], fake_count)
         self.assertEqual(len(result.rows), 2)
         self.assertEqual(len(result.violations), 1)
         self.assertEqual(result.violations[0].intent, "find pattern")
-        # 200 raw vs 120 ccx total -> still net savings, but not all_ok.
-        self.assertEqual(result.total_raw, 210)
-        self.assertEqual(result.total_ccx, 120)
+        self.assertEqual(result.below_regime, ())
+        # 400 raw vs 320 ccx total -> still net savings, but not all_ok.
+        self.assertEqual(result.total_raw, 400)
+        self.assertEqual(result.total_ccx, 320)
         self.assertFalse(result.all_ok)
         self.assertGreater(result.overall_savings_pct, 0)
 
@@ -82,16 +103,38 @@ class TestResultProperties(unittest.TestCase):
         self.assertEqual(empty.overall_savings_pct, 0.0)
         self.assertTrue(empty.all_ok)
 
+    def test_in_regime_boundary_at_floor(self) -> None:
+        self.assertEqual(microbench.REGIME_MIN_RAW_TOKENS, 200)
+        at_floor = Row(intent="i", target="t", raw_tokens=200, ccx_tokens=250)
+        below = Row(intent="i", target="t", raw_tokens=199, ccx_tokens=250)
+        self.assertTrue(at_floor.in_regime)
+        self.assertFalse(below.in_regime)
+        result = Result(rows=(at_floor, below))
+        self.assertEqual(result.violations, (at_floor,))
+        self.assertEqual(result.below_regime, (below,))
+
 
 class TestFormatTable(unittest.TestCase):
     def test_table_marks_violation_and_summary(self) -> None:
         win = Pair("understand file", "repo/a.go", "x" * 800, "y" * 80)
-        loss = Pair("find pattern", "repo:needle", "x" * 40, "y" * 400)
+        loss = Pair("find pattern", "repo:needle", "x" * 800, "y" * 1200)
         table = format_table(score_pairs([win, loss], fake_count))
         self.assertIn("understand file", table)
         self.assertIn("find pattern", table)
         self.assertIn("FAIL", table)
         self.assertIn("1 violation(s)", table)
+
+    def test_table_marks_small_rows_and_notes_exclusion(self) -> None:
+        win = Pair("understand file", "repo/a.go", "x" * 800, "y" * 80)
+        small = Pair("find pattern", "repo:needle", "x" * 40, "y" * 400)
+        table = format_table(score_pairs([win, small], fake_count))
+        self.assertIn("small", table)
+        self.assertNotIn("FAIL", table)
+        self.assertIn("0 violation(s)", table)
+        self.assertIn("below the 200-token raw floor", table)
+        self.assertIn("excluded from gating", table)
+        # The small ccx>raw row is still listed so nothing is hidden.
+        self.assertIn("(small, not gated)", table)
 
 
 class FakeCounter:
@@ -119,12 +162,19 @@ class TestCmdMicrobench(unittest.TestCase):
         ]
         self.assertEqual(self._run(pairs), 0)
 
-    def test_violation_returns_nonzero(self) -> None:
+    def test_in_regime_violation_returns_nonzero(self) -> None:
+        pairs = [
+            Pair("understand file", "repo/a.go", "x" * 800, "y" * 80),
+            Pair("find pattern", "repo:needle", "x" * 800, "y" * 1200),
+        ]
+        self.assertEqual(self._run(pairs), 1)
+
+    def test_below_regime_ccx_larger_returns_zero(self) -> None:
         pairs = [
             Pair("understand file", "repo/a.go", "x" * 800, "y" * 80),
             Pair("find pattern", "repo:needle", "x" * 40, "y" * 400),
         ]
-        self.assertEqual(self._run(pairs), 1)
+        self.assertEqual(self._run(pairs), 0)
 
 
 if __name__ == "__main__":

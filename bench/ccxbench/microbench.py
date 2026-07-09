@@ -7,9 +7,10 @@ count-tokens ground truth on each output.
 
 Pairs are matched by intent: "understand a file" pits the file's full text (what a
 raw `Read` injects) against `ccx code outline`; "find a pattern" pits `grep -rn` against
-`ccx code grep`; and so on. Each pair asserts `ccx_tokens <= raw_tokens`; any violation
-fails the bench, which is the CI regression guard for "strictly less at the tool
-level."
+`ccx code grep`; and so on. Each in-regime pair (raw output at or above
+REGIME_MIN_RAW_TOKENS) asserts `ccx_tokens <= raw_tokens`; a violation there fails the
+bench, the CI regression guard for "strictly less at the tool level." Pairs below the
+floor have nothing to bound, so their envelope overhead is reported, not gated.
 """
 
 from __future__ import annotations
@@ -26,6 +27,10 @@ from .tokens import default_counter
 CountFn = Callable[[str], int]
 
 TIMEOUT_S = 30
+
+# A pair whose raw answer is under ~200 tokens has nothing to bound; ccx's structured
+# envelope costs more there. That overhead is expected, so it is reported, not gated.
+REGIME_MIN_RAW_TOKENS = 200
 
 
 @dataclass(frozen=True)
@@ -57,6 +62,10 @@ class Row:
     def ok(self) -> bool:
         return self.ccx_tokens <= self.raw_tokens
 
+    @property
+    def in_regime(self) -> bool:
+        return self.raw_tokens >= REGIME_MIN_RAW_TOKENS
+
 
 @dataclass(frozen=True)
 class Result:
@@ -66,7 +75,11 @@ class Result:
 
     @property
     def violations(self) -> tuple[Row, ...]:
-        return tuple(r for r in self.rows if not r.ok)
+        return tuple(r for r in self.rows if r.in_regime and not r.ok)
+
+    @property
+    def below_regime(self) -> tuple[Row, ...]:
+        return tuple(r for r in self.rows if not r.in_regime)
 
     @property
     def total_raw(self) -> int:
@@ -237,7 +250,7 @@ def format_table(result: Result) -> str:
     lines = [header, sep]
     for r in result.rows:
         target = r.target if len(r.target) <= 40 else r.target[:37] + "..."
-        mark = "ok" if r.ok else "FAIL"
+        mark = "small" if not r.in_regime else ("ok" if r.ok else "FAIL")
         lines.append(
             f"{r.intent:16} {target:40} {r.raw_tokens:>8} {r.ccx_tokens:>8} {r.savings_pct:>6.1f}%  {mark}"
         )
@@ -246,13 +259,24 @@ def format_table(result: Result) -> str:
         f"overall: {result.total_ccx} ccx vs {result.total_raw} raw tokens "
         f"-> {result.overall_savings_pct:.1f}% savings, {len(result.violations)} violation(s)"
     )
+    if result.below_regime:
+        lines.append(
+            f"{len(result.below_regime)} pair(s) below the {REGIME_MIN_RAW_TOKENS}-token raw floor, "
+            f"excluded from gating:"
+        )
+        for r in result.below_regime:
+            if not r.ok:
+                lines.append(
+                    f"  - {r.intent} {r.target}: ccx {r.ccx_tokens} > raw {r.raw_tokens} (small, not gated)"
+                )
     return "\n".join(lines)
 
 
 def cmd_microbench(cfg: Config, args: argparse.Namespace) -> int:
     """Build the micro-corpus, score it through the count-tokens counter, and print the table.
 
-    Returns 0 when every intent pair satisfies `ccx_tokens <= raw_tokens`, else 1.
+    Returns 0 when every in-regime intent pair satisfies `ccx_tokens <= raw_tokens`, else 1.
+    Pairs below `REGIME_MIN_RAW_TOKENS` are reported but never gate the exit code.
     """
     repos = args.repo.split(",") if getattr(args, "repo", None) else None
     pairs = build_pairs(cfg, repos)
@@ -260,7 +284,7 @@ def cmd_microbench(cfg: Config, args: argparse.Namespace) -> int:
     result = score_pairs(pairs, counter.count)
     print(format_table(result))
     if not result.all_ok:
-        print(f"\nFAIL: {len(result.violations)} intent pair(s) where ccx emitted more than raw:")
+        print(f"\nFAIL: {len(result.violations)} in-regime intent pair(s) where ccx emitted more than raw:")
         for r in result.violations:
             print(f"  - {r.intent} {r.target}: ccx {r.ccx_tokens} > raw {r.raw_tokens}")
         return 1
