@@ -1,0 +1,43 @@
+{
+  "id": "edit-click-short-help-limit",
+  "category": "targeted_edit",
+  "repo": "click",
+  "prompt": "In this command-line library, a command's short help string is shortened to a default maximum length when it has to be derived from the long help text. Raise that default maximum length from 45 to 60 characters. Leave the behavior when a caller passes an explicit limit unchanged.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "changed_file": {
+        "type": "string"
+      },
+      "summary": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "changed_file"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "test_run",
+    "spec": {
+      "cmd": "PYTHONPATH=src python3 -c \"import click; import inspect; src = inspect.getsource(click.Command.get_short_help_str); assert 'limit: int = 60' in src, src\"",
+      "timeout_s": 120
+    }
+  },
+  "gold": {
+    "check": "get_short_help_str default limit is 60",
+    "solution_edits": [
+      {
+        "file": "src/click/core.py",
+        "find": "    def get_short_help_str(self, limit: int = 45) -> str:",
+        "replace": "    def get_short_help_str(self, limit: int = 60) -> str:"
+      }
+    ],
+    "traversal_files": [
+      "src/click/core.py"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

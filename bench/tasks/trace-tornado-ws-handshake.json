@@ -1,0 +1,39 @@
+{
+  "id": "trace-tornado-ws-handshake",
+  "category": "trace",
+  "repo": "tornado",
+  "prompt": "In this web framework, when an HTTP request is routed to a WebSocket handler and its `get` method runs, which method ultimately performs the opening handshake \u2014 validating the client headers and writing the 101 Switching Protocols response? Respond with the repo-relative file path and the 1-based declaration line of that function or method.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "file": {
+        "type": "string"
+      },
+      "line": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "file",
+      "line"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "file_line",
+    "spec": {
+      "line_tolerance": 2
+    }
+  },
+  "gold": {
+    "file": "tornado/websocket.py",
+    "decl": "async def _accept_connection(",
+    "traversal_files": [
+      "tornado/web.py",
+      "tornado/websocket.py"
+    ],
+    "line": 897
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

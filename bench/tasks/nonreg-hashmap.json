@@ -1,7 +1,7 @@
 {
   "id": "nonreg-hashmap",
   "category": "non_regression",
-  "repo": "fixture",
+  "repo": "empty",
   "prompt": "In two sentences, what is a hash map and what is its average lookup time?",
   "schema": {
     "type": "object",

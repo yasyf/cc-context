@@ -1,7 +1,7 @@
 {
   "id": "nonreg-recursion",
   "category": "non_regression",
-  "repo": "fixture",
+  "repo": "empty",
   "prompt": "Define recursion in one sentence and give the term for its stopping condition.",
   "schema": {
     "type": "object",

@@ -9,31 +9,15 @@ ARMS: tuple[str, ...] = ("baseline", "ccx-mcp", "ccx-cli")
 
 CATEGORIES: tuple[str, ...] = (
     "navigation",
-    "callees",
-    "callers",
-    "diff_review",
-    "intent_search",
-    "targeted_edit",
-    "structural_replace",
-    "structural_search",
-    "non_regression",
+    "trace",
     "large_context",
-    "stale_anchor",
+    "diff_review",
+    "targeted_edit",
+    "intent_search",
+    "non_regression",
 )
 
 DECOMP_TERMS: tuple[str, ...] = ("static_overhead", "tool_result", "history", "hook_error", "residual")
-
-
-@dataclass(frozen=True)
-class Symbol:
-    """A ground-truth symbol in the fixture repo: where it is declared and its edges."""
-
-    name: str
-    file: str
-    decl: str
-    kind: str
-    callees: tuple[str, ...]
-    callers: tuple[str, ...]
 
 
 @dataclass(frozen=True)

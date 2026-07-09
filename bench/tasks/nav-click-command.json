@@ -1,0 +1,38 @@
+{
+  "id": "nav-click-command",
+  "category": "navigation",
+  "repo": "click",
+  "prompt": "In this command-line library, where is the `Command` class declared? Respond with the repo-relative file path and the 1-based declaration line.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "file": {
+        "type": "string"
+      },
+      "line": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "file",
+      "line"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "file_line",
+    "spec": {
+      "line_tolerance": 2
+    }
+  },
+  "gold": {
+    "file": "src/click/core.py",
+    "decl": "class Command(BaseCommand):",
+    "traversal_files": [
+      "src/click/core.py"
+    ],
+    "line": 1160
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

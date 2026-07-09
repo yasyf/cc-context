@@ -1,7 +1,7 @@
 {
   "id": "nonreg-binsearch",
   "category": "non_regression",
-  "repo": "fixture",
+  "repo": "empty",
   "prompt": "Explain in two sentences how binary search works on a sorted array.",
   "schema": {
     "type": "object",

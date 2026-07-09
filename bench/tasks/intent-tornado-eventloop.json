@@ -1,0 +1,33 @@
+{
+  "id": "intent-tornado-eventloop",
+  "category": "intent_search",
+  "repo": "tornado",
+  "prompt": "In this web framework, which module owns the machinery that registers callbacks, timers, and file-descriptor readiness for asynchronous work? Respond with the file path relative to the repo root.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "file": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "file"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "file_match",
+    "spec": {}
+  },
+  "gold": {
+    "file": "tornado/ioloop.py",
+    "traversal_files": [
+      "tornado/ioloop.py",
+      "tornado/iostream.py",
+      "tornado/gen.py",
+      "tornado/concurrent.py"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

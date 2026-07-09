@@ -1,0 +1,39 @@
+{
+  "id": "trace-tornado-write-headers",
+  "category": "trace",
+  "repo": "tornado",
+  "prompt": "In this web framework, when a request handler finishes producing a response, the framework flushes it to the client. Following that path, which method on the underlying HTTP/1.x connection actually writes the response status line and headers out to the socket? Respond with the repo-relative file path and the 1-based declaration line of that function or method.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "file": {
+        "type": "string"
+      },
+      "line": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "file",
+      "line"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "file_line",
+    "spec": {
+      "line_tolerance": 2
+    }
+  },
+  "gold": {
+    "file": "tornado/http1connection.py",
+    "decl": "def write_headers(",
+    "traversal_files": [
+      "tornado/web.py",
+      "tornado/http1connection.py"
+    ],
+    "line": 381
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

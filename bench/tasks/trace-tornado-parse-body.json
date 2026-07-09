@@ -1,0 +1,39 @@
+{
+  "id": "trace-tornado-parse-body",
+  "category": "trace",
+  "repo": "tornado",
+  "prompt": "In this web framework, a handler reads a POSTed form field through its body-argument accessor. Tracing back where those body arguments come from, which function actually parses the raw request body bytes into that argument mapping? Respond with the repo-relative file path and the 1-based declaration line of that function or method.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "file": {
+        "type": "string"
+      },
+      "line": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "file",
+      "line"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "file_line",
+    "spec": {
+      "line_tolerance": 2
+    }
+  },
+  "gold": {
+    "file": "tornado/httputil.py",
+    "decl": "def parse_body_arguments(",
+    "traversal_files": [
+      "tornado/web.py",
+      "tornado/httputil.py"
+    ],
+    "line": 748
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

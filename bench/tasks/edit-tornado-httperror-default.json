@@ -1,0 +1,43 @@
+{
+  "id": "edit-tornado-httperror-default",
+  "category": "targeted_edit",
+  "repo": "tornado",
+  "prompt": "When an HTTP error is raised in this web framework without an explicit status code, it currently defaults to HTTP 500. Change that default so it is HTTP 502 instead. Leave the behavior when an explicit status code is passed unchanged.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "changed_file": {
+        "type": "string"
+      },
+      "summary": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "changed_file"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "test_run",
+    "spec": {
+      "cmd": "PYTHONPATH=. python3 -c \"import tornado.web as w; assert w.HTTPError().status_code == 502; assert w.HTTPError(404).status_code == 404\"",
+      "timeout_s": 120
+    }
+  },
+  "gold": {
+    "check": "HTTPError().status_code == 502",
+    "solution_edits": [
+      {
+        "file": "tornado/web.py",
+        "find": "        status_code: int = 500,\n        log_message: Optional[str] = None,",
+        "replace": "        status_code: int = 502,\n        log_message: Optional[str] = None,"
+      }
+    ],
+    "traversal_files": [
+      "tornado/web.py"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

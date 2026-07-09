@@ -1,7 +1,7 @@
 {
   "id": "nonreg-bigo",
   "category": "non_regression",
-  "repo": "fixture",
+  "repo": "empty",
   "prompt": "In one sentence, what does Big-O notation describe about an algorithm?",
   "schema": {
     "type": "object",

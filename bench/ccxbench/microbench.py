@@ -217,6 +217,13 @@ def _corpus(repos: list[str] | None) -> dict[str, dict]:
             "globs": ["*.py"],
             "symbols": ["batch"],
         },
+        "tornado": {
+            "files": ["tornado/httputil.py"],
+            "sections": [("tornado/web.py", "1-50")],
+            "patterns": ["self.request"],
+            "globs": ["*.py"],
+            "symbols": ["RequestHandler"],
+        },
     }
     if repos is None:
         return full

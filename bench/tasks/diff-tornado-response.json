@@ -1,0 +1,60 @@
+{
+  "id": "diff-tornado-response",
+  "category": "diff_review",
+  "repo": "tornado",
+  "prompt": "The working tree has uncommitted changes, possibly across multiple files. Review the diff and determine which top-level functions or methods had their bodies modified relative to HEAD. List their names exactly once each.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "symbols": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "symbols"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "symbols",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "diff_spec": {
+      "edits": [
+        {
+          "file": "tornado/web.py",
+          "find": "        self._reason = httputil.responses[200]",
+          "replace": "        self._reason = httputil.responses.get(200, \"OK\")"
+        },
+        {
+          "file": "tornado/web.py",
+          "find": "            self._reason = escape.native_str(reason)",
+          "replace": "            self._reason = escape.native_str(reason).strip()"
+        },
+        {
+          "file": "tornado/web.py",
+          "find": "        return self._status_code",
+          "replace": "        return int(self._status_code)"
+        }
+      ]
+    },
+    "symbols": [
+      "clear",
+      "get_status",
+      "set_status"
+    ],
+    "traversal_files": [
+      "tornado/web.py"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

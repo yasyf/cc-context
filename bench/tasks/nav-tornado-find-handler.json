@@ -1,0 +1,38 @@
+{
+  "id": "nav-tornado-find-handler",
+  "category": "navigation",
+  "repo": "tornado",
+  "prompt": "In this web framework, which method of the `Application` class selects the message delegate that will handle an incoming request? Respond with the repo-relative file path and the 1-based declaration line.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "file": {
+        "type": "string"
+      },
+      "line": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "file",
+      "line"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "file_line",
+    "spec": {
+      "line_tolerance": 2
+    }
+  },
+  "gold": {
+    "file": "tornado/web.py",
+    "decl": "def find_handler(",
+    "traversal_files": [
+      "tornado/web.py"
+    ],
+    "line": 2277
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

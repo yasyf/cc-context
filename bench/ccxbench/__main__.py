@@ -11,10 +11,8 @@
 from __future__ import annotations
 
 import argparse
-import ast
 import asyncio
 import json
-import re
 import shutil
 import sys
 import tempfile
@@ -22,8 +20,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import fixtures, microbench, report, repos, taskgen
-from .arms import apply_edits
+from . import goldgen, microbench, report, repos, taskgen
 from .config import Config, load
 from .grade import grade, synthetic_result
 from .graders import GradeContext, grade_test_run
@@ -32,150 +29,100 @@ from .types import ARMS, Task
 
 BENCH_DIR = Path(__file__).resolve().parent.parent
 TASKS_DIR = BENCH_DIR / "tasks"
-GO_FUNC_RE = re.compile(r"^func (?:\(([^)]*)\)\s*)?([A-Za-z_]\w*)\s*\(")
+PATCHES_DIR = TASKS_DIR / "patches"
 
 
 def needs_go(task: Task) -> bool:
     return task.grader.kind == "test_run" and "go test" in task.grader.spec.get("cmd", "")
 
 
-def available(task: Task) -> bool:
-    return not (needs_go(task) and shutil.which("go") is None)
+def require_go(tasks: list[Task]) -> None:
+    """Abort the build loudly if a task needs the Go toolchain but `go` is absent — never
+    silently shrink the corpus."""
+    if any(needs_go(t) for t in tasks) and shutil.which("go") is None:
+        sys.exit("go toolchain required for go-test tasks but `go` is not on PATH")
+
+
+def derive_golds(cfg: Config, tasks: list[Task]) -> None:
+    """Fill every headline task's gold from its pinned checkout, and generate diff patches.
+
+    Navigation/trace lines, large_context member sets, and diff_review symbol sets are all
+    recomputed here — nothing is transcribed by hand — so a gold that drifts from its repo fails
+    loudly at build time. Diff patches are (re)written to `tasks/patches/` deterministically.
+    """
+    PATCHES_DIR.mkdir(parents=True, exist_ok=True)
+    for stale in PATCHES_DIR.glob("*.patch"):
+        stale.unlink()
+    for t in tasks:
+        checkout = checkout_dir(cfg, t)
+        if t.category in ("navigation", "trace"):
+            t.gold["line"] = goldgen.resolve_decl_line(checkout, t.gold["file"], t.gold["decl"])
+        elif t.category == "large_context":
+            members = goldgen.recompute_lc_predicate(checkout, t.gold["lc_predicate"], t.repo)
+            if not members:
+                sys.exit(f"task {t.id}: predicate matched no members in {t.repo}")
+            t.gold["members"] = sorted(members)
+        elif t.category == "diff_review":
+            patch, files = goldgen.make_patch(checkout, t.gold["diff_spec"]["edits"])
+            goldgen.check_patch_applies(checkout, patch)
+            (PATCHES_DIR / f"{t.id}.patch").write_text(patch)
+            symbols = goldgen.symbols_changed_by_patch(checkout, patch)
+            if not symbols:
+                sys.exit(f"task {t.id}: patch touched no attributable functions")
+            t.gold["symbols"] = sorted(symbols)
+            t.gold["traversal_files"] = files
 
 
 def build_corpus(cfg: Config) -> list[Task]:
     repos.clone_all(cfg)
     cfg.fixtures_root.mkdir(parents=True, exist_ok=True)
-    fixture_dir = cfg.fixtures_root / fixtures.FIXTURE_NAME
-    if fixture_dir.exists():
-        shutil.rmtree(fixture_dir)
-    manifest = fixtures.build(fixture_dir)
-    oss = [t for t in (taskgen.oss_tasks() + taskgen.large_context_tasks()) if available(t)]
-    verify_oss(cfg, oss)
-    fixture_tasks = taskgen.generate(manifest) + taskgen.stale_anchor_tasks(cfg, fixture_dir)
-    tasks = [t for t in fixture_tasks if available(t)] + oss
-    if TASKS_DIR.exists():
-        shutil.rmtree(TASKS_DIR)
-    TASKS_DIR.mkdir(parents=True)
+    tasks = taskgen.all_tasks()
+    require_go(tasks)
+    derive_golds(cfg, [t for t in tasks if t.repo != "empty"])
+    verify_oss(cfg, [t for t in tasks if t.repo != "empty"])
+    TASKS_DIR.mkdir(parents=True, exist_ok=True)
+    for stale in TASKS_DIR.glob("*.json"):  # non-recursive: committed patches/ survives
+        stale.unlink()
     for t in tasks:
         (TASKS_DIR / f"{t.id}.json").write_text(json.dumps(t.to_dict(), indent=2))
     return tasks
 
 
-def go_funcs(text: str) -> list[tuple[str, str]]:
-    """Brace-scan a Go file into (func_name, body_below_signature) pairs for top-level funcs."""
-    lines = text.splitlines(keepends=True)
-    out: list[tuple[str, str]] = []
-    i, n = 0, len(lines)
-    while i < n:
-        m = GO_FUNC_RE.match(lines[i])
-        if not m:
-            i += 1
-            continue
-        depth, started, body, j = 0, False, [], i
-        while j < n:
-            for ch in lines[j]:
-                if ch == "{":
-                    depth += 1
-                    started = True
-                elif ch == "}":
-                    depth -= 1
-            body.append(lines[j])
-            if started and depth == 0:
-                break
-            j += 1
-        out.append((m.group(2), "".join(body[1:])))
-        i = j + 1
-    return out
-
-
-def recompute_lc_predicate(checkout: Path, pred: dict, repo: str) -> set[str]:
-    """Independently recompute a large_context predicate's member set from the checkout."""
-    kind = pred["kind"]
-    if kind == "py_method":
-        src = (checkout / pred["file"]).read_text()
-        tree = ast.parse(src)
-        members: set[str] = set()
-        for node in tree.body:
-            if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
-                own = {
-                    b.name
-                    for b in node.body
-                    if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef))
-                }
-                if pred["target"] in own:
-                    members.add(node.name)
-        return members
-    if kind == "go_callers":
-        target = pred["target"]
-        call = re.compile(rf"\b{re.escape(target)}\s*\(")
-        members = set()
-        for rel in pred["files"]:
-            for name, body in go_funcs((checkout / rel).read_text()):
-                if name != target and call.search(body):
-                    members.add(name)
-        return members
-    if kind == "go_iface":
-        method = pred["method"]
-        # A param may be named (`req *http.Request`) or bare (`*http.Request`); match both.
-        params = r"\s*,\s*".join(rf"(?:\w+\s+)?{re.escape(p)}" for p in pred["params"])
-        impl = re.compile(
-            rf"func\s+\(\s*\w+\s+\*?([A-Za-z_]\w*)\s*\)\s+{re.escape(method)}\s*\(\s*{params}\s*\)\s+{re.escape(pred['ret'])}\b"
-        )
-        members = set()
-        for go in sorted(checkout.glob("*.go")):
-            if go.name.endswith("_test.go"):
-                continue
-            for m in impl.finditer(go.read_text()):
-                members.add(m.group(1))
-        return members
-    sys.exit(f"unknown lc_predicate kind {kind!r} (repo {repo})")
+def print_floor_table(cfg: Config, tasks: list[Task]) -> list[str]:
+    """Print the per-headline-task traversal-bytes floor table; return under-floor failure lines."""
+    rows = goldgen.floor_rows(cfg.min_traversal_bytes, tasks, lambda t: checkout_dir(cfg, t))
+    print(f"\nsize floor: gold.traversal_files must total >= {cfg.min_traversal_bytes} bytes")
+    print(f"  {'task':34}{'family':20}{'repo':14}{'bytes':>10}  verdict")
+    for r in rows:
+        print(f"  {r.task_id:34}{r.family:20}{r.repo:14}{r.nbytes:>10}  {'ok' if r.ok else 'UNDER'}")
+    return [f"{r.task_id}: traversal {r.nbytes} < floor {cfg.min_traversal_bytes}" for r in rows if not r.ok]
 
 
 def verify_oss(cfg: Config, tasks: list[Task]) -> None:
-    """Fail loudly at build time if any OSS gold disagrees with its pinned checkout."""
+    """Fail loudly at build time if any derived OSS gold disagrees with its pinned checkout."""
     for t in tasks:
         checkout = cfg.fixtures_root / t.repo
         if not checkout.exists():
             sys.exit(f"OSS task {t.id}: checkout missing {checkout}")
-        if t.grader.kind in ("file_line", "file_match"):
-            gold_file = checkout / t.gold["file"]
-            if not gold_file.exists():
+        for rel in t.traversal_files:
+            if not (checkout / rel).is_file():
+                sys.exit(f"OSS task {t.id}: traversal_file {rel} absent from {t.repo}")
+        if t.grader.kind == "file_line":
+            lines = (checkout / t.gold["file"]).read_text().splitlines()
+            tol = int(t.grader.spec.get("line_tolerance", 2))
+            lo, hi = max(0, t.gold["line"] - 1 - tol), min(len(lines), t.gold["line"] + tol)
+            if not any(t.gold["decl"] in ln for ln in lines[lo:hi]):
+                sys.exit(f"OSS task {t.id}: decl {t.gold['decl']!r} not within ±{tol} of line {t.gold['line']}")
+        elif t.grader.kind == "file_match":
+            if not (checkout / t.gold["file"]).is_file():
                 sys.exit(f"OSS task {t.id}: gold file {t.gold['file']} absent from {t.repo}")
-            decl = t.gold.get("verify_decl")
-            if t.grader.kind == "file_line" and decl:
-                lines = gold_file.read_text().splitlines()
-                tol = int(t.grader.spec.get("line_tolerance", 2))
-                lo, hi = max(0, t.gold["line"] - 1 - tol), min(len(lines), t.gold["line"] + tol)
-                if not any(decl in ln for ln in lines[lo:hi]):
-                    sys.exit(f"OSS task {t.id}: decl {decl!r} not within ±{tol} of line {t.gold['line']} in {t.gold['file']}")
-        if t.grader.kind == "set_match" and "verify_decls" in t.gold:
-            field = t.grader.spec.get("field", "items")
-            decls_by_member: dict[str, str] = {}
-            for rel, decl in t.gold["verify_decls"]:
-                decl_file = checkout / rel
-                if not decl_file.exists():
-                    sys.exit(f"OSS task {t.id}: decl file {rel} absent from {t.repo}")
-                if decl not in decl_file.read_text():
-                    sys.exit(f"OSS task {t.id}: gold decl {decl!r} not found in {rel}")
-                decls_by_member[decl] = rel
-            for member in t.gold[field]:
-                pat = re.compile(rf"\b{re.escape(member)}\b")
-                if not any(pat.search(decl) for decl in decls_by_member):
-                    sys.exit(f"OSS task {t.id}: gold member {member!r} has no matching verify_decls entry")
-            if "lc_predicate" in t.gold:
-                recomputed = recompute_lc_predicate(checkout, t.gold["lc_predicate"], t.repo)
-                gold_set = {m.lower() for m in t.gold[field]}
-                if {m.lower() for m in recomputed} != gold_set:
-                    sys.exit(
-                        f"OSS task {t.id}: predicate recompute {sorted(recomputed)} "
-                        f"!= gold {sorted(t.gold[field])}"
-                    )
-        for edits in (t.setup.get("edits", []), t.gold.get("solution_edits", [])):
-            for e in edits:
-                text = (checkout / e["file"]).read_text()
-                if e["find"] not in text:
-                    sys.exit(f"OSS task {t.id}: edit find {e['find']!r} absent from {e['file']}")
+        elif t.grader.kind == "set_match" and "lc_predicate" in t.gold:
+            recomputed = {m.lower() for m in goldgen.recompute_lc_predicate(checkout, t.gold["lc_predicate"], t.repo)}
+            if recomputed != {m.lower() for m in t.gold["members"]}:
+                sys.exit(f"OSS task {t.id}: predicate recompute {sorted(recomputed)} != gold {t.gold['members']}")
+        for e in t.gold.get("solution_edits", []):
+            if e["find"] not in (checkout / e["file"]).read_text():
+                sys.exit(f"OSS task {t.id}: solution find {e['find']!r} absent from {e['file']}")
 
 
 def load_corpus() -> list[Task]:
@@ -217,7 +164,7 @@ def wrong_answer(task: Task) -> dict[str, object]:
 
 
 def checkout_dir(cfg: Config, task: Task) -> Path:
-    return cfg.fixtures_root / (fixtures.FIXTURE_NAME if task.repo == "fixture" else task.repo)
+    return cfg.fixtures_root / task.repo
 
 
 def selftest(cfg: Config) -> int:
@@ -242,12 +189,15 @@ def selftest(cfg: Config) -> int:
     print(f"corpus: {len(tasks)} tasks across {len(by_cat)} categories")
     for cat, n in sorted(by_cat.items()):
         print(f"  {cat:16} {n}")
+
+    fails += print_floor_table(cfg, tasks)
+
     if fails:
         print(f"\nFAIL ({len(fails)}):")
         for f in fails:
             print(f"  - {f}")
         return 1
-    print("\nall graders pass on gold and fail on wrong answers")
+    print("\nall graders pass on gold and fail on wrong answers; all headline tasks clear the floor")
     return 0
 
 
@@ -261,8 +211,10 @@ def selftest_edit(task: Task, src_dir: Path) -> bool:
     with tempfile.TemporaryDirectory() as tmp:
         good_dir = Path(tmp) / "good"
         bad_dir = Path(tmp) / "bad"
-        shutil.copytree(src_dir, good_dir)
-        shutil.copytree(src_dir, bad_dir)
+        # test_run graders build/run source only; skip .git (its live fsmonitor socket is uncopyable).
+        no_git = shutil.ignore_patterns(".git")
+        shutil.copytree(src_dir, good_dir, ignore=no_git)
+        shutil.copytree(src_dir, bad_dir, ignore=no_git)
         for e in solution:
             p = good_dir / e["file"]
             p.write_text(p.read_text().replace(e["find"], e["replace"], 1))
@@ -333,7 +285,7 @@ def replace_ceiling(cfg: Config, ceiling_usd: float) -> Config:
 
 
 def cmd_pilot(cfg: Config, args: argparse.Namespace) -> int:
-    args.categories = "navigation,callees,diff_review,targeted_edit,structural_replace,structural_search,non_regression,intent_search"
+    args.categories = "navigation,trace,large_context,diff_review,targeted_edit,intent_search,non_regression"
     args.sample = 1
     args.tasks = None
     args.limit = None
@@ -372,8 +324,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "build-corpus":
         tasks = build_corpus(cfg)
-        print(f"built fixture + {len(tasks)} tasks -> {TASKS_DIR}")
-        return 0
+        print(f"built {len(tasks)} tasks -> {TASKS_DIR}")
+        rows = goldgen.floor_rows(cfg.min_traversal_bytes, tasks, lambda t: checkout_dir(cfg, t))
+        under = [r for r in rows if not r.ok]
+        for r in under:
+            print(
+                f"FLOOR VIOLATION: {r.task_id} ({r.family}, {r.repo}) traversal {r.nbytes} < {cfg.min_traversal_bytes}",
+                file=sys.stderr,
+            )
+        return 1 if under else 0
     if args.cmd == "list-tasks":
         tasks = load_corpus()
         by_cat = Counter(t.category for t in tasks)

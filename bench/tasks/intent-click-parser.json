@@ -1,0 +1,31 @@
+{
+  "id": "intent-click-parser",
+  "category": "intent_search",
+  "repo": "click",
+  "prompt": "In this command-line library, when command invocation turns raw argv tokens into option and argument values, which source file owns that conversion machinery? Respond with the file path relative to the repo root.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "file": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "file"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "file_match",
+    "spec": {}
+  },
+  "gold": {
+    "file": "src/click/parser.py",
+    "traversal_files": [
+      "src/click/core.py",
+      "src/click/parser.py"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

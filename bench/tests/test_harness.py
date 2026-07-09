@@ -14,8 +14,8 @@ from pathlib import Path
 from cc_transcript import parse_print_result
 
 from ccxbench import taskgen
-from ccxbench.__main__ import recompute_lc_predicate
 from ccxbench.config import Config, load
+from ccxbench.goldgen import recompute_lc_predicate
 from ccxbench.grade import grade, synthetic_result
 from ccxbench.graders import GradeContext, grade_file_line, grade_keywords, grade_set_match
 from ccxbench.types import Grader, Task
@@ -98,92 +98,60 @@ def large_context_corpus_present(cfg: Config) -> bool:
 
 
 class TestLargeContextBuilder(unittest.TestCase):
-    """Every gold member of a large_context task is a real declaration in its fixture file AND
-    satisfies the task's predicate (recomputed independently, mirroring verify_oss), and the
-    naive grep a frugal baseline would run does NOT isolate the gold — the tasks are not
-    grep-defeatable."""
+    """Every large_context predicate recomputes to a non-empty, duplicate-free member set from the
+    pinned checkout; the set_match grader accepts that recomputed set and rejects wrong and
+    incomplete answers; and the get_command task is not defeated by the obvious one-line grep."""
 
-    def test_gold_members_present_and_predicate_holds(self) -> None:
+    def _members(self, cfg: Config, t) -> list[str]:
+        return sorted(recompute_lc_predicate(cfg.fixtures_root / t.repo, t.gold["lc_predicate"], t.repo))
+
+    def test_predicates_recompute_and_grade(self) -> None:
         cfg = load()
         tasks = taskgen.large_context_tasks()
         if not large_context_corpus_present(cfg):
             self.skipTest("large_context corpus absent; run `python -m ccxbench build-corpus` first")
         self.assertEqual(
             [t.id for t in tasks],
-            ["click-enum-get-command-classes", "mux-enum-addmatcher-callers", "mux-enum-matcher-impls"],
+            [
+                "lc-click-get-command",
+                "lc-click-to-info-dict",
+                "lc-click-invoke",
+                "lc-tornado-prepare",
+                "lc-tornado-initialize",
+                "lc-tornado-handler-subclasses",
+            ],
         )
         for t in tasks:
             self.assertEqual(t.category, "large_context")
             field = t.grader.spec["field"]
-            gold = t.gold[field]
-            self.assertEqual(len(gold), len(set(gold)), f"{t.id} gold has duplicates")
-            for rel, decl in t.gold["verify_decls"]:
-                path = cfg.fixtures_root / t.repo / rel
-                self.assertTrue(path.exists(), f"{t.id}: {rel} missing")
-                self.assertIn(decl, path.read_text(), f"{t.id}: decl {decl!r} absent from {rel}")
-            for member in gold:
-                pat = re.compile(rf"\b{re.escape(member)}\b")
-                self.assertTrue(
-                    any(pat.search(decl) for _rel, decl in t.gold["verify_decls"]),
-                    f"{t.id}: gold member {member!r} has no decl",
-                )
-            # Independently recompute the predicate from the fixtures and assert it equals gold.
-            recomputed = recompute_lc_predicate(cfg.fixtures_root / t.repo, t.gold["lc_predicate"], t.repo)
-            self.assertEqual(
-                {m.lower() for m in recomputed},
-                {m.lower() for m in gold},
-                f"{t.id}: predicate recompute {sorted(recomputed)} != gold {sorted(gold)}",
-            )
-
-    def test_builder_gold_grades_correct(self) -> None:
-        for t in taskgen.large_context_tasks():
-            field = t.grader.spec["field"]
+            members = self._members(cfg, t)
+            self.assertTrue(members, f"{t.id}: predicate matched nothing")
+            self.assertEqual(len(members), len(set(members)), f"{t.id}: duplicate members")
+            gold = {field: members}
             ctx = GradeContext("", None)
-            good = grade_set_match({field: list(t.gold[field])}, t.gold, t.grader.spec, ctx)
-            self.assertTrue(good.correct, f"{t.id}: gold answer graded incorrect: {good.detail}")
-            bad = grade_set_match({field: ["NotAReal"]}, t.gold, t.grader.spec, ctx)
+            good = grade_set_match({field: members}, gold, t.grader.spec, ctx)
+            self.assertTrue(good.correct, f"{t.id}: recomputed gold graded incorrect: {good.detail}")
+            bad = grade_set_match({field: ["NotAReal"]}, gold, t.grader.spec, ctx)
             self.assertFalse(bad.correct, f"{t.id}: wrong answer graded correct")
-            # An incomplete answer (gold minus one member) must also grade incorrect.
-            partial = list(t.gold[field])[:-1]
-            incomplete = grade_set_match({field: partial}, t.gold, t.grader.spec, ctx)
+            incomplete = grade_set_match({field: members[:-1]}, gold, t.grader.spec, ctx)
             self.assertFalse(incomplete.correct, f"{t.id}: incomplete answer graded correct")
 
-    def test_naive_grep_does_not_equal_gold(self) -> None:
-        """Encode un-shortcuttability as a regression: the obvious one-liner a frugal baseline
-        runs over-/under-matches, so its result is NOT the gold set."""
+    def test_get_command_not_grep_defeatable(self) -> None:
+        """Un-shortcuttability regression: the obvious `grep '^class '` over core.py over-matches,
+        so the gold (classes defining get_command directly) is a strict subset of it."""
         cfg = load()
-        tasks = {t.id: t for t in taskgen.large_context_tasks()}
         if not large_context_corpus_present(cfg):
             self.skipTest("large_context corpus absent; run `python -m ccxbench build-corpus` first")
-
-        # Flavor 1: `grep '^class '` over core.py yields ALL public classes, not just the 3
-        # that define get_command.
-        t1 = tasks["click-enum-get-command-classes"]
+        t = {x.id: x for x in taskgen.large_context_tasks()}["lc-click-get-command"]
+        members = set(self._members(cfg, t))
         core = (cfg.fixtures_root / "click" / "src/click/core.py").read_text()
         grep_classes = {
             m.group(1)
             for line in core.splitlines()
             if (m := re.match(r"class (\w+)", line)) and not m.group(1).startswith("_")
         }
-        gold1 = set(t1.gold["classes"])
-        self.assertNotEqual(grep_classes, gold1)
-        self.assertTrue(gold1 < grep_classes, "gold must be a strict subset the grep over-matches")
-
-        # Flavor 3: a frugal `grep matcher` scrapes interface/field/helper tokens, not the
-        # implementer type names — Go interfaces are implicit, so it both misses implementers
-        # whose name lacks "matcher" (Route, Router, routeRegexp) and over-includes non-types
-        # (addMatcher, matchers, the interface itself).
-        t3 = tasks["mux-enum-matcher-impls"]
-        muxdir = cfg.fixtures_root / "gorilla-mux"
-        grep_matcher_tokens = set()
-        for go in muxdir.glob("*.go"):
-            if go.name.endswith("_test.go"):
-                continue
-            grep_matcher_tokens |= set(re.findall(r"\b(\w*[Mm]atcher\w*)\b", go.read_text()))
-        gold3 = set(t3.gold["types"])
-        self.assertNotEqual(grep_matcher_tokens, gold3)
-        self.assertTrue(gold3 - grep_matcher_tokens, "grep `matcher` must miss some implementers")
-        self.assertTrue(grep_matcher_tokens - gold3, "grep `matcher` must over-match non-types")
+        self.assertNotEqual(grep_classes, members)
+        self.assertTrue(members < grep_classes, "gold must be a strict subset the grep over-matches")
 
 
 class TestStructuredRun(unittest.TestCase):

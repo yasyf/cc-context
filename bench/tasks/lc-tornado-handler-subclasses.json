@@ -1,0 +1,52 @@
+{
+  "id": "lc-tornado-handler-subclasses",
+  "category": "large_context",
+  "repo": "tornado",
+  "prompt": "Across `tornado/web.py` and `tornado/websocket.py`, enumerate every public class defined at module scope whose declared base classes include `RequestHandler` (written either as `RequestHandler` or as a dotted path ending in `.RequestHandler`). List each qualifying class name exactly once.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "members": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "members"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "members",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "lc_predicate": {
+      "kind": "py_subclass",
+      "base": "RequestHandler",
+      "files": [
+        "tornado/web.py",
+        "tornado/websocket.py"
+      ]
+    },
+    "traversal_files": [
+      "tornado/web.py",
+      "tornado/websocket.py"
+    ],
+    "members": [
+      "ErrorHandler",
+      "FallbackHandler",
+      "RedirectHandler",
+      "StaticFileHandler",
+      "WebSocketHandler"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

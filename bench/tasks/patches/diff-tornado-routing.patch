@@ -1,0 +1,31 @@
+--- a/tornado/routing.py
++++ b/tornado/routing.py
+@@ -359,7 +359,7 @@
+         self, request: httputil.HTTPServerRequest, **kwargs: Any
+     ) -> Optional[httputil.HTTPMessageDelegate]:
+         for rule in self.rules:
+-            target_params = rule.matcher.match(request)
++            target_params = rule.matcher.match(request) or None
+             if target_params is not None:
+                 if rule.target_kwargs:
+                     target_params["target_kwargs"] = rule.target_kwargs
+--- a/tornado/web.py
++++ b/tornado/web.py
+@@ -384,7 +384,7 @@
+         Unlike `set_header`, `add_header` may be called multiple times
+         to return multiple values for the same header.
+         """
+-        self._headers.add(name, self._convert_header_value(value))
++        self._headers.add(str(name), self._convert_header_value(value))
+ 
+     def clear_header(self, name: str) -> None:
+         """Clears an outgoing header, undoing a previous `set_header` call.
+@@ -393,7 +393,7 @@
+         set by `add_header`.
+         """
+         if name in self._headers:
+-            del self._headers[name]
++            self._headers.pop(name, None)
+ 
+     _INVALID_HEADER_CHAR_RE = re.compile(r"[\x00-\x1f]")
+ 

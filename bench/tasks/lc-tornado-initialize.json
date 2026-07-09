@@ -1,0 +1,47 @@
+{
+  "id": "lc-tornado-initialize",
+  "category": "large_context",
+  "repo": "tornado",
+  "prompt": "In `tornado/web.py`, enumerate every public class defined at module scope (public = the name does not start with an underscore; top-level only, not nested) whose own body defines a method named `initialize`. A class counts only if it declares `initialize` directly in its body \u2014 not if it merely inherits it from a base class. List each qualifying class name exactly once.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "members": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "members"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "members",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "lc_predicate": {
+      "kind": "py_method",
+      "file": "tornado/web.py",
+      "target": "initialize"
+    },
+    "traversal_files": [
+      "tornado/web.py"
+    ],
+    "members": [
+      "ErrorHandler",
+      "FallbackHandler",
+      "RedirectHandler",
+      "StaticFileHandler"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

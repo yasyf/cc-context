@@ -1,0 +1,61 @@
+{
+  "id": "diff-tornado-routing",
+  "category": "diff_review",
+  "repo": "tornado",
+  "prompt": "The working tree has uncommitted changes, possibly across multiple files. Review the diff and determine which top-level functions or methods had their bodies modified relative to HEAD. List their names exactly once each.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "symbols": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "symbols"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "symbols",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "diff_spec": {
+      "edits": [
+        {
+          "file": "tornado/web.py",
+          "find": "        self._headers.add(name, self._convert_header_value(value))",
+          "replace": "        self._headers.add(str(name), self._convert_header_value(value))"
+        },
+        {
+          "file": "tornado/web.py",
+          "find": "            del self._headers[name]",
+          "replace": "            self._headers.pop(name, None)"
+        },
+        {
+          "file": "tornado/routing.py",
+          "find": "            target_params = rule.matcher.match(request)",
+          "replace": "            target_params = rule.matcher.match(request) or None"
+        }
+      ]
+    },
+    "symbols": [
+      "add_header",
+      "clear_header",
+      "find_handler"
+    ],
+    "traversal_files": [
+      "tornado/routing.py",
+      "tornado/web.py"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

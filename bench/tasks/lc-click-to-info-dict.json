@@ -1,0 +1,49 @@
+{
+  "id": "lc-click-to-info-dict",
+  "category": "large_context",
+  "repo": "click",
+  "prompt": "In `src/click/core.py`, enumerate every public class defined at module scope (public = the name does not start with an underscore; top-level only, not nested) whose own body defines a method named `to_info_dict`. A class counts only if it declares `to_info_dict` directly in its body \u2014 not if it merely inherits it from a base class. List each qualifying class name exactly once.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "members": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "members"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "members",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "lc_predicate": {
+      "kind": "py_method",
+      "file": "src/click/core.py",
+      "target": "to_info_dict"
+    },
+    "traversal_files": [
+      "src/click/core.py"
+    ],
+    "members": [
+      "BaseCommand",
+      "Command",
+      "Context",
+      "MultiCommand",
+      "Option",
+      "Parameter"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

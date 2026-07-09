@@ -1,0 +1,39 @@
+{
+  "id": "trace-tornado-target-delegate",
+  "category": "trace",
+  "repo": "tornado",
+  "prompt": "In this web framework, when the application routes an incoming request and one of its URL rules matches, which method builds the message delegate that will actually run the matched target? Respond with the repo-relative file path and the 1-based declaration line of that function or method.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "file": {
+        "type": "string"
+      },
+      "line": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "file",
+      "line"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "file_line",
+    "spec": {
+      "line_tolerance": 2
+    }
+  },
+  "gold": {
+    "file": "tornado/routing.py",
+    "decl": "def get_target_delegate(",
+    "traversal_files": [
+      "tornado/web.py",
+      "tornado/routing.py"
+    ],
+    "line": 376
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

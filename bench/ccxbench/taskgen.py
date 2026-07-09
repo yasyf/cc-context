@@ -1,29 +1,19 @@
-"""Generate the benchmark corpus from the fixture manifest plus curated tasks.
+"""Generate the usage-shaped benchmark corpus: complex tasks over pinned real repos plus a control.
 
-Navigation/callees/callers/intent tasks are derived directly from the manifest, so
-their gold answers are ground truth by construction. diff_review, targeted_edit, and
-non_regression tasks are curated literals: diff tasks apply an uncommitted edit whose
-changed symbols are the gold; edit tasks are graded by running a check in the post-run
-workdir; non_regression tasks (ccx_helps=False) prove ccx adds no harm where it can't help.
-stale_anchor tasks embed a freshly captured outline of a fixture file, then shift the target
-declaration with setup edits so the captured line numbers and content anchors go stale; the
-gold is the post-edit declaration line, replayed from the fixture string at build time.
+Every headline task runs against a genuinely large real checkout (tornado, click) whose
+`gold.traversal_files` clear the size floor — big enough that ccx's fixed overhead is noise.
+Navigation and trace locate a declaration on a big file or at the end of a cross-file call chain;
+large_context enumerates the complete set satisfying a body-level predicate; diff_review lists the
+functions a build-time-generated patch touched; targeted_edit is graded by a self-contained,
+offline check; intent_search names the module implementing a whole-repo concept. Every answer is
+derived at build time from the pinned checkout (see `goldgen`) — no line numbers live here.
+non_regression is the control family (repo `empty`, `ccx_helps=False`): it proves ccx adds no harm
+where it cannot help and is excluded from every headline.
 """
 
 from __future__ import annotations
 
-import re
-import subprocess
-from pathlib import Path
-
-from . import fixtures
-from .config import Config
 from .types import Grader, Task
-
-# Symbol-graph (callees/callers) tasks are derived one-per-manifest-symbol, which
-# over-indexes the corpus on a small real-usage slice. Cap each at this many representative
-# symbols (manifest order is stable, so the sample is deterministic).
-SYMBOL_GRAPH_SAMPLE = 3
 
 NAV_SCHEMA = {
     "type": "object",
@@ -31,22 +21,16 @@ NAV_SCHEMA = {
     "required": ["file", "line"],
     "additionalProperties": False,
 }
-CALLEES_SCHEMA = {
-    "type": "object",
-    "properties": {"callees": {"type": "array", "items": {"type": "string"}}},
-    "required": ["callees"],
-    "additionalProperties": False,
-}
-CALLERS_SCHEMA = {
-    "type": "object",
-    "properties": {"callers": {"type": "array", "items": {"type": "string"}}},
-    "required": ["callers"],
-    "additionalProperties": False,
-}
 FILE_SCHEMA = {
     "type": "object",
     "properties": {"file": {"type": "string"}},
     "required": ["file"],
+    "additionalProperties": False,
+}
+MEMBERS_SCHEMA = {
+    "type": "object",
+    "properties": {"members": {"type": "array", "items": {"type": "string"}}},
+    "required": ["members"],
     "additionalProperties": False,
 }
 SYMBOLS_SCHEMA = {
@@ -67,446 +51,301 @@ ANSWER_SCHEMA = {
     "required": ["answer"],
     "additionalProperties": False,
 }
-CLASSES_SCHEMA = {
-    "type": "object",
-    "properties": {"classes": {"type": "array", "items": {"type": "string"}}},
-    "required": ["classes"],
-    "additionalProperties": False,
-}
-TYPES_SCHEMA = {
-    "type": "object",
-    "properties": {"types": {"type": "array", "items": {"type": "string"}}},
-    "required": ["types"],
-    "additionalProperties": False,
-}
 
-REPO = "fixture"
-
-MUX_ROUTECOUNT_TEST = (
-    "printf 'package mux\\nimport \"testing\"\\n"
-    "func TestRouteCountBench(t *testing.T){ r:=NewRouter(); r.NewRoute(); r.NewRoute(); "
-    "if r.RouteCount()!=2 { t.Fatal(r.RouteCount()) } }' > zz_routecount_test.go && "
-    "go test -run TestRouteCountBench . >/dev/null 2>&1; rc=$?; rm -f zz_routecount_test.go; exit $rc"
+DIFF_PROMPT = (
+    "The working tree has uncommitted changes, possibly across multiple files. Review the diff and "
+    "determine which top-level functions or methods had their bodies modified relative to HEAD. "
+    "List their names exactly once each."
 )
 
-MUX_CLEANPATH_TEST = (
-    "printf 'package mux\\nimport \"testing\"\\n"
-    "func TestCleanPathEmptyBench(t *testing.T){ if cleanPath(\"\")!=\"/index\" { t.Fatal(cleanPath(\"\")) } }' "
-    "> zz_cleanpath_test.go && "
-    "go test -run TestCleanPathEmptyBench . >/dev/null 2>&1; rc=$?; rm -f zz_cleanpath_test.go; exit $rc"
-)
 
-STALE_ANCHOR_FILE = "internal/status/status.go"
-STALE_ANCHOR_TIMEOUT_S = 30
-# A content anchor is a '#' plus 4 lowercase Crockford-base32 chars, letter first (see
-# internal/anchor). A capture without one means the ccx under test emits no anchors, so a
-# stale-anchor task would be unfalsifiable — refuse to build it.
-STALE_ANCHOR_RE = re.compile(r"#[a-hjkmnp-tv-z][0-9a-hjkmnp-tv-z]{3}")
-
-# Each stale-anchor edit shifts a target declaration without touching it: two insert unique,
-# brace-free, blank-free lines above the target (so no inserted line duplicates an existing
-# line's trimmed content, which would make a bare anchor ambiguous); one shrinks the block above.
-STALE_BANDS = (
-    "// severity thresholds used by downstream probes, ascending by band:\n"
-    "const bandOff = 0\n"
-    "const bandInfo = 5\n"
-    "const bandNotice = 10\n"
-    "const bandWarn = 20\n"
-    "const bandError = 30\n"
-    "const bandCritical = 40\n"
-    "const bandFatal = 50\n"
-    "const bandUnknown = -1\n"
-    "const bandDefault = bandInfo\n"
-    "const bandCeiling = bandFatal"
-)
-STALE_TIERS = (
-    "\t// probe latency budgets in milliseconds, one per tier:\n"
-    "\tconst tierFast = 5\n"
-    "\tconst tierBrisk = 15\n"
-    "\tconst tierSteady = 45\n"
-    "\tconst tierSlow = 90\n"
-    "\tconst tierLagging = 180\n"
-    "\tconst tierStalled = 360\n"
-    "\tconst tierFrozen = 720\n"
-    "\tconst tierTimeout = 1440\n"
-    "\tconst tierGiveUp = 2880\n"
-    "\tconst tierBudget = tierSteady\n"
-    "\tconst tierWall = tierTimeout"
-)
-STALE_SHRINK_FIND = (
-    "// Degraded reports that the service is running with reduced capacity.\n"
-    "func Degraded() State {\n"
-    "\tconst impaired = 1\n"
-    "\treturn State(impaired)\n"
-    "}"
-)
-STALE_SHRINK_REPLACE = "// Degraded reports reduced capacity.\nfunc Degraded() State { return State(1) }"
-
-# (task id, target func, its decl line, edit find, edit replace).
-STALE_SPECS = [
-    ("stale-ready-insert", "Ready", "func Ready() State {", "type State int", "type State int\n" + STALE_BANDS),
-    (
-        "stale-degraded-insert",
-        "Degraded",
-        "func Degraded() State {",
-        "\tconst healthy = 2",
-        "\tconst healthy = 2\n" + STALE_TIERS,
-    ),
-    ("stale-report-shrink", "Report", "func Report(s State) string {", STALE_SHRINK_FIND, STALE_SHRINK_REPLACE),
-]
-
-# A structural-replace prompt deliberately states the change as a pattern→rewrite over
-# the code's shape, not "open the file and edit line N": the ccx arm can run a single
-# `ccx code replace '<pattern>' '<rewrite>'` (or the ccx_code_replace MCP tool) without
-# reading the file, while the baseline must Read then Edit. Graded by test_run on the
-# resulting code.
-
-
-def nav_tasks(manifest: dict) -> list[Task]:
-    tasks = []
-    for s in manifest["symbols"]:
-        tasks.append(
-            Task(
-                id=f"nav-{s['name']}",
-                category="navigation",
-                repo=REPO,
-                prompt=(
-                    f"In this repository, where is the function `{s['name']}` declared? "
-                    "Respond with the file path relative to the repo root and the 1-based "
-                    "line number of its declaration."
-                ),
-                schema=NAV_SCHEMA,
-                grader=Grader("file_line", {"line_tolerance": 2}),
-                gold={"file": s["file"], "line": s["line"]},
-            )
-        )
-    return tasks
-
-
-def callees_tasks(manifest: dict) -> list[Task]:
-    tasks = []
-    for s in manifest["symbols"]:
-        if not s["callees"]:
-            continue
-        if len(tasks) >= SYMBOL_GRAPH_SAMPLE:
-            break
-        tasks.append(
-            Task(
-                id=f"callees-{s['name']}",
-                category="callees",
-                repo=REPO,
-                prompt=(
-                    f"Within this repository's own code, which functions does `{s['name']}` "
-                    "call directly? List only functions defined in this repository; ignore "
-                    "standard-library or built-in calls."
-                ),
-                schema=CALLEES_SCHEMA,
-                grader=Grader("set_match", {"field": "callees", "mode": "equal", "lower": True}),
-                gold={"callees": s["callees"]},
-            )
-        )
-    return tasks
-
-
-def callers_tasks(manifest: dict) -> list[Task]:
-    tasks = []
-    for s in manifest["symbols"]:
-        if not s["callers"]:
-            continue
-        if len(tasks) >= SYMBOL_GRAPH_SAMPLE:
-            break
-        tasks.append(
-            Task(
-                id=f"callers-{s['name']}",
-                category="callers",
-                repo=REPO,
-                prompt=(
-                    f"Within this repository's own code, which functions call `{s['name']}` "
-                    "directly? List the calling functions' names."
-                ),
-                schema=CALLERS_SCHEMA,
-                grader=Grader("set_match", {"field": "callers", "mode": "equal", "lower": True}),
-                gold={"callers": s["callers"]},
-            )
-        )
-    return tasks
-
-
-def intent_tasks(manifest: dict) -> list[Task]:
-    tasks = []
-    for i, it in enumerate(manifest["intents"]):
-        tasks.append(
-            Task(
-                id=f"intent-{i}",
-                category="intent_search",
-                repo=REPO,
-                prompt=(
-                    f"Which single file contains the code that {it['phrase']}? "
-                    "Respond with the file path relative to the repo root."
-                ),
-                schema=FILE_SCHEMA,
-                grader=Grader("file_match", {}),
-                gold={"file": it["file"]},
-            )
-        )
-    return tasks
-
-
-def diff_tasks() -> list[Task]:
-    return [
-        Task(
-            id="diff-double",
-            category="diff_review",
-            repo=REPO,
-            prompt=(
-                "The working tree has uncommitted changes. Which top-level functions were "
-                "modified relative to HEAD? List their names."
-            ),
-            schema=SYMBOLS_SCHEMA,
-            grader=Grader("set_match", {"field": "symbols", "mode": "equal", "lower": True}),
-            gold={"symbols": ["Double"]},
-            setup={"edits": [{"file": "internal/calc/calc.go", "find": "return Add(n, n)", "replace": "return Add(n, Add(n, 0))"}]},
-        ),
-        Task(
-            id="diff-greet-compute",
-            category="diff_review",
-            repo=REPO,
-            prompt=(
-                "The working tree has uncommitted changes. Which top-level functions were "
-                "modified relative to HEAD? List their names."
-            ),
-            schema=SYMBOLS_SCHEMA,
-            grader=Grader("set_match", {"field": "symbols", "mode": "equal", "lower": True}),
-            gold={"symbols": ["salutation", "Max"]},
-            setup={
-                "edits": [
-                    {"file": "internal/greet/greet.go", "find": 'return "Hello"', "replace": 'return "Hi"'},
-                    {"file": "internal/calc/calc.go", "find": "best := 0", "replace": "best := xs[0]\n\t_ = best"},
-                ]
-            },
-        ),
-        Task(
-            id="diff-slugify",
-            category="diff_review",
-            repo=REPO,
-            prompt=(
-                "The working tree has uncommitted changes. Which top-level functions were "
-                "modified relative to HEAD? List their names."
-            ),
-            schema=SYMBOLS_SCHEMA,
-            grader=Grader("set_match", {"field": "symbols", "mode": "equal", "lower": True}),
-            gold={"symbols": ["slugify"]},
-            setup={"edits": [{"file": "pysrc/util.py", "find": '.replace(" ", "-")', "replace": '.replace(" ", "_")'}]},
-        ),
-    ]
-
-
-def edit_tasks() -> list[Task]:
-    py = "python3 -c"
-    return [
-        Task(
-            id="edit-slugify-underscore",
-            category="targeted_edit",
-            repo=REPO,
-            prompt=(
-                "In pysrc/util.py, change the `slugify` function so it joins words with an "
-                "underscore (`_`) instead of a hyphen (`-`). Make no other behavioral change."
-            ),
-            schema=EDIT_SCHEMA,
-            grader=Grader(
-                "test_run",
-                {"cmd": f"{py} \"import sys; sys.path.insert(0,'pysrc'); import util; assert util.slugify('a b c')=='a_b_c', util.slugify('a b c')\""},
-            ),
-            gold={
-                "check": "slugify('a b c') == 'a_b_c'",
-                "solution_edits": [{"file": "pysrc/util.py", "find": '.replace(" ", "-")', "replace": '.replace(" ", "_")'}],
-            },
-        ),
-        Task(
-            id="edit-double-triple",
-            category="targeted_edit",
-            repo=REPO,
-            prompt=(
-                "In internal/calc/calc.go, change the `Double` function so it returns three "
-                "times n instead of twice n. Keep the function name and signature unchanged."
-            ),
-            schema=EDIT_SCHEMA,
-            grader=Grader(
-                "test_run",
-                {"cmd": "printf 'package calc\\nimport \"testing\"\\nfunc TestD(t *testing.T){ if Double(4)!=12 { t.Fatal(Double(4)) } }' > internal/calc/zz_bench_test.go && go test ./internal/calc/ >/dev/null 2>&1; rc=$?; rm -f internal/calc/zz_bench_test.go; exit $rc", "timeout_s": 180},
-            ),
-            gold={
-                "check": "Double(4) == 12",
-                "solution_edits": [{"file": "internal/calc/calc.go", "find": "return Add(n, n)", "replace": "return Add(n, Add(n, n))"}],
-            },
-        ),
-        Task(
-            id="edit-titlecase-blank",
-            category="targeted_edit",
-            repo=REPO,
-            prompt=(
-                "In pysrc/util.py, add a new function `is_long(s)` that returns True when the "
-                "normalized string has more than 10 characters, reusing the existing "
-                "`normalize` helper. Do not change existing functions."
-            ),
-            schema=EDIT_SCHEMA,
-            grader=Grader(
-                "test_run",
-                {"cmd": f"{py} \"import sys; sys.path.insert(0,'pysrc'); import util; assert util.is_long('a'*11) is True and util.is_long('a b') is False and util.is_long('a   b   c   d') is False\""},
-            ),
-            gold={
-                "check": "is_long longer-than-10 via normalize",
-                "solution_edits": [
-                    {
-                        "file": "pysrc/util.py",
-                        "find": '    return normalize(s) == ""',
-                        "replace": '    return normalize(s) == ""\n\n\ndef is_long(s):\n    """Report whether the normalized string is longer than ten characters."""\n    return len(normalize(s)) > 10',
-                    }
-                ],
-            },
-        ),
-    ]
-
-
-def replace_tasks() -> list[Task]:
-    py = "python3 -c"
-    go_test = (
-        "printf 'package calc\\nimport \"testing\"\\n{test}' > internal/calc/zz_replace_test.go && "
-        "go test ./internal/calc/ >/dev/null 2>&1; rc=$?; rm -f internal/calc/zz_replace_test.go; exit $rc"
+def _nav(tid: str, repo: str, file: str, decl: str, prompt: str) -> Task:
+    """Navigation: find a declaration on a big file. `gold.line` is derived from `decl` at build."""
+    return Task(
+        id=tid,
+        category="navigation",
+        repo=repo,
+        prompt=prompt + " Respond with the repo-relative file path and the 1-based declaration line.",
+        schema=NAV_SCHEMA,
+        grader=Grader("file_line", {"line_tolerance": 2}),
+        gold={"file": file, "decl": decl, "traversal_files": [file]},
     )
+
+
+def _trace(tid: str, repo: str, file: str, decl: str, prompt: str, chain: list[str]) -> Task:
+    """Trace: the terminal function of a cross-file call chain; `gold.line` derived from `decl`."""
+    return Task(
+        id=tid,
+        category="trace",
+        repo=repo,
+        prompt=prompt + " Respond with the repo-relative file path and the 1-based declaration line "
+        "of that function or method.",
+        schema=NAV_SCHEMA,
+        grader=Grader("file_line", {"line_tolerance": 2}),
+        gold={"file": file, "decl": decl, "traversal_files": chain},
+    )
+
+
+def _lc(tid: str, repo: str, prompt: str, predicate: dict, traversal: list[str]) -> Task:
+    """Large-context enumeration; `gold.members` is recomputed from `predicate` at build."""
+    return Task(
+        id=tid,
+        category="large_context",
+        repo=repo,
+        prompt=prompt,
+        schema=MEMBERS_SCHEMA,
+        grader=Grader("set_match", {"field": "members", "mode": "equal", "lower": True}),
+        gold={"lc_predicate": predicate, "traversal_files": traversal},
+    )
+
+
+def _diff(tid: str, repo: str, prompt: str, edits: list[dict]) -> Task:
+    """Diff-review; the patch and `gold.symbols`/`traversal_files` are generated from `edits`."""
+    return Task(
+        id=tid,
+        category="diff_review",
+        repo=repo,
+        prompt=prompt,
+        schema=SYMBOLS_SCHEMA,
+        grader=Grader("set_match", {"field": "symbols", "mode": "equal", "lower": True}),
+        gold={"diff_spec": {"edits": edits}},
+    )
+
+
+def _edit(tid: str, repo: str, prompt: str, cmd: str, check: str, solution: list[dict], traversal: list[str]) -> Task:
+    """Targeted edit graded by a self-contained, offline `test_run`; pristine must fail, solution pass."""
+    return Task(
+        id=tid,
+        category="targeted_edit",
+        repo=repo,
+        prompt=prompt,
+        schema=EDIT_SCHEMA,
+        grader=Grader("test_run", {"cmd": cmd, "timeout_s": 120}),
+        gold={"check": check, "solution_edits": solution, "traversal_files": traversal},
+    )
+
+
+def _intent(tid: str, repo: str, prompt: str, file: str, traversal: list[str]) -> Task:
+    """Intent search: name the module implementing a whole-repo concept (file_match gold)."""
+    return Task(
+        id=tid,
+        category="intent_search",
+        repo=repo,
+        prompt=prompt + " Respond with the file path relative to the repo root.",
+        schema=FILE_SCHEMA,
+        grader=Grader("file_match", {}),
+        gold={"file": file, "traversal_files": traversal},
+    )
+
+
+def navigation_tasks() -> list[Task]:
     return [
-        Task(
-            id="replace-slugify-underscore",
-            category="structural_replace",
-            repo=REPO,
-            prompt=(
-                "In pysrc/util.py, perform a structural find-replace: rewrite the expression "
-                '`normalize(s).replace(" ", "-")` to `normalize(s).replace(" ", "_")` so '
-                "`slugify` joins words with an underscore. Change nothing else."
-            ),
-            schema=EDIT_SCHEMA,
-            grader=Grader(
-                "test_run",
-                {"cmd": f"{py} \"import sys; sys.path.insert(0,'pysrc'); import util; assert util.slugify('a b c')=='a_b_c', util.slugify('a b c')\""},
-            ),
-            gold={
-                "check": "slugify('a b c') == 'a_b_c'",
-                "solution_edits": [{"file": "pysrc/util.py", "find": 'normalize(s).replace(" ", "-")', "replace": 'normalize(s).replace(" ", "_")'}],
-            },
+        _nav("nav-tornado-find-handler", "tornado", "tornado/web.py", "def find_handler(",
+             "In this web framework, which method of the `Application` class selects the message "
+             "delegate that will handle an incoming request?"),
+        _nav("nav-tornado-static-get", "tornado", "tornado/web.py",
+             "async def get(self, path: str, include_body: bool = True) -> None:",
+             "In this web framework, where is the `get` method of the static-file handler declared "
+             "(the handler that serves files off disk)?"),
+        _nav("nav-tornado-set-signed-cookie", "tornado", "tornado/web.py", "def set_signed_cookie(",
+             "In this web framework, where is the request handler's method that sets a "
+             "cryptographically signed cookie declared?"),
+        _nav("nav-click-command", "click", "src/click/core.py", "class Command(BaseCommand):",
+             "In this command-line library, where is the `Command` class declared?"),
+        _nav("nav-click-option", "click", "src/click/core.py", "class Option(Parameter):",
+             "In this command-line library, where is the `Option` class declared?"),
+        _nav("nav-click-resolve-command", "click", "src/click/core.py", "def resolve_command(",
+             "In this command-line library, where is the method that resolves a command-line token "
+             "into a subcommand declared?"),
+    ]
+
+
+def trace_tasks() -> list[Task]:
+    return [
+        _trace("trace-tornado-write-headers", "tornado", "tornado/http1connection.py", "def write_headers(",
+               "In this web framework, when a request handler finishes producing a response, the "
+               "framework flushes it to the client. Following that path, which method on the "
+               "underlying HTTP/1.x connection actually writes the response status line and headers "
+               "out to the socket?",
+               ["tornado/web.py", "tornado/http1connection.py"]),
+        _trace("trace-tornado-ws-handshake", "tornado", "tornado/websocket.py", "async def _accept_connection(",
+               "In this web framework, when an HTTP request is routed to a WebSocket handler and its "
+               "`get` method runs, which method ultimately performs the opening handshake — "
+               "validating the client headers and writing the 101 Switching Protocols response?",
+               ["tornado/web.py", "tornado/websocket.py"]),
+        _trace("trace-tornado-parse-body", "tornado", "tornado/httputil.py", "def parse_body_arguments(",
+               "In this web framework, a handler reads a POSTed form field through its body-argument "
+               "accessor. Tracing back where those body arguments come from, which function actually "
+               "parses the raw request body bytes into that argument mapping?",
+               ["tornado/web.py", "tornado/httputil.py"]),
+        _trace("trace-tornado-target-delegate", "tornado", "tornado/routing.py", "def get_target_delegate(",
+               "In this web framework, when the application routes an incoming request and one of its "
+               "URL rules matches, which method builds the message delegate that will actually run "
+               "the matched target?",
+               ["tornado/web.py", "tornado/routing.py"]),
+    ]
+
+
+def large_context_tasks() -> list[Task]:
+    def method_prompt(file: str, method: str) -> str:
+        return (
+            f"In `{file}`, enumerate every public class defined at module scope (public = the name does "
+            f"not start with an underscore; top-level only, not nested) whose own body defines a method "
+            f"named `{method}`. A class counts only if it declares `{method}` directly in its body — not "
+            f"if it merely inherits it from a base class. List each qualifying class name exactly once."
+        )
+
+    return [
+        _lc("lc-click-get-command", "click", method_prompt("src/click/core.py", "get_command"),
+            {"kind": "py_method", "file": "src/click/core.py", "target": "get_command"},
+            ["src/click/core.py"]),
+        _lc("lc-click-to-info-dict", "click", method_prompt("src/click/core.py", "to_info_dict"),
+            {"kind": "py_method", "file": "src/click/core.py", "target": "to_info_dict"},
+            ["src/click/core.py"]),
+        _lc("lc-click-invoke", "click", method_prompt("src/click/core.py", "invoke"),
+            {"kind": "py_method", "file": "src/click/core.py", "target": "invoke"},
+            ["src/click/core.py"]),
+        _lc("lc-tornado-prepare", "tornado", method_prompt("tornado/web.py", "prepare"),
+            {"kind": "py_method", "file": "tornado/web.py", "target": "prepare"},
+            ["tornado/web.py"]),
+        _lc("lc-tornado-initialize", "tornado", method_prompt("tornado/web.py", "initialize"),
+            {"kind": "py_method", "file": "tornado/web.py", "target": "initialize"},
+            ["tornado/web.py"]),
+        _lc("lc-tornado-handler-subclasses", "tornado",
+            "Across `tornado/web.py` and `tornado/websocket.py`, enumerate every public class defined "
+            "at module scope whose declared base classes include `RequestHandler` (written either as "
+            "`RequestHandler` or as a dotted path ending in `.RequestHandler`). List each qualifying "
+            "class name exactly once.",
+            {"kind": "py_subclass", "base": "RequestHandler", "files": ["tornado/web.py", "tornado/websocket.py"]},
+            ["tornado/web.py", "tornado/websocket.py"]),
+    ]
+
+
+def diff_review_tasks() -> list[Task]:
+    return [
+        _diff("diff-tornado-response", "tornado", DIFF_PROMPT, [
+            {"file": "tornado/web.py",
+             "find": "        self._reason = httputil.responses[200]",
+             "replace": '        self._reason = httputil.responses.get(200, "OK")'},
+            {"file": "tornado/web.py",
+             "find": "            self._reason = escape.native_str(reason)",
+             "replace": "            self._reason = escape.native_str(reason).strip()"},
+            {"file": "tornado/web.py",
+             "find": "        return self._status_code",
+             "replace": "        return int(self._status_code)"},
+        ]),
+        _diff("diff-click-help", "click", DIFF_PROMPT, [
+            {"file": "src/click/core.py",
+             "find": "            text = make_default_short_help(self.help, limit)",
+             "replace": "            text = make_default_short_help(self.help, limit).rstrip()"},
+            {"file": "src/click/core.py",
+             "find": "        rv = [self.options_metavar] if self.options_metavar else []",
+             "replace": "        rv = list([self.options_metavar]) if self.options_metavar else []"},
+            {"file": "src/click/core.py",
+             "find": "        all_names = set(ctx.help_option_names)",
+             "replace": "        all_names = set(ctx.help_option_names or [])"},
+        ]),
+        _diff("diff-tornado-routing", "tornado", DIFF_PROMPT, [
+            {"file": "tornado/web.py",
+             "find": "        self._headers.add(name, self._convert_header_value(value))",
+             "replace": "        self._headers.add(str(name), self._convert_header_value(value))"},
+            {"file": "tornado/web.py",
+             "find": "            del self._headers[name]",
+             "replace": "            self._headers.pop(name, None)"},
+            {"file": "tornado/routing.py",
+             "find": "            target_params = rule.matcher.match(request)",
+             "replace": "            target_params = rule.matcher.match(request) or None"},
+        ]),
+    ]
+
+
+def targeted_edit_tasks() -> list[Task]:
+    return [
+        _edit(
+            "edit-tornado-httperror-default", "tornado",
+            "When an HTTP error is raised in this web framework without an explicit status code, it "
+            "currently defaults to HTTP 500. Change that default so it is HTTP 502 instead. Leave the "
+            "behavior when an explicit status code is passed unchanged.",
+            'PYTHONPATH=. python3 -c "import tornado.web as w; '
+            "assert w.HTTPError().status_code == 502; assert w.HTTPError(404).status_code == 404\"",
+            "HTTPError().status_code == 502",
+            [{"file": "tornado/web.py",
+              "find": "        status_code: int = 500,\n        log_message: Optional[str] = None,",
+              "replace": "        status_code: int = 502,\n        log_message: Optional[str] = None,"}],
+            ["tornado/web.py"],
         ),
-        Task(
-            id="replace-double-thrice",
-            category="structural_replace",
-            repo=REPO,
-            prompt=(
-                "In internal/calc/calc.go, perform a structural find-replace inside `Double`: "
-                "rewrite the statement `return Add(n, n)` to `return Add(n, Add(n, n))` so it "
-                "returns three times n. Keep the signature unchanged."
-            ),
-            schema=EDIT_SCHEMA,
-            grader=Grader(
-                "test_run",
-                {"cmd": go_test.format(test='func TestDoubleBench(t *testing.T){ if Double(4)!=12 { t.Fatal(Double(4)) } }'), "timeout_s": 180},
-            ),
-            gold={
-                "check": "Double(4) == 12",
-                "solution_edits": [{"file": "internal/calc/calc.go", "find": "return Add(n, n)", "replace": "return Add(n, Add(n, n))"}],
-            },
+        _edit(
+            "edit-tornado-supported-methods", "tornado",
+            "Make the base request handler in this web framework advertise support for the HTTP "
+            "`TRACE` method in addition to every method it already lists as supported.",
+            'PYTHONPATH=. python3 -c "import tornado.web as w; '
+            "m = w.RequestHandler.SUPPORTED_METHODS; assert 'TRACE' in m; assert 'GET' in m and 'POST' in m\"",
+            "'TRACE' in RequestHandler.SUPPORTED_METHODS",
+            [{"file": "tornado/web.py",
+              "find": '    SUPPORTED_METHODS = ("GET", "HEAD", "POST", "DELETE", "PATCH", "PUT", "OPTIONS")',
+              "replace": '    SUPPORTED_METHODS = ("GET", "HEAD", "POST", "DELETE", "PATCH", "PUT", "OPTIONS", "TRACE")'}],
+            ["tornado/web.py"],
         ),
-        Task(
-            id="replace-triple-quad",
-            category="structural_replace",
-            repo=REPO,
-            prompt=(
-                "In internal/calc/calc.go, perform a structural find-replace inside `Triple`: "
-                "rewrite the statement `return Add(Double(n), n)` to "
-                "`return Add(Double(n), Double(n))`. Keep the signature unchanged."
-            ),
-            schema=EDIT_SCHEMA,
-            grader=Grader(
-                "test_run",
-                {"cmd": go_test.format(test='func TestTripleBench(t *testing.T){ if Triple(3)!=12 { t.Fatal(Triple(3)) } }'), "timeout_s": 180},
-            ),
-            gold={
-                "check": "Triple(3) == 12",
-                "solution_edits": [{"file": "internal/calc/calc.go", "find": "return Add(Double(n), n)", "replace": "return Add(Double(n), Double(n))"}],
-            },
+        _edit(
+            "edit-click-batch-partial", "click",
+            "In this command-line library, the `batch` helper groups an iterable into fixed-size "
+            "tuples but silently drops any leftover items that do not fill a complete final group. "
+            "Change it so a final, smaller group containing the leftover items is included in the "
+            "result. Keep the behavior for evenly-divisible inputs unchanged.",
+            'PYTHONPATH=src python3 -c "from click.core import batch as b; '
+            "assert b([1,2,3,4,5],2) == [(1,2),(3,4),(5,)], b([1,2,3,4,5],2); assert b([1,2,3,4],2) == [(1,2),(3,4)]\"",
+            "batch keeps the trailing partial group",
+            [{"file": "src/click/core.py",
+              "find": "    return list(zip(*repeat(iter(iterable), batch_size)))",
+              "replace": "    items = list(iterable)\n"
+                         "    return [tuple(items[i : i + batch_size]) for i in range(0, len(items), batch_size)]"}],
+            ["src/click/core.py"],
         ),
-        Task(
-            id="replace-sub-swap",
-            category="structural_replace",
-            repo=REPO,
-            prompt=(
-                "In internal/calc/calc.go, perform a structural find-replace using a pattern with "
-                "metavariables: rewrite the return statement matching `return $A - $B` to "
-                "`return $B - $A`, swapping the operands of `Sub`. Change only `Sub`."
-            ),
-            schema=EDIT_SCHEMA,
-            grader=Grader(
-                "test_run",
-                {"cmd": go_test.format(test='func TestSubSwapBench(t *testing.T){ if Sub(5,2)!=-3 { t.Fatal(Sub(5,2)) } }'), "timeout_s": 180},
-            ),
-            gold={
-                "check": "Sub(5, 2) == -3",
-                "solution_edits": [{"file": "internal/calc/calc.go", "find": "return a - b", "replace": "return b - a"}],
-            },
+        _edit(
+            "edit-click-short-help-limit", "click",
+            "In this command-line library, a command's short help string is shortened to a default "
+            "maximum length when it has to be derived from the long help text. Raise that default "
+            "maximum length from 45 to 60 characters. Leave the behavior when a caller passes an "
+            "explicit limit unchanged.",
+            'PYTHONPATH=src python3 -c "import click; import inspect; '
+            "src = inspect.getsource(click.Command.get_short_help_str); "
+            "assert 'limit: int = 60' in src, src\"",
+            "get_short_help_str default limit is 60",
+            [{"file": "src/click/core.py",
+              "find": "    def get_short_help_str(self, limit: int = 45) -> str:",
+              "replace": "    def get_short_help_str(self, limit: int = 60) -> str:"}],
+            ["src/click/core.py"],
         ),
     ]
 
 
-def routing_tasks() -> list[Task]:
-    """Paired search-routing tasks: a metavar/code-pattern query (routes structural via
-    ast-grep) and a code-shape query, each answerable by locating a file/symbol. The
-    semantic (NL-intent) side of the pair is already covered by intent_tasks; these add
-    the structural-query side the router must classify as structural."""
+def intent_search_tasks() -> list[Task]:
     return [
-        Task(
-            id="route-struct-compute-loop",
-            category="structural_search",
-            repo=REPO,
-            prompt=(
-                "Search this repository for code matching the structural pattern "
-                "`func $NAME(xs []int) int` (a function taking an int slice and returning an int). "
-                "Which single file declares `Compute`, one of the functions that matches? Respond "
-                "with the repo-relative file path."
-            ),
-            schema=FILE_SCHEMA,
-            grader=Grader("file_match", {}),
-            gold={"file": "internal/calc/calc.go"},
-        ),
-        Task(
-            id="route-struct-greet-callsite",
-            category="structural_search",
-            repo=REPO,
-            prompt=(
-                "Search this repository for the structural call pattern `greet.Greet($A)` "
-                "(a call to greet.Greet with any single argument). Which single file contains a "
-                "call site matching it? Respond with the repo-relative file path."
-            ),
-            schema=FILE_SCHEMA,
-            grader=Grader("file_match", {}),
-            gold={"file": "cmd/app/main.go"},
-        ),
-        Task(
-            id="route-nl-greeting",
-            category="intent_search",
-            repo=REPO,
-            prompt=(
-                "Using a natural-language code search, which single file contains the code that "
-                "produces the welcome line shown to a user, addressing them by name? Respond with "
-                "the repo-relative file path."
-            ),
-            schema=FILE_SCHEMA,
-            grader=Grader("file_match", {}),
-            gold={"file": "internal/greet/greet.go"},
-        ),
+        _intent("intent-tornado-eventloop", "tornado",
+                "In this web framework, which module owns the machinery that registers callbacks, "
+                "timers, and file-descriptor readiness for asynchronous work?",
+                "tornado/ioloop.py",
+                ["tornado/ioloop.py", "tornado/iostream.py", "tornado/gen.py", "tornado/concurrent.py"]),
+        _intent("intent-tornado-http1", "tornado",
+                "In this web framework, which module owns the low-level protocol adapter that consumes "
+                "request bytes from sockets and emits responses for the server stack?",
+                "tornado/http1connection.py",
+                ["tornado/http1connection.py", "tornado/httpserver.py", "tornado/httputil.py", "tornado/tcpserver.py"]),
+        _intent("intent-click-parser", "click",
+                "In this command-line library, when command invocation turns raw argv tokens into "
+                "option and argument values, which source file owns that conversion machinery?",
+                "src/click/parser.py",
+                ["src/click/core.py", "src/click/parser.py"]),
     ]
 
 
 def non_regression_tasks() -> list[Task]:
-    # Each task uses synonym groups: a correct answer must hit >=1 term in EVERY group, so the
-    # grader rejects off-topic answers yet accepts paraphrases. These tasks need no repo access;
-    # they confirm ccx adds no cost/accuracy harm where it cannot help (ccx_helps=False).
+    """Control family (`ccx_helps=False`): repo-free reasoning where ccx cannot help.
+
+    Each task uses synonym groups: a correct answer must hit >=1 term in EVERY group, so the
+    grader rejects off-topic answers yet accepts paraphrases. Excluded from every headline; the
+    empty workdir carries no repo and no traversal floor.
+    """
     specs = [
         ("nonreg-binsearch", "Explain in two sentences how binary search works on a sorted array.",
          [["sort"], ["half", "halve", "middle", "mid", "divide"]]),
@@ -517,343 +356,32 @@ def non_regression_tasks() -> list[Task]:
         ("nonreg-bigo", "In one sentence, what does Big-O notation describe about an algorithm?",
          [["time", "operation", "step", "memory", "space", "resource"], ["grow", "scale", "input", "size"]]),
     ]
-    tasks = []
-    for tid, prompt, groups in specs:
-        tasks.append(
-            Task(
-                id=tid,
-                category="non_regression",
-                repo=REPO,
-                prompt=prompt,
-                schema=ANSWER_SCHEMA,
-                grader=Grader("keywords", {"field": "answer"}),
-                gold={"groups": groups},
-                ccx_helps=False,
-            )
-        )
-    return tasks
-
-
-def capture_status_outline(cfg: Config, fixture_dir: Path) -> str:
-    """Capture the pristine anchored outline of the status fixture file, fresh (never cached).
-
-    Fails loud if the outline carries no content anchor: a pre-anchor ccx must never silently
-    produce a hashless stale-anchor corpus.
-    """
-    proc = subprocess.run(
-        [str(cfg.ccx_bin), "code", "outline", STALE_ANCHOR_FILE],
-        cwd=fixture_dir,
-        capture_output=True,
-        text=True,
-        timeout=STALE_ANCHOR_TIMEOUT_S,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"ccx code outline {STALE_ANCHOR_FILE} (in {fixture_dir}) exited {proc.returncode}: {proc.stderr.strip()}"
-        )
-    if not STALE_ANCHOR_RE.search(proc.stdout):
-        raise RuntimeError(
-            f"ccx outline of {STALE_ANCHOR_FILE} carries no content anchor; refusing to build a "
-            f"hashless stale-anchor corpus:\n{proc.stdout}"
-        )
-    return proc.stdout
-
-
-def stale_decl_line(find: str, replace: str, decl: str) -> int:
-    """Replay one setup edit on the pristine status.go string and return the post-edit decl line."""
-    text = fixtures.FILES[STALE_ANCHOR_FILE]
-    if find not in text:
-        raise ValueError(f"stale_anchor edit find {find!r} absent from {STALE_ANCHOR_FILE}")
-    return fixtures.line_of(text.replace(find, replace, 1), decl)
-
-
-def stale_anchor_tasks(cfg: Config, fixture_dir: Path) -> list[Task]:
-    """Build stale-anchor tasks: each embeds the pristine outline as previously-captured context,
-    then a setup edit shifts the target declaration so the captured anchor/line goes stale."""
-    capture = capture_status_outline(cfg, fixture_dir)
-    tasks = []
-    for tid, func, decl, find, replace in STALE_SPECS:
-        tasks.append(
-            Task(
-                id=tid,
-                category="stale_anchor",
-                repo=REPO,
-                prompt=(
-                    f"Earlier, this outline of {STALE_ANCHOR_FILE} was captured:\n\n{capture}\n"
-                    f"The file has since been edited. Where is the function `{func}` declared NOW? "
-                    "Answer with the file path relative to the repo root and the 1-based line "
-                    "number of its declaration."
-                ),
-                schema=NAV_SCHEMA,
-                grader=Grader("file_line", {"line_tolerance": 2}),
-                gold={"file": STALE_ANCHOR_FILE, "line": stale_decl_line(find, replace, decl)},
-                setup={"edits": [{"file": STALE_ANCHOR_FILE, "find": find, "replace": replace}]},
-            )
-        )
-    return tasks
-
-
-def nav_oss(tid: str, repo: str, prompt: str, file: str, line: int, decl: str) -> Task:
-    return Task(
-        id=tid,
-        category="navigation",
-        repo=repo,
-        prompt=prompt,
-        schema=NAV_SCHEMA,
-        grader=Grader("file_line", {"line_tolerance": 2}),
-        gold={"file": file, "line": line, "verify_decl": decl},
-    )
-
-
-def intent_oss(tid: str, repo: str, prompt: str, file: str) -> Task:
-    return Task(
-        id=tid,
-        category="intent_search",
-        repo=repo,
-        prompt=prompt + " Respond with the file path relative to the repo root.",
-        schema=FILE_SCHEMA,
-        grader=Grader("file_match", {}),
-        gold={"file": file},
-    )
-
-
-def oss_tasks() -> list[Task]:
-    """Complex, large-context tasks over pinned real repos (gold verified at build time).
-
-    These are where ccx's value should show: big-file navigation (click core.py is 3k lines),
-    semantic intent search across many files, and multi-file diff review.
-    """
-    diff_prompt = (
-        "The working tree has uncommitted changes, possibly across multiple files. Which "
-        "top-level functions or methods were modified relative to HEAD? List their names."
-    )
     return [
-        nav_oss("mux-nav-router-match", "gorilla-mux",
-                "In this repository, on which file and 1-based line is the `Match` method of the "
-                "`*Router` type declared (the router's Match, not `*Route`'s)? Respond with the "
-                "repo-relative file path and the line of its declaration.",
-                "mux.go", 138, "func (r *Router) Match("),
-        nav_oss("mux-nav-getname", "gorilla-mux",
-                "In this repository, where is the `GetName` method of the `*Route` type declared? "
-                "Respond with the repo-relative file path and the 1-based declaration line.",
-                "route.go", 162, "func (r *Route) GetName("),
-        nav_oss("click-nav-command", "click",
-                "In this repository, where is the `Command` class declared? Respond with the "
-                "repo-relative file path and the 1-based line of its declaration.",
-                "src/click/core.py", 1160, "class Command("),
-        nav_oss("click-nav-option", "click",
-                "In this repository, where is the `Option` class declared? Respond with the "
-                "repo-relative file path and the 1-based line of its declaration.",
-                "src/click/core.py", 2449, "class Option("),
-        nav_oss("click-nav-split-opt", "click",
-                "In this repository, where is the `split_opt` function declared? Respond with the "
-                "repo-relative file path and the 1-based line of its declaration.",
-                "src/click/parser.py", 109, "def split_opt("),
-        intent_oss("mux-intent-dispatch", "gorilla-mux",
-                   "Which file contains the code that dispatches an incoming HTTP request to the "
-                   "matching route's handler (the http.Handler entry point of the router)?",
-                   "mux.go"),
-        intent_oss("mux-intent-regexp", "gorilla-mux",
-                   "Which file implements the regular-expression machinery that compiles and "
-                   "matches route path patterns and their variables?",
-                   "regexp.go"),
-        intent_oss("click-intent-parser", "click",
-                   "Which file implements the parser that turns raw command-line argument strings "
-                   "into parsed options and arguments?",
-                   "src/click/parser.py"),
-        intent_oss("click-intent-decorators", "click",
-                   "Which file defines the decorators used to declare commands and options "
-                   "(for example the @command and @option decorators)?",
-                   "src/click/decorators.py"),
         Task(
-            id="mux-diff-multifile",
-            category="diff_review",
-            repo="gorilla-mux",
-            prompt=diff_prompt,
-            schema=SYMBOLS_SCHEMA,
-            grader=Grader("set_match", {"field": "symbols", "mode": "equal", "lower": True}),
-            gold={"symbols": ["NewRouter", "GetName"]},
-            setup={
-                "edits": [
-                    {"file": "mux.go", "find": "return &Router{namedRoutes: make(map[string]*Route)}", "replace": "return &Router{namedRoutes: make(map[string]*Route)} //nolint"},
-                    {"file": "route.go", "find": "return r.name", "replace": "return r.name //nolint"},
-                ]
-            },
-        ),
-        Task(
-            id="click-diff-parser",
-            category="diff_review",
-            repo="click",
-            prompt=diff_prompt,
-            schema=SYMBOLS_SCHEMA,
-            grader=Grader("set_match", {"field": "symbols", "mode": "equal", "lower": True}),
-            gold={"symbols": ["split_opt", "normalize_opt"]},
-            setup={
-                "edits": [
-                    {"file": "src/click/parser.py", "find": "    first = opt[:1]", "replace": "    first = opt[:1]  # nolint"},
-                    {"file": "src/click/parser.py", "find": "    if ctx is None or ctx.token_normalize_func is None:", "replace": "    if ctx is None or ctx.token_normalize_func is None:  # nolint"},
-                ]
-            },
-        ),
-        Task(
-            id="mux-edit-routecount",
-            category="targeted_edit",
-            repo="gorilla-mux",
-            prompt=(
-                "Add a method `func (r *Router) RouteCount() int` that returns the number of "
-                "routes registered on the router (the length of its internal routes slice). Keep "
-                "all existing behavior unchanged."
-            ),
-            schema=EDIT_SCHEMA,
-            grader=Grader("test_run", {"cmd": MUX_ROUTECOUNT_TEST, "timeout_s": 180}),
-            gold={
-                "check": "RouteCount() == len(routes)",
-                "solution_edits": [
-                    {"file": "mux.go", "find": "func NewRouter() *Router {", "replace": "func (r *Router) RouteCount() int { return len(r.routes) }\n\nfunc NewRouter() *Router {"}
-                ],
-            },
-        ),
-        Task(
-            id="mux-replace-cleanpath-empty",
-            category="structural_replace",
-            repo="gorilla-mux",
-            prompt=(
-                "In mux.go, the unexported `cleanPath` function maps an empty path to `\"/\"`. "
-                "Perform a structural find-replace on that guard so an empty path maps to "
-                "`\"/index\"` instead: rewrite the `if p == \"\" { return \"/\" }` block's returned "
-                "value from `\"/\"` to `\"/index\"`. Change nothing else."
-            ),
-            schema=EDIT_SCHEMA,
-            grader=Grader("test_run", {"cmd": MUX_CLEANPATH_TEST, "timeout_s": 180}),
-            gold={
-                "check": 'cleanPath("") == "/index"',
-                "solution_edits": [
-                    {"file": "mux.go", "find": 'if p == "" {\n\t\treturn "/"\n\t}', "replace": 'if p == "" {\n\t\treturn "/index"\n\t}'}
-                ],
-            },
-        ),
+            id=tid,
+            category="non_regression",
+            repo="empty",
+            prompt=prompt,
+            schema=ANSWER_SCHEMA,
+            grader=Grader("keywords", {"field": "answer"}),
+            gold={"groups": groups},
+            ccx_helps=False,
+        )
+        for tid, prompt, groups in specs
     ]
 
 
-def large_context_tasks() -> list[Task]:
-    """Whole-/many-file enumeration tasks whose gold is the complete set satisfying a body-level predicate."""
-    return [
-        Task(
-            id="click-enum-get-command-classes",
-            category="large_context",
-            repo="click",
-            prompt=(
-                "In `src/click/core.py`, enumerate every public class defined at module scope "
-                "(public = name does not start with an underscore; top-level only, not nested) "
-                "whose own body defines a method named `get_command`. A class counts only if it "
-                "declares `get_command` directly in its body — not if it merely inherits it from "
-                "a base class. List each qualifying class name exactly once."
-            ),
-            schema=CLASSES_SCHEMA,
-            grader=Grader("set_match", {"field": "classes", "mode": "equal", "lower": True}),
-            gold={
-                "classes": ["MultiCommand", "Group", "CommandCollection"],
-                "lc_predicate": {"kind": "py_method", "file": "src/click/core.py", "target": "get_command"},
-                "verify_decls": [
-                    ("src/click/core.py", "class MultiCommand(Command):"),
-                    ("src/click/core.py", "class Group(MultiCommand):"),
-                    ("src/click/core.py", "class CommandCollection(MultiCommand):"),
-                ],
-            },
-        ),
-        Task(
-            id="mux-enum-addmatcher-callers",
-            category="large_context",
-            repo="gorilla-mux",
-            prompt=(
-                "Across `mux.go` and `route.go`, enumerate every top-level function or method "
-                "whose body calls the unexported `(*Route).addMatcher` method (a call of the form "
-                "`r.addMatcher(...)`). List the enclosing functions' or methods' names — each name "
-                "exactly once — and do not include `addMatcher` itself."
-            ),
-            schema=CALLERS_SCHEMA,
-            grader=Grader("set_match", {"field": "callers", "mode": "equal", "lower": True}),
-            gold={
-                "callers": [
-                    "addRegexpMatcher",
-                    "Headers",
-                    "HeadersRegexp",
-                    "MatcherFunc",
-                    "Methods",
-                    "Schemes",
-                    "Subrouter",
-                ],
-                "lc_predicate": {
-                    "kind": "go_callers",
-                    "files": ["mux.go", "route.go"],
-                    "target": "addMatcher",
-                },
-                "verify_decls": [
-                    ("route.go", "func (r *Route) addRegexpMatcher(tpl string, typ regexpType) error {"),
-                    ("route.go", "func (r *Route) Headers(pairs ...string) *Route {"),
-                    ("route.go", "func (r *Route) HeadersRegexp(pairs ...string) *Route {"),
-                    ("route.go", "func (r *Route) MatcherFunc(f MatcherFunc) *Route {"),
-                    ("route.go", "func (r *Route) Methods(methods ...string) *Route {"),
-                    ("route.go", "func (r *Route) Schemes(schemes ...string) *Route {"),
-                    ("route.go", "func (r *Route) Subrouter() *Router {"),
-                ],
-            },
-        ),
-        Task(
-            id="mux-enum-matcher-impls",
-            category="large_context",
-            repo="gorilla-mux",
-            prompt=(
-                "In this repository's non-test Go files, enumerate every type that implements the "
-                "unexported `matcher` interface — that is, every type (exported or not) that defines "
-                "a method `Match(*http.Request, *RouteMatch) bool`. Go interfaces are satisfied "
-                "implicitly, so match the method signature, not any declared `matcher` reference. "
-                "List each implementing type's name exactly once (the bare type name, without a `*`)."
-            ),
-            schema=TYPES_SCHEMA,
-            grader=Grader("set_match", {"field": "types", "mode": "equal", "lower": True}),
-            gold={
-                "types": [
-                    "Router",
-                    "Route",
-                    "MatcherFunc",
-                    "methodMatcher",
-                    "schemeMatcher",
-                    "headerMatcher",
-                    "headerRegexMatcher",
-                    "routeRegexp",
-                ],
-                "lc_predicate": {
-                    "kind": "go_iface",
-                    "method": "Match",
-                    "params": ["*http.Request", "*RouteMatch"],
-                    "ret": "bool",
-                },
-                "verify_decls": [
-                    ("mux.go", "func (r *Router) Match(req *http.Request, match *RouteMatch) bool {"),
-                    ("route.go", "func (r *Route) Match(req *http.Request, match *RouteMatch) bool {"),
-                    ("route.go", "func (m MatcherFunc) Match(r *http.Request, match *RouteMatch) bool {"),
-                    ("route.go", "func (m methodMatcher) Match(r *http.Request, match *RouteMatch) bool {"),
-                    ("route.go", "func (m schemeMatcher) Match(r *http.Request, match *RouteMatch) bool {"),
-                    ("route.go", "func (m headerMatcher) Match(r *http.Request, match *RouteMatch) bool {"),
-                    ("route.go", "func (m headerRegexMatcher) Match(r *http.Request, match *RouteMatch) bool {"),
-                    ("regexp.go", "func (r *routeRegexp) Match(req *http.Request, match *RouteMatch) bool {"),
-                ],
-            },
-        ),
-    ]
+def headline_tasks() -> list[Task]:
+    """Every floor-clearing headline task, in a stable family order."""
+    return (
+        navigation_tasks()
+        + trace_tasks()
+        + large_context_tasks()
+        + diff_review_tasks()
+        + targeted_edit_tasks()
+        + intent_search_tasks()
+    )
 
 
-def generate(manifest: dict) -> list[Task]:
-    """Build the full corpus: manifest-derived tasks plus curated tasks."""
-    return [
-        *nav_tasks(manifest),
-        *callees_tasks(manifest),
-        *callers_tasks(manifest),
-        *intent_tasks(manifest),
-        *diff_tasks(),
-        *edit_tasks(),
-        *replace_tasks(),
-        *routing_tasks(),
-        *non_regression_tasks(),
-    ]
+def all_tasks() -> list[Task]:
+    return headline_tasks() + non_regression_tasks()

@@ -1,0 +1,43 @@
+{
+  "id": "edit-tornado-supported-methods",
+  "category": "targeted_edit",
+  "repo": "tornado",
+  "prompt": "Make the base request handler in this web framework advertise support for the HTTP `TRACE` method in addition to every method it already lists as supported.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "changed_file": {
+        "type": "string"
+      },
+      "summary": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "changed_file"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "test_run",
+    "spec": {
+      "cmd": "PYTHONPATH=. python3 -c \"import tornado.web as w; m = w.RequestHandler.SUPPORTED_METHODS; assert 'TRACE' in m; assert 'GET' in m and 'POST' in m\"",
+      "timeout_s": 120
+    }
+  },
+  "gold": {
+    "check": "'TRACE' in RequestHandler.SUPPORTED_METHODS",
+    "solution_edits": [
+      {
+        "file": "tornado/web.py",
+        "find": "    SUPPORTED_METHODS = (\"GET\", \"HEAD\", \"POST\", \"DELETE\", \"PATCH\", \"PUT\", \"OPTIONS\")",
+        "replace": "    SUPPORTED_METHODS = (\"GET\", \"HEAD\", \"POST\", \"DELETE\", \"PATCH\", \"PUT\", \"OPTIONS\", \"TRACE\")"
+      }
+    ],
+    "traversal_files": [
+      "tornado/web.py"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

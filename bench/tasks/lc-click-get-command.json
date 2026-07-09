@@ -1,0 +1,46 @@
+{
+  "id": "lc-click-get-command",
+  "category": "large_context",
+  "repo": "click",
+  "prompt": "In `src/click/core.py`, enumerate every public class defined at module scope (public = the name does not start with an underscore; top-level only, not nested) whose own body defines a method named `get_command`. A class counts only if it declares `get_command` directly in its body \u2014 not if it merely inherits it from a base class. List each qualifying class name exactly once.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "members": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "members"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "members",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "lc_predicate": {
+      "kind": "py_method",
+      "file": "src/click/core.py",
+      "target": "get_command"
+    },
+    "traversal_files": [
+      "src/click/core.py"
+    ],
+    "members": [
+      "CommandCollection",
+      "Group",
+      "MultiCommand"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}

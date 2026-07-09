@@ -1,0 +1,60 @@
+{
+  "id": "diff-click-help",
+  "category": "diff_review",
+  "repo": "click",
+  "prompt": "The working tree has uncommitted changes, possibly across multiple files. Review the diff and determine which top-level functions or methods had their bodies modified relative to HEAD. List their names exactly once each.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "symbols": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "symbols"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "symbols",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "diff_spec": {
+      "edits": [
+        {
+          "file": "src/click/core.py",
+          "find": "            text = make_default_short_help(self.help, limit)",
+          "replace": "            text = make_default_short_help(self.help, limit).rstrip()"
+        },
+        {
+          "file": "src/click/core.py",
+          "find": "        rv = [self.options_metavar] if self.options_metavar else []",
+          "replace": "        rv = list([self.options_metavar]) if self.options_metavar else []"
+        },
+        {
+          "file": "src/click/core.py",
+          "find": "        all_names = set(ctx.help_option_names)",
+          "replace": "        all_names = set(ctx.help_option_names or [])"
+        }
+      ]
+    },
+    "symbols": [
+      "collect_usage_pieces",
+      "get_help_option_names",
+      "get_short_help_str"
+    ],
+    "traversal_files": [
+      "src/click/core.py"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {}
+}
