@@ -51,16 +51,30 @@ class Cell:
     corrects: list[bool] = field(default_factory=list)
 
 
-def load(jsonl_path: Path) -> list[dict]:
+def load(jsonl_path: Path) -> tuple[list[dict], bool]:
+    """Parse runs.jsonl into records plus a `halted` flag (a ceiling-halt marker was written)."""
     records = []
+    halted = False
     for line in jsonl_path.read_text().splitlines():
         if not line.strip():
             continue
         rec = json.loads(line)
         if "halted" in rec:
+            halted = True
             continue
         records.append(rec)
-    return records
+    return records, halted
+
+
+def integrity_exclusions(records: list[dict], model: str, arms: tuple[str, ...]) -> list[str]:
+    """Headline (non-control) runs excluded for integrity that touch this model x arm set."""
+    out: list[str] = []
+    for r in records:
+        if r.get("category") == CONTROL_CATEGORY or r.get("model") != model or r.get("arm") not in arms:
+            continue
+        if not r.get("integrity", {}).get("ok", True):
+            out.append(f"{r['task_id']} [{r['arm']}] r{r.get('repeat')}")
+    return out
 
 
 def by_task(records: list[dict], model: str, arm: str) -> dict[str, Cell]:
@@ -242,19 +256,23 @@ def both_correct_tasks(cells: dict[str, dict[str, Cell]], paired: list[str], ccx
 
 
 def _regressions(cells: dict[str, dict[str, Cell]], paired: list[str], ccx_arm: str) -> tuple[list[str], list[str]]:
-    """Paired tasks where baseline held but `ccx_arm` broke (regression), and the reverse."""
+    """Paired tasks where `ccx_arm`'s correct-rate fell below baseline's (regression), and the reverse.
+
+    Per-task rate, not all-or-nothing: baseline 2/3 vs ccx 0/3 is a regression even though neither
+    arm is perfect.
+    """
     reg: list[str] = []
     imp: list[str] = []
     for tid in paired:
         b = cells[BASELINE].get(tid)
         c = cells[ccx_arm].get(tid)
-        if not b or not c:
+        if not b or not c or not b.corrects or not c.corrects:
             continue
-        b_ok = all(b.corrects)
-        c_ok = all(c.corrects)
-        if b_ok and not c_ok:
+        b_rate = sum(b.corrects) / len(b.corrects)
+        c_rate = sum(c.corrects) / len(c.corrects)
+        if c_rate < b_rate:
             reg.append(tid)
-        elif c_ok and not b_ok:
+        elif c_rate > b_rate:
             imp.append(tid)
     return reg, imp
 
@@ -330,6 +348,9 @@ def verdict_section(
     paired: list[str],
     hl_h: Headline,
     hl_t: Headline,
+    *,
+    excluded: list[str],
+    incomplete: bool,
 ) -> list[str]:
     c_base, n_base = _accuracy(headline_records, model, BASELINE)
     c_arm, n_arm = _accuracy(headline_records, model, ccx_arm)
@@ -338,6 +359,10 @@ def verdict_section(
     reg, imp = _regressions(cells, paired, ccx_arm)
 
     reasons: list[str] = []
+    if incomplete:
+        reasons.append("incomplete campaign")
+    if excluded:
+        reasons.append(f"integrity exclusions present: {', '.join(excluded)}")
     if acc_arm < acc_base:
         reasons.append(f"accuracy {acc_arm:.1%} < baseline {acc_base:.1%}")
     if reg:
@@ -351,6 +376,8 @@ def verdict_section(
     lines = ["#### Verdict", ""]
     lines.append(f"- **{'PASS' if passed else 'FAIL'}** — {ccx_arm} vs baseline")
     lines.append(f"- accuracy: {ccx_arm} **{acc_arm:.1%}** ({c_arm}/{n_arm}) vs baseline **{acc_base:.1%}** ({c_base}/{n_base})")
+    if excluded:
+        lines.append(f"- ⚠️ integrity exclusions (verdict forced FAIL): {', '.join(f'`{r}`' for r in excluded)}")
     if reg:
         lines.append(f"- ⚠️ regressions: {', '.join(f'`{t}`' for t in reg)}")
     if imp:
@@ -562,6 +589,9 @@ def control_panel(records: list[dict], model: str) -> list[str]:
         correct = sum(1 for r in recs if r["correct"])
         acc = (correct / n * 100.0) if n else 0.0
         lines.append(f"- {arm}: **{acc:.1f}%** ({correct}/{n})")
+    excluded = [f"{r['task_id']} [{r['arm']}] r{r.get('repeat')}" for r in ctl if not r.get("integrity", {}).get("ok", True)]
+    if excluded:
+        lines.append(f"- integrity exclusions (reported, not verdict-forcing): {', '.join(f'`{r}`' for r in excluded)}")
     lines.append("")
     return lines
 
@@ -605,12 +635,15 @@ def render(
     prompts: dict[str, str] | None = None,
     counter: tokens.TokenCounter | None = None,
     meta: dict | None = None,
+    halted: bool = False,
 ) -> str:
     """Render RESULTS.md from run records.
 
     Trajectory sections need each run's saved transcript (`raw_dir/<run_id>.json`), the task
     prompts (`prompts[task_id]`), and a token `counter`. `meta` (the session's `meta.json`)
-    supplies the env fingerprint and the corpus SHA drift check.
+    supplies the env fingerprint, the corpus SHA drift check, and the planned `expected_runs`.
+    `halted` (a ceiling-halt marker in runs.jsonl) or an observed-run count below `expected_runs`
+    marks the campaign incomplete: a banner is rendered and every verdict is forced to FAIL.
     """
     prompts = prompts or {}
     models = sorted({r["model"] for r in records})
@@ -620,6 +653,10 @@ def render(
         raise FileNotFoundError(raw_dir)
     if counter is None:
         counter = tokens.default_counter()
+
+    expected = meta.get("expected_runs") if meta else None
+    missing = (expected - len(records)) if expected is not None else None
+    incomplete = halted or (missing is not None and missing > 0)
 
     lines: list[str] = ["# cc-context benchmark results", ""]
     lines.append(f"Session: `{session_id}` · {len(records)} runs · token-usage savings, paired per task, gated on accuracy.")
@@ -631,11 +668,25 @@ def render(
         "is not a metric."
     )
     lines.append("")
+    if incomplete:
+        detail: list[str] = []
+        if halted:
+            detail.append("run HALTED before the plan completed")
+        if missing is not None and missing > 0:
+            detail.append(f"{missing} of {expected} planned runs missing")
+        elif missing is None:
+            detail.append("planned run count unknown (no expected_runs in meta)")
+        lines.append(f"> ⚠️ **INCOMPLETE CAMPAIGN** — {'; '.join(detail)}. Every verdict is forced to FAIL.")
+        lines.append("")
     if meta is not None:
         lines.append(corpus_drift_line(meta))
         lines.append("")
     for model in models:
-        lines.append(f"## Model: {model}")
+        ids = sorted({mid for r in records if r.get("model") == model for mid in r.get("model_ids", [])})
+        if len(ids) > 1:
+            raise ValueError(f"model {model!r} resolved to multiple ids across runs: {ids}")
+        resolved = f" (resolved: `{ids[0]}`)" if ids else " (⚠️ no resolved model id recorded)"
+        lines.append(f"## Model: {model}{resolved}")
         lines.append("")
 
         ok_records = [r for r in records if r.get("integrity", {}).get("ok", True)]
@@ -652,9 +703,12 @@ def render(
             )
             hl_h = _headline(pairs, "h")
             hl_t = _headline(pairs, "t")
+            excluded = integrity_exclusions(records, model, (BASELINE, ccx_arm))
             lines += headline_section(hl_h, ccx_arm)
             lines += headline_section(hl_t, ccx_arm)
-            lines += verdict_section(model, ccx_arm, headline_records, hcells, paired, hl_h, hl_t)
+            lines += verdict_section(
+                model, ccx_arm, headline_records, hcells, paired, hl_h, hl_t, excluded=excluded, incomplete=incomplete
+            )
             lines += waterfall_section(pairs, ccx_arm)
             lines += diagnosis_section(pairs, ccx_arm)
 
@@ -671,12 +725,12 @@ def render(
 
 
 def write_report(jsonl_path: Path, out_path: Path) -> str:
-    records = load(jsonl_path)
+    records, halted = load(jsonl_path)
     raw_dir = jsonl_path.parent / "raw"
     meta = json.loads((jsonl_path.parent / "meta.json").read_text())
     prompts = _load_prompts()
     counter = tokens.default_counter()
-    md = render(records, jsonl_path.parent.name, raw_dir=raw_dir, prompts=prompts, counter=counter, meta=meta)
+    md = render(records, jsonl_path.parent.name, raw_dir=raw_dir, prompts=prompts, counter=counter, meta=meta, halted=halted)
     out_path.write_text(md)
     return md
 

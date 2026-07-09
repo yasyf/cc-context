@@ -73,8 +73,8 @@ class TestArmRotation(unittest.TestCase):
 
 
 class TestCorpusSha(unittest.TestCase):
-    """corpus_sha hashes the sorted `*.json` contents of a tasks dir, deterministically, and
-    excludes the nested patches/ subdir (non-recursive)."""
+    """corpus_sha hashes the sorted `*.json` contents of a tasks dir plus its `patches/*.patch`
+    runtime inputs, deterministically."""
 
     def test_deterministic_and_order_independent(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -99,15 +99,29 @@ class TestCorpusSha(unittest.TestCase):
             (d / "b.json").write_text('{"id": "b"}')
             self.assertNotEqual(before, corpus_sha(d))
 
-    def test_patches_subdir_excluded(self) -> None:
+    def test_patches_included_but_nested_json_ignored(self) -> None:
         with TemporaryDirectory() as tmp:
             d = Path(tmp)
             (d / "a.json").write_text('{"id": "a"}')
             before = corpus_sha(d)
             (d / "patches").mkdir()
             (d / "patches" / "a.patch").write_text("diff --git")
-            (d / "patches" / "nested.json").write_text('{"deep": true}')  # non-recursive: ignored
-            self.assertEqual(before, corpus_sha(d))
+            # A patch is a runtime input: folding it in changes the digest.
+            with_patch = corpus_sha(d)
+            self.assertNotEqual(before, with_patch)
+            # A nested *.json under patches/ is neither a corpus json (non-recursive) nor a patch.
+            (d / "patches" / "nested.json").write_text('{"deep": true}')
+            self.assertEqual(with_patch, corpus_sha(d))
+
+    def test_patch_content_edit_changes_sha(self) -> None:
+        with TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "a.json").write_text('{"id": "a"}')
+            (d / "patches").mkdir()
+            (d / "patches" / "a.patch").write_text("diff --git a b")
+            before = corpus_sha(d)
+            (d / "patches" / "a.patch").write_text("diff --git c d")
+            self.assertNotEqual(before, corpus_sha(d))
 
 
 class TestConcurrency(unittest.TestCase):
@@ -124,7 +138,7 @@ class TestConcurrency(unittest.TestCase):
             await asyncio.sleep(0)  # yield so bounded overlap is observable
             recorded.append((task.id, arm, model, repeat))
             peak["cur"] -= 1
-            return {"task_id": task.id, "arm": arm, "model": model, "repeat": repeat}
+            return {"task_id": task.id, "arm": arm, "model": model, "repeat": repeat, "total_cost_usd": 0.0}
 
         orig = runner.run_one
         runner.run_one = fake_run_one
@@ -157,13 +171,60 @@ class TestConcurrency(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             cfg = cfg_for(["m"], 2, Path(tmp))
             sess = Session(cfg=cfg, session_id="s")
-            sess.setup()
+            sess.setup(expected_runs=99)
             meta = json.loads((sess.runs_dir / "meta.json").read_text())
         self.assertEqual(meta["arms"], list(ARMS))
         self.assertEqual(meta["max_turns"], cfg.max_turns)
         self.assertEqual(meta["safety_ceiling_usd"], cfg.safety_ceiling_usd)
+        self.assertEqual(meta["expected_runs"], 99)
         self.assertEqual(meta["corpus_sha"], corpus_sha())
         self.assertEqual(len(meta["corpus_sha"]), 64)  # sha256 hex
+
+    def test_run_corpus_writes_expected_runs_from_plan(self) -> None:
+        async def fake_run_one(sess, task, arm, model, repeat):
+            return {"task_id": task.id, "arm": arm, "model": model, "repeat": repeat, "total_cost_usd": 0.0}
+
+        orig = runner.run_one
+        runner.run_one = fake_run_one
+        try:
+            with TemporaryDirectory() as tmp:
+                cfg = cfg_for(["m"], 2, Path(tmp))
+                sess = Session(cfg=cfg, session_id="e")
+                tasks = [stub_task(t) for t in ("a", "b")]
+                asyncio.run(run_corpus(sess, tasks))
+                meta = json.loads((sess.runs_dir / "meta.json").read_text())
+        finally:
+            runner.run_one = orig
+        # expected_runs == len(plan) == tasks x arms x models x repeats.
+        self.assertEqual(meta["expected_runs"], len(tasks) * len(ARMS) * 1 * 2)
+
+    def test_admission_reserves_against_in_flight_spend(self) -> None:
+        """Under concurrency, admission reserves the max single-run cost (1.0 before any run
+        completes) per in-flight run, so workers can't all clear a stale ceiling check. With
+        ceiling 3.5 and reservation 1.0, at most 4 (in_flight*1.0 < 3.5) start before the halt."""
+        peak = {"cur": 0, "max": 0}
+
+        async def fake_run_one(sess, task, arm, model, repeat):
+            peak["cur"] += 1
+            peak["max"] = max(peak["max"], peak["cur"])
+            await asyncio.sleep(0.05)  # hold so concurrent admission is observable
+            peak["cur"] -= 1
+            return {"task_id": task.id, "arm": arm, "model": model, "repeat": repeat, "total_cost_usd": 1.0}
+
+        orig = runner.run_one
+        runner.run_one = fake_run_one
+        try:
+            with TemporaryDirectory() as tmp:
+                cfg = dataclasses.replace(cfg_for(["m"], 1, Path(tmp)), safety_ceiling_usd=3.5)
+                sess = Session(cfg=cfg, session_id="adm")
+                tasks = [stub_task(t) for t in ("a", "b", "c", "d")]  # 4 x 3 arms = 12 runs
+                records = asyncio.run(run_corpus(sess, tasks, concurrency=8))
+                jsonl = [json.loads(ln) for ln in sess.jsonl_path.read_text().splitlines() if ln.strip()]
+        finally:
+            runner.run_one = orig
+        self.assertEqual(peak["max"], 4)  # not 8 (the semaphore cap) — admission bounds it
+        self.assertEqual(len(records), 4)  # only the admitted runs completed
+        self.assertTrue(any("halted" in j for j in jsonl))  # a halt marker was written
 
 
 if __name__ == "__main__":

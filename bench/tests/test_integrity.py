@@ -89,11 +89,14 @@ class TestArmVerdicts(unittest.TestCase):
         ("baseline_guard_fired", [init_msg([]), bash("cat x.go"), tool_err(GUARD_ERR)], "baseline", False, "guard fired"),
         ("mcp_facade_used", [init_msg(["cc-context"]), mcp_call("mcp__cc-context__ccx_code_outline")], "ccx-mcp", True, "ok"),
         ("mcp_bash_ccx_used", [init_msg(["cc-context"]), bash("ccx code outline x.go")], "ccx-mcp", True, "ok"),
-        ("mcp_guard_fired", [init_msg(["cc-context"]), bash("cat x.go"), tool_err(GUARD_ERR)], "ccx-mcp", True, "ok"),
+        # Fix #8: a guard fire with zero ccx use is mislabeled, not ok — guards alone don't prove ccx ran.
+        ("mcp_guard_only_no_ccx", [init_msg(["cc-context"]), bash("cat x.go"), tool_err(GUARD_ERR)], "ccx-mcp", False, "guards fired but ccx never used"),
+        ("mcp_guard_and_ccx", [init_msg(["cc-context"]), bash("ccx code outline x.go"), bash("cat x.go"), tool_err(GUARD_ERR)], "ccx-mcp", True, "ok"),
         ("mcp_cc_absent", [init_msg([]), bash("ccx code outline x.go")], "ccx-mcp", False, "cc-context MCP not loaded"),
         ("mcp_unused", [init_msg(["cc-context"]), bash("echo hi")], "ccx-mcp", False, "ccx never used"),
         ("cli_bash_ccx_used", [init_msg([]), bash("ccx code outline x.go")], "ccx-cli", True, "ok"),
-        ("cli_guard_fired", [init_msg([]), bash("cat x.go"), tool_err(GUARD_ERR)], "ccx-cli", True, "ok"),
+        ("cli_guard_only_no_ccx", [init_msg([]), bash("cat x.go"), tool_err(GUARD_ERR)], "ccx-cli", False, "guards fired but ccx never used"),
+        ("cli_guard_and_ccx", [init_msg([]), bash("ccx code outline x.go"), bash("cat x.go"), tool_err(GUARD_ERR)], "ccx-cli", True, "ok"),
         # The isolation proof: even genuine Bash ccx is mislabeled when cc-context is loaded.
         ("cli_cc_present_breach", [init_msg(["cc-context"]), bash("ccx code outline x.go")], "ccx-cli", False, "isolation breach"),
         ("cli_mcp_call_breach", [init_msg([]), mcp_call("mcp__cc-context__ccx_code_symbol")], "ccx-cli", False, "mcp__cc-context__ tool called"),
@@ -125,6 +128,53 @@ class TestCheatDetection(unittest.TestCase):
                 self.assertIn("ANSWER KEY", v.note)
 
 
+class TestTasksDirCheatDetection(unittest.TestCase):
+    """Fix #3: reading a committed bench/tasks/*.json (the golds) invalidates the run, however the
+    path is spelled — absolute, relative traversal, or a bare dir listing."""
+
+    CASES = (
+        ("abs_task_json", [init_msg([]), tool_use("Read", {"file_path": "/Users/x/cc-context/bench/tasks/nav-click-command.json"}), bash("ccx code outline x.go")], "ccx-cli"),
+        ("rel_traversal", [init_msg([]), bash("cat ../../tasks/nav-click-command.json")], "baseline"),
+        ("tasks_dir_listing", [init_msg([]), bash("ls tasks/")], "baseline"),
+    )
+
+    def test_tasks_json_invalidates(self) -> None:
+        for name, msgs, arm in self.CASES:
+            with self.subTest(name=name):
+                v = integrity.assess(pr_from([*msgs, result_msg()]), arm)
+                self.assertFalse(v.ok, f"{name}: note={v.note!r}")
+                self.assertIn("ANSWER KEY", v.note)
+
+    def test_subtasks_path_is_not_a_cheat(self) -> None:
+        # `subtasks/` must not false-positive as the corpus `tasks/` dir.
+        v = integrity.assess(pr_from([init_msg([]), bash("cat src/subtasks/runner.py"), result_msg()]), "baseline")
+        self.assertNotIn("ANSWER KEY", v.note)
+
+
+class TestCommandPositionCcx(unittest.TestCase):
+    """Fix #7: Bash ccx counts only at command position — start of the command or right after a
+    shell separator (optionally preceded by env assignments) — never as an argument to echo."""
+
+    def test_ccx_as_argument_is_not_a_ccx_use(self) -> None:
+        for cmd in ('echo "ccx code outline"', "echo run ccx code outline", "printf 'see ccx'"):
+            with self.subTest(cmd=cmd):
+                v = integrity.assess(pr_from([init_msg([]), bash(cmd), result_msg()]), "ccx-cli")
+                self.assertFalse(v.ccx_used, f"{cmd!r} should not count as ccx use")
+
+    def test_ccx_at_command_position_counts(self) -> None:
+        cases = [
+            "ccx code outline x.go",
+            "cat foo && ccx repo overview",
+            "rg bar | ccx code grep baz",
+            "FOO=1 ccx code read x.go",
+            "x=$(ccx repo overview)",
+        ]
+        for cmd in cases:
+            with self.subTest(cmd=cmd):
+                v = integrity.assess(pr_from([init_msg([]), bash(cmd), result_msg()]), "ccx-cli")
+                self.assertTrue(v.ccx_used, f"{cmd!r} should count as ccx use")
+
+
 class TestFieldClassification(unittest.TestCase):
     def test_bash_ccx_call_summarized(self) -> None:
         v = integrity.assess(pr_from([init_msg([]), bash("ccx code outline internal/x.go"), result_msg()]), "ccx-cli")
@@ -137,11 +187,13 @@ class TestFieldClassification(unittest.TestCase):
 
     def test_guard_fired_via_permission_denials(self) -> None:
         # A denied heavy primitive recorded only in permission_denials (no is_error tool_result)
-        # must still count as a ccx-navigation guard fire — detected structurally.
+        # must still count as a ccx-navigation guard fire — detected structurally and reported
+        # separately. But (fix #8) a guard fire with zero ccx use is mislabeled, not ok.
         denial = {"tool_name": "Bash", "tool_use_id": "t1", "tool_input": {"command": "find . -name mux.go -type f"}}
         v = integrity.assess(pr_from([init_msg(["cc-context"]), result_msg(permission_denials=[denial])]), "ccx-mcp")
-        self.assertTrue(v.guard_fired)
-        self.assertTrue(v.ok)
+        self.assertTrue(v.guard_fired)  # guard fire still detected + separately reported
+        self.assertFalse(v.ok)
+        self.assertIn("guards fired but ccx never used", v.note)
 
     def test_non_navigation_denial_not_a_guard_fire(self) -> None:
         denial = {"tool_name": "Write", "tool_use_id": "t1", "tool_input": {"file_path": "m.py", "content": "x: Any = 1\n"}}

@@ -38,18 +38,16 @@ def env_fingerprint() -> list[str]:
 def corpus_sha(tasks_dir: Path = TASKS_DIR) -> str:
     """SHA-256 fingerprint of the task corpus, for drift detection between build and report.
 
-    Recipe (report.py must reproduce it byte-for-byte): concatenate the raw bytes of every
-    `bench/tasks/*.json` file — non-recursive, so `tasks/patches/` is excluded — in ascending
-    filename order and hash the result. Filenames set the order but are not themselves hashed.
+    Recipe (report.py must reproduce it byte-for-byte): in ascending relative-path order,
+    concatenate the raw bytes of every `bench/tasks/*.json` AND every `bench/tasks/patches/*.patch`
+    — the diff patches are runtime inputs, so they are folded in — then hash the result. The
+    relative paths set the order but are not themselves hashed.
     """
     h = hashlib.sha256()
-    for p in sorted(tasks_dir.glob("*.json")):
+    files = list(tasks_dir.glob("*.json")) + list((tasks_dir / "patches").glob("*.patch"))
+    for p in sorted(files, key=lambda p: p.relative_to(tasks_dir).as_posix()):
         h.update(p.read_bytes())
     return h.hexdigest()
-
-
-class CeilingExceeded(Exception):
-    pass
 
 
 @dataclass
@@ -66,13 +64,14 @@ class Session:
     def jsonl_path(self) -> Path:
         return self.runs_dir / "runs.jsonl"
 
-    def setup(self) -> None:
+    def setup(self, expected_runs: int) -> None:
         (self.runs_dir / "raw").mkdir(parents=True, exist_ok=True)
         meta = {
             "session_id": self.session_id,
             "models": list(self.cfg.models),
             "arms": list(ARMS),
             "repeats": self.cfg.repeats,
+            "expected_runs": expected_runs,
             "max_turns": self.cfg.max_turns,
             "corpus_sha": corpus_sha(),
             "safety_ceiling_usd": self.cfg.safety_ceiling_usd,
@@ -137,6 +136,7 @@ def error_record(cfg: Config, task: Task, arm: str, model: str, repeat: int, rea
         "category": task.category,
         "arm": arm,
         "model": model,
+        "model_ids": [],
         "repeat": repeat,
         "ccx_helps": task.ccx_helps,
         "is_error": True,
@@ -148,16 +148,14 @@ def error_record(cfg: Config, task: Task, arm: str, model: str, repeat: int, rea
 
 
 async def run_one(sess: Session, task: Task, arm: str, model: str, repeat: int) -> dict:
-    """Run one (task, arm, model, repeat). Returns the record; raises CeilingExceeded first.
+    """Run one (task, arm, model, repeat) through claude and return its record.
 
     `spawnllm.run` owns transient retry and resolves every operational failure — nonzero exit,
     error envelope, timeout, validation — into `resp.error`, never a raise. The full raw event
     stream `parse_print_result` needs lives in `resp.output.raw` on success and failure alike.
+    Ceiling admission and spend accounting are the caller's job (`_run_serial`/`_run_bounded`).
     """
     cfg = sess.cfg
-    if sess.spent_usd >= cfg.safety_ceiling_usd:
-        raise CeilingExceeded(f"spent ${sess.spent_usd:.4f} >= ceiling ${cfg.safety_ceiling_usd:.2f}")
-
     run_id = f"{task.id}__{arm}__{model}__r{repeat}"
     workdir = arms.prepare_workdir(cfg, task, arm, run_id)
     spec = arms.build_run_spec(cfg, task, arm, model, workdir)
@@ -175,7 +173,6 @@ async def run_one(sess: Session, task: Task, arm: str, model: str, repeat: int) 
         return error_record(cfg, task, arm, model, repeat, f"parse failed: {e}")
 
     record = record_from(pr, cfg, task, arm, model, repeat, workdir)
-    sess.spent_usd += pr.total_cost_usd
 
     keep = (not record["integrity"]["ok"]) or pr.is_error
     if not keep:
@@ -201,13 +198,14 @@ def _build_plan(cfg: Config, tasks: list[Task]) -> list[tuple[Task, str, str, in
 
 async def _run_serial(sess: Session, plan: list[tuple[Task, str, str, int]]) -> list[dict]:
     records: list[dict] = []
+    ceiling = sess.cfg.safety_ceiling_usd
     with sess.jsonl_path.open("w") as out:
         for task, arm, model, repeat in plan:
-            try:
-                rec = await run_one(sess, task, arm, model, repeat)
-            except CeilingExceeded as e:
-                out.write(json.dumps({"halted": str(e)}) + "\n")
+            if sess.spent_usd >= ceiling:
+                out.write(json.dumps({"halted": f"spent ${sess.spent_usd:.4f} >= ceiling ${ceiling:.2f}"}) + "\n")
                 break
+            rec = await run_one(sess, task, arm, model, repeat)
+            sess.spent_usd += rec["total_cost_usd"]
             records.append(rec)
             out.write(json.dumps(rec) + "\n")
             out.flush()
@@ -217,8 +215,14 @@ async def _run_serial(sess: Session, plan: list[tuple[Task, str, str, int]]) -> 
 async def _run_bounded(sess: Session, plan: list[tuple[Task, str, str, int]], concurrency: int) -> list[dict]:
     sem = asyncio.Semaphore(concurrency)
     write_lock = asyncio.Lock()
+    admit_lock = asyncio.Lock()
+    ceiling = sess.cfg.safety_ceiling_usd
     records: list[dict] = []
     halted: list[str] = []
+    # Admission accounting: every in-flight run reserves the max single-run cost seen so far
+    # (1.0 USD until the first run completes). A run is admitted only while spent + the sum of
+    # live reservations stays under the ceiling, so N workers can't all clear a stale check.
+    state = {"in_flight": 0, "max_single": 1.0, "any_done": False}
 
     with sess.jsonl_path.open("w") as out:
 
@@ -227,11 +231,20 @@ async def _run_bounded(sess: Session, plan: list[tuple[Task, str, str, int]], co
             async with sem:
                 if halted:
                     return
-                try:
-                    rec = await run_one(sess, task, arm, model, repeat)
-                except CeilingExceeded as e:
-                    halted.append(str(e))
-                    return
+                async with admit_lock:
+                    if sess.spent_usd + state["in_flight"] * state["max_single"] >= ceiling:
+                        halted.append(
+                            f"spent ${sess.spent_usd:.4f} + {state['in_flight']} reservation(s) >= ceiling ${ceiling:.2f}"
+                        )
+                        return
+                    state["in_flight"] += 1
+                rec = await run_one(sess, task, arm, model, repeat)
+                cost = rec["total_cost_usd"]
+                async with admit_lock:
+                    sess.spent_usd += cost
+                    state["max_single"] = cost if not state["any_done"] else max(state["max_single"], cost)
+                    state["any_done"] = True
+                    state["in_flight"] -= 1
             async with write_lock:
                 records.append(rec)
                 out.write(json.dumps(rec) + "\n")
@@ -247,10 +260,11 @@ async def run_corpus(sess: Session, tasks: list[Task], *, concurrency: int = 1) 
     """Execute the round-robin plan (see `_build_plan`), appending each record to runs.jsonl.
 
     `concurrency == 1` (the default) runs strictly serial, byte-identical to the historical
-    single-worker loop. `concurrency > 1` bounds in-flight runs with a semaphore; records are
-    written as they complete."""
-    sess.setup()
+    single-worker loop. `concurrency > 1` bounds in-flight runs with a semaphore and admits
+    each only when spend plus live reservations clears the ceiling; records are written as they
+    complete."""
     plan = _build_plan(sess.cfg, tasks)
+    sess.setup(expected_runs=len(plan))
     if concurrency == 1:
         return await _run_serial(sess, plan)
     return await _run_bounded(sess, plan, concurrency)

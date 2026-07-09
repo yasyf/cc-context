@@ -6,15 +6,18 @@ Run: cd bench && python -m unittest discover -s tests
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import re
+import subprocess
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from cc_transcript import parse_print_result
 
-from ccxbench import taskgen
-from ccxbench.config import Config, load
+from ccxbench import repos, taskgen
+from ccxbench.config import Config, Repo, load
 from ccxbench.goldgen import recompute_lc_predicate
 from ccxbench.grade import grade, synthetic_result
 from ccxbench.graders import GradeContext, grade_file_line, grade_keywords, grade_set_match
@@ -249,6 +252,57 @@ class TestStructuredRun(unittest.TestCase):
         self.assertIsNone(resp.result)
         self.assertIsNotNone(resp.error)
         self.assertIsInstance(resp.error.ex, TimeoutError)
+
+
+class TestRepoConvergence(unittest.TestCase):
+    """Fix #9: an existing .fixtures checkout is trusted only when HEAD is at the pinned ref with a
+    clean working tree; a diverged or dirty checkout is deleted and re-cloned rather than reused."""
+
+    def _git(self, *args: str, cwd: Path) -> None:
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", *args],
+            cwd=str(cwd),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def _source_repo(self, root: Path) -> Path:
+        src = root / "src"
+        src.mkdir()
+        self._git("init", "-q", cwd=src)
+        (src / "file.txt").write_text("v1\n")
+        self._git("add", "-A", cwd=src)
+        self._git("commit", "-qm", "one", cwd=src)
+        self._git("tag", "v1", cwd=src)
+        return src
+
+    def _cfg(self, fixtures: Path, url: str) -> Config:
+        return dataclasses.replace(load(), fixtures_root=fixtures, repos=(Repo("x", url, "v1", "go"),))
+
+    def test_clean_checkout_reused(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = self._cfg(root / "fx", str(self._source_repo(root)))
+            dest = repos.clone(cfg, cfg.repos[0])
+            self.assertTrue(repos._at_ref(dest, "v1"))
+            marker = dest / ".git" / "reused_marker"
+            marker.write_text("x")  # survives only if the checkout is reused, not re-cloned
+            self.assertEqual(repos.clone(cfg, cfg.repos[0]), dest)
+            self.assertTrue(marker.exists())
+
+    def test_dirty_checkout_recloned(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = self._cfg(root / "fx", str(self._source_repo(root)))
+            dest = repos.clone(cfg, cfg.repos[0])
+            marker = dest / ".git" / "reused_marker"
+            marker.write_text("x")
+            (dest / "file.txt").write_text("dirtied\n")  # working tree no longer clean
+            self.assertFalse(repos._at_ref(dest, "v1"))
+            self.assertEqual(repos.clone(cfg, cfg.repos[0]), dest)
+            self.assertTrue(repos._at_ref(dest, "v1"))  # re-cloned back to the pinned ref, clean
+            self.assertFalse(marker.exists())  # the mutated checkout was deleted
 
 
 if __name__ == "__main__":

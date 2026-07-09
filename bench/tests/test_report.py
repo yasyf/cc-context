@@ -62,12 +62,14 @@ def _record(
     ok: bool,
     category: str,
     init: dict | None,
+    model_ids: list[str] | None = None,
 ) -> dict:
     return {
         "task_id": task,
         "category": category,
         "arm": arm,
         "model": model,
+        "model_ids": model_ids or [],
         "repeat": repeat,
         "is_error": False,
         "correct": correct,
@@ -91,6 +93,7 @@ def _add(
     ok: bool = True,
     category: str = "navigation",
     init: dict | None = None,
+    model_ids: list[str] | None = None,
 ) -> None:
     corrects = corrects if corrects is not None else [True] * len(hs)
     for repeat, (h, t, c) in enumerate(zip(hs, ts, corrects, strict=True)):
@@ -105,6 +108,7 @@ def _add(
                 ok=ok,
                 category=category,
                 init=init,
+                model_ids=model_ids,
             )
         )
         (raw_dir / f"{task}__{arm}__{model}__r{repeat}.json").write_text(json.dumps(_transcript(h)))
@@ -254,6 +258,144 @@ class TestControlPanel(unittest.TestCase):
         self.assertIn("Control panel — non_regression", md)
         # The control task never enters the paired headline (only t1 does).
         self.assertNotIn("`nr1`", md.split("Control panel")[0])
+
+
+class TestPerTaskRegression(unittest.TestCase):
+    """Fix #6: a per-task regression is `ccx correct-rate < baseline correct-rate`, not the old
+    all-or-nothing `all(baseline) and not all(ccx)`."""
+
+    def test_rate_drop_is_regression(self) -> None:
+        cells = {
+            "baseline": {"t1": report.Cell(corrects=[True, True, False])},  # 2/3
+            "ccx-mcp": {"t1": report.Cell(corrects=[False, False, False])},  # 0/3
+        }
+        reg, imp = report._regressions(cells, ["t1"], "ccx-mcp")
+        self.assertEqual(reg, ["t1"])
+        self.assertEqual(imp, [])
+
+    def test_rate_gain_is_improvement(self) -> None:
+        cells = {
+            "baseline": {"t1": report.Cell(corrects=[False, False, False])},  # 0/3
+            "ccx-mcp": {"t1": report.Cell(corrects=[True, False, False])},  # 1/3
+        }
+        reg, imp = report._regressions(cells, ["t1"], "ccx-mcp")
+        self.assertEqual((reg, imp), ([], ["t1"]))
+
+    def test_equal_rate_is_neither(self) -> None:
+        cells = {
+            "baseline": {"t1": report.Cell(corrects=[True, False])},  # 1/2
+            "ccx-mcp": {"t1": report.Cell(corrects=[False, True])},  # 1/2
+        }
+        self.assertEqual(report._regressions(cells, ["t1"], "ccx-mcp"), ([], []))
+
+
+class TestIncompleteCampaign(unittest.TestCase):
+    """Fix #1: a halt marker OR observed runs below meta.expected_runs marks the campaign
+    incomplete — a banner is rendered and every verdict is forced to FAIL."""
+
+    def _passing_records(self, recs: list[dict], raw: Path) -> None:
+        for task in ("t1", "t2", "t3"):
+            _add(recs, raw, task=task, arm="baseline", hs=[1000, 1000, 1000], ts=[2000, 2000, 2000])
+            _add(recs, raw, task=task, arm="ccx-mcp", hs=[600, 600, 600], ts=[1200, 1200, 1200])
+            _add(recs, raw, task=task, arm="ccx-cli", hs=[700, 700, 700], ts=[1400, 1400, 1400])
+
+    def test_missing_runs_forces_fail(self) -> None:
+        recs: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            self._passing_records(recs, raw)  # 27 records that would otherwise PASS
+            meta = {"corpus_sha": corpus_sha(), "expected_runs": len(recs) + 3, "env_fingerprint": []}
+            md = _render(recs, raw, meta=meta)
+        self.assertIn("INCOMPLETE CAMPAIGN", md)
+        self.assertIn(f"3 of {len(recs) + 3} planned runs missing", md)
+        self.assertNotIn("**PASS**", md)
+        self.assertIn("incomplete campaign", md)
+
+    def test_halt_marker_forces_fail(self) -> None:
+        recs: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            self._passing_records(recs, raw)
+            meta = {"corpus_sha": corpus_sha(), "expected_runs": len(recs), "env_fingerprint": []}
+            md = report.render(recs, "sess", raw_dir=raw, prompts={}, counter=FakeCounter(), meta=meta, halted=True)
+        self.assertIn("INCOMPLETE CAMPAIGN", md)
+        self.assertIn("HALTED", md)
+        self.assertNotIn("**PASS**", md)
+
+    def test_complete_campaign_not_flagged(self) -> None:
+        recs: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            self._passing_records(recs, raw)
+            meta = {"corpus_sha": corpus_sha(), "expected_runs": len(recs), "env_fingerprint": []}
+            md = _render(recs, raw, meta=meta)
+        self.assertNotIn("INCOMPLETE CAMPAIGN", md)
+        self.assertIn("**PASS**", md)
+
+
+class TestIntegrityExclusionGating(unittest.TestCase):
+    """Fix #2: integrity-excluded runs stay out of aggregates, but any exclusion touching a
+    headline model x arm forces that verdict to FAIL; the control panel only reports its own."""
+
+    def _passing_headlines(self, recs: list[dict], raw: Path) -> None:
+        for task in ("t1", "t2", "t3"):
+            _add(recs, raw, task=task, arm="baseline", hs=[1000, 1000, 1000], ts=[2000, 2000, 2000])
+            _add(recs, raw, task=task, arm="ccx-mcp", hs=[600, 600, 600], ts=[1200, 1200, 1200])
+            _add(recs, raw, task=task, arm="ccx-cli", hs=[700, 700, 700], ts=[1400, 1400, 1400])
+
+    def test_headline_exclusion_forces_fail(self) -> None:
+        recs: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            self._passing_headlines(recs, raw)
+            # A mislabeled ccx-mcp run (its own task, kept out of aggregates) must still FAIL ccx-mcp.
+            _add(recs, raw, task="t4", arm="ccx-mcp", hs=[600], ts=[1200], ok=False)
+            md = _render(recs, raw)
+        self.assertIn("**FAIL** — ccx-mcp vs baseline", md)
+        self.assertIn("integrity exclusions present", md)
+        self.assertIn("t4 [ccx-mcp]", md)
+        # ccx-cli, untouched by the exclusion, still PASSes.
+        self.assertIn("**PASS** — ccx-cli vs baseline", md)
+
+    def test_control_exclusion_reported_not_gated(self) -> None:
+        recs: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            self._passing_headlines(recs, raw)
+            _add(recs, raw, task="nr1", arm="baseline", hs=[500], ts=[500], category="non_regression")
+            _add(recs, raw, task="nr1", arm="ccx-mcp", hs=[500], ts=[500], category="non_regression")
+            _add(recs, raw, task="nr1", arm="ccx-cli", hs=[500], ts=[500], category="non_regression", ok=False)
+            md = _render(recs, raw)
+        self.assertIn("integrity exclusions (reported, not verdict-forcing)", md)
+        self.assertIn("nr1 [ccx-cli]", md)
+        # The control exclusion does not force the ccx-cli headline verdict to FAIL.
+        self.assertIn("**PASS** — ccx-cli vs baseline", md)
+
+
+class TestResolvedModelId(unittest.TestCase):
+    """Fix #10: each requested-model group must map to exactly one resolved model id, rendered in
+    the section header; two ids under one alias is a loud failure."""
+
+    def test_header_shows_resolved_id(self) -> None:
+        recs: list[dict] = []
+        mid = ["claude-sonnet-4-5-20250929"]
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            _add(recs, raw, task="t1", arm="baseline", hs=[1000], ts=[2000], model_ids=mid)
+            _add(recs, raw, task="t1", arm="ccx-mcp", hs=[600], ts=[1200], model_ids=mid)
+            _add(recs, raw, task="t1", arm="ccx-cli", hs=[700], ts=[1400], model_ids=mid)
+            md = _render(recs, raw)
+        self.assertIn("## Model: sonnet (resolved: `claude-sonnet-4-5-20250929`)", md)
+
+    def test_multiple_resolved_ids_raises(self) -> None:
+        recs: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            _add(recs, raw, task="t1", arm="baseline", hs=[1000], ts=[2000], model_ids=["claude-sonnet-A"])
+            _add(recs, raw, task="t1", arm="ccx-mcp", hs=[600], ts=[1200], model_ids=["claude-sonnet-B"])
+            _add(recs, raw, task="t1", arm="ccx-cli", hs=[700], ts=[1400], model_ids=["claude-sonnet-A"])
+            with self.assertRaises(ValueError):
+                _render(recs, raw)
 
 
 class TestFailFastInputs(unittest.TestCase):

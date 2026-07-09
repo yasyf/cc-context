@@ -114,15 +114,17 @@ family), `--limit N`, `--models a,b`, `--repeats N`, `--ceiling USD`,
   headline is pinned per-run and re-proved per campaign.
 - The arm order rotates every repeat, so no arm systematically runs first or
   rides a warm prompt cache; each run gets a fresh checkout.
-- Integrity is checked per arm: a ccx arm must actually use ccx (or trip a
-  guard) to count; baseline must not; any cc-context MCP presence in a
-  `ccx-cli` run marks it mislabeled. Mislabeled and cheated runs are excluded
-  from aggregates and counted in the report.
+- Integrity is checked per arm: a ccx arm must actually use ccx to count (a
+  guard fire alone, with no ccx use, is mislabeled); baseline must not; any
+  cc-context MCP presence in a `ccx-cli` run marks it mislabeled. Mislabeled and
+  cheated runs are excluded from aggregates and force the affected verdict to
+  FAIL, with the run list.
 - Envelope `T` is recomputed from the transcript, and the report counts runs
   outside 2% agreement — the sanity check that replaced the old cost
   crosscheck.
-- `meta.json` stamps a `corpus_sha` over `tasks/*.json`; the report warns when
-  the corpus on disk has drifted from what ran.
+- `meta.json` stamps a `corpus_sha` over `tasks/*.json` and
+  `tasks/patches/*.patch`; the report warns when the corpus on disk has drifted
+  from what ran.
 
 ## Note on guards
 

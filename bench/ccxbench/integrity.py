@@ -1,10 +1,11 @@
 """Assert an arm behaved as labeled, so the comparison is not silently mislabeled.
 
 baseline: no ccx tool, no guard, no cc-context MCP — native tools only. ccx-mcp: cc-context
-loaded AND ccx exercised (a facade tool call or a Bash `ccx`) or a guard fired. ccx-cli: the
-isolation arm — cc-context MCP present or any mcp__cc-context__* call is a breach (mislabeled),
-so a genuine run reaches ccx only through the Bash `ccx` or trips a guard. The verdict is
-recorded per run so the report can prove "only ccx differs" rather than assume it.
+loaded AND ccx actually exercised (a facade tool call or a Bash `ccx`); a guard fire alone,
+with no ccx use, is mislabeled. ccx-cli: the isolation arm — cc-context MCP present or any
+mcp__cc-context__* call is a breach (mislabeled), so a genuine run reaches ccx only through
+the command-position Bash `ccx`. The verdict is recorded per run so the report can prove
+"only ccx differs" rather than assume it.
 """
 
 from __future__ import annotations
@@ -17,7 +18,16 @@ from cc_transcript import PrintResult, ToolResultBlock, ToolUseBlock
 from .types import Integrity
 
 CCX_MCP = "mcp__cc-context__"
-CCX_BASH = re.compile(r"(^|[\s;|&(])ccx\s")
+# ccx at command position only: start of the command string or immediately after a shell
+# separator (; && || | newline $( backtick), optionally preceded by env-var assignments. An
+# `echo "ccx code outline"` argument is NOT a ccx invocation and must not match.
+CCX_BASH = re.compile(r"(?:^|[;|\n`]|&&|\$\()\s*(?:\w+=\S*\s+)*ccx\s")
+
+# The gold answers live in bench/tasks/*.json (and the legacy manifest.json); any tool input
+# referencing that dir — absolute, or a relative traversal like ../../tasks/<id>.json — is
+# reading the answer key, not navigating the repo under test. The lookbehind pins `tasks/` to a
+# path-segment boundary so `subtasks/` and the like don't false-positive.
+ANSWER_KEY = re.compile(r"manifest\.json|(?<![\w.-])tasks/")
 
 # Heavy native primitives the ccx guard pack is designed to intercept.
 HEAVY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -48,8 +58,8 @@ def heavy_label(cmd: str) -> str | None:
 
 
 def read_answer_key(call_input: Mapping[str, object]) -> bool:
-    """True if a tool call references the gold-answer manifest (a cheat, not navigation)."""
-    return any("manifest.json" in str(v) for v in call_input.values())
+    """True if a tool call references the gold-answer key (bench tasks dir or manifest)."""
+    return any(ANSWER_KEY.search(str(v)) for v in call_input.values())
 
 
 def denial_is_ccx_guard(denial: Mapping[str, object]) -> bool:
@@ -121,8 +131,10 @@ def assess(pr: PrintResult, arm: str) -> Integrity:
     elif arm == "ccx-mcp":
         if not cc_present:
             ok, note = False, "ccx-mcp arm but cc-context MCP not loaded"
-        elif ccx_used or guard_fired:
+        elif ccx_used:
             ok, note = True, "ok"
+        elif guard_fired:
+            ok, note = False, "ccx-mcp arm: guards fired but ccx never used — mislabeled"
         else:
             ok, note = False, "ccx-mcp arm but ccx never used and no guard fired — mislabeled"
     elif arm == "ccx-cli":
@@ -130,15 +142,17 @@ def assess(pr: PrintResult, arm: str) -> Integrity:
             ok, note = False, "ccx-cli arm but cc-context MCP loaded — isolation breach, mislabeled"
         elif mcp_ccx_used:
             ok, note = False, "ccx-cli arm but mcp__cc-context__ tool called — mislabeled"
-        elif bash_ccx_used or guard_fired:
+        elif bash_ccx_used:
             ok, note = True, "ok"
+        elif guard_fired:
+            ok, note = False, "ccx-cli arm: guards fired but ccx never used — mislabeled"
         else:
             ok, note = False, "ccx-cli arm but Bash ccx never used and no guard fired — mislabeled"
     else:
         raise ValueError(f"unknown arm: {arm}")
 
     if cheated:
-        ok, note = False, f"READ ANSWER KEY (manifest.json) — run is invalid; {note}"
+        ok, note = False, f"READ ANSWER KEY — run is invalid; {note}"
 
     return Integrity(
         ccx_used=ccx_used,
