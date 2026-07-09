@@ -2,7 +2,7 @@
   "id": "trace-tornado-ws-handshake",
   "category": "trace",
   "repo": "tornado",
-  "prompt": "In this web framework, when an HTTP request is routed to a WebSocket handler and its `get` method runs, which method ultimately performs the opening handshake \u2014 validating the client headers and writing the 101 Switching Protocols response? Respond with the repo-relative file path and the 1-based declaration line of that function or method.",
+  "prompt": "In this web framework, when an HTTP request is routed to a WebSocket handler and its `get` method runs, which method negotiates the subprotocol and extensions and writes the 101 Switching Protocols response? Respond with the repo-relative file path and the 1-based declaration line of that function or method.",
   "schema": {
     "type": "object",
     "properties": {

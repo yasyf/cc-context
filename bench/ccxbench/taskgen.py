@@ -170,8 +170,8 @@ def trace_tasks() -> list[Task]:
                ["tornado/web.py", "tornado/http1connection.py"]),
         _trace("trace-tornado-ws-handshake", "tornado", "tornado/websocket.py", "async def _accept_connection(",
                "In this web framework, when an HTTP request is routed to a WebSocket handler and its "
-               "`get` method runs, which method ultimately performs the opening handshake — "
-               "validating the client headers and writing the 101 Switching Protocols response?",
+               "`get` method runs, which method negotiates the subprotocol and extensions and writes "
+               "the 101 Switching Protocols response?",
                ["tornado/web.py", "tornado/websocket.py"]),
         _trace("trace-tornado-parse-body", "tornado", "tornado/httputil.py", "def parse_body_arguments(",
                "In this web framework, a handler reads a POSTed form field through its body-argument "
