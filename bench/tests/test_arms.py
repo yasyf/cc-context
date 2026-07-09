@@ -11,6 +11,7 @@ import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from ccxbench import arms
@@ -63,6 +64,73 @@ class TestBuildRunSpec(unittest.TestCase):
                     self.assertNotIn("PATH", spec.env)
                 else:
                     self.assertIn(str(cfg.ccx_bin.parent), spec.env["PATH"])
+
+
+class TestGuardsAvailable(unittest.TestCase):
+    """Fix #1: the probe reads the hook's JSON response — live when it denies OR allows a bounded
+    rewrite (`updatedInput` adds a `limit`), naming ccx. A plain allow, a missing pack, or a
+    timeout is not live."""
+
+    DENY = json.dumps(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "Blocked: use `ccx code outline` instead",
+            }
+        }
+    )
+    ALLOW_BOUNDED = json.dumps(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "updatedInput": {"file_path": "/tmp/x.py", "limit": 100},
+                "additionalContext": "Bounded an unbounded Read (~30 KB): Map the rest: `ccx code outline /tmp/x.py`",
+            }
+        }
+    )
+    ALLOW_PLAIN = json.dumps(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "additionalContext": "an allow that mentions ccx but does not rewrite the Read",
+            }
+        }
+    )
+
+    def setUp(self) -> None:
+        arms.GUARD_PROBE.clear()
+
+    def _probe_stdout(self, stdout: str) -> bool:
+        with patch.object(arms.subprocess, "run", return_value=SimpleNamespace(stdout=stdout)) as mrun:
+            live = arms.guards_available(load())
+        self.assertTrue(mrun.called)
+        return live
+
+    def test_old_style_deny_is_live(self) -> None:
+        self.assertTrue(self._probe_stdout(self.DENY))
+
+    def test_new_style_allow_rewrite_is_live(self) -> None:
+        self.assertTrue(self._probe_stdout(self.ALLOW_BOUNDED))
+
+    def test_plain_allow_without_updated_input_is_not_live(self) -> None:
+        self.assertFalse(self._probe_stdout(self.ALLOW_PLAIN))
+
+    def test_missing_read_guards_short_circuits(self) -> None:
+        cfg = dataclasses.replace(load(), plugin_hooks=Path("/nonexistent/hooks"))
+        with patch.object(arms.subprocess, "run") as mrun:
+            self.assertFalse(arms.guards_available(cfg))
+        self.assertFalse(mrun.called)
+
+    def test_timeout_is_not_live(self) -> None:
+        with patch.object(arms.subprocess, "run", side_effect=subprocess.TimeoutExpired("capt-hook", 180)):
+            self.assertFalse(arms.guards_available(load()))
+
+    def test_missing_uvx_is_not_live(self) -> None:
+        with patch.object(arms.subprocess, "run", side_effect=FileNotFoundError()):
+            self.assertFalse(arms.guards_available(load()))
 
 
 class TestPrepareWorkdir(unittest.TestCase):

@@ -17,6 +17,9 @@ CATEGORIES: tuple[str, ...] = (
     "non_regression",
 )
 
+# The control family: an empty workdir, a conceptual question, no code for ccx to navigate.
+CONTROL_CATEGORY = "non_regression"
+
 DECOMP_TERMS: tuple[str, ...] = ("static_overhead", "tool_result", "history", "hook_error", "residual")
 
 

@@ -15,7 +15,7 @@ from typing import Mapping
 
 from cc_transcript import PrintResult, ToolResultBlock, ToolUseBlock
 
-from .types import Integrity
+from .types import CONTROL_CATEGORY, Integrity
 
 CCX_MCP = "mcp__cc-context__"
 # ccx at command position only: start of the command string or immediately after a shell
@@ -82,8 +82,12 @@ def denial_is_ccx_guard(denial: Mapping[str, object]) -> bool:
     return False
 
 
-def assess(pr: PrintResult, arm: str) -> Integrity:
-    """Classify the run's tool activity and judge whether it matches its arm."""
+def assess(pr: PrintResult, arm: str, category: str) -> Integrity:
+    """Classify the run's tool activity and judge whether it matches its arm.
+
+    Control tasks (`category == CONTROL_CATEGORY`) run in an empty workdir with no code, so a ccx
+    arm is not required to exercise ccx — only its isolation invariants still apply.
+    """
     ccx_calls: list[str] = []
     heavy: list[str] = []
     cheated = False
@@ -108,6 +112,9 @@ def assess(pr: PrintResult, arm: str) -> Integrity:
                 if block.name == "Read" and "offset" not in block.input and "limit" not in block.input:
                     heavy.append("read-unbounded")
             elif isinstance(block, ToolResultBlock):
+                # Rewrite-style fires (allow + updatedInput) are never serialized into -p output,
+                # so only deny-style fires are countable here; liveness is proven per session by
+                # the arms.guards_available probe and recorded per run as guards_active.
                 if block.is_error and GUARD_HINT.search(block.content):
                     guard_fired = True
 
@@ -117,6 +124,7 @@ def assess(pr: PrintResult, arm: str) -> Integrity:
     mcp_ccx_used = any(c.startswith(CCX_MCP) for c in ccx_calls)
     bash_ccx_used = any(c.startswith("bash:ccx") for c in ccx_calls)
     cc_present = bool(pr.init) and any(s.name == "cc-context" for s in pr.init.mcp_servers)
+    is_control = category == CONTROL_CATEGORY
 
     if arm == "baseline":
         leaks: list[str] = []
@@ -133,6 +141,8 @@ def assess(pr: PrintResult, arm: str) -> Integrity:
             ok, note = False, "ccx-mcp arm but cc-context MCP not loaded"
         elif ccx_used:
             ok, note = True, "ok"
+        elif is_control:
+            ok, note = True, "ok (control: ccx not required)"
         elif guard_fired:
             ok, note = False, "ccx-mcp arm: guards fired but ccx never used — mislabeled"
         else:
@@ -144,6 +154,8 @@ def assess(pr: PrintResult, arm: str) -> Integrity:
             ok, note = False, "ccx-cli arm but mcp__cc-context__ tool called — mislabeled"
         elif bash_ccx_used:
             ok, note = True, "ok"
+        elif is_control:
+            ok, note = True, "ok (control: ccx not required)"
         elif guard_fired:
             ok, note = False, "ccx-cli arm: guards fired but ccx never used — mislabeled"
         else:

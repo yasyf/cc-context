@@ -373,8 +373,10 @@ class TestIntegrityExclusionGating(unittest.TestCase):
 
 
 class TestResolvedModelId(unittest.TestCase):
-    """Fix #10: each requested-model group must map to exactly one resolved model id, rendered in
-    the section header; two ids under one alias is a loud failure."""
+    """Fix #10/#4: each requested-model group maps to exactly one resolved id — but only after
+    filtering to ids carrying the alias token, since the envelope also lists Claude Code's internal
+    helper models (the haiku title/summary helper). Two matching ids under one alias is a loud
+    failure; a helper id alongside one matching id is not, and is rendered as `helper models:`."""
 
     def test_header_shows_resolved_id(self) -> None:
         recs: list[dict] = []
@@ -396,6 +398,18 @@ class TestResolvedModelId(unittest.TestCase):
             _add(recs, raw, task="t1", arm="ccx-cli", hs=[700], ts=[1400], model_ids=["claude-sonnet-A"])
             with self.assertRaises(ValueError):
                 _render(recs, raw)
+
+    def test_haiku_helper_alongside_one_sonnet_id_does_not_raise(self) -> None:
+        recs: list[dict] = []
+        mid = ["claude-sonnet-5", "claude-haiku-4-5-20251001"]  # the haiku entry is the internal helper.
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            _add(recs, raw, task="t1", arm="baseline", hs=[1000], ts=[2000], model_ids=mid)
+            _add(recs, raw, task="t1", arm="ccx-mcp", hs=[600], ts=[1200], model_ids=mid)
+            _add(recs, raw, task="t1", arm="ccx-cli", hs=[700], ts=[1400], model_ids=mid)
+            md = _render(recs, raw)
+        self.assertIn("## Model: sonnet (resolved: `claude-sonnet-5`)", md)
+        self.assertIn("helper models: `claude-haiku-4-5-20251001`", md)
 
 
 class TestFailFastInputs(unittest.TestCase):

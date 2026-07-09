@@ -84,7 +84,7 @@ class Session:
 
 
 def record_from(pr: PrintResult, cfg: Config, task: Task, arm: str, model: str, repeat: int, workdir: Path) -> dict:
-    integ = integrity.assess(pr, arm)
+    integ = integrity.assess(pr, arm, task.category)
     graded = grade.grade(task, pr, workdir)
     u = pr.usage
     cc_5m = u.cache_creation.ephemeral_5m_input_tokens if u.cache_creation else u.cache_creation_input_tokens

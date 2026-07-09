@@ -27,12 +27,11 @@ from pathlib import Path
 
 from . import tokens, trajectory
 from .runner import corpus_sha
-from .types import ARMS, DECOMP_TERMS, TrajectoryMetrics
+from .types import ARMS, CONTROL_CATEGORY, DECOMP_TERMS, TrajectoryMetrics
 
 BOOTSTRAP_N = 2000
 BOOTSTRAP_SEED = 0
 CONSISTENCY_TOL = 0.02
-CONTROL_CATEGORY = "non_regression"
 
 BASELINE = "baseline"
 CCX_ARMS: tuple[str, ...] = tuple(a for a in ARMS if a != BASELINE)
@@ -683,11 +682,20 @@ def render(
         lines.append("")
     for model in models:
         ids = sorted({mid for r in records if r.get("model") == model for mid in r.get("model_ids", [])})
-        if len(ids) > 1:
-            raise ValueError(f"model {model!r} resolved to multiple ids across runs: {ids}")
-        resolved = f" (resolved: `{ids[0]}`)" if ids else " (⚠️ no resolved model id recorded)"
+        # The envelope's per-model usage also lists Claude Code's internal helper models (the haiku
+        # title/summary helper), not main-loop drift; keep only ids carrying the requested alias
+        # token (a full-id alias matches itself). One matching id is the resolved model; 0 (with ids
+        # present) or >1 is real drift and a loud failure.
+        matching = sorted(mid for mid in ids if model in mid)
+        helpers = sorted(mid for mid in ids if model not in mid)
+        if ids and len(matching) != 1:
+            raise ValueError(f"model {model!r} resolved to {len(matching)} matching ids {matching} (all ids: {ids})")
+        resolved = f" (resolved: `{matching[0]}`)" if matching else " (⚠️ no resolved model id recorded)"
         lines.append(f"## Model: {model}{resolved}")
         lines.append("")
+        if helpers:
+            lines.append(f"helper models: {', '.join(f'`{h}`' for h in helpers)}")
+            lines.append("")
 
         ok_records = [r for r in records if r.get("integrity", {}).get("ok", True)]
         headline_records = [r for r in ok_records if r["category"] != CONTROL_CATEGORY]

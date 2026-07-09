@@ -106,7 +106,7 @@ class TestArmVerdicts(unittest.TestCase):
     def test_verdicts(self) -> None:
         for name, msgs, arm, want_ok, note_substr in self.CASES:
             with self.subTest(name=name):
-                v = integrity.assess(pr_from([*msgs, result_msg()]), arm)
+                v = integrity.assess(pr_from([*msgs, result_msg()]), arm, "navigation")
                 self.assertEqual(v.ok, want_ok, f"{name}: note={v.note!r}")
                 self.assertIn(note_substr, v.note)
 
@@ -123,7 +123,7 @@ class TestCheatDetection(unittest.TestCase):
     def test_answer_key_invalidates(self) -> None:
         for name, msgs, arm in self.CASES:
             with self.subTest(name=name):
-                v = integrity.assess(pr_from([*msgs, result_msg()]), arm)
+                v = integrity.assess(pr_from([*msgs, result_msg()]), arm, "navigation")
                 self.assertFalse(v.ok)
                 self.assertIn("ANSWER KEY", v.note)
 
@@ -141,13 +141,15 @@ class TestTasksDirCheatDetection(unittest.TestCase):
     def test_tasks_json_invalidates(self) -> None:
         for name, msgs, arm in self.CASES:
             with self.subTest(name=name):
-                v = integrity.assess(pr_from([*msgs, result_msg()]), arm)
+                v = integrity.assess(pr_from([*msgs, result_msg()]), arm, "navigation")
                 self.assertFalse(v.ok, f"{name}: note={v.note!r}")
                 self.assertIn("ANSWER KEY", v.note)
 
     def test_subtasks_path_is_not_a_cheat(self) -> None:
         # `subtasks/` must not false-positive as the corpus `tasks/` dir.
-        v = integrity.assess(pr_from([init_msg([]), bash("cat src/subtasks/runner.py"), result_msg()]), "baseline")
+        v = integrity.assess(
+            pr_from([init_msg([]), bash("cat src/subtasks/runner.py"), result_msg()]), "baseline", "navigation"
+        )
         self.assertNotIn("ANSWER KEY", v.note)
 
 
@@ -158,7 +160,7 @@ class TestCommandPositionCcx(unittest.TestCase):
     def test_ccx_as_argument_is_not_a_ccx_use(self) -> None:
         for cmd in ('echo "ccx code outline"', "echo run ccx code outline", "printf 'see ccx'"):
             with self.subTest(cmd=cmd):
-                v = integrity.assess(pr_from([init_msg([]), bash(cmd), result_msg()]), "ccx-cli")
+                v = integrity.assess(pr_from([init_msg([]), bash(cmd), result_msg()]), "ccx-cli", "navigation")
                 self.assertFalse(v.ccx_used, f"{cmd!r} should not count as ccx use")
 
     def test_ccx_at_command_position_counts(self) -> None:
@@ -171,18 +173,20 @@ class TestCommandPositionCcx(unittest.TestCase):
         ]
         for cmd in cases:
             with self.subTest(cmd=cmd):
-                v = integrity.assess(pr_from([init_msg([]), bash(cmd), result_msg()]), "ccx-cli")
+                v = integrity.assess(pr_from([init_msg([]), bash(cmd), result_msg()]), "ccx-cli", "navigation")
                 self.assertTrue(v.ccx_used, f"{cmd!r} should count as ccx use")
 
 
 class TestFieldClassification(unittest.TestCase):
     def test_bash_ccx_call_summarized(self) -> None:
-        v = integrity.assess(pr_from([init_msg([]), bash("ccx code outline internal/x.go"), result_msg()]), "ccx-cli")
+        v = integrity.assess(
+            pr_from([init_msg([]), bash("ccx code outline internal/x.go"), result_msg()]), "ccx-cli", "navigation"
+        )
         self.assertEqual(v.ccx_calls, ["bash:ccx code outline"])
         self.assertTrue(v.ccx_used)
 
     def test_heavy_native_call_classified(self) -> None:
-        v = integrity.assess(pr_from([init_msg([]), bash("git diff HEAD~1"), result_msg()]), "baseline")
+        v = integrity.assess(pr_from([init_msg([]), bash("git diff HEAD~1"), result_msg()]), "baseline", "navigation")
         self.assertIn("git-diff", v.native_heavy_calls)
 
     def test_guard_fired_via_permission_denials(self) -> None:
@@ -190,20 +194,54 @@ class TestFieldClassification(unittest.TestCase):
         # must still count as a ccx-navigation guard fire — detected structurally and reported
         # separately. But (fix #8) a guard fire with zero ccx use is mislabeled, not ok.
         denial = {"tool_name": "Bash", "tool_use_id": "t1", "tool_input": {"command": "find . -name mux.go -type f"}}
-        v = integrity.assess(pr_from([init_msg(["cc-context"]), result_msg(permission_denials=[denial])]), "ccx-mcp")
+        v = integrity.assess(
+            pr_from([init_msg(["cc-context"]), result_msg(permission_denials=[denial])]), "ccx-mcp", "navigation"
+        )
         self.assertTrue(v.guard_fired)  # guard fire still detected + separately reported
         self.assertFalse(v.ok)
         self.assertIn("guards fired but ccx never used", v.note)
 
     def test_non_navigation_denial_not_a_guard_fire(self) -> None:
         denial = {"tool_name": "Write", "tool_use_id": "t1", "tool_input": {"file_path": "m.py", "content": "x: Any = 1\n"}}
-        v = integrity.assess(pr_from([init_msg(["cc-context"]), result_msg(permission_denials=[denial])]), "ccx-mcp")
+        v = integrity.assess(
+            pr_from([init_msg(["cc-context"]), result_msg(permission_denials=[denial])]), "ccx-mcp", "navigation"
+        )
         self.assertFalse(v.guard_fired)
         self.assertFalse(v.ok)
 
     def test_unknown_arm_raises(self) -> None:
         with self.assertRaises(ValueError):
-            integrity.assess(pr_from([init_msg([]), result_msg()]), "ccx")
+            integrity.assess(pr_from([init_msg([]), result_msg()]), "ccx", "navigation")
+
+
+class TestControlCategory(unittest.TestCase):
+    """Fix #3: control (non_regression) tasks run in an empty workdir with no code, so a ccx arm
+    need not exercise ccx to be OK — but the isolation invariants still hold, and headline tasks
+    still require ccx."""
+
+    def test_control_ccx_mcp_no_ccx_is_ok(self) -> None:
+        # cc-context loaded (isolation held), no ccx call — OK because it's a control task.
+        v = integrity.assess(pr_from([init_msg(["cc-context"]), bash("echo hi"), result_msg()]), "ccx-mcp", "non_regression")
+        self.assertTrue(v.ok, f"note={v.note!r}")
+        self.assertIn("control", v.note)
+
+    def test_control_ccx_cli_no_ccx_is_ok(self) -> None:
+        # zero MCP, no Bash ccx — OK because it's a control task.
+        v = integrity.assess(pr_from([init_msg([]), bash("echo hi"), result_msg()]), "ccx-cli", "non_regression")
+        self.assertTrue(v.ok, f"note={v.note!r}")
+        self.assertIn("control", v.note)
+
+    def test_control_ccx_cli_with_cc_present_still_mislabeled(self) -> None:
+        # The isolation breach overrides the control relaxation: cc-context must be absent in ccx-cli.
+        v = integrity.assess(pr_from([init_msg(["cc-context"]), bash("echo hi"), result_msg()]), "ccx-cli", "non_regression")
+        self.assertFalse(v.ok)
+        self.assertIn("isolation breach", v.note)
+
+    def test_headline_ccx_mcp_no_ccx_still_mislabeled(self) -> None:
+        # A non-control task with cc-context loaded but zero ccx use stays mislabeled.
+        v = integrity.assess(pr_from([init_msg(["cc-context"]), bash("echo hi"), result_msg()]), "ccx-mcp", "navigation")
+        self.assertFalse(v.ok)
+        self.assertIn("ccx never used", v.note)
 
 
 if __name__ == "__main__":

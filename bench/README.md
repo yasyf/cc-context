@@ -133,3 +133,10 @@ arms run with ladder (and, for `ccx-mcp`, the facade MCP) alone, and
 `RESULTS.md` says so. The guards are ccx's enforcement layer: a weaker model
 may ignore the ladder and reach for native tools, which the integrity check
 flags either way.
+
+Liveness is proven, per session, by a probe that drives the exact hook command
+against a synthetic oversized read and demands a guard response; every run
+records the result as `guards_active`. In the ccx arms the read guards usually
+fire as silent rewrites — the read comes back bounded, with a ccx hint the
+`-p` output does not serialize — so the transcript-level `guard_fired` counter
+covers only deny-style fires and understates rewrite activity by design.

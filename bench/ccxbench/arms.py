@@ -41,12 +41,34 @@ def guard_command(cfg: Config) -> str:
     return f"uvx --from '{CAPT_HOOK}' capt-hook --hooks {cfg.plugin_hooks} run PreToolUse"
 
 
-def guards_available(cfg: Config) -> bool:
-    """Probe once that the ccx guard pack is live: a large unbounded Read must be denied.
+def guard_response_live(stdout: str) -> bool:
+    """True if the hook's PreToolUse response denies or bounds the probe Read while naming ccx.
 
-    Drives the exact PreToolUse path the ccx arms use (capt-hook + the canonical pack) against a
-    synthetic >20 KB file. A `deny` whose reason names `ccx` proves the cc-context navigation
-    guards loaded and fire; if the pack fails to import, the Read is allowed and the probe is False.
+    The v0.8.0+ ccx pack answers an unbounded large Read two ways, both proof the guards loaded:
+    an old-style `deny`, or an `allow` that rewrites the call via `updatedInput` to bound it
+    (adding a `limit`). A pack that failed to import allows the Read unchanged — no `updatedInput`,
+    no `ccx` mention — and is not live.
+    """
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError:
+        return False
+    hook_out = parsed.get("hookSpecificOutput") if isinstance(parsed, dict) else None
+    if not isinstance(hook_out, dict):
+        return False
+    decision = hook_out.get("permissionDecision")
+    updated = hook_out.get("updatedInput")
+    bounded = decision == "allow" and isinstance(updated, dict) and "limit" in updated
+    return (decision == "deny" or bounded) and "ccx" in stdout
+
+
+def guards_available(cfg: Config) -> bool:
+    """Probe once that the ccx guard pack is live against a synthetic >20 KB unbounded Read.
+
+    Drives the exact PreToolUse path the ccx arms use (capt-hook + the canonical pack) and parses
+    the hook's JSON response: guards are live when it denies the Read or allows a rewritten,
+    bounded one, naming `ccx` either way (see `guard_response_live`). If the pack fails to import,
+    the Read is allowed unchanged and the probe is False.
     """
     key = str(cfg.plugin_hooks)
     if key in GUARD_PROBE:
@@ -71,9 +93,8 @@ def guards_available(cfg: Config) -> bool:
     except (subprocess.TimeoutExpired, FileNotFoundError):
         GUARD_PROBE[key] = False
         return False
-    available = '"permissionDecision": "deny"' in proc.stdout and "ccx" in proc.stdout
-    GUARD_PROBE[key] = available
-    return available
+    GUARD_PROBE[key] = guard_response_live(proc.stdout)
+    return GUARD_PROBE[key]
 
 
 def apply_edits(workdir: Path, task: Task) -> None:
