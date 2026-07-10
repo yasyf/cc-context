@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -65,6 +66,35 @@ const (
 	rawHTML       contentKind = iota // un-extracted page source: plainHTTP, exa
 	cleanMarkdown                    // extracted prose: jina, firecrawl, browserbase
 )
+
+// bodyKind classifies a plainHTTP response body from its content type, routing
+// markdown and PDF away from the HTML extractor.
+type bodyKind int
+
+const (
+	bodyHTML bodyKind = iota
+	bodyMarkdown
+	bodyPDF
+)
+
+// detectBodyKind classifies a plainHTTP body by its Content-Type header, falling
+// back to http.DetectContentType when the header is absent or
+// application/octet-stream. text/markdown, text/x-markdown, and text/plain map to
+// bodyMarkdown; application/pdf to bodyPDF; everything else to bodyHTML.
+func detectBodyKind(contentType, body string) bodyKind {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil || mediaType == "application/octet-stream" {
+		mediaType, _, _ = mime.ParseMediaType(http.DetectContentType([]byte(body)))
+	}
+	switch mediaType {
+	case "text/markdown", "text/x-markdown", "text/plain":
+		return bodyMarkdown
+	case "application/pdf":
+		return bodyPDF
+	default:
+		return bodyHTML
+	}
+}
 
 // challengeInput is the classified view of one tier's response that
 // challengeSignature inspects for a bot/DDoS challenge.
@@ -373,10 +403,10 @@ func (t *tiers) firecrawl(ctx context.Context, targetURL, key string) (FetchResu
 // prior is non-nil it revalidates with conditional headers; a 304 short-circuits
 // to ErrNotModified so the caller keeps the prior chunks and vectors.
 func (t *tiers) plainHTTP(ctx context.Context, targetURL string, prior *Page) (FetchResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, httpTimeout)
+	reqCtx, cancel := context.WithTimeout(ctx, httpTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return FetchResult{}, fmt.Errorf("http: build request: %w", err)
 	}
@@ -411,13 +441,26 @@ func (t *tiers) plainHTTP(ctx context.Context, targetURL string, prior *Page) (F
 		return FetchResult{}, fmt.Errorf("http: %w", errStealthRequired)
 	}
 
-	return FetchResult{
+	res := FetchResult{
 		Tier:     TierHTTP,
 		FinalURL: resp.Request.URL.String(),
-		HTML:     body,
 		ETag:     resp.Header.Get("ETag"),
 		LastMod:  resp.Header.Get("Last-Modified"),
-	}, nil
+	}
+	switch detectBodyKind(resp.Header.Get("Content-Type"), body) {
+	case bodyMarkdown:
+		res.Markdown = body
+	case bodyPDF:
+		// The 20s deadline governs the fetch only; the parse runs under the
+		// caller's context so pdf.go's own timeout can cover a cold liteparse install.
+		res.Markdown, err = parsePDFFn(ctx, []byte(body))
+		if err != nil {
+			return FetchResult{}, fmt.Errorf("http: %w", err)
+		}
+	case bodyHTML:
+		res.HTML = body
+	}
+	return res, nil
 }
 
 // browserbase fetches targetURL through Browserbase's stealth proxy, returning

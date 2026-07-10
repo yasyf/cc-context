@@ -6,12 +6,14 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cache"
@@ -110,6 +112,9 @@ func (UVEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error
 	// uv's kill would orphan.
 	cmd := exec.CommandContext(ctx, uv, "run", "--no-project", "--no-config", "--no-build", "--quiet", "--python", embedPython, "--with", model2vecRequirement, "python", driver) //nolint:gosec // argv is fixed: uv from PATH runs the cached driver against a pinned requirement
 	cmd.Dir = filepath.Dir(driver)
+	// Own process group so a ctx kill reaches the model2vec child, not just uv —
+	// the stdin-close backstop misses a child blocked on the HF snapshot download.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = 5 * time.Second
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -118,7 +123,15 @@ func (UVEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error
 	defer func() { _ = stdin.Close() }()
 	cmd.Cancel = func() error {
 		_ = stdin.Close()
-		return cmd.Process.Kill()
+		// A cancel that races Wait reaping the child sees ESRCH: the group is
+		// already gone, so report it as finished rather than fail a done embed.
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				return os.ErrProcessDone
+			}
+			return err
+		}
+		return nil
 	}
 	var out bytes.Buffer
 	stderr := &tailBuffer{}

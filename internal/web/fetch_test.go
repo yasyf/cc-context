@@ -10,10 +10,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/vendor"
 )
 
 // services bundles the hosted-tier handlers for one cascade test; a nil handler
@@ -906,7 +909,7 @@ func TestFetchPlainHTTPRawHTML(t *testing.T) {
 		body     string
 		escalate bool
 	}{
-		{"ticketmaster i18n json served", nil, `{"considerAssignModal.title":"Just a Moment","x":1}`, false},
+		{"ticketmaster i18n json served", map[string]string{"Content-Type": "application/json"}, `{"considerAssignModal.title":"Just a Moment","x":1}`, false},
 		{"nowsecure turnstile widget served", nil, `<script src="https://challenges.cloudflare.com/turnstile/v0/api.js"></script>`, false},
 		{"cf-mitigated header escalates", map[string]string{"cf-mitigated": "challenge"}, "<html><body>ok</body></html>", true},
 		{"just a moment title escalates", nil, "<html><head><title>Just a moment...</title></head><body>hi</body></html>", true},
@@ -1100,5 +1103,161 @@ func TestFetchBrowserbaseServiceFailureNoStealthLeak(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %q, want it to mention %q", err, want)
 		}
+	}
+}
+
+func TestDetectBodyKind(t *testing.T) {
+	const (
+		htmlBody  = "<html><body><p>hi</p></body></html>"
+		plainBody = "just some words, not markup"
+		pdfBody   = "%PDF-1.4\n1 0 obj<< >>\n"
+	)
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		want        bodyKind
+	}{
+		{"markdown header", "text/markdown", "# Title", bodyMarkdown},
+		{"x-markdown header", "text/x-markdown", "# Title", bodyMarkdown},
+		{"plain header", "text/plain", plainBody, bodyMarkdown},
+		{"markdown header with charset", "text/markdown; charset=utf-8", "# Title", bodyMarkdown},
+		{"pdf header", "application/pdf", pdfBody, bodyPDF},
+		{"html header", "text/html", htmlBody, bodyHTML},
+		{"json header", "application/json", `{"a":1}`, bodyHTML},
+		{"absent header sniffs html", "", htmlBody, bodyHTML},
+		{"absent header sniffs pdf", "", pdfBody, bodyPDF},
+		{"absent header sniffs plain", "", plainBody, bodyMarkdown},
+		{"octet-stream sniffs pdf", "application/octet-stream", pdfBody, bodyPDF},
+		{"octet-stream sniffs html", "application/octet-stream", htmlBody, bodyHTML},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := detectBodyKind(tt.contentType, tt.body); got != tt.want {
+				t.Errorf("detectBodyKind(%q, …) = %d, want %d", tt.contentType, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestFetchPlainHTTPContentTypeRouting pins the plainHTTP tier's content-type
+// routing: a markdown or plain-text body lands in FetchResult.Markdown, an HTML
+// body stays in FetchResult.HTML for the local extractor.
+func TestFetchPlainHTTPContentTypeRouting(t *testing.T) {
+	const (
+		mdBody   = "# Heading\n\nsome *markdown* text"
+		htmlBody = "<html><body><p>hi</p></body></html>"
+	)
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		wantMD      string
+		wantHTML    string
+	}{
+		{"markdown lands in markdown", "text/markdown", mdBody, mdBody, ""},
+		{"x-markdown lands in markdown", "text/x-markdown", mdBody, mdBody, ""},
+		{"plain text lands in markdown", "text/plain", "plain, not escaped", "plain, not escaped", ""},
+		{"html stays in html", "text/html", htmlBody, "", htmlBody},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateKeys(t)
+			ts := testTiers(t, services{jina: status(http.StatusTooManyRequests)})
+			target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tt.contentType)
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, tt.body)
+			})
+
+			got, err := ts.fetch(context.Background(), target, nil)
+			if err != nil {
+				t.Fatalf("fetch: %v", err)
+			}
+			if got.Tier != TierHTTP {
+				t.Errorf("Tier = %q, want %q", got.Tier, TierHTTP)
+			}
+			if got.Markdown != tt.wantMD {
+				t.Errorf("Markdown = %q, want %q", got.Markdown, tt.wantMD)
+			}
+			if got.HTML != tt.wantHTML {
+				t.Errorf("HTML = %q, want %q", got.HTML, tt.wantHTML)
+			}
+		})
+	}
+}
+
+// TestFetchPlainHTTPPDFRoutesToParser proves an application/pdf body routes into
+// parsePDF: with uv forced off the PATH, the parser's uv-missing failure surfaces
+// from the plainHTTP tier, which only fires when detectBodyKind picked bodyPDF.
+func TestFetchPlainHTTPPDFRoutesToParser(t *testing.T) {
+	isolateKeys(t)
+	orig := vendor.LookPath
+	t.Cleanup(func() { vendor.LookPath = orig })
+	vendor.LookPath = func(string) string { return "" }
+
+	ts := testTiers(t, services{jina: status(http.StatusTooManyRequests)})
+	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "%PDF-1.4\n1 0 obj<< >>\n")
+	})
+
+	_, err := ts.fetch(context.Background(), target, nil)
+	if err == nil {
+		t.Fatal("fetch: want an error when a PDF cannot be parsed")
+	}
+	if !strings.Contains(err.Error(), "pdf extraction requires uv") {
+		t.Errorf("err = %q, want it to route into parsePDF and report the missing uv", err)
+	}
+}
+
+// TestPlainHTTPPDFParseNotBoundByFetchDeadline proves the 20s HTTP-fetch deadline
+// does not leak into the PDF parse: plainHTTP hands the parser the caller's
+// context, not the request-scoped one, so pdf.go's own timeout can govern a cold
+// liteparse install. Under the old wiring the parser inherited the 20s deadline.
+func TestPlainHTTPPDFParseNotBoundByFetchDeadline(t *testing.T) {
+	isolateKeys(t)
+	prev := parsePDFFn
+	t.Cleanup(func() { parsePDFFn = prev })
+	var hadDeadline bool
+	parsePDFFn = func(ctx context.Context, _ []byte) (string, error) {
+		_, hadDeadline = ctx.Deadline()
+		return "parsed", nil
+	}
+
+	ts := testTiers(t, services{})
+	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "%PDF-1.4\n")
+	})
+
+	res, err := ts.plainHTTP(context.Background(), target, nil)
+	if err != nil {
+		t.Fatalf("plainHTTP: %v", err)
+	}
+	if res.Markdown != "parsed" {
+		t.Errorf("Markdown = %q, want the parser output", res.Markdown)
+	}
+	if hadDeadline {
+		t.Error("parsePDF context carries a deadline: the 20s fetch deadline leaked into the parse")
+	}
+}
+
+func TestParsePDF(t *testing.T) {
+	if vendor.LookPath("uv") == "" {
+		t.Skip("parsePDF needs uv on PATH (brew install uv)")
+	}
+	data, err := os.ReadFile("testdata/sample.pdf")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	md, err := parsePDF(context.Background(), data)
+	if err != nil {
+		t.Fatalf("parsePDF: %v", err)
+	}
+	if !strings.Contains(md, "Hello CCX PDF") {
+		t.Errorf("markdown = %q, want it to contain the fixture text %q", md, "Hello CCX PDF")
 	}
 }

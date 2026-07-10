@@ -16,6 +16,7 @@ func TestPlainHTTPTenMiBCap(t *testing.T) {
 	// Serve just over the 10 MiB cap; the tier must truncate at the limit.
 	big := bytes.Repeat([]byte("a"), maxBodyBytes+512)
 	target := startTarget(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(big)
 	})
