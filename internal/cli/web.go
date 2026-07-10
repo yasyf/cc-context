@@ -49,6 +49,7 @@ func newWebReadCmd() *cobra.Command {
 	cmd.Flags().StringVar(&a.Section, "section", "", "section ref echoed from ccx web outline, e.g. 2.3 or 2.3#k7fq")
 	cmd.Flags().BoolVar(&a.Full, "full", false, "read the whole page")
 	cmd.Flags().IntVar(&a.Budget, "budget", 0, "token budget for the output")
+	cmd.Flags().IntVar(&a.Offset, "offset", 0, "skip this many tokens into the section or page, to page past a --budget cap")
 	cmd.Flags().BoolVar(&a.Force, "refresh", false, "bypass the cache TTL and refetch")
 	return cmd
 }

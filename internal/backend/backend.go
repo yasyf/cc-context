@@ -83,6 +83,7 @@ type Args struct {
 	IgnoreCase      bool
 	Word            bool
 	Budget          int
+	Offset          int
 	K               int
 	MaxSnippetLines int
 	Expand          int

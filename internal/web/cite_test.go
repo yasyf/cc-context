@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -156,6 +157,162 @@ func TestResolveSameSectionDuplicateReAnchors(t *testing.T) {
 	}
 	if got.Section != "1" {
 		t.Errorf("Resolve section = %q, want %q", got.Section, "1")
+	}
+}
+
+func TestResolvePrintedNumber(t *testing.T) {
+	sections := []Section{
+		{ID: "0"},
+		{ID: "1", Title: "Overview"},
+		{ID: "1.1", Title: "5.6.7. Date/Time Formats"},
+		{ID: "1.2", Title: "5.6.8. Number Formats"},
+		{ID: "2", Title: "1) Getting Started"},
+		{ID: "2.1", Title: "1. Getting Started"},
+	}
+	tests := []struct {
+		name    string
+		input   string
+		wantIDs []string
+	}{
+		{"unique", "5.6.7", []string{"1.1"}},
+		{"unique trailing dot", "5.6.7.", []string{"1.1"}},
+		{"unique trailing paren", "5.6.8)", []string{"1.2"}},
+		{"multiple across sections", "1", []string{"2", "2.1"}},
+		{"no numeric match", "9.9", nil},
+		{"title without number", "Overview", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotIDs []string
+			for _, s := range resolvePrintedNumber(sections, tt.input) {
+				gotIDs = append(gotIDs, s.ID)
+			}
+			if !slices.Equal(gotIDs, tt.wantIDs) {
+				t.Errorf("resolvePrintedNumber(%q) = %v, want %v", tt.input, gotIDs, tt.wantIDs)
+			}
+		})
+	}
+}
+
+func TestPlainTitle(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain title unchanged", "5.6.7. Date/Time Formats", "5.6.7. Date/Time Formats"},
+		{"rfc9110 linked number and bracketed text", "[5.6.7.](#section-5.6.7) [Date/Time Formats]", "5.6.7. Date/Time Formats"},
+		{"bolded number", "**5.6.7.** Date/Time Formats", "5.6.7. Date/Time Formats"},
+		{"inline code number", "`5.6.7.` Date/Time Formats", "5.6.7. Date/Time Formats"},
+		{"collapses whitespace runs", "5.6.7.   Date/Time   Formats", "5.6.7. Date/Time Formats"},
+		{"nested-paren link target unwraps whole and leaves no false number", "[*](https://e/x(y)5.6.7)", ""},
+		{"escaped paren in link target unwraps whole and keeps trailing text", "[5.6.7.](https://e/a\\)) Date", "5.6.7. Date"},
+		{"underscore emphasis stripped like asterisk", "__5.6.7.__ Date/Time Formats", "5.6.7. Date/Time Formats"},
+		{"reference-style link unwraps to its text", "[5.6.7.][sec] Date/Time Formats", "5.6.7. Date/Time Formats"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := plainTitle(tt.in); got != tt.want {
+				t.Errorf("plainTitle(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestResolvePrintedNumberMarkup proves a printed number at the head of a title
+// resolves even when the title carries inline markdown markup — the RFC-9110 form
+// links the number and brackets the text, and headings may bold the number.
+func TestResolvePrintedNumberMarkup(t *testing.T) {
+	sections := []Section{
+		{ID: "1", Title: "[5.6.7.](#section-5.6.7) [Date/Time Formats]"},
+		{ID: "2", Title: "**5.6.8.** Number Formats"},
+	}
+	tests := []struct {
+		name   string
+		input  string
+		wantID string
+	}{
+		{"rfc linked title from bare number", "5.6.7", "1"},
+		{"rfc linked title from trailing dot", "5.6.7.", "1"},
+		{"bolded title", "5.6.8", "2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolvePrintedNumber(sections, tt.input)
+			if len(got) != 1 || got[0].ID != tt.wantID {
+				t.Errorf("resolvePrintedNumber(%q) = %v, want a single §%s", tt.input, got, tt.wantID)
+			}
+		})
+	}
+}
+
+// TestResolvePrintedNumberTitleEdges covers the title-normalization edges: a
+// nested-paren inline link must not leak a false printed number, while underscore
+// emphasis and reference-style links must still resolve their leading number.
+func TestResolvePrintedNumberTitleEdges(t *testing.T) {
+	tests := []struct {
+		name     string
+		sections []Section
+		input    string
+		wantIDs  []string
+	}{
+		{
+			name:     "nested-paren inline link does not falsely resolve",
+			sections: []Section{{ID: "1", Title: "[*](https://e/x(y)5.6.7)"}},
+			input:    "5.6.7",
+			wantIDs:  nil,
+		},
+		{
+			name:     "underscore-bolded number resolves",
+			sections: []Section{{ID: "1", Title: "__5.6.7.__ Date/Time Formats"}},
+			input:    "5.6.7",
+			wantIDs:  []string{"1"},
+		},
+		{
+			name:     "reference-style link number resolves",
+			sections: []Section{{ID: "1", Title: "[5.6.7.][sec] Date/Time Formats"}},
+			input:    "5.6.7",
+			wantIDs:  []string{"1"},
+		},
+		{
+			name:     "escaped paren in link target still resolves",
+			sections: []Section{{ID: "1", Title: "[5.6.7.](https://e/a\\)) Date"}},
+			input:    "5.6.7",
+			wantIDs:  []string{"1"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotIDs []string
+			for _, s := range resolvePrintedNumber(tt.sections, tt.input) {
+				gotIDs = append(gotIDs, s.ID)
+			}
+			if !slices.Equal(gotIDs, tt.wantIDs) {
+				t.Errorf("resolvePrintedNumber(%q) = %v, want %v", tt.input, gotIDs, tt.wantIDs)
+			}
+		})
+	}
+}
+
+func TestLooksLikeSectionID(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"2", true},
+		{"2.3.1", true},
+		{"0", true},
+		{"5.6.7.", false},
+		{"5.6.7)", false},
+		{"Date/Time", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			if got := looksLikeSectionID(tt.input); got != tt.want {
+				t.Errorf("looksLikeSectionID(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
 	}
 }
 

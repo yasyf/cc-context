@@ -13,10 +13,15 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // defaultK is the number of search hits returned when a.K is unset (<= 0).
 const defaultK = 5
+
+// charsPerToken mirrors render.Cap's byte-to-token ratio; --offset is measured in
+// those tokens, so an offset maps back to a byte position the way a --budget cap does.
+const charsPerToken = 4
 
 // embedder produces chunk and query embeddings for search. It is a package var
 // defaulting to the real uv-subprocess embedder so tests can inject a fake
@@ -28,12 +33,13 @@ var embedder Embedder = UVEmbedder{}
 // through a stubbed cascade without live network. It defaults to Fetch.
 var fetchPage = Fetch
 
-// Run fetches, chunks, and serves the page at a.URL for one web op, returning
-// shaped-but-uncapped text — the caller passes it through render.Finalize, which
-// is the single capping site, so Run never calls render.Cap. It reads a.URL
-// (normalized first), a.Query, a.Section, a.Full, a.K (default 5), and a.Force
-// (bypass the cache TTL). It panics on a non-web op, an impossible state the
-// dispatch layer never produces.
+// Run fetches, chunks, and serves the page at a.URL for one web op. For OpWebRead
+// it applies a.Budget and a.Offset itself — fixed-stride paging against the raw
+// span bytes — so render.Finalize passes OpWebRead through and remains the
+// capping site for every other op; outline and search stay uncapped for Finalize
+// to cap. It reads a.URL (normalized first), a.Query, a.Section, a.Full, a.Offset,
+// a.Budget, a.K (default 5), and a.Force (bypass the cache TTL). It panics on a
+// non-web op, an impossible state the dispatch layer never produces.
 func Run(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 	norm, err := NormalizeURL(a.URL)
 	if err != nil {
@@ -143,13 +149,17 @@ func contentSHA(markdown string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// runRead serves the whole page for --full or a bare read, or a section's
-// subtree span with a sibling-navigation footer for --section. A section ref may
-// be a bare ID ("2.3") or a cite's "2.3#k7fq" (with an optional leading "§"),
-// whose hash re-anchors a drifted section to where its content moved.
+// runRead serves the whole page for --full or a bare read, or a section's subtree
+// span for --section, paging by a.Offset and capping to a.Budget against the raw
+// span bytes (see serveSpan). A section ref may be a bare §id ("2.3") or a cite's
+// "2.3#k7fq" (with an optional leading "§"), whose hash re-anchors a drifted
+// section to where its content moved. A ref that is no §id but matches a
+// document's own printed heading number ("5.6.7.") resolves to the section
+// carrying it, prepending a note that maps the printed number to the served §id.
+// The resolve note and the sibling-navigation footer ride outside the budget cap.
 func runRead(page *Page, a backend.Args) (string, error) {
 	if a.Full || a.Section == "" {
-		return page.Markdown, nil
+		return serveSpan(page.Markdown, "the page", a.Offset, a.Budget)
 	}
 	section, hash, err := splitSectionRef(a.Section)
 	if err != nil {
@@ -163,10 +173,71 @@ func runRead(page *Page, a backend.Args) (string, error) {
 		section = chunk.Section
 	}
 	start, end, ok := subtreeSpan(page.Sections, section)
+	note := ""
 	if !ok {
-		return "", fmt.Errorf("section %q not found on %s (run ccx web outline to list sections)", section, page.URL)
+		matches := resolvePrintedNumber(page.Sections, section)
+		switch len(matches) {
+		case 0:
+			return "", sectionNotFoundErr(page, section)
+		case 1:
+			m := matches[0]
+			note = fmt.Sprintf("# printed number %q resolved to §%s (%s)\n", section, m.ID, plainTitle(m.Title))
+			start, end, _ = subtreeSpan(page.Sections, m.ID)
+			section = m.ID
+		default:
+			return "", multiplePrintedErr(section, matches)
+		}
 	}
-	return renderRead(page, section, start, end), nil
+	body, err := serveSpan(page.Markdown[start:end], "section §"+section, a.Offset, a.Budget)
+	if err != nil {
+		return "", err
+	}
+	return note + withNav(page, section, body), nil
+}
+
+// sectionNotFoundErr reports that input matched no §id and no printed heading
+// number. It names the nearest surviving §id only for a §id-shaped input; a
+// heading-text input is instead routed to outline/search by the trailing hint.
+func sectionNotFoundErr(page *Page, input string) error {
+	nearest := ""
+	if looksLikeSectionID(input) {
+		nearest = fmt.Sprintf("; nearest surviving section is §%s", nearestSection(page, input))
+	}
+	return fmt.Errorf("section %q not found on %s%s (run ccx web outline to list sections, or ccx web search to find a heading by text)", input, page.URL, nearest)
+}
+
+// multiplePrintedErr reports that a printed number matched more than one section,
+// listing each §id and title so the caller re-runs with a specific §id.
+func multiplePrintedErr(input string, matches []Section) error {
+	parts := make([]string, len(matches))
+	for i, m := range matches {
+		parts[i] = fmt.Sprintf("§%s (%s)", m.ID, plainTitle(m.Title))
+	}
+	return fmt.Errorf("printed number %q matches multiple sections: %s; pick one by its §id", input, strings.Join(parts, ", "))
+}
+
+// serveSpan applies fixed-stride --offset paging and --budget capping to span,
+// returning the paged content with a continuation footer when a later page remains
+// (see render.CapContinuation). offset skips that many tokens (charsPerToken bytes
+// each) into span; a negative offset, or one at or past span's end, is an error
+// naming span by label. A non-positive budget serves from the offset to span's
+// end, uncapped.
+func serveSpan(span, label string, offset, budget int) (string, error) {
+	if offset < 0 {
+		return "", errors.New("--offset must be non-negative")
+	}
+	// Compare by division before multiplying: --offset accepts up to MaxInt, so
+	// offset*charsPerToken could overflow into a negative index.
+	if offset > (len(span)-1)/charsPerToken {
+		return "", offsetPastEndErr(offset, label, span)
+	}
+	return render.CapContinuation(span, offset, budget), nil
+}
+
+// offsetPastEndErr reports that --offset lands at or past span's end, naming
+// span's own token size so the caller can pick a smaller offset.
+func offsetPastEndErr(offset int, label, span string) error {
+	return fmt.Errorf("--offset %d is past the end of %s (~%d tokens)", offset, label, estimateTokens(span))
 }
 
 // runSearch ranks the page's chunks against a.Query with weighted RRF over dense
@@ -363,20 +434,21 @@ func renderOutline(page *Page) string {
 			strings.Repeat("  ", indent), s.ID, label,
 			estimateTokens(page.Markdown[s.Start:s.End]), counts[s.ID])
 	}
+	if len(page.Sections) <= 1 {
+		b.WriteString("(This page has no heading structure to navigate — ask it a question with 'ccx web search', or page through it with 'ccx web read --section <id> --offset N'.)\n")
+	}
 	return b.String()
 }
 
-// renderRead renders a section's subtree span followed by a sibling-navigation
-// footer, omitting the footer when the section has no siblings to step to.
-func renderRead(page *Page, section string, start, end int) string {
-	span := page.Markdown[start:end]
+// withNav appends a sibling-navigation footer to body — the section IDs before
+// and after section among its siblings — returning body unchanged when section
+// sits alone. The footer rides outside any budget cap already applied to body.
+func withNav(page *Page, section, body string) string {
 	prev, next := siblingNav(page.Sections, section)
 	if prev == "" && next == "" {
-		return span
+		return body
 	}
 
-	var b strings.Builder
-	b.WriteString(strings.TrimRight(span, "\n"))
 	var parts []string
 	if prev != "" {
 		parts = append(parts, "§prev "+prev)
@@ -384,8 +456,7 @@ func renderRead(page *Page, section string, start, end int) string {
 	if next != "" {
 		parts = append(parts, "§next "+next)
 	}
-	fmt.Fprintf(&b, "\n\n— %s\n", strings.Join(parts, " | "))
-	return b.String()
+	return strings.TrimRight(body, "\n") + fmt.Sprintf("\n\n— %s\n", strings.Join(parts, " | "))
 }
 
 // renderSearch renders the ranked hits: a result count header, then per hit a

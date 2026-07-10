@@ -57,7 +57,7 @@ func dispatch(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error)
 		if err != nil {
 			return "", err
 		}
-		return render.Finalize(op, out, a.Budget)
+		return render.Finalize(op, out, a)
 	}
 	if op == backend.OpGrep && (a.IgnoreCase || a.Word) {
 		return ripgrep.Run(cmd.Context(), a)
@@ -79,5 +79,5 @@ func dispatch(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error)
 	if err != nil {
 		return "", err
 	}
-	return render.Finalize(op, out, a.Budget)
+	return render.Finalize(op, out, a)
 }

@@ -25,9 +25,9 @@ func Run(ctx context.Context, bin string, argv []string, a backend.Args) (string
 	out, err := render.RunCLI(ctx, bin, argv)
 	switch {
 	case err == nil:
-		return render.Finalize(backend.OpGrep, out, a.Budget)
+		return render.Finalize(backend.OpGrep, out, a)
 	case grok.IsNotFoundText(err.Error()):
-		return render.Finalize(backend.OpGrep, ripgrep.NoMatch(a.Query), a.Budget)
+		return render.Finalize(backend.OpGrep, ripgrep.NoMatch(a.Query), a)
 	default:
 		return "", err
 	}

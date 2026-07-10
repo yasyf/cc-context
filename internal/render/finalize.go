@@ -12,17 +12,19 @@ import (
 )
 
 // Finalize rewrites op's raw backend output into anchored form, then caps it to
-// budget. Anchors (NN#hash) pin a span to its line's content so the model can
+// a.Budget. Anchors (NN#hash) pin a span to its line's content so the model can
 // echo it back into ccx_code_read even after edits shift line numbers. The
 // rewrite is op-keyed: grep and symbol output gain frame anchors, deps output
 // regroups its "## Used by" rows under per-file "### path" headings with anchored
 // line spans, search and related output is reshaped from raw semble JSON, and
-// every other op passes through unchanged. OpDiff must never reach here — the diff pipeline anchors
-// its own output. The anchor.Files cache is built fresh per call (the MCP proxy
-// is resident, so a cached line table would resolve against pre-edit content).
+// every other op passes through unchanged. OpWebRead passes through too: web.Run
+// applies its own content-aware budget+offset (byte-exact continuation) before
+// Finalize sees it. Every other op caps through Cap. OpDiff must never reach here — the diff pipeline
+// anchors its own output. The anchor.Files cache is built fresh per call (the MCP
+// proxy is resident, so a cached line table would resolve against pre-edit content).
 // Budget double-counting is accepted: a backend may have pre-capped and Cap may
 // stack a second overflow footer.
-func Finalize(op backend.Op, out string, budget int) (string, error) {
+func Finalize(op backend.Op, out string, a backend.Args) (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("finalize: resolve cwd: %w", err)
@@ -31,19 +33,21 @@ func Finalize(op backend.Op, out string, budget int) (string, error) {
 
 	switch op {
 	case backend.OpGrep:
-		return Cap(annotateGrep(out, files), budget), nil
+		return Cap(annotateGrep(out, files), a.Budget), nil
 	case backend.OpSymbol:
-		return Cap(annotateSymbol(out, files), budget), nil
+		return Cap(annotateSymbol(out, files), a.Budget), nil
 	case backend.OpDeps:
-		return Cap(annotateDeps(out, files), budget), nil
+		return Cap(annotateDeps(out, files), a.Budget), nil
 	case backend.OpSearch, backend.OpRelated:
 		reshaped, err := SembleResults(out, files)
 		if err != nil {
 			return "", err
 		}
-		return Cap(reshaped, budget), nil
+		return Cap(reshaped, a.Budget), nil
+	case backend.OpWebRead:
+		return out, nil
 	default:
-		return Cap(out, budget), nil
+		return Cap(out, a.Budget), nil
 	}
 }
 

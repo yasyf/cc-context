@@ -62,7 +62,7 @@ func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runne
 	if err != nil {
 		return "", err
 	}
-	return render.Finalize(backend.OpGrep, reshape(a.Query, eng, groups), a.Budget)
+	return render.Finalize(backend.OpGrep, reshape(a.Query, eng, groups), a)
 }
 
 // execEngine is the real process boundary, tolerating the no-match exit.

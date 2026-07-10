@@ -324,7 +324,7 @@ func TestAnnotateDepsLineCountInvariant(t *testing.T) {
 func TestFinalizeDefaultOpPassesThrough(t *testing.T) {
 	// A non-anchoring op just caps; the payload is byte-identical below budget.
 	in := "line one\nline two\n"
-	got, err := Finalize(backend.OpFind, in, 0)
+	got, err := Finalize(backend.OpFind, in, backend.Args{})
 	if err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}

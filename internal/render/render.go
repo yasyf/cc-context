@@ -9,6 +9,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"unicode/utf8"
 )
 
 // charsPerToken is the crude chars-per-token ratio used to estimate budgets.
@@ -79,19 +80,10 @@ func tolerated(code int, okCodes []int) bool {
 // line boundary and appends an explicit footer naming the omitted volume; it
 // never silently truncates. A non-positive budget returns s unchanged.
 func Cap(s string, budgetTokens int) string {
-	if budgetTokens <= 0 {
-		return s
+	kept, omitted, trimmed := capTrim(s, budgetTokens)
+	if !trimmed {
+		return kept
 	}
-	limit := budgetTokens * charsPerToken
-	if len(s) <= limit {
-		return s
-	}
-
-	cut := strings.LastIndexByte(s[:limit], '\n')
-	if cut < 0 {
-		cut = limit
-	}
-	kept, omitted := s[:cut], s[cut:]
 	omittedLines := strings.Count(strings.Trim(omitted, "\n"), "\n") + 1
 	omittedTokens := len(omitted) / charsPerToken
 
@@ -99,4 +91,70 @@ func Cap(s string, budgetTokens int) string {
 		"%s\n… +%d lines, ~%d tokens omitted — re-run with a larger --budget\n",
 		kept, omittedLines, omittedTokens,
 	)
+}
+
+// CapContinuation serves a fixed-stride page of span for a paged web read: the
+// byte window [offset*charsPerToken, (offset+budget)*charsPerToken), each bound
+// snapped backward to a UTF-8 rune start so page N's end equals page N+1's start
+// and consecutive pages join exactly. A window that stops short of span's end
+// appends a footer naming the next --offset (offset+budget); a non-positive budget
+// or a window reaching the end serves to span's end with no footer. An empty span
+// serves empty; otherwise offset must be a valid page start
+// (offset*charsPerToken < len(span)), which serveSpan enforces.
+func CapContinuation(span string, offset, budget int) string {
+	if span == "" {
+		return span
+	}
+	startRaw := offset * charsPerToken
+	start := snapRuneStart(span, startRaw)
+	// Divide, don't multiply: budget can be MaxInt and budget*charsPerToken overflow.
+	if budget <= 0 || budget > (len(span)-startRaw-1)/charsPerToken {
+		return span[start:]
+	}
+	end := snapRuneStart(span, startRaw+budget*charsPerToken)
+	remainder := span[end:]
+	omittedLines := strings.Count(remainder, "\n")
+	if !strings.HasSuffix(remainder, "\n") {
+		omittedLines++ // count the unterminated final line
+	}
+	omittedTokens := len(remainder) / charsPerToken
+	next := offset + budget
+
+	return fmt.Sprintf(
+		"%s\n… +%d lines, ~%d tokens omitted — re-run with --offset %d to continue, or a larger --budget\n",
+		span[start:end], omittedLines, omittedTokens, next,
+	)
+}
+
+// snapRuneStart moves i backward to the first byte of the UTF-8 rune it lands in so
+// a stride boundary never splits a multi-byte rune, bounding the walk-back to
+// utf8.UTFMax-1 bytes so a run of malformed continuation bytes cannot drag the cut
+// arbitrarily far — beyond the bound, i is returned unchanged and invalid UTF-8 is
+// split as-is. A pure function of (s, i): page N's snapped end equals page N+1's
+// snapped start, so consecutive pages still join exactly. i must index into s.
+func snapRuneStart(s string, i int) int {
+	for j := i; j >= 0 && i-j < utf8.UTFMax; j-- {
+		if utf8.RuneStart(s[j]) {
+			return j
+		}
+	}
+	return i
+}
+
+// capTrim splits s at the last line boundary within budgetTokens, returning the
+// kept prefix, the omitted suffix, and whether a trim was needed. A non-positive
+// budget or an s already within budget returns s whole with trimmed false.
+func capTrim(s string, budgetTokens int) (kept, omitted string, trimmed bool) {
+	if budgetTokens <= 0 {
+		return s, "", false
+	}
+	limit := budgetTokens * charsPerToken
+	if len(s) <= limit {
+		return s, "", false
+	}
+	cut := strings.LastIndexByte(s[:limit], '\n')
+	if cut < 0 {
+		cut = limit
+	}
+	return s[:cut], s[cut:], true
 }

@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -23,6 +26,39 @@ const fixtureMarkdown = "intro paragraph before any heading.\n\n" +
 	"## Install\n\nInstall with homebrew: brew install ccx.\n"
 
 const fixtureURL = "https://example.com/guide"
+
+// fixtureNumbered is a heading tree whose sections print their OWN numbers in the
+// heading text ("5.6.7."), deliberately divergent from the chunker's §ids: §1.1
+// is printed "5.6.7", §1.2 "5.6.8", and §2.1 reuses printed "5.6.7" so a printed
+// number resolves uniquely (5.6.8) or ambiguously (5.6.7).
+const fixtureNumbered = "Preamble line before any heading.\n\n" +
+	"# Reference\n\nReference intro.\n\n" +
+	"## 5.6.7. Date/Time Formats\n\nDate and time formatting rules go here.\n\n" +
+	"## 5.6.8. Number Formats\n\nNumber formatting rules go here.\n\n" +
+	"# Appendix\n\nAppendix intro paragraph.\n\n" +
+	"## 5.6.7. Legacy Formats\n\nLegacy duplicate of the 5.6.7 printed number.\n"
+
+// fixtureLong is a single long section whose lines carry unique markers, so a
+// budget-capped read pages: page one keeps alpha-marker, a later offset reaches
+// bravo-marker.
+const fixtureLong = "# Log\n\n" +
+	"alpha-marker aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" +
+	"bravo-marker bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n" +
+	"charlie ccccccccccccccccccccccccccccccccccccccccc\n" +
+	"delta ddddddddddddddddddddddddddddddddddddddddddd\n" +
+	"echo eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n" +
+	"zeta-marker zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n"
+
+// fixtureFlat is a headingless page: ChunkPage yields the single preamble
+// section, the degenerate case renderOutline hints about.
+const fixtureFlat = "just a wall of text with no headings at all.\n\nmore text here.\n"
+
+// fixtureLinkedTitle carries an RFC-9110-style heading whose title wraps its
+// printed number in an inline link and brackets its text, so a printed-number
+// read exercises title normalization end to end.
+const fixtureLinkedTitle = "# Reference\n\n" +
+	"## [5.6.7.](#section-5.6.7) [Date/Time Formats]\n\n" +
+	"Date and time formatting rules go here.\n"
 
 // fetchFunc mirrors the signature of Fetch (and the fetchPage seam).
 type fetchFunc = func(context.Context, string, *Page) (FetchResult, error)
@@ -223,6 +259,449 @@ func TestRunReadUnknownSection(t *testing.T) {
 	_, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "9.9"})
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("read of unknown section: err = %v, want a not-found error", err)
+	}
+}
+
+func TestRunReadPrintedNumberResolves(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
+	withFetch(t, markdownFetch(fixtureNumbered, "Reference", nil))
+
+	// The printed number 5.6.8 is unique: it resolves to §1.2 with a mapping note.
+	out, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "5.6.8"})
+	if err != nil {
+		t.Fatalf("read of printed number 5.6.8: %v", err)
+	}
+	if want := "# printed number \"5.6.8\" resolved to §1.2 (5.6.8. Number Formats)\n"; !strings.HasPrefix(out, want) {
+		t.Errorf("resolve note missing or not prepended:\n%s", out)
+	}
+	if !strings.Contains(out, "Number formatting rules go here.") {
+		t.Errorf("resolved read missing §1.2 body:\n%s", out)
+	}
+	if strings.Contains(out, "Date/Time Formats") || strings.Contains(out, "Legacy") {
+		t.Errorf("resolved read leaked another printed-5.6.7 section:\n%s", out)
+	}
+}
+
+// TestRunReadPrintedNumberNormalizesNote proves the resolve note shows the printed
+// number's title with its markdown markup stripped (F7), not the raw heading text.
+func TestRunReadPrintedNumberNormalizesNote(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
+	withFetch(t, markdownFetch(fixtureLinkedTitle, "Reference", nil))
+
+	for _, section := range []string{"5.6.7", "5.6.7."} {
+		out, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: section})
+		if err != nil {
+			t.Fatalf("read printed number %q: %v", section, err)
+		}
+		want := fmt.Sprintf("# printed number %q resolved to §1.1 (5.6.7. Date/Time Formats)\n", section)
+		if !strings.HasPrefix(out, want) {
+			t.Errorf("note not normalized, want prefix %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunReadPrintedNumberAmbiguous(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
+	withFetch(t, markdownFetch(fixtureNumbered, "Reference", nil))
+
+	_, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "5.6.7"})
+	if err == nil {
+		t.Fatal("read of ambiguous printed number: want an error")
+	}
+	for _, want := range []string{
+		"printed number \"5.6.7\" matches multiple sections:",
+		"§1.1 (5.6.7. Date/Time Formats)",
+		"§2.1 (5.6.7. Legacy Formats)",
+		"pick one by its §id",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("ambiguous error = %q, want it to contain %q", err, want)
+		}
+	}
+}
+
+func TestRunReadNotFoundHints(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
+	withFetch(t, markdownFetch(fixtureNumbered, "Reference", nil))
+
+	tests := []struct {
+		name       string
+		section    string
+		wantNear   string // substring that must appear
+		wantAbsent string // substring that must not appear
+	}{
+		{"id-shaped offers nearest", "1.9", "; nearest surviving section is §1", ""},
+		{"text input routes to search", "Date/Time", "ccx web search to find a heading by text", "nearest surviving section"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: tt.section})
+			if err == nil {
+				t.Fatalf("read of %q: want a not-found error", tt.section)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, fmt.Sprintf("section %q not found on", tt.section)) {
+				t.Errorf("error = %q, want the not-found prefix for %q", msg, tt.section)
+			}
+			if !strings.Contains(msg, tt.wantNear) {
+				t.Errorf("error = %q, want it to contain %q", msg, tt.wantNear)
+			}
+			if tt.wantAbsent != "" && strings.Contains(msg, tt.wantAbsent) {
+				t.Errorf("error = %q, must not contain %q", msg, tt.wantAbsent)
+			}
+		})
+	}
+}
+
+var nextOffsetRe = regexp.MustCompile(`--offset (\d+) to continue`)
+
+// A rendered page carries decorations that ride outside the budget window: the
+// printed-number resolve note (prefix), the continuation footer (suffix), and the
+// sibling-navigation footer (suffix, appended after the continuation footer).
+// withNav trims the continuation footer's trailing newline when it appends nav, so
+// that newline is optional in contFooterRe.
+var (
+	noteRe       = regexp.MustCompile(`\A# printed number "[^"]*" resolved to §[^\n]*\n`)
+	contFooterRe = regexp.MustCompile(`\n… \+\d+ lines, ~\d+ tokens omitted — re-run with --offset \d+ to continue, or a larger --budget\n?\z`)
+	navRe        = regexp.MustCompile(`\n\n— [^\n]*\n\z`)
+)
+
+// servedContent recovers a page's served stride-window bytes by stripping those
+// decorations, each an exact anchored match so a real content-loss bug can never be
+// masked. Nav is stripped before the footer because it is the outermost suffix.
+func servedContent(page string) string {
+	page = noteRe.ReplaceAllString(page, "")
+	page = navRe.ReplaceAllString(page, "")
+	page = contFooterRe.ReplaceAllString(page, "")
+	return page
+}
+
+// pageThrough reads args, then follows each continuation footer's --offset until a
+// page has no footer, returning every page's output. Under fixed-stride paging a
+// followed footer always names a valid page start, so any read error — including a
+// past-end error — is a failure, as is a footer that fails to advance (infinite
+// loop) or a run that never terminates within maxPages.
+func pageThrough(t *testing.T, args backend.Args, maxPages int) []string {
+	t.Helper()
+	var pages []string
+	offset := args.Offset
+	for i := 0; i < maxPages; i++ {
+		a := args
+		a.Offset = offset
+		out, err := Run(context.Background(), backend.OpWebRead, a)
+		if err != nil {
+			t.Fatalf("page %d at offset %d: %v", i, offset, err)
+		}
+		pages = append(pages, out)
+		m := nextOffsetRe.FindStringSubmatch(out)
+		if m == nil {
+			return pages
+		}
+		n, _ := strconv.Atoi(m[1])
+		if n <= offset {
+			t.Fatalf("footer offset %d did not advance past %d (infinite loop):\n%s", n, offset, out)
+		}
+		offset = n
+	}
+	t.Fatalf("paging did not terminate within %d pages", maxPages)
+	return nil
+}
+
+func TestRunReadOffsetPaging(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
+	withFetch(t, markdownFetch(fixtureLong, "Log", nil))
+
+	const budget = 15 // limit 60 chars: page one keeps the header + first body line only
+
+	page1, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "1", Budget: budget})
+	if err != nil {
+		t.Fatalf("page one read: %v", err)
+	}
+	if !strings.Contains(page1, "alpha-marker") {
+		t.Errorf("page one missing the first-line marker:\n%s", page1)
+	}
+	if strings.Contains(page1, "bravo-marker") {
+		t.Errorf("page one leaked the second-line marker past the cap:\n%s", page1)
+	}
+	m := nextOffsetRe.FindStringSubmatch(page1)
+	if m == nil {
+		t.Fatalf("page one has no continuation footer naming the next offset:\n%s", page1)
+	}
+	next, _ := strconv.Atoi(m[1])
+	if next <= 0 {
+		t.Fatalf("page one advertised a non-advancing offset %d:\n%s", next, page1)
+	}
+
+	page2, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "1", Budget: budget, Offset: next})
+	if err != nil {
+		t.Fatalf("page two read at offset %d: %v", next, err)
+	}
+	if strings.Contains(page2, "alpha-marker") {
+		t.Errorf("page two at offset %d re-served the first-line marker (overlap):\n%s", next, page2)
+	}
+
+	// Following the footers to the end reconstructs the §1 subtree span exactly:
+	// fixed-stride pages join byte-for-byte, so no content is dropped or repeated.
+	sections, _ := ChunkPage(fixtureLong)
+	start, end, _ := subtreeSpan(sections, "1")
+	pages := pageThrough(t, backend.Args{URL: fixtureURL, Section: "1", Budget: budget}, 20)
+	var sb strings.Builder
+	for _, p := range pages {
+		sb.WriteString(servedContent(p))
+	}
+	if got := sb.String(); got != fixtureLong[start:end] {
+		t.Errorf("paged §1 read did not reconstruct its span:\n got = %q\nwant = %q", got, fixtureLong[start:end])
+	}
+}
+
+// siblingPagedMarkdown is a two-H2 page whose §1.1 (Alpha) has a sibling §1.2
+// (Beta), so reading §1.1 carries the sibling nav on every page — the case that
+// exposes the reconstruction blind spot when nav is appended after the footer.
+const siblingPagedMarkdown = "# Guide\n\n" +
+	"## Alpha\n\n" +
+	"aaaa-marker aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" +
+	"bbbb-marker bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n" +
+	"cccc-marker cccccccccccccccccccccccccccccccccccc\n\n" +
+	"## Beta\n\nBeta body paragraph.\n"
+
+// TestRunReadPagingReconstructs is the primary no-loss guarantee: following the
+// continuation footers from offset 0, the concatenation of every page's served
+// content (decorations stripped) equals the fetched span byte-for-byte. Fixed-stride
+// pages may start or end mid-line or on a snapped rune boundary, but they never
+// drop, split away, or repeat a byte — and page one never advertises --offset 0. A
+// section read with siblings carries nav on every page; withNav trims the trailing
+// newline off the final page's content, an exact allowance the assertion accounts for.
+func TestRunReadPagingReconstructs(t *testing.T) {
+	tests := []struct {
+		name     string
+		markdown string
+		section  string // "" reads the whole page (no nav); else a §id with siblings
+		budget   int
+	}{
+		// The three review repros the fixed-stride design must serve without loss.
+		{"repro a short lines lose no line", "ab\ncdef\nghij\n", "", 1},
+		{"repro b long first line loses no tail", "abcdefghij\nZ\n", "", 1},
+		{"repro c many sub-token lines stay monotonic", "a\nbb\nccc\ndddd\neeeee\n", "", 1},
+		// Cap-aligned lines, a page whose window ends exactly at span end, two
+		// multi-byte runes straddling a stride boundary, and a realistic page.
+		{"aligned short lines", "aaaa\nbbbb\ncccc\ndddd\n", "", 1},
+		{"page ends exactly at span end", "abcdefgh", "", 1},
+		{"emoji straddles a stride boundary", "ab😀cd\nef\n", "", 1},
+		{"cjk straddles a stride boundary", "a中文b\ncd\n", "", 1},
+		{"realistic multi-paragraph", fixtureMarkdown, "", 8},
+		// A paged section WITH siblings: nav rides on every page, after the footer.
+		{"paged section with siblings keeps nav on every page", siblingPagedMarkdown, "1.1", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+			defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
+			withFetch(t, markdownFetch(tt.markdown, "Doc", nil))
+
+			args := backend.Args{URL: fixtureURL, Budget: tt.budget}
+			want := tt.markdown
+			if tt.section == "" {
+				args.Full = true
+			} else {
+				args.Section = tt.section
+				sections, _ := ChunkPage(tt.markdown)
+				start, end, ok := subtreeSpan(sections, tt.section)
+				if !ok {
+					t.Fatalf("fixture has no section %q", tt.section)
+				}
+				want = tt.markdown[start:end]
+			}
+
+			pages := pageThrough(t, args, 200)
+			if len(pages) == 0 {
+				t.Fatal("no pages served")
+			}
+			if m := nextOffsetRe.FindStringSubmatch(pages[0]); m != nil {
+				if n, _ := strconv.Atoi(m[1]); n <= 0 {
+					t.Fatalf("page one advertised --offset %d (would loop forever):\n%s", n, pages[0])
+				}
+			}
+			var sb strings.Builder
+			for _, p := range pages {
+				sb.WriteString(servedContent(p))
+			}
+			got := sb.String()
+
+			if !navRe.MatchString(pages[len(pages)-1]) {
+				if got != want {
+					t.Errorf("reconstruction mismatch across %d pages:\n got = %q\nwant = %q", len(pages), got, want)
+				}
+				return
+			}
+			// withNav trims the trailing newline(s) off the final page's content, so a
+			// nav-bearing read reconstructs the span minus exactly its trailing
+			// newlines — never a dropped content byte.
+			if trimmed := strings.TrimRight(want, "\n"); got != trimmed {
+				t.Errorf("reconstruction mismatch across %d pages:\n got = %q\nwant = %q", len(pages), got, trimmed)
+			}
+			if lost := len(want) - len(got); lost < 1 || lost > 2 {
+				t.Errorf("nav trim dropped %d bytes at the final page; want exactly the 1-2 trailing newlines", lost)
+			}
+		})
+	}
+}
+
+// TestRunReadFullOffsetPaging proves --full pages end to end: the offset is applied
+// to the whole page (F2), not ignored, and a follow-the-footer loop serves every
+// section's marker.
+func TestRunReadFullOffsetPaging(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
+	withFetch(t, markdownFetch(fixtureLong, "Log", nil))
+
+	const budget = 15
+	page1, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Full: true, Budget: budget})
+	if err != nil {
+		t.Fatalf("full page one: %v", err)
+	}
+	if strings.Contains(page1, "zeta-marker") {
+		t.Errorf("full page one leaked the last-line marker past the cap:\n%s", page1)
+	}
+	// The offset applies to the whole page (F2), and following the footers
+	// reconstructs every byte of it.
+	pages := pageThrough(t, backend.Args{URL: fixtureURL, Full: true, Budget: budget}, 20)
+	var sb strings.Builder
+	for _, p := range pages {
+		sb.WriteString(servedContent(p))
+	}
+	if got := sb.String(); got != fixtureLong {
+		t.Errorf("full paged read did not reconstruct the page:\n got = %q\nwant = %q", got, fixtureLong)
+	}
+}
+
+func TestRunReadOffsetGuards(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
+	withFetch(t, markdownFetch(fixtureLong, "Log", nil))
+
+	tests := []struct {
+		name    string
+		args    backend.Args
+		wantErr string
+	}{
+		{"negative section", backend.Args{URL: fixtureURL, Section: "1", Offset: -1}, "--offset must be non-negative"},
+		{"negative full", backend.Args{URL: fixtureURL, Full: true, Offset: -5}, "--offset must be non-negative"},
+		{"section past end", backend.Args{URL: fixtureURL, Section: "1", Offset: 100000}, "past the end of section §1"},
+		{"maxint64 does not overflow", backend.Args{URL: fixtureURL, Section: "1", Offset: math.MaxInt64}, "past the end of section §1"},
+		{"maxint does not overflow", backend.Args{URL: fixtureURL, Section: "1", Offset: math.MaxInt}, "past the end of section §1"},
+		{"full past end names the page", backend.Args{URL: fixtureURL, Full: true, Offset: math.MaxInt64}, "past the end of the page"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Run(context.Background(), backend.OpWebRead, tt.args)
+			if err == nil {
+				t.Fatalf("offset %d: want an error", tt.args.Offset)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("err = %q, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestRunReadNavFitsBudgetNoOffset proves the sibling-nav footer rides outside the
+// budget cap (F6): a section whose content fits the budget advertises no
+// continuation offset even when content plus nav would overflow it.
+func TestRunReadNavFitsBudgetNoOffset(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
+	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", nil))
+
+	// Budget exactly covers §1.1's content bytes; the nav footer's bytes must not
+	// tip it into a spurious continuation footer.
+	sections, _ := ChunkPage(fixtureMarkdown)
+	start, end, _ := subtreeSpan(sections, "1.1")
+	budget := (end - start + charsPerToken - 1) / charsPerToken
+
+	out, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "1.1", Budget: budget})
+	if err != nil {
+		t.Fatalf("read §1.1: %v", err)
+	}
+	if !strings.Contains(out, "— §next 1.2") {
+		t.Errorf("read of §1.1 missing its sibling nav footer:\n%s", out)
+	}
+	if strings.Contains(out, "to continue") {
+		t.Errorf("content fit the budget but a continuation offset was advertised:\n%s", out)
+	}
+	if !strings.Contains(out, "### Wrapping") {
+		t.Errorf("read of §1.1 dropped body that fit the budget:\n%s", out)
+	}
+}
+
+// TestRunReadResolvedNotePagesWithoutSkip proves the resolve-note rides outside the
+// budget cap (N1): a printed-number-resolved page-1 footer's next offset lands so
+// page two serves the marker that sat just past the page-1 boundary — no skip.
+func TestRunReadResolvedNotePagesWithoutSkip(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
+
+	md := "# Reference\n\n" +
+		"## 5.6.8. Number Formats\n\n" +
+		"nzero xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n" +
+		"none1 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n" +
+		"ntwo2 zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n"
+	withFetch(t, markdownFetch(md, "Reference", nil))
+
+	const notePrefix = "# printed number \"5.6.8\" resolved to §1.1 (5.6.8. Number Formats)\n"
+	page1, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "5.6.8", Budget: 20})
+	if err != nil {
+		t.Fatalf("resolved page one: %v", err)
+	}
+	if !strings.HasPrefix(page1, notePrefix) {
+		t.Fatalf("page one missing the resolve note prefix:\n%s", page1)
+	}
+
+	// The resolve note rides outside the stride window on every page, so stripping
+	// it and the footer reconstructs the §1.1 subtree span with no skipped byte.
+	sections, _ := ChunkPage(md)
+	start, end, _ := subtreeSpan(sections, "1.1")
+	pages := pageThrough(t, backend.Args{URL: fixtureURL, Section: "5.6.8", Budget: 20}, 20)
+	var sb strings.Builder
+	for _, p := range pages {
+		sb.WriteString(servedContent(p))
+	}
+	if got := sb.String(); got != md[start:end] {
+		t.Errorf("note-bearing paged read did not reconstruct §1.1:\n got = %q\nwant = %q", got, md[start:end])
+	}
+}
+
+func TestRunOutlineDegenerateHint(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
+	withFetch(t, func(_ context.Context, url string, _ *Page) (FetchResult, error) {
+		md := fixtureMarkdown
+		if strings.Contains(url, "flat") {
+			md = fixtureFlat
+		}
+		return FetchResult{Tier: TierJina, FinalURL: url, Markdown: md}, nil
+	})
+
+	flat, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: "https://example.com/flat"})
+	if err != nil {
+		t.Fatalf("flat outline: %v", err)
+	}
+	for _, want := range []string{"This page has no heading structure to navigate", "ccx web read --section <id> --offset N"} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("degenerate outline missing %q:\n%s", want, flat)
+		}
+	}
+
+	rich, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL})
+	if err != nil {
+		t.Fatalf("rich outline: %v", err)
+	}
+	if strings.Contains(rich, "no heading structure") {
+		t.Errorf("multi-section outline wrongly showed the degenerate hint:\n%s", rich)
 	}
 }
 

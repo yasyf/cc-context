@@ -130,6 +130,7 @@ type WebReadIn struct {
 	URL     string `json:"url" jsonschema:"web page URL to read"`
 	Section string `json:"section,omitempty" jsonschema:"a section ref echoed from ccx_web_outline (\"2.3\" or \"2.3#k7fq\"); omit (or set full) to read the whole page"`
 	Full    bool   `json:"full,omitempty" jsonschema:"read the whole page"`
+	Offset  int    `json:"offset,omitempty" jsonschema:"skip this many tokens into the section, to page past a budget cap (the continuation footer names the next offset)"`
 	Budget  int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
 }
 
@@ -285,7 +286,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 		Name:        "ccx_web_read",
 		Description: "Read a web page by section ref or whole — pass a section echoed from ccx_web_outline to avoid pulling the entire page.",
 	}, handler(p, backend.OpWebRead, func(in WebReadIn) backend.Args {
-		return backend.Args{URL: in.URL, Section: in.Section, Full: in.Full, Budget: in.Budget}
+		return backend.Args{URL: in.URL, Section: in.Section, Full: in.Full, Offset: in.Offset, Budget: in.Budget}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{

@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -114,6 +115,61 @@ func Resolve(page *Page, section, hash string) (Chunk, error) {
 	default:
 		return matches[0], nil
 	}
+}
+
+// printedNumberRe matches a document's own printed section number at the head of
+// a Section.Title — "5.6.7. Date/Time Formats", "1) Overview" — capturing the
+// dotted numeral. It is distinct from the chunker's §id: a title numbers itself.
+var printedNumberRe = regexp.MustCompile(`^(\d+(?:\.\d+)*)[.)]?(?:\s|$)`)
+
+// sectionIDRe matches a bare chunker §id shape: a dotted numeral with no trailing
+// punctuation ("2", "2.3.1").
+var sectionIDRe = regexp.MustCompile(`^\d+(\.\d+)*$`)
+
+// inlineLinkRe matches a markdown inline link "[text](target)", capturing the
+// visible text; the target may carry one level of nested parentheses (a URL ending
+// in "(y)") or a backslash-escaped paren (a Wikipedia-style "\(" / "\)") so the
+// match spans the whole target, not up to the first ")".
+var inlineLinkRe = regexp.MustCompile(`\[([^\]]*)\]\((?:[^()\\]|\\.|\([^()]*\))*\)`)
+
+// refLinkRe matches a reference-style markdown link "[text][label]", capturing the
+// visible text so plainTitle can unwrap it before stray brackets are stripped.
+var refLinkRe = regexp.MustCompile(`\[([^\]]*)\]\[[^\]]*\]`)
+
+// plainTitle strips the markdown markup a heading title may carry so a printed
+// number at its head matches and the resolve note reads cleanly: it unwraps inline
+// links "[text](target)" and reference-style links "[text][label]" to their text,
+// drops emphasis and code markers (*, _, and backtick), removes stray brackets, and
+// collapses whitespace runs.
+func plainTitle(title string) string {
+	title = inlineLinkRe.ReplaceAllString(title, "$1")
+	title = refLinkRe.ReplaceAllString(title, "$1")
+	title = strings.NewReplacer("*", "", "_", "", "`", "", "[", "", "]", "").Replace(title)
+	return strings.Join(strings.Fields(title), " ")
+}
+
+// resolvePrintedNumber returns every section whose title opens with the printed
+// number input — the document's own heading numeral, which the chunker's §ids do
+// not follow. input is trimmed of one trailing "." or ")" so "5.6.7." resolves
+// like "5.6.7".
+func resolvePrintedNumber(sections []Section, input string) []Section {
+	if n := len(input); n > 0 && (input[n-1] == '.' || input[n-1] == ')') {
+		input = input[:n-1]
+	}
+	var matches []Section
+	for _, s := range sections {
+		if m := printedNumberRe.FindStringSubmatch(plainTitle(s.Title)); m != nil && m[1] == input {
+			matches = append(matches, s)
+		}
+	}
+	return matches
+}
+
+// looksLikeSectionID reports whether input has the shape of a chunker §id, so a
+// not-found miss can offer the nearest surviving section only for a §id-shaped
+// input, not a stray heading-text fragment.
+func looksLikeSectionID(input string) bool {
+	return sectionIDRe.MatchString(input)
 }
 
 // nearestSection returns the surviving section ID closest to section: the
