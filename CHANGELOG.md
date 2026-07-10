@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `--regex`/`-E` on `ccx code grep` treats the query as a regular expression (ripgrep by default, `grep -E` ERE as the fallback), and explicit file operands — `ccx code grep <pattern> file1 file2` — scope the search to named paths. Both route to the rg/grep engine, so anchored (`^class `) and multi-file queries that the literal tilth path silently 0-matched now resolve. Wired across the CLI, MCP (`regex`/`paths` on `ccx_code_grep`), and `ccx exec`'s `grep()`.
+- Guard pack: a dialect-safe regex `grep` rewrites to `ccx code grep --regex` (separate BRE and ERE whitelists that admit neither backslashes nor the metacharacters where those dialects and Rust's regex diverge), and a bounded `grep` over explicit existing files passes straight through. A tree-wide grep with an unmappable shape (an exotic regex, an exit-code `grep -q`, an untranslatable flag) still blocks with a pointer at the `ccx` equivalent.
+
+### Fixed
+- `ccx vcs diff --scope <file>` no longer drops the whole diff when tilth attributes zero symbol changes — the collapsed `0 symbols touched` header is expanded and the raw hunk spliced back in, on both the CLI and MCP surfaces.
+- `ccx vcs diff <bogus-ref>` errors loudly instead of silently reporting no changes; each Git ref endpoint must resolve.
+
+### Changed
+- An unbudgeted `-i`/`-w`/`--regex`/multi-file `ccx code grep` defaults to a 2000-token output cap at the CLI and MCP surfaces; the uncapped `ccx exec` contract is unchanged.
+
 ## [0.10.0] - 2026-07-10
 
 ### Added
@@ -153,6 +166,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - jj-aware diff translation.
 - Claude Code plugin: facade-only MCP registration, a bootstrap shim that provisions the `ccx` binary, a capt-hook guard pack that blocks token-heavy primitives (unbounded `Read`, bare `cat`, `ls -R`, broad `git diff`) with escape hatches, and the `ccx` skill.
 
+[Unreleased]: https://github.com/yasyf/cc-context/compare/v0.10.0...HEAD
 [0.8.0]: https://github.com/yasyf/cc-context/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/yasyf/cc-context/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/yasyf/cc-context/compare/v0.6.0...v0.6.1

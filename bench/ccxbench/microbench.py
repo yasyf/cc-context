@@ -190,6 +190,19 @@ def build_pairs(cfg: Config, repos: list[str] | None = None) -> list[Pair]:
                 )
             )
 
+        # No multi-file pair: the rg engine's format carries a ~15-20% premium over
+        # `grep -n`, so bounded multi-file literals lose per-call; the capability's
+        # win is session-level turn savings, measured by the bench proper.
+        for pattern in spec.get("regex_patterns", ()):
+            pairs.append(
+                Pair(
+                    intent="find pattern (regex)",
+                    target=f"{repo_name}:{pattern}",
+                    raw_text=_shell(["grep", "-rnE", pattern, "."], repo, ok_codes=(0, 1)),
+                    ccx_text=_ccx(cfg, repo, ["code", "grep", "--regex", pattern]),
+                )
+            )
+
         for glob in spec["globs"]:
             pairs.append(
                 Pair(
@@ -214,7 +227,7 @@ def build_pairs(cfg: Config, repos: list[str] | None = None) -> list[Pair]:
 
 
 def _corpus(repos: list[str] | None) -> dict[str, dict]:
-    """The fixed micro-corpus: a few files, sections, patterns, globs, and symbols per repo."""
+    """The fixed micro-corpus: a few files, sections, patterns, regex patterns, globs, and symbols per repo."""
     full = {
         "gorilla-mux": {
             "files": ["mux.go", "route.go"],
@@ -234,6 +247,7 @@ def _corpus(repos: list[str] | None) -> dict[str, dict]:
             "files": ["tornado/httputil.py"],
             "sections": [("tornado/web.py", "1-50")],
             "patterns": ["self.request"],
+            "regex_patterns": [r"class [A-Za-z_]+\(.*RequestHandler"],
             "globs": ["*.py"],
             "symbols": ["RequestHandler"],
         },

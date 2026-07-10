@@ -9,7 +9,7 @@ sed, git diff, ls -R, or find — the guard hooks block those on anything token-
 1. Orient a repo → `mcp__cc-context__ccx_repo_overview` (or `ccx repo overview`)
 2. "How does X work / where is Y" → `mcp__cc-context__ccx_code_search` (or `ccx code search`)
 3. A specific symbol (def + callers + callees) → `mcp__cc-context__ccx_code_symbol`
-4. Literal / structural text → `mcp__cc-context__ccx_code_grep` (or `ccx code grep`)
+4. Literal or regex text → `mcp__cc-context__ccx_code_grep` (or `ccx code grep`; `regex` param)
 5. List files → `mcp__cc-context__ccx_repo_find` (or `ccx repo find`)
 6. Read a file → `mcp__cc-context__ccx_code_outline` first, then `mcp__cc-context__ccx_code_read`
    for the part you need (whole file via its `--full` equivalent)

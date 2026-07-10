@@ -9,7 +9,7 @@ the guard hooks block those on anything token-heavy.
 1. Orient a repo → `ccx repo overview`
 2. "How does X work / where is Y" (intent) → `ccx code search "<question>"`
 3. A specific symbol (def + callers + callees) → `ccx code symbol <name>` (alias `ccx code grok`)
-4. Literal / structural text → `ccx code grep <text> [--glob G]`
+4. Literal or regex text → `ccx code grep <text> [--regex] [--glob G]`
 5. List files → `ccx repo find "<glob>"`
 6. Read a file → `ccx code outline <file>` first, then `ccx code read <file> --section A-B` for the
    part you need (whole file: `ccx code read <file> --full`)
