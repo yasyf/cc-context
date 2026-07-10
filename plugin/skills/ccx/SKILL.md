@@ -214,6 +214,9 @@ read --section` for that section's subtree with a `§prev`/`§next` footer, or t
 whole page with `--full`. `search` answers with the top-k relevant chunks, each carrying
 a `<url> §2.3#k7fq` cite whose ref echoes back into `read`; ranking is hybrid BM25 +
 local embeddings, degrading to BM25-only (and saying so) when `uv` is off `PATH`.
+On a page with no heading structure the outline collapses to one section — lead with
+`search`, or page through it with `read --offset <tokens>`, echoing the next offset
+from the overflow footer.
 Fetched pages and their indexes persist in the ccx cache for 24 hours — `--refresh` on
 any of the three bypasses the TTL. The MCP mirrors are `mcp__cc-context__ccx_web_outline`,
 `ccx_web_read`, and `ccx_web_search`.
