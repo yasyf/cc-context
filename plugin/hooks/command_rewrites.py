@@ -94,8 +94,10 @@ rewrite_command(
 class HeadTailFile(CustomCommandLineCondition):
     """Matches ``head``/``tail`` reading a named file rather than a piped stream.
 
-    ``<cmd> | head -5`` and ``rg … | tail -20`` bound a pipe's output — the sanctioned
-    way to cap it — so a pipe or redirect is left alone. Only when head/tail's argv
+    A piped ``<cmd> | head -5`` uses head/tail as a stream *sink* to cap a pipe's output —
+    the sanctioned bound for THIS hook — so a pipe or redirect is left alone here. (The pipe
+    *source* stands on its own: an ``rg …`` heading such a pipe is now gated by
+    ``search_guards``; this hook judges only the head/tail sink.) Only when head/tail's argv
     names a file operand is it dumping that file: ``head`` with a line count rewrites to
     a bounded ``ccx code read --section``, while ``tail`` (no start line is knowable) and
     the byte-mode (`-c`) or multi-file forms hard-block.
@@ -183,7 +185,7 @@ rewrite_command(
         Input(command="tail -20 f.go"): Block(pattern="ccx code read"),
         Input(command="head -c 100 f.go"): Block(pattern="ccx code outline"),  # byte mode: no line math
         Input(command="head a.go b.go"): Block(pattern="ccx code read"),  # multi-file
-        Input(command="rg foo | head -5"): Allow(),  # pipe sink — sanctioned
+        Input(command="rg foo | head -5"): Allow(),  # head-as-sink is fine for THIS hook; the rg source is gated by search_guards
         Input(command="cat f | tail -20"): Allow(),  # pipe sink — sanctioned
         Input(command="head -5"): Allow(),  # reads stdin, no file operand
         # `ccx exec` pass-through is deliberate: head inside sh() is the script's business.
