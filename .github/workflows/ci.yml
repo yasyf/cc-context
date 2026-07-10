@@ -24,6 +24,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          check-latest: true
           cache: true
       - uses: astral-sh/setup-uv@v8.2.0
         with:
@@ -46,6 +47,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          check-latest: true
           cache: true
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
@@ -59,6 +61,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          check-latest: true
           cache: true
       - name: govulncheck
         run: |
@@ -91,6 +94,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          check-latest: true
           cache: true
       # The guard pack resolves ccx through plugin/bin/ccx — a gitignored
       # symlink since the self-provisioning installer replaced the checked-in
