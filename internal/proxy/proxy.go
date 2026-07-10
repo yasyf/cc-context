@@ -59,9 +59,10 @@ func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string
 
 // call routes op through its backend and returns budget-capped output. The edit
 // and web ops run in-process (internal/edit, internal/web) without any engine,
-// mirroring the CLI dispatch; a case-insensitive or word-boundary grep runs the
-// in-process ripgrep engine (tilth cannot express -i/-w), matching the CLI
-// dispatch's OpGrep special-case; the diff and overview ops run as child-process
+// mirroring the CLI dispatch; a case-insensitive, word-boundary, regex, or
+// multi-file grep (ripgrep.Handles) runs the in-process ripgrep engine (tilth
+// expresses none of these), matching the CLI dispatch's OpGrep special-case; the
+// diff and overview ops run as child-process
 // CLI invocations to keep the jj-aware VCS translation and fallback that CLIArgv
 // performs; the ast-grep ops run through the shared astgrep orchestration
 // (ast-grep has no MCP server); every other op is a child MCP tool call against
@@ -77,7 +78,7 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 		}
 		return render.Finalize(op, out, a)
 	}
-	if op == backend.OpGrep && (a.IgnoreCase || a.Word) {
+	if op == backend.OpGrep && ripgrep.Handles(a) {
 		return ripgrep.Run(ctx, a)
 	}
 	// Asymmetry with the CLI (internal/cli/run.go routes OpGrep through
@@ -95,7 +96,7 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 		if err != nil {
 			return "", err
 		}
-		return render.RunDiffCLI(ctx, bin, argv, a.Source, a.Budget)
+		return render.RunDiffCLI(ctx, bin, argv, a.Source, a.Scope, a.Budget)
 	case backend.OpOverview:
 		bin, argv, err := b.CLIArgv(ctx, op, a)
 		if err != nil {

@@ -33,6 +33,11 @@ func TestRipgrepArgv(t *testing.T) {
 		{"literal file glob → parent operand + basename", backend.Args{Query: "foo", Glob: file}, []string{"--json", "--fixed-strings", "--glob", "file.go", "--no-ignore-parent", "-e", "foo", "--", sub}},
 		{"nonexistent anchor unchanged", backend.Args{Query: "foo", Glob: missing + "/*.go"}, []string{"--json", "--fixed-strings", "--glob", missing + "/*.go", "-e", "foo"}},
 		{"leading-dash pattern", backend.Args{Query: "-foo"}, []string{"--json", "--fixed-strings", "-e", "-foo"}},
+		{"regex drops --fixed-strings", backend.Args{Query: "foo", Regex: true}, []string{"--json", "-e", "foo"}},
+		{"regex + ignore-case + word", backend.Args{Query: "foo", Regex: true, IgnoreCase: true, Word: true}, []string{"--json", "-i", "-w", "-e", "foo"}},
+		{"literal paths keep --fixed-strings after --", backend.Args{Query: "foo", Paths: []string{"a.go", "b.go"}}, []string{"--json", "--fixed-strings", "-e", "foo", "--", "a.go", "b.go"}},
+		{"scope + paths both ride after --", backend.Args{Query: "foo", Scope: "internal", Paths: []string{"a.go"}}, []string{"--json", "--fixed-strings", "--no-ignore-parent", "-e", "foo", "--", "internal", "a.go"}},
+		{"regex + paths", backend.Args{Query: "^func ", Regex: true, Paths: []string{"a.go"}}, []string{"--json", "-e", "^func ", "--", "a.go"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -77,6 +82,11 @@ func TestGrepArgv(t *testing.T) {
 		{"flag-like scope lands after --", backend.Args{Query: "foo", Scope: "--hidden"}, []string{"-rnFI", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "--hidden"}, false},
 		{"scope + basename glob", backend.Args{Query: "foo", Glob: "*.go", Scope: "internal"}, []string{"-rnFI", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "internal"}, false},
 		{"leading-dash pattern", backend.Args{Query: "-foo"}, []string{"-rnFI", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "-foo", "--", "."}, false},
+		{"regex swaps -rnFI for -rnEI", backend.Args{Query: "foo", Regex: true}, []string{"-rnEI", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
+		{"paths omit excludes", backend.Args{Query: "foo", Paths: []string{"a.go", "b.go"}}, []string{"-rnFI", "-e", "foo", "--", "a.go", "b.go"}, false},
+		{"regex + paths omit excludes", backend.Args{Query: "^func ", Regex: true, Paths: []string{"a.go"}}, []string{"-rnEI", "-e", "^func ", "--", "a.go"}, false},
+		{"scope + paths omit excludes", backend.Args{Query: "foo", Scope: "internal", Paths: []string{"a.go"}}, []string{"-rnFI", "-e", "foo", "--", "internal", "a.go"}, false},
+		{"paths + glob errors", backend.Args{Query: "foo", Paths: []string{"a.go"}, Glob: "*.go"}, nil, true},
 		{"scope + dir glob fails", backend.Args{Query: "foo", Glob: "src/**", Scope: "internal"}, nil, true},
 		{"brace glob fails", backend.Args{Query: "foo", Glob: "{a,b}/**"}, nil, true},
 		{"mid-path wildcard fails", backend.Args{Query: "foo", Glob: "src/*/x.go"}, nil, true},
@@ -95,6 +105,15 @@ func TestGrepArgv(t *testing.T) {
 				t.Errorf("grepArgv() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildArgvRejectsPathsAndGlob(t *testing.T) {
+	args := backend.Args{Query: "foo", Glob: "*.go", Paths: []string{"a.go"}}
+	for _, eng := range []engine{engineRipgrep, engineGrep} {
+		if _, err := buildArgv(eng, args); err == nil {
+			t.Errorf("buildArgv(%v) err = nil, want paths-plus-glob error", eng)
+		}
 	}
 }
 
@@ -488,6 +507,88 @@ func TestResolveEngine_Neither(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "install ripgrep") {
 		t.Errorf("resolveEngine() err = %v, want install hint", err)
+	}
+}
+
+func TestHandles(t *testing.T) {
+	tests := []struct {
+		name string
+		args backend.Args
+		want bool
+	}{
+		{"bare literal stays tilth", backend.Args{Query: "foo"}, false},
+		{"glob-only stays tilth", backend.Args{Query: "foo", Glob: "*.go"}, false},
+		{"scope-only stays tilth", backend.Args{Query: "foo", Scope: "internal"}, false},
+		{"ignore-case routes to engine", backend.Args{Query: "foo", IgnoreCase: true}, true},
+		{"word routes to engine", backend.Args{Query: "foo", Word: true}, true},
+		{"regex routes to engine", backend.Args{Query: "foo", Regex: true}, true},
+		{"paths route to engine", backend.Args{Query: "foo", Paths: []string{"a.go"}}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Handles(tt.args); got != tt.want {
+				t.Errorf("Handles(%+v) = %v, want %v", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRun_LiveRipgrepRegex proves an anchored regex matches where the same query
+// as a --fixed-strings literal cannot: "^func " hits the line starting with func,
+// but no line contains the literal characters "^func ". It skips when rg is absent.
+func TestRun_LiveRipgrepRegex(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("rg not on PATH")
+	}
+	dir := t.TempDir()
+	src := "package x\n// see func usage\nfunc Foo() {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	got, err := Run(context.Background(), backend.Args{Query: "^func ", Regex: true})
+	if err != nil {
+		t.Fatalf("Run(regex) err = %v", err)
+	}
+	if !strings.Contains(got, "### sample.go:3") {
+		t.Errorf("Run(regex) missing anchored func line:\n%s", got)
+	}
+
+	// Same query, forced onto the engine but as a literal: --fixed-strings makes
+	// "^func " match nothing, so an anchored literal 0-matches.
+	lit, err := Run(context.Background(), backend.Args{Query: "^func ", IgnoreCase: true})
+	if err != nil {
+		t.Fatalf("Run(literal) err = %v", err)
+	}
+	if !strings.Contains(lit, "no matches") {
+		t.Errorf("Run(literal) expected no-match for the anchored literal:\n%s", lit)
+	}
+}
+
+// TestRun_LiveRipgrepPaths proves a multi-file run returns hits only from the
+// named files, never a sibling the search did not name. It skips when rg is absent.
+func TestRun_LiveRipgrepPaths(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("rg not on PATH")
+	}
+	dir := t.TempDir()
+	for _, f := range []string{"a.go", "b.go", "c.go"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("var needle = 1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(dir)
+
+	got, err := Run(context.Background(), backend.Args{Query: "needle", Paths: []string{"a.go", "b.go"}})
+	if err != nil {
+		t.Fatalf("Run(paths) err = %v", err)
+	}
+	if !strings.Contains(got, "### a.go:") || !strings.Contains(got, "### b.go:") {
+		t.Errorf("Run(paths) missing named-file sections:\n%s", got)
+	}
+	if strings.Contains(got, "c.go") {
+		t.Errorf("Run(paths) leaked an unnamed file:\n%s", got)
 	}
 }
 

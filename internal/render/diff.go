@@ -18,6 +18,10 @@ var (
 	// working-tree output (c/ and i/ index variants); a bare path covers
 	// commit-range output, where tilth emits no c//w/ prefix.
 	diffFileHeader = regexp.MustCompile(`^## (?:[a-z]/\S+ w/)?(\S+) \((\d+) symbols\)$`)
+	// collapsedDiffHeader matches tilth's one-line header for a scoped diff with no
+	// symbol changes, capturing the working-side path and symbol count. The em dash
+	// is U+2014 and the minus is U+2212 (or ASCII '-'), copied from live output.
+	collapsedDiffHeader = regexp.MustCompile(`^# Diff: (?:[a-z]/\S+ w/)?(\S+) — (\d+) symbols touched, \+\d+/[−-]\d+ lines$`)
 	// diffSHARe matches a full 40-hex object id as a standalone token; it is only
 	// ever applied to the "# Diff:" header line, never the hunk body, where a
 	// 40-hex string can be legitimate content.
@@ -35,14 +39,16 @@ var (
 	diffSymbolRow = regexp.MustCompile(`^(\s*\[.\].*?)L(\d+)(\s+\(.*)$`)
 )
 
-// RunDiffCLI runs the tilth diff, supplements any empty-hunk section with its
-// raw jj-aware hunk, shortens the header SHAs, collapses each file's redundant
+// RunDiffCLI runs the tilth diff, expands a collapsed scoped-diff header into a
+// supplementable section, supplements any empty-hunk section with its raw
+// jj-aware hunk, shortens the header SHAs, collapses each file's redundant
 // preamble, anchors the changed-symbol rows, and caps to budget.
-func RunDiffCLI(ctx context.Context, bin string, argv []string, source string, budget int) (string, error) {
+func RunDiffCLI(ctx context.Context, bin string, argv []string, source, scope string, budget int) (string, error) {
 	out, err := RunCLI(ctx, bin, argv)
 	if err != nil {
 		return "", err
 	}
+	out = expandCollapsedDiffHeader(out, scope)
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("resolve cwd: %w", err)
@@ -63,6 +69,42 @@ func RunDiffCLI(ctx context.Context, bin string, argv []string, source string, b
 	piped = collapsePreambles(piped)
 	piped = annotateDiffSymbols(piped, anchor.NewFiles(cwd))
 	return Cap(piped, budget), nil
+}
+
+// expandCollapsedDiffHeader rewrites tilth's collapsed scoped-diff one-liner into
+// the two-tier header the pipeline needs. A --scope diff with no symbol changes
+// yields only the "# Diff: <path> — 0 symbols touched, +0/−0 lines" line and no
+// "## <path> (0 symbols)" section, so SupplementDiff never splices the raw hunk
+// and the whole diff is dropped. Under a triple gate — a non-empty scope, a
+// 0-symbol collapsed line, no existing per-file header, and a captured path equal
+// to the scope — it appends the synthesized "## <path> (0 symbols)" header so the
+// rest of the pipeline runs unchanged. Every other shape passes through untouched,
+// so the scoped >0-symbol per-symbol format is never disturbed.
+func expandCollapsedDiffHeader(out, scope string) string {
+	if scope == "" {
+		return out
+	}
+	lines := strings.Split(out, "\n")
+	collapsedIdx := -1
+	var path string
+	for i, line := range lines {
+		trimmed := strings.TrimSuffix(line, "\r")
+		if diffFileHeader.MatchString(trimmed) {
+			return out
+		}
+		if m := collapsedDiffHeader.FindStringSubmatch(trimmed); m != nil && m[2] == "0" {
+			collapsedIdx = i
+			path = m[1]
+		}
+	}
+	if collapsedIdx < 0 || path != scope {
+		return out
+	}
+	expanded := make([]string, 0, len(lines)+1)
+	expanded = append(expanded, lines[:collapsedIdx+1]...)
+	expanded = append(expanded, "## "+path+" (0 symbols)")
+	expanded = append(expanded, lines[collapsedIdx+1:]...)
+	return strings.Join(expanded, "\n")
 }
 
 // shortenDiffSHAs trims every full 40-hex object id on the first "# Diff:" header

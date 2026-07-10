@@ -56,7 +56,8 @@ func Detect(dir string) Kind {
 const stagedSource = "staged"
 
 // ResolveDiffSource translates a logical diff source into a git ref tilth can
-// consume. In a git repo the source passes through untouched. In a jj repo,
+// consume. In a git repo the source passes through once each of its endpoints is
+// validated as a real revision (a bogus ref errors loudly). In a jj repo,
 // working-tree and ref-relative revsets resolve to a commit-to-commit range
 // against the @ commit (tilth's structural diff yields no symbols when the live
 // working tree is one side), while genuinely jj-only revsets return
@@ -65,12 +66,45 @@ const stagedSource = "staged"
 func ResolveDiffSource(ctx context.Context, dir, source, scope string) (translated string, useTilth bool, fallbackArgv []string, err error) {
 	switch Detect(dir) {
 	case Git:
-		return source, true, nil, nil
+		return resolveGit(ctx, dir, source, gitCommitID)
 	case JJ:
 		return resolveJJ(ctx, dir, source, scope, defaultBranch, workingCopyCommit, gitCommitID)
 	default:
 		return source, true, nil, nil
 	}
+}
+
+// resolveGit passes a git diff source through to tilth after checking that every
+// non-empty endpoint names a real git revision, so a bogus ref fails loudly
+// instead of tilth silently rendering "No changes.". The working-tree sentinels
+// ("", "uncommitted", "staged") name no git object and skip the check. resolve is
+// injectable so the validation is table-testable without a live repo.
+func resolveGit(ctx context.Context, dir, source string, resolve gitRefResolver) (translated string, useTilth bool, fallbackArgv []string, err error) {
+	switch source {
+	case "", "uncommitted", stagedSource:
+		return source, true, nil, nil
+	}
+	for _, ep := range splitDiffRange(source) {
+		if ep == "" {
+			continue
+		}
+		if _, ok := resolve(ctx, dir, ep); !ok {
+			return "", false, nil, fmt.Errorf("unknown git revision %q in diff source %q", ep, source)
+		}
+	}
+	return source, true, nil, nil
+}
+
+// splitDiffRange splits a git diff source into its endpoints, honoring both the
+// symmetric "A...B" and the "A..B" range forms; a bare ref yields itself.
+func splitDiffRange(source string) []string {
+	if strings.Contains(source, "...") {
+		return strings.SplitN(source, "...", 2)
+	}
+	if strings.Contains(source, "..") {
+		return strings.SplitN(source, "..", 2)
+	}
+	return []string{source}
 }
 
 // RawHunkArgvFor builds the raw-hunk argv from an already-resolved diff source,

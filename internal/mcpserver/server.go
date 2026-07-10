@@ -16,6 +16,7 @@ import (
 	"github.com/yasyf/cc-context/internal/outline"
 	"github.com/yasyf/cc-context/internal/proxy"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/ripgrep"
 	"github.com/yasyf/cc-context/internal/search"
 	"github.com/yasyf/cc-context/internal/version"
 )
@@ -94,13 +95,15 @@ type DepsIn struct {
 
 // GrepIn is the input for ccx_code_grep.
 type GrepIn struct {
-	Text       string `json:"text" jsonschema:"text to search for"`
-	Glob       string `json:"glob,omitempty" jsonschema:"restrict to files matching this glob; a glob anchored at an existing directory is searched even when ignore rules exclude it"`
-	Scope      string `json:"scope,omitempty" jsonschema:"directory to scope the search to"`
-	IgnoreCase bool   `json:"ignoreCase,omitempty" jsonschema:"case-insensitive match; runs ripgrep or system grep instead of the default engine"`
-	Word       bool   `json:"word,omitempty" jsonschema:"match whole words only; runs ripgrep or system grep instead of the default engine"`
-	Budget     int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
-	Expand     int    `json:"expand,omitempty" jsonschema:"rg route (ignoreCase/word): lines of context around each hit; default engine: inlines the full source of the top matches"`
+	Text       string   `json:"text" jsonschema:"text to search for"`
+	Glob       string   `json:"glob,omitempty" jsonschema:"restrict to files matching this glob; a glob anchored at an existing directory is searched even when ignore rules exclude it"`
+	Scope      string   `json:"scope,omitempty" jsonschema:"directory to scope the search to"`
+	IgnoreCase bool     `json:"ignoreCase,omitempty" jsonschema:"case-insensitive match; runs ripgrep or system grep instead of the default engine"`
+	Word       bool     `json:"word,omitempty" jsonschema:"match whole words only; runs ripgrep or system grep instead of the default engine"`
+	Regex      bool     `json:"regex,omitempty" jsonschema:"treat text as a regex; runs ripgrep or system grep"`
+	Paths      []string `json:"paths,omitempty" jsonschema:"search these files instead of the tree; runs ripgrep or system grep"`
+	Budget     int      `json:"budget,omitempty" jsonschema:"token budget for the output"`
+	Expand     int      `json:"expand,omitempty" jsonschema:"rg route (ignoreCase/word): lines of context around each hit; default engine: inlines the full source of the top matches"`
 }
 
 // FindIn is the input for ccx_repo_find.
@@ -245,9 +248,13 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_grep",
-		Description: "Literal text search across code, optionally globbed and budget-bounded — for exact strings. Frames are anchored (55-66#2eak) — echo into ccx_code_read section.",
+		Description: "Literal or regex text search across code, optionally globbed, scoped, or over explicit files — budget-bounded. Frames are anchored (55-66#2eak) — echo into ccx_code_read section.",
 	}, handler(p, backend.OpGrep, func(in GrepIn) backend.Args {
-		return backend.Args{Query: in.Text, Glob: in.Glob, Scope: in.Scope, IgnoreCase: in.IgnoreCase, Word: in.Word, Budget: in.Budget, Expand: in.Expand}
+		a := backend.Args{Query: in.Text, Glob: in.Glob, Scope: in.Scope, IgnoreCase: in.IgnoreCase, Word: in.Word, Regex: in.Regex, Paths: in.Paths, Budget: in.Budget, Expand: in.Expand}
+		if ripgrep.Handles(a) && a.Budget == 0 {
+			a.Budget = ripgrep.DefaultBudget
+		}
+		return a
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{

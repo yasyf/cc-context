@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -38,6 +39,7 @@ func TestTilthCLIArgv(t *testing.T) {
 		{"grep glob scope budget expand", OpGrep, Args{Query: "todo", Glob: "*.go", Scope: "internal", Budget: 3, Expand: 2}, []string{"todo", "--glob", "*.go", "--scope", "internal", "--budget", "3", "--expand=2"}},
 		{"grep scope only", OpGrep, Args{Query: "todo", Scope: "internal"}, []string{"todo", "--scope", "internal"}},
 		{"grep ignore-case/word not routed to tilth", OpGrep, Args{Query: "todo", IgnoreCase: true, Word: true}, []string{"todo"}},
+		{"grep regex/paths not routed to tilth", OpGrep, Args{Query: "todo", Regex: true, Paths: []string{"a.go", "b.go"}}, []string{"todo"}},
 		{"find", OpFind, Args{Glob: "**/*.go"}, []string{"**/*.go"}},
 		{"overview", OpOverview, Args{}, []string{"overview"}},
 	}
@@ -80,8 +82,23 @@ func TestTilthCLIArgvDiff(t *testing.T) {
 func initGitRepoForDiff(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o750); err != nil {
-		t.Fatalf("mkdir .git: %v", err)
+	git := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // fixed git argv; dir is a test TempDir, args are literals
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	git("config", "user.email", "t@t.t")
+	git("config", "user.name", "t")
+	// Two commits so HEAD~1 resolves past the git-branch ref validation.
+	seed := filepath.Join(dir, "seed.txt")
+	for _, content := range []string{"one\n", "two\n"} {
+		if err := os.WriteFile(seed, []byte(content), 0o600); err != nil {
+			t.Fatalf("write seed: %v", err)
+		}
+		git("add", "-A")
+		git("commit", "-qm", "c")
 	}
 	return dir
 }
@@ -124,6 +141,7 @@ func TestTilthMCPTool(t *testing.T) {
 		{"grep", OpGrep, Args{Query: "todo", Glob: "*.go", Kind: "code", Budget: 3, Expand: 2}, "tilth_search", map[string]any{"query": "todo", "glob": "*.go", "kind": "code", "budget": 3, "expand": 2}},
 		{"grep scope", OpGrep, Args{Query: "todo", Glob: "*.go", Scope: "internal", Kind: "code", Budget: 3, Expand: 2}, "tilth_search", map[string]any{"query": "todo", "glob": "*.go", "scope": "internal", "kind": "code", "budget": 3, "expand": 2}},
 		{"grep ignore-case/word absent from tilth params", OpGrep, Args{Query: "todo", IgnoreCase: true, Word: true}, "tilth_search", map[string]any{"query": "todo"}},
+		{"grep regex/paths absent from tilth params", OpGrep, Args{Query: "todo", Regex: true, Paths: []string{"a.go"}}, "tilth_search", map[string]any{"query": "todo"}},
 		{"find", OpFind, Args{Glob: "**/*.go", Scope: "pkg"}, "tilth_files", map[string]any{"pattern": "**/*.go", "scope": "pkg"}},
 		{"diff", OpDiff, Args{Source: "HEAD~1", Scope: "pkg", Budget: 4}, "tilth_diff", map[string]any{"source": "HEAD~1", "scope": "pkg", "budget": 4}},
 	}

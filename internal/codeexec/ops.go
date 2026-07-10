@@ -41,7 +41,7 @@ func Ops(c Caller) map[string]HostFunc {
 			return backend.Args{Path: a.str("path", 0), Section: a.str("section", 1), Full: a.flag("full")}
 		}),
 		"grep": op(backend.OpGrep, func(a *args) backend.Args {
-			return backend.Args{Query: a.str("text", 0), Glob: a.str("glob", 1), Scope: a.str("scope", 2), IgnoreCase: a.flag("ignore_case"), Word: a.flag("word"), Expand: a.num("expand")}
+			return backend.Args{Query: a.str("text", 0), Glob: a.str("glob", 1), Scope: a.str("scope", 2), Paths: a.strs("paths"), IgnoreCase: a.flag("ignore_case"), Word: a.flag("word"), Regex: a.flag("regex"), Expand: a.num("expand")}
 		}),
 		"symbol": op(backend.OpSymbol, func(a *args) backend.Args {
 			return backend.Args{Query: a.str("name", 0), Scope: a.str("scope", 1), Full: a.flag("full")}
@@ -169,6 +169,32 @@ func (a *args) num(name string) int {
 		a.fail(fmt.Errorf("codeexec: argument %q must be a number, got %s", name, kindOf(v)))
 		return 0
 	}
+}
+
+// strs reads a keyword-only list-of-strings argument. An absent argument defaults
+// to nil; a present value that is not a list of strings, or that holds a non-string
+// element, records a labeled error so the sandbox sees the mistake instead of a
+// silent drop.
+func (a *args) strs(name string) []string {
+	v, ok := a.val(name, -1)
+	if !ok {
+		return nil
+	}
+	list, ok := v.([]any)
+	if !ok {
+		a.fail(fmt.Errorf("codeexec: argument %q must be a list of strings, got %s", name, kindOf(v)))
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		s, ok := item.(string)
+		if !ok {
+			a.fail(fmt.Errorf("codeexec: argument %q must be a list of strings, got a %s element", name, kindOf(item)))
+			return nil
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 func (a *args) fail(err error) {

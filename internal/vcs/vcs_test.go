@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -222,9 +224,7 @@ func TestJJFallbackArgv(t *testing.T) {
 // ResolveDiffSource passes the source through untouched, and RawHunkArgvFor omits
 // the ref for a working-tree diff while passing a real ref through.
 func TestRawHunkArgvForGitRepo(t *testing.T) {
-	root := t.TempDir()
-	gitRepo := filepath.Join(root, "git")
-	mustMkdir(t, filepath.Join(gitRepo, ".git"))
+	gitRepo := initLiveGitRepo(t) // two commits so HEAD~1 resolves past ref validation
 
 	tests := []struct {
 		id     string
@@ -296,9 +296,108 @@ func TestRawHunkArgvFor(t *testing.T) {
 	}
 }
 
+// TestResolveDiffSourceGitValidatesRefs drives the injectable git-branch resolver
+// directly: working-tree sentinels skip validation, a valid ref passes through, a
+// bogus ref errors naming the ref, and both endpoints of a range are validated
+// while empty endpoints are skipped.
+func TestResolveDiffSourceGitValidatesRefs(t *testing.T) {
+	// resolve stands in for git rev-parse: these refs are real revisions, every
+	// other name is unknown.
+	resolve := func(_ context.Context, _, ref string) (string, bool) {
+		switch ref {
+		case "HEAD", "main", "feat", "abc123":
+			return "COMMIT-" + ref, true
+		}
+		return "", false
+	}
+	const dir = "/repo"
+
+	tests := []struct {
+		id           string
+		source       string
+		wantTrans    string
+		wantUseTilth bool
+		wantErr      string // substring the error must contain; "" means no error
+	}{
+		{id: "empty skips validation", source: "", wantTrans: "", wantUseTilth: true},
+		{id: "uncommitted skips validation", source: "uncommitted", wantTrans: "uncommitted", wantUseTilth: true},
+		{id: "staged skips validation", source: "staged", wantTrans: "staged", wantUseTilth: true},
+		{id: "valid single ref passes through", source: "HEAD", wantTrans: "HEAD", wantUseTilth: true},
+		{id: "bogus single ref errors naming the ref", source: "bogus", wantUseTilth: false, wantErr: `"bogus"`},
+		{id: "two-dot range validates both endpoints", source: "main..feat", wantTrans: "main..feat", wantUseTilth: true},
+		{id: "three-dot range validates both endpoints", source: "main...feat", wantTrans: "main...feat", wantUseTilth: true},
+		{id: "two-dot range with a bogus endpoint errors", source: "main..nope", wantUseTilth: false, wantErr: `"nope"`},
+		{id: "empty left endpoint validates only the right", source: "..feat", wantTrans: "..feat", wantUseTilth: true},
+		{id: "empty right endpoint validates only the left", source: "main..", wantTrans: "main..", wantUseTilth: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			gotTrans, gotUse, gotArgv, err := resolveGit(context.Background(), dir, tt.source, resolve)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("resolveGit(%q) err = %v, want it to contain %q", tt.source, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveGit(%q) unexpected err: %v", tt.source, err)
+			}
+			if gotTrans != tt.wantTrans {
+				t.Errorf("translated = %q, want %q", gotTrans, tt.wantTrans)
+			}
+			if gotUse != tt.wantUseTilth {
+				t.Errorf("useTilth = %v, want %v", gotUse, tt.wantUseTilth)
+			}
+			if gotArgv != nil {
+				t.Errorf("fallbackArgv = %v, want nil", gotArgv)
+			}
+		})
+	}
+}
+
+// TestResolveDiffSourceGitRejectsBogusRef proves the wired-up ResolveDiffSource
+// (real git rev-parse) errors on a nonexistent ref in a live git repo instead of
+// letting tilth silently render an empty diff.
+func TestResolveDiffSourceGitRejectsBogusRef(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "-q")
+	if _, _, _, err := ResolveDiffSource(context.Background(), dir, "nonexistent-ref", ""); err == nil {
+		t.Fatalf("ResolveDiffSource(git, %q) err = nil, want an error", "nonexistent-ref")
+	} else if !strings.Contains(err.Error(), "nonexistent-ref") {
+		t.Errorf("error %q does not name the bogus ref", err)
+	}
+}
+
 func mustMkdir(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o750); err != nil {
 		t.Fatalf("mkdir %q: %v", path, err)
+	}
+}
+
+// initLiveGitRepo stands up a real git repo with two commits, so a relative ref
+// like HEAD~1 resolves through the git-branch ref validation.
+func initLiveGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runGit(t, dir, "init", "-q")
+	runGit(t, dir, "config", "user.email", "t@t.t")
+	runGit(t, dir, "config", "user.name", "t")
+	seed := filepath.Join(dir, "seed.txt")
+	for i, content := range []string{"one\n", "two\n"} {
+		if err := os.WriteFile(seed, []byte(content), 0o600); err != nil {
+			t.Fatalf("write seed rev %d: %v", i, err)
+		}
+		runGit(t, dir, "add", "-A")
+		runGit(t, dir, "commit", "-qm", "c")
+	}
+	return dir
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // fixed git argv; dir is a test TempDir, args are literals
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }

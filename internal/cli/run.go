@@ -59,7 +59,7 @@ func dispatch(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error)
 		}
 		return render.Finalize(op, out, a)
 	}
-	if op == backend.OpGrep && (a.IgnoreCase || a.Word) {
+	if op == backend.OpGrep && ripgrep.Handles(a) {
 		return ripgrep.Run(cmd.Context(), a)
 	}
 	bin, argv, err := router.For(op).CLIArgv(cmd.Context(), op, a)
@@ -67,7 +67,7 @@ func dispatch(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error)
 		return "", err
 	}
 	if op == backend.OpDiff {
-		return render.RunDiffCLI(cmd.Context(), bin, argv, a.Source, a.Budget)
+		return render.RunDiffCLI(cmd.Context(), bin, argv, a.Source, a.Scope, a.Budget)
 	}
 	if op == backend.OpSymbol {
 		return grok.Run(cmd.Context(), bin, argv, a)

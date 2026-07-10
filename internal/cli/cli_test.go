@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -13,6 +14,69 @@ import (
 	"github.com/yasyf/cc-context/internal/cli"
 	"github.com/yasyf/cc-context/internal/version"
 )
+
+// skipWithoutGrepEngine skips a test unless rg or system grep is on PATH, since
+// the regex/multi-file/ignore-case grep routes run one of them.
+func skipWithoutGrepEngine(t *testing.T) {
+	t.Helper()
+	_, rgErr := exec.LookPath("rg")
+	_, grepErr := exec.LookPath("grep")
+	if rgErr != nil && grepErr != nil {
+		t.Skip("neither rg nor grep on PATH")
+	}
+}
+
+// TestGrepCommandRegex drives the full CLI seam for an anchored regex over an
+// explicit file operand: --regex routes to the rg/grep engine and "^func " hits
+// the line starting with func, which a literal search could not.
+func TestGrepCommandRegex(t *testing.T) {
+	skipWithoutGrepEngine(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte("// mentions func\nfunc Foo() {}\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	t.Chdir(dir)
+
+	var out bytes.Buffer
+	root := cli.NewRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"code", "grep", "--regex", "^func ", "sample.go"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute(grep --regex) error = %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "### sample.go:2") {
+		t.Errorf("grep --regex output missing anchored func line:\n%s", got)
+	}
+}
+
+// TestGrepCommandUnbudgetedCaps proves an unbudgeted engine grep (here -i) over a
+// many-match fixture applies ripgrep.DefaultBudget and ends with the overflow
+// footer instead of flooding the whole match set.
+func TestGrepCommandUnbudgetedCaps(t *testing.T) {
+	skipWithoutGrepEngine(t)
+	dir := t.TempDir()
+	var body strings.Builder
+	for i := 0; i < 1000; i++ {
+		body.WriteString("var needle = 1\n")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "many.go"), []byte(body.String()), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	t.Chdir(dir)
+
+	var out bytes.Buffer
+	root := cli.NewRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"code", "grep", "-i", "needle"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute(grep -i) error = %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "tokens omitted — re-run with a larger --budget") {
+		t.Errorf("unbudgeted engine grep missing overflow footer:\n%s", got[max(0, len(got)-400):])
+	}
+}
 
 func TestRootHelpListsAllOps(t *testing.T) {
 	tests := []struct {

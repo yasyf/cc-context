@@ -186,7 +186,7 @@ func TestGrepToolSchemaHasEngineFields(t *testing.T) {
 	if schema == "" {
 		t.Fatal("ccx_code_grep not registered")
 	}
-	for _, field := range []string{`"scope"`, `"ignoreCase"`, `"word"`} {
+	for _, field := range []string{`"scope"`, `"ignoreCase"`, `"word"`, `"regex"`, `"paths"`} {
 		if !strings.Contains(schema, field) {
 			t.Errorf("ccx_code_grep schema missing %s:\n%s", field, schema)
 		}
@@ -219,6 +219,60 @@ func TestGrepToolIgnoreCaseRoutesToEngine(t *testing.T) {
 	}
 	if !strings.Contains(out, "OpGrep") {
 		t.Errorf("expected the case-variant match text:\n%s", out)
+	}
+}
+
+// TestGrepToolRegexRoutesToEngine proves an MCP ccx_code_grep call with regex
+// routes through the in-process ripgrep engine: an anchored "^func " matches the
+// line starting with func, which a literal search could never find.
+func TestGrepToolRegexRoutesToEngine(t *testing.T) {
+	_, rgErr := exec.LookPath("rg")
+	_, grepErr := exec.LookPath("grep")
+	if rgErr != nil && grepErr != nil {
+		t.Skip("neither rg nor grep on PATH")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte("// mentions func\nfunc Foo() {}\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	t.Chdir(dir)
+
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "^func ", "regex": true})
+	if isErr {
+		t.Fatalf("ccx_code_grep regex is error: %s", out)
+	}
+	if !strings.Contains(out, "### sample.go:2") {
+		t.Errorf("expected the anchored func line from the regex engine match:\n%s", out)
+	}
+}
+
+// TestGrepToolPathsRouteToEngine proves an MCP ccx_code_grep call with explicit
+// paths routes through the engine and returns hits only from the named file.
+func TestGrepToolPathsRouteToEngine(t *testing.T) {
+	_, rgErr := exec.LookPath("rg")
+	_, grepErr := exec.LookPath("grep")
+	if rgErr != nil && grepErr != nil {
+		t.Skip("neither rg nor grep on PATH")
+	}
+	dir := t.TempDir()
+	for _, f := range []string{"named.go", "other.go"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("var needle = 1\n"), 0o600); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+	}
+	t.Chdir(dir)
+
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "needle", "paths": []any{"named.go"}})
+	if isErr {
+		t.Fatalf("ccx_code_grep paths is error: %s", out)
+	}
+	if !strings.Contains(out, "### named.go:") {
+		t.Errorf("expected the named file's match:\n%s", out)
+	}
+	if strings.Contains(out, "other.go") {
+		t.Errorf("unnamed file leaked into results:\n%s", out)
 	}
 }
 

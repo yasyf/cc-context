@@ -167,7 +167,7 @@ func TestRunDiffCLISupplementsRawHunk(t *testing.T) {
 	tilth := writeFakeBin(t, "tilth",
 		"#!/bin/sh\nprintf '# Diff: uncommitted\\n\\n## c/a.go w/a.go (0 symbols)\\n'\n")
 
-	got, err := RunDiffCLI(ctx, tilth, []string{"diff"}, "uncommitted", 0)
+	got, err := RunDiffCLI(ctx, tilth, []string{"diff"}, "uncommitted", "", 0)
 	if err != nil {
 		t.Fatalf("RunDiffCLI() err: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestRunDiffCLILeavesBodiedSectionAlone(t *testing.T) {
 	tilth := writeFakeBin(t, "tilth",
 		"#!/bin/sh\nprintf '# Diff\\n\\n## c/a.go w/a.go (1 symbols)\\n+func Added() {}\\n'\n")
 
-	got, err := RunDiffCLI(ctx, tilth, []string{"diff"}, "uncommitted", 0)
+	got, err := RunDiffCLI(ctx, tilth, []string{"diff"}, "uncommitted", "", 0)
 	if err != nil {
 		t.Fatalf("RunDiffCLI() err: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestRunDiffCLISupplementsRawHunkJJ(t *testing.T) {
 	tilth := writeFakeBin(t, "tilth",
 		"#!/bin/sh\nprintf '# Diff\\n\\n## a.go (0 symbols)\\n\\n## notes.txt (0 symbols)\\n'\n")
 
-	got, err := RunDiffCLI(ctx, tilth, []string{"diff"}, "uncommitted", 0)
+	got, err := RunDiffCLI(ctx, tilth, []string{"diff"}, "uncommitted", "", 0)
 	if err != nil {
 		t.Fatalf("RunDiffCLI() err: %v", err)
 	}
@@ -242,6 +242,149 @@ func TestRunDiffCLISupplementsRawHunkJJ(t *testing.T) {
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q\n--- got ---\n%s", want, got)
+		}
+	}
+}
+
+// TestExpandCollapsedDiffHeader exercises the triple gate that turns tilth's
+// collapsed scoped-diff one-liner into a supplementable two-tier header: it fires
+// only for a non-empty scope, a 0-symbol collapsed line, no existing per-file
+// header, and a captured path equal to the scope. The fixtures carry the real em
+// dash (U+2014) tilth emits; one uses the U+2212 minus and one the ASCII '-' to
+// prove the alternation.
+func TestExpandCollapsedDiffHeader(t *testing.T) {
+	const bare = "# Diff: CHANGELOG.md — 0 symbols touched, +0/−0 lines\n"
+	const prefixed = "# Diff: c/src/click/core.py w/src/click/core.py — 0 symbols touched, +0/−0 lines\n"
+	const asciiMinus = "# Diff: CHANGELOG.md — 0 symbols touched, +0/-0 lines\n"
+	const perSymbol = "# Diff: c/core.py w/core.py — 2 symbols touched, +5/−1 lines\n" +
+		"## [~] Command.format_usage — body changed (L71-80)\n"
+	const twoTier = "# Diff: c/a.go w/a.go — 0 symbols touched, +0/−0 lines\n\n" +
+		"## c/a.go w/a.go (0 symbols)\n@@ -1 +1 @@\n-old\n+new\n"
+
+	tests := []struct {
+		name  string
+		in    string
+		scope string
+		want  string
+	}{
+		{
+			name:  "bare-path collapsed 0-symbol gets a synthesized header",
+			in:    bare,
+			scope: "CHANGELOG.md",
+			want:  "# Diff: CHANGELOG.md — 0 symbols touched, +0/−0 lines\n## CHANGELOG.md (0 symbols)\n",
+		},
+		{
+			name:  "c/-w/-prefixed collapsed 0-symbol captures the working path",
+			in:    prefixed,
+			scope: "src/click/core.py",
+			want:  "# Diff: c/src/click/core.py w/src/click/core.py — 0 symbols touched, +0/−0 lines\n## src/click/core.py (0 symbols)\n",
+		},
+		{
+			name:  "ascii-minus variant still matches and expands",
+			in:    asciiMinus,
+			scope: "CHANGELOG.md",
+			want:  "# Diff: CHANGELOG.md — 0 symbols touched, +0/-0 lines\n## CHANGELOG.md (0 symbols)\n",
+		},
+		{
+			name:  "empty scope passes through untouched",
+			in:    bare,
+			scope: "",
+			want:  bare,
+		},
+		{
+			name:  "scoped >0-symbol per-symbol format passes through untouched",
+			in:    perSymbol,
+			scope: "core.py",
+			want:  perSymbol,
+		},
+		{
+			name:  "already two-tier diff passes through untouched",
+			in:    twoTier,
+			scope: "a.go",
+			want:  twoTier,
+		},
+		{
+			name:  "captured path different from scope passes through untouched",
+			in:    bare,
+			scope: "README.md",
+			want:  bare,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := expandCollapsedDiffHeader(tt.in, tt.scope); got != tt.want {
+				t.Errorf("expandCollapsedDiffHeader()\n got: %q\nwant: %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRunDiffCLIScopedCollapsedHeader proves a --scope diff that tilth collapses
+// to a 0-symbol one-liner is expanded into a supplementable "## <path> (0
+// symbols)" section, so every raw hunk is spliced back and its redundant preamble
+// collapsed rather than the whole diff being silently dropped.
+func TestRunDiffCLIScopedCollapsedHeader(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell script is POSIX-only")
+	}
+	ctx := context.Background()
+	repo := initGitRepo(t)
+	t.Chdir(repo)
+
+	// A long committed base so two separated edits land in two distinct @@ hunks.
+	base := "package main\n\nfunc one() int { return 1 }\n\n" +
+		"// filler\nvar a = 1\nvar b = 2\nvar c = 3\nvar d = 4\nvar e = 5\n" +
+		"var f = 6\nvar g = 7\nvar h = 8\nvar i = 9\nvar j = 10\n\n" +
+		"func two() int { return 2 }\n"
+	writeFile(t, filepath.Join(repo, "big.go"), base)
+	gitCommit(t, repo, "add big.go")
+
+	modified := "package main\n\nfunc one() int { return 11 }\n\n" +
+		"// filler\nvar a = 1\nvar b = 2\nvar c = 3\nvar d = 4\nvar e = 5\n" +
+		"var f = 6\nvar g = 7\nvar h = 8\nvar i = 9\nvar j = 10\n\n" +
+		"func two() int { return 22 }\n"
+	writeFile(t, filepath.Join(repo, "big.go"), modified)
+
+	tilth := writeFakeBin(t, "tilth",
+		"#!/bin/sh\nprintf '# Diff: c/big.go w/big.go — 0 symbols touched, +0/−0 lines\\n'\n")
+
+	got, err := RunDiffCLI(ctx, tilth, []string{"diff"}, "uncommitted", "big.go", 0)
+	if err != nil {
+		t.Fatalf("RunDiffCLI() err: %v", err)
+	}
+	for _, want := range []string{
+		"## big.go (0 symbols)",
+		"-func one() int { return 1 }",
+		"+func one() int { return 11 }",
+		"-func two() int { return 2 }",
+		"+func two() int { return 22 }",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q\n--- got ---\n%s", want, got)
+		}
+	}
+	hunks := 0
+	for _, ln := range strings.Split(got, "\n") {
+		if strings.HasPrefix(ln, "@@ ") {
+			hunks++
+		}
+	}
+	if hunks < 2 {
+		t.Errorf("want >=2 spliced hunk headers, got %d\n--- got ---\n%s", hunks, got)
+	}
+	for _, absent := range []string{"diff --git", "index ", "--- a/big.go", "+++ b/big.go"} {
+		if strings.Contains(got, absent) {
+			t.Errorf("redundant preamble line %q was not collapsed\n--- got ---\n%s", absent, got)
+		}
+	}
+}
+
+func gitCommit(t *testing.T, dir, msg string) {
+	t.Helper()
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-qm", msg}} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // fixed git argv; dir is a test TempDir, args are literals
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
 }

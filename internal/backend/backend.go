@@ -82,6 +82,7 @@ type Args struct {
 	Delete          bool
 	IgnoreCase      bool
 	Word            bool
+	Regex           bool
 	Budget          int
 	Offset          int
 	K               int

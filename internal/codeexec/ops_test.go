@@ -76,6 +76,12 @@ func TestOpsArgMapping(t *testing.T) {
 			backend.Args{Query: "opgrep", Scope: "internal", IgnoreCase: true, Word: true},
 		},
 		{
+			"grep regex + paths", "grep",
+			Call{Kwargs: map[string]any{"text": "^func ", "regex": true, "paths": []any{"a.go", "b.go"}}},
+			backend.OpGrep,
+			backend.Args{Query: "^func ", Regex: true, Paths: []string{"a.go", "b.go"}},
+		},
+		{
 			"grep expand float", "grep",
 			Call{Kwargs: map[string]any{"text": "x", "expand": 2.0}},
 			backend.OpGrep,
@@ -165,6 +171,41 @@ func TestOpsNumArgErrors(t *testing.T) {
 				t.Fatal("call error = nil, want labeled argument error")
 			}
 			for _, want := range []string{"codeexec:", "must be a number"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q missing %q", err, want)
+				}
+			}
+			if fake.op != "" {
+				t.Errorf("op %q dispatched despite argument error", fake.op)
+			}
+		})
+	}
+}
+
+// TestOpsPathsArgErrors proves a paths argument that is not a list of strings
+// raises a labeled error instead of silently dropping the operands.
+func TestOpsPathsArgErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		call Call
+	}{
+		{
+			"paths not a list",
+			Call{Kwargs: map[string]any{"text": "x", "paths": "a.go"}},
+		},
+		{
+			"paths list with non-string element",
+			Call{Kwargs: map[string]any{"text": "x", "paths": []any{"a.go", int64(3)}}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeCaller{out: "ok"}
+			_, err := Ops(fake)["grep"](context.Background(), tt.call)
+			if err == nil {
+				t.Fatal("call error = nil, want labeled list argument error")
+			}
+			for _, want := range []string{"codeexec:", "must be a list of strings"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("error %q missing %q", err, want)
 				}
