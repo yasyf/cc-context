@@ -76,6 +76,9 @@ func (t *tiers) fetch(ctx context.Context, normURL string, prior *Page) (FetchRe
 	stealth := false
 	for _, r := range runs {
 		res, err := r.run()
+		if t.onAttempt != nil {
+			t.onAttempt(r.name, err)
+		}
 		switch {
 		case err == nil:
 			return res, nil
@@ -100,13 +103,18 @@ func (t *tiers) fetch(ctx context.Context, normURL string, prior *Page) (FetchRe
 	if stealth {
 		key := os.Getenv(envBrowserbaseKey)
 		if key == "" {
-			return FetchResult{}, fmt.Errorf("%s is unset; cannot fetch a page that requires stealth: %w", envBrowserbaseKey, ErrBlocked)
+			return FetchResult{}, fmt.Errorf(
+				"%s is unset; cannot fetch a page that requires stealth (earlier failures: %v): %w",
+				envBrowserbaseKey, errors.Join(failures...), ErrBlocked)
 		}
 		res, err := t.browserbase(ctx, normURL, key)
+		if t.onAttempt != nil {
+			t.onAttempt(TierBrowserbase, err)
+		}
 		switch {
 		case err == nil:
 			return res, nil
-		case errors.Is(err, ErrBlocked):
+		case errors.Is(err, ErrBlocked), errors.Is(err, ErrGone), errors.Is(err, ErrAuthRequired):
 			return FetchResult{}, err
 		default:
 			slog.Warn("web fetch browserbase failed", "url", normURL, "err", err)
@@ -114,7 +122,10 @@ func (t *tiers) fetch(ctx context.Context, normURL string, prior *Page) (FetchRe
 		}
 	}
 
-	return FetchResult{}, fmt.Errorf("all fetch tiers failed for %q: %w", normURL, errors.Join(failures...))
+	// Join with %v, not %w: failures may carry errStealthRequired (when the
+	// browserbase attempt itself failed for an ordinary reason), and that
+	// sentinel never escapes fetch.
+	return FetchResult{}, fmt.Errorf("all fetch tiers failed for %q: %v", normURL, errors.Join(failures...))
 }
 
 // localTarget reports whether host addresses a machine only this host can reach —

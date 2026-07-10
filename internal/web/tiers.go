@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -55,25 +57,77 @@ const maxBodyBytes = 10 << 20
 // attempt or ErrBlocked.
 var errStealthRequired = errors.New("target requires a stealth fetch")
 
-// challengeMarkersTight are the challenge-page-specific substrings scanned
-// against raw, un-extracted HTML (the plain-HTTP and exa tiers). A genuine page
-// may embed a bot-sensor script — e.g. walmart.com carries window._pxAppId on a
-// normal 200 — so the raw path matches only strings unique to an interstitial,
-// never the bare "_px"/"datadome" sensor tokens. All markers are lowercase;
-// challengeSignature lowercases the body once so matching is case-insensitive.
-var challengeMarkersTight = []string{
-	"just a moment",
-	"challenges.cloudflare.com",
-	"cf-chl",
-	"px-captcha",
-	"geo.captcha-delivery.com",
-	"attention required! | cloudflare",
+// contentKind distinguishes un-extracted page source from extracted prose,
+// selecting which body-marker set challengeSignature scans.
+type contentKind int
+
+const (
+	rawHTML       contentKind = iota // un-extracted page source: plainHTTP, exa
+	cleanMarkdown                    // extracted prose: jina, firecrawl, browserbase
+)
+
+// challengeInput is the classified view of one tier's response that
+// challengeSignature inspects for a bot/DDoS challenge.
+type challengeInput struct {
+	// Header carries the ORIGIN response headers, non-nil only when the tier fetched
+	// the origin itself (plainHTTP). The hosted tiers' resp.Header belongs to
+	// r.jina.ai / api.exa.ai / api.firecrawl.dev / api.browserbase.com, not the
+	// origin, so they pass nil.
+	Header http.Header
+	Title  string
+	Body   string
+	Kind   contentKind
 }
 
-// challengeMarkersLoose adds the bare sensor tokens to the tight set for the
-// cleaned-markdown tiers (jina, firecrawl, browserbase), where extraction has
-// already stripped page scripts so a lone "_px"/"datadome" betrays a challenge.
-var challengeMarkersLoose = append([]string{"_px", "datadome"}, challengeMarkersTight...)
+// challengeBodyCeiling bounds the short-body interstitial-phrase scan: only a small
+// extracted body — an interstitial, not an article — trips it. The cap is retained
+// deliberately (it changed no measurement) because it bounds the false positives the
+// benign corpus could not sample: a long blog post ABOUT bypassing Cloudflare that
+// quotes "Verifying you are human" stays classified as an article, not a challenge.
+// The measured cost: a long rendered interstitial (indeed.com's ~7KB "Security
+// Check" page, which matches no phrase at any length) stays uncaught — the known
+// residual for the titleless browserbase lane.
+const challengeBodyCeiling = 4096
+
+// challengeTitleMarkers are challenge-page title strings. A title is a single short
+// string, so plain lowercase substring matching is safe here without boundary
+// anchoring.
+var challengeTitleMarkers = []string{
+	"just a moment",
+	"attention required! | cloudflare",
+	"performing security verification",
+}
+
+// interstitialPhrases are the visible strings a rendered challenge interstitial
+// shows. For extracted prose (cleanMarkdown) at or under challengeBodyCeiling, a body
+// containing any of them is a challenge — the only signal the browserbase lane has,
+// since it returns rendered markdown with no title and no origin headers. The first
+// three are the challengeTitleMarkers reused as body phrases (title-provenance);
+// slices.Clone keeps the append from aliasing that package-level slice. The rest are
+// rendered-body-provenance: the interstitial text browserbase renders visibly.
+var interstitialPhrases = append(slices.Clone(challengeTitleMarkers),
+	"verifying you are human",
+	"checking your browser before accessing",
+	"enable javascript and cookies to continue",
+	"please enable js and disable any ad blocker",
+	"needs to review the security of your connection",
+	"access to this page has been denied",
+)
+
+// bodyMarkersTight are the interstitial-unique substrings scanned against raw,
+// un-extracted HTML (plainHTTP, exa). A genuine page may embed a bot-sensor script —
+// e.g. walmart.com carries window._pxAppId on a normal 200 — so the raw path matches
+// only strings a normal page never carries, never the bare "_px"/"datadome" tokens.
+// All markers are lowercase; challengeSignature lowercases the body once.
+var bodyMarkersTight = []string{"cf-chl", "px-captcha", "geo.captcha-delivery.com"}
+
+// bodyMarkersLoose adds the bare sensor tokens for the cleaned-markdown tiers (jina,
+// firecrawl, browserbase), where extraction has stripped page scripts so a lone
+// "_px"/"datadome" in a short body betrays a challenge. The upgrade applies only at
+// or under challengeBodyCeiling: in a long extracted article a bare token is a
+// benign mention (news coverage naming DataDome, prose about the _px cookie), the
+// same false-positive class Bug 1 fixed for the raw markers.
+var bodyMarkersLoose = append([]string{"_px", "datadome"}, bodyMarkersTight...)
 
 // statusInText matches an embedded HTTP error status (4xx/5xx) inside a hosted
 // tier's free-text warning, e.g. jina's "Target URL returned error 404".
@@ -90,28 +144,37 @@ type tiers struct {
 	firecrawlBase   string
 	browserbaseBase string
 	lookupIP        func(ctx context.Context, network, host string) ([]net.IP, error)
+	// onAttempt, when non-nil, observes each cascade tier's outcome in order, before
+	// the outcome is classified. Tests inject it to assert escalation order; newTiers
+	// leaves it nil. The localTarget shortcut bypasses the cascade loop and so never
+	// fires it.
+	onAttempt func(Tier, error)
 }
 
 // newTiers builds the production cascade backends. The shared client refuses a
 // redirect onto a local target so a public URL can never be steered onto a
 // loopback/private address (see refuseLocalRedirect).
 func newTiers() *tiers {
-	return &tiers{
-		client:          &http.Client{CheckRedirect: refuseLocalRedirect},
+	t := &tiers{
 		jinaBase:        jinaBaseProd,
 		exaBase:         exaBaseProd,
 		firecrawlBase:   firecrawlBaseProd,
 		browserbaseBase: browserbaseBaseProd,
 		lookupIP:        net.DefaultResolver.LookupIP,
 	}
+	t.client = &http.Client{CheckRedirect: t.refuseLocalRedirect}
+	return t
 }
 
 // refuseLocalRedirect is the shared client's CheckRedirect policy: it follows
-// ordinary redirects but refuses a hop whose host is a local target, so a public
-// URL cannot be redirected onto a loopback/private address and cached under the
-// public key. It preserves the net/http default cap of 10 redirects.
-func refuseLocalRedirect(req *http.Request, via []*http.Request) error {
-	if localTarget(req.URL.Hostname()) {
+// ordinary redirects but refuses a hop onto a local target — by literal address,
+// or a hostname that resolves entirely to local addresses (the same split-DNS
+// gate the cascade entry applies) — so a public URL cannot be redirected onto a
+// loopback/private address and cached under the public key. It preserves the
+// net/http default cap of 10 redirects.
+func (t *tiers) refuseLocalRedirect(req *http.Request, via []*http.Request) error {
+	host := req.URL.Hostname()
+	if localTarget(host) || (net.ParseIP(host) == nil && t.resolvesLocal(req.Context(), host)) {
 		return fmt.Errorf("refusing redirect to local target %q", req.URL.Host)
 	}
 	if len(via) >= 10 {
@@ -163,35 +226,23 @@ func (t *tiers) jina(ctx context.Context, targetURL string) (FetchResult, error)
 		return FetchResult{}, fmt.Errorf("jina: decode envelope: %w", err)
 	}
 
-	// data.warning is jina's informational channel — cache-snapshot notices, soft
-	// "maybe CAPTCHA" hints — not its error channel; a real target/service failure
-	// rides in the HTTP status (handled above). So a warning is only decisive when
-	// there is no content to serve: then a status embedded in it (the "200-trap",
-	// a target 404 relayed at HTTP 200) is classified, else it explains the miss.
+	// data.warning is jina's multi-class channel — a relayed HTTP status (the
+	// "200-trap"), a soft CAPTCHA/challenge hint, or a benign cache-snapshot notice.
+	// It is classified on both the content-present and content-empty paths, so an
+	// interstitial that shows only in the warning never serves as the article body.
 	content := strings.TrimSpace(env.Data.Content)
+	if w := env.Data.Warning; w != "" {
+		if err := classifyJinaWarning(w); err != nil {
+			return FetchResult{}, err
+		}
+	}
 	if content == "" {
 		if w := env.Data.Warning; w != "" {
-			if status := statusFromText(w); status != 0 {
-				if err := classifyTargetStatus(TierJina, status); err != nil {
-					return FetchResult{}, err
-				}
-			}
 			return FetchResult{}, fmt.Errorf("jina: no content: %s", w)
 		}
 		return FetchResult{}, errors.New("jina: empty content")
 	}
-	// Content present: a warning is a note, not a failure. An actual challenge
-	// page is caught by its content signature below, and a warning that still
-	// carries an explicit HTTP error status is honored (gone/auth abort, a
-	// 403/429/503 escalates to the stealth backstop).
-	if w := env.Data.Warning; w != "" {
-		if status := statusFromText(w); status != 0 {
-			if err := classifyTargetStatus(TierJina, status); err != nil {
-				return FetchResult{}, err
-			}
-		}
-	}
-	if challengeSignature(resp.Header, env.Data.Content, challengeMarkersLoose) {
+	if challengeSignature(challengeInput{Title: env.Data.Title, Body: env.Data.Content, Kind: cleanMarkdown}) {
 		return FetchResult{}, fmt.Errorf("jina: %w", errStealthRequired)
 	}
 
@@ -245,7 +296,13 @@ func (t *tiers) exa(ctx context.Context, targetURL, key string) (FetchResult, er
 	}
 
 	r := out.Results[0]
-	if challengeSignature(resp.Header, r.Text, challengeMarkersTight) {
+	// Exa may omit the page title; derive it from the raw HTML so the title
+	// markers see what plainHTTP would.
+	title := r.Title
+	if title == "" {
+		title = titleTag(r.Text)
+	}
+	if challengeSignature(challengeInput{Title: title, Body: r.Text, Kind: rawHTML}) {
 		return FetchResult{}, fmt.Errorf("exa: %w", errStealthRequired)
 	}
 	final := r.URL
@@ -303,7 +360,7 @@ func (t *tiers) firecrawl(ctx context.Context, targetURL, key string) (FetchResu
 			return FetchResult{}, err
 		}
 	}
-	if challengeSignature(resp.Header, out.Data.Markdown, challengeMarkersLoose) {
+	if challengeSignature(challengeInput{Title: out.Data.Metadata.Title, Body: out.Data.Markdown, Kind: cleanMarkdown}) {
 		return FetchResult{}, fmt.Errorf("firecrawl: %w", errStealthRequired)
 	}
 	if strings.TrimSpace(out.Data.Markdown) == "" {
@@ -350,7 +407,7 @@ func (t *tiers) plainHTTP(ctx context.Context, targetURL string, prior *Page) (F
 	if err != nil {
 		return FetchResult{}, fmt.Errorf("http: read body: %w", err)
 	}
-	if challengeSignature(resp.Header, body, challengeMarkersTight) {
+	if challengeSignature(challengeInput{Header: resp.Header, Title: titleTag(body), Body: body, Kind: rawHTML}) {
 		return FetchResult{}, fmt.Errorf("http: %w", errStealthRequired)
 	}
 
@@ -414,7 +471,7 @@ func (t *tiers) browserbase(ctx context.Context, targetURL, key string) (FetchRe
 	case sc >= 400:
 		return FetchResult{}, fmt.Errorf("browserbase: target returned %d: %w", sc, ErrBlocked)
 	}
-	if challengeSignature(resp.Header, out.Content, challengeMarkersLoose) {
+	if challengeSignature(challengeInput{Body: out.Content, Kind: cleanMarkdown}) {
 		return FetchResult{}, fmt.Errorf("browserbase: challenge persisted: %w", ErrBlocked)
 	}
 	if strings.TrimSpace(out.Content) == "" {
@@ -467,23 +524,90 @@ func serviceFailure(tier Tier, status int) error {
 	return fmt.Errorf("%s: service returned status %d", tier, status)
 }
 
-// challengeSignature reports whether h or body carry a bot/DDoS challenge
-// marker. markers is the set for the caller's content class — challengeMarkersTight
-// for raw un-extracted HTML, challengeMarkersLoose for cleaned markdown. body is
-// matched case-insensitively (the markers are lowercase). h may be nil (hosted
-// tiers pass their service headers, which is harmless); the cf-mitigated header
-// is authoritative on every path.
-func challengeSignature(h http.Header, body string, markers []string) bool {
-	if h != nil && strings.EqualFold(h.Get("cf-mitigated"), "challenge") {
-		return true
-	}
-	lower := strings.ToLower(body)
-	for _, m := range markers {
-		if strings.Contains(lower, m) {
+// challengeSignature reports whether in carries a bot/DDoS challenge, checking in
+// order and returning on the first hit: authoritative origin headers, the title,
+// boundary-anchored body markers (upgraded to the loose set only for extracted
+// prose at or under challengeBodyCeiling), and — under the same short-body gate — a
+// scan for the interstitialPhrases a rendered challenge shows, the only signal for
+// the titleless browserbase lane.
+func challengeSignature(in challengeInput) bool {
+	if in.Header != nil {
+		if strings.EqualFold(in.Header.Get("cf-mitigated"), "challenge") ||
+			strings.EqualFold(in.Header.Get("x-datadome"), "protected") {
 			return true
 		}
 	}
+
+	title := strings.ToLower(in.Title)
+	for _, m := range challengeTitleMarkers {
+		if strings.Contains(title, m) {
+			return true
+		}
+	}
+
+	body := strings.ToLower(in.Body)
+	shortClean := in.Kind == cleanMarkdown && len(in.Body) <= challengeBodyCeiling
+	markers := bodyMarkersTight
+	if shortClean {
+		markers = bodyMarkersLoose
+	}
+	for _, m := range markers {
+		if markerHit(body, m) {
+			return true
+		}
+	}
+
+	if shortClean {
+		for _, p := range interstitialPhrases {
+			if strings.Contains(body, p) {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+// markerHit reports whether marker occurs in lower (already lowercased) at a
+// position not preceded by an alphanumeric byte, so a marker embedded in a longer
+// token — "250px-captchacat" for "px-captcha", "max_px" for "_px" — does not match.
+func markerHit(lower, marker string) bool {
+	for i := 0; ; {
+		j := strings.Index(lower[i:], marker)
+		if j < 0 {
+			return false
+		}
+		at := i + j
+		if at == 0 || !isAlnumByte(lower[at-1]) {
+			return true
+		}
+		i = at + 1
+	}
+}
+
+func isAlnumByte(b byte) bool { return b >= 'a' && b <= 'z' || b >= '0' && b <= '9' }
+
+// classifyJinaWarning maps jina's multi-class data.warning onto a cascade signal: a
+// relayed HTTP status first (preserving the 200-trap), then a CAPTCHA/challenge
+// class that escalates to stealth, then a known-benign class that serves. An
+// unrecognized warning serves but is logged loudly, since a silent unknown signal is
+// how a served interstitial slipped through before.
+func classifyJinaWarning(w string) error {
+	if status := statusFromText(w); status != 0 {
+		return classifyTargetStatus(TierJina, status)
+	}
+	lower := strings.ToLower(w)
+	for _, m := range []string{"captcha", "challenge", "security verification"} {
+		if strings.Contains(lower, m) {
+			return fmt.Errorf("jina: %w", errStealthRequired)
+		}
+	}
+	for _, m := range []string{"cached snapshot", "not yet fully loaded", "shadow dom", "iframe"} {
+		if strings.Contains(lower, m) {
+			return nil
+		}
+	}
+	slog.Warn("jina: unclassified warning", "warning", w)
+	return nil
 }
 
 // statusFromText extracts the first 4xx/5xx status embedded in free text, or 0.

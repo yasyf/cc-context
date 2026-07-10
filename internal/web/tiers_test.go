@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -159,41 +160,6 @@ func TestStatusFromText(t *testing.T) {
 	}
 }
 
-func TestChallengeSignature(t *testing.T) {
-	tests := []struct {
-		name    string
-		header  http.Header
-		body    string
-		markers []string
-		want    bool
-	}{
-		{"clean tight", nil, "# A real page\n\nwith content", challengeMarkersTight, false},
-		// A genuine 200 page (walmart-style) embeds a PerimeterX sensor; the raw
-		// path must not read that as a challenge.
-		{"px sensor on a normal page", nil, "<script>window._pxAppId = 'PXabc123';</script>", challengeMarkersTight, false},
-		// A real Cloudflare interstitial is flagged on both paths, any case.
-		{"cloudflare interstitial tight", nil, "<title>Just A Moment...</title>", challengeMarkersTight, true},
-		{"cloudflare interstitial loose", nil, "<title>Just a moment...</title>", challengeMarkersLoose, true},
-		{"cf-chl uppercase tight", nil, `<div class="CF-CHL-widget"></div>`, challengeMarkersTight, true},
-		{"cf-chl uppercase loose", nil, `<div class="CF-CHL-widget"></div>`, challengeMarkersLoose, true},
-		{"attention required tight", nil, "Attention Required! | Cloudflare", challengeMarkersTight, true},
-		{"datadome delivery host tight", nil, "https://geo.captcha-delivery.com/captcha/", challengeMarkersTight, true},
-		// The bare sensor tokens flag only on the cleaned-markdown (loose) path.
-		{"datadome uppercase loose", nil, "DATADOME CAPTCHA", challengeMarkersLoose, true},
-		{"datadome uppercase not tight", nil, "DATADOME CAPTCHA", challengeMarkersTight, false},
-		{"px token loose", nil, "window._px = 1", challengeMarkersLoose, true},
-		{"cf-mitigated header authoritative on raw path", http.Header{"Cf-Mitigated": {"challenge"}}, "ok body", challengeMarkersTight, true},
-		{"cf-mitigated header case-insensitive", http.Header{"Cf-Mitigated": {"CHALLENGE"}}, "ok", challengeMarkersLoose, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := challengeSignature(tt.header, tt.body, tt.markers); got != tt.want {
-				t.Errorf("challengeSignature() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 // TestPlainHTTPPxSensorNotChallenge proves the end-to-end raw-path fix: a real
 // 200 whose HTML embeds a PerimeterX sensor (window._pxAppId) is returned as
 // content, not rejected as a stealth challenge.
@@ -218,7 +184,7 @@ func TestPlainHTTPPxSensorNotChallenge(t *testing.T) {
 func TestPlainHTTPRefusesRedirectToLocal(t *testing.T) {
 	isolateKeys(t)
 	ts := testTiers(t, services{})
-	ts.client.CheckRedirect = refuseLocalRedirect
+	ts.client.CheckRedirect = ts.refuseLocalRedirect
 	// A public-mapped target 302s to a loopback address; the gate must refuse the
 	// hop before it is fetched and cached under the public URL.
 	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, r *http.Request) {
@@ -228,6 +194,36 @@ func TestPlainHTTPRefusesRedirectToLocal(t *testing.T) {
 	got, err := ts.plainHTTP(context.Background(), target, nil)
 	if err == nil {
 		t.Fatalf("plainHTTP = %+v, want an error refusing the redirect to a local target", got)
+	}
+	if !strings.Contains(err.Error(), "redirect") {
+		t.Errorf("err = %v, want it to describe a refused redirect", err)
+	}
+	if got.HTML != "" {
+		t.Errorf("HTML = %q, want nothing returned on a refused redirect", got.HTML)
+	}
+}
+
+// TestPlainHTTPRefusesRedirectToSplitDNSLocal pins the redirect hop to the same
+// split-DNS gate as the cascade entry: a public target 302s to a public-looking
+// hostname that resolves entirely to a private address, and the hop is refused
+// before the internal content can be fetched and cached under the public key.
+func TestPlainHTTPRefusesRedirectToSplitDNSLocal(t *testing.T) {
+	isolateKeys(t)
+	ts := testTiers(t, services{})
+	ts.lookupIP = func(_ context.Context, _, host string) ([]net.IP, error) {
+		if host == "intra.example" {
+			return []net.IP{net.ParseIP("10.0.0.5")}, nil
+		}
+		return publicLookupIP(context.Background(), "ip", host)
+	}
+	ts.client.CheckRedirect = ts.refuseLocalRedirect
+	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://intra.example/secret", http.StatusFound)
+	})
+
+	got, err := ts.plainHTTP(context.Background(), target, nil)
+	if err == nil {
+		t.Fatalf("plainHTTP = %+v, want an error refusing the split-DNS redirect", got)
 	}
 	if !strings.Contains(err.Error(), "redirect") {
 		t.Errorf("err = %v, want it to describe a refused redirect", err)
