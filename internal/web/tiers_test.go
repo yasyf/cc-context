@@ -210,11 +210,11 @@ func TestPlainHTTPRefusesRedirectToLocal(t *testing.T) {
 func TestPlainHTTPRefusesRedirectToSplitDNSLocal(t *testing.T) {
 	isolateKeys(t)
 	ts := testTiers(t, services{})
-	ts.lookupIP = func(_ context.Context, _, host string) ([]net.IP, error) {
+	ts.lookupIP = func(ctx context.Context, _, host string) ([]net.IP, error) {
 		if host == "intra.example" {
 			return []net.IP{net.ParseIP("10.0.0.5")}, nil
 		}
-		return publicLookupIP(context.Background(), "ip", host)
+		return publicLookupIP(ctx, "ip", host)
 	}
 	ts.client.CheckRedirect = ts.refuseLocalRedirect
 	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, r *http.Request) {

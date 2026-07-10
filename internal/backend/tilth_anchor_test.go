@@ -77,7 +77,7 @@ func anchorFixture(t *testing.T) (existing, missing, file string) {
 	t.Helper()
 	tmp := t.TempDir()
 	existing = filepath.Join(tmp, "pkg")
-	if err := os.MkdirAll(existing, 0o755); err != nil {
+	if err := os.MkdirAll(existing, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	file = filepath.Join(existing, "file.go")

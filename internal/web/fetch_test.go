@@ -995,8 +995,10 @@ func TestFetchOnAttemptOrder(t *testing.T) {
 		isolateKeys(t)
 		t.Setenv(envBrowserbaseKey, "bb-key")
 		ts := testTiers(t, services{
-			jina:        jinaClean(t, challengeBody, "Just a moment..."),
-			browserbase: func(w http.ResponseWriter, _ *http.Request) { writeJSON(t, w, http.StatusOK, map[string]any{"content": "# Real\n\nok", "statusCode": 200}) },
+			jina: jinaClean(t, challengeBody, "Just a moment..."),
+			browserbase: func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(t, w, http.StatusOK, map[string]any{"content": "# Real\n\nok", "statusCode": 200})
+			},
 		})
 		got := record(ts)
 		target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
@@ -1051,8 +1053,8 @@ func TestFetchOnAttemptOrder(t *testing.T) {
 
 // TestFetchBlockedNamesEarlierFailures pins Bug 3: with no browserbase key a stealth
 // cascade fails with ErrBlocked naming the env var and the earlier tier failures,
-// and — because the failures are joined with %v, not %w — errStealthRequired never
-// leaks into the errors.Is chain.
+// and — because the joined failures render as text, not wrapped — errStealthRequired
+// never leaks into the errors.Is chain.
 func TestFetchBlockedNamesEarlierFailures(t *testing.T) {
 	isolateKeys(t) // BROWSERBASE_API_KEY stays unset
 	ts := testTiers(t, services{jina: status(http.StatusTooManyRequests)})
@@ -1066,7 +1068,7 @@ func TestFetchBlockedNamesEarlierFailures(t *testing.T) {
 		t.Fatalf("err = %v, want ErrBlocked", err)
 	}
 	if errors.Is(err, errStealthRequired) {
-		t.Errorf("err = %v, must not leak errStealthRequired (join is %%v, not %%w)", err)
+		t.Errorf("err = %v, must not leak errStealthRequired (join renders as text, not wrapped)", err)
 	}
 	if !strings.Contains(err.Error(), envBrowserbaseKey) {
 		t.Errorf("err = %q, want it to name %s", err, envBrowserbaseKey)
@@ -1089,7 +1091,7 @@ func TestFetchBrowserbaseServiceFailureNoStealthLeak(t *testing.T) {
 		t.Fatal("fetch: want an error when browserbase fails after a stealth escalation")
 	}
 	if errors.Is(err, errStealthRequired) {
-		t.Errorf("err = %v, must not leak errStealthRequired (join is %%v, not %%w)", err)
+		t.Errorf("err = %v, must not leak errStealthRequired (join renders as text, not wrapped)", err)
 	}
 	if errors.Is(err, ErrBlocked) {
 		t.Errorf("err = %v, want a plain joined failure, not ErrBlocked (browserbase 502 is a service failure)", err)

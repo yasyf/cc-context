@@ -220,7 +220,7 @@ func pythonInterpreter() string {
 	}
 	candidates = append(candidates, filepath.Join(".venv", "bin", "python3"))
 	for _, c := range candidates {
-		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() { //nolint:gosec // CLI stats user-supplied candidate paths by design
 			return c
 		}
 	}
