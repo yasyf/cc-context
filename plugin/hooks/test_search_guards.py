@@ -32,8 +32,11 @@ from captain_hook import CommandLine
 from hooks import common, search_guards
 from hooks.common import ccx_supports
 
-# `ccx code grep --help` text once the rg engine (v0.7.0+) lands vs. before it does.
+# `ccx code grep --help` text once the rg engine (v0.7.0+) lands vs. before it does. SUPPORTS_HELP
+# carries `--ignore-case` but not `--regex`, so it doubles as an old binary (v0.7–v0.10): `-i`/`-w`
+# rewrite, but regex/multi-file shapes fall through. REGEX_SUPPORTS_HELP adds `--regex` (v0.11.0+).
 SUPPORTS_HELP = "usage: ccx code grep [-i, --ignore-case] [-w, --word] [--glob G] ..."
+REGEX_SUPPORTS_HELP = "usage: ccx code grep [-i, --ignore-case] [-w, --word] [-E, --regex] [--glob G] ..."
 NO_SUPPORT_HELP = "usage: ccx code grep [--glob G] [--expand int] ..."
 
 
@@ -353,3 +356,161 @@ class TestIgnoredDirTargets:
         command = "rg -d 1 app.log"
         cl = CommandLine.parse(command)
         assert search_guards.RgNonSourceTargets().check_command_line(_evt(command), cl) is False
+
+
+class TestGrepRegexRewrite:
+    """A BRE/ERE-safe pattern rewrites to `ccx code grep --regex` when the local binary advertises
+    `--regex`; on an older binary (SUPPORTS_HELP, no `--regex`) the same shape falls through. Dialect
+    is load-bearing: `|` is BRE-literal (no rewrite) but ERE-meta (rewrites under `-E`); `-P` never maps.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _pin_ccx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # `.` (the cwd) widens to repo-wide, so these shapes are disk-independent apart from the probe.
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
+        ccx_supports.cache_clear()
+        yield
+        ccx_supports.cache_clear()
+
+    def _probe(self, monkeypatch: pytest.MonkeyPatch, help_text: str) -> None:
+        monkeypatch.setattr(common.subprocess, "run", _fake_run(0, stdout=help_text))
+
+    @pytest.mark.parametrize(
+        "command, expected",
+        [
+            ("grep 'foo.*' .", "/fake/ccx code grep 'foo.*' --regex"),  # BRE `.`/`*` are meta in both dialects
+            ("grep '^class ' .", "/fake/ccx code grep '^class ' --regex"),  # anchored — the silent-0-match shape
+            ("grep -E 'a|b' .", "/fake/ccx code grep 'a|b' --regex"),  # ERE alternation rewrites
+            ("grep -G 'foo.*' .", "/fake/ccx code grep 'foo.*' --regex"),  # -G confirms the BRE default
+        ],
+    )
+    def test_regex_safe_rewrites(self, monkeypatch: pytest.MonkeyPatch, command: str, expected: str) -> None:
+        self._probe(monkeypatch, REGEX_SUPPORTS_HELP)
+        assert search_guards._grep_to(_evt(command)) == expected
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep 'a|b' .",  # `|` is BRE-literal — no faithful regex rewrite, and not LITERAL_SAFE
+            "grep -P 'x(?=y)' .",  # PCRE lookahead — -P never maps
+            "grep 'foo(bar' .",  # BRE-literal `(`, meta in Rust — excluded from REGEX_SAFE_BRE
+            r"grep 'a\d' .",  # backslash escape — excluded from every whitelist (defense in depth)
+        ],
+    )
+    def test_unmappable_regex_blocks(self, monkeypatch: pytest.MonkeyPatch, command: str) -> None:
+        self._probe(monkeypatch, REGEX_SUPPORTS_HELP)
+        assert search_guards._grep_to(_evt(command)) is None
+
+    def test_ere_alternation_stays_bre_literal_without_dash_e(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # `a|b` under the BRE default does NOT rewrite; the same pattern under `-E` does.
+        self._probe(monkeypatch, REGEX_SUPPORTS_HELP)
+        assert search_guards._grep_to(_evt("grep 'a|b' .")) is None
+        assert search_guards._grep_to(_evt("grep -E 'a|b' .")) == "/fake/ccx code grep 'a|b' --regex"
+
+    def test_probe_fail_over_existing_file_allows(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Old binary (no `--regex`): a regex grep over an explicit existing file is bounded and
+        # unrewritable → the condition never fires (genuine allow), never a block.
+        (tmp_path / "real.py").write_text("x\n")
+        self._probe(monkeypatch, SUPPORTS_HELP)
+        cl = CommandLine.parse("grep 'foo.*' real.py")
+        assert search_guards._grep_to(_evt("grep 'foo.*' real.py")) is None
+        assert search_guards.GrepFlood().check_command_line(_evt("grep 'foo.*' real.py"), cl) is False
+
+    def test_probe_fail_tree_wide_blocks(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Old binary + `.` (a dir, not a bounded file): unrewritable and unbounded → the condition fires
+        # and `_grep_to` is None → block.
+        self._probe(monkeypatch, SUPPORTS_HELP)
+        cl = CommandLine.parse("grep 'foo.*' .")
+        assert search_guards._grep_to(_evt("grep 'foo.*' .")) is None
+        assert search_guards.GrepFlood().check_command_line(_evt("grep 'foo.*' ."), cl) is True
+
+    def test_regex_note_discloses_rg_engine(self) -> None:
+        # The note for a regex rewrite names the engine; the dot-literal disclosure does not apply.
+        note = search_guards._grep_note(_evt("grep 'foo.*' ."))
+        assert "regex on the rg engine" in note and "any-char" not in note
+
+
+class TestGrepMultiFilePaths:
+    """Two or more explicit existing files carry as `ccx code grep` positionals (multi-file form,
+    ccx ≥ v0.11.0), gated on the same `--regex` probe — old binaries hard-error on extra operands.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        (tmp_path / "a.py").write_text("x\n")
+        (tmp_path / "b.py").write_text("y\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
+        ccx_supports.cache_clear()
+        yield
+        ccx_supports.cache_clear()
+
+    def _probe(self, monkeypatch: pytest.MonkeyPatch, help_text: str) -> None:
+        monkeypatch.setattr(common.subprocess, "run", _fake_run(0, stdout=help_text))
+
+    def test_multi_file_carries_operands(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._probe(monkeypatch, REGEX_SUPPORTS_HELP)
+        assert search_guards._grep_to(_evt("grep foo a.py b.py")) == "/fake/ccx code grep foo a.py b.py"
+
+    def test_single_file_keeps_glob_form(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # One explicit file stays on the old `--glob <file>` form (no `--regex` probe needed).
+        self._probe(monkeypatch, NO_SUPPORT_HELP)
+        assert search_guards._grep_to(_evt("grep foo a.py")) == "/fake/ccx code grep foo --glob a.py"
+
+    def test_multi_file_probe_fail_allows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Old binary lacking `--regex`/multi-file: unrewritable, but both operands are bounded existing
+        # files → the condition never fires (genuine allow).
+        self._probe(monkeypatch, SUPPORTS_HELP)
+        cl = CommandLine.parse("grep foo a.py b.py")
+        assert search_guards._grep_to(_evt("grep foo a.py b.py")) is None
+        assert search_guards.GrepFlood().check_command_line(_evt("grep foo a.py b.py"), cl) is False
+
+
+class TestGrepBoundedPassthrough:
+    """`_bounded_file_grep`: an unrewritable grep over explicit existing files is bounded, so the
+    condition stays silent (genuine allow); a nonexistent path or a directory operand fires and blocks.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        (tmp_path / "real.py").write_text("x\n")
+        (tmp_path / "sub").mkdir()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep -c foo real.py",  # count mode — unmappable, but a bounded existing file
+            "grep -o foo real.py",  # only-matching — unmappable
+            "grep -q foo real.py",  # exit-code — unmappable
+            "grep --binary-files=text foo real.py",  # value-taking long consumes its =value
+            "grep -m 5 foo real.py",  # value-taking short `-m` consumes its `5`
+        ],
+    )
+    def test_bounded_existing_files_do_not_fire(self, command: str) -> None:
+        assert search_guards._bounded_file_grep(CommandLine.parse(command)) is True
+        assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep -c foo ghost.py",  # nonexistent operand → not bounded
+            "grep -c foo sub/",  # directory operand → not bounded
+            "grep -c foo real.py ghost.py",  # one real file, one absent → every operand must exist
+            "grep -c foo",  # no operand at all → not bounded (tree-wide)
+        ],
+    )
+    def test_unbounded_grep_fires_and_blocks(self, command: str) -> None:
+        assert search_guards._bounded_file_grep(CommandLine.parse(command)) is False
+        assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is True
+        assert search_guards._grep_to(_evt(command)) is None
+
+    def test_unknown_flag_is_not_bounded(self) -> None:
+        # Conservative lexer: an unknown flag leaves the grep unbounded (it enters the hook), never a
+        # wrong allow — even over an existing file.
+        assert search_guards._bounded_file_grep(CommandLine.parse("grep --frobnicate foo real.py")) is False
