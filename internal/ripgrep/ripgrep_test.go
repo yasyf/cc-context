@@ -15,6 +15,8 @@ import (
 )
 
 func TestRipgrepArgv(t *testing.T) {
+	sub, missing, file := anchorDirs(t)
+	parent := filepath.Dir(sub)
 	tests := []struct {
 		name string
 		args backend.Args
@@ -22,9 +24,14 @@ func TestRipgrepArgv(t *testing.T) {
 	}{
 		{"bare", backend.Args{Query: "foo"}, []string{"--json", "--fixed-strings", "-e", "foo"}},
 		{"ignore-case + word", backend.Args{Query: "foo", IgnoreCase: true, Word: true}, []string{"--json", "--fixed-strings", "-i", "-w", "-e", "foo"}},
-		{"glob + expand", backend.Args{Query: "foo", Glob: "*.go", Expand: 3}, []string{"--json", "--fixed-strings", "--glob", "*.go", "-C", "3", "-e", "foo"}},
-		{"scope rides after --", backend.Args{Query: "foo", Scope: "internal"}, []string{"--json", "--fixed-strings", "-e", "foo", "--", "internal"}},
-		{"flag-like scope lands after --", backend.Args{Query: "foo", Scope: "--hidden"}, []string{"--json", "--fixed-strings", "-e", "foo", "--", "--hidden"}},
+		{"unanchored glob + expand unchanged", backend.Args{Query: "foo", Glob: "*.go", Expand: 3}, []string{"--json", "--fixed-strings", "--glob", "*.go", "-C", "3", "-e", "foo"}},
+		{"scope adds --no-ignore-parent", backend.Args{Query: "foo", Scope: "internal"}, []string{"--json", "--fixed-strings", "--no-ignore-parent", "-e", "foo", "--", "internal"}},
+		{"flag-like scope lands after -- with flag", backend.Args{Query: "foo", Scope: "--hidden"}, []string{"--json", "--fixed-strings", "--no-ignore-parent", "-e", "foo", "--", "--hidden"}},
+		{"anchored existing-dir glob relativizes to rest + operand", backend.Args{Query: "foo", Glob: sub + "/*.go"}, []string{"--json", "--fixed-strings", "--glob", "*.go", "--no-ignore-parent", "-e", "foo", "--", sub}},
+		{"dir-literal glob drops -g, operand alone filters", backend.Args{Query: "foo", Glob: sub}, []string{"--json", "--fixed-strings", "--no-ignore-parent", "-e", "foo", "--", sub}},
+		{"explicit scope composes onto join", backend.Args{Query: "foo", Glob: "pkg/*.go", Scope: parent}, []string{"--json", "--fixed-strings", "--glob", "*.go", "--no-ignore-parent", "-e", "foo", "--", sub}},
+		{"literal file glob → parent operand + basename", backend.Args{Query: "foo", Glob: file}, []string{"--json", "--fixed-strings", "--glob", "file.go", "--no-ignore-parent", "-e", "foo", "--", sub}},
+		{"nonexistent anchor unchanged", backend.Args{Query: "foo", Glob: missing + "/*.go"}, []string{"--json", "--fixed-strings", "--glob", missing + "/*.go", "-e", "foo"}},
 		{"leading-dash pattern", backend.Args{Query: "-foo"}, []string{"--json", "--fixed-strings", "-e", "-foo"}},
 	}
 	for _, tt := range tests {
@@ -34,6 +41,23 @@ func TestRipgrepArgv(t *testing.T) {
 			}
 		})
 	}
+}
+
+// anchorDirs returns an existing directory, a sibling that does not exist, and a
+// regular file inside the existing directory — all absolute so SplitGlobAnchor's
+// prefix survives ripgrepArgv's os.Stat.
+func anchorDirs(t *testing.T) (existing, missing, file string) {
+	t.Helper()
+	tmp := t.TempDir()
+	existing = filepath.Join(tmp, "pkg")
+	if err := os.MkdirAll(existing, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	file = filepath.Join(existing, "file.go")
+	if err := os.WriteFile(file, []byte("package pkg\n"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	return existing, filepath.Join(tmp, "nope"), file
 }
 
 func TestGrepArgv(t *testing.T) {

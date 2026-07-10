@@ -23,8 +23,8 @@ const (
 	KindRepo Kind = "repo"
 	// KindGoModule is a Go module resolved via the build context or module cache.
 	KindGoModule Kind = "gomod"
-	// KindPython is a Python package resolved via importlib.
-	KindPython Kind = "python"
+	// KindPackage is a Python package resolved via importlib.
+	KindPackage Kind = "package"
 )
 
 // substringCap bounds the case-insensitive fallback matches a workspace search
@@ -34,9 +34,27 @@ const substringCap = 10
 // cacheVersions bounds how many module-cache versions the Go resolver reports.
 const cacheVersions = 3
 
-// pythonProbe prints the resolved spec origin of its argument, or an empty line
-// when the package does not resolve.
-const pythonProbe = `import importlib.util,sys; s=importlib.util.find_spec(sys.argv[1]); print(s.origin if s else '')`
+// pythonProbe prints "<path>\t<version>" for the package named by its argument —
+// the package directory for a package, otherwise the module's spec origin, and
+// the installed distribution version when known. It prints an empty line when the
+// package does not resolve.
+const pythonProbe = `import importlib.util, importlib.metadata as md, sys
+name = sys.argv[1]
+mod = name.replace('-', '_')
+spec = importlib.util.find_spec(mod)
+if spec is None:
+    print('')
+    sys.exit()
+locs = spec.submodule_search_locations
+path = locs[0] if locs else spec.origin
+version = ''
+for candidate in (name, mod):
+    try:
+        version = md.version(candidate)
+        break
+    except md.PackageNotFoundError:
+        pass
+print(path + '\t' + version)`
 
 // Result is a single resolved on-disk location for a queried name.
 type Result struct {
@@ -63,9 +81,10 @@ func Locate(ctx context.Context, name, workspace string) ([]Result, error) {
 }
 
 // resolveWorkspace matches name against the immediate children of the workspace
-// root: an exact directory name wins outright, otherwise up to substringCap
-// case-insensitive substring matches. A missing workspace is no match; any other
-// read failure is returned.
+// root in three tiers: an exact directory name wins outright, then a normalized
+// exact match (so cc_transcript resolves the cc-transcript dir), then up to
+// substringCap normalized substring matches. A missing workspace is no match; any
+// other read failure is returned.
 func resolveWorkspace(workspace, name string) ([]Result, error) {
 	entries, err := os.ReadDir(workspace)
 	if err != nil {
@@ -81,10 +100,16 @@ func resolveWorkspace(workspace, name string) ([]Result, error) {
 		}
 	}
 
-	needle := strings.ToLower(name)
+	needle := normalize(name)
+	for _, e := range entries {
+		if e.IsDir() && normalize(e.Name()) == needle {
+			return []Result{{Kind: KindRepo, Path: filepath.Join(workspace, e.Name())}}, nil
+		}
+	}
+
 	var results []Result
 	for _, e := range entries {
-		if !e.IsDir() || !strings.Contains(strings.ToLower(e.Name()), needle) {
+		if !e.IsDir() || !strings.Contains(normalize(e.Name()), needle) {
 			continue
 		}
 		results = append(results, Result{Kind: KindRepo, Path: filepath.Join(workspace, e.Name())})
@@ -93,6 +118,12 @@ func resolveWorkspace(workspace, name string) ([]Result, error) {
 		}
 	}
 	return results, nil
+}
+
+// normalize folds a name to its PEP 503-flavored form: lowercased with '-' and
+// '.' mapped to '_', so hyphen, dot, and underscore spellings compare equal.
+func normalize(name string) string {
+	return strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(name))
 }
 
 // resolveGoModule resolves name as a Go module: the build context's own view via
@@ -156,21 +187,47 @@ func goModCacheVersions(ctx context.Context, name string) []Result {
 	return results
 }
 
-// resolvePython resolves name to the origin of its importlib spec. An absent
-// python3 or an unresolvable package contributes nothing.
+// resolvePython resolves name to its installed package directory (or module
+// origin) and distribution version via a python3 probe. An absent interpreter or
+// an unresolvable package contributes nothing.
 func resolvePython(ctx context.Context, name string) []Result {
-	if _, err := exec.LookPath("python3"); err != nil {
+	python := pythonInterpreter()
+	if python == "" {
 		return nil
 	}
-	out, err := exec.CommandContext(ctx, "python3", "-c", pythonProbe, name).Output() //nolint:gosec // fixed probe; only the package name varies
+	out, err := exec.CommandContext(ctx, python, "-c", pythonProbe, name).Output() //nolint:gosec // fixed probe; only the package name varies
 	if err != nil {
 		return nil
 	}
-	origin := strings.TrimSpace(string(out))
-	if origin == "" {
+	line := strings.TrimSpace(string(out))
+	if line == "" {
 		return nil
 	}
-	return []Result{{Kind: KindPython, Path: origin}}
+	path, version, _ := strings.Cut(line, "\t")
+	if path == "" {
+		return nil
+	}
+	return []Result{{Kind: KindPackage, Path: path, Version: version}}
+}
+
+// pythonInterpreter picks the python3 to probe: an active virtualenv's
+// interpreter, then a project-local ./.venv, then PATH. It returns "" when none
+// is available.
+func pythonInterpreter() string {
+	var candidates []string
+	if venv := os.Getenv("VIRTUAL_ENV"); venv != "" {
+		candidates = append(candidates, filepath.Join(venv, "bin", "python3"))
+	}
+	candidates = append(candidates, filepath.Join(".venv", "bin", "python3"))
+	for _, c := range candidates {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+			return c
+		}
+	}
+	if p, err := exec.LookPath("python3"); err == nil {
+		return p
+	}
+	return ""
 }
 
 // encodeModulePath applies Go's module-cache case encoding: every uppercase
@@ -253,15 +310,23 @@ func splitVersion(v string) ([]int, string) {
 	return nums, pre
 }
 
-// dedupe drops results whose path was already seen, preserving order.
+// dedupe drops results whose (kind, path) pair was already seen, preserving
+// order. Keying on kind as well as path keeps a repo row and a package row that
+// resolve to the same directory — an editable install — both alive, while still
+// collapsing the go list / module-cache duplicate that shares a kind and path.
 func dedupe(in []Result) []Result {
-	seen := make(map[string]struct{}, len(in))
+	type key struct {
+		kind Kind
+		path string
+	}
+	seen := make(map[key]struct{}, len(in))
 	out := make([]Result, 0, len(in))
 	for _, r := range in {
-		if _, ok := seen[r.Path]; ok {
+		k := key{r.Kind, r.Path}
+		if _, ok := seen[k]; ok {
 			continue
 		}
-		seen[r.Path] = struct{}{}
+		seen[k] = struct{}{}
 		out = append(out, r)
 	}
 	return out

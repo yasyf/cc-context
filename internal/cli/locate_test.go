@@ -24,6 +24,7 @@ func TestLocateCommandRepoHit(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake shell scripts are POSIX-only")
 	}
+	t.Setenv("VIRTUAL_ENV", "")
 	t.Setenv("PATH", t.TempDir()) // no go/python3 on PATH — repo resolver only
 
 	ws := t.TempDir()
@@ -38,12 +39,35 @@ func TestLocateCommandRepoHit(t *testing.T) {
 	}
 }
 
+func TestLocateCommandRepoAndPackageRows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell scripts are POSIX-only")
+	}
+	binDir := t.TempDir()
+	writeFakeScript(t, binDir, "python3", "#!/bin/sh\nprintf '%s\\t%s\\n' /py/site-packages/foo 1.2.3\n")
+	t.Setenv("VIRTUAL_ENV", "")
+	t.Setenv("PATH", binDir) // python3 resolves the package; no `go`, so no gomod row
+
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, "foo"), 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	out := runLocate(t, "foo", ws)
+	want := "repo\t" + filepath.Join(ws, "foo") + "\n" +
+		"package\t/py/site-packages/foo\t1.2.3\n"
+	if out != want {
+		t.Errorf("stdout = %q, want %q", out, want)
+	}
+}
+
 func TestLocateCommandGoModuleVersionColumn(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake shell scripts are POSIX-only")
 	}
 	binDir := t.TempDir()
 	writeFakeScript(t, binDir, "go", fakeGoScript)
+	t.Setenv("VIRTUAL_ENV", "")
 	t.Setenv("PATH", binDir)
 	t.Setenv("FAKE_GOMODCACHE", t.TempDir()) // empty cache — no glob hits
 	t.Setenv("FAKE_GOLIST", "/fake/mod/dir@v1.2.3")
@@ -59,6 +83,7 @@ func TestLocateCommandNotFound(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake shell scripts are POSIX-only")
 	}
+	t.Setenv("VIRTUAL_ENV", "")
 	t.Setenv("PATH", t.TempDir()) // nothing resolves
 
 	cmd := newLocateCmd()

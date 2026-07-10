@@ -93,11 +93,22 @@ func buildArgv(eng engine, a backend.Args) ([]string, error) {
 	}
 }
 
-// ripgrepArgv builds `rg --json --fixed-strings [-i] [-w] [--glob G] [-C N] -e
-// <pattern> [-- scope]`. The pattern rides -e so a leading-dash literal is never
-// mistaken for a flag, and the scope path rides after -- so a scope like
-// "--hidden" is never parsed as an rg flag.
+// ripgrepArgv builds `rg --json --fixed-strings [-i] [-w] [--glob G] [-C N]
+// [--no-ignore-parent] -e <pattern> [-- <path>]`. AnchorGrepArgs first peels an
+// existing directory prefix off the glob into a path operand — composing onto an
+// explicit --scope — exactly as the tilth route does, so the two engines search
+// the same file set: the operand becomes the anchored directory and the glob its
+// leftover basename pattern (empty when the anchor consumed the whole glob, so no
+// -g is emitted and the operand alone selects the files). rg matches a bare
+// basename glob against the printed path at any depth, matching tilth's recursive
+// scope semantics — a full or absolute path glob would match nothing under the
+// operand. The pattern rides -e so a leading-dash literal is never mistaken for a
+// flag, and the operand rides after -- so a value like "--hidden" is never parsed
+// as one. Whenever an operand is present --no-ignore-parent skips the outer
+// .gitignore rg would otherwise apply to an explicit path while still honoring
+// ignore files inside it — parity with tilth's scope semantics.
 func ripgrepArgv(a backend.Args) []string {
+	a = backend.AnchorGrepArgs(a)
 	argv := []string{"--json", "--fixed-strings"}
 	if a.IgnoreCase {
 		argv = append(argv, "-i")
@@ -110,6 +121,9 @@ func ripgrepArgv(a backend.Args) []string {
 	}
 	if a.Expand > 0 {
 		argv = append(argv, "-C", strconv.Itoa(a.Expand))
+	}
+	if a.Scope != "" {
+		argv = append(argv, "--no-ignore-parent")
 	}
 	argv = append(argv, "-e", a.Query)
 	if a.Scope != "" {
@@ -398,6 +412,12 @@ func (b *groupBuilder) groups() []fileGroup {
 	return out
 }
 
+// NoMatch is the house no-match header both the ripgrep and tilth grep routes
+// emit so a zero-hit search reads identically regardless of engine.
+func NoMatch(query string) string {
+	return fmt.Sprintf("# grep: %q — no matches\n", query)
+}
+
 // reshape renders groups into the house grep format render.Finalize anchors:
 // a "### <path>:<match lines>" section header per file, then a "→ [N] <text>"
 // frame for each match and a "  [N] <text>" frame for each context line.
@@ -413,7 +433,7 @@ func reshape(query string, eng engine, groups []fileGroup) string {
 
 	var b strings.Builder
 	if matches == 0 {
-		fmt.Fprintf(&b, "# grep: %q — no matches\n", query)
+		b.WriteString(NoMatch(query))
 		writeEngineNote(&b, eng)
 		return b.String()
 	}

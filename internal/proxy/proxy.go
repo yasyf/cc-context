@@ -80,6 +80,10 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 	if op == backend.OpGrep && (a.IgnoreCase || a.Word) {
 		return ripgrep.Run(ctx, a)
 	}
+	// Asymmetry with the CLI (internal/cli/run.go routes OpGrep through
+	// internal/grep): the default OpGrep MCP route is the plain tilth_search
+	// tool call below, which returns clean 0 matches — it has none of tilth's
+	// CLI no-match path-fallback, so no normalization is needed here.
 
 	b := router.For(op)
 

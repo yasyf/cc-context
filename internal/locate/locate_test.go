@@ -21,10 +21,10 @@ list)
 esac
 `
 
-// pyScript is a fake `python3` that echoes $FAKE_PYORIGIN, standing in for the
-// importlib spec-origin probe.
+// pyScript is a fake `python3` that echoes "$FAKE_PYPATH\t$FAKE_PYVERSION",
+// standing in for the importlib package-path + version probe.
 const pyScript = `#!/bin/sh
-printf '%s\n' "$FAKE_PYORIGIN"
+printf '%s\t%s\n' "$FAKE_PYPATH" "$FAKE_PYVERSION"
 `
 
 func TestLocate(t *testing.T) {
@@ -39,7 +39,8 @@ func TestLocate(t *testing.T) {
 		goList     func(cache string) string
 		cacheMods  []string
 		withPython bool
-		pyOrigin   string
+		pyPath     string
+		pyVersion  string
 		query      string
 		want       func(ws, cache string) []Result
 	}{
@@ -72,6 +73,14 @@ func TestLocate(t *testing.T) {
 					out = append(out, Result{Kind: KindRepo, Path: filepath.Join(ws, d)})
 				}
 				return out
+			},
+		},
+		{
+			name:  "normalized query matches hyphen repo dir",
+			repos: []string{"cc-transcript", "other"},
+			query: "cc_transcript",
+			want: func(ws, _ string) []Result {
+				return []Result{{Kind: KindRepo, Path: filepath.Join(ws, "cc-transcript")}}
 			},
 		},
 		{
@@ -111,12 +120,36 @@ func TestLocate(t *testing.T) {
 			},
 		},
 		{
-			name:       "python origin hit",
+			name:       "package resolves with version",
 			withPython: true,
-			pyOrigin:   "/py/site-packages/foo/__init__.py",
+			pyPath:     "/py/site-packages/foo",
+			pyVersion:  "1.2.3",
 			query:      "foo",
 			want: func(_, _ string) []Result {
-				return []Result{{Kind: KindPython, Path: "/py/site-packages/foo/__init__.py"}}
+				return []Result{{Kind: KindPackage, Path: "/py/site-packages/foo", Version: "1.2.3"}}
+			},
+		},
+		{
+			name:       "package resolves without version",
+			withPython: true,
+			pyPath:     "/py/site-packages/foo",
+			query:      "foo",
+			want: func(_, _ string) []Result {
+				return []Result{{Kind: KindPackage, Path: "/py/site-packages/foo"}}
+			},
+		},
+		{
+			name:       "repo and package resolve, repo first",
+			repos:      []string{"foo"},
+			withPython: true,
+			pyPath:     "/py/site-packages/foo",
+			pyVersion:  "9.9.9",
+			query:      "foo",
+			want: func(ws, _ string) []Result {
+				return []Result{
+					{Kind: KindRepo, Path: filepath.Join(ws, "foo")},
+					{Kind: KindPackage, Path: "/py/site-packages/foo", Version: "9.9.9"},
+				}
 			},
 		},
 		{
@@ -134,13 +167,14 @@ func TestLocate(t *testing.T) {
 			withGo:     true,
 			goList:     func(_ string) string { return "/fake/mod/dir@v2.0.0" },
 			withPython: true,
-			pyOrigin:   "/py/foo.py",
+			pyPath:     "/py/site-packages/foo",
+			pyVersion:  "4.5.6",
 			query:      "cobra",
 			want: func(ws, _ string) []Result {
 				return []Result{
 					{Kind: KindRepo, Path: filepath.Join(ws, "cobra")},
 					{Kind: KindGoModule, Path: "/fake/mod/dir", Version: "v2.0.0"},
-					{Kind: KindPython, Path: "/py/foo.py"},
+					{Kind: KindPackage, Path: "/py/site-packages/foo", Version: "4.5.6"},
 				}
 			},
 		},
@@ -169,8 +203,10 @@ func TestLocate(t *testing.T) {
 			}
 			if tt.withPython {
 				writeScript(t, binDir, "python3", pyScript)
-				t.Setenv("FAKE_PYORIGIN", tt.pyOrigin)
+				t.Setenv("FAKE_PYPATH", tt.pyPath)
+				t.Setenv("FAKE_PYVERSION", tt.pyVersion)
 			}
+			t.Setenv("VIRTUAL_ENV", "") // a dev's active venv must not shadow the fake python3
 			t.Setenv("PATH", binDir)
 
 			got, err := Locate(context.Background(), tt.query, ws)
@@ -193,6 +229,52 @@ func TestLocateMissingWorkspaceIsNoError(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("Locate() = %#v, want no results", got)
+	}
+}
+
+// TestDedupePreservesKindAtSharedPath proves an editable install — a repo row and
+// a package row resolving to the same directory — keeps both rows because the key
+// carries the kind, while a same-kind same-path duplicate (a go list hit that also
+// appears in the module cache) still collapses.
+func TestDedupePreservesKindAtSharedPath(t *testing.T) {
+	shared := "/Users/dev/Code/cc-transcript"
+	in := []Result{
+		{Kind: KindRepo, Path: shared},
+		{Kind: KindGoModule, Path: "/cache/mod@v1.0.0", Version: "v1.0.0"},
+		{Kind: KindGoModule, Path: "/cache/mod@v1.0.0", Version: "v1.0.0"},
+		{Kind: KindPackage, Path: shared, Version: "10.0.0"},
+	}
+	got := dedupe(in)
+	want := []Result{
+		{Kind: KindRepo, Path: shared},
+		{Kind: KindGoModule, Path: "/cache/mod@v1.0.0", Version: "v1.0.0"},
+		{Kind: KindPackage, Path: shared, Version: "10.0.0"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("dedupe() = %#v, want %#v", got, want)
+	}
+}
+
+func TestResolvePythonPrefersVenv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell scripts are POSIX-only")
+	}
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	venvBin := filepath.Join(dir, ".venv", "bin")
+	mustMkdir(t, venvBin)
+	writeScript(t, venvBin, "python3", "#!/bin/sh\nprintf '%s\\t%s\\n' /venv/site-packages/foo 1.0.0\n")
+
+	pathBin := t.TempDir()
+	writeScript(t, pathBin, "python3", "#!/bin/sh\nprintf '%s\\t%s\\n' /path/site-packages/foo 2.0.0\n")
+	t.Setenv("VIRTUAL_ENV", "")
+	t.Setenv("PATH", pathBin)
+
+	got := resolvePython(context.Background(), "foo")
+	want := []Result{{Kind: KindPackage, Path: "/venv/site-packages/foo", Version: "1.0.0"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("resolvePython() = %#v, want %#v", got, want)
 	}
 }
 

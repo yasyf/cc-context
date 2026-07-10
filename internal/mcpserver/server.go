@@ -95,12 +95,12 @@ type DepsIn struct {
 // GrepIn is the input for ccx_code_grep.
 type GrepIn struct {
 	Text       string `json:"text" jsonschema:"text to search for"`
-	Glob       string `json:"glob,omitempty" jsonschema:"restrict to files matching this glob"`
+	Glob       string `json:"glob,omitempty" jsonschema:"restrict to files matching this glob; a glob anchored at an existing directory is searched even when ignore rules exclude it"`
 	Scope      string `json:"scope,omitempty" jsonschema:"directory to scope the search to"`
 	IgnoreCase bool   `json:"ignoreCase,omitempty" jsonschema:"case-insensitive match; runs ripgrep or system grep instead of the default engine"`
 	Word       bool   `json:"word,omitempty" jsonschema:"match whole words only; runs ripgrep or system grep instead of the default engine"`
 	Budget     int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
-	Expand     int    `json:"expand,omitempty" jsonschema:"lines of context to expand around hits"`
+	Expand     int    `json:"expand,omitempty" jsonschema:"rg route (ignoreCase/word): lines of context around each hit; default engine: inlines the full source of the top matches"`
 }
 
 // FindIn is the input for ccx_repo_find.

@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-07-10
+
+### Added
+- Dependency-source search: an explicitly anchored `--glob` (a literal directory or file prefix, e.g. `.venv/lib/…/pkg/*.py`) is searched even where ignore rules would hide it, on both the tilth and ripgrep engines and across CLI, MCP, and `ccx exec`. The anchor composes with an explicit `--scope`, and a glob naming an exact file anchors to its parent directory — ripgrep's explicit-path semantics throughout (`--no-ignore-parent` on the rg route).
+- `ccx repo locate` resolves Python import names (`cc_transcript` ⇄ `cc-transcript`) and emits both a `repo` row (sibling checkout) and a `package` row (installed site-packages directory + `importlib.metadata` version, interpreter resolved `$VIRTUAL_ENV` → `./.venv` → PATH). The Python row's kind is now `package` (was `python`).
+- Guard pack 0.2.0: unpiped `rg` is gated at grep parity — literal-safe invocations rewrite to `ccx code grep` (context flags map to `--expand=<count>`), unmappable ones block with a dependency-source steer (`ccx repo locate <pkg>` → `ccx code grep/outline/read`) — with an exemption when every explicit target is a data file (`.log`/`.json`/`.yaml`/…). Hidden-segment and git-ignored path operands now block for both `grep` and `rg` instead of rewriting to a glob a stale binary would silently 0-match.
+
+### Fixed
+- A no-match literal `ccx code grep` no longer exits 2 with tilth's `not found: <path>/<query>` path-fallback error — it prints the house no-match output; a nonexistent `--scope` still fails loudly.
+- `ccx repo find --scope` reaches the tilth CLI route (the scope was silently dropped).
+
 ## [0.9.0] - 2026-07-09
 
 ### Added
