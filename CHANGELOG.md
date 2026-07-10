@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-07-09
+
+### Added
+- Guard pack: two hooks protecting the cc-guides rendered-artifact regime. A direct `Edit`/`Write`/`MultiEdit`/`NotebookEdit` of a rendered artifact is **blocked** — the predicate fires only when a sibling `.claude/fragments/<repo-relative-target>/layout.toml` exists AND the target's first two lines carry the `cc-guides … | GENERATED` banner, so an unmanaged file or a file that merely contains the word GENERATED is never touched — with a message steering to the fragments plus `cc-guides render`. An edit to a render **source** (any file under `.claude/fragments/`, or `guides/` in the cc-skills content repo) draws a one-shot nudge to re-render and commit the fragments and regenerated artifact together.
+
 ## [0.8.0] - 2026-07-08
 
 ### Added
