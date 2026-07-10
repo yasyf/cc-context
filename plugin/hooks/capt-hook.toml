@@ -1,4 +1,4 @@
 name = "ccx"
-version = "0.2.0"
+version = "0.3.0"
 description = "cc-context guard pack — hard-block token-bomb tool calls (unbounded reads, full diffs, line dumps, recursive listings); steer to ccx"
 hooks = "."

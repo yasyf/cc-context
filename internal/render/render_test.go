@@ -1,11 +1,49 @@
 package render
 
 import (
+	"bytes"
 	"context"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestRunCLIStream(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh to script output")
+	}
+	tests := []struct {
+		name    string
+		script  string // sh -c body
+		want    string // combined stdout+stderr written to w
+		wantErr bool
+	}{
+		{
+			"stdout and stderr both flow to w",
+			"printf out; printf err 1>&2",
+			"outerr",
+			false,
+		},
+		{
+			"nonzero exit is reported, output already streamed",
+			"printf partial; exit 3",
+			"partial",
+			true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var w bytes.Buffer
+			err := RunCLIStream(context.Background(), "/bin/sh", []string{"-c", tt.script}, &w)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("RunCLIStream err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if w.String() != tt.want {
+				t.Errorf("streamed output = %q, want %q", w.String(), tt.want)
+			}
+		})
+	}
+}
 
 func TestRunCLIAllowExit(t *testing.T) {
 	if runtime.GOOS == "windows" {

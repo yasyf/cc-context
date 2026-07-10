@@ -153,13 +153,19 @@ version — and the command exits 3 when nothing resolves.
 ### 7. Ship
 
 Commit, push, and watch CI in one call. `ship` runs a jj-aware commit (plain git
-otherwise), pushes, then blocks on `gh run watch --exit-status`, reporting the commit,
-the push, and the CI conclusion in one summary line:
+otherwise), pushes, then watches every workflow run on the pushed commit — found via
+`gh run list --commit`, retrying registration for up to a minute. The first line is
+the summary; each watched run adds a `workflow · conclusion · duration · url` line,
+and a red run adds its failing jobs and a budget-capped `--log-failed` excerpt with a
+`full log:` pointer. `CI failure` means a run went red; `CI error` means the watch
+itself failed after a successful push (the `check:` line says how to resume — don't
+re-run ship, that cuts a new commit). On a terminal, progress streams live:
 
 ```
 ccx vcs ship -m "fix: budget overflow marker"   # commit + push + watch CI
 ccx vcs ship -m "wip" --no-push                  # commit only, skip push and CI
 ccx vcs ship --amend                             # fold the working copy into the parent
+ccx vcs ship -m "fix: x" --budget 0              # uncapped failure-log excerpt
 ```
 
 ### 8. Re-encode

@@ -11,6 +11,11 @@ allow`` + a note); where it does not, the command falls back to a hard block:
 
 Scoped, summarized, or plumbing variants (``git diff -- <path>``, ``jj diff --stat``,
 ``git show HEAD:file``, ``git log --oneline``) never fire the guard at all.
+
+Beyond the token-bomb rewrites, a one-shot-per-session steering **nudge** points a manual
+single-command ``gh run watch`` at ``ccx vcs ship`` — which folds the commit -> push -> watch
+cycle into one call — while noting that manual ``gh run`` stays right for tag/release runs and
+for resuming after a ship printed ``CI error``. It never blocks; the watch still runs.
 """
 
 from __future__ import annotations
@@ -26,10 +31,17 @@ from captain_hook import (
     Block,
     CommandLine,
     CustomCommandLineCondition,
+    Event,
+    HookResult,
     Input,
     Rewrite,
+    Tool,
+    Warn,
+    on,
     rewrite_command,
+    session_state,
 )
+from pydantic import BaseModel
 
 from .common import GIT_DIFF_SUMMARY_FLAGS, ccx_bin, is_single_command
 
@@ -61,6 +73,15 @@ GIT_SHOW_SUPPRESS_FLAGS = ("--no-patch", "-s")
 # The patch-emitting `git log` / `jj log` flags. Their presence turns a metadata log
 # into a per-commit full-patch dump.
 LOG_PATCH_FLAGS = ("-p", "--patch", "-u")
+
+# The one-shot steer shown when a session watches CI by hand instead of via `ccx vcs ship`.
+GH_RUN_WATCH_NUDGE = (
+    'Watching CI by hand? `ccx vcs ship -m "<msg>"` runs the whole commit → push → watch cycle in '
+    "one call — a jj-aware commit, the push, then `gh run watch --exit-status` on every run for the "
+    "pushed SHA, with a per-run report and budget-capped failure logs. Manual `gh run` still fits a "
+    "tag/release run (no ship commit) and resuming a watch after a ship printed `CI error`. This "
+    "command still runs."
+)
 
 
 def _primary_has(cl: CommandLine, *tokens: str) -> bool:
@@ -454,3 +475,53 @@ rewrite_command(
         Input(command="jj log -r @-"): Allow(),
     },
 )
+
+
+@session_state
+class GhRunWatchNudged(BaseModel):
+    """One-shot latch: set once the ``gh run watch`` -> ``ccx vcs ship`` steer has fired this session.
+
+    A dedicated model class (its own :class:`SessionStore` slot, keyed by the unique class name so
+    it never collides with another hook file's state) records that the nudge has fired, so it is
+    shown at most once per session — repeat ``gh run watch`` calls pass silently.
+    """
+
+    fired: bool = False
+
+
+class GhRunWatchSingle(CustomCommandLineCondition):
+    """Matches a single-command ``gh run watch …`` — the watch step ``ccx vcs ship`` folds in.
+
+    Scoped to ``gh run watch`` alone: ``gh run list --json`` is already rewritten by
+    ``json_guards``' ``wrap_json`` (touching it risks rule interplay), and ``gh run view`` is a
+    legitimate failure drill-down — neither is matched. A piped or chained line (``gh run watch …
+    | tee``, ``… && gh run watch``) is not a single command, so it falls through untouched.
+    """
+
+    def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
+        return is_single_command(cl) and cl.q.runs("gh", "run", "watch")
+
+
+@on(
+    Event.PreToolUse,
+    only_if=[Tool("Bash"), GhRunWatchSingle()],
+    tests={
+        Input(command="gh run watch 123 --exit-status"): Warn(pattern="ccx vcs ship"),
+        Input(command="gh run watch 123 --exit-status | tee run.log"): Allow(),  # piped → not single
+        Input(command="cd repo && gh run watch 123"): Allow(),  # chained → not single
+        Input(command="gh run view 123 --log-failed"): Allow(),  # failure drill-down, not a watch
+        Input(command="gh pr list"): Allow(),
+    },
+)
+def steer_gh_run_watch_to_ship(evt: BaseHookEvent) -> HookResult | None:
+    """Nudge a manual ``gh run watch`` toward ``ccx vcs ship``, at most once per session.
+
+    ``ship`` folds the commit -> push -> watch-every-run cycle into one call; the nudge fires once
+    (the :class:`GhRunWatchNudged` latch) and never blocks, so the watch the model asked for runs.
+    """
+    state = evt.ctx.s.load(GhRunWatchNudged)
+    if state.fired:
+        return None
+    state.fired = True
+    evt.ctx.s[GhRunWatchNudged].set(state)
+    return evt.warn(GH_RUN_WATCH_NUDGE)

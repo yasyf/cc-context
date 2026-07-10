@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 )
@@ -24,6 +25,19 @@ func RunCLI(ctx context.Context, bin string, argv []string) (string, error) {
 		return "", fmt.Errorf("%s: %w: %s", bin, err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
+}
+
+// RunCLIStream executes bin with argv, wiring the child's stdout and stderr to w
+// as they are produced. It does not buffer output; the returned error carries the
+// exit status only (any stderr already flowed to w).
+func RunCLIStream(ctx context.Context, bin string, argv []string, w io.Writer) error {
+	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	cmd.Stdout = w
+	cmd.Stderr = w
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: %w", bin, err)
+	}
+	return nil
 }
 
 // RunCLIAllowExit is RunCLI but tolerates the listed nonzero exit codes: when the

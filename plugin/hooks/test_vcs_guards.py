@@ -1,4 +1,4 @@
-"""Tests for the ``_git_log_history`` path/count parser behind ``LogPatchDump``.
+"""Tests for the ``_git_log_history`` parser and the ``gh run watch`` -> ``ccx vcs ship`` nudge.
 
 Run from the repo root against the captain-hook source env, with ``plugin/`` on the
 path so the ``hooks`` package (and its relative imports) resolves::
@@ -12,6 +12,10 @@ coverage is environment-dependent and lives here rather than in the inline ``tes
 matrix: each case ``chdir``s into a temp dir with a known file. The ``--`` branch and
 the flag/count parsing are disk-independent but share the parser's contract, so they
 are pinned here too.
+
+The nudge's one-shot latch is stateful across two invocations — a shape the declarative
+``tests={}`` harness cannot express — so its fire/silence behavior is driven end to end here
+against a real ``SessionStore`` backed by a temp session dir.
 """
 
 from __future__ import annotations
@@ -19,8 +23,26 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from captain_hook import Action
+from captain_hook.context import HookContext
+from captain_hook.events import PreToolUseEvent
+from captain_hook.session import SessionStore
 
-from hooks.vcs_guards import _git_log_history
+from hooks.vcs_guards import (
+    GhRunWatchNudged,
+    GhRunWatchSingle,
+    _git_log_history,
+    steer_gh_run_watch_to_ship,
+)
+
+MAIN_T = "/transcripts/main.jsonl"
+
+
+def _bash_pre(command: str, session_dir: Path | None = None) -> PreToolUseEvent:
+    """A ``PreToolUseEvent`` for a Bash ``command``, backed by ``session_dir`` for the one-shot latch."""
+    ctx = HookContext(session=SessionStore(session_dir), transcript=None, settings=None)
+    raw = {"tool_name": "Bash", "tool_input": {"command": command}, "transcript_path": MAIN_T}
+    return PreToolUseEvent(_raw=raw, ctx=ctx)
 
 
 @pytest.fixture
@@ -102,3 +124,40 @@ class TestGitLogHistoryDiskBranch:
 
     def test_two_existing_positionals_block(self, _repo: Path) -> None:
         assert _git_log_history(("-p", "f.go", "g.go")) is None
+
+
+class TestGhRunWatchNudge:
+    """The one-shot steer from a manual ``gh run watch`` toward ``ccx vcs ship``."""
+
+    def test_fires_on_gh_run_watch(self, tmp_path: Path) -> None:
+        result = steer_gh_run_watch_to_ship(_bash_pre("gh run watch 123 --exit-status", tmp_path / "s"))
+        assert result is not None
+        assert result.action is Action.warn
+        assert "ccx vcs ship" in result.message
+
+    def test_second_invocation_is_silent(self, tmp_path: Path) -> None:
+        sd = tmp_path / "s"  # one shared session store, as the whole session shares
+        first = steer_gh_run_watch_to_ship(_bash_pre("gh run watch 123 --exit-status", sd))
+        assert first is not None and first.action is Action.warn
+        # A later watch in the same session finds the latch set and stays quiet.
+        assert steer_gh_run_watch_to_ship(_bash_pre("gh run watch 456 --exit-status", sd)) is None
+        assert GhRunWatchNudged(fired=True) == _bash_pre("x", sd).ctx.s.load(GhRunWatchNudged)
+
+    def test_matches_single_gh_run_watch(self) -> None:
+        evt = _bash_pre("gh run watch 123 --exit-status")
+        assert GhRunWatchSingle().check_command_line(evt, evt.command_line) is True
+
+    def test_piped_or_chained_not_matched(self) -> None:
+        # `json_guards`/`ship` own the pipe; a chained line is not a single command → no steer.
+        for cmd in ("gh run watch 123 --exit-status | tee run.log", "cd repo && gh run watch 123"):
+            evt = _bash_pre(cmd)
+            assert GhRunWatchSingle().check_command_line(evt, evt.command_line) is False
+
+    def test_gh_run_view_not_matched(self) -> None:
+        # `gh run view --log-failed` is a legitimate failure drill-down, never a watch.
+        evt = _bash_pre("gh run view 123 --log-failed")
+        assert GhRunWatchSingle().check_command_line(evt, evt.command_line) is False
+
+    def test_gh_pr_list_not_matched(self) -> None:
+        evt = _bash_pre("gh pr list")
+        assert GhRunWatchSingle().check_command_line(evt, evt.command_line) is False
