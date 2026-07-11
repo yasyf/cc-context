@@ -159,9 +159,11 @@ func ripgrepArgv(a backend.Args) []string {
 	return argv
 }
 
-// grepArgv builds `grep -rnFI [-i] [-w] [-C N] --exclude-dir=.[!./]* --exclude=.[!./]*
+// grepArgv builds `grep -rnHFI [-i] [-w] [-C N] --exclude-dir=.[!./]* --exclude=.[!./]*
 // [--include=G] -e <pattern> -- <root>` from flags common to BSD and GNU grep. A
-// regex query swaps -rnFI for -rnEI (ERE, the closest dialect to rg's Rust regex).
+// regex query swaps -rnHFI for -rnHEI (ERE, the closest dialect to rg's Rust regex).
+// The -H flag forces the filename prefix the parser splits on: GNU grep omits it
+// for a single explicit file operand (BSD prints it), which read as "no matches".
 // The -I flag skips binary files and the dotdir/dotfile excludes skip hidden paths,
 // both mirroring ripgrep's defaults so the two engines return the same hit set;
 // -- terminates flag parsing so a directory-rooted scope never reads as a flag.
@@ -177,9 +179,9 @@ func ripgrepArgv(a backend.Args) []string {
 // --exclude to command-line operands, so a named dotfile must not be silently
 // skipped.
 func grepArgv(a backend.Args) ([]string, error) {
-	flags := "-rnFI"
+	flags := "-rnHFI"
 	if a.Regex {
-		flags = "-rnEI"
+		flags = "-rnHEI"
 	}
 	argv := []string{flags}
 	if a.IgnoreCase {
