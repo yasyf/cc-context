@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"add_comment","body":"Shipped in v0.11.0 — release.yml green, brew formula published, adopted for the bench campaign."}]}
+{"v":1,"lamport":3,"ops":[{"kind":"add_comment","body":"v0.11.0 released and brew-adopted (release.yml green). Remaining criterion (brew ccx vcs ship report lines) gets verified on the next real ship — planned for the benchmark campaign's RESULTS.md commit."}]}
