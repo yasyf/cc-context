@@ -28,7 +28,7 @@ min_traversal_bytes = 100000
 
 [paths]
 # All paths are resolved relative to the bench/ directory.
-ccx_bin = "../bin/ccx"            # local HEAD build: the facade MCP (`ccx mcp`) and the Bash `ccx`
+ccx_bin = "/opt/homebrew/bin/ccx"  # the released brew binary (campaign ran v0.11.0); the facade MCP (`ccx mcp`) and the Bash `ccx`
 plugin_hooks = "../plugin/hooks"  # the canonical ccx guard pack (single source of truth)
 work_root = ".work"               # ephemeral per-run checkouts (git-ignored)
 fixtures_root = ".fixtures"       # generated fixture + cloned OSS repos (git-ignored)
