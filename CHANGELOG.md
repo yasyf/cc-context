@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-07-10
+
+### Changed
+- The cc-context plugin no longer registers the `PreToolUse`, `PostToolUse`, or `PreCompact` hook events in `plugin/hooks/hooks.json`. That job moves to the captain-hook plugin (capt-hook 9.0.0 or newer), now the sole registrar of the `uvx capt-hook run <Event>` dispatch commands. Claude Code does not dedupe identical hook commands across sources, so a duplicate registration double-fires every guard. The `SessionStart` entry is unchanged. It still runs pack attach and `install-binary.sh`, and the guard pack dispatches through captain-hook.
+
 ## [0.11.0] - 2026-07-10
 
 ### Added
