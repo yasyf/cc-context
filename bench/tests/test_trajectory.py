@@ -175,6 +175,36 @@ class TestTrajectory(unittest.TestCase):
         self.assertEqual(m.turn_count, 1)
         self.assertEqual(m.total_prompt, 1000)
 
+    def test_interleaved_parallel_tool_message_billed_once(self) -> None:
+        # msg_shared makes two parallel tool calls with the first tool_result interleaved between the
+        # tool_use blocks, so its events straddle a user event and land in two turns (nav-tornado
+        # ev5-ev9 shape). Billing by message.id counts it once (101,000, not the per-turn 151,000).
+        def a(mid: str, blocks: list[dict], cache_read: int, out: int) -> dict:
+            return {
+                "type": "assistant",
+                "message": {
+                    "id": mid,
+                    "content": blocks,
+                    "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": cache_read, "output_tokens": out},
+                },
+            }
+
+        events = [
+            a("msg_shared", [{"type": "thinking", "thinking": "..."}], 50000, 4),
+            a("msg_shared", [{"type": "tool_use", "id": "t1", "name": "X", "input": {}}], 50000, 4),
+            tool_result("t1", "r" * 40),
+            a("msg_shared", [{"type": "tool_use", "id": "t2", "name": "Y", "input": {}}], 50000, 4),
+            tool_result("t2", "r" * 40),
+            a("msg_final", [{"type": "text", "text": "done"}], 51000, 6),
+        ]
+        m = trajectory.compute(events, first_prompt="", count=fake_count)
+        assert m is not None
+        self.assertEqual(m.total_prompt, 101_000)
+        self.assertEqual(m.total_output, 10)
+        self.assertEqual(m.high_water, 51_000)
+        # The interleaved user event still splits the turns: [thinking, tool_use1] | [tool_use2] | [final].
+        self.assertEqual(m.turn_count, 3)
+
     def test_real_fixture_nonreg_bigo_prompt_not_doubled(self) -> None:
         # A real run carrying a mid-turn rate_limit_event: pre-fix the split doubled total_prompt
         # to 103,056; post-fix it is one turn counted once. Usage-derived fields only.

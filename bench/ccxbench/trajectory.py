@@ -1,22 +1,33 @@
 """Reconstruct per-run context accounting from a saved stream-json transcript.
 
 The runner saves the full provider event stream to ``results/<session>/raw/<run>.json``
-as a JSON array (not JSONL). Each assistant event carries its own ``message.usage``;
-within one logical turn the thinking/text/tool_use blocks arrive as separate assistant
-events that repeat the same usage, so a turn is a contiguous run of assistant events
-bounded by a ``user`` event (a tool result or the next prompt). Every other stream event
-(``rate_limit_event``, ``system``, ``result``, unknown) sits inside whichever turn it lands
-in and never opens or closes one — a mid-turn ``rate_limit_event`` used to split a turn in
-two, double-counting its (repeated) prompt in ``total_prompt`` and ``turn_count``.
+as a JSON array (not JSONL). Each assistant event carries its own ``message.usage``; the
+stream fragments a single API response into several assistant events (thinking, then each
+tool_use) that all repeat that call's usage and share one ``message.id``.
 
-The headline quantity is the prompt **high-water mark**: the largest single-turn prompt
-(``input + cache_creation + cache_read``), i.e. how big the context window actually got.
-It is decomposed into additive buckets (see `Decomposition`) and reported alongside the
-cumulative tool-output tokens that ccx directly controls.
+Two accountings run over the stream, at different granularities:
 
-``turn_count`` here (contiguous assistant runs) is a different definition from the
-envelope's ``num_turns`` (Claude Code's own turn accounting); the two may legitimately
-differ and are not cross-checked against each other.
+* **Turns** are the conversational display unit: a contiguous run of assistant events
+  bounded by a ``user`` event (a tool result or the next prompt). ``turn_count`` counts
+  them. Other stream events (``rate_limit_event``, ``system``, ``result``, unknown) sit
+  inside whichever turn they land in and never open or close one.
+* **Token totals** (``total_prompt``/``total_output``) bill by ``message.id`` — the billed
+  API-call identifier — counting each call exactly once. This is robust to the two ways one
+  call's events get split apart in the stream: a ``rate_limit_event`` landing between them
+  (same turn) and, for parallel tool calls, a ``tool_result`` interleaved between the
+  tool_use blocks (which lands them in *different* turns). A per-turn sum double-counts the
+  latter; billing by ``message.id`` does not. (Assistant events lacking an id fall back to
+  per-turn max — real transcripts always carry one.)
+
+The headline quantity is the prompt **high-water mark**: the largest single billed prompt
+(``input + cache_creation + cache_read``), i.e. how big the context window actually got —
+equal to ``max(turn_prompts)`` since every turn's max is some call's prompt. It is
+decomposed into additive buckets (see `Decomposition`) and reported alongside the cumulative
+tool-output tokens that ccx directly controls.
+
+``turn_count`` here (contiguous assistant runs) is a different definition from the envelope's
+``num_turns`` (Claude Code's own turn accounting); the two may legitimately differ and are
+not cross-checked against each other.
 
 A run with no turn whose prompt exceeds zero (a session that never reached the model —
 e.g. an init-only stub) is excluded: `compute` returns ``None``.
@@ -99,6 +110,37 @@ def _turns(events: list[dict]) -> list[list[dict]]:
     return turns
 
 
+def _billed(events: list[dict], turns: list[list[dict]]) -> tuple[list[int], list[int]]:
+    """Per-billed-call (prompt, output) tokens: one entry per API call, not per stream fragment.
+
+    A call is a distinct ``message.id`` (all its events repeat the same usage), billed once even when
+    an interleaved ``tool_result`` splits it across turns — or a ``rate_limit_event`` splits it within
+    one. Assistant events lacking a ``message.id`` fall back to their turn's max, preserving the
+    pre-message-id collapse of same-usage fragments in a single turn.
+    """
+    seen: set[str] = set()
+    prompts: list[int] = []
+    outputs: list[int] = []
+    for turn in turns:
+        idless_prompt = 0
+        idless_output = 0
+        for ev in turn:
+            msg = ev["message"]
+            mid = msg.get("id")
+            usage = msg["usage"]
+            if mid is None:
+                idless_prompt = max(idless_prompt, _prompt_tokens(usage))
+                idless_output = max(idless_output, _output_tokens(usage))
+            elif mid not in seen:
+                seen.add(mid)
+                prompts.append(_prompt_tokens(usage))
+                outputs.append(_output_tokens(usage))
+        if idless_prompt or idless_output:
+            prompts.append(idless_prompt)
+            outputs.append(idless_output)
+    return prompts, outputs
+
+
 def compute(events: list[dict], *, first_prompt: str, count: Count) -> TrajectoryMetrics | None:
     """Compute the trajectory metrics for one run, or ``None`` if the run is a stub.
 
@@ -108,14 +150,17 @@ def compute(events: list[dict], *, first_prompt: str, count: Count) -> Trajector
     """
     turns = _turns(events)
     turn_prompts = [max((_prompt_tokens(ev["message"]["usage"]) for ev in turn), default=0) for turn in turns]
-    turn_outputs = [max((_output_tokens(ev["message"]["usage"]) for ev in turn), default=0) for turn in turns]
     live = [(i, p) for i, p in enumerate(turn_prompts) if p > 0]
     if not live:
         return None
 
     peak_turn, high_water = max(live, key=lambda ip: ip[1])
-    total_prompt = sum(turn_prompts)
-    total_output = sum(turn_outputs)
+    # Token totals bill once per API call (message.id), so a call split across turns by an interleaved
+    # tool_result — or within a turn by a rate_limit_event — is counted once, not per fragment.
+    # high_water == max(turn_prompts) == the max billed prompt, so peak_turn stays coupled to it.
+    billed_prompts, billed_outputs = _billed(events, turns)
+    total_prompt = sum(billed_prompts)
+    total_output = sum(billed_outputs)
 
     cumulative_tool_output = 0
     tool_calls: list[ToolCall] = []
