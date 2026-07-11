@@ -127,10 +127,14 @@ class TestGrepNote:
         note = search_guards._grep_note(_evt("grep -rn -C 3 foo"))
         assert "count was dropped" in note and "--expand=3" in note
 
-    def test_dot_pattern_discloses_literal_dot(self) -> None:
-        # Finding 2: `.` is whitelisted (mostly literal-intent) but grep reads it as any-char, so disclose.
-        note = search_guards._grep_note(_evt("grep -rn foo.bar"))
-        assert "any-char" in note
+    def test_dot_pattern_regex_rewrites_not_literal(self) -> None:
+        # `.` is a dialect metachar, so grep now rewrites it faithfully as a regex — the note names
+        # the engine, not the old any-char-literal disclosure. rg still literal-rewrites `.` (its
+        # default engine reads `.` as a wildcard the literal search can't honor), so the
+        # `.`-literal disclosure stays live there.
+        grep_note = search_guards._grep_note(_evt("grep -rn foo.bar"))
+        assert "regex on the rg engine" in grep_note and "any-char" not in grep_note
+        assert "any-char" in search_guards._rg_note(_evt("rg foo.bar"))
 
     def test_no_dot_carries_no_dot_disclosure(self) -> None:
         note = search_guards._grep_note(_evt("grep -rn foobar"))
@@ -358,8 +362,73 @@ class TestIgnoredDirTargets:
         assert search_guards.RgNonSourceTargets().check_command_line(_evt(command), cl) is False
 
 
+class TestRegexRewritable:
+    """`_regex_rewritable` admits only constructs whose meaning is identical in grep and Rust regex."""
+
+    @pytest.mark.parametrize(
+        "pattern, ere, want",
+        [
+            ("*abc", True, False),  # leading `*` — literal in grep, "nothing to repeat" in Rust
+            ("a{b}", True, False),  # non-digit interval — literal `{b}` in grep, a parse error in Rust
+            ("{2,3}", True, True),  # digits-only interval body accepted
+            ("a^b", False, False),  # mid-pattern `^` — literal in BRE, an anchor in Rust
+            ("^class ", False, True),  # leading `^` anchor, plain atoms after — faithful in both
+            ("a**", False, False),  # stacked quantifier rejected
+            ("foo$", False, True),  # trailing `$` anchor accepted
+            ("a$b", False, False),  # mid `$` — literal in grep, an anchor in Rust
+            ("(a|b)c", True, True),  # balanced group + alternation under ERE
+            ("(a|b", True, False),  # unbalanced group rejected
+            (r"a\d", True, False),  # backslash escape rejected
+            ("a[bc]", True, False),  # bracket class rejected
+            ("a+", True, True),  # ERE `+` quantifier accepted
+            ("a+", False, False),  # `+` is not a BRE metachar, so it never reaches the validator as regex-worthy…
+        ],
+    )
+    def test_admits_only_dialect_faithful(self, pattern: str, ere: bool, want: bool) -> None:
+        # …but fed here directly, BRE `a+` has no quantifier to bind `+` onto, so the scan rejects it;
+        # the classifier never routes a metachar-free BRE pattern here (it stays a literal rewrite).
+        assert search_guards._regex_rewritable(pattern, ere) is want
+
+
+class TestGrepDialectClassification:
+    """Finding 2: classification is per active dialect. `-E 'a+'` (ERE `+` quantifier) rewrites onto
+    `--regex`; `'a+'` under the BRE default is a literal rewrite; `-F 'foo.*'` forces the literal
+    path and, being un-ccx-literal-safe, never flips to a `--regex` rewrite (the silent-corruption bug).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        (tmp_path / "f").write_text("x\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
+        ccx_supports.cache_clear()
+        yield
+        ccx_supports.cache_clear()
+
+    def _probe(self, monkeypatch: pytest.MonkeyPatch, help_text: str) -> None:
+        monkeypatch.setattr(common.subprocess, "run", _fake_run(0, stdout=help_text))
+
+    def test_ere_plus_rewrites_regex(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._probe(monkeypatch, REGEX_SUPPORTS_HELP)
+        assert search_guards._grep_to(_evt("grep -E 'a+' f")) == "/fake/ccx code grep a+ --regex --glob f"
+
+    def test_bre_plus_stays_literal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._probe(monkeypatch, NO_SUPPORT_HELP)  # literal rewrite needs no --regex probe
+        assert search_guards._grep_to(_evt("grep 'a+' f")) == "/fake/ccx code grep a+ --glob f"
+
+    def test_fixed_metachar_never_flips_to_regex(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # `grep -F 'foo.*' f`: -F forces literal, `foo.*` isn't ccx-literal-safe → not rewritable.
+        # `f` is a small existing file, so the grep is bounded → the condition never fires (allow),
+        # and it certainly never rewrites with `--regex`.
+        self._probe(monkeypatch, REGEX_SUPPORTS_HELP)
+        cl = CommandLine.parse("grep -F 'foo.*' f")
+        assert search_guards._grep_to(_evt("grep -F 'foo.*' f")) is None
+        assert search_guards.GrepFlood().check_command_line(_evt("grep -F 'foo.*' f"), cl) is False
+
+
 class TestGrepRegexRewrite:
-    """A BRE/ERE-safe pattern rewrites to `ccx code grep --regex` when the local binary advertises
+    """A validator-cleared pattern rewrites to `ccx code grep --regex` when the local binary advertises
     `--regex`; on an older binary (SUPPORTS_HELP, no `--regex`) the same shape falls through. Dialect
     is load-bearing: `|` is BRE-literal (no rewrite) but ERE-meta (rewrites under `-E`); `-P` never maps.
     """
@@ -393,10 +462,10 @@ class TestGrepRegexRewrite:
     @pytest.mark.parametrize(
         "command",
         [
-            "grep 'a|b' .",  # `|` is BRE-literal — no faithful regex rewrite, and not LITERAL_SAFE
+            "grep 'a|b' .",  # `|` is BRE-literal — classified literal, but not ccx-literal-safe → block
             "grep -P 'x(?=y)' .",  # PCRE lookahead — -P never maps
-            "grep 'foo(bar' .",  # BRE-literal `(`, meta in Rust — excluded from REGEX_SAFE_BRE
-            r"grep 'a\d' .",  # backslash escape — excluded from every whitelist (defense in depth)
+            "grep 'foo(bar' .",  # BRE-literal `(` — classified literal, but not ccx-literal-safe → block
+            r"grep 'a\d' .",  # backslash — a dialect metachar the validator rejects (defense in depth)
         ],
     )
     def test_unmappable_regex_blocks(self, monkeypatch: pytest.MonkeyPatch, command: str) -> None:
@@ -441,6 +510,8 @@ class TestGrepMultiFilePaths:
     def _tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         (tmp_path / "a.py").write_text("x\n")
         (tmp_path / "b.py").write_text("y\n")
+        (tmp_path / "safe").write_text("z\n")
+        (tmp_path / "--regex").write_text("w\n")  # a real file whose name looks like a ccx flag
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
         monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
@@ -452,8 +523,19 @@ class TestGrepMultiFilePaths:
         monkeypatch.setattr(common.subprocess, "run", _fake_run(0, stdout=help_text))
 
     def test_multi_file_carries_operands(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Finding 3: operands land after a literal `--` so cobra reads them as file positionals.
         self._probe(monkeypatch, REGEX_SUPPORTS_HELP)
-        assert search_guards._grep_to(_evt("grep foo a.py b.py")) == "/fake/ccx code grep foo a.py b.py"
+        assert search_guards._grep_to(_evt("grep foo a.py b.py")) == "/fake/ccx code grep foo -- a.py b.py"
+
+    def test_flag_like_operand_stays_behind_separator(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Finding 3 repro: `grep 'a+' -- safe --regex` — grep's own `--` marks `--regex` a filename.
+        # The emitted command must keep it a positional (behind ccx's `--`), never let it re-parse as
+        # the ccx `--regex` flag and flip the literal `a+` search into a regex one.
+        self._probe(monkeypatch, REGEX_SUPPORTS_HELP)
+        assert (
+            search_guards._grep_to(_evt("grep 'a+' -- safe --regex"))
+            == "/fake/ccx code grep a+ -- safe --regex"
+        )
 
     def test_single_file_keeps_glob_form(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # One explicit file stays on the old `--glob <file>` form (no `--regex` probe needed).
@@ -470,13 +552,15 @@ class TestGrepMultiFilePaths:
 
 
 class TestGrepBoundedPassthrough:
-    """`_bounded_file_grep`: an unrewritable grep over explicit existing files is bounded, so the
-    condition stays silent (genuine allow); a nonexistent path or a directory operand fires and blocks.
+    """`_bounded_file_grep`: an unrewritable grep over explicit existing files whose sizes sum under
+    the large-read threshold is bounded, so the condition stays silent (genuine allow); a nonexistent
+    path, a directory operand, an over-threshold file, `-o`/`-v`, or an empty pattern fires and blocks.
     """
 
     @pytest.fixture(autouse=True)
     def _tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         (tmp_path / "real.py").write_text("x\n")
+        (tmp_path / "big.txt").write_text("x" * (common.LARGE_READ_BYTES + 1))  # over the size threshold
         (tmp_path / "sub").mkdir()
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
@@ -485,8 +569,7 @@ class TestGrepBoundedPassthrough:
     @pytest.mark.parametrize(
         "command",
         [
-            "grep -c foo real.py",  # count mode — unmappable, but a bounded existing file
-            "grep -o foo real.py",  # only-matching — unmappable
+            "grep -c foo real.py",  # count mode — unmappable, but a bounded existing file under threshold
             "grep -q foo real.py",  # exit-code — unmappable
             "grep --binary-files=text foo real.py",  # value-taking long consumes its =value
             "grep -m 5 foo real.py",  # value-taking short `-m` consumes its `5`
@@ -503,12 +586,20 @@ class TestGrepBoundedPassthrough:
             "grep -c foo sub/",  # directory operand → not bounded
             "grep -c foo real.py ghost.py",  # one real file, one absent → every operand must exist
             "grep -c foo",  # no operand at all → not bounded (tree-wide)
+            "grep -o . big.txt",  # Finding 4 repro: -o is output-amplifying and dropped → not bounded
+            "grep -v foo real.py",  # -v inverts to the non-matching lines → dropped from the table
+            "grep -c foo big.txt",  # bounded shape, but the file exceeds the size threshold → block
+            "grep '' real.py",  # empty pattern floods every line → block
         ],
     )
     def test_unbounded_grep_fires_and_blocks(self, command: str) -> None:
         assert search_guards._bounded_file_grep(CommandLine.parse(command)) is False
         assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is True
         assert search_guards._grep_to(_evt(command)) is None
+
+    def test_under_threshold_multi_file_sum_is_bounded(self) -> None:
+        # The bound is on the SUM of file sizes: two small files together stay under the threshold.
+        assert search_guards._bounded_file_grep(CommandLine.parse("grep -c foo real.py real.py")) is True
 
     def test_unknown_flag_is_not_bounded(self) -> None:
         # Conservative lexer: an unknown flag leaves the grep unbounded (it enters the hook), never a

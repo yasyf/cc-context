@@ -23,7 +23,7 @@ from captain_hook import (
     rewrite_command,
 )
 
-from .common import IDENT_ALT, LITERAL_SAFE, ccx_bin, ccx_supports, is_single_command
+from .common import IDENT_ALT, LARGE_READ_BYTES, LITERAL_SAFE, ccx_bin, ccx_supports, is_single_command
 
 if TYPE_CHECKING:
     from cc_transcript.command import Command
@@ -56,12 +56,18 @@ CONTEXT_SHORT = frozenset("ABC")
 # simple glob (no braces, no spaces) to compose cleanly onto a braced multi-dir root.
 INCLUDE_SAFE = re.compile(r"^[\w*?./\[\]-]+$")
 
-# grep patterns safe to rewrite onto ccx's `--regex` (rg/Rust-regex engine). BRE (grep's default)
-# excludes `+ ? | ( ) { }` — literal in BRE but meta in Rust; ERE shares Rust's metachars, so admits
-# them. Neither admits backslash, quotes, backticks, or `$` — shell-active chars stay out as defense
-# in depth atop the downstream shlex-quoting.
-REGEX_SAFE_BRE = re.compile(r"^[\w .:@,=/*^\[\]-]+$")
-REGEX_SAFE_ERE = re.compile(r"^[\w .:@,=/*^(){}+?|\[\]-]+$")
+# Regex metacharacters per grep dialect. A pattern carrying NONE of the active dialect's
+# metachars is a plain literal in that dialect (→ literal rewrite when ccx-literal-safe); one
+# carrying any is handed to `_regex_rewritable`, which admits it onto `--regex` only when its
+# meaning is identical in grep and the Rust-regex engine. BRE reads `+ ? | ( ) { }` as literal
+# (so `a+` under the default is a literal), ERE as metachars.
+BRE_METACHARS = frozenset(".*^$[\\")
+ERE_METACHARS = BRE_METACHARS | frozenset("+?|(){}")
+# Chars the validator treats as a plain literal atom — identical in grep BRE/ERE and Rust regex.
+# `.` (the any-char wildcard, also an atom) is admitted here too. Brackets, backslash, quotes,
+# backticks, and a non-terminal `$` are excluded: shell-active chars stay out as defense in depth
+# atop the downstream shlex-quoting, and bracket/backslash constructs diverge across dialects.
+REGEX_ATOM = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_ .:@,=/-")
 
 # Data-file suffixes that make a raw `rg` a sanctioned non-source search (`rg ERROR app.log`),
 # exempt from the rg gate. A purely textual `Path.suffix` check — no stat.
@@ -104,13 +110,15 @@ RG_OP_VALUE_LONG = frozenset(
 # explicit-files grep from a tree-wide one it separates a flag's value token from a path operand.
 # An UNKNOWN flag leaves the grep unbounded (it then enters the hook), never a wrong allow. `-e`/`-f`
 # (and `--regexp`/`--file`) supply the pattern, so no positional is the pattern.
-BOUNDED_BOOL_SHORT = frozenset("iwxvcoqLlrRnHhsIFEGPzaUbT")
+# `-o`/`-v` (and `--only-matching`/`--invert-match`) are excluded: only-matching multiplies output
+# past the file size and invert-match prints the non-matching lines, so neither counts as bounded.
+BOUNDED_BOOL_SHORT = frozenset("iwxcqLlrRnHhsIFEGPzaUbT")
 BOUNDED_VALUE_SHORT = frozenset("mABCdD")
 BOUNDED_PATTERN_SHORT = frozenset("ef")
 BOUNDED_BOOL_LONG = frozenset(
     {
-        "ignore-case", "no-ignore-case", "word-regexp", "line-regexp", "invert-match", "count",
-        "files-with-matches", "files-without-match", "only-matching", "quiet", "silent",
+        "ignore-case", "no-ignore-case", "word-regexp", "line-regexp", "count",
+        "files-with-matches", "files-without-match", "quiet", "silent",
         "no-filename", "with-filename", "line-number", "recursive", "dereference-recursive",
         "extended-regexp", "fixed-strings", "basic-regexp", "perl-regexp", "null", "null-data",
         "text", "byte-offset", "no-messages", "initial-tab", "color", "colour", "binary",
@@ -357,6 +365,66 @@ def _path_blocked(p: str) -> bool:
     return _git_ignored(p)
 
 
+def _valid_brace(body: str) -> bool:
+    """Report whether an ERE interval body (``{m}``/``{m,n}``/``{m,}``) is digits-and-comma only."""
+    return re.fullmatch(r"\d+(,\d*)?", body) is not None
+
+
+def _regex_rewritable(pattern: str, ere: bool) -> bool:
+    """Report whether ``pattern`` maps faithfully onto ``ccx code grep --regex`` (the Rust-regex engine).
+
+    A position-aware dialect check — not a character whitelist, which can't distinguish a literal
+    mid-pattern ``^`` (grep) from an anchor (Rust). Admits only constructs whose meaning is identical
+    in grep (BRE when ``ere`` is false, else ERE) and Rust regex: plain atoms (:data:`REGEX_ATOM`,
+    ``.`` the wildcard), ``*`` (and ``+``/``?`` under ERE) never leading or stacked, ``^`` only first
+    and ``$`` only last, and — ERE only — ``|`` alternation, balanced ``()`` groups, and digits-only
+    ``{m,n}`` intervals. Brackets, backslashes, and any other char are not rewritable.
+    """
+    n = len(pattern)
+    depth = 0
+    quantifiable = False  # a preceding atom a quantifier may bind
+    quantifier = False  # the preceding token was itself a quantifier (no stacking)
+    i = 0
+    while i < n:
+        c = pattern[i]
+        if c in REGEX_ATOM:
+            quantifiable, quantifier = True, False
+        elif c == "*" or (ere and c in "+?"):
+            if not quantifiable or quantifier:
+                return False
+            quantifier = True
+        elif c == "^":
+            if i != 0:
+                return False
+            quantifiable = quantifier = False
+        elif c == "$":
+            if i != n - 1:
+                return False
+            quantifiable = quantifier = False
+        elif ere and c == "|":
+            if not quantifiable:
+                return False
+            quantifiable = quantifier = False
+        elif ere and c == "(":
+            depth += 1
+            quantifiable = quantifier = False
+        elif ere and c == ")":
+            depth -= 1
+            if depth < 0:
+                return False
+            quantifiable, quantifier = True, False
+        elif ere and c == "{":
+            close = pattern.find("}", i)
+            if close == -1 or not _valid_brace(pattern[i + 1 : close]):
+                return False
+            quantifiable = quantifier = True
+            i = close
+        else:
+            return False
+        i += 1
+    return depth == 0
+
+
 def _grep_parse(cl: CommandLine) -> GrepCall | None:
     """Parse an unpiped ``grep`` into its ccx-rewritable shape, or ``None`` to fall back to block.
 
@@ -373,7 +441,7 @@ def _grep_parse(cl: CommandLine) -> GrepCall | None:
     e_count = 0
     include: str | None = None
     positionals: list[str] = []
-    expand = ignore_case = word = dropped_l = dropped_fixed = ere = False
+    expand = ignore_case = word = dropped_l = dropped_fixed = ere = bre = False
     i, n = 0, len(args)
     while i < n:
         a = args[i]
@@ -393,7 +461,9 @@ def _grep_parse(cl: CommandLine) -> GrepCall | None:
             elif name == "extended-regexp":
                 ere = True
             elif name == "basic-regexp":
-                pass  # BRE is grep's default; the flag only confirms it
+                bre = True
+            elif name == "fixed-strings":
+                dropped_fixed = True
             elif name == "perl-regexp":
                 return None  # PCRE never maps
             elif name in ("after-context", "before-context", "context"):
@@ -460,7 +530,7 @@ def _grep_parse(cl: CommandLine) -> GrepCall | None:
             elif head == "E":
                 ere = True
             elif head == "G":
-                pass  # BRE is grep's default; the flag only confirms it
+                bre = True
             elif head == "P":
                 return None  # PCRE never maps
             elif head in DROP_SHORT:
@@ -472,6 +542,7 @@ def _grep_parse(cl: CommandLine) -> GrepCall | None:
             dropped_l = dropped_l or "l" in body
             dropped_fixed = dropped_fixed or "F" in body
             ere = ere or "E" in body
+            bre = bre or "G" in body
         else:
             return None  # a bundle carrying a non-DROP char (value short, MAP flag, or -P)
         i += 1
@@ -483,14 +554,21 @@ def _grep_parse(cl: CommandLine) -> GrepCall | None:
         pattern, paths = positionals[0], positionals[1:]
     else:
         paths = positionals
-    if pattern.startswith("-"):
+    if not pattern or pattern.startswith("-"):
         return None
+    if dropped_fixed and (ere or bre):
+        return None  # grep errors on -F with -E/-G (conflicting matchers)
     regex = False
-    if not LITERAL_SAFE.match(pattern):
-        dialect = REGEX_SAFE_ERE if ere else REGEX_SAFE_BRE
-        if not dialect.match(pattern):
-            return None  # exotic regex (backrefs, escapes, PCRE, dialect-divergent metachars)
+    if dropped_fixed:
+        # -F forces literal; a pattern ccx's literal engine can't take faithfully isn't rewritable.
+        if not LITERAL_SAFE.match(pattern):
+            return None
+    elif any(c in (ERE_METACHARS if ere else BRE_METACHARS) for c in pattern):
+        if not _regex_rewritable(pattern, ere):
+            return None  # dialect-divergent or exotic regex (backrefs, escapes, PCRE)
         regex = True
+    elif not LITERAL_SAFE.match(pattern):
+        return None
     for p in paths:
         if _path_blocked(p):
             return None
@@ -538,7 +616,11 @@ def _build_ccx_grep(parsed: GrepCall) -> str | None:
         parts += ["--glob", shlex.quote(parsed.glob)]
     if parsed.expand:
         parts.append(f"--expand={parsed.expand}")
-    parts += [shlex.quote(p) for p in parsed.paths]
+    if parsed.paths:
+        # `--` so cobra reads every operand as a file positional — a flag-like name (`--regex`,
+        # a `-x` file) after grep's own `--` must not re-parse as a ccx flag and flip the search.
+        parts.append("--")
+        parts += [shlex.quote(p) for p in parsed.paths]
     return " ".join(parts)
 
 
@@ -546,14 +628,16 @@ def _note_text(command: str, parsed: GrepCall) -> str:
     disclosures: list[str] = []
     if parsed.regex:
         disclosures.append("the pattern ran as a regex on the rg engine")
-    elif "." in parsed.pattern:
-        disclosures.append(
-            "`.` matched literally (grep treats it as an any-char wildcard) — use the Grep tool if you meant regex"
-        )
+    else:
+        # Literal-mode disclosures, kept out of the regex branch so the note never claims both.
+        if "." in parsed.pattern and not parsed.dropped_fixed:
+            disclosures.append(
+                "`.` matched literally (grep treats it as an any-char wildcard) — use the Grep tool if you meant regex"
+            )
+        if parsed.dropped_fixed:
+            disclosures.append("`-F` dropped — ccx grep already matches literally")
     if parsed.dropped_l:
         disclosures.append("`-l` dropped — ccx returns the matching lines, not just filenames")
-    if parsed.dropped_fixed:
-        disclosures.append("`-F` dropped — ccx grep already matches literally")
     if parsed.expand:
         if parsed.count_dropped:
             disclosures.append(
@@ -582,11 +666,13 @@ def _grep_note(evt: BaseHookEvent) -> str:
 def _bounded_file_grep(cl: CommandLine) -> bool:
     """Report whether a ``grep`` is a bounded search over explicit existing files.
 
-    A single command whose every flag lexes against the known-arity grep tables and whose every path
-    operand stats as an existing regular file (absolute paths included). Such a grep floods nothing —
-    it reads a fixed, named set of files — so when it is not ccx-rewritable it earns a pass-through.
-    The lexer is conservative: an unknown flag or a bundle with a value-taking char returns ``False``
-    (the grep then enters the hook), never a wrong allow.
+    A single command with a non-empty pattern whose every flag lexes against the known-arity grep
+    tables and whose every path operand stats as an existing regular file (absolute paths included)
+    *whose sizes sum to no more than* :data:`~hooks.common.LARGE_READ_BYTES`. Such a grep floods no
+    more than a guarded ``cat``/``Read`` of the same files would, so when it is not ccx-rewritable it
+    earns a pass-through; over the threshold it blocks (the pipe escape hatch remains). The lexer is
+    conservative: an unknown flag or a bundle with a value-taking char returns ``False`` (the grep
+    then enters the hook), never a wrong allow.
     """
     if not is_single_command(cl):
         return False
@@ -628,10 +714,15 @@ def _bounded_file_grep(cl: CommandLine) -> bool:
         elif not all(ch in BOUNDED_BOOL_SHORT for ch in body):
             return False
         i += 1
-    paths = positionals if pattern_from_flag else positionals[1:]
-    if not paths:
+    if pattern_from_flag:
+        paths = positionals
+    elif not positionals or positionals[0] == "":
+        return False  # no pattern, or an empty pattern that floods every line
+    else:
+        paths = positionals[1:]
+    if not paths or not all(Path(p).is_file() for p in paths):
         return False
-    return all(Path(p).is_file() for p in paths)
+    return sum(Path(p).stat().st_size for p in paths) <= LARGE_READ_BYTES
 
 
 class GrepFlood(CustomCommandLineCondition):
@@ -672,13 +763,18 @@ rewrite_command(
         Input(command="grep -rn --include='*.go' foo ."): Rewrite(pattern="--glob '*.go'"),  # `.` + include → repo-wide glob
         Input(command="grep -rl foo ."): Rewrite(pattern="code grep foo"),  # -l is a no-op; `.` → repo-wide
         Input(command="grep -rn foo . src/"): Rewrite(pattern="code grep foo"),  # `.` sibling widens to whole repo, no --glob
-        # Regex rewrites — a BRE/ERE-safe pattern now maps onto `ccx code grep --regex` (disk-independent
+        # Regex rewrites — a validator-cleared pattern maps onto `ccx code grep --regex` (disk-independent
         # `.` widening; the --regex probe hits the real plugin/bin/ccx, which supports it since v0.11.0):
         Input(command="grep 'foo.*' ."): Rewrite(pattern="--regex"),  # BRE-safe metachars → regex on rg engine
         Input(command="grep -E 'a|b' ."): Rewrite(pattern="--regex"),  # ERE alternation → regex on rg engine
+        Input(command="grep -E 'a+' ."): Rewrite(pattern="--regex"),  # ERE `+` is a quantifier → validator → regex
+        Input(command="grep 'a+' ."): Rewrite(pattern="code grep a+"),  # BRE `+` is literal → literal rewrite, no --regex
         # Block — unmappable shapes fall back to the message:
         Input(command="grep -rnC3 foo src/"): Block(),  # value short glued into a bundle
         Input(command="grep -P 'x(?=y)' ."): Block(),  # PCRE (-P) never maps; `.` is a dir, not a bounded file
+        Input(command="grep 'a^b' ."): Block(),  # BRE mid-pattern `^`: literal in grep, an anchor in Rust → not rewritable
+        Input(command="grep -F 'foo.*' ."): Block(),  # -F forces literal; `foo.*` isn't ccx-literal-safe → no --regex flip
+        Input(command="grep -E -F foo ."): Block(),  # -F with -E: conflicting matchers, grep errors → block
         Input(command="grep -q foo src/"): Block(),  # exit-code contract, tree-wide
         Input(command="grep -c foo src/"): Block(),  # count mode, tree-wide
         Input(command="grep -o foo src/"): Block(),  # only-matching mode, tree-wide
