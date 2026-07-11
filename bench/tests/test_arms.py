@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import subprocess
 import unittest
 from pathlib import Path
@@ -54,16 +55,174 @@ class TestBuildRunSpec(unittest.TestCase):
     def test_addendum_max_turns_and_path_per_arm(self) -> None:
         cfg = load()
         workdir = Path("/tmp/wd")
-        with patch.object(arms, "guards_available", return_value=False):
-            for arm in ARMS:
-                spec = arms.build_run_spec(cfg, make_task("t", "tornado"), arm, "sonnet", workdir)
-                cc = spec.provider_configs["claude"]
-                self.assertEqual(cc.append_system_prompt, arms.ADDENDA[arm])
-                self.assertEqual(cc.max_turns, cfg.max_turns)
-                if arm == "baseline":
-                    self.assertNotIn("PATH", spec.env)
-                else:
-                    self.assertIn(str(cfg.ccx_bin.parent), spec.env["PATH"])
+        with TemporaryDirectory() as tmp:
+            shim = arms.ensure_baseline_shim(Path(tmp))
+            with patch.object(arms, "guards_available", return_value=False):
+                for arm in ARMS:
+                    spec = arms.build_run_spec(cfg, make_task("t", "tornado"), arm, "sonnet", workdir, shim_dir=shim)
+                    cc = spec.provider_configs["claude"]
+                    self.assertEqual(cc.append_system_prompt, arms.ADDENDA[arm])
+                    self.assertEqual(cc.max_turns, cfg.max_turns)
+                    # Every arm pins a minimal PATH (spec.env wins spawnllm's merge); none carries the
+                    # shadowing dirs the pilots leaked (`/usr/local/bin`, any `.venv` segment).
+                    dirs = spec.env["PATH"].split(os.pathsep)
+                    self.assertNotIn("/usr/local/bin", dirs)
+                    self.assertFalse(any(seg == ".venv" for d in dirs for seg in d.split(os.sep)), spec.env["PATH"])
+                    if arm == "baseline":
+                        # Baseline leads with the `ccx`-not-found shim; the real ccx dir is absent.
+                        self.assertEqual(dirs[0], str(shim))
+                        self.assertNotIn(str(cfg.ccx_bin.parent), dirs)
+                    else:
+                        self.assertEqual(dirs[0], str(cfg.ccx_bin.parent))
+                        self.assertNotIn(str(shim), dirs)
+
+
+class TestBaselineShim(unittest.TestCase):
+    """Fix #1: the baseline arm gets a `ccx` stub that fails like a host without ccx installed."""
+
+    def test_stub_exits_127_command_not_found(self) -> None:
+        with TemporaryDirectory() as tmp:
+            shim = arms.ensure_baseline_shim(Path(tmp))
+            proc = subprocess.run([str(shim / "ccx"), "code", "outline", "x"], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 127)
+        self.assertIn("command not found", proc.stderr)
+
+    def test_baseline_leads_with_shim_ccx_arms_omit_it(self) -> None:
+        cfg = load()
+        with TemporaryDirectory() as tmp:
+            shim = arms.ensure_baseline_shim(Path(tmp))
+            base = arms.run_path(cfg, ccx=False, shim_dir=shim).split(os.pathsep)
+            ccxp = arms.run_path(cfg, ccx=True, shim_dir=shim).split(os.pathsep)
+        self.assertEqual(base[0], str(shim))
+        self.assertNotIn(str(shim), ccxp)
+
+
+class TestValidateCcxBin(unittest.TestCase):
+    """Fix #2: a missing or non-executable ccx binary fails loud at setup, never silently."""
+
+    def test_missing_ccx_bin_raises(self) -> None:
+        cfg = dataclasses.replace(load(), ccx_bin=Path("/nonexistent/dir/ccx"))
+        with self.assertRaises(LookupError):
+            arms.validate_ccx_bin(cfg)
+
+    def test_non_executable_ccx_bin_raises(self) -> None:
+        with TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "ccx"
+            fake.write_text("#!/bin/sh\n")  # written but not chmod +x
+            cfg = dataclasses.replace(load(), ccx_bin=fake)
+            with self.assertRaises(LookupError):
+                arms.validate_ccx_bin(cfg)
+
+
+class TestPathExcluded(unittest.TestCase):
+    """Fix #6: exclusions match after symlink + trailing-slash normalization, on path segments."""
+
+    def test_usr_local_bin_excluded_with_or_without_trailing_slash(self) -> None:
+        self.assertTrue(arms._path_excluded("/usr/local/bin"))
+        self.assertTrue(arms._path_excluded("/usr/local/bin/"))
+
+    def test_venv_and_venvs_segments_excluded(self) -> None:
+        with TemporaryDirectory() as tmp:
+            venv = Path(tmp) / ".venv" / "bin"
+            venvs = Path(tmp) / ".venvs" / "tool" / "bin"
+            venv.mkdir(parents=True)
+            venvs.mkdir(parents=True)
+            self.assertTrue(arms._path_excluded(str(venv)))
+            self.assertTrue(arms._path_excluded(str(venvs)))
+
+    def test_symlink_to_excluded_dir_excluded(self) -> None:
+        with TemporaryDirectory() as tmp:
+            target = Path(tmp) / ".venv" / "bin"
+            target.mkdir(parents=True)
+            link = Path(tmp) / "link"
+            link.symlink_to(target)
+            self.assertTrue(arms._path_excluded(str(link)))
+
+    def test_plain_dir_not_excluded(self) -> None:
+        with TemporaryDirectory() as tmp:
+            d = Path(tmp) / "local" / "bin"
+            d.mkdir(parents=True)
+            self.assertFalse(arms._path_excluded(str(d)))
+
+
+class TestGuardProbePath(unittest.TestCase):
+    """Fix #3: the guard-liveness probe runs under the same composed child PATH the arms use."""
+
+    DENY = json.dumps(
+        {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "ccx"}}
+    )
+
+    def setUp(self) -> None:
+        arms.GUARD_PROBE.clear()
+
+    def test_probe_env_path_is_composed_ccx_path(self) -> None:
+        cfg = load()
+        captured: dict = {}
+
+        def fake_run(*_args, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return SimpleNamespace(stdout=self.DENY)
+
+        with patch.object(arms.subprocess, "run", side_effect=fake_run):
+            arms.guards_available(cfg)
+        self.assertIn("env", captured)
+        self.assertEqual(captured["env"]["PATH"], arms.run_path(cfg, ccx=True))
+
+
+class TestRunPath(unittest.TestCase):
+    """Fix #3: `run_path` composes a minimal child PATH, skipping the pilot's leakage vectors."""
+
+    def _mkbin(self, d: Path, name: str) -> None:
+        d.mkdir(parents=True, exist_ok=True)
+        exe = d / name
+        exe.write_text("#!/bin/sh\n")
+        exe.chmod(0o755)
+
+    def test_composition_skips_shadows_and_dedupes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            venv_bin = root / "proj" / ".venv" / "bin"
+            superset_bin = home / ".superset" / "bin"
+            claude_dir = root / "local" / "bin"
+            uvx_dir = root / "tools"
+            # Every decoy also carries a `claude`, so an unskipped one would win the scan.
+            self._mkbin(venv_bin, "claude")
+            self._mkbin(superset_bin, "claude")
+            self._mkbin(claude_dir, "claude")
+            self._mkbin(uvx_dir, "uvx")
+            cfg = dataclasses.replace(load(), ccx_bin=root / "ccxbin" / "ccx")
+            # `/usr/local/bin` is excluded by exact-string match, so its literal presence suffices.
+            path = os.pathsep.join([str(venv_bin), str(superset_bin), "/usr/local/bin", str(claude_dir), str(uvx_dir)])
+            with patch.dict(os.environ, {"PATH": path, "HOME": str(home)}, clear=True):
+                base = arms.run_path(cfg, ccx=False)
+                ccxp = arms.run_path(cfg, ccx=True)
+        base_dirs = base.split(os.pathsep)
+        ccx_dirs = ccxp.split(os.pathsep)
+        for excluded in (str(venv_bin), str(superset_bin), "/usr/local/bin"):
+            self.assertNotIn(excluded, base_dirs)
+            self.assertNotIn(excluded, ccx_dirs)
+        self.assertIn(str(claude_dir), base_dirs)
+        self.assertIn(str(uvx_dir), base_dirs)
+        # ccx binary dir leads for ccx arms only; baseline never carries it.
+        self.assertEqual(ccx_dirs[0], str(cfg.ccx_bin.parent))
+        self.assertNotIn(str(cfg.ccx_bin.parent), base_dirs)
+        # Ordered, first-wins dedupe: resolved tools then the fixed system tail, each once.
+        self.assertEqual(base_dirs, [str(claude_dir), str(uvx_dir), *arms.SYSTEM_PATH_DIRS])
+        self.assertEqual(ccx_dirs, [str(cfg.ccx_bin.parent), str(claude_dir), str(uvx_dir), *arms.SYSTEM_PATH_DIRS])
+
+    def test_raises_when_claude_unfindable(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            venv_bin = root / ".venv" / "bin"
+            uvx_dir = root / "tools"
+            self._mkbin(venv_bin, "claude")  # claude exists only in an excluded dir
+            self._mkbin(uvx_dir, "uvx")
+            cfg = dataclasses.replace(load(), ccx_bin=root / "ccxbin" / "ccx")
+            path = os.pathsep.join([str(venv_bin), str(uvx_dir)])
+            with patch.dict(os.environ, {"PATH": path, "HOME": str(root)}, clear=True):
+                with self.assertRaises(LookupError):
+                    arms.run_path(cfg, ccx=True)
 
 
 class TestGuardsAvailable(unittest.TestCase):

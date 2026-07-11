@@ -26,6 +26,14 @@ CAPT_HOOK = "capt-hook>=3.14.0"
 CCX_ARMS = ("ccx-mcp", "ccx-cli")
 PATCHES_DIR = BENCH_DIR / "tasks" / "patches"
 
+# The fixed tail every arm's child PATH ends with. `run_path` resolves `claude`/`uvx` off the
+# host PATH ahead of these but skips the leakage vectors that corrupted the pilots (see below).
+SYSTEM_PATH_DIRS = ("/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin")
+
+# The baseline arm gets a `ccx` that fails like a host without ccx installed, so an attempted call
+# surfaces in the transcript instead of silently resolving the brew ccx and contaminating the arm.
+BASELINE_SHIM_STUB = '#!/bin/sh\necho "ccx: command not found" >&2\nexit 127\n'
+
 # Length-matched (±15%) addenda so the paired delta isolates ccx, not the volume of advice:
 # the MCP ladder names the mcp__cc-context__* tools, the CLI ladder the `ccx` commands.
 ADDENDA_DIR = Path(__file__).resolve().parent
@@ -81,6 +89,9 @@ def guards_available(cfg: Config) -> bool:
     payload = json.dumps(
         {"hook_event_name": "PreToolUse", "tool_name": "Read", "tool_input": {"file_path": str(probe_file)}}
     )
+    # Probe against the SAME pinned PATH the ccx arms run under, so the hook resolves the same
+    # `uvx`/`capt-hook` at probe time that it will at runtime — not whatever the host shell exposes.
+    child_env = {**os.environ, "PATH": run_path(cfg, ccx=True)}
     try:
         proc = subprocess.run(
             ["uvx", "--from", CAPT_HOOK, "capt-hook", "--hooks", str(cfg.plugin_hooks), "run", "PreToolUse"],
@@ -89,6 +100,7 @@ def guards_available(cfg: Config) -> bool:
             capture_output=True,
             text=True,
             timeout=180,
+            env=child_env,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         GUARD_PROBE[key] = False
@@ -152,13 +164,96 @@ def run_settings(cfg: Config, with_guards: bool) -> str:
     return json.dumps(settings)
 
 
-def build_run_spec(cfg: Config, task: Task, arm: str, model: str, workdir: Path) -> RunSpec:
-    """Build the spawnllm RunSpec for one headless run."""
-    ccx = arm in CCX_ARMS
-    # spawnllm inherits os.environ, so force ENABLE_TOOL_SEARCH off (it leaks true from the dev shell).
-    env: dict[str, str] = {"ENABLE_TOOL_SEARCH": "false"}
+def _path_excluded(d: str) -> bool:
+    """True if a PATH dir is a known leakage vector, matched after symlink + trailing-slash normalize.
+
+    Excluded: any `.venv`/`.venvs` path segment (harness/pyenv tool venvs shadowed the fixture's
+    `click`), `/usr/local/bin` (legacy python2.7 tooling), and anything under `~/.superset` (the
+    superset `claude` shim; over-exclusion there is fail-safe).
+    """
+    real = os.path.realpath(d)
+    parts = real.split(os.sep)
+    if ".venv" in parts or ".venvs" in parts:
+        return True
+    if real == "/usr/local/bin":
+        return True
+    superset = os.path.realpath(os.path.expanduser("~/.superset"))
+    return real == superset or real.startswith(superset + os.sep)
+
+
+def _tool_dir(name: str) -> str:
+    """First host-PATH dir carrying an executable `name`, skipping the `_path_excluded` leakage vectors.
+
+    Raises `LookupError` when `name` resolves only in excluded dirs — never silently falls back.
+    Returns the PATH entry as written (not its realpath) so the composed child PATH is unsurprising.
+    """
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        if not d or _path_excluded(d):
+            continue
+        candidate = Path(d) / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return d
+    raise LookupError(f"{name!r} not found in any non-excluded host PATH dir")
+
+
+def baseline_shim_dir(session_dir: Path) -> Path:
+    """The per-session dir holding the baseline arm's `ccx`-not-found shim."""
+    return session_dir / "baseline-shim"
+
+
+def ensure_baseline_shim(session_dir: Path) -> Path:
+    """Create the baseline `ccx` shim (a stub that exits 127) and return its dir (idempotent)."""
+    d = baseline_shim_dir(session_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    stub = d / "ccx"
+    stub.write_text(BASELINE_SHIM_STUB)
+    stub.chmod(0o755)
+    return d
+
+
+def validate_ccx_bin(cfg: Config) -> str:
+    """Assert the configured ccx binary exists and is executable; return its `--version` output.
+
+    Fails loud at setup so a missing or mis-pinned `ccx_bin` never silently degrades a ccx arm to
+    a no-ccx run — the whole comparison depends on the binary actually being there.
+    """
+    ccx = cfg.ccx_bin
+    if not (ccx.is_file() and os.access(ccx, os.X_OK)):
+        raise LookupError(f"configured ccx_bin is not an executable file: {ccx}")
+    out = subprocess.run([str(ccx), "--version"], capture_output=True, text=True, timeout=30)
+    return out.stdout.strip() or out.stderr.strip()
+
+
+def run_path(cfg: Config, *, ccx: bool, shim_dir: Path | None = None) -> str:
+    """Compose the minimal child PATH for one arm, ordered with first-wins dedupe.
+
+    Order: a leading dir (the ccx binary's dir for ccx arms, else `shim_dir` for baseline), then
+    the resolved `claude` and `uvx` dirs, then `SYSTEM_PATH_DIRS`. spawnllm merges
+    `os.environ | backend env | spec.env` with spec.env winning, so this pins exactly which
+    `claude`/`uvx`/`ccx` a bare-argv run resolves — baseline's leading shim making `ccx` fail loud.
+    """
     if ccx:
-        env["PATH"] = f"{cfg.ccx_bin.parent}{os.pathsep}{os.environ.get('PATH', '')}"
+        lead = [str(cfg.ccx_bin.parent)]
+    elif shim_dir is not None:
+        lead = [str(shim_dir)]
+    else:
+        lead = []
+    dirs = lead + [_tool_dir("claude"), _tool_dir("uvx"), *SYSTEM_PATH_DIRS]
+    seen: set[str] = set()
+    ordered = [d for d in dirs if not (d in seen or seen.add(d))]
+    return os.pathsep.join(ordered)
+
+
+def build_run_spec(cfg: Config, task: Task, arm: str, model: str, workdir: Path, *, shim_dir: Path) -> RunSpec:
+    """Build the spawnllm RunSpec for one headless run.
+
+    `shim_dir` is the session's baseline `ccx`-not-found shim; it leads the baseline arm's PATH and
+    is ignored for ccx arms (which lead with the real ccx binary's dir).
+    """
+    ccx = arm in CCX_ARMS
+    # spawnllm inherits os.environ, so force ENABLE_TOOL_SEARCH off (it leaks true from the dev
+    # shell) and pin a minimal PATH (spec.env wins the merge) so no host dir shadows the tools.
+    env: dict[str, str] = {"ENABLE_TOOL_SEARCH": "false", "PATH": run_path(cfg, ccx=ccx, shim_dir=shim_dir)}
     settings = run_settings(cfg, with_guards=ccx and guards_available(cfg))
     return RunSpec(
         prompt=task.prompt,

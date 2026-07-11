@@ -66,6 +66,10 @@ class Session:
 
     def setup(self, expected_runs: int) -> None:
         (self.runs_dir / "raw").mkdir(parents=True, exist_ok=True)
+        # Fail loud now if the pinned ccx binary is missing, and stand up the baseline `ccx`-not-found
+        # shim, before any run spends money against a mis-pinned or contaminating environment.
+        ccx_version = arms.validate_ccx_bin(self.cfg)
+        shim = arms.ensure_baseline_shim(self.runs_dir)
         meta = {
             "session_id": self.session_id,
             "models": list(self.cfg.models),
@@ -74,11 +78,13 @@ class Session:
             "expected_runs": expected_runs,
             "max_turns": self.cfg.max_turns,
             "corpus_sha": corpus_sha(),
+            "ccx_version": ccx_version,
             "safety_ceiling_usd": self.cfg.safety_ceiling_usd,
             "permission_mode": self.cfg.permission_mode,
             "strip_mcp": self.cfg.strip_mcp,
             "disallowed_tools": list(self.cfg.disallowed_tools),
             "env_fingerprint": env_fingerprint(),
+            "run_path": {arm: arms.run_path(self.cfg, ccx=arm in arms.CCX_ARMS, shim_dir=shim) for arm in ARMS},
         }
         (self.runs_dir / "meta.json").write_text(json.dumps(meta, indent=2))
 
@@ -158,7 +164,7 @@ async def run_one(sess: Session, task: Task, arm: str, model: str, repeat: int) 
     cfg = sess.cfg
     run_id = f"{task.id}__{arm}__{model}__r{repeat}"
     workdir = arms.prepare_workdir(cfg, task, arm, run_id)
-    spec = arms.build_run_spec(cfg, task, arm, model, workdir)
+    spec = arms.build_run_spec(cfg, task, arm, model, workdir, shim_dir=arms.baseline_shim_dir(sess.runs_dir))
     resp = await spawnllm.run(spec)
 
     (sess.runs_dir / "raw" / f"{run_id}.json").write_text(resp.output.raw or "")
@@ -184,7 +190,9 @@ def _build_plan(cfg: Config, tasks: list[Task]) -> list[tuple[Task, str, str, in
     """Round-robin every (task, arm, model, repeat): all tasks once per (model, repeat) before
     any task repeats, so a ceiling halt samples every task evenly. The arm order rotates by
     repeat — `ARMS[r:] + ARMS[:r]` — so no arm is systematically first and each leads once per
-    len(ARMS) repeats; a task's arms stay adjacent for the paired report."""
+    len(ARMS) repeats; a task's arms stay adjacent for the paired report. With repeats=5 and 3
+    arms the rotation doesn't divide evenly, so lead counts land at 2/2/1 per task — negligible
+    and accepted (the paired delta cancels arm-order effects)."""
     n = len(ARMS)
     plan: list[tuple[Task, str, str, int]] = []
     for model in cfg.models:
@@ -220,8 +228,9 @@ async def _run_bounded(sess: Session, plan: list[tuple[Task, str, str, int]], co
     records: list[dict] = []
     halted: list[str] = []
     # Admission accounting: every in-flight run reserves the max single-run cost seen so far
-    # (1.0 USD until the first run completes). A run is admitted only while spent + the sum of
-    # live reservations stays under the ceiling, so N workers can't all clear a stale check.
+    # (1.0 USD until the first run completes). A run is admitted only while spent + the reservations
+    # for the in-flight runs plus this candidate stays under the ceiling, so N workers can't all
+    # clear a stale check.
     state = {"in_flight": 0, "max_single": 1.0, "any_done": False}
 
     with sess.jsonl_path.open("w") as out:
@@ -232,9 +241,11 @@ async def _run_bounded(sess: Session, plan: list[tuple[Task, str, str, int]], co
                 if halted:
                     return
                 async with admit_lock:
-                    if sess.spent_usd + state["in_flight"] * state["max_single"] >= ceiling:
+                    # Reserve for the in-flight runs AND this candidate's own run, so admitting it
+                    # can't push projected spend past the ceiling.
+                    if sess.spent_usd + (state["in_flight"] + 1) * state["max_single"] >= ceiling:
                         halted.append(
-                            f"spent ${sess.spent_usd:.4f} + {state['in_flight']} reservation(s) >= ceiling ${ceiling:.2f}"
+                            f"spent ${sess.spent_usd:.4f} + {state['in_flight'] + 1} reservation(s) >= ceiling ${ceiling:.2f}"
                         )
                         return
                     state["in_flight"] += 1

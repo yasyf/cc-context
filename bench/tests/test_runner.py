@@ -200,8 +200,9 @@ class TestConcurrency(unittest.TestCase):
 
     def test_admission_reserves_against_in_flight_spend(self) -> None:
         """Under concurrency, admission reserves the max single-run cost (1.0 before any run
-        completes) per in-flight run, so workers can't all clear a stale ceiling check. With
-        ceiling 3.5 and reservation 1.0, at most 4 (in_flight*1.0 < 3.5) start before the halt."""
+        completes) for every in-flight run plus the candidate, so workers can't all clear a stale
+        ceiling check. With ceiling 3.5 and reservation 1.0, at most 3 start before the halt:
+        (in_flight+1)*1.0 < 3.5 admits while in_flight is 0/1/2, then in_flight=3 halts."""
         peak = {"cur": 0, "max": 0}
 
         async def fake_run_one(sess, task, arm, model, repeat):
@@ -222,8 +223,8 @@ class TestConcurrency(unittest.TestCase):
                 jsonl = [json.loads(ln) for ln in sess.jsonl_path.read_text().splitlines() if ln.strip()]
         finally:
             runner.run_one = orig
-        self.assertEqual(peak["max"], 4)  # not 8 (the semaphore cap) — admission bounds it
-        self.assertEqual(len(records), 4)  # only the admitted runs completed
+        self.assertEqual(peak["max"], 3)  # not 8 (the semaphore cap) — admission bounds it
+        self.assertEqual(len(records), 3)  # only the admitted runs completed
         self.assertTrue(any("halted" in j for j in jsonl))  # a halt marker was written
 
 
