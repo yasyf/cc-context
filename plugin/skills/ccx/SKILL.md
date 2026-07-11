@@ -217,6 +217,12 @@ local embeddings, degrading to BM25-only (and saying so) when `uv` is off `PATH`
 On a page with no heading structure the outline collapses to one section — lead with
 `search`, or page through it with `read --offset <tokens>`, echoing the next offset
 from the overflow footer.
+A page that fetches as a JS app shell — near-empty content from a client-side app —
+escalates automatically to a rendered fetch when a lane is available: keyed jina
+(`JINA_API_KEY`), firecrawl (`FIRECRAWL_API_KEY`), or the `agent-browser` CLI on `PATH`.
+The jina lane also appends the page's links as a `## Links` section, so nav slugs land
+in outline and search. With no lane available the thin copy is served with a note naming
+what to set or install — set it, then re-run with `--refresh`.
 Fetched pages and their indexes persist in the ccx cache for 24 hours — `--refresh` on
 any of the three bypasses the TTL. The MCP mirrors are `mcp__cc-context__ccx_web_outline`,
 `ccx_web_read`, and `ccx_web_search`.
