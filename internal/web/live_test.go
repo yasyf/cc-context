@@ -13,7 +13,60 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/vendor"
 )
+
+// TestLiveJinaRenderPass confirms the jina render pass returns markdown from a
+// real JS-heavy page and pins the data.links shape: an array of [text, url]
+// pairs. jina carries the summary on FetchResult.Links (renderFetch appends it),
+// so a passing decode plus well-formed pairs validate that shape against
+// production — a different shape would fail the envelope decode inside jina.
+func TestLiveJinaRenderPass(t *testing.T) {
+	requireLive(t, envJinaKey)
+	ctx, cancel := context.WithTimeout(context.Background(), jinaTimeout+5*time.Second)
+	defer cancel()
+
+	res, err := newTiers().jina(ctx, "https://excalidraw.com", true)
+	if err != nil {
+		t.Fatalf("jina render fetch: %v", err)
+	}
+	if res.Tier != TierJinaRender {
+		t.Errorf("Tier = %q, want %q", res.Tier, TierJinaRender)
+	}
+	if strings.TrimSpace(res.Markdown) == "" {
+		t.Error("jina render returned empty markdown")
+	}
+	for i, pair := range res.Links {
+		if len(pair) < 2 {
+			t.Errorf("links[%d] = %v, want a [text, url] pair", i, pair)
+		}
+	}
+	if len(res.Links) == 0 {
+		t.Log("jina render OK but returned no link summary")
+	} else {
+		t.Logf("jina render OK: %d links, first=%v", len(res.Links), res.Links[0])
+	}
+}
+
+// TestLiveAgentBrowserRenderedRead drives the real agent-browser lane against a
+// live page, skipping when the binary is absent.
+func TestLiveAgentBrowserRenderedRead(t *testing.T) {
+	requireLiveOptIn(t)
+	if vendor.LookPath(agentBrowserBin) == "" {
+		t.Skipf("%s not on PATH", agentBrowserBin)
+	}
+	res, err := newTiers().agentBrowser(context.Background(), "https://example.com", false)
+	if err != nil {
+		t.Fatalf("agent-browser rendered read: %v", err)
+	}
+	if res.Tier != TierAgentBrowser {
+		t.Errorf("Tier = %q, want %q", res.Tier, TierAgentBrowser)
+	}
+	if strings.TrimSpace(res.Markdown) == "" {
+		t.Error("agent-browser returned empty markdown")
+	}
+	t.Logf("agent-browser OK: title=%q markdown=%d bytes", res.Title, len(res.Markdown))
+}
 
 // The live tests in this file hit the real hosted tiers to verify each service's
 // wire shape against production — the one thing the httptest suite cannot do,
@@ -59,7 +112,7 @@ func requirePaidLive(t *testing.T, keyEnv string) string {
 // keyless path does in production.
 func TestLiveJinaKeyed(t *testing.T) {
 	requireLive(t, envJinaKey)
-	res, err := newTiers().jina(context.Background(), "https://example.com")
+	res, err := newTiers().jina(context.Background(), "https://example.com", false)
 	if err != nil {
 		t.Fatalf("jina live fetch: %v", err)
 	}
@@ -118,7 +171,7 @@ func TestLiveExaTagged(t *testing.T) {
 // data.markdown and, usually, data.metadata.title on the success path.
 func TestLiveFirecrawl(t *testing.T) {
 	key := requireLive(t, envFirecrawlKey)
-	res, err := newTiers().firecrawl(context.Background(), "https://go.dev/doc/effective_go", key)
+	res, err := newTiers().firecrawl(context.Background(), "https://go.dev/doc/effective_go", key, false)
 	if err != nil {
 		t.Fatalf("firecrawl live fetch: %v", err)
 	}
@@ -293,7 +346,7 @@ func TestLiveJinaChallengeAt200(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), jinaTimeout+5*time.Second)
 	defer cancel()
 
-	res, err := newTiers().jina(ctx, "https://nopecha.com/demo/cloudflare")
+	res, err := newTiers().jina(ctx, "https://nopecha.com/demo/cloudflare", false)
 	switch {
 	case errors.Is(err, errStealthRequired):
 		t.Logf("jina classified the interstitial as a challenge: %v", err)

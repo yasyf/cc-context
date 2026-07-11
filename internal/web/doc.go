@@ -23,6 +23,15 @@ const (
 	TierHTTP Tier = "http"
 	// TierBrowserbase is the stealth Browserbase fetch (BROWSERBASE_API_KEY).
 	TierBrowserbase Tier = "browserbase"
+	// TierJinaRender is the jina reader with headless-browser rendering, the
+	// first lane of the thin-content render escalation (JINA_API_KEY).
+	TierJinaRender Tier = "jina-render"
+	// TierFirecrawlRender is Firecrawl's scrape with a client-side render wait,
+	// the escalation's second lane (FIRECRAWL_API_KEY).
+	TierFirecrawlRender Tier = "firecrawl-render"
+	// TierAgentBrowser is the local agent-browser CLI, the escalation's last lane
+	// and the only one that runs for local targets.
+	TierAgentBrowser Tier = "agent-browser"
 )
 
 // Sentinel fetch failures. A cascade wraps these with %w so callers branch with
@@ -52,6 +61,11 @@ type FetchResult struct {
 	HTML     string
 	ETag     string
 	LastMod  string
+	// Links is the page's link summary as [text, url] pairs in page (nav) order,
+	// populated only by the jina render pass. renderFetch appends it as a ## Links
+	// section to the winning result's Markdown after thinness is classified, so it
+	// never pads a thin body over the floor. See renderFetch.
+	Links [][]string
 }
 
 // Page is a fetched, extracted, and chunked web page — the unit persisted to
@@ -62,6 +76,7 @@ type Page struct {
 	FinalURL   string // after redirects
 	Title      string
 	Tier       Tier
+	Thin       bool // the served body is a thin client-side shell no render lane could improve
 	FetchedAt  time.Time
 	ETag       string
 	LastMod    string

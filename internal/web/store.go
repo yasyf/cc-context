@@ -251,6 +251,7 @@ type pageWire struct {
 	FinalURL   string
 	Title      string
 	Tier       Tier
+	Thin       bool
 	FetchedAt  time.Time
 	ETag       string
 	LastMod    string
@@ -270,6 +271,7 @@ func toWire(p *Page) *pageWire {
 		FinalURL:   p.FinalURL,
 		Title:      p.Title,
 		Tier:       p.Tier,
+		Thin:       p.Thin,
 		FetchedAt:  p.FetchedAt,
 		ETag:       p.ETag,
 		LastMod:    p.LastMod,
@@ -296,6 +298,7 @@ func fromWire(w *pageWire) *Page {
 		FinalURL:   w.FinalURL,
 		Title:      w.Title,
 		Tier:       w.Tier,
+		Thin:       w.Thin,
 		FetchedAt:  w.FetchedAt,
 		ETag:       w.ETag,
 		LastMod:    w.LastMod,

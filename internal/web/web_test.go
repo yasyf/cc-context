@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -68,6 +69,24 @@ func withFetch(t *testing.T, fn fetchFunc) {
 	prev := fetchPage
 	fetchPage = fn
 	t.Cleanup(func() { fetchPage = prev })
+}
+
+// renderFunc mirrors the signature of RenderFetch (and the renderPage seam).
+type renderFunc = func(context.Context, string) (FetchResult, bool, error)
+
+func withRenderPage(t *testing.T, fn renderFunc) {
+	t.Helper()
+	prev := renderPage
+	renderPage = fn
+	t.Cleanup(func() { renderPage = prev })
+}
+
+// TestMain disables render escalation by default so Run stays hermetic: a
+// sub-floor test fixture would otherwise trip thinSignature and spawn a real
+// render subprocess. The escalation tests opt back in with withRenderPage.
+func TestMain(m *testing.M) {
+	renderPage = nil
+	os.Exit(m.Run())
 }
 
 func withEmbedder(t *testing.T, e Embedder) {
@@ -922,4 +941,194 @@ func TestRunPanicsOnNonWebOp(t *testing.T) {
 		}
 	}()
 	_, _ = Run(context.Background(), backend.OpSearch, backend.Args{URL: fixtureURL})
+}
+
+func TestRunThinNoLaneServesNoteAllOps(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
+	isolateKeys(t)
+	disableAgentBrowser(t)
+	withFetch(t, markdownFetch("loading", "App", nil))
+	withRenderPage(t, func(context.Context, string) (FetchResult, bool, error) {
+		return FetchResult{}, false, errors.New("no render lane available")
+	})
+
+	const wantNote = "set JINA_API_KEY"
+	for _, op := range []backend.Op{backend.OpWebOutline, backend.OpWebRead, backend.OpWebSearch} {
+		out, err := Run(context.Background(), op, backend.Args{URL: fixtureURL, Query: "x"})
+		if err != nil {
+			t.Fatalf("Run %v: %v", op, err)
+		}
+		if !strings.Contains(out, wantNote) {
+			t.Errorf("op %v output missing the thin note %q:\n%s", op, wantNote, out)
+		}
+	}
+	page, err := Load(fixtureURL, EmbedModelID)
+	if err != nil || page == nil {
+		t.Fatalf("Load: page=%v err=%v", page, err)
+	}
+	if !page.Thin {
+		t.Error("persisted page.Thin = false, want true")
+	}
+}
+
+func TestRunThinEscalatesServesRendered(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
+	isolateKeys(t)
+	disableAgentBrowser(t)
+	withFetch(t, markdownFetch("loading", "App", nil))
+	rendered := "# Rendered\n\n" + strings.Repeat("real rendered prose here. ", 20)
+	withRenderPage(t, func(context.Context, string) (FetchResult, bool, error) {
+		return FetchResult{Tier: TierJinaRender, FinalURL: fixtureURL, Title: "Rendered", Markdown: rendered}, false, nil
+	})
+
+	out, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(out, "jina-render") || !strings.Contains(out, "# Rendered") {
+		t.Errorf("outline did not serve the rendered result:\n%s", out)
+	}
+	if strings.Contains(out, "static content") {
+		t.Errorf("a non-thin rendered page carried a thin note:\n%s", out)
+	}
+	page, _ := Load(fixtureURL, EmbedModelID)
+	if page == nil || page.Thin {
+		t.Errorf("page.Thin = %v, want false (rendered result is not thin)", page != nil && page.Thin)
+	}
+}
+
+func TestRunThinStillThinKeepsLargest(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
+	isolateKeys(t)
+	t.Setenv(envJinaKey, "jina-key") // a lane is available → the genuinely-little-content wording
+	disableAgentBrowser(t)
+	withFetch(t, markdownFetch("hi", "App", nil))
+	larger := "still thin but a good deal larger than the original body"
+	withRenderPage(t, func(context.Context, string) (FetchResult, bool, error) {
+		return FetchResult{Tier: TierJinaRender, FinalURL: fixtureURL, Title: "App", Markdown: larger}, true, nil
+	})
+
+	out, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Full: true})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.HasPrefix(out, larger) {
+		t.Errorf("read did not serve the larger thin body:\n%s", out)
+	}
+	if !strings.Contains(out, "may genuinely have little static content") {
+		t.Errorf("thin read missing the lane-available note:\n%s", out)
+	}
+	page, _ := Load(fixtureURL, EmbedModelID)
+	if page == nil || !page.Thin {
+		t.Errorf("page.Thin = %v, want true", page != nil && page.Thin)
+	}
+}
+
+func TestRunThinNoteSurvivesCacheHit(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
+	isolateKeys(t)
+	disableAgentBrowser(t)
+	var calls atomic.Int32
+	withFetch(t, markdownFetch("loading", "App", &calls))
+	withRenderPage(t, func(context.Context, string) (FetchResult, bool, error) {
+		return FetchResult{}, false, errors.New("no render lane available")
+	})
+
+	first, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL})
+	if err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	second, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL})
+	if err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Errorf("fetch called %d times, want 1 (second Run must hit the fresh cache)", calls.Load())
+	}
+	for _, out := range []string{first, second} {
+		if !strings.Contains(out, "set JINA_API_KEY") {
+			t.Errorf("outline missing the thin note:\n%s", out)
+		}
+	}
+}
+
+func TestRunNotThinNeverCallsRenderPage(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
+	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", nil))
+	withRenderPage(t, func(context.Context, string) (FetchResult, bool, error) {
+		t.Error("renderPage called for a non-thin page")
+		return FetchResult{}, false, nil
+	})
+
+	out, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.Contains(out, "static content") || strings.Contains(out, "set JINA_API_KEY") {
+		t.Errorf("a non-thin page carried a thin note:\n%s", out)
+	}
+}
+
+func TestRunThinReEscalatesOn304(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
+	isolateKeys(t)
+	disableAgentBrowser(t)
+
+	// A stale Thin page whose origin will 304: without re-escalation it would trap
+	// Thin forever, breaking the note's own "re-run with --refresh" promise.
+	prior := samplePage(fixtureURL, 1, 0, EmbedModelID)
+	prior.Thin = true
+	prior.FetchedAt = timeNow().Add(-48 * time.Hour)
+	if err := Save(prior); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+
+	withFetch(t, func(_ context.Context, _ string, p *Page) (FetchResult, error) {
+		if p == nil {
+			t.Error("revalidation fetch got a nil prior")
+		}
+		return FetchResult{}, fmt.Errorf("http: %w", ErrNotModified)
+	})
+	rendered := "# Rendered\n\n" + strings.Repeat("real rendered prose here. ", 20)
+	withRenderPage(t, func(context.Context, string) (FetchResult, bool, error) {
+		return FetchResult{Tier: TierJinaRender, FinalURL: fixtureURL, Title: "Rendered", Markdown: rendered}, false, nil
+	})
+
+	out, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Full: true})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.HasPrefix(out, rendered) {
+		t.Errorf("304 re-escalation did not serve the rendered body:\n%s", out)
+	}
+	if strings.Contains(out, "static content") {
+		t.Errorf("re-escalated page still carries a thin note:\n%s", out)
+	}
+	page, _ := Load(fixtureURL, EmbedModelID)
+	if page == nil || page.Thin {
+		t.Errorf("page.Thin = %v, want false after 304 re-escalation", page != nil && page.Thin)
+	}
+	if page != nil && page.Markdown != rendered {
+		t.Errorf("persisted markdown is not the rendered body:\n%s", page.Markdown)
+	}
+}
+
+func TestThinNoteLocalTargetNamesAgentBrowser(t *testing.T) {
+	isolateKeys(t)
+	t.Setenv(envJinaKey, "jina-key") // a hosted key is set but cannot reach a local target
+	disableAgentBrowser(t)
+
+	note := thinNote(&Page{URL: "http://localhost:3000/app", Thin: true})
+	if !strings.Contains(note, "install agent-browser") {
+		t.Errorf("local thin note = %q, want it to name agent-browser install", note)
+	}
+	if strings.Contains(note, "may genuinely have little static content") {
+		t.Errorf("local thin note wrongly claims genuine-little-content:\n%s", note)
+	}
 }

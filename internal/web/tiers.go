@@ -52,6 +52,10 @@ const (
 // tier's JSON response) at 10 MiB via an io.LimitReader.
 const maxBodyBytes = 10 << 20
 
+// firecrawlRenderWaitMS is how long Firecrawl's render pass waits for client-side
+// scripts to paint before scraping; well under firecrawlTimeout.
+const firecrawlRenderWaitMS = 8000
+
 // errStealthRequired is the internal cascade signal that a tier's output is a
 // bot/DDoS challenge (or a 403/429/503): the page needs the stealth backstop.
 // It never escapes fetch — the orchestrator translates it to a browserbase
@@ -213,47 +217,63 @@ func (t *tiers) refuseLocalRedirect(req *http.Request, via []*http.Request) erro
 	return nil
 }
 
-// jina fetches targetURL through the always-on r.jina.ai reader, returning
-// markdown. It requests the JSON envelope so a target failure carried as an
-// HTTP-200 body warning (the "200-trap") is caught instead of cached.
-func (t *tiers) jina(ctx context.Context, targetURL string) (FetchResult, error) {
+// jina fetches targetURL through the r.jina.ai reader, returning markdown. It
+// requests the JSON envelope so a target failure carried as an HTTP-200 body
+// warning (the "200-trap") is caught instead of cached. When render is set it
+// forces headless-browser rendering (X-Engine) with a mutation-idle wait and
+// pulls the full link summary, the thin-content escalation's first lane; the
+// link summary rides on FetchResult.Links for renderFetch to append after
+// thinness is classified.
+func (t *tiers) jina(ctx context.Context, targetURL string, render bool) (FetchResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, jinaTimeout)
 	defer cancel()
 
+	tier := TierJina
+	if render {
+		tier = TierJinaRender
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.jinaBase+"/"+targetURL, nil)
 	if err != nil {
-		return FetchResult{}, fmt.Errorf("jina: build request: %w", err)
+		return FetchResult{}, fmt.Errorf("%s: build request: %w", tier, err)
 	}
 	req.Header.Set("X-Respond-With", "markdown")
 	req.Header.Set("Accept", "application/json")
+	if render {
+		req.Header.Set("X-Engine", "browser")
+		req.Header.Set("X-Respond-Timing", "mutation-idle")
+		req.Header.Set("X-No-Cache", "true")
+		req.Header.Set("X-With-Links-Summary", "all")
+	}
 	if key := os.Getenv(envJinaKey); key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return FetchResult{}, fmt.Errorf("jina: request: %w", err)
+		return FetchResult{}, fmt.Errorf("%s: request: %w", tier, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := readLimited(resp.Body)
 	if err != nil {
-		return FetchResult{}, fmt.Errorf("jina: read body: %w", err)
+		return FetchResult{}, fmt.Errorf("%s: read body: %w", tier, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return FetchResult{}, serviceFailure(TierJina, resp.StatusCode)
+		return FetchResult{}, serviceFailure(tier, resp.StatusCode)
 	}
 
 	var env struct {
 		Data struct {
-			Title   string `json:"title"`
-			URL     string `json:"url"`
-			Content string `json:"content"`
-			Warning string `json:"warning"`
+			Title   string     `json:"title"`
+			URL     string     `json:"url"`
+			Content string     `json:"content"`
+			Warning string     `json:"warning"`
+			Links   [][]string `json:"links"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(body), &env); err != nil {
-		return FetchResult{}, fmt.Errorf("jina: decode envelope: %w", err)
+		return FetchResult{}, fmt.Errorf("%s: decode envelope: %w", tier, err)
 	}
 
 	// data.warning is jina's multi-class channel — a relayed HTTP status (the
@@ -262,25 +282,52 @@ func (t *tiers) jina(ctx context.Context, targetURL string) (FetchResult, error)
 	// interstitial that shows only in the warning never serves as the article body.
 	content := strings.TrimSpace(env.Data.Content)
 	if w := env.Data.Warning; w != "" {
-		if err := classifyJinaWarning(w); err != nil {
+		if err := classifyJinaWarning(tier, w); err != nil {
 			return FetchResult{}, err
 		}
 	}
 	if content == "" {
 		if w := env.Data.Warning; w != "" {
-			return FetchResult{}, fmt.Errorf("jina: no content: %s", w)
+			return FetchResult{}, fmt.Errorf("%s: no content: %s", tier, w)
 		}
-		return FetchResult{}, errors.New("jina: empty content")
+		return FetchResult{}, fmt.Errorf("%s: empty content", tier)
 	}
 	if challengeSignature(challengeInput{Title: env.Data.Title, Body: env.Data.Content, Kind: cleanMarkdown}) {
-		return FetchResult{}, fmt.Errorf("jina: %w", errStealthRequired)
+		return FetchResult{}, fmt.Errorf("%s: %w", tier, errStealthRequired)
 	}
 
 	final := env.Data.URL
 	if final == "" {
 		final = targetURL
 	}
-	return FetchResult{Tier: TierJina, FinalURL: final, Title: env.Data.Title, Markdown: env.Data.Content}, nil
+	res := FetchResult{Tier: tier, FinalURL: final, Title: env.Data.Title, Markdown: env.Data.Content}
+	// Carry the link summary unrendered: renderFetch classifies thinness on the
+	// content alone, then appends the ## Links section to the winning body.
+	if render {
+		res.Links = env.Data.Links
+	}
+	return res, nil
+}
+
+// linksSection renders jina's link summary — [text, url] pairs in page order —
+// as a ## Links markdown section so a rendered page's nav links become chunkable
+// and searchable, recovering the sidebar slugs readability extraction drops.
+// Source order is jina's page (nav) order, so it is preserved rather than sorted;
+// an entry with empty text falls back to its URL so the link stays searchable.
+func linksSection(links [][]string) string {
+	var b strings.Builder
+	b.WriteString("\n\n## Links\n\n")
+	for _, pair := range links {
+		if len(pair) < 2 {
+			continue
+		}
+		text, href := pair[0], pair[1]
+		if text == "" {
+			text = href
+		}
+		fmt.Fprintf(&b, "- [%s](%s)\n", text, href)
+	}
+	return b.String()
 }
 
 // exa fetches targetURL through Exa's /contents endpoint with HTML tags
@@ -344,29 +391,40 @@ func (t *tiers) exa(ctx context.Context, targetURL, key string) (FetchResult, er
 
 // firecrawl fetches targetURL through Firecrawl's /v2/scrape endpoint, returning
 // markdown. The target's own status rides in data.metadata.statusCode, so a
-// service-level 200 can still report a gone target.
-func (t *tiers) firecrawl(ctx context.Context, targetURL, key string) (FetchResult, error) {
+// service-level 200 can still report a gone target. When render is set it waits
+// firecrawlRenderWaitMS for client-side scripts to paint, the thin-content
+// escalation's second lane.
+func (t *tiers) firecrawl(ctx context.Context, targetURL, key string, render bool) (FetchResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, firecrawlTimeout)
 	defer cancel()
+
+	tier := TierFirecrawl
+	if render {
+		tier = TierFirecrawlRender
+	}
 
 	reqBody := struct {
 		URL             string   `json:"url"`
 		Formats         []string `json:"formats"`
 		OnlyMainContent bool     `json:"onlyMainContent"`
+		WaitFor         int      `json:"waitFor,omitempty"`
 	}{URL: targetURL, Formats: []string{"markdown"}, OnlyMainContent: true}
+	if render {
+		reqBody.WaitFor = firecrawlRenderWaitMS
+	}
 
 	resp, err := t.postJSON(ctx, t.firecrawlBase+"/v2/scrape", reqBody, map[string]string{"Authorization": "Bearer " + key})
 	if err != nil {
-		return FetchResult{}, fmt.Errorf("firecrawl: request: %w", err)
+		return FetchResult{}, fmt.Errorf("%s: request: %w", tier, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := readLimited(resp.Body)
 	if err != nil {
-		return FetchResult{}, fmt.Errorf("firecrawl: read body: %w", err)
+		return FetchResult{}, fmt.Errorf("%s: read body: %w", tier, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return FetchResult{}, serviceFailure(TierFirecrawl, resp.StatusCode)
+		return FetchResult{}, serviceFailure(tier, resp.StatusCode)
 	}
 
 	var out struct {
@@ -380,23 +438,23 @@ func (t *tiers) firecrawl(ctx context.Context, targetURL, key string) (FetchResu
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(body), &out); err != nil {
-		return FetchResult{}, fmt.Errorf("firecrawl: decode response: %w", err)
+		return FetchResult{}, fmt.Errorf("%s: decode response: %w", tier, err)
 	}
 	if !out.Success {
-		return FetchResult{}, errors.New("firecrawl: service reported success=false")
+		return FetchResult{}, fmt.Errorf("%s: service reported success=false", tier)
 	}
 	if sc := out.Data.Metadata.StatusCode; sc != 0 {
-		if err := classifyTargetStatus(TierFirecrawl, sc); err != nil {
+		if err := classifyTargetStatus(tier, sc); err != nil {
 			return FetchResult{}, err
 		}
 	}
 	if challengeSignature(challengeInput{Title: out.Data.Metadata.Title, Body: out.Data.Markdown, Kind: cleanMarkdown}) {
-		return FetchResult{}, fmt.Errorf("firecrawl: %w", errStealthRequired)
+		return FetchResult{}, fmt.Errorf("%s: %w", tier, errStealthRequired)
 	}
 	if strings.TrimSpace(out.Data.Markdown) == "" {
-		return FetchResult{}, errors.New("firecrawl: empty markdown")
+		return FetchResult{}, fmt.Errorf("%s: empty markdown", tier)
 	}
-	return FetchResult{Tier: TierFirecrawl, FinalURL: targetURL, Title: out.Data.Metadata.Title, Markdown: out.Data.Markdown}, nil
+	return FetchResult{Tier: tier, FinalURL: targetURL, Title: out.Data.Metadata.Title, Markdown: out.Data.Markdown}, nil
 }
 
 // plainHTTP fetches targetURL directly, returning HTML capped at 10 MiB. When
@@ -633,15 +691,16 @@ func isAlnumByte(b byte) bool { return b >= 'a' && b <= 'z' || b >= '0' && b <= 
 // relayed HTTP status first (preserving the 200-trap), then a CAPTCHA/challenge
 // class that escalates to stealth, then a known-benign class that serves. An
 // unrecognized warning serves but is logged loudly, since a silent unknown signal is
-// how a served interstitial slipped through before.
-func classifyJinaWarning(w string) error {
+// how a served interstitial slipped through before. tier distinguishes the base
+// reader from the render pass in the returned error.
+func classifyJinaWarning(tier Tier, w string) error {
 	if status := statusFromText(w); status != 0 {
-		return classifyTargetStatus(TierJina, status)
+		return classifyTargetStatus(tier, status)
 	}
 	lower := strings.ToLower(w)
 	for _, m := range []string{"captcha", "challenge", "security verification"} {
 		if strings.Contains(lower, m) {
-			return fmt.Errorf("jina: %w", errStealthRequired)
+			return fmt.Errorf("%s: %w", tier, errStealthRequired)
 		}
 	}
 	for _, m := range []string{"cached snapshot", "not yet fully loaded", "shadow dom", "iframe"} {
@@ -649,7 +708,7 @@ func classifyJinaWarning(w string) error {
 			return nil
 		}
 	}
-	slog.Warn("jina: unclassified warning", "warning", w)
+	slog.Warn("jina: unclassified warning", "tier", tier, "warning", w)
 	return nil
 }
 

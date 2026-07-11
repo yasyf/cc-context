@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/vendor"
 )
 
 // defaultK is the number of search hits returned when a.K is unset (<= 0).
@@ -32,6 +35,14 @@ var embedder Embedder = UVEmbedder{}
 // fetchPage is the fetch entry point, a package var so tests can drive Run
 // through a stubbed cascade without live network. It defaults to Fetch.
 var fetchPage = Fetch
+
+// renderPage is the thin-content render-escalation entry point. Production always
+// wires it to RenderFetch, so escalation is always considered. A nil renderPage
+// disables escalation entirely and exists solely for the test suite: many
+// existing fixtures are sub-floor and would trip thinSignature, so TestMain nils
+// this to keep Run hermetic (no live network or browser subprocess), and the
+// escalation tests opt back in per-test via withRenderPage.
+var renderPage = RenderFetch
 
 // Run fetches, chunks, and serves the page at a.URL for one web op. For OpWebRead
 // it applies a.Budget and a.Offset itself — fixed-stride paging against the raw
@@ -78,8 +89,14 @@ func acquire(ctx context.Context, norm string, force bool) (*Page, error) {
 	res, err := fetchPage(ctx, norm, prior)
 	if errors.Is(err, ErrNotModified) {
 		// The origin confirmed the cached copy is current: keep its chunks and
-		// vectors, refresh the fetch time, and re-persist.
+		// vectors, refresh the fetch time, and re-persist. A revalidated page that
+		// is still Thin gets another escalation pass — a static host that serves
+		// 304s is exactly where an SPA lives, so --refresh after a lane is
+		// installed must be able to re-escalate rather than trap Thin forever.
 		prior.FetchedAt = timeNow()
+		if renderPage != nil && prior.Thin {
+			escalateThin(ctx, norm, prior)
+		}
 		if err := Save(prior); err != nil {
 			return nil, fmt.Errorf("persist revalidated page %q: %w", norm, err)
 		}
@@ -93,10 +110,80 @@ func acquire(ctx context.Context, norm string, force bool) (*Page, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build page %q: %w", norm, err)
 	}
+	if renderPage != nil && thinSignature(thinInput{Markdown: page.Markdown, HTML: page.RawHTML}) {
+		escalateThin(ctx, norm, page)
+	}
 	if err := Save(page); err != nil {
 		return nil, fmt.Errorf("persist page %q: %w", norm, err)
 	}
 	return page, nil
+}
+
+// escalateThin runs the render chain for a thin cascade result and folds its
+// outcome into page: a non-thin render replaces the body outright, a still-thin
+// render that is larger replaces it with Thin set, and a render error or a
+// smaller render keeps the original body with Thin set. The base cascade already
+// served content, so a chain failure is a Warn, never a hard error — a thin page
+// is always exit-0 success carrying a note.
+func escalateThin(ctx context.Context, norm string, page *Page) {
+	rres, stillThin, err := renderPage(ctx, norm)
+	if err != nil {
+		slog.Warn("web render escalation failed; serving thin content", "url", norm, "err", err)
+		page.Thin = true
+		return
+	}
+	rendered, err := buildPage(rres, nil, norm)
+	if err != nil {
+		slog.Warn("web render escalation build failed; serving thin content", "url", norm, "err", err)
+		page.Thin = true
+		return
+	}
+	if !stillThin {
+		*page = *rendered
+		return
+	}
+	// Every lane came back thin: keep whichever body is larger, and flag it thin.
+	if len(rendered.Markdown) > len(page.Markdown) {
+		*page = *rendered
+	}
+	page.Thin = true
+}
+
+// renderLanesAvailable reports whether any render-escalation lane can run for a
+// page at normURL: a jina or firecrawl key, or the agent-browser binary on PATH.
+// For a local target the hosted lanes cannot reach it, so only agent-browser
+// counts — decided by the cheap literal localTarget predicate (no DNS here).
+func renderLanesAvailable(normURL string) bool {
+	if u, err := url.Parse(normURL); err == nil && localTarget(u.Hostname()) {
+		return vendor.LookPath(agentBrowserBin) != ""
+	}
+	return os.Getenv(envJinaKey) != "" ||
+		os.Getenv(envFirecrawlKey) != "" ||
+		vendor.LookPath(agentBrowserBin) != ""
+}
+
+// thinNote returns the advisory a thin page carries, worded against the render
+// lanes available for this page: no lane names what to set or install; a lane
+// that ran and still came back thin means the page may genuinely have little
+// static content. It is empty for a non-thin page.
+func thinNote(page *Page) string {
+	if !page.Thin {
+		return ""
+	}
+	if renderLanesAvailable(page.URL) {
+		return "this page may genuinely have little static content (re-run with --refresh to retry)"
+	}
+	return "this page looks like a client-side app with little static content; set JINA_API_KEY or FIRECRAWL_API_KEY, or install agent-browser, then re-run with --refresh"
+}
+
+// withThinNote appends the thin-content advisory to body when page is thin,
+// outside any budget cap (like the sibling-navigation footer).
+func withThinNote(page *Page, body string) string {
+	note := thinNote(page)
+	if note == "" {
+		return body
+	}
+	return strings.TrimRight(body, "\n") + fmt.Sprintf("\n\n# %s\n", note)
 }
 
 // buildPage turns a fetch result into a Page. HTML-returning tiers run through
@@ -159,7 +246,11 @@ func contentSHA(markdown string) string {
 // The resolve note and the sibling-navigation footer ride outside the budget cap.
 func runRead(page *Page, a backend.Args) (string, error) {
 	if a.Full || a.Section == "" {
-		return serveSpan(page.Markdown, "the page", a.Offset, a.Budget)
+		body, err := serveSpan(page.Markdown, "the page", a.Offset, a.Budget)
+		if err != nil {
+			return "", err
+		}
+		return withThinNote(page, body), nil
 	}
 	section, hash, err := splitSectionRef(a.Section)
 	if err != nil {
@@ -192,7 +283,7 @@ func runRead(page *Page, a backend.Args) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return note + withNav(page, section, body), nil
+	return withThinNote(page, note+withNav(page, section, body)), nil
 }
 
 // sectionNotFoundErr reports that input matched no §id and no printed heading
@@ -437,6 +528,9 @@ func renderOutline(page *Page) string {
 	if len(page.Sections) <= 1 {
 		b.WriteString("(This page has no heading structure to navigate — ask it a question with 'ccx web search', or page through it with 'ccx web read --section <id> --offset N'.)\n")
 	}
+	if note := thinNote(page); note != "" {
+		fmt.Fprintf(&b, "# %s\n", note)
+	}
 	return b.String()
 }
 
@@ -478,6 +572,9 @@ func renderSearch(page *Page, query string, order []int, scores []float64, note 
 	}
 	if note != "" {
 		fmt.Fprintf(&b, "\n# %s\n", note)
+	}
+	if tn := thinNote(page); tn != "" {
+		fmt.Fprintf(&b, "\n# %s\n", tn)
 	}
 	return b.String()
 }

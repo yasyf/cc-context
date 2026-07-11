@@ -225,6 +225,38 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveLoadRoundTripsThin(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	const model = "potion-base-8M"
+
+	thin := samplePage("https://example.com/thin", 1, 0, model)
+	thin.Thin = true
+	if err := Save(thin); err != nil {
+		t.Fatalf("Save thin: %v", err)
+	}
+	got, err := Load("https://example.com/thin", model)
+	if err != nil || got == nil {
+		t.Fatalf("Load thin: page=%v err=%v", got, err)
+	}
+	if !got.Thin {
+		t.Error("Thin = false after round-trip, want true")
+	}
+
+	// A non-thin page round-trips Thin=false, matching how an old cache entry
+	// written before the field existed decodes.
+	solid := samplePage("https://example.com/solid", 1, 0, model)
+	if err := Save(solid); err != nil {
+		t.Fatalf("Save solid: %v", err)
+	}
+	got2, err := Load("https://example.com/solid", model)
+	if err != nil || got2 == nil {
+		t.Fatalf("Load solid: page=%v err=%v", got2, err)
+	}
+	if got2.Thin {
+		t.Error("Thin = true for a non-thin page, want false")
+	}
+}
+
 func TestLoadMissWhenAbsent(t *testing.T) {
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	got, err := Load("https://example.com/never-fetched", "")
