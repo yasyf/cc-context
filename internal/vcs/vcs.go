@@ -66,7 +66,7 @@ const stagedSource = "staged"
 func ResolveDiffSource(ctx context.Context, dir, source, scope string) (translated string, useTilth bool, fallbackArgv []string, err error) {
 	switch Detect(dir) {
 	case Git:
-		return resolveGit(ctx, dir, source, gitCommitID)
+		return resolveGit(ctx, dir, source, gitRefValid)
 	case JJ:
 		return resolveJJ(ctx, dir, source, scope, defaultBranch, workingCopyCommit, gitCommitID)
 	default:
@@ -74,12 +74,14 @@ func ResolveDiffSource(ctx context.Context, dir, source, scope string) (translat
 	}
 }
 
-// resolveGit passes a git diff source through to tilth after checking that every
+// resolveGit passes a git diff source through to tilth after checking every
 // non-empty endpoint names a real git revision, so a bogus ref fails loudly
-// instead of tilth silently rendering "No changes.". The working-tree sentinels
-// ("", "uncommitted", "staged") name no git object and skip the check. resolve is
-// injectable so the validation is table-testable without a live repo.
-func resolveGit(ctx context.Context, dir, source string, resolve gitRefResolver) (translated string, useTilth bool, fallbackArgv []string, err error) {
+// instead of tilth silently rendering "No changes.". valid is a bare
+// `git rev-parse --quiet` (not ^{commit}-coerced), so the multi-value endpoints
+// git's diff accepts — HEAD^@, HEAD^!, HEAD^- — validate rather than erroring.
+// The working-tree sentinels ("", "uncommitted", "staged") skip the check. valid
+// is injectable so the validation is table-testable without a live repo.
+func resolveGit(ctx context.Context, dir, source string, valid gitRefValidator) (translated string, useTilth bool, fallbackArgv []string, err error) {
 	switch source {
 	case "", "uncommitted", stagedSource:
 		return source, true, nil, nil
@@ -88,12 +90,17 @@ func resolveGit(ctx context.Context, dir, source string, resolve gitRefResolver)
 		if ep == "" {
 			continue
 		}
-		if _, ok := resolve(ctx, dir, ep); !ok {
+		if !valid(ctx, dir, ep) {
 			return "", false, nil, fmt.Errorf("unknown git revision %q in diff source %q", ep, source)
 		}
 	}
 	return source, true, nil, nil
 }
+
+// gitRefValidator reports whether ref names one or more real git revisions within
+// dir. It is injectable so resolveGit's endpoint validation is table-testable
+// without a live repo.
+type gitRefValidator func(ctx context.Context, dir, ref string) bool
 
 // splitDiffRange splits a git diff source into its endpoints, honoring both the
 // symmetric "A...B" and the "A..B" range forms; a bare ref yields itself.
@@ -274,6 +281,14 @@ func jjFallbackArgv(source, scope string) []string {
 		argv = append(argv, scope)
 	}
 	return argv
+}
+
+// gitRefValid reports whether ref parses to at least one real git revision via
+// `git rev-parse --quiet`. Unlike a `--verify … ^{commit}` check it accepts the
+// multi-value endpoints git's diff accepts (HEAD^@, HEAD^!, HEAD^-), which
+// resolve to several ids; a genuinely bogus ref exits nonzero.
+func gitRefValid(ctx context.Context, dir, ref string) bool {
+	return exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--quiet", ref).Run() == nil //nolint:gosec // fixed git argv; only the working dir and ref vary
 }
 
 func workingCopyCommit(ctx context.Context, dir, rev string) (string, error) {

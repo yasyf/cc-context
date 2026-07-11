@@ -260,6 +260,9 @@ func TestExpandCollapsedDiffHeader(t *testing.T) {
 		"## [~] Command.format_usage — body changed (L71-80)\n"
 	const twoTier = "# Diff: c/a.go w/a.go — 0 symbols touched, +0/−0 lines\n\n" +
 		"## c/a.go w/a.go (0 symbols)\n@@ -1 +1 @@\n-old\n+new\n"
+	const spacePath = "# Diff: c/file name.go w/file name.go — 0 symbols touched, +0/−0 lines\n"
+	const spaceTwoTier = "# Diff: c/file name.go w/file name.go — 0 symbols touched, +0/−0 lines\n\n" +
+		"## c/file name.go w/file name.go (0 symbols)\n@@ -1 +1 @@\n-old\n+new\n"
 
 	tests := []struct {
 		name  string
@@ -302,6 +305,18 @@ func TestExpandCollapsedDiffHeader(t *testing.T) {
 			in:    twoTier,
 			scope: "a.go",
 			want:  twoTier,
+		},
+		{
+			name:  "space-containing working path is captured and expanded",
+			in:    spacePath,
+			scope: "file name.go",
+			want:  "# Diff: c/file name.go w/file name.go — 0 symbols touched, +0/−0 lines\n## file name.go (0 symbols)\n",
+		},
+		{
+			name:  "space-path already two-tier passes through untouched",
+			in:    spaceTwoTier,
+			scope: "file name.go",
+			want:  spaceTwoTier,
 		},
 		{
 			name:  "captured path different from scope passes through untouched",
@@ -379,14 +394,59 @@ func TestRunDiffCLIScopedCollapsedHeader(t *testing.T) {
 	}
 }
 
+// TestRunDiffCLIScopedCollapsedHeaderSpacePath proves a scoped diff of a
+// space-named file — which tilth collapses to a 0-symbol one-liner carrying
+// "c/<name> w/<name>" mnemonic prefixes — is still expanded and has its raw hunk
+// spliced back, rather than the whole diff being dropped because the path held a
+// space. The redundant "diff --git" preamble is left in place: its space-path
+// form is ambiguous to collapse, and the hunk itself is what mattered.
+func TestRunDiffCLIScopedCollapsedHeaderSpacePath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell script is POSIX-only")
+	}
+	ctx := context.Background()
+	repo := initGitRepo(t)
+	t.Chdir(repo)
+
+	const name = "file name.go"
+	writeFile(t, filepath.Join(repo, name), "package main\n\nfunc one() int { return 1 }\n")
+	gitCommit(t, repo, "add spaced file")
+	writeFile(t, filepath.Join(repo, name), "package main\n\nfunc one() int { return 11 }\n")
+
+	tilth := writeFakeBin(t, "tilth",
+		"#!/bin/sh\nprintf '# Diff: c/file name.go w/file name.go — 0 symbols touched, +0/−0 lines\\n'\n")
+
+	got, err := RunDiffCLI(ctx, tilth, []string{"diff"}, "uncommitted", name, 0)
+	if err != nil {
+		t.Fatalf("RunDiffCLI() err: %v", err)
+	}
+	for _, want := range []string{
+		"## file name.go (0 symbols)",
+		"-func one() int { return 1 }",
+		"+func one() int { return 11 }",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q\n--- got ---\n%s", want, got)
+		}
+	}
+}
+
 func gitCommit(t *testing.T, dir, msg string) {
 	t.Helper()
 	for _, args := range [][]string{{"add", "-A"}, {"commit", "-qm", msg}} {
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // fixed git argv; dir is a test TempDir, args are literals
+		cmd.Env = isolatedGitEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
+}
+
+// isolatedGitEnv detaches git from the developer's ambient config so a global
+// setting like commit.gpgsign cannot break the test-repo commits; identity comes
+// from the repo-local user.name/user.email the helpers set.
+func isolatedGitEnv() []string {
+	return append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 }
 
 func initJJRepo(t *testing.T) string {
@@ -419,6 +479,7 @@ func initGitRepo(t *testing.T) string {
 		{"config", "user.name", "t"},
 	} {
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // fixed git argv; dir is a test TempDir, args are literals
+		cmd.Env = isolatedGitEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -426,6 +487,7 @@ func initGitRepo(t *testing.T) string {
 	writeFile(t, filepath.Join(dir, "a.go"), "package main\n\n// Greet greets.\nfunc Greet() {}\n")
 	for _, args := range [][]string{{"add", "-A"}, {"commit", "-qm", "init"}} {
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // fixed git argv; dir is a test TempDir, args are literals
+		cmd.Env = isolatedGitEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}

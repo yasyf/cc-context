@@ -14,14 +14,17 @@ import (
 
 var (
 	// diffFileHeader matches a tilth structural-diff per-file header, capturing
-	// the working-side path and symbol count. The optional "x/… w/" prefix covers
-	// working-tree output (c/ and i/ index variants); a bare path covers
-	// commit-range output, where tilth emits no c//w/ prefix.
-	diffFileHeader = regexp.MustCompile(`^## (?:[a-z]/\S+ w/)?(\S+) \((\d+) symbols\)$`)
+	// the working-side path (which may contain spaces) and symbol count. The
+	// optional "x/… w/" prefix covers working-tree output (c/ and i/ index
+	// variants); a bare path covers commit-range output, where tilth emits no
+	// c//w/ prefix.
+	diffFileHeader = regexp.MustCompile(`^## (?:[a-z]/.+? w/)?(.+?) \((\d+) symbols\)$`)
 	// collapsedDiffHeader matches tilth's one-line header for a scoped diff with no
-	// symbol changes, capturing the working-side path and symbol count. The em dash
-	// is U+2014 and the minus is U+2212 (or ASCII '-'), copied from live output.
-	collapsedDiffHeader = regexp.MustCompile(`^# Diff: (?:[a-z]/\S+ w/)?(\S+) — (\d+) symbols touched, \+\d+/[−-]\d+ lines$`)
+	// symbol changes, capturing the whole path region (which may contain spaces)
+	// and the symbol count; collapsedDiffWorkingPath derives the working-side path
+	// from it. The em dash is U+2014 and the minus is U+2212 (or ASCII '-'), copied
+	// from live output.
+	collapsedDiffHeader = regexp.MustCompile(`^# Diff: (.+?) — (\d+) symbols touched, \+\d+/[−-]\d+ lines$`)
 	// diffSHARe matches a full 40-hex object id as a standalone token; it is only
 	// ever applied to the "# Diff:" header line, never the hunk body, where a
 	// 40-hex string can be legitimate content.
@@ -76,8 +79,8 @@ func RunDiffCLI(ctx context.Context, bin string, argv []string, source, scope st
 // yields only the "# Diff: <path> — 0 symbols touched, +0/−0 lines" line and no
 // "## <path> (0 symbols)" section, so SupplementDiff never splices the raw hunk
 // and the whole diff is dropped. Under a triple gate — a non-empty scope, a
-// 0-symbol collapsed line, no existing per-file header, and a captured path equal
-// to the scope — it appends the synthesized "## <path> (0 symbols)" header so the
+// 0-symbol collapsed line, no existing per-file header, and the derived working
+// path equal to the scope — it appends the synthesized "## <path> (0 symbols)" header so the
 // rest of the pipeline runs unchanged. Every other shape passes through untouched,
 // so the scoped >0-symbol per-symbol format is never disturbed.
 func expandCollapsedDiffHeader(out, scope string) string {
@@ -94,7 +97,7 @@ func expandCollapsedDiffHeader(out, scope string) string {
 		}
 		if m := collapsedDiffHeader.FindStringSubmatch(trimmed); m != nil && m[2] == "0" {
 			collapsedIdx = i
-			path = m[1]
+			path = collapsedDiffWorkingPath(m[1])
 		}
 	}
 	if collapsedIdx < 0 || path != scope {
@@ -105,6 +108,24 @@ func expandCollapsedDiffHeader(out, scope string) string {
 	expanded = append(expanded, "## "+path+" (0 symbols)")
 	expanded = append(expanded, lines[collapsedIdx+1:]...)
 	return strings.Join(expanded, "\n")
+}
+
+// collapsedDiffWorkingPath derives the working-side path from a collapsed-header
+// capture. tilth emits "c/<X> w/<Y>" for a working-tree diff (X==Y) and a bare
+// path for a commit-range diff; a path may hold spaces, so the capture is the
+// whole middle. Split on the last " w/": when the left side carries a mnemonic
+// prefix and strips to the working side, return that side, else the capture
+// unchanged. A path that itself contains " w/" is best-effort.
+func collapsedDiffWorkingPath(capture string) string {
+	i := strings.LastIndex(capture, " w/")
+	if i < 0 {
+		return capture
+	}
+	left, right := capture[:i], capture[i+len(" w/"):]
+	if diffPathPrefix.MatchString(left) && stripDiffPrefix(left) == right {
+		return right
+	}
+	return capture
 }
 
 // shortenDiffSHAs trims every full 40-hex object id on the first "# Diff:" header

@@ -301,14 +301,14 @@ func TestRawHunkArgvFor(t *testing.T) {
 // bogus ref errors naming the ref, and both endpoints of a range are validated
 // while empty endpoints are skipped.
 func TestResolveDiffSourceGitValidatesRefs(t *testing.T) {
-	// resolve stands in for git rev-parse: these refs are real revisions, every
-	// other name is unknown.
-	resolve := func(_ context.Context, _, ref string) (string, bool) {
+	// valid stands in for git rev-parse: these forms name real revisions — the
+	// multi-value HEAD^@/HEAD^!/HEAD^- among them — every other name is unknown.
+	valid := func(_ context.Context, _, ref string) bool {
 		switch ref {
-		case "HEAD", "main", "feat", "abc123":
-			return "COMMIT-" + ref, true
+		case "HEAD", "main", "feat", "abc123", "HEAD^@", "HEAD^!", "HEAD^-", "HEAD^{tree}":
+			return true
 		}
-		return "", false
+		return false
 	}
 	const dir = "/repo"
 
@@ -323,6 +323,10 @@ func TestResolveDiffSourceGitValidatesRefs(t *testing.T) {
 		{id: "uncommitted skips validation", source: "uncommitted", wantTrans: "uncommitted", wantUseTilth: true},
 		{id: "staged skips validation", source: "staged", wantTrans: "staged", wantUseTilth: true},
 		{id: "valid single ref passes through", source: "HEAD", wantTrans: "HEAD", wantUseTilth: true},
+		{id: "HEAD^@ multi-value endpoint validates", source: "HEAD^@", wantTrans: "HEAD^@", wantUseTilth: true},
+		{id: "HEAD^! multi-value endpoint validates", source: "HEAD^!", wantTrans: "HEAD^!", wantUseTilth: true},
+		{id: "HEAD^- multi-value endpoint validates", source: "HEAD^-", wantTrans: "HEAD^-", wantUseTilth: true},
+		{id: "HEAD^{tree} validates", source: "HEAD^{tree}", wantTrans: "HEAD^{tree}", wantUseTilth: true},
 		{id: "bogus single ref errors naming the ref", source: "bogus", wantUseTilth: false, wantErr: `"bogus"`},
 		{id: "two-dot range validates both endpoints", source: "main..feat", wantTrans: "main..feat", wantUseTilth: true},
 		{id: "three-dot range validates both endpoints", source: "main...feat", wantTrans: "main...feat", wantUseTilth: true},
@@ -332,7 +336,7 @@ func TestResolveDiffSourceGitValidatesRefs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {
-			gotTrans, gotUse, gotArgv, err := resolveGit(context.Background(), dir, tt.source, resolve)
+			gotTrans, gotUse, gotArgv, err := resolveGit(context.Background(), dir, tt.source, valid)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("resolveGit(%q) err = %v, want it to contain %q", tt.source, err, tt.wantErr)
@@ -368,6 +372,21 @@ func TestResolveDiffSourceGitRejectsBogusRef(t *testing.T) {
 	}
 }
 
+// TestResolveDiffSourceGitAcceptsMultiValueRef proves the wired-up
+// ResolveDiffSource (real git rev-parse) passes a multi-value diff endpoint like
+// HEAD^@ through to tilth instead of rejecting it — the v0.10.0 behavior a
+// ^{commit}-coerced check regressed.
+func TestResolveDiffSourceGitAcceptsMultiValueRef(t *testing.T) {
+	dir := initLiveGitRepo(t) // two commits so HEAD^@ (HEAD's parents) resolves
+	translated, useTilth, _, err := ResolveDiffSource(context.Background(), dir, "HEAD^@", "")
+	if err != nil {
+		t.Fatalf("ResolveDiffSource(git, %q) err = %v, want nil", "HEAD^@", err)
+	}
+	if !useTilth || translated != "HEAD^@" {
+		t.Errorf("ResolveDiffSource(git, %q) = (%q, %v), want (%q, true)", "HEAD^@", translated, useTilth, "HEAD^@")
+	}
+}
+
 func mustMkdir(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o750); err != nil {
@@ -397,7 +416,15 @@ func initLiveGitRepo(t *testing.T) string {
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // fixed git argv; dir is a test TempDir, args are literals
+	cmd.Env = isolatedGitEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
+}
+
+// isolatedGitEnv detaches git from the developer's ambient config so a global
+// setting like commit.gpgsign cannot break the test-repo commits; identity comes
+// from the repo-local user.name/user.email the helpers set.
+func isolatedGitEnv() []string {
+	return append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 }

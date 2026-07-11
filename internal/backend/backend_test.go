@@ -84,6 +84,7 @@ func initGitRepoForDiff(t *testing.T) string {
 	dir := t.TempDir()
 	git := func(args ...string) {
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // fixed git argv; dir is a test TempDir, args are literals
+		cmd.Env = isolatedGitEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -101,6 +102,13 @@ func initGitRepoForDiff(t *testing.T) string {
 		git("commit", "-qm", "c")
 	}
 	return dir
+}
+
+// isolatedGitEnv detaches git from the developer's ambient config so a global
+// setting like commit.gpgsign cannot break the test-repo commits; identity comes
+// from the repo-local user.name/user.email initGitRepoForDiff sets.
+func isolatedGitEnv() []string {
+	return append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 }
 
 func TestTilthCLIArgvUnsupported(t *testing.T) {
