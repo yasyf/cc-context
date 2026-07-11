@@ -2,7 +2,7 @@
   "id": "edit-tornado-httperror-default",
   "category": "targeted_edit",
   "repo": "tornado",
-  "prompt": "When an HTTP error is raised in this web framework without an explicit status code, it currently defaults to HTTP 500. Change that default so it is HTTP 502 instead. Leave the behavior when an explicit status code is passed unchanged.",
+  "prompt": "When an HTTP error is raised in this web framework without an explicit status code, it currently defaults to HTTP 500. Change that default so it is HTTP 502 instead. Leave the behavior when an explicit status code is passed unchanged. Make the edit directly in the source. Do not run the repository's test suite and do not install the package or any dependencies; your change is verified separately after you finish.",
   "schema": {
     "type": "object",
     "properties": {

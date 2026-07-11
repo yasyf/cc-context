@@ -58,6 +58,13 @@ DIFF_PROMPT = (
     "List their names exactly once each."
 )
 
+# Pins the two variance vectors an edit task otherwise leaves open — running the repo's own test
+# suite and installing the package/deps — without naming the offline grader's mechanics.
+EDIT_SUFFIX = (
+    " Make the edit directly in the source. Do not run the repository's test suite and do not "
+    "install the package or any dependencies; your change is verified separately after you finish."
+)
+
 
 def _nav(tid: str, repo: str, file: str, decl: str, prompt: str) -> Task:
     """Navigation: find a declaration on a big file. `gold.line` is derived from `decl` at build."""
@@ -118,7 +125,7 @@ def _edit(tid: str, repo: str, prompt: str, cmd: str, check: str, solution: list
         id=tid,
         category="targeted_edit",
         repo=repo,
-        prompt=prompt,
+        prompt=prompt + EDIT_SUFFIX,
         schema=EDIT_SCHEMA,
         grader=Grader("test_run", {"cmd": cmd, "timeout_s": 120}),
         gold={"check": check, "solution_edits": solution, "traversal_files": traversal},

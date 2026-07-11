@@ -2,7 +2,7 @@
   "id": "edit-tornado-supported-methods",
   "category": "targeted_edit",
   "repo": "tornado",
-  "prompt": "Make the base request handler in this web framework advertise support for the HTTP `TRACE` method in addition to every method it already lists as supported.",
+  "prompt": "Make the base request handler in this web framework advertise support for the HTTP `TRACE` method in addition to every method it already lists as supported. Make the edit directly in the source. Do not run the repository's test suite and do not install the package or any dependencies; your change is verified separately after you finish.",
   "schema": {
     "type": "object",
     "properties": {

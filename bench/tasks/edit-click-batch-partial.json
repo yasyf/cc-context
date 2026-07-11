@@ -2,7 +2,7 @@
   "id": "edit-click-batch-partial",
   "category": "targeted_edit",
   "repo": "click",
-  "prompt": "In this command-line library, the `batch` helper groups an iterable into fixed-size tuples but silently drops any leftover items that do not fill a complete final group. Change it so a final, smaller group containing the leftover items is included in the result. Keep the behavior for evenly-divisible inputs unchanged.",
+  "prompt": "In this command-line library, the `batch` helper groups an iterable into fixed-size tuples but silently drops any leftover items that do not fill a complete final group. Change it so a final, smaller group containing the leftover items is included in the result. Keep the behavior for evenly-divisible inputs unchanged. Make the edit directly in the source. Do not run the repository's test suite and do not install the package or any dependencies; your change is verified separately after you finish.",
   "schema": {
     "type": "object",
     "properties": {

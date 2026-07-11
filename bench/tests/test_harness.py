@@ -8,11 +8,13 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import os
 import re
 import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from cc_transcript import parse_print_result
 
@@ -20,7 +22,7 @@ from ccxbench import repos, taskgen
 from ccxbench.config import Config, Repo, load
 from ccxbench.goldgen import recompute_lc_predicate
 from ccxbench.grade import grade, synthetic_result
-from ccxbench.graders import GradeContext, grade_file_line, grade_keywords, grade_set_match
+from ccxbench.graders import GradeContext, grade_file_line, grade_keywords, grade_set_match, grade_test_run
 from ccxbench.types import Grader, Task
 
 DATA = Path(__file__).resolve().parent / "data"
@@ -94,6 +96,47 @@ class TestGraders(unittest.TestCase):
         self.assertTrue(grade_keywords({"answer": "keep the sorted array, inspect the middle"}, gold, spec, ctx).correct)
         self.assertFalse(grade_keywords({"answer": "I have no idea, sorry"}, gold, spec, ctx).correct)
         self.assertFalse(grade_keywords({"answer": "it must be sorted"}, gold, spec, ctx).correct)
+
+
+class TestGraderPathPrecedence(unittest.TestCase):
+    """Lock the offline grader's isolation: its explicit `PYTHONPATH=<rel>` under cwd=workdir resolves
+    the workdir's package ahead of anything the child inherits — the pilot's venv-contamination vector.
+    This test locks existing behavior; it does not change the grader env."""
+
+    def _pkg(self, root: Path, marker: str) -> None:
+        pkg = root / "foo"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text(f"MARKER = {marker!r}\n")
+
+    def test_workdir_pythonpath_wins_over_inherited(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workdir = root / "workdir"
+            decoy = root / "decoy"
+            self._pkg(workdir / "src", "workdir")
+            self._pkg(decoy, "decoy")
+            spec = {
+                "cmd": "PYTHONPATH=src python3 -c \"import foo; assert foo.MARKER == 'workdir', foo.MARKER\"",
+                "timeout_s": 60,
+            }
+            ctx = GradeContext(result_text="", workdir=workdir)
+            # A hostile inherited PYTHONPATH points at the decoy; the cmd's own assignment must win.
+            with patch.dict(os.environ, {"PYTHONPATH": str(decoy)}, clear=False):
+                res = grade_test_run({}, {}, spec, ctx)
+        self.assertTrue(res.correct, res.detail)
+
+
+class TestTargetedEditSuffix(unittest.TestCase):
+    """The edit family pins the test-suite/install variance vectors without leaking grader mechanics."""
+
+    def test_every_edit_prompt_ends_with_suffix(self) -> None:
+        for t in taskgen.targeted_edit_tasks():
+            self.assertTrue(t.prompt.endswith(taskgen.EDIT_SUFFIX), t.id)
+
+    def test_suffix_does_not_leak_grader_mechanics(self) -> None:
+        low = taskgen.EDIT_SUFFIX.lower()
+        for banned in ("pytest", "pythonpath", "grader"):
+            self.assertNotIn(banned, low)
 
 
 def large_context_corpus_present(cfg: Config) -> bool:

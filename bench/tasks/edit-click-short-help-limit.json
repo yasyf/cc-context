@@ -2,7 +2,7 @@
   "id": "edit-click-short-help-limit",
   "category": "targeted_edit",
   "repo": "click",
-  "prompt": "In this command-line library, a command's short help string is shortened to a default maximum length when it has to be derived from the long help text. Raise that default maximum length from 45 to 60 characters. Leave the behavior when a caller passes an explicit limit unchanged.",
+  "prompt": "In this command-line library, a command's short help string is shortened to a default maximum length when it has to be derived from the long help text. Raise that default maximum length from 45 to 60 characters. Leave the behavior when a caller passes an explicit limit unchanged. Make the edit directly in the source. Do not run the repository's test suite and do not install the package or any dependencies; your change is verified separately after you finish.",
   "schema": {
     "type": "object",
     "properties": {
