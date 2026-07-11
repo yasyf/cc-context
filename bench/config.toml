@@ -7,12 +7,13 @@
 [run]
 # Models to benchmark, as `claude --model` aliases or full IDs.
 models = ["sonnet", "opus"]
-# Repeats per (task, arm, model). Agents are stochastic; R>=3 gives a paired delta + stdev.
-repeats = 3
+# Repeats per (task, arm, model). Agents are stochastic; an odd R keeps `ArmAgg.representative`
+# selection exact, and R>=5 shrinks per-task median noise to ~9% (a true 10% effect wins decisively).
+repeats = 5
 # Max agent turns per run; caps runaway trajectories.
 max_turns = 60
 # Runaway protection only: the runner aborts before measured spend would exceed it. Never reported.
-safety_ceiling_usd = 500.0
+safety_ceiling_usd = 800.0
 # Headless autonomy. Identical for both arms. capt-hook guard hooks still fire under bypass
 # (they are a hook decision, not a permission); the pilot integrity check proves it.
 permission_mode = "bypassPermissions"

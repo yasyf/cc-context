@@ -14,9 +14,9 @@ class TestConfig(unittest.TestCase):
     def test_run_fields(self) -> None:
         cfg = load()
         self.assertEqual(cfg.models, ("sonnet", "opus"))
-        self.assertEqual(cfg.repeats, 3)
+        self.assertEqual(cfg.repeats, 5)
         self.assertEqual(cfg.max_turns, 60)
-        self.assertEqual(cfg.safety_ceiling_usd, 500.0)
+        self.assertEqual(cfg.safety_ceiling_usd, 800.0)
 
     def test_corpus_floor(self) -> None:
         self.assertEqual(load().min_traversal_bytes, 100_000)
