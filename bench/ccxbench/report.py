@@ -8,11 +8,15 @@ Per (model x ccx-arm) two paired headlines gate the claim, each ccx-arm against 
     — from the API-reported envelope usage in `runs.jsonl`, cross-checked against the
     transcript recompute within 2%.
 
+A third paired co-metric — **tool-result tokens** (Σ cumulative tool output ccx directly
+controls) — rides the same CI + sign-test machinery but does **not** gate the verdict; it is
+mechanism evidence, and the verdict stays H + T (see `METRICS`).
+
 Each metric is the **median across repeats** per (task, arm), paired over tasks where both
 arms answered correctly, with a bootstrap CI, win/loss/tie, and an exact sign-test p. A ccx
-arm PASSes only when its accuracy holds and both CIs exclude zero in ccx's favor. Cost is not
-a metric — it never appears. tiktoken appears only in the attribution waterfall, where the
-arm-vs-arm ratios cancel its systematic error.
+arm PASSes only when its accuracy holds and both gating CIs exclude zero in ccx's favor. Cost
+is not a metric — it never appears. tiktoken appears only in the attribution waterfall, where
+the arm-vs-arm ratios cancel its systematic error.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ import math
 import random
 import statistics
 from collections import defaultdict
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -149,9 +154,11 @@ def _metrics(path: Path, prompt: str, counter: tokens.TokenCounter) -> Trajector
 class ArmAgg:
     """Per-(task, arm) aggregate across repeats: transcript metrics + envelope T per repeat.
 
-    `median_h`/`median_t` are the headline metrics (median across repeats, per metric
-    independently). `representative` is the repeat whose high-water is the middle one — a real
-    transcript whose decomposition sums to `median_h` (exact for the odd repeat counts we run).
+    `median_h`/`median_t` are the gating headline metrics and `median_tool_output` the
+    non-gating co-metric (each a median across repeats, per metric independently).
+    `representative` is the repeat whose high-water is closest to `median_h` — a real transcript
+    whose decomposition sums to `median_h` (exact for the odd repeat counts we run; for even
+    counts it is the nearer of the two straddling the median).
     """
 
     metrics: list[TrajectoryMetrics]
@@ -166,9 +173,16 @@ class ArmAgg:
         return statistics.median(self.envelope_t)
 
     @property
+    def median_tool_output(self) -> float:
+        return statistics.median(m.cumulative_tool_output for m in self.metrics)
+
+    @property
     def representative(self) -> TrajectoryMetrics:
+        # The real transcript whose high-water is closest to `median_h`; for even repeat counts the
+        # median falls between two values, so pick the nearer one (ties break to the lower).
         ordered = sorted(self.metrics, key=lambda m: m.high_water)
-        return ordered[len(ordered) // 2]
+        target = self.median_h
+        return min(ordered, key=lambda m: abs(m.high_water - target))
 
 
 @dataclass
@@ -192,10 +206,55 @@ class Headline:
     losses: int
     ties: int
     p: float
+    skipped: int
 
     @property
     def ci_excludes_zero(self) -> bool:
         return self.n > 0 and self.lo > 0
+
+
+@dataclass(frozen=True)
+class MetricSpec:
+    """One paired savings metric: how to read it off an `ArmAgg`, and whether it gates the verdict.
+
+    `gating` specs (H, T) force a FAIL when their CI includes zero (with `gate_reason` as the
+    verdict string); the non-gating tool-result co-metric renders identically but never gates.
+    """
+
+    key: str
+    label: str
+    unit: str
+    gate_reason: str
+    getter: Callable[[ArmAgg], float]
+    gating: bool
+
+
+METRICS: tuple[MetricSpec, ...] = (
+    MetricSpec(
+        "h",
+        "Peak context (H = max single-turn input + cache_create + cache_read)",
+        "H",
+        "peak-context CI includes 0",
+        lambda a: a.median_h,
+        gating=True,
+    ),
+    MetricSpec(
+        "t",
+        "Total tokens processed (T = Σ envelope usage)",
+        "T",
+        "total-tokens CI includes 0",
+        lambda a: a.median_t,
+        gating=True,
+    ),
+    MetricSpec(
+        "tool",
+        "Tool-result tokens (Σ cumulative tool output ccx directly controls)",
+        "tool-result tokens",
+        "tool-result CI includes 0",
+        lambda a: a.median_tool_output,
+        gating=False,
+    ),
+)
 
 
 def _arm_agg(
@@ -281,23 +340,21 @@ def _accuracy(records: list[dict], model: str, arm: str) -> tuple[int, int]:
     return sum(1 for r in recs if r["correct"]), len(recs)
 
 
-def _headline(pairs: list[TaskPair], kind: str) -> Headline:
-    if kind == "h":
-        label = "Peak context (H = max single-turn input + cache_create + cache_read)"
-        unit = "H"
-        base_vals = [p.base.median_h for p in pairs]
-        ccx_vals = [p.ccx.median_h for p in pairs]
-    else:
-        label = "Total tokens processed (T = Σ envelope usage)"
-        unit = "T"
-        base_vals = [p.base.median_t for p in pairs]
-        ccx_vals = [p.ccx.median_t for p in pairs]
+def _headline(pairs: list[TaskPair], spec: MetricSpec) -> Headline:
+    """Paired savings for one metric. Pairs with a zero baseline value are skipped and counted.
 
-    n = len(pairs)
+    H and T are pre-filtered by `build_pairs` (never zero here), so `skipped` only ever bites the
+    tool-result co-metric — a task whose baseline emitted no tool output has no ratio to pair.
+    """
+    live = [p for p in pairs if spec.getter(p.base) != 0]
+    skipped = len(pairs) - len(live)
+    n = len(live)
     if n == 0:
         nan = float("nan")
-        return Headline(label, unit, 0, nan, nan, nan, nan, nan, 0, 0, 0, 1.0)
+        return Headline(spec.label, spec.unit, 0, nan, nan, nan, nan, nan, 0, 0, 0, 1.0, skipped)
 
+    base_vals = [spec.getter(p.base) for p in live]
+    ccx_vals = [spec.getter(p.ccx) for p in live]
     savings = [1.0 - c / b for b, c in zip(base_vals, ccx_vals, strict=True)]
     mean = sum(savings) / n
     lo, hi = bootstrap_ci(savings)
@@ -306,8 +363,8 @@ def _headline(pairs: list[TaskPair], kind: str) -> Headline:
     ties = sum(1 for b, c in zip(base_vals, ccx_vals, strict=True) if c == b)
     p = sign_test_p(wins, losses)
     return Headline(
-        label,
-        unit,
+        spec.label,
+        spec.unit,
         n,
         mean,
         lo,
@@ -318,16 +375,22 @@ def _headline(pairs: list[TaskPair], kind: str) -> Headline:
         losses,
         ties,
         p,
+        skipped,
     )
 
 
 def headline_section(hl: Headline, ccx_arm: str) -> list[str]:
     lines = [f"#### {hl.label}", ""]
     if hl.n == 0:
-        lines.append("- no both-correct task pairs with parseable transcripts — nothing to compare")
+        if hl.skipped:
+            lines.append(f"- all {hl.skipped} pair(s) skipped: zero baseline {hl.unit}")
+        else:
+            lines.append("- no both-correct task pairs with parseable transcripts — nothing to compare")
         lines.append("")
         return lines
     lines.append(f"- Paired on **{hl.n} both-correct task(s)**")
+    if hl.skipped:
+        lines.append(f"- Skipped {hl.skipped} task(s) with zero baseline {hl.unit}")
     lines.append(
         f"- Mean savings: **{hl.mean * 100:+.1f}%** "
         f"(95% CI [{hl.lo * 100:+.1f}%, {hl.hi * 100:+.1f}%]) — positive = ccx processed fewer tokens"
@@ -345,8 +408,7 @@ def verdict_section(
     headline_records: list[dict],
     cells: dict[str, dict[str, Cell]],
     paired: list[str],
-    hl_h: Headline,
-    hl_t: Headline,
+    headlines: Sequence[tuple[Headline, MetricSpec]],
     *,
     excluded: list[str],
     incomplete: bool,
@@ -366,10 +428,9 @@ def verdict_section(
         reasons.append(f"accuracy {acc_arm:.1%} < baseline {acc_base:.1%}")
     if reg:
         reasons.append(f"per-task regressions: {', '.join(reg)}")
-    if not hl_h.ci_excludes_zero:
-        reasons.append("peak-context CI includes 0")
-    if not hl_t.ci_excludes_zero:
-        reasons.append("total-tokens CI includes 0")
+    for hl, spec in headlines:
+        if spec.gating and not hl.ci_excludes_zero:
+            reasons.append(spec.gate_reason)
     passed = not reasons
 
     lines = ["#### Verdict", ""]
@@ -403,15 +464,17 @@ def waterfall_section(pairs: list[TaskPair], ccx_arm: str) -> list[str]:
         lines.append("- no both-correct pairs to chart")
         lines.append("")
         return lines
-    lines.append("| Task | H_base | H_arm | H savings% | T savings% | dominant Δ-bucket |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append("| Task | H_base | H_arm | H savings% | T savings% | tool Δ% | dominant Δ-bucket |")
+    lines.append("|---|---|---|---|---|---|---|")
     for p in sorted(pairs, key=lambda x: 1.0 - x.ccx.median_h / x.base.median_h, reverse=True):
         h_sav = 1.0 - p.ccx.median_h / p.base.median_h
         t_sav = 1.0 - p.ccx.median_t / p.base.median_t
+        tool_base = p.base.median_tool_output
+        tool_cell = f"{(1.0 - p.ccx.median_tool_output / tool_base) * 100:+.1f}%" if tool_base else "—"
         bucket = _dominant_delta_bucket(_decomp_delta(p))
         lines.append(
             f"| `{p.task_id}` | {p.base.median_h:,.0f} | {p.ccx.median_h:,.0f} "
-            f"| {h_sav * 100:+.1f}% | {t_sav * 100:+.1f}% | {bucket} |"
+            f"| {h_sav * 100:+.1f}% | {t_sav * 100:+.1f}% | {tool_cell} | {bucket} |"
         )
     lines.append("")
     return lines
@@ -662,9 +725,11 @@ def render(
     lines.append("")
     lines.append(
         "Headlines per model x ccx arm: **peak context** `H = max single-turn (input + cache_create + "
-        "cache_read)` and **total tokens** `T = Σ envelope usage`. Each is the median across repeats "
-        "per task, paired over both-correct tasks. Positive savings = ccx processed fewer tokens. Cost "
-        "is not a metric."
+        "cache_read)` and **total tokens** `T = Σ envelope usage`, plus **tool-result tokens** (Σ "
+        "cumulative tool output) as a third paired co-metric — same median-across-repeats, bootstrap CI "
+        "and sign test, but **not verdict-gating** (mechanism evidence; the verdict stays H + T). Each is "
+        "the median across repeats per task, paired over both-correct tasks. Positive savings = ccx "
+        "processed fewer tokens. Cost is not a metric."
     )
     lines.append("")
     if incomplete:
@@ -709,13 +774,12 @@ def render(
             pairs = build_pairs(
                 headline_records, model, ccx_arm, paired, both_ok, raw_dir=raw_dir, prompts=prompts, counter=counter
             )
-            hl_h = _headline(pairs, "h")
-            hl_t = _headline(pairs, "t")
+            headlines = [(_headline(pairs, spec), spec) for spec in METRICS]
             excluded = integrity_exclusions(records, model, (BASELINE, ccx_arm))
-            lines += headline_section(hl_h, ccx_arm)
-            lines += headline_section(hl_t, ccx_arm)
+            for hl, _spec in headlines:
+                lines += headline_section(hl, ccx_arm)
             lines += verdict_section(
-                model, ccx_arm, headline_records, hcells, paired, hl_h, hl_t, excluded=excluded, incomplete=incomplete
+                model, ccx_arm, headline_records, hcells, paired, headlines, excluded=excluded, incomplete=incomplete
             )
             lines += waterfall_section(pairs, ccx_arm)
             lines += diagnosis_section(pairs, ccx_arm)

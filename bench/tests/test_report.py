@@ -17,6 +17,7 @@ from pathlib import Path
 
 from ccxbench import report
 from ccxbench.runner import corpus_sha
+from ccxbench.types import Decomposition, TrajectoryMetrics
 
 
 class FakeCounter:
@@ -33,9 +34,13 @@ DEFAULT_INIT = {
 }
 
 
-def _transcript(high_water: int, output: int = 0) -> list[dict]:
-    """One assistant event whose usage gives the turn this prompt high-water."""
-    return [
+def _transcript(high_water: int, output: int = 0, tool_chars: int = 0) -> list[dict]:
+    """One assistant event whose usage gives the turn this prompt high-water.
+
+    `tool_chars` > 0 appends a tool_result user event so `cumulative_tool_output` is non-zero
+    (FakeCounter counts len//4), driving the tool-result co-metric.
+    """
+    events: list[dict] = [
         {
             "type": "assistant",
             "message": {
@@ -49,6 +54,11 @@ def _transcript(high_water: int, output: int = 0) -> list[dict]:
             },
         }
     ]
+    if tool_chars:
+        events.append(
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t", "content": "z" * tool_chars}]}}
+        )
+    return events
 
 
 def _record(
@@ -94,9 +104,11 @@ def _add(
     category: str = "navigation",
     init: dict | None = None,
     model_ids: list[str] | None = None,
+    tool_cs: list[int] | None = None,
 ) -> None:
     corrects = corrects if corrects is not None else [True] * len(hs)
-    for repeat, (h, t, c) in enumerate(zip(hs, ts, corrects, strict=True)):
+    tool_cs = tool_cs if tool_cs is not None else [0] * len(hs)
+    for repeat, (h, t, c, tc) in enumerate(zip(hs, ts, corrects, tool_cs, strict=True)):
         records.append(
             _record(
                 task=task,
@@ -111,7 +123,7 @@ def _add(
                 model_ids=model_ids,
             )
         )
-        (raw_dir / f"{task}__{arm}__{model}__r{repeat}.json").write_text(json.dumps(_transcript(h)))
+        (raw_dir / f"{task}__{arm}__{model}__r{repeat}.json").write_text(json.dumps(_transcript(h, tool_chars=tc)))
 
 
 def _render(records: list[dict], raw_dir: Path, *, meta: dict | None = None) -> str:
@@ -441,6 +453,109 @@ class TestFailFastInputs(unittest.TestCase):
             (raw / "t1__ccx-cli__sonnet__r0.json").write_text("not json")
             with self.assertRaises(ValueError):
                 _render(recs, raw)
+
+
+class TestThirdMetric(unittest.TestCase):
+    """The tool-result tokens co-metric: renders paired with a CI, is non-gating, and per-metric
+    skips pairs whose baseline emitted no tool output (no ZeroDivisionError)."""
+
+    def test_three_headline_blocks_with_tool_ci(self) -> None:
+        recs: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            for task in ("t1", "t2", "t3"):
+                _add(recs, raw, task=task, arm="baseline", hs=[1000] * 5, ts=[2000] * 5, tool_cs=[4000] * 5)  # tool 1000
+                _add(recs, raw, task=task, arm="ccx-mcp", hs=[600] * 5, ts=[1200] * 5, tool_cs=[2000] * 5)  # tool 500
+                _add(recs, raw, task=task, arm="ccx-cli", hs=[700] * 5, ts=[1400] * 5, tool_cs=[2000] * 5)
+            md = _render(recs, raw)
+
+        # All three headline blocks render.
+        self.assertIn("Peak context (H = max single-turn", md)
+        self.assertIn("Total tokens processed (T = Σ envelope usage)", md)
+        self.assertIn("Tool-result tokens", md)
+        # The tool block carries the same paired CI machinery; its savings is 1 - 500/1000 = +50%.
+        tool_block = md[md.index("Tool-result tokens") :][:400]
+        self.assertIn("95% CI", tool_block)
+        self.assertIn("Mean savings: **+50.0%**", tool_block)
+
+    def test_tool_ci_includes_zero_but_verdict_pass(self) -> None:
+        # H and T clearly favor ccx (CIs exclude 0); tool output is identical between arms, so the
+        # tool savings is 0 on every task (CI includes 0). Non-gating → the verdict still PASSes.
+        recs: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            for task in ("t1", "t2", "t3"):
+                _add(recs, raw, task=task, arm="baseline", hs=[1000] * 5, ts=[2000] * 5, tool_cs=[4000] * 5)
+                _add(recs, raw, task=task, arm="ccx-mcp", hs=[600] * 5, ts=[1200] * 5, tool_cs=[4000] * 5)
+                _add(recs, raw, task=task, arm="ccx-cli", hs=[700] * 5, ts=[1400] * 5, tool_cs=[4000] * 5)
+            md = _render(recs, raw)
+
+        self.assertIn("**PASS** — ccx-mcp vs baseline", md)
+        self.assertIn("**PASS** — ccx-cli vs baseline", md)
+        # The tool co-metric shows zero savings (CI does not exclude 0) yet never forces a FAIL.
+        tool_block = md[md.index("Tool-result tokens") :][:400]
+        self.assertIn("Mean savings: **+0.0%**", tool_block)
+        self.assertNotIn("tool-result CI includes 0", md)
+
+    def test_zero_baseline_tool_output_skipped_no_crash(self) -> None:
+        recs: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            for task in ("t1", "t2"):
+                _add(recs, raw, task=task, arm="baseline", hs=[1000] * 5, ts=[2000] * 5, tool_cs=[4000] * 5)
+                _add(recs, raw, task=task, arm="ccx-mcp", hs=[600] * 5, ts=[1200] * 5, tool_cs=[2000] * 5)
+                _add(recs, raw, task=task, arm="ccx-cli", hs=[700] * 5, ts=[1400] * 5, tool_cs=[2000] * 5)
+            # t3's baseline emitted no tool output — the tool metric must skip it, not divide by zero.
+            _add(recs, raw, task="t3", arm="baseline", hs=[1000] * 5, ts=[2000] * 5, tool_cs=[0] * 5)
+            _add(recs, raw, task="t3", arm="ccx-mcp", hs=[600] * 5, ts=[1200] * 5, tool_cs=[2000] * 5)
+            _add(recs, raw, task="t3", arm="ccx-cli", hs=[700] * 5, ts=[1400] * 5, tool_cs=[2000] * 5)
+            md = _render(recs, raw)  # must not raise ZeroDivisionError
+
+        self.assertIn("Skipped 1 task(s) with zero baseline tool-result tokens", md)
+        # H and T still pair over all three tasks; only the tool metric drops t3.
+        self.assertIn("Paired on **3 both-correct task(s)**", md)
+
+    def test_all_pairs_skipped_renders_reason_verdict_unaffected(self) -> None:
+        # Every task's baseline emitted no tool output → the tool metric skips all pairs (n == 0).
+        recs: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            for task in ("t1", "t2", "t3"):
+                _add(recs, raw, task=task, arm="baseline", hs=[1000] * 5, ts=[2000] * 5, tool_cs=[0] * 5)
+                _add(recs, raw, task=task, arm="ccx-mcp", hs=[600] * 5, ts=[1200] * 5, tool_cs=[2000] * 5)
+                _add(recs, raw, task=task, arm="ccx-cli", hs=[700] * 5, ts=[1400] * 5, tool_cs=[2000] * 5)
+            md = _render(recs, raw)
+
+        self.assertIn("all 3 pair(s) skipped: zero baseline tool-result tokens", md)
+        # H and T still gate and PASS; the all-skipped tool metric leaves the verdict untouched.
+        self.assertIn("**PASS** — ccx-mcp vs baseline", md)
+
+
+def _tm(high_water: int) -> TrajectoryMetrics:
+    return TrajectoryMetrics(
+        high_water=high_water,
+        decomposition=Decomposition(high_water, 0, 0, 0, 0),
+        cumulative_tool_output=0,
+        turn_count=1,
+        tool_call_count=0,
+        peak_turn=0,
+        tool_calls=(),
+        total_prompt=high_water,
+        total_output=0,
+    )
+
+
+class TestRepresentative(unittest.TestCase):
+    """`ArmAgg.representative` picks the transcript whose high-water is closest to the median."""
+
+    def test_even_size_picks_nearer_of_the_two_middles(self) -> None:
+        agg = report.ArmAgg(metrics=[_tm(100), _tm(200), _tm(300), _tm(400)], envelope_t=[0, 0, 0, 0])
+        # median_h = (200 + 300) / 2 = 250; both 200 and 300 are 50 away — the tie breaks to 200.
+        self.assertEqual(agg.representative.high_water, 200)
+
+    def test_odd_size_picks_the_exact_median(self) -> None:
+        agg = report.ArmAgg(metrics=[_tm(100), _tm(300), _tm(200)], envelope_t=[0, 0, 0])
+        self.assertEqual(agg.representative.high_water, 200)
 
 
 if __name__ == "__main__":
