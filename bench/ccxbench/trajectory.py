@@ -3,12 +3,20 @@
 The runner saves the full provider event stream to ``results/<session>/raw/<run>.json``
 as a JSON array (not JSONL). Each assistant event carries its own ``message.usage``;
 within one logical turn the thinking/text/tool_use blocks arrive as separate assistant
-events that repeat the same usage, so a turn is a contiguous run of assistant events.
+events that repeat the same usage, so a turn is a contiguous run of assistant events
+bounded by a ``user`` event (a tool result or the next prompt). Every other stream event
+(``rate_limit_event``, ``system``, ``result``, unknown) sits inside whichever turn it lands
+in and never opens or closes one — a mid-turn ``rate_limit_event`` used to split a turn in
+two, double-counting its (repeated) prompt in ``total_prompt`` and ``turn_count``.
 
 The headline quantity is the prompt **high-water mark**: the largest single-turn prompt
 (``input + cache_creation + cache_read``), i.e. how big the context window actually got.
 It is decomposed into additive buckets (see `Decomposition`) and reported alongside the
 cumulative tool-output tokens that ccx directly controls.
+
+``turn_count`` here (contiguous assistant runs) is a different definition from the
+envelope's ``num_turns`` (Claude Code's own turn accounting); the two may legitimately
+differ and are not cross-checked against each other.
 
 A run with no turn whose prompt exceeds zero (a session that never reached the model —
 e.g. an init-only stub) is excluded: `compute` returns ``None``.
@@ -71,13 +79,19 @@ def _arg_summary(block: dict, limit: int = 80) -> str:
 
 
 def _turns(events: list[dict]) -> list[list[dict]]:
-    """Group the event stream into turns: maximal contiguous runs of assistant events."""
+    """Group the event stream into turns: contiguous runs of assistant events split on ``user``.
+
+    Only a ``user`` event (a tool result or the next prompt) closes the current turn; every
+    other non-assistant event (``rate_limit_event``, ``system``, ``result``, unknown) neither
+    extends nor closes it, so a mid-turn ``rate_limit_event`` no longer double-counts a prompt.
+    """
     turns: list[list[dict]] = []
     current: list[dict] = []
     for ev in events:
-        if ev.get("type") == "assistant":
+        kind = ev.get("type")
+        if kind == "assistant":
             current.append(ev)
-        elif current:
+        elif kind == "user" and current:
             turns.append(current)
             current = []
     if current:

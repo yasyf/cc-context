@@ -42,6 +42,18 @@ def tool_result(tool_use_id: str, content: str, is_error: bool = False) -> dict:
     }
 
 
+def rate_limit_event() -> dict:
+    return {"type": "rate_limit_event", "rate_limit": {"status": "allowed"}}
+
+
+def system_event() -> dict:
+    return {"type": "system", "subtype": "init"}
+
+
+def result_event() -> dict:
+    return {"type": "result", "subtype": "success"}
+
+
 def synthetic() -> list[dict]:
     # Turn 1 prompt 1000; peak is Turn 2 prompt 3000 (NOT the last turn); Turn 3 prompt 1500.
     return [
@@ -125,6 +137,64 @@ class TestTrajectory(unittest.TestCase):
                 self.assertEqual(m.total_output, total_output)
                 self.assertEqual(m.total_tokens, total_tokens)
                 self.assertEqual(m.total_tokens, m.total_prompt + m.total_output)
+
+    def test_mid_turn_rate_limit_does_not_split_turn(self) -> None:
+        # Two same-usage assistant events are one logical turn; a rate_limit_event between them
+        # must not split it (which would count the repeated 1000-token prompt twice).
+        events = [
+            assistant(1000, 0, 0, [{"type": "tool_use", "id": "tu1", "name": "Read", "input": {}}]),
+            rate_limit_event(),
+            assistant(1000, 0, 0, [{"type": "text", "text": "..."}]),
+        ]
+        m = trajectory.compute(events, first_prompt="", count=fake_count)
+        assert m is not None
+        self.assertEqual(m.turn_count, 1)
+        self.assertEqual(m.total_prompt, 1000)
+
+    def test_user_event_still_splits_turns(self) -> None:
+        events = [
+            assistant(1000, 0, 0, [{"type": "tool_use", "id": "tu1", "name": "Read", "input": {}}]),
+            tool_result("tu1", "x" * 40),
+            assistant(0, 0, 2000, [{"type": "text", "text": "done"}]),
+        ]
+        m = trajectory.compute(events, first_prompt="", count=fake_count)
+        assert m is not None
+        self.assertEqual(m.turn_count, 2)
+        self.assertEqual(m.total_prompt, 3000)
+
+    def test_leading_system_and_trailing_result_do_not_bound_turns(self) -> None:
+        events = [
+            system_event(),
+            assistant(1000, 0, 0, [{"type": "tool_use", "id": "tu1", "name": "Read", "input": {}}]),
+            rate_limit_event(),
+            assistant(1000, 0, 0, [{"type": "text", "text": "..."}]),
+            result_event(),
+        ]
+        m = trajectory.compute(events, first_prompt="", count=fake_count)
+        assert m is not None
+        self.assertEqual(m.turn_count, 1)
+        self.assertEqual(m.total_prompt, 1000)
+
+    def test_real_fixture_nonreg_bigo_prompt_not_doubled(self) -> None:
+        # A real run carrying a mid-turn rate_limit_event: pre-fix the split doubled total_prompt
+        # to 103,056; post-fix it is one turn counted once. Usage-derived fields only.
+        m = trajectory.from_file(DATA / "nonreg-bigo__ccx-mcp__sonnet__r0.json", first_prompt="", count=fake_count)
+        assert m is not None
+        self.assertEqual(m.turn_count, 1)
+        self.assertEqual(m.total_prompt, 51_528)
+
+    def test_real_fixture_trace_tornado_envelope_consistency(self) -> None:
+        # A flagged envelope-vs-transcript outlier pre-fix; post-fix the transcript recompute lands
+        # within the 2% consistency tolerance. Assert usage-derived fields only (never tool output).
+        m = trajectory.from_file(
+            DATA / "trace-tornado-parse-body__baseline__sonnet__r0.json", first_prompt="", count=fake_count
+        )
+        assert m is not None
+        self.assertEqual(m.turn_count, 4)
+        self.assertEqual(m.total_prompt, 186_466)
+        envelope_t = 186_965  # recorded envelope T for this run (results/20260711T010914Z/runs.jsonl)
+        rel = abs(envelope_t - m.total_tokens) / envelope_t
+        self.assertLessEqual(rel, 0.02)
 
     def test_load_events_rejects_non_array(self) -> None:
         path = DATA / "_not_an_array.json"
