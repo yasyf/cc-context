@@ -110,9 +110,10 @@ RG_OP_VALUE_LONG = frozenset(
 # explicit-files grep from a tree-wide one it separates a flag's value token from a path operand.
 # An UNKNOWN flag leaves the grep unbounded (it then enters the hook), never a wrong allow. `-e`/`-f`
 # (and `--regexp`/`--file`) supply the pattern, so no positional is the pattern.
-# `-o`/`-v` (and `--only-matching`/`--invert-match`) are excluded: only-matching multiplies output
-# past the file size and invert-match prints the non-matching lines, so neither counts as bounded.
-BOUNDED_BOOL_SHORT = frozenset("iwxcqLlrRnHhsIFEGPzaUbT")
+# `-o`/`--only-matching` prints each disjoint non-empty match substring plus a newline, so output stays
+# bounded by ~2× the size-capped input and it counts as bounded; `-v`/`--invert-match` stays excluded —
+# invert-match prints the non-matching lines, a cat-shaped dump idiom.
+BOUNDED_BOOL_SHORT = frozenset("iwxcqLlrRnHhsIFEGPzaUbTo")
 BOUNDED_VALUE_SHORT = frozenset("mABCdD")
 BOUNDED_PATTERN_SHORT = frozenset("ef")
 BOUNDED_BOOL_LONG = frozenset(
@@ -121,7 +122,7 @@ BOUNDED_BOOL_LONG = frozenset(
         "files-with-matches", "files-without-match", "quiet", "silent",
         "no-filename", "with-filename", "line-number", "recursive", "dereference-recursive",
         "extended-regexp", "fixed-strings", "basic-regexp", "perl-regexp", "null", "null-data",
-        "text", "byte-offset", "no-messages", "initial-tab", "color", "colour", "binary",
+        "text", "byte-offset", "no-messages", "initial-tab", "color", "colour", "binary", "only-matching",
     }
 )
 BOUNDED_VALUE_LONG = frozenset(
@@ -663,22 +664,33 @@ def _grep_note(evt: BaseHookEvent) -> str:
     return _note_text(evt.command, _grep_parse(evt.command_line))
 
 
-def _bounded_file_grep(cl: CommandLine) -> bool:
-    """Report whether a ``grep`` is a bounded search over explicit existing files.
+def _bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
+    """Report whether one ``grep`` statement is a bounded search ccx can't rewrite.
 
-    A single command with a non-empty pattern whose every flag lexes against the known-arity grep
-    tables and whose every path operand stats as an existing regular file (absolute paths included)
-    *whose sizes sum to no more than* :data:`~hooks.common.LARGE_READ_BYTES`. Such a grep floods no
-    more than a guarded ``cat``/``Read`` of the same files would, so when it is not ccx-rewritable it
-    earns a pass-through; over the threshold it blocks (the pipe escape hatch remains). The lexer is
-    conservative: an unknown flag or a bundle with a value-taking char returns ``False`` (the grep
-    then enters the hook), never a wrong allow.
+    Judges a single grep occurrence on its own flags and operands — not the whole Bash line — so it
+    holds per-occurrence inside a pipe or ``&&``/``;`` chain. ``sink`` marks a grep on the receiving
+    end of a pipe (``… | grep``): with no path operand it just filters stdin, so an unparseable or
+    operand-less sink grep is presumed a bounded filter, whereas the same shape unpiped is not.
+
+    Two shapes qualify as a bounded file search:
+
+    - *data-ext textual*: every operand is an explicit :data:`NON_SOURCE_EXTS` file matched by suffix
+      with no stat, so a file created earlier in the same compound command or addressed relative to an
+      in-command ``cd`` passes; ``-o`` is fine here (rg parity), but a recursion flag forfeits it (a
+      directory named like a data file under ``-r`` would flood).
+    - *bounded regular files*: every operand stats as an existing regular file whose sizes sum to no
+      more than :data:`~hooks.common.LARGE_READ_BYTES`; ``-o`` forfeits this stat lane, since its
+      per-match filename/line/byte prefixes multiply output past the size bound.
+
+    Conservative throughout: a ``GREP_OPTIONS`` env (which can inject ``-r``/``-o`` the parser never
+    sees), any env alongside path operands, an uninspectable ``-f`` pattern file, a flag-supplied empty
+    pattern, and an unknown flag on an unpiped grep all return ``False`` — never a wrong allow.
     """
-    if not is_single_command(cl):
-        return False
-    args = cl.primary.args
+    if "GREP_OPTIONS" in cmd.env_dict:
+        return False  # a leading GREP_OPTIONS= injects flags (-r/-o …) that never reach cmd.args
+    args = cmd.args
     positionals: list[str] = []
-    pattern_from_flag = False
+    pattern_from_flag = only_matching = pattern_file = empty_flag_pattern = recursive = False
     i, n = 0, len(args)
     while i < n:
         a = args[i]
@@ -690,48 +702,84 @@ def _bounded_file_grep(cl: CommandLine) -> bool:
             i += 1
             continue
         if a.startswith("--"):
-            name, sep, _ = a[2:].partition("=")
+            name, sep, val = a[2:].partition("=")
             if name in BOUNDED_PATTERN_LONG:
                 pattern_from_flag = True
+                if name == "file":
+                    pattern_file = True
+                elif sep:
+                    empty_flag_pattern = empty_flag_pattern or val == ""
+                elif i + 1 < n:
+                    empty_flag_pattern = empty_flag_pattern or args[i + 1] == ""
                 if not sep:
                     i += 1
             elif name in BOUNDED_VALUE_LONG:
+                recursive = recursive or name == "directories"  # any --directories value → assume recursive
                 if not sep:
                     i += 1
-            elif name not in BOUNDED_BOOL_LONG:
-                return False
+            elif name in BOUNDED_BOOL_LONG:
+                recursive = recursive or name in ("recursive", "dereference-recursive")
+                only_matching = only_matching or name == "only-matching"
+            else:
+                return sink
             i += 1
             continue
         body = a[1:]
         head = body[0]
         if head in BOUNDED_PATTERN_SHORT:
             pattern_from_flag = True
+            if head == "f":
+                pattern_file = True
             if len(a) == 2 and i + 1 < n:
+                if head == "e":
+                    empty_flag_pattern = empty_flag_pattern or args[i + 1] == ""
                 i += 1
         elif head in BOUNDED_VALUE_SHORT:
+            recursive = recursive or head == "d"  # -d [recurse] → assume recursive
             if len(a) == 2 and i + 1 < n:
                 i += 1
-        elif not all(ch in BOUNDED_BOOL_SHORT for ch in body):
-            return False
+        elif all(ch in BOUNDED_BOOL_SHORT for ch in body):
+            recursive = recursive or "r" in body or "R" in body
+            only_matching = only_matching or "o" in body
+        else:
+            return sink
         i += 1
     if pattern_from_flag:
+        empty_positional_pattern = False
         paths = positionals
-    elif not positionals or positionals[0] == "":
-        return False  # no pattern, or an empty pattern that floods every line
+    elif not positionals:
+        return False  # no pattern and no operand
     else:
+        empty_positional_pattern = positionals[0] == ""
         paths = positionals[1:]
-    if not paths or not all(Path(p).is_file() for p in paths):
+    if recursive and not paths:
+        return False  # grep -r with no operand recurses the cwd, even as a pipe sink
+    if not paths:
+        return sink  # a pure stdin filter passes; an unpiped stdin-grep fails as today
+    if cmd.env or pattern_file or empty_flag_pattern:
+        return False  # env with paths, an uninspectable -f pattern file, or a flag-supplied empty pattern
+    if empty_positional_pattern:
+        return False  # an empty positional pattern floods every line
+    # Data files pass by suffix, no stat; recursion forfeits it — a dir named like a data file floods.
+    if not recursive and all(not p.endswith("/") and Path(p).suffix.lower() in NON_SOURCE_EXTS for p in paths):
+        return True
+    if only_matching:
+        return False  # -o forfeits the stat lane — per-match prefixes multiply output past the size bound
+    if not all(Path(p).is_file() for p in paths):
         return False
     return sum(Path(p).stat().st_size for p in paths) <= LARGE_READ_BYTES
 
 
 class GrepFlood(CustomCommandLineCondition):
-    """Matches an unpiped file-search ``grep`` unless it is a bounded, unrewritable, explicit-files grep.
+    """Matches a file-search ``grep`` unless every ``grep`` occurrence is a bounded, unrewritable grep.
 
     Fires so the hook rewrites it (``_grep_to`` yields the command) or blocks it (``_grep_to`` yields
-    ``None``). It stays silent only on a bounded explicit-existing-files grep that ccx can't rewrite,
-    letting that grep run — the captain-hook contract turns a ``None`` ``to`` under a set ``block``
-    into an unconditional block, so this per-case allow lives here in the condition.
+    ``None``). The ``_unpiped`` guard keeps a line with no unpiped ``grep`` out of scope (a pure
+    ``… | grep`` filter). Once in scope it stays silent only when *every* ``grep`` on the line — sink
+    greps included, since a sink grep with file operands ignores stdin and searches those files — is a
+    bounded explicit-files or data-file grep that ccx can't rewrite. The captain-hook contract turns a
+    ``None`` ``to`` under a set ``block`` into an unconditional block, so this per-occurrence allow
+    lives here in the condition.
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
@@ -739,7 +787,11 @@ class GrepFlood(CustomCommandLineCondition):
             return False
         if _grep_to(evt) is not None:
             return True
-        return not _bounded_file_grep(cl)
+        return any(
+            not _bounded_file_grep(cmd, sink=i > 0 and cl.parts[i - 1][1] == "|")
+            for i, (cmd, _) in enumerate(cl.parts)
+            if cmd.executable == "grep"
+        )
 
 
 rewrite_command(
@@ -749,10 +801,11 @@ rewrite_command(
         "BLOCKED: raw `grep` for file search floods context. "
         "Use `ccx code grep <text>` (or mcp__cc-context__ccx_code_grep) / `ccx code search` for code; the "
         "built-in Grep tool or `rg` for literal content in non-source files. "
-        "Simple literal and simple-regex greps auto-rewrite to `ccx code grep`, and a grep over explicit "
-        "existing files passes through; this one didn't — an exotic regex (backrefs, escapes, PCRE), an "
-        "unmappable flag, or a tree-wide unmappable search. "
-        "Escape hatch: pipe it (`… | grep`)."
+        "Simple literal and simple-regex greps auto-rewrite to `ccx code grep`; a grep whose explicit "
+        "targets are all data files (`.log`/`.json`/`.yaml`/…) or existing files under the size cap runs "
+        "as-is, even inside pipes and `&&`/`;` chains. This one didn't qualify — a tree-wide or directory "
+        "search, a recursive flag, an unmappable flag, or an over-cap/missing source-file target. "
+        "Escape hatch: pipe input into it (`… | grep`)."
     ),
     note=_grep_note,
     tests={
@@ -777,16 +830,43 @@ rewrite_command(
         Input(command="grep -E -F foo ."): Block(),  # -F with -E: conflicting matchers, grep errors → block
         Input(command="grep -q foo src/"): Block(),  # exit-code contract, tree-wide
         Input(command="grep -c foo src/"): Block(),  # count mode, tree-wide
-        Input(command="grep -o foo src/"): Block(),  # only-matching mode, tree-wide
+        Input(command="grep -o foo src/"): Block(),  # -o output is bounded, but src/ is a dir → tree-wide
         Input(command="grep -e foo -e bar ."): Block(),  # multiple -e over a dir
         Input(command="grep -iw foo src/"): Block(),  # MAP chars bundled → block (engine-independent)
         Input(command="grep -f patterns.txt ."): Block(),  # -f pattern-file over a dir
         # Allow — an unrewritable grep over an explicit existing file is bounded, so the condition never
         # fires (/etc/hosts is a regular file on every CI OS: macOS + Linux):
         Input(command="grep -rn foo /etc/hosts"): Allow(),  # absolute path, but a bounded existing file
-        # Existing block neighbors — a pipe head or `&&` chain is not a single command:
-        Input(command="grep foo file.py | wc -l"): Block(),
-        Input(command="grep foo a && echo done"): Block(),
+        # Per-occurrence data-file passthrough (the incident class) — data-ext operands pass by suffix
+        # with no stat, so each grep runs even inside pipes and `&&`/`;` chains, and a file created
+        # earlier in the same compound or reached via an in-command `cd` still qualifies:
+        Input(
+            command="cd /tmp/scratch && gog --account user@example.com --readonly --json gmail get MSGID "
+            "--json > b_jetblue_jun.json; grep -oiE '[0-9][0-9,]{2,} ?(points|TrueBlue)' b_jetblue_jun.json "
+            "| head; grep -oiE 'mosaic( [0-9])?' b_jetblue_jun.json | sort | uniq -c"
+        ): Allow(),
+        Input(command="grep -oi points b_jetblue_jun.json"): Allow(),  # standalone -o on a data file (data-ext keeps -o)
+        Input(command="echo x > gen.json; grep -i points gen.json"): Allow(),  # created earlier in the compound
+        Input(command="grep -i err app.log | head"): Allow(),  # a downstream pipe no longer disqualifies
+        Input(command="cd sub && grep foo notes.json"): Allow(),  # cd-relative data file
+        # Per-occurrence blocks — one qualifying grep can't launder a tree-wide/recursive/no-operand grep:
+        Input(command="grep -r foo src/ | head"): Block(),  # recursive tree search; the pipe doesn't exempt it
+        Input(command="grep -i points data.json && grep foo ."): Block(),  # data-file grep + a `.` tree search
+        Input(command="grep -r foo logs.json"): Block(),  # -r forfeits the data-ext textual escape
+        Input(command="echo hi; grep -o foo"): Block(),  # no operand in a compound → not bounded
+        # -o forfeits the STAT lane (per-match prefixes multiply output); data-ext keeps -o (above):
+        Input(command="grep -o localhost /etc/hosts"): Block(),  # -o floods the stat path on a non-data file
+        Input(command="grep -oHnb . AGENTS.md"): Block(),  # -oHnb = filename/line/byte prefixes per match on a source file
+        # Holes closed by the adversarial review — env injection, sink-with-operands, flag-supplied patterns:
+        Input(command="grep -q localhost /etc/hosts | grep -r . /"): Block(),  # sink grep w/ operands ignores stdin, recurses /
+        Input(command="GREP_OPTIONS=-r grep -o needle dir.json"): Block(),  # GREP_OPTIONS injects -r past the parser
+        Input(command="grep --regexp= data.json"): Block(),  # empty flag-supplied pattern floods every line
+        Input(command="grep -e '' data.json"): Block(),  # empty -e pattern floods every line
+        Input(command="grep -f pats.txt data.json"): Block(),  # -f pattern file is uninspectable
+        # Existing block neighbors — each unpiped grep is judged on its own operands; a nonexistent
+        # source-ext target isn't bounded, so the line still blocks:
+        Input(command="grep foo ghost.py | wc -l"): Block(),
+        Input(command="grep foo ghost && echo done"): Block(),
         # Existing Allow neighbors — condition unchanged (piped grep, non-grep, ccx exec):
         Input(command="ls | grep foo"): Allow(),
         Input(command="cat x | grep foo | sort"): Allow(),

@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-07-12
+
+### Fixed
+- Guard pack 0.4.0: the grep guard judges each grep statement on its own flags and operands (per-occurrence, matching the rg guard) instead of requiring the whole Bash line to be a single command. Explicit data-file targets (`.log`/`.json`/…) pass textually with no stat, so files created earlier in the same compound command or addressed relative to an in-command `cd` now run as-is (`-o` is allowed on a data-file target — its output tracks the matched data). Tree-wide, directory, and recursive greps still block, and so do the flood shapes an over-broad allow would miss: `-o` over a source file (its per-match filename/line/byte prefixes multiply output past the size cap), a `GREP_OPTIONS` env that injects flags the parser never sees, a pipe-sink grep that names file operands (it searches the files, ignoring stdin), and flag-supplied empty or `-f`-file patterns.
+
 ## [0.12.0] - 2026-07-10
 
 ### Changed

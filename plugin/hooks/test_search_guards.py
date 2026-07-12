@@ -552,16 +552,23 @@ class TestGrepMultiFilePaths:
 
 
 class TestGrepBoundedPassthrough:
-    """`_bounded_file_grep`: an unrewritable grep over explicit existing files whose sizes sum under
-    the large-read threshold is bounded, so the condition stays silent (genuine allow); a nonexistent
-    path, a directory operand, an over-threshold file, `-o`/`-v`, or an empty pattern fires and blocks.
+    """`_bounded_file_grep` judges one grep statement on its own flags and operands, in a fixed order:
+    a `GREP_OPTIONS` env, `grep -r` with no operand, env alongside path operands, an uninspectable `-f`
+    pattern file, a flag-supplied or positional empty pattern, and (on the stat lane) `-o` each forfeit.
+    Two shapes stay bounded (the condition is silent — a genuine allow): every operand an explicit
+    data-ext file (matched by suffix, no stat, `-o` allowed — rg parity) or every operand an existing
+    regular file whose sizes sum under the large-read threshold. A pipe-sink grep (`sink=True`) with no
+    operand is a bounded stdin filter; with file operands it is judged like any file search. Compound
+    lines are judged per grep occurrence — one unbounded grep fires the whole line.
     """
 
     @pytest.fixture(autouse=True)
     def _tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         (tmp_path / "real.py").write_text("x\n")
-        (tmp_path / "big.txt").write_text("x" * (common.LARGE_READ_BYTES + 1))  # over the size threshold
+        (tmp_path / "big.txt").write_text("x" * (common.LARGE_READ_BYTES + 1))  # over threshold, data ext
+        (tmp_path / "big.py").write_text("x" * (common.LARGE_READ_BYTES + 1))  # over threshold, source ext
         (tmp_path / "sub").mkdir()
+        (tmp_path / "dir.json").mkdir()  # a real directory named like a data file
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
         monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
@@ -576,7 +583,7 @@ class TestGrepBoundedPassthrough:
         ],
     )
     def test_bounded_existing_files_do_not_fire(self, command: str) -> None:
-        assert search_guards._bounded_file_grep(CommandLine.parse(command)) is True
+        assert search_guards._bounded_file_grep(CommandLine.parse(command).primary) is True
         assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is False
 
     @pytest.mark.parametrize(
@@ -586,22 +593,106 @@ class TestGrepBoundedPassthrough:
             "grep -c foo sub/",  # directory operand → not bounded
             "grep -c foo real.py ghost.py",  # one real file, one absent → every operand must exist
             "grep -c foo",  # no operand at all → not bounded (tree-wide)
-            "grep -o . big.txt",  # Finding 4 repro: -o is output-amplifying and dropped → not bounded
-            "grep -v foo real.py",  # -v inverts to the non-matching lines → dropped from the table
-            "grep -c foo big.txt",  # bounded shape, but the file exceeds the size threshold → block
-            "grep '' real.py",  # empty pattern floods every line → block
+            "grep -o . big.py",  # -o forfeits the stat lane (big.py is over-threshold anyway) → block
+            "grep -o foo real.py",  # -o forfeits the stat lane even under threshold (per-match prefixes)
+            "grep -on foo real.py",  # -o bundled with -n still forfeits the stat lane
+            "grep -oHnb . real.py",  # R1: -o + -H/-n/-b prefixes multiply output far past the size bound
+            "grep -v foo real.py",  # -v (invert-match) isn't a bounded flag → unbounded when unpiped
+            "grep -c foo big.py",  # bounded shape, but the source-ext file exceeds the size threshold → block
+            "grep '' real.py",  # empty positional pattern floods every line → block
         ],
     )
     def test_unbounded_grep_fires_and_blocks(self, command: str) -> None:
-        assert search_guards._bounded_file_grep(CommandLine.parse(command)) is False
+        assert search_guards._bounded_file_grep(CommandLine.parse(command).primary) is False
         assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is True
         assert search_guards._grep_to(_evt(command)) is None
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep -r foo dir.json",  # -r forfeits data-ext; dir.json is a real directory → not bounded
+            "grep -d recurse foo dir.json",  # -d (--directories) → assume recursive → same
+            "grep foo dir.json/",  # a trailing slash defeats the data-ext textual escape
+        ],
+    )
+    def test_recursion_or_directory_defeats_data_ext(self, command: str) -> None:
+        # A recursion flag or a directory operand forfeits the no-stat data-ext pass even when spelled
+        # like a data file. `-r`/trailing-slash shapes parse as directory-glob rewrites at the GrepFlood
+        # level (not blocks), so only `_bounded_file_grep` is asserted here.
+        assert search_guards._bounded_file_grep(CommandLine.parse(command).primary) is False
+
+    def test_data_ext_is_size_exempt(self) -> None:
+        # Data-ext operands pass by suffix with no stat, so an over-threshold `.txt` is still bounded
+        # (rg parity — a raw `rg` over the same data file is exempt too).
+        assert search_guards._bounded_file_grep(CommandLine.parse("grep foo big.txt").primary) is True
+
     def test_under_threshold_multi_file_sum_is_bounded(self) -> None:
         # The bound is on the SUM of file sizes: two small files together stay under the threshold.
-        assert search_guards._bounded_file_grep(CommandLine.parse("grep -c foo real.py real.py")) is True
+        assert search_guards._bounded_file_grep(CommandLine.parse("grep -c foo real.py real.py").primary) is True
 
     def test_unknown_flag_is_not_bounded(self) -> None:
         # Conservative lexer: an unknown flag leaves the grep unbounded (it enters the hook), never a
         # wrong allow — even over an existing file.
-        assert search_guards._bounded_file_grep(CommandLine.parse("grep --frobnicate foo real.py")) is False
+        assert search_guards._bounded_file_grep(CommandLine.parse("grep --frobnicate foo real.py").primary) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # The incident: two `grep -oiE … b_jetblue_jun.json | …` statements in a `;`/`|` chain over a
+            # file the redirect created earlier — data-ext, so each grep passes with no stat.
+            "cd /tmp/scratch && gog --account user@example.com --readonly --json gmail get MSGID "
+            "--json > b_jetblue_jun.json; grep -oiE '[0-9][0-9,]{2,} ?(points|TrueBlue)' b_jetblue_jun.json "
+            "| head; grep -oiE 'mosaic( [0-9])?' b_jetblue_jun.json | sort | uniq -c",
+            "grep -c foo real.py && grep -c bar real.py",  # both bounded existing files
+            "grep -c foo real.py | wc -l",  # a bounded grep feeding a pipe
+        ],
+    )
+    def test_compound_per_occurrence_allows(self, command: str) -> None:
+        assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is False
+
+    def test_one_unbounded_grep_blocks_the_line(self) -> None:
+        # A qualifying grep can't launder a sibling tree-wide grep: the `.` search fires the whole line.
+        command = "grep -c foo real.py; grep foo ."
+        assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep -oiE 'a{2,}' missing.json",  # -oiE bundle over a nonexistent data file
+            "grep -i foo missing.json",  # nonexistent data file — proves the data-ext pass never stats
+        ],
+    )
+    def test_data_ext_needs_no_stat(self, command: str) -> None:
+        assert search_guards._bounded_file_grep(CommandLine.parse(command).primary) is True
+        assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "GREP_OPTIONS=-r grep -o needle dir.json",  # R2: GREP_OPTIONS injects -r the parser never sees
+            "LC_ALL=C grep -i pat notes.json",  # any env alongside path operands → conservative block
+            "grep --regexp= data.json",  # R4: empty flag-supplied pattern floods every line
+            "grep -e '' data.json",  # R4: empty -e pattern floods every line
+            "grep -f pats.txt data.json",  # R4: an uninspectable -f pattern file
+        ],
+    )
+    def test_env_and_flag_pattern_holes(self, command: str) -> None:
+        # These forfeit before any stat, so the assertion is disk-independent (the named files need not exist).
+        assert search_guards._bounded_file_grep(CommandLine.parse(command).primary) is False
+
+    @pytest.mark.parametrize(
+        ("command", "fires"),
+        [
+            # R3: a sink grep with file operands ignores stdin and searches those files.
+            ("grep -q localhost /etc/hosts | grep -r . /", True),
+            # step 4: grep -r with no operand recurses the cwd even as a pipe sink.
+            ("grep -c foo real.py; printf x | grep -r needle", True),
+            # step 5 does not launder a sink grep that names an over-cap file operand.
+            ("grep -c foo real.py; printf y | grep -c . big.py", True),
+            # a genuine pipe-sink filter (no operand, env allowed) stays a bounded stdin filter.
+            ("grep -c foo real.py; printf x | LC_ALL=C grep pat", False),
+        ],
+    )
+    def test_sink_grep_semantics(self, command: str, fires: bool) -> None:
+        # Every case is a compound (primary is multi-part), so `_grep_parse` bails before any live ccx probe.
+        assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is fires
