@@ -53,6 +53,17 @@ The flood premise itself had never been measured. [analysis/flood-audit-report.m
 - **Grading caveats.** The opus control-panel drop (85/80/75%) is one style-sensitive grader (`nonreg-binsearch` demanded the literal word "sort"); the `trace-tornado-target-delegate` "regression" is gold ambiguity (the symbol is defined at two sites). Both golds repaired for future campaigns; historical grades stand as graded with these caveats. Infra-lost runs (`is_error`) are excluded from accuracy denominators.
 - **Power ceiling.** CIs resample over tasks (n ≤ 26 pairs), not runs; 5 repeats put per-task median noise near 9%. Effects of the measured size (14–35%) resolve decisively; a true ≤5% effect would not.
 
+## Stage 1 (flood-inducing tasks): negative, confirmed twice
+
+The redesign's cheapest falsifier ran as a staged probe (~$30 total; sessions `20260712T064411Z`, `20260712T072354Z`, `20260712T074217Z`). Design and gates: the addendum in [analysis/bench-redesign-proposal.md](analysis/bench-redesign-proposal.md) plus the Stage-1 design doc's task specs.
+
+- Flood-shaped tasks work as tasks: they induce 5× heavier sessions (T up to 2.2M/run), and large-seed import-closure questions do make baselines flood (B1 up to 40%).
+- But sonnet's default answer to width is *iterating bounded greps*, not flooding — per-call frugality survives task pressure (B1 17% on the first task set).
+- Two boundary-contract artifacts were found and fixed along the way (unstated set boundaries penalized perfect-recall answers; the gold predicate excluded a C-extension module the prompt's literal rule included). Both fixes flipped failures without touching graders.
+- The confirmed negative, on the most flood-favorable shape found: ccx-cli lost H, T (2.2× baseline tokens), and tool-result on the one pairable task — and lost **accuracy** (76.9% vs 93.3%) on the family. The compact lane systematically misses members on exhaustive-enumeration questions; the baseline's floods buy its correctness.
+
+That last point sharpens the earlier accuracy story: ccx's accuracy edge is real on locate/trace/diff tasks (the classic corpus, re-confirmed at 100%/96% under terse defaults) and reverses on exhaustive-enumeration tasks, where withholding bytes withholds answers. Token savings claims at the session level are dead on both corpora; the honest product story is precision on targeted questions, guard rewrites as a tail safety net (3.6–3.9% ceiling), and per-call bounding where floods actually happen (weak models; the read-heavy tail).
+
 ## Product changes motivated by these findings
 
 Landed: `--section` comma-range alias (`A,B` ≡ `A-B`, CLI + MCP + edit). In progress: terser `symbol`/`outline` defaults (−94% per locate call, gated on accuracy), MCP description slimming (halve prose, keep every description and the server instructions under Claude Code's 2KB truncation, keyword-align for tool-search matching — native schema deferral is already the client default, so there is no lazy-loading work to build server-side), ladder rewrite (chain ccx calls in one Bash invocation; drop orient-first on targeted lookups), and the ergonomic affordances models reached for and missed (outline windowing, grep context flags, `--lines` alias).
