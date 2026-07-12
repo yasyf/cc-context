@@ -1,1 +1,1 @@
-{"v":1,"lamport":4,"ops":[{"kind":"add_comment","body":"def3c843 on main: fix(guards) grep per-occurrence passthrough + data-file textual escape, pack 0.4.0, plugin 0.13.0 — the v0.13.0 release commit for this task (trailer omitted: commit was pushed before the describe landed)."}]}
+{"v":1,"lamport":5,"ops":[{"kind":"add_comment","body":"Resolved: v0.11.0 and v0.12.0 shipped 2026-07-11; v0.13.0 (def3c843) shipped 2026-07-12 with the grep-guard per-occurrence fix. Local brew + plugin both at 0.13.0."}]}
