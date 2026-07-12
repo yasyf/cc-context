@@ -36,7 +36,7 @@ The flood premise itself had never been measured. [analysis/flood-audit-report.m
 
 - 67.6% of real sessions contain at least one flood-shaped call, but floods are only **13.3% of tool-result tokens**, and the historical "Read = 71.6% of spend" figure no longer holds (Read is 41.7% of tool tokens; 96% of unbounded reads are already small).
 - The guard-rewrite ceiling — the most ccx could save — is **3.6–3.9% of billed T**, heavily skewed (median session 0.18%, p90 6.2%, max 28.9%). The value lives in a read-heavy tail, not the typical session.
-- At real session lengths, the MCP schema tax compounds to ~2.4–3.9% of T — roughly cancelling the entire ceiling. **The CLI path, with zero schema tax, is the only lane with positive headroom.**
+- At real session lengths, the MCP schema tax compounds to ~2.4–3.9% of T — roughly cancelling the entire ceiling. **The CLI path, with zero schema tax, is the only lane with positive headroom.** Scope caveat: the benchmark pins `ENABLE_TOOL_SEARCH=false` for arm comparability (arms.py `run_settings`), so its measured schema tax describes the deferral-off condition. Claude Code now defers all MCP tool schemas by default (native tool search, name-only until used), which shrinks the real-session MCP tax well below this arithmetic for default-config users.
 - Weak-model signal (small n): haiku floods 2.4× more often with a ~9.8% ceiling — the honest deployment claim may be "use ccx where tool discipline is poor."
 - Real sessions median 9.6M billed T over 64 turns — ~46× this benchmark's tasks. Retained-context compounding and compaction, the regime ccx was built for, is exactly what a 4-turn benchmark cannot exhibit.
 
@@ -55,4 +55,4 @@ The flood premise itself had never been measured. [analysis/flood-audit-report.m
 
 ## Product changes motivated by these findings
 
-Landed: `--section` comma-range alias (`A,B` ≡ `A-B`, CLI + MCP + edit). Proposed, pending decisions: terser `symbol`/`outline` defaults (−94% per locate call, needs an accuracy gate), MCP schema slimming (prune or halve descriptions; ~2.5–5k tokens per session prefix), ladder rewrite (chain ccx calls in one Bash invocation; drop orient-first on targeted lookups), and outline windowing / grep context flags models reached for and missed.
+Landed: `--section` comma-range alias (`A,B` ≡ `A-B`, CLI + MCP + edit). In progress: terser `symbol`/`outline` defaults (−94% per locate call, gated on accuracy), MCP description slimming (halve prose, keep every description and the server instructions under Claude Code's 2KB truncation, keyword-align for tool-search matching — native schema deferral is already the client default, so there is no lazy-loading work to build server-side), ladder rewrite (chain ccx calls in one Bash invocation; drop orient-first on targeted lookups), and the ergonomic affordances models reached for and missed (outline windowing, grep context flags, `--lines` alias).
