@@ -36,7 +36,7 @@
       "exclude": [
         "tornado/test/*"
       ],
-      "expect_members": 18
+      "expect_members": 19
     },
     "traversal_files": [
       "tornado/concurrent.py",
@@ -76,6 +76,7 @@
       "tornado.process",
       "tornado.queues",
       "tornado.simple_httpclient",
+      "tornado.speedups",
       "tornado.tcpclient",
       "tornado.util"
     ]

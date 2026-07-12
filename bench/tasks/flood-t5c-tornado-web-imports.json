@@ -36,7 +36,7 @@
       "exclude": [
         "tornado/test/*"
       ],
-      "expect_members": 20
+      "expect_members": 21
     },
     "traversal_files": [
       "tornado/_locale_data.py",
@@ -79,6 +79,7 @@
       "tornado.platform.asyncio",
       "tornado.process",
       "tornado.routing",
+      "tornado.speedups",
       "tornado.tcpserver",
       "tornado.template",
       "tornado.util"

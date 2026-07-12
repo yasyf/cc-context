@@ -364,13 +364,13 @@ def large_context_tasks() -> list[Task]:
             {"kind": "py_subclass_closure", "base": "ParamType", "files": ["src/click/**/*.py"], "expect_members": 15},
             ["src/click/types.py"], floor_exempt=True),
         _lc("flood-t5c-tornado-web-imports", "tornado", import_prompt("web"),
-            {"kind": "py_import_closure", "seed": "tornado.web", **tornado_pkg, "expect_members": 20},
+            {"kind": "py_import_closure", "seed": "tornado.web", **tornado_pkg, "expect_members": 21},
             tornado_web_import_files),
         _lc("flood-t5d-tornado-httpserver-imports", "tornado", import_prompt("httpserver"),
-            {"kind": "py_import_closure", "seed": "tornado.httpserver", **tornado_pkg, "expect_members": 14},
+            {"kind": "py_import_closure", "seed": "tornado.httpserver", **tornado_pkg, "expect_members": 15},
             tornado_httpserver_import_files),
         _lc("flood-t5e-tornado-websocket-imports", "tornado", import_prompt("websocket"),
-            {"kind": "py_import_closure", "seed": "tornado.websocket", **tornado_pkg, "expect_members": 18},
+            {"kind": "py_import_closure", "seed": "tornado.websocket", **tornado_pkg, "expect_members": 19},
             tornado_websocket_import_files),
     ]
 

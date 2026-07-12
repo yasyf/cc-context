@@ -141,6 +141,7 @@ def recompute_lc_predicate(checkout: Path, pred: dict, repo: str) -> set[str]:
         return {n for n in seen if public.get(n, False)}
     if kind == "py_import_closure":
         seed = pred["seed"]
+        pkg = seed.split(".")[0] + "."  # first-party prefix, e.g. "tornado." — excludes the bare root
         files = _predicate_files(checkout, pred)
         valid = {_module_name(p, checkout) for p in files}
         edges: dict[str, set[str]] = defaultdict(set)
@@ -149,14 +150,18 @@ def recompute_lc_predicate(checkout: Path, pred: dict, repo: str) -> set[str]:
             for node in ast.walk(ast.parse(path.read_text())):
                 targets: set[str] = set()
                 if isinstance(node, ast.Import):
-                    targets.update(a.name for a in node.names)
+                    # `import a.b.c` always names a module; a first-party target counts even with no
+                    # .py source (a C extension like `tornado.speedups` is a member, contributing no edges).
+                    targets.update(a.name for a in node.names if a.name.startswith(pkg))
                 elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
-                    # A `from pkg import name` may pull the submodule `pkg.name` or just a name off `pkg`;
-                    # keep whichever is a real module. Counting both is what makes clause 5 deterministic.
-                    targets.add(node.module)
-                    targets.update(f"{node.module}.{a.name}" for a in node.names)
+                    # The from-module is always a real module (extensions included). A `from pkg import
+                    # name` MAY also name a submodule `pkg.name` — kept only when it resolves to a real
+                    # source module, so an imported class/function is never mistaken for a module.
+                    if node.module.startswith(pkg):
+                        targets.add(node.module)
+                    targets.update(t for a in node.names if (t := f"{node.module}.{a.name}") in valid)
                 for t in targets:
-                    if t in valid and t != mod and "." in t:  # "." in t drops the bare root package
+                    if t != mod:
                         edges[mod].add(t)
         seen: set[str] = set()
         frontier = [seed]

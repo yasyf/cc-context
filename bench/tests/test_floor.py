@@ -231,17 +231,21 @@ class TestFloodPredicates(unittest.TestCase):
                 "def f():\n"
                 "    from pkg.infunc import g\n"     # import inside a function: counted
             )
-            (root / "pkg" / "direct.py").write_text("from pkg.deep import h\n")   # transitive
+            (root / "pkg" / "direct.py").write_text(
+                "from pkg.deep import h\n"          # transitive
+                "from pkg.ext import mask\n"        # C-extension module: has no .py but is a member
+            )
             (root / "pkg" / "viafrom.py").write_text("x = 1\n")
             (root / "pkg" / "infunc.py").write_text("x = 1\n")
             (root / "pkg" / "deep.py").write_text("x = 1\n")
             (root / "pkg" / "unused.py").write_text("x = 1\n")                    # never imported
+            (root / "pkg" / "ext.pyi").write_text("def mask() -> int: ...\n")     # stub only; no .py source
             pred = {"kind": "py_import_closure", "seed": "pkg.seed", "files": ["pkg/**/*.py"]}
-            # Reaches direct, viafrom, infunc, and transitively deep. Excludes the seed, the bare `pkg`
-            # root package, stdlib (`os`), and the never-imported `pkg.unused`.
+            # Reaches direct, viafrom, infunc, transitively deep, and the source-less extension pkg.ext.
+            # Excludes the seed, the bare `pkg` root, stdlib (`os`), and the never-imported `pkg.unused`.
             self.assertEqual(
                 recompute_lc_predicate(root, pred, "r"),
-                {"pkg.direct", "pkg.viafrom", "pkg.infunc", "pkg.deep"},
+                {"pkg.direct", "pkg.viafrom", "pkg.infunc", "pkg.deep", "pkg.ext"},
             )
 
 
@@ -258,12 +262,12 @@ class TestFloodCountsOnCheckout(unittest.TestCase):
             "flood-t4-tornado-initialize": 19,
             "flood-t5-tornado-configurable": 17,
             "flood-t6-mux-matcher": 8,
-            # T5-family iteration. The import closures are prompt-coherent (every referenced tornado.*
-            # submodule, root excluded) → 20/14/18, not the design's 16/14/15 (see report).
+            # T5-family iteration. The import closures count every referenced first-party tornado.*
+            # module (root excluded), including the C-extension tornado.speedups (no .py) → 21/15/19.
             "flood-t5b-click-paramtype": 15,
-            "flood-t5c-tornado-web-imports": 20,
-            "flood-t5d-tornado-httpserver-imports": 14,
-            "flood-t5e-tornado-websocket-imports": 18,
+            "flood-t5c-tornado-web-imports": 21,
+            "flood-t5d-tornado-httpserver-imports": 15,
+            "flood-t5e-tornado-websocket-imports": 19,
         }
         tasks = {t.id: t for t in taskgen.large_context_tasks()}
         for tid, n in expect.items():
