@@ -79,6 +79,50 @@ func NormalizeRange(section string) string {
 	return section
 }
 
+// ParseNumericRange parses a line range — a plain "A", a dash "A-B", or the comma
+// alias "A,B" — into 1-indexed inclusive bounds. Bounds are digits only: a signed
+// value like "16--20" is not a range. ok is false with a nil err for anything not
+// range-shaped (a heading, an anchor, a signed or empty value); a range-shaped
+// value whose start exceeds its end is ok false with a non-nil err.
+func ParseNumericRange(section string) (start, end int, ok bool, err error) {
+	section = NormalizeRange(section)
+	dash := strings.IndexByte(section, '-')
+	if dash < 0 {
+		n, digits := parsePositiveInt(section)
+		if !digits {
+			return 0, 0, false, nil
+		}
+		return n, n, true, nil
+	}
+	start, startOK := parsePositiveInt(section[:dash])
+	end, endOK := parsePositiveInt(section[dash+1:])
+	if !startOK || !endOK {
+		return 0, 0, false, nil
+	}
+	if start > end {
+		return 0, 0, false, fmt.Errorf("line range %q is reversed: start %d is after end %d", section, start, end)
+	}
+	return start, end, true, nil
+}
+
+// parsePositiveInt parses a run of ASCII digits into a non-negative int; ok is
+// false for an empty string, a sign, or any non-digit character.
+func parsePositiveInt(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
 // Parse classifies a section string. A numeric line or range and anything not
 // anchor-shaped pass through (ok false, nil error); a well-formed anchor
 // returns its Ref (ok true); an anchor-shaped string with a malformed hash or

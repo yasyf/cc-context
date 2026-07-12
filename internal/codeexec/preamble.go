@@ -15,8 +15,8 @@ type ToolSig struct {
 var staticTools = []ToolSig{
 	{"search", `search(query, repo=None, mode=None, lang=None, k=0)`, "semantic/structural/literal code search; prefer over grep for where/how questions"},
 	{"read", `read(path, section=None, full=False)`, "read a file by section/heading or whole"},
-	{"grep", `grep(text, glob=None, scope=None, paths=None, regex=False, ignore_case=False, word=False, expand=0)`, "literal or regex text search across code and files"},
-	{"outline", `outline(path, items=None, match=None, lang=None)`, "signatures+line numbers for a file or dir"},
+	{"grep", `grep(text, glob=None, scope=None, paths=None, regex=False, ignore_case=False, word=False, expand=0, after=0, before=0, context=0)`, "literal or regex text search across code and files; after/before/context add rg/grep context lines"},
+	{"outline", `outline(path, section=None, items=None, match=None, lang=None)`, "signatures+line numbers for a file or dir; section windows a single-file ast-grep outline to a line range"},
 	{"symbol", `symbol(name, scope=None, full=False)`, "definition, callers, callees, siblings, tests of a symbol"},
 	{"find", `find(glob, scope=None)`, "list files matching a glob with token counts"},
 	{"related", `related(location)`, "code semantically related to a file:line"},

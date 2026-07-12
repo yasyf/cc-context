@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/anchor"
@@ -94,38 +93,17 @@ func resolve(f *anchor.File, section string) (start, end int, move *anchor.Move,
 		}
 		return rng.Start, rng.End, mv, nil
 	}
-	start, end, numeric := parseNumeric(section)
+	start, end, numeric, rangeErr := anchor.ParseNumericRange(section)
+	if rangeErr != nil {
+		return 0, 0, nil, rangeErr
+	}
 	if !numeric {
 		return 0, 0, nil, fmt.Errorf("section %q is not a line range (%q or %q), a single line, or an anchor", section, "A-B", "A,B")
 	}
-	if start < 1 || start > end || end > len(f.Lines()) {
+	if start < 1 || end > len(f.Lines()) {
 		return 0, 0, nil, fmt.Errorf("line range %s out of bounds: file has %d lines", section, len(f.Lines()))
 	}
 	return start, end, nil, nil
-}
-
-// parseNumeric parses a line range — a plain "A", a dash "A-B", or the comma
-// alias "A,B" — into 1-indexed bounds; ok is false for anything else (a heading,
-// an empty section, garbage).
-func parseNumeric(section string) (start, end int, ok bool) {
-	section = anchor.NormalizeRange(section)
-	dash := strings.IndexByte(section, '-')
-	if dash < 0 {
-		n, err := strconv.Atoi(section)
-		if err != nil {
-			return 0, 0, false
-		}
-		return n, n, true
-	}
-	start, err := strconv.Atoi(section[:dash])
-	if err != nil {
-		return 0, 0, false
-	}
-	end, err = strconv.Atoi(section[dash+1:])
-	if err != nil {
-		return 0, 0, false
-	}
-	return start, end, true
 }
 
 // logicalLines splits the replacement content into EOL-normalized lines, or nil

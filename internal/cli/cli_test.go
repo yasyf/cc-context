@@ -210,6 +210,78 @@ func TestReadCommandResolvesAnchor(t *testing.T) {
 	}
 }
 
+// TestReadCommandLinesAlias proves --lines is a hidden alias for --section: the
+// fake tilth engine echoes its argv, so the range must reach the backend as
+// --section.
+func TestReadCommandLinesAlias(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell script is POSIX-only")
+	}
+	writeFakeEngine(t, "tilth")
+	file := writeAnchorFixture(t)
+
+	var out bytes.Buffer
+	root := cli.NewRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"code", "read", file, "--lines", "1-2"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute(read --lines) error = %v", err)
+	}
+	want := fmt.Sprintf("%s --section 1-2", file)
+	if got := out.String(); !strings.Contains(got, want) {
+		t.Errorf("read --lines argv %q not in output %q", want, got)
+	}
+}
+
+// TestOutlineSectionRejectsTilthLane proves `outline --section` on a file that
+// routes to tilth signature mode fails before dispatch with a precise error
+// pointing the caller at ccx code read.
+func TestOutlineSectionRejectsTilthLane(t *testing.T) {
+	dir := t.TempDir()
+	rb := filepath.Join(dir, "a.rb")
+	if err := os.WriteFile(rb, []byte("x = 1\n"), 0o600); err != nil {
+		t.Fatalf("write rb: %v", err)
+	}
+
+	var out bytes.Buffer
+	root := cli.NewRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"code", "outline", rb, "--section", "1-1"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("Execute(outline --section on tilth-routed file) err = nil, want fallback error")
+	}
+	if !strings.Contains(err.Error(), "ccx code read") {
+		t.Errorf("error %q should point at ccx code read", err)
+	}
+}
+
+// TestOutlineLinesAlias proves --lines is a hidden alias for --section on the
+// outline command: it reaches a.Section, so a tilth-routed file hits the same
+// read-fallback guard --section does.
+func TestOutlineLinesAlias(t *testing.T) {
+	dir := t.TempDir()
+	rb := filepath.Join(dir, "a.rb")
+	if err := os.WriteFile(rb, []byte("x = 1\n"), 0o600); err != nil {
+		t.Fatalf("write rb: %v", err)
+	}
+
+	var out bytes.Buffer
+	root := cli.NewRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"code", "outline", rb, "--lines", "1-1"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("Execute(outline --lines on tilth-routed file) err = nil, want fallback error")
+	}
+	if !strings.Contains(err.Error(), "ccx code read") {
+		t.Errorf("error %q should point at ccx code read", err)
+	}
+}
+
 // TestRelatedCommandResolvesAnchor drives an anchored file:line#hash location
 // through the CLI seam: the fake semble engine echoes its argv, proving the
 // location reaches the backend as plain file and line positionals.

@@ -64,11 +64,12 @@ type RelatedIn struct {
 
 // OutlineIn is the input for ccx_code_outline.
 type OutlineIn struct {
-	Path   string `json:"path" jsonschema:"file or directory to outline"`
-	Items  string `json:"items,omitempty" jsonschema:"ast-grep: items to include (imports|exports|structure|all)"`
-	Match  string `json:"match,omitempty" jsonschema:"ast-grep: keep only items whose name/signature matches this regex"`
-	Lang   string `json:"lang,omitempty" jsonschema:"ast-grep: language to parse as; inferred from extension when omitted"`
-	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the outline"`
+	Path    string `json:"path" jsonschema:"file or directory to outline"`
+	Section string `json:"section,omitempty" jsonschema:"restrict a single-file (ast-grep) outline to items intersecting a line range (\"40-95\" or \"40,95\")"`
+	Items   string `json:"items,omitempty" jsonschema:"ast-grep: items to include (imports|exports|structure|all)"`
+	Match   string `json:"match,omitempty" jsonschema:"ast-grep: keep only items whose name/signature matches this regex"`
+	Lang    string `json:"lang,omitempty" jsonschema:"ast-grep: language to parse as; inferred from extension when omitted"`
+	Budget  int    `json:"budget,omitempty" jsonschema:"token budget for the outline"`
 }
 
 // ReadIn is the input for ccx_code_read.
@@ -104,6 +105,9 @@ type GrepIn struct {
 	Paths      []string `json:"paths,omitempty" jsonschema:"search these files instead of the tree; runs ripgrep or system grep"`
 	Budget     int      `json:"budget,omitempty" jsonschema:"token budget for the output"`
 	Expand     int      `json:"expand,omitempty" jsonschema:"rg route (ignoreCase/word): lines of context around each hit; default engine: inlines the full source of the top matches"`
+	After      int      `json:"after,omitempty" jsonschema:"show N lines after each match (-A); runs ripgrep or system grep"`
+	Before     int      `json:"before,omitempty" jsonschema:"show N lines before each match (-B); runs ripgrep or system grep"`
+	Context    int      `json:"context,omitempty" jsonschema:"show N lines around each match (-C); runs ripgrep or system grep"`
 }
 
 // FindIn is the input for ccx_repo_find.
@@ -250,7 +254,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 		Name:        "ccx_code_grep",
 		Description: "Literal or regex text search across code, optionally globbed, scoped, or over explicit files — budget-bounded. Frames are anchored (55-66#2eak) — echo into ccx_code_read section.",
 	}, handler(p, backend.OpGrep, func(in GrepIn) backend.Args {
-		a := backend.Args{Query: in.Text, Glob: in.Glob, Scope: in.Scope, IgnoreCase: in.IgnoreCase, Word: in.Word, Regex: in.Regex, Paths: in.Paths, Budget: in.Budget, Expand: in.Expand}
+		a := backend.Args{Query: in.Text, Glob: in.Glob, Scope: in.Scope, IgnoreCase: in.IgnoreCase, Word: in.Word, Regex: in.Regex, Paths: in.Paths, Budget: in.Budget, Expand: in.Expand, After: in.After, Before: in.Before, Context: in.Context}
 		if ripgrep.Handles(a) && a.Budget == 0 {
 			a.Budget = ripgrep.DefaultBudget
 		}
@@ -388,9 +392,12 @@ func editHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, Edi
 // directories and the languages it outlines, tilth signature mode otherwise.
 func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, OutlineIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in OutlineIn) (*mcp.CallToolResult, any, error) {
-		a := backend.Args{Path: in.Path, Items: in.Items, Match: in.Match, Lang: in.Lang, Budget: in.Budget}
+		a := backend.Args{Path: in.Path, Section: in.Section, Items: in.Items, Match: in.Match, Lang: in.Lang, Budget: in.Budget}
 		op, err := outline.Route(a)
 		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
+		}
+		if _, _, err := outline.ValidateSection(a, op); err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
 		out, err := p.Call(ctx, op, a)

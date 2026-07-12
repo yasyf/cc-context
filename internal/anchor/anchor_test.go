@@ -115,6 +115,43 @@ func TestNormalizeRange(t *testing.T) {
 	}
 }
 
+func TestParseNumericRange(t *testing.T) {
+	tests := []struct {
+		name      string
+		section   string
+		wantStart int
+		wantEnd   int
+		wantOK    bool
+		wantErr   bool
+	}{
+		{"single line", "30", 30, 30, true, false},
+		{"dash range", "30-40", 30, 40, true, false},
+		{"comma range", "30,40", 30, 40, true, false},
+		{"comma range with spaces", "30, 40", 30, 40, true, false},
+		{"single-line range A-A", "5-5", 5, 5, true, false},
+		{"heading not a range", "## Foo", 0, 0, false, false},
+		{"anchor not a range", "120-180#a3fk", 0, 0, false, false},
+		{"bare anchor not a range", "a3fk", 0, 0, false, false},
+		{"empty not a range", "", 0, 0, false, false},
+		{"trailing dash not a range", "30-", 0, 0, false, false},
+		{"signed range not a range", "16--20", 0, 0, false, false},
+		{"signed single not a range", "-5", 0, 0, false, false},
+		{"reversed dash range errors", "20-16", 0, 0, false, true},
+		{"reversed comma range errors", "20,16", 0, 0, false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			start, end, ok, err := anchor.ParseNumericRange(tt.section)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParseNumericRange(%q) err = %v, wantErr %v", tt.section, err, tt.wantErr)
+			}
+			if ok != tt.wantOK || start != tt.wantStart || end != tt.wantEnd {
+				t.Errorf("ParseNumericRange(%q) = (%d, %d, %v), want (%d, %d, %v)", tt.section, start, end, ok, tt.wantStart, tt.wantEnd, tt.wantOK)
+			}
+		})
+	}
+}
+
 // TestFromBytes locks the snapshot split to Load's line split: lines keep any
 // trailing '\r' and a final empty element from a trailing newline is dropped.
 func TestFromBytes(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/outline"
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -53,6 +54,13 @@ func runStructOutline(ctx context.Context, a backend.Args) (string, error) {
 	files, err := ParseOutline([]byte(out))
 	if err != nil {
 		return "", err
+	}
+	if a.Section != "" {
+		start, end, err := outline.ValidateSection(a, backend.OpStructOutline)
+		if err != nil {
+			return "", err
+		}
+		files = WindowOutline(files, start, end)
 	}
 	return render.Cap(RenderOutline(files, anchor.NewFiles(".")), a.Budget), nil
 }

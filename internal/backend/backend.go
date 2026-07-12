@@ -88,6 +88,9 @@ type Args struct {
 	K               int
 	MaxSnippetLines int
 	Expand          int
+	After           int
+	Before          int
+	Context         int
 }
 
 // Backend translates a logical Op plus Args into a concrete invocation, either

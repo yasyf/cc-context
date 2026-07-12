@@ -3,6 +3,8 @@ package codeexec
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/outline"
@@ -29,6 +31,9 @@ func Ops(c Caller) map[string]HostFunc {
 			if a.err != nil {
 				return nil, a.err
 			}
+			if err := a.checkKwargs(); err != nil {
+				return nil, err
+			}
 			out, err := c.Call(ctx, op, ba)
 			if err != nil {
 				return nil, err
@@ -41,7 +46,7 @@ func Ops(c Caller) map[string]HostFunc {
 			return backend.Args{Path: a.str("path", 0), Section: a.str("section", 1), Full: a.flag("full")}
 		}),
 		"grep": op(backend.OpGrep, func(a *args) backend.Args {
-			return backend.Args{Query: a.str("text", 0), Glob: a.str("glob", 1), Scope: a.str("scope", 2), Paths: a.strs("paths"), IgnoreCase: a.flag("ignore_case"), Word: a.flag("word"), Regex: a.flag("regex"), Expand: a.num("expand")}
+			return backend.Args{Query: a.str("text", 0), Glob: a.str("glob", 1), Scope: a.str("scope", 2), Paths: a.strs("paths"), IgnoreCase: a.flag("ignore_case"), Word: a.flag("word"), Regex: a.flag("regex"), Expand: a.num("expand"), After: a.num("after"), Before: a.num("before"), Context: a.num("context")}
 		}),
 		"symbol": op(backend.OpSymbol, func(a *args) backend.Args {
 			return backend.Args{Query: a.str("name", 0), Scope: a.str("scope", 1), Full: a.flag("full")}
@@ -62,9 +67,17 @@ func Ops(c Caller) map[string]HostFunc {
 		"web_search": op(backend.OpWebSearch, func(a *args) backend.Args {
 			return backend.Args{URL: a.str("url", 0), Query: a.str("query", 1), K: a.num("k")}
 		}),
-		"search":  routed(c, func(a backend.Args) (backend.Op, error) { op, _, err := search.Route(a); return op, err }, searchArgs),
-		"outline": routed(c, outline.Route, outlineArgs),
+		"search":  routed(c, func(a backend.Args) (backend.Op, error) { op, _, err := search.Route(a); return op, err }, searchArgs, nil),
+		"outline": routed(c, outline.Route, outlineArgs, validateOutlineSection),
 	}
+}
+
+// validateOutlineSection runs the shared outline --section guard on an exec
+// outline call, so a windowed exec outline is rejected on a directory or tilth
+// lane exactly as the CLI and MCP surfaces are.
+func validateOutlineSection(a backend.Args, op backend.Op) error {
+	_, _, err := outline.ValidateSection(a, op)
+	return err
 }
 
 func searchArgs(a *args) backend.Args {
@@ -79,21 +92,30 @@ func searchArgs(a *args) backend.Args {
 }
 
 func outlineArgs(a *args) backend.Args {
-	return backend.Args{Path: a.str("path", 0), Items: a.str("items", -1), Match: a.str("match", -1), Lang: a.str("lang", -1)}
+	return backend.Args{Path: a.str("path", 0), Section: a.str("section", -1), Items: a.str("items", -1), Match: a.str("match", -1), Lang: a.str("lang", -1)}
 }
 
 // routed builds a host function whose op is chosen at call time by a router
-// (search and outline classify their input before dispatch).
-func routed(c Caller, route func(backend.Args) (backend.Op, error), build func(*args) backend.Args) HostFunc {
+// (search and outline classify their input before dispatch). validate, when
+// non-nil, runs a post-route guard on the args and chosen op before dispatch.
+func routed(c Caller, route func(backend.Args) (backend.Op, error), build func(*args) backend.Args, validate func(backend.Args, backend.Op) error) HostFunc {
 	return func(ctx context.Context, call Call) (any, error) {
 		p := parse(call)
 		a := build(p)
 		if p.err != nil {
 			return nil, p.err
 		}
+		if err := p.checkKwargs(); err != nil {
+			return nil, err
+		}
 		op, err := route(a)
 		if err != nil {
 			return nil, err
+		}
+		if validate != nil {
+			if err := validate(a, op); err != nil {
+				return nil, err
+			}
 		}
 		if op == backend.OpStructural && a.Path != "" {
 			a.Paths = []string{a.Path}
@@ -107,18 +129,22 @@ func routed(c Caller, route func(backend.Args) (backend.Op, error), build func(*
 }
 
 // args reads positional and keyword arguments from a sandbox call, recording
-// the first mapping failure in err. A negative index means keyword-only.
+// the first mapping failure in err. A negative index means keyword-only. Every
+// argument name a builder reads is recorded in seen, so checkKwargs can reject a
+// keyword the op does not accept instead of silently discarding it.
 type args struct {
-	pos []any
-	kw  map[string]any
-	err error
+	pos  []any
+	kw   map[string]any
+	seen map[string]bool
+	err  error
 }
 
 func parse(call Call) *args {
-	return &args{pos: call.Args, kw: call.Kwargs}
+	return &args{pos: call.Args, kw: call.Kwargs, seen: map[string]bool{}}
 }
 
 func (a *args) val(name string, idx int) (any, bool) {
+	a.seen[name] = true
 	if v, ok := a.kw[name]; ok {
 		return v, true
 	}
@@ -126,6 +152,23 @@ func (a *args) val(name string, idx int) (any, bool) {
 		return a.pos[idx], true
 	}
 	return nil, false
+}
+
+// checkKwargs rejects any keyword the builder never read, naming the accepted
+// keywords, so a mistyped or unsupported argument fails loudly instead of being
+// silently ignored.
+func (a *args) checkKwargs() error {
+	for k := range a.kw {
+		if !a.seen[k] {
+			accepted := make([]string, 0, len(a.seen))
+			for name := range a.seen {
+				accepted = append(accepted, name)
+			}
+			sort.Strings(accepted)
+			return fmt.Errorf("codeexec: unknown argument %q; accepted: %s", k, strings.Join(accepted, ", "))
+		}
+	}
+	return nil
 }
 
 func (a *args) str(name string, idx int) string {

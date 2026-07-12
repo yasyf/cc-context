@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/yasyf/cc-context/internal/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
 )
 
@@ -75,4 +76,36 @@ func Route(a backend.Args) (backend.Op, error) {
 		return backend.OpStructOutline, nil
 	}
 	return backend.OpOutline, nil
+}
+
+// ValidateSection guards `ccx code outline --section` and returns the 1-indexed
+// inclusive [start, end] window it resolves to. A line window applies only to a
+// single-file structural (ast-grep) outline: it returns (0, 0, nil) when no
+// section is set, otherwise a precise error — naming the range grammar, rejecting
+// a reversed or directory window, or pointing a tilth (signature-mode) file at
+// ccx code read — so no caller runs an outline that cannot honor the window. op
+// is the engine outline.Route picked for a. It is the single validation point for
+// every surface (CLI, MCP, exec, and the struct-outline runner).
+func ValidateSection(a backend.Args, op backend.Op) (start, end int, err error) {
+	if a.Section == "" {
+		return 0, 0, nil
+	}
+	start, end, ok, rangeErr := anchor.ParseNumericRange(a.Section)
+	if rangeErr != nil {
+		return 0, 0, fmt.Errorf("outline --section: %w; window a single file with ccx code read %s --section", rangeErr, a.Path)
+	}
+	if !ok {
+		return 0, 0, fmt.Errorf("outline --section %q is not a line range (%q or %q); for a heading or anchor read the file with ccx code read %s --section", a.Section, "A-B", "A,B", a.Path)
+	}
+	info, statErr := os.Stat(a.Path)
+	if statErr != nil {
+		return 0, 0, fmt.Errorf("outline: %w", statErr)
+	}
+	if info.IsDir() {
+		return 0, 0, fmt.Errorf("outline --section windows a single file, not the directory %s; pass a file path", a.Path)
+	}
+	if op == backend.OpOutline {
+		return 0, 0, fmt.Errorf("outline --section windows structured (ast-grep) outlines; %s outlines via tilth signature mode — read a line window with ccx code read %s --section %s", a.Path, a.Path, a.Section)
+	}
+	return start, end, nil
 }

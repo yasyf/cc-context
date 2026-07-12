@@ -1,6 +1,7 @@
 package astgrep
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -76,6 +77,62 @@ func TestRenderOutline(t *testing.T) {
 	}
 	if strings.Contains(got, "\t") {
 		t.Errorf("rendered outline must not carry raw tabs:\n%s", got)
+	}
+}
+
+// mkItem builds an outline item spanning 0-based lines [start, end] with the
+// given members, mirroring the ast-grep JSON shape WindowOutline reads.
+func mkItem(name string, start, end int, members ...OutlineItem) OutlineItem {
+	it := OutlineItem{Name: name, Members: members}
+	it.Range.Start.Line = start
+	it.Range.End.Line = end
+	return it
+}
+
+func TestWindowOutline(t *testing.T) {
+	// 0-based spans: Alpha 1-3 (1-based 2-4), Widget 5-20 (6-21) with fields Name
+	// (7) and Size (19), Zeta 25-30 (26-31).
+	items := []OutlineItem{
+		mkItem("Alpha", 1, 3),
+		mkItem("Widget", 5, 20, mkItem("Name", 6, 6), mkItem("Size", 18, 18)),
+		mkItem("Zeta", 25, 30),
+	}
+	tests := []struct {
+		name    string
+		start   int
+		end     int
+		want    []string
+		members map[string][]string
+	}{
+		{"whole file keeps all", 1, 100, []string{"Alpha", "Widget", "Zeta"}, map[string][]string{"Widget": {"Name", "Size"}}},
+		{"inside struct keeps container and overlapping member", 7, 7, []string{"Widget"}, map[string][]string{"Widget": {"Name"}}},
+		{"tail keeps only last", 26, 31, []string{"Zeta"}, nil},
+		{"gap between items keeps nothing", 22, 25, nil, nil},
+		{"boundary is inclusive", 4, 4, []string{"Alpha"}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := WindowOutline([]OutlineFile{{Path: "x.go", Items: items}}, tt.start, tt.end)
+			if len(out) != 1 {
+				t.Fatalf("WindowOutline returned %d files, want 1", len(out))
+			}
+			var got []string
+			for _, it := range out[0].Items {
+				got = append(got, it.Name)
+				if want, ok := tt.members[it.Name]; ok {
+					var mnames []string
+					for _, m := range it.Members {
+						mnames = append(mnames, m.Name)
+					}
+					if !reflect.DeepEqual(mnames, want) {
+						t.Errorf("%s members = %v, want %v", it.Name, mnames, want)
+					}
+				}
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("WindowOutline(%d-%d) items = %v, want %v", tt.start, tt.end, got, tt.want)
+			}
+		})
 	}
 }
 

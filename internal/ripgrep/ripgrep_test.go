@@ -3,6 +3,7 @@ package ripgrep
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +26,9 @@ func TestRipgrepArgv(t *testing.T) {
 		{"bare", backend.Args{Query: "foo"}, []string{"--json", "--fixed-strings", "-e", "foo"}},
 		{"ignore-case + word", backend.Args{Query: "foo", IgnoreCase: true, Word: true}, []string{"--json", "--fixed-strings", "-i", "-w", "-e", "foo"}},
 		{"unanchored glob + expand unchanged", backend.Args{Query: "foo", Glob: "*.go", Expand: 3}, []string{"--json", "--fixed-strings", "--glob", "*.go", "-C", "3", "-e", "foo"}},
+		{"context flag", backend.Args{Query: "foo", Context: 2}, []string{"--json", "--fixed-strings", "-C", "2", "-e", "foo"}},
+		{"after and before flags", backend.Args{Query: "foo", After: 2, Before: 1}, []string{"--json", "--fixed-strings", "-A", "2", "-B", "1", "-e", "foo"}},
+		{"context beats after/before", backend.Args{Query: "foo", Context: 3, After: 9, Before: 9}, []string{"--json", "--fixed-strings", "-C", "3", "-e", "foo"}},
 		{"scope adds --no-ignore-parent", backend.Args{Query: "foo", Scope: "internal"}, []string{"--json", "--fixed-strings", "--no-ignore-parent", "-e", "foo", "--", "internal"}},
 		{"flag-like scope lands after -- with flag", backend.Args{Query: "foo", Scope: "--hidden"}, []string{"--json", "--fixed-strings", "--no-ignore-parent", "-e", "foo", "--", "--hidden"}},
 		{"anchored existing-dir glob relativizes to rest + operand", backend.Args{Query: "foo", Glob: sub + "/*.go"}, []string{"--json", "--fixed-strings", "--glob", "*.go", "--no-ignore-parent", "-e", "foo", "--", sub}},
@@ -72,20 +76,22 @@ func TestGrepArgv(t *testing.T) {
 		want    []string
 		wantErr bool
 	}{
-		{"bare", backend.Args{Query: "foo"}, []string{"-rnHFI", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
-		{"ignore-case", backend.Args{Query: "foo", IgnoreCase: true}, []string{"-rnHFI", "-i", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
-		{"word + expand", backend.Args{Query: "foo", Word: true, Expand: 2}, []string{"-rnHFI", "-w", "-C", "2", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
-		{"basename glob", backend.Args{Query: "foo", Glob: "*.go"}, []string{"-rnHFI", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "."}, false},
-		{"dir recurse glob", backend.Args{Query: "foo", Glob: "src/**"}, []string{"-rnHFI", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "src"}, false},
-		{"dir + ext glob", backend.Args{Query: "foo", Glob: "src/**/*.go"}, []string{"-rnHFI", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "src"}, false},
-		{"scope", backend.Args{Query: "foo", Scope: "internal"}, []string{"-rnHFI", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "internal"}, false},
-		{"flag-like scope lands after --", backend.Args{Query: "foo", Scope: "--hidden"}, []string{"-rnHFI", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "--hidden"}, false},
-		{"scope + basename glob", backend.Args{Query: "foo", Glob: "*.go", Scope: "internal"}, []string{"-rnHFI", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "internal"}, false},
-		{"leading-dash pattern", backend.Args{Query: "-foo"}, []string{"-rnHFI", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "-foo", "--", "."}, false},
-		{"regex swaps -rnFI for -rnEI", backend.Args{Query: "foo", Regex: true}, []string{"-rnHEI", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
-		{"paths omit excludes", backend.Args{Query: "foo", Paths: []string{"a.go", "b.go"}}, []string{"-rnHFI", "-e", "foo", "--", "a.go", "b.go"}, false},
-		{"regex + paths omit excludes", backend.Args{Query: "^func ", Regex: true, Paths: []string{"a.go"}}, []string{"-rnHEI", "-e", "^func ", "--", "a.go"}, false},
-		{"scope + paths omit excludes", backend.Args{Query: "foo", Scope: "internal", Paths: []string{"a.go"}}, []string{"-rnHFI", "-e", "foo", "--", "internal", "a.go"}, false},
+		{"bare", backend.Args{Query: "foo"}, []string{"-rnHFI", "--null","--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
+		{"ignore-case", backend.Args{Query: "foo", IgnoreCase: true}, []string{"-rnHFI", "--null","-i", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
+		{"word + expand", backend.Args{Query: "foo", Word: true, Expand: 2}, []string{"-rnHFI", "--null","-w", "-C", "2", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
+		{"context flag", backend.Args{Query: "foo", Context: 2}, []string{"-rnHFI", "--null","-C", "2", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
+		{"after and before flags", backend.Args{Query: "foo", After: 2, Before: 1}, []string{"-rnHFI", "--null","-A", "2", "-B", "1", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
+		{"basename glob", backend.Args{Query: "foo", Glob: "*.go"}, []string{"-rnHFI", "--null","--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "."}, false},
+		{"dir recurse glob", backend.Args{Query: "foo", Glob: "src/**"}, []string{"-rnHFI", "--null","--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "src"}, false},
+		{"dir + ext glob", backend.Args{Query: "foo", Glob: "src/**/*.go"}, []string{"-rnHFI", "--null","--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "src"}, false},
+		{"scope", backend.Args{Query: "foo", Scope: "internal"}, []string{"-rnHFI", "--null","--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "internal"}, false},
+		{"flag-like scope lands after --", backend.Args{Query: "foo", Scope: "--hidden"}, []string{"-rnHFI", "--null","--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "--hidden"}, false},
+		{"scope + basename glob", backend.Args{Query: "foo", Glob: "*.go", Scope: "internal"}, []string{"-rnHFI", "--null","--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "internal"}, false},
+		{"leading-dash pattern", backend.Args{Query: "-foo"}, []string{"-rnHFI", "--null","--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "-foo", "--", "."}, false},
+		{"regex swaps -rnFI for -rnEI", backend.Args{Query: "foo", Regex: true}, []string{"-rnHEI", "--null","--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
+		{"paths omit excludes", backend.Args{Query: "foo", Paths: []string{"a.go", "b.go"}}, []string{"-rnHFI", "--null","-e", "foo", "--", "a.go", "b.go"}, false},
+		{"regex + paths omit excludes", backend.Args{Query: "^func ", Regex: true, Paths: []string{"a.go"}}, []string{"-rnHEI", "--null","-e", "^func ", "--", "a.go"}, false},
+		{"scope + paths omit excludes", backend.Args{Query: "foo", Scope: "internal", Paths: []string{"a.go"}}, []string{"-rnHFI", "--null","-e", "foo", "--", "internal", "a.go"}, false},
 		{"paths + glob errors", backend.Args{Query: "foo", Paths: []string{"a.go"}, Glob: "*.go"}, nil, true},
 		{"scope + dir glob fails", backend.Args{Query: "foo", Glob: "src/**", Scope: "internal"}, nil, true},
 		{"brace glob fails", backend.Args{Query: "foo", Glob: "{a,b}/**"}, nil, true},
@@ -215,17 +221,23 @@ func TestParseRipgrep_BytesPayload(t *testing.T) {
 	}
 }
 
+// grepLn renders one `grep --null` output line: path, NUL, line number, the match
+// ":" or context "-" separator, then text.
+func grepLn(path string, num int, sep, text string) string {
+	return fmt.Sprintf("%s\x00%d%s%s", path, num, sep, text)
+}
+
 func TestParseGrep(t *testing.T) {
 	raw := strings.Join([]string{
-		"./a.go:3:foo one",
-		"b.go-9-ctx before",
-		"b.go:10:foo two",
+		grepLn("./a.go", 3, ":", "foo one"),
+		grepLn("b.go", 9, "-", "ctx before"),
+		grepLn("b.go", 10, ":", "foo two"),
 		"--",
-		"c.go:5:foo three",
+		grepLn("c.go", 5, ":", "foo three"),
 		"",
 	}, "\n")
 
-	got := parseGrep(raw, true, allExist)
+	got := parseGrep(raw)
 	want := []fileGroup{
 		{path: "a.go", lines: []grepLine{{num: 3, text: "foo one", isMatch: true}}},
 		{path: "b.go", lines: []grepLine{{num: 9, text: "ctx before", isMatch: false}, {num: 10, text: "foo two", isMatch: true}}},
@@ -237,95 +249,31 @@ func TestParseGrep(t *testing.T) {
 }
 
 func TestParseGrep_NoMatch(t *testing.T) {
-	if got := parseGrep("", true, allExist); len(got) != 0 {
+	if got := parseGrep(""); len(got) != 0 {
 		t.Errorf("parseGrep(\"\") = %+v, want empty", got)
 	}
 }
 
-func TestParseGrep_ColonInText(t *testing.T) {
-	got := parseGrep("pkg/x.go:42:\tm := map[string]int{\"a:b\": 1}", true, allExist)
-	want := []fileGroup{{path: "pkg/x.go", lines: []grepLine{{num: 42, text: "\tm := map[string]int{\"a:b\": 1}", isMatch: true}}}}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("parseGrep() = %+v, want %+v", got, want)
-	}
-}
-
-// allExist is the always-true path seam for parser tests whose file paths are
-// synthetic; the filesystem-validated cases live in TestParseGrep_ValidatedSplits.
-func allExist(string) bool { return true }
-
-// mkFixture writes an empty file (creating parent dirs) so os.Stat validation in
-// parseGrep resolves a candidate path to a real file.
-func mkFixture(t *testing.T, dir, rel string) {
-	t.Helper()
-	p := filepath.Join(dir, rel)
-	if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p, []byte("x\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestParseGrep_ValidatedSplits drives the real os.Stat seam against a temp tree,
-// pinning the three shapes a purely lexical split misparses: a context line whose
-// text embeds ":04:" (`15:04:05`), a context line whose text embeds a 3-index
-// slice ":2:" (`data[0:2:4]`), and a dash-digit filename whose match and context
-// lines carry "-01-" before the real "-N-" boundary.
-func TestParseGrep_ValidatedSplits(t *testing.T) {
-	dir := t.TempDir()
-	for _, rel := range []string{"pkg/t.go", "pkg/x.go", "2024-01-migrate.go"} {
-		mkFixture(t, dir, rel)
-	}
-	t.Chdir(dir)
-
+// TestParseGrep_DelimitersNeedNoHeuristic proves --null removes the field-split
+// ambiguity the old stat heuristic resolved: match and context text embedding ":"
+// or "-", a dash-digit filename, and a filename literally containing ":N:" all
+// parse from the NUL alone, with no filesystem probe.
+func TestParseGrep_DelimitersNeedNoHeuristic(t *testing.T) {
 	raw := strings.Join([]string{
-		`./pkg/t.go-2-const layout = "15:04:05"`,
-		`./pkg/t.go:3:foo layout`,
-		"./pkg/x.go-11-\tv := data[0:2:4]",
-		`./pkg/x.go:12:foo slice`,
-		`2024-01-migrate.go:5:foo migrate`,
-		`2024-01-migrate.go-6-// trailing`,
+		grepLn("pkg/x.go", 42, ":", "\tm := map[string]int{\"a:b\": 1}"),
+		grepLn("pkg/t.go", 2, "-", `const layout = "15:04:05"`),
+		grepLn("2024-01-migrate.go", 5, ":", "foo migrate"),
+		grepLn("pkg:12:x.go", 1, ":", "foo"),
 		"",
 	}, "\n")
 
-	got := parseGrep(raw, true, statRegular)
+	got := parseGrep(raw)
 	want := []fileGroup{
-		{path: "pkg/t.go", lines: []grepLine{
-			{num: 2, text: `const layout = "15:04:05"`, isMatch: false},
-			{num: 3, text: "foo layout", isMatch: true},
-		}},
-		{path: "pkg/x.go", lines: []grepLine{
-			{num: 11, text: "\tv := data[0:2:4]", isMatch: false},
-			{num: 12, text: "foo slice", isMatch: true},
-		}},
-		{path: "2024-01-migrate.go", lines: []grepLine{
-			{num: 5, text: "foo migrate", isMatch: true},
-			{num: 6, text: "// trailing", isMatch: false},
-		}},
+		{path: "pkg/x.go", lines: []grepLine{{num: 42, text: "\tm := map[string]int{\"a:b\": 1}", isMatch: true}}},
+		{path: "pkg/t.go", lines: []grepLine{{num: 2, text: `const layout = "15:04:05"`, isMatch: false}}},
+		{path: "2024-01-migrate.go", lines: []grepLine{{num: 5, text: "foo migrate", isMatch: true}}},
+		{path: "pkg:12:x.go", lines: []grepLine{{num: 1, text: "foo", isMatch: true}}},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("parseGrep()\n got = %+v\nwant = %+v", got, want)
-	}
-}
-
-// TestParseGrep_DirStealsSplit reproduces the split-validation footgun: a
-// directory named like a leading path prefix (`pkg`) satisfies mere existence, so
-// grep output for a colon-named regular file (`pkg:12:x.go`) is misattributed to
-// the directory (path "pkg", line 12, text "x.go:1:foo"). Requiring a regular
-// file rejects the directory candidate and lands the true file split.
-func TestParseGrep_DirStealsSplit(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "pkg"), 0o750); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "pkg:12:x.go"), []byte("foo\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(dir)
-
-	got := parseGrep("./pkg:12:x.go:1:foo", false, statRegular)
-	want := []fileGroup{{path: "pkg:12:x.go", lines: []grepLine{{num: 1, text: "foo", isMatch: true}}}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("parseGrep()\n got = %+v\nwant = %+v", got, want)
 	}
@@ -335,21 +283,16 @@ func TestParseGrep_DirStealsSplit(t *testing.T) {
 // right match count and no phantom section when context text embeds a delimiter or
 // a filename embeds a dash-digit run.
 func TestRunCore_GrepValidatesSplits(t *testing.T) {
-	dir := t.TempDir()
-	mkFixture(t, dir, "pkg/t.go")
-	mkFixture(t, dir, "2024-01-migrate.go")
-	t.Chdir(dir)
-
 	grepOut := strings.Join([]string{
-		`./pkg/t.go-2-const layout = "15:04:05"`,
-		`./pkg/t.go:3:foo layout`,
-		`2024-01-migrate.go:5:foo migrate`,
-		`2024-01-migrate.go-6-// trailing`,
+		grepLn("./pkg/t.go", 2, "-", `const layout = "15:04:05"`),
+		grepLn("./pkg/t.go", 3, ":", "foo layout"),
+		grepLn("2024-01-migrate.go", 5, ":", "foo migrate"),
+		grepLn("2024-01-migrate.go", 6, "-", "// trailing"),
 		"",
 	}, "\n")
 	fake := func(context.Context, string, []string) (string, error) { return grepOut, nil }
 
-	got, err := run(context.Background(), engineGrep, "grep", backend.Args{Query: "foo", IgnoreCase: true, Expand: 1}, fake, statRegular)
+	got, err := run(context.Background(), engineGrep, "grep", backend.Args{Query: "foo", IgnoreCase: true, Expand: 1}, fake)
 	if err != nil {
 		t.Fatalf("run() err = %v", err)
 	}
@@ -446,7 +389,7 @@ func TestRunCore(t *testing.T) {
 		`{"type":"match","data":{"path":{"text":"nope/a.go"},"lines":{"text":"foo one\n"},"line_number":3,"submatches":[]}}`,
 		"",
 	}, "\n")
-	grepOut := "nope/a.go:3:foo one\n"
+	grepOut := "nope/a.go\x003:foo one\n"
 
 	tests := []struct {
 		name     string
@@ -465,7 +408,7 @@ func TestRunCore(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := func(context.Context, string, []string) (string, error) { return tt.out, tt.runErr }
-			got, err := run(context.Background(), tt.eng, "bin", tt.args, fake, allExist)
+			got, err := run(context.Background(), tt.eng, "bin", tt.args, fake)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("run() err = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -487,7 +430,7 @@ func TestRunCore_GlobFailFastSkipsRunner(t *testing.T) {
 		called = true
 		return "", nil
 	}
-	_, err := run(context.Background(), engineGrep, "grep", backend.Args{Query: "foo", Glob: "{a,b}"}, fake, allExist)
+	_, err := run(context.Background(), engineGrep, "grep", backend.Args{Query: "foo", Glob: "{a,b}"}, fake)
 	if err == nil {
 		t.Fatal("run() err = nil, want untranslatable-glob error")
 	}
@@ -523,11 +466,38 @@ func TestHandles(t *testing.T) {
 		{"word routes to engine", backend.Args{Query: "foo", Word: true}, true},
 		{"regex routes to engine", backend.Args{Query: "foo", Regex: true}, true},
 		{"paths route to engine", backend.Args{Query: "foo", Paths: []string{"a.go"}}, true},
+		{"after routes to engine", backend.Args{Query: "foo", After: 2}, true},
+		{"before routes to engine", backend.Args{Query: "foo", Before: 2}, true},
+		{"context routes to engine", backend.Args{Query: "foo", Context: 2}, true},
+		{"negative context routes to engine to be rejected", backend.Args{Query: "foo", Context: -1}, true},
+		{"expand-only stays tilth", backend.Args{Query: "foo", Expand: 2}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := Handles(tt.args); got != tt.want {
 				t.Errorf("Handles(%+v) = %v, want %v", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateContext(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    backend.Args
+		wantErr bool
+	}{
+		{"zero ok", backend.Args{}, false},
+		{"positive ok", backend.Args{After: 2, Before: 3, Context: 4}, false},
+		{"at max ok", backend.Args{Context: maxContext}, false},
+		{"over max errors", backend.Args{Before: maxContext + 1}, true},
+		{"negative after errors", backend.Args{After: -1}, true},
+		{"negative context errors", backend.Args{Context: -5}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateContext(tt.args); (err != nil) != tt.wantErr {
+				t.Errorf("validateContext(%+v) err = %v, wantErr %v", tt.args, err, tt.wantErr)
 			}
 		})
 	}

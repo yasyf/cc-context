@@ -2,6 +2,8 @@ package codeexec
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -86,6 +88,12 @@ func TestOpsArgMapping(t *testing.T) {
 			Call{Kwargs: map[string]any{"text": "x", "expand": 2.0}},
 			backend.OpGrep,
 			backend.Args{Query: "x", Expand: 2},
+		},
+		{
+			"grep context lines", "grep",
+			Call{Kwargs: map[string]any{"text": "x", "after": int64(2), "before": int64(1), "context": int64(3)}},
+			backend.OpGrep,
+			backend.Args{Query: "x", After: 2, Before: 1, Context: 3},
 		},
 		{
 			"symbol", "symbol",
@@ -248,6 +256,65 @@ func TestOpsThroughRuntime(t *testing.T) {
 	}
 	if fake.op != backend.OpRead || fake.args.Path != "x.go" || fake.args.Section != "5-9" {
 		t.Errorf("recorded op=%q args=%+v", fake.op, fake.args)
+	}
+}
+
+// TestOpsRejectsUnknownKwargs proves a keyword the op does not accept fails
+// loudly, naming the accepted keywords, instead of being silently discarded.
+func TestOpsRejectsUnknownKwargs(t *testing.T) {
+	tests := []struct {
+		name    string
+		fn      string
+		call    Call
+		unknown string
+	}{
+		{"read lines alias not accepted", "read", Call{Kwargs: map[string]any{"path": "f.go", "lines": "1-2"}}, "lines"},
+		{"grep typo", "grep", Call{Kwargs: map[string]any{"text": "x", "contxt": int64(2)}}, "contxt"},
+		{"outline unknown before route", "outline", Call{Kwargs: map[string]any{"path": "f.go", "bogus": int64(1)}}, "bogus"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeCaller{out: "ok"}
+			_, err := Ops(fake)[tt.fn](context.Background(), tt.call)
+			if err == nil {
+				t.Fatal("call error = nil, want unknown-argument error")
+			}
+			for _, want := range []string{"unknown argument", tt.unknown, "accepted:"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q missing %q", err, want)
+				}
+			}
+			if fake.op != "" {
+				t.Errorf("op %q dispatched despite unknown argument", fake.op)
+			}
+		})
+	}
+}
+
+// TestOutlineSectionExecParity proves the exec outline lane threads section into
+// the backend on the ast-grep lane and applies the shared ValidateSection guard,
+// rejecting a windowed directory outline before dispatch.
+func TestOutlineSectionExecParity(t *testing.T) {
+	dir := t.TempDir()
+	goFile := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(goFile, []byte("package a\n"), 0o600); err != nil {
+		t.Fatalf("write go file: %v", err)
+	}
+
+	fake := &fakeCaller{out: "ok"}
+	if _, err := Ops(fake)["outline"](context.Background(), Call{Kwargs: map[string]any{"path": goFile, "section": "1-1"}}); err != nil {
+		t.Fatalf("outline section call error: %v", err)
+	}
+	if fake.op != backend.OpStructOutline || fake.args.Section != "1-1" {
+		t.Errorf("recorded op=%q section=%q, want struct-outline 1-1", fake.op, fake.args.Section)
+	}
+
+	reject := &fakeCaller{out: "ok"}
+	if _, err := Ops(reject)["outline"](context.Background(), Call{Kwargs: map[string]any{"path": dir, "section": "1-2"}}); err == nil {
+		t.Fatal("outline --section on a directory: err = nil, want validation error")
+	}
+	if reject.op != "" {
+		t.Errorf("op %q dispatched despite directory-window rejection", reject.op)
 	}
 }
 

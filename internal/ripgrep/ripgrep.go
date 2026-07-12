@@ -9,7 +9,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -31,10 +30,57 @@ const DefaultBudget = 2000
 
 // Handles reports whether the rg/grep engine, not tilth, serves this grep. It is
 // the single routing predicate the CLI, proxy, and MCP surfaces share: any of
-// case-insensitivity, whole-word matching, regex, or explicit file operands needs
-// a capability tilth's literal whole-tree search cannot express.
+// case-insensitivity, whole-word matching, regex, explicit file operands, or
+// grep-style context lines (-A/-B/-C) needs a capability tilth's literal
+// whole-tree search cannot express.
 func Handles(a backend.Args) bool {
-	return a.IgnoreCase || a.Word || a.Regex || len(a.Paths) > 0
+	return a.IgnoreCase || a.Word || a.Regex || len(a.Paths) > 0 || hasContext(a)
+}
+
+// maxContext bounds each of -A/-B/-C so a runaway context request can never bury
+// the match frame — the payload — under leading context inside the output budget.
+const maxContext = 100
+
+// hasContext reports whether a carries any grep-style context request via
+// -A/-B/-C (After/Before/Context). A negative value counts: it routes the grep to
+// this engine so validateContext rejects it loudly rather than the >0 argv guards
+// silently dropping it back to a contextless tilth search.
+func hasContext(a backend.Args) bool {
+	return a.After != 0 || a.Before != 0 || a.Context != 0
+}
+
+// validateContext rejects an out-of-range context request: a negative value names
+// the offending flag, and a value past maxContext names the ceiling. It is the
+// single gate every grep surface (CLI, MCP, exec) passes through via Run.
+func validateContext(a backend.Args) error {
+	for _, c := range []struct {
+		flag string
+		n    int
+	}{{"-A/--after-context", a.After}, {"-B/--before-context", a.Before}, {"-C/--context", a.Context}} {
+		if c.n < 0 {
+			return fmt.Errorf("grep %s must be ≥ 0, got %d", c.flag, c.n)
+		}
+		if c.n > maxContext {
+			return fmt.Errorf("grep %s is capped at %d context lines, got %d; narrow the search instead", c.flag, maxContext, c.n)
+		}
+	}
+	return nil
+}
+
+// appendContext appends the -A/-B/-C context flags both rg and grep accept
+// natively. -C sets both directions, so it is emitted alone when set; otherwise
+// -A and -B ride independently.
+func appendContext(argv []string, a backend.Args) []string {
+	if a.Context > 0 {
+		return append(argv, "-C", strconv.Itoa(a.Context))
+	}
+	if a.After > 0 {
+		argv = append(argv, "-A", strconv.Itoa(a.After))
+	}
+	if a.Before > 0 {
+		argv = append(argv, "-B", strconv.Itoa(a.Before))
+	}
+	return argv
 }
 
 // engine selects the concrete grep backend resolved from PATH.
@@ -53,17 +99,18 @@ type runnerFn func(ctx context.Context, bin string, argv []string) (string, erro
 // Run resolves rg (or system grep), searches for a.Query, and returns the hits
 // reshaped into the house grep format, content-anchored, and budget-capped.
 func Run(ctx context.Context, a backend.Args) (string, error) {
+	if err := validateContext(a); err != nil {
+		return "", err
+	}
 	eng, bin, err := resolveEngine()
 	if err != nil {
 		return "", err
 	}
-	return run(ctx, eng, bin, a, execEngine, statRegular)
+	return run(ctx, eng, bin, a, execEngine)
 }
 
 // run is the engine-agnostic core: build argv, execute, parse, reshape, finalize.
-// isFile is the regular-file seam parseGrep validates candidate splits through;
-// production passes statRegular, tests inject a canned predicate.
-func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn, isFile func(string) bool) (string, error) {
+func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) (string, error) {
 	argv, err := buildArgv(eng, a)
 	if err != nil {
 		return "", err
@@ -72,7 +119,7 @@ func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runne
 	if err != nil {
 		return "", err
 	}
-	groups, err := parse(eng, raw, a.Expand > 0, isFile)
+	groups, err := parse(eng, raw)
 	if err != nil {
 		return "", err
 	}
@@ -145,6 +192,7 @@ func ripgrepArgv(a backend.Args) []string {
 	if a.Expand > 0 {
 		argv = append(argv, "-C", strconv.Itoa(a.Expand))
 	}
+	argv = appendContext(argv, a)
 	if a.Scope != "" {
 		argv = append(argv, "--no-ignore-parent")
 	}
@@ -159,11 +207,14 @@ func ripgrepArgv(a backend.Args) []string {
 	return argv
 }
 
-// grepArgv builds `grep -rnHFI [-i] [-w] [-C N] --exclude-dir=.[!./]* --exclude=.[!./]*
+// grepArgv builds `grep -rnHFI --null [-i] [-w] [-C N] --exclude-dir=.[!./]* --exclude=.[!./]*
 // [--include=G] -e <pattern> -- <root>` from flags common to BSD and GNU grep. A
 // regex query swaps -rnHFI for -rnHEI (ERE, the closest dialect to rg's Rust regex).
 // The -H flag forces the filename prefix the parser splits on: GNU grep omits it
 // for a single explicit file operand (BSD prints it), which read as "no matches".
+// --null terminates that filename with a NUL — a byte no path or source line
+// contains — so parseGrep splits the path from the "line:text" tail with no
+// filename-vs-content ambiguity (the long form is portable: BSD -Z is not --null).
 // The -I flag skips binary files and the dotdir/dotfile excludes skip hidden paths,
 // both mirroring ripgrep's defaults so the two engines return the same hit set;
 // -- terminates flag parsing so a directory-rooted scope never reads as a flag.
@@ -183,7 +234,7 @@ func grepArgv(a backend.Args) ([]string, error) {
 	if a.Regex {
 		flags = "-rnHEI"
 	}
-	argv := []string{flags}
+	argv := []string{flags, "--null"}
 	if a.IgnoreCase {
 		argv = append(argv, "-i")
 	}
@@ -193,6 +244,7 @@ func grepArgv(a backend.Args) ([]string, error) {
 	if a.Expand > 0 {
 		argv = append(argv, "-C", strconv.Itoa(a.Expand))
 	}
+	argv = appendContext(argv, a)
 
 	if len(a.Paths) > 0 {
 		if a.Glob != "" {
@@ -274,16 +326,13 @@ type fileGroup struct {
 	lines []grepLine
 }
 
-// parse folds an engine's raw output into per-file groups. tryContext and isFile
-// only matter for system grep, whose "path:line:text" match delimiter and
-// "path-line-text" context delimiter are ambiguous when the matched text embeds
-// either shape; see parseGrep.
-func parse(eng engine, raw string, tryContext bool, isFile func(string) bool) ([]fileGroup, error) {
+// parse folds an engine's raw output into per-file groups.
+func parse(eng engine, raw string) ([]fileGroup, error) {
 	switch eng {
 	case engineRipgrep:
 		return parseRipgrep(raw)
 	case engineGrep:
-		return parseGrep(raw, tryContext, isFile), nil
+		return parseGrep(raw), nil
 	default:
 		return nil, fmt.Errorf("ripgrep: unknown engine %d", eng)
 	}
@@ -353,81 +402,41 @@ func parseRipgrep(raw string) ([]fileGroup, error) {
 	return b.groups(), nil
 }
 
-// statRegular reports whether path is a regular file on disk. It is the default
-// seam parseGrep validates candidate paths through; the grep child ran in this
-// same process's working directory, so a relative path resolves identically here.
-// A directory named like a leading path prefix (e.g. "pkg" ahead of a colon-named
-// file) must not satisfy it, or that directory would steal the field split.
-func statRegular(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular()
-}
-
-// parseGrep folds `grep -rnFI` output into per-file groups. Match lines use a
-// ":line:" delimiter, -C context lines use a "-line-" delimiter, and "--" group
-// separators are dropped. Both delimiters can appear inside the matched text —
-// `const layout = "15:04:05"` embeds ":04:", `data[0:2:4]` embeds ":2:", a
-// filename like `2024-01-migrate.go` embeds "-01-" — so a purely lexical split
-// invents phantom paths. Instead every "sep digits sep" boundary is a candidate
-// and the true field split is the leftmost one whose path is a regular file on
-// disk (memoized per unique path); a directory named like a prefix cannot steal
-// it. A match line's path wins over a context line's when both validate; when the
-// search ran without -C (tryContext is false) a line can only be a match, so the
-// "-line-" form is never tried.
-func parseGrep(raw string, tryContext bool, isFile func(string) bool) []fileGroup {
-	memo := map[string]bool{}
-	valid := func(path string) bool {
-		if v, ok := memo[path]; ok {
-			return v
-		}
-		v := isFile(path)
-		memo[path] = v
-		return v
-	}
-
+// parseGrep folds `grep -rnHFI --null` output into per-file groups. --null prints
+// each path terminated by a NUL, the one byte a filename and a source line can
+// never contain, so the path is exactly the bytes before the first NUL. The tail
+// after the NUL is "<line><sep><text>": a ':' separator marks a match line, a '-'
+// separator a -A/-B/-C context line. Lines with no NUL — the "--" group separator
+// and the trailing blank — are dropped.
+func parseGrep(raw string) []fileGroup {
 	b := newGroupBuilder()
 	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSuffix(line, "\r")
-		if line == "" || line == "--" {
+		nul := strings.IndexByte(line, 0)
+		if nul < 0 {
 			continue
 		}
-		if path, num, text, ok := firstValidSplit(line, ':', valid); ok {
-			b.add(path, num, text, true)
+		num, isMatch, text, ok := splitNulTail(line[nul+1:])
+		if !ok {
 			continue
 		}
-		if tryContext {
-			if path, num, text, ok := firstValidSplit(line, '-', valid); ok {
-				b.add(path, num, text, false)
-			}
-		}
+		b.add(line[:nul], num, text, isMatch)
 	}
 	return b.groups()
 }
 
-// firstValidSplit returns the leftmost "<path><sep><digits><sep><text>" split of
-// line whose path is a regular file (via isFile). grep prints the path field
-// first, so the leftmost boundary backed by a real file is the true split even
-// when the matched text embeds the same "sep digits sep" shape further along.
-func firstValidSplit(line string, sep byte, isFile func(string) bool) (path string, num int, text string, ok bool) {
-	for i := 1; i < len(line); i++ {
-		if line[i] != sep {
-			continue
-		}
-		j := i + 1
-		for j < len(line) && line[j] >= '0' && line[j] <= '9' {
-			j++
-		}
-		if j == i+1 || j >= len(line) || line[j] != sep {
-			continue
-		}
-		candidate := line[:i]
-		if !isFile(candidate) {
-			continue
-		}
-		n, _ := strconv.Atoi(line[i+1 : j])
-		return candidate, n, line[j+1:], true
+// splitNulTail parses the "<digits><sep><text>" tail that follows a --null path
+// terminator: sep ':' marks a match line, '-' a context line. ok is false for a
+// tail without a leading digit run closed by ':' or '-'.
+func splitNulTail(tail string) (num int, isMatch bool, text string, ok bool) {
+	i := 0
+	for i < len(tail) && tail[i] >= '0' && tail[i] <= '9' {
+		i++
 	}
-	return "", 0, "", false
+	if i == 0 || i >= len(tail) || (tail[i] != ':' && tail[i] != '-') {
+		return 0, false, "", false
+	}
+	n, _ := strconv.Atoi(tail[:i])
+	return n, tail[i] == ':', tail[i+1:], true
 }
 
 // groupBuilder accumulates lines into per-file groups, files in first-appearance

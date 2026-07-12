@@ -54,3 +54,44 @@ func TestRouteStatError(t *testing.T) {
 		t.Fatal("Route: want error for a non-existent path")
 	}
 }
+
+func TestValidateSection(t *testing.T) {
+	dir := t.TempDir()
+	goFile := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(goFile, []byte("package a\n"), 0o600); err != nil {
+		t.Fatalf("write go file: %v", err)
+	}
+	rbFile := filepath.Join(dir, "a.rb")
+	if err := os.WriteFile(rbFile, []byte("x = 1\n"), 0o600); err != nil {
+		t.Fatalf("write rb file: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		path      string
+		section   string
+		op        backend.Op
+		wantStart int
+		wantEnd   int
+		wantErr   bool
+	}{
+		{"no section passes", goFile, "", backend.OpStructOutline, 0, 0, false},
+		{"ast-grep file with range passes", goFile, "40-95", backend.OpStructOutline, 40, 95, false},
+		{"comma range passes", goFile, "40,95", backend.OpStructOutline, 40, 95, false},
+		{"non-numeric section rejected", goFile, "## Heading", backend.OpStructOutline, 0, 0, true},
+		{"reversed range rejected", goFile, "95-40", backend.OpStructOutline, 0, 0, true},
+		{"directory rejected", dir, "40-95", backend.OpStructOutline, 0, 0, true},
+		{"tilth lane rejected", rbFile, "40-95", backend.OpOutline, 0, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			start, end, err := ValidateSection(backend.Args{Path: tt.path, Section: tt.section}, tt.op)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateSection(%q, %q, %q) err = %v, wantErr %v", tt.path, tt.section, tt.op, err, tt.wantErr)
+			}
+			if start != tt.wantStart || end != tt.wantEnd {
+				t.Errorf("ValidateSection(%q, %q, %q) = (%d, %d), want (%d, %d)", tt.path, tt.section, tt.op, start, end, tt.wantStart, tt.wantEnd)
+			}
+		})
+	}
+}

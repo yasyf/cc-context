@@ -29,5 +29,8 @@ func newGrepCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&a.Regex, "regex", "E", false, "treat the pattern as a regular expression (ripgrep/grep engine)")
 	cmd.Flags().IntVar(&a.Budget, "budget", 0, "token budget for the output")
 	cmd.Flags().IntVar(&a.Expand, "expand", 0, "tilth engine inlines full source for the top N matches; rg/grep engine adds N context lines around each hit")
+	cmd.Flags().IntVarP(&a.After, "after-context", "A", 0, "show N lines after each match (ripgrep/grep engine)")
+	cmd.Flags().IntVarP(&a.Before, "before-context", "B", 0, "show N lines before each match (ripgrep/grep engine)")
+	cmd.Flags().IntVarP(&a.Context, "context", "C", 0, "show N lines around each match (ripgrep/grep engine)")
 	return cmd
 }

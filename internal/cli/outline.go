@@ -28,6 +28,9 @@ func newOutlineCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if _, _, err := outline.ValidateSection(a, op); err != nil {
+				return err
+			}
 			out, err := outlineFor(cmd, op, a)
 			if err != nil {
 				return err
@@ -36,10 +39,12 @@ func newOutlineCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&a.Section, "section", "", `restrict a single-file outline to items intersecting a line range ("40-95" or "40,95")`)
 	cmd.Flags().StringVar(&a.Items, "items", "", "ast-grep: items to include (imports|exports|structure|all)")
 	cmd.Flags().StringVar(&a.Match, "match", "", "ast-grep: keep only items whose name/signature matches this regex")
 	cmd.Flags().StringVar(&a.Lang, "lang", "", "ast-grep: language to parse as (inferred from extension when omitted)")
 	cmd.Flags().IntVar(&a.Budget, "budget", 0, "token budget for the outline")
+	cmd.Flags().SetNormalizeFunc(sectionAlias)
 	return cmd
 }
 

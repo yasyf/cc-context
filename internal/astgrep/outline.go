@@ -31,6 +31,9 @@ type OutlineItem struct {
 		Start struct {
 			Line int `json:"line"`
 		} `json:"start"`
+		End struct {
+			Line int `json:"line"`
+		} `json:"end"`
 	} `json:"range"`
 	Members []OutlineItem `json:"members"`
 }
@@ -56,6 +59,31 @@ func ParseOutline(stream []byte) ([]OutlineFile, error) {
 		return nil, fmt.Errorf("scan ast-grep outline json: %w", err)
 	}
 	return files, nil
+}
+
+// WindowOutline restricts files to the items whose source span intersects the
+// inclusive 1-indexed line range [start, end], recursing into members: a kept
+// container keeps only its overlapping members. ast-grep reports 0-based lines,
+// so each span is shifted to the ccx 1-based convention before the overlap test.
+func WindowOutline(files []OutlineFile, start, end int) []OutlineFile {
+	out := make([]OutlineFile, 0, len(files))
+	for _, f := range files {
+		f.Items = windowItems(f.Items, start, end)
+		out = append(out, f)
+	}
+	return out
+}
+
+func windowItems(items []OutlineItem, start, end int) []OutlineItem {
+	var kept []OutlineItem
+	for _, it := range items {
+		if oneBased(it.Range.End.Line) < start || oneBased(it.Range.Start.Line) > end {
+			continue
+		}
+		it.Members = windowItems(it.Members, start, end)
+		kept = append(kept, it)
+	}
+	return kept
 }
 
 // RenderOutline renders files as a `# <path>` header per file, then one
