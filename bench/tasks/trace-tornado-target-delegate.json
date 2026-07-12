@@ -32,6 +32,13 @@
       "tornado/web.py",
       "tornado/routing.py"
     ],
+    "alt_sites": [
+      {
+        "file": "tornado/web.py",
+        "decl": "def get_target_delegate(",
+        "line": 2027
+      }
+    ],
     "line": 376
   },
   "ccx_helps": true,

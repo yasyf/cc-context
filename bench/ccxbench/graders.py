@@ -59,15 +59,17 @@ def grade_file_line(answer: object, gold: dict[str, Any], spec: dict[str, Any], 
     line_field = spec.get("line_field", "line")
     tol = int(spec.get("line_tolerance", 2))
     ans_file = str(d.get(file_field, ""))
-    if not file_matches(gold["file"], ans_file):
-        return GradeResult(False, f"file {ans_file!r} != gold {gold['file']!r}")
     try:
         ans_line = int(d.get(line_field))
     except (TypeError, ValueError):
         return GradeResult(False, f"line not an int: {d.get(line_field)!r}")
-    if abs(ans_line - int(gold["line"])) > tol:
-        return GradeResult(False, f"line {ans_line} not within {tol} of {gold['line']}")
-    return GradeResult(True, f"{ans_file}:{ans_line} ~ {gold['file']}:{gold['line']}")
+    # A symbol may be defined in more than one place; accept a match at the primary gold site or any
+    # alternate site (each carries its own build-resolved line).
+    sites = [(gold["file"], int(gold["line"]))] + [(a["file"], int(a["line"])) for a in gold.get("alt_sites", [])]
+    for site_file, site_line in sites:
+        if file_matches(site_file, ans_file) and abs(ans_line - site_line) <= tol:
+            return GradeResult(True, f"{ans_file}:{ans_line} ~ {site_file}:{site_line}")
+    return GradeResult(False, f"{ans_file}:{ans_line} matches no gold site {sites}")
 
 
 def grade_file_match(answer: object, gold: dict[str, Any], spec: dict[str, Any], ctx: GradeContext) -> GradeResult:

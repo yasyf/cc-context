@@ -79,8 +79,15 @@ def _nav(tid: str, repo: str, file: str, decl: str, prompt: str) -> Task:
     )
 
 
-def _trace(tid: str, repo: str, file: str, decl: str, prompt: str, chain: list[str]) -> Task:
-    """Trace: the terminal function of a cross-file call chain; `gold.line` derived from `decl`."""
+def _trace(tid: str, repo: str, file: str, decl: str, prompt: str, chain: list[str], alts: list[dict] | None = None) -> Task:
+    """Trace: the terminal function of a cross-file call chain; `gold.line` derived from `decl`.
+
+    `alts` names additional accepted definition sites (`{"file", "decl"}`) for symbols defined in more
+    than one place — each site's line is resolved at build and the grader accepts a match at any.
+    """
+    gold: dict = {"file": file, "decl": decl, "traversal_files": chain}
+    if alts:
+        gold["alt_sites"] = alts
     return Task(
         id=tid,
         category="trace",
@@ -89,7 +96,7 @@ def _trace(tid: str, repo: str, file: str, decl: str, prompt: str, chain: list[s
         "of that function or method.",
         schema=NAV_SCHEMA,
         grader=Grader("file_line", {"line_tolerance": 2}),
-        gold={"file": file, "decl": decl, "traversal_files": chain},
+        gold=gold,
     )
 
 
@@ -189,7 +196,8 @@ def trace_tasks() -> list[Task]:
                "In this web framework, when the application routes an incoming request and one of its "
                "URL rules matches, which method builds the message delegate that will actually run "
                "the matched target?",
-               ["tornado/web.py", "tornado/routing.py"]),
+               ["tornado/web.py", "tornado/routing.py"],
+               alts=[{"file": "tornado/web.py", "decl": "def get_target_delegate("}]),
     ]
 
 
@@ -355,7 +363,7 @@ def non_regression_tasks() -> list[Task]:
     """
     specs = [
         ("nonreg-binsearch", "Explain in two sentences how binary search works on a sorted array.",
-         [["sort"], ["half", "halve", "middle", "mid", "divide"]]),
+         [["sort", "order", "ascend", "rank", "increasing"], ["half", "halve", "middle", "mid", "divide"]]),
         ("nonreg-hashmap", "In two sentences, what is a hash map and what is its average lookup time?",
          [["hash", "dictionary", "key"], ["o(1)", "constant", "amortized", "average"]]),
         ("nonreg-recursion", "Define recursion in one sentence and give the term for its stopping condition.",

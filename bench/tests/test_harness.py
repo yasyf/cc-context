@@ -70,6 +70,15 @@ class TestGraders(unittest.TestCase):
         self.assertFalse(grade_file_line({"file": "internal/calc/calc.go", "line": 20}, gold, spec, ctx).correct)
         self.assertFalse(grade_file_line({"file": "other.go", "line": 15}, gold, spec, ctx).correct)
 
+    def test_file_line_accepts_any_alt_site(self) -> None:
+        # A symbol defined in two places: an answer at either the primary or an alternate site passes.
+        spec = {"line_tolerance": 2}
+        gold = {"file": "tornado/routing.py", "line": 376, "alt_sites": [{"file": "tornado/web.py", "line": 2027}]}
+        ctx = GradeContext("", None)
+        self.assertTrue(grade_file_line({"file": "tornado/routing.py", "line": 376}, gold, spec, ctx).correct)
+        self.assertTrue(grade_file_line({"file": "tornado/web.py", "line": 2028}, gold, spec, ctx).correct)
+        self.assertFalse(grade_file_line({"file": "tornado/httputil.py", "line": 376}, gold, spec, ctx).correct)
+
     def test_set_match_equal_normalizes(self) -> None:
         spec = {"field": "callees", "mode": "equal", "lower": True}
         gold = {"callees": ["Add", "Double"]}

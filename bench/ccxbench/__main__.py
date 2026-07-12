@@ -57,6 +57,8 @@ def derive_golds(cfg: Config, tasks: list[Task]) -> None:
         checkout = checkout_dir(cfg, t)
         if t.category in ("navigation", "trace"):
             t.gold["line"] = goldgen.resolve_decl_line(checkout, t.gold["file"], t.gold["decl"])
+            for alt in t.gold.get("alt_sites", []):
+                alt["line"] = goldgen.resolve_decl_line(checkout, alt["file"], alt["decl"])
         elif t.category == "large_context":
             members = goldgen.recompute_lc_predicate(checkout, t.gold["lc_predicate"], t.repo)
             if not members:
@@ -108,11 +110,12 @@ def verify_oss(cfg: Config, tasks: list[Task]) -> None:
             if not (checkout / rel).is_file():
                 sys.exit(f"OSS task {t.id}: traversal_file {rel} absent from {t.repo}")
         if t.grader.kind == "file_line":
-            lines = (checkout / t.gold["file"]).read_text().splitlines()
             tol = int(t.grader.spec.get("line_tolerance", 2))
-            lo, hi = max(0, t.gold["line"] - 1 - tol), min(len(lines), t.gold["line"] + tol)
-            if not any(t.gold["decl"] in ln for ln in lines[lo:hi]):
-                sys.exit(f"OSS task {t.id}: decl {t.gold['decl']!r} not within ±{tol} of line {t.gold['line']}")
+            for site in (t.gold, *t.gold.get("alt_sites", [])):
+                lines = (checkout / site["file"]).read_text().splitlines()
+                lo, hi = max(0, site["line"] - 1 - tol), min(len(lines), site["line"] + tol)
+                if not any(site["decl"] in ln for ln in lines[lo:hi]):
+                    sys.exit(f"OSS task {t.id}: decl {site['decl']!r} not within ±{tol} of line {site['line']} in {site['file']}")
         elif t.grader.kind == "file_match":
             if not (checkout / t.gold["file"]).is_file():
                 sys.exit(f"OSS task {t.id}: gold file {t.gold['file']} absent from {t.repo}")
