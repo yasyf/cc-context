@@ -40,6 +40,8 @@ func newOutlineCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&a.Section, "section", "", `restrict a single-file outline to items intersecting a line range ("40-95" or "40,95")`)
+	cmd.Flags().BoolVar(&a.Deep, "deep", false, "ast-grep: include members (struct fields, class methods); default is top-level only")
+	cmd.Flags().BoolVar(&a.Full, "full", false, "alias for --deep: include members")
 	cmd.Flags().StringVar(&a.Items, "items", "", "ast-grep: items to include (imports|exports|structure|all)")
 	cmd.Flags().StringVar(&a.Match, "match", "", "ast-grep: keep only items whose name/signature matches this regex")
 	cmd.Flags().StringVar(&a.Lang, "lang", "", "ast-grep: language to parse as (inferred from extension when omitted)")

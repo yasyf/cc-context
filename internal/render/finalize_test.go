@@ -332,3 +332,115 @@ func TestFinalizeDefaultOpPassesThrough(t *testing.T) {
 		t.Errorf("Finalize(OpFind) = %q, want %q", got, in)
 	}
 }
+
+// grokFixture is a synthetic grok output covering every optional section, used to
+// pin terseSymbol's section filtering and count trailer.
+const grokFixture = `# grok: Foo [pkg/foo.go:10#a3fk]
+
+## signature
+func Foo() error
+
+## doc
+// Foo does the thing.
+
+## body
+func Foo() error {
+	return nil
+}
+
+## callees (2 internal, 1 extern)
+  pkg/foo.go
+    bar          [20-25]   func bar()
+    baz          [30-35]   func baz()
+Sprintf              extern
+
+## callers (3 of 12)
+  pkg/x.go
+    [5]   in X()
+... and 9 more
+
+## siblings (pkg/foo.go)
+Alpha                    [1-5]   func Alpha()
+Beta                     [40-45]   func Beta()
+`
+
+func TestTerseSymbol(t *testing.T) {
+	terseWant := `# grok: Foo [pkg/foo.go:10#a3fk]
+
+## signature
+func Foo() error
+
+## doc
+// Foo does the thing.
+
+callers 12 · callees 3 · siblings 2 — --body/--callers/--callees/--siblings/--full
+`
+	if got := terseSymbol(grokFixture, backend.Args{}); got != terseWant {
+		t.Errorf("terse default =\n%q\nwant\n%q", got, terseWant)
+	}
+
+	t.Run("full passes through", func(t *testing.T) {
+		if got := terseSymbol(grokFixture, backend.Args{Full: true}); got != grokFixture {
+			t.Errorf("--full altered the output:\n%q", got)
+		}
+	})
+
+	t.Run("body flag keeps body, drops it from trailer", func(t *testing.T) {
+		got := terseSymbol(grokFixture, backend.Args{Body: true})
+		if !strings.Contains(got, "## body") {
+			t.Errorf("--body missing body section:\n%s", got)
+		}
+		for _, gone := range []string{"## callers", "## callees", "## siblings"} {
+			if strings.Contains(got, gone) {
+				t.Errorf("--body should still drop %q:\n%s", gone, got)
+			}
+		}
+		if strings.Contains(got, "--body/") {
+			t.Errorf("--body flag should not be offered once body is kept:\n%s", got)
+		}
+		if !strings.Contains(got, "callers 12 · callees 3 · siblings 2 — --callers/--callees/--siblings/--full") {
+			t.Errorf("--body trailer wrong:\n%s", got)
+		}
+	})
+
+	t.Run("callers flag expands only callers", func(t *testing.T) {
+		got := terseSymbol(grokFixture, backend.Args{Callers: true})
+		if !strings.Contains(got, "## callers (3 of 12)") {
+			t.Errorf("--callers missing callers section:\n%s", got)
+		}
+		if strings.Contains(got, "## body") {
+			t.Errorf("--callers should still drop body:\n%s", got)
+		}
+		if !strings.Contains(got, "callees 3 · siblings 2 — --body/--callees/--siblings/--full") {
+			t.Errorf("--callers trailer wrong:\n%s", got)
+		}
+	})
+
+	t.Run("class body synthesizes a signature", func(t *testing.T) {
+		class := "# grok: Widget [w.go:5#w1w1]\n\n## body\nclass Widget(Base):\n    x = 1\n\n## callees (2 internal, 0 extern)\n  w.go\n    a  [1]\n    b  [2]\n\n## siblings (w.go)\nHelper  [10]\n"
+		got := terseSymbol(class, backend.Args{})
+		if !strings.Contains(got, "## signature\nclass Widget(Base):") {
+			t.Errorf("class terse missing synthesized signature:\n%s", got)
+		}
+		if strings.Contains(got, "x = 1") {
+			t.Errorf("class terse should drop the body:\n%s", got)
+		}
+		if !strings.Contains(got, "callees 2 · siblings 1 — --body/--callees/--siblings/--full") {
+			t.Errorf("class terse trailer wrong:\n%s", got)
+		}
+	})
+
+	t.Run("ast-grep fallback passes through", func(t *testing.T) {
+		fallback := "# grok: Widget (ast-grep type fallback)\n### foo.go:7\n→ [7] type Widget struct {\n"
+		if got := terseSymbol(fallback, backend.Args{}); got != fallback {
+			t.Errorf("fallback altered:\n%q", got)
+		}
+	})
+
+	t.Run("signature-only symbol gets no trailer", func(t *testing.T) {
+		sigOnly := "# grok: K [c.go:1#z1z1]\n\n## signature\nconst K = 1\n"
+		if got := terseSymbol(sigOnly, backend.Args{}); got != sigOnly {
+			t.Errorf("signature-only altered:\n%q", got)
+		}
+	})
+}

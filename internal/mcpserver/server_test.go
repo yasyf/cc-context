@@ -348,13 +348,26 @@ func TestOutlineToolRoutesToAstGrep(t *testing.T) {
 	fakeAstGrepOnPath(t, nil)
 	cs := connectTestServer(t)
 
-	// A directory always routes to ast-grep; the result is the rendered outline.
+	// A directory always routes to ast-grep; the terse default renders top-level
+	// declarations only, hiding the struct's member behind a count and the flags.
 	out, isErr := callText(t, cs, "ccx_code_outline", map[string]any{"path": t.TempDir()})
 	if isErr {
 		t.Fatalf("ccx_code_outline is error: %s", out)
 	}
-	if !strings.Contains(out, "# x.go") || !strings.Contains(out, "L5  type X struct {") || !strings.Contains(out, "\n  L6  Y int") {
-		t.Errorf("outline render wrong:\n%s", out)
+	if !strings.Contains(out, "# x.go") || !strings.Contains(out, "L5  type X struct {  (+1 member)") {
+		t.Errorf("terse outline render wrong:\n%s", out)
+	}
+	if strings.Contains(out, "L6  Y int") {
+		t.Errorf("terse outline should hide the member:\n%s", out)
+	}
+
+	// deep=true renders the member.
+	deep, isErr := callText(t, cs, "ccx_code_outline", map[string]any{"path": t.TempDir(), "deep": true})
+	if isErr {
+		t.Fatalf("ccx_code_outline deep is error: %s", deep)
+	}
+	if !strings.Contains(deep, "\n  L6  Y int") {
+		t.Errorf("deep outline should render the member:\n%s", deep)
 	}
 }
 

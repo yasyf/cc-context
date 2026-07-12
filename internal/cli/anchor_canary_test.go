@@ -79,7 +79,9 @@ func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
 	t.Chdir(repo)
 
 	grep := runCCX(t, "code", "grep", "func")
-	symbol := runCCX(t, "code", "symbol", "Greet")
+	// --full so the caller/sibling frame anchors this canary protects are present;
+	// the terse default drops those sections (covered by TestTerseSymbol).
+	symbol := runCCX(t, "code", "symbol", "Greet", "--full")
 	outline := runCCX(t, "code", "outline", "greeter.go")
 	deps := runCCX(t, "code", "deps", "greeter.go")
 	diff := runCCX(t, "vcs", "diff", sha1+".."+sha2)

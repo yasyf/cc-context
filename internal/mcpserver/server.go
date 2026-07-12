@@ -66,6 +66,8 @@ type RelatedIn struct {
 type OutlineIn struct {
 	Path    string `json:"path" jsonschema:"file or directory to outline"`
 	Section string `json:"section,omitempty" jsonschema:"window a single-file (ast-grep) outline to a line range (\"40-95\" or \"40,95\")"`
+	Deep    bool   `json:"deep,omitempty" jsonschema:"ast-grep: include members (struct fields, class methods); default is top-level only"`
+	Full    bool   `json:"full,omitempty" jsonschema:"alias for deep: include members"`
 	Items   string `json:"items,omitempty" jsonschema:"ast-grep: items to include (imports|exports|structure|all)"`
 	Match   string `json:"match,omitempty" jsonschema:"ast-grep: keep items whose name/signature matches this regex"`
 	Lang    string `json:"lang,omitempty" jsonschema:"ast-grep: language; inferred from extension"`
@@ -82,9 +84,14 @@ type ReadIn struct {
 
 // SymbolIn is the input for ccx_code_symbol.
 type SymbolIn struct {
-	Name  string `json:"name" jsonschema:"symbol to grok"`
-	Scope string `json:"scope,omitempty" jsonschema:"directory to scope the lookup to"`
-	Full  bool   `json:"full,omitempty" jsonschema:"include full bodies"`
+	Name     string `json:"name" jsonschema:"symbol to grok"`
+	Scope    string `json:"scope,omitempty" jsonschema:"directory to scope the lookup to"`
+	Body     bool   `json:"body,omitempty" jsonschema:"include the definition body"`
+	Callers  bool   `json:"callers,omitempty" jsonschema:"include the callers list"`
+	Callees  bool   `json:"callees,omitempty" jsonschema:"include the callees list"`
+	Siblings bool   `json:"siblings,omitempty" jsonschema:"include the siblings list"`
+	Tests    bool   `json:"tests,omitempty" jsonschema:"include the tests list"`
+	Full     bool   `json:"full,omitempty" jsonschema:"the full rich output: body plus every list"`
 }
 
 // DepsIn is the input for ccx_code_deps.
@@ -226,7 +233,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_outline",
-		Description: "Outline a file or directory — signatures + line numbers, budget-bounded; prefer over reading whole files. Routes to ast-grep (items, match, section window) or tilth by language.",
+		Description: "Outline a file or directory — top-level signatures + line numbers, budget-bounded; prefer over reading whole files. --deep/--full adds members. Routes to ast-grep (items, match, section window) or tilth by language.",
 	}, outlineHandler(p))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -238,9 +245,9 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_symbol",
-		Description: "Grok a symbol: definition, doc, callers, callees, siblings, tests — one call beats many greps.",
+		Description: "Grok a symbol: signature, path:line#anchor, and doc by default — one call beats many greps. Body and caller/callee/sibling/test lists behind --body/--callers/--callees/--siblings/--tests/--full.",
 	}, handler(p, backend.OpSymbol, func(in SymbolIn) backend.Args {
-		return backend.Args{Query: in.Name, Scope: in.Scope, Full: in.Full}
+		return backend.Args{Query: in.Name, Scope: in.Scope, Body: in.Body, Callers: in.Callers, Callees: in.Callees, Siblings: in.Siblings, Tests: in.Tests, Full: in.Full}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -389,7 +396,7 @@ func editHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, Edi
 // directories and the languages it outlines, tilth signature mode otherwise.
 func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, OutlineIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in OutlineIn) (*mcp.CallToolResult, any, error) {
-		a := backend.Args{Path: in.Path, Section: in.Section, Items: in.Items, Match: in.Match, Lang: in.Lang, Budget: in.Budget}
+		a := backend.Args{Path: in.Path, Section: in.Section, Deep: in.Deep, Full: in.Full, Items: in.Items, Match: in.Match, Lang: in.Lang, Budget: in.Budget}
 		op, err := outline.Route(a)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)

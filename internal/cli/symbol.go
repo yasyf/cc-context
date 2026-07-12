@@ -11,7 +11,7 @@ func newSymbolCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "symbol <name>",
 		Aliases: []string{"grok"},
-		Short:   "Grok a symbol: def, doc, callers, callees, siblings, tests",
+		Short:   "Grok a symbol: signature, path:line, doc — body/callers/callees/siblings/tests behind flags",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a.Query = args[0]
@@ -19,6 +19,11 @@ func newSymbolCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&a.Scope, "scope", "", "directory to scope the lookup to")
-	cmd.Flags().BoolVar(&a.Full, "full", false, "include full bodies")
+	cmd.Flags().BoolVar(&a.Full, "full", false, "the full rich output: body, callers, callees, siblings, tests")
+	cmd.Flags().BoolVar(&a.Body, "body", false, "include the definition body")
+	cmd.Flags().BoolVar(&a.Callers, "callers", false, "include the callers list")
+	cmd.Flags().BoolVar(&a.Callees, "callees", false, "include the callees list")
+	cmd.Flags().BoolVar(&a.Siblings, "siblings", false, "include the siblings list")
+	cmd.Flags().BoolVar(&a.Tests, "tests", false, "include the tests list")
 	return cmd
 }

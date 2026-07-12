@@ -62,7 +62,7 @@ func runStructOutline(ctx context.Context, a backend.Args) (string, error) {
 		}
 		files = WindowOutline(files, start, end)
 	}
-	return render.Cap(RenderOutline(files, anchor.NewFiles(".")), a.Budget), nil
+	return render.Cap(RenderOutline(files, anchor.NewFiles("."), DepthFor(a)), a.Budget), nil
 }
 
 // runReplace previews a.Pattern→a.Rewrite, or applies it when a.Apply is set. An

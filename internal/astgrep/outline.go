@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/anchor"
+	"github.com/yasyf/cc-context/internal/backend"
 )
 
 // OutlineFile is one `ast-grep outline --json=stream` record: a single source
@@ -86,15 +87,36 @@ func windowItems(items []OutlineItem, start, end int) []OutlineItem {
 	return kept
 }
 
+// terseOutlineDefault bounds a default outline to top-level declarations, hiding
+// each container's members behind a "(+N members)" note and the --deep/--full
+// flags. It is the single default switch: the accuracy gate flips it to false to
+// restore the full-depth default, leaving the flags intact.
+const terseOutlineDefault = true
+
+// DepthFor returns the render depth for an outline: unbounded when a asks for
+// members (--deep or --full) or terseOutlineDefault is off, else 0 (top-level
+// declarations only, members collapsed to a count).
+func DepthFor(a backend.Args) int {
+	if a.Deep || a.Full || !terseOutlineDefault {
+		return maxOutlineDepth
+	}
+	return 0
+}
+
+// maxOutlineDepth is the effectively-unbounded depth a full outline renders at.
+const maxOutlineDepth = 1 << 30
+
 // RenderOutline renders files as a `# <path>` header per file, then one
-// `L<line>#<hash>  <signature>` per top-level item with members indented one
-// level and left bare (they live inside the parent's anchored span). The anchor
-// hashes the item's real source line via fs; a cache miss leaves the span bare.
-// ast-grep reports 0-based lines; oneBased shifts them to the ccx 1-based
+// `L<line>#<hash>  <signature>` per top-level item. Members nest one indent level
+// deeper up to maxDepth; at maxDepth a container's members collapse to a
+// `(+N members)` note and a single trailing --deep/--full hint is appended. The
+// anchor hashes the item's real source line via fs; a cache miss leaves the span
+// bare. ast-grep reports 0-based lines; oneBased shifts them to the ccx 1-based
 // convention. A run with no items anywhere collapses to a single no-symbols hint.
-func RenderOutline(files []OutlineFile, fs *anchor.Files) string {
+func RenderOutline(files []OutlineFile, fs *anchor.Files, maxDepth int) string {
 	var b strings.Builder
 	var items int
+	hidden := false
 	for _, f := range files {
 		if len(f.Items) == 0 {
 			continue
@@ -102,20 +124,27 @@ func RenderOutline(files []OutlineFile, fs *anchor.Files) string {
 		fmt.Fprintf(&b, "# %s\n", f.Path)
 		for _, it := range f.Items {
 			items++
-			writeOutlineItem(&b, it, 0, f.Path, fs)
+			if writeOutlineItem(&b, it, 0, maxDepth, f.Path, fs) {
+				hidden = true
+			}
 		}
 	}
 	if items == 0 {
 		return "# no symbols\n"
+	}
+	if hidden {
+		b.WriteString("members hidden — --deep or --full to expand\n")
 	}
 	return b.String()
 }
 
 // writeOutlineItem writes one item as `<indent>L<line>  <signature>`, anchoring
 // the depth-0 line marker with a content hash of its source line when fs can read
-// it. Members recurse at the next indent level and stay bare. The signature falls
-// back to the name when ast-grep emits none (e.g. a struct field).
-func writeOutlineItem(b *strings.Builder, it OutlineItem, depth int, path string, fs *anchor.Files) {
+// it. Members recurse one indent deeper while depth < maxDepth; at the depth
+// ceiling a container's members collapse to a `(+N members)` suffix. It reports
+// whether any member was hidden. The signature falls back to the name when
+// ast-grep emits none (e.g. a struct field).
+func writeOutlineItem(b *strings.Builder, it OutlineItem, depth, maxDepth int, path string, fs *anchor.Files) bool {
 	sig := it.Signature
 	if sig == "" {
 		sig = it.Name
@@ -127,8 +156,33 @@ func writeOutlineItem(b *strings.Builder, it OutlineItem, depth int, path string
 			anchored = "#" + anchor.Of(src).String()
 		}
 	}
-	fmt.Fprintf(b, "%sL%d%s  %s\n", strings.Repeat("  ", depth), line, anchored, sig)
-	for _, m := range it.Members {
-		writeOutlineItem(b, m, depth+1, path, fs)
+	hideHere := depth >= maxDepth && len(it.Members) > 0
+	suffix := ""
+	if hideHere {
+		n := countMembers(it.Members)
+		unit := "members"
+		if n == 1 {
+			unit = "member"
+		}
+		suffix = fmt.Sprintf("  (+%d %s)", n, unit)
 	}
+	fmt.Fprintf(b, "%sL%d%s  %s%s\n", strings.Repeat("  ", depth), line, anchored, sig, suffix)
+	hidden := hideHere
+	if depth < maxDepth {
+		for _, m := range it.Members {
+			if writeOutlineItem(b, m, depth+1, maxDepth, path, fs) {
+				hidden = true
+			}
+		}
+	}
+	return hidden
+}
+
+// countMembers counts an item's members recursively.
+func countMembers(members []OutlineItem) int {
+	n := len(members)
+	for _, m := range members {
+		n += countMembers(m.Members)
+	}
+	return n
 }

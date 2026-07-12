@@ -62,7 +62,7 @@ func TestRenderOutline(t *testing.T) {
 	}
 	// The fixture's paths do not resolve under an empty root, so every span
 	// stays bare — this exercises the cache-miss degradation path.
-	got := RenderOutline(files, anchor.NewFiles(t.TempDir()))
+	got := RenderOutline(files, anchor.NewFiles(t.TempDir()), maxOutlineDepth)
 
 	if !strings.Contains(got, "# internal/backend/astgrep.go\n") {
 		t.Errorf("missing per-file header:\n%s", got)
@@ -137,7 +137,7 @@ func TestWindowOutline(t *testing.T) {
 }
 
 func TestRenderOutlineNoSymbols(t *testing.T) {
-	got := RenderOutline([]OutlineFile{{Path: "empty.rb", Language: "Ruby"}}, anchor.NewFiles("testdata"))
+	got := RenderOutline([]OutlineFile{{Path: "empty.rb", Language: "Ruby"}}, anchor.NewFiles("testdata"), maxOutlineDepth)
 	if got != "# no symbols\n" {
 		t.Errorf("RenderOutline(no items) = %q, want %q", got, "# no symbols\n")
 	}
@@ -151,7 +151,7 @@ func TestRenderOutlineAnchored(t *testing.T) {
 	// Depth-0 items carry an anchor hashing their real source line in
 	// testdata/outline_src.go; members stay bare. Hashes are Of("func Alpha(x
 	// int) int {") = xbmn and Of("type Widget struct {") = gpks.
-	got := RenderOutline(files, anchor.NewFiles("testdata"))
+	got := RenderOutline(files, anchor.NewFiles("testdata"), maxOutlineDepth)
 	want := "# outline_src.go\n" +
 		"L3#xbmn  func Alpha(x int) int {\n" +
 		"L7#gpks  type Widget struct {\n" +
@@ -159,5 +159,23 @@ func TestRenderOutlineAnchored(t *testing.T) {
 		"  L9  Size int\n"
 	if got != want {
 		t.Errorf("RenderOutline anchored =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestRenderOutlineTerse renders at depth 0: top-level items keep their anchors,
+// each container's members collapse to a "(+N members)" note, and a single
+// --deep/--full hint trails the output.
+func TestRenderOutlineTerse(t *testing.T) {
+	files, err := ParseOutline(readFixture(t, "outline_src_stream.jsonl"))
+	if err != nil {
+		t.Fatalf("ParseOutline: %v", err)
+	}
+	got := RenderOutline(files, anchor.NewFiles("testdata"), 0)
+	want := "# outline_src.go\n" +
+		"L3#xbmn  func Alpha(x int) int {\n" +
+		"L7#gpks  type Widget struct {  (+2 members)\n" +
+		"members hidden — --deep or --full to expand\n"
+	if got != want {
+		t.Errorf("RenderOutline terse =\n%q\nwant\n%q", got, want)
 	}
 }

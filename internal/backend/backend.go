@@ -83,6 +83,12 @@ type Args struct {
 	IgnoreCase      bool
 	Word            bool
 	Regex           bool
+	Body            bool
+	Callers         bool
+	Callees         bool
+	Siblings        bool
+	Tests           bool
+	Deep            bool
 	Budget          int
 	Offset          int
 	K               int

@@ -49,7 +49,7 @@ func Ops(c Caller) map[string]HostFunc {
 			return backend.Args{Query: a.str("text", 0), Glob: a.str("glob", 1), Scope: a.str("scope", 2), Paths: a.strs("paths"), IgnoreCase: a.flag("ignore_case"), Word: a.flag("word"), Regex: a.flag("regex"), Expand: a.num("expand"), After: a.num("after"), Before: a.num("before"), Context: a.num("context")}
 		}),
 		"symbol": op(backend.OpSymbol, func(a *args) backend.Args {
-			return backend.Args{Query: a.str("name", 0), Scope: a.str("scope", 1), Full: a.flag("full")}
+			return backend.Args{Query: a.str("name", 0), Scope: a.str("scope", 1), Full: a.flag("full"), Body: a.flag("body"), Callers: a.flag("callers"), Callees: a.flag("callees"), Siblings: a.flag("siblings"), Tests: a.flag("tests")}
 		}),
 		"find":    op(backend.OpFind, func(a *args) backend.Args { return backend.Args{Glob: a.str("glob", 0), Scope: a.str("scope", 1)} }),
 		"related": op(backend.OpRelated, func(a *args) backend.Args { return backend.Args{Query: a.str("location", 0)} }),
@@ -92,7 +92,7 @@ func searchArgs(a *args) backend.Args {
 }
 
 func outlineArgs(a *args) backend.Args {
-	return backend.Args{Path: a.str("path", 0), Section: a.str("section", -1), Items: a.str("items", -1), Match: a.str("match", -1), Lang: a.str("lang", -1)}
+	return backend.Args{Path: a.str("path", 0), Section: a.str("section", -1), Deep: a.flag("deep"), Full: a.flag("full"), Items: a.str("items", -1), Match: a.str("match", -1), Lang: a.str("lang", -1)}
 }
 
 // routed builds a host function whose op is chosen at call time by a router

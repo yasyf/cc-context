@@ -35,7 +35,7 @@ func Finalize(op backend.Op, out string, a backend.Args) (string, error) {
 	case backend.OpGrep:
 		return Cap(annotateGrep(out, files), a.Budget), nil
 	case backend.OpSymbol:
-		return Cap(annotateSymbol(out, files), a.Budget), nil
+		return Cap(terseSymbol(annotateSymbol(out, files), a), a.Budget), nil
 	case backend.OpDeps:
 		return Cap(annotateDeps(out, files), a.Budget), nil
 	case backend.OpSearch, backend.OpRelated:
@@ -190,6 +190,216 @@ func anchorGrokHeader(line string, files *anchor.Files) string {
 		}
 		return fmt.Sprintf("[%s:%s#%s]", m[1], m[2], anchor.Of(text))
 	})
+}
+
+// terseSymbolDefault selects the compact locate form of grok output — header,
+// signature, and doc, with body/callers/callees/siblings/tests dropped to a counts
+// trailer — when no expansion flag is set. It is the single default switch: the
+// accuracy gate flips it to false to restore the rich default, leaving the flags
+// intact.
+const terseSymbolDefault = true
+
+// sectionSpec is one optional grok section a flag can expand; list marks the
+// sections whose count belongs in the terse trailer.
+type sectionSpec struct {
+	name string
+	flag string
+	list bool
+}
+
+// symbolSections orders the optional grok sections for the trailer.
+var symbolSections = []sectionSpec{
+	{"body", "--body", false},
+	{"callers", "--callers", true},
+	{"callees", "--callees", true},
+	{"siblings", "--siblings", true},
+	{"tests", "--tests", true},
+}
+
+// terseSymbol reshapes anchored grok output to the compact locate form: it keeps
+// the header, signature, and doc, drops each optional section its flag does not
+// keep (nor --full, nor a disabled terseSymbolDefault), and appends a trailer
+// naming the dropped list sections' counts and the flags that expand them. Output
+// without the "## signature" grammar — the ast-grep type fallback — passes through.
+func terseSymbol(out string, a backend.Args) string {
+	if a.Full || strings.Contains(out, "(ast-grep type fallback)") {
+		return out
+	}
+	head, sections, ok := splitGrokSections(out)
+	if !ok {
+		return out
+	}
+	hasSig := false
+	for _, s := range sections {
+		if s.name == "signature" {
+			hasSig = true
+		}
+	}
+	kept := head
+	dropped := map[string][]string{}
+	for _, s := range sections {
+		if symbolSectionKept(s.name, a) {
+			kept = append(kept, s.lines...)
+			continue
+		}
+		dropped[s.name] = s.lines
+		// A class/type has no "## signature" section — its declaration is the first
+		// line of the dropped body. Synthesize a signature so the terse form still
+		// shows what the symbol is.
+		if s.name == "body" && !hasSig {
+			if decl := firstNonBlank(s.lines[1:]); decl != "" {
+				kept = append(kept, "## signature", decl, "")
+			}
+		}
+	}
+	var counts, flags []string
+	for _, spec := range symbolSections {
+		lines, isDropped := dropped[spec.name]
+		if !isDropped {
+			continue
+		}
+		flags = append(flags, spec.flag)
+		if spec.list {
+			counts = append(counts, fmt.Sprintf("%s %d", spec.name, grokSectionCount(lines)))
+		}
+	}
+	if len(flags) == 0 {
+		return out
+	}
+	body := strings.TrimRight(strings.Join(kept, "\n"), "\n")
+	trailer := strings.Join(append(flags, "--full"), "/")
+	if len(counts) > 0 {
+		trailer = strings.Join(counts, " · ") + " — " + trailer
+	}
+	return body + "\n\n" + trailer + "\n"
+}
+
+// grokSection is one "## <name>" block of grok output, its header line included.
+type grokSection struct {
+	name  string
+	lines []string
+}
+
+// splitGrokSections splits grok output into the header (lines before the first
+// "## ") and the "## <name>" sections. ok is false when there are no sections —
+// the ast-grep fallback shape terseSymbol leaves untouched.
+func splitGrokSections(out string) (head []string, sections []grokSection, ok bool) {
+	lines := strings.Split(out, "\n")
+	first := -1
+	for i, ln := range lines {
+		if strings.HasPrefix(ln, "## ") {
+			first = i
+			break
+		}
+	}
+	if first < 0 {
+		return nil, nil, false
+	}
+	head = lines[:first]
+	for _, ln := range lines[first:] {
+		if name, is := grokSectionName(ln); is {
+			sections = append(sections, grokSection{name: name})
+		}
+		cur := &sections[len(sections)-1]
+		cur.lines = append(cur.lines, ln)
+	}
+	return head, sections, true
+}
+
+// firstNonBlank returns the first line with non-space content, trimmed of a
+// trailing carriage return, or "" when every line is blank.
+func firstNonBlank(lines []string) string {
+	for _, ln := range lines {
+		if strings.TrimSpace(ln) != "" {
+			return strings.TrimRight(ln, "\r")
+		}
+	}
+	return ""
+}
+
+// grokSectionName returns the first word after "## " (e.g. "callees" from
+// "## callees (1 internal, 4 extern)").
+func grokSectionName(line string) (string, bool) {
+	rest, ok := strings.CutPrefix(line, "## ")
+	if !ok {
+		return "", false
+	}
+	if i := strings.IndexAny(rest, " \t"); i >= 0 {
+		return rest[:i], true
+	}
+	return rest, true
+}
+
+// symbolSectionKept reports whether a section survives the terse filter: signature
+// and doc always do, an optional section does when its flag is set or
+// terseSymbolDefault is off, and an unrecognized section is kept rather than
+// silently dropped.
+func symbolSectionKept(name string, a backend.Args) bool {
+	switch name {
+	case "signature", "doc":
+		return true
+	case "body":
+		return a.Body || !terseSymbolDefault
+	case "callers":
+		return a.Callers || !terseSymbolDefault
+	case "callees":
+		return a.Callees || !terseSymbolDefault
+	case "siblings":
+		return a.Siblings || !terseSymbolDefault
+	case "tests":
+		return a.Tests || !terseSymbolDefault
+	default:
+		return true
+	}
+}
+
+// grokSectionCount reports how many items a dropped list section holds: the total
+// from its "## name (…)" header when it carries numbers (the value after "of" in a
+// "5 of 10" callers header, else the sum, so "1 internal, 4 extern" is 5), else
+// the count of non-empty body rows (a siblings header names no number).
+func grokSectionCount(lines []string) int {
+	header := lines[0]
+	if open := strings.IndexByte(header, '('); open >= 0 {
+		if width := strings.IndexByte(header[open:], ')'); width >= 0 {
+			inside := header[open+1 : open+width]
+			if nums := grokInts(inside); len(nums) > 0 {
+				if strings.Contains(inside, " of ") {
+					return nums[len(nums)-1]
+				}
+				sum := 0
+				for _, n := range nums {
+					sum += n
+				}
+				return sum
+			}
+		}
+	}
+	rows := 0
+	for _, ln := range lines[1:] {
+		if strings.TrimSpace(ln) != "" {
+			rows++
+		}
+	}
+	return rows
+}
+
+// grokInts extracts the decimal integers embedded in s, in order.
+func grokInts(s string) []int {
+	var out []int
+	for i := 0; i < len(s); {
+		if s[i] < '0' || s[i] > '9' {
+			i++
+			continue
+		}
+		j := i
+		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+			j++
+		}
+		n, _ := strconv.Atoi(s[i:j])
+		out = append(out, n)
+		i = j
+	}
+	return out
 }
 
 var (

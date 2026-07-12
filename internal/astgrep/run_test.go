@@ -130,13 +130,24 @@ func TestRunStructural(t *testing.T) {
 
 func TestRunStructOutline(t *testing.T) {
 	fakeAstGrep(t, nil)
+	// Terse default: top-level struct only, its member collapsed to a count.
 	got, err := Run(context.Background(), backend.OpStructOutline, backend.Args{Path: "x.go"})
 	if err != nil {
 		t.Fatalf("Run struct-outline: %v", err)
 	}
-	// 0-based struct line 4 and member line 5 render as L5 and the indented L6.
-	if !strings.Contains(got, "# x.go\n") || !strings.Contains(got, "L5  type X struct {\n") || !strings.Contains(got, "\n  L6  Y int\n") {
-		t.Errorf("struct-outline render wrong:\n%s", got)
+	if !strings.Contains(got, "# x.go\n") || !strings.Contains(got, "L5  type X struct {  (+1 member)\n") {
+		t.Errorf("terse struct-outline render wrong:\n%s", got)
+	}
+	if strings.Contains(got, "L6  Y int") {
+		t.Errorf("terse struct-outline should hide the member:\n%s", got)
+	}
+	// --deep renders the member: 0-based struct line 4 and member line 5 as L5 and the indented L6.
+	deep, err := Run(context.Background(), backend.OpStructOutline, backend.Args{Path: "x.go", Deep: true})
+	if err != nil {
+		t.Fatalf("Run struct-outline deep: %v", err)
+	}
+	if !strings.Contains(deep, "L5  type X struct {\n") || !strings.Contains(deep, "\n  L6  Y int\n") {
+		t.Errorf("deep struct-outline render wrong:\n%s", deep)
 	}
 }
 

@@ -102,6 +102,12 @@ func TestOpsArgMapping(t *testing.T) {
 			backend.Args{Query: "Cap", Scope: "internal/render"},
 		},
 		{
+			"symbol flags", "symbol",
+			Call{Kwargs: map[string]any{"name": "Foo", "body": true, "callers": true, "full": true}},
+			backend.OpSymbol,
+			backend.Args{Query: "Foo", Body: true, Callers: true, Full: true},
+		},
+		{
 			"find", "find",
 			Call{Kwargs: kw("glob", "**/*.go")},
 			backend.OpFind,
@@ -315,6 +321,14 @@ func TestOutlineSectionExecParity(t *testing.T) {
 	}
 	if reject.op != "" {
 		t.Errorf("op %q dispatched despite directory-window rejection", reject.op)
+	}
+
+	deep := &fakeCaller{out: "ok"}
+	if _, err := Ops(deep)["outline"](context.Background(), Call{Kwargs: map[string]any{"path": goFile, "deep": true}}); err != nil {
+		t.Fatalf("outline deep call error: %v", err)
+	}
+	if !deep.args.Deep {
+		t.Errorf("deep flag did not reach the backend: %+v", deep.args)
 	}
 }
 
