@@ -12,14 +12,48 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from cc_transcript import ModelUsage
+
 from ccxbench import runner
 from ccxbench.config import Config, load
-from ccxbench.runner import Session, corpus_sha, run_corpus
+from ccxbench.runner import Session, corpus_sha, main_model_usage, run_corpus
 from ccxbench.types import ARMS, Grader, Task
 
 
 def stub_task(tid: str) -> Task:
     return Task(tid, "navigation", "empty", "p", {}, Grader("file_line"), {"file": "a", "line": 1})
+
+
+def _mu(input_tokens: int = 0, output_tokens: int = 0, cache_read: int = 0, cache_create: int = 0) -> ModelUsage:
+    return ModelUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_input_tokens=cache_read,
+        cache_creation_input_tokens=cache_create,
+        web_search_requests=0,
+        cost_usd=0.0,
+        context_window=200000,
+        max_output_tokens=32000,
+    )
+
+
+class TestMainModelUsage(unittest.TestCase):
+    """record_from sources billed T from the main model's per-model usage, failing loud otherwise."""
+
+    def test_picks_main_model_excluding_haiku_helper(self) -> None:
+        mu = main_model_usage(
+            {"claude-opus-4-8": _mu(cache_read=114602, cache_create=13153, output_tokens=789), "claude-haiku-4-5-20251001": _mu(input_tokens=586)},
+            "opus",
+        )
+        self.assertEqual(mu.cache_read_input_tokens, 114602)
+
+    def test_missing_main_model_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            main_model_usage({"claude-haiku-4-5-20251001": _mu(input_tokens=586)}, "opus")
+
+    def test_ambiguous_main_model_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            main_model_usage({"claude-opus-4-8": _mu(), "claude-opus-4-8-preview": _mu()}, "opus")
 
 
 def cfg_for(models: list[str], repeats: int, results_dir: Path) -> Config:

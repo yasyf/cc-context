@@ -15,11 +15,12 @@ import hashlib
 import json
 import os
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 import spawnllm
-from cc_transcript import PrintResult, parse_print_result
+from cc_transcript import ModelUsage, PrintResult, parse_print_result
 
 from . import arms, grade, integrity
 from .config import BENCH_DIR, Config
@@ -89,12 +90,24 @@ class Session:
         (self.runs_dir / "meta.json").write_text(json.dumps(meta, indent=2))
 
 
+def main_model_usage(model_usage: Mapping[str, ModelUsage], model: str) -> ModelUsage:
+    """The billed per-model usage for the run's main model — the entry whose id carries `model`.
+
+    T is sourced from the per-model totals (retry-INCLUSIVE; they reconstruct `total_cost_usd`), not
+    the result envelope's top-level usage, which drops retried/superseded calls that were still
+    billed. Fails loud when the main model is missing or ambiguous; the haiku title helper is
+    excluded because its id carries no main-model alias.
+    """
+    matching = [mu for mid, mu in model_usage.items() if model in mid]
+    if len(matching) != 1:
+        raise ValueError(f"expected exactly one model_usage entry matching {model!r}, got {sorted(model_usage)}")
+    return matching[0]
+
+
 def record_from(pr: PrintResult, cfg: Config, task: Task, arm: str, model: str, repeat: int, workdir: Path) -> dict:
     integ = integrity.assess(pr, arm, task.category)
     graded = grade.grade(task, pr, workdir)
-    u = pr.usage
-    cc_5m = u.cache_creation.ephemeral_5m_input_tokens if u.cache_creation else u.cache_creation_input_tokens
-    cc_1h = u.cache_creation.ephemeral_1h_input_tokens if u.cache_creation else 0
+    mu = main_model_usage(pr.model_usage, model)
     init = pr.init
     return {
         "task_id": task.id,
@@ -110,11 +123,10 @@ def record_from(pr: PrintResult, cfg: Config, task: Task, arm: str, model: str, 
         "total_cost_usd": pr.total_cost_usd,
         "num_turns": pr.num_turns,
         "usage": {
-            "input": u.input_tokens,
-            "output": u.output_tokens,
-            "cache_read": u.cache_read_input_tokens,
-            "cache_create_5m": cc_5m,
-            "cache_create_1h": cc_1h,
+            "input": mu.input_tokens,
+            "output": mu.output_tokens,
+            "cache_read": mu.cache_read_input_tokens,
+            "cache_create": mu.cache_creation_input_tokens,
         },
         "guards_active": arms.guards_available(cfg) if arm in arms.CCX_ARMS else None,
         "integrity": {

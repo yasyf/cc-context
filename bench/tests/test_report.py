@@ -83,7 +83,7 @@ def _record(
         "repeat": repeat,
         "is_error": False,
         "correct": correct,
-        "usage": {"input": env_t, "output": 0, "cache_read": 0, "cache_create_5m": 0, "cache_create_1h": 0},
+        "usage": {"input": env_t, "output": 0, "cache_read": 0, "cache_create": 0},
         "guards_active": arm != "baseline",
         "integrity": {"ok": ok, "note": "" if ok else "mislabeled"},
         "init": init or DEFAULT_INIT[arm],
@@ -226,18 +226,73 @@ class TestIsolationBreach(unittest.TestCase):
 
 
 class TestConsistency(unittest.TestCase):
-    def test_envelope_vs_transcript_within_2pct(self) -> None:
+    def test_stream_completeness_flags_billed_vs_transcript_gap(self) -> None:
         recs: list[dict] = []
         with tempfile.TemporaryDirectory() as tmp:
             raw = Path(tmp)
-            # Two runs consistent (env T == transcript T), one off by 100%.
+            # Two runs complete (billed T == transcript T), one whose transcript is 100% off (a call
+            # the billing counts is absent from the saved stream).
             _add(recs, raw, task="t1", arm="baseline", hs=[1000], ts=[1000])
             _add(recs, raw, task="t1", arm="ccx-mcp", hs=[1000], ts=[1000])
             _add(recs, raw, task="t1", arm="ccx-cli", hs=[2000], ts=[1000])
             md = _render(recs, raw)
 
-        self.assertIn("Runs within 2%: **2 / 3**", md)
+        self.assertIn("#### Stream completeness", md)
+        self.assertIn("billed T within 2% of transcript T): **2 / 3**", md)
         self.assertIn("`t1` [ccx-cli]", md)
+
+
+class TestConsistencyChecks(unittest.TestCase):
+    """The two split cross-checks: billing reconstruction (healthy) and stream completeness (capture)."""
+
+    def _write(self, raw: Path, rid: str, msg_ids: list[str], num_turns: int, model_usage: dict) -> float:
+        events: list[dict] = [
+            {
+                "type": "assistant",
+                "message": {
+                    "id": mid,
+                    "content": [{"type": "text", "text": "x"}],
+                    "usage": {"input_tokens": 2, "cache_read_input_tokens": 1000 * (i + 1), "cache_creation_input_tokens": 0, "output_tokens": 1},
+                },
+            }
+            for i, mid in enumerate(msg_ids)
+        ]
+        cost = sum(d["costUSD"] for d in model_usage.values())
+        events.append({"type": "result", "subtype": "success", "num_turns": num_turns, "total_cost_usd": cost, "modelUsage": model_usage})
+        (raw / f"{rid}.json").write_text(json.dumps(events))
+        return cost
+
+    def _rec(self, usage: dict, cost: float) -> dict:
+        return {"task_id": "t1", "arm": "ccx-mcp", "model": "opus", "repeat": 0, "usage": usage, "total_cost_usd": cost}
+
+    # modelUsage bills 3 opus calls (input 6, cache_read 6000); the billed record usage matches it.
+    MU = {"claude-opus-4-8": {"inputTokens": 6, "cacheReadInputTokens": 6000, "cacheCreationInputTokens": 0, "outputTokens": 3, "costUSD": 0.05}}
+    BILLED = {"input": 6, "output": 3, "cache_read": 6000, "cache_create": 0}
+
+    def test_billing_clean_but_stream_missing_a_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            cost = self._write(raw, "t1__ccx-mcp__opus__r0", ["a", "b"], num_turns=3, model_usage=self.MU)  # 3 billed, 2 saved
+            md = "\n".join(report.consistency_section([self._rec(self.BILLED, cost)], raw_dir=raw, prompts={}, counter=FakeCounter()))
+        self.assertIn("reconstructs the recorded `total_cost_usd`: **1 / 1**", md)
+        self.assertIn("billed T within 2% of transcript T): **0 / 1**", md)
+        self.assertIn("3,003 tokens short", md)
+
+    def test_complete_run_passes_both_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            cost = self._write(raw, "t1__ccx-mcp__opus__r0", ["a", "b", "c"], num_turns=3, model_usage=self.MU)  # 3 billed, 3 saved
+            md = "\n".join(report.consistency_section([self._rec(self.BILLED, cost)], raw_dir=raw, prompts={}, counter=FakeCounter()))
+        self.assertIn("reconstructs the recorded `total_cost_usd`: **1 / 1**", md)
+        self.assertIn("billed T within 2% of transcript T): **1 / 1**", md)
+
+    def test_billing_mismatch_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            self._write(raw, "t1__ccx-mcp__opus__r0", ["a", "b", "c"], num_turns=3, model_usage=self.MU)
+            # Record's total_cost_usd disagrees with the per-model cost sum → billing reconstruction fails.
+            md = "\n".join(report.consistency_section([self._rec(self.BILLED, 0.99)], raw_dir=raw, prompts={}, counter=FakeCounter()))
+        self.assertIn("reconstructs the recorded `total_cost_usd`: **0 / 1**", md)
 
 
 class TestCorpusDrift(unittest.TestCase):
@@ -556,6 +611,62 @@ class TestRepresentative(unittest.TestCase):
     def test_odd_size_picks_the_exact_median(self) -> None:
         agg = report.ArmAgg(metrics=[_tm(100), _tm(300), _tm(200)], envelope_t=[0, 0, 0])
         self.assertEqual(agg.representative.high_water, 200)
+
+
+def _result_event(model_usage: dict) -> dict:
+    return {"type": "result", "subtype": "success", "modelUsage": model_usage}
+
+
+# A real retry-inclusive opus modelUsage (trace-tornado-parse-body ccx-mcp r3): the top-level envelope
+# reported only 86,512 (retry-exclusive); the billed per-model total is 128,550.
+OPUS_MU = {"inputTokens": 6, "cacheReadInputTokens": 114602, "cacheCreationInputTokens": 13153, "outputTokens": 789, "costUSD": 0.208586}
+HAIKU_MU = {"inputTokens": 586, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0, "outputTokens": 16, "costUSD": 0.000666}
+
+
+class TestBilledUsage(unittest.TestCase):
+    """T sources billed per-model usage (retry-inclusive), not the retry-exclusive top-level envelope."""
+
+    def test_picks_main_model_and_sums_retry_inclusive(self) -> None:
+        events = [_result_event({"claude-opus-4-8": OPUS_MU, "claude-haiku-4-5-20251001": HAIKU_MU})]
+        u = report._billed_usage_from_raw(events, "opus")
+        self.assertEqual(u, {"input": 6, "output": 789, "cache_read": 114602, "cache_create": 13153})
+        # Excludes the haiku helper; the total is the billed 128,550, not the 86,512 top-level envelope.
+        self.assertEqual(u["input"] + u["cache_read"] + u["cache_create"] + u["output"], 128550)
+
+    def test_missing_main_model_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            report._billed_usage_from_raw([_result_event({"claude-haiku-4-5-20251001": HAIKU_MU})], "opus")
+
+    def test_ambiguous_main_model_raises(self) -> None:
+        events = [_result_event({"claude-opus-4-8": OPUS_MU, "claude-opus-4-8-preview": OPUS_MU})]
+        with self.assertRaises(ValueError):
+            report._billed_usage_from_raw(events, "opus")
+
+    def test_no_result_event_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            report._billed_usage_from_raw([{"type": "assistant", "message": {"id": "m", "content": [], "usage": {}}}], "opus")
+
+    def test_refresh_rewrites_stale_usage_from_raw(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            (raw / "t1__baseline__opus__r0.json").write_text(
+                json.dumps(
+                    [
+                        {"type": "assistant", "message": {"id": "m", "content": [{"type": "text", "text": "x"}], "usage": {"input_tokens": 2, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 0, "output_tokens": 1}}},
+                        _result_event({"claude-opus-4-8": OPUS_MU}),
+                    ]
+                )
+            )
+            # A record carrying the stale retry-EXCLUSIVE top-level usage.
+            records = [{"task_id": "t1", "arm": "baseline", "model": "opus", "repeat": 0, "usage": {"input": 4, "output": 740, "cache_read": 78294, "cache_create": 7474}}]
+            report.refresh_billed_usage(records, raw)
+        self.assertEqual(records[0]["usage"], {"input": 6, "output": 789, "cache_read": 114602, "cache_create": 13153})
+        self.assertEqual(report._envelope_tokens(records[0]), 128550)
+
+    def test_refresh_skips_errored_record(self) -> None:
+        records = [{"task_id": "t", "arm": "baseline", "model": "opus", "repeat": 0, "is_error": True}]
+        report.refresh_billed_usage(records, Path("/nonexistent"))  # no raw read, no raise
+        self.assertNotIn("usage", records[0])
 
 
 if __name__ == "__main__":

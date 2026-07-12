@@ -4,9 +4,11 @@ Per (model x ccx-arm) two paired headlines gate the claim, each ccx-arm against 
 
   * **Peak context** `H = max over turns of (input + cache_create + cache_read)` — how big
     the context window actually got, straight from transcript usage (never tiktoken).
-  * **Total tokens processed** `T = Σ per API call (input + cache_create + cache_read) + Σ output`
-    — from the API-reported envelope usage in `runs.jsonl`, cross-checked against the
-    transcript recompute within 2%.
+  * **Total tokens processed** `T = input + cache_create + cache_read + output` — the run's
+    **billed** main-model usage (per-model `modelUsage`, which reconstructs `total_cost_usd`),
+    re-sourced from the raw transcript at render (see `refresh_billed_usage`). The result
+    envelope's top-level usage is NOT used: it silently drops retried/superseded calls that were
+    still billed, undercounting T. Cross-checked against the transcript recompute within 2%.
 
 A third paired co-metric — **tool-result tokens** (Σ cumulative tool output ccx directly
 controls) — rides the same CI + sign-test machinery but does **not** gate the verdict; it is
@@ -137,9 +139,9 @@ def _run_id(task_id: str, arm: str, model: str, repeat: int) -> str:
 
 
 def _envelope_tokens(rec: dict) -> int:
-    """Total tokens processed for one run, from its API-reported envelope usage."""
+    """Total tokens processed for one run, from its billed main-model usage (see `refresh_billed_usage`)."""
     u = rec["usage"]
-    return u["input"] + u["cache_read"] + u["cache_create_5m"] + u["cache_create_1h"] + u["output"]
+    return u["input"] + u["cache_read"] + u["cache_create"] + u["output"]
 
 
 def _metrics(path: Path, prompt: str, counter: tokens.TokenCounter) -> TrajectoryMetrics:
@@ -148,6 +150,45 @@ def _metrics(path: Path, prompt: str, counter: tokens.TokenCounter) -> Trajector
     if m is None:
         raise ValueError(f"{path}: transcript has no model turn with prompt tokens")
     return m
+
+
+def _billed_usage_from_raw(events: list[dict], model: str) -> dict[str, int]:
+    """Billed main-model usage (retry-INCLUSIVE) from a transcript's result-event `modelUsage`.
+
+    The result envelope's top-level usage drops retried/superseded calls that were still billed; the
+    per-model totals (which reconstruct `total_cost_usd`) keep them. The main model is the `modelUsage`
+    entry whose id carries `model` — fail loud when it is missing or ambiguous (the haiku title helper
+    carries no main-model alias and is excluded).
+    """
+    result = next((e for e in events if e.get("type") == "result"), None)
+    if result is None:
+        raise ValueError("transcript has no result event with modelUsage")
+    model_usage = result.get("modelUsage") or {}
+    matching = [d for mid, d in model_usage.items() if model in mid]
+    if len(matching) != 1:
+        raise ValueError(f"expected exactly one modelUsage entry matching {model!r}, got {sorted(model_usage)}")
+    d = matching[0]
+    return {
+        "input": int(d["inputTokens"]),
+        "output": int(d["outputTokens"]),
+        "cache_read": int(d["cacheReadInputTokens"]),
+        "cache_create": int(d["cacheCreationInputTokens"]),
+    }
+
+
+def refresh_billed_usage(records: list[dict], raw_dir: Path) -> None:
+    """Re-source each record's `usage` from its raw transcript's billed `modelUsage`, in place.
+
+    The single source of truth for T is the raw transcript (as it already is for trajectory metrics):
+    records written before the billed-usage fix carry the retry-exclusive top-level usage, so this
+    rewrites every non-error record's usage from the authoritative per-model totals — honest re-renders
+    without editing the campaign's `runs.jsonl`. Idempotent for records already recorded billed.
+    """
+    for r in records:
+        if r.get("is_error") or "usage" not in r:
+            continue
+        path = raw_dir / f"{_run_id(r['task_id'], r['arm'], r['model'], r['repeat'])}.json"
+        r["usage"] = _billed_usage_from_raw(trajectory.load_events(path), r["model"])
 
 
 @dataclass
@@ -606,33 +647,64 @@ def consistency_section(
     prompts: dict[str, str],
     counter: tokens.TokenCounter,
 ) -> list[str]:
-    """Count runs whose transcript-recomputed T is within 2% of the envelope T; list outliers."""
-    lines = ["### Envelope vs transcript token accounting", ""]
-    within = 0
-    total = 0
-    outliers: list[tuple[str, str, str, int, int, float]] = []
+    """Two token-accounting cross-checks: billing reconstruction (healthy) and stream completeness.
+
+    Billing reconstruction confirms the billed per-model usage T is sourced from reconstructs each
+    run's `total_cost_usd` — the signal that the T accounting is sound. Stream completeness compares
+    that complete billed T against the transcript reconstruction: a gap means the saved stream is
+    missing >=1 billed call (a capture loss), not a T error — T is sourced from the billing, not the
+    stream. The two were one "envelope vs transcript" check until the billed-T fix separated them.
+    """
+    lines = ["### Token accounting cross-checks", ""]
+    billing_ok = billing_total = 0
+    stream_ok = stream_total = 0
+    incomplete: list[tuple[str, str, str, int, int]] = []
     for r in records:
         if "usage" not in r:
             continue
-        m = _metrics(
-            raw_dir / f"{_run_id(r['task_id'], r['arm'], r['model'], r['repeat'])}.json",
-            prompts.get(r["task_id"], ""),
-            counter,
-        )
-        env_t = _envelope_tokens(r)
-        trans_t = m.total_tokens
-        if env_t == 0:
-            continue
-        rel = abs(env_t - trans_t) / env_t
-        total += 1
-        if rel <= CONSISTENCY_TOL:
-            within += 1
-        else:
-            outliers.append((r["task_id"], r["arm"], r["model"], env_t, trans_t, rel))
+        path = raw_dir / f"{_run_id(r['task_id'], r['arm'], r['model'], r['repeat'])}.json"
+        events = trajectory.load_events(path)
+        m = trajectory.compute(events, first_prompt=prompts.get(r["task_id"], ""), count=counter.count)
+        if m is None:
+            raise ValueError(f"{path}: transcript has no model turn with prompt tokens")
+        result = next((e for e in events if e.get("type") == "result"), None)
 
-    lines.append(f"- Runs within {CONSISTENCY_TOL:.0%}: **{within} / {total}** (envelope T vs transcript T)")
-    for tid, arm, model, env_t, trans_t, rel in sorted(outliers, key=lambda o: o[5], reverse=True)[:10]:
-        lines.append(f"  - `{tid}` [{arm}] {model}: envelope {env_t:,} vs transcript {trans_t:,} ({rel * 100:.1f}% off)")
+        # 1. Billing reconstruction: the per-model billed cost (T's source) sums to total_cost_usd.
+        model_usage = (result.get("modelUsage") if result else None) or {}
+        cost_sum = sum(float(d.get("costUSD", 0.0)) for d in model_usage.values())
+        total_cost = float(r.get("total_cost_usd") or 0.0)
+        billing_total += 1
+        if abs(cost_sum - total_cost) <= 1e-4 * max(total_cost, 1e-9) + 1e-9:
+            billing_ok += 1
+
+        # 2. Stream completeness: complete billed T vs the transcript reconstruction.
+        billed_t = _envelope_tokens(r)
+        if billed_t == 0:
+            continue
+        stream_total += 1
+        rel = abs(billed_t - m.total_tokens) / billed_t
+        if rel <= CONSISTENCY_TOL:
+            stream_ok += 1
+        else:
+            incomplete.append((r["task_id"], r["arm"], r["model"], billed_t, m.total_tokens))
+
+    lines.append("#### Billing reconstruction — billed usage vs `total_cost_usd`")
+    lines.append(f"- Runs whose per-model billed cost reconstructs the recorded `total_cost_usd`: **{billing_ok} / {billing_total}**")
+    lines.append("")
+    lines.append("#### Stream completeness — billed calls vs the saved transcript")
+    lines.append(
+        f"- Runs whose saved stream carries every billed call (billed T within {CONSISTENCY_TOL:.0%} "
+        f"of transcript T): **{stream_ok} / {stream_total}**"
+    )
+    if incomplete:
+        lines.append(
+            f"- {len(incomplete)} run(s) are missing >=1 billed model call from the saved transcript "
+            "(capture loss — see the 64 KiB transcript-truncation investigation). T is unaffected (it is "
+            "sourced from the complete billing); the transcript-sourced H could in principle understate "
+            "these runs, though the missing call's prompt is ~the recorded peak."
+        )
+        for tid, arm, model, billed_t, trans_t in sorted(incomplete, key=lambda o: o[3] - o[4], reverse=True)[:12]:
+            lines.append(f"  - `{tid}` [{arm}] {model}: billed {billed_t:,} vs transcript {trans_t:,} ({billed_t - trans_t:,} tokens short)")
     lines.append("")
     return lines
 
@@ -725,11 +797,14 @@ def render(
     lines.append("")
     lines.append(
         "Headlines per model x ccx arm: **peak context** `H = max single-turn (input + cache_create + "
-        "cache_read)` and **total tokens** `T = Σ envelope usage`, plus **tool-result tokens** (Σ "
-        "cumulative tool output) as a third paired co-metric — same median-across-repeats, bootstrap CI "
-        "and sign test, but **not verdict-gating** (mechanism evidence; the verdict stays H + T). Each is "
-        "the median across repeats per task, paired over both-correct tasks. Positive savings = ccx "
-        "processed fewer tokens. Cost is not a metric."
+        "cache_read)` and **total tokens** `T = billed main-model usage` (per-model `modelUsage`, which "
+        "reconstructs `total_cost_usd`; not the retry-exclusive result envelope), plus **tool-result "
+        "tokens** (Σ cumulative tool output) as a third paired co-metric — same median-across-repeats, "
+        "bootstrap CI and sign test, but **not verdict-gating** (mechanism evidence; the verdict stays "
+        "H + T). Each is the median across repeats per task, paired over both-correct tasks. Runs that "
+        "errored on infrastructure (e.g. a truncated transcript) are excluded from accuracy and pairing "
+        "like integrity exclusions — an infrastructure loss is not a model failure. Positive savings = "
+        "ccx processed fewer tokens. Cost is not a metric."
     )
     lines.append("")
     if incomplete:
@@ -762,7 +837,9 @@ def render(
             lines.append(f"helper models: {', '.join(f'`{h}`' for h in helpers)}")
             lines.append("")
 
-        ok_records = [r for r in records if r.get("integrity", {}).get("ok", True)]
+        # is_error runs are infrastructure losses (e.g. a truncated transcript), not model failures:
+        # drop them from accuracy/pairing like integrity exclusions, but WITHOUT forcing the verdict.
+        ok_records = [r for r in records if not r.get("is_error") and r.get("integrity", {}).get("ok", True)]
         headline_records = [r for r in ok_records if r["category"] != CONTROL_CATEGORY]
         hcells = {arm: by_task(headline_records, model, arm) for arm in ARMS}
 
@@ -799,6 +876,7 @@ def render(
 def write_report(jsonl_path: Path, out_path: Path) -> str:
     records, halted = load(jsonl_path)
     raw_dir = jsonl_path.parent / "raw"
+    refresh_billed_usage(records, raw_dir)
     meta = json.loads((jsonl_path.parent / "meta.json").read_text())
     prompts = _load_prompts()
     counter = tokens.default_counter()
