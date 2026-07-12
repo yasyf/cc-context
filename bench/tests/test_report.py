@@ -326,6 +326,37 @@ class TestControlPanel(unittest.TestCase):
         # The control task never enters the paired headline (only t1 does).
         self.assertNotIn("`nr1`", md.split("Control panel")[0])
 
+    def test_diagnostic_excluded_from_headline_but_shown(self) -> None:
+        recs: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            _add(recs, raw, task="t1", arm="baseline", hs=[1000], ts=[2000])
+            _add(recs, raw, task="t1", arm="ccx-mcp", hs=[600], ts=[1200])
+            _add(recs, raw, task="t1", arm="ccx-cli", hs=[700], ts=[1400])
+            # A large_context_diag task: excluded from the paired headline, shown in its own panel.
+            _add(recs, raw, task="d1", arm="baseline", hs=[500], ts=[500], category="large_context_diag")
+            _add(recs, raw, task="d1", arm="ccx-mcp", hs=[500], ts=[500], category="large_context_diag")
+            _add(recs, raw, task="d1", arm="ccx-cli", hs=[500], ts=[500], category="large_context_diag")
+            md = _render(recs, raw)
+
+        self.assertIn("Diagnostic panel — large_context_diag", md)
+        # The diagnostic task never enters the paired headline (only t1 does).
+        self.assertNotIn("`d1`", md.split("Diagnostic panel")[0])
+
+
+class TestArmSubsetRendering(unittest.TestCase):
+    def test_missing_ccx_arm_not_rendered_as_pair(self) -> None:
+        # A `--arms baseline,ccx-cli` session: no ccx-mcp runs at all. The absent arm must not
+        # produce a vacuous "ccx-mcp vs baseline" section with a spurious 0/0-accuracy FAIL.
+        recs: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp)
+            _add(recs, raw, task="t1", arm="baseline", hs=[1000], ts=[2000])
+            _add(recs, raw, task="t1", arm="ccx-cli", hs=[700], ts=[1400])
+            md = _render(recs, raw)
+        self.assertIn("### ccx-cli vs baseline", md)
+        self.assertNotIn("### ccx-mcp vs baseline", md)
+
 
 class TestPerTaskRegression(unittest.TestCase):
     """Fix #6: a per-task regression is `ccx correct-rate < baseline correct-rate`, not the old

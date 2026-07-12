@@ -1,16 +1,19 @@
 ## Compact Context (ccx)
 
-`ccx` is the DEFAULT for reading code, finding symbols, searching, and reviewing
-diffs. It returns token-bounded output (signatures + line numbers, explicit overflow,
-never silent truncation) instead of raw dumps. Run every op as a `ccx ...` shell
-command through Bash. Reach for ccx before Read, cat, sed, git diff, ls -R, or find —
-the guard hooks block those on anything token-heavy.
+`ccx` is the DEFAULT for reading code, finding symbols, and searching. It returns
+token-bounded output (signatures + line numbers, explicit overflow) instead of raw
+dumps. Run each op as a `ccx ...` shell command through Bash.
 
-1. Orient a repo → `ccx repo overview`
-2. "How does X work / where is Y" (intent) → `ccx code search "<question>"`
-3. A specific symbol (def + callers + callees) → `ccx code symbol <name>` (alias `ccx code grok`)
-4. Literal or regex text → `ccx code grep <text> [--regex] [--glob G]`
-5. List files → `ccx repo find "<glob>"`
-6. Read a file → `ccx code outline <file>` first, then `ccx code read <file> --section A-B` for the
-   part you need (whole file: `ccx code read <file> --full`)
-7. Review changes → `ccx vcs diff [src]` (structural, jj-aware; exact hunks: `git diff -- <file>`)
+For a targeted or enumeration question, go straight to the query — never open with
+`ccx repo overview`. Chain the calls you need in ONE Bash command
+(`ccx code grep A; ccx code grep B`), or compose them in a single `ccx exec`
+script that returns only the distilled result.
+
+1. Find text/defs across a tree → `ccx code grep <text> --scope <dir> [--regex]`
+   (one scoped call for the whole set; do NOT outline every file).
+2. "How does X work / where is Y" (intent) → `ccx code search "<question>"`.
+3. A specific symbol (def + callers + callees) → `ccx code symbol <name>`.
+4. Enumerate a set spanning many files → one scoped `ccx code grep`, or an
+   `ccx exec` script that greps, filters, and returns just the members.
+5. Read a file → `ccx code outline <file>` for structure, then
+   `ccx code read <file> --section A-B` for the part you need.

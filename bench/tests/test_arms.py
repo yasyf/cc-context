@@ -15,7 +15,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from ccxbench import arms
+from ccxbench import arms, taskgen
 from ccxbench.config import load
 from ccxbench.tokens import local_count
 from ccxbench.types import ARMS, Grader, Task
@@ -38,6 +38,32 @@ class TestLadderParity(unittest.TestCase):
         counts = {arm: local_count(text, "m") for arm, text in arms.ADDENDA.items()}
         lo, hi = min(counts.values()), max(counts.values())
         self.assertLessEqual(hi / lo, 1.15, f"addenda token counts diverge >15%: {counts}")
+
+
+class TestExecPipelineDiagnostic(unittest.TestCase):
+    """The T7 exec-vs-pipeline steering: length-matched per-arm suffixes, threaded onto each arm's
+    ladder only for a task that carries them."""
+
+    def test_exec_and_pipeline_suffixes_length_matched(self) -> None:
+        counts = {arm: local_count(txt, "m") for arm, txt in taskgen.EXEC_PIPELINE_ADDENDA.items()}
+        lo, hi = min(counts.values()), max(counts.values())
+        self.assertLessEqual(hi / lo, 1.15, f"exec/pipeline suffixes diverge >15%: {counts}")
+
+    def test_arm_addendum_appended_only_when_present(self) -> None:
+        cfg = load()
+        plain = Task("t", "navigation", "tornado", "p", {}, Grader("file_line"), {})
+        diag = Task("flood-t7", "large_context_diag", "tornado", "p", {}, Grader("set_match"), {},
+                    arm_addenda=taskgen.EXEC_PIPELINE_ADDENDA)
+        with TemporaryDirectory() as tmp:
+            shim = arms.ensure_baseline_shim(Path(tmp))
+            with patch.object(arms, "guards_available", return_value=False):
+                for arm in ARMS:
+                    base = arms.build_run_spec(cfg, plain, arm, "sonnet", Path("/tmp/wd"), shim_dir=shim)
+                    self.assertEqual(base.provider_configs["claude"].append_system_prompt, arms.ADDENDA[arm])
+                    steered = arms.build_run_spec(cfg, diag, arm, "sonnet", Path("/tmp/wd"), shim_dir=shim)
+                    prompt = steered.provider_configs["claude"].append_system_prompt
+                    self.assertEqual(prompt, arms.ADDENDA[arm] + taskgen.EXEC_PIPELINE_ADDENDA[arm])
+                    self.assertIn("pipeline" if arm == "baseline" else "exec", prompt)
 
 
 class TestMcpConfig(unittest.TestCase):

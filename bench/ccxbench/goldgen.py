@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import difflib
+import fnmatch
 import re
 import shutil
 import subprocess
@@ -19,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .types import Task
+from .types import DIAGNOSTIC_CATEGORY, Task
 
 CONTROL_CATEGORY = "non_regression"
 
@@ -66,33 +67,70 @@ def resolve_decl_line(checkout: Path, rel: str, decl: str) -> int:
     return hits[0]
 
 
+def _base_name(base: ast.expr) -> str:
+    """The rightmost identifier of a class base — bare (`Configurable`) or dotted (`x.Configurable`)."""
+    return base.attr if isinstance(base, ast.Attribute) else getattr(base, "id", "")
+
+
+def _predicate_files(checkout: Path, pred: dict) -> list[Path]:
+    """Resolve a Python predicate's target files: a single `file`, or `files` glob patterns minus
+    `exclude` glob patterns (matched against the checkout-relative path).
+
+    Globs let a predicate span a whole package — `tornado/**/*.py` minus `tornado/test/*` — while a
+    literal path globs to itself, so the single-file and multi-file forms share one resolver.
+    """
+    if "file" in pred:
+        return [checkout / pred["file"]]
+    excluded = pred.get("exclude", ())
+    paths = sorted({p for pat in pred["files"] for p in checkout.glob(pat)})
+    return [p for p in paths if not any(fnmatch.fnmatch(str(p.relative_to(checkout)), e) for e in excluded)]
+
+
 def recompute_lc_predicate(checkout: Path, pred: dict, repo: str) -> set[str]:
     """Independently recompute a large_context predicate's member set from the checkout."""
     kind = pred["kind"]
     if kind == "py_subclass":
         base = pred["base"]
         members: set[str] = set()
-        for rel in pred["files"]:
-            for node in ast.parse((checkout / rel).read_text()).body:
+        for path in _predicate_files(checkout, pred):
+            for node in ast.parse(path.read_text()).body:
                 if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
-                    names = [b.attr if isinstance(b, ast.Attribute) else getattr(b, "id", "") for b in node.bases]
-                    if base in names:
+                    if base in [_base_name(b) for b in node.bases]:
                         members.add(node.name)
         return members
     if kind == "py_method":
-        src = (checkout / pred["file"]).read_text()
-        tree = ast.parse(src)
         members: set[str] = set()
-        for node in tree.body:
-            if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
-                own = {
-                    b.name
-                    for b in node.body
-                    if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef))
-                }
-                if pred["target"] in own:
-                    members.add(node.name)
+        for path in _predicate_files(checkout, pred):
+            for node in ast.parse(path.read_text()).body:
+                if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
+                    own = {
+                        b.name
+                        for b in node.body
+                        if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    }
+                    if pred["target"] in own:
+                        members.add(node.name)
         return members
+    if kind == "py_subclass_closure":
+        base = pred["base"]
+        children: dict[str, set[str]] = defaultdict(set)
+        public: dict[str, bool] = {}
+        for path in _predicate_files(checkout, pred):
+            for node in ast.parse(path.read_text()).body:
+                if isinstance(node, ast.ClassDef):
+                    public[node.name] = not node.name.startswith("_")
+                    for b in node.bases:
+                        name = _base_name(b)
+                        if name:
+                            children[name].add(node.name)
+        seen: set[str] = set()
+        frontier = [base]
+        while frontier:
+            for child in children.get(frontier.pop(), ()):
+                if child not in seen:
+                    seen.add(child)
+                    frontier.append(child)
+        return {n for n in seen if public.get(n, False)}
     if kind == "go_callers":
         target = pred["target"]
         call = re.compile(rf"\b{re.escape(target)}\s*\(")
@@ -136,27 +174,32 @@ def traversal_bytes(checkout: Path, task: Task) -> int:
 
 @dataclass(frozen=True)
 class FloorRow:
-    """One headline task's floor verdict: its traversal-byte total and whether it clears the floor."""
+    """One headline task's floor verdict: its traversal-byte total and whether it clears the floor.
+
+    `exempt` marks a task the floor is waived for — a single-file control or a whole small repo
+    genuinely below the floor — which always passes regardless of its byte total.
+    """
 
     task_id: str
     family: str
     repo: str
     nbytes: int
     ok: bool
+    exempt: bool = False
 
 
 def floor_rows(min_bytes: int, tasks: list[Task], resolve: Callable[[Task], Path]) -> list[FloorRow]:
-    """Per headline task (control family excluded), its traversal bytes and floor verdict.
+    """Per headline task (control and diagnostic families excluded), its traversal bytes and verdict.
 
-    `resolve` maps a task to its pinned checkout root. A task clears the floor when the sum of
-    its `gold.traversal_files` byte sizes is at least `min_bytes`.
+    `resolve` maps a task to its pinned checkout root. A task clears the floor when the sum of its
+    `gold.traversal_files` byte sizes is at least `min_bytes`, or when it is `floor_exempt`.
     """
     rows: list[FloorRow] = []
     for t in tasks:
-        if t.category == CONTROL_CATEGORY:
+        if t.category in (CONTROL_CATEGORY, DIAGNOSTIC_CATEGORY):
             continue
         n = traversal_bytes(resolve(t), t)
-        rows.append(FloorRow(t.id, t.category, t.repo, n, n >= min_bytes))
+        rows.append(FloorRow(t.id, t.category, t.repo, n, t.floor_exempt or n >= min_bytes, t.floor_exempt))
     return rows
 
 

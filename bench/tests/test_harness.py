@@ -174,6 +174,12 @@ class TestLargeContextBuilder(unittest.TestCase):
                 "lc-tornado-prepare",
                 "lc-tornado-initialize",
                 "lc-tornado-handler-subclasses",
+                "flood-t1-click-convert",
+                "flood-t2-click-to-info-dict",
+                "flood-t3-tornado-close",
+                "flood-t4-tornado-initialize",
+                "flood-t5-tornado-configurable",
+                "flood-t6-mux-matcher",
             ],
         )
         for t in tasks:

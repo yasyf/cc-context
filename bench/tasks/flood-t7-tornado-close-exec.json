@@ -1,0 +1,84 @@
+{
+  "id": "flood-t7-tornado-close-exec",
+  "category": "large_context_diag",
+  "repo": "tornado",
+  "prompt": "Across the `tornado/` package, enumerate every module-scope public class whose own body defines a method named `close`, declared directly in that class and not inherited from a base. List each class name exactly once.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "members": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "members"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "members",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "lc_predicate": {
+      "kind": "py_method",
+      "files": [
+        "tornado/**/*.py"
+      ],
+      "exclude": [
+        "tornado/test/*"
+      ],
+      "target": "close",
+      "expect_members": 20
+    },
+    "traversal_files": [
+      "tornado/curl_httpclient.py",
+      "tornado/http1connection.py",
+      "tornado/httpclient.py",
+      "tornado/ioloop.py",
+      "tornado/iostream.py",
+      "tornado/netutil.py",
+      "tornado/simple_httpclient.py",
+      "tornado/tcpclient.py",
+      "tornado/websocket.py",
+      "tornado/platform/asyncio.py"
+    ],
+    "members": [
+      "AddThreadSelectorEventLoop",
+      "AsyncHTTPClient",
+      "AsyncIOLoop",
+      "BaseAsyncIOLoop",
+      "BaseIOStream",
+      "CurlAsyncHTTPClient",
+      "ExecutorResolver",
+      "HTTP1Connection",
+      "HTTP1ServerConnection",
+      "HTTPClient",
+      "IOLoop",
+      "OverrideResolver",
+      "Resolver",
+      "SelectorThread",
+      "SimpleAsyncHTTPClient",
+      "TCPClient",
+      "WebSocketClientConnection",
+      "WebSocketHandler",
+      "WebSocketProtocol",
+      "WebSocketProtocol13"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {},
+  "floor_exempt": false,
+  "arm_addenda": {
+    "baseline": "\n\nFor this task, answer with a single `python3 -c` or `awk` pipeline that greps the package, associates each method to its enclosing class, and prints only the final list of class names.",
+    "ccx-mcp": "\n\nFor this task, answer with a single `ccx exec` script that greps the package, associates each method to its enclosing class, and returns only the final list of class names.",
+    "ccx-cli": "\n\nFor this task, answer with a single `ccx exec` script that greps the package, associates each method to its enclosing class, and returns only the final list of class names."
+  }
+}

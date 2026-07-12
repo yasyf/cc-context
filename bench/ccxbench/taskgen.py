@@ -13,7 +13,7 @@ where it cannot help and is excluded from every headline.
 
 from __future__ import annotations
 
-from .types import Grader, Task
+from .types import DIAGNOSTIC_CATEGORY, Grader, Task
 
 NAV_SCHEMA = {
     "type": "object",
@@ -65,6 +65,23 @@ EDIT_SUFFIX = (
     "install the package or any dependencies; your change is verified separately after you finish."
 )
 
+# Per-arm steering for the confounded exec-vs-pipeline diagnostic (T7). Length-matched so the
+# forced aggregation lane, not the volume of advice, is the only difference between the arms.
+# ccx arms are told to answer with one `ccx exec` script; the baseline with one native pipeline.
+EXEC_REQUIRED_CCX = (
+    "\n\nFor this task, answer with a single `ccx exec` script that greps the package, associates "
+    "each method to its enclosing class, and returns only the final list of class names."
+)
+PIPELINE_REQUIRED_BASELINE = (
+    "\n\nFor this task, answer with a single `python3 -c` or `awk` pipeline that greps the package, "
+    "associates each method to its enclosing class, and prints only the final list of class names."
+)
+EXEC_PIPELINE_ADDENDA: dict[str, str] = {
+    "baseline": PIPELINE_REQUIRED_BASELINE,
+    "ccx-mcp": EXEC_REQUIRED_CCX,
+    "ccx-cli": EXEC_REQUIRED_CCX,
+}
+
 
 def _nav(tid: str, repo: str, file: str, decl: str, prompt: str) -> Task:
     """Navigation: find a declaration on a big file. `gold.line` is derived from `decl` at build."""
@@ -100,16 +117,32 @@ def _trace(tid: str, repo: str, file: str, decl: str, prompt: str, chain: list[s
     )
 
 
-def _lc(tid: str, repo: str, prompt: str, predicate: dict, traversal: list[str]) -> Task:
-    """Large-context enumeration; `gold.members` is recomputed from `predicate` at build."""
+def _lc(
+    tid: str,
+    repo: str,
+    prompt: str,
+    predicate: dict,
+    traversal: list[str],
+    *,
+    floor_exempt: bool = False,
+    category: str = "large_context",
+    arm_addenda: dict[str, str] | None = None,
+) -> Task:
+    """Large-context enumeration; `gold.members` is recomputed from `predicate` at build.
+
+    `floor_exempt` waives the size floor for a genuinely small repo/file. `category` and
+    `arm_addenda` carry the diagnostic (T7) out of the headline and steer its arms.
+    """
     return Task(
         id=tid,
-        category="large_context",
+        category=category,
         repo=repo,
         prompt=prompt,
         schema=MEMBERS_SCHEMA,
         grader=Grader("set_match", {"field": "members", "mode": "equal", "lower": True}),
         gold={"lc_predicate": predicate, "traversal_files": traversal},
+        floor_exempt=floor_exempt,
+        arm_addenda=arm_addenda or {},
     )
 
 
@@ -210,6 +243,28 @@ def large_context_tasks() -> list[Task]:
             f"if it merely inherits it from a base class. List each qualifying class name exactly once."
         )
 
+    # Stage-1 flood tasks (T1–T6): the tornado repo-wide predicates span the package minus its test
+    # suite; traversal lists are the member-bearing files a correct answer spans, floor waived for the
+    # genuinely small surfaces (T1's single file, T6's whole small repo).
+    tornado_pkg = {"files": ["tornado/**/*.py"], "exclude": ["tornado/test/*"]}
+    tornado_close_files = [
+        "tornado/curl_httpclient.py", "tornado/http1connection.py", "tornado/httpclient.py",
+        "tornado/ioloop.py", "tornado/iostream.py", "tornado/netutil.py",
+        "tornado/simple_httpclient.py", "tornado/tcpclient.py", "tornado/websocket.py",
+        "tornado/platform/asyncio.py",
+    ]
+    tornado_initialize_files = [
+        "tornado/curl_httpclient.py", "tornado/httpclient.py", "tornado/httpserver.py",
+        "tornado/ioloop.py", "tornado/netutil.py", "tornado/process.py",
+        "tornado/simple_httpclient.py", "tornado/web.py",
+        "tornado/platform/asyncio.py", "tornado/platform/caresresolver.py", "tornado/platform/twisted.py",
+    ]
+    tornado_configurable_files = [
+        "tornado/curl_httpclient.py", "tornado/httpclient.py", "tornado/httpserver.py",
+        "tornado/ioloop.py", "tornado/netutil.py", "tornado/simple_httpclient.py",
+        "tornado/platform/asyncio.py", "tornado/platform/caresresolver.py", "tornado/platform/twisted.py",
+    ]
+
     return [
         _lc("lc-click-get-command", "click", method_prompt("src/click/core.py", "get_command"),
             {"kind": "py_method", "file": "src/click/core.py", "target": "get_command"},
@@ -233,6 +288,42 @@ def large_context_tasks() -> list[Task]:
             "class name exactly once.",
             {"kind": "py_subclass", "base": "RequestHandler", "files": ["tornado/web.py", "tornado/websocket.py"]},
             ["tornado/web.py", "tornado/websocket.py"]),
+        _lc("flood-t1-click-convert", "click",
+            "In `src/click/types.py`, enumerate every module-scope public class whose own body defines "
+            "a method named `convert`, declared directly and not inherited. List each class name exactly once.",
+            {"kind": "py_method", "file": "src/click/types.py", "target": "convert", "expect_members": 11},
+            ["src/click/types.py"], floor_exempt=True),
+        _lc("flood-t2-click-to-info-dict", "click",
+            "In `src/click/core.py` and `src/click/types.py`, enumerate every module-scope public class "
+            "whose own body defines a method named `to_info_dict`, declared directly and not inherited. "
+            "List each class name exactly once.",
+            {"kind": "py_method", "files": ["src/click/core.py", "src/click/types.py"], "target": "to_info_dict", "expect_members": 13},
+            ["src/click/core.py", "src/click/types.py"]),
+        _lc("flood-t3-tornado-close", "tornado",
+            "Across the `tornado/` package, enumerate every module-scope public class whose own body "
+            "defines a method named `close`, declared directly in that class and not inherited from a "
+            "base. List each class name exactly once.",
+            {"kind": "py_method", **tornado_pkg, "target": "close", "expect_members": 20},
+            tornado_close_files),
+        _lc("flood-t4-tornado-initialize", "tornado",
+            "Across the `tornado/` package, enumerate every module-scope public class whose own body "
+            "defines a method named `initialize`, declared directly in that class and not inherited "
+            "from a base. List each class name exactly once.",
+            {"kind": "py_method", **tornado_pkg, "target": "initialize", "expect_members": 19},
+            tornado_initialize_files),
+        _lc("flood-t5-tornado-configurable", "tornado",
+            "Across the `tornado/` package, enumerate every class that is a subclass of `Configurable`, "
+            "directly or transitively through any chain of intermediate base classes, including bases "
+            "written as a dotted path. List each class name exactly once.",
+            {"kind": "py_subclass_closure", "base": "Configurable", **tornado_pkg, "expect_members": 17},
+            tornado_configurable_files),
+        _lc("flood-t6-mux-matcher", "gorilla-mux",
+            "In this Go router package, enumerate every type that implements the unexported `matcher` "
+            "interface — every type with a method `Match(*http.Request, *RouteMatch) bool`. List each "
+            "type name exactly once.",
+            {"kind": "go_iface", "method": "Match", "params": ["*http.Request", "*RouteMatch"], "ret": "bool", "expect_members": 8},
+            ["doc.go", "middleware.go", "mux.go", "regexp.go", "route.go", "test_helpers.go"],
+            floor_exempt=True),
     ]
 
 
@@ -386,6 +477,28 @@ def non_regression_tasks() -> list[Task]:
     ]
 
 
+def diagnostic_tasks() -> list[Task]:
+    """Diagnostic family (`large_context_diag`): the confounded exec-vs-pipeline probe (Stage-1 T7).
+
+    Its gold is identical to `flood-t3-tornado-close`, but each arm's ladder is steered to force the
+    aggregation lane — one `ccx exec` script for the ccx arms, one native pipeline for the baseline —
+    so the run measures the server-side-aggregation flip and its baseline-pipeline tie. Excluded from
+    every headline aggregate; reported separately, like the control family.
+    """
+    return [
+        _lc("flood-t7-tornado-close-exec", "tornado",
+            "Across the `tornado/` package, enumerate every module-scope public class whose own body "
+            "defines a method named `close`, declared directly in that class and not inherited from a "
+            "base. List each class name exactly once.",
+            {"kind": "py_method", "files": ["tornado/**/*.py"], "exclude": ["tornado/test/*"], "target": "close", "expect_members": 20},
+            ["tornado/curl_httpclient.py", "tornado/http1connection.py", "tornado/httpclient.py",
+             "tornado/ioloop.py", "tornado/iostream.py", "tornado/netutil.py",
+             "tornado/simple_httpclient.py", "tornado/tcpclient.py", "tornado/websocket.py",
+             "tornado/platform/asyncio.py"],
+            category=DIAGNOSTIC_CATEGORY, arm_addenda=EXEC_PIPELINE_ADDENDA),
+    ]
+
+
 def headline_tasks() -> list[Task]:
     """Every floor-clearing headline task, in a stable family order."""
     return (
@@ -399,4 +512,4 @@ def headline_tasks() -> list[Task]:
 
 
 def all_tasks() -> list[Task]:
-    return headline_tasks() + non_regression_tasks()
+    return headline_tasks() + non_regression_tasks() + diagnostic_tasks()

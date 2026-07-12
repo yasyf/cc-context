@@ -1,0 +1,76 @@
+{
+  "id": "flood-t5-tornado-configurable",
+  "category": "large_context",
+  "repo": "tornado",
+  "prompt": "Across the `tornado/` package, enumerate every class that is a subclass of `Configurable`, directly or transitively through any chain of intermediate base classes, including bases written as a dotted path. List each class name exactly once.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "members": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "members"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "members",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "lc_predicate": {
+      "kind": "py_subclass_closure",
+      "base": "Configurable",
+      "files": [
+        "tornado/**/*.py"
+      ],
+      "exclude": [
+        "tornado/test/*"
+      ],
+      "expect_members": 17
+    },
+    "traversal_files": [
+      "tornado/curl_httpclient.py",
+      "tornado/httpclient.py",
+      "tornado/httpserver.py",
+      "tornado/ioloop.py",
+      "tornado/netutil.py",
+      "tornado/simple_httpclient.py",
+      "tornado/platform/asyncio.py",
+      "tornado/platform/caresresolver.py",
+      "tornado/platform/twisted.py"
+    ],
+    "members": [
+      "AsyncHTTPClient",
+      "AsyncIOLoop",
+      "AsyncIOMainLoop",
+      "BaseAsyncIOLoop",
+      "BlockingResolver",
+      "CaresResolver",
+      "CurlAsyncHTTPClient",
+      "DefaultExecutorResolver",
+      "DefaultLoopResolver",
+      "ExecutorResolver",
+      "HTTPServer",
+      "IOLoop",
+      "OverrideResolver",
+      "Resolver",
+      "SimpleAsyncHTTPClient",
+      "ThreadedResolver",
+      "TwistedResolver"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {},
+  "floor_exempt": false,
+  "arm_addenda": {}
+}

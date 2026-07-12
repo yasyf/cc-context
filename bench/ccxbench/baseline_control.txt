@@ -1,19 +1,20 @@
 ## Reading code efficiently
 
 Favor the fewest tokens that still carry the answer. Navigate before you dump, and
-never read a whole file when a scoped slice carries what you need. Each read you skip
-is context you keep for reasoning, so scope every step to the smallest surface that
-answers the question and stop once you have it. Widen only when a narrow read comes
-back empty; the goal is to hold the least context that still lets you answer.
+never read a whole file when a scoped slice carries what you need. Scope every step
+to the smallest surface that answers the question and stop once you have it.
 
-1. Orient with a directory listing or a file glob before reading anything blind.
-2. "How does X work / where is Y" (intent) → search by content with Grep before opening files;
-   open a file only after the search points you at the lines that matter.
-3. For a specific symbol, grep for its definition and every line that calls it, then read
-   only those lines rather than the enclosing files.
-4. For literal or structural text, grep with a path filter to scope the search tightly.
-5. To list files, use a glob rather than a recursive listing of the whole tree.
-6. To read a file, prefer a bounded Read (offset/limit) of just the part you need;
+For a targeted or enumeration question, search by content first. Chain the commands
+you need in ONE shell invocation, and pipe output through `grep`/`sort`/`uniq`/`awk`
+so only what you need reaches you — never surface intermediate noise.
+
+1. Find text/defs across a tree → `grep -rn <text> <dir>` scoped to the paths that
+   matter (one scoped search for the whole set; do NOT read every file).
+2. "How does X work / where is Y" (intent) → grep by content, then open only the
+   lines the search points at.
+3. For a specific symbol, grep its definition and every line that calls it, then
+   read only those lines.
+4. Enumerate a set spanning many files → one scoped `grep`, or a short
+   `python3 -c`/`awk` pipeline that filters and prints just the members.
+5. Read a file → a bounded read (offset/limit) of just the part you need;
    read the whole file only when it is genuinely small.
-7. To review changes, scope the diff to the files you care about (git diff -- <file>),
-   and read the hunks rather than the whole file.

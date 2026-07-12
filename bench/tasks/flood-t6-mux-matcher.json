@@ -1,0 +1,63 @@
+{
+  "id": "flood-t6-mux-matcher",
+  "category": "large_context",
+  "repo": "gorilla-mux",
+  "prompt": "In this Go router package, enumerate every type that implements the unexported `matcher` interface \u2014 every type with a method `Match(*http.Request, *RouteMatch) bool`. List each type name exactly once.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "members": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "members"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "members",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "lc_predicate": {
+      "kind": "go_iface",
+      "method": "Match",
+      "params": [
+        "*http.Request",
+        "*RouteMatch"
+      ],
+      "ret": "bool",
+      "expect_members": 8
+    },
+    "traversal_files": [
+      "doc.go",
+      "middleware.go",
+      "mux.go",
+      "regexp.go",
+      "route.go",
+      "test_helpers.go"
+    ],
+    "members": [
+      "MatcherFunc",
+      "Route",
+      "Router",
+      "headerMatcher",
+      "headerRegexMatcher",
+      "methodMatcher",
+      "routeRegexp",
+      "schemeMatcher"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {},
+  "floor_exempt": true,
+  "arm_addenda": {}
+}

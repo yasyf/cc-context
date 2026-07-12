@@ -56,6 +56,7 @@ class Session:
     cfg: Config
     session_id: str
     spent_usd: float = 0.0
+    arms: tuple[str, ...] = ARMS
 
     @property
     def runs_dir(self) -> Path:
@@ -74,7 +75,7 @@ class Session:
         meta = {
             "session_id": self.session_id,
             "models": list(self.cfg.models),
-            "arms": list(ARMS),
+            "arms": list(self.arms),
             "repeats": self.cfg.repeats,
             "expected_runs": expected_runs,
             "max_turns": self.cfg.max_turns,
@@ -85,7 +86,7 @@ class Session:
             "strip_mcp": self.cfg.strip_mcp,
             "disallowed_tools": list(self.cfg.disallowed_tools),
             "env_fingerprint": env_fingerprint(),
-            "run_path": {arm: arms.run_path(self.cfg, ccx=arm in arms.CCX_ARMS, shim_dir=shim) for arm in ARMS},
+            "run_path": {arm: arms.run_path(self.cfg, ccx=arm in arms.CCX_ARMS, shim_dir=shim) for arm in self.arms},
         }
         (self.runs_dir / "meta.json").write_text(json.dumps(meta, indent=2))
 
@@ -198,18 +199,19 @@ async def run_one(sess: Session, task: Task, arm: str, model: str, repeat: int) 
     return record
 
 
-def _build_plan(cfg: Config, tasks: list[Task]) -> list[tuple[Task, str, str, int]]:
+def _build_plan(cfg: Config, tasks: list[Task], arms: tuple[str, ...] = ARMS) -> list[tuple[Task, str, str, int]]:
     """Round-robin every (task, arm, model, repeat): all tasks once per (model, repeat) before
     any task repeats, so a ceiling halt samples every task evenly. The arm order rotates by
-    repeat — `ARMS[r:] + ARMS[:r]` — so no arm is systematically first and each leads once per
-    len(ARMS) repeats; a task's arms stay adjacent for the paired report. With repeats=5 and 3
+    repeat — `arms[r:] + arms[:r]` — so no arm is systematically first and each leads once per
+    len(arms) repeats; a task's arms stay adjacent for the paired report. With repeats=5 and 3
     arms the rotation doesn't divide evenly, so lead counts land at 2/2/1 per task — negligible
-    and accepted (the paired delta cancels arm-order effects)."""
-    n = len(ARMS)
+    and accepted (the paired delta cancels arm-order effects). `arms` is the selected subset (a
+    `--arms` run narrows it), always including baseline so every ccx arm has something to pair against."""
+    n = len(arms)
     plan: list[tuple[Task, str, str, int]] = []
     for model in cfg.models:
         for repeat in range(cfg.repeats):
-            order = ARMS[repeat % n :] + ARMS[: repeat % n]
+            order = arms[repeat % n :] + arms[: repeat % n]
             for task in tasks:
                 for arm in order:
                     plan.append((task, arm, model, repeat))
@@ -286,7 +288,7 @@ async def run_corpus(sess: Session, tasks: list[Task], *, concurrency: int = 1) 
     single-worker loop. `concurrency > 1` bounds in-flight runs with a semaphore and admits
     each only when spend plus live reservations clears the ceiling; records are written as they
     complete."""
-    plan = _build_plan(sess.cfg, tasks)
+    plan = _build_plan(sess.cfg, tasks, sess.arms)
     sess.setup(expected_runs=len(plan))
     if concurrency == 1:
         return await _run_serial(sess, plan)

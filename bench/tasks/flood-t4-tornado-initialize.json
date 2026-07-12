@@ -1,0 +1,80 @@
+{
+  "id": "flood-t4-tornado-initialize",
+  "category": "large_context",
+  "repo": "tornado",
+  "prompt": "Across the `tornado/` package, enumerate every module-scope public class whose own body defines a method named `initialize`, declared directly in that class and not inherited from a base. List each class name exactly once.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "members": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "members"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "members",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "lc_predicate": {
+      "kind": "py_method",
+      "files": [
+        "tornado/**/*.py"
+      ],
+      "exclude": [
+        "tornado/test/*"
+      ],
+      "target": "initialize",
+      "expect_members": 19
+    },
+    "traversal_files": [
+      "tornado/curl_httpclient.py",
+      "tornado/httpclient.py",
+      "tornado/httpserver.py",
+      "tornado/ioloop.py",
+      "tornado/netutil.py",
+      "tornado/process.py",
+      "tornado/simple_httpclient.py",
+      "tornado/web.py",
+      "tornado/platform/asyncio.py",
+      "tornado/platform/caresresolver.py",
+      "tornado/platform/twisted.py"
+    ],
+    "members": [
+      "AsyncHTTPClient",
+      "AsyncIOLoop",
+      "AsyncIOMainLoop",
+      "BaseAsyncIOLoop",
+      "BlockingResolver",
+      "CaresResolver",
+      "CurlAsyncHTTPClient",
+      "ErrorHandler",
+      "ExecutorResolver",
+      "FallbackHandler",
+      "HTTPServer",
+      "IOLoop",
+      "OverrideResolver",
+      "RedirectHandler",
+      "SimpleAsyncHTTPClient",
+      "StaticFileHandler",
+      "Subprocess",
+      "ThreadedResolver",
+      "TwistedResolver"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {},
+  "floor_exempt": false,
+  "arm_addenda": {}
+}

@@ -1,8 +1,8 @@
 {
-  "id": "lc-click-invoke",
+  "id": "flood-t1-click-convert",
   "category": "large_context",
   "repo": "click",
-  "prompt": "In `src/click/core.py`, enumerate every public class defined at module scope (public = the name does not start with an underscore; top-level only, not nested) whose own body defines a method named `invoke`. A class counts only if it declares `invoke` directly in its body \u2014 not if it merely inherits it from a base class. List each qualifying class name exactly once.",
+  "prompt": "In `src/click/types.py`, enumerate every module-scope public class whose own body defines a method named `convert`, declared directly and not inherited. List each class name exactly once.",
   "schema": {
     "type": "object",
     "properties": {
@@ -29,21 +29,29 @@
   "gold": {
     "lc_predicate": {
       "kind": "py_method",
-      "file": "src/click/core.py",
-      "target": "invoke"
+      "file": "src/click/types.py",
+      "target": "convert",
+      "expect_members": 11
     },
     "traversal_files": [
-      "src/click/core.py"
+      "src/click/types.py"
     ],
     "members": [
-      "BaseCommand",
-      "Command",
-      "Context",
-      "MultiCommand"
+      "BoolParamType",
+      "Choice",
+      "DateTime",
+      "File",
+      "FuncParamType",
+      "ParamType",
+      "Path",
+      "StringParamType",
+      "Tuple",
+      "UUIDParameterType",
+      "UnprocessedParamType"
     ]
   },
   "ccx_helps": true,
   "setup": {},
-  "floor_exempt": false,
+  "floor_exempt": true,
   "arm_addenda": {}
 }

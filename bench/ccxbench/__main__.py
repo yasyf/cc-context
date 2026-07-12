@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fnmatch
 import json
 import shutil
 import sys
@@ -20,12 +21,12 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import goldgen, microbench, report, repos, taskgen
+from . import behavior, goldgen, microbench, report, repos, taskgen
 from .config import Config, load
 from .grade import grade, synthetic_result
 from .graders import GradeContext, grade_test_run
 from .runner import Session, run_corpus
-from .types import ARMS, Task
+from .types import ARMS, DIAGNOSTIC_CATEGORY, Task
 
 BENCH_DIR = Path(__file__).resolve().parent.parent
 TASKS_DIR = BENCH_DIR / "tasks"
@@ -59,10 +60,13 @@ def derive_golds(cfg: Config, tasks: list[Task]) -> None:
             t.gold["line"] = goldgen.resolve_decl_line(checkout, t.gold["file"], t.gold["decl"])
             for alt in t.gold.get("alt_sites", []):
                 alt["line"] = goldgen.resolve_decl_line(checkout, alt["file"], alt["decl"])
-        elif t.category == "large_context":
+        elif t.category in ("large_context", DIAGNOSTIC_CATEGORY):
             members = goldgen.recompute_lc_predicate(checkout, t.gold["lc_predicate"], t.repo)
             if not members:
                 sys.exit(f"task {t.id}: predicate matched no members in {t.repo}")
+            expect = t.gold["lc_predicate"].get("expect_members")
+            if expect is not None and len(members) != expect:
+                sys.exit(f"task {t.id}: predicate yielded {len(members)} members, expected {expect}")
             t.gold["members"] = sorted(members)
         elif t.category == "diff_review":
             patch, files = goldgen.make_patch(checkout, t.gold["diff_spec"]["edits"])
@@ -96,7 +100,8 @@ def print_floor_table(cfg: Config, tasks: list[Task]) -> list[str]:
     print(f"\nsize floor: gold.traversal_files must total >= {cfg.min_traversal_bytes} bytes")
     print(f"  {'task':34}{'family':20}{'repo':14}{'bytes':>10}  verdict")
     for r in rows:
-        print(f"  {r.task_id:34}{r.family:20}{r.repo:14}{r.nbytes:>10}  {'ok' if r.ok else 'UNDER'}")
+        verdict = "exempt" if r.exempt else ("ok" if r.ok else "UNDER")
+        print(f"  {r.task_id:34}{r.family:20}{r.repo:14}{r.nbytes:>10}  {verdict}")
     return [f"{r.task_id}: traversal {r.nbytes} < floor {cfg.min_traversal_bytes}" for r in rows if not r.ok]
 
 
@@ -234,8 +239,8 @@ def selftest_edit(task: Task, src_dir: Path) -> bool:
 
 def select(tasks: list[Task], args: argparse.Namespace) -> list[Task]:
     if args.tasks:
-        wanted = set(args.tasks.split(","))
-        tasks = [t for t in tasks if t.id in wanted]
+        patterns = args.tasks.split(",")
+        tasks = [t for t in tasks if any(fnmatch.fnmatch(t.id, p) for p in patterns)]
     if args.categories:
         cats = set(args.categories.split(","))
         tasks = [t for t in tasks if t.category in cats]
@@ -252,6 +257,21 @@ def select(tasks: list[Task], args: argparse.Namespace) -> list[Task]:
     return tasks
 
 
+def parse_arms(spec: str) -> tuple[str, ...]:
+    """Validate a comma-separated arm selection, returned in canonical ARMS order (deduped).
+
+    Fails loud on an unknown arm (listing the valid ones) and on a selection without `baseline`,
+    which every ccx arm must pair against. An empty/absent spec is the caller's job (defaults to ARMS).
+    """
+    selected = [a.strip() for a in spec.split(",") if a.strip()]
+    unknown = [a for a in selected if a not in ARMS]
+    if unknown:
+        sys.exit(f"unknown arm(s) {unknown}; valid arms: {', '.join(ARMS)}")
+    if "baseline" not in selected:
+        sys.exit(f"--arms must include 'baseline' (nothing to pair the ccx arms against); got {selected}")
+    return tuple(a for a in ARMS if a in selected)
+
+
 def cmd_run(cfg: Config, args: argparse.Namespace) -> int:
     if args.models:
         cfg = replace_models(cfg, args.models.split(","))
@@ -259,13 +279,14 @@ def cmd_run(cfg: Config, args: argparse.Namespace) -> int:
         cfg = replace_repeats(cfg, args.repeats)
     if args.ceiling is not None:
         cfg = replace_ceiling(cfg, args.ceiling)
+    arms = parse_arms(args.arms) if args.arms else ARMS
     tasks = select(load_corpus(), args)
     if not tasks:
         sys.exit("no tasks selected")
     session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    sess = Session(cfg=cfg, session_id=session_id)
-    runs = len(tasks) * len(cfg.models) * cfg.repeats * len(ARMS)
-    print(f"session {session_id}: {len(tasks)} tasks x {len(cfg.models)} models x {cfg.repeats} repeats x {len(ARMS)} arms = {runs} runs")
+    sess = Session(cfg=cfg, session_id=session_id, arms=arms)
+    runs = len(tasks) * len(cfg.models) * cfg.repeats * len(arms)
+    print(f"session {session_id}: {len(tasks)} tasks x {len(cfg.models)} models x {cfg.repeats} repeats x {len(arms)} arms = {runs} runs")
     print(f"safety ceiling: ${cfg.safety_ceiling_usd:.2f}")
     records = asyncio.run(run_corpus(sess, tasks, concurrency=args.concurrency))
     md = report.write_report(sess.jsonl_path, cfg.results_dir / session_id / "RESULTS.md")
@@ -308,17 +329,22 @@ def main(argv: list[str] | None = None) -> int:
 
     for name in ("run", "pilot"):
         rp = sub.add_parser(name)
-        rp.add_argument("--tasks", help="comma-separated task ids")
+        rp.add_argument("--tasks", help="comma-separated task ids or fnmatch globs (e.g. 'flood-t[1-6]-*')")
         rp.add_argument("--categories", help="comma-separated categories")
         rp.add_argument("--sample", type=int, help="max tasks per category")
         rp.add_argument("--limit", type=int, help="max total tasks")
         rp.add_argument("--models", help="override config models (comma-separated)")
+        rp.add_argument("--arms", help=f"comma-separated arms to run (default all: {','.join(ARMS)}); must include baseline")
         rp.add_argument("--repeats", type=int, help="override config repeats")
         rp.add_argument("--ceiling", type=float, help="override config safety_ceiling_usd")
         rp.add_argument("--concurrency", type=int, default=1, help="parallel in-flight runs (default 1, serial)")
 
     rep = sub.add_parser("report")
     rep.add_argument("session")
+
+    bh = sub.add_parser("behavior")
+    bh.add_argument("session")
+    bh.add_argument("--tasks", help="restrict to task ids matching this fnmatch glob (e.g. 'flood-*')")
 
     mb = sub.add_parser("microbench")
     mb.add_argument("--repo")
@@ -353,6 +379,10 @@ def main(argv: list[str] | None = None) -> int:
         jsonl = cfg.results_dir / args.session / "runs.jsonl"
         report.write_report(jsonl, cfg.results_dir / args.session / "RESULTS.md")
         print(f"wrote {cfg.results_dir / args.session / 'RESULTS.md'}")
+        return 0
+    if args.cmd == "behavior":
+        rep = behavior.compute(cfg.results_dir / args.session, task_glob=args.tasks)
+        print(behavior.render(rep))
         return 0
     if args.cmd == "microbench":
         return microbench.cmd_microbench(cfg, args)

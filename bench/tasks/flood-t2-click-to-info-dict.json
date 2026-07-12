@@ -1,8 +1,8 @@
 {
-  "id": "lc-click-invoke",
+  "id": "flood-t2-click-to-info-dict",
   "category": "large_context",
   "repo": "click",
-  "prompt": "In `src/click/core.py`, enumerate every public class defined at module scope (public = the name does not start with an underscore; top-level only, not nested) whose own body defines a method named `invoke`. A class counts only if it declares `invoke` directly in its body \u2014 not if it merely inherits it from a base class. List each qualifying class name exactly once.",
+  "prompt": "In `src/click/core.py` and `src/click/types.py`, enumerate every module-scope public class whose own body defines a method named `to_info_dict`, declared directly and not inherited. List each class name exactly once.",
   "schema": {
     "type": "object",
     "properties": {
@@ -29,17 +29,31 @@
   "gold": {
     "lc_predicate": {
       "kind": "py_method",
-      "file": "src/click/core.py",
-      "target": "invoke"
+      "files": [
+        "src/click/core.py",
+        "src/click/types.py"
+      ],
+      "target": "to_info_dict",
+      "expect_members": 13
     },
     "traversal_files": [
-      "src/click/core.py"
+      "src/click/core.py",
+      "src/click/types.py"
     ],
     "members": [
       "BaseCommand",
+      "Choice",
       "Command",
       "Context",
-      "MultiCommand"
+      "DateTime",
+      "File",
+      "FuncParamType",
+      "MultiCommand",
+      "Option",
+      "ParamType",
+      "Parameter",
+      "Path",
+      "Tuple"
     ]
   },
   "ccx_helps": true,

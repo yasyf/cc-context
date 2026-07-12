@@ -11,6 +11,7 @@ CATEGORIES: tuple[str, ...] = (
     "navigation",
     "trace",
     "large_context",
+    "large_context_diag",
     "diff_review",
     "targeted_edit",
     "intent_search",
@@ -19,6 +20,10 @@ CATEGORIES: tuple[str, ...] = (
 
 # The control family: an empty workdir, a conceptual question, no code for ccx to navigate.
 CONTROL_CATEGORY = "non_regression"
+
+# The diagnostic family: a confounded probe (Stage-1 T7, exec-vs-pipeline) with a real gold but
+# excluded from every headline aggregate, like the control family. Reported separately, never paired.
+DIAGNOSTIC_CATEGORY = "large_context_diag"
 
 DECOMP_TERMS: tuple[str, ...] = ("static_overhead", "tool_result", "history", "hook_error", "residual")
 
@@ -45,6 +50,10 @@ class Task:
     `gold` holds the reference answer the grader checks against. `setup` describes any
     workdir preparation (e.g. an uncommitted patch for diff tasks). `ccx_helps` is False
     for non-regression tasks where ccx is not expected to help — used to report harm.
+    `floor_exempt` waives the traversal-bytes size floor for a task whose repo is genuinely
+    smaller than the floor (a single-file control, or a whole small repo). `arm_addenda`
+    carries a per-arm extra system-prompt line (keyed by arm) appended to that arm's ladder —
+    the only per-task steering, used by the exec-vs-pipeline diagnostic.
     """
 
     id: str
@@ -56,6 +65,8 @@ class Task:
     gold: dict[str, Any]
     ccx_helps: bool = True
     setup: dict[str, Any] = field(default_factory=dict)
+    floor_exempt: bool = False
+    arm_addenda: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -68,6 +79,8 @@ class Task:
             "gold": self.gold,
             "ccx_helps": self.ccx_helps,
             "setup": self.setup,
+            "floor_exempt": self.floor_exempt,
+            "arm_addenda": self.arm_addenda,
         }
 
     @classmethod
@@ -82,6 +95,8 @@ class Task:
             gold=d["gold"],
             ccx_helps=d.get("ccx_helps", True),
             setup=d.get("setup", {}),
+            floor_exempt=d.get("floor_exempt", False),
+            arm_addenda=d.get("arm_addenda", {}),
         )
 
     @property

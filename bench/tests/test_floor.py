@@ -9,7 +9,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from ccxbench import goldgen
+from ccxbench import goldgen, taskgen
+from ccxbench.config import load
 from ccxbench.goldgen import (
     FloorRow,
     floor_rows,
@@ -72,6 +73,23 @@ class TestFloorRows(unittest.TestCase):
             root = Path(tmp)
             control = Task("nr", "non_regression", "empty", "p", {}, Grader("keywords"), {})
             self.assertEqual(floor_rows(100_000, [control], lambda _t: root), [])
+
+    def test_diagnostic_family_excluded_from_floor(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            diag = Task("d", "large_context_diag", "r", "p", {}, Grader("set_match"), {"traversal_files": []})
+            self.assertEqual(floor_rows(100_000, [diag], lambda _t: root), [])
+
+    def test_floor_exempt_passes_under_floor(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "small.py").write_text("y" * 100)
+            t = Task("x", "large_context", "r", "p", {}, Grader("set_match"),
+                     {"traversal_files": ["small.py"]}, floor_exempt=True)
+            (row,) = floor_rows(100_000, [t], lambda _t: root)
+            self.assertTrue(row.ok)
+            self.assertTrue(row.exempt)
+            self.assertEqual(row.nbytes, 100)
 
 
 class TestGoldgenHelpers(unittest.TestCase):
@@ -153,6 +171,77 @@ class TestPatchGeneration(unittest.TestCase):
             (root / "m.py").write_text("def a():\n    x = 1\n    x = 1\n    return x\n")
             with self.assertRaises(SystemExit):
                 make_patch(root, [{"file": "m.py", "find": "    x = 1", "replace": "    x = 2"}])
+
+
+class TestFloodPredicates(unittest.TestCase):
+    """Stage-1 predicate mechanics: py_method over a file list/glob with excludes, and the transitive
+    py_subclass_closure. Synthetic cases pin the logic; TestFloodCountsOnCheckout pins the counts."""
+
+    def test_py_method_single_file_backcompat(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "m.py").write_text("class A:\n    def go(self): pass\n\nclass _P:\n    def go(self): pass\n")
+            pred = {"kind": "py_method", "file": "m.py", "target": "go"}
+            self.assertEqual(recompute_lc_predicate(root, pred, "r"), {"A"})
+
+    def test_py_method_multi_file_union(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.py").write_text("class A:\n    def f(self): pass\n")
+            (root / "b.py").write_text("class B:\n    def f(self): pass\n\nclass C:\n    def g(self): pass\n")
+            pred = {"kind": "py_method", "files": ["a.py", "b.py"], "target": "f"}
+            self.assertEqual(recompute_lc_predicate(root, pred, "r"), {"A", "B"})
+
+    def test_py_method_glob_minus_exclude(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pkg").mkdir()
+            (root / "pkg" / "x.py").write_text("class X:\n    def close(self): pass\n")
+            (root / "pkg" / "sub").mkdir()
+            (root / "pkg" / "sub" / "y.py").write_text("class Y:\n    def close(self): pass\n")
+            (root / "pkg" / "test").mkdir()
+            (root / "pkg" / "test" / "t.py").write_text("class T:\n    def close(self): pass\n")
+            pred = {"kind": "py_method", "files": ["pkg/**/*.py"], "exclude": ["pkg/test/*"], "target": "close"}
+            # `pkg/**/*.py` spans x.py and sub/y.py; `pkg/test/*` (fnmatch, `*` spans `/`) drops the test tree.
+            self.assertEqual(recompute_lc_predicate(root, pred, "r"), {"X", "Y"})
+
+    def test_py_subclass_closure_transitive_dotted_and_public(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.py").write_text(
+                "class Base: pass\n"
+                "class Mid(Base): pass\n"          # direct subclass
+                "class Leaf(mod.Mid): pass\n"      # transitive via a dotted base
+                "class _Priv(Base): pass\n"        # non-public: excluded
+                "class Other(Unrelated): pass\n"   # unrelated: excluded
+            )
+            pred = {"kind": "py_subclass_closure", "base": "Base", "files": ["a.py"]}
+            # The closure excludes Base itself (a class is not its own subclass) and _Priv (non-public).
+            self.assertEqual(recompute_lc_predicate(root, pred, "r"), {"Mid", "Leaf"})
+
+
+class TestFloodCountsOnCheckout(unittest.TestCase):
+    """Each Stage-1 flood predicate recomputes to its pinned member count on the real checkout —
+    a regression guard against predicate drift (and the record that T6 is 8, not the doc's 6)."""
+
+    def test_member_counts_match_pins(self) -> None:
+        cfg = load()
+        expect = {
+            "flood-t1-click-convert": 11,
+            "flood-t2-click-to-info-dict": 13,
+            "flood-t3-tornado-close": 20,
+            "flood-t4-tornado-initialize": 19,
+            "flood-t5-tornado-configurable": 17,
+            "flood-t6-mux-matcher": 8,
+        }
+        tasks = {t.id: t for t in taskgen.large_context_tasks()}
+        for tid, n in expect.items():
+            t = tasks[tid]
+            if not (cfg.fixtures_root / t.repo).is_dir():
+                self.skipTest(f"{t.repo} checkout absent; run build-corpus first")
+            members = recompute_lc_predicate(cfg.fixtures_root / t.repo, t.gold["lc_predicate"], t.repo)
+            self.assertEqual(len(members), n, f"{tid}: {sorted(members)}")
+            self.assertEqual(len(members), len(set(members)), f"{tid}: duplicate members")
 
 
 if __name__ == "__main__":

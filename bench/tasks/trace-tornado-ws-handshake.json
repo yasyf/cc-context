@@ -35,5 +35,7 @@
     "line": 897
   },
   "ccx_helps": true,
-  "setup": {}
+  "setup": {},
+  "floor_exempt": false,
+  "arm_addenda": {}
 }

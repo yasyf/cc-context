@@ -105,6 +105,19 @@ class TestArmRotation(unittest.TestCase):
             self.assertEqual({t.id for (t, _a, _m, _r) in block}, {block[0][0].id})
             self.assertEqual({a for (_t, a, _m, _r) in block}, set(ARMS))
 
+    def test_arm_subset_plan_holds_only_selected_arms(self) -> None:
+        subset = ("baseline", "ccx-cli")
+        cfg = cfg_for(["m"], 3, Path("/unused"))
+        plan = runner._build_plan(cfg, [stub_task("a"), stub_task("b")], subset)
+        self.assertEqual({a for (_t, a, _m, _r) in plan}, set(subset))
+        self.assertEqual(len(plan), 2 * len(subset) * 3)  # 2 tasks x 2 arms x 3 repeats
+        # Rotation still holds over the subset: each arm leads once per len(subset)-cycle.
+        leads = [self._order(plan, "m", r, "a")[0] for r in range(len(subset))]
+        self.assertEqual(sorted(leads), sorted(subset))
+        # Each task's arms stay adjacent (a two-arm block per task).
+        for repeat in range(3):
+            self.assertEqual(set(self._order(plan, "m", repeat, "a")), set(subset))
+
 
 class TestCorpusSha(unittest.TestCase):
     """corpus_sha hashes the sorted `*.json` contents of a tasks dir plus its `patches/*.patch`

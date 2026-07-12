@@ -1,16 +1,18 @@
 ## Compact Context (cc-context)
 
-The `mcp__cc-context__*` tools are the DEFAULT for reading code, finding symbols,
-searching, and reviewing diffs. They return token-bounded output (signatures + line
-numbers, explicit overflow, never silent truncation). Prefer the MCP tool named for each
-op; the `ccx` shell command is an equivalent fallback. Reach for these before Read, cat,
-sed, git diff, ls -R, or find — the guard hooks block those on anything token-heavy.
+The `mcp__cc-context__*` tools are the DEFAULT for reading code, finding symbols, and
+searching. They return token-bounded output (signatures + line numbers, explicit
+overflow) instead of raw dumps. Call the MCP tool named for each op.
 
-1. Orient a repo → `mcp__cc-context__ccx_repo_overview` (or `ccx repo overview`)
-2. "How does X work / where is Y" → `mcp__cc-context__ccx_code_search` (or `ccx code search`)
-3. A specific symbol (def + callers + callees) → `mcp__cc-context__ccx_code_symbol`
-4. Literal or regex text → `mcp__cc-context__ccx_code_grep` (or `ccx code grep`; `regex` param)
-5. List files → `mcp__cc-context__ccx_repo_find` (or `ccx repo find`)
-6. Read a file → `mcp__cc-context__ccx_code_outline` first, then `mcp__cc-context__ccx_code_read`
-   for the part you need (whole file via its `--full` equivalent)
-7. Review changes → `mcp__cc-context__ccx_vcs_diff` (or `ccx vcs diff`)
+For a targeted or enumeration question, go straight to the query — never open with
+`ccx_repo_overview`. Chain the calls you need, or compose them in a single
+`ccx_exec` script that returns only the distilled result.
+
+1. Find text/defs across a tree → `ccx_code_grep` scoped to a dir
+   (one scoped call for the whole set; do NOT outline every file).
+2. "How does X work / where is Y" (intent) → `ccx_code_search`.
+3. A specific symbol (def + callers + callees) → `ccx_code_symbol`.
+4. Enumerate a set spanning many files → one scoped `ccx_code_grep`, or an
+   `ccx_exec` script that greps, filters, and returns just the members.
+5. Read a file → `ccx_code_outline` for structure, then
+   `ccx_code_read` for the section you need.

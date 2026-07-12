@@ -34,7 +34,11 @@ from pathlib import Path
 
 from . import tokens, trajectory
 from .runner import corpus_sha
-from .types import ARMS, CONTROL_CATEGORY, DECOMP_TERMS, TrajectoryMetrics
+from .types import ARMS, CONTROL_CATEGORY, DECOMP_TERMS, DIAGNOSTIC_CATEGORY, TrajectoryMetrics
+
+# Families with a real gold but no place in the paired headline: the control (no code) and the
+# diagnostic (a confounded exec-vs-pipeline probe). Both are reported in their own panels.
+NON_HEADLINE_CATEGORIES: tuple[str, ...] = (CONTROL_CATEGORY, DIAGNOSTIC_CATEGORY)
 
 BOOTSTRAP_N = 2000
 BOOTSTRAP_SEED = 0
@@ -730,6 +734,29 @@ def control_panel(records: list[dict], model: str) -> list[str]:
     return lines
 
 
+def diagnostic_panel(records: list[dict], model: str) -> list[str]:
+    """large_context_diag family — the confounded exec-vs-pipeline probe, excluded from headlines.
+
+    Reports per-arm accuracy plus how often each ccx arm actually took the forced `ccx exec` lane;
+    the aggregation flip it measures is only meaningful when the arm honors that steering."""
+    lines = [f"### Diagnostic panel — {DIAGNOSTIC_CATEGORY} (confounded exec-vs-pipeline probe, excluded from headlines)", ""]
+    diag = [r for r in records if r["model"] == model and r["category"] == DIAGNOSTIC_CATEGORY]
+    if not diag:
+        lines.append(f"- no {DIAGNOSTIC_CATEGORY} tasks in this session")
+        lines.append("")
+        return lines
+    for arm in ARMS:
+        recs = [r for r in diag if r["arm"] == arm]
+        n = len(recs)
+        correct = sum(1 for r in recs if r["correct"])
+        acc = (correct / n * 100.0) if n else 0.0
+        exec_used = sum(1 for r in recs if any("exec" in c for c in r.get("integrity", {}).get("ccx_calls", [])))
+        lane = f", exec lane {exec_used}/{n}" if arm in CCX_ARMS else ""
+        lines.append(f"- {arm}: **{acc:.1f}%** ({correct}/{n}){lane}")
+    lines.append("")
+    return lines
+
+
 def corpus_drift_line(meta: dict) -> str:
     recorded = meta.get("corpus_sha")
     current = corpus_sha()
@@ -840,10 +867,13 @@ def render(
         # is_error runs are infrastructure losses (e.g. a truncated transcript), not model failures:
         # drop them from accuracy/pairing like integrity exclusions, but WITHOUT forcing the verdict.
         ok_records = [r for r in records if not r.get("is_error") and r.get("integrity", {}).get("ok", True)]
-        headline_records = [r for r in ok_records if r["category"] != CONTROL_CATEGORY]
+        headline_records = [r for r in ok_records if r["category"] not in NON_HEADLINE_CATEGORIES]
         hcells = {arm: by_task(headline_records, model, arm) for arm in ARMS}
 
-        for ccx_arm in CCX_ARMS:
+        # Only pair against ccx arms the session actually ran (a `--arms` subset may omit one); an
+        # absent arm has no records, so rendering its section would show a spurious 0/0-accuracy FAIL.
+        present_ccx = [a for a in CCX_ARMS if any(r.get("arm") == a and r.get("model") == model for r in records)]
+        for ccx_arm in present_ccx:
             lines.append(f"### {ccx_arm} vs baseline")
             lines.append("")
             paired, _dropped = paired_task_ids(headline_records, model, ccx_arm)
@@ -864,6 +894,7 @@ def render(
         lines += arm_summary_section(headline_records, model, raw_dir=raw_dir, prompts=prompts, counter=counter)
         lines += isolation_panel(records, model, meta)
         lines += control_panel(records, model)
+        lines += diagnostic_panel(records, model)
 
     lines += consistency_section(records, raw_dir=raw_dir, prompts=prompts, counter=counter)
 

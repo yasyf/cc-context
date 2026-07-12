@@ -36,5 +36,7 @@
     ]
   },
   "ccx_helps": false,
-  "setup": {}
+  "setup": {},
+  "floor_exempt": false,
+  "arm_addenda": {}
 }

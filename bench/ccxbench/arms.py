@@ -255,6 +255,8 @@ def build_run_spec(cfg: Config, task: Task, arm: str, model: str, workdir: Path,
     # shell) and pin a minimal PATH (spec.env wins the merge) so no host dir shadows the tools.
     env: dict[str, str] = {"ENABLE_TOOL_SEARCH": "false", "PATH": run_path(cfg, ccx=ccx, shim_dir=shim_dir)}
     settings = run_settings(cfg, with_guards=ccx and guards_available(cfg))
+    # A task may carry a per-arm ladder addendum (the exec-vs-pipeline diagnostic); otherwise none.
+    addendum = ADDENDA[arm] + task.arm_addenda.get(arm, "")
     return RunSpec(
         prompt=task.prompt,
         model=model,
@@ -268,7 +270,7 @@ def build_run_spec(cfg: Config, task: Task, arm: str, model: str, workdir: Path,
                 permission_mode=cfg.permission_mode,
                 mcp_config=mcp_config(cfg, arm),
                 strict_mcp=cfg.strip_mcp,
-                append_system_prompt=ADDENDA[arm],
+                append_system_prompt=addendum,
                 settings=settings,
                 disallowed_tools=tuple(cfg.disallowed_tools),
                 max_turns=cfg.max_turns,
