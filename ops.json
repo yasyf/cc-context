@@ -1,1 +1,1 @@
-{"v":1,"lamport":5,"ops":[{"kind":"add_comment","body":"Resolved: v0.11.0 and v0.12.0 shipped 2026-07-11; v0.13.0 (def3c843) shipped 2026-07-12 with the grep-guard per-occurrence fix. Local brew + plugin both at 0.13.0."}]}
+{"v":1,"lamport":6,"ops":[{"kind":"set_criterion_status","id":"0b725b8323d8447ef857ea84c86fa30e","status":"met"}]}
