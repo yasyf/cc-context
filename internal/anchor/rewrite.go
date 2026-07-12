@@ -27,6 +27,7 @@ func rewriteRead(a backend.Args) (backend.Args, string, error) {
 	if a.Full {
 		return a, "", nil
 	}
+	a.Section = NormalizeRange(a.Section)
 	ref, ok, err := Parse(a.Section)
 	if err != nil {
 		return a, "", err

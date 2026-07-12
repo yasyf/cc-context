@@ -63,10 +63,21 @@ type Move struct {
 }
 
 var (
-	numericRe   = regexp.MustCompile(`^\d+(?:-\d+)?$`)
-	anchorRe    = regexp.MustCompile(`^(?:(\d+)(?:-(\d+))?#)?([a-hjkmnp-tv-z][0-9a-hjkmnp-tv-z]{3})$`)
-	anchorishRe = regexp.MustCompile(`^\d[\d-]*#`)
+	numericRe    = regexp.MustCompile(`^\d+(?:-\d+)?$`)
+	anchorRe     = regexp.MustCompile(`^(?:(\d+)(?:-(\d+))?#)?([a-hjkmnp-tv-z][0-9a-hjkmnp-tv-z]{3})$`)
+	anchorishRe  = regexp.MustCompile(`^\d[\d-]*#`)
+	commaRangeRe = regexp.MustCompile(`^(\d+)\s*,\s*(\d+)$`)
 )
+
+// NormalizeRange rewrites a comma-separated numeric range ("A,B" or "A, B") to
+// the canonical "A-B" form; every other section string, including a heading that
+// contains a comma, passes through unchanged.
+func NormalizeRange(section string) string {
+	if m := commaRangeRe.FindStringSubmatch(section); m != nil {
+		return m[1] + "-" + m[2]
+	}
+	return section
+}
 
 // Parse classifies a section string. A numeric line or range and anything not
 // anchor-shaped pass through (ok false, nil error); a well-formed anchor

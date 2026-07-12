@@ -87,6 +87,33 @@ func TestParse(t *testing.T) {
 	}
 }
 
+func TestNormalizeRange(t *testing.T) {
+	tests := []struct {
+		name    string
+		section string
+		want    string
+	}{
+		{"comma range", "30,40", "30-40"},
+		{"comma range with space", "30, 40", "30-40"},
+		{"comma range with spaces both sides", "30 , 40", "30-40"},
+		{"dash range unchanged", "30-40", "30-40"},
+		{"single line unchanged", "30", "30"},
+		{"heading with comma unchanged", "## Foo, Bar", "## Foo, Bar"},
+		{"anchor unchanged", "120-180#a3fk", "120-180#a3fk"},
+		{"three-part comma unchanged", "30,40,50", "30,40,50"},
+		{"trailing comma unchanged", "30,", "30,"},
+		{"non-numeric comma unchanged", "a,b", "a,b"},
+		{"empty unchanged", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := anchor.NormalizeRange(tt.section); got != tt.want {
+				t.Errorf("NormalizeRange(%q) = %q, want %q", tt.section, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestFromBytes locks the snapshot split to Load's line split: lines keep any
 // trailing '\r' and a final empty element from a trailing newline is dropped.
 func TestFromBytes(t *testing.T) {

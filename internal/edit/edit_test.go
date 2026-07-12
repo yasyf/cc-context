@@ -64,6 +64,16 @@ func TestRun(t *testing.T) {
 			},
 		},
 		{
+			name:     "comma range edit aliases dash range",
+			content:  "a\nb\nc\nd\n",
+			section:  "2, 3",
+			editArg:  "X\nY\nZ",
+			wantFile: "a\nX\nY\nZ\nd\n",
+			wantOut: func(p string) string {
+				return p + ":" + ref(2, 3, of("b")) + " → " + p + ":" + ref(2, 4, of("X")) + "\n- b\n- c\n+ X\n+ Y\n+ Z\n"
+			},
+		},
+		{
 			name:     "trailing newline terminates content without adding a blank line",
 			content:  "a\nb\nc\n",
 			section:  "2",

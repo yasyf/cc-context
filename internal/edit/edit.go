@@ -83,6 +83,7 @@ func Run(a backend.Args) (string, error) {
 // any relocation. An anchored ref re-resolves by content (vanished or ambiguous
 // errors); a plain numeric range is bounds-checked but unverified.
 func resolve(f *anchor.File, section string) (start, end int, move *anchor.Move, err error) {
+	section = anchor.NormalizeRange(section)
 	ref, ok, err := anchor.Parse(section)
 	if err != nil {
 		return 0, 0, nil, err

@@ -60,10 +60,28 @@ func TestRewriteArgs(t *testing.T) {
 			want: backend.Args{Path: path, Section: "5-7"},
 		},
 		{
+			name: "read comma range normalizes to dash",
+			op:   backend.OpRead,
+			args: backend.Args{Path: path, Section: "5,7"},
+			want: backend.Args{Path: path, Section: "5-7"},
+		},
+		{
+			name: "read comma range with space normalizes to dash",
+			op:   backend.OpRead,
+			args: backend.Args{Path: path, Section: "5, 7"},
+			want: backend.Args{Path: path, Section: "5-7"},
+		},
+		{
 			name: "read heading passthrough",
 			op:   backend.OpRead,
 			args: backend.Args{Path: path, Section: "## Heading"},
 			want: backend.Args{Path: path, Section: "## Heading"},
+		},
+		{
+			name: "read heading with comma passthrough",
+			op:   backend.OpRead,
+			args: backend.Args{Path: path, Section: "## Foo, Bar"},
+			want: backend.Args{Path: path, Section: "## Foo, Bar"},
 		},
 		{
 			name: "read full skips anchor",
