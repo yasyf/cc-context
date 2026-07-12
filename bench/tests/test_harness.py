@@ -180,6 +180,10 @@ class TestLargeContextBuilder(unittest.TestCase):
                 "flood-t4-tornado-initialize",
                 "flood-t5-tornado-configurable",
                 "flood-t6-mux-matcher",
+                "flood-t5b-click-paramtype",
+                "flood-t5c-tornado-web-imports",
+                "flood-t5d-tornado-httpserver-imports",
+                "flood-t5e-tornado-websocket-imports",
             ],
         )
         for t in tasks:

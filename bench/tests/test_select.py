@@ -29,8 +29,19 @@ class TestSelectGlob(unittest.TestCase):
         self.assertEqual(len(ids), 6)
         self.assertNotIn("flood-t7-tornado-close-exec", ids)
 
-    def test_star_glob_includes_the_diagnostic(self) -> None:
-        self.assertEqual(len(select(taskgen.all_tasks(), _args(tasks="flood-*"))), 7)
+    def test_star_glob_includes_all_flood_tasks(self) -> None:
+        # T1–T6 + the four T5-family additions (T5b–e) + T7 diagnostic = 11.
+        self.assertEqual(len(select(taskgen.all_tasks(), _args(tasks="flood-*"))), 11)
+
+    def test_t5_family_glob_selects_the_five_resmoke_candidates(self) -> None:
+        ids = sorted(t.id for t in select(taskgen.all_tasks(), _args(tasks="flood-t5*")))
+        self.assertEqual(ids, [
+            "flood-t5-tornado-configurable",
+            "flood-t5b-click-paramtype",
+            "flood-t5c-tornado-web-imports",
+            "flood-t5d-tornado-httpserver-imports",
+            "flood-t5e-tornado-websocket-imports",
+        ])
 
     def test_comma_list_mixes_exact_and_glob(self) -> None:
         ids = sorted(t.id for t in select(taskgen.all_tasks(), _args(tasks="flood-t1-*,nav-click-command")))

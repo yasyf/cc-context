@@ -1,0 +1,63 @@
+{
+  "id": "flood-t5b-click-paramtype",
+  "category": "large_context",
+  "repo": "click",
+  "prompt": "In the `src/click/` library source, enumerate every public class declared at module scope (top level, not nested) that is a subclass of `ParamType`, directly or transitively through any chain of intermediate base classes (including private intermediates), including bases written as a dotted path. Exclude `ParamType` itself, and list only public names (not starting with `_`). List each class name exactly once.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "members": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "members"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "members",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "lc_predicate": {
+      "kind": "py_subclass_closure",
+      "base": "ParamType",
+      "files": [
+        "src/click/**/*.py"
+      ],
+      "expect_members": 15
+    },
+    "traversal_files": [
+      "src/click/types.py"
+    ],
+    "members": [
+      "BoolParamType",
+      "Choice",
+      "CompositeParamType",
+      "DateTime",
+      "File",
+      "FloatParamType",
+      "FloatRange",
+      "FuncParamType",
+      "IntParamType",
+      "IntRange",
+      "Path",
+      "StringParamType",
+      "Tuple",
+      "UUIDParameterType",
+      "UnprocessedParamType"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {},
+  "floor_exempt": true,
+  "arm_addenda": {}
+}

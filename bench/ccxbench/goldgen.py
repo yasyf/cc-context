@@ -72,6 +72,14 @@ def _base_name(base: ast.expr) -> str:
     return base.attr if isinstance(base, ast.Attribute) else getattr(base, "id", "")
 
 
+def _module_name(path: Path, checkout: Path) -> str:
+    """The dotted module name of a source file relative to the checkout root (`__init__` → the package)."""
+    parts = path.relative_to(checkout).with_suffix("").parts
+    if parts and parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
 def _predicate_files(checkout: Path, pred: dict) -> list[Path]:
     """Resolve a Python predicate's target files: a single `file`, or `files` glob patterns minus
     `exclude` glob patterns (matched against the checkout-relative path).
@@ -131,6 +139,34 @@ def recompute_lc_predicate(checkout: Path, pred: dict, repo: str) -> set[str]:
                     seen.add(child)
                     frontier.append(child)
         return {n for n in seen if public.get(n, False)}
+    if kind == "py_import_closure":
+        seed = pred["seed"]
+        files = _predicate_files(checkout, pred)
+        valid = {_module_name(p, checkout) for p in files}
+        edges: dict[str, set[str]] = defaultdict(set)
+        for path in files:
+            mod = _module_name(path, checkout)
+            for node in ast.walk(ast.parse(path.read_text())):
+                targets: set[str] = set()
+                if isinstance(node, ast.Import):
+                    targets.update(a.name for a in node.names)
+                elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+                    # A `from pkg import name` may pull the submodule `pkg.name` or just a name off `pkg`;
+                    # keep whichever is a real module. Counting both is what makes clause 5 deterministic.
+                    targets.add(node.module)
+                    targets.update(f"{node.module}.{a.name}" for a in node.names)
+                for t in targets:
+                    if t in valid and t != mod and "." in t:  # "." in t drops the bare root package
+                        edges[mod].add(t)
+        seen: set[str] = set()
+        frontier = [seed]
+        while frontier:
+            for child in edges.get(frontier.pop(), ()):
+                if child not in seen:
+                    seen.add(child)
+                    frontier.append(child)
+        seen.discard(seed)
+        return seen
     if kind == "go_callers":
         target = pred["target"]
         call = re.compile(rf"\b{re.escape(target)}\s*\(")

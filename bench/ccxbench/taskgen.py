@@ -264,6 +264,36 @@ def large_context_tasks() -> list[Task]:
         "tornado/ioloop.py", "tornado/netutil.py", "tornado/simple_httpclient.py",
         "tornado/platform/asyncio.py", "tornado/platform/caresresolver.py", "tornado/platform/twisted.py",
     ]
+    # T5-family import closures (T5c/d/e): traversal is the seed file plus every reached module's file.
+    tornado_web_import_files = [
+        "tornado/_locale_data.py", "tornado/autoreload.py", "tornado/concurrent.py", "tornado/escape.py",
+        "tornado/gen.py", "tornado/http1connection.py", "tornado/httpserver.py", "tornado/httputil.py",
+        "tornado/ioloop.py", "tornado/iostream.py", "tornado/locale.py", "tornado/log.py",
+        "tornado/netutil.py", "tornado/options.py", "tornado/platform/asyncio.py", "tornado/process.py",
+        "tornado/routing.py", "tornado/tcpserver.py", "tornado/template.py", "tornado/util.py", "tornado/web.py",
+    ]
+    tornado_httpserver_import_files = [
+        "tornado/concurrent.py", "tornado/escape.py", "tornado/gen.py", "tornado/http1connection.py",
+        "tornado/httpserver.py", "tornado/httputil.py", "tornado/ioloop.py", "tornado/iostream.py",
+        "tornado/log.py", "tornado/netutil.py", "tornado/options.py", "tornado/platform/asyncio.py",
+        "tornado/process.py", "tornado/tcpserver.py", "tornado/util.py",
+    ]
+    tornado_websocket_import_files = [
+        "tornado/concurrent.py", "tornado/escape.py", "tornado/gen.py", "tornado/http1connection.py",
+        "tornado/httpclient.py", "tornado/httputil.py", "tornado/ioloop.py", "tornado/iostream.py",
+        "tornado/locks.py", "tornado/log.py", "tornado/netutil.py", "tornado/options.py",
+        "tornado/platform/asyncio.py", "tornado/process.py", "tornado/queues.py", "tornado/simple_httpclient.py",
+        "tornado/tcpclient.py", "tornado/util.py", "tornado/websocket.py",
+    ]
+
+    def import_prompt(seed: str) -> str:
+        return (
+            f"Starting from `tornado/{seed}.py`, enumerate every first-party `tornado.*` module that it "
+            f"imports, directly or transitively through a chain of intermediate modules. Count a module if "
+            f"any import statement references it anywhere in a file, including inside a function or an "
+            f"`if TYPE_CHECKING:` block. Exclude standard-library and third-party imports, and exclude "
+            f"`tornado.{seed}` itself. List each module's dotted name exactly once."
+        )
 
     return [
         _lc("lc-click-get-command", "click", method_prompt("src/click/core.py", "get_command"),
@@ -312,9 +342,10 @@ def large_context_tasks() -> list[Task]:
             {"kind": "py_method", **tornado_pkg, "target": "initialize", "expect_members": 19},
             tornado_initialize_files),
         _lc("flood-t5-tornado-configurable", "tornado",
-            "Across the `tornado/` package, enumerate every class that is a subclass of `Configurable`, "
-            "directly or transitively through any chain of intermediate base classes, including bases "
-            "written as a dotted path. List each class name exactly once.",
+            "Across non-test source under `tornado/` (exclude anything under `tornado/test/`), enumerate "
+            "every public class declared at module scope that is a subclass of `Configurable`, directly "
+            "or transitively through any chain of intermediate base classes, including bases written as a "
+            "dotted path. Exclude `Configurable` itself. List each class name exactly once.",
             {"kind": "py_subclass_closure", "base": "Configurable", **tornado_pkg, "expect_members": 17},
             tornado_configurable_files),
         _lc("flood-t6-mux-matcher", "gorilla-mux",
@@ -324,6 +355,23 @@ def large_context_tasks() -> list[Task]:
             {"kind": "go_iface", "method": "Match", "params": ["*http.Request", "*RouteMatch"], "ret": "bool", "expect_members": 8},
             ["doc.go", "middleware.go", "mux.go", "regexp.go", "route.go", "test_helpers.go"],
             floor_exempt=True),
+        _lc("flood-t5b-click-paramtype", "click",
+            "In the `src/click/` library source, enumerate every public class declared at module scope "
+            "(top level, not nested) that is a subclass of `ParamType`, directly or transitively through "
+            "any chain of intermediate base classes (including private intermediates), including bases "
+            "written as a dotted path. Exclude `ParamType` itself, and list only public names (not starting "
+            "with `_`). List each class name exactly once.",
+            {"kind": "py_subclass_closure", "base": "ParamType", "files": ["src/click/**/*.py"], "expect_members": 15},
+            ["src/click/types.py"], floor_exempt=True),
+        _lc("flood-t5c-tornado-web-imports", "tornado", import_prompt("web"),
+            {"kind": "py_import_closure", "seed": "tornado.web", **tornado_pkg, "expect_members": 20},
+            tornado_web_import_files),
+        _lc("flood-t5d-tornado-httpserver-imports", "tornado", import_prompt("httpserver"),
+            {"kind": "py_import_closure", "seed": "tornado.httpserver", **tornado_pkg, "expect_members": 14},
+            tornado_httpserver_import_files),
+        _lc("flood-t5e-tornado-websocket-imports", "tornado", import_prompt("websocket"),
+            {"kind": "py_import_closure", "seed": "tornado.websocket", **tornado_pkg, "expect_members": 18},
+            tornado_websocket_import_files),
     ]
 
 

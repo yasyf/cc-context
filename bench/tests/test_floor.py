@@ -219,6 +219,31 @@ class TestFloodPredicates(unittest.TestCase):
             # The closure excludes Base itself (a class is not its own subclass) and _Priv (non-public).
             self.assertEqual(recompute_lc_predicate(root, pred, "r"), {"Mid", "Leaf"})
 
+    def test_py_import_closure_transitive_first_party_minus_seed_and_root(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pkg").mkdir()
+            (root / "pkg" / "__init__.py").write_text("")
+            (root / "pkg" / "seed.py").write_text(
+                "import os\n"                       # stdlib: not counted
+                "import pkg.direct\n"               # direct submodule
+                "from pkg import viafrom\n"         # `from pkg import X` -> pkg.viafrom
+                "def f():\n"
+                "    from pkg.infunc import g\n"     # import inside a function: counted
+            )
+            (root / "pkg" / "direct.py").write_text("from pkg.deep import h\n")   # transitive
+            (root / "pkg" / "viafrom.py").write_text("x = 1\n")
+            (root / "pkg" / "infunc.py").write_text("x = 1\n")
+            (root / "pkg" / "deep.py").write_text("x = 1\n")
+            (root / "pkg" / "unused.py").write_text("x = 1\n")                    # never imported
+            pred = {"kind": "py_import_closure", "seed": "pkg.seed", "files": ["pkg/**/*.py"]}
+            # Reaches direct, viafrom, infunc, and transitively deep. Excludes the seed, the bare `pkg`
+            # root package, stdlib (`os`), and the never-imported `pkg.unused`.
+            self.assertEqual(
+                recompute_lc_predicate(root, pred, "r"),
+                {"pkg.direct", "pkg.viafrom", "pkg.infunc", "pkg.deep"},
+            )
+
 
 class TestFloodCountsOnCheckout(unittest.TestCase):
     """Each Stage-1 flood predicate recomputes to its pinned member count on the real checkout —
@@ -233,6 +258,12 @@ class TestFloodCountsOnCheckout(unittest.TestCase):
             "flood-t4-tornado-initialize": 19,
             "flood-t5-tornado-configurable": 17,
             "flood-t6-mux-matcher": 8,
+            # T5-family iteration. The import closures are prompt-coherent (every referenced tornado.*
+            # submodule, root excluded) → 20/14/18, not the design's 16/14/15 (see report).
+            "flood-t5b-click-paramtype": 15,
+            "flood-t5c-tornado-web-imports": 20,
+            "flood-t5d-tornado-httpserver-imports": 14,
+            "flood-t5e-tornado-websocket-imports": 18,
         }
         tasks = {t.id: t for t in taskgen.large_context_tasks()}
         for tid, n in expect.items():

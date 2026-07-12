@@ -1,0 +1,87 @@
+{
+  "id": "flood-t5e-tornado-websocket-imports",
+  "category": "large_context",
+  "repo": "tornado",
+  "prompt": "Starting from `tornado/websocket.py`, enumerate every first-party `tornado.*` module that it imports, directly or transitively through a chain of intermediate modules. Count a module if any import statement references it anywhere in a file, including inside a function or an `if TYPE_CHECKING:` block. Exclude standard-library and third-party imports, and exclude `tornado.websocket` itself. List each module's dotted name exactly once.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "members": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "members"
+    ],
+    "additionalProperties": false
+  },
+  "grader": {
+    "kind": "set_match",
+    "spec": {
+      "field": "members",
+      "mode": "equal",
+      "lower": true
+    }
+  },
+  "gold": {
+    "lc_predicate": {
+      "kind": "py_import_closure",
+      "seed": "tornado.websocket",
+      "files": [
+        "tornado/**/*.py"
+      ],
+      "exclude": [
+        "tornado/test/*"
+      ],
+      "expect_members": 18
+    },
+    "traversal_files": [
+      "tornado/concurrent.py",
+      "tornado/escape.py",
+      "tornado/gen.py",
+      "tornado/http1connection.py",
+      "tornado/httpclient.py",
+      "tornado/httputil.py",
+      "tornado/ioloop.py",
+      "tornado/iostream.py",
+      "tornado/locks.py",
+      "tornado/log.py",
+      "tornado/netutil.py",
+      "tornado/options.py",
+      "tornado/platform/asyncio.py",
+      "tornado/process.py",
+      "tornado/queues.py",
+      "tornado/simple_httpclient.py",
+      "tornado/tcpclient.py",
+      "tornado/util.py",
+      "tornado/websocket.py"
+    ],
+    "members": [
+      "tornado.concurrent",
+      "tornado.escape",
+      "tornado.gen",
+      "tornado.http1connection",
+      "tornado.httpclient",
+      "tornado.httputil",
+      "tornado.ioloop",
+      "tornado.iostream",
+      "tornado.locks",
+      "tornado.log",
+      "tornado.netutil",
+      "tornado.options",
+      "tornado.platform.asyncio",
+      "tornado.process",
+      "tornado.queues",
+      "tornado.simple_httpclient",
+      "tornado.tcpclient",
+      "tornado.util"
+    ]
+  },
+  "ccx_helps": true,
+  "setup": {},
+  "floor_exempt": false,
+  "arm_addenda": {}
+}
