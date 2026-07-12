@@ -96,6 +96,7 @@ func TestNormalizeRange(t *testing.T) {
 		{"comma range", "30,40", "30-40"},
 		{"comma range with space", "30, 40", "30-40"},
 		{"comma range with spaces both sides", "30 , 40", "30-40"},
+		{"comma range with surrounding whitespace", " 30,40 ", "30-40"},
 		{"dash range unchanged", "30-40", "30-40"},
 		{"single line unchanged", "30", "30"},
 		{"heading with comma unchanged", "## Foo, Bar", "## Foo, Bar"},

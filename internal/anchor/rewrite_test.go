@@ -84,6 +84,12 @@ func TestRewriteArgs(t *testing.T) {
 			want: backend.Args{Path: path, Section: "## Foo, Bar"},
 		},
 		{
+			name: "read three-part comma passthrough",
+			op:   backend.OpRead,
+			args: backend.Args{Path: path, Section: "5,7,9"},
+			want: backend.Args{Path: path, Section: "5,7,9"},
+		},
+		{
 			name: "read full skips anchor",
 			op:   backend.OpRead,
 			args: backend.Args{Path: path, Section: anchor.Format(2, beta), Full: true},

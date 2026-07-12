@@ -66,7 +66,7 @@ var (
 	numericRe    = regexp.MustCompile(`^\d+(?:-\d+)?$`)
 	anchorRe     = regexp.MustCompile(`^(?:(\d+)(?:-(\d+))?#)?([a-hjkmnp-tv-z][0-9a-hjkmnp-tv-z]{3})$`)
 	anchorishRe  = regexp.MustCompile(`^\d[\d-]*#`)
-	commaRangeRe = regexp.MustCompile(`^(\d+)\s*,\s*(\d+)$`)
+	commaRangeRe = regexp.MustCompile(`^\s*(\d+)\s*,\s*(\d+)\s*$`)
 )
 
 // NormalizeRange rewrites a comma-separated numeric range ("A,B" or "A, B") to

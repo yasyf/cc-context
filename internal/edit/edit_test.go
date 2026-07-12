@@ -165,11 +165,18 @@ func TestRun(t *testing.T) {
 			wantErr: "out of bounds",
 		},
 		{
-			name:    "non-anchor non-numeric section errors",
+			name:    "non-anchor non-numeric section errors naming both range forms",
 			content: "a\nb\n",
 			section: "## Heading",
 			editArg: "X",
-			wantErr: "neither a line range nor an anchor",
+			wantErr: `("A-B" or "A,B")`,
+		},
+		{
+			name:    "three-part comma is still invalid",
+			content: "a\nb\nc\n",
+			section: "1,2,3",
+			editArg: "X",
+			wantErr: `("A-B" or "A,B")`,
 		},
 	}
 	for _, tt := range tests {

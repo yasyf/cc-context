@@ -83,7 +83,6 @@ func Run(a backend.Args) (string, error) {
 // any relocation. An anchored ref re-resolves by content (vanished or ambiguous
 // errors); a plain numeric range is bounds-checked but unverified.
 func resolve(f *anchor.File, section string) (start, end int, move *anchor.Move, err error) {
-	section = anchor.NormalizeRange(section)
 	ref, ok, err := anchor.Parse(section)
 	if err != nil {
 		return 0, 0, nil, err
@@ -97,7 +96,7 @@ func resolve(f *anchor.File, section string) (start, end int, move *anchor.Move,
 	}
 	start, end, numeric := parseNumeric(section)
 	if !numeric {
-		return 0, 0, nil, fmt.Errorf("section %q is neither a line range nor an anchor", section)
+		return 0, 0, nil, fmt.Errorf("section %q is not a line range (%q or %q), a single line, or an anchor", section, "A-B", "A,B")
 	}
 	if start < 1 || start > end || end > len(f.Lines()) {
 		return 0, 0, nil, fmt.Errorf("line range %s out of bounds: file has %d lines", section, len(f.Lines()))
@@ -105,9 +104,11 @@ func resolve(f *anchor.File, section string) (start, end int, move *anchor.Move,
 	return start, end, nil, nil
 }
 
-// parseNumeric parses a plain "A" or "A-B" line range; ok is false for anything
-// else (a heading, an empty section, garbage).
+// parseNumeric parses a line range — a plain "A", a dash "A-B", or the comma
+// alias "A,B" — into 1-indexed bounds; ok is false for anything else (a heading,
+// an empty section, garbage).
 func parseNumeric(section string) (start, end int, ok bool) {
+	section = anchor.NormalizeRange(section)
 	dash := strings.IndexByte(section, '-')
 	if dash < 0 {
 		n, err := strconv.Atoi(section)
