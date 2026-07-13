@@ -10,8 +10,17 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from captain_hook import CommandLine
 
+from hooks import common
 from hooks.common import ccx_supports
+
+# `ccx code grep --help` text once the rg engine (v0.7.0+) lands vs. before it does. SUPPORTS_HELP
+# carries `--ignore-case` but not `--regex`, so it doubles as an old binary (v0.7–v0.10): `-i`/`-w`
+# rewrite, but regex/multi-file shapes fall through. REGEX_SUPPORTS_HELP adds `--regex` (v0.11.0+).
+SUPPORTS_HELP = "usage: ccx code grep [-i, --ignore-case] [-w, --word] [--glob G] ..."
+REGEX_SUPPORTS_HELP = "usage: ccx code grep [-i, --ignore-case] [-w, --word] [-E, --regex] [--glob G] ..."
+NO_SUPPORT_HELP = "usage: ccx code grep [--glob G] [--expand int] ..."
 
 
 def fake_run(returncode: int, stdout: str = "", stderr: str = ""):
@@ -29,6 +38,14 @@ def fake_run(returncode: int, stdout: str = "", stderr: str = ""):
         return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
     return run
+
+
+def make_evt(command: str) -> SimpleNamespace:
+    return SimpleNamespace(command_line=CommandLine.parse(command), command=command)
+
+
+def probe(monkeypatch: pytest.MonkeyPatch, help_text: str) -> None:
+    monkeypatch.setattr(common.subprocess, "run", fake_run(0, stdout=help_text))
 
 
 @pytest.fixture(autouse=True)

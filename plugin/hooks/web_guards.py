@@ -2,7 +2,7 @@
 
 A ``WebFetch`` pulls a whole page through a lossy extraction into context, and a raw
 ``curl``/``wget`` page dump to stdout floods it the same way — the web analogue of the
-file-read floods :mod:`read_guards`/:mod:`command_rewrites` already steer. Both guards
+file-read floods :mod:`read_guards`/:mod:`cat_rewrites` already steer. Both guards
 point at the landed ``ccx web`` surface: ``ccx web outline <url>`` maps a page's headings,
 ``ccx web read <url> --section <ref>`` returns one budget-capped section, and
 ``ccx web search <url> "<question>"`` answers a prompt with the top-k relevant excerpts.

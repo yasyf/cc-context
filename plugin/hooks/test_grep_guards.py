@@ -1,17 +1,17 @@
-"""Tests for the version-gated grep/rg rewrites in ``search_guards``.
+"""Tests for the version-gated grep rewrites in ``grep_guards``.
 
 Run from the repo root against the captain-hook source env, with ``plugin/`` on the
 path so the ``hooks`` package (and its relative imports) resolves::
 
     PYTHONPATH=plugin uv run --project ../captain-hook --with pytest \
-        pytest plugin/hooks/test_search_guards.py
+        pytest plugin/hooks/test_grep_guards.py
 
 The ``-i``/``-w`` rewrites are gated on ``ccx_supports("code", "grep", flag="--ignore-case")``,
 which shells out to ``ccx … --help`` — an environment-dependent probe, so those shapes can
 never live in inline ``tests={}`` (they would rewrite or block depending on the local binary).
 Here the probe boundary (``ccx_bin`` + ``subprocess.run``) is monkeypatched and the
 ``ccx_supports`` cache is cleared around every case so a result never leaks between them;
-``search_guards.ccx_bin`` is pinned too so the rewritten command is deterministic.
+``search_common.ccx_bin`` is pinned too so the rewritten command is deterministic.
 
 ``path_blocked`` shells ``git check-ignore`` through that *same* module-global
 ``subprocess.run``, so :func:`fake_run` answers a check-ignore probe "not ignored" (exit 1)
@@ -21,32 +21,15 @@ as "path is ignored" and block every rewrite.
 
 from __future__ import annotations
 
-import subprocess
-from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from captain_hook import CommandLine
 
-from conftest import fake_run
-from hooks import common, search_guards
+from conftest import NO_SUPPORT_HELP, REGEX_SUPPORTS_HELP, SUPPORTS_HELP, fake_run, make_evt, probe
+from hooks import common, grep_guards, rg_guards, search_common
 from hooks.common import ccx_supports
-
-# `ccx code grep --help` text once the rg engine (v0.7.0+) lands vs. before it does. SUPPORTS_HELP
-# carries `--ignore-case` but not `--regex`, so it doubles as an old binary (v0.7–v0.10): `-i`/`-w`
-# rewrite, but regex/multi-file shapes fall through. REGEX_SUPPORTS_HELP adds `--regex` (v0.11.0+).
-SUPPORTS_HELP = "usage: ccx code grep [-i, --ignore-case] [-w, --word] [--glob G] ..."
-REGEX_SUPPORTS_HELP = "usage: ccx code grep [-i, --ignore-case] [-w, --word] [-E, --regex] [--glob G] ..."
-NO_SUPPORT_HELP = "usage: ccx code grep [--glob G] [--expand int] ..."
-
-
-def make_evt(command: str) -> SimpleNamespace:
-    return SimpleNamespace(command_line=CommandLine.parse(command), command=command)
-
-
-def probe(monkeypatch: pytest.MonkeyPatch, help_text: str) -> None:
-    monkeypatch.setattr(common.subprocess, "run", fake_run(0, stdout=help_text))
 
 
 class TestGrepIgnoreCaseWord:
@@ -56,7 +39,7 @@ class TestGrepIgnoreCaseWord:
         # (finding 1), so a bare cwd would block these at parse instead of exercising the gate.
         (tmp_path / "src").mkdir()
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
         monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
         ccx_supports.cache_clear()
         yield
@@ -75,17 +58,17 @@ class TestGrepIgnoreCaseWord:
     )
     def test_rewrites_when_supported(self, monkeypatch: pytest.MonkeyPatch, command: str, expected: str) -> None:
         probe(monkeypatch, SUPPORTS_HELP)
-        assert search_guards.grep_to(make_evt(command)) == expected
+        assert grep_guards.grep_to(make_evt(command)) == expected
 
     @pytest.mark.parametrize("command", ["grep -i foo src/", "grep -w foo src/", "grep -i -w foo src/"])
     def test_blocks_when_flag_absent(self, monkeypatch: pytest.MonkeyPatch, command: str) -> None:
         # `--help` returns 0 but without `--ignore-case` (an older binary) → fall back to block.
         probe(monkeypatch, NO_SUPPORT_HELP)
-        assert search_guards.grep_to(make_evt(command)) is None
+        assert grep_guards.grep_to(make_evt(command)) is None
 
     def test_blocks_when_probe_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(common.subprocess, "run", fake_run(1, stderr='unknown flag "--ignore-case"'))
-        assert search_guards.grep_to(make_evt("grep -i foo src/")) is None
+        assert grep_guards.grep_to(make_evt("grep -i foo src/")) is None
 
     def test_ungated_shape_never_probes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A grep with no -i/-w must not shell the `--help` probe — it rewrites unconditionally. The
@@ -97,19 +80,19 @@ class TestGrepIgnoreCaseWord:
             raise AssertionError("ccx_supports must not probe for a grep without -i/-w")
 
         monkeypatch.setattr(common.subprocess, "run", no_probe)
-        assert search_guards.grep_to(make_evt("grep -rn foo src/")) == "/fake/ccx code grep foo --glob 'src/**'"
+        assert grep_guards.grep_to(make_evt("grep -rn foo src/")) == "/fake/ccx code grep foo --glob 'src/**'"
 
 
 class TestGrepNote:
     # Repo-wide shapes (no path) so the note is disk-independent: `grep_note` runs `grep_parse`,
     # which now classifies path operands against the filesystem.
     def test_discloses_l_fixed_and_expand_drops(self) -> None:
-        note = search_guards.grep_note(make_evt("grep -rlF -C 3 foo"))
+        note = grep_guards.grep_note(make_evt("grep -rlF -C 3 foo"))
         assert "`-l`" in note and "`-F`" in note and "--expand=3" in note
 
     def test_context_flag_discloses_count_drop(self) -> None:
         # Finding 6: the user's `-C N` count is dropped, and `--expand=3` is full-source, not context lines.
-        note = search_guards.grep_note(make_evt("grep -rn -C 3 foo"))
+        note = grep_guards.grep_note(make_evt("grep -rn -C 3 foo"))
         assert "count was dropped" in note and "--expand=3" in note
 
     def test_dot_pattern_regex_rewrites_not_literal(self) -> None:
@@ -117,16 +100,16 @@ class TestGrepNote:
         # the engine, not the old any-char-literal disclosure. rg still literal-rewrites `.` (its
         # default engine reads `.` as a wildcard the literal search can't honor), so the
         # `.`-literal disclosure stays live there.
-        grep_note = search_guards.grep_note(make_evt("grep -rn foo.bar"))
+        grep_note = grep_guards.grep_note(make_evt("grep -rn foo.bar"))
         assert "regex on the rg engine" in grep_note and "any-char" not in grep_note
-        assert "any-char" in search_guards.rg_note(make_evt("rg foo.bar"))
+        assert "any-char" in rg_guards.rg_note(make_evt("rg foo.bar"))
 
     def test_no_dot_carries_no_dot_disclosure(self) -> None:
-        note = search_guards.grep_note(make_evt("grep -rn foobar"))
+        note = grep_guards.grep_note(make_evt("grep -rn foobar"))
         assert "any-char" not in note
 
     def test_plain_rewrite_carries_no_disclosures(self) -> None:
-        note = search_guards.grep_note(make_evt("grep -rn foobar"))
+        note = grep_guards.grep_note(make_evt("grep -rn foobar"))
         assert note.endswith("token-bounded.")
 
 
@@ -144,7 +127,7 @@ class TestGrepPathGlobbing:
         (tmp_path / "v2.5").mkdir()  # dotted directory — the old extension heuristic mis-read it as a file
         (tmp_path / "file.py").write_text("x\n")
         (tmp_path / "Makefile").write_text("all:\n")  # extensionless file — the old heuristic mis-read it as a dir
-        monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
         monkeypatch.chdir(tmp_path)
         return tmp_path
 
@@ -161,7 +144,7 @@ class TestGrepPathGlobbing:
         ],
     )
     def test_disk_classified_globs(self, tree: Path, command: str, expected: str) -> None:
-        assert search_guards.grep_to(make_evt(command)) == expected
+        assert grep_guards.grep_to(make_evt(command)) == expected
 
     @pytest.mark.parametrize(
         "command",
@@ -172,7 +155,7 @@ class TestGrepPathGlobbing:
         ],
     )
     def test_nonexistent_path_blocks(self, tree: Path, command: str) -> None:
-        assert search_guards.grep_to(make_evt(command)) is None
+        assert grep_guards.grep_to(make_evt(command)) is None
 
 
 class TestGrepRepoWide:
@@ -183,7 +166,7 @@ class TestGrepRepoWide:
 
     @pytest.fixture(autouse=True)
     def pin_ccx(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
 
     @pytest.mark.parametrize(
         "command, expected",
@@ -197,150 +180,7 @@ class TestGrepRepoWide:
         ],
     )
     def test_no_dir_glob(self, command: str, expected: str) -> None:
-        assert search_guards.grep_to(make_evt(command)) == expected
-
-
-class TestRgIgnoreCaseWord:
-    """`rg -i`/`-w`/`--ignore-case` gate exactly as grep's do — through the same
-    `ccx_supports("code","grep",flag="--ignore-case")` probe, mocked at the `subprocess.run`
-    boundary — and an rg without `-i`/`-w` must never shell that probe.
-    """
-
-    @pytest.fixture(autouse=True)
-    def pin_ccx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        # `src/` must exist: `rg_parse` classifies path operands against the filesystem, so a
-        # bare cwd would block these at parse instead of exercising the gate.
-        (tmp_path / "src").mkdir()
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
-        monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
-        ccx_supports.cache_clear()
-        yield
-        ccx_supports.cache_clear()
-
-    @pytest.mark.parametrize(
-        "command, expected",
-        [
-            ("rg -i foo src/", "/fake/ccx code grep foo -i --glob 'src/**'"),
-            ("rg -w foo src/", "/fake/ccx code grep foo -w --glob 'src/**'"),
-            ("rg --ignore-case foo src/", "/fake/ccx code grep foo -i --glob 'src/**'"),  # long form
-        ],
-    )
-    def test_rewrites_when_supported(self, monkeypatch: pytest.MonkeyPatch, command: str, expected: str) -> None:
-        probe(monkeypatch, SUPPORTS_HELP)
-        assert search_guards.rg_to(make_evt(command)) == expected
-
-    @pytest.mark.parametrize("command", ["rg -i foo src/", "rg -w foo src/"])
-    def test_blocks_when_flag_absent(self, monkeypatch: pytest.MonkeyPatch, command: str) -> None:
-        # `--help` exits 0 but without `--ignore-case` (an older binary) → fall back to block.
-        probe(monkeypatch, NO_SUPPORT_HELP)
-        assert search_guards.rg_to(make_evt(command)) is None
-
-    def test_blocks_when_probe_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(common.subprocess, "run", fake_run(1, stderr='unknown flag "--ignore-case"'))
-        assert search_guards.rg_to(make_evt("rg -i foo src/")) is None
-
-    def test_ungated_shape_never_probes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # A bare `rg foo src/` (no -i/-w) rewrites without shelling the `--help` probe.
-        def no_probe(cmd: list[str], *_args: object, **_kwargs: object) -> SimpleNamespace:
-            if cmd[:2] == ["git", "check-ignore"]:
-                return SimpleNamespace(returncode=1, stdout="", stderr="")
-            raise AssertionError("ccx_supports must not probe for an rg without -i/-w")
-
-        monkeypatch.setattr(common.subprocess, "run", no_probe)
-        assert search_guards.rg_to(make_evt("rg foo src/")) == "/fake/ccx code grep foo --glob 'src/**'"
-
-
-class TestRgPathGlobbing:
-    """rg path operands share grep's on-disk classifier (`grep_glob`): a directory → `dir/**`,
-    an explicit file passes through, several dirs brace together, an absent path blocks. Exact
-    equality catches a wrongly narrowed `--glob`.
-    """
-
-    @pytest.fixture
-    def tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        (tmp_path / "src").mkdir()
-        (tmp_path / "internal").mkdir()
-        (tmp_path / "file.py").write_text("x\n")
-        monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
-        monkeypatch.chdir(tmp_path)
-        return tmp_path
-
-    @pytest.mark.parametrize(
-        "command, expected",
-        [
-            ("rg foo src/", "/fake/ccx code grep foo --glob 'src/**'"),
-            # `.py` isn't in NON_SOURCE_EXTS — an explicit source file is gated (not exempted), so it rewrites.
-            ("rg foo file.py", "/fake/ccx code grep foo --glob file.py"),
-            ("rg foo src/ internal/", "/fake/ccx code grep foo --glob '{src,internal}/**'"),  # braced multi-dir
-        ],
-    )
-    def test_disk_classified_globs(self, tree: Path, command: str, expected: str) -> None:
-        assert search_guards.rg_to(make_evt(command)) == expected
-
-    def test_nonexistent_path_blocks(self, tree: Path) -> None:
-        # An absent path has no faithful glob → block, never guess.
-        assert search_guards.rg_to(make_evt("rg foo nonexistent/")) is None
-
-
-class TestIgnoredDirTargets:
-    """The silent-0-match regression, both executables: a search aimed inside a hidden or
-    gitignored directory must block with the dependency-source steer, never rewrite to a
-    `--glob` a stale `ccx` silently 0-matches. The directory exists on disk — existence is
-    exactly what the dropped rewrite trusted — so the block must fire regardless.
-    """
-
-    @pytest.fixture(autouse=True)
-    def pin_ccx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
-        monkeypatch.chdir(tmp_path)
-
-    def test_rg_hidden_dir_blocks(self, tmp_path: Path) -> None:
-        (tmp_path / ".venv" / "lib").mkdir(parents=True)
-        # The verbatim incident shape minus its pipe still reaches `rg_to`, and still blocks.
-        assert search_guards.rg_to(make_evt("rg -n 'class ToolUse' .venv/lib/ -A 20")) is None
-
-    def test_grep_hidden_dir_blocks(self, tmp_path: Path) -> None:
-        (tmp_path / ".venv").mkdir()
-        assert search_guards.grep_to(make_evt("grep -rn foo .venv/")) is None
-
-    @pytest.mark.parametrize(
-        "to, command",
-        [
-            (search_guards.rg_to, "rg foo vendor/"),
-            (search_guards.grep_to, "grep -rn foo vendor/"),
-        ],
-    )
-    def test_gitignored_dir_blocks(
-        self, tmp_path: Path, to: Callable[[SimpleNamespace], str | None], command: str
-    ) -> None:
-        # The `git check-ignore` arm of `path_blocked`: a real repo whose .gitignore lists the dir.
-        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-        (tmp_path / ".gitignore").write_text("vendor/\n")
-        (tmp_path / "vendor").mkdir()
-        assert to(make_evt(command)) is None
-
-    def test_mixed_data_and_source_target_stays_gated(self) -> None:
-        # A data-file operand does not exempt a line that also targets a source dir: the one
-        # source-directed operand keeps `RgNonSourceTargets` from skipping the gate.
-        command = "rg foo app.log src/"
-        cl = CommandLine.parse(command)
-        assert search_guards.RgNonSourceTargets().check_command_line(make_evt(command), cl) is False
-
-    def test_trailing_slash_defeats_data_file_exemption(self) -> None:
-        # `src.log/` is a directory, not a `.log` data file (`Path.suffix` strips the slash to
-        # `.log`) — the trailing slash must defeat the exemption; the slashless sibling stays exempt.
-        gated = "rg TODO src.log/"
-        assert search_guards.RgNonSourceTargets().check_command_line(make_evt(gated), CommandLine.parse(gated)) is False
-        exempt = "rg TODO src.log"
-        assert search_guards.RgNonSourceTargets().check_command_line(make_evt(exempt), CommandLine.parse(exempt)) is True
-
-    def test_value_short_flag_defeats_data_file_exemption(self) -> None:
-        # `-d` is rg's max-depth (a value short), not a boolean — the walk must consume its `1`
-        # rather than leak it as a phantom pattern that leaves `app.log` a lone data operand.
-        command = "rg -d 1 app.log"
-        cl = CommandLine.parse(command)
-        assert search_guards.RgNonSourceTargets().check_command_line(make_evt(command), cl) is False
+        assert grep_guards.grep_to(make_evt(command)) == expected
 
 
 class TestRegexRewritable:
@@ -354,7 +194,7 @@ class TestRegexRewritable:
     def pin_ccx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         # `.` widens to repo-wide, so these shapes are disk-independent apart from the `--regex` probe.
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
         monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
         probe(monkeypatch, REGEX_SUPPORTS_HELP)
         ccx_supports.cache_clear()
@@ -373,7 +213,7 @@ class TestRegexRewritable:
         ],
     )
     def test_admits_dialect_faithful(self, command: str, expected: str) -> None:
-        assert search_guards.grep_to(make_evt(command)) == expected
+        assert grep_guards.grep_to(make_evt(command)) == expected
 
     @pytest.mark.parametrize(
         "command",
@@ -390,8 +230,8 @@ class TestRegexRewritable:
     )
     def test_rejects_dialect_divergent(self, command: str) -> None:
         # Unrewritable over `.` (a tree-wide dir, unbounded): no rewrite, so the condition fires (block).
-        assert search_guards.grep_to(make_evt(command)) is None
-        assert search_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
+        assert grep_guards.grep_to(make_evt(command)) is None
+        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
 
 
 class TestGrepDialectClassification:
@@ -404,7 +244,7 @@ class TestGrepDialectClassification:
     def tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         (tmp_path / "f").write_text("x\n")
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
         monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
         ccx_supports.cache_clear()
         yield
@@ -412,11 +252,11 @@ class TestGrepDialectClassification:
 
     def test_ere_plus_rewrites_regex(self, monkeypatch: pytest.MonkeyPatch) -> None:
         probe(monkeypatch, REGEX_SUPPORTS_HELP)
-        assert search_guards.grep_to(make_evt("grep -E 'a+' f")) == "/fake/ccx code grep a+ --regex --glob f"
+        assert grep_guards.grep_to(make_evt("grep -E 'a+' f")) == "/fake/ccx code grep a+ --regex --glob f"
 
     def test_bre_plus_stays_literal(self, monkeypatch: pytest.MonkeyPatch) -> None:
         probe(monkeypatch, NO_SUPPORT_HELP)  # literal rewrite needs no --regex probe
-        assert search_guards.grep_to(make_evt("grep 'a+' f")) == "/fake/ccx code grep a+ --glob f"
+        assert grep_guards.grep_to(make_evt("grep 'a+' f")) == "/fake/ccx code grep a+ --glob f"
 
     def test_fixed_metachar_never_flips_to_regex(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # `grep -F 'foo.*' f`: -F forces literal, `foo.*` isn't ccx-literal-safe → not rewritable.
@@ -424,8 +264,8 @@ class TestGrepDialectClassification:
         # and it certainly never rewrites with `--regex`.
         probe(monkeypatch, REGEX_SUPPORTS_HELP)
         cl = CommandLine.parse("grep -F 'foo.*' f")
-        assert search_guards.grep_to(make_evt("grep -F 'foo.*' f")) is None
-        assert search_guards.GrepFlood().check_command_line(make_evt("grep -F 'foo.*' f"), cl) is False
+        assert grep_guards.grep_to(make_evt("grep -F 'foo.*' f")) is None
+        assert grep_guards.GrepFlood().check_command_line(make_evt("grep -F 'foo.*' f"), cl) is False
 
 
 class TestGrepRegexRewrite:
@@ -438,7 +278,7 @@ class TestGrepRegexRewrite:
     def pin_ccx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         # `.` (the cwd) widens to repo-wide, so these shapes are disk-independent apart from the probe.
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
         monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
         ccx_supports.cache_clear()
         yield
@@ -455,7 +295,7 @@ class TestGrepRegexRewrite:
     )
     def test_regex_safe_rewrites(self, monkeypatch: pytest.MonkeyPatch, command: str, expected: str) -> None:
         probe(monkeypatch, REGEX_SUPPORTS_HELP)
-        assert search_guards.grep_to(make_evt(command)) == expected
+        assert grep_guards.grep_to(make_evt(command)) == expected
 
     @pytest.mark.parametrize(
         "command, expected",
@@ -471,7 +311,7 @@ class TestGrepRegexRewrite:
     )
     def test_bre_translation_rewrites(self, monkeypatch: pytest.MonkeyPatch, command: str, expected: str) -> None:
         probe(monkeypatch, REGEX_SUPPORTS_HELP)
-        assert search_guards.grep_to(make_evt(command)) == expected
+        assert grep_guards.grep_to(make_evt(command)) == expected
 
     def test_incident_bre_alternation_over_dir_rewrites(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -480,7 +320,7 @@ class TestGrepRegexRewrite:
         # `ccx code grep --regex`, the `\|` alternation translated to Rust's `|`.
         (tmp_path / "src").mkdir()
         probe(monkeypatch, REGEX_SUPPORTS_HELP)
-        out = search_guards.grep_to(make_evt("grep -e 'hybrid\\|Onward\\|Bridge' src/"))
+        out = grep_guards.grep_to(make_evt("grep -e 'hybrid\\|Onward\\|Bridge' src/"))
         assert out is not None
         assert "--regex" in out and "'hybrid|Onward|Bridge'" in out
 
@@ -499,13 +339,13 @@ class TestGrepRegexRewrite:
     )
     def test_unmappable_regex_blocks(self, monkeypatch: pytest.MonkeyPatch, command: str) -> None:
         probe(monkeypatch, REGEX_SUPPORTS_HELP)
-        assert search_guards.grep_to(make_evt(command)) is None
+        assert grep_guards.grep_to(make_evt(command)) is None
 
     def test_ere_alternation_stays_bre_literal_without_dash_e(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # `a|b` under the BRE default does NOT rewrite; the same pattern under `-E` does.
         probe(monkeypatch, REGEX_SUPPORTS_HELP)
-        assert search_guards.grep_to(make_evt("grep 'a|b' .")) is None
-        assert search_guards.grep_to(make_evt("grep -E 'a|b' .")) == "/fake/ccx code grep 'a|b' --regex"
+        assert grep_guards.grep_to(make_evt("grep 'a|b' .")) is None
+        assert grep_guards.grep_to(make_evt("grep -E 'a|b' .")) == "/fake/ccx code grep 'a|b' --regex"
 
     def test_probe_fail_over_existing_file_allows(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Old binary (no `--regex`): a regex grep over an explicit existing file is bounded and
@@ -513,20 +353,20 @@ class TestGrepRegexRewrite:
         (tmp_path / "real.py").write_text("x\n")
         probe(monkeypatch, SUPPORTS_HELP)
         cl = CommandLine.parse("grep 'foo.*' real.py")
-        assert search_guards.grep_to(make_evt("grep 'foo.*' real.py")) is None
-        assert search_guards.GrepFlood().check_command_line(make_evt("grep 'foo.*' real.py"), cl) is False
+        assert grep_guards.grep_to(make_evt("grep 'foo.*' real.py")) is None
+        assert grep_guards.GrepFlood().check_command_line(make_evt("grep 'foo.*' real.py"), cl) is False
 
     def test_probe_fail_tree_wide_blocks(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Old binary + `.` (a dir, not a bounded file): unrewritable and unbounded → the condition fires
         # and `grep_to` is None → block.
         probe(monkeypatch, SUPPORTS_HELP)
         cl = CommandLine.parse("grep 'foo.*' .")
-        assert search_guards.grep_to(make_evt("grep 'foo.*' .")) is None
-        assert search_guards.GrepFlood().check_command_line(make_evt("grep 'foo.*' ."), cl) is True
+        assert grep_guards.grep_to(make_evt("grep 'foo.*' .")) is None
+        assert grep_guards.GrepFlood().check_command_line(make_evt("grep 'foo.*' ."), cl) is True
 
     def test_regex_note_discloses_rg_engine(self) -> None:
         # The note for a regex rewrite names the engine; the dot-literal disclosure does not apply.
-        note = search_guards.grep_note(make_evt("grep 'foo.*' ."))
+        note = grep_guards.grep_note(make_evt("grep 'foo.*' ."))
         assert "regex on the rg engine" in note and "any-char" not in note
 
 
@@ -542,7 +382,7 @@ class TestGrepMultiFilePaths:
         (tmp_path / "safe").write_text("z\n")
         (tmp_path / "--regex").write_text("w\n")  # a real file whose name looks like a ccx flag
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
         monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
         ccx_supports.cache_clear()
         yield
@@ -551,7 +391,7 @@ class TestGrepMultiFilePaths:
     def test_multi_file_carries_operands(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Finding 3: operands land after a literal `--` so cobra reads them as file positionals.
         probe(monkeypatch, REGEX_SUPPORTS_HELP)
-        assert search_guards.grep_to(make_evt("grep foo a.py b.py")) == "/fake/ccx code grep foo -- a.py b.py"
+        assert grep_guards.grep_to(make_evt("grep foo a.py b.py")) == "/fake/ccx code grep foo -- a.py b.py"
 
     def test_flag_like_operand_stays_behind_separator(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Finding 3 repro: `grep 'a+' -- safe --regex` — grep's own `--` marks `--regex` a filename.
@@ -559,22 +399,22 @@ class TestGrepMultiFilePaths:
         # the ccx `--regex` flag and flip the literal `a+` search into a regex one.
         probe(monkeypatch, REGEX_SUPPORTS_HELP)
         assert (
-            search_guards.grep_to(make_evt("grep 'a+' -- safe --regex"))
+            grep_guards.grep_to(make_evt("grep 'a+' -- safe --regex"))
             == "/fake/ccx code grep a+ -- safe --regex"
         )
 
     def test_single_file_keeps_glob_form(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # One explicit file stays on the old `--glob <file>` form (no `--regex` probe needed).
         probe(monkeypatch, NO_SUPPORT_HELP)
-        assert search_guards.grep_to(make_evt("grep foo a.py")) == "/fake/ccx code grep foo --glob a.py"
+        assert grep_guards.grep_to(make_evt("grep foo a.py")) == "/fake/ccx code grep foo --glob a.py"
 
     def test_multi_file_probe_fail_allows(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Old binary lacking `--regex`/multi-file: unrewritable, but both operands are bounded existing
         # files → the condition never fires (genuine allow).
         probe(monkeypatch, SUPPORTS_HELP)
         cl = CommandLine.parse("grep foo a.py b.py")
-        assert search_guards.grep_to(make_evt("grep foo a.py b.py")) is None
-        assert search_guards.GrepFlood().check_command_line(make_evt("grep foo a.py b.py"), cl) is False
+        assert grep_guards.grep_to(make_evt("grep foo a.py b.py")) is None
+        assert grep_guards.GrepFlood().check_command_line(make_evt("grep foo a.py b.py"), cl) is False
 
 
 class TestGrepBoundedPassthrough:
@@ -596,7 +436,7 @@ class TestGrepBoundedPassthrough:
         (tmp_path / "sub").mkdir()
         (tmp_path / "dir.json").mkdir()  # a real directory named like a data file
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
         monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
 
     @pytest.mark.parametrize(
@@ -609,7 +449,7 @@ class TestGrepBoundedPassthrough:
         ],
     )
     def test_bounded_existing_files_do_not_fire(self, command: str) -> None:
-        assert search_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is False
+        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is False
 
     @pytest.mark.parametrize(
         "command",
@@ -625,7 +465,7 @@ class TestGrepBoundedPassthrough:
     def test_output_bounded_skips_size_cap(self, command: str) -> None:
         # -c/-q/-l/-L output is one line per operand, not per match, so an over-cap existing file
         # (big.py > LARGE_READ_BYTES) stays bounded — the condition is silent and the grep runs as-is.
-        assert search_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is False
+        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is False
 
     @pytest.mark.parametrize(
         "command",
@@ -639,8 +479,8 @@ class TestGrepBoundedPassthrough:
     def test_output_bounded_skip_stays_narrow(self, command: str) -> None:
         # The skip is only for -c/-q/-l/-L over existing regular files; -o, directories, and missing
         # operands still block (the condition fires and `grep_to` yields no rewrite).
-        assert search_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
-        assert search_guards.grep_to(make_evt(command)) is None
+        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
+        assert grep_guards.grep_to(make_evt(command)) is None
 
     @pytest.mark.parametrize(
         "command",
@@ -659,8 +499,8 @@ class TestGrepBoundedPassthrough:
         ],
     )
     def test_unbounded_grep_fires_and_blocks(self, command: str) -> None:
-        assert search_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
-        assert search_guards.grep_to(make_evt(command)) is None
+        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
+        assert grep_guards.grep_to(make_evt(command)) is None
 
     @pytest.mark.parametrize(
         "command",
@@ -673,24 +513,24 @@ class TestGrepBoundedPassthrough:
     def test_recursion_or_directory_defeats_data_ext(self, command: str) -> None:
         # Recursion or a trailing slash forfeits the no-stat data-ext pass → unbounded → fires. The absent
         # `.json` name keeps `grep_to` at `None`, so no dir-glob rewrite masks the fire.
-        assert search_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
+        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
 
     def test_data_ext_is_size_exempt(self) -> None:
         # Data-ext passes by suffix with no stat, so over-threshold `.txt` stays bounded; `-x` (bounded,
         # not output-bounded) would hit the stat lane and block absent that pass (contrast `-x … big.py`).
         command = "grep -x foo big.txt"
-        assert search_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is False
+        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is False
 
     def test_under_threshold_multi_file_sum_is_bounded(self) -> None:
         # Two small files together stay under the threshold, so the unmappable count grep runs as-is.
         command = "grep -c foo real.py real.py"
-        assert search_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is False
+        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is False
 
     def test_unknown_flag_is_not_bounded(self) -> None:
         # Conservative lexer: an unknown flag leaves the grep unbounded (it fires), never a wrong allow —
         # even over an existing file.
         command = "grep --frobnicate foo real.py"
-        assert search_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
+        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
 
     @pytest.mark.parametrize(
         "command",
@@ -705,12 +545,12 @@ class TestGrepBoundedPassthrough:
         ],
     )
     def test_compound_per_occurrence_allows(self, command: str) -> None:
-        assert search_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is False
+        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is False
 
     def test_one_unbounded_grep_blocks_the_line(self) -> None:
         # A qualifying grep can't launder a sibling tree-wide grep: the `.` search fires the whole line.
         command = "grep -c foo real.py; grep foo ."
-        assert search_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
+        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
 
     @pytest.mark.parametrize(
         "command",
@@ -720,7 +560,7 @@ class TestGrepBoundedPassthrough:
         ],
     )
     def test_data_ext_needs_no_stat(self, command: str) -> None:
-        assert search_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is False
+        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is False
 
     @pytest.mark.parametrize(
         "command",
@@ -734,7 +574,7 @@ class TestGrepBoundedPassthrough:
     )
     def test_env_and_flag_pattern_holes(self, command: str) -> None:
         # These forfeit before any stat → unbounded → fires; disk-independent (the named files need not exist).
-        assert search_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
+        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
 
     @pytest.mark.parametrize(
         ("command", "fires"),
@@ -752,4 +592,4 @@ class TestGrepBoundedPassthrough:
     )
     def test_sink_grep_semantics(self, command: str, fires: bool) -> None:
         # Every case is a compound (primary is multi-part), so `grep_parse` bails before any live ccx probe.
-        assert search_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is fires
+        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is fires
