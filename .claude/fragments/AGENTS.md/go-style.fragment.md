@@ -10,6 +10,10 @@ Target Go 1.23+. Run `task build`, `task test` (`go test -race`), and `task lint
 
 @STYLEGUIDE.md
 
+## Python Style
+
+The capt-hook guard pack under `plugin/hooks/` follows `plugin/hooks/STYLEGUIDE.md` (Python 3.13+): public-surface tests, inline `tests={}` rows, and no leading underscores on module-level helpers.
+
 ## General Rules
 
 **Minimal changes.** Stay within scope; fix the issue, then stop.
