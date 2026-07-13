@@ -32,11 +32,18 @@ const renderDeadline = 120 * time.Second
 // callers branch on it with errors.Is before treating an error as a real fault.
 var ErrNotModified = errors.New("not modified since prior fetch")
 
+// ErrLinkLocalRefused reports that a fetch target is link-local (169.254.0.0/16,
+// fe80::/10) by literal address or by resolution — the auto-configuration range
+// carrying cloud-metadata endpoints like 169.254.169.254, with no legitimate
+// web-fetch use — so every fetch entry point refuses it before any request.
+var ErrLinkLocalRefused = errors.New("refusing link-local / cloud-metadata target")
+
 // Fetch retrieves normURL through the tier cascade — jina, then the keyed exa
 // and firecrawl tiers, then plain HTTP, with browserbase as the stealth backstop
 // — and returns the first tier's clean result. prior, when non-nil, drives
 // plain-HTTP conditional revalidation.
 //
+// A link-local target is refused with ErrLinkLocalRefused before any tier runs.
 // A target 404/410 aborts with ErrGone and a target 401 with ErrAuthRequired,
 // from whichever tier observes it; a 304 revalidation returns ErrNotModified. A
 // page that trips a bot/DDoS challenge routes to browserbase, and when no
@@ -54,12 +61,15 @@ func (t *tiers) fetch(ctx context.Context, normURL string, prior *Page) (FetchRe
 	if err != nil {
 		return FetchResult{}, fmt.Errorf("fetch: parse url %q: %w", normURL, err)
 	}
-	// A local target is unreachable by any hosted reader; keep its URL off them
-	// entirely and use only plain HTTP, with no stealth fallthrough. A public
-	// hostname that resolves entirely to local addresses (split-horizon DNS) is
-	// local too, caught by a best-effort resolve before the hosted tiers run.
+	// A link-local target (the cloud-metadata range) is refused outright. A local
+	// target — including a public name resolving entirely to local addresses
+	// (split-horizon DNS) — is unreachable by any hosted reader; keep its URL off
+	// them entirely and use only plain HTTP, with no stealth fallthrough.
 	host := u.Hostname()
-	if localTarget(host) || (net.ParseIP(host) == nil && t.resolvesLocal(ctx, host)) {
+	switch t.classifyHost(ctx, host) {
+	case hostLinkLocal:
+		return FetchResult{}, fmt.Errorf("fetch %q: %w", host, ErrLinkLocalRefused)
+	case hostLocal:
 		return t.plainHTTP(ctx, normURL, prior)
 	}
 
@@ -150,7 +160,8 @@ func RenderFetch(ctx context.Context, normURL string) (FetchResult, bool, error)
 	return newTiers().renderFetch(ctx, normURL)
 }
 
-// renderFetch runs the render lanes in order under ctx. Every lane runs at most
+// renderFetch runs the render lanes in order under ctx, refusing a link-local
+// target with ErrLinkLocalRefused before any lane runs. Every lane runs at most
 // once and fires t.onAttempt. Any lane error — including errStealthRequired,
 // ErrGone, and ErrAuthRequired — is swallowed here and the chain moves on: the
 // base cascade already served content, so a leaked sentinel would wrongly abort
@@ -164,7 +175,11 @@ func (t *tiers) renderFetch(ctx context.Context, normURL string) (FetchResult, b
 		return FetchResult{}, false, fmt.Errorf("renderFetch: parse url %q: %w", normURL, err)
 	}
 	host := u.Hostname()
-	local := localTarget(host) || (net.ParseIP(host) == nil && t.resolvesLocal(ctx, host))
+	class := t.classifyHost(ctx, host)
+	if class == hostLinkLocal {
+		return FetchResult{}, false, fmt.Errorf("renderFetch %q: %w", host, ErrLinkLocalRefused)
+	}
+	local := class == hostLocal
 
 	type laneRun struct {
 		name Tier
@@ -227,6 +242,84 @@ func withLinks(res FetchResult) FetchResult {
 	return res
 }
 
+// hostClass routes a fetch target: public hosts run the full tier cascade,
+// local hosts use plain HTTP only, link-local hosts are refused.
+type hostClass int
+
+const (
+	hostPublic hostClass = iota
+	hostLocal
+	hostLinkLocal
+)
+
+// classifyHost classifies host with at most one best-effort resolve, bounded by
+// dnsGateTimeout. An IP literal (IPv6 zone stripped) classifies without DNS, as
+// does localhost (RFC 6761: always loopback). Every other name resolves: an
+// answer with ANY link-local address refuses (a resolver alias for the metadata
+// endpoint — metadata.google.internal — is still the metadata endpoint); a
+// by-name local target (*.local, *.internal) is otherwise local, resolvable or
+// not; any other name is local only when it resolves entirely to local
+// addresses (split-horizon DNS, wiki.corp.example → 10.0.0.5) — a resolution
+// failure, an empty answer, or any public address stays public so the hosted
+// cascade still runs (a hosted resolver may legitimately see a different,
+// public address).
+func (t *tiers) classifyHost(ctx context.Context, host string) hostClass {
+	if ip := parseIPZoneless(host); ip != nil { // IP literal — no DNS
+		switch {
+		case ip.IsLinkLocalUnicast():
+			return hostLinkLocal
+		case isLocalIP(ip):
+			return hostLocal
+		default:
+			return hostPublic
+		}
+	}
+	if strings.EqualFold(host, "localhost") {
+		return hostLocal // RFC 6761: always loopback, never link-local — no resolve
+	}
+	byNameLocal := localTarget(host)
+	ctx, cancel := context.WithTimeout(ctx, dnsGateTimeout)
+	defer cancel()
+	ips, err := t.lookupIP(ctx, "ip", host)
+	if err != nil || len(ips) == 0 {
+		if byNameLocal {
+			return hostLocal
+		}
+		return hostPublic
+	}
+	allLocal := true
+	for _, ip := range ips {
+		if ip.IsLinkLocalUnicast() {
+			return hostLinkLocal
+		}
+		if !isLocalIP(ip) {
+			allLocal = false
+		}
+	}
+	if byNameLocal || allLocal {
+		return hostLocal
+	}
+	return hostPublic
+}
+
+// linkLocalTarget reports whether host is a link-local IP literal (169.254.0.0/16,
+// fe80::/10, with or without an IPv6 zone) — the auto-configuration range carrying
+// cloud-metadata endpoints, with no legitimate web-fetch use — which the cascade
+// refuses rather than fetches.
+func linkLocalTarget(host string) bool {
+	ip := parseIPZoneless(host)
+	return ip != nil && ip.IsLinkLocalUnicast()
+}
+
+// parseIPZoneless parses host as an IP, stripping any IPv6 zone (%zone) that
+// net.ParseIP rejects, so a zoned link-local literal (fe80::1%en0) is recognized.
+func parseIPZoneless(host string) net.IP {
+	if i := strings.IndexByte(host, '%'); i >= 0 {
+		host = host[:i]
+	}
+	return net.ParseIP(host)
+}
+
 // localTarget reports whether host addresses a machine only this host can reach —
 // a loopback, private, link-local, or unspecified IP, or the localhost, *.local,
 // or *.internal names. Hosted reader tiers cannot fetch such a target, so the
@@ -246,25 +339,4 @@ func localTarget(host string) bool {
 // unspecified address — one only this host can route to.
 func isLocalIP(ip net.IP) bool {
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
-}
-
-// resolvesLocal reports whether host — a non-IP-literal name the literal
-// localTarget check already passed — resolves entirely to local addresses, the
-// split-horizon case where an internal name like wiki.corp.example points at
-// 10.0.0.5. It is best-effort: a resolution failure, an empty answer, or any
-// public address returns false so the hosted cascade still runs (a hosted
-// resolver may legitimately see a different, public address).
-func (t *tiers) resolvesLocal(ctx context.Context, host string) bool {
-	ctx, cancel := context.WithTimeout(ctx, dnsGateTimeout)
-	defer cancel()
-	ips, err := t.lookupIP(ctx, "ip", host)
-	if err != nil || len(ips) == 0 {
-		return false
-	}
-	for _, ip := range ips {
-		if !isLocalIP(ip) {
-			return false
-		}
-	}
-	return true
 }

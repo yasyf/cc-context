@@ -751,6 +751,169 @@ func TestLocalTarget(t *testing.T) {
 	}
 }
 
+func TestLinkLocalTarget(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{"metadata endpoint", "169.254.169.254", true},
+		{"link-local v4", "169.254.0.1", true},
+		{"link-local v6", "fe80::1", true},
+		{"zoned link-local v6", "fe80::1%en0", true},
+		{"loopback", "127.0.0.1", false},
+		{"localhost", "localhost", false},
+		{"private 10", "10.0.0.5", false},
+		{"private 192", "192.168.1.1", false},
+		{"public dns ip", "8.8.8.8", false},
+		{"public host", "example.com", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := linkLocalTarget(tt.host); got != tt.want {
+				t.Errorf("linkLocalTarget(%q) = %v, want %v", tt.host, got, tt.want)
+			}
+		})
+	}
+}
+
+// guardListener starts a listener any request to which fails the test, and
+// returns its host:port — a target that must never be fetched.
+func guardListener(t *testing.T) string {
+	t.Helper()
+	return startListener(t, func(_ http.ResponseWriter, r *http.Request) {
+		t.Errorf("refused target fetched: %s %s", r.Method, r.URL)
+	})
+}
+
+func TestFetchLinkLocalRefusedNoRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"metadata v4", "http://169.254.169.254/latest/meta-data/"},
+		{"zoned v6", "http://[fe80::1%25en0]/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateKeys(t)
+			// Every key set: the refusal must fire before any tier, hosted or plain.
+			t.Setenv(envJinaKey, "jina-key")
+			t.Setenv(envExaKey, "exa-key")
+			t.Setenv(envFirecrawlKey, "fc-key")
+			t.Setenv(envBrowserbaseKey, "bb-key")
+
+			ts := testTiers(t, services{}) // every hosted tier is a "must not be reached" guard
+			mapperOf(ts).hosts["169.254.169.254"] = guardListener(t)
+			ts.onAttempt = func(tier Tier, err error) {
+				t.Errorf("tier %s ran for a link-local target (err=%v)", tier, err)
+			}
+
+			_, err := ts.fetch(context.Background(), tt.url, nil)
+			if !errors.Is(err, ErrLinkLocalRefused) {
+				t.Errorf("err = %v, want it to wrap ErrLinkLocalRefused", err)
+			}
+		})
+	}
+}
+
+func TestFetchByNameLinkLocalRefused(t *testing.T) {
+	isolateKeys(t)
+	t.Setenv(envJinaKey, "jina-key")
+	t.Setenv(envExaKey, "exa-key")
+	t.Setenv(envFirecrawlKey, "fc-key")
+	t.Setenv(envBrowserbaseKey, "bb-key")
+
+	ts := testTiers(t, services{})
+	// The canonical GCP metadata alias: a by-name-local host answering link-local.
+	ts.lookupIP = func(context.Context, string, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("169.254.169.254")}, nil
+	}
+	mapperOf(ts).hosts["metadata.google.internal"] = guardListener(t)
+	ts.onAttempt = func(tier Tier, err error) {
+		t.Errorf("tier %s ran for a metadata-alias target (err=%v)", tier, err)
+	}
+
+	if got := ts.classifyHost(context.Background(), "metadata.google.internal"); got != hostLinkLocal {
+		t.Errorf("classifyHost = %v, want hostLinkLocal", got)
+	}
+	_, err := ts.fetch(context.Background(), "http://metadata.google.internal/computeMetadata/v1/", nil)
+	if !errors.Is(err, ErrLinkLocalRefused) {
+		t.Errorf("err = %v, want it to wrap ErrLinkLocalRefused", err)
+	}
+}
+
+func TestFetchByNameLocalStillPlainHTTP(t *testing.T) {
+	tests := []struct {
+		name   string
+		lookup func(context.Context, string, string) ([]net.IP, error)
+	}{
+		{"resolves private", func(context.Context, string, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("10.0.0.5")}, nil
+		}},
+		{"resolves loopback", func(context.Context, string, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("127.0.0.1")}, nil
+		}},
+		{"resolution fails", func(context.Context, string, string) ([]net.IP, error) {
+			return nil, errors.New("dial udp: i/o timeout")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateKeys(t)
+			t.Setenv(envJinaKey, "jina-key")
+			t.Setenv(envExaKey, "exa-key")
+			t.Setenv(envFirecrawlKey, "fc-key")
+			t.Setenv(envBrowserbaseKey, "bb-key")
+
+			ts := testTiers(t, services{}) // every hosted tier is a "must not be reached" guard
+			ts.lookupIP = tt.lookup
+			mapperOf(ts).hosts["wiki.internal"] = startListener(t, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, "<html><body>internal wiki</body></html>")
+			})
+
+			got, err := ts.fetch(context.Background(), "http://wiki.internal/page", nil)
+			if err != nil {
+				t.Fatalf("fetch: %v", err)
+			}
+			if got.Tier != TierHTTP {
+				t.Errorf("Tier = %q, want %q (a by-name local target must use plain HTTP only)", got.Tier, TierHTTP)
+			}
+		})
+	}
+}
+
+func TestFetchSplitDNSLinkLocalRefused(t *testing.T) {
+	tests := []struct {
+		name string
+		ips  []net.IP
+	}{
+		{"entirely link-local", []net.IP{net.ParseIP("169.254.169.254")}},
+		{"partly link-local", []net.IP{net.ParseIP("93.184.216.34"), net.ParseIP("169.254.169.254")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateKeys(t)
+			t.Setenv(envJinaKey, "jina-key")
+			t.Setenv(envExaKey, "exa-key")
+			t.Setenv(envFirecrawlKey, "fc-key")
+			t.Setenv(envBrowserbaseKey, "bb-key")
+
+			ts := testTiers(t, services{})
+			ts.lookupIP = func(context.Context, string, string) ([]net.IP, error) { return tt.ips, nil }
+			mapperOf(ts).hosts[remoteTargetHost] = guardListener(t)
+			ts.onAttempt = func(tier Tier, err error) {
+				t.Errorf("tier %s ran for a link-local-resolving target (err=%v)", tier, err)
+			}
+
+			_, err := ts.fetch(context.Background(), remoteTargetURL, nil)
+			if !errors.Is(err, ErrLinkLocalRefused) {
+				t.Errorf("err = %v, want it to wrap ErrLinkLocalRefused", err)
+			}
+		})
+	}
+}
+
 func startTarget(t *testing.T, h http.HandlerFunc) string {
 	t.Helper()
 	return startServer(t, "http-target", h)

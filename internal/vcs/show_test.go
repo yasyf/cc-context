@@ -2,7 +2,9 @@ package vcs
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -172,7 +174,7 @@ func TestShowBuildsArgv(t *testing.T) {
 			bin:    "git",
 			ref:    "",
 			wantArgv: func(dir string) []string {
-				return []string{"-C", dir, "show", "--no-patch", "--format=" + gitShowFormat, "--date=short", "HEAD"}
+				return []string{"-C", dir, "show", "--no-patch", "--format=" + gitShowFormat, "--date=short", "--end-of-options", "HEAD"}
 			},
 		},
 		{
@@ -181,7 +183,7 @@ func TestShowBuildsArgv(t *testing.T) {
 			bin:    "git",
 			ref:    "deadbeef",
 			wantArgv: func(dir string) []string {
-				return []string{"-C", dir, "show", "--no-patch", "--format=" + gitShowFormat, "--date=short", "deadbeef"}
+				return []string{"-C", dir, "show", "--no-patch", "--format=" + gitShowFormat, "--date=short", "--end-of-options", "deadbeef"}
 			},
 		},
 		{
@@ -229,6 +231,64 @@ func TestShowBuildsArgv(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestShowGitRefs drives Show against a live git repo: a flag-shaped ref must
+// error as an unknown revision — --end-of-options keeps it from reaching git as
+// an option (the --output=<path> file-clobber vector) — while a real ref still
+// resolves to its commit.
+func TestShowGitRefs(t *testing.T) {
+	dir := initLiveGitRepo(t)
+	head := gitRevParse(t, dir, "HEAD")
+	parent := gitRevParse(t, dir, "HEAD~1")
+	pwned := filepath.Join(t.TempDir(), "pwned")
+
+	tests := []struct {
+		id        string
+		ref       string
+		wantErr   bool
+		wantRange string
+	}{
+		{id: "flag-shaped ref errors without writing", ref: "--output=" + pwned, wantErr: true},
+		{id: "HEAD resolves", ref: "HEAD", wantRange: parent + ".." + head},
+		{id: "sha resolves", ref: head, wantRange: parent + ".." + head},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			got, err := Show(context.Background(), dir, tt.ref)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Show(%q) err = nil, want error", tt.ref)
+				}
+				if _, statErr := os.Stat(pwned); !errors.Is(statErr, os.ErrNotExist) {
+					t.Errorf("flag-shaped ref wrote %q (stat err = %v), want it absent", pwned, statErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Show(%q) err = %v", tt.ref, err)
+			}
+			if got.Range != tt.wantRange {
+				t.Errorf("Show(%q).Range = %q, want %q", tt.ref, got.Range, tt.wantRange)
+			}
+			if got.Subject != "c" || got.Author != "t" || got.Email != "t@t.t" {
+				t.Errorf("Show(%q) header = %+v, want subject %q author %q email %q", tt.ref, got, "c", "t", "t@t.t")
+			}
+			if got.ShortID == "" || !strings.HasPrefix(head, got.ShortID) {
+				t.Errorf("ShortID %q is not a prefix of %q", got.ShortID, head)
+			}
+		})
+	}
+}
+
+// gitRevParse resolves ref to its full commit id via a real git rev-parse.
+func gitRevParse(t *testing.T, dir, ref string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", dir, "rev-parse", ref).Output() //nolint:gosec // fixed git argv over a TempDir repo
+	if err != nil {
+		t.Fatalf("git rev-parse %s: %v", ref, err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // writeFakeVCS writes an executable named bin that records its argv (one per

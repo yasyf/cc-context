@@ -23,6 +23,20 @@ func disableAgentBrowser(t *testing.T) {
 	t.Cleanup(func() { vendor.LookPath = prev })
 }
 
+func TestRenderFetchLinkLocalRefused(t *testing.T) {
+	isolateKeys(t)
+	stubAgentBrowser(t, "[]", 0) // the only lane available; it must never launch
+	ts := testTiers(t, services{})
+	ts.onAttempt = func(tier Tier, err error) {
+		t.Errorf("render lane %s ran for a link-local target (err=%v)", tier, err)
+	}
+
+	_, _, err := ts.renderFetch(context.Background(), "http://169.254.169.254/latest/meta-data/")
+	if !errors.Is(err, ErrLinkLocalRefused) {
+		t.Errorf("err = %v, want it to wrap ErrLinkLocalRefused", err)
+	}
+}
+
 func TestRenderFetchJinaRenderHeaders(t *testing.T) {
 	isolateKeys(t)
 	t.Setenv(envJinaKey, "jina-key")

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -162,10 +161,10 @@ func (t *tiers) agentBrowser(ctx context.Context, targetURL string, targetLocal 
 }
 
 // hostIsLocal reports whether host addresses a machine only this host can reach —
-// the same predicate the fetch cascade gates on: a literal local target, or a
-// name that resolves entirely to local addresses (best-effort, public on failure).
+// the same classifyHost gate the fetch cascade applies: a literal local or
+// link-local target, or a name resolving to one (best-effort, public on failure).
 func (t *tiers) hostIsLocal(ctx context.Context, host string) bool {
-	return localTarget(host) || (net.ParseIP(host) == nil && t.resolvesLocal(ctx, host))
+	return t.classifyHost(ctx, host) != hostPublic
 }
 
 // hostOf returns the hostname of rawURL, or "" when it does not parse.

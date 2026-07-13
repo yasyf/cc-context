@@ -42,7 +42,9 @@ func showGit(ctx context.Context, dir, ref string) (Commit, error) {
 	if ref == "" {
 		ref = "HEAD"
 	}
-	out, err := exec.CommandContext(ctx, "git", "-C", dir, "show", "--no-patch", "--format="+gitShowFormat, "--date=short", ref).Output() //nolint:gosec // fixed git argv; only the working dir and ref vary
+	// --end-of-options keeps a flag-shaped ref (--output=…) a revision, never a
+	// git option; `--` would demote it to a pathspec instead.
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "show", "--no-patch", "--format="+gitShowFormat, "--date=short", "--end-of-options", ref).Output() //nolint:gosec // fixed git argv; only the working dir and ref vary
 	if err != nil {
 		return Commit{}, fmt.Errorf("git show %q: %w", ref, err)
 	}

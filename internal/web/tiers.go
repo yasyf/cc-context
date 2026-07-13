@@ -201,14 +201,13 @@ func newTiers() *tiers {
 }
 
 // refuseLocalRedirect is the shared client's CheckRedirect policy: it follows
-// ordinary redirects but refuses a hop onto a local target — by literal address,
-// or a hostname that resolves entirely to local addresses (the same split-DNS
-// gate the cascade entry applies) — so a public URL cannot be redirected onto a
-// loopback/private address and cached under the public key. It preserves the
-// net/http default cap of 10 redirects.
+// ordinary redirects but refuses a hop onto a local or link-local target — by
+// literal address, or a hostname resolving to one (the same classifyHost gate
+// the cascade entry applies) — so a public URL cannot be redirected onto a
+// loopback/private/metadata address and cached under the public key. It
+// preserves the net/http default cap of 10 redirects.
 func (t *tiers) refuseLocalRedirect(req *http.Request, via []*http.Request) error {
-	host := req.URL.Hostname()
-	if localTarget(host) || (net.ParseIP(host) == nil && t.resolvesLocal(req.Context(), host)) {
+	if t.classifyHost(req.Context(), req.URL.Hostname()) != hostPublic {
 		return fmt.Errorf("refusing redirect to local target %q", req.URL.Host)
 	}
 	if len(via) >= 10 {

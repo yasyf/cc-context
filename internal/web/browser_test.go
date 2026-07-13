@@ -52,7 +52,7 @@ func mustJSON(t *testing.T, v any) string {
 }
 
 // abTiers is a minimal tiers for the agent-browser lane: it uses only the DNS
-// resolver (the SSRF guard's resolvesLocal) and reports every host public, so the
+// resolver (the SSRF guard's classifyHost) and reports every host public, so the
 // lane's tests never touch the real network. agentBrowser uses no HTTP client.
 func abTiers() *tiers { return &tiers{lookupIP: publicLookupIP} }
 
