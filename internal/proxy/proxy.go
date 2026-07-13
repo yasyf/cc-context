@@ -14,6 +14,7 @@ import (
 	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/edit"
+	"github.com/yasyf/cc-context/internal/grep"
 	"github.com/yasyf/cc-context/internal/grok"
 	"github.com/yasyf/cc-context/internal/mcpclient"
 	"github.com/yasyf/cc-context/internal/render"
@@ -81,10 +82,13 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 	if op == backend.OpGrep && ripgrep.Handles(a) {
 		return ripgrep.Run(ctx, a)
 	}
-	// Asymmetry with the CLI (internal/cli/run.go routes OpGrep through
-	// internal/grep): the default OpGrep MCP route is the plain tilth_search
-	// tool call below, which returns clean 0 matches — it has none of tilth's
-	// CLI no-match path-fallback, so no normalization is needed here.
+	// The default OpGrep MCP route is the plain tilth_search tool call below. Like
+	// internal/cli/run.go's internal/grep path, its clean tilth zero is re-verified
+	// through a live ripgrep recheck after the call (further down): a stale index
+	// must not report a confident "0 matches" on either surface. tilth's MCP server
+	// has no CLI-style no-match path-fallback, so only the clean-zero shape reaches
+	// the recheck here. Headers still differ by lane (tilth "# Search:" vs rg
+	// "# grep:") exactly as they do for every ripgrep.Handles grep today.
 
 	b := router.For(op)
 
@@ -131,6 +135,14 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 			return grok.FallbackTypeDecl(ctx, a, fmt.Errorf("proxy: tool %q failed: %s", tool, text))
 		}
 		return "", fmt.Errorf("proxy: tool %q failed: %s", tool, text)
+	}
+	if op == backend.OpGrep && grep.ZeroMatches(text) {
+		switch rechecked, found, rerr := grep.Recheck(ctx, a); {
+		case rerr != nil && ctx.Err() != nil:
+			return "", fmt.Errorf("proxy: grep zero recheck aborted: %w", ctx.Err())
+		case rerr == nil && found:
+			return rechecked, nil
+		}
 	}
 	return render.Finalize(op, text, a)
 }

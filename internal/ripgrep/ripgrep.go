@@ -25,7 +25,10 @@ const exitNoMatch = 1
 // DefaultBudget caps an otherwise-unbudgeted rg/grep grep so a flooding match set
 // never blows the context window. render.Cap is a no-op at budget<=0, so only the
 // CLI and MCP surfaces apply this default; codeexec leaves the grep uncapped by
-// contract, filtering the output inside its sandbox.
+// contract, filtering the output inside its sandbox. One deviation: a stale-zero
+// recheck (grep.Recheck) applies this cap on every lane, codeexec included — a
+// verification pass swapped in behind a tilth zero must not flood any surface,
+// while codeexec's own rg-routed greps stay uncapped as before.
 const DefaultBudget = 2000
 
 // Handles reports whether the rg/grep engine, not tilth, serves this grep. It is
@@ -99,31 +102,57 @@ type runnerFn func(ctx context.Context, bin string, argv []string) (string, erro
 // Run resolves rg (or system grep), searches for a.Query, and returns the hits
 // reshaped into the house grep format, content-anchored, and budget-capped.
 func Run(ctx context.Context, a backend.Args) (string, error) {
+	out, _, err := RunFound(ctx, a)
+	return out, err
+}
+
+// RunFound is Run also reporting whether the search found any match, decided
+// structurally from the parsed engine events before the output is reshaped and
+// budget-capped. A caller branching on found-ness — the stale-zero recheck — must
+// use this, never sniff the finalized string: capping can byte-cut the no-match
+// header mid-word, and a matched header embeds the query verbatim, so a query
+// containing "— no matches" plus an aligned cut spoofs any string predicate.
+func RunFound(ctx context.Context, a backend.Args) (out string, found bool, err error) {
 	if err := validateContext(a); err != nil {
-		return "", err
+		return "", false, err
 	}
 	eng, bin, err := resolveEngine()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	return run(ctx, eng, bin, a, execEngine)
 }
 
 // run is the engine-agnostic core: build argv, execute, parse, reshape, finalize.
-func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) (string, error) {
+// found comes from the parsed groups, before reshape and capping can distort it.
+func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) (string, bool, error) {
 	argv, err := buildArgv(eng, a)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	raw, err := exec(ctx, bin, argv)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	groups, err := parse(eng, raw)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return render.Finalize(backend.OpGrep, reshape(a.Query, eng, groups), a)
+	out, err := render.Finalize(backend.OpGrep, reshape(a.Query, eng, groups), a)
+	return out, anyMatch(groups), err
+}
+
+// anyMatch reports whether any group carries a match line (context lines alone
+// never count).
+func anyMatch(groups []fileGroup) bool {
+	for _, g := range groups {
+		for _, l := range g.lines {
+			if l.isMatch {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // execEngine is the real process boundary, tolerating the no-match exit.
@@ -228,8 +257,14 @@ func ripgrepArgv(a backend.Args) []string {
 // with an explicit --scope, fails fast. Explicit Paths are the operands directly;
 // they cannot combine with --glob, and the excludes are dropped — GNU grep applies
 // --exclude to command-line operands, so a named dotfile must not be silently
-// skipped.
+// skipped. AnchorGrepArgs first peels an existing directory prefix off the glob
+// into the scope — composing onto an explicit --scope — exactly as the ripgrep
+// and tilth routes do, so every engine searches the same file set; the peel also
+// keeps an anchored glob like pkg/*.go expressible here (the anchor becomes the
+// search root and the basename remainder the --include) where the unpeeled form
+// has no grep translation.
 func grepArgv(a backend.Args) ([]string, error) {
+	a = backend.AnchorGrepArgs(a)
 	flags := "-rnHFI"
 	if a.Regex {
 		flags = "-rnHEI"
@@ -281,8 +316,15 @@ func grepArgv(a backend.Args) ([]string, error) {
 
 // translateGlob maps the ccx --glob shapes system grep can express onto an
 // --include pattern and/or a rooted search directory: a bare basename glob
-// ("*.go") → include; "dir/**" → root dir; "dir/**/*.ext" → root dir + include.
-// Braces and mid-path wildcards have no grep equivalent and fail fast.
+// ("*.go") → include; "**/*.ext" (the remainder AnchorGrepArgs leaves after
+// peeling "dir/**/*.ext", matching any depth exactly as --include does) →
+// include; "dir/**" → root dir; "dir/**/*.ext" → root dir + include. Braces and
+// mid-path wildcards have no grep equivalent and fail fast. A dot-leading
+// basename fails fast too — grepArgv's unconditional hidden-path excludes prune
+// what the glob selects, and an --include like ".*.go" fnmatches across '/' onto
+// the "./" path prefix, matching plain "normal.go" — as does a bare "**/" (an
+// empty basename would emit no --include and search everything, where rg matches
+// nothing); loud inexpressibility beats silently wrong results.
 func translateGlob(glob string) (include, root string, err error) {
 	if glob == "" {
 		return "", "", nil
@@ -291,7 +333,16 @@ func translateGlob(glob string) (include, root string, err error) {
 		return "", "", untranslatable(glob)
 	}
 	if !strings.Contains(glob, "/") {
+		if strings.HasPrefix(glob, ".") {
+			return "", "", untranslatable(glob)
+		}
 		return glob, "", nil
+	}
+	if rest, ok := strings.CutPrefix(glob, "**/"); ok && !strings.Contains(rest, "/") {
+		if rest == "" || strings.HasPrefix(rest, ".") {
+			return "", "", untranslatable(glob)
+		}
+		return rest, "", nil
 	}
 	if dir, ok := strings.CutSuffix(glob, "/**"); ok {
 		if strings.ContainsAny(dir, "*?[]") {
@@ -300,7 +351,7 @@ func translateGlob(glob string) (include, root string, err error) {
 		return "", dir, nil
 	}
 	if dir, rest, ok := strings.Cut(glob, "/**/"); ok {
-		if strings.ContainsAny(dir, "*?[]") || strings.Contains(rest, "/") {
+		if strings.ContainsAny(dir, "*?[]") || strings.Contains(rest, "/") || rest == "" || strings.HasPrefix(rest, ".") {
 			return "", "", untranslatable(glob)
 		}
 		return rest, dir, nil
@@ -309,7 +360,7 @@ func translateGlob(glob string) (include, root string, err error) {
 }
 
 func untranslatable(glob string) error {
-	return fmt.Errorf("grep fallback cannot translate glob %q (braces and mid-path wildcards are unsupported); install ripgrep for full glob support: brew install ripgrep", glob)
+	return fmt.Errorf("grep fallback cannot translate glob %q (braces, mid-path wildcards, and dot-leading basenames are unsupported); install ripgrep for full glob support: brew install ripgrep", glob)
 }
 
 // grepLine is one output line: a matched or context line at num carrying its

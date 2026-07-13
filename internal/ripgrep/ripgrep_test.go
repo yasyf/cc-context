@@ -70,6 +70,8 @@ func anchorDirs(t *testing.T) (existing, missing, file string) {
 }
 
 func TestGrepArgv(t *testing.T) {
+	sub, _, file := anchorDirs(t)
+	parent := filepath.Dir(sub)
 	tests := []struct {
 		name    string
 		args    backend.Args
@@ -96,7 +98,12 @@ func TestGrepArgv(t *testing.T) {
 		{"scope + dir glob fails", backend.Args{Query: "foo", Glob: "src/**", Scope: "internal"}, nil, true},
 		{"brace glob fails", backend.Args{Query: "foo", Glob: "{a,b}/**"}, nil, true},
 		{"mid-path wildcard fails", backend.Args{Query: "foo", Glob: "src/*/x.go"}, nil, true},
-		{"double-star-slash-star fails", backend.Args{Query: "foo", Glob: "**/*.go"}, nil, true},
+		{"double-star-slash-star maps to include", backend.Args{Query: "foo", Glob: "**/*.go"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "."}, false},
+		{"anchored existing-dir glob peels to include + root", backend.Args{Query: "foo", Glob: sub + "/*.go"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", sub}, false},
+		{"anchored dir-literal glob roots the search", backend.Args{Query: "foo", Glob: sub}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", sub}, false},
+		{"anchored recursive glob peels to include + root", backend.Args{Query: "foo", Glob: sub + "/**/*.go"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", sub}, false},
+		{"anchored glob composes with explicit scope", backend.Args{Query: "foo", Glob: "pkg/*.go", Scope: parent}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", sub}, false},
+		{"anchored file glob → parent root + basename include", backend.Args{Query: "foo", Glob: file}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=file.go", "-e", "foo", "--", sub}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -138,9 +145,16 @@ func TestTranslateGlob(t *testing.T) {
 		{"dir plus ext", "src/**/*.go", "*.go", "src", false},
 		{"braces", "{a,b}", "", "", true},
 		{"mid-path wildcard", "src/*/x.go", "", "", true},
-		{"leading double-star", "**/*.go", "", "", true},
+		{"leading double-star", "**/*.go", "*.go", "", false},
+		{"leading double-star deep tail", "**/a/b.go", "", "", true},
 		{"deep tail", "a/**/b/c.go", "", "", true},
 		{"wildcard dir on recurse", "sr*/**", "", "", true},
+		{"bare double-star-slash", "**/", "", "", true},
+		{"leading double-star hidden", "**/.*", "", "", true},
+		{"leading double-star hidden ext", "**/.*.go", "", "", true},
+		{"bare hidden basename", ".*.go", "", "", true},
+		{"hidden under dir recurse", "src/**/.env", "", "", true},
+		{"empty basename under dir recurse", "src/**/", "", "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -292,9 +306,14 @@ func TestRunCore_GrepValidatesSplits(t *testing.T) {
 	}, "\n")
 	fake := func(context.Context, string, []string) (string, error) { return grepOut, nil }
 
-	got, err := run(context.Background(), engineGrep, "grep", backend.Args{Query: "foo", IgnoreCase: true, Expand: 1}, fake)
+	got, found, err := run(context.Background(), engineGrep, "grep", backend.Args{Query: "foo", IgnoreCase: true, Expand: 1}, fake)
 	if err != nil {
 		t.Fatalf("run() err = %v", err)
+	}
+	// The first group's first line is context: found must survive a context line
+	// preceding the match, never reduce to a first-line check.
+	if !found {
+		t.Errorf("run() found = false, want true:\n%s", got)
 	}
 	if !strings.Contains(got, "— 2 matches in 2 files") {
 		t.Errorf("run() count wrong:\n%s", got)
@@ -389,31 +408,45 @@ func TestRunCore(t *testing.T) {
 		`{"type":"match","data":{"path":{"text":"nope/a.go"},"lines":{"text":"foo one\n"},"line_number":3,"submatches":[]}}`,
 		"",
 	}, "\n")
+	rgCtxOut := strings.Join([]string{
+		`{"type":"context","data":{"path":{"text":"nope/a.go"},"lines":{"text":"ctx before\n"},"line_number":2,"submatches":[]}}`,
+		`{"type":"match","data":{"path":{"text":"nope/a.go"},"lines":{"text":"foo one\n"},"line_number":3,"submatches":[]}}`,
+		"",
+	}, "\n")
 	grepOut := "nope/a.go\x003:foo one\n"
 
 	tests := []struct {
-		name     string
-		eng      engine
-		args     backend.Args
-		out      string
-		runErr   error
-		wantErr  bool
-		contains []string
+		name      string
+		eng       engine
+		args      backend.Args
+		out       string
+		runErr    error
+		wantErr   bool
+		wantFound bool
+		contains  []string
 	}{
-		{"rg branch", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true}, rgOut, nil, false, []string{"### nope/a.go:3", "→ [3] foo one"}},
-		{"grep branch", engineGrep, backend.Args{Query: "foo", IgnoreCase: true}, grepOut, nil, false, []string{"### nope/a.go:3", "→ [3] foo one", "system grep"}},
-		{"clean no-match", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true}, "", nil, false, []string{`# grep: "foo" — no matches`}},
-		{"runner error propagates", engineRipgrep, backend.Args{Query: "foo", Word: true}, "", errors.New("boom"), true, nil},
+		{"rg branch", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true}, rgOut, nil, false, true, []string{"### nope/a.go:3", "→ [3] foo one"}},
+		{"grep branch", engineGrep, backend.Args{Query: "foo", IgnoreCase: true}, grepOut, nil, false, true, []string{"### nope/a.go:3", "→ [3] foo one", "system grep"}},
+		{"clean no-match", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true}, "", nil, false, false, []string{`# grep: "foo" — no matches`}},
+		{"context precedes match still found", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true, Expand: 1}, rgCtxOut, nil, false, true, []string{"  [2] ctx before", "→ [3] foo one"}},
+		// found is structural: a Budget so small the cap byte-cuts the header
+		// mid-word must not flip either verdict.
+		{"match found survives tiny budget", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true, Budget: 1}, rgOut, nil, false, true, []string{"omitted"}},
+		{"no-match stays not-found under tiny budget", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true, Budget: 1}, "", nil, false, false, nil},
+		{"runner error propagates", engineRipgrep, backend.Args{Query: "foo", Word: true}, "", errors.New("boom"), true, false, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := func(context.Context, string, []string) (string, error) { return tt.out, tt.runErr }
-			got, err := run(context.Background(), tt.eng, "bin", tt.args, fake)
+			got, found, err := run(context.Background(), tt.eng, "bin", tt.args, fake)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("run() err = %v, wantErr %v", err, tt.wantErr)
 			}
 			if tt.wantErr {
 				return
+			}
+			if found != tt.wantFound {
+				t.Errorf("run() found = %v, want %v:\n%s", found, tt.wantFound, got)
 			}
 			for _, want := range tt.contains {
 				if !strings.Contains(got, want) {
@@ -430,7 +463,7 @@ func TestRunCore_GlobFailFastSkipsRunner(t *testing.T) {
 		called = true
 		return "", nil
 	}
-	_, err := run(context.Background(), engineGrep, "grep", backend.Args{Query: "foo", Glob: "{a,b}"}, fake)
+	_, _, err := run(context.Background(), engineGrep, "grep", backend.Args{Query: "foo", Glob: "{a,b}"}, fake)
 	if err == nil {
 		t.Fatal("run() err = nil, want untranslatable-glob error")
 	}
@@ -498,6 +531,42 @@ func TestValidateContext(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := validateContext(tt.args); (err != nil) != tt.wantErr {
 				t.Errorf("validateContext(%+v) err = %v, wantErr %v", tt.args, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestRunFound_Live proves the exported found verdict is structural: with
+// Budget 1 the finalized output is byte-cut to garbage either way, yet found
+// still reports whether the engine matched. It skips when no engine is on PATH.
+func TestRunFound_Live(t *testing.T) {
+	_, rgErr := exec.LookPath("rg")
+	_, grepErr := exec.LookPath("grep")
+	if rgErr != nil && grepErr != nil {
+		t.Skip("neither rg nor grep on PATH")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte("var needle = 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	tests := []struct {
+		name      string
+		query     string
+		wantFound bool
+	}{
+		{"present needle found", "needle", true},
+		{"absent needle not found", "zzz-absent", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, found, err := RunFound(context.Background(), backend.Args{Query: tt.query, IgnoreCase: true, Budget: 1})
+			if err != nil {
+				t.Fatalf("RunFound() err = %v", err)
+			}
+			if found != tt.wantFound {
+				t.Errorf("RunFound() found = %v, want %v", found, tt.wantFound)
 			}
 		})
 	}

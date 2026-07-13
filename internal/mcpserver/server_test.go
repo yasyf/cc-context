@@ -39,11 +39,28 @@ type fakeReadIn struct {
 	Budget  int    `json:"budget,omitempty"`
 }
 
+// fakeSearchIn mirrors tilth_search's full param surface (query/glob/scope/kind/
+// budget/expand): the go-sdk validates real calls against the handler's In type,
+// so a query-only fake would reject a scoped or budgeted grep.
+type fakeSearchIn struct {
+	Query  string `json:"query"`
+	Glob   string `json:"glob,omitempty"`
+	Scope  string `json:"scope,omitempty"`
+	Kind   string `json:"kind,omitempty"`
+	Budget int    `json:"budget,omitempty"`
+	Expand int    `json:"expand,omitempty"`
+}
+
 func serveFakeTilth() error {
 	s := mcp.NewServer(&mcp.Implementation{Name: "fake-tilth", Version: "test"}, nil)
 	mcp.AddTool(s, &mcp.Tool{Name: "tilth_read", Description: "echo the read params"},
 		func(_ context.Context, _ *mcp.CallToolRequest, in fakeReadIn) (*mcp.CallToolResult, any, error) {
 			text := fmt.Sprintf("read %s section=%s", in.Path, in.Section)
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "tilth_search", Description: "canned zero-match search (stale index)"},
+		func(_ context.Context, _ *mcp.CallToolRequest, in fakeSearchIn) (*mcp.CallToolResult, any, error) {
+			text := fmt.Sprintf("# Search: %q in /x — 0 matches\n\n(~5 tokens)\n", in.Query)
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil
 		})
 	return s.Run(context.Background(), &mcp.StdioTransport{})
@@ -273,6 +290,74 @@ func TestGrepToolPathsRouteToEngine(t *testing.T) {
 	}
 	if strings.Contains(out, "other.go") {
 		t.Errorf("unnamed file leaked into results:\n%s", out)
+	}
+}
+
+// TestGrepToolZeroRechecksThroughEngine proves a bare-literal ccx_code_grep whose
+// tilth result is a (fake, always-stale) zero is re-verified through the live rg
+// engine: the needle planted in the cwd surfaces despite tilth's "0 matches". The
+// fake tilth is prepended to PATH, so rg/grep stay resolvable for the recheck.
+func TestGrepToolZeroRechecksThroughEngine(t *testing.T) {
+	_, rgErr := exec.LookPath("rg")
+	_, grepErr := exec.LookPath("grep")
+	if rgErr != nil && grepErr != nil {
+		t.Skip("neither rg nor grep on PATH")
+	}
+	fakeTilthOnPath(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte("var needle = 1\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	t.Chdir(dir)
+
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "needle"})
+	if isErr {
+		t.Fatalf("ccx_code_grep is error: %s", out)
+	}
+	if !strings.Contains(out, "### sample.go:") {
+		t.Errorf("stale tilth zero should be rechecked to the live match:\n%s", out)
+	}
+	if strings.Contains(out, "0 matches") {
+		t.Errorf("stale zero leaked through the recheck:\n%s", out)
+	}
+}
+
+// TestGrepToolZeroPassesThroughWithoutEngine proves that with no rg/grep on PATH
+// the recheck cannot resolve an engine, so tilth's zero passes through unchanged
+// rather than erroring. PATH is replaced with only the fake-tilth dir — excluding
+// /usr/bin/grep, which would otherwise satisfy resolveEngine — so no live engine
+// is reachable.
+func TestGrepToolZeroPassesThroughWithoutEngine(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("re-exec fake tilth is POSIX-only")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate test binary: %v", err)
+	}
+	binDir := t.TempDir()
+	if err := os.Symlink(exe, filepath.Join(binDir, "tilth")); err != nil {
+		t.Fatalf("symlink fake tilth: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte("var needle = 1\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	t.Chdir(dir)
+
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "needle"})
+	if isErr {
+		t.Fatalf("ccx_code_grep is error: %s", out)
+	}
+	if !strings.Contains(out, "0 matches") {
+		t.Errorf("without an engine the tilth zero must pass through:\n%s", out)
+	}
+	if strings.Contains(out, "### sample.go:") {
+		t.Errorf("no engine available, yet a live match appeared:\n%s", out)
 	}
 }
 
