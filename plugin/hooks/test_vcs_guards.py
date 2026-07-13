@@ -1,4 +1,4 @@
-"""Tests for the ``_git_log_history`` parser and the ``gh run watch`` -> ``ccx vcs ship`` nudge.
+"""Tests for the ``git log -p`` -> ``ccx vcs history`` rewrite and the ``gh run watch`` -> ``ccx vcs ship`` nudge.
 
 Run from the repo root against the captain-hook source env, with ``plugin/`` on the
 path so the ``hooks`` package (and its relative imports) resolves::
@@ -6,12 +6,17 @@ path so the ``hooks`` package (and its relative imports) resolves::
     PYTHONPATH=plugin uv run --project ../captain-hook --with pytest \
         pytest plugin/hooks/test_vcs_guards.py
 
-The no-``--`` branch pins a pathspec only when a sole trailing positional exists on
-disk (a bare revision like ``HEAD~5`` has no file to hand ``ccx vcs history``), so its
-coverage is environment-dependent and lives here rather than in the inline ``tests={}``
-matrix: each case ``chdir``s into a temp dir with a known file. The ``--`` branch and
-the flag/count parsing are disk-independent but share the parser's contract, so they
-are pinned here too.
+The rewrite is driven through ``_logpatch_to`` — the registered ``to=`` builder of the
+``LogPatchDump`` family — so these exercise the public rewrite surface, never the
+``_git_log_history`` helper it delegates to. ``ccx_bin`` is pinned to a fixed path so the
+emitted command is deterministic; a shape with no faithful ``ccx vcs history`` form makes
+``_logpatch_to`` return ``None`` (the rewrite falls back to the block).
+
+The no-``--`` branch pins a pathspec only when a sole trailing positional exists on disk
+(a bare revision like ``HEAD~5`` has no file to hand ``ccx vcs history``), so its coverage
+is environment-dependent and lives here rather than in the inline ``tests={}`` matrix: each
+case ``chdir``s into a temp dir with a known file. The ``--`` branch and the flag/count
+parsing are disk-independent but share the rewrite's contract, so they are pinned here too.
 
 The nudge's one-shot latch is stateful across two invocations — a shape the declarative
 ``tests={}`` harness cannot express — so its fire/silence behavior is driven end to end here
@@ -28,14 +33,15 @@ from captain_hook.context import HookContext
 from captain_hook.events import PreToolUseEvent
 from captain_hook.session import SessionStore
 
+from hooks import vcs_guards
 from hooks.vcs_guards import (
     GhRunWatchNudged,
     GhRunWatchSingle,
-    _git_log_history,
     steer_gh_run_watch_to_ship,
 )
 
 MAIN_T = "/transcripts/main.jsonl"
+FAKE_CCX = "/fake/ccx"
 
 
 def _bash_pre(command: str, session_dir: Path | None = None) -> PreToolUseEvent:
@@ -53,77 +59,92 @@ def _repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-class TestGitLogHistoryDashDash:
-    """The ``--`` branch pins the path with no disk check (disk-independent)."""
-
-    def test_plain_path(self) -> None:
-        assert _git_log_history(("-p", "--", "internal/cli/root.go")) == ("internal/cli/root.go", None)
-
-    def test_path_need_not_exist(self) -> None:
-        # `--` is an explicit pathspec marker — the token is taken verbatim, existence aside.
-        assert _git_log_history(("-p", "--", "ghost/never-there.go")) == ("ghost/never-there.go", None)
-
-    def test_count_two_token(self) -> None:
-        assert _git_log_history(("-p", "-n", "5", "--", "f.go")) == ("f.go", "5")
-
-    def test_count_glued_short(self) -> None:
-        assert _git_log_history(("-p", "-5", "--", "f.go")) == ("f.go", "5")
-
-    def test_count_max_count_equals(self) -> None:
-        assert _git_log_history(("-p", "--max-count=5", "--", "f.go")) == ("f.go", "5")
-
-    def test_count_max_count_two_token(self) -> None:
-        assert _git_log_history(("-p", "--max-count", "5", "--", "f.go")) == ("f.go", "5")
-
-    def test_follow_dropped(self) -> None:
-        assert _git_log_history(("-p", "--follow", "--", "f.go")) == ("f.go", None)
-
-    def test_patch_synonyms(self) -> None:
-        assert _git_log_history(("--patch", "--", "f.go")) == ("f.go", None)
-        assert _git_log_history(("-u", "--", "f.go")) == ("f.go", None)
+@pytest.fixture
+def _pin_ccx(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin ``ccx_bin`` so ``_logpatch_to`` emits a deterministic rewrite string."""
+    monkeypatch.setattr(vcs_guards, "ccx_bin", lambda: FAKE_CCX)
 
 
-class TestGitLogHistoryBlocks:
-    """Shapes with no faithful ``ccx vcs history`` form return ``None`` (→ block)."""
+class TestLogPatchRewriteDashDash:
+    """The ``--`` branch of the ``git log -p`` -> ``ccx vcs history`` rewrite (disk-independent path)."""
 
-    def test_no_path(self) -> None:
-        assert _git_log_history(("-p",)) is None
+    @pytest.mark.parametrize(
+        "command, expected",
+        [
+            ("git log -p -- internal/cli/root.go", f"{FAKE_CCX} vcs history internal/cli/root.go"),
+            # `--` is an explicit pathspec marker — the token is taken verbatim, existence aside.
+            ("git log -p -- ghost/never-there.go", f"{FAKE_CCX} vcs history ghost/never-there.go"),
+            ("git log -p -n 5 -- f.go", f"{FAKE_CCX} vcs history f.go -n 5"),
+            ("git log -p -5 -- f.go", f"{FAKE_CCX} vcs history f.go -n 5"),  # glued -N count form
+            ("git log -p --max-count=5 -- f.go", f"{FAKE_CCX} vcs history f.go -n 5"),
+            ("git log -p --max-count 5 -- f.go", f"{FAKE_CCX} vcs history f.go -n 5"),
+            ("git log -p --follow -- f.go", f"{FAKE_CCX} vcs history f.go"),  # --follow dropped
+            ("git log --patch -- f.go", f"{FAKE_CCX} vcs history f.go"),  # --patch synonym
+            ("git log -u -- f.go", f"{FAKE_CCX} vcs history f.go"),  # -u synonym
+        ],
+        ids=[
+            "plain_path",
+            "path_need_not_exist",
+            "count_two_token",
+            "count_glued_short",
+            "count_max_count_equals",
+            "count_max_count_two_token",
+            "follow_dropped",
+            "patch_synonym",
+            "u_synonym",
+        ],
+    )
+    def test_rewrites(self, _pin_ccx: None, command: str, expected: str) -> None:
+        assert vcs_guards._logpatch_to(_bash_pre(command)) == expected
 
-    def test_two_paths_after_dashdash(self) -> None:
-        assert _git_log_history(("-p", "--", "a.go", "b.go")) is None
 
-    def test_empty_dashdash(self) -> None:
-        assert _git_log_history(("-p", "--")) is None
+class TestLogPatchRewriteBlocks:
+    """Shapes with no faithful ``ccx vcs history`` form make ``_logpatch_to`` return ``None`` (→ block)."""
 
-    def test_revision_before_dashdash(self) -> None:
-        assert _git_log_history(("-p", "HEAD", "--", "f.go")) is None
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git log -p",  # no path
+            "git log -p -- a.go b.go",  # two paths after --
+            "git log -p --",  # empty --
+            "git log -p HEAD -- f.go",  # revision before --
+            "git log -p --author=me -- f.go",  # unrecognized flag
+            "git log -p -n x -- f.go",  # non-numeric count
+            "git log -p -n",  # dangling count flag
+        ],
+        ids=[
+            "no_path",
+            "two_paths_after_dashdash",
+            "empty_dashdash",
+            "revision_before_dashdash",
+            "unrecognized_flag",
+            "non_numeric_count",
+            "dangling_count_flag",
+        ],
+    )
+    def test_blocks(self, _pin_ccx: None, command: str) -> None:
+        assert vcs_guards._logpatch_to(_bash_pre(command)) is None
 
-    def test_unrecognized_flag(self) -> None:
-        assert _git_log_history(("-p", "--author=me", "--", "f.go")) is None
 
-    def test_non_numeric_count(self) -> None:
-        assert _git_log_history(("-p", "-n", "x", "--", "f.go")) is None
-
-    def test_dangling_count_flag(self) -> None:
-        assert _git_log_history(("-p", "-n")) is None
-
-
-class TestGitLogHistoryDiskBranch:
+class TestLogPatchRewriteDiskBranch:
     """The no-``--`` branch: a sole trailing positional is a path iff it exists on disk."""
 
-    def test_sole_existing_positional(self, _repo: Path) -> None:
-        assert _git_log_history(("-p", "f.go")) == ("f.go", None)
+    def test_sole_existing_positional(self, _pin_ccx: None, _repo: Path) -> None:
+        assert vcs_guards._logpatch_to(_bash_pre("git log -p f.go")) == f"{FAKE_CCX} vcs history f.go"
 
-    def test_sole_existing_positional_with_count(self, _repo: Path) -> None:
-        assert _git_log_history(("-p", "-3", "f.go")) == ("f.go", "3")
+    def test_sole_existing_positional_with_count(self, _pin_ccx: None, _repo: Path) -> None:
+        assert vcs_guards._logpatch_to(_bash_pre("git log -p -3 f.go")) == f"{FAKE_CCX} vcs history f.go -n 3"
 
-    def test_nonexistent_positional_is_a_revision(self, _repo: Path) -> None:
-        # `git log -p HEAD~5` — the positional is a revision, not a file, so no path.
-        assert _git_log_history(("-p", "HEAD~5")) is None
-        assert _git_log_history(("-p", "missing.go")) is None
+    @pytest.mark.parametrize(
+        "command",
+        ["git log -p HEAD~5", "git log -p missing.go"],  # revision vs. missing file — neither is a path on disk
+        ids=["bare_revision", "missing_path"],
+    )
+    def test_nonexistent_positional_is_a_revision(self, _pin_ccx: None, _repo: Path, command: str) -> None:
+        assert vcs_guards._logpatch_to(_bash_pre(command)) is None
 
-    def test_two_existing_positionals_block(self, _repo: Path) -> None:
-        assert _git_log_history(("-p", "f.go", "g.go")) is None
+    def test_two_existing_positionals_block(self, _pin_ccx: None, _repo: Path) -> None:
+        assert vcs_guards._logpatch_to(_bash_pre("git log -p f.go g.go")) is None
 
 
 class TestGhRunWatchNudge:

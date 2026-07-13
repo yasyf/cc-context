@@ -344,29 +344,54 @@ class TestIgnoredDirTargets:
 
 
 class TestRegexRewritable:
-    """`_regex_rewritable` returns the Rust-regex translation of an admissible pattern, else `None`."""
+    """`_regex_rewritable`'s dialect translation, seen through the public `_grep_to` rewrite: a pattern
+    carrying an active-dialect metachar is handed to the translator, and its Rust-regex form rides out
+    on `--regex` in the rewritten command (`-E` selects ERE, the default is BRE). A pattern the
+    translator refuses is unrewritable, so over `.` (repo-wide) the grep falls through to the block.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _pin_ccx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # `.` widens to repo-wide, so these shapes are disk-independent apart from the `--regex` probe.
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(search_guards, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
+        _probe(monkeypatch, REGEX_SUPPORTS_HELP)
+        ccx_supports.cache_clear()
+        yield
+        ccx_supports.cache_clear()
 
     @pytest.mark.parametrize(
-        "pattern, ere, want",
+        "command, expected",
         [
-            ("*abc", True, None),  # leading `*` — literal in grep, "nothing to repeat" in Rust
-            ("a{b}", True, None),  # non-digit interval — literal `{b}` in grep, a parse error in Rust
-            ("{2,3}", True, "{2,3}"),  # digits-only interval body accepted, emitted verbatim
-            ("a^b", False, None),  # mid-pattern `^` — literal in BRE, an anchor in Rust
-            ("^class ", False, "^class "),  # leading `^` anchor, plain atoms after — faithful in both
-            ("a**", False, None),  # stacked quantifier rejected
-            ("foo$", False, "foo$"),  # trailing `$` anchor accepted
-            ("a$b", False, None),  # mid `$` — literal in grep, an anchor in Rust
-            ("(a|b)c", True, "(a|b)c"),  # balanced group + alternation under ERE, unchanged
-            ("(a|b", True, None),  # unbalanced group rejected
-            (r"a\d", True, None),  # backslash escape rejected
-            ("a[bc]", True, None),  # bracket class rejected
-            ("a+", True, "a+"),  # ERE `+` quantifier accepted, unchanged
-            ("a+", False, r"a\+"),  # bare BRE `+` is a literal — escaped so Rust reads it literally too
+            ("grep -E '{2,3}' .", "/fake/ccx code grep '{2,3}' --regex"),  # digits-only interval, emitted verbatim
+            ("grep '^class ' .", "/fake/ccx code grep '^class ' --regex"),  # leading `^` anchor + plain atoms
+            ("grep 'foo$' .", "/fake/ccx code grep 'foo$' --regex"),  # trailing `$` anchor accepted
+            ("grep -E '(a|b)c' .", "/fake/ccx code grep '(a|b)c' --regex"),  # balanced group + ERE alternation
+            ("grep -E 'a+' .", "/fake/ccx code grep a+ --regex"),  # ERE `+` quantifier, unchanged
+            ("grep 'a+.' .", "/fake/ccx code grep 'a\\+.' --regex"),  # bare BRE `+` is literal → escaped `\+` (routed by `.`)
         ],
     )
-    def test_admits_only_dialect_faithful(self, pattern: str, ere: bool, want: str | None) -> None:
-        assert search_guards._regex_rewritable(pattern, ere) == want
+    def test_admits_dialect_faithful(self, command: str, expected: str) -> None:
+        assert search_guards._grep_to(_evt(command)) == expected
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep -E '*abc' .",  # leading `*` — literal in grep, "nothing to repeat" in Rust
+            "grep -E 'a{b}' .",  # non-digit interval — literal `{b}` in grep, a parse error in Rust
+            "grep 'a^b' .",  # mid-pattern `^` — literal in BRE, an anchor in Rust
+            "grep 'a**' .",  # stacked quantifier rejected
+            "grep 'a$b' .",  # mid `$` — literal in grep, an anchor in Rust
+            "grep -E '(a|b' .",  # unbalanced group rejected
+            r"grep -E 'a\d' .",  # backslash escape rejected
+            "grep -E 'a[bc]' .",  # bracket class rejected
+        ],
+    )
+    def test_rejects_dialect_divergent(self, command: str) -> None:
+        # Unrewritable over `.` (a tree-wide dir, unbounded): no rewrite, so the condition fires (block).
+        assert search_guards._grep_to(_evt(command)) is None
+        assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is True
 
 
 class TestGrepDialectClassification:
@@ -553,14 +578,14 @@ class TestGrepMultiFilePaths:
 
 
 class TestGrepBoundedPassthrough:
-    """`_bounded_file_grep` judges one grep statement on its own flags and operands, in a fixed order:
+    """`GrepFlood` stays silent (a genuine allow) only when every grep occurrence is a bounded search
+    ccx can't rewrite, judged per occurrence on its own flags and operands in a fixed order of forfeits:
     a `GREP_OPTIONS` env, `grep -r` with no operand, env alongside path operands, an uninspectable `-f`
-    pattern file, a flag-supplied or positional empty pattern, and (on the stat lane) `-o` each forfeit.
-    Two shapes stay bounded (the condition is silent — a genuine allow): every operand an explicit
-    data-ext file (matched by suffix, no stat, `-o` allowed — rg parity) or every operand an existing
-    regular file whose sizes sum under the large-read threshold. A pipe-sink grep (`sink=True`) with no
-    operand is a bounded stdin filter; with file operands it is judged like any file search. Compound
-    lines are judged per grep occurrence — one unbounded grep fires the whole line.
+    pattern file, a flag-supplied or positional empty pattern, and (on the stat lane) `-o`. Two shapes
+    stay bounded: every operand an explicit data-ext file (matched by suffix, no stat, `-o` allowed — rg
+    parity) or every operand an existing regular file whose sizes sum under the large-read threshold. A
+    pipe-sink grep with no operand is a bounded stdin filter; with file operands it is judged like any
+    file search. Compound lines are judged per grep occurrence — one unbounded grep fires the whole line.
     """
 
     @pytest.fixture(autouse=True)
@@ -584,7 +609,6 @@ class TestGrepBoundedPassthrough:
         ],
     )
     def test_bounded_existing_files_do_not_fire(self, command: str) -> None:
-        assert search_guards._bounded_file_grep(CommandLine.parse(command).primary) is True
         assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is False
 
     @pytest.mark.parametrize(
@@ -635,37 +659,38 @@ class TestGrepBoundedPassthrough:
         ],
     )
     def test_unbounded_grep_fires_and_blocks(self, command: str) -> None:
-        assert search_guards._bounded_file_grep(CommandLine.parse(command).primary) is False
         assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is True
         assert search_guards._grep_to(_evt(command)) is None
 
     @pytest.mark.parametrize(
         "command",
         [
-            "grep -r foo dir.json",  # -r forfeits data-ext; dir.json is a real directory → not bounded
-            "grep -d recurse foo dir.json",  # -d (--directories) → assume recursive → same
-            "grep foo dir.json/",  # a trailing slash defeats the data-ext textual escape
+            "grep -r foo logs.json",  # -r forfeits the data-ext textual escape → unbounded → fires
+            "grep -d recurse foo logs.json",  # -d (--directories) → assume recursive → same
+            "grep foo logs.json/",  # a trailing slash defeats the data-ext textual escape
         ],
     )
     def test_recursion_or_directory_defeats_data_ext(self, command: str) -> None:
-        # A recursion flag or a directory operand forfeits the no-stat data-ext pass even when spelled
-        # like a data file. `-r`/trailing-slash shapes parse as directory-glob rewrites at the GrepFlood
-        # level (not blocks), so only `_bounded_file_grep` is asserted here.
-        assert search_guards._bounded_file_grep(CommandLine.parse(command).primary) is False
+        # Recursion or a trailing slash forfeits the no-stat data-ext pass → unbounded → fires. The absent
+        # `.json` name keeps `_grep_to` at `None`, so no dir-glob rewrite masks the fire.
+        assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is True
 
     def test_data_ext_is_size_exempt(self) -> None:
-        # Data-ext operands pass by suffix with no stat, so an over-threshold `.txt` is still bounded
-        # (rg parity — a raw `rg` over the same data file is exempt too).
-        assert search_guards._bounded_file_grep(CommandLine.parse("grep foo big.txt").primary) is True
+        # Data-ext passes by suffix with no stat, so over-threshold `.txt` stays bounded; `-x` (bounded,
+        # not output-bounded) would hit the stat lane and block absent that pass (contrast `-x … big.py`).
+        command = "grep -x foo big.txt"
+        assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is False
 
     def test_under_threshold_multi_file_sum_is_bounded(self) -> None:
-        # The bound is on the SUM of file sizes: two small files together stay under the threshold.
-        assert search_guards._bounded_file_grep(CommandLine.parse("grep -c foo real.py real.py").primary) is True
+        # Two small files together stay under the threshold, so the unmappable count grep runs as-is.
+        command = "grep -c foo real.py real.py"
+        assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is False
 
     def test_unknown_flag_is_not_bounded(self) -> None:
-        # Conservative lexer: an unknown flag leaves the grep unbounded (it enters the hook), never a
-        # wrong allow — even over an existing file.
-        assert search_guards._bounded_file_grep(CommandLine.parse("grep --frobnicate foo real.py").primary) is False
+        # Conservative lexer: an unknown flag leaves the grep unbounded (it fires), never a wrong allow —
+        # even over an existing file.
+        command = "grep --frobnicate foo real.py"
+        assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is True
 
     @pytest.mark.parametrize(
         "command",
@@ -695,7 +720,6 @@ class TestGrepBoundedPassthrough:
         ],
     )
     def test_data_ext_needs_no_stat(self, command: str) -> None:
-        assert search_guards._bounded_file_grep(CommandLine.parse(command).primary) is True
         assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is False
 
     @pytest.mark.parametrize(
@@ -709,8 +733,8 @@ class TestGrepBoundedPassthrough:
         ],
     )
     def test_env_and_flag_pattern_holes(self, command: str) -> None:
-        # These forfeit before any stat, so the assertion is disk-independent (the named files need not exist).
-        assert search_guards._bounded_file_grep(CommandLine.parse(command).primary) is False
+        # These forfeit before any stat → unbounded → fires; disk-independent (the named files need not exist).
+        assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is True
 
     @pytest.mark.parametrize(
         ("command", "fires"),

@@ -19,6 +19,7 @@ the ``ccx_supports`` cache cleared around every case so a probe result never lea
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,7 +31,7 @@ from captain_hook.session import SessionStore
 
 from conftest import fake_run
 from hooks import common, web_guards
-from hooks.web_guards import WholePageWebFetch, _is_api_url, _page_dump_note, _page_dump_to
+from hooks.web_guards import WholePageWebFetch, _page_dump_note, _page_dump_to
 
 
 def _webfetch_event(url: str, session_dir: Path) -> PreToolUseEvent:
@@ -76,16 +77,20 @@ def _bash_evt(command: str) -> SimpleNamespace:
     return SimpleNamespace(command_line=CommandLine.parse(command))
 
 
+def _force_web_support(monkeypatch: pytest.MonkeyPatch, *, ok: bool) -> None:
+    """Force the ``ccx_supports("web", "read")`` gate on/off around the page-dump rewrite.
+
+    `_page_dump_to` builds the command with `web_guards.ccx_bin`; `ccx_supports` probes via
+    `common.ccx_bin` + `common.subprocess.run` — patch all three.
+    """
+    monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
+    monkeypatch.setattr(web_guards, "ccx_bin", lambda: "/fake/ccx")
+    rc, out = (0, "Usage: ccx web read <url> --full") if ok else (1, 'unknown command "web"')
+    monkeypatch.setattr(common.subprocess, "run", fake_run(rc, stdout=out))
+
+
 class TestPageDumpRewrite:
     """The ``curl``/``wget`` → ``ccx web read --full`` rewrite, gated on ``ccx_supports``."""
-
-    def _support(self, monkeypatch: pytest.MonkeyPatch, *, ok: bool) -> None:
-        # `_page_dump_to` builds the command with `web_guards.ccx_bin`; `ccx_supports` probes
-        # via `common.ccx_bin` + `common.subprocess.run` — patch all three.
-        monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
-        monkeypatch.setattr(web_guards, "ccx_bin", lambda: "/fake/ccx")
-        rc, out = (0, "Usage: ccx web read <url> --full") if ok else (1, 'unknown command "web"')
-        monkeypatch.setattr(common.subprocess, "run", fake_run(rc, stdout=out))
 
     @pytest.mark.parametrize(
         "command,url",
@@ -105,23 +110,23 @@ class TestPageDumpRewrite:
     def test_supported_rewrites_to_web_read(
         self, monkeypatch: pytest.MonkeyPatch, command: str, url: str
     ) -> None:
-        self._support(monkeypatch, ok=True)
+        _force_web_support(monkeypatch, ok=True)
         assert _page_dump_to(_bash_evt(command)) == f"/fake/ccx web read {url} --full"
 
     def test_query_string_url_is_shell_quoted(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._support(monkeypatch, ok=True)
+        _force_web_support(monkeypatch, ok=True)
         got = _page_dump_to(_bash_evt("curl 'https://example.com/p?a=1&b=2'"))
         assert got == "/fake/ccx web read 'https://example.com/p?a=1&b=2' --full"
 
     def test_benign_query_string_still_rewrites(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Finding 7: a query string that is *not* JSON/GraphQL (`?page=2`) still rewrites — the
         # api heuristic must not block every URL that happens to carry a query.
-        self._support(monkeypatch, ok=True)
+        _force_web_support(monkeypatch, ok=True)
         got = _page_dump_to(_bash_evt("curl -s 'https://example.com/list?page=2'"))
         assert got == "/fake/ccx web read 'https://example.com/list?page=2' --full"
 
     def test_unsupported_falls_back_to_block(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._support(monkeypatch, ok=False)
+        _force_web_support(monkeypatch, ok=False)
         assert _page_dump_to(_bash_evt("curl https://example.com")) is None
 
     @pytest.mark.parametrize(
@@ -141,20 +146,24 @@ class TestPageDumpRewrite:
     ) -> None:
         # Even with `ccx web read` present, an un-mappable shape returns None (→ block), proving
         # the block reason is the shape, not the gate.
-        self._support(monkeypatch, ok=True)
+        _force_web_support(monkeypatch, ok=True)
         assert _page_dump_to(_bash_evt(command)) is None
 
     def test_note_names_target_and_steers(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._support(monkeypatch, ok=True)
+        _force_web_support(monkeypatch, ok=True)
         note = _page_dump_note(_bash_evt("curl -sL https://example.com/guide"))
         assert "ccx web read https://example.com/guide --full" in note
         assert "ccx web outline https://example.com/guide" in note
         assert "ccx web search https://example.com/guide" in note
 
 
-class TestIsApiUrl:
+class TestApiUrlDecision:
     """Finding 7: the api/JSON heuristic reads the query string and the `/graphql` endpoint too,
-    since readability would shred what those return — but a benign query must stay non-api.
+    since readability would shred what those return — but a benign query must stay rewritable.
+
+    Routed through the `to` builder (`_page_dump_to`) that consumes the heuristic, with the
+    `ccx web read` gate forced on so a None result is the api block, not the missing surface:
+    an api URL falls back to the block (`_page_dump_to` returns None), a non-api URL rewrites.
     """
 
     @pytest.mark.parametrize(
@@ -170,17 +179,19 @@ class TestIsApiUrl:
             "https://example.com/x?a=1&out=JSON",  # case-insensitive query match
         ],
     )
-    def test_api_urls(self, url: str) -> None:
-        assert _is_api_url(url)
+    def test_api_url_falls_back_to_block(self, monkeypatch: pytest.MonkeyPatch, url: str) -> None:
+        _force_web_support(monkeypatch, ok=True)
+        assert _page_dump_to(_bash_evt(f"curl {shlex.quote(url)}")) is None
 
     @pytest.mark.parametrize(
         "url",
         [
             "https://example.com/guide",
-            "https://example.com/list?page=2",  # benign query — must still be non-api (→ rewritable)
+            "https://example.com/list?page=2",  # benign query — must still be rewritable
             "https://example.com/article?ref=home",
             "https://example.com/graphql-tutorial",  # not the /graphql endpoint, and no api signal
         ],
     )
-    def test_non_api_urls(self, url: str) -> None:
-        assert not _is_api_url(url)
+    def test_non_api_url_rewrites(self, monkeypatch: pytest.MonkeyPatch, url: str) -> None:
+        _force_web_support(monkeypatch, ok=True)
+        assert _page_dump_to(_bash_evt(f"curl {shlex.quote(url)}")) == f"/fake/ccx web read {shlex.quote(url)} --full"
