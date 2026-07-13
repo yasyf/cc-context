@@ -1,6 +1,6 @@
 # ![cc-context](docs/assets/readme-banner.webp)
 
-**Take `cat` away from your agent.** Guard hooks block cat, raw grep, and full-file reads and rewrite each into a token-budgeted ccx call for an outline, a symbol with its callers, or a diff.
+**Give your agent bounded context.** Guard hooks catch `cat`, raw `grep`, and full-file reads, rewriting the mappable ones into budgeted ccx calls — line-numbered, token-capped, never silently truncated — and windowing or blocking the rest.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/yasyf/cc-context/ci.yml?branch=main&label=ci)](https://github.com/yasyf/cc-context/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/yasyf/cc-context?sort=semver)](https://github.com/yasyf/cc-context/releases)
@@ -47,34 +47,36 @@ claude mcp add --scope user --transport stdio cc-context -- ccx mcp
 
 ### Orient in an unfamiliar repo in one command
 
-Cold-starting in a codebase you've never seen burns the first few thousand tokens on `ls` and `cat` wandering. One command replaces the tour:
+Need the lay of the land before a deep dive? One command draws the map:
 
 ```bash
 ccx repo overview
 ```
 
 ```console
-[tilth] Go project — 125 source files, 10 directories
-  dirs: cli/ codeexec/ format/ render/ backend/ astgrep/ anchor/ vcs/ cache/ grok/
-  deps: asm, cobra, encoding, go-sdk, jsonschema-go, mousetrap, oauth2, pflag
-  hot (× = importers): plugin/hooks/common.py ×3
+[tilth] Go project — 174 source files, 10 directories
+  dirs: cli/ web/ codeexec/ format/ backend/ render/ astgrep/ anchor/ cache/ vcs/
+  deps: asm, cascadia, chardet, cobra, dateparse, dom, dom, encoding, go-readability, go-sdk
+  hot (× = importers): plugin/hooks/common.py ×2
   git: branch main, clean
   tests: tests/, _test.go, test_*.py
   manifest: go.mod (github.com/yasyf/cc-context)
+
+languages: go (176), py (55), md (22), sh (4)
 ```
 
-Structure, dependencies, the hottest files by importer count, and VCS state, in a few hundred tokens instead of a directory crawl.
+Structure, dependencies, the hottest files by importer count, and VCS state in a few hundred tokens. Skip it when you already know what you're looking for — a targeted search or symbol lookup beats a tour.
 
-### Pull one symbol with its callers, not the whole file
+### Locate one symbol without paging through the file
 
-Understanding one function shouldn't cost a whole-file read plus a grep for its call sites. Ask for the symbol:
+Where does this function live, what's its contract, and how big is its blast radius? One call answers all three:
 
 ```bash
 ccx code symbol NewRootCmd
 ```
 
 ```console
-# grok: NewRootCmd [internal/cli/root.go:11]
+# grok: NewRootCmd [internal/cli/root.go:13#dezd]
 
 ## signature
 func NewRootCmd() *cobra.Command
@@ -82,23 +84,14 @@ func NewRootCmd() *cobra.Command
 ## doc
 // NewRootCmd builds the root command and registers its subcommands.
 
-## body
-…
-
-## callees (4 internal, 5 extern)
-…
-
-## callers (5 of 6)
-  internal/cli/cli_test.go
-    [30]   in TestRootHelpListsAllOps()
-…
+callers 18 · callees 11 — --body/--callers/--callees/--full
 ```
 
-Definition, doc, body, callees, and callers arrive in one budgeted response, so the agent edits code it never paged through.
+Location, signature, and doc land in ~60 tokens; the counts trailer says whether expanding is worth a second call, and `--callers`, `--body`, or `--full` pull exactly the layer you need.
 
 ### Keep JSON output out of context
 
-`gh --json` and `kubectl -o json` dump verbose, nested JSON that floods the context window. Run the command through `ccx format` and its JSON or NDJSON stdout comes back re-encoded in the leanest accurate shape:
+`gh --json` and `kubectl -o json` dump verbose, nested JSON that can swamp a context window. Run the command through `ccx format` and its JSON or NDJSON stdout comes back re-encoded in the leanest accurate shape:
 
 ```bash
 ccx format -- gh release list --limit 5 --json tagName,publishedAt,isLatest
@@ -136,7 +129,7 @@ asyncio.run(main())
 {"constructors":["newCodeCmd","newDepsCmd","newDiffCmd","newExecCmd","newFindCmd","newFormatCmd","newGrepCmd","newHistoryCmd","newLocateCmd","newMCPCmd","newOutlineCmd","newOverviewCmd","newReadCmd","newRelatedCmd","newReplaceCmd","newRepoCmd","newSearchCmd","newShipCmd","newShowCmd","newSymbolCmd","newVcsCmd"],"subcommands":21}
 ```
 
-The ~11,000-character outline of 35 files stayed in the sandbox; only the answer came back. In the spike's four replayed agent episodes, that pattern cut the characters entering context by 12-99×, measured as a raw character delta, separate from the [benchmark suite](bench/README.md). Scripts use a restricted Python subset; `ccx exec --list-tools` prints the host-function catalog and the full rules. The MCP facade exposes the same surface as `ccx_exec`.
+The ~11,000-character outline of 35 files stayed in the sandbox; only the answer came back. In the spike's four replayed agent episodes, that pattern cut the characters entering context by 12-99×, measured as a raw character delta, separate from the [benchmark suite](bench/README.md) — where agents never reached for `exec` unprompted. It pays when your prompts or project guides steer composition through it. The full measured story — where ccx costs tokens, where it saves them, and where it wins on accuracy instead — lives in [bench/FINDINGS.md](bench/FINDINGS.md). Scripts use a restricted Python subset; `ccx exec --list-tools` prints the host-function catalog and the full rules. The MCP facade exposes the same surface as `ccx_exec`.
 
 ## The guard pack enforces it
 
@@ -148,9 +141,9 @@ Each command is a token-bounded stand-in for a primitive an agent would otherwis
 
 | Command | What it does |
 | --- | --- |
-| `ccx repo overview` | Repository structure and entry points; start here |
+| `ccx repo overview` | Repository structure and entry points, for untargeted starts |
 | `ccx code search <query> [path]` | Search routed by query kind; natural language runs semantic, an ast-grep pattern (`$A`, `$$$`) runs structural |
-| `ccx code symbol <name>` (alias `grok`) | Definition, doc, body, callers, callees, siblings, tests |
+| `ccx code symbol <name>` (alias `grok`) | Location, signature, doc + caller/callee counts; flags expand body, callers, tests |
 | `ccx code outline <file-or-dir>` | Token-budgeted structural outline of a file or directory |
 | `ccx code read <file> --section A-B` | Read a line range or a `## Heading` instead of the whole file |
 | `ccx vcs diff [uncommitted\|staged\|<ref>]` | VCS-aware structural diff; defaults to uncommitted |

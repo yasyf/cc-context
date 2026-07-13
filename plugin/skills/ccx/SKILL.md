@@ -21,9 +21,15 @@ description: >-
 
 # ccx — compact codebase context
 
-`ccx` answers codebase questions with the fewest tokens that still carry the answer.
-Every command keeps line numbers, prints a token count, and reports overflow without
-silent truncation. Use it as the default path to any file, symbol, search, or diff.
+`ccx` answers codebase questions with bounded, structured output: line-numbered,
+budget-capped, explicit about overflow, never silently truncated. Across two 450-run
+benchmark campaigns that structure matched or beat native-tool accuracy on locate,
+trace, and diff questions, and held after the terse defaults (CLI 100% on the gated
+re-run; MCP 96.0% vs baseline 96.2%). Use it as the first stop for a targeted
+question: a file section, a symbol, a search, a diff. One boundary: when the answer
+must be a complete set ("every subclass of X", "every module importing Y"), read the
+candidate files — bounded views can withhold members, and measured accuracy reversed
+on exactly those enumeration tasks.
 
 The MCP tools mirror the ccx query surface: `mcp__cc-context__ccx_repo_overview`,
 `mcp__cc-context__ccx_code_search`, `mcp__cc-context__ccx_code_outline`, and the rest of
@@ -37,14 +43,15 @@ Use whichever is available; the workflow is identical. `ccx vcs ship`, `ccx vcs 
 
 ### 1. Orient
 
-Start a new codebase, or a new area of one, with the map:
+Facing an untargeted task in an unfamiliar codebase? Draw the map:
 
 ```
 ccx repo overview
 ```
 
 It reports the structure, languages, and entry points, enough to know where to look
-before you look.
+before you look. Skip it when you already know what you're after — starting with a
+search or symbol lookup costs one round-trip less than starting with a tour.
 
 ### 2. Find
 
@@ -54,8 +61,8 @@ Pick the tool by what you know.
   ```
   ccx code search "how requests get authenticated"
   ```
-- **Have the exact symbol.** Definition plus callers, callees, siblings, and tests in
-  one shot:
+- **Have the exact symbol.** Location, signature, and doc, with a counts trailer;
+  `--callers`/`--callees`/`--body`/`--full` expand the layer you need:
   ```
   ccx code symbol authenticate   # alias: ccx code grok authenticate
   ```
@@ -277,8 +284,8 @@ These hold for every command, which is what makes ccx safe to trust over a raw r
   drifted, because the hash re-anchors by content — which is why anchored cites beat
   bare line numbers in anything durable. The same check gates writes: `ccx code edit`
   refuses to touch a span whose content no longer matches its anchor.
-- **Token counts are shown.** Each output reports its own size — you always know what
-  a result cost before deciding to read more.
+- **Budgets are enforced.** Structural output is capped to the token budget, and most
+  results report their own size — you know what a result cost before reading more.
 - **Overflow is explicit.** When a result exceeds the budget, ccx says so and tells
   you what it left out. It never silently truncates.
 - **There is always a raw fallback.** Hit overflow or want the unabridged source and
@@ -298,6 +305,17 @@ The guard hooks block token-heavy primitives: a full-file `Read` of a large file
 broad `git diff`, raw `grep`, `sed -n`, a bare `cat`, `ls -R`, `find` enumeration, a
 whole-page `WebFetch`, and an unpiped `curl`/`wget` page dump (a URL `ccx web` can't
 serve stays reachable — the same WebFetch passes on a deliberate re-run).
-Each has a ccx equivalent that returns the same answer in a fraction of the tokens.
-Reach for ccx and you stay inside the budget by default; reach for the raw tool and the
-hook turns you back to ccx anyway.
+Each has a ccx equivalent that returns a bounded, structured answer — line-numbered,
+budget-capped, explicit about what was cut — where native output can be unbounded and
+says nothing about what's missing. Measured head-to-head across two 450-run
+campaigns, that structure bought correctness: ccx arms matched or beat native
+accuracy on locate/trace/diff tasks; under the terse defaults the CLI scored 100% on
+the gated re-run (MCP: 96.0% vs baseline 96.2%); and the structural diff caught a
+misattributed hunk that raw hunks missed. Reach for ccx on targeted questions; reach
+for the raw tool and the hook turns you back anyway.
+
+The honest exception is exhaustive enumeration. When the deliverable is a complete
+set, compact views can withhold exactly the members you need — measured on
+enumeration tasks, ccx-cli's accuracy fell to 76.9% against the baseline's 93.3%.
+Read the candidate files (sectioned or `--full`) and treat ccx as the locator, not
+the enumerator.

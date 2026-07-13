@@ -15,7 +15,7 @@ Paired per task on both-correct tasks, median across 5 repeats, bootstrap CI ove
 | Tool-result tokens | ~3.3× baseline (p=0.0005) | ~2.9× baseline (p<0.0001) | ~3.5× baseline (p=0.0009) | ~4.0× baseline (p=0.0001) |
 | Accuracy | 94.5% vs 91.5% | 95.2% vs 91.5% | 93.8% vs 93.8% | **96.1%** vs 93.8% |
 
-Verdicts: **FAIL** on all four (model × arm) cells. Accuracy favors ccx in three of four — accuracy was never the problem.
+Verdicts: **FAIL** on all four (model × arm) cells. Accuracy favors ccx in three of four — on these corpora accuracy was not the problem (Stage 1 later found the enumeration exception, below).
 
 Sessions: `results/20260711T202402Z` (sonnet), `results/20260712T033604Z` (opus). Earlier pilots: `results/20260709T144422Z`, `results/20260711T010914Z`.
 
@@ -44,7 +44,7 @@ The flood premise itself had never been measured. [analysis/flood-audit-report.m
 
 - Per-call bounded output is real: the microbench holds at 90% saving, regression-guarded. It just needs a flood to bound.
 - The accuracy value is verified in transcripts: in `diff-tornado-response`, baseline misattributes a diff hunk while ccx-mcp's structural diff locates it 5/5 ([analysis/stageE-audit.md](analysis/stageE-audit.md)). Part of ccx's token cost bought correctness.
-- The capacity thesis is untested, not refuted: whether bounded outputs let one session complete more work before compaction is the headline question of the redesign ([analysis/bench-redesign-proposal.md](analysis/bench-redesign-proposal.md)) — session-length work orders, prior-defeating corpora, flood-inducing task shapes, and a weak-model axis, staged cheapest-falsifier-first.
+- The capacity thesis is untested, not refuted: whether bounded outputs let one session complete more work before compaction was the redesign proposal's headline question ([analysis/bench-redesign-proposal.md](analysis/bench-redesign-proposal.md)). Stage 1's outcome deferred it indefinitely — see the deferral note below.
 
 ## Validity notes
 
@@ -62,7 +62,9 @@ The redesign's cheapest falsifier ran as a staged probe (~$30 total; sessions `2
 - Two boundary-contract artifacts were found and fixed along the way (unstated set boundaries penalized perfect-recall answers; the gold predicate excluded a C-extension module the prompt's literal rule included). Both fixes flipped failures without touching graders.
 - The confirmed negative, on the most flood-favorable shape found: ccx-cli lost H, T (2.2× baseline tokens), and tool-result on the one pairable task — and lost **accuracy** (76.9% vs 93.3%) on the family. The compact lane systematically misses members on exhaustive-enumeration questions; the baseline's floods buy its correctness.
 
-That last point sharpens the earlier accuracy story: ccx's accuracy edge is real on locate/trace/diff tasks (the classic corpus, re-confirmed at 100%/96% under terse defaults) and reverses on exhaustive-enumeration tasks, where withholding bytes withholds answers. Token savings claims at the session level are dead on both corpora; the honest product story is precision on targeted questions, guard rewrites as a tail safety net (3.6–3.9% ceiling), and per-call bounding where floods actually happen (weak models; the read-heavy tail).
+That last point sharpens the earlier accuracy story: ccx's accuracy edge is real on locate/trace/diff tasks (the classic corpus; the terse-gate re-run scored CLI 100% while MCP came in at 96.0% vs baseline 96.2%) and reverses on exhaustive-enumeration tasks, where withholding bytes withholds answers. Token savings claims at the session level are dead on both corpora; the honest product story is precision on targeted questions, guard rewrites as a tail safety net (3.6–3.9% ceiling), and per-call bounding where floods actually happen (weak models; the read-heavy tail).
+
+Design C — session-capacity work orders measuring compaction deferral — is deferred indefinitely. Stage 1's lesson cuts against its premise: compactness withholds members exactly when work demands exhaustive reading, and retained-context compounding could amplify that trade rather than dilute it. The signal that would reopen the question is a weak-model campaign showing real session-level savings where tool discipline is poor.
 
 ## Product changes motivated by these findings
 
