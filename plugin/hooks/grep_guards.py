@@ -106,8 +106,13 @@ def grep_targets(paths: list[str], include: str | None) -> tuple[str, list[str]]
 
 
 def valid_brace(body: str) -> bool:
-    """Report whether an ERE interval body (``{m}``/``{m,n}``/``{m,}``) is digits-and-comma only."""
-    return re.fullmatch(r"\d+(,\d*)?", body) is not None
+    """Report whether an interval body (``{m}``/``{m,n}``/``{m,}``) is digits-and-comma with every
+    bound within GNU grep's ``RE_DUP_MAX`` (32767) ceiling — above it GNU errors while Rust compiles,
+    so an oversized interval must not rewrite.
+    """
+    if re.fullmatch(r"\d+(,\d*)?", body) is None:
+        return False
+    return all(int(part) <= 32767 for part in body.split(",") if part)
 
 
 def translate_pattern(pattern: str, ere: bool) -> str | None:
@@ -163,6 +168,8 @@ def translate_pattern(pattern: str, ere: bool) -> str | None:
                 quantifier = True
                 i += 2
             elif not ere and nxt == "{":
+                if not quantifiable or quantifier:
+                    return None  # an interval is a quantifier — GNU BRE rejects a leading or stacked one
                 close = pattern.find("\\}", i + 2)
                 if close == -1 or not valid_brace(pattern[i + 2 : close]):
                     return None
@@ -206,6 +213,8 @@ def translate_pattern(pattern: str, ere: bool) -> str | None:
             out.append(c)
             quantifiable, quantifier = True, False
         elif ere and c == "{":
+            if not quantifiable or quantifier:
+                return None  # an interval is a quantifier — a leading or stacked one diverges from Rust
             close = pattern.find("}", i)
             if close == -1 or not valid_brace(pattern[i + 1 : close]):
                 return None
@@ -502,6 +511,8 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
     # Data files pass by suffix, no stat; recursion forfeits it — a dir named like a data file floods.
     if not recursive and all(not p.endswith("/") and Path(p).suffix.lower() in NON_SOURCE_EXTS for p in paths):
         return True
+    if recursive:
+        return False  # a stat at eval-cwd can't prove what -r/-R walks at runtime (a cd may retarget the operand)
     if only_matching:
         return False  # -o forfeits the stat lane — per-match prefixes multiply output past the size bound
     if not all(Path(p).is_file() for p in paths):

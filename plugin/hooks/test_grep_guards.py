@@ -204,7 +204,8 @@ class TestRegexRewritable:
     @pytest.mark.parametrize(
         "command, expected",
         [
-            ("grep -E '{2,3}' .", "/fake/ccx code grep '{2,3}' --regex"),  # digits-only interval, emitted verbatim
+            ("grep -E 'a{2,3}' .", "/fake/ccx code grep 'a{2,3}' --regex"),  # digits-only interval on an atom, emitted verbatim
+            (r"grep 'a\{2,3\}' .", "/fake/ccx code grep 'a{2,3}' --regex"),  # BRE backslashed interval → bare Rust form
             ("grep '^class ' .", "/fake/ccx code grep '^class ' --regex"),  # leading `^` anchor + plain atoms
             ("grep 'foo$' .", "/fake/ccx code grep 'foo$' --regex"),  # trailing `$` anchor accepted
             ("grep -E '(a|b)c' .", "/fake/ccx code grep '(a|b)c' --regex"),  # balanced group + ERE alternation
@@ -220,8 +221,13 @@ class TestRegexRewritable:
         [
             "grep -E '*abc' .",  # leading `*` — literal in grep, "nothing to repeat" in Rust
             "grep -E 'a{b}' .",  # non-digit interval — literal `{b}` in grep, a parse error in Rust
-            "grep 'a^b' .",  # mid-pattern `^` — literal in BRE, an anchor in Rust
+            "grep -E '{2,3}' .",  # leading interval — literal in GNU ERE, a parse error in Rust
             "grep 'a**' .",  # stacked quantifier rejected
+            r"grep 'a\+\{2\}' .",  # BRE interval stacked on `\+` — GNU BRE rejects, Rust would accept
+            "grep -E 'a+{2}' .",  # ERE interval stacked on `+` — divergent, rejected
+            r"grep 'a\{32768\}' .",  # BRE interval past GNU's 32767 ceiling — GNU errors, Rust compiles
+            "grep -E 'a{32768}' .",  # ERE interval past the ceiling — same divergence
+            "grep 'a^b' .",  # mid-pattern `^` — literal in BRE, an anchor in Rust
             "grep 'a$b' .",  # mid `$` — literal in grep, an anchor in Rust
             "grep -E '(a|b' .",  # unbalanced group rejected
             r"grep -E 'a\d' .",  # backslash escape rejected
@@ -433,7 +439,10 @@ class TestGrepBoundedPassthrough:
         (tmp_path / "real.py").write_text("x\n")
         (tmp_path / "big.txt").write_text("x" * (common.LARGE_READ_BYTES + 1))  # over threshold, data ext
         (tmp_path / "big.py").write_text("x" * (common.LARGE_READ_BYTES + 1))  # over threshold, source ext
+        (tmp_path / "half_a.py").write_text("x" * (common.LARGE_READ_BYTES // 2 + 1))  # each under cap,
+        (tmp_path / "half_b.py").write_text("x" * (common.LARGE_READ_BYTES // 2 + 1))  # together over it
         (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "real.py").write_text("y\n")  # a descendant reachable only via -r
         (tmp_path / "dir.json").mkdir()  # a real directory named like a data file
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
@@ -521,10 +530,19 @@ class TestGrepBoundedPassthrough:
         command = "grep -x foo big.txt"
         assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is False
 
-    def test_under_threshold_multi_file_sum_is_bounded(self) -> None:
-        # Two small files together stay under the threshold, so the unmappable count grep runs as-is.
-        command = "grep -c foo real.py real.py"
-        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is False
+    def test_multi_file_sum_gates_the_stat_lane(self) -> None:
+        # `-x` is bounded but NOT output-bounded, so it reaches the size-sum branch: two half-cap files
+        # are bounded apart yet fire together once their sizes sum past the cap.
+        bounded = "grep -x foo half_a.py"
+        assert grep_guards.GrepFlood().check_command_line(make_evt(bounded), CommandLine.parse(bounded)) is False
+        over = "grep -x foo half_a.py half_b.py"
+        assert grep_guards.GrepFlood().check_command_line(make_evt(over), CommandLine.parse(over)) is True
+
+    def test_recursion_forfeits_the_stat_lane(self) -> None:
+        # A stat at eval-cwd can't prove what -r/-R walks at runtime, so recursion is never size-exempt —
+        # even output-bounded -c, whose per-operand bound doesn't hold once recursion fans out per file.
+        for command in ("grep -rc foo real.py", "grep -rc foo big.py", "grep -R foo real.py"):
+            assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
 
     def test_unknown_flag_is_not_bounded(self) -> None:
         # Conservative lexer: an unknown flag leaves the grep unbounded (it fires), never a wrong allow —
