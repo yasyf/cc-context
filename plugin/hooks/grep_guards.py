@@ -511,14 +511,12 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
     # Data files pass by suffix, no stat; recursion forfeits it — a dir named like a data file floods.
     if not recursive and all(not p.endswith("/") and Path(p).suffix.lower() in NON_SOURCE_EXTS for p in paths):
         return True
-    if recursive:
-        return False  # a stat at eval-cwd can't prove what -r/-R walks at runtime (a cd may retarget the operand)
     if only_matching:
         return False  # -o forfeits the stat lane — per-match prefixes multiply output past the size bound
     if not all(Path(p).is_file() for p in paths):
         return False
-    if output_bounded:
-        return True  # -c/-q/-l/-L output is one line per operand, not per match, so file size can't flood
+    if output_bounded and not recursive:
+        return True  # -c/-q/-l/-L is one line per operand — but under -r/-R it fans out per file in the tree
     return sum(Path(p).stat().st_size for p in paths) <= LARGE_READ_BYTES
 
 

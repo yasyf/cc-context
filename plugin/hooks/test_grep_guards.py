@@ -538,11 +538,15 @@ class TestGrepBoundedPassthrough:
         over = "grep -x foo half_a.py half_b.py"
         assert grep_guards.GrepFlood().check_command_line(make_evt(over), CommandLine.parse(over)) is True
 
-    def test_recursion_forfeits_the_stat_lane(self) -> None:
-        # A stat at eval-cwd can't prove what -r/-R walks at runtime, so recursion is never size-exempt —
-        # even output-bounded -c, whose per-operand bound doesn't hold once recursion fans out per file.
-        for command in ("grep -rc foo real.py", "grep -rc foo big.py", "grep -R foo real.py"):
-            assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
+    def test_recursive_count_does_not_ride_the_output_bounded_skip(self) -> None:
+        # -c/-q/-l/-L is one line per operand only WITHOUT recursion; under -r/-R a count fans out one
+        # line per file in the tree, so an over-cap recursive count falls back to the size cap and blocks.
+        over = "grep -rc foo big.py"
+        assert grep_guards.GrepFlood().check_command_line(make_evt(over), CommandLine.parse(over)) is True
+        # A small recursive count/quiet grep still passes the size cap — recursion alone isn't a flood on
+        # a small file (these stay count-mode so `grep_to` yields no rewrite that would mask the verdict).
+        for ok in ("grep -rc foo real.py", "grep -rq foo real.py"):
+            assert grep_guards.GrepFlood().check_command_line(make_evt(ok), CommandLine.parse(ok)) is False
 
     def test_unknown_flag_is_not_bounded(self) -> None:
         # Conservative lexer: an unknown flag leaves the grep unbounded (it fires), never a wrong allow —
