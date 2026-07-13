@@ -9,13 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - The captain-hook dependency is explicit: `plugin.json` declares `{ "name": "captain-hook", "marketplace": "captain-hook", "version": ">=9.9.0" }` and the repo `marketplace.json` allows the cross-marketplace dependency via `allowCrossMarketplaceDependenciesOn`. The allowance is load-bearing — without it Claude Code silently skips the declared dependency at install and the attached guard pack runs with no dispatcher.
 - CI vets the attach-only pack contract: `uvx 'capt-hook>=9.9.0' pack lint plugin` checks the manifest, the canonical attach entry, the dependency floor, the marketplace allowance, and that the pack loads clean.
+- The ccx guard pack auto-approves the read-only ccx surface — the server-pinned `mcp__cc-context__ccx_*` query tools and a fail-closed CLI allowlist — so query calls stop hitting permission prompts.
 
 ### Fixed
 - `install-binary.sh` and the release version check take the first `"version"` match in `plugin.json` — the dependencies block carries version floors of its own, which corrupted the pinned release tag into a multi-line string.
+- `ccx vcs show` validates refs behind `--end-of-options`, closing a flag-injection path where a crafted ref could clobber files; `ccx web` refuses link-local and cloud-metadata hosts (SSRF).
+- A tilth grep reporting zero matches is re-verified through the live rg engine before being trusted — hits in capped or minified files no longer vanish silently.
+- The MCP launch floors the semantic-search dependency at `semble[mcp]>=0.5`.
 
 ### Changed
 - The SessionStart pack attach runs the canonical attach-only prefix, `uvx --isolated capt-hook pack attach "${CLAUDE_PLUGIN_ROOT}/hooks"`; the `install-binary.sh` entry is unchanged.
 - README: the plugin installs from its own marketplace (`cc-context@cc-context`), with the captain-hook marketplace added first so the dependency auto-installs, plus an upgrade note — `claude plugin update` silently skips newly added dependencies. The prior `yasyf/cc-skills` instructions pointed at a marketplace that no longer lists the plugin.
+- Docs reposition on the measured benchmark record ([bench/FINDINGS.md](bench/FINDINGS.md)): the README and the ccx skill lead with bounded, structured output and measured accuracy on targeted questions, the `symbol`/`overview` examples are regenerated from the 0.13.0 terse defaults, the exhaustive-enumeration caveat is stated where it applies, and session-level token-savings claims are retired. The shared guides fragment (`cc-skills:ccx`) carries the same scoping to every consuming repo.
 
 ## [0.13.0] - 2026-07-12
 

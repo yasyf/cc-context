@@ -66,6 +66,16 @@ That last point sharpens the earlier accuracy story: ccx's accuracy edge is real
 
 Design C — session-capacity work orders measuring compaction deferral — is deferred indefinitely. Stage 1's lesson cuts against its premise: compactness withholds members exactly when work demands exhaustive reading, and retained-context compounding could amplify that trade rather than dilute it. The signal that would reopen the question is a weak-model campaign showing real session-level savings where tool discipline is poor.
 
+## Weak-model campaign (haiku): token-neutral, biggest accuracy edge
+
+The flood audit's last live prediction — ccx value grows as tool discipline drops — ran as a 310-run haiku campaign (session `20260713T083836Z`, $23.79; classic 26 tasks + the flood-t5 family, baseline vs ccx-cli, 5 repeats, released ccx 0.13.0 with terse defaults).
+
+- Peak context came in at **+5.1% [−1.3, +12.4]** — the only non-loss token result in the program, point-positive with the CI grazing zero. Total tokens stayed unresolved (−17.2% [−41.7, +3.7]). The strong claim ("ccx saves tokens for weak models") is not confirmed.
+- Accuracy: ccx-cli **86.6% vs baseline 81.3%** — +5.3 points, the largest measured edge of any campaign.
+- Behavior matched the prediction's direction: haiku baselines flood at 30% (sonnet: 17%), and haiku ignores the ladder more (20/310 integrity exclusions vs sonnet's 8/450).
+
+The deployable claim, stated carefully: on weak models ccx is token-neutral and buys its largest accuracy improvement; on strong models it costs tokens for a smaller edge. This is not the session-level-savings positive that the Design-C deferral note names as its reopen signal — capacity stays deferred.
+
 ## Product changes motivated by these findings
 
 Landed: `--section` comma-range alias (`A,B` ≡ `A-B`, CLI + MCP + edit). In progress: terser `symbol`/`outline` defaults (−94% per locate call, gated on accuracy), MCP description slimming (halve prose, keep every description and the server instructions under Claude Code's 2KB truncation, keyword-align for tool-search matching — native schema deferral is already the client default, so there is no lazy-loading work to build server-side), ladder rewrite (chain ccx calls in one Bash invocation; drop orient-first on targeted lookups), and the ergonomic affordances models reached for and missed (outline windowing, grep context flags, `--lines` alias).
