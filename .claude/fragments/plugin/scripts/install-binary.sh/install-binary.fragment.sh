@@ -25,7 +25,8 @@ LINK="$ROOT/bin/$NAME"
 DATA_DIR="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/cc-context}"
 
 # Pinned mode: the target release is the plugin.json version (single source of truth).
-TAG="v$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$ROOT/.claude-plugin/plugin.json")"
+# First match only: the dependencies entries carry "version" keys of their own.
+TAG="v$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$ROOT/.claude-plugin/plugin.json" | head -n 1)"
 
 # Version output is compared v-stripped: goreleaser release binaries print the
 # bare tag (v0.5.0) while brew formula builds stamp their own ldflags (0.5.0).

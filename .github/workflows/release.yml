@@ -16,7 +16,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: plugin.json version matches the tag
         run: |
-          V="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' plugin/.claude-plugin/plugin.json)"
+          # First match only: the dependencies entries carry "version" keys of their own.
+          V="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' plugin/.claude-plugin/plugin.json | head -n 1)"
           if [ "v$V" != "$GITHUB_REF_NAME" ]; then
             echo "::error file=plugin/.claude-plugin/plugin.json::plugin.json version is $V but the tag is $GITHUB_REF_NAME — set it to ${GITHUB_REF_NAME#v} in the release commit (AGENTS.md § Releases), then retag"
             exit 1
