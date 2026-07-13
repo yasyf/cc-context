@@ -99,7 +99,7 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.111" },
     { name = "cc-transcript", specifier = ">=11,<12" },
-    { name = "spawnllm", specifier = ">=0.5.4" },
+    { name = "spawnllm", specifier = ">=0.6.0" },
     { name = "tiktoken", specifier = ">=0.13.0" },
 ]
 
@@ -538,7 +538,7 @@ wheels = [
 
 [[package]]
 name = "spawnllm"
-version = "0.5.5"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anthropic", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -547,9 +547,9 @@ dependencies = [
     { name = "openai", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "pydantic", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a2/4b/cc657752f7494a4d031a5874ce12a2540cbd44460eb4fdf7011393f1283c/spawnllm-0.5.5.tar.gz", hash = "sha256:be78ff46ac56df54edca94d2385f8602ea854231d9414fe1adb0a2aa5b2075c3", size = 29378, upload-time = "2026-07-05T09:32:01.958Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/38/f0/e0d25497d91180d171b3778448bdb7262339af69eba6ab6c4bcbe06661a1/spawnllm-0.6.0.tar.gz", hash = "sha256:4935bc53903a4289191cc73e6b3fea548191d60fac3f2a6afe3c2355a49c8ca8", size = 31132, upload-time = "2026-07-13T09:10:24.86Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/98/76/7049b76c50cc461b4dd0c02dc55ef9730f6cf004339c1146d2b83a484cba/spawnllm-0.5.5-py3-none-any.whl", hash = "sha256:7e2c66a089a66296ea4c59c316634e52f377ade7666bde4a58451a2961df97e4", size = 40335, upload-time = "2026-07-05T09:32:00.684Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/1c/b9ab33e61eb48ba9a4741414c0be8ad9bba8d251af5b546fdd876a9c4a8e/spawnllm-0.6.0-py3-none-any.whl", hash = "sha256:2ea041fced3376f7089563c3220053b49d379f1f54518c48557ebf4b88d48fbf", size = 42612, upload-time = "2026-07-13T09:10:23.756Z" },
 ]
 
 [[package]]

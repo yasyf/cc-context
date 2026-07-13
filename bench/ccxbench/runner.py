@@ -182,20 +182,30 @@ async def run_one(sess: Session, task: Task, arm: str, model: str, repeat: int) 
 
     (sess.runs_dir / "raw" / f"{run_id}.json").write_text(resp.output.raw or "")
     if resp.error is not None and not resp.output.raw.strip():
-        return error_record(cfg, task, arm, model, repeat, resp.error.msg)
+        return attach_discarded(error_record(cfg, task, arm, model, repeat, resp.error.msg), resp)
     if not resp.output.raw.strip():
-        return error_record(cfg, task, arm, model, repeat, "empty output")
+        return attach_discarded(error_record(cfg, task, arm, model, repeat, "empty output"), resp)
 
     try:
         pr = parse_print_result(resp.output.raw.encode())
     except (ValueError, KeyError, StopIteration) as e:
-        return error_record(cfg, task, arm, model, repeat, f"parse failed: {e}")
+        return attach_discarded(error_record(cfg, task, arm, model, repeat, f"parse failed: {e}"), resp)
 
     record = record_from(pr, cfg, task, arm, model, repeat, workdir)
 
     keep = (not record["integrity"]["ok"]) or pr.is_error
     if not keep:
         shutil.rmtree(workdir, ignore_errors=True)
+    return attach_discarded(record, resp)
+
+
+def attach_discarded(record: dict, resp: spawnllm.Response) -> dict:
+    """Spend from retried-away attempts (spawnllm 0.6.0 `discarded_attempts`) counts toward the
+    ceiling but never toward T — those tokens were billed, yet never entered the final context,
+    and `total_cost_usd` must keep reconstructing from the final attempt's modelUsage."""
+    if resp.discarded_attempts:
+        record["discarded_cost_usd"] = sum(a.cost_usd or 0.0 for a in resp.discarded_attempts)
+        record["retry_attempts"] = len(resp.discarded_attempts)
     return record
 
 
@@ -227,7 +237,7 @@ async def _run_serial(sess: Session, plan: list[tuple[Task, str, str, int]]) -> 
                 out.write(json.dumps({"halted": f"spent ${sess.spent_usd:.4f} >= ceiling ${ceiling:.2f}"}) + "\n")
                 break
             rec = await run_one(sess, task, arm, model, repeat)
-            sess.spent_usd += rec["total_cost_usd"]
+            sess.spent_usd += rec["total_cost_usd"] + rec.get("discarded_cost_usd", 0.0)
             records.append(rec)
             out.write(json.dumps(rec) + "\n")
             out.flush()
@@ -264,7 +274,7 @@ async def _run_bounded(sess: Session, plan: list[tuple[Task, str, str, int]], co
                         return
                     state["in_flight"] += 1
                 rec = await run_one(sess, task, arm, model, repeat)
-                cost = rec["total_cost_usd"]
+                cost = rec["total_cost_usd"] + rec.get("discarded_cost_usd", 0.0)
                 async with admit_lock:
                     sess.spent_usd += cost
                     state["max_single"] = cost if not state["any_done"] else max(state["max_single"], cost)

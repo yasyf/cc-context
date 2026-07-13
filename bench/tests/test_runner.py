@@ -56,6 +56,29 @@ class TestMainModelUsage(unittest.TestCase):
             main_model_usage({"claude-opus-4-8": _mu(), "claude-opus-4-8-preview": _mu()}, "opus")
 
 
+class TestAttachDiscarded(unittest.TestCase):
+    """Retried-away attempts' spend joins ceiling accounting without touching total_cost_usd."""
+
+    def test_attaches_summed_cost_and_count(self) -> None:
+        import spawnllm
+
+        resp = type("R", (), {})()
+        resp.discarded_attempts = (
+            spawnllm.DiscardedAttempt(attempt=0, error="OverloadedError", cost_usd=0.80, usage=None, raw_bytes=12),
+            spawnllm.DiscardedAttempt(attempt=1, error="OverloadedError", cost_usd=None, usage=None, raw_bytes=0),
+        )
+        rec = runner.attach_discarded({"total_cost_usd": 0.30}, resp)
+        self.assertEqual(rec["discarded_cost_usd"], 0.80)
+        self.assertEqual(rec["retry_attempts"], 2)
+        self.assertEqual(rec["total_cost_usd"], 0.30)
+
+    def test_no_retries_leaves_record_untouched(self) -> None:
+        resp = type("R", (), {"discarded_attempts": ()})()
+        rec = runner.attach_discarded({"total_cost_usd": 0.30}, resp)
+        self.assertNotIn("discarded_cost_usd", rec)
+        self.assertNotIn("retry_attempts", rec)
+
+
 def cfg_for(models: list[str], repeats: int, results_dir: Path) -> Config:
     return dataclasses.replace(load(), models=tuple(models), repeats=repeats, results_dir=results_dir)
 
