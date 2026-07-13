@@ -63,7 +63,7 @@ CURL_VALUE_SHORTS = frozenset("oXdTFHAbcCeEuUmKwYyzrx")
 CURL_ALLOW_SHORTS = frozenset("oOJXdTFI")
 
 # curl long options with the same "not a page dump" meaning. ``--data*``/``--form*`` families
-# are matched by prefix in :func:`_curl_dumps_page`.
+# are matched by prefix in :func:`curl_dumps_page`.
 CURL_ALLOW_LONGS = frozenset(
     {"--output", "--remote-name", "--remote-header-name", "--output-dir", "--request", "--json", "--upload-file", "--head"}
 )
@@ -85,7 +85,7 @@ WGET_QUIET = frozenset({"-q", "--quiet"})
 WGET_STDOUT_FLAGS = frozenset({"-O", "--output-document"})
 
 
-def _is_local_host(host: str) -> bool:
+def is_local_host(host: str) -> bool:
     """Whether ``host`` (a parsed, lowercased hostname) is loopback or a private-scope target.
 
     Mirrors the Go engine's ``localTarget``: named loopback (``localhost``, ``127.*``) and the
@@ -101,7 +101,7 @@ def _is_local_host(host: str) -> bool:
     return ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
 
 
-def _is_remote_url(token: str) -> bool:
+def is_remote_url(token: str) -> bool:
     """Whether ``token`` is a remote ``http(s)://`` URL — the flood target the guards steer.
 
     A scheme-less spelling (``example.com``, ``localhost:8080/x``) never matches: without an
@@ -110,13 +110,13 @@ def _is_remote_url(token: str) -> bool:
     if not re.match(r"^https?://", token, re.IGNORECASE):
         return False
     host = urlsplit(token).hostname or ""
-    return bool(host) and not _is_local_host(host)
+    return bool(host) and not is_local_host(host)
 
 
-def _is_local_url(url: str) -> bool:
+def is_local_url(url: str) -> bool:
     """Whether ``url`` targets a loopback/private host — never worth guarding a fetch to."""
     host = urlsplit(url).hostname
-    return bool(host) and _is_local_host(host)
+    return bool(host) and is_local_host(host)
 
 
 class WholePageWebFetch(CustomCondition):
@@ -130,7 +130,7 @@ class WholePageWebFetch(CustomCondition):
 
     def check(self, evt: BaseHookEvent) -> bool:
         url = (evt._tool_input.get("url") or "").strip()
-        if not url or _is_local_url(url):
+        if not url or is_local_url(url):
             return False
         return evt.ctx.s.once(url, scope="ccx-web-fetch")
 
@@ -160,7 +160,7 @@ hook(
 )
 
 
-def _sinks_stdout(cmd: Command) -> bool:
+def sinks_stdout(cmd: Command) -> bool:
     """Whether ``cmd`` redirects its stdout to a file — a disk sink, not a context flood.
 
     A stderr-only redirect (``2>/dev/null``) leaves stdout flooding, so it is *not* a sink and
@@ -171,7 +171,7 @@ def _sinks_stdout(cmd: Command) -> bool:
     )
 
 
-def _scan_curl_shorts(token: str) -> tuple[bool, bool]:
+def scan_curl_shorts(token: str) -> tuple[bool, bool]:
     """Scan a bundled short group (``-sSfLo``), returning ``(allows_line, consumes_next_token)``.
 
     ``allows_line`` is set as soon as a sink/method char (:data:`CURL_ALLOW_SHORTS`) appears.
@@ -189,7 +189,7 @@ def _scan_curl_shorts(token: str) -> tuple[bool, bool]:
     return False, False
 
 
-def _curl_dumps_page(args: tuple[str, ...]) -> bool:
+def curl_dumps_page(args: tuple[str, ...]) -> bool:
     """Whether a ``curl`` argv is a plain page GET to stdout — a remote URL, no sink, no method flag."""
     remote = False
     i = 0
@@ -197,7 +197,7 @@ def _curl_dumps_page(args: tuple[str, ...]) -> bool:
     while i < n:
         a = args[i]
         if a == "--":
-            return remote or any(_is_remote_url(t) for t in args[i + 1 :])
+            return remote or any(is_remote_url(t) for t in args[i + 1 :])
         if a.startswith("--"):
             name = a.split("=", 1)[0]
             if name in CURL_ALLOW_LONGS or name.startswith(("--data", "--form")):
@@ -206,7 +206,7 @@ def _curl_dumps_page(args: tuple[str, ...]) -> bool:
                 # curl's long form for the target URL (`--url=<u>` / `--url <u>`) — scan the
                 # value like a positional, since the plain page GET can name it this way.
                 val = a.split("=", 1)[1] if "=" in a else (args[i + 1] if i + 1 < n else "")
-                if _is_remote_url(val):
+                if is_remote_url(val):
                     remote = True
                 i += 1 if "=" in a else 2
                 continue
@@ -216,18 +216,18 @@ def _curl_dumps_page(args: tuple[str, ...]) -> bool:
             i += 1
             continue
         if a.startswith("-") and len(a) > 1:
-            allow, consumes_next = _scan_curl_shorts(a)
+            allow, consumes_next = scan_curl_shorts(a)
             if allow:
                 return False
             i += 2 if consumes_next else 1
             continue
-        if _is_remote_url(a):
+        if is_remote_url(a):
             remote = True
         i += 1
     return remote
 
 
-def _wget_to_stdout(args: tuple[str, ...]) -> bool:
+def wget_to_stdout(args: tuple[str, ...]) -> bool:
     """Whether a ``wget`` argv sets its output document to stdout (``-O -``/``-qO-``/``--output-document=-``).
 
     ``wget`` writes to a file by default, so a plain ``wget <url>`` is a disk download, not a
@@ -244,9 +244,9 @@ def _wget_to_stdout(args: tuple[str, ...]) -> bool:
     return False
 
 
-def _wget_dumps_page(args: tuple[str, ...]) -> bool:
+def wget_dumps_page(args: tuple[str, ...]) -> bool:
     """Whether a ``wget`` argv dumps a remote page to stdout."""
-    return _wget_to_stdout(args) and any(_is_remote_url(a) for a in args)
+    return wget_to_stdout(args) and any(is_remote_url(a) for a in args)
 
 
 class PageDumpToStdout(CustomCommandLineCondition):
@@ -261,19 +261,19 @@ class PageDumpToStdout(CustomCommandLineCondition):
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
         for cmd, op in cl.parts:
-            if op == "|" or _sinks_stdout(cmd):
+            if op == "|" or sinks_stdout(cmd):
                 continue
             # Match on the unwrapped executable so a wrapper prefix (`timeout 10 curl …`,
             # `sudo curl …`, `env FOO=1 curl …`) can't slip the page dump past the block.
             inner = cmd.unwrapped
-            if inner.executable == "curl" and _curl_dumps_page(inner.args):
+            if inner.executable == "curl" and curl_dumps_page(inner.args):
                 return True
-            if inner.executable == "wget" and _wget_dumps_page(inner.args):
+            if inner.executable == "wget" and wget_dumps_page(inner.args):
                 return True
         return False
 
 
-def _curl_rewrite_url(args: tuple[str, ...]) -> str | None:
+def curl_rewrite_url(args: tuple[str, ...]) -> str | None:
     """The single remote URL of a rewritable ``curl`` page dump, or None to fall back to the block.
 
     Rewritable iff every flag is a plain-GET-to-stdout spelling (:data:`CURL_REWRITE_SHORTS`
@@ -291,13 +291,13 @@ def _curl_rewrite_url(args: tuple[str, ...]) -> str | None:
             if any(c not in CURL_REWRITE_SHORTS for c in a[1:]):
                 return None
             continue
-        if not _is_remote_url(a) or url is not None:
+        if not is_remote_url(a) or url is not None:
             return None
         url = a
     return url
 
 
-def _wget_rewrite_url(args: tuple[str, ...]) -> str | None:
+def wget_rewrite_url(args: tuple[str, ...]) -> str | None:
     """The single remote URL of a rewritable ``wget`` stdout dump, or None to fall back to the block.
 
     Rewritable iff every flag is a quiet/stdout spelling (``-q``/``--quiet``, ``-O -``/``-qO-``/
@@ -340,13 +340,13 @@ def _wget_rewrite_url(args: tuple[str, ...]) -> str | None:
             if not ok:
                 return None
             continue
-        if not _is_remote_url(a) or url is not None:
+        if not is_remote_url(a) or url is not None:
             return None
         url = a
     return url
 
 
-def _is_api_url(url: str) -> bool:
+def is_api_url(url: str) -> bool:
     """Whether ``url`` looks like a JSON/API endpoint readability extraction would mangle.
 
     An ``api.*`` host, an ``api`` path segment, a ``.json`` or ``/graphql`` path, or a query
@@ -366,7 +366,7 @@ def _is_api_url(url: str) -> bool:
     return "api" in [seg for seg in parts.path.split("/") if seg]
 
 
-def _dump_url(cl: CommandLine) -> str | None:
+def dump_url(cl: CommandLine) -> str | None:
     """The single remote URL of a directly-invoked ``curl``/``wget`` page dump, or None.
 
     Only a direct ``curl``/``wget`` maps: a wrapper prefix (``timeout``/``sudo``/``env``) leaves
@@ -375,27 +375,27 @@ def _dump_url(cl: CommandLine) -> str | None:
     """
     cmd = cl.primary
     if cmd.executable == "curl":
-        return _curl_rewrite_url(cmd.args)
+        return curl_rewrite_url(cmd.args)
     if cmd.executable == "wget":
-        return _wget_rewrite_url(cmd.args)
+        return wget_rewrite_url(cmd.args)
     return None
 
 
-def _page_dump_to(evt: BaseHookEvent) -> str | None:
+def page_dump_to(evt: BaseHookEvent) -> str | None:
     cl = evt.command_line
     if not is_single_command(cl):
         return None
-    url = _dump_url(cl)
-    if url is None or _is_api_url(url):
+    url = dump_url(cl)
+    if url is None or is_api_url(url):
         return None
     if not ccx_supports("web", "read") or not (ccx := ccx_bin()):
         return None
     return f"{shlex.quote(ccx)} web read {shlex.quote(url)} --full"
 
 
-def _page_dump_note(evt: BaseHookEvent) -> str:
+def page_dump_note(evt: BaseHookEvent) -> str:
     cl = evt.command_line
-    url = _dump_url(cl)
+    url = dump_url(cl)
     return (
         f"Rewrote `{cl.primary.executable} … {url}` → `ccx web read {url} --full`: same page "
         "content, readability-extracted and token-bounded. Next time map its headings first with "
@@ -405,7 +405,7 @@ def _page_dump_note(evt: BaseHookEvent) -> str:
 
 rewrite_command(
     only_if=[PageDumpToStdout()],
-    to=_page_dump_to,
+    to=page_dump_to,
     block=(
         "BLOCKED: `curl`/`wget` dumping a page to stdout floods context. "
         "One page: `ccx web outline <url>` maps its headings, then `ccx web read <url> --section <ref>` "
@@ -414,7 +414,7 @@ rewrite_command(
         "conclusions. Escape hatches — API/JSON: pipe it (`curl … | jq`); download: `curl -o <file>` / "
         "plain `wget`; localhost stays allowed."
     ),
-    note=_page_dump_note,
+    note=page_dump_note,
     # The rewrite itself is gated on `ccx_supports("web", "read")`, so its outcome is
     # environment-dependent — those rows live in test_web_guards.py with ccx_supports
     # monkeypatched. Inline coverage is the block fallbacks (`to` returns None *before* the

@@ -47,7 +47,7 @@ from .common import (
 )
 
 
-def _wraps(cl: CommandLine) -> bool:
+def wraps(cl: CommandLine) -> bool:
     return (
         is_single_command(cl)
         and has_json_output_flag(cl)
@@ -59,18 +59,18 @@ def _wraps(cl: CommandLine) -> bool:
 
 def wrap_json(evt: BaseHookEvent) -> str | None:
     cl = evt.command_line
-    if cl is None or not _wraps(cl) or not (ccx := ccx_bin()):
+    if cl is None or not wraps(cl) or not (ccx := ccx_bin()):
         return None
     return f"{shlex.quote(ccx)} format -- {evt.command}"
 
 
-def _wrap_note(evt: BaseHookEvent) -> str:
+def wrap_note(evt: BaseHookEvent) -> str:
     return "Wrapped a JSON-emitting command in `ccx format`: same data, re-encoded to its leanest shape to save tokens."
 
 
 rewrite_command(
     to=wrap_json,
-    note=_wrap_note,
+    note=wrap_note,
     tests={
         Input(command="gh pr list --json number"): Rewrite(pattern="format -- gh pr list --json number"),
         Input(command="kubectl get pods -o json"): Rewrite(pattern="format -- kubectl get pods -o json"),
@@ -122,7 +122,7 @@ rewrite_command(
 )
 
 
-def _bash_stdout(resp: object) -> str:
+def bash_stdout(resp: object) -> str:
     """Extract the stdout text from a Bash ``PostToolUse`` ``tool_response``.
 
     Claude Code delivers a Bash result as a structured mapping (``{"stdout": ...,
@@ -145,7 +145,7 @@ def _bash_stdout(resp: object) -> str:
     },
 )
 def record_json_shape(evt: BaseHookEvent) -> None:
-    out = _bash_stdout(evt.tool_response)
+    out = bash_stdout(evt.tool_response)
     cl = evt.command_line
     if not out or cl is None or not looks_like_json(out):
         return None

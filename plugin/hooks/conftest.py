@@ -17,7 +17,7 @@ from hooks.common import ccx_supports
 def fake_run(returncode: int, stdout: str = "", stderr: str = ""):
     """A ``subprocess.run`` double carrying the configured result only for the ``--help`` probe.
 
-    A ``git check-ignore`` call (``_path_blocked``'s ignore probe, shelled through the same
+    A ``git check-ignore`` call (``path_blocked``'s ignore probe, shelled through the same
     patched ``subprocess.run``) is answered "not ignored" (exit 1); only the ``ccx … --help``
     probe sees ``returncode``/``stdout``. Callers that never shell check-ignore see the plain
     result — the branch is inert for them.

@@ -54,7 +54,7 @@ class UnboundedLargeRead(CustomInputTypeCondition[ReadCall]):
         return call.offset is None and call.limit is None and is_large(evt.file.path)
 
 
-def _read_note(path: Path) -> str:
+def read_note(path: Path) -> str:
     kb = path.stat().st_size // 1000
     with path.open("rb") as f:
         total = sum(1 for _ in f)
@@ -82,4 +82,4 @@ def bound_large_read(evt: BaseHookEvent) -> HookResult:
     path = evt.file.path
     if path.suffix.lower() in BINARY_READ_EXTS:
         return evt.block(BINARY_READ_MESSAGE)
-    return evt.rewrite({**evt._tool_input, "limit": READ_WINDOW_LINES}, note=_read_note(path))
+    return evt.rewrite({**evt._tool_input, "limit": READ_WINDOW_LINES}, note=read_note(path))

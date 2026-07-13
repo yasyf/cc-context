@@ -114,7 +114,7 @@ def ccx_supports(*subcmd: str, flag: str | None = None) -> bool:
     return flag is None or flag in proc.stdout + proc.stderr
 
 
-def _json_flagged(args: tuple[str, ...]) -> bool:
+def json_flagged(args: tuple[str, ...]) -> bool:
     if any(JSON_FLAG_GLUED.match(a) for a in args):
         return True
     return any(args[i] in JSON_VALUE_FLAGS and args[i + 1] == "json" for i in range(len(args) - 1))
@@ -127,7 +127,7 @@ def has_json_output_flag(cl: CommandLine) -> bool:
     ``--format=json``) directly, and the two-token forms (``-o json``, ``--output
     json``, ``--format json``) by scanning argument adjacency.
     """
-    return _json_flagged(cl.primary.args)
+    return json_flagged(cl.primary.args)
 
 
 def head_has_json_output_flag(cl: CommandLine) -> bool:
@@ -137,7 +137,7 @@ def head_has_json_output_flag(cl: CommandLine) -> bool:
     the right grain for the single-command ``ccx format`` wrap. A pipe steer cares about
     the producer at the head of the pipeline instead (``<cmd --json> | jq``).
     """
-    return _json_flagged(cl.head.args)
+    return json_flagged(cl.head.args)
 
 
 def is_ccx_command(cl: CommandLine) -> bool:

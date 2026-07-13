@@ -94,8 +94,8 @@ class TestCcxSupports:
     def test_false_when_ccx_unresolvable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(common, "ccx_bin", lambda: None)
 
-        def _boom(*_args: object, **_kwargs: object) -> object:
+        def boom(*_args: object, **_kwargs: object) -> object:
             raise AssertionError("subprocess.run must not run when ccx is unresolvable")
 
-        monkeypatch.setattr(common.subprocess, "run", _boom)
+        monkeypatch.setattr(common.subprocess, "run", boom)
         assert not ccx_supports("code", "grep", flag="--ignore-case")

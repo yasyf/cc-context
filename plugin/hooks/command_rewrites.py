@@ -42,10 +42,10 @@ class SedLineRange(CustomCommandLineCondition):
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
         # A piped sed reads a stream, not the trailing file token — leave it alone.
-        return not cl.q.uses_redirect() and _sed_parts(cl) is not None
+        return not cl.q.uses_redirect() and sed_parts(cl) is not None
 
 
-def _sed_parts(cl: CommandLine) -> tuple[str, str, str] | None:
+def sed_parts(cl: CommandLine) -> tuple[str, str, str] | None:
     cmd = cl.primary
     if cmd is None or not cmd.runs("sed", "-n") or len(cmd.args) != 3:
         return None
@@ -55,27 +55,27 @@ def _sed_parts(cl: CommandLine) -> tuple[str, str, str] | None:
     return m.group(1), m.group(2), cmd.args[2]
 
 
-def _sed_to(evt: BaseHookEvent) -> str | None:
-    start, end, file = _sed_parts(evt.command_line)
+def sed_to(evt: BaseHookEvent) -> str | None:
+    start, end, file = sed_parts(evt.command_line)
     if ccx := ccx_bin():
         return f"{ccx} code read {shlex.quote(file)} --section {start}-{end}"
     return None
 
 
-def _sed_note(evt: BaseHookEvent) -> str:
-    start, end, file = _sed_parts(evt.command_line)
+def sed_note(evt: BaseHookEvent) -> str:
+    start, end, file = sed_parts(evt.command_line)
     return f"Rewrote `sed -n {start},{end}p {file}` → `ccx code read --section`: same lines, token-bounded."
 
 
 rewrite_command(
     only_if=[SedLineRange()],
-    to=_sed_to,
+    to=sed_to,
     block=(
         "BLOCKED: `sed -n A,Bp <file>` is a line-range dump. "
         "Use `ccx code read <file> --section A-B` (or mcp__cc-context__ccx_code_read) — it returns the "
         "same lines with structure. Escape hatch: pipe it (`cat <file> | sed -n 'A,Bp'`)."
     ),
-    note=_sed_note,
+    note=sed_note,
     tests={
         Input(command="sed -n '10,40p' f.go"): Rewrite(pattern="code read f.go --section 10-40"),
         Input(command="sed -n 10,40p f.go"): Rewrite(pattern="--section 10-40"),
@@ -107,15 +107,15 @@ class HeadTailFile(CustomCommandLineCondition):
         # A piped head/tail bounds a stream — leave it; only a named file operand fires.
         if cl.q.uses_redirect():
             return False
-        parsed = _headtail_parse(cl)
+        parsed = headtail_parse(cl)
         return parsed is not None and bool(parsed[3])
 
 
-def _int_or_none(s: str) -> int | None:
+def int_or_none(s: str) -> int | None:
     return int(s) if s.isdigit() else None
 
 
-def _headtail_parse(cl: CommandLine) -> tuple[str, str, int | None, list[str]] | None:
+def headtail_parse(cl: CommandLine) -> tuple[str, str, int | None, list[str]] | None:
     exe = cl.primary.executable
     if exe not in ("head", "tail"):
         return None
@@ -133,13 +133,13 @@ def _headtail_parse(cl: CommandLine) -> tuple[str, str, int | None, list[str]] |
             mode = "byte"
             i += 1
         elif a in ("-n", "--lines"):
-            count = _int_or_none(args[i + 1].lstrip("+")) if i + 1 < len(args) else None
+            count = int_or_none(args[i + 1].lstrip("+")) if i + 1 < len(args) else None
             i += 2
         elif a.startswith("--lines="):
-            count = _int_or_none(a.split("=", 1)[1].lstrip("+"))
+            count = int_or_none(a.split("=", 1)[1].lstrip("+"))
             i += 1
         elif a.startswith("-n"):
-            count = _int_or_none(a[2:].lstrip("=+"))
+            count = int_or_none(a[2:].lstrip("=+"))
             i += 1
         elif re.fullmatch(r"-\d+", a):
             count = int(a[1:])
@@ -152,23 +152,23 @@ def _headtail_parse(cl: CommandLine) -> tuple[str, str, int | None, list[str]] |
     return exe, mode, count, files
 
 
-def _headtail_to(evt: BaseHookEvent) -> str | None:
-    exe, mode, count, files = _headtail_parse(evt.command_line)
+def headtail_to(evt: BaseHookEvent) -> str | None:
+    exe, mode, count, files = headtail_parse(evt.command_line)
     if exe == "head" and mode == "line" and len(files) == 1 and (ccx := ccx_bin()):
         n = count if count is not None else 10
         return f"{ccx} code read {shlex.quote(files[0])} --section 1-{n}"
     return None
 
 
-def _headtail_note(evt: BaseHookEvent) -> str:
-    _exe, _mode, count, files = _headtail_parse(evt.command_line)
+def headtail_note(evt: BaseHookEvent) -> str:
+    _exe, _mode, count, files = headtail_parse(evt.command_line)
     n = count if count is not None else 10
     return f"Rewrote `head {files[0]}` → `ccx code read --section 1-{n}`: same lines, token-bounded."
 
 
 rewrite_command(
     only_if=[HeadTailFile()],
-    to=_headtail_to,
+    to=headtail_to,
     block=(
         "BLOCKED: `head`/`tail` on a file dumps raw lines into context. "
         "Use `ccx code read <file> --section A-B` for a bounded range, or `ccx code outline <file>` "
@@ -176,7 +176,7 @@ rewrite_command(
         "(or the mcp__cc-context__ccx_code_read/ccx_code_outline tools). "
         "Escape hatch — bounding a pipe's output: keep `<cmd> | head`/`| tail`."
     ),
-    note=_headtail_note,
+    note=headtail_note,
     tests={
         Input(command="head -40 f.go"): Rewrite(pattern="code read f.go --section 1-40"),
         Input(command="head -n 40 f.go"): Rewrite(pattern="--section 1-40"),
@@ -196,7 +196,7 @@ rewrite_command(
 )
 
 
-def _is_root_manifest(path: str) -> bool:
+def is_root_manifest(path: str) -> bool:
     base = path.rstrip("/").removeprefix("./")
     if "/" in base:  # a directory prefix means it isn't the repo-root manifest
         return False
@@ -218,7 +218,7 @@ class ManifestCat(CustomCommandLineCondition):
         if not (cl.q.runs("cat") or cl.q.runs("bat")):
             return False
         a = cl.primary.args
-        return len(a) == 1 and not a[0].startswith("-") and _is_root_manifest(a[0])
+        return len(a) == 1 and not a[0].startswith("-") and is_root_manifest(a[0])
 
 
 rewrite_command(
@@ -264,31 +264,31 @@ class BareCat(CustomCommandLineCondition):
         if not (cl.q.runs("cat") and bool(a := cl.primary.args) and not a[0].startswith("-")):
             return False
         # A repo-root manifest gets the `ccx repo overview` steer (ManifestCat), not a raw read.
-        return not (len(a) == 1 and _is_root_manifest(a[0]))
+        return not (len(a) == 1 and is_root_manifest(a[0]))
 
 
-def _cat_to(evt: BaseHookEvent) -> str | None:
+def cat_to(evt: BaseHookEvent) -> str | None:
     files = evt.command_line.primary.args
     if len(files) == 1 and (ccx := ccx_bin()):
         return f"{ccx} code read {shlex.quote(files[0])} --full"
     return None
 
 
-def _cat_note(evt: BaseHookEvent) -> str:
+def cat_note(evt: BaseHookEvent) -> str:
     file = evt.command_line.primary.args[0]
     return f"Rewrote `cat {file}` → `ccx code read --full`: same content, token-bounded."
 
 
 rewrite_command(
     only_if=[BareCat()],
-    to=_cat_to,
+    to=cat_to,
     block=(
         "BLOCKED: bare `cat <file>` dumps the whole file into context. "
         "Use `ccx code outline <file>` to map it, then `ccx code read <file> --section A-B` for the part "
         "you need (or the mcp__cc-context__ccx_code_outline/ccx_code_read tools). "
         "Escape hatch — whole file: `ccx code read <file> --full`."
     ),
-    note=_cat_note,
+    note=cat_note,
     tests={
         Input(command="cat main.go"): Rewrite(pattern="code read main.go --full"),
         Input(command="cat a.go b.go"): Block(pattern="ccx code outline"),
@@ -326,31 +326,31 @@ class LsRecursive(CustomCommandLineCondition):
         )
 
 
-def _ls_glob(evt: BaseHookEvent) -> str:
+def ls_glob(evt: BaseHookEvent) -> str:
     dirs = [a for a in evt.command_line.primary.args if not a.startswith("-")]
     return f"{dirs[0].rstrip('/')}/**" if dirs else "**"
 
 
-def _ls_to(evt: BaseHookEvent) -> str | None:
+def ls_to(evt: BaseHookEvent) -> str | None:
     if ccx := ccx_bin():
-        return f'{ccx} repo find "{_ls_glob(evt)}"'
+        return f'{ccx} repo find "{ls_glob(evt)}"'
     return None
 
 
-def _ls_note(evt: BaseHookEvent) -> str:
-    glob = _ls_glob(evt)
+def ls_note(evt: BaseHookEvent) -> str:
+    glob = ls_glob(evt)
     return f'Rewrote `ls -R` → `ccx repo find "{glob}"`: same paths, token-bounded.'
 
 
 rewrite_command(
     only_if=[LsRecursive()],
-    to=_ls_to,
+    to=ls_to,
     block=(
         "BLOCKED: `ls -R` walks the whole tree into context. "
         'Use `ccx repo find "<glob>"` (or mcp__cc-context__ccx_repo_find), or the built-in Glob tool, '
         "to find paths by pattern. Plain `ls` and `ls -la` stay allowed."
     ),
-    note=_ls_note,
+    note=ls_note,
     tests={
         Input(command="ls -R"): Rewrite(pattern='repo find "**"'),
         Input(command="ls -laR src"): Rewrite(pattern='repo find "src/**"'),
@@ -380,14 +380,14 @@ class FindEnumeration(CustomCommandLineCondition):
         if any(cl.q.contains_token(a) for a in self.ACTIONS):
             return False
         has_filter = any(cl.q.contains_token(f) for f in ("-name", "-iname", "-path", "-regex"))
-        return has_filter or _args_type_f(cl.primary.args)
+        return has_filter or args_type_f(cl.primary.args)
 
 
-def _args_type_f(args: tuple[str, ...]) -> bool:
+def args_type_f(args: tuple[str, ...]) -> bool:
     return any(a == "-type" and i + 1 < len(args) and args[i + 1] == "f" for i, a in enumerate(args))
 
 
-def _find_glob(args: tuple[str, ...]) -> str | None:
+def find_glob(args: tuple[str, ...]) -> str | None:
     """The ``ccx repo find`` glob body for an enumeration, or None to hard-block.
 
     A ``-name``/``-iname`` filter maps to `<dir>/**/<pat>`; a bare ``-type f`` walk to
@@ -399,7 +399,7 @@ def _find_glob(args: tuple[str, ...]) -> str | None:
         path = args[0] if args and not args[0].startswith("-") else "."
         prefix = "" if path == "." else f"{path.rstrip('/')}/"
         return f"{prefix}**/{args[args.index(flag) + 1]}"
-    if _args_type_f(args):
+    if args_type_f(args):
         path = args[0] if args and not args[0].startswith("-") else None
         if path is None:
             return None
@@ -408,31 +408,31 @@ def _find_glob(args: tuple[str, ...]) -> str | None:
     return None
 
 
-def _find_to(evt: BaseHookEvent) -> str | None:
-    glob = _find_glob(evt.command_line.primary.args)
+def find_to(evt: BaseHookEvent) -> str | None:
+    glob = find_glob(evt.command_line.primary.args)
     if glob is not None and (ccx := ccx_bin()):
         return f'{ccx} repo find "{glob}"'
     return None
 
 
-def _find_note(evt: BaseHookEvent) -> str:
+def find_note(evt: BaseHookEvent) -> str:
     args = evt.command_line.primary.args
     flag = next((a for a in args if a in FindEnumeration.NAME_FLAGS), None)
     src = f"{flag} {args[args.index(flag) + 1]}" if flag else "-type f"
     path = args[0] if args and not args[0].startswith("-") else "."
-    return f'Rewrote `find {path} {src}` → `ccx repo find "{_find_glob(args)}"`: same paths, token-bounded.'
+    return f'Rewrote `find {path} {src}` → `ccx repo find "{find_glob(args)}"`: same paths, token-bounded.'
 
 
 rewrite_command(
     only_if=[FindEnumeration()],
-    to=_find_to,
+    to=find_to,
     block=(
         "BLOCKED: `find` enumeration floods context. "
         'Scoped to a dir? `ccx repo find "<dir>/**"` (or mcp__cc-context__ccx_repo_find), or the built-in '
         "Glob tool. Orienting the whole repo? `ccx repo overview`. "
         "Escape hatch — need an action: keep the `-exec`/`-delete`/`-print0 | xargs` form."
     ),
-    note=_find_note,
+    note=find_note,
     tests={
         Input(command="find . -name '*.go'"): Rewrite(pattern='repo find "**/*.go"'),
         Input(command="find src -iname '*.PY'"): Rewrite(pattern='repo find "src/**/*.PY"'),
@@ -458,10 +458,10 @@ class LsWorkspaceRoot(CustomCommandLineCondition):
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        return cl.q.runs("ls") and any(_is_scan_root(a) for a in cl.primary.args if not a.startswith("-"))
+        return cl.q.runs("ls") and any(is_scan_root(a) for a in cl.primary.args if not a.startswith("-"))
 
 
-def _is_scan_root(path: str) -> bool:
+def is_scan_root(path: str) -> bool:
     return bool(WORKSPACE_ROOT.match(path)) or "go/pkg/mod" in path
 
 
