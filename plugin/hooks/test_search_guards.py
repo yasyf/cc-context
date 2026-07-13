@@ -363,31 +363,29 @@ class TestIgnoredDirTargets:
 
 
 class TestRegexRewritable:
-    """`_regex_rewritable` admits only constructs whose meaning is identical in grep and Rust regex."""
+    """`_regex_rewritable` returns the Rust-regex translation of an admissible pattern, else `None`."""
 
     @pytest.mark.parametrize(
         "pattern, ere, want",
         [
-            ("*abc", True, False),  # leading `*` — literal in grep, "nothing to repeat" in Rust
-            ("a{b}", True, False),  # non-digit interval — literal `{b}` in grep, a parse error in Rust
-            ("{2,3}", True, True),  # digits-only interval body accepted
-            ("a^b", False, False),  # mid-pattern `^` — literal in BRE, an anchor in Rust
-            ("^class ", False, True),  # leading `^` anchor, plain atoms after — faithful in both
-            ("a**", False, False),  # stacked quantifier rejected
-            ("foo$", False, True),  # trailing `$` anchor accepted
-            ("a$b", False, False),  # mid `$` — literal in grep, an anchor in Rust
-            ("(a|b)c", True, True),  # balanced group + alternation under ERE
-            ("(a|b", True, False),  # unbalanced group rejected
-            (r"a\d", True, False),  # backslash escape rejected
-            ("a[bc]", True, False),  # bracket class rejected
-            ("a+", True, True),  # ERE `+` quantifier accepted
-            ("a+", False, False),  # `+` is not a BRE metachar, so it never reaches the validator as regex-worthy…
+            ("*abc", True, None),  # leading `*` — literal in grep, "nothing to repeat" in Rust
+            ("a{b}", True, None),  # non-digit interval — literal `{b}` in grep, a parse error in Rust
+            ("{2,3}", True, "{2,3}"),  # digits-only interval body accepted, emitted verbatim
+            ("a^b", False, None),  # mid-pattern `^` — literal in BRE, an anchor in Rust
+            ("^class ", False, "^class "),  # leading `^` anchor, plain atoms after — faithful in both
+            ("a**", False, None),  # stacked quantifier rejected
+            ("foo$", False, "foo$"),  # trailing `$` anchor accepted
+            ("a$b", False, None),  # mid `$` — literal in grep, an anchor in Rust
+            ("(a|b)c", True, "(a|b)c"),  # balanced group + alternation under ERE, unchanged
+            ("(a|b", True, None),  # unbalanced group rejected
+            (r"a\d", True, None),  # backslash escape rejected
+            ("a[bc]", True, None),  # bracket class rejected
+            ("a+", True, "a+"),  # ERE `+` quantifier accepted, unchanged
+            ("a+", False, r"a\+"),  # bare BRE `+` is a literal — escaped so Rust reads it literally too
         ],
     )
-    def test_admits_only_dialect_faithful(self, pattern: str, ere: bool, want: bool) -> None:
-        # …but fed here directly, BRE `a+` has no quantifier to bind `+` onto, so the scan rejects it;
-        # the classifier never routes a metachar-free BRE pattern here (it stays a literal rewrite).
-        assert search_guards._regex_rewritable(pattern, ere) is want
+    def test_admits_only_dialect_faithful(self, pattern: str, ere: bool, want: str | None) -> None:
+        assert search_guards._regex_rewritable(pattern, ere) == want
 
 
 class TestGrepDialectClassification:
@@ -460,12 +458,43 @@ class TestGrepRegexRewrite:
         assert search_guards._grep_to(_evt(command)) == expected
 
     @pytest.mark.parametrize(
+        "command, expected",
+        [
+            # BRE escapes translate to their ERE/Rust spelling; the alternation needs a quantifiable atom:
+            ("grep 'a\\|b' .", "/fake/ccx code grep 'a|b' --regex"),  # BRE `\|` → `|`
+            ("grep 'x\\(ab\\)\\+' .", "/fake/ccx code grep 'x(ab)+' --regex"),  # BRE group + `\+` → `(ab)+`
+            # A bare BRE `+` is a literal — escaped so Rust never reads it as a quantifier (routed by the `.`):
+            ("grep 'a.b+' .", "/fake/ccx code grep 'a.b\\+' --regex"),
+            # …but with no metachar to route it, `a+b` stays a plain literal rewrite (no `--regex`):
+            ("grep 'a+b' .", "/fake/ccx code grep a+b"),
+        ],
+    )
+    def test_bre_translation_rewrites(self, monkeypatch: pytest.MonkeyPatch, command: str, expected: str) -> None:
+        self._probe(monkeypatch, REGEX_SUPPORTS_HELP)
+        assert search_guards._grep_to(_evt(command)) == expected
+
+    def test_incident_bre_alternation_over_dir_rewrites(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The getaway incident (minus `-c`): a BRE-alternation grep over an existing dir rewrites to
+        # `ccx code grep --regex`, the `\|` alternation translated to Rust's `|`.
+        (tmp_path / "src").mkdir()
+        self._probe(monkeypatch, REGEX_SUPPORTS_HELP)
+        out = search_guards._grep_to(_evt("grep -e 'hybrid\\|Onward\\|Bridge' src/"))
+        assert out is not None
+        assert "--regex" in out and "'hybrid|Onward|Bridge'" in out
+
+    @pytest.mark.parametrize(
         "command",
         [
             "grep 'a|b' .",  # `|` is BRE-literal — classified literal, but not ccx-literal-safe → block
             "grep -P 'x(?=y)' .",  # PCRE lookahead — -P never maps
             "grep 'foo(bar' .",  # BRE-literal `(` — classified literal, but not ccx-literal-safe → block
             r"grep 'a\d' .",  # backslash — a dialect metachar the validator rejects (defense in depth)
+            r"grep 'a\1b' .",  # backref `\1` — Rust regex has none → refused
+            r"grep 'a\bc' .",  # `\b` word boundary — no faithful cross-dialect form → refused
+            r"grep 'x\(ab' .",  # unbalanced BRE `\(` group → refused
+            r"grep '\+ab' .",  # leading BRE `\+` quantifier with nothing to bind → refused
         ],
     )
     def test_unmappable_regex_blocks(self, monkeypatch: pytest.MonkeyPatch, command: str) -> None:
@@ -589,6 +618,37 @@ class TestGrepBoundedPassthrough:
     @pytest.mark.parametrize(
         "command",
         [
+            "grep -c foo big.py",  # count mode skips the size cap on an existing file (the incident fix)
+            "grep -L foo big.py",  # files-without-match — one line per operand
+            "grep -q foo big.py",  # quiet / exit-code contract
+            "grep -ci foo big.py",  # bundled count + ignore-case
+            "grep --count foo big.py",  # long-form count
+            "grep --files-with-matches foo big.py",  # long-form list-only (the short `-l` is a DROP flag → rewrites)
+        ],
+    )
+    def test_output_bounded_skips_size_cap(self, command: str) -> None:
+        # -c/-q/-l/-L output is one line per operand, not per match, so an over-cap existing file
+        # (big.py > LARGE_READ_BYTES) stays bounded — the condition is silent and the grep runs as-is.
+        assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep -o foo big.py",  # -o forfeits the stat lane — the output-bounded skip is never reached
+            "grep -oc foo big.py",  # the -o forfeit fires before the -c output-bounded skip
+            "grep -c foo sub/",  # count over a directory is still tree-wide
+            "grep -c foo ghost.py",  # count over a missing file — every operand must exist
+        ],
+    )
+    def test_output_bounded_skip_stays_narrow(self, command: str) -> None:
+        # The skip is only for -c/-q/-l/-L over existing regular files; -o, directories, and missing
+        # operands still block (the condition fires and `_grep_to` yields no rewrite).
+        assert search_guards.GrepFlood().check_command_line(_evt(command), CommandLine.parse(command)) is True
+        assert search_guards._grep_to(_evt(command)) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
             "grep -c foo ghost.py",  # nonexistent operand → not bounded
             "grep -c foo sub/",  # directory operand → not bounded
             "grep -c foo real.py ghost.py",  # one real file, one absent → every operand must exist
@@ -598,7 +658,7 @@ class TestGrepBoundedPassthrough:
             "grep -on foo real.py",  # -o bundled with -n still forfeits the stat lane
             "grep -oHnb . real.py",  # R1: -o + -H/-n/-b prefixes multiply output far past the size bound
             "grep -v foo real.py",  # -v (invert-match) isn't a bounded flag → unbounded when unpiped
-            "grep -c foo big.py",  # bounded shape, but the source-ext file exceeds the size threshold → block
+            "grep -x foo big.py",  # -x is bounded but not output-bounded → the size cap still blocks over-cap
             "grep '' real.py",  # empty positional pattern floods every line → block
         ],
     )
@@ -687,8 +747,9 @@ class TestGrepBoundedPassthrough:
             ("grep -q localhost /etc/hosts | grep -r . /", True),
             # step 4: grep -r with no operand recurses the cwd even as a pipe sink.
             ("grep -c foo real.py; printf x | grep -r needle", True),
-            # step 5 does not launder a sink grep that names an over-cap file operand.
-            ("grep -c foo real.py; printf y | grep -c . big.py", True),
+            # step 5 does not launder a sink grep that names an over-cap file operand (no output-bounded
+            # flag, so the size cap still applies — `-c` here would be bounded regardless of size).
+            ("grep -c foo real.py; printf y | grep . big.py", True),
             # a genuine pipe-sink filter (no operand, env allowed) stays a bounded stdin filter.
             ("grep -c foo real.py; printf x | LC_ALL=C grep pat", False),
         ],

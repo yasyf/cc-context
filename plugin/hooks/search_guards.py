@@ -68,6 +68,10 @@ ERE_METACHARS = BRE_METACHARS | frozenset("+?|(){}")
 # backticks, and a non-terminal `$` are excluded: shell-active chars stay out as defense in depth
 # atop the downstream shlex-quoting, and bracket/backslash constructs diverge across dialects.
 REGEX_ATOM = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_ .:@,=/-")
+# Chars whose backslash-escape is a literal of that char in grep BRE/ERE AND Rust regex (`\.` a literal
+# dot, `\\` a literal backslash), so `_regex_rewritable` passes them through verbatim in both dialects.
+# Every other backslash escape (`\d`, `\w`, `\b`, `\<`, `\1`) diverges or has no Rust form → refused.
+REGEX_ESCAPED_LITERAL = frozenset(".*[]^$\\")
 
 # Data-file suffixes that make a raw `rg` a sanctioned non-source search (`rg ERROR app.log`),
 # exempt from the rg gate. A purely textual `Path.suffix` check — no stat.
@@ -371,59 +375,115 @@ def _valid_brace(body: str) -> bool:
     return re.fullmatch(r"\d+(,\d*)?", body) is not None
 
 
-def _regex_rewritable(pattern: str, ere: bool) -> bool:
-    """Report whether ``pattern`` maps faithfully onto ``ccx code grep --regex`` (the Rust-regex engine).
+def _regex_rewritable(pattern: str, ere: bool) -> str | None:
+    """Translate ``pattern`` to the ``ccx code grep --regex`` (Rust-regex) dialect, or ``None`` when unrewritable.
 
-    A position-aware dialect check — not a character whitelist, which can't distinguish a literal
-    mid-pattern ``^`` (grep) from an anchor (Rust). Admits only constructs whose meaning is identical
-    in grep (BRE when ``ere`` is false, else ERE) and Rust regex: plain atoms (:data:`REGEX_ATOM`,
-    ``.`` the wildcard), ``*`` (and ``+``/``?`` under ERE) never leading or stacked, ``^`` only first
-    and ``$`` only last, and — ERE only — ``|`` alternation, balanced ``()`` groups, and digits-only
-    ``{m,n}`` intervals. Brackets, backslashes, and any other char are not rewritable.
+    A position-aware dialect translation — not a character whitelist, which can't distinguish a literal
+    mid-pattern ``^`` (grep) from an anchor (Rust). Admits only constructs whose meaning is identical in
+    grep (BRE when ``ere`` is false, else ERE) and Rust regex, emitting each in its Rust spelling; the
+    returned string equals the input for an already-ERE pattern. Accepted: plain atoms
+    (:data:`REGEX_ATOM`, ``.`` the wildcard); ``*`` (and ``+``/``?`` under ERE) never leading or stacked;
+    ``^`` only first and ``$`` only last; ``|`` alternation, balanced ``()`` groups, and digits-only
+    ``{m,n}`` intervals (ERE bare, BRE backslashed ``\\|`` ``\\(`` ``\\)`` ``\\{m,n\\}``); the escaped
+    literals :data:`REGEX_ESCAPED_LITERAL` verbatim; and, under BRE, bare ``+ ? ( ) { } |`` — literals in
+    BRE — emitted backslash-escaped so Rust reads them as literals too. Brackets, backreferences, and any
+    other backslash escape are not rewritable.
     """
     n = len(pattern)
+    out: list[str] = []
     depth = 0
     quantifiable = False  # a preceding atom a quantifier may bind
     quantifier = False  # the preceding token was itself a quantifier (no stacking)
     i = 0
     while i < n:
         c = pattern[i]
+        if c == "\\":
+            nxt = pattern[i + 1] if i + 1 < n else ""
+            if nxt in REGEX_ESCAPED_LITERAL:
+                out.append("\\" + nxt)
+                quantifiable, quantifier = True, False
+                i += 2
+            elif not ere and nxt == "|":
+                if not quantifiable:
+                    return None
+                out.append("|")
+                quantifiable = quantifier = False
+                i += 2
+            elif not ere and nxt == "(":
+                depth += 1
+                out.append("(")
+                quantifiable = quantifier = False
+                i += 2
+            elif not ere and nxt == ")":
+                depth -= 1
+                if depth < 0:
+                    return None
+                out.append(")")
+                quantifiable, quantifier = True, False
+                i += 2
+            elif not ere and nxt in "+?":
+                if not quantifiable or quantifier:
+                    return None
+                out.append(nxt)
+                quantifier = True
+                i += 2
+            elif not ere and nxt == "{":
+                close = pattern.find("\\}", i + 2)
+                if close == -1 or not _valid_brace(pattern[i + 2 : close]):
+                    return None
+                out.append("{" + pattern[i + 2 : close] + "}")
+                quantifiable = quantifier = True
+                i = close + 2
+            else:
+                return None  # backref \1-\9, \b, \w, \<, \>, a trailing \, … — refused
+            continue
         if c in REGEX_ATOM:
+            out.append(c)
             quantifiable, quantifier = True, False
         elif c == "*" or (ere and c in "+?"):
             if not quantifiable or quantifier:
-                return False
+                return None
+            out.append(c)
             quantifier = True
         elif c == "^":
             if i != 0:
-                return False
+                return None
+            out.append(c)
             quantifiable = quantifier = False
         elif c == "$":
             if i != n - 1:
-                return False
+                return None
+            out.append(c)
             quantifiable = quantifier = False
         elif ere and c == "|":
             if not quantifiable:
-                return False
+                return None
+            out.append(c)
             quantifiable = quantifier = False
         elif ere and c == "(":
             depth += 1
+            out.append(c)
             quantifiable = quantifier = False
         elif ere and c == ")":
             depth -= 1
             if depth < 0:
-                return False
+                return None
+            out.append(c)
             quantifiable, quantifier = True, False
         elif ere and c == "{":
             close = pattern.find("}", i)
             if close == -1 or not _valid_brace(pattern[i + 1 : close]):
-                return False
+                return None
+            out.append(pattern[i : close + 1])
             quantifiable = quantifier = True
             i = close
+        elif not ere and c in "+?(){}|":
+            out.append("\\" + c)
+            quantifiable, quantifier = True, False
         else:
-            return False
+            return None
         i += 1
-    return depth == 0
+    return "".join(out) if depth == 0 else None
 
 
 def _grep_parse(cl: CommandLine) -> GrepCall | None:
@@ -565,8 +625,10 @@ def _grep_parse(cl: CommandLine) -> GrepCall | None:
         if not LITERAL_SAFE.match(pattern):
             return None
     elif any(c in (ERE_METACHARS if ere else BRE_METACHARS) for c in pattern):
-        if not _regex_rewritable(pattern, ere):
+        translated = _regex_rewritable(pattern, ere)
+        if translated is None:
             return None  # dialect-divergent or exotic regex (backrefs, escapes, PCRE)
+        pattern = translated  # BRE spellings (`\|`, `\(…\)`) rewritten to the Rust-regex dialect
         regex = True
     elif not LITERAL_SAFE.match(pattern):
         return None
@@ -679,8 +741,10 @@ def _bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
       in-command ``cd`` passes; ``-o`` is fine here (rg parity), but a recursion flag forfeits it (a
       directory named like a data file under ``-r`` would flood).
     - *bounded regular files*: every operand stats as an existing regular file whose sizes sum to no
-      more than :data:`~hooks.common.LARGE_READ_BYTES`; ``-o`` forfeits this stat lane, since its
-      per-match filename/line/byte prefixes multiply output past the size bound.
+      more than :data:`~hooks.common.LARGE_READ_BYTES` — or, on a count/quiet/list-only grep
+      (``-c``/``-q``/``-l``/``-L``/their long forms), any size, since that output is one line per operand
+      regardless of file size; ``-o`` forfeits this stat lane, since its per-match filename/line/byte
+      prefixes multiply output past the size bound.
 
     Conservative throughout: a ``GREP_OPTIONS`` env (which can inject ``-r``/``-o`` the parser never
     sees), any env alongside path operands, an uninspectable ``-f`` pattern file, a flag-supplied empty
@@ -690,7 +754,7 @@ def _bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
         return False  # a leading GREP_OPTIONS= injects flags (-r/-o …) that never reach cmd.args
     args = cmd.args
     positionals: list[str] = []
-    pattern_from_flag = only_matching = pattern_file = empty_flag_pattern = recursive = False
+    pattern_from_flag = only_matching = pattern_file = empty_flag_pattern = recursive = output_bounded = False
     i, n = 0, len(args)
     while i < n:
         a = args[i]
@@ -720,6 +784,9 @@ def _bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
             elif name in BOUNDED_BOOL_LONG:
                 recursive = recursive or name in ("recursive", "dereference-recursive")
                 only_matching = only_matching or name == "only-matching"
+                output_bounded = output_bounded or name in (
+                    "count", "quiet", "silent", "files-with-matches", "files-without-match"
+                )
             else:
                 return sink
             i += 1
@@ -741,6 +808,7 @@ def _bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
         elif all(ch in BOUNDED_BOOL_SHORT for ch in body):
             recursive = recursive or "r" in body or "R" in body
             only_matching = only_matching or "o" in body
+            output_bounded = output_bounded or any(ch in "cqlL" for ch in body)
         else:
             return sink
         i += 1
@@ -767,6 +835,8 @@ def _bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
         return False  # -o forfeits the stat lane — per-match prefixes multiply output past the size bound
     if not all(Path(p).is_file() for p in paths):
         return False
+    if output_bounded:
+        return True  # -c/-q/-l/-L output is one line per operand, not per match, so file size can't flood
     return sum(Path(p).stat().st_size for p in paths) <= LARGE_READ_BYTES
 
 
@@ -802,7 +872,8 @@ rewrite_command(
         "Use `ccx code grep <text>` (or mcp__cc-context__ccx_code_grep) / `ccx code search` for code; the "
         "built-in Grep tool or `rg` for literal content in non-source files. "
         "Simple literal and simple-regex greps auto-rewrite to `ccx code grep`; a grep whose explicit "
-        "targets are all data files (`.log`/`.json`/`.yaml`/…) or existing files under the size cap runs "
+        "targets are all data files (`.log`/`.json`/`.yaml`/…) or existing files under the size cap "
+        "(count/quiet/list-only greps — `-c`/`-q`/`-l`/`-L` — run regardless of size) runs "
         "as-is, even inside pipes and `&&`/`;` chains. This one didn't qualify — a tree-wide or directory "
         "search, a recursive flag, an unmappable flag, or an over-cap/missing source-file target. "
         "Escape hatch: pipe input into it (`… | grep`)."
@@ -822,6 +893,8 @@ rewrite_command(
         Input(command="grep -E 'a|b' ."): Rewrite(pattern="--regex"),  # ERE alternation → regex on rg engine
         Input(command="grep -E 'a+' ."): Rewrite(pattern="--regex"),  # ERE `+` is a quantifier → validator → regex
         Input(command="grep 'a+' ."): Rewrite(pattern="code grep a+"),  # BRE `+` is literal → literal rewrite, no --regex
+        Input(command="grep 'a\\|b' ."): Rewrite(pattern="--regex"),  # BRE `\|` → ERE `|` alternation, rewritten to regex
+        Input(command="grep 'x\\(ab\\)\\+' ."): Rewrite(pattern="--regex"),  # BRE group + `\+` → `(ab)+` on the rg engine
         # Block — unmappable shapes fall back to the message:
         Input(command="grep -rnC3 foo src/"): Block(),  # value short glued into a bundle
         Input(command="grep -P 'x(?=y)' ."): Block(),  # PCRE (-P) never maps; `.` is a dir, not a bounded file
