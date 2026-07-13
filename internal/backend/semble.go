@@ -73,8 +73,15 @@ func (s Semble) CLIArgv(_ context.Context, op Op, a Args) (bin string, argv []st
 // resolve()): the MCP server is exposed only by the semble[mcp] extra, which the
 // uvx invocation guarantees. A bare on-PATH `semble` has no MCP-server mode and
 // exits on the initialize handshake — do not "unify" this with resolve().
+//
+// The >=0.5 floor guards index freshness: from 0.5.0 semble revalidates a local
+// repo's index on every query (an mtime/file-set check, bounded by a cooldown of
+// 3× the last build duration), so a resident session never serves results stale
+// against the working tree. The launch takes no positional path — semble's
+// argument parsing rejects one — and needs none: the per-call repo param
+// (repoOrCwd) selects the repo.
 func (s Semble) MCPSpec(_ context.Context) (cmd string, argv []string, err error) {
-	return "uvx", []string{"--from", "semble[mcp]", "semble"}, nil
+	return "uvx", []string{"--from", "semble[mcp]>=0.5", "semble"}, nil
 }
 
 // MCPTool translates op into a semble MCP tool name and its params.

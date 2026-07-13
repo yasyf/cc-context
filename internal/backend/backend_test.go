@@ -233,11 +233,13 @@ func TestSembleCLIArgvUnsupported(t *testing.T) {
 func TestSembleMCPSpec(t *testing.T) {
 	orig := vendor.LookPath
 	defer func() { vendor.LookPath = orig }()
-	want := []string{"--from", "semble[mcp]", "semble"}
+	want := []string{"--from", "semble[mcp]>=0.5", "semble"}
 
-	// The MCP launch must be uvx --from semble[mcp] regardless of an on-PATH
-	// semble or a configured Bin: the bare CLI has no MCP-server mode. Guard the
-	// regression where MCPSpec was "unified" with the CLI's resolve().
+	// The MCP launch must be uvx --from semble[mcp]>=0.5 regardless of an on-PATH
+	// semble or a configured Bin: the bare CLI has no MCP-server mode, and the
+	// floor guarantees per-query index revalidation. No positional path may ride
+	// along — semble's argument parsing rejects one. Guard the regression where
+	// MCPSpec was "unified" with the CLI's resolve().
 	for _, tc := range []struct {
 		name   string
 		onPath string
