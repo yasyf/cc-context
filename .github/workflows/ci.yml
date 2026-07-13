@@ -87,6 +87,21 @@ jobs:
           print(f"ok: both capt-hook manifests at {root}")
           PY
 
+  pack-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          # capt-hook requires Python >=3.13; pin it so uvx resolves a version
+          # that carries `pack lint` (added in 9.9.0).
+          python-version: "3.13"
+      - name: capt-hook attach-only pack contract
+        # Lint the plugin root — the dir whose SessionStart `pack attach` line is
+        # passed. Vets the canonical attach, the captain-hook dependency floor,
+        # and the marketplace cross-dependency allowance.
+        run: uvx 'capt-hook>=9.9.0' pack lint plugin
+
   hook-tests:
     runs-on: ubuntu-latest
     steps:

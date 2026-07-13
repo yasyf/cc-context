@@ -9,9 +9,12 @@
 ## Get started
 
 ```
-/plugin marketplace add yasyf/cc-skills
-/plugin install cc-context@skills
+/plugin marketplace add yasyf/captain-hook
+/plugin marketplace add yasyf/cc-context
+/plugin install cc-context@cc-context
 ```
+
+The captain-hook marketplace comes first: the plugin declares [captain-hook](https://github.com/yasyf/captain-hook) as a dependency, and it auto-installs only when its marketplace is already known. Upgrading an existing install? `claude plugin update` silently skips newly added dependencies; add the captain-hook marketplace, then re-run `/plugin install cc-context@cc-context`.
 
 <img src="docs/assets/demo.png" alt="Terminal running 'ccx code outline internal/astgrep/run.go --budget 60' — a syntax-highlighted file outline cut at the budget, ending in '+5 lines, ~111 tokens omitted'" width="700">
 
@@ -20,8 +23,9 @@ The plugin arrives wired together. The `ccx` binary self-provisions, the MCP ser
 Driving with an agent? Paste this:
 
 ```
-/plugin marketplace add yasyf/cc-skills
-/plugin install cc-context@skills
+/plugin marketplace add yasyf/captain-hook
+/plugin marketplace add yasyf/cc-context
+/plugin install cc-context@cc-context
 ```
 
 <details>

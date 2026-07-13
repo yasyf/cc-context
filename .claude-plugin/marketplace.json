@@ -5,6 +5,7 @@
   "owner": {
     "name": "yasyf"
   },
+  "allowCrossMarketplaceDependenciesOn": ["captain-hook"],
   "plugins": [
     {
       "name": "cc-context",

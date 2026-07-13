@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-07-13
+
+### Added
+- The captain-hook dependency is explicit: `plugin.json` declares `{ "name": "captain-hook", "marketplace": "captain-hook", "version": ">=9.9.0" }` and the repo `marketplace.json` allows the cross-marketplace dependency via `allowCrossMarketplaceDependenciesOn`. The allowance is load-bearing — without it Claude Code silently skips the declared dependency at install and the attached guard pack runs with no dispatcher.
+- CI vets the attach-only pack contract: `uvx 'capt-hook>=9.9.0' pack lint plugin` checks the manifest, the canonical attach entry, the dependency floor, the marketplace allowance, and that the pack loads clean.
+
+### Changed
+- The SessionStart pack attach runs the canonical attach-only prefix, `uvx --isolated capt-hook pack attach "${CLAUDE_PLUGIN_ROOT}/hooks"`; the `install-binary.sh` entry is unchanged.
+- README: the plugin installs from its own marketplace (`cc-context@cc-context`), with the captain-hook marketplace added first so the dependency auto-installs, plus an upgrade note — `claude plugin update` silently skips newly added dependencies. The prior `yasyf/cc-skills` instructions pointed at a marketplace that no longer lists the plugin.
+
 ## [0.13.0] - 2026-07-12
 
 ### Fixed
