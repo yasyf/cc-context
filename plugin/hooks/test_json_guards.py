@@ -322,42 +322,42 @@ class TestShapesStore:
 
 
 class TestSeenEmittingJson:
-    def _event(self, command: str, session_dir: Path) -> PreToolUseEvent:
+    def _pre_event(self, command: str, session_dir: Path) -> PreToolUseEvent:
         ctx = HookContext(session=SessionStore(session_dir), transcript=None, settings=None)
         return PreToolUseEvent(_raw={"tool_name": "Bash", "tool_input": {"command": command}}, ctx=ctx)
 
     def test_unseen_shape_does_not_fire(self, tmp_path: Path) -> None:
         cond = SeenEmittingJson()
-        evt = self._event("terraform output", tmp_path / "s1")
+        evt = self._pre_event("terraform output", tmp_path / "s1")
         assert not cond.check_command_line(evt, evt.command_line)
 
     def test_recorded_shape_fires_once_per_session(self, tmp_path: Path) -> None:
         record_shape(fake_evt(), shape("gh issue view 123"))
         cond = SeenEmittingJson()
         session = tmp_path / "s1"
-        first = self._event("gh issue view 123", session)
-        second = self._event("gh issue view 456", session)  # same shape, different value
+        first = self._pre_event("gh issue view 123", session)
+        second = self._pre_event("gh issue view 456", session)  # same shape, different value
         assert cond.check_command_line(first, first.command_line)
         assert not cond.check_command_line(second, second.command_line)  # self-gated within session
 
     def test_recorded_shape_fires_again_in_new_session(self, tmp_path: Path) -> None:
         record_shape(fake_evt(), shape("terraform output"))
         cond = SeenEmittingJson()
-        a = self._event("terraform output", tmp_path / "sessionA")
-        b = self._event("terraform output", tmp_path / "sessionB")
+        a = self._pre_event("terraform output", tmp_path / "sessionA")
+        b = self._pre_event("terraform output", tmp_path / "sessionB")
         assert cond.check_command_line(a, a.command_line)
         assert cond.check_command_line(b, b.command_line)
 
     def test_already_wrapped_does_not_fire(self, tmp_path: Path) -> None:
         record_shape(fake_evt(), shape("terraform output"))
         cond = SeenEmittingJson()
-        evt = self._event("ccx format -- terraform output", tmp_path / "s1")
+        evt = self._pre_event("ccx format -- terraform output", tmp_path / "s1")
         assert not cond.check_command_line(evt, evt.command_line)
 
     def test_piped_command_does_not_fire(self, tmp_path: Path) -> None:
         record_shape(fake_evt(), shape("terraform output"))
         cond = SeenEmittingJson()
-        evt = self._event("terraform output | jq .", tmp_path / "s1")
+        evt = self._pre_event("terraform output | jq .", tmp_path / "s1")
         assert not cond.check_command_line(evt, evt.command_line)
 
     def test_ccx_shape_never_fires_even_if_recorded(self, tmp_path: Path) -> None:
@@ -365,7 +365,7 @@ class TestSeenEmittingJson:
         # before ccx commands were excluded must not nudge wrapping ccx in ccx format.
         record_shape(fake_evt(), shape("ccx exec 'async def main(): return 1'"))
         cond = SeenEmittingJson()
-        evt = self._event("ccx exec 'async def main(): return 2'", tmp_path / "s1")
+        evt = self._pre_event("ccx exec 'async def main(): return 2'", tmp_path / "s1")
         assert not cond.check_command_line(evt, evt.command_line)
 
 
@@ -381,7 +381,7 @@ class TestRecordJsonShape:
     # The exact shape Claude Code surfaces for a Bash tool result.
     RESP = {"stdout": "", "stderr": "", "interrupted": False, "isImage": False, "noOutputExpected": False}
 
-    def _event(self, command: str, tool_response: object, session_dir: Path) -> PostToolUseEvent:
+    def _post_event(self, command: str, tool_response: object, session_dir: Path) -> PostToolUseEvent:
         ctx = HookContext(session=SessionStore(session_dir), transcript=None, settings=None)
         return PostToolUseEvent(
             _raw={"tool_name": "Bash", "tool_input": {"command": command}, "tool_response": tool_response},
@@ -391,26 +391,26 @@ class TestRecordJsonShape:
     def test_dict_json_stdout_records_shape(self, tmp_path: Path) -> None:
         # The regression: a dict tool_response with JSON stdout used to crash on
         # `dict.strip`; now its shape is learned.
-        evt = self._event("terraform output", {**self.RESP, "stdout": '{"a": 1}'}, tmp_path / "s1")
+        evt = self._post_event("terraform output", {**self.RESP, "stdout": '{"a": 1}'}, tmp_path / "s1")
         record_json_shape(evt)
         assert load_shapes(evt) == {shape("terraform output")}
 
     def test_dict_plain_text_stdout_records_nothing(self, tmp_path: Path) -> None:
         # The live repro: a `which ccx`-style dict whose stdout is plain text — no
         # crash, and nothing learned.
-        evt = self._event("which ccx", {**self.RESP, "stdout": "/opt/homebrew/bin/ccx\nv0.6.1"}, tmp_path / "s2")
+        evt = self._post_event("which ccx", {**self.RESP, "stdout": "/opt/homebrew/bin/ccx\nv0.6.1"}, tmp_path / "s2")
         record_json_shape(evt)
         assert load_shapes(evt) == set()
 
     def test_string_json_stdout_still_records_shape(self, tmp_path: Path) -> None:
         # The declared `str` shape still works: a bare-string tool_response emitting
         # JSON is learned.
-        evt = self._event("kubectl get pods -o wide", '[{"id": 1}, {"id": 2}]', tmp_path / "s3")
+        evt = self._post_event("kubectl get pods -o wide", '[{"id": 1}, {"id": 2}]', tmp_path / "s3")
         record_json_shape(evt)
         assert load_shapes(evt) == {shape("kubectl get pods -o wide")}
 
     def test_empty_dict_stdout_records_nothing(self, tmp_path: Path) -> None:
         # Missing/empty stdout is no output to shape — the early return, never a crash.
-        evt = self._event("echo hi", self.RESP, tmp_path / "s4")
+        evt = self._post_event("echo hi", self.RESP, tmp_path / "s4")
         record_json_shape(evt)
         assert load_shapes(evt) == set()

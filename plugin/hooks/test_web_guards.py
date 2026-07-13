@@ -28,12 +28,12 @@ from captain_hook.context import HookContext
 from captain_hook.events import PreToolUseEvent
 from captain_hook.session import SessionStore
 
+from conftest import fake_run
 from hooks import common, web_guards
-from hooks.common import ccx_supports
 from hooks.web_guards import WholePageWebFetch, _is_api_url, _page_dump_note, _page_dump_to
 
 
-def _event(url: str, session_dir: Path) -> PreToolUseEvent:
+def _webfetch_event(url: str, session_dir: Path) -> PreToolUseEvent:
     ctx = HookContext(session=SessionStore(session_dir), transcript=None, settings=None)
     return PreToolUseEvent(_raw={"tool_name": "WebFetch", "tool_input": {"url": url, "prompt": "how do I X"}}, ctx=ctx)
 
@@ -41,41 +41,34 @@ def _event(url: str, session_dir: Path) -> PreToolUseEvent:
 class TestWholePageWebFetch:
     def test_first_attempt_blocks(self, tmp_path: Path) -> None:
         cond = WholePageWebFetch()
-        evt = _event("https://docs.example.com/guide", tmp_path / "s1")
+        evt = _webfetch_event("https://docs.example.com/guide", tmp_path / "s1")
         assert cond.check(evt)
 
     def test_same_url_retry_passes(self, tmp_path: Path) -> None:
         cond = WholePageWebFetch()
         session = tmp_path / "s1"
-        first = _event("https://docs.example.com/guide", session)
-        second = _event("https://docs.example.com/guide", session)
+        first = _webfetch_event("https://docs.example.com/guide", session)
+        second = _webfetch_event("https://docs.example.com/guide", session)
         assert cond.check(first)  # first sight → block
         assert not cond.check(second)  # deliberate re-run of the same URL → escape hatch, passes
 
     def test_distinct_urls_each_block_first_time(self, tmp_path: Path) -> None:
         cond = WholePageWebFetch()
         session = tmp_path / "s1"
-        assert cond.check(_event("https://a.example.com/x", session))
-        assert cond.check(_event("https://b.example.com/y", session))  # a different URL is a fresh first sight
+        assert cond.check(_webfetch_event("https://a.example.com/x", session))
+        assert cond.check(_webfetch_event("https://b.example.com/y", session))  # a different URL is a fresh first sight
 
     def test_retry_isolated_per_session(self, tmp_path: Path) -> None:
         cond = WholePageWebFetch()
         url = "https://docs.example.com/guide"
-        assert cond.check(_event(url, tmp_path / "sessionA"))
-        assert cond.check(_event(url, tmp_path / "sessionB"))  # a new session re-arms the block
+        assert cond.check(_webfetch_event(url, tmp_path / "sessionA"))
+        assert cond.check(_webfetch_event(url, tmp_path / "sessionB"))  # a new session re-arms the block
 
     def test_local_never_blocks_or_records(self, tmp_path: Path) -> None:
         cond = WholePageWebFetch()
         session = tmp_path / "s1"
-        assert not cond.check(_event("http://localhost:3000/health", session))
-        assert not cond.check(_event("http://127.0.0.1:8080/metrics", session))
-
-
-def _fake_run(returncode: int, stdout: str = "", stderr: str = ""):
-    def run(*_args: object, **_kwargs: object) -> SimpleNamespace:
-        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
-
-    return run
+        assert not cond.check(_webfetch_event("http://localhost:3000/health", session))
+        assert not cond.check(_webfetch_event("http://127.0.0.1:8080/metrics", session))
 
 
 def _bash_evt(command: str) -> SimpleNamespace:
@@ -86,19 +79,13 @@ def _bash_evt(command: str) -> SimpleNamespace:
 class TestPageDumpRewrite:
     """The ``curl``/``wget`` → ``ccx web read --full`` rewrite, gated on ``ccx_supports``."""
 
-    @pytest.fixture(autouse=True)
-    def _clear_cache(self):
-        ccx_supports.cache_clear()
-        yield
-        ccx_supports.cache_clear()
-
     def _support(self, monkeypatch: pytest.MonkeyPatch, *, ok: bool) -> None:
         # `_page_dump_to` builds the command with `web_guards.ccx_bin`; `ccx_supports` probes
         # via `common.ccx_bin` + `common.subprocess.run` — patch all three.
         monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
         monkeypatch.setattr(web_guards, "ccx_bin", lambda: "/fake/ccx")
         rc, out = (0, "Usage: ccx web read <url> --full") if ok else (1, 'unknown command "web"')
-        monkeypatch.setattr(common.subprocess, "run", _fake_run(rc, stdout=out))
+        monkeypatch.setattr(common.subprocess, "run", fake_run(rc, stdout=out))
 
     @pytest.mark.parametrize(
         "command,url",

@@ -61,7 +61,7 @@ ccx repo overview
 [tilth] Go project — 174 source files, 10 directories
   dirs: cli/ web/ codeexec/ format/ backend/ render/ astgrep/ anchor/ cache/ vcs/
   deps: asm, cascadia, chardet, cobra, dateparse, dom, dom, encoding, go-readability, go-sdk
-  hot (× = importers): plugin/hooks/common.py ×2
+  hot (× = importers): plugin/hooks/common.py ×8
   git: branch main, clean
   tests: tests/, _test.go, test_*.py
   manifest: go.mod (github.com/yasyf/cc-context)

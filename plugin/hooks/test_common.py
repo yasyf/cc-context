@@ -13,9 +13,9 @@ its boundary (``ccx_bin`` resolution and ``subprocess.run``) is monkeypatched â€
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
+
+from conftest import fake_run
 
 from hooks import common
 from hooks.common import LITERAL_SAFE, ccx_supports
@@ -65,43 +65,30 @@ class TestLiteralSafe:
         assert not LITERAL_SAFE.match("foo*bar")
 
 
-def _fake_run(returncode: int, stdout: str = "", stderr: str = ""):
-    def run(*_args: object, **_kwargs: object) -> SimpleNamespace:
-        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
-
-    return run
-
-
 class TestCcxSupports:
-    @pytest.fixture(autouse=True)
-    def _clear_cache(self):
-        ccx_supports.cache_clear()
-        yield
-        ccx_supports.cache_clear()
-
     def test_true_on_rc0_and_flag_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
-        monkeypatch.setattr(common.subprocess, "run", _fake_run(0, stdout="usage: ccx code grep [--ignore-case] ..."))
+        monkeypatch.setattr(common.subprocess, "run", fake_run(0, stdout="usage: ccx code grep [--ignore-case] ..."))
         assert ccx_supports("code", "grep", flag="--ignore-case")
 
     def test_true_on_rc0_no_flag_requested(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
-        monkeypatch.setattr(common.subprocess, "run", _fake_run(0, stdout="usage: ccx web read ..."))
+        monkeypatch.setattr(common.subprocess, "run", fake_run(0, stdout="usage: ccx web read ..."))
         assert ccx_supports("web", "read")
 
     def test_flag_matched_in_stderr(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
-        monkeypatch.setattr(common.subprocess, "run", _fake_run(0, stderr="  -i, --ignore-case   fold case"))
+        monkeypatch.setattr(common.subprocess, "run", fake_run(0, stderr="  -i, --ignore-case   fold case"))
         assert ccx_supports("code", "grep", flag="--ignore-case")
 
     def test_false_on_nonzero_rc(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
-        monkeypatch.setattr(common.subprocess, "run", _fake_run(1, stderr='unknown command "grep"'))
+        monkeypatch.setattr(common.subprocess, "run", fake_run(1, stderr='unknown command "grep"'))
         assert not ccx_supports("code", "grep", flag="--ignore-case")
 
     def test_false_on_missing_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
-        monkeypatch.setattr(common.subprocess, "run", _fake_run(0, stdout="usage: ccx code grep [--glob G] ..."))
+        monkeypatch.setattr(common.subprocess, "run", fake_run(0, stdout="usage: ccx code grep [--glob G] ..."))
         assert not ccx_supports("code", "grep", flag="--ignore-case")
 
     def test_false_when_ccx_unresolvable(self, monkeypatch: pytest.MonkeyPatch) -> None:
