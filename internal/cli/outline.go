@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/internal/backend"
@@ -24,6 +26,12 @@ func newOutlineCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a.Path = args[0]
+			if info, statErr := os.Stat(a.Path); statErr == nil && info.Mode().IsRegular() {
+				if line, skipped := outline.BinarySkip(a.Path); skipped {
+					cmd.Println(line)
+					return nil
+				}
+			}
 			op, err := outline.Route(a)
 			if err != nil {
 				return err

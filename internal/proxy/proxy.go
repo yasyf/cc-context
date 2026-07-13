@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -14,9 +15,11 @@ import (
 	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/edit"
+	"github.com/yasyf/cc-context/internal/find"
 	"github.com/yasyf/cc-context/internal/grep"
 	"github.com/yasyf/cc-context/internal/grok"
 	"github.com/yasyf/cc-context/internal/mcpclient"
+	"github.com/yasyf/cc-context/internal/outline"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/ripgrep"
 	"github.com/yasyf/cc-context/internal/router"
@@ -69,11 +72,25 @@ func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string
 // (ast-grep has no MCP server); every other op is a child MCP tool call against
 // the engine's resident (lazily opened) session.
 func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
+	if op == backend.OpOutline || op == backend.OpStructOutline {
+		if info, err := os.Stat(a.Path); err == nil && info.Mode().IsRegular() {
+			if line, skipped := outline.BinarySkip(a.Path); skipped {
+				return line, nil
+			}
+		}
+	}
 	if op == backend.OpEdit {
 		return edit.Run(a)
 	}
 	if op == backend.OpWebOutline || op == backend.OpWebRead || op == backend.OpWebSearch {
 		out, err := web.Run(ctx, op, a)
+		if err != nil {
+			return "", err
+		}
+		return render.Finalize(op, out, a)
+	}
+	if op == backend.OpFind {
+		out, err := find.Run(ctx, a)
 		if err != nil {
 			return "", err
 		}

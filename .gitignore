@@ -34,3 +34,8 @@ coverage.txt
 # manages (brew binary, data-dir payload, or dev build) — never a real binary
 plugin/bin/*
 !plugin/bin/.gitkeep
+
+# agent scratchpads and stray root builds
+.scratch/
+.claude-scratch/
+/ccx

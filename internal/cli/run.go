@@ -7,6 +7,7 @@ import (
 	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/edit"
+	"github.com/yasyf/cc-context/internal/find"
 	"github.com/yasyf/cc-context/internal/grep"
 	"github.com/yasyf/cc-context/internal/grok"
 	"github.com/yasyf/cc-context/internal/render"
@@ -54,6 +55,13 @@ func dispatch(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error)
 	}
 	if op == backend.OpWebOutline || op == backend.OpWebRead || op == backend.OpWebSearch {
 		out, err := web.Run(cmd.Context(), op, a)
+		if err != nil {
+			return "", err
+		}
+		return render.Finalize(op, out, a)
+	}
+	if op == backend.OpFind {
+		out, err := find.Run(cmd.Context(), a)
 		if err != nil {
 			return "", err
 		}

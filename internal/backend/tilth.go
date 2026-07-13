@@ -81,11 +81,6 @@ func (t Tilth) CLIArgv(ctx context.Context, op Op, a Args) (bin string, argv []s
 		if a.Expand > 0 {
 			argv = append(argv, "--expand="+strconv.Itoa(a.Expand))
 		}
-	case OpFind:
-		argv = []string{a.Glob}
-		if a.Scope != "" {
-			argv = append(argv, "--scope", a.Scope)
-		}
 	case OpOverview:
 		argv = []string{"overview"}
 	default:
@@ -196,11 +191,6 @@ func (t Tilth) MCPTool(op Op, a Args) (tool string, params map[string]any, err e
 			"kind":   a.Kind,
 			"budget": a.Budget,
 			"expand": a.Expand,
-		}), nil
-	case OpFind:
-		return "tilth_files", omitEmpty(map[string]any{
-			"pattern": a.Glob,
-			"scope":   a.Scope,
 		}), nil
 	case OpDiff:
 		return "tilth_diff", omitEmpty(map[string]any{

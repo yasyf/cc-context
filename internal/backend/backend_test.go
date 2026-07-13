@@ -40,7 +40,6 @@ func TestTilthCLIArgv(t *testing.T) {
 		{"grep scope only", OpGrep, Args{Query: "todo", Scope: "internal"}, []string{"todo", "--scope", "internal"}},
 		{"grep ignore-case/word not routed to tilth", OpGrep, Args{Query: "todo", IgnoreCase: true, Word: true}, []string{"todo"}},
 		{"grep regex/paths not routed to tilth", OpGrep, Args{Query: "todo", Regex: true, Paths: []string{"a.go", "b.go"}}, []string{"todo"}},
-		{"find", OpFind, Args{Glob: "**/*.go"}, []string{"**/*.go"}},
 		{"overview", OpOverview, Args{}, []string{"overview"}},
 	}
 	for _, tt := range tests {
@@ -117,6 +116,18 @@ func TestTilthCLIArgvUnsupported(t *testing.T) {
 	}
 }
 
+// TestTilthFindUnsupported asserts tilth rejects OpFind on both surfaces, so any
+// route that reaches it instead of the native find package fails loudly.
+func TestTilthFindUnsupported(t *testing.T) {
+	tl := Tilth{Bin: fakeTilth}
+	if _, _, err := tl.CLIArgv(context.Background(), OpFind, Args{Glob: "**/*.go"}); err == nil {
+		t.Error("CLIArgv(OpFind): expected unsupported-op error")
+	}
+	if _, _, err := tl.MCPTool(OpFind, Args{Glob: "**/*.go"}); err == nil {
+		t.Error("MCPTool(OpFind): expected unsupported-op error")
+	}
+}
+
 func TestTilthMCPSpec(t *testing.T) {
 	cmd, argv, err := Tilth{Bin: fakeTilth}.MCPSpec(context.Background())
 	if err != nil {
@@ -150,7 +161,6 @@ func TestTilthMCPTool(t *testing.T) {
 		{"grep scope", OpGrep, Args{Query: "todo", Glob: "*.go", Scope: "internal", Kind: "code", Budget: 3, Expand: 2}, "tilth_search", map[string]any{"query": "todo", "glob": "*.go", "scope": "internal", "kind": "code", "budget": 3, "expand": 2}},
 		{"grep ignore-case/word absent from tilth params", OpGrep, Args{Query: "todo", IgnoreCase: true, Word: true}, "tilth_search", map[string]any{"query": "todo"}},
 		{"grep regex/paths absent from tilth params", OpGrep, Args{Query: "todo", Regex: true, Paths: []string{"a.go"}}, "tilth_search", map[string]any{"query": "todo"}},
-		{"find", OpFind, Args{Glob: "**/*.go", Scope: "pkg"}, "tilth_files", map[string]any{"pattern": "**/*.go", "scope": "pkg"}},
 		{"diff", OpDiff, Args{Source: "HEAD~1", Scope: "pkg", Budget: 4}, "tilth_diff", map[string]any{"source": "HEAD~1", "scope": "pkg", "budget": 4}},
 	}
 	for _, tt := range tests {

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/yasyf/cc-context/internal/find"
 )
 
 // sourceExts is the set of file extensions the language census counts — code
@@ -19,10 +21,19 @@ var sourceExts = map[string]bool{
 	"md": true, "proto": true, "sql": true,
 }
 
-// censusSkipDirs are directories the census never descends into.
-var censusSkipDirs = map[string]bool{
-	".git": true, ".jj": true, "node_modules": true, "vendor": true,
-	"target": true, "dist": true, "build": true, ".venv": true,
+// censusSkipDirs are directories the census never descends into: the shared VCS
+// stores plus the language-agnostic build and dependency directories.
+var censusSkipDirs = buildCensusSkipDirs()
+
+func buildCensusSkipDirs() map[string]bool {
+	m := map[string]bool{
+		"node_modules": true, "vendor": true, "target": true,
+		"dist": true, "build": true, ".venv": true,
+	}
+	for _, d := range find.VCSStoreDirs {
+		m[d] = true
+	}
+	return m
 }
 
 // languageCensus returns a one-line "languages: go (12), py (3), ..." summary of

@@ -12,6 +12,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/codeexec"
+	"github.com/yasyf/cc-context/internal/find"
 	"github.com/yasyf/cc-context/internal/format"
 	"github.com/yasyf/cc-context/internal/outline"
 	"github.com/yasyf/cc-context/internal/proxy"
@@ -119,8 +120,19 @@ type GrepIn struct {
 
 // FindIn is the input for ccx_repo_find.
 type FindIn struct {
-	Glob  string `json:"glob" jsonschema:"glob to match files against"`
-	Scope string `json:"scope,omitempty" jsonschema:"directory to scope the search to"`
+	Glob   string `json:"glob" jsonschema:"glob to match files against"`
+	Scope  string `json:"scope,omitempty" jsonschema:"directory to scope the search to"`
+	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the output; 0 or omitted = default 2000; unlimited listing is the codeexec lane"`
+}
+
+// findArgs builds the find backend.Args from a ccx_repo_find call, applying the
+// default budget when the caller sets none (the codeexec path leaves it zero).
+func findArgs(in FindIn) backend.Args {
+	a := backend.Args{Glob: in.Glob, Scope: in.Scope, Budget: in.Budget}
+	if a.Budget == 0 {
+		a.Budget = find.DefaultBudget
+	}
+	return a
 }
 
 // DiffIn is the input for ccx_vcs_diff.
@@ -270,10 +282,8 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_repo_find",
-		Description: "List files matching a glob with per-file token counts — prefer over ls -R.",
-	}, handler(p, backend.OpFind, func(in FindIn) backend.Args {
-		return backend.Args{Glob: in.Glob, Scope: in.Scope}
-	}))
+		Description: "List files matching a glob with per-file token counts — gitignore-honoring, budget-capped; for orientation prefer ccx_repo_overview.",
+	}, handler(p, backend.OpFind, findArgs))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_vcs_diff",
