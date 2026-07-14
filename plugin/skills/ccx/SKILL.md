@@ -71,11 +71,15 @@ Pick the tool by what you know.
   ccx code grep "RATE_LIMIT"
   ccx code grep "func New" --glob "internal/**/*.go"
   ccx code grep -i -w "ratelimit"   # case-insensitive, whole-word (runs on ripgrep)
+  ccx code grep TODO cmd/main.go internal/cli/run.go --glob "*.go"   # --glob filters within explicit paths
   ```
-- **Have a path shape.** List files with per-file token counts:
+- **Have a path shape.** List files with per-file token counts — gitignore-honoring,
+  VCS stores skipped, sorted, budget-capped (`--budget N` raises the cap; a glob
+  anchored at a real path, like `.venv/**/*.py`, lists files ignore rules would hide):
   ```
   ccx repo find "internal/**/*.go"
   ```
+  Orienting a whole repo is `ccx repo overview`, not a `"**/*"` listing.
 
 ### 3. Read
 
@@ -242,7 +246,10 @@ write the pipeline as a script instead. `ccx exec` (MCP: `mcp__cc-context__ccx_e
 runs a short Python script in a sandbox where every ccx query op above is an async host
 function, alongside a gated `sh(cmd)` and the tools of every stateless MCP server,
 auto-reflected with no flag needed. Intermediate output stays in the sandbox; only the
-script's return value enters context.
+script's return value enters context. A shell pipe is not the bound: ccx output is
+already budget-capped, and `| head`/`| tail` re-introduces silent truncation while
+eating the overflow footer — raise `--budget`, narrow with `--section`/`--scope`, or
+write the exec script.
 
 ```
 ccx exec 'import asyncio
