@@ -211,12 +211,21 @@ func Serve(ctx context.Context) error {
 	return s.Run(ctx, &mcp.StdioTransport{})
 }
 
+// metaAlwaysLoad is the tool _meta key Claude Code reads to exempt a tool from
+// tool-search deferral (ENABLE_TOOL_SEARCH).
+const metaAlwaysLoad = "anthropic/alwaysLoad"
+
+// alwaysLoad marks the common ccx tools eager-loaded at session start, so a
+// guard redirect to one costs no ToolSearch round-trip.
+var alwaysLoad = mcp.Meta{metaAlwaysLoad: true}
+
 // register wires every static tool to a handler that builds backend.Args and
 // proxies the call to the matching engine.
 func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_search",
 		Description: "Search code by intent (semantic), ast-grep structural pattern, or literal text — routed by query kind. Prefer over grep for where/how.",
+		Meta:        alwaysLoad,
 	}, searchHandler(p))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -250,11 +259,13 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_outline",
 		Description: "Outline a file or directory — top-level signatures + line numbers, budget-bounded; prefer over reading whole files. --deep/--full adds members. Routes to ast-grep (items, match, section window) or tilth by language.",
+		Meta:        alwaysLoad,
 	}, outlineHandler(p))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_read",
 		Description: "Read a file by section, heading, anchor, or whole; pass section to avoid the entire file.",
+		Meta:        alwaysLoad,
 	}, handler(p, backend.OpRead, func(in ReadIn) backend.Args {
 		return backend.Args{Path: in.Path, Section: in.Section, Full: in.Full, Budget: in.Budget}
 	}))
@@ -276,6 +287,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_grep",
 		Description: "Grep literal or regex text across code — globbed, scoped, or over explicit files; budget-bounded.",
+		Meta:        alwaysLoad,
 	}, handler(p, backend.OpGrep, func(in GrepIn) backend.Args {
 		a := backend.Args{Query: in.Text, Glob: in.Glob, Scope: in.Scope, IgnoreCase: in.IgnoreCase, Word: in.Word, Regex: in.Regex, Paths: in.Paths, Budget: in.Budget, Expand: in.Expand, After: in.After, Before: in.Before, Context: in.Context}
 		if ripgrep.Handles(a) && a.Budget == 0 {

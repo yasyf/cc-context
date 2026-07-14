@@ -182,6 +182,38 @@ func TestRegisteredToolSurface(t *testing.T) {
 	}
 }
 
+// TestAlwaysLoadMetaSurface proves exactly the common workhorse tools carry the
+// anthropic/alwaysLoad _meta flag (eager-loaded past tool-search deferral) and
+// every other registered tool stays deferred without it — asserting over the
+// full ListTools surface so a new tool wrongly marked alwaysLoad fails here.
+func TestAlwaysLoadMetaSurface(t *testing.T) {
+	cs := connectTestServer(t)
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	eager := map[string]bool{
+		"ccx_code_read":    true,
+		"ccx_code_grep":    true,
+		"ccx_code_outline": true,
+		"ccx_code_search":  true,
+	}
+	seen := 0
+	for _, tool := range res.Tools {
+		want := eager[tool.Name]
+		got := tool.Meta[metaAlwaysLoad] == true
+		if got != want {
+			t.Errorf("tool %q alwaysLoad = %v, want %v", tool.Name, got, want)
+		}
+		if want {
+			seen++
+		}
+	}
+	if seen != len(eager) {
+		t.Errorf("eager-loaded tools present = %d, want %d (renamed or unregistered)", seen, len(eager))
+	}
+}
+
 // TestGrepToolSchemaHasEngineFields proves the ripgrep-engine flags and the
 // scope filter are advertised on the ccx_code_grep input schema.
 func TestGrepToolSchemaHasEngineFields(t *testing.T) {

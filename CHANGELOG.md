@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- The common ccx MCP tools — `ccx_code_read`, `ccx_code_grep`, `ccx_code_outline`, `ccx_code_search` — carry the `anthropic/alwaysLoad` tool `_meta` flag, so Claude Code keeps them in the prompt under tool-search deferral (`ENABLE_TOOL_SEARCH`) instead of hiding them behind a `ToolSearch` round-trip. A guard redirect to one lands on an already-loaded tool; the rest of the surface stays deferred, loaded on demand. Per-tool `_meta`, not a server-level `alwaysLoad`, keeps the eager set to the four workhorses and the server's connect non-blocking.
+
 ## [0.17.0] - 2026-07-14
 
 ### Added
