@@ -104,8 +104,6 @@ Reach for your **LSP** when the answer must be exhaustive/structural (findRefere
 
 Target Go 1.23+. Run `task build`, `task test` (`go test -race`), and `task lint`.
 
-Building from source also needs the Rust toolchain (stable, per `format-core/rust-toolchain.toml`) and the `wasm32-unknown-unknown` target. The format engine is `format-core` compiled to WASM and `go:embed`'d, so `task wasm` builds and stages it into `internal/format/formatcore.wasm` (gitignored) before any Go compile — the `build`, `test`, `vet`, and `lint` tasks depend on it. `brew install yasyf/tap/ccx` installs a prebuilt binary that needs no toolchain; `brew install --HEAD` source builds are no longer supported.
-
 **Comments are terse and used sparingly — the code documents itself** through names, types, and organization. The one exception is documentation-generation comments: godoc on exported types, funcs, and the package, each starting with the identifier's name (`// NewRootCmd builds …`); unexported helpers get none. Beyond godoc, comment only for TODOs, non-obvious workarounds, or disabled code — never to restate the signature.
 
 **Errors wrap with `%w`.** Return failures up the stack with `fmt.Errorf("…: %w", err)` and inspect them with `errors.Is` / `errors.As`, never string matching. See STYLEGUIDE.md § Error Handling.
