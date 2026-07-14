@@ -31,7 +31,9 @@ func writeShipFakes(t *testing.T, dir string, withGh bool) {
 
 	jj := "#!/bin/sh\n" + log("jj") + `case "$*" in
   *first_line*) printf '%s\n%s' 'a1b2c3d' 'fix: frobnicate' ;;
-  *name*) if [ -z "$JJ_NO_BOOKMARK" ]; then printf 'main'; fi ;;
+  *remote_bookmarks*) printf '%s' "${JJ_TRUNK_NAMES-main main}" ;;
+  *"bookmarks(exact"*) printf '%s' "${JJ_EXACT_BOOKMARK-found}" ;;
+  *local_bookmarks*) if [ -z "$JJ_NO_BOOKMARK" ]; then printf '%s' "${JJ_BOOKMARK_NAMES:-main}"; fi ;;
   *commit_id*) printf '%s' '` + fakeHeadSHA + `' ;;
 esac
 exit 0
@@ -191,9 +193,10 @@ func TestShipCommitPushWatch(t *testing.T) {
 			want: [][]string{
 				{"jj", "commit", "-m", "fix: frobnicate"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
 				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "bookmark", "move", "--from", jjNearestBookmarkRevset, "--to", "@-"},
-				{"jj", "git", "push"},
+				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
+				{"jj", "git", "push", "--bookmark", "exact:main"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id"},
 				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "10", "--json", "databaseId,workflowName,status,url"},
 				{"gh", "run", "watch", "42", "--exit-status"},
@@ -316,6 +319,58 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			},
 			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
 		},
+		{
+			name:   "jj scoped paths",
+			marker: ".jj",
+			args:   []string{"-m", "fix: frobnicate", "--no-push", "src/a.go", "docs"},
+			want: [][]string{
+				{"jj", "commit", "-m", "fix: frobnicate", "--", "src/a.go", "docs"},
+				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+		},
+		{
+			name:   "git scoped paths",
+			marker: ".git",
+			args:   []string{"-m", "fix: frobnicate", "--no-push", "src/a.go", "docs"},
+			want: [][]string{
+				{"git", "add", "-A", "--", "src/a.go", "docs"},
+				{"git", "commit", "-m", "fix: frobnicate", "--", "src/a.go", "docs"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+		},
+		{
+			name:   "jj amend scoped no message",
+			marker: ".jj",
+			args:   []string{"--amend", "--no-push", "src/a.go"},
+			want: [][]string{
+				{"jj", "squash", "--use-destination-message", "--", "src/a.go"},
+				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+		},
+		{
+			name:   "jj amend scoped with message",
+			marker: ".jj",
+			args:   []string{"--amend", "-m", "fix: frobnicate", "--no-push", "src/a.go"},
+			want: [][]string{
+				{"jj", "squash", "-m", "fix: frobnicate", "--", "src/a.go"},
+				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+		},
+		{
+			name:   "git amend scoped",
+			marker: ".git",
+			args:   []string{"--amend", "-m", "fix: frobnicate", "--no-push", "src/a.go"},
+			want: [][]string{
+				{"git", "add", "-A", "--", "src/a.go"},
+				{"git", "commit", "--amend", "-m", "fix: frobnicate", "--", "src/a.go"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -364,9 +419,10 @@ func TestShipNoWatchSkipsCI(t *testing.T) {
 	assertInvocations(t, readInvocations(t, log), [][]string{
 		{"jj", "commit", "-m", "fix: frobnicate"},
 		{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
 		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-		{"jj", "bookmark", "move", "--from", jjNearestBookmarkRevset, "--to", "@-"},
-		{"jj", "git", "push"},
+		{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
+		{"jj", "git", "push", "--bookmark", "exact:main"},
 	})
 }
 
@@ -456,8 +512,132 @@ func TestShipJJNoBookmarkFails(t *testing.T) {
 	assertInvocations(t, readInvocations(t, log), [][]string{
 		{"jj", "commit", "-m", "fix: frobnicate"},
 		{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
 		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 	})
+}
+
+func TestShipJJForeignBookmarkFails(t *testing.T) {
+	log := setupShip(t, ".jj", true)
+	t.Setenv("JJ_BOOKMARK_NAMES", "someone/probe")
+
+	_, err := runShipCmd(t, "-m", "fix: frobnicate")
+	if err == nil {
+		t.Fatal("expected error when nearest bookmark is not trunk, got nil")
+	}
+	if !strings.Contains(err.Error(), `"someone/probe" is not trunk`) {
+		t.Errorf("error = %v, want it to name the foreign bookmark", err)
+	}
+	if !strings.Contains(err.Error(), "--bookmark someone/probe") {
+		t.Errorf("error = %v, want it to suggest --bookmark someone/probe", err)
+	}
+	assertInvocations(t, readInvocations(t, log), [][]string{
+		{"jj", "commit", "-m", "fix: frobnicate"},
+		{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+	})
+}
+
+func TestShipJJMultipleNearestBookmarksFails(t *testing.T) {
+	log := setupShip(t, ".jj", true)
+	t.Setenv("JJ_BOOKMARK_NAMES", "main other")
+
+	_, err := runShipCmd(t, "-m", "fix: frobnicate")
+	if err == nil {
+		t.Fatal("expected error when several bookmarks are nearest, got nil")
+	}
+	if !strings.Contains(err.Error(), "multiple nearest bookmarks") {
+		t.Errorf("error = %v, want it to mention multiple nearest bookmarks", err)
+	}
+	assertInvocations(t, readInvocations(t, log), [][]string{
+		{"jj", "commit", "-m", "fix: frobnicate"},
+		{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+	})
+}
+
+func TestShipJJUnresolvableTrunkFails(t *testing.T) {
+	tests := []struct {
+		name       string
+		trunkNames string
+	}{
+		{"no trunk bookmark", ""},
+		{"ambiguous trunk names", "main dev"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShip(t, ".jj", true)
+			t.Setenv("JJ_TRUNK_NAMES", tt.trunkNames)
+
+			_, err := runShipCmd(t, "-m", "fix: frobnicate")
+			if err == nil {
+				t.Fatal("expected error when trunk is unresolvable, got nil")
+			}
+			if !strings.Contains(err.Error(), "cannot resolve the trunk bookmark") {
+				t.Errorf("error = %v, want it to mention the unresolvable trunk", err)
+			}
+			assertInvocations(t, readInvocations(t, log), [][]string{
+				{"jj", "commit", "-m", "fix: frobnicate"},
+				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+			})
+		})
+	}
+}
+
+func TestShipJJBookmarkOverride(t *testing.T) {
+	log := setupShip(t, ".jj", true)
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--bookmark", "someone/probe")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `committed a1b2c3d "fix: frobnicate" · pushed someone/probe → origin`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	assertInvocations(t, readInvocations(t, log), [][]string{
+		{"jj", "commit", "-m", "fix: frobnicate"},
+		{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+		{"jj", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjBookmarkTemplate},
+		{"jj", "bookmark", "move", "exact:someone/probe", "--to", "@-"},
+		{"jj", "git", "push", "--bookmark", "exact:someone/probe"},
+	})
+}
+
+func TestShipJJBookmarkOverrideNotFound(t *testing.T) {
+	log := setupShip(t, ".jj", true)
+	t.Setenv("JJ_EXACT_BOOKMARK", "")
+
+	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--bookmark", "someone/probe")
+	if err == nil {
+		t.Fatal("expected error for a nonexistent --bookmark, got nil")
+	}
+	if !strings.Contains(err.Error(), `bookmark "someone/probe" not found`) {
+		t.Errorf("error = %v, want it to say the bookmark was not found", err)
+	}
+	assertInvocations(t, readInvocations(t, log), [][]string{
+		{"jj", "commit", "-m", "fix: frobnicate"},
+		{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+		{"jj", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjBookmarkTemplate},
+	})
+}
+
+func TestShipGitBookmarkFlagFails(t *testing.T) {
+	log := setupShip(t, ".git", true)
+
+	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--bookmark", "main")
+	if err == nil {
+		t.Fatal("expected error for --bookmark in a git repo, got nil")
+	}
+	if !strings.Contains(err.Error(), "applies only to jj") {
+		t.Errorf("error = %v, want it to say --bookmark applies only to jj", err)
+	}
+	if inv := readInvocations(t, log); inv != nil {
+		t.Errorf("no VCS command should run when --bookmark is rejected, got %v", inv)
+	}
 }
 
 func TestShipRequiresMessage(t *testing.T) {

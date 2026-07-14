@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `ccx vcs ship` takes trailing `[paths...]` to scope the commit: in jj the paths pass through as filesets and the remainder stays in the working copy; in git the blanket `git add -A` gives way to a pathspec-scoped add plus a partial commit. A working copy shared with a concurrent session no longer forces manual `jj` steps.
+- The jj push lane only auto-advances the trunk bookmark. A non-trunk nearest bookmark refuses with its name in the error, and the new `--bookmark <name>` flag advances one deliberately; in a plain-git repo the flag is an error. Bookmarks now move by name and push with `--bookmark`, so a second bookmark parked on the same commit no longer rides along. A scoped jj commit whose fileset matches no changes still ships an empty commit — same as an unscoped ship on a clean working copy.
 - `ccx exec` caches MCP discovery on disk per project for 15 minutes, so a warm cache spawns no `claude mcp list` probe; a script that references no reflected tool skips reflection entirely — no probe, no notes. Changing `CCX_EXEC_MCP_ALLOW`/`CCX_EXEC_MCP_DENY` invalidates the cache, `CCX_EXEC_MCP=refresh` forces a fresh probe, and `CCX_EXEC_MCP_TIMEOUT` (Go duration, default `30s`, up from 10s) bounds it — an invalid duration is a hard error.
 
 ### Fixed

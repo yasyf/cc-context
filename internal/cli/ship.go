@@ -24,7 +24,8 @@ const (
 	shipLogBudget           = 2000
 	jjNearestBookmarkRevset = "heads(::@- & bookmarks())"
 	jjDescribeTemplate      = `commit_id.short() ++ "\n" ++ description.first_line()`
-	jjBookmarkTemplate      = `local_bookmarks.map(|b| b.name()).join(" ")`
+	jjBookmarkTemplate      = `local_bookmarks.map(|b| b.name()).join(" ") ++ " "`
+	jjTrunkBookmarkTemplate = `remote_bookmarks.map(|b| b.name()).join(" ") ++ " "`
 )
 
 var (
@@ -51,11 +52,13 @@ var shipStreamCI = func(w io.Writer) bool {
 }
 
 type shipOpts struct {
-	message string
-	noPush  bool
-	noWatch bool
-	amend   bool
-	budget  int
+	message  string
+	noPush   bool
+	noWatch  bool
+	amend    bool
+	budget   int
+	paths    []string
+	bookmark string
 }
 
 type ciRun struct {
@@ -87,10 +90,11 @@ type ciStep struct {
 func newShipCmd() *cobra.Command {
 	var o shipOpts
 	cmd := &cobra.Command{
-		Use:   "ship",
+		Use:   "ship [paths...]",
 		Short: "Commit, push, and watch CI in one step",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Args:  cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			o.paths = args
 			return runShip(cmd, o)
 		},
 	}
@@ -99,6 +103,7 @@ func newShipCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&o.noWatch, "no-watch", false, "push but do not watch CI")
 	cmd.Flags().BoolVar(&o.amend, "amend", false, "fold the working copy into the parent commit")
 	cmd.Flags().IntVar(&o.budget, "budget", shipLogBudget, "token budget for the CI failure log excerpt (0 = uncapped)")
+	cmd.Flags().StringVar(&o.bookmark, "bookmark", "", "jj bookmark to advance and push")
 	return cmd
 }
 
@@ -107,6 +112,9 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	kind := vcs.Detect(workingDir())
 	if kind == vcs.None {
 		return errors.New("ship: no git or jj repository in the working directory")
+	}
+	if o.bookmark != "" && kind != vcs.JJ {
+		return errors.New("ship: --bookmark applies only to jj repositories")
 	}
 	if !o.amend && o.message == "" {
 		return errors.New("ship: -m/--message is required unless --amend")
@@ -128,7 +136,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		return nil
 	}
 
-	branch, err := shipPush(ctx, kind, o.amend)
+	branch, err := shipPush(ctx, kind, o)
 	if err != nil {
 		return err
 	}
@@ -163,14 +171,18 @@ func shipCommit(ctx context.Context, kind vcs.Kind, o shipOpts) error {
 }
 
 func shipCommitJJ(ctx context.Context, o shipOpts) error {
-	var argv []string
+	argv := make([]string, 0, 4+len(o.paths))
 	switch {
 	case o.amend && o.message != "":
-		argv = []string{"squash", "-m", o.message}
+		argv = append(argv, "squash", "-m", o.message)
 	case o.amend:
-		argv = []string{"squash", "--use-destination-message"}
+		argv = append(argv, "squash", "--use-destination-message")
 	default:
-		argv = []string{"commit", "-m", o.message}
+		argv = append(argv, "commit", "-m", o.message)
+	}
+	if len(o.paths) > 0 {
+		argv = append(argv, "--")
+		argv = append(argv, o.paths...)
 	}
 	if _, err := render.RunCLI(ctx, "jj", argv); err != nil {
 		return fmt.Errorf("ship: jj %s: %w", argv[0], err)
@@ -179,7 +191,12 @@ func shipCommitJJ(ctx context.Context, o shipOpts) error {
 }
 
 func shipCommitGit(ctx context.Context, o shipOpts) error {
-	if _, err := render.RunCLI(ctx, "git", []string{"add", "-A"}); err != nil {
+	addArgv := []string{"add", "-A"}
+	if len(o.paths) > 0 {
+		addArgv = append(addArgv, "--")
+		addArgv = append(addArgv, o.paths...)
+	}
+	if _, err := render.RunCLI(ctx, "git", addArgv); err != nil {
 		return fmt.Errorf("ship: git add: %w", err)
 	}
 	var argv []string
@@ -190,6 +207,10 @@ func shipCommitGit(ctx context.Context, o shipOpts) error {
 		argv = []string{"commit", "--amend", "--no-edit"}
 	default:
 		argv = []string{"commit", "-m", o.message}
+	}
+	if len(o.paths) > 0 {
+		argv = append(argv, "--")
+		argv = append(argv, o.paths...)
 	}
 	if _, err := render.RunCLI(ctx, "git", argv); err != nil {
 		return fmt.Errorf("ship: git commit: %w", err)
@@ -224,33 +245,63 @@ func splitDescribe(out, sep string) (string, string, error) {
 	return parts[0], parts[1], nil
 }
 
-func shipPush(ctx context.Context, kind vcs.Kind, amend bool) (string, error) {
+func shipPush(ctx context.Context, kind vcs.Kind, o shipOpts) (string, error) {
 	switch kind {
 	case vcs.JJ:
-		return shipPushJJ(ctx)
+		return shipPushJJ(ctx, o)
 	case vcs.Git:
-		return shipPushGit(ctx, amend)
+		return shipPushGit(ctx, o.amend)
 	default:
 		return "", errors.New("ship: push: unsupported vcs")
 	}
 }
 
-func shipPushJJ(ctx context.Context) (string, error) {
-	names, err := jjBookmarkNames(ctx, jjNearestBookmarkRevset)
-	if err != nil {
-		return "", err
+func shipPushJJ(ctx context.Context, o shipOpts) (string, error) {
+	target := o.bookmark
+	if target == "" {
+		trunkNames, err := jjTrunkBookmarkNames(ctx)
+		if err != nil {
+			return "", err
+		}
+		if len(trunkNames) != 1 {
+			return "", fmt.Errorf("ship: cannot resolve the trunk bookmark from %q; pass --bookmark <name>", trunkNames)
+		}
+		trunk := trunkNames[0]
+
+		names, err := jjBookmarkNames(ctx, jjNearestBookmarkRevset)
+		if err != nil {
+			return "", err
+		}
+		switch len(names) {
+		case 0:
+			return "", fmt.Errorf("ship: no bookmark to advance (%s matched none)", jjNearestBookmarkRevset)
+		case 1:
+		default:
+			return "", fmt.Errorf("ship: multiple nearest bookmarks %q; pass --bookmark <name> to choose one", strings.Join(names, ", "))
+		}
+		if names[0] != trunk {
+			return "", fmt.Errorf("ship: nearest bookmark %q is not trunk %q — pass --bookmark %s to advance it deliberately", names[0], trunk, names[0])
+		}
+		target = names[0]
+	} else {
+		// jj treats a bare NAMES argument as a glob and no-ops with exit 0 on
+		// zero matches; resolve the exact name up front so a typo fails loudly.
+		names, err := jjBookmarkNames(ctx, fmt.Sprintf(`bookmarks(exact:%q)`, target))
+		if err != nil {
+			return "", err
+		}
+		if len(names) == 0 {
+			return "", fmt.Errorf("ship: bookmark %q not found", target)
+		}
 	}
-	if len(names) == 0 {
-		return "", fmt.Errorf("ship: no bookmark to advance (%s matched none)", jjNearestBookmarkRevset)
+
+	if _, err := render.RunCLI(ctx, "jj", []string{"bookmark", "move", "exact:" + target, "--to", "@-"}); err != nil {
+		return "", fmt.Errorf("ship: advance bookmark %q: %w", target, err)
 	}
-	branch := names[0]
-	if _, err := render.RunCLI(ctx, "jj", []string{"bookmark", "move", "--from", jjNearestBookmarkRevset, "--to", "@-"}); err != nil {
-		return "", fmt.Errorf("ship: advance bookmark %q: %w", branch, err)
-	}
-	if _, err := render.RunCLI(ctx, "jj", []string{"git", "push"}); err != nil {
+	if _, err := render.RunCLI(ctx, "jj", []string{"git", "push", "--bookmark", "exact:" + target}); err != nil {
 		return "", fmt.Errorf("ship: jj git push: %w", err)
 	}
-	return branch, nil
+	return target, nil
 }
 
 func shipPushGit(ctx context.Context, amend bool) (string, error) {
@@ -278,6 +329,22 @@ func jjBookmarkNames(ctx context.Context, rev string) ([]string, error) {
 		return nil, fmt.Errorf("ship: jj bookmarks at %q: %w", rev, err)
 	}
 	return strings.Fields(out), nil
+}
+
+func jjTrunkBookmarkNames(ctx context.Context) ([]string, error) {
+	out, err := render.RunCLI(ctx, "jj", []string{"log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate})
+	if err != nil {
+		return nil, fmt.Errorf("ship: jj trunk bookmark: %w", err)
+	}
+	var names []string
+	seen := map[string]bool{}
+	for _, name := range strings.Fields(out) {
+		if !seen[name] {
+			names = append(names, name)
+			seen[name] = true
+		}
+	}
+	return names, nil
 }
 
 // shipWatchCI watches every CI run on the pushed commit and builds a per-run

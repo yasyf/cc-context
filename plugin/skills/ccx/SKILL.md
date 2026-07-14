@@ -165,8 +165,12 @@ version — and the command exits 3 when nothing resolves.
 
 Commit, push, and watch CI in one call. `ship` runs a jj-aware commit (plain git
 otherwise), pushes, then watches every workflow run on the pushed commit — found via
-`gh run list --commit`, retrying registration for up to a minute. The first line is
-the summary; each watched run adds a `workflow · conclusion · duration · url` line,
+`gh run list --commit`, retrying registration for up to a minute. Trailing paths
+scope the commit to just those files; the rest of the working copy — a concurrent
+session's edits included — stays put. The push only auto-advances the trunk
+bookmark: parked on any other bookmark, ship refuses until `--bookmark <name>`
+names the target deliberately. The first line is the summary; each watched run adds
+a `workflow · conclusion · duration · url` line,
 and a red run adds its failing jobs and a budget-capped `--log-failed` excerpt with a
 `full log:` pointer. `CI failure` means a run went red; `CI error` means the watch
 itself failed after a successful push (the `check:` line says how to resume — don't
@@ -174,8 +178,10 @@ re-run ship, that cuts a new commit). On a terminal, progress streams live:
 
 ```
 ccx vcs ship -m "fix: budget overflow marker"   # commit + push + watch CI
+ccx vcs ship -m "fix: route" internal/cli xs.md  # scoped: commit only these paths
 ccx vcs ship -m "wip" --no-push                  # commit only, skip push and CI
 ccx vcs ship --amend                             # fold the working copy into the parent
+ccx vcs ship -m "spike" --bookmark me/probe      # advance a non-trunk bookmark
 ccx vcs ship -m "fix: x" --budget 0              # uncapped failure-log excerpt
 ```
 

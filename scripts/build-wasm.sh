@@ -5,8 +5,13 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
+# rustup's cargo honors format-core/rust-toolchain.toml; a Homebrew cargo
+# shadowing it on PATH ignores the pin and lacks the wasm32 std.
+cargo="cargo"
+[ -x "$HOME/.cargo/bin/cargo" ] && cargo="$HOME/.cargo/bin/cargo"
+
 artifact="$(
-	cargo build -p format-wasm --release --target wasm32-unknown-unknown \
+	"$cargo" build -p format-wasm --release --target wasm32-unknown-unknown \
 		--manifest-path "$root/format-core/Cargo.toml" --message-format=json |
 		grep -o '"[^"]*format_wasm\.wasm"' | tr -d '"' | head -n1
 )"
