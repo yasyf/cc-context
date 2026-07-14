@@ -166,8 +166,9 @@ Each command is a token-bounded stand-in for a primitive an agent would otherwis
 | Variable | Effect |
 | --- | --- |
 | `LOG_LEVEL` / `LOG_FORMAT` | `debug`, `info` (default), `warn`, or `error`, to stderr; set `LOG_FORMAT=json` for structured logs |
-| `CCX_EXEC_MCP` | set to `off` to disable MCP auto-reflection in `ccx exec` |
+| `CCX_EXEC_MCP` | `off` disables MCP auto-reflection in `ccx exec`; `refresh` forces a fresh `claude mcp list` probe, bypassing the 15-minute per-project inventory cache |
 | `CCX_EXEC_MCP_DENY` | comma-separated MCP server names to exclude from reflection; reflected servers run as fresh instances, so list any that need live session state |
 | `CCX_EXEC_MCP_ALLOW` | comma-separated MCP server names to reflect even when classified stateful |
+| `CCX_EXEC_MCP_TIMEOUT` | Go duration bounding the `claude mcp list` probe (default `30s`); a probe that fails past the cache TTL falls back to the last good inventory |
 
 Licensed under [PolyForm Noncommercial 1.0.0](LICENSE).

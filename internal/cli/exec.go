@@ -41,9 +41,13 @@ func newExecCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			inventories, err := codeexec.NewDiskInventoryStore()
+			if err != nil {
+				return err
+			}
 			p := proxy.New()
 			defer func() { _ = p.Close() }()
-			eng := codeexec.NewEngine(p, store)
+			eng := codeexec.NewEngine(p, store, codeexec.WithInventoryStore(inventories))
 			defer func() { _ = eng.Close() }()
 
 			var out string

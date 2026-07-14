@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -34,8 +36,28 @@ type Inventory struct {
 	Notes   []string
 }
 
-// discoverTimeout bounds the `claude mcp list` probe.
-const discoverTimeout = 10 * time.Second
+// discoverTimeout bounds the `claude mcp list` probe on a cold or expired
+// cache; CCX_EXEC_MCP_TIMEOUT overrides it. Paid at most once per TTL window.
+const discoverTimeout = 30 * time.Second
+
+// errBadTimeout marks an unparsable CCX_EXEC_MCP_TIMEOUT: a configuration error
+// the engine surfaces loudly, never degrades to a stale-fallback note.
+var errBadTimeout = errors.New("invalid CCX_EXEC_MCP_TIMEOUT")
+
+// probeTimeout is the deadline for one probe: CCX_EXEC_MCP_TIMEOUT (a
+// time.ParseDuration string) when set, else discoverTimeout. An unparsable
+// value wraps errBadTimeout so the engine fails fast rather than falling back.
+func probeTimeout() (time.Duration, error) {
+	raw := os.Getenv("CCX_EXEC_MCP_TIMEOUT")
+	if raw == "" {
+		return discoverTimeout, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%w %q: %w", errBadTimeout, raw, err)
+	}
+	return d, nil
+}
 
 // serverLine matches one `claude mcp list` health line: name, command-or-URL,
 // status. Names may contain colons (plugin:cc-review:cc-review) but never a
@@ -44,18 +66,28 @@ const discoverTimeout = 10 * time.Second
 var serverLine = regexp.MustCompile(`^(.+?): (.+?) - (.+)$`)
 
 // Discover shells out to `claude mcp list` and returns the connected servers
-// that survive the deterministic pre-filters. Reflection is best-effort: a
-// missing claude binary or a failed probe yields an empty Inventory with an
-// explanatory note, never an error.
+// that survive the deterministic pre-filters. A probe failure — missing binary,
+// timeout, or non-zero exit — returns an error, so the engine can tell it apart
+// from a probe that succeeded with zero servers.
 func Discover(ctx context.Context) (Inventory, error) {
 	if _, err := exec.LookPath("claude"); err != nil {
-		return Inventory{Notes: []string{"mcp reflection unavailable: claude not on PATH"}}, nil
+		return Inventory{}, errors.New("claude not on PATH")
 	}
-	ctx, cancel := context.WithTimeout(ctx, discoverTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "claude", "mcp", "list").Output()
+	timeout, err := probeTimeout()
 	if err != nil {
-		return Inventory{Notes: []string{fmt.Sprintf("mcp reflection unavailable: claude mcp list failed: %v", err)}}, nil
+		return Inventory{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "claude", "mcp", "list")
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 2 * time.Second
+	out, err := cmd.Output()
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return Inventory{}, fmt.Errorf("claude mcp list timed out after %s", timeout)
+		}
+		return Inventory{}, fmt.Errorf("claude mcp list failed: %w", err)
 	}
 	return inventoryOf(string(out)), nil
 }

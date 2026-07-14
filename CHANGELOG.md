@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `ccx exec` caches MCP discovery on disk per project for 15 minutes, so a warm cache spawns no `claude mcp list` probe; a script that references no reflected tool skips reflection entirely — no probe, no notes. Changing `CCX_EXEC_MCP_ALLOW`/`CCX_EXEC_MCP_DENY` invalidates the cache, `CCX_EXEC_MCP=refresh` forces a fresh probe, and `CCX_EXEC_MCP_TIMEOUT` (Go duration, default `30s`, up from 10s) bounds it — an invalid duration is a hard error.
+
+### Fixed
+- A discovery probe that fails past the cache TTL falls back to the last good inventory with a note, and a deadline kill reports `claude mcp list timed out after 30s` instead of the bare `signal: killed`.
+
 ## [0.14.0] - 2026-07-13
 
 ### Added

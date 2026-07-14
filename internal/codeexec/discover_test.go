@@ -2,7 +2,10 @@ package codeexec
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -140,15 +143,78 @@ func TestPrefixes(t *testing.T) {
 
 func TestDiscoverClaudeMissing(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
+	_, err := Discover(context.Background())
+	if err == nil {
+		t.Fatal("Discover with no claude = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "claude not on PATH") {
+		t.Errorf("error = %q, want 'claude not on PATH'", err)
+	}
+}
+
+// writeFakeClaude puts an executable `claude` on PATH running script, so
+// Discover shells out to it instead of the real binary.
+func writeFakeClaude(t *testing.T, script string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell script is POSIX-only")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "claude")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // fake binary must be owner-executable
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestDiscoverParsesOutput(t *testing.T) {
+	clearFilterEnv(t)
+	writeFakeClaude(t, "#!/bin/sh\necho 'fake: /bin/fake-mcp serve - ✔ Connected'\n")
 	inv, err := Discover(context.Background())
 	if err != nil {
-		t.Fatalf("Discover error: %v", err)
+		t.Fatalf("Discover: %v", err)
 	}
-	if len(inv.Servers) != 0 {
-		t.Errorf("Servers = %+v, want none", inv.Servers)
+	want := []ServerSpec{{Name: "fake", Command: "/bin/fake-mcp", Argv: []string{"serve"}, Prefix: "fake"}}
+	if !reflect.DeepEqual(inv.Servers, want) {
+		t.Errorf("Servers = %+v, want %+v", inv.Servers, want)
 	}
-	if !containsSub(inv.Notes, "claude not on PATH") {
-		t.Errorf("Notes = %q, missing PATH note", inv.Notes)
+}
+
+func TestDiscoverTimeout(t *testing.T) {
+	writeFakeClaude(t, "#!/bin/sh\nsleep 5\n")
+	t.Setenv("CCX_EXEC_MCP_TIMEOUT", "100ms")
+	_, err := Discover(context.Background())
+	if err == nil {
+		t.Fatal("Discover on slow claude = nil, want timeout")
+	}
+	if !strings.Contains(err.Error(), "timed out after 100ms") {
+		t.Errorf("error = %q, want 'timed out after 100ms'", err)
+	}
+}
+
+func TestDiscoverProbeFails(t *testing.T) {
+	writeFakeClaude(t, "#!/bin/sh\nexit 1\n")
+	_, err := Discover(context.Background())
+	if err == nil {
+		t.Fatal("Discover on failing claude = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "claude mcp list failed") {
+		t.Errorf("error = %q, want 'claude mcp list failed'", err)
+	}
+	if strings.Contains(err.Error(), "timed out") {
+		t.Errorf("error = %q, must not mention a timeout for a non-timeout failure", err)
+	}
+}
+
+func TestDiscoverBogusTimeout(t *testing.T) {
+	writeFakeClaude(t, "#!/bin/sh\necho hi\n")
+	t.Setenv("CCX_EXEC_MCP_TIMEOUT", "not-a-duration")
+	_, err := Discover(context.Background())
+	if err == nil {
+		t.Fatal("Discover with bogus CCX_EXEC_MCP_TIMEOUT = nil, want parse error")
+	}
+	if !strings.Contains(err.Error(), "CCX_EXEC_MCP_TIMEOUT") {
+		t.Errorf("error = %q, want a CCX_EXEC_MCP_TIMEOUT parse error", err)
 	}
 }
 

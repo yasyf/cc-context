@@ -275,6 +275,11 @@ caps the result size.
   for the sandbox, so a tool that needs live session state will misbehave — exclude it
   with `CCX_EXEC_MCP_DENY=<name>` (comma-separated; `CCX_EXEC_MCP_ALLOW` overrides the
   classifier the other way, and `CCX_EXEC_MCP=off` disables reflection entirely).
+- **Discovery is cached per project for 15 minutes.** A script that references no
+  reflected tool skips reflection entirely — no probe, no notes. Changing
+  `CCX_EXEC_MCP_ALLOW`/`CCX_EXEC_MCP_DENY` invalidates the cache; after adding an MCP
+  server, force a fresh probe with `CCX_EXEC_MCP=refresh`. `CCX_EXEC_MCP_TIMEOUT`
+  (Go duration, default `30s`) bounds the `claude mcp list` health check.
 
 ## Guarantees
 

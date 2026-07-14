@@ -195,7 +195,11 @@ func Serve(ctx context.Context) error {
 
 	var eng *codeexec.Engine
 	if codeexec.Supported() {
-		eng = codeexec.NewEngine(p, codeexec.NewMemoryStore())
+		inventories, err := codeexec.NewDiskInventoryStore()
+		if err != nil {
+			return err
+		}
+		eng = codeexec.NewEngine(p, codeexec.NewMemoryStore(), codeexec.WithInventoryStore(inventories))
 		defer func() { _ = eng.Close() }()
 	}
 

@@ -22,11 +22,11 @@ func TestReferenced(t *testing.T) {
 		{"identifier without call", `fake_echo`, nil},
 		{"longer identifier no match", `xfake_echo()`, nil},
 		{"nested in gather", `asyncio.gather(fake_echo(text="a"), other_tool())`, []string{"fake", "other"}},
-		{"string literal excluded", `await read("see fake_echo(x) for details")`, nil},
-		{"single-quoted literal excluded", `s = 'fake_echo(' + "other_tool("`, nil},
-		{"triple-quoted literal excluded", "doc = \"\"\"call fake_echo(x)\nthen other_tool()\"\"\"", nil},
-		{"comment excluded", "x = 1  # try fake_echo(x) here\nother_tool()", []string{"other"}},
-		{"call beside literal still counts", `fake_echo(text="other_tool(") `, []string{"fake"}},
+		{"string literal counts (fail-open)", `await read("see fake_echo(x) for details")`, []string{"fake"}},
+		{"single-quoted literal counts", `s = 'fake_echo(' + "other_tool("`, []string{"fake", "other"}},
+		{"triple-quoted literal counts", "doc = \"\"\"call fake_echo(x)\nthen other_tool()\"\"\"", []string{"fake", "other"}},
+		{"comment counts", "x = 1  # try fake_echo(x) here\nother_tool()", []string{"fake", "other"}},
+		{"call beside literal, both count", `fake_echo(text="other_tool(") `, []string{"fake", "other"}},
 		{"empty script", ``, nil},
 	}
 	for _, tt := range tests {
@@ -37,6 +37,34 @@ func TestReferenced(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("referenced(%q) = %v, want %v", tt.script, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReferencesMCP(t *testing.T) {
+	servers := []ServerSpec{{Name: "fake", Prefix: "fake"}, {Name: "other", Prefix: "other"}}
+	tests := []struct {
+		name    string
+		script  string
+		servers []ServerSpec
+		want    bool
+	}{
+		{"builtin only", `read("x") + len("y")`, servers, false},
+		{"direct call", `await fake_echo(text="x")`, servers, true},
+		{"aliased bare identifier", `f = fake_echo`, servers, true},
+		{"prefix in string literal counts (fail-open)", `s = "call fake_echo(x) then other_tool("`, servers, true},
+		{"prefix in comment counts", "x = 1  # try fake_echo(x) here", servers, true},
+		{"comment-paired quotes no longer swallow code", "# a '''\nfake_echo(text=\"x\")\n# b '''", servers, true},
+		{"f-string interpolation counts", `msg = f"{fake_echo(text='x')}"`, servers, true},
+		{"method access excluded", `obj.fake_echo(text="x")`, servers, false},
+		{"collision-suffix prefix", `foo_bar_2_run()`, []ServerSpec{{Name: "foo.bar", Prefix: "foo_bar_2"}}, true},
+		{"empty servers", `fake_echo()`, nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := referencesMCP(tt.script, tt.servers); got != tt.want {
+				t.Errorf("referencesMCP(%q) = %v, want %v", tt.script, got, tt.want)
 			}
 		})
 	}
