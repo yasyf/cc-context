@@ -112,6 +112,18 @@ func TestEmbedDriverPathVerifiesContent(t *testing.T) {
 	}
 }
 
+// hfRefusedDownload reports whether err is HF Hub refusing an unauthenticated
+// model download (401/429/CAS) — external infra the integration test skips on.
+func hfRefusedDownload(err error) bool {
+	msg := err.Error()
+	for _, sig := range []string{"401 Unauthorized", "429", "unauthenticated requests", "CAS Client Error"} {
+		if strings.Contains(msg, sig) {
+			return true
+		}
+	}
+	return false
+}
+
 // TestEmbedUVMissing proves the launch failure names uv and the pinned
 // requirement when uv is off PATH.
 func TestEmbedUVMissing(t *testing.T) {
@@ -149,6 +161,9 @@ func TestEmbedIntegration(t *testing.T) {
 	var e UVEmbedder
 	first, err := e.Embed(context.Background(), texts)
 	if err != nil {
+		if hfRefusedDownload(err) {
+			t.Skipf("HF Hub refused the unauthenticated model download (external infra): %v", err)
+		}
 		t.Fatalf("Embed error: %v", err)
 	}
 	if len(first) != len(texts) {
