@@ -69,7 +69,7 @@ func (rt *Runtime) Run(ctx context.Context, script string, budget int) (string, 
 	if err != nil {
 		return "", fmt.Errorf("codeexec: decode result value: %w", err)
 	}
-	return render.Cap(rendered(val, done.Stdout), budget), nil
+	return render.Cap(rendered(val, done.Stdout), budget), nil //nolint:contextcheck // format.Convert pins its own engine deadlines, deliberately decoupled from caller cancellation (see format.loadEngine)
 }
 
 // stubs renders one untyped async stub per host function; untyped so the

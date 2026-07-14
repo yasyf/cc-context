@@ -199,7 +199,7 @@ func callFormat(ctx context.Context, mod api.Module, req []byte) ([]byte, error)
 	if err != nil {
 		return nil, fmt.Errorf("wasm fc_alloc: %w", err)
 	}
-	ptr := uint32(alloc[0])
+	ptr := uint32(alloc[0]) //nolint:gosec // wasm32: fc_alloc returns a 32-bit pointer in the low half
 	if !mem.Write(ptr, req) {
 		return nil, fmt.Errorf("wasm memory write out of range at %d (%d bytes)", ptr, len(req))
 	}
@@ -208,7 +208,7 @@ func callFormat(ctx context.Context, mod api.Module, req []byte) ([]byte, error)
 	if err != nil {
 		return nil, fmt.Errorf("wasm fc_format: %w", err)
 	}
-	outPtr, outLen := uint32(packed[0]>>32), uint32(packed[0])
+	outPtr, outLen := uint32(packed[0]>>32), uint32(packed[0]) //nolint:gosec // wasm32: fc_format packs ptr and len into one uint64
 	out, ok := mem.Read(outPtr, outLen)
 	if !ok {
 		return nil, fmt.Errorf("wasm memory read out of range at %d (%d bytes)", outPtr, outLen)

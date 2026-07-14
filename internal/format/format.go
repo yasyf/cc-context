@@ -145,7 +145,7 @@ func Run(ctx context.Context, argv []string, opts Options, in io.Reader, errOut 
 
 	runErr := cmd.Run()
 
-	out, converted, cerr := Convert(stdout.Bytes(), opts)
+	out, converted, cerr := Convert(stdout.Bytes(), opts) //nolint:contextcheck // the engine pins its own init/call deadlines, deliberately decoupled from caller cancellation (see loadEngine)
 	if cerr != nil {
 		return "", false, 0, fmt.Errorf("convert stdout: %w", cerr)
 	}

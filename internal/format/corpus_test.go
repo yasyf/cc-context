@@ -121,7 +121,7 @@ func runCorpusVector(t *testing.T, file string, v corpusVector) outcome {
 	if isAutoVector(v) && v.ExpectedFormat != nil {
 		got, want := string(res.format), *v.ExpectedFormat
 		classifyOnly := v.ExpectedOutput == nil
-		if got != want && !(classifyOnly && got == string(FormatJSON)) {
+		if got != want && (!classifyOnly || got != string(FormatJSON)) {
 			t.Errorf("FAIL %s :: %s — chose %q, want %q", file, v.Name, got, want)
 			return outcomeFail
 		}
