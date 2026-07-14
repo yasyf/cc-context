@@ -7,12 +7,17 @@ import (
 	"github.com/yasyf/cc-context/internal/backend"
 )
 
-// RewriteArgs resolves any content anchor in a's op-relevant field to plain
-// line numbers before dispatch, so backends stay anchor-ignorant. It returns
-// the rewritten args plus a note when the anchored content moved. Ops without
-// an anchor-capable field pass through unchanged, and the numeric output never
-// re-parses as an anchor, so the rewrite is idempotent.
+// RewriteArgs validates read targets, then resolves any content anchor in a's
+// op-relevant field to plain line numbers before dispatch, so backends stay
+// anchor-ignorant. It returns the rewritten args plus a note when the anchored
+// content moved. Ops without an anchor-capable field pass through unchanged,
+// and the numeric output never re-parses as an anchor, so the rewrite is
+// idempotent.
 func RewriteArgs(op backend.Op, a backend.Args) (backend.Args, string, error) {
+	a, err := backend.ResolveReadPath(op, a)
+	if err != nil {
+		return a, "", err
+	}
 	switch op {
 	case backend.OpRead:
 		return rewriteRead(a)

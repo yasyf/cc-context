@@ -531,8 +531,12 @@ func TestReadToolResolvesAnchor(t *testing.T) {
 func TestReadToolRejectsMalformedAnchor(t *testing.T) {
 	fakeTilthOnPath(t)
 	cs := connectTestServer(t)
+	file := filepath.Join(t.TempDir(), "x.go")
+	if err := os.WriteFile(file, []byte("package x\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
 
-	out, isErr := callText(t, cs, "ccx_code_read", map[string]any{"path": "x.go", "section": "120#zz"})
+	out, isErr := callText(t, cs, "ccx_code_read", map[string]any{"path": file, "section": "120#zz"})
 	if !isErr {
 		t.Fatalf("malformed anchor should be a tool error, got: %s", out)
 	}

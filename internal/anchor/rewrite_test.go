@@ -23,6 +23,7 @@ func writeFixture(t *testing.T) string {
 
 func TestRewriteArgs(t *testing.T) {
 	path := writeFixture(t)
+	missing := filepath.Join(t.TempDir(), "missing.txt")
 	beta := anchor.Of("beta")
 	gamma := anchor.Of("gamma")
 
@@ -94,6 +95,18 @@ func TestRewriteArgs(t *testing.T) {
 			op:   backend.OpRead,
 			args: backend.Args{Path: path, Section: anchor.Format(2, beta), Full: true},
 			want: backend.Args{Path: path, Section: anchor.Format(2, beta), Full: true},
+		},
+		{
+			name:    "read missing full",
+			op:      backend.OpRead,
+			args:    backend.Args{Path: missing, Full: true},
+			wantErr: "path not found",
+		},
+		{
+			name:    "read missing numeric section",
+			op:      backend.OpRead,
+			args:    backend.Args{Path: missing, Section: "5-7"},
+			wantErr: "path not found",
 		},
 		{
 			name:    "read malformed anchor",
@@ -172,6 +185,24 @@ func TestRewriteArgs(t *testing.T) {
 				t.Errorf("RewriteArgs() note = %q, want %q", note, tt.wantNote)
 			}
 		})
+	}
+}
+
+func TestRewriteArgsTildeRead(t *testing.T) {
+	path := writeFixture(t)
+	t.Setenv("HOME", filepath.Dir(path))
+	args := backend.Args{Path: "~/f.txt", Section: anchor.Format(2, anchor.Of("beta"))}
+
+	got, note, err := anchor.RewriteArgs(backend.OpRead, args)
+	if err != nil {
+		t.Fatalf("RewriteArgs() error = %v", err)
+	}
+	want := backend.Args{Path: path, Section: "2-2"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("RewriteArgs() args = %+v, want %+v", got, want)
+	}
+	if note != "" {
+		t.Errorf("RewriteArgs() note = %q, want empty", note)
 	}
 }
 

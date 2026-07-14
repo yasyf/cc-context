@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/backend"
 )
 
 func TestExitCode(t *testing.T) {
@@ -19,6 +21,8 @@ func TestExitCode(t *testing.T) {
 		{"wrapped exit error", fmt.Errorf("ran: %w", &ExitError{Code: 7}), 7},
 		{"not found", ErrNotFound, 3},
 		{"wrapped not found", fmt.Errorf("locate %q: %w", "nope", ErrNotFound), 3},
+		{"path not found", backend.ErrPathNotFound, 3},
+		{"wrapped path not found", fmt.Errorf("read: %w", backend.ErrPathNotFound), 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

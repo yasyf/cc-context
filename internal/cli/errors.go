@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strconv"
 
+	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/web"
 )
 
@@ -19,8 +20,8 @@ type ExitError struct{ Code int }
 func (e *ExitError) Error() string { return "exit code " + strconv.Itoa(e.Code) }
 
 // ExitCode maps err to a process exit code: 0 for nil, an *ExitError's Code, 3
-// for a wrapped ErrNotFound or web.ErrGone (both the not-found category), and 1
-// for anything else.
+// for a wrapped ErrNotFound, backend.ErrPathNotFound, or web.ErrGone (the
+// not-found category), and 1 for anything else.
 func ExitCode(err error) int {
 	if err == nil {
 		return 0
@@ -29,7 +30,7 @@ func ExitCode(err error) int {
 	if errors.As(err, &ee) {
 		return ee.Code
 	}
-	if errors.Is(err, ErrNotFound) || errors.Is(err, web.ErrGone) {
+	if errors.Is(err, ErrNotFound) || errors.Is(err, backend.ErrPathNotFound) || errors.Is(err, web.ErrGone) {
 		return 3
 	}
 	return 1
