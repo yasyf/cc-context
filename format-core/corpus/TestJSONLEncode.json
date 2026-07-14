@@ -1,0 +1,100 @@
+[
+  {
+    "name": "mixed shapes",
+    "input": "[{\"a\":1,\"b\":[true,null]},\"txt\",42,[1,{\"k\":\"v\"}]]",
+    "opts": {
+      "format": "jsonl",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "{\"a\":1,\"b\":[true,null]}\n\"txt\"\n42\n[1,{\"k\":\"v\"}]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "uniform objects",
+    "input": "[{\"id\":1,\"name\":\"a\"},{\"id\":2,\"name\":\"b\"},{\"id\":3,\"name\":\"c\"}]",
+    "opts": {
+      "format": "jsonl",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "{\"id\":1,\"name\":\"a\"}\n{\"id\":2,\"name\":\"b\"}\n{\"id\":3,\"name\":\"c\"}",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "scalars and null",
+    "input": "[1,\"two\",true,null,3.5]",
+    "opts": {
+      "format": "jsonl",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "1\n\"two\"\ntrue\nnull\n3.5",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "big integers digit-exact",
+    "input": "[123456789012345678901234567890,9223372036854775808,18014398509481985]",
+    "opts": {
+      "format": "jsonl",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "123456789012345678901234567890\n9223372036854775808\n18014398509481985",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "no html escaping",
+    "input": "[\"\u003ca href=\\\"x\\\"\u003e\u0026\u003c/a\u003e\",{\"q\":\"a\u003cb\u003ec\u0026d\"}]",
+    "opts": {
+      "format": "jsonl",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "\"\u003ca href=\\\"x\\\"\u003e\u0026\u003c/a\u003e\"\n{\"q\":\"a\u003cb\u003ec\u0026d\"}",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "embedded newline stays escaped",
+    "input": "[\"line1\\nline2\",\"solo\"]",
+    "opts": {
+      "format": "jsonl",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "\"line1\\nline2\"\n\"solo\"",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "empty array",
+    "input": "[]",
+    "opts": {
+      "format": "jsonl",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "",
+    "expect_error": false,
+    "expect_passthrough": false
+  }
+]

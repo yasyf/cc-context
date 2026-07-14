@@ -1,0 +1,30 @@
+[
+  {
+    "name": "duplicate-key rows stay JSON",
+    "input": "[{\"a\":1,\"a\":101},{\"a\":2,\"a\":102}]",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "[{\"a\":1,\"a\":101},{\"a\":2,\"a\":102}]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "duplicate-key row rides alongside a minted class",
+    "input": "[{\"x\":1,\"y\":2},{\"x\":3,\"y\":4},{\"a\":5,\"a\":6}]",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "class A: x,y\n\n[A(1,2),A(3,4),{\"a\":5,\"a\":6}]",
+    "expect_error": false,
+    "expect_passthrough": false
+  }
+]

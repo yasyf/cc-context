@@ -1,0 +1,520 @@
+[
+  {
+    "name": "tabular uniform array source-order columns",
+    "input": "[{\"id\":1,\"name\":\"Ada\"},{\"id\":2,\"name\":\"Lin\"}]",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "[2]{id,name}:\n  1,Ada\n  2,Lin",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "key order preserved with non-alphabetical keys",
+    "input": "{\"zeta\":1,\"alpha\":2}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "zeta: 1\nalpha: 2",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "tabular columns keep non-alphabetical source order",
+    "input": "[{\"zeta\":1,\"alpha\":2},{\"zeta\":3,\"alpha\":4}]",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "[2]{zeta,alpha}:\n  1,2\n  3,4",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "auto floors small table to compact JSON",
+    "input": "[{\"id\":1,\"name\":\"Ada\"},{\"id\":2,\"name\":\"Lin\"}]",
+    "opts": {
+      "format": null,
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "[{\"id\":1,\"name\":\"Ada\"},{\"id\":2,\"name\":\"Lin\"}]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "auto floors deep nesting to compact JSON",
+    "input": "{\"aaa\":{\"bbb\":{\"ccc\":{\"ddd\":{\"eee\":1}}}}}",
+    "opts": {
+      "format": null,
+      "indent": 4,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "{\"aaa\":{\"bbb\":{\"ccc\":{\"ddd\":{\"eee\":1}}}}}",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "FormatTOON always emits TOON even when larger",
+    "input": "{\"aaa\":{\"bbb\":{\"ccc\":{\"ddd\":{\"eee\":1}}}}}",
+    "opts": {
+      "format": "toon",
+      "indent": 4,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "aaa:\n    bbb:\n        ccc:\n            ddd:\n                eee: 1",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "FormatJSON always emits compact JSON even when larger",
+    "input": "[{\"id\":1,\"name\":\"Ada\"},{\"id\":2,\"name\":\"Lin\"}]",
+    "opts": {
+      "format": "json",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "[{\"id\":1,\"name\":\"Ada\"},{\"id\":2,\"name\":\"Lin\"}]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "compact JSON does not HTML-escape",
+    "input": "{\"html\":\"\u003cb\u003e\u0026amp;\u003c/b\u003e \u003e \u003c\"}",
+    "opts": {
+      "format": "json",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "{\"html\":\"\u003cb\u003e\u0026amp;\u003c/b\u003e \u003e \u003c\"}",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "auto compact JSON keeps angle brackets raw",
+    "input": "{\"aaa\":{\"bbb\":{\"ccc\":{\"ddd\":{\"eee\":\"\u003c\u0026\u003e\"}}}}}",
+    "opts": {
+      "format": null,
+      "indent": 4,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "{\"aaa\":{\"bbb\":{\"ccc\":{\"ddd\":{\"eee\":\"\u003c\u0026\u003e\"}}}}}",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "compact JSON preserves big integer digits",
+    "input": "{\"n\":123456789012345678901}",
+    "opts": {
+      "format": "json",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "{\"n\":123456789012345678901}",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "ndjson folds into single table",
+    "input": "{\"a\":1,\"b\":2}\n{\"a\":3,\"b\":4}\n",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "[2]{a,b}:\n  1,2\n  3,4",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "lone top-level array stays an array",
+    "input": "[1,2,3]",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "[3]: 1,2,3",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "single object",
+    "input": "{\"a\":1}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "a: 1",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "tab delimiter",
+    "input": "[{\"a\":1,\"b\":2},{\"a\":3,\"b\":4}]",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": "\t",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "[2\t]{a\tb}:\n  1\t2\n  3\t4",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "pipe delimiter",
+    "input": "[{\"a\":1,\"b\":2},{\"a\":3,\"b\":4}]",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": "|",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "[2|]{a|b}:\n  1|2\n  3|4",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "indent 4",
+    "input": "{\"a\":{\"b\":1}}",
+    "opts": {
+      "format": "toon",
+      "indent": 4,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "a:\n    b: 1",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "null scalar",
+    "input": "{\"a\":null}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "a: null",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "empty array",
+    "input": "[]",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "[0]:",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "empty object",
+    "input": "{}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "nested object",
+    "input": "{\"outer\":{\"inner\":{\"leaf\":7}}}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "outer:\n  inner:\n    leaf: 7",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "numeric-like string is quoted",
+    "input": "{\"a\":\"42\"}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "a: \"42\"",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "bool-like string is quoted",
+    "input": "{\"a\":\"true\"}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "a: \"true\"",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "leading-dash string is quoted",
+    "input": "{\"a\":\"-x\"}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "a: \"-x\"",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "plain string is unquoted",
+    "input": "{\"a\":\"hello\"}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "a: hello",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "large safe integer preserved unquoted",
+    "input": "{\"n\":9007199254740991}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "n: 9007199254740991",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "big integer past safe range preserved as quoted string",
+    "input": "{\"n\":123456789012345678}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "n: \"123456789012345678\"",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "big.Int-width integer preserved as quoted string",
+    "input": "{\"n\":12345678901234567890123456789}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "n: \"12345678901234567890123456789\"",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "negative zero canonicalized",
+    "input": "{\"n\":-0}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "n: 0",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "exponent notation canonicalized when value-exact",
+    "input": "{\"n\":1E2}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "n: 100",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "exponent notation canonicalized when rendering is value-preserving",
+    "input": "{\"n\":2.5e-3}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "n: 0.0025",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "small exponent canonicalized to plain decimal",
+    "input": "{\"n\":1e-7}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "n: 0.0000001",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "compact JSON keeps negative zero and exponent verbatim",
+    "input": "{\"a\":-0,\"b\":1E2}",
+    "opts": {
+      "format": "json",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "{\"a\":-0,\"b\":1E2}",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "float preserved",
+    "input": "{\"n\":1.5}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "n: 1.5",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "integer stays integer not float",
+    "input": "{\"n\":1}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "n: 1",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "non-json passthrough verbatim",
+    "input": "hello not json\n",
+    "opts": {
+      "format": null,
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "hello not json\n",
+    "expect_error": false,
+    "expect_passthrough": true
+  },
+  {
+    "name": "empty input passthrough",
+    "input": "",
+    "opts": {
+      "format": null,
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "",
+    "expect_error": false,
+    "expect_passthrough": true
+  },
+  {
+    "name": "whitespace-only input passthrough",
+    "input": "   \n  ",
+    "opts": {
+      "format": null,
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "   \n  ",
+    "expect_error": false,
+    "expect_passthrough": true
+  }
+]

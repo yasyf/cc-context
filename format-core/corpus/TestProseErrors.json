@@ -1,0 +1,30 @@
+[
+  {
+    "name": "object with no multi-word string field",
+    "input": "{\"a\":\"single-token\",\"b\":42}",
+    "opts": {
+      "format": "prose",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": true,
+    "expect_passthrough": false
+  },
+  {
+    "name": "object with only non-string fields",
+    "input": "{\"n\":1,\"ok\":true}",
+    "opts": {
+      "format": "prose",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": true,
+    "expect_passthrough": false
+  }
+]

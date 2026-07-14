@@ -1,0 +1,27 @@
+[package]
+name = "format-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Canonical shape-classifying JSON re-encoder: TOON, JSONL, compact JSON, and the encoder contract for prose/markdown/CSV/TSV/TRON"
+
+[lib]
+name = "format_core"
+
+[dependencies]
+# serde is trait-only (no std features needed): it exists solely to feed
+# toon-format's Serialize entry point. The IR/decoder path has zero deps.
+serde = { version = "1", default-features = false }
+toon-format = { version = "0.5", default-features = false }
+# Pure bignum crates backing the TOON number-safety guard's exact rational
+# comparison.
+num-bigint = { version = "0.4", default-features = false }
+num-rational = { version = "0.4", default-features = false, features = ["num-bigint"] }
+
+[dev-dependencies]
+# Differential-fuzz oracle and corpus-vector parsing only. dev-deps do not
+# leak features to dependents — that is why runtime serde_json is banned here.
+# float_roundtrip: without it the oracle's own float parse is 1-ulp lossy.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+serde = { version = "1", features = ["derive"] }
+proptest = "1"

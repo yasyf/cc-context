@@ -1,0 +1,72 @@
+[
+  {
+    "name": "uniform array",
+    "input": "[{\"id\":1,\"name\":\"Ada\"},{\"id\":2,\"name\":\"Lin\"}]",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "nested object",
+    "input": "{\"outer\":{\"inner\":{\"leaf\":7}}}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "non-alphabetical keys",
+    "input": "{\"zeta\":1,\"alpha\":2}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "mixed scalars",
+    "input": "{\"s\":\"x\",\"b\":true,\"n\":null,\"f\":1.5}",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "lone array",
+    "input": "[1,2,3]",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": false,
+    "expect_passthrough": false
+  }
+]

@@ -1,0 +1,58 @@
+[
+  {
+    "name": "comma keys one occurrence each mints nothing",
+    "input": "[{\"a,b\":1,\"c\":2},{\"a\":1,\"b,c\":2}]",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "[{\"a,b\":1,\"c\":2},{\"a\":1,\"b,c\":2}]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "comma keys two occurrences each mint distinct classes",
+    "input": "[{\"a,b\":1,\"c\":2},{\"a,b\":3,\"c\":4},{\"a\":5,\"b,c\":6},{\"a\":7,\"b,c\":8}]",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "class A: \"a,b\",c\nclass B: a,\"b,c\"\n\n[A(1,2),A(3,4),B(5,6),B(7,8)]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "nul keys two occurrences each mint distinct classes",
+    "input": "[{\"a\\u0000b\":1,\"c\":2},{\"a\\u0000b\":3,\"c\":4},{\"a\":5,\"b\\u0000c\":6},{\"a\":7,\"b\\u0000c\":8}]",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "class A: \"a\\u0000b\",c\nclass B: a,\"b\\u0000c\"\n\n[A(1,2),A(3,4),B(5,6),B(7,8)]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "nul key single occurrence stays JSON",
+    "input": "[{\"a\\u0000b\":1,\"c\":2},{\"a\\u0000b\":3,\"c\":4},{\"a\":5,\"b\\u0000c\":6}]",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "class A: \"a\\u0000b\",c\n\n[A(1,2),A(3,4),{\"a\":5,\"b\\u0000c\":6}]",
+    "expect_error": false,
+    "expect_passthrough": false
+  }
+]

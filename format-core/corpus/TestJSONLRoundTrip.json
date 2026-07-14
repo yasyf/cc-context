@@ -1,0 +1,58 @@
+[
+  {
+    "name": "mixed",
+    "input": "[{\"a\":1,\"b\":[true,null]},\"txt\",42,[1,{\"k\":\"v\"}]]",
+    "opts": {
+      "format": "jsonl",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "uniform",
+    "input": "[{\"id\":1},{\"id\":2},{\"id\":3}]",
+    "opts": {
+      "format": "jsonl",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "bigints",
+    "input": "[123456789012345678901234567890,9223372036854775808]",
+    "opts": {
+      "format": "jsonl",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "scalars",
+    "input": "[1,\"two\",true,null,3.5]",
+    "opts": {
+      "format": "jsonl",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": false,
+    "expect_passthrough": false
+  }
+]

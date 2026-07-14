@@ -1,0 +1,30 @@
+[
+  {
+    "name": "",
+    "input": "{\"a\":1}",
+    "opts": {
+      "format": "",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": true,
+    "expect_passthrough": false
+  },
+  {
+    "name": "bogus",
+    "input": "{\"a\":1}",
+    "opts": {
+      "format": "bogus",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": true,
+    "expect_passthrough": false
+  }
+]

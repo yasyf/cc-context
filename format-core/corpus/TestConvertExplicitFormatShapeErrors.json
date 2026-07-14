@@ -1,0 +1,100 @@
+[
+  {
+    "name": "csv on object",
+    "input": "{\"a\":1}",
+    "opts": {
+      "format": "csv",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": true,
+    "expect_passthrough": false
+  },
+  {
+    "name": "tsv on object",
+    "input": "{\"a\":1}",
+    "opts": {
+      "format": "tsv",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": true,
+    "expect_passthrough": false
+  },
+  {
+    "name": "markdown on object",
+    "input": "{\"a\":1}",
+    "opts": {
+      "format": "markdown",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": true,
+    "expect_passthrough": false
+  },
+  {
+    "name": "jsonl on object",
+    "input": "{\"a\":1}",
+    "opts": {
+      "format": "jsonl",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": true,
+    "expect_passthrough": false
+  },
+  {
+    "name": "prose on array",
+    "input": "[1,2]",
+    "opts": {
+      "format": "prose",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": true,
+    "expect_passthrough": false
+  },
+  {
+    "name": "toon on excess-precision decimal",
+    "input": "[{\"a\":3.14159265358979323846264338}]",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": true,
+    "expect_passthrough": false
+  },
+  {
+    "name": "toon on out-of-range exponent",
+    "input": "[{\"a\":1e999}]",
+    "opts": {
+      "format": "toon",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": null,
+    "expect_error": true,
+    "expect_passthrough": false
+  }
+]

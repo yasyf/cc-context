@@ -1,0 +1,338 @@
+[
+  {
+    "name": "integer",
+    "input": "123",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "123",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "string",
+    "input": "\"hello\"",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "\"hello\"",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "true",
+    "input": "true",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "true",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "false",
+    "input": "false",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "false",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "null",
+    "input": "null",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "null",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "int array",
+    "input": "[1,2,3]",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "[1,2,3]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "string array",
+    "input": "[\"a\",\"b\"]",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "[\"a\",\"b\"]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "empty object",
+    "input": "{}",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "{}",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "class reuse",
+    "input": "[{\"x\":1,\"y\":2,\"z\":3},{\"x\":3,\"y\":4,\"z\":5}]",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "class A: x,y,z\n\n[A(1,2,3),A(3,4,5)]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "ndjson stream folds to array",
+    "input": "{\"x\":1,\"y\":2}\n{\"x\":3,\"y\":4}",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "class A: x,y\n\n[A(1,2),A(3,4)]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "instance values reordered to declaration order",
+    "input": "{\"a\":{\"x\":1,\"y\":2,\"z\":3},\"b\":{\"y\":4,\"x\":3,\"z\":5},\"c\":{\"x\":2,\"y\":4,\"z\":6}}",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "class A: x,y,z\n\n{\"a\":A(1,2,3),\"b\":A(3,4,5),\"c\":A(2,4,6)}",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "non-identifier declaration keys quoted",
+    "input": "[{\"1a\":1,\"a1\":2,\"valid_name\":3,\"foo-bar\":4},{\"1a\":1,\"a1\":2,\"valid_name\":3,\"foo-bar\":4}]",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "class A: \"1a\",a1,valid_name,\"foo-bar\"\n\n[A(1,2,3,4),A(1,2,3,4)]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "single occurrence stays JSON",
+    "input": "{\"x\":1,\"y\":2,\"z\":3}",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "{\"x\":1,\"y\":2,\"z\":3}",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "single property stays JSON despite repeats",
+    "input": "[{\"x\":1},{\"x\":2},{\"x\":3}]",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "[{\"x\":1},{\"x\":2},{\"x\":3}]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "two properties twice mints a class",
+    "input": "[{\"x\":1,\"y\":2},{\"x\":3,\"y\":4}]",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "class A: x,y\n\n[A(1,2),A(3,4)]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "mixed qualifying and non-qualifying shapes",
+    "input": "{\"single\":{\"a\":1},\"oneTwice\":[{\"b\":2},{\"b\":3}],\"twoTwice\":[{\"d\":4,\"e\":5},{\"d\":6,\"e\":7}],\"threeOnce\":{\"f\":8,\"g\":9,\"h\":10}}",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "class A: d,e\n\n{\"single\":{\"a\":1},\"oneTwice\":[{\"b\":2},{\"b\":3}],\"twoTwice\":[A(4,5),A(6,7)],\"threeOnce\":{\"f\":8,\"g\":9,\"h\":10}}",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "nested classes in DFS pre-order",
+    "input": "[{\"p\":{\"m\":1,\"n\":2},\"q\":3},{\"p\":{\"m\":4,\"n\":5},\"q\":6}]",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "class A: p,q\nclass B: m,n\n\n[A(B(1,2),3),A(B(4,5),6)]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "names assigned by discovery order not qualification order",
+    "input": "[{\"x\":1,\"y\":2},{\"m\":1,\"n\":2},{\"m\":3,\"n\":4},{\"x\":3,\"y\":4}]",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "class A: x,y\nclass B: m,n\n\n[A(1,2),B(1,2),B(3,4),A(3,4)]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "roundtrip users and meta",
+    "input": "{\"users\":[{\"id\":1,\"name\":\"Alice\",\"active\":true},{\"id\":2,\"name\":\"Bob\",\"active\":false}],\"meta\":{\"page\":1,\"total\":2}}",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "class A: id,name,active\n\n{\"users\":[A(1,\"Alice\",true),A(2,\"Bob\",false)],\"meta\":{\"page\":1,\"total\":2}}",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "strings JSON-escaped without HTML escaping",
+    "input": "{\"s\":\"\u003ca\u003e\u0026\\n\\\"q\\\"\\t\\\\\"}",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "{\"s\":\"\u003ca\u003e\u0026\\n\\\"q\\\"\\t\\\\\"}",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "empty objects never fingerprinted",
+    "input": "{\"a\":{},\"b\":{}}",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "{\"a\":{},\"b\":{}}",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "null instance values",
+    "input": "[{\"x\":null,\"y\":1},{\"x\":2,\"y\":null}]",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "class A: x,y\n\n[A(null,1),A(2,null)]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "big integer digit-exact",
+    "input": "[{\"id\":123456789012345678901,\"v\":1},{\"id\":2,\"v\":3}]",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "class A: id,v\n\n[A(123456789012345678901,1),A(2,3)]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "decimal passthrough verbatim",
+    "input": "[{\"a\":1.5,\"b\":2.25},{\"a\":0.1,\"b\":53.0}]",
+    "opts": {
+      "format": "tron",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "class A: a,b\n\n[A(1.5,2.25),A(0.1,53.0)]",
+    "expect_error": false,
+    "expect_passthrough": false
+  }
+]

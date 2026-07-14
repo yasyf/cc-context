@@ -1,0 +1,86 @@
+[
+  {
+    "name": "csv",
+    "input": "[{\"a\":1,\"b\":\"x\"},{\"a\":2,\"b\":\"y\"}]",
+    "opts": {
+      "format": "csv",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "a,b\n1,x\n2,y",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "tsv",
+    "input": "[{\"a\":1,\"b\":\"x\"},{\"a\":2,\"b\":\"y\"}]",
+    "opts": {
+      "format": "tsv",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "a\tb\n1\tx\n2\ty",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "markdown",
+    "input": "[{\"a\":1,\"b\":\"x\"},{\"a\":2,\"b\":\"y\"}]",
+    "opts": {
+      "format": "markdown",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "|a|b|\n|---|---|\n|1|x|\n|2|y|",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "jsonl",
+    "input": "[{\"a\":1,\"b\":\"x\"},{\"a\":2,\"b\":\"y\"}]",
+    "opts": {
+      "format": "jsonl",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "{\"a\":1,\"b\":\"x\"}\n{\"a\":2,\"b\":\"y\"}",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "tron mints even when larger",
+    "input": "[{\"a\":1,\"b\":\"x\"},{\"a\":2,\"b\":\"y\"}]",
+    "opts": {
+      "format": "tron",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "class A: a,b\n\n[A(1,\"x\"),A(2,\"y\")]",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "prose",
+    "input": "{\"id\":7,\"body\":\"two words\"}",
+    "opts": {
+      "format": "prose",
+      "indent": 2,
+      "delimiter": ",",
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "\u003cid\u003e7\u003c/id\u003e\n\ntwo words",
+    "expect_error": false,
+    "expect_passthrough": false
+  }
+]

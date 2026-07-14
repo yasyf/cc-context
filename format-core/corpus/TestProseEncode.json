@@ -1,0 +1,128 @@
+[
+  {
+    "name": "bare string with escaped newlines comes out raw",
+    "input": "\"# Title\\n\\nFirst paragraph with several words.\\nSecond line, still prose.\"",
+    "opts": {
+      "format": "prose",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "# Title\n\nFirst paragraph with several words.\nSecond line, still prose.",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "github issue metadata tags then body",
+    "input": "{\"title\":\"Panic when config missing\",\"number\":1347,\"state\":\"open\",\"locked\":false,\"assignee\":null,\"labels\":[\"bug\",\"p1\"],\"body\":\"Running ccx with no config panics.\\n\\nSteps to reproduce:\\n1. rm ~/.ccx.toml\\n2. ccx repo overview\\n\\nExpected an error, got a panic.\"}",
+    "opts": {
+      "format": "prose",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "\u003ctitle\u003ePanic when config missing\u003c/title\u003e\n\u003cnumber\u003e1347\u003c/number\u003e\n\u003cstate\u003eopen\u003c/state\u003e\n\u003clocked\u003efalse\u003c/locked\u003e\n\u003cassignee\u003enull\u003c/assignee\u003e\n\u003clabels\u003e[\"bug\",\"p1\"]\u003c/labels\u003e\n\nRunning ccx with no config panics.\n\nSteps to reproduce:\n1. rm ~/.ccx.toml\n2. ccx repo overview\n\nExpected an error, got a panic.",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "nested object residual as compact JSON in its tag",
+    "input": "{\"user\":{\"login\":\"yasyf\",\"id\":9223372036854775807},\"body\":\"A multi word prose body that dominates this payload.\"}",
+    "opts": {
+      "format": "prose",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "\u003cuser\u003e{\"login\":\"yasyf\",\"id\":9223372036854775807}\u003c/user\u003e\n\nA multi word prose body that dominates this payload.",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "bigint metadata field digit-exact",
+    "input": "{\"id\":98765432109876543210987654321098765432,\"body\":\"big integers ride along untouched in their tag\"}",
+    "opts": {
+      "format": "prose",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "\u003cid\u003e98765432109876543210987654321098765432\u003c/id\u003e\n\nbig integers ride along untouched in their tag",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "angle brackets in prose body pass through raw",
+    "input": "{\"note\":\"see below\",\"body\":\"Render \u003cb\u003ebold\u003c/b\u003e \u0026 \u003ci\u003eitalic\u003c/i\u003e — raw angle brackets and ampersands survive unescaped.\"}",
+    "opts": {
+      "format": "prose",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "\u003cnote\u003esee below\u003c/note\u003e\n\nRender \u003cb\u003ebold\u003c/b\u003e \u0026 \u003ci\u003eitalic\u003c/i\u003e — raw angle brackets and ampersands survive unescaped.",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "largest multi-word string wins over single-token blob",
+    "input": "{\"blob\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"summary\":\"a short multi word summary is still the only prose candidate\"}",
+    "opts": {
+      "format": "prose",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "\u003cblob\u003eAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\u003c/blob\u003e\n\na short multi word summary is still the only prose candidate",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "smaller prose field rides along as a tag",
+    "input": "{\"tldr\":\"short prose here\",\"body\":\"the substantially longer prose body wins the dominance contest outright\"}",
+    "opts": {
+      "format": "prose",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "\u003ctldr\u003eshort prose here\u003c/tldr\u003e\n\nthe substantially longer prose body wins the dominance contest outright",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "string metadata with newline stays raw inside its tag",
+    "input": "{\"sig\":\"line one\\nline two\",\"body\":\"the actual prose body is comfortably larger than the signature\"}",
+    "opts": {
+      "format": "prose",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "\u003csig\u003eline one\nline two\u003c/sig\u003e\n\nthe actual prose body is comfortably larger than the signature",
+    "expect_error": false,
+    "expect_passthrough": false
+  },
+  {
+    "name": "only-prose object emits body alone with no blank line",
+    "input": "{\"body\":\"just the prose body and nothing else at all\"}",
+    "opts": {
+      "format": "prose",
+      "indent": null,
+      "delimiter": null,
+      "strict": null
+    },
+    "expected_format": null,
+    "expected_output": "just the prose body and nothing else at all",
+    "expect_error": false,
+    "expect_passthrough": false
+  }
+]
