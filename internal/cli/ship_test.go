@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -34,7 +35,9 @@ func writeShipFakes(t *testing.T, dir string, withGh bool) {
   *remote_bookmarks*) printf '%s' "${JJ_TRUNK_NAMES-main main}" ;;
   *"bookmarks(exact"*) printf '%s' "${JJ_EXACT_BOOKMARK-found}" ;;
   *local_bookmarks*) if [ -z "$JJ_NO_BOOKMARK" ]; then printf '%s' "${JJ_BOOKMARK_NAMES:-main}"; fi ;;
-  *commit_id*) printf '%s' '` + fakeHeadSHA + `' ;;
+  *commit_id*)
+    if [ -n "$JJ_COMMIT_ID_FAIL" ]; then printf 'jj: commit id unavailable\n' >&2; exit 1; fi
+    printf '%s' '` + fakeHeadSHA + `' ;;
 esac
 exit 0
 `
@@ -52,8 +55,13 @@ exit 0
       : > "$GH_LIST_FAIL_MARKER"; printf 'gh: transient tls timeout\n' >&2; exit 1
     fi
     if [ -n "$GH_LIST_SETTLE_MARKER" ]; then
-      if [ -s "$GH_LIST_SETTLE_MARKER" ]; then printf '%s' "$GH_RUN_LIST_JSON_2"
-      else printf 'x' > "$GH_LIST_SETTLE_MARKER"; printf '%s' "$GH_RUN_LIST_JSON"; fi
+      count=0
+      if [ -r "$GH_LIST_SETTLE_MARKER" ]; then IFS= read -r count < "$GH_LIST_SETTLE_MARKER" || :; fi
+      count=${count:-0}
+      count=$((count + 1))
+      printf '%s' "$count" > "$GH_LIST_SETTLE_MARKER"
+      if [ "$count" -le "${GH_LIST_SETTLE_AFTER:-1}" ]; then printf '%s' "$GH_RUN_LIST_JSON"
+      else printf '%s' "$GH_RUN_LIST_JSON_2"; fi
     else
       printf '%s' "$GH_RUN_LIST_JSON"
     fi ;;
@@ -198,10 +206,11 @@ func TestShipCommitPushWatch(t *testing.T) {
 				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
 				{"jj", "git", "push", "--bookmark", "exact:main"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id"},
-				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "10", "--json", "databaseId,workflowName,status,url"},
+				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
 				{"gh", "run", "watch", "42", "--exit-status"},
 				{"gh", "run", "view", "42", "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"},
-				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "10", "--json", "databaseId,workflowName,status,url"},
+				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
+				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
 			},
 			summary: `committed a1b2c3d "fix: frobnicate" · pushed main → origin · CI success`,
 		},
@@ -216,10 +225,11 @@ func TestShipCommitPushWatch(t *testing.T) {
 				{"git", "branch", "--show-current"},
 				{"git", "push"},
 				{"git", "rev-parse", "HEAD"},
-				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "10", "--json", "databaseId,workflowName,status,url"},
+				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
 				{"gh", "run", "watch", "42", "--exit-status"},
 				{"gh", "run", "view", "42", "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"},
-				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "10", "--json", "databaseId,workflowName,status,url"},
+				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
+				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
 			},
 			summary: `committed a1b2c3d "fix: frobnicate" · pushed main → origin · CI success`,
 		},
@@ -495,6 +505,57 @@ func TestShipCIStates(t *testing.T) {
 				t.Errorf("gh run watch invoked = %v, want %v", watched, tt.wantWatch)
 			}
 		})
+	}
+}
+
+func TestShipCINoRunWithWorkflowIsUnconfirmed(t *testing.T) {
+	setupShip(t, ".jj", true)
+	workflowDir := filepath.Join(".github", "workflows")
+	if err := os.MkdirAll(workflowDir, 0o750); err != nil {
+		t.Fatalf("mkdir workflows: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowDir, "ci.yml"), []byte("name: ci\n"), 0o600); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	t.Setenv("GH_RUN_LIST_JSON", "[]")
+	shipCIPollInterval = 0
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate")
+	if err == nil {
+		t.Fatal("expected error when workflows exist but no run was registered")
+	}
+	if want := "· CI unconfirmed"; !strings.Contains(got, want) {
+		t.Errorf("summary = %q, want it to contain %q", got, want)
+	}
+	for _, want := range []string{"no CI run was registered", "paths-filtered", "dispatch-only", "on: workflow_dispatch", "gh run list --commit " + fakeHeadSHA} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err, want)
+		}
+	}
+}
+
+func TestShipHeadSHAFailurePrintsCommitPushSummary(t *testing.T) {
+	log := setupShip(t, ".jj", true)
+	t.Setenv("JJ_COMMIT_ID_FAIL", "1")
+
+	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate")
+	if err == nil {
+		t.Fatal("expected head SHA error, got nil")
+	}
+	want := "committed a1b2c3d \"fix: frobnicate\" · pushed main → origin\n"
+	if out != want {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+	if strings.Contains(out, "CI ") {
+		t.Errorf("head SHA failure must not print a CI segment, got %q", out)
+	}
+	if !strings.Contains(err.Error(), "jj log commit_id") {
+		t.Errorf("error = %v, want jj log commit_id failure", err)
+	}
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "gh" {
+			t.Errorf("head SHA failure must stop before gh, got invocation %v", inv)
+		}
 	}
 }
 
@@ -886,10 +947,62 @@ func TestShipCIMultiRunWatchesAll(t *testing.T) {
 	}
 }
 
+func TestShipCIMoreThanTenRunsWatchesAll(t *testing.T) {
+	log := setupShip(t, ".jj", true)
+	var runList strings.Builder
+	runList.WriteByte('[')
+	for id := 100; id < 112; id++ {
+		if id > 100 {
+			runList.WriteByte(',')
+		}
+		fmt.Fprintf(&runList, `{"databaseId":%d,"workflowName":"workflow-%d","status":"completed","url":"https://x/%d"}`, id, id, id)
+		t.Setenv(fmt.Sprintf("GH_RUN_VIEW_JSON_%d", id), fmt.Sprintf(`{"workflowName":"workflow-%d","conclusion":"success","startedAt":"2026-07-08T18:00:00Z","updatedAt":"2026-07-08T18:00:01Z","url":"https://x/%d","jobs":[]}`, id, id))
+	}
+	runList.WriteByte(']')
+	t.Setenv("GH_RUN_LIST_JSON", runList.String())
+	shipCIPollInterval = 0
+
+	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	watched := map[string]int{}
+	limit50 := false
+	for _, inv := range readInvocations(t, log) {
+		if len(inv) >= 4 && inv[0] == "gh" && inv[1] == "run" && inv[2] == "watch" {
+			watched[inv[3]]++
+		}
+		if len(inv) >= 3 && inv[0] == "gh" && inv[1] == "run" && inv[2] == "list" {
+			for i := 3; i+1 < len(inv); i++ {
+				if inv[i] == "--limit" && inv[i+1] == "50" {
+					limit50 = true
+				}
+			}
+		}
+	}
+	if !limit50 {
+		t.Error("gh run list did not use --limit 50")
+	}
+	if len(watched) != 12 {
+		t.Errorf("watched %d runs, want 12: %v", len(watched), watched)
+	}
+	for id := 100; id < 112; id++ {
+		key := fmt.Sprintf("%d", id)
+		if watched[key] != 1 {
+			t.Errorf("run %s watched %d times, want 1", key, watched[key])
+		}
+		want := fmt.Sprintf("workflow-%d · success · 1s · https://x/%d", id, id)
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing report line %q\ngot:\n%s", want, out)
+		}
+	}
+}
+
 func TestShipCISettleWatchesLateRuns(t *testing.T) {
 	log := setupShip(t, ".jj", true)
 	marker := filepath.Join(t.TempDir(), "settle")
 	t.Setenv("GH_LIST_SETTLE_MARKER", marker)
+	t.Setenv("GH_LIST_SETTLE_AFTER", "2")
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON) // first list: run 42 only
 	t.Setenv("GH_RUN_LIST_JSON_2", `[`+
 		`{"databaseId":42,"workflowName":"ci","status":"completed","url":"https://x/42"},`+
@@ -903,10 +1016,17 @@ func TestShipCISettleWatchesLateRuns(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	watched := map[string]bool{}
+	listCalls := 0
 	for _, inv := range readInvocations(t, log) {
+		if len(inv) >= 3 && inv[0] == "gh" && inv[1] == "run" && inv[2] == "list" {
+			listCalls++
+		}
 		if len(inv) >= 4 && inv[0] == "gh" && inv[1] == "run" && inv[2] == "watch" {
 			watched[inv[3]] = true
 		}
+	}
+	if listCalls < 5 {
+		t.Errorf("expected initial discovery, a quiet re-list, the straggler, and the quiet horizon; got %d list calls", listCalls)
 	}
 	if !watched["42"] || !watched["44"] {
 		t.Errorf("expected the settle pass to watch both runs, got %v", watched)

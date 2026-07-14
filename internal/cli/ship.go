@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 const (
 	shipSep                 = " · "
 	shipLogBudget           = 2000
+	shipCIQuietPolls        = 2
 	jjNearestBookmarkRevset = "heads(::@- & bookmarks())"
 	jjDescribeTemplate      = `commit_id.short() ++ "\n" ++ description.first_line()`
 	jjBookmarkTemplate      = `local_bookmarks.map(|b| b.name()).join(" ") ++ " "`
@@ -149,6 +151,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 
 	ciSeg, report, ciErr := shipWatchCI(ctx, cmd.ErrOrStderr(), kind, o.budget)
 	if ciSeg == "" {
+		cmd.Println(strings.Join(segments, shipSep))
 		return ciErr
 	}
 	segments = append(segments, ciSeg)
@@ -364,7 +367,14 @@ func shipWatchCI(ctx context.Context, errW io.Writer, kind vcs.Kind, budget int)
 		return "CI error", report, err
 	}
 	if len(runs) == 0 {
-		return "CI no-run", nil, nil
+		hasWorkflows, err := shipHasWorkflows()
+		if err != nil {
+			return "CI error", nil, err
+		}
+		if !hasWorkflows {
+			return "CI no-run", nil, nil
+		}
+		return "CI unconfirmed", nil, fmt.Errorf("ship: no CI run was registered for the pushed commit; workflows may be paths-filtered or dispatch-only (on: workflow_dispatch); confirm manually: gh run list --commit %s", sha)
 	}
 	return reportCIRuns(ctx, errW, sha, runs, budget)
 }
@@ -419,14 +429,20 @@ func reportCIRuns(ctx context.Context, errW io.Writer, sha string, runs []ciRun,
 	}
 
 	process(runs)
-	for {
+	quiet := 0
+	for quiet < shipCIQuietPolls {
+		if err := sleepCtx(ctx, shipCIPollInterval); err != nil {
+			return "CI error", report, err
+		}
 		more, err := findCIRuns(ctx, sha)
 		if err != nil {
 			report = append(report, fmt.Sprintf("check: gh run list --commit %s", sha))
 			return "CI error", report, err
 		}
 		if process(more) == 0 {
-			break
+			quiet++
+		} else {
+			quiet = 0
 		}
 	}
 
@@ -530,6 +546,23 @@ func ciDuration(start, end time.Time) string {
 	return fmt.Sprintf("%ds", int(d.Round(time.Second).Seconds()))
 }
 
+func shipHasWorkflows() (bool, error) {
+	entries, err := os.ReadDir(filepath.Join(workingDir(), ".github", "workflows"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("ship: read GitHub Actions workflows: %w", err)
+	}
+	for _, entry := range entries {
+		ext := filepath.Ext(entry.Name())
+		if !entry.IsDir() && (ext == ".yml" || ext == ".yaml") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func shipHeadSHA(ctx context.Context, kind vcs.Kind) (string, error) {
 	switch kind {
 	case vcs.Git:
@@ -556,7 +589,7 @@ func shipHeadSHA(ctx context.Context, kind vcs.Kind) (string, error) {
 func findCIRuns(ctx context.Context, sha string) ([]ciRun, error) {
 	var lastErr error
 	for i := 0; i < shipCIPollTries; i++ {
-		out, err := render.RunCLI(ctx, "gh", []string{"run", "list", "--commit", sha, "--limit", "10", "--json", "databaseId,workflowName,status,url"})
+		out, err := render.RunCLI(ctx, "gh", []string{"run", "list", "--commit", sha, "--limit", "50", "--json", "databaseId,workflowName,status,url"})
 		switch {
 		case err != nil:
 			lastErr = fmt.Errorf("ship: gh run list: %w", err)
