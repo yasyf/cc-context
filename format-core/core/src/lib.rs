@@ -177,8 +177,6 @@ pub enum Error {
     UnsupportedShape(String),
     /// A number lexeme would be corrupted by TOON's f64 canonicalization.
     UnsafeNumber(String),
-    /// The encoder is stubbed pending a later phase; auto mode skips it.
-    Unimplemented(Format),
 }
 
 impl fmt::Display for Error {
@@ -188,7 +186,6 @@ impl fmt::Display for Error {
             Error::UnknownFormat(msg) | Error::UnsupportedShape(msg) | Error::UnsafeNumber(msg) => {
                 f.write_str(msg)
             }
-            Error::Unimplemented(fmt_) => write!(f, "encode {fmt_}: not implemented"),
         }
     }
 }
@@ -226,6 +223,22 @@ pub fn classify_candidates(src: &str) -> Result<Vec<Format>, Error> {
     Ok(classify::classify(&v).0)
 }
 
+/// Decodes JSON or NDJSON into the ordered IR, exposed for the WASM envelope
+/// adapter (`format-core/wasm`) to parse its request envelope with the same
+/// decoder as the payload.
+#[doc(hidden)]
+pub fn decode_ir(src: &str) -> Result<Value, Error> {
+    decode::decode_all(src)
+}
+
+/// Serializes the ordered IR to compact JSON, exposed for the WASM envelope
+/// adapter (`format-core/wasm`) to build its response envelope without a second
+/// JSON writer.
+#[doc(hidden)]
+pub fn compact_json(v: &Value) -> String {
+    json::compact_json(v)
+}
+
 fn encode_value(v: &Value, format: Format, opts: &SelectOpts) -> Result<String, Error> {
     match format {
         Format::Toon => toon::encode_toon(v, &opts.toon),
@@ -248,9 +261,9 @@ const CANDIDATE_TOLERANCE_PCT: u64 = 5; // heuristic
 /// within CANDIDATE_TOLERANCE_PCT of the smallest, among candidates that pass
 /// the byte-net invariant len(out) <= len(compact_json(v)) — classifier order
 /// is a preference ranking, so a near-tie goes to the preferred format.
-/// Candidates that error (Unimplemented included) or exceed the net are
-/// skipped, and compact JSON is the implicit last contender, so auto mode
-/// never fails. The tolerance check runs in integer arithmetic:
+/// Candidates that error or exceed the net are skipped, and compact JSON is the
+/// implicit last contender, so auto mode never fails. The tolerance check runs
+/// in integer arithmetic:
 /// out_len * 100 <= min_len * 105.
 fn encode_auto(v: &Value, opts: &SelectOpts) -> Encoded {
     let (candidates, _) = classify::classify(v);

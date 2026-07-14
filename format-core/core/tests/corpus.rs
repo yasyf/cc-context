@@ -271,7 +271,7 @@ fn corpus() {
     }
 
     println!(
-        "\ncorpus summary: {passed} passed, {failed} failed, {skipped} skipped-unimplemented, {} toon-drift",
+        "\ncorpus summary: {passed} passed, {failed} failed, {skipped} skipped, {} toon-drift",
         drifts.len()
     );
     println!("toon-drift report (machine-readable):");

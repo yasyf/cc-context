@@ -76,6 +76,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "format-wasm"
+version = "0.1.0"
+dependencies = [
+ "format-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

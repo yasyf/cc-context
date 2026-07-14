@@ -1,0 +1,20 @@
+[package]
+name = "format-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "wasm32-unknown-unknown envelope adapter over format-core: a coarse fc_format ABI (JSON in, JSON out) with explicit alloc ownership and zero host imports."
+
+[lib]
+name = "format_wasm"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+format-core = { path = "../core" }
+
+[dev-dependencies]
+# Native-test-only: request/response envelope marshaling in the round-trip and
+# corpus tests. Dev-deps never enter the wasm runtime graph, so the "zero deps
+# beyond format-core" invariant holds for the cdylib.
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }

@@ -1,3 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["core"]
+members = ["core", "wasm"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"
+codegen-units = 1

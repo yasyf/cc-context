@@ -1,10 +1,11 @@
-//! # Encoder contract
-//!
-//! Later phases add one encoder per file — tron.rs, tabular.rs (CSV/TSV +
-//! markdown), prose.rs — each written against this contract alone: parallel
-//! agents must be able to implement the files without coordinating. Until an
-//! encoder lands, its stub below returns `Error::Unimplemented`, which the
-//! auto arm treats exactly like any encode error (the candidate is skipped).
+//! The CSV, TSV, markdown, and prose encoders — `encode_csv`, `encode_tsv`,
+//! `encode_markdown`, `encode_prose`, each a `pub(crate) fn(&Value) ->
+//! Result<String, Error>` over the IR (TRON, TOON, JSONL, and compact JSON
+//! live in their own modules). The returned string carries no trailing
+//! newline. An encoder that cannot represent `v` (e.g. CSV on a non-tabular
+//! shape) returns `Error::UnsupportedShape` with a message prefixed by its
+//! name ("encode csv: …") and never falls back — lib.rs's dispatch owns
+//! fallback policy.
 //!
 //! ## The IR
 //!
@@ -17,43 +18,20 @@
 //! documents (a lone document arrives as itself, unwrapped); encoders cannot
 //! and must not distinguish a folded stream from a literal top-level array.
 //!
-//! ## Encoder functions
-//!
-//! Each encoder is one `pub(crate)` function with this exact shape:
-//!
-//! ```ignore
-//! pub(crate) fn encode_tron(v: &Value) -> Result<String, Error>
-//! pub(crate) fn encode_csv(v: &Value) -> Result<String, Error>
-//! pub(crate) fn encode_tsv(v: &Value) -> Result<String, Error>
-//! pub(crate) fn encode_markdown(v: &Value) -> Result<String, Error>
-//! pub(crate) fn encode_prose(v: &Value) -> Result<String, Error>
-//! ```
-//!
-//! `v` is the IR root. Only `encode_toon` deviates — `encode_toon(v, opts:
-//! &ToonOpts)` — because indent and delimiter are TOON-only knobs. The
-//! returned string carries no trailing newline (trim what your library
-//! appends). An encoder that cannot represent `v` (e.g. CSV on a non-tabular
-//! shape) returns `Error::UnsupportedShape` with a descriptive message
-//! prefixed by its name ("encode csv: …"); it never falls back to another
-//! format — the encode dispatch in lib.rs owns fallback policy. Wire-up is
-//! one arm each: an encoder lands by replacing its stub here with the real
-//! module and pointing lib.rs's dispatch at it.
-//!
 //! ## Scalar rendering
 //!
 //! Every scalar emitted in a JSON-quoted position goes through
 //! `json::write_compact`/`write_json_string` (json.rs): strings JSON-escaped
 //! WITHOUT HTML escaping (<, >, & stay raw), numbers as verbatim lexemes,
-//! bool as true/false, null as null. Encoders whose output positions take raw
-//! unquoted text — CSV/TSV cells, markdown cells, prose bodies — handle the
-//! string case themselves and route every non-string scalar through the
-//! compact writer so lexeme precision survives.
+//! bool as true/false, null as null. The encoders here whose output positions
+//! take raw unquoted text — CSV/TSV cells, markdown cells, prose bodies —
+//! handle the string case themselves and route every non-string scalar through
+//! the compact writer so lexeme precision survives.
 //!
 //! ## Naming
 //!
-//! Every unexported helper in an encoder file carries its encoder's prefix:
-//! `tron_x` in tron.rs, `csv_x` in tabular.rs (`md_x` for its markdown half),
-//! `prose_x` in prose.rs.
+//! Every unexported helper carries its encoder's prefix: `csv_x` for the
+//! CSV/TSV pair, `md_x` for markdown, `prose_x` for prose.
 
 use crate::value::Value;
 use crate::Error;
