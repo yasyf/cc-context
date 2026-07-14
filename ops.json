@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"add_comment","body":"Superseded: the v0.11.0 re-run happened and the whole bench campaign concluded. Note 18f3042 records the 3-arm token bench results through v0.11.0; note 027c588 records the FINAL 2026-07 campaign verdict (ccx costs tokens on sonnet+opus at better accuracy; redesign staged in bench/analysis/). Nothing left to run."}]}
+{"v":1,"lamport":3,"ops":[{"kind":"set_status","status":"cancelled"}]}
