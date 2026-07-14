@@ -83,6 +83,21 @@ def is_large(path: Path) -> bool:
     return path.is_file() and path.stat().st_size > LARGE_READ_BYTES
 
 
+def carries_expansion(token: str, *, tilde_only: bool = False) -> bool:
+    """Whether ``token`` carries a shell expansion (``~``/``$``) a rewrite's quoting would suppress.
+
+    A rewrite that ``shlex.quote()``s a path wraps a leading ``~`` or a ``$`` token in single quotes,
+    and the shell that later runs the rewritten ``ccx`` command never expands ``~``/``$`` inside single
+    quotes — ccx then receives a literal ``~/foo`` or ``$d/foo`` that does not exist. Declining the
+    rewrite lets the original command fall through to Allow, where the shell expands the token as
+    intended. ``~`` expands only at word start (``~/foo``, ``~user/foo``), so a mid-token ``~``
+    (``foo~bar.go``) is literal and does not count. ``tilde_only`` is for emitters that embed the token
+    in double quotes (the find/ls glob forms): ``$`` still expands inside double quotes, so only a
+    leading ``~`` stays frozen there.
+    """
+    return token.startswith("~") or (not tilde_only and "$" in token)
+
+
 def ccx_bin() -> str | None:
     """Resolve an absolute, executable ``ccx`` path for the rewrite guards, or ``None``.
 

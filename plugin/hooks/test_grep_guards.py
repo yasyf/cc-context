@@ -26,6 +26,9 @@ from types import SimpleNamespace
 
 import pytest
 from captain_hook import CommandLine
+from captain_hook.context import HookContext
+from captain_hook.events import PreToolUseEvent
+from captain_hook.session import SessionStore
 
 from conftest import NO_SUPPORT_HELP, REGEX_SUPPORTS_HELP, SUPPORTS_HELP, fake_run, make_evt, probe
 from hooks import common, grep_guards, rg_guards, search_common
@@ -615,3 +618,26 @@ class TestGrepBoundedPassthrough:
     def test_sink_grep_semantics(self, command: str, fires: bool) -> None:
         # Every case is a compound (primary is multi-part), so `grep_parse` bails before any live ccx probe.
         assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is fires
+
+
+class TestTranscriptBlockMessage:
+    """`search_block` tunes the block per the line's transcript operands: all-transcript → the
+    cc-transcript steer alone; a transcript operand mixed with an ordinary flood → the default steer
+    PLUS one appended cc-transcript line (never transcript-only).
+    """
+
+    def bash_pre(self, command: str) -> PreToolUseEvent:
+        ctx = HookContext(session=SessionStore(None), transcript=None, settings=None)
+        return PreToolUseEvent(_raw={"tool_name": "Bash", "tool_input": {"command": command}}, ctx=ctx)
+
+    def test_mixed_line_carries_both_steers(self) -> None:
+        # A transcript operand alongside a `.` tree flood → the block names BOTH the default steer and cc-transcript.
+        res = grep_guards.grep_guard(self.bash_pre("grep foo ~/.claude/projects/main.jsonl; grep bar ."))
+        assert res.action.value == "block"
+        assert "floods context" in res.message and "cc-transcript" in res.message
+        assert res.message != search_common.TRANSCRIPT_STEER  # not transcript-only
+
+    def test_all_transcript_line_is_steer_only(self) -> None:
+        res = grep_guards.grep_guard(self.bash_pre("grep -r foo ~/.claude/projects/"))
+        assert res.action.value == "block"
+        assert res.message == search_common.TRANSCRIPT_STEER

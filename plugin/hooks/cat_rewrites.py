@@ -20,7 +20,7 @@ from captain_hook import (
     rewrite_command,
 )
 
-from .common import ccx_bin
+from .common import carries_expansion, ccx_bin
 
 ROOT_MANIFESTS = ("go.mod", "AGENTS.md", "CLAUDE.md", "pyproject.toml", "Taskfile.yml", "package.json")
 
@@ -83,7 +83,9 @@ class BareCat(CustomCommandLineCondition):
     `cat f | cmd`, `cat > f`, and `cat << EOF` all use cat for streaming/writing,
     not for dumping a file's contents into context — only the bare read matches. A
     single file argument is rewritten to `ccx code read --full`; multiple files (no
-    single `--full` target) stay a hard block.
+    single `--full` target) stay a hard block. A file token carrying a shell expansion
+    (``~``/``$``) declines — ``shlex.quote`` would freeze it, so the command falls
+    through to Allow and the real shell expands the path.
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
@@ -91,6 +93,8 @@ class BareCat(CustomCommandLineCondition):
         if "<<" in (evt.command or "") or cl.q.uses_redirect():
             return False
         if not (cl.q.runs("cat") and bool(a := cl.primary.args) and not a[0].startswith("-")):
+            return False
+        if any(carries_expansion(p) for p in a):
             return False
         # A repo-root manifest gets the `ccx repo overview` steer (ManifestCat), not a raw read.
         return not (len(a) == 1 and is_root_manifest(a[0]))
@@ -121,6 +125,13 @@ rewrite_command(
     tests={
         Input(command="cat main.go"): Rewrite(pattern="code read main.go --full"),
         Input(command="cat a.go b.go"): Block(pattern="ccx code outline"),
+        # A `~`/`$` file token declines to rewrite — shlex.quote would freeze it; the real shell expands it.
+        Input(command="cat ~/notes.md"): Allow(),
+        Input(command="cat $d/main.go"): Allow(),
+        Input(command="cat foo~bar.go"): Rewrite(pattern="code read 'foo~bar.go' --full"),  # mid-token `~` is literal
+        # Known-conservative: the parser dequotes per token, so a single-quoted (literal) `$d` is
+        # indistinguishable from an unquoted one and declines either way — a safe Allow, merely unguarded.
+        Input(command="cat '$d/main.go'"): Allow(),
         Input(command="cat f | grep x"): Allow(),
         Input(command="cat <<EOF"): Allow(),
         Input(command="cat << EOF"): Allow(),

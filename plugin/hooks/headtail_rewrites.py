@@ -21,7 +21,7 @@ from captain_hook import (
     rewrite_command,
 )
 
-from .common import ccx_bin
+from .common import carries_expansion, ccx_bin
 
 
 class HeadTailFile(CustomCommandLineCondition):
@@ -30,10 +30,14 @@ class HeadTailFile(CustomCommandLineCondition):
     A piped ``<cmd> | head -5`` uses head/tail as a stream *sink* to cap a pipe's output —
     the sanctioned bound for THIS hook — so a pipe or redirect is left alone here. (The pipe
     *source* stands on its own: an ``rg …`` heading such a pipe is now gated by
-    ``grep_guards``/``rg_guards``; this hook judges only the head/tail sink.) Only when head/tail's argv
-    names a file operand is it dumping that file: ``head`` with a line count rewrites to
-    a bounded ``ccx code read --section``, while ``tail`` (no start line is knowable) and
-    the byte-mode (`-c`) or multi-file forms hard-block.
+    ``grep_guards``/``rg_guards``, and a ``ccx …`` source piped into head/tail is gated by
+    ``ccx_repipe_rewrites``' :class:`~hooks.ccx_repipe_rewrites.CcxRepipe`; this hook judges
+    only the head/tail sink on a FILE operand — a pipe sink is its documented non-goal.) Only
+    when head/tail's argv names a file operand is it dumping that file: ``head`` with a line count
+    rewrites to a bounded ``ccx code read --section``, while ``tail`` (no start line is knowable)
+    and the byte-mode (`-c`) or multi-file forms hard-block. A file token carrying a shell
+    expansion (``~``/``$``) declines — ``shlex.quote`` would freeze it, so the command falls
+    through to Allow and the real shell expands the path.
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
@@ -41,7 +45,7 @@ class HeadTailFile(CustomCommandLineCondition):
         if cl.q.uses_redirect():
             return False
         parsed = headtail_parse(cl)
-        return parsed is not None and bool(parsed[3])
+        return parsed is not None and bool(parsed[3]) and not any(carries_expansion(f) for f in parsed[3])
 
 
 def int_or_none(s: str) -> int | None:
@@ -121,6 +125,9 @@ rewrite_command(
         Input(command="rg foo | head -5"): Allow(),  # head-as-sink is fine for THIS hook; the rg source is gated by rg_guards
         Input(command="cat f | tail -20"): Allow(),  # pipe sink — sanctioned
         Input(command="head -5"): Allow(),  # reads stdin, no file operand
+        # A `~`/`$` file token declines to rewrite — shlex.quote would freeze it; the real shell expands it.
+        Input(command="head -40 $d/host.go"): Allow(),
+        Input(command="head -20 ~/.claude/cache/log.txt"): Allow(),
         # `ccx exec` pass-through is deliberate: head inside sh() is the script's business.
         Input(
             command="ccx exec 'async def main(): return await sh(\"head -40 f.go\")\nasyncio.run(main())'"

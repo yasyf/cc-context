@@ -19,7 +19,7 @@ from captain_hook import (
     rewrite_command,
 )
 
-from .common import ccx_bin
+from .common import carries_expansion, ccx_bin
 
 WORKSPACE_ROOT = re.compile(r"^(~|\$HOME|\$\{HOME\})/Code/?$")
 
@@ -29,14 +29,22 @@ class LsRecursive(CustomCommandLineCondition):
 
     Plain `ls` and `ls -la` stay allowed; only a recursive flag (`-R`, bundled like
     `-laR`, or `--recursive`) matches. The optional directory argument becomes the
-    `ccx repo find "<dir>/**"` glob root, defaulting to `**`.
+    `ccx repo find "<dir>/**"` glob root, defaulting to `**`. A dir carrying a leading
+    ``~`` declines: the glob rides in double quotes where ``~`` stays frozen, so the
+    command falls through to Allow and the shell expands the path.
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        return cl.q.runs("ls") and any(
-            x == "--recursive" or (x.startswith("-") and not x.startswith("--") and "R" in x)
-            for x in cl.primary.args
-        )
+        if not (
+            cl.q.runs("ls")
+            and any(
+                x == "--recursive" or (x.startswith("-") and not x.startswith("--") and "R" in x)
+                for x in cl.primary.args
+            )
+        ):
+            return False
+        dirs = [a for a in cl.primary.args if not a.startswith("-")]
+        return not (dirs and carries_expansion(dirs[0], tilde_only=True))
 
 
 def ls_glob(evt: BaseHookEvent) -> str:
@@ -71,6 +79,9 @@ rewrite_command(
         Input(command="ls --recursive"): Rewrite(pattern='repo find "**"'),
         Input(command="ls -la"): Allow(),
         Input(command="ls"): Allow(),
+        # A leading-`~` dir declines to rewrite — the double-quoted glob would freeze it; the shell expands it.
+        Input(command="ls -R ~/proj"): Allow(),
+        Input(command="ls -R $d"): Rewrite(pattern='repo find "$d/**"'),  # `$` expands inside the double-quoted glob
     },
 )
 

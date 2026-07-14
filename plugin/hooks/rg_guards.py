@@ -11,13 +11,16 @@ from captain_hook import (
     Block,
     CommandLine,
     CustomCommandLineCondition,
+    Event,
+    HookResponse,
     Input,
+    PreToolUseEvent,
     Rewrite,
     Tool,
-    rewrite_command,
+    on,
 )
 
-from .common import LITERAL_SAFE, is_single_command
+from .common import LITERAL_SAFE, carries_expansion, is_single_command
 from .search_common import (
     CONTEXT_SHORT,
     GrepCall,
@@ -25,8 +28,11 @@ from .search_common import (
     UnpipedSearch,
     build_ccx_grep,
     grep_glob,
+    has_command_substitution,
+    is_transcript_path,
     note_text,
     path_blocked,
+    search_block,
     unquote,
 )
 
@@ -147,6 +153,24 @@ class RgNonSourceTargets(CustomCommandLineCondition):
             ):
                 return False
         return matched
+
+
+def rg_occurrence_expands(cmd: Command) -> bool:
+    """Whether one rg occurrence carries a shell expansion that forfeits its rewrite.
+
+    Mirrors :func:`~hooks.grep_guards.grep_occurrence_expands`: a ``$(...)``/backtick substitution (the
+    parser drops the operand, so a rewrite would silently widen the search) or a non-transcript path
+    operand carrying ``~``/``$`` (:func:`~hooks.search_common.build_ccx_grep` ``shlex.quote``s each path,
+    and single quotes freeze ``~``/``$``, so ccx would get a literal ``~/foo`` that does not exist). The
+    rewrite is forfeited, never the block — a raw rg is recursive by default, so an unverifiable operand
+    is a flood the shell must not run. The pattern is excluded (a ``$`` end-anchor stays rewritable):
+    only operands :func:`rg_operands` resolves as paths count. A transcript operand is never singled out
+    here — it blocks and is steered at cc-transcript by :func:`~hooks.search_common.search_block`.
+    """
+    return has_command_substitution(cmd.raw) or (
+        (ops := rg_operands(cmd)) is not None
+        and any(carries_expansion(p) and not is_transcript_path(p) for p in ops)
+    )
 
 
 def fold_expand(current: str, cand: str) -> str:
@@ -315,21 +339,41 @@ def rg_note(evt: BaseHookEvent) -> str:
     return note_text(evt.command, rg_parse(evt.command_line))
 
 
-rewrite_command(
+def rg_guard(evt: PreToolUseEvent) -> HookResponse:
+    """Rewrite a simple literal rg to ``ccx code grep``; block the rest, transcript-steered.
+
+    The custom-handler form (over the declarative ``rewrite_command(block=…)``) is what lets the block
+    message be computed per event: :func:`~hooks.search_common.search_block` swaps in the cc-transcript
+    steer for a transcript operand and otherwise keeps the rg message verbatim. A primary carrying a
+    shell expansion forfeits the rewrite (a spliced ``~``/``$`` freezes; a dropped ``$(...)`` widens the
+    search), so the guard blocks rather than emit a corrupt rewrite.
+    """
+    new = None if rg_occurrence_expands(evt.command_line.primary) else rg_to(evt)
+    if new is None:
+        return evt.block(
+            search_block(
+                evt,
+                "rg",
+                rg_operands,
+                "BLOCKED: raw `rg` file search floods context. "
+                "Use `ccx code grep <text>` (mcp__cc-context__ccx_code_grep) for literal text, "
+                '`ccx code search "<question>"` (mcp__cc-context__ccx_code_search) for intent, '
+                '`ccx repo find "<glob>"` (mcp__cc-context__ccx_repo_find) to list files. '
+                "Dependency source (`.venv`, vendored pkgs): `ccx repo locate <pkg>` (CLI-only), then "
+                "`ccx code grep`/`outline` (mcp__cc-context__ccx_code_outline)/`read` "
+                "(mcp__cc-context__ccx_code_read) with the printed path. "
+                "Simple literal `rg` auto-rewrites to `ccx code grep`; this one didn't — a regex pattern, an unmappable "
+                "flag (`-t`/`-r`/`--no-ignore`/…), an ignored-dir target, an expansion (`~`/`$`/`$(…)`), or a pipe/chain. "
+                "Escape hatches: data files (`.log`/`.json`/`.yaml`/…) as explicit targets run as-is; piped input (`… | rg`) runs as-is.",
+            )
+        )
+    return evt.rewrite_command(new, note=rg_note(evt))
+
+
+on(
+    Event.PreToolUse,
     only_if=[Tool("Bash"), UnpipedSearch("rg")],
     skip_if=[RgNonSourceTargets()],
-    to=rg_to,
-    block=(
-        "BLOCKED: raw `rg` file search floods context. "
-        'Use `ccx code grep <text>` (or mcp__cc-context__ccx_code_grep) for literal text, `ccx code search "<question>"` '
-        'for intent, `ccx repo find "<glob>"` to list files. '
-        "Dependency source (`.venv`, vendored pkgs): `ccx repo locate <pkg>`, then "
-        "`ccx code grep`/`outline`/`read` with the printed path. "
-        "Simple literal `rg` auto-rewrites to `ccx code grep`; this one didn't — a regex pattern, an unmappable "
-        "flag (`-t`/`-r`/`--no-ignore`/…), an ignored-dir target, or a pipe/chain. "
-        "Escape hatches: data files (`.log`/`.json`/`.yaml`/…) as explicit targets run as-is; piped input (`… | rg`) runs as-is."
-    ),
-    note=rg_note,
     tests={
         # Rewrite — disk-independent shapes only (repo-wide, glob-only, context). Path→glob shapes
         # classify each operand against the filesystem, so they live in test_rg_guards.py.
@@ -365,6 +409,19 @@ rewrite_command(
         Input(command="cat f | rg foo"): Allow(),
         Input(command="journalctl | rg err | head -5"): Allow(),
         Input(command="rg foo app.log"): Allow(),  # data-file target runs as-is
+        # A `~`/`$` operand forfeits the rewrite but NOT the block — rg is recursive by default, so an
+        # unverifiable operand is a flood. A data-ext operand stays exempt (RgNonSourceTargets, by suffix).
+        Input(command="rg foo ~/notes.md"): Block(pattern="floods context"),
+        Input(command="rg -n foo $d/host.go"): Block(pattern="floods context"),
+        Input(command="rg foo $d/app.log"): Allow(),  # data-ext expansion operand stays exempt (suffix, no stat)
+        Input(command="rg foo ~/.claude/projects/"): Block(pattern="cc-transcript"),  # transcript → cc-transcript steer
+        # Mixed transcript + flood: the sibling `rg bar .` fires the line; the block carries the cc-transcript line too.
+        Input(command="rg foo ~/.claude/projects/main.jsonl; rg bar ."): Block(pattern="cc-transcript"),
+        # Substitution drops the `$(…)`/backtick operand → rewrite forfeited; the operand-less rg floods → block.
+        Input(command="rg foo $(printf /tmp/target)"): Block(pattern="floods context"),
+        Input(command="rg -n foo `printf x`"): Block(pattern="floods context"),
+        # Per-occurrence: the `$(…)` rg forfeits its rewrite, the sibling `rg bar .` tree search floods → the line blocks.
+        Input(command="rg foo $(printf /tmp/t); rg bar ."): Block(pattern="floods context"),
         Input(command="rg -o 'err.*timeout' server.log"): Allow(),  # regex is fine on a data file
         Input(command="rg -o 'err.*timeout' server.LOG"): Allow(),  # suffix match is case-insensitive (.LOG → .log)
         Input(command="rg foo data.json config.yaml"): Allow(),  # all operands non-source
@@ -379,4 +436,4 @@ rewrite_command(
             "asyncio.run(main())\nPY"
         ): Allow(),
     },
-)
+)(rg_guard)

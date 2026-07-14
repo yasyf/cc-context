@@ -6,7 +6,7 @@ import re
 import shlex
 import subprocess
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from captain_hook import (
     Allow,
@@ -21,6 +21,24 @@ from captain_hook import (
 )
 
 from .common import IDENT_ALT, LITERAL_SAFE, ccx_bin, ccx_supports
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from cc_transcript.command import Command
+
+# The cc-transcript steer: sent when a gated grep/rg's operands are ALL session transcripts.
+TRANSCRIPT_STEER = (
+    "BLOCKED: Session transcripts: use cc-transcript (list / grep / show), never raw grep or "
+    "ccx code grep (mcp__cc-context__ccx_code_grep) — it reads the .jsonl by session/turn/tool "
+    "without flooding context."
+)
+
+# Appended to the engine's block message on a line mixing a transcript operand with an ordinary flood.
+TRANSCRIPT_APPEND = (
+    "Also — the ~/.claude/projects operand is a session transcript: use cc-transcript "
+    "(list / grep / show), not raw grep or ccx code grep (mcp__cc-context__ccx_code_grep)."
+)
 
 
 # The two file-search executables the nudges steer. A pipe's primary (last) command
@@ -162,6 +180,51 @@ class GrepCall(NamedTuple):
     count_dropped: bool  # True when `--expand` holds a fixed placeholder, so the note flags the `-A/-B/-C N` count as lost
     regex: bool = False  # pattern rewrites to `--regex` (ran as a regex on the rg engine)
     paths: tuple[str, ...] = ()  # explicit multi-file operands carried as `ccx code grep` positionals
+
+
+def is_transcript_path(p: str) -> bool:
+    """Whether a grep/rg path operand targets a Claude session transcript — under ``.claude/projects/``.
+
+    Covers the projects dir itself and any ``*.jsonl`` transcript inside it; a ``.jsonl`` elsewhere is
+    ordinary data, not a transcript. Load-bearing for the ``~``/``$`` decline: a transcript path
+    carrying ``~`` (``~/.claude/projects/…``) must stay *blocked* (a raw recursive grep there floods
+    context) rather than fall through to Allow like an ordinary ``~``-path.
+    """
+    return ".claude/projects" in p
+
+
+def has_command_substitution(raw: str) -> bool:
+    """Whether a command's raw text carries a ``$(...)`` or backtick substitution the parser drops.
+
+    tree-sitter folds a standalone ``$(...)``/backtick operand out of the argv, so ``grep foo
+    $(printf /p)`` parses to just the pattern — a rewrite would silently search repo-wide instead of
+    the produced path. The raw text still shows the construct, so a guard declines on it and lets the
+    real shell run the command.
+    """
+    return "$(" in raw or "`" in raw
+
+
+def search_block(
+    evt: BaseHookEvent, exe: str, operands: Callable[[Command], list[str] | None], default: str
+) -> str:
+    """The block message for a gated grep/rg, tuned per the line's transcript operands.
+
+    Gathers every path operand across the ``exe`` commands on the line. No transcript operand keeps the
+    engine's own ``default``; when *every* operand is a session transcript (``~/.claude/projects/…``) the
+    whole steer is :data:`TRANSCRIPT_STEER`; a *mixed* line — a transcript operand alongside an ordinary
+    flood — keeps ``default`` and appends one :data:`TRANSCRIPT_APPEND` line so neither steer is lost.
+    Only ``exe`` commands are inspected — the same scope the guard's own condition uses.
+    """
+    cl = evt.command_line
+    if cl is None:
+        return default
+    ops = [p for cmd in cl.commands if cmd.executable == exe for p in (operands(cmd) or ())]
+    transcript = [p for p in ops if is_transcript_path(p)]
+    if not transcript:
+        return default
+    if len(transcript) == len(ops):
+        return TRANSCRIPT_STEER
+    return f"{default}\n{TRANSCRIPT_APPEND}"
 
 
 def classify_path(p: str) -> bool | None:

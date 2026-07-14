@@ -19,7 +19,7 @@ from captain_hook import (
     rewrite_command,
 )
 
-from .common import ccx_bin
+from .common import carries_expansion, ccx_bin
 
 
 class SedLineRange(CustomCommandLineCondition):
@@ -27,14 +27,18 @@ class SedLineRange(CustomCommandLineCondition):
 
     Allows sed in a pipe (it consumes a stream, not a named file) and allows
     substitution (`sed 's/.../.../'`); only the standalone numeric-range print of a
-    file argument is the `ccx code read --section` case this rewrites.
+    file argument is the `ccx code read --section` case this rewrites. A file token
+    carrying a shell expansion (``~``/``$``) declines: ``shlex.quote`` would freeze it,
+    so the command falls through to Allow and the real shell expands the path.
     """
 
     RANGE = re.compile(r"^(\d+),(\d+)p$")
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
         # A piped sed reads a stream, not the trailing file token — leave it alone.
-        return not cl.q.uses_redirect() and sed_parts(cl) is not None
+        if cl.q.uses_redirect() or (parts := sed_parts(cl)) is None:
+            return False
+        return not carries_expansion(parts[2])
 
 
 def sed_parts(cl: CommandLine) -> tuple[str, str, str] | None:
@@ -72,6 +76,9 @@ rewrite_command(
         Input(command="sed -n '10,40p' f.go"): Rewrite(pattern="code read f.go --section 10-40"),
         Input(command="sed -n 10,40p f.go"): Rewrite(pattern="--section 10-40"),
         Input(command="cat f | sed -n '1,2p'"): Allow(),
+        # A `~`/`$` file token declines to rewrite — shlex.quote would freeze it; the real shell expands it.
+        Input(command="sed -n '5,10p' ~/.claude/cache/changelog.md"): Allow(),
+        Input(command="sed -n '1,2p' $d/host.go"): Allow(),
         Input(command="sed 's/a/b/' f"): Allow(),
         Input(command="sed -n '/start/,/end/p' f"): Allow(),  # non-numeric range
         # `ccx exec` pass-through is deliberate: the script is one opaque ccx token,
