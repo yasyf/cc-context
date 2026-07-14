@@ -1,1 +1,1 @@
-{"v":1,"lamport":8,"ops":[{"kind":"set_criterion_status","id":"f6342caf1db5b32300e523f1ff5a859c","status":"met"}]}
+{"v":1,"lamport":9,"ops":[{"kind":"set_status","status":"done"},{"kind":"link_commit","sha":"6c5ab42b3fd3f828857dcd52ba491857493313c5"}]}
