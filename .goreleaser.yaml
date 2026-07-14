@@ -50,6 +50,10 @@ notarize:
       sign:
         certificate: "{{ .Env.MACOS_SIGN_P12 }}"
         password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+        # wazero's compiler engine mmaps RWX pages for the format-core WASM module
+        # (plain mmap, not MAP_JIT). Hardened-runtime exec of those pages SIGKILLs
+        # without allow-unsigned-executable-memory — `ccx format` dies at engine init.
+        entitlements: .github/macos/entitlements.plist
       notarize:
         issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
         key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"

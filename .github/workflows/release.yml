@@ -41,14 +41,17 @@ jobs:
         rustup target add wasm32-unknown-unknown
         bash scripts/build-wasm.sh
 
-  # Validates the released darwin_arm64 tarball end to end, exercising the
-  # uv-provisioned pydantic-monty sandbox driver an end user hits on `ccx exec`.
+  # Validates the released darwin_arm64 tarball end to end: the uv-provisioned
+  # pydantic-monty sandbox driver behind `ccx exec`, and the wazero-run WASM
+  # format engine behind `ccx format` — the latter is what dies under a hardened
+  # runtime signed without allow-unsigned-executable-memory (SIGKILL at engine
+  # init, which only a signed release artifact can exhibit; v0.16.0 shipped that).
   smoke:
     needs: release
     runs-on: macos-latest
     steps:
       - uses: astral-sh/setup-uv@v8.2.0
-      - name: Run ccx exec from the released darwin_arm64 tarball
+      - name: Run ccx exec and ccx format from the released darwin_arm64 tarball
         env:
           # Keep the smoke test hermetic: never probe the runner for `claude`.
           CCX_EXEC_MCP: "off"
@@ -56,3 +59,4 @@ jobs:
           curl -fsSL -o ccx.tgz "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/ccx_${GITHUB_REF_NAME#v}_darwin_arm64.tar.gz"
           tar xzf ccx.tgz
           test "$(./ccx exec '40+2')" = "42"
+          test "$(echo '{"k": [1, 2, 3]}' | ./ccx format)" = '{"k":[1,2,3]}'

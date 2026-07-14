@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- wazero's compiler engine mmaps RWX code pages for the format-core WASM module
+     (plain mmap, not MAP_JIT, so allow-jit does not cover it). Under the hardened
+     runtime that notarization requires, exec of those pages SIGKILLs without this
+     entitlement — `ccx format` dies at engine init. -->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+</dict>
+</plist>
