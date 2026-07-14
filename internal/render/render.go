@@ -149,7 +149,9 @@ func capTrim(s string, budgetTokens int) (kept, omitted string, trimmed bool) {
 		return s, "", false
 	}
 	limit := budgetTokens * charsPerToken
-	if len(s) <= limit {
+	// Guard the multiply: a math.MaxInt64 budget wraps negative, so an overflow (or
+	// any budget wide enough to hold s) keeps everything uncut.
+	if limit/charsPerToken != budgetTokens || len(s) <= limit {
 		return s, "", false
 	}
 	cut := strings.LastIndexByte(s[:limit], '\n')

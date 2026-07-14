@@ -79,6 +79,9 @@ func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
 	t.Chdir(repo)
 
 	grep := runCCX(t, "code", "grep", "func")
+	// -i routes to the ripgrep engine, exercising ripgrep.Run → reshape →
+	// render.Finalize → annotateGrep that the unflagged tilth grep never touches.
+	grepRG := runCCX(t, "code", "grep", "func", "-i")
 	// --full so the caller/sibling frame anchors this canary protects are present;
 	// the terse default drops those sections (covered by TestTerseSymbol).
 	symbol := runCCX(t, "code", "symbol", "Greet", "--full")
@@ -94,6 +97,7 @@ func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
 		re   *regexp.Regexp
 	}{
 		{"grep frame anchor (finalize.go)", grep, regexp.MustCompile(`\[\d+(?:-\d+)?#` + hashClass + `\]`)},
+		{"grep frame anchor via ripgrep (finalize.go)", grepRG, regexp.MustCompile(`\[\d+(?:-\d+)?#` + hashClass + `\]`)},
 		{"symbol grok locator (finalize.go)", symbol, regexp.MustCompile(`\[[^\]]+:\d+#` + hashClass + `\]`)},
 		{"symbol range frame (finalize.go)", symbol, regexp.MustCompile(`\[\d+-\d+#` + hashClass + `\]`)},
 		{"outline item anchor (outline.go)", outline, regexp.MustCompile(`(?m)^L\d+#` + hashClass + `\b`)},

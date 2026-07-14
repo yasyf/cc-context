@@ -6,6 +6,8 @@ func newRepoCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "repo",
 		Short: "Repo-level orientation and discovery",
+		Args:  cobra.NoArgs,
+		RunE:  groupHelp,
 	}
 	cmd.AddCommand(
 		newOverviewCmd(),

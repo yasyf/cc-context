@@ -6,6 +6,8 @@ func newCodeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "code",
 		Short: "Read, search, and transform code (token-bounded)",
+		Args:  cobra.NoArgs,
+		RunE:  groupHelp,
 	}
 	cmd.AddCommand(
 		newReadCmd(),

@@ -28,6 +28,9 @@ func main() {
 	var ee *cli.ExitError
 	if !errors.As(err, &ee) {
 		fmt.Fprintln(os.Stderr, "ccx:", err)
+		if hint := cli.ExpansionHint(err); hint != "" {
+			fmt.Fprintln(os.Stderr, "ccx:", hint)
+		}
 	}
 	os.Exit(cli.ExitCode(err))
 }

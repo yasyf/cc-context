@@ -10,6 +10,8 @@ func newWebCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "web",
 		Short: "Outline, read, and search web pages (token-bounded)",
+		Args:  cobra.NoArgs,
+		RunE:  groupHelp,
 	}
 	cmd.AddCommand(
 		newWebOutlineCmd(),

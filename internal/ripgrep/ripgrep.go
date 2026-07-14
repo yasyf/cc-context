@@ -9,9 +9,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/bmatcuk/doublestar/v4"
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/render"
@@ -132,7 +137,13 @@ func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runne
 	}
 	raw, err := exec(ctx, bin, argv)
 	if err != nil {
-		return "", false, err
+		if eng != engineRipgrep {
+			return "", false, err
+		}
+		if !ripgrepNoFiles(err) {
+			return "", false, ripgrepRegexHint(err, a.Query)
+		}
+		raw = "" // a glob/type filter matched zero files: the clean no-match grep reports as exit 0
 	}
 	groups, err := parse(eng, raw)
 	if err != nil {
@@ -160,6 +171,30 @@ func execEngine(ctx context.Context, bin string, argv []string) (string, error) 
 	return render.RunCLIAllowExit(ctx, bin, argv, exitNoMatch)
 }
 
+// ripgrepNoFiles reports whether an rg failure carries the exit-2 "no files were
+// searched" diagnostic (a glob/type filter matched zero files), which the grep
+// fallback reports as a clean exit-0 no-match. The phrase is unique to that case,
+// so every other exit-2 stays an error; this reads rg's stderr, not our wording.
+func ripgrepNoFiles(err error) bool {
+	return strings.Contains(err.Error(), "No files were searched")
+}
+
+const regexHintLine = `hint: --regex is Rust syntax — alternation is |, groups ( ); BRE-style \| and \( match the literal character`
+
+// ripgrepRegexHint appends regexHintLine to an rg regex-parse error when pattern
+// carries a BRE-style \|, \(, or \) escape; any other error is returned unchanged.
+// The parse-error signature is disjoint from ripgrepNoFiles's.
+func ripgrepRegexHint(err error, pattern string) error {
+	msg := err.Error()
+	if !strings.Contains(msg, "regex parse error") && !strings.Contains(msg, "unclosed group") {
+		return err
+	}
+	if !strings.Contains(pattern, `\|`) && !strings.Contains(pattern, `\(`) && !strings.Contains(pattern, `\)`) {
+		return err
+	}
+	return fmt.Errorf("%w\n%s", err, regexHintLine)
+}
+
 // resolveEngine prefers ripgrep and falls back to system grep; neither on PATH is
 // a fatal error carrying an install hint.
 func resolveEngine() (engine, string, error) {
@@ -174,7 +209,11 @@ func resolveEngine() (engine, string, error) {
 
 func buildArgv(eng engine, a backend.Args) ([]string, error) {
 	if len(a.Paths) > 0 && a.Glob != "" {
-		return nil, fmt.Errorf("grep cannot combine explicit file paths with --glob %q; drop one", a.Glob)
+		kept, err := filterGlobPaths(a.Paths, a.Glob)
+		if err != nil {
+			return nil, err
+		}
+		a.Paths = kept
 	}
 	switch eng {
 	case engineRipgrep:
@@ -186,12 +225,53 @@ func buildArgv(eng engine, a backend.Args) ([]string, error) {
 	}
 }
 
+// filterGlobPaths partitions explicit grep operands against --glob so both engines
+// search one file set: an existing regular file survives only when fileMatchesGlob
+// keeps it (rg's -g does not filter explicit files, so they are prefiltered here),
+// while a directory (native --glob/--include handles its recursion) or a
+// nonexistent operand (left to the engine, as before) passes through. Every file
+// filtered out with nothing passing through is a loud clean no-match.
+func filterGlobPaths(paths []string, glob string) ([]string, error) {
+	var kept []string
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil || info.IsDir() {
+			kept = append(kept, p)
+			continue
+		}
+		ok, err := fileMatchesGlob(glob, p)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == 0 {
+		return nil, fmt.Errorf("no paths match --glob %q", glob)
+	}
+	return kept, nil
+}
+
+// fileMatchesGlob reports whether file operand p matches glob under rg's -g
+// convention: a slash-less glob matches the basename at any depth, a slashed glob
+// the whole slash-normalized path.
+func fileMatchesGlob(glob, p string) (bool, error) {
+	p = filepath.ToSlash(p)
+	if !strings.Contains(glob, "/") {
+		return doublestar.Match(glob, path.Base(p))
+	}
+	return doublestar.Match(glob, p)
+}
+
 // ripgrepArgv builds `rg --json [--fixed-strings] [-i] [-w] [--glob G] [-C N]
 // [--no-ignore-parent] -e <pattern> [-- [scope] paths...]`. --fixed-strings is
 // dropped for a regex query so the pattern reaches rg's Rust regex engine; any
 // explicit Paths ride after -- alongside the scope operand, so rg searches those
-// files. AnchorGrepArgs first peels an
-// existing directory prefix off the glob into a path operand — composing onto an
+// files. With explicit Paths anchoring is skipped (buildArgv has already prefiltered
+// the file operands against --glob, since rg's -g never filters explicit files), so
+// -g only narrows a directory operand's recursion. Otherwise AnchorGrepArgs first
+// peels an existing directory prefix off the glob into a path operand — composing onto an
 // explicit --scope — exactly as the tilth route does, so the two engines search
 // the same file set: the operand becomes the anchored directory and the glob its
 // leftover basename pattern (empty when the anchor consumed the whole glob, so no
@@ -204,7 +284,9 @@ func buildArgv(eng engine, a backend.Args) ([]string, error) {
 // .gitignore rg would otherwise apply to an explicit path while still honoring
 // ignore files inside it — parity with tilth's scope semantics.
 func ripgrepArgv(a backend.Args) []string {
-	a = backend.AnchorGrepArgs(a)
+	if len(a.Paths) == 0 {
+		a = backend.AnchorGrepArgs(a)
+	}
 	argv := []string{"--json"}
 	if !a.Regex {
 		argv = append(argv, "--fixed-strings")
@@ -252,19 +334,27 @@ func ripgrepArgv(a backend.Args) []string {
 // whole "./"-prefixed path, so `.*` (and `.?*`, `.[!.]*`) match the search root
 // "." and every "./sub" path, excluding the entire tree; requiring a non-dot,
 // non-slash second character matches a hidden *basename* without ever matching
-// "." or the "./" prefix. --glob is translated to an --include and/or a rooted
+// "." or the "./" prefix. The excludes apply on every branch, so a hidden file
+// found by recursing a directory operand is skipped exactly as rg skips it — at the
+// cost of a named dotfile operand being skipped too (GNU grep applies --exclude to
+// command-line operands), an accepted fallback degradation the engine note discloses.
+// --glob is translated to an --include and/or a rooted
 // scope; a glob shape grep cannot express, or a directory-rooted glob combined
-// with an explicit --scope, fails fast. Explicit Paths are the operands directly;
-// they cannot combine with --glob, and the excludes are dropped — GNU grep applies
-// --exclude to command-line operands, so a named dotfile must not be silently
-// skipped. AnchorGrepArgs first peels an existing directory prefix off the glob
+// with an explicit --scope, fails fast. Explicit Paths are the operands directly and
+// combine with --glob: buildArgv prefilters the file operands, and the translated
+// --include narrows any directory operand's recursion (a directory-rooted glob has no
+// operand-compatible translation, so it fails fast). Anchoring is skipped with
+// explicit Paths so an anchored glob can never widen past them; otherwise
+// AnchorGrepArgs first peels an existing directory prefix off the glob
 // into the scope — composing onto an explicit --scope — exactly as the ripgrep
 // and tilth routes do, so every engine searches the same file set; the peel also
 // keeps an anchored glob like pkg/*.go expressible here (the anchor becomes the
 // search root and the basename remainder the --include) where the unpeeled form
 // has no grep translation.
 func grepArgv(a backend.Args) ([]string, error) {
-	a = backend.AnchorGrepArgs(a)
+	if len(a.Paths) == 0 {
+		a = backend.AnchorGrepArgs(a)
+	}
 	flags := "-rnHFI"
 	if a.Regex {
 		flags = "-rnHEI"
@@ -280,10 +370,19 @@ func grepArgv(a backend.Args) ([]string, error) {
 		argv = append(argv, "-C", strconv.Itoa(a.Expand))
 	}
 	argv = appendContext(argv, a)
+	argv = append(argv, "--exclude-dir=.[!./]*", "--exclude=.[!./]*")
+
+	include, globRoot, err := translateGlob(a.Glob)
+	if err != nil {
+		return nil, err
+	}
 
 	if len(a.Paths) > 0 {
-		if a.Glob != "" {
-			return nil, fmt.Errorf("grep fallback cannot combine explicit file paths with --glob %q; drop one", a.Glob)
+		if globRoot != "" {
+			return nil, fmt.Errorf("grep fallback cannot combine explicit paths with a directory-rooted --glob %q; install ripgrep for full glob support: brew install ripgrep", a.Glob)
+		}
+		if include != "" {
+			argv = append(argv, "--include="+include)
 		}
 		argv = append(argv, "-e", a.Query, "--")
 		if a.Scope != "" {
@@ -292,11 +391,6 @@ func grepArgv(a backend.Args) ([]string, error) {
 		return append(argv, a.Paths...), nil
 	}
 
-	argv = append(argv, "--exclude-dir=.[!./]*", "--exclude=.[!./]*")
-	include, globRoot, err := translateGlob(a.Glob)
-	if err != nil {
-		return nil, err
-	}
 	if a.Scope != "" && globRoot != "" {
 		return nil, fmt.Errorf("grep fallback cannot combine --scope with a directory-rooted --glob %q; install ripgrep for full glob support: brew install ripgrep", a.Glob)
 	}

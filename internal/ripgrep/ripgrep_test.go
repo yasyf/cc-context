@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 func TestRipgrepArgv(t *testing.T) {
@@ -42,6 +43,7 @@ func TestRipgrepArgv(t *testing.T) {
 		{"literal paths keep --fixed-strings after --", backend.Args{Query: "foo", Paths: []string{"a.go", "b.go"}}, []string{"--json", "--fixed-strings", "-e", "foo", "--", "a.go", "b.go"}},
 		{"scope + paths both ride after --", backend.Args{Query: "foo", Scope: "internal", Paths: []string{"a.go"}}, []string{"--json", "--fixed-strings", "--no-ignore-parent", "-e", "foo", "--", "internal", "a.go"}},
 		{"regex + paths", backend.Args{Query: "^func ", Regex: true, Paths: []string{"a.go"}}, []string{"--json", "-e", "^func ", "--", "a.go"}},
+		{"paths + glob keep --glob and operands, skip anchoring", backend.Args{Query: "foo", Paths: []string{"a.go", "sub"}, Glob: "*.go"}, []string{"--json", "--fixed-strings", "--glob", "*.go", "-e", "foo", "--", "a.go", "sub"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -91,10 +93,12 @@ func TestGrepArgv(t *testing.T) {
 		{"scope + basename glob", backend.Args{Query: "foo", Glob: "*.go", Scope: "internal"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "internal"}, false},
 		{"leading-dash pattern", backend.Args{Query: "-foo"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "-foo", "--", "."}, false},
 		{"regex swaps -rnFI for -rnEI", backend.Args{Query: "foo", Regex: true}, []string{"-rnHEI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
-		{"paths omit excludes", backend.Args{Query: "foo", Paths: []string{"a.go", "b.go"}}, []string{"-rnHFI", "--null", "-e", "foo", "--", "a.go", "b.go"}, false},
-		{"regex + paths omit excludes", backend.Args{Query: "^func ", Regex: true, Paths: []string{"a.go"}}, []string{"-rnHEI", "--null", "-e", "^func ", "--", "a.go"}, false},
-		{"scope + paths omit excludes", backend.Args{Query: "foo", Scope: "internal", Paths: []string{"a.go"}}, []string{"-rnHFI", "--null", "-e", "foo", "--", "internal", "a.go"}, false},
-		{"paths + glob errors", backend.Args{Query: "foo", Paths: []string{"a.go"}, Glob: "*.go"}, nil, true},
+		{"paths keep excludes", backend.Args{Query: "foo", Paths: []string{"a.go", "b.go"}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "a.go", "b.go"}, false},
+		{"regex + paths keep excludes", backend.Args{Query: "^func ", Regex: true, Paths: []string{"a.go"}}, []string{"-rnHEI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "^func ", "--", "a.go"}, false},
+		{"scope + paths keep excludes", backend.Args{Query: "foo", Scope: "internal", Paths: []string{"a.go"}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "internal", "a.go"}, false},
+		{"paths + basename glob → include", backend.Args{Query: "foo", Paths: []string{"a.go"}, Glob: "*.go"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "a.go"}, false},
+		{"paths + double-star glob → include", backend.Args{Query: "foo", Paths: []string{"a.go", "sub"}, Glob: "**/*.go"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "a.go", "sub"}, false},
+		{"paths + dir-rooted glob fails", backend.Args{Query: "foo", Paths: []string{"sub"}, Glob: "src/**"}, nil, true},
 		{"scope + dir glob fails", backend.Args{Query: "foo", Glob: "src/**", Scope: "internal"}, nil, true},
 		{"brace glob fails", backend.Args{Query: "foo", Glob: "{a,b}/**"}, nil, true},
 		{"mid-path wildcard fails", backend.Args{Query: "foo", Glob: "src/*/x.go"}, nil, true},
@@ -121,12 +125,190 @@ func TestGrepArgv(t *testing.T) {
 	}
 }
 
-func TestBuildArgvRejectsPathsAndGlob(t *testing.T) {
-	args := backend.Args{Query: "foo", Glob: "*.go", Paths: []string{"a.go"}}
-	for _, eng := range []engine{engineRipgrep, engineGrep} {
-		if _, err := buildArgv(eng, args); err == nil {
-			t.Errorf("buildArgv(%v) err = nil, want paths-plus-glob error", eng)
+// globPathsFixture writes a.go, b.txt, and a sub/ directory into a fresh temp dir,
+// chdirs into it, and returns the dir — the on-disk operands filterGlobPaths and
+// buildArgv classify with os.Stat.
+func globPathsFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, f := range []string{"a.go", "b.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x\n"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", f, err)
 		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o750); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	t.Chdir(dir)
+	return dir
+}
+
+func TestFilterGlobPaths(t *testing.T) {
+	globPathsFixture(t)
+	tests := []struct {
+		name    string
+		paths   []string
+		glob    string
+		want    []string
+		wantErr bool
+	}{
+		{"file matching glob kept", []string{"a.go"}, "*.go", []string{"a.go"}, false},
+		{"file not matching glob dropped, none left → error", []string{"b.txt"}, "*.go", nil, true},
+		{"directory passes through to native filtering", []string{"sub"}, "*.go", []string{"sub"}, false},
+		{"nonexistent operand passes through unchanged", []string{"missing.go"}, "*.go", []string{"missing.go"}, false},
+		{"mixed: keep matching file, drop other, pass dir", []string{"a.go", "b.txt", "sub"}, "*.go", []string{"a.go", "sub"}, false},
+		{"slash-less glob matches basename", []string{"a.go"}, "*.go", []string{"a.go"}, false},
+		{"slashed glob matches whole path", []string{"a.go"}, "**/*.go", []string{"a.go"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := filterGlobPaths(tt.paths, tt.glob)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("filterGlobPaths() err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				if !strings.Contains(err.Error(), "no paths match") {
+					t.Errorf("filterGlobPaths() err = %v, want no-paths-match message", err)
+				}
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("filterGlobPaths() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBuildArgvGlobPaths proves buildArgv prefilters explicit file operands
+// Go-side against --glob (so rg's -g, which never filters explicit files, agrees
+// with grep's --include), passes directory operands through to native filtering,
+// and errors when every file operand is filtered out with no directory left.
+func TestBuildArgvGlobPaths(t *testing.T) {
+	globPathsFixture(t)
+	tests := []struct {
+		name    string
+		eng     engine
+		args    backend.Args
+		want    []string
+		wantErr bool
+	}{
+		{"rg file filtering drops non-glob file", engineRipgrep, backend.Args{Query: "foo", Paths: []string{"a.go", "b.txt"}, Glob: "*.go"}, []string{"--json", "--fixed-strings", "--glob", "*.go", "-e", "foo", "--", "a.go"}, false},
+		{"fallback file filtering drops non-glob file", engineGrep, backend.Args{Query: "foo", Paths: []string{"a.go", "b.txt"}, Glob: "*.go"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "a.go"}, false},
+		{"rg dir keeps native --glob", engineRipgrep, backend.Args{Query: "foo", Paths: []string{"sub"}, Glob: "*.go"}, []string{"--json", "--fixed-strings", "--glob", "*.go", "-e", "foo", "--", "sub"}, false},
+		{"fallback dir keeps native --include", engineGrep, backend.Args{Query: "foo", Paths: []string{"sub"}, Glob: "*.go"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "sub"}, false},
+		{"rg mixed file+dir operands", engineRipgrep, backend.Args{Query: "foo", Paths: []string{"a.go", "b.txt", "sub"}, Glob: "*.go"}, []string{"--json", "--fixed-strings", "--glob", "*.go", "-e", "foo", "--", "a.go", "sub"}, false},
+		{"fallback mixed file+dir operands", engineGrep, backend.Args{Query: "foo", Paths: []string{"a.go", "b.txt", "sub"}, Glob: "*.go"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "a.go", "sub"}, false},
+		{"rg empty after filter errors", engineRipgrep, backend.Args{Query: "foo", Paths: []string{"b.txt"}, Glob: "*.go"}, nil, true},
+		{"fallback empty after filter errors", engineGrep, backend.Args{Query: "foo", Paths: []string{"b.txt"}, Glob: "*.go"}, nil, true},
+		{"fallback dir-rooted glob with paths fails", engineGrep, backend.Args{Query: "foo", Paths: []string{"sub"}, Glob: "src/**"}, nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := buildArgv(tt.eng, tt.args)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("buildArgv() err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("buildArgv() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRipgrepNoFiles(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"no-files signature", errors.New("rg: exit status 2: No files were searched, which means ripgrep probably applied a filter"), true},
+		{"regex parse error is not the no-files signature", errors.New("rg: exit status 2: regex parse error: unclosed group"), false},
+		{"other exit-2 is not the no-files signature", errors.New("rg: exit status 2: something else"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ripgrepNoFiles(tt.err); got != tt.want {
+				t.Errorf("ripgrepNoFiles() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRipgrepRegexHint(t *testing.T) {
+	parseErr := errors.New("rg: exit status 2: regex parse error:\n    (?:foo\\|bar()\n    ^\nerror: unclosed group")
+	unclosedOnly := errors.New("rg: exit status 2: regex parse error:\n    (?:foo()\n    ^\nerror: unclosed group")
+	noFiles := errors.New("rg: exit status 2: No files were searched")
+	other := errors.New("rg: exit status 2: something else")
+	tests := []struct {
+		name     string
+		err      error
+		pattern  string
+		wantHint bool
+	}{
+		{"BRE alternation on an unclosed-group parse error fires", parseErr, `foo\|bar(`, true},
+		{"BRE group escape fires", parseErr, `foo\(bar`, true},
+		{"genuine unclosed group without BRE escapes is silent", unclosedOnly, `foo(`, false},
+		{"no-files-searched signature is silent (disjoint from parse errors)", noFiles, `foo\|bar`, false},
+		{"non-regex exit-2 is silent", other, `foo\|bar`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ripgrepRegexHint(tt.err, tt.pattern)
+			hasHint := strings.Contains(got.Error(), "hint: --regex is Rust syntax")
+			if hasHint != tt.wantHint {
+				t.Errorf("ripgrepRegexHint() hint = %v, want %v; got err = %q", hasHint, tt.wantHint, got.Error())
+			}
+			if !errors.Is(got, tt.err) {
+				t.Errorf("ripgrepRegexHint() dropped the wrapped error: %v", got)
+			}
+		})
+	}
+}
+
+// TestRun_RipgrepNoFilesNormalizes proves an rg exit-2 "no files were searched"
+// failure is normalized to the clean no-match grep reports as exit 0, while a grep
+// engine error is returned untouched.
+func TestRun_RipgrepNoFilesNormalizes(t *testing.T) {
+	noFiles := func(context.Context, string, []string) (string, error) {
+		return "", errors.New("rg: exit status 2: No files were searched")
+	}
+	out, found, err := run(context.Background(), engineRipgrep, "rg", backend.Args{Query: "foo", Glob: "*.zzz"}, noFiles)
+	if err != nil {
+		t.Fatalf("run() err = %v, want nil (normalized no-match)", err)
+	}
+	if found {
+		t.Errorf("run() found = true, want false")
+	}
+	if !strings.Contains(out, "no matches") {
+		t.Errorf("run() = %q, want no-match header", out)
+	}
+
+	// The same signature from the grep engine is a real error, not a no-match.
+	boom := func(context.Context, string, []string) (string, error) {
+		return "", errors.New("grep: exit status 2: No files were searched")
+	}
+	if _, _, err := run(context.Background(), engineGrep, "grep", backend.Args{Query: "foo"}, boom); err == nil {
+		t.Errorf("run() grep err = nil, want propagated error")
+	}
+}
+
+// TestRun_RipgrepRegexHintPropagates proves run appends the BRE hint to a rg
+// regex-parse error whose pattern carries a BRE escape, and leaves a bare parse
+// error unhinted.
+func TestRun_RipgrepRegexHintPropagates(t *testing.T) {
+	parseErr := func(context.Context, string, []string) (string, error) {
+		return "", errors.New("rg: exit status 2: regex parse error: unclosed group")
+	}
+	_, _, err := run(context.Background(), engineRipgrep, "rg", backend.Args{Query: `foo\|bar`, Regex: true}, parseErr)
+	if err == nil || !strings.Contains(err.Error(), "hint: --regex is Rust syntax") {
+		t.Errorf("run() err = %v, want BRE hint appended", err)
+	}
+	_, _, err = run(context.Background(), engineRipgrep, "rg", backend.Args{Query: "foo(", Regex: true}, parseErr)
+	if err == nil || strings.Contains(err.Error(), "hint:") {
+		t.Errorf("run() err = %v, want bare parse error without hint", err)
 	}
 }
 
@@ -377,10 +559,9 @@ func TestReshape(t *testing.T) {
 }
 
 func TestReshapeFramesMatchRenderRegexes(t *testing.T) {
-	// The section headers and frames reshape emits must satisfy the exact regexes
-	// render.annotateGrep anchors on, or the output would pass through unanchored.
-	sectionRe := regexp.MustCompile(`^### (.+?):\d[\d,]*(?:[ \t].*)?$`)
-	frameRe := regexp.MustCompile(`^(\s*→?\s*)\[(\d+)(?:-(\d+))?\](\s)`)
+	// Consume the production patterns annotateGrep anchors on, so a render-side
+	// regex change that breaks reshape's frames fails here.
+	sectionRe, _, frameRe := render.GrepReshapeRegexes()
 	out := reshape("foo", engineRipgrep, []fileGroup{
 		{path: "internal/backend/backend.go", lines: []grepLine{{num: 9, text: "ctx", isMatch: false}, {num: 10, text: "match", isMatch: true}}},
 	})
@@ -628,6 +809,102 @@ func TestRun_LiveRipgrepPaths(t *testing.T) {
 	}
 	if strings.Contains(got, "c.go") {
 		t.Errorf("Run(paths) leaked an unnamed file:\n%s", got)
+	}
+
+	// Paths + --glob: rg's -g does not filter the explicit files, so the Go-side
+	// prefilter must drop notes.txt while keeping the .go operands.
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("var needle = 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	globbed, err := Run(context.Background(), backend.Args{Query: "needle", Paths: []string{"a.go", "notes.txt"}, Glob: "*.go"})
+	if err != nil {
+		t.Fatalf("Run(paths+glob) err = %v", err)
+	}
+	if !strings.Contains(globbed, "### a.go:") {
+		t.Errorf("Run(paths+glob) missing .go section:\n%s", globbed)
+	}
+	if strings.Contains(globbed, "notes.txt") {
+		t.Errorf("Run(paths+glob) leaked a non-.go operand:\n%s", globbed)
+	}
+}
+
+// TestRun_LiveEnginesAgreeOnGlobPaths drives both real engines over one fixture of
+// file and directory operands with --glob and proves they return the identical hit
+// set: --glob's Go-side prefilter (rg) and --include (grep) must not diverge.
+func TestRun_LiveEnginesAgreeOnGlobPaths(t *testing.T) {
+	rgBin, rgErr := exec.LookPath("rg")
+	grepBin, grepErr := exec.LookPath("grep")
+	if rgErr != nil || grepErr != nil {
+		t.Skip("need both rg and grep on PATH to compare engines")
+	}
+	dir := t.TempDir()
+	for rel, content := range map[string]string{
+		"a.go":      "var needle = 1\n",
+		"b.txt":     "var needle = 1\n",
+		"sub/c.go":  "var needle = 1\n",
+		"sub/d.txt": "var needle = 1\n",
+	} {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(dir)
+
+	args := backend.Args{Query: "needle", Paths: []string{"a.go", "b.txt", "sub"}, Glob: "*.go"}
+	rgOut, rgFound, err := run(context.Background(), engineRipgrep, rgBin, args, execEngine)
+	if err != nil {
+		t.Fatalf("rg run: %v", err)
+	}
+	grepOut, grepFound, err := run(context.Background(), engineGrep, grepBin, args, execEngine)
+	if err != nil {
+		t.Fatalf("grep run: %v", err)
+	}
+	if !rgFound || !grepFound {
+		t.Fatalf("found mismatch: rg=%v grep=%v", rgFound, grepFound)
+	}
+	for name, out := range map[string]string{"rg": rgOut, "grep": grepOut} {
+		if !strings.Contains(out, "### a.go:") || !strings.Contains(out, "### sub/c.go:") {
+			t.Errorf("%s missing expected .go sections:\n%s", name, out)
+		}
+		if strings.Contains(out, "b.txt") || strings.Contains(out, "d.txt") {
+			t.Errorf("%s leaked a non-.go file past --glob:\n%s", name, out)
+		}
+	}
+}
+
+// TestRun_LiveEnginesAgreeOnZeroGlob proves a --glob matching zero files yields the
+// same clean no-match from both engines — the case where an older rg exits 2 with
+// "No files were searched" while grep exits 0, reconciled by ripgrepNoFiles.
+func TestRun_LiveEnginesAgreeOnZeroGlob(t *testing.T) {
+	rgBin, rgErr := exec.LookPath("rg")
+	grepBin, grepErr := exec.LookPath("grep")
+	if rgErr != nil || grepErr != nil {
+		t.Skip("need both rg and grep on PATH to compare engines")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("var needle = 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	args := backend.Args{Query: "needle", Glob: "*.nomatchext"}
+	rgOut, rgFound, err := run(context.Background(), engineRipgrep, rgBin, args, execEngine)
+	if err != nil {
+		t.Fatalf("rg run: %v", err)
+	}
+	grepOut, grepFound, err := run(context.Background(), engineGrep, grepBin, args, execEngine)
+	if err != nil {
+		t.Fatalf("grep run: %v", err)
+	}
+	if rgFound || grepFound {
+		t.Errorf("expected no match from both: rg=%v grep=%v", rgFound, grepFound)
+	}
+	if !strings.Contains(rgOut, "no matches") || !strings.Contains(grepOut, "no matches") {
+		t.Errorf("expected a no-match header from both:\nrg=%q\ngrep=%q", rgOut, grepOut)
 	}
 }
 

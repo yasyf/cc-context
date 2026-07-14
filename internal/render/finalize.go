@@ -65,6 +65,13 @@ var (
 	grepFrameRe = regexp.MustCompile(`^(\s*→?\s*)\[(\d+)(?:-(\d+))?\](\s)`)
 )
 
+// GrepReshapeRegexes returns the section, fence, and frame patterns annotateGrep
+// anchors grep output on, letting the ripgrep reshaper's drift canary assert
+// against the production patterns instead of copies that could silently diverge.
+func GrepReshapeRegexes() (section, fence, frame *regexp.Regexp) {
+	return grepSectionRe, grepFenceRe, grepFrameRe
+}
+
 // annotateGrep rewrites tilth grep frame lines to carry a content anchor,
 // tracking the current file from "### path:…" and "```path:…" headers. Header,
 // gutter ("NN │"), and open-range lines never match grepFrameRe, so they pass

@@ -112,6 +112,41 @@ func TestRootHelpListsAllOps(t *testing.T) {
 	}
 }
 
+// TestGroupCommandsRejectUnknownSubcommand proves each group command errors on an
+// unknown positional token instead of swallowing it and printing help with exit 0,
+// while a bare group invocation still prints help.
+func TestGroupCommandsRejectUnknownSubcommand(t *testing.T) {
+	for _, group := range []string{"code", "repo", "vcs", "web"} {
+		t.Run(group+" unknown subcommand errors", func(t *testing.T) {
+			var out bytes.Buffer
+			root := cli.NewRootCmd()
+			root.SetOut(&out)
+			root.SetErr(&out)
+			root.SetArgs([]string{group, "definitely-not-a-command"})
+			err := root.Execute()
+			if err == nil {
+				t.Fatalf("Execute(%s definitely-not-a-command) err = nil, want unknown-command error\n%s", group, out.String())
+			}
+			if !strings.Contains(err.Error(), "definitely-not-a-command") {
+				t.Errorf("error does not name the bad token: %v", err)
+			}
+		})
+		t.Run(group+" bare prints help", func(t *testing.T) {
+			var out bytes.Buffer
+			root := cli.NewRootCmd()
+			root.SetOut(&out)
+			root.SetErr(&out)
+			root.SetArgs([]string{group})
+			if err := root.Execute(); err != nil {
+				t.Fatalf("Execute(%s) err = %v, want help with no error", group, err)
+			}
+			if !strings.Contains(out.String(), "Usage:") {
+				t.Errorf("bare %q did not print help:\n%s", group, out.String())
+			}
+		})
+	}
+}
+
 func TestSymbolAliasGrokRegistered(t *testing.T) {
 	for _, group := range cli.NewRootCmd().Commands() {
 		if group.Name() != "code" {
