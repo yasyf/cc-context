@@ -19,6 +19,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+    env:
+      # Pin the HF hub cache somewhere cacheable: a restored commit-sha
+      # snapshot means the embed driver never touches HF Hub, so
+      # TestEmbedIntegration stops skipping on unauthenticated-CAS 401s.
+      HF_HOME: ${{ github.workspace }}/.hf-home
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
@@ -42,10 +47,47 @@ jobs:
         run: cargo test --manifest-path format-core/Cargo.toml
       - name: Vet
         run: go vet ./...
+      - name: Derive HF cache key from the model pin
+        id: hf-pin
+        run: |
+          pin="$(sed -n 's/^const EmbedModelID = "\(.*\)"$/\1/p' internal/web/embed.go)"
+          [ -n "$pin" ]
+          echo "pin=$pin" >> "$GITHUB_OUTPUT"
+      - name: Restore HF embed-model snapshot
+        id: hf-restore
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.HF_HOME }}/hub
+          key: hf-embed-${{ runner.os }}-${{ steps.hf-pin.outputs.pin }}
       - name: Test (race)
+        env:
+          # Optional: authenticates the first snapshot download when the secret
+          # exists. Absent, the download stays unauthenticated and the
+          # integration test skips on a CAS 401 until one run primes the cache.
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: go test -race ./...
       - name: Build
         run: go build ./...
+      - name: Verify HF snapshot serves the driver offline
+        id: hf-warm
+        if: always() && steps.hf-restore.outputs.cache-hit != 'true'
+        # hf hub deletes its *.incomplete markers when a download aborts, so
+        # file layout cannot prove completeness — only embedding offline can.
+        # This gates the save: the cache key is immutable, so a cached partial
+        # snapshot would pin the miss forever.
+        run: |
+          warm=false
+          if [ -d "$HF_HOME/hub" ] &&
+            HF_HUB_OFFLINE=1 go test -count=1 -race -run 'TestEmbedIntegration$' ./internal/web; then
+            warm=true
+          fi
+          echo "warm=$warm" >> "$GITHUB_OUTPUT"
+      - name: Save HF embed-model snapshot
+        if: always() && steps.hf-warm.outputs.warm == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.HF_HOME }}/hub
+          key: hf-embed-${{ runner.os }}-${{ steps.hf-pin.outputs.pin }}
 
   lint:
     runs-on: ubuntu-latest
