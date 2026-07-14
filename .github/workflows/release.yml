@@ -28,12 +28,18 @@ jobs:
     uses: yasyf/homebrew-tap/.github/workflows/release-go.yml@v1
     secrets: inherit
     with:
-      # ccx ships as a formula (livecheck + `brew install --HEAD` source build +
-      # runtime depends_on ast-grep/uv) rendered from its template — goreleaser's
-      # brews block can't express that, so render-formula + publish handle the .rb.
+      # ccx ships as a formula (livecheck + runtime depends_on ast-grep/uv)
+      # rendered from its template — goreleaser's brews block can't express that,
+      # so render-formula + publish handle the .rb.
       render-formula: true
       formula-template: .github/formula/ccx.rb.tmpl
       formula-name: ccx
+      # The format engine is format-core compiled to WASM and go:embed'd, so it
+      # must exist before goreleaser builds. pre-build runs after checkout+setup
+      # and before goreleaser.
+      pre-build: |
+        rustup target add wasm32-unknown-unknown
+        bash scripts/build-wasm.sh
 
   # Validates the released darwin_arm64 tarball end to end, exercising the
   # uv-provisioned pydantic-monty sandbox driver an end user hits on `ccx exec`.

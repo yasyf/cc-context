@@ -33,6 +33,13 @@ jobs:
         # Mirror the runtime launch flags (internal/codeexec/driver.go) so a PR's
         # checked-out uv.toml / pyproject cannot steer resolution here either.
         run: uv run --no-project --no-config --no-build --quiet --python "3.13" --with pydantic-monty==0.0.18 python -c "import pydantic_monty"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Build WASM format engine (go:embed input)
+        run: bash scripts/build-wasm.sh
+      - name: Rust format-core tests (Rust suite + corpus gate)
+        run: cargo test --manifest-path format-core/Cargo.toml
       - name: Vet
         run: go vet ./...
       - name: Test (race)
@@ -49,6 +56,11 @@ jobs:
           go-version-file: go.mod
           check-latest: true
           cache: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Build WASM format engine (go:embed input)
+        run: bash scripts/build-wasm.sh
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -63,6 +75,11 @@ jobs:
           go-version-file: go.mod
           check-latest: true
           cache: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Build WASM format engine (go:embed input)
+        run: bash scripts/build-wasm.sh
       - name: govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -115,6 +132,11 @@ jobs:
       # symlink since the self-provisioning installer replaced the checked-in
       # shim. Without a binary there, rewrite hooks degrade to blocks/no-ops
       # and the rewrite-expectation tests fail. Build from this checkout.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Build WASM format engine (go:embed input)
+        run: bash scripts/build-wasm.sh
       - name: Build ccx and link plugin/bin
         run: |
           go build -o bin/ccx ./cmd/ccx

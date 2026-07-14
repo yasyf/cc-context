@@ -19,6 +19,9 @@ __pycache__/
 /bin/
 /dist/
 
+# WASM format engine, built from format-core/wasm by `task wasm` (go:embed'd)
+/internal/format/formatcore.wasm
+
 # Test / coverage
 *.test
 *.out

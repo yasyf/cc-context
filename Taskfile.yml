@@ -11,24 +11,33 @@ vars:
     -X github.com/yasyf/cc-context/internal/version.Commit={{.COMMIT}}
 
 tasks:
+  wasm:
+    desc: Build the format-core WASM engine and embed it into internal/format
+    cmds:
+      - bash scripts/build-wasm.sh
+
   build:
     desc: Build the binary into ./bin
+    deps: [wasm]
     cmds:
       - go build -trimpath -ldflags "{{.LDFLAGS}}" -o bin/ccx ./cmd/ccx
       - ln -sf ../../bin/ccx plugin/bin/ccx
 
   test:
     desc: Run the test suite with the race detector
+    deps: [wasm]
     cmds:
       - go test -race -count=1 ./...
 
   vet:
     desc: Vet the module
+    deps: [wasm]
     cmds:
       - go vet ./...
 
   lint:
     desc: Lint with golangci-lint
+    deps: [wasm]
     cmds:
       - golangci-lint run
 

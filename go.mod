@@ -5,7 +5,6 @@ go 1.26.5
 require (
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/spf13/cobra v1.10.2
-	github.com/toon-format/toon-go v0.0.0-20251202084852-7ca0e27c4e8c
 	golang.org/x/sys v0.45.0
 )
 
@@ -16,6 +15,7 @@ require (
 	github.com/boyter/gocodewalker v1.5.1
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/spf13/pflag v1.0.9
+	github.com/tetratelabs/wazero v1.12.0
 	github.com/yuin/goldmark v1.8.2
 	golang.org/x/net v0.55.0
 	golang.org/x/sync v0.21.0
