@@ -9,6 +9,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/secrets"
 )
 
 // Finalize rewrites op's raw backend output into anchored form, then caps it to
@@ -16,8 +17,9 @@ import (
 // echo it back into ccx_code_read even after edits shift line numbers. The
 // rewrite is op-keyed: grep and symbol output gain frame anchors, deps output
 // regroups its "## Used by" rows under per-file "### path" headings with anchored
-// line spans, search and related output is reshaped from raw semble JSON, and
-// every other op passes through unchanged. OpWebRead passes through too: web.Run
+// line spans, search and related output is reshaped from raw semble JSON, read
+// output is secret-masked before capping (unless a.RevealSecrets) with a footer
+// naming the fired rules, and every other op passes through unchanged. OpWebRead passes through too: web.Run
 // applies its own content-aware budget+offset (byte-exact continuation) before
 // Finalize sees it. Every other op caps through Cap. OpDiff must never reach here — the diff pipeline
 // anchors its own output. The anchor.Files cache is built fresh per call (the MCP
@@ -44,11 +46,38 @@ func Finalize(op backend.Op, out string, a backend.Args) (string, error) {
 			return "", err
 		}
 		return Cap(reshaped, a.Budget), nil
+	case backend.OpRead:
+		if a.RevealSecrets {
+			return Cap(out, a.Budget), nil
+		}
+		masked, ids := secrets.Mask(out, a.Path)
+		return withSecretsFooter(Cap(masked, a.Budget), ids), nil
 	case backend.OpWebRead:
 		return out, nil
 	default:
 		return Cap(out, a.Budget), nil
 	}
+}
+
+// withSecretsFooter appends the one-line masked-secrets notice after capping, so
+// it is never truncated away; ids are the fired rules in span order, deduped for
+// the notice. No ids means no footer.
+func withSecretsFooter(out string, ids []string) string {
+	if len(ids) == 0 {
+		return out
+	}
+	seen := make(map[string]bool, len(ids))
+	var uniq []string
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			uniq = append(uniq, id)
+		}
+	}
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	return fmt.Sprintf("%s# %d secret(s) masked (%s) — --reveal-secrets prints raw\n", out, len(ids), strings.Join(uniq, ", "))
 }
 
 var (

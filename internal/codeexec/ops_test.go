@@ -60,6 +60,12 @@ func TestOpsArgMapping(t *testing.T) {
 			backend.Args{Path: "z.go", Full: true},
 		},
 		{
+			"read reveal_secrets flag", "read",
+			Call{Kwargs: map[string]any{"path": "z.go", "reveal_secrets": true}},
+			backend.OpRead,
+			backend.Args{Path: "z.go", RevealSecrets: true},
+		},
+		{
 			"grep", "grep",
 			Call{Kwargs: kw("text", "RunDiffCLI", "glob", "*.go")},
 			backend.OpGrep,

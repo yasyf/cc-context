@@ -77,10 +77,11 @@ type OutlineIn struct {
 
 // ReadIn is the input for ccx_code_read.
 type ReadIn struct {
-	Path    string `json:"path" jsonschema:"file to read"`
-	Section string `json:"section,omitempty" jsonschema:"line range (\"40-95\"), heading (\"## Heading\"), or anchor (\"15-27#k2fa\" or bare \"k2fa\"); a shifted anchor re-resolves by content and prepends a \"# anchor …\" note"`
-	Full    bool   `json:"full,omitempty" jsonschema:"read the whole file"`
-	Budget  int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
+	Path          string `json:"path" jsonschema:"file to read"`
+	Section       string `json:"section,omitempty" jsonschema:"line range (\"40-95\"), heading (\"## Heading\"), or anchor (\"15-27#k2fa\" or bare \"k2fa\"); a shifted anchor re-resolves by content and prepends a \"# anchor …\" note"`
+	Full          bool   `json:"full,omitempty" jsonschema:"read the whole file"`
+	RevealSecrets bool   `json:"reveal_secrets,omitempty" jsonschema:"print detected secrets raw instead of masked"`
+	Budget        int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
 }
 
 // SymbolIn is the input for ccx_code_symbol.
@@ -267,7 +268,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 		Description: "Read a file by section, heading, anchor, or whole; pass section to avoid the entire file.",
 		Meta:        alwaysLoad,
 	}, handler(p, backend.OpRead, func(in ReadIn) backend.Args {
-		return backend.Args{Path: in.Path, Section: in.Section, Full: in.Full, Budget: in.Budget}
+		return backend.Args{Path: in.Path, Section: in.Section, Full: in.Full, RevealSecrets: in.RevealSecrets, Budget: in.Budget}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{

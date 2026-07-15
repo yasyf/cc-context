@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] - 2026-07-16
+
+### Added
+- **`ccx code read` masks detected secrets by default.** gitleaks' default rules (vendored from
+  v8.30.1) run over read output before budget capping on all three lanes — CLI, MCP
+  `ccx_code_read`, and the exec `read` host function. A finding of 16+ bytes keeps a 4-byte stub
+  and collapses to `…[masked:<rule-id>]` (a shorter finding masks whole), and a footer names the
+  fired rules. The noisy `generic-api-key` entropy catch-all fires only on env-shaped files
+  (`.env`, `.env.*`, `*.env`, `.envrc`, `credentials`, `.netrc`) — a high-entropy secret
+  hardcoded in `.yaml`/`.json`/source is left raw, deliberately: the rule is documented-noisy on
+  ordinary source and would repaint lockfile hashes. Masking covers `code read` only;
+  `grep`/`outline`/`symbol`/`diff` still emit raw content (backlogged). `--reveal-secrets`
+  (`reveal_secrets` on MCP/exec) prints raw and now trips a permission prompt via the guard pack.
+  Pack 0.7.0.
+
 ## [0.18.0] - 2026-07-15
 
 ### Changed

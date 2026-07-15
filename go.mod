@@ -10,6 +10,7 @@ require (
 
 require (
 	codeberg.org/readeck/go-readability v0.0.0-20260615104154-29522a0e224f
+	github.com/BurntSushi/toml v1.6.0
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/boyter/gocodewalker v1.5.1

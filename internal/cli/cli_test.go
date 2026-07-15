@@ -373,3 +373,67 @@ func writeFakeEngine(t *testing.T, name string) {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
+
+// fakeAWSKey is a well-known example AWS access key id the aws-access-token
+// masking rule fires on.
+const fakeAWSKey = "AKIAIOSFODNN7EXAMPLE" //nolint:gosec // AWS's documented example key id, not a credential
+
+// writeSecretEngine puts a fake tilth on PATH that emits a secret-bearing
+// line, so the read tests can prove masking at the CLI seam.
+func writeSecretEngine(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\necho 'KEY = \"" + fakeAWSKey + "\"'\n"
+	if err := os.WriteFile(filepath.Join(dir, "tilth"), []byte(script), 0o700); err != nil { //nolint:gosec // fake engine script must be owner-executable
+		t.Fatalf("write fake engine: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// TestReadCommandMasksSecretOutput proves a secret emitted by the engine comes
+// out masked with the footer when --reveal-secrets is absent.
+func TestReadCommandMasksSecretOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell script is POSIX-only")
+	}
+	writeSecretEngine(t)
+	file := writeAnchorFixture(t)
+
+	got := runCCX(t, "code", "read", file, "--full")
+	want := "KEY = \"AKIA…[masked:aws-access-token]\"\n# 1 secret(s) masked (aws-access-token) — --reveal-secrets prints raw\n"
+	if got != want {
+		t.Errorf("read output = %q, want %q", got, want)
+	}
+}
+
+// TestReadCommandRevealSecrets proves --reveal-secrets passes the engine's
+// secret through raw, with no footer.
+func TestReadCommandRevealSecrets(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell script is POSIX-only")
+	}
+	writeSecretEngine(t)
+	file := writeAnchorFixture(t)
+
+	got := runCCX(t, "code", "read", file, "--full", "--reveal-secrets")
+	want := "KEY = \"" + fakeAWSKey + "\"\n"
+	if got != want {
+		t.Errorf("read --reveal-secrets output = %q, want %q", got, want)
+	}
+}
+
+// TestReadCommandRevealSecretsStaysLocal proves the flag is ccx-side
+// post-processing only: the argv the fake tilth echoes back never carries it.
+func TestReadCommandRevealSecretsStaysLocal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell script is POSIX-only")
+	}
+	writeFakeEngine(t, "tilth")
+	file := writeAnchorFixture(t)
+
+	got := runCCX(t, "code", "read", file, "--full", "--reveal-secrets")
+	want := file + " --full\n"
+	if got != want {
+		t.Errorf("read argv echo = %q, want %q", got, want)
+	}
+}

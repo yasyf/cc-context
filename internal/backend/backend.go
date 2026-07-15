@@ -77,6 +77,7 @@ type Args struct {
 	Mode            string
 	Paths           []string
 	Full            bool
+	RevealSecrets   bool
 	Apply           bool
 	Force           bool
 	Delete          bool
