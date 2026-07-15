@@ -159,7 +159,7 @@ jobs:
         # Lint the plugin root — the dir whose SessionStart `pack attach` line is
         # passed. Vets the canonical attach, the captain-hook dependency floor,
         # and the marketplace cross-dependency allowance.
-        run: uvx 'capt-hook>=9.9.0' pack lint plugin
+        run: uvx 'capt-hook>=9.15.0' pack lint plugin
 
   hook-tests:
     runs-on: ubuntu-latest

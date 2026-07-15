@@ -15,21 +15,24 @@ The ``curl``/``wget`` → ``ccx web read`` rewrite is gated on ``ccx_supports("w
 so its outcome is environment-dependent and cannot live in the inline ``tests={}``. Here the
 probe boundary (``ccx_bin`` + ``subprocess.run``) is monkeypatched to force support on/off, with
 the ``ccx_supports`` cache cleared around every case so a probe result never leaks between them.
+
+``page_dump_to``/``page_dump_note`` are occurrence-scoped (``rewrite_command_occurrences``), so
+each takes an ``Occurrence`` alongside the event rather than a whole-line stand-in. ``evt_occ``
+parses a command line and hands back the ``(evt, Occurrence)`` pair each builder takes — the
+same convention :mod:`test_cat_rewrites` established for its own occurrence-scoped rewrite.
 """
 
 from __future__ import annotations
 
 import shlex
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
-from captain_hook import CommandLine
 from captain_hook.context import HookContext
 from captain_hook.events import PreToolUseEvent
 from captain_hook.session import SessionStore
 
-from conftest import fake_run
+from conftest import fake_run, make_evt
 from hooks import common, web_guards
 from hooks.web_guards import WholePageWebFetch, page_dump_note, page_dump_to
 
@@ -72,9 +75,9 @@ class TestWholePageWebFetch:
         assert not cond.check(webfetch_event("http://127.0.0.1:8080/metrics", session))
 
 
-def make_bash_evt(command: str) -> SimpleNamespace:
-    """A minimal event exposing ``command_line`` — all ``page_dump_to``/``page_dump_note`` read."""
-    return SimpleNamespace(command_line=CommandLine.parse(command))
+def evt_occ(command: str, index: int = 0):
+    evt = make_evt(command)
+    return evt, evt.command_line.occurrences[index]
 
 
 def force_web_support(monkeypatch: pytest.MonkeyPatch, *, ok: bool) -> None:
@@ -111,23 +114,25 @@ class TestPageDumpRewrite:
         self, monkeypatch: pytest.MonkeyPatch, command: str, url: str
     ) -> None:
         force_web_support(monkeypatch, ok=True)
-        assert page_dump_to(make_bash_evt(command)) == f"/fake/ccx web read {url} --full"
+        evt, occ = evt_occ(command)
+        assert page_dump_to(evt, occ) == f"/fake/ccx web read {url} --full"
 
     def test_query_string_url_is_shell_quoted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         force_web_support(monkeypatch, ok=True)
-        got = page_dump_to(make_bash_evt("curl 'https://example.com/p?a=1&b=2'"))
-        assert got == "/fake/ccx web read 'https://example.com/p?a=1&b=2' --full"
+        evt, occ = evt_occ("curl 'https://example.com/p?a=1&b=2'")
+        assert page_dump_to(evt, occ) == "/fake/ccx web read 'https://example.com/p?a=1&b=2' --full"
 
     def test_benign_query_string_still_rewrites(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Finding 7: a query string that is *not* JSON/GraphQL (`?page=2`) still rewrites — the
         # api heuristic must not block every URL that happens to carry a query.
         force_web_support(monkeypatch, ok=True)
-        got = page_dump_to(make_bash_evt("curl -s 'https://example.com/list?page=2'"))
-        assert got == "/fake/ccx web read 'https://example.com/list?page=2' --full"
+        evt, occ = evt_occ("curl -s 'https://example.com/list?page=2'")
+        assert page_dump_to(evt, occ) == "/fake/ccx web read 'https://example.com/list?page=2' --full"
 
     def test_unsupported_falls_back_to_block(self, monkeypatch: pytest.MonkeyPatch) -> None:
         force_web_support(monkeypatch, ok=False)
-        assert page_dump_to(make_bash_evt("curl https://example.com")) is None
+        evt, occ = evt_occ("curl https://example.com")
+        assert page_dump_to(evt, occ) is None
 
     @pytest.mark.parametrize(
         "command",
@@ -137,8 +142,7 @@ class TestPageDumpRewrite:
             "curl https://example.com/api/v1",  # `api` path segment
             "curl -H 'X-Auth: t' https://example.com",  # header flag → un-mappable
             "curl --url https://example.com/x",  # --url spelling
-            "curl https://example.com && echo done",  # multi-part line
-            "timeout 10 curl https://example.com/x",  # wrapper prefix
+            "timeout 10 curl https://example.com/x",  # wrapper prefix — occurrence_rewrite_url never unwraps
         ],
     )
     def test_supported_still_blocks_unmappable(
@@ -147,14 +151,37 @@ class TestPageDumpRewrite:
         # Even with `ccx web read` present, an un-mappable shape returns None (→ block), proving
         # the block reason is the shape, not the gate.
         force_web_support(monkeypatch, ok=True)
-        assert page_dump_to(make_bash_evt(command)) is None
+        evt, occ = evt_occ(command)
+        assert page_dump_to(evt, occ) is None
+
+    def test_compound_line_rewrites_the_curl_occurrence_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Deliberate flip: occurrences now judge independently, so `&&`'s curl still rewrites.
+        force_web_support(monkeypatch, ok=True)
+        evt = make_evt("curl https://example.com && echo done")
+        curl_occ, echo_occ = evt.command_line.occurrences
+        assert page_dump_to(evt, curl_occ) == "/fake/ccx web read https://example.com --full"
+        assert page_dump_to(evt, echo_occ) is None
 
     def test_note_names_target_and_steers(self, monkeypatch: pytest.MonkeyPatch) -> None:
         force_web_support(monkeypatch, ok=True)
-        note = page_dump_note(make_bash_evt("curl -sL https://example.com/guide"))
+        evt, occ = evt_occ("curl -sL https://example.com/guide")
+        text = page_dump_to(evt, occ)
+        note = page_dump_note(evt, [(occ, text)])
         assert "ccx web read https://example.com/guide --full" in note
         assert "ccx web outline https://example.com/guide" in note
         assert "ccx web search https://example.com/guide" in note
+
+    def test_note_falls_back_to_placeholder_for_multiple_urls(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Two distinct URLs across pairs: one trailing suggestion can't name both, so it stays generic.
+        force_web_support(monkeypatch, ok=True)
+        evt = make_evt("curl https://example.com/a && curl https://example.com/b")
+        occ_a, occ_b = evt.command_line.occurrences
+        pairs = [(occ_a, page_dump_to(evt, occ_a)), (occ_b, page_dump_to(evt, occ_b))]
+        note = page_dump_note(evt, pairs)
+        assert "ccx web read https://example.com/a --full" in note
+        assert "ccx web read https://example.com/b --full" in note
+        assert "ccx web outline <url>" in note
+        assert 'ccx web search <url> "<question>"' in note
 
 
 class TestApiUrlDecision:
@@ -181,7 +208,8 @@ class TestApiUrlDecision:
     )
     def test_api_url_falls_back_to_block(self, monkeypatch: pytest.MonkeyPatch, url: str) -> None:
         force_web_support(monkeypatch, ok=True)
-        assert page_dump_to(make_bash_evt(f"curl {shlex.quote(url)}")) is None
+        evt, occ = evt_occ(f"curl {shlex.quote(url)}")
+        assert page_dump_to(evt, occ) is None
 
     @pytest.mark.parametrize(
         "url",
@@ -194,4 +222,5 @@ class TestApiUrlDecision:
     )
     def test_non_api_url_rewrites(self, monkeypatch: pytest.MonkeyPatch, url: str) -> None:
         force_web_support(monkeypatch, ok=True)
-        assert page_dump_to(make_bash_evt(f"curl {shlex.quote(url)}")) == f"/fake/ccx web read {shlex.quote(url)} --full"
+        evt, occ = evt_occ(f"curl {shlex.quote(url)}")
+        assert page_dump_to(evt, occ) == f"/fake/ccx web read {shlex.quote(url)} --full"

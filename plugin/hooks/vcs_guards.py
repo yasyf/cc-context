@@ -29,6 +29,7 @@ from captain_hook import (
     Allow,
     BaseHookEvent,
     Block,
+    Command,
     CommandLine,
     CustomCommandLineCondition,
     Event,
@@ -38,7 +39,7 @@ from captain_hook import (
     Tool,
     Warn,
     on,
-    rewrite_command,
+    rewrite_command_occurrences,
     session_state,
 )
 from pydantic import BaseModel
@@ -46,7 +47,7 @@ from pydantic import BaseModel
 from .common import GIT_DIFF_SUMMARY_FLAGS, ccx_bin, is_single_command
 
 if TYPE_CHECKING:
-    from captain_hook import ParsedCommand
+    from cc_transcript.command import Occurrence
 
 # `jj diff` is scoped (a positional path) or summarized by one of these; a bare
 # diff with neither dumps the full patch.
@@ -84,17 +85,16 @@ GH_RUN_WATCH_NUDGE = (
 )
 
 
-def primary_has(cl: CommandLine, *tokens: str) -> bool:
-    """Report whether the primary command's argv carries any of ``tokens`` verbatim.
+def command_has(cmd: Command, *tokens: str) -> bool:
+    """Report whether a command's argv carries any of ``tokens`` verbatim.
 
-    Exact whole-token membership on the primary command only, so a short flag like
-    ``-p`` never substring-matches ``--pretty`` and never bleeds from a piped neighbor.
+    Exact whole-token membership keeps a short flag like ``-p`` from
+    substring-matching ``--pretty``.
     """
-    argv = cl.primary.argv
-    return any(token in argv for token in tokens)
+    return any(token in cmd.argv for token in tokens)
 
 
-def jj_diff_has_pathspec(cmd: ParsedCommand) -> bool:
+def jj_diff_has_pathspec(cmd: Command) -> bool:
     """Report whether ``jj diff`` carries a positional pathspec (revset flags aside).
 
     Walks the args after the ``diff`` subcommand, skipping value-taking flags and
@@ -123,9 +123,58 @@ def jj_diff_has_pathspec(cmd: ParsedCommand) -> bool:
     return False
 
 
-def has_blob_ref(cmd: ParsedCommand) -> bool:
+def has_blob_ref(cmd: Command) -> bool:
     """Report whether any positional arg is a ``<ref>:<path>`` blob/tree selector."""
     return any(":" in a for a in cmd.args if not a.startswith("-"))
+
+
+def occurrence_can_rewrite(occ: Occurrence) -> bool:
+    """Report whether an occurrence is outside a pipe and carries no redirects."""
+    return not occ.piped and not occ.command.redirects
+
+
+def is_git_diff_pager(cmd: Command) -> bool:
+    """Report whether ``cmd`` is an unscoped, non-summary ``git diff``."""
+    return (
+        cmd.executable == "git"
+        and bool(cmd.args)
+        and cmd.args[0] == "diff"
+        and "--" not in cmd.args
+        and not command_has(cmd, *GIT_DIFF_SUMMARY_FLAGS)
+    )
+
+
+def is_jj_diff_pager(cmd: Command) -> bool:
+    """Report whether ``cmd`` is an unscoped, non-summary ``jj diff``."""
+    return (
+        cmd.executable == "jj"
+        and bool(cmd.args)
+        and cmd.args[0] == "diff"
+        and not command_has(cmd, *JJ_DIFF_SUMMARY_FLAGS)
+        and not jj_diff_has_pathspec(cmd)
+    )
+
+
+def is_git_show_pager(cmd: Command) -> bool:
+    """Report whether ``cmd`` is a patch-emitting ``git show``."""
+    return (
+        cmd.executable == "git"
+        and bool(cmd.args)
+        and cmd.args[0] == "show"
+        and not command_has(cmd, *GIT_DIFF_SUMMARY_FLAGS)
+        and not command_has(cmd, *GIT_SHOW_SUPPRESS_FLAGS)
+        and not has_blob_ref(cmd)
+    )
+
+
+def is_log_patch_dump(cmd: Command) -> bool:
+    """Report whether ``cmd`` is a patch-emitting ``git log`` or ``jj log``."""
+    return (
+        cmd.executable in ("git", "jj")
+        and bool(cmd.args)
+        and cmd.args[0] == "log"
+        and command_has(cmd, *LOG_PATCH_FLAGS)
+    )
 
 
 class GitDiffPager(CustomCommandLineCondition):
@@ -137,11 +186,7 @@ class GitDiffPager(CustomCommandLineCondition):
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        return (
-            cl.q.runs("git", "diff")
-            and not cl.q.contains_token("--")
-            and not any(cl.q.contains_token(flag) for flag in GIT_DIFF_SUMMARY_FLAGS)
-        )
+        return any(occurrence_can_rewrite(occ) and is_git_diff_pager(occ.command) for occ in cl.occurrences)
 
 
 class JjDiffPager(CustomCommandLineCondition):
@@ -153,11 +198,7 @@ class JjDiffPager(CustomCommandLineCondition):
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        return (
-            cl.q.runs("jj", "diff")
-            and not primary_has(cl, *JJ_DIFF_SUMMARY_FLAGS)
-            and not jj_diff_has_pathspec(cl.primary)
-        )
+        return any(occurrence_can_rewrite(occ) and is_jj_diff_pager(occ.command) for occ in cl.occurrences)
 
 
 class GitShowPager(CustomCommandLineCondition):
@@ -169,12 +210,7 @@ class GitShowPager(CustomCommandLineCondition):
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        return (
-            cl.q.runs("git", "show")
-            and not primary_has(cl, *GIT_DIFF_SUMMARY_FLAGS)
-            and not primary_has(cl, *GIT_SHOW_SUPPRESS_FLAGS)
-            and not has_blob_ref(cl.primary)
-        )
+        return any(occurrence_can_rewrite(occ) and is_git_show_pager(occ.command) for occ in cl.occurrences)
 
 
 class LogPatchDump(CustomCommandLineCondition):
@@ -186,11 +222,10 @@ class LogPatchDump(CustomCommandLineCondition):
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        is_log = cl.q.runs("git", "log") or cl.q.runs("jj", "log")
-        return is_log and primary_has(cl, *LOG_PATCH_FLAGS)
+        return any(occurrence_can_rewrite(occ) and is_log_patch_dump(occ.command) for occ in cl.occurrences)
 
 
-def gitdiff_args(cl: CommandLine) -> list[str] | None:
+def gitdiff_args(cmd: Command) -> list[str] | None:
     """The trailing args for ``ccx vcs diff``, or ``None`` to fall back to the block.
 
     A bare ``git diff`` -> ``[]`` (working tree); a sole ``--cached``/``--staged`` ->
@@ -199,7 +234,7 @@ def gitdiff_args(cl: CommandLine) -> list[str] | None:
     flag (``-w``, ``-U3``, ``--word-diff``) or a second positional has no faithful
     ``ccx vcs diff`` form, so it blocks.
     """
-    rest = list(cl.primary.args[1:])
+    rest = list(cmd.args[1:])
     if not rest:
         return []
     if rest in (["--cached"], ["--staged"]):
@@ -209,28 +244,40 @@ def gitdiff_args(cl: CommandLine) -> list[str] | None:
     return None
 
 
-def gitdiff_to(evt: BaseHookEvent) -> str | None:
-    cl = evt.command_line
-    if not is_single_command(cl):
+def gitdiff_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
+    cmd = occ.command
+    if not occurrence_can_rewrite(occ) or not is_git_diff_pager(cmd):
         return None
-    args = gitdiff_args(cl)
+    args = gitdiff_args(cmd)
     if args is None or (ccx := ccx_bin()) is None:
         return None
     return " ".join([shlex.quote(ccx), "vcs", "diff", *(shlex.quote(a) for a in args)])
 
 
-def gitdiff_note(evt: BaseHookEvent) -> str:
-    cl = evt.command_line
-    dst = " ".join(["ccx", "vcs", "diff", *(gitdiff_args(cl) or [])])
+def gitdiff_blocks(evt: BaseHookEvent, occ: Occurrence) -> bool:
+    cmd = occ.command
     return (
-        f"Rewrote `{cl.raw}` → `{dst}`: same change set as a structural per-file summary, "
+        occurrence_can_rewrite(occ)
+        and is_git_diff_pager(cmd)
+        and (cmd.span is None or gitdiff_to(evt, occ) is None)
+    )
+
+
+def gitdiff_note(evt: BaseHookEvent, pairs: list[tuple[Occurrence, str]]) -> str:
+    rewrites = []
+    for occ, _ in pairs:
+        dst = " ".join(["ccx", "vcs", "diff", *(shlex.quote(a) for a in gitdiff_args(occ.command) or [])])
+        rewrites.append(f"`{occ.command.raw}` → `{dst}`")
+    return (
+        f"Rewrote {', '.join(rewrites)}: same change set as a structural per-file summary, "
         "token-bounded. Need the raw hunks? Scope them: `git diff -- <path>`."
     )
 
 
-rewrite_command(
+rewrite_command_occurrences(
     only_if=[GitDiffPager()],
     to=gitdiff_to,
+    block_if=gitdiff_blocks,
     block=(
         "BLOCKED: `git diff` without a pathspec dumps the full patch into context. "
         "Use `ccx vcs diff` for a compact summary (or mcp__cc-context__ccx_vcs_diff). "
@@ -255,31 +302,42 @@ rewrite_command(
         Input(command="git diff -- src/x.go"): Allow(),
         Input(command="git diff HEAD~1 -- src/x.go"): Allow(),
         Input(command="git status"): Allow(),
+        Input(command="git status && git diff"): Rewrite(pattern="git status && "),
+        Input(command="git diff; echo done"): Rewrite(pattern="vcs diff; echo done"),
+        Input(command="git diff > out.patch"): Allow(),
+        Input(command="git diff | head"): Allow(),
     },
 )
 
 
-def jjdiff_to(evt: BaseHookEvent) -> str | None:
-    cl = evt.command_line
-    if not is_single_command(cl):
+def jjdiff_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
+    cmd = occ.command
+    if not occurrence_can_rewrite(occ) or not is_jj_diff_pager(cmd):
         return None
     # Only a bare `jj diff` maps. `jj diff -r REV` is REV-vs-parent while `ccx vcs diff
     # REV` is REV-vs-working — not equivalent — so any arg after `diff` falls to block.
-    if list(cl.primary.args) != ["diff"] or (ccx := ccx_bin()) is None:
+    if list(cmd.args) != ["diff"] or (ccx := ccx_bin()) is None:
         return None
     return f"{shlex.quote(ccx)} vcs diff"
 
 
-def jjdiff_note(evt: BaseHookEvent) -> str:
+def jjdiff_blocks(evt: BaseHookEvent, occ: Occurrence) -> bool:
+    cmd = occ.command
+    return occurrence_can_rewrite(occ) and is_jj_diff_pager(cmd) and (cmd.span is None or jjdiff_to(evt, occ) is None)
+
+
+def jjdiff_note(evt: BaseHookEvent, pairs: list[tuple[Occurrence, str]]) -> str:
+    rewrites = ", ".join(f"`{occ.command.raw}` → `ccx vcs diff`" for occ, _ in pairs)
     return (
-        "Rewrote `jj diff` → `ccx vcs diff`: same working-copy changes as a jj-aware "
+        f"Rewrote {rewrites}: same working-copy changes as a jj-aware "
         "structural summary, token-bounded. Need the raw hunks? `jj diff <path>`."
     )
 
 
-rewrite_command(
+rewrite_command_occurrences(
     only_if=[JjDiffPager()],
     to=jjdiff_to,
+    block_if=jjdiff_blocks,
     block=(
         "BLOCKED: `jj diff` without a pathspec dumps the full patch into context. "
         "Use `ccx vcs diff` for a compact, jj-aware summary (or mcp__cc-context__ccx_vcs_diff). "
@@ -302,7 +360,7 @@ rewrite_command(
 )
 
 
-def gitshow_args(cl: CommandLine) -> list[str] | None:
+def gitshow_args(cmd: Command) -> list[str] | None:
     """The trailing args for ``ccx vcs show``, or ``None`` to fall back to the block.
 
     A bare ``git show`` -> ``[]`` (the last commit); a sole positional ref (``HEAD``,
@@ -310,7 +368,7 @@ def gitshow_args(cl: CommandLine) -> list[str] | None:
     refs, so these resolve even in a jj repo). Any flag the condition did not already
     exclude, or a second positional, has no faithful ``ccx vcs show`` form, so it blocks.
     """
-    rest = list(cl.primary.args[1:])
+    rest = list(cmd.args[1:])
     if not rest:
         return []
     if len(rest) == 1 and not rest[0].startswith("-"):
@@ -318,28 +376,40 @@ def gitshow_args(cl: CommandLine) -> list[str] | None:
     return None
 
 
-def gitshow_to(evt: BaseHookEvent) -> str | None:
-    cl = evt.command_line
-    if not is_single_command(cl):
+def gitshow_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
+    cmd = occ.command
+    if not occurrence_can_rewrite(occ) or not is_git_show_pager(cmd):
         return None
-    args = gitshow_args(cl)
+    args = gitshow_args(cmd)
     if args is None or (ccx := ccx_bin()) is None:
         return None
     return " ".join([shlex.quote(ccx), "vcs", "show", *(shlex.quote(a) for a in args)])
 
 
-def gitshow_note(evt: BaseHookEvent) -> str:
-    cl = evt.command_line
-    dst = " ".join(["ccx", "vcs", "show", *(gitshow_args(cl) or [])])
+def gitshow_blocks(evt: BaseHookEvent, occ: Occurrence) -> bool:
+    cmd = occ.command
     return (
-        f"Rewrote `{cl.raw}` → `{dst}`: the commit message plus a structural per-file summary, "
+        occurrence_can_rewrite(occ)
+        and is_git_show_pager(cmd)
+        and (cmd.span is None or gitshow_to(evt, occ) is None)
+    )
+
+
+def gitshow_note(evt: BaseHookEvent, pairs: list[tuple[Occurrence, str]]) -> str:
+    rewrites = []
+    for occ, _ in pairs:
+        dst = " ".join(["ccx", "vcs", "show", *(shlex.quote(a) for a in gitshow_args(occ.command) or [])])
+        rewrites.append(f"`{occ.command.raw}` → `{dst}`")
+    return (
+        f"Rewrote {', '.join(rewrites)}: the commit message plus a structural per-file summary, "
         "token-bounded. Need one file? `git show <ref>:<path>` stays allowed."
     )
 
 
-rewrite_command(
+rewrite_command_occurrences(
     only_if=[GitShowPager()],
     to=gitshow_to,
+    block_if=gitshow_blocks,
     block=(
         "BLOCKED: `git show <ref>` dumps a full patch into context. "
         "Use `ccx vcs show <ref>` for the commit message plus a structural per-file summary. "
@@ -363,8 +433,8 @@ rewrite_command(
 )
 
 
-def git_log_history(args: tuple[str, ...]) -> tuple[str, str | None] | None:
-    """Map the args after ``git log`` to ``(path, count)`` for ``ccx vcs history``, or ``None``.
+def git_log_history(cmd: Command) -> tuple[str, str | None] | None:
+    """Map a ``git log`` command to ``(path, count)`` for ``ccx vcs history``, or ``None``.
 
     Walks the patch/`--follow`/max-count flags (dropping `--follow`, capturing the
     count from ``-n N``, ``-N``, or ``--max-count[=]N``) and pins the single pathspec:
@@ -372,6 +442,7 @@ def git_log_history(args: tuple[str, ...]) -> tuple[str, str | None] | None:
     revision positional, a missing path, more than one path, an unparsable count, or
     any unrecognized flag returns ``None`` (fall back to the block).
     """
+    args = cmd.args[1:]
     count: str | None = None
     positionals: list[str] = []
     path: str | None = None
@@ -415,15 +486,15 @@ def git_log_history(args: tuple[str, ...]) -> tuple[str, str | None] | None:
     return path, count
 
 
-def logpatch_to(evt: BaseHookEvent) -> str | None:
-    cl = evt.command_line
-    if not is_single_command(cl):
+def logpatch_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
+    cmd = occ.command
+    if not occurrence_can_rewrite(occ) or not is_log_patch_dump(cmd):
         return None
     # `jj log -p` always blocks: `ccx vcs history` is git-backed, so a jj-native log
     # has no faithful mapping.
-    if cl.q.runs("jj", "log"):
+    if cmd.executable == "jj":
         return None
-    parsed = git_log_history(cl.primary.args[1:])
+    parsed = git_log_history(cmd)
     if parsed is None or (ccx := ccx_bin()) is None:
         return None
     path, count = parsed
@@ -433,20 +504,36 @@ def logpatch_to(evt: BaseHookEvent) -> str | None:
     return " ".join(out)
 
 
-def logpatch_note(evt: BaseHookEvent) -> str:
-    cl = evt.command_line
-    path, count = git_log_history(cl.primary.args[1:])
-    dst = f"ccx vcs history {path}" + (f" -n {count}" if count is not None else "")
-    dropped = " `--follow` dropped — history follows renames natively." if "--follow" in cl.primary.args else ""
+def logpatch_blocks(evt: BaseHookEvent, occ: Occurrence) -> bool:
+    cmd = occ.command
     return (
-        f"Rewrote `{cl.raw}` → `{dst}`: same commits as a per-commit sha + subject + "
+        occurrence_can_rewrite(occ)
+        and is_log_patch_dump(cmd)
+        and (cmd.span is None or logpatch_to(evt, occ) is None)
+    )
+
+
+def logpatch_note(evt: BaseHookEvent, pairs: list[tuple[Occurrence, str]]) -> str:
+    rewrites = []
+    for occ, _ in pairs:
+        path, count = git_log_history(occ.command)
+        dst = f"ccx vcs history {shlex.quote(path)}" + (f" -n {count}" if count is not None else "")
+        rewrites.append(f"`{occ.command.raw}` → `{dst}`")
+    dropped = (
+        " `--follow` dropped — history follows renames natively."
+        if any("--follow" in occ.command.args for occ, _ in pairs)
+        else ""
+    )
+    return (
+        f"Rewrote {', '.join(rewrites)}: same commits as a per-commit sha + subject + "
         f"changed-symbols summary, token-bounded.{dropped}"
     )
 
 
-rewrite_command(
+rewrite_command_occurrences(
     only_if=[LogPatchDump()],
     to=logpatch_to,
+    block_if=logpatch_blocks,
     block=(
         "BLOCKED: `git log -p` / `jj log -p` dumps every commit's full patch into context. "
         "Use `ccx vcs history <path> -n N` for a per-commit sha + subject + changed-symbols summary. "

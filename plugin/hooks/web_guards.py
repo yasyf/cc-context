@@ -30,6 +30,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import shlex
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from captain_hook import (
@@ -42,12 +43,16 @@ from captain_hook import (
     CustomCondition,
     Event,
     Input,
+    Rewrite,
     Tool,
     hook,
-    rewrite_command,
+    rewrite_command_occurrences,
 )
 
-from .common import ccx_bin, ccx_supports, is_single_command
+from .common import ccx_bin, ccx_supports
+
+if TYPE_CHECKING:
+    from cc_transcript.command import Occurrence
 
 # Loopback and non-routable hosts a fetch to which never floods the shared context — a
 # local dev server or private service, not a public page. Matched on the parsed hostname.
@@ -366,14 +371,33 @@ def is_api_url(url: str) -> bool:
     return "api" in [seg for seg in parts.path.split("/") if seg]
 
 
-def dump_url(cl: CommandLine) -> str | None:
+def occurrence_can_rewrite(occ: "Occurrence") -> bool:
+    """Report whether an occurrence is outside a pipe and carries no redirects."""
+    return not occ.piped and not occ.command.redirects
+
+
+def occurrence_dumps(cmd: Command) -> bool:
+    """Whether ``cmd`` (seen through any wrapper) is a ``curl``/``wget`` page dump to stdout.
+
+    Matches on the unwrapped executable, same as :class:`PageDumpToStdout`, so a wrapper prefix
+    (``timeout``/``sudo``/``env``) still counts as a dump — the condition sees through wrappers to
+    match/block; :func:`occurrence_rewrite_url` does not, so a wrapped dump falls to the block.
+    """
+    inner = cmd.unwrapped
+    if inner.executable == "curl":
+        return curl_dumps_page(inner.args)
+    if inner.executable == "wget":
+        return wget_dumps_page(inner.args)
+    return False
+
+
+def occurrence_rewrite_url(cmd: Command) -> str | None:
     """The single remote URL of a directly-invoked ``curl``/``wget`` page dump, or None.
 
     Only a direct ``curl``/``wget`` maps: a wrapper prefix (``timeout``/``sudo``/``env``) leaves
-    ``cl.primary`` as the wrapper, so it returns None and the guard blocks (dropping the wrapper
-    would change the command). The condition sees through wrappers to block; the rewrite does not.
+    ``cmd.executable`` as the wrapper, so it returns None and the occurrence blocks (dropping the
+    wrapper would change the command).
     """
-    cmd = cl.primary
     if cmd.executable == "curl":
         return curl_rewrite_url(cmd.args)
     if cmd.executable == "wget":
@@ -381,11 +405,11 @@ def dump_url(cl: CommandLine) -> str | None:
     return None
 
 
-def page_dump_to(evt: BaseHookEvent) -> str | None:
-    cl = evt.command_line
-    if not is_single_command(cl):
+def page_dump_to(evt: BaseHookEvent, occ: "Occurrence") -> str | None:
+    cmd = occ.command
+    if not occurrence_can_rewrite(occ) or not occurrence_dumps(cmd):
         return None
-    url = dump_url(cl)
+    url = occurrence_rewrite_url(cmd)
     if url is None or is_api_url(url):
         return None
     if not ccx_supports("web", "read") or not (ccx := ccx_bin()):
@@ -393,19 +417,41 @@ def page_dump_to(evt: BaseHookEvent) -> str | None:
     return f"{shlex.quote(ccx)} web read {shlex.quote(url)} --full"
 
 
-def page_dump_note(evt: BaseHookEvent) -> str:
-    cl = evt.command_line
-    url = dump_url(cl)
+def page_dump_blocks(evt: BaseHookEvent, occ: "Occurrence") -> bool:
+    cmd = occ.command
     return (
-        f"Rewrote `{cl.primary.executable} … {url}` → `ccx web read {url} --full`: same page "
-        "content, readability-extracted and token-bounded. Next time map its headings first with "
-        f'`ccx web outline {url}`, or ask a question with `ccx web search {url} "<question>"`.'
+        occurrence_can_rewrite(occ)
+        and occurrence_dumps(cmd)
+        and (cmd.span is None or page_dump_to(evt, occ) is None)
     )
 
 
-rewrite_command(
+def page_dump_note(evt: BaseHookEvent, pairs: "list[tuple[Occurrence, str]]") -> str:
+    """Note the rewrite(s) and steer toward `ccx web outline`/`ccx web search`.
+
+    A single distinct URL across `pairs` names that URL in the outline/search suggestions too;
+    multiple distinct URLs fall back to a literal `<url>` placeholder — one trailing suggestion
+    can't name several targets.
+    """
+    rewrites = []
+    urls: set[str] = set()
+    for occ, _ in pairs:
+        cmd = occ.command
+        url = occurrence_rewrite_url(cmd)
+        urls.add(url)
+        rewrites.append(f"`{cmd.executable} … {url}` → `ccx web read {url} --full`")
+    target = urls.pop() if len(urls) == 1 else "<url>"
+    return (
+        f"Rewrote {', '.join(rewrites)}: same page content, readability-extracted and token-bounded. "
+        f"Next time map its headings first with `ccx web outline {target}`, or ask a question with "
+        f'`ccx web search {target} "<question>"`.'
+    )
+
+
+rewrite_command_occurrences(
     only_if=[PageDumpToStdout()],
     to=page_dump_to,
+    block_if=page_dump_blocks,
     block=(
         "BLOCKED: `curl`/`wget` dumping a page to stdout floods context. "
         "One page: `ccx web outline <url>` maps its headings, then `ccx web read <url> --section <ref>` "
@@ -431,7 +477,9 @@ rewrite_command(
         Input(command="curl --retry 3 https://example.com"): Block(),  # retry flag → un-mappable
         Input(command="curl --url=https://example.com/large.html"): Block(),  # --url long form
         Input(command="curl --url https://example.com/large.html"): Block(),  # --url two-token form
-        Input(command="curl https://example.com && echo done"): Block(),  # multi-part line
+        # A compound line's curl occurrence rewrites in place; the sibling survives verbatim.
+        Input(command="curl https://example.com && echo done"): Rewrite(pattern="ccx web read"),
+        Input(command="mkdir -p out && curl -s https://example.com/page"): Rewrite(pattern="mkdir -p out && "),
         Input(command="curl https://example.com 2>/dev/null"): Block(),  # redirect
         Input(command="timeout 10 curl https://example.com/big.html"): Block(),  # wrapper prefix
         Input(command="sudo curl https://example.com/page"): Block(),  # wrapper prefix

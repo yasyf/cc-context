@@ -103,7 +103,7 @@ def repipe_to(evt: BaseHookEvent) -> str | None:
     cl = evt.command_line
     if prefix_needs_requote(cl.head):  # a re-quote-needing env value would corrupt the spliced prefix → block
         return None
-    _exe, mode, count, files = headtail_parse(cl)
+    _exe, mode, count, files = headtail_parse(cl.primary)
     if _exe != "head" or mode != "line" or files:  # tail, byte mode, or a file operand → block
         return None
     src = cl.head.unwrapped

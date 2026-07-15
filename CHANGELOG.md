@@ -4,7 +4,27 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.18.0] - 2026-07-15
+
+### Changed
+- **`ccx code read` fails loudly on unresolvable paths.** A leading `~` expands textually, the
+  target is stat'd before dispatch, and a missing file exits 3 with `path not found` instead of
+  silently degrading into a tilth content search. A directory errors with a `ccx code outline`
+  pointer — the MCP `ccx_code_read` directory listing is gone, deliberately. The CLI, MCP, and
+  exec lanes share the one check.
+- **Guard-pack rewrites are per-occurrence.** The cat/sed/head/find/ls/git-pager/curl-dump
+  rewrite guards splice only the qualifying command of a compound line (capt-hook 9.15's
+  `rewrite_command_occurrences`): `cat big.go; echo done` rewrites the `cat` and keeps the `echo`
+  byte-for-byte, `cd src && find . -name '*.go'` rewrites after the `cd` so the glob roots
+  correctly, and an unrewritable flood segment blocks the whole line rather than running raw
+  beside a rewritten sibling. Any-occurrence conditions close the `git diff; echo done` and
+  `cat go.mod; echo x` allow-holes, and `git diff > out.patch` now runs — a file redirect does
+  not flood context.
+- **The bare-`cat` guard is size-gated.** It rewrites only an existing file over the large-read
+  cap, expanding `~` itself and emitting the quoted absolute path — no more frozen-tilde phantom
+  searches; small, nonexistent, or `$`-carrying operands run untouched, and a multi-file `cat`
+  blocks only when its stat-able operands sum past the cap. Pack 0.6.0; capt-hook floor
+  `>=9.15.0`.
 
 ### Added
 - The common ccx MCP tools — `ccx_code_read`, `ccx_code_grep`, `ccx_code_outline`, `ccx_code_search` — carry the `anthropic/alwaysLoad` tool `_meta` flag, so Claude Code keeps them in the prompt under tool-search deferral (`ENABLE_TOOL_SEARCH`) instead of hiding them behind a `ToolSearch` round-trip. A guard redirect to one lands on an already-loaded tool; the rest of the surface stays deferred, loaded on demand. Per-tool `_meta`, not a server-level `alwaysLoad`, keeps the eager set to the four workhorses and the server's connect non-blocking.

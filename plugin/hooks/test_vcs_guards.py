@@ -65,6 +65,12 @@ def pin_ccx(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(vcs_guards, "ccx_bin", lambda: FAKE_CCX)
 
 
+def call_logpatch_to(command: str) -> str | None:
+    """Drive ``vcs_guards.logpatch_to`` on ``command``'s primary occurrence — the public rewrite surface."""
+    evt = bash_pre(command)
+    return vcs_guards.logpatch_to(evt, evt.command_line.occurrences[-1])
+
+
 class TestLogPatchRewriteDashDash:
     """The ``--`` branch of the ``git log -p`` -> ``ccx vcs history`` rewrite (disk-independent path)."""
 
@@ -95,7 +101,7 @@ class TestLogPatchRewriteDashDash:
         ],
     )
     def test_rewrites(self, pin_ccx: None, command: str, expected: str) -> None:
-        assert vcs_guards.logpatch_to(bash_pre(command)) == expected
+        assert call_logpatch_to(command) == expected
 
 
 class TestLogPatchRewriteBlocks:
@@ -123,17 +129,17 @@ class TestLogPatchRewriteBlocks:
         ],
     )
     def test_blocks(self, pin_ccx: None, command: str) -> None:
-        assert vcs_guards.logpatch_to(bash_pre(command)) is None
+        assert call_logpatch_to(command) is None
 
 
 class TestLogPatchRewriteDiskBranch:
     """The no-``--`` branch: a sole trailing positional is a path iff it exists on disk."""
 
     def test_sole_existing_positional(self, pin_ccx: None, repo: Path) -> None:
-        assert vcs_guards.logpatch_to(bash_pre("git log -p f.go")) == f"{FAKE_CCX} vcs history f.go"
+        assert call_logpatch_to("git log -p f.go") == f"{FAKE_CCX} vcs history f.go"
 
     def test_sole_existing_positional_with_count(self, pin_ccx: None, repo: Path) -> None:
-        assert vcs_guards.logpatch_to(bash_pre("git log -p -3 f.go")) == f"{FAKE_CCX} vcs history f.go -n 3"
+        assert call_logpatch_to("git log -p -3 f.go") == f"{FAKE_CCX} vcs history f.go -n 3"
 
     @pytest.mark.parametrize(
         "command",
@@ -141,10 +147,10 @@ class TestLogPatchRewriteDiskBranch:
         ids=["bare_revision", "missing_path"],
     )
     def test_nonexistent_positional_is_a_revision(self, pin_ccx: None, repo: Path, command: str) -> None:
-        assert vcs_guards.logpatch_to(bash_pre(command)) is None
+        assert call_logpatch_to(command) is None
 
     def test_two_existing_positionals_block(self, pin_ccx: None, repo: Path) -> None:
-        assert vcs_guards.logpatch_to(bash_pre("git log -p f.go g.go")) is None
+        assert call_logpatch_to("git log -p f.go g.go") is None
 
 
 class TestGhRunWatchNudge:
