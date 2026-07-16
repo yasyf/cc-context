@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -14,6 +13,7 @@ import (
 	"github.com/yasyf/cc-context/internal/anchor"
 	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/diff"
 	"github.com/yasyf/cc-context/internal/edit"
 	"github.com/yasyf/cc-context/internal/find"
 	"github.com/yasyf/cc-context/internal/grok"
@@ -63,19 +63,18 @@ func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string
 }
 
 // call routes op through its backend and returns budget-capped output. The edit,
-// web, find, read, overview, and grep ops run in-process (internal/edit,
-// internal/web, internal/find, internal/read, internal/overview,
-// internal/ripgrep) without any engine, mirroring the CLI dispatch; the diff op
-// runs as a child-process CLI invocation to keep the jj-aware VCS translation and
-// fallback that CLIArgv performs; the ast-grep ops run through the shared astgrep
-// orchestration (ast-grep has no MCP server); every other op is a child MCP tool
-// call against the engine's resident (lazily opened) session.
+// web, find, read, overview, grep, outline, and diff ops run in-process
+// (internal/edit, internal/web, internal/find, internal/read, internal/overview,
+// internal/ripgrep, internal/outline, internal/diff) without any engine, mirroring
+// the CLI dispatch; the ast-grep ops run through the shared astgrep orchestration
+// (ast-grep has no MCP server); every other op is a child MCP tool call against the
+// engine's resident (lazily opened) session.
 func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 	if op == backend.OpOutline || op == backend.OpStructOutline {
-		if info, err := os.Stat(a.Path); err == nil && info.Mode().IsRegular() {
-			if line, skipped := outline.BinarySkip(a.Path); skipped {
-				return line, nil
-			}
+		// Skip a binary target before dispatch (both engines), so a forced --lang
+		// still skips. BinarySkip stats internally and no-ops on a dir or text file.
+		if line, skipped := outline.BinarySkip(a.Path); skipped {
+			return line, nil
 		}
 	}
 	if op == backend.OpEdit {
@@ -112,18 +111,28 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 	if op == backend.OpGrep {
 		return ripgrep.Run(ctx, a)
 	}
+	if op == backend.OpOutline {
+		// The native fallback anchors its own output; cap only, never re-anchor.
+		out, err := outline.Fallback(a.Path, a)
+		if err != nil {
+			return "", err
+		}
+		return render.Cap(out, a.Budget), nil
+	}
+	if op == backend.OpDiff {
+		// The diff renderer anchors its own output; cap only, never render.Finalize.
+		out, err := diff.Run(ctx, a)
+		if err != nil {
+			return "", err
+		}
+		return render.Cap(out, a.Budget), nil
+	}
 
 	b := router.For(op)
 
 	switch op {
 	case backend.OpStructural, backend.OpReplace, backend.OpStructOutline:
 		return astgrep.Run(ctx, op, a)
-	case backend.OpDiff:
-		bin, argv, err := b.CLIArgv(ctx, op, a)
-		if err != nil {
-			return "", err
-		}
-		return render.RunDiffCLI(ctx, bin, argv, a.Source, a.Scope, a.Budget)
 	}
 
 	tool, params, err := b.MCPTool(op, a)

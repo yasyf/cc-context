@@ -272,7 +272,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_outline",
-		Description: "Outline a file or directory — top-level signatures + line numbers, budget-bounded; prefer over reading whole files. --deep/--full adds members. Routes to ast-grep (items, match, section window) or tilth by language.",
+		Description: "Outline a file or directory — top-level signatures + line numbers, budget-bounded; prefer over reading whole files. --deep/--full adds members. Routes to ast-grep (items, match, section window) or a native fallback (markdown headings, head window) by language.",
 		Meta:        alwaysLoad,
 	}, outlineHandler(p))
 
@@ -443,7 +443,7 @@ func editHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, Edi
 
 // outlineHandler selects the engine through outline.Route and dispatches the
 // routed op, mirroring the CLI so both surfaces behave identically: ast-grep for
-// directories and the languages it outlines, tilth signature mode otherwise.
+// directories and the languages it outlines, the native fallback otherwise.
 func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, OutlineIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in OutlineIn) (*mcp.CallToolResult, any, error) {
 		a := backend.Args{Path: in.Path, Section: in.Section, Deep: in.Deep, Full: in.Full, Items: in.Items, Match: in.Match, Lang: in.Lang, Budget: in.Budget}

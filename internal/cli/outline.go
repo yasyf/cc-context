@@ -1,21 +1,19 @@
 package cli
 
 import (
-	"os"
-
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/outline"
-	"github.com/yasyf/cc-context/internal/proxy"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // outlineHeaders names the routing header printed on stdout for each engine, so
-// the answering engine is visible: ast-grep for the languages it outlines and
-// any directory, tilth signature mode otherwise.
+// the answering engine is visible: ast-grep for the languages it outlines and any
+// directory, the native fallback (markdown headings, head window) otherwise.
 var outlineHeaders = map[backend.Op]string{
 	backend.OpStructOutline: "# ast-grep",
-	backend.OpOutline:       "# tilth",
+	backend.OpOutline:       "# fallback",
 }
 
 func newOutlineCmd() *cobra.Command {
@@ -26,11 +24,12 @@ func newOutlineCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a.Path = args[0]
-			if info, statErr := os.Stat(a.Path); statErr == nil && info.Mode().IsRegular() {
-				if line, skipped := outline.BinarySkip(a.Path); skipped {
-					cmd.Println(line)
-					return nil
-				}
+			// A binary target is skipped before routing, so a forced --lang still
+			// skips and the skip line carries no routing header. BinarySkip stats
+			// internally and is a no-op on a directory or a text file.
+			if line, skipped := outline.BinarySkip(a.Path); skipped {
+				cmd.Println(line)
+				return nil
 			}
 			op, err := outline.Route(a)
 			if err != nil {
@@ -59,14 +58,16 @@ func newOutlineCmd() *cobra.Command {
 }
 
 // outlineFor returns op's budget-capped outline output: ast-grep's structural
-// outline through the direct CLI dispatch, or tilth signature mode through a
-// one-shot facade session — the tilth CLI cannot elide bodies, so its compact
-// form is reachable only over MCP.
+// outline through the direct CLI dispatch, or the native fallback (markdown
+// heading tree / head window) for a language ast-grep cannot outline. The fallback
+// anchors its own output, so it is only budget-capped — never re-anchored.
 func outlineFor(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error) {
 	if op == backend.OpStructOutline {
 		return dispatchOp(cmd, op, a)
 	}
-	p := proxy.New()
-	defer func() { _ = p.Close() }()
-	return p.Call(cmd.Context(), op, a)
+	out, err := outline.Fallback(a.Path, a)
+	if err != nil {
+		return "", err
+	}
+	return render.Cap(out, a.Budget), nil
 }

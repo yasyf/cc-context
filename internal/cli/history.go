@@ -3,14 +3,14 @@ package cli
 import (
 	"context"
 	"fmt"
-	"regexp"
+	"os"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/yasyf/cc-context/internal/diff"
 	"github.com/yasyf/cc-context/internal/render"
-	"github.com/yasyf/cc-context/internal/vendor"
 )
 
 func newHistoryCmd() *cobra.Command {
@@ -48,21 +48,21 @@ type historyCommit struct {
 }
 
 // runHistory enumerates up to n commits touching path (newest first, following
-// renames), summarizes each commit's changed symbols via the tilth structural
+// renames), summarizes each commit's changed symbols via the native structural
 // diff, and returns the budget-capped report.
 func runHistory(ctx context.Context, path string, n, budget int) (string, error) {
 	commits, err := logCommits(ctx, path, n)
 	if err != nil {
 		return "", err
 	}
-	tilthBin, err := vendor.Resolve(ctx, vendor.Tilth, "")
+	cwd, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("resolve tilth: %w", err)
+		return "", fmt.Errorf("resolve cwd: %w", err)
 	}
 
 	var b strings.Builder
 	for _, c := range commits {
-		summary, err := commitSummary(ctx, tilthBin, c.short, c.path)
+		summary, err := commitSummary(ctx, cwd, c.short, c.path)
 		if err != nil {
 			return "", err
 		}
@@ -119,10 +119,13 @@ func statusPath(line string) string {
 }
 
 // commitSummary returns the indented symbol line for one commit: the changed
-// symbols from the tilth structural diff; the degraded (+added/-deleted) numstat
-// when tilth extracts no symbols (non-structural files, comment-only edits); or
-// "(added)" for a root commit with no parent to diff against.
-func commitSummary(ctx context.Context, tilthBin, sha, path string) (string, error) {
+// symbols from the native structural diff of the first-parent..sha range scoped to
+// path; the degraded (+added/-deleted) numstat when no symbols classify
+// (non-structural files, comment-only edits); or "(added)" for a root commit with
+// no parent to diff against. The range uses the resolved parent id rather than
+// "sha^" so it resolves in a jj working copy too, where "^" is not a revset
+// operator. dir is the repo the commitStat and diff commands run against.
+func commitSummary(ctx context.Context, dir, sha, path string) (string, error) {
 	parents, added, deleted, err := commitStat(ctx, sha, path)
 	if err != nil {
 		return "", err
@@ -130,11 +133,11 @@ func commitSummary(ctx context.Context, tilthBin, sha, path string) (string, err
 	if len(parents) == 0 {
 		return "(added)", nil
 	}
-	diff, err := render.RunCLI(ctx, tilthBin, []string{"diff", sha + "^.." + sha, "--scope", path})
+	syms, err := diff.ChangedSymbols(ctx, dir, parents[0]+".."+sha, path)
 	if err != nil {
-		return "", fmt.Errorf("tilth diff %s: %w", sha, err)
+		return "", fmt.Errorf("changed symbols %s: %w", sha, err)
 	}
-	if syms := changedSymbols(diff); len(syms) > 0 {
+	if len(syms) > 0 {
 		return strings.Join(syms, ", "), nil
 	}
 	return fmt.Sprintf("(+%d/-%d)", added, deleted), nil
@@ -169,26 +172,4 @@ func parseNumstat(out string) (parents []string, added, deleted int) {
 		deleted += d
 	}
 	return parents, added, deleted
-}
-
-// symbolHeader matches a tilth structural-diff per-symbol section header, e.g.
-// "## [~] dispatchOp — body changed (L28-47)". The status flag is ' ' (unchanged),
-// '~' (body changed), '+' (added), or '-' (deleted); the name runs up to the
-// em-dash change note or the "(L…" location, so names containing parentheses
-// (Go's "import (") survive intact.
-var symbolHeader = regexp.MustCompile(`^## \[([ ~+-])\] (.+?)(?: —| \(L\d)`)
-
-// changedSymbols extracts the changed symbols from tilth diff output, tagging each
-// with its change sigil (+ added, ~ changed, - deleted) and dropping unchanged
-// (' ') sections. Order follows tilth's output.
-func changedSymbols(diff string) []string {
-	var syms []string
-	for _, line := range strings.Split(diff, "\n") {
-		m := symbolHeader.FindStringSubmatch(line)
-		if m == nil || m[1] == " " {
-			continue
-		}
-		syms = append(syms, m[1]+m[2])
-	}
-	return syms
 }

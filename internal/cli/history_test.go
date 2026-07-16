@@ -2,11 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -105,191 +106,120 @@ func TestParseNumstat(t *testing.T) {
 	}
 }
 
-func TestChangedSymbols(t *testing.T) {
-	tests := []struct {
-		name string
-		diff string
-		want []string
-	}{
-		{
-			name: "mixed changed and unchanged sections",
-			diff: "# Diff: internal/cli/run.go — 2 symbols touched, +7/−2 lines\n\n" +
-				"## [ ] runOp (L15-22, unchanged)\n" +
-				"## [~] dispatchOp — body changed (L28-47)\n" +
-				"## [-] oldHelper — deleted (L50-55)\n",
-			want: []string{"~dispatchOp", "-oldHelper"},
-		},
-		{
-			name: "added symbol",
-			diff: "## [+] runOp — added (L13-24)\n",
-			want: []string{"+runOp"},
-		},
-		{
-			name: "symbol name containing parentheses survives",
-			diff: "## [~] import ( — body changed (L3-10)\n" +
-				"## [ ] import ( (L3-11, unchanged)\n",
-			want: []string{"~import ("},
-		},
-		{
-			name: "no structural symbols (non-structural file)",
-			diff: "# Diff: AGENTS.md — 0 symbols touched, +3/−1 lines\n",
-			want: nil,
-		},
-		{
-			name: "all unchanged yields nothing",
-			diff: "## [ ] runOp (L15-22, unchanged)\n## [ ] dispatchOp (L28-40, unchanged)\n",
-			want: nil,
-		},
+// TestCommitSummary drives commitSummary against a scripted real git repo: a root
+// commit yields "(added)"; a commit with structural edits (Foo's body changed, Bar
+// removed, Baz added) yields the sigil-tagged symbols from the native diff; and a
+// comment-only commit with no symbol change degrades to the numstat. It needs git
+// and ast-grep.
+func TestCommitSummary(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := changedSymbols(tt.diff); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("changedSymbols() = %#v, want %#v", got, tt.want)
-			}
-		})
-	}
-}
-
-// TestHistoryCommand drives newHistoryCmd end to end against a fake git and a fake
-// tilth on PATH: the git log enumeration, the per-commit numstat probe, and the
-// per-commit tilth structural diff are all stubbed by scripts that echo canned
-// output and record their argv. It asserts the exact per-commit output shape
-// (symbols, degraded numstat, and the root "(added)" fallback), that the git log
-// argv carries --follow and -n, that the tilth range is "<sha>^..<sha>" scoped to
-// the path, and that the parentless root commit is never handed to tilth.
-func TestHistoryCommand(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake shell scripts are POSIX-only")
+	if _, err := exec.LookPath("ast-grep"); err != nil {
+		t.Skip("ast-grep not on PATH")
 	}
 	dir := t.TempDir()
-	argvLog := filepath.Join(dir, "argv.log")
-	writeFake(t, dir, "git", fakeGit)
-	writeFake(t, dir, "tilth", fakeTilth)
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("FAKE_ARGV_LOG", argvLog)
+	historyGit(t, dir, "init", "-q")
+	historyGit(t, dir, "config", "user.email", "t@t.t")
+	historyGit(t, dir, "config", "user.name", "t")
 
-	var out bytes.Buffer
-	cmd := newHistoryCmd()
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-	cmd.SetArgs([]string{"internal/cli/run.go", "-n", "3"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v\noutput:\n%s", err, out.String())
+	historyWrite(t, dir, "a.go", "package a\n\nfunc Foo() int { return 1 }\nfunc Bar() int { return 2 }\n")
+	historyGit(t, dir, "add", "-A")
+	historyGit(t, dir, "commit", "-qm", "c1: root")
+	rootSha := historyShortSha(t, dir, "HEAD")
+
+	historyWrite(t, dir, "a.go", "package a\n\nfunc Foo() int { return 11 }\nfunc Baz() int { return 3 }\n")
+	historyGit(t, dir, "add", "-A")
+	historyGit(t, dir, "commit", "-qm", "c2: rework symbols")
+	symSha := historyShortSha(t, dir, "HEAD")
+
+	historyWrite(t, dir, "a.go", "package a\n\nfunc Foo() int { return 11 }\nfunc Baz() int { return 3 }\n// trailing note\n")
+	historyGit(t, dir, "add", "-A")
+	historyGit(t, dir, "commit", "-qm", "c3: comment only")
+	commentSha := historyShortSha(t, dir, "HEAD")
+
+	t.Chdir(dir) // commitStat runs git in the cwd; ChangedSymbols resolves against dir
+
+	if got, err := commitSummary(context.Background(), dir, rootSha, "a.go"); err != nil || got != "(added)" {
+		t.Errorf("root commitSummary = %q, err %v, want %q", got, err, "(added)")
 	}
 
-	wantOut := "aaa1111 2026-06-24 feat: rework dispatch\n" +
-		"    ~dispatchOp, -oldHelper\n" +
-		"bbb2222 2026-06-23 chore: reformat\n" +
-		"    (+3/-1)\n" +
-		"ccc3333 2026-06-20 initial import\n" +
-		"    (added)\n"
-	if got := out.String(); got != wantOut {
-		t.Errorf("output =\n%q\nwant\n%q", got, wantOut)
-	}
-
-	logged, err := os.ReadFile(argvLog)
+	got, err := commitSummary(context.Background(), dir, symSha, "a.go")
 	if err != nil {
-		t.Fatalf("read argv log: %v", err)
+		t.Fatalf("symbol commitSummary err: %v", err)
 	}
-	argv := string(logged)
-	wantContains := []string{
-		"git log --follow --format=%h%x00%ad%x00%s --date=short -n 3 --name-status -- internal/cli/run.go",
-		"tilth diff aaa1111^..aaa1111 --scope internal/cli/run.go",
-		"tilth diff bbb2222^..bbb2222 --scope internal/cli/run.go",
-		"git show --numstat --format=%P ccc3333 -- internal/cli/run.go",
-	}
-	for _, want := range wantContains {
-		if !strings.Contains(argv, want) {
-			t.Errorf("argv log missing %q\nlog:\n%s", want, argv)
+	for _, want := range []string{"~Foo", "+Baz", "-Bar"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("symbol commitSummary = %q, missing %q", got, want)
 		}
 	}
-	// The root commit has no parent, so it must never be handed to tilth.
-	if strings.Contains(argv, "ccc3333^..ccc3333") {
-		t.Errorf("root commit was diffed against a nonexistent parent\nlog:\n%s", argv)
-	}
 
-	// --budget caps the whole report, appending the explicit omission footer.
-	var capped bytes.Buffer
-	cmd = newHistoryCmd()
-	cmd.SetOut(&capped)
-	cmd.SetErr(&capped)
-	cmd.SetArgs([]string{"internal/cli/run.go", "-n", "3", "--budget", "5"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute(--budget) error = %v", err)
-	}
-	if capped.Len() >= len(wantOut) || !strings.Contains(capped.String(), "tokens omitted") {
-		t.Errorf("--budget did not cap output:\n%s", capped.String())
+	if got, err := commitSummary(context.Background(), dir, commentSha, "a.go"); err != nil || got != "(+1/-0)" {
+		t.Errorf("comment-only commitSummary = %q, err %v, want %q", got, err, "(+1/-0)")
 	}
 }
 
-// TestHistoryFollowsRename drives newHistoryCmd against a fake git whose --follow
-// log crosses two renames (old.go → mid.go → new.go). It proves each commit's
-// structural diff is scoped to the file's name AT that commit — the rename
-// destination — not the queried path, so pre-rename commits resolve instead of
-// handing tilth a path that never existed there (the crash this fixes).
-func TestHistoryFollowsRename(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake shell scripts are POSIX-only")
+// TestCommitSummaryJJ is the colocated-jj analogue of TestCommitSummary: in a jj
+// working copy the native diff routes the first-parent..sha range through jj, which
+// rejects a "sha^" endpoint — so this guards that commitSummary hands jj a resolved
+// parent id instead. It needs jj, git, and ast-grep.
+func TestCommitSummaryJJ(t *testing.T) {
+	if _, err := exec.LookPath("jj"); err != nil {
+		t.Skip("jj not on PATH")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	if _, err := exec.LookPath("ast-grep"); err != nil {
+		t.Skip("ast-grep not on PATH")
 	}
 	dir := t.TempDir()
-	argvLog := filepath.Join(dir, "argv.log")
-	writeFake(t, dir, "git", fakeGitRename)
-	writeFake(t, dir, "tilth", fakeTilthRename)
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("FAKE_ARGV_LOG", argvLog)
+	historyJJ(t, dir, "git", "init", "--colocate")
+	historyJJ(t, dir, "config", "set", "--repo", "user.email", "t@t.t")
+	historyJJ(t, dir, "config", "set", "--repo", "user.name", "t")
 
-	var out bytes.Buffer
-	cmd := newHistoryCmd()
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-	cmd.SetArgs([]string{"pkg/new.go", "-n", "5"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v\noutput:\n%s", err, out.String())
-	}
+	historyWrite(t, dir, "a.go", "package a\n\nfunc Foo() int { return 1 }\nfunc Bar() int { return 2 }\n")
+	historyJJ(t, dir, "commit", "-m", "c1: root")
+	historyWrite(t, dir, "a.go", "package a\n\nfunc Foo() int { return 11 }\nfunc Baz() int { return 3 }\n")
+	historyJJ(t, dir, "commit", "-m", "c2: rework symbols")
 
-	wantOut := "c3aaaaa 2026-06-24 c3: rename mid to new\n" +
-		"    +Baz\n" +
-		"c2bbbbb 2026-06-23 c2: rename old to mid\n" +
-		"    +Bar\n" +
-		"c1ccccc 2026-06-20 c1: add old\n" +
-		"    (added)\n"
-	if got := out.String(); got != wantOut {
-		t.Errorf("output =\n%q\nwant\n%q", got, wantOut)
-	}
-
-	logged, err := os.ReadFile(argvLog)
+	// The just-committed change is @-; resolve its git commit id through jj (git
+	// cannot rev-parse the jj @- revset).
+	out, err := exec.Command("jj", "-R", dir, "log", "--no-graph", "-r", "@-", "-T", "commit_id").Output() //nolint:gosec // fixed jj argv; dir is a test TempDir
 	if err != nil {
-		t.Fatalf("read argv log: %v", err)
+		t.Fatalf("jj resolve @- commit id: %v", err)
 	}
-	argv := string(logged)
-	wantContains := []string{
-		"git log --follow --format=%h%x00%ad%x00%s --date=short -n 5 --name-status -- pkg/new.go",
-		"tilth diff c3aaaaa^..c3aaaaa --scope pkg/new.go",
-		"tilth diff c2bbbbb^..c2bbbbb --scope pkg/mid.go",
+	symSha := strings.TrimSpace(string(out))
+	t.Chdir(dir)
+
+	got, err := commitSummary(context.Background(), dir, symSha, "a.go")
+	if err != nil {
+		t.Fatalf("commitSummary (jj lane) err: %v", err)
 	}
-	for _, want := range wantContains {
-		if !strings.Contains(argv, want) {
-			t.Errorf("argv log missing %q\nlog:\n%s", want, argv)
+	for _, want := range []string{"~Foo", "+Baz", "-Bar"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("jj-lane commitSummary = %q, missing %q", got, want)
 		}
-	}
-	// The bug scoped every commit to the queried path; the pre-rename commit must
-	// use its own name, never pkg/new.go.
-	if strings.Contains(argv, "c2bbbbb^..c2bbbbb --scope pkg/new.go") {
-		t.Errorf("pre-rename commit scoped to the post-rename path\nlog:\n%s", argv)
-	}
-	// The root commit has no parent, so it is never handed to tilth.
-	if strings.Contains(argv, "c1ccccc^..c1ccccc") {
-		t.Errorf("root commit was diffed against a nonexistent parent\nlog:\n%s", argv)
 	}
 }
 
-// TestHistoryLiveSmoke runs the real command against this repository. It is
-// skipped unless CCX_LIVE_SMOKE is set, since it shells out to the real git
-// history and the pinned tilth binary. Assertions are loose (shape, not content)
-// so an evolving history does not make it flaky.
+// historyJJ runs a jj command in dir, failing the test on error.
+func historyJJ(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("jj", args...) //nolint:gosec // fixed jj argv; dir is a test TempDir, args are literals
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("jj %v: %v\n%s", args, err, out)
+	}
+}
+
+// TestHistoryLiveSmoke runs the real command against this repository. It is skipped
+// unless CCX_LIVE_SMOKE is set, since it shells out to the real git history and
+// ast-grep. Assertions are loose (shape, not content) so an evolving history does
+// not make it flaky.
 func TestHistoryLiveSmoke(t *testing.T) {
 	if os.Getenv("CCX_LIVE_SMOKE") == "" {
-		t.Skip("set CCX_LIVE_SMOKE=1 to run the live smoke against real git + tilth")
+		t.Skip("set CCX_LIVE_SMOKE=1 to run the live smoke against real git + ast-grep")
 	}
 	t.Chdir("../..") // repo root, so the pathspecs below resolve
 
@@ -313,82 +243,31 @@ func TestHistoryLiveSmoke(t *testing.T) {
 	}
 }
 
-// writeFake writes name as an executable script under dir.
-func writeFake(t *testing.T, dir, name, body string) {
+// historyGit runs a git command in dir with the developer's ambient config detached.
+func historyGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(body), 0o700); err != nil { //nolint:gosec // fake tool script must be owner-executable
-		t.Fatalf("write fake %s: %v", name, err)
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // fixed git argv; dir is a test TempDir, args are literals
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
 
-const fakeGit = `#!/bin/sh
-printf 'git %s\n' "$*" >> "$FAKE_ARGV_LOG"
-case "$1" in
-log)
-	printf 'aaa1111\0002026-06-24\000feat: rework dispatch\n\nM\tinternal/cli/run.go\n'
-	printf 'bbb2222\0002026-06-23\000chore: reformat\n\nM\tinternal/cli/run.go\n'
-	printf 'ccc3333\0002026-06-20\000initial import\n\nA\tinternal/cli/run.go\n'
-	;;
-show)
-	case "$4" in
-	aaa1111) printf 'parent0\n\n7\t2\tinternal/cli/run.go\n' ;;
-	bbb2222) printf 'parentx\n\n3\t1\tinternal/cli/run.go\n' ;;
-	ccc3333) printf '\n\n40\t0\tinternal/cli/run.go\n' ;;
-	esac
-	;;
-esac
-`
+// historyWrite writes content to dir/name, failing the test on error.
+func historyWrite(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+}
 
-const fakeTilth = `#!/bin/sh
-printf 'tilth %s\n' "$*" >> "$FAKE_ARGV_LOG"
-case "$2" in
-'aaa1111^..aaa1111')
-	cat <<'EOF'
-# Diff: internal/cli/run.go — 2 symbols touched, +7/−2 lines
-
-## [ ] runOp (L15-22, unchanged)
-## [~] dispatchOp — body changed (L28-47)
-## [-] oldHelper — deleted (L50-55)
-EOF
-	;;
-'bbb2222^..bbb2222')
-	cat <<'EOF'
-# Diff: internal/cli/run.go — 0 symbols touched, +3/−1 lines
-
-## [ ] runOp (L15-22, unchanged)
-EOF
-	;;
-esac
-`
-
-// fakeGitRename models a --follow log that crosses two renames: the file is named
-// old.go at c1 (root, added), renamed to mid.go at c2, and to new.go at c3. show
-// keys on the sha ($4); c1 is parentless so its numstat first line is empty.
-const fakeGitRename = `#!/bin/sh
-printf 'git %s\n' "$*" >> "$FAKE_ARGV_LOG"
-case "$1" in
-log)
-	printf 'c3aaaaa\0002026-06-24\000c3: rename mid to new\n\nR090\tpkg/mid.go\tpkg/new.go\n'
-	printf 'c2bbbbb\0002026-06-23\000c2: rename old to mid\n\nR090\tpkg/old.go\tpkg/mid.go\n'
-	printf 'c1ccccc\0002026-06-20\000c1: add old\n\nA\tpkg/old.go\n'
-	;;
-show)
-	case "$4" in
-	c3aaaaa) printf 'p2\n\n1\t0\tpkg/new.go\n' ;;
-	c2bbbbb) printf 'p1\n\n1\t0\tpkg/mid.go\n' ;;
-	c1ccccc) printf '\n\n3\t0\tpkg/old.go\n' ;;
-	esac
-	;;
-esac
-`
-
-// fakeTilthRename emits one added symbol per rename commit's range, scoped to that
-// commit's own name; c1 is a root commit and is never handed to tilth.
-const fakeTilthRename = `#!/bin/sh
-printf 'tilth %s\n' "$*" >> "$FAKE_ARGV_LOG"
-case "$2" in
-'c3aaaaa^..c3aaaaa') printf '## [+] Baz — added (L7-7)\n' ;;
-'c2bbbbb^..c2bbbbb') printf '## [+] Bar — added (L5-5)\n' ;;
-esac
-`
+// historyShortSha resolves rev to its abbreviated commit id in dir.
+func historyShortSha(t *testing.T, dir, rev string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--short", rev) //nolint:gosec // fixed git argv; dir is a test TempDir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse %s: %v", rev, err)
+	}
+	return strings.TrimSpace(string(out))
+}

@@ -13,29 +13,38 @@ import (
 	"github.com/yasyf/cc-context/internal/backend"
 )
 
-// astGrepExts are the file extensions ast-grep 0.44.0 outlines (Go, Python,
-// TypeScript/TSX, JavaScript, Rust, Java, Kotlin). Verified against the vendored
-// binary; languages it merely recognizes but has no outline rules for (Ruby, C,
-// C++, C#, PHP, and the config/markup family) return empty and so route to tilth.
-// Revisit on a vendor version bump. The content-anchor rewrites in render/finalize.go
-// and render/diff.go are keyed to tilth's output grammar the same way;
-// TestContentAnchorsSurviveEngineGrammar (internal/cli) is the drift canary for both.
-var astGrepExts = map[string]struct{}{
-	".go":   {},
-	".py":   {},
-	".pyi":  {},
-	".ts":   {},
-	".mts":  {},
-	".cts":  {},
-	".tsx":  {},
-	".js":   {},
-	".mjs":  {},
-	".cjs":  {},
-	".jsx":  {},
-	".rs":   {},
-	".java": {},
-	".kt":   {},
-	".kts":  {},
+// astGrepLangByExt maps the file extensions ast-grep 0.44.0 outlines to the
+// --lang value that outlines them (Go, Python, TypeScript/TSX, JavaScript, Rust,
+// Java, Kotlin). Verified against the vendored binary; languages it merely
+// recognizes but has no outline rules for (Ruby, C, C++, C#, PHP, and the
+// config/markup family) are absent and so route to the native fallback
+// (internal/outline/fallback.go). Revisit on a vendor version bump. The ast-grep
+// anchor rewrites in internal/astgrep/outline.go are keyed to its output grammar;
+// TestContentAnchorsSurviveEngineGrammar (internal/cli) is the drift canary.
+var astGrepLangByExt = map[string]string{
+	".go":   "go",
+	".py":   "python",
+	".pyi":  "python",
+	".ts":   "typescript",
+	".mts":  "typescript",
+	".cts":  "typescript",
+	".tsx":  "tsx",
+	".js":   "javascript",
+	".mjs":  "javascript",
+	".cjs":  "javascript",
+	".jsx":  "javascript",
+	".rs":   "rust",
+	".java": "java",
+	".kt":   "kotlin",
+	".kts":  "kotlin",
+}
+
+// LangForExt returns the ast-grep --lang value that outlines path's extension,
+// with ok=false when ast-grep has no outline rules for it. It is the single ext→
+// lang source both outline.Route and the native diff's blob outlining consult.
+func LangForExt(path string) (lang string, ok bool) {
+	lang, ok = astGrepLangByExt[strings.ToLower(filepath.Ext(path))]
+	return lang, ok
 }
 
 // astGrepLangs are the ast-grep --lang values whose outlines ast-grep serves,
@@ -54,10 +63,10 @@ var astGrepLangs = map[string]struct{}{
 }
 
 // Route selects the op that serves a.Path. A directory always routes to ast-grep
-// (OpStructOutline) — tilth outlines a single file only. A file routes to
-// ast-grep when its language is in ast-grep's outline catalog and to tilth
-// signature mode (OpOutline) otherwise, so an unsupported language is served by
-// the engine that can outline it rather than silently returning nothing.
+// (OpStructOutline). A file routes to ast-grep when its language is in ast-grep's
+// outline catalog and to the native fallback (OpOutline) otherwise, so an
+// unsupported language gets an honest head window or heading tree rather than
+// silently returning nothing.
 func Route(a backend.Args) (backend.Op, error) {
 	info, err := os.Stat(a.Path)
 	if err != nil {
@@ -72,7 +81,7 @@ func Route(a backend.Args) (backend.Op, error) {
 		}
 		return backend.OpOutline, nil
 	}
-	if _, ok := astGrepExts[strings.ToLower(filepath.Ext(a.Path))]; ok {
+	if _, ok := LangForExt(a.Path); ok {
 		return backend.OpStructOutline, nil
 	}
 	return backend.OpOutline, nil
@@ -82,7 +91,7 @@ func Route(a backend.Args) (backend.Op, error) {
 // inclusive [start, end] window it resolves to. A line window applies only to a
 // single-file structural (ast-grep) outline: it returns (0, 0, nil) when no
 // section is set, otherwise a precise error — naming the range grammar, rejecting
-// a reversed or directory window, or pointing a tilth (signature-mode) file at
+// a reversed or directory window, or pointing a fallback-outlined file at
 // ccx code read — so no caller runs an outline that cannot honor the window. op
 // is the engine outline.Route picked for a. It is the single validation point for
 // every surface (CLI, MCP, exec, and the struct-outline runner).
@@ -105,7 +114,7 @@ func ValidateSection(a backend.Args, op backend.Op) (start, end int, err error) 
 		return 0, 0, fmt.Errorf("outline --section windows a single file, not the directory %s; pass a file path", a.Path)
 	}
 	if op == backend.OpOutline {
-		return 0, 0, fmt.Errorf("outline --section windows structured (ast-grep) outlines; %s outlines via tilth signature mode — read a line window with ccx code read %s --section %s", a.Path, a.Path, a.Section)
+		return 0, 0, fmt.Errorf("outline --section windows structured (ast-grep) outlines; %s outlines via the native fallback — read a line window with ccx code read %s --section %s", a.Path, a.Path, a.Section)
 	}
 	return start, end, nil
 }

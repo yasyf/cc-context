@@ -37,7 +37,18 @@ func Detect(path string) (mime string, binary bool) {
 
 	buf := make([]byte, probeBytes)
 	n, _ := io.ReadFull(f, buf)
-	probe := buf[:n]
+	return DetectBytes(buf[:n])
+}
+
+// DetectBytes classifies an in-memory snapshot with the same rules as Detect,
+// for callers that already hold the bytes (a VCS blob) and cannot re-open a file.
+// It sniffs the media type over the leading 512 bytes and the binary decision over
+// the leading 4096, matching Detect's windows.
+func DetectBytes(data []byte) (mime string, binary bool) {
+	probe := data
+	if len(probe) > probeBytes {
+		probe = probe[:probeBytes]
+	}
 	mimeProbe := probe
 	if len(mimeProbe) > mimeBytes {
 		mimeProbe = probe[:mimeBytes]

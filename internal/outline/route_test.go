@@ -29,10 +29,10 @@ func TestRoute(t *testing.T) {
 		{"rust file", write("a.rs"), "", backend.OpStructOutline},
 		{"python file", write("a.py"), "", backend.OpStructOutline},
 		{"tsx file", write("a.tsx"), "", backend.OpStructOutline},
-		{"ruby file falls back to tilth", write("a.rb"), "", backend.OpOutline},
-		{"c file falls back to tilth", write("a.c"), "", backend.OpOutline},
-		{"yaml file falls back to tilth", write("a.yaml"), "", backend.OpOutline},
-		{"no extension falls back to tilth", write("Makefile"), "", backend.OpOutline},
+		{"ruby file falls back to native fallback", write("a.rb"), "", backend.OpOutline},
+		{"c file falls back to native fallback", write("a.c"), "", backend.OpOutline},
+		{"yaml file falls back to native fallback", write("a.yaml"), "", backend.OpOutline},
+		{"no extension falls back to native fallback", write("Makefile"), "", backend.OpOutline},
 		{"lang override to supported", write("a.txt"), "go", backend.OpStructOutline},
 		{"lang override to unsupported", write("a.go"), "ruby", backend.OpOutline},
 	}
@@ -44,6 +44,34 @@ func TestRoute(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("Route(%q, lang=%q) = %q, want %q", tt.path, tt.lang, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLangForExt(t *testing.T) {
+	tests := []struct {
+		path     string
+		wantLang string
+		wantOK   bool
+	}{
+		{"a.go", "go", true},
+		{"pkg/b.py", "python", true},
+		{"c.pyi", "python", true},
+		{"d.ts", "typescript", true},
+		{"e.tsx", "tsx", true},
+		{"f.jsx", "javascript", true},
+		{"g.RS", "rust", true},
+		{"h.kt", "kotlin", true},
+		{"i.rb", "", false},
+		{"Makefile", "", false},
+		{"j.yaml", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			lang, ok := LangForExt(tt.path)
+			if lang != tt.wantLang || ok != tt.wantOK {
+				t.Errorf("LangForExt(%q) = (%q, %v), want (%q, %v)", tt.path, lang, ok, tt.wantLang, tt.wantOK)
 			}
 		})
 	}
@@ -81,7 +109,7 @@ func TestValidateSection(t *testing.T) {
 		{"non-numeric section rejected", goFile, "## Heading", backend.OpStructOutline, 0, 0, true},
 		{"reversed range rejected", goFile, "95-40", backend.OpStructOutline, 0, 0, true},
 		{"directory rejected", dir, "40-95", backend.OpStructOutline, 0, 0, true},
-		{"tilth lane rejected", rbFile, "40-95", backend.OpOutline, 0, 0, true},
+		{"fallback lane rejected", rbFile, "40-95", backend.OpOutline, 0, 0, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

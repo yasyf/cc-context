@@ -73,7 +73,7 @@ func Ops(c Caller) map[string]HostFunc {
 }
 
 // validateOutlineSection runs the shared outline --section guard on an exec
-// outline call, so a windowed exec outline is rejected on a directory or tilth
+// outline call, so a windowed exec outline is rejected on a directory or fallback
 // lane exactly as the CLI and MCP surfaces are.
 func validateOutlineSection(a backend.Args, op backend.Op) error {
 	_, _, err := outline.ValidateSection(a, op)

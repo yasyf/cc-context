@@ -41,6 +41,39 @@ func TestDetect(t *testing.T) {
 	}
 }
 
+func TestDetectBytes(t *testing.T) {
+	tests := []struct {
+		name       string
+		content    []byte
+		wantMime   string
+		wantBinary bool
+	}{
+		{"png magic", []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"), "image/png", true},
+		{"utf-8 text", []byte("package main\n\nfunc main() {}\n"), "text/plain; charset=utf-8", false},
+		{"empty blob", []byte{}, "text/plain; charset=utf-8", false},
+		{"nul in text", []byte("abc\x00def"), "application/octet-stream", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mime, binary := DetectBytes(tt.content)
+			if mime != tt.wantMime {
+				t.Errorf("mime = %q, want %q", mime, tt.wantMime)
+			}
+			if binary != tt.wantBinary {
+				t.Errorf("binary = %v, want %v", binary, tt.wantBinary)
+			}
+		})
+	}
+}
+
+func TestDetectBytesLateNUL(t *testing.T) {
+	// A NUL past the 512-byte media window must still be caught by the wider probe.
+	content := append(bytes.Repeat([]byte("a"), 512), 0)
+	if _, binary := DetectBytes(content); !binary {
+		t.Error("a NUL at offset 512 must classify the blob as binary")
+	}
+}
+
 func TestDetectMissingFile(t *testing.T) {
 	mime, binary := Detect(filepath.Join(t.TempDir(), "does-not-exist"))
 	if mime != "" || binary {

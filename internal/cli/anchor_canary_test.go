@@ -62,14 +62,14 @@ func UseGreeter() string {
 `
 
 // TestContentAnchorsSurviveEngineGrammar is the drift canary for the content-anchor
-// rewrites: it drives the real ripgrep, tilth, and ast-grep engines through the full
-// CLI dispatch over a throwaway fixture repo and asserts every anchor rewrite still
-// fired at least once. The rewrites in internal/ripgrep/ripgrep.go, internal/render/
-// finalize.go, internal/render/diff.go, and internal/astgrep/outline.go are keyed to
-// the engines' output grammar, so an engine version bump that reshapes that grammar
-// degrades silently to "no anchors". This test converts that silent regression into a
-// loud failure. The assertions check that a rewrite shape appeared, never a specific
-// hash value.
+// rewrites: it drives the real ripgrep, tilth, and ast-grep engines plus the native
+// diff and outline-fallback renderers through the full CLI dispatch over a throwaway
+// fixture repo and asserts every anchor still fired at least once. The grammar-keyed
+// rewrites in internal/ripgrep/ripgrep.go, internal/render/finalize.go (tilth
+// grok/deps), and internal/astgrep/outline.go degrade silently to "no anchors" on an
+// engine version bump; the self-generated anchors in internal/diff/render.go and
+// internal/outline/fallback.go are canaried here too. The assertions check that an
+// anchor shape appeared, never a specific hash value.
 func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
 	if testing.Short() {
 		t.Skip("provisions and runs the real tilth + ast-grep engines")
@@ -88,6 +88,7 @@ func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
 	// the terse default drops those sections (covered by TestTerseSymbol).
 	symbol := runCCX(t, "code", "symbol", "Greet", "--full")
 	outline := runCCX(t, "code", "outline", "greeter.go")
+	outlineMD := runCCX(t, "code", "outline", "guide.md")
 	deps := runCCX(t, "code", "deps", "greeter.go")
 	diff := runCCX(t, "vcs", "diff", sha1+".."+sha2)
 
@@ -102,10 +103,11 @@ func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
 		{"grep frame anchor via -i (ripgrep)", grepRG, regexp.MustCompile(`\[\d+(?:-\d+)?#` + hashClass + `\]`)},
 		{"symbol grok locator (finalize.go)", symbol, regexp.MustCompile(`\[[^\]]+:\d+#` + hashClass + `\]`)},
 		{"symbol range frame (finalize.go)", symbol, regexp.MustCompile(`\[\d+-\d+#` + hashClass + `\]`)},
-		{"outline item anchor (outline.go)", outline, regexp.MustCompile(`(?m)^L\d+#` + hashClass + `\b`)},
+		{"outline item anchor (astgrep outline.go)", outline, regexp.MustCompile(`(?m)^L\d+#` + hashClass + `\b`)},
+		{"fallback heading anchor (outline fallback.go)", outlineMD, regexp.MustCompile(`(?m)^L\d+#` + hashClass + `\b`)},
 		{"deps group heading (finalize.go)", deps, regexp.MustCompile(`(?m)^### \S`)},
 		{"deps row anchor (finalize.go)", deps, regexp.MustCompile(`(?m)^L\d+#` + hashClass + `\b`)},
-		{"diff symbol-row anchor (diff.go)", diff, regexp.MustCompile(`L\d+#` + hashClass + `\b`)},
+		{"diff symbol-row anchor (native diff render.go)", diff, regexp.MustCompile(`\[~\][^\n]*L\d+(?:-\d+)?#` + hashClass + `\b`)},
 	}
 	for _, p := range patterns {
 		t.Run(p.name, func(t *testing.T) {
@@ -115,24 +117,21 @@ func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
 		})
 	}
 
-	t.Run("diff header SHAs shortened (diff.go)", func(t *testing.T) {
-		if !strings.Contains(diff, sha1[:10]+".."+sha2[:10]) {
-			t.Errorf("# Diff: header SHAs not shortened to 10 chars\n--- output ---\n%s", diff)
-		}
-		if strings.Contains(diff, sha1) {
-			t.Errorf("full 40-hex SHA survived the shortening\n--- output ---\n%s", diff)
+	t.Run("native diff classifies the covered file (render.go)", func(t *testing.T) {
+		// greeter.go's body-only edit classifies Greet as a changed symbol.
+		if !strings.Contains(diff, "## greeter.go") || !strings.Contains(diff, "[~] Greet") {
+			t.Errorf("native diff did not classify greeter.go's changed symbol\n--- output ---\n%s", diff)
 		}
 	})
 
-	t.Run("diff preamble collapsed (diff.go)", func(t *testing.T) {
-		// notes.txt is a 0-symbol section, so its whole body is the raw git hunk
-		// spliced in — which always opens with a "diff --git" preamble. The hunk
-		// content proves the splice ran; the absent preamble proves the collapse did.
-		if !strings.Contains(diff, "@@") || !strings.Contains(diff, "+second note line") {
-			t.Errorf("raw hunk was not spliced into the 0-symbol section\n--- output ---\n%s", diff)
+	t.Run("native diff renders raw hunks for an uncovered file (render.go)", func(t *testing.T) {
+		// notes.txt has no ast-grep rules, so the native diff builds its own hunk —
+		// never a git "diff --git" preamble.
+		if !strings.Contains(diff, "@@") || !strings.Contains(diff, "+second note line") || !strings.Contains(diff, "-first note line") {
+			t.Errorf("raw hunk missing from the uncovered-file section\n--- output ---\n%s", diff)
 		}
 		if strings.Contains(diff, "diff --git") {
-			t.Errorf("per-file diff preamble was not collapsed\n--- output ---\n%s", diff)
+			t.Errorf("native diff must not emit a git preamble\n--- output ---\n%s", diff)
 		}
 	})
 }
@@ -182,6 +181,7 @@ func writeCanaryRepo(t *testing.T) (repo, sha1, sha2 string) {
 	writeCanaryFile(t, repo, "greeter.go", greeterV1)
 	writeCanaryFile(t, repo, "util.go", utilGo)
 	writeCanaryFile(t, repo, "notes.txt", "first note line\n")
+	writeCanaryFile(t, repo, "guide.md", "# Title\n\nintro\n\n## Section One\n\nbody\n")
 	runGit(t, repo, "add", "-A")
 	runGit(t, repo, "commit", "-qm", "init")
 	sha1 = revParse(t, repo, "HEAD")

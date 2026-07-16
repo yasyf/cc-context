@@ -3,8 +3,6 @@ package backend
 import (
 	"context"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -24,8 +22,6 @@ func TestTilthCLIArgv(t *testing.T) {
 		args Args
 		argv []string
 	}{
-		{"outline", OpOutline, Args{Path: "a.go"}, []string{"a.go"}},
-		{"outline budget", OpOutline, Args{Path: "a.go", Budget: 500}, []string{"a.go", "--budget", "500"}},
 		{"symbol", OpSymbol, Args{Query: "Foo"}, []string{"grok", "Foo"}},
 		{"symbol scope full", OpSymbol, Args{Query: "Foo", Scope: "pkg", Full: true}, []string{"grok", "Foo", "--scope", "pkg", "--full"}},
 		{"deps", OpDeps, Args{Path: "a.go"}, []string{"a.go", "--deps"}},
@@ -45,58 +41,6 @@ func TestTilthCLIArgv(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestTilthCLIArgvDiff(t *testing.T) {
-	// In a plain-git repo vcs.ResolveDiffSource passes the source through and
-	// selects tilth. Run inside a controlled git repo so the result does not
-	// depend on the ambient VCS (the cc-context tree is itself a colocated jj
-	// repo, where a single ref resolves to a ref..@ commit range instead).
-	t.Chdir(initGitRepoForDiff(t))
-	tl := Tilth{Bin: fakeTilth}
-	bin, argv, err := tl.CLIArgv(context.Background(), OpDiff, Args{Source: "HEAD~1", Scope: "pkg", Budget: 4})
-	if err != nil {
-		t.Fatalf("CLIArgv: %v", err)
-	}
-	if bin != fakeTilth {
-		t.Errorf("bin = %q, want %q", bin, fakeTilth)
-	}
-	want := []string{"diff", "HEAD~1", "--scope", "pkg", "--budget", "4"}
-	if !reflect.DeepEqual(argv, want) {
-		t.Errorf("argv = %v, want %v", argv, want)
-	}
-}
-
-func initGitRepoForDiff(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	git := func(args ...string) {
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // fixed git argv; dir is a test TempDir, args are literals
-		cmd.Env = isolatedGitEnv()
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	git("init", "-q")
-	git("config", "user.email", "t@t.t")
-	git("config", "user.name", "t")
-	// Two commits so HEAD~1 resolves past the git-branch ref validation.
-	seed := filepath.Join(dir, "seed.txt")
-	for _, content := range []string{"one\n", "two\n"} {
-		if err := os.WriteFile(seed, []byte(content), 0o600); err != nil {
-			t.Fatalf("write seed: %v", err)
-		}
-		git("add", "-A")
-		git("commit", "-qm", "c")
-	}
-	return dir
-}
-
-// isolatedGitEnv detaches git from the developer's ambient config so a global
-// setting like commit.gpgsign cannot break the test-repo commits; identity comes
-// from the repo-local user.name/user.email initGitRepoForDiff sets.
-func isolatedGitEnv() []string {
-	return append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 }
 
 func TestTilthCLIArgvUnsupported(t *testing.T) {
@@ -139,12 +83,9 @@ func TestTilthMCPTool(t *testing.T) {
 		tool   string
 		params map[string]any
 	}{
-		{"outline", OpOutline, Args{Path: "a.go", Budget: 500}, "tilth_read", map[string]any{"path": "a.go", "mode": "signature", "budget": 500}},
-		{"outline no budget", OpOutline, Args{Path: "a.go"}, "tilth_read", map[string]any{"path": "a.go", "mode": "signature"}},
 		{"symbol", OpSymbol, Args{Query: "Foo", Scope: "pkg", Full: true}, "tilth_grok", map[string]any{"target": "Foo", "scope": "pkg", "full": true}},
 		{"symbol minimal", OpSymbol, Args{Query: "Foo"}, "tilth_grok", map[string]any{"target": "Foo"}},
 		{"deps", OpDeps, Args{Path: "a.go", Scope: "pkg", Budget: 7}, "tilth_deps", map[string]any{"path": "a.go", "scope": "pkg", "budget": 7}},
-		{"diff", OpDiff, Args{Source: "HEAD~1", Scope: "pkg", Budget: 4}, "tilth_diff", map[string]any{"source": "HEAD~1", "scope": "pkg", "budget": 4}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

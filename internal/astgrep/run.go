@@ -65,6 +65,24 @@ func runStructOutline(ctx context.Context, a backend.Args) (string, error) {
 	return render.Cap(RenderOutline(files, anchor.NewFiles("."), DepthFor(a)), a.Budget), nil
 }
 
+// OutlineStdin outlines src fed on stdin as language lang, returning the parsed
+// outline files. It drives `ast-grep outline --stdin -l <lang> --json=stream
+// --view expanded` — the same view runStructOutline uses — so a VCS blob is
+// outlined without staging it to disk. An empty or symbol-less src yields one
+// file with no items; outline exits 0 even on no match, so no exit is tolerated.
+func OutlineStdin(ctx context.Context, src []byte, lang string) ([]OutlineFile, error) {
+	bin, err := resolveBin("")
+	if err != nil {
+		return nil, err
+	}
+	argv := []string{"outline", "--stdin", "-l", lang, "--json=stream", "--view", "expanded"}
+	out, err := render.RunCLIStdin(ctx, bin, argv, src)
+	if err != nil {
+		return nil, err
+	}
+	return ParseOutline([]byte(out))
+}
+
 // runReplace previews a.Pattern→a.Rewrite, or applies it when a.Apply is set. An
 // apply first counts the distinct files the preview would touch and refuses to
 // write more than applyFileCap of them unless a.Force is set.

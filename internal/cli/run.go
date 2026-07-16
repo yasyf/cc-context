@@ -6,6 +6,7 @@ import (
 	"github.com/yasyf/cc-context/internal/anchor"
 	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/diff"
 	"github.com/yasyf/cc-context/internal/edit"
 	"github.com/yasyf/cc-context/internal/find"
 	"github.com/yasyf/cc-context/internal/grok"
@@ -85,12 +86,17 @@ func dispatch(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error)
 	if op == backend.OpGrep {
 		return ripgrep.Run(cmd.Context(), a)
 	}
+	if op == backend.OpDiff {
+		out, err := diff.Run(cmd.Context(), a)
+		if err != nil {
+			return "", err
+		}
+		// The diff renderer anchors its own output; cap only, never render.Finalize.
+		return render.Cap(out, a.Budget), nil
+	}
 	bin, argv, err := router.For(op).CLIArgv(cmd.Context(), op, a)
 	if err != nil {
 		return "", err
-	}
-	if op == backend.OpDiff {
-		return render.RunDiffCLI(cmd.Context(), bin, argv, a.Source, a.Scope, a.Budget)
 	}
 	if op == backend.OpSymbol {
 		return grok.Run(cmd.Context(), bin, argv, a)

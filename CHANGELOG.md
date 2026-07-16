@@ -4,6 +4,25 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **`ccx vcs diff` is native.** Changed symbols come from ast-grep outlines of the
+  before/after blobs intersected with natively computed hunks — no external diff engine,
+  no regex post-processing. Renames render as `## old → new` (a clean rename says so
+  instead of masquerading as a new file), untracked files appear on the git lane, jj-only
+  revsets get real per-file hunks instead of `--stat` counts, git-syntax sources
+  (`HEAD~1..HEAD`) resolve through git in a colocated repo, symbol classification past 30
+  files discloses itself, and `--full` inlines per-file hunks. `ccx vcs show` inherits all
+  of it.
+- **`ccx code outline` fallback is native.** Markdown gets an anchored ATX heading
+  outline; languages without ast-grep outline rules get an honestly-labeled head window
+  with a precise `ccx code read --section` continuation pointer — tilth signature mode is
+  gone.
+- **`ccx vcs history` summarizes commits through the native diff classifier** — the
+  per-commit tilth shell-out and its output-scraping regex are deleted; the `(+a/-b)`
+  line-count degradation and `(added)` root-commit paths stay.
+
 ## [0.23.0] - 2026-07-17
 
 ### Added
