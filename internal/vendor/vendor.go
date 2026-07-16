@@ -48,9 +48,8 @@ type Tool struct {
 	// control: a downloaded archive whose digest is absent here, or mismatches, is
 	// refused. Bump alongside Version.
 	Checksums map[string]string
-	// BinInArchive is the archive entry to extract. Tilth's tar.gz archives ship a
-	// single binary, but the ast-grep zip ships both "ast-grep" and "sg", so the
-	// entry must be selected by name.
+	// BinInArchive is the archive entry to extract by name, required for a zip that
+	// ships more than one entry (e.g. tilth's Windows zip).
 	BinInArchive string
 }
 
@@ -208,7 +207,7 @@ func (t Tool) extractTarGz(archive []byte) ([]byte, error) {
 }
 
 // extractZip returns the entry named t.BinInArchive from a zip archive. Selecting
-// by name is required because the ast-grep zip ships both "ast-grep" and "sg".
+// by name is required because a zip may ship more than one entry.
 func (t Tool) extractZip(archive []byte) ([]byte, error) {
 	zr, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
 	if err != nil {

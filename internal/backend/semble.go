@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yasyf/cc-context/internal/vendor"
+	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
 // Semble translates ops onto the semble engine. Resolution order is "semble" on
@@ -29,7 +29,7 @@ func (s Semble) resolve() (bin string, prefix []string) {
 	switch {
 	case s.Bin != "":
 		return s.Bin, nil
-	case vendor.LookPath("semble") != "":
+	case lookpath.Find("semble") != "":
 		return "semble", nil
 	default:
 		return "uvx", []string{"--from", "semble[mcp]", "semble"}

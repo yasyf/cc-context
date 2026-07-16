@@ -3,8 +3,6 @@ package backend
 import (
 	"context"
 	"fmt"
-
-	"github.com/yasyf/cc-context/internal/vendor"
 )
 
 // AstGrep translates the structural ops onto the ast-grep engine. ast-grep is a
@@ -12,18 +10,14 @@ import (
 // `--json=stream` so the facade reconstructs bounded output from JSON rather than
 // ast-grep's colored text.
 type AstGrep struct {
-	// Bin is the resolved ast-grep binary path. Empty triggers resolution via
-	// vendor.Resolve (configured bin → PATH → pinned download) on first use.
+	// Bin is the ast-grep binary path passed through to CLIArgv verbatim. Empty in
+	// production; astgrep.resolveBin does PATH resolution at the run chokepoint.
 	Bin string
 }
 
 // Engine reports that AstGrep is backed by the ast-grep engine.
 func (g AstGrep) Engine() Engine {
 	return EngineAstGrep
-}
-
-func (g AstGrep) bin(ctx context.Context) (string, error) {
-	return vendor.Resolve(ctx, vendor.AstGrep, g.Bin)
 }
 
 // CLIArgv translates op into an `ast-grep run` or `ast-grep outline` invocation.
@@ -64,11 +58,7 @@ func (g AstGrep) CLIArgv(ctx context.Context, op Op, a Args) (bin string, argv [
 	default:
 		return "", nil, fmt.Errorf("ast-grep: unsupported op %q", op)
 	}
-	bin, err = g.bin(ctx)
-	if err != nil {
-		return "", nil, fmt.Errorf("ast-grep: resolve binary: %w", err)
-	}
-	return bin, argv, nil
+	return g.Bin, argv, nil
 }
 
 // appendScope appends the lang/glob/paths tail shared by both ops. Language is

@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cache"
-	"github.com/yasyf/cc-context/internal/vendor"
+	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
 //go:embed embed_driver.py
@@ -54,7 +54,7 @@ const stderrTail = 8 << 10
 
 // Supported reports whether hybrid (dense+BM25) search is available: the
 // embedding driver needs uv on PATH to provision its Python runtime.
-func Supported() bool { return vendor.LookPath("uv") != "" }
+func Supported() bool { return lookpath.Find("uv") != "" }
 
 // UnsupportedReason explains the missing prerequisite when Supported is false.
 const UnsupportedReason = "ccx web search runs BM25-only without uv on PATH (brew install uv) — hybrid ranking needs it"
@@ -85,7 +85,7 @@ type embedResponse struct {
 // the driver treats EOF as the kill signal (so a python grandchild dies even
 // when the kill only reaches uv — same backstop as codeexec).
 func (UVEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	uv := vendor.LookPath("uv")
+	uv := lookpath.Find("uv")
 	if uv == "" {
 		return nil, fmt.Errorf("web: uv not on PATH — needed to run the %s embedding driver (brew install uv)", model2vecRequirement)
 	}

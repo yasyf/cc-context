@@ -15,8 +15,8 @@ import (
 // fakeAstGrep installs an executable named "ast-grep" on PATH that emits canned
 // --json=stream output. An `outline` run emits one canned outline file object; a
 // preview run emits one JSON match per file in files (space-separated); an apply
-// run (argv carries -U) emits nothing. vendor.Resolve finds it via
-// LookPath("ast-grep").
+// run (argv carries -U) emits nothing; a --version probe answers the floor.
+// resolveBin finds it via lookpath.Find("ast-grep").
 func fakeAstGrep(t *testing.T, files []string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -32,6 +32,7 @@ func fakeAstGrep(t *testing.T, files []string) {
 	// 0-based struct line 4 and member line 5 render as the 1-based L5 and L6.
 	const outline = `{"path":"x.go","language":"Go","items":[{"symbolType":"struct","name":"X","signature":"type X struct {","isExported":true,"range":{"start":{"line":4}},"members":[{"symbolType":"field","name":"Y","signature":"Y int","range":{"start":{"line":5}}}]}]}`
 	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then echo \"ast-grep 0.44.0\"; exit 0; fi\n" +
 		"if [ \"$1\" = outline ]; then\n" +
 		"cat <<'EOF'\n" + outline + "\nEOF\n" +
 		"exit 0\n" +

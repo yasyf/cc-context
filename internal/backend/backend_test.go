@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/yasyf/cc-context/internal/vendor"
+	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
 const (
@@ -215,15 +215,15 @@ func TestSembleCLIArgv(t *testing.T) {
 }
 
 func TestSembleCLIArgvResolution(t *testing.T) {
-	orig := vendor.LookPath
-	defer func() { vendor.LookPath = orig }()
+	orig := lookpath.Find
+	defer func() { lookpath.Find = orig }()
 
-	vendor.LookPath = func(string) string { return "/usr/bin/semble" }
+	lookpath.Find = func(string) string { return "/usr/bin/semble" }
 	if bin, _, _ := (Semble{}).CLIArgv(context.Background(), OpSearch, Args{Query: "x"}); bin != "semble" {
 		t.Errorf("on-PATH bin = %q, want semble", bin)
 	}
 
-	vendor.LookPath = func(string) string { return "" }
+	lookpath.Find = func(string) string { return "" }
 	bin, argv, _ := (Semble{}).CLIArgv(context.Background(), OpSearch, Args{Query: "x"})
 	if bin != "uvx" {
 		t.Errorf("fallback bin = %q, want uvx", bin)
@@ -241,8 +241,8 @@ func TestSembleCLIArgvUnsupported(t *testing.T) {
 }
 
 func TestSembleMCPSpec(t *testing.T) {
-	orig := vendor.LookPath
-	defer func() { vendor.LookPath = orig }()
+	orig := lookpath.Find
+	defer func() { lookpath.Find = orig }()
 	want := []string{"--from", "semble[mcp]>=0.5", "semble"}
 
 	// The MCP launch must be uvx --from semble[mcp]>=0.5 regardless of an on-PATH
@@ -260,7 +260,7 @@ func TestSembleMCPSpec(t *testing.T) {
 		{"Bin configured", "", Semble{Bin: fakeSemble}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			vendor.LookPath = func(string) string { return tc.onPath }
+			lookpath.Find = func(string) string { return tc.onPath }
 			cmd, argv, err := tc.s.MCPSpec(context.Background())
 			if err != nil {
 				t.Fatalf("MCPSpec: %v", err)

@@ -37,6 +37,8 @@ The Homebrew formula pulls in ast-grep and uv:
 brew install yasyf/tap/ccx
 ```
 
+Release-tarball and `go install` installs need `ast-grep` ≥ 0.44 on PATH for the structural ops; install it with `brew install ast-grep` or `uv tool install ast-grep-cli`.
+
 Without the plugin, register the MCP server by hand:
 
 ```bash

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/cli"
-	"github.com/yasyf/cc-context/internal/vendor"
+	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
 // webFixtureHTML is a small article with a preamble paragraph, an H1, and two
@@ -39,9 +39,9 @@ func isolateWeb(t *testing.T) {
 	t.Setenv("EXA_API_KEY", "")
 	t.Setenv("FIRECRAWL_API_KEY", "")
 	t.Setenv("BROWSERBASE_API_KEY", "")
-	prev := vendor.LookPath
-	vendor.LookPath = func(string) string { return "" }
-	t.Cleanup(func() { vendor.LookPath = prev })
+	prev := lookpath.Find
+	lookpath.Find = func(string) string { return "" }
+	t.Cleanup(func() { lookpath.Find = prev })
 }
 
 // startWebFixture serves webFixtureHTML on a loopback httptest server.

@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cache"
-	"github.com/yasyf/cc-context/internal/vendor"
+	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
 //go:embed driver.py
@@ -44,7 +44,7 @@ type driverProc struct {
 }
 
 func launchDriver(ctx context.Context) (*driverProc, error) {
-	uv := vendor.LookPath("uv")
+	uv := lookpath.Find("uv")
 	if uv == "" {
 		return nil, fmt.Errorf("codeexec: uv not on PATH — needed to run the %s sandbox driver (brew install uv)", montyRequirement)
 	}

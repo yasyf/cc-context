@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yasyf/cc-context/internal/vendor"
+	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
 var _ Embedder = UVEmbedder{}
@@ -127,9 +127,9 @@ func hfRefusedDownload(err error) bool {
 // TestEmbedUVMissing proves the launch failure names uv and the pinned
 // requirement when uv is off PATH.
 func TestEmbedUVMissing(t *testing.T) {
-	orig := vendor.LookPath
-	vendor.LookPath = func(string) string { return "" }
-	t.Cleanup(func() { vendor.LookPath = orig })
+	orig := lookpath.Find
+	lookpath.Find = func(string) string { return "" }
+	t.Cleanup(func() { lookpath.Find = orig })
 
 	if Supported() {
 		t.Fatal("Supported() = true with uv stubbed off PATH")

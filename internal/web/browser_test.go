@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yasyf/cc-context/internal/vendor"
+	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
 // abEntry is one command's entry in a faked `batch --json` output array; a nil
@@ -67,7 +67,7 @@ func sessionField(line string) string {
 	return ""
 }
 
-// stubAgentBrowser installs a fake agent-browser on PATH (via a vendor.LookPath
+// stubAgentBrowser installs a fake agent-browser on PATH (via a lookpath.Find
 // override) whose `batch` drains stdin, prints batchOut, and exits with exitCode,
 // and whose `close` exits 0. Every invocation's argv is appended to the returned
 // log file so a test can assert the session handed to `close`. exitCode lets a
@@ -100,21 +100,21 @@ exit 0
 }
 
 // installStub writes script as an executable agent-browser in dir and points
-// vendor.LookPath at it (and only it).
+// lookpath.Find at it (and only it).
 func installStub(t *testing.T, dir, script string) {
 	t.Helper()
 	stub := filepath.Join(dir, agentBrowserBin)
 	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil { //nolint:gosec // test-only stub must be executable
 		t.Fatalf("write stub: %v", err)
 	}
-	prev := vendor.LookPath
-	vendor.LookPath = func(name string) string {
+	prev := lookpath.Find
+	lookpath.Find = func(name string) string {
 		if name == agentBrowserBin {
 			return stub
 		}
 		return ""
 	}
-	t.Cleanup(func() { vendor.LookPath = prev })
+	t.Cleanup(func() { lookpath.Find = prev })
 }
 
 func TestAgentBrowserParsesBatchOutput(t *testing.T) {

@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/backend"
-	"github.com/yasyf/cc-context/internal/vendor"
+	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
 // fixtureMarkdown is a small heading tree with a preamble, an H1, two H2s, and
@@ -100,14 +100,14 @@ func withEmbedder(t *testing.T, e Embedder) {
 // whether uv is installed on the test host.
 func setUV(t *testing.T, present bool) {
 	t.Helper()
-	prev := vendor.LookPath
-	vendor.LookPath = func(string) string {
+	prev := lookpath.Find
+	lookpath.Find = func(string) string {
 		if present {
 			return "/usr/bin/uv"
 		}
 		return ""
 	}
-	t.Cleanup(func() { vendor.LookPath = prev })
+	t.Cleanup(func() { lookpath.Find = prev })
 }
 
 // markdownFetch stubs the cascade to return fixed markdown as a jina result and

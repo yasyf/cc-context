@@ -16,7 +16,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/yasyf/cc-context/internal/vendor"
+	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
 // services bundles the hosted-tier handlers for one cascade test; a nil handler
@@ -1355,9 +1355,9 @@ func TestFetchPlainHTTPContentTypeRouting(t *testing.T) {
 // from the plainHTTP tier, which only fires when detectBodyKind picked bodyPDF.
 func TestFetchPlainHTTPPDFRoutesToParser(t *testing.T) {
 	isolateKeys(t)
-	orig := vendor.LookPath
-	t.Cleanup(func() { vendor.LookPath = orig })
-	vendor.LookPath = func(string) string { return "" }
+	orig := lookpath.Find
+	t.Cleanup(func() { lookpath.Find = orig })
+	lookpath.Find = func(string) string { return "" }
 
 	ts := testTiers(t, services{jina: status(http.StatusTooManyRequests)})
 	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
@@ -1409,7 +1409,7 @@ func TestPlainHTTPPDFParseNotBoundByFetchDeadline(t *testing.T) {
 }
 
 func TestParsePDF(t *testing.T) {
-	if vendor.LookPath("uv") == "" {
+	if lookpath.Find("uv") == "" {
 		t.Skip("parsePDF needs uv on PATH (brew install uv)")
 	}
 	data, err := os.ReadFile("testdata/sample.pdf")

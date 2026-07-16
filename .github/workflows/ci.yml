@@ -34,6 +34,10 @@ jobs:
       - uses: astral-sh/setup-uv@v8.2.0
         with:
           cache-suffix: codeexec
+      - name: Install ast-grep (structural search/replace/outline engine)
+        run: |
+          uv tool install ast-grep-cli
+          echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
       - name: Warm the codeexec sandbox runtime
         # Mirror the runtime launch flags (internal/codeexec/driver.go) so a PR's
         # checked-out uv.toml / pyproject cannot steer resolution here either.

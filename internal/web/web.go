@@ -16,7 +16,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/render"
-	"github.com/yasyf/cc-context/internal/vendor"
+	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
 // defaultK is the number of search hits returned when a.K is unset (<= 0).
@@ -155,11 +155,11 @@ func escalateThin(ctx context.Context, norm string, page *Page) {
 // counts — decided by the cheap literal localTarget predicate (no DNS here).
 func renderLanesAvailable(normURL string) bool {
 	if u, err := url.Parse(normURL); err == nil && localTarget(u.Hostname()) {
-		return vendor.LookPath(agentBrowserBin) != ""
+		return lookpath.Find(agentBrowserBin) != ""
 	}
 	return os.Getenv(envJinaKey) != "" ||
 		os.Getenv(envFirecrawlKey) != "" ||
-		vendor.LookPath(agentBrowserBin) != ""
+		lookpath.Find(agentBrowserBin) != ""
 }
 
 // thinNote returns the advisory a thin page carries, worded against the render

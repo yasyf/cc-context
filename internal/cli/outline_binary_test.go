@@ -86,6 +86,7 @@ func fakeOutlineAstGrep(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ast-grep")
 	script := `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "ast-grep 0.44.0"; exit 0; fi
 cat <<'EOF'
 {"path":"source.go","language":"Go","items":[{"symbolType":"struct","name":"X","signature":"type X struct {","isExported":true,"range":{"start":{"line":2}},"members":[]}]}
 EOF

@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/backend"
-	"github.com/yasyf/cc-context/internal/vendor"
+	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
 // TestLiveJinaRenderPass confirms the jina render pass returns markdown from a
@@ -52,7 +52,7 @@ func TestLiveJinaRenderPass(t *testing.T) {
 // live page, skipping when the binary is absent.
 func TestLiveAgentBrowserRenderedRead(t *testing.T) {
 	requireLiveOptIn(t)
-	if vendor.LookPath(agentBrowserBin) == "" {
+	if lookpath.Find(agentBrowserBin) == "" {
 		t.Skipf("%s not on PATH", agentBrowserBin)
 	}
 	res, err := newTiers().agentBrowser(context.Background(), "https://example.com", false)

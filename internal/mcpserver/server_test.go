@@ -129,6 +129,7 @@ func fakeAstGrepOnPath(t *testing.T, files []string) {
 	}
 	const outline = `{"path":"x.go","language":"Go","items":[{"symbolType":"struct","name":"X","signature":"type X struct {","isExported":true,"range":{"start":{"line":4}},"members":[{"symbolType":"field","name":"Y","signature":"Y int","range":{"start":{"line":5}}}]}]}`
 	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then echo \"ast-grep 0.44.0\"; exit 0; fi\n" +
 		"if [ \"$1\" = outline ]; then\n" +
 		"cat <<'EOF'\n" + outline + "\nEOF\n" +
 		"exit 0\n" +

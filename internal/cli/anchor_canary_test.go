@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/cli"
+	"github.com/yasyf/cc-context/internal/lookpath"
 	"github.com/yasyf/cc-context/internal/vendor"
 )
 
@@ -61,7 +62,7 @@ func UseGreeter() string {
 `
 
 // TestContentAnchorsSurviveEngineGrammar is the drift canary for the content-anchor
-// rewrites: it drives the real vendored tilth and ast-grep engines through the full
+// rewrites: it drives the real tilth and ast-grep engines through the full
 // CLI dispatch over a throwaway fixture repo and asserts every anchor rewrite still
 // fired at least once. The rewrites in internal/render/finalize.go, internal/render/
 // diff.go, and internal/astgrep/outline.go are keyed to the engines' output grammar
@@ -135,22 +136,34 @@ func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
 	})
 }
 
-// forcePinnedEngines provisions the pinned tilth and ast-grep binaries and prepends
-// symlinks to them onto PATH, so the CLI legs resolve the pinned versions — the
-// grammar the anchor regexes target — over any engine already installed on PATH. It
-// skips the test when a binary cannot be provisioned, e.g. offline.
+// forcePinnedEngines stages both engines under a temp dir prepended to PATH so the
+// CLI legs resolve a known version whose grammar the anchor regexes target: tilth
+// from its pinned download, ast-grep from PATH (de-vendored). It skips when tilth
+// cannot be provisioned (e.g. offline); a missing PATH ast-grep skips locally but
+// hard-fails in CI, where the test job installs it (uv tool install ast-grep-cli).
 func forcePinnedEngines(ctx context.Context, t *testing.T) {
 	t.Helper()
 	binDir := t.TempDir()
-	for _, tool := range []vendor.Tool{vendor.Tilth, vendor.AstGrep} {
-		bin, err := vendor.Ensure(ctx, tool)
-		if err != nil {
-			t.Skipf("cannot provision the pinned %s engine (offline?): %v", tool.Name, err)
-		}
-		if err := os.Symlink(bin, filepath.Join(binDir, tool.Name)); err != nil {
-			t.Fatalf("symlink pinned %s: %v", tool.Name, err)
-		}
+
+	tilthBin, err := vendor.Ensure(ctx, vendor.Tilth)
+	if err != nil {
+		t.Skipf("cannot provision the pinned tilth engine (offline?): %v", err)
 	}
+	if err := os.Symlink(tilthBin, filepath.Join(binDir, vendor.Tilth.Name)); err != nil {
+		t.Fatalf("symlink pinned tilth: %v", err)
+	}
+
+	astGrepBin := lookpath.Find("ast-grep")
+	if astGrepBin == "" {
+		if os.Getenv("CI") != "" {
+			t.Fatal("ast-grep not on PATH in CI: the test job must install it (uv tool install ast-grep-cli)")
+		}
+		t.Skip("ast-grep not on PATH; install it to run the anchor canary (brew install ast-grep)")
+	}
+	if err := os.Symlink(astGrepBin, filepath.Join(binDir, "ast-grep")); err != nil {
+		t.Fatalf("symlink ast-grep: %v", err)
+	}
+
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 

@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **ast-grep is a normal PATH dependency, not a vendored download.** ccx no longer fetches
+  a pinned ast-grep release on first use; it resolves `ast-grep` from PATH, probes the
+  0.44.0 version floor once per binary path, and errors with an install hint when it's
+  absent. The Homebrew formula already installs it; other installs need
+  `brew install ast-grep` or `uv tool install ast-grep-cli`.
+
 ## [0.21.0] - 2026-07-16
 
 ### Added

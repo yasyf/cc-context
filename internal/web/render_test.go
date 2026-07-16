@@ -10,17 +10,17 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/yasyf/cc-context/internal/vendor"
+	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
-// disableAgentBrowser stubs vendor.LookPath to report every binary absent, so a
+// disableAgentBrowser stubs lookpath.Find to report every binary absent, so a
 // render-chain test exercising only the hosted lanes never spawns the real
 // agent-browser that may be installed on the dev host.
 func disableAgentBrowser(t *testing.T) {
 	t.Helper()
-	prev := vendor.LookPath
-	vendor.LookPath = func(string) string { return "" }
-	t.Cleanup(func() { vendor.LookPath = prev })
+	prev := lookpath.Find
+	lookpath.Find = func(string) string { return "" }
+	t.Cleanup(func() { lookpath.Find = prev })
 }
 
 func TestRenderFetchLinkLocalRefused(t *testing.T) {

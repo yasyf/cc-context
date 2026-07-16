@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yasyf/cc-context/internal/vendor"
+	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
 // cascadeDeadline bounds the whole fetch cascade across every tier, independent
@@ -196,7 +196,7 @@ func (t *tiers) renderFetch(ctx context.Context, normURL string) (FetchResult, b
 			runs = append(runs, laneRun{TierFirecrawlRender, func() (FetchResult, error) { return t.firecrawl(ctx, normURL, key, true) }})
 		}
 	}
-	if vendor.LookPath(agentBrowserBin) != "" {
+	if lookpath.Find(agentBrowserBin) != "" {
 		runs = append(runs, laneRun{TierAgentBrowser, func() (FetchResult, error) { return t.agentBrowser(ctx, normURL, local) }})
 	}
 	if len(runs) == 0 {

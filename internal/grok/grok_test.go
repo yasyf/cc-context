@@ -162,7 +162,11 @@ func fakeAstGrepEmpty(t *testing.T) {
 
 func fakeAstGrep(t *testing.T, script string) {
 	t.Helper()
-	dir := filepath.Dir(writeFakeBin(t, "ast-grep", script))
+	// resolveBin probes `ast-grep --version` before every run: answer the floor,
+	// then fall through to the test's own script for the real argv.
+	versioned := strings.Replace(script, "#!/bin/sh\n",
+		"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"ast-grep 0.44.0\"; exit 0; fi\n", 1)
+	dir := filepath.Dir(writeFakeBin(t, "ast-grep", versioned))
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 

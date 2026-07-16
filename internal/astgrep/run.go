@@ -104,12 +104,17 @@ func matchesFor(ctx context.Context, op backend.Op, a backend.Args) ([]Match, er
 	return Parse([]byte(out))
 }
 
-// runArgv translates op into the ast-grep argv and runs it, tolerating the
-// no-match exit so an empty result is not mistaken for a failure.
+// runArgv translates op into the ast-grep argv, resolves the binary on PATH
+// (enforcing the version floor), and runs it, tolerating the no-match exit so an
+// empty result is not mistaken for a failure.
 func runArgv(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 	bin, argv, err := backend.AstGrep{}.CLIArgv(ctx, op, a)
 	if err != nil {
 		return "", err
 	}
-	return render.RunCLIAllowExit(ctx, bin, argv, astGrepExitNoMatch)
+	resolved, err := resolveBin(bin)
+	if err != nil {
+		return "", err
+	}
+	return render.RunCLIAllowExit(ctx, resolved, argv, astGrepExitNoMatch)
 }

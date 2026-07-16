@@ -9,7 +9,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/cli"
 	"github.com/yasyf/cc-context/internal/codeexec"
-	"github.com/yasyf/cc-context/internal/vendor"
+	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
 // executeExec runs `ccx exec` with args and the given in-stream (nil leaves the
@@ -100,9 +100,9 @@ func TestExecListTools(t *testing.T) {
 // TestExecUnsupportedWithoutUV proves the CLI gate surfaces UnsupportedReason
 // when uv is off PATH, before any sandbox work.
 func TestExecUnsupportedWithoutUV(t *testing.T) {
-	orig := vendor.LookPath
-	vendor.LookPath = func(string) string { return "" }
-	t.Cleanup(func() { vendor.LookPath = orig })
+	orig := lookpath.Find
+	lookpath.Find = func(string) string { return "" }
+	t.Cleanup(func() { lookpath.Find = orig })
 
 	out, _, err := executeExec(t, []string{"40+2"}, "")
 	if err == nil {
