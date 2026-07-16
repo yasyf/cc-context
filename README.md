@@ -66,7 +66,7 @@ dirs: internal (31 pkgs: anchor, astgrep, backend, cache, …) · bench (4 pkgs:
 entry: cmd/ccx/main.go
 manifests: go.mod (15 direct deps)
 tests: 123 test files (go, py)
-git: @ cf13457c "fix(lint): gosec/revive/staticcheck cleanups in read and overview" · 3 dirty · 262 commits
+git: @ cf13457c "fix(lint): gosec/revive/staticcheck cleanups in read and overview" · 46 dirty · 262 commits
 hot (90d): bench/tasks (233), plugin/hooks (167), internal/cli (154), bench/ccxbench (123), internal/web (105)
 ```
 

@@ -19,61 +19,6 @@ import (
 	"github.com/yasyf/cc-context/internal/proxy"
 )
 
-// TestMain doubles as the fake tilth MCP engine: when the test binary is
-// re-executed as "tilth --mcp" (via the fakeTilthOnPath symlink), it serves a
-// stdio MCP server whose tilth_search returns a canned zero-match. read is native,
-// so the fake needs no tilth_read.
-func TestMain(m *testing.M) {
-	if len(os.Args) > 1 && os.Args[1] == "--mcp" {
-		if err := serveFakeTilth(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		os.Exit(0)
-	}
-	os.Exit(m.Run())
-}
-
-// fakeSearchIn mirrors tilth_search's full param surface (query/glob/scope/kind/
-// budget/expand): the go-sdk validates real calls against the handler's In type,
-// so a query-only fake would reject a scoped or budgeted grep.
-type fakeSearchIn struct {
-	Query  string `json:"query"`
-	Glob   string `json:"glob,omitempty"`
-	Scope  string `json:"scope,omitempty"`
-	Kind   string `json:"kind,omitempty"`
-	Budget int    `json:"budget,omitempty"`
-	Expand int    `json:"expand,omitempty"`
-}
-
-func serveFakeTilth() error {
-	s := mcp.NewServer(&mcp.Implementation{Name: "fake-tilth", Version: "test"}, nil)
-	mcp.AddTool(s, &mcp.Tool{Name: "tilth_search", Description: "canned zero-match search (stale index)"},
-		func(_ context.Context, _ *mcp.CallToolRequest, in fakeSearchIn) (*mcp.CallToolResult, any, error) {
-			text := fmt.Sprintf("# Search: %q in /x — 0 matches\n\n(~5 tokens)\n", in.Query)
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil
-		})
-	return s.Run(context.Background(), &mcp.StdioTransport{})
-}
-
-// fakeTilthOnPath symlinks the test binary onto PATH as "tilth", so the proxy's
-// engine resolution spawns the TestMain fake instead of a real engine.
-func fakeTilthOnPath(t *testing.T) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("re-exec fake tilth is POSIX-only")
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("locate test binary: %v", err)
-	}
-	dir := t.TempDir()
-	if err := os.Symlink(exe, filepath.Join(dir, "tilth")); err != nil {
-		t.Fatalf("symlink fake tilth: %v", err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
 // connectTestServer registers the ccx tools on a server and returns a connected
 // in-memory client session. Reflection is hard-off so no test shells out to
 // `claude mcp list`.
@@ -316,17 +261,15 @@ func TestGrepToolPathsRouteToEngine(t *testing.T) {
 	}
 }
 
-// TestGrepToolZeroRechecksThroughEngine proves a bare-literal ccx_code_grep whose
-// tilth result is a (fake, always-stale) zero is re-verified through the live rg
-// engine: the needle planted in the cwd surfaces despite tilth's "0 matches". The
-// fake tilth is prepended to PATH, so rg/grep stay resolvable for the recheck.
-func TestGrepToolZeroRechecksThroughEngine(t *testing.T) {
+// TestGrepToolDefaultRoutesToEngine proves a bare-literal ccx_code_grep (no
+// engine flags) now runs the native ripgrep engine: the needle planted in the cwd
+// surfaces as an anchored house-format section, with no tilth engine on PATH.
+func TestGrepToolDefaultRoutesToEngine(t *testing.T) {
 	_, rgErr := exec.LookPath("rg")
 	_, grepErr := exec.LookPath("grep")
 	if rgErr != nil && grepErr != nil {
 		t.Skip("neither rg nor grep on PATH")
 	}
-	fakeTilthOnPath(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte("var needle = 1\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -339,48 +282,10 @@ func TestGrepToolZeroRechecksThroughEngine(t *testing.T) {
 		t.Fatalf("ccx_code_grep is error: %s", out)
 	}
 	if !strings.Contains(out, "### sample.go:") {
-		t.Errorf("stale tilth zero should be rechecked to the live match:\n%s", out)
+		t.Errorf("bare literal grep should route to the native engine:\n%s", out)
 	}
 	if strings.Contains(out, "0 matches") {
-		t.Errorf("stale zero leaked through the recheck:\n%s", out)
-	}
-}
-
-// TestGrepToolZeroPassesThroughWithoutEngine proves that with no rg/grep on PATH
-// the recheck cannot resolve an engine, so tilth's zero passes through unchanged
-// rather than erroring. PATH is replaced with only the fake-tilth dir — excluding
-// /usr/bin/grep, which would otherwise satisfy resolveEngine — so no live engine
-// is reachable.
-func TestGrepToolZeroPassesThroughWithoutEngine(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("re-exec fake tilth is POSIX-only")
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("locate test binary: %v", err)
-	}
-	binDir := t.TempDir()
-	if err := os.Symlink(exe, filepath.Join(binDir, "tilth")); err != nil {
-		t.Fatalf("symlink fake tilth: %v", err)
-	}
-	t.Setenv("PATH", binDir)
-
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte("var needle = 1\n"), 0o600); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-	t.Chdir(dir)
-
-	cs := connectTestServer(t)
-	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "needle"})
-	if isErr {
-		t.Fatalf("ccx_code_grep is error: %s", out)
-	}
-	if !strings.Contains(out, "0 matches") {
-		t.Errorf("without an engine the tilth zero must pass through:\n%s", out)
-	}
-	if strings.Contains(out, "### sample.go:") {
-		t.Errorf("no engine available, yet a live match appeared:\n%s", out)
+		t.Errorf("planted needle reported as no match:\n%s", out)
 	}
 }
 

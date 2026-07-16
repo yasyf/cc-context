@@ -16,7 +16,6 @@ import (
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/edit"
 	"github.com/yasyf/cc-context/internal/find"
-	"github.com/yasyf/cc-context/internal/grep"
 	"github.com/yasyf/cc-context/internal/grok"
 	"github.com/yasyf/cc-context/internal/mcpclient"
 	"github.com/yasyf/cc-context/internal/outline"
@@ -64,13 +63,11 @@ func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string
 }
 
 // call routes op through its backend and returns budget-capped output. The edit,
-// web, find, read, and overview ops run in-process (internal/edit, internal/web,
-// internal/find, internal/read, internal/overview) without any engine, mirroring
-// the CLI dispatch; a case-insensitive, word-boundary, regex, or multi-file grep
-// (ripgrep.Handles) runs the in-process ripgrep engine (tilth expresses none of
-// these), matching the CLI dispatch's OpGrep special-case; the diff op runs as a
-// child-process CLI invocation to keep the jj-aware VCS translation and fallback
-// that CLIArgv performs; the ast-grep ops run through the shared astgrep
+// web, find, read, overview, and grep ops run in-process (internal/edit,
+// internal/web, internal/find, internal/read, internal/overview,
+// internal/ripgrep) without any engine, mirroring the CLI dispatch; the diff op
+// runs as a child-process CLI invocation to keep the jj-aware VCS translation and
+// fallback that CLIArgv performs; the ast-grep ops run through the shared astgrep
 // orchestration (ast-grep has no MCP server); every other op is a child MCP tool
 // call against the engine's resident (lazily opened) session.
 func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
@@ -112,16 +109,9 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 		}
 		return render.Finalize(op, out, a)
 	}
-	if op == backend.OpGrep && ripgrep.Handles(a) {
+	if op == backend.OpGrep {
 		return ripgrep.Run(ctx, a)
 	}
-	// The default OpGrep MCP route is the plain tilth_search tool call below. Like
-	// internal/cli/run.go's internal/grep path, its clean tilth zero is re-verified
-	// through a live ripgrep recheck after the call (further down): a stale index
-	// must not report a confident "0 matches" on either surface. tilth's MCP server
-	// has no CLI-style no-match path-fallback, so only the clean-zero shape reaches
-	// the recheck here. Headers still differ by lane (tilth "# Search:" vs rg
-	// "# grep:") exactly as they do for every ripgrep.Handles grep today.
 
 	b := router.For(op)
 
@@ -158,14 +148,6 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 			return grok.FallbackTypeDecl(ctx, a, fmt.Errorf("proxy: tool %q failed: %s", tool, text))
 		}
 		return "", fmt.Errorf("proxy: tool %q failed: %s", tool, text)
-	}
-	if op == backend.OpGrep && grep.ZeroMatches(text) {
-		switch rechecked, found, rerr := grep.Recheck(ctx, a); {
-		case rerr != nil && ctx.Err() != nil:
-			return "", fmt.Errorf("proxy: grep zero recheck aborted: %w", ctx.Err())
-		case rerr == nil && found:
-			return rechecked, nil
-		}
 	}
 	return render.Finalize(op, text, a)
 }

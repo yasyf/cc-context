@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 
 	"github.com/yasyf/cc-context/internal/vcs"
@@ -54,21 +53,6 @@ func (t Tilth) CLIArgv(ctx context.Context, op Op, a Args) (bin string, argv []s
 		}
 		if a.Budget > 0 {
 			argv = append(argv, "--budget", strconv.Itoa(a.Budget))
-		}
-	case OpGrep:
-		a = AnchorGrepArgs(a)
-		argv = []string{a.Query}
-		if a.Glob != "" {
-			argv = append(argv, "--glob", a.Glob)
-		}
-		if a.Scope != "" {
-			argv = append(argv, "--scope", a.Scope)
-		}
-		if a.Budget > 0 {
-			argv = append(argv, "--budget", strconv.Itoa(a.Budget))
-		}
-		if a.Expand > 0 {
-			argv = append(argv, "--expand="+strconv.Itoa(a.Expand))
 		}
 	default:
 		return "", nil, fmt.Errorf("tilth: unsupported op %q", op)
@@ -157,16 +141,6 @@ func (t Tilth) MCPTool(op Op, a Args) (tool string, params map[string]any, err e
 			"scope":  a.Scope,
 			"budget": a.Budget,
 		}), nil
-	case OpGrep:
-		a = AnchorGrepArgs(a)
-		return "tilth_search", omitEmpty(map[string]any{
-			"query":  a.Query,
-			"glob":   a.Glob,
-			"scope":  a.Scope,
-			"kind":   a.Kind,
-			"budget": a.Budget,
-			"expand": a.Expand,
-		}), nil
 	case OpDiff:
 		return "tilth_diff", omitEmpty(map[string]any{
 			"source": a.Source,
@@ -176,36 +150,6 @@ func (t Tilth) MCPTool(op Op, a Args) (tool string, params map[string]any, err e
 	default:
 		return "", nil, fmt.Errorf("tilth: unsupported op %q", op)
 	}
-}
-
-// AnchorGrepArgs peels an existing directory prefix off a.Glob into a.Scope so a
-// glob anchored at a real directory is searched even when ignore rules exclude
-// it. An explicit a.Scope composes rather than short-circuits: the prefix joins
-// onto it, and the joined directory becomes the new scope. A fully-literal glob
-// naming a regular file anchors to that file's parent directory with the basename
-// as the glob. A slash-less rest under a tilth scope matches by basename at any
-// depth, so the split can over-match nested files; accepted. When the joined
-// prefix does not exist on disk, a is returned unchanged.
-func AnchorGrepArgs(a Args) Args {
-	dir, rest := SplitGlobAnchor(a.Glob)
-	if dir == "" {
-		return a
-	}
-	joined := dir
-	if a.Scope != "" {
-		joined = filepath.Join(a.Scope, dir)
-	}
-	info, err := os.Stat(joined)
-	if err != nil {
-		return a
-	}
-	switch {
-	case info.IsDir():
-		a.Scope, a.Glob = joined, rest
-	case rest == "" && info.Mode().IsRegular():
-		a.Scope, a.Glob = filepath.Dir(joined), filepath.Base(joined)
-	}
-	return a
 }
 
 // omitEmpty drops zero-valued entries so the params map carries only the fields

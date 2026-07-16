@@ -62,13 +62,14 @@ func UseGreeter() string {
 `
 
 // TestContentAnchorsSurviveEngineGrammar is the drift canary for the content-anchor
-// rewrites: it drives the real tilth and ast-grep engines through the full
+// rewrites: it drives the real ripgrep, tilth, and ast-grep engines through the full
 // CLI dispatch over a throwaway fixture repo and asserts every anchor rewrite still
-// fired at least once. The rewrites in internal/render/finalize.go, internal/render/
-// diff.go, and internal/astgrep/outline.go are keyed to the engines' output grammar
-// by regex, so an engine version bump that reshapes that grammar degrades silently to
-// "no anchors". This test converts that silent regression into a loud failure. The
-// assertions check that a rewrite shape appeared, never a specific hash value.
+// fired at least once. The rewrites in internal/ripgrep/ripgrep.go, internal/render/
+// finalize.go, internal/render/diff.go, and internal/astgrep/outline.go are keyed to
+// the engines' output grammar, so an engine version bump that reshapes that grammar
+// degrades silently to "no anchors". This test converts that silent regression into a
+// loud failure. The assertions check that a rewrite shape appeared, never a specific
+// hash value.
 func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
 	if testing.Short() {
 		t.Skip("provisions and runs the real tilth + ast-grep engines")
@@ -80,8 +81,8 @@ func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
 	t.Chdir(repo)
 
 	grep := runCCX(t, "code", "grep", "func")
-	// -i routes to the ripgrep engine, exercising ripgrep.Run → reshape →
-	// render.Finalize → annotateGrep that the unflagged tilth grep never touches.
+	// Both the bare and -i greps run the native ripgrep engine (ripgrep.Run →
+	// reshape, which stamps anchors at generation time); the flag only toggles case.
 	grepRG := runCCX(t, "code", "grep", "func", "-i")
 	// --full so the caller/sibling frame anchors this canary protects are present;
 	// the terse default drops those sections (covered by TestTerseSymbol).
@@ -97,8 +98,8 @@ func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
 		out  string
 		re   *regexp.Regexp
 	}{
-		{"grep frame anchor (finalize.go)", grep, regexp.MustCompile(`\[\d+(?:-\d+)?#` + hashClass + `\]`)},
-		{"grep frame anchor via ripgrep (finalize.go)", grepRG, regexp.MustCompile(`\[\d+(?:-\d+)?#` + hashClass + `\]`)},
+		{"grep frame anchor (ripgrep)", grep, regexp.MustCompile(`\[\d+(?:-\d+)?#` + hashClass + `\]`)},
+		{"grep frame anchor via -i (ripgrep)", grepRG, regexp.MustCompile(`\[\d+(?:-\d+)?#` + hashClass + `\]`)},
 		{"symbol grok locator (finalize.go)", symbol, regexp.MustCompile(`\[[^\]]+:\d+#` + hashClass + `\]`)},
 		{"symbol range frame (finalize.go)", symbol, regexp.MustCompile(`\[\d+-\d+#` + hashClass + `\]`)},
 		{"outline item anchor (outline.go)", outline, regexp.MustCompile(`(?m)^L\d+#` + hashClass + `\b`)},

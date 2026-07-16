@@ -28,7 +28,7 @@ class TestLiteralSafe:
             "foo_bar",  # word chars + underscore
             "foo bar",  # space
             "a.b/c:d",  # dot, slash, colon
-            "foo.bar",  # a bare dot is whitelisted — it is not a glob metachar for tilth
+            "foo.bar",  # a bare dot is whitelisted — literal in a fixed-string rg query
             "user@host",
             "a,b",
             "key=value",

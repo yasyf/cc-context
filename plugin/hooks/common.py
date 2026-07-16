@@ -44,9 +44,8 @@ GIT_DIFF_SUMMARY_FLAGS = ("--stat", "--numstat", "--shortstat", "--name-only", "
 # by `|`, each looking like a code identifier (letters/digits/underscore, no spaces).
 IDENT_ALT = re.compile(r"\b[A-Za-z_]\w*(?:\|[A-Za-z_]\w*)+\b")
 
-# Whitelist for grep patterns safe to rewrite onto ccx's literal-match engine. Raw grep
-# patterns are BRE regex, so a metachar pattern can't faithfully become a literal search,
-# and glob metachars (`*?[`) misroute tilth's query auto-dispatch — load-bearing on both paths.
+# Pattern chars safe to rewrite onto ccx's fixed-string grep: an excluded regex/glob
+# metachar (`*?[^$(){}|`) changes meaning as a literal rg query or in the ccx grep argv.
 LITERAL_SAFE = re.compile(r"^[\w ./:@,=+-]+$")
 
 # JSON-output flags that mark a command as worth wrapping in `ccx format`. The glued

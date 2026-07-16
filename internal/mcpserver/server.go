@@ -126,7 +126,7 @@ type GrepIn struct {
 	Regex      bool     `json:"regex,omitempty" jsonschema:"treat text as regex; runs the rg/grep engine"`
 	Paths      []string `json:"paths,omitempty" jsonschema:"search these files, not the tree; runs the rg/grep engine"`
 	Budget     int      `json:"budget,omitempty" jsonschema:"token budget for the output"`
-	Expand     int      `json:"expand,omitempty" jsonschema:"rg engine: context lines per hit; default engine: inlines full source of top matches"`
+	Expand     int      `json:"expand,omitempty" jsonschema:"context lines around each hit"`
 	After      int      `json:"after,omitempty" jsonschema:"context lines after each match (-A)"`
 	Before     int      `json:"before,omitempty" jsonschema:"context lines before each match (-B)"`
 	Context    int      `json:"context,omitempty" jsonschema:"context lines around each match (-C)"`
@@ -302,7 +302,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 		Meta:        alwaysLoad,
 	}, handler(p, backend.OpGrep, func(in GrepIn) backend.Args {
 		a := backend.Args{Query: in.Text, Glob: in.Glob, Scope: in.Scope, IgnoreCase: in.IgnoreCase, Word: in.Word, Regex: in.Regex, Paths: in.Paths, Budget: in.Budget, Expand: in.Expand, After: in.After, Before: in.Before, Context: in.Context}
-		if ripgrep.Handles(a) && a.Budget == 0 {
+		if a.Budget == 0 {
 			a.Budget = ripgrep.DefaultBudget
 		}
 		return a

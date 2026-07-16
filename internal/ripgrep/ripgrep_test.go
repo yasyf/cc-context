@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
-	"github.com/yasyf/cc-context/internal/render"
 )
 
 func TestRipgrepArgv(t *testing.T) {
@@ -549,38 +549,43 @@ func TestReshape(t *testing.T) {
 			want:   "# grep: \"zzz\" — no matches\n# engine: system grep (ripgrep not found); hidden and binary files skipped; .gitignore not applied\n",
 		},
 	}
+	// Synthetic paths miss the empty cache, so frames stay bare (see the wants).
+	files := anchor.NewFiles(t.TempDir())
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := reshape(tt.query, tt.eng, tt.groups); got != tt.want {
+			if got := reshape(tt.query, tt.eng, tt.groups, files); got != tt.want {
 				t.Errorf("reshape()\n got = %q\nwant = %q", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestReshapeFramesMatchRenderRegexes(t *testing.T) {
-	// Consume the production patterns annotateGrep anchors on, so a render-side
-	// regex change that breaks reshape's frames fails here.
-	sectionRe, _, frameRe := render.GrepReshapeRegexes()
-	out := reshape("foo", engineRipgrep, []fileGroup{
-		{path: "internal/backend/backend.go", lines: []grepLine{{num: 9, text: "ctx", isMatch: false}, {num: 10, text: "match", isMatch: true}}},
-	})
-	var sawSection, sawMatchFrame, sawCtxFrame bool
-	for _, line := range strings.Split(out, "\n") {
-		switch {
-		case sectionRe.MatchString(line):
-			sawSection = true
-			if got := sectionRe.FindStringSubmatch(line)[1]; got != "internal/backend/backend.go" {
-				t.Errorf("section path = %q", got)
-			}
-		case strings.HasPrefix(line, "→ ") && frameRe.MatchString(line):
-			sawMatchFrame = true
-		case strings.HasPrefix(line, "  [") && frameRe.MatchString(line):
-			sawCtxFrame = true
-		}
+// TestReshapeAnchorsFrames proves reshape stamps a content anchor onto each frame
+// at generation time, hashed from the real file's line, and leaves a frame bare
+// when its line is out of range. The golden asserts the exact anchored shape.
+func TestReshapeAnchorsFrames(t *testing.T) {
+	dir := t.TempDir()
+	const src = "package x\nvar match = 1\nvar ctx = 2\n"
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte(src), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if !sawSection || !sawMatchFrame || !sawCtxFrame {
-		t.Errorf("regex coverage: section=%v matchFrame=%v ctxFrame=%v\n%s", sawSection, sawMatchFrame, sawCtxFrame, out)
+	files := anchor.NewFiles(dir)
+
+	ctxHash := anchor.Of("var ctx = 2")
+	matchHash := anchor.Of("var match = 1")
+	groups := []fileGroup{{path: "a.go", lines: []grepLine{
+		{num: 3, text: "var ctx = 2", isMatch: false},
+		{num: 2, text: "var match = 1", isMatch: true},
+		{num: 99, text: "out of range", isMatch: true},
+	}}}
+
+	want := "# grep: \"match\" — 2 matches in 1 files\n" +
+		"\n### a.go:2,99\n" +
+		"  [3#" + string(ctxHash) + "] var ctx = 2\n" +
+		"→ [2#" + string(matchHash) + "] var match = 1\n" +
+		"→ [99] out of range\n"
+	if got := reshape("match", engineRipgrep, groups, files); got != want {
+		t.Errorf("reshape()\n got = %q\nwant = %q", got, want)
 	}
 }
 
@@ -667,29 +672,27 @@ func TestResolveEngine_Neither(t *testing.T) {
 	}
 }
 
-func TestHandles(t *testing.T) {
+func TestAnchorGrepArgs(t *testing.T) {
+	sub, missing, file := anchorDirs(t)
+	parent := filepath.Dir(sub)
 	tests := []struct {
-		name string
-		args backend.Args
-		want bool
+		name      string
+		args      backend.Args
+		wantGlob  string
+		wantScope string
 	}{
-		{"bare literal stays tilth", backend.Args{Query: "foo"}, false},
-		{"glob-only stays tilth", backend.Args{Query: "foo", Glob: "*.go"}, false},
-		{"scope-only stays tilth", backend.Args{Query: "foo", Scope: "internal"}, false},
-		{"ignore-case routes to engine", backend.Args{Query: "foo", IgnoreCase: true}, true},
-		{"word routes to engine", backend.Args{Query: "foo", Word: true}, true},
-		{"regex routes to engine", backend.Args{Query: "foo", Regex: true}, true},
-		{"paths route to engine", backend.Args{Query: "foo", Paths: []string{"a.go"}}, true},
-		{"after routes to engine", backend.Args{Query: "foo", After: 2}, true},
-		{"before routes to engine", backend.Args{Query: "foo", Before: 2}, true},
-		{"context routes to engine", backend.Args{Query: "foo", Context: 2}, true},
-		{"negative context routes to engine to be rejected", backend.Args{Query: "foo", Context: -1}, true},
-		{"expand-only stays tilth", backend.Args{Query: "foo", Expand: 2}, false},
+		{"anchored existing dir → scope + rest", backend.Args{Query: "foo", Glob: sub + "/*.go"}, "*.go", sub},
+		{"nonexistent prefix → unchanged", backend.Args{Query: "foo", Glob: missing + "/*.go"}, missing + "/*.go", ""},
+		{"explicit scope composes onto join", backend.Args{Query: "foo", Glob: "pkg/*.go", Scope: parent}, "*.go", sub},
+		{"explicit scope nonexistent join → unchanged", backend.Args{Query: "foo", Glob: "nope/*.go", Scope: parent}, "nope/*.go", parent},
+		{"literal file glob → parent scope + basename", backend.Args{Query: "foo", Glob: file}, "file.go", sub},
+		{"slash-less glob → unchanged", backend.Args{Query: "foo", Glob: "*.go"}, "*.go", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := Handles(tt.args); got != tt.want {
-				t.Errorf("Handles(%+v) = %v, want %v", tt.args, got, tt.want)
+			got := AnchorGrepArgs(tt.args)
+			if got.Glob != tt.wantGlob || got.Scope != tt.wantScope {
+				t.Errorf("AnchorGrepArgs glob=%q scope=%q, want glob=%q scope=%q", got.Glob, got.Scope, tt.wantGlob, tt.wantScope)
 			}
 		})
 	}
@@ -717,10 +720,10 @@ func TestValidateContext(t *testing.T) {
 	}
 }
 
-// TestRunFound_Live proves the exported found verdict is structural: with
+// TestRunFoundness_Live proves run's found verdict is structural: with
 // Budget 1 the finalized output is byte-cut to garbage either way, yet found
 // still reports whether the engine matched. It skips when no engine is on PATH.
-func TestRunFound_Live(t *testing.T) {
+func TestRunFoundness_Live(t *testing.T) {
 	_, rgErr := exec.LookPath("rg")
 	_, grepErr := exec.LookPath("grep")
 	if rgErr != nil && grepErr != nil {
@@ -742,12 +745,16 @@ func TestRunFound_Live(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, found, err := RunFound(context.Background(), backend.Args{Query: tt.query, IgnoreCase: true, Budget: 1})
+			eng, bin, err := resolveEngine()
 			if err != nil {
-				t.Fatalf("RunFound() err = %v", err)
+				t.Fatalf("resolveEngine() err = %v", err)
+			}
+			_, found, err := run(context.Background(), eng, bin, backend.Args{Query: tt.query, IgnoreCase: true, Budget: 1}, execEngine)
+			if err != nil {
+				t.Fatalf("run() err = %v", err)
 			}
 			if found != tt.wantFound {
-				t.Errorf("RunFound() found = %v, want %v", found, tt.wantFound)
+				t.Errorf("run() found = %v, want %v", found, tt.wantFound)
 			}
 		})
 	}

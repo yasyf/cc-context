@@ -1,7 +1,7 @@
-// Package ripgrep runs a case-insensitive, word-boundary, regex, or multi-file
-// `ccx code grep` through ripgrep — or system grep when rg is absent — and
-// reshapes either engine's output into the house grep format so render.Finalize
-// anchors and caps it identically to tilth grep. Handles is the routing predicate.
+// Package ripgrep runs every `ccx code grep` through ripgrep — or system grep
+// when rg is absent — and reshapes the engine's output into the house grep
+// format, stamping content anchors onto each frame at generation time before
+// render.Cap bounds it.
 package ripgrep
 
 import (
@@ -18,6 +18,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
+	"github.com/yasyf/cc-context/internal/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/render"
 )
@@ -27,35 +28,15 @@ import (
 // exactly as astgrep.Run tolerates ast-grep's no-match.
 const exitNoMatch = 1
 
-// DefaultBudget caps an otherwise-unbudgeted rg/grep grep so a flooding match set
-// never blows the context window. render.Cap is a no-op at budget<=0, so only the
-// CLI and MCP surfaces apply this default; codeexec leaves the grep uncapped by
-// contract, filtering the output inside its sandbox. One deviation: a stale-zero
-// recheck (grep.Recheck) applies this cap on every lane, codeexec included — a
-// verification pass swapped in behind a tilth zero must not flood any surface,
-// while codeexec's own rg-routed greps stay uncapped as before.
+// DefaultBudget caps an otherwise-unbudgeted grep so a flooding match set never
+// blows the context window. render.Cap is a no-op at budget<=0, so only the CLI
+// and MCP surfaces apply this default; codeexec leaves the grep uncapped by
+// contract, filtering the output inside its sandbox.
 const DefaultBudget = 2000
-
-// Handles reports whether the rg/grep engine, not tilth, serves this grep. It is
-// the single routing predicate the CLI, proxy, and MCP surfaces share: any of
-// case-insensitivity, whole-word matching, regex, explicit file operands, or
-// grep-style context lines (-A/-B/-C) needs a capability tilth's literal
-// whole-tree search cannot express.
-func Handles(a backend.Args) bool {
-	return a.IgnoreCase || a.Word || a.Regex || len(a.Paths) > 0 || hasContext(a)
-}
 
 // maxContext bounds each of -A/-B/-C so a runaway context request can never bury
 // the match frame — the payload — under leading context inside the output budget.
 const maxContext = 100
-
-// hasContext reports whether a carries any grep-style context request via
-// -A/-B/-C (After/Before/Context). A negative value counts: it routes the grep to
-// this engine so validateContext rejects it loudly rather than the >0 argv guards
-// silently dropping it back to a contextless tilth search.
-func hasContext(a backend.Args) bool {
-	return a.After != 0 || a.Before != 0 || a.Context != 0
-}
 
 // validateContext rejects an out-of-range context request: a negative value names
 // the offending flag, and a value past maxContext names the ceiling. It is the
@@ -107,29 +88,20 @@ type runnerFn func(ctx context.Context, bin string, argv []string) (string, erro
 // Run resolves rg (or system grep), searches for a.Query, and returns the hits
 // reshaped into the house grep format, content-anchored, and budget-capped.
 func Run(ctx context.Context, a backend.Args) (string, error) {
-	out, _, err := RunFound(ctx, a)
-	return out, err
-}
-
-// RunFound is Run also reporting whether the search found any match, decided
-// structurally from the parsed engine events before the output is reshaped and
-// budget-capped. A caller branching on found-ness — the stale-zero recheck — must
-// use this, never sniff the finalized string: capping can byte-cut the no-match
-// header mid-word, and a matched header embeds the query verbatim, so a query
-// containing "— no matches" plus an aligned cut spoofs any string predicate.
-func RunFound(ctx context.Context, a backend.Args) (out string, found bool, err error) {
 	if err := validateContext(a); err != nil {
-		return "", false, err
+		return "", err
 	}
 	eng, bin, err := resolveEngine()
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
-	return run(ctx, eng, bin, a, execEngine)
+	out, _, err := run(ctx, eng, bin, a, execEngine)
+	return out, err
 }
 
-// run is the engine-agnostic core: build argv, execute, parse, reshape, finalize.
-// found comes from the parsed groups, before reshape and capping can distort it.
+// run is the engine-agnostic core: build argv, execute, parse, reshape, cap.
+// found is decided from parsed groups before reshape/cap — capping can cut the
+// no-match header and a matched header embeds the query, so never string-sniff.
 func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) (string, bool, error) {
 	argv, err := buildArgv(eng, a)
 	if err != nil {
@@ -149,8 +121,12 @@ func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runne
 	if err != nil {
 		return "", false, err
 	}
-	out, err := render.Finalize(backend.OpGrep, reshape(a.Query, eng, groups), a)
-	return out, anyMatch(groups), err
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", false, fmt.Errorf("ripgrep: resolve cwd: %w", err)
+	}
+	reshaped := reshape(a.Query, eng, groups, anchor.NewFiles(cwd))
+	return render.Cap(reshaped, a.Budget), anyMatch(groups), nil
 }
 
 // anyMatch reports whether any group carries a match line (context lines alone
@@ -264,6 +240,35 @@ func fileMatchesGlob(glob, p string) (bool, error) {
 	return doublestar.Match(glob, p)
 }
 
+// AnchorGrepArgs peels an existing directory prefix off a.Glob into a.Scope so a
+// glob anchored at a real directory is searched even when ignore rules exclude
+// it. An explicit a.Scope composes rather than short-circuits: the prefix joins
+// onto it, and the joined directory becomes the new scope. A fully-literal glob
+// naming a regular file anchors to that file's parent directory with the basename
+// as the glob. When the joined prefix does not exist on disk, a is returned
+// unchanged. backend.SplitGlobAnchor does the metachar-free prefix split.
+func AnchorGrepArgs(a backend.Args) backend.Args {
+	dir, rest := backend.SplitGlobAnchor(a.Glob)
+	if dir == "" {
+		return a
+	}
+	joined := dir
+	if a.Scope != "" {
+		joined = filepath.Join(a.Scope, dir)
+	}
+	info, err := os.Stat(joined)
+	if err != nil {
+		return a
+	}
+	switch {
+	case info.IsDir():
+		a.Scope, a.Glob = joined, rest
+	case rest == "" && info.Mode().IsRegular():
+		a.Scope, a.Glob = filepath.Dir(joined), filepath.Base(joined)
+	}
+	return a
+}
+
 // ripgrepArgv builds `rg --json [--fixed-strings] [-i] [-w] [--glob G] [-C N]
 // [--no-ignore-parent] -e <pattern> [-- [scope] paths...]`. --fixed-strings is
 // dropped for a regex query so the pattern reaches rg's Rust regex engine; any
@@ -272,20 +277,19 @@ func fileMatchesGlob(glob, p string) (bool, error) {
 // the file operands against --glob, since rg's -g never filters explicit files), so
 // -g only narrows a directory operand's recursion. Otherwise AnchorGrepArgs first
 // peels an existing directory prefix off the glob into a path operand — composing onto an
-// explicit --scope — exactly as the tilth route does, so the two engines search
-// the same file set: the operand becomes the anchored directory and the glob its
+// explicit --scope — so both engines (rg and the grep fallback) search the same
+// file set: the operand becomes the anchored directory and the glob its
 // leftover basename pattern (empty when the anchor consumed the whole glob, so no
 // -g is emitted and the operand alone selects the files). rg matches a bare
-// basename glob against the printed path at any depth, matching tilth's recursive
-// scope semantics — a full or absolute path glob would match nothing under the
-// operand. The pattern rides -e so a leading-dash literal is never mistaken for a
-// flag, and the operand rides after -- so a value like "--hidden" is never parsed
-// as one. Whenever an operand is present --no-ignore-parent skips the outer
-// .gitignore rg would otherwise apply to an explicit path while still honoring
-// ignore files inside it — parity with tilth's scope semantics.
+// basename glob against the printed path at any depth — a full or absolute path
+// glob would match nothing under the operand. The pattern rides -e so a
+// leading-dash literal is never mistaken for a flag, and the operand rides after
+// -- so a value like "--hidden" is never parsed as one. Whenever an operand is
+// present --no-ignore-parent skips the outer .gitignore rg would otherwise apply
+// to an explicit path while still honoring ignore files inside it.
 func ripgrepArgv(a backend.Args) []string {
 	if len(a.Paths) == 0 {
-		a = backend.AnchorGrepArgs(a)
+		a = AnchorGrepArgs(a)
 	}
 	argv := []string{"--json"}
 	if !a.Regex {
@@ -347,13 +351,13 @@ func ripgrepArgv(a backend.Args) []string {
 // explicit Paths so an anchored glob can never widen past them; otherwise
 // AnchorGrepArgs first peels an existing directory prefix off the glob
 // into the scope — composing onto an explicit --scope — exactly as the ripgrep
-// and tilth routes do, so every engine searches the same file set; the peel also
+// route does, so both engines search the same file set; the peel also
 // keeps an anchored glob like pkg/*.go expressible here (the anchor becomes the
 // search root and the basename remainder the --include) where the unpeeled form
 // has no grep translation.
 func grepArgv(a backend.Args) ([]string, error) {
 	if len(a.Paths) == 0 {
-		a = backend.AnchorGrepArgs(a)
+		a = AnchorGrepArgs(a)
 	}
 	flags := "-rnHFI"
 	if a.Regex {
@@ -614,16 +618,18 @@ func (b *groupBuilder) groups() []fileGroup {
 	return out
 }
 
-// NoMatch is the house no-match header both the ripgrep and tilth grep routes
-// emit so a zero-hit search reads identically regardless of engine.
+// NoMatch is the house no-match header the grep engine emits so a zero-hit
+// search reads identically whether rg or the system-grep fallback ran.
 func NoMatch(query string) string {
 	return fmt.Sprintf("# grep: %q — no matches\n", query)
 }
 
-// reshape renders groups into the house grep format render.Finalize anchors:
-// a "### <path>:<match lines>" section header per file, then a "→ [N] <text>"
-// frame for each match and a "  [N] <text>" frame for each context line.
-func reshape(query string, eng engine, groups []fileGroup) string {
+// reshape renders groups into the house grep format: a "### <path>:<match lines>"
+// section header per file, then a "→ [N#hash] <text>" frame for each match and a
+// "  [N#hash] <text>" frame for each context line. Each frame's content anchor is
+// stamped here at generation time, hashed from the file's line via files; a frame
+// whose file or line the cache cannot resolve stays a bare "[N]".
+func reshape(query string, eng engine, groups []fileGroup, files *anchor.Files) string {
 	matches := 0
 	for _, g := range groups {
 		for _, l := range g.lines {
@@ -655,10 +661,21 @@ func reshape(query string, eng engine, groups []fileGroup) string {
 			if l.isMatch {
 				arrow = "→ "
 			}
-			fmt.Fprintf(&b, "%s[%d] %s\n", arrow, l.num, l.text)
+			fmt.Fprintf(&b, "%s[%s] %s\n", arrow, anchoredSpan(g.path, l.num, files), l.text)
 		}
 	}
 	return b.String()
+}
+
+// anchoredSpan renders a frame's bracket span, appending the content anchor
+// hashed from path's line n when the cache resolves it; a miss — unreadable file
+// or out-of-range line — yields the bare line number.
+func anchoredSpan(path string, n int, files *anchor.Files) string {
+	span := strconv.Itoa(n)
+	if text, ok := files.LineAt(path, n); ok {
+		span += "#" + string(anchor.Of(text))
+	}
+	return span
 }
 
 // writeEngineNote discloses the system-grep degradation (hidden and binary paths

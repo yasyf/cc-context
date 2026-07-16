@@ -30,12 +30,6 @@ func TestTilthCLIArgv(t *testing.T) {
 		{"symbol scope full", OpSymbol, Args{Query: "Foo", Scope: "pkg", Full: true}, []string{"grok", "Foo", "--scope", "pkg", "--full"}},
 		{"deps", OpDeps, Args{Path: "a.go"}, []string{"a.go", "--deps"}},
 		{"deps scope budget", OpDeps, Args{Path: "a.go", Scope: "pkg", Budget: 7}, []string{"a.go", "--deps", "--scope", "pkg", "--budget", "7"}},
-		{"grep", OpGrep, Args{Query: "todo"}, []string{"todo"}},
-		{"grep glob budget expand", OpGrep, Args{Query: "todo", Glob: "*.go", Budget: 3, Expand: 2}, []string{"todo", "--glob", "*.go", "--budget", "3", "--expand=2"}},
-		{"grep glob scope budget expand", OpGrep, Args{Query: "todo", Glob: "*.go", Scope: "internal", Budget: 3, Expand: 2}, []string{"todo", "--glob", "*.go", "--scope", "internal", "--budget", "3", "--expand=2"}},
-		{"grep scope only", OpGrep, Args{Query: "todo", Scope: "internal"}, []string{"todo", "--scope", "internal"}},
-		{"grep ignore-case/word not routed to tilth", OpGrep, Args{Query: "todo", IgnoreCase: true, Word: true}, []string{"todo"}},
-		{"grep regex/paths not routed to tilth", OpGrep, Args{Query: "todo", Regex: true, Paths: []string{"a.go", "b.go"}}, []string{"todo"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -150,10 +144,6 @@ func TestTilthMCPTool(t *testing.T) {
 		{"symbol", OpSymbol, Args{Query: "Foo", Scope: "pkg", Full: true}, "tilth_grok", map[string]any{"target": "Foo", "scope": "pkg", "full": true}},
 		{"symbol minimal", OpSymbol, Args{Query: "Foo"}, "tilth_grok", map[string]any{"target": "Foo"}},
 		{"deps", OpDeps, Args{Path: "a.go", Scope: "pkg", Budget: 7}, "tilth_deps", map[string]any{"path": "a.go", "scope": "pkg", "budget": 7}},
-		{"grep", OpGrep, Args{Query: "todo", Glob: "*.go", Kind: "code", Budget: 3, Expand: 2}, "tilth_search", map[string]any{"query": "todo", "glob": "*.go", "kind": "code", "budget": 3, "expand": 2}},
-		{"grep scope", OpGrep, Args{Query: "todo", Glob: "*.go", Scope: "internal", Kind: "code", Budget: 3, Expand: 2}, "tilth_search", map[string]any{"query": "todo", "glob": "*.go", "scope": "internal", "kind": "code", "budget": 3, "expand": 2}},
-		{"grep ignore-case/word absent from tilth params", OpGrep, Args{Query: "todo", IgnoreCase: true, Word: true}, "tilth_search", map[string]any{"query": "todo"}},
-		{"grep regex/paths absent from tilth params", OpGrep, Args{Query: "todo", Regex: true, Paths: []string{"a.go"}}, "tilth_search", map[string]any{"query": "todo"}},
 		{"diff", OpDiff, Args{Source: "HEAD~1", Scope: "pkg", Budget: 4}, "tilth_diff", map[string]any{"source": "HEAD~1", "scope": "pkg", "budget": 4}},
 	}
 	for _, tt := range tests {

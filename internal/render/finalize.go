@@ -15,11 +15,12 @@ import (
 // Finalize rewrites op's raw backend output into anchored form, then caps it to
 // a.Budget. Anchors (NN#hash) pin a span to its line's content so the model can
 // echo it back into ccx_code_read even after edits shift line numbers. The
-// rewrite is op-keyed: grep and symbol output gain frame anchors, deps output
+// rewrite is op-keyed: symbol output gains frame anchors, deps output
 // regroups its "## Used by" rows under per-file "### path" headings with anchored
 // line spans, search and related output is reshaped from raw semble JSON, read
 // output is secret-masked before capping (unless a.RevealSecrets) with a footer
-// naming the fired rules, and every other op passes through unchanged. OpWebRead passes through too: web.Run
+// naming the fired rules, and every other op passes through unchanged. Grep never
+// reaches here — internal/ripgrep anchors and caps its own output. OpWebRead passes through too: web.Run
 // applies its own content-aware budget+offset (byte-exact continuation) before
 // Finalize sees it. Every other op caps through Cap. OpDiff must never reach here — the diff pipeline
 // anchors its own output. The anchor.Files cache is built fresh per call (the MCP
@@ -34,8 +35,6 @@ func Finalize(op backend.Op, out string, a backend.Args) (string, error) {
 	files := anchor.NewFiles(cwd)
 
 	switch op {
-	case backend.OpGrep:
-		return Cap(annotateGrep(out, files), a.Budget), nil
 	case backend.OpSymbol:
 		return Cap(terseSymbol(annotateSymbol(out, files), a), a.Budget), nil
 	case backend.OpDeps:
@@ -78,50 +77,6 @@ func withSecretsFooter(out string, ids []string) string {
 		out += "\n"
 	}
 	return fmt.Sprintf("%s# %d secret(s) masked (%s) — --reveal-secrets prints raw\n", out, len(ids), strings.Join(uniq, ", "))
-}
-
-var (
-	// grepSectionRe matches a tilth grep "### path:64,75 [desc]" section header,
-	// capturing the path. The lazy path stops at the last ':' before the line
-	// list, so a Windows drive letter (never followed by a digit) stays in it.
-	grepSectionRe = regexp.MustCompile(`^### (.+?):\d[\d,]*(?:[ \t].*)?$`)
-	// grepFenceRe matches a tilth grep fenced-block header "```path:1-88",
-	// capturing the path. Backticks force a double-quoted pattern.
-	grepFenceRe = regexp.MustCompile("^```(.+?):\\d+(?:-\\d+)?$")
-	// grepFrameRe matches a grep frame line "  [55-66] " or "→ [55] ": indent and
-	// optional arrow, a numeric line or range in brackets, then a space. An open
-	// range "[4-]" has no closing digit before ']', so it never matches.
-	grepFrameRe = regexp.MustCompile(`^(\s*→?\s*)\[(\d+)(?:-(\d+))?\](\s)`)
-)
-
-// GrepReshapeRegexes returns the section, fence, and frame patterns annotateGrep
-// anchors grep output on, letting the ripgrep reshaper's drift canary assert
-// against the production patterns instead of copies that could silently diverge.
-func GrepReshapeRegexes() (section, fence, frame *regexp.Regexp) {
-	return grepSectionRe, grepFenceRe, grepFrameRe
-}
-
-// annotateGrep rewrites tilth grep frame lines to carry a content anchor,
-// tracking the current file from "### path:…" and "```path:…" headers. Header,
-// gutter ("NN │"), and open-range lines never match grepFrameRe, so they pass
-// through byte-identical; a frame whose file or line the cache cannot resolve
-// stays bare.
-func annotateGrep(out string, files *anchor.Files) string {
-	lines := strings.Split(out, "\n")
-	var file string
-	for i, line := range lines {
-		match := strings.TrimSuffix(line, "\r")
-		if m := grepSectionRe.FindStringSubmatch(match); m != nil {
-			file = m[1]
-			continue
-		}
-		if m := grepFenceRe.FindStringSubmatch(match); m != nil {
-			file = m[1]
-			continue
-		}
-		lines[i] = anchorFrameLine(line, grepFrameRe, file, files)
-	}
-	return strings.Join(lines, "\n")
 }
 
 var (

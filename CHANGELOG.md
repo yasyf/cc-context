@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ccx repo overview` is native.** Languages, dirs, entry points, manifests, test counts,
   git state, and 90-day churn come from one gitignore-honoring walk plus live git; the MCP
   surface now carries the language census the CLI used to append on its own.
+- **ripgrep is the only grep engine.** The tilth literal lane and its stale-zero recheck
+  band-aid are gone; every `ccx code grep` runs live ripgrep (system `grep` fills in, with
+  its disclosure note), so a zero is a real zero and results honor `.gitignore` on every
+  lane. Content anchors are stamped at generation from a per-call line cache, `--expand`
+  means context lines around each hit, and the shapes are unchanged from the flagged lane
+  agents already saw.
 
 ## [0.22.0] - 2026-07-16
 

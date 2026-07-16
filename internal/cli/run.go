@@ -8,7 +8,6 @@ import (
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/edit"
 	"github.com/yasyf/cc-context/internal/find"
-	"github.com/yasyf/cc-context/internal/grep"
 	"github.com/yasyf/cc-context/internal/grok"
 	"github.com/yasyf/cc-context/internal/overview"
 	"github.com/yasyf/cc-context/internal/read"
@@ -83,7 +82,7 @@ func dispatch(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error)
 		}
 		return render.Finalize(op, out, a)
 	}
-	if op == backend.OpGrep && ripgrep.Handles(a) {
+	if op == backend.OpGrep {
 		return ripgrep.Run(cmd.Context(), a)
 	}
 	bin, argv, err := router.For(op).CLIArgv(cmd.Context(), op, a)
@@ -95,9 +94,6 @@ func dispatch(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error)
 	}
 	if op == backend.OpSymbol {
 		return grok.Run(cmd.Context(), bin, argv, a)
-	}
-	if op == backend.OpGrep {
-		return grep.Run(cmd.Context(), bin, argv, a)
 	}
 	out, err := render.RunCLI(cmd.Context(), bin, argv)
 	if err != nil {

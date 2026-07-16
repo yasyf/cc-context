@@ -49,7 +49,6 @@ func TestAnnotateGolden(t *testing.T) {
 		golden string
 		fn     func(string, *anchor.Files) string
 	}{
-		{"grep", "grep_input.txt", "grep_golden.txt", annotateGrep},
 		{"symbol", "symbol_input.txt", "symbol_golden.txt", annotateSymbol},
 		{"deps", "deps_input.txt", "deps_golden.txt", annotateDeps},
 	}
@@ -57,28 +56,6 @@ func TestAnnotateGolden(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := tt.fn(readFixture(t, tt.input), anchor.NewFiles("testdata"))
 			checkGolden(t, tt.golden, got)
-		})
-	}
-}
-
-func TestAnnotateGrepInvariants(t *testing.T) {
-	got := annotateGrep(readFixture(t, "grep_input.txt"), anchor.NewFiles("testdata"))
-	tests := []struct {
-		name string
-		line string
-	}{
-		{"section header untouched", "### example.go:14,19 [2 usages in function Greeter]"},
-		{"open range untouched", "  [4-]   imports: ("},
-		{"fence header untouched", "```example.go:18-20"},
-		{"gutter untouched", "  19 │ func (g *Greeter) Greet(name string) string {"},
-		{"missing-file frame stays bare", "→ [8]   func gone() {}"},
-		{"resolved frame anchored", "  [9-11#"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if !strings.Contains(got, tt.line) {
-				t.Errorf("want output to contain %q\n---\n%s", tt.line, got)
-			}
 		})
 	}
 }
@@ -101,19 +78,6 @@ func TestAnnotateSymbolInvariants(t *testing.T) {
 				t.Errorf("want output to contain %q\n---\n%s", tt.line, got)
 			}
 		})
-	}
-}
-
-// TestAnnotateGrepCRLF proves a CRLF-terminated grep section header still sets
-// the active file, so the following frame anchors against it and keeps its "\r".
-func TestAnnotateGrepCRLF(t *testing.T) {
-	hash := string(anchor.Of("func (g *Greeter) Greet(name string) string {"))
-	in := "### example.go:19\r\n" +
-		"  [19]   func (g *Greeter) Greet(name string) string {\r\n"
-	want := "### example.go:19\r\n" +
-		"  [19#" + hash + "]   func (g *Greeter) Greet(name string) string {\r\n"
-	if got := annotateGrep(in, anchor.NewFiles("testdata")); got != want {
-		t.Errorf("annotateGrep()\n got:\n%q\nwant:\n%q", got, want)
 	}
 }
 
