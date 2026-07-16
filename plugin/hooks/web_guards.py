@@ -6,9 +6,10 @@ file-read floods :mod:`read_guards`/:mod:`cat_rewrites` already steer. Both guar
 point at the landed ``ccx web`` surface: ``ccx web outline <url>`` maps a page's headings,
 ``ccx web read <url> --section <ref>`` returns one budget-capped section, and
 ``ccx web search <url> "<question>"`` answers a prompt with the top-k relevant excerpts.
-Their messages teach the same tiered handoff: a single-page lookup calls ``ccx web``
-directly, while research across many pages spawns a cheap reader subagent that runs
-``ccx web`` and returns only its conclusions, never the raw pages.
+Their messages teach the same tiered handoff: a one-page question spawns the plugin's
+``web-fetch`` agent (URL + prompt in, cited conclusions out) or calls ``ccx web``
+directly, while research across many pages spawns ``web-researcher`` — both agents run
+``ccx web`` in their own context and return only conclusions, never the raw pages.
 
 ``WebSearch`` is deliberately unguarded: its snippets are already token-bounded, and it is
 the discovery step that decides which page deserves a ``ccx web`` fetch in the first place.
@@ -22,7 +23,8 @@ target, and a scheme-less spelling all stay allowed by construction. When the fe
 page GET (``curl -sL <url>`` / ``wget -qO- <url>``) it is *rewritten* to ``ccx web read <url>
 --full`` — content-preserving, token-bounded — gated on the ``ccx web`` surface being present
 (``ccx_supports``); an API/JSON URL (``api.*`` host, ``api`` path segment, ``.json`` path), an
-extra flag readability can't honor, or a wrapped/chained line falls back to the block.
+extra flag readability can't honor, or a wrapped line falls back to the block — a chained
+line (``&&``/``;``) rewrites occurrence-by-occurrence instead.
 """
 
 from __future__ import annotations
@@ -145,11 +147,13 @@ hook(
     only_if=[Tool("WebFetch"), WholePageWebFetch()],
     message=(
         "BLOCKED: WebFetch pulls a whole page through a lossy extraction into context. "
-        "One page: `ccx web outline <url>` maps its headings, `ccx web read <url> --section <ref>` "
+        "Drop-in: spawn the `cc-context:web-fetch` agent with this URL and your prompt verbatim — "
+        "it reads the page in its own context and returns only the cited answer. Reading inline "
+        "instead? `ccx web outline <url>` maps its headings, `ccx web read <url> --section <ref>` "
         "returns one budget-capped section, and `ccx web search <url> \"<question>\"` answers your "
-        "prompt with the top-k relevant excerpts (your WebFetch prompt works verbatim). "
-        "Researching across pages? Spawn a cheap reader subagent that runs `ccx web` and returns "
-        "only conclusions. Escape hatch — `ccx web` can't serve this URL: re-run the same WebFetch; "
+        "prompt with the top-k relevant excerpts. "
+        "Researching across pages? Spawn `cc-context:web-researcher` with the question and seed "
+        "URLs. Escape hatch — `ccx web` can't serve this URL: re-run the same WebFetch; "
         "a repeat of the URL passes."
     ),
     block=True,
@@ -454,10 +458,12 @@ rewrite_command_occurrences(
     block_if=page_dump_blocks,
     block=(
         "BLOCKED: `curl`/`wget` dumping a page to stdout floods context. "
-        "One page: `ccx web outline <url>` maps its headings, then `ccx web read <url> --section <ref>` "
-        "for the part you need, or `ccx web search <url> \"<question>\"` for the top-k relevant excerpts. "
-        "Researching across pages? Spawn a cheap reader subagent that runs `ccx web` and returns only "
-        "conclusions. Escape hatches — API/JSON: pipe it (`curl … | jq`); download: `curl -o <file>` / "
+        "Answering a question from the page? Spawn the `cc-context:web-fetch` agent (URL + "
+        "question) — it returns only the cited answer. Reading inline? `ccx web outline <url>` "
+        "maps its headings, then `ccx web read <url> --section <ref>` for the part you need, or "
+        "`ccx web search <url> \"<question>\"` for the top-k relevant excerpts. "
+        "Researching across pages? Spawn `cc-context:web-researcher`. "
+        "Escape hatches — API/JSON: pipe it (`curl … | jq`); download: `curl -o <file>` / "
         "plain `wget`; localhost stays allowed."
     ),
     note=page_dump_note,

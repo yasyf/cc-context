@@ -243,6 +243,9 @@ what to set or install — set it, then re-run with `--refresh`.
 Fetched pages and their indexes persist in the ccx cache for 24 hours — `--refresh` on
 any of the three bypasses the TTL. The MCP mirrors are `mcp__cc-context__ccx_web_outline`,
 `ccx_web_read`, and `ccx_web_search`.
+A one-shot question about a page can skip the loop entirely: spawn the
+`cc-context:web-fetch` agent with the URL and your prompt, and only the cited answer
+enters your context — see [Reader subagents](#reader-subagents).
 
 ### 10. Compose
 
@@ -336,4 +339,29 @@ The honest exception is exhaustive enumeration. When the deliverable is a comple
 set, compact views can withhold exactly the members you need — measured on
 enumeration tasks, ccx-cli's accuracy fell to 76.9% against the baseline's 93.3%.
 Read the candidate files (sectioned or `--full`) and treat ccx as the locator, not
-the enumerator.
+the enumerator — or spawn the `enumerator` agent below, which packages that
+verification loop.
+
+## Reader subagents
+
+The plugin ships five read-only agents that run the flows above in their own
+context and return only conclusions. Spawn them as `cc-context:<name>` whenever
+the raw material — a web page, a CI log, a dependency's source — has no business
+entering yours:
+
+- `web-fetch` — the WebFetch drop-in: one URL plus your prompt in, the cited
+  answer out. The WebFetch and page-dump guard messages name it.
+- `web-researcher` — a research question plus seed URLs; discovers pages with
+  WebSearch, reads across them via `ccx web`, returns findings with a
+  `<url> §ref` cite per claim.
+- `ci-triage` — a red run id; digs `gh run view --log-failed` where it can't
+  flood anything and returns the root cause, a minimal excerpt, and the next
+  step. `ccx vcs ship`'s red-run report points at it.
+- `dep-reader` — "how does `<pkg>` implement X"; resolves the installed source
+  with `ccx repo locate` and returns the answer with `path:line#hash` cites.
+- `enumerator` — complete-set questions ("every subclass of X"); sweeps LSP,
+  call-graph, and textual lanes, verifies each candidate by reading it, and
+  returns the proven set with its blind spots named.
+
+All five default to `model: sonnet`; pass `model: opus` (or higher) at spawn
+time when the page, log, or set warrants it.

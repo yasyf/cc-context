@@ -359,7 +359,9 @@ def rg_guard(evt: PreToolUseEvent) -> HookResponse:
                 "Use `ccx code grep <text>` (mcp__cc-context__ccx_code_grep) for literal text, "
                 '`ccx code search "<question>"` (mcp__cc-context__ccx_code_search) for intent, '
                 '`ccx repo find "<glob>"` (mcp__cc-context__ccx_repo_find) to list files. '
-                "Dependency source (`.venv`, vendored pkgs): `ccx repo locate <pkg>` (CLI-only), then "
+                "Dependency source (`.venv`, vendored pkgs): spawn the `cc-context:dep-reader` agent "
+                "with the package and your question — it returns cited conclusions, never the source. "
+                "Inline: `ccx repo locate <pkg>` (CLI-only), then "
                 "`ccx code grep`/`outline` (mcp__cc-context__ccx_code_outline)/`read` "
                 "(mcp__cc-context__ccx_code_read) with the printed path. "
                 "Simple literal `rg` auto-rewrites to `ccx code grep`; this one didn't — a regex pattern, an unmappable "

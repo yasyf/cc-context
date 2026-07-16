@@ -530,7 +530,7 @@ func ciFailureDetail(ctx context.Context, id string, view ciView, budget int) []
 	} else if excerpt := strings.TrimRight(render.Cap(ansiRE.ReplaceAllString(log, ""), budget), "\n"); excerpt != "" {
 		lines = append(lines, excerpt)
 	}
-	return append(lines, fmt.Sprintf("full log: gh run view %s --log-failed", id))
+	return append(lines, fmt.Sprintf("full log: gh run view %s --log-failed", id)+shipSep+"triage: spawn the cc-context:ci-triage agent with this run id")
 }
 
 // ciGreen reports whether a conclusion counts as passing; skipped and neutral
