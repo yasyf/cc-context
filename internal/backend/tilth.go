@@ -39,17 +39,6 @@ func (t Tilth) CLIArgv(ctx context.Context, op Op, a Args) (bin string, argv []s
 		if a.Budget > 0 {
 			argv = append(argv, "--budget", strconv.Itoa(a.Budget))
 		}
-	case OpRead:
-		argv = []string{a.Path}
-		switch {
-		case a.Full:
-			argv = append(argv, "--full")
-		case a.Section != "":
-			argv = append(argv, "--section", a.Section)
-		}
-		if a.Budget > 0 {
-			argv = append(argv, "--budget", strconv.Itoa(a.Budget))
-		}
 	case OpSymbol:
 		argv = []string{"grok", a.Query}
 		if a.Scope != "" {
@@ -81,8 +70,6 @@ func (t Tilth) CLIArgv(ctx context.Context, op Op, a Args) (bin string, argv []s
 		if a.Expand > 0 {
 			argv = append(argv, "--expand="+strconv.Itoa(a.Expand))
 		}
-	case OpOverview:
-		argv = []string{"overview"}
 	default:
 		return "", nil, fmt.Errorf("tilth: unsupported op %q", op)
 	}
@@ -158,18 +145,6 @@ func (t Tilth) MCPTool(op Op, a Args) (tool string, params map[string]any, err e
 			"mode":   "signature",
 			"budget": a.Budget,
 		}), nil
-	case OpRead:
-		p := map[string]any{"path": a.Path}
-		switch {
-		case a.Full:
-			p["full"] = true
-		case a.Section != "":
-			p["section"] = a.Section
-		}
-		if a.Budget > 0 {
-			p["budget"] = a.Budget
-		}
-		return "tilth_read", p, nil
 	case OpSymbol:
 		return "tilth_grok", omitEmpty(map[string]any{
 			"target": a.Query,
@@ -198,8 +173,6 @@ func (t Tilth) MCPTool(op Op, a Args) (tool string, params map[string]any, err e
 			"scope":  a.Scope,
 			"budget": a.Budget,
 		}), nil
-	case OpOverview:
-		return "", nil, fmt.Errorf("tilth: op %q has no MCP tool", op)
 	default:
 		return "", nil, fmt.Errorf("tilth: unsupported op %q", op)
 	}

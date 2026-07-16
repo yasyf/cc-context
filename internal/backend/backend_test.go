@@ -26,10 +26,6 @@ func TestTilthCLIArgv(t *testing.T) {
 	}{
 		{"outline", OpOutline, Args{Path: "a.go"}, []string{"a.go"}},
 		{"outline budget", OpOutline, Args{Path: "a.go", Budget: 500}, []string{"a.go", "--budget", "500"}},
-		{"read full", OpRead, Args{Path: "a.go", Full: true}, []string{"a.go", "--full"}},
-		{"read section", OpRead, Args{Path: "a.go", Section: "10-20"}, []string{"a.go", "--section", "10-20"}},
-		{"read full beats section", OpRead, Args{Path: "a.go", Full: true, Section: "10-20"}, []string{"a.go", "--full"}},
-		{"read section budget", OpRead, Args{Path: "a.go", Section: "## H", Budget: 99}, []string{"a.go", "--section", "## H", "--budget", "99"}},
 		{"symbol", OpSymbol, Args{Query: "Foo"}, []string{"grok", "Foo"}},
 		{"symbol scope full", OpSymbol, Args{Query: "Foo", Scope: "pkg", Full: true}, []string{"grok", "Foo", "--scope", "pkg", "--full"}},
 		{"deps", OpDeps, Args{Path: "a.go"}, []string{"a.go", "--deps"}},
@@ -40,7 +36,6 @@ func TestTilthCLIArgv(t *testing.T) {
 		{"grep scope only", OpGrep, Args{Query: "todo", Scope: "internal"}, []string{"todo", "--scope", "internal"}},
 		{"grep ignore-case/word not routed to tilth", OpGrep, Args{Query: "todo", IgnoreCase: true, Word: true}, []string{"todo"}},
 		{"grep regex/paths not routed to tilth", OpGrep, Args{Query: "todo", Regex: true, Paths: []string{"a.go", "b.go"}}, []string{"todo"}},
-		{"overview", OpOverview, Args{}, []string{"overview"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -152,8 +147,6 @@ func TestTilthMCPTool(t *testing.T) {
 	}{
 		{"outline", OpOutline, Args{Path: "a.go", Budget: 500}, "tilth_read", map[string]any{"path": "a.go", "mode": "signature", "budget": 500}},
 		{"outline no budget", OpOutline, Args{Path: "a.go"}, "tilth_read", map[string]any{"path": "a.go", "mode": "signature"}},
-		{"read full", OpRead, Args{Path: "a.go", Full: true}, "tilth_read", map[string]any{"path": "a.go", "full": true}},
-		{"read section", OpRead, Args{Path: "a.go", Section: "## H", Budget: 9}, "tilth_read", map[string]any{"path": "a.go", "section": "## H", "budget": 9}},
 		{"symbol", OpSymbol, Args{Query: "Foo", Scope: "pkg", Full: true}, "tilth_grok", map[string]any{"target": "Foo", "scope": "pkg", "full": true}},
 		{"symbol minimal", OpSymbol, Args{Query: "Foo"}, "tilth_grok", map[string]any{"target": "Foo"}},
 		{"deps", OpDeps, Args{Path: "a.go", Scope: "pkg", Budget: 7}, "tilth_deps", map[string]any{"path": "a.go", "scope": "pkg", "budget": 7}},
@@ -176,12 +169,6 @@ func TestTilthMCPTool(t *testing.T) {
 				t.Errorf("params = %v, want %v", params, tt.params)
 			}
 		})
-	}
-}
-
-func TestTilthMCPToolOverviewErrors(t *testing.T) {
-	if _, _, err := (Tilth{Bin: fakeTilth}).MCPTool(OpOverview, Args{}); err == nil {
-		t.Fatal("expected error: overview has no MCP tool")
 	}
 }
 

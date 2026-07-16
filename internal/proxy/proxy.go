@@ -20,6 +20,8 @@ import (
 	"github.com/yasyf/cc-context/internal/grok"
 	"github.com/yasyf/cc-context/internal/mcpclient"
 	"github.com/yasyf/cc-context/internal/outline"
+	"github.com/yasyf/cc-context/internal/overview"
+	"github.com/yasyf/cc-context/internal/read"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/ripgrep"
 	"github.com/yasyf/cc-context/internal/router"
@@ -61,16 +63,16 @@ func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string
 	return note + out, nil
 }
 
-// call routes op through its backend and returns budget-capped output. The edit
-// and web ops run in-process (internal/edit, internal/web) without any engine,
-// mirroring the CLI dispatch; a case-insensitive, word-boundary, regex, or
-// multi-file grep (ripgrep.Handles) runs the in-process ripgrep engine (tilth
-// expresses none of these), matching the CLI dispatch's OpGrep special-case; the
-// diff and overview ops run as child-process
-// CLI invocations to keep the jj-aware VCS translation and fallback that CLIArgv
-// performs; the ast-grep ops run through the shared astgrep orchestration
-// (ast-grep has no MCP server); every other op is a child MCP tool call against
-// the engine's resident (lazily opened) session.
+// call routes op through its backend and returns budget-capped output. The edit,
+// web, find, read, and overview ops run in-process (internal/edit, internal/web,
+// internal/find, internal/read, internal/overview) without any engine, mirroring
+// the CLI dispatch; a case-insensitive, word-boundary, regex, or multi-file grep
+// (ripgrep.Handles) runs the in-process ripgrep engine (tilth expresses none of
+// these), matching the CLI dispatch's OpGrep special-case; the diff op runs as a
+// child-process CLI invocation to keep the jj-aware VCS translation and fallback
+// that CLIArgv performs; the ast-grep ops run through the shared astgrep
+// orchestration (ast-grep has no MCP server); every other op is a child MCP tool
+// call against the engine's resident (lazily opened) session.
 func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 	if op == backend.OpOutline || op == backend.OpStructOutline {
 		if info, err := os.Stat(a.Path); err == nil && info.Mode().IsRegular() {
@@ -91,6 +93,20 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 	}
 	if op == backend.OpFind {
 		out, err := find.Run(ctx, a)
+		if err != nil {
+			return "", err
+		}
+		return render.Finalize(op, out, a)
+	}
+	if op == backend.OpRead {
+		out, err := read.Run(a)
+		if err != nil {
+			return "", err
+		}
+		return render.Finalize(op, out, a)
+	}
+	if op == backend.OpOverview {
+		out, err := overview.Run(ctx, a)
 		if err != nil {
 			return "", err
 		}
@@ -118,16 +134,6 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 			return "", err
 		}
 		return render.RunDiffCLI(ctx, bin, argv, a.Source, a.Scope, a.Budget)
-	case backend.OpOverview:
-		bin, argv, err := b.CLIArgv(ctx, op, a)
-		if err != nil {
-			return "", err
-		}
-		out, err := render.RunCLI(ctx, bin, argv)
-		if err != nil {
-			return "", err
-		}
-		return render.Finalize(op, out, a)
 	}
 
 	tool, params, err := b.MCPTool(op, a)

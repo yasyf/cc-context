@@ -21,7 +21,8 @@ import (
 
 // TestMain doubles as the fake tilth MCP engine: when the test binary is
 // re-executed as "tilth --mcp" (via the fakeTilthOnPath symlink), it serves a
-// stdio MCP server whose tilth_read echoes its params instead of running tests.
+// stdio MCP server whose tilth_search returns a canned zero-match. read is native,
+// so the fake needs no tilth_read.
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "--mcp" {
 		if err := serveFakeTilth(); err != nil {
@@ -31,13 +32,6 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
-}
-
-type fakeReadIn struct {
-	Path    string `json:"path"`
-	Section string `json:"section,omitempty"`
-	Full    bool   `json:"full,omitempty"`
-	Budget  int    `json:"budget,omitempty"`
 }
 
 // fakeSearchIn mirrors tilth_search's full param surface (query/glob/scope/kind/
@@ -54,11 +48,6 @@ type fakeSearchIn struct {
 
 func serveFakeTilth() error {
 	s := mcp.NewServer(&mcp.Implementation{Name: "fake-tilth", Version: "test"}, nil)
-	mcp.AddTool(s, &mcp.Tool{Name: "tilth_read", Description: "echo the read params"},
-		func(_ context.Context, _ *mcp.CallToolRequest, in fakeReadIn) (*mcp.CallToolResult, any, error) {
-			text := fmt.Sprintf("read %s section=%s", in.Path, in.Section)
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil
-		})
 	mcp.AddTool(s, &mcp.Tool{Name: "tilth_search", Description: "canned zero-match search (stale index)"},
 		func(_ context.Context, _ *mcp.CallToolRequest, in fakeSearchIn) (*mcp.CallToolResult, any, error) {
 			text := fmt.Sprintf("# Search: %q in /x — 0 matches\n\n(~5 tokens)\n", in.Query)
@@ -504,11 +493,10 @@ func TestSearchToolInvalidMode(t *testing.T) {
 	}
 }
 
-// TestReadToolResolvesAnchor proves the proxy seam: an anchored section reaches
-// the engine's tilth_read params already numeric, and the move note is
-// prepended to the tool output.
+// TestReadToolResolvesAnchor proves the proxy seam runs native read: an anchored
+// section re-resolves to its content's current line, the move note is prepended,
+// and the anchored native header carries the served line.
 func TestReadToolResolvesAnchor(t *testing.T) {
-	fakeTilthOnPath(t)
 	cs := connectTestServer(t)
 
 	file := filepath.Join(t.TempDir(), "f.txt")
@@ -521,7 +509,7 @@ func TestReadToolResolvesAnchor(t *testing.T) {
 	if isErr {
 		t.Fatalf("ccx_code_read is error: %s", out)
 	}
-	want := fmt.Sprintf("# anchor %s: line 2 → 3\nread %s section=3-3", gamma, file)
+	want := fmt.Sprintf("# anchor %s: line 2 → 3\n# read %s:3#%s (1 of 3 lines)\ngamma\n", gamma, file, gamma)
 	if out != want {
 		t.Errorf("ccx_code_read out = %q, want %q", out, want)
 	}
@@ -531,7 +519,6 @@ func TestReadToolResolvesAnchor(t *testing.T) {
 // garbage hash errors at the facade with the expected form instead of falling
 // through to the engine.
 func TestReadToolRejectsMalformedAnchor(t *testing.T) {
-	fakeTilthOnPath(t)
 	cs := connectTestServer(t)
 	file := filepath.Join(t.TempDir(), "x.go")
 	if err := os.WriteFile(file, []byte("package x\n"), 0o600); err != nil {

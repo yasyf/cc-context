@@ -16,6 +16,7 @@ import (
 	"github.com/yasyf/cc-context/internal/format"
 	"github.com/yasyf/cc-context/internal/outline"
 	"github.com/yasyf/cc-context/internal/proxy"
+	"github.com/yasyf/cc-context/internal/read"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/ripgrep"
 	"github.com/yasyf/cc-context/internal/search"
@@ -83,7 +84,17 @@ type ReadIn struct {
 	Section       string `json:"section,omitempty" jsonschema:"line range (\"40-95\"), heading (\"## Heading\"), or anchor (\"15-27#k2fa\" or bare \"k2fa\"); a shifted anchor re-resolves by content and prepends a \"# anchor …\" note"`
 	Full          bool   `json:"full,omitempty" jsonschema:"read the whole file"`
 	RevealSecrets bool   `json:"reveal_secrets,omitempty" jsonschema:"print detected secrets raw instead of masked"`
-	Budget        int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
+	Budget        int    `json:"budget,omitempty" jsonschema:"token budget for the output; 0 or omitted = default 2000"`
+}
+
+// readArgs builds the read backend.Args from a ccx_code_read call, applying the
+// default budget when the caller sets none (the codeexec path leaves it zero).
+func readArgs(in ReadIn) backend.Args {
+	a := backend.Args{Path: in.Path, Section: in.Section, Full: in.Full, RevealSecrets: in.RevealSecrets, Budget: in.Budget}
+	if a.Budget == 0 {
+		a.Budget = read.DefaultBudget
+	}
+	return a
 }
 
 // SymbolIn is the input for ccx_code_symbol.
@@ -269,9 +280,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 		Name:        "ccx_code_read",
 		Description: "Read a file by section, heading, anchor, or whole; pass section to avoid the entire file.",
 		Meta:        alwaysLoad,
-	}, handler(p, backend.OpRead, func(in ReadIn) backend.Args {
-		return backend.Args{Path: in.Path, Section: in.Section, Full: in.Full, RevealSecrets: in.RevealSecrets, Budget: in.Budget}
-	}))
+	}, handler(p, backend.OpRead, readArgs))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_symbol",

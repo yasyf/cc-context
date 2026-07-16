@@ -5,6 +5,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/read"
 )
 
 // sectionAlias maps the --lines flag name onto --section so a caller who guesses
@@ -24,6 +25,9 @@ func newReadCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a.Path = args[0]
+			if a.Budget == 0 {
+				a.Budget = read.DefaultBudget
+			}
 			return runOp(cmd, backend.OpRead, a)
 		},
 	}

@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **`ccx code read` is served natively.** One `os.ReadFile` shaped into anchored output
+  whose header reads `# read path:A-B#hash (k of N lines)`, so stale line labels are
+  impossible by construction; tilth's index is no longer consulted. Sections take line
+  ranges, `#hash` anchors, and markdown ATX headings (markdown files only); a non-markdown
+  symbol lookup is redirected to `ccx code symbol --body`.
+- **`ccx repo overview` is native.** Languages, dirs, entry points, manifests, test counts,
+  git state, and 90-day churn come from one gitignore-honoring walk plus live git; the MCP
+  surface now carries the language census the CLI used to append on its own.
+
 ## [0.22.0] - 2026-07-16
 
 ### Changed

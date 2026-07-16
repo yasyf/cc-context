@@ -219,53 +219,30 @@ func TestSearchCommandInvokesBackend(t *testing.T) {
 	}
 }
 
-// TestReadCommandResolvesAnchor drives an anchored --section through the full
-// CLI seam: the fake tilth engine echoes its argv, proving the section reaches
-// the backend already numeric, with the move note prepended to the output.
+// TestReadCommandResolvesAnchor drives an anchored --section through the full CLI
+// seam onto native read: the anchor re-resolves to its content's current line, the
+// move note is prepended, and the anchored native header carries the served line.
 func TestReadCommandResolvesAnchor(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake shell script is POSIX-only")
-	}
-	writeFakeEngine(t, "tilth")
 	file := writeAnchorFixture(t)
 	gamma := anchor.Of("gamma")
 
-	var out bytes.Buffer
-	root := cli.NewRootCmd()
-	root.SetOut(&out)
-	root.SetErr(&out)
-	root.SetArgs([]string{"code", "read", file, "--section", anchor.Format(2, gamma)})
-	if err := root.Execute(); err != nil {
-		t.Fatalf("Execute(read) error = %v", err)
-	}
-
-	want := fmt.Sprintf("# anchor %s: line 2 → 3\n%s --section 3-3", gamma, file)
-	if got := strings.TrimSpace(out.String()); got != want {
+	got := runCCX(t, "code", "read", file, "--section", anchor.Format(2, gamma))
+	want := fmt.Sprintf("# anchor %s: line 2 → 3\n# read %s:3#%s (1 of 3 lines)\ngamma\n", gamma, file, gamma)
+	if got != want {
 		t.Errorf("read output = %q, want %q", got, want)
 	}
 }
 
 // TestReadCommandLinesAlias proves --lines is a hidden alias for --section: the
-// fake tilth engine echoes its argv, so the range must reach the backend as
-// --section.
+// range reaches native read, which serves lines 1-2 of the fixture.
 func TestReadCommandLinesAlias(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake shell script is POSIX-only")
-	}
-	writeFakeEngine(t, "tilth")
 	file := writeAnchorFixture(t)
 
-	var out bytes.Buffer
-	root := cli.NewRootCmd()
-	root.SetOut(&out)
-	root.SetErr(&out)
-	root.SetArgs([]string{"code", "read", file, "--lines", "1-2"})
-	if err := root.Execute(); err != nil {
-		t.Fatalf("Execute(read --lines) error = %v", err)
-	}
-	want := fmt.Sprintf("%s --section 1-2", file)
-	if got := out.String(); !strings.Contains(got, want) {
-		t.Errorf("read --lines argv %q not in output %q", want, got)
+	got := runCCX(t, "code", "read", file, "--lines", "1-2")
+	first := anchor.Of("alpha")
+	want := fmt.Sprintf("# read %s:1-2#%s (2 of 3 lines)\nalpha\nbeta\n", file, first)
+	if got != want {
+		t.Errorf("read --lines output = %q, want %q", got, want)
 	}
 }
 
@@ -378,62 +355,39 @@ func writeFakeEngine(t *testing.T, name string) {
 // masking rule fires on.
 const fakeAWSKey = "AKIAIOSFODNN7EXAMPLE" //nolint:gosec // AWS's documented example key id, not a credential
 
-// writeSecretEngine puts a fake tilth on PATH that emits a secret-bearing
-// line, so the read tests can prove masking at the CLI seam.
-func writeSecretEngine(t *testing.T) {
+// writeSecretFixture writes a one-line file embedding a detectable AWS key, so the
+// read tests prove masking against native read at the CLI seam.
+func writeSecretFixture(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	script := "#!/bin/sh\necho 'KEY = \"" + fakeAWSKey + "\"'\n"
-	if err := os.WriteFile(filepath.Join(dir, "tilth"), []byte(script), 0o700); err != nil { //nolint:gosec // fake engine script must be owner-executable
-		t.Fatalf("write fake engine: %v", err)
+	path := filepath.Join(t.TempDir(), "creds.txt")
+	if err := os.WriteFile(path, []byte("KEY = \""+fakeAWSKey+"\"\n"), 0o600); err != nil {
+		t.Fatalf("write secret fixture: %v", err)
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return path
 }
 
-// TestReadCommandMasksSecretOutput proves a secret emitted by the engine comes
-// out masked with the footer when --reveal-secrets is absent.
+// TestReadCommandMasksSecretOutput proves a secret in the file comes out masked
+// with the footer when --reveal-secrets is absent.
 func TestReadCommandMasksSecretOutput(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake shell script is POSIX-only")
-	}
-	writeSecretEngine(t)
-	file := writeAnchorFixture(t)
+	file := writeSecretFixture(t)
+	h := anchor.Of("KEY = \"" + fakeAWSKey + "\"")
 
 	got := runCCX(t, "code", "read", file, "--full")
-	want := "KEY = \"AKIA…[masked:aws-access-token]\"\n# 1 secret(s) masked (aws-access-token) — --reveal-secrets prints raw\n"
+	want := fmt.Sprintf("# read %s:1#%s (1 lines)\nKEY = \"AKIA…[masked:aws-access-token]\"\n# 1 secret(s) masked (aws-access-token) — --reveal-secrets prints raw\n", file, h)
 	if got != want {
 		t.Errorf("read output = %q, want %q", got, want)
 	}
 }
 
-// TestReadCommandRevealSecrets proves --reveal-secrets passes the engine's
-// secret through raw, with no footer.
+// TestReadCommandRevealSecrets proves --reveal-secrets passes the file's secret
+// through raw, with no footer.
 func TestReadCommandRevealSecrets(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake shell script is POSIX-only")
-	}
-	writeSecretEngine(t)
-	file := writeAnchorFixture(t)
+	file := writeSecretFixture(t)
+	h := anchor.Of("KEY = \"" + fakeAWSKey + "\"")
 
 	got := runCCX(t, "code", "read", file, "--full", "--reveal-secrets")
-	want := "KEY = \"" + fakeAWSKey + "\"\n"
+	want := fmt.Sprintf("# read %s:1#%s (1 lines)\nKEY = \"%s\"\n", file, h, fakeAWSKey)
 	if got != want {
 		t.Errorf("read --reveal-secrets output = %q, want %q", got, want)
-	}
-}
-
-// TestReadCommandRevealSecretsStaysLocal proves the flag is ccx-side
-// post-processing only: the argv the fake tilth echoes back never carries it.
-func TestReadCommandRevealSecretsStaysLocal(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake shell script is POSIX-only")
-	}
-	writeFakeEngine(t, "tilth")
-	file := writeAnchorFixture(t)
-
-	got := runCCX(t, "code", "read", file, "--full", "--reveal-secrets")
-	want := file + " --full\n"
-	if got != want {
-		t.Errorf("read argv echo = %q, want %q", got, want)
 	}
 }

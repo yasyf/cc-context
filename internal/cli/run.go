@@ -10,6 +10,8 @@ import (
 	"github.com/yasyf/cc-context/internal/find"
 	"github.com/yasyf/cc-context/internal/grep"
 	"github.com/yasyf/cc-context/internal/grok"
+	"github.com/yasyf/cc-context/internal/overview"
+	"github.com/yasyf/cc-context/internal/read"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/ripgrep"
 	"github.com/yasyf/cc-context/internal/router"
@@ -62,6 +64,20 @@ func dispatch(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error)
 	}
 	if op == backend.OpFind {
 		out, err := find.Run(cmd.Context(), a)
+		if err != nil {
+			return "", err
+		}
+		return render.Finalize(op, out, a)
+	}
+	if op == backend.OpRead {
+		out, err := read.Run(a)
+		if err != nil {
+			return "", err
+		}
+		return render.Finalize(op, out, a)
+	}
+	if op == backend.OpOverview {
+		out, err := overview.Run(cmd.Context(), a)
 		if err != nil {
 			return "", err
 		}
