@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"add_comment","body":"Feature landed on cc-context main as 450e524b6897 (feat(ship): fetch-first + auto-rebase onto the target bookmark); CI green. This task unblocks once a ccx release containing that commit is published to the tap — then update the shared ccx fragment's entry 13 and bump consumer lock pins."}]}
+{"v":1,"lamport":3,"ops":[{"kind":"set_criterion_status","id":"bfee5298f7d8cbdbe0943e59e4e42161","status":"met"}]}
