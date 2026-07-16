@@ -290,6 +290,7 @@ func collapse(name string, n *dirNode) (string, *dirNode) {
 		var k string
 		var c *dirNode
 		for k, c = range n.children {
+			break
 		}
 		disp += "/" + k
 		n = c

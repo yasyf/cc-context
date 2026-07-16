@@ -39,7 +39,7 @@ var manifestProbes = []struct {
 func probeManifests(root string) []manifest {
 	var out []manifest
 	for _, p := range manifestProbes {
-		data, err := os.ReadFile(filepath.Join(root, p.file))
+		data, err := os.ReadFile(filepath.Join(root, p.file)) //nolint:gosec // p.file comes from the fixed manifestProbes table
 		if err != nil {
 			continue
 		}
@@ -263,7 +263,7 @@ func parsePomXML(file, data string) manifest {
 
 // parseGradle records a Gradle build file's presence without a dependency count (its
 // dependency block has no format-portable count).
-func parseGradle(file, data string) manifest {
+func parseGradle(file, _ string) manifest {
 	return manifest{file: file, headline: "gradle project"}
 }
 

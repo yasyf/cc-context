@@ -42,10 +42,10 @@ func scanHeadings(lines []string) []mdHeading {
 	for i, line := range lines {
 		text := strings.TrimSpace(strings.TrimSuffix(line, "\r"))
 		if marker := fenceMarker(text); marker != 0 {
-			switch {
-			case fence == 0:
+			switch fence {
+			case 0:
 				fence = marker
-			case fence == marker:
+			case marker:
 				fence = 0
 			}
 			continue
