@@ -13,10 +13,10 @@ import (
 	"github.com/yasyf/cc-context/internal/anchor"
 	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/deps"
 	"github.com/yasyf/cc-context/internal/diff"
 	"github.com/yasyf/cc-context/internal/edit"
 	"github.com/yasyf/cc-context/internal/find"
-	"github.com/yasyf/cc-context/internal/grok"
 	"github.com/yasyf/cc-context/internal/mcpclient"
 	"github.com/yasyf/cc-context/internal/outline"
 	"github.com/yasyf/cc-context/internal/overview"
@@ -24,6 +24,7 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/ripgrep"
 	"github.com/yasyf/cc-context/internal/router"
+	"github.com/yasyf/cc-context/internal/symbol"
 	"github.com/yasyf/cc-context/internal/web"
 )
 
@@ -127,6 +128,21 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 		}
 		return render.Cap(out, a.Budget), nil
 	}
+	if op == backend.OpSymbol {
+		// symbol self-anchors; cap only, never render.Finalize's symbol grammar.
+		out, err := symbol.Run(ctx, a)
+		if err != nil {
+			return "", err
+		}
+		return render.Cap(out, a.Budget), nil
+	}
+	if op == backend.OpDeps {
+		out, err := deps.Run(ctx, a)
+		if err != nil {
+			return "", err
+		}
+		return render.Cap(out, a.Budget), nil
+	}
 
 	b := router.For(op)
 
@@ -152,10 +168,6 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 
 	text := mcpclient.TextOf(res)
 	if res.IsError {
-		// On an MCP grok miss, recover via the same ast-grep fallback the CLI uses.
-		if op == backend.OpSymbol && grok.IsNotFoundText(text) {
-			return grok.FallbackTypeDecl(ctx, a, fmt.Errorf("proxy: tool %q failed: %s", tool, text))
-		}
 		return "", fmt.Errorf("proxy: tool %q failed: %s", tool, text)
 	}
 	return render.Finalize(op, text, a)

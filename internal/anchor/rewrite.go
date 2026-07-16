@@ -14,7 +14,7 @@ import (
 // and the numeric output never re-parses as an anchor, so the rewrite is
 // idempotent.
 func RewriteArgs(op backend.Op, a backend.Args) (backend.Args, string, error) {
-	a, err := backend.ResolveReadPath(op, a)
+	a, err := backend.ResolvePath(op, a)
 	if err != nil {
 		return a, "", err
 	}

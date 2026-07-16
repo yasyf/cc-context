@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestResolveReadPath(t *testing.T) {
+func TestResolvePath(t *testing.T) {
 	tests := []struct {
 		name            string
 		op              Op
@@ -116,23 +116,45 @@ func TestResolveReadPath(t *testing.T) {
 			wantErrIs:    []error{ErrPathNotFound, fs.ErrNotExist},
 			wantContains: []string{"~root/x"},
 		},
+		{
+			name: "deps missing file is path-not-found (closes 50ae868)",
+			op:   OpDeps,
+			setup: func(t *testing.T) (Args, Args) {
+				path := filepath.Join(t.TempDir(), "missing.go")
+				a := Args{Path: path}
+				return a, a
+			},
+			wantErrIs:       []error{ErrPathNotFound, fs.ErrNotExist},
+			wantContains:    []string{"deps"},
+			wantPathInError: true,
+		},
+		{
+			name: "deps existing file passes",
+			op:   OpDeps,
+			setup: func(t *testing.T) (Args, Args) {
+				t.Chdir(t.TempDir())
+				writePathcheckFile(t, "a.go")
+				a := Args{Path: "a.go"}
+				return a, a
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			args, want := tt.setup(t)
-			got, err := ResolveReadPath(tt.op, args)
+			got, err := ResolvePath(tt.op, args)
 			if !reflect.DeepEqual(got, want) {
-				t.Errorf("ResolveReadPath() args = %+v, want %+v", got, want)
+				t.Errorf("ResolvePath() args = %+v, want %+v", got, want)
 			}
 			if len(tt.wantErrIs) == 0 && len(tt.wantNotErrIs) == 0 && len(tt.wantContains) == 0 {
 				if err != nil {
-					t.Fatalf("ResolveReadPath() error = %v", err)
+					t.Fatalf("ResolvePath() error = %v", err)
 				}
 				return
 			}
 			if err == nil {
-				t.Fatal("ResolveReadPath() error = nil, want error")
+				t.Fatal("ResolvePath() error = nil, want error")
 			}
 			for _, target := range tt.wantErrIs {
 				if !errors.Is(err, target) {

@@ -289,6 +289,74 @@ func TestGrepToolDefaultRoutesToEngine(t *testing.T) {
 	}
 }
 
+// requireEngines skips when the native symbol/deps engines (ast-grep + rg) are not
+// on PATH.
+func requireEngines(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("ast-grep"); err != nil {
+		t.Skip("ast-grep not on PATH")
+	}
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("rg not on PATH")
+	}
+}
+
+// TestSymbolToolNative proves ccx_code_symbol runs the native symbol resolver
+// through the proxy seam — no tilth on PATH — resolving a real fixture to the
+// anchored locate card.
+func TestSymbolToolNative(t *testing.T) {
+	requireEngines(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "widget.go"),
+		[]byte("package fix\n\n// Greet builds a greeting.\nfunc Greet(name string) string {\n\treturn name\n}\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	t.Chdir(dir)
+
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_code_symbol", map[string]any{"name": "Greet"})
+	if isErr {
+		t.Fatalf("ccx_code_symbol is error: %s", out)
+	}
+	if !strings.HasPrefix(out, "# symbol Greet — function — widget.go:") {
+		t.Errorf("native symbol card header wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "Greet builds a greeting.") {
+		t.Errorf("native symbol card missing doc:\n%s", out)
+	}
+}
+
+// TestDepsToolNative proves ccx_code_deps runs the native deps analyzer through the
+// proxy seam: a real Go fixture yields the anchored imports and used-by report.
+func TestDepsToolNative(t *testing.T) {
+	requireEngines(t)
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	write("go.mod", "module example.com/fix\n\ngo 1.23\n")
+	write("lib/lib.go", "package lib\n\nimport \"strings\"\n\nfunc Trim(s string) string { return strings.TrimSpace(s) }\n")
+	write("app/app.go", "package app\n\nimport \"example.com/fix/lib\"\n\nfunc Run() string { return lib.Trim(\" x \") }\n")
+	t.Chdir(dir)
+
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_code_deps", map[string]any{"path": "lib/lib.go"})
+	if isErr {
+		t.Fatalf("ccx_code_deps is error: %s", out)
+	}
+	for _, want := range []string{"# deps lib/lib.go —", "strings (std)", "## used by", "app/app.go:", "→ lib.Trim"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("native deps output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestReplaceToolPreviewVsApply(t *testing.T) {
 	fakeAstGrepOnPath(t, []string{"a.go", "b.go"})
 	cs := connectTestServer(t)

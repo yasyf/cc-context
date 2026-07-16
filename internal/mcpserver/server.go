@@ -1,5 +1,5 @@
 // Package mcpserver exposes the static ccx_* tool surface over stdio, proxying
-// each tool to the bundled tilth and semble engines.
+// each tool to the bundled semble engine or the native op package that serves it.
 package mcpserver
 
 import (
@@ -12,6 +12,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/codeexec"
+	"github.com/yasyf/cc-context/internal/deps"
 	"github.com/yasyf/cc-context/internal/find"
 	"github.com/yasyf/cc-context/internal/format"
 	"github.com/yasyf/cc-context/internal/outline"
@@ -113,7 +114,17 @@ type SymbolIn struct {
 type DepsIn struct {
 	Path   string `json:"path" jsonschema:"file to analyze"`
 	Scope  string `json:"scope,omitempty" jsonschema:"directory to scope the analysis to"`
-	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
+	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the output; 0 or omitted = default 2000"`
+}
+
+// depsArgs builds the deps backend.Args from a ccx_code_deps call, applying the
+// default budget when the caller sets none (the codeexec path leaves it zero).
+func depsArgs(in DepsIn) backend.Args {
+	a := backend.Args{Path: in.Path, Scope: in.Scope, Budget: in.Budget}
+	if a.Budget == 0 {
+		a.Budget = deps.DefaultBudget
+	}
+	return a
 }
 
 // GrepIn is the input for ccx_code_grep.
@@ -284,17 +295,15 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_symbol",
-		Description: "Grok a symbol: signature, path:line#anchor, and doc by default — one call beats many greps. Body and caller/callee/sibling/test lists behind --body/--callers/--callees/--siblings/--tests/--full.",
+		Description: "Grok a symbol: a terse locate card — signature, path:line#anchor, doc, and a refs/tests/siblings counts trailer — one call beats many greps. Body and caller/callee/sibling/test lists expand behind --body/--callers/--callees/--siblings/--tests/--full.",
 	}, handler(p, backend.OpSymbol, func(in SymbolIn) backend.Args {
 		return backend.Args{Query: in.Name, Scope: in.Scope, Body: in.Body, Callers: in.Callers, Callees: in.Callees, Siblings: in.Siblings, Tests: in.Tests, Full: in.Full}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_deps",
-		Description: "Dependencies of a file (imports and their resolved targets), budget-bounded.",
-	}, handler(p, backend.OpDeps, func(in DepsIn) backend.Args {
-		return backend.Args{Path: in.Path, Scope: in.Scope, Budget: in.Budget}
-	}))
+		Description: "A file's imports (classified local/std/external) and the files that import it (used by), each anchored — budget-bounded, syntactic (not a build graph).",
+	}, handler(p, backend.OpDeps, depsArgs))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_grep",

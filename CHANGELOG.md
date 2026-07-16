@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **`ccx code symbol` is native.** Definitions come from a whole-scope ast-grep outline
+  index, which resolves the Go types, consts, and vars the old engine never could; extra
+  hits rank deterministically behind an `also defined:` line. Docs are extracted from
+  source comments and docstrings. `--callers` shows word references with
+  enclosing-function attribution and says so in its header; `--callees` is labeled
+  syntactic. A miss walks exact → case-insensitive (disclosed) → definition-shaped text
+  before exiting 3 with `symbol not found`.
+- **`ccx code deps` is native.** Imports come from ast-grep with per-family
+  local/std/external classification and `(unresolved)` where resolution would be a guess.
+  Dependents come from an import-shape-filtered ripgrep scan scoped to the importing
+  language; a language without a sound needle, like Rust or C#, says `dependents not
+  scanned` instead of guessing. The output ends with its method line — syntactic, not a
+  build graph — and a missing path exits 3.
+
 ## [0.24.0] - 2026-07-17
 
 ### Changed

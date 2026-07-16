@@ -62,41 +62,27 @@ type outlineSym struct {
 }
 
 // flattenOutline flattens an outline into a name→entries index (a name may repeat
-// across overloads or receivers). Members are qualified under their container and
-// recursed into; field members are folded into the container.
+// across overloads or receivers). astgrep.WalkItems qualifies members under their
+// container and descends only into classifiable members, so field members fold
+// into their container's childSpans rather than becoming entries.
 func flattenOutline(files []astgrep.OutlineFile) map[string][]outlineSym {
 	byName := map[string][]outlineSym{}
-	for _, f := range files {
-		for _, it := range f.Items {
-			flattenItem(it, "", byName)
+	astgrep.WalkItems(files, func(it astgrep.OutlineItem, qualified string, _ int) {
+		var childSpans [][2]int
+		for _, m := range it.Members {
+			if classifiableMember(m) {
+				childSpans = append(childSpans, [2]int{oneBased(m.Range.Start.Line), oneBased(m.Range.End.Line)})
+			}
 		}
-	}
+		byName[qualified] = append(byName[qualified], outlineSym{
+			name:       qualified,
+			start:      oneBased(it.Range.Start.Line),
+			end:        oneBased(it.Range.End.Line),
+			sig:        it.Signature,
+			childSpans: childSpans,
+		})
+	}, classifiableMember)
 	return byName
-}
-
-func flattenItem(it astgrep.OutlineItem, prefix string, byName map[string][]outlineSym) {
-	name := it.Name
-	if prefix != "" {
-		name = prefix + "." + it.Name
-	}
-	var childSpans [][2]int
-	for _, m := range it.Members {
-		if classifiableMember(m) {
-			childSpans = append(childSpans, [2]int{oneBased(m.Range.Start.Line), oneBased(m.Range.End.Line)})
-		}
-	}
-	byName[name] = append(byName[name], outlineSym{
-		name:       name,
-		start:      oneBased(it.Range.Start.Line),
-		end:        oneBased(it.Range.End.Line),
-		sig:        it.Signature,
-		childSpans: childSpans,
-	})
-	for _, m := range it.Members {
-		if classifiableMember(m) {
-			flattenItem(m, name, byName)
-		}
-	}
 }
 
 // topSpans returns every top-level item's full span, which covers all of its

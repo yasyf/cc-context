@@ -5,9 +5,9 @@ import "github.com/yasyf/cc-context/internal/backend"
 
 // For returns the backend that serves op. semble serves the semantic ops
 // (search, related); ast-grep serves the structural ops (structural, replace,
-// struct-outline); tilth serves the symbol and deps ops (the default). Outline,
-// diff, find, and the web/read/grep ops are served natively before ever reaching
-// here, so routing them is an impossible state.
+// struct-outline). Symbol, deps, outline, diff, find, and the web/read/grep ops are
+// now served natively before ever reaching here, so routing them is an impossible
+// state; the tilth default is vestigial, retained for the machinery-teardown pass.
 func For(op backend.Op) backend.Backend {
 	switch op {
 	case backend.OpSearch, backend.OpRelated:

@@ -6,15 +6,16 @@ import (
 	"github.com/yasyf/cc-context/internal/anchor"
 	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/deps"
 	"github.com/yasyf/cc-context/internal/diff"
 	"github.com/yasyf/cc-context/internal/edit"
 	"github.com/yasyf/cc-context/internal/find"
-	"github.com/yasyf/cc-context/internal/grok"
 	"github.com/yasyf/cc-context/internal/overview"
 	"github.com/yasyf/cc-context/internal/read"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/ripgrep"
 	"github.com/yasyf/cc-context/internal/router"
+	"github.com/yasyf/cc-context/internal/symbol"
 	"github.com/yasyf/cc-context/internal/web"
 )
 
@@ -94,12 +95,24 @@ func dispatch(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error)
 		// The diff renderer anchors its own output; cap only, never render.Finalize.
 		return render.Cap(out, a.Budget), nil
 	}
+	if op == backend.OpSymbol {
+		// symbol self-anchors; cap only, never render.Finalize's symbol grammar.
+		out, err := symbol.Run(cmd.Context(), a)
+		if err != nil {
+			return "", err
+		}
+		return render.Cap(out, a.Budget), nil
+	}
+	if op == backend.OpDeps {
+		out, err := deps.Run(cmd.Context(), a)
+		if err != nil {
+			return "", err
+		}
+		return render.Cap(out, a.Budget), nil
+	}
 	bin, argv, err := router.For(op).CLIArgv(cmd.Context(), op, a)
 	if err != nil {
 		return "", err
-	}
-	if op == backend.OpSymbol {
-		return grok.Run(cmd.Context(), bin, argv, a)
 	}
 	out, err := render.RunCLI(cmd.Context(), bin, argv)
 	if err != nil {

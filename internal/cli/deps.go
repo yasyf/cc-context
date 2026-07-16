@@ -4,6 +4,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/deps"
 )
 
 func newDepsCmd() *cobra.Command {
@@ -14,6 +15,10 @@ func newDepsCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a.Path = args[0]
+			// An unset flag gets the default; an explicit --budget 0 means unlimited.
+			if !cmd.Flags().Changed("budget") {
+				a.Budget = deps.DefaultBudget
+			}
 			return runOp(cmd, backend.OpDeps, a)
 		},
 	}

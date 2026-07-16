@@ -25,7 +25,7 @@ const DefaultBudget = 2000
 // Run reads a.Path and renders the requested window — a.Full or an empty
 // a.Section for the whole file, a numeric range or markdown heading otherwise —
 // as an anchored block. A binary target returns the outline binary-skip row and
-// a nil error; the path is assumed pre-validated by backend.ResolveReadPath, so a
+// a nil error; the path is assumed pre-validated by backend.ResolvePath, so a
 // file that vanished between check and read surfaces as a plain wrapped error.
 func Run(a backend.Args) (string, error) {
 	if skip, ok := outline.BinarySkip(a.Path); ok {

@@ -14,38 +14,14 @@ const (
 	fakeSemble = "/fake/semble"
 )
 
-func TestTilthCLIArgv(t *testing.T) {
-	tl := Tilth{Bin: fakeTilth}
-	tests := []struct {
-		name string
-		op   Op
-		args Args
-		argv []string
-	}{
-		{"symbol", OpSymbol, Args{Query: "Foo"}, []string{"grok", "Foo"}},
-		{"symbol scope full", OpSymbol, Args{Query: "Foo", Scope: "pkg", Full: true}, []string{"grok", "Foo", "--scope", "pkg", "--full"}},
-		{"deps", OpDeps, Args{Path: "a.go"}, []string{"a.go", "--deps"}},
-		{"deps scope budget", OpDeps, Args{Path: "a.go", Scope: "pkg", Budget: 7}, []string{"a.go", "--deps", "--scope", "pkg", "--budget", "7"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			bin, argv, err := tl.CLIArgv(context.Background(), tt.op, tt.args)
-			if err != nil {
-				t.Fatalf("CLIArgv: %v", err)
-			}
-			if bin != fakeTilth {
-				t.Errorf("bin = %q, want %q", bin, fakeTilth)
-			}
-			if !reflect.DeepEqual(argv, tt.argv) {
-				t.Errorf("argv = %v, want %v", argv, tt.argv)
-			}
-		})
-	}
-}
-
+// TestTilthCLIArgvUnsupported asserts the tilth CLI shell errors loudly on every
+// op now that symbol and deps run natively — nothing routes to tilth.
 func TestTilthCLIArgvUnsupported(t *testing.T) {
-	if _, _, err := (Tilth{Bin: fakeTilth}).CLIArgv(context.Background(), OpSearch, Args{}); err == nil {
-		t.Fatal("expected error for unsupported op")
+	tl := Tilth{Bin: fakeTilth}
+	for _, op := range []Op{OpSearch, OpSymbol, OpDeps} {
+		if _, _, err := tl.CLIArgv(context.Background(), op, Args{}); err == nil {
+			t.Errorf("CLIArgv(%s): expected unsupported-op error", op)
+		}
 	}
 }
 
@@ -74,32 +50,14 @@ func TestTilthMCPSpec(t *testing.T) {
 	}
 }
 
-func TestTilthMCPTool(t *testing.T) {
+// TestTilthMCPToolUnsupported asserts the tilth MCP shell errors loudly on every
+// op now that symbol and deps run natively.
+func TestTilthMCPToolUnsupported(t *testing.T) {
 	tl := Tilth{Bin: fakeTilth}
-	tests := []struct {
-		name   string
-		op     Op
-		args   Args
-		tool   string
-		params map[string]any
-	}{
-		{"symbol", OpSymbol, Args{Query: "Foo", Scope: "pkg", Full: true}, "tilth_grok", map[string]any{"target": "Foo", "scope": "pkg", "full": true}},
-		{"symbol minimal", OpSymbol, Args{Query: "Foo"}, "tilth_grok", map[string]any{"target": "Foo"}},
-		{"deps", OpDeps, Args{Path: "a.go", Scope: "pkg", Budget: 7}, "tilth_deps", map[string]any{"path": "a.go", "scope": "pkg", "budget": 7}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tool, params, err := tl.MCPTool(tt.op, tt.args)
-			if err != nil {
-				t.Fatalf("MCPTool: %v", err)
-			}
-			if tool != tt.tool {
-				t.Errorf("tool = %q, want %q", tool, tt.tool)
-			}
-			if !reflect.DeepEqual(params, tt.params) {
-				t.Errorf("params = %v, want %v", params, tt.params)
-			}
-		})
+	for _, op := range []Op{OpSearch, OpSymbol, OpDeps} {
+		if _, _, err := tl.MCPTool(op, Args{}); err == nil {
+			t.Errorf("MCPTool(%s): expected unsupported-op error", op)
+		}
 	}
 }
 

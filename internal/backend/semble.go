@@ -139,3 +139,25 @@ func splitLoc(loc string) (file string, line int, err error) {
 	}
 	return loc[:i], line, nil
 }
+
+// omitEmpty drops zero-valued entries so the params map carries only the fields
+// the caller actually set: empty strings, false bools, and zero ints fall out.
+func omitEmpty(params map[string]any) map[string]any {
+	for k, v := range params {
+		switch val := v.(type) {
+		case string:
+			if val == "" {
+				delete(params, k)
+			}
+		case bool:
+			if !val {
+				delete(params, k)
+			}
+		case int:
+			if val == 0 {
+				delete(params, k)
+			}
+		}
+	}
+	return params
+}

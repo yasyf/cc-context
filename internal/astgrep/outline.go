@@ -3,12 +3,14 @@ package astgrep
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // OutlineFile is one `ast-grep outline --json=stream` record: a single source
@@ -60,6 +62,103 @@ func ParseOutline(stream []byte) ([]OutlineFile, error) {
 		return nil, fmt.Errorf("scan ast-grep outline json: %w", err)
 	}
 	return files, nil
+}
+
+// OutlineOpts carries the optional filters for a whole-scope outline: Items
+// selects an item category (e.g. "imports"), Match keeps only items whose
+// signature matches the regex, and Lang forces the source language.
+type OutlineOpts struct {
+	Items string
+	Match string
+	Lang  string
+}
+
+// OutlinePaths runs `ast-grep outline <paths...> --json=stream --view expanded`
+// over paths with the optional --items, --match, and -l filters, returning the
+// parsed outline files. outline exits 0 even on a no-match or a missing path (the
+// error rides stderr), so no exit is tolerated and an empty result parses to zero
+// files.
+func OutlinePaths(ctx context.Context, paths []string, o OutlineOpts) ([]OutlineFile, error) {
+	bin, err := resolveBin("")
+	if err != nil {
+		return nil, err
+	}
+	argv := append([]string{"outline"}, paths...)
+	argv = append(argv, "--json=stream", "--view", "expanded")
+	if o.Items != "" {
+		argv = append(argv, "--items", o.Items)
+	}
+	if o.Match != "" {
+		argv = append(argv, "--match", o.Match)
+	}
+	if o.Lang != "" {
+		argv = append(argv, "-l", o.Lang)
+	}
+	out, err := render.RunCLI(ctx, bin, argv)
+	if err != nil {
+		return nil, err
+	}
+	return ParseOutline([]byte(out))
+}
+
+// FlatItem is one entry of a flattened outline: the item's bare name, its
+// qualified name (Container.member for a nested member, the bare name at top
+// level), its symbol type and signature, its 1-based inclusive line span, and its
+// nesting depth (0 for a top-level declaration).
+type FlatItem struct {
+	Name       string
+	Qualified  string
+	SymbolType string
+	Signature  string
+	StartLine  int
+	EndLine    int
+	Depth      int
+}
+
+// Flatten flattens the file's items depth-first into FlatItems, qualifying each
+// nested member under its container and shifting ast-grep's 0-based lines to the
+// 1-based convention. Every item is emitted — fields included — so callers filter
+// by SymbolType. It shares WalkItems with diff's symbol classifier.
+func (f OutlineFile) Flatten() []FlatItem {
+	var out []FlatItem
+	WalkItems([]OutlineFile{f}, func(it OutlineItem, qualified string, depth int) {
+		out = append(out, FlatItem{
+			Name:       it.Name,
+			Qualified:  qualified,
+			SymbolType: it.SymbolType,
+			Signature:  it.Signature,
+			StartLine:  oneBased(it.Range.Start.Line),
+			EndLine:    oneBased(it.Range.End.Line),
+			Depth:      depth,
+		})
+	}, func(OutlineItem) bool { return true })
+	return out
+}
+
+// WalkItems visits every reachable item across files depth-first, passing each to
+// visit with its qualified name (Container.member; the bare name at top level) and
+// 0-based depth. A top-level item is always visited; the walk descends into a
+// member's own members only when descend reports true for that member, letting a
+// caller prune a subtree (e.g. a struct's fields).
+func WalkItems(files []OutlineFile, visit func(it OutlineItem, qualified string, depth int), descend func(OutlineItem) bool) {
+	for _, f := range files {
+		for _, it := range f.Items {
+			walkItem(it, "", 0, visit, descend)
+		}
+	}
+}
+
+func walkItem(it OutlineItem, prefix string, depth int, visit func(OutlineItem, string, int), descend func(OutlineItem) bool) {
+	qualified := it.Name
+	if prefix != "" {
+		qualified = prefix + "." + it.Name
+	}
+	visit(it, qualified, depth)
+	for _, m := range it.Members {
+		if descend(m) {
+			walkItem(m, qualified, depth+1, visit, descend)
+		}
+	}
 }
 
 // WindowOutline restricts files to the items whose source span intersects the

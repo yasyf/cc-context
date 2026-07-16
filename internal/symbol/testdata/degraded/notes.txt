@@ -1,0 +1,4 @@
+Some prose about the module.
+def orphan_sym(x):
+    return x
+More prose here.

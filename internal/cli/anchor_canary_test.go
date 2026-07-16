@@ -2,7 +2,6 @@ package cli_test
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/yasyf/cc-context/internal/cli"
 	"github.com/yasyf/cc-context/internal/lookpath"
-	"github.com/yasyf/cc-context/internal/vendor"
 )
 
 // hashClass is the character class of a 4-char content anchor: a leading letter
@@ -20,6 +18,8 @@ import (
 const hashClass = `[a-hjkmnp-tv-z][0-9a-hjkmnp-tv-z]{3}`
 
 const greeterV1 = `package fix
+
+import "strconv"
 
 // Greeter builds greetings.
 type Greeter struct {
@@ -31,12 +31,14 @@ func (g Greeter) Greet(name string) string {
 	return g.Prefix + name
 }
 
-func helper(x int) int {
-	return x * 2
+func helper(x int) string {
+	return strconv.Itoa(x * 2)
 }
 `
 
 const greeterV2 = `package fix
+
+import "strconv"
 
 // Greeter builds greetings.
 type Greeter struct {
@@ -48,8 +50,8 @@ func (g Greeter) Greet(name string) string {
 	return g.Prefix + name + "!"
 }
 
-func helper(x int) int {
-	return x * 2
+func helper(x int) string {
+	return strconv.Itoa(x * 2)
 }
 `
 
@@ -61,21 +63,31 @@ func UseGreeter() string {
 }
 `
 
+// subUseGo lives in a sub-package importing the fixture's root package, so it is a
+// dependent of greeter.go for the native deps used-by leg.
+const subUseGo = `package sub
+
+import "example.com/fix"
+
+func Run() string {
+	return fix.UseGreeter()
+}
+`
+
 // TestContentAnchorsSurviveEngineGrammar is the drift canary for the content-anchor
-// rewrites: it drives the real ripgrep, tilth, and ast-grep engines plus the native
-// diff and outline-fallback renderers through the full CLI dispatch over a throwaway
-// fixture repo and asserts every anchor still fired at least once. The grammar-keyed
-// rewrites in internal/ripgrep/ripgrep.go, internal/render/finalize.go (tilth
-// grok/deps), and internal/astgrep/outline.go degrade silently to "no anchors" on an
-// engine version bump; the self-generated anchors in internal/diff/render.go and
-// internal/outline/fallback.go are canaried here too. The assertions check that an
-// anchor shape appeared, never a specific hash value.
+// rewrites: it drives the real ripgrep and ast-grep engines plus the native symbol,
+// deps, diff, and outline-fallback renderers through the full CLI dispatch over a
+// throwaway fixture repo and asserts every anchor still fired at least once. The
+// grammar-keyed rewrite in internal/ripgrep/ripgrep.go and the ast-grep outline
+// parse in internal/astgrep/outline.go degrade silently to "no anchors" on an engine
+// version bump; the self-generated anchors in internal/symbol, internal/deps,
+// internal/diff/render.go, and internal/outline/fallback.go are canaried here too.
+// The assertions check that an anchor shape appeared, never a specific hash value.
 func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
 	if testing.Short() {
-		t.Skip("provisions and runs the real tilth + ast-grep engines")
+		t.Skip("provisions and runs the real ast-grep engine")
 	}
-	ctx := context.Background()
-	forcePinnedEngines(ctx, t)
+	forcePinnedEngines(t)
 
 	repo, sha1, sha2 := writeCanaryRepo(t)
 	t.Chdir(repo)
@@ -101,12 +113,12 @@ func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
 	}{
 		{"grep frame anchor (ripgrep)", grep, regexp.MustCompile(`\[\d+(?:-\d+)?#` + hashClass + `\]`)},
 		{"grep frame anchor via -i (ripgrep)", grepRG, regexp.MustCompile(`\[\d+(?:-\d+)?#` + hashClass + `\]`)},
-		{"symbol grok locator (finalize.go)", symbol, regexp.MustCompile(`\[[^\]]+:\d+#` + hashClass + `\]`)},
-		{"symbol range frame (finalize.go)", symbol, regexp.MustCompile(`\[\d+-\d+#` + hashClass + `\]`)},
+		{"symbol locator (symbol pkg)", symbol, regexp.MustCompile(`(?m)^# symbol \S.*:\d+(?:-\d+)?#` + hashClass)},
+		{"symbol frame anchor (symbol pkg)", symbol, regexp.MustCompile(`\[\d+(?:-\d+)?#` + hashClass + `\]`)},
 		{"outline item anchor (astgrep outline.go)", outline, regexp.MustCompile(`(?m)^L\d+#` + hashClass + `\b`)},
 		{"fallback heading anchor (outline fallback.go)", outlineMD, regexp.MustCompile(`(?m)^L\d+#` + hashClass + `\b`)},
-		{"deps group heading (finalize.go)", deps, regexp.MustCompile(`(?m)^### \S`)},
-		{"deps row anchor (finalize.go)", deps, regexp.MustCompile(`(?m)^L\d+#` + hashClass + `\b`)},
+		{"deps used-by anchor (deps pkg)", deps, regexp.MustCompile(`(?m)^[\w./-]+:\d+(?:-\d+)?#` + hashClass)},
+		{"deps uses-row anchor (deps pkg)", deps, regexp.MustCompile(`(?m)^L\d+#` + hashClass + `\b`)},
 		{"diff symbol-row anchor (native diff render.go)", diff, regexp.MustCompile(`\[~\][^\n]*L\d+(?:-\d+)?#` + hashClass + `\b`)},
 	}
 	for _, p := range patterns {
@@ -136,22 +148,14 @@ func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
 	})
 }
 
-// forcePinnedEngines stages both engines under a temp dir prepended to PATH so the
-// CLI legs resolve a known version whose grammar the anchor regexes target: tilth
-// from its pinned download, ast-grep from PATH (de-vendored). It skips when tilth
-// cannot be provisioned (e.g. offline); a missing PATH ast-grep skips locally but
-// hard-fails in CI, where the test job installs it (uv tool install ast-grep-cli).
-func forcePinnedEngines(ctx context.Context, t *testing.T) {
+// forcePinnedEngines stages ast-grep under a temp dir prepended to PATH so the CLI
+// legs resolve the PATH ast-grep whose outline grammar the anchor regexes target. A
+// missing PATH ast-grep skips locally but hard-fails in CI, where the test job
+// installs it (uv tool install ast-grep-cli). The tilth engine is gone — symbol and
+// deps now self-anchor natively — so no engine is provisioned here.
+func forcePinnedEngines(t *testing.T) {
 	t.Helper()
 	binDir := t.TempDir()
-
-	tilthBin, err := vendor.Ensure(ctx, vendor.Tilth)
-	if err != nil {
-		t.Skipf("cannot provision the pinned tilth engine (offline?): %v", err)
-	}
-	if err := os.Symlink(tilthBin, filepath.Join(binDir, vendor.Tilth.Name)); err != nil {
-		t.Fatalf("symlink pinned tilth: %v", err)
-	}
 
 	astGrepBin := lookpath.Find("ast-grep")
 	if astGrepBin == "" {
@@ -168,9 +172,11 @@ func forcePinnedEngines(ctx context.Context, t *testing.T) {
 }
 
 // writeCanaryRepo builds a two-commit git repo and returns its path and the two
-// commit SHAs. greeter.go and util.go feed the grep, symbol, and outline legs; the
-// second commit's body-only edit and notes.txt change drive the diff leg's symbol
-// row, SHA shortening, and preamble collapse across the sha1..sha2 range.
+// commit SHAs. go.mod, greeter.go, util.go, and sub/use.go feed the grep, symbol,
+// deps, and outline legs (greeter.go imports strconv for a deps use row, sub/use.go
+// imports the root package as its deps dependent); the second commit's body-only
+// edit and notes.txt change drive the diff leg's symbol row, SHA shortening, and
+// preamble collapse across the sha1..sha2 range.
 func writeCanaryRepo(t *testing.T) (repo, sha1, sha2 string) {
 	t.Helper()
 	repo = t.TempDir()
@@ -178,8 +184,10 @@ func writeCanaryRepo(t *testing.T) (repo, sha1, sha2 string) {
 	runGit(t, repo, "config", "user.email", "t@t.t")
 	runGit(t, repo, "config", "user.name", "t")
 
+	writeCanaryFile(t, repo, "go.mod", "module example.com/fix\n\ngo 1.23\n")
 	writeCanaryFile(t, repo, "greeter.go", greeterV1)
 	writeCanaryFile(t, repo, "util.go", utilGo)
+	writeCanaryFile(t, repo, "sub/use.go", subUseGo)
 	writeCanaryFile(t, repo, "notes.txt", "first note line\n")
 	writeCanaryFile(t, repo, "guide.md", "# Title\n\nintro\n\n## Section One\n\nbody\n")
 	runGit(t, repo, "add", "-A")
@@ -228,10 +236,15 @@ func revParse(t *testing.T, dir, rev string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// writeCanaryFile writes content to dir/name, failing the test on error.
+// writeCanaryFile writes content to dir/name, creating parent directories, failing
+// the test on error.
 func writeCanaryFile(t *testing.T, dir, name, content string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+	full := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+		t.Fatalf("mkdir %s: %v", name, err)
+	}
+	if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
 		t.Fatalf("write %s: %v", name, err)
 	}
 }

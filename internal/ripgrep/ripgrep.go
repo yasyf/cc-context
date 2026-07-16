@@ -99,25 +99,60 @@ func Run(ctx context.Context, a backend.Args) (string, error) {
 	return out, err
 }
 
-// run is the engine-agnostic core: build argv, execute, parse, reshape, cap.
+// MatchLine is one line of a file's grep hits: its 1-based line number, source
+// text (trailing CR/LF trimmed), and whether it is a match line versus an
+// -A/-B/-C context line.
+type MatchLine struct {
+	Num     int
+	Text    string
+	IsMatch bool
+}
+
+// FileMatch is one file's grep hits in stream (line) order.
+type FileMatch struct {
+	Path  string
+	Lines []MatchLine
+}
+
+// Matches searches for a.Query exactly as Run does — same engine resolution,
+// argv building, glob-anchor peeling, and clean no-match tolerance — but returns
+// the parsed per-file hits instead of reshaped, content-anchored, budget-capped
+// text: no anchoring, no capping. It is the composition entry point native symbol
+// and deps build on; a clean no-match yields zero FileMatches, not an error.
+func Matches(ctx context.Context, a backend.Args) ([]FileMatch, error) {
+	if err := validateContext(a); err != nil {
+		return nil, err
+	}
+	eng, bin, err := resolveEngine()
+	if err != nil {
+		return nil, err
+	}
+	groups, err := searchGroups(ctx, eng, bin, a, execEngine)
+	if err != nil {
+		return nil, err
+	}
+	return toFileMatches(groups), nil
+}
+
+// toFileMatches projects the internal per-file groups onto the exported
+// FileMatch shape, preserving file and line order.
+func toFileMatches(groups []fileGroup) []FileMatch {
+	out := make([]FileMatch, 0, len(groups))
+	for _, g := range groups {
+		lines := make([]MatchLine, 0, len(g.lines))
+		for _, l := range g.lines {
+			lines = append(lines, MatchLine{Num: l.num, Text: l.text, IsMatch: l.isMatch})
+		}
+		out = append(out, FileMatch{Path: g.path, Lines: lines})
+	}
+	return out
+}
+
+// run is the engine-agnostic Run core: search into groups, then reshape and cap.
 // found is decided from parsed groups before reshape/cap — capping can cut the
 // no-match header and a matched header embeds the query, so never string-sniff.
 func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) (string, bool, error) {
-	argv, err := buildArgv(eng, a)
-	if err != nil {
-		return "", false, err
-	}
-	raw, err := exec(ctx, bin, argv)
-	if err != nil {
-		if eng != engineRipgrep {
-			return "", false, err
-		}
-		if !ripgrepNoFiles(err) {
-			return "", false, ripgrepRegexHint(err, a.Query)
-		}
-		raw = "" // a glob/type filter matched zero files: the clean no-match grep reports as exit 0
-	}
-	groups, err := parse(eng, raw)
+	groups, err := searchGroups(ctx, eng, bin, a, exec)
 	if err != nil {
 		return "", false, err
 	}
@@ -127,6 +162,29 @@ func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runne
 	}
 	reshaped := reshape(a.Query, eng, groups, anchor.NewFiles(cwd))
 	return render.Cap(reshaped, a.Budget), anyMatch(groups), nil
+}
+
+// searchGroups builds the engine argv, executes it, and folds the raw output into
+// per-file groups: the parse layer Run and Matches share, everything before
+// reshape, anchoring, and capping. An rg failure that is really a glob/type
+// filter matching zero files is normalized to the clean no-match grep reports as
+// exit 0; a regex-parse failure carrying a BRE escape is hinted.
+func searchGroups(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) ([]fileGroup, error) {
+	argv, err := buildArgv(eng, a)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := exec(ctx, bin, argv)
+	if err != nil {
+		if eng != engineRipgrep {
+			return nil, err
+		}
+		if !ripgrepNoFiles(err) {
+			return nil, ripgrepRegexHint(err, a.Query)
+		}
+		raw = "" // a glob/type filter matched zero files: the clean no-match grep reports as exit 0
+	}
+	return parse(eng, raw)
 }
 
 // anyMatch reports whether any group carries a match line (context lines alone
