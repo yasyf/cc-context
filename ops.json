@@ -1,1 +1,1 @@
-{"v":1,"lamport":3,"ops":[{"kind":"set_criterion_status","id":"cb5887d07ca2359bd4cec061a6d988a3","status":"met","note":"Live tests TestShip{JJ,Git}HunkScoped{Live,SubdirLive} green locally and in CI (run 29502951501 on trunk 5e0ab43a, jj via taiki-e); refusals pinned by TestShipHunkRefusals + TestApplySelectionFailureWritesSidecar; docs in 6389fc2e (README, SKILL.md, CHANGELOG) + cc-skills 86777bab (AGENTS entry 13, version-control)"}]}
+{"v":1,"lamport":4,"ops":[{"kind":"set_status","status":"done"},{"kind":"link_commit","sha":"5e0ab43ac07a5cf9c9baa20f895469b92480f12e"}]}
