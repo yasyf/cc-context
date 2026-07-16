@@ -15,8 +15,8 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/yasyf/cc-context/internal/backend"
-	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // defaultK is the number of search hits returned when a.K is unset (<= 0).

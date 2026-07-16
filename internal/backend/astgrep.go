@@ -24,7 +24,7 @@ func (g AstGrep) Engine() Engine {
 // OpStructural searches for a.Query; OpReplace rewrites a.Pattern to a.Rewrite,
 // writing in place only when a.Apply is set (-U); OpStructOutline outlines a.Path.
 // Interactive mode is never used: it is TTY-only and dead in the MCP surface.
-func (g AstGrep) CLIArgv(ctx context.Context, op Op, a Args) (bin string, argv []string, err error) {
+func (g AstGrep) CLIArgv(_ context.Context, op Op, a Args) (bin string, argv []string, err error) {
 	switch op {
 	case OpStructural:
 		argv = g.appendScope([]string{"run", "-p", a.Query, "--json=stream"}, a)
