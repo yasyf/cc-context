@@ -147,7 +147,7 @@ func tomlArray(elems ...string) string {
 // readSidecar returns the structured failure reason the apply-selection tool
 // wrote, or "" when the tool never got that far.
 func readSidecar(path string) string {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // the sidecar path is ship's own tempfile, not untrusted input
 	if err != nil {
 		return ""
 	}

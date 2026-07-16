@@ -123,7 +123,7 @@ func changedFiles(ctx context.Context, kind vcs.Kind, root string) ([]string, er
 // hunksReadCurrent reads path's working content, treating a missing file as an
 // empty current (a deletion) so a removed file still lists as one deletion hunk.
 func hunksReadCurrent(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // the path is the caller's own listing target, not untrusted input
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
