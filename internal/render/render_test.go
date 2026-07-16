@@ -107,6 +107,67 @@ func TestRunCLIAllowExit(t *testing.T) {
 	}
 }
 
+func TestRunCLIEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh to read env")
+	}
+	tests := []struct {
+		name     string
+		script   string
+		extraEnv []string
+		want     string
+		wantErr  bool
+	}{
+		{"extra var reaches the child", `printf '%s' "$CCX_TEST_VAR"`, []string{"CCX_TEST_VAR=idxfile"}, "idxfile", false},
+		{"last value wins over an inherited one", `printf '%s' "$PATH_TEST"`, []string{"PATH_TEST=a", "PATH_TEST=b"}, "b", false},
+		{"os.Environ is still inherited", `printf '%s' "${HOME:+has-home}"`, nil, "has-home", false},
+		{"nonzero exit wraps stderr", "echo boom 1>&2; exit 1", nil, "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := RunCLIEnv(context.Background(), "/bin/sh", []string{"-c", tt.script}, tt.extraEnv)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("RunCLIEnv err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("RunCLIEnv = %q, want %q", got, tt.want)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "boom") {
+				t.Errorf("RunCLIEnv err = %v, want it to carry the child stderr", err)
+			}
+		})
+	}
+}
+
+func TestRunCLIStdin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh to echo stdin")
+	}
+	tests := []struct {
+		name    string
+		script  string
+		stdin   []byte
+		want    string
+		wantErr bool
+	}{
+		{"stdin is fed to the child", "cat", []byte("selected\ncontent\n"), "selected\ncontent\n", false},
+		{"empty stdin", "cat", nil, "", false},
+		{"child that ignores stdin still succeeds", "printf oid", []byte("ignored payload"), "oid", false},
+		{"nonzero exit wraps stderr", "echo boom 1>&2; exit 1", []byte("x"), "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := RunCLIStdin(context.Background(), "/bin/sh", []string{"-c", tt.script}, tt.stdin)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("RunCLIStdin err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("RunCLIStdin = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCap(t *testing.T) {
 	tests := []struct {
 		id     string

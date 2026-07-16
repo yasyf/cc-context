@@ -60,18 +60,17 @@ ccx repo overview
 ```
 
 ```console
-[tilth] Go project — 174 source files, 10 directories
-  dirs: cli/ web/ codeexec/ format/ backend/ render/ astgrep/ anchor/ cache/ vcs/
-  deps: asm, cascadia, chardet, cobra, dateparse, dom, dom, encoding, go-readability, go-sdk
-  hot (× = importers): plugin/hooks/common.py ×8
-  git: branch main, clean
-  tests: tests/, _test.go, test_*.py
-  manifest: go.mod (github.com/yasyf/cc-context)
-
-languages: go (176), py (55), md (22), sh (4)
+# cc-context — go module github.com/yasyf/cc-context (go 1.26)
+languages: go (217), py (67), md (31), rs (13), sh (5)
+dirs: internal (31 pkgs: anchor, astgrep, backend, cache, …) · bench (4 pkgs: analysis, ccxbench, tasks, tests) · format-core (3 pkgs: core, corpus, wasm) · plugin (4 pkgs: agents, hooks, scripts, skills) · docs (2 pkgs: assets, scripts) · cmd/ccx · scripts
+entry: cmd/ccx/main.go
+manifests: go.mod (15 direct deps)
+tests: 123 test files (go, py)
+git: @ cf13457c "fix(lint): gosec/revive/staticcheck cleanups in read and overview" · 3 dirty · 262 commits
+hot (90d): bench/tasks (233), plugin/hooks (167), internal/cli (154), bench/ccxbench (123), internal/web (105)
 ```
 
-Structure, dependencies, the hottest files by importer count, and VCS state in a few hundred tokens. Skip it when you already know what you're looking for — a targeted search or symbol lookup beats a tour.
+Structure, entry points, manifests, recent churn, and VCS state in a few hundred tokens. Skip it when you already know what you're looking for — a targeted search or symbol lookup beats a tour.
 
 ### Locate one symbol without paging through the file
 
@@ -161,7 +160,7 @@ Each command is a token-bounded stand-in for a primitive an agent would otherwis
 | `ccx format [-- <cmd>]` | Re-encode a command's JSON/NDJSON output lean, or filter a pipe |
 | `ccx exec [script]` | Compose ccx ops, `sh()`, and reflected MCP tools in a sandbox; only the return value enters context |
 
-`ccx --help` catalogs the rest, including structural find-replace with a preview-first `--apply`, dependency maps, per-commit symbol history, and `ccx vcs ship` to commit, push, and watch CI in one call; `ccx <command> --help` has the flags. Five engines sit behind the one surface. semble handles semantic search, ast-grep handles structural search and rewrites, an in-process web engine handles pages, ripgrep takes case-insensitive and word-boundary greps (`-i`, `-w`; system `grep` fills in when `rg` is missing), and tilth handles everything else; `ccx` routes each command for you.
+`ccx --help` catalogs the rest, including structural find-replace with a preview-first `--apply`, dependency maps, per-commit symbol history, and `ccx vcs ship -m "<msg>" [paths...]` to commit, push, and watch CI in one call — trailing paths scope the commit to just those files, `ccx vcs hunks` refs with `--skip-hunk`/`--only-hunk` scope it to individual hunks of a file, the push auto-advances only the trunk bookmark, and commits made from a Claude session carry a `Claude-Session-Id` trailer; `ccx <command> --help` has the flags. Five engines sit behind the one surface. semble handles semantic search, ast-grep handles structural search and rewrites, an in-process web engine handles pages, ripgrep takes case-insensitive and word-boundary greps (`-i`, `-w`; system `grep` fills in when `rg` is missing), and tilth handles everything else; `ccx` routes each command for you.
 
 ## Configuration
 

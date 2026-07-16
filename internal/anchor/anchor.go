@@ -42,6 +42,26 @@ func Of(line string) Hash {
 	})
 }
 
+// OfLines hashes an ordered group of lines as one content digest: each line is
+// trimmed as Of trims, the trimmed lines are joined with '\n', and the join is
+// folded and encoded exactly as Of. OfLines of a single line equals Of of it.
+func OfLines(lines []string) Hash {
+	h := fnv.New32a()
+	for i, line := range lines {
+		if i > 0 {
+			_, _ = h.Write([]byte{'\n'}) // fnv.Write never fails
+		}
+		_, _ = h.Write([]byte(strings.TrimSpace(line)))
+	}
+	v := h.Sum32() % fold
+	return Hash([]byte{
+		letters[v>>15],
+		alphabet[(v>>10)&31],
+		alphabet[(v>>5)&31],
+		alphabet[v&31],
+	})
+}
+
 // Ref is a parsed anchor reference. Line 0 marks a bare anchor (hash only);
 // End 0 marks a single-line reference.
 type Ref struct {

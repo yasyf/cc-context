@@ -37,6 +37,46 @@ func TestOfGolden(t *testing.T) {
 	}
 }
 
+// TestOfLines locks the group-hash contract: a single line equals Of, an empty
+// group equals Of(""), whitespace is trimmed per line, order is significant, and
+// the encoding stays 4 letter-first Crockford-base32 chars.
+func TestOfLines(t *testing.T) {
+	const alphabet = "0123456789abcdefghjkmnpqrstvwxyz"
+	const letters = "abcdefghjkmnpqrstvwxyz"
+
+	if got, want := anchor.OfLines([]string{"return nil"}), anchor.Of("return nil"); got != want {
+		t.Errorf("OfLines single = %q, want Of = %q", got, want)
+	}
+	if got, want := anchor.OfLines(nil), anchor.Of(""); got != want {
+		t.Errorf("OfLines(nil) = %q, want Of(\"\") = %q", got, want)
+	}
+	if got, want := anchor.OfLines([]string{"  a  ", "\tb\r"}), anchor.OfLines([]string{"a", "b"}); got != want {
+		t.Errorf("OfLines untrimmed = %q, want trimmed = %q", got, want)
+	}
+	if anchor.OfLines([]string{"a", "b"}) == anchor.OfLines([]string{"b", "a"}) {
+		t.Errorf("OfLines is order-insensitive, want order to matter")
+	}
+
+	for _, lines := range [][]string{nil, {"-x"}, {"-a", "+b", "+c"}} {
+		h := anchor.OfLines(lines)
+		if h != anchor.OfLines(lines) {
+			t.Errorf("OfLines(%q) not deterministic", lines)
+		}
+		s := h.String()
+		if len(s) != 4 {
+			t.Errorf("OfLines(%q) = %q, want length 4", lines, s)
+		}
+		if !strings.ContainsRune(letters, rune(s[0])) {
+			t.Errorf("OfLines(%q) = %q, first char must be a letter", lines, s)
+		}
+		for _, c := range s {
+			if !strings.ContainsRune(alphabet, c) {
+				t.Errorf("OfLines(%q) = %q, char %q outside alphabet", lines, s, c)
+			}
+		}
+	}
+}
+
 func TestParse(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -14,6 +14,8 @@ func newVcsCmd() *cobra.Command {
 		newShipCmd(),
 		newShowCmd(),
 		newHistoryCmd(),
+		newHunksCmd(),
+		newApplySelectionCmd(),
 	)
 	return cmd
 }

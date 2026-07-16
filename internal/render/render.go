@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"unicode/utf8"
@@ -19,6 +20,36 @@ const charsPerToken = 4
 // child's stderr in the returned error.
 func RunCLI(ctx context.Context, bin string, argv []string) (string, error) {
 	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%s: %w: %s", bin, err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
+// RunCLIEnv is RunCLI with extraEnv appended to the process environment, for
+// callers that must set an env-only variable the flag surface cannot express
+// (e.g. GIT_INDEX_FILE). extraEnv extends os.Environ(), so a "KEY=value" element
+// overrides any inherited KEY per exec's last-wins rule.
+func RunCLIEnv(ctx context.Context, bin string, argv, extraEnv []string) (string, error) {
+	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	cmd.Env = append(os.Environ(), extraEnv...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%s: %w: %s", bin, err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
+// RunCLIStdin is RunCLI with stdin fed from the given bytes, for a command that
+// reads its payload from stdin (e.g. git hash-object --stdin).
+func RunCLIStdin(ctx context.Context, bin string, argv []string, stdin []byte) (string, error) {
+	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	cmd.Stdin = bytes.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

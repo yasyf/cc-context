@@ -63,6 +63,10 @@ jobs:
         with:
           path: ${{ env.HF_HOME }}/hub
           key: hf-embed-${{ runner.os }}-${{ steps.hf-pin.outputs.pin }}
+      - name: Install jj (live hunk-scoped ship tests)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: jj-cli
       - name: Test (race)
         env:
           # Optional: authenticates the first snapshot download when the secret

@@ -59,13 +59,15 @@ var shipStreamCI = func(w io.Writer) bool {
 }
 
 type shipOpts struct {
-	message  string
-	noPush   bool
-	noWatch  bool
-	amend    bool
-	budget   int
-	paths    []string
-	bookmark string
+	message   string
+	noPush    bool
+	noWatch   bool
+	amend     bool
+	budget    int
+	paths     []string
+	bookmark  string
+	skipHunks []string
+	onlyHunks []string
 }
 
 type ciRun struct {
@@ -114,6 +116,8 @@ On a jj repo, ship fetches from the remote first and, when the target bookmark i
 	cmd.Flags().BoolVar(&o.amend, "amend", false, "fold the working copy into the parent commit")
 	cmd.Flags().IntVar(&o.budget, "budget", shipLogBudget, "token budget for the CI failure log excerpt (0 = uncapped)")
 	cmd.Flags().StringVar(&o.bookmark, "bookmark", "", "jj bookmark to advance and push")
+	cmd.Flags().StringArrayVar(&o.skipHunks, "skip-hunk", nil, "commit everything except this hunk ref (repeatable; refs from ccx vcs hunks)")
+	cmd.Flags().StringArrayVar(&o.onlyHunks, "only-hunk", nil, "commit only this hunk ref in its file (repeatable; refs from ccx vcs hunks)")
 	return cmd
 }
 
@@ -130,7 +134,17 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		return errors.New("ship: -m/--message is required unless --amend")
 	}
 
-	if err := shipCommit(ctx, kind, o); err != nil {
+	sel, err := parseShipSelection(ctx, kind, o)
+	if err != nil {
+		return err
+	}
+	if sel != nil {
+		if err := resolveShipSelection(ctx, kind, sel); err != nil {
+			return err
+		}
+	}
+
+	if err := shipCommit(ctx, kind, o, sel); err != nil {
 		return err
 	}
 
@@ -188,19 +202,22 @@ func withSessionTrailer(message string) string {
 	return message + "\n\nClaude-Session-Id: " + id
 }
 
-func shipCommit(ctx context.Context, kind vcs.Kind, o shipOpts) error {
+func shipCommit(ctx context.Context, kind vcs.Kind, o shipOpts, sel *shipSelection) error {
 	o.message = withSessionTrailer(o.message)
 	switch kind {
 	case vcs.JJ:
-		return shipCommitJJ(ctx, o)
+		return shipCommitJJ(ctx, o, sel)
 	case vcs.Git:
-		return shipCommitGit(ctx, o)
+		return shipCommitGit(ctx, o, sel)
 	default:
 		return errors.New("ship: commit: unsupported vcs")
 	}
 }
 
-func shipCommitJJ(ctx context.Context, o shipOpts) error {
+func shipCommitJJ(ctx context.Context, o shipOpts, sel *shipSelection) error {
+	if sel != nil {
+		return shipCommitJJSelect(ctx, o, sel)
+	}
 	argv := make([]string, 0, 4+len(o.paths))
 	switch {
 	case o.amend && o.message != "":
@@ -220,7 +237,55 @@ func shipCommitJJ(ctx context.Context, o shipOpts) error {
 	return nil
 }
 
-func shipCommitGit(ctx context.Context, o shipOpts) error {
+// shipCommitJJSelect commits a hunk selection through jj's diff-editor protocol:
+// it writes a plan tempfile plus a sidecar, points a throwaway merge tool at
+// ccx's own apply-selection subcommand, and lets jj drive the partial commit
+// inside its transaction. On failure it prefers the sidecar's structured reason
+// over raw jj stderr.
+func shipCommitJJSelect(ctx context.Context, o shipOpts, sel *shipSelection) error {
+	sidecar, err := os.CreateTemp("", "ccx-ship-result-*")
+	if err != nil {
+		return fmt.Errorf("ship: create result file: %w", err)
+	}
+	sidecarPath := sidecar.Name()
+	_ = sidecar.Close()
+	defer func() { _ = os.Remove(sidecarPath) }()
+
+	planBytes, err := json.Marshal(buildSelectionPlan(sel, sidecarPath))
+	if err != nil {
+		return fmt.Errorf("ship: encode selection plan: %w", err)
+	}
+	planFile, err := os.CreateTemp("", "ccx-ship-plan-*.json")
+	if err != nil {
+		return fmt.Errorf("ship: create selection plan: %w", err)
+	}
+	planPath := planFile.Name()
+	defer func() { _ = os.Remove(planPath) }()
+	if _, err := planFile.Write(planBytes); err != nil {
+		_ = planFile.Close()
+		return fmt.Errorf("ship: write selection plan: %w", err)
+	}
+	if err := planFile.Close(); err != nil {
+		return fmt.Errorf("ship: write selection plan: %w", err)
+	}
+
+	argv, err := jjSelectArgv(o, planPath)
+	if err != nil {
+		return err
+	}
+	if _, err := render.RunCLI(ctx, "jj", argv); err != nil {
+		if reason := readSidecar(sidecarPath); reason != "" {
+			return fmt.Errorf("ship: %s: %w", reason, err)
+		}
+		return fmt.Errorf("ship: jj %s: %w", argv[0], err)
+	}
+	return nil
+}
+
+func shipCommitGit(ctx context.Context, o shipOpts, sel *shipSelection) error {
+	if sel != nil {
+		return shipCommitGitSelect(ctx, o, sel)
+	}
 	addArgv := []string{"add", "-A"}
 	if len(o.paths) > 0 {
 		addArgv = append(addArgv, "--")

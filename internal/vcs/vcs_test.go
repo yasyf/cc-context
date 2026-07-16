@@ -296,6 +296,44 @@ func TestRawHunkArgvFor(t *testing.T) {
 	}
 }
 
+// TestShowFileArgv pins the base-image argv for each lane and that an absent VCS
+// panics rather than returning a silent empty argv.
+func TestShowFileArgv(t *testing.T) {
+	tests := []struct {
+		name      string
+		kind      Kind
+		path      string
+		want      []string
+		wantPanic bool
+	}{
+		{
+			name: "git shows the HEAD blob past end-of-options", kind: Git, path: "internal/cli/ship.go",
+			want: []string{"git", "show", "--end-of-options", "HEAD:internal/cli/ship.go"},
+		},
+		{
+			name: "jj shows the parent revision", kind: JJ, path: "internal/cli/ship.go",
+			want: []string{"jj", "file", "show", "-r", "@-", "--", `root:"internal/cli/ship.go"`},
+		},
+		{name: "no vcs panics", kind: None, path: "a.go", wantPanic: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.wantPanic {
+				defer func() {
+					if recover() == nil {
+						t.Errorf("ShowFileArgv(%v) did not panic", tt.kind)
+					}
+				}()
+				ShowFileArgv(tt.kind, tt.path)
+				return
+			}
+			if got := ShowFileArgv(tt.kind, tt.path); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ShowFileArgv = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestResolveDiffSourceGitValidatesRefs drives the injectable git-branch resolver
 // directly: working-tree sentinels skip validation, a valid ref passes through, a
 // bogus ref errors naming the ref, and both endpoints of a range are validated

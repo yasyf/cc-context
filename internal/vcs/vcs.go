@@ -133,6 +133,23 @@ func RawHunkArgvFor(dir, source, tilthSource string, useTilth bool, file string)
 	return append(argv, "--", file)
 }
 
+// ShowFileArgv builds the argv that prints path's committed content — git's HEAD
+// blob or jj's @- revision — as the base image of a hunk diff. path is
+// repo-root-relative: git's HEAD:<path> is a root-anchored tree path and jj's
+// root:"<path>" fileset pins the root frame, so both resolve from any working
+// directory. --end-of-options keeps a flag-like path from being parsed as a flag
+// (the git-show injection fix). kind must be Git or JJ; anything else panics.
+func ShowFileArgv(kind Kind, path string) []string {
+	switch kind {
+	case Git:
+		return []string{"git", "show", "--end-of-options", "HEAD:" + path}
+	case JJ:
+		return []string{"jj", "file", "show", "-r", "@-", "--", fmt.Sprintf("root:%q", path)}
+	default:
+		panic(fmt.Sprintf("vcs.ShowFileArgv: kind %d is not Git or JJ", kind))
+	}
+}
+
 // branchLookup resolves the repository's default branch name. It is injectable
 // so the pure translation matrix can be tested without shelling out.
 type branchLookup func(ctx context.Context, dir string) (string, error)

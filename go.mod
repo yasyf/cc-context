@@ -15,6 +15,7 @@ require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/boyter/gocodewalker v1.5.1
 	github.com/go-git/go-git/v5 v5.19.1
+	github.com/sergi/go-diff v1.4.0
 	github.com/spf13/pflag v1.0.9
 	github.com/tetratelabs/wazero v1.12.0
 	github.com/yuin/goldmark v1.8.2

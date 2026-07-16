@@ -36,8 +36,9 @@ The MCP tools mirror the ccx query surface: `mcp__cc-context__ccx_repo_overview`
 the read, search, edit, and diff commands take the same arguments as their CLI counterparts;
 `mcp__cc-context__ccx_exec` and `mcp__cc-context__ccx_exec_tools` mirror `ccx exec`;
 `mcp__cc-context__BashFormat` mirrors `ccx format -- <cmd>`.
-Use whichever is available; the workflow is identical. `ccx vcs ship`, `ccx vcs show`,
-`ccx vcs history`, and `ccx repo locate` are CLI-only — there is no MCP tool for them.
+Use whichever is available; the workflow is identical. `ccx vcs ship`, `ccx vcs hunks`,
+`ccx vcs show`, `ccx vcs history`, and `ccx repo locate` are CLI-only — there is no MCP
+tool for them.
 
 ## Workflow
 
@@ -193,6 +194,8 @@ re-run ship, that cuts a new commit). On a terminal, progress streams live:
 ```
 ccx vcs ship -m "fix: budget overflow marker"   # commit + push + watch CI
 ccx vcs ship -m "fix: route" internal/cli xs.md  # scoped: commit only these paths
+ccx vcs hunks f.go                               # list pending hunks as file:A-B#hash refs
+ccx vcs ship -m "fix: x" --skip-hunk f.go:530-536#k2fa f.go  # ship f.go minus one hunk
 ccx vcs ship -m "wip" --no-push                  # commit only, skip push and CI
 ccx vcs ship --amend                             # fold the working copy into the parent
 ccx vcs ship -m "spike" --bookmark me/probe      # advance a non-trunk bookmark

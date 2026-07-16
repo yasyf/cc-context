@@ -32,6 +32,9 @@ func writeShipFakes(t *testing.T, dir string, withGh bool) {
 	}
 
 	jj := "#!/bin/sh\n" + log("jj") + `case "$*" in
+  root) printf '%s' "$SHIP_FAKE_ROOT" ;;
+  "file list"*) printf 'f.txt\n' ;;
+  "file show"*) printf '%s' "$JJ_FILE_SHOW_BASE" ;;
   "git fetch") if [ -n "$JJ_FETCH_FAIL" ]; then printf 'jj: cannot reach origin\n' >&2; exit 1; fi ;;
   "op log "*) printf 'op123abc' ;;
   rebase*) : ;;
@@ -61,10 +64,17 @@ func writeShipFakes(t *testing.T, dir string, withGh bool) {
 esac
 exit 0
 `
-	git := "#!/bin/sh\n" + log("git") + `case "$1 $2" in
+	// When GIT_INDEX_FILE is set, log a leading "idx" record naming the temp index
+	// basename so a test can assert which git calls carried the throwaway index.
+	gitIdxMark := "if [ -n \"$GIT_INDEX_FILE\" ]; then { printf 'idx\\0'; printf '%s\\0' \"${GIT_INDEX_FILE##*/}\"; printf '\\0'; } >> \"$SHIP_LOG\"; fi\n"
+	git := "#!/bin/sh\n" + gitIdxMark + log("git") + `case "$1 $2" in
   "log -1") printf '%s\0%s' 'a1b2c3d' 'fix: frobnicate' ;;
   "branch --show-current") printf 'main\n' ;;
   "rev-parse HEAD") printf '%s' '` + fakeHeadSHA + `' ;;
+  "rev-parse --show-toplevel") printf '%s' "$SHIP_FAKE_ROOT" ;;
+  "show --end-of-options") printf '%s' "$GIT_FILE_SHOW_BASE" ;;
+  "ls-tree --full-tree") printf '100644 blob 1111111111111111111111111111111111111111\t%s\n' "$5" ;;
+  "hash-object -w") printf '%s' "${GIT_HASH_OID:-2222222222222222222222222222222222222222}" ;;
 esac
 exit 0
 `
@@ -140,6 +150,14 @@ func setupShip(t *testing.T, marker string, withGh bool) string {
 	if err := os.Chdir(dir); err != nil {
 		t.Fatalf("chdir: %v", err)
 	}
+
+	// The fakes echo this as the repo root (git rev-parse --show-toplevel / jj
+	// root); it is the post-chdir cwd, so it matches the frame rootRel resolves.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Setenv("SHIP_FAKE_ROOT", wd)
 
 	t.Setenv("PATH", binDir)
 	// Zero the session id so subtests asserting bare commit argv stay green even

@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Hunk-scoped ship.** `ccx vcs hunks [paths...]` lists every pending hunk as a stable
+  `file:A-B#hash` ref; repeatable `ccx vcs ship --skip-hunk <ref>` / `--only-hunk <ref>`
+  commit a file partially. jj cuts the partial commit through its diff-editor protocol in
+  one transaction (ccx re-invokes itself as the tool); git goes through a temp index. The
+  working copy is never rewritten, excluded hunks stay uncommitted in `@`, an empty or
+  drifted selection refuses instead of committing, and refs round-trip from any
+  subdirectory. CI installs jj so the live jj-lane tests run there.
+
 ### Changed
 - **`ccx code read` is served natively.** One `os.ReadFile` shaped into anchored output
   whose header reads `# read path:A-B#hash (k of N lines)`, so stale line labels are
