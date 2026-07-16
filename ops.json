@@ -1,1 +1,1 @@
-{"v":1,"lamport":5,"ops":[{"kind":"set_criterion_status","id":"3e484b2ab4de9afc7fe349c3f61ca8af","status":"met","note":"README:164 rewritten in 6389fc2e with [paths...] + hunk scoping + trunk-only bookmark + session trailer; alwaysLoad hunk concern moot (landed independently); commit path-scoped, no foreign hunks swept"}]}
+{"v":1,"lamport":6,"ops":[{"kind":"set_status","status":"done"},{"kind":"link_commit","sha":"5e0ab43ac07a5cf9c9baa20f895469b92480f12e"}]}
