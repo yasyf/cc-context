@@ -1,7 +1,13 @@
 fragments = [
   "cc-context-development-guide",
+  "cc-skills:ask-before-assuming",
+  "cc-skills:code-review-response",
+  "cc-skills:parallelize",
+  "cc-skills:writing-plans",
   "cc-skills:ccx",
   "go-style",
+  "cc-skills:version-control",
+  "releases",
 ]
 
 [sources.cc-skills]
