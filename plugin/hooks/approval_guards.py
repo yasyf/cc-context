@@ -26,6 +26,7 @@ from captain_hook import (
     CommandLine,
     CustomCommandLineCondition,
     CustomCondition,
+    Event,
     Input,
     Tool,
     approve,
@@ -172,8 +173,11 @@ class McpTool(CustomCondition):
         return bool(evt.tool_name) and evt.tool_name.startswith("mcp__")
 
 
+# All three approvers pin dialog-only: PreToolUse would compose with repo_find_nudge and
+# override settings deny rules (capt-hook's default is now PreToolUse | PermissionRequest).
 approve(
     "ccx read-only mcp",
+    events=Event.PermissionRequest,
     only_if=[CcxMcpReadOnly()],
     tests={
         Input(tool="mcp__cc-context__ccx_code_grep", tool_input={"pattern": "TODO"}): Allow(explicit=True),
@@ -205,6 +209,7 @@ approve(
 
 approve(
     "ccx replace preview",
+    events=Event.PermissionRequest,
     only_if=[CcxReplacePreview()],
     tests={
         Input(tool="mcp__cc-context__ccx_code_replace", tool_input={"pattern": "a", "rewrite": "b"}): Allow(
@@ -225,6 +230,7 @@ approve(
 
 approve(
     "ccx read-only cli",
+    events=Event.PermissionRequest,
     only_if=[Tool("Bash"), CcxReadOnlyCli()],
     skip_if=[McpTool()],
     tests={

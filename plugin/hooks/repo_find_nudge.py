@@ -5,8 +5,9 @@ budget — the first move should be ``ccx repo overview``, or a glob anchored wi
 (``internal/**/*.go``) / a ``--scope``. Fires once per session, non-blocking, on the first-sight Bash
 ``ccx repo find <glob>`` or the cc-context ``ccx_repo_find`` MCP tool.
 
-No conflict with the read-only auto-approval in ``approval_guards``: those approvers register on
-``Event.PermissionRequest`` (the ``approve()`` default), this nudge on ``Event.PreToolUse``. Captain-hook
+No conflict with the read-only auto-approval in ``approval_guards``: those approvers pin
+``events=Event.PermissionRequest`` explicitly (the ``approve()`` default is now
+``PreToolUse | PermissionRequest``), this nudge registers on ``Event.PreToolUse``. Captain-hook
 dispatches each event separately, so the two never compose in one ``dispatch`` and the advisory is
 never swallowed by the approval (only a same-event approval beats a warn).
 """
