@@ -246,10 +246,10 @@ func TestReadCommandLinesAlias(t *testing.T) {
 	}
 }
 
-// TestOutlineSectionRejectsTilthLane proves `outline --section` on a file that
-// routes to tilth signature mode fails before dispatch with a precise error
+// TestOutlineSectionRejectsFallbackLane proves `outline --section` on a file that
+// routes to the native fallback lane fails before dispatch with a precise error
 // pointing the caller at ccx code read.
-func TestOutlineSectionRejectsTilthLane(t *testing.T) {
+func TestOutlineSectionRejectsFallbackLane(t *testing.T) {
 	dir := t.TempDir()
 	rb := filepath.Join(dir, "a.rb")
 	if err := os.WriteFile(rb, []byte("x = 1\n"), 0o600); err != nil {
@@ -263,7 +263,7 @@ func TestOutlineSectionRejectsTilthLane(t *testing.T) {
 	root.SetArgs([]string{"code", "outline", rb, "--section", "1-1"})
 	err := root.Execute()
 	if err == nil {
-		t.Fatal("Execute(outline --section on tilth-routed file) err = nil, want fallback error")
+		t.Fatal("Execute(outline --section on fallback-routed file) err = nil, want fallback error")
 	}
 	if !strings.Contains(err.Error(), "ccx code read") {
 		t.Errorf("error %q should point at ccx code read", err)
@@ -271,7 +271,7 @@ func TestOutlineSectionRejectsTilthLane(t *testing.T) {
 }
 
 // TestOutlineLinesAlias proves --lines is a hidden alias for --section on the
-// outline command: it reaches a.Section, so a tilth-routed file hits the same
+// outline command: it reaches a.Section, so a fallback-routed file hits the same
 // read-fallback guard --section does.
 func TestOutlineLinesAlias(t *testing.T) {
 	dir := t.TempDir()
@@ -287,7 +287,7 @@ func TestOutlineLinesAlias(t *testing.T) {
 	root.SetArgs([]string{"code", "outline", rb, "--lines", "1-1"})
 	err := root.Execute()
 	if err == nil {
-		t.Fatal("Execute(outline --lines on tilth-routed file) err = nil, want fallback error")
+		t.Fatal("Execute(outline --lines on fallback-routed file) err = nil, want fallback error")
 	}
 	if !strings.Contains(err.Error(), "ccx code read") {
 		t.Errorf("error %q should point at ccx code read", err)

@@ -1,22 +1,15 @@
 package cli
 
 import (
+	"context"
+
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/internal/anchor"
-	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
-	"github.com/yasyf/cc-context/internal/deps"
-	"github.com/yasyf/cc-context/internal/diff"
-	"github.com/yasyf/cc-context/internal/edit"
-	"github.com/yasyf/cc-context/internal/find"
-	"github.com/yasyf/cc-context/internal/overview"
-	"github.com/yasyf/cc-context/internal/read"
+	"github.com/yasyf/cc-context/internal/dispatch"
 	"github.com/yasyf/cc-context/internal/render"
-	"github.com/yasyf/cc-context/internal/ripgrep"
-	"github.com/yasyf/cc-context/internal/router"
-	"github.com/yasyf/cc-context/internal/symbol"
-	"github.com/yasyf/cc-context/internal/web"
+	"github.com/yasyf/cc-context/internal/semble"
 )
 
 // runOp dispatches op through its backend and prints the budget-capped output on
@@ -32,89 +25,34 @@ func runOp(cmd *cobra.Command, op backend.Op, a backend.Args) error {
 
 // dispatchOp resolves content anchors in a to plain line numbers, dispatches op
 // through its backend, and prepends the anchor-move note after capping so the
-// note is never truncated away.
+// note is never truncated away. Native ops run in-process via internal/dispatch;
+// the semantic ops (search, related) run the one-shot semble CLI lane.
 func dispatchOp(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error) {
 	a, note, err := anchor.RewriteArgs(op, a)
 	if err != nil {
 		return "", err
 	}
-	out, err := dispatch(cmd, op, a)
+	var out string
+	if dispatch.Native(op) {
+		out, err = dispatch.Run(cmd.Context(), op, a)
+	} else {
+		out, err = runSemble(cmd.Context(), op, a)
+	}
 	if err != nil {
 		return "", err
 	}
 	return note + out, nil
 }
 
-// dispatch routes op through its backend, executes the resulting argv, and
-// returns the output capped to a.Budget. The ast-grep ops emit --json=stream and
-// tolerate the clean no-match exit, so they run through the shared astgrep
-// orchestration; every other op runs as a plain capped CLI invocation.
-func dispatch(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error) {
-	if op == backend.OpEdit {
-		return edit.Run(a)
-	}
-	if op == backend.OpStructural || op == backend.OpReplace || op == backend.OpStructOutline {
-		return astgrep.Run(cmd.Context(), op, a)
-	}
-	if op == backend.OpWebOutline || op == backend.OpWebRead || op == backend.OpWebSearch {
-		out, err := web.Run(cmd.Context(), op, a)
-		if err != nil {
-			return "", err
-		}
-		return render.Finalize(op, out, a)
-	}
-	if op == backend.OpFind {
-		out, err := find.Run(cmd.Context(), a)
-		if err != nil {
-			return "", err
-		}
-		return render.Finalize(op, out, a)
-	}
-	if op == backend.OpRead {
-		out, err := read.Run(a)
-		if err != nil {
-			return "", err
-		}
-		return render.Finalize(op, out, a)
-	}
-	if op == backend.OpOverview {
-		out, err := overview.Run(cmd.Context(), a)
-		if err != nil {
-			return "", err
-		}
-		return render.Finalize(op, out, a)
-	}
-	if op == backend.OpGrep {
-		return ripgrep.Run(cmd.Context(), a)
-	}
-	if op == backend.OpDiff {
-		out, err := diff.Run(cmd.Context(), a)
-		if err != nil {
-			return "", err
-		}
-		// The diff renderer anchors its own output; cap only, never render.Finalize.
-		return render.Cap(out, a.Budget), nil
-	}
-	if op == backend.OpSymbol {
-		// symbol self-anchors; cap only, never render.Finalize's symbol grammar.
-		out, err := symbol.Run(cmd.Context(), a)
-		if err != nil {
-			return "", err
-		}
-		return render.Cap(out, a.Budget), nil
-	}
-	if op == backend.OpDeps {
-		out, err := deps.Run(cmd.Context(), a)
-		if err != nil {
-			return "", err
-		}
-		return render.Cap(out, a.Budget), nil
-	}
-	bin, argv, err := router.For(op).CLIArgv(cmd.Context(), op, a)
+// runSemble runs the one-shot semble CLI lane for the semantic ops (search,
+// related): the facade drives semble as a subprocess here rather than the proxy's
+// resident MCP session, capping and anchoring the reshaped result via Finalize.
+func runSemble(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
+	bin, argv, err := semble.CLIArgv(ctx, op, a)
 	if err != nil {
 		return "", err
 	}
-	out, err := render.RunCLI(cmd.Context(), bin, argv)
+	out, err := render.RunCLI(ctx, bin, argv)
 	if err != nil {
 		return "", err
 	}

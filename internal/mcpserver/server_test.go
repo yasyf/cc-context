@@ -179,9 +179,9 @@ func TestGrepToolSchemaHasEngineFields(t *testing.T) {
 }
 
 // TestGrepToolIgnoreCaseRoutesToEngine proves an MCP ccx_code_grep call with
-// ignoreCase routes through the in-process ripgrep engine (rg or system grep),
-// not tilth's MCPTool: no engine is symlinked onto PATH, yet a case-insensitive
-// query returns anchored house-format frames for the uppercase match.
+// ignoreCase routes through the in-process ripgrep engine (rg or system grep):
+// no MCP session is opened, yet a case-insensitive query returns anchored
+// house-format frames for the uppercase match.
 func TestGrepToolIgnoreCaseRoutesToEngine(t *testing.T) {
 	_, rgErr := exec.LookPath("rg")
 	_, grepErr := exec.LookPath("grep")
@@ -263,7 +263,7 @@ func TestGrepToolPathsRouteToEngine(t *testing.T) {
 
 // TestGrepToolDefaultRoutesToEngine proves a bare-literal ccx_code_grep (no
 // engine flags) now runs the native ripgrep engine: the needle planted in the cwd
-// surfaces as an anchored house-format section, with no tilth engine on PATH.
+// surfaces as an anchored house-format section, with no MCP engine on PATH.
 func TestGrepToolDefaultRoutesToEngine(t *testing.T) {
 	_, rgErr := exec.LookPath("rg")
 	_, grepErr := exec.LookPath("grep")
@@ -302,8 +302,8 @@ func requireEngines(t *testing.T) {
 }
 
 // TestSymbolToolNative proves ccx_code_symbol runs the native symbol resolver
-// through the proxy seam — no tilth on PATH — resolving a real fixture to the
-// anchored locate card.
+// through the proxy seam — no MCP engine on PATH — resolving a real fixture to
+// the anchored locate card.
 func TestSymbolToolNative(t *testing.T) {
 	requireEngines(t)
 	dir := t.TempDir()

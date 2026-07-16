@@ -224,10 +224,9 @@ func TestHistoryLiveSmoke(t *testing.T) {
 	t.Chdir("../..") // repo root, so the pathspecs below resolve
 
 	block := regexp.MustCompile(`(?m)^[0-9a-f]{7,} \d{4}-\d{2}-\d{2} .+\n {4}\S`)
-	// internal/vendor/vendor.go was renamed from tilth.go; --follow crosses the
-	// rename, so a pre-rename commit is scoped to its then-current name — the case
-	// that used to crash when every commit was scoped to the queried path.
-	for _, path := range []string{"AGENTS.md", "internal/cli/run.go", "internal/vendor/vendor.go"} {
+	// The semble path spans a file move, so --follow must cross the rename to reach
+	// its pre-move history — the case that crashed when a commit was scoped by path.
+	for _, path := range []string{"AGENTS.md", "internal/cli/run.go", "internal/semble/semble.go"} {
 		var out bytes.Buffer
 		cmd := newHistoryCmd()
 		cmd.SetOut(&out)

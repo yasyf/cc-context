@@ -106,16 +106,16 @@ func TestUseBreakdown(t *testing.T) {
 // enrichment end to end.
 func TestLiveDeps(t *testing.T) {
 	t.Chdir("../..")
-	out, err := Run(context.Background(), backend.Args{Path: "internal/backend/backend.go"})
+	out, err := Run(context.Background(), backend.Args{Path: "internal/backend/pathcheck.go"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	t.Logf("live deps output:\n%s", out)
 	for _, want := range []string{
-		"# deps internal/backend/backend.go — 1 uses (1 std),",
-		"context (std)",
+		"# deps internal/backend/pathcheck.go — 5 uses (5 std),",
+		"errors (std)",
 		"## used by",
-		"internal/router/router.go:",
+		"internal/anchor/rewrite.go:",
 		"→ backend.",
 		"# method: imports via ast-grep; dependents via ripgrep import-line scan — syntactic, not a build graph",
 	} {

@@ -77,7 +77,7 @@ func TestShowCmdMetadata(t *testing.T) {
 }
 
 // TestShowLiveSmoke runs the command against this real repo through the full
-// tilth/jj pipeline. It is gated on CCX_LIVE_SMOKE so the default suite stays
+// native/jj pipeline. It is gated on CCX_LIVE_SMOKE so the default suite stays
 // hermetic; run it with CCX_LIVE_SMOKE=1 go test -run TestShowLiveSmoke.
 func TestShowLiveSmoke(t *testing.T) {
 	if os.Getenv("CCX_LIVE_SMOKE") == "" {

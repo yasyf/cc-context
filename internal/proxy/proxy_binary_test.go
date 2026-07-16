@@ -19,7 +19,7 @@ func TestCallBinaryOutlineSkipsBeforeDispatch(t *testing.T) {
 		op   backend.Op
 		args backend.Args
 	}{
-		{"tilth outline", backend.OpOutline, backend.Args{Path: path}},
+		{"native outline", backend.OpOutline, backend.Args{Path: path}},
 		{"forced go structural outline", backend.OpStructOutline, backend.Args{Path: path, Lang: "go"}},
 	}
 	for _, tt := range tests {
@@ -33,8 +33,8 @@ func TestCallBinaryOutlineSkipsBeforeDispatch(t *testing.T) {
 			if got != want {
 				t.Errorf("Call() = %q, want %q", got, want)
 			}
-			if len(p.engines) != 0 {
-				t.Errorf("Call() opened %d engine sessions, want 0", len(p.engines))
+			if p.session != nil {
+				t.Error("Call() opened a semble session, want none")
 			}
 		})
 	}

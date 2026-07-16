@@ -74,20 +74,26 @@ func Run() string {
 }
 `
 
-// TestContentAnchorsSurviveEngineGrammar is the drift canary for the content-anchor
-// rewrites: it drives the real ripgrep and ast-grep engines plus the native symbol,
-// deps, diff, and outline-fallback renderers through the full CLI dispatch over a
-// throwaway fixture repo and asserts every anchor still fired at least once. The
-// grammar-keyed rewrite in internal/ripgrep/ripgrep.go and the ast-grep outline
-// parse in internal/astgrep/outline.go degrade silently to "no anchors" on an engine
-// version bump; the self-generated anchors in internal/symbol, internal/deps,
+// TestAnchorsEmittedAcrossOps is the permanent integration test that every native
+// op emits content anchors at generation time: it drives the real ripgrep and
+// ast-grep engines plus the native symbol, deps, diff, and outline-fallback
+// renderers through the full CLI dispatch over a throwaway fixture repo and asserts
+// every anchor still fired at least once. The grammar-keyed rewrite in
+// internal/ripgrep/ripgrep.go and the ast-grep outline parse in
+// internal/astgrep/outline.go degrade silently to "no anchors" on an engine version
+// bump; the self-generated anchors in internal/symbol, internal/deps,
 // internal/diff/render.go, and internal/outline/fallback.go are canaried here too.
 // The assertions check that an anchor shape appeared, never a specific hash value.
-func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
+func TestAnchorsEmittedAcrossOps(t *testing.T) {
 	if testing.Short() {
 		t.Skip("provisions and runs the real ast-grep engine")
 	}
-	forcePinnedEngines(t)
+	if lookpath.Find("ast-grep") == "" {
+		if os.Getenv("CI") != "" {
+			t.Fatal("ast-grep not on PATH in CI: the test job must install it (uv tool install ast-grep-cli)")
+		}
+		t.Skip("ast-grep not on PATH; install it to run the anchor canary (brew install ast-grep)")
+	}
 
 	repo, sha1, sha2 := writeCanaryRepo(t)
 	t.Chdir(repo)
@@ -146,29 +152,6 @@ func TestContentAnchorsSurviveEngineGrammar(t *testing.T) {
 			t.Errorf("native diff must not emit a git preamble\n--- output ---\n%s", diff)
 		}
 	})
-}
-
-// forcePinnedEngines stages ast-grep under a temp dir prepended to PATH so the CLI
-// legs resolve the PATH ast-grep whose outline grammar the anchor regexes target. A
-// missing PATH ast-grep skips locally but hard-fails in CI, where the test job
-// installs it (uv tool install ast-grep-cli). The tilth engine is gone — symbol and
-// deps now self-anchor natively — so no engine is provisioned here.
-func forcePinnedEngines(t *testing.T) {
-	t.Helper()
-	binDir := t.TempDir()
-
-	astGrepBin := lookpath.Find("ast-grep")
-	if astGrepBin == "" {
-		if os.Getenv("CI") != "" {
-			t.Fatal("ast-grep not on PATH in CI: the test job must install it (uv tool install ast-grep-cli)")
-		}
-		t.Skip("ast-grep not on PATH; install it to run the anchor canary (brew install ast-grep)")
-	}
-	if err := os.Symlink(astGrepBin, filepath.Join(binDir, "ast-grep")); err != nil {
-		t.Fatalf("symlink ast-grep: %v", err)
-	}
-
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // writeCanaryRepo builds a two-commit git repo and returns its path and the two

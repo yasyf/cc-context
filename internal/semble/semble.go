@@ -1,4 +1,7 @@
-package backend
+// Package semble drives the semble engine: the one-shot CLI argv the facade runs
+// for `ccx code search`/`related`, and the MCP tool name plus params the proxy's
+// resident semble session calls.
+package semble
 
 import (
 	"context"
@@ -7,40 +10,24 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
-// Semble translates ops onto the semble engine. Resolution order is "semble" on
-// PATH, falling back to "uvx --from semble[mcp] semble".
-type Semble struct {
-	// Bin is the resolved semble binary path. Empty triggers PATH lookup with a
-	// uvx fallback.
-	Bin string
-}
-
-// Engine reports that Semble is backed by the semble engine.
-func (s Semble) Engine() Engine {
-	return EngineSemble
-}
-
-// resolve returns the launch prefix for semble: the configured binary, else
-// "semble" when it is on PATH, else the uvx invocation that fetches it.
-func (s Semble) resolve() (bin string, prefix []string) {
-	switch {
-	case s.Bin != "":
-		return s.Bin, nil
-	case lookpath.Find("semble") != "":
+// resolve returns the launch prefix for semble's CLI: "semble" when it is on
+// PATH, else the uvx invocation that fetches it.
+func resolve() (bin string, prefix []string) {
+	if lookpath.Find("semble") != "" {
 		return "semble", nil
-	default:
-		return "uvx", []string{"--from", "semble[mcp]", "semble"}
 	}
+	return "uvx", []string{"--from", "semble[mcp]", "semble"}
 }
 
 // CLIArgv translates op into a semble child-process invocation.
-func (s Semble) CLIArgv(_ context.Context, op Op, a Args) (bin string, argv []string, err error) {
-	bin, argv = s.resolve()
+func CLIArgv(_ context.Context, op backend.Op, a backend.Args) (bin string, argv []string, err error) {
+	bin, argv = resolve()
 	switch op {
-	case OpSearch:
+	case backend.OpSearch:
 		argv = append(argv, "search", a.Query)
 		if a.Path != "" {
 			argv = append(argv, a.Path)
@@ -54,7 +41,7 @@ func (s Semble) CLIArgv(_ context.Context, op Op, a Args) (bin string, argv []st
 		if a.Kind != "" {
 			argv = append(argv, "--content", a.Kind)
 		}
-	case OpRelated:
+	case backend.OpRelated:
 		// semble's find-related CLI takes file and line as two positional args,
 		// not a single "file:line" token.
 		file, line, lerr := splitLoc(a.Query)
@@ -69,7 +56,7 @@ func (s Semble) CLIArgv(_ context.Context, op Op, a Args) (bin string, argv []st
 }
 
 // MCPSpec returns the command that launches semble's MCP server over stdio.
-// This intentionally does NOT honor s.Bin / on-PATH resolution (unlike the CLI's
+// This intentionally does NOT honor on-PATH resolution (unlike the CLI's
 // resolve()): the MCP server is exposed only by the semble[mcp] extra, which the
 // uvx invocation guarantees. A bare on-PATH `semble` has no MCP-server mode and
 // exits on the initialize handshake — do not "unify" this with resolve().
@@ -80,14 +67,14 @@ func (s Semble) CLIArgv(_ context.Context, op Op, a Args) (bin string, argv []st
 // against the working tree. The launch takes no positional path — semble's
 // argument parsing rejects one — and needs none: the per-call repo param
 // (repoOrCwd) selects the repo.
-func (s Semble) MCPSpec(_ context.Context) (cmd string, argv []string, err error) {
+func MCPSpec(_ context.Context) (cmd string, argv []string, err error) {
 	return "uvx", []string{"--from", "semble[mcp]>=0.5", "semble"}, nil
 }
 
 // MCPTool translates op into a semble MCP tool name and its params.
-func (s Semble) MCPTool(op Op, a Args) (tool string, params map[string]any, err error) {
+func MCPTool(op backend.Op, a backend.Args) (tool string, params map[string]any, err error) {
 	switch op {
-	case OpSearch:
+	case backend.OpSearch:
 		repo, err := repoOrCwd(a.Path)
 		if err != nil {
 			return "", nil, err
@@ -98,7 +85,7 @@ func (s Semble) MCPTool(op Op, a Args) (tool string, params map[string]any, err 
 			"top_k":             a.K,
 			"max_snippet_lines": a.MaxSnippetLines,
 		}), nil
-	case OpRelated:
+	case backend.OpRelated:
 		file, line, err := splitLoc(a.Query)
 		if err != nil {
 			return "", nil, err

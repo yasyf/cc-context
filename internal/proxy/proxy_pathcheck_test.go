@@ -19,7 +19,7 @@ func TestCallMissingReadSkipsBeforeDispatch(t *testing.T) {
 	if got != "" {
 		t.Errorf("Call() = %q, want empty", got)
 	}
-	if len(p.engines) != 0 {
-		t.Errorf("Call() opened %d engine sessions, want 0", len(p.engines))
+	if p.session != nil {
+		t.Error("Call() opened a semble session, want none")
 	}
 }

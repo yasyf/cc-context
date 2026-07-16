@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scanned` instead of guessing. The output ends with its method line — syntactic, not a
   build graph — and a missing path exits 3.
 
+### Removed
+- **The tilth engine is gone.** Every op it served now runs natively, computed fresh from
+  the working tree on each call — the stale-index bug class cannot recur. With it went the
+  router and `Backend` interface (one dispatch table serves the CLI, the MCP facade, and
+  exec), the pinned-binary download machinery, and the regex layers that reparsed engine
+  output. semble is the one resident MCP engine, now with a session-level test; the anchor
+  canary survives as `TestAnchorsEmittedAcrossOps`, pinning that every native op emits
+  content anchors at generation time.
+
 ## [0.24.0] - 2026-07-17
 
 ### Changed

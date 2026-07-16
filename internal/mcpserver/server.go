@@ -1,5 +1,5 @@
-// Package mcpserver exposes the static ccx_* tool surface over stdio, proxying
-// each tool to the bundled semble engine or the native op package that serves it.
+// Package mcpserver exposes the static ccx_* tool surface over stdio, serving
+// the native ccx ops in-process, with semble as the one resident MCP engine.
 package mcpserver
 
 import (

@@ -34,8 +34,8 @@ func TestParseOutline(t *testing.T) {
 	if m := it.Members[0]; m.Name != "Bin" || m.Signature != "Bin string" || m.Range.Start.Line != 16 {
 		t.Errorf("member0 = %+v, want Bin \"Bin string\" at 0-based line 16", m)
 	}
-	if files[1].Path != "internal/backend/tilth.go" {
-		t.Errorf("file1 = %s, want internal/backend/tilth.go", files[1].Path)
+	if files[1].Path != "internal/backend/pathcheck.go" {
+		t.Errorf("file1 = %s, want internal/backend/pathcheck.go", files[1].Path)
 	}
 }
 

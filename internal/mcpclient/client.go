@@ -16,7 +16,7 @@ import (
 // session, identifying the client as clientName.
 func Connect(ctx context.Context, clientName, bin string, argv ...string) (*mcp.ClientSession, error) {
 	client := mcp.NewClient(&mcp.Implementation{Name: clientName, Version: version.String()}, nil)
-	return client.Connect(ctx, &mcp.CommandTransport{Command: exec.Command(bin, argv...)}, nil) //nolint:gosec // bin/argv come from trusted backend resolution (vendored tilth path, fixed semble MCPSpec), not user free-text
+	return client.Connect(ctx, &mcp.CommandTransport{Command: exec.Command(bin, argv...)}, nil) //nolint:gosec // bin/argv come from trusted resolution (the fixed semble MCP launch spec and reflected MCP-server specs), not user free-text
 }
 
 // TextOf concatenates the text content blocks of a tool result.

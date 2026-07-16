@@ -81,15 +81,12 @@ ccx code symbol NewRootCmd
 ```
 
 ```console
-# grok: NewRootCmd [internal/cli/root.go:13#dezd]
-
-## signature
+# symbol NewRootCmd — function — internal/cli/root.go:18-46#dezd
 func NewRootCmd() *cobra.Command
 
-## doc
-// NewRootCmd builds the root command and registers its subcommands.
+NewRootCmd builds the root command and registers its subcommands.
 
-callers 18 · callees 11 — --body/--callers/--callees/--full
+refs 36 · tests 22 · siblings 11 — --callers/--tests/--siblings/--body/--full
 ```
 
 Location, signature, and doc land in ~60 tokens; the counts trailer says whether expanding is worth a second call, and `--callers`, `--body`, or `--full` pull exactly the layer you need.
@@ -160,7 +157,7 @@ Each command is a token-bounded stand-in for a primitive an agent would otherwis
 | `ccx format [-- <cmd>]` | Re-encode a command's JSON/NDJSON output lean, or filter a pipe |
 | `ccx exec [script]` | Compose ccx ops, `sh()`, and reflected MCP tools in a sandbox; only the return value enters context |
 
-`ccx --help` catalogs the rest, including structural find-replace with a preview-first `--apply`, dependency maps, per-commit symbol history, and `ccx vcs ship -m "<msg>" [paths...]` to commit, push, and watch CI in one call — trailing paths scope the commit to just those files, `ccx vcs hunks` refs with `--skip-hunk`/`--only-hunk` scope it to individual hunks of a file, the push auto-advances only the trunk bookmark, and commits made from a Claude session carry a `Claude-Session-Id` trailer; `ccx <command> --help` has the flags. Five engines sit behind the one surface. semble handles semantic search, ast-grep handles structural search and rewrites, an in-process web engine handles pages, ripgrep takes case-insensitive and word-boundary greps (`-i`, `-w`; system `grep` fills in when `rg` is missing), and tilth handles everything else; `ccx` routes each command for you.
+`ccx --help` catalogs the rest, including structural find-replace with a preview-first `--apply`, dependency maps, per-commit symbol history, and `ccx vcs ship -m "<msg>" [paths...]` to commit, push, and watch CI in one call — trailing paths scope the commit to just those files, `ccx vcs hunks` refs with `--skip-hunk`/`--only-hunk` scope it to individual hunks of a file, the push auto-advances only the trunk bookmark, and commits made from a Claude session carry a `Claude-Session-Id` trailer; `ccx <command> --help` has the flags. Three engines sit behind the one surface — semble for semantic search, ast-grep for structural search, rewrites, and outlines, and ripgrep for every text grep (system `grep` fills in when `rg` is missing) — and everything else (read, symbol, deps, diff, history, overview, web) runs natively inside `ccx`, computed fresh from the working tree on every call; `ccx` routes each command for you.
 
 ## Configuration
 

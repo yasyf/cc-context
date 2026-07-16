@@ -126,13 +126,69 @@ func matchesFor(ctx context.Context, op backend.Op, a backend.Args) ([]Match, er
 // (enforcing the version floor), and runs it, tolerating the no-match exit so an
 // empty result is not mistaken for a failure.
 func runArgv(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
-	bin, argv, err := backend.AstGrep{}.CLIArgv(ctx, op, a)
+	argv, err := argvFor(op, a)
 	if err != nil {
 		return "", err
 	}
-	resolved, err := resolveBin(bin)
+	resolved, err := resolveBin("")
 	if err != nil {
 		return "", err
 	}
 	return render.RunCLIAllowExit(ctx, resolved, argv, astGrepExitNoMatch)
+}
+
+// argvFor builds the `ast-grep run`/`outline` argv for op (the binary is
+// resolved separately at the run chokepoint). OpStructural searches a.Query;
+// OpReplace rewrites a.Pattern to a.Rewrite, writing in place only when a.Apply
+// is set (-U); OpStructOutline outlines a.Path. Interactive mode is never used:
+// TTY-only and dead in the MCP surface.
+func argvFor(op backend.Op, a backend.Args) ([]string, error) {
+	switch op {
+	case backend.OpStructural:
+		return appendScope([]string{"run", "-p", a.Query, "--json=stream"}, a), nil
+	case backend.OpStructOutline:
+		// --view expanded is the only view whose JSON carries members; outline takes
+		// one <path> positional, so it skips the run-shaped appendScope tail.
+		argv := []string{"outline", a.Path, "--json=stream", "--view", "expanded"}
+		if a.Items != "" {
+			argv = append(argv, "--items", a.Items)
+		}
+		if a.Match != "" {
+			argv = append(argv, "--match", a.Match)
+		}
+		if a.Lang != "" {
+			argv = append(argv, "-l", a.Lang)
+		}
+		return argv, nil
+	case backend.OpReplace:
+		argv := []string{"run", "-p", a.Pattern, "-r", a.Rewrite}
+		// -U and --json=stream are mutually exclusive: with the stream flag, -U
+		// prints JSON and writes nothing, so apply omits it to actually rewrite.
+		if a.Apply {
+			argv = append(argv, "-U")
+		} else {
+			argv = append(argv, "--json=stream")
+		}
+		return appendScope(argv, a), nil
+	default:
+		return nil, fmt.Errorf("ast-grep: unsupported op %q", op)
+	}
+}
+
+// appendScope appends the lang/glob/paths tail shared by the run-shaped ops.
+// Language is passed only when set (ast-grep infers it per file from the
+// extension); the paths default to the repo root when none are given.
+func appendScope(argv []string, a backend.Args) []string {
+	if a.Lang != "" {
+		argv = append(argv, "-l", a.Lang)
+	}
+	if a.Glob != "" {
+		argv = append(argv, "--globs", a.Glob)
+	}
+	if len(a.Paths) > 0 {
+		argv = append(argv, a.Paths...)
+	} else {
+		argv = append(argv, ".")
+	}
+	return argv
 }

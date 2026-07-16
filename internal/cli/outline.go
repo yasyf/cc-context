@@ -5,7 +5,6 @@ import (
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/outline"
-	"github.com/yasyf/cc-context/internal/render"
 )
 
 // outlineHeaders names the routing header printed on stdout for each engine, so
@@ -38,7 +37,7 @@ func newOutlineCmd() *cobra.Command {
 			if _, _, err := outline.ValidateSection(a, op); err != nil {
 				return err
 			}
-			out, err := outlineFor(cmd, op, a)
+			out, err := dispatchOp(cmd, op, a)
 			if err != nil {
 				return err
 			}
@@ -55,19 +54,4 @@ func newOutlineCmd() *cobra.Command {
 	cmd.Flags().IntVar(&a.Budget, "budget", 0, "token budget for the outline")
 	cmd.Flags().SetNormalizeFunc(sectionAlias)
 	return cmd
-}
-
-// outlineFor returns op's budget-capped outline output: ast-grep's structural
-// outline through the direct CLI dispatch, or the native fallback (markdown
-// heading tree / head window) for a language ast-grep cannot outline. The fallback
-// anchors its own output, so it is only budget-capped — never re-anchored.
-func outlineFor(cmd *cobra.Command, op backend.Op, a backend.Args) (string, error) {
-	if op == backend.OpStructOutline {
-		return dispatchOp(cmd, op, a)
-	}
-	out, err := outline.Fallback(a.Path, a)
-	if err != nil {
-		return "", err
-	}
-	return render.Cap(out, a.Budget), nil
 }

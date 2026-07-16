@@ -1,22 +1,6 @@
-// Package backend defines the stable logical-op surface and the Backend
-// interface that translates ops into concrete CLI/MCP invocations.
+// Package backend defines the stable logical-op vocabulary — the Op set and the
+// Args every op consumes — shared across the CLI and MCP surfaces.
 package backend
-
-import "context"
-
-// Engine identifies the concrete engine backing a logical op. It keys the
-// proxy's per-engine MCP sessions so router.For remains the single source of
-// truth for op->engine.
-type Engine string
-
-const (
-	// EngineTilth is the tilth engine.
-	EngineTilth Engine = "tilth"
-	// EngineSemble is the semble engine.
-	EngineSemble Engine = "semble"
-	// EngineAstGrep is the ast-grep engine.
-	EngineAstGrep Engine = "ast-grep"
-)
 
 // Op is a logical context operation, stable across the CLI and MCP surfaces.
 type Op string
@@ -57,8 +41,8 @@ const (
 	OpWebSearch  Op = "web-search"
 )
 
-// Args carries every flag and positional an op may consume. Each backend reads
-// only the fields relevant to the op it is asked to translate.
+// Args carries every flag and positional an op may consume. Each op reads only
+// the fields relevant to it.
 type Args struct {
 	Path            string
 	URL             string
@@ -99,13 +83,4 @@ type Args struct {
 	After           int
 	Before          int
 	Context         int
-}
-
-// Backend translates a logical Op plus Args into a concrete invocation, either
-// as a child-process argv or as an MCP tool call.
-type Backend interface {
-	Engine() Engine
-	CLIArgv(ctx context.Context, op Op, a Args) (bin string, argv []string, err error)
-	MCPSpec(ctx context.Context) (cmd string, argv []string, err error)
-	MCPTool(op Op, a Args) (tool string, params map[string]any, err error)
 }

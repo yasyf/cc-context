@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "cc-context",
-  "description": "Compact codebase-context tools — a facade MCP + ccx CLI proxying semble (NL search) and tilth (symbol/outline/diff), with capt-hook enforcement.",
+  "description": "Compact codebase-context tools — a facade MCP + ccx CLI serving native token-bounded code ops with semble semantic search and ast-grep structural ops, with capt-hook enforcement.",
   "owner": {
     "name": "yasyf"
   },
@@ -10,7 +10,7 @@
     {
       "name": "cc-context",
       "source": "./plugin",
-      "description": "Compact codebase-context tools — a facade MCP + ccx CLI proxying semble (NL search) and tilth (symbol/outline/diff), with capt-hook enforcement.",
+      "description": "Compact codebase-context tools — a facade MCP + ccx CLI serving native token-bounded code ops with semble semantic search and ast-grep structural ops, with capt-hook enforcement.",
       "category": "development",
       "tags": [
         "context",

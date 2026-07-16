@@ -69,8 +69,8 @@ func sectionRef(t *testing.T, outline, heading string) string {
 }
 
 // TestWebToolsRoundTrip drives ccx_web_outline/read/search through the MCP proxy
-// seam against a loopback fixture, guarding the proxy.call web special-case: a
-// missing case there routes web ops to tilth while the CLI still works.
+// seam against a loopback fixture, guarding the web dispatch case: a missing case
+// there would route web ops to the semble MCP session while the CLI still works.
 func TestWebToolsRoundTrip(t *testing.T) {
 	isolateWeb(t)
 	srv := startWebFixture(t)
