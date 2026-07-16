@@ -129,6 +129,54 @@ func TestShipJJHunkOnlyArgv(t *testing.T) {
 	assertJJSelectCommit(t, inv[3], "commit", []string{"-m", "fix: frobnicate", "--", "f.txt"})
 }
 
+func TestShipHunkHooksAreReportedSkipped(t *testing.T) {
+	log := setupHunkShip(t, "f.txt")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	writeShipHookFiles(t, root)
+	ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--only-hunk", ref, "f.txt")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `hooks hunk-skip · committed a1b2c3d "fix: frobnicate" · not pushed`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "uvx" {
+			t.Errorf("uvx invoked for a hunk-scoped ship: %v", inv)
+		}
+	}
+}
+
+func TestShipHunkNoVerifySilencesHookSegment(t *testing.T) {
+	log := setupHunkShip(t, "f.txt")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	writeShipHookFiles(t, root)
+	ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--no-verify", "--only-hunk", ref, "f.txt")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `committed a1b2c3d "fix: frobnicate" · not pushed`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "uvx" {
+			t.Errorf("uvx invoked despite --no-verify: %v", inv)
+		}
+	}
+}
+
 func TestShipJJHunkAmendArgv(t *testing.T) {
 	tests := []struct {
 		name string
@@ -306,6 +354,46 @@ func TestShipGitHunkPlumbingSequence(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestShipGitHunkNoVerify(t *testing.T) {
+	tests := []struct {
+		name         string
+		noVerify     bool
+		wantNoVerify bool
+	}{
+		{"default preserves native hooks", false, false},
+		{"no verify reaches temp-index commit", true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupGitHunkShip(t, "f.txt", "")
+			ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
+			args := []string{"-m", "fix: frobnicate", "--no-push", "--only-hunk", ref, "f.txt"}
+			if tt.noVerify {
+				args = append(args, "--no-verify")
+			}
+			if _, err := runShipCmd(t, args...); err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			seq, _ := gitIdxCarriers(t, log)
+			var commit []string
+			for _, inv := range seq {
+				if len(inv) > 1 && inv[0] == "git" && inv[1] == "commit" {
+					commit = inv
+				}
+			}
+			gotNoVerify := false
+			for _, arg := range commit {
+				if arg == "--no-verify" {
+					gotNoVerify = true
+				}
+			}
+			if gotNoVerify != tt.wantNoVerify {
+				t.Errorf("commit argv = %v, --no-verify present = %v, want %v", commit, gotNoVerify, tt.wantNoVerify)
+			}
+		})
 	}
 }
 

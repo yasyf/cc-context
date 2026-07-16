@@ -46,6 +46,45 @@ func TestDetect(t *testing.T) {
 	}
 }
 
+func TestDetectRoot(t *testing.T) {
+	root := t.TempDir()
+
+	jjDir := filepath.Join(root, "jjrepo")
+	mustMkdir(t, filepath.Join(jjDir, ".jj"))
+	mustMkdir(t, filepath.Join(jjDir, ".git")) // colocated: jj wins
+	colocatedChild := filepath.Join(jjDir, "pkg", "sub")
+	mustMkdir(t, colocatedChild)
+
+	gitDir := filepath.Join(root, "gitrepo")
+	mustMkdir(t, filepath.Join(gitDir, ".git"))
+	gitChild := filepath.Join(gitDir, "internal")
+	mustMkdir(t, gitChild)
+
+	plain := filepath.Join(root, "plain")
+	mustMkdir(t, plain)
+
+	tests := []struct {
+		id       string
+		dir      string
+		wantKind Kind
+		wantRoot string
+	}{
+		{"jj root", jjDir, JJ, jjDir},
+		{"jj colocated child resolves to jj root", colocatedChild, JJ, jjDir},
+		{"git root", gitDir, Git, gitDir},
+		{"git nested child resolves to git root", gitChild, Git, gitDir},
+		{"none", plain, None, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			gotKind, gotRoot := DetectRoot(tt.dir)
+			if gotKind != tt.wantKind || gotRoot != tt.wantRoot {
+				t.Fatalf("DetectRoot(%q) = (%v, %q), want (%v, %q)", tt.dir, gotKind, gotRoot, tt.wantKind, tt.wantRoot)
+			}
+		})
+	}
+}
+
 func TestTranslateRevset(t *testing.T) {
 	tests := []struct {
 		id     string

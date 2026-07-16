@@ -123,14 +123,19 @@ func selectionScoped(sel *shipSelection, p string) bool {
 // gitSelectCommitArgv builds the temp-index commit argv, carrying NO pathspec so
 // git commits the index tree and not worktree state.
 func gitSelectCommitArgv(o shipOpts) []string {
+	var argv []string
 	switch {
 	case o.amend && o.message != "":
-		return []string{"commit", "--amend", "-m", o.message}
+		argv = []string{"commit", "--amend", "-m", o.message}
 	case o.amend:
-		return []string{"commit", "--amend", "--no-edit"}
+		argv = []string{"commit", "--amend", "--no-edit"}
 	default:
-		return []string{"commit", "-m", o.message}
+		argv = []string{"commit", "-m", o.message}
 	}
+	if o.noVerify {
+		argv = append(argv, "--no-verify")
+	}
+	return argv
 }
 
 // gitRestorePaths returns the pathspec that resyncs the real index to the new

@@ -29,6 +29,20 @@ func RunCLI(ctx context.Context, bin string, argv []string) (string, error) {
 	return stdout.String(), nil
 }
 
+// RunCLIDir is RunCLI with the child's working directory pinned to dir, for a
+// command whose output paths are cwd-relative (e.g. jj diff --name-only).
+func RunCLIDir(ctx context.Context, dir, bin string, argv []string) (string, error) {
+	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%s: %w: %s", bin, err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
 // RunCLIEnv is RunCLI with extraEnv appended to the process environment, for
 // callers that must set an env-only variable the flag surface cannot express
 // (e.g. GIT_INDEX_FILE). extraEnv extends os.Environ(), so a "KEY=value" element

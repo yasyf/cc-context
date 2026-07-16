@@ -36,16 +36,25 @@ var jjOnlyOperators = []string{"::", "|", "&", " ~ ", "@-:", "(", ")"}
 // (colocated repos). It walks up from dir looking for a .jj or .git entry,
 // returning at the first directory that has either.
 func Detect(dir string) Kind {
+	kind, _ := DetectRoot(dir)
+	return kind
+}
+
+// DetectRoot reports which VCS manages dir and the directory holding the .jj or
+// .git marker, preferring jj when both are present (colocated repos). It walks
+// up from dir looking for either entry, returning at the first directory that
+// has one; root is "" when neither is found.
+func DetectRoot(dir string) (Kind, string) {
 	for {
 		if _, err := os.Stat(filepath.Join(dir, ".jj")); err == nil {
-			return JJ
+			return JJ, dir
 		}
 		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return Git
+			return Git, dir
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return None
+			return None, ""
 		}
 		dir = parent
 	}

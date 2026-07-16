@@ -62,6 +62,7 @@ type shipOpts struct {
 	message   string
 	noPush    bool
 	noWatch   bool
+	noVerify  bool
 	amend     bool
 	budget    int
 	paths     []string
@@ -113,6 +114,7 @@ On a jj repo, ship fetches from the remote first and, when the target bookmark i
 	cmd.Flags().StringVarP(&o.message, "message", "m", "", "commit message")
 	cmd.Flags().BoolVar(&o.noPush, "no-push", false, "commit only; do not push or watch CI")
 	cmd.Flags().BoolVar(&o.noWatch, "no-watch", false, "push but do not watch CI")
+	cmd.Flags().BoolVar(&o.noVerify, "no-verify", false, "skip pre-commit hooks (uvx prek) before committing")
 	cmd.Flags().BoolVar(&o.amend, "amend", false, "fold the working copy into the parent commit")
 	cmd.Flags().IntVar(&o.budget, "budget", shipLogBudget, "token budget for the CI failure log excerpt (0 = uncapped)")
 	cmd.Flags().StringVar(&o.bookmark, "bookmark", "", "jj bookmark to advance and push")
@@ -123,7 +125,7 @@ On a jj repo, ship fetches from the remote first and, when the target bookmark i
 
 func runShip(cmd *cobra.Command, o shipOpts) error {
 	ctx := cmd.Context()
-	kind := vcs.Detect(workingDir())
+	kind, root := vcs.DetectRoot(workingDir())
 	if kind == vcs.None {
 		return errors.New("ship: no git or jj repository in the working directory")
 	}
@@ -144,7 +146,8 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		}
 	}
 
-	if err := shipCommit(ctx, kind, o, sel); err != nil {
+	hookSeg, err := shipCommit(ctx, cmd.ErrOrStderr(), root, kind, o, sel)
+	if err != nil {
 		return err
 	}
 
@@ -152,7 +155,12 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	if err != nil {
 		return err
 	}
-	segments := []string{fmt.Sprintf("committed %s %q", short, subject)}
+	segments := make([]string, 0, 5)
+	if hookSeg != "" {
+		segments = append(segments, hookSeg)
+	}
+	committedSegment := len(segments)
+	segments = append(segments, fmt.Sprintf("committed %s %q", short, subject))
 
 	if o.noPush {
 		segments = append(segments, "not pushed")
@@ -169,7 +177,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		if err != nil {
 			return err
 		}
-		segments[0] = fmt.Sprintf("committed %s %q", short, subject)
+		segments[committedSegment] = fmt.Sprintf("committed %s %q", short, subject)
 		segments = append(segments, fmt.Sprintf("rebased %d commit(s) onto %s", rebased, branch))
 	}
 	segments = append(segments, fmt.Sprintf("pushed %s → origin", branch))
@@ -202,16 +210,50 @@ func withSessionTrailer(message string) string {
 	return message + "\n\nClaude-Session-Id: " + id
 }
 
-func shipCommit(ctx context.Context, kind vcs.Kind, o shipOpts, sel *shipSelection) error {
+// shipCommit stages, runs pre-commit hooks, and commits. Hunk-scoped selections
+// report "hooks hunk-skip" instead: external prek would inspect full worktree
+// files, not the partial content being committed through a throwaway index.
+// It returns the hook summary segment to prepend to the ship summary.
+func shipCommit(ctx context.Context, errW io.Writer, root string, kind vcs.Kind, o shipOpts, sel *shipSelection) (string, error) {
 	o.message = withSessionTrailer(o.message)
+	var seg string
+	if kind == vcs.Git && sel == nil {
+		if err := shipGitAdd(ctx, o); err != nil {
+			return "", err
+		}
+	}
+	if sel != nil && !o.noVerify && shipHasHookConfig(root) {
+		seg = "hooks hunk-skip"
+	}
+	if sel == nil {
+		var err error
+		seg, err = shipRunHooks(ctx, errW, root, kind, o)
+		if err != nil {
+			return "", err
+		}
+	}
 	switch kind {
 	case vcs.JJ:
-		return shipCommitJJ(ctx, o, sel)
+		return seg, shipCommitJJ(ctx, o, sel)
 	case vcs.Git:
-		return shipCommitGit(ctx, o, sel)
+		return seg, shipCommitGit(ctx, o, sel)
 	default:
-		return errors.New("ship: commit: unsupported vcs")
+		return "", errors.New("ship: commit: unsupported vcs")
 	}
+}
+
+// shipGitAdd stages the ship's paths (or everything, when unscoped) into the real
+// index ahead of hook attempts and the commit.
+func shipGitAdd(ctx context.Context, o shipOpts) error {
+	addArgv := []string{"add", "-A"}
+	if len(o.paths) > 0 {
+		addArgv = append(addArgv, "--")
+		addArgv = append(addArgv, o.paths...)
+	}
+	if _, err := render.RunCLI(ctx, "git", addArgv); err != nil {
+		return fmt.Errorf("ship: git add: %w", err)
+	}
+	return nil
 }
 
 func shipCommitJJ(ctx context.Context, o shipOpts, sel *shipSelection) error {
@@ -286,14 +328,6 @@ func shipCommitGit(ctx context.Context, o shipOpts, sel *shipSelection) error {
 	if sel != nil {
 		return shipCommitGitSelect(ctx, o, sel)
 	}
-	addArgv := []string{"add", "-A"}
-	if len(o.paths) > 0 {
-		addArgv = append(addArgv, "--")
-		addArgv = append(addArgv, o.paths...)
-	}
-	if _, err := render.RunCLI(ctx, "git", addArgv); err != nil {
-		return fmt.Errorf("ship: git add: %w", err)
-	}
 	var argv []string
 	switch {
 	case o.amend && o.message != "":
@@ -302,6 +336,9 @@ func shipCommitGit(ctx context.Context, o shipOpts, sel *shipSelection) error {
 		argv = []string{"commit", "--amend", "--no-edit"}
 	default:
 		argv = []string{"commit", "-m", o.message}
+	}
+	if o.noVerify {
+		argv = append(argv, "--no-verify")
 	}
 	if len(o.paths) > 0 {
 		argv = append(argv, "--")

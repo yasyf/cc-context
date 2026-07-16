@@ -61,6 +61,18 @@ func writeShipFakes(t *testing.T, dir string, withGh bool) {
   *commit_id*)
     if [ -n "$JJ_COMMIT_ID_FAIL" ]; then printf 'jj: commit id unavailable\n' >&2; exit 1; fi
     printf '%s' '` + fakeHeadSHA + `' ;;
+  "diff --name-only"*)
+    if [ -n "$JJ_LOG_PWD" ]; then { printf 'pwd\0'; printf '%s\0' "$PWD"; printf '\0'; } >> "$SHIP_LOG"; fi
+    names=$JJ_DIFF_NAMES
+    if [ -n "$SHIP_DIFF_NAMES_MARKER" ]; then
+      count=0
+      if [ -r "$SHIP_DIFF_NAMES_MARKER" ]; then IFS= read -r count < "$SHIP_DIFF_NAMES_MARKER" || :; fi
+      count=${count:-0}
+      count=$((count + 1))
+      printf '%s' "$count" > "$SHIP_DIFF_NAMES_MARKER"
+      if [ "$count" -gt 1 ]; then names=$JJ_DIFF_NAMES_2; fi
+    fi
+    printf '%s' "$names" ;;
 esac
 exit 0
 `
@@ -75,7 +87,31 @@ exit 0
   "show --end-of-options") printf '%s' "$GIT_FILE_SHOW_BASE" ;;
   "ls-tree --full-tree") printf '100644 blob 1111111111111111111111111111111111111111\t%s\n' "$5" ;;
   "hash-object -w") printf '%s' "${GIT_HASH_OID:-2222222222222222222222222222222222222222}" ;;
+  "diff --cached")
+    names=$GIT_DIFF_NAMES
+    if [ -n "$SHIP_DIFF_NAMES_MARKER" ]; then
+      count=0
+      if [ -r "$SHIP_DIFF_NAMES_MARKER" ]; then IFS= read -r count < "$SHIP_DIFF_NAMES_MARKER" || :; fi
+      count=${count:-0}
+      count=$((count + 1))
+      printf '%s' "$count" > "$SHIP_DIFF_NAMES_MARKER"
+      if [ "$count" -gt 1 ]; then names=$GIT_DIFF_NAMES_2; fi
+    fi
+    printf '%s' "$names" | while IFS= read -r line || [ -n "$line" ]; do printf '%s\0' "$line"; done ;;
 esac
+exit 0
+`
+	uvx := "#!/bin/sh\n" + log("uvx") + `if [ -n "$UVX_PREK_FAIL_MARKER" ]; then
+  count=0
+  if [ -r "$UVX_PREK_FAIL_MARKER" ]; then IFS= read -r count < "$UVX_PREK_FAIL_MARKER" || :; fi
+  count=${count:-0}
+  if [ "$count" -gt 0 ]; then
+    count=$((count - 1))
+    printf '%s' "$count" > "$UVX_PREK_FAIL_MARKER"
+    printf 'files were modified by this hook\n' >&2
+    exit 1
+  fi
+fi
 exit 0
 `
 	gh := "#!/bin/sh\n" + log("gh") + `case "$1 $2" in
@@ -117,6 +153,7 @@ exit 0
 	}
 	write("jj", jj)
 	write("git", git)
+	write("uvx", uvx)
 	if withGh {
 		write("gh", gh)
 	}
@@ -296,6 +333,603 @@ func TestShipCommitPushWatch(t *testing.T) {
 	}
 }
 
+// writeShipHookFiles writes a prek config and the named files (empty content) at
+// root, so shipHookFiles' on-disk filter and prek's --files scope both see them.
+func writeShipHookFiles(t *testing.T, root string, names ...string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, ".pre-commit-config.yaml"), []byte("repos: []\n"), 0o600); err != nil {
+		t.Fatalf("write pre-commit config: %v", err)
+	}
+	for _, name := range names {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("x"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+}
+
+func TestShipHooksPass(t *testing.T) {
+	tests := []struct {
+		name   string
+		marker string
+		want   [][]string
+	}{
+		{
+			name:   "jj",
+			marker: ".jj",
+			want: [][]string{
+				{"jj", "diff", "--name-only"},
+				{"uvx", "prek", "run", "--cd", "ROOT", "--files", "f1.go"},
+				{"jj", "commit", "-m", "fix: frobnicate"},
+				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+			},
+		},
+		{
+			name:   "git",
+			marker: ".git",
+			want: [][]string{
+				{"git", "add", "-A"},
+				{"git", "diff", "--cached", "--name-only", "--diff-filter=d", "-z"},
+				{"uvx", "prek", "run", "--cd", "ROOT", "--files", "f1.go"},
+				{"git", "commit", "-m", "fix: frobnicate"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShip(t, tt.marker, false)
+			root, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("getwd: %v", err)
+			}
+			if tt.marker == ".jj" {
+				if err := os.Mkdir(filepath.Join(root, ".git"), 0o750); err != nil {
+					t.Fatalf("mkdir .git: %v", err)
+				}
+			}
+			writeShipHookFiles(t, root, "f1.go")
+			t.Setenv("JJ_DIFF_NAMES", "f1.go\n")
+			t.Setenv("GIT_DIFF_NAMES", "f1.go\n")
+
+			for i, rec := range tt.want {
+				for j, field := range rec {
+					if field == "ROOT" {
+						tt.want[i][j] = root
+					}
+				}
+			}
+
+			got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+			if err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			want := `hooks ok · committed a1b2c3d "fix: frobnicate" · not pushed`
+			if got != want {
+				t.Errorf("summary = %q, want %q", got, want)
+			}
+			assertInvocations(t, readInvocations(t, log), tt.want)
+		})
+	}
+}
+
+func TestShipHooksJJAmend(t *testing.T) {
+	log := setupShip(t, ".jj", false)
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o750); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	writeShipHookFiles(t, root, "folded.go")
+	t.Setenv("JJ_DIFF_NAMES", "folded.go\n")
+
+	got, err := runShipCmd(t, "--amend", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `hooks ok · committed a1b2c3d "fix: frobnicate" · not pushed`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	assertInvocations(t, readInvocations(t, log), [][]string{
+		{"jj", "diff", "--name-only"},
+		{"uvx", "prek", "run", "--cd", root, "--files", "folded.go"},
+		{"jj", "squash", "--use-destination-message"},
+		{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+	})
+}
+
+func TestShipHooksSubdirRunsAtRoot(t *testing.T) {
+	log := setupShip(t, ".jj", false)
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o750); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "sub"), 0o750); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	writeShipHookFiles(t, root, "sub/x.go")
+	t.Setenv("JJ_DIFF_NAMES", "sub/x.go\n")
+	t.Setenv("JJ_LOG_PWD", "1")
+	if err := os.Chdir(filepath.Join(root, "sub")); err != nil {
+		t.Fatalf("chdir sub: %v", err)
+	}
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "x.go")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `hooks ok · committed a1b2c3d "fix: frobnicate" · not pushed`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	assertInvocations(t, readInvocations(t, log), [][]string{
+		{"jj", "diff", "--name-only", "--", "sub/x.go"},
+		{"pwd", root},
+		{"uvx", "prek", "run", "--cd", root, "--files", "sub/x.go"},
+		{"jj", "commit", "-m", "fix: frobnicate", "--", "x.go"},
+		{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+	})
+}
+
+func TestShipHooksAutoFixLeavingNothingAborts(t *testing.T) {
+	tests := []struct {
+		name   string
+		marker string
+	}{
+		{"jj", ".jj"},
+		{"git", ".git"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShip(t, tt.marker, false)
+			root, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("getwd: %v", err)
+			}
+			if tt.marker == ".jj" {
+				if err := os.Mkdir(filepath.Join(root, ".git"), 0o750); err != nil {
+					t.Fatalf("mkdir .git: %v", err)
+				}
+			}
+			writeShipHookFiles(t, root, "f1.go")
+			t.Setenv("JJ_DIFF_NAMES", "f1.go\n")
+			t.Setenv("GIT_DIFF_NAMES", "f1.go\n")
+			// Second derivation returns nothing: the auto-fixer reverted the change.
+			namesMarker := filepath.Join(root, "names.marker")
+			if err := os.WriteFile(namesMarker, []byte("0"), 0o600); err != nil {
+				t.Fatalf("write names marker: %v", err)
+			}
+			t.Setenv("SHIP_DIFF_NAMES_MARKER", namesMarker)
+			t.Setenv("JJ_DIFF_NAMES_2", "")
+			t.Setenv("GIT_DIFF_NAMES_2", "")
+			failMarker := filepath.Join(root, "prek.marker")
+			if err := os.WriteFile(failMarker, []byte("1"), 0o600); err != nil {
+				t.Fatalf("write fail marker: %v", err)
+			}
+			t.Setenv("UVX_PREK_FAIL_MARKER", failMarker)
+
+			_, err = runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+			if err == nil || !strings.Contains(err.Error(), "nothing to commit") {
+				t.Fatalf("ship error = %v, want nothing-to-commit", err)
+			}
+			uvxCount := 0
+			for _, inv := range readInvocations(t, log) {
+				if inv[0] == "uvx" {
+					uvxCount++
+				}
+				if inv[0] == "jj" && (inv[1] == "commit" || inv[1] == "squash") {
+					t.Errorf("jj commit ran after hooks emptied the change: %v", inv)
+				}
+				if inv[0] == "git" && inv[1] == "commit" {
+					t.Errorf("git commit ran after hooks emptied the change: %v", inv)
+				}
+			}
+			if uvxCount != 1 {
+				t.Errorf("uvx invocation count = %d, want 1 (no retry on an empty re-derive)", uvxCount)
+			}
+		})
+	}
+}
+
+func TestShipHooksAutoFixThenPass(t *testing.T) {
+	tests := []struct {
+		name   string
+		marker string
+	}{
+		{"jj", ".jj"},
+		{"git", ".git"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShip(t, tt.marker, false)
+			root, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("getwd: %v", err)
+			}
+			if tt.marker == ".jj" {
+				if err := os.Mkdir(filepath.Join(root, ".git"), 0o750); err != nil {
+					t.Fatalf("mkdir .git: %v", err)
+				}
+			}
+			writeShipHookFiles(t, root, "f1.go")
+			t.Setenv("JJ_DIFF_NAMES", "f1.go\n")
+			t.Setenv("GIT_DIFF_NAMES", "f1.go\n")
+			marker := filepath.Join(root, "prek.marker")
+			if err := os.WriteFile(marker, []byte("1"), 0o600); err != nil {
+				t.Fatalf("write marker: %v", err)
+			}
+			t.Setenv("UVX_PREK_FAIL_MARKER", marker)
+
+			got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+			if err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			want := `hooks fixed · committed a1b2c3d "fix: frobnicate" · not pushed`
+			if got != want {
+				t.Errorf("summary = %q, want %q", got, want)
+			}
+			uvxCount, gitAddCount := 0, 0
+			for _, inv := range readInvocations(t, log) {
+				if inv[0] == "uvx" {
+					uvxCount++
+				}
+				if tt.marker == ".git" && len(inv) >= 3 && inv[0] == "git" && inv[1] == "add" && inv[2] == "-A" {
+					gitAddCount++
+				}
+			}
+			if uvxCount != 2 {
+				t.Errorf("uvx invocation count = %d, want 2", uvxCount)
+			}
+			if tt.marker == ".git" && gitAddCount != 2 {
+				t.Errorf("git add -A invocation count = %d, want 2", gitAddCount)
+			}
+		})
+	}
+}
+
+func TestShipHooksRetryRederivesFiles(t *testing.T) {
+	tests := []struct {
+		name   string
+		marker string
+	}{
+		{"jj", ".jj"},
+		{"git", ".git"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShip(t, tt.marker, false)
+			root, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("getwd: %v", err)
+			}
+			if tt.marker == ".jj" {
+				if err := os.Mkdir(filepath.Join(root, ".git"), 0o750); err != nil {
+					t.Fatalf("mkdir .git: %v", err)
+				}
+			}
+			writeShipHookFiles(t, root, "first.go", "generated.go")
+			t.Setenv("JJ_DIFF_NAMES", "first.go\n")
+			t.Setenv("JJ_DIFF_NAMES_2", "generated.go\n")
+			t.Setenv("GIT_DIFF_NAMES", "first.go\n")
+			t.Setenv("GIT_DIFF_NAMES_2", "generated.go\n")
+			diffMarker := filepath.Join(root, "diff.marker")
+			t.Setenv("SHIP_DIFF_NAMES_MARKER", diffMarker)
+			failMarker := filepath.Join(root, "prek.marker")
+			if err := os.WriteFile(failMarker, []byte("1"), 0o600); err != nil {
+				t.Fatalf("write prek marker: %v", err)
+			}
+			t.Setenv("UVX_PREK_FAIL_MARKER", failMarker)
+
+			got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+			if err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			want := `hooks fixed · committed a1b2c3d "fix: frobnicate" · not pushed`
+			if got != want {
+				t.Errorf("summary = %q, want %q", got, want)
+			}
+			var uvx [][]string
+			for _, inv := range readInvocations(t, log) {
+				if inv[0] == "uvx" {
+					uvx = append(uvx, inv)
+				}
+			}
+			wantUVX := [][]string{
+				{"uvx", "prek", "run", "--cd", root, "--files", "first.go"},
+				{"uvx", "prek", "run", "--cd", root, "--files", "generated.go"},
+			}
+			assertInvocations(t, uvx, wantUVX)
+		})
+	}
+}
+
+func TestShipHooksPersistentFailure(t *testing.T) {
+	log := setupShip(t, ".git", false)
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	writeShipHookFiles(t, root, "f1.go")
+	t.Setenv("GIT_DIFF_NAMES", "f1.go\n")
+	marker := filepath.Join(root, "prek.marker")
+	if err := os.WriteFile(marker, []byte("2"), 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	t.Setenv("UVX_PREK_FAIL_MARKER", marker)
+
+	_, err = runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err == nil || !strings.Contains(err.Error(), "ship: hooks:") {
+		t.Fatalf("ship error = %v, want containing %q", err, "ship: hooks:")
+	}
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "git" && len(inv) > 1 && inv[1] == "commit" {
+			t.Errorf("commit ran after persistent hook failure: %v", inv)
+		}
+	}
+}
+
+func TestShipHooksNoVerify(t *testing.T) {
+	log := setupShip(t, ".git", false)
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	writeShipHookFiles(t, root, "f1.go")
+	t.Setenv("GIT_DIFF_NAMES", "f1.go\n")
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--no-verify")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `committed a1b2c3d "fix: frobnicate" · not pushed`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	var commit []string
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "uvx" {
+			t.Errorf("uvx invoked with --no-verify: %v", inv)
+		}
+		if len(inv) > 1 && inv[0] == "git" && inv[1] == "commit" {
+			commit = inv
+		}
+	}
+	wantCommit := []string{"git", "commit", "-m", "fix: frobnicate", "--no-verify"}
+	if !reflect.DeepEqual(commit, wantCommit) {
+		t.Errorf("commit argv = %v, want %v", commit, wantCommit)
+	}
+}
+
+func TestShipHooksNoConfig(t *testing.T) {
+	log := setupShip(t, ".git", false)
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `committed a1b2c3d "fix: frobnicate" · not pushed`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "uvx" {
+			t.Errorf("uvx invoked without a config file: %v", inv)
+		}
+	}
+}
+
+func TestShipHooksUvxMissing(t *testing.T) {
+	log := setupShip(t, ".git", false)
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	writeShipHookFiles(t, root, "f1.go")
+	t.Setenv("GIT_DIFF_NAMES", "f1.go\n")
+	if err := os.Remove(filepath.Join(filepath.Dir(log), "bin", "uvx")); err != nil {
+		t.Fatalf("remove fake uvx: %v", err)
+	}
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `hooks uvx-missing · committed a1b2c3d "fix: frobnicate" · not pushed`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+}
+
+func TestShipHooksJJNoGitMarker(t *testing.T) {
+	log := setupShip(t, ".jj", false)
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	writeShipHookFiles(t, root, "f1.go")
+	t.Setenv("JJ_DIFF_NAMES", "f1.go\n")
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `hooks no-git · committed a1b2c3d "fix: frobnicate" · not pushed`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "uvx" {
+			t.Errorf("uvx invoked for a jj repo without a .git marker: %v", inv)
+		}
+	}
+}
+
+func TestShipHooksEmptyFilesSkipSoftGuards(t *testing.T) {
+	tests := []struct {
+		name      string
+		marker    string
+		removeUVX bool
+	}{
+		{"jj without git", ".jj", false},
+		{"git without uvx", ".git", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShip(t, tt.marker, false)
+			root, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("getwd: %v", err)
+			}
+			writeShipHookFiles(t, root)
+			if tt.removeUVX {
+				if err := os.Remove(filepath.Join(filepath.Dir(log), "bin", "uvx")); err != nil {
+					t.Fatalf("remove fake uvx: %v", err)
+				}
+			}
+
+			got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+			if err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			want := `committed a1b2c3d "fix: frobnicate" · not pushed`
+			if got != want {
+				t.Errorf("summary = %q, want %q", got, want)
+			}
+			for _, inv := range readInvocations(t, log) {
+				if inv[0] == "uvx" {
+					t.Errorf("uvx invoked with no changed files: %v", inv)
+				}
+			}
+		})
+	}
+}
+
+func TestShipHooksScopedPaths(t *testing.T) {
+	log := setupShip(t, ".git", false)
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	writeShipHookFiles(t, root)
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o750); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "a.go"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write src/a.go: %v", err)
+	}
+	t.Setenv("GIT_DIFF_NAMES", "src/a.go\n")
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "src/a.go")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `hooks ok · committed a1b2c3d "fix: frobnicate" · not pushed`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	want2 := [][]string{
+		{"git", "add", "-A", "--", "src/a.go"},
+		{"git", "diff", "--cached", "--name-only", "--diff-filter=d", "-z", "--", "src/a.go"},
+		{"uvx", "prek", "run", "--cd", root, "--files", "src/a.go"},
+		{"git", "commit", "-m", "fix: frobnicate", "--", "src/a.go"},
+		{"git", "log", "-1", "--format=%h%x00%s"},
+	}
+	assertInvocations(t, readInvocations(t, log), want2)
+}
+
+func TestShipHooksFiltersMissingFile(t *testing.T) {
+	log := setupShip(t, ".git", false)
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	writeShipHookFiles(t, root, "f1.go")
+	t.Setenv("GIT_DIFF_NAMES", "f1.go\ngone.go\n")
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `hooks ok · committed a1b2c3d "fix: frobnicate" · not pushed`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "uvx" {
+			for _, f := range inv {
+				if f == "gone.go" {
+					t.Errorf("--files listed a deleted file: %v", inv)
+				}
+			}
+		}
+	}
+}
+
+func TestShipHooksPreserveHookableFilenames(t *testing.T) {
+	tests := []struct {
+		name     string
+		filename string
+		create   func(*testing.T, string)
+	}{
+		{
+			name:     "non-ASCII",
+			filename: "café.go",
+			create: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+					t.Fatalf("write %s: %v", path, err)
+				}
+			},
+		},
+		{
+			name:     "broken symlink",
+			filename: "broken.go",
+			create: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.Symlink("missing-target", path); err != nil {
+					t.Fatalf("symlink %s: %v", path, err)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShip(t, ".git", false)
+			root, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("getwd: %v", err)
+			}
+			writeShipHookFiles(t, root)
+			tt.create(t, filepath.Join(root, tt.filename))
+			t.Setenv("GIT_DIFF_NAMES", tt.filename+"\n")
+
+			got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+			if err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			want := `hooks ok · committed a1b2c3d "fix: frobnicate" · not pushed`
+			if got != want {
+				t.Errorf("summary = %q, want %q", got, want)
+			}
+			var uvx []string
+			for _, inv := range readInvocations(t, log) {
+				if inv[0] == "uvx" {
+					uvx = inv
+				}
+			}
+			wantUVX := []string{"uvx", "prek", "run", "--cd", root, "--files", tt.filename}
+			if !reflect.DeepEqual(uvx, wantUVX) {
+				t.Errorf("uvx argv = %v, want %v", uvx, wantUVX)
+			}
+		})
+	}
+}
+
 func TestShipJJNeverInvokesGitCommit(t *testing.T) {
 	log := setupShip(t, ".jj", true)
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
@@ -368,6 +1002,17 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			want: [][]string{
 				{"git", "add", "-A"},
 				{"git", "commit", "--amend", "--no-edit"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+		},
+		{
+			name:   "git amend no verify",
+			marker: ".git",
+			args:   []string{"--amend", "--no-verify", "--no-push"},
+			want: [][]string{
+				{"git", "add", "-A"},
+				{"git", "commit", "--amend", "--no-edit", "--no-verify"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 			},
 			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
@@ -865,6 +1510,40 @@ func TestShipJJRebase(t *testing.T) {
 			}
 			assertInvocations(t, readInvocations(t, log), tt.want)
 		})
+	}
+}
+
+func TestShipJJRebasePreservesHookSummary(t *testing.T) {
+	setupShip(t, ".jj", false)
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o750); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	writeShipHookFiles(t, root, "f1.go")
+	t.Setenv("JJ_DIFF_NAMES", "f1.go\n")
+	t.Setenv("JJ_NO_BOOKMARK", "1")
+	describeMarker := filepath.Join(t.TempDir(), "describe")
+	if err := os.WriteFile(describeMarker, nil, 0o600); err != nil {
+		t.Fatalf("write describe marker: %v", err)
+	}
+	t.Setenv("JJ_DESCRIBE_MARKER", describeMarker)
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `hooks ok · committed e9f8a7b "fix: frobnicate" · rebased 2 commit(s) onto main · pushed main → origin`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if count := strings.Count(got, "hooks ok"); count != 1 {
+		t.Errorf("hooks segment count = %d, want 1 in %q", count, got)
+	}
+	if count := strings.Count(got, "committed "); count != 1 {
+		t.Errorf("committed segment count = %d, want 1 in %q", count, got)
 	}
 }
 
