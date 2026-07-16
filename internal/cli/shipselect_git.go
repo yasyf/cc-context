@@ -64,7 +64,7 @@ func gitStageSelected(ctx context.Context, path string, sel *shipSelection, env 
 	if err != nil {
 		return err
 	}
-	current, err := os.ReadFile(filepath.Join(sel.root, path))
+	current, err := os.ReadFile(filepath.Join(sel.root, path)) //nolint:gosec // the path is the caller's own ship target under the repo root, not untrusted input
 	if err != nil {
 		return fmt.Errorf("ship: read %s: %w", path, err)
 	}
