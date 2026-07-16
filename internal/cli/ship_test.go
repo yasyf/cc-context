@@ -21,13 +21,14 @@ const (
 )
 
 // writeShipFakes installs fake jj, git, and (when withGh) gh executables into
-// dir. Each records its argv into $SHIP_LOG as a blank-line-delimited record
-// (command name then one arg per line) and emits canned stdout so the ship
+// dir. Each records its argv into $SHIP_LOG as a NUL-delimited record (every
+// field terminated by \0, the record by one extra \0, so an argv element with
+// embedded newlines stays one field) and emits canned stdout so the ship
 // command's parsing paths run without a real VCS or network.
 func writeShipFakes(t *testing.T, dir string, withGh bool) {
 	t.Helper()
 	log := func(name string) string {
-		return "{ printf '" + name + "\\n'; for a in \"$@\"; do printf '%s\\n' \"$a\"; done; printf '\\n'; } >> \"$SHIP_LOG\"\n"
+		return "{ printf '" + name + "\\0'; for a in \"$@\"; do printf '%s\\0' \"$a\"; done; printf '\\0'; } >> \"$SHIP_LOG\"\n"
 	}
 
 	jj := "#!/bin/sh\n" + log("jj") + `case "$*" in
@@ -122,6 +123,9 @@ func setupShip(t *testing.T, marker string, withGh bool) string {
 	}
 
 	t.Setenv("PATH", binDir)
+	// Zero the session id so subtests asserting bare commit argv stay green even
+	// when the suite runs inside a Claude Code session, which exports it.
+	t.Setenv(envClaudeSessionKey, "")
 	log := filepath.Join(dir, "ship.log")
 	t.Setenv("SHIP_LOG", log)
 	return log
@@ -169,12 +173,12 @@ func readInvocations(t *testing.T, log string) [][]string {
 		t.Fatalf("read log: %v", err)
 	}
 	var got [][]string
-	for _, rec := range strings.Split(string(data), "\n\n") {
-		rec = strings.Trim(rec, "\n")
+	for _, rec := range strings.Split(string(data), "\x00\x00") {
+		rec = strings.Trim(rec, "\x00")
 		if rec == "" {
 			continue
 		}
-		got = append(got, strings.Split(rec, "\n"))
+		got = append(got, strings.Split(rec, "\x00"))
 	}
 	return got
 }
@@ -385,6 +389,94 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			log := setupShip(t, tt.marker, true)
+			got, err := runShipCmd(t, tt.args...)
+			if err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			if got != tt.summary {
+				t.Errorf("summary = %q, want %q", got, tt.summary)
+			}
+			assertInvocations(t, readInvocations(t, log), tt.want)
+		})
+	}
+}
+
+func TestShipSessionTrailer(t *testing.T) {
+	tests := []struct {
+		name    string
+		marker  string
+		args    []string
+		want    [][]string
+		summary string
+	}{
+		{
+			name:   "jj commit appends trailer",
+			marker: ".jj",
+			args:   []string{"-m", "fix: frobnicate", "--no-push"},
+			want: [][]string{
+				{"jj", "commit", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid"},
+				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+		},
+		{
+			name:   "git commit appends trailer",
+			marker: ".git",
+			args:   []string{"-m", "fix: frobnicate", "--no-push"},
+			want: [][]string{
+				{"git", "add", "-A"},
+				{"git", "commit", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+		},
+		{
+			name:   "jj amend with message appends trailer",
+			marker: ".jj",
+			args:   []string{"--amend", "-m", "fix: frobnicate", "--no-push"},
+			want: [][]string{
+				{"jj", "squash", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid"},
+				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+		},
+		{
+			name:   "git amend with message appends trailer",
+			marker: ".git",
+			args:   []string{"--amend", "-m", "fix: frobnicate", "--no-push"},
+			want: [][]string{
+				{"git", "add", "-A"},
+				{"git", "commit", "--amend", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+		},
+		{
+			name:   "jj amend without message carries no trailer",
+			marker: ".jj",
+			args:   []string{"--amend", "--no-push"},
+			want: [][]string{
+				{"jj", "squash", "--use-destination-message"},
+				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+		},
+		{
+			name:   "git amend without message carries no trailer",
+			marker: ".git",
+			args:   []string{"--amend", "--no-push"},
+			want: [][]string{
+				{"git", "add", "-A"},
+				{"git", "commit", "--amend", "--no-edit"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShip(t, tt.marker, true)
+			t.Setenv(envClaudeSessionKey, "some-uuid")
 			got, err := runShipCmd(t, tt.args...)
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
@@ -1154,6 +1246,27 @@ func TestCIDuration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := ciDuration(tt.start, tt.end); got != tt.want {
 				t.Errorf("ciDuration = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWithSessionTrailer(t *testing.T) {
+	tests := []struct {
+		name    string
+		id      string
+		message string
+		want    string
+	}{
+		{"env set appends trailer", "sess-abc", "fix: frobnicate", "fix: frobnicate\n\nClaude-Session-Id: sess-abc"},
+		{"env empty leaves message", "", "fix: frobnicate", "fix: frobnicate"},
+		{"empty message stays empty", "sess-abc", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(envClaudeSessionKey, tt.id)
+			if got := withSessionTrailer(tt.message); got != tt.want {
+				t.Errorf("withSessionTrailer(%q) = %q, want %q", tt.message, got, tt.want)
 			}
 		})
 	}

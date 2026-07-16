@@ -162,7 +162,18 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	return ciErr
 }
 
+const envClaudeSessionKey = "CLAUDE_CODE_SESSION_ID"
+
+func withSessionTrailer(message string) string {
+	id := os.Getenv(envClaudeSessionKey)
+	if id == "" || message == "" {
+		return message
+	}
+	return message + "\n\nClaude-Session-Id: " + id
+}
+
 func shipCommit(ctx context.Context, kind vcs.Kind, o shipOpts) error {
+	o.message = withSessionTrailer(o.message)
 	switch kind {
 	case vcs.JJ:
 		return shipCommitJJ(ctx, o)
@@ -495,7 +506,7 @@ func ciRunLine(view ciView) string {
 
 // ciFailureDetail names each red job and its failed steps, appends the
 // ANSI-stripped, budget-capped --log-failed excerpt (fetch failure is non-fatal),
-// and always ends with the full-log pointer.
+// and always ends with the full-log pointer plus the ci-triage agent handoff.
 func ciFailureDetail(ctx context.Context, id string, view ciView, budget int) []string {
 	var lines []string
 	for _, job := range view.Jobs {
