@@ -173,8 +173,8 @@ class McpTool(CustomCondition):
         return bool(evt.tool_name) and evt.tool_name.startswith("mcp__")
 
 
-# All three approvers pin dialog-only: PreToolUse would compose with repo_find_nudge and
-# override settings deny rules (capt-hook's default is now PreToolUse | PermissionRequest).
+# All three approvers pin dialog-only so they never compose with repo_find_nudge at
+# PreToolUse (capt-hook's default is now PreToolUse | PermissionRequest).
 approve(
     "ccx read-only mcp",
     events=Event.PermissionRequest,
