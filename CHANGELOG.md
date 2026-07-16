@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.21.0] - 2026-07-16
 
 ### Added
 - **`ccx code edit --match` addresses by exact text instead of a span.** The needle is
@@ -15,6 +15,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   coordinates. Content is written verbatim — trailing spaces and a trailing newline land on
   disk untrimmed — and every error path leaves the file byte-identical. Mirrored on the MCP
   `ccx_code_edit` tool (`match`, `all` params).
+
+### Changed
+- **`ccx vcs ship` fetches first and auto-rebases onto the target bookmark.** When the trunk
+  (or `--bookmark`) target is no longer an ancestor of `@-`, ship rebases the local stack onto
+  it and reports a `rebased N commit(s) onto X` segment; any conflict across the rewritten set
+  rolls back via `jj op restore` and errors with the conflicted commits plus manual recovery
+  steps. A missing or multi-head target bookmark refuses before any mutation, an empty
+  `target..@-` refuses to move the bookmark backwards, and a rerun after a failed push takes
+  the no-divergence path — resume never rebases twice. Git lane unchanged; `--no-push` still
+  skips the network entirely.
+
+### Fixed
+- The guard pack pins its three read-only approvers to `PermissionRequest` only, ahead of
+  capt-hook flipping the `approve()` default to `PreToolUse | PermissionRequest` — they must
+  never compose with `repo_find_nudge` in one PreToolUse dispatch nor override settings deny
+  rules.
 
 ## [0.19.0] - 2026-07-16
 
