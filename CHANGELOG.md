@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`ccx code edit --match` addresses by exact text instead of a span.** The needle is
+  byte-exact and multi-line (a CRLF file normalizes needle and content to its own EOL); zero
+  matches error before any write, several error listing each candidate's `line#hash` anchor
+  for a scoped re-run, `--at` composes with `--match` to confine the scan to a hash-verified
+  span, and `--all` replaces every occurrence with a per-match stanza report in final-file
+  coordinates. Content is written verbatim — trailing spaces and a trailing newline land on
+  disk untrimmed — and every error path leaves the file byte-identical. Mirrored on the MCP
+  `ccx_code_edit` tool (`match`, `all` params).
+
 ## [0.19.0] - 2026-07-16
 
 ### Added

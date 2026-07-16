@@ -52,9 +52,11 @@ type ReplaceIn struct {
 // empty replacement (blank the range) is distinct from an omitted one.
 type EditIn struct {
 	Path    string  `json:"path" jsonschema:"file to edit in place"`
-	At      string  `json:"at" jsonschema:"span to replace: line range (\"40-95\"), single line, or anchor (\"15-27#k2fa\" or bare \"k2fa\"); a shifted anchor re-resolves by content"`
+	At      string  `json:"at,omitempty" jsonschema:"span to replace: line range (\"40-95\"), single line, or anchor (\"15-27#k2fa\" or bare \"k2fa\"); a shifted anchor re-resolves by content"`
+	Match   *string `json:"match,omitempty" jsonschema:"exact text to find and replace (byte-exact, multi-line); newlines in the needle and content normalize to the file's EOL (a standalone \\r is preserved); give at, match, or both; fails loudly on 0 matches or on >1 without all"`
 	Content *string `json:"content,omitempty" jsonschema:"replacement text; give exactly one of content or delete"`
 	Delete  bool    `json:"delete,omitempty" jsonschema:"delete the span; give exactly one of content or delete"`
+	All     bool    `json:"all,omitempty" jsonschema:"with match, replace every occurrence"`
 	Budget  int     `json:"budget,omitempty" jsonschema:"token budget for the report"`
 }
 
@@ -247,7 +249,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_edit",
-		Description: "WRITE an in-place edit: replace or delete a line range or anchored span. An anchored 'at' is hash-verified — refuses if the span vanished or resolves ambiguously; a bare numeric range is bounds-checked only. Applies immediately (no preview); a moved anchor comes back as a \"# anchor …\" note. Give exactly one of content or delete.",
+		Description: "WRITE an in-place edit: replace or delete a line range or anchored span. An anchored 'at' is hash-verified — refuses if the span vanished or resolves ambiguously; a bare numeric range is bounds-checked only. Applies immediately (no preview); a moved anchor comes back as a \"# anchor …\" note. Give exactly one of content or delete. match finds an exact byte sequence (optionally scoped by at) and replaces it — newlines in the needle and content normalize to the file's EOL (a standalone \r is preserved); fails loudly on 0 or ambiguous matches; all replaces every occurrence; the report echoes the written lines with fresh anchors.",
 	}, editHandler(p))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -398,15 +400,27 @@ func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, S
 	}
 }
 
-// editHandler enforces the write's exactly-one-of-content-or-delete contract —
-// the presence check the CLI makes with cobra's Changed — then proxies the edit
-// op, which resolves and writes locally without touching an engine.
+// editHandler enforces the write's content/delete and location contracts before
+// proxying the edit op, which resolves and writes locally without touching an
+// engine.
 func editHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, EditIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in EditIn) (*mcp.CallToolResult, any, error) {
 		if (in.Content != nil) == in.Delete {
 			return nil, nil, fmt.Errorf("%s: provide exactly one of content or delete", req.Params.Name)
 		}
-		a := backend.Args{Path: in.Path, Section: in.At, Delete: in.Delete, Budget: in.Budget}
+		if in.Match != nil && *in.Match == "" {
+			return nil, nil, fmt.Errorf("%s: match must be non-empty", req.Params.Name)
+		}
+		if in.All && in.Match == nil {
+			return nil, nil, fmt.Errorf("%s: all requires match", req.Params.Name)
+		}
+		if in.At == "" && in.Match == nil {
+			return nil, nil, fmt.Errorf("%s: provide at, match, or both", req.Params.Name)
+		}
+		a := backend.Args{Path: in.Path, Section: in.At, Delete: in.Delete, All: in.All, Budget: in.Budget}
+		if in.Match != nil {
+			a.Match = *in.Match
+		}
 		if in.Content != nil {
 			a.Content = *in.Content
 		}

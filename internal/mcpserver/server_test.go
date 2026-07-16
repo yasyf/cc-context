@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -570,6 +571,102 @@ func TestEditToolWritesFile(t *testing.T) {
 	want := fmt.Sprintf("%s:%s → %s:%s\n- beta\n+ BETA\n", file, anchor.Format(2, beta), file, anchor.Format(2, anchor.Of("BETA")))
 	if out != want {
 		t.Errorf("ccx_code_edit out = %q, want %q", out, want)
+	}
+}
+
+// TestEditToolMatchWritesFile proves match mode writes replacement bytes
+// verbatim, including trailing spaces and the replacement's trailing newline.
+func TestEditToolMatchWritesFile(t *testing.T) {
+	cs := connectTestServer(t)
+
+	file := filepath.Join(t.TempDir(), "f.txt")
+	if err := os.WriteFile(file, []byte("alpha\nbeta\ngamma\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	out, isErr := callText(t, cs, "ccx_code_edit", map[string]any{
+		"path": file, "match": "beta", "content": "BETA  \n",
+	})
+	if isErr {
+		t.Fatalf("ccx_code_edit match is error: %s", out)
+	}
+	got, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read edited file: %v", err)
+	}
+	want := []byte("alpha\nBETA  \n\ngamma\n")
+	if !bytes.Equal(got, want) {
+		t.Errorf("file after match edit = %q, want %q", got, want)
+	}
+}
+
+// TestEditToolMatchAmbiguousErrors proves an unscoped duplicate match reports
+// each candidate anchor and leaves the file byte-identical.
+func TestEditToolMatchAmbiguousErrors(t *testing.T) {
+	cs := connectTestServer(t)
+	file := filepath.Join(t.TempDir(), "f.txt")
+	fixture := []byte("dup\nmiddle\ndup\n")
+	if err := os.WriteFile(file, fixture, 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	out, isErr := callText(t, cs, "ccx_code_edit", map[string]any{
+		"path": file, "match": "dup", "content": "unique",
+	})
+	if !isErr {
+		t.Fatalf("ambiguous match should be a tool error, got: %s", out)
+	}
+	dup := anchor.Of("dup")
+	wantCandidates := fmt.Sprintf("(%s, %s)", anchor.Format(1, dup), anchor.Format(3, dup))
+	if !strings.Contains(out, wantCandidates) {
+		t.Errorf("ambiguous-match error missing candidates %s: %s", wantCandidates, out)
+	}
+	got, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read rejected edit file: %v", err)
+	}
+	if !bytes.Equal(got, fixture) {
+		t.Errorf("file changed on ambiguous match: %q", got)
+	}
+}
+
+// TestEditToolMatchValidation proves the facade rejects missing or invalid match
+// controls before the local edit engine can touch the file.
+func TestEditToolMatchValidation(t *testing.T) {
+	cs := connectTestServer(t)
+	file := filepath.Join(t.TempDir(), "f.txt")
+	fixture := []byte("alpha\nbeta\ngamma\n")
+	if err := os.WriteFile(file, fixture, 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"neither at nor match", map[string]any{"path": file, "content": "X"}, "provide at, match, or both"},
+		{"empty match", map[string]any{"path": file, "match": "", "content": "X"}, "match must be non-empty"},
+		{"all without match", map[string]any{"path": file, "at": "2", "content": "X", "all": true}, "all requires match"},
+		{"all without at or match errors all first", map[string]any{"path": file, "content": "X", "all": true}, "all requires match"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, isErr := callText(t, cs, "ccx_code_edit", tt.args)
+			if !isErr {
+				t.Fatalf("expected a tool error, got: %s", out)
+			}
+			if !strings.Contains(out, tt.want) {
+				t.Errorf("error text missing %q: %s", tt.want, out)
+			}
+			got, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatalf("read rejected edit file: %v", err)
+			}
+			if !bytes.Equal(got, fixture) {
+				t.Errorf("file changed on rejected match edit: %q", got)
+			}
+		})
 	}
 }
 

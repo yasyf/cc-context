@@ -128,6 +128,20 @@ line); `--delete` removes the range instead; a plain numeric `--at A-B` is legal
 unverified. Untouched lines round-trip byte-identical — CRLF and a missing trailing
 newline survive, and the file mode is preserved.
 
+When you know the exact text but not its span, `--match` addresses by content instead:
+
+```
+ccx code edit internal/router/router.go --match 'return lookup(p)' --content 'return lookup(canon(p))'
+```
+
+The needle is byte-exact — trailing spaces, tabs, and multi-line spans all count, with
+newlines matched to the file's EOL convention — and the content is written verbatim:
+nothing is trimmed, and a trailing newline lands on disk. Zero matches error before any write; several error listing each candidate's
+`line#hash`, so the recovery is `--at 40#k2fa --match …`, which confines the scan to
+that verified span. `--all` replaces every occurrence and reports one stanza per match,
+refs in final-file coordinates. The report echoes each written line back with its fresh
+anchor — the `+` rows are what the file now contains.
+
 ### 5. Review
 
 Inspect changes without dumping the entire working tree:

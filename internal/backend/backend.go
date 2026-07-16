@@ -81,6 +81,7 @@ type Args struct {
 	Apply           bool
 	Force           bool
 	Delete          bool
+	All             bool
 	IgnoreCase      bool
 	Word            bool
 	Regex           bool

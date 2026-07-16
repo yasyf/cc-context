@@ -38,6 +38,17 @@ func Run(a backend.Args) (string, error) {
 		return "", fmt.Errorf("edit %s: %w", a.Path, err)
 	}
 	f := anchor.FromBytes(a.Path, data)
+
+	if a.All && a.Match == "" {
+		return "", fmt.Errorf("edit %s: --all requires --match", a.Path)
+	}
+	if a.Section == "" && a.Match == "" {
+		return "", fmt.Errorf("edit %s: provide --at, --match, or both", a.Path)
+	}
+	if a.Match != "" {
+		return runMatch(a, resolved, data, f)
+	}
+
 	lines := f.Lines()
 
 	oldA, oldB, move, err := resolve(f, a.Section)

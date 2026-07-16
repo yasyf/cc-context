@@ -144,6 +144,26 @@ func TestRun(t *testing.T) {
 			},
 		},
 		{
+			name:     "trailing spaces on a single line land on disk",
+			content:  "a\nb\nc\n",
+			section:  "2",
+			editArg:  "B  ",
+			wantFile: "a\nB  \nc\n",
+			wantOut: func(p string) string {
+				return p + ":" + ref(2, 2, of("b")) + " → " + p + ":" + ref(2, 2, of("B  ")) + "\n- b\n+ B  \n"
+			},
+		},
+		{
+			name:     "interior trailing space and trailing tab land on disk",
+			content:  "a\nb\nc\n",
+			section:  "2",
+			editArg:  "X \nY\t",
+			wantFile: "a\nX \nY\t\nc\n",
+			wantOut: func(p string) string {
+				return p + ":" + ref(2, 2, of("b")) + " → " + p + ":" + ref(2, 3, of("X ")) + "\n- b\n+ X \n+ Y\t\n"
+			},
+		},
+		{
 			name:    "vanished anchor errors before write",
 			content: "alpha\nbeta\n",
 			section: anchor.Format(1, of("gone")),
@@ -187,6 +207,342 @@ func TestRun(t *testing.T) {
 			}
 			prePerm := statPerm(t, path)
 			a := backend.Args{Path: path, Section: tt.section, Content: tt.editArg, Delete: tt.delete}
+
+			out, err := edit.Run(a)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("Run() error = nil, want containing %q", tt.wantErr)
+				}
+				if got := err.Error(); !strings.Contains(got, tt.wantErr) {
+					t.Fatalf("Run() error = %q, want containing %q", got, tt.wantErr)
+				}
+				assertFileBytes(t, path, tt.content)
+				return
+			}
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if want := tt.wantOut(path); out != want {
+				t.Errorf("Run() output =\n%q\nwant\n%q", out, want)
+			}
+			assertFileBytes(t, path, tt.wantFile)
+			if got := statPerm(t, path); got != prePerm {
+				t.Errorf("file perm = %o, want preserved %o", got, prePerm)
+			}
+		})
+	}
+}
+
+func TestRunMatch(t *testing.T) {
+	of := anchor.Of
+	tests := []struct {
+		name     string
+		content  string
+		match    string
+		editArg  string
+		section  string
+		all      bool
+		delete   bool
+		wantFile string
+		wantOut  func(path string) string
+		wantErr  string
+	}{
+		{
+			name:     "whole-line match replace",
+			content:  "alpha\nbeta\ngamma\n",
+			match:    "beta",
+			editArg:  "BETA",
+			wantFile: "alpha\nBETA\ngamma\n",
+			wantOut: func(p string) string {
+				return p + ":" + ref(2, 2, of("beta")) + " → " + p + ":" + ref(2, 2, of("BETA")) + "\n- beta\n+ BETA\n"
+			},
+		},
+		{
+			name:     "substring match shows whole affected line",
+			content:  "hello world\n",
+			match:    "world",
+			editArg:  "there",
+			wantFile: "hello there\n",
+			wantOut: func(p string) string {
+				return p + ":" + ref(1, 1, of("hello world")) + " → " + p + ":" + ref(1, 1, of("hello there")) + "\n- hello world\n+ hello there\n"
+			},
+		},
+		{
+			name:     "multi-line needle",
+			content:  "a\nb\nc\nd\n",
+			match:    "b\nc",
+			editArg:  "X",
+			wantFile: "a\nX\nd\n",
+			wantOut: func(p string) string {
+				return p + ":" + ref(2, 3, of("b")) + " → " + p + ":" + ref(2, 2, of("X")) + "\n- b\n- c\n+ X\n"
+			},
+		},
+		{
+			name:     "multi-line needle normalizes to CRLF",
+			content:  "a\r\nb\r\nc\r\n",
+			match:    "a\nb",
+			editArg:  "X",
+			wantFile: "X\r\nc\r\n",
+			wantOut: func(p string) string {
+				return p + ":" + ref(1, 2, of("a")) + " → " + p + ":" + ref(1, 1, of("X")) + "\n- a\n- b\n+ X\n"
+			},
+		},
+		{
+			name:     "replacement trailing spaces land byte-exact",
+			content:  "a\nb\nc\n",
+			match:    "b",
+			editArg:  "B  ",
+			wantFile: "a\nB  \nc\n",
+			wantOut: func(p string) string {
+				return p + ":" + ref(2, 2, of("b")) + " → " + p + ":" + ref(2, 2, of("B  ")) + "\n- b\n+ B  \n"
+			},
+		},
+		{
+			name:     "content ending in newline written verbatim",
+			content:  "a\nb\nc\n",
+			match:    "b",
+			editArg:  "B\n",
+			wantFile: "a\nB\n\nc\n",
+			wantOut: func(p string) string {
+				return p + ":" + ref(2, 2, of("b")) + " → " + p + ":" + ref(2, 2, of("B")) + "\n- b\n+ B\n"
+			},
+		},
+		{
+			name:    "zero matches errors",
+			content: "a\nb\nc\n",
+			match:   "zzz",
+			editArg: "X",
+			wantErr: "--match not found",
+		},
+		{
+			name:    "ambiguous match lists candidate anchors",
+			content: "x\ny\nx\n",
+			match:   "x",
+			editArg: "Z",
+			wantErr: "--match found 2 matches (" + anchor.Format(1, of("x")) + ", " + anchor.Format(3, of("x")) + "); scope with --at, extend the match, or pass --all",
+		},
+		{
+			name:     "all replaces every occurrence",
+			content:  "x\ny\nx\n",
+			match:    "x",
+			editArg:  "Z",
+			all:      true,
+			wantFile: "Z\ny\nZ\n",
+			wantOut: func(p string) string {
+				return "# 2 occurrences replaced\n" +
+					p + ":" + ref(1, 1, of("x")) + " → " + p + ":" + ref(1, 1, of("Z")) + "\n- x\n+ Z\n\n" +
+					p + ":" + ref(3, 3, of("x")) + " → " + p + ":" + ref(3, 3, of("Z")) + "\n- x\n+ Z\n"
+			},
+		},
+		{
+			name:     "all with two hits on same line shows final line in both stanzas",
+			content:  "a a\n",
+			match:    "a",
+			editArg:  "X",
+			all:      true,
+			wantFile: "X X\n",
+			wantOut: func(p string) string {
+				stanza := p + ":" + ref(1, 1, of("a a")) + " → " + p + ":" + ref(1, 1, of("X X")) + "\n- a a\n+ X X\n"
+				return "# 2 occurrences replaced\n" + stanza + "\n" + stanza
+			},
+		},
+		{
+			name:     "at-scoped match replaces only the in-span occurrence",
+			content:  "x\ny\nx\n",
+			match:    "x",
+			editArg:  "Z",
+			section:  "1",
+			wantFile: "Z\ny\nx\n",
+			wantOut: func(p string) string {
+				return p + ":" + ref(1, 1, of("x")) + " → " + p + ":" + ref(1, 1, of("Z")) + "\n- x\n+ Z\n"
+			},
+		},
+		{
+			name:     "at-scoped moved anchor prepends the move note",
+			content:  "new\nalpha\nbeta\n",
+			match:    "alpha",
+			editArg:  "ALPHA",
+			section:  anchor.Format(1, of("alpha")),
+			wantFile: "new\nALPHA\nbeta\n",
+			wantOut: func(p string) string {
+				return "# anchor " + of("alpha").String() + ": line 1 → 2\n" +
+					p + ":" + ref(2, 2, of("alpha")) + " → " + p + ":" + ref(2, 2, of("ALPHA")) + "\n- alpha\n+ ALPHA\n"
+			},
+		},
+		{
+			name:    "scoped zero-in-span error names the span",
+			content: "x\ny\nx\n",
+			match:   "x",
+			editArg: "Z",
+			section: "2",
+			wantErr: "--match not found in " + anchor.Format(2, of("y")),
+		},
+		{
+			name:     "delete via match removes the bytes",
+			content:  "a\nb\nc\n",
+			match:    "b\n",
+			delete:   true,
+			wantFile: "a\nc\n",
+			wantOut: func(p string) string {
+				return p + ":" + ref(2, 2, of("b")) + " → " + p + ":" + ref(2, 2, of("c")) + "\n- b\n"
+			},
+		},
+		{
+			name:    "content equal to match errors",
+			content: "a\nb\nc\n",
+			match:   "b",
+			editArg: "b",
+			wantErr: "nothing to change",
+		},
+		{
+			name:     "aa in aaa replaces once",
+			content:  "aaa\n",
+			match:    "aa",
+			editArg:  "b",
+			wantFile: "ba\n",
+			wantOut: func(p string) string {
+				return p + ":" + ref(1, 1, of("aaa")) + " → " + p + ":" + ref(1, 1, of("ba")) + "\n- aaa\n+ ba\n"
+			},
+		},
+		{
+			name:     "fused delete-all no panic",
+			content:  "a\nba\nb\n",
+			match:    "a\nb",
+			delete:   true,
+			all:      true,
+			wantFile: "\n",
+			wantOut: func(p string) string {
+				s1 := p + ":" + ref(1, 2, of("a")) + " → " + p + ":" + ref(1, 1, of("")) + "\n- a\n- ba\n"
+				s2 := p + ":" + ref(2, 3, of("ba")) + " → " + p + ":" + ref(1, 1, of("")) + "\n- ba\n- b\n"
+				return "# 2 occurrences replaced\n" + s1 + "\n" + s2
+			},
+		},
+		{
+			name:     "fused replace-all shows final lines",
+			content:  "AAAA\nb AAAA\nb\n",
+			match:    "AAAA\nb",
+			editArg:  "X",
+			all:      true,
+			wantFile: "X X\n",
+			wantOut: func(p string) string {
+				s1 := p + ":" + ref(1, 2, of("AAAA")) + " → " + p + ":" + ref(1, 1, of("X X")) + "\n- AAAA\n- b AAAA\n+ X X\n"
+				s2 := p + ":" + ref(2, 3, of("b AAAA")) + " → " + p + ":" + ref(1, 1, of("X X")) + "\n- b AAAA\n- b\n+ X X\n"
+				return "# 2 occurrences replaced\n" + s1 + "\n" + s2
+			},
+		},
+		{
+			name:     "fused single-match shows final line",
+			content:  "a\nb\nc\n",
+			match:    "b\n",
+			editArg:  "B",
+			section:  "2",
+			wantFile: "a\nBc\n",
+			wantOut: func(p string) string {
+				return p + ":" + ref(2, 2, of("b")) + " → " + p + ":" + ref(2, 2, of("Bc")) + "\n- b\n+ Bc\n"
+			},
+		},
+		{
+			name:     "crlf standalone cr in needle matches bare cr",
+			content:  "a\r\nb\r\n",
+			match:    "b\r",
+			editArg:  "X",
+			wantFile: "a\r\nX\n",
+			wantOut: func(p string) string {
+				return p + ":" + ref(2, 2, of("b")) + " → " + p + ":" + ref(2, 2, of("X")) + "\n- b\n+ X\n"
+			},
+		},
+		{
+			name:     "crlf standalone cr in content preserved",
+			content:  "a\r\nb\r\n",
+			match:    "b",
+			editArg:  "B\r",
+			wantFile: "a\r\nB\r\r\n",
+			wantOut: func(p string) string {
+				return p + ":" + ref(2, 2, of("b")) + " → " + p + ":" + ref(2, 2, of("B")) + "\n- b\n+ B\r\n"
+			},
+		},
+		{
+			name:     "scoped moved anchor note carries the supplied hash not the match line",
+			content:  "new\nscope\ninside\n",
+			match:    "inside",
+			editArg:  "INSIDE",
+			section:  anchor.FormatRange(1, 2, of("scope")),
+			wantFile: "new\nscope\nINSIDE\n",
+			wantOut: func(p string) string {
+				return "# anchor " + of("scope").String() + ": line 1 → 2\n" +
+					p + ":" + ref(3, 3, of("inside")) + " → " + p + ":" + ref(3, 3, of("INSIDE")) + "\n- inside\n+ INSIDE\n"
+			},
+		},
+		{
+			name:     "all with scoped moved anchor emits note before header",
+			content:  "new\nalpha\nx\nx\n",
+			match:    "x",
+			editArg:  "Z",
+			section:  anchor.FormatRange(1, 3, of("alpha")),
+			all:      true,
+			wantFile: "new\nalpha\nZ\nZ\n",
+			wantOut: func(p string) string {
+				s1 := p + ":" + ref(3, 3, of("x")) + " → " + p + ":" + ref(3, 3, of("Z")) + "\n- x\n+ Z\n"
+				s2 := p + ":" + ref(4, 4, of("x")) + " → " + p + ":" + ref(4, 4, of("Z")) + "\n- x\n+ Z\n"
+				return "# anchor " + of("alpha").String() + ": line 1 → 2\n" +
+					"# 2 occurrences replaced\n" + s1 + "\n" + s2
+			},
+		},
+		{
+			name:     "all with one match emits singular header",
+			content:  "x\n",
+			match:    "x",
+			editArg:  "Z",
+			all:      true,
+			wantFile: "Z\n",
+			wantOut: func(p string) string {
+				return "# 1 occurrence replaced\n" +
+					p + ":" + ref(1, 1, of("x")) + " → " + p + ":" + ref(1, 1, of("Z")) + "\n- x\n+ Z\n"
+			},
+		},
+		{
+			name:     "all unequal-length replacement keeps final coordinates",
+			content:  "aaa\nbbb\naaa\n",
+			match:    "aaa",
+			editArg:  "LONGREPL",
+			all:      true,
+			wantFile: "LONGREPL\nbbb\nLONGREPL\n",
+			wantOut: func(p string) string {
+				s1 := p + ":" + ref(1, 1, of("aaa")) + " → " + p + ":" + ref(1, 1, of("LONGREPL")) + "\n- aaa\n+ LONGREPL\n"
+				s2 := p + ":" + ref(3, 3, of("aaa")) + " → " + p + ":" + ref(3, 3, of("LONGREPL")) + "\n- aaa\n+ LONGREPL\n"
+				return "# 2 occurrences replaced\n" + s1 + "\n" + s2
+			},
+		},
+		{
+			name:     "crlf multi-line replacement normalizes each new line",
+			content:  "a\r\nb\r\nc\r\n",
+			match:    "b",
+			editArg:  "X\nY",
+			wantFile: "a\r\nX\r\nY\r\nc\r\n",
+			wantOut: func(p string) string {
+				return p + ":" + ref(2, 2, of("b")) + " → " + p + ":" + ref(2, 3, of("X")) + "\n- b\n+ X\n+ Y\n"
+			},
+		},
+		{
+			name:    "all without match errors",
+			content: "a\nb\n",
+			all:     true,
+			wantErr: "--all requires --match",
+		},
+		{
+			name:    "neither at nor match errors",
+			content: "a\nb\n",
+			wantErr: "provide --at, --match, or both",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "f.txt")
+			if err := os.WriteFile(path, []byte(tt.content), 0o600); err != nil {
+				t.Fatalf("write fixture: %v", err)
+			}
+			prePerm := statPerm(t, path)
+			a := backend.Args{Path: path, Section: tt.section, Match: tt.match, Content: tt.editArg, All: tt.all, Delete: tt.delete}
 
 			out, err := edit.Run(a)
 			if tt.wantErr != "" {
