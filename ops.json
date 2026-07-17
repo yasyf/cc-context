@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"add_comment","body":"Fixed in v0.25.0: backend.ResolveReadPath generalized to ResolvePath(op, a) covering OpRead + OpDeps — deps paths tilde-expand, stat, and exit 3 ErrPathNotFound like read."}]}
+{"v":1,"lamport":3,"session":"22c5cfe6-e27f-4c38-9f84-2ae34c09e42e","ops":[{"kind":"set_criterion_status","id":"cff8d08d7f06803c688316a9ec6fd1c3","status":"met"}]}
