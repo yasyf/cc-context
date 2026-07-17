@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from glob import has_magic
 from pathlib import Path
+from stat import S_ISREG
 from typing import TYPE_CHECKING
 
 from captain_hook import (
@@ -11,21 +13,17 @@ from captain_hook import (
     Block,
     CommandLine,
     CustomCommandLineCondition,
-    Event,
-    HookResponse,
     Input,
     PreToolUseEvent,
     Rewrite,
-    Tool,
-    on,
+    rewrite_command_occurrences,
 )
 
-from .common import LITERAL_SAFE, carries_expansion, is_single_command
+from .common import LARGE_READ_BYTES, LITERAL_SAFE, carries_expansion
 from .search_common import (
     CONTEXT_SHORT,
     GrepCall,
     NON_SOURCE_EXTS,
-    UnpipedSearch,
     build_ccx_grep,
     grep_glob,
     has_command_substitution,
@@ -37,7 +35,7 @@ from .search_common import (
 )
 
 if TYPE_CHECKING:
-    from cc_transcript.command import Command
+    from cc_transcript.command import Command, Occurrence
 
 
 # ripgrep's own DROP table — never grep's: rg's short flags are false friends (`-r` takes a
@@ -53,6 +51,19 @@ RG_OP_VALUE_SHORT = frozenset("gtTABCmrEjMd")
 # bundle) without consuming the next token. A short outside this set ∪ RG_OP_VALUE_SHORT is unknown
 # and gates the command (`-d 1` is max-depth: its `1` must not leak in as a phantom pattern).
 RG_BOOLEAN_SHORT = frozenset("iwnNsSHIlLcovxFupahqz0")
+
+RG_BOOLEAN_LONG = frozenset(
+    {
+        "count",
+        "count-matches",
+        "files-with-matches",
+        "files-without-match",
+        "json",
+        "only-matching",
+    }
+)
+
+RG_OUTPUT_BOUNDED_LONG = frozenset({"count", "count-matches", "files-with-matches", "files-without-match"})
 
 RG_OP_VALUE_LONG = frozenset(
     {
@@ -111,7 +122,7 @@ def rg_operands(cmd: Command) -> list[str] | None:
             elif name in RG_OP_VALUE_LONG:
                 if not sep:
                     i += 1
-            else:
+            elif name not in RG_BOOLEAN_LONG:
                 return None
             i += 1
             continue
@@ -132,27 +143,63 @@ def rg_operands(cmd: Command) -> list[str] | None:
     return positionals
 
 
-class RgNonSourceTargets(CustomCommandLineCondition):
-    """Skips the rg gate when every unpiped ``rg`` searches only non-source data files.
+def bounded_file_rg(cmd: Command, *, sink: bool = False) -> bool:
+    """Report whether one ``rg`` statement is a bounded explicit-file search.
 
-    The sanctioned escape hatch: a raw ``rg`` whose explicit path operands are all data files
-    (:data:`NON_SOURCE_EXTS`, by a textual suffix check — no stat) runs as-is. A directory or
-    source-file operand, a cwd search (no operand), or an unparseable flag shape leaves the
-    command gated.
+    The no-stat lane preserves rg's data-file escape: explicit :data:`NON_SOURCE_EXTS` operands pass
+    by suffix, including paths created earlier in a compound command. The stat lane admits only
+    existing regular-file operands whose total size is no more than :data:`LARGE_READ_BYTES`; count
+    and list-only flags waive the size cap, but never the regular-file requirement. Because rg recurses
+    by default, a directory, glob, missing operand, or operand-less unpiped rg is unbounded. ``-o``,
+    ``--json``, and ``RIPGREP_CONFIG_PATH`` forfeit both lanes because they can multiply output or inject
+    unseen flags.
     """
-
-    def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        matched = False
-        for i, (cmd, _) in enumerate(cl.parts):
-            if cmd.executable != "rg" or (i > 0 and cl.parts[i - 1][1] == "|"):
-                continue
-            matched = True
-            operands = rg_operands(cmd)
-            if not operands or any(
-                op.endswith("/") or Path(op).suffix.lower() not in NON_SOURCE_EXTS for op in operands
-            ):
-                return False
-        return matched
+    if "RIPGREP_CONFIG_PATH" in cmd.env_dict:
+        return False
+    if (operands := rg_operands(cmd)) is None:
+        return sink
+    output_bounded = only_matching = json = False
+    i, n = 0, len(cmd.args)
+    while i < n:
+        a = cmd.args[i]
+        if a == "--":
+            break
+        if a == "-" or not a.startswith("-"):
+            i += 1
+            continue
+        if a.startswith("--"):
+            name, sep, _ = a[2:].partition("=")
+            output_bounded = output_bounded or name in RG_OUTPUT_BOUNDED_LONG
+            only_matching = only_matching or name == "only-matching"
+            json = json or name == "json"
+            if name in {"regexp", "file"} | RG_OP_VALUE_LONG and not sep:
+                i += 1
+            i += 1
+            continue
+        body = a[1:]
+        head = body[0]
+        if head in ("e", "f") or head in RG_OP_VALUE_SHORT:
+            if len(a) == 2:
+                i += 1
+        else:
+            output_bounded = output_bounded or "c" in body or "l" in body
+            only_matching = only_matching or "o" in body
+        i += 1
+    if only_matching or json:
+        return False
+    if not operands:
+        return sink
+    if all(not p.endswith("/") and Path(p).suffix.lower() in NON_SOURCE_EXTS for p in operands):
+        return True
+    if any(has_magic(p) for p in operands):
+        return False
+    try:
+        stats = [Path(p).stat() for p in operands]
+    except OSError:
+        return False
+    if not all(S_ISREG(result.st_mode) for result in stats):
+        return False
+    return output_bounded or sum(result.st_size for result in stats) <= LARGE_READ_BYTES
 
 
 def rg_occurrence_expands(cmd: Command) -> bool:
@@ -178,8 +225,8 @@ def fold_expand(current: str, cand: str) -> str:
     return cand if not current else str(max(int(current), int(cand)))
 
 
-def rg_parse(cl: CommandLine) -> GrepCall | None:
-    """Parse an unpiped ``rg`` into its ccx-rewritable shape, or ``None`` to fall back to block.
+def rg_parse(occ: Occurrence) -> GrepCall | None:
+    """Parse one direct, unpiped ``rg`` occurrence into its ccx-rewritable shape.
 
     Mirrors :func:`grep_parse` over ripgrep's grammar with its own DROP table
     (:data:`RG_DROP_SHORT`). ``-A/-B/-C``/``--context`` map to ``--expand=<count>`` with the count
@@ -187,9 +234,10 @@ def rg_parse(cl: CommandLine) -> GrepCall | None:
     glob (rg globs are gitignore-style — only a basename composes faithfully). Any other long flag,
     a repeated ``-e``, a value-taking short, a regex pattern, or an out-of-repo path blocks.
     """
-    if not is_single_command(cl):
+    cmd = occ.command
+    if occ.prev_op == "|" or cmd.executable != "rg":
         return None
-    args = cl.primary.args
+    args = cmd.args
     pattern: str | None = None
     e_count = 0
     include: str | None = None
@@ -330,52 +378,75 @@ def rg_parse(cl: CommandLine) -> GrepCall | None:
     return GrepCall(pattern, glob, expand, ignore_case, word, dropped_l, dropped_fixed, count_dropped=False)
 
 
-def rg_to(evt: BaseHookEvent) -> str | None:
-    parsed = rg_parse(evt.command_line)
+def rg_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
+    if rg_occurrence_expands(occ.command):
+        return None
+    parsed = rg_parse(occ)
     return build_ccx_grep(parsed) if parsed is not None else None
 
 
-def rg_note(evt: BaseHookEvent) -> str:
-    return note_text(evt.command, rg_parse(evt.command_line))
+def rg_note(evt: BaseHookEvent, pairs: list[tuple[Occurrence, str]]) -> str:
+    return "\n".join(
+        note_text(occ.command.raw, parsed)
+        for occ, _ in pairs
+        if (parsed := rg_parse(occ)) is not None
+    )
 
 
-def rg_guard(evt: PreToolUseEvent) -> HookResponse:
-    """Rewrite a simple literal rg to ``ccx code grep``; block the rest, transcript-steered.
+class RgFlood(CustomCommandLineCondition):
+    """Match a line carrying an actionable unpiped ``rg`` occurrence.
 
-    The custom-handler form (over the declarative ``rewrite_command(block=…)``) is what lets the block
-    message be computed per event: :func:`~hooks.search_common.search_block` swaps in the cc-transcript
-    steer for a transcript operand and otherwise keeps the rg message verbatim. A primary carrying a
-    shell expansion forfeits the rewrite (a spliced ``~``/``$`` freezes; a dropped ``$(...)`` widens the
-    search), so the guard blocks rather than emit a corrupt rewrite.
+    Direct rewritable rgs activate the splice lane; an unrewritable rg activates the block lane unless
+    it is a bounded explicit-file/data-file search. Matching through ``cmd.unwrapped`` makes wrapper
+    prefixes transparent to the condition, while :func:`rg_to` stays direct-only so a qualifying
+    wrapped rg blocks instead of dropping its wrapper.
     """
-    new = None if rg_occurrence_expands(evt.command_line.primary) else rg_to(evt)
-    if new is None:
-        return evt.block(
-            search_block(
-                evt,
-                "rg",
-                rg_operands,
-                "BLOCKED: raw `rg` file search floods context. "
-                "Use `ccx code grep <text>` (mcp__cc-context__ccx_code_grep) for literal text, "
-                '`ccx code search "<question>"` (mcp__cc-context__ccx_code_search) for intent, '
-                '`ccx repo find "<glob>"` (mcp__cc-context__ccx_repo_find) to list files. '
-                "Dependency source (`.venv`, vendored pkgs): spawn the `cc-context:dep-reader` agent "
-                "with the package and your question — it returns cited conclusions, never the source. "
-                "Inline: `ccx repo locate <pkg>` (CLI-only), then "
-                "`ccx code grep`/`outline` (mcp__cc-context__ccx_code_outline)/`read` "
-                "(mcp__cc-context__ccx_code_read) with the printed path. "
-                "Simple literal `rg` auto-rewrites to `ccx code grep`; this one didn't — a regex pattern, an unmappable "
-                "flag (`-t`/`-r`/`--no-ignore`/…), an ignored-dir target, an expansion (`~`/`$`/`$(…)`), or a pipe/chain. "
-                "Escape hatches: data files (`.log`/`.json`/`.yaml`/…) as explicit targets run as-is; piped input (`… | rg`) runs as-is.",
-            )
+
+    def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
+        rgs = [occ for occ in cl.occurrences if occ.command.unwrapped.executable == "rg"]
+        return any(occ.prev_op != "|" for occ in rgs) and any(
+            (occ.prev_op != "|" and rg_to(evt, occ) is not None)
+            or not bounded_file_rg(occ.command.unwrapped, sink=occ.prev_op == "|")
+            for occ in rgs
         )
-    return evt.rewrite_command(new, note=rg_note(evt))
 
 
-on(
-    Event.PreToolUse,
-    only_if=[Tool("Bash"), UnpipedSearch("rg")],
-    skip_if=[RgNonSourceTargets()],
+def rg_block_if(evt: BaseHookEvent, occ: Occurrence) -> bool:
+    cmd = occ.command
+    if (inner := cmd.unwrapped).executable != "rg" or cmd.span is None:
+        return inner.executable == "rg"
+    return rg_to(evt, occ) is None
+
+
+def rg_block(evt: PreToolUseEvent, cl: CommandLine) -> str:
+    return search_block(
+        evt,
+        "rg",
+        rg_operands,
+        "BLOCKED: raw `rg` file search floods context. "
+        "Use `ccx code grep <text>` (mcp__cc-context__ccx_code_grep) for literal text, "
+        '`ccx code search "<question>"` (mcp__cc-context__ccx_code_search) for intent, '
+        '`ccx repo find "<glob>"` (mcp__cc-context__ccx_repo_find) to list files. '
+        "Dependency source (`.venv`, vendored pkgs): spawn the `cc-context:dep-reader` agent "
+        "with the package and your question — it returns cited conclusions, never the source. "
+        "Inline: `ccx repo locate <pkg>` (CLI-only), then "
+        "`ccx code grep`/`outline` (mcp__cc-context__ccx_code_outline)/`read` "
+        "(mcp__cc-context__ccx_code_read) with the printed path. "
+        "Simple literal `rg` auto-rewrites to `ccx code grep`; this one didn't — a regex pattern, an "
+        "unmappable flag (`-t`/`-r`/`--no-ignore`/…), an ignored-dir target, an expansion "
+        "(`~`/`$`/`$(…)`), a wrapper, or an unbounded recursive target. Explicit data files and existing "
+        "regular files under the size cap run as-is; count/list-only searches run regardless of file size. "
+        "Escape hatch: pipe input into it (`… | rg`).",
+        cl=cl,
+    )
+
+
+rewrite_command_occurrences(
+    only_if=[RgFlood()],
+    to=rg_to,
+    block_if=rg_block_if,
+    block=rg_block,
+    note=rg_note,
     tests={
         # Rewrite — disk-independent shapes only (repo-wide, glob-only, context). Path→glob shapes
         # classify each operand against the filesystem, so they live in test_rg_guards.py.
@@ -390,6 +461,7 @@ on(
         Input(command="rg -B 5 -A 2 TODO"): Rewrite(pattern="--expand=5"),  # order-independent superset
         Input(command="rg --color always plugin"): Rewrite(pattern="code grep plugin"),  # --color eats its space-form value
         Input(command="rg --color=always plugin"): Rewrite(pattern="code grep plugin"),  # =glued --color still no-ops
+        Input(command="printf 'left  side'; rg foo"): Rewrite(pattern="printf 'left  side'; "),
         # Block — unmappable shapes fall back to the message:
         Input(command="rg 'foo.*' ."): Block(),  # regex-metachar pattern (LITERAL_SAFE)
         Input(command="rg fo+ file.py"): Block(),  # `+` is an rg quantifier — no faithful literal rewrite
@@ -401,18 +473,21 @@ on(
         Input(command="rg -m 5 foo ."): Block(),  # -m takes a value
         Input(command="rg -d 1 app.log"): Block(),  # -d (max-depth) takes a value — its 1 must not leak an exemption
         Input(command="rg --files"): Block(pattern="ccx repo find"),  # file listing → repo find
-        Input(command="rg foo /etc/hosts"): Block(),  # absolute path
+        Input(command="rg foo /etc/hosts"): Allow(),  # deliberate flip: bounded regular-file stat lane
         # The verbatim incident command: hidden `.venv` segment + a pipe → deterministic block, no stat.
         Input(
             command='rg -n "class ToolUse" .venv/lib/python3.13/site-packages/cc_transcript/ -A 20 | head -40'
         ): Block(pattern="ccx repo locate"),
         Input(command="rg foo file.py | wc -l"): Block(),  # pipe-source parity with grep
+        Input(command="rg -c foo ."): Block(),  # count is bounded only over explicit regular files
+        Input(command="sudo rg foo ."): Block(),  # wrapper-transparent condition; direct-only rewrite
         # Allow — piped sink (rg consumes stdin), non-source data-file targets, ccx exec pass-through:
         Input(command="cat f | rg foo"): Allow(),
         Input(command="journalctl | rg err | head -5"): Allow(),
         Input(command="rg foo app.log"): Allow(),  # data-file target runs as-is
+        Input(command="rg -c foo app.log"): Allow(),  # count-only data-file rg escapes without stat
         # A `~`/`$` operand forfeits the rewrite but NOT the block — rg is recursive by default, so an
-        # unverifiable operand is a flood. A data-ext operand stays exempt (RgNonSourceTargets, by suffix).
+        # unverifiable operand is a flood. A data-ext operand stays in the no-stat lane by suffix.
         Input(command="rg foo ~/notes.md"): Block(pattern="floods context"),
         Input(command="rg -n foo $d/host.go"): Block(pattern="floods context"),
         Input(command="rg foo $d/app.log"): Allow(),  # data-ext expansion operand stays exempt (suffix, no stat)
@@ -424,8 +499,8 @@ on(
         Input(command="rg -n foo `printf x`"): Block(pattern="floods context"),
         # Per-occurrence: the `$(…)` rg forfeits its rewrite, the sibling `rg bar .` tree search floods → the line blocks.
         Input(command="rg foo $(printf /tmp/t); rg bar ."): Block(pattern="floods context"),
-        Input(command="rg -o 'err.*timeout' server.log"): Allow(),  # regex is fine on a data file
-        Input(command="rg -o 'err.*timeout' server.LOG"): Allow(),  # suffix match is case-insensitive (.LOG → .log)
+        Input(command="rg -o 'err.*timeout' server.log"): Block(),  # deliberate flip: -o forfeits both bounded lanes
+        Input(command="rg -o 'err.*timeout' server.LOG"): Block(),  # deliberate flip: suffix case cannot override -o
         Input(command="rg foo data.json config.yaml"): Allow(),  # all operands non-source
         Input(command="rg foo logs/app.log | head -5"): Allow(),  # data-file head of a pipe
         # `ccx exec` pass-through is deliberate: sh("rg …") is in-sandbox and budget-capped on return.
@@ -438,4 +513,4 @@ on(
             "asyncio.run(main())\nPY"
         ): Allow(),
     },
-)(rg_guard)
+)

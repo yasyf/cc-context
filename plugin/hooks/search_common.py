@@ -205,7 +205,12 @@ def has_command_substitution(raw: str) -> bool:
 
 
 def search_block(
-    evt: BaseHookEvent, exe: str, operands: Callable[[Command], list[str] | None], default: str
+    evt: BaseHookEvent,
+    exe: str,
+    operands: Callable[[Command], list[str] | None],
+    default: str,
+    *,
+    cl: CommandLine | None = None,
 ) -> str:
     """The block message for a gated grep/rg, tuned per the line's transcript operands.
 
@@ -213,12 +218,18 @@ def search_block(
     engine's own ``default``; when *every* operand is a session transcript (``~/.claude/projects/…``) the
     whole steer is :data:`TRANSCRIPT_STEER`; a *mixed* line — a transcript operand alongside an ordinary
     flood — keeps ``default`` and appends one :data:`TRANSCRIPT_APPEND` line so neither steer is lost.
-    Only ``exe`` commands are inspected — the same scope the guard's own condition uses.
+    Every occurrence is inspected through its unwrapped command, so wrapper-prefixed searches contribute
+    their operands too — the same scope the guard's wrapper-transparent condition uses.
     """
-    cl = evt.command_line
-    if cl is None:
+    command_line = cl or evt.command_line
+    if command_line is None:
         return default
-    ops = [p for cmd in cl.commands if cmd.executable == exe for p in (operands(cmd) or ())]
+    ops = [
+        p
+        for occ in command_line.occurrences
+        if (cmd := occ.command.unwrapped).executable == exe
+        for p in (operands(cmd) or ())
+    ]
     transcript = [p for p in ops if is_transcript_path(p)]
     if not transcript:
         return default

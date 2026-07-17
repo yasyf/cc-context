@@ -4,7 +4,48 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0] - 2026-07-18
+
+### Changed
+- **The grep, rg, and json guard lanes are per-occurrence.** A `;`/`&&`/`|`-joined line
+  now splices: the flood-risk grep/rg occurrence rewrites to its ccx equivalent (and the
+  json-emitting occurrence wraps in `ccx format --`) while sibling commands survive
+  byte-for-byte, where the old lanes blocked or skipped compound lines wholesale. Block
+  messages are computed from the live command line via capt-hook 9.28.0's callable
+  `block=`, and the search guards now see through wrapper prefixes: a wrapped flood
+  search (`sudo grep foo .`) blocks instead of slipping past on the wrapper name —
+  wrapped occurrences match-to-block, never match-to-rewrite. The plugin's capt-hook
+  floor rises to 9.28.0 and the pack manifest to 0.8.0.
+
+### Added
+- **rg gains a grep-style bounded stat lane.** An rg whose operands all stat as regular
+  files summing under the read budget runs raw instead of blocking — rg is
+  recursive-by-default, so the stat lane doubles as the recursion check. Count/list-only
+  flags escape the size cap; `-o`, `--json`, or a `RIPGREP_CONFIG_PATH` in the
+  environment forfeit the lane.
+
+## [0.27.0] - 2026-07-18
+
+### Fixed
+- **`ccx exec` propagates not-found across the sandbox boundary.** A script that dies on
+  a missing path now exits 3 like the direct CLI read: host-op failures carry a
+  structured `err_code` through the monty wire, and an uncaught not-found wraps
+  `codeexec.ErrNotFound` into the exit taxonomy. A script that catches the error and
+  continues still exits 0.
+- **`ccx vcs ship` resolves its push target before committing** — a bookmark refusal
+  leaves the working copy untouched instead of stranding a commit — and refuses an
+  empty working copy instead of cutting an empty duplicate.
+
+## [0.26.0] - 2026-07-17
+
+### Changed
+- **`ccx vcs ship` runs the repo's prek pre-commit hooks before committing.** Auto-fixes
+  are re-verified and folded into the commit; a hook that still fails after the retry
+  aborts the ship with nothing committed. `--no-verify` skips the gate, and hunk-scoped
+  ships skip it with a `hooks hunk-skip` report segment.
+
 ## [0.25.0] - 2026-07-17
+
 
 ### Changed
 - **`ccx code symbol` is native.** Definitions come from a whole-scope ast-grep outline

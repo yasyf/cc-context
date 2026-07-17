@@ -22,7 +22,9 @@ from captain_hook import CommandLine
 from captain_hook.context import HookContext
 from captain_hook.events import PostToolUseEvent, PreToolUseEvent
 from captain_hook.session import SessionStore
+from cc_transcript.command import Occurrence
 
+import hooks.json_guards as json_guards
 from hooks.common import (
     already_wrapped,
     command_shape,
@@ -35,7 +37,7 @@ from hooks.common import (
     load_shapes,
     record_shape,
 )
-from hooks.json_guards import SeenEmittingJson, record_json_shape
+from hooks.json_guards import SeenEmittingJson, record_json_shape, wraps
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +54,39 @@ def fake_evt(repo_root: Path | None = None) -> SimpleNamespace:
 
 def shape(command: str) -> str:
     return command_shape(CommandLine.parse(command))
+
+
+def occurrence(command: str, *, index: int = 0) -> Occurrence:
+    return CommandLine.parse(command).occurrences[index]
+
+
+class TestWraps:
+    def test_plain_single_command(self) -> None:
+        assert wraps(occurrence("gh pr list --json number"))
+
+    def test_subshell_inner_occurrence_is_plain(self) -> None:
+        assert wraps(occurrence("(gh pr list --json number)"))
+
+    def test_compound_gates_each_occurrence(self) -> None:
+        cl = CommandLine.parse("ccx format -- gh pr list --json x; gh issue list --json number; printf done")
+        assert not wraps(cl.occurrences[0])
+        assert wraps(cl.occurrences[1])
+        assert not wraps(cl.occurrences[2])
+
+    def test_streaming_sibling_does_not_suppress_rewrite(self) -> None:
+        cl = CommandLine.parse("gh pr list --json number; kubectl get pods -o json --watch")
+        assert wraps(cl.occurrences[0])
+        assert not wraps(cl.occurrences[1])
+
+    def test_ccx_executable_is_never_wrappable(self) -> None:
+        assert not wraps(occurrence("/opt/homebrew/bin/ccx exec --json x"))
+
+    def test_wrap_json_uses_occurrence_raw(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(json_guards, "ccx_bin", lambda: "/tmp/ccx binary")
+        occ = occurrence('printf done; gh pr list --json number --search "is:open draft:false"', index=1)
+        assert json_guards.wrap_json(SimpleNamespace(), occ) == (
+            "'/tmp/ccx binary' format -- gh pr list --json number --search \"is:open draft:false\""
+        )
 
 
 class TestCommandShape:

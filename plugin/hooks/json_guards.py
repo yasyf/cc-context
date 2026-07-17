@@ -7,16 +7,19 @@ TRON, JSONL, prose, or compact JSON, with TOON only for large uniform arrays —
 before it floods context. Commands
 *observed* emitting JSON at runtime are recorded to a persistent shapes store; next
 time a command of that shape runs, the agent gets a **nudge** to wrap it. The rewrite
-fires only on a single command (no pipe/redirect — ``--json | jq`` needs raw JSON)
-that isn't already wrapped, is plain argv (no env prefix, subshell, or shell keyword
-— the spliced raw text must re-parse as words after ``--``), and isn't streaming
-(``--watch``/``--follow`` never exits, and the wrapper buffers stdout until exit).
-It emits ``permissionDecision: allow`` so it adds no extra prompt.
+fires on each eligible occurrence of a compound line, leaving its siblings byte-for-byte
+intact. Piped and redirected occurrences stay raw (``--json | jq`` needs JSON), as do
+occurrences that are already wrapped, aren't plain argv (an env prefix, subshell, or
+shell keyword cannot safely follow ``--``), or are streaming (``--watch``/``--follow``
+never exits, and the wrapper buffers stdout until exit). It emits
+``permissionDecision: allow`` so it adds no extra prompt.
 """
 
 from __future__ import annotations
 
 import shlex
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from captain_hook import (
     Allow,
@@ -29,46 +32,74 @@ from captain_hook import (
     Tool,
     nudge,
     on,
-    rewrite_command,
+    rewrite_command_occurrences,
 )
 
 from .common import (
+    SHELL_WORD_EXECUTABLES,
+    STREAMING_FLAGS,
     already_wrapped,
     ccx_bin,
     command_shape,
     has_json_output_flag,
-    has_streaming_flag,
     is_ccx_command,
-    is_plain_argv,
     is_single_command,
+    json_flagged,
     load_shapes,
     looks_like_json,
     record_shape,
 )
 
+if TYPE_CHECKING:
+    from cc_transcript.command import Occurrence
 
-def wraps(cl: CommandLine) -> bool:
+
+def occurrence_has_json_output_flag(occ: Occurrence) -> bool:
+    return json_flagged(occ.command.args)
+
+
+def occurrence_has_streaming_flag(occ: Occurrence) -> bool:
+    return any(arg.split("=", 1)[0] in STREAMING_FLAGS for arg in occ.command.args)
+
+
+def occurrence_is_plain_argv(occ: Occurrence) -> bool:
+    cmd = occ.command
+    if cmd.env or cmd.executable in SHELL_WORD_EXECUTABLES:
+        return False
+    try:
+        words = shlex.split(cmd.raw)
+    except ValueError:
+        return False
+    return words == list(cmd.argv)
+
+
+def occurrence_already_wrapped(occ: Occurrence) -> bool:
+    cmd = occ.command
+    return "ccx format" in cmd.raw or Path(cmd.executable).name == "ccx"
+
+
+def wraps(occ: Occurrence) -> bool:
     return (
-        is_single_command(cl)
-        and has_json_output_flag(cl)
-        and not already_wrapped(cl)
-        and not has_streaming_flag(cl)
-        and is_plain_argv(cl)
+        not occ.piped
+        and not occ.command.redirects
+        and occurrence_has_json_output_flag(occ)
+        and not occurrence_already_wrapped(occ)
+        and not occurrence_has_streaming_flag(occ)
+        and occurrence_is_plain_argv(occ)
     )
 
 
-def wrap_json(evt: BaseHookEvent) -> str | None:
-    cl = evt.command_line
-    if cl is None or not wraps(cl) or not (ccx := ccx_bin()):
+def wrap_json(evt: BaseHookEvent, occ: Occurrence) -> str | None:
+    if not wraps(occ) or not (ccx := ccx_bin()):
         return None
-    return f"{shlex.quote(ccx)} format -- {evt.command}"
+    return shlex.quote(ccx) + " format -- " + occ.command.raw
 
 
-def wrap_note(evt: BaseHookEvent) -> str:
+def wrap_note(evt: BaseHookEvent, pairs: list[tuple[Occurrence, str]]) -> str:
     return "Wrapped a JSON-emitting command in `ccx format`: same data, re-encoded to its leanest shape to save tokens."
 
 
-rewrite_command(
+rewrite_command_occurrences(
     to=wrap_json,
     note=wrap_note,
     tests={
@@ -89,11 +120,15 @@ rewrite_command(
             pattern="format -- gh pr list --json number --search"
         ),
         # Non-argv shapes: after `ccx format --` an env-assignment prefix execs as
-        # argv[0] ("executable file not found"), a subshell is a bash syntax error,
-        # and `time` stops being a shell keyword — the rewrite bails on each.
+        # argv[0] ("executable file not found"), and `time` stops being a shell
+        # keyword — the rewrite bails on each.
         Input(command="GH_HOST=x.example.com gh pr list --json number"): Allow(),
-        Input(command="(gh pr list --json number)"): Allow(),
         Input(command="time gh pr list --json number"): Allow(),
+        # Occurrence splicing preserves the subshell delimiters outside the command's
+        # span, so its inner plain argv is now safe to wrap in place.
+        Input(command="(gh pr list --json number)"): Rewrite(
+            pattern="format -- gh pr list --json number)"
+        ),
         # Builtins with no binary counterpart: after `--` they exec as literal
         # binaries ("executable file not found") — the rewrite bails on each.
         Input(command="exec gh pr list --json number"): Allow(),
@@ -106,6 +141,16 @@ rewrite_command(
         # already_wrapped must recognize the ccx format wrap, or this rewrite
         # would re-wrap its own output forever (the wrapped line still has --json).
         Input(command="ccx format -- gh pr list --json x"): Allow(),
+        # Compound rewrite: only the JSON occurrence changes; its sibling stays byte-identical.
+        Input(command="gh pr list --json number; printf 'keep  two spaces'"): Rewrite(
+            pattern="format -- gh pr list --json number; printf 'keep  two spaces'"
+        ),
+        # Re-evaluating a previously spliced occurrence is a no-op even though its args retain --json.
+        Input(command="ccx format -- gh pr list --json x; printf done"): Allow(),
+        # A plain single command keeps the original whole-command rewrite behavior.
+        Input(command="gh issue list --json number,title"): Rewrite(
+            pattern="format -- gh issue list --json number,title"
+        ),
         # `ccx exec` pass-through is deliberate: the script is one opaque token, so a
         # `--json` inside it never reads as this command's own JSON-output flag.
         Input(

@@ -12,16 +12,13 @@ from captain_hook import (
     Block,
     CommandLine,
     CustomCommandLineCondition,
-    Event,
-    HookResponse,
     Input,
     PreToolUseEvent,
     Rewrite,
-    Tool,
-    on,
+    rewrite_command_occurrences,
 )
 
-from .common import LARGE_READ_BYTES, LITERAL_SAFE, carries_expansion, is_single_command
+from .common import LARGE_READ_BYTES, LITERAL_SAFE, carries_expansion
 from .search_common import (
     CONTEXT_SHORT,
     GrepCall,
@@ -34,12 +31,11 @@ from .search_common import (
     note_text,
     path_blocked,
     search_block,
-    unpiped,
     unquote,
 )
 
 if TYPE_CHECKING:
-    from cc_transcript.command import Command
+    from cc_transcript.command import Command, Occurrence
 
 
 # grep flags ccx code grep subsumes as no-ops on its literal, always-recursive, line-numbered
@@ -236,18 +232,20 @@ def translate_pattern(pattern: str, ere: bool) -> str | None:
     return "".join(out) if depth == 0 else None
 
 
-def grep_parse(cl: CommandLine) -> GrepCall | None:
-    """Parse an unpiped ``grep`` into its ccx-rewritable shape, or ``None`` to fall back to block.
+def grep_parse(occ: Occurrence) -> GrepCall | None:
+    """Parse one direct, unpiped ``grep`` occurrence into its ccx-rewritable shape.
 
-    Rewrites only a single command whose flags all fall in the DROP/MAP sets and whose one
-    pattern is a plain literal (:data:`LITERAL_SAFE`). Anything regex-shaped, exit-code /
-    output-mode oriented (``-c -q -o -v -L -x``), alternate-engine (``-E -P -G``), multi-pattern
-    (repeated ``-e``), or reaching outside the repo (absolute / ``~`` / ``..`` path) blocks. A
-    value-taking short glued into a bundle (``-rnC3``) blocks too — bundles are DROP-only.
+    Rewrites only a direct invocation whose flags all fall in the DROP/MAP sets and whose one pattern
+    is a plain literal (:data:`LITERAL_SAFE`). A pipe-sink occurrence and a wrapper-prefixed grep
+    decline here. Dialect-divergent/exotic regexes, exit-code / output-mode shapes
+    (``-c -q -o -v -L -x``), PCRE (``-P``), multi-pattern searches (repeated ``-e``), or paths
+    reaching outside the repo (absolute / ``~`` / ``..``) block. A value-taking short glued into a
+    bundle (``-rnC3``) blocks too — bundles are DROP-only.
     """
-    if not is_single_command(cl):
+    cmd = occ.command
+    if occ.prev_op == "|" or cmd.executable != "grep":
         return None
-    args = cl.primary.args
+    args = cmd.args
     pattern: str | None = None
     e_count = 0
     include: str | None = None
@@ -403,13 +401,19 @@ def grep_parse(cl: CommandLine) -> GrepCall | None:
     )
 
 
-def grep_to(evt: BaseHookEvent) -> str | None:
-    parsed = grep_parse(evt.command_line)
+def grep_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
+    if grep_occurrence_expands(occ.command):
+        return None
+    parsed = grep_parse(occ)
     return build_ccx_grep(parsed) if parsed is not None else None
 
 
-def grep_note(evt: BaseHookEvent) -> str:
-    return note_text(evt.command, grep_parse(evt.command_line))
+def grep_note(evt: BaseHookEvent, pairs: list[tuple[Occurrence, str]]) -> str:
+    return "\n".join(
+        note_text(occ.command.raw, parsed)
+        for occ, _ in pairs
+        if (parsed := grep_parse(occ)) is not None
+    )
 
 
 def bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
@@ -596,66 +600,64 @@ def grep_occurrence_expands(cmd: Command) -> bool:
 
 
 class GrepFlood(CustomCommandLineCondition):
-    """Matches a file-search ``grep`` unless every ``grep`` occurrence is a bounded search ccx can't rewrite.
+    """Match a line carrying an actionable unpiped ``grep`` occurrence.
 
-    Fires so the hook rewrites it (``grep_to`` yields the command) or blocks it (``grep_to`` yields
-    ``None``, or :func:`grep_guard` forfeits the rewrite for an expansion). The ``unpiped`` guard keeps
-    a line with no unpiped ``grep`` out of scope (a pure ``… | grep`` filter). Once in scope it stays
-    silent only when *every* ``grep`` on the line — sink greps included, since a sink grep with file
-    operands ignores stdin and searches those files — is a bounded explicit-files or data-file grep
-    (:func:`bounded_file_grep`). Shell expansion no longer exempts an occurrence from the flood check:
-    an expansion forfeits only the rewrite (:func:`grep_occurrence_expands`), so a ``~``/``$`` or
-    ``$(...)`` occurrence that is not bounded still blocks, and a bounded data-file operand carrying an
-    expansion still allows. The per-occurrence walk means one occurrence never launders a sibling
-    tree-wide grep — that sibling still blocks.
+    A pure ``… | grep`` filter stays outside the registration because its zero-rewrite fallback carries
+    a block. Direct rewritable greps activate the splice lane; an unrewritable grep activates the block
+    lane only when it is not a bounded explicit-file/data-file search. Matching through
+    ``cmd.unwrapped`` makes wrapper prefixes transparent to the condition, while :func:`grep_to` remains
+    direct-only so a qualifying wrapped grep blocks instead of silently dropping its wrapper.
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        if not unpiped(cl, "grep"):
-            return False
-        if grep_to(evt) is not None and not grep_occurrence_expands(cl.primary):
-            return True
-        return any(
-            not bounded_file_grep(cmd, sink=i > 0 and cl.parts[i - 1][1] == "|")
-            for i, (cmd, _) in enumerate(cl.parts)
-            if cmd.executable == "grep"
+        greps = [occ for occ in cl.occurrences if occ.command.unwrapped.executable == "grep"]
+        return any(occ.prev_op != "|" for occ in greps) and any(
+            (occ.prev_op != "|" and grep_to(evt, occ) is not None)
+            or not bounded_file_grep(occ.command.unwrapped, sink=occ.prev_op == "|")
+            for occ in greps
         )
 
 
-def grep_guard(evt: PreToolUseEvent) -> HookResponse:
-    """Rewrite a bounded literal/simple-regex grep to ``ccx code grep``; block the rest, transcript-steered.
+def grep_block_if(evt: BaseHookEvent, occ: Occurrence) -> bool:
+    """Whether one qualifying grep must block instead of rewrite or run bounded.
 
-    The custom-handler form (over the declarative ``rewrite_command(block=…)``) is what lets the block
-    message be computed per event: :func:`~hooks.search_common.search_block` swaps in the cc-transcript
-    steer for a transcript operand and otherwise keeps the grep message verbatim. A primary carrying a
-    shell expansion forfeits the rewrite (a spliced ``~``/``$`` freezes; a dropped ``$(...)`` widens the
-    search repo-wide), so the guard blocks rather than emit a corrupt rewrite.
+    ``block_if`` sees span-less occurrences that :func:`grep_to` never receives, so the span is checked
+    here. A direct rewritable grep proceeds to the splice lane. A bounded, unrewritable grep remains a
+    standalone allow because :class:`GrepFlood` does not activate for it; if a sibling activates the
+    lane, it blocks here rather than execute beside a partial rewrite, preserving the old whole-line
+    verdict.
     """
-    new = None if grep_occurrence_expands(evt.command_line.primary) else grep_to(evt)
-    if new is None:
-        return evt.block(
-            search_block(
-                evt,
-                "grep",
-                grep_operands,
-                "BLOCKED: raw `grep` for file search floods context. "
-                "Use `ccx code grep <text>` (mcp__cc-context__ccx_code_grep) / `ccx code search` "
-                "(mcp__cc-context__ccx_code_search) for code; the "
-                "built-in Grep tool or `rg` for literal content in non-source files. "
-                "Simple literal and simple-regex greps auto-rewrite to `ccx code grep`; a grep whose explicit "
-                "targets are all data files (`.log`/`.json`/`.yaml`/…) or existing files under the size cap "
-                "(count/quiet/list-only greps — `-c`/`-q`/`-l`/`-L` — run regardless of size) runs "
-                "as-is, even inside pipes and `&&`/`;` chains. This one didn't qualify — a tree-wide or directory "
-                "search, a recursive flag, an unmappable flag, or an over-cap/missing source-file target. "
-                "Escape hatch: pipe input into it (`… | grep`).",
-            )
-        )
-    return evt.rewrite_command(new, note=grep_note(evt))
+    cmd = occ.command
+    if (inner := cmd.unwrapped).executable != "grep" or cmd.span is None:
+        return inner.executable == "grep"
+    return grep_to(evt, occ) is None
 
 
-on(
-    Event.PreToolUse,
-    only_if=[Tool("Bash"), GrepFlood()],
+def grep_block(evt: PreToolUseEvent, cl: CommandLine) -> str:
+    return search_block(
+        evt,
+        "grep",
+        grep_operands,
+        "BLOCKED: raw `grep` for file search floods context. "
+        "Use `ccx code grep <text>` (mcp__cc-context__ccx_code_grep) / `ccx code search` "
+        "(mcp__cc-context__ccx_code_search) for code; the "
+        "built-in Grep tool or `rg` for literal content in non-source files. "
+        "Simple literal and simple-regex greps auto-rewrite to `ccx code grep`; a grep whose explicit "
+        "targets are all data files (`.log`/`.json`/`.yaml`/…) or existing files under the size cap "
+        "(count/quiet/list-only greps — `-c`/`-q`/`-l`/`-L` — run regardless of size) runs "
+        "as-is, even inside pipes and `&&`/`;` chains. This one didn't qualify — a tree-wide or directory "
+        "search, a recursive flag, an unmappable flag, or an over-cap/missing source-file target. "
+        "Escape hatch: pipe input into it (`… | grep`).",
+        cl=cl,
+    )
+
+
+rewrite_command_occurrences(
+    only_if=[GrepFlood()],
+    to=grep_to,
+    block_if=grep_block_if,
+    block=grep_block,
+    note=grep_note,
     tests={
         # Rewrite — disk-independent shapes only (repo-wide, `.` widens, include-only). Path→glob
         # shapes classify each operand against the filesystem, so they live in test_grep_guards.py
@@ -664,6 +666,7 @@ on(
         Input(command="grep -rn --include='*.go' foo ."): Rewrite(pattern="--glob '*.go'"),  # `.` + include → repo-wide glob
         Input(command="grep -rl foo ."): Rewrite(pattern="code grep foo"),  # -l is a no-op; `.` → repo-wide
         Input(command="grep -rn foo . src/"): Rewrite(pattern="code grep foo"),  # `.` sibling widens to whole repo, no --glob
+        Input(command="echo x; grep -r foo ."): Rewrite(pattern="echo x; "),  # splice only grep; sibling stays byte-identical
         # Regex rewrites — a validator-cleared pattern maps onto `ccx code grep --regex` (disk-independent
         # `.` widening; the --regex probe hits the real plugin/bin/ccx, which supports it since v0.11.0):
         Input(command="grep 'foo.*' ."): Rewrite(pattern="--regex"),  # BRE-safe metachars → regex on rg engine
@@ -704,6 +707,7 @@ on(
         Input(command="grep -i points data.json && grep foo ."): Block(),  # data-file grep + a `.` tree search
         Input(command="grep -r foo logs.json"): Block(),  # -r forfeits the data-ext textual escape
         Input(command="echo hi; grep -o foo"): Block(),  # no operand in a compound → not bounded
+        Input(command="echo x; grep -c foo ."): Block(),  # one flooding grep blocks the whole compound line
         # -o forfeits the STAT lane (per-match prefixes multiply output); data-ext keeps -o (above):
         Input(command="grep -o localhost /etc/hosts"): Block(),  # -o floods the stat path on a non-data file
         Input(command="grep -oHnb . AGENTS.md"): Block(),  # -oHnb = filename/line/byte prefixes per match on a source file
@@ -733,8 +737,8 @@ on(
         Input(command="grep foo $d/host.go; grep bar ."): Block(pattern="floods context"),
         # Mixed transcript + flood: the block carries BOTH the default steer and the cc-transcript line.
         Input(command="grep foo ~/.claude/projects/main.jsonl; grep bar ."): Block(pattern="cc-transcript"),
-        # WONTFIX (unchanged): `grep foo foo~bar.go` allows via the bounded-file stat lane (mid-token `~` is literal).
-        Input(command="sudo grep foo ."): Allow(),  # WONTFIX fail-open: launder wrapper's non-grep exe → unpiped() misses
+        Input(command="sudo grep foo ."): Block(),  # Approved wrapper-transparency decision (2026-07-17).
+        Input(command="timeout 10 grep foo ."): Block(),  # Approved wrapper-transparency decision (2026-07-17).
         # Existing Allow neighbors — condition unchanged (piped grep, non-grep, ccx exec):
         Input(command="ls | grep foo"): Allow(),
         Input(command="cat x | grep foo | sort"): Allow(),
@@ -751,4 +755,4 @@ on(
             "asyncio.run(main())\nPY"
         ): Allow(),
     },
-)(grep_guard)
+)
