@@ -11,6 +11,7 @@ import asyncio
 import json
 import math
 import os
+import re
 import sys
 import threading
 import traceback
@@ -29,6 +30,11 @@ ARG_CEILING = 64 << 20
 MAX_DEPTH = 64  # wire nesting cap, mirrored in value.go maxWireDepth
 STDOUT_CAP = 8 << 20  # print noise truncates; the marker names the cut
 VALUE_CAP = 32 << 20  # encoded final value; truncating one would corrupt it, so over-cap errors
+
+# Matches the [ccx:CODE] wire tag the host-result site prefixes onto a raised
+# error; the terminal handler extracts the code and strips the tag (and one
+# trailing space) from the reported message.
+CODE_TAG = re.compile(r"\[ccx:([a-z_]+)\] ?")
 
 # Lambdas resolve decode at call time, so the table can precede its definition.
 TAGS = {
@@ -140,7 +146,14 @@ class Host:
                 send({"t": "call", "id": self.last_id, **body})
             result = await fut
             if not result.get("ok"):
-                raise RuntimeError(result.get("error") or f"host call {name} failed")
+                message = result.get("error") or f"host call {name} failed"
+                # [ccx:CODE] is a wire tag driver.py both writes here and reads
+                # at the terminal handler — not cross-boundary string-matching.
+                # Known leak: a script that stringifies the caught error sees it.
+                code = result.get("err_code")
+                if code:
+                    message = f"[ccx:{code}] {message}"
+                raise RuntimeError(message)
             return decode(result.get("value"))
 
         return call
@@ -196,7 +209,13 @@ async def main():
             print_callback=collect,
         )
     except MontyRuntimeError as e:
-        finish({"t": "done", "ok": False, "phase": "run", "error": str(e)})
+        message = str(e)
+        frame = {"t": "done", "ok": False, "phase": "run", "error": message}
+        m = CODE_TAG.search(message)
+        if m:
+            frame["err_code"] = m.group(1)
+            frame["error"] = CODE_TAG.sub("", message, count=1)
+        finish(frame)
     except BaseException:
         crash()
     try:

@@ -2,11 +2,14 @@ package codeexec
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
@@ -62,6 +65,113 @@ func TestRuntimeRun(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("Run(%q) = %q, want %q", tt.script, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDoneError proves a failed done frame wraps ErrNotFound only for the
+// "not_found" wire code; empty and unknown codes stay plain errors, and the
+// phase-prefixed message is preserved either way. No sandbox, so no uv gate.
+func TestDoneError(t *testing.T) {
+	tests := []struct {
+		name         string
+		frame        *driverFrame
+		wantMsg      string
+		wantNotFound bool
+	}{
+		{
+			"not_found wraps sentinel",
+			&driverFrame{Phase: "run", Error: `read "/x": path not found`, ErrCode: "not_found"},
+			`run: read "/x": path not found: not found`,
+			true,
+		},
+		{
+			"empty code plain error",
+			&driverFrame{Phase: "run", Error: "ValueError: boom"},
+			"run: ValueError: boom",
+			false,
+		},
+		{
+			"unknown code plain error",
+			&driverFrame{Phase: "run", Error: "weird", ErrCode: "teapot"},
+			"run: weird",
+			false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := doneError(tt.frame)
+			if err.Error() != tt.wantMsg {
+				t.Errorf("doneError() = %q, want %q", err, tt.wantMsg)
+			}
+			if got := errors.Is(err, ErrNotFound); got != tt.wantNotFound {
+				t.Errorf("errors.Is(err, ErrNotFound) = %t, want %t", got, tt.wantNotFound)
+			}
+		})
+	}
+}
+
+// TestRunHostErrorCodes proves the not_found code survives the full sandbox
+// round-trip: an uncaught host not-found wraps ErrNotFound (exit 3), a caught
+// one that continues succeeds (exit 0), and a script that raises its own error
+// stays plain (exit 1) with no tag leak.
+func TestRunHostErrorCodes(t *testing.T) {
+	requireUV(t)
+	rt := NewRuntime(map[string]HostFunc{
+		"missing": func(context.Context, Call) (any, error) {
+			return nil, fmt.Errorf(`read "/nope": %w`, backend.ErrPathNotFound)
+		},
+	})
+	tests := []struct {
+		name         string
+		script       string
+		wantErr      bool
+		wantNotFound bool
+		wantContains []string
+	}{
+		{
+			name:         "uncaught not_found wraps sentinel",
+			script:       "import asyncio\nasyncio.run(missing())",
+			wantErr:      true,
+			wantNotFound: true,
+			wantContains: []string{"run:", "path not found"},
+		},
+		{
+			name:    "caught and continued succeeds",
+			script:  "import asyncio\nasync def main():\n    try:\n        await missing()\n    except Exception:\n        return \"recovered\"\nasyncio.run(main())",
+			wantErr: false,
+		},
+		{
+			name:         "raises own error stays plain",
+			script:       "import asyncio\nasync def main():\n    try:\n        await missing()\n    except Exception:\n        raise ValueError(\"boom\")\nasyncio.run(main())",
+			wantErr:      true,
+			wantNotFound: false,
+			wantContains: []string{"ValueError", "boom"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := rt.Run(context.Background(), tt.script, 0)
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("Run(%q) error: %v", tt.script, err)
+				}
+				if got != "recovered" {
+					t.Errorf("Run(%q) = %q, want %q", tt.script, got, "recovered")
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Run(%q) = nil error, want failure", tt.script)
+			}
+			if got := errors.Is(err, ErrNotFound); got != tt.wantNotFound {
+				t.Errorf("errors.Is(err, ErrNotFound) = %t, want %t (err %q)", got, tt.wantNotFound, err)
+			}
+			for _, w := range tt.wantContains {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error %q missing %q", err, w)
+				}
 			}
 		})
 	}

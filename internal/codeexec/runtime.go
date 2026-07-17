@@ -9,6 +9,7 @@ package codeexec
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -22,6 +23,10 @@ import (
 // runTimeout bounds one Run end to end: driver spawn (a cold uv cache
 // downloads the wheel), the sandbox's own duration limit, and host calls.
 const runTimeout = 3 * time.Minute
+
+// ErrNotFound reports an uncaught host call that resolved to nothing; cli.ExitCode
+// matches it to map the run to exit 3 (codeexec cannot import cli).
+var ErrNotFound = errors.New("not found")
 
 // Runtime executes scripts against a fixed registry of host functions.
 type Runtime struct {
@@ -63,13 +68,22 @@ func (rt *Runtime) Run(ctx context.Context, script string, budget int) (string, 
 		return "", err
 	}
 	if !done.OK {
-		return "", fmt.Errorf("%s: %s", done.Phase, done.Error)
+		return "", doneError(done)
 	}
 	val, err := decodeValue(done.Value)
 	if err != nil {
 		return "", fmt.Errorf("codeexec: decode result value: %w", err)
 	}
 	return render.Cap(rendered(val, done.Stdout), budget), nil //nolint:contextcheck // format.Convert pins its own engine deadlines, deliberately decoupled from caller cancellation (see format.loadEngine)
+}
+
+// doneError shapes a failed done frame into an error, wrapping ErrNotFound when
+// the driver tagged the run "not_found" so cli.ExitCode maps it to exit 3.
+func doneError(done *driverFrame) error {
+	if done.ErrCode == "not_found" {
+		return fmt.Errorf("%s: %s: %w", done.Phase, done.Error, ErrNotFound)
+	}
+	return fmt.Errorf("%s: %s", done.Phase, done.Error)
 }
 
 // stubs renders one untyped async stub per host function; untyped so the

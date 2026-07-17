@@ -3,12 +3,17 @@ package codeexec
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
+
+	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/symbol"
+	"github.com/yasyf/cc-context/internal/web"
 )
 
 // hostCallValve caps a single host call's string return, so one careless call
@@ -31,26 +36,29 @@ type initFrame struct {
 }
 
 // resultFrame answers one call frame; ok false raises Error into the sandbox.
+// ErrCode carries an errors.Is identity across the boundary as a category.
 type resultFrame struct {
-	ID    int64           `json:"id"`
-	OK    bool            `json:"ok"`
-	Value json.RawMessage `json:"value,omitempty"`
-	Error string          `json:"error,omitempty"`
+	ID      int64           `json:"id"`
+	OK      bool            `json:"ok"`
+	Value   json.RawMessage `json:"value,omitempty"`
+	Error   string          `json:"error,omitempty"`
+	ErrCode string          `json:"err_code,omitempty"`
 }
 
 // driverFrame is any line the driver writes: t is "ready", "call", or "done",
 // with the remaining fields populated per type.
 type driverFrame struct {
-	T      string                     `json:"t"`
-	ID     int64                      `json:"id"`
-	Fn     string                     `json:"fn"`
-	Args   []json.RawMessage          `json:"args"`
-	Kwargs map[string]json.RawMessage `json:"kwargs"`
-	OK     bool                       `json:"ok"`
-	Phase  string                     `json:"phase"`
-	Value  json.RawMessage            `json:"value"`
-	Error  string                     `json:"error"`
-	Stdout string                     `json:"stdout"`
+	T       string                     `json:"t"`
+	ID      int64                      `json:"id"`
+	Fn      string                     `json:"fn"`
+	Args    []json.RawMessage          `json:"args"`
+	Kwargs  map[string]json.RawMessage `json:"kwargs"`
+	OK      bool                       `json:"ok"`
+	Phase   string                     `json:"phase"`
+	Value   json.RawMessage            `json:"value"`
+	Error   string                     `json:"error"`
+	ErrCode string                     `json:"err_code"`
+	Stdout  string                     `json:"stdout"`
 }
 
 // pump drives one run over the driver's stream: it writes the init frame,
@@ -121,7 +129,7 @@ func dispatch(ctx context.Context, funcs map[string]HostFunc, f driverFrame) res
 	}
 	val, err := fn(ctx, call)
 	if err != nil {
-		return resultFrame{ID: f.ID, Error: err.Error()}
+		return resultFrame{ID: f.ID, Error: err.Error(), ErrCode: errCode(err)}
 	}
 	// Reject an oversized raw string/[]byte before encoding it, then re-check
 	// the encoded size so structured returns (map/slice) hit the valve too —
@@ -137,6 +145,16 @@ func dispatch(ctx context.Context, funcs map[string]HostFunc, f driverFrame) res
 		return valveExceeded(f.ID, len(enc))
 	}
 	return resultFrame{ID: f.ID, OK: true, Value: enc}
+}
+
+// errCode maps a host error to a wire category preserving its errors.Is
+// identity across the boundary; the not-found sentinels give "not_found".
+func errCode(err error) string {
+	if errors.Is(err, backend.ErrPathNotFound) ||
+		errors.Is(err, symbol.ErrNotFound) || errors.Is(err, web.ErrGone) {
+		return "not_found"
+	}
+	return ""
 }
 
 func valveExceeded(id int64, size int) resultFrame {

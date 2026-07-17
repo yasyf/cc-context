@@ -11,6 +11,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/symbol"
+	"github.com/yasyf/cc-context/internal/web"
 )
 
 // fakeDriver stands in for the Python child in pump tests: calls go out
@@ -119,6 +123,67 @@ func TestPumpParallelDispatch(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&calls); got != n {
 		t.Errorf("host call invocations = %d, want %d", got, n)
+	}
+}
+
+// TestErrCode proves the not-found sentinels map to the "not_found" wire code
+// (through wrapping) and everything else to the empty code.
+func TestErrCode(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"path not found", backend.ErrPathNotFound, "not_found"},
+		{"wrapped path not found", fmt.Errorf("read: %w", backend.ErrPathNotFound), "not_found"},
+		{"symbol not found", symbol.ErrNotFound, "not_found"},
+		{"web gone", web.ErrGone, "not_found"},
+		{"generic error", errors.New("boom"), ""},
+		{"nil", nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := errCode(tt.err); got != tt.want {
+				t.Errorf("errCode(%v) = %q, want %q", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDispatchErrCode proves dispatch stamps the wire code onto a failed result
+// frame (and leaves it empty on success), preserving the raw error message.
+func TestDispatchErrCode(t *testing.T) {
+	tests := []struct {
+		name     string
+		ret      any
+		err      error
+		wantOK   bool
+		wantCode string
+	}{
+		{"path not found tags not_found", nil, backend.ErrPathNotFound, false, "not_found"},
+		{"symbol not found tags not_found", nil, symbol.ErrNotFound, false, "not_found"},
+		{"generic error no code", nil, errors.New("boom"), false, ""},
+		{"success no code", "ok", nil, true, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			funcs := map[string]HostFunc{
+				"fn": func(context.Context, Call) (any, error) { return tt.ret, tt.err },
+			}
+			res := dispatch(context.Background(), funcs, driverFrame{ID: 7, Fn: "fn"})
+			if res.OK != tt.wantOK {
+				t.Errorf("OK = %t, want %t", res.OK, tt.wantOK)
+			}
+			if res.ErrCode != tt.wantCode {
+				t.Errorf("ErrCode = %q, want %q", res.ErrCode, tt.wantCode)
+			}
+			if res.ID != 7 {
+				t.Errorf("ID = %d, want 7", res.ID)
+			}
+			if tt.err != nil && res.Error != tt.err.Error() {
+				t.Errorf("Error = %q, want %q", res.Error, tt.err.Error())
+			}
+		})
 	}
 }
 

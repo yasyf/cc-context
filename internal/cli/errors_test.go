@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/codeexec"
 )
 
 func TestExitCode(t *testing.T) {
@@ -23,6 +24,8 @@ func TestExitCode(t *testing.T) {
 		{"wrapped not found", fmt.Errorf("locate %q: %w", "nope", ErrNotFound), 3},
 		{"path not found", backend.ErrPathNotFound, 3},
 		{"wrapped path not found", fmt.Errorf("read: %w", backend.ErrPathNotFound), 3},
+		{"codeexec not found", codeexec.ErrNotFound, 3},
+		{"wrapped codeexec not found", fmt.Errorf("run: %w", codeexec.ErrNotFound), 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
