@@ -1,1 +1,1 @@
-{"v":1,"lamport":3,"session":"22c5cfe6-e27f-4c38-9f84-2ae34c09e42e","ops":[{"kind":"set_criterion_status","id":"150c82b12903e1e555aa60008d487d26","status":"met"}]}
+{"v":1,"lamport":4,"session":"22c5cfe6-e27f-4c38-9f84-2ae34c09e42e","ops":[{"kind":"add_comment","body":"Resolved by deletion in the tilth rip-and-replace: read went native in v0.23.0 (no polymorphic query dispatch to misroute; paths validate pre-dispatch), tilth removed entirely in v0.25.0. Regression row 'spaced extensionless path reads as a file' shipped in 909de4e8b8ac."}]}
