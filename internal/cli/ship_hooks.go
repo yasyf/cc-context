@@ -83,18 +83,7 @@ func shipHasHookConfig(root string) bool {
 	return false
 }
 
-// shipHookFiles lists the root-relative files ship is about to commit, for
-// scoping the prek run. JJ: `jj diff --name-only` with its working directory
-// pinned to root (jj emits cwd-relative paths; scoped o.paths are rebased to
-// match) — the call also snapshots @ and, colocated, syncs the git index, which
-// is what makes new files visible to prek. Git: NUL-delimited
-// `git diff --cached --name-only --diff-filter=d` after shipGitAdd; git output
-// is root-relative from any cwd. The existence filter drops jj-tracked deletions
-// but keeps broken symlinks; a jj filename containing a newline splits and is
-// dropped (git's NUL lane is immune) — accepted, like leading-dash names. For
-// --amend this lists what is being folded; unchanged files already in the
-// amended commit are not re-hooked.
-func shipHookFiles(ctx context.Context, root string, kind vcs.Kind, o shipOpts) ([]string, error) {
+func shipChangedPaths(ctx context.Context, root string, kind vcs.Kind, o shipOpts) ([]string, error) {
 	var out string
 	switch kind {
 	case vcs.JJ:
@@ -135,6 +124,29 @@ func shipHookFiles(ctx context.Context, root string, kind vcs.Kind, o shipOpts) 
 		if line == "" {
 			continue
 		}
+		files = append(files, line)
+	}
+	return files, nil
+}
+
+// shipHookFiles lists the root-relative files ship is about to commit, for
+// scoping the prek run. JJ: `jj diff --name-only` with its working directory
+// pinned to root (jj emits cwd-relative paths; scoped o.paths are rebased to
+// match) — the call also snapshots @ and, colocated, syncs the git index, which
+// is what makes new files visible to prek. Git: NUL-delimited
+// `git diff --cached --name-only --diff-filter=d` after shipGitAdd; git output
+// is root-relative from any cwd. The existence filter drops jj-tracked deletions
+// but keeps broken symlinks; a jj filename containing a newline splits and is
+// dropped (git's NUL lane is immune) — accepted, like leading-dash names. For
+// --amend this lists what is being folded; unchanged files already in the
+// amended commit are not re-hooked.
+func shipHookFiles(ctx context.Context, root string, kind vcs.Kind, o shipOpts) ([]string, error) {
+	changed, err := shipChangedPaths(ctx, root, kind, o)
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, line := range changed {
 		if _, err := os.Lstat(filepath.Join(root, line)); err != nil {
 			continue
 		}

@@ -21,10 +21,14 @@ import (
 )
 
 const (
-	shipSep                 = " · "
-	shipLogBudget           = 2000
-	shipCIQuietPolls        = 2
-	jjNearestBookmarkRevset = "heads(::@- & bookmarks())"
+	shipSep          = " · "
+	shipLogBudget    = 2000
+	shipCIQuietPolls = 2
+
+	// Pre-commit @ is the commit-to-be, so ::@ here matches what ::@- matched
+	// post-commit. A partial jj squash keeps bookmarks on the remainder @; the
+	// push phase's post-commit ancestry and rebase checks handle that state.
+	jjNearestBookmarkRevset = "heads(::@ & bookmarks())"
 	jjDescribeTemplate      = `commit_id.short() ++ "\n" ++ description.first_line()`
 	jjBookmarkTemplate      = `local_bookmarks.map(|b| b.name()).join(" ") ++ " "`
 	jjTrunkBookmarkTemplate = `remote_bookmarks.map(|b| b.name()).join(" ") ++ " "`
@@ -33,6 +37,7 @@ const (
 	jjConflictRevsetFmt     = `conflicts() & (bookmarks(exact:%q)..@-)::`
 	jjStackLineTemplate     = `commit_id.short() ++ " " ++ description.first_line() ++ "\n"`
 	jjOpIDTemplate          = `id`
+	jjAtStateTemplate       = `parents.len()`
 )
 
 var (
@@ -104,7 +109,7 @@ func newShipCmd() *cobra.Command {
 		Short: "Commit, push, and watch CI in one step",
 		Long: `Commit, push, and watch CI in one step.
 
-On a jj repo, ship fetches from the remote first and, when the target bookmark is no longer an ancestor of the local stack, rebases the stack onto it before advancing and pushing; a rebase that would conflict is rolled back and reported instead of pushed.`,
+Ship refuses an empty working copy (the usual cause: a prior ship already landed the commit in @-) and resolves the push target before committing, so a refusal leaves the working copy untouched. On a jj repo, ship fetches from the remote first and, when the target bookmark is no longer an ancestor of the local stack, rebases the stack onto it after committing; a rebase that would conflict is rolled back and reported instead of pushed.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			o.paths = args
@@ -145,6 +150,18 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 			return err
 		}
 	}
+	var target string
+	if !o.noPush {
+		target, err = shipPreflight(ctx, kind, o)
+		if err != nil {
+			return err
+		}
+	}
+	if kind == vcs.JJ && sel == nil && !o.amend {
+		if err := shipRefuseEmptyJJ(ctx, root, o, target); err != nil {
+			return err
+		}
+	}
 
 	hookSeg, err := shipCommit(ctx, cmd.ErrOrStderr(), root, kind, o, sel)
 	if err != nil {
@@ -168,7 +185,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		return nil
 	}
 
-	branch, rebased, err := shipPush(ctx, kind, o)
+	branch, rebased, err := shipPush(ctx, kind, o, target)
 	if err != nil {
 		return err
 	}
@@ -370,60 +387,84 @@ func shipDescribe(ctx context.Context, kind vcs.Kind) (short, subject string, er
 }
 
 func splitDescribe(out, sep string) (string, string, error) {
-	parts := strings.SplitN(strings.TrimRight(out, "\n"), sep, 2)
+	parts := strings.SplitN(out, sep, 2)
 	if len(parts) != 2 {
 		return "", "", fmt.Errorf("ship: malformed commit description %q", out)
 	}
-	return parts[0], parts[1], nil
+	return strings.TrimRight(parts[0], "\n"), strings.TrimRight(parts[1], "\n"), nil
 }
 
-func shipPush(ctx context.Context, kind vcs.Kind, o shipOpts) (string, int, error) {
+func shipRefuseEmptyJJ(ctx context.Context, root string, o shipOpts, target string) error {
+	paths, err := shipChangedPaths(ctx, root, vcs.JJ, o)
+	if err != nil {
+		return err
+	}
+	if len(paths) > 0 {
+		return nil
+	}
+	state, err := render.RunCLI(ctx, "jj", []string{"log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate})
+	if err != nil {
+		return fmt.Errorf("ship: jj working-copy state: %w", err)
+	}
+	var parents int
+	if _, err := fmt.Sscan(state, &parents); err != nil {
+		return fmt.Errorf("ship: malformed jj working-copy state %q: %w", state, err)
+	}
+	if parents > 1 {
+		return nil
+	}
+	short, subject, err := shipDescribe(ctx, vcs.JJ)
+	if err != nil {
+		return err
+	}
+	scope := ""
+	if len(o.paths) > 0 {
+		scope = " in " + strings.Join(o.paths, ", ")
+	}
+	hint := ""
+	if target != "" {
+		hint = fmt.Sprintf(" push it: jj bookmark move exact:%s --to @- && jj git push --bookmark exact:%s", target, target)
+	}
+	return fmt.Errorf("ship: nothing to commit%s — did a prior ship already land %s %q?%s", scope, short, subject, hint)
+}
+
+func shipPreflight(ctx context.Context, kind vcs.Kind, o shipOpts) (string, error) {
 	switch kind {
 	case vcs.JJ:
-		return shipPushJJ(ctx, o)
+		return shipPreflightJJ(ctx, o)
 	case vcs.Git:
-		branch, err := shipPushGit(ctx, o.amend)
-		return branch, 0, err
+		return shipPreflightGit(ctx)
 	default:
-		return "", 0, errors.New("ship: push: unsupported vcs")
+		return "", errors.New("ship: push: unsupported vcs")
 	}
 }
 
-func shipPushJJ(ctx context.Context, o shipOpts) (string, int, error) {
-	if _, err := render.RunCLI(ctx, "jj", []string{"git", "fetch"}); err != nil {
-		return "", 0, fmt.Errorf("ship: jj git fetch: %w", err)
-	}
-
+func shipPreflightJJ(ctx context.Context, o shipOpts) (string, error) {
 	target := o.bookmark
-	diverged := false
 	if target == "" {
 		trunkNames, err := jjTrunkBookmarkNames(ctx)
 		if err != nil {
-			return "", 0, err
+			return "", err
 		}
 		if len(trunkNames) != 1 {
-			return "", 0, fmt.Errorf("ship: cannot resolve the trunk bookmark from %q; pass --bookmark <name>", trunkNames)
+			return "", fmt.Errorf("ship: cannot resolve the trunk bookmark from %q; pass --bookmark <name>", trunkNames)
 		}
 		trunk := trunkNames[0]
 
 		names, err := jjBookmarkNames(ctx, jjNearestBookmarkRevset)
 		if err != nil {
-			return "", 0, err
+			return "", err
 		}
 		switch len(names) {
 		case 0:
-			diverged = true
-		case 1:
-		default:
-			return "", 0, fmt.Errorf("ship: multiple nearest bookmarks %q; pass --bookmark <name> to choose one", strings.Join(names, ", "))
-		}
-		if !diverged && names[0] != trunk {
-			return "", 0, fmt.Errorf("ship: nearest bookmark %q is not trunk %q — pass --bookmark %s to advance it deliberately", names[0], trunk, names[0])
-		}
-		if diverged {
 			target = trunk
-		} else {
+		case 1:
+			if names[0] != trunk {
+				return "", fmt.Errorf("ship: nearest bookmark %q is not trunk %q — pass --bookmark %s to advance it deliberately", names[0], trunk, names[0])
+			}
 			target = names[0]
+		default:
+			return "", fmt.Errorf("ship: multiple nearest bookmarks %q; pass --bookmark <name> to choose one", strings.Join(names, ", "))
 		}
 	}
 
@@ -433,39 +474,77 @@ func shipPushJJ(ctx context.Context, o shipOpts) (string, int, error) {
 	// exact name up front so both fail loudly.
 	heads, err := jjLogLines(ctx, fmt.Sprintf(`bookmarks(exact:%q)`, target))
 	if err != nil {
-		return "", 0, err
+		return "", err
 	}
 	switch {
 	case len(heads) == 0:
-		return "", 0, fmt.Errorf("ship: bookmark %q not found", target)
+		return "", fmt.Errorf("ship: bookmark %q not found", target)
 	case len(heads) > 1:
-		return "", 0, fmt.Errorf("ship: bookmark %q is conflicted (%d heads); resolve it (jj bookmark list --conflicted) before shipping", target, len(heads))
+		return "", fmt.Errorf("ship: bookmark %q is conflicted (%d heads); resolve it (jj bookmark list --conflicted) before shipping", target, len(heads))
+	}
+	return target, nil
+}
+
+func shipPreflightGit(ctx context.Context) (string, error) {
+	out, err := render.RunCLI(ctx, "git", []string{"branch", "--show-current"})
+	if err != nil {
+		return "", fmt.Errorf("ship: git branch --show-current: %w", err)
+	}
+	branch := strings.TrimSpace(out)
+	if branch == "" {
+		return "", errors.New("ship: detached HEAD; no branch to push")
+	}
+	return branch, nil
+}
+
+func shipPush(ctx context.Context, kind vcs.Kind, o shipOpts, target string) (string, int, error) {
+	switch kind {
+	case vcs.JJ:
+		rebased, err := shipPushJJ(ctx, target)
+		return target, rebased, err
+	case vcs.Git:
+		branch, err := shipPushGit(ctx, o.amend)
+		return branch, 0, err
+	default:
+		return "", 0, errors.New("ship: push: unsupported vcs")
+	}
+}
+
+func shipPushJJ(ctx context.Context, target string) (int, error) {
+	if _, err := render.RunCLI(ctx, "jj", []string{"git", "fetch"}); err != nil {
+		return 0, fmt.Errorf("ship: jj git fetch: %w", err)
 	}
 
-	if o.bookmark != "" {
-		ancestors, err := jjBookmarkNames(ctx, fmt.Sprintf(jjAncestorRevsetFmt, target))
-		if err != nil {
-			return "", 0, err
-		}
-		diverged = len(ancestors) == 0
+	heads, err := jjLogLines(ctx, fmt.Sprintf(`bookmarks(exact:%q)`, target))
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case len(heads) == 0:
+		return 0, fmt.Errorf("ship: bookmark %q not found", target)
+	case len(heads) > 1:
+		return 0, fmt.Errorf("ship: bookmark %q is conflicted (%d heads); resolve it (jj bookmark list --conflicted) before shipping", target, len(heads))
 	}
 
+	ancestors, err := jjBookmarkNames(ctx, fmt.Sprintf(jjAncestorRevsetFmt, target))
+	if err != nil {
+		return 0, err
+	}
 	rebased := 0
-	if diverged {
-		var err error
+	if len(ancestors) == 0 {
 		rebased, err = jjRebaseOnto(ctx, target)
 		if err != nil {
-			return "", 0, err
+			return 0, err
 		}
 	}
 
 	if _, err := render.RunCLI(ctx, "jj", []string{"bookmark", "move", "exact:" + target, "--to", "@-"}); err != nil {
-		return "", 0, fmt.Errorf("ship: advance bookmark %q: %w", target, err)
+		return 0, fmt.Errorf("ship: advance bookmark %q: %w", target, err)
 	}
 	if _, err := render.RunCLI(ctx, "jj", []string{"git", "push", "--bookmark", "exact:" + target}); err != nil {
-		return "", 0, fmt.Errorf("ship: jj git push: %w", err)
+		return 0, fmt.Errorf("ship: jj git push: %w", err)
 	}
-	return target, rebased, nil
+	return rebased, nil
 }
 
 func shipPushGit(ctx context.Context, amend bool) (string, error) {

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -140,6 +141,85 @@ func setupLiveJJRepo(t *testing.T, base, current string) string {
 func jjFileShow(t *testing.T, dir, rev string) string {
 	t.Helper()
 	return mustRun(t, dir, "jj", "file", "show", "-r", rev, "--", "f.txt")
+}
+
+func TestShipJJPreflightRefusalAndEmptyGuardLive(t *testing.T) {
+	requireLiveVCS(t, "git", "jj")
+	base := t.TempDir()
+	remote := filepath.Join(base, "remote.git")
+	seed := filepath.Join(base, "seed")
+	clone := filepath.Join(base, "clone")
+	cfg := filepath.Join(t.TempDir(), "jjconfig.toml")
+	if err := os.WriteFile(cfg, []byte("user.name=\"t\"\nuser.email=\"t@t.t\"\n"), 0o600); err != nil {
+		t.Fatalf("write jj config: %v", err)
+	}
+	t.Setenv("JJ_CONFIG", cfg)
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv(envClaudeSessionKey, "")
+
+	mustRun(t, base, "git", "init", "--bare", "--initial-branch=main", remote)
+	if err := os.Mkdir(seed, 0o750); err != nil {
+		t.Fatalf("mkdir seed: %v", err)
+	}
+	mustRun(t, seed, "git", "init", "--initial-branch=main")
+	if err := os.WriteFile(filepath.Join(seed, "f.txt"), []byte("base\n"), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("write base: %v", err)
+	}
+	mustRun(t, seed, "git", "add", "f.txt")
+	mustRun(t, seed, "git", "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-m", "init")
+	mustRun(t, seed, "git", "branch", "dev")
+	mustRun(t, seed, "git", "remote", "add", "origin", remote)
+	mustRun(t, seed, "git", "push", "origin", "main", "dev")
+	mustRun(t, base, "jj", "git", "clone", "--colocate", remote, clone)
+	if err := os.WriteFile(filepath.Join(clone, "f.txt"), []byte("edited\n"), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("write edit: %v", err)
+	}
+	t.Chdir(clone)
+
+	before, err := strconv.Atoi(strings.TrimSpace(mustRun(t, base, "git", "--git-dir="+remote, "rev-list", "--count", "main")))
+	if err != nil {
+		t.Fatalf("parse initial remote commit count: %v", err)
+	}
+	opBefore := strings.TrimSpace(mustRun(t, clone, "jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate))
+	_, err = runShipCmd(t, "-m", "x", "--no-watch")
+	if err == nil || !strings.Contains(err.Error(), "cannot resolve the trunk bookmark") {
+		t.Fatalf("first ship error = %v, want trunk resolution refusal", err)
+	}
+	if diff := mustRun(t, clone, "jj", "diff", "--name-only"); !strings.Contains(diff, "f.txt") {
+		t.Errorf("jj diff after refusal = %q, want f.txt edit", diff)
+	}
+	afterRefusal, err := strconv.Atoi(strings.TrimSpace(mustRun(t, base, "git", "--git-dir="+remote, "rev-list", "--count", "main")))
+	if err != nil {
+		t.Fatalf("parse post-refusal remote commit count: %v", err)
+	}
+	if afterRefusal != before {
+		t.Errorf("remote main count after refusal = %d, want %d", afterRefusal, before)
+	}
+	opAfter := strings.TrimSpace(mustRun(t, clone, "jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate))
+	if opAfter != opBefore {
+		t.Errorf("jj operation after refusal = %q, want unchanged %q", opAfter, opBefore)
+	}
+
+	if _, err := runShipCmd(t, "-m", "x", "--no-watch", "--bookmark", "main"); err != nil {
+		t.Fatalf("second ship error = %v", err)
+	}
+	afterPush, err := strconv.Atoi(strings.TrimSpace(mustRun(t, base, "git", "--git-dir="+remote, "rev-list", "--count", "main")))
+	if err != nil {
+		t.Fatalf("parse post-push remote commit count: %v", err)
+	}
+	if afterPush != before+1 {
+		t.Errorf("remote main count after push = %d, want %d", afterPush, before+1)
+	}
+
+	_, err = runShipCmd(t, "-m", "y", "--no-watch")
+	if err == nil || !strings.Contains(err.Error(), "nothing to commit — did a prior ship already land") {
+		t.Fatalf("third ship error = %v, want empty ship refusal", err)
+	}
+	if !strings.Contains(err.Error(), "jj bookmark move exact:main --to @- && jj git push --bookmark exact:main") {
+		t.Errorf("third ship error = %q, want exact:main push hint", err)
+	}
 }
 
 func TestShipJJHunkScopedLive(t *testing.T) {
