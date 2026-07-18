@@ -50,14 +50,21 @@ def ccx_command(line: CommandLine) -> Command | None:
     """The line's first `ccx` invocation, or None.
 
     Command position is by construction: the parsed :class:`~cc_transcript.CommandLine`
-    surfaces pipeline segments, `&&`/`;` continuations, and `$(…)` substitutions as
-    commands, while an `echo "ccx code outline"` argument never parses as one.
+    surfaces pipeline segments, `&&`/`;` continuations, and — since cc-transcript 14.1 —
+    `$(…)` and backtick command substitutions at every word/argument syntactic position
+    (nested included) as commands, so `echo $(ccx repo overview)` counts while a quoted
+    literal `echo "ccx code outline"` still never parses as one.
     """
     return next((c for c in line.commands if c.executable == "ccx"), None)
 
 
 def heavy_label(line: CommandLine) -> str | None:
-    """The label of the line's first heavy native primitive the ccx guard pack intercepts, or None."""
+    """The label of the line's first heavy native primitive the ccx guard pack intercepts, or None.
+
+    `parts` enumerates substitution-nested commands too (cc-transcript 14.1), so a heavy
+    primitive smuggled through `echo $(git diff HEAD~1)` earns the same label as a
+    top-level one.
+    """
     parts = line.parts
     for i, (c, _op) in enumerate(parts):
         match c.executable:

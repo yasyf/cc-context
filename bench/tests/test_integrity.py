@@ -154,8 +154,9 @@ class TestTasksDirCheatDetection(unittest.TestCase):
 
 
 class TestCommandPositionCcx(unittest.TestCase):
-    """Fix #7: Bash ccx counts only at command position — start of the command or right after a
-    shell separator (optionally preceded by env assignments) — never as an argument to echo."""
+    """Fix #7: Bash ccx counts only at command position — start of the command, right after a
+    shell separator (optionally preceded by env assignments), or inside a command substitution
+    (TestSubstitutionNestedCcx) — never as a literal argument word to echo/printf."""
 
     def test_ccx_as_argument_is_not_a_ccx_use(self) -> None:
         for cmd in ('echo "ccx code outline"', "echo run ccx code outline", "printf 'see ccx'"):
@@ -177,6 +178,29 @@ class TestCommandPositionCcx(unittest.TestCase):
                 self.assertTrue(v.ccx_used, f"{cmd!r} should count as ccx use")
 
 
+class TestSubstitutionNestedCcx(unittest.TestCase):
+    """cc-transcript 14.1: `$(…)` and backtick substitutions at every word/argument position join
+    command enumeration (nested included), so substitution-nested ccx counts as a genuine use —
+    while a quoted literal mention still never does (TestCommandPositionCcx)."""
+
+    CASES = (
+        # (name, command, expected ccx_calls)
+        ("dollar_paren_argument", "echo $(ccx repo overview)", ["bash:ccx repo overview"]),
+        ("backticks_argument", "echo `ccx repo overview`", ["bash:ccx repo overview"]),
+        ("nested_in_host_span", "find . -name $(ccx code grep foo)", ["bash:ccx code grep"]),
+        ("nested_inside_nested_substitution", "echo $(cat $(ccx repo overview))", ["bash:ccx repo overview"]),
+        ("double_quoted_substitution", 'echo "$(ccx code outline x.go)"', ["bash:ccx code outline"]),
+    )
+
+    def test_substitution_nested_ccx_counts(self) -> None:
+        for name, cmd, want_calls in self.CASES:
+            with self.subTest(name=name):
+                v = integrity.assess(pr_from([init_msg([]), bash(cmd), result_msg()]), "ccx-cli", "navigation")
+                self.assertTrue(v.ccx_used, f"{cmd!r} should count as ccx use")
+                self.assertEqual(v.ccx_calls, want_calls)
+                self.assertTrue(v.ok, f"note={v.note!r}")
+
+
 class TestFieldClassification(unittest.TestCase):
     def test_bash_ccx_call_summarized(self) -> None:
         v = integrity.assess(
@@ -188,6 +212,10 @@ class TestFieldClassification(unittest.TestCase):
     def test_heavy_native_call_classified(self) -> None:
         v = integrity.assess(pr_from([init_msg([]), bash("git diff HEAD~1"), result_msg()]), "baseline", "navigation")
         self.assertIn("git-diff", v.native_heavy_calls)
+
+    def test_substitution_nested_heavy_classified(self) -> None:
+        v = integrity.assess(pr_from([init_msg([]), bash("echo $(git diff HEAD~1)"), result_msg()]), "baseline", "navigation")
+        self.assertEqual(v.native_heavy_calls, ["git-diff"])
 
     def test_guard_fired_via_permission_denials(self) -> None:
         # A denied heavy primitive recorded only in permission_denials (no is_error tool_result)
