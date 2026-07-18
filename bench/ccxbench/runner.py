@@ -105,6 +105,16 @@ def main_model_usage(model_usage: Mapping[str, ModelUsage], model: str) -> Model
     return matching[0]
 
 
+def usage_dict(mu: ModelUsage) -> dict[str, int]:
+    """The record-shaped projection of a billed per-model usage — the one codepath writing `usage`."""
+    return {
+        "input": mu.input_tokens,
+        "output": mu.output_tokens,
+        "cache_read": mu.cache_read_input_tokens,
+        "cache_create": mu.cache_creation_input_tokens,
+    }
+
+
 def record_from(pr: PrintResult, cfg: Config, task: Task, arm: str, model: str, repeat: int, workdir: Path) -> dict:
     integ = integrity.assess(pr, arm, task.category)
     graded = grade.grade(task, pr, workdir)
@@ -123,12 +133,7 @@ def record_from(pr: PrintResult, cfg: Config, task: Task, arm: str, model: str, 
         "grade_detail": graded.detail,
         "total_cost_usd": pr.total_cost_usd,
         "num_turns": pr.num_turns,
-        "usage": {
-            "input": mu.input_tokens,
-            "output": mu.output_tokens,
-            "cache_read": mu.cache_read_input_tokens,
-            "cache_create": mu.cache_creation_input_tokens,
-        },
+        "usage": usage_dict(mu),
         "guards_active": arms.guards_available(cfg) if arm in arms.CCX_ARMS else None,
         "integrity": {
             "ok": integ.ok,
@@ -188,7 +193,7 @@ async def run_one(sess: Session, task: Task, arm: str, model: str, repeat: int) 
 
     try:
         pr = parse_print_result(resp.output.raw.encode())
-    except (ValueError, KeyError, StopIteration) as e:
+    except (ValueError, KeyError) as e:
         return attach_discarded(error_record(cfg, task, arm, model, repeat, f"parse failed: {e}"), resp)
 
     record = record_from(pr, cfg, task, arm, model, repeat, workdir)

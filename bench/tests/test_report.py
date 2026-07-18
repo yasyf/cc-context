@@ -20,18 +20,23 @@ from ccxbench.runner import corpus_sha
 from ccxbench.types import Decomposition, TrajectoryMetrics
 
 
-class FakeCounter:
-    """Deterministic stand-in for tokens.TokenCounter (no network)."""
-
-    def count(self, text: str) -> int:
-        return len(text) // 4
-
-
 DEFAULT_INIT = {
     "baseline": {"mcp_servers": [], "plugins": [], "n_tools": 10, "n_skills": 0},
     "ccx-cli": {"mcp_servers": [], "plugins": [], "n_tools": 10, "n_skills": 0},
     "ccx-mcp": {"mcp_servers": ["cc-context"], "plugins": [], "n_tools": 12, "n_skills": 0},
 }
+
+# A real retry-inclusive opus modelUsage (trace-tornado-parse-body ccx-mcp r3): the top-level envelope
+# reported only 86,512 (retry-exclusive); the billed per-model total is 128,550.
+OPUS_MU = {"inputTokens": 6, "cacheReadInputTokens": 114602, "cacheCreationInputTokens": 13153, "outputTokens": 789, "costUSD": 0.208586, "webSearchRequests": 0, "contextWindow": 200000, "maxOutputTokens": 32000}
+HAIKU_MU = {"inputTokens": 586, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0, "outputTokens": 16, "costUSD": 0.000666, "webSearchRequests": 0, "contextWindow": 200000, "maxOutputTokens": 32000}
+
+
+class FakeCounter:
+    """Deterministic stand-in for tokens.TokenCounter (no network)."""
+
+    def count(self, text: str) -> int:
+        return len(text) // 4
 
 
 def _transcript(high_water: int, output: int = 0, tool_chars: int = 0) -> list[dict]:
@@ -645,37 +650,46 @@ class TestRepresentative(unittest.TestCase):
 
 
 def _result_event(model_usage: dict) -> dict:
-    return {"type": "result", "subtype": "success", "modelUsage": model_usage}
+    return {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "num_turns": 1,
+        "total_cost_usd": sum(d["costUSD"] for d in model_usage.values()),
+        "session_id": "test",
+        "usage": {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+        "modelUsage": model_usage,
+        "permission_denials": [],
+    }
 
 
-# A real retry-inclusive opus modelUsage (trace-tornado-parse-body ccx-mcp r3): the top-level envelope
-# reported only 86,512 (retry-exclusive); the billed per-model total is 128,550.
-OPUS_MU = {"inputTokens": 6, "cacheReadInputTokens": 114602, "cacheCreationInputTokens": 13153, "outputTokens": 789, "costUSD": 0.208586}
-HAIKU_MU = {"inputTokens": 586, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0, "outputTokens": 16, "costUSD": 0.000666}
+def _raw(events: list[dict]) -> bytes:
+    return json.dumps(events).encode()
 
 
 class TestBilledUsage(unittest.TestCase):
     """T sources billed per-model usage (retry-inclusive), not the retry-exclusive top-level envelope."""
 
     def test_picks_main_model_and_sums_retry_inclusive(self) -> None:
-        events = [_result_event({"claude-opus-4-8": OPUS_MU, "claude-haiku-4-5-20251001": HAIKU_MU})]
-        u = report._billed_usage_from_raw(events, "opus")
+        raw = _raw([_result_event({"claude-opus-4-8": OPUS_MU, "claude-haiku-4-5-20251001": HAIKU_MU})])
+        u = report._billed_usage_from_raw(raw, "opus")
         self.assertEqual(u, {"input": 6, "output": 789, "cache_read": 114602, "cache_create": 13153})
         # Excludes the haiku helper; the total is the billed 128,550, not the 86,512 top-level envelope.
         self.assertEqual(u["input"] + u["cache_read"] + u["cache_create"] + u["output"], 128550)
 
     def test_missing_main_model_raises(self) -> None:
         with self.assertRaises(ValueError):
-            report._billed_usage_from_raw([_result_event({"claude-haiku-4-5-20251001": HAIKU_MU})], "opus")
+            report._billed_usage_from_raw(_raw([_result_event({"claude-haiku-4-5-20251001": HAIKU_MU})]), "opus")
 
     def test_ambiguous_main_model_raises(self) -> None:
-        events = [_result_event({"claude-opus-4-8": OPUS_MU, "claude-opus-4-8-preview": OPUS_MU})]
+        raw = _raw([_result_event({"claude-opus-4-8": OPUS_MU, "claude-opus-4-8-preview": OPUS_MU})])
         with self.assertRaises(ValueError):
-            report._billed_usage_from_raw(events, "opus")
+            report._billed_usage_from_raw(raw, "opus")
 
     def test_no_result_event_raises(self) -> None:
+        asst = {"type": "assistant", "session_id": "test", "message": {"id": "m", "content": [], "usage": {}}}
         with self.assertRaises(ValueError):
-            report._billed_usage_from_raw([{"type": "assistant", "message": {"id": "m", "content": [], "usage": {}}}], "opus")
+            report._billed_usage_from_raw(_raw([asst]), "opus")
 
     def test_refresh_rewrites_stale_usage_from_raw(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -683,7 +697,7 @@ class TestBilledUsage(unittest.TestCase):
             (raw / "t1__baseline__opus__r0.json").write_text(
                 json.dumps(
                     [
-                        {"type": "assistant", "message": {"id": "m", "content": [{"type": "text", "text": "x"}], "usage": {"input_tokens": 2, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 0, "output_tokens": 1}}},
+                        {"type": "assistant", "session_id": "test", "message": {"id": "m", "content": [{"type": "text", "text": "x"}], "usage": {"input_tokens": 2, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 0, "output_tokens": 1}}},
                         _result_event({"claude-opus-4-8": OPUS_MU}),
                     ]
                 )

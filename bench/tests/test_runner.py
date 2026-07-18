@@ -12,7 +12,9 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from cc_transcript import ModelUsage
+from collections.abc import Mapping
+
+from cc_transcript import ModelUsage, parse_print_result
 
 from ccxbench import runner
 from ccxbench.config import Config, load
@@ -24,17 +26,32 @@ def stub_task(tid: str) -> Task:
     return Task(tid, "navigation", "empty", "p", {}, Grader("file_line"), {"file": "a", "line": 1})
 
 
-def _mu(input_tokens: int = 0, output_tokens: int = 0, cache_read: int = 0, cache_create: int = 0) -> ModelUsage:
-    return ModelUsage(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_input_tokens=cache_read,
-        cache_creation_input_tokens=cache_create,
-        web_search_requests=0,
-        cost_usd=0.0,
-        context_window=200000,
-        max_output_tokens=32000,
-    )
+def _mu(input_tokens: int = 0, output_tokens: int = 0, cache_read: int = 0, cache_create: int = 0) -> dict:
+    return {
+        "inputTokens": input_tokens,
+        "outputTokens": output_tokens,
+        "cacheReadInputTokens": cache_read,
+        "cacheCreationInputTokens": cache_create,
+        "webSearchRequests": 0,
+        "costUSD": 0.0,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000,
+    }
+
+
+def _usage_map(model_usage: dict[str, dict]) -> Mapping[str, ModelUsage]:
+    """v14 ModelUsage is a native view (not Python-constructible): parse it from a print envelope."""
+    element = {
+        "type": "result",
+        "is_error": False,
+        "num_turns": 0,
+        "total_cost_usd": 0.0,
+        "session_id": "test",
+        "usage": {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+        "modelUsage": model_usage,
+        "permission_denials": [],
+    }
+    return parse_print_result(json.dumps([element]).encode()).model_usage
 
 
 class TestMainModelUsage(unittest.TestCase):
@@ -42,18 +59,23 @@ class TestMainModelUsage(unittest.TestCase):
 
     def test_picks_main_model_excluding_haiku_helper(self) -> None:
         mu = main_model_usage(
-            {"claude-opus-4-8": _mu(cache_read=114602, cache_create=13153, output_tokens=789), "claude-haiku-4-5-20251001": _mu(input_tokens=586)},
+            _usage_map(
+                {
+                    "claude-opus-4-8": _mu(cache_read=114602, cache_create=13153, output_tokens=789),
+                    "claude-haiku-4-5-20251001": _mu(input_tokens=586),
+                }
+            ),
             "opus",
         )
         self.assertEqual(mu.cache_read_input_tokens, 114602)
 
     def test_missing_main_model_raises(self) -> None:
         with self.assertRaises(ValueError):
-            main_model_usage({"claude-haiku-4-5-20251001": _mu(input_tokens=586)}, "opus")
+            main_model_usage(_usage_map({"claude-haiku-4-5-20251001": _mu(input_tokens=586)}), "opus")
 
     def test_ambiguous_main_model_raises(self) -> None:
         with self.assertRaises(ValueError):
-            main_model_usage({"claude-opus-4-8": _mu(), "claude-opus-4-8-preview": _mu()}, "opus")
+            main_model_usage(_usage_map({"claude-opus-4-8": _mu(), "claude-opus-4-8-preview": _mu()}), "opus")
 
 
 class TestAttachDiscarded(unittest.TestCase):

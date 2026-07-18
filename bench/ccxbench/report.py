@@ -32,8 +32,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from cc_transcript import parse_print_result
+
 from . import tokens, trajectory
-from .runner import corpus_sha
+from .runner import corpus_sha, main_model_usage, usage_dict
 from .types import ARMS, CONTROL_CATEGORY, DECOMP_TERMS, DIAGNOSTIC_CATEGORY, TrajectoryMetrics
 
 # Families with a real gold but no place in the paired headline: the control (no code) and the
@@ -156,28 +158,16 @@ def _metrics(path: Path, prompt: str, counter: tokens.TokenCounter) -> Trajector
     return m
 
 
-def _billed_usage_from_raw(events: list[dict], model: str) -> dict[str, int]:
+def _billed_usage_from_raw(raw: bytes, model: str) -> dict[str, int]:
     """Billed main-model usage (retry-INCLUSIVE) from a transcript's result-event `modelUsage`.
 
     The result envelope's top-level usage drops retried/superseded calls that were still billed; the
-    per-model totals (which reconstruct `total_cost_usd`) keep them. The main model is the `modelUsage`
-    entry whose id carries `model` — fail loud when it is missing or ambiguous (the haiku title helper
-    carries no main-model alias and is excluded).
+    per-model totals (which reconstruct `total_cost_usd`) keep them. The typed surface carries the
+    fail-loud contract: `parse_print_result` raises on a stream with no result envelope, and
+    `main_model_usage` on a main model that is missing or ambiguous (the haiku title helper carries
+    no main-model alias and is excluded).
     """
-    result = next((e for e in events if e.get("type") == "result"), None)
-    if result is None:
-        raise ValueError("transcript has no result event with modelUsage")
-    model_usage = result.get("modelUsage") or {}
-    matching = [d for mid, d in model_usage.items() if model in mid]
-    if len(matching) != 1:
-        raise ValueError(f"expected exactly one modelUsage entry matching {model!r}, got {sorted(model_usage)}")
-    d = matching[0]
-    return {
-        "input": int(d["inputTokens"]),
-        "output": int(d["outputTokens"]),
-        "cache_read": int(d["cacheReadInputTokens"]),
-        "cache_create": int(d["cacheCreationInputTokens"]),
-    }
+    return usage_dict(main_model_usage(parse_print_result(raw).model_usage, model))
 
 
 def refresh_billed_usage(records: list[dict], raw_dir: Path) -> None:
@@ -192,7 +182,7 @@ def refresh_billed_usage(records: list[dict], raw_dir: Path) -> None:
         if r.get("is_error") or "usage" not in r:
             continue
         path = raw_dir / f"{_run_id(r['task_id'], r['arm'], r['model'], r['repeat'])}.json"
-        r["usage"] = _billed_usage_from_raw(trajectory.load_events(path), r["model"])
+        r["usage"] = _billed_usage_from_raw(path.read_bytes(), r["model"])
 
 
 @dataclass
