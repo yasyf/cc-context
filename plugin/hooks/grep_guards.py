@@ -424,17 +424,20 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
     end of a pipe (``… | grep``): with no path operand it just filters stdin, so an unparseable or
     operand-less sink grep is presumed a bounded filter, whereas the same shape unpiped is not.
 
-    Two shapes qualify as a bounded file search:
+    Three shapes qualify as a bounded file search:
 
     - *data-ext textual*: every operand is an explicit :data:`NON_SOURCE_EXTS` file matched by suffix
       with no stat, so a file created earlier in the same compound command or addressed relative to an
       in-command ``cd`` passes; ``-o`` is fine here (rg parity), but a recursion flag forfeits it (a
       directory named like a data file under ``-r`` would flood).
+    - *count/quiet/list-only* (``-c``/``-q``/``-l``/``-L``/their long forms): one line per operand by
+      construction — a missing operand yields a single grep error line — so any size and any existence
+      passes (a file the same compound creates earlier qualifies); an operand that is an existing
+      directory, ends with ``/``, or carries a glob/brace metacharacter (one operand can expand to
+      thousands) forfeits, as do recursion and ``-o``.
     - *bounded regular files*: every operand stats as an existing regular file whose sizes sum to no
-      more than :data:`~hooks.common.LARGE_READ_BYTES` — or, on a count/quiet/list-only grep
-      (``-c``/``-q``/``-l``/``-L``/their long forms), any size, since that output is one line per operand
-      regardless of file size; ``-o`` forfeits this stat lane, since its per-match filename/line/byte
-      prefixes multiply output past the size bound.
+      more than :data:`~hooks.common.LARGE_READ_BYTES`; ``-o`` forfeits this stat lane, since its
+      per-match filename/line/byte prefixes multiply output past the size bound.
 
     Conservative throughout: a ``GREP_OPTIONS`` env (which can inject ``-r``/``-o`` the parser never
     sees), any env alongside path operands, an uninspectable ``-f`` pattern file, a flag-supplied empty
@@ -523,10 +526,12 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
         return True
     if only_matching:
         return False  # -o forfeits the stat lane — per-match prefixes multiply output past the size bound
+    if output_bounded and not recursive:
+        # -c/-q/-l/-L is one line per operand at any size or existence; directories, unexpanded
+        # glob/brace operands, and -r/-R fan back out.
+        return not any(p.endswith("/") or any(ch in p for ch in "*?[{") or Path(p).is_dir() for p in paths)
     if not all(Path(p).is_file() for p in paths):
         return False
-    if output_bounded and not recursive:
-        return True  # -c/-q/-l/-L is one line per operand — but under -r/-R it fans out per file in the tree
     return sum(Path(p).stat().st_size for p in paths) <= LARGE_READ_BYTES
 
 
@@ -644,7 +649,7 @@ def grep_block(evt: PreToolUseEvent, cl: CommandLine) -> str:
         "built-in Grep tool or `rg` for literal content in non-source files. "
         "Simple literal and simple-regex greps auto-rewrite to `ccx code grep`; a grep whose explicit "
         "targets are all data files (`.log`/`.json`/`.yaml`/…) or existing files under the size cap "
-        "(count/quiet/list-only greps — `-c`/`-q`/`-l`/`-L` — run regardless of size) runs "
+        "(count/quiet/list-only greps — `-c`/`-q`/`-l`/`-L` — run regardless of size or existence) runs "
         "as-is, even inside pipes and `&&`/`;` chains. This one didn't qualify — a tree-wide or directory "
         "search, a recursive flag, an unmappable flag, or an over-cap/missing source-file target. "
         "Escape hatch: pipe input into it (`… | grep`).",
@@ -690,6 +695,17 @@ rewrite_command_occurrences(
         # Allow — an unrewritable grep over an explicit existing file is bounded, so the condition never
         # fires (/etc/hosts is a regular file on every CI OS: macOS + Linux):
         Input(command="grep -rn foo /etc/hosts"): Allow(),  # absolute path, but a bounded existing file
+        # Count/quiet/list-only greps run at any size or existence — a missing operand (e.g. created
+        # earlier in the same compound) is one grep error line; directory-shaped operands stay blocked:
+        Input(
+            command="curl -sL -o /tmp/ch-live.html https://yasyf.github.io/captain-hook/ && "
+            "wc -c < /tmp/ch-live.html && for m in 'id=\"links\"' gd-hero; do "
+            "printf '%s: %s\\n' \"$m\" \"$(grep -c \"$m\" /tmp/ch-live.html)\"; done"
+        ): Allow(),  # the incident: -c over a file the curl creates later in the same compound
+        Input(command="grep -q pat missing.html"): Allow(),  # -q on a missing file: one error line + exit code
+        Input(command="grep -l foo a.html b.html"): Allow(),  # -l: at most one line per (missing) operand
+        Input(command="grep -c needle file{1..10000}"): Block(),  # brace expansion multiplies operands post-eval
+        Input(command="grep -c needle *"): Block(),  # unexpanded glob — operand count unknown at eval time
         # Per-occurrence data-file passthrough (the incident class) — data-ext operands pass by suffix
         # with no stat, so each grep runs even inside pipes and `&&`/`;` chains, and a file created
         # earlier in the same compound or reached via an in-command `cd` still qualifies:

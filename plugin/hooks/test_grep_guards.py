@@ -477,11 +477,13 @@ class TestGrepBoundedPassthrough:
     """`GrepFlood` stays silent (a genuine allow) only when every grep occurrence is a bounded search
     ccx can't rewrite, judged per occurrence on its own flags and operands in a fixed order of forfeits:
     a `GREP_OPTIONS` env, `grep -r` with no operand, env alongside path operands, an uninspectable `-f`
-    pattern file, a flag-supplied or positional empty pattern, and (on the stat lane) `-o`. Two shapes
+    pattern file, a flag-supplied or positional empty pattern, and (on the stat lane) `-o`. Three shapes
     stay bounded: every operand an explicit data-ext file (matched by suffix, no stat, `-o` allowed — rg
-    parity) or every operand an existing regular file whose sizes sum under the large-read threshold. A
-    pipe-sink grep with no operand is a bounded stdin filter; with file operands it is judged like any
-    file search. Compound lines are judged per grep occurrence — one unbounded grep fires the whole line.
+    parity); a count/quiet/list-only grep over literal (glob-free) non-directory operands at any size or
+    existence; or every
+    operand an existing regular file whose sizes sum under the large-read threshold. A pipe-sink grep
+    with no operand is a bounded stdin filter; with file operands it is judged like any file search.
+    Compound lines are judged per grep occurrence — one unbounded grep fires the whole line.
     """
 
     @pytest.fixture(autouse=True)
@@ -529,24 +531,37 @@ class TestGrepBoundedPassthrough:
     @pytest.mark.parametrize(
         "command",
         [
+            "grep -c foo ghost.py",  # missing file → one grep error line, not a flood
+            "grep -c foo real.py ghost.py",  # mixed existing/missing — still one line per operand
+            "grep -q foo ghost.py",  # quiet over a missing file
+            "curl -so page.html https://x.test/ && grep -c m page.html",  # created later in the same compound
+        ],
+    )
+    def test_output_bounded_skips_existence(self, command: str) -> None:
+        # PreToolUse fires before the compound's earlier commands run, so a bounded-output grep must
+        # pass on operands that don't exist yet; directory-shaped operands still fire (stays_narrow).
+        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
             "grep -o foo big.py",  # -o forfeits the stat lane — the output-bounded skip is never reached
             "grep -oc foo big.py",  # the -o forfeit fires before the -c output-bounded skip
             "grep -c foo sub/",  # count over a directory is still tree-wide
-            "grep -c foo ghost.py",  # count over a missing file — every operand must exist
+            "grep -c foo *.py",  # glob operand — expansion can multiply operands past any bound
+            "grep -c foo f{1..100}.py",  # brace operand — same multiplication
         ],
     )
     def test_output_bounded_skip_stays_narrow(self, command: str) -> None:
-        # The skip is only for -c/-q/-l/-L over existing regular files; -o, directories, and missing
-        # operands still block (the condition fires and `grep_to` yields no rewrite).
+        # The skip is only for -c/-q/-l/-L over literal non-directory operands; -o, directories, and
+        # glob/brace operands still block (the condition fires and `grep_to` yields no rewrite).
         assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
         assert grep_rewrite(command) is None
 
     @pytest.mark.parametrize(
         "command",
         [
-            "grep -c foo ghost.py",  # nonexistent operand → not bounded
             "grep -c foo sub/",  # directory operand → not bounded
-            "grep -c foo real.py ghost.py",  # one real file, one absent → every operand must exist
             "grep -c foo",  # no operand at all → not bounded (tree-wide)
             "grep -o . big.py",  # -o forfeits the stat lane (big.py is over-threshold anyway) → block
             "grep -o foo real.py",  # -o forfeits the stat lane even under threshold (per-match prefixes)
