@@ -120,7 +120,7 @@ def _run_metrics(raw_dir: Path, record: dict, count: Callable[[str], int]) -> Tr
         return None
     try:
         return trajectory.from_file(path, first_prompt="", count=count)
-    except (ValueError, KeyError, json.JSONDecodeError):
+    except (ValueError, KeyError):
         return None
 
 

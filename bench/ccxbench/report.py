@@ -657,15 +657,13 @@ def consistency_section(
         if "usage" not in r:
             continue
         path = raw_dir / f"{_run_id(r['task_id'], r['arm'], r['model'], r['repeat'])}.json"
-        events = trajectory.load_events(path)
-        m = trajectory.compute(events, first_prompt=prompts.get(r["task_id"], ""), count=counter.count)
+        pr = parse_print_result(path.read_bytes())
+        m = trajectory.compute(pr, first_prompt=prompts.get(r["task_id"], ""), count=counter.count)
         if m is None:
             raise ValueError(f"{path}: transcript has no model turn with prompt tokens")
-        result = next((e for e in events if e.get("type") == "result"), None)
 
         # 1. Billing reconstruction: the per-model billed cost (T's source) sums to total_cost_usd.
-        model_usage = (result.get("modelUsage") if result else None) or {}
-        cost_sum = sum(float(d.get("costUSD", 0.0)) for d in model_usage.values())
+        cost_sum = sum(mu.cost_usd for mu in pr.model_usage.values())
         total_cost = float(r.get("total_cost_usd") or 0.0)
         billing_total += 1
         if abs(cost_sum - total_cost) <= 1e-4 * max(total_cost, 1e-9) + 1e-9:

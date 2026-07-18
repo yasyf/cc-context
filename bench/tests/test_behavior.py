@@ -37,15 +37,30 @@ def _rec(
     }
 
 
+def _usage(input_tokens: int) -> dict:
+    return {"input_tokens": input_tokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 1}
+
+
 def _transcript(read_chars: int) -> list[dict]:
     """A minimal stream: one Read tool call whose result is `read_chars` long, plus a closing turn."""
     return [
-        {"type": "assistant", "message": {"id": "m1", "usage": {"input_tokens": 100}, "content": [
+        {"type": "assistant", "session_id": "test", "message": {"id": "m1", "usage": _usage(100), "content": [
             {"type": "tool_use", "id": "r1", "name": "Read", "input": {"file_path": "web.py"}}]}},
-        {"type": "user", "message": {"content": [
+        {"type": "user", "session_id": "test", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "r1", "content": "x" * read_chars}]}},
-        {"type": "assistant", "message": {"id": "m2", "usage": {"input_tokens": 200}, "content": [
+        {"type": "assistant", "session_id": "test", "message": {"id": "m2", "usage": _usage(200), "content": [
             {"type": "text", "text": "done"}]}},
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "num_turns": 1,
+            "total_cost_usd": 0.0,
+            "session_id": "test",
+            "usage": {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+            "modelUsage": {},
+            "permission_denials": [],
+        },
     ]
 
 

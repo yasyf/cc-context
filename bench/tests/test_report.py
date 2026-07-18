@@ -48,6 +48,7 @@ def _transcript(high_water: int, output: int = 0, tool_chars: int = 0) -> list[d
     events: list[dict] = [
         {
             "type": "assistant",
+            "session_id": "test",
             "message": {
                 "content": [{"type": "text", "text": "ok"}],
                 "usage": {
@@ -61,9 +62,9 @@ def _transcript(high_water: int, output: int = 0, tool_chars: int = 0) -> list[d
     ]
     if tool_chars:
         events.append(
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t", "content": "z" * tool_chars}]}}
+            {"type": "user", "session_id": "test", "message": {"content": [{"type": "tool_result", "tool_use_id": "t", "content": "z" * tool_chars}]}}
         )
-    return events
+    return [*events, _result_event({})]
 
 
 def _record(
@@ -254,6 +255,7 @@ class TestConsistencyChecks(unittest.TestCase):
         events: list[dict] = [
             {
                 "type": "assistant",
+                "session_id": "test",
                 "message": {
                     "id": mid,
                     "content": [{"type": "text", "text": "x"}],
@@ -262,16 +264,15 @@ class TestConsistencyChecks(unittest.TestCase):
             }
             for i, mid in enumerate(msg_ids)
         ]
-        cost = sum(d["costUSD"] for d in model_usage.values())
-        events.append({"type": "result", "subtype": "success", "num_turns": num_turns, "total_cost_usd": cost, "modelUsage": model_usage})
+        events.append(_result_event(model_usage) | {"num_turns": num_turns})
         (raw / f"{rid}.json").write_text(json.dumps(events))
-        return cost
+        return sum(d["costUSD"] for d in model_usage.values())
 
     def _rec(self, usage: dict, cost: float) -> dict:
         return {"task_id": "t1", "arm": "ccx-mcp", "model": "opus", "repeat": 0, "usage": usage, "total_cost_usd": cost}
 
     # modelUsage bills 3 opus calls (input 6, cache_read 6000); the billed record usage matches it.
-    MU = {"claude-opus-4-8": {"inputTokens": 6, "cacheReadInputTokens": 6000, "cacheCreationInputTokens": 0, "outputTokens": 3, "costUSD": 0.05}}
+    MU = {"claude-opus-4-8": {"inputTokens": 6, "cacheReadInputTokens": 6000, "cacheCreationInputTokens": 0, "outputTokens": 3, "costUSD": 0.05, "webSearchRequests": 0, "contextWindow": 200000, "maxOutputTokens": 32000}}
     BILLED = {"input": 6, "output": 3, "cache_read": 6000, "cache_create": 0}
 
     def test_billing_clean_but_stream_missing_a_call(self) -> None:
