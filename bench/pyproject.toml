@@ -6,7 +6,7 @@ requires-python = ">=3.13"
 dependencies = [
     "anthropic>=0.111",
     "spawnllm>=0.6.0",
-    "cc-transcript>=14,<15",
+    "cc-transcript>=14.1,<15",
     "tiktoken>=0.13.0",
 ]
 
