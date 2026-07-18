@@ -55,8 +55,9 @@ func TestDriverStdinEOFAnyPhase(t *testing.T) {
 	go func() { _, _ = io.Copy(io.Discard, d.stdout) }()
 
 	init := initFrame{
-		Script: "while True:\n    pass",
-		Limits: map[string]any{"max_duration_secs": 300, "max_recursion_depth": 200},
+		Script:    "while True:\n    pass",
+		Functions: []string{},
+		Limits:    map[string]any{"max_duration_secs": 300, "max_recursion_depth": 200},
 	}
 	if err := json.NewEncoder(d.stdin).Encode(init); err != nil {
 		t.Fatalf("write init: %v", err)
