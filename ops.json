@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"session":"5d9cdcc2-10c1-4ed1-b0e5-86c78b1d5a76","ops":[{"kind":"add_comment","body":"Root-caused and fixed in 004ae485: the test's init frame omitted Functions, encoding \"functions\": null; the driver's comprehension over None raised TypeError -\u003e crash exit 1, racing the stdin-EOF backstop's exit 2. Fixture now sends functions:[]; go test -race -count=10 green; assertion unchanged."}]}
+{"v":1,"lamport":3,"session":"5d9cdcc2-10c1-4ed1-b0e5-86c78b1d5a76","ops":[{"kind":"set_criterion_status","id":"dffdff2801b3899ee31beb7d2f3b58eb","status":"met"}]}
