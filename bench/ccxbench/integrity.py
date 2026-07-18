@@ -13,15 +13,20 @@ from __future__ import annotations
 import re
 from typing import Mapping
 
-from cc_transcript import PrintResult, ToolResultBlock, ToolUseBlock
+from cc_transcript import (
+    BashCall,
+    Command,
+    CommandLine,
+    PrintResult,
+    ReadCall,
+    ToolResultBlock,
+    ToolUseBlock,
+    parse_tool_call,
+)
 
 from .types import CONTROL_CATEGORY, Integrity
 
 CCX_MCP = "mcp__cc-context__"
-# ccx at command position only: start of the command string or immediately after a shell
-# separator (; && || | newline $( backtick), optionally preceded by env-var assignments. An
-# `echo "ccx code outline"` argument is NOT a ccx invocation and must not match.
-CCX_BASH = re.compile(r"(?:^|[;|\n`]|&&|\$\()\s*(?:\w+=\S*\s+)*ccx\s")
 
 # The gold answers live in bench/tasks/*.json (and the legacy manifest.json); any tool input
 # referencing that dir — absolute, or a relative traversal like ../../tasks/<id>.json — is
@@ -29,31 +34,43 @@ CCX_BASH = re.compile(r"(?:^|[;|\n`]|&&|\$\()\s*(?:\w+=\S*\s+)*ccx\s")
 # path-segment boundary so `subtasks/` and the like don't false-positive.
 ANSWER_KEY = re.compile(r"manifest\.json|(?<![\w.-])tasks/")
 
-# Heavy native primitives the ccx guard pack is designed to intercept.
-HEAVY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("cat", re.compile(r"(^|[\s;|&(])cat\s+[^|]*$")),
-    ("sed-n", re.compile(r"(^|[\s;|&(])sed\s+-n\s")),
-    ("ls-R", re.compile(r"(^|[\s;|&(])ls\s+-[a-zA-Z]*R")),
-    ("git-diff", re.compile(r"(^|[\s;|&(])git\s+diff(?!\s+--stat|\s+--numstat|\s+--name-only)")),
-    ("find-enum", re.compile(r"(^|[\s;|&(])find\s+\S+\s+-name\s")),
-)
-
 # Signatures of a fired ccx guard, taken from the guard pack's deny messages.
 GUARD_HINT = re.compile(
     r"ccx\s+(code|repo|vcs)\s+(outline|read|diff|find|symbol|grok|grep|search)|use\s+`?ccx", re.IGNORECASE
 )
 
+# A recursive-listing flag cluster (`-R`, `-laR`, …).
+LS_RECURSIVE = re.compile(r"-[a-zA-Z]*R")
 
-def is_ccx_call(name: str, cmd: str) -> bool:
-    if name.startswith(CCX_MCP):
-        return True
-    return name == "Bash" and bool(CCX_BASH.search(cmd))
+# git diff variants the guard pack considers bounded.
+BOUNDED_GIT_DIFF = ("--stat", "--numstat", "--name-only")
 
 
-def heavy_label(cmd: str) -> str | None:
-    for label, pat in HEAVY_PATTERNS:
-        if pat.search(cmd):
-            return label
+def ccx_command(line: CommandLine) -> Command | None:
+    """The line's first `ccx` invocation, or None.
+
+    Command position is by construction: the parsed :class:`~cc_transcript.CommandLine`
+    surfaces pipeline segments, `&&`/`;` continuations, and `$(…)` substitutions as
+    commands, while an `echo "ccx code outline"` argument never parses as one.
+    """
+    return next((c for c in line.commands if c.executable == "ccx"), None)
+
+
+def heavy_label(line: CommandLine) -> str | None:
+    """The label of the line's first heavy native primitive the ccx guard pack intercepts, or None."""
+    parts = line.parts
+    for i, (c, _op) in enumerate(parts):
+        match c.executable:
+            case "cat" if c.args and all(op != "|" for _, op in parts[i:]):
+                return "cat"
+            case "sed" if c.args[:1] == ("-n",):
+                return "sed-n"
+            case "ls" if any(LS_RECURSIVE.match(a) for a in c.args):
+                return "ls-R"
+            case "git" if c.args[:1] == ("diff",) and not any(f in c.args for f in BOUNDED_GIT_DIFF):
+                return "git-diff"
+            case "find" if "-name" in c.args[1:]:
+                return "find-enum"
     return None
 
 
@@ -71,15 +88,16 @@ def denial_is_ccx_guard(denial: Mapping[str, object]) -> bool:
     guards intercept. (The deny reason itself surfaces as an is_error tool_result, matched
     separately via GUARD_HINT.)
     """
-    tool = str(denial.get("tool_name", ""))
     tool_input = denial.get("tool_input") or {}
     if not isinstance(tool_input, Mapping):
         return False
-    if tool == "Bash":
-        return heavy_label(str(tool_input.get("command", ""))) is not None
-    if tool == "Read":
-        return "offset" not in tool_input and "limit" not in tool_input
-    return False
+    match parse_tool_call(str(denial.get("tool_name", "")), tool_input, on_error="other"):
+        case BashCall(command_line=line):
+            return heavy_label(line) is not None
+        case ReadCall(offset=None, limit=None):
+            return True
+        case _:
+            return False
 
 
 def assess(pr: PrintResult, arm: str, category: str) -> Integrity:
@@ -95,22 +113,19 @@ def assess(pr: PrintResult, arm: str, category: str) -> Integrity:
     for message in pr.messages:
         for block in message.blocks:
             if isinstance(block, ToolUseBlock):
-                cmd = str(block.input.get("command", "")) if block.name == "Bash" else ""
                 if read_answer_key(block.input):
                     cheated = True
-                if is_ccx_call(block.name, cmd):
-                    if block.name.startswith(CCX_MCP):
-                        ccx_calls.append(block.name)
-                    else:
-                        rest = cmd[CCX_BASH.search(cmd).end() :].split()
-                        depth = 2 if rest and rest[0] in ("code", "repo", "vcs") else 1
-                        ccx_calls.append(" ".join(["bash:ccx", *rest[:depth]]))
+                if block.name.startswith(CCX_MCP):
+                    ccx_calls.append(block.name)
                     continue
-                label = heavy_label(cmd)
-                if label:
-                    heavy.append(label)
-                if block.name == "Read" and "offset" not in block.input and "limit" not in block.input:
-                    heavy.append("read-unbounded")
+                match parse_tool_call(block.name, block.input, on_error="other"):
+                    case BashCall(command_line=line) if (ccx := ccx_command(line)) is not None:
+                        depth = 2 if ccx.args and ccx.args[0] in ("code", "repo", "vcs") else 1
+                        ccx_calls.append(" ".join(["bash:ccx", *ccx.args[:depth]]))
+                    case BashCall(command_line=line) if (label := heavy_label(line)) is not None:
+                        heavy.append(label)
+                    case ReadCall(offset=None, limit=None):
+                        heavy.append("read-unbounded")
             elif isinstance(block, ToolResultBlock):
                 # Rewrite-style fires (allow + updatedInput) are never serialized into -p output,
                 # so only deny-style fires are countable here; liveness is proven per session by
