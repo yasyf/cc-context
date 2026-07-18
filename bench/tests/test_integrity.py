@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from cc_transcript import parse_print_result
+from cc_transcript import BashCall, CommandLine, parse_print_result, parse_tool_call
 
 from ccxbench import integrity
 
@@ -61,6 +61,12 @@ def tool_use(name: str, tool_input: dict) -> dict:
 
 def bash(cmd: str) -> dict:
     return tool_use("Bash", {"command": cmd})
+
+
+def command_line(cmd: str) -> CommandLine:
+    call = parse_tool_call("Bash", {"command": cmd})
+    assert isinstance(call, BashCall)
+    return call.command_line
 
 
 def mcp_call(name: str) -> dict:
@@ -216,6 +222,36 @@ class TestFieldClassification(unittest.TestCase):
     def test_substitution_nested_heavy_classified(self) -> None:
         v = integrity.assess(pr_from([init_msg([]), bash("echo $(git diff HEAD~1)"), result_msg()]), "baseline", "navigation")
         self.assertEqual(v.native_heavy_calls, ["git-diff"])
+
+    def test_every_matching_command_is_classified(self) -> None:
+        cases = (
+            (
+                "multiple_ccx_commands",
+                "ccx code grep foo; ccx repo overview",
+                ["bash:ccx code grep", "bash:ccx repo overview"],
+                [],
+            ),
+            (
+                "ccx_and_heavy_same_bash_call",
+                "ccx code grep foo; cat huge.py",
+                ["bash:ccx code grep"],
+                ["cat"],
+            ),
+        )
+        for name, cmd, want_ccx, want_heavy in cases:
+            with self.subTest(name=name):
+                v = integrity.assess(pr_from([init_msg([]), bash(cmd), result_msg()]), "baseline", "navigation")
+                self.assertEqual(v.ccx_calls, want_ccx)
+                self.assertEqual(v.native_heavy_calls, want_heavy)
+
+    def test_heavy_labels_preserve_occurrences_and_pipe_guard(self) -> None:
+        cases = (
+            ("multiple_heavy_commands", "sed -n '1,5p' small.py; cat huge.py", ("sed-n", "cat")),
+            ("cat_before_pipe_not_heavy", "cat notes.txt | grep x", ()),
+        )
+        for name, cmd, want in cases:
+            with self.subTest(name=name):
+                self.assertEqual(integrity.heavy_labels(command_line(cmd)), want)
 
     def test_guard_fired_via_permission_denials(self) -> None:
         # A denied heavy primitive recorded only in permission_denials (no is_error tool_result)

@@ -46,8 +46,8 @@ LS_RECURSIVE = re.compile(r"-[a-zA-Z]*R")
 BOUNDED_GIT_DIFF = ("--stat", "--numstat", "--name-only")
 
 
-def ccx_command(line: CommandLine) -> Command | None:
-    """The line's first `ccx` invocation, or None.
+def ccx_commands(line: CommandLine) -> tuple[Command, ...]:
+    """The line's `ccx` invocations, in document order.
 
     Command position is by construction: the parsed :class:`~cc_transcript.CommandLine`
     surfaces pipeline segments, `&&`/`;` continuations, and — since cc-transcript 14.1 —
@@ -55,30 +55,31 @@ def ccx_command(line: CommandLine) -> Command | None:
     (nested included) as commands, so `echo $(ccx repo overview)` counts while a quoted
     literal `echo "ccx code outline"` still never parses as one.
     """
-    return next((c for c in line.commands if c.executable == "ccx"), None)
+    return tuple(c for c in line.commands if c.executable == "ccx")
 
 
-def heavy_label(line: CommandLine) -> str | None:
-    """The label of the line's first heavy native primitive the ccx guard pack intercepts, or None.
+def heavy_labels(line: CommandLine) -> tuple[str, ...]:
+    """Labels of the line's heavy native primitives the ccx guard pack intercepts, in command order.
 
     `parts` enumerates substitution-nested commands too (cc-transcript 14.1), so a heavy
     primitive smuggled through `echo $(git diff HEAD~1)` earns the same label as a
     top-level one.
     """
+    labels: list[str] = []
     parts = line.parts
     for i, (c, _op) in enumerate(parts):
         match c.executable:
             case "cat" if c.args and all(op != "|" for _, op in parts[i:]):
-                return "cat"
+                labels.append("cat")
             case "sed" if c.args[:1] == ("-n",):
-                return "sed-n"
+                labels.append("sed-n")
             case "ls" if any(LS_RECURSIVE.match(a) for a in c.args):
-                return "ls-R"
+                labels.append("ls-R")
             case "git" if c.args[:1] == ("diff",) and not any(f in c.args for f in BOUNDED_GIT_DIFF):
-                return "git-diff"
+                labels.append("git-diff")
             case "find" if "-name" in c.args[1:]:
-                return "find-enum"
-    return None
+                labels.append("find-enum")
+    return tuple(labels)
 
 
 def read_answer_key(call_input: Mapping[str, object]) -> bool:
@@ -100,7 +101,7 @@ def denial_is_ccx_guard(denial: Mapping[str, object]) -> bool:
         return False
     match parse_tool_call(str(denial.get("tool_name", "")), tool_input, on_error="other"):
         case BashCall(command_line=line):
-            return heavy_label(line) is not None
+            return bool(heavy_labels(line))
         case ReadCall(offset=None, limit=None):
             return True
         case _:
@@ -126,11 +127,11 @@ def assess(pr: PrintResult, arm: str, category: str) -> Integrity:
                     ccx_calls.append(block.name)
                     continue
                 match parse_tool_call(block.name, block.input, on_error="other"):
-                    case BashCall(command_line=line) if (ccx := ccx_command(line)) is not None:
-                        depth = 2 if ccx.args and ccx.args[0] in ("code", "repo", "vcs") else 1
-                        ccx_calls.append(" ".join(["bash:ccx", *ccx.args[:depth]]))
-                    case BashCall(command_line=line) if (label := heavy_label(line)) is not None:
-                        heavy.append(label)
+                    case BashCall(command_line=line):
+                        for cmd in ccx_commands(line):
+                            depth = 2 if cmd.args and cmd.args[0] in ("code", "repo", "vcs") else 1
+                            ccx_calls.append(" ".join(["bash:ccx", *cmd.args[:depth]]))
+                        heavy.extend(heavy_labels(line))
                     case ReadCall(offset=None, limit=None):
                         heavy.append("read-unbounded")
             elif isinstance(block, ToolResultBlock):
