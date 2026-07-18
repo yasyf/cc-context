@@ -1,5 +1,19 @@
 [pack]
 name = "ccx"
-version = "0.8.0"
+version = "0.9.0"
 description = "cc-context guard pack — hard-block token-bomb tool calls (unbounded reads, full diffs, line dumps, recursive listings); steer to ccx and auto-approve its read-only surface"
 hooks = "."
+
+[tools.ccx_code_edit]
+behaves_like = "Edit"
+span_edit = { path = "path", content = "content", delete = "delete" }
+
+# gating only: previews (apply falsy) over-match, accepted
+[tools.ccx_code_replace]
+behaves_like = "Write"
+
+[tools.ccx_exec]
+behaves_like = "Bash"
+
+[tools.BashFormat]
+behaves_like = "Bash"
