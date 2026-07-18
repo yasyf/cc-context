@@ -2,3 +2,9 @@ name = "ccx"
 version = "0.8.0"
 description = "cc-context guard pack — hard-block token-bomb tool calls (unbounded reads, full diffs, line dumps, recursive listings); steer to ccx and auto-approve its read-only surface"
 hooks = "."
+
+[pack]
+name = "ccx"
+version = "0.8.0"
+description = "cc-context guard pack — hard-block token-bomb tool calls (unbounded reads, full diffs, line dumps, recursive listings); steer to ccx and auto-approve its read-only surface"
+hooks = "."

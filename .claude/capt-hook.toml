@@ -2,3 +2,22 @@ name = "ccx"
 version = "0.8.0"
 description = "cc-context guard pack — hard-block token-bomb tool calls (unbounded reads, full diffs, line dumps, recursive listings); steer to ccx and auto-approve its read-only surface"
 hooks = "plugin/hooks"
+
+[pack]
+name = "ccx"
+version = "0.8.0"
+description = "cc-context guard pack — hard-block token-bomb tool calls (unbounded reads, full diffs, line dumps, recursive listings); steer to ccx and auto-approve its read-only surface"
+hooks = "plugin/hooks"
+
+[packs.cc-notes]
+source = "github:yasyf/cc-notes@latest"
+
+[packs.fixes]
+
+[packs.general]
+
+[packs.go]
+
+[packs.python]
+
+[packs.steering]
