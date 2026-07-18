@@ -248,6 +248,8 @@ class TestFieldClassification(unittest.TestCase):
         cases = (
             ("multiple_heavy_commands", "sed -n '1,5p' small.py; cat huge.py", ("sed-n", "cat")),
             ("cat_before_pipe_not_heavy", "cat notes.txt | grep x", ()),
+            ("cat_before_stderr_pipe_not_heavy", "cat notes.txt |& grep x", ()),
+            ("cat_with_later_unrelated_pipeline", "cat huge.py; printf x | grep x", ("cat",)),
         )
         for name, cmd, want in cases:
             with self.subTest(name=name):

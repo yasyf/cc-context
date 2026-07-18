@@ -61,15 +61,16 @@ def ccx_commands(line: CommandLine) -> tuple[Command, ...]:
 def heavy_labels(line: CommandLine) -> tuple[str, ...]:
     """Labels of the line's heavy native primitives the ccx guard pack intercepts, in command order.
 
-    `parts` enumerates substitution-nested commands too (cc-transcript 14.1), so a heavy
-    primitive smuggled through `echo $(git diff HEAD~1)` earns the same label as a
-    top-level one.
+    `occurrences` enumerates substitution-nested commands too (cc-transcript 14.1), so a
+    heavy primitive smuggled through `echo $(git diff HEAD~1)` earns the same label as a
+    top-level one, and `piped` — not a raw operator scan — decides whether a `cat`'s
+    output is consumed by a pipeline (covering `|&` and byte-gap pipes).
     """
     labels: list[str] = []
-    parts = line.parts
-    for i, (c, _op) in enumerate(parts):
+    for o in line.occurrences:
+        c = o.command
         match c.executable:
-            case "cat" if c.args and all(op != "|" for _, op in parts[i:]):
+            case "cat" if c.args and not o.piped:
                 labels.append("cat")
             case "sed" if c.args[:1] == ("-n",):
                 labels.append("sed-n")
