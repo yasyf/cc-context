@@ -21,10 +21,12 @@ to stdout with a remote ``http(s)`` URL — a pipe (``| jq``), a disk sink (``-o
 ``wget``/redirect), a non-GET method (``-X``/``-d``/``--json``/``-T``/``-I``), a localhost
 target, and a scheme-less spelling all stay allowed by construction. When the fetch is a plain
 page GET (``curl -sL <url>`` / ``wget -qO- <url>``) it is *rewritten* to ``ccx web read <url>
---full`` — content-preserving, token-bounded — gated on the ``ccx web`` surface being present
+--full`` — readability-extracted markdown, token-bounded — gated on the ``ccx web`` surface being present
 (``ccx_supports``); an API/JSON URL (``api.*`` host, ``api`` path segment, ``.json`` path), an
 extra flag readability can't honor, or a wrapped line falls back to the block — a chained
 line (``&&``/``;``) rewrites occurrence-by-occurrence instead.
+A dump whose output an assignment substitution captures is a sink — consumed programmatically,
+so it is left untouched rather than rewritten.
 """
 
 from __future__ import annotations
@@ -90,6 +92,9 @@ CURL_REWRITE_LONGS = frozenset({"--silent", "--show-error", "--fail", "--locatio
 # output-document is handled per-token (``-O -`` / ``-qO-`` / ``--output-document=-``).
 WGET_QUIET = frozenset({"-q", "--quiet"})
 WGET_STDOUT_FLAGS = frozenset({"-O", "--output-document"})
+
+# An assignment head: optional keyword/flag words (`export`, `local`, `declare -r`) then `NAME=`/`NAME+=`.
+ASSIGNMENT_HEAD = re.compile(r"(?:[A-Za-z_-][\w-]*\s+)*[A-Za-z_]\w*\+?=")
 
 
 def is_local_host(host: str) -> bool:
@@ -263,14 +268,15 @@ class PageDumpToStdout(CustomCommandLineCondition):
 
     Allowed by construction: a command whose stdout is piped (``| jq``) or redirected to a file,
     a curl sink (``-o``/``-O``) or non-GET method (``-X``/``-d``/``--json``/``-T``/``-I``), a
-    non-stdout ``wget`` (its default disk download), a localhost target, and a scheme-less URL.
+    non-stdout ``wget`` (its default disk download), a localhost target, a scheme-less URL, and
+    an assignment-captured substitution body (``H=$(curl …)``).
     An unpiped ``curl -s <api>`` blocks on purpose — a raw JSON dump floods context the same way,
     and the pipe hatch (`… | jq`) is right there.
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
         for cmd, op in cl.parts:
-            if op == "|" or sinks_stdout(cmd):
+            if op == "|" or sinks_stdout(cmd) or assignment_captured(cl.raw, cmd.span):
                 continue
             # Match on the unwrapped executable so a wrapper prefix (`timeout 10 curl …`,
             # `sudo curl …`, `env FOO=1 curl …`) can't slip the page dump past the block.
@@ -380,6 +386,40 @@ def occurrence_can_rewrite(occ: "Occurrence") -> bool:
     return not occ.piped and not occ.command.redirects
 
 
+def assignment_captured(raw: str, span: tuple[int, int] | None) -> bool:
+    """Whether the command at ``span`` is a substitution body a variable assignment captures.
+
+    The parser surfaces a substitution body as its own part/occurrence — span starting right
+    after the ``$(``/backtick opener — for assignment hosts (``H=$(curl …)``, ``export``/
+    ``local``/``declare``/``+=``, concatenated values like ``H=x$(…)y``) and test-expression
+    hosts (``[ -n "$(curl …)" ]``) alike. Only the assignment shapes are the sink lane, so the
+    text from the last command separator to the opener must read as an assignment head
+    (keyword/flag words then ``NAME=``). Captured output reaches no context by itself, and a
+    splice there hands the consumer extracted markdown instead of raw HTML (the ``H=$(curl …)``
+    incident) — the capture runs untouched. A test-expression host fails the match, a completed
+    assignment followed by a new word (``export H=1 "$(curl …)"``) fails on the unquoted space,
+    and a span-less command can't prove hosting — all keep the normal lane.
+    """
+    if span is None:
+        return False
+    head = raw[: span[0]].rstrip()
+    if not head.endswith(("$(", "`")):
+        return False
+    seg = re.split(r"[;&|(]", head.removesuffix("$(").removesuffix("`"))[-1].lstrip()
+    if (m := ASSIGNMENT_HEAD.match(seg)) is None:
+        return False
+    quote = None
+    for ch in seg[m.end() :]:
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch.isspace():
+            return False  # unquoted whitespace after NAME= starts a new word — not this assignment's value
+    return True
+
+
 def occurrence_dumps(cmd: Command) -> bool:
     """Whether ``cmd`` (seen through any wrapper) is a ``curl``/``wget`` page dump to stdout.
 
@@ -411,7 +451,11 @@ def occurrence_rewrite_url(cmd: Command) -> str | None:
 
 def page_dump_to(evt: BaseHookEvent, occ: "Occurrence") -> str | None:
     cmd = occ.command
-    if not occurrence_can_rewrite(occ) or not occurrence_dumps(cmd):
+    if (
+        not occurrence_can_rewrite(occ)
+        or assignment_captured(occ.line.raw, occ.command.span)
+        or not occurrence_dumps(cmd)
+    ):
         return None
     url = occurrence_rewrite_url(cmd)
     if url is None or is_api_url(url):
@@ -426,6 +470,7 @@ def page_dump_blocks(evt: BaseHookEvent, occ: "Occurrence") -> bool:
     return (
         occurrence_can_rewrite(occ)
         and occurrence_dumps(cmd)
+        and not assignment_captured(occ.line.raw, occ.command.span)
         and (cmd.span is None or page_dump_to(evt, occ) is None)
     )
 
@@ -446,7 +491,8 @@ def page_dump_note(evt: BaseHookEvent, pairs: "list[tuple[Occurrence, str]]") ->
         rewrites.append(f"`{cmd.executable} … {url}` → `ccx web read {url} --full`")
     target = urls.pop() if len(urls) == 1 else "<url>"
     return (
-        f"Rewrote {', '.join(rewrites)}: same page content, readability-extracted and token-bounded. "
+        f"Rewrote {', '.join(rewrites)}: readability-extracted markdown of the page, token-bounded — "
+        "NOT the raw HTML (tags, scripts, and attributes are stripped). "
         f"Next time map its headings first with `ccx web outline {target}`, or ask a question with "
         f'`ccx web search {target} "<question>"`.'
     )
@@ -489,6 +535,20 @@ rewrite_command_occurrences(
         Input(command="curl https://example.com 2>/dev/null"): Block(),  # redirect
         Input(command="timeout 10 curl https://example.com/big.html"): Block(),  # wrapper prefix
         Input(command="sudo curl https://example.com/page"): Block(),  # wrapper prefix
+        # Assignment-captured dumps are sinks: the capture is consumed programmatically — never
+        # rewrite. The later `echo "$H"` re-dump is outside the guard's data-flow view: accepted.
+        Input(command="H=$(curl -sL https://example.com/)"): Allow(),  # the incident shape
+        Input(command="export H=$(curl https://example.com/page)"): Allow(),
+        Input(command="H=`curl -sL https://example.com/`"): Allow(),  # backtick form
+        Input(command="H=$(wget -qO- https://example.com/)"): Allow(),
+        Input(command="H=$(timeout 10 curl https://example.com/)"): Allow(),  # wrapped + hosted
+        Input(command="H=$(curl https://example.com | jq .)"): Allow(),  # piped capture — the pipe bounds it
+        Input(command='H=$(curl https://example.com/); echo "$H"'): Allow(),  # the accepted hole
+        # A captured sibling neither blocks nor rewrites; the bare dump still splices.
+        Input(command="H=$(curl https://a.example/); curl -s https://b.example/"): Rewrite(pattern="ccx web read"),
+        # String-embedded/operand substitutions fold into the host argv — parser-invisible, stays Allow.
+        Input(command='echo "$(curl https://example.com)"'): Allow(),
+        Input(command='printf "%s" "$(curl https://example.com)"'): Allow(),
         Input(command="curl https://example.com | jq ."): Allow(),
         Input(command="curl https://example.com | grep -c foo"): Allow(),
         Input(command="curl -o page.html https://example.com"): Allow(),

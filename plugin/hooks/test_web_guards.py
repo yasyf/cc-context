@@ -34,7 +34,13 @@ from captain_hook.session import SessionStore
 
 from conftest import fake_run, make_evt
 from hooks import common, web_guards
-from hooks.web_guards import WholePageWebFetch, page_dump_note, page_dump_to
+from hooks.web_guards import (
+    WholePageWebFetch,
+    assignment_captured,
+    page_dump_blocks,
+    page_dump_note,
+    page_dump_to,
+)
 
 
 def webfetch_event(url: str, session_dir: Path) -> PreToolUseEvent:
@@ -90,6 +96,91 @@ def force_web_support(monkeypatch: pytest.MonkeyPatch, *, ok: bool) -> None:
     monkeypatch.setattr(web_guards, "ccx_bin", lambda: "/fake/ccx")
     rc, out = (0, "Usage: ccx web read <url> --full") if ok else (1, 'unknown command "web"')
     monkeypatch.setattr(common.subprocess, "run", fake_run(rc, stdout=out))
+
+
+class TestAssignmentCapturedDump:
+    """Assignment-captured page dumps are sinks, never readability rewrites."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "H=$(curl -sL https://example.com/)",
+            "export H=$(curl https://example.com/page)",
+            "H=`curl -sL https://example.com/`",
+            "H=$(wget -qO- https://example.com/)",
+            "H=$(timeout 10 curl https://example.com/)",
+            "H=$(curl https://example.com | jq .)",
+            'H="$(curl -sL https://example.com/)"',
+            "H=$( curl -sL https://example.com/ )",
+            "H=$(VAR=1 curl https://example.com/)",
+            'H="pre $(curl https://example.com/) post"',
+            "H=x$(curl https://example.com/)y",
+            "H=${X:-$(curl https://example.com/)}",
+            "local h=$(curl https://example.com/)",
+            "declare -r h=$(curl https://example.com/)",
+            "H+=$(curl https://example.com/)",
+            "H1=$(curl https://example.com/)",
+        ],
+    )
+    def test_captured_dump_is_allowed_untouched(
+        self, monkeypatch: pytest.MonkeyPatch, command: str
+    ) -> None:
+        force_web_support(monkeypatch, ok=True)
+        evt, occ = evt_occ(command)
+        assert assignment_captured(occ.line.raw, occ.command.span)
+        assert page_dump_to(evt, occ) is None
+        assert not page_dump_blocks(evt, occ)
+        assert not web_guards.PageDumpToStdout().check(evt)
+
+    def test_rewritable_sibling_survives_captured_assignment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        force_web_support(monkeypatch, ok=True)
+        evt = make_evt("A=$(true); curl https://example.com")
+        _, curl_occ = evt.command_line.occurrences
+        assert not assignment_captured(evt.command_line.raw, curl_occ.command.span)
+        assert page_dump_to(evt, curl_occ) == "/fake/ccx web read https://example.com --full"
+        assert web_guards.PageDumpToStdout().check(evt)
+
+    def test_test_expression_host_keeps_todays_lane(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        force_web_support(monkeypatch, ok=True)
+        evt = make_evt('[ -n "$(curl https://example.com)" ]')
+        curl_occ = next(o for o in evt.command_line.occurrences if o.command.executable == "curl")
+        assert not assignment_captured(evt.command_line.raw, curl_occ.command.span)
+        assert page_dump_to(evt, curl_occ) == "/fake/ccx web read https://example.com --full"
+
+    def test_completed_assignment_before_substitution_keeps_todays_lane(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `H=1` completes before the substitution word starts — the dump isn't this assignment's value.
+        force_web_support(monkeypatch, ok=True)
+        evt = make_evt('export H=1 "$(curl https://example.com/)"')
+        curl_occ = next(o for o in evt.command_line.occurrences if o.command.executable == "curl")
+        assert not assignment_captured(evt.command_line.raw, curl_occ.command.span)
+        assert page_dump_to(evt, curl_occ) == "/fake/ccx web read https://example.com/ --full"
+
+    def test_captured_sibling_leaves_bare_dump_active(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        force_web_support(monkeypatch, ok=True)
+        evt = make_evt("H=$(curl https://a.example/); curl -s https://b.example/")
+        captured, bare = evt.command_line.occurrences
+        assert assignment_captured(evt.command_line.raw, captured.command.span)
+        assert page_dump_to(evt, captured) is None
+        assert not page_dump_blocks(evt, captured)
+        assert page_dump_to(evt, bare) == "/fake/ccx web read https://b.example/ --full"
+
+    def test_accepted_hole_is_allowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        force_web_support(monkeypatch, ok=True)
+        evt = make_evt('H=$(curl https://example.com/); echo "$H"')
+        assert not web_guards.PageDumpToStdout().check(evt)
+
+    def test_nested_substitution_is_parser_invisible(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        force_web_support(monkeypatch, ok=True)
+        evt, occ = evt_occ("H=$(echo $(curl https://example.com))")
+        assert occ.command.executable == "echo"
+        assert occ.command.args == ()
+        assert page_dump_to(evt, occ) is None
+        assert not page_dump_blocks(evt, occ)
+        assert not web_guards.PageDumpToStdout().check(evt)
 
 
 class TestPageDumpRewrite:
@@ -168,6 +259,7 @@ class TestPageDumpRewrite:
         text = page_dump_to(evt, occ)
         note = page_dump_note(evt, [(occ, text)])
         assert "ccx web read https://example.com/guide --full" in note
+        assert "NOT the raw HTML" in note
         assert "ccx web outline https://example.com/guide" in note
         assert "ccx web search https://example.com/guide" in note
 
