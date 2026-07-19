@@ -173,14 +173,14 @@ class TestAssignmentCapturedDump:
         evt = make_evt('H=$(curl https://example.com/); echo "$H"')
         assert not web_guards.PageDumpToStdout().check(evt)
 
-    def test_nested_substitution_is_parser_invisible(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_nested_substitution_keeps_the_guard_active(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The inner dump's host is `echo`, not the assignment — capture can't be proven through the
+        # nested substitution, so the conservative pre-sink-lane behavior holds.
         force_web_support(monkeypatch, ok=True)
-        evt, occ = evt_occ("H=$(echo $(curl https://example.com))")
-        assert occ.command.executable == "echo"
-        assert occ.command.args == ()
-        assert page_dump_to(evt, occ) is None
-        assert not page_dump_blocks(evt, occ)
-        assert not web_guards.PageDumpToStdout().check(evt)
+        evt = make_evt("H=$(echo $(curl https://example.com))")
+        curl_occ = next(o for o in evt.command_line.occurrences if o.command.executable == "curl")
+        assert not assignment_captured(evt.command_line.raw, curl_occ.command.span)
+        assert web_guards.PageDumpToStdout().check(evt)
 
 
 class TestPageDumpRewrite:

@@ -546,9 +546,10 @@ rewrite_command_occurrences(
         Input(command='H=$(curl https://example.com/); echo "$H"'): Allow(),  # the accepted hole
         # A captured sibling neither blocks nor rewrites; the bare dump still splices.
         Input(command="H=$(curl https://a.example/); curl -s https://b.example/"): Rewrite(pattern="ccx web read"),
-        # String-embedded/operand substitutions fold into the host argv — parser-invisible, stays Allow.
-        Input(command='echo "$(curl https://example.com)"'): Allow(),
-        Input(command='printf "%s" "$(curl https://example.com)"'): Allow(),
+        # A string-embedded dump substitution surfaces span-less — no span can prove capture, and the
+        # expanded page hits stdout through the host command, so it blocks like a bare dump.
+        Input(command='echo "$(curl https://example.com)"'): Block(pattern="ccx web outline"),
+        Input(command='printf "%s" "$(curl https://example.com)"'): Block(pattern="ccx web outline"),
         Input(command="curl https://example.com | jq ."): Allow(),
         Input(command="curl https://example.com | grep -c foo"): Allow(),
         Input(command="curl -o page.html https://example.com"): Allow(),
