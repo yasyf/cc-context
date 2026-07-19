@@ -135,40 +135,6 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
-  manifests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: capt-hook pack manifests move in lockstep
-        run: |
-          python3 - <<'PY'
-          import sys, tomllib
-
-          root = tomllib.load(open(".claude/capt-hook.toml", "rb"))["pack"]["version"]
-          plugin = tomllib.load(open("plugin/hooks/capt-hook.toml", "rb"))["pack"]["version"]
-          if root != plugin:
-              sys.exit(
-                  f"capt-hook manifest version skew: .claude/capt-hook.toml={root} "
-                  f"!= plugin/hooks/capt-hook.toml={plugin}"
-              )
-          print(f"ok: both capt-hook manifests at {root}")
-          PY
-
-  pack-lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8.2.0
-        with:
-          # capt-hook requires Python >=3.13; pin it so uvx resolves a version
-          # that carries `pack lint` (added in 9.9.0).
-          python-version: "3.13"
-      - name: capt-hook attach-only pack contract
-        # Lint the plugin root — the dir whose SessionStart `pack attach` line is
-        # passed. Vets the canonical attach, the captain-hook dependency floor,
-        # and the marketplace cross-dependency allowance.
-        run: uvx 'capt-hook>=9.28.0' pack lint plugin
-
   hook-tests:
     runs-on: ubuntu-latest
     steps:
@@ -215,12 +181,12 @@ jobs:
           gh release download -R yasyf/cc-notes --pattern cc-notes_linux_amd64 --output "$HOME/.local/bin/cc-notes" --clobber
           chmod +x "$HOME/.local/bin/cc-notes"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: capt-hook hook tests
-        run: uvx capt-hook --hooks plugin/hooks test
+      - name: capt-hook pack test
+        run: uvx --isolated 'capt-hook>=11.0.0' pack test plugin
       # The declarative harness can only inject a string tool_response; the dict
       # shapes Claude Code hands the guards (record_json_shape's real input, and the
       # rest of the guard/session-state unit tests) are covered by pytest over the
       # whole directory instead. Pinned to 3.13 with published capt-hook, matching
       # the harness.
       - name: Guard-pack pytest
-        run: PYTHONPATH=plugin uv run --no-project --no-config --python 3.13 --with capt-hook --with pytest python -m pytest plugin/hooks/
+        run: PYTHONPATH=plugin/capt-hook uv run --no-project --no-config --python 3.13 --with capt-hook --with pytest python -m pytest plugin/capt-hook/hooks/

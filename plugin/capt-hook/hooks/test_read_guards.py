@@ -3,8 +3,8 @@
 Run from the repo root against the captain-hook source env, with ``plugin/`` on the
 path so the ``hooks`` package (and its relative imports) resolves::
 
-    PYTHONPATH=plugin uv run --project ../captain-hook --with pytest \
-        pytest plugin/hooks/test_read_guards.py
+    PYTHONPATH=plugin/capt-hook uv run --project ../captain-hook --with pytest \
+        pytest plugin/capt-hook/hooks/test_read_guards.py
 
 The registered ``bound_large_read`` hook counts the file's lines to report an honest
 window (``showing lines 1-100 of N total``), so it needs a real file on disk — a tmp

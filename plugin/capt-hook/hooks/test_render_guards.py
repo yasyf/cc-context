@@ -3,8 +3,8 @@
 Run from the repo root against the captain-hook source env, with ``plugin/`` on the
 path so the ``hooks`` package (and its relative imports) resolves::
 
-    PYTHONPATH=plugin uv run --project ../captain-hook --with pytest \
-        pytest plugin/hooks/test_render_guards.py
+    PYTHONPATH=plugin/capt-hook uv run --project ../captain-hook --with pytest \
+        pytest plugin/capt-hook/hooks/test_render_guards.py
 
 ``RenderedArtifact`` stats a sibling ``.claude/fragments/<rel>/layout.toml`` and reads the
 target's banner, and ``RenderSource``'s cc-skills ``guides/`` arm reads ``repo_root.name`` —

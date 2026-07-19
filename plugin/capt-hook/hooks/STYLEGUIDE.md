@@ -1,6 +1,6 @@
 # cc-context Hooks Style Guide
 
-The concrete style rules for `plugin/hooks/` — the Python source of the capt-hook
+The concrete style rules for `plugin/capt-hook/hooks/` — the Python source of the capt-hook
 `ccx` guard pack. Target Python 3.13+. Go code follows the root `STYLEGUIDE.md`;
 this file governs the Python.
 
@@ -256,7 +256,7 @@ Tests live beside the hooks as `test_*.py`, with shared fixtures in `conftest.py
 Run the pytest suite against the sibling captain-hook checkout:
 
 ```bash
-PYTHONPATH=plugin uv run --project ../captain-hook --with pytest pytest plugin/hooks/
+PYTHONPATH=plugin/capt-hook uv run --project ../captain-hook --with pytest pytest plugin/capt-hook/hooks/
 ```
 
 Every registration also carries inline `tests={...}` — `Input(...)` mapped to

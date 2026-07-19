@@ -3,8 +3,8 @@
 Run from the repo root against the captain-hook source env, with ``plugin/`` on the
 path so the ``hooks`` package (and its relative imports) resolves::
 
-    PYTHONPATH=plugin uv run --project ../captain-hook --with pytest \
-        pytest plugin/hooks/test_web_guards.py
+    PYTHONPATH=plugin/capt-hook uv run --project ../captain-hook --with pytest \
+        pytest plugin/capt-hook/hooks/test_web_guards.py
 
 The ``once``-gated first-attempt-per-URL behavior needs a real ``SessionStore`` backed by a
 temp dir — an inline capt-hook test event carries no session dir, so ``once`` there always

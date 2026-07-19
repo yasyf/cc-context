@@ -105,7 +105,7 @@ def ccx_bin() -> str | None:
     dev build), then ``shutil.which("ccx")``. Returns ``None`` when none resolves, so
     a rewrite guard can fall back to a hard block instead of emitting a broken command.
     """
-    return resolve_binary("ccx", extra_dirs=[Path(__file__).resolve().parents[1] / "bin"])
+    return resolve_binary("ccx", extra_dirs=[Path(__file__).resolve().parents[2] / "bin"])
 
 
 @functools.cache

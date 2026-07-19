@@ -3,8 +3,8 @@
 Run from the repo root against the captain-hook source env, with ``plugin/`` on the
 path so the ``hooks`` package (and its relative imports) resolves::
 
-    PYTHONPATH=plugin uv run --project ../captain-hook --with pytest \
-        pytest plugin/hooks/test_vcs_guards.py
+    PYTHONPATH=plugin/capt-hook uv run --project ../captain-hook --with pytest \
+        pytest plugin/capt-hook/hooks/test_vcs_guards.py
 
 The rewrite is driven through ``logpatch_to`` — the registered ``to=`` builder of the
 ``LogPatchDump`` family — so these exercise the public rewrite surface, never the

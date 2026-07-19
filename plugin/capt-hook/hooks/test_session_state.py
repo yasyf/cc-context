@@ -3,8 +3,8 @@
 Run from the repo root against the captain-hook source env, with ``plugin/`` on the
 path so the ``hooks`` package (and its relative imports) resolves::
 
-    PYTHONPATH=plugin uv run --project ../captain-hook --with pytest \
-        pytest plugin/hooks/test_session_state.py
+    PYTHONPATH=plugin/capt-hook uv run --project ../captain-hook --with pytest \
+        pytest plugin/capt-hook/hooks/test_session_state.py
 
 The recorder, gate, and reset are exercised end to end against a real ``SessionStore``
 backed by a temp session dir and real files on disk (the store internals are never

@@ -3,8 +3,8 @@
 Run from the repo root against the captain-hook source env, with ``plugin/`` on the path so
 the ``hooks`` package (and its relative imports) resolves::
 
-    PYTHONPATH=plugin uv run --project ../captain-hook --with pytest \
-        pytest plugin/hooks/test_cat_rewrites.py
+    PYTHONPATH=plugin/capt-hook uv run --project ../captain-hook --with pytest \
+        pytest plugin/capt-hook/hooks/test_cat_rewrites.py
 
 The single-file rewrite and the multi-file block classify operands against the filesystem
 (``is_large`` / ``Path.stat``), so they can't live in inline ``tests={}`` — they would rewrite
