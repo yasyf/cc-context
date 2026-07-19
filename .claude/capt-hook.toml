@@ -1,6 +1,6 @@
 [pack]
 name = "ccx"
-version = "0.9.0"
+version = "0.10.0"
 description = "cc-context guard pack — hard-block token-bomb tool calls (unbounded reads, full diffs, line dumps, recursive listings); steer to ccx and auto-approve its read-only surface"
 hooks = "plugin/hooks"
 
