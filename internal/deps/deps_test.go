@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yasyf/cc-context/internal/anchor"
+	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
 )
 
@@ -115,7 +115,7 @@ func TestLiveDeps(t *testing.T) {
 		"# deps internal/backend/pathcheck.go — 5 uses (5 std),",
 		"errors (std)",
 		"## used by",
-		"internal/anchor/rewrite.go:",
+		"anchor/rewrite.go:",
 		"→ backend.",
 		"# method: imports via ast-grep; dependents via ripgrep import-line scan — syntactic, not a build graph",
 	} {

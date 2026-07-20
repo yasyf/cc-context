@@ -1,6 +1,7 @@
-// Package anchor implements content anchors: 4-character content-derived line
-// hashes ("120#a3fk") that pin a section reference to what a line says rather
-// than where it sits, so the reference survives edits that shift line numbers.
+// Package anchor implements content anchors: a section reference "120#a3fk" or
+// range "120-180#a3fk" whose 4-char trailer is a content hash of the line(s).
+// The hash pins the reference to what a line says, not where it sits, so it
+// re-anchors by content and survives edits that shift line numbers.
 package anchor
 
 import (

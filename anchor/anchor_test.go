@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yasyf/cc-context/internal/anchor"
+	"github.com/yasyf/cc-context/anchor"
 )
 
 // TestOfGolden locks the hash contract — FNV-1a 32-bit over the trimmed line,

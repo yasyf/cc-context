@@ -7,7 +7,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/yasyf/cc-context/internal/anchor"
+	"github.com/yasyf/cc-context/anchor"
 )
 
 func loadFixture(t *testing.T, name string) string {

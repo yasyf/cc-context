@@ -30,6 +30,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(
 		newVcsCmd(),
 		newCodeCmd(),
+		newAnchorCmd(),
 		newRepoCmd(),
 		newWebCmd(),
 		newExecCmd(),

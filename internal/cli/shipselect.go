@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/yasyf/cc-context/internal/anchor"
+	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/hunk"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"

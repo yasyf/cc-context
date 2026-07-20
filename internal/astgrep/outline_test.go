@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yasyf/cc-context/internal/anchor"
+	"github.com/yasyf/cc-context/anchor"
 )
 
 func TestParseOutline(t *testing.T) {

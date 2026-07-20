@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yasyf/cc-context/internal/anchor"
+	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/cli"
 	"github.com/yasyf/cc-context/internal/version"
 )
@@ -84,8 +84,9 @@ func TestRootHelpListsAllOps(t *testing.T) {
 		args []string
 		ops  []string
 	}{
-		{"root", []string{"--help"}, []string{"vcs", "code", "repo", "web", "exec", "format"}},
+		{"root", []string{"--help"}, []string{"vcs", "code", "anchor", "repo", "web", "exec", "format"}},
 		{"vcs", []string{"vcs", "--help"}, []string{"diff"}},
+		{"anchor", []string{"anchor", "--help"}, []string{"hash", "resolve"}},
 		{"code", []string{"code", "--help"}, []string{
 			"read", "outline", "search", "grep", "symbol", "deps", "related", "replace", "edit",
 		}},
@@ -116,7 +117,7 @@ func TestRootHelpListsAllOps(t *testing.T) {
 // unknown positional token instead of swallowing it and printing help with exit 0,
 // while a bare group invocation still prints help.
 func TestGroupCommandsRejectUnknownSubcommand(t *testing.T) {
-	for _, group := range []string{"code", "repo", "vcs", "web"} {
+	for _, group := range []string{"code", "repo", "vcs", "web", "anchor"} {
 		t.Run(group+" unknown subcommand errors", func(t *testing.T) {
 			var out bytes.Buffer
 			root := cli.NewRootCmd()

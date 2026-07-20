@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/yasyf/cc-context/internal/anchor"
+	"github.com/yasyf/cc-context/anchor"
 )
 
 // Match is one ast-grep `--json=stream` record. Only the fields the renderers

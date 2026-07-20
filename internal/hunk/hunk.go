@@ -11,7 +11,7 @@ import (
 
 	"github.com/sergi/go-diff/diffmatchpatch"
 
-	"github.com/yasyf/cc-context/internal/anchor"
+	"github.com/yasyf/cc-context/anchor"
 )
 
 // Hunk is one contiguous run of changed lines carrying zero context. Coordinates

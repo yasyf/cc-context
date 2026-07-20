@@ -9,7 +9,7 @@ import (
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
 
-	"github.com/yasyf/cc-context/internal/anchor"
+	"github.com/yasyf/cc-context/anchor"
 )
 
 // maxChunkTokens is the leaf-chunk ceiling: a chunk never estimates over this
