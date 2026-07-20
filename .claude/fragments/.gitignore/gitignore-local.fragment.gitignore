@@ -1,0 +1,10 @@
+# WASM format engine, built from format-core/wasm by `task wasm` (go:embed'd)
+/internal/format/formatcore.wasm
+
+# plugin/bin is on the Bash tool's PATH; it holds only symlinks the installer
+# manages (brew binary, data-dir payload, or dev build) — never a real binary
+plugin/bin/*
+!plugin/bin/.gitkeep
+
+# agent scratchpads and stray root builds
+/ccx
