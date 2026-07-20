@@ -34,9 +34,11 @@ from captain_hook.session import SessionStore
 
 from conftest import fake_run, make_evt
 from hooks import common, web_guards
+from cc_transcript.command import Occurrence
+
 from hooks.web_guards import (
     WholePageWebFetch,
-    assignment_captured,
+    occurrence_captured,
     page_dump_blocks,
     page_dump_note,
     page_dump_to,
@@ -86,6 +88,16 @@ def evt_occ(command: str, index: int = 0):
     return evt, evt.cmd.line.occurrences[index]
 
 
+def dump_occurrence(evt: PreToolUseEvent) -> Occurrence:
+    """The ``curl``/``wget`` occurrence a page-dump line carries — the one the guard judges.
+
+    Selected by the unwrapped executable, since a nested substitution (``export H=$(curl …)``)
+    surfaces the dump past index 0 and a wrapper prefix (``timeout 10 curl …``) hides it behind
+    the wrapper's own executable.
+    """
+    return next(o for o in evt.cmd.line.occurrences if o.command.unwrapped.executable in ("curl", "wget"))
+
+
 def force_web_support(monkeypatch: pytest.MonkeyPatch, *, ok: bool) -> None:
     """Force the ``ccx_supports("web", "read")`` gate on/off around the page-dump rewrite.
 
@@ -115,7 +127,6 @@ class TestAssignmentCapturedDump:
             "H=$(VAR=1 curl https://example.com/)",
             'H="pre $(curl https://example.com/) post"',
             "H=x$(curl https://example.com/)y",
-            "H=${X:-$(curl https://example.com/)}",
             "local h=$(curl https://example.com/)",
             "declare -r h=$(curl https://example.com/)",
             "H+=$(curl https://example.com/)",
@@ -126,10 +137,18 @@ class TestAssignmentCapturedDump:
         self, monkeypatch: pytest.MonkeyPatch, command: str
     ) -> None:
         force_web_support(monkeypatch, ok=True)
-        evt, occ = evt_occ(command)
-        assert assignment_captured(occ.line.raw, occ.command.span)
+        evt = make_evt(command)
+        occ = dump_occurrence(evt)
+        assert occurrence_captured(occ)
         assert page_dump_to(evt, occ) is None
         assert not page_dump_blocks(evt, occ)
+        assert not web_guards.PageDumpToStdout().check(evt)
+
+    def test_parameter_expansion_default_is_unseen(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A `${X:-$(curl …)}` default isn't descended into — no curl occurrence surfaces to guard.
+        force_web_support(monkeypatch, ok=True)
+        evt = make_evt("H=${X:-$(curl https://example.com/)}")
+        assert not any(o.command.unwrapped.executable == "curl" for o in evt.cmd.line.occurrences)
         assert not web_guards.PageDumpToStdout().check(evt)
 
     def test_rewritable_sibling_survives_captured_assignment(
@@ -138,32 +157,32 @@ class TestAssignmentCapturedDump:
         force_web_support(monkeypatch, ok=True)
         evt = make_evt("A=$(true); curl https://example.com")
         _, curl_occ = evt.cmd.line.occurrences
-        assert not assignment_captured(evt.cmd.line.raw, curl_occ.command.span)
+        assert not occurrence_captured(curl_occ)
         assert page_dump_to(evt, curl_occ) == "/fake/ccx web read https://example.com --full"
         assert web_guards.PageDumpToStdout().check(evt)
 
-    def test_test_expression_host_keeps_todays_lane(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_test_expression_host_keeps_the_guard_active(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The dump's host is `[` (a test), not an assignment builtin — no capture, guard stays active.
         force_web_support(monkeypatch, ok=True)
         evt = make_evt('[ -n "$(curl https://example.com)" ]')
-        curl_occ = next(o for o in evt.cmd.line.occurrences if o.command.executable == "curl")
-        assert not assignment_captured(evt.cmd.line.raw, curl_occ.command.span)
-        assert page_dump_to(evt, curl_occ) == "/fake/ccx web read https://example.com --full"
+        curl_occ = dump_occurrence(evt)
+        assert not occurrence_captured(curl_occ)
+        assert web_guards.PageDumpToStdout().check(evt)
 
-    def test_completed_assignment_before_substitution_keeps_todays_lane(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # `H=1` completes before the substitution word starts — the dump isn't this assignment's value.
+    def test_assignment_builtin_host_is_captured(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An assignment builtin never prints its args, so any `$(curl …)` it hosts reads as
+        # captured — coarser than the old per-word check, but the page still reaches no context.
         force_web_support(monkeypatch, ok=True)
         evt = make_evt('export H=1 "$(curl https://example.com/)"')
-        curl_occ = next(o for o in evt.cmd.line.occurrences if o.command.executable == "curl")
-        assert not assignment_captured(evt.cmd.line.raw, curl_occ.command.span)
-        assert page_dump_to(evt, curl_occ) == "/fake/ccx web read https://example.com/ --full"
+        curl_occ = dump_occurrence(evt)
+        assert occurrence_captured(curl_occ)
+        assert not web_guards.PageDumpToStdout().check(evt)
 
     def test_captured_sibling_leaves_bare_dump_active(self, monkeypatch: pytest.MonkeyPatch) -> None:
         force_web_support(monkeypatch, ok=True)
         evt = make_evt("H=$(curl https://a.example/); curl -s https://b.example/")
         captured, bare = evt.cmd.line.occurrences
-        assert assignment_captured(evt.cmd.line.raw, captured.command.span)
+        assert occurrence_captured(captured)
         assert page_dump_to(evt, captured) is None
         assert not page_dump_blocks(evt, captured)
         assert page_dump_to(evt, bare) == "/fake/ccx web read https://b.example/ --full"
@@ -174,12 +193,12 @@ class TestAssignmentCapturedDump:
         assert not web_guards.PageDumpToStdout().check(evt)
 
     def test_nested_substitution_keeps_the_guard_active(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The inner dump's host is `echo`, not the assignment — capture can't be proven through the
-        # nested substitution, so the conservative pre-sink-lane behavior holds.
+        # The inner dump's host is `echo`, not an assignment — capture isn't proven through the
+        # nested substitution, so the guard conservatively stays active.
         force_web_support(monkeypatch, ok=True)
         evt = make_evt("H=$(echo $(curl https://example.com))")
-        curl_occ = next(o for o in evt.cmd.line.occurrences if o.command.executable == "curl")
-        assert not assignment_captured(evt.cmd.line.raw, curl_occ.command.span)
+        curl_occ = dump_occurrence(evt)
+        assert not occurrence_captured(curl_occ)
         assert web_guards.PageDumpToStdout().check(evt)
 
 

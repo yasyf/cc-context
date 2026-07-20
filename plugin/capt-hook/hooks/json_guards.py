@@ -7,12 +7,14 @@ TRON, JSONL, prose, or compact JSON, with TOON only for large uniform arrays —
 before it floods context. Commands
 *observed* emitting JSON at runtime are recorded to a persistent shapes store; next
 time a command of that shape runs, the agent gets a **nudge** to wrap it. The rewrite
-fires on each eligible occurrence of a compound line, leaving its siblings byte-for-byte
-intact. Piped and redirected occurrences stay raw (``--json | jq`` needs JSON), as do
-occurrences that are already wrapped, aren't plain argv (an env prefix, subshell, or
-shell keyword cannot safely follow ``--``), or are streaming (``--watch``/``--follow``
-never exits, and the wrapper buffers stdout until exit). It emits
-``permissionDecision: allow`` so it adds no extra prompt.
+fires on each eligible top-level occurrence of a compound line, leaving its siblings
+byte-for-byte intact. Piped and redirected occurrences stay raw (``--json | jq`` needs
+JSON), as do occurrences that are already wrapped, aren't plain argv (an env prefix,
+subshell, or shell keyword cannot safely follow ``--``), are streaming
+(``--watch``/``--follow`` never exits, and the wrapper buffers stdout until exit), or are
+nested below top level — a ``$(…)`` substitution or ``eval`` payload whose output is
+captured, not dumped to context, and whose splice cannot survive its enclosing quote
+layers. It emits ``permissionDecision: allow`` so it adds no extra prompt.
 """
 
 from __future__ import annotations
@@ -80,7 +82,8 @@ def occurrence_already_wrapped(occ: Occurrence) -> bool:
 
 def wraps(occ: Occurrence) -> bool:
     return (
-        not occ.piped
+        occ.nesting == 0
+        and not occ.piped
         and not occ.command.redirects
         and occurrence_has_json_output_flag(occ)
         and not occurrence_already_wrapped(occ)
@@ -119,18 +122,21 @@ rewrite_command_occurrences(
         Input(command='gh pr list --json number --search "is:open draft:false"'): Rewrite(
             pattern="format -- gh pr list --json number --search"
         ),
-        # Non-argv shapes: after `ccx format --` an env-assignment prefix execs as
-        # argv[0] ("executable file not found"), and `time` stops being a shell
-        # keyword — the rewrite bails on each.
+        # An env-assignment prefix execs as argv[0] after `ccx format --`
+        # ("executable file not found"), so it bails. `time`, though, is a wrapper the parser
+        # unwraps — the plain-argv `gh` occurrence splices in place with `time` preserved ahead
+        # of it (the wrap reaches through the prefix, which is exactly what the JSON guard wants).
         Input(command="GH_HOST=x.example.com gh pr list --json number"): Allow(),
-        Input(command="time gh pr list --json number"): Allow(),
+        Input(command="time gh pr list --json number"): Rewrite(pattern="format -- gh pr list --json number"),
         # Occurrence splicing preserves the subshell delimiters outside the command's
         # span, so its inner plain argv is now safe to wrap in place.
         Input(command="(gh pr list --json number)"): Rewrite(
             pattern="format -- gh pr list --json number)"
         ),
-        # Builtins with no binary counterpart: after `--` they exec as literal
-        # binaries ("executable file not found") — the rewrite bails on each.
+        # `exec`/`source` are shell-word builtins that bail at the top level (they can't follow
+        # `--`). `eval` splits its payload into a *nested* occurrence: the inner `gh` is plain
+        # argv, but its splice can't survive the eval quote layers, so the nesting gate declines
+        # it cleanly rather than leaning on a swallowed splice failure.
         Input(command="exec gh pr list --json number"): Allow(),
         Input(command="eval gh pr list --json number"): Allow(),
         Input(command="source render.sh --json"): Allow(),

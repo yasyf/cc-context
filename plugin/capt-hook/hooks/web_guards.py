@@ -93,8 +93,9 @@ CURL_REWRITE_LONGS = frozenset({"--silent", "--show-error", "--fail", "--locatio
 WGET_QUIET = frozenset({"-q", "--quiet"})
 WGET_STDOUT_FLAGS = frozenset({"-O", "--output-document"})
 
-# An assignment head: optional keyword/flag words (`export`, `local`, `declare -r`) then `NAME=`/`NAME+=`.
-ASSIGNMENT_HEAD = re.compile(r"(?:[A-Za-z_-][\w-]*\s+)*[A-Za-z_]\w*\+?=")
+# Shell builtins that bind their arguments to variables. A `$(curl …)` value one of these captures
+# lands in a variable, never on stdout, so a page dump inside it floods no context.
+ASSIGNMENT_BUILTINS = frozenset({"export", "local", "declare", "readonly", "typeset"})
 
 
 def is_local_host(host: str) -> bool:
@@ -269,21 +270,19 @@ class PageDumpToStdout(CustomCommandLineCondition):
     Allowed by construction: a command whose stdout is piped (``| jq``) or redirected to a file,
     a curl sink (``-o``/``-O``) or non-GET method (``-X``/``-d``/``--json``/``-T``/``-I``), a
     non-stdout ``wget`` (its default disk download), a localhost target, a scheme-less URL, and
-    an assignment-captured substitution body (``H=$(curl …)``).
+    a substitution whose output an assignment captures (``H=$(curl …)``, ``export H=$(curl …)``).
     An unpiped ``curl -s <api>`` blocks on purpose — a raw JSON dump floods context the same way,
     and the pipe hatch (`… | jq`) is right there.
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        for cmd, op in cl.parts:
-            if op == "|" or sinks_stdout(cmd) or assignment_captured(cl.raw, cmd.span):
+        for occ in cl.occurrences:
+            cmd = occ.command
+            if occ.piped or sinks_stdout(cmd) or occurrence_captured(occ):
                 continue
-            # Match on the unwrapped executable so a wrapper prefix (`timeout 10 curl …`,
-            # `sudo curl …`, `env FOO=1 curl …`) can't slip the page dump past the block.
-            inner = cmd.unwrapped
-            if inner.executable == "curl" and curl_dumps_page(inner.args):
-                return True
-            if inner.executable == "wget" and wget_dumps_page(inner.args):
+            # `occurrence_dumps` matches on the unwrapped executable, so a wrapper prefix
+            # (`timeout 10 curl …`, `sudo curl …`, `env FOO=1 curl …`) can't slip the dump past.
+            if occurrence_dumps(cmd):
                 return True
         return False
 
@@ -386,38 +385,26 @@ def occurrence_can_rewrite(occ: "Occurrence") -> bool:
     return not occ.piped and not occ.command.redirects
 
 
-def assignment_captured(raw: str, span: tuple[int, int] | None) -> bool:
-    """Whether the command at ``span`` is a substitution body a variable assignment captures.
+def host_is_assignment(cmd: Command) -> bool:
+    """Whether ``cmd`` is an assignment builtin (:data:`ASSIGNMENT_BUILTINS`) capturing a value into a variable."""
+    return bool(cmd.argv) and cmd.argv[0] in ASSIGNMENT_BUILTINS
 
-    The parser surfaces a substitution body as its own part/occurrence — span starting right
-    after the ``$(``/backtick opener — for assignment hosts (``H=$(curl …)``, ``export``/
-    ``local``/``declare``/``+=``, concatenated values like ``H=x$(…)y``) and test-expression
-    hosts (``[ -n "$(curl …)" ]``) alike. Only the assignment shapes are the sink lane, so the
-    text from the last command separator to the opener must read as an assignment head
-    (keyword/flag words then ``NAME=``). Captured output reaches no context by itself, and a
-    splice there hands the consumer extracted markdown instead of raw HTML (the ``H=$(curl …)``
-    incident) — the capture runs untouched. A test-expression host fails the match, a completed
-    assignment followed by a new word (``export H=1 "$(curl …)"``) fails on the unquoted space,
-    and a span-less command can't prove hosting — all keep the normal lane.
+
+def occurrence_captured(occ: Occurrence) -> bool:
+    """Whether a substituted occurrence's stdout is captured by a variable assignment, never flooding context.
+
+    A bare ``H=$(curl …)`` surfaces the substitution with no host command (an assignment-only
+    line); ``export H=$(curl …)`` / ``local H=$(curl …)`` surface it hosted by the assignment
+    builtin. Either way the page is captured into a variable, reaching no context — the capture
+    runs untouched, and a splice there would hand the consumer extracted markdown instead of raw
+    HTML (the ``H=$(curl …)`` incident). A substitution a printing command consumes
+    (``echo "$(curl …)"``) is hosted by that command, floods context, and stays guarded. A
+    top-level occurrence (``nesting == 0``) is never a capture.
     """
-    if span is None:
+    if occ.nesting == 0:
         return False
-    head = raw[: span[0]].rstrip()
-    if not head.endswith(("$(", "`")):
-        return False
-    seg = re.split(r"[;&|(]", head.removesuffix("$(").removesuffix("`"))[-1].lstrip()
-    if (m := ASSIGNMENT_HEAD.match(seg)) is None:
-        return False
-    quote = None
-    for ch in seg[m.end() :]:
-        if quote:
-            if ch == quote:
-                quote = None
-        elif ch in "\"'":
-            quote = ch
-        elif ch.isspace():
-            return False  # unquoted whitespace after NAME= starts a new word — not this assignment's value
-    return True
+    host = occ.host
+    return host is None or host_is_assignment(host.command)
 
 
 def occurrence_dumps(cmd: Command) -> bool:
@@ -451,11 +438,7 @@ def occurrence_rewrite_url(cmd: Command) -> str | None:
 
 def page_dump_to(evt: BaseHookEvent, occ: "Occurrence") -> str | None:
     cmd = occ.command
-    if (
-        not occurrence_can_rewrite(occ)
-        or assignment_captured(occ.line.raw, occ.command.span)
-        or not occurrence_dumps(cmd)
-    ):
+    if not occurrence_can_rewrite(occ) or occurrence_captured(occ) or not occurrence_dumps(cmd):
         return None
     url = occurrence_rewrite_url(cmd)
     if url is None or is_api_url(url):
@@ -470,7 +453,7 @@ def page_dump_blocks(evt: BaseHookEvent, occ: "Occurrence") -> bool:
     return (
         occurrence_can_rewrite(occ)
         and occurrence_dumps(cmd)
-        and not assignment_captured(occ.line.raw, occ.command.span)
+        and not occurrence_captured(occ)
         and (cmd.span is None or page_dump_to(evt, occ) is None)
     )
 
@@ -546,8 +529,8 @@ rewrite_command_occurrences(
         Input(command='H=$(curl https://example.com/); echo "$H"'): Allow(),  # the accepted hole
         # A captured sibling neither blocks nor rewrites; the bare dump still splices.
         Input(command="H=$(curl https://a.example/); curl -s https://b.example/"): Rewrite(pattern="ccx web read"),
-        # A string-embedded dump substitution surfaces span-less — no span can prove capture, and the
-        # expanded page hits stdout through the host command, so it blocks like a bare dump.
+        # A substitution a printing command consumes is hosted by that command (not an assignment),
+        # so the expanded page reaches stdout through it — it blocks like a bare dump.
         Input(command='echo "$(curl https://example.com)"'): Block(pattern="ccx web outline"),
         Input(command='printf "%s" "$(curl https://example.com)"'): Block(pattern="ccx web outline"),
         Input(command="curl https://example.com | jq ."): Allow(),

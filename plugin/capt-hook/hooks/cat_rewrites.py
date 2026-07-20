@@ -61,13 +61,14 @@ def line_has_heredoc(evt: BaseHookEvent) -> bool:
 def bare_cat_files(occ: Occurrence) -> tuple[str, ...] | None:
     """The operands of a bare ``cat <file>...`` occurrence, or ``None`` when it isn't one.
 
-    ``None`` when the occurrence is piped or carries a redirect (streaming/writing uses, not a
-    context dump), or when it is not a flagless ``cat`` read (executable ``cat``, at least one
-    arg, first arg not a flag). The line-level heredoc decline lives in :func:`line_has_heredoc`,
-    not here — a heredoc is a property of the whole line, not a single occurrence.
+    ``None`` when the occurrence is nested below top level (a ``$(…)``/``eval`` payload, whose
+    splice can't survive its quote layers), is piped or carries a redirect (streaming/writing
+    uses, not a context dump), or when it is not a flagless ``cat`` read (executable ``cat``, at
+    least one arg, first arg not a flag). The line-level heredoc decline lives in
+    :func:`line_has_heredoc`, not here — a heredoc is a property of the whole line.
     """
     cmd = occ.command
-    if occ.piped or cmd.redirects or cmd.executable != "cat":
+    if occ.nesting or occ.piped or cmd.redirects or cmd.executable != "cat":
         return None
     args = cmd.args
     if not args or args[0].startswith("-"):
