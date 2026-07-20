@@ -83,7 +83,7 @@ class TestWholePageWebFetch:
 
 def evt_occ(command: str, index: int = 0):
     evt = make_evt(command)
-    return evt, evt.command_line.occurrences[index]
+    return evt, evt.cmd.line.occurrences[index]
 
 
 def force_web_support(monkeypatch: pytest.MonkeyPatch, *, ok: bool) -> None:
@@ -137,16 +137,16 @@ class TestAssignmentCapturedDump:
     ) -> None:
         force_web_support(monkeypatch, ok=True)
         evt = make_evt("A=$(true); curl https://example.com")
-        _, curl_occ = evt.command_line.occurrences
-        assert not assignment_captured(evt.command_line.raw, curl_occ.command.span)
+        _, curl_occ = evt.cmd.line.occurrences
+        assert not assignment_captured(evt.cmd.line.raw, curl_occ.command.span)
         assert page_dump_to(evt, curl_occ) == "/fake/ccx web read https://example.com --full"
         assert web_guards.PageDumpToStdout().check(evt)
 
     def test_test_expression_host_keeps_todays_lane(self, monkeypatch: pytest.MonkeyPatch) -> None:
         force_web_support(monkeypatch, ok=True)
         evt = make_evt('[ -n "$(curl https://example.com)" ]')
-        curl_occ = next(o for o in evt.command_line.occurrences if o.command.executable == "curl")
-        assert not assignment_captured(evt.command_line.raw, curl_occ.command.span)
+        curl_occ = next(o for o in evt.cmd.line.occurrences if o.command.executable == "curl")
+        assert not assignment_captured(evt.cmd.line.raw, curl_occ.command.span)
         assert page_dump_to(evt, curl_occ) == "/fake/ccx web read https://example.com --full"
 
     def test_completed_assignment_before_substitution_keeps_todays_lane(
@@ -155,15 +155,15 @@ class TestAssignmentCapturedDump:
         # `H=1` completes before the substitution word starts — the dump isn't this assignment's value.
         force_web_support(monkeypatch, ok=True)
         evt = make_evt('export H=1 "$(curl https://example.com/)"')
-        curl_occ = next(o for o in evt.command_line.occurrences if o.command.executable == "curl")
-        assert not assignment_captured(evt.command_line.raw, curl_occ.command.span)
+        curl_occ = next(o for o in evt.cmd.line.occurrences if o.command.executable == "curl")
+        assert not assignment_captured(evt.cmd.line.raw, curl_occ.command.span)
         assert page_dump_to(evt, curl_occ) == "/fake/ccx web read https://example.com/ --full"
 
     def test_captured_sibling_leaves_bare_dump_active(self, monkeypatch: pytest.MonkeyPatch) -> None:
         force_web_support(monkeypatch, ok=True)
         evt = make_evt("H=$(curl https://a.example/); curl -s https://b.example/")
-        captured, bare = evt.command_line.occurrences
-        assert assignment_captured(evt.command_line.raw, captured.command.span)
+        captured, bare = evt.cmd.line.occurrences
+        assert assignment_captured(evt.cmd.line.raw, captured.command.span)
         assert page_dump_to(evt, captured) is None
         assert not page_dump_blocks(evt, captured)
         assert page_dump_to(evt, bare) == "/fake/ccx web read https://b.example/ --full"
@@ -178,8 +178,8 @@ class TestAssignmentCapturedDump:
         # nested substitution, so the conservative pre-sink-lane behavior holds.
         force_web_support(monkeypatch, ok=True)
         evt = make_evt("H=$(echo $(curl https://example.com))")
-        curl_occ = next(o for o in evt.command_line.occurrences if o.command.executable == "curl")
-        assert not assignment_captured(evt.command_line.raw, curl_occ.command.span)
+        curl_occ = next(o for o in evt.cmd.line.occurrences if o.command.executable == "curl")
+        assert not assignment_captured(evt.cmd.line.raw, curl_occ.command.span)
         assert web_guards.PageDumpToStdout().check(evt)
 
 
@@ -249,7 +249,7 @@ class TestPageDumpRewrite:
         # Deliberate flip: occurrences now judge independently, so `&&`'s curl still rewrites.
         force_web_support(monkeypatch, ok=True)
         evt = make_evt("curl https://example.com && echo done")
-        curl_occ, echo_occ = evt.command_line.occurrences
+        curl_occ, echo_occ = evt.cmd.line.occurrences
         assert page_dump_to(evt, curl_occ) == "/fake/ccx web read https://example.com --full"
         assert page_dump_to(evt, echo_occ) is None
 
@@ -267,7 +267,7 @@ class TestPageDumpRewrite:
         # Two distinct URLs across pairs: one trailing suggestion can't name both, so it stays generic.
         force_web_support(monkeypatch, ok=True)
         evt = make_evt("curl https://example.com/a && curl https://example.com/b")
-        occ_a, occ_b = evt.command_line.occurrences
+        occ_a, occ_b = evt.cmd.line.occurrences
         pairs = [(occ_a, page_dump_to(evt, occ_a)), (occ_b, page_dump_to(evt, occ_b))]
         note = page_dump_note(evt, pairs)
         assert "ccx web read https://example.com/a --full" in note

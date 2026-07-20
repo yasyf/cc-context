@@ -221,8 +221,8 @@ def search_block(
     Every occurrence is inspected through its unwrapped command, so wrapper-prefixed searches contribute
     their operands too — the same scope the guard's wrapper-transparent condition uses.
     """
-    command_line = cl or evt.command_line
-    if command_line is None:
+    command_line = cl or evt.cmd.line
+    if not command_line:
         return default
     ops = [
         p

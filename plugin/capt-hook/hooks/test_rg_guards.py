@@ -38,7 +38,7 @@ from hooks.common import ccx_supports
 
 def event_occurrence(command: str, index: int = 0) -> tuple[PreToolUseEvent, Occurrence]:
     evt = make_evt(command)
-    return evt, evt.command_line.occurrences[index]
+    return evt, evt.cmd.line.occurrences[index]
 
 
 def rg_rewrite(command: str, index: int = 0) -> str | None:
@@ -196,17 +196,17 @@ class TestRgOccurrenceRewrite:
     def test_compound_splices_only_rg(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
         evt = make_evt("printf 'left  side'; rg foo")
-        occurrence = evt.command_line.occurrences[1]
+        occurrence = evt.cmd.line.occurrences[1]
         replacement = rg_guards.rg_to(evt, occurrence)
         assert replacement == "/fake/ccx code grep foo"
-        assert evt.command_line.splice({occurrence.index: replacement}) == (
+        assert evt.cmd.line.splice({occurrence.index: replacement}) == (
             "printf 'left  side'; /fake/ccx code grep foo"
         )
 
     def test_wrapped_rg_matches_but_never_rewrites(self) -> None:
         evt, occurrence = event_occurrence("sudo rg foo .")
         assert occurrence.command.unwrapped.executable == "rg"
-        assert rg_guards.RgFlood().check_command_line(evt, evt.command_line) is True
+        assert rg_guards.RgFlood().check_command_line(evt, evt.cmd.line) is True
         assert rg_guards.rg_to(evt, occurrence) is None
         assert rg_guards.rg_block_if(evt, occurrence) is True
 
@@ -232,8 +232,8 @@ class TestRgBoundedPassthrough:
     )
     def test_bounded_file_lanes_do_not_fire(self, command: str) -> None:
         evt = make_evt(command)
-        assert rg_guards.bounded_file_rg(evt.command_line.primary) is True
-        assert rg_guards.RgFlood().check_command_line(evt, evt.command_line) is False
+        assert rg_guards.bounded_file_rg(evt.cmd.line.primary) is True
+        assert rg_guards.RgFlood().check_command_line(evt, evt.cmd.line) is False
 
     @pytest.mark.parametrize(
         "command",
@@ -262,8 +262,8 @@ class TestRgBoundedPassthrough:
     )
     def test_unbounded_recursive_or_stat_shapes_fire(self, command: str) -> None:
         evt = make_evt(command)
-        assert rg_guards.bounded_file_rg(evt.command_line.primary) is False
-        assert rg_guards.RgFlood().check_command_line(evt, evt.command_line) is True
+        assert rg_guards.bounded_file_rg(evt.cmd.line.primary) is False
+        assert rg_guards.RgFlood().check_command_line(evt, evt.cmd.line) is True
 
     @pytest.mark.parametrize(
         "command",
@@ -279,5 +279,5 @@ class TestRgBoundedPassthrough:
     )
     def test_forfeits_both_bounded_lanes(self, command: str) -> None:
         evt = make_evt(command)
-        assert rg_guards.bounded_file_rg(evt.command_line.primary.unwrapped) is False
-        assert rg_guards.RgFlood().check_command_line(evt, evt.command_line) is True
+        assert rg_guards.bounded_file_rg(evt.cmd.line.primary.unwrapped) is False
+        assert rg_guards.RgFlood().check_command_line(evt, evt.cmd.line) is True

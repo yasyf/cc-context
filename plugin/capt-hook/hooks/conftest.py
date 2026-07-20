@@ -41,7 +41,8 @@ def fake_run(returncode: int, stdout: str = "", stderr: str = ""):
 
 
 def make_evt(command: str) -> SimpleNamespace:
-    return SimpleNamespace(command_line=CommandLine.parse(command), command=command)
+    line = CommandLine.parse(command)
+    return SimpleNamespace(cmd=SimpleNamespace(line=line, raw=command, q=line.q))
 
 
 def probe(monkeypatch: pytest.MonkeyPatch, help_text: str) -> None:

@@ -55,7 +55,7 @@ def line_has_heredoc(evt: BaseHookEvent) -> bool:
     Per-occurrence heredoc detection is unsound — a ``cat << EOF`` body can contain any text,
     including an inner ``cat`` — so a compound with any heredoc stays untouched.
     """
-    return "<<" in (evt.command or "")
+    return "<<" in evt.cmd.raw
 
 
 def bare_cat_files(occ: Occurrence) -> tuple[str, ...] | None:

@@ -100,7 +100,7 @@ class CcxRepipe(CustomCommandLineCondition):
 
 def repipe_to(evt: BaseHookEvent) -> str | None:
     """The source-bounded rewrite for the two faithful shapes, else ``None`` to hard-block."""
-    cl = evt.command_line
+    cl = evt.cmd.line
     if prefix_needs_requote(cl.head):  # a re-quote-needing env value would corrupt the spliced prefix → block
         return None
     _exe, mode, count, files = headtail_parse(cl.primary)
@@ -120,7 +120,7 @@ def repipe_to(evt: BaseHookEvent) -> str | None:
 
 
 def repipe_note(evt: BaseHookEvent) -> str:
-    if evt.command_line.head.unwrapped.args[:2] == ("repo", "find"):
+    if evt.cmd.line.head.unwrapped.args[:2] == ("repo", "find"):
         return "Dropped `| head` — `ccx repo find` output is already token-budget-capped."
     return "Rewrote `ccx code read --full | head -N` → `--section 1-N`: same lines, no dropped overflow footer."
 

@@ -364,7 +364,7 @@ class TestSeenEmittingJson:
     def test_unseen_shape_does_not_fire(self, tmp_path: Path) -> None:
         cond = SeenEmittingJson()
         evt = self.pre_event("terraform output", tmp_path / "s1")
-        assert not cond.check_command_line(evt, evt.command_line)
+        assert not cond.check_command_line(evt, evt.cmd.line)
 
     def test_recorded_shape_fires_once_per_session(self, tmp_path: Path) -> None:
         record_shape(fake_evt(), shape("gh issue view 123"))
@@ -372,28 +372,28 @@ class TestSeenEmittingJson:
         session = tmp_path / "s1"
         first = self.pre_event("gh issue view 123", session)
         second = self.pre_event("gh issue view 456", session)  # same shape, different value
-        assert cond.check_command_line(first, first.command_line)
-        assert not cond.check_command_line(second, second.command_line)  # self-gated within session
+        assert cond.check_command_line(first, first.cmd.line)
+        assert not cond.check_command_line(second, second.cmd.line)  # self-gated within session
 
     def test_recorded_shape_fires_again_in_new_session(self, tmp_path: Path) -> None:
         record_shape(fake_evt(), shape("terraform output"))
         cond = SeenEmittingJson()
         a = self.pre_event("terraform output", tmp_path / "sessionA")
         b = self.pre_event("terraform output", tmp_path / "sessionB")
-        assert cond.check_command_line(a, a.command_line)
-        assert cond.check_command_line(b, b.command_line)
+        assert cond.check_command_line(a, a.cmd.line)
+        assert cond.check_command_line(b, b.cmd.line)
 
     def test_already_wrapped_does_not_fire(self, tmp_path: Path) -> None:
         record_shape(fake_evt(), shape("terraform output"))
         cond = SeenEmittingJson()
         evt = self.pre_event("ccx format -- terraform output", tmp_path / "s1")
-        assert not cond.check_command_line(evt, evt.command_line)
+        assert not cond.check_command_line(evt, evt.cmd.line)
 
     def test_piped_command_does_not_fire(self, tmp_path: Path) -> None:
         record_shape(fake_evt(), shape("terraform output"))
         cond = SeenEmittingJson()
         evt = self.pre_event("terraform output | jq .", tmp_path / "s1")
-        assert not cond.check_command_line(evt, evt.command_line)
+        assert not cond.check_command_line(evt, evt.cmd.line)
 
     def test_ccx_shape_never_fires_even_if_recorded(self, tmp_path: Path) -> None:
         # The durable store is global and long-lived: a `ccx exec` shape recorded
@@ -401,7 +401,7 @@ class TestSeenEmittingJson:
         record_shape(fake_evt(), shape("ccx exec 'async def main(): return 1'"))
         cond = SeenEmittingJson()
         evt = self.pre_event("ccx exec 'async def main(): return 2'", tmp_path / "s1")
-        assert not cond.check_command_line(evt, evt.command_line)
+        assert not cond.check_command_line(evt, evt.cmd.line)
 
 
 class TestRecordJsonShape:

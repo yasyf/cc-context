@@ -191,8 +191,8 @@ def bash_stdout(resp: object) -> str:
 )
 def record_json_shape(evt: BaseHookEvent) -> None:
     out = bash_stdout(evt.tool_response)
-    cl = evt.command_line
-    if not out or cl is None or not looks_like_json(out):
+    cl = evt.cmd.line
+    if not out or not cl or not looks_like_json(out):
         return None
     if already_wrapped(cl) or is_ccx_command(cl) or has_json_output_flag(cl) or not is_single_command(cl):
         return None

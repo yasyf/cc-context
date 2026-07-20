@@ -68,7 +68,7 @@ def pin_ccx(monkeypatch: pytest.MonkeyPatch) -> None:
 def call_logpatch_to(command: str) -> str | None:
     """Drive ``vcs_guards.logpatch_to`` on ``command``'s primary occurrence — the public rewrite surface."""
     evt = bash_pre(command)
-    return vcs_guards.logpatch_to(evt, evt.command_line.occurrences[-1])
+    return vcs_guards.logpatch_to(evt, evt.cmd.line.occurrences[-1])
 
 
 class TestLogPatchRewriteDashDash:
@@ -172,19 +172,19 @@ class TestGhRunWatchNudge:
 
     def test_matches_single_gh_run_watch(self) -> None:
         evt = bash_pre("gh run watch 123 --exit-status")
-        assert GhRunWatchSingle().check_command_line(evt, evt.command_line) is True
+        assert GhRunWatchSingle().check_command_line(evt, evt.cmd.line) is True
 
     def test_piped_or_chained_not_matched(self) -> None:
         # `json_guards`/`ship` own the pipe; a chained line is not a single command → no steer.
         for cmd in ("gh run watch 123 --exit-status | tee run.log", "cd repo && gh run watch 123"):
             evt = bash_pre(cmd)
-            assert GhRunWatchSingle().check_command_line(evt, evt.command_line) is False
+            assert GhRunWatchSingle().check_command_line(evt, evt.cmd.line) is False
 
     def test_gh_run_view_not_matched(self) -> None:
         # `gh run view --log-failed` is a legitimate failure drill-down, never a watch.
         evt = bash_pre("gh run view 123 --log-failed")
-        assert GhRunWatchSingle().check_command_line(evt, evt.command_line) is False
+        assert GhRunWatchSingle().check_command_line(evt, evt.cmd.line) is False
 
     def test_gh_pr_list_not_matched(self) -> None:
         evt = bash_pre("gh pr list")
-        assert GhRunWatchSingle().check_command_line(evt, evt.command_line) is False
+        assert GhRunWatchSingle().check_command_line(evt, evt.cmd.line) is False

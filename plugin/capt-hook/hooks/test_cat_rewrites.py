@@ -25,7 +25,7 @@ from hooks import cat_rewrites
 
 def evt_occ(command: str, index: int = 0):
     evt = make_evt(command)
-    return evt, evt.command_line.occurrences[index]
+    return evt, evt.cmd.line.occurrences[index]
 
 
 class TestBareCatFiles:
@@ -123,7 +123,7 @@ class TestCatTo:
         big = tmp_path / "big.md"
         big.write_bytes(b"x" * (cat_rewrites.LARGE_READ_BYTES + 1))
         evt = make_evt(f"cat {big}; echo x; cat {tmp_path / 'ghost.md'}")
-        first, echo, ghost = evt.command_line.occurrences
+        first, echo, ghost = evt.cmd.line.occurrences
         assert cat_rewrites.cat_to(evt, first) == f"/fake/ccx code read {big} --full"
         assert cat_rewrites.cat_to(evt, echo) is None
         assert cat_rewrites.cat_to(evt, ghost) is None

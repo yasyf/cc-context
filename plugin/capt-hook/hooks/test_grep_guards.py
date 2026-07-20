@@ -38,7 +38,7 @@ from hooks.common import ccx_supports
 
 def event_occurrence(command: str, index: int = 0) -> tuple[PreToolUseEvent, Occurrence]:
     evt = make_evt(command)
-    return evt, evt.command_line.occurrences[index]
+    return evt, evt.cmd.line.occurrences[index]
 
 
 def grep_rewrite(command: str, index: int = 0) -> str | None:
@@ -448,7 +448,7 @@ class TestGrepOccurrenceRewrite:
     def test_compound_splices_only_grep(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
         evt = make_evt("echo x; grep -r foo .")
-        cl = evt.command_line
+        cl = evt.cmd.line
         grep_occ = cl.occurrences[1]
         replacement = grep_guards.grep_to(evt, grep_occ)
         assert replacement == "/fake/ccx code grep foo"
@@ -456,14 +456,14 @@ class TestGrepOccurrenceRewrite:
 
     def test_one_flooding_grep_blocks_benign_siblings(self) -> None:
         evt = make_evt("echo x; grep -c foo .")
-        cl = evt.command_line
+        cl = evt.cmd.line
         assert grep_guards.GrepFlood().check_command_line(evt, cl) is True
         assert grep_guards.grep_block_if(evt, cl.occurrences[1]) is True
 
     def test_wrapped_grep_matches_but_never_rewrites(self) -> None:
         evt, occ = event_occurrence("sudo grep foo .")
         assert occ.command.unwrapped.executable == "grep"
-        assert grep_guards.GrepFlood().check_command_line(evt, evt.command_line) is True
+        assert grep_guards.GrepFlood().check_command_line(evt, evt.cmd.line) is True
         assert grep_guards.grep_to(evt, occ) is None
         assert grep_guards.grep_block_if(evt, occ) is True
 
@@ -695,15 +695,15 @@ class TestTranscriptBlockMessage:
     def test_mixed_line_carries_both_steers(self) -> None:
         # A transcript operand alongside a `.` tree flood → the block names BOTH the default steer and cc-transcript.
         evt = self.bash_pre("grep foo ~/.claude/projects/main.jsonl; grep bar .")
-        message = grep_guards.grep_block(evt, evt.command_line)
+        message = grep_guards.grep_block(evt, evt.cmd.line)
         assert "floods context" in message and "cc-transcript" in message
         assert message != search_common.TRANSCRIPT_STEER  # not transcript-only
 
     def test_all_transcript_line_is_steer_only(self) -> None:
         evt = self.bash_pre("grep -r foo ~/.claude/projects/")
-        assert grep_guards.grep_block(evt, evt.command_line) == search_common.TRANSCRIPT_STEER
+        assert grep_guards.grep_block(evt, evt.cmd.line) == search_common.TRANSCRIPT_STEER
 
     def test_wrapped_transcript_occurrence_contributes_to_mixed_message(self) -> None:
         evt = self.bash_pre("sudo grep foo ~/.claude/projects/main.jsonl; grep bar .")
-        message = grep_guards.grep_block(evt, evt.command_line)
+        message = grep_guards.grep_block(evt, evt.cmd.line)
         assert "floods context" in message and "cc-transcript" in message

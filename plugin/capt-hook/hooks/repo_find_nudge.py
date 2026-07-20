@@ -75,8 +75,8 @@ def repo_find_glob(evt: BaseHookEvent) -> str | None:
         if ti.get("scope"):
             return None
         return glob if isinstance(glob := ti.get("glob"), str) else None
-    cl = evt.command_line
-    if cl is None or Path(cl.primary.executable).name != "ccx" or cl.primary.args[:2] != ("repo", "find"):
+    cl = evt.cmd.line
+    if not cl or Path(cl.primary.executable).name != "ccx" or cl.primary.args[:2] != ("repo", "find"):
         return None
     rest = cl.primary.args[2:]
     scoped = False
