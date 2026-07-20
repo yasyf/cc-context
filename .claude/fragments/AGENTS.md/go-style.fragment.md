@@ -16,7 +16,7 @@ Building from source also needs the Rust toolchain (stable, per `format-core/rus
 
 ## Python Style
 
-The capt-hook guard pack under `plugin/hooks/` follows `plugin/hooks/STYLEGUIDE.md` (Python 3.13+): public-surface tests, inline `tests={}` rows, and no leading underscores on module-level helpers.
+The capt-hook guard pack under `plugin/capt-hook/hooks/` follows `plugin/capt-hook/hooks/STYLEGUIDE.md` (Python 3.13+): public-surface tests, inline `tests={}` rows, and no leading underscores on module-level helpers.
 
 ## General Rules
 
