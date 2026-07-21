@@ -49,6 +49,14 @@ func TestRewriteArgs(t *testing.T) {
 			wantNote: fmt.Sprintf("# anchor %s: line 1 → 3\n", gamma),
 		},
 		{
+			name: "path resolution precedes anchor move note",
+			op:   backend.OpRead,
+			args: backend.Args{Path: strings.TrimSuffix(path, ".txt"), Section: anchor.Format(1, gamma)},
+			want: backend.Args{Path: path, Section: "3-3"},
+			wantNote: fmt.Sprintf("# note: %s → %s\n# anchor %s: line 1 → 3\n",
+				strings.TrimSuffix(path, ".txt"), path, gamma),
+		},
+		{
 			name: "read range anchor",
 			op:   backend.OpRead,
 			args: backend.Args{Path: path, Section: anchor.FormatRange(2, 3, beta)},

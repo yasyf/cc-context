@@ -57,11 +57,13 @@ func TestOutlineCommandNonBinaryTargets(t *testing.T) {
 	fakeOutlineAstGrep(t)
 
 	tests := []struct {
-		name string
-		path string
+		name       string
+		path       string
+		wantPrefix string
 	}{
-		{"go file", "source.go"},
-		{"directory", "pkg"},
+		{"go file", "source.go", "# ast-grep\n"},
+		{"extension sibling", "source", "# note: source → source.go\n# ast-grep\n"},
+		{"directory", "pkg", "# ast-grep\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -74,7 +76,7 @@ func TestOutlineCommandNonBinaryTargets(t *testing.T) {
 				t.Fatalf("outline execute: %v\n%s", err, out.String())
 			}
 			got := out.String()
-			if !strings.HasPrefix(got, "# ast-grep\n") || !strings.Contains(got, "type X struct {") {
+			if !strings.HasPrefix(got, tt.wantPrefix) || !strings.Contains(got, "type X struct {") {
 				t.Errorf("outline output = %q, want ast-grep structural outline", got)
 			}
 		})

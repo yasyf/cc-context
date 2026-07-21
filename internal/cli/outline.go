@@ -23,16 +23,15 @@ func newOutlineCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a.Path = args[0]
-			// A binary target is skipped before routing, so a forced --lang still
-			// skips and the skip line carries no routing header. BinarySkip stats
-			// internally and is a no-op on a directory or a text file.
-			if line, skipped := outline.BinarySkip(a.Path); skipped {
-				cmd.Println(line)
-				return nil
-			}
-			op, err := outline.Route(a)
+			op, note, err := outline.Route(&a)
 			if err != nil {
 				return err
+			}
+			// A binary target is skipped after path resolution, so a forced --lang
+			// still skips and the skip line carries no routing header.
+			if line, skipped := outline.BinarySkip(a.Path); skipped {
+				cmd.Printf("%s%s\n", note, line)
+				return nil
 			}
 			if _, _, err := outline.ValidateSection(a, op); err != nil {
 				return err
@@ -41,7 +40,7 @@ func newOutlineCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cmd.Printf("%s\n%s", outlineHeaders[op], out)
+			cmd.Printf("%s%s\n%s", note, outlineHeaders[op], out)
 			return nil
 		},
 	}

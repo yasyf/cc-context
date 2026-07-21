@@ -46,7 +46,7 @@ func TestFlagErrorHints(t *testing.T) {
 		},
 		{
 			name: "cross command hint: budget missing lists commands that have it",
-			args: []string{"code", "symbol", "foo", "--budget", "100"},
+			args: []string{"code", "related", "foo.go:1", "--budget", "100"},
 			want: "unknown flag: --budget (commands with --budget: ",
 		},
 		{

@@ -4,6 +4,29 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0] - 2026-07-21
+
+### Added
+- **`ccx code grep` auto-escalates to regex on zero literal matches.** The literal pass
+  runs exactly as before; when it finds nothing and the pattern carries a regex
+  metacharacter and compiles, the search reruns as a regex and the header says so —
+  `(auto-regex)` on a hit, `no matches (literal or regex)` after a double miss — so
+  `a|b` works without `--regex`. Explicit `--regex` output is byte-identical to before,
+  metachar-free patterns never rerun, a backslash-bearing pattern stays literal on the
+  system-grep fallback (POSIX ERE reads `\v` as `v`), and a BRE-flavored miss (`\|`)
+  gets the Rust-syntax hint appended after budget capping so it can't be truncated away.
+- **Missing path operands resolve to their unique extension sibling.** The path-taking
+  ops (`grep` operands and scopes, `read`, `outline`, `edit`, `history`, structural
+  search/replace, `find`/`symbol`/`deps` scopes) resolve `pkg/events` to
+  `pkg/events.py` when exactly one `pkg/events.*` exists, prepending a
+  `# note: pkg/events → pkg/events.py` line; several candidates error listing them and
+  a true miss errors clean at exit 3 instead of surfacing raw engine stderr.
+  Glob-shaped operands pass through untouched, `vcs diff` scopes stay exempt (a deleted
+  file's diff is legitimate), and `history` never hard-fails a missing path.
+- **`ccx code symbol --budget`.** The symbol card joins the budget-capped commands:
+  default 2000 tokens on the CLI and MCP surfaces, while `ccx exec` leaves it uncapped
+  by contract like every other op.
+
 ## [0.28.0] - 2026-07-18
 
 ### Changed

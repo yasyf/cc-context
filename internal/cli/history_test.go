@@ -106,6 +106,61 @@ func TestParseNumstat(t *testing.T) {
 	}
 }
 
+func TestResolveHistoryPath(t *testing.T) {
+	t.Chdir(t.TempDir())
+	historyWrite(t, ".", "unique.py", "print('x')\n")
+	historyWrite(t, ".", "many.go", "package many\n")
+	historyWrite(t, ".", "many.py", "print('x')\n")
+	tests := []struct {
+		name     string
+		path     string
+		wantPath string
+		wantNote string
+	}{
+		{"unique sibling resolves", "unique", "unique.py", "# note: unique → unique.py\n"},
+		{"ambiguity passes original", "many", "many", ""},
+		{"miss passes original", "deleted", "deleted", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path, note := resolveHistoryPath(tt.path)
+			if path != tt.wantPath {
+				t.Errorf("resolveHistoryPath(%q) path = %q, want %q", tt.path, path, tt.wantPath)
+			}
+			if note != tt.wantNote {
+				t.Errorf("resolveHistoryPath(%q) note = %q, want %q", tt.path, note, tt.wantNote)
+			}
+		})
+	}
+}
+
+func TestHistoryCommandResolvesExtensionSibling(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	historyGit(t, dir, "init", "-q")
+	historyGit(t, dir, "config", "user.email", "t@t.t")
+	historyGit(t, dir, "config", "user.name", "t")
+	historyWrite(t, dir, "source.go", "package source\n")
+	historyGit(t, dir, "add", "-A")
+	historyGit(t, dir, "commit", "-qm", "add source")
+	t.Chdir(dir)
+
+	cmd := newHistoryCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"source"})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("history execute: %v\n%s", err, out.String())
+	}
+	wantPrefix := "# note: source → source.go\n"
+	if got := out.String(); !strings.HasPrefix(got, wantPrefix) || !strings.Contains(got, "add source\n    (added)\n") {
+		t.Errorf("history output = %q, want prefix %q followed by commit summary", got, wantPrefix)
+	}
+}
+
 // TestCommitSummary drives commitSummary against a scripted real git repo: a root
 // commit yields "(added)"; a commit with structural edits (Foo's body changed, Bar
 // removed, Baz added) yields the sigil-tagged symbols from the native diff; and a

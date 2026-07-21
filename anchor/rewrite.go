@@ -14,17 +14,19 @@ import (
 // and the numeric output never re-parses as an anchor, so the rewrite is
 // idempotent.
 func RewriteArgs(op backend.Op, a backend.Args) (backend.Args, string, error) {
-	a, err := backend.ResolvePath(op, a)
+	a, resolutionNote, err := backend.ResolvePath(op, a)
 	if err != nil {
 		return a, "", err
 	}
 	switch op {
 	case backend.OpRead:
-		return rewriteRead(a)
+		a, anchorNote, err := rewriteRead(a)
+		return a, resolutionNote + anchorNote, err
 	case backend.OpRelated:
-		return rewriteRelated(a)
+		a, anchorNote, err := rewriteRelated(a)
+		return a, resolutionNote + anchorNote, err
 	default:
-		return a, "", nil
+		return a, resolutionNote, nil
 	}
 }
 

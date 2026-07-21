@@ -20,6 +20,10 @@ import (
 	"github.com/yasyf/cc-context/internal/backend"
 )
 
+// DefaultBudget bounds symbol output when the caller sets none: the CLI and MCP
+// surfaces apply it, while codeexec leaves it zero.
+const DefaultBudget = 2000
+
 // ErrNotFound marks a query that resolved neither a structural definition nor
 // definition-shaped text. The CLI maps it to exit 3.
 var ErrNotFound = errors.New("symbol not found")

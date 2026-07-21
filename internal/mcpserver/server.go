@@ -21,6 +21,7 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/ripgrep"
 	"github.com/yasyf/cc-context/internal/search"
+	"github.com/yasyf/cc-context/internal/symbol"
 	"github.com/yasyf/cc-context/internal/version"
 )
 
@@ -108,6 +109,15 @@ type SymbolIn struct {
 	Siblings bool   `json:"siblings,omitempty" jsonschema:"include the siblings list"`
 	Tests    bool   `json:"tests,omitempty" jsonschema:"include the tests list"`
 	Full     bool   `json:"full,omitempty" jsonschema:"the full rich output: body plus every list"`
+	Budget   int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
+}
+
+func symbolArgs(in SymbolIn) backend.Args {
+	a := backend.Args{Query: in.Name, Scope: in.Scope, Body: in.Body, Callers: in.Callers, Callees: in.Callees, Siblings: in.Siblings, Tests: in.Tests, Full: in.Full, Budget: in.Budget}
+	if a.Budget == 0 {
+		a.Budget = symbol.DefaultBudget
+	}
+	return a
 }
 
 // DepsIn is the input for ccx_code_deps.
@@ -134,8 +144,8 @@ type GrepIn struct {
 	Scope      string   `json:"scope,omitempty" jsonschema:"directory to scope to"`
 	IgnoreCase bool     `json:"ignoreCase,omitempty" jsonschema:"case-insensitive; runs the rg/grep engine"`
 	Word       bool     `json:"word,omitempty" jsonschema:"whole words only; runs the rg/grep engine"`
-	Regex      bool     `json:"regex,omitempty" jsonschema:"treat text as regex; runs the rg/grep engine"`
-	Paths      []string `json:"paths,omitempty" jsonschema:"search these files, not the tree; runs the rg/grep engine"`
+	Regex      bool     `json:"regex,omitempty" jsonschema:"force regex (auto-detected on zero literal matches); runs the rg/grep engine"`
+	Paths      []string `json:"paths,omitempty" jsonschema:"search these files, resolving a unique extension sibling; runs the rg/grep engine"`
 	Budget     int      `json:"budget,omitempty" jsonschema:"token budget for the output"`
 	Expand     int      `json:"expand,omitempty" jsonschema:"context lines around each hit"`
 	After      int      `json:"after,omitempty" jsonschema:"context lines after each match (-A)"`
@@ -296,9 +306,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_symbol",
 		Description: "Grok a symbol: a terse locate card — signature, path:line#anchor, doc, and a refs/tests/siblings counts trailer — one call beats many greps. Body and caller/callee/sibling/test lists expand behind --body/--callers/--callees/--siblings/--tests/--full.",
-	}, handler(p, backend.OpSymbol, func(in SymbolIn) backend.Args {
-		return backend.Args{Query: in.Name, Scope: in.Scope, Body: in.Body, Callers: in.Callers, Callees: in.Callees, Siblings: in.Siblings, Tests: in.Tests, Full: in.Full}
-	}))
+	}, handler(p, backend.OpSymbol, symbolArgs))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_deps",
@@ -456,7 +464,7 @@ func editHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, Edi
 func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, OutlineIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in OutlineIn) (*mcp.CallToolResult, any, error) {
 		a := backend.Args{Path: in.Path, Section: in.Section, Deep: in.Deep, Full: in.Full, Items: in.Items, Match: in.Match, Lang: in.Lang, Budget: in.Budget}
-		op, err := outline.Route(a)
+		op, note, err := outline.Route(&a)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
@@ -467,7 +475,7 @@ func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, 
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: note + out}}}, nil, nil
 	}
 }
 

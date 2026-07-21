@@ -4,7 +4,9 @@
 package outline
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,29 +64,36 @@ var astGrepLangs = map[string]struct{}{
 	"kotlin":     {},
 }
 
-// Route selects the op that serves a.Path. A directory always routes to ast-grep
-// (OpStructOutline). A file routes to ast-grep when its language is in ast-grep's
-// outline catalog and to the native fallback (OpOutline) otherwise, so an
-// unsupported language gets an honest head window or heading tree rather than
-// silently returning nothing.
-func Route(a backend.Args) (backend.Op, error) {
-	info, err := os.Stat(a.Path)
+// Route resolves a.Path and selects the op that serves it. A directory always
+// routes to ast-grep (OpStructOutline). A file routes to ast-grep when its
+// language is in ast-grep's outline catalog and to the native fallback
+// (OpOutline) otherwise.
+func Route(a *backend.Args) (backend.Op, string, error) {
+	resolved, note, err := backend.ResolvePath(backend.OpStructural, backend.Args{Paths: []string{a.Path}})
 	if err != nil {
-		return "", fmt.Errorf("outline: %w", err)
+		return "", "", fmt.Errorf("outline: %w", err)
+	}
+	a.Path = resolved.Paths[0]
+	info, err := os.Stat(a.Path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", "", fmt.Errorf("outline %q: %w: %w", a.Path, backend.ErrPathNotFound, err)
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("outline: %w", err)
 	}
 	if info.IsDir() {
-		return backend.OpStructOutline, nil
+		return backend.OpStructOutline, note, nil
 	}
 	if a.Lang != "" {
 		if _, ok := astGrepLangs[strings.ToLower(a.Lang)]; ok {
-			return backend.OpStructOutline, nil
+			return backend.OpStructOutline, note, nil
 		}
-		return backend.OpOutline, nil
+		return backend.OpOutline, note, nil
 	}
 	if _, ok := LangForExt(a.Path); ok {
-		return backend.OpStructOutline, nil
+		return backend.OpStructOutline, note, nil
 	}
-	return backend.OpOutline, nil
+	return backend.OpOutline, note, nil
 }
 
 // ValidateSection guards `ccx code outline --section` and returns the 1-indexed

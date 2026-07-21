@@ -232,6 +232,29 @@ func TestGrepToolRegexRoutesToEngine(t *testing.T) {
 	}
 }
 
+func TestGrepToolAutoRegex(t *testing.T) {
+	_, rgErr := exec.LookPath("rg")
+	_, grepErr := exec.LookPath("grep")
+	if rgErr != nil && grepErr != nil {
+		t.Skip("neither rg nor grep on PATH")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte("// mentions func\nfunc Foo() {}\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	t.Chdir(dir)
+
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "^func "})
+	if isErr {
+		t.Fatalf("ccx_code_grep auto-regex is error: %s", out)
+	}
+	if !strings.Contains(out, `# grep: "^func " — 1 matches in 1 files (auto-regex)`) ||
+		!strings.Contains(out, "### sample.go:2") {
+		t.Errorf("expected the annotated anchored auto-regex match:\n%s", out)
+	}
+}
+
 // TestGrepToolPathsRouteToEngine proves an MCP ccx_code_grep call with explicit
 // paths routes through the engine and returns hits only from the named file.
 func TestGrepToolPathsRouteToEngine(t *testing.T) {
@@ -258,6 +281,28 @@ func TestGrepToolPathsRouteToEngine(t *testing.T) {
 	}
 	if strings.Contains(out, "other.go") {
 		t.Errorf("unnamed file leaked into results:\n%s", out)
+	}
+}
+
+func TestGrepToolPathResolvesSibling(t *testing.T) {
+	_, rgErr := exec.LookPath("rg")
+	_, grepErr := exec.LookPath("grep")
+	if rgErr != nil && grepErr != nil {
+		t.Skip("neither rg nor grep on PATH")
+	}
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("events.py", []byte("def old():\n    pass\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "def old", "paths": []any{"events"}})
+	if isErr {
+		t.Fatalf("ccx_code_grep sibling is error: %s", out)
+	}
+	wantPrefix := "# note: events → events.py\n# grep: \"def old\""
+	if !strings.HasPrefix(out, wantPrefix) || !strings.Contains(out, "### events.py:1") {
+		t.Errorf("ccx_code_grep sibling output = %q, want prefix %q and resolved path hit", out, wantPrefix)
 	}
 }
 
@@ -485,6 +530,26 @@ func TestReadToolResolvesAnchor(t *testing.T) {
 	want := fmt.Sprintf("# anchor %s: line 2 → 3\n# read %s:3#%s (1 of 3 lines)\ngamma\n", gamma, file, gamma)
 	if out != want {
 		t.Errorf("ccx_code_read out = %q, want %q", out, want)
+	}
+}
+
+func TestReadToolResolvesExtensionSibling(t *testing.T) {
+	cs := connectTestServer(t)
+
+	original := filepath.Join(t.TempDir(), "events")
+	resolved := original + ".py"
+	if err := os.WriteFile(resolved, []byte("hello\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	out, isErr := callText(t, cs, "ccx_code_read", map[string]any{"path": original, "section": "1"})
+	if isErr {
+		t.Fatalf("ccx_code_read sibling is error: %s", out)
+	}
+	hash := anchor.Of("hello")
+	want := fmt.Sprintf("# note: %s → %s\n# read %s:1#%s (1 of 1 lines)\nhello\n", original, resolved, resolved, hash)
+	if out != want {
+		t.Errorf("ccx_code_read sibling out = %q, want %q", out, want)
 	}
 }
 

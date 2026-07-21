@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -78,6 +79,14 @@ type engine int
 const (
 	engineRipgrep engine = iota
 	engineGrep
+)
+
+type escalation int
+
+const (
+	escNone escalation = iota
+	escAutoRegex
+	escBothMissed
 )
 
 // runnerFn is the process boundary: it runs bin+argv and returns stdout,
@@ -156,12 +165,43 @@ func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runne
 	if err != nil {
 		return "", false, err
 	}
+	esc := escNone
+	autoMode := !a.Regex
+	if autoMode && !anyMatch(groups) && escalatable(eng, a.Query) {
+		ra := a
+		ra.Regex = true
+		rgroups, rerr := searchGroups(ctx, eng, bin, ra, exec)
+		if rerr == nil {
+			if anyMatch(rgroups) {
+				groups = rgroups
+				esc = escAutoRegex
+			} else {
+				esc = escBothMissed
+			}
+		}
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", false, fmt.Errorf("ripgrep: resolve cwd: %w", err)
 	}
-	reshaped := reshape(a.Query, eng, groups, anchor.NewFiles(cwd))
-	return render.Cap(reshaped, a.Budget), anyMatch(groups), nil
+	reshaped := reshape(a.Query, eng, groups, esc, anchor.NewFiles(cwd))
+	found := anyMatch(groups)
+	out := render.Cap(reshaped, a.Budget)
+	if autoMode && !found && hasBREEscape(a.Query) {
+		out += regexHintLine + "\n"
+	}
+	return out, found, nil
+}
+
+func escalatable(eng engine, q string) bool {
+	if eng == engineGrep && strings.ContainsRune(q, '\\') {
+		return false
+	}
+	if q == regexp.QuoteMeta(q) {
+		return false
+	}
+	_, err := regexp.Compile(q)
+	return err == nil
 }
 
 // searchGroups builds the engine argv, executes it, and folds the raw output into
@@ -223,10 +263,14 @@ func ripgrepRegexHint(err error, pattern string) error {
 	if !strings.Contains(msg, "regex parse error") && !strings.Contains(msg, "unclosed group") {
 		return err
 	}
-	if !strings.Contains(pattern, `\|`) && !strings.Contains(pattern, `\(`) && !strings.Contains(pattern, `\)`) {
+	if !hasBREEscape(pattern) {
 		return err
 	}
 	return fmt.Errorf("%w\n%s", err, regexHintLine)
+}
+
+func hasBREEscape(q string) bool {
+	return strings.Contains(q, `\|`) || strings.Contains(q, `\(`) || strings.Contains(q, `\)`)
 }
 
 // resolveEngine prefers ripgrep and falls back to system grep; neither on PATH is
@@ -262,9 +306,8 @@ func buildArgv(eng engine, a backend.Args) ([]string, error) {
 // filterGlobPaths partitions explicit grep operands against --glob so both engines
 // search one file set: an existing regular file survives only when fileMatchesGlob
 // keeps it (rg's -g does not filter explicit files, so they are prefiltered here),
-// while a directory (native --glob/--include handles its recursion) or a
-// nonexistent operand (left to the engine, as before) passes through. Every file
-// filtered out with nothing passing through is a loud clean no-match.
+// while a directory passes through for native --glob/--include recursion. Every
+// file filtered out with nothing passing through is a loud clean no-match.
 func filterGlobPaths(paths []string, glob string) ([]string, error) {
 	var kept []string
 	for _, p := range paths {
@@ -687,7 +730,7 @@ func NoMatch(query string) string {
 // "  [N#hash] <text>" frame for each context line. Each frame's content anchor is
 // stamped here at generation time, hashed from the file's line via files; a frame
 // whose file or line the cache cannot resolve stays a bare "[N]".
-func reshape(query string, eng engine, groups []fileGroup, files *anchor.Files) string {
+func reshape(query string, eng engine, groups []fileGroup, esc escalation, files *anchor.Files) string {
 	matches := 0
 	for _, g := range groups {
 		for _, l := range g.lines {
@@ -699,11 +742,19 @@ func reshape(query string, eng engine, groups []fileGroup, files *anchor.Files) 
 
 	var b strings.Builder
 	if matches == 0 {
-		b.WriteString(NoMatch(query))
+		if esc == escBothMissed {
+			fmt.Fprintf(&b, "# grep: %q — no matches (literal or regex)\n", query)
+		} else {
+			b.WriteString(NoMatch(query))
+		}
 		writeEngineNote(&b, eng)
 		return b.String()
 	}
-	fmt.Fprintf(&b, "# grep: %q — %d matches in %d files\n", query, matches, len(groups))
+	fmt.Fprintf(&b, "# grep: %q — %d matches in %d files", query, matches, len(groups))
+	if esc == escAutoRegex {
+		b.WriteString(" (auto-regex)")
+	}
+	b.WriteByte('\n')
 	writeEngineNote(&b, eng)
 
 	for _, g := range groups {

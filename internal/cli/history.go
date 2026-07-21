@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/diff"
 	"github.com/yasyf/cc-context/internal/render"
 )
@@ -23,17 +24,26 @@ func newHistoryCmd() *cobra.Command {
 		Short: "Per-commit summary of a file's changed symbols (replaces git log -p)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			out, err := runHistory(cmd.Context(), args[0], number, budget)
+			path, note := resolveHistoryPath(args[0])
+			out, err := runHistory(cmd.Context(), path, number, budget)
 			if err != nil {
 				return err
 			}
-			cmd.Print(out)
+			cmd.Print(note + out)
 			return nil
 		},
 	}
 	cmd.Flags().IntVarP(&number, "number", "n", 10, "max commits to summarize")
 	cmd.Flags().IntVar(&budget, "budget", 0, "token budget for the output")
 	return cmd
+}
+
+func resolveHistoryPath(path string) (string, string) {
+	a, note, err := backend.ResolvePath(backend.OpStructural, backend.Args{Paths: []string{path}})
+	if err != nil {
+		return path, ""
+	}
+	return a.Paths[0], note
 }
 
 // historyCommit is one entry from `git log --follow --name-status`: the

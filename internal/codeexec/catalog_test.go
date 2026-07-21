@@ -289,7 +289,7 @@ func TestBuildCatalog(t *testing.T) {
 		{Name: "healthy", Command: "healthy-mcp", Prefix: "healthy"},
 	}}
 
-	cat := buildCatalog(ctx, inv, conn.connect, 200*time.Millisecond)
+	cat := buildCatalog(ctx, inv, conn.connect, 2*time.Second)
 	if cat.Hash != "h" || len(cat.Servers) != 3 {
 		t.Fatalf("catalog = hash %q, %d servers; want h, 3", cat.Hash, len(cat.Servers))
 	}

@@ -112,7 +112,7 @@ func TestLiveDeps(t *testing.T) {
 	}
 	t.Logf("live deps output:\n%s", out)
 	for _, want := range []string{
-		"# deps internal/backend/pathcheck.go — 5 uses (5 std),",
+		"# deps internal/backend/pathcheck.go — 6 uses (6 std),",
 		"errors (std)",
 		"## used by",
 		"anchor/rewrite.go:",

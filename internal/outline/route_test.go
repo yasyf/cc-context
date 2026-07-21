@@ -1,6 +1,7 @@
 package outline
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -38,9 +39,13 @@ func TestRoute(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := Route(backend.Args{Path: tt.path, Lang: tt.lang})
+			a := backend.Args{Path: tt.path, Lang: tt.lang}
+			got, note, err := Route(&a)
 			if err != nil {
 				t.Fatalf("Route: %v", err)
+			}
+			if note != "" {
+				t.Errorf("Route(%q, lang=%q) note = %q, want empty", tt.path, tt.lang, note)
 			}
 			if got != tt.want {
 				t.Errorf("Route(%q, lang=%q) = %q, want %q", tt.path, tt.lang, got, tt.want)
@@ -78,8 +83,50 @@ func TestLangForExt(t *testing.T) {
 }
 
 func TestRouteStatError(t *testing.T) {
-	if _, err := Route(backend.Args{Path: filepath.Join(t.TempDir(), "missing.go")}); err == nil {
-		t.Fatal("Route: want error for a non-existent path")
+	dir := t.TempDir()
+	danglingBase := filepath.Join(dir, "source")
+	if err := os.Symlink(filepath.Join(dir, "missing"), danglingBase+".go"); err != nil {
+		t.Fatalf("symlink fixture: %v", err)
+	}
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"missing path", filepath.Join(dir, "missing.go")},
+		{"resolved dangling symlink", danglingBase},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := backend.Args{Path: tt.path}
+			_, _, err := Route(&a)
+			if !errors.Is(err, backend.ErrPathNotFound) {
+				t.Fatalf("Route() error = %v, want ErrPathNotFound", err)
+			}
+		})
+	}
+}
+
+func TestRouteResolvesExtensionBeforeRouting(t *testing.T) {
+	dir := t.TempDir()
+	original := filepath.Join(dir, "source")
+	resolved := original + ".go"
+	if err := os.WriteFile(resolved, []byte("package source\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	a := backend.Args{Path: original}
+	op, note, err := Route(&a)
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if op != backend.OpStructOutline {
+		t.Errorf("Route() op = %q, want %q", op, backend.OpStructOutline)
+	}
+	if a.Path != resolved {
+		t.Errorf("Route() path = %q, want %q", a.Path, resolved)
+	}
+	wantNote := "# note: " + original + " → " + resolved + "\n"
+	if note != wantNote {
+		t.Errorf("Route() note = %q, want %q", note, wantNote)
 	}
 }
 

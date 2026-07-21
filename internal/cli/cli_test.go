@@ -50,6 +50,73 @@ func TestGrepCommandRegex(t *testing.T) {
 	}
 }
 
+func TestGrepCommandAutoRegex(t *testing.T) {
+	skipWithoutGrepEngine(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte("// mentions func\nfunc Foo() {}\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	t.Chdir(dir)
+
+	var out bytes.Buffer
+	root := cli.NewRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"code", "grep", "^func ", "sample.go"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute(grep auto-regex) error = %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, `# grep: "^func " — 1 matches in 1 files (auto-regex)`) ||
+		!strings.Contains(got, "### sample.go:2") {
+		t.Errorf("grep auto-regex output missing annotated anchored match:\n%s", got)
+	}
+}
+
+func TestSearchCommandLiteralAutoRegexHeader(t *testing.T) {
+	skipWithoutGrepEngine(t)
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("sample.go", []byte("func Foo() {}\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	var out bytes.Buffer
+	root := cli.NewRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"code", "search", "--literal", "^func "})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute(search --literal) error = %v", err)
+	}
+	wantPrefix := "# literal (grep)\n# grep: \"^func \" — 1 matches in 1 files (auto-regex)\n"
+	if got := out.String(); !strings.HasPrefix(got, wantPrefix) {
+		t.Errorf("search --literal output = %q, want prefix %q", got, wantPrefix)
+	}
+}
+
+func TestGrepCommandResolvesExtensionSibling(t *testing.T) {
+	skipWithoutGrepEngine(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "events.py"), []byte("def old():\n    pass\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	t.Chdir(dir)
+
+	var out bytes.Buffer
+	root := cli.NewRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"code", "grep", "def old", "events"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute(grep sibling) error = %v", err)
+	}
+	got := out.String()
+	wantPrefix := "# note: events → events.py\n# grep: \"def old\""
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Errorf("grep sibling output = %q, want prefix %q", got, wantPrefix)
+	}
+}
+
 // TestGrepCommandUnbudgetedCaps proves an unbudgeted engine grep (here -i) over a
 // many-match fixture applies ripgrep.DefaultBudget and ends with the overflow
 // footer instead of flooding the whole match set.

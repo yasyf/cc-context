@@ -246,16 +246,21 @@ func TestRipgrepRegexHint(t *testing.T) {
 		name     string
 		err      error
 		pattern  string
+		wantBRE  bool
 		wantHint bool
 	}{
-		{"BRE alternation on an unclosed-group parse error fires", parseErr, `foo\|bar(`, true},
-		{"BRE group escape fires", parseErr, `foo\(bar`, true},
-		{"genuine unclosed group without BRE escapes is silent", unclosedOnly, `foo(`, false},
-		{"no-files-searched signature is silent (disjoint from parse errors)", noFiles, `foo\|bar`, false},
-		{"non-regex exit-2 is silent", other, `foo\|bar`, false},
+		{"BRE alternation on an unclosed-group parse error fires", parseErr, `foo\|bar(`, true, true},
+		{"BRE group escape fires", parseErr, `foo\(bar`, true, true},
+		{"BRE closing-group escape is detected", parseErr, `foo\)bar`, true, true},
+		{"genuine unclosed group without BRE escapes is silent", unclosedOnly, `foo(`, false, false},
+		{"no-files-searched signature is silent (disjoint from parse errors)", noFiles, `foo\|bar`, true, false},
+		{"non-regex exit-2 is silent", other, `foo\|bar`, true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if got := hasBREEscape(tt.pattern); got != tt.wantBRE {
+				t.Errorf("hasBREEscape() = %v, want %v", got, tt.wantBRE)
+			}
 			got := ripgrepRegexHint(tt.err, tt.pattern)
 			hasHint := strings.Contains(got.Error(), "hint: --regex is Rust syntax")
 			if hasHint != tt.wantHint {
@@ -263,6 +268,31 @@ func TestRipgrepRegexHint(t *testing.T) {
 			}
 			if !errors.Is(got, tt.err) {
 				t.Errorf("ripgrepRegexHint() dropped the wrapped error: %v", got)
+			}
+		})
+	}
+}
+
+func TestEscalatable(t *testing.T) {
+	tests := []struct {
+		name string
+		eng  engine
+		q    string
+		want bool
+	}{
+		{"rg alternation", engineRipgrep, "a|b", true},
+		{"rg anchors", engineRipgrep, "^foo$", true},
+		{"rg plain punctuation", engineRipgrep, "alpha-123/path", false},
+		{"rg non-compiling", engineRipgrep, "a|b(", false},
+		{"rg QuoteMeta plain stays plain", engineRipgrep, regexp.QuoteMeta("alpha-123"), false},
+		{"rg QuoteMeta metacharacters remain escalatable", engineRipgrep, regexp.QuoteMeta("a|b"), true},
+		{"rg backslash remains escalatable", engineRipgrep, `\v`, true},
+		{"grep backslash is not escalatable", engineGrep, `\v`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := escalatable(tt.eng, tt.q); got != tt.want {
+				t.Errorf("escalatable(%d, %q) = %v, want %v", tt.eng, tt.q, got, tt.want)
 			}
 		})
 	}
@@ -518,6 +548,7 @@ func TestReshape(t *testing.T) {
 		query  string
 		eng    engine
 		groups []fileGroup
+		esc    escalation
 		want   string
 	}{
 		{
@@ -542,6 +573,21 @@ func TestReshape(t *testing.T) {
 			want:   "# grep: \"zzz\" — no matches\n",
 		},
 		{
+			name:   "auto-regex matches",
+			query:  "foo|bar",
+			eng:    engineRipgrep,
+			groups: groups,
+			esc:    escAutoRegex,
+			want:   "# grep: \"foo|bar\" — 2 matches in 2 files (auto-regex)\n\n### a.go:3\n→ [3] foo one\n\n### b.go:10\n  [9] ctx\n→ [10] bar\n",
+		},
+		{
+			name:  "literal and regex miss",
+			query: "foo|bar",
+			eng:   engineRipgrep,
+			esc:   escBothMissed,
+			want:  "# grep: \"foo|bar\" — no matches (literal or regex)\n",
+		},
+		{
 			name:   "grep no match note",
 			query:  "zzz",
 			eng:    engineGrep,
@@ -553,7 +599,7 @@ func TestReshape(t *testing.T) {
 	files := anchor.NewFiles(t.TempDir())
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := reshape(tt.query, tt.eng, tt.groups, files); got != tt.want {
+			if got := reshape(tt.query, tt.eng, tt.groups, tt.esc, files); got != tt.want {
 				t.Errorf("reshape()\n got = %q\nwant = %q", got, tt.want)
 			}
 		})
@@ -584,7 +630,7 @@ func TestReshapeAnchorsFrames(t *testing.T) {
 		"  [3#" + string(ctxHash) + "] var ctx = 2\n" +
 		"→ [2#" + string(matchHash) + "] var match = 1\n" +
 		"→ [99] out of range\n"
-	if got := reshape("match", engineRipgrep, groups, files); got != want {
+	if got := reshape("match", engineRipgrep, groups, escNone, files); got != want {
 		t.Errorf("reshape()\n got = %q\nwant = %q", got, want)
 	}
 }
@@ -600,33 +646,60 @@ func TestRunCore(t *testing.T) {
 		"",
 	}, "\n")
 	grepOut := "nope/a.go\x003:foo one\n"
+	type runnerResult struct {
+		out string
+		err error
+	}
 
 	tests := []struct {
-		name      string
-		eng       engine
-		args      backend.Args
-		out       string
-		runErr    error
-		wantErr   bool
-		wantFound bool
-		contains  []string
+		name        string
+		eng         engine
+		args        backend.Args
+		runs        []runnerResult
+		wantErr     bool
+		wantFound   bool
+		wantCalls   int
+		contains    []string
+		notContains []string
+		wantExact   string
+		wantSuffix  string
 	}{
-		{"rg branch", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true}, rgOut, nil, false, true, []string{"### nope/a.go:3", "→ [3] foo one"}},
-		{"grep branch", engineGrep, backend.Args{Query: "foo", IgnoreCase: true}, grepOut, nil, false, true, []string{"### nope/a.go:3", "→ [3] foo one", "system grep"}},
-		{"clean no-match", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true}, "", nil, false, false, []string{`# grep: "foo" — no matches`}},
-		{"context precedes match still found", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true, Expand: 1}, rgCtxOut, nil, false, true, []string{"  [2] ctx before", "→ [3] foo one"}},
+		{"rg branch", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true}, []runnerResult{{out: rgOut}}, false, true, 1, []string{"### nope/a.go:3", "→ [3] foo one"}, nil, "", ""},
+		{"grep branch", engineGrep, backend.Args{Query: "foo", IgnoreCase: true}, []runnerResult{{out: grepOut}}, false, true, 1, []string{"### nope/a.go:3", "→ [3] foo one", "system grep"}, nil, "", ""},
+		{"miss escalates to regex hit", engineRipgrep, backend.Args{Query: "foo|bar"}, []runnerResult{{}, {out: rgOut}}, false, true, 2, []string{`# grep: "foo|bar" — 1 matches in 1 files (auto-regex)`, "### nope/a.go:3"}, nil, "", ""},
+		{"literal and regex miss", engineRipgrep, backend.Args{Query: "foo|bar"}, []runnerResult{{}, {}}, false, false, 2, []string{`# grep: "foo|bar" — no matches (literal or regex)`}, nil, "", ""},
+		{"metachar-free miss does not rerun", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true}, []runnerResult{{}}, false, false, 1, []string{`# grep: "foo" — no matches`}, []string{"literal or regex"}, "", ""},
+		{"forced regex miss does not rerun", engineRipgrep, backend.Args{Query: "foo|bar", Regex: true}, []runnerResult{{}}, false, false, 1, []string{`# grep: "foo|bar" — no matches`}, []string{"literal or regex"}, "", ""},
+		{"forced BRE regex miss has no hint", engineRipgrep, backend.Args{Query: `absent\|other`, Regex: true}, []runnerResult{{}}, false, false, 1, nil, nil, "# grep: \"absent\\\\|other\" — no matches\n", ""},
+		{"regex rerun error leaves literal verdict", engineRipgrep, backend.Args{Query: "foo|bar"}, []runnerResult{{}, {err: errors.New("regex boom")}}, false, false, 2, []string{`# grep: "foo|bar" — no matches`}, []string{"literal or regex"}, "", ""},
+		{"BRE escape miss includes hint", engineRipgrep, backend.Args{Query: `\(foo\|bar\)`}, []runnerResult{{}, {}}, false, false, 2, []string{`# grep: "\\(foo\\|bar\\)" — no matches (literal or regex)`, regexHintLine}, nil, "", ""},
+		{"grep backslash miss does not escalate", engineGrep, backend.Args{Query: `\v`}, []runnerResult{{}}, false, false, 1, []string{`# grep: "\\v" — no matches`}, []string{"literal or regex", "auto-regex"}, "", ""},
+		{"rg backslash miss still escalates", engineRipgrep, backend.Args{Query: `\v`}, []runnerResult{{}, {}}, false, false, 2, []string{`# grep: "\\v" — no matches (literal or regex)`}, nil, "", ""},
+		{"tiny-budget BRE miss retains hint", engineRipgrep, backend.Args{Query: `\(foo\|bar\)`, Budget: 1}, []runnerResult{{}, {}}, false, false, 2, []string{"omitted", regexHintLine}, nil, "", regexHintLine + "\n"},
+		{"context precedes match still found", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true, Expand: 1}, []runnerResult{{out: rgCtxOut}}, false, true, 1, []string{"  [2] ctx before", "→ [3] foo one"}, nil, "", ""},
 		// found is structural: a Budget so small the cap byte-cuts the header
 		// mid-word must not flip either verdict.
-		{"match found survives tiny budget", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true, Budget: 1}, rgOut, nil, false, true, []string{"omitted"}},
-		{"no-match stays not-found under tiny budget", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true, Budget: 1}, "", nil, false, false, nil},
-		{"runner error propagates", engineRipgrep, backend.Args{Query: "foo", Word: true}, "", errors.New("boom"), true, false, nil},
+		{"match found survives tiny budget", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true, Budget: 1}, []runnerResult{{out: rgOut}}, false, true, 1, []string{"omitted"}, nil, "", ""},
+		{"no-match stays not-found under tiny budget", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true, Budget: 1}, []runnerResult{{}}, false, false, 1, nil, nil, "", ""},
+		{"runner error propagates", engineRipgrep, backend.Args{Query: "foo", Word: true}, []runnerResult{{err: errors.New("boom")}}, true, false, 1, nil, nil, "", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fake := func(context.Context, string, []string) (string, error) { return tt.out, tt.runErr }
+			calls := 0
+			fake := func(context.Context, string, []string) (string, error) {
+				if calls >= len(tt.runs) {
+					t.Fatalf("runner call %d exceeds %d canned results", calls+1, len(tt.runs))
+				}
+				result := tt.runs[calls]
+				calls++
+				return result.out, result.err
+			}
 			got, found, err := run(context.Background(), tt.eng, "bin", tt.args, fake)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("run() err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if calls != tt.wantCalls {
+				t.Errorf("runner calls = %d, want %d", calls, tt.wantCalls)
 			}
 			if tt.wantErr {
 				return
@@ -634,9 +707,20 @@ func TestRunCore(t *testing.T) {
 			if found != tt.wantFound {
 				t.Errorf("run() found = %v, want %v:\n%s", found, tt.wantFound, got)
 			}
+			if tt.wantExact != "" && got != tt.wantExact {
+				t.Errorf("run() = %q, want %q", got, tt.wantExact)
+			}
+			if tt.wantSuffix != "" && !strings.HasSuffix(got, tt.wantSuffix) {
+				t.Errorf("run() output does not end with %q:\n%s", tt.wantSuffix, got)
+			}
 			for _, want := range tt.contains {
 				if !strings.Contains(got, want) {
 					t.Errorf("run() output missing %q:\n%s", want, got)
+				}
+			}
+			for _, unwanted := range tt.notContains {
+				if strings.Contains(got, unwanted) {
+					t.Errorf("run() output unexpectedly contains %q:\n%s", unwanted, got)
 				}
 			}
 		})
@@ -760,9 +844,8 @@ func TestRunFoundness_Live(t *testing.T) {
 	}
 }
 
-// TestRun_LiveRipgrepRegex proves an anchored regex matches where the same query
-// as a --fixed-strings literal cannot: "^func " hits the line starting with func,
-// but no line contains the literal characters "^func ". It skips when rg is absent.
+// TestRun_LiveRipgrepRegex proves both forced and automatically detected regex
+// searches match an anchored function declaration. It skips when rg is absent.
 func TestRun_LiveRipgrepRegex(t *testing.T) {
 	if _, err := exec.LookPath("rg"); err != nil {
 		t.Skip("rg not on PATH")
@@ -782,14 +865,14 @@ func TestRun_LiveRipgrepRegex(t *testing.T) {
 		t.Errorf("Run(regex) missing anchored func line:\n%s", got)
 	}
 
-	// Same query, forced onto the engine but as a literal: --fixed-strings makes
-	// "^func " match nothing, so an anchored literal 0-matches.
+	// The literal pass misses, then the valid metacharacter-bearing query reruns as
+	// regex and annotates the count.
 	lit, err := Run(context.Background(), backend.Args{Query: "^func ", IgnoreCase: true})
 	if err != nil {
 		t.Fatalf("Run(literal) err = %v", err)
 	}
-	if !strings.Contains(lit, "no matches") {
-		t.Errorf("Run(literal) expected no-match for the anchored literal:\n%s", lit)
+	if !strings.Contains(lit, `# grep: "^func " — 1 matches in 1 files (auto-regex)`) {
+		t.Errorf("Run(literal) missing auto-regex header:\n%s", lit)
 	}
 }
 
@@ -879,6 +962,40 @@ func TestRun_LiveEnginesAgreeOnGlobPaths(t *testing.T) {
 		}
 		if strings.Contains(out, "b.txt") || strings.Contains(out, "d.txt") {
 			t.Errorf("%s leaked a non-.go file past --glob:\n%s", name, out)
+		}
+	}
+}
+
+func TestRun_LiveEnginesAgreeOnAutoRegex(t *testing.T) {
+	rgBin, rgErr := exec.LookPath("rg")
+	grepBin, grepErr := exec.LookPath("grep")
+	if rgErr != nil || grepErr != nil {
+		t.Skip("need both rg and grep on PATH to compare engines")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sample.txt"), []byte("foo\nbar\nbaz\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	args := backend.Args{Query: "foo|bar"}
+	rgOut, rgFound, err := run(context.Background(), engineRipgrep, rgBin, args, execEngine)
+	if err != nil {
+		t.Fatalf("rg run: %v", err)
+	}
+	grepOut, grepFound, err := run(context.Background(), engineGrep, grepBin, args, execEngine)
+	if err != nil {
+		t.Fatalf("grep run: %v", err)
+	}
+	if !rgFound || !grepFound {
+		t.Fatalf("found mismatch: rg=%v grep=%v", rgFound, grepFound)
+	}
+	for name, out := range map[string]string{"rg": rgOut, "grep": grepOut} {
+		if !strings.Contains(out, `# grep: "foo|bar" — 2 matches in 1 files (auto-regex)`) {
+			t.Errorf("%s missing auto-regex header:\n%s", name, out)
+		}
+		if !strings.Contains(out, "→ [1#") || !strings.Contains(out, "→ [2#") {
+			t.Errorf("%s missing expected match frames:\n%s", name, out)
 		}
 	}
 }

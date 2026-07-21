@@ -67,7 +67,10 @@ func Ops(c Caller) map[string]HostFunc {
 		"web_search": op(backend.OpWebSearch, func(a *args) backend.Args {
 			return backend.Args{URL: a.str("url", 0), Query: a.str("query", 1), K: a.num("k")}
 		}),
-		"search":  routed(c, func(a backend.Args) (backend.Op, error) { op, _, err := search.Route(a); return op, err }, searchArgs, nil),
+		"search": routed(c, func(a *backend.Args) (backend.Op, string, error) {
+			op, _, err := search.Route(*a)
+			return op, "", err
+		}, searchArgs, nil),
 		"outline": routed(c, outline.Route, outlineArgs, validateOutlineSection),
 	}
 }
@@ -98,7 +101,7 @@ func outlineArgs(a *args) backend.Args {
 // routed builds a host function whose op is chosen at call time by a router
 // (search and outline classify their input before dispatch). validate, when
 // non-nil, runs a post-route guard on the args and chosen op before dispatch.
-func routed(c Caller, route func(backend.Args) (backend.Op, error), build func(*args) backend.Args, validate func(backend.Args, backend.Op) error) HostFunc {
+func routed(c Caller, route func(*backend.Args) (backend.Op, string, error), build func(*args) backend.Args, validate func(backend.Args, backend.Op) error) HostFunc {
 	return func(ctx context.Context, call Call) (any, error) {
 		p := parse(call)
 		a := build(p)
@@ -108,7 +111,7 @@ func routed(c Caller, route func(backend.Args) (backend.Op, error), build func(*
 		if err := p.checkKwargs(); err != nil {
 			return nil, err
 		}
-		op, err := route(a)
+		op, note, err := route(&a)
 		if err != nil {
 			return nil, err
 		}
@@ -124,7 +127,7 @@ func routed(c Caller, route func(backend.Args) (backend.Op, error), build func(*
 		if err != nil {
 			return nil, err
 		}
-		return out, nil
+		return note + out, nil
 	}
 }
 
