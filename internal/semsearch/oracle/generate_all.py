@@ -15,7 +15,7 @@ def main() -> None:
     write_golden("bm25_scores.json", generate_bm25_scores.generate(index, queries))
     write_golden("search_results.json", generate_search.generate(index, queries))
     write_golden("related_results.json", generate_related.generate(index, queries))
-    write_golden("embeddings.json", generate_embeddings.generate(index))
+    write_golden("embeddings.json", generate_embeddings.generate(index, queries))
 
 
 if __name__ == "__main__":

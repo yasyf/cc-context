@@ -9,36 +9,36 @@
         {
           "end_line": 7,
           "file_path": "test/auth_test.py",
-          "score": 0.6804555058479309,
-          "semantic_score": 0.6804555058479309,
+          "score": 0.6801782846450806,
+          "semantic_score": 0.6801782846450806,
           "start_line": 1
         },
         {
           "end_line": 70,
           "file_path": "src/auth_service.py",
-          "score": 0.45689427852630615,
-          "semantic_score": 0.45689427852630615,
+          "score": 0.4568573236465454,
+          "semantic_score": 0.4568573236465454,
           "start_line": 56
         },
         {
           "end_line": 21,
           "file_path": "compat/legacy_adapter.py",
-          "score": 0.44604945182800293,
-          "semantic_score": 0.44604945182800293,
+          "score": 0.4460100531578064,
+          "semantic_score": 0.4460100531578064,
           "start_line": 1
         },
         {
           "end_line": 5,
           "file_path": "python/__init__.py",
-          "score": 0.4454590082168579,
-          "semantic_score": 0.4454590082168579,
+          "score": 0.44452059268951416,
+          "semantic_score": 0.44452059268951416,
           "start_line": 1
         },
         {
           "end_line": 21,
           "file_path": "src/auth_service.py",
-          "score": 0.4376370906829834,
-          "semantic_score": 0.4376370906829834,
+          "score": 0.4375804662704468,
+          "semantic_score": 0.4375804662704468,
           "start_line": 1
         }
       ],
@@ -58,22 +58,22 @@
         {
           "end_line": 13,
           "file_path": "tests/http_parser_test.go",
-          "score": 0.5882432460784912,
-          "semantic_score": 0.5882432460784912,
+          "score": 0.588904857635498,
+          "semantic_score": 0.588904857635498,
           "start_line": 1
         },
         {
           "end_line": 12,
           "file_path": "go/http_parser.go",
-          "score": 0.520808219909668,
-          "semantic_score": 0.520808219909668,
+          "score": 0.5255738496780396,
+          "semantic_score": 0.5255738496780396,
           "start_line": 1
         },
         {
           "end_line": 21,
           "file_path": "tests/router_test.go",
-          "score": 0.3757838010787964,
-          "semantic_score": 0.3757838010787964,
+          "score": 0.3759363293647766,
+          "semantic_score": 0.3759363293647766,
           "start_line": 1
         },
         {
@@ -86,8 +86,8 @@
         {
           "end_line": 38,
           "file_path": "src/router.go",
-          "score": 0.25365304946899414,
-          "semantic_score": 0.25365304946899414,
+          "score": 0.2540118098258972,
+          "semantic_score": 0.2540118098258972,
           "start_line": 1
         }
       ],

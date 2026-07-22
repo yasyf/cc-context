@@ -6,13 +6,16 @@ from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
+import numpy as np
+import numpy.typing as npt
 from huggingface_hub import snapshot_download
 from model2vec import StaticModel
 from semble import SembleIndex
 from semble.index.bm25 import BM25
 from semble.index.create import create_index_from_path
-from semble.index.dense import SelectableBasicBackend, load_model
+from semble.index.dense import SelectableBasicBackend, embed_chunks, load_model
 from semble.types import Chunk, ContentType
 
 
@@ -72,16 +75,22 @@ def resolve_model_snapshot() -> str:
     )
 
 
+def embed_chunks_padding_free(model: StaticModel, chunks: list[Chunk]) -> npt.NDArray[np.float32]:
+    return np.concatenate([embed_chunks(model, [chunk]) for chunk in chunks])
+
+
 def load_oracle_index() -> OracleIndex:
     require_deterministic_hash_seed()
     snapshot = resolve_model_snapshot()
     model, _ = load_model(snapshot)
-    bm25, semantic, chunks, _ = create_index_from_path(
-        CORPUS_DIR,
-        model,
-        content=(ContentType.CODE, ContentType.DOCS, ContentType.CONFIG),
-        display_root=CORPUS_DIR,
-    )
+    # Singleton batches keep unmasked padding out of model2vec's mean pool.
+    with patch("semble.index.create.embed_chunks", embed_chunks_padding_free):
+        bm25, semantic, chunks, _ = create_index_from_path(
+            CORPUS_DIR,
+            model,
+            content=(ContentType.CODE, ContentType.DOCS, ContentType.CONFIG),
+            display_root=CORPUS_DIR,
+        )
     return OracleIndex(
         model=model,
         model_path=snapshot,

@@ -51,8 +51,17 @@ PYTHONHASHSEED=0 ~/.cache/ccx-semsearch/oracle/.venv/bin/python internal/semsear
 The outputs are, respectively, chunk line boundaries plus a classification of
 every corpus file, enriched BM25 document tokens, BM25 scores for every query
 and chunk, fused and reranked searches, related-code searches, and float32
-embedding samples. Search goldens record the query kind, resolved alpha, and
-known relevant paths; generation fails if a case returns none of those paths.
+embeddings for every corpus chunk and query. Search goldens record query kind,
+resolved alpha, and known relevant paths; generation fails if a case returns
+none of those paths.
+
+## Padding-free embeddings
+
+All corpus chunks are encoded one text at a time with model2vec's default
+512-token truncation. model2vec 0.8.2 mean-pools unmasked padding, so batched
+vectors otherwise depend on the longest neighboring text; singleton encoding
+keeps the oracle aligned with the native batch-invariant engine. Queries are
+already encoded individually by Semble.
 
 Released 0.5.2 does not retain a semantic score on its final `SearchResult`.
 `generate_search.py` runs the released `_search_semantic` candidate stage with
