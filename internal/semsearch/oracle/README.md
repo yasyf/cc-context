@@ -89,3 +89,12 @@ query IDs and one symbol query ID with `--content all`, the pinned local model
 snapshot, and an isolated cache. It compares file path, line range, and score
 against `search_results.json`, prints JSON evidence, and exits nonzero on any
 mismatch.
+
+## Semantic-score serialization caveat
+
+`search_results.json` carries semble's live `semantic_score` values, which
+semble computes against the query vector while it is still float16 (Vicinity
+normalizes the f16 query). `embeddings.json` serializes f32-converted vectors,
+which reproduce those cosines only to ~3e-4. Parity tests therefore gate
+`semantic_score` at 5e-4 while fused scores and rank order stay strict —
+ranking is rank-based and unaffected by the artifact.

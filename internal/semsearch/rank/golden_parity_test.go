@@ -259,4 +259,4 @@ func assertDistinctScoreOrder(t *testing.T, got []float64, want []goldenScoreDoc
 	}
 }
 
-// TODO: Add full fused-search parity against search_results.json with the embedding engine.
+// Full chunk+embed+rank parity is covered by semsearch_test.TestFusedSearchGoldenParity.
