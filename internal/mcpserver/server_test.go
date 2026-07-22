@@ -171,7 +171,7 @@ func TestGrepToolSchemaHasEngineFields(t *testing.T) {
 	if schema == "" {
 		t.Fatal("ccx_code_grep not registered")
 	}
-	for _, field := range []string{`"scope"`, `"ignoreCase"`, `"word"`, `"regex"`, `"paths"`} {
+	for _, field := range []string{`"scope"`, `"ignoreCase"`, `"word"`, `"regex"`, `"filesWithMatches"`, `"paths"`} {
 		if !strings.Contains(schema, field) {
 			t.Errorf("ccx_code_grep schema missing %s:\n%s", field, schema)
 		}
@@ -236,6 +236,31 @@ func TestSemanticToolDescriptionsStateContentScope(t *testing.T) {
 	}
 	for name := range remaining {
 		t.Errorf("tool %q not registered", name)
+	}
+}
+
+func TestGrepToolFilesWithMatchesRoutesToEngine(t *testing.T) {
+	_, rgErr := exec.LookPath("rg")
+	_, grepErr := exec.LookPath("grep")
+	if rgErr != nil && grepErr != nil {
+		t.Skip("neither rg nor grep on PATH")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte("var needle = 1\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.go"), []byte("var other = 1\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	t.Chdir(dir)
+
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "needle", "filesWithMatches": true})
+	if isErr {
+		t.Fatalf("ccx_code_grep filesWithMatches is error: %s", out)
+	}
+	if out != "sample.go\n" {
+		t.Errorf("ccx_code_grep filesWithMatches output = %q, want %q", out, "sample.go\n")
 	}
 }
 

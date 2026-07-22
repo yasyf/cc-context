@@ -28,8 +28,10 @@ func TestRipgrepArgv(t *testing.T) {
 		{"ignore-case + word", backend.Args{Query: "foo", IgnoreCase: true, Word: true}, []string{"--json", "--fixed-strings", "-i", "-w", "-e", "foo"}},
 		{"unanchored glob + expand unchanged", backend.Args{Query: "foo", Glob: "*.go", Expand: 3}, []string{"--json", "--fixed-strings", "--glob", "*.go", "-C", "3", "-e", "foo"}},
 		{"context flag", backend.Args{Query: "foo", Context: 2}, []string{"--json", "--fixed-strings", "-C", "2", "-e", "foo"}},
+		{"after flag", backend.Args{Query: "foo", After: 2}, []string{"--json", "--fixed-strings", "-A", "2", "-e", "foo"}},
 		{"after and before flags", backend.Args{Query: "foo", After: 2, Before: 1}, []string{"--json", "--fixed-strings", "-A", "2", "-B", "1", "-e", "foo"}},
-		{"context beats after/before", backend.Args{Query: "foo", Context: 3, After: 9, Before: 9}, []string{"--json", "--fixed-strings", "-C", "3", "-e", "foo"}},
+		{"context and after flags", backend.Args{Query: "foo", Context: 1, After: 3}, []string{"--json", "--fixed-strings", "-C", "1", "-A", "3", "-e", "foo"}},
+		{"context with after and before flags", backend.Args{Query: "foo", Context: 3, After: 9, Before: 9}, []string{"--json", "--fixed-strings", "-C", "3", "-A", "9", "-B", "9", "-e", "foo"}},
 		{"scope adds --no-ignore-parent", backend.Args{Query: "foo", Scope: "internal"}, []string{"--json", "--fixed-strings", "--no-ignore-parent", "-e", "foo", "--", "internal"}},
 		{"flag-like scope lands after -- with flag", backend.Args{Query: "foo", Scope: "--hidden"}, []string{"--json", "--fixed-strings", "--no-ignore-parent", "-e", "foo", "--", "--hidden"}},
 		{"anchored existing-dir glob relativizes to rest + operand", backend.Args{Query: "foo", Glob: sub + "/*.go"}, []string{"--json", "--fixed-strings", "--glob", "*.go", "--no-ignore-parent", "-e", "foo", "--", sub}},
@@ -40,6 +42,7 @@ func TestRipgrepArgv(t *testing.T) {
 		{"leading-dash pattern", backend.Args{Query: "-foo"}, []string{"--json", "--fixed-strings", "-e", "-foo"}},
 		{"regex drops --fixed-strings", backend.Args{Query: "foo", Regex: true}, []string{"--json", "-e", "foo"}},
 		{"regex + ignore-case + word", backend.Args{Query: "foo", Regex: true, IgnoreCase: true, Word: true}, []string{"--json", "-i", "-w", "-e", "foo"}},
+		{"files with matches + filters", backend.Args{Query: "^foo", Glob: "*.go", Scope: "internal", IgnoreCase: true, Word: true, Regex: true, FilesWithMatches: true}, []string{"--files-with-matches", "-i", "-w", "--glob", "*.go", "--no-ignore-parent", "-e", "^foo", "--", "internal"}},
 		{"literal paths keep --fixed-strings after --", backend.Args{Query: "foo", Paths: []string{"a.go", "b.go"}}, []string{"--json", "--fixed-strings", "-e", "foo", "--", "a.go", "b.go"}},
 		{"scope + paths both ride after --", backend.Args{Query: "foo", Scope: "internal", Paths: []string{"a.go"}}, []string{"--json", "--fixed-strings", "--no-ignore-parent", "-e", "foo", "--", "internal", "a.go"}},
 		{"regex + paths", backend.Args{Query: "^func ", Regex: true, Paths: []string{"a.go"}}, []string{"--json", "-e", "^func ", "--", "a.go"}},
@@ -84,7 +87,9 @@ func TestGrepArgv(t *testing.T) {
 		{"ignore-case", backend.Args{Query: "foo", IgnoreCase: true}, []string{"-rnHFI", "--null", "-i", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
 		{"word + expand", backend.Args{Query: "foo", Word: true, Expand: 2}, []string{"-rnHFI", "--null", "-w", "-C", "2", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
 		{"context flag", backend.Args{Query: "foo", Context: 2}, []string{"-rnHFI", "--null", "-C", "2", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
+		{"after flag", backend.Args{Query: "foo", After: 2}, []string{"-rnHFI", "--null", "-A", "2", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
 		{"after and before flags", backend.Args{Query: "foo", After: 2, Before: 1}, []string{"-rnHFI", "--null", "-A", "2", "-B", "1", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
+		{"context and after flags", backend.Args{Query: "foo", Context: 1, After: 3}, []string{"-rnHFI", "--null", "-C", "1", "-A", "3", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
 		{"basename glob", backend.Args{Query: "foo", Glob: "*.go"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "."}, false},
 		{"dir recurse glob", backend.Args{Query: "foo", Glob: "src/**"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "src"}, false},
 		{"dir + ext glob", backend.Args{Query: "foo", Glob: "src/**/*.go"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "src"}, false},
@@ -93,6 +98,7 @@ func TestGrepArgv(t *testing.T) {
 		{"scope + basename glob", backend.Args{Query: "foo", Glob: "*.go", Scope: "internal"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "internal"}, false},
 		{"leading-dash pattern", backend.Args{Query: "-foo"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "-foo", "--", "."}, false},
 		{"regex swaps -rnFI for -rnEI", backend.Args{Query: "foo", Regex: true}, []string{"-rnHEI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
+		{"files with matches + filters", backend.Args{Query: "^foo", Glob: "*.go", Scope: "internal", IgnoreCase: true, Word: true, Regex: true, FilesWithMatches: true}, []string{"-rEI", "-l", "-i", "-w", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "^foo", "--", "internal"}, false},
 		{"paths keep excludes", backend.Args{Query: "foo", Paths: []string{"a.go", "b.go"}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "a.go", "b.go"}, false},
 		{"regex + paths keep excludes", backend.Args{Query: "^func ", Regex: true, Paths: []string{"a.go"}}, []string{"-rnHEI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "^func ", "--", "a.go"}, false},
 		{"scope + paths keep excludes", backend.Args{Query: "foo", Scope: "internal", Paths: []string{"a.go"}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "internal", "a.go"}, false},
@@ -480,6 +486,59 @@ func TestParseGrep_NoMatch(t *testing.T) {
 	}
 }
 
+func TestParseFilesWithMatches(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		eng  engine
+		raw  string
+		want []string
+	}{
+		{"ripgrep", engineRipgrep, "a.go\nsub/b.go\n" + filepath.Join(cwd, "abs.go") + "\n", []string{"a.go", "sub/b.go", "abs.go"}},
+		{"grep", engineGrep, "./a.go\r\n./sub/b.go\r\n" + filepath.Join(cwd, "abs.go") + "\r\n", []string{"./a.go", "./sub/b.go", "abs.go"}},
+		{"relative path syntax preserved", engineRipgrep, "./link/../match.go\n", []string{"./link/../match.go"}},
+		{"ripgrep no match", engineRipgrep, "", nil},
+		{"grep no match", engineGrep, "", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseFilesWithMatches(tt.eng, tt.raw)
+			if err != nil {
+				t.Fatalf("parseFilesWithMatches() err = %v", err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("parseFilesWithMatches() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRenderFilesWithMatches(t *testing.T) {
+	tests := []struct {
+		name   string
+		query  string
+		paths  []string
+		budget int
+		want   string
+	}{
+		{"uncapped", "foo", []string{"a.go", "b.go"}, 0, "a.go\nb.go\n"},
+		{"budget footer", "foo", []string{"a.go", "b.go", "c.go"}, 2, "a.go\n… +2 lines, ~2 tokens omitted — re-run with a larger --budget\n"},
+		{"tiny budget withholds long first path", "foo", []string{"internal/backend/backend.go", "b.go"}, 1, "… +2 lines, ~8 tokens omitted — re-run with a larger --budget\n"},
+		{"budget keeps only complete paths", "foo", []string{"internal/backend/backend.go", "b.go"}, 8, "internal/backend/backend.go\n… +1 lines, ~1 tokens omitted — re-run with a larger --budget\n"},
+		{"no match", "foo", nil, 0, NoMatch("foo")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := renderFilesWithMatches(tt.query, tt.paths, tt.budget); got != tt.want {
+				t.Errorf("renderFilesWithMatches() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestParseGrep_DelimitersNeedNoHeuristic proves --null removes the field-split
 // ambiguity the old stat heuristic resolved: match and context text embedding ":"
 // or "-", a dash-digit filename, and a filename literally containing ":N:" all
@@ -666,6 +725,8 @@ func TestRunCore(t *testing.T) {
 	}{
 		{"rg branch", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true}, []runnerResult{{out: rgOut}}, false, true, 1, []string{"### nope/a.go:3", "→ [3] foo one"}, nil, "", ""},
 		{"grep branch", engineGrep, backend.Args{Query: "foo", IgnoreCase: true}, []runnerResult{{out: grepOut}}, false, true, 1, []string{"### nope/a.go:3", "→ [3] foo one", "system grep"}, nil, "", ""},
+		{"files with matches", engineRipgrep, backend.Args{Query: "foo", FilesWithMatches: true}, []runnerResult{{out: "./nope/a.go\nnope/b.go\n"}}, false, true, 1, nil, nil, "./nope/a.go\nnope/b.go\n", ""},
+		{"files with matches miss", engineRipgrep, backend.Args{Query: "foo", FilesWithMatches: true}, []runnerResult{{}}, false, false, 1, nil, nil, NoMatch("foo"), ""},
 		{"miss escalates to regex hit", engineRipgrep, backend.Args{Query: "foo|bar"}, []runnerResult{{}, {out: rgOut}}, false, true, 2, []string{`# grep: "foo|bar" — 1 matches in 1 files (auto-regex)`, "### nope/a.go:3"}, nil, "", ""},
 		{"literal and regex miss", engineRipgrep, backend.Args{Query: "foo|bar"}, []runnerResult{{}, {}}, false, false, 2, []string{`# grep: "foo|bar" — no matches (literal or regex)`}, nil, "", ""},
 		{"metachar-free miss does not rerun", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true}, []runnerResult{{}}, false, false, 1, []string{`# grep: "foo" — no matches`}, []string{"literal or regex"}, "", ""},
@@ -786,19 +847,28 @@ func TestValidateContext(t *testing.T) {
 	tests := []struct {
 		name    string
 		args    backend.Args
-		wantErr bool
+		wantErr string
 	}{
-		{"zero ok", backend.Args{}, false},
-		{"positive ok", backend.Args{After: 2, Before: 3, Context: 4}, false},
-		{"at max ok", backend.Args{Context: maxContext}, false},
-		{"over max errors", backend.Args{Before: maxContext + 1}, true},
-		{"negative after errors", backend.Args{After: -1}, true},
-		{"negative context errors", backend.Args{Context: -5}, true},
+		{"zero ok", backend.Args{}, ""},
+		{"positive ok", backend.Args{After: 2, Before: 3, Context: 4}, ""},
+		{"at max ok", backend.Args{Context: maxContext}, ""},
+		{"over max errors", backend.Args{Before: maxContext + 1}, "capped"},
+		{"negative after errors", backend.Args{After: -1}, "must be"},
+		{"negative context errors", backend.Args{Context: -5}, "must be"},
+		{"files with matches allows filters", backend.Args{FilesWithMatches: true, Glob: "*.go", Scope: "internal", IgnoreCase: true, Word: true, Regex: true, Budget: 10}, ""},
+		{"files with matches rejects expand", backend.Args{FilesWithMatches: true, Expand: 1}, "--expand"},
+		{"files with matches rejects after", backend.Args{FilesWithMatches: true, After: 1}, "-A/--after-context"},
+		{"files with matches rejects before", backend.Args{FilesWithMatches: true, Before: 1}, "-B/--before-context"},
+		{"files with matches rejects context", backend.Args{FilesWithMatches: true, Context: 1}, "-C/--context"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := validateContext(tt.args); (err != nil) != tt.wantErr {
-				t.Errorf("validateContext(%+v) err = %v, wantErr %v", tt.args, err, tt.wantErr)
+			err := validateContext(tt.args)
+			if tt.wantErr == "" && err != nil {
+				t.Errorf("validateContext(%+v) err = %v, want nil", tt.args, err)
+			}
+			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Errorf("validateContext(%+v) err = %v, want error containing %q", tt.args, err, tt.wantErr)
 			}
 		})
 	}

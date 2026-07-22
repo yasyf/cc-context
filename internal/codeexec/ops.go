@@ -46,7 +46,7 @@ func Ops(c Caller) map[string]HostFunc {
 			return backend.Args{Path: a.str("path", 0), Section: a.str("section", 1), Full: a.flag("full"), RevealSecrets: a.flag("reveal_secrets")}
 		}),
 		"grep": op(backend.OpGrep, func(a *args) backend.Args {
-			return backend.Args{Query: a.str("text", 0), Glob: a.str("glob", 1), Scope: a.str("scope", 2), Paths: a.strs("paths"), IgnoreCase: a.flag("ignore_case"), Word: a.flag("word"), Regex: a.flag("regex"), Expand: a.num("expand"), After: a.num("after"), Before: a.num("before"), Context: a.num("context")}
+			return backend.Args{Query: a.str("text", 0), Glob: a.str("glob", 1), Scope: a.str("scope", 2), Paths: a.strs("paths"), IgnoreCase: a.flag("ignore_case"), Word: a.flag("word"), Regex: a.flag("regex"), FilesWithMatches: a.flag("files_with_matches"), Expand: a.num("expand"), After: a.num("after"), Before: a.num("before"), Context: a.num("context")}
 		}),
 		"symbol": op(backend.OpSymbol, func(a *args) backend.Args {
 			return backend.Args{Query: a.str("name", 0), Scope: a.str("scope", 1), Full: a.flag("full"), Body: a.flag("body"), Callers: a.flag("callers"), Callees: a.flag("callees"), Siblings: a.flag("siblings"), Tests: a.flag("tests")}

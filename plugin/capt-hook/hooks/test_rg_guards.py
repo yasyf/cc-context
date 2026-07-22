@@ -29,9 +29,20 @@ from types import SimpleNamespace
 import pytest
 from captain_hook import CommandLine
 from captain_hook.events import PreToolUseEvent
+from captain_hook.types import HookResult
 from cc_transcript.command import Occurrence
 
-from conftest import NO_SUPPORT_HELP, SUPPORTS_HELP, fake_run, make_evt, probe
+from conftest import (
+    FILES_WITH_MATCHES_HELP,
+    NATIVE_CONTEXT_HELP,
+    NO_SUPPORT_HELP,
+    REGEX_SUPPORTS_HELP,
+    SUPPORTS_HELP,
+    fake_run,
+    make_evt,
+    probe,
+    run_visit,
+)
 from hooks import common, grep_guards, rg_guards, search_common
 from hooks.common import ccx_supports
 
@@ -43,12 +54,25 @@ def event_occurrence(command: str, index: int = 0) -> tuple[PreToolUseEvent, Occ
 
 def rg_rewrite(command: str, index: int = 0) -> str | None:
     evt, occ = event_occurrence(command, index)
-    return rg_guards.rg_to(evt, occ)
+    return rg_guards.rg_to(evt, occ, cwd=evt.cwd)
+
+
+def rg_verdict(command: str) -> HookResult | str | None:
+    """The whole-line verdict from the ``visit=`` walk: a block ``HookResult``, a rewrite string, or
+    ``None`` for a genuine allow (the thinned ``RgFlood`` gate is no longer the allow signal)."""
+    return run_visit(make_evt(command), rg_guards.rg_visit)
+
+
+def rg_rewrite_note(command: str) -> str:
+    evt, occ = event_occurrence(command)
+    parsed = rg_guards.rg_parse(occ, cwd=evt.cwd)
+    assert parsed is not None
+    return search_common.note_text(occ.command.raw, parsed)
 
 
 def grep_rewrite(command: str) -> str | None:
     evt, occ = event_occurrence(command)
-    return grep_guards.grep_to(evt, occ)
+    return grep_guards.grep_to(evt, occ, cwd=evt.cwd)
 
 
 class TestRgIgnoreCaseWord:
@@ -100,6 +124,59 @@ class TestRgIgnoreCaseWord:
 
         monkeypatch.setattr(common.subprocess, "run", no_probe)
         assert rg_rewrite("rg foo src/") == "/fake/ccx code grep foo --glob 'src/**'"
+
+
+class TestRgNativeContext:
+    @pytest.fixture(autouse=True)
+    def pin_ccx(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
+
+    @pytest.mark.parametrize(
+        "command, expected",
+        [
+            ("rg -A 2 -B5 --context=7 foo", "/fake/ccx code grep foo -A=2 -B=5 --context=7"),
+            ("rg --after-context 9 foo", "/fake/ccx code grep foo --after-context=9"),
+        ],
+    )
+    def test_maps_exact_flags_when_supported(
+        self, monkeypatch: pytest.MonkeyPatch, command: str, expected: str
+    ) -> None:
+        probe(monkeypatch, NATIVE_CONTEXT_HELP)
+        assert rg_rewrite(command) == expected
+
+    def test_old_binary_keeps_expand_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        probe(monkeypatch, REGEX_SUPPORTS_HELP)
+        assert rg_rewrite("rg -A 2 -B 5 foo") == "/fake/ccx code grep foo --expand=5"
+
+
+class TestRgFilesWithMatches:
+    @pytest.fixture(autouse=True)
+    def pin_ccx(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
+
+    @pytest.mark.parametrize("command", ["rg -l foo", "rg --files-with-matches foo"])
+    def test_maps_when_supported(self, monkeypatch: pytest.MonkeyPatch, command: str) -> None:
+        probe(monkeypatch, FILES_WITH_MATCHES_HELP)
+        assert rg_rewrite(command) == "/fake/ccx code grep foo -l"
+        assert rg_rewrite_note(command) == (
+            f"Rewrote `{command}` → `ccx code grep`: same literal search, token-bounded."
+        )
+
+    @pytest.mark.parametrize("command", ["rg -l foo", "rg --files-with-matches foo"])
+    def test_old_binary_keeps_drop_and_disclosure(self, monkeypatch: pytest.MonkeyPatch, command: str) -> None:
+        probe(monkeypatch, NATIVE_CONTEXT_HELP)
+        assert rg_rewrite(command) == "/fake/ccx code grep foo"
+        assert rg_rewrite_note(command) == (
+            f"Rewrote `{command}` → `ccx code grep`: same literal search, token-bounded. "
+            "`-l` dropped — ccx returns the matching lines, not just filenames."
+        )
+
+    def test_l_with_context_suppresses_context_flags(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # ccx hard-errors on `-l` with `-A/-B/-C`, and native rg -l ignores context — emit `-l` alone.
+        probe(monkeypatch, FILES_WITH_MATCHES_HELP)
+        assert rg_rewrite("rg -l -A 2 foo") == "/fake/ccx code grep foo -l"
 
 
 class TestRgPathGlobbing:
@@ -208,7 +285,7 @@ class TestRgOccurrenceRewrite:
         assert occurrence.command.unwrapped.executable == "rg"
         assert rg_guards.RgFlood().check_command_line(evt, evt.cmd.line) is True
         assert rg_guards.rg_to(evt, occurrence) is None
-        assert rg_guards.rg_block_if(evt, occurrence) is True
+        assert isinstance(rg_verdict("sudo rg foo ."), HookResult)
 
 
 class TestRgBoundedPassthrough:
@@ -227,13 +304,15 @@ class TestRgBoundedPassthrough:
         "command",
         [
             "rg -v foo real.py",
+            "rg -m1 foo real.py",
+            "rg --max-count=1 foo real.py",
             "rg foo missing.log",
         ],
     )
     def test_bounded_file_lanes_do_not_fire(self, command: str) -> None:
         evt = make_evt(command)
-        assert rg_guards.bounded_file_rg(evt.cmd.line.primary) is True
-        assert rg_guards.RgFlood().check_command_line(evt, evt.cmd.line) is False
+        assert rg_guards.bounded_file_rg(evt.cmd.line.primary, cwd=evt.cwd) is True
+        assert rg_verdict(command) is None
 
     @pytest.mark.parametrize(
         "command",
@@ -247,13 +326,17 @@ class TestRgBoundedPassthrough:
         ],
     )
     def test_output_bounded_flags_skip_size_cap(self, command: str) -> None:
-        assert rg_guards.bounded_file_rg(CommandLine.parse(command).primary) is True
+        evt = make_evt(command)
+        assert rg_guards.bounded_file_rg(evt.cmd.line.primary, cwd=evt.cwd) is True
 
     @pytest.mark.parametrize(
         "command",
         [
             "rg -v foo big.py",
             "rg -v foo half_a.py half_b.py",
+            "rg -m1 foo big.py",
+            "rg -m nope foo real.py",
+            "rg -m1 foo sub",
             "rg -c foo sub",
             "rg -c foo ghost.py",
             "rg -c foo",
@@ -281,3 +364,14 @@ class TestRgBoundedPassthrough:
         evt = make_evt(command)
         assert rg_guards.bounded_file_rg(evt.cmd.line.primary.unwrapped) is False
         assert rg_guards.RgFlood().check_command_line(evt, evt.cmd.line) is True
+
+    def test_unknown_sink_flag_cannot_hide_a_path(self) -> None:
+        command = "rg -c foo real.py; printf x | rg -Zr pat /"
+        evt = make_evt(command)
+        assert rg_guards.RgFlood().check_command_line(evt, evt.cmd.line) is True
+
+    def test_conditional_cd_declines_cwd_trust(self, tmp_path: Path) -> None:
+        # `false && cd` short-circuits — the threaded cwd is declined and the stat lane fails closed.
+        (tmp_path / "small").mkdir()
+        (tmp_path / "small" / "real.py").write_text("x\n")
+        assert isinstance(rg_verdict(f"false && cd {tmp_path / 'small'}; rg foo real.py"), HookResult)

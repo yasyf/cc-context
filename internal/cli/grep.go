@@ -27,6 +27,7 @@ func newGrepCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&a.IgnoreCase, "ignore-case", "i", false, "case-insensitive match (ripgrep/grep engine)")
 	cmd.Flags().BoolVarP(&a.Word, "word", "w", false, "match whole words only (ripgrep/grep engine)")
 	cmd.Flags().BoolVarP(&a.Regex, "regex", "E", false, "treat the pattern as a regular expression (ripgrep/grep engine)")
+	cmd.Flags().BoolVarP(&a.FilesWithMatches, "files-with-matches", "l", false, "list only the paths of files with matches")
 	cmd.Flags().IntVar(&a.Budget, "budget", 0, "token budget for the output")
 	cmd.Flags().IntVar(&a.Expand, "expand", 0, "adds N context lines around each hit")
 	cmd.Flags().IntVarP(&a.After, "after-context", "A", 0, "show N lines after each match (ripgrep/grep engine)")

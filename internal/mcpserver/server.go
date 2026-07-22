@@ -140,18 +140,19 @@ func depsArgs(in DepsIn) backend.Args {
 
 // GrepIn is the input for ccx_code_grep.
 type GrepIn struct {
-	Text       string   `json:"text" jsonschema:"text to search for"`
-	Glob       string   `json:"glob,omitempty" jsonschema:"files matching this glob; an anchored dir glob searches even under ignore rules"`
-	Scope      string   `json:"scope,omitempty" jsonschema:"directory (or a single file) to scope to"`
-	IgnoreCase bool     `json:"ignoreCase,omitempty" jsonschema:"case-insensitive; runs the rg/grep engine"`
-	Word       bool     `json:"word,omitempty" jsonschema:"whole words only; runs the rg/grep engine"`
-	Regex      bool     `json:"regex,omitempty" jsonschema:"force regex (auto-detected on zero literal matches); runs the rg/grep engine"`
-	Paths      []string `json:"paths,omitempty" jsonschema:"search these files, resolving a unique extension sibling; runs the rg/grep engine"`
-	Budget     int      `json:"budget,omitempty" jsonschema:"token budget for the output"`
-	Expand     int      `json:"expand,omitempty" jsonschema:"context lines around each hit"`
-	After      int      `json:"after,omitempty" jsonschema:"context lines after each match (-A)"`
-	Before     int      `json:"before,omitempty" jsonschema:"context lines before each match (-B)"`
-	Context    int      `json:"context,omitempty" jsonschema:"context lines around each match (-C)"`
+	Text             string   `json:"text" jsonschema:"text to search for"`
+	Glob             string   `json:"glob,omitempty" jsonschema:"files matching this glob; an anchored dir glob searches even under ignore rules"`
+	Scope            string   `json:"scope,omitempty" jsonschema:"directory (or a single file) to scope to"`
+	IgnoreCase       bool     `json:"ignoreCase,omitempty" jsonschema:"case-insensitive; runs the rg/grep engine"`
+	Word             bool     `json:"word,omitempty" jsonschema:"whole words only; runs the rg/grep engine"`
+	Regex            bool     `json:"regex,omitempty" jsonschema:"force regex (auto-detected on zero literal matches); runs the rg/grep engine"`
+	FilesWithMatches bool     `json:"filesWithMatches,omitempty" jsonschema:"list only the paths of files with matches"`
+	Paths            []string `json:"paths,omitempty" jsonschema:"search these files, resolving a unique extension sibling; runs the rg/grep engine"`
+	Budget           int      `json:"budget,omitempty" jsonschema:"token budget for the output"`
+	Expand           int      `json:"expand,omitempty" jsonschema:"context lines around each hit"`
+	After            int      `json:"after,omitempty" jsonschema:"context lines after each match (-A)"`
+	Before           int      `json:"before,omitempty" jsonschema:"context lines before each match (-B)"`
+	Context          int      `json:"context,omitempty" jsonschema:"context lines around each match (-C)"`
 }
 
 // FindIn is the input for ccx_repo_find.
@@ -321,7 +322,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 		Description: "Grep literal or regex text across code — globbed, scoped, or over explicit files; budget-bounded.",
 		Meta:        alwaysLoad,
 	}, handler(p, backend.OpGrep, func(in GrepIn) backend.Args {
-		a := backend.Args{Query: in.Text, Glob: in.Glob, Scope: in.Scope, IgnoreCase: in.IgnoreCase, Word: in.Word, Regex: in.Regex, Paths: in.Paths, Budget: in.Budget, Expand: in.Expand, After: in.After, Before: in.Before, Context: in.Context}
+		a := backend.Args{Query: in.Text, Glob: in.Glob, Scope: in.Scope, IgnoreCase: in.IgnoreCase, Word: in.Word, Regex: in.Regex, FilesWithMatches: in.FilesWithMatches, Paths: in.Paths, Budget: in.Budget, Expand: in.Expand, After: in.After, Before: in.Before, Context: in.Context}
 		if a.Budget == 0 {
 			a.Budget = ripgrep.DefaultBudget
 		}

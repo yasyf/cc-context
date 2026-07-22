@@ -54,15 +54,34 @@ func validateContext(a backend.Args) error {
 			return fmt.Errorf("grep %s is capped at %d context lines, got %d; narrow the search instead", c.flag, maxContext, c.n)
 		}
 	}
+	if a.FilesWithMatches {
+		var conflicts []string
+		for _, c := range []struct {
+			flag string
+			n    int
+		}{
+			{"--expand", a.Expand},
+			{"-A/--after-context", a.After},
+			{"-B/--before-context", a.Before},
+			{"-C/--context", a.Context},
+		} {
+			if c.n != 0 {
+				conflicts = append(conflicts, c.flag)
+			}
+		}
+		if len(conflicts) > 0 {
+			return fmt.Errorf("grep --files-with-matches cannot be combined with %s", strings.Join(conflicts, ", "))
+		}
+	}
 	return nil
 }
 
-// appendContext appends the -A/-B/-C context flags both rg and grep accept
-// natively. -C sets both directions, so it is emitted alone when set; otherwise
-// -A and -B ride independently.
+// appendContext appends the -C/-A/-B context flags both rg and grep accept
+// natively. -C comes first so BSD grep lets a following -A or -B override that
+// direction.
 func appendContext(argv []string, a backend.Args) []string {
 	if a.Context > 0 {
-		return append(argv, "-C", strconv.Itoa(a.Context))
+		argv = append(argv, "-C", strconv.Itoa(a.Context))
 	}
 	if a.After > 0 {
 		argv = append(argv, "-A", strconv.Itoa(a.After))
@@ -161,6 +180,9 @@ func toFileMatches(groups []fileGroup) []FileMatch {
 // found is decided from parsed groups before reshape/cap — capping can cut the
 // no-match header and a matched header embeds the query, so never string-sniff.
 func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) (string, bool, error) {
+	if a.FilesWithMatches {
+		return runFilesWithMatches(ctx, eng, bin, a, exec)
+	}
 	groups, err := searchGroups(ctx, eng, bin, a, exec)
 	if err != nil {
 		return "", false, err
@@ -193,6 +215,49 @@ func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runne
 	return out, found, nil
 }
 
+func runFilesWithMatches(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) (string, bool, error) {
+	paths, err := searchFilesWithMatches(ctx, eng, bin, a, exec)
+	if err != nil {
+		return "", false, err
+	}
+	if !a.Regex && len(paths) == 0 && escalatable(eng, a.Query) {
+		ra := a
+		ra.Regex = true
+		rpaths, rerr := searchFilesWithMatches(ctx, eng, bin, ra, exec)
+		if rerr == nil && len(rpaths) > 0 {
+			paths = rpaths
+		}
+	}
+	if len(paths) == 0 {
+		return renderFilesWithMatches(a.Query, paths, a.Budget), false, nil
+	}
+	return renderFilesWithMatches(a.Query, paths, a.Budget), true, nil
+}
+
+func renderFilesWithMatches(query string, paths []string, budget int) string {
+	if len(paths) == 0 {
+		return render.Cap(NoMatch(query), budget)
+	}
+	rendered := strings.Join(paths, "\n") + "\n"
+	const charsPerToken = 4
+	if budget <= 0 || budget > (len(rendered)-1)/charsPerToken {
+		return rendered
+	}
+
+	limit := budget * charsPerToken
+	var b strings.Builder
+	cutoff := 0
+	for cutoff < len(paths) && b.Len()+len(paths[cutoff])+1 <= limit {
+		b.WriteString(paths[cutoff])
+		b.WriteByte('\n')
+		cutoff++
+	}
+	omitted := strings.Join(paths[cutoff:], "\n") + "\n"
+	fmt.Fprintf(&b, "… +%d lines, ~%d tokens omitted — re-run with a larger --budget\n",
+		len(paths)-cutoff, len(omitted)/charsPerToken)
+	return b.String()
+}
+
 func escalatable(eng engine, q string) bool {
 	if eng == engineGrep && strings.ContainsRune(q, '\\') {
 		return false
@@ -210,21 +275,37 @@ func escalatable(eng engine, q string) bool {
 // filter matching zero files is normalized to the clean no-match grep reports as
 // exit 0; a regex-parse failure carrying a BRE escape is hinted.
 func searchGroups(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) ([]fileGroup, error) {
-	argv, err := buildArgv(eng, a)
+	raw, err := searchOutput(ctx, eng, bin, a, exec)
 	if err != nil {
 		return nil, err
+	}
+	return parse(eng, raw)
+}
+
+func searchFilesWithMatches(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) ([]string, error) {
+	raw, err := searchOutput(ctx, eng, bin, a, exec)
+	if err != nil {
+		return nil, err
+	}
+	return parseFilesWithMatches(eng, raw)
+}
+
+func searchOutput(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) (string, error) {
+	argv, err := buildArgv(eng, a)
+	if err != nil {
+		return "", err
 	}
 	raw, err := exec(ctx, bin, argv)
 	if err != nil {
 		if eng != engineRipgrep {
-			return nil, err
+			return "", err
 		}
 		if !ripgrepNoFiles(err) {
-			return nil, ripgrepRegexHint(err, a.Query)
+			return "", ripgrepRegexHint(err, a.Query)
 		}
 		raw = "" // a glob/type filter matched zero files: the clean no-match grep reports as exit 0
 	}
-	return parse(eng, raw)
+	return raw, nil
 }
 
 // anyMatch reports whether any group carries a match line (context lines alone
@@ -371,7 +452,8 @@ func AnchorGrepArgs(a backend.Args) backend.Args {
 }
 
 // ripgrepArgv builds `rg --json [--fixed-strings] [-i] [-w] [--glob G] [-C N]
-// [--no-ignore-parent] -e <pattern> [-- [scope] paths...]`. --fixed-strings is
+// [--no-ignore-parent] -e <pattern> [-- [scope] paths...]`. Files-only mode
+// replaces --json with --files-with-matches. --fixed-strings is
 // dropped for a regex query so the pattern reaches rg's Rust regex engine; any
 // explicit Paths ride after -- alongside the scope operand, so rg searches those
 // files. With explicit Paths anchoring is skipped (buildArgv has already prefiltered
@@ -393,6 +475,9 @@ func ripgrepArgv(a backend.Args) []string {
 		a = AnchorGrepArgs(a)
 	}
 	argv := []string{"--json"}
+	if a.FilesWithMatches {
+		argv = []string{"--files-with-matches"}
+	}
 	if !a.Regex {
 		argv = append(argv, "--fixed-strings")
 	}
@@ -424,7 +509,8 @@ func ripgrepArgv(a backend.Args) []string {
 }
 
 // grepArgv builds `grep -rnHFI --null [-i] [-w] [-C N] --exclude-dir=.[!./]* --exclude=.[!./]*
-// [--include=G] -e <pattern> -- <root>` from flags common to BSD and GNU grep. A
+// [--include=G] -e <pattern> -- <root>` from flags common to BSD and GNU grep.
+// Files-only mode uses -l without --null. A
 // regex query swaps -rnHFI for -rnHEI (ERE, the closest dialect to rg's Rust regex).
 // The -H flag forces the filename prefix the parser splits on: GNU grep omits it
 // for a single explicit file operand (BSD prints it), which read as "no matches".
@@ -465,6 +551,13 @@ func grepArgv(a backend.Args) ([]string, error) {
 		flags = "-rnHEI"
 	}
 	argv := []string{flags, "--null"}
+	if a.FilesWithMatches {
+		flags = "-rFI"
+		if a.Regex {
+			flags = "-rEI"
+		}
+		argv = []string{flags, "-l"}
+	}
 	if a.IgnoreCase {
 		argv = append(argv, "-i")
 	}
@@ -586,6 +679,36 @@ func parse(eng engine, raw string) ([]fileGroup, error) {
 	default:
 		return nil, fmt.Errorf("ripgrep: unknown engine %d", eng)
 	}
+}
+
+func parseFilesWithMatches(eng engine, raw string) ([]string, error) {
+	switch eng {
+	case engineRipgrep, engineGrep:
+	default:
+		return nil, fmt.Errorf("ripgrep: unknown engine %d", eng)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("ripgrep: resolve cwd: %w", err)
+	}
+	cwdPrefix := cwd
+	if !strings.HasSuffix(cwdPrefix, string(filepath.Separator)) {
+		cwdPrefix += string(filepath.Separator)
+	}
+	var paths []string
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if line == "" {
+			continue
+		}
+		if filepath.IsAbs(line) {
+			if relative, found := strings.CutPrefix(line, cwdPrefix); found {
+				line = relative
+			}
+		}
+		paths = append(paths, line)
+	}
+	return paths, nil
 }
 
 // rgEvent is one line of the rg --json event stream. Only match and context

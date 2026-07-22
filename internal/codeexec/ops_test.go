@@ -90,6 +90,12 @@ func TestOpsArgMapping(t *testing.T) {
 			backend.Args{Query: "^func ", Regex: true, Paths: []string{"a.go", "b.go"}},
 		},
 		{
+			"grep files with matches", "grep",
+			Call{Kwargs: map[string]any{"text": "needle", "files_with_matches": true}},
+			backend.OpGrep,
+			backend.Args{Query: "needle", FilesWithMatches: true},
+		},
+		{
 			"grep expand float", "grep",
 			Call{Kwargs: map[string]any{"text": "x", "expand": 2.0}},
 			backend.OpGrep,

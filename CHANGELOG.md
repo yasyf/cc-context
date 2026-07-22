@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.29.0] - 2026-07-21
 
 ### Added
+- **`ccx code grep --files-with-matches`.** The new `-l` mode prints only the
+  relative paths of matching files, with the usual budget cap and explicit overflow
+  footer. Glob, scope, case, word, and regex filters remain available; context flags
+  are rejected because file-only output has no match frames to expand.
 - **`ccx code grep` auto-escalates to regex on zero literal matches.** The literal pass
   runs exactly as before; when it finds nothing and the pattern carries a regex
   metacharacter and compiles, the search reruns as a regex and the header says so —

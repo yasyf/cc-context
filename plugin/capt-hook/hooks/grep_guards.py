@@ -15,34 +15,56 @@ from captain_hook import (
     Input,
     PreToolUseEvent,
     Rewrite,
+    Rewritten,
     rewrite_command_occurrences,
 )
 
-from .common import LARGE_READ_BYTES, LITERAL_SAFE, carries_expansion
+from .common import LARGE_READ_BYTES, LITERAL_SAFE, carries_expansion, ccx_supports
 from .search_common import (
     CONTEXT_SHORT,
     GrepCall,
     NON_SOURCE_EXTS,
     build_ccx_grep,
     classify_path,
+    conditional_cd_precedes,
+    downstream_allowed,
     grep_glob,
     has_command_substitution,
     is_transcript_path,
     note_text,
     path_blocked,
+    resolve_operand,
+    resolved_is_dir,
+    resolved_is_file,
     search_block,
     unquote,
 )
 
 if TYPE_CHECKING:
+    from captain_hook import HookResult, WalkContext
     from cc_transcript.command import Command, Occurrence
 
 
 # grep flags ccx code grep subsumes as no-ops on its literal, always-recursive, line-numbered
-# engine. `-l` and `-F` change output/semantics, so the note discloses their drop; the rest
-# (`-r -R -n -H -h -s -I`) are silent. Long-form DROP flags aren't in the set, so `--recursive`
-# and friends fall through to the block — conservative, never wrong.
+# engine. `-l` and `-F` change output/semantics, so the note discloses their drop; the rest are silent.
 DROP_SHORT = frozenset("rRnHhsIFl")
+DROP_LONG = frozenset(
+    {
+        "recursive",
+        "dereference-recursive",
+        "line-number",
+        "with-filename",
+        "no-filename",
+        "no-messages",
+        "files-with-matches",
+    }
+)
+
+# Long flags that take no value: native grep errors on `--recursive=oops`, so an attached value
+# declines the rewrite instead of silently discarding it.
+NO_VALUE_LONG = DROP_LONG | frozenset(
+    {"ignore-case", "word-regexp", "extended-regexp", "basic-regexp", "fixed-strings"}
+)
 
 # Regex metacharacters per grep dialect. A pattern carrying NONE of the active dialect's
 # metachars is a plain literal in that dialect (→ literal rewrite when ccx-literal-safe); one
@@ -80,6 +102,7 @@ BOUNDED_BOOL_LONG = frozenset(
         "no-filename", "with-filename", "line-number", "recursive", "dereference-recursive",
         "extended-regexp", "fixed-strings", "basic-regexp", "perl-regexp", "null", "null-data",
         "text", "byte-offset", "no-messages", "initial-tab", "color", "colour", "binary", "only-matching",
+        "line-buffered",
     }
 )
 BOUNDED_VALUE_LONG = frozenset(
@@ -92,18 +115,19 @@ BOUNDED_VALUE_LONG = frozenset(
 BOUNDED_PATTERN_LONG = frozenset({"regexp", "file"})
 
 
-def grep_targets(paths: list[str], include: str | None) -> tuple[str, list[str]] | None:
+def grep_targets(paths: list[str], include: str | None, *, cwd: Path | None) -> tuple[str, list[str]] | None:
     """Split grep's path args into a ``(glob, path_operands)`` pair, or ``None`` to block.
 
     Two or more explicit *existing regular files* (no ``--include``, no ``.``-widening) carry as
     ``ccx code grep`` positionals — the multi-file form (ccx ≥ v0.11.0) — with an empty glob.
     Everything else routes through :func:`grep_glob`: a directory, a lone file (``--glob file`` for
     old-binary compat), an ``--include``, or repo-wide widening yield a glob and no path operands.
+    Path operands are classified against the filesystem resolved from ``cwd``.
     """
     if include is None and not any(p in (".", "./") for p in paths) and len(paths) >= 2:
-        if all(classify_path(p) is False for p in paths):
+        if all(classify_path(p, cwd=cwd) is False for p in paths):
             return "", [p.rstrip("/") for p in paths]
-    glob = grep_glob(paths, include)
+    glob = grep_glob(paths, include, cwd=cwd)
     return None if glob is None else (glob, [])
 
 
@@ -232,7 +256,7 @@ def translate_pattern(pattern: str, ere: bool) -> str | None:
     return "".join(out) if depth == 0 else None
 
 
-def grep_parse(occ: Occurrence) -> GrepCall | None:
+def grep_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | None:
     """Parse one direct, unpiped ``grep`` occurrence into its ccx-rewritable shape.
 
     Rewrites only a direct invocation whose flags all fall in the DROP/MAP sets and whose one pattern
@@ -243,14 +267,15 @@ def grep_parse(occ: Occurrence) -> GrepCall | None:
     bundle (``-rnC3``) blocks too — bundles are DROP-only.
     """
     cmd = occ.command
-    if occ.prev_op == "|" or cmd.executable != "grep":
+    if occ.prev_op == "|" or cmd.executable != "grep" or cmd.env:
         return None
     args = cmd.args
     pattern: str | None = None
     e_count = 0
     include: str | None = None
     positionals: list[str] = []
-    expand = ignore_case = word = dropped_l = dropped_fixed = ere = bre = False
+    context_args: list[tuple[str, str]] = []
+    ignore_case = word = dropped_l = dropped_fixed = ere = bre = False
     i, n = 0, len(args)
     while i < n:
         a = args[i]
@@ -263,6 +288,8 @@ def grep_parse(occ: Occurrence) -> GrepCall | None:
             continue
         if a.startswith("--"):
             name, sep, val = a[2:].partition("=")
+            if sep and name in NO_VALUE_LONG:
+                return None  # native grep rejects `--recursive=oops` — never rewrite past its error
             if name == "ignore-case":
                 ignore_case = True
             elif name == "word-regexp":
@@ -279,11 +306,13 @@ def grep_parse(occ: Occurrence) -> GrepCall | None:
                 if sep:
                     if not unquote(val).isdigit():
                         return None
+                    count = unquote(val)
                 else:
                     if i + 1 >= n or not args[i + 1].isdigit():
                         return None
+                    count = args[i + 1]
                     i += 1
-                expand = True
+                context_args.append((f"--{name}", count))
             elif name == "include":
                 if include is not None:
                     return None
@@ -305,6 +334,8 @@ def grep_parse(occ: Occurrence) -> GrepCall | None:
                     return None
             elif name in ("color", "colour"):
                 pass
+            elif name in DROP_LONG:
+                dropped_l = dropped_l or name == "files-with-matches"
             else:
                 return None
             i += 1
@@ -315,11 +346,13 @@ def grep_parse(occ: Occurrence) -> GrepCall | None:
             if len(body) > 1:
                 if not unquote(body[1:]).isdigit():
                     return None
+                count = unquote(body[1:])
             elif i + 1 < n and args[i + 1].isdigit():
+                count = args[i + 1]
                 i += 1
             else:
                 return None
-            expand = True
+            context_args.append((f"-{head}", count))
         elif head == "e":
             e_count += 1
             if len(body) > 1:
@@ -381,42 +414,37 @@ def grep_parse(occ: Occurrence) -> GrepCall | None:
     elif not LITERAL_SAFE.match(pattern):
         return None
     for p in paths:
-        if path_blocked(p):
+        if path_blocked(p, cwd=cwd):
             return None
-    targets = grep_targets(paths, include)
+    targets = grep_targets(paths, include, cwd=cwd)
     if targets is None:
         return None
     glob, path_ops = targets
+    native_context = bool(context_args) and ccx_supports("code", "grep", flag="--after-context")
     return GrepCall(
         pattern,
         glob,
-        "3" if expand else "",
+        "" if not context_args or native_context else "3",
+        tuple(context_args) if native_context else (),
         ignore_case,
         word,
         dropped_l,
         dropped_fixed,
-        count_dropped=True,
+        count_dropped=bool(context_args) and not native_context,
         regex=regex,
         paths=tuple(path_ops),
     )
 
 
-def grep_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
-    if grep_occurrence_expands(occ.command):
+def grep_to(evt: BaseHookEvent, occ: Occurrence, *, cwd: Path | None = None) -> str | None:
+    # A grep whose output feeds a pipe is never rewritten — ccx output must not be spliced into a pipe.
+    if occ.next_op == "|" or grep_occurrence_expands(occ.command):
         return None
-    parsed = grep_parse(occ)
+    parsed = grep_parse(occ, cwd=cwd)
     return build_ccx_grep(parsed) if parsed is not None else None
 
 
-def grep_note(evt: BaseHookEvent, pairs: list[tuple[Occurrence, str]]) -> str:
-    return "\n".join(
-        note_text(occ.command.raw, parsed)
-        for occ, _ in pairs
-        if (parsed := grep_parse(occ)) is not None
-    )
-
-
-def bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
+def bounded_file_grep(cmd: Command, *, sink: bool = False, cwd: Path | None = None) -> bool:
     """Report whether one ``grep`` statement is a bounded search ccx can't rewrite.
 
     Judges a single grep occurrence on its own flags and operands — not the whole Bash line — so it
@@ -437,17 +465,23 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
       thousands) forfeits, as do recursion and ``-o``.
     - *bounded regular files*: every operand stats as an existing regular file whose sizes sum to no
       more than :data:`~hooks.common.LARGE_READ_BYTES`; ``-o`` forfeits this stat lane, since its
-      per-match filename/line/byte prefixes multiply output past the size bound.
+      per-match filename/line/byte prefixes multiply output past the size bound. Numeric
+      ``-m``/``--max-count`` caps matching lines per operand but stays in this size-capped lane: one
+      minified matching line can still be megabytes. The no-stat data-ext lane retains that residual
+      long-line exposure.
 
     Conservative throughout: a ``GREP_OPTIONS`` env (which can inject ``-r``/``-o`` the parser never
     sees), any env alongside path operands, an uninspectable ``-f`` pattern file, a flag-supplied empty
-    pattern, and an unknown flag on an unpiped grep all return ``False`` — never a wrong allow.
+    pattern, and an unknown flag on an unpiped grep all return ``False`` — never a wrong allow. An
+    unknown flag on a pipe sink qualifies only after the full walk proves it has no path operand.
     """
     if "GREP_OPTIONS" in cmd.env_dict:
         return False  # a leading GREP_OPTIONS= injects flags (-r/-o …) that never reach cmd.args
     args = cmd.args
     positionals: list[str] = []
     pattern_from_flag = only_matching = pattern_file = empty_flag_pattern = recursive = output_bounded = False
+    max_count = invalid_max_count = False
+    unknown_flag = False
     i, n = 0, len(args)
     while i < n:
         a = args[i]
@@ -472,6 +506,10 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
                     i += 1
             elif name in BOUNDED_VALUE_LONG:
                 recursive = recursive or name == "directories"  # any --directories value → assume recursive
+                if name == "max-count":
+                    count = unquote(val) if sep else args[i + 1] if i + 1 < n else ""
+                    max_count = max_count or count.isdigit()
+                    invalid_max_count = invalid_max_count or not count.isdigit()
                 if not sep:
                     i += 1
             elif name in BOUNDED_BOOL_LONG:
@@ -481,7 +519,7 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
                     "count", "quiet", "silent", "files-with-matches", "files-without-match"
                 )
             else:
-                return sink
+                unknown_flag = True
             i += 1
             continue
         body = a[1:]
@@ -496,6 +534,10 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
                 i += 1
         elif head in BOUNDED_VALUE_SHORT:
             recursive = recursive or head == "d"  # -d [recurse] → assume recursive
+            if head == "m":
+                count = unquote(body[1:]) if len(a) > 2 else args[i + 1] if i + 1 < n else ""
+                max_count = max_count or count.isdigit()
+                invalid_max_count = invalid_max_count or not count.isdigit()
             if len(a) == 2 and i + 1 < n:
                 i += 1
         elif all(ch in BOUNDED_BOOL_SHORT for ch in body):
@@ -503,7 +545,7 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
             only_matching = only_matching or "o" in body
             output_bounded = output_bounded or any(ch in "cqlL" for ch in body)
         else:
-            return sink
+            unknown_flag = True
         i += 1
     if pattern_from_flag:
         empty_positional_pattern = False
@@ -513,6 +555,10 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
     else:
         empty_positional_pattern = positionals[0] == ""
         paths = positionals[1:]
+    if unknown_flag:
+        return sink and not paths
+    if invalid_max_count:
+        return False
     if recursive and not paths:
         return False  # grep -r with no operand recurses the cwd, even as a pipe sink
     if not paths:
@@ -521,6 +567,10 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
         return False  # env with paths, an uninspectable -f pattern file, or a flag-supplied empty pattern
     if empty_positional_pattern:
         return False  # an empty positional pattern floods every line
+    if max_count and any(
+        p.endswith("/") or any(ch in p for ch in "*?[{") or resolved_is_dir(p, cwd) for p in paths
+    ):
+        return False
     # Data files pass by suffix, no stat; recursion forfeits it — a dir named like a data file floods.
     if not recursive and all(not p.endswith("/") and Path(p).suffix.lower() in NON_SOURCE_EXTS for p in paths):
         return True
@@ -529,10 +579,10 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
     if output_bounded and not recursive:
         # -c/-q/-l/-L is one line per operand at any size or existence; directories, unexpanded
         # glob/brace operands, and -r/-R fan back out.
-        return not any(p.endswith("/") or any(ch in p for ch in "*?[{") or Path(p).is_dir() for p in paths)
-    if not all(Path(p).is_file() for p in paths):
+        return not any(p.endswith("/") or any(ch in p for ch in "*?[{") or resolved_is_dir(p, cwd) for p in paths)
+    if not all(resolved_is_file(p, cwd) for p in paths):
         return False
-    return sum(Path(p).stat().st_size for p in paths) <= LARGE_READ_BYTES
+    return sum(resolve_operand(p, cwd).stat().st_size for p in paths) <= LARGE_READ_BYTES
 
 
 def grep_operands(cmd: Command) -> list[str] | None:
@@ -604,38 +654,35 @@ def grep_occurrence_expands(cmd: Command) -> bool:
     )
 
 
-class GrepFlood(CustomCommandLineCondition):
-    """Match a line carrying an actionable unpiped ``grep`` occurrence.
+def grep_bounded(occ: Occurrence, *, cwd: Path | None) -> bool:
+    """Whether one grep occurrence runs verbatim — bounded by its own operands or by a downstream sink.
 
-    A pure ``… | grep`` filter stays outside the registration because its zero-rewrite fallback carries
-    a block. Direct rewritable greps activate the splice lane; an unrewritable grep activates the block
-    lane only when it is not a bounded explicit-file/data-file search. Matching through
-    ``cmd.unwrapped`` makes wrapper prefixes transparent to the condition, while :func:`grep_to` remains
-    direct-only so a qualifying wrapped grep blocks instead of silently dropping its wrapper.
+    Two independent lanes bound a grep. :func:`bounded_file_grep` proves its own operands bounded
+    (stats resolved against the effective ``cwd``), and :func:`~hooks.search_common.downstream_allowed`
+    proves its output pipeline terminates in a bounding sink (``head``/``tail``/``wc``) — the terminal
+    caps what enters context, so the exact command runs verbatim rather than splicing ccx into the pipe.
+    The downstream lane fails closed on unparseable operands and keeps the policy screens: a session
+    transcript, hidden-segment dependency path, or git-ignored/out-of-repo operand blocks with its
+    steer regardless of the sink, since that is policy, not boundedness.
+    """
+    inner = occ.command.unwrapped
+    return bounded_file_grep(inner, sink=occ.prev_op == "|", cwd=cwd) or downstream_allowed(
+        occ, grep_operands(inner), cwd=cwd
+    )
+
+
+class GrepFlood(CustomCommandLineCondition):
+    """Match a line carrying any unpiped ``grep`` occurrence.
+
+    A cheap structural gate — cwd-blind, so it cannot judge boundedness or rewritability (those turn on
+    the effective cwd, which only the walk sees). :func:`grep_visit` is authoritative: it returns a
+    verdict per occurrence, and a line whose every grep is a bounded search yields all-``None`` (a genuine
+    allow). Matching through ``cmd.unwrapped`` keeps wrapper prefixes transparent; a pure ``… | grep``
+    filter (no unpiped grep) stays outside the registration entirely.
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        greps = [occ for occ in cl.occurrences if occ.command.unwrapped.executable == "grep"]
-        return any(occ.prev_op != "|" for occ in greps) and any(
-            (occ.prev_op != "|" and grep_to(evt, occ) is not None)
-            or not bounded_file_grep(occ.command.unwrapped, sink=occ.prev_op == "|")
-            for occ in greps
-        )
-
-
-def grep_block_if(evt: BaseHookEvent, occ: Occurrence) -> bool:
-    """Whether one qualifying grep must block instead of rewrite or run bounded.
-
-    ``block_if`` sees span-less occurrences that :func:`grep_to` never receives, so the span is checked
-    here. A direct rewritable grep proceeds to the splice lane. A bounded, unrewritable grep remains a
-    standalone allow because :class:`GrepFlood` does not activate for it; if a sibling activates the
-    lane, it blocks here rather than execute beside a partial rewrite, preserving the old whole-line
-    verdict.
-    """
-    cmd = occ.command
-    if (inner := cmd.unwrapped).executable != "grep" or cmd.span is None:
-        return inner.executable == "grep"
-    return grep_to(evt, occ) is None
+        return any(occ.command.unwrapped.executable == "grep" and occ.prev_op != "|" for occ in cl.occurrences)
 
 
 def grep_block(evt: PreToolUseEvent, cl: CommandLine) -> str:
@@ -657,19 +704,47 @@ def grep_block(evt: PreToolUseEvent, cl: CommandLine) -> str:
     )
 
 
+def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | Rewritten | HookResult | None:
+    """Per-occurrence verdict for the ``visit=`` walk, threading the effective ``cwd``.
+
+    Non-grep occurrences pass (``None``). For a grep, the effective ``cwd`` is trusted only when the
+    walk carried one (``ctx.cwd``), the raw line has no bare ``(`` (the parser flattens subshells, so
+    an untrusted line would leak a ``(cd … )`` cwd into siblings), and no preceding ``cd`` is gated
+    behind ``&&``/``||`` (:func:`~hooks.search_common.conditional_cd_precedes` — the shell may
+    short-circuit it, leaving the grep in the original cwd); declined, every stat lane fails closed
+    rather than falling back to the process cwd. A rewritable grep splices to ``ccx code grep`` when
+    the occurrence is spliceable (else blocks); an unrewritable grep runs verbatim when it is a
+    bounded search (:func:`grep_bounded`) and blocks otherwise. Blocking rides a :class:`HookResult`
+    that aborts the walk, discarding any sibling rewrite.
+    """
+    if occ.command.unwrapped.executable != "grep":
+        return None
+    base = (
+        ctx.cwd
+        if ctx.cwd is not None and "(" not in evt.cmd.line.raw and not conditional_cd_precedes(occ)
+        else None
+    )
+    if (text := grep_to(evt, occ, cwd=base)) is not None:
+        if ctx.spliceable:
+            return Rewritten(text, note=note_text(occ.command.raw, grep_parse(occ, cwd=base)))
+        return evt.block(grep_block(evt, evt.cmd.line))
+    if grep_bounded(occ, cwd=base):
+        return None
+    return evt.block(grep_block(evt, evt.cmd.line))
+
+
 rewrite_command_occurrences(
     only_if=[GrepFlood()],
-    to=grep_to,
-    block_if=grep_block_if,
-    block=grep_block,
-    note=grep_note,
+    visit=grep_visit,
     tests={
         # Rewrite — disk-independent shapes only (repo-wide, `.` widens, include-only). Path→glob
         # shapes classify each operand against the filesystem, so they live in test_grep_guards.py
         # (TestGrepPathGlobbing) where a tmp tree and pinned cwd make the classification deterministic.
         Input(command="grep -rn foo"): Rewrite(pattern="code grep foo"),  # recursive, no path → repo-wide
+        Input(command="grep --recursive foo ."): Rewrite(pattern="code grep foo"),  # long recursive no-op
         Input(command="grep -rn --include='*.go' foo ."): Rewrite(pattern="--glob '*.go'"),  # `.` + include → repo-wide glob
-        Input(command="grep -rl foo ."): Rewrite(pattern="code grep foo"),  # -l is a no-op; `.` → repo-wide
+        Input(command="grep -A 7 foo"): Rewrite(pattern="-A=7"),  # native context count preserved
+        Input(command="grep -rl foo ."): Rewrite(pattern="code grep foo"),  # probe-specific -l suffix lives in pytest
         Input(command="grep -rn foo . src/"): Rewrite(pattern="code grep foo"),  # `.` sibling widens to whole repo, no --glob
         Input(command="echo x; grep -r foo ."): Rewrite(pattern="echo x; "),  # splice only grep; sibling stays byte-identical
         # Regex rewrites — a validator-cleared pattern maps onto `ccx code grep --regex` (disk-independent
@@ -682,6 +757,7 @@ rewrite_command_occurrences(
         Input(command="grep 'x\\(ab\\)\\+' ."): Rewrite(pattern="--regex"),  # BRE group + `\+` → `(ab)+` on the rg engine
         # Block — unmappable shapes fall back to the message:
         Input(command="grep -rnC3 foo src/"): Block(),  # value short glued into a bundle
+        Input(command="grep --recursive=oops foo ."): Block(),  # native grep rejects a value on a no-value long
         Input(command="grep -P 'x(?=y)' ."): Block(),  # PCRE (-P) never maps; `.` is a dir, not a bounded file
         Input(command="grep 'a^b' ."): Block(),  # BRE mid-pattern `^`: literal in grep, an anchor in Rust → not rewritable
         Input(command="grep -F 'foo.*' ."): Block(),  # -F forces literal; `foo.*` isn't ccx-literal-safe → no --regex flip
@@ -718,9 +794,39 @@ rewrite_command_occurrences(
         Input(command="echo x > gen.json; grep -i points gen.json"): Allow(),  # created earlier in the compound
         Input(command="grep -i err app.log | head"): Allow(),  # a downstream pipe no longer disqualifies
         Input(command="cd sub && grep foo notes.json"): Allow(),  # cd-relative data file
+        # Downstream-bounded lane: a direct grep whose output pipeline ends in a head/tail/wc sink runs
+        # verbatim — the sink caps context, ccx is never spliced into a pipe. Flip of a former Block row.
+        Input(command="grep -r foo src/ | head"): Allow(),
+        Input(command="grep -r x . | head -n 20"): Allow(),  # in-cap sink count keeps the lane
+        Input(command="grep -r x . | head -n 100000"): Block(),  # over-cap line count re-opens the flood
+        Input(command="grep -r x . | head -c 100000000"): Block(),  # a 100MB byte count is no sink
+        Input(command="grep -r x . | tail -c 100000000"): Block(),  # tail counts cap the same way
+        Input(command="grep --line-buffered -r foo . | head"): Allow(),  # long cosmetic boolean parses; the sink bounds
+        # ANY intermediate `tee` defeats the sink — a deliberate blanket, not just terminal devices.
+        Input(command="grep -r x . | head"): Allow(),  # tee neighbor: same sink, no intermediate stage
+        Input(command="grep -r x . | tee /tmp/out | head"): Block(),  # file-target tee blocks too
+        Input(command="grep -r x . | tee /dev/tty | head"): Block(),
+        Input(command="grep -r x . | tee /dev/stderr | wc -l"): Block(),
+        Input(command="grep -r x . | wc --files0-from=-"): Block(),  # wc reading a file list fans out
+        # A pipe never launders a flood: a non-bounding terminal keeps the block.
+        Input(command="grep -r foo src/ | grep -v x"): Block(),  # terminal is grep -v (a filter), not a sink
+        Input(command="grep -rn foo . | sort"): Block(),  # sort is not a bounding sink → no rewrite into the pipe
+        Input(command="grep -r foo . | tail -f"): Block(),  # tail -f follows forever → unbounded
+        Input(command="grep -rn foo . | tail -n +5"): Block(),  # tail -n +5 prints from an offset to EOF → unbounded
+        Input(command="grep -r foo ~/.claude/projects/ | head"): Block(pattern="cc-transcript"),  # transcript: policy over the sink
+        # The incident regression, verbatim: two direct greps piped through filters to a terminal `head`.
+        Input(
+            command="cd ~/Code/cc-skills && grep -rl 'wrangler' plugins docs tools plugin 2>/dev/null "
+            "| grep -v node_modules | head; grep -rl 'deploy.sh' plugins docs 2>/dev/null | head"
+        ): Allow(),
         # Per-occurrence blocks — one qualifying grep can't launder a tree-wide/recursive/no-operand grep:
-        Input(command="grep -r foo src/ | head"): Block(),  # recursive tree search; the pipe doesn't exempt it
-        Input(command="grep -i points data.json && grep foo ."): Block(),  # data-file grep + a `.` tree search
+        Input(command="grep -i points data.json && grep foo ."): Rewrite(
+            pattern="grep -i points data.json && "
+        ),  # bounded data-file sibling stays byte-identical while the tree grep splices
+        Input(command="grep -c foo data.json && grep -rn bar ."): Rewrite(
+            pattern="grep -c foo data.json && "
+        ),  # bounded output sibling no longer vetoes the splice
+        Input(command="grep -c foo src/ && grep -rn bar ."): Block(),  # flooding sibling still vetoes the line
         Input(command="grep -r foo logs.json"): Block(),  # -r forfeits the data-ext textual escape
         Input(command="echo hi; grep -o foo"): Block(),  # no operand in a compound → not bounded
         Input(command="echo x; grep -c foo ."): Block(),  # one flooding grep blocks the whole compound line
@@ -729,13 +835,14 @@ rewrite_command_occurrences(
         Input(command="grep -oHnb . AGENTS.md"): Block(),  # -oHnb = filename/line/byte prefixes per match on a source file
         # Holes closed by the adversarial review — env injection, sink-with-operands, flag-supplied patterns:
         Input(command="grep -q localhost /etc/hosts | grep -r . /"): Block(),  # sink grep w/ operands ignores stdin, recurses /
+        Input(command="GREP_OPTIONS=-v grep foo ."): Block(),  # rewriting must not delete the env prefix's semantics
         Input(command="GREP_OPTIONS=-r grep -o needle dir.json"): Block(),  # GREP_OPTIONS injects -r past the parser
         Input(command="grep --regexp= data.json"): Block(),  # empty flag-supplied pattern floods every line
         Input(command="grep -e '' data.json"): Block(),  # empty -e pattern floods every line
         Input(command="grep -f pats.txt data.json"): Block(),  # -f pattern file is uninspectable
-        # Existing block neighbors — each unpiped grep is judged on its own operands; a nonexistent
-        # source-ext target isn't bounded, so the line still blocks:
-        Input(command="grep foo ghost.py | wc -l"): Block(),
+        # A `wc` terminal bounds the pipeline, so the nonexistent-source-ext grep runs verbatim (flip of a
+        # former Block row); the `&&` neighbor has no bounding sink, so it still blocks.
+        Input(command="grep foo ghost.py | wc -l"): Allow(),
         Input(command="grep foo ghost && echo done"): Block(),
         # A `~`/`$` operand forfeits the rewrite but NOT the block — unverifiable → flood.
         Input(command="grep foo ~/notes.md"): Block(pattern="floods context"),
@@ -752,7 +859,7 @@ rewrite_command_occurrences(
         # Per-occurrence: the `$d` grep forfeits its rewrite, the `.` tree search floods → the line blocks.
         Input(command="grep foo $d/host.go; grep bar ."): Block(pattern="floods context"),
         # Mixed transcript + flood: the block carries BOTH the default steer and the cc-transcript line.
-        Input(command="grep foo ~/.claude/projects/main.jsonl; grep bar ."): Block(pattern="cc-transcript"),
+        Input(command="grep foo ~/.claude/projects/main.jsonl; grep -v bar ."): Block(pattern="cc-transcript"),
         Input(command="sudo grep foo ."): Block(),  # Approved wrapper-transparency decision (2026-07-17).
         Input(command="timeout 10 grep foo ."): Block(),  # Approved wrapper-transparency decision (2026-07-17).
         # Existing Allow neighbors — condition unchanged (piped grep, non-grep, ccx exec):

@@ -16,25 +16,31 @@ from captain_hook import (
     Input,
     PreToolUseEvent,
     Rewrite,
+    Rewritten,
     rewrite_command_occurrences,
 )
 
-from .common import LARGE_READ_BYTES, LITERAL_SAFE, carries_expansion
+from .common import LARGE_READ_BYTES, LITERAL_SAFE, carries_expansion, ccx_supports
 from .search_common import (
     CONTEXT_SHORT,
     GrepCall,
     NON_SOURCE_EXTS,
     build_ccx_grep,
+    conditional_cd_precedes,
+    downstream_allowed,
     grep_glob,
     has_command_substitution,
     is_transcript_path,
     note_text,
     path_blocked,
+    resolve_operand,
+    resolved_is_dir,
     search_block,
     unquote,
 )
 
 if TYPE_CHECKING:
+    from captain_hook import HookResult, WalkContext
     from cc_transcript.command import Command, Occurrence
 
 
@@ -60,10 +66,35 @@ RG_BOOLEAN_LONG = frozenset(
         "files-without-match",
         "json",
         "only-matching",
+        # Cosmetic/match-mode booleans (long spellings of RG_BOOLEAN_SHORT). The flood family
+        # (`--hidden`, `--no-ignore*`, `--unrestricted`) stays absent — it must keep gating to None.
+        "ignore-case",
+        "word-regexp",
+        "line-number",
+        "no-line-number",
+        "case-sensitive",
+        "smart-case",
+        "with-filename",
+        "no-filename",
+        "invert-match",
+        "line-regexp",
+        "fixed-strings",
+        "text",
+        "quiet",
+        "null",
+        "heading",
+        "no-heading",
+        "line-buffered",
     }
 )
 
 RG_OUTPUT_BOUNDED_LONG = frozenset({"count", "count-matches", "files-with-matches", "files-without-match"})
+
+# Long flags rg's rewrite parser reads that take no value: rg errors on `--files-with-matches=oops`,
+# so an attached value declines the rewrite instead of silently discarding it.
+RG_NO_VALUE_LONG = frozenset(
+    {"ignore-case", "word-regexp", "fixed-strings", "files-with-matches", "line-number", "no-line-number"}
+)
 
 RG_OP_VALUE_LONG = frozenset(
     {
@@ -143,7 +174,7 @@ def rg_operands(cmd: Command) -> list[str] | None:
     return positionals
 
 
-def bounded_file_rg(cmd: Command, *, sink: bool = False) -> bool:
+def bounded_file_rg(cmd: Command, *, sink: bool = False, cwd: Path | None = None) -> bool:
     """Report whether one ``rg`` statement is a bounded explicit-file search.
 
     The no-stat lane preserves rg's data-file escape: explicit :data:`NON_SOURCE_EXTS` operands pass
@@ -152,49 +183,85 @@ def bounded_file_rg(cmd: Command, *, sink: bool = False) -> bool:
     and list-only flags waive the size cap, but never the regular-file requirement. Because rg recurses
     by default, a directory, glob, missing operand, or operand-less unpiped rg is unbounded. ``-o``,
     ``--json``, and ``RIPGREP_CONFIG_PATH`` forfeit both lanes because they can multiply output or inject
-    unseen flags.
+    unseen flags. An unknown flag qualifies only on an operand-less pipe sink; the lexer finishes its
+    walk so a later path can never be hidden by that flag. Numeric ``-m``/``--max-count`` caps matching
+    lines per operand but retains the stat lane's size cap because one minified matching line can still
+    be megabytes; the no-stat data-ext lane retains that residual long-line exposure.
     """
     if "RIPGREP_CONFIG_PATH" in cmd.env_dict:
         return False
-    if (operands := rg_operands(cmd)) is None:
-        return sink
+    positionals: list[str] = []
+    pattern_from_flag = unknown_flag = max_count = invalid_max_count = False
     output_bounded = only_matching = json = False
     i, n = 0, len(cmd.args)
     while i < n:
         a = cmd.args[i]
         if a == "--":
+            positionals.extend(cmd.args[i + 1 :])
             break
         if a == "-" or not a.startswith("-"):
+            positionals.append(a)
             i += 1
             continue
         if a.startswith("--"):
-            name, sep, _ = a[2:].partition("=")
+            name, sep, val = a[2:].partition("=")
             output_bounded = output_bounded or name in RG_OUTPUT_BOUNDED_LONG
             only_matching = only_matching or name == "only-matching"
             json = json or name == "json"
-            if name in {"regexp", "file"} | RG_OP_VALUE_LONG and not sep:
-                i += 1
+            if name in ("regexp", "file"):
+                pattern_from_flag = True
+                if not sep:
+                    i += 1
+            elif name in RG_OP_VALUE_LONG:
+                if name == "max-count":
+                    count = unquote(val) if sep else cmd.args[i + 1] if i + 1 < n else ""
+                    max_count = max_count or count.isdigit()
+                    invalid_max_count = invalid_max_count or not count.isdigit()
+                if not sep:
+                    i += 1
+            elif name not in RG_BOOLEAN_LONG:
+                unknown_flag = True
             i += 1
             continue
         body = a[1:]
         head = body[0]
-        if head in ("e", "f") or head in RG_OP_VALUE_SHORT:
+        if head in ("e", "f"):
+            pattern_from_flag = True
             if len(a) == 2:
                 i += 1
-        else:
+        elif head in RG_OP_VALUE_SHORT:
+            if head == "m":
+                count = unquote(body[1:]) if len(a) > 2 else cmd.args[i + 1] if i + 1 < n else ""
+                max_count = max_count or count.isdigit()
+                invalid_max_count = invalid_max_count or not count.isdigit()
+            if len(a) == 2:
+                i += 1
+        elif all(ch in RG_BOOLEAN_SHORT for ch in body):
             output_bounded = output_bounded or "c" in body or "l" in body
             only_matching = only_matching or "o" in body
+        else:
+            unknown_flag = True
         i += 1
+    operands = positionals if pattern_from_flag else positionals[1:] if positionals else []
+    if unknown_flag:
+        return sink and not operands
+    if invalid_max_count:
+        return False
     if only_matching or json:
         return False
     if not operands:
         return sink
+    if max_count and any(p.endswith("/") or has_magic(p) or resolved_is_dir(p, cwd) for p in operands):
+        return False
     if all(not p.endswith("/") and Path(p).suffix.lower() in NON_SOURCE_EXTS for p in operands):
         return True
     if any(has_magic(p) for p in operands):
         return False
+    resolved = [resolve_operand(p, cwd) for p in operands]
+    if any(r is None for r in resolved):
+        return False
     try:
-        stats = [Path(p).stat() for p in operands]
+        stats = [r.stat() for r in resolved]
     except OSError:
         return False
     if not all(S_ISREG(result.st_mode) for result in stats):
@@ -221,21 +288,22 @@ def rg_occurrence_expands(cmd: Command) -> bool:
 
 
 def fold_expand(current: str, cand: str) -> str:
-    """Fold a context count into the running ``--expand`` max — several ``-A/-B/-C`` widen to their superset."""
+    """Fold a context count into the old-binary ``--expand`` fallback max."""
     return cand if not current else str(max(int(current), int(cand)))
 
 
-def rg_parse(occ: Occurrence) -> GrepCall | None:
+def rg_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | None:
     """Parse one direct, unpiped ``rg`` occurrence into its ccx-rewritable shape.
 
     Mirrors :func:`grep_parse` over ripgrep's grammar with its own DROP table
-    (:data:`RG_DROP_SHORT`). ``-A/-B/-C``/``--context`` map to ``--expand=<count>`` with the count
-    preserved (grep drops it); ``-g/--glob`` fills the include slot, gated to a slash-free basename
-    glob (rg globs are gitignore-style — only a basename composes faithfully). Any other long flag,
-    a repeated ``-e``, a value-taking short, a regex pattern, or an out-of-repo path blocks.
+    (:data:`RG_DROP_SHORT`). ``-A/-B/-C``/their long forms map to the same native ccx flags when
+    available, with ``--expand`` retained for old binaries; ``-g/--glob`` fills the include slot,
+    gated to a slash-free basename glob (rg globs are gitignore-style — only a basename composes
+    faithfully). Any other long flag, a repeated ``-e``, a value-taking short, a regex pattern, or an
+    out-of-repo path blocks.
     """
     cmd = occ.command
-    if occ.prev_op == "|" or cmd.executable != "rg":
+    if occ.prev_op == "|" or cmd.executable != "rg" or cmd.env:
         return None
     args = cmd.args
     pattern: str | None = None
@@ -243,6 +311,7 @@ def rg_parse(occ: Occurrence) -> GrepCall | None:
     include: str | None = None
     positionals: list[str] = []
     expand = ""
+    context_args: list[tuple[str, str]] = []
     ignore_case = word = dropped_l = dropped_fixed = False
     i, n = 0, len(args)
     while i < n:
@@ -256,6 +325,8 @@ def rg_parse(occ: Occurrence) -> GrepCall | None:
             continue
         if a.startswith("--"):
             name, sep, val = a[2:].partition("=")
+            if sep and name in RG_NO_VALUE_LONG:
+                return None  # rg rejects `--files-with-matches=oops` — never rewrite past its error
             if name == "ignore-case":
                 ignore_case = True
             elif name == "word-regexp":
@@ -270,6 +341,7 @@ def rg_parse(occ: Occurrence) -> GrepCall | None:
                     i += 1
                 else:
                     return None
+                context_args.append((f"--{name}", cand))
                 expand = fold_expand(expand, cand)
             elif name == "glob":
                 if include is not None:
@@ -319,6 +391,7 @@ def rg_parse(occ: Occurrence) -> GrepCall | None:
                 i += 1
             else:
                 return None
+            context_args.append((f"-{head}", cand))
             expand = fold_expand(expand, cand)
         elif head == "e":
             e_count += 1
@@ -370,52 +443,62 @@ def rg_parse(occ: Occurrence) -> GrepCall | None:
     if pattern.startswith("-") or "+" in pattern or not LITERAL_SAFE.match(pattern):
         return None
     for p in paths:
-        if path_blocked(p):
+        if path_blocked(p, cwd=cwd):
             return None
-    glob = grep_glob(paths, include)
+    glob = grep_glob(paths, include, cwd=cwd)
     if glob is None:
         return None
-    return GrepCall(pattern, glob, expand, ignore_case, word, dropped_l, dropped_fixed, count_dropped=False)
+    native_context = bool(context_args) and ccx_supports("code", "grep", flag="--after-context")
+    return GrepCall(
+        pattern,
+        glob,
+        "" if native_context else expand,
+        tuple(context_args) if native_context else (),
+        ignore_case,
+        word,
+        dropped_l,
+        dropped_fixed,
+        count_dropped=False,
+    )
 
 
-def rg_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
-    if rg_occurrence_expands(occ.command):
+def rg_to(evt: BaseHookEvent, occ: Occurrence, *, cwd: Path | None = None) -> str | None:
+    # An rg whose output feeds a pipe is never rewritten — ccx output must not be spliced into a pipe.
+    if occ.next_op == "|" or rg_occurrence_expands(occ.command):
         return None
-    parsed = rg_parse(occ)
+    parsed = rg_parse(occ, cwd=cwd)
     return build_ccx_grep(parsed) if parsed is not None else None
 
 
-def rg_note(evt: BaseHookEvent, pairs: list[tuple[Occurrence, str]]) -> str:
-    return "\n".join(
-        note_text(occ.command.raw, parsed)
-        for occ, _ in pairs
-        if (parsed := rg_parse(occ)) is not None
+def rg_bounded(occ: Occurrence, *, cwd: Path | None) -> bool:
+    """Whether one rg occurrence runs verbatim — bounded by its own operands or by a downstream sink.
+
+    Mirrors :func:`~hooks.grep_guards.grep_bounded`: :func:`bounded_file_rg` proves its own operands
+    bounded (stats resolved against the effective ``cwd``), and
+    :func:`~hooks.search_common.downstream_allowed` proves its output pipeline terminates in a bounding
+    sink (``head``/``tail``/``wc``), so the exact command runs verbatim rather than splicing ccx into the
+    pipe. The downstream lane fails closed on unparseable operands and keeps the policy screens — a
+    session transcript, hidden-segment dependency path (``.venv/…``), or git-ignored/out-of-repo operand
+    blocks with its steer regardless of the sink, since that is policy, not boundedness.
+    """
+    inner = occ.command.unwrapped
+    return bounded_file_rg(inner, sink=occ.prev_op == "|", cwd=cwd) or downstream_allowed(
+        occ, rg_operands(inner), cwd=cwd
     )
 
 
 class RgFlood(CustomCommandLineCondition):
-    """Match a line carrying an actionable unpiped ``rg`` occurrence.
+    """Match a line carrying any unpiped ``rg`` occurrence.
 
-    Direct rewritable rgs activate the splice lane; an unrewritable rg activates the block lane unless
-    it is a bounded explicit-file/data-file search. Matching through ``cmd.unwrapped`` makes wrapper
-    prefixes transparent to the condition, while :func:`rg_to` stays direct-only so a qualifying
-    wrapped rg blocks instead of dropping its wrapper.
+    A cheap structural gate — cwd-blind, so it cannot judge boundedness or rewritability (those turn on
+    the effective cwd, which only the walk sees). :func:`rg_visit` is authoritative: it returns a verdict
+    per occurrence, and a line whose every rg is a bounded search yields all-``None`` (a genuine allow).
+    Matching through ``cmd.unwrapped`` keeps wrapper prefixes transparent; a pure ``… | rg`` filter (no
+    unpiped rg) stays outside the registration entirely.
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        rgs = [occ for occ in cl.occurrences if occ.command.unwrapped.executable == "rg"]
-        return any(occ.prev_op != "|" for occ in rgs) and any(
-            (occ.prev_op != "|" and rg_to(evt, occ) is not None)
-            or not bounded_file_rg(occ.command.unwrapped, sink=occ.prev_op == "|")
-            for occ in rgs
-        )
-
-
-def rg_block_if(evt: BaseHookEvent, occ: Occurrence) -> bool:
-    cmd = occ.command
-    if (inner := cmd.unwrapped).executable != "rg" or cmd.span is None:
-        return inner.executable == "rg"
-    return rg_to(evt, occ) is None
+        return any(occ.command.unwrapped.executable == "rg" and occ.prev_op != "|" for occ in cl.occurrences)
 
 
 def rg_block(evt: PreToolUseEvent, cl: CommandLine) -> str:
@@ -439,24 +522,50 @@ def rg_block(evt: PreToolUseEvent, cl: CommandLine) -> str:
     )
 
 
+def rg_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | Rewritten | HookResult | None:
+    """Per-occurrence verdict for the ``visit=`` walk, threading the effective ``cwd``.
+
+    Mirrors :func:`~hooks.grep_guards.grep_visit`. Non-rg occurrences pass (``None``). For an rg, the
+    effective ``cwd`` is trusted only when the walk carried one (``ctx.cwd``), the raw line has no bare
+    ``(`` (the parser flattens subshells, so an untrusted line would leak a ``(cd … )`` cwd into
+    siblings), and no preceding ``cd`` is gated behind ``&&``/``||``
+    (:func:`~hooks.search_common.conditional_cd_precedes` — the shell may short-circuit it); declined,
+    every stat lane fails closed rather than falling back to the process cwd. A rewritable rg splices
+    to ``ccx code grep`` when the occurrence is spliceable (else blocks); an unrewritable rg runs
+    verbatim when it is a bounded search (:func:`rg_bounded`) and blocks otherwise. Blocking rides a
+    :class:`HookResult` that aborts the walk, discarding any sibling rewrite.
+    """
+    if occ.command.unwrapped.executable != "rg":
+        return None
+    base = (
+        ctx.cwd
+        if ctx.cwd is not None and "(" not in evt.cmd.line.raw and not conditional_cd_precedes(occ)
+        else None
+    )
+    if (text := rg_to(evt, occ, cwd=base)) is not None:
+        if ctx.spliceable:
+            return Rewritten(text, note=note_text(occ.command.raw, rg_parse(occ, cwd=base)))
+        return evt.block(rg_block(evt, evt.cmd.line))
+    if rg_bounded(occ, cwd=base):
+        return None
+    return evt.block(rg_block(evt, evt.cmd.line))
+
+
 rewrite_command_occurrences(
     only_if=[RgFlood()],
-    to=rg_to,
-    block_if=rg_block_if,
-    block=rg_block,
-    note=rg_note,
+    visit=rg_visit,
     tests={
         # Rewrite — disk-independent shapes only (repo-wide, glob-only, context). Path→glob shapes
         # classify each operand against the filesystem, so they live in test_rg_guards.py.
         Input(command="rg foo"): Rewrite(pattern="code grep foo"),  # no path → repo-wide
         Input(command="rg -n foo"): Rewrite(pattern="code grep foo"),  # -n cosmetic
-        Input(command="rg -nl foo"): Rewrite(pattern="code grep foo"),  # -l disclosed, dropped
+        Input(command="rg -nl foo"): Rewrite(pattern="code grep foo"),  # probe-specific -l suffix lives in pytest
         Input(command="rg -F foo"): Rewrite(pattern="code grep foo"),  # -F disclosed (ccx matches literally)
         Input(command="rg -g '*.go' foo"): Rewrite(pattern="--glob '*.go'"),  # basename glob → include
-        Input(command="rg -C 3 foo"): Rewrite(pattern="--expand=3"),  # context count preserved
-        Input(command="rg -A 20 foo"): Rewrite(pattern="--expand=20"),  # count carried through, not dropped
-        Input(command="rg -A 2 -B 5 TODO"): Rewrite(pattern="--expand=5"),  # several context flags → max, not last-wins
-        Input(command="rg -B 5 -A 2 TODO"): Rewrite(pattern="--expand=5"),  # order-independent superset
+        Input(command="rg -C 3 foo"): Rewrite(pattern="-C=3"),  # native context count preserved
+        Input(command="rg -A 20 foo"): Rewrite(pattern="-A=20"),  # native context count preserved
+        Input(command="rg -A 2 -B 5 TODO"): Rewrite(pattern="-A=2 -B=5"),  # native flags preserve both counts
+        Input(command="rg -B 5 -A 2 TODO"): Rewrite(pattern="-B=5 -A=2"),  # native flag order preserved
         Input(command="rg --color always plugin"): Rewrite(pattern="code grep plugin"),  # --color eats its space-form value
         Input(command="rg --color=always plugin"): Rewrite(pattern="code grep plugin"),  # =glued --color still no-ops
         Input(command="printf 'left  side'; rg foo"): Rewrite(pattern="printf 'left  side'; "),
@@ -470,14 +579,35 @@ rewrite_command_occurrences(
         Input(command="rg -e a -e b ."): Block(),  # multiple -e
         Input(command="rg -m 5 foo ."): Block(),  # -m takes a value
         Input(command="rg -d 1 app.log"): Block(),  # -d (max-depth) takes a value — its 1 must not leak an exemption
+        Input(command="rg --files-with-matches=oops foo"): Block(),  # rg rejects a value on a no-value long
         Input(command="rg --files"): Block(pattern="ccx repo find"),  # file listing → repo find
         Input(command="rg foo /etc/hosts"): Allow(),  # deliberate flip: bounded regular-file stat lane
-        # The verbatim incident command: hidden `.venv` segment + a pipe → deterministic block, no stat.
+        # The verbatim incident command: a hidden `.venv` segment is a policy steer, so the downstream
+        # `head -40` never launders it — the dependency-source block stands, no stat.
         Input(
             command='rg -n "class ToolUse" .venv/lib/python3.13/site-packages/cc_transcript/ -A 20 | head -40'
         ): Block(pattern="ccx repo locate"),
-        Input(command="rg foo file.py | wc -l"): Block(),  # pipe-source parity with grep
+        # The amendment is narrow: a non-hidden operand under the same bounded terminal runs verbatim.
+        Input(command="rg -n foo src/ -A 20 | head -40"): Allow(),
+        # Unparseable operands fail the downstream lane closed: `--hidden` makes rg_operands None, so
+        # the sink cannot launder the `.venv/` target past the dependency-source steer.
+        Input(command="rg --hidden foo .venv/ | head"): Block(pattern="ccx repo locate"),
+        # Long cosmetic/match-mode booleans parse like their short forms, so the bounded sink allows;
+        # the flood family (`--hidden`/`--no-ignore*`/`--unrestricted`) stays out of the set and gated.
+        Input(command="rg --fixed-strings foo internal/ | head"): Allow(),
+        Input(command="rg --line-number foo internal/ | head"): Allow(),
+        Input(command="rg --smart-case foo . | head -20"): Allow(),
+        Input(command="rg --no-ignore foo . | head"): Block(pattern="ccx repo locate"),  # sink never launders it
+        # Downstream-bounded lane: a `wc`/`head`/`tail` terminal caps context, so the direct rg runs
+        # verbatim (flip of a former Block row); a non-bounding terminal (`cat`) still blocks.
+        Input(command="rg foo file.py | wc -l"): Allow(),
+        Input(command="rg -l foo | cat"): Block(),  # cat is not a bounding sink → the flood still blocks
         Input(command="rg -c foo ."): Block(),  # count is bounded only over explicit regular files
+        Input(command="rg -c foo data.json && rg bar ."): Rewrite(
+            pattern="rg -c foo data.json && "
+        ),  # bounded sibling stays byte-identical while the tree rg splices
+        Input(command="rg -c foo src/ && rg bar ."): Block(),  # flooding sibling still vetoes the line
+        Input(command="RIPGREP_CONFIG_PATH=rg.conf rg foo ."): Block(),  # rewriting must not delete the env prefix
         Input(command="sudo rg foo ."): Block(),  # wrapper-transparent condition; direct-only rewrite
         # Allow — piped sink (rg consumes stdin), non-source data-file targets, ccx exec pass-through:
         Input(command="cat f | rg foo"): Allow(),
@@ -490,8 +620,8 @@ rewrite_command_occurrences(
         Input(command="rg -n foo $d/host.go"): Block(pattern="floods context"),
         Input(command="rg foo $d/app.log"): Allow(),  # data-ext expansion operand stays exempt (suffix, no stat)
         Input(command="rg foo ~/.claude/projects/"): Block(pattern="cc-transcript"),  # transcript → cc-transcript steer
-        # Mixed transcript + flood: the sibling `rg bar .` fires the line; the block carries the cc-transcript line too.
-        Input(command="rg foo ~/.claude/projects/main.jsonl; rg bar ."): Block(pattern="cc-transcript"),
+        # Mixed transcript + flood: the unrewritable sibling fires; the block carries the cc-transcript line too.
+        Input(command="rg foo ~/.claude/projects/main.jsonl; rg -v bar ."): Block(pattern="cc-transcript"),
         # Substitution drops the `$(…)`/backtick operand → rewrite forfeited; the operand-less rg floods → block.
         Input(command="rg foo $(printf /tmp/target)"): Block(pattern="floods context"),
         Input(command="rg -n foo `printf x`"): Block(pattern="floods context"),
