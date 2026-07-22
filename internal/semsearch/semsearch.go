@@ -20,12 +20,13 @@ type Chunk struct {
 
 // Result is one ranked search hit. Score is the fused, boosted,
 // penalty-adjusted effective score; SemanticScore is the raw cosine
-// similarity (1 − distance) of the chunk embedding to the query.
+// similarity (1 − distance) of the chunk embedding to the query, nil for
+// hits outside the semantic candidate set (semble's None).
 type Result struct {
-	FilePath      string  `json:"file_path"`
-	StartLine     int     `json:"start_line"`
-	EndLine       int     `json:"end_line"`
-	Score         float64 `json:"score"`
-	SemanticScore float64 `json:"semantic_score"`
-	Content       string  `json:"content,omitempty"`
+	FilePath      string   `json:"file_path"`
+	StartLine     int      `json:"start_line"`
+	EndLine       int      `json:"end_line"`
+	Score         float64  `json:"score"`
+	SemanticScore *float64 `json:"semantic_score,omitempty"`
+	Content       string   `json:"content,omitempty"`
 }

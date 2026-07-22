@@ -24,13 +24,14 @@ func TestRankEndToEnd(t *testing.T) {
 		t.Fatalf("got %d results, want 2", len(got))
 	}
 
+	semantic := func(v float64) *float64 { return &v }
 	want := []semsearch.Result{
 		{
 			FilePath:      "session.py",
 			StartLine:     1,
 			EndLine:       2,
 			Score:         0.03934426229508197,
-			SemanticScore: 1.0,
+			SemanticScore: semantic(1.0),
 			Content:       "def login(session): return session",
 		},
 		{
@@ -38,14 +39,15 @@ func TestRankEndToEnd(t *testing.T) {
 			StartLine:     1,
 			EndLine:       2,
 			Score:         0.00967741935483871,
-			SemanticScore: 0.0,
+			SemanticScore: semantic(0.0),
 			Content:       "def unrelated(): pass",
 		},
 	}
 	for i := range want {
 		g, w := got[i], want[i]
 		if g.FilePath != w.FilePath || g.StartLine != w.StartLine || g.EndLine != w.EndLine ||
-			g.Content != w.Content || !almostEqual(g.Score, w.Score) || !almostEqual(g.SemanticScore, w.SemanticScore) {
+			g.Content != w.Content || !almostEqual(g.Score, w.Score) ||
+			g.SemanticScore == nil || !almostEqual(*g.SemanticScore, *w.SemanticScore) {
 			t.Errorf("result[%d] = %+v, want %+v", i, g, w)
 		}
 	}

@@ -88,12 +88,14 @@ func Rank(query string, queryVec []float32, chunks []semsearch.Chunk, vectors []
 	for i, r := range ranked {
 		c := chunks[r.idx]
 		results[i] = semsearch.Result{
-			FilePath:      c.Path,
-			StartLine:     c.StartLine,
-			EndLine:       c.EndLine,
-			Score:         r.score,
-			SemanticScore: semanticScores[r.idx],
-			Content:       c.Content,
+			FilePath:  c.Path,
+			StartLine: c.StartLine,
+			EndLine:   c.EndLine,
+			Score:     r.score,
+			Content:   c.Content,
+		}
+		if s, ok := semanticScores[r.idx]; ok {
+			results[i].SemanticScore = &s
 		}
 	}
 	return results
