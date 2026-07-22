@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/backend"
@@ -49,5 +50,26 @@ func TestFinalizeDefaultOpPassesThrough(t *testing.T) {
 	}
 	if got != in {
 		t.Errorf("Finalize(OpFind) = %q, want %q", got, in)
+	}
+}
+
+func TestFinalizeSembleScoreLabels(t *testing.T) {
+	in := readFixture(t, "semble_input.json")
+	for _, tt := range []struct {
+		op   backend.Op
+		want string
+	}{
+		{backend.OpSearch, "(score=0.48)"},
+		{backend.OpRelated, "(cos=0.48)"},
+	} {
+		t.Run(string(tt.op), func(t *testing.T) {
+			got, err := Finalize(tt.op, in, backend.Args{})
+			if err != nil {
+				t.Fatalf("Finalize(%s): %v", tt.op, err)
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("Finalize(%s) = %q, want score label %q", tt.op, got, tt.want)
+			}
+		})
 	}
 }

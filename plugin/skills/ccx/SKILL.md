@@ -31,11 +31,12 @@ must be a complete set ("every subclass of X", "every module importing Y"), read
 candidate files — bounded views can withhold members, and measured accuracy reversed
 on exactly those enumeration tasks.
 
-The MCP tools mirror the ccx query surface: `mcp__cc-context__ccx_repo_overview`,
-`mcp__cc-context__ccx_code_search`, `mcp__cc-context__ccx_code_outline`, and the rest of
+The MCP tools mirror the ccx query surface: `ccx_repo_overview`,
+`ccx_code_search`, `ccx_code_outline`, and the rest of
 the read, search, edit, and diff commands take the same arguments as their CLI counterparts;
-`mcp__cc-context__ccx_exec` and `mcp__cc-context__ccx_exec_tools` mirror `ccx exec`;
-`mcp__cc-context__BashFormat` mirrors `ccx format -- <cmd>`.
+`ccx_exec` and `ccx_exec_tools` mirror `ccx exec`; `BashFormat` mirrors
+`ccx format -- <cmd>`. Clients may show these under a client-assigned `mcp__…__`
+prefix; use the names as listed in the tool inventory.
 Use whichever is available; the workflow is identical. `ccx vcs ship`, `ccx vcs hunks`,
 `ccx vcs show`, `ccx vcs history`, and `ccx repo locate` are CLI-only — there is no MCP
 tool for them.
@@ -109,7 +110,7 @@ ccx code read internal/router/router.go --full
 ### 4. Edit
 
 Write through the same anchor you read with. The hash is the verification: `ccx code
-edit` (MCP: `mcp__cc-context__ccx_code_edit`) refuses to write unless the anchored
+edit` (MCP: the `ccx_code_edit` tool) refuses to write unless the anchored
 content still matches. A span that merely moved re-anchors, applies, and prepends
 `# anchor k2fa: line 40 → 44`; a vanished or ambiguous anchor errors before any write,
 leaving the file byte-identical.
@@ -229,7 +230,7 @@ Near-ties go to the classifier's preferred encoding — a later candidate must b
 earlier one by more than 5% in bytes to displace it. Auto output never exceeds
 compact JSON by bytes; `--format=X` forces one encoder even
 when it's larger. Non-JSON output passes through verbatim and the exit code is
-propagated. Over MCP, `mcp__cc-context__BashFormat` runs the command and returns the
+propagated. Over MCP, the `BashFormat` tool runs the command and returns the
 compacted output — a `format` param forces an encoder.
 
 ### 9. Web pages
@@ -258,7 +259,7 @@ The jina lane also appends the page's links as a `## Links` section, so nav slug
 in outline and search. With no lane available the thin copy is served with a note naming
 what to set or install — set it, then re-run with `--refresh`.
 Fetched pages and their indexes persist in the ccx cache for 24 hours — `--refresh` on
-any of the three bypasses the TTL. The MCP mirrors are `mcp__cc-context__ccx_web_outline`,
+any of the three bypasses the TTL. The MCP mirrors are `ccx_web_outline`,
 `ccx_web_read`, and `ccx_web_search`.
 A one-shot question about a page can skip the loop entirely: spawn the
 `cc-context:web-fetch` agent with the URL and your prompt, and only the cited answer
@@ -268,7 +269,7 @@ enters your context — see [Reader subagents](#reader-subagents).
 
 One question takes one call from steps 1–9. When the work is a pipeline — two or more
 chained calls, output you'd immediately filter or project, a fan-out across files —
-write the pipeline as a script instead. `ccx exec` (MCP: `mcp__cc-context__ccx_exec`)
+write the pipeline as a script instead. `ccx exec` (MCP: the `ccx_exec` tool)
 runs a short Python script in a sandbox where every ccx query op above is an async host
 function, alongside a gated `sh(cmd)` and the tools of every stateless MCP server,
 auto-reflected with no flag needed. Intermediate output stays in the sandbox; only the
@@ -289,7 +290,7 @@ The script comes in as an argument, `--file <path>`, or stdin (`--file -`); `--b
 caps the result size.
 
 - **Print the catalog once per session, before the first script.** `ccx exec
-  --list-tools` (MCP: `mcp__cc-context__ccx_exec_tools`) lists every host function
+  --list-tools` (MCP: the `ccx_exec_tools` tool) lists every host function
   signature — ccx ops, `sh`, and the reflected MCP tools — plus the Python-subset
   rules and a worked example. Once is enough; don't re-run it per script.
 - **The sandbox speaks a Python subset.** No classes, no `match`; imports are limited

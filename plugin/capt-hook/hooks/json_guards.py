@@ -227,8 +227,7 @@ class SeenEmittingJson(CustomCommandLineCondition):
 
 nudge(
     "This command was seen emitting JSON before — wrap it to save tokens: `ccx format -- <cmd>` "
-    "re-encodes JSON stdout to its leanest shape (or mcp__cc-context__BashFormat runs it and "
-    "returns the compacted output).",
+    "re-encodes JSON stdout to its leanest shape.",
     only_if=[Tool("Bash"), SeenEmittingJson()],
     events=Event.PreToolUse,
     max_fires=50,

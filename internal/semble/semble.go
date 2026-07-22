@@ -39,7 +39,8 @@ func CLIArgv(_ context.Context, op backend.Op, a backend.Args) (bin string, argv
 			argv = append(argv, "--max-snippet-lines", strconv.Itoa(a.MaxSnippetLines))
 		}
 		if a.Kind != "" {
-			argv = append(argv, "--content", a.Kind)
+			argv = append(argv, "--content")
+			argv = append(argv, strings.Fields(a.Kind)...)
 		}
 	case backend.OpRelated:
 		// semble's find-related CLI takes file and line as two positional args,
@@ -49,6 +50,13 @@ func CLIArgv(_ context.Context, op backend.Op, a backend.Args) (bin string, argv
 			return "", nil, lerr
 		}
 		argv = append(argv, "find-related", file, strconv.Itoa(line))
+		if a.Path != "" {
+			argv = append(argv, a.Path)
+		}
+		if a.Kind != "" {
+			argv = append(argv, "--content")
+			argv = append(argv, strings.Fields(a.Kind)...)
+		}
 	default:
 		return "", nil, fmt.Errorf("semble: unsupported op %q", op)
 	}
@@ -66,9 +74,10 @@ func CLIArgv(_ context.Context, op backend.Op, a backend.Args) (bin string, argv
 // 3× the last build duration), so a resident session never serves results stale
 // against the working tree. The launch takes no positional path — semble's
 // argument parsing rejects one — and needs none: the per-call repo param
-// (repoOrCwd) selects the repo.
+// (repoOrCwd) selects the repo. The content values index code and docs by
+// default.
 func MCPSpec(_ context.Context) (cmd string, argv []string, err error) {
-	return "uvx", []string{"--from", "semble[mcp]>=0.5", "semble"}, nil
+	return "uvx", []string{"--from", "semble[mcp]>=0.5", "semble", "--content", "code", "docs"}, nil
 }
 
 // MCPTool translates op into a semble MCP tool name and its params.

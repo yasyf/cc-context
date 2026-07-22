@@ -30,14 +30,13 @@ if TYPE_CHECKING:
 # The cc-transcript steer: sent when a gated grep/rg's operands are ALL session transcripts.
 TRANSCRIPT_STEER = (
     "BLOCKED: Session transcripts: use cc-transcript (list / grep / show), never raw grep or "
-    "ccx code grep (mcp__cc-context__ccx_code_grep) — it reads the .jsonl by session/turn/tool "
-    "without flooding context."
+    "ccx code grep — it reads the .jsonl by session/turn/tool without flooding context."
 )
 
 # Appended to the engine's block message on a line mixing a transcript operand with an ordinary flood.
 TRANSCRIPT_APPEND = (
     "Also — the ~/.claude/projects operand is a session transcript: use cc-transcript "
-    "(list / grep / show), not raw grep or ccx code grep (mcp__cc-context__ccx_code_grep)."
+    "(list / grep / show), not raw grep or ccx code grep."
 )
 
 
@@ -83,14 +82,13 @@ class RgIdentAlternation(CustomCommandLineCondition):
 
 
 nudge(
-    "Searching for several identifiers? `ccx code symbol <name>` (or mcp__cc-context__ccx_code_symbol) "
-    "resolves a definition plus its callers in one call; `ccx code grep <text>` groups hits "
-    "compactly. This search still runs — just consider the ccx tools for symbol lookups.",
+    "Searching for several identifiers? `ccx code symbol <name>` resolves a definition plus its callers "
+    "in one call; `ccx code grep 'a|b' --regex` runs them as one search and groups hits compactly.",
     only_if=[Tool("Bash"), RgIdentAlternation()],
     events=Event.PreToolUse,
     tests={
         Input(command="rg 'fooBar|bazQux' src/"): Warn(pattern="ccx code symbol"),
-        Input(command="rg 'Foo|Bar|Baz' ."): Warn(),
+        Input(command="rg 'Foo|Bar|Baz' ."): Warn(pattern="--regex"),
         Input(command="grep 'fooBar|bazQux' src/"): Warn(pattern="ccx code symbol"),
         Input(command="rg TODO"): Allow(),
         Input(command="grep TODO ."): Allow(),
@@ -126,8 +124,7 @@ class NaturalLanguagePhrase(CustomCommandLineCondition):
 
 nudge(
     'Searching for a concept rather than a literal string? `ccx code search "<question>"` '
-    "(or mcp__cc-context__ccx_code_search) runs a semantic search that finds code by intent, "
-    "not exact text. This search still runs — just consider ccx code search for phrase-shaped queries.",
+    "runs a semantic search that finds code by intent, not exact text.",
     only_if=[Tool("Bash"), NaturalLanguagePhrase()],
     events=Event.PreToolUse,
     tests={

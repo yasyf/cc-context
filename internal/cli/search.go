@@ -59,7 +59,7 @@ func newSearchCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&explain, "explain", false, "print the routing decision to stderr")
 	cmd.Flags().IntVarP(&a.K, "k", "k", 0, "max results to return")
 	cmd.Flags().IntVar(&a.MaxSnippetLines, "max-snippet-lines", 10, "max lines of code per result (0 = full chunk)")
-	cmd.Flags().StringVar(&a.Kind, "content", "", "content filter: code|docs|config|all")
+	cmd.Flags().StringVar(&a.Kind, "content", "code docs", "content types to search; several go quoted as one value: --content \"code docs\"; choices code, docs, config, all")
 	cmd.Flags().IntVar(&a.Budget, "budget", 0, "token budget for the output")
 	return cmd
 }

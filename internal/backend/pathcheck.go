@@ -48,6 +48,24 @@ func ResolvePath(op Op, a Args) (Args, string, error) {
 			a.Paths[i] = resolved
 			note.WriteString(resolutionNote)
 		}
+		if a.Scope != "" && !strings.ContainsAny(a.Scope, globMeta) {
+			resolved, resolutionNote, err := resolveLenient(op, a.Scope)
+			if err != nil {
+				if errors.Is(err, ErrPathNotFound) {
+					return a, "", checkScope(op, a.Scope)
+				}
+				return a, "", err
+			}
+			info, err := os.Stat(resolved)
+			if err != nil {
+				return a, "", fmt.Errorf("%s scope %q: %w", op, a.Scope, err)
+			}
+			if info.Mode().IsRegular() {
+				a.Paths = append(a.Paths, resolved)
+				a.Scope = ""
+				note.WriteString(resolutionNote)
+			}
+		}
 		if err := checkScope(op, a.Scope); err != nil {
 			return a, "", err
 		}
@@ -128,7 +146,7 @@ func checkScope(op Op, dir string) error {
 		return fmt.Errorf("%s scope %q: %w", op, dir, err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("%s scope %q: not a directory: %w", op, dir, ErrPathNotFound)
+		return fmt.Errorf("%s scope %q: is a file, not a directory", op, dir)
 	}
 	return nil
 }

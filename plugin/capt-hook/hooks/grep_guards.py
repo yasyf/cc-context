@@ -644,9 +644,9 @@ def grep_block(evt: PreToolUseEvent, cl: CommandLine) -> str:
         "grep",
         grep_operands,
         "BLOCKED: raw `grep` for file search floods context. "
-        "Use `ccx code grep <text>` (mcp__cc-context__ccx_code_grep) / `ccx code search` "
-        "(mcp__cc-context__ccx_code_search) for code; the "
-        "built-in Grep tool or `rg` for literal content in non-source files. "
+        "Use `ccx code grep <text>` / `ccx code search` for code; the built-in Grep tool or `rg` for "
+        "literal content in non-source files. Several terms? One call covers them: "
+        "`ccx code grep 'a|b|c' --regex`. "
         "Simple literal and simple-regex greps auto-rewrite to `ccx code grep`; a grep whose explicit "
         "targets are all data files (`.log`/`.json`/`.yaml`/…) or existing files under the size cap "
         "(count/quiet/list-only greps — `-c`/`-q`/`-l`/`-L` — run regardless of size or existence) runs "

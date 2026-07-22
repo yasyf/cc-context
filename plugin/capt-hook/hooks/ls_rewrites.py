@@ -97,7 +97,7 @@ rewrite_command_occurrences(
     to=ls_to,
     block=(
         "BLOCKED: `ls -R` walks the whole tree into context. "
-        'Use `ccx repo find "<glob>"` (or mcp__cc-context__ccx_repo_find), or the built-in Glob tool, '
+        'Use `ccx repo find "<glob>"`, or the built-in Glob tool, '
         "to find paths by pattern. Plain `ls` and `ls -la` stay allowed."
     ),
     note=ls_note,
@@ -149,7 +149,7 @@ rewrite_command(
     block=(
         "BLOCKED: `ls` of a workspace or module-cache root floods context. "
         "Locating a repo/module? `ccx repo locate <name>`. "
-        "Orienting a project? `ccx repo overview` (or mcp__cc-context__ccx_repo_overview). "
+        "Orienting a project? `ccx repo overview`. "
         "Plain `ls` and `ls <subdir>` inside a project stay allowed."
     ),
     tests={

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -56,11 +57,13 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 	if err != nil {
 		return "", err
 	}
+	start := time.Now()
 	session, err := p.sembleSession(ctx)
 	if err != nil {
 		return "", err
 	}
 	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: params})
+	elapsed := time.Since(start)
 	if err != nil {
 		return "", fmt.Errorf("proxy: call %q: %w", tool, err)
 	}
@@ -68,7 +71,11 @@ func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string
 	if res.IsError {
 		return "", fmt.Errorf("proxy: tool %q failed: %s", tool, text)
 	}
-	return render.Finalize(op, text, a)
+	out, err := render.Finalize(op, text, a)
+	if err != nil {
+		return "", err
+	}
+	return render.WithSlowSearchNote(out, elapsed), nil
 }
 
 // sembleSession returns the resident semble session, connecting it on first use.

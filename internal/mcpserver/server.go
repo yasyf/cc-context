@@ -66,6 +66,7 @@ type EditIn struct {
 // RelatedIn is the input for ccx_code_related.
 type RelatedIn struct {
 	Location string `json:"location" jsonschema:"file:line, or an anchor (\"f.go:12#a3fk\"); a shifted anchor re-resolves by content and prepends a \"# anchor …\" note"`
+	Repo     string `json:"repo,omitempty" jsonschema:"repo root or https git URL; default project root"`
 }
 
 // OutlineIn is the input for ccx_code_outline.
@@ -102,7 +103,7 @@ func readArgs(in ReadIn) backend.Args {
 // SymbolIn is the input for ccx_code_symbol.
 type SymbolIn struct {
 	Name     string `json:"name" jsonschema:"symbol to grok"`
-	Scope    string `json:"scope,omitempty" jsonschema:"directory to scope the lookup to"`
+	Scope    string `json:"scope,omitempty" jsonschema:"directory (directories only) to scope the lookup to"`
 	Body     bool   `json:"body,omitempty" jsonschema:"include the definition body"`
 	Callers  bool   `json:"callers,omitempty" jsonschema:"include the callers list"`
 	Callees  bool   `json:"callees,omitempty" jsonschema:"include the callees list"`
@@ -123,7 +124,7 @@ func symbolArgs(in SymbolIn) backend.Args {
 // DepsIn is the input for ccx_code_deps.
 type DepsIn struct {
 	Path   string `json:"path" jsonschema:"file to analyze"`
-	Scope  string `json:"scope,omitempty" jsonschema:"directory to scope the analysis to"`
+	Scope  string `json:"scope,omitempty" jsonschema:"directory (directories only) to scope the analysis to"`
 	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the output; 0 or omitted = default 2000"`
 }
 
@@ -141,7 +142,7 @@ func depsArgs(in DepsIn) backend.Args {
 type GrepIn struct {
 	Text       string   `json:"text" jsonschema:"text to search for"`
 	Glob       string   `json:"glob,omitempty" jsonschema:"files matching this glob; an anchored dir glob searches even under ignore rules"`
-	Scope      string   `json:"scope,omitempty" jsonschema:"directory to scope to"`
+	Scope      string   `json:"scope,omitempty" jsonschema:"directory (or a single file) to scope to"`
 	IgnoreCase bool     `json:"ignoreCase,omitempty" jsonschema:"case-insensitive; runs the rg/grep engine"`
 	Word       bool     `json:"word,omitempty" jsonschema:"whole words only; runs the rg/grep engine"`
 	Regex      bool     `json:"regex,omitempty" jsonschema:"force regex (auto-detected on zero literal matches); runs the rg/grep engine"`
@@ -156,7 +157,7 @@ type GrepIn struct {
 // FindIn is the input for ccx_repo_find.
 type FindIn struct {
 	Glob   string `json:"glob" jsonschema:"glob to match files against"`
-	Scope  string `json:"scope,omitempty" jsonschema:"directory to scope the search to"`
+	Scope  string `json:"scope,omitempty" jsonschema:"directory (directories only) to scope the search to"`
 	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the output; 0 or omitted = default 2000; unlimited listing is the codeexec lane"`
 }
 
@@ -221,6 +222,8 @@ type BashFormatIn struct {
 	Budget    int      `json:"budget,omitempty" jsonschema:"token budget for the output"`
 }
 
+const serverInstructions = "Single question → the matching ccx_* tool; pipeline, filter, fan-out, or post-processed output → ccx_exec (catalog once via ccx_exec_tools). Producer outputs carry anchors (path:12#a3fk) and web refs (§2.3) — echo them into ccx_code_read or ccx_web_read to chain. Tool names may appear under a client-assigned mcp__…__ prefix; call tools exactly as listed in your client's tool inventory."
+
 // Serve creates the proxy (engines connect lazily on first use) and the
 // resident sandbox engine, registers the static ccx_* tools, and serves them
 // over stdio until ctx is cancelled or the transport closes.
@@ -239,7 +242,7 @@ func Serve(ctx context.Context) error {
 	}
 
 	s := mcp.NewServer(&mcp.Implementation{Name: "cc-context", Version: version.String()}, &mcp.ServerOptions{
-		Instructions: "Single question → the matching ccx_* tool; pipeline, filter, fan-out, or post-processed output → ccx_exec (catalog once via ccx_exec_tools). Producer outputs carry anchors (path:12#a3fk) and web refs (§2.3) — echo them into ccx_code_read or ccx_web_read to chain.",
+		Instructions: serverInstructions,
 	})
 	register(s, p, eng)
 
@@ -259,7 +262,7 @@ var alwaysLoad = mcp.Meta{metaAlwaysLoad: true}
 func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_search",
-		Description: "Search code by intent (semantic), ast-grep structural pattern, or literal text — routed by query kind. Prefer over grep for where/how.",
+		Description: "Search code by intent (semantic), ast-grep structural pattern, or literal text — routed by query kind. Prefer over grep for where/how. Searches cover code+docs; narrowing by content type is CLI-only.",
 		Meta:        alwaysLoad,
 	}, searchHandler(p))
 
@@ -286,9 +289,9 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_related",
-		Description: "Find code semantically related to a file:line — follow-up to a search hit. Takes an anchored location too (f.go:12#a3fk).",
+		Description: "Find code semantically related to a file:line — follow-up to a search hit. Takes an anchored location too (f.go:12#a3fk). Searches cover code+docs; narrowing by content type is CLI-only.",
 	}, handler(p, backend.OpRelated, func(in RelatedIn) backend.Args {
-		return backend.Args{Query: in.Location}
+		return backend.Args{Query: in.Location, Path: in.Repo}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{

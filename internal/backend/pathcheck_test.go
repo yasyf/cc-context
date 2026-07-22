@@ -20,6 +20,7 @@ func TestResolvePath(t *testing.T) {
 		wantErrIs       []error
 		wantNotErrIs    []error
 		wantContains    []string
+		wantNotContains []string
 		wantPathInError bool
 		wantNote        string
 	}{
@@ -268,6 +269,29 @@ func TestResolvePath(t *testing.T) {
 			wantContains: []string{"scope", "missing"},
 		},
 		{
+			name: "grep file scope becomes an operand",
+			op:   OpGrep,
+			setup: func(t *testing.T) (Args, Args) {
+				t.Chdir(t.TempDir())
+				writePathcheckFile(t, "existing.go")
+				writePathcheckFile(t, "scope.go")
+				return Args{Paths: []string{"existing.go"}, Scope: "scope.go"}, Args{Paths: []string{"existing.go", "scope.go"}}
+			},
+		},
+		{
+			name: "grep extensionless file scope becomes a resolved operand",
+			op:   OpGrep,
+			setup: func(t *testing.T) (Args, Args) {
+				t.Chdir(t.TempDir())
+				if err := os.Mkdir("pkg", 0o700); err != nil {
+					t.Fatalf("mkdir fixture: %v", err)
+				}
+				writePathcheckFile(t, "pkg/events.py")
+				return Args{Scope: "pkg/events"}, Args{Paths: []string{"pkg/events.py"}}
+			},
+			wantNote: "# note: pkg/events → pkg/events.py\n",
+		},
+		{
 			name: "deps missing scope",
 			op:   OpDeps,
 			setup: func(t *testing.T) (Args, Args) {
@@ -322,7 +346,7 @@ func TestResolvePath(t *testing.T) {
 			},
 		},
 		{
-			name: "file scope is path-not-found",
+			name: "find file scope reports file not directory",
 			op:   OpFind,
 			setup: func(t *testing.T) (Args, Args) {
 				t.Chdir(t.TempDir())
@@ -330,8 +354,9 @@ func TestResolvePath(t *testing.T) {
 				a := Args{Scope: "a.go"}
 				return a, a
 			},
-			wantErrIs:    []error{ErrPathNotFound},
-			wantContains: []string{"not a directory"},
+			wantNotErrIs:    []error{ErrPathNotFound},
+			wantContains:    []string{"is a file, not a directory"},
+			wantNotContains: []string{"path not found"},
 		},
 		{
 			name: "diff missing scope is exempt",
@@ -379,6 +404,11 @@ func TestResolvePath(t *testing.T) {
 			for _, want := range tt.wantContains {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("error = %q, want containing %q", err, want)
+				}
+			}
+			for _, unwanted := range tt.wantNotContains {
+				if strings.Contains(err.Error(), unwanted) {
+					t.Errorf("error = %q, want not containing %q", err, unwanted)
 				}
 			}
 			if tt.wantPathInError && !strings.Contains(err.Error(), got.Path) {

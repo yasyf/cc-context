@@ -81,8 +81,8 @@ rewrite_command_occurrences(
     to=sed_to,
     block=(
         "BLOCKED: `sed -n A,Bp <file>` is a line-range dump. "
-        "Use `ccx code read <file> --section A-B` (or mcp__cc-context__ccx_code_read) — it returns the "
-        "same lines with structure. Escape hatch: pipe it (`cat <file> | sed -n 'A,Bp'`)."
+        "Use `ccx code read <file> --section A-B` — it returns the same lines with structure. "
+        "Escape hatch: pipe it (`cat <file> | sed -n 'A,Bp'`)."
     ),
     note=sed_note,
     tests={

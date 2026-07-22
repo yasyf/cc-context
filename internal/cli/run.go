@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -52,9 +53,15 @@ func runSemble(ctx context.Context, op backend.Op, a backend.Args) (string, erro
 	if err != nil {
 		return "", err
 	}
+	start := time.Now()
 	out, err := render.RunCLI(ctx, bin, argv)
+	elapsed := time.Since(start)
 	if err != nil {
 		return "", err
 	}
-	return render.Finalize(op, out, a)
+	out, err = render.Finalize(op, out, a)
+	if err != nil {
+		return "", err
+	}
+	return render.WithSlowSearchNote(out, elapsed), nil
 }

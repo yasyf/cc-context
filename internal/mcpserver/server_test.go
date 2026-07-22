@@ -178,6 +178,67 @@ func TestGrepToolSchemaHasEngineFields(t *testing.T) {
 	}
 }
 
+func TestScopeSchemaDescriptions(t *testing.T) {
+	cs := connectTestServer(t)
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	want := map[string]string{
+		"ccx_code_symbol":  `"description":"directory (directories only) to scope the lookup to"`,
+		"ccx_code_deps":    `"description":"directory (directories only) to scope the analysis to"`,
+		"ccx_code_grep":    `"description":"directory (or a single file) to scope to"`,
+		"ccx_code_related": `"description":"repo root or https git URL; default project root"`,
+		"ccx_repo_find":    `"description":"directory (directories only) to scope the search to"`,
+	}
+	for _, tool := range res.Tools {
+		description, ok := want[tool.Name]
+		if !ok {
+			continue
+		}
+		raw, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("marshal %s input schema: %v", tool.Name, err)
+		}
+		if !strings.Contains(string(raw), description) {
+			t.Errorf("%s scope schema missing %s:\n%s", tool.Name, description, raw)
+		}
+		delete(want, tool.Name)
+	}
+	for name := range want {
+		t.Errorf("tool %q not registered", name)
+	}
+}
+
+func TestServerInstructionsNameInstalledTools(t *testing.T) {
+	want := "Tool names may appear under a client-assigned mcp__…__ prefix; call tools exactly as listed in your client's tool inventory."
+	if !strings.Contains(serverInstructions, want) {
+		t.Errorf("server instructions missing %q", want)
+	}
+}
+
+func TestSemanticToolDescriptionsStateContentScope(t *testing.T) {
+	cs := connectTestServer(t)
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	want := "Searches cover code+docs; narrowing by content type is CLI-only."
+	remaining := map[string]bool{"ccx_code_search": true, "ccx_code_related": true}
+	for _, tool := range res.Tools {
+		if !remaining[tool.Name] {
+			continue
+		}
+		if !strings.Contains(tool.Description, want) {
+			t.Errorf("%s description missing %q: %q", tool.Name, want, tool.Description)
+		}
+		delete(remaining, tool.Name)
+	}
+	for name := range remaining {
+		t.Errorf("tool %q not registered", name)
+	}
+}
+
 // TestGrepToolIgnoreCaseRoutesToEngine proves an MCP ccx_code_grep call with
 // ignoreCase routes through the in-process ripgrep engine (rg or system grep):
 // no MCP session is opened, yet a case-insensitive query returns anchored

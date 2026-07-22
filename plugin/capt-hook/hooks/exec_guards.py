@@ -64,9 +64,8 @@ class JsonPipedToFilter(CustomCommandLineCondition):
 
 
 nudge(
-    "Projecting JSON through a pipe? `ccx exec` (or mcp__cc-context__ccx_exec) can sh() the "
-    "command, json.loads it in-sandbox, and return only the projection — the raw JSON never "
-    "enters context. This pipe still runs.",
+    "Projecting JSON through a pipe? `ccx exec` can sh() the command, json.loads it in-sandbox, "
+    "and return only the projection — the raw JSON never enters context. This pipe still runs.",
     only_if=[Tool("Bash"), JsonPipedToFilter()],
     events=Event.PreToolUse,
     tests={

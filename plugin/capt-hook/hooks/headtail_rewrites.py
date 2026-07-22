@@ -121,7 +121,7 @@ rewrite_command_occurrences(
         "BLOCKED: `head`/`tail` on a file dumps raw lines into context. "
         "Use `ccx code read <file> --section A-B` for a bounded range, or `ccx code outline <file>` "
         "to map it — the outline's line numbers show where the file ends, so you can bound a tail "
-        "(or the mcp__cc-context__ccx_code_read/ccx_code_outline tools). "
+        "operation. "
         "Escape hatch — bounding a pipe's output: keep `<cmd> | head`/`| tail`."
     ),
     note=headtail_note,

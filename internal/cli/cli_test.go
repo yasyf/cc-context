@@ -281,8 +281,29 @@ func TestSearchCommandInvokesBackend(t *testing.T) {
 	if !strings.Contains(got, "# semantic (semble)") {
 		t.Errorf("missing routing header in %q", got)
 	}
-	wantArgv := "search auth flow src -k 3 --max-snippet-lines 10"
+	wantArgv := "search auth flow src -k 3 --max-snippet-lines 10 --content code docs"
 	if !strings.Contains(got, wantArgv) {
+		t.Errorf("backend argv %q not in output %q", wantArgv, got)
+	}
+}
+
+func TestSearchCommandContentOverride(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell script is POSIX-only")
+	}
+	writeFakeEngine(t, "semble")
+
+	var out bytes.Buffer
+	root := cli.NewRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"code", "search", "auth flow", "--content", "code"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute(search --content code) error = %v", err)
+	}
+
+	wantArgv := "search auth flow --max-snippet-lines 10 --content code"
+	if got := out.String(); !strings.Contains(got, wantArgv) {
 		t.Errorf("backend argv %q not in output %q", wantArgv, got)
 	}
 }
@@ -384,7 +405,30 @@ func TestRelatedCommandResolvesAnchor(t *testing.T) {
 
 	// The anchored beta#hash resolves to line 2, so the argv carries the plain "2";
 	// the fake semble engine echoes that argv into the reshaped snippet.
-	wantArgv := fmt.Sprintf("find-related %s 2", file)
+	wantArgv := fmt.Sprintf("find-related %s 2 --content code docs", file)
+	if got := out.String(); !strings.Contains(got, wantArgv) {
+		t.Errorf("related argv %q not in output %q", wantArgv, got)
+	}
+}
+
+func TestRelatedCommandForwardsPathAndContent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell script is POSIX-only")
+	}
+	writeFakeEngine(t, "semble")
+	file := writeAnchorFixture(t)
+	repo := t.TempDir()
+
+	var out bytes.Buffer
+	root := cli.NewRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"code", "related", file + ":2", repo, "--content", "config"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute(related) error = %v", err)
+	}
+
+	wantArgv := fmt.Sprintf("find-related %s 2 %s --content config", file, repo)
 	if got := out.String(); !strings.Contains(got, wantArgv) {
 		t.Errorf("related argv %q not in output %q", wantArgv, got)
 	}

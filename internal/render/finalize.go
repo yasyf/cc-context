@@ -25,7 +25,11 @@ func Finalize(op backend.Op, out string, a backend.Args) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("finalize: resolve cwd: %w", err)
 		}
-		reshaped, err := SembleResults(out, anchor.NewFiles(cwd))
+		scoreLabel := "score"
+		if op == backend.OpRelated {
+			scoreLabel = "cos"
+		}
+		reshaped, err := SembleResults(out, anchor.NewFiles(cwd), scoreLabel)
 		if err != nil {
 			return "", err
 		}

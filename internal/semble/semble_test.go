@@ -24,7 +24,9 @@ func TestCLIArgv(t *testing.T) {
 		{"search", backend.OpSearch, backend.Args{Query: "auth flow"}, []string{"search", "auth flow"}},
 		{"search path k", backend.OpSearch, backend.Args{Query: "auth", Path: "src", K: 5}, []string{"search", "auth", "src", "-k", "5"}},
 		{"search all flags", backend.OpSearch, backend.Args{Query: "auth", Path: "src", K: 3, MaxSnippetLines: 8, Kind: "code"}, []string{"search", "auth", "src", "-k", "3", "--max-snippet-lines", "8", "--content", "code"}},
+		{"search multiple content kinds", backend.OpSearch, backend.Args{Query: "auth", Kind: "code docs"}, []string{"search", "auth", "--content", "code", "docs"}},
 		{"related", backend.OpRelated, backend.Args{Query: "a.go:42"}, []string{"find-related", "a.go", "42"}},
+		{"related path and content", backend.OpRelated, backend.Args{Query: "a.go:42", Path: "/repo", Kind: "code docs"}, []string{"find-related", "a.go", "42", "/repo", "--content", "code", "docs"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -74,7 +76,7 @@ func TestCLIArgvUnsupported(t *testing.T) {
 func TestMCPSpec(t *testing.T) {
 	orig := lookpath.Find
 	t.Cleanup(func() { lookpath.Find = orig })
-	want := []string{"--from", "semble[mcp]>=0.5", "semble"}
+	want := []string{"--from", "semble[mcp]>=0.5", "semble", "--content", "code", "docs"}
 
 	for _, onPath := range []string{"", "/usr/bin/semble"} {
 		lookpath.Find = func(string) string { return onPath }

@@ -424,14 +424,12 @@ def rg_block(evt: PreToolUseEvent, cl: CommandLine) -> str:
         "rg",
         rg_operands,
         "BLOCKED: raw `rg` file search floods context. "
-        "Use `ccx code grep <text>` (mcp__cc-context__ccx_code_grep) for literal text, "
-        '`ccx code search "<question>"` (mcp__cc-context__ccx_code_search) for intent, '
-        '`ccx repo find "<glob>"` (mcp__cc-context__ccx_repo_find) to list files. '
+        "Use `ccx code grep <text>` for literal text, "
+        '`ccx code search "<question>"` for intent, `ccx repo find "<glob>"` to list files. '
+        "Several terms? One call covers them: `ccx code grep 'a|b|c' --regex`. "
         "Dependency source (`.venv`, vendored pkgs): spawn the `cc-context:dep-reader` agent "
         "with the package and your question — it returns cited conclusions, never the source. "
-        "Inline: `ccx repo locate <pkg>` (CLI-only), then "
-        "`ccx code grep`/`outline` (mcp__cc-context__ccx_code_outline)/`read` "
-        "(mcp__cc-context__ccx_code_read) with the printed path. "
+        "Inline: `ccx repo locate <pkg>` (CLI-only), then `ccx code grep`/`outline`/`read` with the printed path. "
         "Simple literal `rg` auto-rewrites to `ccx code grep`; this one didn't — a regex pattern, an "
         "unmappable flag (`-t`/`-r`/`--no-ignore`/…), an ignored-dir target, an expansion "
         "(`~`/`$`/`$(…)`), a wrapper, or an unbounded recursive target. Explicit data files and existing "

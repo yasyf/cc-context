@@ -36,8 +36,7 @@ BINARY_READ_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", 
 # the text-file rewrite landed.
 BINARY_READ_MESSAGE = (
     "BLOCKED: unbounded Read of a large file (>20KB) floods context. "
-    "Map it first: `ccx code outline <path>` (or mcp__cc-context__ccx_code_outline), then "
-    "`ccx code read <path> --section A-B` (or mcp__cc-context__ccx_code_read) for the part you need. "
+    "Map it first: `ccx code outline <path>`, then `ccx code read <path> --section A-B` for the part you need. "
     "Escape hatch — whole file: `ccx code read <path> --full`, or re-run Read with offset/limit."
 )
 

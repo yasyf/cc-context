@@ -280,7 +280,7 @@ rewrite_command_occurrences(
     block_if=gitdiff_blocks,
     block=(
         "BLOCKED: `git diff` without a pathspec dumps the full patch into context. "
-        "Use `ccx vcs diff` for a compact summary (or mcp__cc-context__ccx_vcs_diff). "
+        "Use `ccx vcs diff` for a compact summary. "
         "Already know the file? `git diff -- <path>` / `git diff <ref> -- <path>` stays allowed, "
         "as do `git diff --stat`/`--numstat`/`--name-only`. Need the raw hunks? Scope them: `git diff -- <path>`."
     ),
@@ -340,7 +340,7 @@ rewrite_command_occurrences(
     block_if=jjdiff_blocks,
     block=(
         "BLOCKED: `jj diff` without a pathspec dumps the full patch into context. "
-        "Use `ccx vcs diff` for a compact, jj-aware summary (or mcp__cc-context__ccx_vcs_diff). "
+        "Use `ccx vcs diff` for a compact, jj-aware summary. "
         "Already know the file? `jj diff <path>` (or `git diff -- <path>`) gives the exact hunks, "
         "as do `jj diff --stat`/`--summary`/`-s`. A revset alone (`jj diff -r <rev>` / `--from`/`--to`) "
         "still needs a path to stay scoped."

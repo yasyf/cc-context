@@ -131,7 +131,7 @@ rewrite_command(
     block=(
         "BLOCKED: ccx output is already token-budget-capped — re-truncating with head/tail slices "
         "arbitrarily and drops the overflow footer. Bound at the source: --budget N (tokens) or "
-        "--section A-B; post-process with `ccx exec` (mcp__cc-context__ccx_exec). Bounded readers: "
+        "--section A-B; post-process with `ccx exec`. Bounded readers: "
         "`ccx code read` (ccx_code_read), `ccx code grep` (ccx_code_grep), `ccx repo find` (ccx_repo_find)."
     ),
     note=repipe_note,

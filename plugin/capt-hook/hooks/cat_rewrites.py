@@ -176,7 +176,7 @@ rewrite_command(
     to=lambda evt: None,
     block=(
         "BLOCKED: `cat`/`bat` of a root manifest is redundant — orient with `ccx repo overview` "
-        "(it already summarizes the manifest; or mcp__cc-context__ccx_repo_overview). "
+        "(it already summarizes the manifest). "
         "Need the raw file? `ccx code read <file> --full`."
     ),
     tests={
@@ -207,7 +207,7 @@ rewrite_command_occurrences(
     block=(
         "BLOCKED: bare `cat <file>` dumps the whole file into context. "
         "Use `ccx code outline <file>` to map it, then `ccx code read <file> --section A-B` for the part "
-        "you need (or the mcp__cc-context__ccx_code_outline/ccx_code_read tools). "
+        "you need. "
         "Escape hatch — whole file: `ccx code read <file> --full`."
     ),
     note=cat_note,

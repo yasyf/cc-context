@@ -8,17 +8,29 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
+const fakeSembleInitDelayEnv = "CCX_TEST_SEMBLE_INIT_DELAY"
+
 // TestMain doubles as the fake semble MCP engine: re-executed via the fakeSemble
-// symlink as "uvx --from semble[mcp]>=0.5 semble", it serves a stdio MCP server
+// symlink as "uvx --from semble[mcp]>=0.5 semble --content code docs", it serves a stdio MCP server
 // whose search/find_related tools return canned semble JSON instead of indexing.
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "--from" {
+		if value := os.Getenv(fakeSembleInitDelayEnv); value != "" {
+			delay, err := time.ParseDuration(value)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			time.Sleep(delay)
+		}
 		if err := serveFakeSemble(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -63,7 +75,7 @@ func serveFakeSemble() error {
 }
 
 // fakeSembleOnPath symlinks the test binary onto PATH as "uvx", so the proxy's
-// semble MCPSpec launch (uvx --from semble[mcp]>=0.5 semble) spawns the TestMain
+// semble MCPSpec launch (uvx --from semble[mcp]>=0.5 semble --content code docs) spawns the TestMain
 // fake instead of a real uvx.
 func fakeSembleOnPath(t *testing.T) {
 	t.Helper()
@@ -93,7 +105,7 @@ func TestSembleSessionLane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call(OpSearch): %v", err)
 	}
-	if !strings.Contains(got, "# 1 results") || !strings.Contains(got, "canned search snippet") {
+	if !strings.Contains(got, "# 1 results") || !strings.Contains(got, "(score=0.42)") || !strings.Contains(got, "canned search snippet") {
 		t.Errorf("search output = %q, want the canned semble result", got)
 	}
 	if p.session == nil {
@@ -104,7 +116,25 @@ func TestSembleSessionLane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call(OpRelated): %v", err)
 	}
-	if !strings.Contains(rel, "canned related snippet") {
+	if !strings.Contains(rel, "(cos=0.31)") || !strings.Contains(rel, "canned related snippet") {
 		t.Errorf("related output = %q, want the canned related result", rel)
+	}
+}
+
+func TestSembleSessionInitCountsTowardSlowSearch(t *testing.T) {
+	fakeSembleOnPath(t)
+	t.Setenv(fakeSembleInitDelayEnv, "250ms")
+	previousThreshold := render.SlowSearchThreshold
+	render.SlowSearchThreshold = 100 * time.Millisecond
+	t.Cleanup(func() { render.SlowSearchThreshold = previousThreshold })
+	p := New()
+	t.Cleanup(func() { _ = p.Close() })
+
+	got, err := p.Call(context.Background(), backend.OpSearch, backend.Args{Query: "auth flow"})
+	if err != nil {
+		t.Fatalf("Call(OpSearch): %v", err)
+	}
+	if !strings.Contains(got, "# note: slow search (") {
+		t.Errorf("search output = %q, want slow-search note including session initialization", got)
 	}
 }

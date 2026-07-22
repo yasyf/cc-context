@@ -111,8 +111,8 @@ rewrite_command_occurrences(
     to=find_to,
     block=(
         "BLOCKED: `find` enumeration floods context. "
-        'Scoped to a dir? `ccx repo find "<dir>/**"` (mcp__cc-context__ccx_repo_find), or the built-in '
-        "Glob tool. Orienting the whole repo? `ccx repo overview` (mcp__cc-context__ccx_repo_overview). "
+        'Scoped to a dir? `ccx repo find "<dir>/**"`, or the built-in Glob tool. '
+        "Orienting the whole repo? `ccx repo overview`. "
         "Escape hatch — need an action: keep the `-exec`/`-delete`/`-print0 | xargs` form."
     ),
     note=find_note,

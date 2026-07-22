@@ -8,13 +8,18 @@ import (
 
 func newRelatedCmd() *cobra.Command {
 	var a backend.Args
-	return &cobra.Command{
-		Use:   "related <file:line>",
+	cmd := &cobra.Command{
+		Use:   "related <file:line> [path]",
 		Short: "Find code related to a file:line, or an anchored f.go:12#a3fk",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a.Query = args[0]
+			if len(args) == 2 {
+				a.Path = args[1]
+			}
 			return runOp(cmd, backend.OpRelated, a)
 		},
 	}
+	cmd.Flags().StringVar(&a.Kind, "content", "code docs", "content types to search; several go quoted as one value: --content \"code docs\"; choices code, docs, config, all")
+	return cmd
 }
