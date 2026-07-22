@@ -8,26 +8,12 @@ permissions:
   contents: write
 
 jobs:
-  # The plugin's install-binary.sh pins the release it downloads to the
-  # plugin.json version, so a tag that doesn't match ships a plugin that 404s.
-  verify-plugin-version:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: plugin.json version matches the tag
-        run: |
-          # First match only: the dependencies entries carry "version" keys of their own.
-          V="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' plugin/.claude-plugin/plugin.json | head -n 1)"
-          if [ "v$V" != "$GITHUB_REF_NAME" ]; then
-            echo "::error file=plugin/.claude-plugin/plugin.json::plugin.json version is $V but the tag is $GITHUB_REF_NAME — set it to ${GITHUB_REF_NAME#v} in the release commit (AGENTS.md § Releases), then retag"
-            exit 1
-          fi
-
   release:
-    needs: verify-plugin-version
     uses: yasyf/homebrew-tap/.github/workflows/release-go.yml@v1
     secrets: inherit
     with:
+      # plugin.json version must equal the tag; install-binary.sh 404s otherwise.
+      plugin-manifest: plugin/.claude-plugin/plugin.json
       # ccx ships as a formula (livecheck + `brew install --HEAD` source build +
       # runtime depends_on ast-grep/uv) rendered from its template — goreleaser's
       # brews block can't express that, so render-formula + publish handle the .rb.
