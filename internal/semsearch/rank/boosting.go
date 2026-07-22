@@ -370,13 +370,13 @@ func joinEscaped(keywords []string) string {
 }
 
 func maxScoreOf(cands []scored) float64 {
-	max := cands[0].score
+	best := cands[0].score
 	for _, c := range cands[1:] {
-		if c.score > max {
-			max = c.score
+		if c.score > best {
+			best = c.score
 		}
 	}
-	return max
+	return best
 }
 
 func idxSetOf(cands []scored) map[int]bool {

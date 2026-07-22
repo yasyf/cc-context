@@ -9,6 +9,7 @@ import (
 // semble's CODE/DOCS/CONFIG/DATA buckets in files.py.
 type ContentType string
 
+// The four semble content buckets; data files are never indexed.
 const (
 	ContentCode   ContentType = "code"
 	ContentDocs   ContentType = "docs"

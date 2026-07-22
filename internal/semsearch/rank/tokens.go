@@ -39,7 +39,10 @@ func SplitIdentifier(token string) []string {
 // tokenize.
 func Tokenize(text string) []string {
 	raw := tokenRe.FindAllString(text, -1)
-	var result []string
+	if len(raw) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(raw))
 	for _, tok := range raw {
 		result = append(result, SplitIdentifier(tok)...)
 	}

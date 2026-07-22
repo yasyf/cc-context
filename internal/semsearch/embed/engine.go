@@ -137,17 +137,17 @@ func (e *Engine) load(ctx context.Context, b *modelBlobs) error {
 	if err != nil {
 		return err
 	}
-	defer e.free(ctx, tokPtr, uint32(len(b.tokenizer)))
+	defer e.freeBlob(ctx, tokPtr, b.tokenizer)
 	modelPtr, err := e.writeBlob(ctx, b.model)
 	if err != nil {
 		return err
 	}
-	defer e.free(ctx, modelPtr, uint32(len(b.model)))
+	defer e.freeBlob(ctx, modelPtr, b.model)
 	cfgPtr, err := e.writeBlob(ctx, b.config)
 	if err != nil {
 		return err
 	}
-	defer e.free(ctx, cfgPtr, uint32(len(b.config)))
+	defer e.freeBlob(ctx, cfgPtr, b.config)
 
 	res, err := e.loadModel.Call(ctx,
 		uint64(tokPtr), uint64(len(b.tokenizer)),
@@ -178,7 +178,7 @@ func (e *Engine) encodeBatch(ctx context.Context, texts []string) ([][]float32, 
 	if err != nil {
 		return nil, err
 	}
-	defer e.free(ctx, inPtr, uint32(len(frame)))
+	defer e.freeBlob(ctx, inPtr, frame)
 
 	res, err := e.encode.Call(ctx, uint64(inPtr), uint64(len(frame)))
 	if err != nil {
@@ -201,11 +201,16 @@ func (e *Engine) writeBlob(ctx context.Context, data []byte) (uint32, error) {
 	if err != nil {
 		return 0, fmt.Errorf("em_alloc(%d): %w", len(data), err)
 	}
-	ptr := uint32(res[0])
+	ptr := uint32(res[0]) //nolint:gosec // wasm32: em_alloc returns a 32-bit pointer in the low half
 	if !e.module.Memory().Write(ptr, data) {
 		return 0, fmt.Errorf("write %d bytes at %d out of range", len(data), ptr)
 	}
 	return ptr, nil
+}
+
+// freeBlob releases a writeBlob allocation.
+func (e *Engine) freeBlob(ctx context.Context, ptr uint32, data []byte) {
+	e.free(ctx, ptr, uint32(len(data))) //nolint:gosec // wasm32: blob sizes fit 32-bit linear memory
 }
 
 // free releases a WASM buffer previously handed out by em_alloc or packed out
@@ -222,9 +227,9 @@ func frameBatch(texts []string) []byte {
 		total += 4 + len(t)
 	}
 	buf := make([]byte, 0, total)
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(texts)))
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(texts))) //nolint:gosec // wasm32: batch sizes fit 32-bit frames
 	for _, t := range texts {
-		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(t)))
+		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(t))) //nolint:gosec // wasm32: text lengths fit 32-bit frames
 		buf = append(buf, t...)
 	}
 	return buf
@@ -260,7 +265,7 @@ func parseMatrix(buf []byte, want int) ([][]float32, error) {
 
 // unpack splits a (ptr << 32) | len return value into its pointer and length.
 func unpack(packed uint64) (ptr, length uint32) {
-	return uint32(packed >> 32), uint32(packed)
+	return uint32(packed >> 32), uint32(packed) //nolint:gosec // wasm32: em_encode packs ptr and len into one uint64
 }
 
 // compileModule builds the compiler runtime over the shared on-disk AOT cache

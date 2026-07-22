@@ -18,10 +18,11 @@ func TestChunkSourceASTPath(t *testing.T) {
 	// chunks under the 750 budget only when tight; here desired is large so it
 	// exercises the boundary→Chunk materialization (lines, content).
 	src := "line one\nline two\nline three\nline four\n"
-	root := parent(0, uint32(len(src)),
+	srcLen := uint32(len(src)) //nolint:gosec // fixed test fixture
+	root := parent(0, srcLen,
 		leaf(0, 18),  // "line one\nline two\n"
 		leaf(18, 29), // "line three\n"
-		leaf(29, uint32(len(src))),
+		leaf(29, srcLen),
 	)
 	got := chunkSource(src, "x.fake", "python", fakeParser{root: root, ok: true})
 	if len(got) != 1 {

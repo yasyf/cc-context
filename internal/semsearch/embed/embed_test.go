@@ -235,9 +235,9 @@ func BenchmarkEncode(b *testing.B) {
 }
 
 func truncate(s string) string {
-	const max = 40
-	if len(s) <= max {
+	const limit = 40
+	if len(s) <= limit {
 		return s
 	}
-	return s[:max] + "…"
+	return s[:limit] + "…"
 }

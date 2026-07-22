@@ -36,14 +36,14 @@ func main() {
 
 func run(root string) error {
 	enc := json.NewEncoder(os.Stdout)
-	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error { //nolint:gosec // walking the user-supplied root is the tool's purpose
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			return nil
 		}
-		content, err := os.ReadFile(path)
+		content, err := os.ReadFile(path) //nolint:gosec // reading the user-supplied walk root is the tool's purpose
 		if err != nil {
 			return fmt.Errorf("read %s: %w", path, err)
 		}
