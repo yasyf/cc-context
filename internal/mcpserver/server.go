@@ -231,7 +231,7 @@ const serverInstructions = "Single question → the matching ccx_* tool; pipelin
 // over stdio until ctx is cancelled or the transport closes.
 func Serve(ctx context.Context) error {
 	p := proxy.New()
-	defer func() { _ = p.Close() }()
+	defer func() { _ = p.Close() }() //nolint:contextcheck // teardown runs after ctx is cancelled; Close uses a fresh context by design
 
 	var eng *codeexec.Engine
 	if codeexec.Supported() {

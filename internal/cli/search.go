@@ -10,7 +10,7 @@ import (
 
 // engineHeaders names the routing header printed on stdout for each kind.
 var engineHeaders = map[querykind.Kind]string{
-	querykind.KindSemantic:   "# semantic (semble)",
+	querykind.KindSemantic:   "# semantic (native)",
 	querykind.KindStructural: "# structural (ast-grep)",
 	querykind.KindLiteral:    "# literal (grep)",
 }
@@ -52,7 +52,7 @@ func newSearchCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&structural, "structural", false, "force structural (ast-grep) search")
-	cmd.Flags().BoolVar(&semantic, "semantic", false, "force semantic (semble) search")
+	cmd.Flags().BoolVar(&semantic, "semantic", false, "force semantic (native) search")
 	cmd.Flags().BoolVar(&literal, "literal", false, "force literal (grep) search")
 	cmd.MarkFlagsMutuallyExclusive("structural", "semantic", "literal")
 	cmd.Flags().StringVar(&a.Lang, "lang", "", "structural: language to parse as (inferred from extension when omitted)")

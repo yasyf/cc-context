@@ -279,7 +279,7 @@ func TestSearchCommandNative(t *testing.T) {
 	}
 
 	got := out.String()
-	if !strings.Contains(got, "# semantic (semble)") {
+	if !strings.Contains(got, "# semantic (native)") {
 		t.Errorf("missing routing header in %q", got)
 	}
 	if strings.Contains(got, "# 0 results") {

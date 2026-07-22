@@ -143,7 +143,7 @@ func store(dir string, man manifest, chunks []semsearch.Chunk, vectors [][]float
 
 func readManifest(dir string) (manifest, error) {
 	var man manifest
-	data, err := os.ReadFile(filepath.Join(dir, manifestFile))
+	data, err := os.ReadFile(filepath.Join(dir, manifestFile)) //nolint:gosec // dir derives from the repo-path sha256, not user input
 	if err != nil {
 		return man, err
 	}
@@ -154,7 +154,7 @@ func readManifest(dir string) (manifest, error) {
 }
 
 func readChunks(dir string) ([]semsearch.Chunk, error) {
-	data, err := os.ReadFile(filepath.Join(dir, chunksFile))
+	data, err := os.ReadFile(filepath.Join(dir, chunksFile)) //nolint:gosec // dir derives from the repo-path sha256, not user input
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +173,7 @@ func encodeVectors(vectors [][]float32) []byte {
 		dims = len(vectors[0])
 	}
 	buf := make([]byte, 0, 8+len(vectors)*dims*4)
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(vectors)))
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(vectors))) //nolint:gosec // matrix dims fit the u32 framing
 	buf = binary.LittleEndian.AppendUint32(buf, uint32(dims))
 	for _, row := range vectors {
 		for _, v := range row {
@@ -184,7 +184,7 @@ func encodeVectors(vectors [][]float32) []byte {
 }
 
 func readVectors(dir string) ([][]float32, error) {
-	data, err := os.ReadFile(filepath.Join(dir, vectorsFile))
+	data, err := os.ReadFile(filepath.Join(dir, vectorsFile)) //nolint:gosec // dir derives from the repo-path sha256, not user input
 	if err != nil {
 		return nil, err
 	}

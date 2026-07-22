@@ -23,11 +23,10 @@ import (
 // defaultTopK matches semble's search/find_related default (top_k=5).
 const defaultTopK = 5
 
-// TODO(fused-search-golden): full fused-search parity against
-// testdata/goldens/search_results.json is out of scope here — it needs the
-// tree-sitter chunker (a sibling lane) and regenerated padding-free goldens,
-// both of which land at merge. Until then Search runs on the line-chunk fallback
-// (index.DefaultChunker) and is exercised only by the fake-embedder engine tests.
+// Fused-search golden parity (chunk→embed→rank against
+// testdata/goldens/search_results.json) lives in semsearch's
+// fused_parity_test.go; the engine layer adds the walker and cache on top and
+// is exercised by the fake-embedder tests here.
 
 // Search runs native semantic search over the repo (a.Path, else cwd) and
 // returns the ranked results. Content types come from a.Kind (default code+docs);

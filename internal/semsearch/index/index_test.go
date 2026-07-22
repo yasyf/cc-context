@@ -50,13 +50,13 @@ func detVec(s string, dims int) []float32 {
 	return v
 }
 
-// altChunker chunks like the line chunker but reports a distinct ID, to exercise
-// cache invalidation on a chunker change.
+// altChunker chunks like the default chunker but reports a distinct ID, to
+// exercise cache invalidation on a chunker change.
 type altChunker struct{}
 
 func (altChunker) ID() string { return "alt-v1" }
 func (altChunker) ChunkFile(p, l, c string) []semsearch.Chunk {
-	return lineChunker{}.ChunkFile(p, l, c)
+	return DefaultChunker().ChunkFile(p, l, c)
 }
 
 func writeIndexRepo(t *testing.T) string {
