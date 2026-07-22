@@ -12,9 +12,10 @@ vars:
 
 tasks:
   wasm:
-    desc: Build the format-core WASM engine and embed it into internal/format
+    desc: Build the format-core and tree-sitter grammar WASM modules for go:embed
     cmds:
       - bash scripts/build-wasm.sh
+      - bash scripts/build-chunk-grammars.sh
 
   wasm-embed:
     desc: Build the embed-core WASM engine and embed it into internal/semsearch/embed
