@@ -52,6 +52,20 @@ func samplePage(url string, nChunks, nVectors int, model string) *Page {
 	return p
 }
 
+// mustLoad loads url at model, failing the test on an error or a cache miss,
+// and returns a non-nil page.
+func mustLoad(t *testing.T, url, model string) *Page {
+	t.Helper()
+	got, err := Load(url, model)
+	if err != nil {
+		t.Fatalf("Load(%q, %q): %v", url, model, err)
+	}
+	if got == nil {
+		t.Fatalf("Load(%q, %q) returned a miss, want a hit", url, model)
+	}
+	return got
+}
+
 func webPagePath(t *testing.T, normURL string) string {
 	t.Helper()
 	dir, err := cache.Dir("web")
@@ -158,13 +172,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Errorf("Save did not stamp Version: got %d, want %d", want.Version, schemaVersion)
 	}
 
-	got, err := Load(url, model)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if got == nil {
-		t.Fatal("Load returned a miss, want a hit")
-	}
+	got := mustLoad(t, url, model)
 
 	if got.Version != schemaVersion {
 		t.Errorf("Version = %d, want %d", got.Version, schemaVersion)
@@ -277,13 +285,7 @@ func TestLoadLazyPageWithoutVectors(t *testing.T) {
 	if err := Save(samplePage(url, 2, 0, "")); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	got, err := Load(url, "any-model")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if got == nil {
-		t.Fatal("Load returned a miss, want a hit for a never-embedded page")
-	}
+	got := mustLoad(t, url, "any-model")
 	if len(got.Vectors) != 0 {
 		t.Errorf("Vectors = %v, want empty", got.Vectors)
 	}
