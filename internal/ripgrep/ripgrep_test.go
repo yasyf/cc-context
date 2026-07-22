@@ -498,8 +498,8 @@ func TestParseFilesWithMatches(t *testing.T) {
 		want []string
 	}{
 		{"ripgrep", engineRipgrep, "a.go\nsub/b.go\n" + filepath.Join(cwd, "abs.go") + "\n", []string{"a.go", "sub/b.go", "abs.go"}},
-		{"grep", engineGrep, "./a.go\r\n./sub/b.go\r\n" + filepath.Join(cwd, "abs.go") + "\r\n", []string{"./a.go", "./sub/b.go", "abs.go"}},
-		{"relative path syntax preserved", engineRipgrep, "./link/../match.go\n", []string{"./link/../match.go"}},
+		{"grep strips implicit-root ./", engineGrep, "./a.go\r\n./sub/b.go\r\n" + filepath.Join(cwd, "abs.go") + "\r\n", []string{"a.go", "sub/b.go", "abs.go"}},
+		{"parent-dir syntax not collapsed", engineRipgrep, "link/../match.go\n", []string{"link/../match.go"}},
 		{"ripgrep no match", engineRipgrep, "", nil},
 		{"grep no match", engineGrep, "", nil},
 	}
@@ -725,7 +725,7 @@ func TestRunCore(t *testing.T) {
 	}{
 		{"rg branch", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true}, []runnerResult{{out: rgOut}}, false, true, 1, []string{"### nope/a.go:3", "→ [3] foo one"}, nil, "", ""},
 		{"grep branch", engineGrep, backend.Args{Query: "foo", IgnoreCase: true}, []runnerResult{{out: grepOut}}, false, true, 1, []string{"### nope/a.go:3", "→ [3] foo one", "system grep"}, nil, "", ""},
-		{"files with matches", engineRipgrep, backend.Args{Query: "foo", FilesWithMatches: true}, []runnerResult{{out: "./nope/a.go\nnope/b.go\n"}}, false, true, 1, nil, nil, "./nope/a.go\nnope/b.go\n", ""},
+		{"files with matches", engineRipgrep, backend.Args{Query: "foo", FilesWithMatches: true}, []runnerResult{{out: "./nope/a.go\nnope/b.go\n"}}, false, true, 1, nil, nil, "nope/a.go\nnope/b.go\n", ""},
 		{"files with matches miss", engineRipgrep, backend.Args{Query: "foo", FilesWithMatches: true}, []runnerResult{{}}, false, false, 1, nil, nil, NoMatch("foo"), ""},
 		{"miss escalates to regex hit", engineRipgrep, backend.Args{Query: "foo|bar"}, []runnerResult{{}, {out: rgOut}}, false, true, 2, []string{`# grep: "foo|bar" — 1 matches in 1 files (auto-regex)`, "### nope/a.go:3"}, nil, "", ""},
 		{"literal and regex miss", engineRipgrep, backend.Args{Query: "foo|bar"}, []runnerResult{{}, {}}, false, false, 2, []string{`# grep: "foo|bar" — no matches (literal or regex)`}, nil, "", ""},

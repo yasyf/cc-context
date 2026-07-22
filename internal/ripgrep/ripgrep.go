@@ -706,6 +706,9 @@ func parseFilesWithMatches(eng engine, raw string) ([]string, error) {
 				line = relative
 			}
 		}
+		// grep roots an implicit search at "." and prefixes every hit with "./"; rg emits bare
+		// relative paths. Strip the prefix so both engines return the same shape.
+		line = strings.TrimPrefix(line, "."+string(filepath.Separator))
 		paths = append(paths, line)
 	}
 	return paths, nil
