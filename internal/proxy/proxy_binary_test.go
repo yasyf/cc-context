@@ -33,9 +33,6 @@ func TestCallBinaryOutlineSkipsBeforeDispatch(t *testing.T) {
 			if got != want {
 				t.Errorf("Call() = %q, want %q", got, want)
 			}
-			if p.session != nil {
-				t.Error("Call() opened a semble session, want none")
-			}
 		})
 	}
 }

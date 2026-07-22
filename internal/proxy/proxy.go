@@ -1,36 +1,24 @@
-// Package proxy fronts the facade tools: it runs the native ccx ops in-process
-// via internal/dispatch and holds the one resident semble MCP session, opened
-// lazily on first use and kept alive until Close.
+// Package proxy fronts the facade tools: it runs every ccx op in-process via
+// internal/dispatch, including the semantic search/related ops now that they no
+// longer need a resident semble MCP session.
 package proxy
 
 import (
 	"context"
-	"fmt"
-	"sync"
-	"time"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/dispatch"
-	"github.com/yasyf/cc-context/internal/mcpclient"
-	"github.com/yasyf/cc-context/internal/render"
-	"github.com/yasyf/cc-context/internal/semble"
 )
 
-// Proxy fronts the op surface: native ops run in-process via internal/dispatch,
-// and the two semantic ops (search, related) call the resident semble MCP
-// session, which opens lazily on first use and stays resident until Close.
-type Proxy struct {
-	mu      sync.Mutex
-	session *mcp.ClientSession
-}
+// Proxy fronts the op surface: every op runs in-process via internal/dispatch.
+// It carries no engine state — the resident model2vec engine behind the semantic
+// ops lives in dispatch and is released by Close.
+type Proxy struct{}
 
-// New returns a proxy with no semble session yet; it connects on first use.
-func New() *Proxy {
-	return &Proxy{}
-}
+// New returns a proxy; the resident embedder connects lazily on first semantic
+// call, inside dispatch.
+func New() *Proxy { return &Proxy{} }
 
 // Call resolves content anchors in a to plain line numbers, dispatches op, and
 // prepends the anchor-move note after capping so the note is never truncated away.
@@ -39,73 +27,14 @@ func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string
 	if err != nil {
 		return "", err
 	}
-	out, err := p.call(ctx, op, a)
+	out, err := dispatch.Run(ctx, op, a)
 	if err != nil {
 		return "", err
 	}
 	return note + out, nil
 }
 
-// call runs a native op in-process via dispatch.Run, and the two semantic ops
-// (search, related) as a child MCP tool call against the resident semble session.
-func (p *Proxy) call(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
-	if dispatch.Native(op) {
-		return dispatch.Run(ctx, op, a)
-	}
-
-	tool, params, err := semble.MCPTool(op, a)
-	if err != nil {
-		return "", err
-	}
-	start := time.Now()
-	session, err := p.sembleSession(ctx)
-	if err != nil {
-		return "", err
-	}
-	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: params})
-	elapsed := time.Since(start)
-	if err != nil {
-		return "", fmt.Errorf("proxy: call %q: %w", tool, err)
-	}
-	text := mcpclient.TextOf(res)
-	if res.IsError {
-		return "", fmt.Errorf("proxy: tool %q failed: %s", tool, text)
-	}
-	out, err := render.Finalize(op, text, a)
-	if err != nil {
-		return "", err
-	}
-	return render.WithSlowSearchNote(out, elapsed), nil
-}
-
-// sembleSession returns the resident semble session, connecting it on first use.
-// The connection outlives the triggering call (context.WithoutCancel) so it stays
-// resident for the proxy's lifetime; a failed connect is not cached, so the next
-// call retries.
-func (p *Proxy) sembleSession(ctx context.Context) (*mcp.ClientSession, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.session != nil {
-		return p.session, nil
-	}
-	cmd, argv, err := semble.MCPSpec(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("proxy: resolve semble: %w", err)
-	}
-	session, err := mcpclient.Connect(context.WithoutCancel(ctx), "cc-context-proxy", cmd, argv...)
-	if err != nil {
-		return nil, fmt.Errorf("proxy: connect semble: %w", err)
-	}
-	p.session = session
-	return session, nil
-}
-
-// Close shuts down the semble session if it was opened.
+// Close releases the resident embedder if the process opened one.
 func (p *Proxy) Close() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.session == nil {
-		return nil
-	}
-	return p.session.Close()
+	return dispatch.CloseEmbedder(context.Background())
 }

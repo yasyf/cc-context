@@ -223,7 +223,9 @@ func TestSemanticToolDescriptionsStateContentScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	want := "Searches cover code+docs; narrowing by content type is CLI-only."
+	// Per-request content narrowing is now supported over MCP (not CLI-only), so
+	// both semantic tools advertise the content knob.
+	want := "pass content to narrow (code|docs|config|all)"
 	remaining := map[string]bool{"ccx_code_search": true, "ccx_code_related": true}
 	for _, tool := range res.Tools {
 		if !remaining[tool.Name] {

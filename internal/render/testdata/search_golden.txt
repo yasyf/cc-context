@@ -1,0 +1,7 @@
+# 2 results
+
+example.go:19-21#m0c7 (score=0.48 cos=0.32)
+func (g *Greeter) Greet(name string) string {
+
+remote/only.go:3-5 (score=0.12)
+bm25 only

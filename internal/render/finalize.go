@@ -2,38 +2,23 @@ package render
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
-	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/secrets"
 )
 
-// Finalize shapes op's raw backend output for the caller. Search and related
-// output is reshaped from raw semble JSON and anchored; read output is
+// Finalize shapes op's raw backend output for the caller. Read output is
 // secret-masked before capping (unless a.RevealSecrets) with a footer naming the
 // fired rules; OpWebRead passes through (web.Run applies its own byte-exact
-// budget+offset before Finalize sees it); every other op caps through Cap. Symbol,
-// deps, grep, diff, and outline never reach here — they self-anchor and cap in
-// their own packages. The anchor.Files cache is built fresh per call (the MCP proxy
-// is resident, so a cached line table would resolve against pre-edit content).
+// budget+offset before Finalize sees it); every other op caps through Cap.
+// Search, related, symbol, deps, grep, diff, and outline never reach here — they
+// self-anchor and cap in their own packages (search/related via
+// dispatch.runSemantic and SearchResults). The anchor.Files cache is built fresh
+// per call (the MCP proxy is resident, so a cached line table would resolve
+// against pre-edit content).
 func Finalize(op backend.Op, out string, a backend.Args) (string, error) {
 	switch op {
-	case backend.OpSearch, backend.OpRelated:
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("finalize: resolve cwd: %w", err)
-		}
-		scoreLabel := "score"
-		if op == backend.OpRelated {
-			scoreLabel = "cos"
-		}
-		reshaped, err := SembleResults(out, anchor.NewFiles(cwd), scoreLabel)
-		if err != nil {
-			return "", err
-		}
-		return Cap(reshaped, a.Budget), nil
 	case backend.OpRead:
 		if a.RevealSecrets {
 			return Cap(out, a.Budget), nil

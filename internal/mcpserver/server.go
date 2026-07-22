@@ -35,6 +35,7 @@ type SearchIn struct {
 	Repo            string `json:"repo,omitempty" jsonschema:"repo root or https git URL; default project root"`
 	Mode            string `json:"mode,omitempty" jsonschema:"routing override: auto|semantic|structural|literal (default auto)"`
 	Lang            string `json:"lang,omitempty" jsonschema:"structural: language; inferred from extension"`
+	Content         string `json:"content,omitempty" jsonschema:"semantic: content types to index for this query; space-separated code|docs|config|all (default \"code docs\")"`
 	K               int    `json:"k,omitempty" jsonschema:"max results to return"`
 	MaxSnippetLines int    `json:"max_snippet_lines,omitempty" jsonschema:"max lines per result snippet"`
 }
@@ -67,6 +68,7 @@ type EditIn struct {
 type RelatedIn struct {
 	Location string `json:"location" jsonschema:"file:line, or an anchor (\"f.go:12#a3fk\"); a shifted anchor re-resolves by content and prepends a \"# anchor …\" note"`
 	Repo     string `json:"repo,omitempty" jsonschema:"repo root or https git URL; default project root"`
+	Content  string `json:"content,omitempty" jsonschema:"content types to index for this query; space-separated code|docs|config|all (default \"code docs\")"`
 }
 
 // OutlineIn is the input for ccx_code_outline.
@@ -262,7 +264,7 @@ var alwaysLoad = mcp.Meta{metaAlwaysLoad: true}
 func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_search",
-		Description: "Search code by intent (semantic), ast-grep structural pattern, or literal text — routed by query kind. Prefer over grep for where/how. Searches cover code+docs; narrowing by content type is CLI-only.",
+		Description: "Search code by intent (semantic), ast-grep structural pattern, or literal text — routed by query kind. Prefer over grep for where/how. Semantic search covers code+docs by default; pass content to narrow (code|docs|config|all).",
 		Meta:        alwaysLoad,
 	}, searchHandler(p))
 
@@ -289,9 +291,9 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_related",
-		Description: "Find code semantically related to a file:line — follow-up to a search hit. Takes an anchored location too (f.go:12#a3fk). Searches cover code+docs; narrowing by content type is CLI-only.",
+		Description: "Find code semantically related to a file:line — follow-up to a search hit. Takes an anchored location too (f.go:12#a3fk). Covers code+docs by default; pass content to narrow (code|docs|config|all).",
 	}, handler(p, backend.OpRelated, func(in RelatedIn) backend.Args {
-		return backend.Args{Query: in.Location, Path: in.Repo}
+		return backend.Args{Query: in.Location, Path: in.Repo, Kind: in.Content}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -411,6 +413,7 @@ func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, S
 			Path:            in.Repo,
 			Mode:            in.Mode,
 			Lang:            in.Lang,
+			Kind:            in.Content,
 			K:               in.K,
 			MaxSnippetLines: snippet,
 		}
