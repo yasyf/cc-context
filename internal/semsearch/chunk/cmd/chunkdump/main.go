@@ -1,7 +1,9 @@
 // Command chunkdump walks a directory, chunks every eligible file with the
 // semsearch chunker, and prints one JSON object per chunk — {path, start_line,
-// end_line} — for the semble injection experiment. Paths are relative to the
-// walk root (posix). It is a plain recursive walk with no gitignore handling.
+// end_line, content} — for the semble injection experiment. Content is the
+// byte-exact chunk text (boundaries are character-granular, so line spans
+// alone are lossy at mid-line splits). Paths are relative to the walk root
+// (posix). It is a plain recursive walk with no gitignore handling.
 package main
 
 import (
@@ -18,6 +20,7 @@ type record struct {
 	Path      string `json:"path"`
 	StartLine int    `json:"start_line"`
 	EndLine   int    `json:"end_line"`
+	Content   string `json:"content"`
 }
 
 func main() {
@@ -50,7 +53,7 @@ func run(root string) error {
 		}
 		rel = filepath.ToSlash(rel)
 		for _, c := range chunk.Chunk(rel, content) {
-			if err := enc.Encode(record{Path: c.Path, StartLine: c.StartLine, EndLine: c.EndLine}); err != nil {
+			if err := enc.Encode(record{Path: c.Path, StartLine: c.StartLine, EndLine: c.EndLine, Content: c.Content}); err != nil {
 				return err
 			}
 		}
