@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["wasm"]
+
+[profile.release]
+# opt-level 3 (not "z"): the mean-pool + tokenize hot path is throughput-bound,
+# and the module code is downloaded/compiled once, so a larger .wasm is cheap.
+opt-level = 3
+lto = true
+strip = true
+panic = "abort"
+codegen-units = 1
