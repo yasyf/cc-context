@@ -1,0 +1,403 @@
+{
+  "chunks": [
+    {
+      "end_line": 6,
+      "path": "README.md",
+      "start_line": 1
+    },
+    {
+      "end_line": 5,
+      "path": "compat/cache.rs",
+      "start_line": 1
+    },
+    {
+      "end_line": 21,
+      "path": "compat/legacy_adapter.py",
+      "start_line": 1
+    },
+    {
+      "end_line": 10,
+      "path": "config/search.yaml",
+      "start_line": 1
+    },
+    {
+      "end_line": 9,
+      "path": "config/settings.yaml",
+      "start_line": 1
+    },
+    {
+      "end_line": 20,
+      "path": "examples/login_example.ts",
+      "start_line": 1
+    },
+    {
+      "end_line": 4,
+      "path": "examples/state_manager.ts",
+      "start_line": 1
+    },
+    {
+      "end_line": 12,
+      "path": "go/http_parser.go",
+      "start_line": 1
+    },
+    {
+      "end_line": 32,
+      "path": "go/http_parser.go",
+      "start_line": 14
+    },
+    {
+      "end_line": 5,
+      "path": "pkg/__init__.py",
+      "start_line": 1
+    },
+    {
+      "end_line": 5,
+      "path": "python/__init__.py",
+      "start_line": 1
+    },
+    {
+      "end_line": 20,
+      "path": "python/auth.py",
+      "start_line": 1
+    },
+    {
+      "end_line": 16,
+      "path": "python/chunker.py",
+      "start_line": 1
+    },
+    {
+      "end_line": 29,
+      "path": "python/chunker.py",
+      "start_line": 18
+    },
+    {
+      "end_line": 45,
+      "path": "python/chunker.py",
+      "start_line": 31
+    },
+    {
+      "end_line": 62,
+      "path": "python/chunker.py",
+      "start_line": 47
+    },
+    {
+      "end_line": 80,
+      "path": "python/chunker.py",
+      "start_line": 65
+    },
+    {
+      "end_line": 2,
+      "path": "python/over_128.py",
+      "start_line": 1
+    },
+    {
+      "end_line": 20,
+      "path": "rust/cache.rs",
+      "start_line": 1
+    },
+    {
+      "end_line": 21,
+      "path": "src/auth_service.py",
+      "start_line": 1
+    },
+    {
+      "end_line": 38,
+      "path": "src/auth_service.py",
+      "start_line": 22
+    },
+    {
+      "end_line": 54,
+      "path": "src/auth_service.py",
+      "start_line": 40
+    },
+    {
+      "end_line": 70,
+      "path": "src/auth_service.py",
+      "start_line": 56
+    },
+    {
+      "end_line": 38,
+      "path": "src/router.go",
+      "start_line": 1
+    },
+    {
+      "end_line": 67,
+      "path": "src/router.go",
+      "start_line": 40
+    },
+    {
+      "end_line": 18,
+      "path": "test/auth_service_test.py",
+      "start_line": 1
+    },
+    {
+      "end_line": 7,
+      "path": "test/auth_test.py",
+      "start_line": 1
+    },
+    {
+      "end_line": 13,
+      "path": "tests/http_parser_test.go",
+      "start_line": 1
+    },
+    {
+      "end_line": 21,
+      "path": "tests/router_test.go",
+      "start_line": 1
+    },
+    {
+      "end_line": 3,
+      "path": "threshold.py",
+      "start_line": 1
+    },
+    {
+      "end_line": 10,
+      "path": "typescript/state_manager.d.ts",
+      "start_line": 1
+    },
+    {
+      "end_line": 21,
+      "path": "typescript/state_manager.ts",
+      "start_line": 1
+    },
+    {
+      "end_line": 15,
+      "path": "web/contracts.d.ts",
+      "start_line": 1
+    },
+    {
+      "end_line": 7,
+      "path": "web/sessionStore.ts",
+      "start_line": 1
+    },
+    {
+      "end_line": 26,
+      "path": "web/sessionStore.ts",
+      "start_line": 7
+    },
+    {
+      "end_line": 38,
+      "path": "web/sessionStore.ts",
+      "start_line": 28
+    }
+  ],
+  "files": [
+    {
+      "bytes": 280,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "README.md",
+      "language": "markdown"
+    },
+    {
+      "bytes": 187,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "compat/cache.rs",
+      "language": "rust"
+    },
+    {
+      "bytes": 668,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "compat/legacy_adapter.py",
+      "language": "python"
+    },
+    {
+      "bytes": 182,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "config/search.yaml",
+      "language": "yaml"
+    },
+    {
+      "bytes": 191,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "config/settings.yaml",
+      "language": "yaml"
+    },
+    {
+      "bytes": 189,
+      "chunk_count": 0,
+      "classification": "unsupported_content_type",
+      "file_path": "data/catalog.json",
+      "language": "json"
+    },
+    {
+      "bytes": 157,
+      "chunk_count": 0,
+      "classification": "unsupported_content_type",
+      "file_path": "data/metrics.csv",
+      "language": "csv"
+    },
+    {
+      "bytes": 56,
+      "chunk_count": 0,
+      "classification": "unsupported_content_type",
+      "file_path": "data/records.csv",
+      "language": "csv"
+    },
+    {
+      "bytes": 74,
+      "chunk_count": 0,
+      "classification": "unsupported_content_type",
+      "file_path": "data/records.json",
+      "language": "json"
+    },
+    {
+      "bytes": 740,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "examples/login_example.ts",
+      "language": "typescript"
+    },
+    {
+      "bytes": 219,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "examples/state_manager.ts",
+      "language": "typescript"
+    },
+    {
+      "bytes": 786,
+      "chunk_count": 2,
+      "classification": "indexed",
+      "file_path": "go/http_parser.go",
+      "language": "go"
+    },
+    {
+      "bytes": 184,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "pkg/__init__.py",
+      "language": "python"
+    },
+    {
+      "bytes": 171,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "python/__init__.py",
+      "language": "python"
+    },
+    {
+      "bytes": 729,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "python/auth.py",
+      "language": "python"
+    },
+    {
+      "bytes": 3045,
+      "chunk_count": 5,
+      "classification": "indexed",
+      "file_path": "python/chunker.py",
+      "language": "python"
+    },
+    {
+      "bytes": 1,
+      "chunk_count": 0,
+      "classification": "empty",
+      "file_path": "python/empty_under_128.py",
+      "language": "python"
+    },
+    {
+      "bytes": 129,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "python/over_128.py",
+      "language": "python"
+    },
+    {
+      "bytes": 542,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "rust/cache.rs",
+      "language": "rust"
+    },
+    {
+      "bytes": 2355,
+      "chunk_count": 4,
+      "classification": "indexed",
+      "file_path": "src/auth_service.py",
+      "language": "python"
+    },
+    {
+      "bytes": 1251,
+      "chunk_count": 2,
+      "classification": "indexed",
+      "file_path": "src/router.go",
+      "language": "go"
+    },
+    {
+      "bytes": 619,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "test/auth_service_test.py",
+      "language": "python"
+    },
+    {
+      "bytes": 292,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "test/auth_test.py",
+      "language": "python"
+    },
+    {
+      "bytes": 345,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "tests/http_parser_test.go",
+      "language": "go"
+    },
+    {
+      "bytes": 523,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "tests/router_test.go",
+      "language": "go"
+    },
+    {
+      "bytes": 176,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "threshold.py",
+      "language": "python"
+    },
+    {
+      "bytes": 1,
+      "chunk_count": 0,
+      "classification": "empty",
+      "file_path": "tiny.py",
+      "language": "python"
+    },
+    {
+      "bytes": 255,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "typescript/state_manager.d.ts",
+      "language": "typescript"
+    },
+    {
+      "bytes": 463,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "typescript/state_manager.ts",
+      "language": "typescript"
+    },
+    {
+      "bytes": 336,
+      "chunk_count": 1,
+      "classification": "indexed",
+      "file_path": "web/contracts.d.ts",
+      "language": "typescript"
+    },
+    {
+      "bytes": 1146,
+      "chunk_count": 3,
+      "classification": "indexed",
+      "file_path": "web/sessionStore.ts",
+      "language": "typescript"
+    }
+  ]
+}

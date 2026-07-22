@@ -1,0 +1,102 @@
+{
+  "related": [
+    {
+      "id": "related_python_token_validation",
+      "relevant_paths": [
+        "test/auth_test.py"
+      ],
+      "results": [
+        {
+          "end_line": 7,
+          "file_path": "test/auth_test.py",
+          "score": 0.6804555058479309,
+          "semantic_score": 0.6804555058479309,
+          "start_line": 1
+        },
+        {
+          "end_line": 70,
+          "file_path": "src/auth_service.py",
+          "score": 0.45689427852630615,
+          "semantic_score": 0.45689427852630615,
+          "start_line": 56
+        },
+        {
+          "end_line": 21,
+          "file_path": "compat/legacy_adapter.py",
+          "score": 0.44604945182800293,
+          "semantic_score": 0.44604945182800293,
+          "start_line": 1
+        },
+        {
+          "end_line": 5,
+          "file_path": "python/__init__.py",
+          "score": 0.4454590082168579,
+          "semantic_score": 0.4454590082168579,
+          "start_line": 1
+        },
+        {
+          "end_line": 21,
+          "file_path": "src/auth_service.py",
+          "score": 0.4376370906829834,
+          "semantic_score": 0.4376370906829834,
+          "start_line": 1
+        }
+      ],
+      "source": {
+        "end_line": 20,
+        "file_path": "python/auth.py",
+        "start_line": 1
+      },
+      "top_k": 5
+    },
+    {
+      "id": "related_go_http_parser",
+      "relevant_paths": [
+        "tests/http_parser_test.go"
+      ],
+      "results": [
+        {
+          "end_line": 13,
+          "file_path": "tests/http_parser_test.go",
+          "score": 0.5882432460784912,
+          "semantic_score": 0.5882432460784912,
+          "start_line": 1
+        },
+        {
+          "end_line": 12,
+          "file_path": "go/http_parser.go",
+          "score": 0.520808219909668,
+          "semantic_score": 0.520808219909668,
+          "start_line": 1
+        },
+        {
+          "end_line": 21,
+          "file_path": "tests/router_test.go",
+          "score": 0.3757838010787964,
+          "semantic_score": 0.3757838010787964,
+          "start_line": 1
+        },
+        {
+          "end_line": 67,
+          "file_path": "src/router.go",
+          "score": 0.2850375771522522,
+          "semantic_score": 0.2850375771522522,
+          "start_line": 40
+        },
+        {
+          "end_line": 38,
+          "file_path": "src/router.go",
+          "score": 0.25365304946899414,
+          "semantic_score": 0.25365304946899414,
+          "start_line": 1
+        }
+      ],
+      "source": {
+        "end_line": 32,
+        "file_path": "go/http_parser.go",
+        "start_line": 14
+      },
+      "top_k": 5
+    }
+  ]
+}

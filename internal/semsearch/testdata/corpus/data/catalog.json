@@ -1,0 +1,7 @@
+{
+  "accounts": [
+    {"id": "user-001", "display_name": "Ada Example", "active": true},
+    {"id": "user-002", "display_name": "Lin Example", "active": false}
+  ],
+  "schema_version": 1
+}

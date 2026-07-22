@@ -1,0 +1,480 @@
+{
+  "queries": [
+    {
+      "alpha": 0.3,
+      "id": "symbol_session_token_validator",
+      "kind": "symbol",
+      "query": "SessionTokenValidator",
+      "relevant_paths": [
+        "python/auth.py"
+      ],
+      "results": [
+        {
+          "end_line": 20,
+          "file_path": "python/auth.py",
+          "score": 0.07295326566214282,
+          "semantic_score": 0.3234219551086426,
+          "start_line": 1
+        },
+        {
+          "end_line": 7,
+          "file_path": "web/sessionStore.ts",
+          "score": 0.01879171136531892,
+          "semantic_score": 0.38410335779190063,
+          "start_line": 1
+        },
+        {
+          "end_line": 70,
+          "file_path": "src/auth_service.py",
+          "score": 0.01712197883227445,
+          "semantic_score": 0.2211485505104065,
+          "start_line": 56
+        },
+        {
+          "end_line": 21,
+          "file_path": "typescript/state_manager.ts",
+          "score": 0.015935324157386875,
+          "semantic_score": 0.32607531547546387,
+          "start_line": 1
+        },
+        {
+          "end_line": 9,
+          "file_path": "config/settings.yaml",
+          "score": 0.013849192968188597,
+          "semantic_score": 0.09174364805221558,
+          "start_line": 1
+        },
+        {
+          "end_line": 15,
+          "file_path": "web/contracts.d.ts",
+          "score": 0.011178935535653186,
+          "semantic_score": 0.31111830472946167,
+          "start_line": 1
+        },
+        {
+          "end_line": 10,
+          "file_path": "typescript/state_manager.d.ts",
+          "score": 0.011088820104202302,
+          "semantic_score": 0.34398114681243896,
+          "start_line": 1
+        },
+        {
+          "end_line": 5,
+          "file_path": "python/__init__.py",
+          "score": 0.008747613636558519,
+          "semantic_score": 0.5908966064453125,
+          "start_line": 1
+        }
+      ],
+      "top_k": 8
+    },
+    {
+      "alpha": 0.3,
+      "id": "symbol_parse_http_response",
+      "kind": "symbol",
+      "query": "ParseHTTPResponse",
+      "relevant_paths": [
+        "go/http_parser.go"
+      ],
+      "results": [
+        {
+          "end_line": 32,
+          "file_path": "go/http_parser.go",
+          "score": 0.07788471708090956,
+          "semantic_score": 0.6554031372070312,
+          "start_line": 14
+        },
+        {
+          "end_line": 38,
+          "file_path": "src/router.go",
+          "score": 0.017932506074291955,
+          "semantic_score": 0.13815438747406006,
+          "start_line": 1
+        },
+        {
+          "end_line": 15,
+          "file_path": "web/contracts.d.ts",
+          "score": 0.011484436114041418,
+          "semantic_score": 0.06841439008712769,
+          "start_line": 1
+        },
+        {
+          "end_line": 12,
+          "file_path": "go/http_parser.go",
+          "score": 0.007936507936507936,
+          "semantic_score": 0.315165638923645,
+          "start_line": 1
+        },
+        {
+          "end_line": 67,
+          "file_path": "src/router.go",
+          "score": 0.007320971867007673,
+          "semantic_score": 0.10812920331954956,
+          "start_line": 40
+        },
+        {
+          "end_line": 29,
+          "file_path": "python/chunker.py",
+          "score": 0.006627739460116293,
+          "semantic_score": 0.14844131469726562,
+          "start_line": 18
+        },
+        {
+          "end_line": 70,
+          "file_path": "src/auth_service.py",
+          "score": 0.005449734797530692,
+          "semantic_score": 0.018792331218719482,
+          "start_line": 56
+        },
+        {
+          "end_line": 13,
+          "file_path": "tests/http_parser_test.go",
+          "score": 0.005392002287103476,
+          "semantic_score": 0.6475883722305298,
+          "start_line": 1
+        }
+      ],
+      "top_k": 8
+    },
+    {
+      "alpha": 0.3,
+      "id": "symbol_state_manager",
+      "kind": "symbol",
+      "query": "StateManager",
+      "relevant_paths": [
+        "typescript/state_manager.ts"
+      ],
+      "results": [
+        {
+          "end_line": 21,
+          "file_path": "typescript/state_manager.ts",
+          "score": 0.10499704562797858,
+          "semantic_score": 0.35306859016418457,
+          "start_line": 1
+        },
+        {
+          "end_line": 10,
+          "file_path": "typescript/state_manager.d.ts",
+          "score": 0.05343781987235936,
+          "semantic_score": 0.277172327041626,
+          "start_line": 1
+        },
+        {
+          "end_line": 80,
+          "file_path": "python/chunker.py",
+          "score": 0.007756300464888672,
+          "semantic_score": 0.09917259216308594,
+          "start_line": 65
+        },
+        {
+          "end_line": 7,
+          "file_path": "web/sessionStore.ts",
+          "score": 0.006945403866831077,
+          "semantic_score": 0.19890350103378296,
+          "start_line": 1
+        },
+        {
+          "end_line": 21,
+          "file_path": "src/auth_service.py",
+          "score": 0.006477139075537528,
+          "semantic_score": 0.05521577596664429,
+          "start_line": 1
+        },
+        {
+          "end_line": 4,
+          "file_path": "examples/state_manager.ts",
+          "score": 0.005755429266879602,
+          "semantic_score": 0.6234065890312195,
+          "start_line": 1
+        },
+        {
+          "end_line": 12,
+          "file_path": "go/http_parser.go",
+          "score": 0.005439963222233549,
+          "semantic_score": 0.07435017824172974,
+          "start_line": 1
+        },
+        {
+          "end_line": 38,
+          "file_path": "src/router.go",
+          "score": 0.005282037591332535,
+          "semantic_score": 0.05048418045043945,
+          "start_line": 1
+        }
+      ],
+      "top_k": 8
+    },
+    {
+      "alpha": 0.5,
+      "id": "nl_validate_bearer_token",
+      "kind": "nl",
+      "query": "validate bearer token expiration and audience",
+      "relevant_paths": [
+        "python/auth.py"
+      ],
+      "results": [
+        {
+          "end_line": 38,
+          "file_path": "src/auth_service.py",
+          "score": 0.018433682784062037,
+          "semantic_score": 0.2350369691848755,
+          "start_line": 22
+        },
+        {
+          "end_line": 20,
+          "file_path": "python/auth.py",
+          "score": 0.01704559432005178,
+          "semantic_score": 0.6362955570220947,
+          "start_line": 1
+        },
+        {
+          "end_line": 7,
+          "file_path": "web/sessionStore.ts",
+          "score": 0.016545310241713254,
+          "semantic_score": 0.25499796867370605,
+          "start_line": 1
+        },
+        {
+          "end_line": 6,
+          "file_path": "README.md",
+          "score": 0.014945237266770084,
+          "semantic_score": 0.10324227809906006,
+          "start_line": 1
+        },
+        {
+          "end_line": 45,
+          "file_path": "python/chunker.py",
+          "score": 0.01407845309793403,
+          "semantic_score": -0.016523122787475586,
+          "start_line": 31
+        },
+        {
+          "end_line": 21,
+          "file_path": "typescript/state_manager.ts",
+          "score": 0.013119229835295027,
+          "semantic_score": 0.07075893878936768,
+          "start_line": 1
+        },
+        {
+          "end_line": 15,
+          "file_path": "web/contracts.d.ts",
+          "score": 0.010900315917082735,
+          "semantic_score": 0.26008105278015137,
+          "start_line": 1
+        },
+        {
+          "end_line": 10,
+          "file_path": "typescript/state_manager.d.ts",
+          "score": 0.009377812048416164,
+          "semantic_score": 0.08641386032104492,
+          "start_line": 1
+        }
+      ],
+      "top_k": 8
+    },
+    {
+      "alpha": 0.5,
+      "id": "nl_parse_http_response",
+      "kind": "nl",
+      "query": "parse an HTTP response status line and headers",
+      "relevant_paths": [
+        "go/http_parser.go"
+      ],
+      "results": [
+        {
+          "end_line": 32,
+          "file_path": "go/http_parser.go",
+          "score": 0.024250824447212885,
+          "semantic_score": 0.778693437576294,
+          "start_line": 14
+        },
+        {
+          "end_line": 29,
+          "file_path": "python/chunker.py",
+          "score": 0.018433682784062037,
+          "semantic_score": 0.30139684677124023,
+          "start_line": 18
+        },
+        {
+          "end_line": 38,
+          "file_path": "src/router.go",
+          "score": 0.016255852079179085,
+          "semantic_score": 0.1441558599472046,
+          "start_line": 1
+        },
+        {
+          "end_line": 21,
+          "file_path": "src/auth_service.py",
+          "score": 0.015461077941641468,
+          "semantic_score": 0.08595681190490723,
+          "start_line": 1
+        },
+        {
+          "end_line": 6,
+          "file_path": "README.md",
+          "score": 0.01443663949933464,
+          "semantic_score": 0.11425435543060303,
+          "start_line": 1
+        },
+        {
+          "end_line": 12,
+          "file_path": "go/http_parser.go",
+          "score": 0.011008788400518275,
+          "semantic_score": 0.38842397928237915,
+          "start_line": 1
+        },
+        {
+          "end_line": 15,
+          "file_path": "web/contracts.d.ts",
+          "score": 0.010310413911839308,
+          "semantic_score": 0.11908447742462158,
+          "start_line": 1
+        },
+        {
+          "end_line": 16,
+          "file_path": "python/chunker.py",
+          "score": 0.007575757575757576,
+          "semantic_score": 0.2867710590362549,
+          "start_line": 1
+        }
+      ],
+      "top_k": 8
+    },
+    {
+      "alpha": 0.5,
+      "id": "nl_refresh_cache",
+      "kind": "nl",
+      "query": "refresh cached records without returning stale values",
+      "relevant_paths": [
+        "rust/cache.rs"
+      ],
+      "results": [
+        {
+          "end_line": 20,
+          "file_path": "rust/cache.rs",
+          "score": 0.02031490535990971,
+          "semantic_score": 0.540919303894043,
+          "start_line": 1
+        },
+        {
+          "end_line": 26,
+          "file_path": "web/sessionStore.ts",
+          "score": 0.01863686287271692,
+          "semantic_score": 0.168005108833313,
+          "start_line": 7
+        },
+        {
+          "end_line": 15,
+          "file_path": "web/contracts.d.ts",
+          "score": 0.01215901399123389,
+          "semantic_score": 0.3392900228500366,
+          "start_line": 1
+        },
+        {
+          "end_line": 62,
+          "file_path": "python/chunker.py",
+          "score": 0.009583177623665413,
+          "semantic_score": 0.07690554857254028,
+          "start_line": 47
+        },
+        {
+          "end_line": 21,
+          "file_path": "src/auth_service.py",
+          "score": 0.009285901297210832,
+          "semantic_score": 0.11090600490570068,
+          "start_line": 1
+        },
+        {
+          "end_line": 9,
+          "file_path": "config/settings.yaml",
+          "score": 0.008480912258885639,
+          "semantic_score": 0.24261659383773804,
+          "start_line": 1
+        },
+        {
+          "end_line": 20,
+          "file_path": "python/auth.py",
+          "score": 0.008223914917707286,
+          "semantic_score": 0.1474745273590088,
+          "start_line": 1
+        },
+        {
+          "end_line": 7,
+          "file_path": "web/sessionStore.ts",
+          "score": 0.00763759328358209,
+          "semantic_score": 0.1348646879196167,
+          "start_line": 1
+        }
+      ],
+      "top_k": 8
+    },
+    {
+      "alpha": 0.5,
+      "id": "nl_chunk_siblings",
+      "kind": "nl",
+      "query": "pack nested functions and adjacent syntax siblings into chunks",
+      "relevant_paths": [
+        "python/chunker.py"
+      ],
+      "results": [
+        {
+          "end_line": 80,
+          "file_path": "python/chunker.py",
+          "score": 0.01935987509758002,
+          "semantic_score": 0.41204315423965454,
+          "start_line": 65
+        },
+        {
+          "end_line": 6,
+          "file_path": "README.md",
+          "score": 0.016876585422197592,
+          "semantic_score": 0.22844064235687256,
+          "start_line": 1
+        },
+        {
+          "end_line": 21,
+          "file_path": "src/auth_service.py",
+          "score": 0.015709496661920095,
+          "semantic_score": 0.05082356929779053,
+          "start_line": 1
+        },
+        {
+          "end_line": 38,
+          "file_path": "src/router.go",
+          "score": 0.008183673343868178,
+          "semantic_score": 0.17962253093719482,
+          "start_line": 1
+        },
+        {
+          "end_line": 45,
+          "file_path": "python/chunker.py",
+          "score": 0.008064516129032258,
+          "semantic_score": 0.3614075779914856,
+          "start_line": 31
+        },
+        {
+          "end_line": 7,
+          "file_path": "web/sessionStore.ts",
+          "score": 0.008023801380039657,
+          "semantic_score": 0.09980535507202148,
+          "start_line": 1
+        },
+        {
+          "end_line": 12,
+          "file_path": "go/http_parser.go",
+          "score": 0.007868237127232783,
+          "semantic_score": 0.11199897527694702,
+          "start_line": 1
+        },
+        {
+          "end_line": 10,
+          "file_path": "config/search.yaml",
+          "score": 0.007806538008847537,
+          "semantic_score": 0.13993942737579346,
+          "start_line": 1
+        }
+      ],
+      "top_k": 8
+    }
+  ]
+}
