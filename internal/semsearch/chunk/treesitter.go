@@ -20,8 +20,10 @@ import (
 )
 
 const (
-	// tsCallTimeout bounds one parse; tsInitTimeout bounds the one-time runtime
-	// build and each grammar's first compile (cold, uncached — large grammars).
+	// tsCallTimeout bounds one parse (instantiate + ts_parse). tsInitTimeout
+	// bounds the one-time runtime build and each grammar's first cold compile,
+	// held off the parse deadline so a slow first compile can never consume the
+	// parse budget and silently downgrade a file to line chunking.
 	tsCallTimeout = 30 * time.Second
 	tsInitTimeout = 120 * time.Second
 	// tsMaxMemoryPages caps an instance's linear memory at 1 GiB (64 KiB/page);
@@ -65,10 +67,13 @@ func tsParse(lang string, src []byte) (node, bool, error) {
 	if err != nil {
 		return node{}, false, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), tsCallTimeout)
-	defer cancel()
 
-	compiled, ok, err := eng.compiledFor(ctx, lang)
+	// A grammar's one-time cold compile runs under the generous init budget, not
+	// the per-parse deadline; on subsequent parses compiledFor returns the cached
+	// module and the wide budget is inert.
+	compileCtx, cancelCompile := context.WithTimeout(context.Background(), tsInitTimeout)
+	defer cancelCompile()
+	compiled, ok, err := eng.compiledFor(compileCtx, lang)
 	if err != nil {
 		return node{}, false, err
 	}
@@ -76,6 +81,8 @@ func tsParse(lang string, src []byte) (node, bool, error) {
 		return node{}, false, nil
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), tsCallTimeout)
+	defer cancel()
 	mod, err := eng.runtime.InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithName(""))
 	if err != nil {
 		return node{}, false, fmt.Errorf("instantiate %s grammar: %w", lang, err)
@@ -135,6 +142,12 @@ func newTSCompilerRuntime(ctx context.Context, compilationCache wazero.Compilati
 		WithCloseOnContextDone(true)), nil
 }
 
+// compileModule performs a grammar's one-time AOT compile. A package var so a
+// test can observe the compile-scoped context, distinct from the parse deadline.
+var compileModule = func(ctx context.Context, rt wazero.Runtime, wasm []byte) (wazero.CompiledModule, error) {
+	return rt.CompileModule(ctx, wasm)
+}
+
 // compiledFor returns the compiled grammar for lang, compiling it on first use.
 // ok is false with a nil error when no grammar is embedded for lang.
 func (e *tsEngine) compiledFor(ctx context.Context, lang string) (wazero.CompiledModule, bool, error) {
@@ -153,7 +166,7 @@ func (e *tsEngine) compiledFor(ctx context.Context, lang string) (wazero.Compile
 	if err != nil {
 		return nil, false, fmt.Errorf("decompress %s grammar: %w", lang, err)
 	}
-	compiled, err := e.runtime.CompileModule(ctx, wasmBytes)
+	compiled, err := compileModule(ctx, e.runtime, wasmBytes)
 	if err != nil {
 		return nil, false, fmt.Errorf("compile %s grammar: %w", lang, err)
 	}
@@ -189,12 +202,26 @@ func runParse(ctx context.Context, mod api.Module, src []byte) (node, bool, erro
 }
 
 // reconstructTree rebuilds the parse tree from bridge.c's flat buffer: a uint32
-// node count followed by pre-order (start, end, child_count) triples.
+// node count followed by pre-order (start, end, child_count) triples. Descent is
+// clamped at the chunker's recursionDepth guard: mergeNodeInner never reads a
+// node's children below that depth, so deeper subtrees cannot affect any chunk
+// and are skipped rather than materialized. This bounds the Go stack against a
+// pathologically deep tree (e.g. hundreds of thousands of nested parens), which
+// would otherwise exhaust it here before the chunker's own guard ever ran.
 func reconstructTree(buf []byte) node {
 	nodes := buf[4:]
 	idx := 0
-	var build func() node
-	build = func() node {
+	// skipSubtrees advances idx past roots complete pre-order subtrees without
+	// materializing them, iteratively so depth cannot exhaust the stack.
+	skipSubtrees := func(roots uint32) {
+		remaining := int(roots)
+		for remaining > 0 {
+			remaining += int(binary.LittleEndian.Uint32(nodes[idx*12+8:])) - 1
+			idx++
+		}
+	}
+	var build func(depth int) node
+	build = func(depth int) node {
 		base := idx * 12
 		n := node{
 			start: binary.LittleEndian.Uint32(nodes[base:]),
@@ -202,15 +229,20 @@ func reconstructTree(buf []byte) node {
 		}
 		nchildren := binary.LittleEndian.Uint32(nodes[base+8:])
 		idx++
-		if nchildren > 0 {
-			n.children = make([]node, nchildren)
-			for i := range n.children {
-				n.children[i] = build()
-			}
+		if nchildren == 0 {
+			return n
+		}
+		if depth > recursionDepth {
+			skipSubtrees(nchildren)
+			return n
+		}
+		n.children = make([]node, nchildren)
+		for i := range n.children {
+			n.children[i] = build(depth + 1)
 		}
 		return n
 	}
-	return build()
+	return build(0)
 }
 
 func gunzip(b []byte) ([]byte, error) {

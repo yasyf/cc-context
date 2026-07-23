@@ -1,6 +1,7 @@
 package chunk
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -45,6 +46,31 @@ func TestChunkSourceLineFallback(t *testing.T) {
 	}
 	if got[0].StartLine != 1 || got[0].EndLine != 3 {
 		t.Errorf("lines = %d-%d, want 1-3", got[0].StartLine, got[0].EndLine)
+	}
+}
+
+// TestChunkOversizedSkipsDecode pins C5: the 1 MB gate is checked before the
+// whole content is decoded, so an oversized input is rejected without the large
+// intermediate allocation decodeReplace would make.
+func TestChunkOversizedSkipsDecode(t *testing.T) {
+	content := []byte(strings.Repeat("x = 1\n", 200_000)) // ~1.2 MB of valid Python
+	if got := Chunk("big.py", content); got != nil {
+		t.Fatalf("Chunk() = %d chunks, want nil for oversized input", len(got))
+	}
+
+	const iters = 20
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	for range iters {
+		Chunk("big.py", content)
+	}
+	runtime.ReadMemStats(&after)
+
+	perCall := (after.TotalAlloc - before.TotalAlloc) / iters
+	if perCall > uint64(len(content))/2 {
+		t.Errorf("per-call alloc = %d bytes, want << input size %d: the decode must be skipped before the size gate",
+			perCall, len(content))
 	}
 }
 

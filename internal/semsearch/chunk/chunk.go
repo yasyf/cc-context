@@ -29,11 +29,11 @@ func Chunk(path string, content []byte) []semsearch.Chunk {
 	if Classify(lang) == ContentData {
 		return nil
 	}
-
-	source := decodeReplace(content)
 	if len(content) > maxFileBytes {
 		return nil
 	}
+
+	source := decodeReplace(content)
 	if len(content) < emptyFileBytes && pythonStrip(source) == "" {
 		return nil
 	}
