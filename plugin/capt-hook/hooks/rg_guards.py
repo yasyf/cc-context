@@ -20,7 +20,7 @@ from captain_hook import (
     rewrite_command_occurrences,
 )
 
-from .common import LARGE_READ_BYTES, LITERAL_SAFE, carries_expansion, ccx_supports
+from .common import LITERAL_SAFE, carries_expansion, ccx_supports
 from .search_common import (
     CONTEXT_SHORT,
     GrepCall,
@@ -39,6 +39,7 @@ from .search_common import (
     resolve_operand,
     resolved_is_dir,
     search_block,
+    tree_size_capped,
     unquote,
 )
 
@@ -181,21 +182,26 @@ def bounded_file_rg(cmd: Command, *, sink: bool = False, cwd: Path | None = None
     """Report whether one ``rg`` statement is a bounded explicit-file search.
 
     The no-stat lane preserves rg's data-file escape: explicit :data:`NON_SOURCE_EXTS` operands pass
-    by suffix, including paths created earlier in a compound command. The stat lane admits only
-    existing regular-file operands whose total size is no more than :data:`LARGE_READ_BYTES`; count
-    and list-only flags waive the size cap, but never the regular-file requirement. Because rg recurses
-    by default, a directory, glob, missing operand, or operand-less unpiped rg is unbounded. ``-o``,
-    ``--json``, and ``RIPGREP_CONFIG_PATH`` forfeit both lanes because they can multiply output or inject
-    unseen flags. An unknown flag qualifies only on an operand-less pipe sink; the lexer finishes its
-    walk so a later path can never be hidden by that flag. Numeric ``-m``/``--max-count`` caps matching
-    lines per operand but retains the stat lane's size cap because one minified matching line can still
-    be megabytes; the no-stat data-ext lane retains that residual long-line exposure.
+    by suffix, including paths created earlier in a compound command; one that stats as a directory
+    falls out of the suffix lane to the capped walk — rg would recurse into it. The stat lane admits existing
+    regular files and directory trees whose combined walk stays under the byte and entry caps; count
+    and list-only flags waive the size cap only when every operand is a regular file. ``-L`` forfeits
+    directory operands (symlink following breaks the walk's bound); ``-z``, ``-r``/``--replace``, and
+    ``--color=always`` forfeit both lanes — decompression, replacement, and match decoration multiply
+    output past any on-disk size bound.
+    A glob, missing operand, or operand-less unpiped rg is unbounded. ``-o``, ``--json``, and
+    ``RIPGREP_CONFIG_PATH`` forfeit both lanes because they can multiply output or inject unseen flags.
+    An unknown flag qualifies only on an operand-less pipe sink; the lexer finishes its walk so a later
+    path can never be hidden by that flag. Numeric ``-m``/``--max-count`` caps matching lines per operand
+    but retains the stat lane's size cap because one minified matching line can still be megabytes; the
+    no-stat data-ext lane retains that residual long-line exposure.
     """
     if "RIPGREP_CONFIG_PATH" in cmd.env_dict:
         return False
     positionals: list[str] = []
     pattern_from_flag = unknown_flag = max_count = invalid_max_count = False
     output_bounded = only_matching = json = False
+    follow = search_zip = replace = color_always = False
     i, n = 0, len(cmd.args)
     while i < n:
         a = cmd.args[i]
@@ -211,6 +217,8 @@ def bounded_file_rg(cmd: Command, *, sink: bool = False, cwd: Path | None = None
             output_bounded = output_bounded or name in RG_OUTPUT_BOUNDED_LONG
             only_matching = only_matching or name == "only-matching"
             json = json or name == "json"
+            replace = replace or name == "replace"
+            color_always = color_always or (name == "color" and unquote(val) == "always")
             if name in ("regexp", "file"):
                 pattern_from_flag = True
                 if not sep:
@@ -233,6 +241,7 @@ def bounded_file_rg(cmd: Command, *, sink: bool = False, cwd: Path | None = None
             if len(a) == 2:
                 i += 1
         elif head in RG_OP_VALUE_SHORT:
+            replace = replace or head == "r"
             if head == "m":
                 count = unquote(body[1:]) if len(a) > 2 else cmd.args[i + 1] if i + 1 < n else ""
                 max_count = max_count or count.isdigit()
@@ -242,6 +251,8 @@ def bounded_file_rg(cmd: Command, *, sink: bool = False, cwd: Path | None = None
         elif all(ch in RG_BOOLEAN_SHORT for ch in body):
             output_bounded = output_bounded or "c" in body or "l" in body
             only_matching = only_matching or "o" in body
+            follow = follow or "L" in body
+            search_zip = search_zip or "z" in body
         else:
             unknown_flag = True
         i += 1
@@ -250,26 +261,35 @@ def bounded_file_rg(cmd: Command, *, sink: bool = False, cwd: Path | None = None
         return sink and not operands
     if invalid_max_count:
         return False
-    if only_matching or json:
-        return False
+    if only_matching or json or replace or color_always or search_zip:
+        return False  # match decoration, replacement, or decompression multiplies output past any size bound
     if not operands:
         return sink
-    if max_count and any(p.endswith("/") or has_magic(p) or resolved_is_dir(p, cwd) for p in operands):
+    if max_count and any(has_magic(p) or "{" in p for p in operands):
         return False
-    if all(not p.endswith("/") and Path(p).suffix.lower() in NON_SOURCE_EXTS for p in operands):
+    if all(
+        not p.endswith("/")
+        and Path(p).suffix.lower() in NON_SOURCE_EXTS
+        and "{" not in p
+        and not resolved_is_dir(p, cwd)
+        for p in operands
+    ):
         return True
-    if any(has_magic(p) for p in operands):
-        return False
+    if any(has_magic(p) or "{" in p or carries_expansion(p) for p in operands):
+        return False  # an unexpanded glob/brace/`$`/`~` operand stats as a literal, not as its expansion
     resolved = [resolve_operand(p, cwd) for p in operands]
     if any(r is None for r in resolved):
         return False
-    try:
-        stats = [r.stat() for r in resolved]
-    except OSError:
+    if output_bounded:
+        try:
+            stats = [r.stat() for r in resolved]
+        except OSError:
+            return False
+        if all(S_ISREG(result.st_mode) for result in stats):
+            return True
+    if follow and any(resolved_is_dir(p, cwd) for p in operands):
         return False
-    if not all(S_ISREG(result.st_mode) for result in stats):
-        return False
-    return output_bounded or sum(result.st_size for result in stats) <= LARGE_READ_BYTES
+    return tree_size_capped(operands, cwd=cwd)
 
 
 def rg_occurrence_expands(cmd: Command) -> bool:
@@ -483,15 +503,26 @@ def rg_bounded(occ: Occurrence, *, cwd: Path | None) -> bool:
     Mirrors :func:`~hooks.grep_guards.grep_bounded`: :func:`bounded_file_rg` proves its own operands
     bounded (stats resolved against the effective ``cwd``), and
     :func:`~hooks.search_common.downstream_allowed` proves its output pipeline terminates in a bounding
-    sink (``head``/``tail``/``wc``), so the exact command runs verbatim rather than splicing ccx into the
-    pipe. The downstream lane fails closed on unparseable operands and keeps the policy screens — a
-    session transcript, hidden-segment dependency path (``.venv/…``), or git-ignored/out-of-repo operand
-    blocks with its steer regardless of the sink, since that is policy, not boundedness.
+    sink (``head``/``tail``/``wc`` or a ``sed``/``awk`` head-equivalent), so the exact command runs
+    verbatim rather than splicing ccx into the pipe. The directory and downstream lanes fail closed on
+    unparseable operands and keep the policy screens — a session transcript, hidden-segment dependency
+    path (``.venv/…``), or git-ignored/out-of-repo operand blocks with its steer regardless of the sink,
+    since that is policy, not boundedness.
     """
     inner = occ.command.unwrapped
-    return bounded_file_rg(inner, sink=occ.prev_op == "|", cwd=cwd) or downstream_allowed(
-        occ, rg_operands(inner), cwd=cwd
-    )
+    operands = rg_operands(inner)
+    if (
+        # A RIPGREP_CONFIG_PATH assignment anywhere on the line (a prior `export` included) injects
+        # flags the parser never sees; the sink lane survives it — the terminal caps output regardless.
+        "RIPGREP_CONFIG_PATH" not in occ.line.raw
+        and bounded_file_rg(inner, sink=occ.prev_op == "|", cwd=cwd)
+        and (
+            operands is None
+            or not any(resolved_is_dir(p, cwd) and path_blocked(p, cwd=cwd) for p in operands)
+        )
+    ):
+        return True
+    return downstream_allowed(occ, operands, cwd=cwd)
 
 
 class RgFlood(CustomCommandLineCondition):
@@ -520,10 +551,13 @@ def rg_block(evt: PreToolUseEvent, cl: CommandLine, *, reason: str | None = None
         "Dependency source (`.venv`, vendored pkgs): spawn the `cc-context:dep-reader` agent "
         "with the package and your question — it returns cited conclusions, never the source. "
         "Inline: `ccx repo locate <pkg>` (CLI-only), then `ccx code grep`/`outline`/`read` with the printed path. "
-        "Simple literal `rg` auto-rewrites to `ccx code grep`; this one didn't — a regex pattern, an "
-        "unmappable flag (`-t`/`-r`/`--no-ignore`/…), an ignored-dir target, an expansion "
-        "(`~`/`$`/`$(…)`), a wrapper, or an unbounded recursive target. Explicit data files and existing "
-        "regular files under the size cap run as-is; count/list-only searches run regardless of file size. "
+        "Simple literal `rg` auto-rewrites to `ccx code grep`; an rg runs as-is when its explicit targets "
+        "are all data files, existing files — or directories (rg recurses by default) — whose bytes total "
+        "under the size cap (count/list-only searches over regular files run regardless of file size), or "
+        "when its pipeline ends in a bounding sink (`head`, in-cap `tail -n`, `wc`, `sed -n '1,20p'`, "
+        "`awk 'NR<=20'`). This one didn't qualify — a regex pattern, an unmappable flag "
+        "(`-t`/`-r`/`--no-ignore`/…), an ignored-dir target, an expansion (`~`/`$`/`$(…)`), a wrapper, "
+        "an over-cap or unwalkable target, or an unbounded recursive target. "
         "Escape hatch: pipe input into it (`… | rg`).",
         cl=cl,
         reason=reason,
@@ -608,11 +642,13 @@ rewrite_command_occurrences(
         Input(command="rg --line-number foo internal/ | head"): Allow(),
         Input(command="rg --smart-case foo . | head -20"): Allow(),
         Input(command="rg --no-ignore foo . | head"): Block(pattern="ccx repo locate"),  # sink never launders it
-        # Downstream-bounded lane: a `wc`/`head`/`tail` terminal caps context, so the direct rg runs
+        # Downstream-bounded lane: a recognized terminal caps context, so the direct rg runs
         # verbatim (flip of a former Block row); a non-bounding terminal (`cat`) still blocks.
         Input(command="rg foo file.py | wc -l"): Allow(),
+        Input(command="rg foo | sed -n '1,20p'"): Allow(),
+        Input(command="rg foo | sed '1,20p'"): Block(),
         Input(command="rg -l foo | cat"): Block(),  # cat is not a bounding sink → the flood still blocks
-        Input(command="rg -c foo ."): Block(),  # count is bounded only over explicit regular files
+        Input(command="rg -c foo"): Block(),  # operand-less count is still tree-wide
         Input(command="rg -c foo data.json && rg bar ."): Rewrite(
             pattern="rg -c foo data.json && "
         ),  # bounded sibling stays byte-identical while the tree rg splices

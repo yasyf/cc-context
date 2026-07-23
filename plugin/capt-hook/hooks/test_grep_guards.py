@@ -648,13 +648,13 @@ class TestGrepBoundedPassthrough:
     """`GrepFlood` stays silent (a genuine allow) only when every grep occurrence is a bounded search
     ccx can't rewrite, judged per occurrence on its own flags and operands in a fixed order of forfeits:
     a `GREP_OPTIONS` env, `grep -r` with no operand, env alongside path operands, an uninspectable `-f`
-    pattern file, a flag-supplied or positional empty pattern, and (on the stat lane) `-o`. Three shapes
+    pattern file, a flag-supplied or positional empty pattern, and (on the stat lane) `-o`. Four shapes
     stay bounded: every operand an explicit data-ext file (matched by suffix, no stat, `-o` allowed — rg
     parity); a count/quiet/list-only grep over literal (glob-free) non-directory operands at any size or
-    existence; or every
-    operand an existing regular file whose sizes sum under the large-read threshold. A pipe-sink grep
-    with no operand is a bounded stdin filter; with file operands it is judged like any file search.
-    Compound lines are judged per grep occurrence — one unbounded grep fires the whole line.
+    existence; every operand an existing regular file whose sizes sum under the large-read threshold; or
+    a plain-`-r` directory tree under the byte and entry caps. A pipe-sink grep with no operand is a
+    bounded stdin filter; with file operands it is judged like any file search. Compound lines are judged
+    per grep occurrence — one unbounded grep fires the whole line.
     """
 
     @pytest.fixture(autouse=True)
@@ -667,6 +667,13 @@ class TestGrepBoundedPassthrough:
         (tmp_path / "sub").mkdir()
         (tmp_path / "sub" / "real.py").write_text("y\n")  # a descendant reachable only via -r
         (tmp_path / "dir.json").mkdir()  # a real directory named like a data file
+        (tmp_path / "d").mkdir()
+        (tmp_path / "d" / "small.py").write_text("small\n")
+        (tmp_path / "aqua.yaml").write_text("buck2\n")
+        (tmp_path / "aqua").mkdir()
+        (tmp_path / "aqua" / "reindeer.py").write_text("reindeer\n")
+        (tmp_path / "over-cap").mkdir()
+        (tmp_path / "over-cap" / "huge.py").write_text("x" * (common.LARGE_READ_BYTES + 1))
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
         monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
@@ -750,7 +757,6 @@ class TestGrepBoundedPassthrough:
             "grep -x foo big.py",  # -x is bounded but not output-bounded → the size cap still blocks over-cap
             "grep -m1 foo big.py",  # max-count limits lines, not their width, so the size cap remains
             "grep -m nope foo real.py",  # max-count joins the lane only with a numeric value
-            "grep -m1 -r foo sub/",  # max-count does not bound a recursive directory search
             "grep '' real.py",  # empty positional pattern floods every line → block
         ],
     )
@@ -790,6 +796,31 @@ class TestGrepBoundedPassthrough:
         # a small file (these stay count-mode so `grep_to` yields no rewrite that would mask the verdict).
         for ok in ("grep -rc foo real.py", "grep -rq foo real.py"):
             assert grep_verdict(ok) is None
+
+    def test_plain_recursive_small_directory_is_bounded(self) -> None:
+        evt = make_evt("grep -ri foo d/")
+        assert grep_guards.bounded_file_grep(evt.cmd.line.primary, cwd=evt.cwd)
+
+    def test_reported_sed_regression_runs_verbatim(self) -> None:
+        command = (
+            'grep -riE "buck2|reindeer" aqua.yaml aqua/ 2>/dev/null '
+            "| grep -v vendor | sort -u | sed -n '1,20p'"
+        )
+        assert grep_verdict(command) is None
+
+    def test_dereference_recursive_directory_is_not_bounded(self) -> None:
+        evt = make_evt("grep -R foo d/")
+        assert not grep_guards.bounded_file_grep(evt.cmd.line.primary, cwd=evt.cwd)
+
+    def test_over_cap_directory_blocks_with_reason(self) -> None:
+        command = "grep -r 'a^b' over-cap/"
+        assert isinstance(grep_verdict(command), HookResult)
+        evt, occ = event_occurrence(command)
+        assert search_common.block_reason(occ, cwd=evt.cwd) == "`over-cap/` tree exceeds the size cap"
+
+    def test_max_count_plain_recursive_small_directory_is_bounded(self) -> None:
+        evt = make_evt("grep -rm5 foo d/")
+        assert grep_guards.bounded_file_grep(evt.cmd.line.primary, cwd=evt.cwd)
 
     def test_unknown_flag_is_not_bounded(self) -> None:
         # Conservative lexer: an unknown flag leaves the grep unbounded (it fires), never a wrong allow —

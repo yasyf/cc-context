@@ -19,7 +19,7 @@ from captain_hook import (
     rewrite_command_occurrences,
 )
 
-from .common import LARGE_READ_BYTES, LITERAL_SAFE, carries_expansion, ccx_supports
+from .common import LITERAL_SAFE, carries_expansion, ccx_supports
 from .search_common import (
     CONTEXT_SHORT,
     GrepCall,
@@ -36,10 +36,9 @@ from .search_common import (
     note_text,
     path_blocked,
     relativize_operand,
-    resolve_operand,
     resolved_is_dir,
-    resolved_is_file,
     search_block,
+    tree_size_capped,
     unquote,
 )
 
@@ -137,9 +136,10 @@ def grep_targets(paths: list[str], include: str | None, *, cwd: Path | None) -> 
 def valid_brace(body: str) -> bool:
     """Report whether an interval body (``{m}``/``{m,n}``/``{m,}``) is digits-and-comma with every
     bound within GNU grep's ``RE_DUP_MAX`` (32767) ceiling — above it GNU errors while Rust compiles,
-    so an oversized interval must not rewrite.
+    so an oversized interval must not rewrite. An over-length body short-circuits before Python's
+    int-conversion limit can raise.
     """
-    if re.fullmatch(r"\d+(,\d*)?", body) is None:
+    if len(body) > 11 or re.fullmatch(r"\d+(,\d*)?", body) is None:
         return False
     return all(int(part) <= 32767 for part in body.split(",") if part)
 
@@ -460,7 +460,7 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False, cwd: Path | None = No
     end of a pipe (``… | grep``): with no path operand it just filters stdin, so an unparseable or
     operand-less sink grep is presumed a bounded filter, whereas the same shape unpiped is not.
 
-    Three shapes qualify as a bounded file search:
+    Four shapes qualify as a bounded file search:
 
     - *data-ext textual*: every operand is an explicit :data:`NON_SOURCE_EXTS` file matched by suffix
       with no stat, so a file created earlier in the same compound command or addressed relative to an
@@ -477,6 +477,9 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False, cwd: Path | None = No
       ``-m``/``--max-count`` caps matching lines per operand but stays in this size-capped lane: one
       minified matching line can still be megabytes. The no-stat data-ext lane retains that residual
       long-line exposure.
+    - *bounded plain-recursive trees*: directory operands under plain ``-r`` join the stat lane when
+      the combined walk stays under the byte and entry caps. ``-R`` and directory/device handling flags
+      forfeit because they can follow symlinks or change how non-regular inputs are read.
 
     Conservative throughout: a ``GREP_OPTIONS`` env (which can inject ``-r``/``-o`` the parser never
     sees), any env alongside path operands, an uninspectable ``-f`` pattern file, a flag-supplied empty
@@ -488,6 +491,7 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False, cwd: Path | None = No
     args = cmd.args
     positionals: list[str] = []
     pattern_from_flag = only_matching = pattern_file = empty_flag_pattern = recursive = output_bounded = False
+    dereference = color_always = False
     max_count = invalid_max_count = False
     unknown_flag = False
     i, n = 0, len(args)
@@ -514,6 +518,7 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False, cwd: Path | None = No
                     i += 1
             elif name in BOUNDED_VALUE_LONG:
                 recursive = recursive or name == "directories"  # any --directories value → assume recursive
+                dereference = dereference or name in ("directories", "devices")
                 if name == "max-count":
                     count = unquote(val) if sep else args[i + 1] if i + 1 < n else ""
                     max_count = max_count or count.isdigit()
@@ -522,6 +527,8 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False, cwd: Path | None = No
                     i += 1
             elif name in BOUNDED_BOOL_LONG:
                 recursive = recursive or name in ("recursive", "dereference-recursive")
+                dereference = dereference or name == "dereference-recursive"
+                color_always = color_always or (name in ("color", "colour") and unquote(val) == "always")
                 only_matching = only_matching or name == "only-matching"
                 output_bounded = output_bounded or name in (
                     "count", "quiet", "silent", "files-with-matches", "files-without-match"
@@ -542,14 +549,30 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False, cwd: Path | None = No
                 i += 1
         elif head in BOUNDED_VALUE_SHORT:
             recursive = recursive or head == "d"  # -d [recurse] → assume recursive
+            dereference = dereference or head in ("d", "D")
             if head == "m":
                 count = unquote(body[1:]) if len(a) > 2 else args[i + 1] if i + 1 < n else ""
                 max_count = max_count or count.isdigit()
                 invalid_max_count = invalid_max_count or not count.isdigit()
             if len(a) == 2 and i + 1 < n:
                 i += 1
+        elif "m" in body[1:]:
+            prefix, _, count = body.partition("m")
+            if body.count("m") != 1 or not all(ch in BOUNDED_BOOL_SHORT for ch in prefix):
+                unknown_flag = True
+            else:
+                recursive = recursive or "r" in prefix or "R" in prefix
+                dereference = dereference or "R" in prefix
+                only_matching = only_matching or "o" in prefix
+                output_bounded = output_bounded or any(ch in "cqlL" for ch in prefix)
+                if not count and i + 1 < n:
+                    i += 1
+                    count = args[i]
+                max_count = max_count or count.isdigit()
+                invalid_max_count = invalid_max_count or not count.isdigit()
         elif all(ch in BOUNDED_BOOL_SHORT for ch in body):
             recursive = recursive or "r" in body or "R" in body
+            dereference = dereference or "R" in body
             only_matching = only_matching or "o" in body
             output_bounded = output_bounded or any(ch in "cqlL" for ch in body)
         else:
@@ -575,12 +598,15 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False, cwd: Path | None = No
         return False  # env with paths, an uninspectable -f pattern file, or a flag-supplied empty pattern
     if empty_positional_pattern:
         return False  # an empty positional pattern floods every line
-    if max_count and any(
-        p.endswith("/") or any(ch in p for ch in "*?[{") or resolved_is_dir(p, cwd) for p in paths
-    ):
+    if max_count and any(any(ch in p for ch in "*?[{") for p in paths):
         return False
-    # Data files pass by suffix, no stat; recursion forfeits it — a dir named like a data file floods.
-    if not recursive and all(not p.endswith("/") and Path(p).suffix.lower() in NON_SOURCE_EXTS for p in paths):
+    if color_always:
+        return False  # --color=always wraps every match in SGR bytes, multiplying output past the size bound
+    # Data files pass by suffix, no stat; recursion forfeits it — a dir named like a data file floods —
+    # and a brace operand forfeits: `x.{log,py}` expands past the suffix. A `~`/`$` prefix keeps it.
+    if not recursive and all(
+        not p.endswith("/") and Path(p).suffix.lower() in NON_SOURCE_EXTS and "{" not in p for p in paths
+    ):
         return True
     if only_matching:
         return False  # -o forfeits the stat lane — per-match prefixes multiply output past the size bound
@@ -588,9 +614,11 @@ def bounded_file_grep(cmd: Command, *, sink: bool = False, cwd: Path | None = No
         # -c/-q/-l/-L is one line per operand at any size or existence; directories, unexpanded
         # glob/brace operands, and -r/-R fan back out.
         return not any(p.endswith("/") or any(ch in p for ch in "*?[{") or resolved_is_dir(p, cwd) for p in paths)
-    if not all(resolved_is_file(p, cwd) for p in paths):
+    if any(any(ch in p for ch in "*?[{") or carries_expansion(p) for p in paths):
+        return False  # an unexpanded glob/brace/`$`/`~` operand stats as a literal, not as its expansion
+    if any(resolved_is_dir(p, cwd) and (not recursive or dereference) for p in paths):
         return False
-    return sum(resolve_operand(p, cwd).stat().st_size for p in paths) <= LARGE_READ_BYTES
+    return tree_size_capped(paths, cwd=cwd)
 
 
 def grep_operands(cmd: Command) -> list[str] | None:
@@ -637,6 +665,12 @@ def grep_operands(cmd: Command) -> list[str] | None:
         elif head in BOUNDED_VALUE_SHORT:
             if len(a) == 2 and i + 1 < n:
                 i += 1
+        elif "m" in body[1:]:
+            prefix, _, count = body.partition("m")
+            if body.count("m") != 1 or not all(ch in BOUNDED_BOOL_SHORT for ch in prefix):
+                return None
+            if not count and i + 1 < n:
+                i += 1
         elif not all(ch in BOUNDED_BOOL_SHORT for ch in body):
             return None
         i += 1
@@ -667,16 +701,27 @@ def grep_bounded(occ: Occurrence, *, cwd: Path | None) -> bool:
 
     Two independent lanes bound a grep. :func:`bounded_file_grep` proves its own operands bounded
     (stats resolved against the effective ``cwd``), and :func:`~hooks.search_common.downstream_allowed`
-    proves its output pipeline terminates in a bounding sink (``head``/``tail``/``wc``) — the terminal
-    caps what enters context, so the exact command runs verbatim rather than splicing ccx into the pipe.
-    The downstream lane fails closed on unparseable operands and keeps the policy screens: a session
-    transcript, hidden-segment dependency path, or git-ignored/out-of-repo operand blocks with its
-    steer regardless of the sink, since that is policy, not boundedness.
+    proves its output pipeline terminates in a bounding sink (``head``/``tail``/``wc`` or a ``sed``/``awk``
+    head-equivalent) — the terminal caps what enters context, so the exact command runs verbatim rather
+    than splicing ccx into the pipe. The directory and downstream lanes fail closed on unparseable
+    operands and keep the policy screens: a session transcript, hidden-segment dependency path, or
+    git-ignored/out-of-repo operand blocks with its steer regardless of the sink, since that is policy,
+    not boundedness.
     """
     inner = occ.command.unwrapped
-    return bounded_file_grep(inner, sink=occ.prev_op == "|", cwd=cwd) or downstream_allowed(
-        occ, grep_operands(inner), cwd=cwd
-    )
+    operands = grep_operands(inner)
+    if (
+        # A GREP_OPTIONS assignment anywhere on the line (a prior `export` included) injects flags the
+        # parser never sees; the sink lane survives it — the terminal caps output regardless.
+        "GREP_OPTIONS" not in occ.line.raw
+        and bounded_file_grep(inner, sink=occ.prev_op == "|", cwd=cwd)
+        and (
+            operands is None
+            or not any(resolved_is_dir(p, cwd) and path_blocked(p, cwd=cwd) for p in operands)
+        )
+    ):
+        return True
+    return downstream_allowed(occ, operands, cwd=cwd)
 
 
 class GrepFlood(CustomCommandLineCondition):
@@ -702,11 +747,12 @@ def grep_block(evt: PreToolUseEvent, cl: CommandLine, *, reason: str | None = No
         "Use `ccx code grep <text>` / `ccx code search` for code; the built-in Grep tool or `rg` for "
         "literal content in non-source files. Several terms? One call covers them: "
         "`ccx code grep 'a|b|c' --regex`. "
-        "Simple literal and simple-regex greps auto-rewrite to `ccx code grep`; a grep whose explicit "
-        "targets are all data files (`.log`/`.json`/`.yaml`/…) or existing files under the size cap "
-        "(count/quiet/list-only greps — `-c`/`-q`/`-l`/`-L` — run regardless of size or existence) runs "
-        "as-is, even inside pipes and `&&`/`;` chains. This one didn't qualify — a tree-wide or directory "
-        "search, a recursive flag, an unmappable flag, or an over-cap/missing source-file target. "
+        "Simple literal and simple-regex greps auto-rewrite to `ccx code grep`; a grep runs as-is when "
+        "its explicit targets are all data files (`.log`/`.json`/`.yaml`/…), existing files — or, under "
+        "plain `-r`, directories — whose bytes total under the size cap (count/quiet/list-only greps — "
+        "`-c`/`-q`/`-l`/`-L` — run regardless of size or existence), or when its pipeline ends in a "
+        "bounding sink (`head`, in-cap `tail -n`, `wc`, `sed -n '1,20p'`, `awk 'NR<=20'`). This one "
+        "didn't qualify — a tree-wide search, an over-cap or unwalkable target, or an unmappable flag. "
         "Escape hatch: pipe input into it (`… | grep`).",
         cl=cl,
         reason=reason,
@@ -807,7 +853,7 @@ rewrite_command_occurrences(
         Input(command="echo x > gen.json; grep -i points gen.json"): Allow(),  # created earlier in the compound
         Input(command="grep -i err app.log | head"): Allow(),  # a downstream pipe no longer disqualifies
         Input(command="cd sub && grep foo notes.json"): Allow(),  # cd-relative data file
-        # Downstream-bounded lane: a direct grep whose output pipeline ends in a head/tail/wc sink runs
+        # Downstream-bounded lane: a direct grep whose output pipeline ends in a recognized sink runs
         # verbatim — the sink caps context, ccx is never spliced into a pipe. Flip of a former Block row.
         Input(command="grep -r foo src/ | head"): Allow(),
         Input(command="grep -r x . | head -n 20"): Allow(),  # in-cap sink count keeps the lane
@@ -821,6 +867,20 @@ rewrite_command_occurrences(
         Input(command="grep -r x . | tee /dev/tty | head"): Block(),
         Input(command="grep -r x . | tee /dev/stderr | wc -l"): Block(),
         Input(command="grep -r x . | wc --files0-from=-"): Block(),  # wc reading a file list fans out
+        Input(command="grep -rn foo | sed -n '1,20p'"): Allow(),
+        Input(command="grep -rn foo | sed '1,20p'"): Block(),
+        Input(command="grep -rn foo | sed -n '1,20p' extra.txt"): Block(),
+        Input(command="grep -rn foo | awk 'NR<=20'"): Allow(),
+        Input(command="grep -rn foo | awk 'NR>20'"): Block(),
+        Input(command="grep -rn foo | sed -n '1,20p' | cat"): Block(),
+        # A stage that can write past the pipe defeats the sink; `2>&1` merges INTO it and stays exempt.
+        Input(command="grep -rn foo >/dev/stderr | sed -n '1,20p'"): Block(),
+        Input(command="grep -rn foo 2>&1 | sed -n '1,20p'"): Allow(),
+        Input(command='grep -rn foo | awk \'{ print > "/dev/stderr" }\' | sed -n \'1,20p\''): Block(),
+        # An earlier export injects flags env_dict never sees — the operand lanes forfeit, the sink survives.
+        Input(command="export GREP_OPTIONS=-o; grep -q foo x.log"): Block(),
+        Input(command="export GREP_OPTIONS=-o; grep -rn foo | head"): Allow(),
+        Input(command="grep --color=always -q foo x.log"): Block(),  # SGR decoration multiplies output
         # A pipe never launders a flood: a non-bounding terminal keeps the block.
         Input(command="grep -r foo src/ | grep -v x"): Block(),  # terminal is grep -v (a filter), not a sink
         Input(command="grep -rn foo . | sort"): Block(),  # sort is not a bounding sink → no rewrite into the pipe

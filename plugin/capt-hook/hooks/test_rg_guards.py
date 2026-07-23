@@ -297,6 +297,13 @@ class TestRgBoundedPassthrough:
         (tmp_path / "half_b.py").write_text("x" * (common.LARGE_READ_BYTES // 2 + 1))
         (tmp_path / "sub").mkdir()
         (tmp_path / "dir.json").mkdir()
+        (tmp_path / "dir.json" / "huge.json").write_text("x" * (common.LARGE_READ_BYTES + 1))
+        (tmp_path / "notes.yaml").mkdir()
+        (tmp_path / "notes.yaml" / "small.yaml").write_text("small\n")
+        (tmp_path / "d").mkdir()
+        (tmp_path / "d" / "small.py").write_text("small\n")
+        (tmp_path / "over-cap").mkdir()
+        (tmp_path / "over-cap" / "huge.py").write_text("x" * (common.LARGE_READ_BYTES + 1))
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
 
@@ -336,8 +343,6 @@ class TestRgBoundedPassthrough:
             "rg -v foo half_a.py half_b.py",
             "rg -m1 foo big.py",
             "rg -m nope foo real.py",
-            "rg -m1 foo sub",
-            "rg -c foo sub",
             "rg -c foo ghost.py",
             "rg -c foo",
             "rg -v foo '*.py'",
@@ -358,6 +363,10 @@ class TestRgBoundedPassthrough:
             "rg --json foo missing.log",
             "RIPGREP_CONFIG_PATH=rg.conf rg foo real.py",
             "RIPGREP_CONFIG_PATH=rg.conf rg foo missing.log",
+            "rg -z foo real.py",
+            "rg --replace=y foo real.py",
+            "rg --color=always foo real.py",
+            "rg foo f{1,2}.py",
         ],
     )
     def test_forfeits_both_bounded_lanes(self, command: str) -> None:
@@ -369,6 +378,34 @@ class TestRgBoundedPassthrough:
         command = "rg -c foo real.py; printf x | rg -Zr pat /"
         evt = make_evt(command)
         assert rg_guards.RgFlood().check_command_line(evt, evt.cmd.line) is True
+
+    def test_small_directory_is_bounded(self) -> None:
+        evt = make_evt("rg foo d/")
+        assert rg_guards.bounded_file_rg(evt.cmd.line.primary, cwd=evt.cwd)
+
+    def test_data_named_directory_takes_the_walk_lane(self) -> None:
+        # A directory named like a data file must not ride the no-stat suffix lane — rg recurses it.
+        # Piped forms decline the rewrite, so the bounded lanes decide the verdict.
+        assert isinstance(rg_verdict("rg foo dir.json | sort"), HookResult)
+        assert rg_verdict("rg foo notes.yaml | sort") is None
+        evt = make_evt("rg -L foo notes.yaml")
+        assert not rg_guards.bounded_file_rg(evt.cmd.line.primary, cwd=evt.cwd)
+
+    @pytest.mark.parametrize("command", ["rg -L foo d/", "rg -z foo d/"])
+    def test_follow_and_search_zip_directories_block(self, command: str) -> None:
+        evt = make_evt(command)
+        assert not rg_guards.bounded_file_rg(evt.cmd.line.primary, cwd=evt.cwd)
+        assert isinstance(rg_verdict(command), HookResult)
+
+    def test_count_over_small_directory_is_bounded(self) -> None:
+        assert rg_verdict("rg -c foo d/") is None
+
+    def test_over_cap_directory_blocks(self) -> None:
+        command = "rg 'foo.*' over-cap/"
+        assert isinstance(rg_verdict(command), HookResult)
+        evt, occ = event_occurrence(command)
+        assert not rg_guards.bounded_file_rg(occ.command, cwd=evt.cwd)
+        assert search_common.block_reason(occ, cwd=evt.cwd) == "`over-cap/` tree exceeds the size cap"
 
     def test_conditional_cd_declines_cwd_trust(self, tmp_path: Path) -> None:
         # `false && cd` short-circuits — the threaded cwd is declined and the stat lane fails closed.

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
 from pathlib import Path
+from stat import S_ISDIR, S_ISREG
 from typing import TYPE_CHECKING, NamedTuple
 
 from captain_hook import (
@@ -73,6 +75,7 @@ NON_SOURCE_EXTS = frozenset(
 
 # Line cap for a bounding `head -n`/`tail -n` sink; byte counts (`-c`) cap at LARGE_READ_BYTES.
 SINK_LINE_CAP = 2000
+DIR_WALK_ENTRY_CAP = 2000
 
 
 class RgIdentAlternation(CustomCommandLineCondition):
@@ -159,11 +162,18 @@ def unpiped(cl: CommandLine, exe: str) -> bool:
     )
 
 
+def plain_count(count: str, cap: int) -> bool:
+    """Whether ``count`` is a plain ASCII integer within ``cap``. ``str.isdigit`` alone admits
+    Unicode digits (``²``) that ``int()`` rejects, and a thousands-digit run trips Python's
+    int-conversion limit — both fail closed here instead of raising mid-hook."""
+    return count.isascii() and count.isdigit() and len(count) <= 10 and int(count) <= cap
+
+
 def count_bounded(flag: str, count: str) -> bool:
     """Whether a ``head``/``tail`` ``-n``/``-c`` count keeps the sink bounded: a plain number within
     :data:`SINK_LINE_CAP` lines or :data:`~hooks.common.LARGE_READ_BYTES` bytes — ``head -c 100000000``
     is the flood the sink pretends to cap, and a ``+``/suffixed count is not a plain cap."""
-    return count.isdigit() and int(count) <= (LARGE_READ_BYTES if flag == "-c" else SINK_LINE_CAP)
+    return plain_count(count, LARGE_READ_BYTES if flag == "-c" else SINK_LINE_CAP)
 
 
 def tail_bounded(args: tuple[str, ...]) -> bool:
@@ -215,10 +225,149 @@ def head_bounded(args: tuple[str, ...]) -> bool:
     return True
 
 
+def sed_addr_bounded(addr: str) -> bool:
+    """A numeric sed address within the sink cap and at least 1 — BSD sed never matches address 0,
+    so ``0q`` never quits and autoprint floods."""
+    return plain_count(addr, SINK_LINE_CAP) and int(addr) > 0
+
+
+def sed_script_bounded(script: str, *, quiet: bool) -> bool:
+    i, n = 0, len(script)
+    while i < n and script[i].isspace():
+        i += 1
+    start = i
+    while i < n and "0" <= script[i] <= "9":
+        i += 1
+    if i == start:
+        return False
+    first = script[start:i]
+    while i < n and script[i].isspace():
+        i += 1
+    second: str | None = None
+    if i < n and script[i] == ",":
+        i += 1
+        while i < n and script[i].isspace():
+            i += 1
+        start = i
+        while i < n and "0" <= script[i] <= "9":
+            i += 1
+        if i == start:
+            return False
+        second = script[start:i]
+        while i < n and script[i].isspace():
+            i += 1
+    if i >= n:
+        return False
+    command = script[i]
+    i += 1
+    while i < n and script[i].isspace():
+        i += 1
+    if i != n:
+        return False
+    if command == "q":
+        return second is None and sed_addr_bounded(first)
+    if command == "p":
+        return quiet and sed_addr_bounded(first) and (second is None or sed_addr_bounded(second))
+    return False
+
+
+def sed_bounded(args: tuple[str, ...]) -> bool:
+    """Admit only numeric ``p``/``q`` scripts whose output cap is structural.
+
+    ``p`` needs quiet mode because sed's default autoprint otherwise passes the full stream; every
+    unrecognized option, script token, or file operand fails closed.
+    """
+    quiet = False
+    script = None
+    i, n = 0, len(args)
+    while i < n:
+        arg = args[i]
+        if script is not None:
+            return False  # BSD sed reads post-script args as input files, and flag order flips meaning
+        if arg in ("-n", "--quiet", "--silent"):
+            quiet = True
+        elif arg == "-e":
+            if script is not None or i + 1 >= n:
+                return False
+            i += 1
+            script = args[i]
+        elif arg.startswith("-e") and len(arg) > 2:
+            if script is not None:
+                return False
+            script = arg[2:]
+        elif arg.startswith("--expression="):
+            if script is not None:
+                return False
+            script = arg.removeprefix("--expression=")
+        elif arg.startswith("-"):
+            return False
+        else:
+            script = arg
+        i += 1
+    return script is not None and sed_script_bounded(script, quiet=quiet)
+
+
+def awk_tokens(program: str) -> list[str] | None:
+    if "\n" in program or "\r" in program:
+        return None  # a newline separates awk rules — `NR<=20\n{print}` is two rules, the second unconditional
+    tokens: list[str] = []
+    i, n = 0, len(program)
+    while i < n:
+        if program[i].isspace():
+            i += 1
+            continue
+        if program.startswith("print", i):
+            tokens.append("print")
+            i += len("print")
+            continue
+        if program.startswith("NR", i):
+            tokens.append("NR")
+            i += len("NR")
+            continue
+        if program.startswith("$0", i):
+            tokens.append("$0")
+            i += len("$0")
+            continue
+        if program.startswith("<=", i) or program.startswith("==", i):
+            tokens.append(program[i : i + 2])
+            i += 2
+            continue
+        if program[i] in "<{}":
+            tokens.append(program[i])
+            i += 1
+            continue
+        if "0" <= program[i] <= "9":
+            start = i
+            while i < n and "0" <= program[i] <= "9":
+                i += 1
+            tokens.append(program[start:i])
+            continue
+        return None
+    return tokens
+
+
+def awk_bounded(args: tuple[str, ...]) -> bool:
+    """Admit only an ``NR`` comparison with an optional whole-record print action.
+
+    The token grammar excludes flags, extra operands, and every expression whose output bound cannot
+    be proven directly from one numeric comparison.
+    """
+    if len(args) != 1 or args[0].startswith("-"):
+        return False
+    tokens = awk_tokens(args[0])
+    if tokens is None or len(tokens) not in (3, 6, 7) or tokens[0] != "NR" or not tokens[2].isdigit():
+        return False
+    if tokens[3:] not in ([], ["{", "print", "}"], ["{", "print", "$0", "}"]):
+        return False
+    return tokens[1] == "==" or tokens[1] in ("<", "<=") and plain_count(tokens[2], SINK_LINE_CAP)
+
+
 def writes_terminal_device(cmd: Command) -> bool:
-    """Whether a pipeline stage names a terminal-visible device (``/dev/tty*``, ``/dev/std*``) as an
-    argument — output through it reaches the console past any downstream sink."""
-    return any(a.startswith(("/dev/tty", "/dev/std")) for a in cmd.args)
+    """Whether a pipeline stage can write to the console past any downstream sink: a terminal-visible
+    device (``/dev/tty*``, ``/dev/std*``) anywhere in its raw text — argument, redirect target, or an
+    embedded awk/sh program — or a ``>&2`` stdout-to-stderr redirect. ``2>&1`` merges into the pipe
+    and stays exempt."""
+    return "/dev/tty" in cmd.raw or "/dev/std" in cmd.raw or ">&2" in cmd.raw
 
 
 def downstream_bounded(occ: Occurrence) -> bool:
@@ -226,10 +375,11 @@ def downstream_bounded(occ: Occurrence) -> bool:
 
     Walks forward from ``occ`` while each command is pipe-joined (``|``) to the next; the pipeline's
     terminal command bounds what reaches context when it is an in-cap ``head``/non-following ``tail``
-    (:func:`head_bounded`/:func:`tail_bounded`) or a ``wc`` without ``--files0-from`` (a file list to
-    read makes it a fan-out, not a sink). Intermediate stages (``grep -v``, ``sort``, ``sed``) never
-    terminate the walk and never bound — only the last command is judged — but an intermediate ``tee``
-    or any stage naming a terminal-visible device (:func:`writes_terminal_device`) defeats the sink:
+    (:func:`head_bounded`/:func:`tail_bounded`), a head-equivalent ``sed``/``awk`` script, or a ``wc``
+    without ``--files0-from`` (a file list to read makes it a fan-out, not a sink). Intermediate stages
+    (``grep -v``, ``sort``, or non-terminal ``sed``/``awk``) never terminate the walk and never bound —
+    only the last command is judged — but an intermediate ``tee`` or any stage naming a terminal-visible
+    device (:func:`writes_terminal_device`) defeats the sink:
     ``tee /dev/tty | head`` floods the console while ``head`` caps only its own stdout. An occurrence
     heading no pipe, or one whose pipeline ends in ``sort``/``uniq``/``cat``/another ``grep``, returns
     False: running the user's exact command is faithful only when a sink caps its output, and ccx output
@@ -237,6 +387,8 @@ def downstream_bounded(occ: Occurrence) -> bool:
     """
     occurrences = occ.line.occurrences
     cur = occ
+    if writes_terminal_device(cur.command.unwrapped):
+        return False  # the source itself can bypass the pipe (`>/dev/stderr`, `>&2`)
     while cur.next_op == "|":
         cur = occurrences[cur.index + 1]
         inner = cur.command.unwrapped
@@ -245,8 +397,12 @@ def downstream_bounded(occ: Occurrence) -> bool:
         if cur.next_op == "|" and inner.executable == "tee":
             return False
     match cur.command.unwrapped.executable:
+        case "awk" | "gawk" | "mawk" | "nawk":
+            return awk_bounded(cur.command.unwrapped.args)
         case "head":
             return head_bounded(cur.command.unwrapped.args)
+        case "sed" | "gsed":
+            return sed_bounded(cur.command.unwrapped.args)
         case "wc":
             return not any(a.startswith("--files0-from") for a in cur.command.unwrapped.args)
         case "tail":
@@ -507,6 +663,8 @@ def block_reason(occ: Occurrence, *, cwd: Path | None) -> str | None:
             kind = classify_path(p, cwd=cwd)
             if kind is None and not p.endswith("/"):
                 return f"no source file `{p}` on disk"
+            if kind is True and not tree_size_capped([p], cwd=cwd):
+                return f"`{p}` tree exceeds the size cap"
             if kind is False and resolve_operand(p, cwd).stat().st_size > LARGE_READ_BYTES:
                 return f"`{p}` exceeds the read-size cap"
     return None
@@ -523,6 +681,54 @@ def resolve_operand(p: str, cwd: Path | None) -> Path | None:
     if path.is_absolute():
         return path
     return cwd / path if cwd is not None else None
+
+
+def tree_size_capped(operands: list[str], *, cwd: Path | None) -> bool:
+    """Bound a mixed file/tree search by bytes and entries.
+
+    Operand stats follow symlinks — grep/rg dereference command-line paths — while entries inside the
+    walk never do. Both caps exit during the iterative walk; an unreadable, missing, or non-regular
+    entry fails closed. The byte total bounds match content, not the per-line ``path:line`` prefixes a
+    recursive search prepends — a dense-match tree of long paths keeps that residual amplification,
+    like the data-ext lane's long-line exposure.
+    """
+    total = entries_seen = 0
+    pending: list[Path] = []
+    for operand in operands:
+        if (path := resolve_operand(operand, cwd)) is None:
+            return False
+        try:
+            result = path.stat()
+        except OSError:
+            return False
+        if S_ISREG(result.st_mode):
+            total += result.st_size
+            if total > LARGE_READ_BYTES:
+                return False
+        elif S_ISDIR(result.st_mode):
+            pending.append(path)
+        else:
+            return False
+    while pending:
+        try:
+            with os.scandir(pending.pop()) as directory:
+                for entry in directory:
+                    entries_seen += 1
+                    if entries_seen > DIR_WALK_ENTRY_CAP:
+                        return False
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(Path(entry.path))
+                        continue
+                    if not entry.is_file(follow_symlinks=False):
+                        return False
+                    total += entry.stat(follow_symlinks=False).st_size
+                    if total > LARGE_READ_BYTES:
+                        return False
+        except OSError:
+            return False
+    return total <= LARGE_READ_BYTES
 
 
 def resolved_is_dir(p: str, cwd: Path | None) -> bool:
