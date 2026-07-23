@@ -14,6 +14,11 @@
 #   4. brew present, binary absent                    -> brew install, symlink
 #   5. durable data-dir payload at target             -> re-symlink, no re-download
 #   6. static download into the data dir              -> sha256-verify, symlink
+#
+# Consumer extension point: a sibling scripts/install-binary.extras.sh, when
+# present, is sourced after TAG/BARE and before any arm runs — plugin-specific
+# migrations go there, and redefining extras_on_exit() adds work to the EXIT
+# trap. Ships from the consumer's own fragments; most plugins have none.
 set -eu
 
 NAME="ccx"
@@ -29,22 +34,13 @@ BREW_LOCK_MAX_AGE=600
 BREW_LOCK_TOKEN="$$.$(date +%s)"
 BREW_LOCK_HELD=0
 
-# Pinned mode: the target release is the plugin.json version (single source of truth).
-# First match only: the dependencies entries carry "version" keys of their own.
-TAG="v$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$ROOT/.claude-plugin/plugin.json" | head -n 1)"
-
-# Version output is compared v-stripped: goreleaser release binaries print the
-# bare tag (v0.5.0) while brew formula builds stamp their own ldflags (0.5.0).
-BARE="${TAG#v}"
-
-# migration (2026-07-04): overlay plugin updates keep the pre-v0.5.0 bootstrap
-# shim at bin/ccx; a regular file with a #! header there is that shim, not a
-# managed symlink — without this sniff its dev fallback parks it in the dev arm
-# forever. The shim also cached versioned ccx-v* payloads; sweep those.
-if [ -f "$LINK" ] && [ ! -L "$LINK" ] && [ "$(head -c 2 "$LINK" 2>/dev/null)" = "#!" ]; then
-  rm -f "$LINK"
-fi
-rm -f "$DATA_DIR/bin/$NAME-v"* "${XDG_CACHE_HOME:-$HOME/.cache}/cc-context/bin/$NAME-v"*
+# Rename-atomic: bare ln -sf unlinks then re-creates, and a concurrent caller
+# exec'ing $LINK in that window sees ENOENT — fatal on the MCP path now that
+# detached refreshes relink while callers run.
+relink() {
+  ln -sf "$1" "$LINK.$$"
+  mv -f "$LINK.$$" "$LINK"
+}
 
 release_brew_lock() {
   [ "$BREW_LOCK_HELD" -eq 1 ] || return 0
@@ -95,29 +91,45 @@ acquire_brew_lock() {
   BREW_LOCK_HELD=1
 }
 
-# Best-effort: ensure ripgrep is available for `ccx code grep -i/-w`. Deferred to
-# an EXIT trap and backgrounded so it never blocks session start and, on a fresh
-# machine, never races the foreground `brew install ccx` arm below on Homebrew's
-# global lock — the trap fires at exit, after whichever install arm ran, and still
-# covers every early-exit path. ccx falls back to system grep when rg is absent,
-# and no brew is not an error.
-ensure_rg() {
-  command -v rg >/dev/null 2>&1 && return 0
-  command -v brew >/dev/null 2>&1 || return 0
-  brew install ripgrep >/dev/null 2>&1 || true
-}
-trap 'release_brew_lock; ensure_rg &' EXIT
+# Pinned mode: the target release is the plugin.json version (single source of truth).
+# head -n 1: a dependencies block carries its own "version" keys; only the first match
+# is the plugin's own version.
+TAG="v$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$ROOT/.claude-plugin/plugin.json" | head -n 1)"
+
+# Version output is compared v-stripped: goreleaser release binaries print the
+# bare tag (v0.5.0) while brew formula builds stamp their own ldflags (0.5.0).
+BARE="${TAG#v}"
+
+extras_on_exit() { :; }
+if [ -f "$ROOT/scripts/install-binary.extras.sh" ]; then
+  . "$ROOT/scripts/install-binary.extras.sh"
+fi
+trap 'release_brew_lock; extras_on_exit' EXIT
 
 # Arms 1+2: exact target exits, a dev build (describe/pseudo-version suffix, or
 # the bare "dev" of an unstamped build) is never clobbered, a stale release or
 # no version output falls through.
+stale=""
 if [ -x "$LINK" ]; then
   case "$("$LINK" --version 2>/dev/null | head -n 1)" in
     "$TAG" | "$BARE") exit 0 ;;
     dev | v[0-9]*[!0-9.]* | [0-9]*[!0-9.]*) exit 0 ;;
-    v[0-9]* | [0-9]*) ;;
+    v[0-9]* | [0-9]*) stale=1 ;;
     *) ;;
   esac
+fi
+
+# A stale-but-working binary never blocks its caller: hooks and MCP entrypoints
+# run this script on their critical path, where a slow brew or GitHub
+# round-trip in arms 3-6 kills MCP registration outright (the client's 30s
+# connect timeout, never retried). Detach the refresh with all three stdio fds
+# off the caller's pipes, keep serving the installed binary, and let the relink
+# land for a later launch. A broken binary (no version output) still refreshes
+# foreground; --sync (the detached child itself, or a caller that must block)
+# forces the foreground path.
+if [ -n "$stale" ] && [ "${1:-}" != "--sync" ]; then
+  sh "$0" --sync </dev/null >/dev/null 2>&1 &
+  exit 0
 fi
 
 mkdir -p "$ROOT/bin"
@@ -179,7 +191,7 @@ if [ -n "$found" ]; then
       ;;
   esac
   if [ -n "$found" ]; then
-    ln -sf "$found" "$LINK"
+    relink "$found"
     exit 0
   fi
 fi
@@ -208,7 +220,7 @@ if command -v brew >/dev/null 2>&1; then
     found="$(probe)"
   fi
   if [ -n "$found" ]; then
-    ln -sf "$found" "$LINK"
+    relink "$found"
     exit 0
   fi
   echo "$NAME: Homebrew unavailable or failed (e.g. tap-trust #22603); using direct download" >&2
@@ -256,7 +268,7 @@ dest="$DATA_DIR/bin/$NAME"
 if [ -x "$dest" ]; then
   case "$("$dest" --version 2>/dev/null | head -n 1)" in
     "$TAG" | "$BARE")
-      ln -sf "$dest" "$LINK"
+      relink "$dest"
       exit 0
       ;;
   esac
@@ -268,12 +280,10 @@ mkdir -p "$DATA_DIR/bin"
 # running executable fails with ETXTBSY on Linux, and the rename keeps any
 # still-executing inode alive.
 tmp="$(mktemp "$DATA_DIR/bin/.$NAME.XXXXXX")"
-# This overwrites the top-level EXIT trap, so re-arm ensure_rg alongside the tmp
-# cleanup to keep rg provisioning on the download path too.
-trap 'rm -f "$tmp"; release_brew_lock; ensure_rg &' EXIT
-curl -fsSL --retry 2 -o "$tmp" "$url"
+trap 'rm -f "$tmp"; release_brew_lock; extras_on_exit' EXIT
+curl -fsSL --retry 2 --connect-timeout 10 --max-time 300 -o "$tmp" "$url"
 
-if ! sums="$(curl -fsSL --retry 2 "https://github.com/$REPO/releases/download/$TAG/checksums.txt")"; then
+if ! sums="$(curl -fsSL --retry 2 --connect-timeout 10 --max-time 60 "https://github.com/$REPO/releases/download/$TAG/checksums.txt")"; then
   echo "$NAME: could not fetch checksums.txt for $TAG" >&2
   exit 1
 fi
@@ -290,5 +300,5 @@ fi
 
 chmod +x "$tmp"
 mv -f "$tmp" "$dest"
-ln -sf "$dest" "$LINK"
+relink "$dest"
 echo "$NAME: installed $dest ($("$dest" --version))" >&2
