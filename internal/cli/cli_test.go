@@ -494,6 +494,10 @@ func writeAnchorFixture(t *testing.T) string {
 	return path
 }
 
+// secretsFooter is the shared masked-secrets footer every masking surface
+// appends after its cap when exactly the aws-access-token rule fired once.
+const secretsFooter = "# 1 secret(s) masked (aws-access-token) — --reveal-secrets prints raw\n" //nolint:gosec // footer text, not a credential
+
 // fakeAWSKey is a well-known example AWS access key id the aws-access-token
 // masking rule fires on.
 const fakeAWSKey = "AKIAIOSFODNN7EXAMPLE" //nolint:gosec // AWS's documented example key id, not a credential
@@ -519,6 +523,33 @@ func TestReadCommandMasksSecretOutput(t *testing.T) {
 	want := fmt.Sprintf("# read %s:1#%s (1 lines)\nKEY = \"AKIA…[masked:aws-access-token]\"\n# 1 secret(s) masked (aws-access-token) — --reveal-secrets prints raw\n", file, h)
 	if got != want {
 		t.Errorf("read output = %q, want %q", got, want)
+	}
+}
+
+// TestGrepCommandMasksSecretOutput proves the grep surface masks a matched
+// secret at the CLI seam with the shared footer, and that --reveal-secrets
+// prints it raw with no footer.
+func TestGrepCommandMasksSecretOutput(t *testing.T) {
+	skipWithoutGrepEngine(t)
+	file := writeSecretFixture(t)
+
+	got := runCCX(t, "code", "grep", "KEY", file)
+	if strings.Contains(got, fakeAWSKey) {
+		t.Errorf("grep output leaked the raw secret:\n%s", got)
+	}
+	if !strings.Contains(got, "KEY = \"AKIA…[masked:aws-access-token]\"") {
+		t.Errorf("grep output missing the masked match line:\n%s", got)
+	}
+	if !strings.HasSuffix(got, secretsFooter) {
+		t.Errorf("grep output missing the secrets footer:\n%s", got)
+	}
+
+	reveal := runCCX(t, "code", "grep", "KEY", file, "--reveal-secrets")
+	if !strings.Contains(reveal, fakeAWSKey) {
+		t.Errorf("grep --reveal-secrets output missing the raw secret:\n%s", reveal)
+	}
+	if strings.Contains(reveal, "[masked:") || strings.Contains(reveal, "secret(s) masked") {
+		t.Errorf("grep --reveal-secrets output still masked:\n%s", reveal)
 	}
 }
 

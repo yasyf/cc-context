@@ -96,6 +96,60 @@ func TestMask(t *testing.T) {
 	}
 }
 
+// TestMaskLines proves the line-preserving mask: single-line secrets mask in
+// place with an identity Src mapping, a multiline private key spanning lines
+// folds them into the span's first line — Src recording the fold so callers
+// can re-map their per-line bookkeeping — and text after the fold keeps its
+// original line attribution.
+func TestMaskLines(t *testing.T) {
+	pem := []string{
+		"-----BEGIN PRIVATE KEY-----",
+		"bm90YXJlYWxrZXlqdXN0YWZpeHR1cmVmb3J0ZXN0aW5nMDAx",
+		"bm90YXJlYWxrZXlqdXN0YWZpeHR1cmVmb3J0ZXN0aW5nMDAy",
+		"-----END PRIVATE KEY-----",
+	}
+	tests := []struct {
+		name  string
+		lines []string
+		path  string
+		want  []MaskedLine
+	}{
+		{
+			name:  "no findings identity",
+			lines: []string{"alpha", "beta"},
+			path:  "main.go",
+			want:  []MaskedLine{{Text: "alpha", Src: 0}, {Text: "beta", Src: 1}},
+		},
+		{
+			name:  "single-line secret masks in place",
+			lines: []string{"a = 1", "key = \"" + awsKey + "\"", "b = 2"},
+			path:  "main.go",
+			want: []MaskedLine{
+				{Text: "a = 1", Src: 0},
+				{Text: "key = \"AKIA…[masked:aws-access-token]\"", Src: 1, Rules: []string{"aws-access-token"}},
+				{Text: "b = 2", Src: 2},
+			},
+		},
+		{
+			name:  "multiline private key folds into its first line",
+			lines: append(append([]string{"header"}, pem...), "footer"),
+			path:  "key.pem",
+			want: []MaskedLine{
+				{Text: "header", Src: 0},
+				{Text: "----…[masked:private-key]", Src: 1, Rules: []string{"private-key"}},
+				{Text: "footer", Src: 5},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := MaskLines(tt.lines, tt.path); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("MaskLines() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEnvShaped(t *testing.T) {
 	tests := []struct {
 		path string

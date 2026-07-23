@@ -24,7 +24,7 @@ func Finalize(op backend.Op, out string, a backend.Args) (string, error) {
 			return Cap(out, a.Budget), nil
 		}
 		masked, ids := secrets.Mask(out, a.Path)
-		return withSecretsFooter(Cap(masked, a.Budget), ids), nil
+		return WithSecretsFooter(Cap(masked, a.Budget), ids), nil
 	case backend.OpWebRead:
 		return out, nil
 	default:
@@ -32,10 +32,12 @@ func Finalize(op backend.Op, out string, a backend.Args) (string, error) {
 	}
 }
 
-// withSecretsFooter appends the one-line masked-secrets notice after capping, so
+// WithSecretsFooter appends the one-line masked-secrets notice after capping, so
 // it is never truncated away; ids are the fired rules in span order, deduped for
-// the notice. No ids means no footer.
-func withSecretsFooter(out string, ids []string) string {
+// the notice. No ids means no footer. It is the single footer shape every
+// masking surface appends — read via Finalize; grep, symbol, outline, and diff
+// at their own render/cap points.
+func WithSecretsFooter(out string, ids []string) string {
 	if len(ids) == 0 {
 		return out
 	}

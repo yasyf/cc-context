@@ -40,6 +40,63 @@ func Mask(text, path string) (string, []string) {
 	return b.String(), ids
 }
 
+// MaskedLine is one output line of MaskLines: its masked text, the 0-based
+// index of the input line it began as, and the rule ids of the masked spans
+// that begin on it.
+type MaskedLine struct {
+	Text  string
+	Src   int
+	Rules []string
+}
+
+// MaskLines masks lines joined as one text — so a multiline rule (private-key)
+// fires across them — and re-splits the result. A masked span that swallows
+// line breaks folds the swallowed lines into the span's first: each output
+// line records the input line it began as, so a caller keeping per-line
+// bookkeeping (grep frames, an outline window) can re-map. Lines with no
+// findings come back unchanged.
+func MaskLines(lines []string, path string) []MaskedLine {
+	text := strings.Join(lines, "\n")
+	spans := findSpans(text, path)
+	out := make([]MaskedLine, 0, len(lines))
+	if len(spans) == 0 {
+		for i, l := range lines {
+			out = append(out, MaskedLine{Text: l, Src: i})
+		}
+		return out
+	}
+	var buf strings.Builder
+	inLine := 0
+	cur := MaskedLine{Src: 0}
+	emitRaw := func(seg string) {
+		for {
+			i := strings.IndexByte(seg, '\n')
+			if i < 0 {
+				buf.WriteString(seg)
+				return
+			}
+			buf.WriteString(seg[:i])
+			cur.Text = buf.String()
+			out = append(out, cur)
+			buf.Reset()
+			inLine++
+			cur = MaskedLine{Src: inLine}
+			seg = seg[i+1:]
+		}
+	}
+	prev := 0
+	for _, s := range spans {
+		emitRaw(text[prev:s.start])
+		cur.Rules = append(cur.Rules, s.ruleID)
+		buf.WriteString(replacement(text[s.start:s.end], s.ruleID))
+		inLine += strings.Count(text[s.start:s.end], "\n")
+		prev = s.end
+	}
+	emitRaw(text[prev:])
+	cur.Text = buf.String()
+	return append(out, cur)
+}
+
 // findSpans collects each rule's match spans across text, then folds overlaps
 // via mergeSpans. Every span is edge-trimmed of line breaks; a whole-match span
 // (no secretGroup) additionally sheds the trailing delimiter its rule swallowed.

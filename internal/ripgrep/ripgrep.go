@@ -22,6 +22,7 @@ import (
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/secrets"
 )
 
 // exitNoMatch is the exit code both rg and grep return for a clean no-match; it
@@ -114,7 +115,10 @@ const (
 type runnerFn func(ctx context.Context, bin string, argv []string) (string, error)
 
 // Run resolves rg (or system grep), searches for a.Query, and returns the hits
-// reshaped into the house grep format, content-anchored, and budget-capped.
+// reshaped into the house grep format, content-anchored, secret-masked per file
+// — contiguous match+context blocks as one text, and the header's query echo
+// pathlessly (unless a.RevealSecrets) — and budget-capped, with the shared
+// masked-secrets footer appended after the cap.
 func Run(ctx context.Context, a backend.Args) (string, error) {
 	if err := validateContext(a); err != nil {
 		return "", err
@@ -206,13 +210,71 @@ func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runne
 	if err != nil {
 		return "", false, fmt.Errorf("ripgrep: resolve cwd: %w", err)
 	}
-	reshaped := reshape(a.Query, eng, groups, esc, anchor.NewFiles(cwd))
+	displayQuery := a.Query
+	var maskedIDs []string
+	if !a.RevealSecrets {
+		maskedIDs = maskGroups(groups)
+		var fired []string
+		displayQuery, fired = secrets.Mask(a.Query, "")
+		maskedIDs = append(maskedIDs, fired...)
+	}
+	reshaped := reshape(displayQuery, eng, groups, esc, anchor.NewFiles(cwd))
 	found := anyMatch(groups)
 	out := render.Cap(reshaped, a.Budget)
 	if autoMode && !found && hasBREEscape(a.Query) {
 		out += regexHintLine + "\n"
 	}
-	return out, found, nil
+	return render.WithSecretsFooter(out, maskedIDs), found, nil
+}
+
+// maskGroups masks each file's contiguous match+context blocks, each as one
+// text with the file's path as the rule context — so a multiline rule
+// (private-key) fires across a block's lines — returning the fired rule ids in
+// group then span order. A masked span that swallows line breaks folds the
+// swallowed frames into the span's first: the surviving frame keeps its own
+// number and is a match when any folded frame was.
+func maskGroups(groups []fileGroup) []string {
+	var ids []string
+	for gi := range groups {
+		ids = maskGroup(&groups[gi], ids)
+	}
+	return ids
+}
+
+// maskGroup rebuilds one group's frames from its blocks' masked lines,
+// returning ids extended with the fired rules. A block is a run of
+// consecutively numbered lines — the unit rg/grep emit between context gaps.
+func maskGroup(g *fileGroup, ids []string) []string {
+	var rebuilt []grepLine
+	for start := 0; start < len(g.lines); {
+		end := start + 1
+		for end < len(g.lines) && g.lines[end].num == g.lines[end-1].num+1 {
+			end++
+		}
+		block := g.lines[start:end]
+		texts := make([]string, len(block))
+		for i, l := range block {
+			texts[i] = l.text
+		}
+		masked := secrets.MaskLines(texts, g.path)
+		for j, ml := range masked {
+			cover := len(block)
+			if j+1 < len(masked) {
+				cover = masked[j+1].Src
+			}
+			frame := grepLine{num: block[ml.Src].num, text: ml.Text}
+			for _, l := range block[ml.Src:cover] {
+				if l.isMatch {
+					frame.isMatch = true
+				}
+			}
+			rebuilt = append(rebuilt, frame)
+			ids = append(ids, ml.Rules...)
+		}
+		start = end
+	}
+	g.lines = rebuilt
+	return ids
 }
 
 func runFilesWithMatches(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) (string, bool, error) {
@@ -229,7 +291,14 @@ func runFilesWithMatches(ctx context.Context, eng engine, bin string, a backend.
 		}
 	}
 	if len(paths) == 0 {
-		return renderFilesWithMatches(a.Query, paths, a.Budget), false, nil
+		// The no-match header echoes the query; mask it so a searched-for secret
+		// value is never reprinted raw. The path list itself never echoes it.
+		displayQuery := a.Query
+		var maskedIDs []string
+		if !a.RevealSecrets {
+			displayQuery, maskedIDs = secrets.Mask(a.Query, "")
+		}
+		return render.WithSecretsFooter(renderFilesWithMatches(displayQuery, paths, a.Budget), maskedIDs), false, nil
 	}
 	return renderFilesWithMatches(a.Query, paths, a.Budget), true, nil
 }
