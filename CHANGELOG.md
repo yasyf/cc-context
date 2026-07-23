@@ -6,7 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-07-23
+
+### Added
+- **Secret masking now covers every content-bearing read surface, not just
+  `ccx code read`.** `ccx code grep` masks each file's match+context block as one
+  text — so multiline rules like private-key fire across lines — and masks the
+  header's query echo; `ccx code symbol` masks doc comments, caller/test rows, and
+  degraded matches alongside signatures and bodies; `ccx code outline` masks the
+  full source before windowing, so a truncated head window cannot leak a secret's
+  prefix; `ccx vcs diff`/`show`/`history` mask per-file hunks (renamed files under
+  both the old and new paths), the commit header, and history subjects. Every
+  surface reports fired rules in the same footer as read and gains the read lane's
+  `reveal_secrets` escape hatch (CLI flag, MCP param, and exec op) — wired to fall
+  through to the permission dialog rather than auto-approving raw-secret output.
+
 ### Fixed
+- **The `ccx exec` discovery probe kills its whole process group on timeout.** The
+  `claude mcp list` probe now starts in its own process group, and cancellation
+  SIGKILLs the group while the unreaped leader still pins the pgid — descendants of
+  a TERM-ignoring child no longer outlive the CLI. Windows keeps the single-process
+  behavior.
 - **`ccx vcs ship` auto-tracks an untracked trunk bookmark on jj.** In a fresh
   `jj git init --colocate` repo the remote trunk (`main@origin`) arrives untracked,
   so `jj git fetch` never advanced the local bookmark — leaving ship's divergence
