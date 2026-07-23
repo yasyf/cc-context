@@ -55,9 +55,9 @@ func Search(ctx context.Context, emb index.Embedder, a backend.Args) ([]semsearc
 }
 
 // Warm builds or refreshes the persistent index for the requested repo.
-func Warm(ctx context.Context, emb index.Embedder, a backend.Args) error {
-	_, _, err := load(ctx, emb, a)
-	return err
+func Warm(ctx context.Context, emb index.Embedder, a backend.Args) (*index.Index, error) {
+	idx, _, err := load(ctx, emb, a)
+	return idx, err
 }
 
 // Related runs semble's find_related selector path: it resolves the chunk at

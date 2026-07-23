@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"math/rand"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -86,6 +87,82 @@ func TestBenchSemsearchQueryJSON(t *testing.T) {
 					if _, ok := row[key]; !ok {
 						t.Errorf("row missing %q: %v", key, row)
 					}
+				}
+			}
+		})
+	}
+}
+
+func TestBenchSemsearchTimeJSON(t *testing.T) {
+	previous := newBenchSemsearchEmbedder
+	newBenchSemsearchEmbedder = func(context.Context) (index.Embedder, error) {
+		return fakeBenchEmbedder{}, nil
+	}
+	t.Cleanup(func() { newBenchSemsearchEmbedder = previous })
+
+	repo, err := filepath.Abs(filepath.Join("..", "semsearch", "engine", "testdata", "repo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		queries []string
+	}{
+		{name: "one query", queries: []string{"authenticated session login"}},
+		{name: "two queries", queries: []string{"authenticated session login", "database migration"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+			queriesPath := filepath.Join(t.TempDir(), "queries.json")
+			data, err := json.Marshal(tt.queries)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(queriesPath, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			var out bytes.Buffer
+			cmd := newBenchSemsearchTimeCmd()
+			cmd.SetOut(&out)
+			cmd.SetArgs([]string{repo, "--queries", queriesPath})
+			if err := cmd.ExecuteContext(context.Background()); err != nil {
+				t.Fatalf("time: %v", err)
+			}
+
+			var row map[string]any
+			if err := json.Unmarshal(out.Bytes(), &row); err != nil {
+				t.Fatalf("decode %q: %v", out.String(), err)
+			}
+			if len(row) != 6 {
+				t.Errorf("row keys = %v, want exactly six benchmark fields", row)
+			}
+			for _, key := range []string{"cold_index_ms", "query_p50_ms", "query_mean_ms"} {
+				if value, ok := row[key].(float64); !ok || value <= 0 {
+					t.Errorf("%s = %v, want a positive number", key, row[key])
+				}
+			}
+			for _, key := range []string{"chunks", "files"} {
+				if value, ok := row[key].(float64); !ok || value <= 0 {
+					t.Errorf("%s = %v, want a positive integer", key, row[key])
+				}
+			}
+			perQuery, ok := row["per_query"].([]any)
+			if !ok || len(perQuery) != len(tt.queries) {
+				t.Fatalf("per_query = %v, want %d rows", row["per_query"], len(tt.queries))
+			}
+			for i, value := range perQuery {
+				query, ok := value.(map[string]any)
+				if !ok {
+					t.Fatalf("per_query[%d] = %v, want object", i, value)
+				}
+				if len(query) != 2 || query["query"] != tt.queries[i] {
+					t.Errorf("per_query[%d] = %v, want query and median_ms", i, query)
+				}
+				if median, ok := query["median_ms"].(float64); !ok || median <= 0 {
+					t.Errorf("per_query[%d].median_ms = %v, want a positive number", i, query["median_ms"])
 				}
 			}
 		})

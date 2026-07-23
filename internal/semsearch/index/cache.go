@@ -61,6 +61,15 @@ func cacheDir(root string) (string, error) {
 	return cache.Dir("semsearch", hex.EncodeToString(sum[:]))
 }
 
+// CacheDir resolves the persistent index-cache directory for root.
+func CacheDir(root string) (string, error) {
+	root, err := resolveRoot(root)
+	if err != nil {
+		return "", err
+	}
+	return cacheDir(root)
+}
+
 // resolveRoot returns root as an absolute, symlink-resolved path used both as
 // the cache key and the walk root.
 func resolveRoot(root string) (string, error) {
