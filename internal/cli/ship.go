@@ -33,12 +33,19 @@ const (
 	jjDescribeTemplate      = `commit_id.short() ++ "\n" ++ description.first_line()`
 	jjBookmarkTemplate      = `local_bookmarks.map(|b| b.name()).join(" ") ++ " "`
 	jjTrunkBookmarkTemplate = `remote_bookmarks.map(|b| b.name()).join(" ") ++ " "`
-	jjAncestorRevsetFmt     = `bookmarks(exact:%q) & ::@-`
-	jjStackRevsetFmt        = `bookmarks(exact:%q)..@-`
-	jjConflictRevsetFmt     = `conflicts() & (bookmarks(exact:%q)..@-)::`
-	jjStackLineTemplate     = `commit_id.short() ++ " " ++ description.first_line() ++ "\n"`
-	jjOpIDTemplate          = `id`
-	jjAtStateTemplate       = `parents.len()`
+
+	// jjRemoteBookmarkTemplate emits one "remote<TAB>tracked|untracked" line per
+	// entry of jj bookmark list <name> --all-remotes. Filtering the list to the
+	// exact bookmark name makes every line that bookmark's own remote counterpart,
+	// so the remote and tracked fields alone disambiguate — the name is never parsed
+	// back out of jj's template quoting.
+	jjRemoteBookmarkTemplate = `remote ++ "\t" ++ if(tracked, "tracked", "untracked") ++ "\n"`
+	jjAncestorRevsetFmt      = `bookmarks(exact:%q) & ::@-`
+	jjStackRevsetFmt         = `bookmarks(exact:%q)..@-`
+	jjConflictRevsetFmt      = `conflicts() & (bookmarks(exact:%q)..@-)::`
+	jjStackLineTemplate      = `commit_id.short() ++ " " ++ description.first_line() ++ "\n"`
+	jjOpIDTemplate           = `id`
+	jjAtStateTemplate        = `parents.len()`
 )
 
 var (
@@ -520,10 +527,92 @@ func shipPush(ctx context.Context, kind vcs.Kind, o shipOpts, target, preAmendSH
 }
 
 func shipPushJJ(ctx context.Context, target string, amend bool) (int, error) {
+	if err := jjTrackUntrackedTarget(ctx, target); err != nil {
+		return 0, err
+	}
 	hint := fmt.Sprintf("jj git fetch && jj rebase -b @- --destination 'bookmarks(exact:%s)' && jj bookmark move exact:%s --to @- && jj git push --bookmark exact:%s", target, target, target)
 	return shipPushRetry(ctx, target, hint, func(ctx context.Context) (int, error) {
 		return shipPushJJOnce(ctx, target, amend)
 	})
+}
+
+// jjTrackUntrackedTarget tracks target's untracked remote counterpart before a
+// push — the fresh colocated-init state where jj git fetch never advances the
+// local bookmark (leaving ship's divergence check blind) and jj git push refuses
+// with "Non-tracking remote bookmark". It tracks the remote the counterpart
+// actually sits on, and when several remotes carry an untracked counterpart the one
+// the push targets. Tracking mutates no working-copy state, so a later push refusal
+// still leaves the tree untouched.
+func jjTrackUntrackedTarget(ctx context.Context, target string) error {
+	remotes, err := jjUntrackedTargetRemotes(ctx, target)
+	if err != nil {
+		return err
+	}
+	if len(remotes) == 0 {
+		return nil
+	}
+	remote := remotes[0]
+	if len(remotes) > 1 {
+		remote, err = jjPushRemote(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	if _, err := render.RunCLI(ctx, "jj", []string{"bookmark", "track", jjExactPattern(target), "--remote=" + remote}); err != nil {
+		return fmt.Errorf("ship: jj bookmark track %s --remote=%s: %w", target, remote, err)
+	}
+	return nil
+}
+
+// jjUntrackedTargetRemotes returns the remotes carrying a same-name bookmark for
+// target that jj has not been told to track. It filters jj bookmark list to the
+// exact name so every line is target's own remote counterpart, then reads the
+// remote and tracked fields; the local-view line (empty remote) and the internal
+// git remote (always tracked) both fall out of the untracked filter. A local-only
+// bookmark pushed for the first time has no remote counterpart and is left alone.
+func jjUntrackedTargetRemotes(ctx context.Context, target string) ([]string, error) {
+	out, err := render.RunCLI(ctx, "jj", []string{"bookmark", "list", jjExactPattern(target), "--all-remotes", "-T", jjRemoteBookmarkTemplate})
+	if err != nil {
+		return nil, fmt.Errorf("ship: jj bookmark list %s --all-remotes: %w", target, err)
+	}
+	var remotes []string
+	for _, line := range strings.Split(out, "\n") {
+		remote, tracked, ok := strings.Cut(line, "\t")
+		if !ok || remote == "" || tracked != "untracked" {
+			continue
+		}
+		remotes = append(remotes, remote)
+	}
+	return remotes, nil
+}
+
+// jjPushRemote resolves the remote jj git push targets: the git.push setting, or
+// origin when it is unset. jj derives the push remote from config, not from the
+// tracked bookmarks, so this mirrors jj's own resolution — used to break a tie when
+// more than one remote carries an untracked counterpart.
+func jjPushRemote(ctx context.Context) (string, error) {
+	out, code, stderr, err := render.RunCLIExitCode(ctx, "jj", []string{"config", "get", "git.push"})
+	if err != nil {
+		return "", fmt.Errorf("ship: jj config get git.push: %w", err)
+	}
+	switch code {
+	case 0:
+		if r := strings.TrimSpace(out); r != "" {
+			return r, nil
+		}
+		return "origin", nil
+	case 1:
+		return "origin", nil
+	default:
+		return "", fmt.Errorf("ship: jj config get git.push: exit %d: %s", code, strings.TrimSpace(stderr))
+	}
+}
+
+// jjExactPattern renders name as jj's exact string pattern, exact:"…", quoting it
+// so a bookmark name carrying an '@' (or any character jj would otherwise read as a
+// bookmark@remote symbol or a glob metacharacter) is matched literally.
+func jjExactPattern(name string) string {
+	return `exact:"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(name) + `"`
 }
 
 // shipPushJJOnce is one push attempt: fetch, re-check the bookmark, rebase when

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`ccx vcs ship` auto-tracks an untracked trunk bookmark on jj.** In a fresh
+  `jj git init --colocate` repo the remote trunk (`main@origin`) arrives untracked,
+  so `jj git fetch` never advanced the local bookmark — leaving ship's divergence
+  check blind — and `jj git push --bookmark exact:main` refused outright with
+  "Non-tracking remote bookmark". Before fetching, ship now scans
+  `jj bookmark list <target> --all-remotes` for an untracked same-name counterpart
+  and runs `jj bookmark track <target> --remote=<remote>` against the remote the
+  counterpart actually sits on — honoring a non-origin remote instead of a
+  hard-coded `origin`, and tracking the push target when several remotes carry one.
+  The name is passed as an exact string pattern, so a bookmark carrying an `@`
+  tracks correctly. Tracking mutates no working-copy state, so a later push refusal
+  still leaves the working copy untouched.
 - **`ccx vcs ship` survives a remote that advances mid-ship, on both backends.** A
   concurrent push landing between ship's fetch and its push previously surfaced as a
   raw rejection (`... (non-fast-forward)`) — and on jj repos left the local bookmark

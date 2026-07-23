@@ -113,6 +113,17 @@ Error: Failed to push some bookmarks}" >&2
       if [ "$count" -gt "${SHIP_DIFF_NAMES_SWITCH_AFTER:-1}" ]; then names=$JJ_DIFF_NAMES_2; fi
     fi
     printf '%s' "$names" ;;
+  "bookmark list"*)
+    printf '\tuntracked\n'
+    printf 'git\ttracked\n'
+    origin_tracked=1
+    for r in $JJ_UNTRACKED_REMOTES; do
+      printf '%s\tuntracked\n' "$r"
+      if [ "$r" = origin ]; then origin_tracked=; fi
+    done
+    if [ -n "$origin_tracked" ]; then printf 'origin\ttracked\n'; fi ;;
+  "config get git.push")
+    if [ -n "$JJ_PUSH_REMOTE" ]; then printf '%s\n' "$JJ_PUSH_REMOTE"; else printf 'Config error: Value not found for git.push\n' >&2; exit 1; fi ;;
   commit*|squash*|bookmark*) : ;;
   *) printf 'fake jj: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
 esac
@@ -384,6 +395,7 @@ func TestShipCommitPushWatch(t *testing.T) {
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
 				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
@@ -1970,6 +1982,7 @@ func TestShipNoWatchSkipsCI(t *testing.T) {
 		{"jj", "diff", "--name-only"},
 		{"jj", "commit", "-m", "fix: frobnicate"},
 		{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+		{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 		{"jj", "git", "fetch"},
 		{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 		{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
@@ -2102,6 +2115,27 @@ func TestShipHeadSHAFailurePrintsCommitPushSummary(t *testing.T) {
 	}
 }
 
+func TestJJExactPattern(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain", "main", `exact:"main"`},
+		{"slash", "someone/probe", `exact:"someone/probe"`},
+		{"at sign", "foo@bar", `exact:"foo@bar"`},
+		{"double quote", `has"quote`, `exact:"has\"quote"`},
+		{"backslash", `back\slash`, `exact:"back\\slash"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := jjExactPattern(tt.in); got != tt.want {
+				t.Errorf("jjExactPattern(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestShipJJRebase(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -2115,6 +2149,75 @@ func TestShipJJRebase(t *testing.T) {
 		wantErr        []string
 	}{
 		{
+			name: "untracked trunk auto-tracks before fetch then pushes",
+			env:  map[string]string{"JJ_UNTRACKED_REMOTES": "origin"},
+			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "diff", "--name-only"},
+				{"jj", "commit", "-m", "fix: frobnicate"},
+				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
+				{"jj", "bookmark", "track", jjExactPattern("main"), "--remote=origin"},
+				{"jj", "git", "fetch"},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "git", "push", "--bookmark", "exact:main"},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · pushed main → origin`,
+		},
+		{
+			// The trunk's counterpart is untracked on a non-origin remote (main@backup)
+			// while main@origin is tracked: ship must track the remote the untracked
+			// counterpart actually sits on, not a hard-coded origin.
+			name: "untracked counterpart on a non-origin remote tracks that remote",
+			env:  map[string]string{"JJ_UNTRACKED_REMOTES": "backup"},
+			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "diff", "--name-only"},
+				{"jj", "commit", "-m", "fix: frobnicate"},
+				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
+				{"jj", "bookmark", "track", jjExactPattern("main"), "--remote=backup"},
+				{"jj", "git", "fetch"},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "git", "push", "--bookmark", "exact:main"},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · pushed main → origin`,
+		},
+		{
+			// Two remotes carry an untracked counterpart, so ship breaks the tie on the
+			// remote jj git push targets — the git.push config setting.
+			name: "multiple untracked counterparts track the push target",
+			env:  map[string]string{"JJ_UNTRACKED_REMOTES": "backup origin", "JJ_PUSH_REMOTE": "backup"},
+			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "diff", "--name-only"},
+				{"jj", "commit", "-m", "fix: frobnicate"},
+				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
+				{"jj", "config", "get", "git.push"},
+				{"jj", "bookmark", "track", jjExactPattern("main"), "--remote=backup"},
+				{"jj", "git", "fetch"},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "git", "push", "--bookmark", "exact:main"},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · pushed main → origin`,
+		},
+		{
 			name:           "diverged trunk rebases",
 			env:            map[string]string{"JJ_NO_BOOKMARK": "1", "JJ_DIVERGED": "1"},
 			describeMarker: true,
@@ -2125,6 +2228,7 @@ func TestShipJJRebase(t *testing.T) {
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
 				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
@@ -2149,6 +2253,7 @@ func TestShipJJRebase(t *testing.T) {
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "bookmark", "list", jjExactPattern("someone/probe"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
 				{"jj", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "someone/probe"), "--no-graph", "-T", jjBookmarkTemplate},
@@ -2190,6 +2295,7 @@ func TestShipJJRebase(t *testing.T) {
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
 				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
@@ -2215,6 +2321,7 @@ func TestShipJJRebase(t *testing.T) {
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
 				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
@@ -2240,6 +2347,7 @@ func TestShipJJRebase(t *testing.T) {
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
 				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
@@ -2257,6 +2365,7 @@ func TestShipJJRebase(t *testing.T) {
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
 			},
 			wantErr: []string{"jj git fetch"},
@@ -2274,6 +2383,7 @@ func TestShipJJRebase(t *testing.T) {
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
 				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
@@ -2306,6 +2416,7 @@ func TestShipJJRebase(t *testing.T) {
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
 				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
@@ -2341,6 +2452,7 @@ func TestShipJJRebase(t *testing.T) {
 				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "squash", "-m", "fix: frobnicate"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
 				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
@@ -2362,6 +2474,7 @@ func TestShipJJRebase(t *testing.T) {
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
 				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
@@ -2383,6 +2496,7 @@ func TestShipJJRebase(t *testing.T) {
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
 				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
@@ -2628,6 +2742,7 @@ func TestShipJJBookmarkOverride(t *testing.T) {
 		{"jj", "diff", "--name-only"},
 		{"jj", "commit", "-m", "fix: frobnicate"},
 		{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+		{"jj", "bookmark", "list", jjExactPattern("someone/probe"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 		{"jj", "git", "fetch"},
 		{"jj", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
 		{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "someone/probe"), "--no-graph", "-T", jjBookmarkTemplate},

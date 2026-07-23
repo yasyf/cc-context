@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -219,6 +220,128 @@ func TestShipJJPreflightRefusalAndEmptyGuardLive(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "jj bookmark move exact:main --to @- && jj git push --bookmark exact:main") {
 		t.Errorf("third ship error = %q, want exact:main push hint", err)
+	}
+}
+
+// TestShipJJAutoTrackUntrackedLive proves ship auto-tracks an untracked trunk
+// bookmark in a fresh colocated repo: a git clone imported by jj git init
+// --colocate leaves a local main bookmark but an untracked main@origin, so jj git
+// push refuses "Non-tracking remote bookmark" until ship tracks it. The push must
+// land and the bookmark must end up tracked.
+func TestShipJJAutoTrackUntrackedLive(t *testing.T) {
+	requireLiveVCS(t, "git", "jj")
+	base := t.TempDir()
+	remote := filepath.Join(base, "remote.git")
+	seed := filepath.Join(base, "seed")
+	clone := filepath.Join(base, "clone")
+	cfg := filepath.Join(t.TempDir(), "jjconfig.toml")
+	if err := os.WriteFile(cfg, []byte("user.name=\"t\"\nuser.email=\"t@t.t\"\n"), 0o600); err != nil {
+		t.Fatalf("write jj config: %v", err)
+	}
+	t.Setenv("JJ_CONFIG", cfg)
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv(envClaudeSessionKey, "")
+
+	mustRun(t, base, "git", "init", "--bare", "--initial-branch=main", remote)
+	if err := os.Mkdir(seed, 0o750); err != nil {
+		t.Fatalf("mkdir seed: %v", err)
+	}
+	mustRun(t, seed, "git", "init", "--initial-branch=main")
+	if err := os.WriteFile(filepath.Join(seed, "f.txt"), []byte("base\n"), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("write base: %v", err)
+	}
+	mustRun(t, seed, "git", "add", "f.txt")
+	mustRun(t, seed, "git", "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-m", "init")
+	mustRun(t, seed, "git", "remote", "add", "origin", remote)
+	mustRun(t, seed, "git", "push", "origin", "main")
+
+	// A git clone imports origin/main as a git remote-tracking ref; jj git init
+	// --colocate then sees a local main bookmark but leaves main@origin untracked.
+	mustRun(t, base, "git", "clone", remote, clone)
+	mustRun(t, clone, "jj", "git", "init", "--colocate")
+	if before := mustRun(t, clone, "jj", "bookmark", "list", "--remote", "origin", "-T", jjRemoteBookmarkTemplate); !strings.Contains(before, "origin\tuntracked") {
+		t.Fatalf("precondition: main@origin should be untracked, got %q", before)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "f.txt"), []byte("edited\n"), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("write edit: %v", err)
+	}
+	t.Chdir(clone)
+
+	before, err := strconv.Atoi(strings.TrimSpace(mustRun(t, base, "git", "--git-dir="+remote, "rev-list", "--count", "main")))
+	if err != nil {
+		t.Fatalf("parse initial remote commit count: %v", err)
+	}
+
+	if _, err := runShipCmd(t, "-m", "x", "--no-watch"); err != nil {
+		t.Fatalf("ship error = %v, want auto-track then successful push", err)
+	}
+
+	after, err := strconv.Atoi(strings.TrimSpace(mustRun(t, base, "git", "--git-dir="+remote, "rev-list", "--count", "main")))
+	if err != nil {
+		t.Fatalf("parse post-push remote commit count: %v", err)
+	}
+	if after != before+1 {
+		t.Errorf("remote main count after push = %d, want %d", after, before+1)
+	}
+	tracked := mustRun(t, clone, "jj", "bookmark", "list", "--remote", "origin", "--tracked", "-T", jjRemoteBookmarkTemplate)
+	if !strings.Contains(tracked, "origin\ttracked") {
+		t.Errorf("main@origin should be tracked after ship, got %q", tracked)
+	}
+}
+
+// TestJJTrackUntrackedAtNameLive proves the auto-track path handles a bookmark name
+// that needs jj string-pattern quoting: a git branch literally named "foo@bar",
+// imported untracked by jj git init --colocate. jjTrackUntrackedTarget must find the
+// untracked counterpart via the exact-name list and track it with the quoted
+// argument plus --remote — the bare foo@bar@origin operand jj reads as a
+// bookmark@remote symbol and refuses.
+func TestJJTrackUntrackedAtNameLive(t *testing.T) {
+	requireLiveVCS(t, "git", "jj")
+	const branch = "foo@bar"
+	base := t.TempDir()
+	remote := filepath.Join(base, "remote.git")
+	seed := filepath.Join(base, "seed")
+	clone := filepath.Join(base, "clone")
+	cfg := filepath.Join(t.TempDir(), "jjconfig.toml")
+	if err := os.WriteFile(cfg, []byte("user.name=\"t\"\nuser.email=\"t@t.t\"\n"), 0o600); err != nil {
+		t.Fatalf("write jj config: %v", err)
+	}
+	t.Setenv("JJ_CONFIG", cfg)
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv(envClaudeSessionKey, "")
+
+	mustRun(t, base, "git", "init", "--bare", "--initial-branch=main", remote)
+	if err := os.Mkdir(seed, 0o750); err != nil {
+		t.Fatalf("mkdir seed: %v", err)
+	}
+	mustRun(t, seed, "git", "init", "--initial-branch=main")
+	if err := os.WriteFile(filepath.Join(seed, "f.txt"), []byte("base\n"), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("write base: %v", err)
+	}
+	mustRun(t, seed, "git", "add", "f.txt")
+	mustRun(t, seed, "git", "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-m", "init")
+	mustRun(t, seed, "git", "branch", branch)
+	mustRun(t, seed, "git", "remote", "add", "origin", remote)
+	mustRun(t, seed, "git", "push", "origin", "main", branch)
+
+	mustRun(t, base, "git", "clone", remote, clone)
+	mustRun(t, clone, "jj", "git", "init", "--colocate")
+	pat := jjExactPattern(branch)
+	if before := mustRun(t, clone, "jj", "bookmark", "list", pat, "--all-remotes", "-T", jjRemoteBookmarkTemplate); !strings.Contains(before, "origin\tuntracked") {
+		t.Fatalf("precondition: %s@origin should be untracked, got %q", branch, before)
+	}
+	t.Chdir(clone)
+
+	if err := jjTrackUntrackedTarget(context.Background(), branch); err != nil {
+		t.Fatalf("jjTrackUntrackedTarget(%q) = %v, want nil", branch, err)
+	}
+	after := mustRun(t, clone, "jj", "bookmark", "list", pat, "--all-remotes", "-T", jjRemoteBookmarkTemplate)
+	if !strings.Contains(after, "origin\ttracked") {
+		t.Errorf("%s@origin should be tracked after track, got %q", branch, after)
 	}
 }
 
