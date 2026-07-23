@@ -16,6 +16,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"runtime"
@@ -45,11 +46,19 @@ const (
 	maxMemoryPages = 16384
 )
 
+// maxU32Bytes is the u32 linear-address ceiling that every frame count, text
+// length, and total blob size must fit: the ABI passes each as a WASM u32, so a
+// larger value would narrow silently and hand the guest a corrupt view. A var,
+// not a const, so bounds tests can lower it to exercise the rejection path.
+var maxU32Bytes uint64 = math.MaxUint32
+
 // Engine is a resident model2vec inference engine. Construct it with New and
 // release its WASM instance with Close. Encode is safe for concurrent use;
 // calls serialize on a single shared instance.
 type Engine struct {
 	runtime   wazero.Runtime
+	cache     wazero.CompilationCache
+	compiled  wazero.CompiledModule
 	module    api.Module
 	alloc     api.Function
 	dealloc   api.Function
@@ -70,7 +79,7 @@ func New(ctx context.Context) (*Engine, error) {
 		return nil, err
 	}
 
-	rt, compiled, err := compileModule(ctx)
+	rt, compilationCache, compiled, err := compileModule(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -78,11 +87,15 @@ func New(ctx context.Context) (*Engine, error) {
 	mod, err := rt.InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithName(""))
 	if err != nil {
 		_ = rt.Close(ctx)
+		_ = compiled.Close(ctx)
+		_ = compilationCache.Close(ctx)
 		return nil, fmt.Errorf("instantiate embedcore.wasm: %w", err)
 	}
 
 	e := &Engine{
 		runtime:   rt,
+		cache:     compilationCache,
+		compiled:  compiled,
 		module:    mod,
 		alloc:     mod.ExportedFunction("em_alloc"),
 		dealloc:   mod.ExportedFunction("em_dealloc"),
@@ -91,14 +104,14 @@ func New(ctx context.Context) (*Engine, error) {
 	}
 
 	if err := e.load(ctx, blobs); err != nil {
-		_ = rt.Close(ctx)
+		_ = e.Close(ctx)
 		return nil, err
 	}
 
 	// Warm up: JITs the encode path and captures the embedding dimensionality.
 	warm, err := e.encodeBatch(ctx, []string{"warm up"})
 	if err != nil {
-		_ = rt.Close(ctx)
+		_ = e.Close(ctx)
 		return nil, fmt.Errorf("warmup encode: %w", err)
 	}
 	e.dims = len(warm[0])
@@ -108,9 +121,35 @@ func New(ctx context.Context) (*Engine, error) {
 // Dims is the embedding dimensionality every Encode vector carries.
 func (e *Engine) Dims() int { return e.dims }
 
-// Close releases the resident WASM instance and its runtime.
+// Close releases the resident WASM instance, its compiled module, the runtime,
+// and the on-disk compilation cache. wazero deliberately leaves a configured
+// cache open when the runtime closes, so the cache — which retains the compiled
+// module code — must be closed explicitly. Close nulls the retained handles so a
+// closed Engine pins no model memory. It is idempotent and safe to call after a
+// partial New.
 func (e *Engine) Close(ctx context.Context) error {
-	return e.runtime.Close(ctx)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	var errs []error
+	if e.runtime != nil {
+		if err := e.runtime.Close(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("close runtime: %w", err))
+		}
+	}
+	if e.compiled != nil {
+		if err := e.compiled.Close(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("close compiled module: %w", err))
+		}
+	}
+	if e.cache != nil {
+		if err := e.cache.Close(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("close compilation cache: %w", err))
+		}
+	}
+	e.runtime, e.compiled, e.cache, e.module = nil, nil, nil, nil
+	e.alloc, e.dealloc, e.loadModel, e.encode = nil, nil, nil, nil
+	return errors.Join(errs...)
 }
 
 // Encode embeds each text into an L2-normalized float32 vector of length Dims.
@@ -133,17 +172,17 @@ func (e *Engine) load(ctx context.Context, b *modelBlobs) error {
 	ctx, cancel := context.WithTimeout(ctx, loadTimeout)
 	defer cancel()
 
-	tokPtr, err := e.writeBlob(ctx, b.tokenizer)
+	tokPtr, err := writeBlob(ctx, e, b.tokenizer)
 	if err != nil {
 		return err
 	}
 	defer e.freeBlob(ctx, tokPtr, b.tokenizer)
-	modelPtr, err := e.writeBlob(ctx, b.model)
+	modelPtr, err := writeBlob(ctx, e, b.model)
 	if err != nil {
 		return err
 	}
 	defer e.freeBlob(ctx, modelPtr, b.model)
-	cfgPtr, err := e.writeBlob(ctx, b.config)
+	cfgPtr, err := writeBlob(ctx, e, b.config)
 	if err != nil {
 		return err
 	}
@@ -173,8 +212,11 @@ func (e *Engine) load(ctx context.Context, b *modelBlobs) error {
 // encodeBatch frames texts, runs one em_encode, and copies the flat matrix out.
 // The caller holds e.mu (or is the single-threaded New).
 func (e *Engine) encodeBatch(ctx context.Context, texts []string) ([][]float32, error) {
-	frame := frameBatch(texts)
-	inPtr, err := e.writeBlob(ctx, frame)
+	frame, err := frameBatch(texts)
+	if err != nil {
+		return nil, err
+	}
+	inPtr, err := writeBlob(ctx, e, frame)
 	if err != nil {
 		return nil, err
 	}
@@ -194,15 +236,46 @@ func (e *Engine) encodeBatch(ctx context.Context, texts []string) ([][]float32, 
 	return parseMatrix(out, len(texts))
 }
 
-// writeBlob allocates a WASM buffer and copies data into it, returning its
-// address. The caller frees it with free.
-func (e *Engine) writeBlob(ctx context.Context, data []byte) (uint32, error) {
-	res, err := e.alloc.Call(ctx, uint64(len(data)))
+// blobWriter is the guest-memory boundary writeBlob drives: reserve n bytes,
+// copy a payload into the reservation, and release a reservation. The Engine
+// binds it to its em_alloc/em_dealloc exports and linear memory; tests fake it
+// to exercise the write-failure path without a multi-GiB allocation.
+type blobWriter interface {
+	guestAlloc(ctx context.Context, n uint32) (uint32, error)
+	guestWrite(ptr uint32, data []byte) bool
+	guestFree(ctx context.Context, ptr, n uint32)
+}
+
+func (e *Engine) guestAlloc(ctx context.Context, n uint32) (uint32, error) {
+	res, err := e.alloc.Call(ctx, uint64(n))
+	if err != nil {
+		return 0, err
+	}
+	return uint32(res[0]), nil //nolint:gosec // wasm32: em_alloc returns a 32-bit pointer in the low half
+}
+
+func (e *Engine) guestWrite(ptr uint32, data []byte) bool {
+	return e.module.Memory().Write(ptr, data)
+}
+
+func (e *Engine) guestFree(ctx context.Context, ptr, n uint32) {
+	e.free(ctx, ptr, n)
+}
+
+// writeBlob reserves a WASM buffer and copies data into it, returning its
+// address. It rejects a blob larger than the u32 linear-address space before
+// reserving, and releases the reservation if the copy fails, so a failed write
+// leaks nothing. The caller frees a successful reservation with free.
+func writeBlob(ctx context.Context, w blobWriter, data []byte) (uint32, error) {
+	if uint64(len(data)) > maxU32Bytes {
+		return 0, fmt.Errorf("blob of %d bytes exceeds the u32 linear-address limit", len(data))
+	}
+	ptr, err := w.guestAlloc(ctx, uint32(len(data))) //nolint:gosec // guarded by the u32 check above
 	if err != nil {
 		return 0, fmt.Errorf("em_alloc(%d): %w", len(data), err)
 	}
-	ptr := uint32(res[0]) //nolint:gosec // wasm32: em_alloc returns a 32-bit pointer in the low half
-	if !e.module.Memory().Write(ptr, data) {
+	if !w.guestWrite(ptr, data) {
+		w.guestFree(ctx, ptr, uint32(len(data))) //nolint:gosec // guarded by the u32 check above
 		return 0, fmt.Errorf("write %d bytes at %d out of range", len(data), ptr)
 	}
 	return ptr, nil
@@ -221,18 +294,29 @@ func (e *Engine) free(ctx context.Context, ptr, n uint32) {
 }
 
 // frameBatch encodes texts as [u32 count] then, per text, [u32 byte_len][utf8].
-func frameBatch(texts []string) []byte {
-	total := 4
+// It errors when the batch count, any text length, or the total frame size
+// exceeds what the u32 ABI can address, rather than narrowing silently.
+func frameBatch(texts []string) ([]byte, error) {
+	if uint64(len(texts)) > maxU32Bytes {
+		return nil, fmt.Errorf("batch of %d texts exceeds the u32 frame-count limit", len(texts))
+	}
+	total := uint64(4)
 	for _, t := range texts {
-		total += 4 + len(t)
+		if uint64(len(t)) > maxU32Bytes {
+			return nil, fmt.Errorf("text of %d bytes exceeds the u32 frame-length limit", len(t))
+		}
+		total += 4 + uint64(len(t))
+	}
+	if total > maxU32Bytes {
+		return nil, fmt.Errorf("framed batch of %d bytes exceeds the u32 address limit", total)
 	}
 	buf := make([]byte, 0, total)
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(texts))) //nolint:gosec // wasm32: batch sizes fit 32-bit frames
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(texts))) //nolint:gosec // guarded by the count check above
 	for _, t := range texts {
-		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(t))) //nolint:gosec // wasm32: text lengths fit 32-bit frames
+		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(t))) //nolint:gosec // guarded by the per-text length check above
 		buf = append(buf, t...)
 	}
-	return buf
+	return buf, nil
 }
 
 // parseMatrix decodes the [u32 rows][u32 dims][row-major f32] encode output and
@@ -269,30 +353,33 @@ func unpack(packed uint64) (ptr, length uint32) {
 }
 
 // compileModule builds the compiler runtime over the shared on-disk AOT cache
-// and compiles the embedded module.
-func compileModule(ctx context.Context) (wazero.Runtime, wazero.CompiledModule, error) {
+// and compiles the embedded module. The caller owns the returned cache and
+// closes it (via Engine.Close); wazero will not close a configured cache itself.
+func compileModule(ctx context.Context) (wazero.Runtime, wazero.CompilationCache, wazero.CompiledModule, error) {
 	ctx, cancel := context.WithTimeout(ctx, compileTimeout)
 	defer cancel()
 
 	dir, err := cache.Dir("wasm")
 	if err != nil {
-		return nil, nil, fmt.Errorf("resolve wasm cache dir: %w", err)
+		return nil, nil, nil, fmt.Errorf("resolve wasm cache dir: %w", err)
 	}
 	compilationCache, err := wazero.NewCompilationCacheWithDir(dir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open wasm compilation cache: %w", err)
+		return nil, nil, nil, fmt.Errorf("open wasm compilation cache: %w", err)
 	}
 
 	rt, err := newCompilerRuntime(ctx, compilationCache)
 	if err != nil {
-		return nil, nil, err
+		_ = compilationCache.Close(ctx)
+		return nil, nil, nil, err
 	}
 	compiled, err := rt.CompileModule(ctx, wasmModule)
 	if err != nil {
 		_ = rt.Close(ctx)
-		return nil, nil, fmt.Errorf("compile embedcore.wasm: %w", err)
+		_ = compilationCache.Close(ctx)
+		return nil, nil, nil, fmt.Errorf("compile embedcore.wasm: %w", err)
 	}
-	return rt, compiled, nil
+	return rt, compilationCache, compiled, nil
 }
 
 // newCompilerRuntime builds the wazero compiler runtime. Unlike the format

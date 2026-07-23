@@ -34,6 +34,15 @@ var weightFiles = [...]weightFile{
 	{"model.safetensors", "75cf7a6c2171b230ad19b1e7d8e0b1aee86da5a02af8e7cacedd9921d227623c"},
 }
 
+// maxWeightFileBytes bounds each model file's download before its checksum is
+// verified, so a broken or hostile mirror streaming an endless 200 cannot
+// exhaust memory ahead of the integrity gate. The pinned model is ~30 MB total
+// (config.json and tokenizer.json are tiny; model.safetensors is the bulk), so
+// this 256 MiB ceiling is generous headroom while still capping the read.
+// verifyChecksum stays the integrity gate; this is only a DoS guard. A var, not
+// a const, so the download test can lower it.
+var maxWeightFileBytes int64 = 256 << 20
+
 // modelBlobs is the three-file model2vec payload the WASM engine loads.
 type modelBlobs struct {
 	tokenizer []byte
@@ -111,9 +120,12 @@ func download(ctx context.Context, wf weightFile) ([]byte, error) {
 	if resp.StatusCode/100 != 2 {
 		return nil, fmt.Errorf("fetch %s: unexpected status %s", url, resp.Status)
 	}
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxWeightFileBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("%w: read %s: %w", ErrWeightsUnavailable, wf.name, err)
+	}
+	if int64(len(data)) > maxWeightFileBytes {
+		return nil, fmt.Errorf("fetch %s: response exceeds the %d-byte cap (broken or hostile mirror)", url, maxWeightFileBytes)
 	}
 	return data, nil
 }
