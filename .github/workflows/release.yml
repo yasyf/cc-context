@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   release:
-    uses: yasyf/homebrew-tap/.github/workflows/release-go.yml@3bfe1af3bdc10ec783e79050e7c647152a537801
+    uses: yasyf/homebrew-tap/.github/workflows/release-go.yml@bd8e25ab658e40ce49e7f904dfc9953e1cbf9d80
     secrets: inherit
     with:
       # plugin.json version must equal the tag; install-binary.sh 404s otherwise.
