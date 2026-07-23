@@ -1,3 +1,4 @@
+// Fixture: ast-grep outline internal/ripgrep --json=stream --view expanded > internal/astgrep/testdata/outline_stream.jsonl
 package astgrep
 
 import (
@@ -13,29 +14,29 @@ func TestParseOutline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseOutline: %v", err)
 	}
-	if len(files) != 2 {
-		t.Fatalf("parsed %d files, want 2", len(files))
+	if len(files) != 3 {
+		t.Fatalf("parsed %d files, want 3", len(files))
 	}
-	if files[0].Path != "internal/backend/astgrep.go" || files[0].Language != "Go" {
-		t.Errorf("file0 = %s (%s), want internal/backend/astgrep.go (Go)", files[0].Path, files[0].Language)
+	if files[0].Path != "internal/ripgrep/matches_test.go" || files[0].Language != "Go" {
+		t.Errorf("file0 = %s (%s), want internal/ripgrep/matches_test.go (Go)", files[0].Path, files[0].Language)
 	}
 	if len(files[0].Items) != 7 {
 		t.Errorf("file0 items = %d, want 7", len(files[0].Items))
 	}
-	// First item is the AstGrep struct, captured straight from the stream.
+	// First item is the namedEngine struct, captured straight from the stream.
 	it := files[0].Items[0]
-	if it.SymbolType != "struct" || it.Name != "AstGrep" || it.Signature != "type AstGrep struct {" || it.Range.Start.Line != 13 || !it.IsExported {
-		t.Errorf("item0 = %+v, want struct AstGrep at 0-based line 13, exported", it)
+	if it.SymbolType != "struct" || it.Name != "namedEngine" || it.Signature != "type namedEngine struct {" || it.Range.Start.Line != 15 || !it.IsExported {
+		t.Errorf("item0 = %+v, want struct namedEngine at 0-based line 15, exported", it)
 	}
-	// Its single member is the Bin field, with an expanded signature and its line.
-	if len(it.Members) != 1 {
-		t.Fatalf("item0 members = %d, want 1", len(it.Members))
+	// Its three members are expanded; assert the first member and its line.
+	if len(it.Members) != 3 {
+		t.Fatalf("item0 members = %d, want 3", len(it.Members))
 	}
-	if m := it.Members[0]; m.Name != "Bin" || m.Signature != "Bin string" || m.Range.Start.Line != 16 {
-		t.Errorf("member0 = %+v, want Bin \"Bin string\" at 0-based line 16", m)
+	if m := it.Members[0]; m.Name != "name" || m.Signature != "name string" || m.Range.Start.Line != 16 {
+		t.Errorf("member0 = %+v, want name \"name string\" at 0-based line 16", m)
 	}
-	if files[1].Path != "internal/backend/pathcheck.go" {
-		t.Errorf("file1 = %s, want internal/backend/pathcheck.go", files[1].Path)
+	if files[1].Path != "internal/ripgrep/ripgrep.go" {
+		t.Errorf("file1 = %s, want internal/ripgrep/ripgrep.go", files[1].Path)
 	}
 }
 
@@ -64,15 +65,15 @@ func TestRenderOutline(t *testing.T) {
 	// stays bare — this exercises the cache-miss degradation path.
 	got := RenderOutline(files, anchor.NewFiles(t.TempDir()), maxOutlineDepth)
 
-	if !strings.Contains(got, "# internal/backend/astgrep.go\n") {
+	if !strings.Contains(got, "# internal/ripgrep/matches_test.go\n") {
 		t.Errorf("missing per-file header:\n%s", got)
 	}
-	// ast-grep's 0-based line 13 renders as the 1-based L14.
-	if !strings.Contains(got, "L14  type AstGrep struct {\n") {
+	// ast-grep's 0-based line 15 renders as the 1-based L16.
+	if !strings.Contains(got, "L16  type namedEngine struct {\n") {
 		t.Errorf("missing top-level item line (1-based):\n%s", got)
 	}
 	// The member is indented two spaces and carries its own 1-based line (16→17).
-	if !strings.Contains(got, "\n  L17  Bin string\n") {
+	if !strings.Contains(got, "\n  L17  name string\n") {
 		t.Errorf("missing indented member line:\n%s", got)
 	}
 	if strings.Contains(got, "\t") {

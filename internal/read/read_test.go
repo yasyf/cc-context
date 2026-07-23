@@ -42,7 +42,7 @@ func TestRunOutput(t *testing.T) {
 			want:    "# read %P:1-4#%H (4 lines)\nalpha\nbravo\ncharlie\ndelta\n",
 		},
 		{
-			// Regression: tilth's CLI lane misclassified spaced or extensionless
+			// Regression: the legacy CLI lane misclassified spaced or extensionless
 			// paths as search queries (cc-notes 777edc9); native read must not.
 			name:    "spaced extensionless path reads as a file",
 			file:    "my notes file",

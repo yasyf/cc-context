@@ -1,3 +1,4 @@
+// Fixtures: ast-grep run -p 'return $A, nil' --json=stream internal/ripgrep > internal/astgrep/testdata/search_stream.jsonl; ast-grep run -p 'return $A, nil' -r 'return $A, nil /* ok */' --json=stream internal/ripgrep > internal/astgrep/testdata/rewrite_stream.jsonl
 package astgrep
 
 import (
@@ -21,15 +22,15 @@ func TestParseAndDistinctFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if len(matches) != 9 {
-		t.Fatalf("parsed %d matches, want 9", len(matches))
+	if len(matches) != 14 {
+		t.Fatalf("parsed %d matches, want 14", len(matches))
 	}
 	if got := DistinctFiles(matches); got != 2 {
 		t.Errorf("DistinctFiles = %d, want 2", got)
 	}
-	// First record is render.go:24, drawn straight from the captured stream.
-	if matches[0].File != "internal/render/render.go" || matches[0].Range.Start.Line != 24 {
-		t.Errorf("first match = %s:%d, want internal/render/render.go:24", matches[0].File, matches[0].Range.Start.Line)
+	// First record is ripgrep.go:161, drawn straight from the captured stream.
+	if matches[0].File != "internal/ripgrep/ripgrep.go" || matches[0].Range.Start.Line != 161 {
+		t.Errorf("first match = %s:%d, want internal/ripgrep/ripgrep.go:161", matches[0].File, matches[0].Range.Start.Line)
 	}
 }
 
@@ -58,13 +59,13 @@ func TestRenderSearch(t *testing.T) {
 	got := RenderSearch(matches)
 
 	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
-	if len(lines) != 9 {
-		t.Fatalf("rendered %d lines, want 9:\n%s", len(lines), got)
+	if len(lines) != 14 {
+		t.Fatalf("rendered %d lines, want 14:\n%s", len(lines), got)
 	}
 	// Single-line matches collapse to file:Lstart#hash; the preview is the trimmed
-	// match text (no leading tab, no body). ast-grep's 0-based line 24 renders as
-	// the 1-based L25, anchored by Of("\treturn stdout.String(), nil") = mqc1.
-	want := "internal/render/render.go:L25#mqc1  return stdout.String(), nil"
+	// match text (no leading tab, no body). ast-grep's 0-based line 161 renders as
+	// the 1-based L162, anchored by Of("\treturn toFileMatches(groups), nil") = ag4k.
+	want := "internal/ripgrep/ripgrep.go:L162#ag4k  return toFileMatches(groups), nil"
 	if lines[0] != want {
 		t.Errorf("first line = %q, want %q", lines[0], want)
 	}
@@ -80,16 +81,16 @@ func TestRenderPreview(t *testing.T) {
 	}
 	got := RenderPreview(matches)
 
-	header := "# 9 matches across 2 files\n"
+	header := "# 14 matches across 2 files\n"
 	if !strings.HasPrefix(got, header) {
 		t.Errorf("preview header = %q, want prefix %q", got[:len(header)], header)
 	}
 	// The first hit's anchor + diff lines come from the captured stream; ast-grep's
-	// 0-based line 24 renders as the 1-based 25, anchored by
-	// Of("\treturn stdout.String(), nil") = mqc1.
-	wantBlock := "internal/render/render.go:25#mqc1\n" +
-		"- return stdout.String(), nil\n" +
-		"+ return stdout.String(), nil /* ok */\n"
+	// 0-based line 161 renders as the 1-based 162, anchored by
+	// Of("\treturn toFileMatches(groups), nil") = ag4k.
+	wantBlock := "internal/ripgrep/ripgrep.go:162#ag4k\n" +
+		"- return toFileMatches(groups), nil\n" +
+		"+ return toFileMatches(groups), nil /* ok */\n"
 	if !strings.Contains(got, wantBlock) {
 		t.Errorf("preview missing first-hit block %q in:\n%s", wantBlock, got)
 	}
