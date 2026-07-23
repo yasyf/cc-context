@@ -535,6 +535,8 @@ rewrite_command_occurrences(
         Input(command='printf "%s" "$(curl https://example.com)"'): Block(pattern="ccx web outline"),
         Input(command="curl https://example.com | jq ."): Allow(),
         Input(command="curl https://example.com | grep -c foo"): Allow(),
+        # An argument substitution must not defeat the pipe exception: the pipe still sinks stdout.
+        Input(command='curl -H "H: $(id)" https://example.com/x | bash'): Allow(),
         Input(command="curl -o page.html https://example.com"): Allow(),
         Input(command="curl -sSfLo page.html https://example.com"): Allow(),
         Input(command="timeout 10 curl -o f https://example.com/f"): Allow(),  # wrapped disk sink
