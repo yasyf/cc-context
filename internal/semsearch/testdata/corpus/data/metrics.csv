@@ -1,0 +1,4 @@
+metric_name,metric_value,recorded_at
+active_sessions,12,2026-07-22T00:00:00Z
+expired_sessions,3,2026-07-22T00:00:00Z
+refresh_failures,1,2026-07-22T00:00:00Z

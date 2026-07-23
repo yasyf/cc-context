@@ -1,0 +1,9 @@
+service:
+  name: oracle-fixture
+  session_ttl_seconds: 3600
+  signing_algorithm: sha256
+routes:
+  normalize_trailing_slash: true
+cache:
+  remove_expired_on_read: false
+  maximum_entries: 128

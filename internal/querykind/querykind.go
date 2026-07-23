@@ -1,5 +1,5 @@
 // Package querykind classifies a search query into the engine that should serve
-// it: semantic (semble), structural (ast-grep), or literal (grep).
+// it: semantic (native), structural (ast-grep), or literal (grep).
 package querykind
 
 import (

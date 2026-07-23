@@ -59,9 +59,12 @@ search or symbol lookup costs one round-trip less than starting with a tour.
 
 Pick the tool by what you know.
 
-- **Have the intent but not the name.** Semantic search by meaning:
+- **Have the intent but not the name.** Semantic search by meaning — a native in-process
+  engine, no external service. `--content` narrows the corpus (space-separated
+  `code|docs|config|all`, default `code docs`), the same flag on `ccx code related` and over the MCP:
   ```
   ccx code search "how requests get authenticated"
+  ccx code search "retry backoff policy" --content "code docs config"
   ```
 - **Have the exact symbol.** Location, signature, and doc, with a counts trailer;
   `--callers`/`--callees`/`--body`/`--full` expand the layer you need:

@@ -1,0 +1,10 @@
+# getrandom 0.3's default wasm32-unknown-unknown backend is `wasm_js`, which
+# drags in the browser wasm-bindgen graph and emits JS imports (getRandomValues,
+# externref table ops) that a bare wazero host cannot satisfy. The `custom`
+# backend routes every getrandom call to __getrandom_v03_custom in the cdylib
+# (a deterministic fill: randomness here only seeds DoS-resistant HashMaps,
+# never inference), leaving the module with zero host imports like format-core.
+#
+# Target-scoped so it never touches host proc-macro / build-script compiles.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="custom"']

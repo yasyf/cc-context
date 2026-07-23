@@ -1,0 +1,69 @@
+{
+  "queries": [
+    {
+      "id": "symbol_session_token_validator",
+      "query": "SessionTokenValidator",
+      "kind": "symbol",
+      "top_k": 8,
+      "relevant_paths": ["python/auth.py"]
+    },
+    {
+      "id": "symbol_parse_http_response",
+      "query": "ParseHTTPResponse",
+      "kind": "symbol",
+      "top_k": 8,
+      "relevant_paths": ["go/http_parser.go"]
+    },
+    {
+      "id": "symbol_state_manager",
+      "query": "StateManager",
+      "kind": "symbol",
+      "top_k": 8,
+      "relevant_paths": ["typescript/state_manager.ts"]
+    },
+    {
+      "id": "nl_validate_bearer_token",
+      "query": "validate bearer token expiration and audience",
+      "kind": "nl",
+      "top_k": 8,
+      "relevant_paths": ["python/auth.py"]
+    },
+    {
+      "id": "nl_parse_http_response",
+      "query": "parse an HTTP response status line and headers",
+      "kind": "nl",
+      "top_k": 8,
+      "relevant_paths": ["go/http_parser.go"]
+    },
+    {
+      "id": "nl_refresh_cache",
+      "query": "refresh cached records without returning stale values",
+      "kind": "nl",
+      "top_k": 8,
+      "relevant_paths": ["rust/cache.rs"]
+    },
+    {
+      "id": "nl_chunk_siblings",
+      "query": "pack nested functions and adjacent syntax siblings into chunks",
+      "kind": "nl",
+      "top_k": 8,
+      "relevant_paths": ["python/chunker.py"]
+    }
+  ],
+  "related": [
+    {
+      "id": "related_python_token_validation",
+      "file_path": "python/auth.py",
+      "line": 6,
+      "top_k": 5,
+      "relevant_paths": ["test/auth_test.py"]
+    },
+    {
+      "id": "related_go_http_parser",
+      "file_path": "go/http_parser.go",
+      "line": 14,
+      "top_k": 5,
+      "relevant_paths": ["tests/http_parser_test.go"]
+    }
+  ]
+}

@@ -2,16 +2,22 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"hash/fnv"
+	"io"
+	"math"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/cli"
+	"github.com/yasyf/cc-context/internal/dispatch"
+	"github.com/yasyf/cc-context/internal/semsearch/index"
 	"github.com/yasyf/cc-context/internal/version"
 )
 
@@ -255,57 +261,120 @@ func TestVersionPrintsBareTag(t *testing.T) {
 	}
 }
 
-// TestSearchCommandInvokesBackend drives the full CLI->router->backend->render
-// path. The semble engine is mocked with a fake script that echoes its argv, so
-// no real engine or network is touched; the assertion proves the search command
-// builds the expected argv and that --budget capping is applied to the output.
-func TestSearchCommandInvokesBackend(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake shell script is POSIX-only")
-	}
-	writeFakeEngine(t, "semble")
+// TestSearchCommandNative drives the full CLI->router->dispatch->render path for
+// a semantic query against the in-process engine, with a deterministic fake
+// embedder in place of the WASM weights. It proves the semantic routing header
+// prints and native results render.
+func TestSearchCommandNative(t *testing.T) {
+	useFakeEmbedder(t)
+	repo := writeSemanticRepo(t)
 
 	var out bytes.Buffer
 	root := cli.NewRootCmd()
 	root.SetOut(&out)
 	root.SetErr(&out)
-	root.SetArgs([]string{"code", "search", "auth flow", "src", "-k", "3"})
+	root.SetArgs([]string{"code", "search", "authenticate user session flow", repo, "-k", "3"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("Execute(search) error = %v", err)
 	}
 
 	got := out.String()
-	// A natural-language query routes to semble (semantic); the routing header is
-	// prepended and the reshaped snippet carries the argv the fake engine echoed,
-	// proving both the routing decision and the argv the search command built.
-	if !strings.Contains(got, "# semantic (semble)") {
+	if !strings.Contains(got, "# semantic (native)") {
 		t.Errorf("missing routing header in %q", got)
 	}
-	wantArgv := "search auth flow src -k 3 --max-snippet-lines 10 --content code docs"
-	if !strings.Contains(got, wantArgv) {
-		t.Errorf("backend argv %q not in output %q", wantArgv, got)
+	if strings.Contains(got, "# 0 results") {
+		t.Errorf("native search returned no results:\n%s", got)
+	}
+	if !strings.Contains(got, ".go") {
+		t.Errorf("expected a code result in %q", got)
 	}
 }
 
-func TestSearchCommandContentOverride(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake shell script is POSIX-only")
-	}
-	writeFakeEngine(t, "semble")
+// TestSearchCommandContentNarrowing proves --content code drops the repo's docs
+// file from the native index, so it cannot appear among results.
+func TestSearchCommandContentNarrowing(t *testing.T) {
+	useFakeEmbedder(t)
+	repo := writeSemanticRepo(t)
 
 	var out bytes.Buffer
 	root := cli.NewRootCmd()
 	root.SetOut(&out)
 	root.SetErr(&out)
-	root.SetArgs([]string{"code", "search", "auth flow", "--content", "code"})
+	root.SetArgs([]string{"code", "search", "documentation flow", repo, "--content", "code"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("Execute(search --content code) error = %v", err)
 	}
 
-	wantArgv := "search auth flow --max-snippet-lines 10 --content code"
-	if got := out.String(); !strings.Contains(got, wantArgv) {
-		t.Errorf("backend argv %q not in output %q", wantArgv, got)
+	got := out.String()
+	if strings.Contains(got, "readme.md") {
+		t.Errorf("--content code should exclude the docs file:\n%s", got)
 	}
+	if !strings.Contains(got, ".go") {
+		t.Errorf("expected a code result in %q", got)
+	}
+}
+
+// useFakeEmbedder injects a deterministic embedder for the test's duration so
+// the semantic ops run without the resident WASM engine or its weights.
+func useFakeEmbedder(t *testing.T) {
+	t.Helper()
+	restore := dispatch.SetEmbedderProvider(func(context.Context) (index.Embedder, error) {
+		return fakeEmbedder{}, nil
+	})
+	t.Cleanup(restore)
+}
+
+// fakeEmbedder maps each text to a fixed pseudo-random unit vector.
+type fakeEmbedder struct{}
+
+func (fakeEmbedder) Dims() int { return 16 }
+
+func (fakeEmbedder) Encode(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, text := range texts {
+		out[i] = unitVec(text, 16)
+	}
+	return out, nil
+}
+
+// unitVec derives a deterministic L2-normalized vector from a text.
+func unitVec(s string, dims int) []float32 {
+	h := fnv.New64a()
+	_, _ = io.WriteString(h, s)
+	r := rand.New(rand.NewSource(int64(h.Sum64()))) //nolint:gosec // deterministic test vectors, not security
+	v := make([]float32, dims)
+	var norm float64
+	for i := range v {
+		v[i] = float32(r.NormFloat64())
+		norm += float64(v[i]) * float64(v[i])
+	}
+	norm = math.Sqrt(norm)
+	if norm == 0 {
+		v[0] = 1
+		return v
+	}
+	for i := range v {
+		v[i] = float32(float64(v[i]) / norm)
+	}
+	return v
+}
+
+// writeSemanticRepo writes a small indexable repo (two code files, one docs
+// file) and returns its path.
+func writeSemanticRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	files := map[string]string{
+		"auth.go":   "package auth\n\n// Login authenticates a user session flow.\nfunc Login(user string) error {\n\treturn nil\n}\n",
+		"parse.go":  "package parse\n\n// Parse reads the auth token flow from input.\nfunc Parse(in string) string {\n\treturn in\n}\n",
+		"readme.md": "# Auth\n\nThe authentication flow documentation lives here for reference.\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	return dir
 }
 
 // TestReadCommandResolvesAnchor drives an anchored --section through the full CLI
@@ -383,54 +452,35 @@ func TestOutlineLinesAlias(t *testing.T) {
 	}
 }
 
-// TestRelatedCommandResolvesAnchor drives an anchored file:line#hash location
-// through the CLI seam: the fake semble engine echoes its argv, proving the
-// location reaches the backend as plain file and line positionals.
-func TestRelatedCommandResolvesAnchor(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake shell script is POSIX-only")
-	}
-	writeFakeEngine(t, "semble")
-	file := writeAnchorFixture(t)
-	beta := anchor.Of("beta")
+// TestRelatedCommandNative drives an anchored file:line#hash location through the
+// CLI seam onto the native engine: the anchor re-resolves to its line, the source
+// chunk is dropped, and the remaining same-language chunk renders with a cos=
+// label.
+func TestRelatedCommandNative(t *testing.T) {
+	useFakeEmbedder(t)
+	repo := writeSemanticRepo(t)
+	t.Chdir(repo)
+	line4 := anchor.Of("func Login(user string) error {")
 
 	var out bytes.Buffer
 	root := cli.NewRootCmd()
 	root.SetOut(&out)
 	root.SetErr(&out)
-	root.SetArgs([]string{"code", "related", file + ":" + anchor.Format(2, beta)})
+	root.SetArgs([]string{"code", "related", "auth.go:" + anchor.Format(4, line4)})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("Execute(related) error = %v", err)
 	}
 
-	// The anchored beta#hash resolves to line 2, so the argv carries the plain "2";
-	// the fake semble engine echoes that argv into the reshaped snippet.
-	wantArgv := fmt.Sprintf("find-related %s 2 --content code docs", file)
-	if got := out.String(); !strings.Contains(got, wantArgv) {
-		t.Errorf("related argv %q not in output %q", wantArgv, got)
+	got := out.String()
+	if strings.Contains(got, "# 0 results") {
+		t.Errorf("native related returned no results:\n%s", got)
 	}
-}
-
-func TestRelatedCommandForwardsPathAndContent(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake shell script is POSIX-only")
+	if !strings.Contains(got, "cos=") {
+		t.Errorf("related missing cos= label:\n%s", got)
 	}
-	writeFakeEngine(t, "semble")
-	file := writeAnchorFixture(t)
-	repo := t.TempDir()
-
-	var out bytes.Buffer
-	root := cli.NewRootCmd()
-	root.SetOut(&out)
-	root.SetErr(&out)
-	root.SetArgs([]string{"code", "related", file + ":2", repo, "--content", "config"})
-	if err := root.Execute(); err != nil {
-		t.Fatalf("Execute(related) error = %v", err)
-	}
-
-	wantArgv := fmt.Sprintf("find-related %s 2 %s --content config", file, repo)
-	if got := out.String(); !strings.Contains(got, wantArgv) {
-		t.Errorf("related argv %q not in output %q", wantArgv, got)
+	// The source's own file is the seed; the related result is the sibling .go.
+	if !strings.Contains(got, "parse.go") {
+		t.Errorf("expected the sibling code chunk in %q", got)
 	}
 }
 
@@ -442,25 +492,6 @@ func writeAnchorFixture(t *testing.T) string {
 		t.Fatalf("write fixture: %v", err)
 	}
 	return path
-}
-
-// writeFakeEngine puts an executable with the given engine name on PATH that
-// echoes its arguments, so backend resolution picks it over a real binary.
-func writeFakeEngine(t *testing.T, name string) {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, name)
-	script := "#!/bin/sh\necho \"$@\"\n"
-	if name == "semble" {
-		// search/related output is reshaped from semble JSON, so the fake must emit
-		// valid JSON. Its argv is echoed into the snippet so the assertion can still
-		// prove which argv reached the backend.
-		script = "#!/bin/sh\n" + `printf '{"results":[{"file_path":"loc","start_line":1,"end_line":1,"score":0,"content":"%s"}]}' "$*"` + "\n"
-	}
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // fake engine script must be owner-executable
-		t.Fatalf("write fake engine: %v", err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // fakeAWSKey is a well-known example AWS access key id the aws-access-token

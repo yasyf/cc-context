@@ -1,0 +1,19 @@
+[package]
+name = "embed-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "wasm32-unknown-unknown envelope adapter over model2vec-rs: a resident static-embedding engine with an explicit C-ABI (alloc/dealloc, load_model, encode) and zero host imports."
+
+[lib]
+name = "embed_wasm"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# wasm feature: local-only (no hf-hub/ureq network stack) + tokenizers'
+# unstable_wasm (fancy-regex in place of onig, no rayon) — the exact swap that
+# keeps tokenizer output bit-identical to Python model2vec on wasm.
+model2vec-rs = { version = "0.2.1", default-features = false, features = ["wasm"] }
+# getrandom's `custom` backend (see ../.cargo/config.toml) needs the crate in
+# scope for the __getrandom_v03_custom hook's Error return type.
+getrandom = { version = "0.3", default-features = false }

@@ -4,6 +4,27 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0] - 2026-07-23
+
+### Changed
+- **`ccx code search` and `ccx code related` now run a native in-process semantic
+  engine.** The previous implementation shelled out to the external Python `semble`
+  package through `uvx`; the whole pipeline — tree-sitter AST chunking, model2vec
+  embeddings via an embedded WASM module, hand-rolled BM25, RRF fusion, and a
+  code-tuned ranking stack — now runs inside the `ccx` binary, so no external
+  process is spawned and `uv` is no longer required for search. Model weights
+  (`potion-code-16M-v2`, a pinned HuggingFace revision) download once into a local
+  cache on first use. On the semble benchmark (63 repos, 1251 queries, same
+  machine) the native engine matches semble's ranking quality (NDCG@10 0.853) and
+  is faster on both cold index build and warm query latency. AST chunking covers 19
+  languages; other file types fall back to line-window chunking.
+
+### Added
+- **Per-request `--content` filter on `ccx code search` and `ccx code related`**, and
+  on the MCP `search`/`related` tools (space-separated `code|docs|config|all`,
+  default `code docs`) — narrowing by content type is now available over MCP, not
+  just the CLI.
+
 ## [0.29.0] - 2026-07-21
 
 ### Added

@@ -1,0 +1,10 @@
+semantic_search:
+  model: potion-code-16M-v2
+  chunk_target_chars: 750
+  bm25:
+    k1: 1.5
+    b: 0.75
+  ranking:
+    rrf_k: 60
+    symbol_alpha: 0.3
+    natural_language_alpha: 0.5
