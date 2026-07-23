@@ -45,8 +45,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - name: Build WASM format engine (go:embed input)
-        run: bash scripts/build-wasm.sh
+      - name: Install zig (tree-sitter grammar wasm cc)
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+      - name: Build WASM engines + grammars (go:embed inputs)
+        run: |
+          bash scripts/build-wasm.sh
+          bash scripts/build-embed-wasm.sh
+          bash scripts/build-chunk-grammars.sh
       - name: Rust format-core tests (Rust suite + corpus gate)
         run: cargo test --manifest-path format-core/Cargo.toml
       - name: Vet
@@ -109,8 +116,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - name: Build WASM format engine (go:embed input)
-        run: bash scripts/build-wasm.sh
+      - name: Install zig (tree-sitter grammar wasm cc)
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+      - name: Build WASM engines + grammars (go:embed inputs)
+        run: |
+          bash scripts/build-wasm.sh
+          bash scripts/build-embed-wasm.sh
+          bash scripts/build-chunk-grammars.sh
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -128,8 +142,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - name: Build WASM format engine (go:embed input)
-        run: bash scripts/build-wasm.sh
+      - name: Install zig (tree-sitter grammar wasm cc)
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+      - name: Build WASM engines + grammars (go:embed inputs)
+        run: |
+          bash scripts/build-wasm.sh
+          bash scripts/build-embed-wasm.sh
+          bash scripts/build-chunk-grammars.sh
       - name: govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -151,8 +172,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - name: Build WASM format engine (go:embed input)
-        run: bash scripts/build-wasm.sh
+      - name: Install zig (tree-sitter grammar wasm cc)
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+      - name: Build WASM engines + grammars (go:embed inputs)
+        run: |
+          bash scripts/build-wasm.sh
+          bash scripts/build-embed-wasm.sh
+          bash scripts/build-chunk-grammars.sh
       - name: Build ccx and link plugin/bin
         run: |
           go build -o bin/ccx ./cmd/ccx

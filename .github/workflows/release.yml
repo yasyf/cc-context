@@ -20,12 +20,20 @@ jobs:
       render-formula: true
       formula-template: .github/formula/ccx.rb.tmpl
       formula-name: ccx
-      # The format engine is format-core compiled to WASM and go:embed'd, so it
-      # must exist before goreleaser builds. pre-build runs after checkout+setup
-      # and before goreleaser.
+      # Three WASM engines are go:embed'd and must exist before goreleaser
+      # builds: format-core, embed-core (model2vec), and the tree-sitter grammar
+      # modules (built with zig cc). pre-build runs after checkout+setup and
+      # before goreleaser, on the goreleaser host (linux/x86_64).
       pre-build: |
+        set -euo pipefail
         rustup target add wasm32-unknown-unknown
+        zig_url=$(curl -fsSL https://ziglang.org/download/index.json \
+          | python3 -c "import sys,json;print(json.load(sys.stdin)['0.14.0']['x86_64-linux']['tarball'])")
+        curl -fsSL "$zig_url" | tar -xJ
+        export PATH="$PWD/$(basename "$zig_url" .tar.xz):$PATH"
         bash scripts/build-wasm.sh
+        bash scripts/build-embed-wasm.sh
+        bash scripts/build-chunk-grammars.sh
 
   # Validates the released darwin_arm64 tarball end to end: the uv-provisioned
   # pydantic-monty sandbox driver behind `ccx exec`, and the wazero-run WASM
