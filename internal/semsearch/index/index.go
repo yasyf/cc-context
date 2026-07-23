@@ -68,7 +68,7 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 
 	var idx *Index
 	err = cache.WithLock(ctx, dir, "index", func() error {
-		prev := loadPersisted(dir, modelID, contentK, chunkerID)
+		prev := loadPersisted(dir, modelID, contentK, chunkerID, emb.Dims())
 		built, berr := build(ctx, emb, root, exts, chunker, prev)
 		if berr != nil {
 			return berr

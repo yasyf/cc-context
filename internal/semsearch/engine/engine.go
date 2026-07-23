@@ -24,6 +24,12 @@ import (
 // defaultTopK matches semble's search/find_related default (top_k=5).
 const defaultTopK = 5
 
+// ModelID is the cache identity for the embedding model: its repo plus the pinned
+// weights revision. A weights bump changes Revision while Repo holds, so folding
+// the revision in invalidates the on-disk cache — otherwise stale old-weights
+// vectors would be served against new-weights query embeddings, silently wrong.
+const ModelID = embed.Repo + "@" + embed.Revision
+
 // Fused-search golden parity (chunk→embed→rank against
 // testdata/goldens/search_results.json) lives in semsearch's
 // fused_parity_test.go; the engine layer adds the walker and cache on top and
@@ -101,7 +107,8 @@ func Related(ctx context.Context, emb index.Embedder, a backend.Args) ([]semsear
 		}
 		hits = append(hits, scored{idx: i, score: rank.Cosine(queryVec, idx.Vectors[i])})
 	}
-	// Score desc, then (start_line, path) ascending — rank's canonical tie-break.
+	// Score desc, then (start_line, path, corpus index) ascending — rank's
+	// canonical tie-break, total even when two chunks share path+start_line.
 	sort.Slice(hits, func(i, j int) bool {
 		if hits[i].score != hits[j].score {
 			return hits[i].score > hits[j].score
@@ -110,7 +117,10 @@ func Related(ctx context.Context, emb index.Embedder, a backend.Args) ([]semsear
 		if ci.StartLine != cj.StartLine {
 			return ci.StartLine < cj.StartLine
 		}
-		return ci.Path < cj.Path
+		if ci.Path != cj.Path {
+			return ci.Path < cj.Path
+		}
+		return hits[i].idx < hits[j].idx
 	})
 
 	k := topK(a.K)
@@ -152,7 +162,7 @@ func load(ctx context.Context, emb index.Embedder, a backend.Args) (*index.Index
 	if err != nil {
 		return nil, nil, err
 	}
-	idx, err := index.Load(ctx, emb, repo, content, index.DefaultChunker(), embed.Repo)
+	idx, err := index.Load(ctx, emb, repo, content, index.DefaultChunker(), ModelID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -201,14 +211,14 @@ func loadCached(ctx context.Context, emb index.Embedder, a backend.Args) (*index
 		return nil, nil, err
 	}
 	chunker := index.DefaultChunker()
-	key := indexKey{repo: resolved, content: index.ContentKey(content), model: embed.Repo, chunker: chunker.ID()}
+	key := indexKey{repo: resolved, content: index.ContentKey(content), model: ModelID, chunker: chunker.ID()}
 
 	residentMu.Lock()
 	defer residentMu.Unlock()
 	if idx := residentIndex[key]; idx != nil {
 		return idx, content, nil
 	}
-	idx, err := index.Load(ctx, emb, repo, content, chunker, embed.Repo)
+	idx, err := index.Load(ctx, emb, repo, content, chunker, ModelID)
 	if err != nil {
 		return nil, nil, err
 	}

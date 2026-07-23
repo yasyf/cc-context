@@ -119,6 +119,10 @@ func Run(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 // span list, appending the weak-match and slow-search notes after the cap so
 // neither is truncated away.
 func runSemantic(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
+	// Time from before the embedder is constructed: a cold first request pays the
+	// weight download, WASM compile, and model load, and the slow-search note must
+	// reflect that latency rather than excluding it.
+	start := time.Now()
 	emb, err := sharedEmbedder(ctx)
 	if err != nil {
 		return "", err
@@ -130,7 +134,6 @@ func runSemantic(ctx context.Context, op backend.Op, a backend.Args) (string, er
 		}
 	}
 
-	start := time.Now()
 	var results []semsearch.Result
 	if op == backend.OpSearch {
 		results, err = engine.Search(ctx, emb, a)

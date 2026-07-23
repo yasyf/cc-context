@@ -16,9 +16,11 @@ const (
 
 // BM25 is a hand-rolled BM25 inverted index over a fixed set of documents,
 // mirroring semble/index/bm25.py. It is a distinct implementation from
-// internal/web/bm25.go, whose k1 and tokenizer differ. Scores are computed in
-// float64 (semble accumulates in a numpy float32 array); only ranking and the
-// sign of a score feed the pipeline, so the widened precision is safe.
+// internal/web/bm25.go, whose k1 and tokenizer differ. Scores accumulate in
+// float32 in query-term first-occurrence order — matching semble's numpy float32
+// array and Counter iteration — so two documents with identical length and term
+// frequencies reach bit-identical scores and the canonical tie-break fires
+// deterministically (a float64 accumulation over map-order terms does not).
 type BM25 struct {
 	documents   map[string]map[string]int // chunk id → term counts
 	docLengths  map[string]int
@@ -71,7 +73,11 @@ func (b *BM25) SetDocOrder(chunkIDs []string) {
 
 // GetScores returns BM25 scores for a tokenized query, aligned with the doc
 // order. Mirrors semble/index/bm25.py BM25.get_scores (without the weight mask,
-// which serves selector filtering outside this stage's scope).
+// which serves selector filtering outside this stage's scope). Terms iterate in
+// first-occurrence order (Python Counter) and each document's score accumulates
+// in float32 (semble's numpy float32 array), so the result is bit-stable across
+// calls and tied documents compare exactly equal — a float64 sum over map-order
+// terms is not associative and would vary run to run.
 func (b *BM25) GetScores(tokens []string) []float64 {
 	scores := make([]float64, len(b.docOrder))
 	corpusSize := len(b.documents)
@@ -79,15 +85,21 @@ func (b *BM25) GetScores(tokens []string) []float64 {
 		return scores
 	}
 	avgdl := float64(b.totalDocLen) / float64(corpusSize)
+	terms := make([]string, 0, len(tokens))
 	queryTF := map[string]int{}
 	for _, t := range tokens {
+		if _, ok := queryTF[t]; !ok {
+			terms = append(terms, t)
+		}
 		queryTF[t]++
 	}
-	for term, qtf := range queryTF {
+	acc := make([]float32, len(b.docOrder))
+	for _, term := range terms {
 		docs := b.postings[term]
 		if len(docs) == 0 {
 			continue
 		}
+		qtf := queryTF[term]
 		df := len(docs)
 		idf := math.Log(1 + (float64(corpusSize)-float64(df)+0.5)/(float64(df)+0.5))
 		for chunkID, tf := range docs {
@@ -97,8 +109,11 @@ func (b *BM25) GetScores(tokens []string) []float64 {
 			}
 			dl := b.docLengths[chunkID]
 			tfc := float64(tf) / (bm25K1*(1-bm25B+bm25B*float64(dl)/avgdl) + float64(tf))
-			scores[idx] += float64(qtf) * idf * tfc
+			acc[idx] += float32(float64(qtf) * idf * tfc)
 		}
+	}
+	for i, v := range acc {
+		scores[i] = float64(v)
 	}
 	return scores
 }

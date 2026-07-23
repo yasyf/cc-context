@@ -338,16 +338,23 @@ const nsPrefix = `(?:[A-Za-z_][A-Za-z0-9_]*(?:\.|::))*`
 // needed elsewhere).
 const keywordPrefix = `(?:^|\s)(?:`
 
+// definitionPatternCacheMax bounds the compiled-pattern cache, mirroring
+// boosting.py's functools.lru_cache(maxsize=256): a resident MCP process sees one
+// distinct query symbol per search, so an unbounded map would grow without limit.
+const definitionPatternCacheMax = 256
+
 var (
 	defKeywordBody = joinEscaped(defKeywords)
 	sqlKeywordBody = joinEscaped(sqlKeywords)
 
 	definitionPatternMu    sync.Mutex
 	definitionPatternCache = map[string][2]*regexp.Regexp{}
+	definitionPatternOrder []string // insertion order, for FIFO eviction at the cap
 )
 
 // definitionPattern builds (general, sql) definition regexes for a symbol,
-// caching by name. Mirrors boosting.py _definition_pattern.
+// caching by name under a 256-entry bound. Mirrors boosting.py
+// _definition_pattern.
 func definitionPattern(symbolName string) (*regexp.Regexp, *regexp.Regexp) {
 	definitionPatternMu.Lock()
 	defer definitionPatternMu.Unlock()
@@ -357,7 +364,13 @@ func definitionPattern(symbolName string) (*regexp.Regexp, *regexp.Regexp) {
 	suffix := `)\s+` + nsPrefix + regexp.QuoteMeta(symbolName) + `(?:\s|[<({:\[;]|$)`
 	general := regexp.MustCompile(`(?m)` + keywordPrefix + defKeywordBody + suffix)
 	sql := regexp.MustCompile(`(?im)` + keywordPrefix + sqlKeywordBody + suffix)
+	if len(definitionPatternCache) >= definitionPatternCacheMax {
+		oldest := definitionPatternOrder[0]
+		definitionPatternOrder = definitionPatternOrder[1:]
+		delete(definitionPatternCache, oldest)
+	}
 	definitionPatternCache[symbolName] = [2]*regexp.Regexp{general, sql}
+	definitionPatternOrder = append(definitionPatternOrder, symbolName)
 	return general, sql
 }
 

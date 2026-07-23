@@ -184,6 +184,90 @@ func TestLoadInvalidation(t *testing.T) {
 	}
 }
 
+// dimsEmbedder is a counting embedder with a configurable output width, for the
+// dims-mismatch cache-rejection test.
+type dimsEmbedder struct {
+	dims    int
+	encoded int
+}
+
+func (d *dimsEmbedder) Dims() int { return d.dims }
+
+func (d *dimsEmbedder) Encode(_ context.Context, texts []string) ([][]float32, error) {
+	d.encoded += len(texts)
+	out := make([][]float32, len(texts))
+	for i, text := range texts {
+		out[i] = detVec(text, d.dims)
+	}
+	return out, nil
+}
+
+// TestLoadRevisionBumpRebuilds covers I3(a): a weights bump changes the model
+// identity (embed.Repo holds, embed.Revision moves — engine folds both into the
+// modelID it passes here), so the cached vectors must be discarded and rebuilt
+// rather than served stale against new-weights query embeddings.
+func TestLoadRevisionBumpRebuilds(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	repo := writeIndexRepo(t)
+	ctx := context.Background()
+
+	emb := &countingEmbedder{}
+	if _, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "minishlab/potion-code-16M-v2@rev1"); err != nil {
+		t.Fatalf("cold Load: %v", err)
+	}
+
+	emb.encoded = 0
+	got, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "minishlab/potion-code-16M-v2@rev2")
+	if err != nil {
+		t.Fatalf("revision-bump Load: %v", err)
+	}
+	if got.TotalFiles == 0 || got.Reindexed != got.TotalFiles {
+		t.Errorf("revision bump should force full rebuild: Reindexed=%d TotalFiles=%d", got.Reindexed, got.TotalFiles)
+	}
+	if emb.encoded != len(got.Chunks) {
+		t.Errorf("re-embedded %d texts, want all %d chunks (no stale reuse)", emb.encoded, len(got.Chunks))
+	}
+}
+
+// TestLoadDimsMismatchRebuilds covers I3(b): a persisted cache whose vector width
+// no longer matches the live embedder (a dimension change under the same model
+// string) must be rejected by loadPersisted and rebuilt, so mismatched vectors
+// never reach rank.Cosine (which would panic).
+func TestLoadDimsMismatchRebuilds(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	repo := writeIndexRepo(t)
+	ctx := context.Background()
+
+	small := &dimsEmbedder{dims: 8}
+	cold, err := Load(ctx, small, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x")
+	if err != nil {
+		t.Fatalf("cold Load (dims 8): %v", err)
+	}
+	if len(cold.Vectors) == 0 || len(cold.Vectors[0]) != 8 {
+		t.Fatalf("cold vectors dims = %d, want 8", vecDims(cold.Vectors))
+	}
+
+	// Same model string, wider embedder: the cached 8-dim vectors must not load.
+	wide := &dimsEmbedder{dims: 16}
+	got, err := Load(ctx, wide, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x")
+	if err != nil {
+		t.Fatalf("reload (dims 16): %v", err)
+	}
+	if got.TotalFiles == 0 || got.Reindexed != got.TotalFiles {
+		t.Errorf("dims mismatch should force full rebuild: Reindexed=%d TotalFiles=%d", got.Reindexed, got.TotalFiles)
+	}
+	if d := vecDims(got.Vectors); d != 16 {
+		t.Errorf("rebuilt vectors dims = %d, want 16 (stale 8-dim cache rejected)", d)
+	}
+}
+
+func vecDims(vectors [][]float32) int {
+	if len(vectors) == 0 {
+		return 0
+	}
+	return len(vectors[0])
+}
+
 func TestLoadNoIndexableFiles(t *testing.T) {
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	repo := t.TempDir()

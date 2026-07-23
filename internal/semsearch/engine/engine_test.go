@@ -11,9 +11,25 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/semsearch/embed"
 	"github.com/yasyf/cc-context/internal/semsearch/engine"
 	"github.com/yasyf/cc-context/internal/semsearch/index"
 )
+
+// TestModelIDIncludesRevision covers I3(a): the cache identity must fold in the
+// pinned weights revision, not just the repo name, so a weights bump (Repo holds,
+// Revision moves) invalidates the on-disk cache instead of serving stale vectors.
+func TestModelIDIncludesRevision(t *testing.T) {
+	if engine.ModelID == embed.Repo {
+		t.Fatalf("engine.ModelID = %q equals the bare repo; a revision bump would not invalidate the cache", engine.ModelID)
+	}
+	if !strings.Contains(engine.ModelID, embed.Revision) {
+		t.Errorf("engine.ModelID = %q, want it to include the pinned revision %q", engine.ModelID, embed.Revision)
+	}
+	if want := embed.Repo + "@" + embed.Revision; engine.ModelID != want {
+		t.Errorf("engine.ModelID = %q, want %q", engine.ModelID, want)
+	}
+}
 
 // fakeEmbedder maps each text to a deterministic unit vector, so the engine runs
 // without the resident WASM weights.

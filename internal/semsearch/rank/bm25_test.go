@@ -24,9 +24,10 @@ func TestEnrichForBM25(t *testing.T) {
 }
 
 func TestBM25GetScores(t *testing.T) {
-	// 3-doc corpus; expected float64 scores hand-computed from the semble 0.5.2
-	// formula (k1=1.5, b=0.75, idf=log(1+(N-df+0.5)/(df+0.5))). semble accumulates
-	// in numpy float32; these float64 values agree with it to ~6 significant digits.
+	// 3-doc corpus; expected scores from the semble 0.5.2 formula (k1=1.5, b=0.75,
+	// idf=log(1+(N-df+0.5)/(df+0.5))) accumulated in float32, matching semble's
+	// numpy float32 array. The two-term sum is exactly twice the single-term score
+	// because "quick" and "fox" share df/tf/idf and float32 doubling is exact.
 	bm := NewBM25()
 	bm.AddDocument("0", Tokenize("the quick brown fox")) // len 4
 	bm.AddDocument("1", Tokenize("quick fox jumps"))     // len 3
@@ -38,9 +39,9 @@ func TestBM25GetScores(t *testing.T) {
 		query string
 		want  []float64
 	}{
-		{"single term", "quick", []float64{0.17247839605348098, 0.1968601588463814, 0.0}},
-		{"other single term", "fox", []float64{0.17247839605348098, 0.1968601588463814, 0.0}},
-		{"two terms sum", "quick fox", []float64{0.34495679210696195, 0.3937203176927628, 0.0}},
+		{"single term", "quick", []float64{0.17247839272022247, 0.1968601644039154, 0.0}},
+		{"other single term", "fox", []float64{0.17247839272022247, 0.1968601644039154, 0.0}},
+		{"two terms sum", "quick fox", []float64{0.34495678544044495, 0.3937203288078308, 0.0}},
 		{"no match", "nomatch", []float64{0.0, 0.0, 0.0}},
 	}
 	for _, tt := range tests {

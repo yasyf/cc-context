@@ -86,8 +86,9 @@ func ResolveRoot(root string) (string, error) {
 // loadPersisted loads and validates a repo's cache, returning nil (no error)
 // when it is absent, malformed, or incompatible with the requested parameters —
 // mirroring semble's load_previous_for_incremental (a bad cache is rebuilt, not
-// fatal).
-func loadPersisted(dir, model, content, chunker string) *persisted {
+// fatal). dims is the live embedder's output width: a cache whose vectors do not
+// match it is rejected (rebuilt) so mismatched vectors never reach rank.Cosine.
+func loadPersisted(dir, model, content, chunker string, dims int) *persisted {
 	man, err := readManifest(dir)
 	if err != nil {
 		return nil
@@ -104,6 +105,9 @@ func loadPersisted(dir, model, content, chunker string) *persisted {
 		return nil
 	}
 	if len(chunks) != len(vectors) || (man.Dims != 0 && len(vectors) > 0 && len(vectors[0]) != man.Dims) {
+		return nil
+	}
+	if dims != 0 && ((man.Dims != 0 && man.Dims != dims) || (len(vectors) > 0 && len(vectors[0]) != dims)) {
 		return nil
 	}
 	// Every file's chunk range must line up with the flat arrays.

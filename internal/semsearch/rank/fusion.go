@@ -6,10 +6,12 @@
 //
 // Tie-breaking substrate: semble sorts the fused candidate set by start_line to
 // counteract hash-order randomness (search.py). This port makes (start_line,
-// path) the canonical tie-break everywhere — including the per-leg RRF ranking,
-// where semble instead inherits numpy argpartition/argsort order. The two agree
-// whenever leg scores are distinct (the common case) and diverge only on exactly
-// tied cosine or BM25 leg scores, which numpy orders non-reproducibly.
+// path, corpus index) the canonical tie-break everywhere — including the per-leg
+// RRF ranking, where semble instead inherits numpy argpartition/argsort order.
+// The corpus-index final key makes the order a strict total order even when two
+// distinct chunks share both path and start_line. The two agree whenever leg
+// scores are distinct (the common case) and diverge only on exactly tied cosine
+// or BM25 leg scores, which numpy orders non-reproducibly.
 package rank
 
 import (
@@ -111,7 +113,9 @@ func Rank(query string, queryVec []float32, chunks []semsearch.Chunk, vectors []
 // Cosine returns the cosine similarity of two float32 vectors — semble's
 // 1 − cosine_distance (index/dense.py). Computed in float64 (semble uses numpy
 // float32); the widened precision only affects the reported SemanticScore, since
-// fusion is rank-based.
+// fusion is rank-based. A zero-norm vector (an out-of-vocabulary query embeds to
+// all zeros) yields 0, mirroring embed.Cosine — dividing by a zero norm would
+// produce NaN, which defeats the canonical tie-break and fails json.Marshal.
 func Cosine(a, b []float32) float64 {
 	var dot, na, nb float64
 	for i := range a {
@@ -119,6 +123,9 @@ func Cosine(a, b []float32) float64 {
 		dot += av * bv
 		na += av * av
 		nb += bv * bv
+	}
+	if na == 0 || nb == 0 {
+		return 0
 	}
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
@@ -219,13 +226,18 @@ func unionOrdered(a, b map[int]float64, chunks []semsearch.Chunk) []int {
 		if ca.StartLine != cb.StartLine {
 			return ca.StartLine < cb.StartLine
 		}
-		return ca.Path < cb.Path
+		if ca.Path != cb.Path {
+			return ca.Path < cb.Path
+		}
+		return union[i] < union[j] // corpus index — distinct chunks can share path+start_line
 	})
 	return union
 }
 
 // sortByScoreThenCanonical sorts hits by score descending, breaking ties by
-// (start_line, path) ascending — a strict total order over distinct chunks.
+// (start_line, path) ascending and then by corpus index — a strict total order
+// over distinct chunks even when two chunks share both path and start_line (a
+// minified single-line file yields many chunks at start_line 1).
 func sortByScoreThenCanonical(hits []scored, chunks []semsearch.Chunk) {
 	sort.Slice(hits, func(i, j int) bool {
 		if hits[i].score != hits[j].score {
@@ -235,6 +247,9 @@ func sortByScoreThenCanonical(hits []scored, chunks []semsearch.Chunk) {
 		if ca.StartLine != cb.StartLine {
 			return ca.StartLine < cb.StartLine
 		}
-		return ca.Path < cb.Path
+		if ca.Path != cb.Path {
+			return ca.Path < cb.Path
+		}
+		return hits[i].idx < hits[j].idx
 	})
 }

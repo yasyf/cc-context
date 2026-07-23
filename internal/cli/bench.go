@@ -141,7 +141,7 @@ func writeBenchSemsearchTiming(
 
 	// Build the index once against the cleared cache — the honest cold-index cost.
 	started := time.Now()
-	idx, err := index.Load(ctx, emb, repo, content, index.DefaultChunker(), embed.Repo)
+	idx, err := index.Load(ctx, emb, repo, content, index.DefaultChunker(), engine.ModelID)
 	if err != nil {
 		return fmt.Errorf("build cold semantic-search index: %w", err)
 	}

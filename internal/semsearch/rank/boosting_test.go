@@ -1,6 +1,7 @@
 package rank
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/semsearch"
@@ -159,6 +160,25 @@ func TestApplyQueryBoostNLStem(t *testing.T) {
 		if got := scoreOf(t, out, idx); !almostEqual(got, w) {
 			t.Errorf("idx %d = %v, want %v", idx, got, w)
 		}
+	}
+}
+
+// TestDefinitionPatternCacheBounded covers R4: the compiled-pattern cache is
+// bounded to 256 entries (semble's lru_cache(maxsize=256)); feeding more than 256
+// distinct symbols must not grow it without limit.
+func TestDefinitionPatternCacheBounded(t *testing.T) {
+	for i := 0; i < definitionPatternCacheMax+100; i++ {
+		definitionPattern(fmt.Sprintf("Sym%dUnique", i))
+	}
+	definitionPatternMu.Lock()
+	size := len(definitionPatternCache)
+	order := len(definitionPatternOrder)
+	definitionPatternMu.Unlock()
+	if size > definitionPatternCacheMax {
+		t.Errorf("definitionPatternCache size = %d, want ≤ %d", size, definitionPatternCacheMax)
+	}
+	if order > definitionPatternCacheMax {
+		t.Errorf("definitionPatternOrder length = %d, want ≤ %d", order, definitionPatternCacheMax)
 	}
 }
 
