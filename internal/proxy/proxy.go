@@ -5,10 +5,12 @@ package proxy
 
 import (
 	"context"
+	"errors"
 
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/dispatch"
+	"github.com/yasyf/cc-context/internal/web"
 )
 
 // Proxy fronts the op surface: every op runs in-process via internal/dispatch.
@@ -34,9 +36,13 @@ func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string
 	return note + out, nil
 }
 
-// Close frees the resident index cache and releases the resident embedder if the
-// process opened one.
+// Close frees the resident index cache and releases both resident embedders (the
+// code engine in dispatch and the web-search engine in web) if the process opened
+// them.
 func (p *Proxy) Close() error {
 	dispatch.CloseIndexCache()
-	return dispatch.CloseEmbedder(context.Background())
+	return errors.Join(
+		dispatch.CloseEmbedder(context.Background()),
+		web.CloseEmbedder(context.Background()),
+	)
 }

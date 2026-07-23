@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // --- E3: ABI bounds guard + free-on-fail ------------------------------------
@@ -125,10 +127,62 @@ func TestFrameBatchRoundTrip(t *testing.T) {
 	}
 }
 
+// --- E1: Encode cancellation checks -----------------------------------------
+
+type errObservedContext struct {
+	context.Context
+	observed chan struct{}
+	once     sync.Once
+}
+
+func (c *errObservedContext) Err() error {
+	err := c.Context.Err()
+	c.once.Do(func() { close(c.observed) })
+	return err
+}
+
+func TestEncodePreCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var eng Engine
+	got, err := eng.Encode(ctx, []string{"text"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Encode error = %v, want %v", err, context.Canceled)
+	}
+	if got != nil {
+		t.Fatalf("Encode result = %v, want nil", got)
+	}
+}
+
+func TestEncodeCanceledWhileWaiting(t *testing.T) {
+	var eng Engine
+	eng.mu.Lock()
+
+	baseCtx, cancel := context.WithCancel(context.Background())
+	ctx := &errObservedContext{
+		Context:  baseCtx,
+		observed: make(chan struct{}),
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := eng.Encode(ctx, []string{"text"})
+		result <- err
+	}()
+
+	<-ctx.observed
+	cancel()
+	eng.mu.Unlock()
+
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Encode error = %v, want %v", err, context.Canceled)
+	}
+}
+
 // --- E2: Close releases the cache and is idempotent -------------------------
 
 func TestCloseIdempotentReleasesHandles(t *testing.T) {
-	eng, err := New(context.Background())
+	eng, err := New(context.Background(), CodePin)
 	if errors.Is(err, ErrWeightsUnavailable) {
 		t.Skip("model weights unavailable (offline, empty cache) — skipping")
 	}
@@ -164,7 +218,7 @@ func TestDownloadBounded(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("HF_ENDPOINT", srv.URL)
 
-	_, err := download(context.Background(), weightFile{name: "config.json", sha256: "unused"})
+	_, err := download(context.Background(), CodePin, WeightFile{Name: "config.json", SHA256: "unused"})
 	if err == nil || !strings.Contains(err.Error(), "cap") {
 		t.Fatalf("download over-cap err = %v, want bounded-read rejection", err)
 	}
@@ -172,6 +226,31 @@ func TestDownloadBounded(t *testing.T) {
 	// offline sentinel, so callers do not treat it as "no network".
 	if errors.Is(err, ErrWeightsUnavailable) {
 		t.Fatalf("over-cap download wrongly reported as ErrWeightsUnavailable: %v", err)
+	}
+}
+
+func TestDownloadTimesOut(t *testing.T) {
+	orig := downloadTimeout
+	defer func() { downloadTimeout = orig }()
+	downloadTimeout = 50 * time.Millisecond
+
+	block := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		<-block // accept, then stall past the deadline
+	}))
+	// LIFO: unblock the handler before Close waits on the in-flight request.
+	defer srv.Close()
+	defer close(block)
+	t.Setenv("HF_ENDPOINT", srv.URL)
+
+	_, err := download(context.Background(), CodePin, WeightFile{Name: "config.json", SHA256: "unused"})
+	// A stalled mirror surfaces as the skippable offline sentinel, not a hard
+	// error, and carries the deadline cause for diagnosis.
+	if !errors.Is(err, ErrWeightsUnavailable) {
+		t.Fatalf("download timeout err = %v, want wrapping ErrWeightsUnavailable", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("download timeout err = %v, want wrapping context.DeadlineExceeded", err)
 	}
 }
 
@@ -187,7 +266,7 @@ func TestDownloadNormalVerifies(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("HF_ENDPOINT", srv.URL)
 
-	got, err := download(context.Background(), weightFile{name: "config.json", sha256: want})
+	got, err := download(context.Background(), CodePin, WeightFile{Name: "config.json", SHA256: want})
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}

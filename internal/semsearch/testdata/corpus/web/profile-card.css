@@ -1,0 +1,56 @@
+@layer components {
+  .profile-card {
+    --card-accent: #3157d5;
+    display: grid;
+    gap: 1rem;
+    max-width: 32rem;
+    padding: 1.5rem;
+    color: #1d2433;
+    background: #ffffff;
+    border: 1px solid #d7dce5;
+    border-radius: 0.75rem;
+    box-shadow: 0 0.5rem 1.5rem rgb(29 36 51 / 10%);
+  }
+
+  .profile-card > header {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 1.5rem;
+  }
+
+  .profile-card h2,
+  .profile-card p {
+    margin: 0;
+  }
+
+  .profile-card button {
+    padding: 0.5rem 0.75rem;
+    color: white;
+    background: var(--card-accent);
+    border: 0;
+    border-radius: 0.375rem;
+    cursor: pointer;
+  }
+
+  .profile-card button:focus-visible {
+    outline: 0.2rem solid color-mix(in srgb, var(--card-accent), white 35%);
+    outline-offset: 0.2rem;
+  }
+
+  .profile-card ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0;
+    margin: 0;
+    list-style: none;
+  }
+
+  @media (width <= 32rem) {
+    .profile-card > header {
+      align-items: stretch;
+      flex-direction: column;
+    }
+  }
+}

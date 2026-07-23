@@ -20,7 +20,7 @@ import (
 const benchSemsearchTopK = 10
 
 var newBenchSemsearchEmbedder = func(ctx context.Context) (index.Embedder, error) {
-	return embed.New(ctx)
+	return embed.New(ctx, embed.CodePin)
 }
 
 type benchSemsearchResult struct {

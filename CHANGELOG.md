@@ -4,6 +4,44 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.0] - 2026-07-23
+
+### Added
+- **AST chunking for TSX, CSS, SCSS, and Vue.** New tree-sitter grammars, pinned to
+  the same upstream revisions as semble's language pack, replace line-window chunking
+  for these extensions; the embedded grammar set grows ~330 KB to ~4.4 MB. The
+  63-repo/1251-query quality gate re-ran benchmark-neutral (overall NDCG@10 delta vs
+  semble unchanged at −0.0007).
+
+### Changed
+- **`ccx web search` hybrid embeddings now run the native in-process engine.** The
+  per-call `uv`/Python model2vec subprocess is gone; web search shares the resident
+  WASM engine machinery with code search, on the same pinned `potion-base-8M` model,
+  so cached page vectors stay valid. `uv` is no longer required for hybrid ranking —
+  without weights (empty cache, offline) web search degrades to BM25-only, and a
+  stalled weights download now fails within a bounded window (~5 minutes, the old
+  subprocess path's first-run bound, restored for the native engine) instead of
+  hanging engine construction.
+- **The model-weights cache is namespaced per model** (`models/<repo>/<revision>`),
+  making room for the second (web) model; the code model re-downloads once (~30 MB)
+  on the first search after upgrade.
+
+### Fixed
+- **Gitignore-negated files with unmapped extensions now index** (line-chunked)
+  instead of silently vanishing; a repo whose only file is such a file no longer
+  errors `no indexable files`.
+- **Index-cache crash safety.** The persisted index's manifest, chunks, and vectors
+  now share a per-write generation nonce; a crash between the three writes leaves a
+  torn cache that rebuilds instead of silently pairing new chunks with stale
+  vectors. Existing caches rebuild once (schema bump).
+- **Malformed UTF-8 decodes with Python parity end to end.** Invalid byte sequences
+  produce one U+FFFD per maximal invalid subsequence (Python `errors="replace"`
+  semantics) — including on the production indexing path, which previously collapsed
+  each invalid run into a single replacement — matching semble's chunk boundaries
+  for malformed files.
+- **Embedding calls honor context cancellation** promptly when queued behind other
+  work (an in-flight sub-15 ms WASM encode still runs to completion by design).
+
 ## [0.30.0] - 2026-07-23
 
 ### Changed

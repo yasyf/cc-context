@@ -33,14 +33,28 @@ func TestDecodeReplace(t *testing.T) {
 		want string
 	}{
 		{"valid ascii", []byte("hello"), "hello"},
-		{"valid multibyte", []byte("café"), "café"},
-		{"stray byte", []byte{'a', 0xff, 'b'}, "a�b"},
-		{"leading invalid", []byte{0x80, 'x'}, "�x"},
+		{"valid multibyte", []byte("café 😀"), "café 😀"},
+		{"bare continuation", []byte{0x80}, "�"},
+		{"bare continuation run", []byte{0x80, 0xbf}, "��"},
+		{"truncated 2-byte sequence", []byte{0xc2}, "�"},
+		{"truncated 3-byte sequence after lead", []byte{0xe2}, "�"},
+		{"truncated 3-byte sequence after one continuation", []byte{0xe2, 0x82}, "�"},
+		{"truncated 4-byte sequence after lead", []byte{0xf0}, "�"},
+		{"truncated 4-byte sequence after one continuation", []byte{0xf0, 0x9f}, "�"},
+		{"truncated 4-byte sequence after two continuations", []byte{0xf0, 0x9f, 0x92}, "�"},
+		{"overlong 2-byte encoding", []byte{0xc0, 0xaf}, "��"},
+		{"invalid lead bytes", []byte{0xfe, 0xff}, "��"},
+		{"surrogate encoding", []byte{0xed, 0xa0, 0x80}, "���"},
+		{"overlong 3-byte encoding", []byte{0xe0, 0x80, 0x80}, "���"},
+		{"code point above Unicode maximum", []byte{0xf4, 0x90, 0x80, 0x80}, "����"},
+		{"valid text around invalid prefix", []byte{'A', 0xf0, 0x9f, '(', 'B'}, "A�(B"},
+		{"4-byte lead before breaker", []byte{0xf0, '('}, "�("},
+		{"4-byte prefix before breaker", []byte{0xf0, 0x9f, '('}, "�("},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := decodeReplace(tt.in); got != tt.want {
-				t.Errorf("decodeReplace(%v) = %q, want %q", tt.in, got, tt.want)
+			if got := DecodeReplace(tt.in); got != tt.want {
+				t.Errorf("DecodeReplace(%v) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}

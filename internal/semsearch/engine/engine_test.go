@@ -20,13 +20,13 @@ import (
 // pinned weights revision, not just the repo name, so a weights bump (Repo holds,
 // Revision moves) invalidates the on-disk cache instead of serving stale vectors.
 func TestModelIDIncludesRevision(t *testing.T) {
-	if engine.ModelID == embed.Repo {
+	if engine.ModelID == embed.CodePin.Repo {
 		t.Fatalf("engine.ModelID = %q equals the bare repo; a revision bump would not invalidate the cache", engine.ModelID)
 	}
-	if !strings.Contains(engine.ModelID, embed.Revision) {
-		t.Errorf("engine.ModelID = %q, want it to include the pinned revision %q", engine.ModelID, embed.Revision)
+	if !strings.Contains(engine.ModelID, embed.CodePin.Revision) {
+		t.Errorf("engine.ModelID = %q, want it to include the pinned revision %q", engine.ModelID, embed.CodePin.Revision)
 	}
-	if want := embed.Repo + "@" + embed.Revision; engine.ModelID != want {
+	if want := embed.CodePin.Repo + "@" + embed.CodePin.Revision; engine.ModelID != want {
 		t.Errorf("engine.ModelID = %q, want %q", engine.ModelID, want)
 	}
 }

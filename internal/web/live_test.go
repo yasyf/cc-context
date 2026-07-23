@@ -549,15 +549,15 @@ func TestLiveWebRunOutlineReadSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
-	if Supported() {
+	if strings.Contains(search, UnsupportedReason) {
+		t.Logf("embedding model unavailable: search ran BM25-only, skipping cite-quality assertion (%s)", firstLine(search))
+	} else {
 		if strings.HasPrefix(search, "# 0 results") {
 			t.Errorf("search returned 0 hits: %s", firstLine(search))
 		}
 		if !strings.Contains(search, "§") || !strings.Contains(search, "#") {
 			t.Errorf("search hits carry no §…# cite:\n%s", search)
 		}
-	} else {
-		t.Logf("uv absent: search ran BM25-only, skipping cite-quality assertion (%s)", firstLine(search))
 	}
 
 	if got := fetches.Load(); got != 1 {

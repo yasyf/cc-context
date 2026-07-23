@@ -1,6 +1,7 @@
 package index
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -17,7 +18,7 @@ import (
 
 // schemaVersion is the on-disk index-cache format version. A mismatch discards
 // the cache and rebuilds — bump it whenever the persisted layout changes.
-const schemaVersion = 1
+const schemaVersion = 2
 
 // Cache file names within a repo's cache dir.
 const (
@@ -37,12 +38,18 @@ type fileManifest struct {
 
 // manifest is the cache header plus the per-file chunk ranges, in walk order.
 type manifest struct {
-	Schema  int            `json:"schema"`
-	Model   string         `json:"model"`
-	Content string         `json:"content"`
-	Chunker string         `json:"chunker"`
-	Dims    int            `json:"dims"`
-	Files   []fileManifest `json:"files"`
+	Schema     int            `json:"schema"`
+	Generation string         `json:"generation"`
+	Model      string         `json:"model"`
+	Content    string         `json:"content"`
+	Chunker    string         `json:"chunker"`
+	Dims       int            `json:"dims"`
+	Files      []fileManifest `json:"files"`
+}
+
+type chunkEnvelope struct {
+	Generation string            `json:"generation"`
+	Chunks     []semsearch.Chunk `json:"chunks"`
 }
 
 // persisted is a loaded, self-consistent cache: the manifest, the flat chunk
@@ -96,14 +103,18 @@ func loadPersisted(dir, model, content, chunker string, dims int) *persisted {
 	if man.Schema != schemaVersion || man.Model != model || man.Content != content || man.Chunker != chunker {
 		return nil
 	}
-	chunks, err := readChunks(dir)
+	chunkData, err := readChunks(dir)
 	if err != nil {
 		return nil
 	}
-	vectors, err := readVectors(dir)
+	vectorGeneration, vectors, err := readVectors(dir)
 	if err != nil {
 		return nil
 	}
+	if man.Generation == "" || man.Generation != chunkData.Generation || man.Generation != vectorGeneration {
+		return nil
+	}
+	chunks := chunkData.Chunks
 	if len(chunks) != len(vectors) || (man.Dims != 0 && len(vectors) > 0 && len(vectors[0]) != man.Dims) {
 		return nil
 	}
@@ -133,20 +144,29 @@ func (p *persisted) entryByPath() map[string]fileManifest {
 	return m
 }
 
-// store writes the manifest, chunks, and vector matrix atomically into dir.
+// store writes the manifest, chunks, and vector matrix into dir.
 func store(dir string, man manifest, chunks []semsearch.Chunk, vectors [][]float32) error {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return fmt.Errorf("generate cache generation: %w", err)
+	}
+	man.Generation = hex.EncodeToString(nonce[:])
+
 	manData, err := json.Marshal(man)
 	if err != nil {
 		return fmt.Errorf("marshal manifest: %w", err)
 	}
-	chunkData, err := json.Marshal(chunks)
+	chunkData, err := json.Marshal(chunkEnvelope{
+		Generation: man.Generation,
+		Chunks:     chunks,
+	})
 	if err != nil {
 		return fmt.Errorf("marshal chunks: %w", err)
 	}
 	if err := cache.Store(filepath.Join(dir, chunksFile), chunkData, 0o640); err != nil {
 		return err
 	}
-	if err := cache.Store(filepath.Join(dir, vectorsFile), encodeVectors(vectors), 0o640); err != nil {
+	if err := cache.Store(filepath.Join(dir, vectorsFile), encodeVectors(man.Generation, vectors), 0o640); err != nil {
 		return err
 	}
 	// Manifest last: it is the validity gate, so it must not name chunks/vectors
@@ -166,26 +186,28 @@ func readManifest(dir string) (manifest, error) {
 	return man, nil
 }
 
-func readChunks(dir string) ([]semsearch.Chunk, error) {
+func readChunks(dir string) (chunkEnvelope, error) {
 	data, err := os.ReadFile(filepath.Join(dir, chunksFile)) //nolint:gosec // dir derives from the repo-path sha256, not user input
 	if err != nil {
-		return nil, err
+		return chunkEnvelope{}, err
 	}
-	var chunks []semsearch.Chunk
-	if err := json.Unmarshal(data, &chunks); err != nil {
-		return nil, fmt.Errorf("decode chunks: %w", err)
+	var envelope chunkEnvelope
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return chunkEnvelope{}, fmt.Errorf("decode chunks: %w", err)
 	}
-	return chunks, nil
+	return envelope, nil
 }
 
-// encodeVectors frames a vector matrix as [u32 rows][u32 dims][row-major f32],
-// little-endian — the same framing the WASM engine emits.
-func encodeVectors(vectors [][]float32) []byte {
+// encodeVectors frames a vector matrix as
+// [u32 generation length][generation][u32 rows][u32 dims][row-major f32].
+func encodeVectors(generation string, vectors [][]float32) []byte {
 	dims := 0
 	if len(vectors) > 0 {
 		dims = len(vectors[0])
 	}
-	buf := make([]byte, 0, 8+len(vectors)*dims*4)
+	buf := make([]byte, 0, 12+len(generation)+len(vectors)*dims*4)
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(generation))) //nolint:gosec // generated nonce length fits the u32 framing
+	buf = append(buf, generation...)
 	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(vectors))) //nolint:gosec // matrix dims fit the u32 framing
 	buf = binary.LittleEndian.AppendUint32(buf, uint32(dims))
 	for _, row := range vectors {
@@ -196,21 +218,30 @@ func encodeVectors(vectors [][]float32) []byte {
 	return buf
 }
 
-func readVectors(dir string) ([][]float32, error) {
+func readVectors(dir string) (string, [][]float32, error) {
 	data, err := os.ReadFile(filepath.Join(dir, vectorsFile)) //nolint:gosec // dir derives from the repo-path sha256, not user input
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	if len(data) < 8 {
-		return nil, errors.New("vectors.bin too short")
+	if len(data) < 12 {
+		return "", nil, errors.New("vectors.bin too short")
 	}
-	rows := int(binary.LittleEndian.Uint32(data[0:4]))
-	dims := int(binary.LittleEndian.Uint32(data[4:8]))
-	if len(data) != 8+rows*dims*4 {
-		return nil, fmt.Errorf("vectors.bin is %d bytes, want %d (rows=%d dims=%d)", len(data), 8+rows*dims*4, rows, dims)
+	generationLen := binary.LittleEndian.Uint32(data[0:4])
+	if uint64(generationLen)+12 > uint64(len(data)) {
+		return "", nil, fmt.Errorf("vectors.bin generation length %d exceeds %d-byte payload", generationLen, len(data))
 	}
+	generationEnd := 4 + int(generationLen)
+	generation := string(data[4:generationEnd])
+	rowsValue := binary.LittleEndian.Uint32(data[generationEnd : generationEnd+4])
+	dimsValue := binary.LittleEndian.Uint32(data[generationEnd+4 : generationEnd+8])
+	want := uint64(generationEnd+8) + uint64(rowsValue)*uint64(dimsValue)*4
+	if uint64(len(data)) != want {
+		return "", nil, fmt.Errorf("vectors.bin is %d bytes, want %d (rows=%d dims=%d)", len(data), want, rowsValue, dimsValue)
+	}
+	rows := int(rowsValue)
+	dims := int(dimsValue)
 	out := make([][]float32, rows)
-	off := 8
+	off := generationEnd + 8
 	for i := range out {
 		row := make([]float32, dims)
 		for j := range row {
@@ -219,5 +250,5 @@ func readVectors(dir string) ([][]float32, error) {
 		}
 		out[i] = row
 	}
-	return out, nil
+	return generation, out, nil
 }

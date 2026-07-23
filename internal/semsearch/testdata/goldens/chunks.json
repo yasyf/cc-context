@@ -161,9 +161,54 @@
       "start_line": 1
     },
     {
+      "end_line": 21,
+      "path": "web/AccountPanel.vue",
+      "start_line": 1
+    },
+    {
+      "end_line": 46,
+      "path": "web/AccountPanel.vue",
+      "start_line": 23
+    },
+    {
+      "end_line": 68,
+      "path": "web/AccountPanel.vue",
+      "start_line": 48
+    },
+    {
+      "end_line": 20,
+      "path": "web/ProfileCard.tsx",
+      "start_line": 1
+    },
+    {
+      "end_line": 48,
+      "path": "web/ProfileCard.tsx",
+      "start_line": 22
+    },
+    {
       "end_line": 15,
       "path": "web/contracts.d.ts",
       "start_line": 1
+    },
+    {
+      "end_line": 14,
+      "path": "web/notification-stack.scss",
+      "start_line": 1
+    },
+    {
+      "end_line": 58,
+      "path": "web/notification-stack.scss",
+      "start_line": 14
+    },
+    {
+      "end_line": 34,
+      "path": "web/profile-card.css",
+      "start_line": 1
+    },
+    {
+      "end_line": 56,
+      "path": "web/profile-card.css",
+      "start_line": 36
     },
     {
       "end_line": 7,
@@ -386,11 +431,39 @@
       "language": "typescript"
     },
     {
+      "bytes": 1407,
+      "chunk_count": 3,
+      "classification": "indexed",
+      "file_path": "web/AccountPanel.vue",
+      "language": "vue"
+    },
+    {
+      "bytes": 1179,
+      "chunk_count": 2,
+      "classification": "indexed",
+      "file_path": "web/ProfileCard.tsx",
+      "language": "tsx"
+    },
+    {
       "bytes": 336,
       "chunk_count": 1,
       "classification": "indexed",
       "file_path": "web/contracts.d.ts",
       "language": "typescript"
+    },
+    {
+      "bytes": 993,
+      "chunk_count": 2,
+      "classification": "indexed",
+      "file_path": "web/notification-stack.scss",
+      "language": "scss"
+    },
+    {
+      "bytes": 1083,
+      "chunk_count": 2,
+      "classification": "indexed",
+      "file_path": "web/profile-card.css",
+      "language": "css"
     },
     {
       "bytes": 1146,
