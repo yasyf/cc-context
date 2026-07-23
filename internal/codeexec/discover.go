@@ -13,7 +13,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -39,6 +38,8 @@ type Inventory struct {
 // discoverTimeout bounds the `claude mcp list` probe on a cold or expired
 // cache; CCX_EXEC_MCP_TIMEOUT overrides it. Paid at most once per TTL window.
 const discoverTimeout = 30 * time.Second
+
+const probeWaitDelay = 2 * time.Second
 
 // errBadTimeout marks an unparsable CCX_EXEC_MCP_TIMEOUT: a configuration error
 // the engine surfaces loudly, never degrades to a stale-fallback note.
@@ -80,8 +81,8 @@ func Discover(ctx context.Context) (Inventory, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "claude", "mcp", "list")
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-	cmd.WaitDelay = 2 * time.Second
+	cmd.WaitDelay = probeWaitDelay
+	configureProbeCommand(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {

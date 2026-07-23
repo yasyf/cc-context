@@ -6,8 +6,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // realList pins the live `claude mcp list` output observed 2026-07: names may
@@ -189,6 +192,54 @@ func TestDiscoverTimeout(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "timed out after 100ms") {
 		t.Errorf("error = %q, want 'timed out after 100ms'", err)
+	}
+}
+
+func TestDiscoverTimeoutKillsDescendants(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process-group signals are POSIX-only")
+	}
+	pidPath := filepath.Join(t.TempDir(), "grandchild.pid")
+	t.Setenv("CCX_TEST_GRANDCHILD_PID", pidPath)
+	writeFakeClaude(t, "#!/bin/sh\n( trap '' TERM; exec sleep 30 ) &\nprintf '%s\\n' \"$!\" > \"$CCX_TEST_GRANDCHILD_PID\"\ntrap '' TERM\nwait\n")
+	t.Setenv("CCX_EXEC_MCP_TIMEOUT", "500ms")
+
+	_, err := Discover(context.Background())
+	if err == nil {
+		t.Fatal("Discover on TERM-ignoring claude = nil, want timeout")
+	}
+	if !strings.Contains(err.Error(), "timed out after 500ms") {
+		t.Errorf("error = %q, want 'timed out after 500ms'", err)
+	}
+
+	var rawPID []byte
+	readDeadline := time.Now().Add(2 * time.Second)
+	for {
+		rawPID, err = os.ReadFile(pidPath)
+		if err == nil {
+			break
+		}
+		if time.Now().After(readDeadline) {
+			t.Fatalf("read grandchild PID: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(rawPID)))
+	if err != nil {
+		t.Fatalf("parse grandchild PID: %v", err)
+	}
+	grandchild, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatalf("find grandchild: %v", err)
+	}
+	t.Cleanup(func() { _ = grandchild.Kill() })
+
+	deadline := time.Now().Add(3 * time.Second)
+	for grandchild.Signal(syscall.Signal(0)) == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("grandchild PID %d survived Discover timeout", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
