@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"session":"21a581bd-205a-4512-92ae-2e98f08daa9b","ops":[{"kind":"verify_note","witness":null,"verified_commit":"3157214a0db01ce663cc8f0f2366bf571058e6c5"}]}
+{"v":1,"lamport":3,"session":"e3f4c9b6-fbbd-4a50-8392-2a989876635b","ops":[{"kind":"mark_stale","reason":"Done: cc-skills d3592c4 updated ccx guide entry 2 to the native-engine wording + --content filter (plus two stale semble mentions in the repo-bootstrap reference); Guides lint/Guides/Autobump CI green. cc-context repos pick it up on the next guides re-render."}]}
