@@ -27,10 +27,14 @@ jobs:
       pre-build: |
         set -euo pipefail
         rustup target add wasm32-unknown-unknown
+        # Extract zig OUTSIDE the checkout — a tarball unpacked into the repo
+        # tree leaves an untracked dir that fails goreleaser's dirty-tree check.
         zig_url=$(curl -fsSL https://ziglang.org/download/index.json \
           | python3 -c "import sys,json;print(json.load(sys.stdin)['0.14.0']['x86_64-linux']['tarball'])")
-        curl -fsSL "$zig_url" | tar -xJ
-        export PATH="$PWD/$(basename "$zig_url" .tar.xz):$PATH"
+        zig_dir="${RUNNER_TEMP:-/tmp}/zig"
+        mkdir -p "$zig_dir"
+        curl -fsSL "$zig_url" | tar -xJ -C "$zig_dir" --strip-components=1
+        export PATH="$zig_dir:$PATH"
         bash scripts/build-wasm.sh
         bash scripts/build-embed-wasm.sh
         bash scripts/build-chunk-grammars.sh
