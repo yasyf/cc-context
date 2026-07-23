@@ -148,7 +148,7 @@ func TestFallback(t *testing.T) {
 			if err := os.WriteFile(path, []byte(tt.content), 0o600); err != nil {
 				t.Fatalf("write fixture: %v", err)
 			}
-			got, err := Fallback(path, backend.Args{Budget: tt.budget})
+			got, _, err := Fallback(path, backend.Args{Budget: tt.budget})
 			if err != nil {
 				t.Fatalf("Fallback: %v", err)
 			}
@@ -161,7 +161,7 @@ func TestFallback(t *testing.T) {
 
 func TestFallbackMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gone.rb")
-	if _, err := Fallback(path, backend.Args{}); err == nil {
+	if _, _, err := Fallback(path, backend.Args{}); err == nil {
 		t.Fatal("Fallback on a missing file: want error, got nil")
 	}
 }

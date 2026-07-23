@@ -122,6 +122,9 @@ func (r *resolver) refBlock(label string, top candidate, refs []ref) (refBlock, 
 			g.rows = append(g.rows, row)
 			shown++
 		}
+		if len(g.rows) > 0 {
+			g.rows = strings.Split(r.maskText(p, strings.Join(g.rows, "\n")), "\n")
+		}
 		blk.groups = append(blk.groups, g)
 	}
 	blk.omitted = len(refs) - shown

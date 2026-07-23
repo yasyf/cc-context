@@ -553,6 +553,32 @@ func TestGrepCommandMasksSecretOutput(t *testing.T) {
 	}
 }
 
+// TestOutlineCommandMasksSecretOutput proves the fallback outline surface masks
+// a head-window secret at the CLI seam with the shared footer, and that
+// --reveal-secrets prints it raw with no footer.
+func TestOutlineCommandMasksSecretOutput(t *testing.T) {
+	file := writeSecretFixture(t)
+
+	got := runCCX(t, "code", "outline", file)
+	if strings.Contains(got, fakeAWSKey) {
+		t.Errorf("outline output leaked the raw secret:\n%s", got)
+	}
+	if !strings.Contains(got, "KEY = \"AKIA…[masked:aws-access-token]\"") {
+		t.Errorf("outline output missing the masked head-window line:\n%s", got)
+	}
+	if !strings.HasSuffix(got, secretsFooter) {
+		t.Errorf("outline output missing the secrets footer:\n%s", got)
+	}
+
+	reveal := runCCX(t, "code", "outline", file, "--reveal-secrets")
+	if !strings.Contains(reveal, fakeAWSKey) {
+		t.Errorf("outline --reveal-secrets output missing the raw secret:\n%s", reveal)
+	}
+	if strings.Contains(reveal, "[masked:") || strings.Contains(reveal, "secret(s) masked") {
+		t.Errorf("outline --reveal-secrets output still masked:\n%s", reveal)
+	}
+}
+
 // TestReadCommandRevealSecrets proves --reveal-secrets passes the file's secret
 // through raw, with no footer.
 func TestReadCommandRevealSecrets(t *testing.T) {

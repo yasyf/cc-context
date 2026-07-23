@@ -63,7 +63,7 @@ func TestRenderOutline(t *testing.T) {
 	}
 	// The fixture's paths do not resolve under an empty root, so every span
 	// stays bare — this exercises the cache-miss degradation path.
-	got := RenderOutline(files, anchor.NewFiles(t.TempDir()), maxOutlineDepth)
+	got, _ := RenderOutline(files, anchor.NewFiles(t.TempDir()), maxOutlineDepth, false)
 
 	if !strings.Contains(got, "# internal/ripgrep/matches_test.go\n") {
 		t.Errorf("missing per-file header:\n%s", got)
@@ -138,7 +138,7 @@ func TestWindowOutline(t *testing.T) {
 }
 
 func TestRenderOutlineNoSymbols(t *testing.T) {
-	got := RenderOutline([]OutlineFile{{Path: "empty.rb", Language: "Ruby"}}, anchor.NewFiles("testdata"), maxOutlineDepth)
+	got, _ := RenderOutline([]OutlineFile{{Path: "empty.rb", Language: "Ruby"}}, anchor.NewFiles("testdata"), maxOutlineDepth, false)
 	if got != "# no symbols\n" {
 		t.Errorf("RenderOutline(no items) = %q, want %q", got, "# no symbols\n")
 	}
@@ -152,7 +152,7 @@ func TestRenderOutlineAnchored(t *testing.T) {
 	// Depth-0 items carry an anchor hashing their real source line in
 	// testdata/outline_src.go; members stay bare. Hashes are Of("func Alpha(x
 	// int) int {") = xbmn and Of("type Widget struct {") = gpks.
-	got := RenderOutline(files, anchor.NewFiles("testdata"), maxOutlineDepth)
+	got, _ := RenderOutline(files, anchor.NewFiles("testdata"), maxOutlineDepth, false)
 	want := "# outline_src.go\n" +
 		"L3#xbmn  func Alpha(x int) int {\n" +
 		"L7#gpks  type Widget struct {\n" +
@@ -171,7 +171,7 @@ func TestRenderOutlineTerse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseOutline: %v", err)
 	}
-	got := RenderOutline(files, anchor.NewFiles("testdata"), 0)
+	got, _ := RenderOutline(files, anchor.NewFiles("testdata"), 0, false)
 	want := "# outline_src.go\n" +
 		"L3#xbmn  func Alpha(x int) int {\n" +
 		"L7#gpks  type Widget struct {  (+2 members)\n" +

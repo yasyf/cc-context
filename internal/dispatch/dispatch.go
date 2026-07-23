@@ -83,12 +83,13 @@ func Run(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 	case backend.OpGrep:
 		return ripgrep.Run(ctx, a)
 	case backend.OpOutline:
-		// The native fallback anchors its own output; cap only, never re-anchor.
-		out, err := outline.Fallback(a.Path, a)
+		// The native fallback anchors and masks its own output; cap only, never
+		// re-anchor, with the masked-secrets footer appended after the cap.
+		out, ids, err := outline.Fallback(a.Path, a)
 		if err != nil {
 			return "", err
 		}
-		return render.Cap(out, a.Budget), nil
+		return render.WithSecretsFooter(render.Cap(out, a.Budget), ids), nil
 	case backend.OpDiff:
 		// The diff renderer anchors its own output; cap only, never render.Finalize.
 		out, err := diff.Run(ctx, a)
@@ -97,12 +98,13 @@ func Run(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 		}
 		return render.Cap(out, a.Budget), nil
 	case backend.OpSymbol:
-		// symbol self-anchors; cap only, never render.Finalize's symbol grammar.
-		out, err := symbol.Run(ctx, a)
+		// symbol self-anchors and masks; cap only, never render.Finalize's symbol
+		// grammar, with the masked-secrets footer appended after the cap.
+		out, ids, err := symbol.Run(ctx, a)
 		if err != nil {
 			return "", err
 		}
-		return render.Cap(out, a.Budget), nil
+		return render.WithSecretsFooter(render.Cap(out, a.Budget), ids), nil
 	case backend.OpDeps:
 		out, err := deps.Run(ctx, a)
 		if err != nil {

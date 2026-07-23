@@ -62,7 +62,8 @@ func runStructOutline(ctx context.Context, a backend.Args) (string, error) {
 		}
 		files = WindowOutline(files, start, end)
 	}
-	return render.Cap(RenderOutline(files, anchor.NewFiles("."), DepthFor(a)), a.Budget), nil
+	out, ids := RenderOutline(files, anchor.NewFiles("."), DepthFor(a), a.RevealSecrets)
+	return render.WithSecretsFooter(render.Cap(out, a.Budget), ids), nil
 }
 
 // OutlineStdin outlines src fed on stdin as language lang, returning the parsed

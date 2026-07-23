@@ -8,6 +8,7 @@ import (
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/ripgrep"
+	"github.com/yasyf/cc-context/internal/secrets"
 )
 
 // card is the render-ready model of a resolved symbol: the header fields, the
@@ -70,8 +71,8 @@ func (r *resolver) buildCard(cands []candidate, fold bool) (card, error) {
 		loc:        r.loc(top),
 		caseFolded: fold,
 		query:      r.a.Query,
-		signature:  strings.TrimSuffix(top.signature, " {"),
-		doc:        r.doc(top),
+		signature:  r.maskText(top.path, strings.TrimSuffix(top.signature, " {")),
+		doc:        r.maskText(top.path, r.doc(top)),
 	}
 
 	refs, err := r.refScan(top)
@@ -89,7 +90,9 @@ func (r *resolver) buildCard(cands []candidate, fold bool) (card, error) {
 
 	if showBody {
 		c.showBody = true
-		c.body = r.bodyLines(top)
+		if body := r.bodyLines(top); len(body) > 0 {
+			c.body = strings.Split(r.maskText(top.path, strings.Join(body, "\n")), "\n")
+		}
 	}
 	if showCallers {
 		blk, err := r.refBlock("callers", top, refs)
@@ -100,12 +103,16 @@ func (r *resolver) buildCard(cands []candidate, fold bool) (card, error) {
 	}
 	if showCallees {
 		c.showCallees = true
-		c.callees = r.callees(top)
+		if list := r.callees(top); len(list) > 0 {
+			c.callees = strings.Split(r.maskText(top.path, strings.Join(list, "\n")), "\n")
+		}
 	}
 	if showSiblings {
 		c.showSiblings = true
 		c.siblingPath = top.path
-		c.siblingRows = r.siblingRows(top)
+		if rows := r.siblingRows(top); len(rows) > 0 {
+			c.siblingRows = strings.Split(r.maskText(top.path, strings.Join(rows, "\n")), "\n")
+		}
 	}
 	if showTests {
 		blk, err := r.refBlock("tests", top, filterTestRefs(refs))
@@ -124,6 +131,19 @@ func (r *resolver) buildCard(cands []candidate, fold bool) (card, error) {
 		c.also, c.alsoMore = r.alsoEntries(cands[1:])
 	}
 	return c, nil
+}
+
+// maskText masks detected secrets in text under path's rule context, recording
+// the fired rule ids for the caller's footer; a.RevealSecrets passes text
+// through raw. Multi-line text is masked in one call, so joined line sets share
+// one keyword pre-check.
+func (r *resolver) maskText(path, text string) string {
+	if r.a.RevealSecrets {
+		return text
+	}
+	masked, ids := secrets.Mask(text, path)
+	r.maskedIDs = append(r.maskedIDs, ids...)
+	return masked
 }
 
 // alsoCap bounds the disambiguation footer's inline entries before it collapses
@@ -282,6 +302,9 @@ func (r *resolver) degradedGroups(rows []ref) (groups []refGroup, omitted int) {
 			}
 			g.rows = append(g.rows, fmt.Sprintf("[%s] %s", r.anchoredLine(p, rf.line), strings.TrimSpace(rf.text)))
 			shown++
+		}
+		if len(g.rows) > 0 {
+			g.rows = strings.Split(r.maskText(p, strings.Join(g.rows, "\n")), "\n")
 		}
 		groups = append(groups, g)
 	}

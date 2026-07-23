@@ -50,6 +50,7 @@ func newOutlineCmd() *cobra.Command {
 	cmd.Flags().StringVar(&a.Items, "items", "", "ast-grep: items to include (imports|exports|structure|all)")
 	cmd.Flags().StringVar(&a.Match, "match", "", "ast-grep: keep only items whose name/signature matches this regex")
 	cmd.Flags().StringVar(&a.Lang, "lang", "", "ast-grep: language to parse as (inferred from extension when omitted)")
+	cmd.Flags().BoolVar(&a.RevealSecrets, "reveal-secrets", false, "print detected secrets raw instead of masked")
 	cmd.Flags().IntVar(&a.Budget, "budget", 0, "token budget for the outline")
 	cmd.Flags().SetNormalizeFunc(sectionAlias)
 	return cmd

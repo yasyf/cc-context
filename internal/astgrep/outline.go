@@ -11,6 +11,7 @@ import (
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/secrets"
 )
 
 // OutlineFile is one `ast-grep outline --json=stream` record: a single source
@@ -208,33 +209,44 @@ const maxOutlineDepth = 1 << 30
 // RenderOutline renders files as a `# <path>` header per file, then one
 // `L<line>#<hash>  <signature>` per top-level item. Members nest one indent level
 // deeper up to maxDepth; at maxDepth a container's members collapse to a
-// `(+N members)` note and a single trailing --deep/--full hint is appended. The
+// `(+N members)` note and a single trailing --deep/--full hint is appended. Each
+// file's section is secret-masked in that file's path context unless reveal is
+// set; the fired rule ids come back in file order for the caller's footer. The
 // anchor hashes the item's real source line via fs; a cache miss leaves the span
 // bare. ast-grep reports 0-based lines; oneBased shifts them to the ccx 1-based
 // convention. A run with no items anywhere collapses to a single no-symbols hint.
-func RenderOutline(files []OutlineFile, fs *anchor.Files, maxDepth int) string {
+func RenderOutline(files []OutlineFile, fs *anchor.Files, maxDepth int, reveal bool) (string, []string) {
 	var b strings.Builder
 	var items int
+	var ids []string
 	hidden := false
 	for _, f := range files {
 		if len(f.Items) == 0 {
 			continue
 		}
-		fmt.Fprintf(&b, "# %s\n", f.Path)
+		var fb strings.Builder
+		fmt.Fprintf(&fb, "# %s\n", f.Path)
 		for _, it := range f.Items {
 			items++
-			if writeOutlineItem(&b, it, 0, maxDepth, f.Path, fs) {
+			if writeOutlineItem(&fb, it, 0, maxDepth, f.Path, fs) {
 				hidden = true
 			}
 		}
+		section := fb.String()
+		if !reveal {
+			var fired []string
+			section, fired = secrets.Mask(section, f.Path)
+			ids = append(ids, fired...)
+		}
+		b.WriteString(section)
 	}
 	if items == 0 {
-		return "# no symbols\n"
+		return "# no symbols\n", nil
 	}
 	if hidden {
 		b.WriteString("members hidden — --deep or --full to expand\n")
 	}
-	return b.String()
+	return b.String(), ids
 }
 
 // writeOutlineItem writes one item as `<indent>L<line>  <signature>`, anchoring

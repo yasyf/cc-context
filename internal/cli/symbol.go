@@ -23,6 +23,7 @@ func newSymbolCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&a.Scope, "scope", "", "directory to scope the lookup to")
+	cmd.Flags().BoolVar(&a.RevealSecrets, "reveal-secrets", false, "print detected secrets raw instead of masked")
 	cmd.Flags().IntVar(&a.Budget, "budget", 0, "token budget for the output")
 	cmd.Flags().BoolVar(&a.Full, "full", false, "the full rich output: body, callers, callees, siblings, tests")
 	cmd.Flags().BoolVar(&a.Body, "body", false, "include the definition body")

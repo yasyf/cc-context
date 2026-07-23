@@ -33,15 +33,19 @@ var ErrNotFound = errors.New("symbol not found")
 // mistaken for a single ":".
 var separators = []string{"::", "#", "."}
 
-// Run resolves a.Query, returning the rendered card. It runs a full outline over
-// the scope (a.Scope, else "."), filters flattened items to the query name
-// including members, ranks the hits, and renders the top hit's card with the
-// requested expansions. A miss degrades exact → case-insensitive → definition-
+// Run resolves a.Query, returning the rendered card and the secret-masking rule
+// ids that fired while rendering it (the caller appends the shared footer after
+// its cap). It runs a full outline over the scope (a.Scope, else "."), filters
+// flattened items to the query name including members, ranks the hits, and
+// renders the top hit's card with the requested expansions — the signature,
+// doc, body, callees, and sibling rows masked in the defining file's path
+// context, and each reference or degraded-match row in its own file's, unless
+// a.RevealSecrets. A miss degrades exact → case-insensitive → definition-
 // keyword text before failing with ErrNotFound. The output is not capped.
-func Run(ctx context.Context, a backend.Args) (string, error) {
+func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("symbol: resolve cwd: %w", err)
+		return "", nil, fmt.Errorf("symbol: resolve cwd: %w", err)
 	}
 	qualifier, name := parseQuery(a.Query)
 	scope := a.Scope
@@ -59,7 +63,11 @@ func Run(ctx context.Context, a backend.Args) (string, error) {
 		outlines:  map[string][]astgrep.OutlineFile{},
 		lineCache: map[string][]string{},
 	}
-	return r.run()
+	out, err := r.run()
+	if err != nil {
+		return "", nil, err
+	}
+	return out, r.maskedIDs, nil
 }
 
 // resolver holds one Run's state: the parsed query, the scope, the per-response
@@ -76,6 +84,7 @@ type resolver struct {
 	scopeSet  []astgrep.OutlineFile
 	outlines  map[string][]astgrep.OutlineFile
 	lineCache map[string][]string
+	maskedIDs []string
 }
 
 // run drives the miss ladder: an exact-name hit renders the card, else a
