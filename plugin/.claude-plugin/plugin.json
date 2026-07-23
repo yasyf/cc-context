@@ -1,7 +1,7 @@
 {
   "name": "cc-context",
-  "version": "0.29.1",
-  "description": "Compact codebase-context tools — a facade MCP + ccx CLI serving native token-bounded code ops (read, grep, symbol, outline, diff, deps, overview) with semble semantic search and ast-grep structural ops, plus ccx exec for sandboxed multi-call composition where only the distilled result enters context, with capt-hook enforcement.",
+  "version": "0.30.0",
+  "description": "Compact codebase-context tools — a facade MCP + ccx CLI serving native token-bounded code ops (read, grep, symbol, outline, diff, deps, overview) with native semantic search and ast-grep structural ops, plus ccx exec for sandboxed multi-call composition where only the distilled result enters context, with capt-hook enforcement.",
   "author": {
     "name": "Yasyf Mohamedali",
     "url": "https://github.com/yasyf"
