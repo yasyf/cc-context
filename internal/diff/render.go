@@ -6,6 +6,7 @@ import (
 
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/hunk"
+	"github.com/yasyf/cc-context/internal/secrets"
 )
 
 // classifyCap bounds how many covered files undergo full symbol classification;
@@ -65,11 +66,14 @@ type diffModel struct {
 	files                   []fileReport
 }
 
-// render emits the final diff shape from an assembled model: a header line, one
+// render emits the final diff shape from an assembled model — a header line, one
 // section per file, and (in terse mode, when any file classified) a trailer
-// pointing at --full. In full mode each classified file also inlines its
-// 3-context hunks; the trailer is dropped.
-func render(m diffModel, full bool) string {
+// pointing at --full — masking each file's section in that file's path context
+// (a renamed file's under the pre-image path too) unless reveal is set, and
+// returning the fired rule ids in file order for the caller's footer. In full
+// mode each classified file also inlines its 3-context hunks; the trailer is
+// dropped.
+func render(m diffModel, full, reveal bool) (string, []string) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# diff %s %s %d files %s +%d ~%d %s%d symbols\n",
 		m.label, emDash, len(m.files), midDot, m.added, m.changed, sigilRemoved, m.removed)
@@ -81,6 +85,7 @@ func render(m diffModel, full bool) string {
 		}
 	}
 
+	var ids []string
 	disclosed, hasSymbols := false, false
 	for _, r := range m.files {
 		if r.kind == fileKindCapped && !disclosed {
@@ -88,26 +93,41 @@ func render(m diffModel, full bool) string {
 				ellipsis, capped, classifyCap, emDash)
 			disclosed = true
 		}
+		var fb strings.Builder
 		switch r.kind {
 		case fileKindSymbols:
-			renderSymbolFile(&b, r, full)
+			renderSymbolFile(&fb, r, full)
 			hasSymbols = true
 		case fileKindRawHunks:
-			renderRawHunks(&b, r, full)
+			renderRawHunks(&fb, r, full)
 		case fileKindRawText:
-			renderRawText(&b, r)
+			renderRawText(&fb, r)
 		case fileKindBinary:
-			fmt.Fprintf(&b, "## %s %s binary\n", fileHeader(r), emDash)
+			fmt.Fprintf(&fb, "## %s %s binary\n", fileHeader(r), emDash)
 		case fileKindCapped:
-			renderCapped(&b, r)
+			renderCapped(&fb, r)
 		case fileKindRenamed:
-			fmt.Fprintf(&b, "## %s %s renamed, no content change\n", fileHeader(r), emDash)
+			fmt.Fprintf(&fb, "## %s %s renamed, no content change\n", fileHeader(r), emDash)
 		}
+		section := fb.String()
+		if !reveal {
+			var fired []string
+			section, fired = secrets.Mask(section, r.path)
+			ids = append(ids, fired...)
+			if r.renamedFrom != "" {
+				// A renamed file's hunks mix old- and new-image content; a second
+				// pass under the pre-image path fires the rules gated on it (.env),
+				// masking the union of both paths' findings.
+				section, fired = secrets.Mask(section, r.renamedFrom)
+				ids = append(ids, fired...)
+			}
+		}
+		b.WriteString(section)
 	}
 	if !full && hasSymbols {
 		fmt.Fprintf(&b, "hunks hidden %s --full inlines per-file hunks\n", emDash)
 	}
-	return b.String()
+	return b.String(), ids
 }
 
 // symRow is one rendered symbol line before column alignment.

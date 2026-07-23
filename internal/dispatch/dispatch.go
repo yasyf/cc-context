@@ -91,12 +91,13 @@ func Run(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 		}
 		return render.WithSecretsFooter(render.Cap(out, a.Budget), ids), nil
 	case backend.OpDiff:
-		// The diff renderer anchors its own output; cap only, never render.Finalize.
-		out, err := diff.Run(ctx, a)
+		// The diff renderer anchors and masks its own output; cap only, never
+		// render.Finalize, with the masked-secrets footer appended after the cap.
+		out, ids, err := diff.Run(ctx, a)
 		if err != nil {
 			return "", err
 		}
-		return render.Cap(out, a.Budget), nil
+		return render.WithSecretsFooter(render.Cap(out, a.Budget), ids), nil
 	case backend.OpSymbol:
 		// symbol self-anchors and masks; cap only, never render.Finalize's symbol
 		// grammar, with the masked-secrets footer appended after the cap.

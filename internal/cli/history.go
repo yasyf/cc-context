@@ -12,12 +12,14 @@ import (
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/diff"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/secrets"
 )
 
 func newHistoryCmd() *cobra.Command {
 	var (
 		number int
 		budget int
+		reveal bool
 	)
 	cmd := &cobra.Command{
 		Use:   "history <path>",
@@ -25,7 +27,7 @@ func newHistoryCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, note := resolveHistoryPath(args[0])
-			out, err := runHistory(cmd.Context(), path, number, budget)
+			out, err := runHistory(cmd.Context(), path, number, budget, reveal)
 			if err != nil {
 				return err
 			}
@@ -35,6 +37,7 @@ func newHistoryCmd() *cobra.Command {
 	}
 	cmd.Flags().IntVarP(&number, "number", "n", 10, "max commits to summarize")
 	cmd.Flags().IntVar(&budget, "budget", 0, "token budget for the output")
+	cmd.Flags().BoolVar(&reveal, "reveal-secrets", false, "print detected secrets raw instead of masked")
 	return cmd
 }
 
@@ -59,8 +62,10 @@ type historyCommit struct {
 
 // runHistory enumerates up to n commits touching path (newest first, following
 // renames), summarizes each commit's changed symbols via the native structural
-// diff, and returns the budget-capped report.
-func runHistory(ctx context.Context, path string, n, budget int) (string, error) {
+// diff, and returns the budget-capped report. Unless reveal, the report —
+// commit subjects and changed-symbol names both — is masked in path's rule
+// context, the shared footer appended after the cap.
+func runHistory(ctx context.Context, path string, n, budget int, reveal bool) (string, error) {
 	commits, err := logCommits(ctx, path, n)
 	if err != nil {
 		return "", err
@@ -78,7 +83,12 @@ func runHistory(ctx context.Context, path string, n, budget int) (string, error)
 		}
 		fmt.Fprintf(&b, "%s %s %s\n    %s\n", c.short, c.date, c.subject, summary)
 	}
-	return render.Cap(b.String(), budget), nil
+	out := b.String()
+	var ids []string
+	if !reveal {
+		out, ids = secrets.Mask(out, path)
+	}
+	return render.WithSecretsFooter(render.Cap(out, budget), ids), nil
 }
 
 // logCommits runs the pinned `git log --follow --name-status` enumeration over

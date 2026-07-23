@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -99,6 +100,148 @@ func TestShowLiveSmoke(t *testing.T) {
 	}
 	if !strings.Contains(got, "## ") {
 		t.Errorf("output missing structural per-file section:\n%s", got)
+	}
+}
+
+// rawAWSKey is a well-known example AWS access key id the aws-access-token
+// masking rule fires on.
+const rawAWSKey = "AKIAIOSFODNN7EXAMPLE" //nolint:gosec // AWS's documented example key id, not a credential
+
+// TestShowMasksSecretOutput scripts a real git repo whose head commit adds a
+// credentials file, then drives the show command end to end: the hunk line comes
+// out masked in the file's path context with the shared footer after the cap,
+// and --reveal-secrets prints it raw with no footer.
+func TestShowMasksSecretOutput(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // fixed git verb; dir is a test TempDir and args are literals
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("init", "-q")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "Test")
+	write("README.md", "# fixture\n")
+	git("add", "-A")
+	git("commit", "-qm", "init")
+	write("creds.txt", "KEY = \""+rawAWSKey+"\"\n")
+	git("add", "-A")
+	git("commit", "-qm", "add creds")
+	t.Chdir(dir)
+
+	show := func(args ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		cmd := newShowCmd()
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("show %v: %v\n%s", args, err, out.String())
+		}
+		return out.String()
+	}
+
+	got := show()
+	if strings.Contains(got, rawAWSKey) {
+		t.Errorf("show output leaked the raw secret:\n%s", got)
+	}
+	if !strings.Contains(got, "KEY = \"AKIA…[masked:aws-access-token]\"") {
+		t.Errorf("show output missing the masked hunk line:\n%s", got)
+	}
+	footer := "# 1 secret(s) masked (aws-access-token) — --reveal-secrets prints raw\n" //nolint:gosec // footer text, not a credential
+	if !strings.HasSuffix(got, footer) {
+		t.Errorf("show output missing the secrets footer:\n%s", got)
+	}
+
+	reveal := show("--reveal-secrets")
+	if !strings.Contains(reveal, rawAWSKey) {
+		t.Errorf("show --reveal-secrets output missing the raw secret:\n%s", reveal)
+	}
+	if strings.Contains(reveal, "[masked:") || strings.Contains(reveal, "secret(s) masked") {
+		t.Errorf("show --reveal-secrets output still masked:\n%s", reveal)
+	}
+}
+
+// TestShowMasksHeaderSecret scripts a repo whose head commit carries a secret
+// in its subject and body, then proves the show header masks both pathlessly
+// with the shared footer, and that --reveal-secrets prints them raw.
+func TestShowMasksHeaderSecret(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // fixed git verb; dir is a test TempDir and args are literals
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "-A")
+	git("commit", "-qm", "init")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# fixture\nmore\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "-A")
+	git("commit", "-qm", "leak "+rawAWSKey+" in subject\n\nrotate "+rawAWSKey+" later")
+	t.Chdir(dir)
+
+	show := func(args ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		cmd := newShowCmd()
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("show %v: %v\n%s", args, err, out.String())
+		}
+		return out.String()
+	}
+
+	got := show()
+	if strings.Contains(got, rawAWSKey) {
+		t.Errorf("show header leaked the raw secret:\n%s", got)
+	}
+	for _, want := range []string{
+		"leak AKIA…[masked:aws-access-token] in subject",
+		"rotate AKIA…[masked:aws-access-token] later",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("show header missing %q:\n%s", want, got)
+		}
+	}
+	footer := "# 2 secret(s) masked (aws-access-token) — --reveal-secrets prints raw\n" //nolint:gosec // footer text, not a credential
+	if !strings.HasSuffix(got, footer) {
+		t.Errorf("show output missing the secrets footer:\n%s", got)
+	}
+
+	reveal := show("--reveal-secrets")
+	if !strings.Contains(reveal, "leak "+rawAWSKey+" in subject") {
+		t.Errorf("show --reveal-secrets header missing the raw secret:\n%s", reveal)
+	}
+	if strings.Contains(reveal, "[masked:") || strings.Contains(reveal, "secret(s) masked") {
+		t.Errorf("show --reveal-secrets output still masked:\n%s", reveal)
 	}
 }
 

@@ -17,22 +17,26 @@ import (
 )
 
 // Run resolves a.Source into a diff plan against the cwd's VCS, classifies each
-// changed file (scoped by a.Scope), and renders the structural diff. Output is
-// uncapped — the caller budget-caps it — and a.Full inlines per-file hunks.
-func Run(ctx context.Context, a backend.Args) (string, error) {
+// changed file (scoped by a.Scope), and renders the structural diff, each file's
+// section secret-masked in that file's path context unless a.RevealSecrets. The
+// fired rule ids come back in file order — the caller appends the shared footer
+// after its cap. Output is uncapped — the caller budget-caps it — and a.Full
+// inlines per-file hunks.
+func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("diff: resolve cwd: %w", err)
+		return "", nil, fmt.Errorf("diff: resolve cwd: %w", err)
 	}
 	plan, err := vcs.ResolveDiffPlan(ctx, cwd, a.Source)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	model, err := buildModel(ctx, plan, scopeFilter(plan.Files, a.Scope))
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return render(model, a.Full), nil
+	out, ids := render(model, a.Full, a.RevealSecrets)
+	return out, ids, nil
 }
 
 // ChangedSymbols returns the sigil-tagged changed symbols across source's diff,

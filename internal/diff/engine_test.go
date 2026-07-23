@@ -58,7 +58,7 @@ func TestRunE2E(t *testing.T) {
 	e2eWrite(t, dir, "logo.bin", []byte("\x00\x01\x02BINX\x00\x00payload2"))
 
 	t.Chdir(dir)
-	out, err := Run(context.Background(), backend.Args{Source: "uncommitted", Full: true})
+	out, _, err := Run(context.Background(), backend.Args{Source: "uncommitted", Full: true})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestRunRename(t *testing.T) {
 	e2eWrite(t, dir, "moved.go", []byte(strings.Replace(mod, "return 4 }", "return 40 }", 1)))
 
 	t.Chdir(dir)
-	out, err := Run(context.Background(), backend.Args{Source: "uncommitted"})
+	out, _, err := Run(context.Background(), backend.Args{Source: "uncommitted"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

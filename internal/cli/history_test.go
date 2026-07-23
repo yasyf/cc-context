@@ -161,6 +161,57 @@ func TestHistoryCommandResolvesExtensionSibling(t *testing.T) {
 	}
 }
 
+// TestHistoryMasksSecretOutput scripts a repo whose commit subject carries a
+// secret, then proves the history report masks it with the shared footer and
+// that --reveal-secrets prints it raw. (Changed-symbol names flow through the
+// same report-level mask.)
+func TestHistoryMasksSecretOutput(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	historyGit(t, dir, "init", "-q")
+	historyGit(t, dir, "config", "user.email", "t@t.t")
+	historyGit(t, dir, "config", "user.name", "t")
+	historyWrite(t, dir, "conf.txt", "value = 1\n")
+	historyGit(t, dir, "add", "-A")
+	historyGit(t, dir, "commit", "-qm", "leak "+rawAWSKey+" in subject")
+	t.Chdir(dir)
+
+	history := func(args ...string) string {
+		t.Helper()
+		cmd := newHistoryCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(args)
+		if err := cmd.ExecuteContext(context.Background()); err != nil {
+			t.Fatalf("history %v: %v\n%s", args, err, out.String())
+		}
+		return out.String()
+	}
+
+	got := history("conf.txt")
+	if strings.Contains(got, rawAWSKey) {
+		t.Errorf("history output leaked the raw secret:\n%s", got)
+	}
+	if !strings.Contains(got, "leak AKIA…[masked:aws-access-token] in subject") {
+		t.Errorf("history output missing the masked subject:\n%s", got)
+	}
+	footer := "# 1 secret(s) masked (aws-access-token) — --reveal-secrets prints raw\n" //nolint:gosec // footer text, not a credential
+	if !strings.HasSuffix(got, footer) {
+		t.Errorf("history output missing the secrets footer:\n%s", got)
+	}
+
+	reveal := history("conf.txt", "--reveal-secrets")
+	if !strings.Contains(reveal, "leak "+rawAWSKey+" in subject") {
+		t.Errorf("history --reveal-secrets output missing the raw secret:\n%s", reveal)
+	}
+	if strings.Contains(reveal, "[masked:") || strings.Contains(reveal, "secret(s) masked") {
+		t.Errorf("history --reveal-secrets output still masked:\n%s", reveal)
+	}
+}
+
 // TestCommitSummary drives commitSummary against a scripted real git repo: a root
 // commit yields "(added)"; a commit with structural edits (Foo's body changed, Bar
 // removed, Baz added) yields the sigil-tagged symbols from the native diff; and a

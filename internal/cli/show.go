@@ -7,8 +7,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/diff"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/secrets"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
 
@@ -29,12 +32,17 @@ func newShowCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&a.Scope, "scope", "", "path to scope the diff to")
+	cmd.Flags().BoolVar(&a.RevealSecrets, "reveal-secrets", false, "print detected secrets raw instead of masked")
 	cmd.Flags().IntVar(&a.Budget, "budget", 0, "token budget for the output")
 	return cmd
 }
 
 // runShow resolves the commit header and its parent..commit range, renders that
-// range through the shared diff pipeline, and caps the header+diff to budget.
+// range through the shared diff pipeline (which masks each file's section), and
+// caps the header+diff to budget — show's own render/cap point, so the
+// masked-secrets footer lands after the cap here, not in dispatch. The commit
+// header (subject, body, author) is masked pathlessly, its fired rules joining
+// the footer.
 func runShow(cmd *cobra.Command, ref string, a backend.Args) error {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -44,14 +52,22 @@ func runShow(cmd *cobra.Command, ref string, a backend.Args) error {
 	if err != nil {
 		return err
 	}
-	budget := a.Budget
 	a.Source = commit.Range
-	a.Budget = 0 // render the full diff; the header+diff total is capped below
-	diff, err := dispatchOp(cmd, backend.OpDiff, a)
+	a, note, err := anchor.RewriteArgs(backend.OpDiff, a)
 	if err != nil {
 		return err
 	}
-	cmd.Print(render.Cap(showHeader(commit)+diff, budget))
+	out, ids, err := diff.Run(cmd.Context(), a)
+	if err != nil {
+		return err
+	}
+	header := showHeader(commit)
+	if !a.RevealSecrets {
+		masked, fired := secrets.Mask(header, "")
+		header = masked
+		ids = append(fired, ids...)
+	}
+	cmd.Print(note + render.WithSecretsFooter(render.Cap(header+out, a.Budget), ids))
 	return nil
 }
 

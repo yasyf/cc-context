@@ -34,7 +34,7 @@ func TestRenderSymbols(t *testing.T) {
 		"… +2/−0 lines outside symbols\n" +
 		"hunks hidden — --full inlines per-file hunks\n"
 
-	if got := render(m, false); got != want {
+	if got, _ := render(m, false, false); got != want {
 		t.Errorf("render mismatch\n got: %q\nwant: %q", got, want)
 	}
 }
@@ -46,7 +46,7 @@ func TestRenderRenameNoContentChange(t *testing.T) {
 	}
 	want := "# diff uncommitted — 1 files · +0 ~0 −0 symbols\n" +
 		"## old.go → new.go — renamed, no content change\n"
-	if got := render(m, false); got != want {
+	if got, _ := render(m, false, false); got != want {
 		t.Errorf("rename render mismatch\n got: %q\nwant: %q", got, want)
 	}
 }
@@ -63,7 +63,7 @@ func TestRenderRenameWithEdits(t *testing.T) {
 		"## old.go → new.go (~1)\n" +
 		fmt.Sprintf("[~] Foo  L3#%s   body\n", h3) +
 		"hunks hidden — --full inlines per-file hunks\n"
-	if got := render(m, false); got != want {
+	if got, _ := render(m, false, false); got != want {
 		t.Errorf("rename-with-edits render mismatch\n got: %q\nwant: %q", got, want)
 	}
 }
@@ -80,14 +80,14 @@ func TestRenderRawHunks(t *testing.T) {
 	wantTerse := "# diff uncommitted — 1 files · +0 ~0 −0 symbols\n" +
 		"## config/foo.rb — no ast-grep rules for .rb; raw hunks\n" +
 		"@@ -2,1 +2,1 @@\n-b = 2\n+b = 3\n"
-	if got := render(m, false); got != wantTerse {
+	if got, _ := render(m, false, false); got != wantTerse {
 		t.Errorf("terse mismatch\n got: %q\nwant: %q", got, wantTerse)
 	}
 
 	wantFull := "# diff uncommitted — 1 files · +0 ~0 −0 symbols\n" +
 		"## config/foo.rb — no ast-grep rules for .rb; raw hunks\n" +
 		"@@ -1,2 +1,2 @@\n a = 1\n-b = 2\n+b = 3\n"
-	if got := render(m, true); got != wantFull {
+	if got, _ := render(m, true, false); got != wantFull {
 		t.Errorf("full mismatch\n got: %q\nwant: %q", got, wantFull)
 	}
 }
@@ -99,7 +99,7 @@ func TestRenderBinary(t *testing.T) {
 	}
 	want := "# diff uncommitted — 1 files · +0 ~0 −0 symbols\n" +
 		"## assets/logo.png — binary\n"
-	if got := render(m, false); got != want {
+	if got, _ := render(m, false, false); got != want {
 		t.Errorf("binary mismatch\n got: %q\nwant: %q", got, want)
 	}
 }
@@ -121,7 +121,7 @@ func TestRenderCapDisclosure(t *testing.T) {
 		"# … 2 files beyond the 30-file classification cap — hunk counts only:\n" +
 		"## x.go — 2 hunks (+3/−1)\n" +
 		"## y.go — 1 hunks (+1/−0)\n"
-	if got := render(m, false); got != want {
+	if got, _ := render(m, false, false); got != want {
 		t.Errorf("cap mismatch\n got: %q\nwant: %q", got, want)
 	}
 }
@@ -140,7 +140,7 @@ func TestRenderSymbolsFullInlinesHunks(t *testing.T) {
 		"## a.go (~1)\n" +
 		fmt.Sprintf("[~] Mod  L3-5#%s   body\n", h3) +
 		"@@ -1,5 +1,5 @@\n package a\n \n func Mod() {\n-\treturn 1\n+\treturn 2\n }\n"
-	if got := render(m, true); got != want {
+	if got, _ := render(m, true, false); got != want {
 		t.Errorf("full symbol mismatch\n got: %q\nwant: %q", got, want)
 	}
 }

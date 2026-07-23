@@ -21,6 +21,7 @@ func newDiffCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&a.Scope, "scope", "", "path to scope the diff to")
+	cmd.Flags().BoolVar(&a.RevealSecrets, "reveal-secrets", false, "print detected secrets raw instead of masked")
 	cmd.Flags().IntVar(&a.Budget, "budget", 0, "token budget for the output")
 	return cmd
 }
