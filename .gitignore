@@ -43,14 +43,6 @@ coverage.txt
 # WASM format engine, built from format-core/wasm by `task wasm` (go:embed'd)
 /internal/format/formatcore.wasm
 
-# WASM embedding engine, built from embed-core/wasm by `task wasm-embed` (go:embed'd)
-/internal/semsearch/embed/embedcore.wasm
-
-# tree-sitter grammar WASM modules, built by scripts/build-chunk-grammars.sh
-# (go:embed'd) plus its source/compile cache
-/internal/semsearch/chunk/grammars/*.wasm.gz
-/internal/semsearch/chunk/wasm/.build/
-
 # plugin/bin is on the Bash tool's PATH; it holds only symlinks the installer
 # manages (brew binary, data-dir payload, or dev build) — never a real binary
 plugin/bin/*
