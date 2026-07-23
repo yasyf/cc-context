@@ -24,6 +24,8 @@ from .search_common import (
     CONTEXT_SHORT,
     GrepCall,
     NON_SOURCE_EXTS,
+    bare_paren,
+    block_reason,
     build_ccx_grep,
     classify_path,
     conditional_cd_precedes,
@@ -33,6 +35,7 @@ from .search_common import (
     is_transcript_path,
     note_text,
     path_blocked,
+    relativize_operand,
     resolve_operand,
     resolved_is_dir,
     resolved_is_file,
@@ -264,7 +267,9 @@ def grep_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | None:
     decline here. Dialect-divergent/exotic regexes, exit-code / output-mode shapes
     (``-c -q -o -v -L -x``), PCRE (``-P``), multi-pattern searches (repeated ``-e``), or paths
     reaching outside the repo (absolute / ``~`` / ``..``) block. A value-taking short glued into a
-    bundle (``-rnC3``) blocks too — bundles are DROP-only.
+    bundle (``-rnC3``) blocks too — a bundle carries only flagless DROP and MAP shorts
+    (``-i``/``-w``/``-E``/``-G``). An in-repo absolute path operand is relativized before
+    classification, so ``grep -ri foo /abs/repo/src`` rewrites like the relative spelling.
     """
     cmd = occ.command
     if occ.prev_op == "|" or cmd.executable != "grep" or cmd.env:
@@ -380,13 +385,15 @@ def grep_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | None:
                 dropped_fixed = dropped_fixed or head == "F"
             else:
                 return None  # -v -x -c -o -L -q -z, …
-        elif all(ch in DROP_SHORT or ch in ("E", "G") for ch in body):
+        elif all(ch in DROP_SHORT or ch in ("E", "G", "i", "w") for ch in body):
             dropped_l = dropped_l or "l" in body
             dropped_fixed = dropped_fixed or "F" in body
             ere = ere or "E" in body
             bre = bre or "G" in body
+            ignore_case = ignore_case or "i" in body
+            word = word or "w" in body
         else:
-            return None  # a bundle carrying a non-DROP char (value short, MAP flag, or -P)
+            return None  # a bundle carrying a non-DROP, non-MAP char (value short or -P)
         i += 1
     if e_count > 1:
         return None
@@ -413,6 +420,7 @@ def grep_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | None:
         regex = True
     elif not LITERAL_SAFE.match(pattern):
         return None
+    paths = [relativize_operand(p, cwd=cwd) for p in paths]
     for p in paths:
         if path_blocked(p, cwd=cwd):
             return None
@@ -685,7 +693,7 @@ class GrepFlood(CustomCommandLineCondition):
         return any(occ.command.unwrapped.executable == "grep" and occ.prev_op != "|" for occ in cl.occurrences)
 
 
-def grep_block(evt: PreToolUseEvent, cl: CommandLine) -> str:
+def grep_block(evt: PreToolUseEvent, cl: CommandLine, *, reason: str | None = None) -> str:
     return search_block(
         evt,
         "grep",
@@ -701,6 +709,7 @@ def grep_block(evt: PreToolUseEvent, cl: CommandLine) -> str:
         "search, a recursive flag, an unmappable flag, or an over-cap/missing source-file target. "
         "Escape hatch: pipe input into it (`… | grep`).",
         cl=cl,
+        reason=reason,
     )
 
 
@@ -708,8 +717,10 @@ def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str |
     """Per-occurrence verdict for the ``visit=`` walk, threading the effective ``cwd``.
 
     Non-grep occurrences pass (``None``). For a grep, the effective ``cwd`` is trusted only when the
-    walk carried one (``ctx.cwd``), the raw line has no bare ``(`` (the parser flattens subshells, so
-    an untrusted line would leak a ``(cd … )`` cwd into siblings), and no preceding ``cd`` is gated
+    walk carried one (``ctx.cwd``), the raw line has no bare ``(`` outside quoting
+    (:func:`~hooks.search_common.bare_paren` — the parser flattens subshells, so an untrusted line
+    would leak a ``(cd … )`` cwd into siblings; a paren inside a quoted pattern keeps trust), and no
+    preceding ``cd`` is gated
     behind ``&&``/``||`` (:func:`~hooks.search_common.conditional_cd_precedes` — the shell may
     short-circuit it, leaving the grep in the original cwd); declined, every stat lane fails closed
     rather than falling back to the process cwd. A rewritable grep splices to ``ccx code grep`` when
@@ -721,16 +732,16 @@ def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str |
         return None
     base = (
         ctx.cwd
-        if ctx.cwd is not None and "(" not in evt.cmd.line.raw and not conditional_cd_precedes(occ)
+        if ctx.cwd is not None and not bare_paren(evt.cmd.line.raw) and not conditional_cd_precedes(occ)
         else None
     )
     if (text := grep_to(evt, occ, cwd=base)) is not None:
         if ctx.spliceable:
             return Rewritten(text, note=note_text(occ.command.raw, grep_parse(occ, cwd=base)))
-        return evt.block(grep_block(evt, evt.cmd.line))
+        return evt.block(grep_block(evt, evt.cmd.line, reason=block_reason(occ, cwd=base)))
     if grep_bounded(occ, cwd=base):
         return None
-    return evt.block(grep_block(evt, evt.cmd.line))
+    return evt.block(grep_block(evt, evt.cmd.line, reason=block_reason(occ, cwd=base)))
 
 
 rewrite_command_occurrences(
@@ -766,7 +777,9 @@ rewrite_command_occurrences(
         Input(command="grep -c foo src/"): Block(),  # count mode, tree-wide
         Input(command="grep -o foo src/"): Block(),  # -o output is bounded, but src/ is a dir → tree-wide
         Input(command="grep -e foo -e bar ."): Block(),  # multiple -e over a dir
-        Input(command="grep -iw foo src/"): Block(),  # MAP chars bundled → block (engine-independent)
+        Input(command="grep -riw foo"): Rewrite(pattern="-i -w"),  # -riw bundle maps both MAP shorts; repo-wide
+        Input(command="grep -iw foo"): Rewrite(pattern="-i -w"),  # pure-MAP bundle, no DROP, no path → repo-wide
+        Input(command="grep -ri foo"): Rewrite(pattern="code grep foo"),  # -ri bundle maps -i; repo-wide
         Input(command="grep -f patterns.txt ."): Block(),  # -f pattern-file over a dir
         # Allow — an unrewritable grep over an explicit existing file is bounded, so the condition never
         # fires (/etc/hosts is a regular file on every CI OS: macOS + Linux):

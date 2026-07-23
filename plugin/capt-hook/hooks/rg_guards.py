@@ -25,6 +25,8 @@ from .search_common import (
     CONTEXT_SHORT,
     GrepCall,
     NON_SOURCE_EXTS,
+    bare_paren,
+    block_reason,
     build_ccx_grep,
     conditional_cd_precedes,
     downstream_allowed,
@@ -33,6 +35,7 @@ from .search_common import (
     is_transcript_path,
     note_text,
     path_blocked,
+    relativize_operand,
     resolve_operand,
     resolved_is_dir,
     search_block,
@@ -300,7 +303,8 @@ def rg_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | None:
     available, with ``--expand`` retained for old binaries; ``-g/--glob`` fills the include slot,
     gated to a slash-free basename glob (rg globs are gitignore-style — only a basename composes
     faithfully). Any other long flag, a repeated ``-e``, a value-taking short, a regex pattern, or an
-    out-of-repo path blocks.
+    out-of-repo path blocks. An in-repo absolute path operand is relativized before classification, so
+    ``rg -i foo /abs/repo/src`` rewrites like the relative spelling.
     """
     cmd = occ.command
     if occ.prev_op == "|" or cmd.executable != "rg" or cmd.env:
@@ -424,11 +428,13 @@ def rg_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | None:
                 dropped_fixed = dropped_fixed or head == "F"
             else:
                 return None  # -o -v -c -u -E -r -t -m -j -M …
-        elif all(ch in RG_DROP_SHORT for ch in body):
+        elif all(ch in RG_DROP_SHORT or ch in ("i", "w") for ch in body):
             dropped_l = dropped_l or "l" in body
             dropped_fixed = dropped_fixed or "F" in body
+            ignore_case = ignore_case or "i" in body
+            word = word or "w" in body
         else:
-            return None  # a bundle carrying a non-DROP char (value short or MAP flag)
+            return None  # a bundle carrying a non-DROP, non-MAP char (value short)
         i += 1
     if e_count > 1:
         return None
@@ -442,6 +448,7 @@ def rg_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | None:
     # grep's BRE `+` is already literal, so this rejection is rg-only (LITERAL_SAFE admits `+`).
     if pattern.startswith("-") or "+" in pattern or not LITERAL_SAFE.match(pattern):
         return None
+    paths = [relativize_operand(p, cwd=cwd) for p in paths]
     for p in paths:
         if path_blocked(p, cwd=cwd):
             return None
@@ -501,7 +508,7 @@ class RgFlood(CustomCommandLineCondition):
         return any(occ.command.unwrapped.executable == "rg" and occ.prev_op != "|" for occ in cl.occurrences)
 
 
-def rg_block(evt: PreToolUseEvent, cl: CommandLine) -> str:
+def rg_block(evt: PreToolUseEvent, cl: CommandLine, *, reason: str | None = None) -> str:
     return search_block(
         evt,
         "rg",
@@ -519,6 +526,7 @@ def rg_block(evt: PreToolUseEvent, cl: CommandLine) -> str:
         "regular files under the size cap run as-is; count/list-only searches run regardless of file size. "
         "Escape hatch: pipe input into it (`… | rg`).",
         cl=cl,
+        reason=reason,
     )
 
 
@@ -527,8 +535,9 @@ def rg_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | R
 
     Mirrors :func:`~hooks.grep_guards.grep_visit`. Non-rg occurrences pass (``None``). For an rg, the
     effective ``cwd`` is trusted only when the walk carried one (``ctx.cwd``), the raw line has no bare
-    ``(`` (the parser flattens subshells, so an untrusted line would leak a ``(cd … )`` cwd into
-    siblings), and no preceding ``cd`` is gated behind ``&&``/``||``
+    ``(`` outside quoting (:func:`~hooks.search_common.bare_paren` — the parser flattens subshells, so
+    an untrusted line would leak a ``(cd … )`` cwd into siblings; a paren inside a quoted pattern keeps
+    trust), and no preceding ``cd`` is gated behind ``&&``/``||``
     (:func:`~hooks.search_common.conditional_cd_precedes` — the shell may short-circuit it); declined,
     every stat lane fails closed rather than falling back to the process cwd. A rewritable rg splices
     to ``ccx code grep`` when the occurrence is spliceable (else blocks); an unrewritable rg runs
@@ -539,16 +548,16 @@ def rg_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | R
         return None
     base = (
         ctx.cwd
-        if ctx.cwd is not None and "(" not in evt.cmd.line.raw and not conditional_cd_precedes(occ)
+        if ctx.cwd is not None and not bare_paren(evt.cmd.line.raw) and not conditional_cd_precedes(occ)
         else None
     )
     if (text := rg_to(evt, occ, cwd=base)) is not None:
         if ctx.spliceable:
             return Rewritten(text, note=note_text(occ.command.raw, rg_parse(occ, cwd=base)))
-        return evt.block(rg_block(evt, evt.cmd.line))
+        return evt.block(rg_block(evt, evt.cmd.line, reason=block_reason(occ, cwd=base)))
     if rg_bounded(occ, cwd=base):
         return None
-    return evt.block(rg_block(evt, evt.cmd.line))
+    return evt.block(rg_block(evt, evt.cmd.line, reason=block_reason(occ, cwd=base)))
 
 
 rewrite_command_occurrences(
@@ -561,6 +570,7 @@ rewrite_command_occurrences(
         Input(command="rg -n foo"): Rewrite(pattern="code grep foo"),  # -n cosmetic
         Input(command="rg -nl foo"): Rewrite(pattern="code grep foo"),  # probe-specific -l suffix lives in pytest
         Input(command="rg -F foo"): Rewrite(pattern="code grep foo"),  # -F disclosed (ccx matches literally)
+        Input(command="rg -in foo"): Rewrite(pattern="-i"),  # MAP `i` bundled with cosmetic `n` → mapped
         Input(command="rg -g '*.go' foo"): Rewrite(pattern="--glob '*.go'"),  # basename glob → include
         Input(command="rg -C 3 foo"): Rewrite(pattern="-C=3"),  # native context count preserved
         Input(command="rg -A 20 foo"): Rewrite(pattern="-A=20"),  # native context count preserved

@@ -908,3 +908,153 @@ class TestTranscriptBlockMessage:
         evt = self.bash_pre("sudo grep foo ~/.claude/projects/main.jsonl; grep bar .")
         message = grep_guards.grep_block(evt, evt.cmd.line)
         assert "floods context" in message and "cc-transcript" in message
+
+
+class TestBareParen:
+    """Fix 2: `bare_paren` distrusts a cwd only for a `(` OUTSIDE all quoting — a real subshell or
+    group. A paren living inside a quoted pattern (`grep -E '^(a|b)' f`) is not bare, so the line
+    keeps its cwd trust; `$(…)` and a backslash-escaped `\\(` are classified by the same rule.
+    """
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("grep -E '^(go|toolchain) ' go.mod", False),  # paren only inside a quoted pattern
+            ("(cd x && grep a .)", True),  # a real subshell paren
+            ('grep "a(b" f && (make)', True),  # quoted `(` ignored; the `&& (make)` paren is bare
+            ("grep 'a(b' f", False),  # single-quoted paren
+            (r"grep \( f", False),  # backslash-escaped `(` outside quotes
+            ("grep foo .", False),  # no paren at all
+            ("grep foo $(printf x)", True),  # `$(…)` substitution paren stays bare → still distrusted
+            # ANSI-C `$'…'`: `\'` does NOT close, so parity must not desync and swallow a later bare `(`.
+            (r"echo $'a\'b'; (cd sneaky && true); grep secret probe.py", True),  # the refuter's repro
+            (r"echo $'a\'b'", False),  # ANSI-C token alone, no bare paren
+            (r"grep $'\t(' f.txt", False),  # `(` inside ANSI-C is quoted
+            (r"echo $'a\\' && (x)", True),  # escaped backslash then close → the `&& (x)` paren is bare
+            ("grep \"a$'b\" f && (x)", True),  # `$'` inside double quotes never arms ANSI-C
+        ],
+    )
+    def test_bare_paren(self, raw: str, expected: bool) -> None:
+        assert search_common.bare_paren(raw) is expected
+
+
+class TestGrepAnsiCQuotingCwdTrust:
+    """End to end: an ANSI-C `$'…'` token must not desync `bare_paren` and swallow a later genuinely-bare
+    `(cd sub && true)` subshell — the flattened cwd stays distrusted, so the grep blocks exactly as HEAD
+    does rather than rewriting `probe.py` against the wrong directory.
+    """
+
+    def test_ansi_c_token_before_bare_subshell_blocks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "probe.py").write_text("secret\n")  # exists → a wrongly-trusted cwd would rewrite it
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
+        verdict = grep_verdict(r"echo $'a\'b'; (cd sneaky && true); grep secret probe.py")
+        assert isinstance(verdict, HookResult)
+
+
+class TestGrepQuotedParenCwdTrust:
+    """Fix 2, end to end: a paren confined to the quoted pattern regains cwd trust, so an existing
+    in-cap `go.mod` stats as a bounded file and runs verbatim instead of blocking (the regression).
+    """
+
+    def test_quoted_paren_line_allows_bounded_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "go.mod").write_text("module x\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
+        # An old binary (no --regex) declines the rewrite, so the bounded-file lane is what runs.
+        probe(monkeypatch, NO_SUPPORT_HELP)
+        assert grep_verdict("grep -E '^(go|toolchain) ' go.mod") is None
+
+
+class TestGrepBundleMapAndRelativize:
+    """Fix 3: a MAP short (`-i`/`-w`) glued into a DROP bundle (`-ri`) maps instead of blocking.
+    Fix 4: an in-repo absolute directory operand relativizes before classification. Both need the
+    `--ignore-case` probe and a real tmp tree, so they live in pytest with exact-equality assertions.
+    """
+
+    @pytest.fixture(autouse=True)
+    def tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        (tmp_path / "bench").mkdir()
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.chdir(tmp_path)
+        ccx_supports.cache_clear()
+        yield
+        ccx_supports.cache_clear()
+
+    def test_ri_bundle_maps_and_abs_dir_relativizes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A `-ri` bundle maps `-i`, an absolute in-repo dir relativizes to `bench/**`, `-l` drops.
+        probe(monkeypatch, SUPPORTS_HELP)
+        cwd = Path.cwd()
+        assert grep_rewrite(f"grep -n foo -ri {cwd}/bench/ -l") == "/fake/ccx code grep foo -i --glob 'bench/**'"
+
+    def test_ri_bundle_relative_dir_maps_ignore_case(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        probe(monkeypatch, SUPPORTS_HELP)
+        assert grep_rewrite("grep -n 'semble' -ri bench/ -l") == "/fake/ccx code grep semble -i --glob 'bench/**'"
+
+
+class TestBlockReason:
+    """Fix 5: an advisory clause naming the first disqualifier is appended to the block steer.
+    Diagnostic only — a shape matching no cheap, certain check leaves the message byte-identical.
+    """
+
+    def first_grep(self, command: str, cwd: str | Path | None = None) -> tuple[PreToolUseEvent, Occurrence]:
+        evt = make_evt(command, cwd=cwd) if cwd is not None else make_evt(command)
+        occ = next(o for o in evt.cmd.line.occurrences if o.command.unwrapped.executable == "grep")
+        return evt, occ
+
+    def test_subshell_names_untrusted_cwd(self) -> None:
+        _evt, occ = self.first_grep("(cd /tmp && grep foo .) && grep bar src/")
+        assert "cwd untrusted" in search_common.block_reason(occ, cwd=None)
+
+    def test_quoted_paren_line_names_the_file_not_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The paren is quoted, so the reason is the missing source file — never the cwd-untrusted clause.
+        monkeypatch.chdir(tmp_path)
+        _evt, occ = self.first_grep("grep -E '^(a|b)' ghost.py", cwd=tmp_path)
+        reason = search_common.block_reason(occ, cwd=tmp_path)
+        assert reason is not None and "cwd untrusted" not in reason and "ghost.py" in reason
+
+    def test_out_of_repo_abs_operand(self) -> None:
+        _evt, occ = self.first_grep("grep -rn foo /etc/")
+        assert search_common.block_reason(occ, cwd=None) == "out-of-repo operand `/etc/`"
+
+    def test_pcre_flag_appends_to_message(self) -> None:
+        evt, occ = self.first_grep("grep -P 'x(?=y)' .")
+        reason = search_common.block_reason(occ, cwd=None)
+        assert reason == "PCRE (-P) never maps"
+        assert grep_guards.grep_block(evt, evt.cmd.line, reason=reason).endswith("This block: PCRE (-P) never maps.")
+
+    def test_glob_operand(self) -> None:
+        _evt, occ = self.first_grep("grep -rn foo '*.py'")
+        assert "glob operand" in search_common.block_reason(occ, cwd=None)
+
+    def test_dash_leading_operand_after_double_dash_is_not_a_flag(self) -> None:
+        # The `-Pxyz` after `--` is a filename, not a flag: the reason names the real blocker (`-m5`),
+        # never "PCRE" — flags are scanned only before the first bare `--`.
+        _evt, occ = self.first_grep("grep -m5 foo -- -Pxyz")
+        reason = search_common.block_reason(occ, cwd=None)
+        assert "PCRE" not in reason and "-m5" in reason
+
+    def test_leading_value_short_in_bundle_names_the_bundle(self) -> None:
+        # `-dr` glues the value-taking `-d` at the bundle head — named the same as the reordered `-rd`.
+        _evt, occ = self.first_grep("grep -dr foo src/")
+        assert search_common.block_reason(occ, cwd=None) == "`-dr` glues a value-taking short into a bundle"
+
+    def test_head_context_short_is_never_blamed(self) -> None:
+        # `-C3` maps at the head, so the value-short blame skips it — the `-P` on the line is the reason.
+        _evt, occ = self.first_grep("grep -C3 -P x .")
+        reason = search_common.block_reason(occ, cwd=None)
+        assert reason == "PCRE (-P) never maps" and "-C3" not in reason
+
+    def test_interior_context_short_is_blamed(self) -> None:
+        # `-rnC3` glues the value-taking `-C` INTERIOR, where no parse maps it → named.
+        _evt, occ = self.first_grep("grep -rnC3 foo src/")
+        assert search_common.block_reason(occ, cwd=None) == "`-rnC3` glues a value-taking short into a bundle"
+
+    def test_no_match_leaves_message_byte_identical(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "src").mkdir()
+        monkeypatch.chdir(tmp_path)
+        evt, occ = self.first_grep("grep -r foo src/ | cat", cwd=tmp_path)
+        reason = search_common.block_reason(occ, cwd=tmp_path)
+        assert reason is None
+        assert "This block:" not in grep_guards.grep_block(evt, evt.cmd.line, reason=reason)

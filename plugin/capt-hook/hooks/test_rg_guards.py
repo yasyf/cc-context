@@ -375,3 +375,48 @@ class TestRgBoundedPassthrough:
         (tmp_path / "small").mkdir()
         (tmp_path / "small" / "real.py").write_text("x\n")
         assert isinstance(rg_verdict(f"false && cd {tmp_path / 'small'}; rg foo real.py"), HookResult)
+
+
+class TestRelativizeOperand:
+    """Fix 4, both executables: an in-repo absolute path operand relativizes to its cwd-relative form
+    before classification, so `<engine> foo /abs/repo/src/` rewrites identically to the relative
+    spelling and never leaks an absolute path into the emitted `--glob`. An operand escaping the cwd
+    keeps its absolute form and blocks exactly as an out-of-repo path does. Exact equality catches a
+    leaked absolute glob.
+    """
+
+    @pytest.fixture(autouse=True)
+    def tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        repo = tmp_path / "repo"
+        (repo / "src").mkdir(parents=True)
+        (repo / "file.py").write_text("x\n")
+        (tmp_path / "outside").mkdir()
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.chdir(repo)
+
+    @pytest.mark.parametrize("to, prefix", [(rg_rewrite, "rg foo"), (grep_rewrite, "grep -rn foo")])
+    def test_abs_dir_inside_cwd_matches_relative(self, to: Callable[[str], str | None], prefix: str) -> None:
+        cwd = Path.cwd()
+        assert to(f"{prefix} {cwd}/src/") == to(f"{prefix} src/") == "/fake/ccx code grep foo --glob 'src/**'"
+
+    @pytest.mark.parametrize("to, prefix", [(rg_rewrite, "rg foo"), (grep_rewrite, "grep -rn foo")])
+    def test_abs_path_outside_cwd_blocks(self, to: Callable[[str], str | None], prefix: str) -> None:
+        outside = Path.cwd().parent / "outside"
+        assert to(f"{prefix} {outside}/") is None
+
+    @pytest.mark.parametrize("to, prefix", [(rg_rewrite, "rg foo"), (grep_rewrite, "grep foo")])
+    def test_abs_file_inside_cwd_lone_glob(self, to: Callable[[str], str | None], prefix: str) -> None:
+        cwd = Path.cwd()
+        assert to(f"{prefix} {cwd}/file.py") == "/fake/ccx code grep foo --glob file.py"
+
+
+class TestRgBlockReason:
+    """`block_reason`'s glued-value-short blame must never name a flag that maps at the rg bundle head."""
+
+    def test_head_glob_short_is_never_blamed(self) -> None:
+        # `-g` (glob) maps at the rg head, so a pipe-blocked line carrying `-g '*.go'` never blames it —
+        # the block's true cause is the non-sink `| cat`, which yields no cheap, certain clause.
+        evt = make_evt("rg -g '*.go' foo | cat")
+        occ = next(o for o in evt.cmd.line.occurrences if o.command.unwrapped.executable == "rg")
+        reason = search_common.block_reason(occ, cwd=None)
+        assert reason is None or "-g" not in reason

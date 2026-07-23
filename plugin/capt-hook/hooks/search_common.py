@@ -57,6 +57,10 @@ NL_PHRASE = re.compile(r"^[a-z]+(?: [a-z]+)+$")
 # Short flags naming a numeric context window (`-A/-B/-C N`).
 CONTEXT_SHORT = frozenset("ABC")
 
+# Value/pattern shorts an engine maps at a bundle HEAD (`-C3`, `-e`, rg `-g`), so :func:`block_reason`
+# blames them only glued INTERIOR (`-rnC3`).
+MAPS_AT_HEAD = CONTEXT_SHORT | frozenset("eg")
+
 # An `--include` value is a glob, not a pattern, so it skips LITERAL_SAFE — but it must be a
 # simple glob (no braces, no spaces) to compose cleanly onto a braced multi-dir root.
 INCLUDE_SAFE = re.compile(r"^[\w*?./\[\]-]+$")
@@ -362,6 +366,57 @@ def has_command_substitution(raw: str) -> bool:
     return "$(" in raw or "`" in raw
 
 
+def bare_paren(raw: str) -> bool:
+    """Whether ``raw`` carries a ``(`` outside every shell quote — a real subshell or group paren.
+
+    Single-pass scan over single-quote, double-quote, ANSI-C (``$'…'``), and backslash state: a plain
+    ``'…'`` escapes nothing, a backslash escapes the next char everywhere else (``$'…'`` included, so
+    ``$'a\\'b'`` does not close early), and ``$'`` arms only outside quotes (``"a$'b"`` stays plain). A
+    ``(`` unquoted and unescaped returns ``True``; one inside any quote returns ``False``, keeping cwd
+    trust — while ``$(…)`` and a real ``(cd … )`` subshell stay bare and still forfeit it.
+    """
+    in_single = in_double = in_ansi = escaped = dollar = False
+    for ch in raw:
+        if escaped:
+            escaped = dollar = False
+            continue
+        if in_single:
+            in_single = ch != "'"
+            dollar = False
+            continue
+        if in_ansi:
+            if ch == "\\":
+                escaped = True
+            elif ch == "'":
+                in_ansi = False
+            dollar = False
+            continue
+        if in_double:
+            if ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_double = False
+            dollar = False
+            continue
+        if ch == "\\":
+            escaped = True
+            dollar = False
+        elif ch == "'":
+            if dollar:
+                in_ansi = True
+            else:
+                in_single = True
+            dollar = False
+        elif ch == '"':
+            in_double = True
+            dollar = False
+        elif ch == "(":
+            return True
+        else:
+            dollar = ch == "$"
+    return False
+
+
 def search_block(
     evt: BaseHookEvent,
     exe: str,
@@ -369,6 +424,7 @@ def search_block(
     default: str,
     *,
     cl: CommandLine | None = None,
+    reason: str | None = None,
 ) -> str:
     """The block message for a gated grep/rg, tuned per the line's transcript operands.
 
@@ -377,23 +433,83 @@ def search_block(
     whole steer is :data:`TRANSCRIPT_STEER`; a *mixed* line — a transcript operand alongside an ordinary
     flood — keeps ``default`` and appends one :data:`TRANSCRIPT_APPEND` line so neither steer is lost.
     Every occurrence is inspected through its unwrapped command, so wrapper-prefixed searches contribute
-    their operands too — the same scope the guard's wrapper-transparent condition uses.
+    their operands too — the same scope the guard's wrapper-transparent condition uses. A non-``None``
+    ``reason`` (:func:`block_reason`) appends one ``This block: …`` line naming the first disqualifier;
+    ``None`` leaves the steer byte-identical.
     """
     command_line = cl or evt.cmd.line
     if not command_line:
-        return default
-    ops = [
-        p
-        for occ in command_line.occurrences
-        if (cmd := occ.command.unwrapped).executable == exe
-        for p in (operands(cmd) or ())
-    ]
-    transcript = [p for p in ops if is_transcript_path(p)]
-    if not transcript:
-        return default
-    if len(transcript) == len(ops):
-        return TRANSCRIPT_STEER
-    return f"{default}\n{TRANSCRIPT_APPEND}"
+        steer = default
+    else:
+        ops = [
+            p
+            for occ in command_line.occurrences
+            if (cmd := occ.command.unwrapped).executable == exe
+            for p in (operands(cmd) or ())
+        ]
+        transcript = [p for p in ops if is_transcript_path(p)]
+        if not transcript:
+            steer = default
+        elif len(transcript) == len(ops):
+            steer = TRANSCRIPT_STEER
+        else:
+            steer = f"{default}\n{TRANSCRIPT_APPEND}"
+    return f"{steer}\nThis block: {reason}." if reason else steer
+
+
+def block_reason(occ: Occurrence, *, cwd: Path | None) -> str | None:
+    """A short advisory clause naming the first disqualifier behind a gated grep/rg block, or ``None``.
+
+    Diagnostic only — never consulted for a verdict, so a ``None`` result leaves the block message
+    byte-identical. Inspects the blocking occurrence cheapest-and-most-certain first and returns the
+    first disqualifier that fires; anything it cannot pin certainly yields ``None``. Operands are
+    engine-classified (grep vs rg arities) and relativized against ``cwd`` exactly as the rewrite parser
+    is, so an in-repo absolute never reads as out-of-repo.
+    """
+    # Lazy imports break the search_common ↔ guard-module cycle: the operand extractors and arity
+    # tables live in the engine modules, which import this one at load; by call time both are loaded.
+    from .grep_guards import BOUNDED_PATTERN_SHORT, BOUNDED_VALUE_SHORT, grep_operands
+    from .rg_guards import RG_OP_VALUE_SHORT, rg_operands
+
+    if bare_paren(occ.line.raw) or conditional_cd_precedes(occ):
+        return "cwd untrusted on this line (subshell or conditional cd) — file stats fail closed"
+    inner = occ.command.unwrapped
+    is_grep = inner.executable == "grep"
+    raw_ops = grep_operands(inner) if is_grep else rg_operands(inner)
+    value_shorts = BOUNDED_VALUE_SHORT | BOUNDED_PATTERN_SHORT if is_grep else RG_OP_VALUE_SHORT | frozenset("ef")
+    never_maps = value_shorts - MAPS_AT_HEAD  # unmappable even at a bundle head
+    mode_shorts = "qcovLx" if is_grep else "qcov"
+    ops = [relativize_operand(p, cwd=cwd) for p in (raw_ops or ())]
+    for p in ops:
+        if any(ch in p for ch in "*?["):
+            return f"glob operand `{p}` — unstattable before shell expansion"
+    for p in ops:
+        if p.startswith(("/", "~")) or ".." in p.rstrip("/").split("/"):
+            return f"out-of-repo operand `{p}`"
+    for p in ops:
+        if has_hidden_segment(p) or git_ignored(p, cwd=cwd):
+            return f"dependency or ignored operand `{p}` — ask the cc-context:dep-reader agent"
+    # Flags live only before the first bare `--`; a dash-leading operand after it is not a flag.
+    scan_args = inner.args[: inner.args.index("--")] if "--" in inner.args else inner.args
+    bundles = [a for a in scan_args if a.startswith("-") and not a.startswith("--") and a != "-"]
+    longs = {a[2:].partition("=")[0] for a in scan_args if a.startswith("--")}
+    if any("P" in a[1:] for a in bundles) or "perl-regexp" in longs:
+        return "PCRE (-P) never maps"
+    for a in bundles:
+        body = a[1:]
+        if body and (body[0] in never_maps or any(ch in value_shorts for ch in body[1:])):
+            return f"`{a}` glues a value-taking short into a bundle"
+    mode_flag = next((ch for a in bundles for ch in a[1:] if ch in mode_shorts), None)
+    if mode_flag and (not ops or any(p.rstrip("/") in (".", "..") or resolved_is_dir(p, cwd) for p in ops)):
+        return f"`-{mode_flag}` (exit-code/output mode) over a directory or tree — no single glob"
+    if cwd is not None:
+        for p in ops:
+            kind = classify_path(p, cwd=cwd)
+            if kind is None and not p.endswith("/"):
+                return f"no source file `{p}` on disk"
+            if kind is False and resolve_operand(p, cwd).stat().st_size > LARGE_READ_BYTES:
+                return f"`{p}` exceeds the read-size cap"
+    return None
 
 
 def resolve_operand(p: str, cwd: Path | None) -> Path | None:
@@ -509,6 +625,25 @@ def git_ignored(p: str, *, cwd: Path | None) -> bool:
     except OSError:
         return False
     return proc.returncode == 0
+
+
+def relativize_operand(p: str, *, cwd: Path | None) -> str:
+    """Rewrite an in-repo absolute path operand to its ``cwd``-relative form, else return it unchanged.
+
+    An absolute ``p`` resolving strictly under ``cwd`` becomes its relative spelling, so the rewrite's
+    ``--glob`` stays in-repo — the emitters reuse operand strings verbatim, and an absolute path must
+    never leak into an emitted ``--glob``. An operand escaping ``cwd`` (``ValueError``), a relative
+    operand, or one with no trusted ``cwd`` returns unchanged, so :func:`path_blocked` still rejects an
+    out-of-repo absolute exactly as before. ``~`` paths are left alone — ``carries_expansion`` already
+    forfeits their rewrite upstream. The relative form carries no trailing slash; the downstream
+    ``.rstrip("/")`` never depended on one.
+    """
+    if not p.startswith("/") or cwd is None:
+        return p
+    try:
+        return str(Path(p).resolve().relative_to(cwd.resolve()))
+    except ValueError:
+        return p
 
 
 def path_blocked(p: str, *, cwd: Path | None) -> bool:
