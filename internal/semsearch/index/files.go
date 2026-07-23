@@ -90,9 +90,9 @@ func ParseContent(spec string) ([]ContentType, error) {
 	return out, nil
 }
 
-// contentKey renders a content-type set as a stable, order-independent string
-// for cache-validity comparison.
-func contentKey(types []ContentType) string {
+// ContentKey renders a content-type set as a stable, order-independent string
+// for cache-validity comparison and resident-cache keying.
+func ContentKey(types []ContentType) string {
 	vals := make([]string, len(types))
 	for i, t := range types {
 		vals[i] = string(t)

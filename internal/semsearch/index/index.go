@@ -11,6 +11,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/cache"
 	"github.com/yasyf/cc-context/internal/semsearch"
+	"github.com/yasyf/cc-context/internal/semsearch/rank"
 )
 
 // embedBatchSize bounds one Encode call so a large repo does not frame its whole
@@ -26,11 +27,14 @@ type Embedder interface {
 }
 
 // Index is a repo's loaded chunk corpus and its parallel embedding matrix:
-// Vectors[i] embeds Chunks[i]. It is the input to the ranking stage.
+// Vectors[i] embeds Chunks[i]. It is the input to the ranking stage. BM25 is the
+// prebuilt corpus BM25 over Chunks in the same order — built eagerly on Load,
+// never persisted — so a warm reuse serves queries without rebuilding it.
 type Index struct {
 	Root       string
 	Chunks     []semsearch.Chunk
 	Vectors    [][]float32
+	BM25       *rank.BM25
 	Reindexed  int // files re-embedded this Load; 0 means a fully warm cache hit
 	TotalFiles int
 }
@@ -42,7 +46,7 @@ type Index struct {
 // indexable file. The build holds a per-repo lock so concurrent callers do not
 // race the cache.
 func Load(ctx context.Context, emb Embedder, root string, content []ContentType, chunker Chunker, modelID string) (*Index, error) {
-	root, err := resolveRoot(root)
+	root, err := ResolveRoot(root)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +62,7 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 	if err != nil {
 		return nil, err
 	}
-	contentK := contentKey(content)
+	contentK := ContentKey(content)
 	chunkerID := chunker.ID()
 	exts := Extensions(content)
 
@@ -84,6 +88,7 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 			Root:       root,
 			Chunks:     built.chunks,
 			Vectors:    built.vectors,
+			BM25:       rank.BuildBM25(built.chunks),
 			Reindexed:  built.reindexed,
 			TotalFiles: len(built.files),
 		}

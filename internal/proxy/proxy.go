@@ -34,7 +34,9 @@ func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string
 	return note + out, nil
 }
 
-// Close releases the resident embedder if the process opened one.
+// Close frees the resident index cache and releases the resident embedder if the
+// process opened one.
 func (p *Proxy) Close() error {
+	dispatch.CloseIndexCache()
 	return dispatch.CloseEmbedder(context.Background())
 }

@@ -42,6 +42,9 @@ type Options struct {
 	// path penalties, saturation). When false, results are sorted by fused
 	// score alone.
 	Rerank bool
+	// BM25 is an optional prebuilt BM25 over the same chunks in the same order;
+	// nil rebuilds per call.
+	BM25 *BM25
 }
 
 // Rank scores chunks against a query and returns the top results. queryVec is
@@ -57,7 +60,11 @@ func Rank(query string, queryVec []float32, chunks []semsearch.Chunk, vectors []
 		semanticScores[h.idx] = h.score
 	}
 
-	bm25 := searchBM25(buildBM25(chunks), query, chunks, candidateCount)
+	bm := opts.BM25
+	if bm == nil {
+		bm = buildBM25(chunks)
+	}
+	bm25 := searchBM25(bm, query, chunks, candidateCount)
 
 	normSemantic := rrfScores(semantic, chunks)
 	normBM25 := rrfScores(bm25, chunks)
@@ -157,6 +164,11 @@ func searchBM25(bm *BM25, query string, chunks []semsearch.Chunk, candidateCount
 	}
 	return out
 }
+
+// BuildBM25 constructs the corpus BM25 index over chunks in the given order,
+// for callers that prebuild it once and reuse it across Rank calls via
+// Options.BM25 instead of paying buildBM25 on every query.
+func BuildBM25(chunks []semsearch.Chunk) *BM25 { return buildBM25(chunks) }
 
 // buildBM25 constructs the corpus BM25 index, tokenizing each chunk's
 // path-enriched content. Mirrors semble/index/create.py indexing.

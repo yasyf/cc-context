@@ -134,31 +134,35 @@ func writeBenchSemsearchTiming(
 		return fmt.Errorf("clear semantic-search cache: %w", err)
 	}
 
-	a := backend.Args{Path: repo, Kind: "code"}
+	content, err := index.ParseContent("code")
+	if err != nil {
+		return fmt.Errorf("parse benchmark content: %w", err)
+	}
+
+	// Build the index once against the cleared cache — the honest cold-index cost.
 	started := time.Now()
-	if _, err := engine.Warm(ctx, emb, a); err != nil {
+	idx, err := index.Load(ctx, emb, repo, content, index.DefaultChunker(), embed.Repo)
+	if err != nil {
 		return fmt.Errorf("build cold semantic-search index: %w", err)
 	}
 	coldIndexMS := elapsedMS(started)
 
-	idx, err := engine.Warm(ctx, emb, a)
-	if err != nil {
-		return fmt.Errorf("reload warm semantic-search index: %w", err)
-	}
-
+	// Every query serves off the one retained in-memory index, so the warmup +
+	// 5-run median times true warm serving, not repeated loads.
+	a := backend.Args{Path: repo, Kind: "code"}
 	perQuery := make([]benchSemsearchQueryTime, 0, len(queries))
 	medians := make([]float64, 0, len(queries))
 	for _, query := range queries {
 		queryArgs := a
 		queryArgs.Query = query
-		if _, err := engine.Search(ctx, emb, queryArgs); err != nil {
+		if _, err := engine.SearchLoaded(ctx, emb, idx, content, queryArgs); err != nil {
 			return fmt.Errorf("warm up benchmark query %q: %w", query, err)
 		}
 
 		runs := make([]float64, 5)
 		for i := range runs {
 			started = time.Now()
-			if _, err := engine.Search(ctx, emb, queryArgs); err != nil {
+			if _, err := engine.SearchLoaded(ctx, emb, idx, content, queryArgs); err != nil {
 				return fmt.Errorf("benchmark query %q: %w", query, err)
 			}
 			runs[i] = elapsedMS(started)

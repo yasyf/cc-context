@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/semsearch"
@@ -35,20 +36,27 @@ func Search(ctx context.Context, emb index.Embedder, a backend.Args) ([]semsearc
 	if strings.TrimSpace(a.Query) == "" {
 		return nil, nil
 	}
-	idx, content, err := load(ctx, emb, a)
+	idx, content, err := loadCached(ctx, emb, a)
 	if err != nil {
 		return nil, err
 	}
+	return SearchLoaded(ctx, emb, idx, content, a)
+}
+
+// SearchLoaded ranks a.Query against an already-loaded index: it embeds the
+// query, runs the rank stage over idx's resident chunks/vectors reusing the
+// prebuilt idx.BM25 (nil rebuilds per call), and truncates snippets. Search
+// loads idx via the resident cache and calls this; the bench time loop calls it
+// directly to time warm serving without a per-query reload.
+func SearchLoaded(ctx context.Context, emb index.Embedder, idx *index.Index, content []index.ContentType, a backend.Args) ([]semsearch.Result, error) {
 	if len(idx.Chunks) == 0 {
 		return nil, nil
 	}
-
 	vecs, err := emb.Encode(ctx, []string{a.Query})
 	if err != nil {
 		return nil, fmt.Errorf("embed query: %w", err)
 	}
-
-	opts := rank.Options{TopK: topK(a.K), Rerank: hasCode(content)}
+	opts := rank.Options{TopK: topK(a.K), Rerank: hasCode(content), BM25: idx.BM25}
 	results := rank.Rank(a.Query, vecs[0], idx.Chunks, idx.Vectors, opts)
 	truncate(results, a.MaxSnippetLines)
 	return results, nil
@@ -68,7 +76,7 @@ func Related(ctx context.Context, emb index.Embedder, a backend.Args) ([]semsear
 	if err != nil {
 		return nil, err
 	}
-	idx, _, err := load(ctx, emb, a)
+	idx, _, err := loadCached(ctx, emb, a)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +140,9 @@ func Related(ctx context.Context, emb index.Embedder, a backend.Args) ([]semsear
 	return out, nil
 }
 
-// load resolves the repo and returns its loaded index plus the content types.
+// load resolves the repo and returns its freshly loaded index plus the content
+// types. Warm calls it to (re)build the persistent index; the resident
+// serving path uses loadCached.
 func load(ctx context.Context, emb index.Embedder, a backend.Args) (*index.Index, []index.ContentType, error) {
 	content, err := index.ParseContent(a.Kind)
 	if err != nil {
@@ -147,6 +157,72 @@ func load(ctx context.Context, emb index.Embedder, a backend.Args) (*index.Index
 		return nil, nil, err
 	}
 	return idx, content, nil
+}
+
+// residentIndex is the process-lifetime index cache: one loaded *index.Index per
+// (resolved repo, content, model, chunker). A warm MCP server serves many
+// search/related queries against the retained in-memory index instead of
+// re-reading the disk cache and rebuilding BM25 on every call. It mirrors
+// semble's serve-from-memory model — a repo edited mid-process is NOT
+// re-indexed until the process restarts, the intended semble-equivalent
+// behavior. The one-query-per-process CLI always misses; only the resident MCP
+// server (and the bench time loop, which loads once) benefit. Mirrors the
+// resident embedder singleton in internal/dispatch: package-level state, a
+// mutex, and a Close that frees it.
+var (
+	residentMu    sync.Mutex
+	residentIndex = map[indexKey]*index.Index{}
+)
+
+// indexKey identifies a resident index by its resolved repo path and the
+// parameters that make two loads incompatible.
+type indexKey struct {
+	repo    string
+	content string
+	model   string
+	chunker string
+}
+
+// loadCached returns the repo's loaded index from the resident cache, loading it
+// once on a miss and retaining it for the process's lifetime. It resolves the
+// repo exactly as load/index.Load does so a hit and its populating miss share a
+// key.
+func loadCached(ctx context.Context, emb index.Embedder, a backend.Args) (*index.Index, []index.ContentType, error) {
+	content, err := index.ParseContent(a.Kind)
+	if err != nil {
+		return nil, nil, err
+	}
+	repo, err := repoOrCwd(a.Path)
+	if err != nil {
+		return nil, nil, err
+	}
+	resolved, err := index.ResolveRoot(repo)
+	if err != nil {
+		return nil, nil, err
+	}
+	chunker := index.DefaultChunker()
+	key := indexKey{repo: resolved, content: index.ContentKey(content), model: embed.Repo, chunker: chunker.ID()}
+
+	residentMu.Lock()
+	defer residentMu.Unlock()
+	if idx := residentIndex[key]; idx != nil {
+		return idx, content, nil
+	}
+	idx, err := index.Load(ctx, emb, repo, content, chunker, embed.Repo)
+	if err != nil {
+		return nil, nil, err
+	}
+	residentIndex[key] = idx
+	return idx, content, nil
+}
+
+// CloseIndexCache drops every retained index so the process frees the memory.
+// The MCP server calls it on shutdown alongside the embedder; tests call it to
+// force a fresh load.
+func CloseIndexCache() {
+	residentMu.Lock()
+	defer residentMu.Unlock()
+	residentIndex = map[indexKey]*index.Index{}
 }
 
 // resolveChunk returns the index of the chunk containing line in file, or -1 —

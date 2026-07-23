@@ -173,6 +173,10 @@ func sharedEmbedder(ctx context.Context) (index.Embedder, error) {
 	return e, nil
 }
 
+// CloseIndexCache frees the engine's resident index cache. The MCP proxy calls
+// it on shutdown alongside CloseEmbedder; a one-shot CLI relies on process exit.
+func CloseIndexCache() { engine.CloseIndexCache() }
+
 // CloseEmbedder releases the resident embedder if one was constructed. The MCP
 // proxy calls it on shutdown; a one-shot CLI relies on process exit.
 func CloseEmbedder(ctx context.Context) error {
