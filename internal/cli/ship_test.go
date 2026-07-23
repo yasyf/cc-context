@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -36,13 +37,49 @@ func writeShipFakes(t *testing.T, dir string, withGh bool) {
   "file list"*) printf 'f.txt\n' ;;
   "file show"*) printf '%s' "$JJ_FILE_SHOW_BASE" ;;
   "git fetch") if [ -n "$JJ_FETCH_FAIL" ]; then printf 'jj: cannot reach origin\n' >&2; exit 1; fi ;;
-  "op log "*) printf 'op123abc' ;;
+  "git push"*)
+    if [ -n "$JJ_PUSH_REJECT_MARKER" ]; then
+      count=0
+      if [ -r "$JJ_PUSH_REJECT_MARKER" ]; then IFS= read -r count < "$JJ_PUSH_REJECT_MARKER" || :; fi
+      count=${count:-0}
+      if [ "$count" -gt 0 ]; then
+        count=$((count - 1))
+        printf '%s' "$count" > "$JJ_PUSH_REJECT_MARKER"
+        printf '%s\n' "${JJ_PUSH_FAIL_STDERR:-Warning: The following references unexpectedly moved on the remote:
+  refs/heads/main (reason: stale info)
+Hint: Try fetching from the remote, then make the bookmark point to where you want it to be, and push again.
+Error: Failed to push some bookmarks}" >&2
+        exit 1
+      fi
+    fi ;;
+  "op log "*)
+    if [ -n "$JJ_OP_LOG_COUNTER" ]; then
+      count=0
+      if [ -r "$JJ_OP_LOG_COUNTER" ]; then IFS= read -r count < "$JJ_OP_LOG_COUNTER" || :; fi
+      count=${count:-0}
+      count=$((count + 1))
+      printf '%s' "$count" > "$JJ_OP_LOG_COUNTER"
+      printf 'op%03d' "$count"
+    else
+      printf 'op123abc'
+    fi ;;
+  "op revert"*) if [ -n "$JJ_OP_REVERT_FAIL" ]; then printf 'jj: op revert failed\n' >&2; exit 1; fi ;;
   rebase*) : ;;
   *"conflicts()"*)
     if [ -n "$JJ_CONFLICT_CHECK_FAIL" ]; then printf 'jj: conflict check failed\n' >&2; exit 1; fi
     printf '%s' "$JJ_CONFLICTS" ;;
   *"..@-"*) if [ -z "$JJ_STACK_EMPTY" ]; then printf 'b2c3d4e one\nc3d4e5f two\n'; fi ;;
-  *"& ::@"*) if [ -z "$JJ_DIVERGED" ]; then printf 'x '; fi ;;
+  *"& ::@"*)
+    diverged=$JJ_DIVERGED
+    if [ -n "$JJ_DIVERGED_MARKER" ]; then
+      count=0
+      if [ -r "$JJ_DIVERGED_MARKER" ]; then IFS= read -r count < "$JJ_DIVERGED_MARKER" || :; fi
+      count=${count:-0}
+      count=$((count + 1))
+      printf '%s' "$count" > "$JJ_DIVERGED_MARKER"
+      if [ "$count" -gt "${JJ_DIVERGED_SWITCH_AFTER:-1}" ]; then diverged=1; fi
+    fi
+    if [ -z "$diverged" ]; then printf 'x '; fi ;;
   *"bookmarks(exact"*)
     case "${JJ_BOOKMARK_HEADS:-1}" in
       0) : ;;
@@ -76,6 +113,8 @@ func writeShipFakes(t *testing.T, dir string, withGh bool) {
       if [ "$count" -gt "${SHIP_DIFF_NAMES_SWITCH_AFTER:-1}" ]; then names=$JJ_DIFF_NAMES_2; fi
     fi
     printf '%s' "$names" ;;
+  commit*|squash*|bookmark*) : ;;
+  *) printf 'fake jj: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
 esac
 exit 0
 `
@@ -105,6 +144,51 @@ exit 0
       if [ "$count" -gt 1 ]; then names=$GIT_DIFF_NAMES_2; fi
     fi
     printf '%s' "$names" | while IFS= read -r line || [ -n "$line" ]; do printf '%s\0' "$line"; done ;;
+  "config --get") if [ -n "$GIT_BRANCH_REMOTE" ]; then printf '%s\n' "$GIT_BRANCH_REMOTE"; else exit 1; fi ;;
+  fetch*) if [ -n "$GIT_FETCH_FAIL" ]; then printf 'git: cannot reach origin\n' >&2; exit 1; fi ;;
+  "rev-parse --verify")
+    case "$4" in
+      REBASE_HEAD) if [ -n "$GIT_REBASE_CONFLICT" ]; then exit 0; else exit 1; fi ;;
+      *) if [ -n "$GIT_REMOTE_REF_MISSING" ]; then exit 1; fi ;;
+    esac ;;
+  "merge-base --is-ancestor")
+    if [ -n "$GIT_DIVERGED" ]; then exit 1; fi
+    if [ -n "$GIT_DIVERGED_MARKER" ]; then
+      count=0
+      if [ -r "$GIT_DIVERGED_MARKER" ]; then IFS= read -r count < "$GIT_DIVERGED_MARKER" || :; fi
+      count=${count:-0}
+      count=$((count + 1))
+      printf '%s' "$count" > "$GIT_DIVERGED_MARKER"
+      if [ "$count" -gt "${GIT_DIVERGED_SWITCH_AFTER:-1}" ]; then exit 1; fi
+    fi ;;
+  "rev-list --count") printf '2' ;;
+  "rebase --autostash")
+    if [ -n "$GIT_REBASE_NO_START" ]; then printf 'error: cannot rebase: Your index contains uncommitted changes.\n' >&2; exit 1; fi
+    if [ -n "$GIT_REBASE_CONFLICT" ]; then printf 'CONFLICT (content): Merge conflict in f.txt\n' >&2; exit 1; fi
+    if [ -n "$GIT_AUTOSTASH_WARN" ]; then printf 'Created autostash: 54f649e\nYour local changes are stashed, however applying them\nresulted in conflicts.  You can either resolve the conflicts\nand then discard the stash with "git stash drop".\nSuccessfully rebased and updated refs/heads/main.\n' >&2; fi ;;
+  "rebase --abort") : ;;
+  "diff --name-only") printf 'f.txt\n' ;;
+  "push"*)
+    case "$*" in
+      *--force-with-lease=*)
+        if [ -n "$GIT_LEASE_STALE" ]; then printf '! [rejected] main -> main (stale info)\nerror: failed to push some refs\n' >&2; exit 1; fi ;;
+      *)
+        if [ -n "$GIT_PUSH_FAIL_STDERR" ]; then printf '%s\n' "$GIT_PUSH_FAIL_STDERR" >&2; exit 1; fi
+        if [ -n "$GIT_AMEND_PLAIN_NONFF" ]; then printf '! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs\n' >&2; exit 1; fi
+        if [ -n "$GIT_PUSH_REJECT_MARKER" ]; then
+          count=0
+          if [ -r "$GIT_PUSH_REJECT_MARKER" ]; then IFS= read -r count < "$GIT_PUSH_REJECT_MARKER" || :; fi
+          count=${count:-0}
+          if [ "$count" -gt 0 ]; then
+            count=$((count - 1))
+            printf '%s' "$count" > "$GIT_PUSH_REJECT_MARKER"
+            printf '! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs\n' >&2
+            exit 1
+          fi
+        fi ;;
+    esac ;;
+  "add"*|"read-tree"*|"update-index"*|"restore"*) : ;;
+  *) printf 'fake git: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
 esac
 exit 0
 `
@@ -304,6 +388,7 @@ func TestShipCommitPushWatch(t *testing.T) {
 				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "git", "push", "--bookmark", "exact:main"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id"},
 				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
@@ -324,7 +409,11 @@ func TestShipCommitPushWatch(t *testing.T) {
 				{"git", "commit", "-m", "fix: frobnicate"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "branch", "--show-current"},
-				{"git", "push"},
+				{"git", "config", "--get", "branch.main.remote"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
+				{"git", "push", "origin", "main"},
 				{"git", "rev-parse", "HEAD"},
 				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
 				{"gh", "run", "watch", "42", "--exit-status"},
@@ -1339,7 +1428,11 @@ func TestShipGitUsesPostCommitBranch(t *testing.T) {
 		{"git", "commit", "-m", "fix: frobnicate"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"git", "branch", "--show-current"},
-		{"git", "push"},
+		{"git", "config", "--get", "branch.other.remote"},
+		{"git", "fetch", "origin"},
+		{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/other"},
+		{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/other", "HEAD"},
+		{"git", "push", "origin", "other"},
 	})
 }
 
@@ -1432,7 +1525,7 @@ func TestShipSessionTrailer(t *testing.T) {
 	}
 }
 
-func TestShipGitAmendForcePushes(t *testing.T) {
+func TestShipGitAmendFastForwardPush(t *testing.T) {
 	log := setupShip(t, ".git", true)
 	got, err := runShipCmd(t, "--amend", "-m", "fix: frobnicate", "--no-watch")
 	if err != nil {
@@ -1442,14 +1535,422 @@ func TestShipGitAmendForcePushes(t *testing.T) {
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	assertInvocations(t, readInvocations(t, log), [][]string{
+	invocations := readInvocations(t, log)
+	assertInvocations(t, invocations, [][]string{
 		{"git", "branch", "--show-current"},
+		{"git", "rev-parse", "HEAD"},
 		{"git", "add", "-A"},
 		{"git", "commit", "--amend", "-m", "fix: frobnicate"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"git", "branch", "--show-current"},
-		{"git", "push", "--force-with-lease"},
+		{"git", "config", "--get", "branch.main.remote"},
+		{"git", "push", "origin", "main"},
 	})
+	// An amend of an unpushed commit fast-forwards: a plain push lands with no
+	// force at all, and the lane must never fetch (a fetch would refresh the lease).
+	for _, inv := range invocations {
+		if len(inv) >= 2 && inv[0] == "git" && inv[1] == "fetch" {
+			t.Errorf("fast-forward amend must not fetch, got %v", inv)
+		}
+		for _, arg := range inv {
+			if strings.HasPrefix(arg, "--force-with-lease") {
+				t.Errorf("fast-forward amend must not force-push, got %v", inv)
+			}
+		}
+	}
+}
+
+// captureSlog redirects the default slog logger to a buffer for the test's
+// duration so an assertion can read the warnings the ship lanes emit.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	return &buf
+}
+
+func TestShipGitRebase(t *testing.T) {
+	tests := []struct {
+		name     string
+		env      map[string]string
+		want     [][]string
+		summary  string
+		wantErr  []string
+		wantWarn bool
+	}{
+		{
+			name: "no divergence pushes clean",
+			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "add", "-A"},
+				{"git", "commit", "-m", "fix: frobnicate"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				{"git", "branch", "--show-current"},
+				{"git", "config", "--get", "branch.main.remote"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
+				{"git", "push", "origin", "main"},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · pushed main → origin`,
+		},
+		{
+			name: "diverged rebases then pushes",
+			env:  map[string]string{"GIT_DIVERGED": "1"},
+			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "add", "-A"},
+				{"git", "commit", "-m", "fix: frobnicate"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				{"git", "branch", "--show-current"},
+				{"git", "config", "--get", "branch.main.remote"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
+				{"git", "rev-list", "--count", "refs/remotes/origin/main..HEAD"},
+				{"git", "rebase", "--autostash", "refs/remotes/origin/main"},
+				{"git", "push", "origin", "main"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · rebased 2 commit(s) onto main · pushed main → origin`,
+		},
+		{
+			name: "rebase conflict aborts and reports",
+			env:  map[string]string{"GIT_DIVERGED": "1", "GIT_REBASE_CONFLICT": "1"},
+			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "add", "-A"},
+				{"git", "commit", "-m", "fix: frobnicate"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				{"git", "branch", "--show-current"},
+				{"git", "config", "--get", "branch.main.remote"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
+				{"git", "rev-list", "--count", "refs/remotes/origin/main..HEAD"},
+				{"git", "rebase", "--autostash", "refs/remotes/origin/main"},
+				{"git", "rev-parse", "--verify", "--quiet", "REBASE_HEAD"},
+				{"git", "diff", "--name-only", "--diff-filter=U"},
+				{"git", "rebase", "--abort"},
+			},
+			wantErr: []string{"rebase onto origin/main conflicts in: f.txt", "resolve manually"},
+		},
+		{
+			name: "missing remote branch skips rebase",
+			env:  map[string]string{"GIT_REMOTE_REF_MISSING": "1"},
+			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "add", "-A"},
+				{"git", "commit", "-m", "fix: frobnicate"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				{"git", "branch", "--show-current"},
+				{"git", "config", "--get", "branch.main.remote"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "push", "origin", "main"},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · pushed main → origin`,
+		},
+		{
+			name:     "autostash pop conflict warns",
+			env:      map[string]string{"GIT_DIVERGED": "1", "GIT_AUTOSTASH_WARN": "1"},
+			wantWarn: true,
+			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "add", "-A"},
+				{"git", "commit", "-m", "fix: frobnicate"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				{"git", "branch", "--show-current"},
+				{"git", "config", "--get", "branch.main.remote"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
+				{"git", "rev-list", "--count", "refs/remotes/origin/main..HEAD"},
+				{"git", "rebase", "--autostash", "refs/remotes/origin/main"},
+				{"git", "push", "origin", "main"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · rebased 2 commit(s) onto main · pushed main → origin`,
+		},
+		{
+			name: "resolves the configured remote",
+			env:  map[string]string{"GIT_BRANCH_REMOTE": "backup"},
+			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "add", "-A"},
+				{"git", "commit", "-m", "fix: frobnicate"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				{"git", "branch", "--show-current"},
+				{"git", "config", "--get", "branch.main.remote"},
+				{"git", "fetch", "backup"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/backup/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/backup/main", "HEAD"},
+				{"git", "push", "backup", "main"},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · pushed main → backup`,
+		},
+		{
+			name: "rebase failing before it starts is not a conflict",
+			env:  map[string]string{"GIT_DIVERGED": "1", "GIT_REBASE_NO_START": "1"},
+			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "add", "-A"},
+				{"git", "commit", "-m", "fix: frobnicate"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				{"git", "branch", "--show-current"},
+				{"git", "config", "--get", "branch.main.remote"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
+				{"git", "rev-list", "--count", "refs/remotes/origin/main..HEAD"},
+				{"git", "rebase", "--autostash", "refs/remotes/origin/main"},
+				{"git", "rev-parse", "--verify", "--quiet", "REBASE_HEAD"},
+			},
+			wantErr: []string{"git rebase onto origin/main", "uncommitted changes"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShip(t, ".git", false)
+			for key, value := range tt.env {
+				t.Setenv(key, value)
+			}
+			buf := captureSlog(t)
+
+			got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+			if len(tt.wantErr) == 0 {
+				if err != nil {
+					t.Fatalf("ship error = %v", err)
+				}
+				if got != tt.summary {
+					t.Errorf("summary = %q, want %q", got, tt.summary)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("expected ship error, got nil")
+				}
+				for _, want := range tt.wantErr {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error = %q, want it to contain %q", err, want)
+					}
+				}
+			}
+			if warned := strings.Contains(buf.String(), "git stash pop"); warned != tt.wantWarn {
+				t.Errorf("autostash warning = %v, want %v (log: %q)", warned, tt.wantWarn, buf.String())
+			}
+			assertInvocations(t, readInvocations(t, log), tt.want)
+		})
+	}
+}
+
+func TestShipGitPushRetry(t *testing.T) {
+	tests := []struct {
+		name           string
+		args           []string
+		env            map[string]string
+		pushReject     int
+		divergedSwitch bool
+		want           [][]string
+		summary        string
+		wantErr        []string
+	}{
+		{
+			name:           "rejected push refetches and lands",
+			pushReject:     1,
+			divergedSwitch: true,
+			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "add", "-A"},
+				{"git", "commit", "-m", "fix: frobnicate"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				{"git", "branch", "--show-current"},
+				{"git", "config", "--get", "branch.main.remote"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
+				{"git", "push", "origin", "main"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
+				{"git", "rev-list", "--count", "refs/remotes/origin/main..HEAD"},
+				{"git", "rebase", "--autostash", "refs/remotes/origin/main"},
+				{"git", "push", "origin", "main"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · rebased 2 commit(s) onto main · pushed main → origin`,
+		},
+		{
+			name:       "retries exhausted names the remedy",
+			pushReject: 3,
+			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "add", "-A"},
+				{"git", "commit", "-m", "fix: frobnicate"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				{"git", "branch", "--show-current"},
+				{"git", "config", "--get", "branch.main.remote"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
+				{"git", "push", "origin", "main"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
+				{"git", "push", "origin", "main"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
+				{"git", "push", "origin", "main"},
+			},
+			wantErr: []string{"rejected 3 times", "git fetch origin && git rebase --autostash origin/main && git push", "non-fast-forward"},
+		},
+		{
+			name:           "conflict during retry rebase is terminal",
+			pushReject:     1,
+			divergedSwitch: true,
+			env:            map[string]string{"GIT_REBASE_CONFLICT": "1"},
+			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "add", "-A"},
+				{"git", "commit", "-m", "fix: frobnicate"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				{"git", "branch", "--show-current"},
+				{"git", "config", "--get", "branch.main.remote"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
+				{"git", "push", "origin", "main"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
+				{"git", "rev-list", "--count", "refs/remotes/origin/main..HEAD"},
+				{"git", "rebase", "--autostash", "refs/remotes/origin/main"},
+				{"git", "rev-parse", "--verify", "--quiet", "REBASE_HEAD"},
+				{"git", "diff", "--name-only", "--diff-filter=U"},
+				{"git", "rebase", "--abort"},
+			},
+			wantErr: []string{"rebase onto origin/main conflicts", "f.txt"},
+		},
+		{
+			name: "amend stale lease never fetches or retries",
+			args: []string{"--amend"},
+			env:  map[string]string{"GIT_AMEND_PLAIN_NONFF": "1", "GIT_LEASE_STALE": "1"},
+			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "rev-parse", "HEAD"},
+				{"git", "add", "-A"},
+				{"git", "commit", "--amend", "-m", "fix: frobnicate"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				{"git", "branch", "--show-current"},
+				{"git", "config", "--get", "branch.main.remote"},
+				{"git", "push", "origin", "main"},
+				{"git", "push", "origin", "--force-with-lease=main:" + fakeHeadSHA, "main"},
+			},
+			wantErr: []string{"built on the commit you amended"},
+		},
+		{
+			name: "hook decline does not retry",
+			env:  map[string]string{"GIT_PUSH_FAIL_STDERR": "! [remote rejected] main -> main (pre-receive hook declined)"},
+			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "add", "-A"},
+				{"git", "commit", "-m", "fix: frobnicate"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				{"git", "branch", "--show-current"},
+				{"git", "config", "--get", "branch.main.remote"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
+				{"git", "push", "origin", "main"},
+			},
+			wantErr: []string{"ship: git push:", "pre-receive hook declined"},
+		},
+		{
+			name:       "both attempts rebase reports the count once",
+			pushReject: 1,
+			env:        map[string]string{"GIT_DIVERGED": "1"},
+			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "add", "-A"},
+				{"git", "commit", "-m", "fix: frobnicate"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				{"git", "branch", "--show-current"},
+				{"git", "config", "--get", "branch.main.remote"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
+				{"git", "rev-list", "--count", "refs/remotes/origin/main..HEAD"},
+				{"git", "rebase", "--autostash", "refs/remotes/origin/main"},
+				{"git", "push", "origin", "main"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
+				{"git", "rev-list", "--count", "refs/remotes/origin/main..HEAD"},
+				{"git", "rebase", "--autostash", "refs/remotes/origin/main"},
+				{"git", "push", "origin", "main"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+			},
+			summary: `committed a1b2c3d "fix: frobnicate" · rebased 2 commit(s) onto main · pushed main → origin`,
+		},
+		{
+			name: "remote-rejected veto beats a mixed non-fast-forward token",
+			env:  map[string]string{"GIT_PUSH_FAIL_STDERR": "! [remote rejected] main -> main (pre-receive hook declined)\n! [rejected] feature -> feature (non-fast-forward)"},
+			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "add", "-A"},
+				{"git", "commit", "-m", "fix: frobnicate"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				{"git", "branch", "--show-current"},
+				{"git", "config", "--get", "branch.main.remote"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+				{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
+				{"git", "push", "origin", "main"},
+			},
+			wantErr: []string{"ship: git push:", "pre-receive hook declined"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShip(t, ".git", false)
+			for key, value := range tt.env {
+				t.Setenv(key, value)
+			}
+			if tt.pushReject > 0 {
+				marker := filepath.Join(t.TempDir(), "gitpush")
+				if err := os.WriteFile(marker, []byte(fmt.Sprintf("%d", tt.pushReject)), 0o600); err != nil {
+					t.Fatalf("write push marker: %v", err)
+				}
+				t.Setenv("GIT_PUSH_REJECT_MARKER", marker)
+			}
+			if tt.divergedSwitch {
+				t.Setenv("GIT_DIVERGED_MARKER", filepath.Join(t.TempDir(), "gitdiverged"))
+			}
+
+			args := append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)
+			got, err := runShipCmd(t, args...)
+			if len(tt.wantErr) == 0 {
+				if err != nil {
+					t.Fatalf("ship error = %v", err)
+				}
+				if got != tt.summary {
+					t.Errorf("summary = %q, want %q", got, tt.summary)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("expected ship error, got nil")
+				}
+				for _, want := range tt.wantErr {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error = %q, want it to contain %q", err, want)
+					}
+				}
+			}
+			assertInvocations(t, readInvocations(t, log), tt.want)
+		})
+	}
 }
 
 func TestShipNoWatchSkipsCI(t *testing.T) {
@@ -1473,6 +1974,7 @@ func TestShipNoWatchSkipsCI(t *testing.T) {
 		{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 		{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
 		{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
+		{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 		{"jj", "git", "push", "--bookmark", "exact:main"},
 	})
 }
@@ -1606,6 +2108,8 @@ func TestShipJJRebase(t *testing.T) {
 		args           []string
 		env            map[string]string
 		describeMarker bool
+		pushReject     int
+		divergedSwitch bool
 		want           [][]string
 		summary        string
 		wantErr        []string
@@ -1625,10 +2129,11 @@ func TestShipJJRebase(t *testing.T) {
 				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "main"), "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "rebase", "-b", "@-", "--destination", `bookmarks(exact:"main")`},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "log", "-r", `conflicts() & (bookmarks(exact:"main")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "git", "push", "--bookmark", "exact:main"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
@@ -1648,10 +2153,11 @@ func TestShipJJRebase(t *testing.T) {
 				{"jj", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "someone/probe"), "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "someone/probe"), "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "rebase", "-b", "@-", "--destination", `bookmarks(exact:"someone/probe")`},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "log", "-r", `conflicts() & (bookmarks(exact:"someone/probe")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "bookmark", "move", "exact:someone/probe", "--to", "@-"},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "git", "push", "--bookmark", "exact:someone/probe"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
@@ -1688,10 +2194,10 @@ func TestShipJJRebase(t *testing.T) {
 				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "main"), "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "rebase", "-b", "@-", "--destination", `bookmarks(exact:"main")`},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "log", "-r", `conflicts() & (bookmarks(exact:"main")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "op", "restore", "op123abc"},
+				{"jj", "op", "revert", "op123abc"},
 			},
 			wantErr: []string{`rebase onto "main" conflicts in 1 commit`, "c0ffee1", "rolled back"},
 		},
@@ -1713,10 +2219,10 @@ func TestShipJJRebase(t *testing.T) {
 				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "main"), "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "rebase", "-b", "@-", "--destination", `bookmarks(exact:"main")`},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "log", "-r", `conflicts() & (bookmarks(exact:"main")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "op", "restore", "op123abc"},
+				{"jj", "op", "revert", "op123abc"},
 			},
 			wantErr: []string{`conflict check after rebase onto "main" failed (rebase rolled back)`},
 		},
@@ -1755,6 +2261,146 @@ func TestShipJJRebase(t *testing.T) {
 			},
 			wantErr: []string{"jj git fetch"},
 		},
+		{
+			name:           "rejected push restores and lands",
+			env:            map[string]string{"JJ_NO_BOOKMARK": "1"},
+			describeMarker: true,
+			pushReject:     1,
+			divergedSwitch: true,
+			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "diff", "--name-only"},
+				{"jj", "commit", "-m", "fix: frobnicate"},
+				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "git", "fetch"},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "git", "push", "--bookmark", "exact:main"},
+				{"jj", "op", "revert", "op123abc"},
+				{"jj", "git", "fetch"},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "main"), "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "rebase", "-b", "@-", "--destination", `bookmarks(exact:"main")`},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "log", "-r", `conflicts() & (bookmarks(exact:"main")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "git", "push", "--bookmark", "exact:main"},
+				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+			},
+			summary: `committed e9f8a7b "fix: frobnicate" · rebased 2 commit(s) onto main · pushed main → origin`,
+		},
+		{
+			name:       "retries exhausted restores last state",
+			env:        map[string]string{"JJ_NO_BOOKMARK": "1"},
+			pushReject: 3,
+			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "diff", "--name-only"},
+				{"jj", "commit", "-m", "fix: frobnicate"},
+				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "git", "fetch"},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "git", "push", "--bookmark", "exact:main"},
+				{"jj", "op", "revert", "op123abc"},
+				{"jj", "git", "fetch"},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "git", "push", "--bookmark", "exact:main"},
+				{"jj", "op", "revert", "op123abc"},
+				{"jj", "git", "fetch"},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "git", "push", "--bookmark", "exact:main"},
+				{"jj", "op", "revert", "op123abc"},
+			},
+			wantErr: []string{"rejected 3 times", "jj git fetch && jj rebase -b @-", "unexpectedly moved"},
+		},
+		{
+			name:       "amend rejection refuses",
+			args:       []string{"--amend"},
+			env:        map[string]string{"JJ_NO_BOOKMARK": "1"},
+			pushReject: 1,
+			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "squash", "-m", "fix: frobnicate"},
+				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "git", "fetch"},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "git", "push", "--bookmark", "exact:main"},
+				{"jj", "op", "revert", "op123abc"},
+			},
+			wantErr: []string{"not force-retrying over their work"},
+		},
+		{
+			name:       "permission failure passes through",
+			env:        map[string]string{"JJ_NO_BOOKMARK": "1", "JJ_PUSH_FAIL_STDERR": "The remote rejected the following updates:\nError: Failed to push some bookmarks"},
+			pushReject: 1,
+			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "diff", "--name-only"},
+				{"jj", "commit", "-m", "fix: frobnicate"},
+				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "git", "fetch"},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "git", "push", "--bookmark", "exact:main"},
+			},
+			wantErr: []string{"ship: jj git push:", "Failed to push some bookmarks"},
+		},
+		{
+			name:           "conflict during retry rebase rolls back",
+			env:            map[string]string{"JJ_NO_BOOKMARK": "1", "JJ_CONFLICTS": "c0ffee1 fix: frobnicate\n"},
+			pushReject:     1,
+			divergedSwitch: true,
+			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "diff", "--name-only"},
+				{"jj", "commit", "-m", "fix: frobnicate"},
+				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "git", "fetch"},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "git", "push", "--bookmark", "exact:main"},
+				{"jj", "op", "revert", "op123abc"},
+				{"jj", "git", "fetch"},
+				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "main"), "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "rebase", "-b", "@-", "--destination", `bookmarks(exact:"main")`},
+				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "log", "-r", `conflicts() & (bookmarks(exact:"main")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "op", "revert", "op123abc"},
+			},
+			wantErr: []string{`rebase onto "main" conflicts`, "c0ffee1", "rolled back"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1768,6 +2414,16 @@ func TestShipJJRebase(t *testing.T) {
 					t.Fatalf("write describe marker: %v", err)
 				}
 				t.Setenv("JJ_DESCRIBE_MARKER", marker)
+			}
+			if tt.pushReject > 0 {
+				marker := filepath.Join(t.TempDir(), "jjpush")
+				if err := os.WriteFile(marker, []byte(fmt.Sprintf("%d", tt.pushReject)), 0o600); err != nil {
+					t.Fatalf("write push marker: %v", err)
+				}
+				t.Setenv("JJ_PUSH_REJECT_MARKER", marker)
+			}
+			if tt.divergedSwitch {
+				t.Setenv("JJ_DIVERGED_MARKER", filepath.Join(t.TempDir(), "jjdiverged"))
 			}
 
 			args := append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)
@@ -1791,6 +2447,63 @@ func TestShipJJRebase(t *testing.T) {
 			}
 			assertInvocations(t, readInvocations(t, log), tt.want)
 		})
+	}
+}
+
+func TestShipJJPushRevertTargetsBookmarkMove(t *testing.T) {
+	log := setupShip(t, ".jj", true)
+	t.Setenv("JJ_NO_BOOKMARK", "1")
+	t.Setenv("JJ_DIVERGED", "1")
+	t.Setenv("JJ_OP_LOG_COUNTER", filepath.Join(t.TempDir(), "opcounter"))
+	marker := filepath.Join(t.TempDir(), "jjpush")
+	if err := os.WriteFile(marker, []byte("1"), 0o600); err != nil {
+		t.Fatalf("write push marker: %v", err)
+	}
+	t.Setenv("JJ_PUSH_REJECT_MARKER", marker)
+
+	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	// Attempt 1 logs op001 after the rebase and op002 after the bookmark move; the
+	// rejected push must revert op002 (the move), never op001 (the rebase, which is
+	// kept and replayed onto the fresh remote tip).
+	var reverted []string
+	for _, inv := range readInvocations(t, log) {
+		if len(inv) == 4 && inv[0] == "jj" && inv[1] == "op" && inv[2] == "revert" {
+			reverted = append(reverted, inv[3])
+		}
+	}
+	if want := []string{"op002"}; !reflect.DeepEqual(reverted, want) {
+		t.Errorf("op revert targets = %v, want %v", reverted, want)
+	}
+}
+
+func TestShipJJPushRevertFailureIsTerminal(t *testing.T) {
+	log := setupShip(t, ".jj", true)
+	t.Setenv("JJ_NO_BOOKMARK", "1")
+	t.Setenv("JJ_OP_REVERT_FAIL", "1")
+	marker := filepath.Join(t.TempDir(), "jjpush")
+	if err := os.WriteFile(marker, []byte("1"), 0o600); err != nil {
+		t.Fatalf("write push marker: %v", err)
+	}
+	t.Setenv("JJ_PUSH_REJECT_MARKER", marker)
+
+	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+	if err == nil {
+		t.Fatal("expected terminal error when op revert fails")
+	}
+	if !strings.Contains(err.Error(), "jj op revert op123abc") {
+		t.Errorf("error = %q, want it to name the manual revert command", err)
+	}
+	// A failed undo is terminal: exactly one fetch, no retry.
+	fetches := 0
+	for _, inv := range readInvocations(t, log) {
+		if len(inv) >= 3 && inv[0] == "jj" && inv[1] == "git" && inv[2] == "fetch" {
+			fetches++
+		}
+	}
+	if fetches != 1 {
+		t.Errorf("jj git fetch count = %d, want 1 (a failed undo must not retry)", fetches)
 	}
 }
 
@@ -1919,6 +2632,7 @@ func TestShipJJBookmarkOverride(t *testing.T) {
 		{"jj", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
 		{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "someone/probe"), "--no-graph", "-T", jjBookmarkTemplate},
 		{"jj", "bookmark", "move", "exact:someone/probe", "--to", "@-"},
+		{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 		{"jj", "git", "push", "--bookmark", "exact:someone/probe"},
 	})
 }

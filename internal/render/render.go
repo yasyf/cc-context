@@ -111,6 +111,43 @@ func RunCLIAllowExit(ctx context.Context, bin string, argv []string, okCodes ...
 	return "", fmt.Errorf("%s: %w: %s", bin, err, strings.TrimSpace(stderr.String()))
 }
 
+// RunCLIExitCode executes bin with argv, returning its stdout, the child's exit
+// code (via errors.As, never string-matching), and its stderr, so a caller can
+// branch on a command that signals through its status, like git merge-base
+// --is-ancestor, and still surface the stderr on an unexpected code. A nonzero
+// exit is not an error; err is non-nil only when the child could not run.
+func RunCLIExitCode(ctx context.Context, bin string, argv []string) (string, int, string, error) {
+	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err == nil {
+		return stdout.String(), 0, stderr.String(), nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return stdout.String(), exitErr.ExitCode(), stderr.String(), nil
+	}
+	return "", 0, "", fmt.Errorf("%s: %w: %s", bin, err, strings.TrimSpace(stderr.String()))
+}
+
+// RunCLIKeepStderr is RunCLI but also returns the child's stderr on success, for
+// a command that warns on stderr while exiting 0 (git rebase --autostash warns
+// that an autostash pop "resulted in conflicts" and exits 0). A nonzero exit wraps
+// the child's stderr in the returned error as RunCLI does.
+func RunCLIKeepStderr(ctx context.Context, bin string, argv []string) (stdout, stderr string, err error) {
+	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return "", "", fmt.Errorf("%s: %w: %s", bin, err, strings.TrimSpace(errBuf.String()))
+	}
+	return outBuf.String(), errBuf.String(), nil
+}
+
 // tolerated reports whether code is one of the allowed exit codes.
 func tolerated(code int, okCodes []int) bool {
 	for _, ok := range okCodes {

@@ -4,6 +4,35 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`ccx vcs ship` survives a remote that advances mid-ship, on both backends.** A
+  concurrent push landing between ship's fetch and its push previously surfaced as a
+  raw rejection (`... (non-fast-forward)`) — and on jj repos left the local bookmark
+  advanced, so even a manual ship re-run tripped the conflicted-bookmark refusal.
+  Ship now classifies a rejected push (git's `(non-fast-forward)`/`(fetch first)`
+  per-ref reasons; jj's "unexpectedly moved") and re-fetches, re-rebases, and
+  re-pushes, up to 3 attempts; the jj lane first reverts its own bookmark move via a
+  targeted `jj op revert`, so retries and manual re-runs both start from a clean
+  bookmark and a concurrent local session's operations are never rolled back with
+  it. Exhausted retries fail with the exact manual recovery steps instead of raw
+  stderr.
+
+### Changed
+- **The git lane of `ccx vcs ship` gains the fetch-first flow the jj lane already
+  had**: fetch, ancestor check, and `git rebase --autostash` onto `origin/<branch>`
+  before the push; a conflicting rebase aborts back to the pre-rebase state and
+  reports the conflicted files; an autostash that conflicts on pop is surfaced with
+  `git stash pop` instructions instead of being parked silently. The lane targets
+  the branch's configured remote (`branch.<name>.remote`, falling back to origin)
+  for the fetch, the rebase base, the push, and the report, instead of hard-coding
+  origin. A rejected `--amend` push never auto-retries on either backend, and the
+  git amend push now tries a plain push first and force-pushes only with a lease
+  pinned to the commit being rewritten — an externally refreshed tracking ref (an
+  IDE background fetch, say) can no longer turn the lease into a silent overwrite
+  of a concurrent push.
+
 ## [0.31.0] - 2026-07-23
 
 ### Added

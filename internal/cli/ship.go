@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -109,7 +110,7 @@ func newShipCmd() *cobra.Command {
 		Short: "Commit, push, and watch CI in one step",
 		Long: `Commit, push, and watch CI in one step.
 
-Ship refuses an empty working copy (the usual cause: a prior ship already landed the commit in @-) and resolves the push target before committing, so a refusal leaves the working copy untouched. On a jj repo, ship fetches from the remote first and, when the target bookmark is no longer an ancestor of the local stack, rebases the stack onto it after committing; a rebase that would conflict is rolled back and reported instead of pushed.`,
+Ship refuses an empty working copy (the usual cause: a prior ship already landed the commit in @-) and resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>, autostashing uncommitted work); a rebase that would conflict is rolled back and reported instead of pushed. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			o.paths = args
@@ -163,6 +164,15 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		}
 	}
 
+	var preAmendSHA string
+	if !o.noPush && kind == vcs.Git && o.amend {
+		out, rerr := render.RunCLI(ctx, "git", []string{"rev-parse", "HEAD"})
+		if rerr != nil {
+			return fmt.Errorf("ship: git rev-parse HEAD: %w", rerr)
+		}
+		preAmendSHA = strings.TrimSpace(out)
+	}
+
 	hookSeg, err := shipCommit(ctx, cmd.ErrOrStderr(), root, kind, o, sel)
 	if err != nil {
 		return err
@@ -185,7 +195,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		return nil
 	}
 
-	branch, rebased, err := shipPush(ctx, kind, o, target)
+	branch, remote, rebased, err := shipPush(ctx, kind, o, target, preAmendSHA)
 	if err != nil {
 		return err
 	}
@@ -197,7 +207,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		segments[committedSegment] = fmt.Sprintf("committed %s %q", short, subject)
 		segments = append(segments, fmt.Sprintf("rebased %d commit(s) onto %s", rebased, branch))
 	}
-	segments = append(segments, fmt.Sprintf("pushed %s → origin", branch))
+	segments = append(segments, fmt.Sprintf("pushed %s → %s", branch, remote))
 
 	if o.noWatch {
 		cmd.Println(strings.Join(segments, shipSep))
@@ -497,20 +507,29 @@ func shipPreflightGit(ctx context.Context) (string, error) {
 	return branch, nil
 }
 
-func shipPush(ctx context.Context, kind vcs.Kind, o shipOpts, target string) (string, int, error) {
+func shipPush(ctx context.Context, kind vcs.Kind, o shipOpts, target, preAmendSHA string) (branch, remote string, rebased int, err error) {
 	switch kind {
 	case vcs.JJ:
-		rebased, err := shipPushJJ(ctx, target)
-		return target, rebased, err
+		rebased, err = shipPushJJ(ctx, target, o.amend)
+		return target, "origin", rebased, err
 	case vcs.Git:
-		branch, err := shipPushGit(ctx, o.amend)
-		return branch, 0, err
+		return shipPushGit(ctx, o.amend, preAmendSHA)
 	default:
-		return "", 0, errors.New("ship: push: unsupported vcs")
+		return "", "", 0, errors.New("ship: push: unsupported vcs")
 	}
 }
 
-func shipPushJJ(ctx context.Context, target string) (int, error) {
+func shipPushJJ(ctx context.Context, target string, amend bool) (int, error) {
+	hint := fmt.Sprintf("jj git fetch && jj rebase -b @- --destination 'bookmarks(exact:%s)' && jj bookmark move exact:%s --to @- && jj git push --bookmark exact:%s", target, target, target)
+	return shipPushRetry(ctx, target, hint, func(ctx context.Context) (int, error) {
+		return shipPushJJOnce(ctx, target, amend)
+	})
+}
+
+// shipPushJJOnce is one push attempt: fetch, re-check the bookmark, rebase when
+// the target diverged, advance the bookmark, then push. It snapshots the op log
+// right after the bookmark move so a rejected push can undo exactly that move.
+func shipPushJJOnce(ctx context.Context, target string, amend bool) (int, error) {
 	if _, err := render.RunCLI(ctx, "jj", []string{"git", "fetch"}); err != nil {
 		return 0, fmt.Errorf("ship: jj git fetch: %w", err)
 	}
@@ -541,29 +560,219 @@ func shipPushJJ(ctx context.Context, target string) (int, error) {
 	if _, err := render.RunCLI(ctx, "jj", []string{"bookmark", "move", "exact:" + target, "--to", "@-"}); err != nil {
 		return 0, fmt.Errorf("ship: advance bookmark %q: %w", target, err)
 	}
+	moveOp, err := jjOpID(ctx)
+	if err != nil {
+		return 0, err
+	}
 	if _, err := render.RunCLI(ctx, "jj", []string{"git", "push", "--bookmark", "exact:" + target}); err != nil {
-		return 0, fmt.Errorf("ship: jj git push: %w", err)
+		return rebased, shipPushJJReject(ctx, target, moveOp, amend, err)
 	}
 	return rebased, nil
 }
 
-func shipPushGit(ctx context.Context, amend bool) (string, error) {
+// shipPushJJReject classifies a failed jj push. A remote-advanced rejection undoes
+// only the bookmark move (jj op revert moveOp, uncancellable so a cancelled ctx
+// leaves no advanced bookmark) and returns a *pushRejectedError to replay; a
+// non-rejection, a failed undo, or a rejected amend is terminal.
+func shipPushJJReject(ctx context.Context, target, moveOp string, amend bool, pushErr error) error {
+	raw := fmt.Errorf("ship: jj git push: %w", pushErr)
+	if !jjPushRejected(raw) {
+		return raw
+	}
+	cleanup := context.WithoutCancel(ctx)
+	if _, uerr := render.RunCLI(cleanup, "jj", []string{"op", "revert", moveOp}); uerr != nil {
+		return fmt.Errorf("ship: jj git push rejected (%w); reverting the bookmark move also failed: %w — run: jj op revert %s", pushErr, uerr, moveOp)
+	}
+	if amend {
+		return fmt.Errorf("ship: origin advanced past the commit you amended on %q — someone else pushed; not force-retrying over their work; inspect with jj log and jj op log, then reconcile manually: %w", target, pushErr)
+	}
+	return &pushRejectedError{err: raw}
+}
+
+func shipPushGit(ctx context.Context, amend bool, preAmendSHA string) (string, string, int, error) {
 	out, err := render.RunCLI(ctx, "git", []string{"branch", "--show-current"})
 	if err != nil {
-		return "", fmt.Errorf("ship: git branch --show-current: %w", err)
+		return "", "", 0, fmt.Errorf("ship: git branch --show-current: %w", err)
 	}
 	branch := strings.TrimSpace(out)
 	if branch == "" {
-		return "", errors.New("ship: detached HEAD; no branch to push")
+		return "", "", 0, errors.New("ship: detached HEAD; no branch to push")
 	}
-	argv := []string{"push"}
+	remote, err := gitRemoteFor(ctx, branch)
+	if err != nil {
+		return "", "", 0, err
+	}
 	if amend {
-		argv = []string{"push", "--force-with-lease"}
+		return branch, remote, 0, shipPushGitAmend(ctx, remote, branch, preAmendSHA)
 	}
-	if _, err := render.RunCLI(ctx, "git", argv); err != nil {
-		return "", fmt.Errorf("ship: git push: %w", err)
+	hint := fmt.Sprintf("git fetch %s && git rebase --autostash %s/%s && git push %s %s", remote, remote, branch, remote, branch)
+	rebased, err := shipPushRetry(ctx, branch, hint, func(ctx context.Context) (int, error) {
+		return shipPushGitOnce(ctx, remote, branch)
+	})
+	return branch, remote, rebased, err
+}
+
+// gitRemoteFor resolves the remote that branch.<branch>.remote configures, so a
+// triangular or non-origin-only repo fetches, rebases, and pushes against the
+// same remote. git config --get exits 1 when unset; that and an empty value both
+// default to origin. Any other exit is an error.
+func gitRemoteFor(ctx context.Context, branch string) (string, error) {
+	out, code, stderr, err := render.RunCLIExitCode(ctx, "git", []string{"config", "--get", "branch." + branch + ".remote"})
+	if err != nil {
+		return "", fmt.Errorf("ship: git config branch.%s.remote: %w", branch, err)
 	}
-	return branch, nil
+	switch code {
+	case 0:
+		if r := strings.TrimSpace(out); r != "" {
+			return r, nil
+		}
+		return "origin", nil
+	case 1:
+		return "origin", nil
+	default:
+		return "", fmt.Errorf("ship: git config branch.%s.remote: exit %d: %s", branch, code, strings.TrimSpace(stderr))
+	}
+}
+
+// shipPushGitAmend pushes an amended commit without ever fetching. It tries a
+// plain push first (an amend of an unpushed commit fast-forwards, no force) and
+// only on a non-fast-forward rejection force-pushes with a lease pinned to
+// preAmendSHA, so the force lands iff the remote still sits on the rewritten
+// commit. A stale or rejected lease is terminal.
+func shipPushGitAmend(ctx context.Context, remote, branch, preAmendSHA string) error {
+	_, err := render.RunCLI(ctx, "git", []string{"push", remote, branch})
+	if err == nil {
+		return nil
+	}
+	if !gitPushRejected(err) {
+		return fmt.Errorf("ship: git push: %w", err)
+	}
+	lease := fmt.Sprintf("--force-with-lease=%s:%s", branch, preAmendSHA)
+	if _, err := render.RunCLI(ctx, "git", []string{"push", remote, lease, branch}); err != nil {
+		if gitPushStaleLease(err) || gitPushRejected(err) {
+			return fmt.Errorf("ship: %s/%s moved since your last sync — someone may have built on the commit you amended; fetch and reconcile manually before force-pushing: %w", remote, branch, err)
+		}
+		return fmt.Errorf("ship: git push: %w", err)
+	}
+	return nil
+}
+
+// shipPushGitOnce is one non-amend push attempt: fetch the remote, rebase onto
+// <remote>/<branch> when it advanced past HEAD, then push. A rejected push moves
+// no local ref, so it re-enters as a *pushRejectedError with no rollback.
+func shipPushGitOnce(ctx context.Context, remote, branch string) (int, error) {
+	if _, err := render.RunCLI(ctx, "git", []string{"fetch", remote}); err != nil {
+		return 0, fmt.Errorf("ship: git fetch %s: %w", remote, err)
+	}
+	remoteRef := "refs/remotes/" + remote + "/" + branch
+	present, err := gitRefExists(ctx, remoteRef)
+	if err != nil {
+		return 0, err
+	}
+	rebased := 0
+	if present {
+		ancestor, err := gitIsAncestor(ctx, remoteRef, "HEAD")
+		if err != nil {
+			return 0, err
+		}
+		if !ancestor {
+			rebased, err = gitRebaseOnto(ctx, remote, branch)
+			if err != nil {
+				return 0, err
+			}
+		}
+	}
+	if _, err := render.RunCLI(ctx, "git", []string{"push", remote, branch}); err != nil {
+		raw := fmt.Errorf("ship: git push: %w", err)
+		if gitPushRejected(raw) {
+			return rebased, &pushRejectedError{err: raw}
+		}
+		return rebased, raw
+	}
+	return rebased, nil
+}
+
+// gitRefExists reports whether ref resolves (git rev-parse --verify --quiet: exit
+// 0 present, exit 1 missing). Any other exit is an error naming the code.
+func gitRefExists(ctx context.Context, ref string) (bool, error) {
+	_, code, stderr, err := render.RunCLIExitCode(ctx, "git", []string{"rev-parse", "--verify", "--quiet", ref})
+	if err != nil {
+		return false, fmt.Errorf("ship: git rev-parse %s: %w", ref, err)
+	}
+	switch code {
+	case 0:
+		return true, nil
+	case 1:
+		return false, nil
+	default:
+		return false, fmt.Errorf("ship: git rev-parse %s: exit %d: %s", ref, code, strings.TrimSpace(stderr))
+	}
+}
+
+// gitIsAncestor reports whether maybe is an ancestor of ref (git merge-base
+// --is-ancestor: exit 0 yes, exit 1 no). Any other exit is an error.
+func gitIsAncestor(ctx context.Context, maybe, ref string) (bool, error) {
+	_, code, stderr, err := render.RunCLIExitCode(ctx, "git", []string{"merge-base", "--is-ancestor", maybe, ref})
+	if err != nil {
+		return false, fmt.Errorf("ship: git merge-base --is-ancestor: %w", err)
+	}
+	switch code {
+	case 0:
+		return true, nil
+	case 1:
+		return false, nil
+	default:
+		return false, fmt.Errorf("ship: git merge-base --is-ancestor: exit %d: %s", code, strings.TrimSpace(stderr))
+	}
+}
+
+// gitRebaseOnto rebases HEAD onto <remote>/<branch> with --autostash (the worktree
+// is dirty after a hunk-scoped ship), returning the number of local commits
+// replayed. A failed rebase is classified by gitRebaseFailure; an autostash pop
+// left unapplied is surfaced as a warning, not a failure.
+func gitRebaseOnto(ctx context.Context, remote, branch string) (int, error) {
+	remoteRef := "refs/remotes/" + remote + "/" + branch
+	countOut, err := render.RunCLI(ctx, "git", []string{"rev-list", "--count", remoteRef + "..HEAD"})
+	if err != nil {
+		return 0, fmt.Errorf("ship: git rev-list --count: %w", err)
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(countOut))
+	if err != nil {
+		return 0, fmt.Errorf("ship: malformed rev-list count %q: %w", countOut, err)
+	}
+
+	_, stderr, err := render.RunCLIKeepStderr(ctx, "git", []string{"rebase", "--autostash", remoteRef})
+	if err != nil {
+		return 0, gitRebaseFailure(ctx, remote, branch, err)
+	}
+	if strings.Contains(stderr, "resulted in conflicts") {
+		slog.Warn("ship: rebase left autostashed changes unapplied — recover them with git stash pop", "branch", branch)
+	}
+	return count, nil
+}
+
+// gitRebaseFailure classifies a failed git rebase --autostash. A rebase in progress
+// (REBASE_HEAD resolves) conflicted mid-replay: list, abort (restoring the
+// autostash), report. Otherwise it failed before starting (hook, dirty index) —
+// return the raw error, no abort. Cleanup runs uncancellable.
+func gitRebaseFailure(ctx context.Context, remote, branch string, rebaseErr error) error {
+	cleanup := context.WithoutCancel(ctx)
+	inProgress, err := gitRefExists(cleanup, "REBASE_HEAD")
+	if err != nil {
+		return err
+	}
+	if !inProgress {
+		return fmt.Errorf("ship: git rebase onto %s/%s: %w", remote, branch, rebaseErr)
+	}
+	files, lerr := render.RunCLI(cleanup, "git", []string{"diff", "--name-only", "--diff-filter=U"})
+	if _, aerr := render.RunCLI(cleanup, "git", []string{"rebase", "--abort"}); aerr != nil {
+		return fmt.Errorf("ship: rebase onto %s/%s conflicted (%w) and abort failed: %w — run: git rebase --abort, then resolve manually", remote, branch, rebaseErr, aerr)
+	}
+	if lerr != nil {
+		return fmt.Errorf("ship: rebase onto %s/%s conflicted (%w); aborted back to the pre-rebase state; listing the conflicted files also failed: %w — resolve manually: git fetch %s && git rebase --autostash %s/%s, fix the conflicts (git status), then git push %s %s", remote, branch, rebaseErr, lerr, remote, remote, branch, remote, branch)
+	}
+	conflicted := strings.Join(strings.Fields(files), ", ")
+	return fmt.Errorf("ship: rebase onto %s/%s conflicts in: %s; aborted back to the pre-rebase state (%w) — resolve manually: git fetch %s && git rebase --autostash %s/%s, fix the conflicts (git status), then git push %s %s", remote, branch, conflicted, rebaseErr, remote, remote, branch, remote, branch)
 }
 
 func jjBookmarkNames(ctx context.Context, rev string) ([]string, error) {
@@ -625,28 +834,30 @@ func jjRebaseOnto(ctx context.Context, target string) (int, error) {
 		return 0, fmt.Errorf("ship: %q..@- is empty — the commit already landed on %q; refusing to move the bookmark backwards", target, target)
 	}
 
-	opID, err := jjOpID(ctx)
-	if err != nil {
-		return 0, err
-	}
 	if _, err := render.RunCLI(ctx, "jj", []string{"rebase", "-b", "@-", "--destination", fmt.Sprintf(`bookmarks(exact:%q)`, target)}); err != nil {
 		return 0, fmt.Errorf("ship: jj rebase onto %q: %w", target, err)
+	}
+	rebaseOp, err := jjOpID(ctx)
+	if err != nil {
+		return 0, err
 	}
 
 	// rebase -b @- rewrites every descendant of the stack, including siblings
 	// of @; check the whole rewritten set without including conflicts below it.
 	conflicts, err := jjLogLines(ctx, fmt.Sprintf(jjConflictRevsetFmt, target))
+	cleanup := context.WithoutCancel(ctx)
 	if err != nil {
-		_, rerr := render.RunCLI(ctx, "jj", []string{"op", "restore", opID})
-		if rerr == nil {
+		_, uerr := render.RunCLI(cleanup, "jj", []string{"op", "revert", rebaseOp})
+		if uerr == nil {
 			return 0, fmt.Errorf("ship: conflict check after rebase onto %q failed (rebase rolled back): %w", target, err)
 		}
-		return 0, fmt.Errorf("ship: conflict check after rebase onto %q failed: %w; rollback also failed: %w — run: jj op restore %s", target, err, rerr, opID)
+		return 0, fmt.Errorf("ship: conflict check after rebase onto %q failed: %w; rollback also failed: %w — run: jj op revert %s", target, err, uerr, rebaseOp)
 	}
 	if len(conflicts) > 0 {
-		// Restore the whole operation so a conflicted @ rolls back with the stack.
-		if _, rerr := render.RunCLI(ctx, "jj", []string{"op", "restore", opID}); rerr != nil {
-			return 0, fmt.Errorf("ship: rebase onto %q conflicted and rollback failed: %w — run: jj op restore %s, then resolve manually", target, rerr, opID)
+		// Undo only the rebase so a conflicted @ rolls back without touching a
+		// concurrent session's operations.
+		if _, uerr := render.RunCLI(cleanup, "jj", []string{"op", "revert", rebaseOp}); uerr != nil {
+			return 0, fmt.Errorf("ship: rebase onto %q conflicted and rollback failed: %w — run: jj op revert %s, then resolve manually", target, uerr, rebaseOp)
 		}
 		return 0, fmt.Errorf("ship: rebase onto %q conflicts in %d commit(s); rolled back to the pre-rebase state\nconflicted:\n  %s\nresolve manually: jj rebase -b @- --destination 'bookmarks(exact:%q)', fix the conflicts (jj status), then: jj bookmark move exact:%s --to @- && jj git push --bookmark exact:%s", target, len(conflicts), strings.Join(conflicts, "\n  "), target, target, target)
 	}
