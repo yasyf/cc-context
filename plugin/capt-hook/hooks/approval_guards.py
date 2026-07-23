@@ -109,16 +109,16 @@ def ccx_mcp_tool(tool_name: str | None) -> str | None:
 class CcxMcpReadOnly(CustomCondition):
     """Matches the strictly read-only cc-context MCP tools, server-pinned by exact name.
 
-    ``ccx_code_read`` carrying a truthy ``reveal_secrets`` is excluded — the
-    secret-masking escape hatch falls through to the dialog, mirroring the CLI
+    Any call carrying a truthy ``reveal_secrets`` is excluded — every masking
+    surface (read, grep, symbol, outline, diff) exposes the escape hatch, and it
+    falls through to the dialog on all of them, mirroring the CLI
     ``--reveal-secrets`` carve-out below.
     """
 
     def check(self, evt: BaseHookEvent) -> bool:
-        tool = ccx_mcp_tool(evt.tool_name)
-        if tool == "ccx_code_read" and evt.input.raw.get("reveal_secrets"):
+        if evt.input.raw.get("reveal_secrets"):
             return False
-        return tool in READ_ONLY_MCP_TOOLS
+        return ccx_mcp_tool(evt.tool_name) in READ_ONLY_MCP_TOOLS
 
 
 class CcxReplacePreview(CustomCondition):
@@ -157,12 +157,12 @@ class CcxReadOnlyCli(CustomCommandLineCondition):
             return False
         if len(args) < 2:
             return False
+        # --reveal-secrets prints raw secret material; the masking escape hatch is
+        # never self-serve, so any spelling on any op falls through to the dialog.
+        if any(a.startswith("--reveal-secrets") for a in args):
+            return False
         if (args[0], args[1]) == ("code", "replace"):
             return not any(a.startswith("--apply") for a in args)
-        if (args[0], args[1]) == ("code", "read"):
-            # --reveal-secrets prints raw secret material; the masking escape hatch
-            # is never self-serve, so any spelling falls through to the dialog.
-            return not any(a.startswith("--reveal-secrets") for a in args)
         return (args[0], args[1]) in READ_ONLY_CLI_OPS
 
 
@@ -191,6 +191,11 @@ approve(
         Input(tool="mcp__cc-context__ccx_code_read", tool_input={"path": "main.go", "reveal_secrets": False}): Allow(
             explicit=True
         ),
+        # every masking surface exposes reveal_secrets — the carve-out covers them all
+        Input(tool="mcp__cc-context__ccx_code_grep", tool_input={"text": "KEY", "reveal_secrets": True}): Ask(),
+        Input(tool="mcp__plugin_cc-context_cc-context__ccx_vcs_diff", tool_input={"reveal_secrets": True}): Ask(),
+        Input(tool="mcp__cc-context__ccx_code_symbol", tool_input={"name": "x", "reveal_secrets": True}): Ask(),
+        Input(tool="mcp__cc-context__ccx_code_outline", tool_input={"path": "f.go", "reveal_secrets": True}): Ask(),
         Input(
             tool="mcp__plugin_cc-context_cc-context__ccx_web_search",
             tool_input={"url": "https://go.dev", "query": "generics"},
@@ -277,6 +282,9 @@ approve(
         Input(command="ccx code replace 'a' 'b' --apply=false"): Ask(),  # any --apply spelling prompts, fail-closed
         Input(command="ccx code read f.go --reveal-secrets"): Ask(),  # masking escape hatch is not self-serve
         Input(command="ccx code read f.go --reveal-secrets=false"): Ask(),  # any --reveal-secrets spelling prompts, fail-closed
+        Input(command="ccx code grep KEY --reveal-secrets"): Ask(),  # the carve-out covers every masking op
+        Input(command="ccx vcs show --reveal-secrets"): Ask(),
+        Input(command="ccx vcs history f.go --reveal-secrets"): Ask(),
         Input(command="ccx --budget 5 code read f.go"): Ask(),  # global flag before family
         Input(command="ccx code"): Ask(),  # missing op
         Input(tool="mcp__srv__Bash", tool_input={"command": "ccx code grep foo"}): Ask(),  # MCP Bash veto

@@ -108,6 +108,12 @@ func TestOpsArgMapping(t *testing.T) {
 			backend.Args{Query: "x", After: 2, Before: 1, Context: 3},
 		},
 		{
+			"grep reveal_secrets flag", "grep",
+			Call{Kwargs: map[string]any{"text": "x", "reveal_secrets": true}},
+			backend.OpGrep,
+			backend.Args{Query: "x", RevealSecrets: true},
+		},
+		{
 			"symbol", "symbol",
 			Call{Kwargs: kw("name", "Cap", "scope", "internal/render")},
 			backend.OpSymbol,
@@ -118,6 +124,12 @@ func TestOpsArgMapping(t *testing.T) {
 			Call{Kwargs: map[string]any{"name": "Foo", "body": true, "callers": true, "full": true}},
 			backend.OpSymbol,
 			backend.Args{Query: "Foo", Body: true, Callers: true, Full: true},
+		},
+		{
+			"symbol reveal_secrets flag", "symbol",
+			Call{Kwargs: map[string]any{"name": "Foo", "reveal_secrets": true}},
+			backend.OpSymbol,
+			backend.Args{Query: "Foo", RevealSecrets: true},
 		},
 		{
 			"find", "find",
@@ -136,6 +148,12 @@ func TestOpsArgMapping(t *testing.T) {
 			Call{Kwargs: kw("source", "staged")},
 			backend.OpDiff,
 			backend.Args{Source: "staged"},
+		},
+		{
+			"diff reveal_secrets flag", "diff",
+			Call{Kwargs: map[string]any{"reveal_secrets": true}},
+			backend.OpDiff,
+			backend.Args{Source: "uncommitted", RevealSecrets: true},
 		},
 		{
 			"search literal routes to grep", "search",
@@ -325,6 +343,14 @@ func TestOutlineSectionExecParity(t *testing.T) {
 	}
 	if fake.op != backend.OpStructOutline || fake.args.Section != "1-1" {
 		t.Errorf("recorded op=%q section=%q, want struct-outline 1-1", fake.op, fake.args.Section)
+	}
+
+	reveal := &fakeCaller{out: "ok"}
+	if _, err := Ops(reveal)["outline"](context.Background(), Call{Kwargs: map[string]any{"path": goFile, "reveal_secrets": true}}); err != nil {
+		t.Fatalf("outline reveal_secrets call error: %v", err)
+	}
+	if !reveal.args.RevealSecrets {
+		t.Error("outline reveal_secrets flag not threaded into args")
 	}
 
 	reject := &fakeCaller{out: "ok"}

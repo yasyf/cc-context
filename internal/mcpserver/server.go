@@ -73,14 +73,15 @@ type RelatedIn struct {
 
 // OutlineIn is the input for ccx_code_outline.
 type OutlineIn struct {
-	Path    string `json:"path" jsonschema:"file or directory to outline"`
-	Section string `json:"section,omitempty" jsonschema:"window a single-file (ast-grep) outline to a line range (\"40-95\" or \"40,95\")"`
-	Deep    bool   `json:"deep,omitempty" jsonschema:"ast-grep: include members (struct fields, class methods); default is top-level only"`
-	Full    bool   `json:"full,omitempty" jsonschema:"alias for deep: include members"`
-	Items   string `json:"items,omitempty" jsonschema:"ast-grep: items to include (imports|exports|structure|all)"`
-	Match   string `json:"match,omitempty" jsonschema:"ast-grep: keep items whose name/signature matches this regex"`
-	Lang    string `json:"lang,omitempty" jsonschema:"ast-grep: language; inferred from extension"`
-	Budget  int    `json:"budget,omitempty" jsonschema:"token budget for the outline"`
+	Path          string `json:"path" jsonschema:"file or directory to outline"`
+	Section       string `json:"section,omitempty" jsonschema:"window a single-file (ast-grep) outline to a line range (\"40-95\" or \"40,95\")"`
+	Deep          bool   `json:"deep,omitempty" jsonschema:"ast-grep: include members (struct fields, class methods); default is top-level only"`
+	Full          bool   `json:"full,omitempty" jsonschema:"alias for deep: include members"`
+	Items         string `json:"items,omitempty" jsonschema:"ast-grep: items to include (imports|exports|structure|all)"`
+	Match         string `json:"match,omitempty" jsonschema:"ast-grep: keep items whose name/signature matches this regex"`
+	Lang          string `json:"lang,omitempty" jsonschema:"ast-grep: language; inferred from extension"`
+	RevealSecrets bool   `json:"reveal_secrets,omitempty" jsonschema:"print detected secrets raw instead of masked"`
+	Budget        int    `json:"budget,omitempty" jsonschema:"token budget for the outline"`
 }
 
 // ReadIn is the input for ccx_code_read.
@@ -104,19 +105,20 @@ func readArgs(in ReadIn) backend.Args {
 
 // SymbolIn is the input for ccx_code_symbol.
 type SymbolIn struct {
-	Name     string `json:"name" jsonschema:"symbol to grok"`
-	Scope    string `json:"scope,omitempty" jsonschema:"directory (directories only) to scope the lookup to"`
-	Body     bool   `json:"body,omitempty" jsonschema:"include the definition body"`
-	Callers  bool   `json:"callers,omitempty" jsonschema:"include the callers list"`
-	Callees  bool   `json:"callees,omitempty" jsonschema:"include the callees list"`
-	Siblings bool   `json:"siblings,omitempty" jsonschema:"include the siblings list"`
-	Tests    bool   `json:"tests,omitempty" jsonschema:"include the tests list"`
-	Full     bool   `json:"full,omitempty" jsonschema:"the full rich output: body plus every list"`
-	Budget   int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
+	Name          string `json:"name" jsonschema:"symbol to grok"`
+	Scope         string `json:"scope,omitempty" jsonschema:"directory (directories only) to scope the lookup to"`
+	Body          bool   `json:"body,omitempty" jsonschema:"include the definition body"`
+	Callers       bool   `json:"callers,omitempty" jsonschema:"include the callers list"`
+	Callees       bool   `json:"callees,omitempty" jsonschema:"include the callees list"`
+	Siblings      bool   `json:"siblings,omitempty" jsonschema:"include the siblings list"`
+	Tests         bool   `json:"tests,omitempty" jsonschema:"include the tests list"`
+	Full          bool   `json:"full,omitempty" jsonschema:"the full rich output: body plus every list"`
+	RevealSecrets bool   `json:"reveal_secrets,omitempty" jsonschema:"print detected secrets raw instead of masked"`
+	Budget        int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
 }
 
 func symbolArgs(in SymbolIn) backend.Args {
-	a := backend.Args{Query: in.Name, Scope: in.Scope, Body: in.Body, Callers: in.Callers, Callees: in.Callees, Siblings: in.Siblings, Tests: in.Tests, Full: in.Full, Budget: in.Budget}
+	a := backend.Args{Query: in.Name, Scope: in.Scope, Body: in.Body, Callers: in.Callers, Callees: in.Callees, Siblings: in.Siblings, Tests: in.Tests, Full: in.Full, RevealSecrets: in.RevealSecrets, Budget: in.Budget}
 	if a.Budget == 0 {
 		a.Budget = symbol.DefaultBudget
 	}
@@ -150,6 +152,7 @@ type GrepIn struct {
 	Regex            bool     `json:"regex,omitempty" jsonschema:"force regex (auto-detected on zero literal matches); runs the rg/grep engine"`
 	FilesWithMatches bool     `json:"filesWithMatches,omitempty" jsonschema:"list only the paths of files with matches"`
 	Paths            []string `json:"paths,omitempty" jsonschema:"search these files, resolving a unique extension sibling; runs the rg/grep engine"`
+	RevealSecrets    bool     `json:"reveal_secrets,omitempty" jsonschema:"print detected secrets raw instead of masked"`
 	Budget           int      `json:"budget,omitempty" jsonschema:"token budget for the output"`
 	Expand           int      `json:"expand,omitempty" jsonschema:"context lines around each hit"`
 	After            int      `json:"after,omitempty" jsonschema:"context lines after each match (-A)"`
@@ -176,9 +179,10 @@ func findArgs(in FindIn) backend.Args {
 
 // DiffIn is the input for ccx_vcs_diff.
 type DiffIn struct {
-	Source string `json:"source,omitempty" jsonschema:"diff source: uncommitted|staged|<ref> (default uncommitted)"`
-	Scope  string `json:"scope,omitempty" jsonschema:"path to scope the diff to"`
-	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
+	Source        string `json:"source,omitempty" jsonschema:"diff source: uncommitted|staged|<ref> (default uncommitted)"`
+	Scope         string `json:"scope,omitempty" jsonschema:"path to scope the diff to"`
+	RevealSecrets bool   `json:"reveal_secrets,omitempty" jsonschema:"print detected secrets raw instead of masked"`
+	Budget        int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
 }
 
 // OverviewIn is the input for ccx_repo_overview.
@@ -324,7 +328,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 		Description: "Grep literal or regex text across code — globbed, scoped, or over explicit files; budget-bounded.",
 		Meta:        alwaysLoad,
 	}, handler(p, backend.OpGrep, func(in GrepIn) backend.Args {
-		a := backend.Args{Query: in.Text, Glob: in.Glob, Scope: in.Scope, IgnoreCase: in.IgnoreCase, Word: in.Word, Regex: in.Regex, FilesWithMatches: in.FilesWithMatches, Paths: in.Paths, Budget: in.Budget, Expand: in.Expand, After: in.After, Before: in.Before, Context: in.Context}
+		a := backend.Args{Query: in.Text, Glob: in.Glob, Scope: in.Scope, IgnoreCase: in.IgnoreCase, Word: in.Word, Regex: in.Regex, FilesWithMatches: in.FilesWithMatches, Paths: in.Paths, RevealSecrets: in.RevealSecrets, Budget: in.Budget, Expand: in.Expand, After: in.After, Before: in.Before, Context: in.Context}
 		if a.Budget == 0 {
 			a.Budget = ripgrep.DefaultBudget
 		}
@@ -344,7 +348,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 		if source == "" {
 			source = "uncommitted"
 		}
-		return backend.Args{Source: source, Scope: in.Scope, Budget: in.Budget}
+		return backend.Args{Source: source, Scope: in.Scope, RevealSecrets: in.RevealSecrets, Budget: in.Budget}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -470,7 +474,7 @@ func editHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, Edi
 // directories and the languages it outlines, the native fallback otherwise.
 func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, OutlineIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in OutlineIn) (*mcp.CallToolResult, any, error) {
-		a := backend.Args{Path: in.Path, Section: in.Section, Deep: in.Deep, Full: in.Full, Items: in.Items, Match: in.Match, Lang: in.Lang, Budget: in.Budget}
+		a := backend.Args{Path: in.Path, Section: in.Section, Deep: in.Deep, Full: in.Full, Items: in.Items, Match: in.Match, Lang: in.Lang, RevealSecrets: in.RevealSecrets, Budget: in.Budget}
 		op, note, err := outline.Route(&a)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)

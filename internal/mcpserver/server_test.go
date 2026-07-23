@@ -178,6 +178,40 @@ func TestGrepToolSchemaHasEngineFields(t *testing.T) {
 	}
 }
 
+// TestMaskingToolSchemasAdvertiseRevealSecrets proves every masking surface the
+// MCP mirrors — read, grep, symbol, outline, diff — exposes the reveal_secrets
+// escape hatch its footer advertises.
+func TestMaskingToolSchemasAdvertiseRevealSecrets(t *testing.T) {
+	cs := connectTestServer(t)
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	want := map[string]bool{
+		"ccx_code_read":    true,
+		"ccx_code_grep":    true,
+		"ccx_code_symbol":  true,
+		"ccx_code_outline": true,
+		"ccx_vcs_diff":     true,
+	}
+	for _, tool := range res.Tools {
+		if !want[tool.Name] {
+			continue
+		}
+		raw, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("marshal %s input schema: %v", tool.Name, err)
+		}
+		if !strings.Contains(string(raw), `"reveal_secrets"`) {
+			t.Errorf("%s schema missing reveal_secrets:\n%s", tool.Name, raw)
+		}
+		delete(want, tool.Name)
+	}
+	for name := range want {
+		t.Errorf("tool %q not registered", name)
+	}
+}
+
 func TestScopeSchemaDescriptions(t *testing.T) {
 	cs := connectTestServer(t)
 	res, err := cs.ListTools(context.Background(), nil)
