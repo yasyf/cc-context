@@ -30,6 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bookmark and a concurrent local session's operations are never rolled back with
   it. Exhausted retries fail with the exact manual recovery steps instead of raw
   stderr.
+- **`ccx vcs ship --skip-hunk` refuses on snapshot drift instead of sweeping in a
+  foreign hunk.** Skip mode ("commit everything except the named hunks") fail-opened:
+  a hunk written to a selected file between `ccx vcs hunks` and the commit was
+  silently committed anyway. Ship now fingerprints each hunk-scoped file by its
+  listed hunk digests and, at commit time on both backends — the jj diff-tool lane
+  carries the set through the selection plan, the git temp-index lane reads it in
+  process — refuses a skip-mode commit that carries a hunk absent from that set,
+  naming the foreign hunk(s). Only mode is unaffected: its foreign hunks stay
+  uncommitted by construction, which is the commit-around-a-concurrent-session
+  workflow.
 
 ### Changed
 - **The git lane of `ccx vcs ship` gains the fetch-first flow the jj lane already

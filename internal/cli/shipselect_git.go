@@ -72,6 +72,9 @@ func gitStageSelected(ctx context.Context, path string, sel *shipSelection, env 
 	if err != nil {
 		return fmt.Errorf("ship: %w", err)
 	}
+	if err := refuseForeignHunks(path, sel.mode, hunks, sel.preflight[path]); err != nil {
+		return fmt.Errorf("ship: %w", err)
+	}
 	selected := hunk.Select(base, hunks, keep)
 	mode, err := gitFileMode(ctx, sel.root, path)
 	if err != nil {

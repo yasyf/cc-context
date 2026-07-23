@@ -19,6 +19,10 @@ import (
 const (
 	hunkBase    = "a\nb\nc\nd\ne\n"
 	hunkCurrent = "A\nb\nc\nd\nE\n"
+	// dupHunkBase/dupHunkCurrent yield two identical deletion hunks (same digest),
+	// so a snapshot can carry a digest more times than pre-flight logged it.
+	dupHunkBase    = "gone\na\ngone\n"
+	dupHunkCurrent = "a\n"
 )
 
 // hunkRefFor renders the post-image ref (path:A-B#digest) for the i-th hunk
@@ -576,7 +580,7 @@ func TestApplySelectionRewritesRight(t *testing.T) {
 			hunks := hunk.Compute([]byte(tt.base), []byte(tt.current))
 			plan := selectionPlan{
 				Files: map[string]planFile{
-					"f.txt": {Mode: tt.mode, Hunks: []planHunk{{Range: hunkRange(hunks[tt.hunkIdx]), Digest: hunks[tt.hunkIdx].Digest.String()}}},
+					"f.txt": {Mode: tt.mode, Hunks: []planHunk{{Range: hunkRange(hunks[tt.hunkIdx]), Digest: hunks[tt.hunkIdx].Digest.String()}}, KnownDigests: hunkDigestCounts(hunks)},
 				},
 				Result: filepath.Join(t.TempDir(), "sidecar"),
 			}
@@ -615,6 +619,10 @@ func TestApplySelectionRewritesRight(t *testing.T) {
 
 func TestApplySelectionFailureWritesSidecar(t *testing.T) {
 	driftHash := hunk.Compute([]byte("x\n"), []byte("Y\n"))[0].Digest
+	changeHunks := hunk.Compute([]byte(hunkBase), []byte(hunkCurrent))
+	foreignRef := hunkListRef("f.txt", changeHunks[1])
+	dupHunks := hunk.Compute([]byte(dupHunkBase), []byte(dupHunkCurrent))
+	dupForeignRef := hunkListRef("f.txt", dupHunks[1])
 
 	tests := []struct {
 		name       string
@@ -622,6 +630,7 @@ func TestApplySelectionFailureWritesSidecar(t *testing.T) {
 		current    string
 		mode       string
 		planHunks  []planHunk
+		known      map[string]int
 		wantReason string
 	}{
 		{
@@ -639,6 +648,29 @@ func TestApplySelectionFailureWritesSidecar(t *testing.T) {
 			mode:       "skip",
 			planHunks:  nil, // filled from the single computed hunk below
 			wantReason: "all changes excluded in f.txt; drop the file from the ship instead",
+		},
+		{
+			// Skip hunk 0; hunk 1's digest is absent from the pre-flight set, so it
+			// is a foreign change skip mode must refuse rather than sweep in.
+			name:       "foreign hunk swept by skip",
+			base:       hunkBase,
+			current:    hunkCurrent,
+			mode:       "skip",
+			planHunks:  []planHunk{{Range: hunkRange(changeHunks[0]), Digest: changeHunks[0].Digest.String()}},
+			known:      map[string]int{changeHunks[0].Digest.String(): 1},
+			wantReason: "foreign hunk(s) appeared in f.txt since listing: " + foreignRef,
+		},
+		{
+			// The snapshot carries the same deletion twice while pre-flight logged its
+			// digest once: skip mode names hunk 0, and the identical second hunk is a
+			// foreign duplicate that a digest set would mask but digest counts catch.
+			name:       "duplicate foreign hunk swept by skip",
+			base:       dupHunkBase,
+			current:    dupHunkCurrent,
+			mode:       "skip",
+			planHunks:  []planHunk{{Range: hunkRange(dupHunks[0]), Digest: dupHunks[0].Digest.String()}},
+			known:      map[string]int{dupHunks[0].Digest.String(): 1},
+			wantReason: "foreign hunk(s) appeared in f.txt since listing: " + dupForeignRef,
 		},
 	}
 	for _, tt := range tests {
@@ -658,7 +690,7 @@ func TestApplySelectionFailureWritesSidecar(t *testing.T) {
 			}
 			sidecar := filepath.Join(t.TempDir(), "sidecar")
 			plan := selectionPlan{
-				Files:  map[string]planFile{"f.txt": {Mode: tt.mode, Hunks: hunks}},
+				Files:  map[string]planFile{"f.txt": {Mode: tt.mode, Hunks: hunks, KnownDigests: tt.known}},
 				Result: sidecar,
 			}
 			err := runApplySelection(writeTempPlan(t, plan), leftDir, rightDir)
@@ -790,5 +822,141 @@ func TestApplySelectionRefRoundTrip(t *testing.T) {
 		if idx != i {
 			t.Errorf("ref for hunk %d matched hunk %d", i, idx)
 		}
+	}
+}
+
+// TestRefuseForeignHunks checks the shared skip-mode guard both commit lanes call:
+// a snapshot hunk absent at listing time is named and refused in skip mode, a
+// digest carried more times than pre-flight logged it is caught by count (not
+// masked by the original), every hunk is named when the whole set is foreign, and
+// only mode is never guarded (its foreign hunks stay uncommitted by construction).
+func TestRefuseForeignHunks(t *testing.T) {
+	changeHunks := hunk.Compute([]byte(hunkBase), []byte(hunkCurrent))
+	if len(changeHunks) != 2 {
+		t.Fatalf("fixture must yield 2 hunks, got %d", len(changeHunks))
+	}
+	dupHunks := hunk.Compute([]byte(dupHunkBase), []byte(dupHunkCurrent))
+	if len(dupHunks) != 2 || dupHunks[0].Digest != dupHunks[1].Digest {
+		t.Fatalf("dup fixture must yield 2 same-digest hunks, got %d: %+v", len(dupHunks), dupHunks)
+	}
+	ref0 := hunkListRef("f.txt", changeHunks[0])
+	ref1 := hunkListRef("f.txt", changeHunks[1])
+	dupRef1 := hunkListRef("f.txt", dupHunks[1])
+	firstOnly := map[string]int{changeHunks[0].Digest.String(): 1}
+
+	tests := []struct {
+		name     string
+		mode     selectMode
+		hunks    []hunk.Hunk
+		known    map[string]int
+		wantErr  bool
+		wantRefs []string
+	}{
+		{"skip clean passes", selectSkip, changeHunks, hunkDigestCounts(changeHunks), false, nil},
+		{"skip foreign refuses names it", selectSkip, changeHunks, firstOnly, true, []string{ref1}},
+		{"skip all-foreign names every hunk", selectSkip, changeHunks, map[string]int{}, true, []string{ref0, ref1}},
+		{"only foreign never guarded", selectOnly, changeHunks, firstOnly, false, nil},
+		{"skip duplicate over count refuses the extra", selectSkip, dupHunks, map[string]int{dupHunks[0].Digest.String(): 1}, true, []string{dupRef1}},
+		{"skip duplicate within count passes", selectSkip, dupHunks, hunkDigestCounts(dupHunks), false, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := refuseForeignHunks("f.txt", tt.mode, tt.hunks, tt.known)
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("refuseForeignHunks() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected a foreign-hunk refusal, got nil")
+			}
+			for _, ref := range tt.wantRefs {
+				if !strings.Contains(err.Error(), ref) {
+					t.Errorf("error = %q, want it to name %q", err, ref)
+				}
+			}
+			if !strings.Contains(err.Error(), "re-run: ccx vcs hunks f.txt") {
+				t.Errorf("error = %q, want the re-list hint", err)
+			}
+		})
+	}
+}
+
+// TestGitStageSelectedForeignHunk drives the git lane's per-file staging directly
+// with a pre-flight fingerprint that omits a snapshot hunk: skip mode refuses and
+// names the foreign hunk (including a duplicate the snapshot carries more times
+// than pre-flight logged), only mode ignores it, and a complete fingerprint commits
+// cleanly.
+func TestGitStageSelectedForeignHunk(t *testing.T) {
+	tests := []struct {
+		name    string
+		base    string
+		current string
+		mode    selectMode
+		selIdx  int // the hunk index the selection names
+		// preflight builds the pre-flight digest counts from the snapshot's hunks.
+		preflight func(hunks []hunk.Hunk) map[string]int
+		// wantForeignIdx is the snapshot hunk the refusal must name, or -1 for a clean stage.
+		wantForeignIdx int
+	}{
+		{
+			name: "skip refuses a foreign hunk", base: hunkBase, current: hunkCurrent, mode: selectSkip, selIdx: 0,
+			preflight:      func(h []hunk.Hunk) map[string]int { return map[string]int{h[0].Digest.String(): 1} },
+			wantForeignIdx: 1,
+		},
+		{
+			name: "only ignores a foreign hunk", base: hunkBase, current: hunkCurrent, mode: selectOnly, selIdx: 0,
+			preflight:      func(h []hunk.Hunk) map[string]int { return map[string]int{h[0].Digest.String(): 1} },
+			wantForeignIdx: -1,
+		},
+		{
+			name: "skip clean passes", base: hunkBase, current: hunkCurrent, mode: selectSkip, selIdx: 0,
+			preflight:      func(h []hunk.Hunk) map[string]int { return hunkDigestCounts(h) },
+			wantForeignIdx: -1,
+		},
+		{
+			// A concurrent session duplicated the committed deletion: the snapshot carries
+			// digest D twice while pre-flight logged it once, so skip mode must refuse the
+			// second D rather than sweep it in — the multiplicity a digest set would miss.
+			name: "skip refuses a duplicate foreign hunk", base: dupHunkBase, current: dupHunkCurrent, mode: selectSkip, selIdx: 0,
+			preflight:      func(h []hunk.Hunk) map[string]int { return map[string]int{h[0].Digest.String(): 1} },
+			wantForeignIdx: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setupGitHunkShip(t, "f.txt", "")
+			if err := os.WriteFile("f.txt", []byte(tt.current), 0o644); err != nil { //nolint:gosec // test fixture
+				t.Fatalf("write f.txt: %v", err)
+			}
+			t.Setenv("GIT_FILE_SHOW_BASE", tt.base)
+			hunks := hunk.Compute([]byte(tt.base), []byte(tt.current))
+			root, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("getwd: %v", err)
+			}
+			sel := &shipSelection{
+				root:      root,
+				mode:      tt.mode,
+				files:     map[string][]anchor.Ref{"f.txt": {hunkRef(hunks[tt.selIdx])}},
+				preflight: map[string]map[string]int{"f.txt": tt.preflight(hunks)},
+			}
+			env := []string{"GIT_INDEX_FILE=" + filepath.Join(t.TempDir(), "idx")}
+			err = gitStageSelected(context.Background(), "f.txt", sel, env)
+			if tt.wantForeignIdx < 0 {
+				if err != nil {
+					t.Fatalf("gitStageSelected() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected a foreign-hunk refusal, got nil")
+			}
+			want := "foreign hunk(s) appeared in f.txt since listing: " + hunkListRef("f.txt", hunks[tt.wantForeignIdx])
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error = %q, want it to contain %q", err, want)
+			}
+		})
 	}
 }

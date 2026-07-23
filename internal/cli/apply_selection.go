@@ -22,11 +22,13 @@ type selectionPlan struct {
 	Result string              `json:"result"`
 }
 
-// planFile is one file's selection: skip or only, and the hunk refs by
-// post-image range and content digest.
+// planFile is one file's selection: skip or only, the hunk refs by post-image
+// range and content digest, and the pre-flight digest counts the out-of-process
+// apply checks a skip-mode snapshot against for foreign hunks.
 type planFile struct {
-	Mode  string     `json:"mode"`
-	Hunks []planHunk `json:"hunks"`
+	Mode         string         `json:"mode"`
+	Hunks        []planHunk     `json:"hunks"`
+	KnownDigests map[string]int `json:"known_digests"`
 }
 
 // planHunk pins a hunk by its post-image line range and content digest.
@@ -44,7 +46,7 @@ func buildSelectionPlan(sel *shipSelection, resultPath string) selectionPlan {
 		for i, ref := range refs {
 			hunks[i] = planHunk{Range: refRange(ref), Digest: ref.Hash.String()}
 		}
-		files[path] = planFile{Mode: sel.mode.String(), Hunks: hunks}
+		files[path] = planFile{Mode: sel.mode.String(), Hunks: hunks, KnownDigests: sel.preflight[path]}
 	}
 	return selectionPlan{Files: files, Result: resultPath}
 }
@@ -226,6 +228,9 @@ func applySelectionFile(leftDir, rightDir, path string, pf planFile) error {
 	}
 	hunks, keep, err := resolveFileKeep(path, base, current, refs, mode)
 	if err != nil {
+		return err
+	}
+	if err := refuseForeignHunks(path, mode, hunks, pf.KnownDigests); err != nil {
 		return err
 	}
 	selected := hunk.Select(base, hunks, keep)

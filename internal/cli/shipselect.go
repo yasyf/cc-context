@@ -40,6 +40,12 @@ type shipSelection struct {
 	root  string
 	mode  selectMode
 	files map[string][]anchor.Ref
+
+	// preflight fingerprints each hunk-scoped file by how many times each content
+	// digest was present at listing time, so a commit-time snapshot carrying a
+	// foreign hunk — a digest absent here, or one appearing more times than it did
+	// here — is refused in skip mode instead of silently swept in.
+	preflight map[string]map[string]int
 }
 
 // parseShipSelection validates the hunk flags and their refs, returning nil when
@@ -178,6 +184,7 @@ func cleanRel(path string) string {
 // identical resolution inside its diff tool against jj's own snapshot; this pass
 // is the pre-flight half of that double guard.
 func resolveShipSelection(ctx context.Context, kind vcs.Kind, sel *shipSelection) error {
+	sel.preflight = make(map[string]map[string]int, len(sel.files))
 	for path, refs := range sel.files {
 		base, err := showFileBase(ctx, kind, path)
 		if err != nil {
@@ -187,11 +194,53 @@ func resolveShipSelection(ctx context.Context, kind vcs.Kind, sel *shipSelection
 		if err != nil {
 			return fmt.Errorf("ship: read %s: %w", path, err)
 		}
-		if _, _, err := resolveFileKeep(path, base, current, refs, sel.mode); err != nil {
+		hunks, _, err := resolveFileKeep(path, base, current, refs, sel.mode)
+		if err != nil {
 			return fmt.Errorf("ship: %w", err)
 		}
+		sel.preflight[path] = hunkDigestCounts(hunks)
 	}
 	return nil
+}
+
+// hunkDigestCounts tallies how many times each content digest occurs across hunks —
+// the pre-flight fingerprint refuseForeignHunks checks a later snapshot against. It
+// counts rather than sets membership so an identical change appearing twice at
+// commit time but once at listing time is still caught as one foreign hunk.
+func hunkDigestCounts(hunks []hunk.Hunk) map[string]int {
+	counts := make(map[string]int, len(hunks))
+	for i := range hunks {
+		counts[hunks[i].Digest.String()]++
+	}
+	return counts
+}
+
+// refuseForeignHunks refuses a skip-mode commit when the snapshot carries a hunk
+// absent at listing time — a foreign change written to the file between
+// `ccx vcs hunks` and the commit that skip mode ("everything except the named
+// hunks") would otherwise sweep in silently. A digest is foreign once the snapshot
+// carries it more times than the pre-flight fingerprint did, so a duplicated
+// identical change is caught, not masked by the original's digest. Only mode is
+// never guarded: its foreign hunks stay uncommitted by construction, which is the
+// whole point of committing around a concurrent session's work. Both commit lanes
+// call this after resolveFileKeep recomputes the snapshot's hunks.
+func refuseForeignHunks(path string, mode selectMode, hunks []hunk.Hunk, known map[string]int) error {
+	if mode != selectSkip {
+		return nil
+	}
+	seen := make(map[string]int, len(hunks))
+	var foreign []string
+	for i := range hunks {
+		digest := hunks[i].Digest.String()
+		seen[digest]++
+		if seen[digest] > known[digest] {
+			foreign = append(foreign, hunkListRef(path, hunks[i]))
+		}
+	}
+	if len(foreign) == 0 {
+		return nil
+	}
+	return fmt.Errorf("foreign hunk(s) appeared in %s since listing: %s; --skip-hunk would sweep them in — re-run: ccx vcs hunks %s", path, strings.Join(foreign, ", "), path)
 }
 
 // showFileBase returns the root-relative path's committed base image — git's HEAD
