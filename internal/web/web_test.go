@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/backend"
-	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/semsearch/embed"
 )
 
 // fixtureMarkdown is a small heading tree with a preamble, an H1, two H2s, and
@@ -91,23 +91,7 @@ func TestMain(m *testing.M) {
 
 func withEmbedder(t *testing.T, e Embedder) {
 	t.Helper()
-	prev := embedder
-	embedder = e
-	t.Cleanup(func() { embedder = prev })
-}
-
-// setUV forces Supported() on or off by stubbing the uv lookup, independent of
-// whether uv is installed on the test host.
-func setUV(t *testing.T, present bool) {
-	t.Helper()
-	prev := lookpath.Find
-	lookpath.Find = func(string) string {
-		if present {
-			return "/usr/bin/uv"
-		}
-		return ""
-	}
-	t.Cleanup(func() { lookpath.Find = prev })
+	t.Cleanup(setEmbedderProvider(func(context.Context) (Embedder, error) { return e, nil }))
 }
 
 // markdownFetch stubs the cascade to return fixed markdown as a jina result and
@@ -727,7 +711,6 @@ func TestRunOutlineDegenerateHint(t *testing.T) {
 func TestRunSearchHybrid(t *testing.T) {
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
-	setUV(t, true)
 	fake := &fakeEmbedder{}
 	withEmbedder(t, fake)
 	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", nil))
@@ -765,7 +748,9 @@ func TestRunSearchHybrid(t *testing.T) {
 func TestRunSearchBM25OnlyWhenUnsupported(t *testing.T) {
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
-	setUV(t, false)
+	t.Cleanup(setEmbedderProvider(func(context.Context) (Embedder, error) {
+		return nil, embed.ErrWeightsUnavailable
+	}))
 	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", nil))
 
 	out, err := Run(context.Background(), backend.OpWebSearch, backend.Args{URL: fixtureURL, Query: "handle errors"})
@@ -783,7 +768,6 @@ func TestRunSearchBM25OnlyWhenUnsupported(t *testing.T) {
 func TestRunSearchDegradesOnEmbedError(t *testing.T) {
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
-	setUV(t, true)
 	withEmbedder(t, &fakeEmbedder{err: fmt.Errorf("driver blew up")})
 	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", nil))
 

@@ -24,11 +24,12 @@ import (
 // defaultTopK matches semble's search/find_related default (top_k=5).
 const defaultTopK = 5
 
-// ModelID is the cache identity for the embedding model: its repo plus the pinned
-// weights revision. A weights bump changes Revision while Repo holds, so folding
-// the revision in invalidates the on-disk cache — otherwise stale old-weights
-// vectors would be served against new-weights query embeddings, silently wrong.
-const ModelID = embed.Repo + "@" + embed.Revision
+// ModelID is the cache identity for the embedding model: the code pin's repo plus
+// its pinned weights revision. A weights bump changes Revision while Repo holds, so
+// folding the revision in invalidates the on-disk cache — otherwise stale
+// old-weights vectors would be served against new-weights query embeddings,
+// silently wrong.
+var ModelID = embed.CodePin.Repo + "@" + embed.CodePin.Revision
 
 // Fused-search golden parity (chunk→embed→rank against
 // testdata/goldens/search_results.json) lives in semsearch's

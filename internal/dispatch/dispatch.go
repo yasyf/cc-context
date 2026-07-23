@@ -157,7 +157,7 @@ func runSemantic(ctx context.Context, op backend.Op, a backend.Args) (string, er
 var (
 	embMu       sync.Mutex
 	embEngine   index.Embedder
-	newEmbedder = func(ctx context.Context) (index.Embedder, error) { return embed.New(ctx) }
+	newEmbedder = func(ctx context.Context) (index.Embedder, error) { return embed.New(ctx, embed.CodePin) }
 )
 
 // sharedEmbedder returns the process's resident embedder, constructing it on

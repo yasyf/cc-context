@@ -103,7 +103,7 @@ func TestFusedSearchGoldenParity(t *testing.T) {
 	t.Logf("chunk parity: %d chunks match in order", len(chunks))
 
 	ctx := context.Background()
-	engine, err := embed.New(ctx)
+	engine, err := embed.New(ctx, embed.CodePin)
 	if errors.Is(err, embed.ErrWeightsUnavailable) {
 		t.Skip("model weights unavailable (offline, empty cache) — skipping")
 	}

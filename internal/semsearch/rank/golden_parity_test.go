@@ -15,7 +15,7 @@ import (
 
 const (
 	goldenTestdataDir            = "../testdata"
-	goldenDocumentCount          = 36
+	goldenDocumentCount          = 45
 	goldenQueryCount             = 7
 	goldenScoreRelativeTolerance = 1e-5
 )

@@ -18,22 +18,19 @@ const (
 
 // Chunk splits one file's raw bytes into chunks, applying semble's per-file
 // policy: files over 1 MB, whitespace-only files under 128 bytes, data-language
-// files (JSON, CSV, …), and files whose extension semble does not map all yield
-// no chunks. content is the raw file bytes; it is decoded as UTF-8 with invalid
-// sequences replaced by U+FFFD, matching semble's read_file_text.
+// files (JSON, CSV, …) yield no chunks; files with unmapped extensions fall
+// back to line chunking. content is the raw file bytes; it is decoded as UTF-8
+// with invalid sequences replaced by U+FFFD, matching semble's read_file_text.
 func Chunk(path string, content []byte) []semsearch.Chunk {
 	lang, ok := DetectLanguage(path)
-	if !ok {
-		return nil
-	}
-	if Classify(lang) == ContentData {
+	if ok && Classify(lang) == ContentData {
 		return nil
 	}
 	if len(content) > maxFileBytes {
 		return nil
 	}
 
-	source := decodeReplace(content)
+	source := DecodeReplace(content)
 	if len(content) < emptyFileBytes && pythonStrip(source) == "" {
 		return nil
 	}

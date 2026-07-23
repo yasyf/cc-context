@@ -69,12 +69,12 @@ type Engine struct {
 	dims int
 }
 
-// New resolves the pinned weights (downloading once into the cache), compiles
-// the WASM module behind wazero's compiler backend, instantiates it resident,
-// and loads the weights into its linear memory. It returns ErrWeightsUnavailable
+// New resolves the pin's weights (downloading once into the cache), compiles the
+// WASM module behind wazero's compiler backend, instantiates it resident, and
+// loads the weights into its linear memory. It returns ErrWeightsUnavailable
 // when the weights are neither cached nor downloadable.
-func New(ctx context.Context) (*Engine, error) {
-	blobs, err := resolveWeights(ctx)
+func New(ctx context.Context, pin ModelPin) (*Engine, error) {
+	blobs, err := resolveWeights(ctx, pin)
 	if err != nil {
 		return nil, err
 	}
@@ -157,11 +157,18 @@ func (e *Engine) Close(ctx context.Context) error {
 // in-vocabulary tokens embeds to the zero vector. Calls serialize on the shared
 // instance.
 func (e *Engine) Encode(ctx context.Context, texts []string) ([][]float32, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if len(texts) == 0 {
 		return [][]float32{}, nil
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// An in-flight WASM encode runs to completion; local calls stay under 15 ms.
 	return e.encodeBatch(ctx, texts)
 }
 

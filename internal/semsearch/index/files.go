@@ -10,6 +10,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/yasyf/cc-context/internal/semsearch/chunk"
 )
 
 // File-eligibility gates, ported verbatim from semble/index/files.py.
@@ -170,7 +172,7 @@ func readFileText(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read %q: %w", path, err)
 	}
-	return strings.ToValidUTF8(string(data), "�"), nil
+	return chunk.DecodeReplace(data), nil
 }
 
 // extOf returns the final extension of a slash- or OS-separated path, including

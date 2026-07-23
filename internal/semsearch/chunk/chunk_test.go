@@ -1,9 +1,12 @@
 package chunk
 
 import (
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/semsearch"
 )
 
 // fakeParser returns a fixed tree, or ok=false to force the line fallback.
@@ -51,7 +54,7 @@ func TestChunkSourceLineFallback(t *testing.T) {
 
 // TestChunkOversizedSkipsDecode pins C5: the 1 MB gate is checked before the
 // whole content is decoded, so an oversized input is rejected without the large
-// intermediate allocation decodeReplace would make.
+// intermediate allocation DecodeReplace would make.
 func TestChunkOversizedSkipsDecode(t *testing.T) {
 	content := []byte(strings.Repeat("x = 1\n", 200_000)) // ~1.2 MB of valid Python
 	if got := Chunk("big.py", content); got != nil {
@@ -87,7 +90,7 @@ func TestChunkGates(t *testing.T) {
 		{"whitespace over 128 yields nothing", "w.py", strings.Repeat(" ", 200), true},
 		{"data language excluded", "d.json", "{\"a\": 1, \"b\": [1, 2, 3], \"c\": true}\n", true},
 		{"csv excluded", "d.csv", "a,b,c\n1,2,3\n4,5,6\n", true},
-		{"unmapped extension excluded", "notes.unknownext", "some real content here\n", true},
+		{"unmapped extension indexed", "notes.unknownext", "some real content here\n", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -97,6 +100,38 @@ func TestChunkGates(t *testing.T) {
 			}
 			if !tt.wantEmpty && len(got) == 0 {
 				t.Error("Chunk() = 0 chunks, want at least 1")
+			}
+		})
+	}
+}
+
+func TestChunkLanguageDetectionFallback(t *testing.T) {
+	first := strings.Repeat("a", 400) + "\n"
+	second := strings.Repeat("b", 400) + "\n"
+	content := first + second + "tail\n"
+	tests := []struct {
+		name string
+		path string
+		want []semsearch.Chunk
+	}{
+		{
+			name: "unknown extension line chunks",
+			path: "special.kjs",
+			want: []semsearch.Chunk{
+				{Path: "special.kjs", StartLine: 1, EndLine: 1, Content: first},
+				{Path: "special.kjs", StartLine: 2, EndLine: 3, Content: second + "tail\n"},
+			},
+		},
+		{
+			name: "known data language skips",
+			path: "special.json",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Chunk(tt.path, []byte(content))
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("Chunk() = %#v, want %#v", got, tt.want)
 			}
 		})
 	}

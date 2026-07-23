@@ -47,7 +47,7 @@ func loadGolden(t *testing.T) golden {
 // downloadable (offline CI). Any other failure is fatal.
 func mustEngine(tb testing.TB) *embed.Engine {
 	tb.Helper()
-	eng, err := embed.New(context.Background())
+	eng, err := embed.New(context.Background(), embed.CodePin)
 	if errors.Is(err, embed.ErrWeightsUnavailable) {
 		tb.Skip("model weights unavailable (offline, empty cache) — skipping")
 	}

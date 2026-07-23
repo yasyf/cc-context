@@ -17,6 +17,7 @@ import (
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/lookpath"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/semsearch/embed"
 )
 
 // defaultK is the number of search hits returned when a.K is unset (<= 0).
@@ -25,12 +26,6 @@ const defaultK = 5
 // charsPerToken mirrors render.Cap's byte-to-token ratio; --offset is measured in
 // those tokens, so an offset maps back to a byte position the way a --budget cap does.
 const charsPerToken = 4
-
-// embedder produces chunk and query embeddings for search. It is a package var
-// defaulting to the real uv-subprocess embedder so tests can inject a fake
-// without a network or subprocess; it is the least-exported seam that lets Run
-// stay a single entry point. It is only read on the search path.
-var embedder Embedder = UVEmbedder{}
 
 // fetchPage is the fetch entry point, a package var so tests can drive Run
 // through a stubbed cascade without live network. It defaults to Fetch.
@@ -347,41 +342,37 @@ func runSearch(ctx context.Context, page *Page, a backend.Args) (string, error) 
 		chunkVecs [][]float32
 		queryVec  []float32
 		note      string
-		g         *errgroup.Group
 	)
-	if Supported() {
-		var gctx context.Context
-		g, gctx = errgroup.WithContext(ctx)
-		existing := page.Vectors
-		g.Go(func() error {
-			vecs, qv, err := embedForSearch(gctx, existing, texts, a.Query)
-			if err != nil {
-				return err
-			}
-			chunkVecs, queryVec = vecs, qv
-			return nil
-		})
-	} else {
-		note = UnsupportedReason
-	}
+	g, gctx := errgroup.WithContext(ctx)
+	existing := page.Vectors
+	g.Go(func() error {
+		vecs, qv, err := embedForSearch(gctx, existing, texts, a.Query)
+		if err != nil {
+			return err
+		}
+		chunkVecs, queryVec = vecs, qv
+		return nil
+	})
 
 	lexOrder := newBM25(texts).rank(a.Query)
 
 	var dense []int
-	if g != nil {
-		if err := g.Wait(); err != nil {
+	if err := g.Wait(); err != nil {
+		if errors.Is(err, embed.ErrWeightsUnavailable) {
+			note = UnsupportedReason
+		} else {
 			slog.Warn("web search degraded to BM25-only", "url", page.URL, "err", err)
 			note = fmt.Sprintf("hybrid search unavailable (%v); ranked by BM25 alone", err)
-		} else {
-			if page.Vectors == nil {
-				page.Vectors = chunkVecs
-				page.EmbedModel = EmbedModelID
-				if err := Save(page); err != nil {
-					slog.Warn("persist embedded chunk vectors", "url", page.URL, "err", err)
-				}
-			}
-			dense = denseOrder(page.Vectors, queryVec)
 		}
+	} else {
+		if page.Vectors == nil {
+			page.Vectors = chunkVecs
+			page.EmbedModel = EmbedModelID
+			if err := Save(page); err != nil {
+				slog.Warn("persist embedded chunk vectors", "url", page.URL, "err", err)
+			}
+		}
+		dense = denseOrder(page.Vectors, queryVec)
 	}
 
 	fused := fuse(dense, lexOrder, k)
@@ -389,12 +380,18 @@ func runSearch(ctx context.Context, page *Page, a backend.Args) (string, error) 
 	return renderSearch(page, a.Query, fused, scores, note), nil
 }
 
-// embedForSearch returns the page's chunk vectors and the query vector. When
-// existing is nil (a first search) it embeds every chunk text and the query in
-// one subprocess call; when the vectors already persist it embeds only the query.
+// embedForSearch returns the page's chunk vectors and the query vector via the
+// resident engine. When existing is nil (a first search) it embeds every chunk
+// text and the query in one call; when the vectors already persist it embeds only
+// the query. A construction failure (ErrWeightsUnavailable) propagates so the
+// caller degrades to BM25-only.
 func embedForSearch(ctx context.Context, existing [][]float32, texts []string, query string) (chunkVecs [][]float32, queryVec []float32, err error) {
+	emb, err := sharedEmbedder(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 	if existing != nil {
-		qv, err := embedder.Embed(ctx, []string{query})
+		qv, err := emb.Embed(ctx, []string{query})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -403,7 +400,7 @@ func embedForSearch(ctx context.Context, existing [][]float32, texts []string, q
 	batch := make([]string, 0, len(texts)+1)
 	batch = append(batch, texts...)
 	batch = append(batch, query)
-	vecs, err := embedder.Embed(ctx, batch)
+	vecs, err := emb.Embed(ctx, batch)
 	if err != nil {
 		return nil, nil, err
 	}

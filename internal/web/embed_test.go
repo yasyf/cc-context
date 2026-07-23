@@ -1,169 +1,140 @@
 package web
 
 import (
-	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"math"
 	"os"
-	"path/filepath"
-	"reflect"
 	"slices"
-	"strings"
 	"testing"
-	"time"
 
-	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/semsearch/embed"
 )
 
-var _ Embedder = UVEmbedder{}
+var _ Embedder = engineEmbedder{}
 
-// requireUV skips a test that spawns the real embedding driver when uv is
-// absent.
-func requireUV(t *testing.T) {
+// cosineParityEpsilon gates agreement between the resident WASM engine and Python
+// model2vec for potion-base-8M, measured as cosine distance (1 − cosine
+// similarity). Observed distance across the sample is ≤ 3e-8, so this 1e-5 bound
+// clears by three orders of magnitude.
+const cosineParityEpsilon = 1e-5
+
+// componentParityEpsilon is a secondary per-component sanity bound. Float16
+// weights and different mean-pool summation orders drift each component by up to
+// ~7e-5, so cosine is the real gate and this only catches gross divergence.
+const componentParityEpsilon = 2e-4
+
+// goldenBase8MPath is the oracle-generated parity fixture, owned by the embed
+// package (potion-base-8M is its model too).
+const goldenBase8MPath = "../semsearch/embed/testdata/golden_base8m.json"
+
+type goldenVectors struct {
+	Dims    int         `json:"dims"`
+	Texts   []string    `json:"texts"`
+	Vectors [][]float32 `json:"vectors"`
+}
+
+func loadGoldenBase8M(t *testing.T) goldenVectors {
 	t.Helper()
-	if !Supported() {
-		t.Skip(UnsupportedReason)
-	}
-}
-
-func TestParseEmbedVectors(t *testing.T) {
-	tests := []struct {
-		name    string
-		data    string
-		texts   int
-		want    [][]float32
-		wantErr string
-	}{
-		{"valid", `{"dims":2,"vectors":[[1,0],[0.5,0.5]]}`, 2, [][]float32{{1, 0}, {0.5, 0.5}}, ""},
-		{"count mismatch", `{"dims":2,"vectors":[[1,0]]}`, 2, nil, "returned 1 vectors for 2 texts"},
-		{"dims mismatch", `{"dims":3,"vectors":[[1,0],[0,1]]}`, 2, nil, "vector 0 has 2 dims, want 3"},
-		{"ragged", `{"dims":2,"vectors":[[1,0],[1]]}`, 2, nil, "vector 1 has 1 dims, want 2"},
-		{"garbage", `not json`, 1, nil, "decode embedding response"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseEmbedVectors([]byte(tt.data), tt.texts)
-			if tt.wantErr != "" {
-				if err == nil {
-					t.Fatalf("parseEmbedVectors = nil error, want %q", tt.wantErr)
-				}
-				if !strings.Contains(err.Error(), tt.wantErr) {
-					t.Errorf("error %q missing %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("parseEmbedVectors error: %v", err)
-			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("parseEmbedVectors = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestWarmMarker(t *testing.T) {
-	dir := t.TempDir()
-	path, warm := warmMarker(dir)
-	if warm {
-		t.Fatal("warm = true with no marker")
-	}
-	if path != filepath.Join(dir, ".embed-warm") {
-		t.Fatalf("marker path = %q, want it under %q", path, dir)
-	}
-	if err := os.WriteFile(path, []byte("minishlab/potion-base-8M@stalepin"), 0o600); err != nil {
-		t.Fatalf("write stale marker: %v", err)
-	}
-	if _, warm := warmMarker(dir); warm {
-		t.Error("warm = true with a stale model pin")
-	}
-	if err := os.WriteFile(path, []byte(EmbedModelID), 0o600); err != nil {
-		t.Fatalf("write marker: %v", err)
-	}
-	if _, warm := warmMarker(dir); !warm {
-		t.Error("warm = false with the current model pin")
-	}
-}
-
-// TestEmbedDriverPathVerifiesContent proves a tampered cached driver is
-// rewritten on the next resolve instead of being trusted by filename.
-func TestEmbedDriverPathVerifiesContent(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	path, err := embedDriverPath()
+	data, err := os.ReadFile(goldenBase8MPath)
 	if err != nil {
-		t.Fatalf("embedDriverPath error: %v", err)
+		t.Fatalf("read golden: %v", err)
 	}
-	if err := os.WriteFile(path, []byte("print('tampered')\n"), 0o600); err != nil {
-		t.Fatalf("tamper: %v", err)
+	var g goldenVectors
+	if err := json.Unmarshal(data, &g); err != nil {
+		t.Fatalf("decode golden: %v", err)
 	}
-	again, err := embedDriverPath()
-	if err != nil {
-		t.Fatalf("embedDriverPath after tamper error: %v", err)
-	}
-	if again != path {
-		t.Fatalf("embedDriverPath = %q, want %q", again, path)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read restored driver: %v", err)
-	}
-	if !bytes.Equal(got, embedDriverSource) {
-		t.Error("cached driver not restored to the embedded source after tampering")
-	}
+	return g
 }
 
-// hfRefusedDownload reports whether err is HF Hub refusing an unauthenticated
-// model download (401/429/CAS) — external infra the integration test skips on.
-func hfRefusedDownload(err error) bool {
-	msg := err.Error()
-	for _, sig := range []string{"401 Unauthorized", "429", "unauthenticated requests", "CAS Client Error"} {
-		if strings.Contains(msg, sig) {
-			return true
+// TestWebEmbedParity proves the resident engine behind web search (WebPin,
+// potion-base-8M) reproduces Python model2vec's vectors within epsilon, so cached
+// page vectors stay comparable across the native/Python engine swap. It skips
+// when the weights are neither cached nor downloadable (offline CI).
+func TestWebEmbedParity(t *testing.T) {
+	g := loadGoldenBase8M(t)
+
+	eng, err := embed.New(context.Background(), WebPin)
+	if errors.Is(err, embed.ErrWeightsUnavailable) {
+		t.Skip("model weights unavailable (offline, empty cache) — skipping")
+	}
+	if err != nil {
+		t.Fatalf("embed.New: %v", err)
+	}
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	if eng.Dims() != g.Dims {
+		t.Fatalf("Dims() = %d, want %d", eng.Dims(), g.Dims)
+	}
+	got, err := eng.Encode(context.Background(), g.Texts)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if len(got) != len(g.Vectors) {
+		t.Fatalf("got %d vectors, want %d", len(got), len(g.Vectors))
+	}
+
+	for i := range got {
+		if len(got[i]) != g.Dims {
+			t.Errorf("vector %d has %d dims, want %d", i, len(got[i]), g.Dims)
+			continue
 		}
-	}
-	return false
-}
-
-// TestEmbedUVMissing proves the launch failure names uv and the pinned
-// requirement when uv is off PATH.
-func TestEmbedUVMissing(t *testing.T) {
-	orig := lookpath.Find
-	lookpath.Find = func(string) string { return "" }
-	t.Cleanup(func() { lookpath.Find = orig })
-
-	if Supported() {
-		t.Fatal("Supported() = true with uv stubbed off PATH")
-	}
-	_, err := UVEmbedder{}.Embed(context.Background(), []string{"x"})
-	if err == nil {
-		t.Fatal("Embed = nil error, want launch failure")
-	}
-	for _, want := range []string{"uv", model2vecRequirement} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q missing %q", err, want)
+		var maxDiff float64
+		for j := range got[i] {
+			if d := math.Abs(float64(got[i][j]) - float64(g.Vectors[i][j])); d > maxDiff {
+				maxDiff = d
+			}
+		}
+		// A text with no in-vocabulary tokens embeds to the zero vector on both
+		// sides, where cosine is undefined; component agreement is the signal there.
+		if l2norm(g.Vectors[i]) < 1e-6 {
+			if maxDiff > componentParityEpsilon {
+				t.Errorf("text %d: zero-vector mismatch, max component diff %g", i, maxDiff)
+			}
+			continue
+		}
+		if cosDist := 1 - embed.Cosine(got[i], g.Vectors[i]); cosDist > cosineParityEpsilon {
+			t.Errorf("text %d: cosine distance %g exceeds epsilon %g (max component diff %g)",
+				i, cosDist, cosineParityEpsilon, maxDiff)
+		}
+		if maxDiff > componentParityEpsilon {
+			t.Errorf("text %d: max component diff %g exceeds sanity bound %g", i, maxDiff, componentParityEpsilon)
 		}
 	}
 }
 
-// TestEmbedIntegration exercises the real driver end to end: 256 dims,
-// L2-normalized vectors, determinism within and across calls, and the
-// first-success marker. The second call's wall time is the warm cold-start
-// the embedTimeout comment records.
+func l2norm(v []float32) float64 {
+	var s float64
+	for _, x := range v {
+		s += float64(x) * float64(x)
+	}
+	return math.Sqrt(s)
+}
+
+// TestEmbedIntegration exercises the resident web embedder end to end via the
+// package accessor: 256 dims, L2-normalized vectors, and determinism within and
+// across calls. It skips when the model weights are neither cached nor
+// downloadable (offline CI).
 func TestEmbedIntegration(t *testing.T) {
-	requireUV(t)
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Cleanup(func() { _ = CloseEmbedder(context.Background()) })
 
 	texts := []string{
 		"how do I handle errors in Go",
 		"install the package with homebrew",
 		"how do I handle errors in Go",
 	}
-	var e UVEmbedder
+	e, err := sharedEmbedder(context.Background())
+	if errors.Is(err, embed.ErrWeightsUnavailable) {
+		t.Skip("model weights unavailable (offline, empty cache) — skipping")
+	}
+	if err != nil {
+		t.Fatalf("sharedEmbedder: %v", err)
+	}
+
 	first, err := e.Embed(context.Background(), texts)
 	if err != nil {
-		if hfRefusedDownload(err) {
-			t.Skipf("HF Hub refused the unauthenticated model download (external infra): %v", err)
-		}
 		t.Fatalf("Embed error: %v", err)
 	}
 	if len(first) != len(texts) {
@@ -173,11 +144,7 @@ func TestEmbedIntegration(t *testing.T) {
 		if len(v) != 256 {
 			t.Fatalf("vector %d has %d dims, want 256", i, len(v))
 		}
-		var sum float64
-		for _, x := range v {
-			sum += float64(x) * float64(x)
-		}
-		if norm := math.Sqrt(sum); math.Abs(norm-1) > 1e-3 {
+		if norm := l2norm(v); math.Abs(norm-1) > 1e-3 {
 			t.Errorf("vector %d L2 norm = %v, want 1±1e-3", i, norm)
 		}
 	}
@@ -185,21 +152,10 @@ func TestEmbedIntegration(t *testing.T) {
 		t.Error("identical texts embedded to different vectors within one call")
 	}
 
-	driver, err := embedDriverPath()
-	if err != nil {
-		t.Fatalf("embedDriverPath error: %v", err)
-	}
-	if _, warm := warmMarker(filepath.Dir(driver)); !warm {
-		t.Error("first successful Embed left no warm marker")
-	}
-
-	start := time.Now()
 	second, err := e.Embed(context.Background(), texts)
-	warmWall := time.Since(start)
 	if err != nil {
 		t.Fatalf("second Embed error: %v", err)
 	}
-	t.Logf("warm embed wall time: %v", warmWall)
 	for i := range first {
 		if !slices.Equal(first[i], second[i]) {
 			t.Errorf("vector %d differs across calls; embedding is not deterministic", i)

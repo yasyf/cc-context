@@ -21,10 +21,10 @@ func pythonStrip(s string) string {
 	return strings.TrimFunc(s, isPythonSpace)
 }
 
-// decodeReplace decodes raw file bytes as UTF-8, replacing every maximal invalid
+// DecodeReplace decodes raw file bytes as UTF-8, replacing every maximal invalid
 // subsequence with U+FFFD, mirroring Python's bytes.decode("utf-8", "replace")
 // used by semble's read_file_text. Valid UTF-8 is returned unchanged.
-func decodeReplace(b []byte) string {
+func DecodeReplace(b []byte) string {
 	if utf8.Valid(b) {
 		return string(b)
 	}
@@ -33,8 +33,13 @@ func decodeReplace(b []byte) string {
 	for i := 0; i < len(b); {
 		r, size := utf8.DecodeRune(b[i:])
 		if r == utf8.RuneError && size == 1 {
+			invalidSize := 1
+			for i+invalidSize < len(b) &&
+				!utf8.FullRune(b[i:i+invalidSize+1]) {
+				invalidSize++
+			}
 			sb.WriteRune(utf8.RuneError)
-			i++
+			i += invalidSize
 			continue
 		}
 		sb.Write(b[i : i+size])
