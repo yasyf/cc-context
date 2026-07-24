@@ -22,12 +22,13 @@ from .search_common import (
     CONTEXT_SHORT,
     DEP_STEER,
     GrepCall,
+    any_git_ignored,
     build_ccx_grep,
     forfeits_count,
     forfeits_operand,
     grep_glob,
     has_command_substitution,
-    has_hidden_segment,
+    has_dependency_segment,
     is_transcript_path,
     note_text,
     path_operands_raw,
@@ -125,7 +126,7 @@ def rg_operands(cmd: Command) -> list[str] | None:
 
     A tolerant walk: it separates path operands from the pattern and consumes the values of known
     value-taking flags; ``-e``/``-f``/``--regexp``/``--file`` mark that the pattern came from a flag
-    (so no positional is the pattern). It feeds the policy steers (transcript / hidden segment) and
+    (so no positional is the pattern). It feeds the policy steers (transcript / dependency source) and
     tree-shape detection. Any unrecognized long or short flag returns ``None`` — the steers skip and
     shape detection falls back to a raw dir scan, never a wrong block.
     """
@@ -411,10 +412,13 @@ def rg_block(evt: PreToolUseEvent, cl: CommandLine) -> str:
 def rg_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | Rewritten | HookResult | None:
     """Per-occurrence verdict under the fail-open doctrine.
 
-    Mirrors :func:`~hooks.grep_guards.grep_visit`. Non-rg occurrences pass. The policy steers scan the raw
-    path-like tokens (:func:`path_operands_raw`), so an unparseable flag can't blind them: a transcript
-    operand blocks with the cc-transcript steer, a hidden-segment operand (``.venv/…``) with the
-    dep-reader steer — both fire even through pipes and may over-match. An rg consuming or feeding a pipe
+    Mirrors :func:`~hooks.grep_guards.grep_visit`. Non-rg occurrences pass. The policy steers scan the
+    parsed path operands (pattern excluded), falling back to the raw path-like tokens
+    (:func:`path_operands_raw`) when the flag walk can't parse — an unparseable flag can't blind them,
+    though the fallback over-matches (the pattern token rides along): a transcript operand blocks with
+    the cc-transcript steer; a dependency segment (``.venv/…``, ``site-packages/…``) or a
+    ``git check-ignore``-ignored directory operand with the dep-reader steer — all fire even through
+    pipes, while an ignored plain file stays bounded and runs raw. An rg consuming or feeding a pipe
     runs verbatim. An rg that is not tree-shaped runs raw. A tree-shaped rg whose raw text carries a
     ``$(…)``/backtick substitution runs raw. A path operand carrying a shell expansion or glob metachar,
     or a context count past Python's int-string limit, forfeits the rewrite and runs raw. Otherwise an
@@ -425,10 +429,11 @@ def rg_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | R
     inner = occ.command.unwrapped
     if inner.executable != "rg":
         return None
-    raw_ops = path_operands_raw(inner.args)
-    if any(is_transcript_path(p) for p in raw_ops):
+    ops = rg_operands(inner)
+    steer_ops = path_operands_raw(inner.args) if ops is None else ops
+    if any(is_transcript_path(p) for p in steer_ops):
         return evt.block(rg_block(evt, evt.cmd.line))
-    if any(has_hidden_segment(p) for p in raw_ops):
+    if any(has_dependency_segment(p) for p in steer_ops) or any_git_ignored(steer_ops, cwd=ctx.cwd):
         return evt.block(DEP_STEER)
     if occ.prev_op == "|" or occ.next_op == "|":
         return None
@@ -436,7 +441,7 @@ def rg_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | R
         return None
     if has_command_substitution(occ.command.raw):
         return None
-    if ((ops := rg_operands(inner)) and any(forfeits_operand(p) for p in ops)) or forfeits_count(inner.args):
+    if (ops and any(forfeits_operand(p) for p in ops)) or forfeits_count(inner.args):
         return None
     parsed = rg_parse(occ, cwd=ctx.cwd)
     if parsed is None:
@@ -498,12 +503,13 @@ rewrite_command_occurrences(
         Input(command="rg foo | sed -n '1,20p'"): Allow(),
         Input(command="rg foo | sed '1,20p'"): Allow(),  # unbounded sed no longer matters
         Input(command="rg -l foo | cat"): Allow(),  # non-sink terminal no longer matters
-        Input(command="rg -n foo src/ -A 20 | head -40"): Allow(),  # non-hidden target + pipe → runs raw
-        # Fix 1: the steers scan the raw path-like tokens, so an unparseable flag can't hide a
-        # hidden-segment or transcript operand — both fire even through a downstream pipe.
-        Input(command="rg --hidden needle .venv/ | head"): Block(pattern="ccx repo locate"),  # `.venv/` → dep steer
+        Input(command="rg -n foo src/ -A 20 | head -40"): Allow(),  # non-dep target + pipe → runs raw
+        # Steers scan parsed operands (raw fallback for unparseable flags) and fire through pipes;
+        # ignored-dir shapes rest on `git check-ignore` → pytest TestDependencyDirTargets, never inline.
+        Input(command="rg x .jj/repo | head"): Block(pattern="ccx repo locate"),  # VCS-store segment → dep steer
+        Input(command="rg --hidden needle .venv/ | head"): Block(pattern="ccx repo locate"),  # raw fallback carries `.venv/`
         Input(command="rg --no-ignore foo ~/.claude/projects/ | head"): Block(pattern="cc-transcript"),  # transcript steer
-        Input(command="rg --no-ignore foo . | head"): Allow(),  # no hidden/transcript operand + pipe → runs raw
+        Input(command="rg --no-ignore foo . | head"): Allow(),  # no dep/transcript operand + pipe → runs raw
         Input(command="rg --fixed-strings foo internal/ | head"): Allow(),
         Input(command="rg --line-number foo internal/ | head"): Allow(),
         Input(command="rg --smart-case foo . | head -20"): Allow(),
@@ -519,7 +525,7 @@ rewrite_command_occurrences(
         Input(command="rg foo ~/.claude/projects/main.jsonl; rg -v bar ."): Block(pattern="cc-transcript"),  # mixed
         Input(
             command='rg -n "class ToolUse" .venv/lib/python3.13/site-packages/cc_transcript/ -A 20 | head -40'
-        ): Block(pattern="ccx repo locate"),  # hidden `.venv` segment → dep steer, even through the pipe
+        ): Block(pattern="ccx repo locate"),  # `site-packages` VCS-store segment → dep steer, even through the pipe
         # Substitution forfeits the rewrite (parser drops the operand); the rest runs raw under fail-open.
         Input(command="rg foo $(printf /tmp/target)"): Allow(),
         Input(command="rg -n foo `printf x`"): Allow(),

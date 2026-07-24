@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -28,19 +30,91 @@ def test_is_transcript_path(path: str, expected: bool) -> None:
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
-        (".venv/lib/python3.13", True),
-        ("node_modules/.cache", True),
         (".git/objects", True),
-        ("src/.hidden/x", True),
+        (".jj/repo", True),
+        (".hg/store", True),
+        (".svn/pristine", True),
+        (".venv/lib/python3.13", True),
+        ("node_modules/express", True),
+        ("node_modules/.cache", True),
+        ("~/.local/lib/python3.13/site-packages/pkg", True),
+        ("/usr/lib/python3/dist-packages/foo", True),
+        ("src/.hidden/x", False),
+        ("~/.config/fish", False),
+        (".github/workflows", False),
+        ("~/.claude/plugins", False),
         ("./src", False),
         ("../src", False),
         ("src/internal", False),
         ("a.venv/b", False),
     ],
-    ids=["venv", "nested-hidden", "git", "mid-hidden", "dot", "dotdot", "plain", "not-a-segment"],
+    ids=[
+        "git",
+        "jj",
+        "hg",
+        "svn",
+        "venv",
+        "node-modules",
+        "node-modules-cache",
+        "site-packages",
+        "dist-packages",
+        "mid-hidden",
+        "config",
+        "github",
+        "claude-plugins",
+        "dot",
+        "dotdot",
+        "plain",
+        "not-a-segment",
+    ],
 )
-def test_has_hidden_segment(path: str, expected: bool) -> None:
-    assert search_common.has_hidden_segment(path) is expected
+def test_has_dependency_segment(path: str, expected: bool) -> None:
+    assert search_common.has_dependency_segment(path) is expected
+
+
+class TestAnyGitIgnored:
+    """``any_git_ignored`` consults the cwd repo's ignore rules for directory operands only;
+    every non-hit — an ignored plain file, an unignored dir, no repo, no cwd — is ``False``
+    under fail-open, and a 128 on one operand never masks another."""
+
+    @pytest.fixture
+    def repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        # A host's global excludes must not leak into the tmp repo's ignore verdicts.
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        (tmp_path / ".gitignore").write_text("build/\n*.log\n")
+        (tmp_path / "build").mkdir()
+        (tmp_path / "src").mkdir()
+        (tmp_path / "app.log").write_text("err\n")
+        return tmp_path
+
+    def test_ignored_dir_hits(self, repo: Path) -> None:
+        assert search_common.any_git_ignored(["build"], cwd=repo) is True
+
+    def test_ignored_file_never_consulted(self, repo: Path) -> None:
+        assert search_common.any_git_ignored(["app.log"], cwd=repo) is False
+
+    def test_bad_operand_cannot_mask_an_ignored_dir(self, repo: Path) -> None:
+        # `/` is outside the repo → the batch exits 128, and the fallback must still find `build`.
+        assert search_common.any_git_ignored(["/", "build"], cwd=repo) is True
+
+    def test_pathspec_magic_operand_skipped(self, repo: Path) -> None:
+        (repo / ":(top)build").mkdir()
+        assert search_common.any_git_ignored([":(top)build"], cwd=repo) is False
+
+    def test_tilde_operand_expands(self, repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HOME", str(repo))
+        assert search_common.any_git_ignored(["~/build"], cwd=repo) is True
+
+    def test_unignored_dirs_miss(self, repo: Path) -> None:
+        assert search_common.any_git_ignored(["src", "."], cwd=repo) is False
+
+    def test_not_a_repo(self, tmp_path: Path) -> None:
+        assert search_common.any_git_ignored(["."], cwd=tmp_path) is False
+
+    def test_untrusted_cwd(self) -> None:
+        assert search_common.any_git_ignored(["build"], cwd=None) is False
 
 
 @pytest.mark.parametrize(

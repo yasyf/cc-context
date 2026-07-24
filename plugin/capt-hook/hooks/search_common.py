@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
@@ -39,7 +40,7 @@ TRANSCRIPT_APPEND = (
     "(list / grep / show), not raw grep or ccx code grep."
 )
 
-# The dep-reader steer: sent when a gated grep/rg targets a hidden dependency/VCS-internal segment.
+# The dep-reader steer: sent when a grep/rg targets a VCS-store segment or a git-ignored operand.
 DEP_STEER = (
     "BLOCKED: Dependency or VCS-internal source (`.venv`, `node_modules`, `.git`, vendored packages) "
     "floods context. Spawn the `cc-context:dep-reader` agent with the package and your question — it "
@@ -172,13 +173,39 @@ def is_transcript_path(p: str) -> bool:
     return any(segs[i] == ".claude" and segs[i + 1] == "projects" for i in range(len(segs) - 1))
 
 
-def has_hidden_segment(p: str) -> bool:
-    """Whether a path has a hidden ``/``-segment — one starting with ``.`` other than ``.``/``..``.
+def has_dependency_segment(p: str) -> bool:
+    """Whether a path has an unambiguous dependency-source or VCS-store ``/``-segment — names
+    that mean dep source wherever they appear, in-repo or out. Exact segment membership
+    (``a.venv/b`` and ``.github/workflows`` never match), purely textual, no stat."""
+    return any(
+        seg in (".git", ".jj", ".hg", ".svn", ".venv", "node_modules", "site-packages", "dist-packages")
+        for seg in p.split("/")
+    )
 
-    Marks a dependency-source or VCS-internal directory (``.venv/lib/…``, ``.git/…``,
-    ``node_modules/.cache``). Purely textual, no stat.
-    """
-    return any(seg.startswith(".") and seg not in (".", "..") for seg in p.rstrip("/").split("/"))
+
+def any_git_ignored(ops: list[str], *, cwd: Path | None) -> bool:
+    """Whether any directory operand is git-ignored, per the cwd repo's own rules. A file
+    operand is bounded by itself and a ``:``-led one is pathspec magic — both skipped; ``~``
+    expands so a home-anchored path still resolves. One batched ``git check-ignore`` answers
+    the common case; its 128 (one bad operand poisons a batch) falls back per-operand so a
+    bad path can't mask an ignored one. Git absent or an untrusted ``cwd`` → ``False``."""
+    if cwd is None:
+        return False
+    expanded = (str(Path(p).expanduser()) if p.startswith("~") else p for p in ops)
+    dirs = [p for p in expanded if not p.startswith(":") and resolved_is_dir(p, cwd)]
+    if not dirs:
+        return False
+
+    def check(paths: list[str]) -> int:
+        try:
+            return subprocess.run(["git", "check-ignore", "--", *paths], capture_output=True, cwd=cwd).returncode
+        except OSError:
+            return 128
+
+    rc = check(dirs)
+    if rc == 128 and len(dirs) > 1:
+        return any(check([d]) == 0 for d in dirs)
+    return rc == 0
 
 
 def forfeits_operand(p: str) -> bool:

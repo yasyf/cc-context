@@ -105,7 +105,9 @@ def run_visit(
 
 
 def probe(monkeypatch: pytest.MonkeyPatch, help_text: str) -> None:
-    monkeypatch.setattr(common.subprocess, "run", fake_run(0, stdout=help_text))
+    # Scoped to the `common` module: the global `subprocess.run` stays real, so a visit's
+    # `git check-ignore` (search_common) never sees the fake probe result.
+    monkeypatch.setattr(common, "subprocess", SimpleNamespace(run=fake_run(0, stdout=help_text)))
 
 
 @pytest.fixture(autouse=True)

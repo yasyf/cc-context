@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **capt-hook guard pack: fail-open doctrine.** Guards fire only on positively
+  identified offenses; every ambiguity — unparseable flags, unstattable operands,
+  command substitutions, env prefixes, an untrusted cwd — falls through to allow.
+  Any downstream pipe runs raw as post-processing, explicit-file and `~`-operand
+  searches run raw, and an unresolvable `ccx` binary never blocks.
+
+### Fixed
+- **The grep/rg dependency steer is gitignore-driven.** The dep-reader steer now
+  fires only on unambiguous dependency segments (`.git`, `.jj`, `.hg`, `.svn`,
+  `.venv`, `node_modules`, `site-packages`, `dist-packages`) or directory
+  operands the cwd repo's own `git check-ignore` reports ignored (batched, with
+  a per-operand fallback so one out-of-repo operand can't mask an ignored one) —
+  searches under `~/.config/`, `.github/`, or `~/.claude/plugins/` run raw again, an
+  ignored plain file (`app.log` under `*.log`) stays raw as a bounded search,
+  and `node_modules/express` (no leading dot) is now correctly steered. The
+  steers also scan parsed operands first, so a pattern that merely looks like a
+  dep path (`grep '.venv' README.md`) no longer blocks; raw tokens remain the
+  unparseable-flag fallback.
+
 ## [0.32.0] - 2026-07-23
 
 ### Added

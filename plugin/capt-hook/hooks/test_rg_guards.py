@@ -16,6 +16,8 @@ Here the probe boundary (``ccx_bin`` + ``subprocess.run``) is monkeypatched and 
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -205,24 +207,56 @@ class TestRgPathGlobbing:
         assert rg_verdict("rg foo nonexistent/") is None
 
 
-class TestHiddenDirTargets:
-    """A hidden-segment operand (`.venv/…`) is a textual policy steer: the verdict blocks with the
-    dep-reader steer regardless of on-disk existence, and even through a downstream pipe. The block
-    lands at the verdict, not in the emitter — `rg_to`/`grep_to` would happily glob a hidden dir.
+class TestDependencyDirTargets:
+    """Dependency-source operands are a policy steer: an unambiguous dep segment (`.venv/…`,
+    `node_modules/…`) blocks textually regardless of on-disk existence, and a directory operand
+    the cwd repo's own `git check-ignore` reports ignored blocks the same way — both even through
+    a downstream pipe. Everything git doesn't claim (`~/.config/…`, an ignored plain file, a
+    dep-lookalike pattern) runs raw. The block lands at the verdict, not in the emitter —
+    `rg_to`/`grep_to` would happily glob an ignored dir.
     """
 
     @pytest.fixture(autouse=True)
-    def pin_ccx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        (tmp_path / ".gitignore").write_text("generated/\n*.log\n")
+        (tmp_path / "generated").mkdir()
+        (tmp_path / "app.log").write_text("err\n")
         monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
         monkeypatch.chdir(tmp_path)
+        return tmp_path
 
-    def test_rg_hidden_dir_blocks_with_dep_steer(self) -> None:
+    def test_rg_dep_segment_blocks_with_dep_steer(self) -> None:
         verdict = rg_verdict("rg -n 'class ToolUse' .venv/lib/ -A 20 | head")
         assert isinstance(verdict, HookResult) and "ccx repo locate" in verdict.message
 
-    def test_grep_hidden_dir_blocks_with_dep_steer(self) -> None:
+    def test_rg_unparseable_flag_cannot_blind_the_steer(self) -> None:
+        verdict = rg_verdict("rg --hidden needle .venv/ | head")
+        assert isinstance(verdict, HookResult) and "ccx repo locate" in verdict.message
+
+    def test_grep_dep_segment_blocks_with_dep_steer(self) -> None:
         verdict = grep_verdict("grep -rn foo .venv/")
         assert isinstance(verdict, HookResult) and "ccx repo locate" in verdict.message
+
+    def test_grep_undotted_dep_segment_blocks(self) -> None:
+        verdict = grep_verdict("grep -r foo node_modules/express | head")
+        assert isinstance(verdict, HookResult) and "ccx repo locate" in verdict.message
+
+    def test_ignored_dir_blocks_via_check_ignore(self) -> None:
+        verdict = grep_verdict("grep -rn foo generated/")
+        assert isinstance(verdict, HookResult) and "ccx repo locate" in verdict.message
+
+    def test_ignored_file_runs_raw(self) -> None:
+        assert grep_verdict("grep -i err app.log | head") is None
+
+    def test_home_dotdirs_run_raw(self) -> None:
+        assert rg_verdict("rg -l x ~/.claude/plugins/") is None
+        assert grep_verdict("grep -rn foo ~/.config/fish/") is None
+
+    def test_dep_lookalike_pattern_runs_raw(self) -> None:
+        assert grep_verdict("grep -rn '.venv' README.md") is None
 
 
 class TestRgOccurrenceRewrite:

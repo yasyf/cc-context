@@ -105,7 +105,7 @@ class TestGrepIgnoreCaseWord:
 
     def test_ungated_shape_never_probes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A grep with no -i/-w rewrites unconditionally — no `--help` probe, and no `git check-ignore`
-        # now that the path-block screen is gone. Any subprocess from here is the failure.
+        # (that screen lives at the visit's steers, not the emitter). Any subprocess from here is the failure.
         def no_probe(cmd: list[str], *_args: object, **_kwargs: object) -> SimpleNamespace:
             raise AssertionError("a grep without -i/-w must shell no subprocess")
 
@@ -214,6 +214,7 @@ class TestGrepPathGlobbing:
         (tmp_path / "src").mkdir()
         (tmp_path / "internal").mkdir()
         (tmp_path / "v2.5").mkdir()  # dotted directory — the old extension heuristic mis-read it as a file
+        (tmp_path / ".github" / "workflows").mkdir(parents=True)  # dot-dir that is first-party, never a dep steer
         (tmp_path / "file.py").write_text("x\n")
         (tmp_path / "Makefile").write_text("all:\n")  # extensionless file — the old heuristic mis-read it as a dir
         monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
@@ -230,6 +231,7 @@ class TestGrepPathGlobbing:
             ("grep -rn -C 3 foo src/", "/fake/ccx code grep foo --glob 'src/**' -C=3"),
             ("grep foo Makefile", "/fake/ccx code grep foo --glob Makefile"),  # extensionless FILE, not Makefile/**
             ("grep -rn foo v2.5", "/fake/ccx code grep foo --glob 'v2.5/**'"),  # dotted DIR, not a file glob
+            ("grep -rn foo .github/workflows/", "/fake/ccx code grep foo --glob '.github/workflows/**'"),
         ],
     )
     def test_disk_classified_globs(self, tree: Path, command: str, expected: str) -> None:

@@ -23,11 +23,12 @@ from .search_common import (
     CONTEXT_SHORT,
     DEP_STEER,
     GrepCall,
+    any_git_ignored,
     build_ccx_grep,
     forfeits_operand,
     grep_glob,
     has_command_substitution,
-    has_hidden_segment,
+    has_dependency_segment,
     is_transcript_path,
     note_text,
     path_operands_raw,
@@ -433,8 +434,8 @@ def grep_operands(cmd: Command) -> list[str] | None:
     """Extract a ``grep``'s explicit path operands (the pattern excluded), or ``None`` if unparseable.
 
     A tolerant walk over grep's flag arities (:data:`BOUNDED_BOOL_SHORT` and friends). It separates path
-    operands from the pattern and from flag values, feeding the policy steers (transcript / hidden
-    segment) and tree-shape detection. An unknown flag returns ``None`` — the steers skip and shape
+    operands from the pattern and from flag values, feeding the policy steers (transcript / dependency
+    source) and tree-shape detection. An unknown flag returns ``None`` — the steers skip and shape
     detection falls back to a raw dir scan, never a wrong block.
     """
     args = cmd.args
@@ -553,11 +554,14 @@ def grep_block(evt: PreToolUseEvent, cl: CommandLine) -> str:
 def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | Rewritten | HookResult | None:
     """Per-occurrence verdict under the fail-open doctrine.
 
-    Non-grep occurrences pass. The policy steers scan the raw path-like tokens (:func:`path_operands_raw`),
-    so an unparseable flag can't blind them: a transcript operand blocks with the cc-transcript steer, a
-    hidden-segment operand (``.venv/…``, ``.git/…``) with the dep-reader steer — both fire even through
-    pipes, and may over-match (the pattern token rides along). A grep consuming or feeding a pipe runs
-    verbatim (post-processing). A grep that is not tree-shaped runs raw (explicit-file searches are bounded
+    Non-grep occurrences pass. The policy steers scan the parsed path operands (pattern excluded),
+    falling back to the raw path-like tokens (:func:`path_operands_raw`) when the flag walk can't parse —
+    an unparseable flag can't blind them, though the fallback over-matches (the pattern token rides
+    along): a transcript operand blocks with the cc-transcript steer; a dependency segment (``.venv/…``,
+    ``node_modules/…``, ``.git/…``) or a directory operand the repo's own ``git check-ignore`` reports
+    ignored (``dist/``, a generated tree) blocks with the dep-reader steer — all fire even through
+    pipes, while an ignored plain file stays bounded and runs raw. A grep consuming or feeding a pipe
+    runs verbatim (post-processing). A grep that is not tree-shaped runs raw (explicit-file searches are bounded
     by their operands). A tree-shaped grep whose raw text carries a ``$(…)``/backtick substitution runs raw
     (the parser drops the operand, so a rewrite would silently widen scope). A path operand carrying a
     shell expansion or glob metachar forfeits the rewrite and runs raw (never a lossy emission). Otherwise
@@ -569,10 +573,11 @@ def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str |
     inner = occ.command.unwrapped
     if inner.executable != "grep":
         return None
-    raw_ops = path_operands_raw(inner.args)
-    if any(is_transcript_path(p) for p in raw_ops):
+    ops = grep_operands(inner)
+    steer_ops = path_operands_raw(inner.args) if ops is None else ops
+    if any(is_transcript_path(p) for p in steer_ops):
         return evt.block(grep_block(evt, evt.cmd.line))
-    if any(has_hidden_segment(p) for p in raw_ops):
+    if any(has_dependency_segment(p) for p in steer_ops) or any_git_ignored(steer_ops, cwd=ctx.cwd):
         return evt.block(DEP_STEER)
     if occ.prev_op == "|" or occ.next_op == "|":
         return None
@@ -580,7 +585,7 @@ def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str |
         return None
     if has_command_substitution(occ.command.raw):
         return None
-    if (ops := grep_operands(inner)) and any(forfeits_operand(p) for p in ops):
+    if ops and any(forfeits_operand(p) for p in ops):
         return None
     parsed = grep_parse(occ, cwd=ctx.cwd)
     if parsed is None:
@@ -670,6 +675,9 @@ rewrite_command_occurrences(
         # Transcript policy steer — fires even through a downstream pipe (checked before the pipe):
         Input(command="grep -r foo ~/.claude/projects/"): Block(pattern="cc-transcript"),
         Input(command="grep -r foo ~/.claude/projects/ | head"): Block(pattern="cc-transcript"),
+        # Dep policy steer — a VCS-store segment blocks textually; ignored-dir shapes rest on
+        # `git check-ignore` and live in pytest (TestDependencyDirTargets), never inline.
+        Input(command="grep -r foo .git/ | head"): Block(pattern="ccx repo locate"),
         # Mixed transcript + flood: the block carries BOTH the default steer and the cc-transcript line.
         Input(command="grep foo ~/.claude/projects/main.jsonl; grep -v bar ."): Block(pattern="cc-transcript"),
         # Per-occurrence splices: a non-tree-shaped sibling stays byte-identical while the tree grep splices.
