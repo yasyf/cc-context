@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -290,28 +291,41 @@ func shipCommitGT(ctx context.Context, errW io.Writer, root string, o shipOpts, 
 	return strings.Join(segs, shipSep), nil
 }
 
-// shipCommitGTSelect commits a hunk selection through gt's real index (no
-// throwaway index like shipCommitGitSelect — gt reads the real one) and runs
-// the gt verb with no pathspec; no restore --staged, gt's commit consumes it.
-// The staging plumbing below stays on git: gt's only hunk surface is
-// interactive `-p`, which --no-interactive can't drive.
+// shipCommitGTSelect commits a hunk selection through the same throwaway-index
+// technique as shipCommitGitSelect — gt shells out to git, which honors
+// GIT_INDEX_FILE, so running gt's verb under the same env commits only the temp
+// index. gt's only hunk surface is interactive -p, so staging stays on git.
 func shipCommitGTSelect(ctx context.Context, o shipOpts, sel *shipSelection, plan gtPlan) error {
-	if _, err := render.RunCLI(ctx, "git", []string{"read-tree", "HEAD"}); err != nil {
+	idxFile, err := os.CreateTemp("", "ccx-ship-index-*")
+	if err != nil {
+		return fmt.Errorf("ship: create temp index: %w", err)
+	}
+	idxPath := idxFile.Name()
+	_ = idxFile.Close()
+	defer func() { _ = os.Remove(idxPath) }()
+	env := []string{"GIT_INDEX_FILE=" + idxPath}
+
+	if _, err := render.RunCLIEnv(ctx, "git", []string{"read-tree", "HEAD"}, env); err != nil {
 		return fmt.Errorf("ship: git read-tree: %w", err)
 	}
 	if addArgv, ok := gitSelectAddArgv(o.paths, sel); ok {
-		if _, err := render.RunCLI(ctx, "git", addArgv); err != nil {
+		if _, err := render.RunCLIEnv(ctx, "git", addArgv, env); err != nil {
 			return fmt.Errorf("ship: git add: %w", err)
 		}
 	}
 	for _, path := range sortedSelectionFiles(sel) {
-		if err := gitStageSelected(ctx, path, sel, nil); err != nil {
+		if err := gitStageSelected(ctx, path, sel, env); err != nil {
 			return err
 		}
 	}
 	argv := gtCommitArgv(o, plan)
-	if _, err := render.RunCLI(ctx, "gt", argv); err != nil {
+	if _, err := render.RunCLIEnv(ctx, "gt", argv, env); err != nil {
 		return fmt.Errorf("ship: gt %s: %w", argv[0], err)
+	}
+
+	restoreArgv := append([]string{"restore", "--staged", "--"}, gitRestorePaths(o.paths)...)
+	if _, err := render.RunCLI(ctx, "git", restoreArgv); err != nil {
+		return fmt.Errorf("ship: git restore --staged: %w", err)
 	}
 	return nil
 }

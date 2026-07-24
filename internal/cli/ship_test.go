@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -219,7 +221,7 @@ exit 0
 fi
 exit 0
 `
-	gt := "#!/bin/sh\n" + log("gt") + `case "$1" in
+	gt := "#!/bin/sh\n" + gitIdxMark + log("gt") + `case "$1" in
   state)
     if [ -n "$GT_STATE_JSON_MARKER" ]; then
       count=0
@@ -3516,6 +3518,16 @@ func TestShipGTCreateFlag(t *testing.T) {
 	}
 }
 
+func TestShipCreateExplicitEmpty(t *testing.T) {
+	log := setupShipGT(t, false)
+	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--create=")
+	wantErr := "ship: --create requires a branch name or no value"
+	if err == nil || err.Error() != wantErr {
+		t.Fatalf("error = %v, want %q", err, wantErr)
+	}
+	assertNoGTCommit(t, readInvocations(t, log))
+}
+
 func TestShipGTAmend(t *testing.T) {
 	tests := []struct {
 		name string
@@ -3599,29 +3611,41 @@ func TestShipGTHunkScoped(t *testing.T) {
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	assertInvocations(t, readInvocations(t, log), [][]string{
+	raw := readInvocations(t, log)
+	var idxBasename string
+	for _, inv := range raw {
+		if inv[0] == "idx" {
+			idxBasename = inv[1]
+			break
+		}
+	}
+	if idxBasename == "" {
+		t.Fatal("no idx marker logged; gt hunk-scoped commit must run under a temp GIT_INDEX_FILE")
+	}
+	idxRec := []string{"idx", idxBasename}
+
+	// The temp-index marker must gate exactly read-tree, update-index, and the
+	// gt verb — the same throwaway-index technique the git lane uses — always
+	// naming the same temp index.
+	assertInvocations(t, raw, [][]string{
 		{"git", "rev-parse", "--show-toplevel"},
 		{"git", "ls-tree", "--full-tree", "HEAD", "--", "f.txt"},
 		{"git", "show", "--end-of-options", "HEAD:f.txt"},
 		{"git", "branch", "--show-current"},
 		{"gt", "state"},
+		idxRec,
 		{"git", "read-tree", "HEAD"},
 		{"git", "ls-tree", "--full-tree", "HEAD", "--", "f.txt"},
 		{"git", "show", "--end-of-options", "HEAD:f.txt"},
 		{"git", "ls-tree", "--full-tree", "HEAD", "--", "f.txt"},
 		{"git", "hash-object", "-w", "--stdin"},
+		idxRec,
 		{"git", "update-index", "--add", "--cacheinfo", "100644,2222222222222222222222222222222222222222,f.txt"},
+		idxRec,
 		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
+		{"git", "restore", "--staged", "--", "f.txt"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 	})
-	for _, inv := range readInvocations(t, log) {
-		if inv[0] == "idx" {
-			t.Errorf("gt hunk-scoped commit must use the real index, but an idx marker was logged: %v", inv)
-		}
-		if inv[0] == "git" && inv[1] == "restore" {
-			t.Errorf("gt hunk-scoped commit must not restore --staged: %v", inv)
-		}
-	}
 }
 
 func TestShipGTRefusals(t *testing.T) {
@@ -4002,4 +4026,32 @@ func TestShipReviewsWiring(t *testing.T) {
 			t.Errorf("error = %q, want it to preserve the CI failure", err.Error())
 		}
 	})
+}
+
+// TestShipReviewsWatchExitCodeFirewall proves shipReviewsWatch's %v wrap keeps
+// an ErrNotFound-shaped cause from leaking through errors.Join: joined with a
+// red-CI error, ExitCode must pick the CI failure's code (1), not the reviews
+// watch's would-be 3.
+func TestShipReviewsWatchExitCodeFirewall(t *testing.T) {
+	setupReviews(t)
+	t.Setenv("GH_PR_VIEW_JSON_main", reviewsViewJSON(5, "OPEN", false))
+	marker := filepath.Join(t.TempDir(), "view.marker")
+	t.Setenv("GH_PR_VIEW_JSON_5", reviewsViewJSON(5, "OPEN", false))
+	t.Setenv("GH_PR_VIEW_MARKER_5", marker)
+	t.Setenv("GH_PR_VIEW_OPEN_CALLS_5", "1")
+	t.Setenv("GH_PR_VIEW_FAIL_AFTER_5", "1")
+
+	var out bytes.Buffer
+	reviewsErr := shipReviewsWatch(context.Background(), &out, []string{"main"})
+	if reviewsErr == nil {
+		t.Fatal("expected shipReviewsWatch to return a non-nil error")
+	}
+	if errors.Is(reviewsErr, ErrNotFound) {
+		t.Errorf("shipReviewsWatch error = %v, must not still match ErrNotFound", reviewsErr)
+	}
+
+	ciErr := errors.New("ship: CI failed for 1 run(s) on the pushed commit")
+	if code := ExitCode(errors.Join(ciErr, reviewsErr)); code != 1 {
+		t.Errorf("ExitCode(errors.Join(ciErr, reviewsErr)) = %d, want 1 (the CI failure's code)", code)
+	}
 }

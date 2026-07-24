@@ -124,7 +124,7 @@ func newShipCmd() *cobra.Command {
 
 Ship refuses an empty working copy (the usual cause: a prior ship already landed the commit in @-) and resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>, autostashing uncommitted work); a rebase that would conflict is rolled back and reported instead of pushed. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
 
-A live Graphite config (.git/.graphite_repo_config) routes ship to the gt lane instead, even in colocated jj repos; --no-gt falls back to the jj/git detection above. The gt lane commits through gt: on trunk, -m auto-creates a stacked branch named from the message; on a stacked branch, -m appends a commit and --amend amends the branch tip. --create starts a new stacked branch on top of the current one — bare --create derives the name from the message, and an explicit name must be spelled --create=name (cobra parses "--create name" as a path operand to commit). Instead of pushing, the lane submits the downstack with gt submit, published by default; --draft submits drafts, --publish makes the default explicit. Ship never fetches, rebases, or retries in the gt lane — gt owns restacking — so it refuses up front on an untracked branch (run gt track, or pass --no-gt), on needs_restack anywhere on the downstack (run gt restack, then re-run ship), and on --amend on trunk; a failed submit reports gt's own recovery step (gt restack, gt sync, or gt auth) instead of retrying. The report names the submitted branch and its PR: submitted <branch> → PR #<n> <url>.
+A live Graphite config (.git/.graphite_repo_config) routes ship to the gt lane instead, even in colocated jj repos; --no-gt falls back to the jj/git detection above. The gt lane commits through gt: on trunk, -m auto-creates a stacked branch named from the message; on a stacked branch, -m appends a commit and --amend amends the branch tip; an untracked branch is adopted first with gt track -f (parented to its nearest tracked ancestor). --create starts a new stacked branch on top of the current one — bare --create derives the name from the message, and an explicit name must be spelled --create=name (cobra parses "--create name" as a path operand to commit). Instead of pushing, the lane submits the downstack with gt submit, published by default; --draft submits drafts, --publish makes the default explicit. Ship never fetches, rebases, or retries in the gt lane — gt owns restacking — so it refuses up front on needs_restack anywhere on the downstack (run gt restack, then re-run ship), on a branch gt track cannot adopt, and on --amend on trunk; a failed submit reports gt's own recovery step (gt restack, gt sync, or gt auth) instead of retrying. The report names the submitted branch and its PR: submitted <branch> → PR #<n> <url>.
 
 --reviews keeps listening after the CI watch: each new review comment on the pushed branch's PR — every submitted PR, in the gt lane — streams to stdout until all are merged or closed. The standalone surface, with attach and replay knobs (--since, --interval, --budget, --stack), is ccx vcs reviews.`,
 		Args: cobra.ArbitraryArgs,
@@ -168,6 +168,9 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	}
 	if !gtLane && (o.create != "" || o.draft || o.publish) {
 		return errors.New("ship: --create/--draft/--publish apply only to graphite repos; pass --no-gt only when .git/.graphite_repo_config exists, or drop these flags")
+	}
+	if cmd.Flags().Changed("create") && o.create == "" {
+		return errors.New("ship: --create requires a branch name or no value")
 	}
 	if o.bookmark != "" && kind != vcs.JJ {
 		return errors.New("ship: --bookmark applies only to jj repositories")
@@ -283,7 +286,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	if o.noWatch {
 		cmd.Println(strings.Join(segments, shipSep))
 		if o.reviews {
-			return shipWatchReviews(ctx, cmd.OutOrStdout(), reviewBranches)
+			return shipReviewsWatch(ctx, cmd.OutOrStdout(), reviewBranches)
 		}
 		return nil
 	}
@@ -292,7 +295,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	if ciSeg == "" {
 		cmd.Println(strings.Join(segments, shipSep))
 		if o.reviews {
-			return errors.Join(ciErr, shipWatchReviews(ctx, cmd.OutOrStdout(), reviewBranches))
+			return errors.Join(ciErr, shipReviewsWatch(ctx, cmd.OutOrStdout(), reviewBranches))
 		}
 		return ciErr
 	}
@@ -302,9 +305,19 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		cmd.Println(line)
 	}
 	if o.reviews {
-		return errors.Join(ciErr, shipWatchReviews(ctx, cmd.OutOrStdout(), reviewBranches))
+		return errors.Join(ciErr, shipReviewsWatch(ctx, cmd.OutOrStdout(), reviewBranches))
 	}
 	return ciErr
+}
+
+// shipReviewsWatch wraps shipWatchReviews with %v, not %w: the watch's
+// internal error categories must not steer ship's exit code — a co-occurring
+// CI failure owns it.
+func shipReviewsWatch(ctx context.Context, w io.Writer, branches []string) error {
+	if err := shipWatchReviews(ctx, w, branches); err != nil {
+		return fmt.Errorf("reviews: %v", err) //nolint:errorlint // deliberate: %w would let its category outlive this wrap
+	}
+	return nil
 }
 
 const envClaudeSessionKey = "CLAUDE_CODE_SESSION_ID"

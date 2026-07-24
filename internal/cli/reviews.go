@@ -27,7 +27,10 @@ const (
 	envReviewsPollInterval = "CCX_REVIEWS_POLL_INTERVAL"
 )
 
-var errBadReviewsPollInterval = errors.New("invalid CCX_REVIEWS_POLL_INTERVAL")
+var (
+	errBadReviewsPollInterval     = errors.New("invalid CCX_REVIEWS_POLL_INTERVAL")
+	errReviewsIntervalNotPositive = errors.New("reviews: poll interval must be positive")
+)
 
 type ghPRComment struct {
 	ID   int64  `json:"id"`
@@ -65,6 +68,7 @@ type prTarget struct {
 	URL       string
 	watermark time.Time
 	seen      map[string]time.Time
+	fails     int // consecutive failed polls
 }
 
 type reviewsOpts struct {
@@ -104,7 +108,10 @@ func newReviewsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "reviews [pr-or-branch...]",
 		Short: "Stream new GitHub PR review events",
-		Args:  cobra.ArbitraryArgs,
+		Long: "Stream new GitHub PR review events. The watch is at-least-once: " +
+			"a cancelled watch's resume command reuses the oldest open target's " +
+			"watermark, so a resumed watch may re-print events already seen.",
+		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if stack && len(args) > 0 {
 				return errors.New("reviews: --stack and positional targets cannot be combined")
@@ -134,6 +141,9 @@ func newReviewsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if stack && len(targets) == 0 {
+				return errors.New("reviews: --stack found no stacked branches — run it from a stacked branch, not trunk")
+			}
 			return watchReviews(cmd.Context(), cmd.OutOrStdout(), targets, o)
 		},
 	}
@@ -146,6 +156,9 @@ func newReviewsCmd() *cobra.Command {
 
 func reviewsPollInterval(flag time.Duration, changed bool) (time.Duration, error) {
 	if changed {
+		if flag <= 0 {
+			return 0, errReviewsIntervalNotPositive
+		}
 		return flag, nil
 	}
 	raw := os.Getenv(envReviewsPollInterval)
@@ -155,6 +168,9 @@ func reviewsPollInterval(flag time.Duration, changed bool) (time.Duration, error
 	interval, err := time.ParseDuration(raw)
 	if err != nil {
 		return 0, fmt.Errorf("%w %q: %w", errBadReviewsPollInterval, raw, err)
+	}
+	if interval <= 0 {
+		return 0, errReviewsIntervalNotPositive
 	}
 	return interval, nil
 }
@@ -310,57 +326,67 @@ func watchReviews(ctx context.Context, w io.Writer, targets []*prTarget, o revie
 	}
 
 	open := targets
-	merged, closed := 0, 0
-	failures := 0
+	merged, closed, aborted := 0, 0, 0
 	for len(open) > 0 {
-		polls, err := pollReviewCycle(ctx, open, o)
+		results := pollReviewCycle(ctx, open, o)
 		if ctx.Err() != nil {
 			if werr := writeReviewsCancellation(w, open, merged, closed); werr != nil {
 				return werr
 			}
 			return ctx.Err()
 		}
-		if err != nil {
-			failures++
-			slog.Warn("reviews: poll failed", "consecutive_failures", failures, "err", err)
-			if failures >= reviewsMaxFails {
-				return fmt.Errorf("reviews: poll failed %d consecutive cycles: %w", failures, err)
-			}
-		} else {
-			failures = 0
-			var events []reviewEvent
-			for _, poll := range polls {
-				events = append(events, poll.events...)
-			}
-			sort.SliceStable(events, func(i, j int) bool {
-				return events[i].timestamp.Before(events[j].timestamp)
-			})
-			for _, event := range events {
-				if err := writeReviewEvent(w, event, o.budget); err != nil {
-					return err
-				}
-			}
 
-			next := make([]*prTarget, 0, len(open))
-			for _, poll := range polls {
-				poll.target.watermark = poll.watermark
-				poll.target.seen = poll.seen
-				if poll.terminal == "" {
-					next = append(next, poll.target)
+		var events []reviewEvent
+		next := make([]*prTarget, 0, len(open))
+		for _, res := range results {
+			if res.err != nil {
+				res.target.fails++
+				slog.Warn("reviews: poll failed", "pr", res.target.Number, "consecutive_failures", res.target.fails, "err", res.err)
+				if res.target.fails < reviewsMaxFails {
+					next = append(next, res.target)
+				}
+				continue
+			}
+			res.target.fails = 0
+			res.target.watermark = res.poll.watermark
+			res.target.seen = res.poll.seen
+			events = append(events, res.poll.events...)
+			if res.poll.terminal == "" {
+				next = append(next, res.target)
+			}
+		}
+		sort.SliceStable(events, func(i, j int) bool {
+			return events[i].timestamp.Before(events[j].timestamp)
+		})
+		for _, event := range events {
+			if err := writeReviewEvent(w, event, o.budget); err != nil {
+				return err
+			}
+		}
+
+		for _, res := range results {
+			switch {
+			case res.err != nil:
+				if res.target.fails < reviewsMaxFails {
 					continue
 				}
-				if _, err := fmt.Fprintf(w, "◆ pr#%d %s%s%s\n\n",
-					poll.target.Number, poll.terminal, shipSep, poll.target.URL); err != nil {
-					return fmt.Errorf("reviews: write terminal line: %w", err)
+				if _, werr := fmt.Fprintf(w, "◆ pr#%d watch aborted%s%v\n\n", res.target.Number, shipSep, res.err); werr != nil {
+					return fmt.Errorf("reviews: write aborted line: %w", werr)
 				}
-				if poll.terminal == "merged" {
+				aborted++
+			case res.poll.terminal != "":
+				if _, werr := fmt.Fprintf(w, "◆ pr#%d %s%s%s\n\n",
+					res.target.Number, res.poll.terminal, shipSep, res.target.URL); werr != nil {
+					return fmt.Errorf("reviews: write terminal line: %w", werr)
+				}
+				if res.poll.terminal == "merged" {
 					merged++
 				} else {
 					closed++
 				}
 			}
-			open = next
 		}
+		open = next
 
 		if len(open) == 0 {
 			break
@@ -375,25 +401,38 @@ func watchReviews(ctx context.Context, w io.Writer, targets []*prTarget, o revie
 			return fmt.Errorf("reviews: sleep: %w", err)
 		}
 	}
-	if _, err := fmt.Fprintln(w, strings.Join([]string{
+	summary := []string{
 		fmt.Sprintf("watch done%s%d merged", shipSep, merged),
 		fmt.Sprintf("%d closed", closed),
-	}, shipSep)); err != nil {
+	}
+	if aborted > 0 {
+		summary = append(summary, fmt.Sprintf("%d aborted", aborted))
+	}
+	if _, err := fmt.Fprintln(w, strings.Join(summary, shipSep)); err != nil {
 		return fmt.Errorf("reviews: write completion line: %w", err)
+	}
+	if aborted > 0 {
+		return fmt.Errorf("reviews: %d of %d target(s) aborted after repeated failures", aborted, len(targets))
 	}
 	return nil
 }
 
-func pollReviewCycle(ctx context.Context, targets []*prTarget, o reviewsOpts) ([]reviewsPoll, error) {
-	polls := make([]reviewsPoll, 0, len(targets))
+// pollReviewResult is one target's outcome from a single poll cycle.
+type pollReviewResult struct {
+	target *prTarget
+	poll   reviewsPoll
+	err    error
+}
+
+// pollReviewCycle polls every target once, continuing past a per-target
+// failure so one broken PR never blocks another target's cycle.
+func pollReviewCycle(ctx context.Context, targets []*prTarget, o reviewsOpts) []pollReviewResult {
+	results := make([]pollReviewResult, 0, len(targets))
 	for _, target := range targets {
 		poll, err := pollReviewTarget(ctx, target, o)
-		if err != nil {
-			return nil, err
-		}
-		polls = append(polls, poll)
+		results = append(results, pollReviewResult{target: target, poll: poll, err: err})
 	}
-	return polls, nil
+	return results
 }
 
 func pollReviewTarget(ctx context.Context, target *prTarget, o reviewsOpts) (reviewsPoll, error) {
@@ -522,6 +561,18 @@ func inlineLocus(comment ghPRComment) string {
 	return fmt.Sprintf("%s:%d", comment.Path, *comment.Line)
 }
 
+// sanitizeReviewBody strips ANSI escapes and C0 control characters (besides
+// \n and \t) from a PR comment body before it reaches the terminal.
+func sanitizeReviewBody(body string) string {
+	body = ansiRE.ReplaceAllString(body, "")
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 && r != '\n' && r != '\t' {
+			return -1
+		}
+		return r
+	}, body)
+}
+
 func writeReviewEvent(w io.Writer, event reviewEvent, budget int) error {
 	parts := []string{event.kind, event.author, fmt.Sprintf("pr#%d", event.target.Number)}
 	if event.locus != "" {
@@ -534,7 +585,7 @@ func writeReviewEvent(w io.Writer, event reviewEvent, budget int) error {
 	if _, err := fmt.Fprintf(w, "◆ %s\n", strings.Join(parts, shipSep)); err != nil {
 		return fmt.Errorf("reviews: write event header: %w", err)
 	}
-	if body := strings.TrimRight(render.Cap(event.body, budget), "\n"); body != "" {
+	if body := strings.TrimRight(render.Cap(sanitizeReviewBody(event.body), budget), "\n"); body != "" {
 		if _, err := fmt.Fprintf(w, "  %s\n", strings.ReplaceAll(body, "\n", "\n  ")); err != nil {
 			return fmt.Errorf("reviews: write event body: %w", err)
 		}

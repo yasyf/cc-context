@@ -45,24 +45,36 @@ case "$1 $2" in
     if [ "$count" -le "$open_calls" ]; then
       printf '%s' "$open_json"
     else
+      eval 'fail_after=${GH_PR_VIEW_FAIL_AFTER_'"$key"'-}'
+      if [ -n "$fail_after" ]; then
+        printf 'no pull requests found for branch "%s"\n' "$key" >&2
+        exit 1
+      fi
       eval 'done_json=${GH_PR_VIEW_DONE_JSON_'"$key"'-}'
       printf '%s' "$done_json"
     fi
     ;;
   "api --paginate")
-    if [ -n "$GH_API_FAIL_MARKER" ]; then
+    path=$3
+    case "$path" in
+      */pulls/*) rest=${path#*/pulls/}; num=${rest%%/*} ;;
+      */issues/*) rest=${path#*/issues/}; num=${rest%%/*} ;;
+      *) num= ;;
+    esac
+    eval 'fail_marker=${GH_API_FAIL_MARKER_'"$num"'-}'
+    if [ -z "$fail_marker" ]; then fail_marker=$GH_API_FAIL_MARKER; fi
+    if [ -n "$fail_marker" ]; then
       count=0
-      if [ -r "$GH_API_FAIL_MARKER" ]; then IFS= read -r count < "$GH_API_FAIL_MARKER" || :; fi
+      if [ -r "$fail_marker" ]; then IFS= read -r count < "$fail_marker" || :; fi
       count=${count:-0}
       if [ "$count" -gt 0 ]; then
         count=$((count - 1))
-        printf '%s' "$count" > "$GH_API_FAIL_MARKER"
+        printf '%s' "$count" > "$fail_marker"
         printf 'gh: transient network timeout\n' >&2
         exit 1
       fi
     fi
 
-    path=$3
     feed=
     case "$path" in
       */pulls/*/comments*) feed=INLINE ;;
@@ -397,9 +409,52 @@ func TestReviewsAbortsAfterMaxFailures(t *testing.T) {
 	}
 	t.Setenv("GH_API_FAIL_MARKER", failures)
 
-	_, err := runReviewsCmd(t, "7", "--since", "all")
-	if err == nil || !strings.Contains(err.Error(), "poll failed 5 consecutive cycles") {
-		t.Fatalf("reviews error = %v, want five-failure abort", err)
+	got, err := runReviewsCmd(t, "7", "--since", "all")
+	if err == nil || !strings.Contains(err.Error(), "1 of 1 target(s) aborted") {
+		t.Fatalf("reviews error = %v, want a 1-of-1 aborted error", err)
+	}
+	if !strings.Contains(got, "◆ pr#7 watch aborted") {
+		t.Errorf("aborted line missing:\n%s", got)
+	}
+	if !strings.HasSuffix(got, "watch done · 0 merged · 0 closed · 1 aborted\n") {
+		t.Errorf("completion summary mismatch:\n%s", got)
+	}
+}
+
+// TestReviewsMultiPRPartialFailureIsolation drives one healthy target (pr#1,
+// merges normally) alongside one persistently-failing target (pr#2, fails
+// every poll via its own GH_API_FAIL_MARKER_2): pr#1's events must still be
+// delivered, and only pr#2 aborts.
+func TestReviewsMultiPRPartialFailureIsolation(t *testing.T) {
+	setupReviews(t)
+	setReviewsTransition(t, 1, 1, "MERGED", true)
+	t.Setenv("GH_COMMENTS_JSON", `[{
+		"id":101,
+		"body":"healthy event",
+		"user":{"login":"alice"},
+		"html_url":"https://github.com/acme/repo/pull/1#issuecomment-101",
+		"created_at":"2026-07-20T18:00:00Z",
+		"updated_at":"2026-07-20T18:01:00Z"
+	}]`)
+	t.Setenv("GH_PR_VIEW_JSON_2", reviewsViewJSON(2, "OPEN", false))
+	failures := filepath.Join(t.TempDir(), "pr2-failures.marker")
+	if err := os.WriteFile(failures, []byte("5"), 0o600); err != nil {
+		t.Fatalf("write failures marker: %v", err)
+	}
+	t.Setenv("GH_API_FAIL_MARKER_2", failures)
+
+	got, err := runReviewsCmd(t, "1", "2", "--since", "all")
+	if err == nil || !strings.Contains(err.Error(), "1 of 2 target(s) aborted") {
+		t.Fatalf("reviews error = %v, want a 1-of-2 aborted error", err)
+	}
+	if !strings.Contains(got, "id 101") {
+		t.Errorf("healthy target's event missing:\n%s", got)
+	}
+	if !strings.Contains(got, "◆ pr#2 watch aborted") {
+		t.Errorf("failing target's abort line missing:\n%s", got)
+	}
+	if !strings.HasSuffix(got, "watch done · 1 merged · 0 closed · 1 aborted\n") {
+		t.Errorf("completion summary mismatch:\n%s", got)
 	}
 }
 
@@ -542,6 +597,77 @@ func TestReviewsBadEnvInterval(t *testing.T) {
 	_, err := runReviewsCmd(t, "7")
 	if !errors.Is(err, errBadReviewsPollInterval) {
 		t.Fatalf("reviews error = %v, want errBadReviewsPollInterval", err)
+	}
+}
+
+func TestReviewsPollIntervalFloor(t *testing.T) {
+	tests := []struct {
+		name    string
+		flag    time.Duration
+		changed bool
+		env     string
+	}{
+		{"flag zero", 0, true, ""},
+		{"flag negative", -time.Second, true, ""},
+		{"env zero", 0, false, "0s"},
+		{"env negative", 0, false, "-1s"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.env != "" {
+				t.Setenv(envReviewsPollInterval, tt.env)
+			}
+			_, err := reviewsPollInterval(tt.flag, tt.changed)
+			if !errors.Is(err, errReviewsIntervalNotPositive) {
+				t.Errorf("reviewsPollInterval(%v, %v) error = %v, want errReviewsIntervalNotPositive", tt.flag, tt.changed, err)
+			}
+		})
+	}
+}
+
+// TestReviewsStackNoTargets drives --stack from trunk (stackBranches returns
+// no branches), which must refuse rather than silently reporting a 0/0 watch.
+func TestReviewsStackNoTargets(t *testing.T) {
+	setupShipGT(t, false)
+	t.Setenv("GIT_BRANCH", "main")
+	t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true}}`)
+
+	_, err := runReviewsCmd(t, "--stack")
+	wantErr := "reviews: --stack found no stacked branches — run it from a stacked branch, not trunk"
+	if err == nil || err.Error() != wantErr {
+		t.Fatalf("reviews --stack error = %v, want %q", err, wantErr)
+	}
+}
+
+// TestWriteReviewEventSanitizesBody proves an ANSI escape, a \r spoof
+// attempt, and a control character are all stripped before the body reaches
+// the terminal.
+func TestWriteReviewEventSanitizesBody(t *testing.T) {
+	event := reviewEvent{
+		target:    &prTarget{Number: 7},
+		kind:      "comment",
+		author:    "alice",
+		body:      "\x1b[31mred\x1b[0m\r\nline2\x07bell",
+		htmlURL:   "https://example/1",
+		id:        1,
+		timestamp: time.Date(2026, 7, 20, 18, 0, 0, 0, time.UTC),
+	}
+	var out bytes.Buffer
+	if err := writeReviewEvent(&out, event, 0); err != nil {
+		t.Fatalf("writeReviewEvent error = %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, "\x1b") {
+		t.Errorf("ANSI escape leaked into output:\n%q", got)
+	}
+	if strings.Contains(got, "\r") {
+		t.Errorf("carriage return leaked into output:\n%q", got)
+	}
+	if strings.Contains(got, "\x07") {
+		t.Errorf("control character leaked into output:\n%q", got)
+	}
+	if !strings.Contains(got, "red") || !strings.Contains(got, "line2bell") {
+		t.Errorf("sanitized body lost content:\n%q", got)
 	}
 }
 

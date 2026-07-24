@@ -28,7 +28,8 @@ func writeRestackFakes(t *testing.T, dir string, withGT bool) {
     if [ -n "$RESTACK_GT_FAIL" ]; then
       printf '%s\n' "$RESTACK_GT_STDERR" >&2
       exit 1
-    fi ;;
+    fi
+    if [ -n "$RESTACK_SYNC_MARKER" ]; then : > "$RESTACK_SYNC_MARKER"; fi ;;
   state) printf '%s' "${RESTACK_GT_STATE:-{\"main\":{\"trunk\":true}}}" ;;
   *) printf 'fake gt: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
 esac
@@ -59,6 +60,18 @@ exit 0
 `
 	git := "#!/bin/sh\n" + log("git") + `case "$1 $2" in
   "branch --show-current") printf '%s\n' "${RESTACK_GIT_BRANCH:-feature}" ;;
+  "rev-parse HEAD")
+    if [ -e "$RESTACK_SYNC_MARKER" ]; then
+      printf '%s' "${RESTACK_GIT_REV_HEAD_AFTER:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}"
+    else
+      printf '%s' "${RESTACK_GIT_REV_HEAD_BEFORE:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+    fi ;;
+  "rev-parse main")
+    if [ -e "$RESTACK_SYNC_MARKER" ]; then
+      printf '%s' "${RESTACK_GIT_REV_TRUNK_AFTER:-dddddddddddddddddddddddddddddddddddddddd}"
+    else
+      printf '%s' "${RESTACK_GIT_REV_TRUNK_BEFORE:-cccccccccccccccccccccccccccccccccccccccc}"
+    fi ;;
   "config --get")
     if [ -n "$RESTACK_GIT_REMOTE" ]; then printf '%s\n' "$RESTACK_GIT_REMOTE"; else exit 1; fi ;;
   "symbolic-ref --short")
@@ -141,6 +154,9 @@ func setupRestack(t *testing.T, marker string, graphite, withGT bool) string {
 	logPath := filepath.Join(dir, "restack.log")
 	t.Setenv("PATH", binDir)
 	t.Setenv("RESTACK_LOG", logPath)
+	if withGT {
+		t.Setenv("RESTACK_SYNC_MARKER", filepath.Join(dir, "sync.marker"))
+	}
 	return logPath
 }
 
@@ -200,9 +216,57 @@ func TestRestackGTSuccess(t *testing.T) {
 		t.Fatalf("output = %q, want %q", out, "restacked · trunk main")
 	}
 	requireRestackRecords(t, logPath, [][]string{
-		{"gt", "sync", "--no-interactive"},
 		{"gt", "state"},
+		{"git", "rev-parse", "HEAD"},
+		{"git", "rev-parse", "main"},
+		{"gt", "sync", "--no-interactive"},
+		{"git", "rev-parse", "HEAD"},
+		{"git", "rev-parse", "main"},
 	})
+}
+
+func TestRestackGTNoOpReporting(t *testing.T) {
+	tests := []struct {
+		name        string
+		headBefore  string
+		headAfter   string
+		trunkBefore string
+		trunkAfter  string
+		want        string
+	}{
+		{
+			name: "sync moved HEAD", headBefore: "aaaa", headAfter: "bbbb",
+			trunkBefore: "cccc", trunkAfter: "cccc",
+			want: "restacked · trunk main",
+		},
+		{
+			name: "sync moved trunk", headBefore: "aaaa", headAfter: "aaaa",
+			trunkBefore: "cccc", trunkAfter: "dddd",
+			want: "restacked · trunk main",
+		},
+		{
+			name: "sync was a no-op", headBefore: "aaaa", headAfter: "aaaa",
+			trunkBefore: "cccc", trunkAfter: "cccc",
+			want: "already up to date · trunk main",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setupRestack(t, ".git", true, true)
+			t.Setenv("RESTACK_GIT_REV_HEAD_BEFORE", tt.headBefore)
+			t.Setenv("RESTACK_GIT_REV_HEAD_AFTER", tt.headAfter)
+			t.Setenv("RESTACK_GIT_REV_TRUNK_BEFORE", tt.trunkBefore)
+			t.Setenv("RESTACK_GIT_REV_TRUNK_AFTER", tt.trunkAfter)
+
+			out, _, err := runRestackCmd(t)
+			if err != nil {
+				t.Fatalf("restack: %v", err)
+			}
+			if out != tt.want {
+				t.Fatalf("output = %q, want %q", out, tt.want)
+			}
+		})
+	}
 }
 
 func TestRestackGTFailures(t *testing.T) {
@@ -253,6 +317,9 @@ func TestRestackGTFailures(t *testing.T) {
 				t.Fatalf("error = %q, want substring %q", err, tt.want)
 			}
 			requireRestackRecords(t, logPath, [][]string{
+				{"gt", "state"},
+				{"git", "rev-parse", "HEAD"},
+				{"git", "rev-parse", "main"},
 				{"gt", "sync", "--no-interactive"},
 			})
 		})
@@ -267,8 +334,8 @@ func TestRestackGraphiteFirst(t *testing.T) {
 			t.Fatalf("restack: %v", err)
 		}
 		records := readRestackLog(t, logPath)
-		if len(records) == 0 || !reflect.DeepEqual(records[0], []string{"gt", "sync", "--no-interactive"}) {
-			t.Fatalf("first argv = %#v, want gt sync", records)
+		if len(records) == 0 || records[0][0] != "gt" {
+			t.Fatalf("first argv = %#v, want a gt command (routed to the gt lane, not jj)", records)
 		}
 	})
 

@@ -84,6 +84,19 @@ func runRestack(cmd *cobra.Command, o restackOpts) error {
 }
 
 func restackGT(ctx context.Context, errW io.Writer) (string, error) {
+	state, err := gtStateQuery(ctx)
+	if err != nil {
+		return "", fmt.Errorf("restack: graphite state: %w", err)
+	}
+	trunk, err := gtTrunkBranch(state)
+	if err != nil {
+		return "", fmt.Errorf("restack: graphite trunk: %w", err)
+	}
+	beforeHead, beforeTrunk, err := gtRestackShas(ctx, trunk)
+	if err != nil {
+		return "", err
+	}
+
 	argv := []string{"sync", "--no-interactive"}
 	if shipStreamCI(errW) {
 		var output strings.Builder
@@ -94,15 +107,37 @@ func restackGT(ctx context.Context, errW io.Writer) (string, error) {
 		return "", classifyGTRestack(err)
 	}
 
-	state, err := gtStateQuery(ctx)
+	afterHead, afterTrunk, err := gtRestackShas(ctx, trunk)
 	if err != nil {
-		return "", fmt.Errorf("restack: graphite state: %w", err)
+		return "", err
 	}
-	trunk, err := gtTrunkBranch(state)
-	if err != nil {
-		return "", fmt.Errorf("restack: graphite trunk: %w", err)
+	if beforeHead == afterHead && beforeTrunk == afterTrunk {
+		return "already up to date · trunk " + trunk, nil
 	}
 	return "restacked · trunk " + trunk, nil
+}
+
+// gtRestackShas resolves HEAD's and trunk's current commit SHAs, so restackGT
+// can tell a no-op gt sync from one that actually moved something.
+func gtRestackShas(ctx context.Context, trunk string) (head, trunkSHA string, err error) {
+	head, err = gitRevParseSHA(ctx, "HEAD")
+	if err != nil {
+		return "", "", err
+	}
+	trunkSHA, err = gitRevParseSHA(ctx, trunk)
+	if err != nil {
+		return "", "", err
+	}
+	return head, trunkSHA, nil
+}
+
+// gitRevParseSHA resolves ref to its commit SHA.
+func gitRevParseSHA(ctx context.Context, ref string) (string, error) {
+	out, err := render.RunCLI(ctx, "git", []string{"rev-parse", ref})
+	if err != nil {
+		return "", fmt.Errorf("restack: git rev-parse %s: %w", ref, err)
+	}
+	return strings.TrimSpace(out), nil
 }
 
 func classifyGTRestack(err error) error {

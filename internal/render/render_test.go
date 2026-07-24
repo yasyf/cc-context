@@ -199,11 +199,23 @@ func TestCap(t *testing.T) {
 			budget: 1, // limit = 1*4 = 4 == len
 			want:   "abcd",
 		},
+		{
+			// No newline to cut at, so the fallback cut (limit=8) must snap back
+			// to the rune boundary at byte 6, not split the third 世 mid-rune.
+			id:     "no newline snaps the cut to a rune boundary",
+			s:      "世世世世世",
+			budget: 2,
+			want:   "世世\n… +1 lines, ~2 tokens omitted — re-run with a larger --budget\n",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {
-			if got := Cap(tt.s, tt.budget); got != tt.want {
+			got := Cap(tt.s, tt.budget)
+			if got != tt.want {
 				t.Errorf("Cap(%q, %d) = %q, want %q", tt.s, tt.budget, got, tt.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("Cap(%q, %d) = %q, not valid UTF-8", tt.s, tt.budget, got)
 			}
 		})
 	}

@@ -697,17 +697,48 @@ func mapEqual(a, b map[string]bool) bool {
 	return true
 }
 
-// requireLiveGT skips a live gt test when gt is off PATH, and isolates HOME and
-// XDG_CONFIG_HOME so gt's own config lives under a fresh TempDir instead of the
-// operator's real ~/.graphite. init/create/modify/state/track/restack all run
-// unauthenticated against that isolated config; sync and submit demand auth and
-// must never be invoked from a live test.
+// requireLiveGT skips a live gt test when gt is off PATH, isolates HOME,
+// XDG_CONFIG_HOME, and PATH (no brew) under a fresh TempDir, and clears
+// GRAPHITE_AUTH_TOKEN so gt never authenticates during a live test; sync
+// and submit are never invoked here.
 func requireLiveGT(t *testing.T) {
 	t.Helper()
 	requireLiveVCS(t, "git", "gt")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
+	t.Setenv("GRAPHITE_AUTH_TOKEN", "")
+	scrubBrewFromPATH(t)
+}
+
+// scrubBrewFromPATH rebuilds PATH from the resolved git/gt dirs plus the base
+// system dirs, dropping any Homebrew bin dir: gt's first run under a fresh
+// HOME shells out to brew, racing its bootsnap cache write against cleanup.
+func scrubBrewFromPATH(t *testing.T) {
+	t.Helper()
+	path := []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
+	seen := map[string]bool{}
+	for _, p := range path {
+		seen[p] = true
+	}
+	for _, bin := range []string{"git", "gt"} {
+		resolved, err := exec.LookPath(bin)
+		if err != nil {
+			t.Fatalf("resolve %s: %v", bin, err)
+		}
+		// A Homebrew formula's PATH entry is itself a symlink into a Cellar
+		// dir it shares with no other formula; resolve it or brew's own bin
+		// dir (holding the symlink) leaks back onto PATH.
+		target, err := filepath.EvalSymlinks(resolved)
+		if err != nil {
+			t.Fatalf("resolve symlink %s: %v", resolved, err)
+		}
+		if dir := filepath.Dir(target); !seen[dir] {
+			seen[dir] = true
+			path = append(path, dir)
+		}
+	}
+	t.Setenv("PATH", strings.Join(path, string(os.PathListSeparator)))
 }
 
 // setupLiveGTRepo stands up a config-isolated git repo with a graphite trunk
@@ -820,5 +851,55 @@ func TestShipLiveGT(t *testing.T) {
 	}
 	if len(entry.Parents) != 1 || entry.Parents[0].Ref != "main" {
 		t.Errorf("gt state parents for untracked-branch = %+v, want a single main parent", entry.Parents)
+	}
+}
+
+// TestShipGTHunkScopedLive exercises the gt lane's hunk-scoped commit against
+// real gt and git binaries, proving the same staged-content-survivor property
+// TestShipGitHunkScopedLive proves for the git lane: an unrelated staged file
+// must ride through the temp-index commit untouched.
+func TestShipGTHunkScopedLive(t *testing.T) {
+	requireLiveGT(t)
+	dir := setupLiveGTRepo(t, "a\nb\nc\nd\ne\n")
+
+	if err := os.WriteFile(filepath.Join(dir, "staged.txt"), []byte("staged\n"), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("write staged: %v", err)
+	}
+	mustRun(t, dir, "git", "add", "staged.txt")
+	const current = "A\nb\nc\nd\nE\n"
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte(current), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("write current: %v", err)
+	}
+
+	refs := liveHunkRefs(t, "f.txt")
+	if len(refs) == 0 {
+		t.Fatal("want at least one hunk ref")
+	}
+	before := statOf(t, "f.txt")
+
+	if _, err := runShipCmd(t, "-m", "partial ship", "--no-push", "--only-hunk", refs[0], "f.txt"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+
+	const wantCommitted = "A\nb\nc\nd\ne\n"
+	if got := mustRun(t, dir, "git", "show", "HEAD:f.txt"); got != wantCommitted {
+		t.Errorf("committed (HEAD:f.txt) = %q, want %q", got, wantCommitted)
+	}
+	if got := readFileStr(t, "f.txt"); got != current {
+		t.Errorf("worktree f.txt = %q, want %q (byte-identical to pre-ship)", got, current)
+	}
+	if after := statOf(t, "f.txt"); !after.equal(before) {
+		t.Errorf("worktree stat changed: before=%+v after=%+v (temp-index lane must not touch the worktree)", before, after)
+	}
+
+	// staged.txt must stay staged and uncommitted; f.txt must show
+	// modified-unstaged (index synced to new HEAD, worktree still the full current).
+	status := statusSet(t, dir)
+	want := map[string]bool{"A  staged.txt": true, " M f.txt": true}
+	if !mapEqual(status, want) {
+		t.Errorf("git status --porcelain = %v, want %v", status, want)
+	}
+	if _, err := runGit(dir, "show", "HEAD:staged.txt"); err == nil {
+		t.Errorf("staged.txt must not be committed, but HEAD:staged.txt resolved")
 	}
 }

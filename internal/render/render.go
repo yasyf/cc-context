@@ -238,7 +238,7 @@ func capTrim(s string, budgetTokens int) (kept, omitted string, trimmed bool) {
 	}
 	cut := strings.LastIndexByte(s[:limit], '\n')
 	if cut < 0 {
-		cut = limit
+		cut = snapRuneStart(s, limit)
 	}
 	return s[:cut], s[cut:], true
 }
