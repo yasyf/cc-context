@@ -82,6 +82,11 @@ type shipOpts struct {
 	bookmark  string
 	skipHunks []string
 	onlyHunks []string
+	create    string
+	draft     bool
+	publish   bool
+	noGT      bool
+	reviews   bool
 }
 
 type ciRun struct {
@@ -117,7 +122,11 @@ func newShipCmd() *cobra.Command {
 		Short: "Commit, push, and watch CI in one step",
 		Long: `Commit, push, and watch CI in one step.
 
-Ship refuses an empty working copy (the usual cause: a prior ship already landed the commit in @-) and resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>, autostashing uncommitted work); a rebase that would conflict is rolled back and reported instead of pushed. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.`,
+Ship refuses an empty working copy (the usual cause: a prior ship already landed the commit in @-) and resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>, autostashing uncommitted work); a rebase that would conflict is rolled back and reported instead of pushed. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
+
+A live Graphite config (.git/.graphite_repo_config) routes ship to the gt lane instead, even in colocated jj repos; --no-gt falls back to the jj/git detection above. The gt lane commits through gt: on trunk, -m auto-creates a stacked branch named from the message; on a stacked branch, -m appends a commit and --amend amends the branch tip. --create starts a new stacked branch on top of the current one — bare --create derives the name from the message, and an explicit name must be spelled --create=name (cobra parses "--create name" as a path operand to commit). Instead of pushing, the lane submits the downstack with gt submit, published by default; --draft submits drafts, --publish makes the default explicit. Ship never fetches, rebases, or retries in the gt lane — gt owns restacking — so it refuses up front on an untracked branch (run gt track, or pass --no-gt), on needs_restack anywhere on the downstack (run gt restack, then re-run ship), and on --amend on trunk; a failed submit reports gt's own recovery step (gt restack, gt sync, or gt auth) instead of retrying. The report names the submitted branch and its PR: submitted <branch> → PR #<n> <url>.
+
+--reviews keeps listening after the CI watch: each new review comment on the pushed branch's PR — every submitted PR, in the gt lane — streams to stdout until all are merged or closed. The standalone surface, with attach and replay knobs (--since, --interval, --budget, --stack), is ccx vcs reviews.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			o.paths = args
@@ -133,6 +142,14 @@ Ship refuses an empty working copy (the usual cause: a prior ship already landed
 	cmd.Flags().StringVar(&o.bookmark, "bookmark", "", "jj bookmark to advance and push")
 	cmd.Flags().StringArrayVar(&o.skipHunks, "skip-hunk", nil, "commit everything except this hunk ref (repeatable; refs from ccx vcs hunks)")
 	cmd.Flags().StringArrayVar(&o.onlyHunks, "only-hunk", nil, "commit only this hunk ref in its file (repeatable; refs from ccx vcs hunks)")
+	cmd.Flags().StringVar(&o.create, "create", "", "start a new stacked branch on top of the current one (graphite lane only); bare --create derives the name from the message, an explicit name must be spelled --create=name")
+	cmd.Flags().Lookup("create").NoOptDefVal = gtNoOptCreate
+	cmd.Flags().BoolVar(&o.draft, "draft", false, "submit new PRs as drafts (graphite lane only)")
+	cmd.Flags().BoolVar(&o.publish, "publish", false, "publish new PRs (graphite lane only; the default when neither is passed)")
+	cmd.Flags().BoolVar(&o.noGT, "no-gt", false, "ignore a live graphite config and fall back to the jj/git detection")
+	cmd.Flags().BoolVar(&o.reviews, "reviews", false, "after the CI watch, keep streaming new PR review comments until every submitted PR is merged or closed")
+	cmd.MarkFlagsMutuallyExclusive("create", "amend")
+	cmd.MarkFlagsMutuallyExclusive("draft", "publish")
 	return cmd
 }
 
@@ -142,11 +159,24 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	if kind == vcs.None {
 		return errors.New("ship: no git or jj repository in the working directory")
 	}
+	gtLane := !o.noGT && (kind == vcs.Git || kind == vcs.JJ) && vcs.GraphiteRepo(root)
+	if gtLane {
+		if _, gerr := exec.LookPath("gt"); gerr != nil {
+			return errors.New("ship: graphite config found but gt not on PATH — install graphite (brew install graphite) or pass --no-gt")
+		}
+		kind = vcs.Git
+	}
+	if !gtLane && (o.create != "" || o.draft || o.publish) {
+		return errors.New("ship: --create/--draft/--publish apply only to graphite repos; pass --no-gt only when .git/.graphite_repo_config exists, or drop these flags")
+	}
 	if o.bookmark != "" && kind != vcs.JJ {
 		return errors.New("ship: --bookmark applies only to jj repositories")
 	}
 	if !o.amend && o.message == "" {
 		return errors.New("ship: -m/--message is required unless --amend")
+	}
+	if o.reviews && o.noPush {
+		return errors.New("ship: --reviews requires push (drop --no-push)")
 	}
 
 	sel, err := parseShipSelection(ctx, kind, o)
@@ -159,7 +189,14 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		}
 	}
 	var target string
-	if !o.noPush {
+	var plan gtPlan
+	switch {
+	case gtLane:
+		plan, err = shipPreflightGT(ctx, o)
+		if err != nil {
+			return err
+		}
+	case !o.noPush:
 		target, err = shipPreflight(ctx, kind, o)
 		if err != nil {
 			return err
@@ -172,7 +209,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	}
 
 	var preAmendSHA string
-	if !o.noPush && kind == vcs.Git && o.amend {
+	if !o.noPush && kind == vcs.Git && o.amend && !gtLane {
 		out, rerr := render.RunCLI(ctx, "git", []string{"rev-parse", "HEAD"})
 		if rerr != nil {
 			return fmt.Errorf("ship: git rev-parse HEAD: %w", rerr)
@@ -180,7 +217,12 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		preAmendSHA = strings.TrimSpace(out)
 	}
 
-	hookSeg, err := shipCommit(ctx, cmd.ErrOrStderr(), root, kind, o, sel)
+	var hookSeg string
+	if gtLane {
+		hookSeg, err = shipCommitGT(ctx, cmd.ErrOrStderr(), root, o, sel, plan)
+	} else {
+		hookSeg, err = shipCommit(ctx, cmd.ErrOrStderr(), root, kind, o, sel)
+	}
 	if err != nil {
 		return err
 	}
@@ -202,7 +244,13 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		return nil
 	}
 
-	branch, remote, rebased, err := shipPush(ctx, kind, o, target, preAmendSHA)
+	var branch, remote string
+	var rebased int
+	if gtLane {
+		branch, err = shipPushGT(ctx, o)
+	} else {
+		branch, remote, rebased, err = shipPush(ctx, kind, o, target, preAmendSHA)
+	}
 	if err != nil {
 		return err
 	}
@@ -214,22 +262,47 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		segments[committedSegment] = fmt.Sprintf("committed %s %q", short, subject)
 		segments = append(segments, fmt.Sprintf("rebased %d commit(s) onto %s", rebased, branch))
 	}
-	segments = append(segments, fmt.Sprintf("pushed %s → %s", branch, remote))
+	if gtLane {
+		segments = append(segments, gtPRSegment(ctx, branch, plan.depth))
+	} else {
+		segments = append(segments, fmt.Sprintf("pushed %s → %s", branch, remote))
+	}
+
+	var reviewBranches []string
+	if o.reviews {
+		if gtLane {
+			reviewBranches, err = stackBranches(ctx)
+			if err != nil {
+				return err
+			}
+		} else {
+			reviewBranches = []string{branch}
+		}
+	}
 
 	if o.noWatch {
 		cmd.Println(strings.Join(segments, shipSep))
+		if o.reviews {
+			return shipWatchReviews(ctx, cmd.OutOrStdout(), reviewBranches)
+		}
 		return nil
 	}
 
 	ciSeg, report, ciErr := shipWatchCI(ctx, cmd.ErrOrStderr(), kind, o.budget)
 	if ciSeg == "" {
 		cmd.Println(strings.Join(segments, shipSep))
+		if o.reviews {
+			return errors.Join(ciErr, shipWatchReviews(ctx, cmd.OutOrStdout(), reviewBranches))
+		}
 		return ciErr
 	}
 	segments = append(segments, ciSeg)
 	cmd.Println(strings.Join(segments, shipSep))
 	for _, line := range report {
 		cmd.Println(line)
+	}
+	if o.reviews {
+		return errors.Join(ciErr, shipWatchReviews(ctx, cmd.OutOrStdout(), reviewBranches))
 	}
 	return ciErr
 }

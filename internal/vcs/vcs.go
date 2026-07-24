@@ -60,6 +60,17 @@ func DetectRoot(dir string) (Kind, string) {
 	}
 }
 
+// GraphiteRepo reports whether root has a live Graphite configuration
+// (.git/.graphite_repo_config), the signal that routes ship to the gt lane —
+// even over a colocated jj root, since the config lives under .git. A linked
+// git worktree's .git is a file rather than a directory, so the join always
+// misses there and GraphiteRepo reports false, falling back to the plain-git
+// lane.
+func GraphiteRepo(root string) bool {
+	_, err := os.Stat(filepath.Join(root, ".git", ".graphite_repo_config"))
+	return err == nil
+}
+
 // stagedSource is the source string for a staged (index vs @-) diff; ResolveDiffPlan
 // routes it to stagedPlan and translateRevset classifies it as translationStaged.
 const stagedSource = "staged"

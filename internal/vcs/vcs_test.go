@@ -85,6 +85,45 @@ func TestDetectRoot(t *testing.T) {
 	}
 }
 
+func TestGraphiteRepo(t *testing.T) {
+	root := t.TempDir()
+
+	withConfig := filepath.Join(root, "withconfig")
+	mustMkdir(t, filepath.Join(withConfig, ".git"))
+	if err := os.WriteFile(filepath.Join(withConfig, ".git", ".graphite_repo_config"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write graphite config: %v", err)
+	}
+
+	withoutConfig := filepath.Join(root, "withoutconfig")
+	mustMkdir(t, filepath.Join(withoutConfig, ".git"))
+
+	// A linked git worktree's .git is a file (a "gitdir: …" pointer), not a
+	// directory, so joining .graphite_repo_config onto it can never resolve.
+	worktree := filepath.Join(root, "worktree")
+	mustMkdir(t, worktree)
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: ../withconfig/.git/worktrees/worktree\n"), 0o600); err != nil {
+		t.Fatalf("write worktree .git file: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		dir  string
+		want bool
+	}{
+		{"graphite config present", withConfig, true},
+		{"git dir without graphite config", withoutConfig, false},
+		{"linked worktree (.git is a file) never matches", worktree, false},
+		{"no .git at all", root, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := GraphiteRepo(tt.dir); got != tt.want {
+				t.Fatalf("GraphiteRepo(%q) = %v, want %v", tt.dir, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestTranslateRevset(t *testing.T) {
 	tests := []struct {
 		id     string
