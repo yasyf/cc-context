@@ -27,8 +27,12 @@ case "$1 $2" in
     fi
     operand=
     if [ "$3" != "--json" ]; then operand=$3; fi
-    key=$operand
-    if [ -z "$key" ]; then key=DEFAULT; fi
+    # operands can be branch names with chars illegal in var names (dash rejects the eval); no external
+    # tools exist on the fake PATH, so route non-identifier operands to the un-keyed fallback vars instead
+    case $operand in
+      "" | *[!A-Za-z0-9_]*) key=DEFAULT ;;
+      *) key=$operand ;;
+    esac
     eval 'open_json=${GH_PR_VIEW_JSON_'"$key"'-}'
     if [ -z "$open_json" ]; then open_json=$GH_PR_VIEW_JSON; fi
     eval 'marker=${GH_PR_VIEW_MARKER_'"$key"'-}'
