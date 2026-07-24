@@ -9,10 +9,13 @@
 /internal/semsearch/chunk/grammars/*.wasm.gz
 /internal/semsearch/chunk/wasm/.build/
 
-# plugin/bin is on the Bash tool's PATH; it holds only symlinks the installer
-# manages (brew binary, data-dir payload, or dev build) — never a real binary
+# plugin/bin is on the Bash tool's PATH. It holds the committed binrun wrappers —
+# the install-binary.sh symlink and the version-exact ccx.binrun descriptor — so
+# those are un-ignored; a stray real binary a dev build drops stays ignored.
 plugin/bin/*
 !plugin/bin/.gitkeep
+!plugin/bin/ccx
+!plugin/bin/ccx.binrun
 
 # agent scratchpads and stray root builds
 /ccx

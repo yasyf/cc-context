@@ -1,9 +1,10 @@
 #!/bin/sh
-# MCP launcher: provision ccx (installer output to stderr — stdout is the MCP
-# transport), then exec the stdio server. bin/ccx is a symlink by design; with
-# nothing resolved the exec fails loudly.
+# MCP launcher: exec ccx's stdio server. bin/ccx is the binrun wrapper — it
+# resolves the version-exact artifact (bootstrapping the runner if needed) and
+# execs it, so a bare invocation both provisions and runs. stdout is the MCP
+# transport; the wrapper and binrun log to stderr, and SessionStart pre-warms
+# the cache so a cold resolve never races the first request.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-"$ROOT/scripts/install-binary.sh" >&2 || true
 exec "$ROOT/bin/ccx" mcp

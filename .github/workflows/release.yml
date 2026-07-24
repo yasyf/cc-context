@@ -12,8 +12,6 @@ jobs:
     uses: yasyf/homebrew-tap/.github/workflows/release-go.yml@52b26a1684d94ae2669d124f844148deaa4f5baf
     secrets: inherit
     with:
-      # plugin.json version must equal the tag; install-binary.sh 404s otherwise.
-      plugin-manifest: plugin/.claude-plugin/plugin.json
       # ccx ships as a formula (livecheck + `brew install --HEAD` source build +
       # runtime depends_on ast-grep/uv) rendered from its template — goreleaser's
       # brews block can't express that, so render-formula + publish handle the .rb.
@@ -58,3 +56,59 @@ jobs:
           tar xzf ccx.tgz
           test "$(./ccx exec '40+2')" = "42"
           test "$(echo '{"k": [1, 2, 3]}' | ./ccx format)" = '{"k":[1,2,3]}'
+
+  # Refresh the committed binrun descriptor (plugin/bin/ccx.binrun) to pin the
+  # just-released version, and move the plugin manifest to the same version in
+  # the same commit. Both live in-tree because the plugin marketplace serves
+  # main HEAD, so the version-exact descriptor and the manifest must both be on
+  # main; the descriptor is re-uploaded to the release for parity. Bumping
+  # plugin.json here (not in a separate hand commit) keeps it in lockstep with
+  # the descriptor, so the CI agreement gate stays green after every release.
+  # Gates on `release` (not a `release: published` trigger) because a release
+  # goreleaser creates with the default GITHUB_TOKEN does not fire `release`
+  # events for other workflows.
+  descriptor:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Download release archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p dist
+          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+            --dir dist --pattern '*.tar.gz' --pattern 'checksums.txt'
+      - name: Render descriptor and sync manifest version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          plugin/scripts/render-descriptor.sh dist "$version" > plugin/bin/ccx.binrun
+          chmod +x plugin/bin/ccx.binrun
+          jq --arg v "$version" '.version = $v' plugin/.claude-plugin/plugin.json > plugin/.claude-plugin/plugin.json.tmp
+          mv plugin/.claude-plugin/plugin.json.tmp plugin/.claude-plugin/plugin.json
+      - name: Validate descriptor
+        run: go run github.com/yasyf/binrun/cmd/binrun@v0.1.1 -- parse plugin/bin/ccx.binrun
+      - name: Commit refreshed descriptor and manifest to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- plugin/bin/ccx.binrun plugin/.claude-plugin/plugin.json; then
+            echo "descriptor and manifest already current for ${GITHUB_REF_NAME}"
+          else
+            git add plugin/bin/ccx.binrun plugin/.claude-plugin/plugin.json
+            git commit -m "chore(release): sync ccx.binrun + manifest to ${GITHUB_REF_NAME}"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
+      - name: Upload descriptor to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" plugin/bin/ccx.binrun --repo "${GITHUB_REPOSITORY}" --clobber

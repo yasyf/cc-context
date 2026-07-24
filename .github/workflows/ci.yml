@@ -176,3 +176,14 @@ jobs:
       # the harness.
       - name: Guard-pack pytest
         run: PYTHONPATH=plugin/capt-hook uv run --no-project --no-config --python 3.13 --with capt-hook --with pytest python -m pytest plugin/capt-hook/hooks/
+
+  descriptor-agreement:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Plugin manifest version equals the pinned binrun descriptor
+        run: |
+          manifest="$(jq -r .version plugin/.claude-plugin/plugin.json)"
+          pinned="$(tail -n +2 plugin/bin/ccx.binrun | jq -r .version.static)"
+          echo "manifest=$manifest pinned=$pinned"
+          test "$manifest" = "$pinned"
