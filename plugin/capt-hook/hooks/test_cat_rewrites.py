@@ -1,4 +1,4 @@
-"""Filesystem-classifying tests for ``cat_rewrites``.
+"""Filesystem-classifying tests for the ``cat_rewrites`` single-file rewrite.
 
 Run from the repo root against the captain-hook source env, with ``plugin/`` on the path so
 the ``hooks`` package (and its relative imports) resolves::
@@ -6,11 +6,9 @@ the ``hooks`` package (and its relative imports) resolves::
     PYTHONPATH=plugin/capt-hook uv run --project ../captain-hook --with pytest \
         pytest plugin/capt-hook/hooks/test_cat_rewrites.py
 
-The single-file rewrite and the multi-file block classify operands against the filesystem
-(``is_large`` / ``Path.stat``), so they can't live in inline ``tests={}`` — they would rewrite
-or block depending on what happens to exist on disk. Here a ``tmp_path`` tree pins the sizes,
-``$HOME`` is monkeypatched for ``~`` expansion, and ``cat_rewrites.ccx_bin`` is pinned so the
-emitted command is deterministic and the "ccx unresolvable" block lane is exercised for real.
+The rewrite classifies its operand against the filesystem, so ``tmp_path`` pins sizes,
+``$HOME`` is monkeypatched for ``~`` expansion, and ``cat_rewrites.ccx_bin`` is pinned for a
+deterministic emitted command.
 """
 
 from __future__ import annotations
@@ -112,12 +110,21 @@ class TestCatTo:
         evt, occ = evt_occ(f"cat {tmp_path / 'ghost.md'}")
         assert cat_rewrites.cat_to(evt, occ) is None
 
-    def test_ccx_unresolvable_never_emits(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_ccx_unresolvable_allows(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(cat_rewrites, "ccx_bin", lambda: None)
         big = tmp_path / "big.md"
         big.write_bytes(b"x" * (cat_rewrites.LARGE_READ_BYTES + 1))
         evt, occ = evt_occ(f"cat {big}")
         assert cat_rewrites.cat_to(evt, occ) is None
+        assert cat_rewrites.BareCat().check_command_line(evt, evt.cmd.line) is False
+
+    def test_multi_file_allows_regardless_of_size(self, tmp_path: Path) -> None:
+        files = [tmp_path / name for name in ("a.md", "b.md")]
+        for file in files:
+            file.write_bytes(b"x" * (cat_rewrites.LARGE_READ_BYTES + 1))
+        evt, occ = evt_occ(f"cat {files[0]} {files[1]}")
+        assert cat_rewrites.cat_to(evt, occ) is None
+        assert cat_rewrites.BareCat().check_command_line(evt, evt.cmd.line) is False
 
     def test_compound_rewrites_only_the_large_occurrence(self, tmp_path: Path) -> None:
         big = tmp_path / "big.md"
@@ -127,66 +134,6 @@ class TestCatTo:
         assert cat_rewrites.cat_to(evt, first) == f"/fake/ccx code read {big} --full"
         assert cat_rewrites.cat_to(evt, echo) is None
         assert cat_rewrites.cat_to(evt, ghost) is None
-
-
-class TestCatBlock:
-    def large(self, tmp_path: Path, name: str, size: int) -> Path:
-        f = tmp_path / name
-        f.write_bytes(b"x" * size)
-        return f
-
-    def test_single_large_blocks_only_without_ccx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        big = self.large(tmp_path, "big.md", cat_rewrites.LARGE_READ_BYTES + 1)
-        evt, occ = evt_occ(f"cat {big}")
-        monkeypatch.setattr(cat_rewrites, "ccx_bin", lambda: "/fake/ccx")
-        assert cat_rewrites.cat_block(evt, occ) is False  # ccx resolves → cat_to rewrites, no block
-        monkeypatch.setattr(cat_rewrites, "ccx_bin", lambda: None)
-        assert cat_rewrites.cat_block(evt, occ) is True  # ccx gone → never emit a broken command
-
-    def test_single_small_passes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(cat_rewrites, "ccx_bin", lambda: None)
-        small = self.large(tmp_path, "small.md", 64)
-        evt, occ = evt_occ(f"cat {small}")
-        assert cat_rewrites.cat_block(evt, occ) is False
-
-    @pytest.mark.parametrize("command", ["cat $d/main.go", "cat go.mod"], ids=["dollar", "manifest"])
-    def test_single_out_of_lane_passes(
-        self, command: str, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(cat_rewrites, "ccx_bin", lambda: None)
-        evt, occ = evt_occ(command)
-        assert cat_rewrites.cat_block(evt, occ) is False
-
-    def test_multi_file_sum_over_cap_blocks(self, tmp_path: Path) -> None:
-        a = self.large(tmp_path, "a.md", 15_000)
-        b = self.large(tmp_path, "b.md", 15_000)
-        evt, occ = evt_occ(f"cat {a} {b}")
-        assert cat_rewrites.cat_block(evt, occ) is True
-
-    def test_multi_file_sum_under_cap_passes(self, tmp_path: Path) -> None:
-        a = self.large(tmp_path, "a.md", 5_000)
-        b = self.large(tmp_path, "b.md", 5_000)
-        evt, occ = evt_occ(f"cat {a} {b}")
-        assert cat_rewrites.cat_block(evt, occ) is False
-
-    def test_multi_file_nonexistent_and_dollar_operands_dont_count(self, tmp_path: Path) -> None:
-        # Only stat-able operands sum; a $-expansion and a missing file contribute nothing, so the
-        # 5 KB real file keeps the line under the cap.
-        a = self.large(tmp_path, "a.md", 5_000)
-        evt, occ = evt_occ(f"cat {a} $d/x.md {tmp_path / 'ghost.md'}")
-        assert cat_rewrites.cat_block(evt, occ) is False
-
-    def test_multi_file_one_over_cap_blocks_despite_dollar_sibling(self, tmp_path: Path) -> None:
-        big = self.large(tmp_path, "big.md", cat_rewrites.LARGE_READ_BYTES + 1)
-        evt, occ = evt_occ(f"cat {big} $d/x.md")
-        assert cat_rewrites.cat_block(evt, occ) is True
-
-    def test_home_multi_file_expands(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HOME", str(tmp_path))
-        self.large(tmp_path, "a.md", 15_000)
-        self.large(tmp_path, "b.md", 15_000)
-        evt, occ = evt_occ("cat ~/a.md ~/b.md")
-        assert cat_rewrites.cat_block(evt, occ) is True
 
 
 class TestManifestClassifier:
@@ -222,12 +169,9 @@ class TestLineHasHeredoc:
     def test_detects_heredoc(self, command: str, expected: bool) -> None:
         assert cat_rewrites.line_has_heredoc(make_evt(command)) is expected
 
-    def test_heredoc_declines_rewrite_and_block(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # A large operand on a heredoc line still declines both lanes — per-occurrence heredoc
-        # detection is unsound, so the whole line is left untouched.
-        monkeypatch.setattr(cat_rewrites, "ccx_bin", lambda: None)
+    def test_heredoc_declines_rewrite(self, tmp_path: Path) -> None:
+        # Per-occurrence heredoc detection is unsound, so the whole line is left untouched.
         big = tmp_path / "big.md"
         big.write_bytes(b"x" * (cat_rewrites.LARGE_READ_BYTES + 1))
         evt, occ = evt_occ(f"cat {big} <<EOF")
         assert cat_rewrites.cat_to(evt, occ) is None
-        assert cat_rewrites.cat_block(evt, occ) is False

@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import re
 import shlex
-import subprocess
+import sys
 from pathlib import Path
-from stat import S_ISDIR, S_ISREG
 from typing import TYPE_CHECKING, NamedTuple
 
 from captain_hook import (
@@ -21,14 +19,13 @@ from captain_hook import (
     Warn,
     nudge,
 )
-from captain_hook.util.shell import normalize_executable
 
-from .common import IDENT_ALT, LARGE_READ_BYTES, LITERAL_SAFE, ccx_bin, ccx_supports
+from .common import IDENT_ALT, ccx_bin, ccx_supports
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from cc_transcript.command import Command, Occurrence
+    from cc_transcript.command import Command
 
 # The cc-transcript steer: sent when a gated grep/rg's operands are ALL session transcripts.
 TRANSCRIPT_STEER = (
@@ -40,6 +37,14 @@ TRANSCRIPT_STEER = (
 TRANSCRIPT_APPEND = (
     "Also — the ~/.claude/projects operand is a session transcript: use cc-transcript "
     "(list / grep / show), not raw grep or ccx code grep."
+)
+
+# The dep-reader steer: sent when a gated grep/rg targets a hidden dependency/VCS-internal segment.
+DEP_STEER = (
+    "BLOCKED: Dependency or VCS-internal source (`.venv`, `node_modules`, `.git`, vendored packages) "
+    "floods context. Spawn the `cc-context:dep-reader` agent with the package and your question — it "
+    "returns cited conclusions, never the source. Inline: `ccx repo locate <pkg>` (CLI-only), then "
+    "`ccx code grep`/`outline`/`read` with the printed path."
 )
 
 
@@ -59,23 +64,9 @@ NL_PHRASE = re.compile(r"^[a-z]+(?: [a-z]+)+$")
 # Short flags naming a numeric context window (`-A/-B/-C N`).
 CONTEXT_SHORT = frozenset("ABC")
 
-# Value/pattern shorts an engine maps at a bundle HEAD (`-C3`, `-e`, rg `-g`), so :func:`block_reason`
-# blames them only glued INTERIOR (`-rnC3`).
-MAPS_AT_HEAD = CONTEXT_SHORT | frozenset("eg")
-
-# An `--include` value is a glob, not a pattern, so it skips LITERAL_SAFE — but it must be a
-# simple glob (no braces, no spaces) to compose cleanly onto a braced multi-dir root.
+# An `--include` value is a glob, not a pattern — but it must be a simple glob (no braces,
+# no spaces) to compose cleanly onto a braced multi-dir root.
 INCLUDE_SAFE = re.compile(r"^[\w*?./\[\]-]+$")
-
-# Data-file suffixes that make a raw `rg` a sanctioned non-source search (`rg ERROR app.log`),
-# exempt from the rg gate. A purely textual `Path.suffix` check — no stat.
-NON_SOURCE_EXTS = frozenset(
-    {".log", ".txt", ".csv", ".tsv", ".json", ".jsonl", ".ndjson", ".yaml", ".yml", ".toml", ".ini"}
-)
-
-# Line cap for a bounding `head -n`/`tail -n` sink; byte counts (`-c`) cap at LARGE_READ_BYTES.
-SINK_LINE_CAP = 2000
-DIR_WALK_ENTRY_CAP = 2000
 
 
 class RgIdentAlternation(CustomCommandLineCondition):
@@ -155,316 +146,6 @@ nudge(
 )
 
 
-def unpiped(cl: CommandLine, exe: str) -> bool:
-    """Report whether ``exe`` runs as a file searcher — not merely as a pipe sink consuming stdin."""
-    return any(
-        cmd.executable == exe and (i == 0 or cl.parts[i - 1][1] != "|") for i, (cmd, _) in enumerate(cl.parts)
-    )
-
-
-def plain_count(count: str, cap: int) -> bool:
-    """Whether ``count`` is a plain ASCII integer within ``cap``. ``str.isdigit`` alone admits
-    Unicode digits (``²``) that ``int()`` rejects, and a thousands-digit run trips Python's
-    int-conversion limit — both fail closed here instead of raising mid-hook."""
-    return count.isascii() and count.isdigit() and len(count) <= 10 and int(count) <= cap
-
-
-def count_bounded(flag: str, count: str) -> bool:
-    """Whether a ``head``/``tail`` ``-n``/``-c`` count keeps the sink bounded: a plain number within
-    :data:`SINK_LINE_CAP` lines or :data:`~hooks.common.LARGE_READ_BYTES` bytes — ``head -c 100000000``
-    is the flood the sink pretends to cap, and a ``+``/suffixed count is not a plain cap."""
-    return plain_count(count, LARGE_READ_BYTES if flag == "-c" else SINK_LINE_CAP)
-
-
-def tail_bounded(args: tuple[str, ...]) -> bool:
-    """Whether a terminal ``tail`` bounds its output.
-
-    Bare ``tail`` and ``tail -n N``/``tail -c N`` with a plain in-cap count (:func:`count_bounded`) cap
-    the stream to its last N lines/bytes. ``tail -f`` follows forever, a ``+``-prefixed count
-    (``tail -n +5``) prints from an offset through EOF, and an over-cap count re-opens the flood — all
-    forfeit the sink. Conservative: an unrecognized token (a positional filename, ``--lines=``) returns
-    False, never a wrong allow.
-    """
-    i, n = 0, len(args)
-    while i < n:
-        a = args[i]
-        if a in ("-n", "-c"):
-            if i + 1 >= n or not count_bounded(a, args[i + 1]):
-                return False
-            i += 2
-            continue
-        if a.startswith(("-n", "-c")) and count_bounded(a[:2], a[2:]):
-            i += 1
-            continue
-        return False
-    return True
-
-
-def head_bounded(args: tuple[str, ...]) -> bool:
-    """Whether a terminal ``head`` bounds its output.
-
-    Bare ``head`` caps at 10 lines; ``-n N``/``-c N`` (separate, glued, or the legacy ``-N``) stay
-    bounded only while the count is in-cap (:func:`count_bounded`). Conservative: an unrecognized
-    token returns False, never a wrong allow.
-    """
-    i, n = 0, len(args)
-    while i < n:
-        a = args[i]
-        if a in ("-n", "-c"):
-            if i + 1 >= n or not count_bounded(a, args[i + 1]):
-                return False
-            i += 2
-            continue
-        if a.startswith(("-n", "-c")) and count_bounded(a[:2], a[2:]):
-            i += 1
-            continue
-        if len(a) > 1 and a[0] == "-" and count_bounded("-n", a[1:]):
-            i += 1
-            continue
-        return False
-    return True
-
-
-def sed_addr_bounded(addr: str) -> bool:
-    """A numeric sed address within the sink cap and at least 1 — BSD sed never matches address 0,
-    so ``0q`` never quits and autoprint floods."""
-    return plain_count(addr, SINK_LINE_CAP) and int(addr) > 0
-
-
-def sed_script_bounded(script: str, *, quiet: bool) -> bool:
-    i, n = 0, len(script)
-    while i < n and script[i].isspace():
-        i += 1
-    start = i
-    while i < n and "0" <= script[i] <= "9":
-        i += 1
-    if i == start:
-        return False
-    first = script[start:i]
-    while i < n and script[i].isspace():
-        i += 1
-    second: str | None = None
-    if i < n and script[i] == ",":
-        i += 1
-        while i < n and script[i].isspace():
-            i += 1
-        start = i
-        while i < n and "0" <= script[i] <= "9":
-            i += 1
-        if i == start:
-            return False
-        second = script[start:i]
-        while i < n and script[i].isspace():
-            i += 1
-    if i >= n:
-        return False
-    command = script[i]
-    i += 1
-    while i < n and script[i].isspace():
-        i += 1
-    if i != n:
-        return False
-    if command == "q":
-        return second is None and sed_addr_bounded(first)
-    if command == "p":
-        return quiet and sed_addr_bounded(first) and (second is None or sed_addr_bounded(second))
-    return False
-
-
-def sed_bounded(args: tuple[str, ...]) -> bool:
-    """Admit only numeric ``p``/``q`` scripts whose output cap is structural.
-
-    ``p`` needs quiet mode because sed's default autoprint otherwise passes the full stream; every
-    unrecognized option, script token, or file operand fails closed.
-    """
-    quiet = False
-    script = None
-    i, n = 0, len(args)
-    while i < n:
-        arg = args[i]
-        if script is not None:
-            return False  # BSD sed reads post-script args as input files, and flag order flips meaning
-        if arg in ("-n", "--quiet", "--silent"):
-            quiet = True
-        elif arg == "-e":
-            if script is not None or i + 1 >= n:
-                return False
-            i += 1
-            script = args[i]
-        elif arg.startswith("-e") and len(arg) > 2:
-            if script is not None:
-                return False
-            script = arg[2:]
-        elif arg.startswith("--expression="):
-            if script is not None:
-                return False
-            script = arg.removeprefix("--expression=")
-        elif arg.startswith("-"):
-            return False
-        else:
-            script = arg
-        i += 1
-    return script is not None and sed_script_bounded(script, quiet=quiet)
-
-
-def awk_tokens(program: str) -> list[str] | None:
-    if "\n" in program or "\r" in program:
-        return None  # a newline separates awk rules — `NR<=20\n{print}` is two rules, the second unconditional
-    tokens: list[str] = []
-    i, n = 0, len(program)
-    while i < n:
-        if program[i].isspace():
-            i += 1
-            continue
-        if program.startswith("print", i):
-            tokens.append("print")
-            i += len("print")
-            continue
-        if program.startswith("NR", i):
-            tokens.append("NR")
-            i += len("NR")
-            continue
-        if program.startswith("$0", i):
-            tokens.append("$0")
-            i += len("$0")
-            continue
-        if program.startswith("<=", i) or program.startswith("==", i):
-            tokens.append(program[i : i + 2])
-            i += 2
-            continue
-        if program[i] in "<{}":
-            tokens.append(program[i])
-            i += 1
-            continue
-        if "0" <= program[i] <= "9":
-            start = i
-            while i < n and "0" <= program[i] <= "9":
-                i += 1
-            tokens.append(program[start:i])
-            continue
-        return None
-    return tokens
-
-
-def awk_bounded(args: tuple[str, ...]) -> bool:
-    """Admit only an ``NR`` comparison with an optional whole-record print action.
-
-    The token grammar excludes flags, extra operands, and every expression whose output bound cannot
-    be proven directly from one numeric comparison.
-    """
-    if len(args) != 1 or args[0].startswith("-"):
-        return False
-    tokens = awk_tokens(args[0])
-    if tokens is None or len(tokens) not in (3, 6, 7) or tokens[0] != "NR" or not tokens[2].isdigit():
-        return False
-    if tokens[3:] not in ([], ["{", "print", "}"], ["{", "print", "$0", "}"]):
-        return False
-    return tokens[1] == "==" or tokens[1] in ("<", "<=") and plain_count(tokens[2], SINK_LINE_CAP)
-
-
-def writes_terminal_device(cmd: Command) -> bool:
-    """Whether a pipeline stage can write to the console past any downstream sink: a terminal-visible
-    device (``/dev/tty*``, ``/dev/std*``) anywhere in its raw text — argument, redirect target, or an
-    embedded awk/sh program — or a ``>&2`` stdout-to-stderr redirect. ``2>&1`` merges into the pipe
-    and stays exempt."""
-    return "/dev/tty" in cmd.raw or "/dev/std" in cmd.raw or ">&2" in cmd.raw
-
-
-def downstream_bounded(occ: Occurrence) -> bool:
-    """Whether ``occ``'s output pipeline terminates in a bounding sink, so it runs verbatim.
-
-    Walks forward from ``occ`` while each command is pipe-joined (``|``) to the next; the pipeline's
-    terminal command bounds what reaches context when it is an in-cap ``head``/non-following ``tail``
-    (:func:`head_bounded`/:func:`tail_bounded`), a head-equivalent ``sed``/``awk`` script, or a ``wc``
-    without ``--files0-from`` (a file list to read makes it a fan-out, not a sink). Intermediate stages
-    (``grep -v``, ``sort``, or non-terminal ``sed``/``awk``) never terminate the walk and never bound —
-    only the last command is judged — but an intermediate ``tee`` or any stage naming a terminal-visible
-    device (:func:`writes_terminal_device`) defeats the sink:
-    ``tee /dev/tty | head`` floods the console while ``head`` caps only its own stdout. An occurrence
-    heading no pipe, or one whose pipeline ends in ``sort``/``uniq``/``cat``/another ``grep``, returns
-    False: running the user's exact command is faithful only when a sink caps its output, and ccx output
-    must never be spliced into a pipe.
-    """
-    occurrences = occ.line.occurrences
-    cur = occ
-    if writes_terminal_device(cur.command.unwrapped):
-        return False  # the source itself can bypass the pipe (`>/dev/stderr`, `>&2`)
-    while cur.next_op == "|":
-        cur = occurrences[cur.index + 1]
-        inner = cur.command.unwrapped
-        if writes_terminal_device(inner):
-            return False
-        if cur.next_op == "|" and inner.executable == "tee":
-            return False
-    match cur.command.unwrapped.executable:
-        case "awk" | "gawk" | "mawk" | "nawk":
-            return awk_bounded(cur.command.unwrapped.args)
-        case "head":
-            return head_bounded(cur.command.unwrapped.args)
-        case "sed" | "gsed":
-            return sed_bounded(cur.command.unwrapped.args)
-        case "wc":
-            return not any(a.startswith("--files0-from") for a in cur.command.unwrapped.args)
-        case "tail":
-            return tail_bounded(cur.command.unwrapped.args)
-        case _:
-            return False
-
-
-def downstream_allowed(occ: Occurrence, operands: list[str] | None, *, cwd: Path | None) -> bool:
-    """Whether the downstream-bounded lane grants one search occurrence its verbatim allow.
-
-    The sink (:func:`downstream_bounded`) caps what reaches context, but the lane fails closed on
-    operands the engine's tolerant walk could not parse (``None`` — an unknown flag may hide what the
-    search targets), and the policy screens survive the sink: a :func:`steer_pinned` operand (session
-    transcript, hidden segment) or one :func:`path_blocked` rejects (git-ignored dir, out-of-repo
-    path) keeps today's block and its steer. ``path_blocked`` shells ``git check-ignore``, so the
-    screen runs only after the sink is proven.
-    """
-    return (
-        downstream_bounded(occ)
-        and operands is not None
-        and not any(steer_pinned(p) or path_blocked(p, cwd=cwd) for p in operands)
-    )
-
-
-def conditional_cd_precedes(occ: Occurrence) -> bool:
-    """Whether a ``cd`` gated behind ``&&``/``||`` short-circuits ``occ``'s threaded cwd.
-
-    The walk threads every non-piped ``cd`` unconditionally, but the shell short-circuits a
-    ``&&``/``||``-joined one (``false && cd /small; grep …`` runs grep in the ORIGINAL cwd), so a
-    threaded cwd downstream of such a ``cd`` is untrustworthy — the caller declines it and every stat
-    lane fails closed, exactly as the bare-``(`` subshell decline does. An ``&&``-gated ``cd`` inside
-    ``occ``'s own unbroken ``&&`` chain is exempt: ``occ`` runs only if that ``cd`` did, so the cwd it
-    set is the one ``occ`` sees (``cd A && cd B && grep``, ``mkdir X && cd X && grep`` stay trusted). A
-    ``||``-reached ``cd`` never is: it runs only when its predecessor failed, so which cwd ``occ`` sees
-    is unknowable (``cd A || cd B && grep`` runs in A or B).
-    """
-    chain_start = occ.index
-    while chain_start > 0 and occ.line.occurrences[chain_start].prev_op == "&&":
-        chain_start -= 1
-    return any(
-        normalize_executable(prev.command.unwrapped.executable) == "cd"
-        and (prev.prev_op == "||" or (prev.prev_op == "&&" and prev.index < chain_start))
-        for prev in occ.line.occurrences[: occ.index]
-    )
-
-
-class UnpipedSearch(CustomCommandLineCondition):
-    """Matches a search executable (``grep``/``rg``) that does not consume piped input.
-
-    Parametrized by ``exe`` so one class gates both engines. Allows the stream-filter idiom
-    (`… | rg`) while still matching the exe used for file searching, whether standalone,
-    heading a pipe, or in a `&&`/`;` chain.
-    """
-
-    def __init__(self, exe: str) -> None:
-        self.exe = exe
-
-    def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        return unpiped(cl, self.exe)
-
-
 class GrepCall(NamedTuple):
     pattern: str
     glob: str  # "" → repo-wide (no --glob)
@@ -482,33 +163,44 @@ class GrepCall(NamedTuple):
 def is_transcript_path(p: str) -> bool:
     """Whether a grep/rg path operand targets a Claude session transcript — under ``.claude/projects/``.
 
-    Covers the projects dir itself and any ``*.jsonl`` transcript inside it; a ``.jsonl`` elsewhere is
-    ordinary data, not a transcript. Load-bearing for the ``~``/``$`` decline: a transcript path
-    carrying ``~`` (``~/.claude/projects/…``) must stay *blocked* (a raw recursive grep there floods
-    context) rather than fall through to Allow like an ordinary ``~``-path.
+    Matches the consecutive path segments ``.claude`` then ``projects`` (split on ``/``), so the
+    projects dir itself or any transcript nested under it is caught while a lookalike substring
+    (``docs/x.claude/projects-notes.md``) is not. A purely textual check — a ``$VAR`` hiding such a
+    path is not caught (accepted under fail-open).
     """
-    return ".claude/projects" in p
+    segs = p.split("/")
+    return any(segs[i] == ".claude" and segs[i + 1] == "projects" for i in range(len(segs) - 1))
 
 
 def has_hidden_segment(p: str) -> bool:
     """Whether a path has a hidden ``/``-segment — one starting with ``.`` other than ``.``/``..``.
 
     Marks a dependency-source or VCS-internal directory (``.venv/lib/…``, ``.git/…``,
-    ``node_modules/.cache``). Purely textual, no stat — the same segment test :func:`path_blocked` uses.
+    ``node_modules/.cache``). Purely textual, no stat.
     """
     return any(seg.startswith(".") and seg not in (".", "..") for seg in p.rstrip("/").split("/"))
 
 
-def steer_pinned(p: str) -> bool:
-    """Whether an operand keeps today's block + policy steer even when its output pipeline is bounded.
+def forfeits_operand(p: str) -> bool:
+    """Whether a path operand carries a shell expansion (leading ``~``, ``$``) or a glob metachar
+    (``*``, ``?``, ``[``) no faithful ``ccx code grep`` rewrite can preserve.
 
-    Two textual policy screens, no stat: a session transcript (:func:`is_transcript_path` → the
-    cc-transcript steer) or a hidden-segment path (:func:`has_hidden_segment` → the dependency-source
-    steer). A bounding sink caps what reaches context, but the steer still names the right tool, so these
-    operands are policy, not boundedness, and stay blocked under a downstream ``head``/``tail``/``wc``.
-    Absolute and ``~`` operands do not pin the lane on their own.
+    ``shlex.quote`` would freeze a ``~``/``$`` into a literal ccx never expands, and a ``[``/``*``/``?``
+    reaches ccx's glob engine as a character class or wildcard the operand never meant — so the
+    occurrence forfeits the rewrite and runs raw, never a block and never a lossy emission. Callers pass
+    path operands only; a ``$`` anchor inside the pattern stays rewritable.
     """
-    return is_transcript_path(p) or has_hidden_segment(p)
+    return p.startswith("~") or any(c in p for c in "$*?[")
+
+
+def forfeits_count(args: tuple[str, ...]) -> bool:
+    """Whether any bare numeric token exceeds Python's int-string conversion limit.
+
+    A pathological ``-A <5000-digit>`` context count that :func:`~hooks.rg_guards.fold_expand`'s
+    ``int()`` refuses; the occurrence forfeits the rewrite and runs raw rather than crash on the
+    conversion. ``sys.get_int_max_str_digits() == 0`` disables the limit, so nothing overflows.
+    """
+    return (limit := sys.get_int_max_str_digits()) != 0 and any(a.isdigit() and len(a) > limit for a in args)
 
 
 def has_command_substitution(raw: str) -> bool:
@@ -516,61 +208,49 @@ def has_command_substitution(raw: str) -> bool:
 
     tree-sitter folds a standalone ``$(...)``/backtick operand out of the argv, so ``grep foo
     $(printf /p)`` parses to just the pattern — a rewrite would silently search repo-wide instead of
-    the produced path. The raw text still shows the construct, so a guard declines on it and lets the
-    real shell run the command.
+    the produced path. The raw text still shows the construct, so a rewrite is forfeited and the real
+    shell runs the command.
     """
     return "$(" in raw or "`" in raw
 
 
-def bare_paren(raw: str) -> bool:
-    """Whether ``raw`` carries a ``(`` outside every shell quote — a real subshell or group paren.
+def path_operands_raw(args: tuple[str, ...]) -> list[str]:
+    """Every positional-shaped arg — non-flag tokens plus everything after a bare ``--``.
 
-    Single-pass scan over single-quote, double-quote, ANSI-C (``$'…'``), and backslash state: a plain
-    ``'…'`` escapes nothing, a backslash escapes the next char everywhere else (``$'…'`` included, so
-    ``$'a\\'b'`` does not close early), and ``$'`` arms only outside quotes (``"a$'b"`` stays plain). A
-    ``(`` unquoted and unescaped returns ``True``; one inside any quote returns ``False``, keeping cwd
-    trust — while ``$(…)`` and a real ``(cd … )`` subshell stay bare and still forfeit it.
+    Tolerant of unknown flags, so it feeds tree-shape detection when the arity walk
+    (:func:`~hooks.grep_guards.grep_operands` / :func:`~hooks.rg_guards.rg_operands`) returns ``None``
+    and cannot separate the pattern from the paths. It over-includes the pattern token; a dir-operand
+    scan over it is still sound because a pattern is rarely a directory.
     """
-    in_single = in_double = in_ansi = escaped = dollar = False
-    for ch in raw:
-        if escaped:
-            escaped = dollar = False
-            continue
-        if in_single:
-            in_single = ch != "'"
-            dollar = False
-            continue
-        if in_ansi:
-            if ch == "\\":
-                escaped = True
-            elif ch == "'":
-                in_ansi = False
-            dollar = False
-            continue
-        if in_double:
-            if ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_double = False
-            dollar = False
-            continue
-        if ch == "\\":
-            escaped = True
-            dollar = False
-        elif ch == "'":
-            if dollar:
-                in_ansi = True
-            else:
-                in_single = True
-            dollar = False
-        elif ch == '"':
-            in_double = True
-            dollar = False
-        elif ch == "(":
-            return True
-        else:
-            dollar = ch == "$"
-    return False
+    out: list[str] = []
+    seen_double_dash = False
+    for a in args:
+        if seen_double_dash or a == "-" or not a.startswith("-"):
+            out.append(a)
+        elif a == "--":
+            seen_double_dash = True
+    return out
+
+
+def resolve_operand(p: str, cwd: Path | None) -> Path | None:
+    """Resolve a grep/rg path operand against ``cwd`` for a stat, or ``None`` when unresolvable.
+
+    An absolute operand resolves regardless of ``cwd``; a relative one needs a ``cwd``. With none, a
+    relative operand is unresolvable and the one ``is_dir`` probe fails open (not a directory).
+    """
+    path = Path(p)
+    if path.is_absolute():
+        return path
+    return cwd / path if cwd is not None else None
+
+
+def resolved_is_dir(p: str, cwd: Path | None) -> bool:
+    """Whether ``p`` is a directory operand: ``.``/``..`` (always the cwd/parent) or a path resolving
+    against ``cwd`` to an existing directory. An unstattable operand (``$VAR``, missing, no trusted
+    ``cwd``) is not a directory — the fail-open direction."""
+    if p.rstrip("/") in (".", ".."):
+        return True
+    return (path := resolve_operand(p, cwd)) is not None and path.is_dir()
 
 
 def search_block(
@@ -580,7 +260,6 @@ def search_block(
     default: str,
     *,
     cl: CommandLine | None = None,
-    reason: str | None = None,
 ) -> str:
     """The block message for a gated grep/rg, tuned per the line's transcript operands.
 
@@ -589,180 +268,25 @@ def search_block(
     whole steer is :data:`TRANSCRIPT_STEER`; a *mixed* line — a transcript operand alongside an ordinary
     flood — keeps ``default`` and appends one :data:`TRANSCRIPT_APPEND` line so neither steer is lost.
     Every occurrence is inspected through its unwrapped command, so wrapper-prefixed searches contribute
-    their operands too — the same scope the guard's wrapper-transparent condition uses. A non-``None``
-    ``reason`` (:func:`block_reason`) appends one ``This block: …`` line naming the first disqualifier;
-    ``None`` leaves the steer byte-identical.
+    their operands too. An occurrence whose flags the arity walk can't map (``operands`` returns ``None``)
+    falls back to its raw path-like tokens, so an unparseable flag never blinds the transcript steer.
     """
     command_line = cl or evt.cmd.line
     if not command_line:
-        steer = default
-    else:
-        ops = [
-            p
-            for occ in command_line.occurrences
-            if (cmd := occ.command.unwrapped).executable == exe
-            for p in (operands(cmd) or ())
-        ]
-        transcript = [p for p in ops if is_transcript_path(p)]
-        if not transcript:
-            steer = default
-        elif len(transcript) == len(ops):
-            steer = TRANSCRIPT_STEER
-        else:
-            steer = f"{default}\n{TRANSCRIPT_APPEND}"
-    return f"{steer}\nThis block: {reason}." if reason else steer
-
-
-def block_reason(occ: Occurrence, *, cwd: Path | None) -> str | None:
-    """A short advisory clause naming the first disqualifier behind a gated grep/rg block, or ``None``.
-
-    Diagnostic only — never consulted for a verdict, so a ``None`` result leaves the block message
-    byte-identical. Inspects the blocking occurrence cheapest-and-most-certain first and returns the
-    first disqualifier that fires; anything it cannot pin certainly yields ``None``. Operands are
-    engine-classified (grep vs rg arities) and relativized against ``cwd`` exactly as the rewrite parser
-    is, so an in-repo absolute never reads as out-of-repo.
-    """
-    # Lazy imports break the search_common ↔ guard-module cycle: the operand extractors and arity
-    # tables live in the engine modules, which import this one at load; by call time both are loaded.
-    from .grep_guards import BOUNDED_PATTERN_SHORT, BOUNDED_VALUE_SHORT, grep_operands
-    from .rg_guards import RG_OP_VALUE_SHORT, rg_operands
-
-    if bare_paren(occ.line.raw) or conditional_cd_precedes(occ):
-        return "cwd untrusted on this line (subshell or conditional cd) — file stats fail closed"
-    inner = occ.command.unwrapped
-    is_grep = inner.executable == "grep"
-    raw_ops = grep_operands(inner) if is_grep else rg_operands(inner)
-    value_shorts = BOUNDED_VALUE_SHORT | BOUNDED_PATTERN_SHORT if is_grep else RG_OP_VALUE_SHORT | frozenset("ef")
-    never_maps = value_shorts - MAPS_AT_HEAD  # unmappable even at a bundle head
-    mode_shorts = "qcovLx" if is_grep else "qcov"
-    ops = [relativize_operand(p, cwd=cwd) for p in (raw_ops or ())]
-    for p in ops:
-        if any(ch in p for ch in "*?["):
-            return f"glob operand `{p}` — unstattable before shell expansion"
-    for p in ops:
-        if p.startswith(("/", "~")) or ".." in p.rstrip("/").split("/"):
-            return f"out-of-repo operand `{p}`"
-    for p in ops:
-        if has_hidden_segment(p) or git_ignored(p, cwd=cwd):
-            return f"dependency or ignored operand `{p}` — ask the cc-context:dep-reader agent"
-    # Flags live only before the first bare `--`; a dash-leading operand after it is not a flag.
-    scan_args = inner.args[: inner.args.index("--")] if "--" in inner.args else inner.args
-    bundles = [a for a in scan_args if a.startswith("-") and not a.startswith("--") and a != "-"]
-    longs = {a[2:].partition("=")[0] for a in scan_args if a.startswith("--")}
-    if any("P" in a[1:] for a in bundles) or "perl-regexp" in longs:
-        return "PCRE (-P) never maps"
-    for a in bundles:
-        body = a[1:]
-        if body and (body[0] in never_maps or any(ch in value_shorts for ch in body[1:])):
-            return f"`{a}` glues a value-taking short into a bundle"
-    mode_flag = next((ch for a in bundles for ch in a[1:] if ch in mode_shorts), None)
-    if mode_flag and (not ops or any(p.rstrip("/") in (".", "..") or resolved_is_dir(p, cwd) for p in ops)):
-        return f"`-{mode_flag}` (exit-code/output mode) over a directory or tree — no single glob"
-    if cwd is not None:
-        for p in ops:
-            kind = classify_path(p, cwd=cwd)
-            if kind is None and not p.endswith("/"):
-                return f"no source file `{p}` on disk"
-            if kind is True and not tree_size_capped([p], cwd=cwd):
-                return f"`{p}` tree exceeds the size cap"
-            if kind is False and resolve_operand(p, cwd).stat().st_size > LARGE_READ_BYTES:
-                return f"`{p}` exceeds the read-size cap"
-    return None
-
-
-def resolve_operand(p: str, cwd: Path | None) -> Path | None:
-    """Resolve a grep/rg path operand against ``cwd`` for a stat, or ``None`` when unresolvable.
-
-    An absolute operand resolves regardless of ``cwd``; a relative one needs a ``cwd``. With none —
-    the walk declined to trust the threaded cwd, or the line carried none — a relative operand is
-    unresolvable and every stat lane declines rather than falling back to the process cwd.
-    """
-    path = Path(p)
-    if path.is_absolute():
-        return path
-    return cwd / path if cwd is not None else None
-
-
-def tree_size_capped(operands: list[str], *, cwd: Path | None) -> bool:
-    """Bound a mixed file/tree search by bytes and entries.
-
-    Operand stats follow symlinks — grep/rg dereference command-line paths — while entries inside the
-    walk never do. Both caps exit during the iterative walk; an unreadable, missing, or non-regular
-    entry fails closed. The byte total bounds match content, not the per-line ``path:line`` prefixes a
-    recursive search prepends — a dense-match tree of long paths keeps that residual amplification,
-    like the data-ext lane's long-line exposure.
-    """
-    total = entries_seen = 0
-    pending: list[Path] = []
-    for operand in operands:
-        if (path := resolve_operand(operand, cwd)) is None:
-            return False
-        try:
-            result = path.stat()
-        except OSError:
-            return False
-        if S_ISREG(result.st_mode):
-            total += result.st_size
-            if total > LARGE_READ_BYTES:
-                return False
-        elif S_ISDIR(result.st_mode):
-            pending.append(path)
-        else:
-            return False
-    while pending:
-        try:
-            with os.scandir(pending.pop()) as directory:
-                for entry in directory:
-                    entries_seen += 1
-                    if entries_seen > DIR_WALK_ENTRY_CAP:
-                        return False
-                    if entry.is_symlink():
-                        continue
-                    if entry.is_dir(follow_symlinks=False):
-                        pending.append(Path(entry.path))
-                        continue
-                    if not entry.is_file(follow_symlinks=False):
-                        return False
-                    total += entry.stat(follow_symlinks=False).st_size
-                    if total > LARGE_READ_BYTES:
-                        return False
-        except OSError:
-            return False
-    return total <= LARGE_READ_BYTES
-
-
-def resolved_is_dir(p: str, cwd: Path | None) -> bool:
-    """Whether ``p`` is a directory operand: ``.``/``..`` (always the cwd/parent, a directory whatever
-    the cwd) or a path resolving against ``cwd`` to an existing directory (``False`` when unresolvable)."""
-    if p.rstrip("/") in (".", ".."):
-        return True
-    return (path := resolve_operand(p, cwd)) is not None and path.is_dir()
-
-
-def resolved_is_file(p: str, cwd: Path | None) -> bool:
-    """Whether ``p`` resolves against ``cwd`` to an existing regular file (``False`` when unresolvable)."""
-    return (path := resolve_operand(p, cwd)) is not None and path.is_file()
-
-
-def classify_path(p: str, *, cwd: Path | None) -> bool | None:
-    """Classify a grep path operand against the filesystem, resolving it against ``cwd``.
-
-    ``True`` for an existing directory, ``False`` for an existing file, ``None`` when the
-    path is on disk as neither — or when it is relative and ``cwd`` is untrusted/absent, so it
-    cannot be resolved without falling back to the process cwd. A real stat is the only faithful
-    test: the old extension heuristic mis-globbed an extensionless file (``Makefile`` →
-    ``Makefile/**`` → a silent 0-match) and a dotted directory (``internal/v2.5`` → treated as a
-    file). A path with no correct glob has the caller block rather than guess — never a silently
-    wrong search.
-    """
-    path = resolve_operand(p, cwd)
-    if path is None:
-        return None
-    if path.is_dir():
-        return True
-    if path.is_file():
-        return False
-    return None
+        return default
+    ops: list[str] = []
+    for occ in command_line.occurrences:
+        cmd = occ.command.unwrapped
+        if cmd.executable != exe:
+            continue
+        parsed = operands(cmd)
+        ops.extend(path_operands_raw(cmd.args) if parsed is None else parsed)
+    transcript = [p for p in ops if is_transcript_path(p)]
+    if not transcript:
+        return default
+    if len(transcript) == len(ops):
+        return TRANSCRIPT_STEER
+    return f"{default}\n{TRANSCRIPT_APPEND}"
 
 
 def brace(dirs: list[str]) -> str:
@@ -782,16 +306,19 @@ def unquote(s: str) -> str:
 
 
 def grep_glob(paths: list[str], include: str | None, *, cwd: Path | None) -> str | None:
-    """Build the ``--glob`` body for grep's path args: ``""`` for repo-wide, ``None`` to block.
+    """Build the ``--glob`` body for a tree-shaped search's path args: ``""`` for repo-wide, ``None`` to block.
 
-    A ``.``/``./`` among the paths widens the search to the whole repo — every sibling path
-    is a subset, so no ``--glob`` narrows it (an ``--include`` still applies repo-wide as a
-    bare ``*.go``). Otherwise each path is classified against the filesystem (resolved against
-    ``cwd``): directories become ``dir/**`` (braced when several: ``{a,b}/**``), a lone file
-    passes through as-is, and an ``--include`` glob composes onto the dir roots (``dir/**/*.go``).
-    A nonexistent path, an operand unresolvable without a trusted ``cwd``, mixed file+dir paths,
-    several files, and an include over explicit files have no faithful single-glob form → block.
+    A ``.``/``./`` among the paths widens the search to the whole repo — every sibling path is a subset,
+    so no ``--glob`` narrows it (an ``--include`` still applies repo-wide as a bare ``*.go``). Otherwise
+    each operand is a directory (:func:`resolved_is_dir` → ``dir/**``, braced when several: ``{a,b}/**``)
+    or a non-directory (a lone file passes through as-is; an unstattable ``$VAR``/missing path lands here
+    too under fail-open), and an ``--include`` glob composes onto the dir roots (``dir/**/*.go``). Mixed
+    file+dir paths, several non-directory operands, and an include over explicit files have no faithful
+    single-glob form → block. An out-of-repo operand (absolute, ``~``, or a ``..`` segment) has no
+    repo-relative glob either — it forfeits the rewrite rather than emit a glob ccx would 0-match.
     """
+    if any(p.startswith(("/", "~")) or ".." in p.rstrip("/").split("/") for p in paths):
+        return None
     if any(p in (".", "./") for p in paths):
         if include is None:
             return ""
@@ -799,10 +326,7 @@ def grep_glob(paths: list[str], include: str | None, *, cwd: Path | None) -> str
     dirs: list[str] = []
     files: list[str] = []
     for p in paths:
-        kind = classify_path(p, cwd=cwd)
-        if kind is None:
-            return None
-        (dirs if kind else files).append(p.rstrip("/"))
+        (dirs if resolved_is_dir(p, cwd) else files).append(p.rstrip("/"))
     if include is not None:
         if not INCLUDE_SAFE.match(include) or files:
             return None
@@ -814,61 +338,6 @@ def grep_glob(paths: list[str], include: str | None, *, cwd: Path | None) -> str
     if dirs:
         return f"{brace(dirs)}/**"
     return ""
-
-
-def git_ignored(p: str, *, cwd: Path | None) -> bool:
-    """Best-effort ``git check-ignore`` from ``cwd``: ``True`` only when git reports ``p`` ignored.
-
-    Runs the probe with ``cwd`` as its working directory — where the search would run. With no
-    trusted ``cwd`` the probe is skipped (``False``): the caller's stat lane already declines an
-    unresolvable operand. Anything but a clean ignore hit (a tracked path, git absent, not a repo)
-    returns ``False`` so the rewrite still proceeds.
-    """
-    if cwd is None:
-        return False
-    try:
-        proc = subprocess.run(["git", "check-ignore", "-q", p], capture_output=True, cwd=cwd)
-    except OSError:
-        return False
-    return proc.returncode == 0
-
-
-def relativize_operand(p: str, *, cwd: Path | None) -> str:
-    """Rewrite an in-repo absolute path operand to its ``cwd``-relative form, else return it unchanged.
-
-    An absolute ``p`` resolving strictly under ``cwd`` becomes its relative spelling, so the rewrite's
-    ``--glob`` stays in-repo — the emitters reuse operand strings verbatim, and an absolute path must
-    never leak into an emitted ``--glob``. An operand escaping ``cwd`` (``ValueError``), a relative
-    operand, or one with no trusted ``cwd`` returns unchanged, so :func:`path_blocked` still rejects an
-    out-of-repo absolute exactly as before. ``~`` paths are left alone — ``carries_expansion`` already
-    forfeits their rewrite upstream. The relative form carries no trailing slash; the downstream
-    ``.rstrip("/")`` never depended on one.
-    """
-    if not p.startswith("/") or cwd is None:
-        return p
-    try:
-        return str(Path(p).resolve().relative_to(cwd.resolve()))
-    except ValueError:
-        return p
-
-
-def path_blocked(p: str, *, cwd: Path | None) -> bool:
-    """Report whether a grep/rg path operand must fall through to the block.
-
-    Rejects paths reaching outside the repo (absolute, ``~``, ``..``), non-literal paths, any
-    path with a hidden segment (``.venv``, ``node_modules/.cache``), and — best-effort — paths
-    ``git check-ignore`` (run from ``cwd``) reports ignored. Rewriting a search inside an ignored
-    or hidden dir to a ``--glob`` that a stale ``ccx`` silently 0-matches is worse than blocking
-    with the dependency-source steer, so those operands block instead.
-    """
-    stripped = p.rstrip("/")
-    if p.startswith(("/", "~")) or not LITERAL_SAFE.match(stripped):
-        return True
-    if ".." in stripped.split("/"):
-        return True
-    if has_hidden_segment(p):
-        return True
-    return git_ignored(p, cwd=cwd)
 
 
 def build_ccx_grep(parsed: GrepCall) -> str | None:

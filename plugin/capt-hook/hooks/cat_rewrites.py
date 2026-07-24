@@ -1,17 +1,8 @@
-"""Rewrite a bare single-file ``cat <file>`` to ``ccx code read --full`` in place — but only
-when the operand is a large, existing file — with a ``note`` back to the model. A raw
-root-manifest ``cat`` (redundant with ``ccx repo overview``) hard-blocks, and a multi-file
-``cat`` whose existing operands blow the size cap hard-blocks onto the right ``ccx`` entry
-point instead.
+"""Rewrite a large bare single-file ``cat`` to ``ccx code read --full``; block a bare root
+manifest as redundant with ``ccx repo overview``.
 
-Both surfaces judge every occurrence of a ``;``/``&&``/``|``-joined line, so a compound like
-``cat big.md; echo x; cat other`` rewrites the ``cat big.md`` occurrence and leaves the ``echo``
-and the trailing ``cat`` byte-for-byte intact — where the old ``cl.primary``-only guards
-silently dropped every occurrence but the last (a real incident).
-
-Heredoc lines (``cat << EOF``) decline as a whole: per-occurrence heredoc detection is unsound
-(a heredoc body can carry any text, including an inner ``cat``), so a compound containing any
-``<<`` stays untouched — known-conservative.
+Both guards handle every occurrence of a compound line. Heredoc lines decline as a whole because
+their bodies can contain inner ``cat`` commands that cannot be classified per occurrence.
 """
 
 from __future__ import annotations
@@ -117,26 +108,6 @@ def cat_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
     return None
 
 
-def cat_block(evt: BaseHookEvent, occ: Occurrence) -> bool:
-    """Whether ``occ`` is a bare cat that must hard-block rather than rewrite or run.
-
-    Two lanes block, both honoring the size-gate philosophy — a small, nonexistent, or
-    unstatable cat is bounded (or fails on its own) and passes through:
-
-    - a single large, existing file whose rewrite can't be emitted because ``ccx`` won't resolve
-      on disk (never ship a broken ``ccx: command not found`` — the old whole-line fallback, now
-      per-occurrence);
-    - a multi-file cat whose existing operands sum past :data:`~hooks.common.LARGE_READ_BYTES`
-      (mirrors ``bounded_file_grep``'s stat lane — a nonexistent or ``$``-expanded operand stats
-      to nothing and simply doesn't count).
-    """
-    if line_has_heredoc(evt) or (files := bare_cat_files(occ)) is None:
-        return False
-    if len(files) == 1:
-        return (target := single_cat_target(occ)) is not None and is_large(Path(target)) and ccx_bin() is None
-    return sum(p.stat().st_size for f in files if (p := Path(os.path.expanduser(f))).is_file()) > LARGE_READ_BYTES
-
-
 def cat_note(evt: BaseHookEvent, pairs: list[tuple[Occurrence, str]]) -> str:
     reads = ", ".join(f"`cat {bare_cat_files(occ)[0]}`" for occ, _ in pairs)
     return f"Rewrote {reads} → `ccx code read --full`: same content, token-bounded."
@@ -157,18 +128,13 @@ class ManifestCat(CustomCommandLineCondition):
 
 
 class BareCat(CustomCommandLineCondition):
-    """Matches a line carrying a bare-``cat`` occurrence that either rewrites or blocks.
+    """Matches a line carrying a large single-file bare ``cat`` that can be rewritten.
 
-    Gates the per-occurrence hook so it fires only when some occurrence is actionable — a large
-    single file to rewrite (or block when ``ccx`` won't resolve), or a multi-file flood to block.
-    An all-small, nonexistent, ``$``-expanded, manifest, piped, or heredoc line never matches, so
-    it never reaches the hook's block fallthrough. :func:`cat_to` / :func:`cat_block` then rewrite
-    or block each qualifying occurrence in place, leaving siblings (an ``echo``, a small file, a
-    manifest :class:`ManifestCat` owns) byte-for-byte intact.
+    Every non-rewritable or ambiguous occurrence falls through; rewrites preserve siblings.
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        return any(cat_to(evt, occ) is not None or cat_block(evt, occ) for occ in cl.occurrences)
+        return any(cat_to(evt, occ) is not None for occ in cl.occurrences)
 
 
 rewrite_command(
@@ -203,13 +169,6 @@ rewrite_command(
 rewrite_command_occurrences(
     only_if=[BareCat()],
     to=cat_to,
-    block_if=cat_block,
-    block=(
-        "BLOCKED: bare `cat <file>` dumps the whole file into context. "
-        "Use `ccx code outline <file>` to map it, then `ccx code read <file> --section A-B` for the part "
-        "you need. "
-        "Escape hatch — whole file: `ccx code read <file> --full`."
-    ),
     note=cat_note,
     tests={
         # A large existing single file rewrites to `ccx code read --full` with the absolute path.
@@ -221,9 +180,9 @@ rewrite_command_occurrences(
         # Small out-of-repo absolute (bounded) and a nonexistent absolute (fails on its own) both pass.
         Input(command="cat /etc/hosts"): Allow(),
         Input(command="cat /nonexistent/trip.json"): Allow(),
-        # Deliberate flip: a multi-file cat of small existing files is now ALLOWED (size-gate), where the
-        # old rule blocked every multi-file cat outright.
+        # Multi-file cats are outside this rewrite lane regardless of aggregate size.
         Input(command="cat /etc/hosts /etc/hosts"): Allow(),
+        Input(command="cat {file} {file}", file=FileFixture(size=LARGE_READ_BYTES + 1, name="big.md")): Allow(),
         # `~` is expanded for real: a large home file rewrites with the EXPANDED absolute path (proving no
         # frozen `~` — a frozen token would read `code read ~/…`, never `code read /…`).
         Input(command="cat ~/big.md", file=FileFixture(home=True, name="big.md", size=LARGE_READ_BYTES + 1)): Rewrite(

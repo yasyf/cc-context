@@ -1,8 +1,5 @@
-"""Rewrite a ``find`` enumeration occurrence to a ``ccx repo find "<glob>"`` in place, with a
-``note`` back to the model. Forms with no glob equivalent — a ``-path``/``-regex`` filter, a
-``-type f`` walk with no dir — hard-block onto the right ``ccx`` entry point instead. When
-``ccx`` cannot be resolved on disk the rewrite falls back to a hard block, so the guard
-never emits a broken ``ccx: command not found``.
+"""Rewrite positively identified ``find`` enumerations to ``ccx repo find "<glob>"``.
+Ambiguous or unrewritable forms pass through untouched.
 """
 
 from __future__ import annotations
@@ -14,7 +11,6 @@ from typing import TYPE_CHECKING
 from captain_hook import (
     Allow,
     BaseHookEvent,
-    Block,
     Command,
     CommandLine,
     CustomCommandLineCondition,
@@ -36,33 +32,31 @@ def args_type_f(args: tuple[str, ...]) -> bool:
     return any(a == "-type" and i + 1 < len(args) and args[i + 1] == "f" for i, a in enumerate(args))
 
 
+def find_name_filter(args: tuple[str, ...]) -> str | None:
+    return next((args[i + 1] for i, a in enumerate(args) if a in NAME_FLAGS and i + 1 < len(args)), None)
+
+
 def is_find_enumeration(cmd: Command) -> bool:
     """Report whether ``cmd`` is ``find`` used to *list* matches (no action flag) — a context
     flood.
 
-    A ``-name``/``-iname``/``-path``/``-regex`` filter or a scoped ``-type f`` walk both
-    enumerate paths; a find that ends in an action — ``-exec``, ``-delete``, ``-print0``
-    (almost always ``| xargs``) — is doing work, not flooding, so it is left alone. A dir
-    operand carrying a leading ``~`` declines: the glob rides in double quotes where ``$``
-    expands but ``~`` stays frozen, so the command falls through to Allow and the shell
-    expands the path.
+    A valid ``-name``/``-iname`` filter or a ``-type f`` walk enumerates paths. Action
+    forms, unsupported filters, and expansion-bearing dirs fall through untouched.
     """
     if cmd.executable != "find" or cmd.redirects:
         return False
     args = cmd.args
-    if any(a in ACTIONS for a in args):
+    if any(a in ACTIONS or a in ("-path", "-regex") for a in args):
         return False
     path = args[0] if args and not args[0].startswith("-") else None
-    if path is not None and carries_expansion(path, tilde_only=True):
+    if path is not None and carries_expansion(path):
         return False
-    has_filter = any(f in args for f in ("-name", "-iname", "-path", "-regex"))
-    return has_filter or args_type_f(args)
+    return find_name_filter(args) is not None or args_type_f(args)
 
 
 class FindEnumeration(CustomCommandLineCondition):
     """Matches a ``;``/``&&``/``|``-joined line carrying a rewritable ``find`` enumeration
-    occurrence — a context flood. The steer is ``ccx repo find`` (scoped) or ``ccx repo
-    overview`` (whole repo) / Glob.
+    occurrence — a context flood. The steer is ``ccx repo find`` or Glob.
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
@@ -70,22 +64,18 @@ class FindEnumeration(CustomCommandLineCondition):
 
 
 def find_glob(args: tuple[str, ...]) -> str | None:
-    """The ``ccx repo find`` glob body for an enumeration, or None to hard-block.
+    """Return the ``ccx repo find`` glob for a positively identified enumeration.
 
-    A ``-name``/``-iname`` filter maps to `<dir>/**/<pat>`; a *scoped* ``-type f`` walk to
-    `<dir>/**`. A ``-path``/``-regex`` filter (no glob equivalent) and a ``-type f`` with no
-    dir *or* a whole-repo dir (orient the repo with ``ccx repo overview`` instead) both
-    return None. The dir operand is ``normpath``-cleaned first, so ``.//`` and ``./.`` collapse
-    to the root (block) just like a bare ``.``, and ``src//`` to ``src`` (rewrite ``src/**``).
+    A ``-name``/``-iname`` filter maps to `<dir>/**/<pat>`; a ``-type f`` walk maps to
+    `<dir>/**`, with the repository root represented by `**`.
     """
-    flag = next((a for a in args if a in NAME_FLAGS), None)
     raw = args[0] if args and not args[0].startswith("-") else None
     path = os.path.normpath(raw) if raw is not None else "."
-    if flag:
+    if pattern := find_name_filter(args):
         prefix = "" if path == "." else f"{path}/"
-        return f"{prefix}**/{args[args.index(flag) + 1]}"
+        return f"{prefix}**/{pattern}"
     if args_type_f(args):
-        return None if path == "." else f"{path}/**"
+        return "**" if path == "." else f"{path}/**"
     return None
 
 
@@ -109,12 +99,6 @@ def find_note(evt: BaseHookEvent, pairs: "list[tuple[Occurrence, str]]") -> str:
 rewrite_command_occurrences(
     only_if=[FindEnumeration()],
     to=find_to,
-    block=(
-        "BLOCKED: `find` enumeration floods context. "
-        'Scoped to a dir? `ccx repo find "<dir>/**"`, or the built-in Glob tool. '
-        "Orienting the whole repo? `ccx repo overview`. "
-        "Escape hatch — need an action: keep the `-exec`/`-delete`/`-print0 | xargs` form."
-    ),
     note=find_note,
     tests={
         Input(command="find . -name '*.go'"): Rewrite(pattern='repo find "**/*.go"'),
@@ -122,17 +106,18 @@ rewrite_command_occurrences(
         Input(command="find . -name '*.go' | wc -l"): Allow(),
         Input(command="find src -iname '*.PY'"): Rewrite(pattern='repo find "src/**/*.PY"'),
         Input(command="find src -type f"): Rewrite(pattern='repo find "src/**"'),  # bare -type f, scoped
-        Input(command="find . -type f"): Block(pattern="ccx repo overview"),  # whole-repo walk → orient, not `**`
-        Input(command="find -type f"): Block(pattern="ccx repo overview"),  # no dir → orient
-        Input(command="find .// -type f"): Block(pattern="ccx repo overview"),  # `.//` normalizes to root → orient
-        Input(command="find ./. -type f"): Block(pattern="ccx repo overview"),  # `./.` normalizes to root → orient
+        Input(command="find . -type f"): Rewrite(pattern='repo find "**"'),
+        Input(command="find -type f"): Rewrite(pattern='repo find "**"'),
+        Input(command="find .// -type f"): Rewrite(pattern='repo find "**"'),
+        Input(command="find ./. -type f"): Rewrite(pattern='repo find "**"'),
         Input(command="find src// -type f"): Rewrite(pattern='repo find "src/**"'),  # trailing slashes cleaned
-        # A leading-`~` dir declines to rewrite — the double-quoted glob would freeze it; the shell expands it.
+        # Expansion-bearing dirs decline so the shell can expand the original command.
         Input(command="find ~/src -type f"): Allow(),
         Input(command="find ~/src -name '*.go'"): Allow(),
-        Input(command="find $d -type f"): Rewrite(pattern='repo find "$d/**"'),  # `$` expands inside the double-quoted glob
-        Input(command="find . -path '*/gen/*'"): Block(pattern="ccx repo find"),  # -path stays a block
-        Input(command="find . -regex '.*\\.go'"): Block(),  # -regex stays a block
+        Input(command="find $d -type f"): Allow(),
+        Input(command="find . -name"): Allow(),
+        Input(command="find . -path '*/gen/*'"): Allow(),
+        Input(command="find . -regex '.*\\.go'"): Allow(),
         Input(command="find . -name '*.go' -exec rm {} +"): Allow(),
         Input(command="find . -name '*.go' -delete"): Allow(),
         Input(command="find . -name '*.go' -print0 | xargs rm"): Allow(),

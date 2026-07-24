@@ -1,7 +1,5 @@
 """Rewrite ``sed -n A,Bp <file>`` — a numeric line-range dump — to ``ccx code read
---section`` in place, with a ``note`` back to the model. When ``ccx`` cannot be resolved on
-disk the rewrite falls back to a hard block, so the guard never emits a broken
-``ccx: command not found``.
+--section`` in place, with a ``note`` back to the model.
 """
 
 from __future__ import annotations
@@ -79,11 +77,6 @@ def sed_note(evt: BaseHookEvent, pairs: "list[tuple[Occurrence, str]]") -> str:
 rewrite_command_occurrences(
     only_if=[SedLineRange()],
     to=sed_to,
-    block=(
-        "BLOCKED: `sed -n A,Bp <file>` is a line-range dump. "
-        "Use `ccx code read <file> --section A-B` — it returns the same lines with structure. "
-        "Escape hatch: pipe it (`cat <file> | sed -n 'A,Bp'`)."
-    ),
     note=sed_note,
     tests={
         Input(command="sed -n '10,40p' f.go"): Rewrite(pattern="code read f.go --section 10-40"),

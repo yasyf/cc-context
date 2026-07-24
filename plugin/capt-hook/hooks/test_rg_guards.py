@@ -12,22 +12,14 @@ never live in inline ``tests={}`` (they would rewrite or block depending on the 
 Here the probe boundary (``ccx_bin`` + ``subprocess.run``) is monkeypatched and the
 ``ccx_supports`` cache is cleared around every case so a result never leaks between them;
 ``search_common.ccx_bin`` is pinned too so the rewritten command is deterministic.
-
-``path_blocked`` shells ``git check-ignore`` through that *same* module-global
-``subprocess.run``, so :func:`fake_run` answers a check-ignore probe "not ignored" (exit 1)
-and reserves the configured result for the ``--help`` call — a bare exit-code fake would read
-as "path is ignored" and block every rewrite.
 """
 
 from __future__ import annotations
 
-import subprocess
-from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from captain_hook import CommandLine
 from captain_hook.events import PreToolUseEvent
 from captain_hook.types import HookResult
 from cc_transcript.command import Occurrence
@@ -54,7 +46,7 @@ def event_occurrence(command: str, index: int = 0) -> tuple[PreToolUseEvent, Occ
 
 def rg_rewrite(command: str, index: int = 0) -> str | None:
     evt, occ = event_occurrence(command, index)
-    return rg_guards.rg_to(evt, occ, cwd=evt.cwd)
+    return rg_guards.rg_to(occ, cwd=evt.cwd)
 
 
 def rg_verdict(command: str) -> HookResult | str | None:
@@ -72,7 +64,11 @@ def rg_rewrite_note(command: str) -> str:
 
 def grep_rewrite(command: str) -> str | None:
     evt, occ = event_occurrence(command)
-    return grep_guards.grep_to(evt, occ, cwd=evt.cwd)
+    return grep_guards.grep_to(occ, cwd=evt.cwd)
+
+
+def grep_verdict(command: str) -> HookResult | str | None:
+    return run_visit(make_evt(command), grep_guards.grep_visit)
 
 
 class TestRgIgnoreCaseWord:
@@ -116,11 +112,9 @@ class TestRgIgnoreCaseWord:
         assert rg_rewrite("rg -i foo src/") is None
 
     def test_ungated_shape_never_probes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # A bare `rg foo src/` (no -i/-w) rewrites without shelling the `--help` probe.
+        # A bare `rg foo src/` (no -i/-w) rewrites without shelling any subprocess.
         def no_probe(cmd: list[str], *_args: object, **_kwargs: object) -> SimpleNamespace:
-            if cmd[:2] == ["git", "check-ignore"]:
-                return SimpleNamespace(returncode=1, stdout="", stderr="")
-            raise AssertionError("ccx_supports must not probe for an rg without -i/-w")
+            raise AssertionError("an rg without -i/-w must shell no subprocess")
 
         monkeypatch.setattr(common.subprocess, "run", no_probe)
         assert rg_rewrite("rg foo src/") == "/fake/ccx code grep foo --glob 'src/**'"
@@ -181,8 +175,8 @@ class TestRgFilesWithMatches:
 
 class TestRgPathGlobbing:
     """rg path operands share grep's on-disk classifier (`grep_glob`): a directory → `dir/**`,
-    an explicit file passes through, several dirs brace together, an absent path blocks. Exact
-    equality catches a wrongly narrowed `--glob`.
+    an explicit file passes through, several dirs brace together. Exact equality catches a wrongly
+    narrowed `--glob`.
     """
 
     @pytest.fixture
@@ -206,16 +200,15 @@ class TestRgPathGlobbing:
     def test_disk_classified_globs(self, tree: Path, command: str, expected: str) -> None:
         assert rg_rewrite(command) == expected
 
-    def test_nonexistent_path_blocks(self, tree: Path) -> None:
-        # An absent path has no faithful glob → block, never guess.
-        assert rg_rewrite("rg foo nonexistent/") is None
+    def test_nonexistent_path_runs_raw(self, tree: Path) -> None:
+        # An absent path is not a directory → not tree-shaped → runs raw under fail-open.
+        assert rg_verdict("rg foo nonexistent/") is None
 
 
-class TestIgnoredDirTargets:
-    """The silent-0-match regression, both executables: a search aimed inside a hidden or
-    gitignored directory must block with the dependency-source steer, never rewrite to a
-    `--glob` a stale `ccx` silently 0-matches. The directory exists on disk — existence is
-    exactly what the dropped rewrite trusted — so the block must fire regardless.
+class TestHiddenDirTargets:
+    """A hidden-segment operand (`.venv/…`) is a textual policy steer: the verdict blocks with the
+    dep-reader steer regardless of on-disk existence, and even through a downstream pipe. The block
+    lands at the verdict, not in the emitter — `rg_to`/`grep_to` would happily glob a hidden dir.
     """
 
     @pytest.fixture(autouse=True)
@@ -223,50 +216,13 @@ class TestIgnoredDirTargets:
         monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
         monkeypatch.chdir(tmp_path)
 
-    def test_rg_hidden_dir_blocks(self, tmp_path: Path) -> None:
-        (tmp_path / ".venv" / "lib").mkdir(parents=True)
-        # The verbatim incident shape minus its pipe still reaches `rg_to`, and still blocks.
-        assert rg_rewrite("rg -n 'class ToolUse' .venv/lib/ -A 20") is None
+    def test_rg_hidden_dir_blocks_with_dep_steer(self) -> None:
+        verdict = rg_verdict("rg -n 'class ToolUse' .venv/lib/ -A 20 | head")
+        assert isinstance(verdict, HookResult) and "ccx repo locate" in verdict.message
 
-    def test_grep_hidden_dir_blocks(self, tmp_path: Path) -> None:
-        (tmp_path / ".venv").mkdir()
-        assert grep_rewrite("grep -rn foo .venv/") is None
-
-    @pytest.mark.parametrize(
-        "to, command",
-        [
-            (rg_rewrite, "rg foo vendor/"),
-            (grep_rewrite, "grep -rn foo vendor/"),
-        ],
-    )
-    def test_gitignored_dir_blocks(
-        self, tmp_path: Path, to: Callable[[str], str | None], command: str
-    ) -> None:
-        # The `git check-ignore` arm of `path_blocked`: a real repo whose .gitignore lists the dir.
-        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-        (tmp_path / ".gitignore").write_text("vendor/\n")
-        (tmp_path / "vendor").mkdir()
-        assert to(command) is None
-
-    def test_mixed_data_and_source_target_stays_gated(self) -> None:
-        # A data-file operand does not exempt a line that also targets a source dir: the one
-        # source-directed operand keeps the no-stat lane from skipping the gate.
-        command = "rg foo app.log src/"
-        assert rg_guards.bounded_file_rg(CommandLine.parse(command).primary) is False
-
-    def test_trailing_slash_defeats_data_file_exemption(self) -> None:
-        # `src.log/` is a directory, not a `.log` data file (`Path.suffix` strips the slash to
-        # `.log`) — the trailing slash must defeat the exemption; the slashless sibling stays exempt.
-        gated = "rg TODO src.log/"
-        assert rg_guards.bounded_file_rg(CommandLine.parse(gated).primary) is False
-        exempt = "rg TODO src.log"
-        assert rg_guards.bounded_file_rg(CommandLine.parse(exempt).primary) is True
-
-    def test_value_short_flag_defeats_data_file_exemption(self) -> None:
-        # `-d` is rg's max-depth (a value short), not a boolean — the walk must consume its `1`
-        # rather than leak it as a phantom pattern that leaves `app.log` a lone data operand.
-        command = "rg -d 1 app.log"
-        assert rg_guards.bounded_file_rg(CommandLine.parse(command).primary) is False
+    def test_grep_hidden_dir_blocks_with_dep_steer(self) -> None:
+        verdict = grep_verdict("grep -rn foo .venv/")
+        assert isinstance(verdict, HookResult) and "ccx repo locate" in verdict.message
 
 
 class TestRgOccurrenceRewrite:
@@ -274,7 +230,7 @@ class TestRgOccurrenceRewrite:
         monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
         evt = make_evt("printf 'left  side'; rg foo")
         occurrence = evt.cmd.line.occurrences[1]
-        replacement = rg_guards.rg_to(evt, occurrence)
+        replacement = rg_guards.rg_to(occurrence)
         assert replacement == "/fake/ccx code grep foo"
         assert evt.cmd.line.splice({occurrence.index: replacement}) == (
             "printf 'left  side'; /fake/ccx code grep foo"
@@ -284,176 +240,40 @@ class TestRgOccurrenceRewrite:
         evt, occurrence = event_occurrence("sudo rg foo .")
         assert occurrence.command.unwrapped.executable == "rg"
         assert rg_guards.RgFlood().check_command_line(evt, evt.cmd.line) is True
-        assert rg_guards.rg_to(evt, occurrence) is None
+        assert rg_guards.rg_to(occurrence) is None
         assert isinstance(rg_verdict("sudo rg foo ."), HookResult)
 
 
-class TestRgBoundedPassthrough:
-    @pytest.fixture(autouse=True)
-    def tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        (tmp_path / "real.py").write_text("x\n")
-        (tmp_path / "big.py").write_text("x" * (common.LARGE_READ_BYTES + 1))
-        (tmp_path / "half_a.py").write_text("x" * (common.LARGE_READ_BYTES // 2 + 1))
-        (tmp_path / "half_b.py").write_text("x" * (common.LARGE_READ_BYTES // 2 + 1))
-        (tmp_path / "sub").mkdir()
-        (tmp_path / "dir.json").mkdir()
-        (tmp_path / "dir.json" / "huge.json").write_text("x" * (common.LARGE_READ_BYTES + 1))
-        (tmp_path / "notes.yaml").mkdir()
-        (tmp_path / "notes.yaml" / "small.yaml").write_text("small\n")
-        (tmp_path / "d").mkdir()
-        (tmp_path / "d" / "small.py").write_text("small\n")
-        (tmp_path / "over-cap").mkdir()
-        (tmp_path / "over-cap" / "huge.py").write_text("x" * (common.LARGE_READ_BYTES + 1))
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "rg -v foo real.py",
-            "rg -m1 foo real.py",
-            "rg --max-count=1 foo real.py",
-            "rg foo missing.log",
-        ],
-    )
-    def test_bounded_file_lanes_do_not_fire(self, command: str) -> None:
-        evt = make_evt(command)
-        assert rg_guards.bounded_file_rg(evt.cmd.line.primary, cwd=evt.cwd) is True
-        assert rg_verdict(command) is None
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "rg -c foo big.py",
-            "rg -l foo big.py",
-            "rg --count foo big.py",
-            "rg --files-with-matches foo big.py",
-            "rg --files-without-match foo big.py",
-            "rg --count-matches foo big.py",
-        ],
-    )
-    def test_output_bounded_flags_skip_size_cap(self, command: str) -> None:
-        evt = make_evt(command)
-        assert rg_guards.bounded_file_rg(evt.cmd.line.primary, cwd=evt.cwd) is True
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "rg -v foo big.py",
-            "rg -v foo half_a.py half_b.py",
-            "rg -m1 foo big.py",
-            "rg -m nope foo real.py",
-            "rg -c foo ghost.py",
-            "rg -c foo",
-            "rg -v foo '*.py'",
-        ],
-    )
-    def test_unbounded_recursive_or_stat_shapes_fire(self, command: str) -> None:
-        evt = make_evt(command)
-        assert rg_guards.bounded_file_rg(evt.cmd.line.primary) is False
-        assert rg_guards.RgFlood().check_command_line(evt, evt.cmd.line) is True
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "rg -o foo real.py",
-            "rg -o foo missing.log",
-            "rg --only-matching foo real.py",
-            "rg --json foo real.py",
-            "rg --json foo missing.log",
-            "RIPGREP_CONFIG_PATH=rg.conf rg foo real.py",
-            "RIPGREP_CONFIG_PATH=rg.conf rg foo missing.log",
-            "rg -z foo real.py",
-            "rg --replace=y foo real.py",
-            "rg --color=always foo real.py",
-            "rg foo f{1,2}.py",
-        ],
-    )
-    def test_forfeits_both_bounded_lanes(self, command: str) -> None:
-        evt = make_evt(command)
-        assert rg_guards.bounded_file_rg(evt.cmd.line.primary.unwrapped) is False
-        assert rg_guards.RgFlood().check_command_line(evt, evt.cmd.line) is True
-
-    def test_unknown_sink_flag_cannot_hide_a_path(self) -> None:
-        command = "rg -c foo real.py; printf x | rg -Zr pat /"
-        evt = make_evt(command)
-        assert rg_guards.RgFlood().check_command_line(evt, evt.cmd.line) is True
-
-    def test_small_directory_is_bounded(self) -> None:
-        evt = make_evt("rg foo d/")
-        assert rg_guards.bounded_file_rg(evt.cmd.line.primary, cwd=evt.cwd)
-
-    def test_data_named_directory_takes_the_walk_lane(self) -> None:
-        # A directory named like a data file must not ride the no-stat suffix lane — rg recurses it.
-        # Piped forms decline the rewrite, so the bounded lanes decide the verdict.
-        assert isinstance(rg_verdict("rg foo dir.json | sort"), HookResult)
-        assert rg_verdict("rg foo notes.yaml | sort") is None
-        evt = make_evt("rg -L foo notes.yaml")
-        assert not rg_guards.bounded_file_rg(evt.cmd.line.primary, cwd=evt.cwd)
-
-    @pytest.mark.parametrize("command", ["rg -L foo d/", "rg -z foo d/"])
-    def test_follow_and_search_zip_directories_block(self, command: str) -> None:
-        evt = make_evt(command)
-        assert not rg_guards.bounded_file_rg(evt.cmd.line.primary, cwd=evt.cwd)
-        assert isinstance(rg_verdict(command), HookResult)
-
-    def test_count_over_small_directory_is_bounded(self) -> None:
-        assert rg_verdict("rg -c foo d/") is None
-
-    def test_over_cap_directory_blocks(self) -> None:
-        command = "rg 'foo.*' over-cap/"
-        assert isinstance(rg_verdict(command), HookResult)
-        evt, occ = event_occurrence(command)
-        assert not rg_guards.bounded_file_rg(occ.command, cwd=evt.cwd)
-        assert search_common.block_reason(occ, cwd=evt.cwd) == "`over-cap/` tree exceeds the size cap"
-
-    def test_conditional_cd_declines_cwd_trust(self, tmp_path: Path) -> None:
-        # `false && cd` short-circuits — the threaded cwd is declined and the stat lane fails closed.
-        (tmp_path / "small").mkdir()
-        (tmp_path / "small" / "real.py").write_text("x\n")
-        assert isinstance(rg_verdict(f"false && cd {tmp_path / 'small'}; rg foo real.py"), HookResult)
-
-
-class TestRelativizeOperand:
-    """Fix 4, both executables: an in-repo absolute path operand relativizes to its cwd-relative form
-    before classification, so `<engine> foo /abs/repo/src/` rewrites identically to the relative
-    spelling and never leaks an absolute path into the emitted `--glob`. An operand escaping the cwd
-    keeps its absolute form and blocks exactly as an out-of-repo path does. Exact equality catches a
-    leaked absolute glob.
+class TestInfraNoneAllows:
+    """Fix 4: infra unavailability (no ``ccx`` on disk, or a required probe fails) runs the tree-shaped
+    search raw — it never converts a failed rewrite into a block. Only a genuinely unmappable shape
+    (a value-taking short like ``-t``) blocks, and that block still fires with ``ccx`` absent.
     """
 
     @pytest.fixture(autouse=True)
-    def tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        repo = tmp_path / "repo"
-        (repo / "src").mkdir(parents=True)
-        (repo / "file.py").write_text("x\n")
-        (tmp_path / "outside").mkdir()
+    def cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: None)
+        monkeypatch.setattr(common, "ccx_bin", lambda: None)
+
+    def test_ccx_bin_none_allows_tree_rg(self) -> None:
+        assert rg_verdict("rg needle") is None
+
+    def test_ccx_bin_none_still_blocks_unmappable_shape(self) -> None:
+        assert isinstance(rg_verdict("rg -t py foo"), HookResult)
+
+
+class TestRgBigContextCount:
+    """Fix 6: a context count past Python's int-string conversion limit forfeits the rewrite and runs
+    raw — the emitter declines without raising, and the verdict allows.
+    """
+
+    @pytest.fixture(autouse=True)
+    def pin_ccx(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
-        monkeypatch.chdir(repo)
+        monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
 
-    @pytest.mark.parametrize("to, prefix", [(rg_rewrite, "rg foo"), (grep_rewrite, "grep -rn foo")])
-    def test_abs_dir_inside_cwd_matches_relative(self, to: Callable[[str], str | None], prefix: str) -> None:
-        cwd = Path.cwd()
-        assert to(f"{prefix} {cwd}/src/") == to(f"{prefix} src/") == "/fake/ccx code grep foo --glob 'src/**'"
-
-    @pytest.mark.parametrize("to, prefix", [(rg_rewrite, "rg foo"), (grep_rewrite, "grep -rn foo")])
-    def test_abs_path_outside_cwd_blocks(self, to: Callable[[str], str | None], prefix: str) -> None:
-        outside = Path.cwd().parent / "outside"
-        assert to(f"{prefix} {outside}/") is None
-
-    @pytest.mark.parametrize("to, prefix", [(rg_rewrite, "rg foo"), (grep_rewrite, "grep foo")])
-    def test_abs_file_inside_cwd_lone_glob(self, to: Callable[[str], str | None], prefix: str) -> None:
-        cwd = Path.cwd()
-        assert to(f"{prefix} {cwd}/file.py") == "/fake/ccx code grep foo --glob file.py"
-
-
-class TestRgBlockReason:
-    """`block_reason`'s glued-value-short blame must never name a flag that maps at the rg bundle head."""
-
-    def test_head_glob_short_is_never_blamed(self) -> None:
-        # `-g` (glob) maps at the rg head, so a pipe-blocked line carrying `-g '*.go'` never blames it —
-        # the block's true cause is the non-sink `| cat`, which yields no cheap, certain clause.
-        evt = make_evt("rg -g '*.go' foo | cat")
-        occ = next(o for o in evt.cmd.line.occurrences if o.command.unwrapped.executable == "rg")
-        reason = search_common.block_reason(occ, cwd=None)
-        assert reason is None or "-g" not in reason
+    def test_overflow_count_forfeits_without_crash(self) -> None:
+        command = "rg -A " + "9" * 5000 + " -B 1 needle"
+        assert rg_rewrite(command) is None  # emitter forfeits, never raises ValueError
+        assert rg_verdict(command) is None  # verdict runs raw

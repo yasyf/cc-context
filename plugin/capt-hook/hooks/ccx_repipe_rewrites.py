@@ -1,9 +1,8 @@
-"""Rewrite or block a two-stage ``ccx … | head``/``tail`` pipe.
+"""Rewrite three canonical two-stage ``ccx … | head``/``tail`` pipes.
 
 ``ccx`` output is already token-budget-capped and carries an explicit overflow footer, so re-slicing
 it with ``head``/``tail`` truncates arbitrarily and drops that footer. Three shapes have a faithful
-source-bounded equivalent and rewrite in place; every other ``ccx | head``/``tail`` hard-blocks onto
-bounding at the source (``--budget``/``--section``) or ``ccx exec``:
+source-bounded equivalent and rewrite in place:
 
 * ``ccx code read <file> --full | head -N`` -> **rewrite** to ``ccx code read <file> --section 1-N``
   (``--full`` dropped, other flags preserved);
@@ -13,22 +12,17 @@ bounding at the source (``--budget``/``--section``) or ``ccx exec``:
   ship's report is already lean and budget-capped, and the pipe would mask ship's exit status; this
   branch alone also reaches a ``tail`` sink and ``head -c`` byte mode).
 
-This judges only a ccx *source* piped into a head/tail *sink*. A head/tail on a FILE operand is
-:class:`~hooks.headtail_rewrites.HeadTailFile`'s job (a pipe sink is its documented non-goal); a
-three-plus-stage pipeline (``ccx … | jq | head``) and a non-ccx source never match here.
+Every other shape runs unchanged, including env-prefixed or wrapped ccx invocations.
 """
 
 from __future__ import annotations
 
-import re
 import shlex
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from captain_hook import (
     Allow,
     BaseHookEvent,
-    Block,
     CommandLine,
     CustomCommandLineCondition,
     Input,
@@ -42,60 +36,28 @@ from .headtail_rewrites import headtail_parse
 if TYPE_CHECKING:
     from cc_transcript.command import Command
 
-# A leading ``VAR=`` assignment token, for spotting an env-wrapper assignment among the wrapper words.
-ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-
-
-def prefix_needs_requote(head: Command) -> bool:
-    """Whether the env/wrapper prefix carries a value ``shlex.quote`` can't faithfully re-emit.
-
-    A bare ``FOO=val`` lands in ``head.env`` with its value unquoted; a glued ``env FOO=val`` keeps the
-    value — inner quotes and all — as a wrapper argv token. A value carrying whitespace or a quote char
-    round-trips unfaithfully (``env FOO='two words'`` double-wraps under ``shlex.quote``), so the rewrite
-    bails to the block instead of splicing a corrupt prefix.
-    """
-    stripped = len(head.argv) - len(head.unwrapped.argv)
-    values = [v for _k, v in head.env]
-    values += [tok.split("=", 1)[1] for tok in head.argv[:stripped] if ASSIGN.match(tok)]
-    return any(any(c in v for c in " \t\n'\"") for v in values)
-
 
 def source_is_ccx(cmd: Command) -> bool:
-    """Whether a pipeline's source command runs the ``ccx`` binary, seen through prefix laundering.
-
-    ``unwrapped`` strips a leading ``command``/``env``/``sudo``/… wrapper and any ``VAR=val``
-    prefix, so ``command ccx …`` and ``FOO=1 ccx …`` resolve to the same ``ccx`` source a bare
-    invocation does — the same way :meth:`Command.runs` defeats the launderers elsewhere in the pack.
-    """
-    exe = cmd.unwrapped.executable
-    return exe == ccx_bin() or Path(exe).name == "ccx"
+    return (
+        not cmd.env
+        and not any(char in cmd.raw for char in "$`")
+        and (ccx := ccx_bin()) is not None
+        and cmd.executable in ("ccx", ccx)
+    )
 
 
-def source_prefix(head: Command) -> list[str]:
-    """The env-assignment and wrapper tokens before ``ccx``, quoted so the rewrite preserves them.
-
-    A rewrite drops anything it does not re-emit, so ``FOO=1 ccx … | head`` would lose ``FOO=1`` and
-    ``command ccx … | head`` its ``command`` builtin. This reconstructs both: the leading ``VAR=val``
-    assignments (parsed into ``head.env``) plus the wrapper words :meth:`Command.unwrapped` strips.
-    """
-    stripped = len(head.argv) - len(head.unwrapped.argv)
-    return [
-        *(f"{k}={shlex.quote(v)}" for k, v in head.env),
-        *(shlex.quote(t) for t in head.argv[:stripped]),
-    ]
+def byte_sink(cmd: Command) -> bool:
+    if cmd.env:
+        return False
+    match list(cmd.args):
+        case ["-c" | "--bytes", raw_count]:
+            return raw_count.isdigit()
+        case _:
+            return False
 
 
 class CcxRepipe(CustomCommandLineCondition):
-    """Matches a two-stage ``ccx … | head``/``tail`` pipe — ccx source, head/tail sink.
-
-    Exactly two stages joined by a pipe, the first a ``ccx`` invocation, the last ``head`` or
-    ``tail``. The three source-bounded shapes rewrite (via :func:`repipe_to`) — ``ccx vcs ship``
-    from either sink and mode, the other two only from a ``head`` sink in line mode; every other
-    ccx|head/tail (a non-ship ``tail`` sink, non-ship ``head -c`` byte mode, or any other
-    subcommand) hard-blocks. A three-plus-stage pipeline and a non-ccx source fall through
-    untouched — and a head/tail on a FILE operand is
-    :class:`~hooks.headtail_rewrites.HeadTailFile`'s job (a pipe sink is its documented non-goal).
-    """
+    """Matches a literal ccx source piped directly to a head/tail sink."""
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
         if len(cl.parts) != 2 or cl.parts[0][1] != "|":
@@ -104,32 +66,31 @@ class CcxRepipe(CustomCommandLineCondition):
 
 
 def repipe_to(evt: BaseHookEvent) -> str | None:
-    """The source-bounded rewrite for the two faithful shapes, else ``None`` to hard-block."""
     cl = evt.cmd.line
-    if prefix_needs_requote(cl.head):  # a re-quote-needing env value would corrupt the spliced prefix → block
-        return None
-    _exe, mode, count, files = headtail_parse(cl.primary)
-    if files:  # a file operand → block
-        return None
-    src = cl.head.unwrapped
+    src = cl.head
     args = list(src.args)
     ccx = src.executable
-    prefix = source_prefix(cl.head)
-    if args[:2] == ["vcs", "ship"]:  # ship's report is already lean and budget-capped; a pipe just masks its exit status
-        return " ".join([*prefix, *(shlex.quote(t) for t in [ccx, *args])])
-    if _exe != "head" or mode != "line":  # tail or byte mode → block (ship already handled above)
+    parsed = headtail_parse(cl.primary)
+    if args[:2] == ["vcs", "ship"] and (
+        (parsed is not None and not parsed[3]) or byte_sink(cl.primary)
+    ):
+        return " ".join(shlex.quote(t) for t in [ccx, *args])
+    if parsed is None:
+        return None
+    exe, _mode, count, files = parsed
+    if exe != "head" or files:
         return None
     if args[:2] == ["code", "read"] and "--full" in args:
         n = count if count is not None else 10
         kept = [a for a in args if a != "--full"]
-        return " ".join([*prefix, shlex.quote(ccx), *(shlex.quote(a) for a in kept), "--section", f"1-{n}"])
+        return " ".join([shlex.quote(ccx), *(shlex.quote(a) for a in kept), "--section", f"1-{n}"])
     if args[:2] == ["repo", "find"]:
-        return " ".join([*prefix, *(shlex.quote(t) for t in [ccx, *args])])
+        return " ".join(shlex.quote(t) for t in [ccx, *args])
     return None
 
 
 def repipe_note(evt: BaseHookEvent) -> str:
-    args = evt.cmd.line.head.unwrapped.args
+    args = evt.cmd.line.head.args
     if args[:2] == ("repo", "find"):
         return "Dropped `| head` — `ccx repo find` output is already token-budget-capped."
     if args[:2] == ("vcs", "ship"):
@@ -140,12 +101,6 @@ def repipe_note(evt: BaseHookEvent) -> str:
 rewrite_command(
     only_if=[CcxRepipe()],
     to=repipe_to,
-    block=(
-        "BLOCKED: ccx output is already token-budget-capped — re-truncating with head/tail slices "
-        "arbitrarily and drops the overflow footer. Bound at the source: --budget N (tokens) or "
-        "--section A-B; post-process with `ccx exec`. Bounded readers: "
-        "`ccx code read` (ccx_code_read), `ccx code grep` (ccx_code_grep), `ccx repo find` (ccx_repo_find)."
-    ),
     note=repipe_note,
     tests={
         Input(command="ccx code read f.go --full | head -5"): Rewrite(pattern="code read f.go --section 1-5"),
@@ -154,23 +109,21 @@ rewrite_command(
         Input(command="ccx vcs ship -m fix | tail -20"): Rewrite(pattern="vcs ship -m fix"),
         Input(command="ccx vcs ship -m fix | head -5"): Rewrite(pattern="vcs ship -m fix"),
         Input(command="ccx vcs ship -m fix | tail -c 100"): Rewrite(pattern="vcs ship -m fix"),  # byte-mode sink also strips
-        # Prefix laundering no longer bypasses: `command`/`env` wrappers unwrap to the ccx source, and
-        # the leading `VAR=val`/wrapper prefix rides into the rewrite verbatim instead of being dropped.
-        Input(command="command ccx code read f.go --full | head -5"): Rewrite(pattern="code read f.go --section 1-5"),
-        Input(command="FOO=1 ccx code read f.go --full | head -5"): Rewrite(
-            pattern="FOO=1 ccx code read f.go --section 1-5"
-        ),
-        Input(command="env FOO=1 ccx code read f.go --full | head -5"): Rewrite(
-            pattern="env FOO=1 ccx code read f.go --section 1-5"
-        ),
-        # An env value needing re-quoting (whitespace/quotes) would corrupt the spliced prefix → block, not rewrite.
-        Input(command="env FOO='two words' ccx code read f.go --full | head -5"): Block(pattern="--budget"),
-        Input(command="FOO='two words' ccx code read f.go --full | head -5"): Block(pattern="--budget"),
-        Input(command="ccx code grep foo | head -5"): Block(pattern="--budget"),  # other subcommand → block
-        Input(command="ccx code read f.go --full | tail -5"): Block(pattern="--budget"),  # tail → block
-        Input(command="ccx code read f.go --full | head -c 100"): Block(pattern="--budget"),  # byte mode → block
-        Input(command="ccx vcs ship -m fix | tail -5 f.txt"): Block(pattern="--budget"),  # file operand → block
-        Input(command="ccx exec 'x' | head -3"): Block(pattern="--budget"),  # ccx exec source → block
+        Input(command="command ccx code read f.go --full | head -5"): Allow(),
+        Input(command="FOO=1 ccx code read f.go --full | head -5"): Allow(),
+        Input(command="env FOO=1 ccx code read f.go --full | head -5"): Allow(),
+        Input(command="env FOO='two words' ccx code read f.go --full | head -5"): Allow(),
+        Input(command="FOO='two words' ccx code read f.go --full | head -5"): Allow(),
+        Input(command="ccx code grep foo | head -5"): Allow(),
+        Input(command="ccx code read f.go --full | tail -5"): Allow(),
+        Input(command="ccx code read f.go --full | head -c 100"): Allow(),
+        Input(command="ccx code read f.go --full | head --lines=5"): Allow(),
+        Input(command="ccx vcs ship -m fix | tail -5 f.txt"): Allow(),
+        Input(command="ccx vcs ship -m fix | FOO=1 tail -c 100"): Allow(),
+        Input(command="ccx exec 'x' | head -3"): Allow(),
+        Input(command="ccx code read $FILE --full | head -5"): Allow(),
+        Input(command="ccx repo find $(printf '**/*.go') | head -20"): Allow(),
+        Input(command="ccx vcs ship -m `printf fix` | tail -20"): Allow(),
         Input(command="rg foo | head -5"): Allow(),  # non-ccx source → not ours
         Input(command="ccx code grep foo | jq . | head -3"): Allow(),  # three stages → not ours
         Input(command="ccx code read f.go --section 1-5"): Allow(),  # no pipe → not ours

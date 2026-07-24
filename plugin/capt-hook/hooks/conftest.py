@@ -44,17 +44,10 @@ NO_SUPPORT_HELP = "usage: ccx code grep [--glob G] [--expand int] ..."
 
 
 def fake_run(returncode: int, stdout: str = "", stderr: str = ""):
-    """A ``subprocess.run`` double carrying the configured result only for the ``--help`` probe.
-
-    A ``git check-ignore`` call (``path_blocked``'s ignore probe, shelled through the same
-    patched ``subprocess.run``) is answered "not ignored" (exit 1); only the ``ccx … --help``
-    probe sees ``returncode``/``stdout``. Callers that never shell check-ignore see the plain
-    result — the branch is inert for them.
-    """
+    """A ``subprocess.run`` double answering every call — in practice the ``ccx … --help`` probe,
+    the pack's one remaining process boundary — with the configured result."""
 
     def run(cmd: list[str], *_args: object, **_kwargs: object) -> SimpleNamespace:
-        if cmd[:2] == ["git", "check-ignore"]:
-            return SimpleNamespace(returncode=1, stdout="", stderr="")
         return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
     return run

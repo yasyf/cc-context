@@ -1,4 +1,4 @@
-"""Tests for bounded search sinks and capped filesystem walks."""
+"""Tests for the surviving search-family primitives: policy screens, operand shape, and the glob emitter."""
 
 from __future__ import annotations
 
@@ -6,158 +6,165 @@ from pathlib import Path
 
 import pytest
 
-from hooks import common, search_common
+from hooks import search_common
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("~/.claude/projects/x.jsonl", True),
+        (".claude/projects", True),
+        ("/home/u/.claude/projects/sess/turn.jsonl", True),
+        ("data.jsonl", False),
+        ("src/claude/projects", False),
+        ("docs/x.claude/projects-notes.md", False),  # lookalike substring, not consecutive segments
+    ],
+    ids=["home-jsonl", "bare-dir", "abs-nested", "plain-jsonl", "not-hidden", "substring-lookalike"],
+)
+def test_is_transcript_path(path: str, expected: bool) -> None:
+    assert search_common.is_transcript_path(path) is expected
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        (".venv/lib/python3.13", True),
+        ("node_modules/.cache", True),
+        (".git/objects", True),
+        ("src/.hidden/x", True),
+        ("./src", False),
+        ("../src", False),
+        ("src/internal", False),
+        ("a.venv/b", False),
+    ],
+    ids=["venv", "nested-hidden", "git", "mid-hidden", "dot", "dotdot", "plain", "not-a-segment"],
+)
+def test_has_hidden_segment(path: str, expected: bool) -> None:
+    assert search_common.has_hidden_segment(path) is expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("grep foo $(printf /p)", True),
+        ("grep foo `printf x`", True),
+        ("grep foo '$(printf x)'", True),  # textual: a quoted `$(` still forfeits the rewrite
+        ("grep -n foo $d/host.go", False),  # a bare `$VAR` is not a substitution
+        ("grep foo src/", False),
+    ],
+    ids=["dollar-paren", "backtick", "quoted-subst", "var-only", "plain"],
+)
+def test_has_command_substitution(raw: str, expected: bool) -> None:
+    assert search_common.has_command_substitution(raw) is expected
+
+
+@pytest.mark.parametrize(
+    ("operand", "expected"),
+    [
+        ("$d", True),  # var expansion
+        ("$d/host.go", True),
+        ("~/notes.md", True),  # leading tilde
+        ("src[old]/", True),  # bracket → char class
+        ("*.go", True),  # glob star
+        ("file?.py", True),  # glob question
+        ("src/", False),  # plain dir
+        ("foo~bar.go", False),  # mid-token tilde is literal
+        (".", False),
+    ],
+    ids=["var", "var-path", "tilde", "bracket", "star", "question", "plain", "mid-tilde", "dot"],
+)
+def test_forfeits_operand(operand: str, expected: bool) -> None:
+    assert search_common.forfeits_operand(operand) is expected
 
 
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
-        (("-n", "1,20p"), True),
-        (("--quiet", "20p"), True),
-        (("--silent", " 1 , 20 p "), True),
-        (("-n", "-e", "1,20p"), True),
-        (("-n", "-e1,20p"), True),
-        (("-n", "--expression=1,20p"), True),
-        (("20q",), True),
-        (("-n", "1,2000000p"), False),
-        (("2000000q",), False),
-        (("1,20p",), False),
-        (("-n", "1,20p", "extra.txt"), False),
-        (("-n", "-e", "1p", "-e", "2p"), False),
-        (("-n", "/needle/p"), False),
-        (("-n", "1,20p;21q"), False),
-        (("-f", "script.sed"), False),
-        (("-n", "²p"), False),
-        (("9" * 5000 + "q",), False),
-        (("0q",), False),
-        (("1,20p", "-n"), False),
+        (("-A", "9" * 5000, "-B", "1", "needle"), True),  # 5000-digit count past the int-string limit
+        (("-A", "20", "foo"), False),  # ordinary count
+        (("foo", "src/"), False),
     ],
-    ids=[
-        "quiet-short",
-        "quiet-long",
-        "silent-whitespace",
-        "separate-expression",
-        "glued-expression",
-        "long-expression",
-        "quit",
-        "print-over-cap",
-        "quit-over-cap",
-        "autoprint",
-        "second-positional",
-        "second-expression",
-        "regex-address",
-        "joined-scripts",
-        "flag",
-        "unicode-digit",
-        "over-long-count",
-        "zero-address",
-        "flag-after-script",
-    ],
+    ids=["overflow", "ordinary", "no-count"],
 )
-def test_sed_bounded(args: tuple[str, ...], expected: bool) -> None:
-    assert search_common.sed_bounded(args) is expected
+def test_forfeits_count(args: tuple[str, ...], expected: bool) -> None:
+    assert search_common.forfeits_count(args) is expected
 
 
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
-        (("NR<20",), True),
-        (("NR <= 20",), True),
-        (("NR==1",), True),
-        (("NR == 2000000 { print }",), True),
-        (("NR<=20 {print $0}",), True),
-        (("NR<=2000000",), False),
-        (("NR>=20",), False),
-        (("NR!=2",), False),
-        (("{print}",), False),
-        (("-F,", "NR<=20"), False),
-        (("--posix", "NR<=20"), False),
-        (("NR<=20", "extra.txt"), False),
-        (("NR<=²",), False),
-        (("NR==" + "9" * 5000,), True),
-        (("NR<=20\n{print}",), False),
+        (("-rn", "foo", "src/"), ["foo", "src/"]),  # tolerant: over-includes the pattern
+        (("-A", "3", "foo", "."), ["3", "foo", "."]),  # unknown value arity not resolved — that is fine here
+        (("foo", "--", "-weird.py"), ["foo", "-weird.py"]),  # post `--` positionals kept
+        (("-", "foo"), ["-", "foo"]),  # a lone `-` (stdin) is a positional
+        (("--recursive", "foo"), ["foo"]),  # long flags dropped
     ],
-    ids=[
-        "less-than",
-        "whitespace",
-        "equal",
-        "print-action-equal",
-        "print-record-action",
-        "over-cap",
-        "greater-equal",
-        "not-equal",
-        "bare-action",
-        "field-separator",
-        "flag",
-        "second-positional",
-        "unicode-digit",
-        "equal-over-long-count",
-        "embedded-newline",
-    ],
+    ids=["short-bundle", "value-flag", "double-dash", "stdin-dash", "long-flag"],
 )
-def test_awk_bounded(args: tuple[str, ...], expected: bool) -> None:
-    assert search_common.awk_bounded(args) is expected
+def test_path_operands_raw(args: tuple[str, ...], expected: list[str]) -> None:
+    assert search_common.path_operands_raw(args) == expected
+
+
+def test_resolved_is_dir(tmp_path: Path) -> None:
+    (tmp_path / "d").mkdir()
+    (tmp_path / "f.py").write_text("x\n")
+    assert search_common.resolved_is_dir(".", tmp_path) is True
+    assert search_common.resolved_is_dir("..", tmp_path) is True
+    assert search_common.resolved_is_dir("d", tmp_path) is True
+    assert search_common.resolved_is_dir("d/", tmp_path) is True
+    assert search_common.resolved_is_dir("f.py", tmp_path) is False  # a file
+    assert search_common.resolved_is_dir("ghost", tmp_path) is False  # missing
+    assert search_common.resolved_is_dir("d", None) is False  # no trusted cwd → fail open
+
+
+class TestGrepGlob:
+    """The glob emitter shared by grep and rg: a directory → ``dir/**``, several → braced, a lone file
+    passes through, and out-of-repo / mixed / multi-file shapes forfeit (``None``) so the caller blocks
+    or falls through rather than emitting a glob ccx would 0-match.
+    """
+
+    @pytest.fixture(autouse=True)
+    def tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "src").mkdir()
+        (tmp_path / "internal").mkdir()
+        (tmp_path / "file.py").write_text("x\n")
+        monkeypatch.chdir(tmp_path)
+
+    @pytest.mark.parametrize(
+        ("paths", "include", "expected"),
+        [
+            (["."], None, ""),  # `.` widens repo-wide
+            (["./"], None, ""),
+            (["src"], None, "src/**"),
+            (["src/"], None, "src/**"),  # trailing slash stripped
+            (["src", "internal"], None, "{src,internal}/**"),  # braced multi-dir
+            (["file.py"], None, "file.py"),  # a lone file passes through
+            (["src"], "*.go", "src/**/*.go"),  # include composes onto the dir root
+            (["."], "*.go", "*.go"),  # `.` + include → bare include glob
+            (["src", "file.py"], None, None),  # mixed dir+file → no single glob
+            (["file.py", "internal/x.py"], None, None),  # two non-dirs → multi-file lane, not a glob
+            (["/abs/src"], None, None),  # absolute operand → out-of-repo forfeit
+            (["~/src"], None, None),  # `~` operand → forfeit
+            (["../src"], None, None),  # `..` segment → forfeit
+        ],
+        ids=[
+            "dot", "dot-slash", "dir", "dir-slash", "multi-dir", "lone-file", "include-on-dir",
+            "dot-include", "mixed", "two-files", "absolute", "tilde", "dotdot",
+        ],
+    )
+    def test_grep_glob(self, paths: list[str], include: str | None, expected: str | None) -> None:
+        assert search_common.grep_glob(paths, include, cwd=Path.cwd()) == expected
+
+
+def test_brace() -> None:
+    assert search_common.brace(["src"]) == "src"
+    assert search_common.brace(["src", "internal"]) == "{src,internal}"
 
 
 @pytest.mark.parametrize(
-    ("flag", "count", "expected"),
-    [
-        ("-n", "2000", True),
-        ("-n", "²", False),
-        ("-c", "9" * 5000, False),
-    ],
-    ids=["in-cap", "unicode-digit", "over-long-count"],
+    ("raw", "expected"),
+    [("'*.go'", "*.go"), ('"a b"', "a b"), ("plain", "plain"), ("'unbalanced", "'unbalanced")],
+    ids=["single", "double", "plain", "unbalanced"],
 )
-def test_count_bounded(flag: str, count: str, expected: bool) -> None:
-    assert search_common.count_bounded(flag, count) is expected
-
-
-def test_tree_size_capped_accepts_file_and_directory_mix(tmp_path: Path) -> None:
-    (tmp_path / "root.txt").write_text("root")
-    directory = tmp_path / "d"
-    directory.mkdir()
-    (directory / "child.txt").write_text("child")
-
-    assert search_common.tree_size_capped(["root.txt", "d"], cwd=tmp_path)
-
-
-def test_tree_size_capped_rejects_over_cap_directory(tmp_path: Path) -> None:
-    directory = tmp_path / "d"
-    directory.mkdir()
-    (directory / "huge").write_bytes(b"x" * (common.LARGE_READ_BYTES + 1))
-
-    assert not search_common.tree_size_capped(["d"], cwd=tmp_path)
-
-
-def test_tree_size_capped_rejects_entry_spam(tmp_path: Path) -> None:
-    directory = tmp_path / "d"
-    directory.mkdir()
-    for i in range(search_common.DIR_WALK_ENTRY_CAP + 1):
-        (directory / str(i)).touch()
-
-    assert not search_common.tree_size_capped(["d"], cwd=tmp_path)
-
-
-def test_tree_size_capped_skips_symlink_to_huge_file(tmp_path: Path) -> None:
-    huge = tmp_path / "huge"
-    huge.write_bytes(b"x" * (common.LARGE_READ_BYTES + 1))
-    directory = tmp_path / "d"
-    directory.mkdir()
-    (directory / "small").write_text("small")
-    (directory / "linked-huge").symlink_to(huge)
-
-    assert search_common.tree_size_capped(["d"], cwd=tmp_path)
-
-
-def test_tree_size_capped_follows_operand_symlinks(tmp_path: Path) -> None:
-    (tmp_path / "small").write_text("small")
-    (tmp_path / "huge").write_bytes(b"x" * (common.LARGE_READ_BYTES + 1))
-    (tmp_path / "small-link").symlink_to(tmp_path / "small")
-    (tmp_path / "huge-link").symlink_to(tmp_path / "huge")
-
-    assert search_common.tree_size_capped(["small-link"], cwd=tmp_path)
-    assert not search_common.tree_size_capped(["huge-link"], cwd=tmp_path)
-
-
-def test_tree_size_capped_rejects_missing_operand(tmp_path: Path) -> None:
-    assert not search_common.tree_size_capped(["missing"], cwd=tmp_path)
+def test_unquote(raw: str, expected: str) -> None:
+    assert search_common.unquote(raw) == expected

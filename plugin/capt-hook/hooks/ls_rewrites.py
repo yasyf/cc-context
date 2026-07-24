@@ -28,7 +28,7 @@ from .common import carries_expansion, ccx_bin
 if TYPE_CHECKING:
     from cc_transcript.command import Occurrence
 
-WORKSPACE_ROOT = re.compile(r"^(~|\$HOME|\$\{HOME\})/Code/?$")
+WORKSPACE_ROOT = re.compile(r"^(?:~|\$(?:HOME|\{HOME\}))/Code/?$")
 
 
 def is_ls_recursive_command(cmd: Command) -> bool:

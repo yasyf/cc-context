@@ -12,16 +12,10 @@ never live in inline ``tests={}`` (they would rewrite or block depending on the 
 Here the probe boundary (``ccx_bin`` + ``subprocess.run``) is monkeypatched and the
 ``ccx_supports`` cache is cleared around every case so a result never leaks between them;
 ``search_common.ccx_bin`` is pinned too so the rewritten command is deterministic.
-
-``path_blocked`` shells ``git check-ignore`` through that *same* module-global
-``subprocess.run``, so :func:`fake_run` answers a check-ignore probe "not ignored" (exit 1)
-and reserves the configured result for the ``--help`` call — a bare exit-code fake would read
-as "path is ignored" and block every rewrite.
 """
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -55,7 +49,7 @@ def event_occurrence(command: str, index: int = 0) -> tuple[PreToolUseEvent, Occ
 
 def grep_rewrite(command: str, index: int = 0) -> str | None:
     evt, occ = event_occurrence(command, index)
-    return grep_guards.grep_to(evt, occ, cwd=evt.cwd)
+    return grep_guards.grep_to(occ, cwd=evt.cwd)
 
 
 def grep_verdict(command: str) -> HookResult | str | None:
@@ -110,13 +104,10 @@ class TestGrepIgnoreCaseWord:
         assert grep_rewrite("grep -i foo src/") is None
 
     def test_ungated_shape_never_probes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # A grep with no -i/-w must not shell the `--help` probe — it rewrites unconditionally. The
-        # path-classification `git check-ignore` call is expected (and answered "not ignored"); only
-        # a `--help` probe shelled from here is the failure.
+        # A grep with no -i/-w rewrites unconditionally — no `--help` probe, and no `git check-ignore`
+        # now that the path-block screen is gone. Any subprocess from here is the failure.
         def no_probe(cmd: list[str], *_args: object, **_kwargs: object) -> SimpleNamespace:
-            if cmd[:2] == ["git", "check-ignore"]:
-                return SimpleNamespace(returncode=1, stdout="", stderr="")
-            raise AssertionError("ccx_supports must not probe for a grep without -i/-w")
+            raise AssertionError("a grep without -i/-w must shell no subprocess")
 
         monkeypatch.setattr(common.subprocess, "run", no_probe)
         assert grep_rewrite("grep -rn foo src/") == "/fake/ccx code grep foo --glob 'src/**'"
@@ -244,23 +235,21 @@ class TestGrepPathGlobbing:
     def test_disk_classified_globs(self, tree: Path, command: str, expected: str) -> None:
         assert grep_rewrite(command) == expected
 
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "grep -rn foo nonexistent/",  # absent path — no faithful glob → block
-            "grep foo ghost.py",
-            "grep -rn foo src/ ghost/",  # one real dir, one absent → block (never guess the absent one)
-        ],
-    )
-    def test_nonexistent_path_blocks(self, tree: Path, command: str) -> None:
-        assert grep_rewrite(command) is None
+    @pytest.mark.parametrize("command", ["grep -rn foo nonexistent/", "grep foo ghost.py"])
+    def test_missing_lone_path_runs_raw(self, tree: Path, command: str) -> None:
+        # A missing path is not a directory → not tree-shaped → runs raw under fail-open.
+        assert grep_verdict(command) is None
+
+    def test_real_dir_with_missing_sibling_blocks(self, tree: Path) -> None:
+        # A real dir makes it tree-shaped, but the mixed dir+missing target has no single glob → block.
+        assert isinstance(grep_verdict("grep -rn foo src/ ghost/"), HookResult)
 
 
 class TestGrepCwdThreading:
     """The `visit=` walk threads `evt.cwd` through statically resolvable `cd` occurrences, so a grep's
-    path operands classify against the effective cwd — but only when it is trustworthy. A bare `(`
-    (subshell) or an unresolvable `cd` ($VAR / bare / `-`) declines the trust, and every stat lane then
-    fails closed rather than falling back to the process cwd.
+    path operands classify against the effective cwd. Under the fail-open doctrine the threaded cwd is
+    trusted as-is — no subshell or conditional-cd decline — so a wrong cwd at worst mis-stats one
+    `is_dir` probe and fails open.
     """
 
     @pytest.fixture(autouse=True)
@@ -280,23 +269,6 @@ class TestGrepCwdThreading:
             f"cd {target} && /fake/ccx code grep foo --glob 'src/**'"
         )
 
-    def test_subshell_cd_declines_cwd_trust(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The parser flattens the subshell, so a `(cd …)` cwd must not leak to a sibling — `src/` (present
-        # in the process cwd) stays unclassified and the line blocks: no wrong rewrite.
-        (tmp_path / "src").mkdir()
-        monkeypatch.chdir(tmp_path)
-        assert isinstance(grep_verdict("(cd /tmp && grep foo .) && grep bar src/"), HookResult)
-
-    @pytest.mark.parametrize("prefix", ["cd $VAR", "cd", "cd -"])
-    def test_unresolvable_cd_declines_stat_lane(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prefix: str
-    ) -> None:
-        # $VAR (dynamic), bare `cd` (HOME), and `cd -` (OLDPWD) resolve to None — the following grep's
-        # stat lane fails closed rather than trusting the process cwd, so `src/` blocks despite existing.
-        (tmp_path / "src").mkdir()
-        monkeypatch.chdir(tmp_path)
-        assert isinstance(grep_verdict(f"{prefix} && grep -rn foo src/"), HookResult)
-
     def test_cd_into_uncreated_dir_stays_conservative(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -308,8 +280,7 @@ class TestGrepCwdThreading:
         )
 
     def test_chained_cd_in_and_chain_keeps_trust(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Both cds sit in the grep's own unbroken `&&` chain — grep runs only if they did — so the
-        # threaded cwd stays trusted and `deep/` classifies against target/sub.
+        # Both cds thread into the effective cwd, so `deep/` classifies against target/sub.
         (tmp_path / "target" / "sub" / "deep").mkdir(parents=True)
         (tmp_path / "elsewhere").mkdir()
         monkeypatch.chdir(tmp_path / "elsewhere")
@@ -319,25 +290,15 @@ class TestGrepCwdThreading:
         )
 
     def test_mkdir_cd_in_chain_keeps_trust(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # A gated `cd` inside the grep's own `&&` chain no longer declines trust (the old blanket
-        # over-block); `newdir` is uncreated, so `sub/` classifies against the kept pre-cd cwd.
+        # `newdir` is uncreated, so `resolve_cd` keeps the pre-cd cwd and `sub/` classifies against it.
         (tmp_path / "sub").mkdir()
         monkeypatch.chdir(tmp_path)
         assert grep_verdict("mkdir -p newdir && cd newdir && grep -rn foo sub/") == (
             "mkdir -p newdir && cd newdir && /fake/ccx code grep foo --glob 'sub/**'"
         )
 
-    def test_conditional_cd_declines_cwd_trust(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # `false && cd` short-circuits, so the grep runs in the ORIGINAL cwd — trust is declined
-        # and the stat lane fails closed: the pre-threading block, never a wrong-tree rewrite.
-        (tmp_path / "small" / "src").mkdir(parents=True)
-        (tmp_path / "elsewhere").mkdir()
-        monkeypatch.chdir(tmp_path / "elsewhere")
-        small = tmp_path / "small"
-        assert isinstance(grep_verdict(f"false && cd {small}; grep -rn foo src/"), HookResult)
-
     def test_unconditional_semicolon_cd_keeps_trust(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # A `;`-joined (or line-heading) `cd` always runs — only a cd ITSELF gated behind `&&`/`||` declines.
+        # A `;`-joined `cd` threads into the effective cwd exactly like an `&&`-joined one.
         (tmp_path / "target" / "src").mkdir(parents=True)
         (tmp_path / "elsewhere").mkdir()
         monkeypatch.chdir(tmp_path / "elsewhere")
@@ -345,16 +306,6 @@ class TestGrepCwdThreading:
         assert grep_verdict(f"cd {target}; grep -rn foo src/") == (
             f"cd {target}; /fake/ccx code grep foo --glob 'src/**'"
         )
-
-    def test_or_reached_cd_declines_cwd_trust(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # `cd A || cd B && grep` runs in A when `cd A` succeeds, in B otherwise — the threaded cwd (B)
-        # is unknowable, so a `||`-reached cd declines trust even inside the grep's `&&` chain.
-        (tmp_path / "b" / "src").mkdir(parents=True)
-        (tmp_path / "a").mkdir()
-        (tmp_path / "elsewhere").mkdir()
-        monkeypatch.chdir(tmp_path / "elsewhere")
-        a, b = tmp_path / "a", tmp_path / "b"
-        assert isinstance(grep_verdict(f"cd {a} || cd {b} && grep -rn foo src/"), HookResult)
 
 
 class TestGrepRepoWide:
@@ -557,13 +508,15 @@ class TestGrepRegexRewrite:
         assert grep_rewrite("grep 'foo.*' real.py") is None
         assert grep_verdict("grep 'foo.*' real.py") is None
 
-    def test_probe_fail_tree_wide_blocks(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Old binary + `.` (a dir, not a bounded file): unrewritable and unbounded → the condition fires
-        # and `grep_to` is None → block.
+    def test_probe_fail_tree_wide_allows_infra(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Fix 4: old binary (no `--regex`) over `.` — the regex shape is mappable but the required probe
+        # fails, so infra unavailability runs raw (allow), never a block. The emitter still declines and
+        # the flood condition still matches; the allow lands at the visitor.
         probe(monkeypatch, SUPPORTS_HELP)
         cl = CommandLine.parse("grep 'foo.*' .")
         assert grep_rewrite("grep 'foo.*' .") is None
         assert grep_guards.GrepFlood().check_command_line(make_evt("grep 'foo.*' ."), cl) is True
+        assert grep_verdict("grep 'foo.*' .") is None
 
     def test_regex_note_discloses_rg_engine(self) -> None:
         # The note for a regex rewrite names the engine; the dot-literal disclosure does not apply.
@@ -623,7 +576,7 @@ class TestGrepOccurrenceRewrite:
         evt = make_evt("echo x; grep -r foo .")
         cl = evt.cmd.line
         grep_occ = cl.occurrences[1]
-        replacement = grep_guards.grep_to(evt, grep_occ)
+        replacement = grep_guards.grep_to(grep_occ)
         assert replacement == "/fake/ccx code grep foo"
         assert cl.splice({grep_occ.index: replacement}) == "echo x; /fake/ccx code grep foo"
 
@@ -635,283 +588,32 @@ class TestGrepOccurrenceRewrite:
         evt, occ = event_occurrence("sudo grep foo .")
         assert occ.command.unwrapped.executable == "grep"
         assert grep_guards.GrepFlood().check_command_line(evt, evt.cmd.line) is True
-        assert grep_guards.grep_to(evt, occ) is None
+        assert grep_guards.grep_to(occ) is None
         assert isinstance(grep_verdict("sudo grep foo ."), HookResult)
 
     def test_spanless_grep_rechecks_and_blocks(self) -> None:
-        evt, occ = event_occurrence("grep foo > out .")
+        _evt, occ = event_occurrence("grep foo > out .")
         assert occ.command.span is None
         assert isinstance(grep_verdict("grep foo > out ."), HookResult)
 
 
-class TestGrepBoundedPassthrough:
-    """`GrepFlood` stays silent (a genuine allow) only when every grep occurrence is a bounded search
-    ccx can't rewrite, judged per occurrence on its own flags and operands in a fixed order of forfeits:
-    a `GREP_OPTIONS` env, `grep -r` with no operand, env alongside path operands, an uninspectable `-f`
-    pattern file, a flag-supplied or positional empty pattern, and (on the stat lane) `-o`. Four shapes
-    stay bounded: every operand an explicit data-ext file (matched by suffix, no stat, `-o` allowed — rg
-    parity); a count/quiet/list-only grep over literal (glob-free) non-directory operands at any size or
-    existence; every operand an existing regular file whose sizes sum under the large-read threshold; or
-    a plain-`-r` directory tree under the byte and entry caps. A pipe-sink grep with no operand is a
-    bounded stdin filter; with file operands it is judged like any file search. Compound lines are judged
-    per grep occurrence — one unbounded grep fires the whole line.
+class TestInfraNoneAllows:
+    """Fix 4: infra unavailability (no ``ccx`` on disk, or a required probe fails) runs the tree-shaped
+    search raw — it never converts a failed rewrite into a block. Only a genuinely unmappable shape
+    (``-P``, an exotic regex) blocks, and that block still fires with ``ccx`` absent.
     """
 
     @pytest.fixture(autouse=True)
-    def tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        (tmp_path / "real.py").write_text("x\n")
-        (tmp_path / "big.txt").write_text("x" * (common.LARGE_READ_BYTES + 1))  # over threshold, data ext
-        (tmp_path / "big.py").write_text("x" * (common.LARGE_READ_BYTES + 1))  # over threshold, source ext
-        (tmp_path / "half_a.py").write_text("x" * (common.LARGE_READ_BYTES // 2 + 1))  # each under cap,
-        (tmp_path / "half_b.py").write_text("x" * (common.LARGE_READ_BYTES // 2 + 1))  # together over it
-        (tmp_path / "sub").mkdir()
-        (tmp_path / "sub" / "real.py").write_text("y\n")  # a descendant reachable only via -r
-        (tmp_path / "dir.json").mkdir()  # a real directory named like a data file
-        (tmp_path / "d").mkdir()
-        (tmp_path / "d" / "small.py").write_text("small\n")
-        (tmp_path / "aqua.yaml").write_text("buck2\n")
-        (tmp_path / "aqua").mkdir()
-        (tmp_path / "aqua" / "reindeer.py").write_text("reindeer\n")
-        (tmp_path / "over-cap").mkdir()
-        (tmp_path / "over-cap" / "huge.py").write_text("x" * (common.LARGE_READ_BYTES + 1))
+    def cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
-        monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: None)
+        monkeypatch.setattr(common, "ccx_bin", lambda: None)
 
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "grep -c foo real.py",  # count mode — unmappable, but a bounded existing file under threshold
-            "grep -q foo real.py",  # exit-code — unmappable
-            "grep --binary-files=text foo real.py",  # value-taking long consumes its =value
-            "grep -m 5 foo real.py",  # value-taking short `-m` consumes its `5`
-            "grep -m1 foo real.py",  # numeric max-count is bounded but keeps the size cap
-            "grep --max-count=1 foo real.py",  # long-form max-count follows the same lane
-        ],
-    )
-    def test_bounded_existing_files_do_not_fire(self, command: str) -> None:
-        assert grep_verdict(command) is None
+    def test_ccx_bin_none_allows_tree_grep(self) -> None:
+        assert grep_verdict("grep needle .") is None
 
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "grep -c foo big.py",  # count mode skips the size cap on an existing file (the incident fix)
-            "grep -L foo big.py",  # files-without-match — one line per operand
-            "grep -q foo big.py",  # quiet / exit-code contract
-            "grep -ci foo big.py",  # bundled count + ignore-case
-            "grep --count foo big.py",  # long-form count
-        ],
-    )
-    def test_output_bounded_skips_size_cap(self, command: str) -> None:
-        # -c/-q/-l/-L output is one line per operand, not per match, so an over-cap existing file
-        # (big.py > LARGE_READ_BYTES) stays bounded — the walk returns None and the grep runs as-is.
-        assert grep_verdict(command) is None
-
-    def test_long_files_with_matches_rewrites(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Deliberately moved out of the bounded-output lane: the long `-l` spelling is now a DROP flag.
-        probe(monkeypatch, FILES_WITH_MATCHES_HELP)
-        command = "grep --files-with-matches foo big.py"
-        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
-        assert grep_rewrite(command) == "/fake/ccx code grep foo -l --glob big.py"
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "grep -c foo ghost.py",  # missing file → one grep error line, not a flood
-            "grep -c foo real.py ghost.py",  # mixed existing/missing — still one line per operand
-            "grep -q foo ghost.py",  # quiet over a missing file
-            "curl -so page.html https://x.test/ && grep -c m page.html",  # created later in the same compound
-        ],
-    )
-    def test_output_bounded_skips_existence(self, command: str) -> None:
-        # PreToolUse fires before the compound's earlier commands run, so a bounded-output grep must
-        # pass on operands that don't exist yet; directory-shaped operands still fire (stays_narrow).
-        assert grep_verdict(command) is None
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "grep -o foo big.py",  # -o forfeits the stat lane — the output-bounded skip is never reached
-            "grep -oc foo big.py",  # the -o forfeit fires before the -c output-bounded skip
-            "grep -c foo sub/",  # count over a directory is still tree-wide
-            "grep -c foo *.py",  # glob operand — expansion can multiply operands past any bound
-            "grep -c foo f{1..100}.py",  # brace operand — same multiplication
-        ],
-    )
-    def test_output_bounded_skip_stays_narrow(self, command: str) -> None:
-        # The skip is only for -c/-q/-l/-L over literal non-directory operands; -o, directories, and
-        # glob/brace operands still block (the condition fires and `grep_to` yields no rewrite).
-        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
-        assert grep_rewrite(command) is None
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "grep -c foo sub/",  # directory operand → not bounded
-            "grep -c foo",  # no operand at all → not bounded (tree-wide)
-            "grep -o . big.py",  # -o forfeits the stat lane (big.py is over-threshold anyway) → block
-            "grep -o foo real.py",  # -o forfeits the stat lane even under threshold (per-match prefixes)
-            "grep -on foo real.py",  # -o bundled with -n still forfeits the stat lane
-            "grep -oHnb . real.py",  # R1: -o + -H/-n/-b prefixes multiply output far past the size bound
-            "grep -v foo real.py",  # -v (invert-match) isn't a bounded flag → unbounded when unpiped
-            "grep -x foo big.py",  # -x is bounded but not output-bounded → the size cap still blocks over-cap
-            "grep -m1 foo big.py",  # max-count limits lines, not their width, so the size cap remains
-            "grep -m nope foo real.py",  # max-count joins the lane only with a numeric value
-            "grep '' real.py",  # empty positional pattern floods every line → block
-        ],
-    )
-    def test_unbounded_grep_fires_and_blocks(self, command: str) -> None:
-        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
-        assert grep_rewrite(command) is None
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "grep -r foo logs.json",  # -r forfeits the data-ext textual escape → unbounded → fires
-            "grep -d recurse foo logs.json",  # -d (--directories) → assume recursive → same
-            "grep foo logs.json/",  # a trailing slash defeats the data-ext textual escape
-        ],
-    )
-    def test_recursion_or_directory_defeats_data_ext(self, command: str) -> None:
-        # Recursion or a trailing slash forfeits the no-stat data-ext pass → unbounded → fires. The absent
-        # `.json` name keeps `grep_to` at `None`, so no dir-glob rewrite masks the fire.
-        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
-
-    def test_data_ext_is_size_exempt(self) -> None:
-        # Data-ext passes by suffix with no stat, so over-threshold `.txt` stays bounded; `-x` (bounded,
-        # not output-bounded) would hit the stat lane and block absent that pass (contrast `-x … big.py`).
-        assert grep_verdict("grep -x foo big.txt") is None
-
-    def test_multi_file_sum_gates_the_stat_lane(self) -> None:
-        # `-x` is bounded but NOT output-bounded, so it reaches the size-sum branch: two half-cap files
-        # are bounded apart yet fire together once their sizes sum past the cap.
-        assert grep_verdict("grep -x foo half_a.py") is None
-        assert isinstance(grep_verdict("grep -x foo half_a.py half_b.py"), HookResult)
-
-    def test_recursive_count_does_not_ride_the_output_bounded_skip(self) -> None:
-        # -c/-q/-l/-L is one line per operand only WITHOUT recursion; under -r/-R a count fans out one
-        # line per file in the tree, so an over-cap recursive count falls back to the size cap and blocks.
-        assert isinstance(grep_verdict("grep -rc foo big.py"), HookResult)
-        # A small recursive count/quiet grep still passes the size cap — recursion alone isn't a flood on
-        # a small file (these stay count-mode so `grep_to` yields no rewrite that would mask the verdict).
-        for ok in ("grep -rc foo real.py", "grep -rq foo real.py"):
-            assert grep_verdict(ok) is None
-
-    def test_plain_recursive_small_directory_is_bounded(self) -> None:
-        evt = make_evt("grep -ri foo d/")
-        assert grep_guards.bounded_file_grep(evt.cmd.line.primary, cwd=evt.cwd)
-
-    def test_reported_sed_regression_runs_verbatim(self) -> None:
-        command = (
-            'grep -riE "buck2|reindeer" aqua.yaml aqua/ 2>/dev/null '
-            "| grep -v vendor | sort -u | sed -n '1,20p'"
-        )
-        assert grep_verdict(command) is None
-
-    def test_dereference_recursive_directory_is_not_bounded(self) -> None:
-        evt = make_evt("grep -R foo d/")
-        assert not grep_guards.bounded_file_grep(evt.cmd.line.primary, cwd=evt.cwd)
-
-    def test_over_cap_directory_blocks_with_reason(self) -> None:
-        command = "grep -r 'a^b' over-cap/"
-        assert isinstance(grep_verdict(command), HookResult)
-        evt, occ = event_occurrence(command)
-        assert search_common.block_reason(occ, cwd=evt.cwd) == "`over-cap/` tree exceeds the size cap"
-
-    def test_max_count_plain_recursive_small_directory_is_bounded(self) -> None:
-        evt = make_evt("grep -rm5 foo d/")
-        assert grep_guards.bounded_file_grep(evt.cmd.line.primary, cwd=evt.cwd)
-
-    def test_unknown_flag_is_not_bounded(self) -> None:
-        # Conservative lexer: an unknown flag leaves the grep unbounded (it fires), never a wrong allow —
-        # even over an existing file.
-        command = "grep --frobnicate foo real.py"
-        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            # The incident: two `grep -oiE … b_jetblue_jun.json | …` statements in a `;`/`|` chain over a
-            # file the redirect created earlier — data-ext, so each grep passes with no stat.
-            "cd /tmp/scratch && gog --account user@example.com --readonly --json gmail get MSGID "
-            "--json > b_jetblue_jun.json; grep -oiE '[0-9][0-9,]{2,} ?(points|TrueBlue)' b_jetblue_jun.json "
-            "| head; grep -oiE 'mosaic( [0-9])?' b_jetblue_jun.json | sort | uniq -c",
-            "grep -c foo real.py && grep -c bar real.py",  # both bounded existing files
-            "grep -c foo real.py | wc -l",  # a bounded grep feeding a pipe
-        ],
-    )
-    def test_compound_per_occurrence_allows(self, command: str) -> None:
-        assert grep_verdict(command) is None
-
-    def test_one_unbounded_grep_blocks_the_line(self) -> None:
-        # A qualifying grep can't launder a sibling tree-wide grep: the `.` search fires the whole line.
-        command = "grep -c foo real.py; grep foo ."
-        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "grep -oiE 'a{2,}' missing.json",  # -oiE bundle over a nonexistent data file
-            "grep -i foo missing.json",  # nonexistent data file — proves the data-ext pass never stats
-        ],
-    )
-    def test_data_ext_needs_no_stat(self, command: str) -> None:
-        assert grep_verdict(command) is None
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "GREP_OPTIONS=-r grep -o needle dir.json",  # R2: GREP_OPTIONS injects -r the parser never sees
-            "LC_ALL=C grep -i pat notes.json",  # any env alongside path operands → conservative block
-            "grep --regexp= data.json",  # R4: empty flag-supplied pattern floods every line
-            "grep -e '' data.json",  # R4: empty -e pattern floods every line
-            "grep -f pats.txt data.json",  # R4: an uninspectable -f pattern file
-        ],
-    )
-    def test_env_and_flag_pattern_holes(self, command: str) -> None:
-        # These forfeit before any stat → unbounded → fires; disk-independent (the named files need not exist).
-        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
-
-    @pytest.mark.parametrize(
-        ("command", "fires"),
-        [
-            # R3: a sink grep with file operands ignores stdin and searches those files.
-            ("grep -q localhost /etc/hosts | grep -r . /", True),
-            # step 4: grep -r with no operand recurses the cwd even as a pipe sink.
-            ("grep -c foo real.py; printf x | grep -r needle", True),
-            # step 5 does not launder a sink grep that names an over-cap file operand (no output-bounded
-            # flag, so the size cap still applies — `-c` here would be bounded regardless of size).
-            ("grep -c foo real.py; printf y | grep . big.py", True),
-            ("grep -c foo real.py; printf x | grep -Zr pat /", True),
-            # a genuine pipe-sink filter (no operand, env allowed) stays a bounded stdin filter.
-            ("grep -c foo real.py; printf x | LC_ALL=C grep pat", False),
-        ],
-    )
-    def test_sink_grep_semantics(self, command: str, fires: bool) -> None:
-        # Every unpiped grep uses an unmappable output flag, so `grep_to` returns before a live ccx probe.
-        assert isinstance(grep_verdict(command), HookResult) is fires
-
-
-class TestGrepDownstreamPathScreen:
-    """The downstream-bounded verbatim allow keeps the policy screens: a git-ignored operand
-    (`node_modules/`) declines the lane and blocks with its steer, while an ordinary directory
-    under the same sink still runs verbatim. `path_blocked` shells `git check-ignore`, so a real
-    repo pins the ignore verdict.
-    """
-
-    @pytest.fixture(autouse=True)
-    def repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-        (tmp_path / ".gitignore").write_text("node_modules/\n")
-        (tmp_path / "node_modules").mkdir()
-        (tmp_path / "src").mkdir()
-        monkeypatch.chdir(tmp_path)
-
-    def test_gitignored_operand_declines_the_sink(self) -> None:
-        assert isinstance(grep_verdict("grep -r foo node_modules/ | head"), HookResult)
-
-    def test_plain_dir_operand_keeps_the_sink(self) -> None:
-        assert grep_verdict("grep -r foo src/ | head") is None
+    def test_ccx_bin_none_still_blocks_unmappable_shape(self) -> None:
+        assert isinstance(grep_verdict("grep -P 'x(?=y)' ."), HookResult)
 
 
 class TestTranscriptBlockMessage:
@@ -941,66 +643,9 @@ class TestTranscriptBlockMessage:
         assert "floods context" in message and "cc-transcript" in message
 
 
-class TestBareParen:
-    """Fix 2: `bare_paren` distrusts a cwd only for a `(` OUTSIDE all quoting — a real subshell or
-    group. A paren living inside a quoted pattern (`grep -E '^(a|b)' f`) is not bare, so the line
-    keeps its cwd trust; `$(…)` and a backslash-escaped `\\(` are classified by the same rule.
-    """
-
-    @pytest.mark.parametrize(
-        "raw, expected",
-        [
-            ("grep -E '^(go|toolchain) ' go.mod", False),  # paren only inside a quoted pattern
-            ("(cd x && grep a .)", True),  # a real subshell paren
-            ('grep "a(b" f && (make)', True),  # quoted `(` ignored; the `&& (make)` paren is bare
-            ("grep 'a(b' f", False),  # single-quoted paren
-            (r"grep \( f", False),  # backslash-escaped `(` outside quotes
-            ("grep foo .", False),  # no paren at all
-            ("grep foo $(printf x)", True),  # `$(…)` substitution paren stays bare → still distrusted
-            # ANSI-C `$'…'`: `\'` does NOT close, so parity must not desync and swallow a later bare `(`.
-            (r"echo $'a\'b'; (cd sneaky && true); grep secret probe.py", True),  # the refuter's repro
-            (r"echo $'a\'b'", False),  # ANSI-C token alone, no bare paren
-            (r"grep $'\t(' f.txt", False),  # `(` inside ANSI-C is quoted
-            (r"echo $'a\\' && (x)", True),  # escaped backslash then close → the `&& (x)` paren is bare
-            ("grep \"a$'b\" f && (x)", True),  # `$'` inside double quotes never arms ANSI-C
-        ],
-    )
-    def test_bare_paren(self, raw: str, expected: bool) -> None:
-        assert search_common.bare_paren(raw) is expected
-
-
-class TestGrepAnsiCQuotingCwdTrust:
-    """End to end: an ANSI-C `$'…'` token must not desync `bare_paren` and swallow a later genuinely-bare
-    `(cd sub && true)` subshell — the flattened cwd stays distrusted, so the grep blocks exactly as HEAD
-    does rather than rewriting `probe.py` against the wrong directory.
-    """
-
-    def test_ansi_c_token_before_bare_subshell_blocks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        (tmp_path / "probe.py").write_text("secret\n")  # exists → a wrongly-trusted cwd would rewrite it
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
-        verdict = grep_verdict(r"echo $'a\'b'; (cd sneaky && true); grep secret probe.py")
-        assert isinstance(verdict, HookResult)
-
-
-class TestGrepQuotedParenCwdTrust:
-    """Fix 2, end to end: a paren confined to the quoted pattern regains cwd trust, so an existing
-    in-cap `go.mod` stats as a bounded file and runs verbatim instead of blocking (the regression).
-    """
-
-    def test_quoted_paren_line_allows_bounded_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        (tmp_path / "go.mod").write_text("module x\n")
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
-        # An old binary (no --regex) declines the rewrite, so the bounded-file lane is what runs.
-        probe(monkeypatch, NO_SUPPORT_HELP)
-        assert grep_verdict("grep -E '^(go|toolchain) ' go.mod") is None
-
-
-class TestGrepBundleMapAndRelativize:
-    """Fix 3: a MAP short (`-i`/`-w`) glued into a DROP bundle (`-ri`) maps instead of blocking.
-    Fix 4: an in-repo absolute directory operand relativizes before classification. Both need the
-    `--ignore-case` probe and a real tmp tree, so they live in pytest with exact-equality assertions.
+class TestGrepBundleMap:
+    """A MAP short (`-i`/`-w`) glued into a DROP bundle (`-ri`) maps instead of blocking. Needs the
+    `--ignore-case` probe and a real tmp tree, so it lives in pytest with exact-equality assertions.
     """
 
     @pytest.fixture(autouse=True)
@@ -1013,79 +658,6 @@ class TestGrepBundleMapAndRelativize:
         yield
         ccx_supports.cache_clear()
 
-    def test_ri_bundle_maps_and_abs_dir_relativizes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # A `-ri` bundle maps `-i`, an absolute in-repo dir relativizes to `bench/**`, `-l` drops.
-        probe(monkeypatch, SUPPORTS_HELP)
-        cwd = Path.cwd()
-        assert grep_rewrite(f"grep -n foo -ri {cwd}/bench/ -l") == "/fake/ccx code grep foo -i --glob 'bench/**'"
-
     def test_ri_bundle_relative_dir_maps_ignore_case(self, monkeypatch: pytest.MonkeyPatch) -> None:
         probe(monkeypatch, SUPPORTS_HELP)
         assert grep_rewrite("grep -n 'semble' -ri bench/ -l") == "/fake/ccx code grep semble -i --glob 'bench/**'"
-
-
-class TestBlockReason:
-    """Fix 5: an advisory clause naming the first disqualifier is appended to the block steer.
-    Diagnostic only — a shape matching no cheap, certain check leaves the message byte-identical.
-    """
-
-    def first_grep(self, command: str, cwd: str | Path | None = None) -> tuple[PreToolUseEvent, Occurrence]:
-        evt = make_evt(command, cwd=cwd) if cwd is not None else make_evt(command)
-        occ = next(o for o in evt.cmd.line.occurrences if o.command.unwrapped.executable == "grep")
-        return evt, occ
-
-    def test_subshell_names_untrusted_cwd(self) -> None:
-        _evt, occ = self.first_grep("(cd /tmp && grep foo .) && grep bar src/")
-        assert "cwd untrusted" in search_common.block_reason(occ, cwd=None)
-
-    def test_quoted_paren_line_names_the_file_not_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The paren is quoted, so the reason is the missing source file — never the cwd-untrusted clause.
-        monkeypatch.chdir(tmp_path)
-        _evt, occ = self.first_grep("grep -E '^(a|b)' ghost.py", cwd=tmp_path)
-        reason = search_common.block_reason(occ, cwd=tmp_path)
-        assert reason is not None and "cwd untrusted" not in reason and "ghost.py" in reason
-
-    def test_out_of_repo_abs_operand(self) -> None:
-        _evt, occ = self.first_grep("grep -rn foo /etc/")
-        assert search_common.block_reason(occ, cwd=None) == "out-of-repo operand `/etc/`"
-
-    def test_pcre_flag_appends_to_message(self) -> None:
-        evt, occ = self.first_grep("grep -P 'x(?=y)' .")
-        reason = search_common.block_reason(occ, cwd=None)
-        assert reason == "PCRE (-P) never maps"
-        assert grep_guards.grep_block(evt, evt.cmd.line, reason=reason).endswith("This block: PCRE (-P) never maps.")
-
-    def test_glob_operand(self) -> None:
-        _evt, occ = self.first_grep("grep -rn foo '*.py'")
-        assert "glob operand" in search_common.block_reason(occ, cwd=None)
-
-    def test_dash_leading_operand_after_double_dash_is_not_a_flag(self) -> None:
-        # The `-Pxyz` after `--` is a filename, not a flag: the reason names the real blocker (`-m5`),
-        # never "PCRE" — flags are scanned only before the first bare `--`.
-        _evt, occ = self.first_grep("grep -m5 foo -- -Pxyz")
-        reason = search_common.block_reason(occ, cwd=None)
-        assert "PCRE" not in reason and "-m5" in reason
-
-    def test_leading_value_short_in_bundle_names_the_bundle(self) -> None:
-        # `-dr` glues the value-taking `-d` at the bundle head — named the same as the reordered `-rd`.
-        _evt, occ = self.first_grep("grep -dr foo src/")
-        assert search_common.block_reason(occ, cwd=None) == "`-dr` glues a value-taking short into a bundle"
-
-    def test_head_context_short_is_never_blamed(self) -> None:
-        # `-C3` maps at the head, so the value-short blame skips it — the `-P` on the line is the reason.
-        _evt, occ = self.first_grep("grep -C3 -P x .")
-        reason = search_common.block_reason(occ, cwd=None)
-        assert reason == "PCRE (-P) never maps" and "-C3" not in reason
-
-    def test_interior_context_short_is_blamed(self) -> None:
-        # `-rnC3` glues the value-taking `-C` INTERIOR, where no parse maps it → named.
-        _evt, occ = self.first_grep("grep -rnC3 foo src/")
-        assert search_common.block_reason(occ, cwd=None) == "`-rnC3` glues a value-taking short into a bundle"
-
-    def test_no_match_leaves_message_byte_identical(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        (tmp_path / "src").mkdir()
-        monkeypatch.chdir(tmp_path)
-        evt, occ = self.first_grep("grep -r foo src/ | cat", cwd=tmp_path)
-        reason = search_common.block_reason(occ, cwd=tmp_path)
-        assert reason is None
-        assert "This block:" not in grep_guards.grep_block(evt, evt.cmd.line, reason=reason)

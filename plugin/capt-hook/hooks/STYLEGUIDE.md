@@ -153,7 +153,7 @@ names. Don't build a tuple just to pattern-match on it.
 Options and flags go keyword-only, after `*`.
 
 ```python
-def bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool: ...
+def grep_tree_shaped(cmd: Command, *, cwd: Path | None) -> bool: ...
 ```
 
 Use `@overload` when the return type depends on the argument shape.
@@ -201,9 +201,10 @@ return response.returncode == 0
 
 No broad `except Exception` that swallows everything. Use dedicated exception
 classes. No sentinel return values; raise, or return a typed result. In guard code
-the conservative fallthrough (`return False`, or `None` under the registered
-contract) is a typed result meaning "block" or "no rewrite"; a failure that needs
-diagnosing raises instead.
+the fallthrough (`return False`, or `None` under the registered contract) is a
+typed result meaning "no verdict — the command runs" or "no rewrite"; blocks are
+reserved for positively identified offenses, and a failure that needs diagnosing
+raises instead.
 
 ## Code Organization
 
@@ -237,12 +238,13 @@ deleted on sight.
 
 ```python
 # Good — lane rationale the code can't show
-def bounded_file_grep(cmd: Command, *, sink: bool = False) -> bool:
-    """Report whether one grep statement is a bounded search ccx can't rewrite.
+def grep_tree_shaped(cmd: Command, *, cwd: Path | None) -> bool:
+    """Report whether one grep positively targets a tree — the flood the guard exists for.
 
-    Two shapes qualify: data-ext operands matched by suffix with no stat, and
-    regular files whose sizes sum under the cap. Conservative throughout: an
-    unknown flag on an unpiped grep returns False — never a wrong allow.
+    Only a recursive flag with no operands, a `.`/`..` operand, or an operand one
+    stat proves is a directory qualifies. Everything ambiguous — unparseable flags,
+    variables, unstattable paths — returns False and the command runs: blocks
+    under-match by design.
     """
 
 # Bad — restates the signature
@@ -253,10 +255,11 @@ def grep_note(evt: BaseHookEvent) -> str:
 ## Testing
 
 Tests live beside the hooks as `test_*.py`, with shared fixtures in `conftest.py`.
-Run the pytest suite against the sibling captain-hook checkout:
+Run the pytest suite against published capt-hook — the CI mirror (the sibling
+checkout pins unreleased deps whose parser drifts from the released one):
 
 ```bash
-PYTHONPATH=plugin/capt-hook uv run --project ../captain-hook --with pytest pytest plugin/capt-hook/hooks/
+PYTHONPATH=plugin/capt-hook uv run --no-project --with pytest --with capt-hook pytest plugin/capt-hook/hooks/
 ```
 
 Every registration also carries inline `tests={...}` — `Input(...)` mapped to
@@ -268,6 +271,6 @@ Tests exercise the public surface: condition classes via `check_command_line`, t
 `to`/`note` builders via their returned strings, and the `Input` harness — not
 module internals. Write strict assertions against specific expected values; a test
 that can't fail uncovers nothing. Mock the process boundary (the `ccx --help`
-probe, `git check-ignore`) and leave the guard under test real. Parameterize
+probe) and leave the guard under test real. Parameterize
 repeated test bodies, giving each case a descriptive `id` and its own expected
 values.

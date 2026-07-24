@@ -16,22 +16,15 @@ the discovery step that decides which page deserves a ``ccx web`` fetch in the f
 
 The ``WebFetch`` guard blocks the *first* attempt per URL per session (``once`` self-gate);
 a deliberate re-run of the same URL passes, so an auth-walled or JS-heavy page ``ccx web``
-cannot serve stays reachable. The ``curl``/``wget`` guard fires only on an unpiped page GET
-to stdout with a remote ``http(s)`` URL — a pipe (``| jq``), a disk sink (``-o``/``-O``/plain
-``wget``/redirect), a non-GET method (``-X``/``-d``/``--json``/``-T``/``-I``), a localhost
-target, and a scheme-less spelling all stay allowed by construction. When the fetch is a plain
-page GET (``curl -sL <url>`` / ``wget -qO- <url>``) it is *rewritten* to ``ccx web read <url>
---full`` — readability-extracted markdown, token-bounded — gated on the ``ccx web`` surface being present
-(``ccx_supports``); an API/JSON URL (``api.*`` host, ``api`` path segment, ``.json`` path), an
-extra flag readability can't honor, or a wrapped line falls back to the block — a chained
-line (``&&``/``;``) rewrites occurrence-by-occurrence instead.
-A dump whose output an assignment substitution captures is a sink — consumed programmatically,
-so it is left untouched rather than rewritten.
+cannot serve stays reachable. The ``curl``/``wget`` guard recognizes only an unpiped page GET
+to stdout with a remote ``http(s)`` URL. A direct plain GET (``curl -sL <url>`` /
+``wget -qO- <url>``) rewrites to ``ccx web read <url> --full`` when that surface is available.
+API URLs, wrappers, environment prefixes, substitutions, unsupported flags, and unresolved
+``ccx`` binaries run unchanged.
 """
 
 from __future__ import annotations
 
-import ipaddress
 import re
 import shlex
 from typing import TYPE_CHECKING
@@ -58,10 +51,6 @@ from .common import ccx_bin, ccx_supports
 if TYPE_CHECKING:
     from cc_transcript.command import Occurrence
 
-# Loopback and non-routable hosts a fetch to which never floods the shared context — a
-# local dev server or private service, not a public page. Matched on the parsed hostname.
-LOCAL_HOSTS = frozenset({"localhost", "0.0.0.0", "::1"})
-
 # curl short options that consume a value (the rest of the bundle, or the next token when
 # the char ends the group). Scanning left-to-right, the first of these ends the group, so a
 # header/referer/cookie value is skipped rather than misread as the target URL.
@@ -82,54 +71,26 @@ CURL_ALLOW_LONGS = frozenset(
 # they allow the line first.)
 CURL_VALUE_LONGS = frozenset({"--header", "--referer", "--user-agent", "--cookie", "--proxy"})
 
-# curl short chars that keep a fetch a plain page GET, safe to rewrite to ``ccx web read``:
-# silent (s), show-error (S), fail (f), location/follow (L). A bundle of only these + one remote
-# URL maps; any other char (auth, header, method, …) makes the request un-mappable → block.
-CURL_REWRITE_SHORTS = frozenset("sSLf")
-CURL_REWRITE_LONGS = frozenset({"--silent", "--show-error", "--fail", "--location", "--compressed"})
-
-# wget spellings that keep a fetch a plain quiet stdout dump, safe to rewrite. The stdout
-# output-document is handled per-token (``-O -`` / ``-qO-`` / ``--output-document=-``).
-WGET_QUIET = frozenset({"-q", "--quiet"})
-WGET_STDOUT_FLAGS = frozenset({"-O", "--output-document"})
-
-# Shell builtins that bind their arguments to variables. A `$(curl …)` value one of these captures
-# lands in a variable, never on stdout, so a page dump inside it floods no context.
-ASSIGNMENT_BUILTINS = frozenset({"export", "local", "declare", "readonly", "typeset"})
-
-
-def is_local_host(host: str) -> bool:
-    """Whether ``host`` (a parsed, lowercased hostname) is loopback or a private-scope target.
-
-    Mirrors the Go engine's ``localTarget``: named loopback (``localhost``, ``127.*``) and the
-    ``.local``/``.internal`` suffixes, plus any IP literal that is loopback, private (RFC1918),
-    link-local, or unspecified — so a target the engine fetches over plain HTTP is never guarded.
-    """
-    if host in LOCAL_HOSTS or host.startswith("127.") or host.endswith((".local", ".internal")):
-        return True
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
+CURL_PLAIN_SHORTS = frozenset("sSL")
+CURL_PLAIN_LONGS = frozenset({"--silent", "--show-error", "--location"})
+WGET_PLAIN_LONGS = frozenset({"--quiet", "--output-document", "--output-document=-"})
+WGET_PLAIN_SHORT = re.compile(r"-(?:q+|q*O-?)$")
 
 
 def is_remote_url(token: str) -> bool:
-    """Whether ``token`` is a remote ``http(s)://`` URL — the flood target the guards steer.
-
-    A scheme-less spelling (``example.com``, ``localhost:8080/x``) never matches: without an
-    ``http(s)://`` prefix it is deliberately a conservative allow, the right bias for a blocker.
-    """
-    if not re.match(r"^https?://", token, re.IGNORECASE):
+    """Whether ``token`` is an unambiguous non-loopback ``http(s)`` URL."""
+    try:
+        parts = urlsplit(token)
+        host = parts.hostname
+    except ValueError:
         return False
-    host = urlsplit(token).hostname or ""
-    return bool(host) and not is_local_host(host)
-
-
-def is_local_url(url: str) -> bool:
-    """Whether ``url`` targets a loopback/private host — never worth guarding a fetch to."""
-    host = urlsplit(url).hostname
-    return bool(host) and is_local_host(host)
+    return (
+        parts.scheme.lower() in {"http", "https"}
+        and bool(host)
+        and host != "localhost"
+        and host != "::1"
+        and not host.startswith("127.")
+    )
 
 
 class WholePageWebFetch(CustomCondition):
@@ -143,7 +104,7 @@ class WholePageWebFetch(CustomCondition):
 
     def check(self, evt: BaseHookEvent) -> bool:
         url = (evt._tool_input.get("url") or "").strip()
-        if not url or is_local_url(url):
+        if not is_remote_url(url):
             return False
         return evt.ctx.s.once(url, scope="ccx-web-fetch")
 
@@ -169,8 +130,6 @@ hook(
         ),
         Input(tool="WebFetch", tool_input={"url": "http://localhost:3000/health"}): Allow(),
         Input(tool="WebFetch", tool_input={"url": "http://127.0.0.1:8080/metrics"}): Allow(),
-        # Private-scope IP literals are local like the Go engine's localTarget — never guarded.
-        Input(tool="WebFetch", tool_input={"url": "http://192.168.1.1/admin"}): Allow(),
     },
 )
 
@@ -178,8 +137,7 @@ hook(
 def sinks_stdout(cmd: Command) -> bool:
     """Whether ``cmd`` redirects its stdout to a file — a disk sink, not a context flood.
 
-    A stderr-only redirect (``2>/dev/null``) leaves stdout flooding, so it is *not* a sink and
-    the guard still blocks; only an output redirect on the default/stdout fd counts.
+    A stderr-only redirect leaves stdout flooding; only a default/stdout redirect counts.
     """
     return any(
         r.op in (">", ">>", ">|", ">&") and (r.fd is None or r.fd == 1) for r in cmd.redirects
@@ -212,7 +170,7 @@ def curl_dumps_page(args: tuple[str, ...]) -> bool:
     while i < n:
         a = args[i]
         if a == "--":
-            return remote or any(is_remote_url(t) for t in args[i + 1 :])
+            return remote or any(is_page_url(t) for t in args[i + 1 :])
         if a.startswith("--"):
             name = a.split("=", 1)[0]
             if name in CURL_ALLOW_LONGS or name.startswith(("--data", "--form")):
@@ -221,7 +179,7 @@ def curl_dumps_page(args: tuple[str, ...]) -> bool:
                 # curl's long form for the target URL (`--url=<u>` / `--url <u>`) — scan the
                 # value like a positional, since the plain page GET can name it this way.
                 val = a.split("=", 1)[1] if "=" in a else (args[i + 1] if i + 1 < n else "")
-                if is_remote_url(val):
+                if is_page_url(val):
                     remote = True
                 i += 1 if "=" in a else 2
                 continue
@@ -236,7 +194,7 @@ def curl_dumps_page(args: tuple[str, ...]) -> bool:
                 return False
             i += 2 if consumes_next else 1
             continue
-        if is_remote_url(a):
+        if is_page_url(a):
             remote = True
         i += 1
     return remote
@@ -261,114 +219,28 @@ def wget_to_stdout(args: tuple[str, ...]) -> bool:
 
 def wget_dumps_page(args: tuple[str, ...]) -> bool:
     """Whether a ``wget`` argv dumps a remote page to stdout."""
-    return wget_to_stdout(args) and any(is_remote_url(a) for a in args)
+    return wget_to_stdout(args) and any(is_page_url(a) for a in args)
 
 
 class PageDumpToStdout(CustomCommandLineCondition):
     """Matches an unpiped ``curl``/``wget`` page GET to stdout with a remote ``http(s)`` URL.
 
-    Allowed by construction: a command whose stdout is piped (``| jq``) or redirected to a file,
-    a curl sink (``-o``/``-O``) or non-GET method (``-X``/``-d``/``--json``/``-T``/``-I``), a
-    non-stdout ``wget`` (its default disk download), a localhost target, a scheme-less URL, and
-    a substitution whose output an assignment captures (``H=$(curl …)``, ``export H=$(curl …)``).
-    An unpiped ``curl -s <api>`` blocks on purpose — a raw JSON dump floods context the same way,
-    and the pipe hatch (`… | jq`) is right there.
+    Pipes, redirects, non-GET methods, API URLs, wrappers, environment prefixes,
+    substitutions, loopback targets, and scheme-less URLs do not match.
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
         for occ in cl.occurrences:
             cmd = occ.command
-            if occ.piped or sinks_stdout(cmd) or occurrence_captured(occ):
+            if occ.piped or sinks_stdout(cmd) or not occurrence_is_direct(cl, occ):
                 continue
-            # `occurrence_dumps` matches on the unwrapped executable, so a wrapper prefix
-            # (`timeout 10 curl …`, `sudo curl …`, `env FOO=1 curl …`) can't slip the dump past.
             if occurrence_dumps(cmd):
                 return True
         return False
 
 
-def curl_rewrite_url(args: tuple[str, ...]) -> str | None:
-    """The single remote URL of a rewritable ``curl`` page dump, or None to fall back to the block.
-
-    Rewritable iff every flag is a plain-GET-to-stdout spelling (:data:`CURL_REWRITE_SHORTS`
-    bundles / :data:`CURL_REWRITE_LONGS`) and exactly one remote ``http(s)`` URL is present. Any
-    other flag (``-H``/``-u``/``--retry``/``--url``…), a second URL, or a non-remote positional
-    returns None, so the guard blocks with its steer rather than drop a flag that changes the request.
-    """
-    url = None
-    for a in args:
-        if a.startswith("--"):
-            if a not in CURL_REWRITE_LONGS:
-                return None
-            continue
-        if a.startswith("-") and len(a) > 1:
-            if any(c not in CURL_REWRITE_SHORTS for c in a[1:]):
-                return None
-            continue
-        if not is_remote_url(a) or url is not None:
-            return None
-        url = a
-    return url
-
-
-def wget_rewrite_url(args: tuple[str, ...]) -> str | None:
-    """The single remote URL of a rewritable ``wget`` stdout dump, or None to fall back to the block.
-
-    Rewritable iff every flag is a quiet/stdout spelling (``-q``/``--quiet``, ``-O -``/``-qO-``/
-    ``-qO -``/``--output-document=-``) and exactly one remote URL is present; any other flag, a
-    non-stdout ``-O``, or a second URL returns None so the guard blocks rather than mis-rewrite.
-    """
-    url = None
-    skip_next = False
-    for i, a in enumerate(args):
-        if skip_next:
-            skip_next = False
-            continue
-        if a in WGET_QUIET:
-            continue
-        if a in WGET_STDOUT_FLAGS:
-            if i + 1 < len(args) and args[i + 1] == "-":
-                skip_next = True
-                continue
-            return None
-        if a.startswith("--output-document="):
-            if a.split("=", 1)[1] != "-":
-                return None
-            continue
-        if a.startswith("-") and not a.startswith("--") and len(a) > 1:
-            ok, body, k = True, a[1:], 0
-            while k < len(body):
-                if body[k] == "q":
-                    k += 1
-                    continue
-                if body[k] == "O":
-                    rest = body[k + 1 :]
-                    if rest:
-                        ok = rest == "-"
-                    else:
-                        ok = i + 1 < len(args) and args[i + 1] == "-"
-                        skip_next = ok
-                    break
-                ok = False
-                break
-            if not ok:
-                return None
-            continue
-        if not is_remote_url(a) or url is not None:
-            return None
-        url = a
-    return url
-
-
 def is_api_url(url: str) -> bool:
-    """Whether ``url`` looks like a JSON/API endpoint readability extraction would mangle.
-
-    An ``api.*`` host, an ``api`` path segment, a ``.json`` or ``/graphql`` path, or a query
-    string naming ``json``/``graphql`` (case-insensitive) all signal structured data, not an
-    article — the block steers those to the pipe hatch (`… | jq`), not `ccx web read`. The
-    query string matters because ``…/data?format=json`` and a ``/graphql`` endpoint return
-    JSON that readability would shred.
-    """
+    """Whether ``url`` names an endpoint curl should handle unchanged."""
     parts = urlsplit(url)
     if (parts.hostname or "").lower().startswith("api."):
         return True
@@ -380,82 +252,83 @@ def is_api_url(url: str) -> bool:
     return "api" in [seg for seg in parts.path.split("/") if seg]
 
 
-def occurrence_can_rewrite(occ: "Occurrence") -> bool:
-    """Report whether an occurrence is outside a pipe and carries no redirects."""
-    return not occ.piped and not occ.command.redirects
+def is_page_url(url: str) -> bool:
+    """Whether ``url`` is a remote page rather than an API-shaped endpoint."""
+    return is_remote_url(url) and not is_api_url(url)
 
 
-def host_is_assignment(cmd: Command) -> bool:
-    """Whether ``cmd`` is an assignment builtin (:data:`ASSIGNMENT_BUILTINS`) capturing a value into a variable."""
-    return bool(cmd.argv) and cmd.argv[0] in ASSIGNMENT_BUILTINS
+def curl_plain_flag(arg: str) -> bool:
+    return arg == "--" or arg in CURL_PLAIN_LONGS or (
+        arg.startswith("-")
+        and not arg.startswith("--")
+        and len(arg) > 1
+        and all(char in CURL_PLAIN_SHORTS for char in arg[1:])
+    )
 
 
-def occurrence_captured(occ: Occurrence) -> bool:
-    """Whether a substituted occurrence's stdout is captured by a variable assignment, never flooding context.
-
-    A bare ``H=$(curl …)`` surfaces the substitution with no host command (an assignment-only
-    line); ``export H=$(curl …)`` / ``local H=$(curl …)`` surface it hosted by the assignment
-    builtin. Either way the page is captured into a variable, reaching no context — the capture
-    runs untouched, and a splice there would hand the consumer extracted markdown instead of raw
-    HTML (the ``H=$(curl …)`` incident). A substitution a printing command consumes
-    (``echo "$(curl …)"``) is hosted by that command, floods context, and stays guarded. A
-    top-level occurrence (``nesting == 0``) is never a capture.
-    """
-    if occ.nesting == 0:
-        return False
-    host = occ.host
-    return host is None or host_is_assignment(host.command)
-
-
-def occurrence_dumps(cmd: Command) -> bool:
-    """Whether ``cmd`` (seen through any wrapper) is a ``curl``/``wget`` page dump to stdout.
-
-    Matches on the unwrapped executable, same as :class:`PageDumpToStdout`, so a wrapper prefix
-    (``timeout``/``sudo``/``env``) still counts as a dump — the condition sees through wrappers to
-    match/block; :func:`occurrence_rewrite_url` does not, so a wrapped dump falls to the block.
-    """
-    inner = cmd.unwrapped
-    if inner.executable == "curl":
-        return curl_dumps_page(inner.args)
-    if inner.executable == "wget":
-        return wget_dumps_page(inner.args)
-    return False
+def wget_plain_flag(arg: str) -> bool:
+    return (
+        arg in WGET_PLAIN_LONGS
+        or arg in {"-", "--"}
+        or WGET_PLAIN_SHORT.fullmatch(arg) is not None
+    )
 
 
 def occurrence_rewrite_url(cmd: Command) -> str | None:
-    """The single remote URL of a directly-invoked ``curl``/``wget`` page dump, or None.
-
-    Only a direct ``curl``/``wget`` maps: a wrapper prefix (``timeout``/``sudo``/``env``) leaves
-    ``cmd.executable`` as the wrapper, so it returns None and the occurrence blocks (dropping the
-    wrapper would change the command).
-    """
-    if cmd.executable == "curl":
-        return curl_rewrite_url(cmd.args)
-    if cmd.executable == "wget":
-        return wget_rewrite_url(cmd.args)
+    """The URL of a direct plain ``curl``/``wget`` page dump."""
+    urls = tuple(arg for arg in cmd.args if is_page_url(arg))
+    if len(urls) != 1:
+        return None
+    url = urls[0]
+    others = tuple(arg for arg in cmd.args if arg != url)
+    if cmd.executable == "curl" and all(curl_plain_flag(arg) for arg in others):
+        return url
+    if (
+        cmd.executable == "wget"
+        and wget_to_stdout(cmd.args)
+        and all(wget_plain_flag(arg) for arg in others)
+    ):
+        return url
     return None
+
+
+def occurrence_is_direct(cl: CommandLine, occ: Occurrence) -> bool:
+    """Whether wrappers, prefixes, and substitutions leave the occurrence unambiguous."""
+    return (
+        occ.nesting == 0
+        and not occ.command.env
+        and not any(child.host == occ for child in cl.occurrences)
+    )
+
+
+def occurrence_dumps(cmd: Command) -> bool:
+    """Whether a direct command is a remote page dump to stdout."""
+    if cmd.executable == "curl":
+        return curl_dumps_page(cmd.args)
+    if cmd.executable == "wget":
+        return wget_dumps_page(cmd.args)
+    return False
+
+
+def occurrence_can_rewrite(evt: BaseHookEvent, occ: Occurrence) -> bool:
+    """Whether the occurrence is direct, unpiped, and without a stdout sink."""
+    return (
+        not occ.piped
+        and not sinks_stdout(occ.command)
+        and occurrence_is_direct(evt.cmd.line, occ)
+    )
 
 
 def page_dump_to(evt: BaseHookEvent, occ: "Occurrence") -> str | None:
     cmd = occ.command
-    if not occurrence_can_rewrite(occ) or occurrence_captured(occ) or not occurrence_dumps(cmd):
+    if not occurrence_can_rewrite(evt, occ) or not occurrence_dumps(cmd):
         return None
     url = occurrence_rewrite_url(cmd)
-    if url is None or is_api_url(url):
+    if url is None:
         return None
-    if not ccx_supports("web", "read") or not (ccx := ccx_bin()):
+    if not (ccx := ccx_bin()) or not ccx_supports("web", "read"):
         return None
     return f"{shlex.quote(ccx)} web read {shlex.quote(url)} --full"
-
-
-def page_dump_blocks(evt: BaseHookEvent, occ: "Occurrence") -> bool:
-    cmd = occ.command
-    return (
-        occurrence_can_rewrite(occ)
-        and occurrence_dumps(cmd)
-        and not occurrence_captured(occ)
-        and (cmd.span is None or page_dump_to(evt, occ) is None)
-    )
 
 
 def page_dump_note(evt: BaseHookEvent, pairs: "list[tuple[Occurrence, str]]") -> str:
@@ -484,74 +357,58 @@ def page_dump_note(evt: BaseHookEvent, pairs: "list[tuple[Occurrence, str]]") ->
 rewrite_command_occurrences(
     only_if=[PageDumpToStdout()],
     to=page_dump_to,
-    block_if=page_dump_blocks,
-    block=(
-        "BLOCKED: `curl`/`wget` dumping a page to stdout floods context. "
-        "Answering a question from the page? Spawn the `cc-context:web-fetch` agent (URL + "
-        "question) — it returns only the cited answer. Reading inline? `ccx web outline <url>` "
-        "maps its headings, then `ccx web read <url> --section <ref>` for the part you need, or "
-        "`ccx web search <url> \"<question>\"` for the top-k relevant excerpts. "
-        "Researching across pages? Spawn `cc-context:web-researcher`. "
-        "Escape hatches — API/JSON: pipe it (`curl … | jq`); download: `curl -o <file>` / "
-        "plain `wget`; localhost stays allowed."
-    ),
     note=page_dump_note,
-    # The rewrite itself is gated on `ccx_supports("web", "read")`, so its outcome is
-    # environment-dependent — those rows live in test_web_guards.py with ccx_supports
-    # monkeypatched. Inline coverage is the block fallbacks (`to` returns None *before* the
-    # gate, so they block regardless of the local ccx) and the Allow neighbors.
     tests={
-        Input(command="curl -s https://api.example.com/v1/data"): Block(pattern="ccx web outline"),  # api.* host
-        Input(command="curl https://example.com/data.json"): Block(),  # .json path
-        Input(command="curl https://example.com/api/v1"): Block(),  # `api` path segment
-        Input(command="curl -s 'https://example.com/data?format=json'"): Block(),  # json in query string
-        Input(command="curl 'https://example.com/report?q=graphql'"): Block(),  # graphql in query string
-        Input(command="curl https://example.com/graphql"): Block(),  # /graphql endpoint path
-        Input(command="curl -H 'X-Auth: t' https://example.com"): Block(),  # header flag → un-mappable
-        Input(command="curl -u user:pass https://example.com"): Block(),  # auth flag → un-mappable
-        Input(command="curl --retry 3 https://example.com"): Block(),  # retry flag → un-mappable
-        Input(command="curl --url=https://example.com/large.html"): Block(),  # --url long form
-        Input(command="curl --url https://example.com/large.html"): Block(),  # --url two-token form
-        # A compound line's curl occurrence rewrites in place; the sibling survives verbatim.
+        Input(command="curl -s https://api.example.com/v1/data"): Allow(),
+        Input(command="curl https://example.com/data.json"): Allow(),
+        Input(command="curl https://example.com/api/v1"): Allow(),
+        Input(command="curl -s 'https://example.com/data?format=json'"): Allow(),
+        Input(command="curl 'https://example.com/report?q=graphql'"): Allow(),
+        Input(command="curl https://example.com/graphql"): Allow(),
+        Input(command="curl -H 'X-Auth: t' https://example.com"): Allow(),
+        Input(command="curl -u user:pass https://example.com"): Allow(),
+        Input(command="curl --retry 3 https://example.com"): Allow(),
+        Input(command="curl --url=https://example.com/large.html"): Allow(),
+        Input(command="curl --url https://example.com/large.html"): Allow(),
+        Input(command="curl -f https://example.com"): Allow(),
+        Input(command="curl --compressed https://example.com"): Allow(),
+        Input(command="curl -- https://example.com"): Rewrite(pattern="ccx web read"),
+        Input(command="wget -qO- -- https://example.com"): Rewrite(pattern="ccx web read"),
+        Input(command="curl -s https://example.com 2>/dev/null"): Rewrite(pattern="ccx web read"),
         Input(command="curl https://example.com && echo done"): Rewrite(pattern="ccx web read"),
         Input(command="mkdir -p out && curl -s https://example.com/page"): Rewrite(pattern="mkdir -p out && "),
-        Input(command="curl https://example.com 2>/dev/null"): Block(),  # redirect
-        Input(command="timeout 10 curl https://example.com/big.html"): Block(),  # wrapper prefix
-        Input(command="sudo curl https://example.com/page"): Block(),  # wrapper prefix
-        # Assignment-captured dumps are sinks: the capture is consumed programmatically — never
-        # rewrite. The later `echo "$H"` re-dump is outside the guard's data-flow view: accepted.
-        Input(command="H=$(curl -sL https://example.com/)"): Allow(),  # the incident shape
+        Input(command="curl https://example.com 2>/dev/null"): Rewrite(pattern="ccx web read"),
+        Input(command="timeout 10 curl https://example.com/big.html"): Allow(),
+        Input(command="sudo curl https://example.com/page"): Allow(),
+        Input(command="env TOKEN=x curl https://example.com/page"): Allow(),
+        Input(command="TOKEN=x curl https://example.com/page"): Allow(),
+        Input(command="H=$(curl -sL https://example.com/)"): Allow(),
         Input(command="export H=$(curl https://example.com/page)"): Allow(),
-        Input(command="H=`curl -sL https://example.com/`"): Allow(),  # backtick form
+        Input(command="H=`curl -sL https://example.com/`"): Allow(),
         Input(command="H=$(wget -qO- https://example.com/)"): Allow(),
-        Input(command="H=$(timeout 10 curl https://example.com/)"): Allow(),  # wrapped + hosted
-        Input(command="H=$(curl https://example.com | jq .)"): Allow(),  # piped capture — the pipe bounds it
-        Input(command='H=$(curl https://example.com/); echo "$H"'): Allow(),  # the accepted hole
-        # A captured sibling neither blocks nor rewrites; the bare dump still splices.
+        Input(command="H=$(timeout 10 curl https://example.com/)"): Allow(),
+        Input(command="H=$(curl https://example.com | jq .)"): Allow(),
+        Input(command='H=$(curl https://example.com/); echo "$H"'): Allow(),
         Input(command="H=$(curl https://a.example/); curl -s https://b.example/"): Rewrite(pattern="ccx web read"),
-        # A substitution a printing command consumes is hosted by that command (not an assignment),
-        # so the expanded page reaches stdout through it — it blocks like a bare dump.
-        Input(command='echo "$(curl https://example.com)"'): Block(pattern="ccx web outline"),
-        Input(command='printf "%s" "$(curl https://example.com)"'): Block(pattern="ccx web outline"),
+        Input(command='echo "$(curl https://example.com)"'): Allow(),
+        Input(command='printf "%s" "$(curl https://example.com)"'): Allow(),
+        Input(command='curl -H "H: $(id)" https://example.com/x'): Allow(),
+        Input(command="curl $URL"): Allow(),
         Input(command="curl https://example.com | jq ."): Allow(),
         Input(command="curl https://example.com | grep -c foo"): Allow(),
-        # An argument substitution must not defeat the pipe exception: the pipe still sinks stdout.
         Input(command='curl -H "H: $(id)" https://example.com/x | bash'): Allow(),
         Input(command="curl -o page.html https://example.com"): Allow(),
         Input(command="curl -sSfLo page.html https://example.com"): Allow(),
-        Input(command="timeout 10 curl -o f https://example.com/f"): Allow(),  # wrapped disk sink
-        Input(command="curl --url=http://localhost:8080/x"): Allow(),  # --url= localhost
+        Input(command="timeout 10 curl -o f https://example.com/f"): Allow(),
+        Input(command="curl --url=http://localhost:8080/x"): Allow(),
         Input(command="curl https://example.com > page.html"): Allow(),
-        Input(command="wget https://example.com"): Allow(),  # wget's default disk download
+        Input(command="wget https://example.com"): Allow(),
         Input(command="curl -X POST https://api.example.com"): Allow(),
-        Input(command="curl --json '{}' https://api.example.com/v1"): Allow(),  # request-body flag, not GET
-        Input(command="curl -I https://example.com"): Allow(),  # HEAD request
+        Input(command="curl --json '{}' https://api.example.com/v1"): Allow(),
+        Input(command="curl -I https://example.com"): Allow(),
         Input(command="curl http://localhost:3000/health"): Allow(),
         Input(command="curl https://127.0.0.1/metrics"): Allow(),
-        Input(command="curl http://10.0.0.5/status"): Allow(),  # RFC1918 private IP — local
-        Input(command="curl localhost:8080/health"): Allow(),  # scheme-less — conservative allow
-        # `ccx exec` pass-through is deliberate: the curl inside sh() is one opaque token, and
-        # internal/codeexec/sh.go owns in-sandbox policy, not hooks.
+        Input(command="curl localhost:8080/health"): Allow(),
         Input(
             command="ccx exec 'async def main(): return await sh(\"curl https://example.com\")\nasyncio.run(main())'"
         ): Allow(),

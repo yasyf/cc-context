@@ -9,14 +9,11 @@ path so the ``hooks`` package (and its relative imports) resolves::
 The rewrite is driven through ``logpatch_to`` — the registered ``to=`` builder of the
 ``LogPatchDump`` family — so these exercise the public rewrite surface, never the
 ``git_log_history`` helper it delegates to. ``ccx_bin`` is pinned to a fixed path so the
-emitted command is deterministic; a shape with no faithful ``ccx vcs history`` form makes
-``logpatch_to`` return ``None`` (the rewrite falls back to the block).
+emitted command is deterministic. A shape with no faithful ``ccx vcs history`` form makes
+``logpatch_to`` return ``None``, leaving the raw command unchanged.
 
-The no-``--`` branch pins a pathspec only when a sole trailing positional exists on disk
-(a bare revision like ``HEAD~5`` has no file to hand ``ccx vcs history``), so its coverage
-is environment-dependent and lives here rather than in the inline ``tests={}`` matrix: each
-case ``chdir``s into a temp dir with a known file. The ``--`` branch and the flag/count
-parsing are disk-independent but share the rewrite's contract, so they are pinned here too.
+The no-``--`` branch pins a pathspec only when a sole trailing positional exists
+relative to the event cwd; the explicit ``--`` branch remains disk-independent.
 
 The nudge's one-shot latch is stateful across two invocations — a shape the declarative
 ``tests={}`` harness cannot express — so its fire/silence behavior is driven end to end here
@@ -44,18 +41,28 @@ MAIN_T = "/transcripts/main.jsonl"
 FAKE_CCX = "/fake/ccx"
 
 
-def bash_pre(command: str, session_dir: Path | None = None) -> PreToolUseEvent:
+def bash_pre(
+    command: str,
+    session_dir: Path | None = None,
+    *,
+    cwd: Path | None = None,
+) -> PreToolUseEvent:
     """A ``PreToolUseEvent`` for a Bash ``command``, backed by ``session_dir`` for the one-shot latch."""
     ctx = HookContext(session=SessionStore(session_dir), transcript=None, settings=None)
-    raw = {"tool_name": "Bash", "tool_input": {"command": command}, "transcript_path": MAIN_T}
+    raw = {
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "transcript_path": MAIN_T,
+        "cwd": str(cwd) if cwd is not None else None,
+    }
     return PreToolUseEvent(_raw=raw, ctx=ctx)
 
 
 @pytest.fixture
-def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def repo(tmp_path: Path) -> Path:
     (tmp_path / "f.go").write_text("package main\n")
     (tmp_path / "g.go").write_text("package main\n")
-    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pkg").mkdir()
     return tmp_path
 
 
@@ -65,9 +72,9 @@ def pin_ccx(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(vcs_guards, "ccx_bin", lambda: FAKE_CCX)
 
 
-def call_logpatch_to(command: str) -> str | None:
+def call_logpatch_to(command: str, *, cwd: Path | None = None) -> str | None:
     """Drive ``vcs_guards.logpatch_to`` on ``command``'s primary occurrence — the public rewrite surface."""
-    evt = bash_pre(command)
+    evt = bash_pre(command, cwd=cwd)
     return vcs_guards.logpatch_to(evt, evt.cmd.line.occurrences[-1])
 
 
@@ -104,8 +111,8 @@ class TestLogPatchRewriteDashDash:
         assert call_logpatch_to(command) == expected
 
 
-class TestLogPatchRewriteBlocks:
-    """Shapes with no faithful ``ccx vcs history`` form make ``logpatch_to`` return ``None`` (→ block)."""
+class TestLogPatchRewriteResiduals:
+    """Shapes with no faithful rewrite return ``None`` and leave the raw command unchanged."""
 
     @pytest.mark.parametrize(
         "command",
@@ -128,29 +135,46 @@ class TestLogPatchRewriteBlocks:
             "dangling_count_flag",
         ],
     )
-    def test_blocks(self, pin_ccx: None, command: str) -> None:
+    def test_allows_raw(self, pin_ccx: None, command: str) -> None:
         assert call_logpatch_to(command) is None
 
 
-class TestLogPatchRewriteDiskBranch:
-    """The no-``--`` branch: a sole trailing positional is a path iff it exists on disk."""
+class TestLogPatchRewritePositional:
+    """The no-``--`` branch maps only a sole positional existing relative to the event cwd."""
 
-    def test_sole_existing_positional(self, pin_ccx: None, repo: Path) -> None:
-        assert call_logpatch_to("git log -p f.go") == f"{FAKE_CCX} vcs history f.go"
+    def test_sole_existing_file(self, pin_ccx: None, repo: Path) -> None:
+        assert call_logpatch_to("git log -p f.go", cwd=repo) == f"{FAKE_CCX} vcs history f.go"
+
+    def test_sole_existing_directory(self, pin_ccx: None, repo: Path) -> None:
+        assert call_logpatch_to("git log -p pkg", cwd=repo) == f"{FAKE_CCX} vcs history pkg"
 
     def test_sole_existing_positional_with_count(self, pin_ccx: None, repo: Path) -> None:
-        assert call_logpatch_to("git log -p -3 f.go") == f"{FAKE_CCX} vcs history f.go -n 3"
+        assert call_logpatch_to("git log -p -3 f.go", cwd=repo) == f"{FAKE_CCX} vcs history f.go -n 3"
 
-    @pytest.mark.parametrize(
-        "command",
-        ["git log -p HEAD~5", "git log -p missing.go"],  # revision vs. missing file — neither is a path on disk
-        ids=["bare_revision", "missing_path"],
-    )
-    def test_nonexistent_positional_is_a_revision(self, pin_ccx: None, repo: Path, command: str) -> None:
-        assert call_logpatch_to(command) is None
+    @pytest.mark.parametrize("command", ["git log -p HEAD~5", "git log -p missing.go"])
+    def test_nonexistent_positional_allows_raw(self, pin_ccx: None, repo: Path, command: str) -> None:
+        assert call_logpatch_to(command, cwd=repo) is None
 
-    def test_two_existing_positionals_block(self, pin_ccx: None, repo: Path) -> None:
-        assert call_logpatch_to("git log -p f.go g.go") is None
+    def test_unresolvable_positional_allows_raw(self, pin_ccx: None) -> None:
+        assert call_logpatch_to("git log -p f.go") is None
+
+    def test_two_positionals_allow_raw(self, pin_ccx: None, repo: Path) -> None:
+        assert call_logpatch_to("git log -p f.go g.go", cwd=repo) is None
+
+
+class TestMissingCcx:
+    """An unresolved ``ccx`` binary leaves every canonical raw command unchanged."""
+
+    def test_allows_raw(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(vcs_guards, "ccx_bin", lambda: None)
+        for builder, command in (
+            (vcs_guards.gitdiff_to, "git diff"),
+            (vcs_guards.jjdiff_to, "jj diff"),
+            (vcs_guards.gitshow_to, "git show"),
+            (vcs_guards.logpatch_to, "git log -p -- f.go"),
+        ):
+            evt = bash_pre(command)
+            assert builder(evt, evt.cmd.line.occurrences[-1]) is None
 
 
 class TestGhRunWatchNudge:
