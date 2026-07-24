@@ -220,7 +220,21 @@ fi
 exit 0
 `
 	gt := "#!/bin/sh\n" + log("gt") + `case "$1" in
-  state) printf '%s' "$GT_STATE_JSON" ;;
+  state)
+    if [ -n "$GT_STATE_JSON_MARKER" ]; then
+      count=0
+      if [ -r "$GT_STATE_JSON_MARKER" ]; then IFS= read -r count < "$GT_STATE_JSON_MARKER" || :; fi
+      count=${count:-0}
+      count=$((count + 1))
+      printf '%s' "$count" > "$GT_STATE_JSON_MARKER"
+      if [ "$count" -gt "${GT_STATE_JSON_SWITCH_AFTER:-1}" ]; then printf '%s' "$GT_STATE_JSON_2"
+      else printf '%s' "$GT_STATE_JSON"; fi
+    else
+      printf '%s' "$GT_STATE_JSON"
+    fi ;;
+  add) : ;;
+  track)
+    if [ -n "$GT_TRACK_FAIL" ]; then printf 'gt: track failed\n' >&2; exit 1; fi ;;
   create|modify)
     : > "$SHIP_LOG.git-committed" ;;
   submit)
@@ -3348,7 +3362,7 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 		assertInvocations(t, readInvocations(t, log), [][]string{
 			{"git", "branch", "--show-current"},
 			{"gt", "state"},
-			{"git", "add", "-A"},
+			{"gt", "add", "--no-interactive", "-A"},
 			{"git", "diff", "--cached", "--quiet"},
 			{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
 			{"git", "log", "-1", "--format=%h%x00%s"},
@@ -3418,7 +3432,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			assertInvocations(t, readInvocations(t, log), [][]string{
 				{"git", "branch", "--show-current"},
 				{"gt", "state"},
-				{"git", "add", "-A"},
+				{"gt", "add", "--no-interactive", "-A"},
 				{"git", "diff", "--cached", "--quiet"},
 				{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
@@ -3457,7 +3471,7 @@ func TestShipGTTrunkAutoCreate(t *testing.T) {
 	assertInvocations(t, readInvocations(t, log), [][]string{
 		{"git", "branch", "--show-current"},
 		{"gt", "state"},
-		{"git", "add", "-A"},
+		{"gt", "add", "--no-interactive", "-A"},
 		{"git", "diff", "--cached", "--quiet"},
 		{"gt", "create", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
@@ -3557,7 +3571,7 @@ func TestShipGTPathScoped(t *testing.T) {
 	assertInvocations(t, readInvocations(t, log), [][]string{
 		{"git", "branch", "--show-current"},
 		{"gt", "state"},
-		{"git", "add", "-A", "--", "src/a.go", "docs"},
+		{"gt", "add", "--no-interactive", "-A", "--", "src/a.go", "docs"},
 		{"git", "diff", "--cached", "--quiet"},
 		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
@@ -3624,13 +3638,6 @@ func TestShipGTRefusals(t *testing.T) {
 			wantErr: "ship: stack needs restack — run gt restack (gt continue / gt abort on conflict), then re-run ship",
 		},
 		{
-			name: "untracked branch",
-			setup: func(t *testing.T) {
-				t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true}}`)
-			},
-			wantErr: "ship: branch feature is not tracked by graphite — run gt track, or pass --no-gt",
-		},
-		{
 			name: "staged empty",
 			setup: func(t *testing.T) {
 				t.Setenv("GIT_STAGED_EMPTY", "1")
@@ -3652,6 +3659,54 @@ func TestShipGTRefusals(t *testing.T) {
 			assertNoGTCommit(t, readInvocations(t, log))
 		})
 	}
+
+	t.Run("untracked branch auto-tracks", func(t *testing.T) {
+		log := setupShipGT(t, false)
+		marker := filepath.Join(t.TempDir(), "gt-state")
+		t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true}}`)
+		t.Setenv("GT_STATE_JSON_2", `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
+		t.Setenv("GT_STATE_JSON_MARKER", marker)
+
+		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		want := `tracked feature · committed a1b2c3d "fix: frobnicate" · not pushed`
+		if got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+		assertInvocations(t, readInvocations(t, log), [][]string{
+			{"git", "branch", "--show-current"},
+			{"gt", "state"},
+			{"gt", "track", "-f", "--no-interactive"},
+			{"gt", "state"},
+			{"gt", "add", "--no-interactive", "-A"},
+			{"git", "diff", "--cached", "--quiet"},
+			{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
+			{"git", "log", "-1", "--format=%h%x00%s"},
+		})
+	})
+
+	t.Run("untracked branch auto-track fails", func(t *testing.T) {
+		log := setupShipGT(t, false)
+		t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true}}`)
+		t.Setenv("GT_TRACK_FAIL", "1")
+
+		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+		if err == nil {
+			t.Fatal("expected refusal, got nil")
+		}
+		wantErr := "ship: branch feature is not tracked by graphite — run gt track, or pass --no-gt"
+		if err.Error() != wantErr {
+			t.Errorf("error = %q, want %q", err.Error(), wantErr)
+		}
+		assertInvocations(t, readInvocations(t, log), [][]string{
+			{"git", "branch", "--show-current"},
+			{"gt", "state"},
+			{"gt", "track", "-f", "--no-interactive"},
+		})
+		assertNoGTCommit(t, readInvocations(t, log))
+	})
 }
 
 func TestShipGTClassifySubmit(t *testing.T) {

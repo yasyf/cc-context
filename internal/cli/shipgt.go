@@ -51,13 +51,15 @@ type gtBranchState struct {
 type gtState map[string]gtBranchState
 
 // gtPlan is shipPreflightGT's routing decision: branch and trunk, whether
-// ship auto-creates a stacked branch off trunk, and the report's stack depth.
+// ship auto-creates a stacked branch off trunk, the report's stack depth, and
+// whether preflight had to auto-track an untracked branch via gt track -f.
 type gtPlan struct {
-	branch     string
-	trunk      string
-	onTrunk    bool
-	autoCreate bool
-	depth      int
+	branch      string
+	trunk       string
+	onTrunk     bool
+	autoCreate  bool
+	depth       int
+	autoTracked bool
 }
 
 // gtStateQuery runs gt state and parses its JSON.
@@ -128,7 +130,9 @@ func stackBranches(ctx context.Context) ([]string, error) {
 
 // shipPreflightGT validates the current branch against graphite's tracked
 // state. Unlike the jj/git preflights it always runs, even under --no-push,
-// so an untracked branch or an unrestacked stack still refuses a commit.
+// so an unrestacked stack still refuses a commit. An untracked branch is
+// auto-adopted via gt track -f (parented to its most recent tracked
+// ancestor); only a track that still leaves the branch untracked refuses.
 func shipPreflightGT(ctx context.Context, o shipOpts) (gtPlan, error) {
 	branch, err := shipPreflightGit(ctx)
 	if err != nil {
@@ -143,8 +147,19 @@ func shipPreflightGT(ctx context.Context, o shipOpts) (gtPlan, error) {
 		return gtPlan{}, err
 	}
 	onTrunk := branch == trunk
-	if _, tracked := state[branch]; !tracked && !onTrunk {
-		return gtPlan{}, fmt.Errorf("ship: branch %s is not tracked by graphite — run gt track, or pass --no-gt", branch)
+	_, tracked := state[branch]
+	var autoTracked bool
+	if !tracked && !onTrunk {
+		if _, terr := render.RunCLI(ctx, "gt", []string{"track", "-f", "--no-interactive"}); terr == nil {
+			if state, err = gtStateQuery(ctx); err != nil {
+				return gtPlan{}, err
+			}
+			_, tracked = state[branch]
+		}
+		if !tracked {
+			return gtPlan{}, fmt.Errorf("ship: branch %s is not tracked by graphite — run gt track, or pass --no-gt", branch)
+		}
+		autoTracked = true
 	}
 
 	chain, err := gtDownstack(state, branch, trunk)
@@ -167,7 +182,7 @@ func shipPreflightGT(ctx context.Context, o shipOpts) (gtPlan, error) {
 		depth++
 	}
 
-	return gtPlan{branch: branch, trunk: trunk, onTrunk: onTrunk, autoCreate: autoCreate, depth: depth}, nil
+	return gtPlan{branch: branch, trunk: trunk, onTrunk: onTrunk, autoCreate: autoCreate, depth: depth, autoTracked: autoTracked}, nil
 }
 
 // gtCommitArgv picks modify vs create by whether --create was passed and
@@ -221,19 +236,39 @@ func shipRefuseEmptyGT(ctx context.Context, o shipOpts) error {
 	return fmt.Errorf("ship: nothing to commit%s — did a prior ship already land %s %q?", scope, short, subject)
 }
 
+// shipGTAdd stages the ship's paths (or everything, when unscoped) into the
+// real index through gt add — gt's own git-add passthrough — so the plain
+// staging step stays on the gt binary like every other gt-lane mutation.
+func shipGTAdd(ctx context.Context, o shipOpts) error {
+	addArgv := []string{"add", "--no-interactive", "-A"}
+	if len(o.paths) > 0 {
+		addArgv = append(addArgv, "--")
+		addArgv = append(addArgv, o.paths...)
+	}
+	if _, err := render.RunCLI(ctx, "gt", addArgv); err != nil {
+		return fmt.Errorf("ship: gt add: %w", err)
+	}
+	return nil
+}
+
 // shipCommitGT stages, refuses an empty commit, runs pre-commit hooks (or
 // reports "hooks hunk-skip" for a hunk selection), then commits through gt.
-// It never passes -a to gt: staging is shipGitAdd's job, same as the git lane.
+// It never passes -a to gt: staging is shipGTAdd's job, same as the git lane
+// is shipGitAdd's. A preflight auto-track (plan.autoTracked) is folded into
+// the same returned segment, ahead of any hook segment.
 func shipCommitGT(ctx context.Context, errW io.Writer, root string, o shipOpts, sel *shipSelection, plan gtPlan) (string, error) {
 	o.message = withSessionTrailer(o.message)
-	if sel != nil {
-		var seg string
-		if !o.noVerify && shipHasHookConfig(root) {
-			seg = "hooks hunk-skip"
-		}
-		return seg, shipCommitGTSelect(ctx, o, sel, plan)
+	segs := make([]string, 0, 2)
+	if plan.autoTracked {
+		segs = append(segs, "tracked "+plan.branch)
 	}
-	if err := shipGitAdd(ctx, o); err != nil {
+	if sel != nil {
+		if !o.noVerify && shipHasHookConfig(root) {
+			segs = append(segs, "hooks hunk-skip")
+		}
+		return strings.Join(segs, shipSep), shipCommitGTSelect(ctx, o, sel, plan)
+	}
+	if err := shipGTAdd(ctx, o); err != nil {
 		return "", err
 	}
 	if !o.amend {
@@ -241,20 +276,25 @@ func shipCommitGT(ctx context.Context, errW io.Writer, root string, o shipOpts, 
 			return "", err
 		}
 	}
-	seg, err := shipRunHooks(ctx, errW, root, vcs.Git, o)
+	hookSeg, err := shipRunHooks(ctx, errW, root, vcs.Git, o)
 	if err != nil {
 		return "", err
+	}
+	if hookSeg != "" {
+		segs = append(segs, hookSeg)
 	}
 	argv := gtCommitArgv(o, plan)
 	if _, err := render.RunCLI(ctx, "gt", argv); err != nil {
 		return "", fmt.Errorf("ship: gt %s: %w", argv[0], err)
 	}
-	return seg, nil
+	return strings.Join(segs, shipSep), nil
 }
 
 // shipCommitGTSelect commits a hunk selection through gt's real index (no
 // throwaway index like shipCommitGitSelect — gt reads the real one) and runs
 // the gt verb with no pathspec; no restore --staged, gt's commit consumes it.
+// The staging plumbing below stays on git: gt's only hunk surface is
+// interactive `-p`, which --no-interactive can't drive.
 func shipCommitGTSelect(ctx context.Context, o shipOpts, sel *shipSelection, plan gtPlan) error {
 	if _, err := render.RunCLI(ctx, "git", []string{"read-tree", "HEAD"}); err != nil {
 		return fmt.Errorf("ship: git read-tree: %w", err)

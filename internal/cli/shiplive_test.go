@@ -735,9 +735,9 @@ func setupLiveGTRepo(t *testing.T, base string) string {
 
 // TestShipLiveGT exercises the gt lane against the real gt and git binaries: a
 // path-scoped ship on trunk auto-creates and checks out a stacked branch,
-// commits only the scoped file (an untracked sibling stays untouched), and gt
-// state tracks the new branch with parent main; a second path-scoped ship on
-// that branch appends a second commit via gt modify -c.
+// commits only the scoped file, and gt state tracks it with parent main; a
+// second ship on that branch appends a commit via gt modify -c; a third ship,
+// on a branch made with plain git switch -c, auto-tracks it via gt track -f.
 func TestShipLiveGT(t *testing.T) {
 	requireLiveGT(t)
 	dir := setupLiveGTRepo(t, "base\n")
@@ -794,5 +794,31 @@ func TestShipLiveGT(t *testing.T) {
 	lines := strings.Split(strings.TrimRight(log, "\n"), "\n")
 	if len(lines) != 2 {
 		t.Errorf("commit count on %s = %d, want 2 (gt modify -c appends): %v", branch, len(lines), lines)
+	}
+
+	mustRun(t, dir, "git", "switch", "-q", "main")
+	mustRun(t, dir, "git", "switch", "-q", "-c", "untracked-branch")
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("untracked change\n"), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("write untracked change: %v", err)
+	}
+	got, err := runShipCmd(t, "-m", "untracked branch commit", "--no-push", "f.txt")
+	if err != nil {
+		t.Fatalf("untracked-branch ship error = %v", err)
+	}
+	for _, want := range []string{"tracked untracked-branch", `"untracked branch commit"`, "not pushed"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary = %q, want it to contain %q", got, want)
+		}
+	}
+	stateOut = mustRun(t, dir, "gt", "state")
+	if err := json.Unmarshal([]byte(stateOut), &state); err != nil {
+		t.Fatalf("parse gt state: %v", err)
+	}
+	entry, ok = state["untracked-branch"]
+	if !ok {
+		t.Fatalf("gt state has no entry for untracked-branch: %s", stateOut)
+	}
+	if len(entry.Parents) != 1 || entry.Parents[0].Ref != "main" {
+		t.Errorf("gt state parents for untracked-branch = %+v, want a single main parent", entry.Parents)
 	}
 }
