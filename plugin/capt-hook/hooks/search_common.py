@@ -192,7 +192,9 @@ def any_git_ignored(ops: list[str], *, cwd: Path | None) -> bool:
     if cwd is None:
         return False
     expanded = (str(Path(p).expanduser()) if p.startswith("~") else p for p in ops)
-    dirs = [p for p in expanded if not p.startswith(":") and resolved_is_dir(p, cwd)]
+    # `.`/`..` is the search root, never dep source — and the one shape on every tree grep.
+    candidates = (p for p in expanded if p.rstrip("/") not in (".", "..") and not p.startswith(":"))
+    dirs = [p for p in candidates if resolved_is_dir(p, cwd)]
     if not dirs:
         return False
 
