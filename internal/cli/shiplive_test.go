@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -694,4 +695,104 @@ func mapEqual(a, b map[string]bool) bool {
 		}
 	}
 	return true
+}
+
+// requireLiveGT skips a live gt test when gt is off PATH, and isolates HOME and
+// XDG_CONFIG_HOME so gt's own config lives under a fresh TempDir instead of the
+// operator's real ~/.graphite. init/create/modify/state/track/restack all run
+// unauthenticated against that isolated config; sync and submit demand auth and
+// must never be invoked from a live test.
+func requireLiveGT(t *testing.T) {
+	t.Helper()
+	requireLiveVCS(t, "git", "gt")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
+}
+
+// setupLiveGTRepo stands up a config-isolated git repo with a graphite trunk
+// tracked on main, chdirs into it, and returns its path.
+func setupLiveGTRepo(t *testing.T, base string) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv(envClaudeSessionKey, "")
+
+	mustRun(t, dir, "git", "init", "-q", "-b", "main")
+	mustRun(t, dir, "git", "config", "user.email", "t@t.t")
+	mustRun(t, dir, "git", "config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte(base), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("write base: %v", err)
+	}
+	mustRun(t, dir, "git", "add", "f.txt")
+	mustRun(t, dir, "git", "commit", "-qm", "init")
+	mustRun(t, dir, "gt", "init", "--trunk", "main", "--no-interactive")
+	t.Chdir(dir)
+	return dir
+}
+
+// TestShipLiveGT exercises the gt lane against the real gt and git binaries: a
+// path-scoped ship on trunk auto-creates and checks out a stacked branch,
+// commits only the scoped file (an untracked sibling stays untouched), and gt
+// state tracks the new branch with parent main; a second path-scoped ship on
+// that branch appends a second commit via gt modify -c.
+func TestShipLiveGT(t *testing.T) {
+	requireLiveGT(t)
+	dir := setupLiveGTRepo(t, "base\n")
+
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("scoped change\n"), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("write scoped change: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "excluded.txt"), []byte("excluded\n"), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("write excluded file: %v", err)
+	}
+
+	if _, err := runShipCmd(t, "-m", "first stacked commit", "--no-push", "f.txt"); err != nil {
+		t.Fatalf("first ship error = %v", err)
+	}
+
+	branch := strings.TrimSpace(mustRun(t, dir, "git", "branch", "--show-current"))
+	if branch == "main" {
+		t.Fatal("gt create did not check out a new branch")
+	}
+	if got := mustRun(t, dir, "git", "show", "HEAD:f.txt"); got != "scoped change\n" {
+		t.Errorf("HEAD:f.txt = %q, want %q", got, "scoped change\n")
+	}
+	if _, err := runGit(dir, "show", "HEAD:excluded.txt"); err == nil {
+		t.Error("excluded.txt must not be committed, but HEAD:excluded.txt resolved")
+	}
+	status := statusSet(t, dir)
+	if !status["?? excluded.txt"] {
+		t.Errorf("git status --porcelain = %v, want excluded.txt untracked", status)
+	}
+
+	stateOut := mustRun(t, dir, "gt", "state")
+	var state gtState
+	if err := json.Unmarshal([]byte(stateOut), &state); err != nil {
+		t.Fatalf("parse gt state: %v", err)
+	}
+	entry, ok := state[branch]
+	if !ok {
+		t.Fatalf("gt state has no entry for %s: %s", branch, stateOut)
+	}
+	if len(entry.Parents) != 1 || entry.Parents[0].Ref != "main" {
+		t.Errorf("gt state parents for %s = %+v, want a single main parent", branch, entry.Parents)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("second change\n"), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("write second change: %v", err)
+	}
+	if _, err := runShipCmd(t, "-m", "second stacked commit", "--no-push", "f.txt"); err != nil {
+		t.Fatalf("second ship error = %v", err)
+	}
+	if got := strings.TrimSpace(mustRun(t, dir, "git", "branch", "--show-current")); got != branch {
+		t.Fatalf("second ship switched branches: now on %q, want %q", got, branch)
+	}
+	log := mustRun(t, dir, "git", "log", "--oneline", "main.."+branch)
+	lines := strings.Split(strings.TrimRight(log, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Errorf("commit count on %s = %d, want 2 (gt modify -c appends): %v", branch, len(lines), lines)
+	}
 }

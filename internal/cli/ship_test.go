@@ -145,6 +145,9 @@ exit 0
   "ls-tree --full-tree") printf '100644 blob 1111111111111111111111111111111111111111\t%s\n' "$5" ;;
   "hash-object -w") printf '%s' "${GIT_HASH_OID:-2222222222222222222222222222222222222222}" ;;
   "diff --cached")
+    if [ "$3" = "--quiet" ]; then
+      if [ -n "$GIT_STAGED_EMPTY" ]; then exit 0; else exit 1; fi
+    fi
     names=$GIT_DIFF_NAMES
     if [ -n "$SHIP_DIFF_NAMES_MARKER" ]; then
       count=0
@@ -216,7 +219,23 @@ exit 0
 fi
 exit 0
 `
+	gt := "#!/bin/sh\n" + log("gt") + `case "$1" in
+  state) printf '%s' "$GT_STATE_JSON" ;;
+  create|modify)
+    : > "$SHIP_LOG.git-committed" ;;
+  submit)
+    if [ -n "$GT_SUBMIT_FAIL_STDERR" ]; then printf '%s\n' "$GT_SUBMIT_FAIL_STDERR" >&2; exit 1; fi ;;
+  *) printf 'fake gt: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
+esac
+exit 0
+`
 	gh := "#!/bin/sh\n" + log("gh") + `case "$1 $2" in
+  "pr view")
+    if [ -n "$GH_PR_VIEW_NOT_FOUND" ]; then
+      printf 'no pull requests found for branch "%s"\n' "$3" >&2
+      exit 1
+    fi
+    printf '%s' "$GH_PR_VIEW_JSON" ;;
   "run list")
     if [ -n "$GH_LIST_FAIL" ]; then printf 'gh: network timeout\n' >&2; exit 1; fi
     if [ -n "$GH_LIST_FAIL_MARKER" ] && [ -s "$GH_LIST_FAIL_MARKER" ]; then
@@ -256,6 +275,7 @@ exit 0
 	write("jj", jj)
 	write("git", git)
 	write("uvx", uvx)
+	write("gt", gt)
 	if withGh {
 		write("gh", gh)
 	}
@@ -305,6 +325,21 @@ func setupShip(t *testing.T, marker string, withGh bool) string {
 	t.Setenv(envClaudeSessionKey, "")
 	log := filepath.Join(dir, "ship.log")
 	t.Setenv("SHIP_LOG", log)
+	return log
+}
+
+// setupShipGT extends setupShip with a live Graphite config and a default gt
+// state tracking the current branch "feature" as a one-deep stack on trunk
+// "main", routing ship to the gt lane. withGh mirrors setupShip's fake-gh
+// toggle.
+func setupShipGT(t *testing.T, withGh bool) string {
+	t.Helper()
+	log := setupShip(t, ".git", withGh)
+	if err := os.WriteFile(filepath.Join(".git", ".graphite_repo_config"), []byte("{}"), 0o644); err != nil { //nolint:gosec // test fixture file
+		t.Fatalf("write .graphite_repo_config: %v", err)
+	}
+	t.Setenv("GIT_BRANCH", "feature")
+	t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
 	return log
 }
 
@@ -3283,4 +3318,633 @@ func TestCIGreen(t *testing.T) {
 			}
 		})
 	}
+}
+
+// assertNoGTCommit fails the test if a gt create or modify ran, for a refusal
+// that must fire before any commit side effect.
+func assertNoGTCommit(t *testing.T, invocations [][]string) {
+	t.Helper()
+	for _, inv := range invocations {
+		if len(inv) > 1 && inv[0] == "gt" && (inv[1] == "create" || inv[1] == "modify") {
+			t.Errorf("commit ran before refusal: %v", inv)
+		}
+	}
+}
+
+func TestShipGTPrecedenceOverJJ(t *testing.T) {
+	t.Run("graphite wins over a colocated jj marker", func(t *testing.T) {
+		log := setupShipGT(t, false)
+		if err := os.Mkdir(".jj", 0o750); err != nil {
+			t.Fatalf("mkdir .jj: %v", err)
+		}
+		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		want := `committed a1b2c3d "fix: frobnicate" · not pushed`
+		if got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+		assertInvocations(t, readInvocations(t, log), [][]string{
+			{"git", "branch", "--show-current"},
+			{"gt", "state"},
+			{"git", "add", "-A"},
+			{"git", "diff", "--cached", "--quiet"},
+			{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
+			{"git", "log", "-1", "--format=%h%x00%s"},
+		})
+	})
+
+	t.Run("--no-gt falls back to jj", func(t *testing.T) {
+		log := setupShipGT(t, false)
+		if err := os.Mkdir(".jj", 0o750); err != nil {
+			t.Fatalf("mkdir .jj: %v", err)
+		}
+		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--no-gt")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		want := `committed a1b2c3d "fix: frobnicate" · not pushed`
+		if got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+		assertInvocations(t, readInvocations(t, log), [][]string{
+			{"jj", "diff", "--name-only"},
+			{"jj", "commit", "-m", "fix: frobnicate"},
+			{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+		})
+	})
+}
+
+func TestShipGTStackedHappyPath(t *testing.T) {
+	tests := []struct {
+		name      string
+		branch    string
+		stateJSON string
+		wantSeg   string
+	}{
+		{
+			name:      "depth 1",
+			branch:    "feature",
+			stateJSON: `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`,
+			wantSeg:   "submitted feature → PR #7 https://github.com/x/pull/7",
+		},
+		{
+			name:   "depth 2",
+			branch: "feature2",
+			stateJSON: `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},` +
+				`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`,
+			wantSeg: "submitted feature2 → PR #7 https://github.com/x/pull/7 (stack of 2)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShipGT(t, true)
+			t.Setenv("GIT_BRANCH", tt.branch)
+			t.Setenv("GT_STATE_JSON", tt.stateJSON)
+			t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
+			t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewSuccess)
+			t.Setenv("GH_PR_VIEW_JSON", `{"number":7,"url":"https://github.com/x/pull/7"}`)
+			shipCIPollInterval = 0
+
+			got, err := runShipCmd(t, "-m", "fix: frobnicate")
+			if err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			want := `committed a1b2c3d "fix: frobnicate" · ` + tt.wantSeg + ` · CI success`
+			if got != want {
+				t.Errorf("summary = %q, want %q", got, want)
+			}
+			assertInvocations(t, readInvocations(t, log), [][]string{
+				{"git", "branch", "--show-current"},
+				{"gt", "state"},
+				{"git", "add", "-A"},
+				{"git", "diff", "--cached", "--quiet"},
+				{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				{"git", "branch", "--show-current"},
+				{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
+				{"gh", "pr", "view", tt.branch, "--json", "number,url"},
+				{"git", "rev-parse", "HEAD"},
+				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
+				{"gh", "run", "watch", "42", "--exit-status"},
+				{"gh", "run", "view", "42", "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"},
+				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
+				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
+			})
+		})
+	}
+}
+
+func TestShipGTTrunkAutoCreate(t *testing.T) {
+	log := setupShipGT(t, true)
+	t.Setenv("GIT_BRANCH", "main")
+	t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true}}`)
+	t.Setenv("GIT_BRANCH_AFTER_COMMIT", "feat-branch")
+	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
+	t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewSuccess)
+	t.Setenv("GH_PR_VIEW_JSON", `{"number":9,"url":"https://github.com/x/pull/9"}`)
+	shipCIPollInterval = 0
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `committed a1b2c3d "fix: frobnicate" · submitted feat-branch → PR #9 https://github.com/x/pull/9 · CI success`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	assertInvocations(t, readInvocations(t, log), [][]string{
+		{"git", "branch", "--show-current"},
+		{"gt", "state"},
+		{"git", "add", "-A"},
+		{"git", "diff", "--cached", "--quiet"},
+		{"gt", "create", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"},
+		{"git", "log", "-1", "--format=%h%x00%s"},
+		{"git", "branch", "--show-current"},
+		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
+		{"gh", "pr", "view", "feat-branch", "--json", "number,url"},
+		{"git", "rev-parse", "HEAD"},
+		{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
+		{"gh", "run", "watch", "42", "--exit-status"},
+		{"gh", "run", "view", "42", "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"},
+		{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
+		{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
+	})
+}
+
+func TestShipGTCreateFlag(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"explicit name", []string{"--create=newbranch"}, []string{"gt", "create", "newbranch", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
+		{"bare create derives from message", []string{"--create"}, []string{"gt", "create", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShipGT(t, false)
+			args := append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.args...)
+			if _, err := runShipCmd(t, args...); err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			var commit []string
+			for _, inv := range readInvocations(t, log) {
+				if inv[0] == "gt" && (inv[1] == "create" || inv[1] == "modify") {
+					commit = inv
+				}
+			}
+			if !reflect.DeepEqual(commit, tt.want) {
+				t.Errorf("commit argv = %v, want %v", commit, tt.want)
+			}
+		})
+	}
+}
+
+func TestShipGTAmend(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"with message", []string{"--amend", "-m", "fix: frobnicate"}, []string{"gt", "modify", "-m", "fix: frobnicate", "--no-interactive"}},
+		{"without message", []string{"--amend"}, []string{"gt", "modify", "--no-interactive"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShipGT(t, false)
+			args := append(append([]string{}, tt.args...), "--no-push")
+			if _, err := runShipCmd(t, args...); err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			var commit []string
+			for _, inv := range readInvocations(t, log) {
+				if inv[0] == "gt" && inv[1] == "modify" {
+					commit = inv
+				}
+				if inv[0] == "git" && inv[1] == "diff" {
+					t.Errorf("amend must not probe git diff --cached --quiet: %v", inv)
+				}
+			}
+			if !reflect.DeepEqual(commit, tt.want) {
+				t.Errorf("commit argv = %v, want %v", commit, tt.want)
+			}
+		})
+	}
+
+	t.Run("amend on trunk refuses", func(t *testing.T) {
+		log := setupShipGT(t, false)
+		t.Setenv("GIT_BRANCH", "main")
+		t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true}}`)
+		_, err := runShipCmd(t, "--amend", "-m", "fix: frobnicate", "--no-push")
+		if err == nil {
+			t.Fatal("expected refusal, got nil")
+		}
+		wantErr := "ship: --amend on trunk is refused in the graphite lane — create a stacked branch instead (gt create)"
+		if err.Error() != wantErr {
+			t.Errorf("error = %q, want %q", err.Error(), wantErr)
+		}
+		assertNoGTCommit(t, readInvocations(t, log))
+	})
+}
+
+func TestShipGTPathScoped(t *testing.T) {
+	log := setupShipGT(t, false)
+	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "src/a.go", "docs"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	assertInvocations(t, readInvocations(t, log), [][]string{
+		{"git", "branch", "--show-current"},
+		{"gt", "state"},
+		{"git", "add", "-A", "--", "src/a.go", "docs"},
+		{"git", "diff", "--cached", "--quiet"},
+		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
+		{"git", "log", "-1", "--format=%h%x00%s"},
+	})
+}
+
+func TestShipGTHunkScoped(t *testing.T) {
+	log := setupShipGT(t, false)
+	if err := os.WriteFile("f.txt", []byte(hunkCurrent), 0o644); err != nil { //nolint:gosec // test fixture file
+		t.Fatalf("write f.txt: %v", err)
+	}
+	t.Setenv("GIT_FILE_SHOW_BASE", hunkBase)
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	writeShipHookFiles(t, root)
+	ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--only-hunk", ref, "f.txt")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `hooks hunk-skip · committed a1b2c3d "fix: frobnicate" · not pushed`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	assertInvocations(t, readInvocations(t, log), [][]string{
+		{"git", "rev-parse", "--show-toplevel"},
+		{"git", "ls-tree", "--full-tree", "HEAD", "--", "f.txt"},
+		{"git", "show", "--end-of-options", "HEAD:f.txt"},
+		{"git", "branch", "--show-current"},
+		{"gt", "state"},
+		{"git", "read-tree", "HEAD"},
+		{"git", "ls-tree", "--full-tree", "HEAD", "--", "f.txt"},
+		{"git", "show", "--end-of-options", "HEAD:f.txt"},
+		{"git", "ls-tree", "--full-tree", "HEAD", "--", "f.txt"},
+		{"git", "hash-object", "-w", "--stdin"},
+		{"git", "update-index", "--add", "--cacheinfo", "100644,2222222222222222222222222222222222222222,f.txt"},
+		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
+		{"git", "log", "-1", "--format=%h%x00%s"},
+	})
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "idx" {
+			t.Errorf("gt hunk-scoped commit must use the real index, but an idx marker was logged: %v", inv)
+		}
+		if inv[0] == "git" && inv[1] == "restore" {
+			t.Errorf("gt hunk-scoped commit must not restore --staged: %v", inv)
+		}
+	}
+}
+
+func TestShipGTRefusals(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T)
+		wantErr string
+	}{
+		{
+			name: "needs restack",
+			setup: func(t *testing.T) {
+				t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true},"feature":{"needs_restack":true,"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
+			},
+			wantErr: "ship: stack needs restack — run gt restack (gt continue / gt abort on conflict), then re-run ship",
+		},
+		{
+			name: "untracked branch",
+			setup: func(t *testing.T) {
+				t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true}}`)
+			},
+			wantErr: "ship: branch feature is not tracked by graphite — run gt track, or pass --no-gt",
+		},
+		{
+			name: "staged empty",
+			setup: func(t *testing.T) {
+				t.Setenv("GIT_STAGED_EMPTY", "1")
+			},
+			wantErr: `ship: nothing to commit — did a prior ship already land a1b2c3d "fix: frobnicate"?`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShipGT(t, false)
+			tt.setup(t)
+			_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+			if err == nil {
+				t.Fatal("expected refusal, got nil")
+			}
+			if err.Error() != tt.wantErr {
+				t.Errorf("error = %q, want %q", err.Error(), tt.wantErr)
+			}
+			assertNoGTCommit(t, readInvocations(t, log))
+		})
+	}
+}
+
+func TestShipGTClassifySubmit(t *testing.T) {
+	tests := []struct {
+		name    string
+		stderr  string
+		wantErr string
+	}{
+		{"restack needed (primary wording)", gtRestackNeeded1, "ship: stack drifted since preflight — run gt restack, then re-run ship"},
+		{"restack needed (conflict wording)", gtRestackNeeded2 + "feature", "ship: stack drifted since preflight — run gt restack, then re-run ship"},
+		{"trunk stale", gtTrunkStale, "ship: trunk is out of sync — run gt sync (or ccx vcs restack), then re-run ship"},
+		{"remote changed (updated wording)", gtRemoteChanged1, "ship: remote branch changed since last submit — reconcile manually (gt sync), then re-run ship"},
+		{"remote changed (lease wording)", gtRemoteChanged2, "ship: remote branch changed since last submit — reconcile manually (gt sync), then re-run ship"},
+		{"auth required (please wording)", gtAuthRequired1, "ship: graphite auth required — run gt auth"},
+		{"auth required (invalid wording)", gtAuthRequired2, "ship: graphite auth required — run gt auth"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShipGT(t, false)
+			t.Setenv("GT_SUBMIT_FAIL_STDERR", tt.stderr)
+			_, err := runShipCmd(t, "-m", "fix: frobnicate")
+			if err == nil {
+				t.Fatal("expected submit failure, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tt.wantErr)
+			}
+			submits := 0
+			for _, inv := range readInvocations(t, log) {
+				if inv[0] == "gt" && inv[1] == "submit" {
+					submits++
+				}
+			}
+			if submits != 1 {
+				t.Errorf("submit ran %d times, want exactly 1 (gt owns restacking, ship never retries)", submits)
+			}
+		})
+	}
+
+	t.Run("unknown stderr wraps verbatim", func(t *testing.T) {
+		setupShipGT(t, false)
+		t.Setenv("GT_SUBMIT_FAIL_STDERR", "some other gt error")
+		_, err := runShipCmd(t, "-m", "fix: frobnicate")
+		if err == nil {
+			t.Fatal("expected submit failure, got nil")
+		}
+		if !strings.Contains(err.Error(), "ship: gt submit:") || !strings.Contains(err.Error(), "some other gt error") {
+			t.Errorf("error = %q, want it to wrap ship: gt submit: and the raw stderr", err.Error())
+		}
+	})
+}
+
+func TestShipGTDraftPublish(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"draft", []string{"--draft"}, "--draft"},
+		{"default publishes", nil, "--publish"},
+		{"explicit publish", []string{"--publish"}, "--publish"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShipGT(t, false)
+			args := append([]string{"-m", "fix: frobnicate"}, tt.args...)
+			if _, err := runShipCmd(t, args...); err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			var submit []string
+			for _, inv := range readInvocations(t, log) {
+				if inv[0] == "gt" && inv[1] == "submit" {
+					submit = inv
+				}
+			}
+			want := []string{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", tt.want}
+			if !reflect.DeepEqual(submit, want) {
+				t.Errorf("submit argv = %v, want %v", submit, want)
+			}
+		})
+	}
+
+	t.Run("draft and publish are mutually exclusive", func(t *testing.T) {
+		log := setupShipGT(t, false)
+		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--draft", "--publish")
+		wantErr := "if any flags in the group [draft publish] are set none of the others can be; [draft publish] were all set"
+		if err == nil || err.Error() != wantErr {
+			t.Errorf("error = %v, want %q", err, wantErr)
+		}
+		if inv := readInvocations(t, log); inv != nil {
+			t.Errorf("no VCS command may run before flag validation, got %v", inv)
+		}
+	})
+}
+
+func TestShipGTFlagsOutsideGTLane(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"--create", []string{"--create"}},
+		{"--draft", []string{"--draft"}},
+		{"--publish", []string{"--publish"}},
+	}
+	wantErr := "ship: --create/--draft/--publish apply only to graphite repos; pass --no-gt only when .git/.graphite_repo_config exists, or drop these flags"
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShip(t, ".git", false)
+			args := append(append([]string{}, tt.args...), "--no-push")
+			_, err := runShipCmd(t, args...)
+			if err == nil || err.Error() != wantErr {
+				t.Errorf("error = %v, want %q", err, wantErr)
+			}
+			if inv := readInvocations(t, log); inv != nil {
+				t.Errorf("no VCS command may run before the graphite-only flag check, got %v", inv)
+			}
+		})
+	}
+}
+
+func TestShipGTGHMissing(t *testing.T) {
+	log := setupShipGT(t, false)
+	got, err := runShipCmd(t, "-m", "fix: frobnicate")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `committed a1b2c3d "fix: frobnicate" · submitted feature · CI gh-missing`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "gh" {
+			t.Errorf("gh invoked despite missing from PATH: %v", inv)
+		}
+	}
+}
+
+func TestShipGTNoPush(t *testing.T) {
+	log := setupShipGT(t, false)
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `committed a1b2c3d "fix: frobnicate" · not pushed`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	sawState, sawSubmit := false, false
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "gt" && inv[1] == "state" {
+			sawState = true
+		}
+		if inv[0] == "gt" && inv[1] == "submit" {
+			sawSubmit = true
+		}
+	}
+	if !sawState {
+		t.Error("gt state never ran — preflight must run even under --no-push")
+	}
+	if sawSubmit {
+		t.Error("gt submit ran despite --no-push")
+	}
+}
+
+func TestShipGTNoVerify(t *testing.T) {
+	log := setupShipGT(t, false)
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	writeShipHookFiles(t, root)
+
+	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--no-verify"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	var commit []string
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "uvx" {
+			t.Errorf("uvx invoked despite --no-verify: %v", inv)
+		}
+		if inv[0] == "gt" && inv[1] == "modify" {
+			commit = inv
+		}
+	}
+	want := []string{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"}
+	if !reflect.DeepEqual(commit, want) {
+		t.Errorf("commit argv = %v, want %v", commit, want)
+	}
+}
+
+func TestShipGTSessionTrailer(t *testing.T) {
+	log := setupShipGT(t, false)
+	t.Setenv(envClaudeSessionKey, "some-uuid")
+	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	var commit []string
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "gt" && inv[1] == "modify" {
+			commit = inv
+		}
+	}
+	want := []string{"gt", "modify", "-c", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid", "--no-interactive"}
+	if !reflect.DeepEqual(commit, want) {
+		t.Errorf("commit argv = %v, want %v", commit, want)
+	}
+}
+
+func TestShipReviewsWiring(t *testing.T) {
+	t.Run("--reviews requires push", func(t *testing.T) {
+		log := setupShip(t, ".git", false)
+		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--reviews")
+		wantErr := "ship: --reviews requires push (drop --no-push)"
+		if err == nil || err.Error() != wantErr {
+			t.Errorf("error = %v, want %q", err, wantErr)
+		}
+		if inv := readInvocations(t, log); inv != nil {
+			t.Errorf("no VCS command may run before the --reviews/--no-push refusal, got %v", inv)
+		}
+	})
+
+	t.Run("git lane with no open PR", func(t *testing.T) {
+		setupShip(t, ".git", true)
+		t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
+		t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewSuccess)
+		t.Setenv("GH_PR_VIEW_NOT_FOUND", "1")
+		shipCIPollInterval = 0
+
+		out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--reviews")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		summaryIdx := strings.Index(out, `committed a1b2c3d "fix: frobnicate" · pushed main → origin · CI success`)
+		notFoundIdx := strings.Index(out, "reviews: no open PR for main")
+		if summaryIdx < 0 || notFoundIdx < 0 {
+			t.Fatalf("stdout missing expected lines:\n%s", out)
+		}
+		if notFoundIdx < summaryIdx {
+			t.Errorf("the ship report must print before the reviews no-PR note:\n%s", out)
+		}
+		if !strings.HasSuffix(strings.TrimRight(out, "\n"), "reviews: no open PR for main") {
+			t.Errorf("the reviews no-PR note must be the last line:\n%s", out)
+		}
+	})
+
+	t.Run("gt lane watches every downstack branch", func(t *testing.T) {
+		log := setupShipGT(t, true)
+		t.Setenv("GIT_BRANCH", "feature2")
+		t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
+			`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
+		t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
+		t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewSuccess)
+		t.Setenv("GH_PR_VIEW_NOT_FOUND", "1")
+		shipCIPollInterval = 0
+
+		out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--reviews")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		var prViewBranches []string
+		for _, inv := range readInvocations(t, log) {
+			if len(inv) > 3 && inv[0] == "gh" && inv[1] == "pr" && inv[2] == "view" {
+				prViewBranches = append(prViewBranches, inv[3])
+			}
+		}
+		// gtPRSegment resolves feature2 first, then shipWatchReviews resolves the
+		// whole downstack, feature2 first.
+		want := []string{"feature2", "feature2", "feature"}
+		if !reflect.DeepEqual(prViewBranches, want) {
+			t.Errorf("gh pr view branches = %v, want %v", prViewBranches, want)
+		}
+		for _, w := range []string{"reviews: no open PR for feature2", "reviews: no open PR for feature"} {
+			if !strings.Contains(out, w) {
+				t.Errorf("stdout %q missing %q", out, w)
+			}
+		}
+	})
+
+	t.Run("red CI plus clean reviews watch preserves the CI error", func(t *testing.T) {
+		setupShipGT(t, true)
+		t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
+		t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewFailure)
+		t.Setenv("GH_WATCH_EXIT", "1")
+		t.Setenv("GH_LOG_FAILED", "go test failed\n")
+		t.Setenv("GH_PR_VIEW_NOT_FOUND", "1")
+		shipCIPollInterval = 0
+
+		_, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--reviews")
+		if err == nil {
+			t.Fatal("expected a non-nil error from the failed CI run")
+		}
+		if !strings.Contains(err.Error(), "ship: CI failed for 1 run(s) on the pushed commit") {
+			t.Errorf("error = %q, want it to preserve the CI failure", err.Error())
+		}
+	})
 }
