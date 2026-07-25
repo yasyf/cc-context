@@ -32,7 +32,7 @@ jobs:
       - name: Install ast-grep (structural search/replace/outline engine)
         run: |
           uv tool install ast-grep-cli
-          echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
+          uv tool dir --bin >> "$GITHUB_PATH"
       - name: Warm the codeexec sandbox runtime
         # Mirror the runtime launch flags (internal/codeexec/driver.go) so a PR's
         # checked-out uv.toml / pyproject cannot steer resolution here either.
