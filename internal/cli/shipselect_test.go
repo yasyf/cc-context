@@ -364,15 +364,24 @@ func TestShipGitHunkPlumbingSequence(t *testing.T) {
 func TestShipGitHunkNoVerify(t *testing.T) {
 	tests := []struct {
 		name         string
+		hookConfig   bool
 		noVerify     bool
 		wantNoVerify bool
 	}{
-		{"default preserves native hooks", false, false},
-		{"no verify reaches temp-index commit", true, true},
+		{"default preserves native hooks", false, false, false},
+		{"prek config preserves native hooks", true, false, false},
+		{"no verify reaches temp-index commit", false, true, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			log := setupGitHunkShip(t, "f.txt", "")
+			if tt.hookConfig {
+				root, err := os.Getwd()
+				if err != nil {
+					t.Fatalf("getwd: %v", err)
+				}
+				writeShipHookFiles(t, root)
+			}
 			ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
 			args := []string{"-m", "fix: frobnicate", "--no-push", "--only-hunk", ref, "f.txt"}
 			if tt.noVerify {

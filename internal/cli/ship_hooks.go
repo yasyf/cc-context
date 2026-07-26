@@ -26,61 +26,88 @@ var shipHookConfigNames = []string{".pre-commit-config.yaml", ".pre-commit-confi
 // fixed". External hook execution retains the same staging window as a manual
 // git add followed by git commit. A later jj push-time auto-rebase may incorporate
 // upstream content the hooks did not inspect; upstream CI covers that boundary.
-func shipRunHooks(ctx context.Context, errW io.Writer, root string, kind vcs.Kind, o shipOpts) (string, error) {
+// The covered result reports whether this pass discharges the commit's hook
+// obligations, so the caller can suppress Git's duplicate run; a message-stage
+// config, which prek run --files never reaches, keeps it false.
+func shipRunHooks(ctx context.Context, errW io.Writer, root string, kind vcs.Kind, o shipOpts) (seg string, covered bool, err error) {
 	if o.noVerify {
-		return "", nil
+		return "", false, nil
 	}
-	if !shipHasHookConfig(root) {
-		return "", nil
+	config := shipHookConfigPath(root)
+	if config == "" {
+		return "", false, nil
 	}
 	files, err := shipHookFiles(ctx, root, kind, o)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if len(files) == 0 {
-		return "", nil
+		return "", false, nil
 	}
 	if kind == vcs.JJ {
 		if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
-			return "hooks no-git", nil
+			return "hooks no-git", false, nil
 		}
 	}
 	if _, err := exec.LookPath("uvx"); err != nil {
-		return "hooks uvx-missing", nil
+		return "hooks uvx-missing", false, nil
 	}
+	msgStage, err := shipHookConfigHasMsgStage(config)
+	if err != nil {
+		return "", false, err
+	}
+	covered = !msgStage
 
 	// Leading-dash filenames intentionally reach prek unchanged so it fails loudly.
 	argv := append([]string{"prek", "run", "--cd", root, "--files"}, files...)
 	if _, err := render.RunCLI(ctx, "uvx", argv); err == nil {
-		return "hooks ok", nil
+		return "hooks ok", covered, nil
 	}
 	if kind == vcs.Git {
 		if err := shipGitAdd(ctx, o); err != nil {
-			return "", err
+			return "", false, err
 		}
 	}
 	files, err = shipHookFiles(ctx, root, kind, o)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if len(files) == 0 {
-		return "", errors.New("ship: hooks: auto-fixes reverted every pending change; nothing to commit")
+		return "", false, errors.New("ship: hooks: auto-fixes reverted every pending change; nothing to commit")
 	}
 	argv = append([]string{"prek", "run", "--cd", root, "--files"}, files...)
 	if err := render.RunCLIStream(ctx, "uvx", argv, errW); err != nil {
-		return "", fmt.Errorf("ship: hooks: %w — pre-commit hooks still failing after auto-fix; fix them or re-run with --no-verify", err)
+		return "", false, fmt.Errorf("ship: hooks: %w — pre-commit hooks still failing after auto-fix; fix them or re-run with --no-verify", err)
 	}
-	return "hooks fixed", nil
+	return "hooks fixed", covered, nil
+}
+
+// shipHookConfigPath returns root's prek-recognized config file, or "" when
+// root holds none.
+func shipHookConfigPath(root string) string {
+	for _, name := range shipHookConfigNames {
+		path := filepath.Join(root, name)
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return ""
 }
 
 // shipHasHookConfig reports whether root holds a prek-recognized config file.
 func shipHasHookConfig(root string) bool {
-	for _, name := range shipHookConfigNames {
-		if _, err := os.Stat(filepath.Join(root, name)); err == nil {
-			return true
-		}
+	return shipHookConfigPath(root) != ""
+}
+
+// shipHookConfigHasMsgStage reports whether the config mentions commit-msg or
+// prepare-commit-msg. The substring scan stands in for a YAML/TOML parse:
+// over-matching only preserves Git's own hook run.
+func shipHookConfigHasMsgStage(path string) (bool, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // the path is one of shipHookConfigNames under the repo root, not untrusted input
+	if err != nil {
+		return false, fmt.Errorf("ship: hooks: read %s: %w", filepath.Base(path), err)
 	}
-	return false
+	return strings.Contains(string(data), "commit-msg"), nil
 }
 
 func shipChangedPaths(ctx context.Context, root string, kind vcs.Kind, o shipOpts) ([]string, error) {

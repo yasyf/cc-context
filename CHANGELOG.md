@@ -4,7 +4,20 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.34.0] - 2026-07-26
+
+### Fixed
+- **`ccx vcs ship` runs the repo's prek hooks once, not twice.** Ship ran its own
+  scoped `uvx prek` pass and then let the commit fire git's `pre-commit` hook,
+  which re-ran the same hooks through prek's unstaged-stash path — a path that
+  checks out from the current index rather than a pinned tree and reports a
+  failed restore only on stderr, so a `gt modify` dropped the staged edits and
+  still exited 0. The second run added nothing, so ship now passes `--no-verify`
+  to the git and gt commits it has already hooked itself. Repos ship did not hook are untouched:
+  no prek config, a missing `uvx`, a jj repo with no `.git`, `--no-verify`, and
+  hunk-scoped selections all leave the repo's own git hooks running, as does a
+  prek config declaring a `commit-msg` or `prepare-commit-msg` stage, which
+  `prek run --files` never reaches.
 
 ## [0.33.0] - 2026-07-24
 

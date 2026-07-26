@@ -76,6 +76,7 @@ type shipOpts struct {
 	noPush    bool
 	noWatch   bool
 	noVerify  bool
+	hooksRan  bool
 	amend     bool
 	budget    int
 	paths     []string
@@ -347,7 +348,7 @@ func shipCommit(ctx context.Context, errW io.Writer, root string, kind vcs.Kind,
 	}
 	if sel == nil {
 		var err error
-		seg, err = shipRunHooks(ctx, errW, root, kind, o)
+		seg, o.hooksRan, err = shipRunHooks(ctx, errW, root, kind, o)
 		if err != nil {
 			return "", err
 		}
@@ -457,7 +458,7 @@ func shipCommitGit(ctx context.Context, o shipOpts, sel *shipSelection) error {
 	default:
 		argv = []string{"commit", "-m", o.message}
 	}
-	if o.noVerify {
+	if o.noVerify || o.hooksRan {
 		argv = append(argv, "--no-verify")
 	}
 	if len(o.paths) > 0 {

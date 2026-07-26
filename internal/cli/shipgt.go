@@ -206,7 +206,7 @@ func gtCommitArgv(o shipOpts, plan gtPlan) []string {
 		argv = []string{"modify", "-c", "-m", o.message}
 	}
 	argv = append(argv, "--no-interactive")
-	if o.noVerify {
+	if o.noVerify || o.hooksRan {
 		argv = append(argv, "--no-verify")
 	}
 	return argv
@@ -277,10 +277,11 @@ func shipCommitGT(ctx context.Context, errW io.Writer, root string, o shipOpts, 
 			return "", err
 		}
 	}
-	hookSeg, err := shipRunHooks(ctx, errW, root, vcs.Git, o)
+	hookSeg, hooksRan, err := shipRunHooks(ctx, errW, root, vcs.Git, o)
 	if err != nil {
 		return "", err
 	}
+	o.hooksRan = hooksRan
 	if hookSeg != "" {
 		segs = append(segs, hookSeg)
 	}

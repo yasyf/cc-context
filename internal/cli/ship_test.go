@@ -544,7 +544,7 @@ func TestShipHooksPass(t *testing.T) {
 				{"git", "add", "-A"},
 				{"git", "diff", "--cached", "--name-only", "--diff-filter=d", "-z"},
 				{"uvx", "prek", "run", "--cd", "ROOT", "--files", "f1.go"},
-				{"git", "commit", "-m", "fix: frobnicate"},
+				{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 			},
 		},
@@ -911,10 +911,53 @@ func TestShipHooksNoConfig(t *testing.T) {
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
+	var commit []string
 	for _, inv := range readInvocations(t, log) {
 		if inv[0] == "uvx" {
 			t.Errorf("uvx invoked without a config file: %v", inv)
 		}
+		if len(inv) > 1 && inv[0] == "git" && inv[1] == "commit" {
+			commit = inv
+		}
+	}
+	wantCommit := []string{"git", "commit", "-m", "fix: frobnicate"}
+	if !reflect.DeepEqual(commit, wantCommit) {
+		t.Errorf("commit argv = %v, want %v — a repo's own git hooks must still run", commit, wantCommit)
+	}
+}
+
+// TestShipHooksCommitMsgStage pins the one config shape ship must not suppress:
+// prek run --files never reaches the message stages --no-verify would silence.
+func TestShipHooksCommitMsgStage(t *testing.T) {
+	log := setupShip(t, ".git", false)
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	writeShipHookFiles(t, root, "f1.go")
+	config := "repos:\n  - repo: local\n    hooks:\n      - id: gitlint\n        stages: [commit-msg]\n"
+	if err := os.WriteFile(filepath.Join(root, ".pre-commit-config.yaml"), []byte(config), 0o600); err != nil {
+		t.Fatalf("write pre-commit config: %v", err)
+	}
+	t.Setenv("GIT_DIFF_NAMES", "f1.go\n")
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `hooks ok · committed a1b2c3d "fix: frobnicate" · not pushed`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	var commit []string
+	for _, inv := range readInvocations(t, log) {
+		if len(inv) > 1 && inv[0] == "git" && inv[1] == "commit" {
+			commit = inv
+		}
+	}
+	wantCommit := []string{"git", "commit", "-m", "fix: frobnicate"}
+	if !reflect.DeepEqual(commit, wantCommit) {
+		t.Errorf("commit argv = %v, want %v — a commit-msg stage still needs git's hook run", commit, wantCommit)
 	}
 }
 
@@ -937,6 +980,16 @@ func TestShipHooksUvxMissing(t *testing.T) {
 	want := `hooks uvx-missing · committed a1b2c3d "fix: frobnicate" · not pushed`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
+	}
+	var commit []string
+	for _, inv := range readInvocations(t, log) {
+		if len(inv) > 1 && inv[0] == "git" && inv[1] == "commit" {
+			commit = inv
+		}
+	}
+	wantCommit := []string{"git", "commit", "-m", "fix: frobnicate"}
+	if !reflect.DeepEqual(commit, wantCommit) {
+		t.Errorf("commit argv = %v, want %v — hooks ccx could not run stay git's job", commit, wantCommit)
 	}
 }
 
@@ -1050,7 +1103,7 @@ func TestShipHooksScopedPaths(t *testing.T) {
 		{"git", "add", "-A", "--", "src/a.go"},
 		{"git", "diff", "--cached", "--name-only", "--diff-filter=d", "-z", "--", "src/a.go"},
 		{"uvx", "prek", "run", "--cd", root, "--files", "src/a.go"},
-		{"git", "commit", "-m", "fix: frobnicate", "--", "src/a.go"},
+		{"git", "commit", "-m", "fix: frobnicate", "--no-verify", "--", "src/a.go"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 	}
 	assertInvocations(t, readInvocations(t, log), want2)
@@ -3914,6 +3967,43 @@ func TestShipGTNoVerify(t *testing.T) {
 		if inv[0] == "gt" && inv[1] == "modify" {
 			commit = inv
 		}
+	}
+	want := []string{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"}
+	if !reflect.DeepEqual(commit, want) {
+		t.Errorf("commit argv = %v, want %v", commit, want)
+	}
+}
+
+// TestShipGTHooksSuppressGitRun pins the gt lane's half of the single-run
+// guarantee: ccx's own prek pass, then --no-verify so gt's commit does not
+// fire the same hooks again through git.
+func TestShipGTHooksSuppressGitRun(t *testing.T) {
+	log := setupShipGT(t, false)
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	writeShipHookFiles(t, root, "f1.go")
+	t.Setenv("GIT_DIFF_NAMES", "f1.go\n")
+
+	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	var uvx, commit []string
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "uvx" {
+			if uvx != nil {
+				t.Errorf("uvx invoked more than once: %v", inv)
+			}
+			uvx = inv
+		}
+		if inv[0] == "gt" && inv[1] == "modify" {
+			commit = inv
+		}
+	}
+	wantUVX := []string{"uvx", "prek", "run", "--cd", root, "--files", "f1.go"}
+	if !reflect.DeepEqual(uvx, wantUVX) {
+		t.Errorf("uvx argv = %v, want %v", uvx, wantUVX)
 	}
 	want := []string{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"}
 	if !reflect.DeepEqual(commit, want) {
