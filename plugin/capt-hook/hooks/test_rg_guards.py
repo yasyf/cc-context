@@ -60,7 +60,7 @@ def rg_verdict(command: str) -> HookResult | str | None:
 def rg_rewrite_note(command: str) -> str:
     evt, occ = event_occurrence(command)
     parsed = rg_guards.rg_parse(occ, cwd=evt.cwd)
-    assert parsed is not None
+    assert isinstance(parsed, search_common.GrepCall)
     return search_common.note_text(occ.command.raw, parsed)
 
 
@@ -257,6 +257,17 @@ class TestDependencyDirTargets:
 
     def test_dep_lookalike_pattern_runs_raw(self) -> None:
         assert grep_verdict("grep -rn '.venv' README.md") is None
+
+    def test_invert_filter_stage_is_not_a_dep_target(self) -> None:
+        # The incident: `-v` was missing from the arity table, so the filter stage fell back to raw
+        # tokens and its PATTERN (`generated`, a git-ignored dir here) read as a dependency target.
+        assert grep_verdict("grep -rn foo . | grep -v generated") is None
+        assert rg_verdict("rg -n foo . | rg -P generated") is None
+
+    def test_invert_over_an_ignored_dir_still_blocks(self) -> None:
+        # …while a real ignored-dir operand under the same flag still steers to dep-reader.
+        verdict = grep_verdict("grep -rv foo generated/")
+        assert isinstance(verdict, HookResult) and "ccx repo locate" in verdict.message
 
 
 class TestRgOccurrenceRewrite:

@@ -61,7 +61,7 @@ def grep_verdict(command: str) -> HookResult | str | None:
 def grep_rewrite_note(command: str) -> str:
     evt, occ = event_occurrence(command)
     parsed = grep_guards.grep_parse(occ, cwd=evt.cwd)
-    assert parsed is not None
+    assert isinstance(parsed, search_common.GrepCall)
     return search_common.note_text(occ.command.raw, parsed)
 
 
@@ -190,7 +190,7 @@ class TestGrepNote:
         assert "regex on the rg engine" in grep_note and "any-char" not in grep_note
         rg_evt, rg_occ = event_occurrence("rg foo.bar")
         rg_parsed = rg_guards.rg_parse(rg_occ, cwd=rg_evt.cwd)
-        assert rg_parsed is not None
+        assert isinstance(rg_parsed, search_common.GrepCall)
         assert "any-char" in search_common.note_text(rg_occ.command.raw, rg_parsed)
 
     def test_no_dot_carries_no_dot_disclosure(self) -> None:

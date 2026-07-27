@@ -21,9 +21,11 @@ from .common import LITERAL_SAFE, ccx_supports
 from .search_common import (
     CONTEXT_SHORT,
     DEP_STEER,
+    Decline,
     GrepCall,
     any_git_ignored,
     build_ccx_grep,
+    decline_clause,
     forfeits_count,
     forfeits_operand,
     grep_glob,
@@ -56,7 +58,9 @@ RG_OP_VALUE_SHORT = frozenset("gtTABCmrEjMd")
 # rg's boolean short flags — they take no value, so `rg_operands` may skip one (or an all-boolean
 # bundle) without consuming the next token. A short outside this set ∪ RG_OP_VALUE_SHORT is unknown
 # and makes `rg_operands` return None (`-d 1` is max-depth: its `1` must not leak in as a phantom pattern).
-RG_BOOLEAN_SHORT = frozenset("iwnNsSHIlLcovxFupahqz0")
+# Membership is arity, never rewritability: `-P`/`-U`/`-v` lex here yet `rg_parse` still declines them.
+# `-V`/`--version` stay OUT: an operand-less rg is tree-shaped, so lexing them would block a version probe.
+RG_BOOLEAN_SHORT = frozenset("iwnNsSHIlLcovxFupahqz0bPU")
 
 RG_BOOLEAN_LONG = frozenset(
     {
@@ -83,6 +87,9 @@ RG_BOOLEAN_LONG = frozenset(
         "text",
         "quiet",
         "null",
+        "pcre2",
+        "multiline",
+        "byte-offset",
         "heading",
         "no-heading",
         "line-buffered",
@@ -187,19 +194,25 @@ def fold_expand(current: str, cand: str) -> str | None:
         return None
 
 
-def rg_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | None:
-    """Parse one direct, unpiped ``rg`` occurrence into its ccx-rewritable shape.
+def rg_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | Decline:
+    """Parse one direct, unpiped ``rg`` occurrence into its ccx-rewritable shape, or a :class:`Decline`
+    naming what refused.
 
     Mirrors :func:`~hooks.grep_guards.grep_parse` over ripgrep's grammar with its own DROP table
     (:data:`RG_DROP_SHORT`). ``-A/-B/-C``/their long forms map to the same native ccx flags when
     available, with ``--expand`` retained for old binaries; ``-g/--glob`` fills the include slot,
     gated to a slash-free basename glob (rg globs are gitignore-style — only a basename composes
     faithfully). Any other long flag, a repeated ``-e``, a value-taking short, a regex pattern, or an
-    out-of-repo path (via :func:`grep_glob`) declines the rewrite.
+    out-of-repo path (via :func:`grep_glob`) declines the rewrite, carrying the offending flag or
+    pattern verbatim for the block message.
     """
     cmd = occ.command
-    if occ.prev_op == "|" or cmd.executable != "rg" or cmd.env:
-        return None
+    if occ.prev_op == "|":
+        return Decline("a piped rg post-processes its input instead of searching a tree")
+    if cmd.env:
+        return Decline("an env prefix (`VAR=… rg`) hides the flags a rewrite would have to map")
+    if cmd.executable != "rg":
+        return Decline(f"the `{cmd.executable}` wrapper prefix keeps the rewrite off")
     args = cmd.args
     pattern: str | None = None
     e_count = 0
@@ -221,7 +234,7 @@ def rg_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | None:
         if a.startswith("--"):
             name, sep, val = a[2:].partition("=")
             if sep and name in RG_NO_VALUE_LONG:
-                return None  # rg rejects `--files-with-matches=oops` — never rewrite past its error
+                return Decline(f"rg itself rejects a value on `--{name}`")
             if name == "ignore-case":
                 ignore_case = True
             elif name == "word-regexp":
@@ -229,28 +242,28 @@ def rg_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | None:
             elif name in ("after-context", "before-context", "context"):
                 if sep:
                     if not unquote(val).isdigit():
-                        return None
+                        return Decline(f"`--{name}` needs a numeric count")
                     cand = unquote(val)
                 elif i + 1 < n and args[i + 1].isdigit():
                     cand = args[i + 1]
                     i += 1
                 else:
-                    return None
+                    return Decline(f"`--{name}` needs a numeric count")
                 context_args.append((f"--{name}", cand))
                 if (expand := fold_expand(expand, cand)) is None:
-                    return None
+                    return Decline(f"the `--{name} {cand}` count is too large to fold into one ccx window")
             elif name == "glob":
                 if include is not None:
-                    return None
+                    return Decline("a repeated `--glob`")
                 if sep:
                     include = unquote(val)
                 elif i + 1 < n:
                     include = args[i + 1]
                     i += 1
                 else:
-                    return None
+                    return Decline("`--glob` with no glob")
                 if "/" in include:
-                    return None
+                    return Decline(f"the multi-segment glob `--glob {include}` — only a basename glob maps")
             elif name == "regexp":
                 e_count += 1
                 if sep:
@@ -259,7 +272,7 @@ def rg_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | None:
                     pattern = args[i + 1]
                     i += 1
                 else:
-                    return None
+                    return Decline("`--regexp` with no pattern")
             elif name == "fixed-strings":
                 dropped_fixed = True
             elif name == "files-with-matches":
@@ -272,7 +285,7 @@ def rg_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | None:
                 if not sep and i + 1 < n:
                     i += 1
             else:
-                return None
+                return Decline(f"the `--{name}` flag has no ccx equivalent")
             i += 1
             continue
         body = a[1:]
@@ -280,16 +293,16 @@ def rg_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | None:
         if head in CONTEXT_SHORT:
             if len(body) > 1:
                 if not unquote(body[1:]).isdigit():
-                    return None
+                    return Decline(f"`-{head}` needs a numeric count")
                 cand = unquote(body[1:])
             elif i + 1 < n and args[i + 1].isdigit():
                 cand = args[i + 1]
                 i += 1
             else:
-                return None
+                return Decline(f"`-{head}` needs a numeric count")
             context_args.append((f"-{head}", cand))
             if (expand := fold_expand(expand, cand)) is None:
-                return None
+                return Decline(f"the `-{head} {cand}` count is too large to fold into one ccx window")
         elif head == "e":
             e_count += 1
             if len(body) > 1:
@@ -298,19 +311,19 @@ def rg_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | None:
                 pattern = args[i + 1]
                 i += 1
             else:
-                return None
+                return Decline("`-e` with no pattern")
         elif head == "g":
             if include is not None:
-                return None
+                return Decline("a repeated `-g`")
             if len(body) > 1:
                 include = unquote(body[1:])
             elif i + 1 < n:
                 include = args[i + 1]
                 i += 1
             else:
-                return None
+                return Decline("`-g` with no glob")
             if "/" in include:
-                return None
+                return Decline(f"the multi-segment glob `-g {include}` — only a basename glob maps")
         elif len(body) == 1:
             if head == "i":
                 ignore_case = True
@@ -320,30 +333,35 @@ def rg_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | None:
                 dropped_l = dropped_l or head == "l"
                 dropped_fixed = dropped_fixed or head == "F"
             else:
-                return None  # -o -v -c -u -E -r -t -m -j -M …
+                return Decline(f"`-{head}` has no ccx equivalent")
         elif all(ch in RG_DROP_SHORT or ch in ("i", "w") for ch in body):
             dropped_l = dropped_l or "l" in body
             dropped_fixed = dropped_fixed or "F" in body
             ignore_case = ignore_case or "i" in body
             word = word or "w" in body
         else:
-            return None  # a bundle carrying a non-DROP, non-MAP char (value short)
+            unmappable = "".join(c for c in dict.fromkeys(body) if c not in RG_DROP_SHORT and c not in ("i", "w"))
+            return Decline(f"the `{a}` bundle carries `-{unmappable}`, which has no ccx equivalent")
         i += 1
     if e_count > 1:
-        return None
+        return Decline("a multi-pattern search (repeated `-e`/`--regexp`)")
     if pattern is None:
         if not positionals:
-            return None
+            return Decline("no pattern operand")
         pattern, paths = positionals[0], positionals[1:]
     else:
         paths = positionals
-    # rg's default engine reads `+` as a quantifier, so a literal ccx rewrite would under-match;
+    if pattern.startswith("-"):
+        return Decline(f"the flag-shaped pattern `{pattern}`")
     # grep's BRE `+` is already literal, so this rejection is rg-only (LITERAL_SAFE admits `+`).
-    if pattern.startswith("-") or "+" in pattern or not LITERAL_SAFE.match(pattern):
-        return None
+    if "+" in pattern:
+        return Decline(f"the pattern `{pattern}` — rg reads `+` as a quantifier, so a literal ccx rewrite would under-match")
+    if not LITERAL_SAFE.match(pattern):
+        return Decline(f"the pattern `{pattern}` isn't literal-safe for ccx")
     glob = grep_glob(paths, include, cwd=cwd)
     if glob is None:
-        return None
+        target = " ".join(paths) if paths else f"--glob {include}"
+        return Decline(f"the target `{target}` has no single in-repo glob")
     native_context = bool(context_args) and ccx_supports("code", "grep", flag="--after-context")
     return GrepCall(
         pattern,
@@ -376,7 +394,7 @@ def rg_tree_shaped(cmd: Command, *, cwd: Path | None) -> bool:
 def rg_to(occ: Occurrence, *, cwd: Path | None = None) -> str | None:
     """The ``ccx code grep`` rewrite for an rg occurrence, or ``None`` when the emitter cannot map it."""
     parsed = rg_parse(occ, cwd=cwd)
-    return build_ccx_grep(parsed) if parsed is not None else None
+    return build_ccx_grep(parsed) if isinstance(parsed, GrepCall) else None
 
 
 class RgFlood(CustomCommandLineCondition):
@@ -391,7 +409,7 @@ class RgFlood(CustomCommandLineCondition):
         return any(occ.command.unwrapped.executable == "rg" and occ.prev_op != "|" for occ in cl.occurrences)
 
 
-def rg_block(evt: PreToolUseEvent, cl: CommandLine) -> str:
+def rg_block(evt: PreToolUseEvent, cl: CommandLine, *, reason: str = "") -> str:
     return search_block(
         evt,
         "rg",
@@ -402,8 +420,8 @@ def rg_block(evt: PreToolUseEvent, cl: CommandLine) -> str:
         "Several terms? One call covers them: `ccx code grep 'a|b|c' --regex`. "
         "Dependency source (`.venv`, vendored pkgs): spawn the `cc-context:dep-reader` agent — cited "
         "conclusions, never the source; inline `ccx repo locate <pkg>` (CLI-only) then `ccx code grep`. "
-        "Simple tree rg auto-rewrites to `ccx code grep`; this one didn't map — a regex pattern, an "
-        "unmappable flag (`-t`/`-r`/`--no-ignore`/…), an env prefix, or an out-of-repo target. "
+        "Simple tree rg auto-rewrites to `ccx code grep`"
+        f"{decline_clause(reason)}"
         "Escape hatch: pipe input into it (`… | rg`), or name explicit files.",
         cl=cl,
     )
@@ -422,7 +440,8 @@ def rg_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | R
     runs verbatim. An rg that is not tree-shaped runs raw. A tree-shaped rg whose raw text carries a
     ``$(…)``/backtick substitution runs raw. A path operand carrying a shell expansion or glob metachar,
     or a context count past Python's int-string limit, forfeits the rewrite and runs raw. Otherwise an
-    unmappable shape blocks with the flood steer, while a mappable shape the local ``ccx`` binary is too
+    unmappable shape blocks with the flood steer naming the :class:`Decline`'s reason, while a mappable
+    shape the local ``ccx`` binary is too
     old (or absent) to emit runs raw — infra unavailability never blocks. A block rides a
     :class:`HookResult` that aborts the walk, discarding any sibling rewrite.
     """
@@ -444,14 +463,14 @@ def rg_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | R
     if (ops and any(forfeits_operand(p) for p in ops)) or forfeits_count(inner.args):
         return None
     parsed = rg_parse(occ, cwd=ctx.cwd)
-    if parsed is None:
-        return evt.block(rg_block(evt, evt.cmd.line))
+    if isinstance(parsed, Decline):
+        return evt.block(rg_block(evt, evt.cmd.line, reason=parsed.reason))
     text = build_ccx_grep(parsed)
     if text is None:
         return None
     if ctx.spliceable:
         return Rewritten(text, note=note_text(occ.command.raw, parsed))
-    return evt.block(rg_block(evt, evt.cmd.line))
+    return evt.block(rg_block(evt, evt.cmd.line, reason="this tool call takes no in-place rewrite"))
 
 
 rewrite_command_occurrences(
@@ -474,8 +493,10 @@ rewrite_command_occurrences(
         Input(command="rg --color=always plugin"): Rewrite(pattern="code grep plugin"),  # =glued --color still no-ops
         Input(command="printf 'left  side'; rg foo"): Rewrite(pattern="printf 'left  side'; "),
         # Block — tree-shaped (no operand, or `.`) but the emitter can't map the flag/pattern:
-        Input(command="rg 'foo.*' ."): Block(),  # regex-metachar pattern (LITERAL_SAFE)
-        Input(command="rg -t py foo"): Block(),  # -t takes a value (false friend of grep)
+        Input(command="rg 'foo.*' ."): Block(pattern="the pattern `foo.*` isn't literal-safe"),  # named, not guessed
+        Input(command="rg -t py foo"): Block(pattern="didn't map: `-t` has no ccx equivalent"),  # -t takes a value
+        Input(command="rg -P 'x(?=y)' ."): Block(pattern="`-P` has no ccx equivalent"),  # PCRE: boolean for arity, never mapped
+        Input(command="rg -U foo ."): Block(pattern="`-U` has no ccx equivalent"),  # multiline: same lane as -P
         Input(command="rg -uu foo"): Block(pattern="ccx repo locate"),  # unrestricted → tree, no map → dep steer in flood msg
         Input(command="rg -r repl foo"): Block(),  # -r takes a value — misparse guard
         Input(command="rg -e a -e b ."): Block(),  # multiple -e
@@ -514,6 +535,8 @@ rewrite_command_occurrences(
         Input(command="rg --line-number foo internal/ | head"): Allow(),
         Input(command="rg --smart-case foo . | head -20"): Allow(),
         Input(command="rg foo logs/app.log | head -5"): Allow(),  # data-file head of a pipe
+        Input(command="rg -n foo . | rg -v node_modules"): Allow(),  # `-v` is arity-known: no phantom dep operand
+        Input(command="rg -n foo . | rg -P node_modules"): Allow(),  # same for `-P`, now arity-known too
         Input(command="cat f | rg foo"): Allow(),  # piped sink (rg consumes stdin)
         Input(command="journalctl | rg err | head -5"): Allow(),
         # `rg -c foo` (no operand) is still tree-wide → block; the bounded sibling splices in a compound.

@@ -161,6 +161,16 @@ class GrepCall(NamedTuple):
     paths: tuple[str, ...] = ()  # explicit multi-file operands carried as `ccx code grep` positionals
 
 
+class Decline(NamedTuple):
+    """A parser's refusal to rewrite one occurrence, carrying the specific flag or pattern that refused.
+
+    The alternative to ``None``: a block message that names the real blocker instead of listing the
+    shapes it might have been, so the reader never has to guess which one fired.
+    """
+
+    reason: str
+
+
 def is_transcript_path(p: str) -> bool:
     """Whether a grep/rg path operand targets a Claude session transcript — under ``.claude/projects/``.
 
@@ -280,6 +290,12 @@ def resolved_is_dir(p: str, cwd: Path | None) -> bool:
     if p.rstrip("/") in (".", ".."):
         return True
     return (path := resolve_operand(p, cwd)) is not None and path.is_dir()
+
+
+def decline_clause(reason: str) -> str:
+    """The cause clause a block message appends: one :class:`Decline`'s reason, or a bare period when the
+    block came from a policy steer rather than a parse and no reason exists to name."""
+    return f"; this one didn't map: {reason}. " if reason else ". "
 
 
 def search_block(
