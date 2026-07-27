@@ -1,0 +1,6 @@
+[env]
+# TODO: drop once golangci-lint's cached issues carry checkout-relative
+# positions — v2.12.2 keys the issue cache checkout-independently but stores
+# absolute paths, so a sibling checkout replays them and resolves //nolint
+# against the wrong tree. The prek commit hook inherits this.
+GOLANGCI_LINT_CACHE = "{{config_root}}/.task/golangci-lint"
