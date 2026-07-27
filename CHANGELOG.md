@@ -4,6 +4,92 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.35.0] - 2026-07-27
+
+### Fixed
+- **The Graphite lane is gated before any mutation.** A live
+  `.git/.graphite_repo_config` routed `ccx vcs ship` to the gt lane on its own —
+  a file that proves only that `gt init` once ran and carries no repo identity
+  at all (trunk names and fetch timestamps, identical in every repo that has
+  one), so nothing local can say whether Graphite can actually submit. On repos
+  that were not synced, ship committed onto a gt branch and discovered the
+  failure at `gt submit` (`ERROR: Graphite could not verify you have access to
+  <owner>/<repo>`), leaving a manual rescue: fast-forward trunk to the commit,
+  delete the gt branch, push by hand. Three gates now run before anything
+  mutates, each demoting to the jj/git lane with the reason in a leading
+  `lane <kind> (<reason>)` report segment: `ccx.nogt` set in git config (a
+  durable per-repo opt-out), GitHub reporting the repository is someone else's,
+  and a `gt auth --no-interactive` probe under a 5s timeout. A timeout or an
+  unreachable Graphite server *keeps* the gt lane rather than demoting — a
+  network blip must never push a branch outside a real stack. Verdicts cache per
+  repo: 24h positive, 1h negative, unknown never. The same resolution now backs
+  `ccx vcs restack` (a declined lane falls back to the jj/git rebase) and
+  `ccx vcs reviews --stack` (which reports why the lane was declined instead of
+  failing on a missing stack).
+- **Linked worktrees detect their Graphite config.** `GraphiteRepo` stat'd
+  `<root>/.git/.graphite_repo_config`, but `.git` is a *file* in a linked
+  worktree, so detection always missed and ship silently took the jj/git lane in
+  every one. The config is now resolved through the git common dir — the main
+  worktree's `.git`, where it actually lives.
+- **A refusal in the plain-git lane leaves the working copy untouched.** The
+  lane cut the new branch with `git switch -c` before committing, so a failing
+  prek hook or a failing `git commit` returned its error with the user standing
+  on a branch that had not existed a moment earlier, and no rollback anywhere.
+  The switch-and-commit region now carries a rollback that disarms structurally
+  on success; a failure switches back and deletes the branch ship cut, and a
+  rollback that itself fails joins its error to the original rather than
+  replacing it.
+- **The jj lane no longer refuses on a non-trunk bookmark.** `nearest bookmark
+  %q is not trunk — pass --bookmark %q` fired on the first ship in every new
+  workspace, and the answer was invariably the bookmark the caller was already
+  standing on. Ship now appends to it and names it in the report.
+- **A derived branch name no longer carries the session trailer.** On trunk the
+  gt lane passed the commit message to `gt create`, which derives a branch name
+  from it — including the `Claude-Session-Id` trailer ship appends. Ship now
+  derives the name itself from the subject alone, before the trailer, and always
+  passes it explicitly.
+
+### Added
+- **Branch selection resolves before the commit forms**, one decision every lane
+  consumes, reported as a `branch <name>` or `created <name>` segment. On trunk
+  ship appends in your own repositories and starts a branch elsewhere, so a
+  commit is never formed where a `protect-<trunk>` hook will reject it and leave
+  it dangling; a detached HEAD or an ambiguous trunk refuses rather than
+  guesses. New flags: `--branch <name>` (commit onto that branch, creating it
+  here when it does not exist), `--new-branch[=<name>]` (always start one,
+  deriving the name from the commit subject when bare — an explicit name is
+  spelled `--new-branch=name`, since cobra parses a bare `--new-branch name` as
+  a path operand), `--append` (refuse rather than branch on trunk),
+  `--allow-trunk` (let `--branch` advance a trunk you do not own), and
+  `--parent <branch>` (graphite lane only). `--create` and `--bookmark` remain
+  as aliases — of `--new-branch` (deprecated) and `--branch` (jj-only).
+- **`ccx vcs ship` owns pull requests in every lane** through repeatable,
+  branch-scoped `--pr-title` and `--pr-body-file` (`<branch>=<value>`, a bare
+  value applying to the tip; `-` reads stdin once), plus `--no-pr`. The gt lane
+  sets the title and body `gt submit --no-edit` leaves empty — the only way a
+  downstack PR gets a body at all; the jj/git lane creates the PR it previously
+  never opened, with explicit `--repo` and `--base` so a fork does not resolve
+  to its parent, and never `--fill`, which would publish the commit's
+  `Claude-Session-Id` trailer into the description. A field is written only when
+  the invocation restates it, so a re-ship leaves a hand-edited description
+  alone, and a ship that names no PR flag makes no `gh pr` call — an unflagged
+  ship behaves exactly as before. `--draft`/`--publish` are no longer gt-only
+  and convert an existing PR in either direction.
+- **`ccx vcs info`** (alias `lane`) reports the lane a mutating command would
+  take here and why — vcs kind, root, branch, trunk, dirty state, Graphite
+  config/CLI/reachability, the GitHub repository record, and on the gt lane the
+  downstack with each branch's PR and whether that PR has a body. `--json`,
+  `--refresh`, `--no-gt`. It fails soft when GitHub is unreachable and mutates
+  nothing.
+- **`ccx vcs guidelines`** (alias `contributing`) fetches and caches a
+  repository's contribution documents: every PR-template variant,
+  `CONTRIBUTING.md`, the code of conduct, and issue config. It deliberately does
+  not summarize — a consumer reproducing a PR template needs it verbatim,
+  checkboxes and `<!-- -->` guidance included. The network payload caches for a
+  day; local files re-read every run, since a branch switch changes
+  `CONTRIBUTING.md` on disk. `--json`, `--refresh`, `--full` (issue-template
+  bodies), `--budget` (per document).
+
 ## [0.34.0] - 2026-07-26
 
 ### Fixed
