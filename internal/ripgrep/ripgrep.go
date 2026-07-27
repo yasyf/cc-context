@@ -482,13 +482,21 @@ func filterGlobPaths(paths []string, glob string) ([]string, error) {
 
 // fileMatchesGlob reports whether file operand p matches glob under rg's -g
 // convention: a slash-less glob matches the basename at any depth, a slashed glob
-// the whole slash-normalized path.
+// the whole slash-normalized path, and a leading "!" inverts the decision.
+// doublestar has no top-level negation, so the "!" is peeled off rather than
+// matched as the literal character no real filename carries.
 func fileMatchesGlob(glob, p string) (bool, error) {
+	pattern, negated := strings.CutPrefix(glob, "!")
 	p = filepath.ToSlash(p)
-	if !strings.Contains(glob, "/") {
-		return doublestar.Match(glob, path.Base(p))
+	target := p
+	if !strings.Contains(pattern, "/") {
+		target = path.Base(p)
 	}
-	return doublestar.Match(glob, p)
+	ok, err := doublestar.Match(pattern, target)
+	if err != nil {
+		return false, err
+	}
+	return ok != negated, nil
 }
 
 // AnchorGrepArgs peels an existing directory prefix off a.Glob into a.Scope so a
@@ -680,7 +688,9 @@ func grepArgv(a backend.Args) ([]string, error) {
 // ("*.go") → include; "**/*.ext" (the remainder AnchorGrepArgs leaves after
 // peeling "dir/**/*.ext", matching any depth exactly as --include does) →
 // include; "dir/**" → root dir; "dir/**/*.ext" → root dir + include. Braces and
-// mid-path wildcards have no grep equivalent and fail fast. A dot-leading
+// mid-path wildcards have no grep equivalent and fail fast, as does an exclusion
+// glob ("!…") — --exclude is order-dependent against --include and differs across
+// the greps resolveEngine resolves. A dot-leading
 // basename fails fast too — grepArgv's unconditional hidden-path excludes prune
 // what the glob selects, and an --include like ".*.go" fnmatches across '/' onto
 // the "./" path prefix, matching plain "normal.go" — as does a bare "**/" (an
@@ -690,7 +700,7 @@ func translateGlob(glob string) (include, root string, err error) {
 	if glob == "" {
 		return "", "", nil
 	}
-	if strings.ContainsAny(glob, "{}") {
+	if strings.ContainsAny(glob, "{}") || strings.HasPrefix(glob, "!") {
 		return "", "", untranslatable(glob)
 	}
 	if !strings.Contains(glob, "/") {
@@ -721,7 +731,7 @@ func translateGlob(glob string) (include, root string, err error) {
 }
 
 func untranslatable(glob string) error {
-	return fmt.Errorf("grep fallback cannot translate glob %q (braces, mid-path wildcards, and dot-leading basenames are unsupported); install ripgrep for full glob support: brew install ripgrep", glob)
+	return fmt.Errorf("grep fallback cannot translate glob %q (braces, mid-path wildcards, dot-leading basenames, and ! exclusions are unsupported); install ripgrep for full glob support: brew install ripgrep", glob)
 }
 
 // grepLine is one output line: a matched or context line at num carrying its

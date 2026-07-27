@@ -47,6 +47,8 @@ func TestRipgrepArgv(t *testing.T) {
 		{"scope + paths both ride after --", backend.Args{Query: "foo", Scope: "internal", Paths: []string{"a.go"}}, []string{"--json", "--fixed-strings", "--no-ignore-parent", "-e", "foo", "--", "internal", "a.go"}},
 		{"regex + paths", backend.Args{Query: "^func ", Regex: true, Paths: []string{"a.go"}}, []string{"--json", "-e", "^func ", "--", "a.go"}},
 		{"paths + glob keep --glob and operands, skip anchoring", backend.Args{Query: "foo", Paths: []string{"a.go", "sub"}, Glob: "*.go"}, []string{"--json", "--fixed-strings", "--glob", "*.go", "-e", "foo", "--", "a.go", "sub"}},
+		{"negated glob rides -g verbatim for rg's native exclusion", backend.Args{Query: "foo", Glob: "!*.min.js"}, []string{"--json", "--fixed-strings", "--glob", "!*.min.js", "-e", "foo"}},
+		{"negated glob is never anchored, even rooted at a real dir", backend.Args{Query: "foo", Glob: "!" + sub + "/*.go"}, []string{"--json", "--fixed-strings", "--glob", "!" + sub + "/*.go", "-e", "foo"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -108,6 +110,9 @@ func TestGrepArgv(t *testing.T) {
 		{"scope + dir glob fails", backend.Args{Query: "foo", Glob: "src/**", Scope: "internal"}, nil, true},
 		{"brace glob fails", backend.Args{Query: "foo", Glob: "{a,b}/**"}, nil, true},
 		{"mid-path wildcard fails", backend.Args{Query: "foo", Glob: "src/*/x.go"}, nil, true},
+		{"negated basename glob fails", backend.Args{Query: "foo", Glob: "!*.min.js"}, nil, true},
+		{"negated dir-rooted glob fails", backend.Args{Query: "foo", Glob: "!vendor/**"}, nil, true},
+		{"negated double-star glob fails", backend.Args{Query: "foo", Glob: "!**/*.go"}, nil, true},
 		{"double-star-slash-star maps to include", backend.Args{Query: "foo", Glob: "**/*.go"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "."}, false},
 		{"anchored existing-dir glob peels to include + root", backend.Args{Query: "foo", Glob: sub + "/*.go"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", sub}, false},
 		{"anchored dir-literal glob roots the search", backend.Args{Query: "foo", Glob: sub}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", sub}, false},
@@ -165,6 +170,11 @@ func TestFilterGlobPaths(t *testing.T) {
 		{"mixed: keep matching file, drop other, pass dir", []string{"a.go", "b.txt", "sub"}, "*.go", []string{"a.go", "sub"}, false},
 		{"slash-less glob matches basename", []string{"a.go"}, "*.go", []string{"a.go"}, false},
 		{"slashed glob matches whole path", []string{"a.go"}, "**/*.go", []string{"a.go"}, false},
+		{"negated glob drops the file it excludes", []string{"a.go", "b.txt"}, "!*.go", []string{"b.txt"}, false},
+		{"negated glob keeps the file it does not exclude", []string{"b.txt"}, "!*.go", []string{"b.txt"}, false},
+		{"negated mixed: drop excluded file, keep other, pass dir", []string{"a.go", "b.txt", "sub"}, "!*.go", []string{"b.txt", "sub"}, false},
+		{"negated slashed glob inverts the whole-path match", []string{"a.go"}, "!**/*.go", nil, true},
+		{"negation excluding every file operand → error", []string{"a.go"}, "!*.go", nil, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -207,6 +217,9 @@ func TestBuildArgvGlobPaths(t *testing.T) {
 		{"rg empty after filter errors", engineRipgrep, backend.Args{Query: "foo", Paths: []string{"b.txt"}, Glob: "*.go"}, nil, true},
 		{"fallback empty after filter errors", engineGrep, backend.Args{Query: "foo", Paths: []string{"b.txt"}, Glob: "*.go"}, nil, true},
 		{"fallback dir-rooted glob with paths fails", engineGrep, backend.Args{Query: "foo", Paths: []string{"sub"}, Glob: "src/**"}, nil, true},
+		{"rg negated mixed operands drop the excluded file, keep the dir", engineRipgrep, backend.Args{Query: "foo", Paths: []string{"a.go", "b.txt", "sub"}, Glob: "!*.go"}, []string{"--json", "--fixed-strings", "--glob", "!*.go", "-e", "foo", "--", "b.txt", "sub"}, false},
+		{"rg negated glob excluding every file operand errors", engineRipgrep, backend.Args{Query: "foo", Paths: []string{"a.go"}, Glob: "!*.go"}, nil, true},
+		{"fallback negated glob refused even with a surviving operand", engineGrep, backend.Args{Query: "foo", Paths: []string{"a.go", "b.txt", "sub"}, Glob: "!*.go"}, nil, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -373,6 +386,10 @@ func TestTranslateGlob(t *testing.T) {
 		{"bare hidden basename", ".*.go", "", "", true},
 		{"hidden under dir recurse", "src/**/.env", "", "", true},
 		{"empty basename under dir recurse", "src/**/", "", "", true},
+		{"negated basename", "!*.min.js", "", "", true},
+		{"negated dir recurse", "!vendor/**", "", "", true},
+		{"negated leading double-star", "!**/*.go", "", "", true},
+		{"negated dir plus ext", "!src/**/*.go", "", "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -381,6 +398,9 @@ func TestTranslateGlob(t *testing.T) {
 				t.Fatalf("translateGlob(%q) err = %v, wantErr %v", tt.glob, err, tt.wantErr)
 			}
 			if tt.wantErr {
+				if !strings.Contains(err.Error(), "install ripgrep for full glob support") {
+					t.Errorf("translateGlob(%q) err = %v, want the install-ripgrep refusal", tt.glob, err)
+				}
 				return
 			}
 			if include != tt.wantInclude || root != tt.wantRoot {
