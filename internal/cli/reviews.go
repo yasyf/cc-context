@@ -16,7 +16,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/internal/render"
-	"github.com/yasyf/cc-context/internal/vcs"
 )
 
 const (
@@ -237,8 +236,14 @@ func viewReviewTarget(ctx context.Context, operand string) (ghPRView, error) {
 // graphite downstack, skipping (with a note to w) a branch with no open PR
 // rather than failing the whole command.
 func resolveStackReviewTargets(ctx context.Context, w io.Writer, since time.Time) ([]*prTarget, error) {
-	kind, root := vcs.DetectRoot(workingDir())
-	if (kind != vcs.Git && kind != vcs.JJ) || !vcs.GraphiteRepo(root) {
+	l, err := resolveLane(ctx, "reviews", workingDir(), false)
+	if err != nil {
+		return nil, err
+	}
+	if !l.gt {
+		if l.note != "" {
+			return nil, fmt.Errorf("reviews: --stack declined the graphite lane: %s", l.note)
+		}
 		return nil, errors.New("reviews: --stack requires a graphite repo")
 	}
 	branches, err := stackBranches(ctx)

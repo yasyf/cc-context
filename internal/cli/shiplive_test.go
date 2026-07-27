@@ -544,6 +544,38 @@ func TestShipGitHunkScopedLive(t *testing.T) {
 	}
 }
 
+// TestShipGitNewBranchRollbackLive proves the rollback against real git: a ship
+// whose commit refuses after the branch was cut leaves neither the checkout nor
+// the branch behind. An empty working copy is the refusal git itself raises.
+func TestShipGitNewBranchRollbackLive(t *testing.T) {
+	requireLiveVCS(t, "git")
+	dir := t.TempDir()
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv(envClaudeSessionKey, "")
+	mustRun(t, dir, "git", "init", "-q")
+	mustRun(t, dir, "git", "config", "user.email", "t@t.t")
+	mustRun(t, dir, "git", "config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("a\n"), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("write f.txt: %v", err)
+	}
+	mustRun(t, dir, "git", "add", "f.txt")
+	mustRun(t, dir, "git", "commit", "-qm", "init")
+	t.Chdir(dir)
+	before := strings.TrimSpace(mustRun(t, dir, "git", "branch", "--show-current"))
+
+	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x"); err == nil {
+		t.Fatal("expected the commit to refuse an empty working copy, got nil")
+	}
+	if got := strings.TrimSpace(mustRun(t, dir, "git", "branch", "--show-current")); got != before {
+		t.Errorf("checked out %q after the refusal, want %q", got, before)
+	}
+	if out, err := runGit(dir, "rev-parse", "--verify", "refs/heads/feat-x"); err == nil {
+		t.Errorf("feat-x survived the refusal: %s", out)
+	}
+}
+
 // initSubdirGitRepo stands up a config-isolated git repo with the tracked file at
 // sub/f.txt and chdirs into sub/, so ship runs from a subdirectory against the
 // repo-root object frame. It returns the repo root.
@@ -761,7 +793,31 @@ func setupLiveGTRepo(t *testing.T, base string) string {
 	mustRun(t, dir, "git", "commit", "-qm", "init")
 	mustRun(t, dir, "gt", "init", "--trunk", "main", "--no-interactive")
 	t.Chdir(dir)
+	// The lane gate's reachability probe asks Graphite whether the repo is
+	// submittable, and requireLiveGT deliberately clears GRAPHITE_AUTH_TOKEN;
+	// seed the verdict so the lane survives to the part under test.
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	seedLaneRecords(t, dir, laneSeed{})
 	return dir
+}
+
+// TestLiveGTProbeNoToken pins gtProbeNoToken to the real gt binary: every other
+// probe test feeds a fake the wording this package already believes, so only a
+// live run catches a reword. It asserts the recognized note rather than a bare
+// negative, since an unrecognized failure demotes too. Pins the no-token path
+// only — gtProbeReady needs a genuinely authed, synced repo.
+func TestLiveGTProbeNoToken(t *testing.T) {
+	requireLiveGT(t)
+	dir := setupLiveGTRepo(t, "base\n")
+
+	reachable, note, known := gtReachable(context.Background(), dir)
+	if reachable || !known {
+		t.Fatalf("gtReachable() = (%v, %q, %v), want a known negative", reachable, note, known)
+	}
+	want := "graphite has no auth token — run gt auth --token <token>"
+	if note != want {
+		t.Errorf("note = %q, want %q — gt likely reworded %q, which now only degrades the note", note, want, gtProbeNoToken)
+	}
 }
 
 // TestShipLiveGT exercises the gt lane against the real gt and git binaries: a

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -80,14 +81,28 @@ type shipOpts struct {
 	amend     bool
 	budget    int
 	paths     []string
-	bookmark  string
 	skipHunks []string
 	onlyHunks []string
-	create    string
-	draft     bool
-	publish   bool
-	noGT      bool
-	reviews   bool
+
+	// branch, newBranch, appendOnly, parent, and allowTrunk are the caller's
+	// stated intent for resolveBranchPlan; --bookmark and --create are aliases
+	// bound to the same fields as --branch and --new-branch.
+	branch     string
+	newBranch  string
+	appendOnly bool
+	parent     string
+	allowTrunk bool
+
+	draft   bool
+	publish bool
+	noGT    bool
+	reviews bool
+
+	// prTitle and prBodyFile are repeatable and branch-scoped, because one gt
+	// submit opens a pull request for every branch in the downstack.
+	prTitle    []string
+	prBodyFile []string
+	noPR       bool
 }
 
 type ciRun struct {
@@ -125,7 +140,11 @@ func newShipCmd() *cobra.Command {
 
 Ship refuses an empty working copy (the usual cause: a prior ship already landed the commit in @-) and resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>, autostashing uncommitted work); a rebase that would conflict is rolled back and reported instead of pushed. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
 
-A live Graphite config (.git/.graphite_repo_config) routes ship to the gt lane instead, even in colocated jj repos; --no-gt falls back to the jj/git detection above. The gt lane commits through gt: on trunk, -m auto-creates a stacked branch named from the message; on a stacked branch, -m appends a commit and --amend amends the branch tip; an untracked branch is adopted first with gt track -f (parented to its nearest tracked ancestor). --create starts a new stacked branch on top of the current one — bare --create derives the name from the message, and an explicit name must be spelled --create=name (cobra parses "--create name" as a path operand to commit). Instead of pushing, the lane submits the downstack with gt submit, published by default; --draft submits drafts, --publish makes the default explicit. Ship never fetches, rebases, or retries in the gt lane — gt owns restacking — so it refuses up front on needs_restack anywhere on the downstack (run gt restack, then re-run ship), on a branch gt track cannot adopt, and on --amend on trunk; a failed submit reports gt's own recovery step (gt restack, gt sync, or gt auth) instead of retrying. The report names the submitted branch and its PR: submitted <branch> → PR #<n> <url>.
+Where the commit goes is one decision, resolved before any mutation and reported as a branch <name> or created <name> segment. On a non-trunk branch or bookmark, ship appends to it. On trunk it appends in your own repositories — direct-to-main is deliberate there — and starts a branch named from the commit subject when GitHub says the repository is someone else's, since an org trunk rejects the commit through its protect-<trunk> hook and leaves it dangling; the graphite lane always starts a branch on trunk, because gt has no verb that commits onto it. A detached HEAD is refused rather than guessed at, and so are several trunk candidates unless --branch names one of them. --branch <name> commits onto that branch, creating it here when it does not exist and refusing when it exists somewhere else, since ship does not check branches out; --new-branch[=<name>] always starts one, deriving the name from the commit subject when bare (an explicit name must be spelled --new-branch=name, because cobra parses "--new-branch name" as a path operand to commit); --append refuses on trunk; --allow-trunk lets --branch advance a trunk you do not own. --bookmark is a jj-only alias of --branch, --create a deprecated alias of --new-branch. A new branch is cut with gt create (graphite), git switch -c (git), or jj bookmark create -r @- (jj).
+
+A live Graphite config (.git/.graphite_repo_config, or the git common dir's copy in a linked worktree) routes ship to the gt lane instead, even in colocated jj repos; --no-gt falls back to the jj/git detection above. Ship declines that lane, reporting a leading lane <kind> (<reason>) segment, when the repo sets ccx.nogt or when GitHub says the repo is someone else's — a public repo you neither administer nor share an owner or organization with. A lookup that cannot be made at all (gh off PATH, not signed in, no GitHub remote) keeps the gt lane. Ship also asks Graphite itself, before any commit forms, whether this repo is submittable — a live config only proves gt init once ran — and declines the lane when Graphite answers no (no auth token, no permissions); a probe that times out or cannot reach the Graphite server keeps the lane rather than demoting, so a network blip never pushes a branch outside a real stack, and the verdict is cached between ships. The gt lane commits through gt: gt create <name> starts a stacked branch, gt modify -c appends to one, and --amend amends the branch tip; an untracked branch is adopted first with gt track -f, or gt track --parent when --parent names one, and the resolved parent is reported. Instead of pushing, the lane submits the downstack with gt submit, published by default; --draft submits drafts, --publish makes the default explicit. A submit deeper than one branch runs gt submit --dry-run first and names every branch in the report, since gt submit always force-pushes the whole downstack. Ship never fetches, rebases, or retries in the gt lane — gt owns restacking — so it refuses up front on needs_restack anywhere on the downstack (run gt restack, then re-run ship), on a branch gt track cannot adopt, and on --amend on trunk; a failed submit reports gt's own recovery step (gt restack, gt sync, or gt auth) instead of retrying. The report names the submitted branch and its PR: submitted <branch> → PR #<n> <url>.
+
+Ship owns the pull request in every lane. --pr-title and --pr-body-file are repeatable and branch-scoped — <branch>=<value>, a bare value applying to the tip — because one gt submit opens a PR for every branch in the downstack; --pr-body-file takes "-" once to read the body from piped stdin. Outside the graphite lane ship opens the branch's PR when there is none (never with --fill, which would publish the commit's Claude-Session-Id trailer into the description) and edits exactly the fields this invocation restated when there is, so a description someone hand-edited survives a re-ship that does not mention it; a body given is replaced wholesale, never merged. On trunk it reports no PR (on trunk). In the graphite lane gt submit opens the PRs and ship restates the named branches afterwards, which is the only way a downstack PR gets a body at all. Every body file is read before the commit forms, so an unreadable path refuses with the working copy untouched, and a ship that names no PR flag makes no gh pr call. --draft and --publish apply in every lane, converting an existing PR in either direction; --no-pr skips the step.
 
 --reviews keeps listening after the CI watch: each new review comment on the pushed branch's PR — every submitted PR, in the gt lane — streams to stdout until all are merged or closed. The standalone surface, with attach and replay knobs (--since, --interval, --budget, --stack), is ccx vcs reviews.`,
 		Args: cobra.ArbitraryArgs,
@@ -140,47 +159,75 @@ A live Graphite config (.git/.graphite_repo_config) routes ship to the gt lane i
 	cmd.Flags().BoolVar(&o.noVerify, "no-verify", false, "skip pre-commit hooks (uvx prek) before committing")
 	cmd.Flags().BoolVar(&o.amend, "amend", false, "fold the working copy into the parent commit")
 	cmd.Flags().IntVar(&o.budget, "budget", shipLogBudget, "token budget for the CI failure log excerpt (0 = uncapped)")
-	cmd.Flags().StringVar(&o.bookmark, "bookmark", "", "jj bookmark to advance and push")
 	cmd.Flags().StringArrayVar(&o.skipHunks, "skip-hunk", nil, "commit everything except this hunk ref (repeatable; refs from ccx vcs hunks)")
 	cmd.Flags().StringArrayVar(&o.onlyHunks, "only-hunk", nil, "commit only this hunk ref in its file (repeatable; refs from ccx vcs hunks)")
-	cmd.Flags().StringVar(&o.create, "create", "", "start a new stacked branch on top of the current one (graphite lane only); bare --create derives the name from the message, an explicit name must be spelled --create=name")
-	cmd.Flags().Lookup("create").NoOptDefVal = gtNoOptCreate
-	cmd.Flags().BoolVar(&o.draft, "draft", false, "submit new PRs as drafts (graphite lane only)")
-	cmd.Flags().BoolVar(&o.publish, "publish", false, "publish new PRs (graphite lane only; the default when neither is passed)")
+	cmd.Flags().StringVar(&o.branch, "branch", "", "commit onto this branch, creating it here when it does not exist")
+	cmd.Flags().StringVar(&o.branch, "bookmark", "", "jj-only alias of --branch")
+	cmd.Flags().StringVar(&o.newBranch, "new-branch", "", "start a new branch for this commit; bare --new-branch derives the name from the message, an explicit name must be spelled --new-branch=name")
+	cmd.Flags().Lookup("new-branch").NoOptDefVal = branchNoOptDefVal
+	cmd.Flags().StringVar(&o.newBranch, "create", "", "deprecated alias of --new-branch")
+	cmd.Flags().Lookup("create").NoOptDefVal = branchNoOptDefVal
+	cmd.Flags().BoolVar(&o.appendOnly, "append", false, "append the commit to the branch already checked out, refusing on trunk")
+	cmd.Flags().StringVar(&o.parent, "parent", "", "parent of a new or newly tracked stacked branch (graphite lane only)")
+	cmd.Flags().BoolVar(&o.allowTrunk, "allow-trunk", false, "let --branch advance the trunk of a repository you do not own")
+	cmd.Flags().BoolVar(&o.draft, "draft", false, "open new PRs as drafts, and convert an existing one to a draft")
+	cmd.Flags().BoolVar(&o.publish, "publish", false, "publish new PRs, and mark an existing draft ready (the default when neither is passed)")
 	cmd.Flags().BoolVar(&o.noGT, "no-gt", false, "ignore a live graphite config and fall back to the jj/git detection")
 	cmd.Flags().BoolVar(&o.reviews, "reviews", false, "after the CI watch, keep streaming new PR review comments until every submitted PR is merged or closed")
-	cmd.MarkFlagsMutuallyExclusive("create", "amend")
-	cmd.MarkFlagsMutuallyExclusive("draft", "publish")
+	cmd.Flags().StringArrayVar(&o.prTitle, "pr-title", nil, "set the pull request title; repeatable as <branch>=<title>, bare applies to the tip")
+	cmd.Flags().StringArrayVar(&o.prBodyFile, "pr-body-file", nil, `set the pull request body from a file; repeatable as <branch>=<path>, bare applies to the tip ("-" reads stdin)`)
+	cmd.Flags().BoolVar(&o.noPR, "no-pr", false, "push only; never create or update a pull request")
+	for _, group := range [][]string{
+		{"new-branch", "amend"},
+		{"create", "amend"},
+		{"branch", "new-branch"},
+		{"branch", "create"},
+		{"branch", "bookmark"},
+		{"append", "branch"},
+		{"append", "new-branch"},
+		{"append", "create"},
+		{"draft", "publish"},
+		{"no-pr", "pr-title"},
+		{"no-pr", "pr-body-file"},
+	} {
+		cmd.MarkFlagsMutuallyExclusive(group...)
+	}
 	return cmd
 }
 
 func runShip(cmd *cobra.Command, o shipOpts) error {
 	ctx := cmd.Context()
-	kind, root := vcs.DetectRoot(workingDir())
-	if kind == vcs.None {
-		return errors.New("ship: no git or jj repository in the working directory")
+	if err := checkBranchFlags(cmd, o); err != nil {
+		return err
 	}
-	gtLane := !o.noGT && (kind == vcs.Git || kind == vcs.JJ) && vcs.GraphiteRepo(root)
+	l, err := resolveLane(ctx, "ship", workingDir(), o.noGT)
+	if err != nil {
+		return err
+	}
+	root, gtLane := l.root, l.gt
+	kind := l.kind
 	if gtLane {
-		if _, gerr := exec.LookPath("gt"); gerr != nil {
-			return errors.New("ship: graphite config found but gt not on PATH — install graphite (brew install graphite) or pass --no-gt")
-		}
 		kind = vcs.Git
 	}
-	if !gtLane && (o.create != "" || o.draft || o.publish) {
-		return errors.New("ship: --create/--draft/--publish apply only to graphite repos; pass --no-gt only when .git/.graphite_repo_config exists, or drop these flags")
+	if !gtLane && o.parent != "" {
+		return errors.New("ship: --parent applies only to graphite repos; pass --no-gt only when .git/.graphite_repo_config exists, or drop it")
 	}
-	if cmd.Flags().Changed("create") && o.create == "" {
-		return errors.New("ship: --create requires a branch name or no value")
-	}
-	if o.bookmark != "" && kind != vcs.JJ {
-		return errors.New("ship: --bookmark applies only to jj repositories")
+	if cmd.Flags().Changed("bookmark") {
+		if gtLane {
+			return errors.New("ship: --bookmark does not apply in the graphite lane; pass --no-gt to advance a jj bookmark instead")
+		}
+		if l.kind != vcs.JJ {
+			return errors.New("ship: --bookmark applies only to jj repositories")
+		}
 	}
 	if !o.amend && o.message == "" {
 		return errors.New("ship: -m/--message is required unless --amend")
 	}
 	if o.reviews && o.noPush {
 		return errors.New("ship: --reviews requires push (drop --no-push)")
+	}
+	if o.noPush && (len(o.prTitle) > 0 || len(o.prBodyFile) > 0) {
+		return errors.New("ship: --pr-title/--pr-body-file require push (drop --no-push)")
 	}
 
 	sel, err := parseShipSelection(ctx, kind, o)
@@ -192,22 +239,24 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 			return err
 		}
 	}
-	var target string
-	var plan gtPlan
-	switch {
-	case gtLane:
-		plan, err = shipPreflightGT(ctx, o)
-		if err != nil {
-			return err
-		}
-	case !o.noPush:
-		target, err = shipPreflight(ctx, kind, o)
-		if err != nil {
+	plan, planSeg, err := shipResolvePlan(ctx, l, o)
+	if err != nil {
+		return err
+	}
+	prRun := shipPRRequested(cmd, l, o)
+	meta, prCleanup, err := resolvePRMeta(cmd, o, plan.name)
+	defer prCleanup()
+	if err != nil {
+		return err
+	}
+	var prNWO string
+	if prRun && !o.noPush {
+		if prNWO, err = shipPRRepo(ctx, l, plan); err != nil {
 			return err
 		}
 	}
 	if kind == vcs.JJ && sel == nil && !o.amend {
-		if err := shipRefuseEmptyJJ(ctx, root, o, target); err != nil {
+		if err := shipRefuseEmptyJJ(ctx, root, o, plan); err != nil {
 			return err
 		}
 	}
@@ -225,8 +274,18 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	if gtLane {
 		hookSeg, err = shipCommitGT(ctx, cmd.ErrOrStderr(), root, o, sel, plan)
 	} else {
-		hookSeg, err = shipCommit(ctx, cmd.ErrOrStderr(), root, kind, o, sel)
+		hookSeg, err = shipCommitLocal(ctx, cmd.ErrOrStderr(), root, kind, o, sel, plan)
 	}
+	if err != nil {
+		return err
+	}
+	if kind == vcs.JJ && plan.action == branchCreate {
+		if _, err := render.RunCLI(ctx, "jj", []string{"bookmark", "create", plan.name, "-r", "@-"}); err != nil {
+			return fmt.Errorf("ship: jj bookmark create %s: %w", plan.name, err)
+		}
+	}
+
+	branch, healSeg, err := shipBranchAfterCommit(ctx, kind, plan)
 	if err != nil {
 		return err
 	}
@@ -235,12 +294,23 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	if err != nil {
 		return err
 	}
-	segments := make([]string, 0, 5)
-	if hookSeg != "" {
-		segments = append(segments, hookSeg)
+	segments := make([]string, 0, 8)
+	if l.note != "" {
+		segments = append(segments, fmt.Sprintf("lane %s (%s)", kindLabel(l.kind), l.note))
+	}
+	for _, seg := range []string{planSeg, hookSeg} {
+		if seg != "" {
+			segments = append(segments, seg)
+		}
 	}
 	committedSegment := len(segments)
 	segments = append(segments, fmt.Sprintf("committed %s %q", short, subject))
+	if seg := branchSegment(plan, branch, o.noPush); seg != "" {
+		segments = append(segments, seg)
+	}
+	if healSeg != "" {
+		segments = append(segments, healSeg)
+	}
 
 	if o.noPush {
 		segments = append(segments, "not pushed")
@@ -248,12 +318,13 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		return nil
 	}
 
-	var branch, remote string
+	var remote string
 	var rebased int
+	var prSeg string
 	if gtLane {
-		branch, err = shipPushGT(ctx, o)
+		prSeg, err = shipPushGT(ctx, o, branch)
 	} else {
-		branch, remote, rebased, err = shipPush(ctx, kind, o, target, preAmendSHA)
+		remote, rebased, err = shipPush(ctx, kind, o, branch, preAmendSHA)
 	}
 	if err != nil {
 		return err
@@ -267,9 +338,19 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		segments = append(segments, fmt.Sprintf("rebased %d commit(s) onto %s", rebased, branch))
 	}
 	if gtLane {
-		segments = append(segments, gtPRSegment(ctx, branch, plan.depth))
+		segments = append(segments, prSeg)
 	} else {
 		segments = append(segments, fmt.Sprintf("pushed %s → %s", branch, remote))
+	}
+
+	if prRun {
+		seg, err := shipPR(ctx, l, prNWO, branch, plan.trunk, subject, meta)
+		if err != nil {
+			return err
+		}
+		if seg != "" {
+			segments = append(segments, seg)
+		}
 	}
 
 	var reviewBranches []string
@@ -329,6 +410,38 @@ func withSessionTrailer(message string) string {
 		return message
 	}
 	return message + "\n\nClaude-Session-Id: " + id
+}
+
+// shipCommitLocal commits on the lanes ship drives itself — jj and plain git —
+// cutting the git lane's new branch first. Anything failing after that checkout
+// switches back and deletes the branch, so a refusal leaves the working copy
+// where it started. Deferred, so a new failure path inherits the rollback, and
+// scoped here, so the commit landing disarms it.
+func shipCommitLocal(ctx context.Context, errW io.Writer, root string, kind vcs.Kind, o shipOpts, sel *shipSelection, plan branchPlan) (seg string, err error) {
+	if kind == vcs.Git && plan.action == branchCreate {
+		if _, serr := render.RunCLI(ctx, "git", []string{"switch", "-c", plan.name}); serr != nil {
+			return "", fmt.Errorf("ship: git switch -c %s: %w", plan.name, serr)
+		}
+		defer func() {
+			if err != nil {
+				err = errors.Join(err, shipRestoreBranch(ctx, plan.from, plan.name))
+			}
+		}()
+	}
+	return shipCommit(ctx, errW, root, kind, o, sel)
+}
+
+// shipRestoreBranch puts the working copy back on from and deletes created. -D
+// is not a force: git switch -c refuses an existing name, so created is one this
+// run cut, with no commit on it. A step that fails names what it left behind.
+func shipRestoreBranch(ctx context.Context, from, created string) error {
+	if _, err := render.RunCLI(ctx, "git", []string{"switch", from}); err != nil {
+		return fmt.Errorf("ship: rollback: git switch %s: %w — the working copy is left on %s", from, err, created)
+	}
+	if _, err := render.RunCLI(ctx, "git", []string{"branch", "-D", created}); err != nil {
+		return fmt.Errorf("ship: rollback: git branch -D %s: %w — the branch ship cut is left behind", created, err)
+	}
+	return nil
 }
 
 // shipCommit stages, runs pre-commit hooks, and commits. Hunk-scoped selections
@@ -498,7 +611,7 @@ func splitDescribe(out, sep string) (string, string, error) {
 	return strings.TrimRight(parts[0], "\n"), strings.TrimRight(parts[1], "\n"), nil
 }
 
-func shipRefuseEmptyJJ(ctx context.Context, root string, o shipOpts, target string) error {
+func shipRefuseEmptyJJ(ctx context.Context, root string, o shipOpts, plan branchPlan) error {
 	paths, err := shipChangedPaths(ctx, root, vcs.JJ, o)
 	if err != nil {
 		return err
@@ -526,90 +639,285 @@ func shipRefuseEmptyJJ(ctx context.Context, root string, o shipOpts, target stri
 		scope = " in " + strings.Join(o.paths, ", ")
 	}
 	hint := ""
-	if target != "" {
-		hint = fmt.Sprintf(" push it: jj bookmark move exact:%s --to @- && jj git push --bookmark exact:%s", target, target)
+	if plan.name != "" {
+		hint = fmt.Sprintf(" push it: jj bookmark move exact:%s --to @- && jj git push --bookmark exact:%s", plan.name, plan.name)
 	}
 	return fmt.Errorf("ship: nothing to commit%s — did a prior ship already land %s %q?%s", scope, short, subject, hint)
 }
 
-func shipPreflight(ctx context.Context, kind vcs.Kind, o shipOpts) (string, error) {
-	switch kind {
+// checkBranchFlags validates the branch-intent flags before any repository read.
+// A bare --new-branch never consumes the next token (cobra's NoOptDefVal), and
+// ship's ArbitraryArgs then files it as a path to commit, so "--new-branch docs"
+// would silently commit only docs/; a positional that is not on disk is refused
+// instead.
+//
+// An explicit name skips deriveBranchName's legality check, so it runs here.
+func checkBranchFlags(cmd *cobra.Command, o shipOpts) error {
+	for _, name := range []string{"new-branch", "create"} {
+		if cmd.Flags().Changed(name) && o.newBranch == "" {
+			return fmt.Errorf("ship: --%s requires a branch name or no value", name)
+		}
+	}
+	if o.branch != "" && !legalBranchName(o.branch) {
+		return fmt.Errorf("ship: --branch %q is not a legal branch name", o.branch)
+	}
+	if o.newBranch != "" && o.newBranch != branchNoOptDefVal && !legalBranchName(o.newBranch) {
+		return fmt.Errorf("ship: --new-branch %q is not a legal branch name", o.newBranch)
+	}
+	if o.newBranch != branchNoOptDefVal {
+		return nil
+	}
+	for _, path := range o.paths {
+		if _, err := os.Stat(path); err != nil {
+			return fmt.Errorf("ship: %q is not a path — did you mean --new-branch=%s?", path, path)
+		}
+	}
+	return nil
+}
+
+// shipResolvePlan resolves where the commit goes, before any mutation, on
+// whichever lane is live. The second return is the preflight's own report
+// segment, which today only the graphite lane's auto-track produces.
+func shipResolvePlan(ctx context.Context, l lane, o shipOpts) (branchPlan, string, error) {
+	if l.gt {
+		return shipPreflightGT(ctx, l, o)
+	}
+	switch l.kind {
 	case vcs.JJ:
-		return shipPreflightJJ(ctx, o)
+		plan, err := shipPreflightJJ(ctx, l, o)
+		return plan, "", err
 	case vcs.Git:
-		return shipPreflightGit(ctx)
+		plan, err := shipPreflightGitLane(ctx, l, o)
+		return plan, "", err
 	default:
-		return "", errors.New("ship: push: unsupported vcs")
+		return branchPlan{}, "", errors.New("ship: unsupported vcs")
 	}
 }
 
-func shipPreflightJJ(ctx context.Context, o shipOpts) (string, error) {
-	target := o.bookmark
-	if target == "" {
-		trunkNames, err := jjTrunkBookmarkNames(ctx)
-		if err != nil {
-			return "", err
-		}
-		if len(trunkNames) != 1 {
-			return "", fmt.Errorf("ship: cannot resolve the trunk bookmark from %q; pass --bookmark <name>", trunkNames)
-		}
-		trunk := trunkNames[0]
-
-		names, err := jjBookmarkNames(ctx, jjNearestBookmarkRevset)
-		if err != nil {
-			return "", err
-		}
-		switch len(names) {
-		case 0:
-			target = trunk
-		case 1:
-			if names[0] != trunk {
-				return "", fmt.Errorf("ship: nearest bookmark %q is not trunk %q — pass --bookmark %s to advance it deliberately", names[0], trunk, names[0])
-			}
-			target = names[0]
-		default:
-			return "", fmt.Errorf("ship: multiple nearest bookmarks %q; pass --bookmark <name> to choose one", strings.Join(names, ", "))
-		}
-	}
-
-	// jj treats a bare NAMES argument as a glob and no-ops with exit 0 on
-	// zero matches, and a conflicted bookmark resolves to multiple commits,
-	// which rebase would silently treat as a merge destination; resolve the
-	// exact name up front so both fail loudly.
-	heads, err := jjLogLines(ctx, fmt.Sprintf(`bookmarks(exact:%q)`, target))
+func shipPreflightJJ(ctx context.Context, l lane, o shipOpts) (branchPlan, error) {
+	trunkNames, err := jjTrunkBookmarkNames(ctx)
 	if err != nil {
-		return "", err
+		return branchPlan{}, err
 	}
+	trunk := ""
 	switch {
-	case len(heads) == 0:
-		return "", fmt.Errorf("ship: bookmark %q not found", target)
-	case len(heads) > 1:
-		return "", fmt.Errorf("ship: bookmark %q is conflicted (%d heads); resolve it (jj bookmark list --conflicted) before shipping", target, len(heads))
+	case len(trunkNames) == 1:
+		trunk = trunkNames[0]
+	// A --branch naming one of the candidates is the caller disambiguating, so it
+	// resolves trunk rather than only silencing the refusal: every trunk guard
+	// downstream compares against this name.
+	case len(trunkNames) > 1 && slices.Contains(trunkNames, o.branch):
+		trunk = o.branch
+	case len(trunkNames) > 1:
+		return branchPlan{}, fmt.Errorf("ship: cannot resolve the trunk bookmark from %q; pass --branch naming one of them", trunkNames)
 	}
-	return target, nil
+
+	names, err := jjBookmarkNames(ctx, jjNearestBookmarkRevset)
+	if err != nil {
+		return branchPlan{}, err
+	}
+	current := trunk
+	switch len(names) {
+	case 0:
+	case 1:
+		current = names[0]
+	default:
+		return branchPlan{}, fmt.Errorf("ship: multiple nearest bookmarks %q; pass --branch <name> to choose one", strings.Join(names, ", "))
+	}
+
+	// A --branch naming a bookmark that already exists is one ship appends to,
+	// wherever it sits: moving a jj bookmark strands no working copy the way a
+	// git checkout would.
+	probed := false
+	if o.branch != "" {
+		heads, err := jjBookmarkHeads(ctx, o.branch)
+		if err != nil {
+			return branchPlan{}, err
+		}
+		probed = true
+		if heads > 0 {
+			current = o.branch
+		}
+	}
+
+	repo, err := shipTrunkRepo(ctx, l, o, current, trunk)
+	if err != nil {
+		return branchPlan{}, err
+	}
+	plan, err := resolveBranchPlan(l, repo, o, current, trunk)
+	if err != nil {
+		return branchPlan{}, err
+	}
+	// Only a push needs the target to resolve; a --no-push ship in a repository
+	// with no bookmark at all still commits, exactly as it did before.
+	if o.noPush || plan.action == branchCreate {
+		return plan, nil
+	}
+	if plan.name == "" {
+		return branchPlan{}, fmt.Errorf("ship: cannot resolve the trunk bookmark from %q; pass --branch <name>", trunkNames)
+	}
+	if !probed || plan.name != o.branch {
+		heads, err := jjBookmarkHeads(ctx, plan.name)
+		if err != nil {
+			return branchPlan{}, err
+		}
+		if heads == 0 {
+			return branchPlan{}, fmt.Errorf("ship: bookmark %q not found", plan.name)
+		}
+	}
+	return plan, nil
 }
 
-func shipPreflightGit(ctx context.Context) (string, error) {
+// jjBookmarkHeads counts the commits name resolves to. jj treats a bare NAMES
+// argument as a glob and no-ops with exit 0 on zero matches, and a conflicted
+// bookmark resolves to several commits, which rebase would silently treat as a
+// merge destination; resolving the exact name up front makes both fail loudly.
+// Zero heads is a count, not an error — it is how ship tells "create it" from
+// "append to it" — so only a conflicted bookmark refuses here.
+func jjBookmarkHeads(ctx context.Context, name string) (int, error) {
+	heads, err := jjLogLines(ctx, fmt.Sprintf(`bookmarks(exact:%q)`, name))
+	if err != nil {
+		return 0, err
+	}
+	if len(heads) > 1 {
+		return 0, fmt.Errorf("ship: bookmark %q is conflicted (%d heads); resolve it (jj bookmark list --conflicted) before shipping", name, len(heads))
+	}
+	return len(heads), nil
+}
+
+func shipPreflightGitLane(ctx context.Context, l lane, o shipOpts) (branchPlan, error) {
+	current, err := gitCurrentBranch(ctx)
+	if err != nil {
+		return branchPlan{}, err
+	}
+	trunk, err := gitTrunkBranch(ctx)
+	if err != nil {
+		return branchPlan{}, err
+	}
+	repo, err := shipTrunkRepo(ctx, l, o, current, trunk)
+	if err != nil {
+		return branchPlan{}, err
+	}
+	plan, err := resolveBranchPlan(l, repo, o, current, trunk)
+	if err != nil {
+		return branchPlan{}, err
+	}
+	return plan, refuseExistingBranch(ctx, o, plan)
+}
+
+// refuseExistingBranch refuses a --branch that names an existing branch other
+// than the one checked out: reaching it would mean checking it out mid-ship,
+// which strands the working copy's changes on the branch being left.
+func refuseExistingBranch(ctx context.Context, o shipOpts, plan branchPlan) error {
+	if o.branch == "" || plan.action != branchCreate {
+		return nil
+	}
+	exists, err := gitRefExists(ctx, "refs/heads/"+plan.name)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return fmt.Errorf("ship: branch %s already exists — check it out first; ship does not switch branches mid-commit", plan.name)
+	}
+	return nil
+}
+
+// gitCurrentBranch names the checked-out branch, empty on a detached HEAD.
+func gitCurrentBranch(ctx context.Context) (string, error) {
 	out, err := render.RunCLI(ctx, "git", []string{"branch", "--show-current"})
 	if err != nil {
 		return "", fmt.Errorf("ship: git branch --show-current: %w", err)
 	}
-	branch := strings.TrimSpace(out)
-	if branch == "" {
-		return "", errors.New("ship: detached HEAD; no branch to push")
-	}
-	return branch, nil
+	return strings.TrimSpace(out), nil
 }
 
-func shipPush(ctx context.Context, kind vcs.Kind, o shipOpts, target, preAmendSHA string) (branch, remote string, rebased int, err error) {
+// gitTrunkBranch reads the remote's default branch, empty when origin/HEAD does
+// not resolve — a local-only repository has no trunk, which reads as "not on
+// trunk" and leaves ship appending where it stands.
+func gitTrunkBranch(ctx context.Context) (string, error) {
+	ref := "refs/remotes/origin/HEAD"
+	out, code, _, err := render.RunCLIExitCode(ctx, "git", []string{"symbolic-ref", "--short", ref})
+	if err != nil {
+		return "", fmt.Errorf("ship: git symbolic-ref %s: %w", ref, err)
+	}
+	if code != 0 {
+		return "", nil
+	}
+	trunk, _ := strings.CutPrefix(strings.TrimSpace(out), "origin/")
+	return trunk, nil
+}
+
+// shipTrunkRepo looks the repository up only when the decision turns on who
+// owns it — a ship that already sits off trunk never touches GitHub. An
+// unanswerable lookup returns the zero Repo, which resolveBranchPlan reads as
+// the viewer's own, the same way the lane gate only ever demotes on a positive
+// answer.
+func shipTrunkRepo(ctx context.Context, l lane, o shipOpts, current, trunk string) (vcs.Repo, error) {
+	if trunk == "" || (current != trunk && o.branch != trunk) {
+		return vcs.Repo{}, nil
+	}
+	repo, err := vcs.LookupRepo(ctx, l.root, false)
+	if errors.Is(err, vcs.ErrNoGitHub) {
+		return vcs.Repo{}, nil
+	}
+	if err != nil {
+		return vcs.Repo{}, fmt.Errorf("ship: %w", err)
+	}
+	return repo, nil
+}
+
+// shipBranchAfterCommit re-reads the branch the commit actually landed on and
+// self-heals a detached HEAD: a gt-lane commit in a linked worktree has twice
+// left HEAD detached with the branch ref lagging the true tip, and the recovery
+// was git checkout -B <branch> <sha> after reflog archaeology. jj has no
+// checkout to lose, so its target is the plan's.
+func shipBranchAfterCommit(ctx context.Context, kind vcs.Kind, plan branchPlan) (string, string, error) {
+	if kind != vcs.Git {
+		return plan.name, "", nil
+	}
+	branch, err := gitCurrentBranch(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	if branch != "" {
+		return branch, "", nil
+	}
+	out, err := render.RunCLI(ctx, "git", []string{"rev-parse", "HEAD"})
+	if err != nil {
+		return "", "", fmt.Errorf("ship: git rev-parse HEAD: %w", err)
+	}
+	sha := strings.TrimSpace(out)
+	if _, err := render.RunCLI(ctx, "git", []string{"checkout", "-B", plan.name, sha}); err != nil {
+		return "", "", fmt.Errorf("ship: HEAD is detached at %s and git checkout -B %s failed: %w", sha, plan.name, err)
+	}
+	return plan.name, "healed detached HEAD onto " + plan.name, nil
+}
+
+// branchSegment reports the branch a commit landed on. A created branch is
+// always named; an appended one only when nothing downstream will name it,
+// which is every ship that does not push.
+func branchSegment(plan branchPlan, branch string, noPush bool) string {
+	switch {
+	case branch == "":
+		return ""
+	case plan.action == branchCreate:
+		return "created " + branch
+	case noPush:
+		return "branch " + branch
+	default:
+		return ""
+	}
+}
+
+func shipPush(ctx context.Context, kind vcs.Kind, o shipOpts, target, preAmendSHA string) (remote string, rebased int, err error) {
 	switch kind {
 	case vcs.JJ:
 		rebased, err = shipPushJJ(ctx, target, o.amend)
-		return target, "origin", rebased, err
+		return "origin", rebased, err
 	case vcs.Git:
-		return shipPushGit(ctx, o.amend, preAmendSHA)
+		return shipPushGit(ctx, o.amend, target, preAmendSHA)
 	default:
-		return "", "", 0, errors.New("ship: push: unsupported vcs")
+		return "", 0, errors.New("ship: push: unsupported vcs")
 	}
 }
 
@@ -765,27 +1073,19 @@ func shipPushJJReject(ctx context.Context, target, moveOp string, amend bool, pu
 	return &pushRejectedError{err: raw}
 }
 
-func shipPushGit(ctx context.Context, amend bool, preAmendSHA string) (string, string, int, error) {
-	out, err := render.RunCLI(ctx, "git", []string{"branch", "--show-current"})
-	if err != nil {
-		return "", "", 0, fmt.Errorf("ship: git branch --show-current: %w", err)
-	}
-	branch := strings.TrimSpace(out)
-	if branch == "" {
-		return "", "", 0, errors.New("ship: detached HEAD; no branch to push")
-	}
+func shipPushGit(ctx context.Context, amend bool, branch, preAmendSHA string) (string, int, error) {
 	remote, err := gitRemoteFor(ctx, branch)
 	if err != nil {
-		return "", "", 0, err
+		return "", 0, err
 	}
 	if amend {
-		return branch, remote, 0, shipPushGitAmend(ctx, remote, branch, preAmendSHA)
+		return remote, 0, shipPushGitAmend(ctx, remote, branch, preAmendSHA)
 	}
 	hint := fmt.Sprintf("git fetch %s && git rebase --autostash %s/%s && git push %s %s", remote, remote, branch, remote, branch)
 	rebased, err := shipPushRetry(ctx, branch, hint, func(ctx context.Context) (int, error) {
 		return shipPushGitOnce(ctx, remote, branch)
 	})
-	return branch, remote, rebased, err
+	return remote, rebased, err
 }
 
 // gitRemoteFor resolves the remote that branch.<branch>.remote configures, so a

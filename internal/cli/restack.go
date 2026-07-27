@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -48,16 +47,11 @@ func newRestackCmd() *cobra.Command {
 
 func runRestack(cmd *cobra.Command, o restackOpts) error {
 	ctx := cmd.Context()
-	kind, root := vcs.DetectRoot(workingDir())
-	if kind == vcs.None {
-		return errors.New("restack: no git or jj repository in the working directory")
+	l, err := resolveLane(ctx, "restack", workingDir(), o.noGT)
+	if err != nil {
+		return err
 	}
-
-	gtLane := !o.noGT && (kind == vcs.Git || kind == vcs.JJ) && vcs.GraphiteRepo(root)
-	if gtLane {
-		if _, err := exec.LookPath("gt"); err != nil {
-			return errors.New("restack: graphite config found but gt not on PATH — install graphite (brew install graphite) or pass --no-gt")
-		}
+	if l.gt {
 		summary, err := restackGT(ctx, cmd.ErrOrStderr())
 		if err != nil {
 			return err
@@ -67,14 +61,13 @@ func runRestack(cmd *cobra.Command, o restackOpts) error {
 	}
 
 	var summary string
-	var err error
-	switch kind {
+	switch l.kind {
 	case vcs.JJ:
 		summary, err = restackJJ(ctx)
 	case vcs.Git:
 		summary, err = restackGit(ctx)
 	default:
-		panic(fmt.Sprintf("restack: unsupported vcs kind %d", kind))
+		panic(fmt.Sprintf("restack: unsupported vcs kind %d", l.kind))
 	}
 	if err != nil {
 		return err

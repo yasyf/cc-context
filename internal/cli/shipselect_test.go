@@ -101,8 +101,8 @@ func TestShipJJHunkArgv(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	inv := readInvocations(t, log)
-	if len(inv) != 5 {
-		t.Fatalf("want 5 jj invocations, got %d: %v", len(inv), inv)
+	if len(inv) != 7 {
+		t.Fatalf("want 7 jj invocations, got %d: %v", len(inv), inv)
 	}
 	if want := []string{"jj", "root"}; !reflect.DeepEqual(inv[0], want) {
 		t.Errorf("repo root = %v, want %v", inv[0], want)
@@ -113,9 +113,9 @@ func TestShipJJHunkArgv(t *testing.T) {
 	if want := []string{"jj", "file", "show", "-r", "@-", "--", `root:"f.txt"`}; !reflect.DeepEqual(inv[2], want) {
 		t.Errorf("pre-flight base read = %v, want %v", inv[2], want)
 	}
-	assertJJSelectCommit(t, inv[3], "commit", []string{"-m", "fix: frobnicate", "--", "f.txt"})
-	if want := []string{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate}; !reflect.DeepEqual(inv[4], want) {
-		t.Errorf("describe = %v, want %v", inv[4], want)
+	assertJJSelectCommit(t, inv[5], "commit", []string{"-m", "fix: frobnicate", "--", "f.txt"})
+	if want := []string{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate}; !reflect.DeepEqual(inv[6], want) {
+		t.Errorf("describe = %v, want %v", inv[6], want)
 	}
 }
 
@@ -127,10 +127,10 @@ func TestShipJJHunkOnlyArgv(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	inv := readInvocations(t, log)
-	if len(inv) != 5 {
-		t.Fatalf("want 5 jj invocations, got %d: %v", len(inv), inv)
+	if len(inv) != 7 {
+		t.Fatalf("want 7 jj invocations, got %d: %v", len(inv), inv)
 	}
-	assertJJSelectCommit(t, inv[3], "commit", []string{"-m", "fix: frobnicate", "--", "f.txt"})
+	assertJJSelectCommit(t, inv[5], "commit", []string{"-m", "fix: frobnicate", "--", "f.txt"})
 }
 
 func TestShipHunkHooksAreReportedSkipped(t *testing.T) {
@@ -146,7 +146,7 @@ func TestShipHunkHooksAreReportedSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `hooks hunk-skip · committed a1b2c3d "fix: frobnicate" · not pushed`
+	want := `hooks hunk-skip · committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
@@ -170,7 +170,7 @@ func TestShipHunkNoVerifySilencesHookSegment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · not pushed`
+	want := `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
@@ -199,10 +199,10 @@ func TestShipJJHunkAmendArgv(t *testing.T) {
 				t.Fatalf("ship error = %v", err)
 			}
 			inv := readInvocations(t, log)
-			if len(inv) != 5 {
-				t.Fatalf("want 5 jj invocations, got %d: %v", len(inv), inv)
+			if len(inv) != 7 {
+				t.Fatalf("want 7 jj invocations, got %d: %v", len(inv), inv)
 			}
-			assertJJSelectCommit(t, inv[3], "squash", tt.tail)
+			assertJJSelectCommit(t, inv[5], "squash", tt.tail)
 		})
 	}
 }
@@ -323,6 +323,8 @@ func TestShipGitHunkPlumbingSequence(t *testing.T) {
 		{"git", "rev-parse", "--show-toplevel"},                  // resolve repo root
 		{"git", "ls-tree", "--full-tree", "HEAD", "--", "f.txt"}, // pre-flight base existence
 		{"git", "show", "--end-of-options", "HEAD:f.txt"},        // pre-flight base read
+		{"git", "branch", "--show-current"},                      // branch plan
+		gitTrunkArgv,
 		{"git", "read-tree", "HEAD"},
 		{"git", "add", "-A", "--", "g.txt"},                      // the whole-shipped sibling
 		{"git", "ls-tree", "--full-tree", "HEAD", "--", "f.txt"}, // stage-time base existence
@@ -332,6 +334,7 @@ func TestShipGitHunkPlumbingSequence(t *testing.T) {
 		{"git", "update-index", "--add", "--cacheinfo", "100644,2222222222222222222222222222222222222222,f.txt"},
 		{"git", "commit", "-m", "fix: frobnicate"},
 		{"git", "restore", "--staged", "--", "f.txt", "g.txt"},
+		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 	}
 	assertInvocations(t, seq, want)
@@ -359,6 +362,38 @@ func TestShipGitHunkPlumbingSequence(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestShipGitHunkNewBranchRollback covers the rollback on the selection path,
+// which reaches the commit through several more failure points than a whole-file
+// ship: a failure there restores the branch just as a hook failure does.
+func TestShipGitHunkNewBranchRollback(t *testing.T) {
+	log := setupGitHunkShip(t, "f.txt", "")
+	ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
+	t.Setenv("GIT_COMMIT_FAIL", "1")
+
+	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x", "--only-hunk", ref, "f.txt")
+	if err == nil || !strings.Contains(err.Error(), "ship: git commit:") {
+		t.Fatalf("ship error = %v, want the temp-index commit failure", err)
+	}
+	seq, _ := gitIdxCarriers(t, log)
+	assertInvocations(t, seq, [][]string{
+		{"git", "rev-parse", "--show-toplevel"},
+		{"git", "ls-tree", "--full-tree", "HEAD", "--", "f.txt"},
+		{"git", "show", "--end-of-options", "HEAD:f.txt"},
+		{"git", "branch", "--show-current"},
+		gitTrunkArgv,
+		{"git", "switch", "-c", "feat-x"},
+		{"git", "read-tree", "HEAD"},
+		{"git", "ls-tree", "--full-tree", "HEAD", "--", "f.txt"},
+		{"git", "show", "--end-of-options", "HEAD:f.txt"},
+		{"git", "ls-tree", "--full-tree", "HEAD", "--", "f.txt"},
+		{"git", "hash-object", "-w", "--stdin"},
+		{"git", "update-index", "--add", "--cacheinfo", "100644,2222222222222222222222222222222222222222,f.txt"},
+		{"git", "commit", "-m", "fix: frobnicate"},
+		{"git", "switch", "main"},
+		{"git", "branch", "-D", "feat-x"},
+	})
 }
 
 func TestShipGitHunkNoVerify(t *testing.T) {

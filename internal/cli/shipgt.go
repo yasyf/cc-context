@@ -14,10 +14,6 @@ import (
 	"github.com/yasyf/cc-context/internal/vcs"
 )
 
-// gtNoOptCreate is cobra's NoOptDefVal for a bare --create: "-" is not a
-// legal git branch name, so it never collides with an explicit --create=name.
-const gtNoOptCreate = "-"
-
 const (
 	// gtRestackNeeded{1,2} through gtAuthRequired{1,2} are gt 1.8.6's own
 	// wording for classifyGTSubmit; version-dependent, kept as lone constants
@@ -50,18 +46,6 @@ type gtBranchState struct {
 
 // gtState is gt state's parsed output: branch name to its tracked state.
 type gtState map[string]gtBranchState
-
-// gtPlan is shipPreflightGT's routing decision: branch and trunk, whether
-// ship auto-creates a stacked branch off trunk, the report's stack depth, and
-// whether preflight had to auto-track an untracked branch via gt track -f.
-type gtPlan struct {
-	branch      string
-	trunk       string
-	onTrunk     bool
-	autoCreate  bool
-	depth       int
-	autoTracked bool
-}
 
 // gtStateQuery runs gt state and parses its JSON.
 func gtStateQuery(ctx context.Context) (gtState, error) {
@@ -111,9 +95,12 @@ func gtDownstack(state gtState, branch, trunk string) ([]string, error) {
 // stackBranches lists the current downstack chain — current branch first, up
 // to (excluding) trunk — or nil when the current branch is trunk.
 func stackBranches(ctx context.Context) ([]string, error) {
-	branch, err := shipPreflightGit(ctx)
+	branch, err := gitCurrentBranch(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if branch == "" {
+		return nil, errors.New("ship: detached HEAD; no stack to resolve")
 	}
 	state, err := gtStateQuery(ctx)
 	if err != nil {
@@ -129,79 +116,105 @@ func stackBranches(ctx context.Context) ([]string, error) {
 	return gtDownstack(state, branch, trunk)
 }
 
-// shipPreflightGT validates the current branch against graphite's tracked
-// state. Unlike the jj/git preflights it always runs, even under --no-push,
-// so an unrestacked stack still refuses a commit. An untracked branch is
-// auto-adopted via gt track -f (parented to its most recent tracked
-// ancestor); only a track that still leaves the branch untracked refuses.
-func shipPreflightGT(ctx context.Context, o shipOpts) (gtPlan, error) {
-	branch, err := shipPreflightGit(ctx)
+// shipPreflightGT resolves the branch decision and validates the current branch
+// against graphite's tracked state. Unlike the jj/git preflights it always
+// runs, even under --no-push, so an unrestacked stack still refuses a commit.
+// An untracked branch is auto-adopted first; only a track that still leaves the
+// branch untracked refuses.
+func shipPreflightGT(ctx context.Context, l lane, o shipOpts) (branchPlan, string, error) {
+	branch, err := gitCurrentBranch(ctx)
 	if err != nil {
-		return gtPlan{}, err
+		return branchPlan{}, "", err
 	}
 	state, err := gtStateQuery(ctx)
 	if err != nil {
-		return gtPlan{}, err
+		return branchPlan{}, "", err
 	}
 	trunk, err := gtTrunkBranch(state)
 	if err != nil {
-		return gtPlan{}, err
+		return branchPlan{}, "", err
 	}
-	onTrunk := branch == trunk
-	_, tracked := state[branch]
-	var autoTracked bool
-	if !tracked && !onTrunk {
-		if _, terr := render.RunCLI(ctx, "gt", []string{"track", "-f", "--no-interactive"}); terr == nil {
-			if state, err = gtStateQuery(ctx); err != nil {
-				return gtPlan{}, err
+
+	var seg string
+	if branch != "" && branch != trunk {
+		if _, tracked := state[branch]; !tracked {
+			if state, seg, err = gtTrack(ctx, o, branch); err != nil {
+				return branchPlan{}, "", err
 			}
-			_, tracked = state[branch]
 		}
-		if !tracked {
-			return gtPlan{}, fmt.Errorf("ship: branch %s is not tracked by graphite — run gt track, or pass --no-gt", branch)
+		chain, err := gtDownstack(state, branch, trunk)
+		if err != nil {
+			return branchPlan{}, "", err
 		}
-		autoTracked = true
+		for _, b := range chain {
+			if state[b].NeedsRestack {
+				return branchPlan{}, "", errors.New("ship: stack needs restack — run gt restack (gt continue / gt abort on conflict), then re-run ship")
+			}
+		}
 	}
 
-	chain, err := gtDownstack(state, branch, trunk)
+	if o.amend && branch == trunk {
+		return branchPlan{}, "", errors.New("ship: --amend on trunk is refused in the graphite lane — create a stacked branch instead (gt create)")
+	}
+
+	repo, err := shipTrunkRepo(ctx, l, o, branch, trunk)
 	if err != nil {
-		return gtPlan{}, err
+		return branchPlan{}, "", err
 	}
-	for _, b := range chain {
-		if state[b].NeedsRestack {
-			return gtPlan{}, errors.New("ship: stack needs restack — run gt restack (gt continue / gt abort on conflict), then re-run ship")
-		}
+	plan, err := resolveBranchPlan(l, repo, o, branch, trunk)
+	if err != nil {
+		return branchPlan{}, "", err
 	}
-
-	if o.amend && onTrunk {
-		return gtPlan{}, errors.New("ship: --amend on trunk is refused in the graphite lane — create a stacked branch instead (gt create)")
-	}
-
-	depth := len(chain)
-	autoCreate := onTrunk && o.create == ""
-	if autoCreate || o.create != "" {
-		depth++
-	}
-
-	return gtPlan{branch: branch, trunk: trunk, onTrunk: onTrunk, autoCreate: autoCreate, depth: depth, autoTracked: autoTracked}, nil
+	return plan, seg, nil
 }
 
-// gtCommitArgv picks modify vs create by whether --create was passed and
-// whether the branch is trunk; amend always modifies. create also gets
-// --no-ai (modify has no --ai flag to pin).
-func gtCommitArgv(o shipOpts, plan gtPlan) []string {
+// gtTrack adopts an untracked branch, reporting the parent it landed on. gt
+// track -f "sets the parent to the most recent tracked ancestor of the branch
+// being tracked to skip prompts" and takes precedence over --parent, so a branch
+// cut off another feature branch is adopted onto it and gt submit then publishes
+// that unrelated branch too; --parent therefore drops -f, and either way the
+// resolved parent is read back out of gt state and named in the report.
+func gtTrack(ctx context.Context, o shipOpts, branch string) (gtState, string, error) {
+	argv := []string{"track", "-f", "--no-interactive"}
+	if o.parent != "" {
+		argv = []string{"track", "--parent", o.parent, "--no-interactive"}
+	}
+	untracked := fmt.Errorf("ship: branch %s is not tracked by graphite — run gt track, or pass --no-gt", branch)
+	if _, err := render.RunCLI(ctx, "gt", argv); err != nil {
+		return nil, "", untracked
+	}
+	state, err := gtStateQuery(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	s, tracked := state[branch]
+	if !tracked {
+		return nil, "", untracked
+	}
+	seg := "tracked " + branch
+	if len(s.Parents) > 0 {
+		seg += " onto " + s.Parents[0].Ref
+	}
+	return state, seg, nil
+}
+
+// gtCommitArgv picks modify vs create from the branch plan; amend always
+// modifies. A create always names the branch explicitly — gt would otherwise
+// "generate a branch name from the commit message", which by then carries the
+// Claude-Session-Id trailer — and gets --no-ai (modify has no --ai flag to pin).
+func gtCommitArgv(o shipOpts, plan branchPlan) []string {
 	var argv []string
 	switch {
 	case o.amend && o.message != "":
 		argv = []string{"modify", "-m", o.message}
 	case o.amend:
 		argv = []string{"modify"}
-	case o.create == gtNoOptCreate:
-		argv = []string{"create", "-m", o.message, "--no-ai"}
-	case o.create != "":
-		argv = []string{"create", o.create, "-m", o.message, "--no-ai"}
-	case plan.onTrunk:
-		argv = []string{"create", "-m", o.message, "--no-ai"}
+	case plan.action == branchCreate:
+		argv = []string{"create", plan.name}
+		if plan.parent != "" {
+			argv = append(argv, "--onto", plan.parent)
+		}
+		argv = append(argv, "-m", o.message, "--no-ai")
 	default:
 		argv = []string{"modify", "-c", "-m", o.message}
 	}
@@ -255,19 +268,16 @@ func shipGTAdd(ctx context.Context, o shipOpts) error {
 // shipCommitGT stages, refuses an empty commit, runs pre-commit hooks (or
 // reports "hooks hunk-skip" for a hunk selection), then commits through gt.
 // It never passes -a to gt: staging is shipGTAdd's job, same as the git lane
-// is shipGitAdd's. A preflight auto-track (plan.autoTracked) is folded into
-// the same returned segment, ahead of any hook segment.
-func shipCommitGT(ctx context.Context, errW io.Writer, root string, o shipOpts, sel *shipSelection, plan gtPlan) (string, error) {
+// is shipGitAdd's. The branch name in plan was derived before this call appends
+// the session trailer, which is what keeps the trailer out of it.
+func shipCommitGT(ctx context.Context, errW io.Writer, root string, o shipOpts, sel *shipSelection, plan branchPlan) (string, error) {
 	o.message = withSessionTrailer(o.message)
-	segs := make([]string, 0, 2)
-	if plan.autoTracked {
-		segs = append(segs, "tracked "+plan.branch)
-	}
 	if sel != nil {
+		seg := ""
 		if !o.noVerify && shipHasHookConfig(root) {
-			segs = append(segs, "hooks hunk-skip")
+			seg = "hooks hunk-skip"
 		}
-		return strings.Join(segs, shipSep), shipCommitGTSelect(ctx, o, sel, plan)
+		return seg, shipCommitGTSelect(ctx, o, sel, plan)
 	}
 	if err := shipGTAdd(ctx, o); err != nil {
 		return "", err
@@ -282,21 +292,18 @@ func shipCommitGT(ctx context.Context, errW io.Writer, root string, o shipOpts, 
 		return "", err
 	}
 	o.hooksRan = hooksRan
-	if hookSeg != "" {
-		segs = append(segs, hookSeg)
-	}
 	argv := gtCommitArgv(o, plan)
 	if _, err := render.RunCLI(ctx, "gt", argv); err != nil {
 		return "", fmt.Errorf("ship: gt %s: %w", argv[0], err)
 	}
-	return strings.Join(segs, shipSep), nil
+	return hookSeg, nil
 }
 
 // shipCommitGTSelect commits a hunk selection through the same throwaway-index
 // technique as shipCommitGitSelect — gt shells out to git, which honors
 // GIT_INDEX_FILE, so running gt's verb under the same env commits only the temp
 // index. gt's only hunk surface is interactive -p, so staging stays on git.
-func shipCommitGTSelect(ctx context.Context, o shipOpts, sel *shipSelection, plan gtPlan) error {
+func shipCommitGTSelect(ctx context.Context, o shipOpts, sel *shipSelection, plan branchPlan) error {
 	idxFile, err := os.CreateTemp("", "ccx-ship-index-*")
 	if err != nil {
 		return fmt.Errorf("ship: create temp index: %w", err)
@@ -361,42 +368,68 @@ func classifyGTSubmit(err error) error {
 	}
 }
 
-// shipPushGT re-reads the branch after the commit (gt create switches HEAD)
-// and submits the downstack. It never fetches, rebases, or retries — gt
-// owns restacking, and a rejected submit reports gt's own recovery step.
-func shipPushGT(ctx context.Context, o shipOpts) (string, error) {
-	branch, err := shipPreflightGit(ctx)
+// shipPushGT submits the downstack of the branch the commit landed on. The
+// downstack is re-read here, after the commit, because a gt create adds a
+// branch to it. It never fetches, rebases, or retries — gt owns restacking, and
+// a rejected submit reports gt's own recovery step.
+//
+// gt submit force-pushes "all branches in the current stack from trunk to the
+// current branch"; --no-stack only drops the upstack. So a submit that will
+// touch more than the current branch runs --dry-run first ("Reports the PRs
+// that would be submitted and terminates") and names every branch it will
+// publish in the report.
+func shipPushGT(ctx context.Context, o shipOpts, branch string) (string, error) {
+	state, err := gtStateQuery(ctx)
 	if err != nil {
 		return "", err
 	}
-	if _, err := render.RunCLI(ctx, "gt", gtSubmitArgv(o)); err != nil {
-		return branch, classifyGTSubmit(err)
+	trunk, err := gtTrunkBranch(state)
+	if err != nil {
+		return "", err
 	}
-	return branch, nil
+	var chain []string
+	if branch != trunk {
+		if chain, err = gtDownstack(state, branch, trunk); err != nil {
+			return "", err
+		}
+	}
+	if len(chain) > 1 {
+		if _, err := render.RunCLI(ctx, "gt", []string{"submit", "--dry-run", "--no-interactive"}); err != nil {
+			return "", classifyGTSubmit(err)
+		}
+	}
+	if _, err := render.RunCLI(ctx, "gt", gtSubmitArgv(o)); err != nil {
+		return "", classifyGTSubmit(err)
+	}
+	return gtPRSegment(ctx, branch, chain), nil
 }
 
 // gtPRSegment resolves branch's PR via gh (non-fatal when gh is missing or
-// the lookup fails) and formats the report segment, naming the stack depth
-// when > 1.
-func gtPRSegment(ctx context.Context, branch string, depth int) string {
+// the lookup fails) and formats the report segment, naming every branch the
+// submit published when the stack is deeper than one.
+func gtPRSegment(ctx context.Context, branch string, chain []string) string {
+	stack := ""
+	if len(chain) > 1 {
+		names := make([]string, len(chain))
+		for i, b := range chain {
+			names[len(chain)-1-i] = b
+		}
+		stack = fmt.Sprintf(" (stack of %d: %s)", len(chain), strings.Join(names, ", "))
+	}
 	base := "submitted " + branch
 	if _, err := exec.LookPath("gh"); err != nil {
-		return base
+		return base + stack
 	}
 	out, err := render.RunCLI(ctx, "gh", []string{"pr", "view", branch, "--json", "number,url"})
 	if err != nil {
-		return base
+		return base + stack
 	}
 	var pr struct {
 		Number int    `json:"number"`
 		URL    string `json:"url"`
 	}
 	if err := json.Unmarshal([]byte(out), &pr); err != nil {
-		return base
+		return base + stack
 	}
-	seg := fmt.Sprintf("%s → PR #%d %s", base, pr.Number, pr.URL)
-	if depth > 1 {
-		seg += fmt.Sprintf(" (stack of %d)", depth)
-	}
-	return seg
+	return fmt.Sprintf("%s → PR #%d %s%s", base, pr.Number, pr.URL, stack)
 }

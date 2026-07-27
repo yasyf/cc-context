@@ -61,14 +61,39 @@ func DetectRoot(dir string) (Kind, string) {
 }
 
 // GraphiteRepo reports whether root has a live Graphite configuration
-// (.git/.graphite_repo_config), the signal that routes ship to the gt lane —
-// even over a colocated jj root, since the config lives under .git. A linked
-// git worktree's .git is a file rather than a directory, so the join always
-// misses there and GraphiteRepo reports false, falling back to the plain-git
-// lane.
-func GraphiteRepo(root string) bool {
-	_, err := os.Stat(filepath.Join(root, ".git", ".graphite_repo_config"))
+// (.graphite_repo_config in the git common dir), the signal that routes ship to
+// the gt lane — even over a colocated jj root, since the config lives under
+// .git. A linked worktree's .git is a file holding a gitdir pointer rather than
+// a directory, so the plain join misses there and the common dir — the main
+// worktree's .git, where the config actually lives — is resolved through git.
+func GraphiteRepo(ctx context.Context, root string) bool {
+	if _, err := os.Stat(filepath.Join(root, ".git", ".graphite_repo_config")); err == nil {
+		return true
+	}
+	info, err := os.Stat(filepath.Join(root, ".git"))
+	if err != nil || info.IsDir() {
+		return false
+	}
+	common, err := gitCommonDir(ctx, root)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(common, ".graphite_repo_config"))
 	return err == nil
+}
+
+// gitCommonDir resolves root's git common dir — the main worktree's .git, which
+// every linked worktree shares — as an absolute path.
+func gitCommonDir(ctx context.Context, root string) (string, error) {
+	out, err := exec.CommandContext(ctx, "git", "-C", root, "rev-parse", "--git-common-dir").Output() //nolint:gosec // fixed git argv; only the working dir varies
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --git-common-dir in %q: %w", root, err)
+	}
+	dir := strings.TrimSpace(string(out))
+	if filepath.IsAbs(dir) {
+		return dir, nil
+	}
+	return filepath.Join(root, dir), nil
 }
 
 // stagedSource is the source string for a staged (index vs @-) diff; ResolveDiffPlan

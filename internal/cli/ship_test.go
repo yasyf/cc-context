@@ -83,7 +83,10 @@ Error: Failed to push some bookmarks}" >&2
     fi
     if [ -z "$diverged" ]; then printf 'x '; fi ;;
   *"bookmarks(exact"*)
-    case "${JJ_BOOKMARK_HEADS:-1}" in
+    heads=${JJ_BOOKMARK_HEADS:-1}
+    # A bookmark ship just created resolves from then on, whatever the knob says.
+    if [ -e "$SHIP_LOG.jj-bookmark-created" ]; then heads=1; fi
+    case "$heads" in
       0) : ;;
       2) printf 'a1b2c3d subj\nb2c3d4e subj\n' ;;
       *) printf 'a1b2c3d subj\n' ;;
@@ -126,6 +129,7 @@ Error: Failed to push some bookmarks}" >&2
     if [ -n "$origin_tracked" ]; then printf 'origin\ttracked\n'; fi ;;
   "config get git.push")
     if [ -n "$JJ_PUSH_REMOTE" ]; then printf '%s\n' "$JJ_PUSH_REMOTE"; else printf 'Config error: Value not found for git.push\n' >&2; exit 1; fi ;;
+  "bookmark create"*) : > "$SHIP_LOG.jj-bookmark-created" ;;
   commit*|squash*|bookmark*) : ;;
   *) printf 'fake jj: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
 esac
@@ -139,8 +143,22 @@ exit 0
   "branch --show-current")
     branch=${GIT_BRANCH-main}
     if [ -n "$GIT_BRANCH_AFTER_COMMIT" ] && [ -e "$SHIP_LOG.git-committed" ]; then branch=$GIT_BRANCH_AFTER_COMMIT; fi
+    if [ -r "$SHIP_LOG.git-switched" ]; then IFS= read -r branch < "$SHIP_LOG.git-switched" || :; fi
+    if [ -n "$GIT_DETACHED_AFTER_COMMIT" ] && [ -e "$SHIP_LOG.git-committed" ] && [ ! -e "$SHIP_LOG.git-healed" ]; then branch=; fi
     printf '%s\n' "$branch" ;;
-  "commit "*) : > "$SHIP_LOG.git-committed" ;;
+  "symbolic-ref --short")
+    if [ -z "$GIT_TRUNK" ]; then exit 1; fi
+    printf 'origin/%s\n' "$GIT_TRUNK" ;;
+  "switch -c") printf '%s\n' "$3" > "$SHIP_LOG.git-switched" ;;
+  "switch "*)
+    if [ -n "$GIT_SWITCH_BACK_FAIL" ]; then printf 'fatal: invalid reference: %s\n' "$2" >&2; exit 1; fi
+    printf '%s\n' "$2" > "$SHIP_LOG.git-switched" ;;
+  "branch -D")
+    if [ -n "$GIT_BRANCH_DELETE_FAIL" ]; then printf "error: branch '%s' not found\n" "$3" >&2; exit 1; fi ;;
+  "checkout -B") printf '%s\n' "$3" > "$SHIP_LOG.git-switched"; : > "$SHIP_LOG.git-healed" ;;
+  "commit "*)
+    if [ -n "$GIT_COMMIT_FAIL" ]; then printf 'fatal: commit refused\n' >&2; exit 1; fi
+    : > "$SHIP_LOG.git-committed" ;;
   "rev-parse HEAD") printf '%s' '` + fakeHeadSHA + `' ;;
   "rev-parse --show-toplevel") printf '%s' "$SHIP_FAKE_ROOT" ;;
   "show --end-of-options") printf '%s' "$GIT_FILE_SHOW_BASE" ;;
@@ -160,7 +178,12 @@ exit 0
       if [ "$count" -gt 1 ]; then names=$GIT_DIFF_NAMES_2; fi
     fi
     printf '%s' "$names" | while IFS= read -r line || [ -n "$line" ]; do printf '%s\0' "$line"; done ;;
-  "config --get") if [ -n "$GIT_BRANCH_REMOTE" ]; then printf '%s\n' "$GIT_BRANCH_REMOTE"; else exit 1; fi ;;
+  "config --get")
+    case "$3" in
+      ccx.nogt) if [ -n "$GIT_CONFIG_CCX_NOGT" ]; then printf '%s\n' "$GIT_CONFIG_CCX_NOGT"; else exit 1; fi ;;
+      branch.*.remote) if [ -n "$GIT_BRANCH_REMOTE" ]; then printf '%s\n' "$GIT_BRANCH_REMOTE"; else exit 1; fi ;;
+      *) printf 'fake git: unmatched config key: %s\n' "$3" >&2; exit 2 ;;
+    esac ;;
   fetch*) if [ -n "$GIT_FETCH_FAIL" ]; then printf 'git: cannot reach origin\n' >&2; exit 1; fi ;;
   "rev-parse --verify")
     case "$4" in
@@ -222,6 +245,14 @@ fi
 exit 0
 `
 	gt := "#!/bin/sh\n" + gitIdxMark + log("gt") + `case "$1" in
+  auth)
+    if [ -n "$GT_AUTH_STDERR" ]; then printf '%s\n' "$GT_AUTH_STDERR" >&2; fi
+    # exec so the ctx kill reaps the sleep too: a surviving grandchild would hold
+    # the stdout pipe open and block Run past its deadline. PATH is the fake bin
+    # dir alone, so sleep needs its absolute path.
+    if [ -n "$GT_AUTH_HANG" ]; then exec /bin/sleep 30; fi
+    printf '%s\n' "${GT_AUTH_STDOUT-✅ Ready to submit PRs to github.com/yasyf/cc-context}"
+    exit "${GT_AUTH_EXIT:-0}" ;;
   state)
     if [ -n "$GT_STATE_JSON_MARKER" ]; then
       count=0
@@ -237,7 +268,10 @@ exit 0
   add) : ;;
   track)
     if [ -n "$GT_TRACK_FAIL" ]; then printf 'gt: track failed\n' >&2; exit 1; fi ;;
-  create|modify)
+  create)
+    printf '%s\n' "$2" > "$SHIP_LOG.git-switched"
+    : > "$SHIP_LOG.git-committed" ;;
+  modify)
     : > "$SHIP_LOG.git-committed" ;;
   submit)
     if [ -n "$GT_SUBMIT_FAIL_STDERR" ]; then printf '%s\n' "$GT_SUBMIT_FAIL_STDERR" >&2; exit 1; fi ;;
@@ -246,12 +280,24 @@ esac
 exit 0
 `
 	gh := "#!/bin/sh\n" + log("gh") + `case "$1 $2" in
+  "repo view") printf '%s' "$GH_REPO_VIEW_JSON" ;;
+  "api graphql")
+    if [ -n "$GH_VIEWER_JSON" ]; then printf '%s' "$GH_VIEWER_JSON"
+    else printf '{"data":{"viewer":{"login":"yasyf","organizations":{"nodes":[]}}}}'; fi ;;
   "pr view")
     if [ -n "$GH_PR_VIEW_NOT_FOUND" ]; then
       printf 'no pull requests found for branch "%s"\n' "$3" >&2
       exit 1
     fi
+    if [ -n "$GH_PR_VIEW_DIR" ] && [ -r "$GH_PR_VIEW_DIR/$3" ]; then
+      IFS= read -r branchpr < "$GH_PR_VIEW_DIR/$3" || :
+      printf '%s' "$branchpr"
+      exit 0
+    fi
     printf '%s' "$GH_PR_VIEW_JSON" ;;
+  "pr list") printf '%s' "${GH_PR_LIST_JSON:-[]}" ;;
+  "pr create") printf '%s\n' "$GH_PR_CREATE_OUT" ;;
+  "pr edit"|"pr ready") : ;;
   "run list")
     if [ -n "$GH_LIST_FAIL" ]; then printf 'gh: network timeout\n' >&2; exit 1; fi
     if [ -n "$GH_LIST_FAIL_MARKER" ] && [ -s "$GH_LIST_FAIL_MARKER" ]; then
@@ -335,6 +381,12 @@ func setupShip(t *testing.T, marker string, withGh bool) string {
 	t.Setenv("SHIP_FAKE_ROOT", wd)
 
 	t.Setenv("PATH", binDir)
+	// Root the cache under the test's own dir so the lane gate never reads or
+	// writes the developer's real ~/Library/Caches/cc-context, then seed it: the
+	// branch plan looks the repository up whenever the ship sits on trunk, and a
+	// seeded record keeps that off gh for every test that is not about the gate.
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	seedLaneRecords(t, ".", laneSeed{})
 	t.Setenv("JJ_DIFF_NAMES", "f.txt\n")
 	// Zero the session id so subtests asserting bare commit argv stay green even
 	// when the suite runs inside a Claude Code session, which exports it.
@@ -356,6 +408,7 @@ func setupShipGT(t *testing.T, withGh bool) string {
 	}
 	t.Setenv("GIT_BRANCH", "feature")
 	t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
+	seedLaneRecords(t, ".", laneSeed{})
 	return log
 }
 
@@ -411,6 +464,42 @@ func readInvocations(t *testing.T, log string) [][]string {
 	return got
 }
 
+// normalizeTempPaths rewrites the temp path a "-" body file materializes stdin
+// into, which is the one nondeterministic element an argv sequence can carry —
+// a --pr-body-file naming a fixture is the path the test itself created.
+func normalizeTempPaths(invocations [][]string) [][]string {
+	for _, inv := range invocations {
+		for i, arg := range inv {
+			if strings.Contains(arg, "ccx-pr-body-") {
+				inv[i] = "<pr-body>"
+			}
+		}
+	}
+	return invocations
+}
+
+// jjPlanArgv is the branch-plan preflight every jj-lane ship runs before any
+// mutation: resolve trunk, then the bookmark nearest the working copy. A ship
+// that pushes probes the resolved target on top of these.
+func jjPlanArgv() [][]string {
+	return [][]string{
+		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+	}
+}
+
+// gitTrunkArgv is the git lane's trunk read, which follows its branch read in
+// every plain-git ship.
+var gitTrunkArgv = []string{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"}
+
+// The CI watch's three gh calls, for want-lists long enough that spelling them
+// out buries the argv under test.
+var (
+	ghRunListArgv  = []string{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"}
+	ghRunWatchArgv = []string{"gh", "run", "watch", "42", "--exit-status"}
+	ghRunViewArgv  = []string{"gh", "run", "view", "42", "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"}
+)
+
 func assertInvocations(t *testing.T, got, want [][]string) {
 	t.Helper()
 	if !reflect.DeepEqual(got, want) {
@@ -418,11 +507,30 @@ func assertInvocations(t *testing.T, got, want [][]string) {
 	}
 }
 
-func assertNoShipCommit(t *testing.T, invocations [][]string) {
+// shipMutates reports whether inv moved the repository: a commit, or a branch
+// cut, moved, or checked out. The reads spelled with a mutating verb — git
+// branch --show-current, jj bookmark list — are not among them.
+func shipMutates(inv []string) bool {
+	if len(inv) < 2 {
+		return false
+	}
+	rest := inv[2:]
+	switch inv[0] + " " + inv[1] {
+	case "jj commit", "jj squash", "git commit", "git switch", "git checkout":
+		return true
+	case "jj bookmark":
+		return len(rest) > 0 && rest[0] != "list"
+	case "git branch":
+		return len(rest) > 0 && rest[0] != "--show-current"
+	}
+	return false
+}
+
+func assertNoShipMutation(t *testing.T, invocations [][]string) {
 	t.Helper()
 	for _, inv := range invocations {
-		if len(inv) > 1 && (inv[0] == "jj" && (inv[1] == "commit" || inv[1] == "squash") || inv[0] == "git" && inv[1] == "commit") {
-			t.Errorf("commit ran before target resolution refused: %v", inv)
+		if shipMutates(inv) {
+			t.Errorf("repository mutated before ship refused: %v", inv)
 		}
 	}
 }
@@ -468,10 +576,11 @@ func TestShipCommitPushWatch(t *testing.T) {
 			args:   []string{"-m", "fix: frobnicate"},
 			want: [][]string{
 				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "-m", "fix: frobnicate"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "branch", "--show-current"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.main.remote"},
 				{"git", "fetch", "origin"},
 				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
@@ -530,6 +639,8 @@ func TestShipHooksPass(t *testing.T) {
 			name:   "jj",
 			marker: ".jj",
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "diff", "--name-only"},
 				{"uvx", "prek", "run", "--cd", "ROOT", "--files", "f1.go"},
@@ -541,10 +652,13 @@ func TestShipHooksPass(t *testing.T) {
 			name:   "git",
 			marker: ".git",
 			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "diff", "--cached", "--name-only", "--diff-filter=d", "-z"},
 				{"uvx", "prek", "run", "--cd", "ROOT", "--files", "f1.go"},
 				{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
+				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 			},
 		},
@@ -577,7 +691,7 @@ func TestShipHooksPass(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			want := `hooks ok · committed a1b2c3d "fix: frobnicate" · not pushed`
+			want := `hooks ok · committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 			if got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
@@ -602,11 +716,13 @@ func TestShipHooksJJAmend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `hooks ok · committed a1b2c3d "fix: frobnicate" · not pushed`
+	want := `hooks ok · committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	assertInvocations(t, readInvocations(t, log), [][]string{
+		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 		{"jj", "diff", "--name-only"},
 		{"uvx", "prek", "run", "--cd", root, "--files", "folded.go"},
 		{"jj", "squash", "--use-destination-message"},
@@ -637,11 +753,13 @@ func TestShipHooksSubdirRunsAtRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `hooks ok · committed a1b2c3d "fix: frobnicate" · not pushed`
+	want := `hooks ok · committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	assertInvocations(t, readInvocations(t, log), [][]string{
+		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 		{"jj", "diff", "--name-only", "--", "sub/x.go"},
 		{"pwd", root},
 		{"jj", "diff", "--name-only", "--", "sub/x.go"},
@@ -754,7 +872,7 @@ func TestShipHooksAutoFixThenPass(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			want := `hooks fixed · committed a1b2c3d "fix: frobnicate" · not pushed`
+			want := `hooks fixed · committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 			if got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
@@ -817,7 +935,7 @@ func TestShipHooksRetryRederivesFiles(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			want := `hooks fixed · committed a1b2c3d "fix: frobnicate" · not pushed`
+			want := `hooks fixed · committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 			if got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
@@ -881,7 +999,7 @@ func TestShipHooksNoVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · not pushed`
+	want := `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
@@ -907,7 +1025,7 @@ func TestShipHooksNoConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · not pushed`
+	want := `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
@@ -945,7 +1063,7 @@ func TestShipHooksCommitMsgStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `hooks ok · committed a1b2c3d "fix: frobnicate" · not pushed`
+	want := `hooks ok · committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
@@ -977,7 +1095,7 @@ func TestShipHooksUvxMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `hooks uvx-missing · committed a1b2c3d "fix: frobnicate" · not pushed`
+	want := `hooks uvx-missing · committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
@@ -1006,7 +1124,7 @@ func TestShipHooksJJNoGitMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `hooks no-git · committed a1b2c3d "fix: frobnicate" · not pushed`
+	want := `hooks no-git · committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
@@ -1042,6 +1160,8 @@ func TestShipHooksEmptyFilesSkipSoftGuards(t *testing.T) {
 				}
 				invocations := readInvocations(t, log)
 				assertInvocations(t, invocations, [][]string{
+					{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+					{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 					{"jj", "diff", "--name-only"},
 					{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
 					{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
@@ -1063,7 +1183,7 @@ func TestShipHooksEmptyFilesSkipSoftGuards(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			want := `committed a1b2c3d "fix: frobnicate" · not pushed`
+			want := `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 			if got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
@@ -1095,15 +1215,18 @@ func TestShipHooksScopedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `hooks ok · committed a1b2c3d "fix: frobnicate" · not pushed`
+	want := `hooks ok · committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	want2 := [][]string{
+		{"git", "branch", "--show-current"},
+		{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 		{"git", "add", "-A", "--", "src/a.go"},
 		{"git", "diff", "--cached", "--name-only", "--diff-filter=d", "-z", "--", "src/a.go"},
 		{"uvx", "prek", "run", "--cd", root, "--files", "src/a.go"},
 		{"git", "commit", "-m", "fix: frobnicate", "--no-verify", "--", "src/a.go"},
+		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 	}
 	assertInvocations(t, readInvocations(t, log), want2)
@@ -1122,7 +1245,7 @@ func TestShipHooksFiltersMissingFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `hooks ok · committed a1b2c3d "fix: frobnicate" · not pushed`
+	want := `hooks ok · committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
@@ -1179,7 +1302,7 @@ func TestShipHooksPreserveHookableFilenames(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			want := `hooks ok · committed a1b2c3d "fix: frobnicate" · not pushed`
+			want := `hooks ok · committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 			if got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
@@ -1226,117 +1349,144 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			marker: ".jj",
 			args:   []string{"-m", "fix: frobnicate", "--no-push"},
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
-			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
 		{
 			name:   "git no-push",
 			marker: ".git",
 			args:   []string{"-m", "fix: frobnicate", "--no-push"},
 			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "-m", "fix: frobnicate"},
+				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 			},
-			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
 		{
 			name:   "jj amend no message",
 			marker: ".jj",
 			args:   []string{"--amend", "--no-push"},
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "squash", "--use-destination-message"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
-			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
 		{
 			name:   "jj amend with message",
 			marker: ".jj",
 			args:   []string{"--amend", "-m", "fix: frobnicate", "--no-push"},
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "squash", "-m", "fix: frobnicate"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
-			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
 		{
 			name:   "git amend no message",
 			marker: ".git",
 			args:   []string{"--amend", "--no-push"},
 			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "--amend", "--no-edit"},
+				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 			},
-			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
 		{
 			name:   "git amend no verify",
 			marker: ".git",
 			args:   []string{"--amend", "--no-verify", "--no-push"},
 			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "--amend", "--no-edit", "--no-verify"},
+				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 			},
-			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
 		{
 			name:   "jj scoped paths",
 			marker: ".jj",
 			args:   []string{"-m", "fix: frobnicate", "--no-push", "src/a.go", "docs"},
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only", "--", "src/a.go", "docs"},
 				{"jj", "commit", "-m", "fix: frobnicate", "--", "src/a.go", "docs"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
-			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
 		{
 			name:   "git scoped paths",
 			marker: ".git",
 			args:   []string{"-m", "fix: frobnicate", "--no-push", "src/a.go", "docs"},
 			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A", "--", "src/a.go", "docs"},
 				{"git", "commit", "-m", "fix: frobnicate", "--", "src/a.go", "docs"},
+				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 			},
-			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
 		{
 			name:   "jj amend scoped no message",
 			marker: ".jj",
 			args:   []string{"--amend", "--no-push", "src/a.go"},
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "squash", "--use-destination-message", "--", "src/a.go"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
-			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
 		{
 			name:   "jj amend scoped with message",
 			marker: ".jj",
 			args:   []string{"--amend", "-m", "fix: frobnicate", "--no-push", "src/a.go"},
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "squash", "-m", "fix: frobnicate", "--", "src/a.go"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
-			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
 		{
 			name:   "git amend scoped",
 			marker: ".git",
 			args:   []string{"--amend", "-m", "fix: frobnicate", "--no-push", "src/a.go"},
 			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A", "--", "src/a.go"},
 				{"git", "commit", "--amend", "-m", "fix: frobnicate", "--", "src/a.go"},
+				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 			},
-			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
 	}
 	for _, tt := range tests {
@@ -1394,6 +1544,8 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			args:    []string{"-m", "fix: frobnicate", "--no-watch", "--bookmark", "someone/probe"},
 			wantErr: `ship: nothing to commit — did a prior ship already land a1b2c3d "fix: frobnicate"? push it: jj bookmark move exact:someone/probe --to @- && jj git push --bookmark exact:someone/probe`,
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
@@ -1401,10 +1553,15 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			},
 		},
 		{
-			name:    "no push omits hint",
+			// The hint names the target under --no-push too: the branch plan
+			// resolves once for every lane, push or not.
+			name:    "no push still names the target",
 			args:    []string{"-m", "fix: frobnicate", "--no-push", "--bookmark", "someone/probe"},
-			wantErr: `ship: nothing to commit — did a prior ship already land a1b2c3d "fix: frobnicate"?`,
+			wantErr: `ship: nothing to commit — did a prior ship already land a1b2c3d "fix: frobnicate"? push it: jj bookmark move exact:someone/probe --to @- && jj git push --bookmark exact:someone/probe`,
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
@@ -1413,8 +1570,10 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 		{
 			name:    "description only working copy refuses",
 			args:    []string{"-m", "description only", "--no-push"},
-			wantErr: `ship: nothing to commit — did a prior ship already land a1b2c3d "fix: frobnicate"?`,
+			wantErr: `ship: nothing to commit — did a prior ship already land a1b2c3d "fix: frobnicate"? push it: jj bookmark move exact:main --to @- && jj git push --bookmark exact:main`,
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
@@ -1424,8 +1583,10 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			name:        "conflicted merge working copy commits",
 			args:        []string{"-m", "fix: frobnicate", "--no-push"},
 			env:         map[string]string{"JJ_AT_PARENTS": "2"},
-			wantSummary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			wantSummary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
 				{"jj", "commit", "-m", "fix: frobnicate"},
@@ -1435,8 +1596,10 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 		{
 			name:    "conflicted single-parent working copy refuses",
 			args:    []string{"-m", "fix: frobnicate", "--no-push"},
-			wantErr: `ship: nothing to commit — did a prior ship already land a1b2c3d "fix: frobnicate"?`,
+			wantErr: `ship: nothing to commit — did a prior ship already land a1b2c3d "fix: frobnicate"? push it: jj bookmark move exact:main --to @- && jj git push --bookmark exact:main`,
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
@@ -1446,8 +1609,10 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			name:    "empty root refuses",
 			args:    []string{"-m", "fix: frobnicate", "--no-push"},
 			env:     map[string]string{"JJ_DESCRIBE_OUTPUT": "000000000000\n"},
-			wantErr: `ship: nothing to commit — did a prior ship already land 000000000000 ""?`,
+			wantErr: `ship: nothing to commit — did a prior ship already land 000000000000 ""? push it: jj bookmark move exact:main --to @- && jj git push --bookmark exact:main`,
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
@@ -1459,6 +1624,8 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			env:     map[string]string{"JJ_DESCRIBE_OUTPUT": "000000000000"},
 			wantErr: `ship: malformed commit description "000000000000"`,
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
@@ -1502,27 +1669,62 @@ func TestShipJJEmptyAmendExempt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · not pushed`
+	want := `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	assertInvocations(t, readInvocations(t, log), [][]string{
+		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 		{"jj", "squash", "--use-destination-message"},
 		{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 	})
 }
 
+// TestShipGitDetachedHeadRefusesBeforeCommit proves a detached HEAD is refused
+// rather than guessed at, under --no-push too: the plan resolves before any
+// mutation on every lane.
 func TestShipGitDetachedHeadRefusesBeforeCommit(t *testing.T) {
-	log := setupShip(t, ".git", false)
-	t.Setenv("GIT_BRANCH", "")
+	for _, args := range [][]string{{"--no-watch"}, {"--no-push"}} {
+		t.Run(args[0], func(t *testing.T) {
+			log := setupShip(t, ".git", false)
+			t.Setenv("GIT_BRANCH", "")
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
-	if err == nil || err.Error() != "ship: detached HEAD; no branch to push" {
-		t.Fatalf("ship error = %v, want detached HEAD refusal", err)
+			_, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate"}, args...)...)
+			if err == nil || err.Error() != "ship: detached HEAD — check out a branch before shipping" {
+				t.Fatalf("ship error = %v, want detached HEAD refusal", err)
+			}
+			invocations := readInvocations(t, log)
+			assertInvocations(t, invocations, [][]string{{"git", "branch", "--show-current"}, gitTrunkArgv})
+			assertNoShipMutation(t, invocations)
+		})
 	}
-	invocations := readInvocations(t, log)
-	assertInvocations(t, invocations, [][]string{{"git", "branch", "--show-current"}})
-	assertNoShipCommit(t, invocations)
+}
+
+// TestShipDetachedHeadAfterCommitSelfHeals proves a commit that leaves HEAD
+// detached — twice observed from a gt-lane ship in a linked worktree — is
+// repaired with git checkout -B instead of reported as a success.
+func TestShipDetachedHeadAfterCommitSelfHeals(t *testing.T) {
+	log := setupShipGT(t, false)
+	t.Setenv("GIT_DETACHED_AFTER_COMMIT", "1")
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `committed a1b2c3d "fix: frobnicate" · branch feature · healed detached HEAD onto feature · not pushed`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	var healed []string
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "git" && inv[1] == "checkout" {
+			healed = inv
+		}
+	}
+	if want := []string{"git", "checkout", "-B", "feature", fakeHeadSHA}; !reflect.DeepEqual(healed, want) {
+		t.Errorf("heal argv = %v, want %v", healed, want)
+	}
 }
 
 func TestShipGitUsesPostCommitBranch(t *testing.T) {
@@ -1540,10 +1742,11 @@ func TestShipGitUsesPostCommitBranch(t *testing.T) {
 	}
 	assertInvocations(t, readInvocations(t, log), [][]string{
 		{"git", "branch", "--show-current"},
+		{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 		{"git", "add", "-A"},
 		{"git", "commit", "-m", "fix: frobnicate"},
-		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"git", "branch", "--show-current"},
+		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"git", "config", "--get", "branch.other.remote"},
 		{"git", "fetch", "origin"},
 		{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/other"},
@@ -1565,64 +1768,79 @@ func TestShipSessionTrailer(t *testing.T) {
 			marker: ".jj",
 			args:   []string{"-m", "fix: frobnicate", "--no-push"},
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
-			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
 		{
 			name:   "git commit appends trailer",
 			marker: ".git",
 			args:   []string{"-m", "fix: frobnicate", "--no-push"},
 			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid"},
+				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 			},
-			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
 		{
 			name:   "jj amend with message appends trailer",
 			marker: ".jj",
 			args:   []string{"--amend", "-m", "fix: frobnicate", "--no-push"},
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "squash", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
-			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
 		{
 			name:   "git amend with message appends trailer",
 			marker: ".git",
 			args:   []string{"--amend", "-m", "fix: frobnicate", "--no-push"},
 			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "--amend", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid"},
+				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 			},
-			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
 		{
 			name:   "jj amend without message carries no trailer",
 			marker: ".jj",
 			args:   []string{"--amend", "--no-push"},
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "squash", "--use-destination-message"},
 				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
-			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
 		{
 			name:   "git amend without message carries no trailer",
 			marker: ".git",
 			args:   []string{"--amend", "--no-push"},
 			want: [][]string{
+				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "--amend", "--no-edit"},
+				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 			},
-			summary: `committed a1b2c3d "fix: frobnicate" · not pushed`,
+			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
 	}
 	for _, tt := range tests {
@@ -1654,11 +1872,12 @@ func TestShipGitAmendFastForwardPush(t *testing.T) {
 	invocations := readInvocations(t, log)
 	assertInvocations(t, invocations, [][]string{
 		{"git", "branch", "--show-current"},
+		{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 		{"git", "rev-parse", "HEAD"},
 		{"git", "add", "-A"},
 		{"git", "commit", "--amend", "-m", "fix: frobnicate"},
-		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"git", "branch", "--show-current"},
+		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"git", "config", "--get", "branch.main.remote"},
 		{"git", "push", "origin", "main"},
 	})
@@ -1700,10 +1919,11 @@ func TestShipGitRebase(t *testing.T) {
 			name: "no divergence pushes clean",
 			want: [][]string{
 				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "-m", "fix: frobnicate"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "branch", "--show-current"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.main.remote"},
 				{"git", "fetch", "origin"},
 				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
@@ -1717,10 +1937,11 @@ func TestShipGitRebase(t *testing.T) {
 			env:  map[string]string{"GIT_DIVERGED": "1"},
 			want: [][]string{
 				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "-m", "fix: frobnicate"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "branch", "--show-current"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.main.remote"},
 				{"git", "fetch", "origin"},
 				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
@@ -1737,10 +1958,11 @@ func TestShipGitRebase(t *testing.T) {
 			env:  map[string]string{"GIT_DIVERGED": "1", "GIT_REBASE_CONFLICT": "1"},
 			want: [][]string{
 				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "-m", "fix: frobnicate"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "branch", "--show-current"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.main.remote"},
 				{"git", "fetch", "origin"},
 				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
@@ -1758,10 +1980,11 @@ func TestShipGitRebase(t *testing.T) {
 			env:  map[string]string{"GIT_REMOTE_REF_MISSING": "1"},
 			want: [][]string{
 				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "-m", "fix: frobnicate"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "branch", "--show-current"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.main.remote"},
 				{"git", "fetch", "origin"},
 				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
@@ -1775,10 +1998,11 @@ func TestShipGitRebase(t *testing.T) {
 			wantWarn: true,
 			want: [][]string{
 				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "-m", "fix: frobnicate"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "branch", "--show-current"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.main.remote"},
 				{"git", "fetch", "origin"},
 				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
@@ -1795,10 +2019,11 @@ func TestShipGitRebase(t *testing.T) {
 			env:  map[string]string{"GIT_BRANCH_REMOTE": "backup"},
 			want: [][]string{
 				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "-m", "fix: frobnicate"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "branch", "--show-current"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.main.remote"},
 				{"git", "fetch", "backup"},
 				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/backup/main"},
@@ -1812,10 +2037,11 @@ func TestShipGitRebase(t *testing.T) {
 			env:  map[string]string{"GIT_DIVERGED": "1", "GIT_REBASE_NO_START": "1"},
 			want: [][]string{
 				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "-m", "fix: frobnicate"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "branch", "--show-current"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.main.remote"},
 				{"git", "fetch", "origin"},
 				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
@@ -1878,10 +2104,11 @@ func TestShipGitPushRetry(t *testing.T) {
 			divergedSwitch: true,
 			want: [][]string{
 				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "-m", "fix: frobnicate"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "branch", "--show-current"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.main.remote"},
 				{"git", "fetch", "origin"},
 				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
@@ -1902,10 +2129,11 @@ func TestShipGitPushRetry(t *testing.T) {
 			pushReject: 3,
 			want: [][]string{
 				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "-m", "fix: frobnicate"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "branch", "--show-current"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.main.remote"},
 				{"git", "fetch", "origin"},
 				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
@@ -1929,10 +2157,11 @@ func TestShipGitPushRetry(t *testing.T) {
 			env:            map[string]string{"GIT_REBASE_CONFLICT": "1"},
 			want: [][]string{
 				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "-m", "fix: frobnicate"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "branch", "--show-current"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.main.remote"},
 				{"git", "fetch", "origin"},
 				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
@@ -1955,11 +2184,12 @@ func TestShipGitPushRetry(t *testing.T) {
 			env:  map[string]string{"GIT_AMEND_PLAIN_NONFF": "1", "GIT_LEASE_STALE": "1"},
 			want: [][]string{
 				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "rev-parse", "HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "--amend", "-m", "fix: frobnicate"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "branch", "--show-current"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.main.remote"},
 				{"git", "push", "origin", "main"},
 				{"git", "push", "origin", "--force-with-lease=main:" + fakeHeadSHA, "main"},
@@ -1971,10 +2201,11 @@ func TestShipGitPushRetry(t *testing.T) {
 			env:  map[string]string{"GIT_PUSH_FAIL_STDERR": "! [remote rejected] main -> main (pre-receive hook declined)"},
 			want: [][]string{
 				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "-m", "fix: frobnicate"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "branch", "--show-current"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.main.remote"},
 				{"git", "fetch", "origin"},
 				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
@@ -1989,10 +2220,11 @@ func TestShipGitPushRetry(t *testing.T) {
 			env:        map[string]string{"GIT_DIVERGED": "1"},
 			want: [][]string{
 				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "-m", "fix: frobnicate"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "branch", "--show-current"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.main.remote"},
 				{"git", "fetch", "origin"},
 				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
@@ -2015,10 +2247,11 @@ func TestShipGitPushRetry(t *testing.T) {
 			env:  map[string]string{"GIT_PUSH_FAIL_STDERR": "! [remote rejected] main -> main (pre-receive hook declined)\n! [rejected] feature -> feature (non-fast-forward)"},
 			want: [][]string{
 				{"git", "branch", "--show-current"},
+				{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
 				{"git", "add", "-A"},
 				{"git", "commit", "-m", "fix: frobnicate"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "branch", "--show-current"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.main.remote"},
 				{"git", "fetch", "origin"},
 				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
@@ -2353,6 +2586,8 @@ func TestShipJJRebase(t *testing.T) {
 			env:            map[string]string{"JJ_DIVERGED": "1"},
 			describeMarker: true,
 			want: [][]string{
+				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
@@ -2760,26 +2995,48 @@ func TestShipJJRebasePreservesHookSummary(t *testing.T) {
 	}
 }
 
-func TestShipJJForeignBookmarkFails(t *testing.T) {
-	log := setupShip(t, ".jj", true)
+// TestShipJJNonTrunkBookmarkAppends proves the old "nearest bookmark is not
+// trunk" refusal is gone: the answer it demanded was always the bookmark the
+// working copy already sat on, so ship appends to it and names it in the report.
+func TestShipJJNonTrunkBookmarkAppends(t *testing.T) {
+	log := setupShip(t, ".jj", false)
 	t.Setenv("JJ_BOOKMARK_NAMES", "someone/probe")
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate")
-	if err == nil {
-		t.Fatal("expected error when nearest bookmark is not trunk, got nil")
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
 	}
-	if !strings.Contains(err.Error(), `"someone/probe" is not trunk`) {
-		t.Errorf("error = %v, want it to name the foreign bookmark", err)
+	want := `committed a1b2c3d "fix: frobnicate" · branch someone/probe · not pushed`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
 	}
-	if !strings.Contains(err.Error(), "--bookmark someone/probe") {
-		t.Errorf("error = %v, want it to suggest --bookmark someone/probe", err)
+	assertInvocations(t, readInvocations(t, log), append(
+		jjPlanArgv(),
+		[]string{"jj", "diff", "--name-only"},
+		[]string{"jj", "commit", "-m", "fix: frobnicate"},
+		[]string{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+	))
+}
+
+// TestShipJJNonTrunkBookmarkPushesItself proves the appended bookmark is the one
+// pushed, not trunk.
+func TestShipJJNonTrunkBookmarkPushesItself(t *testing.T) {
+	log := setupShip(t, ".jj", false)
+	t.Setenv("JJ_BOOKMARK_NAMES", "someone/probe")
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
 	}
-	invocations := readInvocations(t, log)
-	assertInvocations(t, invocations, [][]string{
-		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-	})
-	assertNoShipCommit(t, invocations)
+	want := `committed a1b2c3d "fix: frobnicate" · pushed someone/probe → origin`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "jj" && inv[1] == "git" && inv[2] == "push" && inv[len(inv)-1] != "exact:someone/probe" {
+			t.Errorf("push argv = %v, want it to target exact:someone/probe", inv)
+		}
+	}
 }
 
 func TestShipJJMultipleNearestBookmarksFails(t *testing.T) {
@@ -2798,36 +3055,119 @@ func TestShipJJMultipleNearestBookmarksFails(t *testing.T) {
 		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
 		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 	})
-	assertNoShipCommit(t, invocations)
+	assertNoShipMutation(t, invocations)
 }
 
-func TestShipJJUnresolvableTrunkFails(t *testing.T) {
-	tests := []struct {
-		name       string
-		trunkNames string
-	}{
-		{"no trunk bookmark", ""},
-		{"ambiguous trunk names", "main dev"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			log := setupShip(t, ".jj", true)
-			t.Setenv("JJ_TRUNK_NAMES", tt.trunkNames)
+// TestShipJJAmbiguousTrunkFails proves several trunk candidates are refused,
+// listing them: that is genuine ambiguity, not something to guess at.
+func TestShipJJAmbiguousTrunkFails(t *testing.T) {
+	log := setupShip(t, ".jj", true)
+	t.Setenv("JJ_TRUNK_NAMES", "main dev")
 
-			_, err := runShipCmd(t, "-m", "fix: frobnicate")
-			if err == nil {
-				t.Fatal("expected error when trunk is unresolvable, got nil")
-			}
-			if !strings.Contains(err.Error(), "cannot resolve the trunk bookmark") {
-				t.Errorf("error = %v, want it to mention the unresolvable trunk", err)
-			}
-			invocations := readInvocations(t, log)
-			assertInvocations(t, invocations, [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-			})
-			assertNoShipCommit(t, invocations)
-		})
+	_, err := runShipCmd(t, "-m", "fix: frobnicate")
+	if err == nil {
+		t.Fatal("expected error when trunk is ambiguous, got nil")
 	}
+	if !strings.Contains(err.Error(), `cannot resolve the trunk bookmark from ["main" "dev"]`) {
+		t.Errorf("error = %v, want it to list both candidates", err)
+	}
+	invocations := readInvocations(t, log)
+	assertInvocations(t, invocations, [][]string{
+		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+	})
+	assertNoShipMutation(t, invocations)
+}
+
+// TestShipJJAmbiguousTrunkBranch proves --branch settles several trunk
+// candidates only by naming one of them, and that the name it picks becomes the
+// trunk every guard downstream compares against.
+func TestShipJJAmbiguousTrunkBranch(t *testing.T) {
+	t.Run("a --branch naming no candidate still refuses", func(t *testing.T) {
+		log := setupShip(t, ".jj", true)
+		t.Setenv("JJ_TRUNK_NAMES", "main dev")
+
+		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "feature")
+		if err == nil || !strings.Contains(err.Error(), `cannot resolve the trunk bookmark from ["main" "dev"]`) {
+			t.Fatalf("error = %v, want the trunk resolution refusal", err)
+		}
+		invocations := readInvocations(t, log)
+		assertInvocations(t, invocations, [][]string{
+			{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		})
+		assertNoShipMutation(t, invocations)
+	})
+
+	t.Run("the candidate it names is the trunk the guards weigh", func(t *testing.T) {
+		log := setupShip(t, ".jj", true)
+		t.Setenv("JJ_TRUNK_NAMES", "main dev")
+		seedLaneRecords(t, ".", laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
+
+		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "main")
+		if err == nil || !strings.Contains(err.Error(), "pass --allow-trunk to advance it deliberately") {
+			t.Fatalf("error = %v, want the org-trunk refusal", err)
+		}
+		assertNoShipMutation(t, readInvocations(t, log))
+	})
+
+	t.Run("a trunk of your own it names is committed onto", func(t *testing.T) {
+		setupShip(t, ".jj", true)
+		t.Setenv("JJ_TRUNK_NAMES", "main dev")
+
+		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--branch", "main", "--pr-title", "Better title")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		want := `committed a1b2c3d "fix: frobnicate" · pushed main → origin · no PR (on trunk)`
+		if got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestShipJJNoTrunkBookmark proves an unnamed trunk stops mattering once the
+// working copy sits on a bookmark: only a push with nothing at all to target
+// still refuses.
+func TestShipJJNoTrunkBookmark(t *testing.T) {
+	t.Run("a nearest bookmark is pushed regardless", func(t *testing.T) {
+		setupShip(t, ".jj", false)
+		t.Setenv("JJ_TRUNK_NAMES", "")
+
+		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		want := `committed a1b2c3d "fix: frobnicate" · pushed main → origin`
+		if got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("no bookmark at all still commits under --no-push", func(t *testing.T) {
+		setupShip(t, ".jj", false)
+		t.Setenv("JJ_TRUNK_NAMES", "")
+		t.Setenv("JJ_NO_BOOKMARK", "1")
+
+		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		want := `committed a1b2c3d "fix: frobnicate" · not pushed`
+		if got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("no bookmark at all refuses a push", func(t *testing.T) {
+		log := setupShip(t, ".jj", false)
+		t.Setenv("JJ_TRUNK_NAMES", "")
+		t.Setenv("JJ_NO_BOOKMARK", "1")
+
+		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+		if err == nil || !strings.Contains(err.Error(), "cannot resolve the trunk bookmark") {
+			t.Fatalf("error = %v, want the trunk resolution refusal", err)
+		}
+		assertNoShipMutation(t, readInvocations(t, log))
+	})
 }
 
 func TestShipJJBookmarkOverride(t *testing.T) {
@@ -2842,6 +3182,8 @@ func TestShipJJBookmarkOverride(t *testing.T) {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	assertInvocations(t, readInvocations(t, log), [][]string{
+		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 		{"jj", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
 		{"jj", "diff", "--name-only"},
 		{"jj", "commit", "-m", "fix: frobnicate"},
@@ -2856,22 +3198,46 @@ func TestShipJJBookmarkOverride(t *testing.T) {
 	})
 }
 
-func TestShipJJBookmarkOverrideNotFound(t *testing.T) {
-	log := setupShip(t, ".jj", true)
+// TestShipJJNewBranch proves a --bookmark naming no existing bookmark now
+// creates it: jj bookmark create -r @- runs after the commit, and the push
+// targets the new bookmark rather than trunk.
+func TestShipJJNewBranch(t *testing.T) {
+	log := setupShip(t, ".jj", false)
 	t.Setenv("JJ_BOOKMARK_HEADS", "0")
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--bookmark", "someone/probe")
-	if err == nil {
-		t.Fatal("expected error for a nonexistent --bookmark, got nil")
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--bookmark", "someone/probe")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
 	}
-	if !strings.Contains(err.Error(), `bookmark "someone/probe" not found`) {
-		t.Errorf("error = %v, want it to say the bookmark was not found", err)
+	want := `committed a1b2c3d "fix: frobnicate" · created someone/probe · pushed someone/probe → origin`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
 	}
+
 	invocations := readInvocations(t, log)
-	assertInvocations(t, invocations, [][]string{
-		{"jj", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
-	})
-	assertNoShipCommit(t, invocations)
+	create, push := -1, -1
+	for i, inv := range invocations {
+		switch {
+		case inv[0] == "jj" && inv[1] == "bookmark" && inv[2] == "create":
+			create = i
+			if want := []string{"jj", "bookmark", "create", "someone/probe", "-r", "@-"}; !reflect.DeepEqual(inv, want) {
+				t.Errorf("create argv = %v, want %v", inv, want)
+			}
+		case inv[0] == "jj" && inv[1] == "git" && inv[2] == "push":
+			push = i
+			if want := []string{"jj", "git", "push", "--bookmark", "exact:someone/probe"}; !reflect.DeepEqual(inv, want) {
+				t.Errorf("push argv = %v, want %v", inv, want)
+			}
+		}
+	}
+	switch {
+	case create < 0:
+		t.Fatalf("no jj bookmark create in %v", invocations)
+	case push < 0:
+		t.Fatalf("no jj git push in %v", invocations)
+	case create > push:
+		t.Errorf("jj bookmark create ran after the push (%d > %d)", create, push)
+	}
 }
 
 func TestShipGitBookmarkFlagFails(t *testing.T) {
@@ -2887,6 +3253,34 @@ func TestShipGitBookmarkFlagFails(t *testing.T) {
 	if inv := readInvocations(t, log); inv != nil {
 		t.Errorf("no VCS command should run when --bookmark is rejected, got %v", inv)
 	}
+}
+
+// TestShipBookmarkGuardReadsTheSpelling pins the guard to the flag the caller
+// typed rather than the field it binds. --bookmark and --branch share o.branch,
+// and the jj-only rule belongs to the --bookmark spelling alone; it also reads
+// the detected lane kind, never the graphite lane's coercion to git, which is
+// what once reported "applies only to jj repositories" inside a jj repository.
+func TestShipBookmarkGuardReadsTheSpelling(t *testing.T) {
+	t.Run("--bookmark refuses in a colocated jj graphite repo", func(t *testing.T) {
+		log := setupShipGT(t, false)
+		if err := os.Mkdir(".jj", 0o750); err != nil {
+			t.Fatalf("mkdir .jj: %v", err)
+		}
+		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--bookmark", "main")
+		wantErr := "ship: --bookmark does not apply in the graphite lane; pass --no-gt to advance a jj bookmark instead"
+		if err == nil || err.Error() != wantErr {
+			t.Fatalf("error = %v, want %q", err, wantErr)
+		}
+		assertNoGTCommit(t, readInvocations(t, log))
+	})
+
+	t.Run("--branch carries no such restriction", func(t *testing.T) {
+		log := setupShipGT(t, false)
+		if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "feature"); err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		assertGTCommit(t, readInvocations(t, log))
+	})
 }
 
 func TestShipRequiresMessage(t *testing.T) {
@@ -3410,16 +3804,18 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
-		want := `committed a1b2c3d "fix: frobnicate" · not pushed`
+		want := `committed a1b2c3d "fix: frobnicate" · branch feature · not pushed`
 		if got != want {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
 		assertInvocations(t, readInvocations(t, log), [][]string{
+			nogtProbe,
 			{"git", "branch", "--show-current"},
 			{"gt", "state"},
 			{"gt", "add", "--no-interactive", "-A"},
 			{"git", "diff", "--cached", "--quiet"},
 			{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
+			{"git", "branch", "--show-current"},
 			{"git", "log", "-1", "--format=%h%x00%s"},
 		})
 	})
@@ -3433,15 +3829,16 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
-		want := `committed a1b2c3d "fix: frobnicate" · not pushed`
+		want := `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
 		if got != want {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
-		assertInvocations(t, readInvocations(t, log), [][]string{
-			{"jj", "diff", "--name-only"},
-			{"jj", "commit", "-m", "fix: frobnicate"},
-			{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
-		})
+		assertInvocations(t, readInvocations(t, log), append(
+			jjPlanArgv(),
+			[]string{"jj", "diff", "--name-only"},
+			[]string{"jj", "commit", "-m", "fix: frobnicate"},
+			[]string{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+		))
 	})
 }
 
@@ -3450,6 +3847,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 		name      string
 		branch    string
 		stateJSON string
+		dryRun    bool
 		wantSeg   string
 	}{
 		{
@@ -3463,7 +3861,8 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			branch: "feature2",
 			stateJSON: `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},` +
 				`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`,
-			wantSeg: "submitted feature2 → PR #7 https://github.com/x/pull/7 (stack of 2)",
+			dryRun:  true,
+			wantSeg: "submitted feature2 → PR #7 https://github.com/x/pull/7 (stack of 2: feature, feature2)",
 		},
 	}
 	for _, tt := range tests {
@@ -3480,36 +3879,45 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			want := `committed a1b2c3d "fix: frobnicate" · ` + tt.wantSeg + ` · CI success`
-			if got != want {
-				t.Errorf("summary = %q, want %q", got, want)
+			if summary := `committed a1b2c3d "fix: frobnicate" · ` + tt.wantSeg + ` · CI success`; got != summary {
+				t.Errorf("summary = %q, want %q", got, summary)
 			}
-			assertInvocations(t, readInvocations(t, log), [][]string{
+			want := [][]string{
+				nogtProbe,
 				{"git", "branch", "--show-current"},
 				{"gt", "state"},
 				{"gt", "add", "--no-interactive", "-A"},
 				{"git", "diff", "--cached", "--quiet"},
 				{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "branch", "--show-current"},
-				{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
-				{"gh", "pr", "view", tt.branch, "--json", "number,url"},
-				{"git", "rev-parse", "HEAD"},
-				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
-				{"gh", "run", "watch", "42", "--exit-status"},
-				{"gh", "run", "view", "42", "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"},
-				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
-				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
-			})
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				{"gt", "state"},
+			}
+			// gt submit force-pushes the whole downstack, so a stack deeper than
+			// one branch is reported by --dry-run before anything is pushed.
+			if tt.dryRun {
+				want = append(want, []string{"gt", "submit", "--dry-run", "--no-interactive"})
+			}
+			assertInvocations(t, readInvocations(t, log), append(
+				want,
+				[]string{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
+				[]string{"gh", "pr", "view", tt.branch, "--json", "number,url"},
+				[]string{"git", "rev-parse", "HEAD"},
+				ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
+			))
 		})
 	}
 }
 
-func TestShipGTTrunkAutoCreate(t *testing.T) {
+// TestShipGTTrunkStacksBranch replaces TestShipGTTrunkAutoCreate: the branch
+// is named by ccx rather than left to gt's message-derived guess, and the
+// report says so before the submit.
+func TestShipGTTrunkStacksBranch(t *testing.T) {
 	log := setupShipGT(t, true)
 	t.Setenv("GIT_BRANCH", "main")
 	t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true}}`)
-	t.Setenv("GIT_BRANCH_AFTER_COMMIT", "feat-branch")
+	t.Setenv("GT_STATE_JSON_2", `{"main":{"trunk":true},"fix-frobnicate":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
+	t.Setenv("GT_STATE_JSON_MARKER", filepath.Join(t.TempDir(), "gt-state"))
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
 	t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewSuccess)
 	t.Setenv("GH_PR_VIEW_JSON", `{"number":9,"url":"https://github.com/x/pull/9"}`)
@@ -3519,37 +3927,169 @@ func TestShipGTTrunkAutoCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · submitted feat-branch → PR #9 https://github.com/x/pull/9 · CI success`
+	want := `committed a1b2c3d "fix: frobnicate" · created fix-frobnicate · submitted fix-frobnicate → PR #9 https://github.com/x/pull/9 · CI success`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	assertInvocations(t, readInvocations(t, log), [][]string{
+		nogtProbe,
+		{"git", "branch", "--show-current"},
+		{"gt", "state"},
+		{"gt", "add", "--no-interactive", "-A"},
+		{"git", "diff", "--cached", "--quiet"},
+		{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"},
+		{"git", "branch", "--show-current"},
+		{"git", "log", "-1", "--format=%h%x00%s"},
+		{"gt", "state"},
+		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
+		{"gh", "pr", "view", "fix-frobnicate", "--json", "number,url"},
+		{"git", "rev-parse", "HEAD"},
+		ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
+	})
+}
+
+// TestShipTrunkPersonalAppends and TestShipTrunkOrgCreates are the Personal()
+// split: outside the graphite lane, trunk in your own repository is committed
+// to directly, and an org trunk gets a branch instead.
+func TestShipTrunkPersonalAppends(t *testing.T) {
+	setupShip(t, ".git", false)
+	t.Setenv("GIT_TRUNK", "main")
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+}
+
+func TestShipTrunkOrgCreates(t *testing.T) {
+	log := setupShip(t, ".git", false)
+	t.Setenv("GIT_TRUNK", "main")
+	seedLaneRecords(t, ".", laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `committed a1b2c3d "fix: frobnicate" · created fix-frobnicate · not pushed`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	assertInvocations(t, readInvocations(t, log), [][]string{
 		{"git", "branch", "--show-current"},
-		{"gt", "state"},
-		{"gt", "add", "--no-interactive", "-A"},
-		{"git", "diff", "--cached", "--quiet"},
-		{"gt", "create", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"},
-		{"git", "log", "-1", "--format=%h%x00%s"},
+		gitTrunkArgv,
+		{"git", "switch", "-c", "fix-frobnicate"},
+		{"git", "add", "-A"},
+		{"git", "commit", "-m", "fix: frobnicate"},
 		{"git", "branch", "--show-current"},
-		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
-		{"gh", "pr", "view", "feat-branch", "--json", "number,url"},
-		{"git", "rev-parse", "HEAD"},
-		{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
-		{"gh", "run", "watch", "42", "--exit-status"},
-		{"gh", "run", "view", "42", "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"},
-		{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
-		{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
+		{"git", "log", "-1", "--format=%h%x00%s"},
 	})
 }
 
-func TestShipGTCreateFlag(t *testing.T) {
+// TestShipGitNewBranch proves --new-branch cuts the branch with git switch -c
+// before the commit, so the commit lands on it rather than on trunk.
+func TestShipGitNewBranch(t *testing.T) {
+	log := setupShip(t, ".git", false)
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `committed a1b2c3d "fix: frobnicate" · created feat-x · not pushed`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	assertInvocations(t, readInvocations(t, log), [][]string{
+		{"git", "branch", "--show-current"},
+		gitTrunkArgv,
+		{"git", "switch", "-c", "feat-x"},
+		{"git", "add", "-A"},
+		{"git", "commit", "-m", "fix: frobnicate"},
+		{"git", "branch", "--show-current"},
+		{"git", "log", "-1", "--format=%h%x00%s"},
+	})
+}
+
+// TestShipGitNewBranchRollback proves a refusal after the branch cut leaves the
+// working copy where it started: ship switches back, deletes the branch it cut,
+// and still reports the failure that refused the ship.
+func TestShipGitNewBranchRollback(t *testing.T) {
+	log := setupShip(t, ".git", false)
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	writeShipHookFiles(t, root, "f1.go")
+	t.Setenv("GIT_DIFF_NAMES", "f1.go\n")
+	marker := filepath.Join(root, "prek.marker")
+	if err := os.WriteFile(marker, []byte("2"), 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	t.Setenv("UVX_PREK_FAIL_MARKER", marker)
+
+	_, err = runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x")
+	if err == nil || !strings.Contains(err.Error(), "ship: hooks:") {
+		t.Fatalf("ship error = %v, want the hook failure", err)
+	}
+	hookArgv := []string{"uvx", "prek", "run", "--cd", root, "--files", "f1.go"}
+	assertInvocations(t, readInvocations(t, log), [][]string{
+		{"git", "branch", "--show-current"},
+		gitTrunkArgv,
+		{"git", "switch", "-c", "feat-x"},
+		{"git", "add", "-A"},
+		{"git", "diff", "--cached", "--name-only", "--diff-filter=d", "-z"},
+		hookArgv,
+		{"git", "add", "-A"},
+		{"git", "diff", "--cached", "--name-only", "--diff-filter=d", "-z"},
+		hookArgv,
+		{"git", "switch", "main"},
+		{"git", "branch", "-D", "feat-x"},
+	})
+}
+
+// TestShipGitNewBranchRollbackFailure proves a rollback that cannot finish is
+// reported alongside the refusal that triggered it, never instead of it.
+func TestShipGitNewBranchRollbackFailure(t *testing.T) {
+	setupShip(t, ".git", false)
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	writeShipHookFiles(t, root, "f1.go")
+	t.Setenv("GIT_DIFF_NAMES", "f1.go\n")
+	marker := filepath.Join(root, "prek.marker")
+	if err := os.WriteFile(marker, []byte("2"), 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	t.Setenv("UVX_PREK_FAIL_MARKER", marker)
+	t.Setenv("GIT_SWITCH_BACK_FAIL", "1")
+
+	_, err = runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x")
+	if err == nil {
+		t.Fatal("expected a refusal, got nil")
+	}
+	for _, want := range []string{"ship: hooks:", "ship: rollback: git switch main", "the working copy is left on feat-x"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err.Error(), want)
+		}
+	}
+}
+
+// TestShipGTCreateNamesExplicitly proves ship always hands gt a branch name, so
+// gt never derives one from a message carrying the session trailer.
+func TestShipGTCreateNamesExplicitly(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
 		want []string
 	}{
-		{"explicit name", []string{"--create=newbranch"}, []string{"gt", "create", "newbranch", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
-		{"bare create derives from message", []string{"--create"}, []string{"gt", "create", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
+		{"explicit name", []string{"--new-branch=newbranch"}, []string{"gt", "create", "newbranch", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
+		{"bare new-branch derives from the subject", []string{"--new-branch"}, []string{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
+		{"the deprecated --create alias still works", []string{"--create=newbranch"}, []string{"gt", "create", "newbranch", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
+		{"--parent stacks the branch onto it", []string{"--new-branch=newbranch", "--parent", "base"}, []string{"gt", "create", "newbranch", "--onto", "base", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3572,13 +4112,213 @@ func TestShipGTCreateFlag(t *testing.T) {
 }
 
 func TestShipCreateExplicitEmpty(t *testing.T) {
-	log := setupShipGT(t, false)
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--create=")
-	wantErr := "ship: --create requires a branch name or no value"
+	for _, flag := range []string{"--create=", "--new-branch="} {
+		t.Run(flag, func(t *testing.T) {
+			log := setupShipGT(t, false)
+			_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", flag)
+			wantErr := "ship: " + strings.TrimSuffix(flag, "=") + " requires a branch name or no value"
+			if err == nil || err.Error() != wantErr {
+				t.Fatalf("error = %v, want %q", err, wantErr)
+			}
+			assertNoGTCommit(t, readInvocations(t, log))
+		})
+	}
+}
+
+// TestShipCreateSwallowsPathOperand covers the flag shape that silently
+// committed a subset: cobra's NoOptDefVal never consumes the next token, so
+// "--new-branch docs" filed docs as the only path to commit.
+func TestShipCreateSwallowsPathOperand(t *testing.T) {
+	for _, flag := range []string{"--new-branch", "--create"} {
+		t.Run(flag, func(t *testing.T) {
+			log := setupShipGT(t, false)
+			_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", flag, "docs")
+			wantErr := `ship: "docs" is not a path — did you mean --new-branch=docs?`
+			if err == nil || err.Error() != wantErr {
+				t.Fatalf("error = %v, want %q", err, wantErr)
+			}
+			invocations := readInvocations(t, log)
+			assertNoGTCommit(t, invocations)
+			if invocations != nil {
+				t.Errorf("no VCS command may run before the path-operand refusal, got %v", invocations)
+			}
+		})
+	}
+
+	t.Run("a real path is still a path", func(t *testing.T) {
+		log := setupShipGT(t, false)
+		if err := os.Mkdir("docs", 0o750); err != nil {
+			t.Fatalf("mkdir docs: %v", err)
+		}
+		if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--new-branch", "docs"); err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		var add []string
+		for _, inv := range readInvocations(t, log) {
+			if inv[0] == "gt" && inv[1] == "add" {
+				add = inv
+			}
+		}
+		if want := []string{"gt", "add", "--no-interactive", "-A", "--", "docs"}; !reflect.DeepEqual(add, want) {
+			t.Errorf("add argv = %v, want %v", add, want)
+		}
+	})
+}
+
+// TestShipIllegalBranchName proves an explicit branch name is refused by ship,
+// before any lane work: only a derived name passes through legalBranchName
+// otherwise, leaving the refusal to whichever backend's argv parser ran first.
+func TestShipIllegalBranchName(t *testing.T) {
+	for _, f := range []struct{ flag, canonical string }{
+		{"--branch", "--branch"},
+		{"--bookmark", "--branch"},
+		{"--new-branch", "--new-branch"},
+		{"--create", "--new-branch"},
+	} {
+		for _, name := range []string{"--force", "a..b", "x.lock", "feature/", "feature."} {
+			t.Run(f.flag+"="+name, func(t *testing.T) {
+				log := setupShip(t, ".git", false)
+
+				_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", f.flag+"="+name)
+				wantErr := fmt.Sprintf("ship: %s %q is not a legal branch name", f.canonical, name)
+				if err == nil || err.Error() != wantErr {
+					t.Fatalf("error = %v, want %q", err, wantErr)
+				}
+				invocations := readInvocations(t, log)
+				assertNoShipMutation(t, invocations)
+				if invocations != nil {
+					t.Errorf("no VCS command may run before the illegal-name refusal, got %v", invocations)
+				}
+			})
+		}
+	}
+}
+
+// TestShipBranchFlag covers --branch's three outcomes: appending to the branch
+// already checked out, cutting one that does not exist, and refusing to switch
+// to one that exists elsewhere.
+func TestShipBranchFlag(t *testing.T) {
+	t.Run("naming the current branch appends", func(t *testing.T) {
+		log := setupShip(t, ".git", false)
+		t.Setenv("GIT_BRANCH", "feature")
+
+		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "feature")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		want := `committed a1b2c3d "fix: frobnicate" · branch feature · not pushed`
+		if got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+		for _, inv := range readInvocations(t, log) {
+			if inv[0] == "git" && inv[1] == "switch" {
+				t.Errorf("git switch ran for a branch already checked out: %v", inv)
+			}
+		}
+	})
+
+	t.Run("naming an existing branch refuses", func(t *testing.T) {
+		log := setupShip(t, ".git", false)
+		t.Setenv("GIT_BRANCH", "feature")
+
+		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "other")
+		wantErr := "ship: branch other already exists — check it out first; ship does not switch branches mid-commit"
+		if err == nil || err.Error() != wantErr {
+			t.Fatalf("error = %v, want %q", err, wantErr)
+		}
+		assertNoShipMutation(t, readInvocations(t, log))
+	})
+
+	t.Run("naming a missing branch creates it here", func(t *testing.T) {
+		setupShip(t, ".git", false)
+		t.Setenv("GIT_BRANCH", "feature")
+		t.Setenv("GIT_REMOTE_REF_MISSING", "1")
+
+		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "other")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		want := `committed a1b2c3d "fix: frobnicate" · created other · not pushed`
+		if got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("naming an org trunk refuses without --allow-trunk", func(t *testing.T) {
+		log := setupShip(t, ".git", false)
+		t.Setenv("GIT_BRANCH", "feature")
+		t.Setenv("GIT_TRUNK", "main")
+		seedLaneRecords(t, ".", laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
+
+		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "main")
+		if err == nil || !strings.Contains(err.Error(), "pass --allow-trunk to advance it deliberately") {
+			t.Fatalf("error = %v, want the org-trunk refusal", err)
+		}
+		assertNoShipMutation(t, readInvocations(t, log))
+	})
+}
+
+// TestShipAppendFlag proves --append refuses on trunk, where the branch it
+// would append to is the one ship exists to keep commits off.
+func TestShipAppendFlag(t *testing.T) {
+	log := setupShip(t, ".git", false)
+	t.Setenv("GIT_TRUNK", "main")
+
+	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--append")
+	wantErr := "ship: append would commit onto trunk — pass --new-branch"
 	if err == nil || err.Error() != wantErr {
 		t.Fatalf("error = %v, want %q", err, wantErr)
 	}
-	assertNoGTCommit(t, readInvocations(t, log))
+	assertNoShipMutation(t, readInvocations(t, log))
+}
+
+// TestShipGTTrackReportsParent proves the parent gt track -f picked is named in
+// the report, and that --parent replaces -f rather than being overridden by it.
+func TestShipGTTrackReportsParent(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		wantTrack []string
+		wantSeg   string
+	}{
+		{
+			name:      "gt track -f reports the ancestor it picked",
+			wantTrack: []string{"gt", "track", "-f", "--no-interactive"},
+			wantSeg:   "tracked feature onto base",
+		},
+		{
+			name:      "--parent drops -f, which would take precedence over it",
+			args:      []string{"--parent", "base"},
+			wantTrack: []string{"gt", "track", "--parent", "base", "--no-interactive"},
+			wantSeg:   "tracked feature onto base",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShipGT(t, false)
+			t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true},"base":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
+			t.Setenv("GT_STATE_JSON_2", `{"main":{"trunk":true},"base":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
+				`"feature":{"parents":[{"ref":"base","sha":"beadfeed"}]}}`)
+			t.Setenv("GT_STATE_JSON_MARKER", filepath.Join(t.TempDir(), "gt-state"))
+
+			got, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.args...)...)
+			if err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			if !strings.HasPrefix(got, tt.wantSeg+" · ") {
+				t.Errorf("summary = %q, want it to lead with %q", got, tt.wantSeg)
+			}
+			var track []string
+			for _, inv := range readInvocations(t, log) {
+				if inv[0] == "gt" && inv[1] == "track" {
+					track = inv
+				}
+			}
+			if !reflect.DeepEqual(track, tt.wantTrack) {
+				t.Errorf("track argv = %v, want %v", track, tt.wantTrack)
+			}
+		})
+	}
 }
 
 func TestShipGTAmend(t *testing.T) {
@@ -3634,11 +4374,13 @@ func TestShipGTPathScoped(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	assertInvocations(t, readInvocations(t, log), [][]string{
+		nogtProbe,
 		{"git", "branch", "--show-current"},
 		{"gt", "state"},
 		{"gt", "add", "--no-interactive", "-A", "--", "src/a.go", "docs"},
 		{"git", "diff", "--cached", "--quiet"},
 		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
+		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 	})
 }
@@ -3660,7 +4402,7 @@ func TestShipGTHunkScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `hooks hunk-skip · committed a1b2c3d "fix: frobnicate" · not pushed`
+	want := `hooks hunk-skip · committed a1b2c3d "fix: frobnicate" · branch feature · not pushed`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
@@ -3681,6 +4423,7 @@ func TestShipGTHunkScoped(t *testing.T) {
 	// gt verb — the same throwaway-index technique the git lane uses — always
 	// naming the same temp index.
 	assertInvocations(t, raw, [][]string{
+		nogtProbe,
 		{"git", "rev-parse", "--show-toplevel"},
 		{"git", "ls-tree", "--full-tree", "HEAD", "--", "f.txt"},
 		{"git", "show", "--end-of-options", "HEAD:f.txt"},
@@ -3697,6 +4440,7 @@ func TestShipGTHunkScoped(t *testing.T) {
 		idxRec,
 		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
 		{"git", "restore", "--staged", "--", "f.txt"},
+		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 	})
 }
@@ -3748,11 +4492,12 @@ func TestShipGTRefusals(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
-		want := `tracked feature · committed a1b2c3d "fix: frobnicate" · not pushed`
+		want := `tracked feature onto main · committed a1b2c3d "fix: frobnicate" · branch feature · not pushed`
 		if got != want {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
 		assertInvocations(t, readInvocations(t, log), [][]string{
+			nogtProbe,
 			{"git", "branch", "--show-current"},
 			{"gt", "state"},
 			{"gt", "track", "-f", "--no-interactive"},
@@ -3760,6 +4505,7 @@ func TestShipGTRefusals(t *testing.T) {
 			{"gt", "add", "--no-interactive", "-A"},
 			{"git", "diff", "--cached", "--quiet"},
 			{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
+			{"git", "branch", "--show-current"},
 			{"git", "log", "-1", "--format=%h%x00%s"},
 		})
 	})
@@ -3778,6 +4524,7 @@ func TestShipGTRefusals(t *testing.T) {
 			t.Errorf("error = %q, want %q", err.Error(), wantErr)
 		}
 		assertInvocations(t, readInvocations(t, log), [][]string{
+			nogtProbe,
 			{"git", "branch", "--show-current"},
 			{"gt", "state"},
 			{"gt", "track", "-f", "--no-interactive"},
@@ -3879,28 +4626,18 @@ func TestShipGTDraftPublish(t *testing.T) {
 	})
 }
 
+// TestShipGTFlagsOutsideGTLane covers --parent alone: --draft and --publish
+// stopped being graphite-only when ship took over the pull request in every
+// lane, where they toggle the draft state through gh.
 func TestShipGTFlagsOutsideGTLane(t *testing.T) {
-	tests := []struct {
-		name string
-		args []string
-	}{
-		{"--create", []string{"--create"}},
-		{"--draft", []string{"--draft"}},
-		{"--publish", []string{"--publish"}},
+	log := setupShip(t, ".git", false)
+	wantErr := "ship: --parent applies only to graphite repos; pass --no-gt only when .git/.graphite_repo_config exists, or drop it"
+	_, err := runShipCmd(t, "--parent", "base", "--no-push")
+	if err == nil || err.Error() != wantErr {
+		t.Errorf("error = %v, want %q", err, wantErr)
 	}
-	wantErr := "ship: --create/--draft/--publish apply only to graphite repos; pass --no-gt only when .git/.graphite_repo_config exists, or drop these flags"
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			log := setupShip(t, ".git", false)
-			args := append(append([]string{}, tt.args...), "--no-push")
-			_, err := runShipCmd(t, args...)
-			if err == nil || err.Error() != wantErr {
-				t.Errorf("error = %v, want %q", err, wantErr)
-			}
-			if inv := readInvocations(t, log); inv != nil {
-				t.Errorf("no VCS command may run before the graphite-only flag check, got %v", inv)
-			}
-		})
+	if inv := readInvocations(t, log); inv != nil {
+		t.Errorf("no VCS command may run before the graphite-only flag check, got %v", inv)
 	}
 }
 
@@ -3927,7 +4664,7 @@ func TestShipGTNoPush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · not pushed`
+	want := `committed a1b2c3d "fix: frobnicate" · branch feature · not pushed`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}

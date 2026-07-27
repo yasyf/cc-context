@@ -38,8 +38,8 @@ the read, search, edit, and diff commands take the same arguments as their CLI c
 `ccx format -- <cmd>`. Clients may show these under a client-assigned `mcp__…__`
 prefix; use the names as listed in the tool inventory.
 Use whichever is available; the workflow is identical. `ccx vcs ship`, `ccx vcs hunks`,
-`ccx vcs show`, `ccx vcs history`, and `ccx repo locate` are CLI-only — there is no MCP
-tool for them.
+`ccx vcs show`, `ccx vcs history`, `ccx vcs info`, `ccx vcs guidelines`, and
+`ccx repo locate` are CLI-only — there is no MCP tool for them.
 
 ## Workflow
 
@@ -186,9 +186,30 @@ Commit, push, and watch CI in one call. `ship` runs a jj-aware commit (plain git
 otherwise), pushes, then watches every workflow run on the pushed commit — found via
 `gh run list --commit`, retrying registration for up to a minute. Trailing paths
 scope the commit to just those files; the rest of the working copy — a concurrent
-session's edits included — stays put. The push only auto-advances the trunk
-bookmark: parked on any other bookmark, ship refuses until `--bookmark <name>`
-names the target deliberately. The first line is the summary; each watched run adds
+session's edits included — stays put. Where the commit goes is one decision,
+resolved before any mutation and reported as a `branch <name>` or `created <name>`
+segment: a non-trunk branch or bookmark gets appended to, trunk stays direct in your
+own repositories and becomes a branch named from the commit subject when GitHub says
+the repository is someone else's, and a detached HEAD or an ambiguous trunk refuses.
+`--branch <name>`, `--new-branch[=<name>]`, `--append`, and `--allow-trunk` state
+intent explicitly (`--bookmark` is the jj-only alias of `--branch`, `--create` the
+deprecated alias of `--new-branch`).
+
+A live Graphite config (`.git/.graphite_repo_config`, linked worktrees included)
+routes ship to the gt lane — commits through `gt create`/`gt modify`, the push a
+`gt submit` of the downstack, published by default — after three gates, each
+demoting to jj/git with the reason in a leading `lane <kind> (<reason>)` segment:
+`ccx.nogt` set in git config, GitHub positively saying the repo is someone else's,
+and a cached probe of whether Graphite can actually submit here (a probe that
+cannot reach Graphite keeps the lane). `--no-gt` opts out. Ship owns the pull
+request in every lane: `--pr-title`/`--pr-body-file` (repeatable, branch-scoped as
+`<branch>=<value>`, a bare value applying to the tip, `-` reading stdin) create the
+branch's PR or edit exactly the fields restated — a hand-edited description
+survives a re-ship that does not mention it — `--draft`/`--publish` convert an
+existing PR in either direction, `--no-pr` opts out, and a ship naming no PR flag
+makes no `gh pr` call.
+
+The first line is the summary; each watched run adds
 a `workflow · conclusion · duration · url` line,
 and a red run adds its failing jobs and a budget-capped `--log-failed` excerpt with a
 `full log:` pointer. `CI failure` means a run went red; `CI error` means the watch
@@ -202,8 +223,21 @@ ccx vcs hunks f.go                               # list pending hunks as file:A-
 ccx vcs ship -m "fix: x" --skip-hunk f.go:530-536#k2fa f.go  # ship f.go minus one hunk
 ccx vcs ship -m "wip" --no-push                  # commit only, skip push and CI
 ccx vcs ship --amend                             # fold the working copy into the parent
-ccx vcs ship -m "spike" --bookmark me/probe      # advance a non-trunk bookmark
+ccx vcs ship -m "spike" --branch me/probe        # commit onto a named branch
+ccx vcs ship -m "feat: x" --new-branch --pr-title "Add X" --pr-body-file body.md
 ccx vcs ship -m "fix: x" --budget 0              # uncapped failure-log excerpt
+```
+
+`ccx vcs info` (alias `lane`) reports the lane a mutating command would take and
+why — vcs kind, branch, trunk, the Graphite gates, the GitHub repo record, and on
+the gt lane the downstack with each branch's PR. `ccx vcs guidelines` (alias
+`contributing`) fetches and caches the repo's PR templates, `CONTRIBUTING.md`, code
+of conduct, and issue config, served verbatim so a PR body can reproduce the
+template exactly:
+
+```
+ccx vcs info                                     # which lane a ship would take, and why
+ccx vcs guidelines                               # PR templates + contribution rules, verbatim
 ```
 
 ### 8. Re-encode

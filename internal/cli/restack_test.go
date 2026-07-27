@@ -73,7 +73,11 @@ exit 0
       printf '%s' "${RESTACK_GIT_REV_TRUNK_BEFORE:-cccccccccccccccccccccccccccccccccccccccc}"
     fi ;;
   "config --get")
-    if [ -n "$RESTACK_GIT_REMOTE" ]; then printf '%s\n' "$RESTACK_GIT_REMOTE"; else exit 1; fi ;;
+    case "$3" in
+      ccx.nogt) if [ -n "$RESTACK_CONFIG_CCX_NOGT" ]; then printf '%s\n' "$RESTACK_CONFIG_CCX_NOGT"; else exit 1; fi ;;
+      branch.*.remote) if [ -n "$RESTACK_GIT_REMOTE" ]; then printf '%s\n' "$RESTACK_GIT_REMOTE"; else exit 1; fi ;;
+      *) printf 'fake git: unmatched config key: %s\n' "$3" >&2; exit 2 ;;
+    esac ;;
   "symbolic-ref --short")
     if [ -n "$RESTACK_GIT_SYMBOLIC_MISS" ]; then exit 1; fi
     printf '%s/%s\n' "${RESTACK_GIT_REMOTE:-origin}" "${RESTACK_GIT_TRUNK:-main}" ;;
@@ -153,9 +157,15 @@ func setupRestack(t *testing.T, marker string, graphite, withGT bool) string {
 
 	logPath := filepath.Join(dir, "restack.log")
 	t.Setenv("PATH", binDir)
+	// Root the cache under the test's own dir so the lane gate never reads or
+	// writes the developer's real ~/Library/Caches/cc-context.
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	t.Setenv("RESTACK_LOG", logPath)
 	if withGT {
 		t.Setenv("RESTACK_SYNC_MARKER", filepath.Join(dir, "sync.marker"))
+	}
+	if graphite {
+		seedLaneRecords(t, ".", laneSeed{})
 	}
 	return logPath
 }
@@ -216,6 +226,7 @@ func TestRestackGTSuccess(t *testing.T) {
 		t.Fatalf("output = %q, want %q", out, "restacked · trunk main")
 	}
 	requireRestackRecords(t, logPath, [][]string{
+		nogtProbe,
 		{"gt", "state"},
 		{"git", "rev-parse", "HEAD"},
 		{"git", "rev-parse", "main"},
@@ -317,6 +328,7 @@ func TestRestackGTFailures(t *testing.T) {
 				t.Fatalf("error = %q, want substring %q", err, tt.want)
 			}
 			requireRestackRecords(t, logPath, [][]string{
+				nogtProbe,
 				{"gt", "state"},
 				{"git", "rev-parse", "HEAD"},
 				{"git", "rev-parse", "main"},
@@ -334,8 +346,8 @@ func TestRestackGraphiteFirst(t *testing.T) {
 			t.Fatalf("restack: %v", err)
 		}
 		records := readRestackLog(t, logPath)
-		if len(records) == 0 || records[0][0] != "gt" {
-			t.Fatalf("first argv = %#v, want a gt command (routed to the gt lane, not jj)", records)
+		if len(records) < 2 || records[1][0] != "gt" {
+			t.Fatalf("argv after the lane gate = %#v, want a gt command (routed to the gt lane, not jj)", records)
 		}
 	})
 
@@ -553,9 +565,7 @@ func TestRestackRefusesMissingGT(t *testing.T) {
 	if err.Error() != want {
 		t.Fatalf("error = %q, want %q", err, want)
 	}
-	if records := readRestackLog(t, logPath); len(records) != 0 {
-		t.Fatalf("unexpected argv records: %#v", records)
-	}
+	requireRestackRecords(t, logPath, [][]string{nogtProbe})
 }
 
 func TestRestackRegisteredWithRebaseAlias(t *testing.T) {

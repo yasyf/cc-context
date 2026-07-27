@@ -117,7 +117,15 @@ func RunCLIAllowExit(ctx context.Context, bin string, argv []string, okCodes ...
 // --is-ancestor, and still surface the stderr on an unexpected code. A nonzero
 // exit is not an error; err is non-nil only when the child could not run.
 func RunCLIExitCode(ctx context.Context, bin string, argv []string) (string, int, string, error) {
+	return RunCLIExitCodeDir(ctx, "", bin, argv)
+}
+
+// RunCLIExitCodeDir is RunCLIExitCode with the child's working directory pinned
+// to dir, for a command whose answer depends on which repo it runs in (e.g. gt
+// auth). An empty dir inherits the parent's working directory.
+func RunCLIExitCodeDir(ctx context.Context, dir, bin string, argv []string) (string, int, string, error) {
 	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
