@@ -4,6 +4,46 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.38.0] - 2026-07-28
+
+### Removed
+- **BREAKING: `--scope` is gone; `-g/--glob` is the one path selector.** It was a
+  second spelling of the same idea, and the code had already admitted as much —
+  the glob module owned the metacharacter test that gated scope validation, the
+  ripgrep lane *derived* a scope by peeling the anchor off the globs, and a
+  file-valued scope was silently coerced into a path operand. Two selectors that
+  compose by accident teach a model of narrowing that does not exist, so
+  the flag is deleted outright, with no alias and no deprecation window: consumers
+  are agents that re-read `--help`, the docs, and the live MCP schema each session,
+  and cobra's `unknown flag` is the loud failure the alternative would have hidden.
+  Migrate `--scope D` to `-g D`, `--scope D --glob G` to `-g 'D/**/G'` (slash-less
+  `G`) or `-g 'D/G'` (slashed `G`), and a file-valued `--scope F` to a positional
+  `F` on `code grep` or `-g F` on `vcs diff`/`vcs show`. `code symbol`, `vcs diff`,
+  and `vcs show` gain `-g` to replace it; on `repo find` the globs are positionals,
+  so `--scope D` becomes a bare `D` operand rather than a flag; `code deps` loses
+  selection entirely, since its `--scope` was validated on every call and then read
+  by nothing. One frame difference survives the unification: a slashed glob is
+  cwd-relative on the search ops and repo-root-relative on `vcs diff`/`vcs show`,
+  which filter git's changed-file list rather than walking the tree.
+- **BREAKING: the MCP selector fields collapse to one `globs` array.** `glob` and
+  `scope` on `ccx_code_grep`, `ccx_repo_find`, `ccx_code_symbol`, `ccx_vcs_diff`,
+  and `ccx_code_replace` each become a single ordered `globs: string[]`, so a
+  client can express the exclusion and ordering the CLI has taken since 0.37.0
+  instead of one glob plus a directory. `ccx_code_deps` drops selection with the
+  CLI flag. In `ccx exec`, `grep(text, globs=…)`, `symbol(name, globs=…)`,
+  `find(globs)`, and `diff(source, globs=…)` change shape the same way, and
+  `deps(path)` loses its parameter.
+
+### Changed
+- **`vcs diff`/`vcs show` filter changed files through `MatchGlobs`, not a path
+  prefix.** The filter stays stat-free, so a path the diff *deletes* still matches
+  the glob naming it — a prefix test that touched the disk would drop exactly the
+  files a diff exists to report.
+- **`code symbol` takes its outline root from the anchor its includes share.** A
+  glob narrower than its anchor, or one that only excludes, then decides membership
+  through `MatchGlobs`, and the reference scan carries the same list — so
+  `-g '*.go'` narrows a whole-tree lookup, which no directory scope could express.
+
 ## [0.37.0] - 2026-07-27
 
 ### Changed
