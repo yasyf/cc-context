@@ -4,6 +4,61 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.0] - 2026-07-28
+
+### Fixed
+- **The graphite reachability gate was inert in every release since 0.35.0.** The
+  gate exists to keep `ccx vcs ship` off the gt lane in a repo Graphite cannot
+  submit for — the failure it was written for is a commit cut onto a gt branch
+  and then a `gt submit` that refuses. Its probe was capped at 5s. Measured over
+  60 runs across three repos, `gt auth --no-interactive` answers in 7.0s at the
+  median, 10.9s at p95, and 13.1s at the slowest, with a separate reading at
+  17.9s: the cap sat below every single observation, so every probe timed out,
+  every timeout read as "unknown", and unknown kept the lane. `ccx vcs info`
+  reported `reachable: true` for a probe that never answered. The cap is now 20s,
+  and the constant carries the distribution it came from — the 5s value was
+  derived from one ~1.5s sample, which is the whole defect.
+
+### Changed
+- **An unanswered probe demotes to jj/git instead of keeping the gt lane.** The
+  verdict is now three-valued — reachable, refused, unknown — and only an
+  explicit yes keeps the lane; gt's own ready line is the only thing that counts
+  as consent, so an exit 0 that never confirms submittability is unknown rather
+  than assent. A demoted lane names its reason on the ship report line as it
+  already did for a refusal. This is deliberately fail-safe: the gate cannot go
+  inert again without also being visible, and the cost is that a network blip on
+  a genuinely-synced repo pushes a plain branch outside the live stack.
+- **An unknown verdict is cached for 60s.** Reachable answers cache for 24h and
+  refusals for 1h; unknown now caches too, briefly. Under demote-on-unknown a
+  cached unknown is a cached *demotion*, so caching it costs nothing in safety —
+  while not caching it makes every command during an outage pay a fresh 20s
+  probe to re-derive the same answer. 60s is short enough that a transient blip
+  self-heals almost immediately. The on-disk record's schema version bumps, so
+  verdicts cached by an older binary read as a miss.
+- **`graphite.reachable` in `ccx vcs info --json` is a string, not a boolean.** It
+  carries the probe's own verdict — `"yes"`, `"no"`, or `"unknown"` — with a new
+  `graphite.reason` explaining anything but a yes, and stays absent for a repo
+  never probed at all. A boolean could not distinguish a repo Graphite refuses
+  from one nobody could get an answer about, which is exactly the conflation that
+  hid the inert gate. The human line gains
+  `reachability unknown (gt auth did not answer within 20s)`.
+- **A probe cannot be outlived by a process it forked.** The deadline killed `gt`
+  itself, but a grandchild holding the inherited stdout pipe kept the read
+  blocked, so a forking probe could outlast its own cap. Probes now lead their
+  own process group and cancellation SIGKILLs the group; `exec.Cmd.WaitDelay`
+  backstops every `render.RunCLI*` helper, which previously would block forever
+  on a descendant that outlived its parent. Only the probe path takes the changed
+  signal semantics — the unbounded callers get the backstop alone.
+- **`vcs.GraphiteRepo` distinguishes "no Graphite config" from "could not tell".**
+  It collapsed every lookup failure into "not a graphite repo", so a linked
+  worktree whose gitdir pointer git cannot resolve — a broken repository —
+  answered the same as an ordinary repo without Graphite. Only a missing config
+  answers false now; anything else propagates.
+- **`ccx vcs restack` reports a declined graphite lane.** It resolved the lane and
+  then dropped the explanation on the floor, so a restack that quietly ran on
+  jj/git looked identical to one that took the gt lane. `ship` and `reviews`
+  already surfaced this.
+
 ## [0.38.0] - 2026-07-28
 
 ### Removed

@@ -40,14 +40,17 @@ type vcsInfo struct {
 	Downstack   []stackEntry `json:"downstack,omitempty"`
 }
 
-// graphiteInfo is what the graphite lane has available here. Reachable is a
-// pointer so an unprobed repo — no live config, or no gt to ask with — stays
-// distinguishable from one Graphite refuses.
+// graphiteInfo is what the graphite lane has available here. Reachable carries
+// the probe's own verdict rather than a boolean, so a repo Graphite refuses, one
+// nobody could get an answer about, and one never probed at all — no live
+// config, or no gt to ask with, which leaves it empty — all stay distinct.
+// Reason explains anything but a yes.
 type graphiteInfo struct {
 	Config    bool   `json:"config"`
 	CLI       bool   `json:"cli"`
 	Version   string `json:"version,omitempty"`
-	Reachable *bool  `json:"reachable,omitempty"`
+	Reachable string `json:"reachable,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 // stackEntry is one branch in the graphite downstack and the pull request it
@@ -151,7 +154,11 @@ func collectVcsInfo(ctx context.Context, l lane, o vcsInfoOpts) (vcsInfo, error)
 // else's repo — is probed here instead: what graphite has available is worth
 // reporting even where the lane refused to use it.
 func infoGraphite(ctx context.Context, l lane, o vcsInfoOpts) (graphiteInfo, error) {
-	g := graphiteInfo{Config: vcs.GraphiteRepo(ctx, l.root)}
+	config, err := vcs.GraphiteRepo(ctx, l.root)
+	if err != nil {
+		return graphiteInfo{}, err
+	}
+	g := graphiteInfo{Config: config}
 	if !g.Config {
 		return g, nil
 	}
@@ -164,15 +171,15 @@ func infoGraphite(ctx context.Context, l lane, o vcsInfoOpts) (graphiteInfo, err
 		return graphiteInfo{}, fmt.Errorf("info: gt --version: %w", err)
 	}
 	g.Version = strings.TrimSpace(out)
-	if l.reachable != nil {
-		g.Reachable = l.reachable
+	if l.verdict != "" {
+		g.Reachable, g.Reason = string(l.verdict), l.note
 		return g, nil
 	}
-	reachable, _, err := gtReachability(ctx, l.root, o.refresh)
+	verdict, why, err := gtReachability(ctx, l.root, o.refresh)
 	if err != nil {
 		return graphiteInfo{}, err
 	}
-	g.Reachable = &reachable
+	g.Reachable, g.Reason = string(verdict), why
 	return g, nil
 }
 
@@ -393,12 +400,13 @@ func infoGraphiteValue(g graphiteInfo) string {
 		}
 		segs = append(segs, seg)
 	}
-	if g.Reachable != nil {
-		if *g.Reachable {
-			segs = append(segs, "reachable")
-		} else {
-			segs = append(segs, "unreachable")
-		}
+	switch gtVerdict(g.Reachable) {
+	case gtVerdictOK:
+		segs = append(segs, "reachable")
+	case gtVerdictDenied:
+		segs = append(segs, "unreachable")
+	case gtVerdictUnknown:
+		segs = append(segs, "reachability unknown ("+g.Reason+")")
 	}
 	return strings.Join(segs, shipSep)
 }

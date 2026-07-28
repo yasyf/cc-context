@@ -98,8 +98,9 @@ func TestGraphiteRepo(t *testing.T) {
 	withoutConfig := filepath.Join(root, "withoutconfig")
 	mustMkdir(t, filepath.Join(withoutConfig, ".git"))
 
-	// A .git file whose gitdir pointer resolves nowhere: the common-dir
-	// fallback runs and fails, which is a miss rather than a crash.
+	// A .git file whose gitdir pointer resolves nowhere: the common-dir fallback
+	// runs and fails, which is a broken repository. Reporting it as "no graphite
+	// config" would make it indistinguishable from the plain directory below.
 	dangling := filepath.Join(root, "dangling")
 	mustMkdir(t, dangling)
 	if err := os.WriteFile(filepath.Join(dangling, ".git"), []byte("gitdir: ../withconfig/.git/worktrees/dangling\n"), 0o600); err != nil {
@@ -107,18 +108,23 @@ func TestGraphiteRepo(t *testing.T) {
 	}
 
 	tests := []struct {
-		name string
-		dir  string
-		want bool
+		name    string
+		dir     string
+		want    bool
+		wantErr bool
 	}{
-		{"graphite config present", withConfig, true},
-		{"git dir without graphite config", withoutConfig, false},
-		{"unresolvable gitdir pointer", dangling, false},
-		{"no .git at all", root, false},
+		{name: "graphite config present", dir: withConfig, want: true},
+		{name: "git dir without graphite config", dir: withoutConfig},
+		{name: "unresolvable gitdir pointer", dir: dangling, wantErr: true},
+		{name: "no .git at all", dir: root},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := GraphiteRepo(context.Background(), tt.dir); got != tt.want {
+			got, err := GraphiteRepo(context.Background(), tt.dir)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("GraphiteRepo(%q) error = %v, want an error: %v", tt.dir, err, tt.wantErr)
+			}
+			if got != tt.want {
 				t.Fatalf("GraphiteRepo(%q) = %v, want %v", tt.dir, got, tt.want)
 			}
 		})
@@ -150,7 +156,11 @@ func TestGraphiteRepoWorktree(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := GraphiteRepo(context.Background(), tt.dir); got != tt.want {
+			got, err := GraphiteRepo(context.Background(), tt.dir)
+			if err != nil {
+				t.Fatalf("GraphiteRepo(%q): %v", tt.dir, err)
+			}
+			if got != tt.want {
 				t.Fatalf("GraphiteRepo(%q) = %v, want %v", tt.dir, got, tt.want)
 			}
 		})

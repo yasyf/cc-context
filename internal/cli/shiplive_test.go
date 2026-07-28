@@ -810,9 +810,9 @@ func TestLiveGTProbeNoToken(t *testing.T) {
 	requireLiveGT(t)
 	dir := setupLiveGTRepo(t, "base\n")
 
-	reachable, note, known := gtReachable(context.Background(), dir)
-	if reachable || !known {
-		t.Fatalf("gtReachable() = (%v, %q, %v), want a known negative", reachable, note, known)
+	verdict, note := gtReachable(context.Background(), dir)
+	if verdict != gtVerdictDenied {
+		t.Fatalf("gtReachable() = (%q, %q), want %q", verdict, note, gtVerdictDenied)
 	}
 	want := "graphite has no auth token — run gt auth --token <token>"
 	if note != want {

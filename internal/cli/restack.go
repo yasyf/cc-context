@@ -72,6 +72,9 @@ func runRestack(cmd *cobra.Command, o restackOpts) error {
 	if err != nil {
 		return err
 	}
+	if l.note != "" {
+		summary = fmt.Sprintf("lane %s (%s)%s%s", kindLabel(l.kind), l.note, shipSep, summary)
+	}
 	cmd.Println(summary)
 	return nil
 }

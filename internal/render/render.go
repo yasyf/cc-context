@@ -10,16 +10,30 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
 // charsPerToken is the crude chars-per-token ratio used to estimate budgets.
 const charsPerToken = 4
 
+// waitDelay bounds how long Wait blocks after the child is gone, for a
+// descendant still holding the inherited output pipes open. Matches the
+// in-repo precedent (internal/web, internal/codeexec).
+const waitDelay = 5 * time.Second
+
+// newCmd is every helper's child. It only unblocks Wait — killing a descendant
+// needs the process group configureProbeCommand sets up.
+func newCmd(ctx context.Context, bin string, argv []string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	cmd.WaitDelay = waitDelay
+	return cmd
+}
+
 // RunCLI executes bin with argv, returning its stdout. A nonzero exit wraps the
 // child's stderr in the returned error.
 func RunCLI(ctx context.Context, bin string, argv []string) (string, error) {
-	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	cmd := newCmd(ctx, bin, argv)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -32,7 +46,7 @@ func RunCLI(ctx context.Context, bin string, argv []string) (string, error) {
 // RunCLIDir is RunCLI with the child's working directory pinned to dir, for a
 // command whose output paths are cwd-relative (e.g. jj diff --name-only).
 func RunCLIDir(ctx context.Context, dir, bin string, argv []string) (string, error) {
-	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	cmd := newCmd(ctx, bin, argv)
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -48,7 +62,7 @@ func RunCLIDir(ctx context.Context, dir, bin string, argv []string) (string, err
 // (e.g. GIT_INDEX_FILE). extraEnv extends os.Environ(), so a "KEY=value" element
 // overrides any inherited KEY per exec's last-wins rule.
 func RunCLIEnv(ctx context.Context, bin string, argv, extraEnv []string) (string, error) {
-	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	cmd := newCmd(ctx, bin, argv)
 	cmd.Env = append(os.Environ(), extraEnv...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -62,7 +76,7 @@ func RunCLIEnv(ctx context.Context, bin string, argv, extraEnv []string) (string
 // RunCLIStdin is RunCLI with stdin fed from the given bytes, for a command that
 // reads its payload from stdin (e.g. git hash-object --stdin).
 func RunCLIStdin(ctx context.Context, bin string, argv []string, stdin []byte) (string, error) {
-	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	cmd := newCmd(ctx, bin, argv)
 	cmd.Stdin = bytes.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -77,7 +91,7 @@ func RunCLIStdin(ctx context.Context, bin string, argv []string, stdin []byte) (
 // as they are produced. It does not buffer output; the returned error carries the
 // exit status only (any stderr already flowed to w).
 func RunCLIStream(ctx context.Context, bin string, argv []string, w io.Writer) error {
-	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	cmd := newCmd(ctx, bin, argv)
 	cmd.Stdout = w
 	cmd.Stderr = w
 	if err := cmd.Run(); err != nil {
@@ -94,7 +108,7 @@ func RunCLIStream(ctx context.Context, bin string, argv []string, w io.Writer) e
 // non-listed nonzero exit. The exit code is read from the process error via
 // errors.As, never by string-matching.
 func RunCLIAllowExit(ctx context.Context, bin string, argv []string, okCodes ...int) (string, error) {
-	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	cmd := newCmd(ctx, bin, argv)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -124,7 +138,7 @@ func RunCLIExitCode(ctx context.Context, bin string, argv []string) (string, int
 // to dir, for a command whose answer depends on which repo it runs in (e.g. gt
 // auth). An empty dir inherits the parent's working directory.
 func RunCLIExitCodeDir(ctx context.Context, dir, bin string, argv []string) (string, int, string, error) {
-	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	cmd := newCmd(ctx, bin, argv)
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -141,12 +155,38 @@ func RunCLIExitCodeDir(ctx context.Context, dir, bin string, argv []string) (str
 	return "", 0, "", fmt.Errorf("%s: %w: %s", bin, err, strings.TrimSpace(stderr.String()))
 }
 
+// RunCLIProbeDir is RunCLIExitCodeDir for a probe under a deadline: the child
+// leads its own process group and cancellation SIGKILLs the group, so a
+// grandchild cannot outlive the deadline holding the output pipes open. It is
+// the deadline that makes this worth the changed signal semantics, so an
+// unbounded caller stays on RunCLIExitCodeDir. Whatever the child managed to
+// write is returned even when it was killed, so the caller can still read a
+// reason off a partial answer.
+func RunCLIProbeDir(ctx context.Context, dir, bin string, argv []string) (string, int, string, error) {
+	cmd := newCmd(ctx, bin, argv)
+	cmd.Dir = dir
+	configureProbeCommand(cmd)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err == nil {
+		return stdout.String(), 0, stderr.String(), nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return stdout.String(), exitErr.ExitCode(), stderr.String(), nil
+	}
+	return stdout.String(), 0, stderr.String(), fmt.Errorf("%s: %w: %s", bin, err, strings.TrimSpace(stderr.String()))
+}
+
 // RunCLIKeepStderr is RunCLI but also returns the child's stderr on success, for
 // a command that warns on stderr while exiting 0 (git rebase --autostash warns
 // that an autostash pop "resulted in conflicts" and exits 0). A nonzero exit wraps
 // the child's stderr in the returned error as RunCLI does.
 func RunCLIKeepStderr(ctx context.Context, bin string, argv []string) (stdout, stderr string, err error) {
-	cmd := exec.CommandContext(ctx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	cmd := newCmd(ctx, bin, argv)
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf

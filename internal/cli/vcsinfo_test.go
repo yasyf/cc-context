@@ -259,6 +259,46 @@ func TestVcsInfoGraphiteDeclined(t *testing.T) {
 	}
 }
 
+// TestVcsInfoProbeUnknown proves info reports a probe that never answered as
+// unknown rather than as either verdict it could not get: the lane demotes, and
+// both the lane note and the graphite line carry the reason, so the report never
+// claims a reachability it never established.
+func TestVcsInfoProbeUnknown(t *testing.T) {
+	setupShipGT(t, true)
+	infoFakes(t)
+	clearGTRecord(t, ".")
+	t.Setenv("GT_AUTH_HANG", "1")
+
+	out, err := runVcsInfoCmd(t, "--json")
+	if err != nil {
+		t.Fatalf("info error = %v", err)
+	}
+	var got vcsInfo
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("unmarshal report: %v\n%s", err, out)
+	}
+	wantReason := "gt auth did not answer within " + gtProbeTimeout.String()
+	if got.Lane != "git" {
+		t.Errorf("lane = %q, want git — an unknown verdict demotes", got.Lane)
+	}
+	if got.LaneReason != infoDeclinedPrefix+wantReason {
+		t.Errorf("lane_reason = %q, want %q", got.LaneReason, infoDeclinedPrefix+wantReason)
+	}
+	if got.Graphite.Reachable != string(gtVerdictUnknown) || got.Graphite.Reason != wantReason {
+		t.Errorf("graphite reachable/reason = %q/%q, want %q/%q",
+			got.Graphite.Reachable, got.Graphite.Reason, gtVerdictUnknown, wantReason)
+	}
+
+	human, err := runVcsInfoCmd(t)
+	if err != nil {
+		t.Fatalf("info error = %v", err)
+	}
+	want := "config live · gt 1.8.6 · reachability unknown (" + wantReason + ")"
+	if line := infoLine(t, human, "graphite"); line != want {
+		t.Errorf("graphite = %q, want %q", line, want)
+	}
+}
+
 // TestVcsInfoRefreshLaneVerdict proves --refresh re-probes the verdict the lane
 // turns on rather than only the line describing it: a cached negative the user
 // has since fixed moves the lane itself, and every input is asked for once.
@@ -269,11 +309,11 @@ func TestVcsInfoRefreshLaneVerdict(t *testing.T) {
 		args          []string
 		wantLane      string
 		wantReason    string
-		wantReachable bool
+		wantReachable gtVerdict
 		wantLookups   int
 	}{
-		{"refresh re-probes", []string{"--json", "--refresh"}, "gt", "", true, 1},
-		{"no refresh serves the cached verdict", []string{"--json"}, "git", infoDeclinedPrefix + staleNote, false, 0},
+		{"refresh re-probes", []string{"--json", "--refresh"}, "gt", "", gtVerdictOK, 1},
+		{"no refresh serves the cached verdict", []string{"--json"}, "git", infoDeclinedPrefix + staleNote, gtVerdictDenied, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -294,11 +334,8 @@ func TestVcsInfoRefreshLaneVerdict(t *testing.T) {
 			if got.Lane != tt.wantLane || got.LaneReason != tt.wantReason {
 				t.Errorf("lane/lane_reason = %q/%q, want %q/%q", got.Lane, got.LaneReason, tt.wantLane, tt.wantReason)
 			}
-			if got.Graphite.Reachable == nil {
-				t.Fatalf("graphite.reachable = null, want a probed %t", tt.wantReachable)
-			}
-			if *got.Graphite.Reachable != tt.wantReachable {
-				t.Errorf("graphite.reachable = %t, want %t — the report contradicts its own lane", *got.Graphite.Reachable, tt.wantReachable)
+			if got.Graphite.Reachable != string(tt.wantReachable) {
+				t.Errorf("graphite.reachable = %q, want %q — the report contradicts its own lane", got.Graphite.Reachable, tt.wantReachable)
 			}
 			invocations := readInvocations(t, log)
 			if n := countInvocations(invocations, "gt", "auth"); n != tt.wantLookups {
@@ -380,8 +417,8 @@ func TestVcsInfoJSON(t *testing.T) {
 	if !got.Graphite.Config || !got.Graphite.CLI || got.Graphite.Version != "1.8.6" {
 		t.Errorf("graphite = %+v, want a live config on gt 1.8.6", got.Graphite)
 	}
-	if got.Graphite.Reachable == nil || !*got.Graphite.Reachable {
-		t.Errorf("graphite.reachable = %v, want a probed true", got.Graphite.Reachable)
+	if got.Graphite.Reachable != string(gtVerdictOK) {
+		t.Errorf("graphite.reachable = %q, want %q", got.Graphite.Reachable, gtVerdictOK)
 	}
 	if got.GitHub == nil || got.GitHub.NameWithOwner != "yasyf/cc-context" || got.GitHub.ViewerPermission != "ADMIN" {
 		t.Errorf("github = %+v, want the seeded repo record", got.GitHub)

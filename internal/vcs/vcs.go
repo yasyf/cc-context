@@ -66,20 +66,29 @@ func DetectRoot(dir string) (Kind, string) {
 // .git. A linked worktree's .git is a file holding a gitdir pointer rather than
 // a directory, so the plain join misses there and the common dir — the main
 // worktree's .git, where the config actually lives — is resolved through git.
-func GraphiteRepo(ctx context.Context, root string) bool {
+//
+// Only a missing config answers false: a gitdir pointer git cannot resolve is a
+// broken repository, not a repository without Graphite, and the two must stay
+// distinguishable.
+func GraphiteRepo(ctx context.Context, root string) (bool, error) {
 	if _, err := os.Stat(filepath.Join(root, ".git", ".graphite_repo_config")); err == nil {
-		return true
+		return true, nil
 	}
 	info, err := os.Stat(filepath.Join(root, ".git"))
 	if err != nil || info.IsDir() {
-		return false
+		return false, nil
 	}
 	common, err := gitCommonDir(ctx, root)
 	if err != nil {
-		return false
+		return false, err
 	}
-	_, err = os.Stat(filepath.Join(common, ".graphite_repo_config"))
-	return err == nil
+	if _, err := os.Stat(filepath.Join(common, ".graphite_repo_config")); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat graphite config under %q: %w", common, err)
+	}
+	return true, nil
 }
 
 // gitCommonDir resolves root's git common dir — the main worktree's .git, which

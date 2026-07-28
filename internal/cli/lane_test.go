@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -54,8 +55,12 @@ func seedLaneRecords(t *testing.T, dir string, seed laneSeed) {
 	write(repoPath, fmt.Sprintf(
 		`{"schema":1,"repo":{"name_with_owner":%q,"owner":%q,"is_private":%t,"viewer_login":"yasyf","viewer_permission":%q,"affiliated":%t,"fetched_at":%q}}`,
 		seed.nameWithOwner, seed.owner, !seed.public, seed.permission, !seed.unaffiliated, now))
+	verdict := gtVerdictOK
+	if seed.unreachable {
+		verdict = gtVerdictDenied
+	}
 	write(filepath.Join(filepath.Dir(repoPath), "gt.json"), fmt.Sprintf(
-		`{"schema":1,"reachable":%t,"note":%q,"fetched_at":%q}`, !seed.unreachable, seed.note, now))
+		`{"schema":%d,"verdict":%q,"note":%q,"fetched_at":%q}`, gtSchema, verdict, seed.note, now))
 }
 
 // clearLaneRecords empties dir's lane cache, so the gate has to look the repo
@@ -66,10 +71,25 @@ func clearLaneRecords(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatalf("resolve repo cache path: %v", err)
 	}
-	for _, path := range []string{repoPath, filepath.Join(filepath.Dir(repoPath), "gt.json")} {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			t.Fatalf("clear %s: %v", path, err)
-		}
+	if err := os.Remove(repoPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("clear %s: %v", repoPath, err)
+	}
+	clearGTRecord(t, dir)
+}
+
+// clearGTRecord drops just the cached gt verdict, leaving the seeded GitHub
+// record in place. A test that wants a live probe still wants repo metadata
+// served from cache: clearing it too sends the report back to the fake gh,
+// failing the test on an unrelated lookup.
+func clearGTRecord(t *testing.T, dir string) {
+	t.Helper()
+	repoPath, err := vcs.RepoCachePath(dir)
+	if err != nil {
+		t.Fatalf("resolve repo cache path: %v", err)
+	}
+	path := filepath.Join(filepath.Dir(repoPath), "gt.json")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("clear %s: %v", path, err)
 	}
 }
 
@@ -168,82 +188,89 @@ func TestShipGateUnknownKeepsGT(t *testing.T) {
 }
 
 func TestClassifyGTProbe(t *testing.T) {
+	const unconfirmed = "gt auth exited 0 without confirming this repo is submittable"
 	tests := []struct {
-		name      string
-		output    string
-		code      int
-		reachable bool
-		note      string
-		known     bool
+		name    string
+		output  string
+		code    int
+		verdict gtVerdict
+		note    string
 	}{
 		{
-			name:   "synced repo",
-			output: "Authenticated as: yasyf\n✅ Ready to submit PRs to github.com/yasyf/cc-context\n",
-			code:   0, reachable: true, known: true,
+			name:    "synced repo",
+			output:  "Authenticated as: yasyf\n✅ Ready to submit PRs to github.com/yasyf/cc-context\n",
+			code:    0,
+			verdict: gtVerdictOK,
 		},
 		{
-			name:   "authenticated but outside a submittable repo",
-			output: "Authenticated as: yasyf\n",
-			code:   0,
+			name:    "authenticated but outside a submittable repo",
+			output:  "Authenticated as: yasyf\n",
+			code:    0,
+			verdict: gtVerdictUnknown,
+			note:    unconfirmed,
 		},
 		{
-			name:   "not synced",
-			output: "Error: yasyf does not have the necessary permissions to submit PRs to cli/cli\n",
-			code:   1,
-			note:   "Error: yasyf does not have the necessary permissions to submit PRs to cli/cli",
-			known:  true,
+			name:    "not synced",
+			output:  "Error: yasyf does not have the necessary permissions to submit PRs to cli/cli\n",
+			code:    1,
+			verdict: gtVerdictDenied,
+			note:    "Error: yasyf does not have the necessary permissions to submit PRs to cli/cli",
 		},
 		{
-			name:   "no token",
-			output: "No auth token set\n",
-			code:   1,
-			note:   "graphite has no auth token — run gt auth --token <token>",
-			known:  true,
+			name:    "no token",
+			output:  "No auth token set\n",
+			code:    1,
+			verdict: gtVerdictDenied,
+			note:    "graphite has no auth token — run gt auth --token <token>",
 		},
 		{
-			name:   "server unreachable",
-			output: "Could not connect to the Graphite server\n",
-			code:   1,
+			name:    "server unreachable",
+			output:  "Could not connect to the Graphite server\n",
+			code:    1,
+			verdict: gtVerdictUnknown,
+			note:    "graphite server unreachable",
 		},
 		{
-			name:   "unrecognized failure demotes on gt's own words",
-			output: "gt: something new went wrong\n",
-			code:   1,
-			note:   "gt: something new went wrong",
-			known:  true,
+			name:    "unrecognized failure demotes on gt's own words",
+			output:  "gt: something new went wrong\n",
+			code:    1,
+			verdict: gtVerdictDenied,
+			note:    "gt: something new went wrong",
 		},
 		{
-			name:  "silent nonzero exit still demotes",
-			code:  1,
-			note:  "gt auth failed without output",
-			known: true,
+			name:    "silent nonzero exit still demotes",
+			code:    1,
+			verdict: gtVerdictDenied,
+			note:    "gt auth failed without output",
 		},
 		{
-			name:   "a reworded ready line is not a success",
-			output: "✅ All set to open PRs against github.com/yasyf/cc-context\n",
-			code:   0,
+			name:    "a reworded ready line is not a success",
+			output:  "✅ All set to open PRs against github.com/yasyf/cc-context\n",
+			code:    0,
+			verdict: gtVerdictUnknown,
+			note:    unconfirmed,
 		},
 		{
-			name:   "an overlong failure is capped",
-			output: strings.Repeat("z", gtProbeNoteBudget+50),
-			code:   1,
-			note:   strings.Repeat("z", gtProbeNoteBudget) + "…",
-			known:  true,
+			name:    "an overlong failure is capped",
+			output:  strings.Repeat("z", gtProbeNoteBudget+50),
+			code:    1,
+			verdict: gtVerdictDenied,
+			note:    strings.Repeat("z", gtProbeNoteBudget) + "…",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reachable, note, known := classifyGTProbe(tt.output, tt.code)
-			if reachable != tt.reachable || note != tt.note || known != tt.known {
-				t.Errorf("classifyGTProbe() = (%v, %q, %v), want (%v, %q, %v)",
-					reachable, note, known, tt.reachable, tt.note, tt.known)
+			verdict, note := classifyGTProbe(tt.output, tt.code)
+			if verdict != tt.verdict || note != tt.note {
+				t.Errorf("classifyGTProbe() = (%q, %q), want (%q, %q)", verdict, note, tt.verdict, tt.note)
 			}
 		})
 	}
 }
 
 // TestShipGateProbe drives the probe end to end through ship, with the cached
-// verdict cleared so gt auth actually runs.
+// verdict cleared so gt auth actually runs. Only gt's own ready line keeps the
+// lane; every other answer, decline or non-answer alike, demotes with a note.
 func TestShipGateProbe(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -258,8 +285,14 @@ func TestShipGateProbe(t *testing.T) {
 			stderr:   "Error: yasyf does not have the necessary permissions to submit PRs to cli/cli",
 			wantNote: "Error: yasyf does not have the necessary permissions to submit PRs to cli/cli",
 		},
-		{name: "server unreachable", stdout: "", exit: "1", stderr: gtProbeUnreadable},
-		{name: "authenticated outside a repo", stdout: "Authenticated as: yasyf"},
+		{
+			name: "server unreachable", stdout: "", exit: "1", stderr: gtProbeUnreadable,
+			wantNote: "graphite server unreachable",
+		},
+		{
+			name: "authenticated outside a repo", stdout: "Authenticated as: yasyf",
+			wantNote: "gt auth exited 0 without confirming this repo is submittable",
+		},
 		{
 			name: "unrecognized failure", stdout: "", exit: "1",
 			stderr:   "Error: gt rewrote this message in 2.0",
@@ -298,49 +331,44 @@ func TestShipGateProbe(t *testing.T) {
 	}
 }
 
-// TestShipGateProbeTimeoutKeepsGT proves a hung probe never costs the gt lane:
-// demoting on a network stall would push a branch outside a live stack.
-func TestShipGateProbeTimeoutKeepsGT(t *testing.T) {
+// TestShipGateProbeTimeoutDemotes proves a hung probe costs the gt lane. Riding
+// the lane on an answer nobody got is the worse trade: it submits into a stack
+// Graphite may not accept, where demoting only lands a plain branch, and the
+// report names the reason so the demotion is never silent.
+func TestShipGateProbeTimeoutDemotes(t *testing.T) {
 	log := setupShipGT(t, false)
 	clearLaneRecords(t, ".")
 	t.Setenv("GT_AUTH_HANG", "1")
 
-	start := time.Now()
 	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push")
-	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	if elapsed < gtProbeTimeout {
-		t.Errorf("ship took %s, want at least the %s probe timeout — the probe did not hang", elapsed, gtProbeTimeout)
+	want := "lane git (gt auth did not answer within " + gtProbeTimeout.String() + ")"
+	if !strings.HasPrefix(out, want) {
+		t.Errorf("report = %q, want it to lead with %q", out, want)
 	}
-	if elapsed > 4*gtProbeTimeout {
-		t.Errorf("ship took %s, want the probe bounded near %s", elapsed, gtProbeTimeout)
-	}
-	invocations := readInvocations(t, log)
-	if len(invocations) < 2 || invocations[1][0] != "gt" || invocations[1][1] != "auth" {
-		t.Fatalf("argv after the lane gate = %v, want gt auth", invocations)
-	}
-	if strings.HasPrefix(out, "lane ") {
-		t.Errorf("report = %q, want no lane segment on an unknown verdict", out)
-	}
-	assertGTCommit(t, invocations)
+	assertNoGTCommit(t, readInvocations(t, log))
 }
 
-// TestGTReachabilityCaches proves the probe runs once per repo, that an unknown
-// verdict is never cached, and that a negative expires on the shorter TTL.
+// TestGTReachabilityCaches proves each verdict is served for its own TTL: a
+// positive for a day, a negative for an hour, and an unknown for a minute.
 func TestGTReachabilityCaches(t *testing.T) {
 	tests := []struct {
 		name      string
-		reachable bool
+		schema    int
+		verdict   gtVerdict
 		age       time.Duration
 		wantFresh bool
 	}{
-		{"fresh positive", true, time.Hour, true},
-		{"positive within 24h", true, 23 * time.Hour, true},
-		{"positive past 24h", true, 25 * time.Hour, false},
-		{"negative within 1h", false, 30 * time.Minute, true},
-		{"negative past 1h", false, 2 * time.Hour, false},
+		{"fresh positive", gtSchema, gtVerdictOK, time.Hour, true},
+		{"positive within 24h", gtSchema, gtVerdictOK, 23 * time.Hour, true},
+		{"positive past 24h", gtSchema, gtVerdictOK, 25 * time.Hour, false},
+		{"negative within 1h", gtSchema, gtVerdictDenied, 30 * time.Minute, true},
+		{"negative past 1h", gtSchema, gtVerdictDenied, 2 * time.Hour, false},
+		{"unknown within 60s", gtSchema, gtVerdictUnknown, 30 * time.Second, true},
+		{"unknown past 60s", gtSchema, gtVerdictUnknown, 2 * time.Minute, false},
+		{"a boolean schema-1 record reads as a miss", 1, gtVerdictOK, time.Hour, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -350,8 +378,8 @@ func TestGTReachabilityCaches(t *testing.T) {
 			if err != nil {
 				t.Fatalf("gt cache path: %v", err)
 			}
-			body := fmt.Sprintf(`{"schema":1,"reachable":%t,"note":"n","fetched_at":%q}`,
-				tt.reachable, time.Now().Add(-tt.age).Format(time.RFC3339Nano))
+			body := fmt.Sprintf(`{"schema":%d,"verdict":%q,"note":"n","fetched_at":%q}`,
+				tt.schema, tt.verdict, time.Now().Add(-tt.age).Format(time.RFC3339Nano))
 			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 				t.Fatalf("seed gt record: %v", err)
 			}
@@ -362,21 +390,42 @@ func TestGTReachabilityCaches(t *testing.T) {
 	}
 }
 
-func TestGTReachabilityDoesNotCacheUnknown(t *testing.T) {
+// TestGTReachabilityCachesUnknownBriefly proves an unanswerable probe demotes and
+// is remembered, but only for gtUnknownTTL. The two halves are one decision:
+// unknown demotes, so a cached unknown is a cached demotion — it cannot resurrect
+// the lane it just declined, which is what makes storing it safe at all, and
+// storing it stops every command during an outage paying a fresh probe to
+// re-derive the same answer. The short TTL is the other half: the one verdict
+// nobody could confirm is re-asked as soon as the answer might have changed, so a
+// repo that recovers is not held demoted.
+func TestGTReachabilityCachesUnknownBriefly(t *testing.T) {
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	t.Setenv("PATH", t.TempDir())
 	dir := t.TempDir()
 
-	reachable, note, err := gtReachability(context.Background(), dir, false)
-	if err != nil || !reachable || note != "" {
-		t.Fatalf("gtReachability() = (%v, %q, %v), want (true, \"\", nil)", reachable, note, err)
+	verdict, note, err := gtReachability(context.Background(), dir, false)
+	if err != nil || verdict != gtVerdictUnknown || note == "" {
+		t.Fatalf("gtReachability() = (%q, %q, %v), want (%q, a reason, nil)", verdict, note, err, gtVerdictUnknown)
 	}
 	path, err := gtCachePath(dir)
 	if err != nil {
 		t.Fatalf("gt cache path: %v", err)
 	}
-	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-		t.Errorf("gt.json exists after an unknown verdict (stat err = %v), want no record", statErr)
+	rec, ok := readGTRecord(path)
+	if !ok || rec.Verdict != gtVerdictUnknown {
+		t.Fatalf("readGTRecord() = (%+v, %v), want a stored %q verdict", rec, ok, gtVerdictUnknown)
+	}
+
+	rec.FetchedAt = time.Now().Add(-gtUnknownTTL - time.Second)
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatalf("marshal backdated record: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write backdated record: %v", err)
+	}
+	if _, ok := readGTRecord(path); ok {
+		t.Errorf("readGTRecord() served a record older than gtUnknownTTL (%s), want a miss", gtUnknownTTL)
 	}
 }
 
@@ -406,9 +455,9 @@ func TestGTReachabilityLocksProbe(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			reachable, note, err := gtReachability(context.Background(), dir, false)
-			if err != nil || !reachable || note != "" {
-				t.Errorf("gtReachability() = (%v, %q, %v), want (true, \"\", nil)", reachable, note, err)
+			verdict, note, err := gtReachability(context.Background(), dir, false)
+			if err != nil || verdict != gtVerdictOK || note != "" {
+				t.Errorf("gtReachability() = (%q, %q, %v), want (%q, \"\", nil)", verdict, note, err, gtVerdictOK)
 			}
 		}()
 	}
