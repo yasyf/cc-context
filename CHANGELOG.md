@@ -4,6 +4,42 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.0] - 2026-07-27
+
+### Changed
+- **`--glob` is a repeatable, ordered glob list, with `-g` as its shorthand.**
+  `backend.Args.Glob` becomes `Globs []string`, and every engine evaluates the
+  list through `backend.MatchGlobs` in ripgrep's dialect: a leading `!` excludes,
+  last match wins, includes form an OR-whitelist. Repeating the flag was
+  previously silent last-wins — `-g '*.go' -g '*.md'` searched only the Markdown
+  — and now returns the union. `ccx repo find` takes several globs the same way.
+  A metachar-free glob naming a real directory normalizes to `dir/**`, since
+  ripgrep matches nothing against a bare directory name; this is `repo find`'s
+  existing rule promoted so every lane shares it.
+
+### Fixed
+- **A slashed glob matches the full path instead of collapsing to its basename.**
+  `-g 'internal/semsearch/*.go'` was peeled to `-g '*.go'`, which ripgrep matches
+  against the basename at any depth, so it returned all 52 `.go` files beneath
+  that tree rather than the 2 direct children. Globs now ride in full-path form
+  under a relative anchor. An absolute operand is the exception and drops the
+  anchor: ripgrep reads a leading `/` as gitignore's root anchor and strips it,
+  so an absolute glob matches nothing at all — behavior there is unchanged.
+- **`ccx code replace` honors a glob over explicit file operands.** ast-grep's
+  `--globs` never filtered an explicit file operand — positively or negatively —
+  so `code replace -g '!vendor/**' <file>` searched the file regardless. Explicit
+  operands now route through the same prefilter the grep lane uses: directories
+  pass through for native recursion, regular files survive only if the glob list
+  keeps them, and filtering everything away is a loud error rather than an empty
+  result.
+- **An absolute glob outside `--scope` no longer silently overrides it.** In
+  `repo find`, such a glob re-rooted the walk and ignored the scope that was
+  asked for; it now selects nothing, which is what the contradictory input means.
+
+Anchoring stays deliberately strict: it fires only when every include carries the
+same literal anchor, because ripgrep applies each `-g` under every operand, so
+peeling disjoint anchors would silently widen the search.
+
 ## [0.36.0] - 2026-07-27
 
 ### Fixed
