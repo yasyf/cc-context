@@ -16,6 +16,7 @@ var ErrPathNotFound = errors.New("path not found")
 // ResolvePath resolves filesystem operands before dispatch and returns a note
 // for each uniquely inferred sibling path.
 func ResolvePath(op Op, a Args) (Args, string, error) {
+	a.Globs = normalizeGlobs(a.Scope, a.Globs)
 	var note strings.Builder
 	switch op {
 	case OpRead, OpDeps, OpEdit:
@@ -87,6 +88,32 @@ func ResolvePath(op Op, a Args) (Args, string, error) {
 		return a, "", nil
 	}
 	return a, note.String(), nil
+}
+
+// normalizeGlobs canonicalizes each glob into the form the engines match: a
+// leading "./" goes, since no engine prints it, and an include naming an
+// existing directory becomes "dir/**", since a bare directory glob selects no
+// file. An exclusion keeps its bare form — excluding a directory already prunes
+// the subtree.
+func normalizeGlobs(scope string, globs []string) []string {
+	if len(globs) == 0 {
+		return nil
+	}
+	out := make([]string, len(globs))
+	for i, g := range globs {
+		pattern, negated := strings.CutPrefix(g, "!")
+		pattern = strings.TrimPrefix(pattern, "./")
+		if !negated && pattern != "" && !strings.ContainsAny(pattern, globMeta) {
+			if info, err := os.Stat(filepath.Join(scope, pattern)); err == nil && info.IsDir() {
+				pattern = strings.TrimSuffix(pattern, "/") + "/**"
+			}
+		}
+		if negated {
+			pattern = "!" + pattern
+		}
+		out[i] = pattern
+	}
+	return out
 }
 
 func resolveLenient(op Op, path string) (string, string, error) {

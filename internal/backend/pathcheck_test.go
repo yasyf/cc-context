@@ -12,6 +12,45 @@ import (
 	"testing"
 )
 
+// TestNormalizeGlobs pins the canonical form every engine sees: a bare directory
+// glob selects no file in rg, so an include naming one becomes "dir/**", while an
+// exclusion keeps its bare form because excluding a directory prunes the subtree.
+func TestNormalizeGlobs(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "pkg", "sub"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	writePathcheckFile(t, filepath.Join(dir, "pkg", "f.go"))
+	t.Chdir(dir)
+
+	tests := []struct {
+		name  string
+		scope string
+		globs []string
+		want  []string
+	}{
+		{"no globs", "", nil, nil},
+		{"metachar glob untouched", "", []string{"*.go"}, []string{"*.go"}},
+		{"existing dir becomes a subtree include", "", []string{"pkg"}, []string{"pkg/**"}},
+		{"trailing slash collapses into the subtree include", "", []string{"pkg/"}, []string{"pkg/**"}},
+		{"nested dir normalizes too", "", []string{"pkg/sub"}, []string{"pkg/sub/**"}},
+		{"regular file is left alone", "", []string{"pkg/f.go"}, []string{"pkg/f.go"}},
+		{"missing path is left alone", "", []string{"nope"}, []string{"nope"}},
+		{"exclusion keeps its bare directory form", "", []string{"!pkg"}, []string{"!pkg"}},
+		{"leading ./ is dropped", "", []string{"./**/*.go"}, []string{"**/*.go"}},
+		{"leading ./ is dropped on an exclusion too", "", []string{"!./x/*.go"}, []string{"!x/*.go"}},
+		{"dir resolves against the scope", "pkg", []string{"sub"}, []string{"sub/**"}},
+		{"whole list normalizes in place", "", []string{"pkg", "!*.md", "*.go"}, []string{"pkg/**", "!*.md", "*.go"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeGlobs(tt.scope, tt.globs); !slices.Equal(got, tt.want) {
+				t.Errorf("normalizeGlobs(%q, %q) = %q, want %q", tt.scope, tt.globs, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolvePath(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -364,6 +403,18 @@ func TestResolvePath(t *testing.T) {
 			setup: func(t *testing.T) (Args, Args) {
 				a := Args{Scope: filepath.Join(t.TempDir(), "deleted.go")}
 				return a, a
+			},
+		},
+		{
+			name: "grep globs normalize before dispatch",
+			op:   OpGrep,
+			setup: func(t *testing.T) (Args, Args) {
+				dir := t.TempDir()
+				if err := os.MkdirAll(filepath.Join(dir, "pkg"), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				t.Chdir(dir)
+				return Args{Globs: []string{"pkg", "./*.go"}}, Args{Globs: []string{"pkg/**", "*.go"}}
 			},
 		},
 	}

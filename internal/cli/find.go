@@ -10,17 +10,19 @@ import (
 func newFindCmd() *cobra.Command {
 	var a backend.Args
 	cmd := &cobra.Command{
-		Use:   "find <glob>",
+		Use:   "find <glob...>",
 		Short: "List files matching a glob, with per-file token counts",
 		Long: `List files matching a glob, with per-file token counts.
 
-Honors the gitignore chain and skips VCS stores (.git, .jj, .hg, .svn); output is
-sorted and budget-capped, with a footer counting withheld rows and ignore-hidden
-files. A glob anchored at a real path (.venv/**/*.py) lists files ignore rules
-would hide. For whole-repo orientation use "ccx repo overview" instead.`,
-		Args: cobra.ExactArgs(1),
+Several globs apply in order, gitignore-style: any include makes the set a
+whitelist, a leading "!" excludes, and the last match wins. Honors the gitignore
+chain and skips VCS stores (.git, .jj, .hg, .svn); output is sorted and
+budget-capped, with a footer counting withheld rows and ignore-hidden files. A
+glob anchored at a real path (.venv/**/*.py) lists files ignore rules would hide.
+For whole-repo orientation use "ccx repo overview" instead.`,
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a.Glob = args[0]
+			a.Globs = args
 			// An unset flag gets the default; an explicit --budget 0 means unlimited.
 			if !cmd.Flags().Changed("budget") {
 				a.Budget = find.DefaultBudget

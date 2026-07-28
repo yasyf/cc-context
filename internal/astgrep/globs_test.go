@@ -29,8 +29,9 @@ func globsFixture(t *testing.T) {
 }
 
 // TestRunStructuralNegatedGlobs pins real ast-grep's "!" --globs behavior: it
-// excludes natively, so no Go-side translation is warranted, but --globs never
-// filters an explicit file operand — positively or negatively.
+// excludes natively, so no Go-side translation is warranted. --globs never
+// filters an explicit file operand — positively or negatively — so appendScope
+// prefilters those in Go.
 func TestRunStructuralNegatedGlobs(t *testing.T) {
 	if _, err := exec.LookPath("ast-grep"); err != nil {
 		t.Skip("ast-grep not on PATH")
@@ -49,27 +50,33 @@ func TestRunStructuralNegatedGlobs(t *testing.T) {
 		},
 		{
 			"negated basename glob excludes the matching file",
-			backend.Args{Query: "function $F() { $$$ }", Lang: "js", Glob: "!*.min.js", Paths: []string{"."}},
+			backend.Args{Query: "function $F() { $$$ }", Lang: "js", Globs: []string{"!*.min.js"}, Paths: []string{"."}},
 			[]string{"src/a.js", "vendor/b.js"},
 			"src/c.min.js",
 		},
 		{
 			"negated dir glob excludes the whole subtree",
-			backend.Args{Query: "function $F() { $$$ }", Lang: "js", Glob: "!vendor/**", Paths: []string{"."}},
+			backend.Args{Query: "function $F() { $$$ }", Lang: "js", Globs: []string{"!vendor/**"}, Paths: []string{"."}},
 			[]string{"src/a.js", "src/c.min.js"},
 			"vendor/b.js",
 		},
 		{
-			"explicit file operands bypass the negation entirely",
-			backend.Args{Query: "function $F() { $$$ }", Lang: "js", Glob: "!*.min.js", Paths: []string{"src/a.js", "src/c.min.js"}},
-			[]string{"src/a.js", "src/c.min.js"},
-			"",
+			"explicit file operands are prefiltered against the negation",
+			backend.Args{Query: "function $F() { $$$ }", Lang: "js", Globs: []string{"!*.min.js"}, Paths: []string{"src/a.js", "src/c.min.js"}},
+			[]string{"src/a.js"},
+			"src/c.min.js",
 		},
 		{
-			"explicit file operands bypass a positive glob too",
-			backend.Args{Query: "function $F() { $$$ }", Lang: "js", Glob: "*.min.js", Paths: []string{"src/a.js", "src/c.min.js"}},
+			"explicit file operands are prefiltered against a positive glob too",
+			backend.Args{Query: "function $F() { $$$ }", Lang: "js", Globs: []string{"*.min.js"}, Paths: []string{"src/a.js", "src/c.min.js"}},
+			[]string{"src/c.min.js"},
+			"src/a.js",
+		},
+		{
+			"several globs apply in order",
+			backend.Args{Query: "function $F() { $$$ }", Lang: "js", Globs: []string{"*.js", "!vendor/**"}, Paths: []string{"."}},
 			[]string{"src/a.js", "src/c.min.js"},
-			"",
+			"vendor/b.js",
 		},
 	}
 	for _, tt := range tests {

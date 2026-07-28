@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,8 +18,11 @@ func TestFindArgsBudget(t *testing.T) {
 	if got := findArgs(FindIn{Glob: "*.go", Budget: 42}); got.Budget != 42 {
 		t.Errorf("explicit budget = %d, want 42 (passthrough)", got.Budget)
 	}
-	if got := findArgs(FindIn{Glob: "*.go", Scope: "pkg", Budget: 7}); got.Glob != "*.go" || got.Scope != "pkg" {
+	if got := findArgs(FindIn{Glob: "*.go", Scope: "pkg", Budget: 7}); !slices.Equal(got.Globs, []string{"*.go"}) || got.Scope != "pkg" {
 		t.Errorf("glob/scope passthrough = %+v", got)
+	}
+	if got := findArgs(FindIn{Scope: "pkg"}); got.Globs != nil {
+		t.Errorf("absent glob = %q, want no globs", got.Globs)
 	}
 }
 

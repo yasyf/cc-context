@@ -170,7 +170,7 @@ type FindIn struct {
 // findArgs builds the find backend.Args from a ccx_repo_find call, applying the
 // default budget when the caller sets none (the codeexec path leaves it zero).
 func findArgs(in FindIn) backend.Args {
-	a := backend.Args{Glob: in.Glob, Scope: in.Scope, Budget: in.Budget}
+	a := backend.Args{Globs: backend.SingleGlob(in.Glob), Scope: in.Scope, Budget: in.Budget}
 	if a.Budget == 0 {
 		a.Budget = find.DefaultBudget
 	}
@@ -282,7 +282,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 			Rewrite: in.Rewrite,
 			Paths:   in.Paths,
 			Lang:    in.Lang,
-			Glob:    in.Glob,
+			Globs:   backend.SingleGlob(in.Glob),
 			Apply:   in.Apply,
 			Force:   in.Force,
 			Budget:  in.Budget,
@@ -328,7 +328,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 		Description: "Grep literal or regex text across code — globbed, scoped, or over explicit files; budget-bounded.",
 		Meta:        alwaysLoad,
 	}, handler(p, backend.OpGrep, func(in GrepIn) backend.Args {
-		a := backend.Args{Query: in.Text, Glob: in.Glob, Scope: in.Scope, IgnoreCase: in.IgnoreCase, Word: in.Word, Regex: in.Regex, FilesWithMatches: in.FilesWithMatches, Paths: in.Paths, RevealSecrets: in.RevealSecrets, Budget: in.Budget, Expand: in.Expand, After: in.After, Before: in.Before, Context: in.Context}
+		a := backend.Args{Query: in.Text, Globs: backend.SingleGlob(in.Glob), Scope: in.Scope, IgnoreCase: in.IgnoreCase, Word: in.Word, Regex: in.Regex, FilesWithMatches: in.FilesWithMatches, Paths: in.Paths, RevealSecrets: in.RevealSecrets, Budget: in.Budget, Expand: in.Expand, After: in.After, Before: in.Before, Context: in.Context}
 		if a.Budget == 0 {
 			a.Budget = ripgrep.DefaultBudget
 		}

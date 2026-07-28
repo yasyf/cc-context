@@ -146,7 +146,7 @@ func runArgv(ctx context.Context, op backend.Op, a backend.Args) (string, error)
 func argvFor(op backend.Op, a backend.Args) ([]string, error) {
 	switch op {
 	case backend.OpStructural:
-		return appendScope([]string{"run", "-p", a.Query, "--json=stream"}, a), nil
+		return appendScope([]string{"run", "-p", a.Query, "--json=stream"}, a)
 	case backend.OpStructOutline:
 		// --view expanded is the only view whose JSON carries members; outline takes
 		// one <path> positional, so it skips the run-shaped appendScope tail.
@@ -170,26 +170,33 @@ func argvFor(op backend.Op, a backend.Args) ([]string, error) {
 		} else {
 			argv = append(argv, "--json=stream")
 		}
-		return appendScope(argv, a), nil
+		return appendScope(argv, a)
 	default:
 		return nil, fmt.Errorf("ast-grep: unsupported op %q", op)
 	}
 }
 
-// appendScope appends the lang/glob/paths tail shared by the run-shaped ops.
+// appendScope appends the lang/globs/paths tail shared by the run-shaped ops.
 // Language is passed only when set (ast-grep infers it per file from the
-// extension); the paths default to the repo root when none are given.
-func appendScope(argv []string, a backend.Args) []string {
+// extension); the paths default to the repo root when none are given. --globs
+// never filters an explicit file operand, so those are prefiltered in Go.
+func appendScope(argv []string, a backend.Args) ([]string, error) {
 	if a.Lang != "" {
 		argv = append(argv, "-l", a.Lang)
 	}
-	if a.Glob != "" {
-		argv = append(argv, "--globs", a.Glob)
+	for _, g := range a.Globs {
+		argv = append(argv, "--globs", g)
 	}
-	if len(a.Paths) > 0 {
-		argv = append(argv, a.Paths...)
-	} else {
-		argv = append(argv, ".")
+	if len(a.Paths) == 0 {
+		return append(argv, "."), nil
 	}
-	return argv
+	paths := a.Paths
+	if len(a.Globs) > 0 {
+		kept, err := backend.FilterGlobPaths(a.Paths, a.Globs)
+		if err != nil {
+			return nil, err
+		}
+		paths = kept
+	}
+	return append(argv, paths...), nil
 }

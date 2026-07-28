@@ -35,9 +35,14 @@ func writeTree(t *testing.T, root string, files map[string]string) {
 
 func run(t *testing.T, glob, scope string, budget int) string {
 	t.Helper()
-	out, err := Run(context.Background(), backend.Args{Glob: glob, Scope: scope, Budget: budget})
+	return runGlobs(t, []string{glob}, scope, budget)
+}
+
+func runGlobs(t *testing.T, globs []string, scope string, budget int) string {
+	t.Helper()
+	out, err := Run(context.Background(), backend.Args{Globs: globs, Scope: scope, Budget: budget})
 	if err != nil {
-		t.Fatalf("Run(%q, %q): %v", glob, scope, err)
+		t.Fatalf("Run(%q, %q): %v", globs, scope, err)
 	}
 	return out
 }
@@ -172,6 +177,76 @@ func TestRecursiveBasenameGlob(t *testing.T) {
 	mustNotContain(t, out, "d.txt")
 }
 
+func TestSeveralGlobsApplyInOrder(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"a.go":            "package a\n",
+		"a_test.go":       "package a\n",
+		"notes.md":        "# hi\n",
+		"data.json":       "{}\n",
+		"vendor/dep.go":   "package dep\n",
+		"vendor/dep.md":   "# dep\n",
+		"deep/nested.go":  "package deep\n",
+		"deep/nested.txt": "text\n",
+	})
+
+	// Two includes union.
+	out := runGlobs(t, []string{"*.go", "*.md"}, root, 0)
+	mustContain(t, out, "a.go", "notes.md", "vendor/dep.go", "vendor/dep.md", "deep/nested.go", "— 6 files")
+	mustNotContain(t, out, "data.json", "nested.txt")
+
+	// A trailing exclusion narrows the union; last match wins.
+	out = runGlobs(t, []string{"*.go", "*.md", "!*_test.go"}, root, 0)
+	mustContain(t, out, "a.go", "notes.md", "— 5 files")
+	mustNotContain(t, out, "a_test.go")
+
+	// An exclusion matching an ancestor prunes the subtree.
+	out = runGlobs(t, []string{"*.go", "!vendor"}, root, 0)
+	mustContain(t, out, "a.go", "a_test.go", "deep/nested.go", "— 3 files")
+	mustNotContain(t, out, "vendor/dep.go")
+
+	// An exclusion-only list selects everything it does not exclude.
+	out = runGlobs(t, []string{"!*.go", "!*.md"}, root, 0)
+	mustContain(t, out, "data.json", "deep/nested.txt", "— 2 files")
+
+	// The header echoes every glob the caller typed.
+	mustContain(t, runGlobs(t, []string{"*.go", "!*_test.go"}, root, 0), `# Glob: "*.go", "!*_test.go" in `)
+}
+
+func TestSeveralGlobsShareAnAnchor(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		".gitignore":     "build/\n",
+		"build/out.go":   "package build\n",
+		"build/out.md":   "# out\n",
+		"build/skip.txt": "x\n",
+		"src/keep.go":    "package src\n",
+	})
+	// Both includes anchor at the ignored build/, so the escape hatch fires and the
+	// walk re-roots there — src/ is outside the anchor and never listed.
+	out := runGlobs(t, []string{"build/*.go", "build/*.md"}, root, 0)
+	mustContain(t, out, "build/out.go", "build/out.md", "— 2 files")
+	mustNotContain(t, out, "skip.txt", "keep.go", "ignored files hidden")
+
+	// Differing anchors share none, so the walk stays at the root and the ignore
+	// chain applies again — build/ is hidden, and disclosed.
+	out = runGlobs(t, []string{"build/*.go", "src/*.go"}, root, 0)
+	mustContain(t, out, "src/keep.go", "— 1 files", "1 ignored files hidden")
+	mustNotContain(t, out, "build/out.go")
+}
+
+func TestAbsoluteGlobRelativizes(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"pkg/a.go": "package pkg\n",
+		"pkg/a.md": "# a\n",
+		"top.go":   "package top\n",
+	})
+	out := run(t, filepath.ToSlash(root)+"/pkg/*.go", root, 0)
+	mustContain(t, out, "pkg/a.go", "— 1 files")
+	mustNotContain(t, out, "a.md", "top.go")
+}
+
 func TestDotfileInclusion(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root, map[string]string{
@@ -283,15 +358,15 @@ func TestScopeReRooting(t *testing.T) {
 	mustNotContain(t, out, "outer.go")
 }
 
-func TestDotAnchorKeepsVCSExcluded(t *testing.T) {
+func TestRootAnchorKeepsVCSExcluded(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root, map[string]string{
 		".git/HEAD": "ref: refs/heads/main\n",
 		"real.txt":  "content\n",
 	})
-	// "./**/*" anchors at the walk root itself — a normal default walk, not an
-	// escape, so the VCS store stays excluded.
-	out := run(t, "./**/*", root, 0)
+	// An absolute glob spanning the walk root relativizes to a plain "**/*" — a
+	// default walk, not an escape, so the VCS store stays excluded.
+	out := run(t, filepath.ToSlash(root)+"/**/*", root, 0)
 	mustContain(t, out, "real.txt")
 	mustNotContain(t, out, "HEAD")
 }

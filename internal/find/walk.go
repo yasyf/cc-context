@@ -4,12 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"slices"
 	"strings"
 
-	"github.com/bmatcuk/doublestar/v4"
 	"github.com/boyter/gocodewalker"
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 
@@ -37,41 +35,53 @@ type walkConfig struct {
 	matcher    gitignore.Matcher
 }
 
-// resolveAnchor applies the grep lane's escape-hatch contract to glob: when its
-// literal prefix resolves to an existing path below the walk root, the walk
-// re-roots there with ignore-FILE processing disabled. It returns the walk root,
-// the glob to match relative to that root, whether the escape hatch fired, and
-// whether the VCS stores stay excluded. An anchor that resolves to the walk root
-// itself is a normal default walk, not an escape. A prefix that does not resolve
-// leaves root and glob unchanged. The VCS stores stay excluded even under the
-// escape hatch, unless a path element of the anchor is itself a VCS store —
-// explicitly naming the store is the only way in.
-func resolveAnchor(root, glob string) (walkRoot, matchGlob string, escaped, excludeVCS bool) {
-	dir, rest := backend.SplitGlobAnchor(glob)
-	if dir == "" {
-		return root, glob, false, true
+// relativizeGlobs rewrites an absolute glob into root's frame, the one the walk
+// matches paths in. A glob outside root stays absolute and selects nothing there.
+func relativizeGlobs(root string, globs []string) []string {
+	out := make([]string, len(globs))
+	for i, g := range globs {
+		pattern, negated := strings.CutPrefix(g, "!")
+		if filepath.IsAbs(pattern) {
+			if rel, err := filepath.Rel(root, pattern); err == nil && !strings.HasPrefix(rel, "..") {
+				pattern = filepath.ToSlash(rel)
+			}
+		}
+		if negated {
+			pattern = "!" + pattern
+		}
+		out[i] = pattern
 	}
-	joined := dir
-	if !filepath.IsAbs(dir) {
-		joined = filepath.Join(root, dir)
+	return out
+}
+
+// resolveAnchor applies the grep lane's escape-hatch contract to the anchor every
+// include glob shares: when it resolves to an existing path below the walk root,
+// the walk re-roots there with ignore-FILE processing disabled — globs keep
+// matching root-relative paths, so re-rooting only narrows the walk. An anchor
+// resolving to the walk root itself, or not at all, is a normal default walk. The
+// VCS stores stay excluded even under the escape hatch, unless a path element of
+// the anchor is itself a VCS store — naming the store is the only way in.
+func resolveAnchor(root string, globs []string) (walkRoot string, escaped, excludeVCS bool) {
+	// An anchor still absolute after relativizeGlobs lies outside root, so it can
+	// select nothing and must not disable the ignore chain.
+	dir := backend.SharedGlobAnchor(globs)
+	if dir == "" || filepath.IsAbs(dir) {
+		return root, false, true
 	}
+	joined := filepath.Join(root, dir)
 	info, err := os.Stat(joined)
-	if err != nil {
-		return root, glob, false, true
-	}
 	switch {
-	case info.IsDir():
-		if rest == "" {
-			rest = "**/*"
-		}
-		if filepath.Clean(joined) == filepath.Clean(root) {
-			return root, rest, false, true
-		}
-		return joined, rest, true, !anchorNamesVCSStore(dir)
-	case rest == "" && info.Mode().IsRegular():
-		return filepath.Dir(joined), filepath.Base(joined), true, !anchorNamesVCSStore(dir)
+	case err != nil:
+		return root, false, true
+	case info.Mode().IsRegular():
+		joined = filepath.Dir(joined)
+	case !info.IsDir():
+		return root, false, true
 	}
-	return root, glob, false, true
+	if filepath.Clean(joined) == filepath.Clean(root) {
+		return root, false, true
+	}
+	return joined, true, !anchorNamesVCSStore(dir)
 }
 
 // anchorNamesVCSStore reports whether any path element of the anchor is a VCS
@@ -85,14 +95,13 @@ func anchorNamesVCSStore(dir string) bool {
 	return false
 }
 
-// collect walks walkRoot and returns the files matching matchGlob (relative to
-// walkRoot), each path also made relative to displayRoot for output. Under the
-// default semantics it honors the per-directory .gitignore/.ignore/.gitmodules
-// chain gocodewalker discovers, plus cfg.matcher for the enclosing repo's
-// ancestor rules, and hard-skips the VCS stores; the escape hatch disables all
-// ignore-FILE processing. It also returns the set of extensions seen anywhere
-// under the walk, for the zero-match hint.
-func collect(ctx context.Context, displayRoot, walkRoot, matchGlob string, cfg walkConfig) ([]match, map[string]bool, error) {
+// collect walks walkRoot and returns the files globs select, matched — and
+// reported — relative to displayRoot. Under the default semantics it honors the
+// per-directory .gitignore/.ignore/.gitmodules chain gocodewalker discovers, plus
+// cfg.matcher for the enclosing repo's ancestor rules, and hard-skips the VCS
+// stores; the escape hatch disables all ignore-FILE processing. It also returns
+// the set of extensions seen anywhere under the walk, for the zero-match hint.
+func collect(ctx context.Context, displayRoot, walkRoot string, globs []string, cfg walkConfig) ([]match, map[string]bool, error) {
 	queue := make(chan *gocodewalker.File, 256)
 	w := newWalker(walkRoot, queue)
 	w.IgnoreGitIgnore = cfg.escaped
@@ -120,13 +129,14 @@ func collect(ctx context.Context, displayRoot, walkRoot, matchGlob string, cfg w
 		if ext := extOf(f.Filename); ext != "" {
 			seenExts[ext] = true
 		}
-		matchRel, err := filepath.Rel(walkRoot, f.Location)
+		rel, err := filepath.Rel(displayRoot, f.Location)
 		if err != nil {
 			continue
 		}
-		ok, err := matchGlobFn(matchGlob, matchRel, cfg.escaped)
+		rel = filepath.ToSlash(rel)
+		ok, err := backend.MatchGlobs(rel, globs)
 		if err != nil {
-			stop = fmt.Errorf("find: match glob %q: %w", matchGlob, err)
+			stop = fmt.Errorf("find: match globs %q: %w", globs, err)
 			w.Terminate()
 			continue
 		}
@@ -140,11 +150,7 @@ func collect(ctx context.Context, displayRoot, walkRoot, matchGlob string, cfg w
 		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
-		outRel, err := filepath.Rel(displayRoot, f.Location)
-		if err != nil {
-			continue
-		}
-		matches = append(matches, match{rel: filepath.ToSlash(outRel), abs: f.Location, size: info.Size()})
+		matches = append(matches, match{rel: rel, abs: f.Location, size: info.Size()})
 	}
 	if err := <-errc; err != nil {
 		return nil, nil, fmt.Errorf("find: walk %q: %w", walkRoot, err)
@@ -170,11 +176,11 @@ func ignoredByRepo(cfg walkConfig, abs string) bool {
 	return cfg.matcher.Match(strings.Split(filepath.ToSlash(rel), "/"), false)
 }
 
-// countHidden reports how many additional files matchGlob would match under root
+// countHidden reports how many additional files globs would select under root
 // once the ignore chain is disabled — the files the default walk hid. VCS stores
 // stay skipped so their internals never count. The result is clamped at zero
 // against a concurrent tree mutation between the two walks.
-func countHidden(ctx context.Context, root, matchGlob string, shown int) (int, error) {
+func countHidden(ctx context.Context, root string, globs []string, shown int) (int, error) {
 	queue := make(chan *gocodewalker.File, 256)
 	w := newWalker(root, queue)
 	w.IgnoreGitIgnore = true
@@ -196,13 +202,13 @@ func countHidden(ctx context.Context, root, matchGlob string, shown int) (int, e
 			w.Terminate()
 			continue
 		}
-		matchRel, err := filepath.Rel(root, f.Location)
+		rel, err := filepath.Rel(root, f.Location)
 		if err != nil {
 			continue
 		}
-		ok, err := matchGlobFn(matchGlob, matchRel, false)
+		ok, err := backend.MatchGlobs(filepath.ToSlash(rel), globs)
 		if err != nil {
-			stop = fmt.Errorf("find: match glob %q: %w", matchGlob, err)
+			stop = fmt.Errorf("find: match globs %q: %w", globs, err)
 			w.Terminate()
 			continue
 		}
@@ -234,18 +240,6 @@ func newWalker(root string, queue chan *gocodewalker.File) *gocodewalker.FileWal
 	w.IncludeHidden = true
 	w.SetErrorHandler(func(error) bool { return true })
 	return w
-}
-
-// matchGlobFn matches rel against pattern: a slash-less pattern the caller typed
-// matches the basename at any depth (recursive-basename semantics); a slashed
-// pattern — and any anchored remainder, so ".venv/*.py" stays direct-children —
-// matches the full relative path via doublestar.
-func matchGlobFn(pattern, rel string, anchored bool) (bool, error) {
-	rel = filepath.ToSlash(rel)
-	if !anchored && !strings.Contains(pattern, "/") {
-		return doublestar.Match(pattern, path.Base(rel))
-	}
-	return doublestar.Match(pattern, rel)
 }
 
 // gitRootOf walks up from start returning the nearest directory that holds a .git

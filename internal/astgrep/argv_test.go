@@ -24,8 +24,14 @@ func TestArgvFor(t *testing.T) {
 		{
 			"structural lang glob paths",
 			backend.OpStructural,
-			backend.Args{Query: "$A.Foo($$$)", Lang: "go", Glob: "!*_test.go", Paths: []string{"internal", "cmd"}},
+			backend.Args{Query: "$A.Foo($$$)", Lang: "go", Globs: []string{"!*_test.go"}, Paths: []string{"internal", "cmd"}},
 			[]string{"run", "-p", "$A.Foo($$$)", "--json=stream", "-l", "go", "--globs", "!*_test.go", "internal", "cmd"},
+		},
+		{
+			"several globs each ride their own --globs, in order",
+			backend.OpStructural,
+			backend.Args{Query: "$A.Foo($$$)", Globs: []string{"*.go", "!*_test.go"}},
+			[]string{"run", "-p", "$A.Foo($$$)", "--json=stream", "--globs", "*.go", "--globs", "!*_test.go", "."},
 		},
 		{
 			"replace preview (no -U)",
@@ -44,7 +50,7 @@ func TestArgvFor(t *testing.T) {
 		{
 			"replace apply with lang glob paths",
 			backend.OpReplace,
-			backend.Args{Pattern: "Add($A)", Rewrite: "Inc($A)", Apply: true, Lang: "go", Glob: "*.go", Paths: []string{"pkg"}},
+			backend.Args{Pattern: "Add($A)", Rewrite: "Inc($A)", Apply: true, Lang: "go", Globs: []string{"*.go"}, Paths: []string{"pkg"}},
 			[]string{"run", "-p", "Add($A)", "-r", "Inc($A)", "-U", "-l", "go", "--globs", "*.go", "pkg"},
 		},
 		{

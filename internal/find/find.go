@@ -42,7 +42,7 @@ const maxTrailerBytes = 64
 // overflow (a math.MaxInt64 budget would wrap negative in the cutoff multiply).
 const maxBudget = 1 << 31
 
-// Run lists the files matching a.Glob under a.Scope (or the cwd), rendered to a
+// Run lists the files a.Globs select under a.Scope (or the cwd), rendered to a
 // budgeted listing. A zero a.Budget renders every row uncapped.
 func Run(ctx context.Context, a backend.Args) (string, error) {
 	root := a.Scope
@@ -58,13 +58,14 @@ func Run(ctx context.Context, a backend.Args) (string, error) {
 		return "", fmt.Errorf("find: resolve root %q: %w", root, err)
 	}
 
-	walkRoot, matchGlob, escaped, excludeVCS := resolveAnchor(absRoot, a.Glob)
+	globs := relativizeGlobs(absRoot, a.Globs)
+	walkRoot, escaped, excludeVCS := resolveAnchor(absRoot, globs)
 	cfg := walkConfig{escaped: escaped, excludeVCS: excludeVCS}
 	if !escaped {
 		cfg.gitRoot = gitRootOf(walkRoot)
 		cfg.matcher = ancestorMatcher(cfg.gitRoot, walkRoot)
 	}
-	matches, seenExts, err := collect(ctx, absRoot, walkRoot, matchGlob, cfg)
+	matches, seenExts, err := collect(ctx, absRoot, walkRoot, globs, cfg)
 	if err != nil {
 		return "", err
 	}
@@ -72,7 +73,7 @@ func Run(ctx context.Context, a backend.Args) (string, error) {
 
 	hidden := 0
 	if !escaped {
-		if hidden, err = countHidden(ctx, absRoot, matchGlob, len(matches)); err != nil {
+		if hidden, err = countHidden(ctx, absRoot, globs, len(matches)); err != nil {
 			return "", err
 		}
 	}
@@ -81,16 +82,16 @@ func Run(ctx context.Context, a backend.Args) (string, error) {
 	if budget > maxBudget {
 		budget = maxBudget
 	}
-	return render(a.Glob, absRoot, matches, seenExts, hidden, budget), nil
+	return render(a.Globs, absRoot, matches, seenExts, hidden, budget), nil
 }
 
 // render assembles the header, the rows that fit the budget, and the overflow and
 // ignore-disclosure footers.
-func render(glob, displayRoot string, matches []match, seenExts map[string]bool, hidden, budget int) string {
+func render(globs []string, displayRoot string, matches []match, seenExts map[string]bool, hidden, budget int) string {
 	displayRoot = filepath.ToSlash(displayRoot)
 	total := len(matches)
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Glob: %q in %s — %s files\n", glob, displayRoot, humanComma(total))
+	fmt.Fprintf(&b, "# Glob: %s in %s — %s files\n", quoteGlobs(globs), displayRoot, humanComma(total))
 
 	if total == 0 {
 		// A zero match still discloses hidden files when there are any — that hint is
@@ -122,6 +123,15 @@ func render(glob, displayRoot string, matches []match, seenExts map[string]bool,
 	}
 
 	return b.String()
+}
+
+// quoteGlobs renders the glob list as comma-separated quoted patterns.
+func quoteGlobs(globs []string) string {
+	quoted := make([]string, len(globs))
+	for i, g := range globs {
+		quoted[i] = strconv.Quote(g)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // disclosureLine names how many ignore-filtered files matched the glob and points

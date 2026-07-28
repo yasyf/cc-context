@@ -2,6 +2,7 @@ package backend
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -66,6 +67,99 @@ func TestMatchGlobs(t *testing.T) {
 func TestMatchGlobsBadPattern(t *testing.T) {
 	if _, err := MatchGlobs("a.go", []string{"["}); err == nil {
 		t.Fatal("MatchGlobs([) = nil error, want a bad-pattern error")
+	}
+}
+
+func TestSharedGlobAnchor(t *testing.T) {
+	tests := []struct {
+		name  string
+		globs []string
+		want  string
+	}{
+		{"empty set", nil, ""},
+		{"slash-less include", []string{"*.go"}, ""},
+		{"single anchored include", []string{"internal/cli/*.go"}, "internal/cli"},
+		{"same anchor twice", []string{"internal/*.go", "internal/*.md"}, "internal"},
+		{"differing anchors", []string{"internal/*.go", "other/*.md"}, ""},
+		{"nested anchors are not shared", []string{"internal/*.go", "internal/cli/*.md"}, ""},
+		{"one unanchored include cancels", []string{"internal/*.go", "*.md"}, ""},
+		{"exclusions are skipped", []string{"internal/*.go", "!*_test.go"}, "internal"},
+		{"exclusion-only set never anchors", []string{"!internal/*.go"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SharedGlobAnchor(tt.globs); got != tt.want {
+				t.Errorf("SharedGlobAnchor(%q) = %q, want %q", tt.globs, got, tt.want)
+			}
+		})
+	}
+}
+
+// globPathsFixture writes a.go, b.txt, and a sub/ directory into a fresh temp dir
+// and chdirs into it — the on-disk operands FilterGlobPaths classifies with os.Stat.
+func globPathsFixture(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, f := range []string{"a.go", "b.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x\n"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", f, err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o750); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	t.Chdir(dir)
+}
+
+func TestFilterGlobPaths(t *testing.T) {
+	globPathsFixture(t)
+	tests := []struct {
+		name    string
+		paths   []string
+		globs   []string
+		want    []string
+		wantErr bool
+	}{
+		{"file matching glob kept", []string{"a.go"}, []string{"*.go"}, []string{"a.go"}, false},
+		{"file not matching glob dropped, none left → error", []string{"b.txt"}, []string{"*.go"}, nil, true},
+		{"directory passes through to native filtering", []string{"sub"}, []string{"*.go"}, []string{"sub"}, false},
+		{"nonexistent operand passes through unchanged", []string{"missing.go"}, []string{"*.go"}, []string{"missing.go"}, false},
+		{"mixed: keep matching file, drop other, pass dir", []string{"a.go", "b.txt", "sub"}, []string{"*.go"}, []string{"a.go", "sub"}, false},
+		{"slashed glob matches whole path", []string{"a.go"}, []string{"**/*.go"}, []string{"a.go"}, false},
+		{"negated glob drops the file it excludes", []string{"a.go", "b.txt"}, []string{"!*.go"}, []string{"b.txt"}, false},
+		{"negated glob keeps the file it does not exclude", []string{"b.txt"}, []string{"!*.go"}, []string{"b.txt"}, false},
+		{"negated mixed: drop excluded file, keep other, pass dir", []string{"a.go", "b.txt", "sub"}, []string{"!*.go"}, []string{"b.txt", "sub"}, false},
+		{"negated slashed glob inverts the whole-path match", []string{"a.go"}, []string{"!**/*.go"}, nil, true},
+		{"negation excluding every file operand → error", []string{"a.go"}, []string{"!*.go"}, nil, true},
+		{"several includes union the operands", []string{"a.go", "b.txt"}, []string{"*.go", "*.txt"}, []string{"a.go", "b.txt"}, false},
+		{"include then exclusion drops the excluded operand", []string{"a.go", "b.txt"}, []string{"*.go", "*.txt", "!*.txt"}, []string{"a.go"}, false},
+		{"last match wins across the list", []string{"a.go"}, []string{"!*.go", "*.go"}, []string{"a.go"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FilterGlobPaths(tt.paths, tt.globs)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("FilterGlobPaths() err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				if !strings.Contains(err.Error(), "no paths match") {
+					t.Errorf("FilterGlobPaths() err = %v, want no-paths-match message", err)
+				}
+				return
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("FilterGlobPaths() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSingleGlob(t *testing.T) {
+	if got := SingleGlob(""); got != nil {
+		t.Errorf("SingleGlob(\"\") = %q, want nil", got)
+	}
+	if got := SingleGlob("*.go"); !slices.Equal(got, []string{"*.go"}) {
+		t.Errorf("SingleGlob(*.go) = %q, want [*.go]", got)
 	}
 }
 

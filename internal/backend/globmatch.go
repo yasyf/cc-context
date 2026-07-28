@@ -2,6 +2,7 @@ package backend
 
 import (
 	"fmt"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -113,4 +114,60 @@ func MatchGlobs(p string, globs []string) (bool, error) {
 	default:
 		return !hasInclude, nil
 	}
+}
+
+// SharedGlobAnchor returns the literal directory prefix every include glob
+// carries, or "" when the set holds no include, one carries no anchor, or two
+// anchor differently — an engine applies every glob under every operand, so
+// disjoint anchors have no single directory to peel into one. Exclusions never
+// anchor and are skipped.
+func SharedGlobAnchor(globs []string) string {
+	var anchor string
+	for _, g := range globs {
+		if strings.HasPrefix(g, "!") {
+			continue
+		}
+		dir, _ := SplitGlobAnchor(g)
+		if dir == "" || (anchor != "" && dir != anchor) {
+			return ""
+		}
+		anchor = dir
+	}
+	return anchor
+}
+
+// FilterGlobPaths keeps the explicit operands globs select, for engines whose
+// glob flag ignores explicit operands (rg's -g and ast-grep's --globs both do).
+// A directory passes through for the engine's own recursion; a regular file
+// survives only when MatchGlobs keeps it. Filtering every operand away is a loud
+// clean no-match.
+func FilterGlobPaths(paths, globs []string) ([]string, error) {
+	var kept []string
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil || info.IsDir() {
+			kept = append(kept, p)
+			continue
+		}
+		ok, err := MatchGlobs(p, globs)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == 0 {
+		return nil, fmt.Errorf("no paths match --glob %q", globs)
+	}
+	return kept, nil
+}
+
+// SingleGlob wraps the single-valued glob the MCP and exec wire formats still
+// carry into the ordered list Args.Globs takes; an empty string yields none.
+func SingleGlob(g string) []string {
+	if g == "" {
+		return nil
+	}
+	return []string{g}
 }

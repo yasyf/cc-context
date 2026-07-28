@@ -69,7 +69,7 @@ func TestOpsArgMapping(t *testing.T) {
 			"grep", "grep",
 			Call{Kwargs: kw("text", "RunDiffCLI", "glob", "*.go")},
 			backend.OpGrep,
-			backend.Args{Query: "RunDiffCLI", Glob: "*.go"},
+			backend.Args{Query: "RunDiffCLI", Globs: []string{"*.go"}},
 		},
 		{
 			"grep expand int", "grep",
@@ -135,7 +135,7 @@ func TestOpsArgMapping(t *testing.T) {
 			"find", "find",
 			Call{Kwargs: kw("glob", "**/*.go")},
 			backend.OpFind,
-			backend.Args{Glob: "**/*.go"},
+			backend.Args{Globs: []string{"**/*.go"}},
 		},
 		{
 			"diff default source", "diff",

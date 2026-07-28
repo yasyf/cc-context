@@ -47,7 +47,6 @@ type Args struct {
 	Path             string
 	URL              string
 	Query            string
-	Glob             string
 	Section          string
 	Scope            string
 	Source           string
@@ -60,6 +59,7 @@ type Args struct {
 	Match            string
 	Mode             string
 	Paths            []string
+	Globs            []string
 	Full             bool
 	RevealSecrets    bool
 	Apply            bool
