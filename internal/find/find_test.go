@@ -33,16 +33,29 @@ func writeTree(t *testing.T, root string, files map[string]string) {
 	}
 }
 
-func run(t *testing.T, glob, scope string, budget int) string {
+// tempRoot returns a symlink-resolved temp directory, so a test that chdirs into
+// it sees the path os.Getwd reports (macOS resolves /var to /private/var).
+func tempRoot(t *testing.T) string {
 	t.Helper()
-	return runGlobs(t, []string{glob}, scope, budget)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp root: %v", err)
+	}
+	return root
 }
 
-func runGlobs(t *testing.T, globs []string, scope string, budget int) string {
+func run(t *testing.T, glob, root string, budget int) string {
 	t.Helper()
-	out, err := Run(context.Background(), backend.Args{Globs: globs, Scope: scope, Budget: budget})
+	return runGlobs(t, []string{glob}, root, budget)
+}
+
+// runGlobs lists globs from root, which Run reads as the cwd.
+func runGlobs(t *testing.T, globs []string, root string, budget int) string {
+	t.Helper()
+	t.Chdir(root)
+	out, err := Run(context.Background(), backend.Args{Globs: globs, Budget: budget})
 	if err != nil {
-		t.Fatalf("Run(%q, %q): %v", globs, scope, err)
+		t.Fatalf("Run(%q) in %q: %v", globs, root, err)
 	}
 	return out
 }
@@ -66,7 +79,7 @@ func mustNotContain(t *testing.T, out string, subs ...string) {
 }
 
 func TestGitignoreChainHonored(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		".gitignore":     "ignored.go\n",
 		"keep.go":        "package a\n",
@@ -81,7 +94,7 @@ func TestGitignoreChainHonored(t *testing.T) {
 }
 
 func TestGitInfoExcludeHonored(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		".git/info/exclude": "excluded.txt\n",
 		"keep.txt":          "keep\n",
@@ -93,7 +106,7 @@ func TestGitInfoExcludeHonored(t *testing.T) {
 }
 
 func TestPopulatedJJExcluded(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		".jj/repo/store/op.txt": "internal\n",
 		"real.txt":              "content\n",
@@ -105,7 +118,7 @@ func TestPopulatedJJExcluded(t *testing.T) {
 }
 
 func TestBinaryRowNoTokenEstimate(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	png := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 48128-8)...) // 47KB PNG
 	if err := os.WriteFile(filepath.Join(root, "logo.png"), png, 0o600); err != nil {
 		t.Fatal(err)
@@ -134,7 +147,7 @@ func TestBinaryRowNoTokenEstimate(t *testing.T) {
 }
 
 func TestEscapeHatchReachesIgnored(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		".gitignore":       ".venv/\n",
 		"app.py":           "print(1)\n",
@@ -153,7 +166,7 @@ func TestEscapeHatchReachesIgnored(t *testing.T) {
 }
 
 func TestAnchoredRestStaysDirectChildren(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		".gitignore":        ".venv/\n",
 		".venv/direct.py":   "x = 1\n",
@@ -165,7 +178,7 @@ func TestAnchoredRestStaysDirectChildren(t *testing.T) {
 }
 
 func TestRecursiveBasenameGlob(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		"a.go":              "package a\n",
 		"deep/b.go":         "package b\n",
@@ -178,7 +191,7 @@ func TestRecursiveBasenameGlob(t *testing.T) {
 }
 
 func TestSeveralGlobsApplyInOrder(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		"a.go":            "package a\n",
 		"a_test.go":       "package a\n",
@@ -214,7 +227,7 @@ func TestSeveralGlobsApplyInOrder(t *testing.T) {
 }
 
 func TestSeveralGlobsShareAnAnchor(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		".gitignore":     "build/\n",
 		"build/out.go":   "package build\n",
@@ -236,7 +249,7 @@ func TestSeveralGlobsShareAnAnchor(t *testing.T) {
 }
 
 func TestAbsoluteGlobRelativizes(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		"pkg/a.go": "package pkg\n",
 		"pkg/a.md": "# a\n",
@@ -248,7 +261,7 @@ func TestAbsoluteGlobRelativizes(t *testing.T) {
 }
 
 func TestDotfileInclusion(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		".env":                 "SECRET=1\n",
 		"visible.txt":          "hi\n",
@@ -259,7 +272,7 @@ func TestDotfileInclusion(t *testing.T) {
 }
 
 func TestEmptyResult(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{"a.go": "package a\n", "b.go": "package b\n"})
 	out := run(t, "*.py", root, 0)
 	mustContain(t, out, "— 0 files", "no files match", "go")
@@ -267,7 +280,7 @@ func TestEmptyResult(t *testing.T) {
 }
 
 func TestEmptyResultDisclosesHidden(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		".gitignore": "secret.go\n",
 		"secret.go":  "package a\n",
@@ -280,7 +293,7 @@ func TestEmptyResultDisclosesHidden(t *testing.T) {
 }
 
 func TestBudgetOverflowFooter(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	const n, size = 50, 400
 	files := map[string]string{}
 	for i := 0; i < n; i++ {
@@ -322,7 +335,7 @@ func TestBudgetOverflowFooter(t *testing.T) {
 }
 
 func TestIgnoreDisclosureOnlyWhenHidden(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{"a.go": "package a\n", "b.go": "package b\n"})
 	out := run(t, "*.go", root, 0)
 	mustContain(t, out, "— 2 files")
@@ -330,7 +343,7 @@ func TestIgnoreDisclosureOnlyWhenHidden(t *testing.T) {
 }
 
 func TestDeterministic(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	png := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 100)...)
 	if err := os.WriteFile(filepath.Join(root, "img.png"), png, 0o600); err != nil {
 		t.Fatal(err)
@@ -347,7 +360,7 @@ func TestDeterministic(t *testing.T) {
 }
 
 func TestScopeReRooting(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		"outer.go":     "package a\n",
 		"pkg/inner.go": "package b\n",
@@ -359,7 +372,7 @@ func TestScopeReRooting(t *testing.T) {
 }
 
 func TestRootAnchorKeepsVCSExcluded(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		".git/HEAD": "ref: refs/heads/main\n",
 		"real.txt":  "content\n",
@@ -372,7 +385,7 @@ func TestRootAnchorKeepsVCSExcluded(t *testing.T) {
 }
 
 func TestEscapedSubtreeKeepsVCSExcluded(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		"project/real.txt":        "ok\n",
 		"project/.git/secret.txt": "g\n",
@@ -388,7 +401,7 @@ func TestEscapedSubtreeKeepsVCSExcluded(t *testing.T) {
 }
 
 func TestEscapedIntoVCSStoreListsInternals(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		".jj/repo/store/op.txt": "internal\n",
 		"real.txt":              "content\n",
@@ -399,7 +412,7 @@ func TestEscapedIntoVCSStoreListsInternals(t *testing.T) {
 }
 
 func TestAncestorGitignoreScoped(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		".gitignore":    "sub/secret.go\n",
 		"sub/secret.go": "package sub\n",
@@ -414,7 +427,7 @@ func TestAncestorGitignoreScoped(t *testing.T) {
 }
 
 func TestAncestorInfoExcludeFromGitRoot(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		".git/info/exclude": "sub/hidden.txt\n",
 		"sub/hidden.txt":    "x\n",
@@ -428,7 +441,7 @@ func TestAncestorInfoExcludeFromGitRoot(t *testing.T) {
 }
 
 func TestEscapeHatchIgnoresDotIgnore(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		"sub/.ignore":   "hidden.py\n",
 		"sub/hidden.py": "x = 1\n",
@@ -440,7 +453,7 @@ func TestEscapeHatchIgnoresDotIgnore(t *testing.T) {
 }
 
 func TestEscapeHatchIgnoresGitModules(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{
 		"sub/.gitmodules":     "[submodule \"v\"]\n\tpath = vendored\n\turl = https://example.com/v.git\n",
 		"sub/vendored/dep.py": "x = 1\n",
@@ -455,7 +468,7 @@ func TestBackslashInFilenameNotRewritten(t *testing.T) {
 	if os.PathSeparator == '\\' {
 		t.Skip("a backslash is a path separator on this OS")
 	}
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{`a\b.txt`: "content\n"})
 	// A literal backslash inside a POSIX filename is legal and must survive; only
 	// the root's separators are normalized to slashes.
@@ -464,7 +477,7 @@ func TestBackslashInFilenameNotRewritten(t *testing.T) {
 }
 
 func TestBudgetMaxIntNoPanic(t *testing.T) {
-	root := t.TempDir()
+	root := tempRoot(t)
 	writeTree(t, root, map[string]string{"a.txt": "x\n", "b.txt": "y\n"})
 	// A math.MaxInt64 budget must clamp, not overflow the cutoff multiply.
 	out := run(t, "*.txt", root, math.MaxInt64)

@@ -18,11 +18,11 @@ import (
 // maxEntries caps how many entry-point paths the entry section lists.
 const maxEntries = 4
 
-// Run assembles the repo overview for a.Scope (or the cwd), ordered most-orienting
-// first so a budget cap trims the git/churn tail gracefully. It is not itself capped;
-// the caller finalizes it through render.
-func Run(ctx context.Context, a backend.Args) (string, error) {
-	root, err := resolveRoot(a)
+// Run assembles the repo overview for the cwd, ordered most-orienting first so a
+// budget cap trims the git/churn tail gracefully. It is not itself capped; the
+// caller finalizes it through render.
+func Run(ctx context.Context, _ backend.Args) (string, error) {
+	root, err := resolveRoot()
 	if err != nil {
 		return "", err
 	}
@@ -46,19 +46,15 @@ func Run(ctx context.Context, a backend.Args) (string, error) {
 	return b.String(), nil
 }
 
-// resolveRoot resolves a.Scope (or the cwd) to an absolute path.
-func resolveRoot(a backend.Args) (string, error) {
-	root := a.Scope
-	if root == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("overview: resolve cwd: %w", err)
-		}
-		root = cwd
-	}
-	abs, err := filepath.Abs(root)
+// resolveRoot resolves the cwd to an absolute path.
+func resolveRoot() (string, error) {
+	cwd, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("overview: resolve root %q: %w", root, err)
+		return "", fmt.Errorf("overview: resolve cwd: %w", err)
+	}
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", fmt.Errorf("overview: resolve root %q: %w", cwd, err)
 	}
 	return abs, nil
 }

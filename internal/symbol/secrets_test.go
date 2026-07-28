@@ -58,7 +58,7 @@ func TestRunMasksSecrets(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tt.args.Scope = writeSecretScope(t)
+			tt.args.Globs = []string{writeSecretScope(t) + "/**"}
 			out, ids, err := Run(context.Background(), tt.args)
 			if err != nil {
 				t.Fatalf("Run: %v", err)
@@ -135,7 +135,7 @@ func TestRunMasksDocCallerAndDegradedRows(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tt.args.Scope = writeRefScope(t)
+			tt.args.Globs = []string{writeRefScope(t) + "/**"}
 			out, ids, err := Run(context.Background(), tt.args)
 			if err != nil {
 				t.Fatalf("Run: %v", err)

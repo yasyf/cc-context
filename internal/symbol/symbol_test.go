@@ -67,7 +67,7 @@ func TestCalleesExcludesDefinitions(t *testing.T) {
 
 func TestRunMissIsNotFound(t *testing.T) {
 	requireBins(t)
-	_, _, err := Run(context.Background(), backend.Args{Query: "ZzNoSuchSymbolXx", Scope: "testdata/src"})
+	_, _, err := Run(context.Background(), backend.Args{Query: "ZzNoSuchSymbolXx", Globs: []string{"testdata/src/**"}})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Run miss = %v, want ErrNotFound", err)
 	}
@@ -77,7 +77,7 @@ func TestRunMissIsNotFound(t *testing.T) {
 // --full cards, exercising the whole pipeline against real ast-grep and ripgrep.
 func TestLiveE2E(t *testing.T) {
 	requireBins(t)
-	terse, _, err := Run(context.Background(), backend.Args{Query: "decorate", Scope: "testdata/src"})
+	terse, _, err := Run(context.Background(), backend.Args{Query: "decorate", Globs: []string{"testdata/src/**"}})
 	if err != nil {
 		t.Fatalf("terse Run: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestLiveE2E(t *testing.T) {
 	}
 	t.Logf("=== TERSE (decorate) ===\n%s", terse)
 
-	full, _, err := Run(context.Background(), backend.Args{Query: "decorate", Scope: "testdata/src", Full: true})
+	full, _, err := Run(context.Background(), backend.Args{Query: "decorate", Globs: []string{"testdata/src/**"}, Full: true})
 	if err != nil {
 		t.Fatalf("full Run: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestLiveE2E(t *testing.T) {
 // top hit renders a card and the rest collapse into the "also defined" footer.
 func TestLiveDisambiguation(t *testing.T) {
 	requireBins(t)
-	out, _, err := Run(context.Background(), backend.Args{Query: "Widget", Scope: "testdata/src"})
+	out, _, err := Run(context.Background(), backend.Args{Query: "Widget", Globs: []string{"testdata/src/**"}})
 	if err != nil {
 		t.Fatalf("disambiguation Run: %v", err)
 	}
@@ -121,8 +121,8 @@ func TestLiveDisambiguation(t *testing.T) {
 		!strings.Contains(out, "testdata/src/sample.ts:") {
 		t.Errorf("want disambiguation footer citing py and ts, got:\n%s", out)
 	}
-	if !strings.HasSuffix(strings.TrimRight(out, "\n"), "— narrow with --scope") {
-		t.Errorf("want footer to end with the --scope hint, got:\n%s", out)
+	if !strings.HasSuffix(strings.TrimRight(out, "\n"), "— narrow with -g") {
+		t.Errorf("want footer to end with the -g hint, got:\n%s", out)
 	}
 	t.Logf("=== DISAMBIGUATION (Widget) ===\n%s", out)
 }
@@ -131,7 +131,7 @@ func TestLiveDisambiguation(t *testing.T) {
 // outline, so the miss ladder falls through to the definition-keyword scan.
 func TestLiveDegraded(t *testing.T) {
 	requireBins(t)
-	out, _, err := Run(context.Background(), backend.Args{Query: "orphan_sym", Scope: "testdata/degraded"})
+	out, _, err := Run(context.Background(), backend.Args{Query: "orphan_sym", Globs: []string{"testdata/degraded/**"}})
 	if err != nil {
 		t.Fatalf("degraded Run: %v", err)
 	}

@@ -87,7 +87,7 @@ func TestRenderCardGoldens(t *testing.T) {
 				"func Foo() error\n" +
 				"\n" +
 				"refs 0 · tests 0 · siblings 2 — --callers/--tests/--siblings/--body/--full\n" +
-				"also defined: b.go:20#h2b3 (method) · c.go:5#h3c4 (variable) — narrow with --scope\n",
+				"also defined: b.go:20#h2b3 (method) · c.go:5#h3c4 (variable) — narrow with -g\n",
 		},
 		{
 			name: "disambiguation with overflow",
@@ -104,7 +104,7 @@ func TestRenderCardGoldens(t *testing.T) {
 				"func Foo()\n" +
 				"\n" +
 				"refs 0 · tests 0 · siblings 0 — --callers/--tests/--siblings/--body/--full\n" +
-				"also defined: b.go:2#h2b3 (function) · (+4 more) — narrow with --scope\n",
+				"also defined: b.go:2#h2b3 (function) · (+4 more) — narrow with -g\n",
 		},
 		{
 			name: "case-insensitive disclosure",

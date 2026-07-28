@@ -27,7 +27,8 @@ func TestRunNoVCS(t *testing.T) {
 		"internal/x/a_test.go": "package x\n",
 		"README.md":            "# app\n",
 	})
-	out, err := Run(context.Background(), backend.Args{Scope: root})
+	t.Chdir(root)
+	out, err := Run(context.Background(), backend.Args{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +66,8 @@ func TestRunIncludesGitWhenGitAnswers(t *testing.T) {
 		"log --since=90.days --name-only --format=": "internal/x/a.go\n",
 	})
 	root := scaffold(t, map[string]string{"internal/x/a.go": "package x\n"})
-	out, err := Run(context.Background(), backend.Args{Scope: root})
+	t.Chdir(root)
+	out, err := Run(context.Background(), backend.Args{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +87,8 @@ func TestLiveExample(t *testing.T) {
 		t.Fatal(err)
 	}
 	repoRoot := filepath.Clean(filepath.Join(cwd, "..", ".."))
-	out, err := Run(context.Background(), backend.Args{Scope: repoRoot})
+	t.Chdir(repoRoot)
+	out, err := Run(context.Background(), backend.Args{})
 	if err != nil {
 		t.Fatal(err)
 	}

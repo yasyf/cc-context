@@ -171,7 +171,7 @@ func TestGrepToolSchemaHasEngineFields(t *testing.T) {
 	if schema == "" {
 		t.Fatal("ccx_code_grep not registered")
 	}
-	for _, field := range []string{`"scope"`, `"ignoreCase"`, `"word"`, `"regex"`, `"filesWithMatches"`, `"paths"`} {
+	for _, field := range []string{`"globs"`, `"ignoreCase"`, `"word"`, `"regex"`, `"filesWithMatches"`, `"paths"`} {
 		if !strings.Contains(schema, field) {
 			t.Errorf("ccx_code_grep schema missing %s:\n%s", field, schema)
 		}
@@ -212,30 +212,38 @@ func TestMaskingToolSchemasAdvertiseRevealSecrets(t *testing.T) {
 	}
 }
 
-func TestScopeSchemaDescriptions(t *testing.T) {
+// TestSelectorSchemaDescriptions pins the one selector every path-narrowing tool
+// exposes: an ordered "globs" array. A "scope" property anywhere would mean the
+// deleted second spelling came back.
+func TestSelectorSchemaDescriptions(t *testing.T) {
 	cs := connectTestServer(t)
 	res, err := cs.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
+	const globsArray = `,"items":{"type":"string"},"type":["null","array"]}`
 	want := map[string]string{
-		"ccx_code_symbol":  `"description":"directory (directories only) to scope the lookup to"`,
-		"ccx_code_deps":    `"description":"directory (directories only) to scope the analysis to"`,
-		"ccx_code_grep":    `"description":"directory (or a single file) to scope to"`,
+		"ccx_code_symbol":  `"globs":{"description":"restrict the lookup to files matching these globs (ordered, gitignore-style; ! excludes, last match wins)"` + globsArray,
+		"ccx_code_grep":    `"globs":{"description":"restrict to files matching these globs (ordered, gitignore-style; ! excludes, last match wins); a glob anchored at a real directory searches even under ignore rules"` + globsArray,
+		"ccx_code_replace": `"globs":{"description":"restrict to files matching these globs (ordered, gitignore-style; ! excludes, last match wins)"` + globsArray,
 		"ccx_code_related": `"description":"repo root or https git URL; default project root"`,
-		"ccx_repo_find":    `"description":"directory (directories only) to scope the search to"`,
+		"ccx_repo_find":    `"globs":{"description":"globs to match files against (ordered, gitignore-style; ! excludes, last match wins)"` + globsArray,
+		"ccx_vcs_diff":     `"globs":{"description":"restrict to changed files matching these globs (ordered, gitignore-style; ! excludes, last match wins)"` + globsArray,
 	}
 	for _, tool := range res.Tools {
-		description, ok := want[tool.Name]
-		if !ok {
-			continue
-		}
 		raw, err := json.Marshal(tool.InputSchema)
 		if err != nil {
 			t.Fatalf("marshal %s input schema: %v", tool.Name, err)
 		}
+		if strings.Contains(string(raw), `"scope"`) {
+			t.Errorf("%s schema still exposes scope:\n%s", tool.Name, raw)
+		}
+		description, ok := want[tool.Name]
+		if !ok {
+			continue
+		}
 		if !strings.Contains(string(raw), description) {
-			t.Errorf("%s scope schema missing %s:\n%s", tool.Name, description, raw)
+			t.Errorf("%s selector schema missing %s:\n%s", tool.Name, description, raw)
 		}
 		delete(want, tool.Name)
 	}

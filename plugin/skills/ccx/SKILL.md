@@ -74,17 +74,56 @@ Pick the tool by what you know.
 - **Have literal text to match.** Error strings, env-var names, a verbatim token:
   ```
   ccx code grep "RATE_LIMIT"
-  ccx code grep "func New" --glob "internal/**/*.go"
+  ccx code grep "func New" -g "internal/**/*.go"
   ccx code grep -i -w "ratelimit"   # case-insensitive, whole-word (runs on ripgrep)
-  ccx code grep TODO cmd/main.go internal/cli/run.go --glob "*.go"   # --glob filters within explicit paths
+  ccx code grep TODO cmd/main.go internal/cli/run.go -g "*.go"   # -g filters within explicit paths
   ```
 - **Have a path shape.** List files with per-file token counts — gitignore-honoring,
-  VCS stores skipped, sorted, budget-capped (`--budget N` raises the cap; a glob
-  anchored at a real path, like `.venv/**/*.py`, lists files ignore rules would hide):
+  VCS stores skipped, sorted, budget-capped (`--budget N` raises the cap):
   ```
   ccx repo find "internal/**/*.go"
   ```
   Orienting a whole repo is `ccx repo overview`, not a `"**/*"` listing.
+
+#### Narrowing with `-g`
+
+`-g/--glob` is the only path selector. It is repeatable and ordered, and one set of
+rules governs it on `code grep`, `code symbol`, `code replace`, `vcs diff`, `vcs show`,
+and `repo find` (where the globs are positionals). There is no `--scope` — passing one
+is `unknown flag`.
+
+```
+ccx code grep "func New" -g "internal/**" -g "!*_test.go"   # subtree, minus tests
+ccx code symbol Cap -g "internal/render/**"                 # was --scope internal/render
+ccx vcs diff -g "internal/cli/ship.go"                      # one changed file
+ccx repo find "*.go" "!vendor/**"                           # positional on find
+```
+
+The rules are ripgrep's, and `MatchGlobs` applies them wherever ccx filters in Go:
+
+- **Order decides.** Last match wins; any include turns the set into a whitelist, an
+  exclusion-only set keeps everything it does not exclude.
+- **A slash changes the target.** A slash-less glob (`*.go`) matches the basename at
+  any depth; a slashed one (`internal/*.go`) matches the path, so it selects direct
+  children only. That path is cwd-relative on the search ops and repo-root-relative on
+  `vcs diff`/`vcs show`, which filter git's own changed-file list — so run from a
+  subdirectory, those two want the repo-root spelling (`-g 'pkg/sub/*.go'`, not
+  `-g 'sub/*.go'`).
+- **A bare directory means its subtree.** `-g internal` normalizes to `internal/**`.
+  Raw ripgrep matches nothing against a bare directory name; ccx diverges on purpose,
+  so `-g <dir>` is the drop-in for the old `--scope <dir>`.
+- **An anchored glob escapes the ignore rules.** `-g '.venv/**/*.py'` searches an
+  ignored tree, because the literal anchor becomes the search operand.
+- **Mixed anchors fall off the cliff.** The anchor is peeled only when *every* include
+  shares it — ripgrep applies each `-g` under every operand, so peeling disjoint
+  anchors would silently widen the search. `-g '.venv/**/*.py' -g '*.sh'` does not
+  anchor, and the ignored `.venv` tree drops out with no warning. Recover with braces
+  under one anchor (`-g '.venv/**/*.{py,sh}'`) or with two calls.
+
+Migrating a `--scope`: `--scope D` is `-g D`; `--scope D --glob G` is `-g 'D/**/G'`
+for a slash-less `G` or `-g 'D/G'` for a slashed one; a file-valued `--scope F` is a
+positional `F` on `code grep` and `-g F` on `vcs diff`/`vcs show`. `code deps` had a
+`--scope` that nothing read, and it is gone with no replacement.
 
 ### 3. Read
 
@@ -312,13 +351,13 @@ function, alongside a gated `sh(cmd)` and the tools of every stateless MCP serve
 auto-reflected with no flag needed. Intermediate output stays in the sandbox; only the
 script's return value enters context. A shell pipe is not the bound: ccx output is
 already budget-capped, and `| head`/`| tail` re-introduces silent truncation while
-eating the overflow footer — raise `--budget`, narrow with `--section`/`--scope`, or
+eating the overflow footer — raise `--budget`, narrow with `--section`/`-g`, or
 write the exec script.
 
 ```
 ccx exec 'import asyncio
 async def main():
-    raw = await grep("TODO", glob="internal/**/*.go")
+    raw = await grep("TODO", globs=["internal/**/*.go"])
     return [ln for ln in raw.splitlines() if "FIXME" not in ln]
 asyncio.run(main())'
 ```

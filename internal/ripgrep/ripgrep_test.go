@@ -18,7 +18,7 @@ import (
 
 func TestRipgrepArgv(t *testing.T) {
 	sub, missing, file := anchorDirs(t)
-	parent := filepath.Dir(sub)
+	t.Chdir(filepath.Dir(sub))
 	tests := []struct {
 		name string
 		args backend.Args
@@ -32,19 +32,16 @@ func TestRipgrepArgv(t *testing.T) {
 		{"after and before flags", backend.Args{Query: "foo", After: 2, Before: 1}, []string{"--json", "--fixed-strings", "-A", "2", "-B", "1", "-e", "foo"}},
 		{"context and after flags", backend.Args{Query: "foo", Context: 1, After: 3}, []string{"--json", "--fixed-strings", "-C", "1", "-A", "3", "-e", "foo"}},
 		{"context with after and before flags", backend.Args{Query: "foo", Context: 3, After: 9, Before: 9}, []string{"--json", "--fixed-strings", "-C", "3", "-A", "9", "-B", "9", "-e", "foo"}},
-		{"scope adds --no-ignore-parent", backend.Args{Query: "foo", Scope: "internal"}, []string{"--json", "--fixed-strings", "--no-ignore-parent", "-e", "foo", "--", "internal"}},
-		{"flag-like scope lands after -- with flag", backend.Args{Query: "foo", Scope: "--hidden"}, []string{"--json", "--fixed-strings", "--no-ignore-parent", "-e", "foo", "--", "--hidden"}},
 		{"anchored existing-dir glob relativizes to rest + operand", backend.Args{Query: "foo", Globs: []string{sub + "/*.go"}}, []string{"--json", "--fixed-strings", "--glob", "*.go", "--no-ignore-parent", "-e", "foo", "--", sub}},
 		{"dir-literal glob drops -g, operand alone filters", backend.Args{Query: "foo", Globs: []string{sub}}, []string{"--json", "--fixed-strings", "--no-ignore-parent", "-e", "foo", "--", sub}},
-		{"explicit scope composes onto join", backend.Args{Query: "foo", Globs: []string{"pkg/*.go"}, Scope: parent}, []string{"--json", "--fixed-strings", "--glob", "*.go", "--no-ignore-parent", "-e", "foo", "--", sub}},
 		{"literal file glob → parent operand + basename", backend.Args{Query: "foo", Globs: []string{file}}, []string{"--json", "--fixed-strings", "--glob", "file.go", "--no-ignore-parent", "-e", "foo", "--", sub}},
 		{"nonexistent anchor unchanged", backend.Args{Query: "foo", Globs: []string{missing + "/*.go"}}, []string{"--json", "--fixed-strings", "--glob", missing + "/*.go", "-e", "foo"}},
+		{"relative dir glob is the --scope replacement: operand + full-path -g", backend.Args{Query: "foo", Globs: []string{"pkg/**"}}, []string{"--json", "--fixed-strings", "--glob", "pkg/**", "--no-ignore-parent", "-e", "foo", "--", "pkg"}},
 		{"leading-dash pattern", backend.Args{Query: "-foo"}, []string{"--json", "--fixed-strings", "-e", "-foo"}},
 		{"regex drops --fixed-strings", backend.Args{Query: "foo", Regex: true}, []string{"--json", "-e", "foo"}},
 		{"regex + ignore-case + word", backend.Args{Query: "foo", Regex: true, IgnoreCase: true, Word: true}, []string{"--json", "-i", "-w", "-e", "foo"}},
-		{"files with matches + filters", backend.Args{Query: "^foo", Globs: []string{"*.go"}, Scope: "internal", IgnoreCase: true, Word: true, Regex: true, FilesWithMatches: true}, []string{"--files-with-matches", "-i", "-w", "--glob", "*.go", "--no-ignore-parent", "-e", "^foo", "--", "internal"}},
+		{"files with matches + filters", backend.Args{Query: "^foo", Globs: []string{"*.go"}, IgnoreCase: true, Word: true, Regex: true, FilesWithMatches: true}, []string{"--files-with-matches", "-i", "-w", "--glob", "*.go", "-e", "^foo"}},
 		{"literal paths keep --fixed-strings after --", backend.Args{Query: "foo", Paths: []string{"a.go", "b.go"}}, []string{"--json", "--fixed-strings", "-e", "foo", "--", "a.go", "b.go"}},
-		{"scope + paths both ride after --", backend.Args{Query: "foo", Scope: "internal", Paths: []string{"a.go"}}, []string{"--json", "--fixed-strings", "--no-ignore-parent", "-e", "foo", "--", "internal", "a.go"}},
 		{"regex + paths", backend.Args{Query: "^func ", Regex: true, Paths: []string{"a.go"}}, []string{"--json", "-e", "^func ", "--", "a.go"}},
 		{"paths + glob keep --glob and operands, skip anchoring", backend.Args{Query: "foo", Paths: []string{"a.go", "sub"}, Globs: []string{"*.go"}}, []string{"--json", "--fixed-strings", "--glob", "*.go", "-e", "foo", "--", "a.go", "sub"}},
 		{"negated glob rides -g verbatim for rg's native exclusion", backend.Args{Query: "foo", Globs: []string{"!*.min.js"}}, []string{"--json", "--fixed-strings", "--glob", "!*.min.js", "-e", "foo"}},
@@ -81,7 +78,7 @@ func anchorDirs(t *testing.T) (existing, missing, file string) {
 
 func TestGrepArgv(t *testing.T) {
 	sub, _, file := anchorDirs(t)
-	parent := filepath.Dir(sub)
+	t.Chdir(filepath.Dir(sub))
 	tests := []struct {
 		name    string
 		args    backend.Args
@@ -98,19 +95,14 @@ func TestGrepArgv(t *testing.T) {
 		{"basename glob", backend.Args{Query: "foo", Globs: []string{"*.go"}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "."}, false},
 		{"dir recurse glob", backend.Args{Query: "foo", Globs: []string{"src/**"}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "src"}, false},
 		{"dir + ext glob", backend.Args{Query: "foo", Globs: []string{"src/**/*.go"}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "src"}, false},
-		{"scope", backend.Args{Query: "foo", Scope: "internal"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "internal"}, false},
-		{"flag-like scope lands after --", backend.Args{Query: "foo", Scope: "--hidden"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "--hidden"}, false},
-		{"scope + basename glob", backend.Args{Query: "foo", Globs: []string{"*.go"}, Scope: "internal"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "internal"}, false},
 		{"leading-dash pattern", backend.Args{Query: "-foo"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "-foo", "--", "."}, false},
 		{"regex swaps -rnFI for -rnEI", backend.Args{Query: "foo", Regex: true}, []string{"-rnHEI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
-		{"files with matches + filters", backend.Args{Query: "^foo", Globs: []string{"*.go"}, Scope: "internal", IgnoreCase: true, Word: true, Regex: true, FilesWithMatches: true}, []string{"-rEI", "-l", "-i", "-w", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "^foo", "--", "internal"}, false},
+		{"files with matches + filters", backend.Args{Query: "^foo", Globs: []string{"*.go"}, IgnoreCase: true, Word: true, Regex: true, FilesWithMatches: true}, []string{"-rEI", "-l", "-i", "-w", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "^foo", "--", "."}, false},
 		{"paths keep excludes", backend.Args{Query: "foo", Paths: []string{"a.go", "b.go"}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "a.go", "b.go"}, false},
 		{"regex + paths keep excludes", backend.Args{Query: "^func ", Regex: true, Paths: []string{"a.go"}}, []string{"-rnHEI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "^func ", "--", "a.go"}, false},
-		{"scope + paths keep excludes", backend.Args{Query: "foo", Scope: "internal", Paths: []string{"a.go"}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "internal", "a.go"}, false},
 		{"paths + basename glob → include", backend.Args{Query: "foo", Paths: []string{"a.go"}, Globs: []string{"*.go"}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "a.go"}, false},
 		{"paths + double-star glob → include", backend.Args{Query: "foo", Paths: []string{"a.go", "sub"}, Globs: []string{"**/*.go"}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "a.go", "sub"}, false},
 		{"paths + dir-rooted glob fails", backend.Args{Query: "foo", Paths: []string{"sub"}, Globs: []string{"src/**"}}, nil, true},
-		{"scope + dir glob fails", backend.Args{Query: "foo", Globs: []string{"src/**"}, Scope: "internal"}, nil, true},
 		{"brace glob fails", backend.Args{Query: "foo", Globs: []string{"{a,b}/**"}}, nil, true},
 		{"mid-path wildcard fails", backend.Args{Query: "foo", Globs: []string{"src/*/x.go"}}, nil, true},
 		{"negated basename glob fails", backend.Args{Query: "foo", Globs: []string{"!*.min.js"}}, nil, true},
@@ -118,9 +110,9 @@ func TestGrepArgv(t *testing.T) {
 		{"negated double-star glob fails", backend.Args{Query: "foo", Globs: []string{"!**/*.go"}}, nil, true},
 		{"double-star-slash-star maps to include", backend.Args{Query: "foo", Globs: []string{"**/*.go"}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", "."}, false},
 		{"anchored existing-dir glob peels to include + root", backend.Args{Query: "foo", Globs: []string{sub + "/*.go"}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", sub}, false},
+		{"relative dir glob is the --scope replacement: peeled root", backend.Args{Query: "foo", Globs: []string{"pkg/**"}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=**", "-e", "foo", "--", "pkg"}, false},
 		{"anchored dir-literal glob roots the search", backend.Args{Query: "foo", Globs: []string{sub}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", sub}, false},
 		{"anchored recursive glob peels to include + root", backend.Args{Query: "foo", Globs: []string{sub + "/**/*.go"}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", sub}, false},
-		{"anchored glob composes with explicit scope", backend.Args{Query: "foo", Globs: []string{"pkg/*.go"}, Scope: parent}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "-e", "foo", "--", sub}, false},
 		{"anchored file glob → parent root + basename include", backend.Args{Query: "foo", Globs: []string{file}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=file.go", "-e", "foo", "--", sub}, false},
 		{"several basename globs OR as repeated --include", backend.Args{Query: "foo", Globs: []string{"*.go", "*.md"}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "--include=*.go", "--include=*.md", "-e", "foo", "--", "."}, false},
 		{"several globs with a directory-rooted one fail", backend.Args{Query: "foo", Globs: []string{"*.go", "src/**"}}, nil, true},
@@ -808,18 +800,15 @@ func TestResolveEngine_Neither(t *testing.T) {
 
 func TestAnchorGrepArgs(t *testing.T) {
 	sub, missing, file := anchorDirs(t)
-	parent := filepath.Dir(sub)
 	tests := []struct {
-		name      string
-		args      backend.Args
-		wantGlobs []string
-		wantScope string
+		name       string
+		args       backend.Args
+		wantGlobs  []string
+		wantAnchor string
 	}{
-		{"anchored existing dir → scope, absolute anchor dropped", backend.Args{Query: "foo", Globs: []string{sub + "/*.go"}}, []string{"*.go"}, sub},
+		{"anchored existing dir → anchor, absolute prefix dropped", backend.Args{Query: "foo", Globs: []string{sub + "/*.go"}}, []string{"*.go"}, sub},
 		{"nonexistent prefix → unchanged", backend.Args{Query: "foo", Globs: []string{missing + "/*.go"}}, []string{missing + "/*.go"}, ""},
-		{"explicit scope composes onto join", backend.Args{Query: "foo", Globs: []string{"pkg/*.go"}, Scope: parent}, []string{"*.go"}, sub},
-		{"explicit scope nonexistent join → unchanged", backend.Args{Query: "foo", Globs: []string{"nope/*.go"}, Scope: parent}, []string{"nope/*.go"}, parent},
-		{"literal file glob → parent scope + basename", backend.Args{Query: "foo", Globs: []string{file}}, []string{"file.go"}, sub},
+		{"literal file glob → parent anchor + basename", backend.Args{Query: "foo", Globs: []string{file}}, []string{"file.go"}, sub},
 		{"slash-less glob → unchanged", backend.Args{Query: "foo", Globs: []string{"*.go"}}, []string{"*.go"}, ""},
 		{"exclusion rides through the anchor untouched", backend.Args{Query: "foo", Globs: []string{sub + "/*.go", "!*_test.go"}}, []string{"*.go", "!*_test.go"}, sub},
 		{"differing anchors are never peeled", backend.Args{Query: "foo", Globs: []string{sub + "/*.go", missing + "/*.md"}}, []string{sub + "/*.go", missing + "/*.md"}, ""},
@@ -827,9 +816,9 @@ func TestAnchorGrepArgs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := AnchorGrepArgs(tt.args)
-			if !reflect.DeepEqual(got.Globs, tt.wantGlobs) || got.Scope != tt.wantScope {
-				t.Errorf("AnchorGrepArgs globs=%q scope=%q, want globs=%q scope=%q", got.Globs, got.Scope, tt.wantGlobs, tt.wantScope)
+			got, anchor := AnchorGrepArgs(tt.args)
+			if !reflect.DeepEqual(got.Globs, tt.wantGlobs) || anchor != tt.wantAnchor {
+				t.Errorf("AnchorGrepArgs globs=%q anchor=%q, want globs=%q anchor=%q", got.Globs, anchor, tt.wantGlobs, tt.wantAnchor)
 			}
 		})
 	}
@@ -841,10 +830,10 @@ func TestAnchorGrepArgs(t *testing.T) {
 func TestAnchorGrepArgsRelative(t *testing.T) {
 	globPathsFixture(t)
 	tests := []struct {
-		name      string
-		globs     []string
-		wantGlobs []string
-		wantScope string
+		name       string
+		globs      []string
+		wantGlobs  []string
+		wantAnchor string
 	}{
 		{"anchor stays in the glob", []string{"sub/*.go"}, []string{"sub/*.go"}, "sub"},
 		{"normalized dir glob keeps its anchor", []string{"sub/**"}, []string{"sub/**"}, "sub"},
@@ -853,9 +842,9 @@ func TestAnchorGrepArgsRelative(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := AnchorGrepArgs(backend.Args{Query: "foo", Globs: tt.globs})
-			if !reflect.DeepEqual(got.Globs, tt.wantGlobs) || got.Scope != tt.wantScope {
-				t.Errorf("AnchorGrepArgs globs=%q scope=%q, want globs=%q scope=%q", got.Globs, got.Scope, tt.wantGlobs, tt.wantScope)
+			got, anchor := AnchorGrepArgs(backend.Args{Query: "foo", Globs: tt.globs})
+			if !reflect.DeepEqual(got.Globs, tt.wantGlobs) || anchor != tt.wantAnchor {
+				t.Errorf("AnchorGrepArgs globs=%q anchor=%q, want globs=%q anchor=%q", got.Globs, anchor, tt.wantGlobs, tt.wantAnchor)
 			}
 		})
 	}
@@ -873,7 +862,7 @@ func TestValidateContext(t *testing.T) {
 		{"over max errors", backend.Args{Before: maxContext + 1}, "capped"},
 		{"negative after errors", backend.Args{After: -1}, "must be"},
 		{"negative context errors", backend.Args{Context: -5}, "must be"},
-		{"files with matches allows filters", backend.Args{FilesWithMatches: true, Globs: []string{"*.go"}, Scope: "internal", IgnoreCase: true, Word: true, Regex: true, Budget: 10}, ""},
+		{"files with matches allows filters", backend.Args{FilesWithMatches: true, Globs: []string{"*.go"}, IgnoreCase: true, Word: true, Regex: true, Budget: 10}, ""},
 		{"files with matches rejects expand", backend.Args{FilesWithMatches: true, Expand: 1}, "--expand"},
 		{"files with matches rejects after", backend.Args{FilesWithMatches: true, After: 1}, "-A/--after-context"},
 		{"files with matches rejects before", backend.Args{FilesWithMatches: true, Before: 1}, "-B/--before-context"},

@@ -46,18 +46,18 @@ func Ops(c Caller) map[string]HostFunc {
 			return backend.Args{Path: a.str("path", 0), Section: a.str("section", 1), Full: a.flag("full"), RevealSecrets: a.flag("reveal_secrets")}
 		}),
 		"grep": op(backend.OpGrep, func(a *args) backend.Args {
-			return backend.Args{Query: a.str("text", 0), Globs: backend.SingleGlob(a.str("glob", 1)), Scope: a.str("scope", 2), Paths: a.strs("paths"), IgnoreCase: a.flag("ignore_case"), Word: a.flag("word"), Regex: a.flag("regex"), FilesWithMatches: a.flag("files_with_matches"), RevealSecrets: a.flag("reveal_secrets"), Expand: a.num("expand"), After: a.num("after"), Before: a.num("before"), Context: a.num("context")}
+			return backend.Args{Query: a.str("text", 0), Globs: a.strs("globs", 1), Paths: a.strs("paths", 2), IgnoreCase: a.flag("ignore_case"), Word: a.flag("word"), Regex: a.flag("regex"), FilesWithMatches: a.flag("files_with_matches"), RevealSecrets: a.flag("reveal_secrets"), Expand: a.num("expand"), After: a.num("after"), Before: a.num("before"), Context: a.num("context")}
 		}),
 		"symbol": op(backend.OpSymbol, func(a *args) backend.Args {
-			return backend.Args{Query: a.str("name", 0), Scope: a.str("scope", 1), Full: a.flag("full"), Body: a.flag("body"), Callers: a.flag("callers"), Callees: a.flag("callees"), Siblings: a.flag("siblings"), Tests: a.flag("tests"), RevealSecrets: a.flag("reveal_secrets")}
+			return backend.Args{Query: a.str("name", 0), Globs: a.strs("globs", 1), Full: a.flag("full"), Body: a.flag("body"), Callers: a.flag("callers"), Callees: a.flag("callees"), Siblings: a.flag("siblings"), Tests: a.flag("tests"), RevealSecrets: a.flag("reveal_secrets")}
 		}),
 		"find": op(backend.OpFind, func(a *args) backend.Args {
-			return backend.Args{Globs: backend.SingleGlob(a.str("glob", 0)), Scope: a.str("scope", 1)}
+			return backend.Args{Globs: a.strs("globs", 0)}
 		}),
 		"related": op(backend.OpRelated, func(a *args) backend.Args { return backend.Args{Query: a.str("location", 0)} }),
-		"deps":    op(backend.OpDeps, func(a *args) backend.Args { return backend.Args{Path: a.str("path", 0), Scope: a.str("scope", 1)} }),
+		"deps":    op(backend.OpDeps, func(a *args) backend.Args { return backend.Args{Path: a.str("path", 0)} }),
 		"diff": op(backend.OpDiff, func(a *args) backend.Args {
-			return backend.Args{Source: a.strOr("source", 0, "uncommitted"), Scope: a.str("scope", 1), RevealSecrets: a.flag("reveal_secrets")}
+			return backend.Args{Source: a.strOr("source", 0, "uncommitted"), Globs: a.strs("globs", 1), RevealSecrets: a.flag("reveal_secrets")}
 		}),
 		"overview": op(backend.OpOverview, func(*args) backend.Args { return backend.Args{} }),
 		"web_outline": op(backend.OpWebOutline, func(a *args) backend.Args {
@@ -219,12 +219,13 @@ func (a *args) num(name string) int {
 	}
 }
 
-// strs reads a keyword-only list-of-strings argument. An absent argument defaults
+// strs reads a list-of-strings argument, positional at idx or keyword-only when
+// idx is negative. An absent argument defaults
 // to nil; a present value that is not a list of strings, or that holds a non-string
 // element, records a labeled error so the sandbox sees the mistake instead of a
 // silent drop.
-func (a *args) strs(name string) []string {
-	v, ok := a.val(name, -1)
+func (a *args) strs(name string, idx int) []string {
+	v, ok := a.val(name, idx)
 	if !ok {
 		return nil
 	}

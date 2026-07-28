@@ -25,27 +25,25 @@ func TestNormalizeGlobs(t *testing.T) {
 
 	tests := []struct {
 		name  string
-		scope string
 		globs []string
 		want  []string
 	}{
-		{"no globs", "", nil, nil},
-		{"metachar glob untouched", "", []string{"*.go"}, []string{"*.go"}},
-		{"existing dir becomes a subtree include", "", []string{"pkg"}, []string{"pkg/**"}},
-		{"trailing slash collapses into the subtree include", "", []string{"pkg/"}, []string{"pkg/**"}},
-		{"nested dir normalizes too", "", []string{"pkg/sub"}, []string{"pkg/sub/**"}},
-		{"regular file is left alone", "", []string{"pkg/f.go"}, []string{"pkg/f.go"}},
-		{"missing path is left alone", "", []string{"nope"}, []string{"nope"}},
-		{"exclusion keeps its bare directory form", "", []string{"!pkg"}, []string{"!pkg"}},
-		{"leading ./ is dropped", "", []string{"./**/*.go"}, []string{"**/*.go"}},
-		{"leading ./ is dropped on an exclusion too", "", []string{"!./x/*.go"}, []string{"!x/*.go"}},
-		{"dir resolves against the scope", "pkg", []string{"sub"}, []string{"sub/**"}},
-		{"whole list normalizes in place", "", []string{"pkg", "!*.md", "*.go"}, []string{"pkg/**", "!*.md", "*.go"}},
+		{"no globs", nil, nil},
+		{"metachar glob untouched", []string{"*.go"}, []string{"*.go"}},
+		{"existing dir becomes a subtree include", []string{"pkg"}, []string{"pkg/**"}},
+		{"trailing slash collapses into the subtree include", []string{"pkg/"}, []string{"pkg/**"}},
+		{"nested dir normalizes too", []string{"pkg/sub"}, []string{"pkg/sub/**"}},
+		{"regular file is left alone", []string{"pkg/f.go"}, []string{"pkg/f.go"}},
+		{"missing path is left alone", []string{"nope"}, []string{"nope"}},
+		{"exclusion keeps its bare directory form", []string{"!pkg"}, []string{"!pkg"}},
+		{"leading ./ is dropped", []string{"./**/*.go"}, []string{"**/*.go"}},
+		{"leading ./ is dropped on an exclusion too", []string{"!./x/*.go"}, []string{"!x/*.go"}},
+		{"whole list normalizes in place", []string{"pkg", "!*.md", "*.go"}, []string{"pkg/**", "!*.md", "*.go"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := normalizeGlobs(tt.scope, tt.globs); !slices.Equal(got, tt.want) {
-				t.Errorf("normalizeGlobs(%q, %q) = %q, want %q", tt.scope, tt.globs, got, tt.want)
+			if got := normalizeGlobs(tt.globs); !slices.Equal(got, tt.want) {
+				t.Errorf("normalizeGlobs(%q) = %q, want %q", tt.globs, got, tt.want)
 			}
 		})
 	}
@@ -59,7 +57,6 @@ func TestResolvePath(t *testing.T) {
 		wantErrIs       []error
 		wantNotErrIs    []error
 		wantContains    []string
-		wantNotContains []string
 		wantPathInError bool
 		wantNote        string
 	}{
@@ -297,115 +294,6 @@ func TestResolvePath(t *testing.T) {
 			wantNote: "# note: events → events.py\n",
 		},
 		{
-			name: "grep missing scope",
-			op:   OpGrep,
-			setup: func(t *testing.T) (Args, Args) {
-				t.Chdir(t.TempDir())
-				a := Args{Scope: "missing"}
-				return a, a
-			},
-			wantErrIs:    []error{ErrPathNotFound, fs.ErrNotExist},
-			wantContains: []string{"scope", "missing"},
-		},
-		{
-			name: "grep file scope becomes an operand",
-			op:   OpGrep,
-			setup: func(t *testing.T) (Args, Args) {
-				t.Chdir(t.TempDir())
-				writePathcheckFile(t, "existing.go")
-				writePathcheckFile(t, "scope.go")
-				return Args{Paths: []string{"existing.go"}, Scope: "scope.go"}, Args{Paths: []string{"existing.go", "scope.go"}}
-			},
-		},
-		{
-			name: "grep extensionless file scope becomes a resolved operand",
-			op:   OpGrep,
-			setup: func(t *testing.T) (Args, Args) {
-				t.Chdir(t.TempDir())
-				if err := os.Mkdir("pkg", 0o700); err != nil {
-					t.Fatalf("mkdir fixture: %v", err)
-				}
-				writePathcheckFile(t, "pkg/events.py")
-				return Args{Scope: "pkg/events"}, Args{Paths: []string{"pkg/events.py"}}
-			},
-			wantNote: "# note: pkg/events → pkg/events.py\n",
-		},
-		{
-			name: "deps missing scope",
-			op:   OpDeps,
-			setup: func(t *testing.T) (Args, Args) {
-				t.Chdir(t.TempDir())
-				writePathcheckFile(t, "a.go")
-				a := Args{Path: "a.go", Scope: "missing"}
-				return a, a
-			},
-			wantErrIs:    []error{ErrPathNotFound, fs.ErrNotExist},
-			wantContains: []string{"scope", "missing"},
-		},
-		{
-			name: "symbol missing scope",
-			op:   OpSymbol,
-			setup: func(t *testing.T) (Args, Args) {
-				t.Chdir(t.TempDir())
-				a := Args{Scope: "missing"}
-				return a, a
-			},
-			wantErrIs:    []error{ErrPathNotFound, fs.ErrNotExist},
-			wantContains: []string{"scope", "missing"},
-		},
-		{
-			name: "find missing scope",
-			op:   OpFind,
-			setup: func(t *testing.T) (Args, Args) {
-				t.Chdir(t.TempDir())
-				a := Args{Scope: "missing"}
-				return a, a
-			},
-			wantErrIs:    []error{ErrPathNotFound, fs.ErrNotExist},
-			wantContains: []string{"scope", "missing"},
-		},
-		{
-			name: "trailing slash over file scope is path-not-found",
-			op:   OpFind,
-			setup: func(t *testing.T) (Args, Args) {
-				path := filepath.Join(t.TempDir(), "a.go")
-				writePathcheckFile(t, path)
-				a := Args{Scope: path + string(os.PathSeparator)}
-				return a, a
-			},
-			wantErrIs: []error{ErrPathNotFound, syscall.ENOTDIR},
-		},
-		{
-			name: "scope glob metachar passes unchanged",
-			op:   OpFind,
-			setup: func(t *testing.T) (Args, Args) {
-				t.Chdir(t.TempDir())
-				a := Args{Scope: "missing/*"}
-				return a, a
-			},
-		},
-		{
-			name: "find file scope reports file not directory",
-			op:   OpFind,
-			setup: func(t *testing.T) (Args, Args) {
-				t.Chdir(t.TempDir())
-				writePathcheckFile(t, "a.go")
-				a := Args{Scope: "a.go"}
-				return a, a
-			},
-			wantNotErrIs:    []error{ErrPathNotFound},
-			wantContains:    []string{"is a file, not a directory"},
-			wantNotContains: []string{"path not found"},
-		},
-		{
-			name: "diff missing scope is exempt",
-			op:   OpDiff,
-			setup: func(t *testing.T) (Args, Args) {
-				a := Args{Scope: filepath.Join(t.TempDir(), "deleted.go")}
-				return a, a
-			},
-		},
-		{
 			name: "grep globs normalize before dispatch",
 			op:   OpGrep,
 			setup: func(t *testing.T) (Args, Args) {
@@ -455,11 +343,6 @@ func TestResolvePath(t *testing.T) {
 			for _, want := range tt.wantContains {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("error = %q, want containing %q", err, want)
-				}
-			}
-			for _, unwanted := range tt.wantNotContains {
-				if strings.Contains(err.Error(), unwanted) {
-					t.Errorf("error = %q, want not containing %q", err, unwanted)
 				}
 			}
 			if tt.wantPathInError && !strings.Contains(err.Error(), got.Path) {

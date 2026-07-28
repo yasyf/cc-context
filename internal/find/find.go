@@ -42,20 +42,16 @@ const maxTrailerBytes = 64
 // overflow (a math.MaxInt64 budget would wrap negative in the cutoff multiply).
 const maxBudget = 1 << 31
 
-// Run lists the files a.Globs select under a.Scope (or the cwd), rendered to a
-// budgeted listing. A zero a.Budget renders every row uncapped.
+// Run lists the files a.Globs select under the cwd, rendered to a budgeted
+// listing. A zero a.Budget renders every row uncapped.
 func Run(ctx context.Context, a backend.Args) (string, error) {
-	root := a.Scope
-	if root == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("find: resolve cwd: %w", err)
-		}
-		root = cwd
-	}
-	absRoot, err := filepath.Abs(root)
+	cwd, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("find: resolve root %q: %w", root, err)
+		return "", fmt.Errorf("find: resolve cwd: %w", err)
+	}
+	absRoot, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", fmt.Errorf("find: resolve root %q: %w", cwd, err)
 	}
 
 	globs := relativizeGlobs(absRoot, a.Globs)
@@ -114,7 +110,7 @@ func render(globs []string, displayRoot string, matches []match, seenExts map[st
 		for _, m := range matches[cutoff:] {
 			withheld += m.size
 		}
-		fmt.Fprintf(&b, "… and %s more files (~%s tokens) — raise --budget, or narrow the glob / --scope. Orienting the repo? `ccx repo overview`.\n",
+		fmt.Fprintf(&b, "… and %s more files (~%s tokens) — raise --budget, or narrow the glob. Orienting the repo? `ccx repo overview`.\n",
 			humanComma(total-cutoff), humanTokens(int(withheld)/bytesPerToken))
 	}
 

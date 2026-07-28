@@ -67,7 +67,7 @@ func TestShowCmdMetadata(t *testing.T) {
 	if cmd.Use != "show [ref]" {
 		t.Errorf("Use = %q, want %q", cmd.Use, "show [ref]")
 	}
-	for _, flag := range []string{"scope", "budget"} {
+	for _, flag := range []string{"glob", "budget"} {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Errorf("missing --%s flag", flag)
 		}

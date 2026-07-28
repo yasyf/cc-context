@@ -451,32 +451,30 @@ func buildArgv(eng engine, a backend.Args) ([]string, error) {
 	}
 }
 
-// AnchorGrepArgs peels the anchor every include glob shares into a.Scope, so a
-// glob anchored at a real directory is searched even under ignore rules. An
-// explicit a.Scope composes: the prefix joins onto it. A literal glob naming a
-// regular file anchors to that file's parent; an anchor missing from disk leaves
-// a unchanged.
-func AnchorGrepArgs(a backend.Args) backend.Args {
+// AnchorGrepArgs peels the anchor every include glob shares into the operand the
+// engine searches, so a glob anchored at a real directory is searched even under
+// ignore rules. A literal glob naming a regular file anchors to that file's
+// parent; an anchor missing from disk leaves a unchanged and yields no operand.
+func AnchorGrepArgs(a backend.Args) (backend.Args, string) {
 	dir := backend.SharedGlobAnchor(a.Globs)
 	if dir == "" {
-		return a
+		return a, ""
 	}
-	joined := dir
-	if a.Scope != "" {
-		joined = filepath.Join(a.Scope, dir)
-	}
-	info, err := os.Stat(joined)
+	info, err := os.Stat(dir)
 	if err != nil {
-		return a
+		return a, ""
 	}
 	switch {
 	case info.IsDir():
-		a.Scope, a.Globs = joined, anchorGlobs(a.Globs, dir, joined)
+		a.Globs = anchorGlobs(a.Globs, dir, dir)
+		return a, dir
 	case info.Mode().IsRegular():
-		parent := filepath.Dir(joined)
-		a.Scope, a.Globs = parent, anchorGlobs(a.Globs, path.Dir(filepath.ToSlash(dir)), parent)
+		parent := filepath.Dir(dir)
+		a.Globs = anchorGlobs(a.Globs, path.Dir(filepath.ToSlash(dir)), parent)
+		return a, parent
+	default:
+		return a, ""
 	}
-	return a
 }
 
 // anchorGlobs rewrites each include's literal anchor to the operand rg searches
@@ -504,15 +502,16 @@ func anchorGlobs(globs []string, dir, operand string) []string {
 }
 
 // ripgrepArgv builds `rg --json [--fixed-strings] [-i] [-w] [--glob G]... [-C N]
-// [--no-ignore-parent] -e <pattern> [-- [scope] paths...]`; files-only mode swaps
+// [--no-ignore-parent] -e <pattern> [-- [anchor] paths...]`; files-only mode swaps
 // --json for --files-with-matches, and a regex query drops --fixed-strings.
 // Explicit Paths skip anchoring (buildArgv prefiltered them), so -g only narrows
 // a directory operand there. -e and -- keep a leading-dash pattern or operand
-// from parsing as a flag; --no-ignore-parent spares an operand the outer
+// from parsing as a flag; --no-ignore-parent spares an anchored operand the outer
 // .gitignore while still honoring the ignore files inside it.
 func ripgrepArgv(a backend.Args) []string {
+	anchor := ""
 	if len(a.Paths) == 0 {
-		a = AnchorGrepArgs(a)
+		a, anchor = AnchorGrepArgs(a)
 	}
 	argv := []string{"--json"}
 	if a.FilesWithMatches {
@@ -534,15 +533,15 @@ func ripgrepArgv(a backend.Args) []string {
 		argv = append(argv, "-C", strconv.Itoa(a.Expand))
 	}
 	argv = appendContext(argv, a)
-	if a.Scope != "" {
+	if anchor != "" {
 		argv = append(argv, "--no-ignore-parent")
 	}
 	argv = append(argv, "-e", a.Query)
-	if a.Scope != "" || len(a.Paths) > 0 {
+	if anchor != "" {
+		return append(argv, "--", anchor)
+	}
+	if len(a.Paths) > 0 {
 		argv = append(argv, "--")
-		if a.Scope != "" {
-			argv = append(argv, a.Scope)
-		}
 		argv = append(argv, a.Paths...)
 	}
 	return argv
@@ -559,7 +558,7 @@ func ripgrepArgv(a backend.Args) []string {
 // filename-vs-content ambiguity (the long form is portable: BSD -Z is not --null).
 // The -I flag skips binary files and the dotdir/dotfile excludes skip hidden paths,
 // both mirroring ripgrep's defaults so the two engines return the same hit set;
-// -- terminates flag parsing so a directory-rooted scope never reads as a flag.
+// -- terminates flag parsing so a directory-rooted operand never reads as a flag.
 // The `.[!./]*` glob — not the simpler
 // `.*` — is deliberate: BSD grep also fnmatches --exclude patterns against the
 // whole "./"-prefixed path, so `.*` (and `.?*`, `.[!.]*`) match the search root
@@ -570,21 +569,22 @@ func ripgrepArgv(a backend.Args) []string {
 // cost of a named dotfile operand being skipped too (GNU grep applies --exclude to
 // command-line operands), an accepted fallback degradation the engine note discloses.
 // --glob is translated to an --include and/or a rooted
-// scope; a glob shape grep cannot express, or a directory-rooted glob combined
-// with an explicit --scope, fails fast. Explicit Paths are the operands directly and
+// search directory; a glob shape grep cannot express fails fast. Explicit Paths
+// are the operands directly and
 // combine with --glob: buildArgv prefilters the file operands, and the translated
 // --include narrows any directory operand's recursion (a directory-rooted glob has no
 // operand-compatible translation, so it fails fast). Anchoring is skipped with
 // explicit Paths so an anchored glob can never widen past them; otherwise
-// AnchorGrepArgs first peels an existing directory prefix off the glob
-// into the scope — composing onto an explicit --scope — exactly as the ripgrep
+// AnchorGrepArgs first peels the directory prefix off the glob into the search
+// operand exactly as the ripgrep
 // route does, so both engines search the same file set; the peel also
 // keeps an anchored glob like pkg/*.go expressible here (the anchor becomes the
 // search root and the basename remainder the --include) where the unpeeled form
 // has no grep translation.
 func grepArgv(a backend.Args) ([]string, error) {
+	anchor := ""
 	if len(a.Paths) == 0 {
-		a = AnchorGrepArgs(a)
+		a, anchor = AnchorGrepArgs(a)
 	}
 	flags := "-rnHFI"
 	if a.Regex {
@@ -610,32 +610,25 @@ func grepArgv(a backend.Args) ([]string, error) {
 	argv = appendContext(argv, a)
 	argv = append(argv, "--exclude-dir=.[!./]*", "--exclude=.[!./]*")
 
-	includes, globRoot, err := translateGlobs(a.Scope, a.Globs)
+	includes, globRoot, err := translateGlobs(anchor, a.Globs)
 	if err != nil {
 		return nil, err
 	}
+	argv = appendIncludes(argv, includes)
 
 	if len(a.Paths) > 0 {
 		if globRoot != "" {
 			return nil, fmt.Errorf("grep fallback cannot combine explicit paths with a directory-rooted --glob %q; install ripgrep for full glob support: brew install ripgrep", a.Globs)
 		}
-		argv = appendIncludes(argv, includes)
 		argv = append(argv, "-e", a.Query, "--")
-		if a.Scope != "" {
-			argv = append(argv, a.Scope)
-		}
 		return append(argv, a.Paths...), nil
 	}
 
-	if a.Scope != "" && globRoot != "" {
-		return nil, fmt.Errorf("grep fallback cannot combine --scope with a directory-rooted --glob %q; install ripgrep for full glob support: brew install ripgrep", a.Globs)
-	}
-	root := a.Scope
-	if root == "" {
-		root = "."
-	}
-	argv = appendIncludes(argv, includes)
-	if globRoot != "" {
+	root := "."
+	switch {
+	case anchor != "":
+		root = anchor
+	case globRoot != "":
 		root = globRoot
 	}
 	argv = append(argv, "-e", a.Query, "--", root)
@@ -665,13 +658,14 @@ func appendIncludes(argv, includes []string) []string {
 // nothing); loud inexpressibility beats silently wrong results.
 // translateGlobs maps an ordered glob list onto the --include patterns and rooted
 // search directory system grep can express. Globs reach here in full-path form
-// for rg, so scope — the operand grep searches — is stripped back off, leaving
-// the basename shape --include takes. Several includes OR together, but grep has
-// only one search root, so a directory-rooted glob beside any other fails fast.
-func translateGlobs(scope string, globs []string) (includes []string, root string, err error) {
-	prefix := filepath.ToSlash(scope) + "/"
+// for rg, so the peeled anchor — the operand grep searches — is stripped back
+// off, leaving the basename shape --include takes. Several includes OR together,
+// but grep has only one search root, so a directory-rooted glob beside any other
+// fails fast.
+func translateGlobs(anchor string, globs []string) (includes []string, root string, err error) {
+	prefix := filepath.ToSlash(anchor) + "/"
 	for _, g := range globs {
-		if scope != "" {
+		if anchor != "" {
 			g = strings.TrimPrefix(g, prefix)
 		}
 		include, globRoot, err := translateGlob(g)

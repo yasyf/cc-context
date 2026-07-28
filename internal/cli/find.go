@@ -30,7 +30,6 @@ For whole-repo orientation use "ccx repo overview" instead.`,
 			return runOp(cmd, backend.OpFind, a)
 		},
 	}
-	cmd.Flags().StringVar(&a.Scope, "scope", "", "directory to scope the search to")
 	cmd.Flags().IntVar(&a.Budget, "budget", 0, "token budget for the output")
 	return cmd
 }

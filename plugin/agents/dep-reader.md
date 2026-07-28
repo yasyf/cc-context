@@ -26,13 +26,15 @@ actually running. Then read within the located path:
 
 ```bash
 ccx code outline <path>                          # structural map
-ccx code grep <text> --scope <path>              # literal search, ignore rules bypassed
+ccx code grep <text> -g '<path>/**'              # literal search, ignore rules bypassed
 ccx code read <file> --section A-B               # the part that matters
 ```
 
-A scope or glob anchored at the real path (`.venv/…/pkg/*.py`) reaches code
-that ignore rules would hide — that's the sanctioned route into `.venv`,
-where raw `rg` is blocked.
+A glob anchored at the real path (`.venv/…/pkg/*.py`) reaches code that ignore
+rules would hide — that's the sanctioned route into `.venv`, where raw `rg` is
+blocked. Anchoring needs every include to share the one anchor, so keep several
+extensions under it (`-g '<path>/**/*.{py,pyi}'`) rather than pairing an
+anchored glob with a bare `-g '*.py'`, which anchors neither.
 
 ## Return shape
 

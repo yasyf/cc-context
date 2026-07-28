@@ -67,7 +67,7 @@ func TestOpsArgMapping(t *testing.T) {
 		},
 		{
 			"grep", "grep",
-			Call{Kwargs: kw("text", "RunDiffCLI", "glob", "*.go")},
+			Call{Kwargs: map[string]any{"text": "RunDiffCLI", "globs": []any{"*.go"}}},
 			backend.OpGrep,
 			backend.Args{Query: "RunDiffCLI", Globs: []string{"*.go"}},
 		},
@@ -78,10 +78,28 @@ func TestOpsArgMapping(t *testing.T) {
 			backend.Args{Query: "x", Expand: 3},
 		},
 		{
-			"grep scope + ignore_case + word", "grep",
-			Call{Kwargs: map[string]any{"text": "opgrep", "scope": "internal", "ignore_case": true, "word": true}},
+			"grep positional globs and paths", "grep",
+			Call{Args: []any{"x", []any{"*.go"}, []any{"a.go"}}},
 			backend.OpGrep,
-			backend.Args{Query: "opgrep", Scope: "internal", IgnoreCase: true, Word: true},
+			backend.Args{Query: "x", Globs: []string{"*.go"}, Paths: []string{"a.go"}},
+		},
+		{
+			"symbol positional globs", "symbol",
+			Call{Args: []any{"Cap", []any{"internal/**"}}},
+			backend.OpSymbol,
+			backend.Args{Query: "Cap", Globs: []string{"internal/**"}},
+		},
+		{
+			"diff positional globs", "diff",
+			Call{Args: []any{"staged", []any{"*.go"}}},
+			backend.OpDiff,
+			backend.Args{Source: "staged", Globs: []string{"*.go"}},
+		},
+		{
+			"grep ordered globs + ignore_case + word", "grep",
+			Call{Kwargs: map[string]any{"text": "opgrep", "globs": []any{"internal/**", "!*_test.go"}, "ignore_case": true, "word": true}},
+			backend.OpGrep,
+			backend.Args{Query: "opgrep", Globs: []string{"internal/**", "!*_test.go"}, IgnoreCase: true, Word: true},
 		},
 		{
 			"grep regex + paths", "grep",
@@ -115,9 +133,9 @@ func TestOpsArgMapping(t *testing.T) {
 		},
 		{
 			"symbol", "symbol",
-			Call{Kwargs: kw("name", "Cap", "scope", "internal/render")},
+			Call{Kwargs: map[string]any{"name": "Cap", "globs": []any{"internal/render/**"}}},
 			backend.OpSymbol,
-			backend.Args{Query: "Cap", Scope: "internal/render"},
+			backend.Args{Query: "Cap", Globs: []string{"internal/render/**"}},
 		},
 		{
 			"symbol flags", "symbol",
@@ -132,10 +150,10 @@ func TestOpsArgMapping(t *testing.T) {
 			backend.Args{Query: "Foo", RevealSecrets: true},
 		},
 		{
-			"find", "find",
-			Call{Kwargs: kw("glob", "**/*.go")},
+			"find positional globs", "find",
+			Call{Args: []any{[]any{"**/*.go", "!vendor/**"}}},
 			backend.OpFind,
-			backend.Args{Globs: []string{"**/*.go"}},
+			backend.Args{Globs: []string{"**/*.go", "!vendor/**"}},
 		},
 		{
 			"diff default source", "diff",
@@ -380,6 +398,9 @@ func TestStaticToolsMatchOps(t *testing.T) {
 	documented := make(map[string]bool, len(staticTools))
 	for _, ts := range staticTools {
 		documented[ts.Name] = true
+		if strings.Contains(ts.Signature, "scope") {
+			t.Errorf("staticTools %q still documents a scope parameter: %s", ts.Name, ts.Signature)
+		}
 		if ts.Name == "sh" {
 			continue
 		}

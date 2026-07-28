@@ -48,7 +48,6 @@ type Args struct {
 	URL              string
 	Query            string
 	Section          string
-	Scope            string
 	Source           string
 	Kind             string
 	Pattern          string

@@ -35,7 +35,8 @@ var separators = []string{"::", "#", "."}
 
 // Run resolves a.Query, returning the rendered card and the secret-masking rule
 // ids that fired while rendering it (the caller appends the shared footer after
-// its cap). It runs a full outline over the scope (a.Scope, else "."), filters
+// its cap). It runs a full outline over the anchor a.Globs share (else "."),
+// keeps the files a.Globs select, filters
 // flattened items to the query name including members, ranks the hits, and
 // renders the top hit's card with the requested expansions — the signature,
 // doc, body, callees, and sibling rows masked in the defining file's path
@@ -48,15 +49,14 @@ func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 		return "", nil, fmt.Errorf("symbol: resolve cwd: %w", err)
 	}
 	qualifier, name := parseQuery(a.Query)
-	scope := a.Scope
-	if scope == "" {
-		scope = "."
+	root := backend.SharedGlobAnchor(a.Globs)
+	if root == "" {
+		root = "."
 	}
 	r := &resolver{
 		ctx:       ctx,
 		a:         a,
-		scope:     scope,
-		refScope:  a.Scope,
+		root:      root,
 		qualifier: qualifier,
 		name:      name,
 		files:     anchor.NewFiles(cwd),
@@ -70,14 +70,14 @@ func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 	return out, r.maskedIDs, nil
 }
 
-// resolver holds one Run's state: the parsed query, the scope, the per-response
-// anchor cache, and memoized outlines and file line tables. It is never shared
-// across calls — a reused line table would resolve anchors against stale content.
+// resolver holds one Run's state: the parsed query, the outline root, the
+// per-response anchor cache, and memoized outlines and file line tables. It is
+// never shared across calls — a reused line table would resolve anchors against
+// stale content.
 type resolver struct {
 	ctx       context.Context
 	a         backend.Args
-	scope     string // outline scope path ("." for the whole tree)
-	refScope  string // ripgrep scope ("" for the whole tree)
+	root      string // outline root ("." for the whole tree)
 	qualifier string
 	name      string
 	files     *anchor.Files
@@ -91,7 +91,7 @@ type resolver struct {
 // case-insensitive hit renders it with a disclosure, else definition-shaped text
 // degrades, else ErrNotFound.
 func (r *resolver) run() (string, error) {
-	files, err := r.outline([]string{r.scope})
+	files, err := r.rootOutline()
 	if err != nil {
 		return "", err
 	}
@@ -140,7 +140,28 @@ func parseQuery(query string) (qualifier, name string) {
 	return query[:best], name
 }
 
-// outline runs a memoized `ast-grep outline` over paths. Both the scope index and
+// rootOutline outlines the glob anchor and keeps the files a.Globs select. The
+// anchor bounds what ast-grep walks; MatchGlobs decides membership, since a glob
+// narrower than its anchor (or one that only excludes) still selects a subset.
+func (r *resolver) rootOutline() ([]astgrep.OutlineFile, error) {
+	files, err := r.outline([]string{r.root})
+	if err != nil {
+		return nil, err
+	}
+	kept := make([]astgrep.OutlineFile, 0, len(files))
+	for _, f := range files {
+		ok, err := backend.MatchGlobs(normPath(f.Path), r.a.Globs)
+		if err != nil {
+			return nil, fmt.Errorf("symbol: %w", err)
+		}
+		if ok {
+			kept = append(kept, f)
+		}
+	}
+	return kept, nil
+}
+
+// outline runs a memoized `ast-grep outline` over paths. Both the root index and
 // the per-reference-set attribution outline flow through it, so a repeated path
 // set never re-spawns ast-grep within one Run.
 func (r *resolver) outline(paths []string) ([]astgrep.OutlineFile, error) {

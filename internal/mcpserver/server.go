@@ -46,7 +46,7 @@ type ReplaceIn struct {
 	Rewrite string   `json:"rewrite" jsonschema:"replacement template; reference the same metavars"`
 	Paths   []string `json:"paths,omitempty" jsonschema:"files or dirs to scope to; default repo root"`
 	Lang    string   `json:"lang,omitempty" jsonschema:"language; inferred from extension"`
-	Glob    string   `json:"glob,omitempty" jsonschema:"gitignore-style include/exclude; ! to exclude"`
+	Globs   []string `json:"globs,omitempty" jsonschema:"restrict to files matching these globs (ordered, gitignore-style; ! excludes, last match wins)"`
 	Apply   bool     `json:"apply,omitempty" jsonschema:"WRITE the changes; omit for a preview diff"`
 	Force   bool     `json:"force,omitempty" jsonschema:"bypass the apply file-count cap"`
 	Budget  int      `json:"budget,omitempty" jsonschema:"token budget for the preview"`
@@ -105,20 +105,20 @@ func readArgs(in ReadIn) backend.Args {
 
 // SymbolIn is the input for ccx_code_symbol.
 type SymbolIn struct {
-	Name          string `json:"name" jsonschema:"symbol to grok"`
-	Scope         string `json:"scope,omitempty" jsonschema:"directory (directories only) to scope the lookup to"`
-	Body          bool   `json:"body,omitempty" jsonschema:"include the definition body"`
-	Callers       bool   `json:"callers,omitempty" jsonschema:"include the callers list"`
-	Callees       bool   `json:"callees,omitempty" jsonschema:"include the callees list"`
-	Siblings      bool   `json:"siblings,omitempty" jsonschema:"include the siblings list"`
-	Tests         bool   `json:"tests,omitempty" jsonschema:"include the tests list"`
-	Full          bool   `json:"full,omitempty" jsonschema:"the full rich output: body plus every list"`
-	RevealSecrets bool   `json:"reveal_secrets,omitempty" jsonschema:"print detected secrets raw instead of masked"`
-	Budget        int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
+	Name          string   `json:"name" jsonschema:"symbol to grok"`
+	Globs         []string `json:"globs,omitempty" jsonschema:"restrict the lookup to files matching these globs (ordered, gitignore-style; ! excludes, last match wins)"`
+	Body          bool     `json:"body,omitempty" jsonschema:"include the definition body"`
+	Callers       bool     `json:"callers,omitempty" jsonschema:"include the callers list"`
+	Callees       bool     `json:"callees,omitempty" jsonschema:"include the callees list"`
+	Siblings      bool     `json:"siblings,omitempty" jsonschema:"include the siblings list"`
+	Tests         bool     `json:"tests,omitempty" jsonschema:"include the tests list"`
+	Full          bool     `json:"full,omitempty" jsonschema:"the full rich output: body plus every list"`
+	RevealSecrets bool     `json:"reveal_secrets,omitempty" jsonschema:"print detected secrets raw instead of masked"`
+	Budget        int      `json:"budget,omitempty" jsonschema:"token budget for the output"`
 }
 
 func symbolArgs(in SymbolIn) backend.Args {
-	a := backend.Args{Query: in.Name, Scope: in.Scope, Body: in.Body, Callers: in.Callers, Callees: in.Callees, Siblings: in.Siblings, Tests: in.Tests, Full: in.Full, RevealSecrets: in.RevealSecrets, Budget: in.Budget}
+	a := backend.Args{Query: in.Name, Globs: in.Globs, Body: in.Body, Callers: in.Callers, Callees: in.Callees, Siblings: in.Siblings, Tests: in.Tests, Full: in.Full, RevealSecrets: in.RevealSecrets, Budget: in.Budget}
 	if a.Budget == 0 {
 		a.Budget = symbol.DefaultBudget
 	}
@@ -128,14 +128,13 @@ func symbolArgs(in SymbolIn) backend.Args {
 // DepsIn is the input for ccx_code_deps.
 type DepsIn struct {
 	Path   string `json:"path" jsonschema:"file to analyze"`
-	Scope  string `json:"scope,omitempty" jsonschema:"directory (directories only) to scope the analysis to"`
 	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the output; 0 or omitted = default 2000"`
 }
 
 // depsArgs builds the deps backend.Args from a ccx_code_deps call, applying the
 // default budget when the caller sets none (the codeexec path leaves it zero).
 func depsArgs(in DepsIn) backend.Args {
-	a := backend.Args{Path: in.Path, Scope: in.Scope, Budget: in.Budget}
+	a := backend.Args{Path: in.Path, Budget: in.Budget}
 	if a.Budget == 0 {
 		a.Budget = deps.DefaultBudget
 	}
@@ -145,8 +144,7 @@ func depsArgs(in DepsIn) backend.Args {
 // GrepIn is the input for ccx_code_grep.
 type GrepIn struct {
 	Text             string   `json:"text" jsonschema:"text to search for"`
-	Glob             string   `json:"glob,omitempty" jsonschema:"files matching this glob; an anchored dir glob searches even under ignore rules"`
-	Scope            string   `json:"scope,omitempty" jsonschema:"directory (or a single file) to scope to"`
+	Globs            []string `json:"globs,omitempty" jsonschema:"restrict to files matching these globs (ordered, gitignore-style; ! excludes, last match wins); a glob anchored at a real directory searches even under ignore rules"`
 	IgnoreCase       bool     `json:"ignoreCase,omitempty" jsonschema:"case-insensitive; runs the rg/grep engine"`
 	Word             bool     `json:"word,omitempty" jsonschema:"whole words only; runs the rg/grep engine"`
 	Regex            bool     `json:"regex,omitempty" jsonschema:"force regex (auto-detected on zero literal matches); runs the rg/grep engine"`
@@ -162,15 +160,14 @@ type GrepIn struct {
 
 // FindIn is the input for ccx_repo_find.
 type FindIn struct {
-	Glob   string `json:"glob" jsonschema:"glob to match files against"`
-	Scope  string `json:"scope,omitempty" jsonschema:"directory (directories only) to scope the search to"`
-	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the output; 0 or omitted = default 2000; unlimited listing is the codeexec lane"`
+	Globs  []string `json:"globs" jsonschema:"globs to match files against (ordered, gitignore-style; ! excludes, last match wins)"`
+	Budget int      `json:"budget,omitempty" jsonschema:"token budget for the output; 0 or omitted = default 2000; unlimited listing is the codeexec lane"`
 }
 
 // findArgs builds the find backend.Args from a ccx_repo_find call, applying the
 // default budget when the caller sets none (the codeexec path leaves it zero).
 func findArgs(in FindIn) backend.Args {
-	a := backend.Args{Globs: backend.SingleGlob(in.Glob), Scope: in.Scope, Budget: in.Budget}
+	a := backend.Args{Globs: in.Globs, Budget: in.Budget}
 	if a.Budget == 0 {
 		a.Budget = find.DefaultBudget
 	}
@@ -179,10 +176,10 @@ func findArgs(in FindIn) backend.Args {
 
 // DiffIn is the input for ccx_vcs_diff.
 type DiffIn struct {
-	Source        string `json:"source,omitempty" jsonschema:"diff source: uncommitted|staged|<ref> (default uncommitted)"`
-	Scope         string `json:"scope,omitempty" jsonschema:"path to scope the diff to"`
-	RevealSecrets bool   `json:"reveal_secrets,omitempty" jsonschema:"print detected secrets raw instead of masked"`
-	Budget        int    `json:"budget,omitempty" jsonschema:"token budget for the output"`
+	Source        string   `json:"source,omitempty" jsonschema:"diff source: uncommitted|staged|<ref> (default uncommitted)"`
+	Globs         []string `json:"globs,omitempty" jsonschema:"restrict to changed files matching these globs (ordered, gitignore-style; ! excludes, last match wins)"`
+	RevealSecrets bool     `json:"reveal_secrets,omitempty" jsonschema:"print detected secrets raw instead of masked"`
+	Budget        int      `json:"budget,omitempty" jsonschema:"token budget for the output"`
 }
 
 // OverviewIn is the input for ccx_repo_overview.
@@ -282,7 +279,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 			Rewrite: in.Rewrite,
 			Paths:   in.Paths,
 			Lang:    in.Lang,
-			Globs:   backend.SingleGlob(in.Glob),
+			Globs:   in.Globs,
 			Apply:   in.Apply,
 			Force:   in.Force,
 			Budget:  in.Budget,
@@ -325,10 +322,10 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_grep",
-		Description: "Grep literal or regex text across code — globbed, scoped, or over explicit files; budget-bounded.",
+		Description: "Grep literal or regex text across code — globbed or over explicit files; budget-bounded.",
 		Meta:        alwaysLoad,
 	}, handler(p, backend.OpGrep, func(in GrepIn) backend.Args {
-		a := backend.Args{Query: in.Text, Globs: backend.SingleGlob(in.Glob), Scope: in.Scope, IgnoreCase: in.IgnoreCase, Word: in.Word, Regex: in.Regex, FilesWithMatches: in.FilesWithMatches, Paths: in.Paths, RevealSecrets: in.RevealSecrets, Budget: in.Budget, Expand: in.Expand, After: in.After, Before: in.Before, Context: in.Context}
+		a := backend.Args{Query: in.Text, Globs: in.Globs, IgnoreCase: in.IgnoreCase, Word: in.Word, Regex: in.Regex, FilesWithMatches: in.FilesWithMatches, Paths: in.Paths, RevealSecrets: in.RevealSecrets, Budget: in.Budget, Expand: in.Expand, After: in.After, Before: in.Before, Context: in.Context}
 		if a.Budget == 0 {
 			a.Budget = ripgrep.DefaultBudget
 		}
@@ -337,7 +334,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_repo_find",
-		Description: "List files matching a glob with per-file token counts — gitignore-honoring, budget-capped; for orientation prefer ccx_repo_overview.",
+		Description: "List files matching globs with per-file token counts — gitignore-honoring, budget-capped; for orientation prefer ccx_repo_overview.",
 	}, handler(p, backend.OpFind, findArgs))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -348,7 +345,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 		if source == "" {
 			source = "uncommitted"
 		}
-		return backend.Args{Source: source, Scope: in.Scope, RevealSecrets: in.RevealSecrets, Budget: in.Budget}
+		return backend.Args{Source: source, Globs: in.Globs, RevealSecrets: in.RevealSecrets, Budget: in.Budget}
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{

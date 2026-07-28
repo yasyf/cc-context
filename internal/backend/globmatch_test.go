@@ -154,15 +154,6 @@ func TestFilterGlobPaths(t *testing.T) {
 	}
 }
 
-func TestSingleGlob(t *testing.T) {
-	if got := SingleGlob(""); got != nil {
-		t.Errorf("SingleGlob(\"\") = %q, want nil", got)
-	}
-	if got := SingleGlob("*.go"); !slices.Equal(got, []string{"*.go"}) {
-		t.Errorf("SingleGlob(*.go) = %q, want [*.go]", got)
-	}
-}
-
 // TestMatchGlobsParity compares MatchGlobs' selection over the repo file list
 // against real rg's for each glob set. It skips when rg is absent.
 func TestMatchGlobsParity(t *testing.T) {

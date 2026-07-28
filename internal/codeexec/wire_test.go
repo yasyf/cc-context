@@ -299,7 +299,7 @@ func TestPumpValve(t *testing.T) {
 	}
 	res := <-captured
 	want := fmt.Sprintf(
-		"codeexec valve: host call returned %d bytes (per-call limit %d); narrow the call with a tighter scope, section, or glob instead of reading it whole",
+		"codeexec valve: host call returned %d bytes (per-call limit %d); narrow the call with a tighter glob or section instead of reading it whole",
 		hostCallValve+1, hostCallValve)
 	if res.OK || res.Error != want {
 		t.Errorf("result = ok %t error %q, want the verbatim valve message", res.OK, res.Error)

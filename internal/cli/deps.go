@@ -22,7 +22,6 @@ func newDepsCmd() *cobra.Command {
 			return runOp(cmd, backend.OpDeps, a)
 		},
 	}
-	cmd.Flags().StringVar(&a.Scope, "scope", "", "directory to scope the analysis to")
 	cmd.Flags().IntVar(&a.Budget, "budget", 0, "token budget for the output")
 	return cmd
 }

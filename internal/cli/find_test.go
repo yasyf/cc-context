@@ -11,14 +11,15 @@ import (
 	"testing"
 )
 
-// runFind executes the find command against a fixture scope, returning stdout.
-func runFind(t *testing.T, scope string, args ...string) string {
+// runFind executes the find command from dir, returning stdout.
+func runFind(t *testing.T, dir string, args ...string) string {
 	t.Helper()
+	t.Chdir(dir)
 	cmd := newFindCmd()
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
-	cmd.SetArgs(append([]string{"*.txt", "--scope", scope}, args...))
+	cmd.SetArgs(append([]string{"*.txt"}, args...))
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("find execute: %v\n%s", err, out.String())
 	}

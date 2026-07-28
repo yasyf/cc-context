@@ -237,7 +237,7 @@ func alsoLine(c card) string {
 	if c.alsoMore > 0 {
 		line += fmt.Sprintf(" · (+%d more)", c.alsoMore)
 	}
-	return line + " — narrow with --scope"
+	return line + " — narrow with -g"
 }
 
 // renderBlock renders a reference section: a "## label (word refs — N in K files)"
@@ -266,7 +266,7 @@ const degradedKeywords = `func|def|class|fn|type|const|var|let|interface|struct|
 // outline rules — and renders anchored rows, returning "" when nothing matches.
 func (r *resolver) degraded() (string, error) {
 	pattern := `^\s*(` + degradedKeywords + `)\b.*\b` + regexp.QuoteMeta(r.name) + `\b`
-	fms, err := ripgrep.Matches(r.ctx, backend.Args{Query: pattern, Regex: true, Scope: r.refScope})
+	fms, err := ripgrep.Matches(r.ctx, backend.Args{Query: pattern, Regex: true, Globs: r.a.Globs})
 	if err != nil {
 		return "", fmt.Errorf("symbol: degraded scan %q: %w", r.name, err)
 	}

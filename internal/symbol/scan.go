@@ -26,11 +26,11 @@ type ref struct {
 	text string
 }
 
-// refScan word-searches the scope for the symbol name and returns the references,
-// dropping the definition's own line and import-shaped lines. It is one ripgrep
-// spawn, run even for a terse card's counts.
+// refScan word-searches the selected files for the symbol name and returns the
+// references, dropping the definition's own line and import-shaped lines. It is
+// one ripgrep spawn, run even for a terse card's counts.
 func (r *resolver) refScan(top candidate) ([]ref, error) {
-	fms, err := ripgrep.Matches(r.ctx, backend.Args{Query: r.name, Word: true, Scope: r.refScope})
+	fms, err := ripgrep.Matches(r.ctx, backend.Args{Query: r.name, Word: true, Globs: r.a.Globs})
 	if err != nil {
 		return nil, fmt.Errorf("symbol: ref scan %q: %w", r.name, err)
 	}

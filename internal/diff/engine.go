@@ -17,7 +17,7 @@ import (
 )
 
 // Run resolves a.Source into a diff plan against the cwd's VCS, classifies each
-// changed file (scoped by a.Scope), and renders the structural diff, each file's
+// changed file a.Globs select, and renders the structural diff, each file's
 // section secret-masked in that file's path context unless a.RevealSecrets. The
 // fired rule ids come back in file order — the caller appends the shared footer
 // after its cap. Output is uncapped — the caller budget-caps it — and a.Full
@@ -31,7 +31,11 @@ func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	model, err := buildModel(ctx, plan, scopeFilter(plan.Files, a.Scope))
+	files, err := globFilter(plan.Files, a.Globs)
+	if err != nil {
+		return "", nil, err
+	}
+	model, err := buildModel(ctx, plan, files)
 	if err != nil {
 		return "", nil, err
 	}
@@ -40,10 +44,11 @@ func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 }
 
 // ChangedSymbols returns the sigil-tagged changed symbols across source's diff,
-// scoped to scopePath — "+name" added, "~name" changed, "-name" removed, in file
-// then position order. It powers the history summary, which passes a committed
-// range and a single file scope; a non-symbolic plan yields none.
-func ChangedSymbols(ctx context.Context, dir, source, scopePath string) ([]string, error) {
+// narrowed to one repo-root-relative path — "+name" added, "~name" changed,
+// "-name" removed, in file then position order. It powers the history summary,
+// which passes a committed range and a single file path; a non-symbolic plan
+// yields none.
+func ChangedSymbols(ctx context.Context, dir, source, path string) ([]string, error) {
 	plan, err := vcs.ResolveDiffPlan(ctx, dir, source)
 	if err != nil {
 		return nil, err
@@ -51,9 +56,10 @@ func ChangedSymbols(ctx context.Context, dir, source, scopePath string) ([]strin
 	if !plan.Symbolic {
 		return nil, nil
 	}
+	files := pathFilter(plan.Files, path)
 	cache := outlineCache{}
 	var syms []string
-	for _, path := range scopeFilter(plan.Files, scopePath) {
+	for _, path := range files {
 		lang, covered := outline.LangForExt(path)
 		if !covered {
 			continue
@@ -170,20 +176,37 @@ func blobBinary(before, after []byte) bool {
 	return bin
 }
 
-// scopeFilter keeps files at or under scope (a repo-root-relative path); an empty
-// scope keeps everything.
-func scopeFilter(files []string, scope string) []string {
-	if scope == "" {
-		return files
-	}
-	scope = strings.TrimSuffix(filepath.ToSlash(filepath.Clean(scope)), "/")
+// pathFilter keeps the repo-root-relative changed paths at or under path. It
+// compares bytes rather than compiling a glob, so a filename carrying glob
+// metacharacters selects itself, and only itself.
+func pathFilter(files []string, path string) []string {
 	var kept []string
 	for _, f := range files {
-		if f == scope || strings.HasPrefix(f, scope+"/") {
+		if f == path || strings.HasPrefix(f, path+"/") {
 			kept = append(kept, f)
 		}
 	}
 	return kept
+}
+
+// globFilter keeps the repo-root-relative changed paths globs select; an empty
+// list keeps everything. It never stats, so a path deleted by the diff still
+// matches the glob naming it.
+func globFilter(files, globs []string) ([]string, error) {
+	if len(globs) == 0 {
+		return files, nil
+	}
+	var kept []string
+	for _, f := range files {
+		ok, err := backend.MatchGlobs(f, globs)
+		if err != nil {
+			return nil, fmt.Errorf("diff: %w", err)
+		}
+		if ok {
+			kept = append(kept, f)
+		}
+	}
+	return kept, nil
 }
 
 // changedSymbolSigil maps a change kind to the ASCII sigil the history summary

@@ -159,7 +159,7 @@ func errCode(err error) string {
 
 func valveExceeded(id int64, size int) resultFrame {
 	return resultFrame{ID: id, Error: fmt.Sprintf(
-		"codeexec valve: host call returned %d bytes (per-call limit %d); narrow the call with a tighter scope, section, or glob instead of reading it whole",
+		"codeexec valve: host call returned %d bytes (per-call limit %d); narrow the call with a tighter glob or section instead of reading it whole",
 		size, hostCallValve)}
 }
 

@@ -162,12 +162,3 @@ func FilterGlobPaths(paths, globs []string) ([]string, error) {
 	}
 	return kept, nil
 }
-
-// SingleGlob wraps the single-valued glob the MCP and exec wire formats still
-// carry into the ordered list Args.Globs takes; an empty string yields none.
-func SingleGlob(g string) []string {
-	if g == "" {
-		return nil
-	}
-	return []string{g}
-}

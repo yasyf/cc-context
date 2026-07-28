@@ -11,7 +11,7 @@ func newGrepCmd() *cobra.Command {
 	var a backend.Args
 	cmd := &cobra.Command{
 		Use:   "grep <text> [paths...]",
-		Short: "Search code text (literal or regex), optionally globbed, scoped, or over explicit files",
+		Short: "Search code text (literal or regex), optionally globbed or over explicit files",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a.Query = args[0]
@@ -23,7 +23,6 @@ func newGrepCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringArrayVarP(&a.Globs, "glob", "g", nil, "restrict to files matching this glob (repeatable, ordered; ! excludes)")
-	cmd.Flags().StringVar(&a.Scope, "scope", "", "restrict to files under this directory")
 	cmd.Flags().BoolVarP(&a.IgnoreCase, "ignore-case", "i", false, "case-insensitive match (ripgrep/grep engine)")
 	cmd.Flags().BoolVarP(&a.Word, "word", "w", false, "match whole words only (ripgrep/grep engine)")
 	cmd.Flags().BoolVarP(&a.Regex, "regex", "E", false, "treat the pattern as a regular expression (ripgrep/grep engine)")
