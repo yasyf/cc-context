@@ -4,6 +4,57 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.0] - 2026-07-27
+
+### Fixed
+- **A `grep -v <dep-name>` filter stage no longer blocks the whole pipeline.**
+  `grep -rn foo . | grep -v node_modules` was denied with the dep-reader steer —
+  a message telling the caller to stop reading dependency source, for a command
+  that was excluding it. `v` was missing from the guard's `BOUNDED_BOOL_SHORT`
+  arity table, so the tail stage failed to lex; the policy steer then fell back
+  to the raw path-like tokens, which carry the *pattern* token, and
+  `has_dependency_segment` matched it. Steers run before the pipe escape, so one
+  filter stage killed the pipeline. Membership in these tables is arity, never
+  rewritability: `-v` still declines the rewrite, pinned by a test, so an
+  inverted grep can never become a non-inverted `ccx code grep`. The same hole is
+  closed for `--invert-match` and for rg's `-P`/`-U`/`-b` — which means those
+  tree-wide floods now block as `grep -P` always has, with the `… | rg` escape
+  hatch unchanged. `-V`/`--version` stays out of rg's table, since an
+  operand-less rg is tree-shaped and lexing it would block a version probe.
+- **A blocked search now names what refused to map.** The flood block offered
+  "a PCRE/exotic-regex pattern, an unmappable flag, or a mixed/out-of-repo
+  target" and left the reader to guess — which is exactly how the incident above
+  got misdiagnosed as an `--include` failure. `grep_parse`/`rg_parse` now return
+  a `Decline` carrying the offending flag or pattern verbatim, so the message
+  reads ``this one didn't map: the `-rv` bundle carries `-v`, which has no ccx
+  equivalent``. Policy steers, which have no parse behind them, stay reasonless
+  rather than inventing a cause.
+- **Negated globs fail loudly instead of returning the wrong files.** A leading
+  `!` in `--glob` was half-wired: with explicit path operands the search routed
+  through `doublestar.Match`, which has no top-level negation, so a mixed
+  directory-and-file operand list silently dropped the files while the directory
+  kept the search alive; and the system-grep fallback emitted a literal
+  `--include=!foo`, which grep treats as an fnmatch pattern — zero hits, no
+  error. Matching is now negation-aware, and the fallback refuses rather than
+  translating. Refusing is deliberate: exclusion is order-dependent (on BSD grep,
+  reversing `--include`/`--exclude` lets the excluded file back in) and the
+  fallback takes whatever `grep` is on `PATH`, so any mapping is a silent
+  semantics fork.
+
+### Added
+- **`backend.MatchGlobs`**, an ordered ripgrep-dialect glob evaluator: a leading
+  `!` excludes, last match wins, includes form an OR-whitelist, an
+  exclusion-only list means everything-except, a slash-less glob matches the
+  basename at any depth, and a slashed glob matches the cwd-relative path. It is
+  stat-free, so a deleted path still matches. Two rules had to be corrected
+  against real ripgrep rather than assumed: rg prunes directories during the
+  walk, so an exclusion matching an ancestor kills the subtree and no later
+  include revives a file under it — though each ancestor takes its own
+  last-match-wins vote, so a later glob matching the directory itself does rescue
+  it; and doublestar's `a/**` matches the bare directory `a` where rg's does not,
+  compiled away by rewriting a trailing `/**` to `/**/*`. Groundwork for
+  collapsing `--glob`/`--scope`/`--exclude` onto one selector.
+
 ## [0.35.0] - 2026-07-27
 
 ### Fixed
