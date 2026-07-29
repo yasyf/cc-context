@@ -240,7 +240,9 @@ routes ship to the gt lane — commits through `gt create`/`gt modify`, the push
 demoting to jj/git with the reason in a leading `lane <kind> (<reason>)` segment:
 `ccx.nogt` set in git config, GitHub positively saying the repo is someone else's,
 and a cached probe of whether Graphite can actually submit here (a probe that
-cannot reach Graphite keeps the lane). `--no-gt` opts out. Ship owns the pull
+times out or cannot reach Graphite demotes too, and each verdict caches for its
+own span: a yes a day, a no an hour, an unanswered probe a minute). `--no-gt`
+opts out. Ship owns the pull
 request in every lane: `--pr-title`/`--pr-body-file` (repeatable, branch-scoped as
 `<branch>=<value>`, a bare value applying to the tip, `-` reading stdin) create the
 branch's PR or edit exactly the fields restated — a hand-edited description
