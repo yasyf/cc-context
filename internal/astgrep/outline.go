@@ -80,7 +80,7 @@ type OutlineOpts struct {
 // error rides stderr), so no exit is tolerated and an empty result parses to zero
 // files.
 func OutlinePaths(ctx context.Context, paths []string, o OutlineOpts) ([]OutlineFile, error) {
-	bin, err := resolveBin("")
+	bin, err := resolveBin(ctx, "")
 	if err != nil {
 		return nil, err
 	}

@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -81,7 +82,7 @@ func Run(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 		}
 		return render.Finalize(op, out, a)
 	case backend.OpGrep:
-		return ripgrep.Run(ctx, a)
+		return runGrep(ctx, a)
 	case backend.OpOutline:
 		// The native fallback anchors and masks its own output; cap only, never
 		// re-anchor, with the masked-secrets footer appended after the cap.
@@ -115,6 +116,18 @@ func Run(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 	default:
 		return "", fmt.Errorf("dispatch: op %q is not native", op)
 	}
+}
+
+// runGrep runs ripgrep and appends the slow-grep note after ripgrep's own cap,
+// so a walk that crossed out of the repo — a dependency tree, a module cache —
+// discloses what it covered instead of just costing the wait.
+func runGrep(ctx context.Context, a backend.Args) (string, error) {
+	start := time.Now()
+	out, err := ripgrep.Run(ctx, a)
+	if err != nil {
+		return "", err
+	}
+	return render.WithSlowGrepNote(out, time.Since(start), strings.Join(a.Paths, ", ")), nil
 }
 
 // runSemantic runs the native semsearch engine for search/related: it embeds

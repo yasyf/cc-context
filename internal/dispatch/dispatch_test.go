@@ -14,6 +14,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/ripgrep"
 	"github.com/yasyf/cc-context/internal/semsearch/engine"
 	"github.com/yasyf/cc-context/internal/semsearch/index"
 )
@@ -91,5 +92,61 @@ func TestRunSemanticSlowNoteCountsColdInit(t *testing.T) {
 	}
 	if !strings.Contains(out, "slow search") {
 		t.Errorf("slow-search note missing; cold-init latency must count toward the timer:\n%s", out)
+	}
+}
+
+// TestRunGrepSlowNote covers the OpGrep arm disclosing an expensive walk: a
+// dependency-tree grep costs tens of seconds today and returns with no sign it
+// was expensive.
+func TestRunGrepSlowNote(t *testing.T) {
+	repo := writeDispatchRepo(t)
+
+	tests := []struct {
+		name      string
+		threshold time.Duration
+		paths     []string
+		want      string
+		wantNote  bool
+	}{
+		{
+			name:      "fast walk stays silent",
+			threshold: time.Hour,
+			paths:     []string{repo},
+		},
+		{
+			name:      "slow walk names the path operand",
+			threshold: 0,
+			paths:     []string{repo},
+			want:      "walked " + repo + "; narrow with a subpath or --glob\n",
+			wantNote:  true,
+		},
+		{
+			name:      "slow walk with no operand names the working directory",
+			threshold: 0,
+			want:      "walked the working directory; narrow with a subpath or --glob\n",
+			wantNote:  true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Chdir(repo)
+			prev := render.SlowGrepThreshold
+			render.SlowGrepThreshold = tt.threshold
+			t.Cleanup(func() { render.SlowGrepThreshold = prev })
+
+			out, err := Run(context.Background(), backend.OpGrep, backend.Args{Query: "Login", Paths: tt.paths, Budget: ripgrep.DefaultBudget})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !strings.Contains(out, "auth.go") {
+				t.Fatalf("grep results missing the hit:\n%s", out)
+			}
+			if got := strings.Contains(out, "# note: slow grep"); got != tt.wantNote {
+				t.Fatalf("slow-grep note = %v, want %v:\n%s", got, tt.wantNote, out)
+			}
+			if tt.wantNote && !strings.HasSuffix(out, tt.want) {
+				t.Errorf("output does not end with %q:\n%s", tt.want, out)
+			}
+		})
 	}
 }

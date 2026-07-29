@@ -110,3 +110,26 @@ func WithSlowSearchNote(out string, elapsed time.Duration) string {
 	}
 	return fmt.Sprintf("%s# note: slow search (%ds) — first search builds the semantic index; repeats are fast\n", out, int(rounded.Seconds()))
 }
+
+// SlowGrepThreshold controls when grep latency guidance appears. A grep confined
+// to a repo answers in well under a second, so crossing this means the walk
+// covered a tree far larger than one.
+var SlowGrepThreshold = 5 * time.Second
+
+// WithSlowGrepNote appends guidance when a grep's walk exceeds
+// SlowGrepThreshold, naming the scope it covered so the cost of walking a
+// dependency tree is visible rather than silent. An empty scope is the walk over
+// the working directory.
+func WithSlowGrepNote(out string, elapsed time.Duration, scope string) string {
+	if elapsed <= SlowGrepThreshold {
+		return out
+	}
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	walked := "the working directory"
+	if scope != "" {
+		walked = scope
+	}
+	return fmt.Sprintf("%s# note: slow grep (%ds) — walked %s; narrow with a subpath or --glob\n", out, int(elapsed.Round(time.Second).Seconds()), walked)
+}

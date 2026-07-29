@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
@@ -107,6 +108,22 @@ const (
 	escBothMissed
 )
 
+// escalationElapsedCap bounds how long a fruitless literal pass may run before
+// the auto-regex retry stops being worth a second full walk of the same tree.
+const escalationElapsedCap = 10 * time.Second
+
+// now is the clock the elapsed cap reads; tests swap it.
+var now = time.Now
+
+// heavy reports whether a pass ran long enough that searching the same tree
+// again as a regex costs more than the escalation is worth. Wall time is the
+// bound on every engine and mode, because size is not cost: a warm 480 MB tree
+// searches in a second, and skipping that retry answers "no matches" when
+// matches exist.
+func heavy(elapsed time.Duration) bool {
+	return elapsed > escalationElapsedCap
+}
+
 // runnerFn is the process boundary: it runs bin+argv and returns stdout,
 // tolerating the clean no-match exit. run takes it as a parameter so tests drive
 // the reshaper with a canned engine transcript instead of a real subprocess.
@@ -157,7 +174,7 @@ func Matches(ctx context.Context, a backend.Args) ([]FileMatch, error) {
 	if err != nil {
 		return nil, err
 	}
-	groups, err := searchGroups(ctx, eng, bin, a, execEngine)
+	groups, _, err := searchGroups(ctx, eng, bin, a, execEngine)
 	if err != nil {
 		return nil, err
 	}
@@ -185,22 +202,27 @@ func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runne
 	if a.FilesWithMatches {
 		return runFilesWithMatches(ctx, eng, bin, a, exec)
 	}
-	groups, err := searchGroups(ctx, eng, bin, a, exec)
+	groups, spent, err := searchGroups(ctx, eng, bin, a, exec)
 	if err != nil {
 		return "", false, err
 	}
 	esc := escNone
 	autoMode := !a.Regex
+	skipped := false
 	if autoMode && !anyMatch(groups) && escalatable(eng, a.Query) {
-		ra := a
-		ra.Regex = true
-		rgroups, rerr := searchGroups(ctx, eng, bin, ra, exec)
-		if rerr == nil {
-			if anyMatch(rgroups) {
-				groups = rgroups
-				esc = escAutoRegex
-			} else {
-				esc = escBothMissed
+		if heavy(spent) {
+			skipped = true
+		} else {
+			ra := a
+			ra.Regex = true
+			rgroups, _, rerr := searchGroups(ctx, eng, bin, ra, exec)
+			if rerr == nil {
+				if anyMatch(rgroups) {
+					groups = rgroups
+					esc = escAutoRegex
+				} else {
+					esc = escBothMissed
+				}
 			}
 		}
 	}
@@ -221,6 +243,9 @@ func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runne
 	out := render.Cap(reshaped, a.Budget)
 	if autoMode && !found && hasBREEscape(a.Query) {
 		out += regexHintLine + "\n"
+	}
+	if skipped {
+		out += escalationSkipHint + "\n"
 	}
 	return render.WithSecretsFooter(out, maskedIDs), found, nil
 }
@@ -276,16 +301,21 @@ func maskGroup(g *fileGroup, ids []string) []string {
 }
 
 func runFilesWithMatches(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) (string, bool, error) {
-	paths, err := searchFilesWithMatches(ctx, eng, bin, a, exec)
+	paths, spent, err := searchFilesWithMatches(ctx, eng, bin, a, exec)
 	if err != nil {
 		return "", false, err
 	}
+	skipped := false
 	if !a.Regex && len(paths) == 0 && escalatable(eng, a.Query) {
-		ra := a
-		ra.Regex = true
-		rpaths, rerr := searchFilesWithMatches(ctx, eng, bin, ra, exec)
-		if rerr == nil && len(rpaths) > 0 {
-			paths = rpaths
+		if heavy(spent) {
+			skipped = true
+		} else {
+			ra := a
+			ra.Regex = true
+			rpaths, _, rerr := searchFilesWithMatches(ctx, eng, bin, ra, exec)
+			if rerr == nil && len(rpaths) > 0 {
+				paths = rpaths
+			}
 		}
 	}
 	if len(paths) == 0 {
@@ -296,7 +326,11 @@ func runFilesWithMatches(ctx context.Context, eng engine, bin string, a backend.
 		if !a.RevealSecrets {
 			displayQuery, maskedIDs = secrets.Mask(a.Query, "")
 		}
-		return render.WithSecretsFooter(renderFilesWithMatches(displayQuery, paths, a.Budget), maskedIDs), false, nil
+		out := renderFilesWithMatches(displayQuery, paths, a.Budget)
+		if skipped {
+			out += escalationSkipHint + "\n"
+		}
+		return render.WithSecretsFooter(out, maskedIDs), false, nil
 	}
 	return renderFilesWithMatches(a.Query, paths, a.Budget), true, nil
 }
@@ -340,39 +374,50 @@ func escalatable(eng engine, q string) bool {
 // per-file groups: the parse layer Run and Matches share, everything before
 // reshape, anchoring, and capping. An rg failure that is really a glob/type
 // filter matching zero files is normalized to the clean no-match grep reports as
-// exit 0; a regex-parse failure carrying a BRE escape is hinted.
-func searchGroups(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) ([]fileGroup, error) {
-	raw, err := searchOutput(ctx, eng, bin, a, exec)
+// exit 0; a regex-parse failure carrying a BRE escape is hinted. The pass's
+// elapsed time rides along so an escalation can be priced before it is paid for.
+func searchGroups(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) ([]fileGroup, time.Duration, error) {
+	raw, spent, err := searchOutput(ctx, eng, bin, a, exec)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return parse(eng, raw)
+	groups, err := parse(eng, raw)
+	if err != nil {
+		return nil, 0, err
+	}
+	return groups, spent, nil
 }
 
-func searchFilesWithMatches(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) ([]string, error) {
-	raw, err := searchOutput(ctx, eng, bin, a, exec)
+func searchFilesWithMatches(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) ([]string, time.Duration, error) {
+	raw, spent, err := searchOutput(ctx, eng, bin, a, exec)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return parseFilesWithMatches(eng, raw)
+	paths, err := parseFilesWithMatches(eng, raw)
+	if err != nil {
+		return nil, 0, err
+	}
+	return paths, spent, nil
 }
 
-func searchOutput(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) (string, error) {
+func searchOutput(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) (string, time.Duration, error) {
 	argv, err := buildArgv(eng, a)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
+	start := now()
 	raw, err := exec(ctx, bin, argv)
+	spent := now().Sub(start)
 	if err != nil {
 		if eng != engineRipgrep {
-			return "", err
+			return "", 0, err
 		}
 		if !ripgrepNoFiles(err) {
-			return "", ripgrepRegexHint(err, a.Query)
+			return "", 0, ripgrepRegexHint(err, a.Query)
 		}
 		raw = "" // a glob/type filter matched zero files: the clean no-match grep reports as exit 0
 	}
-	return raw, nil
+	return raw, spent, nil
 }
 
 // anyMatch reports whether any group carries a match line (context lines alone
@@ -388,9 +433,22 @@ func anyMatch(groups []fileGroup) bool {
 	return false
 }
 
-// execEngine is the real process boundary, tolerating the no-match exit.
+// engineTimeout is the runaway guard on one engine pass, never a policy knob: a
+// legitimate literal search of a 5 GB module cache lands near 24s.
+var engineTimeout = 120 * time.Second
+
+// execEngine is the real process boundary, tolerating the no-match exit and
+// bounding the child by engineTimeout.
 func execEngine(ctx context.Context, bin string, argv []string) (string, error) {
-	return render.RunCLIAllowExit(ctx, bin, argv, exitNoMatch)
+	runCtx, cancel := context.WithTimeout(ctx, engineTimeout)
+	defer cancel()
+	out, err := render.RunCLIAllowExit(runCtx, bin, argv, exitNoMatch)
+	// A killed child surfaces as an opaque exit error, so the deadline is read
+	// off the context rather than the exit code.
+	if err != nil && ctx.Err() == nil && runCtx.Err() != nil {
+		return "", fmt.Errorf("%s gave up after %s; narrow the search with a subpath operand or --glob: %w", bin, engineTimeout, err)
+	}
+	return out, err
 }
 
 // ripgrepNoFiles reports whether an rg failure carries the exit-2 "no files were
@@ -402,6 +460,8 @@ func ripgrepNoFiles(err error) bool {
 }
 
 const regexHintLine = `hint: --regex is Rust syntax — alternation is |, groups ( ); BRE-style \| and \( match the literal character`
+
+const escalationSkipHint = `hint: the literal pass was too expensive to retry as a regex automatically; re-run with --regex`
 
 // ripgrepRegexHint appends regexHintLine to an rg regex-parse error when pattern
 // carries a BRE-style \|, \(, or \) escape; any other error is returned unchanged.

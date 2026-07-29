@@ -41,7 +41,7 @@ func presentEngines(t *testing.T) []namedEngine {
 // asserts identical hits from rg and system grep over the same fixture.
 func matchesVia(t *testing.T, e namedEngine, a backend.Args) []FileMatch {
 	t.Helper()
-	groups, err := searchGroups(context.Background(), e.eng, e.bin, a, execEngine)
+	groups, _, err := searchGroups(context.Background(), e.eng, e.bin, a, execEngine)
 	if err != nil {
 		t.Fatalf("searchGroups(%s): %v", e.name, err)
 	}
@@ -147,6 +147,27 @@ func TestMatches_Public(t *testing.T) {
 		if !reflect.DeepEqual(byPath[path], lines) {
 			t.Errorf("Matches()[%s]\n got = %+v\nwant = %+v", path, byPath[path], lines)
 		}
+	}
+}
+
+// TestSearchGroups_ReportsElapsed proves each pass carries out the wall time it
+// spent — the number the auto-regex escalation is priced against — on a real
+// subprocess through both engines, not just the stubbed clock.
+func TestSearchGroups_ReportsElapsed(t *testing.T) {
+	engines := presentEngines(t)
+	writeFixture(t, "a.go", "package a\n\nvar needle = 1\n")
+
+	for _, e := range engines {
+		t.Run(e.name, func(t *testing.T) {
+			args := backend.Args{Query: "needle", Paths: []string{"a.go"}}
+			_, spent, err := searchGroups(context.Background(), e.eng, e.bin, args, execEngine)
+			if err != nil {
+				t.Fatalf("searchGroups(%s): %v", e.name, err)
+			}
+			if spent <= 0 {
+				t.Errorf("elapsed = %v, want a positive duration", spent)
+			}
+		})
 	}
 }
 

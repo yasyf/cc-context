@@ -72,7 +72,7 @@ func runStructOutline(ctx context.Context, a backend.Args) (string, error) {
 // outlined without staging it to disk. An empty or symbol-less src yields one
 // file with no items; outline exits 0 even on no match, so no exit is tolerated.
 func OutlineStdin(ctx context.Context, src []byte, lang string) ([]OutlineFile, error) {
-	bin, err := resolveBin("")
+	bin, err := resolveBin(ctx, "")
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +131,7 @@ func runArgv(ctx context.Context, op backend.Op, a backend.Args) (string, error)
 	if err != nil {
 		return "", err
 	}
-	resolved, err := resolveBin("")
+	resolved, err := resolveBin(ctx, "")
 	if err != nil {
 		return "", err
 	}

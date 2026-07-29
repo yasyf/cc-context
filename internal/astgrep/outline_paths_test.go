@@ -35,7 +35,7 @@ func Alpha(x int) int {
 // requireAstGrep skips the test when no ast-grep at the version floor resolves.
 func requireAstGrep(t *testing.T) {
 	t.Helper()
-	if _, err := resolveBin(""); err != nil {
+	if _, err := resolveBin(context.Background(), ""); err != nil {
 		t.Skipf("ast-grep unavailable: %v", err)
 	}
 }

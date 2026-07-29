@@ -1,6 +1,7 @@
 package astgrep
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -21,7 +22,7 @@ var versionChecks sync.Map
 // resolveBin returns the ast-grep binary to exec: the configured path when set,
 // else the one on PATH (only "ast-grep" — never "sg", which is shadow-utils
 // setgroups on Linux). It fails when ast-grep is absent or below the version floor.
-func resolveBin(configured string) (string, error) {
+func resolveBin(ctx context.Context, configured string) (string, error) {
 	bin := configured
 	if bin == "" {
 		bin = lookpath.Find("ast-grep")
@@ -29,18 +30,18 @@ func resolveBin(configured string) (string, error) {
 	if bin == "" {
 		return "", fmt.Errorf("ccx structural search, replace, and outline need ast-grep on PATH; install: brew install ast-grep (or: uv tool install ast-grep-cli)")
 	}
-	if err := checkVersion(bin); err != nil {
+	if err := checkVersion(ctx, bin); err != nil {
 		return "", err
 	}
 	return bin, nil
 }
 
 // checkVersion runs the floor probe for bin, memoizing only a pass.
-func checkVersion(bin string) error {
+func checkVersion(ctx context.Context, bin string) error {
 	if _, ok := versionChecks.Load(bin); ok {
 		return nil
 	}
-	if err := probeVersion(bin); err != nil {
+	if err := probeVersion(ctx, bin); err != nil {
 		return err
 	}
 	versionChecks.Store(bin, struct{}{})
@@ -50,8 +51,8 @@ func checkVersion(bin string) error {
 // probeVersion execs `<bin> --version` and enforces the floor, erroring on an
 // unparseable line (named with the binary path and raw output) or a version below
 // minVersion.
-func probeVersion(bin string) error {
-	out, err := exec.Command(bin, "--version").Output() //nolint:gosec // bin is a resolved ast-grep path
+func probeVersion(ctx context.Context, bin string) error {
+	out, err := exec.CommandContext(ctx, bin, "--version").Output() //nolint:gosec // bin is a resolved ast-grep path
 	if err != nil {
 		return fmt.Errorf("ast-grep: run %q --version: %w", bin, err)
 	}

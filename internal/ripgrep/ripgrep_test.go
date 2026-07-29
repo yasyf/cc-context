@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
@@ -766,6 +768,184 @@ func TestRunCore(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// stubClock pins every engine pass to exactly step of wall time, so the
+// escalation gate is driven without sleeping.
+func stubClock(t *testing.T, step time.Duration) {
+	t.Helper()
+	orig := now
+	t.Cleanup(func() { now = orig })
+	at := time.Unix(0, 0)
+	now = func() time.Time {
+		at = at.Add(step)
+		return at
+	}
+}
+
+// TestRunCore_EscalationCostGate proves the auto-regex retry is priced before it
+// is paid for, on wall time alone: a literal pass slower than the cap returns
+// the no-match verdict with the --regex hint instead of walking the tree a
+// second time, and every engine and mode is gated the same way — a big tree that
+// searches fast still escalates, because size is not cost.
+func TestRunCore_EscalationCostGate(t *testing.T) {
+	// What a fruitless rg pass really emits: the summary event, no match events.
+	rgMiss := `{"data":{"stats":{}},"type":"summary"}` + "\n"
+	rgHit := `{"type":"match","data":{"path":{"text":"a.go"},"lines":{"text":"foo one\n"},"line_number":3}}` + "\n"
+	grepHit := "a.go\x003:foo one\n"
+
+	tests := []struct {
+		name        string
+		eng         engine
+		args        backend.Args
+		step        time.Duration
+		runs        []string
+		wantCalls   int
+		contains    []string
+		notContains []string
+	}{
+		{
+			name: "an rg pass past the elapsed cap skips the retry", eng: engineRipgrep,
+			args: backend.Args{Query: "foo|bar"}, step: escalationElapsedCap + time.Millisecond,
+			runs: []string{rgMiss}, wantCalls: 1,
+			contains:    []string{`# grep: "foo|bar" — no matches`, escalationSkipHint},
+			notContains: []string{"literal or regex", "auto-regex"},
+		},
+		{
+			name: "an rg pass at the elapsed cap still escalates", eng: engineRipgrep,
+			args: backend.Args{Query: "foo|bar"}, step: escalationElapsedCap,
+			runs: []string{rgMiss, rgHit}, wantCalls: 2,
+			contains:    []string{"(auto-regex)", "### a.go:3"},
+			notContains: []string{escalationSkipHint},
+		},
+		{
+			name: "a big tree that searches fast still escalates", eng: engineRipgrep,
+			args: backend.Args{Query: "foo|bar"}, step: time.Second,
+			runs: []string{rgMiss, rgHit}, wantCalls: 2,
+			contains:    []string{"(auto-regex)", "### a.go:3"},
+			notContains: []string{escalationSkipHint},
+		},
+		{
+			name: "a slow grep pass skips the retry", eng: engineGrep,
+			args: backend.Args{Query: "foo|bar"}, step: escalationElapsedCap + time.Second,
+			runs: []string{""}, wantCalls: 1,
+			contains:    []string{`# grep: "foo|bar" — no matches`, escalationSkipHint},
+			notContains: []string{"literal or regex", "auto-regex"},
+		},
+		{
+			name: "a quick grep pass escalates", eng: engineGrep,
+			args: backend.Args{Query: "foo|bar"}, step: time.Millisecond,
+			runs: []string{"", grepHit}, wantCalls: 2,
+			contains:    []string{"(auto-regex)", "### a.go:3"},
+			notContains: []string{escalationSkipHint},
+		},
+		{
+			name: "a slow --files-with-matches pass skips the retry", eng: engineRipgrep,
+			args: backend.Args{Query: "foo|bar", FilesWithMatches: true}, step: escalationElapsedCap + time.Second,
+			runs: []string{""}, wantCalls: 1,
+			contains: []string{`# grep: "foo|bar" — no matches`, escalationSkipHint},
+		},
+		{
+			name: "a quick --files-with-matches pass escalates", eng: engineRipgrep,
+			args: backend.Args{Query: "foo|bar", FilesWithMatches: true}, step: time.Millisecond,
+			runs: []string{"", "a.go\n"}, wantCalls: 2,
+			contains:    []string{"a.go"},
+			notContains: []string{escalationSkipHint},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stubClock(t, tt.step)
+			calls := 0
+			fake := func(context.Context, string, []string) (string, error) {
+				if calls >= len(tt.runs) {
+					t.Fatalf("runner call %d exceeds %d canned results", calls+1, len(tt.runs))
+				}
+				out := tt.runs[calls]
+				calls++
+				return out, nil
+			}
+			got, _, err := run(context.Background(), tt.eng, "bin", tt.args, fake)
+			if err != nil {
+				t.Fatalf("run() err = %v", err)
+			}
+			if calls != tt.wantCalls {
+				t.Errorf("runner calls = %d, want %d:\n%s", calls, tt.wantCalls, got)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(got, want) {
+					t.Errorf("run() output missing %q:\n%s", want, got)
+				}
+			}
+			for _, unwanted := range tt.notContains {
+				if strings.Contains(got, unwanted) {
+					t.Errorf("run() output unexpectedly contains %q:\n%s", unwanted, got)
+				}
+			}
+		})
+	}
+}
+
+// stubEngine writes a POSIX stub binary that runs body, standing in for an
+// engine pass whose duration the test controls.
+func stubEngine(t *testing.T, body string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX stub engines only")
+	}
+	path := filepath.Join(t.TempDir(), "stub-engine")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil { //nolint:gosec // stub engine must be owner-executable
+		t.Fatalf("write stub engine: %v", err)
+	}
+	return path
+}
+
+// TestExecEngine_TimeoutKillsChild proves a runaway engine is bounded rather
+// than hung on forever, and that the deadline — which reaches the caller as an
+// opaque signal exit — is reported as one, naming the narrowing flags.
+func TestExecEngine_TimeoutKillsChild(t *testing.T) {
+	bin := stubEngine(t, "exec sleep 30")
+	orig := engineTimeout
+	t.Cleanup(func() { engineTimeout = orig })
+	engineTimeout = 200 * time.Millisecond
+
+	start := time.Now()
+	_, err := execEngine(context.Background(), bin, nil)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("execEngine() err = nil, want a deadline error")
+	}
+	for _, want := range []string{engineTimeout.String(), "subpath operand", "--glob"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("execEngine() err = %v, want it to name %q", err, want)
+		}
+	}
+	if elapsed > 10*time.Second {
+		t.Errorf("execEngine took %v; the deadline never reached the child", elapsed)
+	}
+}
+
+// TestExecEngine_ParentCancelIsNotADeadline proves a caller-cancelled search
+// surfaces its own cancellation rather than being reported as a runaway engine.
+func TestExecEngine_ParentCancelIsNotADeadline(t *testing.T) {
+	bin := stubEngine(t, "exec sleep 30")
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := execEngine(ctx, bin, nil)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("execEngine() err = nil, want a cancellation error")
+	}
+	if strings.Contains(err.Error(), "gave up after") {
+		t.Errorf("execEngine() err = %v, want the caller's cancellation, not the engine deadline", err)
+	}
+	if elapsed > 10*time.Second {
+		t.Errorf("execEngine took %v; the cancellation never reached the child", elapsed)
 	}
 }
 

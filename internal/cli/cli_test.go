@@ -363,6 +363,7 @@ func unitVec(s string, dims int) []float32 {
 // file) and returns its path.
 func writeSemanticRepo(t *testing.T) string {
 	t.Helper()
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	dir := t.TempDir()
 	files := map[string]string{
 		"auth.go":   "package auth\n\n// Login authenticates a user session flow.\nfunc Login(user string) error {\n\treturn nil\n}\n",

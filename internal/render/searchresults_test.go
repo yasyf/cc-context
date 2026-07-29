@@ -110,3 +110,51 @@ func TestWithSlowSearchNote(t *testing.T) {
 		t.Errorf("slow output = %q, want %q", got, want)
 	}
 }
+
+func TestWithSlowGrepNote(t *testing.T) {
+	const hits = "# 1 match\n"
+	slow := SlowGrepThreshold + 500*time.Millisecond
+
+	tests := []struct {
+		name    string
+		out     string
+		elapsed time.Duration
+		scope   string
+		want    string
+	}{
+		{
+			name:    "at threshold unchanged",
+			out:     hits,
+			elapsed: SlowGrepThreshold,
+			scope:   "/go/pkg/mod",
+			want:    hits,
+		},
+		{
+			name:    "slow walk names the scope",
+			out:     hits,
+			elapsed: slow,
+			scope:   "/go/pkg/mod",
+			want:    hits + "# note: slow grep (6s) — walked /go/pkg/mod; narrow with a subpath or --glob\n",
+		},
+		{
+			name:    "slow walk without a scope names the working directory",
+			out:     hits,
+			elapsed: slow,
+			want:    hits + "# note: slow grep (6s) — walked the working directory; narrow with a subpath or --glob\n",
+		},
+		{
+			name:    "output missing its trailing newline gains one",
+			out:     "# 1 match",
+			elapsed: slow,
+			scope:   "vendor",
+			want:    hits + "# note: slow grep (6s) — walked vendor; narrow with a subpath or --glob\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := WithSlowGrepNote(tt.out, tt.elapsed, tt.scope); got != tt.want {
+				t.Errorf("WithSlowGrepNote() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
