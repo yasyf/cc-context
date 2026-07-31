@@ -221,7 +221,7 @@ func TestShowFileArgv(t *testing.T) {
 		},
 		{
 			name: "jj shows the parent revision", kind: JJ, path: "internal/cli/ship.go",
-			want: []string{"jj", "file", "show", "-r", "@-", "--", `root:"internal/cli/ship.go"`},
+			want: []string{"jj", "--ignore-working-copy", "file", "show", "-r", "@-", "--", `root:"internal/cli/ship.go"`},
 		},
 		{name: "no vcs panics", kind: None, path: "a.go", wantPanic: true},
 	}

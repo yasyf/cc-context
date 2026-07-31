@@ -35,7 +35,8 @@ func writeRestackFakes(t *testing.T, dir string, withGT bool) {
 esac
 exit 0
 `
-	jj := "#!/bin/sh\n" + log("jj") + `case "$1 $2" in
+	jj := "#!/bin/sh\n" + log("jj") + `if [ "$1" = --ignore-working-copy ]; then shift; fi
+case "$1 $2" in
   "git fetch")
     if [ -n "$RESTACK_JJ_FETCH_FAIL" ]; then printf 'jj fetch failed\n' >&2; exit 1; fi ;;
   "log -r")
@@ -415,13 +416,13 @@ func TestRestackJJRebase(t *testing.T) {
 		t.Fatalf("output = %q", out)
 	}
 	requireRestackRecords(t, logPath, [][]string{
-		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
 		{"jj", "git", "fetch"},
-		{"jj", "log", "-r", jjRestackAncestorRevset, "--no-graph", "-T", jjStackLineTemplate},
-		{"jj", "log", "-r", jjRestackStackRevset, "--no-graph", "-T", jjStackLineTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", jjRestackAncestorRevset, "--no-graph", "-T", jjStackLineTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", jjRestackStackRevset, "--no-graph", "-T", jjStackLineTemplate},
 		{"jj", "rebase", "-b", "@", "--destination", "trunk()"},
-		{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
-		{"jj", "log", "-r", jjRestackConflictRevset, "--no-graph", "-T", jjStackLineTemplate},
+		{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", jjRestackConflictRevset, "--no-graph", "-T", jjStackLineTemplate},
 	})
 }
 
@@ -461,9 +462,9 @@ func TestRestackJJAlreadyUpToDate(t *testing.T) {
 		t.Fatalf("output = %q", out)
 	}
 	requireRestackRecords(t, logPath, [][]string{
-		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
 		{"jj", "git", "fetch"},
-		{"jj", "log", "-r", jjRestackAncestorRevset, "--no-graph", "-T", jjStackLineTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", jjRestackAncestorRevset, "--no-graph", "-T", jjStackLineTemplate},
 	})
 }
 

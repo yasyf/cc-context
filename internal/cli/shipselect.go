@@ -133,7 +133,7 @@ func repoRoot(ctx context.Context, kind vcs.Kind) (string, error) {
 		}
 		return strings.TrimSpace(out), nil
 	case vcs.JJ:
-		out, err := render.RunCLI(ctx, "jj", []string{"root"})
+		out, err := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "root"})
 		if err != nil {
 			return "", fmt.Errorf("jj root: %w", err)
 		}
@@ -278,7 +278,7 @@ func fileInBase(ctx context.Context, kind vcs.Kind, path string) (bool, error) {
 		}
 		return strings.TrimSpace(out) != "", nil
 	case vcs.JJ:
-		out, err := render.RunCLI(ctx, "jj", []string{"file", "list", "-r", "@-", "--", fmt.Sprintf("root:%q", path)})
+		out, err := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "file", "list", "-r", "@-", "--", fmt.Sprintf("root:%q", path)})
 		if err != nil {
 			return false, fmt.Errorf("read base tree %s: %w", path, err)
 		}

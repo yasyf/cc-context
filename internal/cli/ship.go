@@ -597,7 +597,7 @@ func shipDescribe(ctx context.Context, kind vcs.Kind) (short, subject string, er
 		}
 		return splitDescribe(out, "\x00")
 	case vcs.JJ:
-		out, rerr := render.RunCLI(ctx, "jj", []string{"log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate})
+		out, rerr := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate})
 		if rerr != nil {
 			return "", "", fmt.Errorf("ship: jj log: %w", rerr)
 		}
@@ -623,7 +623,7 @@ func shipRefuseEmptyJJ(ctx context.Context, root string, o shipOpts, plan branch
 	if len(paths) > 0 {
 		return nil
 	}
-	state, err := render.RunCLI(ctx, "jj", []string{"log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate})
+	state, err := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate})
 	if err != nil {
 		return fmt.Errorf("ship: jj working-copy state: %w", err)
 	}
@@ -977,6 +977,9 @@ func jjTrackUntrackedTarget(ctx context.Context, target string) error {
 // remote and tracked fields; the local-view line (empty remote) and the internal
 // git remote (always tracked) both fall out of the untracked filter. A local-only
 // bookmark pushed for the first time has no remote counterpart and is left alone.
+// Deliberately runs without --ignore-working-copy: that flag suppresses jj's
+// implicit git import, and a counterpart fetched git-side would then go unseen,
+// leaving jj git push to refuse the bookmark it was this call's job to track.
 func jjUntrackedTargetRemotes(ctx context.Context, target string) ([]string, error) {
 	out, err := render.RunCLI(ctx, "jj", []string{"bookmark", "list", jjExactPattern(target), "--all-remotes", "-T", jjRemoteBookmarkTemplate})
 	if err != nil {
@@ -998,7 +1001,7 @@ func jjUntrackedTargetRemotes(ctx context.Context, target string) ([]string, err
 // tracked bookmarks, so this mirrors jj's own resolution — used to break a tie when
 // more than one remote carries an untracked counterpart.
 func jjPushRemote(ctx context.Context) (string, error) {
-	out, code, stderr, err := render.RunCLIExitCode(ctx, "jj", []string{"config", "get", "git.push"})
+	out, code, stderr, err := render.RunCLIExitCode(ctx, "jj", []string{"--ignore-working-copy", "config", "get", "git.push"})
 	if err != nil {
 		return "", fmt.Errorf("ship: jj config get git.push: %w", err)
 	}
@@ -1264,7 +1267,7 @@ func gitRebaseFailure(ctx context.Context, remote, branch string, rebaseErr erro
 }
 
 func jjBookmarkNames(ctx context.Context, prefix, rev string) ([]string, error) {
-	out, err := render.RunCLI(ctx, "jj", []string{"log", "-r", rev, "--no-graph", "-T", jjBookmarkTemplate})
+	out, err := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "log", "-r", rev, "--no-graph", "-T", jjBookmarkTemplate})
 	if err != nil {
 		return nil, fmt.Errorf("%s: jj bookmarks at %q: %w", prefix, rev, err)
 	}
@@ -1272,7 +1275,7 @@ func jjBookmarkNames(ctx context.Context, prefix, rev string) ([]string, error) 
 }
 
 func jjTrunkBookmarkNames(ctx context.Context, prefix string) ([]string, error) {
-	out, err := render.RunCLI(ctx, "jj", []string{"log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate})
+	out, err := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate})
 	if err != nil {
 		return nil, fmt.Errorf("%s: jj trunk bookmark: %w", prefix, err)
 	}
@@ -1288,7 +1291,7 @@ func jjTrunkBookmarkNames(ctx context.Context, prefix string) ([]string, error) 
 }
 
 func jjLogLines(ctx context.Context, prefix, rev string) ([]string, error) {
-	out, err := render.RunCLI(ctx, "jj", []string{"log", "-r", rev, "--no-graph", "-T", jjStackLineTemplate})
+	out, err := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "log", "-r", rev, "--no-graph", "-T", jjStackLineTemplate})
 	if err != nil {
 		return nil, fmt.Errorf("%s: jj log %q: %w", prefix, rev, err)
 	}
@@ -1302,7 +1305,7 @@ func jjLogLines(ctx context.Context, prefix, rev string) ([]string, error) {
 }
 
 func jjOpID(ctx context.Context) (string, error) {
-	out, err := render.RunCLI(ctx, "jj", []string{"op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate})
+	out, err := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate})
 	if err != nil {
 		return "", fmt.Errorf("ship: jj op log: %w", err)
 	}
@@ -1574,7 +1577,7 @@ func shipHeadSHA(ctx context.Context, kind vcs.Kind) (string, error) {
 		}
 		return strings.TrimSpace(out), nil
 	case vcs.JJ:
-		out, err := render.RunCLI(ctx, "jj", []string{"log", "-r", "@-", "--no-graph", "-T", "commit_id"})
+		out, err := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", "commit_id"})
 		if err != nil {
 			return "", fmt.Errorf("ship: jj log commit_id: %w", err)
 		}

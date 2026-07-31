@@ -104,17 +104,17 @@ func TestShipJJHunkArgv(t *testing.T) {
 	if len(inv) != 7 {
 		t.Fatalf("want 7 jj invocations, got %d: %v", len(inv), inv)
 	}
-	if want := []string{"jj", "root"}; !reflect.DeepEqual(inv[0], want) {
+	if want := []string{"jj", "--ignore-working-copy", "root"}; !reflect.DeepEqual(inv[0], want) {
 		t.Errorf("repo root = %v, want %v", inv[0], want)
 	}
-	if want := []string{"jj", "file", "list", "-r", "@-", "--", `root:"f.txt"`}; !reflect.DeepEqual(inv[1], want) {
+	if want := []string{"jj", "--ignore-working-copy", "file", "list", "-r", "@-", "--", `root:"f.txt"`}; !reflect.DeepEqual(inv[1], want) {
 		t.Errorf("base existence probe = %v, want %v", inv[1], want)
 	}
-	if want := []string{"jj", "file", "show", "-r", "@-", "--", `root:"f.txt"`}; !reflect.DeepEqual(inv[2], want) {
+	if want := []string{"jj", "--ignore-working-copy", "file", "show", "-r", "@-", "--", `root:"f.txt"`}; !reflect.DeepEqual(inv[2], want) {
 		t.Errorf("pre-flight base read = %v, want %v", inv[2], want)
 	}
 	assertJJSelectCommit(t, inv[5], "commit", []string{"-m", "fix: frobnicate", "--", "f.txt"})
-	if want := []string{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate}; !reflect.DeepEqual(inv[6], want) {
+	if want := []string{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate}; !reflect.DeepEqual(inv[6], want) {
 		t.Errorf("describe = %v, want %v", inv[6], want)
 	}
 }
@@ -212,11 +212,11 @@ func TestShipHunkRefusals(t *testing.T) {
 	ref1 := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 1)
 	driftHash := hunk.Compute([]byte("x\n"), []byte("Y\n"))[0].Digest
 	driftRef := "f.txt:1#" + driftHash.String()
-	rootOnly := [][]string{{"jj", "root"}}
+	rootOnly := [][]string{{"jj", "--ignore-working-copy", "root"}}
 	resolveSeq := [][]string{
-		{"jj", "root"},
-		{"jj", "file", "list", "-r", "@-", "--", `root:"f.txt"`},
-		{"jj", "file", "show", "-r", "@-", "--", `root:"f.txt"`},
+		{"jj", "--ignore-working-copy", "root"},
+		{"jj", "--ignore-working-copy", "file", "list", "-r", "@-", "--", `root:"f.txt"`},
+		{"jj", "--ignore-working-copy", "file", "show", "-r", "@-", "--", `root:"f.txt"`},
 	}
 
 	tests := []struct {

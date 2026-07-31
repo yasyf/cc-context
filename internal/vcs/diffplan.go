@@ -343,7 +343,7 @@ func blobArgv(kind Kind, rev, path string) []string {
 	case kind == Git:
 		return []string{"git", "show", "--end-of-options", rev + ":" + path}
 	default:
-		return []string{"jj", "file", "show", "-r", rev, "--", fmt.Sprintf("root:%q", path)}
+		return []string{"jj", "--ignore-working-copy", "file", "show", "-r", rev, "--", fmt.Sprintf("root:%q", path)}
 	}
 }
 
@@ -358,7 +358,7 @@ func treeHasPath(ctx context.Context, root string, kind Kind, rev, path string) 
 		cmd.Dir = root
 		return cmd.Run() == nil
 	default:
-		out, err := runIn(ctx, root, "jj", "file", "list", "-r", rev, "--", fmt.Sprintf("root:%q", path))
+		out, err := runIn(ctx, root, "jj", "--ignore-working-copy", "file", "list", "-r", rev, "--", fmt.Sprintf("root:%q", path))
 		return err == nil && len(bytes.TrimSpace(out)) > 0
 	}
 }
@@ -412,7 +412,7 @@ func diffRoot(ctx context.Context, dir string, kind Kind) (string, error) {
 	case Git:
 		argv = []string{"git", "rev-parse", "--show-toplevel"}
 	default:
-		argv = []string{"jj", "workspace", "root"}
+		argv = []string{"jj", "--ignore-working-copy", "workspace", "root"}
 	}
 	out, err := runIn(ctx, dir, argv[0], argv[1:]...)
 	if err != nil {

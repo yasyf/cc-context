@@ -132,7 +132,7 @@ func ShowFileArgv(kind Kind, path string) []string {
 	case Git:
 		return []string{"git", "show", "--end-of-options", "HEAD:" + path}
 	case JJ:
-		return []string{"jj", "file", "show", "-r", "@-", "--", fmt.Sprintf("root:%q", path)}
+		return []string{"jj", "--ignore-working-copy", "file", "show", "-r", "@-", "--", fmt.Sprintf("root:%q", path)}
 	default:
 		panic(fmt.Sprintf("vcs.ShowFileArgv: kind %d is not Git or JJ", kind))
 	}

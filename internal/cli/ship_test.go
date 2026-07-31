@@ -34,7 +34,8 @@ func writeShipFakes(t *testing.T, dir string, withGh bool) {
 		return "{ printf '" + name + "\\0'; for a in \"$@\"; do printf '%s\\0' \"$a\"; done; printf '\\0'; } >> \"$SHIP_LOG\"\n"
 	}
 
-	jj := "#!/bin/sh\n" + log("jj") + `case "$*" in
+	jj := "#!/bin/sh\n" + log("jj") + `if [ "$1" = --ignore-working-copy ]; then shift; fi
+case "$*" in
   root) printf '%s' "$SHIP_FAKE_ROOT" ;;
   "file list"*) printf 'f.txt\n' ;;
   "file show"*) printf '%s' "$JJ_FILE_SHOW_BASE" ;;
@@ -488,8 +489,8 @@ func normalizeTempPaths(invocations [][]string) [][]string {
 // that pushes probes the resolved target on top of these.
 func jjPlanArgv() [][]string {
 	return [][]string{
-		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 	}
 }
 
@@ -540,6 +541,127 @@ func assertNoShipMutation(t *testing.T, invocations [][]string) {
 	}
 }
 
+var jjIgnoresWorkingCopy = map[string]bool{
+	"log":             true,
+	"op log":          true,
+	"root":            true,
+	"file list":       true,
+	"file show":       true,
+	"config get":      true,
+	"bookmark list":   false,
+	"diff":            false,
+	"commit":          false,
+	"squash":          false,
+	"rebase":          false,
+	"bookmark create": false,
+	"bookmark move":   false,
+	"bookmark track":  false,
+	"git fetch":       false,
+	"git push":        false,
+	"op revert":       false,
+}
+
+func jjVerb(argv []string) string {
+	switch argv[0] {
+	case "op", "file", "bookmark", "git", "config":
+		return argv[0] + " " + argv[1]
+	}
+	return argv[0]
+}
+
+func TestJJWorkingCopyFlag(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T) string
+	}{
+		{
+			name: "commit and push",
+			run: func(t *testing.T) string {
+				log := setupShip(t, ".jj", true)
+				_, _ = runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+				return log
+			},
+		},
+		{
+			name: "track the push target",
+			run: func(t *testing.T) string {
+				log := setupShip(t, ".jj", true)
+				t.Setenv("JJ_UNTRACKED_REMOTES", "backup origin")
+				t.Setenv("JJ_PUSH_REMOTE", "backup")
+				_, _ = runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+				return log
+			},
+		},
+		{
+			name: "amend",
+			run: func(t *testing.T) string {
+				log := setupShip(t, ".jj", true)
+				_, _ = runShipCmd(t, "--amend", "--no-push")
+				return log
+			},
+		},
+		{
+			name: "create a bookmark",
+			run: func(t *testing.T) string {
+				log := setupShip(t, ".jj", true)
+				t.Setenv("JJ_BOOKMARK_HEADS", "0")
+				_, _ = runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--bookmark", "someone/probe")
+				return log
+			},
+		},
+		{
+			name: "conflicted rebase rolls back",
+			run: func(t *testing.T) string {
+				log := setupShip(t, ".jj", true)
+				t.Setenv("JJ_NO_BOOKMARK", "1")
+				t.Setenv("JJ_DIVERGED", "1")
+				t.Setenv("JJ_CONFLICTS", "c0ffee1 fix: frobnicate\n")
+				_, _ = runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+				return log
+			},
+		},
+		{
+			name: "hunk-scoped",
+			run: func(t *testing.T) string {
+				log := setupHunkShip(t, "f.txt")
+				ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
+				_, _ = runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--skip-hunk", ref, "f.txt")
+				return log
+			},
+		},
+	}
+	seen := map[string]bool{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, inv := range readInvocations(t, tt.run(t)) {
+				if inv[0] != "jj" {
+					continue
+				}
+				argv := inv[1:]
+				flagged := argv[0] == "--ignore-working-copy"
+				if flagged {
+					argv = argv[1:]
+				}
+				verb := jjVerb(argv)
+				want, ok := jjIgnoresWorkingCopy[verb]
+				if !ok {
+					t.Errorf("unclassified jj verb %q: %v", verb, inv)
+					continue
+				}
+				if flagged != want {
+					t.Errorf("jj %s: --ignore-working-copy = %v, want %v: %v", verb, flagged, want, inv)
+				}
+				seen[verb] = true
+			}
+		})
+	}
+	for verb := range jjIgnoresWorkingCopy {
+		if !seen[verb] {
+			t.Errorf("no scenario ran jj %s", verb)
+		}
+	}
+}
+
 func TestShipCommitPushWatch(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -553,20 +675,20 @@ func TestShipCommitPushWatch(t *testing.T) {
 			marker: ".jj",
 			args:   []string{"-m", "fix: frobnicate"},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "git", "push", "--bookmark", "exact:main"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id"},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", "commit_id"},
 				{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"},
 				{"gh", "run", "watch", "42", "--exit-status"},
 				{"gh", "run", "view", "42", "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"},
@@ -644,13 +766,13 @@ func TestShipHooksPass(t *testing.T) {
 			name:   "jj",
 			marker: ".jj",
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "diff", "--name-only"},
 				{"uvx", "prek", "run", "--cd", "ROOT", "--files", "f1.go"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 		},
 		{
@@ -726,12 +848,12 @@ func TestShipHooksJJAmend(t *testing.T) {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	assertInvocations(t, readInvocations(t, log), [][]string{
-		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 		{"jj", "diff", "--name-only"},
 		{"uvx", "prek", "run", "--cd", root, "--files", "folded.go"},
 		{"jj", "squash", "--use-destination-message"},
-		{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 	})
 }
 
@@ -763,15 +885,15 @@ func TestShipHooksSubdirRunsAtRoot(t *testing.T) {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	assertInvocations(t, readInvocations(t, log), [][]string{
-		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 		{"jj", "diff", "--name-only", "--", "sub/x.go"},
 		{"pwd", root},
 		{"jj", "diff", "--name-only", "--", "sub/x.go"},
 		{"pwd", root},
 		{"uvx", "prek", "run", "--cd", root, "--files", "sub/x.go"},
 		{"jj", "commit", "-m", "fix: frobnicate", "--", "x.go"},
-		{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 	})
 }
 
@@ -1165,11 +1287,11 @@ func TestShipHooksEmptyFilesSkipSoftGuards(t *testing.T) {
 				}
 				invocations := readInvocations(t, log)
 				assertInvocations(t, invocations, [][]string{
-					{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-					{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+					{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+					{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 					{"jj", "diff", "--name-only"},
-					{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
-					{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+					{"jj", "--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
+					{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 				})
 				for _, inv := range invocations {
 					if inv[0] == "uvx" || inv[0] == "jj" && (inv[1] == "commit" || inv[1] == "squash") {
@@ -1354,11 +1476,11 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			marker: ".jj",
 			args:   []string{"-m", "fix: frobnicate", "--no-push"},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
@@ -1381,10 +1503,10 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			marker: ".jj",
 			args:   []string{"--amend", "--no-push"},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "squash", "--use-destination-message"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
@@ -1393,10 +1515,10 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			marker: ".jj",
 			args:   []string{"--amend", "-m", "fix: frobnicate", "--no-push"},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "squash", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
@@ -1433,11 +1555,11 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			marker: ".jj",
 			args:   []string{"-m", "fix: frobnicate", "--no-push", "src/a.go", "docs"},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only", "--", "src/a.go", "docs"},
 				{"jj", "commit", "-m", "fix: frobnicate", "--", "src/a.go", "docs"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
@@ -1460,10 +1582,10 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			marker: ".jj",
 			args:   []string{"--amend", "--no-push", "src/a.go"},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "squash", "--use-destination-message", "--", "src/a.go"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
@@ -1472,10 +1594,10 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			marker: ".jj",
 			args:   []string{"--amend", "-m", "fix: frobnicate", "--no-push", "src/a.go"},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "squash", "-m", "fix: frobnicate", "--", "src/a.go"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
@@ -1523,12 +1645,12 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			args:    []string{"-m", "fix: frobnicate", "--no-watch"},
 			wantErr: `ship: nothing to commit — did a prior ship already land a1b2c3d "fix: frobnicate"? push it: jj bookmark move exact:main --to @- && jj git push --bookmark exact:main`,
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
-				{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 		},
 		{
@@ -1536,12 +1658,12 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			args:    []string{"-m", "fix: frobnicate", "--no-watch", "src/a.go"},
 			wantErr: `ship: nothing to commit in src/a.go — did a prior ship already land a1b2c3d "fix: frobnicate"? push it: jj bookmark move exact:main --to @- && jj git push --bookmark exact:main`,
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only", "--", "src/a.go"},
-				{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 		},
 		{
@@ -1549,12 +1671,12 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			args:    []string{"-m", "fix: frobnicate", "--no-watch", "--bookmark", "someone/probe"},
 			wantErr: `ship: nothing to commit — did a prior ship already land a1b2c3d "fix: frobnicate"? push it: jj bookmark move exact:someone/probe --to @- && jj git push --bookmark exact:someone/probe`,
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
-				{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 		},
 		{
@@ -1564,12 +1686,12 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			args:    []string{"-m", "fix: frobnicate", "--no-push", "--bookmark", "someone/probe"},
 			wantErr: `ship: nothing to commit — did a prior ship already land a1b2c3d "fix: frobnicate"? push it: jj bookmark move exact:someone/probe --to @- && jj git push --bookmark exact:someone/probe`,
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
-				{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 		},
 		{
@@ -1577,11 +1699,11 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			args:    []string{"-m", "description only", "--no-push"},
 			wantErr: `ship: nothing to commit — did a prior ship already land a1b2c3d "fix: frobnicate"? push it: jj bookmark move exact:main --to @- && jj git push --bookmark exact:main`,
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only"},
-				{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 		},
 		{
@@ -1590,12 +1712,12 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			env:         map[string]string{"JJ_AT_PARENTS": "2"},
 			wantSummary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only"},
-				{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
 				{"jj", "commit", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 		},
 		{
@@ -1603,11 +1725,11 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			args:    []string{"-m", "fix: frobnicate", "--no-push"},
 			wantErr: `ship: nothing to commit — did a prior ship already land a1b2c3d "fix: frobnicate"? push it: jj bookmark move exact:main --to @- && jj git push --bookmark exact:main`,
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only"},
-				{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 		},
 		{
@@ -1616,11 +1738,11 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			env:     map[string]string{"JJ_DESCRIBE_OUTPUT": "000000000000\n"},
 			wantErr: `ship: nothing to commit — did a prior ship already land 000000000000 ""? push it: jj bookmark move exact:main --to @- && jj git push --bookmark exact:main`,
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only"},
-				{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 		},
 		{
@@ -1629,11 +1751,11 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			env:     map[string]string{"JJ_DESCRIBE_OUTPUT": "000000000000"},
 			wantErr: `ship: malformed commit description "000000000000"`,
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only"},
-				{"jj", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 		},
 	}
@@ -1679,10 +1801,10 @@ func TestShipJJEmptyAmendExempt(t *testing.T) {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	assertInvocations(t, readInvocations(t, log), [][]string{
-		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 		{"jj", "squash", "--use-destination-message"},
-		{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 	})
 }
 
@@ -1773,11 +1895,11 @@ func TestShipSessionTrailer(t *testing.T) {
 			marker: ".jj",
 			args:   []string{"-m", "fix: frobnicate", "--no-push"},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
@@ -1800,10 +1922,10 @@ func TestShipSessionTrailer(t *testing.T) {
 			marker: ".jj",
 			args:   []string{"--amend", "-m", "fix: frobnicate", "--no-push"},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "squash", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
@@ -1826,10 +1948,10 @@ func TestShipSessionTrailer(t *testing.T) {
 			marker: ".jj",
 			args:   []string{"--amend", "--no-push"},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "squash", "--use-destination-message"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 			summary: `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`,
 		},
@@ -2318,18 +2440,18 @@ func TestShipNoWatchSkipsCI(t *testing.T) {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	assertInvocations(t, readInvocations(t, log), [][]string{
-		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-		{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 		{"jj", "diff", "--name-only"},
 		{"jj", "commit", "-m", "fix: frobnicate"},
-		{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 		{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 		{"jj", "git", "fetch"},
-		{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-		{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
 		{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
-		{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+		{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 		{"jj", "git", "push", "--bookmark", "exact:main"},
 	})
 }
@@ -2494,19 +2616,19 @@ func TestShipJJRebase(t *testing.T) {
 			name: "untracked trunk auto-tracks before fetch then pushes",
 			env:  map[string]string{"JJ_UNTRACKED_REMOTES": "origin"},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "bookmark", "track", jjExactPattern("main"), "--remote=origin"},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "git", "push", "--bookmark", "exact:main"},
 			},
 			summary: `committed a1b2c3d "fix: frobnicate" · pushed main → origin`,
@@ -2518,19 +2640,19 @@ func TestShipJJRebase(t *testing.T) {
 			name: "untracked counterpart on a non-origin remote tracks that remote",
 			env:  map[string]string{"JJ_UNTRACKED_REMOTES": "backup"},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "bookmark", "track", jjExactPattern("main"), "--remote=backup"},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "git", "push", "--bookmark", "exact:main"},
 			},
 			summary: `committed a1b2c3d "fix: frobnicate" · pushed main → origin`,
@@ -2541,20 +2663,20 @@ func TestShipJJRebase(t *testing.T) {
 			name: "multiple untracked counterparts track the push target",
 			env:  map[string]string{"JJ_UNTRACKED_REMOTES": "backup origin", "JJ_PUSH_REMOTE": "backup"},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
-				{"jj", "config", "get", "git.push"},
+				{"jj", "--ignore-working-copy", "config", "get", "git.push"},
 				{"jj", "bookmark", "track", jjExactPattern("main"), "--remote=backup"},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "git", "push", "--bookmark", "exact:main"},
 			},
 			summary: `committed a1b2c3d "fix: frobnicate" · pushed main → origin`,
@@ -2564,24 +2686,24 @@ func TestShipJJRebase(t *testing.T) {
 			env:            map[string]string{"JJ_NO_BOOKMARK": "1", "JJ_DIVERGED": "1"},
 			describeMarker: true,
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "main"), "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "main"), "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "rebase", "-b", "@-", "--destination", `bookmarks(exact:"main")`},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
-				{"jj", "log", "-r", `conflicts() & (bookmarks(exact:"main")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `conflicts() & (bookmarks(exact:"main")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "git", "push", "--bookmark", "exact:main"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 			summary: `committed e9f8a7b "fix: frobnicate" · rebased 2 commit(s) onto main · pushed main → origin`,
 		},
@@ -2591,24 +2713,24 @@ func TestShipJJRebase(t *testing.T) {
 			env:            map[string]string{"JJ_DIVERGED": "1"},
 			describeMarker: true,
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 				{"jj", "bookmark", "list", jjExactPattern("someone/probe"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "someone/probe"), "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "someone/probe"), "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "someone/probe"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "someone/probe"), "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "rebase", "-b", "@-", "--destination", `bookmarks(exact:"someone/probe")`},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
-				{"jj", "log", "-r", `conflicts() & (bookmarks(exact:"someone/probe")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `conflicts() & (bookmarks(exact:"someone/probe")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "bookmark", "move", "exact:someone/probe", "--to", "@-"},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "git", "push", "--bookmark", "exact:someone/probe"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 			summary: `committed e9f8a7b "fix: frobnicate" · rebased 2 commit(s) onto someone/probe · pushed someone/probe → origin`,
 		},
@@ -2619,9 +2741,9 @@ func TestShipJJRebase(t *testing.T) {
 				"JJ_BOOKMARK_HEADS": "2",
 			},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 			},
 			wantErr: []string{`bookmark "main" is conflicted (2 heads)`, "resolve it"},
 		},
@@ -2633,20 +2755,20 @@ func TestShipJJRebase(t *testing.T) {
 				"JJ_CONFLICTS":   "c0ffee1 fix: frobnicate\n",
 			},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "main"), "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "main"), "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "rebase", "-b", "@-", "--destination", `bookmarks(exact:"main")`},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
-				{"jj", "log", "-r", `conflicts() & (bookmarks(exact:"main")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `conflicts() & (bookmarks(exact:"main")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "op", "revert", "op123abc"},
 			},
 			wantErr: []string{`rebase onto "main" conflicts in 1 commit`, "c0ffee1", "rolled back"},
@@ -2659,20 +2781,20 @@ func TestShipJJRebase(t *testing.T) {
 				"JJ_CONFLICT_CHECK_FAIL": "1",
 			},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "main"), "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "main"), "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "rebase", "-b", "@-", "--destination", `bookmarks(exact:"main")`},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
-				{"jj", "log", "-r", `conflicts() & (bookmarks(exact:"main")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `conflicts() & (bookmarks(exact:"main")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "op", "revert", "op123abc"},
 			},
 			wantErr: []string{`conflict check after rebase onto "main" failed (rebase rolled back)`},
@@ -2685,17 +2807,17 @@ func TestShipJJRebase(t *testing.T) {
 				"JJ_STACK_EMPTY": "1",
 			},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "main"), "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "main"), "--no-graph", "-T", jjStackLineTemplate},
 			},
 			wantErr: []string{"already landed", "refusing to move the bookmark backwards"},
 		},
@@ -2703,12 +2825,12 @@ func TestShipJJRebase(t *testing.T) {
 			name: "fetch failure is fatal",
 			env:  map[string]string{"JJ_FETCH_FAIL": "1"},
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
 			},
@@ -2721,31 +2843,31 @@ func TestShipJJRebase(t *testing.T) {
 			pushReject:     1,
 			divergedSwitch: true,
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "git", "push", "--bookmark", "exact:main"},
 				{"jj", "op", "revert", "op123abc"},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "main"), "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "main"), "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "rebase", "-b", "@-", "--destination", `bookmarks(exact:"main")`},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
-				{"jj", "log", "-r", `conflicts() & (bookmarks(exact:"main")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `conflicts() & (bookmarks(exact:"main")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "git", "push", "--bookmark", "exact:main"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			},
 			summary: `committed e9f8a7b "fix: frobnicate" · rebased 2 commit(s) onto main · pushed main → origin`,
 		},
@@ -2754,32 +2876,32 @@ func TestShipJJRebase(t *testing.T) {
 			env:        map[string]string{"JJ_NO_BOOKMARK": "1"},
 			pushReject: 3,
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "git", "push", "--bookmark", "exact:main"},
 				{"jj", "op", "revert", "op123abc"},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "git", "push", "--bookmark", "exact:main"},
 				{"jj", "op", "revert", "op123abc"},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "git", "push", "--bookmark", "exact:main"},
 				{"jj", "op", "revert", "op123abc"},
 			},
@@ -2791,17 +2913,17 @@ func TestShipJJRebase(t *testing.T) {
 			env:        map[string]string{"JJ_NO_BOOKMARK": "1"},
 			pushReject: 1,
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "squash", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "git", "push", "--bookmark", "exact:main"},
 				{"jj", "op", "revert", "op123abc"},
 			},
@@ -2812,18 +2934,18 @@ func TestShipJJRebase(t *testing.T) {
 			env:        map[string]string{"JJ_NO_BOOKMARK": "1", "JJ_PUSH_FAIL_STDERR": "The remote rejected the following updates:\nError: Failed to push some bookmarks"},
 			pushReject: 1,
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "git", "push", "--bookmark", "exact:main"},
 			},
 			wantErr: []string{"ship: jj git push:", "Failed to push some bookmarks"},
@@ -2834,27 +2956,27 @@ func TestShipJJRebase(t *testing.T) {
 			pushReject:     1,
 			divergedSwitch: true,
 			want: [][]string{
-				{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-				{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "diff", "--name-only"},
 				{"jj", "commit", "-m", "fix: frobnicate"},
-				{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 				{"jj", "bookmark", "list", jjExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
 				{"jj", "bookmark", "move", "exact:main", "--to", "@-"},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 				{"jj", "git", "push", "--bookmark", "exact:main"},
 				{"jj", "op", "revert", "op123abc"},
 				{"jj", "git", "fetch"},
-				{"jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
-				{"jj", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "main"), "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "main"), "--no-graph", "-T", jjBookmarkTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjStackRevsetFmt, "main"), "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "rebase", "-b", "@-", "--destination", `bookmarks(exact:"main")`},
-				{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
-				{"jj", "log", "-r", `conflicts() & (bookmarks(exact:"main")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
+				{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+				{"jj", "--ignore-working-copy", "log", "-r", `conflicts() & (bookmarks(exact:"main")..@-)::`, "--no-graph", "-T", jjStackLineTemplate},
 				{"jj", "op", "revert", "op123abc"},
 			},
 			wantErr: []string{`rebase onto "main" conflicts`, "c0ffee1", "rolled back"},
@@ -3019,7 +3141,7 @@ func TestShipJJNonTrunkBookmarkAppends(t *testing.T) {
 		jjPlanArgv(),
 		[]string{"jj", "diff", "--name-only"},
 		[]string{"jj", "commit", "-m", "fix: frobnicate"},
-		[]string{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+		[]string{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 	))
 }
 
@@ -3057,8 +3179,8 @@ func TestShipJJMultipleNearestBookmarksFails(t *testing.T) {
 	}
 	invocations := readInvocations(t, log)
 	assertInvocations(t, invocations, [][]string{
-		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 	})
 	assertNoShipMutation(t, invocations)
 }
@@ -3128,7 +3250,7 @@ func TestShipJJAmbiguousTrunkFails(t *testing.T) {
 		}
 		invocations := readInvocations(t, log)
 		assertInvocations(t, invocations, [][]string{
-			{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+			{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
 		})
 		assertNoShipMutation(t, invocations)
 	})
@@ -3163,7 +3285,7 @@ func TestShipJJAmbiguousTrunkBranch(t *testing.T) {
 		}
 		invocations := readInvocations(t, log)
 		assertInvocations(t, invocations, [][]string{
-			{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+			{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
 		})
 		assertNoShipMutation(t, invocations)
 	})
@@ -3253,18 +3375,18 @@ func TestShipJJBookmarkOverride(t *testing.T) {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	assertInvocations(t, readInvocations(t, log), [][]string{
-		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-		{"jj", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-		{"jj", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
 		{"jj", "diff", "--name-only"},
 		{"jj", "commit", "-m", "fix: frobnicate"},
-		{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 		{"jj", "bookmark", "list", jjExactPattern("someone/probe"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
 		{"jj", "git", "fetch"},
-		{"jj", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
-		{"jj", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "someone/probe"), "--no-graph", "-T", jjBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
+		{"jj", "--ignore-working-copy", "log", "-r", fmt.Sprintf(jjAncestorRevsetFmt, "someone/probe"), "--no-graph", "-T", jjBookmarkTemplate},
 		{"jj", "bookmark", "move", "exact:someone/probe", "--to", "@-"},
-		{"jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
+		{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 		{"jj", "git", "push", "--bookmark", "exact:someone/probe"},
 	})
 }
@@ -3908,7 +4030,7 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 			jjPlanArgv(),
 			[]string{"jj", "diff", "--name-only"},
 			[]string{"jj", "commit", "-m", "fix: frobnicate"},
-			[]string{"jj", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
+			[]string{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 		))
 	})
 }
