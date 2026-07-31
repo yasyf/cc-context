@@ -643,6 +643,33 @@ func TestReviewsStackNoTargets(t *testing.T) {
 	}
 }
 
+func TestReviewsStackFailuresCarryReviewsPrefix(t *testing.T) {
+	tests := []struct {
+		name   string
+		branch string
+		state  string
+		want   string
+	}{
+		{"unparseable gt state", "feature", "not json", "reviews: parse gt state:"},
+		{"detached HEAD", "", `{"main":{"trunk":true}}`, "reviews: detached HEAD; no stack to resolve"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setupShipGT(t, false)
+			t.Setenv("GIT_BRANCH", tt.branch)
+			t.Setenv("GT_STATE_JSON", tt.state)
+
+			_, err := runReviewsCmd(t, "--stack")
+			if err == nil {
+				t.Fatal("reviews --stack succeeded, want failure")
+			}
+			if !strings.HasPrefix(err.Error(), tt.want) {
+				t.Errorf("error = %v, want it to lead with %q", err, tt.want)
+			}
+		})
+	}
+}
+
 // TestWriteReviewEventSanitizesBody proves an ANSI escape, a \r spoof
 // attempt, and a control character are all stripped before the body reaches
 // the terminal.

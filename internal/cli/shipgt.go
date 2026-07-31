@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/render"
@@ -47,73 +46,82 @@ type gtBranchState struct {
 // gtState is gt state's parsed output: branch name to its tracked state.
 type gtState map[string]gtBranchState
 
+type errGTUntracked struct{ Branch string }
+
+func (e *errGTUntracked) Error() string {
+	return "gt state has no parent for " + e.Branch
+}
+
 // gtStateQuery runs gt state and parses its JSON.
-func gtStateQuery(ctx context.Context) (gtState, error) {
+func gtStateQuery(ctx context.Context, prefix string) (gtState, error) {
 	out, err := render.RunCLI(ctx, "gt", []string{"state"})
 	if err != nil {
-		return nil, fmt.Errorf("ship: gt state: %w", err)
+		return nil, fmt.Errorf("%s: gt state: %w", prefix, err)
 	}
 	var state gtState
 	if err := json.Unmarshal([]byte(out), &state); err != nil {
-		return nil, fmt.Errorf("ship: parse gt state: %w", err)
+		return nil, fmt.Errorf("%s: parse gt state: %w", prefix, err)
 	}
 	return state, nil
 }
 
 // gtTrunkBranch returns the one branch state marks Trunk.
-func gtTrunkBranch(state gtState) (string, error) {
+func gtTrunkBranch(prefix string, state gtState) (string, error) {
 	for name, s := range state {
 		if s.Trunk {
 			return name, nil
 		}
 	}
-	return "", errors.New("ship: gt state named no trunk branch")
+	return "", fmt.Errorf("%s: gt state named no trunk branch", prefix)
 }
 
 // gtDownstack walks branch to trunk via each entry's first parent, returning
-// every branch visited (branch first), excluding trunk. It errors on a
-// missing parent or a cycle — corrupt or unresolvable gt metadata.
-func gtDownstack(state gtState, branch, trunk string) ([]string, error) {
+// every branch visited (branch first), excluding trunk.
+func gtDownstack(prefix string, state gtState, branch, trunk string) ([]string, error) {
 	var chain []string
 	seen := make(map[string]bool)
 	cur := branch
 	for cur != trunk {
 		if seen[cur] {
-			return nil, fmt.Errorf("ship: gt state parent chain cycles at %s", cur)
+			return nil, fmt.Errorf("%s: gt state parent chain cycles at %s", prefix, cur)
 		}
 		seen[cur] = true
 		chain = append(chain, cur)
 		s, ok := state[cur]
-		if !ok || len(s.Parents) == 0 {
-			return nil, fmt.Errorf("ship: gt state has no parent for %s", cur)
+		switch {
+		case ok && len(s.Parents) > 0:
+			cur = s.Parents[0].Ref
+		case cur == branch:
+			return nil, fmt.Errorf("%s: %w", prefix, &errGTUntracked{Branch: cur})
+		default:
+			return nil, fmt.Errorf("%s: gt state has no parent for %s, an ancestor of %s — the stack is unresolvable; run gt track %s, or gt restack", prefix, cur, branch, cur)
 		}
-		cur = s.Parents[0].Ref
 	}
 	return chain, nil
 }
 
 // stackBranches lists the current downstack chain — current branch first, up
 // to (excluding) trunk — or nil when the current branch is trunk.
-func stackBranches(ctx context.Context) ([]string, error) {
+func stackBranches(ctx context.Context, prefix string) ([]string, error) {
 	branch, err := gitCurrentBranch(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if branch == "" {
-		return nil, errors.New("ship: detached HEAD; no stack to resolve")
+		return nil, fmt.Errorf("%s: detached HEAD; no stack to resolve", prefix)
 	}
-	state, err := gtStateQuery(ctx)
+	state, err := gtStateQuery(ctx, prefix)
 	if err != nil {
 		return nil, err
 	}
-	trunk, err := gtTrunkBranch(state)
+	trunk, err := gtTrunkBranch(prefix, state)
 	if err != nil {
 		return nil, err
 	}
 	if branch == trunk {
 		return nil, nil
 	}
-	return gtDownstack(state, branch, trunk)
+	return gtDownstack(prefix, state, branch, trunk)
 }
 
 // shipPreflightGT resolves the branch decision and validates the current branch
@@ -126,11 +134,11 @@ func shipPreflightGT(ctx context.Context, l lane, o shipOpts) (branchPlan, strin
 	if err != nil {
 		return branchPlan{}, "", err
 	}
-	state, err := gtStateQuery(ctx)
+	state, err := gtStateQuery(ctx, "ship")
 	if err != nil {
 		return branchPlan{}, "", err
 	}
-	trunk, err := gtTrunkBranch(state)
+	trunk, err := gtTrunkBranch("ship", state)
 	if err != nil {
 		return branchPlan{}, "", err
 	}
@@ -142,7 +150,7 @@ func shipPreflightGT(ctx context.Context, l lane, o shipOpts) (branchPlan, strin
 				return branchPlan{}, "", err
 			}
 		}
-		chain, err := gtDownstack(state, branch, trunk)
+		chain, err := gtDownstack("ship", state, branch, trunk)
 		if err != nil {
 			return branchPlan{}, "", err
 		}
@@ -183,7 +191,7 @@ func gtTrack(ctx context.Context, o shipOpts, branch string) (gtState, string, e
 	if _, err := render.RunCLI(ctx, "gt", argv); err != nil {
 		return nil, "", untracked
 	}
-	state, err := gtStateQuery(ctx)
+	state, err := gtStateQuery(ctx, "ship")
 	if err != nil {
 		return nil, "", err
 	}
@@ -378,36 +386,34 @@ func classifyGTSubmit(err error) error {
 // touch more than the current branch runs --dry-run first ("Reports the PRs
 // that would be submitted and terminates") and names every branch it will
 // publish in the report.
-func shipPushGT(ctx context.Context, o shipOpts, branch string) (string, error) {
-	state, err := gtStateQuery(ctx)
+func shipPushGT(ctx context.Context, root string, o shipOpts, meta map[string]prMeta, branch string) (submitted string, bodyless []string, err error) {
+	state, err := gtStateQuery(ctx, "ship")
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	trunk, err := gtTrunkBranch(state)
+	trunk, err := gtTrunkBranch("ship", state)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	var chain []string
 	if branch != trunk {
-		if chain, err = gtDownstack(state, branch, trunk); err != nil {
-			return "", err
+		if chain, err = gtDownstack("ship", state, branch, trunk); err != nil {
+			return "", nil, err
 		}
 	}
 	if len(chain) > 1 {
 		if _, err := render.RunCLI(ctx, "gt", []string{"submit", "--dry-run", "--no-interactive"}); err != nil {
-			return "", classifyGTSubmit(err)
+			return "", nil, classifyGTSubmit(err)
 		}
 	}
 	if _, err := render.RunCLI(ctx, "gt", gtSubmitArgv(o)); err != nil {
-		return "", classifyGTSubmit(err)
+		return "", nil, classifyGTSubmit(err)
 	}
-	return gtPRSegment(ctx, branch, chain), nil
+	submitted, bodyless = gtPRSegment(ctx, root, branch, chain, meta)
+	return submitted, bodyless, nil
 }
 
-// gtPRSegment resolves branch's PR via gh (non-fatal when gh is missing or
-// the lookup fails) and formats the report segment, naming every branch the
-// submit published when the stack is deeper than one.
-func gtPRSegment(ctx context.Context, branch string, chain []string) string {
+func gtPRSegment(ctx context.Context, root, branch string, chain []string, meta map[string]prMeta) (submitted string, bodyless []string) {
 	stack := ""
 	if len(chain) > 1 {
 		names := make([]string, len(chain))
@@ -416,20 +422,17 @@ func gtPRSegment(ctx context.Context, branch string, chain []string) string {
 		}
 		stack = fmt.Sprintf(" (stack of %d: %s)", len(chain), strings.Join(names, ", "))
 	}
-	base := "submitted " + branch
-	if _, err := exec.LookPath("gh"); err != nil {
-		return base + stack
+	submitted = "submitted " + branch + stack
+	for _, entry := range infoDownstack(ctx, root, chain) {
+		if entry.PR == 0 {
+			continue
+		}
+		if entry.Branch == branch {
+			submitted = fmt.Sprintf("submitted %s → PR #%d %s%s", branch, entry.PR, entry.URL, stack)
+		}
+		if !entry.HasBody && !meta[entry.Branch].writesBody() {
+			bodyless = append(bodyless, fmt.Sprintf("bodyless PR #%d %s", entry.PR, entry.Branch))
+		}
 	}
-	out, err := render.RunCLI(ctx, "gh", []string{"pr", "view", branch, "--json", "number,url"})
-	if err != nil {
-		return base + stack
-	}
-	var pr struct {
-		Number int    `json:"number"`
-		URL    string `json:"url"`
-	}
-	if err := json.Unmarshal([]byte(out), &pr); err != nil {
-		return base + stack
-	}
-	return fmt.Sprintf("%s → PR #%d %s%s", base, pr.Number, pr.URL, stack)
+	return submitted, bodyless
 }

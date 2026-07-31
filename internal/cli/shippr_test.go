@@ -215,7 +215,7 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"gt", "state"},
 		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
-		{"gh", "pr", "view", "feature", "--json", "number,url"},
+		{"gh", "pr", "view", "feature", "--json", "number,url,body"},
 		{"git", "branch", "--show-current"},
 		{"gt", "state"},
 		{"gh", "pr", "view", "feature", "--json", "number,url,body"},
@@ -258,7 +258,9 @@ func TestShipPRGTBackfill(t *testing.T) {
 		}
 	}
 	assertInvocations(t, pr, [][]string{
-		{"gh", "pr", "view", "feature2", "--json", "number,url"},
+		{"gh", "pr", "view", "base", "--json", "number,url,body"},
+		{"gh", "pr", "view", "feature", "--json", "number,url,body"},
+		{"gh", "pr", "view", "feature2", "--json", "number,url,body"},
 		{"gh", "pr", "view", "base", "--json", "number,url,body"},
 		{"gh", "pr", "view", "feature", "--json", "number,url,body"},
 		{"gh", "pr", "view", "feature2", "--json", "number,url,body"},

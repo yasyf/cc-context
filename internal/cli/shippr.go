@@ -32,9 +32,14 @@ type prState struct {
 // prMeta is the caller's stated pull request metadata; an unset field is never
 // written, so a re-ship that passes neither leaves a human's edits alone.
 type prMeta struct {
-	title    string
-	bodyPath string // materialized: a real path, never "-"
-	draft    *bool  // nil unless --draft/--publish was explicitly Changed
+	title     string
+	bodyPath  string // materialized: a real path, never "-"
+	bodyBlank bool   // bodyPath holds nothing but whitespace
+	draft     *bool  // nil unless --draft/--publish was explicitly Changed
+}
+
+func (m prMeta) writesBody() bool {
+	return m.bodyPath != "" && !m.bodyBlank
 }
 
 // stated names the fields this invocation restated, in report order. No stated
@@ -91,23 +96,25 @@ func resolvePRMeta(cmd *cobra.Command, o shipOpts, tip string) (map[string]prMet
 		if entry.bodyPath != "" {
 			return nil, cleanup, fmt.Errorf("ship: --pr-body-file given twice for branch %s", branch)
 		}
-		switch {
-		case path != prBodyStdin:
-			if _, err := os.Stat(path); err != nil {
-				return nil, cleanup, fmt.Errorf("ship: --pr-body-file %s: %w", path, err)
+		if path == prBodyStdin {
+			switch {
+			case stdinTaken:
+				return nil, cleanup, errors.New(`ship: only one --pr-body-file may read stdin ("-")`)
+			case !stdinPiped(cmd):
+				return nil, cleanup, errors.New(`ship: --pr-body-file - reads the body from stdin, which is a terminal — pipe the body in or pass a path`)
 			}
-		case stdinTaken:
-			return nil, cleanup, errors.New(`ship: only one --pr-body-file may read stdin ("-")`)
-		case !stdinPiped(cmd):
-			return nil, cleanup, errors.New(`ship: --pr-body-file - reads the body from stdin, which is a terminal — pipe the body in or pass a path`)
-		default:
 			tmp, remove, err := materializeStdin(cmd.InOrStdin())
 			if err != nil {
 				return nil, cleanup, err
 			}
 			path, cleanup, stdinTaken = tmp, remove, true
 		}
+		body, err := os.ReadFile(path) //nolint:gosec // the caller names the body file
+		if err != nil {
+			return nil, cleanup, fmt.Errorf("ship: --pr-body-file %s: %w", path, err)
+		}
 		entry.bodyPath = path
+		entry.bodyBlank = strings.TrimSpace(string(body)) == ""
 		meta[branch] = entry
 	}
 
@@ -299,18 +306,18 @@ func shipPRGT(ctx context.Context, l lane, nwo string, meta map[string]prMeta) (
 	if err != nil {
 		return "", err
 	}
-	state, err := gtStateQuery(ctx)
+	state, err := gtStateQuery(ctx, "ship")
 	if err != nil {
 		return "", err
 	}
-	trunk, err := gtTrunkBranch(state)
+	trunk, err := gtTrunkBranch("ship", state)
 	if err != nil {
 		return "", err
 	}
 	if branch == "" || branch == trunk {
 		return "", nil
 	}
-	chain, err := gtDownstack(state, branch, trunk)
+	chain, err := gtDownstack("ship", state, branch, trunk)
 	if err != nil {
 		return "", err
 	}

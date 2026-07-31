@@ -39,6 +39,7 @@ exit 0
   "git fetch")
     if [ -n "$RESTACK_JJ_FETCH_FAIL" ]; then printf 'jj fetch failed\n' >&2; exit 1; fi ;;
   "log -r")
+    if [ -n "$RESTACK_JJ_LOG_FAIL" ]; then printf 'jj log failed\n' >&2; exit 1; fi
     case "$3" in
       "trunk()") printf '%s' "${RESTACK_JJ_TRUNK_NAMES:-main}" ;;
       "trunk() & ::@")
@@ -336,6 +337,40 @@ func TestRestackGTFailures(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestRestackHelperFailuresCarryRestackPrefix(t *testing.T) {
+	t.Run("gt lane", func(t *testing.T) {
+		setupRestack(t, ".git", true, true)
+		t.Setenv("RESTACK_GT_STATE", "not json")
+
+		_, _, err := runRestackCmd(t)
+		if err == nil {
+			t.Fatal("restack succeeded on unparseable gt state, want failure")
+		}
+		if !strings.HasPrefix(err.Error(), "restack: parse gt state:") {
+			t.Errorf("error = %v, want it to lead with restack's own prefix", err)
+		}
+		if strings.Contains(err.Error(), "ship:") {
+			t.Errorf("error = %v, want restack's prefix, not ship's", err)
+		}
+	})
+
+	t.Run("jj lane", func(t *testing.T) {
+		setupRestack(t, ".jj", false, false)
+		t.Setenv("RESTACK_JJ_LOG_FAIL", "1")
+
+		_, _, err := runRestackCmd(t)
+		if err == nil {
+			t.Fatal("restack succeeded on a failed jj log, want failure")
+		}
+		if !strings.HasPrefix(err.Error(), "restack: jj trunk bookmark:") {
+			t.Errorf("error = %v, want it to lead with restack's own prefix", err)
+		}
+		if strings.Contains(err.Error(), "ship:") {
+			t.Errorf("error = %v, want restack's prefix, not ship's", err)
+		}
+	})
 }
 
 func TestRestackGraphiteFirst(t *testing.T) {

@@ -101,7 +101,12 @@ Error: Failed to push some bookmarks}" >&2
       if [ -n "$JJ_DESCRIBE_MARKER" ]; then printf 'x' >> "$JJ_DESCRIBE_MARKER"; fi
       printf '%s\n%s' 'a1b2c3d' 'fix: frobnicate'
     fi ;;
-  *remote_bookmarks*) printf '%s' "${JJ_TRUNK_NAMES-main main}" ;;
+  *remote_bookmarks*)
+    # JJ_TRUNK_NAMES_FILTERED answers the template that drops the @git
+    # pseudo-remote, so a test can tell the two templates apart.
+    names=${JJ_TRUNK_NAMES-main main}
+    case "$*" in *'!= "git"'*) names=${JJ_TRUNK_NAMES_FILTERED-$names} ;; esac
+    printf '%s' "$names" ;;
   *local_bookmarks*) if [ -z "$JJ_NO_BOOKMARK" ]; then printf '%s' "${JJ_BOOKMARK_NAMES:-main}"; fi ;;
   *commit_id*)
     if [ -n "$JJ_COMMIT_ID_FAIL" ]; then printf 'jj: commit id unavailable\n' >&2; exit 1; fi
@@ -3041,14 +3046,14 @@ func TestShipJJNonTrunkBookmarkPushesItself(t *testing.T) {
 
 func TestShipJJMultipleNearestBookmarksFails(t *testing.T) {
 	log := setupShip(t, ".jj", true)
-	t.Setenv("JJ_BOOKMARK_NAMES", "main other")
+	t.Setenv("JJ_BOOKMARK_NAMES", "feat-a feat-b")
 
 	_, err := runShipCmd(t, "-m", "fix: frobnicate")
 	if err == nil {
 		t.Fatal("expected error when several bookmarks are nearest, got nil")
 	}
-	if !strings.Contains(err.Error(), "multiple nearest bookmarks") {
-		t.Errorf("error = %v, want it to mention multiple nearest bookmarks", err)
+	if !strings.Contains(err.Error(), "multiple nearest bookmarks feat-a, feat-b (trunk main is not among them)") {
+		t.Errorf("error = %v, want it to name every candidate and the trunk none of them is", err)
 	}
 	invocations := readInvocations(t, log)
 	assertInvocations(t, invocations, [][]string{
@@ -3058,24 +3063,90 @@ func TestShipJJMultipleNearestBookmarksFails(t *testing.T) {
 	assertNoShipMutation(t, invocations)
 }
 
+func TestShipJJNearestBookmarksResolve(t *testing.T) {
+	t.Run("trunk among the candidates wins, and the report says so", func(t *testing.T) {
+		setupShip(t, ".jj", true)
+		t.Setenv("JJ_BOOKMARK_NAMES", "feat-a main feat-b")
+
+		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		want := `bookmark main (trunk, chosen over feat-a, feat-b) · committed a1b2c3d "fix: frobnicate" · pushed main → origin`
+		if got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("--branch naming a candidate picks it", func(t *testing.T) {
+		log := setupShip(t, ".jj", true)
+		t.Setenv("JJ_BOOKMARK_NAMES", "feat-a feat-b")
+
+		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--branch", "feat-b")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		want := `committed a1b2c3d "fix: frobnicate" · pushed feat-b → origin`
+		if got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+		for _, inv := range readInvocations(t, log) {
+			if inv[0] == "jj" && inv[1] == "git" && inv[2] == "push" && inv[len(inv)-1] != "exact:feat-b" {
+				t.Errorf("push argv = %v, want it to target exact:feat-b", inv)
+			}
+		}
+	})
+
+	t.Run("--branch naming a bookmark elsewhere retracts the trunk segment", func(t *testing.T) {
+		setupShip(t, ".jj", true)
+		t.Setenv("JJ_BOOKMARK_NAMES", "main feat-a")
+
+		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--branch", "other")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		want := `committed a1b2c3d "fix: frobnicate" · pushed other → origin`
+		if got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+	})
+}
+
 // TestShipJJAmbiguousTrunkFails proves several trunk candidates are refused,
 // listing them: that is genuine ambiguity, not something to guess at.
 func TestShipJJAmbiguousTrunkFails(t *testing.T) {
-	log := setupShip(t, ".jj", true)
-	t.Setenv("JJ_TRUNK_NAMES", "main dev")
+	t.Run("two real remotes refuse", func(t *testing.T) {
+		log := setupShip(t, ".jj", true)
+		t.Setenv("JJ_TRUNK_NAMES", "main dev")
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate")
-	if err == nil {
-		t.Fatal("expected error when trunk is ambiguous, got nil")
-	}
-	if !strings.Contains(err.Error(), `cannot resolve the trunk bookmark from ["main" "dev"]`) {
-		t.Errorf("error = %v, want it to list both candidates", err)
-	}
-	invocations := readInvocations(t, log)
-	assertInvocations(t, invocations, [][]string{
-		{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		_, err := runShipCmd(t, "-m", "fix: frobnicate")
+		if err == nil {
+			t.Fatal("expected error when trunk is ambiguous, got nil")
+		}
+		if !strings.Contains(err.Error(), `cannot resolve the trunk bookmark from ["main" "dev"]`) {
+			t.Errorf("error = %v, want it to list both candidates", err)
+		}
+		invocations := readInvocations(t, log)
+		assertInvocations(t, invocations, [][]string{
+			{"jj", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
+		})
+		assertNoShipMutation(t, invocations)
 	})
-	assertNoShipMutation(t, invocations)
+
+	t.Run("a local branch resting on trunk is not a candidate", func(t *testing.T) {
+		setupShip(t, ".jj", true)
+		t.Setenv("JJ_TRUNK_NAMES", "main feat-x")
+		t.Setenv("JJ_TRUNK_NAMES_FILTERED", "main")
+
+		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		want := `committed a1b2c3d "fix: frobnicate" · pushed main → origin`
+		if got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+	})
 }
 
 // TestShipJJAmbiguousTrunkBranch proves --branch settles several trunk
@@ -3848,12 +3919,14 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 		branch    string
 		stateJSON string
 		dryRun    bool
+		prViews   []string
 		wantSeg   string
 	}{
 		{
 			name:      "depth 1",
 			branch:    "feature",
 			stateJSON: `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`,
+			prViews:   []string{"feature"},
 			wantSeg:   "submitted feature → PR #7 https://github.com/x/pull/7",
 		},
 		{
@@ -3862,6 +3935,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			stateJSON: `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},` +
 				`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`,
 			dryRun:  true,
+			prViews: []string{"feature", "feature2"},
 			wantSeg: "submitted feature2 → PR #7 https://github.com/x/pull/7 (stack of 2: feature, feature2)",
 		},
 	}
@@ -3872,7 +3946,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			t.Setenv("GT_STATE_JSON", tt.stateJSON)
 			t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
 			t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewSuccess)
-			t.Setenv("GH_PR_VIEW_JSON", `{"number":7,"url":"https://github.com/x/pull/7"}`)
+			t.Setenv("GH_PR_VIEW_JSON", `{"number":7,"url":"https://github.com/x/pull/7","body":"why"}`)
 			shipCIPollInterval = 0
 
 			got, err := runShipCmd(t, "-m", "fix: frobnicate")
@@ -3898,10 +3972,12 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			if tt.dryRun {
 				want = append(want, []string{"gt", "submit", "--dry-run", "--no-interactive"})
 			}
+			want = append(want, []string{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"})
+			for _, b := range tt.prViews {
+				want = append(want, []string{"gh", "pr", "view", b, "--json", "number,url,body"})
+			}
 			assertInvocations(t, readInvocations(t, log), append(
 				want,
-				[]string{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
-				[]string{"gh", "pr", "view", tt.branch, "--json", "number,url"},
 				[]string{"git", "rev-parse", "HEAD"},
 				ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
 			))
@@ -3920,7 +3996,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 	t.Setenv("GT_STATE_JSON_MARKER", filepath.Join(t.TempDir(), "gt-state"))
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
 	t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewSuccess)
-	t.Setenv("GH_PR_VIEW_JSON", `{"number":9,"url":"https://github.com/x/pull/9"}`)
+	t.Setenv("GH_PR_VIEW_JSON", `{"number":9,"url":"https://github.com/x/pull/9","body":"why"}`)
 	shipCIPollInterval = 0
 
 	got, err := runShipCmd(t, "-m", "fix: frobnicate")
@@ -3942,9 +4018,77 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"gt", "state"},
 		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
-		{"gh", "pr", "view", "fix-frobnicate", "--json", "number,url"},
+		{"gh", "pr", "view", "fix-frobnicate", "--json", "number,url,body"},
 		{"git", "rev-parse", "HEAD"},
 		ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
+	})
+}
+
+func TestShipGTBodylessPR(t *testing.T) {
+	t.Run("a bodyless submit is reported", func(t *testing.T) {
+		setupShipGT(t, true)
+		t.Setenv("GH_PR_VIEW_JSON", `{"number":7,"url":"https://github.com/x/pull/7","body":"  "}`)
+
+		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #7 https://github.com/x/pull/7 · bodyless PR #7 feature`
+		if got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a body this ship writes settles it", func(t *testing.T) {
+		setupShipGT(t, true)
+		seedPRViews(t, map[string]string{"feature": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`})
+		body := writePRBody(t, "body.md", "why this change\n")
+
+		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #7 https://github.com/x/pull/7 · set PR #7 body`
+		if got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("an empty body file settles nothing", func(t *testing.T) {
+		setupShipGT(t, true)
+		seedPRViews(t, map[string]string{"feature": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`})
+		body := writePRBody(t, "empty.md", "  \n\t\n")
+
+		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #7 https://github.com/x/pull/7 · ` +
+			`set PR #7 body · bodyless PR #7 feature`
+		if got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a bodyless downstack under a bodied tip is named too", func(t *testing.T) {
+		setupShipGT(t, true)
+		t.Setenv("GIT_BRANCH", "feature2")
+		t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
+			`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
+		seedPRViews(t, map[string]string{
+			"feature":  `{"number":6,"url":"https://github.com/x/pull/6","body":""}`,
+			"feature2": `{"number":7,"url":"https://github.com/x/pull/7","body":"why"}`,
+		})
+
+		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		want := `committed a1b2c3d "fix: frobnicate" · submitted feature2 → PR #7 https://github.com/x/pull/7 ` +
+			`(stack of 2: feature, feature2) · bodyless PR #6 feature`
+		if got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
 	})
 }
 
@@ -4823,9 +4967,7 @@ func TestShipReviewsWiring(t *testing.T) {
 				prViewBranches = append(prViewBranches, inv[3])
 			}
 		}
-		// gtPRSegment resolves feature2 first, then shipWatchReviews resolves the
-		// whole downstack, feature2 first.
-		want := []string{"feature2", "feature2", "feature"}
+		want := []string{"feature", "feature2", "feature2", "feature"}
 		if !reflect.DeepEqual(prViewBranches, want) {
 			t.Errorf("gh pr view branches = %v, want %v", prViewBranches, want)
 		}

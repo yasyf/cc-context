@@ -51,6 +51,7 @@ type graphiteInfo struct {
 	Version   string `json:"version,omitempty"`
 	Reachable string `json:"reachable,omitempty"`
 	Reason    string `json:"reason,omitempty"`
+	Untracked bool   `json:"untracked,omitempty"`
 }
 
 // stackEntry is one branch in the graphite downstack and the pull request it
@@ -189,11 +190,11 @@ func infoGT(ctx context.Context, l lane, info *vcsInfo) error {
 	if err := infoGitBranch(ctx, l.root, info); err != nil {
 		return err
 	}
-	state, err := gtStateQuery(ctx)
+	state, err := gtStateQuery(ctx, "info")
 	if err != nil {
 		return err
 	}
-	trunk, err := gtTrunkBranch(state)
+	trunk, err := gtTrunkBranch("info", state)
 	if err != nil {
 		return err
 	}
@@ -204,7 +205,12 @@ func infoGT(ctx context.Context, l lane, info *vcsInfo) error {
 	if info.Branch == "" || info.Branch == trunk {
 		return nil
 	}
-	chain, err := gtDownstack(state, info.Branch, trunk)
+	chain, err := gtDownstack("info", state, info.Branch, trunk)
+	var untracked *errGTUntracked
+	if errors.As(err, &untracked) {
+		info.Graphite.Untracked = true
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -232,12 +238,12 @@ func infoGit(ctx context.Context, l lane, info *vcsInfo) error {
 // revset shipPreflightJJ resolves — and the trunk bookmark, which is empty
 // unless it resolves to exactly one name.
 func infoJJ(ctx context.Context, l lane, info *vcsInfo) error {
-	names, err := jjBookmarkNames(ctx, jjNearestBookmarkRevset)
+	names, err := jjBookmarkNames(ctx, "info", jjNearestBookmarkRevset)
 	if err != nil {
 		return err
 	}
 	info.Branch = strings.Join(names, " ")
-	trunkNames, err := jjTrunkBookmarkNames(ctx)
+	trunkNames, err := jjTrunkBookmarkNames(ctx, "info")
 	if err != nil {
 		return err
 	}
@@ -363,7 +369,7 @@ func renderVcsInfo(info vcsInfo) string {
 	}
 	line("dirty", infoDirtyValue(info))
 	if info.Graphite.Config {
-		line("graphite", infoGraphiteValue(info.Graphite))
+		line("graphite", infoGraphiteValue(info.Graphite, info.Trunk))
 	}
 	switch {
 	case info.GitHub != nil:
@@ -391,7 +397,7 @@ func infoDirtyValue(info vcsInfo) string {
 	return fmt.Sprintf("yes (%d %s)", info.DirtyFiles, noun)
 }
 
-func infoGraphiteValue(g graphiteInfo) string {
+func infoGraphiteValue(g graphiteInfo, trunk string) string {
 	segs := []string{"config live"}
 	if g.CLI {
 		seg := "gt"
@@ -407,6 +413,9 @@ func infoGraphiteValue(g graphiteInfo) string {
 		segs = append(segs, "unreachable")
 	case gtVerdictUnknown:
 		segs = append(segs, "reachability unknown ("+g.Reason+")")
+	}
+	if g.Untracked {
+		segs = append(segs, "branch untracked (gt track --parent "+trunk+")")
 	}
 	return strings.Join(segs, shipSep)
 }

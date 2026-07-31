@@ -33,7 +33,9 @@ const (
 	jjNearestBookmarkRevset = "heads(::@ & bookmarks())"
 	jjDescribeTemplate      = `commit_id.short() ++ "\n" ++ description.first_line()`
 	jjBookmarkTemplate      = `local_bookmarks.map(|b| b.name()).join(" ") ++ " "`
-	jjTrunkBookmarkTemplate = `remote_bookmarks.map(|b| b.name()).join(" ") ++ " "`
+	// jj exposes every local git ref of a colocated repo as <name>@git, which an
+	// unfiltered remote_bookmarks would make a trunk candidate of.
+	jjTrunkBookmarkTemplate = `remote_bookmarks.filter(|b| b.remote() != "git").map(|b| b.name()).join(" ") ++ " "`
 
 	// jjRemoteBookmarkTemplate emits one "remote<TAB>tracked|untracked" line per
 	// entry of jj bookmark list <name> --all-remotes. Filtering the list to the
@@ -321,8 +323,9 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	var remote string
 	var rebased int
 	var prSeg string
+	var bodylessSegs []string
 	if gtLane {
-		prSeg, err = shipPushGT(ctx, o, branch)
+		prSeg, bodylessSegs, err = shipPushGT(ctx, root, o, meta, branch)
 	} else {
 		remote, rebased, err = shipPush(ctx, kind, o, branch, preAmendSHA)
 	}
@@ -352,11 +355,12 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 			segments = append(segments, seg)
 		}
 	}
+	segments = append(segments, bodylessSegs...)
 
 	var reviewBranches []string
 	if o.reviews {
 		if gtLane {
-			reviewBranches, err = stackBranches(ctx)
+			reviewBranches, err = stackBranches(ctx, "ship")
 			if err != nil {
 				return err
 			}
@@ -684,8 +688,7 @@ func shipResolvePlan(ctx context.Context, l lane, o shipOpts) (branchPlan, strin
 	}
 	switch l.kind {
 	case vcs.JJ:
-		plan, err := shipPreflightJJ(ctx, l, o)
-		return plan, "", err
+		return shipPreflightJJ(ctx, l, o)
 	case vcs.Git:
 		plan, err := shipPreflightGitLane(ctx, l, o)
 		return plan, "", err
@@ -694,10 +697,10 @@ func shipResolvePlan(ctx context.Context, l lane, o shipOpts) (branchPlan, strin
 	}
 }
 
-func shipPreflightJJ(ctx context.Context, l lane, o shipOpts) (branchPlan, error) {
-	trunkNames, err := jjTrunkBookmarkNames(ctx)
+func shipPreflightJJ(ctx context.Context, l lane, o shipOpts) (branchPlan, string, error) {
+	trunkNames, err := jjTrunkBookmarkNames(ctx, "ship")
 	if err != nil {
-		return branchPlan{}, err
+		return branchPlan{}, "", err
 	}
 	trunk := ""
 	switch {
@@ -709,20 +712,29 @@ func shipPreflightJJ(ctx context.Context, l lane, o shipOpts) (branchPlan, error
 	case len(trunkNames) > 1 && slices.Contains(trunkNames, o.branch):
 		trunk = o.branch
 	case len(trunkNames) > 1:
-		return branchPlan{}, fmt.Errorf("ship: cannot resolve the trunk bookmark from %q; pass --branch naming one of them", trunkNames)
+		return branchPlan{}, "", fmt.Errorf("ship: cannot resolve the trunk bookmark from %q; pass --branch naming one of them", trunkNames)
 	}
 
-	names, err := jjBookmarkNames(ctx, jjNearestBookmarkRevset)
+	names, err := jjBookmarkNames(ctx, "ship", jjNearestBookmarkRevset)
 	if err != nil {
-		return branchPlan{}, err
+		return branchPlan{}, "", err
 	}
-	current := trunk
-	switch len(names) {
-	case 0:
-	case 1:
+	current, seg := trunk, ""
+	switch {
+	case len(names) == 1:
 		current = names[0]
-	default:
-		return branchPlan{}, fmt.Errorf("ship: multiple nearest bookmarks %q; pass --branch <name> to choose one", strings.Join(names, ", "))
+	case len(names) > 1 && slices.Contains(names, o.branch):
+		current = o.branch
+	case len(names) > 1 && slices.Contains(names, trunk):
+		others := slices.DeleteFunc(slices.Clone(names), func(n string) bool { return n == trunk })
+		current = trunk
+		seg = fmt.Sprintf("bookmark %s (trunk, chosen over %s)", trunk, strings.Join(others, ", "))
+	case len(names) > 1:
+		aside := "no trunk bookmark resolves here"
+		if trunk != "" {
+			aside = fmt.Sprintf("trunk %s is not among them", trunk)
+		}
+		return branchPlan{}, "", fmt.Errorf("ship: multiple nearest bookmarks %s (%s); pass --branch <name> to choose one", strings.Join(names, ", "), aside)
 	}
 
 	// A --branch naming a bookmark that already exists is one ship appends to,
@@ -732,40 +744,40 @@ func shipPreflightJJ(ctx context.Context, l lane, o shipOpts) (branchPlan, error
 	if o.branch != "" {
 		heads, err := jjBookmarkHeads(ctx, o.branch)
 		if err != nil {
-			return branchPlan{}, err
+			return branchPlan{}, "", err
 		}
 		probed = true
 		if heads > 0 {
-			current = o.branch
+			current, seg = o.branch, ""
 		}
 	}
 
 	repo, err := shipTrunkRepo(ctx, l, o, current, trunk)
 	if err != nil {
-		return branchPlan{}, err
+		return branchPlan{}, "", err
 	}
 	plan, err := resolveBranchPlan(l, repo, o, current, trunk)
 	if err != nil {
-		return branchPlan{}, err
+		return branchPlan{}, "", err
 	}
 	// Only a push needs the target to resolve; a --no-push ship in a repository
 	// with no bookmark at all still commits, exactly as it did before.
 	if o.noPush || plan.action == branchCreate {
-		return plan, nil
+		return plan, seg, nil
 	}
 	if plan.name == "" {
-		return branchPlan{}, fmt.Errorf("ship: cannot resolve the trunk bookmark from %q; pass --branch <name>", trunkNames)
+		return branchPlan{}, "", fmt.Errorf("ship: cannot resolve the trunk bookmark from %q; pass --branch <name>", trunkNames)
 	}
 	if !probed || plan.name != o.branch {
 		heads, err := jjBookmarkHeads(ctx, plan.name)
 		if err != nil {
-			return branchPlan{}, err
+			return branchPlan{}, "", err
 		}
 		if heads == 0 {
-			return branchPlan{}, fmt.Errorf("ship: bookmark %q not found", plan.name)
+			return branchPlan{}, "", fmt.Errorf("ship: bookmark %q not found", plan.name)
 		}
 	}
-	return plan, nil
+	return plan, seg, nil
 }
 
 // jjBookmarkHeads counts the commits name resolves to. jj treats a bare NAMES
@@ -775,7 +787,7 @@ func shipPreflightJJ(ctx context.Context, l lane, o shipOpts) (branchPlan, error
 // Zero heads is a count, not an error — it is how ship tells "create it" from
 // "append to it" — so only a conflicted bookmark refuses here.
 func jjBookmarkHeads(ctx context.Context, name string) (int, error) {
-	heads, err := jjLogLines(ctx, fmt.Sprintf(`bookmarks(exact:%q)`, name))
+	heads, err := jjLogLines(ctx, "ship", fmt.Sprintf(`bookmarks(exact:%q)`, name))
 	if err != nil {
 		return 0, err
 	}
@@ -1018,7 +1030,7 @@ func shipPushJJOnce(ctx context.Context, target string, amend bool) (int, error)
 		return 0, fmt.Errorf("ship: jj git fetch: %w", err)
 	}
 
-	heads, err := jjLogLines(ctx, fmt.Sprintf(`bookmarks(exact:%q)`, target))
+	heads, err := jjLogLines(ctx, "ship", fmt.Sprintf(`bookmarks(exact:%q)`, target))
 	if err != nil {
 		return 0, err
 	}
@@ -1029,7 +1041,7 @@ func shipPushJJOnce(ctx context.Context, target string, amend bool) (int, error)
 		return 0, fmt.Errorf("ship: bookmark %q is conflicted (%d heads); resolve it (jj bookmark list --conflicted) before shipping", target, len(heads))
 	}
 
-	ancestors, err := jjBookmarkNames(ctx, fmt.Sprintf(jjAncestorRevsetFmt, target))
+	ancestors, err := jjBookmarkNames(ctx, "ship", fmt.Sprintf(jjAncestorRevsetFmt, target))
 	if err != nil {
 		return 0, err
 	}
@@ -1251,18 +1263,18 @@ func gitRebaseFailure(ctx context.Context, remote, branch string, rebaseErr erro
 	return fmt.Errorf("ship: rebase onto %s/%s conflicts in: %s; aborted back to the pre-rebase state (%w) — resolve manually: git fetch %s && git rebase --autostash %s/%s, fix the conflicts (git status), then git push %s %s", remote, branch, conflicted, rebaseErr, remote, remote, branch, remote, branch)
 }
 
-func jjBookmarkNames(ctx context.Context, rev string) ([]string, error) {
+func jjBookmarkNames(ctx context.Context, prefix, rev string) ([]string, error) {
 	out, err := render.RunCLI(ctx, "jj", []string{"log", "-r", rev, "--no-graph", "-T", jjBookmarkTemplate})
 	if err != nil {
-		return nil, fmt.Errorf("ship: jj bookmarks at %q: %w", rev, err)
+		return nil, fmt.Errorf("%s: jj bookmarks at %q: %w", prefix, rev, err)
 	}
 	return strings.Fields(out), nil
 }
 
-func jjTrunkBookmarkNames(ctx context.Context) ([]string, error) {
+func jjTrunkBookmarkNames(ctx context.Context, prefix string) ([]string, error) {
 	out, err := render.RunCLI(ctx, "jj", []string{"log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate})
 	if err != nil {
-		return nil, fmt.Errorf("ship: jj trunk bookmark: %w", err)
+		return nil, fmt.Errorf("%s: jj trunk bookmark: %w", prefix, err)
 	}
 	var names []string
 	seen := map[string]bool{}
@@ -1275,10 +1287,10 @@ func jjTrunkBookmarkNames(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
-func jjLogLines(ctx context.Context, rev string) ([]string, error) {
+func jjLogLines(ctx context.Context, prefix, rev string) ([]string, error) {
 	out, err := render.RunCLI(ctx, "jj", []string{"log", "-r", rev, "--no-graph", "-T", jjStackLineTemplate})
 	if err != nil {
-		return nil, fmt.Errorf("ship: jj log %q: %w", rev, err)
+		return nil, fmt.Errorf("%s: jj log %q: %w", prefix, rev, err)
 	}
 	var lines []string
 	for _, line := range strings.Split(out, "\n") {
@@ -1302,7 +1314,7 @@ func jjOpID(ctx context.Context) (string, error) {
 }
 
 func jjRebaseOnto(ctx context.Context, target string) (int, error) {
-	stack, err := jjLogLines(ctx, fmt.Sprintf(jjStackRevsetFmt, target))
+	stack, err := jjLogLines(ctx, "ship", fmt.Sprintf(jjStackRevsetFmt, target))
 	if err != nil {
 		return 0, err
 	}
@@ -1320,7 +1332,7 @@ func jjRebaseOnto(ctx context.Context, target string) (int, error) {
 
 	// rebase -b @- rewrites every descendant of the stack, including siblings
 	// of @; check the whole rewritten set without including conflicts below it.
-	conflicts, err := jjLogLines(ctx, fmt.Sprintf(jjConflictRevsetFmt, target))
+	conflicts, err := jjLogLines(ctx, "ship", fmt.Sprintf(jjConflictRevsetFmt, target))
 	cleanup := context.WithoutCancel(ctx)
 	if err != nil {
 		_, uerr := render.RunCLI(cleanup, "jj", []string{"op", "revert", rebaseOp})

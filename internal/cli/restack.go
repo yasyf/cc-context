@@ -80,13 +80,13 @@ func runRestack(cmd *cobra.Command, o restackOpts) error {
 }
 
 func restackGT(ctx context.Context, errW io.Writer) (string, error) {
-	state, err := gtStateQuery(ctx)
+	state, err := gtStateQuery(ctx, "restack")
 	if err != nil {
-		return "", fmt.Errorf("restack: graphite state: %w", err)
+		return "", err
 	}
-	trunk, err := gtTrunkBranch(state)
+	trunk, err := gtTrunkBranch("restack", state)
 	if err != nil {
-		return "", fmt.Errorf("restack: graphite trunk: %w", err)
+		return "", err
 	}
 	beforeHead, beforeTrunk, err := gtRestackShas(ctx, trunk)
 	if err != nil {
@@ -149,9 +149,9 @@ func classifyGTRestack(err error) error {
 }
 
 func restackJJ(ctx context.Context) (string, error) {
-	trunkNames, err := jjTrunkBookmarkNames(ctx)
+	trunkNames, err := jjTrunkBookmarkNames(ctx, "restack")
 	if err != nil {
-		return "", fmt.Errorf("restack: resolve jj trunk bookmark: %w", err)
+		return "", err
 	}
 	if len(trunkNames) != 1 {
 		return "", fmt.Errorf("restack: cannot resolve the trunk bookmark from %q — configure trunk() to resolve one tracked bookmark", trunkNames)
@@ -161,9 +161,9 @@ func restackJJ(ctx context.Context) (string, error) {
 	if _, err := render.RunCLI(ctx, "jj", []string{"git", "fetch"}); err != nil {
 		return "", fmt.Errorf("restack: jj git fetch: %w", err)
 	}
-	ancestors, err := jjLogLines(ctx, jjRestackAncestorRevset)
+	ancestors, err := jjLogLines(ctx, "restack", jjRestackAncestorRevset)
 	if err != nil {
-		return "", fmt.Errorf("restack: inspect jj trunk ancestry: %w", err)
+		return "", err
 	}
 	if len(ancestors) > 0 {
 		return "fetched · already up to date", nil
@@ -177,9 +177,9 @@ func restackJJ(ctx context.Context) (string, error) {
 }
 
 func jjRestackOntoTrunk(ctx context.Context, trunk string) (int, error) {
-	stack, err := jjLogLines(ctx, jjRestackStackRevset)
+	stack, err := jjLogLines(ctx, "restack", jjRestackStackRevset)
 	if err != nil {
-		return 0, fmt.Errorf("restack: inspect jj stack: %w", err)
+		return 0, err
 	}
 	if len(stack) == 0 {
 		return 0, fmt.Errorf("restack: trunk %q is not an ancestor of @ but trunk()..@ is empty", trunk)
@@ -193,7 +193,7 @@ func jjRestackOntoTrunk(ctx context.Context, trunk string) (int, error) {
 		return 0, fmt.Errorf("restack: read jj rebase operation: %w", err)
 	}
 
-	conflicts, err := jjLogLines(ctx, jjRestackConflictRevset)
+	conflicts, err := jjLogLines(ctx, "restack", jjRestackConflictRevset)
 	cleanup := context.WithoutCancel(ctx)
 	if err != nil {
 		_, revertErr := render.RunCLI(cleanup, "jj", []string{"op", "revert", rebaseOp})

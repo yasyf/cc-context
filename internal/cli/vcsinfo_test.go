@@ -451,6 +451,57 @@ func TestVcsInfoDownstackBodies(t *testing.T) {
 	}
 }
 
+func TestVcsInfoUntrackedBranch(t *testing.T) {
+	setupShipGT(t, true)
+	infoFakes(t)
+	t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true}}`)
+
+	out, err := runVcsInfoCmd(t)
+	if err != nil {
+		t.Fatalf("info error = %v", err)
+	}
+	want := "config live · gt 1.8.6 · reachable · branch untracked (gt track --parent main)"
+	if got := infoLine(t, out, "graphite"); got != want {
+		t.Errorf("graphite = %q, want %q", got, want)
+	}
+	if strings.Contains(out, "downstack") {
+		t.Errorf("report names a downstack for an untracked branch:\n%s", out)
+	}
+}
+
+func TestVcsInfoBrokenAncestorChainFails(t *testing.T) {
+	setupShipGT(t, true)
+	infoFakes(t)
+	t.Setenv("GIT_BRANCH", "feature2")
+	t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true},"feature2":{"parents":[{"ref":"feature","sha":"bb"}]}}`)
+
+	out, err := runVcsInfoCmd(t)
+	if err == nil {
+		t.Fatalf("info succeeded on an unresolvable stack:\n%s", out)
+	}
+	want := "info: gt state has no parent for feature, an ancestor of feature2"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %v, want it to contain %q", err, want)
+	}
+	if strings.Contains(err.Error(), "ship:") {
+		t.Errorf("error = %v, want info's own prefix, not ship's", err)
+	}
+}
+
+func TestVcsInfoGTStateFailureCarriesInfoPrefix(t *testing.T) {
+	setupShipGT(t, true)
+	infoFakes(t)
+	t.Setenv("GT_STATE_JSON", "not json")
+
+	out, err := runVcsInfoCmd(t)
+	if err == nil {
+		t.Fatalf("info succeeded on unparseable gt state:\n%s", out)
+	}
+	if !strings.HasPrefix(err.Error(), "info: parse gt state:") {
+		t.Errorf("error = %v, want it to lead with info's own prefix", err)
+	}
+}
+
 // TestVcsInfoWarmCacheSkipsRepoView proves a seeded record answers the GitHub
 // lookup outright: info is an orientation call, not a network round trip.
 func TestVcsInfoWarmCacheSkipsRepoView(t *testing.T) {

@@ -246,7 +246,7 @@ func resolveStackReviewTargets(ctx context.Context, w io.Writer, since time.Time
 		}
 		return nil, errors.New("reviews: --stack requires a graphite repo")
 	}
-	branches, err := stackBranches(ctx)
+	branches, err := stackBranches(ctx, "reviews")
 	if err != nil {
 		return nil, err
 	}
