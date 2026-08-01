@@ -956,6 +956,7 @@ func TestBashFormatConvertsJSON(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("sh -c is POSIX-only")
 	}
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	cs := connectTestServer(t)
 	out, isErr := callText(t, cs, "BashFormat", map[string]any{
 		"command": []any{"sh", "-c", `printf '[{"a":1},{"a":2}]'`},
@@ -973,6 +974,7 @@ func TestBashFormatAutoFloorsToCompactJSON(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("sh -c is POSIX-only")
 	}
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	cs := connectTestServer(t)
 	out, isErr := callText(t, cs, "BashFormat", map[string]any{
 		"command": []any{"sh", "-c", `printf '[{"a": 1}, {"a": 2}]'`},
@@ -1003,6 +1005,7 @@ func TestBashFormatSurfacesStderrAndExit(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("sh -c is POSIX-only")
 	}
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	cs := connectTestServer(t)
 	out, isErr := callText(t, cs, "BashFormat", map[string]any{
 		"command": []any{"sh", "-c", `echo boom 1>&2; printf '[{"a":1}]'; exit 5`},
@@ -1023,6 +1026,7 @@ func TestBashFormatStderrOnSuccessIsNotAnError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("sh -c is POSIX-only")
 	}
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	cs := connectTestServer(t)
 	out, isErr := callText(t, cs, "BashFormat", map[string]any{
 		"command": []any{"sh", "-c", `echo warn 1>&2; printf '[{"a":1}]'`},

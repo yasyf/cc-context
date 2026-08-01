@@ -34,6 +34,7 @@ type corpusOpts struct {
 // expect_error/expect_passthrough where non-null. It mirrors corpus.rs, including
 // the two locked >2^53 policy skips (toon-go quotes; this port rejects).
 func TestCorpusThroughWASM(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	files, err := filepath.Glob(filepath.Join(corpusDir, "*.json"))
 	if err != nil {
 		t.Fatalf("glob corpus: %v", err)

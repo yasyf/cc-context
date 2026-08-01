@@ -12,6 +12,7 @@ import (
 // returning its stdout and the command error.
 func runFormat(t *testing.T, stdin string, args ...string) (string, error) {
 	t.Helper()
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	cmd := NewRootCmd()
 	var out bytes.Buffer
 	cmd.SetIn(strings.NewReader(stdin))

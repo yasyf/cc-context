@@ -17,6 +17,7 @@ func defaultOpts() Options {
 // survive TOON's float64 canonicalization, so the engine skips TOON and auto
 // falls through to a verbatim encoder that keeps every digit.
 func TestConvertAutoSkipsLossyTOON(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	const pi = "3.14159265358979323846264338"
 	var b strings.Builder
 	for i := range 400 {
@@ -35,6 +36,7 @@ func TestConvertAutoSkipsLossyTOON(t *testing.T) {
 }
 
 func TestConvertStrict(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	opts := Options{Format: FormatAuto, Indent: 2, Delimiter: DelimiterComma, Strict: true}
 	_, converted, err := Convert([]byte("not json"), opts)
 	if err == nil {
@@ -50,6 +52,7 @@ func TestConvertStrict(t *testing.T) {
 // non-JSON auto-mode input each return src verbatim with converted=false and no
 // error, so the wrapper never corrupts non-JSON stdout.
 func TestConvertPassthrough(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	tests := []struct {
 		name string
 		src  string
@@ -77,6 +80,7 @@ func TestConvertPassthrough(t *testing.T) {
 // TestConvertForcedShapeError pins the loud failure when a forced format cannot
 // represent the payload: an explicit format never falls back to passthrough.
 func TestConvertForcedShapeError(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	_, converted, err := Convert([]byte(`{"a":1}`), Options{Format: FormatCSV, Indent: 2, Delimiter: DelimiterComma})
 	if err == nil {
 		t.Fatal("Convert(csv on object): want error, got nil")
@@ -89,6 +93,7 @@ func TestConvertForcedShapeError(t *testing.T) {
 // TestConvertUnknownFormat pins the loud failure on a format name the engine
 // cannot parse.
 func TestConvertUnknownFormat(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	_, converted, err := Convert([]byte(`{"a":1}`), Options{Format: Format("bogus"), Indent: 2, Delimiter: DelimiterComma})
 	if err == nil {
 		t.Fatal("Convert(bogus format): want error, got nil")
@@ -99,6 +104,7 @@ func TestConvertUnknownFormat(t *testing.T) {
 }
 
 func TestRunConvertsStdout(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	out, converted, code, err := Run(
 		context.Background(),
 		[]string{"sh", "-c", `printf '[{"a":1},{"a":2}]'`},
@@ -120,6 +126,7 @@ func TestRunConvertsStdout(t *testing.T) {
 }
 
 func TestRunNonZeroExitCapturesStderr(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	var stderr bytes.Buffer
 	out, converted, code, err := Run(
 		context.Background(),
@@ -157,6 +164,7 @@ func TestRunSpawnFailure(t *testing.T) {
 }
 
 func TestRunForwardsStdin(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	in := strings.NewReader(`{"a":1}`)
 	out, converted, code, err := Run(
 		context.Background(),

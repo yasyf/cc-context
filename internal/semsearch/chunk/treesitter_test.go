@@ -3,11 +3,26 @@ package chunk
 import (
 	"context"
 	"encoding/binary"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/tetratelabs/wazero"
 )
+
+// TestMain points the wazero compilation cache at a fixed dir under os.TempDir
+// so the suite never writes the developer's real one. It has to be
+// process-scoped rather than per-test: loadTSEngine pins the dir it first saw
+// for the process lifetime, so a t.TempDir removed at its own test's end would
+// leave every later grammar compile writing into a deleted directory. The dir
+// is reused and never removed, so consecutive runs skip the ~8s cold compile of
+// every grammar; wazero keys entries by module content, CPU features, and its
+// own version, so a stale entry is never wrongly reused.
+func TestMain(m *testing.M) {
+	os.Setenv("CLAUDE_PLUGIN_DATA", filepath.Join(os.TempDir(), "cc-context-test-wasm-cache"))
+	os.Exit(m.Run())
+}
 
 // grammarSnippets is one small, valid program per required language.
 var grammarSnippets = map[string]string{
