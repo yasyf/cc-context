@@ -54,6 +54,14 @@ const (
 var (
 	shipCIPollTries    = 12
 	shipCIPollInterval = 5 * time.Second
+
+	// shipCIWatchTimeout is the runaway guard on one gh run watch, which blocks
+	// until the run concludes and so is legitimately slower than any generic
+	// default. This repo runs only GitHub-hosted runners, which cap a job at 6h and
+	// a whole run at 35 days, so 12h sits past twice the longest job that can run
+	// and far short of the run's own cap: a watch still blocked here is a hung gh,
+	// not a build.
+	shipCIWatchTimeout = 12 * time.Hour
 )
 
 // ansiRE matches CSI escape sequences (colour, cursor moves) so a captured log
@@ -1470,12 +1478,15 @@ func reportCIRuns(ctx context.Context, errW io.Writer, sha string, runs []ciRun,
 }
 
 // watchCIRun blocks until run id concludes, streaming gh's progress to errW on a
-// real terminal and otherwise buffering it away.
+// real terminal and otherwise buffering it away. The wait is bounded by
+// shipCIWatchTimeout, an explicit deadline render's generic guard defers to.
 func watchCIRun(ctx context.Context, errW io.Writer, id string) error {
+	watchCtx, cancel := context.WithTimeout(ctx, shipCIWatchTimeout)
+	defer cancel()
 	if shipStreamCI(errW) {
-		return render.RunCLIStream(ctx, "gh", []string{"run", "watch", id, "--exit-status", "--compact"}, errW)
+		return render.RunCLIStream(watchCtx, "gh", []string{"run", "watch", id, "--exit-status", "--compact"}, errW)
 	}
-	_, err := render.RunCLI(ctx, "gh", []string{"run", "watch", id, "--exit-status"})
+	_, err := render.RunCLI(watchCtx, "gh", []string{"run", "watch", id, "--exit-status"})
 	return err
 }
 

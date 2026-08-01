@@ -3947,6 +3947,55 @@ func TestShipCIStreamingSeam(t *testing.T) {
 	}
 }
 
+// TestWatchCIRunBounded drives both branches of the watch against a gh that never
+// concludes: each must carry shipCIWatchTimeout, since gh run watch blocks until
+// the run is over and so outlives any generic bound by design — and the default
+// must stay past GitHub's own 6h job ceiling, or a long green build reports as a
+// CI error.
+func TestWatchCIRunBounded(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell scripts are POSIX-only")
+	}
+	if shipCIWatchTimeout < 6*time.Hour {
+		t.Errorf("shipCIWatchTimeout = %s, want it past GitHub's 6h job ceiling", shipCIWatchTimeout)
+	}
+	tests := []struct {
+		name   string
+		stream bool
+	}{
+		{"buffered watch is bounded", false},
+		{"streaming watch is bounded", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			gh := filepath.Join(binDir, "gh")
+			if err := os.WriteFile(gh, []byte("#!/bin/sh\nsleep 30\n"), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
+				t.Fatalf("write fake gh: %v", err)
+			}
+			t.Setenv("PATH", binDir)
+
+			oldStream := shipStreamCI
+			t.Cleanup(func() { shipStreamCI = oldStream })
+			shipStreamCI = func(io.Writer) bool { return tt.stream }
+
+			oldTimeout := shipCIWatchTimeout
+			shipCIWatchTimeout = 100 * time.Millisecond
+			t.Cleanup(func() { shipCIWatchTimeout = oldTimeout })
+
+			start := time.Now()
+			err := watchCIRun(context.Background(), io.Discard, "42")
+			elapsed := time.Since(start)
+			if err == nil {
+				t.Fatal("watchCIRun = nil, want the bound to kill a watch that never concludes")
+			}
+			if elapsed > 10*time.Second {
+				t.Errorf("watchCIRun returned after %s; the watch outlived its bound", elapsed)
+			}
+		})
+	}
+}
+
 func TestCIDuration(t *testing.T) {
 	start := time.Date(2026, 7, 8, 18, 0, 0, 0, time.UTC)
 	tests := []struct {

@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -42,6 +43,94 @@ func TestRunCLIStream(t *testing.T) {
 			}
 			if w.String() != tt.want {
 				t.Errorf("streamed output = %q, want %q", w.String(), tt.want)
+			}
+		})
+	}
+}
+
+// TestRunCLIRunTimeout drives the runaway guard through runTimeout in
+// milliseconds: a child that would block for 30s must come back killed and named
+// as the deadline, not as an opaque signal exit; a caller's own deadline wins in
+// either direction — a tighter one is never misreported as the guard firing, and
+// a longer one lets the child run past runTimeout, which is the whole point of
+// ship's CI watch outliving any default bound.
+func TestRunCLIRunTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh to block")
+	}
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		parent  time.Duration // caller's own deadline; 0 leaves it unbounded
+		script  string        // sh -c body
+		wantOut string        // stdout of a child the bound let finish; "" expects a failure
+		want    string        // substring the error must carry
+		wantNot string        // substring the error must not carry
+	}{
+		{
+			name:    "a blocked child is killed and reported as the deadline",
+			timeout: 50 * time.Millisecond,
+			script:  "sleep 30",
+			want:    "/bin/sh did not finish within 50ms and was killed",
+		},
+		{
+			name:    "a caller's tighter deadline wins and is not read as the guard",
+			timeout: time.Minute,
+			parent:  50 * time.Millisecond,
+			script:  "sleep 30",
+			wantNot: "did not finish within",
+		},
+		{
+			name:    "a caller's longer deadline wins and the child outlives runTimeout",
+			timeout: 50 * time.Millisecond,
+			parent:  30 * time.Second,
+			script:  "sleep 1; printf concluded",
+			wantOut: "concluded",
+		},
+		{
+			name:    "a real failure still wraps the child's stderr",
+			timeout: time.Minute,
+			script:  "echo boom 1>&2; exit 3",
+			want:    "boom",
+			wantNot: "did not finish within",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			restore := runTimeout
+			runTimeout = tt.timeout
+			t.Cleanup(func() { runTimeout = restore })
+
+			ctx := context.Background()
+			if tt.parent > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, tt.parent)
+				defer cancel()
+			}
+
+			start := time.Now()
+			out, err := RunCLI(ctx, "/bin/sh", []string{"-c", tt.script})
+			elapsed := time.Since(start)
+			if tt.wantOut != "" {
+				if err != nil {
+					t.Fatalf("RunCLI err = %v, want the caller's %s deadline to let the child finish", err, tt.parent)
+				}
+				if out != tt.wantOut {
+					t.Errorf("RunCLI = %q, want %q", out, tt.wantOut)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("RunCLI = %q, want a failure", out)
+			}
+			if elapsed > 10*time.Second {
+				t.Errorf("RunCLI returned after %s; the child outlived its bound", elapsed)
+			}
+			if tt.want != "" && !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("RunCLI err = %v, want it to carry %q", err, tt.want)
+			}
+			if tt.wantNot != "" && strings.Contains(err.Error(), tt.wantNot) {
+				t.Errorf("RunCLI err = %v, want it not to carry %q", err, tt.wantNot)
 			}
 		})
 	}
