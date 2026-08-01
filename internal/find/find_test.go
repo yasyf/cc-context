@@ -22,6 +22,12 @@ func writeTree(t *testing.T, root string, files map[string]string) {
 	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o750); err != nil {
 		t.Fatal(err)
 	}
+	writeFiles(t, root, files)
+}
+
+// writeFiles materializes files under root without seeding a git root.
+func writeFiles(t *testing.T, root string, files map[string]string) {
+	t.Helper()
 	for rel, content := range files {
 		p := filepath.Join(root, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
@@ -30,6 +36,35 @@ func writeTree(t *testing.T, root string, files map[string]string) {
 		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// writeLinkedWorktree materializes a main checkout at root/main — its git dir
+// holding the shared info/exclude and the linked worktree's administrative dir,
+// whose commondir points back at it — plus the worktree tree at root/wt. The
+// caller writes the worktree's .git pointer file, since its target is what varies.
+func writeLinkedWorktree(t *testing.T, root, exclude string, files map[string]string) (wt, gitDir string) {
+	t.Helper()
+	main := filepath.Join(root, "main")
+	gitDir = filepath.Join(main, ".git", "worktrees", "wt")
+	writeFiles(t, main, map[string]string{
+		".git/info/exclude":           exclude,
+		".git/worktrees/wt/commondir": "../..\n",
+	})
+	wt = filepath.Join(root, "wt")
+	if err := os.MkdirAll(wt, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	writeFiles(t, wt, files)
+	return wt, gitDir
+}
+
+// writePointer writes the gitdir pointer file that stands in for .git in a linked
+// worktree.
+func writePointer(t *testing.T, wt, gitDir string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+gitDir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -103,6 +138,61 @@ func TestGitInfoExcludeHonored(t *testing.T) {
 	out := run(t, "*.txt", root, 0)
 	mustContain(t, out, "keep.txt", "— 1 files", "1 ignored files hidden")
 	mustNotContain(t, out, "excluded.txt")
+}
+
+func TestWorktreeInfoExcludeFromCommonDir(t *testing.T) {
+	tests := []struct {
+		name    string
+		gitdir  func(wt, gitDir string) string
+		want    []string
+		notWant []string
+	}{
+		{
+			name:    "absolute gitdir",
+			gitdir:  func(_, gitDir string) string { return gitDir },
+			want:    []string{"keep.txt", "— 1 files", "1 ignored files hidden"},
+			notWant: []string{"excluded.txt"},
+		},
+		{
+			name:    "relative gitdir",
+			gitdir:  func(string, string) string { return "../main/.git/worktrees/wt" },
+			want:    []string{"keep.txt", "— 1 files", "1 ignored files hidden"},
+			notWant: []string{"excluded.txt"},
+		},
+		{
+			name:    "dangling gitdir",
+			gitdir:  func(wt, _ string) string { return filepath.Join(wt, "gone") },
+			want:    []string{"keep.txt", "excluded.txt", "— 2 files"},
+			notWant: []string{"ignored files hidden"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := tempRoot(t)
+			wt, gitDir := writeLinkedWorktree(t, root, "excluded.txt\n", map[string]string{
+				"keep.txt":     "keep\n",
+				"excluded.txt": "gone\n",
+			})
+			writePointer(t, wt, tt.gitdir(wt, gitDir))
+			out := run(t, "*.txt", wt, 0)
+			mustContain(t, out, tt.want...)
+			mustNotContain(t, out, tt.notWant...)
+		})
+	}
+}
+
+func TestWorktreeGitPointerFileNotListed(t *testing.T) {
+	root := tempRoot(t)
+	wt, gitDir := writeLinkedWorktree(t, root, "", map[string]string{"keep.txt": "keep\n"})
+	writePointer(t, wt, gitDir)
+
+	named := run(t, ".git", wt, 0)
+	mustContain(t, named, "— 0 files")
+	mustNotContain(t, named, ".git  (")
+
+	full := run(t, "**/*", wt, 0)
+	mustContain(t, full, "keep.txt", "— 1 files")
+	mustNotContain(t, full, "ignored files hidden")
 }
 
 func TestPopulatedJJExcluded(t *testing.T) {

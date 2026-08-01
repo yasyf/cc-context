@@ -26,7 +26,7 @@ type match struct {
 // walkConfig captures how collect filters a walk: escaped disables ignore-FILE
 // processing (.gitignore/.ignore/.gitmodules), excludeVCS hard-skips the VCS
 // stores, and matcher (rooted at gitRoot) applies the enclosing repo's ignore
-// chain — the git-root info/exclude plus the .gitignore files down to the walk
+// chain — the repo's info/exclude plus the .gitignore files down to the walk
 // root — that a gocodewalker rooted below the git root never sees on its own.
 type walkConfig struct {
 	escaped    bool
@@ -126,6 +126,9 @@ func collect(ctx context.Context, displayRoot, walkRoot string, globs []string, 
 			w.Terminate()
 			continue
 		}
+		if cfg.excludeVCS && vcsStoreFile(f.Filename) {
+			continue
+		}
 		if ext := extOf(f.Filename); ext != "" {
 			seenExts[ext] = true
 		}
@@ -163,7 +166,7 @@ func collect(ctx context.Context, displayRoot, walkRoot string, globs []string, 
 
 // ignoredByRepo reports whether the enclosing repo's ancestor ignore chain hides
 // the file at abs. gocodewalker already applied the walk-root-and-below chain, so
-// this only adds the rules above the walk root (and the git-root info/exclude);
+// this only adds the rules above the walk root (and the repo's info/exclude);
 // it is a no-op when the walk is not inside a git repo or the escape hatch fired.
 func ignoredByRepo(cfg walkConfig, abs string) bool {
 	if cfg.matcher == nil {
@@ -202,6 +205,9 @@ func countHidden(ctx context.Context, root string, globs []string, shown int) (i
 			w.Terminate()
 			continue
 		}
+		if vcsStoreFile(f.Filename) {
+			continue
+		}
 		rel, err := filepath.Rel(root, f.Location)
 		if err != nil {
 			continue
@@ -233,6 +239,13 @@ func countHidden(ctx context.Context, root string, globs []string, shown int) (i
 	return 0, nil
 }
 
+// vcsStoreFile reports whether name is a VCS store that reached the walk as a
+// regular file — a linked worktree's .git gitdir pointer, which gocodewalker's
+// directory-only ExcludeDirectory never prunes.
+func vcsStoreFile(name string) bool {
+	return slices.Contains(VCSStoreDirs, name)
+}
+
 // newWalker builds a gocodewalker rooted at root that emits dotfiles and tolerates
 // per-file errors; the caller sets the ignore-processing flags before Start.
 func newWalker(root string, queue chan *gocodewalker.File) *gocodewalker.FileWalker {
@@ -259,8 +272,41 @@ func gitRootOf(start string) string {
 	}
 }
 
-// ancestorMatcher builds the enclosing repo's ignore matcher: the git-root
-// .git/info/exclude plus every .gitignore from the git root down to walkRoot
+// gitCommonDir resolves the git directory holding the repo-wide info/, given a
+// git root: <gitRoot>/.git when that is a directory, and — when it is the gitdir
+// pointer file of a linked worktree — the common directory that worktree's
+// administrative dir names, which is where the shared info/exclude lives. It
+// returns "" when the pointer does not resolve, leaving the repo without an
+// ancestor matcher rather than failing the walk.
+func gitCommonDir(gitRoot string) string {
+	dot := filepath.Join(gitRoot, ".git")
+	info, err := os.Stat(dot)
+	if err != nil {
+		return ""
+	}
+	if info.IsDir() {
+		return dot
+	}
+	data, err := os.ReadFile(dot) //nolint:gosec // path is the caller's own repo gitdir pointer; reading it is intended
+	if err != nil {
+		return ""
+	}
+	gitDir, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir: ")
+	if !ok {
+		return ""
+	}
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(gitRoot, gitDir)
+	}
+	common, err := os.ReadFile(filepath.Join(gitDir, "commondir")) //nolint:gosec // path is the caller's own repo git dir; reading it is intended
+	if err != nil {
+		return gitDir
+	}
+	return filepath.Join(gitDir, strings.TrimSpace(string(common)))
+}
+
+// ancestorMatcher builds the enclosing repo's ignore matcher: the common dir's
+// info/exclude plus every .gitignore from the git root down to walkRoot
 // (inclusive), each pattern anchored at its own file's directory via its domain,
 // in ascending priority (deeper wins). It matches paths relative to the git root,
 // so an anchored ancestor rule like "sub/secret.go" applies even when the walk is
@@ -270,7 +316,10 @@ func ancestorMatcher(gitRoot, walkRoot string) gitignore.Matcher {
 	if gitRoot == "" {
 		return nil
 	}
-	ps := parsePatternFile(filepath.Join(gitRoot, ".git", "info", "exclude"), nil)
+	var ps []gitignore.Pattern
+	if common := gitCommonDir(gitRoot); common != "" {
+		ps = parsePatternFile(filepath.Join(common, "info", "exclude"), nil)
+	}
 	ps = append(ps, parsePatternFile(filepath.Join(gitRoot, ".gitignore"), nil)...)
 
 	rel, err := filepath.Rel(gitRoot, walkRoot)
