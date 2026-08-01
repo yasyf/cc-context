@@ -362,7 +362,7 @@ func runSearch(ctx context.Context, page *Page, a backend.Args) (string, error) 
 			note = UnsupportedReason
 		} else {
 			slog.Warn("web search degraded to BM25-only", "url", page.URL, "err", err)
-			note = fmt.Sprintf("hybrid search unavailable (%v); ranked by BM25 alone", err)
+			note = fmt.Sprintf("%s (%v); ranked by BM25 alone", DegradedPrefix, err)
 		}
 	} else {
 		if page.Vectors == nil {

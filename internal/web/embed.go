@@ -32,6 +32,10 @@ var EmbedModelID = WebPin.Repo + "@" + WebPin.Revision
 // hybrid ranking cannot run this session.
 const UnsupportedReason = "ccx web search runs BM25-only until the embedding model is available (the first run downloads it) — hybrid ranking needs it"
 
+// DegradedPrefix opens the note appended to a BM25-only result when embedding
+// failed for any other reason, ahead of the interpolated cause.
+const DegradedPrefix = "hybrid search unavailable"
+
 // Embedder embeds texts into L2-normalized vectors, one per text, all of equal
 // dimensionality. texts must be non-empty; a text with no in-vocabulary tokens
 // embeds to the zero vector.
@@ -99,9 +103,10 @@ func CloseEmbedder(ctx context.Context) error {
 	return closer.Close(ctx)
 }
 
-// setEmbedderProvider overrides the resident web-embedder provider and clears the
-// cached engine, returning a restore func. Test seam only.
-func setEmbedderProvider(p func(context.Context) (Embedder, error)) func() {
+// SetEmbedderProvider overrides the resident web-embedder provider and clears the
+// cached engine, returning a restore func. It is a test seam for injecting a fake
+// embedder in place of the resident WASM engine; not for production use.
+func SetEmbedderProvider(p func(context.Context) (Embedder, error)) func() {
 	webEmbMu.Lock()
 	defer webEmbMu.Unlock()
 	prevProvider, prevEmbedder := newWebEmbedder, webEmbedder

@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/cli"
 	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/web"
 )
 
 // webFixtureHTML is a small article with a preamble paragraph, an H1, and two
@@ -28,10 +30,12 @@ const webFixtureHTML = `<!doctype html>
 </body>
 </html>`
 
-// isolateWeb points the web cache at a temp dir, unsets the fetch-tier API keys,
-// and forces the uv-gated embedder off so ccx web runs hermetically: the
-// loopback httptest target takes the plain-HTTP tier and search ranks BM25-only,
-// touching no network beyond the fixture server and spawning no subprocess.
+// isolateWeb makes ccx web hermetic: the page cache points at a temp dir, the
+// fetch-tier API keys are unset so the loopback httptest target takes the plain
+// HTTP tier, every binary reports absent so no agent-browser render escalates,
+// and topicEmbedder replaces the resident WASM engine so hybrid ranking runs
+// without downloading the pinned model weights. Nothing beyond the fixture
+// server is reachable, and no subprocess spawns.
 func isolateWeb(t *testing.T) {
 	t.Helper()
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
@@ -42,6 +46,28 @@ func isolateWeb(t *testing.T) {
 	prev := lookpath.Find
 	lookpath.Find = func(string) string { return "" }
 	t.Cleanup(func() { lookpath.Find = prev })
+	t.Cleanup(web.SetEmbedderProvider(func(context.Context) (web.Embedder, error) {
+		return topicEmbedder{}, nil
+	}))
+}
+
+// topicEmbedder maps each text to a deterministic 3-dim unit vector keyed on
+// coarse topic, so the errors query aligns densely with the errors chunk.
+type topicEmbedder struct{}
+
+func (topicEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, text := range texts {
+		switch lt := strings.ToLower(text); {
+		case strings.Contains(lt, "error"):
+			out[i] = []float32{1, 0, 0}
+		case strings.Contains(lt, "install"):
+			out[i] = []float32{0, 1, 0}
+		default:
+			out[i] = []float32{0, 0, 1}
+		}
+	}
+	return out, nil
 }
 
 // startWebFixture serves webFixtureHTML on a loopback httptest server.
@@ -120,5 +146,10 @@ func TestWebOutlineReadSearchE2E(t *testing.T) {
 	}
 	if !strings.Contains(search, "errors.Is") {
 		t.Errorf("search did not surface the errors chunk:\n%s", search)
+	}
+	for _, marker := range []string{web.UnsupportedReason, web.DegradedPrefix} {
+		if strings.Contains(search, marker) {
+			t.Errorf("search degraded to BM25-only (%q) instead of ranking with the injected embedder:\n%s", marker, search)
+		}
 	}
 }

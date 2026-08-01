@@ -91,7 +91,7 @@ func TestMain(m *testing.M) {
 
 func withEmbedder(t *testing.T, e Embedder) {
 	t.Helper()
-	t.Cleanup(setEmbedderProvider(func(context.Context) (Embedder, error) { return e, nil }))
+	t.Cleanup(SetEmbedderProvider(func(context.Context) (Embedder, error) { return e, nil }))
 }
 
 // markdownFetch stubs the cascade to return fixed markdown as a jina result and
@@ -748,7 +748,7 @@ func TestRunSearchHybrid(t *testing.T) {
 func TestRunSearchBM25OnlyWhenUnsupported(t *testing.T) {
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
-	t.Cleanup(setEmbedderProvider(func(context.Context) (Embedder, error) {
+	t.Cleanup(SetEmbedderProvider(func(context.Context) (Embedder, error) {
 		return nil, embed.ErrWeightsUnavailable
 	}))
 	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", nil))
