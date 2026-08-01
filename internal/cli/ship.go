@@ -1089,7 +1089,7 @@ func shipPushJJReject(ctx context.Context, target, moveOp string, amend bool, pu
 }
 
 func shipPushGit(ctx context.Context, amend bool, branch, preAmendSHA string) (string, int, error) {
-	remote, err := gitRemoteFor(ctx, branch)
+	remote, err := gitRemoteFor(ctx, "ship", branch)
 	if err != nil {
 		return "", 0, err
 	}
@@ -1106,11 +1106,12 @@ func shipPushGit(ctx context.Context, amend bool, branch, preAmendSHA string) (s
 // gitRemoteFor resolves the remote that branch.<branch>.remote configures, so a
 // triangular or non-origin-only repo fetches, rebases, and pushes against the
 // same remote. git config --get exits 1 when unset; that and an empty value both
-// default to origin. Any other exit is an error.
-func gitRemoteFor(ctx context.Context, branch string) (string, error) {
+// default to origin. Any other exit is an error, prefixed with the command that
+// asked — ship, restack, and info all do.
+func gitRemoteFor(ctx context.Context, prefix, branch string) (string, error) {
 	out, code, stderr, err := render.RunCLIExitCode(ctx, "git", []string{"config", "--get", "branch." + branch + ".remote"})
 	if err != nil {
-		return "", fmt.Errorf("ship: git config branch.%s.remote: %w", branch, err)
+		return "", fmt.Errorf("%s: git config branch.%s.remote: %w", prefix, branch, err)
 	}
 	switch code {
 	case 0:
@@ -1121,7 +1122,7 @@ func gitRemoteFor(ctx context.Context, branch string) (string, error) {
 	case 1:
 		return "origin", nil
 	default:
-		return "", fmt.Errorf("ship: git config branch.%s.remote: exit %d: %s", branch, code, strings.TrimSpace(stderr))
+		return "", fmt.Errorf("%s: git config branch.%s.remote: exit %d: %s", prefix, branch, code, strings.TrimSpace(stderr))
 	}
 }
 

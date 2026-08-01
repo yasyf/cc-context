@@ -24,20 +24,23 @@ const infoDeclinedPrefix = "graphite declined: "
 // vcsInfo is the lane a mutating VCS command would take in this working copy
 // and the inputs the gate weighed reaching it. It reports; it never chooses.
 type vcsInfo struct {
-	Lane        string       `json:"lane"`
-	LaneReason  string       `json:"lane_reason,omitempty"`
-	VCS         string       `json:"vcs"`
-	Root        string       `json:"root"`
-	Branch      string       `json:"branch"`
-	BranchKind  string       `json:"branch_kind"`
-	Detached    bool         `json:"detached"`
-	Trunk       string       `json:"trunk"`
-	Dirty       bool         `json:"dirty"`
-	DirtyFiles  int          `json:"dirty_files"`
-	Graphite    graphiteInfo `json:"graphite"`
-	GitHub      *vcs.Repo    `json:"github"`
-	GitHubError string       `json:"github_error,omitempty"`
-	Downstack   []stackEntry `json:"downstack,omitempty"`
+	Lane          string        `json:"lane"`
+	LaneReason    string        `json:"lane_reason,omitempty"`
+	VCS           string        `json:"vcs"`
+	Root          string        `json:"root"`
+	Worktree      *worktreeInfo `json:"worktree,omitempty"`
+	CheckoutError string        `json:"checkout_error,omitempty"`
+	Branch        string        `json:"branch"`
+	BranchKind    string        `json:"branch_kind"`
+	Detached      bool          `json:"detached"`
+	Trunk         string        `json:"trunk"`
+	TrunkHolder   string        `json:"trunk_holder,omitempty"`
+	Dirty         bool          `json:"dirty"`
+	DirtyFiles    int           `json:"dirty_files"`
+	Graphite      graphiteInfo  `json:"graphite"`
+	GitHub        *vcs.Repo     `json:"github"`
+	GitHubError   string        `json:"github_error,omitempty"`
+	Downstack     []stackEntry  `json:"downstack,omitempty"`
 }
 
 // graphiteInfo is what the graphite lane has available here. Reachable carries
@@ -52,6 +55,20 @@ type graphiteInfo struct {
 	Reachable string `json:"reachable,omitempty"`
 	Reason    string `json:"reason,omitempty"`
 	Untracked bool   `json:"untracked,omitempty"`
+	// StackError is graphite state info could not resolve into a trunk and a
+	// downstack. It is reported rather than fatal because an unparseable state
+	// and an unresolvable parent chain are what someone runs info to find out.
+	StackError string `json:"stack_error,omitempty"`
+}
+
+// worktreeInfo places a linked working copy inside its repository: which of the
+// shapes git and jj can attach it by, where the repository's own working copy
+// sits, and the admin dir every sibling contends over.
+type worktreeInfo struct {
+	Shape     string `json:"shape"`
+	MainRoot  string `json:"main_root"`
+	CommonDir string `json:"common_dir,omitempty"`
+	RepoKey   string `json:"repo_key"`
 }
 
 // stackEntry is one branch in the graphite downstack and the pull request it
@@ -88,7 +105,7 @@ func newVcsInfoCmd() *cobra.Command {
 
 func runVcsInfo(cmd *cobra.Command, o vcsInfoOpts) error {
 	ctx := cmd.Context()
-	l, err := resolveLaneRefresh(ctx, "info", workingDir(), o.noGT, o.refresh)
+	l, err := resolveLaneReport(ctx, "info", workingDir(), o.noGT, o.refresh)
 	if err != nil {
 		return err
 	}
@@ -124,6 +141,10 @@ func collectVcsInfo(ctx context.Context, l lane, o vcsInfoOpts) (vcsInfo, error)
 	if l.kind == vcs.JJ {
 		info.BranchKind = "bookmark"
 	}
+	if l.broken != nil {
+		info.CheckoutError = l.broken.Error()
+		return info, nil
+	}
 
 	graphite, err := infoGraphite(ctx, l, o)
 	if err != nil {
@@ -142,6 +163,9 @@ func collectVcsInfo(ctx context.Context, l lane, o vcsInfoOpts) (vcsInfo, error)
 	if err != nil {
 		return vcsInfo{}, err
 	}
+	if err := infoWorktree(ctx, l, &info); err != nil {
+		return vcsInfo{}, err
+	}
 	if err := infoGitHub(ctx, l, o, &info); err != nil {
 		return vcsInfo{}, err
 	}
@@ -155,11 +179,7 @@ func collectVcsInfo(ctx context.Context, l lane, o vcsInfoOpts) (vcsInfo, error)
 // else's repo — is probed here instead: what graphite has available is worth
 // reporting even where the lane refused to use it.
 func infoGraphite(ctx context.Context, l lane, o vcsInfoOpts) (graphiteInfo, error) {
-	config, err := vcs.GraphiteRepo(ctx, l.root)
-	if err != nil {
-		return graphiteInfo{}, err
-	}
-	g := graphiteInfo{Config: config}
+	g := graphiteInfo{Config: vcs.GraphiteRepo(l.checkout)}
 	if !g.Config {
 		return g, nil
 	}
@@ -190,43 +210,53 @@ func infoGT(ctx context.Context, l lane, info *vcsInfo) error {
 	if err := infoGitBranch(ctx, l.root, info); err != nil {
 		return err
 	}
-	state, err := gtStateQuery(ctx, "info")
-	if err != nil {
-		return err
-	}
-	trunk, err := gtTrunkBranch("info", state)
-	if err != nil {
-		return err
-	}
-	info.Trunk = trunk
 	if err := infoGitDirty(ctx, l.root, info); err != nil {
 		return err
 	}
+	infoGTStack(ctx, l, info)
+	return nil
+}
+
+// infoGTStack fills the trunk and the downstack a gt submit would publish.
+// Graphite state it cannot resolve lands in StackError rather than aborting the
+// report: an unresolvable stack is a diagnosis, and refusing to print the branch,
+// dirtiness, and repository around it withholds the rest of the answer too.
+func infoGTStack(ctx context.Context, l lane, info *vcsInfo) {
+	state, err := gtStateQuery(ctx, "info")
+	if err != nil {
+		info.Graphite.StackError = err.Error()
+		return
+	}
+	trunk, err := gtTrunkBranch("info", state)
+	if err != nil {
+		info.Graphite.StackError = err.Error()
+		return
+	}
+	info.Trunk = trunk
 	if info.Branch == "" || info.Branch == trunk {
-		return nil
+		return
 	}
 	chain, err := gtDownstack("info", state, info.Branch, trunk)
 	var untracked *errGTUntracked
-	if errors.As(err, &untracked) {
+	switch {
+	case errors.As(err, &untracked):
 		info.Graphite.Untracked = true
-		return nil
+	case err != nil:
+		info.Graphite.StackError = err.Error()
+	default:
+		info.Downstack = infoDownstack(ctx, l.root, chain)
 	}
-	if err != nil {
-		return err
-	}
-	info.Downstack = infoDownstack(ctx, l.root, chain)
-	return nil
 }
 
 func infoGit(ctx context.Context, l lane, info *vcsInfo) error {
 	if err := infoGitBranch(ctx, l.root, info); err != nil {
 		return err
 	}
-	remote, err := gitRemoteFor(ctx, info.Branch)
+	remote, err := gitRemoteFor(ctx, "info", info.Branch)
 	if err != nil {
 		return err
 	}
-	trunk, err := gitRemoteTrunk(ctx, remote)
+	trunk, err := gitRemoteTrunk(ctx, "info", remote)
 	if err != nil {
 		return err
 	}
@@ -316,6 +346,49 @@ func infoBranchPR(ctx context.Context, root string, entry *stackEntry) {
 	entry.HasBody = strings.TrimSpace(pr.Body) != ""
 }
 
+// infoWorktree places this working copy inside its repository and names the
+// checkout currently holding trunk — the answer to a gt restack that skipped a
+// branch "because it is checked out in worktree W" and still exited 0. It reads
+// the resolved checkout, not the process cwd, which in a linked worktree need not
+// be the same tree. A trunk no checkout holds is normal — a detached main working
+// copy under colocated jj — so an absent holder is silence, not a failure.
+func infoWorktree(ctx context.Context, l lane, info *vcsInfo) error {
+	ck := l.checkout
+	if ck.Linked() {
+		info.Worktree = &worktreeInfo{
+			Shape:     infoShape(ck.Shape),
+			MainRoot:  ck.MainRoot,
+			CommonDir: ck.CommonDir,
+			RepoKey:   ck.RepoKey(),
+		}
+	}
+	if ck.CommonDir == "" || info.Trunk == "" {
+		return nil
+	}
+	holders, err := vcs.BranchHolders(ctx, ck)
+	if err != nil {
+		return fmt.Errorf("info: %w", err)
+	}
+	info.TrunkHolder = holders[info.Trunk]
+	return nil
+}
+
+// infoShape names how a working copy is attached to its repository.
+func infoShape(shape vcs.Shape) string {
+	switch shape {
+	case vcs.ShapeMain:
+		return "main"
+	case vcs.ShapeGitWorktree:
+		return "git worktree"
+	case vcs.ShapeJJWorkspace:
+		return "jj workspace"
+	case vcs.ShapeColocatedWorktree:
+		return "colocated worktree"
+	default:
+		panic(fmt.Sprintf("cli: no label for vcs shape %d", shape))
+	}
+}
+
 // infoGitHub attaches the repository's GitHub metadata, reusing the record the
 // gates read when they got as far as reading one. Every reason the answer is
 // unknowable — gh off PATH, signed out, no GitHub remote, offline — lands in
@@ -358,6 +431,18 @@ func renderVcsInfo(info vcsInfo) string {
 	}
 	line("vcs", info.VCS)
 	line("root", info.Root)
+	if info.CheckoutError != "" {
+		line("checkout", info.CheckoutError)
+		return b.String()
+	}
+	if wt := info.Worktree; wt != nil {
+		line("shape", wt.Shape)
+		line("main-root", wt.MainRoot)
+		if wt.CommonDir != "" {
+			line("common-dir", wt.CommonDir)
+		}
+		line("repo-key", wt.RepoKey)
+	}
 	switch {
 	case info.Detached:
 		line("branch", "(detached)")
@@ -367,9 +452,15 @@ func renderVcsInfo(info vcsInfo) string {
 	if info.Trunk != "" {
 		line("trunk", info.Trunk)
 	}
+	if info.TrunkHolder != "" {
+		line("trunk-held", info.TrunkHolder)
+	}
 	line("dirty", infoDirtyValue(info))
 	if info.Graphite.Config {
 		line("graphite", infoGraphiteValue(info.Graphite, info.Trunk))
+	}
+	if info.Graphite.StackError != "" {
+		line("stack", info.Graphite.StackError)
 	}
 	switch {
 	case info.GitHub != nil:

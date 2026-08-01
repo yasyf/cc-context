@@ -10,9 +10,14 @@ import (
 )
 
 // infoFakes overlays the ship fakes with the arms ccx vcs info needs — git
-// status/symbolic-ref/show-ref, gt --version, and a per-branch gh pr view. Each
+// status/symbolic-ref/show-ref, the repository-wide for-each-ref that names each
+// branch's holding worktree, gt --version, and a per-branch gh pr view. Each
 // wrapper handles its own arms and execs the renamed base fake for the rest, so
 // writeShipFakes stays untouched.
+//
+// GIT_BRANCH_HOLDERS is a space-separated branch=worktree list; unset means no
+// checkout holds any branch, which is what git reports for a detached working
+// copy and the default every report assertion here is written against.
 func infoFakes(t *testing.T) {
 	t.Helper()
 	wd, err := os.Getwd()
@@ -49,6 +54,14 @@ func infoFakes(t *testing.T) {
   "show-ref --verify")
     `+logRec("git")+`    if [ -n "$GIT_SHOW_REF_FOUND" ]; then exit 0; fi
     exit 1 ;;
+  "--git-dir "*)
+    case "$3" in
+      for-each-ref)
+        `+logRec("git")+`        for pair in $GIT_BRANCH_HOLDERS; do
+          printf '%s\0%s\n' "${pair%%=*}" "${pair#*=}"
+        done
+        exit 0 ;;
+    esac ;;
 esac
 exec git-base "$@"
 `)
@@ -469,36 +482,222 @@ func TestVcsInfoUntrackedBranch(t *testing.T) {
 	}
 }
 
-func TestVcsInfoBrokenAncestorChainFails(t *testing.T) {
+// TestVcsInfoBrokenAncestorChainReported proves an unresolvable parent chain is
+// the report's answer rather than its failure: a stack nobody can walk is the
+// state someone runs info to diagnose, and the branch and dirtiness around it
+// stay readable. The error text still carries info's own prefix — it must never
+// tell the reader to go look at ship.
+func TestVcsInfoBrokenAncestorChainReported(t *testing.T) {
 	setupShipGT(t, true)
 	infoFakes(t)
 	t.Setenv("GIT_BRANCH", "feature2")
 	t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true},"feature2":{"parents":[{"ref":"feature","sha":"bb"}]}}`)
 
 	out, err := runVcsInfoCmd(t)
-	if err == nil {
-		t.Fatalf("info succeeded on an unresolvable stack:\n%s", out)
+	if err != nil {
+		t.Fatalf("info error = %v", err)
 	}
+	stack := infoLine(t, out, "stack")
 	want := "info: gt state has no parent for feature, an ancestor of feature2"
-	if !strings.Contains(err.Error(), want) {
-		t.Errorf("error = %v, want it to contain %q", err, want)
+	if !strings.Contains(stack, want) {
+		t.Errorf("stack = %q, want it to contain %q", stack, want)
 	}
-	if strings.Contains(err.Error(), "ship:") {
-		t.Errorf("error = %v, want info's own prefix, not ship's", err)
+	if strings.Contains(stack, "ship:") {
+		t.Errorf("stack = %q, want info's own prefix, not ship's", stack)
+	}
+	if got := infoLine(t, out, "branch"); got != "feature2" {
+		t.Errorf("branch = %q, want the report to survive the unresolvable stack", got)
+	}
+	if strings.Contains(out, "downstack") {
+		t.Errorf("report names a downstack it could not resolve:\n%s", out)
 	}
 }
 
+// TestVcsInfoGTStateFailureCarriesInfoPrefix proves gt state info cannot parse
+// is reported, still under info's own prefix rather than ship's.
 func TestVcsInfoGTStateFailureCarriesInfoPrefix(t *testing.T) {
 	setupShipGT(t, true)
 	infoFakes(t)
 	t.Setenv("GT_STATE_JSON", "not json")
 
 	out, err := runVcsInfoCmd(t)
-	if err == nil {
-		t.Fatalf("info succeeded on unparseable gt state:\n%s", out)
+	if err != nil {
+		t.Fatalf("info error = %v", err)
 	}
-	if !strings.HasPrefix(err.Error(), "info: parse gt state:") {
-		t.Errorf("error = %v, want it to lead with info's own prefix", err)
+	if got := infoLine(t, out, "stack"); !strings.HasPrefix(got, "info: parse gt state:") {
+		t.Errorf("stack = %q, want it to lead with info's own prefix", got)
+	}
+	if strings.Contains(out, "trunk") {
+		t.Errorf("report names a trunk gt state never gave it:\n%s", out)
+	}
+}
+
+// TestVcsInfoGitTrunkFailureCarriesInfoPrefix pins the git lane's half of the
+// same rule: gitRemoteTrunk is restack's helper, and its error would otherwise
+// send someone running info off to restack.
+func TestVcsInfoGitTrunkFailureCarriesInfoPrefix(t *testing.T) {
+	setupShip(t, ".git", true)
+	infoFakes(t)
+	seedLaneRecords(t, ".", laneSeed{})
+	t.Setenv("GIT_SYMBOLIC_REF", "")
+
+	out, err := runVcsInfoCmd(t)
+	if err == nil {
+		t.Fatalf("info succeeded with no resolvable default branch:\n%s", out)
+	}
+	want := "info: cannot resolve origin's default branch"
+	if !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("error = %v, want it to lead with %q", err, want)
+	}
+	if strings.Contains(err.Error(), "restack:") {
+		t.Errorf("error = %v, want info's own prefix, not restack's", err)
+	}
+}
+
+// TestVcsInfoTrunkHolder proves info names the working copy holding trunk — the
+// thing that explains a gt restack skipping a branch "because it is checked out
+// in worktree W" and still exiting 0 — and stays silent when no checkout holds
+// it, which is what git reports for a detached main working copy.
+func TestVcsInfoTrunkHolder(t *testing.T) {
+	tests := []struct {
+		name    string
+		holders string
+		want    string
+	}{
+		{"trunk held elsewhere", "main=/wt/main feature=", "/wt/main"},
+		{"trunk held by nobody", "main= feature=", ""},
+		{"no checkout holds anything", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setupShipGT(t, true)
+			infoFakes(t)
+			t.Setenv("GIT_BRANCH_HOLDERS", tt.holders)
+
+			out, err := runVcsInfoCmd(t, "--json")
+			if err != nil {
+				t.Fatalf("info error = %v", err)
+			}
+			var got vcsInfo
+			if err := json.Unmarshal([]byte(out), &got); err != nil {
+				t.Fatalf("unmarshal report: %v\n%s", err, out)
+			}
+			if got.TrunkHolder != tt.want {
+				t.Errorf("trunk_holder = %q, want %q", got.TrunkHolder, tt.want)
+			}
+			human, err := runVcsInfoCmd(t)
+			if err != nil {
+				t.Fatalf("info error = %v", err)
+			}
+			if tt.want == "" {
+				if strings.Contains(human, "trunk-held") {
+					t.Errorf("report names a trunk holder nobody is:\n%s", human)
+				}
+				return
+			}
+			if line := infoLine(t, human, "trunk-held"); line != tt.want {
+				t.Errorf("trunk-held = %q, want %q", line, tt.want)
+			}
+		})
+	}
+}
+
+// TestVcsInfoMainCheckoutHasNoWorktreeBlock proves the worktree block is the
+// linked checkout's answer alone: a repository's own working copy is not "inside"
+// anything, so reporting a shape, a main root, and a repo key that all restate
+// root would be noise.
+func TestVcsInfoMainCheckoutHasNoWorktreeBlock(t *testing.T) {
+	setupShipGT(t, true)
+	infoFakes(t)
+
+	out, err := runVcsInfoCmd(t, "--json")
+	if err != nil {
+		t.Fatalf("info error = %v", err)
+	}
+	var got vcsInfo
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("unmarshal report: %v\n%s", err, out)
+	}
+	if got.Worktree != nil {
+		t.Errorf("worktree = %+v, want none for the repository's own working copy", got.Worktree)
+	}
+}
+
+// TestVcsInfoLinkedWorktree proves a linked worktree reports where it sits
+// rather than refusing, and that root stays this checkout's own tree — pointing
+// it at the main working copy would name bytes ccx is not looking at.
+func TestVcsInfoLinkedWorktree(t *testing.T) {
+	setupShip(t, "", true)
+	infoFakes(t)
+	root := infoRoot(t)
+	main := t.TempDir()
+	common := filepath.Join(main, ".git")
+	admin := filepath.Join(common, "worktrees", "wt")
+	if err := os.MkdirAll(admin, 0o750); err != nil {
+		t.Fatalf("mkdir admin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte("../..\n"), 0o600); err != nil {
+		t.Fatalf("write commondir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
+		t.Fatalf("write gitdir pointer: %v", err)
+	}
+	// The lane cache keys on the repository, which the pointer only now names, so
+	// the seed a linked worktree reads has to be written after it.
+	seedLaneRecords(t, ".", laneSeed{})
+
+	out, err := runVcsInfoCmd(t, "--json")
+	if err != nil {
+		t.Fatalf("info error = %v", err)
+	}
+	var got vcsInfo
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("unmarshal report: %v\n%s", err, out)
+	}
+	if got.Root != root {
+		t.Errorf("root = %q, want this checkout's own tree %q", got.Root, root)
+	}
+	// The repository's own paths are the gitdir pointer's bytes, resolved
+	// lexically, so two checkouts reaching one repository key it identically.
+	want := worktreeInfo{
+		Shape:     "git worktree",
+		MainRoot:  main,
+		CommonDir: common,
+		RepoKey:   common,
+	}
+	if got.Worktree == nil || *got.Worktree != want {
+		t.Errorf("worktree = %+v, want %+v", got.Worktree, want)
+	}
+}
+
+// TestVcsInfoBrokenCheckoutReported proves the command whose whole output is a
+// diagnosis of the working copy survives one: a gitdir pointer resolving to
+// nothing is reported, not an exit 1, and the report stops there rather than
+// claiming a branch or a dirtiness it cannot read.
+func TestVcsInfoBrokenCheckoutReported(t *testing.T) {
+	setupShip(t, "", true)
+	infoFakes(t)
+	seedLaneRecords(t, ".", laneSeed{})
+	root := infoRoot(t)
+	dangling := filepath.Join(t.TempDir(), "gone")
+	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: "+dangling+"\n"), 0o600); err != nil {
+		t.Fatalf("write gitdir pointer: %v", err)
+	}
+
+	out, err := runVcsInfoCmd(t)
+	if err != nil {
+		t.Fatalf("info error = %v", err)
+	}
+	got := infoLine(t, out, "checkout")
+	for _, want := range []string{"gitdir pointer resolves to nothing", dangling} {
+		if !strings.Contains(got, want) {
+			t.Errorf("checkout = %q, want it to contain %q", got, want)
+		}
+	}
+	for _, absent := range []string{"dirty", "branch", "graphite"} {
+		if strings.Contains(out, absent) {
+			t.Errorf("report names %q it could not read:\n%s", absent, out)
+		}
 	}
 }
 

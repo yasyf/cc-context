@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -285,25 +283,22 @@ func refreshGuidelines(cmd *cobra.Command, root, dir, path string, needContribut
 // guidelinesRoot resolves the repo root as an absolute, symlink-free path, so a
 // relative path and a symlinked one key the same cache entry.
 func guidelinesRoot() (string, error) {
-	_, root := vcs.DetectRoot(workingDir())
-	if root == "" {
-		root = workingDir()
-	}
-	abs, err := filepath.Abs(root)
+	c, err := vcs.ResolveCheckout(workingDir())
 	if err != nil {
-		return "", fmt.Errorf("guidelines: resolve %q: %w", root, err)
+		return "", fmt.Errorf("guidelines: %w", err)
 	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return resolved, nil
-	}
-	return abs, nil
+	return c.Root, nil
 }
 
-// guidelinesCacheDir resolves the per-repo cache directory, which ccx's other
-// GitHub-derived entries share.
+// guidelinesCacheDir resolves the per-repo cache directory out of the GitHub
+// metadata record's own path, so the documents — pure repository identity —
+// cannot drift into a per-checkout entry.
 func guidelinesCacheDir(root string) (string, error) {
-	sum := sha256.Sum256([]byte(root))
-	return cache.Dir("github", hex.EncodeToString(sum[:]))
+	repoPath, err := vcs.RepoCachePath(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Dir(repoPath), nil
 }
 
 // loadGuidelines serves the cached GitHub payload when it is fresh and answers

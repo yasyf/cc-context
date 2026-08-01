@@ -127,32 +127,22 @@ func LookupRepo(ctx context.Context, root string, refresh bool) (Repo, error) {
 	return repo, nil
 }
 
-// RepoCachePath resolves the cached-record path for root's GitHub metadata. It
-// is exported so tests can seed or clear the record.
+// RepoCachePath resolves the cached-record path for the GitHub metadata of the
+// repository root belongs to. The key is the repository, not the checkout, so
+// a repository's linked worktrees share one record rather than each paying
+// their own `gh repo view`. It is exported so tests can seed or clear the
+// record.
 func RepoCachePath(root string) (string, error) {
-	resolved, err := resolveRoot(root)
+	c, err := ResolveCheckout(root)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256([]byte(resolved))
+	sum := sha256.Sum256([]byte(c.RepoKey()))
 	dir, err := cache.Dir("github", hex.EncodeToString(sum[:]))
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "repo.json"), nil
-}
-
-// resolveRoot returns root as an absolute, symlink-resolved path, so the cache
-// key is stable across relative paths and symlinks.
-func resolveRoot(root string) (string, error) {
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		return "", fmt.Errorf("resolve %q: %w", root, err)
-	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return resolved, nil
-	}
-	return abs, nil
 }
 
 func fetchRepo(ctx context.Context, root string, refresh bool) (Repo, error) {

@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/vcs"
 )
 
 const (
@@ -445,6 +447,80 @@ func TestGuidelinesHumanOutput(t *testing.T) {
 	}
 	if !strings.Contains(cached, "· cached 0s ago (--refresh to re-fetch)\n") {
 		t.Errorf("warm output missing the cache age:\n%s", cached)
+	}
+}
+
+func newGuidelinesRepo(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o750); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	return root
+}
+
+// writeGuidelinesWorktree hand-builds the pointer files `git worktree add`
+// writes — a .git file naming an admin dir under mainRoot, and that dir's
+// commondir — so the layout classifies without a git binary. The pointer holds
+// mainRoot resolved, because that is the form git writes.
+func writeGuidelinesWorktree(t *testing.T, mainRoot string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(mainRoot)
+	if err != nil {
+		t.Fatalf("resolve %q: %v", mainRoot, err)
+	}
+	admin := filepath.Join(resolved, ".git", "worktrees", "wt")
+	if err := os.MkdirAll(admin, 0o750); err != nil {
+		t.Fatalf("mkdir admin dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte("../..\n"), 0o600); err != nil {
+		t.Fatalf("write commondir: %v", err)
+	}
+	linked := t.TempDir()
+	if err := os.WriteFile(filepath.Join(linked, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
+		t.Fatalf("write gitdir pointer: %v", err)
+	}
+	return linked
+}
+
+func mustGuidelinesCacheDir(t *testing.T, root string) string {
+	t.Helper()
+	dir, err := guidelinesCacheDir(root)
+	if err != nil {
+		t.Fatalf("guidelinesCacheDir(%q): %v", root, err)
+	}
+	return dir
+}
+
+func TestGuidelinesCacheDirKeysTheRepository(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	mainRoot := newGuidelinesRepo(t)
+	mainDir := mustGuidelinesCacheDir(t, mainRoot)
+
+	tests := []struct {
+		name     string
+		root     func(t *testing.T) string
+		wantSame bool
+	}{
+		{"the main checkout", func(*testing.T) string { return mainRoot }, true},
+		{"a linked worktree", func(t *testing.T) string { return writeGuidelinesWorktree(t, mainRoot) }, true},
+		{"an unrelated repository", func(t *testing.T) string { return newGuidelinesRepo(t) }, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := tt.root(t)
+			dir := mustGuidelinesCacheDir(t, root)
+			repoPath, err := vcs.RepoCachePath(root)
+			if err != nil {
+				t.Fatalf("RepoCachePath(%q): %v", root, err)
+			}
+			if want := filepath.Dir(repoPath); dir != want {
+				t.Errorf("guidelinesCacheDir = %q, want the GitHub record's directory %q", dir, want)
+			}
+			if same := dir == mainDir; same != tt.wantSame {
+				t.Errorf("shares the main checkout's directory = %v, want %v (%q vs %q)", same, tt.wantSame, dir, mainDir)
+			}
+		})
 	}
 }
 

@@ -60,49 +60,17 @@ func DetectRoot(dir string) (Kind, string) {
 	}
 }
 
-// GraphiteRepo reports whether root has a live Graphite configuration
+// GraphiteRepo reports whether c's repository has a live Graphite configuration
 // (.graphite_repo_config in the git common dir), the signal that routes ship to
 // the gt lane — even over a colocated jj root, since the config lives under
-// .git. A linked worktree's .git is a file holding a gitdir pointer rather than
-// a directory, so the plain join misses there and the common dir — the main
-// worktree's .git, where the config actually lives — is resolved through git.
-//
-// Only a missing config answers false: a gitdir pointer git cannot resolve is a
-// broken repository, not a repository without Graphite, and the two must stay
-// distinguishable.
-func GraphiteRepo(ctx context.Context, root string) (bool, error) {
-	if _, err := os.Stat(filepath.Join(root, ".git", ".graphite_repo_config")); err == nil {
-		return true, nil
+// .git, and from a linked worktree, whose own admin dir never holds it. A jj
+// repository with no git backing has no common dir and so no config.
+func GraphiteRepo(c Checkout) bool {
+	if c.CommonDir == "" {
+		return false
 	}
-	info, err := os.Stat(filepath.Join(root, ".git"))
-	if err != nil || info.IsDir() {
-		return false, nil
-	}
-	common, err := gitCommonDir(ctx, root)
-	if err != nil {
-		return false, err
-	}
-	if _, err := os.Stat(filepath.Join(common, ".graphite_repo_config")); err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("stat graphite config under %q: %w", common, err)
-	}
-	return true, nil
-}
-
-// gitCommonDir resolves root's git common dir — the main worktree's .git, which
-// every linked worktree shares — as an absolute path.
-func gitCommonDir(ctx context.Context, root string) (string, error) {
-	out, err := exec.CommandContext(ctx, "git", "-C", root, "rev-parse", "--git-common-dir").Output() //nolint:gosec // fixed git argv; only the working dir varies
-	if err != nil {
-		return "", fmt.Errorf("git rev-parse --git-common-dir in %q: %w", root, err)
-	}
-	dir := strings.TrimSpace(string(out))
-	if filepath.IsAbs(dir) {
-		return dir, nil
-	}
-	return filepath.Join(root, dir), nil
+	_, err := os.Stat(filepath.Join(c.CommonDir, ".graphite_repo_config"))
+	return err == nil
 }
 
 // stagedSource is the source string for a staged (index vs @-) diff; ResolveDiffPlan

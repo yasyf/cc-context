@@ -1,7 +1,7 @@
 package vcs
 
 import (
-	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -91,80 +91,107 @@ func TestGraphiteRepo(t *testing.T) {
 
 	withConfig := filepath.Join(root, "withconfig")
 	mustMkdir(t, filepath.Join(withConfig, ".git"))
-	if err := os.WriteFile(filepath.Join(withConfig, ".git", ".graphite_repo_config"), []byte("{}"), 0o600); err != nil {
-		t.Fatalf("write graphite config: %v", err)
-	}
+	mustWriteFile(t, filepath.Join(withConfig, ".git", ".graphite_repo_config"), "{}")
 
 	withoutConfig := filepath.Join(root, "withoutconfig")
 	mustMkdir(t, filepath.Join(withoutConfig, ".git"))
 
-	// A .git file whose gitdir pointer resolves nowhere: the common-dir fallback
-	// runs and fails, which is a broken repository. Reporting it as "no graphite
-	// config" would make it indistinguishable from the plain directory below.
-	dangling := filepath.Join(root, "dangling")
-	mustMkdir(t, dangling)
-	if err := os.WriteFile(filepath.Join(dangling, ".git"), []byte("gitdir: ../withconfig/.git/worktrees/dangling\n"), 0o600); err != nil {
-		t.Fatalf("write dangling .git file: %v", err)
-	}
-
-	tests := []struct {
-		name    string
-		dir     string
-		want    bool
-		wantErr bool
-	}{
-		{name: "graphite config present", dir: withConfig, want: true},
-		{name: "git dir without graphite config", dir: withoutConfig},
-		{name: "unresolvable gitdir pointer", dir: dangling, wantErr: true},
-		{name: "no .git at all", dir: root},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := GraphiteRepo(context.Background(), tt.dir)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("GraphiteRepo(%q) error = %v, want an error: %v", tt.dir, err, tt.wantErr)
-			}
-			if got != tt.want {
-				t.Fatalf("GraphiteRepo(%q) = %v, want %v", tt.dir, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestGraphiteRepoWorktree drives GraphiteRepo over a real linked worktree,
-// where .git is a gitdir pointer file and the Graphite config lives in the
-// common dir the main worktree owns.
-func TestGraphiteRepoWorktree(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	main := initLiveGitRepo(t)
-	if err := os.WriteFile(filepath.Join(main, ".git", ".graphite_repo_config"), []byte("{}"), 0o600); err != nil {
-		t.Fatalf("write graphite config: %v", err)
-	}
-	linked := filepath.Join(t.TempDir(), "wt")
-	runGit(t, main, "worktree", "add", "-q", "-b", "feature", linked)
+	jjOnly := filepath.Join(root, "jjonly")
+	mustMkdir(t, filepath.Join(jjOnly, ".jj"))
 
 	tests := []struct {
 		name string
 		dir  string
 		want bool
 	}{
-		{"main worktree", main, true},
-		{"linked worktree resolves the common dir", linked, true},
-		{"repo with no graphite config", initLiveGitRepo(t), false},
+		{name: "graphite config present", dir: withConfig, want: true},
+		{name: "git dir without graphite config", dir: withoutConfig},
+		{name: "jj repository with no git backing", dir: jjOnly},
+		{name: "no repository at all", dir: root},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := GraphiteRepo(context.Background(), tt.dir)
+			c, err := ResolveCheckout(tt.dir)
 			if err != nil {
-				t.Fatalf("GraphiteRepo(%q): %v", tt.dir, err)
+				t.Fatalf("ResolveCheckout(%q): %v", tt.dir, err)
 			}
-			if got != tt.want {
+			if got := GraphiteRepo(c); got != tt.want {
 				t.Fatalf("GraphiteRepo(%q) = %v, want %v", tt.dir, got, tt.want)
 			}
 		})
 	}
+}
+
+// TestGraphiteRepoDangling pins the distinction GraphiteRepo no longer has to
+// make itself: a .git file whose gitdir pointer resolves nowhere is a broken
+// repository, not a repository without Graphite, and ResolveCheckout types it
+// as such rather than letting the narrower question answer false.
+func TestGraphiteRepoDangling(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "dangling")
+	mustMkdir(t, dir)
+	mustWriteFile(t, filepath.Join(dir, ".git"), "gitdir: ../nowhere/.git/worktrees/dangling\n")
+
+	_, err := ResolveCheckout(dir)
+	var broken *BrokenCheckout
+	if !errors.As(err, &broken) {
+		t.Fatalf("ResolveCheckout(%q) error = %v, want a *BrokenCheckout", dir, err)
+	}
+}
+
+// TestGraphiteRepoWorktree drives GraphiteRepo over a real linked worktree,
+// where .git is a gitdir pointer file and the Graphite config lives in the
+// common dir the main worktree owns — the same common dir that keys both
+// checkouts onto one repository.
+func TestGraphiteRepoWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	main := initLiveGitRepo(t)
+	mustWriteFile(t, filepath.Join(main, ".git", ".graphite_repo_config"), "{}")
+	linked := filepath.Join(t.TempDir(), "wt")
+	runGit(t, main, "worktree", "add", "-q", "-b", "feature", linked)
+
+	tests := []struct {
+		name      string
+		dir       string
+		want      bool
+		wantShape Shape
+	}{
+		{"main worktree", main, true, ShapeMain},
+		{"linked worktree resolves the common dir", linked, true, ShapeGitWorktree},
+		{"repo with no graphite config", initLiveGitRepo(t), false, ShapeMain},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := ResolveCheckout(tt.dir)
+			if err != nil {
+				t.Fatalf("ResolveCheckout(%q): %v", tt.dir, err)
+			}
+			if c.Shape != tt.wantShape {
+				t.Errorf("Shape = %v, want %v", c.Shape, tt.wantShape)
+			}
+			if got := GraphiteRepo(c); got != tt.want {
+				t.Fatalf("GraphiteRepo(%q) = %v, want %v", tt.dir, got, tt.want)
+			}
+		})
+	}
+
+	mainKey := mustRepoKey(t, main)
+	if linkedKey := mustRepoKey(t, linked); linkedKey != mainKey {
+		t.Fatalf("RepoKey mismatch: linked %q, main %q", linkedKey, mainKey)
+	}
+	if mainKey != filepath.Join(canon(t, main), ".git") {
+		t.Fatalf("RepoKey = %q, want the main .git", mainKey)
+	}
+}
+
+func mustRepoKey(t *testing.T, dir string) string {
+	t.Helper()
+	c, err := ResolveCheckout(dir)
+	if err != nil {
+		t.Fatalf("ResolveCheckout(%q): %v", dir, err)
+	}
+	return c.RepoKey()
 }
 
 func TestTranslateRevset(t *testing.T) {

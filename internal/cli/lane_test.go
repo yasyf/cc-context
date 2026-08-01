@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -485,6 +486,90 @@ func TestShipGateRespectsNoGTConfig(t *testing.T) {
 		t.Errorf("report = %q, want it to lead with %q", out, want)
 	}
 	assertNoGT(t, readInvocations(t, log))
+}
+
+// brokenCheckoutDir builds a working copy whose .git file points at an admin dir
+// that is not there — the shape left behind when a linked worktree's repository
+// is deleted out from under it.
+func brokenCheckoutDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	target := filepath.Join(dir, "gone", "worktrees", "wt")
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: "+target+"\n"), 0o600); err != nil {
+		t.Fatalf("write .git pointer: %v", err)
+	}
+	return dir
+}
+
+// TestResolveLaneBrokenCheckout proves the split the two resolvers exist for. A
+// checkout whose pointer into its repository resolves to nothing errors, which
+// is all a mutating command reads; the lane comes back carrying the backend and
+// working copy that did resolve, so a reporting command has something to
+// diagnose. The zero lane would not do — vcs.Git is 0, so it reports a git
+// checkout nobody resolved.
+func TestResolveLaneBrokenCheckout(t *testing.T) {
+	dir := brokenCheckoutDir(t)
+	target := filepath.Join(dir, "gone", "worktrees", "wt")
+
+	refused, err := resolveLane(context.Background(), "ship", dir, false)
+	var broken *vcs.BrokenCheckout
+	if !errors.As(err, &broken) {
+		t.Fatalf("resolveLane() error = %v, want a *vcs.BrokenCheckout", err)
+	}
+	if refused.broken == nil || refused.kind != vcs.Git || refused.root != dir {
+		t.Errorf("resolveLane() lane = %+v, want the diagnosis over (%v, %q)", refused, vcs.Git, dir)
+	}
+
+	l, err := resolveLaneReport(context.Background(), "info", dir, false, false)
+	if err != nil {
+		t.Fatalf("resolveLaneReport() error = %v, want nil", err)
+	}
+	if l.broken == nil {
+		t.Fatalf("resolveLaneReport() lane = %+v, want it to carry the broken checkout", l)
+	}
+	if l.kind != vcs.Git || l.root != dir {
+		t.Errorf("resolveLaneReport() lane = (%v, %q), want (%v, %q)", l.kind, l.root, vcs.Git, dir)
+	}
+	if l.broken.Target != target {
+		t.Errorf("broken.Target = %q, want %q", l.broken.Target, target)
+	}
+	if l.gt {
+		t.Error("resolveLaneReport() kept the gt lane over a broken checkout")
+	}
+}
+
+// TestResolveLaneNoRepository proves the Kind None rejection stays here:
+// ResolveCheckout answers "no repository" without failing, and a directory
+// outside one is refused by every caller, the reporting ones included.
+func TestResolveLaneNoRepository(t *testing.T) {
+	const want = "info: no git or jj repository in the working directory"
+	l, err := resolveLaneReport(context.Background(), "info", t.TempDir(), false, false)
+	if err == nil || err.Error() != want {
+		t.Fatalf("resolveLaneReport() error = %v, want %q", err, want)
+	}
+	if l != (lane{}) {
+		t.Errorf("resolveLaneReport() lane = %+v, want the zero lane", l)
+	}
+}
+
+// TestKindLabel pins a label for every kind, None included: a reported broken
+// checkout can carry one now, and a panic is not a diagnosis.
+func TestKindLabel(t *testing.T) {
+	tests := []struct {
+		kind vcs.Kind
+		want string
+	}{
+		{vcs.Git, "git"},
+		{vcs.JJ, "jj"},
+		{vcs.None, "none"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := kindLabel(tt.kind); got != tt.want {
+				t.Errorf("kindLabel(%d) = %q, want %q", tt.kind, got, tt.want)
+			}
+		})
+	}
 }
 
 // TestReviewsStackDeclinesForeignRepo proves the gate is shared: a demoted ship

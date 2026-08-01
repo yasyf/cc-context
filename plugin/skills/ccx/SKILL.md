@@ -271,7 +271,14 @@ ccx vcs ship -m "fix: x" --budget 0              # uncapped failure-log excerpt
 
 `ccx vcs info` (alias `lane`) reports the lane a mutating command would take and
 why — vcs kind, branch, trunk, the Graphite gates, the GitHub repo record, and on
-the gt lane the downstack with each branch's PR. `ccx vcs guidelines` (alias
+the gt lane the downstack with each branch's PR. A linked worktree also reports
+where it sits: its shape, the repository's own working copy, the common dir its
+siblings contend over, and the key that separates siblings from unrelated repos.
+Every git-backed checkout reports which working copy holds trunk, which is what
+explains a `gt restack` that skipped a branch and still exited 0. Inputs it cannot
+read — a gitdir pointer resolving to nothing, graphite state it cannot walk, an
+unreachable GitHub — are reported in the report rather than raised as errors.
+`ccx vcs guidelines` (alias
 `contributing`) fetches and caches the repo's PR templates, `CONTRIBUTING.md`, code
 of conduct, and issue config, served verbatim so a PR body can reproduce the
 template exactly:

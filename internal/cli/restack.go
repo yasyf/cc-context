@@ -220,15 +220,15 @@ func restackGit(ctx context.Context) (string, error) {
 	if branch == "" {
 		return "", errors.New("restack: detached HEAD — check out a branch before restacking")
 	}
-	remote, err := gitRemoteFor(ctx, branch)
+	remote, err := gitRemoteFor(ctx, "restack", branch)
 	if err != nil {
-		return "", fmt.Errorf("restack: resolve remote for %s: %w", branch, err)
+		return "", err
 	}
 	if _, err := render.RunCLI(ctx, "git", []string{"fetch", remote}); err != nil {
 		return "", fmt.Errorf("restack: git fetch %s: %w", remote, err)
 	}
 
-	trunk, err := gitRemoteTrunk(ctx, remote)
+	trunk, err := gitRemoteTrunk(ctx, "restack", remote)
 	if err != nil {
 		return "", err
 	}
@@ -254,34 +254,37 @@ func restackGit(ctx context.Context) (string, error) {
 	return "fetched · rebased onto " + remoteTrunk, nil
 }
 
-func gitRemoteTrunk(ctx context.Context, remote string) (string, error) {
+// gitRemoteTrunk resolves remote's default branch, prefixing every failure with
+// the command that asked — restack and info share it, and an error naming the
+// wrong one sends the reader to the wrong command.
+func gitRemoteTrunk(ctx context.Context, prefix, remote string) (string, error) {
 	ref := "refs/remotes/" + remote + "/HEAD"
+	unresolved := fmt.Errorf("%s: cannot resolve %s's default branch — run git remote set-head %s -a", prefix, remote, remote)
 	out, code, _, err := render.RunCLIExitCode(ctx, "git", []string{"symbolic-ref", "--short", ref})
 	if err != nil {
-		return "", fmt.Errorf("restack: git symbolic-ref %s: %w", ref, err)
+		return "", fmt.Errorf("%s: git symbolic-ref %s: %w", prefix, ref, err)
 	}
 	if code == 0 {
 		name := strings.TrimSpace(out)
-		prefix := remote + "/"
-		if trunk, ok := strings.CutPrefix(name, prefix); ok && trunk != "" {
+		if trunk, ok := strings.CutPrefix(name, remote+"/"); ok && trunk != "" {
 			return trunk, nil
 		}
-		return "", fmt.Errorf("restack: cannot resolve %s's default branch — run git remote set-head %s -a", remote, remote)
+		return "", unresolved
 	}
 
 	for _, trunk := range []string{"main", "master"} {
 		candidate := "refs/remotes/" + remote + "/" + trunk
 		_, code, stderr, err := render.RunCLIExitCode(ctx, "git", []string{"show-ref", "--verify", candidate})
 		if err != nil {
-			return "", fmt.Errorf("restack: git show-ref %s: %w", candidate, err)
+			return "", fmt.Errorf("%s: git show-ref %s: %w", prefix, candidate, err)
 		}
 		switch code {
 		case 0:
 			return trunk, nil
 		case 1:
 		default:
-			return "", fmt.Errorf("restack: git show-ref %s: exit %d: %s", candidate, code, strings.TrimSpace(stderr))
+			return "", fmt.Errorf("%s: git show-ref %s: exit %d: %s", prefix, candidate, code, strings.TrimSpace(stderr))
 		}
 	}
-	return "", fmt.Errorf("restack: cannot resolve %s's default branch — run git remote set-head %s -a", remote, remote)
+	return "", unresolved
 }

@@ -4,6 +4,41 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`ccx vcs info` places a working copy inside its repository.** A linked
+  checkout — `git worktree add`, `jj workspace add`, or a git worktree carrying
+  its own colocated `.jj` — reports its `shape`, the repository's own working copy
+  as `main-root`, the admin dir every sibling contends over as `common-dir`, and
+  the `repo-key` that separates two siblings from two unrelated repositories.
+  Every git-backed checkout reports `trunk-held`, the working copy currently
+  holding trunk. That last line is the answer to a `gt restack` that prints
+  `Did not restack branch B because it is checked out in worktree W` and then
+  exits 0: the branch it skipped is held somewhere else, and nothing else in the
+  output said so. A trunk no checkout holds prints nothing — a detached main
+  working copy under colocated jj is the usual reason, and it is not a failure.
+
+### Changed
+- **`ccx vcs info` reports the states it used to exit 1 on.** A working copy whose
+  gitdir pointer resolves to nothing lands in a new `checkout_error` field and a
+  `checkout` line rather than aborting the command, and graphite state that cannot
+  be walked into a trunk and a downstack lands in `graphite.stack_error` and a
+  `stack` line. Both follow the precedent `github_error` set: an input nobody can
+  read is what someone runs `info` to find out, and refusing to print the branch,
+  the dirtiness, and the repository around it withholds the rest of the answer
+  too. `--json` gains `worktree`, `trunk_holder`, `checkout_error`, and
+  `graphite.stack_error`; every existing field keeps its shape and meaning, `root`
+  included — it is this working copy, never the repository's.
+
+### Fixed
+- **`ccx vcs info` failures named a command nobody ran.** Resolving the git lane's
+  trunk goes through two helpers ship and restack own, whose errors read
+  `ship: git config branch.<b>.remote: …` and
+  `restack: git symbolic-ref refs/remotes/origin/HEAD: …` — so a failed report
+  sent the reader off to a command they had not invoked. Both helpers now take
+  their caller's own prefix.
+
 ## [0.39.0] - 2026-07-28
 
 ### Fixed

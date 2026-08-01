@@ -78,9 +78,11 @@ const (
 
 // lane is the resolved backend a mutating VCS command runs on.
 type lane struct {
-	kind vcs.Kind
-	root string
-	gt   bool
+	kind     vcs.Kind
+	root     string
+	checkout vcs.Checkout
+	broken   *vcs.BrokenCheckout
+	gt       bool
 	// note explains a graphite lane that was available but declined — for the
 	// report line and ccx vcs info's lane_reason.
 	note string
@@ -112,20 +114,29 @@ func resolveLane(ctx context.Context, name, dir string, noGT bool) (lane, error)
 // weigh — the repository's GitHub metadata and gt's reachability verdict — so a
 // caller that reports the lane can re-probe the verdict it turns on rather than
 // only the line describing it.
+//
+// A broken checkout is the one error returned alongside a populated lane: the
+// backend and the working copy are known even when the repository behind them
+// is not, and resolveLaneReport hands that diagnosis on rather than exiting.
 func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh bool) (lane, error) {
-	kind, root := vcs.DetectRoot(dir)
-	if kind == vcs.None {
-		return lane{}, fmt.Errorf("%s: no git or jj repository in the working directory", name)
+	ck, err := vcs.ResolveCheckout(dir)
+	var broken *vcs.BrokenCheckout
+	if errors.As(err, &broken) {
+		kind, root := vcs.DetectRoot(dir)
+		return lane{kind: kind, root: root, broken: broken}, fmt.Errorf("%s: %w", name, err)
 	}
-	l := lane{kind: kind, root: root}
-	if noGT {
-		return l, nil
-	}
-	graphite, err := vcs.GraphiteRepo(ctx, root)
 	if err != nil {
 		return lane{}, fmt.Errorf("%s: %w", name, err)
 	}
-	if !graphite {
+	if ck.Kind == vcs.None {
+		return lane{}, fmt.Errorf("%s: no git or jj repository in the working directory", name)
+	}
+	root := ck.Root
+	l := lane{kind: ck.Kind, root: root, checkout: ck}
+	if noGT {
+		return l, nil
+	}
+	if !vcs.GraphiteRepo(ck) {
 		return l, nil
 	}
 	if gtDisabled(ctx, root) {
@@ -163,6 +174,18 @@ func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh boo
 	return l, nil
 }
 
+// resolveLaneReport resolves the lane for a reporting command, carrying a broken
+// checkout on the lane instead of refusing: a command whose whole output is a
+// diagnosis of the working copy is the one caller that must survive one.
+func resolveLaneReport(ctx context.Context, name, dir string, noGT, refresh bool) (lane, error) {
+	l, err := resolveLaneRefresh(ctx, name, dir, noGT, refresh)
+	var broken *vcs.BrokenCheckout
+	if errors.As(err, &broken) {
+		return l, nil
+	}
+	return l, err
+}
+
 // kindLabel names a lane's backend for the report.
 func kindLabel(kind vcs.Kind) string {
 	switch kind {
@@ -170,6 +193,8 @@ func kindLabel(kind vcs.Kind) string {
 		return "jj"
 	case vcs.Git:
 		return "git"
+	case vcs.None:
+		return "none"
 	default:
 		panic(fmt.Sprintf("cli: no lane label for vcs kind %d", kind))
 	}
@@ -313,8 +338,10 @@ func gtProbeLine(output, marker string) string {
 	return marker
 }
 
-// gtCachePath resolves the cached reachability verdict for root, a sibling of
-// its GitHub metadata record.
+// gtCachePath resolves the cached reachability verdict for the repository root
+// belongs to, a sibling of its GitHub metadata record. The key is the
+// repository, not the checkout, so a repository's linked worktrees share one
+// verdict and the single probe behind it.
 func gtCachePath(root string) (string, error) {
 	repoPath, err := vcs.RepoCachePath(root)
 	if err != nil {
