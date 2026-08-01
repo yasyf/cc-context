@@ -195,6 +195,23 @@ func TestWorktreeGitPointerFileNotListed(t *testing.T) {
 	mustNotContain(t, full, "ignored files hidden")
 }
 
+// TestVCSNamedRegularFilesListed pins the boundary of the rule above: only .git
+// reaches a walk as a regular file, so a file the user named .jj, .hg, or .svn
+// is theirs and stays listed.
+func TestVCSNamedRegularFilesListed(t *testing.T) {
+	root := tempRoot(t)
+	writeTree(t, root, map[string]string{
+		".jj":  "a note\n",
+		".hg":  "a note\n",
+		".svn": "a note\n",
+	})
+	for _, name := range []string{".jj", ".hg", ".svn"} {
+		t.Run(name, func(t *testing.T) {
+			mustContain(t, run(t, name, root, 0), name, "— 1 files")
+		})
+	}
+}
+
 func TestPopulatedJJExcluded(t *testing.T) {
 	root := tempRoot(t)
 	writeTree(t, root, map[string]string{

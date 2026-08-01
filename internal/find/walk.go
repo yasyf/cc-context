@@ -240,10 +240,12 @@ func countHidden(ctx context.Context, root string, globs []string, shown int) (i
 }
 
 // vcsStoreFile reports whether name is a VCS store that reached the walk as a
-// regular file — a linked worktree's .git gitdir pointer, which gocodewalker's
-// directory-only ExcludeDirectory never prunes.
+// regular file — a linked worktree's or submodule's .git gitdir pointer, which
+// gocodewalker's directory-only ExcludeDirectory never prunes. Only .git has
+// that file form; .jj, .hg, and .svn are always directories, so a regular file
+// carrying one of those names is the user's own and stays listed.
 func vcsStoreFile(name string) bool {
-	return slices.Contains(VCSStoreDirs, name)
+	return name == ".git"
 }
 
 // newWalker builds a gocodewalker rooted at root that emits dotfiles and tolerates
