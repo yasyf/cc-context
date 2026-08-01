@@ -179,7 +179,11 @@ func collectVcsInfo(ctx context.Context, l lane, o vcsInfoOpts) (vcsInfo, error)
 // else's repo — is probed here instead: what graphite has available is worth
 // reporting even where the lane refused to use it.
 func infoGraphite(ctx context.Context, l lane, o vcsInfoOpts) (graphiteInfo, error) {
-	g := graphiteInfo{Config: vcs.GraphiteRepo(l.checkout)}
+	config, err := vcs.GraphiteRepo(l.checkout)
+	if err != nil {
+		return graphiteInfo{}, fmt.Errorf("info: %w", err)
+	}
+	g := graphiteInfo{Config: config}
 	if !g.Config {
 		return g, nil
 	}
@@ -313,37 +317,87 @@ func infoGitDirty(ctx context.Context, root string, info *vcsInfo) error {
 }
 
 // infoDownstack resolves chain — gt's branch-first walk — into base-first
-// entries carrying each branch's PR. A branch with no PR, or no gh to ask
-// with, still reports its name: the caller needs the whole submit set.
+// entries carrying each branch's PR, in one round trip for the whole stack. A
+// branch with no PR, no gh to ask with, or a query GitHub refused still reports
+// its name: the caller needs the whole submit set.
 func infoDownstack(ctx context.Context, root string, chain []string) []stackEntry {
-	_, ghErr := exec.LookPath("gh")
 	entries := make([]stackEntry, 0, len(chain))
 	for i := len(chain) - 1; i >= 0; i-- {
-		entry := stackEntry{Branch: chain[i]}
-		if ghErr == nil {
-			infoBranchPR(ctx, root, &entry)
-		}
-		entries = append(entries, entry)
+		entries = append(entries, stackEntry{Branch: chain[i]})
 	}
+	if len(entries) == 0 {
+		return entries
+	}
+	if _, err := exec.LookPath("gh"); err != nil {
+		return entries
+	}
+	resolveDownstackPRs(ctx, root, entries)
 	return entries
 }
 
-func infoBranchPR(ctx context.Context, root string, entry *stackEntry) {
-	out, err := render.RunCLIDir(ctx, root, "gh", []string{"pr", "view", entry.Branch, "--json", "number,url,body"})
+// resolveDownstackPRs fills every entry's pull request from one gh api graphql
+// call, which is the only batch gh exposes: pr list --head takes a single branch,
+// so a list-based batch would have to over-fetch and filter, making --limit a
+// correctness knob. {owner} and {repo} are gh's own placeholders for the
+// repository of the working directory, so the batch needs no metadata lookup.
+func resolveDownstackPRs(ctx context.Context, root string, entries []stackEntry) {
+	argv := make([]string, 0, 8+2*len(entries))
+	argv = append(argv, "api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}")
+	for i, entry := range entries {
+		argv = append(argv, "-f", downstackPRAlias(i)+"="+entry.Branch)
+	}
+	argv = append(argv, "-f", "query="+downstackPRQuery(len(entries)))
+	out, err := render.RunCLIDir(ctx, root, "gh", argv)
 	if err != nil {
 		return
 	}
-	var pr struct {
-		Number int    `json:"number"`
-		URL    string `json:"url"`
-		Body   string `json:"body"`
+	var resp struct {
+		Data struct {
+			Repository map[string]struct {
+				Nodes []struct {
+					Number int    `json:"number"`
+					URL    string `json:"url"`
+					Body   string `json:"body"`
+				} `json:"nodes"`
+			} `json:"repository"`
+		} `json:"data"`
 	}
-	if err := json.Unmarshal([]byte(out), &pr); err != nil {
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
 		return
 	}
-	entry.PR = pr.Number
-	entry.URL = pr.URL
-	entry.HasBody = strings.TrimSpace(pr.Body) != ""
+	for i := range entries {
+		nodes := resp.Data.Repository[downstackPRAlias(i)].Nodes
+		if len(nodes) == 0 {
+			continue
+		}
+		entries[i].PR = nodes[0].Number
+		entries[i].URL = nodes[0].URL
+		entries[i].HasBody = strings.TrimSpace(nodes[0].Body) != ""
+	}
+}
+
+// downstackPRAlias names one branch's field in the batched query. A GraphQL
+// alias takes neither "/" nor "." nor "-", which branch names do, so the
+// branch's position stands in for its name.
+func downstackPRAlias(i int) string {
+	return fmt.Sprintf("b%d", i)
+}
+
+// downstackPRQuery renders one aliased pullRequests field per branch. It names
+// no state filter, because gh pr view — the per-branch call this replaced — has
+// none either and resolves a merged pull request just as happily; and it orders
+// ascending so a branch carrying more than one pull request resolves to the
+// same, oldest one on every run.
+func downstackPRQuery(n int) string {
+	decls := make([]string, 0, n+2)
+	decls = append(decls, "$owner: String!", "$repo: String!")
+	var fields strings.Builder
+	for i := range n {
+		alias := downstackPRAlias(i)
+		decls = append(decls, "$"+alias+": String!")
+		fmt.Fprintf(&fields, "    %s: pullRequests(headRefName: $%s, first: 1, orderBy: {field: CREATED_AT, direction: ASC}) { nodes { number url body } }\n", alias, alias)
+	}
+	return fmt.Sprintf("query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}", strings.Join(decls, ", "), fields.String())
 }
 
 // infoWorktree places this working copy inside its repository and names the
@@ -437,7 +491,9 @@ func renderVcsInfo(info vcsInfo) string {
 	}
 	if wt := info.Worktree; wt != nil {
 		line("shape", wt.Shape)
-		line("main-root", wt.MainRoot)
+		if wt.MainRoot != "" {
+			line("main-root", wt.MainRoot)
+		}
 		if wt.CommonDir != "" {
 			line("common-dir", wt.CommonDir)
 		}

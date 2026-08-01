@@ -115,7 +115,11 @@ func TestGraphiteRepo(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ResolveCheckout(%q): %v", tt.dir, err)
 			}
-			if got := GraphiteRepo(c); got != tt.want {
+			got, err := GraphiteRepo(c)
+			if err != nil {
+				t.Fatalf("GraphiteRepo(%q): %v", tt.dir, err)
+			}
+			if got != tt.want {
 				t.Fatalf("GraphiteRepo(%q) = %v, want %v", tt.dir, got, tt.want)
 			}
 		})
@@ -135,6 +139,28 @@ func TestGraphiteRepoDangling(t *testing.T) {
 	var broken *BrokenCheckout
 	if !errors.As(err, &broken) {
 		t.Fatalf("ResolveCheckout(%q) error = %v, want a *BrokenCheckout", dir, err)
+	}
+}
+
+// TestGraphiteRepoUnreadable pins the distinction the bool alone cannot carry: a
+// config that exists but cannot be stat'd must not answer the same false a repo
+// Graphite has never seen answers, since that false routes a mutation off the gt
+// lane.
+func TestGraphiteRepoUnreadable(t *testing.T) {
+	root := t.TempDir()
+	common := filepath.Join(root, ".git")
+	mustMkdir(t, common)
+	config := filepath.Join(common, ".graphite_repo_config")
+	if err := os.Symlink(config, config); err != nil {
+		t.Fatalf("symlink %q: %v", config, err)
+	}
+
+	got, err := GraphiteRepo(Checkout{CommonDir: common})
+	if err == nil {
+		t.Fatalf("GraphiteRepo = (%v, nil), want a stat error", got)
+	}
+	if got {
+		t.Errorf("GraphiteRepo = %v alongside the error, want false", got)
 	}
 }
 
@@ -170,7 +196,11 @@ func TestGraphiteRepoWorktree(t *testing.T) {
 			if c.Shape != tt.wantShape {
 				t.Errorf("Shape = %v, want %v", c.Shape, tt.wantShape)
 			}
-			if got := GraphiteRepo(c); got != tt.want {
+			got, err := GraphiteRepo(c)
+			if err != nil {
+				t.Fatalf("GraphiteRepo(%q): %v", tt.dir, err)
+			}
+			if got != tt.want {
 				t.Fatalf("GraphiteRepo(%q) = %v, want %v", tt.dir, got, tt.want)
 			}
 		})

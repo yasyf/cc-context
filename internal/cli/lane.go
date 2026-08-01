@@ -117,13 +117,15 @@ func resolveLane(ctx context.Context, name, dir string, noGT bool) (lane, error)
 //
 // A broken checkout is the one error returned alongside a populated lane: the
 // backend and the working copy are known even when the repository behind them
-// is not, and resolveLaneReport hands that diagnosis on rather than exiting.
+// is not, and resolveLaneReport hands that diagnosis on rather than exiting. The
+// lane takes them off the partial checkout ResolveCheckout returns with the
+// error, so the root it reports is the canonical one the diagnosis names — the
+// two lines of that report are one path spelled one way.
 func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh bool) (lane, error) {
 	ck, err := vcs.ResolveCheckout(dir)
 	var broken *vcs.BrokenCheckout
 	if errors.As(err, &broken) {
-		kind, root := vcs.DetectRoot(dir)
-		return lane{kind: kind, root: root, broken: broken}, fmt.Errorf("%s: %w", name, err)
+		return lane{kind: ck.Kind, root: ck.Root, broken: broken}, fmt.Errorf("%s: %w", name, err)
 	}
 	if err != nil {
 		return lane{}, fmt.Errorf("%s: %w", name, err)
@@ -136,7 +138,11 @@ func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh boo
 	if noGT {
 		return l, nil
 	}
-	if !vcs.GraphiteRepo(ck) {
+	graphite, err := vcs.GraphiteRepo(ck)
+	if err != nil {
+		return lane{}, fmt.Errorf("%s: %w", name, err)
+	}
+	if !graphite {
 		return l, nil
 	}
 	if gtDisabled(ctx, root) {

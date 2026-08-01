@@ -288,8 +288,31 @@ exit 0
 	gh := "#!/bin/sh\n" + log("gh") + `case "$1 $2" in
   "repo view") printf '%s' "$GH_REPO_VIEW_JSON" ;;
   "api graphql")
-    if [ -n "$GH_VIEWER_JSON" ]; then printf '%s' "$GH_VIEWER_JSON"
-    else printf '{"data":{"viewer":{"login":"yasyf","organizations":{"nodes":[]}}}}'; fi ;;
+    case "$*" in
+      *pullRequests*)
+        # One aliased field per branch, off the same GH_PR_VIEW_* fixtures the
+        # per-branch gh pr view read; an empty node set is a branch with no PR.
+        printf '{"data":{"repository":{'
+        sep=
+        for a in "$@"; do
+          case "$a" in b[0-9]*=*) ;; *) continue ;; esac
+          branch=${a#*=}
+          node=
+          if [ -z "$GH_PR_VIEW_NOT_FOUND" ]; then
+            if [ -n "$GH_PR_VIEW_DIR" ] && [ -r "$GH_PR_VIEW_DIR/$branch" ]; then
+              IFS= read -r node < "$GH_PR_VIEW_DIR/$branch" || :
+            else
+              node=$GH_PR_VIEW_JSON
+            fi
+          fi
+          printf '%s"%s":{"nodes":[%s]}' "$sep" "${a%%=*}" "$node"
+          sep=,
+        done
+        printf '}}}' ;;
+      *)
+        if [ -n "$GH_VIEWER_JSON" ]; then printf '%s' "$GH_VIEWER_JSON"
+        else printf '{"data":{"viewer":{"login":"yasyf","organizations":{"nodes":[]}}}}'; fi ;;
+    esac ;;
   "pr view")
     if [ -n "$GH_PR_VIEW_NOT_FOUND" ]; then
       printf 'no pull requests found for branch "%s"\n' "$3" >&2
@@ -332,6 +355,7 @@ exit 0
       *--log-failed*) eval "printf '%s' \"\${GH_LOG_FAILED_$id:-\$GH_LOG_FAILED}\"" ;;
       *) eval "printf '%s' \"\${GH_RUN_VIEW_JSON_$id:-\$GH_RUN_VIEW_JSON}\"" ;;
     esac ;;
+  *) printf 'fake gh: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
 esac
 exit 0
 `
@@ -505,6 +529,17 @@ var (
 	ghRunWatchArgv = []string{"gh", "run", "watch", "42", "--exit-status"}
 	ghRunViewArgv  = []string{"gh", "run", "view", "42", "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"}
 )
+
+// ghDownstackPRArgv is the one batched pull request lookup a gt-lane report
+// makes, in place of a gh pr view per branch. branches are base-first, the order
+// infoDownstack aliases them in.
+func ghDownstackPRArgv(branches ...string) []string {
+	argv := []string{"gh", "api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}"}
+	for i, b := range branches {
+		argv = append(argv, "-f", fmt.Sprintf("b%d=%s", i, b))
+	}
+	return append(argv, "-f", "query="+downstackPRQuery(len(branches)))
+}
 
 func assertInvocations(t *testing.T, got, want [][]string) {
 	t.Helper()
@@ -4037,28 +4072,28 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 
 func TestShipGTStackedHappyPath(t *testing.T) {
 	tests := []struct {
-		name      string
-		branch    string
-		stateJSON string
-		dryRun    bool
-		prViews   []string
-		wantSeg   string
+		name       string
+		branch     string
+		stateJSON  string
+		dryRun     bool
+		prBranches []string
+		wantSeg    string
 	}{
 		{
-			name:      "depth 1",
-			branch:    "feature",
-			stateJSON: `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`,
-			prViews:   []string{"feature"},
-			wantSeg:   "submitted feature → PR #7 https://github.com/x/pull/7",
+			name:       "depth 1",
+			branch:     "feature",
+			stateJSON:  `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`,
+			prBranches: []string{"feature"},
+			wantSeg:    "submitted feature → PR #7 https://github.com/x/pull/7",
 		},
 		{
 			name:   "depth 2",
 			branch: "feature2",
 			stateJSON: `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},` +
 				`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`,
-			dryRun:  true,
-			prViews: []string{"feature", "feature2"},
-			wantSeg: "submitted feature2 → PR #7 https://github.com/x/pull/7 (stack of 2: feature, feature2)",
+			dryRun:     true,
+			prBranches: []string{"feature", "feature2"},
+			wantSeg:    "submitted feature2 → PR #7 https://github.com/x/pull/7 (stack of 2: feature, feature2)",
 		},
 	}
 	for _, tt := range tests {
@@ -4094,10 +4129,10 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			if tt.dryRun {
 				want = append(want, []string{"gt", "submit", "--dry-run", "--no-interactive"})
 			}
-			want = append(want, []string{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"})
-			for _, b := range tt.prViews {
-				want = append(want, []string{"gh", "pr", "view", b, "--json", "number,url,body"})
-			}
+			want = append(want,
+				[]string{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
+				ghDownstackPRArgv(tt.prBranches...),
+			)
 			assertInvocations(t, readInvocations(t, log), append(
 				want,
 				[]string{"git", "rev-parse", "HEAD"},
@@ -4140,7 +4175,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"gt", "state"},
 		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
-		{"gh", "pr", "view", "fix-frobnicate", "--json", "number,url,body"},
+		ghDownstackPRArgv("fix-frobnicate"),
 		{"git", "rev-parse", "HEAD"},
 		ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
 	})
@@ -5084,15 +5119,20 @@ func TestShipReviewsWiring(t *testing.T) {
 			t.Fatalf("ship error = %v", err)
 		}
 		var prViewBranches []string
+		var batched [][]string
 		for _, inv := range readInvocations(t, log) {
-			if len(inv) > 3 && inv[0] == "gh" && inv[1] == "pr" && inv[2] == "view" {
+			switch {
+			case len(inv) > 3 && inv[0] == "gh" && inv[1] == "pr" && inv[2] == "view":
 				prViewBranches = append(prViewBranches, inv[3])
+			case len(inv) > 2 && inv[0] == "gh" && inv[1] == "api" && inv[2] == "graphql":
+				batched = append(batched, inv)
 			}
 		}
-		want := []string{"feature", "feature2", "feature2", "feature"}
+		want := []string{"feature2", "feature"}
 		if !reflect.DeepEqual(prViewBranches, want) {
 			t.Errorf("gh pr view branches = %v, want %v", prViewBranches, want)
 		}
+		assertInvocations(t, batched, [][]string{ghDownstackPRArgv("feature", "feature2")})
 		for _, w := range []string{"reviews: no open PR for feature2", "reviews: no open PR for feature"} {
 			if !strings.Contains(out, w) {
 				t.Errorf("stdout %q missing %q", out, w)

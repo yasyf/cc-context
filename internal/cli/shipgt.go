@@ -386,53 +386,56 @@ func classifyGTSubmit(err error) error {
 // touch more than the current branch runs --dry-run first ("Reports the PRs
 // that would be submitted and terminates") and names every branch it will
 // publish in the report.
-func shipPushGT(ctx context.Context, root string, o shipOpts, meta map[string]prMeta, branch string) (submitted string, bodyless []string, err error) {
+// The resolved downstack it returns is the one the pull request step then
+// backfills into, so the stack is walked and its pull requests fetched once.
+func shipPushGT(ctx context.Context, root string, o shipOpts, meta map[string]prMeta, branch string) (submitted string, bodyless []string, stack []stackEntry, err error) {
 	state, err := gtStateQuery(ctx, "ship")
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	trunk, err := gtTrunkBranch("ship", state)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	var chain []string
 	if branch != trunk {
 		if chain, err = gtDownstack("ship", state, branch, trunk); err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
 	}
 	if len(chain) > 1 {
 		if _, err := render.RunCLI(ctx, "gt", []string{"submit", "--dry-run", "--no-interactive"}); err != nil {
-			return "", nil, classifyGTSubmit(err)
+			return "", nil, nil, classifyGTSubmit(err)
 		}
 	}
 	if _, err := render.RunCLI(ctx, "gt", gtSubmitArgv(o)); err != nil {
-		return "", nil, classifyGTSubmit(err)
+		return "", nil, nil, classifyGTSubmit(err)
 	}
-	submitted, bodyless = gtPRSegment(ctx, root, branch, chain, meta)
-	return submitted, bodyless, nil
+	submitted, bodyless, stack = gtPRSegment(ctx, root, branch, chain, meta)
+	return submitted, bodyless, stack, nil
 }
 
-func gtPRSegment(ctx context.Context, root, branch string, chain []string, meta map[string]prMeta) (submitted string, bodyless []string) {
-	stack := ""
+func gtPRSegment(ctx context.Context, root, branch string, chain []string, meta map[string]prMeta) (submitted string, bodyless []string, stack []stackEntry) {
+	stackSeg := ""
 	if len(chain) > 1 {
 		names := make([]string, len(chain))
 		for i, b := range chain {
 			names[len(chain)-1-i] = b
 		}
-		stack = fmt.Sprintf(" (stack of %d: %s)", len(chain), strings.Join(names, ", "))
+		stackSeg = fmt.Sprintf(" (stack of %d: %s)", len(chain), strings.Join(names, ", "))
 	}
-	submitted = "submitted " + branch + stack
-	for _, entry := range infoDownstack(ctx, root, chain) {
+	submitted = "submitted " + branch + stackSeg
+	stack = infoDownstack(ctx, root, chain)
+	for _, entry := range stack {
 		if entry.PR == 0 {
 			continue
 		}
 		if entry.Branch == branch {
-			submitted = fmt.Sprintf("submitted %s → PR #%d %s%s", branch, entry.PR, entry.URL, stack)
+			submitted = fmt.Sprintf("submitted %s → PR #%d %s%s", branch, entry.PR, entry.URL, stackSeg)
 		}
 		if !entry.HasBody && !meta[entry.Branch].writesBody() {
 			bodyless = append(bodyless, fmt.Sprintf("bodyless PR #%d %s", entry.PR, entry.Branch))
 		}
 	}
-	return submitted, bodyless
+	return submitted, bodyless, stack
 }

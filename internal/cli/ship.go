@@ -324,8 +324,9 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	var rebased int
 	var prSeg string
 	var bodylessSegs []string
+	var gtStack []stackEntry
 	if gtLane {
-		prSeg, bodylessSegs, err = shipPushGT(ctx, root, o, meta, branch)
+		prSeg, bodylessSegs, gtStack, err = shipPushGT(ctx, root, o, meta, branch)
 	} else {
 		remote, rebased, err = shipPush(ctx, kind, o, branch, preAmendSHA)
 	}
@@ -347,7 +348,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	}
 
 	if prRun {
-		seg, err := shipPR(ctx, l, prNWO, branch, plan.trunk, subject, meta)
+		seg, err := shipPR(ctx, l, prNWO, branch, plan.trunk, subject, meta, gtStack)
 		if err != nil {
 			return err
 		}

@@ -17,23 +17,26 @@ import (
 // neither tool to build them and allows neither to resolve them. The live tests
 // below keep the hand-written shapes honest against what the tools really write.
 type handFixtures struct {
-	gitMain      string
-	gitLinked    string
-	relLinked    string
-	submodule    string
-	coloc        string
-	colocLinked  string
-	jjWorkspace  string
-	colocWS      string
-	jjNoStore    string
-	danglingGit  string
-	danglingJJ   string
-	notAPointer  string
-	plain        string
-	linkedAdmin  string
-	colocAdmin   string
-	submodAdmin  string
-	colocLinkAdm string
+	gitMain        string
+	gitLinked      string
+	relLinked      string
+	submodule      string
+	coloc          string
+	colocLinked    string
+	jjWorkspace    string
+	colocWS        string
+	jjNoStore      string
+	danglingGit    string
+	danglingJJ     string
+	emptyJJ        string
+	danglingCommon string
+	emptyCommon    string
+	notAPointer    string
+	plain          string
+	linkedAdmin    string
+	colocAdmin     string
+	submodAdmin    string
+	colocLinkAdm   string
 }
 
 func newHandFixtures(t *testing.T) handFixtures {
@@ -85,6 +88,22 @@ func newHandFixtures(t *testing.T) handFixtures {
 	mustMkdir(t, filepath.Join(fx.danglingJJ, ".jj"))
 	mustWriteFile(t, filepath.Join(fx.danglingJJ, ".jj", "repo"), "../../nowhere/.jj/repo\n")
 
+	// A truncated pointer resolves to the .jj holding it, which exists — the one
+	// shape a stat check alone accepts as a workspace owning its own store.
+	fx.emptyJJ = filepath.Join(base, "empty-jj")
+	mustMkdir(t, filepath.Join(fx.emptyJJ, ".jj"))
+	mustWriteFile(t, filepath.Join(fx.emptyJJ, ".jj", "repo"), "\n")
+
+	fx.danglingCommon = filepath.Join(base, "dangling-common")
+	writeGitWorktree(t, fx.gitMain, fx.danglingCommon, "dangling-common", filepath.Join(fx.gitMain, ".git", "worktrees", "dangling-common"))
+	mustWriteFile(t, filepath.Join(fx.gitMain, ".git", "worktrees", "dangling-common", "commondir"), "../../../nowhere\n")
+
+	// An empty commondir resolves to the worktree's own admin dir, which would
+	// key it apart from the repository it belongs to rather than failing.
+	fx.emptyCommon = filepath.Join(base, "empty-common")
+	writeGitWorktree(t, fx.gitMain, fx.emptyCommon, "empty-common", filepath.Join(fx.gitMain, ".git", "worktrees", "empty-common"))
+	mustWriteFile(t, filepath.Join(fx.gitMain, ".git", "worktrees", "empty-common", "commondir"), "\n")
+
 	fx.notAPointer = filepath.Join(base, "not-a-pointer")
 	mustMkdir(t, fx.notAPointer)
 	mustWriteFile(t, filepath.Join(fx.notAPointer, ".git"), "not a gitdir line\n")
@@ -96,7 +115,9 @@ func newHandFixtures(t *testing.T) handFixtures {
 
 // TestResolveCheckout is the whole classification table, run with PATH pointed
 // at an empty directory: any subprocess on a layout git or jj actually writes
-// fails the row rather than silently costing ship's preflight a fork.
+// fails the row rather than silently costing ship's preflight a fork. A refused
+// row checks the two fields the error contract promises — Kind and Root — and
+// nothing else, since the rest is what failed to resolve.
 func TestResolveCheckout(t *testing.T) {
 	fx := newHandFixtures(t)
 	gitCommon := filepath.Join(fx.gitMain, ".git")
@@ -206,9 +227,30 @@ func TestResolveCheckout(t *testing.T) {
 			want:    Checkout{Kind: None, Root: fx.plain, Shape: ShapeMain, MainRoot: fx.plain},
 			wantKey: fx.plain,
 		},
-		{name: "gitdir pointer resolving to nothing", dir: fx.danglingGit, wantErr: true, wantBroken: true},
-		{name: "jj workspace pointer resolving to nothing", dir: fx.danglingJJ, wantErr: true, wantBroken: true},
-		{name: "git file holding no gitdir pointer", dir: fx.notAPointer, wantErr: true, wantBroken: true},
+		{
+			name: "gitdir pointer resolving to nothing", dir: fx.danglingGit,
+			want: Checkout{Kind: Git, Root: fx.danglingGit}, wantErr: true, wantBroken: true,
+		},
+		{
+			name: "jj workspace pointer resolving to nothing", dir: fx.danglingJJ,
+			want: Checkout{Kind: JJ, Root: fx.danglingJJ}, wantErr: true, wantBroken: true,
+		},
+		{
+			name: "empty jj workspace pointer", dir: fx.emptyJJ,
+			want: Checkout{Kind: JJ, Root: fx.emptyJJ}, wantErr: true, wantBroken: true,
+		},
+		{
+			name: "commondir resolving to nothing", dir: fx.danglingCommon,
+			want: Checkout{Kind: Git, Root: fx.danglingCommon}, wantErr: true, wantBroken: true,
+		},
+		{
+			name: "empty commondir", dir: fx.emptyCommon,
+			want: Checkout{Kind: Git, Root: fx.emptyCommon}, wantErr: true, wantBroken: true,
+		},
+		{
+			name: "git file holding no gitdir pointer", dir: fx.notAPointer,
+			want: Checkout{Kind: Git, Root: fx.notAPointer}, wantErr: true, wantBroken: true,
+		},
 	}
 
 	t.Setenv("PATH", t.TempDir())
@@ -222,6 +264,9 @@ func TestResolveCheckout(t *testing.T) {
 				var broken *BrokenCheckout
 				if errors.As(err, &broken) != tt.wantBroken {
 					t.Fatalf("ResolveCheckout(%q) error = %v, want a *BrokenCheckout: %v", tt.dir, err, tt.wantBroken)
+				}
+				if got.Kind != tt.want.Kind || got.Root != tt.want.Root {
+					t.Fatalf("ResolveCheckout(%q) = (%v, %q), want the partial (%v, %q)", tt.dir, got.Kind, got.Root, tt.want.Kind, tt.want.Root)
 				}
 				return
 			}
@@ -309,6 +354,94 @@ func TestResolveCheckoutLive(t *testing.T) {
 		t.Fatalf("ResolveCheckout of a second repo: %v", err)
 	} else if other.RepoKey() == mainCheckout.RepoKey() {
 		t.Errorf("separate repositories share the key %q", other.RepoKey())
+	}
+}
+
+// TestResolveCheckoutSymlinkedAdminLive covers the identity a canonical root
+// cannot reach: when .git is itself a symlink to an admin dir living elsewhere,
+// git resolves it before writing a linked worktree's pointer, so a main checkout
+// keeping the symlink spelling would key one repository under two names.
+func TestResolveCheckoutSymlinkedAdminLive(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	main := initLiveGitRepo(t)
+	admin := filepath.Join(canon(t, t.TempDir()), "admin")
+	if err := os.Rename(filepath.Join(main, ".git"), admin); err != nil {
+		t.Fatalf("move admin dir: %v", err)
+	}
+	if err := os.Symlink(admin, filepath.Join(main, ".git")); err != nil {
+		t.Fatalf("symlink admin dir: %v", err)
+	}
+	linked := filepath.Join(t.TempDir(), "linked")
+	runGit(t, main, "worktree", "add", "-q", "-b", "feature", linked)
+
+	mainCheckout, err := ResolveCheckout(main)
+	if err != nil {
+		t.Fatalf("ResolveCheckout(%q): %v", main, err)
+	}
+	if mainCheckout.CommonDir != admin {
+		t.Errorf("CommonDir = %q, want the symlink target %q", mainCheckout.CommonDir, admin)
+	}
+	if mainCheckout.MainRoot != canon(t, main) {
+		t.Errorf("MainRoot = %q, want %q", mainCheckout.MainRoot, canon(t, main))
+	}
+	linkedCheckout, err := ResolveCheckout(linked)
+	if err != nil {
+		t.Fatalf("ResolveCheckout(%q): %v", linked, err)
+	}
+	if linkedCheckout.RepoKey() != mainCheckout.RepoKey() {
+		t.Fatalf("RepoKey mismatch: linked %q, main %q", linkedCheckout.RepoKey(), mainCheckout.RepoKey())
+	}
+}
+
+// TestResolveCheckoutNoMainRootLive covers the two layouts whose common dir is
+// not a <root>/.git: a bare repository and the admin dir a --separate-git-dir
+// checkout points at. Neither names a working copy — git's own worktree list
+// reports the common dir itself — so MainRoot stays empty rather than naming the
+// unrelated directory one level up.
+func TestResolveCheckoutNoMainRootLive(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	seed := initLiveGitRepo(t)
+	runGit(t, seed, "branch", "-M", "trunk")
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	runGit(t, seed, "clone", "-q", "--bare", seed, bare)
+	fromBare := filepath.Join(t.TempDir(), "from-bare")
+	runGit(t, bare, "worktree", "add", "-q", fromBare, "trunk")
+
+	base := t.TempDir()
+	admin := filepath.Join(base, "admin")
+	separate := filepath.Join(base, "main")
+	runGit(t, base, "init", "-q", "--separate-git-dir", admin, separate)
+	runGit(t, separate, "config", "user.email", "t@t.t")
+	runGit(t, separate, "config", "user.name", "t")
+	runGit(t, separate, "commit", "-q", "--allow-empty", "-m", "c")
+	fromSeparate := filepath.Join(t.TempDir(), "from-separate")
+	runGit(t, separate, "worktree", "add", "-q", "-b", "feature", fromSeparate)
+
+	tests := []struct {
+		name      string
+		dir       string
+		wantComon string
+	}{
+		{"worktree of a bare repository", fromBare, canon(t, bare)},
+		{"worktree of a --separate-git-dir checkout", fromSeparate, canon(t, admin)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ResolveCheckout(tt.dir)
+			if err != nil {
+				t.Fatalf("ResolveCheckout(%q): %v", tt.dir, err)
+			}
+			if got.CommonDir != tt.wantComon {
+				t.Fatalf("CommonDir = %q, want %q", got.CommonDir, tt.wantComon)
+			}
+			if got.MainRoot != "" {
+				t.Errorf("MainRoot = %q, want no main working copy", got.MainRoot)
+			}
+		})
 	}
 }
 
@@ -516,6 +649,36 @@ func TestBranchHolders(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("BranchHolders =\n\t%+v\nwant\n\t%+v", got, want)
+	}
+}
+
+// TestResolveCheckoutBrokenRootCanonical pins the half of the error contract a
+// fixture built on an already-canonical path cannot test: the Root returned
+// beside a *BrokenCheckout is canonicalized exactly as a healthy checkout's is,
+// so a caller reporting both never prints one path in two spellings.
+func TestResolveCheckoutBrokenRootCanonical(t *testing.T) {
+	base := canon(t, t.TempDir())
+	dir := filepath.Join(base, "wt")
+	mustMkdir(t, dir)
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatalf("symlink %q: %v", dir, err)
+	}
+	mustWriteFile(t, filepath.Join(dir, ".git"), gitdirPrefix+"gone/worktrees/wt\n")
+
+	got, err := ResolveCheckout(link)
+	var broken *BrokenCheckout
+	if !errors.As(err, &broken) {
+		t.Fatalf("ResolveCheckout(%q) error = %v, want a *BrokenCheckout", link, err)
+	}
+	if got.Root != dir {
+		t.Errorf("Root = %q, want the canonical %q rather than the symlinked %q", got.Root, dir, link)
+	}
+	if got.Root != broken.Root {
+		t.Errorf("Root = %q, error names %q", got.Root, broken.Root)
+	}
+	if got.Kind != Git {
+		t.Errorf("Kind = %v, want %v", got.Kind, Git)
 	}
 }
 

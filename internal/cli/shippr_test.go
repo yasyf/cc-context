@@ -56,8 +56,9 @@ func seedPRViews(t *testing.T, payloads map[string]string) {
 	t.Setenv("GH_PR_VIEW_DIR", dir)
 }
 
-// assertNoPRStep fails on any gh verb only the pull request step issues. The gt
-// lane's own gh pr view (the submit's report segment) is deliberately not one.
+// assertNoPRStep fails on any gh verb only the pull request step issues. The
+// batched lookup behind the gt lane's submit report is deliberately not one —
+// it is a gh api graphql call, and every verb named here mutates or lists.
 func assertNoPRStep(t *testing.T, invocations [][]string) {
 	t.Helper()
 	for _, inv := range invocations {
@@ -215,10 +216,7 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"gt", "state"},
 		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
-		{"gh", "pr", "view", "feature", "--json", "number,url,body"},
-		{"git", "branch", "--show-current"},
-		{"gt", "state"},
-		{"gh", "pr", "view", "feature", "--json", "number,url,body"},
+		ghDownstackPRArgv("feature"),
 		{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "Better title", "--body-file", body},
 	})
 }
@@ -251,19 +249,14 @@ func TestShipPRGTBackfill(t *testing.T) {
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	var pr [][]string
+	var gh [][]string
 	for _, inv := range readInvocations(t, log) {
-		if inv[0] == "gh" && inv[1] == "pr" {
-			pr = append(pr, inv)
+		if inv[0] == "gh" {
+			gh = append(gh, inv)
 		}
 	}
-	assertInvocations(t, pr, [][]string{
-		{"gh", "pr", "view", "base", "--json", "number,url,body"},
-		{"gh", "pr", "view", "feature", "--json", "number,url,body"},
-		{"gh", "pr", "view", "feature2", "--json", "number,url,body"},
-		{"gh", "pr", "view", "base", "--json", "number,url,body"},
-		{"gh", "pr", "view", "feature", "--json", "number,url,body"},
-		{"gh", "pr", "view", "feature2", "--json", "number,url,body"},
+	assertInvocations(t, gh, [][]string{
+		ghDownstackPRArgv("base", "feature", "feature2"),
 		{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--body-file", tipBody},
 		{"gh", "pr", "edit", "6", "--repo", fakePRRepo, "--body-file", midBody},
 	})
@@ -287,7 +280,15 @@ func TestShipPRUnusedCostsNothing(t *testing.T) {
 		if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
-		assertNoPRStep(t, readInvocations(t, log))
+		invocations := readInvocations(t, log)
+		assertNoPRStep(t, invocations)
+		var gh [][]string
+		for _, inv := range invocations {
+			if inv[0] == "gh" {
+				gh = append(gh, inv)
+			}
+		}
+		assertInvocations(t, gh, [][]string{ghDownstackPRArgv("feature")})
 	})
 	t.Run("--no-pr", func(t *testing.T) {
 		log := setupShip(t, ".git", true)

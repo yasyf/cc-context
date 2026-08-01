@@ -11,7 +11,8 @@ import (
 
 // infoFakes overlays the ship fakes with the arms ccx vcs info needs — git
 // status/symbolic-ref/show-ref, the repository-wide for-each-ref that names each
-// branch's holding worktree, gt --version, and a per-branch gh pr view. Each
+// branch's holding worktree, gt --version, and the batched downstack pull
+// request query, whose per-branch payload is $GH_PR_VIEW_<branch>. Each
 // wrapper handles its own arms and execs the renamed base fake for the rest, so
 // writeShipFakes stays untouched.
 //
@@ -73,14 +74,20 @@ esac
 exec gt-base "$@"
 `)
 	wrap("gh", "#!/bin/sh\n"+`case "$1 $2" in
-  "pr view")
-    `+logRec("gh")+`    eval "json=\${GH_PR_VIEW_$3-}"
-    if [ -z "$json" ]; then
-      printf 'no pull requests found for branch "%s"\n' "$3" >&2
-      exit 1
-    fi
-    printf '%s' "$json"
-    exit 0 ;;
+  "api graphql")
+    case "$*" in
+      *pullRequests*)
+        `+logRec("gh")+`        printf '{"data":{"repository":{'
+        sep=
+        for a in "$@"; do
+          case "$a" in b[0-9]*=*) ;; *) continue ;; esac
+          eval "json=\${GH_PR_VIEW_${a#*=}-}"
+          printf '%s"%s":{"nodes":[%s]}' "$sep" "${a%%=*}" "$json"
+          sep=,
+        done
+        printf '}}}'
+        exit 0 ;;
+    esac ;;
 esac
 exec gh-base "$@"
 `)
@@ -630,7 +637,10 @@ func TestVcsInfoLinkedWorktree(t *testing.T) {
 	setupShip(t, "", true)
 	infoFakes(t)
 	root := infoRoot(t)
-	main := t.TempDir()
+	main, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve main checkout: %v", err)
+	}
 	common := filepath.Join(main, ".git")
 	admin := filepath.Join(common, "worktrees", "wt")
 	if err := os.MkdirAll(admin, 0o750); err != nil {
@@ -658,7 +668,7 @@ func TestVcsInfoLinkedWorktree(t *testing.T) {
 		t.Errorf("root = %q, want this checkout's own tree %q", got.Root, root)
 	}
 	// The repository's own paths are the gitdir pointer's bytes, resolved
-	// lexically, so two checkouts reaching one repository key it identically.
+	// symlink-free, so two checkouts reaching one repository key it identically.
 	want := worktreeInfo{
 		Shape:     "git worktree",
 		MainRoot:  main,
@@ -702,7 +712,8 @@ func TestVcsInfoBrokenCheckoutReported(t *testing.T) {
 }
 
 // TestVcsInfoWarmCacheSkipsRepoView proves a seeded record answers the GitHub
-// lookup outright: info is an orientation call, not a network round trip.
+// lookup outright: info is an orientation call, and the one round trip it still
+// makes is the downstack's own pull request lookup — one for the whole stack.
 func TestVcsInfoWarmCacheSkipsRepoView(t *testing.T) {
 	log := setupShipGT(t, true)
 	infoFakes(t)
@@ -712,6 +723,12 @@ func TestVcsInfoWarmCacheSkipsRepoView(t *testing.T) {
 	}
 	invocations := readInvocations(t, log)
 	assertNoInvocation(t, invocations, "gh", "repo", "view")
-	assertNoInvocation(t, invocations, "gh", "api", "graphql")
 	assertNoInvocation(t, invocations, "gt", "auth")
+	var graphql [][]string
+	for _, inv := range invocations {
+		if len(inv) > 2 && inv[0] == "gh" && inv[1] == "api" && inv[2] == "graphql" {
+			graphql = append(graphql, inv)
+		}
+	}
+	assertInvocations(t, graphql, [][]string{ghDownstackPRArgv("feature")})
 }

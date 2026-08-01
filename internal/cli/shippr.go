@@ -180,9 +180,9 @@ func shipPRRepo(ctx context.Context, l lane, plan branchPlan) (string, error) {
 // branch's pull request when there is none and restates exactly the fields this
 // invocation named when there is, so a description someone edited by hand
 // survives a re-ship that does not mention it.
-func shipPR(ctx context.Context, l lane, nwo, branch, trunk, subject string, meta map[string]prMeta) (string, error) {
+func shipPR(ctx context.Context, l lane, nwo, branch, trunk, subject string, meta map[string]prMeta, stack []stackEntry) (string, error) {
 	if l.gt {
-		return shipPRGT(ctx, l, nwo, meta)
+		return shipPRGT(ctx, l, nwo, meta, stack)
 	}
 	// A pull request from trunk into trunk is not a thing, and on a personal
 	// repository that is the normal place to ship from.
@@ -296,38 +296,16 @@ func prEditArgv(nwo string, number int, m prMeta) []string {
 	return argv
 }
 
-// shipPRGT backfills the pull requests gt submit just opened. The submit runs
-// with --no-edit, so every PR it creates arrives bodyless, and restating the
-// branches this invocation named is the only way a downstack PR gets a body at
-// all. A branch the caller did not name has nothing to write, so it is left
-// alone whether or not it already has one.
-func shipPRGT(ctx context.Context, l lane, nwo string, meta map[string]prMeta) (string, error) {
-	branch, err := gitCurrentBranch(ctx)
-	if err != nil {
-		return "", err
-	}
-	state, err := gtStateQuery(ctx, "ship")
-	if err != nil {
-		return "", err
-	}
-	trunk, err := gtTrunkBranch("ship", state)
-	if err != nil {
-		return "", err
-	}
-	if branch == "" || branch == trunk {
-		return "", nil
-	}
-	chain, err := gtDownstack("ship", state, branch, trunk)
-	if err != nil {
-		return "", err
-	}
-
-	// infoDownstack orders the stack base-first; the report reads tip-first, the
-	// way the submit segment ahead of it names the tip.
-	entries := infoDownstack(ctx, l.root, chain)
-	segs := make([]string, 0, len(entries))
-	for i := len(entries) - 1; i >= 0; i-- {
-		entry := entries[i]
+// shipPRGT backfills the pull requests gt submit just opened, over the downstack
+// the push step already resolved. The submit runs with --no-edit, so every PR it
+// creates arrives bodyless, and restating the branches this invocation named is
+// the only way a downstack PR gets a body at all. A branch the caller did not
+// name has nothing to write, so it is left alone whether or not it already has
+// one.
+func shipPRGT(ctx context.Context, l lane, nwo string, meta map[string]prMeta, stack []stackEntry) (string, error) {
+	segs := make([]string, 0, len(stack))
+	for i := len(stack) - 1; i >= 0; i-- {
+		entry := stack[i]
 		m := meta[entry.Branch]
 		fields := m.stated()
 		if len(fields) == 0 {

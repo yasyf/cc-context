@@ -64,13 +64,22 @@ func DetectRoot(dir string) (Kind, string) {
 // (.graphite_repo_config in the git common dir), the signal that routes ship to
 // the gt lane — even over a colocated jj root, since the config lives under
 // .git, and from a linked worktree, whose own admin dir never holds it. A jj
-// repository with no git backing has no common dir and so no config.
-func GraphiteRepo(c Checkout) bool {
+// repository with no git backing has no common dir and so no config. Only a
+// missing config answers false: a config that exists but cannot be stat'd is an
+// error, since routing a mutation off the gt lane because a probe failed is a
+// different answer from routing it off because Graphite is not here.
+func GraphiteRepo(c Checkout) (bool, error) {
 	if c.CommonDir == "" {
-		return false
+		return false, nil
 	}
-	_, err := os.Stat(filepath.Join(c.CommonDir, ".graphite_repo_config"))
-	return err == nil
+	config := filepath.Join(c.CommonDir, ".graphite_repo_config")
+	if _, err := os.Stat(config); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat graphite config %q: %w", config, err)
+	}
+	return true, nil
 }
 
 // stagedSource is the source string for a staged (index vs @-) diff; ResolveDiffPlan

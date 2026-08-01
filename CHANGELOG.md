@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exits 0: the branch it skipped is held somewhere else, and nothing else in the
   output said so. A trunk no checkout holds prints nothing — a detached main
   working copy under colocated jj is the usual reason, and it is not a failure.
+  A linked worktree of a bare repository, or of one made with
+  `git init --separate-git-dir`, reports no `main-root` at all, because there
+  is no main working copy — git's own `git worktree list` cannot recover one
+  either.
 
 ### Changed
 - **`ccx vcs info` reports the states it used to exit 1 on.** A working copy whose
@@ -30,6 +34,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   too. `--json` gains `worktree`, `trunk_holder`, `checkout_error`, and
   `graphite.stack_error`; every existing field keeps its shape and meaning, `root`
   included — it is this working copy, never the repository's.
+- **Repository caches are keyed on the repository, not the checkout.** The
+  GitHub record, the Graphite reachability verdict, and the contribution
+  guidelines were each cached per working copy: ccx identified a working copy
+  by what manages it and where it sits, and that pair was standing in for a
+  third fact — which repository it belongs to. With one checkout the
+  conflation is invisible. Across linked worktrees sharing one `.git`, one ref
+  namespace, and one Graphite database it is a whole failure class: measured
+  here, six checkouts of one repository each held their own cache directory,
+  so each paid its own `gh repo view` and its own reachability probe — 20s
+  timeout, 6.67s median — for a verdict that is identical by construction. All
+  three records now key on the admin dir every sibling shares. The
+  semantic-search index deliberately does not — it derives from working-tree
+  content, which genuinely differs between siblings. Two things a user will
+  observe: every existing cache record is orphaned on first run — the key is
+  the directory name, so an old record is never mis-read, only ignored, and
+  one refetch per repository restores it — and sibling checkouts now contend
+  on one lock rather than N, so total cost drops to one probe, but a single
+  command on a cold cache can wait behind a sibling's.
+- **The downstack pull-request lookup is one call, not one per branch.**
+  `ccx vcs info` and every gt-lane `ccx vcs ship` resolved the downstack's
+  pull requests with a `gh pr view` per branch, and ship did it from two
+  places that each re-derived the stack, so a two-branch stack cost four
+  lookups. It is now a single `gh api graphql` naming every branch: on a
+  two-branch stack, a ship with no PR flags went from 2 `gh` calls to 1, and
+  one carrying `--pr-body-file` from 5 to 2. Selection is unchanged — no state
+  filter, matching `gh pr view`, and a branch with two open pull requests
+  resolves to the older one deterministically.
 
 ### Fixed
 - **`ccx vcs info` failures named a command nobody ran.** Resolving the git lane's
@@ -38,6 +69,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `restack: git symbolic-ref refs/remotes/origin/HEAD: …` — so a failed report
   sent the reader off to a command they had not invoked. Both helpers now take
   their caller's own prefix.
+- **Ignore rules silently stopped applying in a linked git worktree.** A linked
+  worktree's `.git` is a file holding a `gitdir:` pointer, not a directory, so
+  `ccx repo find` joining `<root>/.git/info/exclude` resolved to nothing —
+  every `info/exclude` rule that worked in the main checkout silently stopped
+  applying there, no error, just more files than the ignore rules said. The
+  same file-not-directory fact put the pointer itself in the listing: the
+  walker excludes VCS directories, not files, and ccx walks hidden entries, so
+  `ccx repo find ".git"` returned a row from every linked worktree. Both now
+  resolve through the common dir.
 
 ## [0.39.0] - 2026-07-28
 

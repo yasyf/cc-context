@@ -45,7 +45,10 @@ type Checkout struct {
 	// objects, and Graphite state they contend over. Empty for a jj repository
 	// with no git backing.
 	CommonDir string
-	// MainRoot is the repository's own working copy, equal to Root for ShapeMain.
+	// MainRoot is the repository's own working copy, equal to Root for ShapeMain
+	// and empty for a repository that has none — a bare repository, or the admin
+	// dir a --separate-git-dir checkout points at, neither of which names the
+	// working copy behind it.
 	MainRoot string
 	// JJStore is the .jj/repo every workspace of a jj repository shares; empty
 	// when Kind is not JJ.
@@ -94,6 +97,14 @@ func (e *BrokenCheckout) Error() string {
 // the gitdir pointer it writes into a linked worktree: a root left as the caller
 // spelled it would key that worktree's repository differently from the main
 // checkout's, which is the one thing RepoKey exists to prevent.
+//
+// An error comes back with what was established before it, not the zero
+// Checkout, and exactly two of those fields are trustworthy: Kind and Root, the
+// latter in the canonical form above — enough to name the working copy in the
+// same spelling a healthy one would use. Shape, GitDir, CommonDir, MainRoot,
+// JJStore, and the RepoKey and Linked derived from them are unset or provisional
+// on that path and a caller may rely on none of them: the failure is precisely
+// that the repository behind the working copy did not resolve.
 func ResolveCheckout(dir string) (Checkout, error) {
 	kind, detected := DetectRoot(dir)
 	if kind == None {
@@ -111,7 +122,7 @@ func ResolveCheckout(dir string) (Checkout, error) {
 	if kind == JJ {
 		store, linked, err := jjStore(root)
 		if err != nil {
-			return Checkout{}, err
+			return c, err
 		}
 		c.JJStore = store
 		if linked {
@@ -129,16 +140,17 @@ func ResolveCheckout(dir string) (Checkout, error) {
 		return jjGitBacking(c)
 	}
 	if err != nil {
-		return Checkout{}, fmt.Errorf("stat %q: %w", gitPath, err)
+		return c, fmt.Errorf("stat %q: %w", gitPath, err)
 	}
 	if info.IsDir() {
-		c.GitDir, c.CommonDir = gitPath, gitPath
+		admin := canonical(gitPath)
+		c.GitDir, c.CommonDir = admin, admin
 		return c, nil
 	}
 
 	gitDir, common, err := gitPointer(gitPath)
 	if err != nil {
-		return Checkout{}, err
+		return c, err
 	}
 	c.GitDir, c.CommonDir = gitDir, common
 	// A .git file is not enough to make a checkout linked: a submodule's points
@@ -147,7 +159,7 @@ func ResolveCheckout(dir string) (Checkout, error) {
 	if gitDir == common {
 		return c, nil
 	}
-	c.MainRoot = filepath.Dir(common)
+	c.MainRoot = mainRootOf(common)
 	c.Shape = ShapeGitWorktree
 	if kind == JJ {
 		c.Shape = ShapeColocatedWorktree
@@ -162,10 +174,29 @@ func canonicalRoot(root string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve %q: %w", root, err)
 	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return resolved, nil
+	return canonical(abs), nil
+}
+
+// canonical resolves path's symlinks, the form git writes into the pointer files
+// of a linked worktree — including the case a canonical root does not cover, a
+// .git that is itself a symlink to an admin dir living elsewhere. A path that
+// resolves to nothing keeps the spelling it was named by, so a broken pointer is
+// reported as written.
+func canonical(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
 	}
-	return abs, nil
+	return path
+}
+
+// mainRootOf names the working copy behind a common dir, the way git's own
+// worktree list does: <root>/.git is the only layout naming one, so a bare
+// repository or the admin dir a --separate-git-dir checkout points at has none.
+func mainRootOf(common string) string {
+	if filepath.Base(common) != ".git" {
+		return ""
+	}
+	return filepath.Dir(common)
 }
 
 // jjStore resolves the .jj/repo every workspace of root's repository shares, and
@@ -189,7 +220,11 @@ func jjStore(root string) (string, bool, error) {
 	if err != nil {
 		return "", false, fmt.Errorf("read %q: %w", repo, err)
 	}
-	store := resolveAgainst(jjDir, strings.TrimSpace(string(raw)))
+	pointer := strings.TrimSpace(string(raw))
+	if pointer == "" {
+		return "", false, &BrokenCheckout{Root: root, Target: repo, Reason: "jj workspace pointer is empty"}
+	}
+	store := resolveAgainst(jjDir, pointer)
 	if _, err := os.Stat(store); err != nil { //nolint:gosec // the store the .jj/repo pointer just named, not untrusted input
 		return "", false, &BrokenCheckout{Root: root, Target: store, Reason: "jj workspace pointer resolves to nothing"}
 	}
@@ -208,12 +243,12 @@ func jjGitBacking(c Checkout) (Checkout, error) {
 		return c, nil
 	}
 	if err != nil {
-		return Checkout{}, fmt.Errorf("read git target under %q: %w", storeDir, err)
+		return c, fmt.Errorf("read git target under %q: %w", storeDir, err)
 	}
 	target := resolveAgainst(storeDir, strings.TrimSpace(string(raw)))
 	info, err := os.Stat(target) //nolint:gosec // the target the jj store's git_target just named, not untrusted input
 	if err != nil {
-		return Checkout{}, &BrokenCheckout{Root: c.Root, Target: target, Reason: "jj store git target resolves to nothing"}
+		return c, &BrokenCheckout{Root: c.Root, Target: target, Reason: "jj store git target resolves to nothing"}
 	}
 	if info.IsDir() {
 		c.GitDir, c.CommonDir = target, target
@@ -221,7 +256,7 @@ func jjGitBacking(c Checkout) (Checkout, error) {
 	}
 	gitDir, common, err := gitPointer(target)
 	if err != nil {
-		return Checkout{}, err
+		return c, err
 	}
 	c.GitDir, c.CommonDir = gitDir, common
 	return c, nil
@@ -231,8 +266,10 @@ func jjGitBacking(c Checkout) (Checkout, error) {
 // that admin dir shares with its siblings. Both pointers may be relative, and
 // git writes each against a different base: the gitdir line against the .git
 // file's own directory, commondir against the admin dir it sits in. An admin dir
-// carrying no commondir is its own repository — a submodule's under
-// .git/modules — so it is its own common dir.
+// carrying no commondir file at all is its own repository — a submodule's under
+// .git/modules — so it is its own common dir; a commondir that is present but
+// unreadable, empty, or resolving to nothing is a broken repository instead,
+// never that same answer arrived at by accident.
 func gitPointer(gitFile string) (string, string, error) {
 	base := filepath.Dir(gitFile)
 	raw, err := os.ReadFile(gitFile) //nolint:gosec // the .git pointer under the caller's own root, not untrusted input
@@ -248,21 +285,33 @@ func gitPointer(gitFile string) (string, string, error) {
 	if _, err := os.Stat(gitDir); err != nil { //nolint:gosec // the admin dir the gitdir pointer just named, not untrusted input
 		return "", "", &BrokenCheckout{Root: base, Target: gitDir, Reason: "gitdir pointer resolves to nothing"}
 	}
-	common, err := os.ReadFile(filepath.Join(gitDir, "commondir")) //nolint:gosec // the admin dir the gitdir pointer just named, not untrusted input
-	if err != nil {
+	commonFile := filepath.Join(gitDir, "commondir")
+	raw, err = os.ReadFile(commonFile) //nolint:gosec // the admin dir the gitdir pointer just named, not untrusted input
+	if os.IsNotExist(err) {
 		return gitDir, gitDir, nil
 	}
-	return gitDir, resolveAgainst(gitDir, strings.TrimSpace(string(common))), nil
+	if err != nil {
+		return "", "", fmt.Errorf("read %q: %w", commonFile, err)
+	}
+	target := strings.TrimSpace(string(raw))
+	if target == "" {
+		return "", "", &BrokenCheckout{Root: base, Target: commonFile, Reason: "commondir pointer is empty"}
+	}
+	common := resolveAgainst(gitDir, target)
+	if _, err := os.Stat(common); err != nil { //nolint:gosec // the common dir the commondir pointer just named, not untrusted input
+		return "", "", &BrokenCheckout{Root: base, Target: common, Reason: "commondir pointer resolves to nothing"}
+	}
+	return gitDir, common, nil
 }
 
 // resolveAgainst joins a pointer's target to the directory it was written
-// against, leaving an already-absolute target alone. It stays lexical so two
-// checkouts reaching one repository resolve to the same bytes.
+// against, leaving an already-absolute target alone, then resolves the result's
+// symlinks so two checkouts reaching one repository land on the same bytes.
 func resolveAgainst(base, target string) string {
 	if filepath.IsAbs(target) {
-		return filepath.Clean(target)
+		return canonical(filepath.Clean(target))
 	}
-	return filepath.Join(base, target)
+	return canonical(filepath.Join(base, target))
 }
 
 // Worktree is one entry of a repository's git worktree list. Path is git's own

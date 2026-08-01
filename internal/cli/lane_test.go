@@ -490,15 +490,33 @@ func TestShipGateRespectsNoGTConfig(t *testing.T) {
 
 // brokenCheckoutDir builds a working copy whose .git file points at an admin dir
 // that is not there — the shape left behind when a linked worktree's repository
-// is deleted out from under it.
-func brokenCheckoutDir(t *testing.T) string {
+// is deleted out from under it — and returns the symlinked path a caller would
+// spell alongside the canonical root every report must name. The two differ by
+// construction: a fixture already canonical could not catch a root that skipped
+// canonicalization.
+func brokenCheckoutDir(t *testing.T) (string, string) {
 	t.Helper()
-	dir := t.TempDir()
-	target := filepath.Join(dir, "gone", "worktrees", "wt")
+	base := t.TempDir()
+	dir := filepath.Join(base, "wt")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatalf("create checkout: %v", err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatalf("symlink checkout: %v", err)
+	}
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("resolve %q: %v", dir, err)
+	}
+	if link == root {
+		t.Fatalf("fixture %q is already canonical — the test could not fail", link)
+	}
+	target := filepath.Join(root, "gone", "worktrees", "wt")
 	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: "+target+"\n"), 0o600); err != nil {
 		t.Fatalf("write .git pointer: %v", err)
 	}
-	return dir
+	return link, root
 }
 
 // TestResolveLaneBrokenCheckout proves the split the two resolvers exist for. A
@@ -506,18 +524,19 @@ func brokenCheckoutDir(t *testing.T) string {
 // is all a mutating command reads; the lane comes back carrying the backend and
 // working copy that did resolve, so a reporting command has something to
 // diagnose. The zero lane would not do — vcs.Git is 0, so it reports a git
-// checkout nobody resolved.
+// checkout nobody resolved. Both roots come off the partial checkout, so the
+// report's root line and its checkout line name one path in one spelling.
 func TestResolveLaneBrokenCheckout(t *testing.T) {
-	dir := brokenCheckoutDir(t)
-	target := filepath.Join(dir, "gone", "worktrees", "wt")
+	dir, root := brokenCheckoutDir(t)
+	target := filepath.Join(root, "gone", "worktrees", "wt")
 
 	refused, err := resolveLane(context.Background(), "ship", dir, false)
 	var broken *vcs.BrokenCheckout
 	if !errors.As(err, &broken) {
 		t.Fatalf("resolveLane() error = %v, want a *vcs.BrokenCheckout", err)
 	}
-	if refused.broken == nil || refused.kind != vcs.Git || refused.root != dir {
-		t.Errorf("resolveLane() lane = %+v, want the diagnosis over (%v, %q)", refused, vcs.Git, dir)
+	if refused.broken == nil || refused.kind != vcs.Git || refused.root != root {
+		t.Errorf("resolveLane() lane = %+v, want the diagnosis over (%v, %q)", refused, vcs.Git, root)
 	}
 
 	l, err := resolveLaneReport(context.Background(), "info", dir, false, false)
@@ -527,8 +546,11 @@ func TestResolveLaneBrokenCheckout(t *testing.T) {
 	if l.broken == nil {
 		t.Fatalf("resolveLaneReport() lane = %+v, want it to carry the broken checkout", l)
 	}
-	if l.kind != vcs.Git || l.root != dir {
-		t.Errorf("resolveLaneReport() lane = (%v, %q), want (%v, %q)", l.kind, l.root, vcs.Git, dir)
+	if l.kind != vcs.Git || l.root != root {
+		t.Errorf("resolveLaneReport() lane = (%v, %q), want (%v, %q)", l.kind, l.root, vcs.Git, root)
+	}
+	if l.root != l.broken.Root {
+		t.Errorf("lane root %q and diagnosis root %q are one path in two spellings", l.root, l.broken.Root)
 	}
 	if l.broken.Target != target {
 		t.Errorf("broken.Target = %q, want %q", l.broken.Target, target)
