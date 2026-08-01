@@ -147,13 +147,13 @@ type wasmResponse struct {
 // runEngine runs src and opts through one one-shot module instance. The error
 // return is a host failure (trap/timeout/limit); a domain error rides in errKind.
 func runEngine(src []byte, opts Options) (engineResult, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
-	defer cancel()
-
 	eng, err := loadEngine()
 	if err != nil {
 		return engineResult{}, errors.Join(errEngineUnavailable, err)
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
 
 	req := wasmRequest{Src: string(src), Indent: opts.Indent, Delimiter: opts.Delimiter.char()}
 	if opts.Format != FormatAuto {

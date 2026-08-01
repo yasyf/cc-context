@@ -20,7 +20,9 @@ import (
 // every grammar; wazero keys entries by module content, CPU features, and its
 // own version, so a stale entry is never wrongly reused.
 func TestMain(m *testing.M) {
-	os.Setenv("CLAUDE_PLUGIN_DATA", filepath.Join(os.TempDir(), "cc-context-test-wasm-cache"))
+	if err := os.Setenv("CLAUDE_PLUGIN_DATA", filepath.Join(os.TempDir(), "cc-context-test-wasm-cache")); err != nil {
+		panic(err)
+	}
 	os.Exit(m.Run())
 }
 
