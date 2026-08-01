@@ -41,8 +41,9 @@ const (
 // separate reading at 17.9s. The previous 5s cap sat below every one of those
 // observations — it was derived from a single ~1.5s sample and timed out every
 // probe in the field, which made this whole gate inert. Re-derive this from the
-// distribution, never from one run.
-const gtProbeTimeout = 20 * time.Second
+// distribution, never from one run. A var so tests that exercise the deadline
+// can shorten it.
+var gtProbeTimeout = 20 * time.Second
 
 // gtProbeReady through gtProbeUnreadable are gt 1.8.6's own wording for
 // classifyGTProbe; version-dependent, kept as lone constants so an upgrade is a

@@ -94,6 +94,17 @@ func clearGTRecord(t *testing.T, dir string) {
 	}
 }
 
+// shortenGTProbe cuts the probe deadline for a test that waits it out, so
+// GT_AUTH_HANG costs a second rather than the field-derived cap. Still far
+// longer than spawning the fake gt, so the probe is aborted mid-run — the path
+// under test — never before it starts.
+func shortenGTProbe(t *testing.T) {
+	t.Helper()
+	prior := gtProbeTimeout
+	gtProbeTimeout = time.Second
+	t.Cleanup(func() { gtProbeTimeout = prior })
+}
+
 // nogtProbe is the ccx.nogt read the lane gate makes before committing to the
 // graphite lane, so it leads every gt-lane argv sequence.
 var nogtProbe = []string{"git", "config", "--get", nogtKey}
@@ -340,6 +351,7 @@ func TestShipGateProbeTimeoutDemotes(t *testing.T) {
 	log := setupShipGT(t, false)
 	clearLaneRecords(t, ".")
 	t.Setenv("GT_AUTH_HANG", "1")
+	shortenGTProbe(t)
 
 	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push")
 	if err != nil {

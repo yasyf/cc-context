@@ -288,6 +288,7 @@ func TestVcsInfoProbeUnknown(t *testing.T) {
 	infoFakes(t)
 	clearGTRecord(t, ".")
 	t.Setenv("GT_AUTH_HANG", "1")
+	shortenGTProbe(t)
 
 	out, err := runVcsInfoCmd(t, "--json")
 	if err != nil {
