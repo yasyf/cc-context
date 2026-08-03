@@ -64,7 +64,22 @@ jobs:
       - name: Install jj (live hunk-scoped ship tests)
         uses: taiki-e/install-action@v2
         with:
-          tool: jj-cli
+          # Pinned: the vcs tests depend on jj 0.43 specifics (revset escape
+          # vocabulary, escape_json(), the colocated-worktree refusal). Bumping
+          # this means re-running the affected live-jj tests, not just CI.
+          tool: jj-cli@0.43.0
+      - name: Install gt (live Graphite-lane tests)
+        # The version is single-sourced from the same file the gt goldens are
+        # recorded against, so CI cannot install a gt that disagrees with them.
+        # Bumping it means re-running `task record-gt`; a missing file fails
+        # here rather than silently installing latest, and the version assert
+        # turns a skipped optionalDependency into a red step instead of ~66
+        # tests that quietly skip.
+        run: |
+          gtver="$(cat internal/cli/testdata/gt/VERSION)"
+          npm install -g --prefix "$HOME/.npm-global" "@withgraphite/graphite-cli@$gtver"
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+          test "$("$HOME/.npm-global/bin/gt" --version)" = "$gtver"
       - name: Test (race)
         run: go test -race ./...
       - name: Build
