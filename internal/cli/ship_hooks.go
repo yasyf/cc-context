@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
@@ -17,6 +19,18 @@ import (
 // shipHookConfigNames are the prek config filenames probed at root; ship skips
 // hooks silently when none is present.
 var shipHookConfigNames = []string{".pre-commit-config.yaml", ".pre-commit-config.yml", "prek.toml"}
+
+// shipHookIndexLock is the lock git holds over the index it is rewriting. It
+// sits beside the index, which sibling worktrees do not share: each linked
+// worktree's index lives under its own admin dir, so a commit contends over the
+// lock in Checkout.GitDir — CommonDir only for the repository's own working copy
+// — and never over the common dir's.
+const shipHookIndexLock = "index.lock"
+
+// shipHookScrubbedEnv are the variables a hook child must not inherit: each pins
+// git to whatever checkout invoked ccx, which from a linked worktree is not the
+// one being committed.
+var shipHookScrubbedEnv = []string{"GIT_DIR", "GIT_WORK_TREE"}
 
 // shipRunHooks runs prek (via uvx) over the files ship is about to commit, with
 // an auto-fix-then-verify policy: prek's exit code cannot tell a genuine failure
@@ -52,6 +66,9 @@ func shipRunHooks(ctx context.Context, errW io.Writer, root string, kind vcs.Kin
 	if _, err := exec.LookPath("uvx"); err != nil {
 		return "hooks uvx-missing", false, nil
 	}
+	if err := shipRefuseIndexLock(root); err != nil {
+		return "", false, err
+	}
 	msgStage, err := shipHookConfigHasMsgStage(config)
 	if err != nil {
 		return "", false, err
@@ -60,7 +77,7 @@ func shipRunHooks(ctx context.Context, errW io.Writer, root string, kind vcs.Kin
 
 	// Leading-dash filenames intentionally reach prek unchanged so it fails loudly.
 	argv := append([]string{"prek", "run", "--cd", root, "--files"}, files...)
-	if _, err := render.RunCLI(ctx, "uvx", argv); err == nil {
+	if err := shipRunPrek(ctx, argv, nil); err == nil {
 		return "hooks ok", covered, nil
 	}
 	if kind == vcs.Git {
@@ -76,10 +93,63 @@ func shipRunHooks(ctx context.Context, errW io.Writer, root string, kind vcs.Kin
 		return "", false, errors.New("ship: hooks: auto-fixes reverted every pending change; nothing to commit")
 	}
 	argv = append([]string{"prek", "run", "--cd", root, "--files"}, files...)
-	if err := render.RunCLIStream(ctx, "uvx", argv, errW); err != nil {
+	if err := shipRunPrek(ctx, argv, errW); err != nil {
 		return "", false, fmt.Errorf("ship: hooks: %w — pre-commit hooks still failing after auto-fix; fix them or re-run with --no-verify", err)
 	}
 	return "hooks fixed", covered, nil
+}
+
+// shipRunPrek spawns prek with shipHookScrubbedEnv stripped from the child
+// environment, which is why it builds the command itself rather than going
+// through render (whose helpers only extend os.Environ, and an empty GIT_DIR is
+// fatal to git rather than absent). Output goes to w; a nil w routes the child
+// to /dev/null rather than a pipe nothing reads.
+func shipRunPrek(ctx context.Context, argv []string, w io.Writer) error {
+	cmd := exec.CommandContext(ctx, "uvx", argv...) //nolint:gosec // argv is prek's fixed verb plus the files ship derived, not user free-text
+	cmd.Env = shipHookEnv()
+	cmd.Stdout, cmd.Stderr = w, w
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("uvx: %w", err)
+	}
+	return nil
+}
+
+func shipHookEnv() []string {
+	env := os.Environ()
+	kept := make([]string, 0, len(env))
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if slices.Contains(shipHookScrubbedEnv, name) {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	return kept
+}
+
+// shipRefuseIndexLock refuses while another process holds the index lock of the
+// checkout under root, and passes a jj working copy with no git backing, which
+// has no index to contend over. The refusal carries the lock's mtime because
+// git's own failure names neither the holder nor its age, and only the age
+// separates a live sibling session (seconds) from a crashed process's leftovers
+// (hours).
+func shipRefuseIndexLock(root string) error {
+	c, err := vcs.ResolveCheckout(root)
+	if err != nil {
+		return fmt.Errorf("ship: hooks: %w", err)
+	}
+	if c.GitDir == "" {
+		return nil
+	}
+	lock := filepath.Join(c.GitDir, shipHookIndexLock)
+	info, err := os.Stat(lock)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("ship: hooks: stat %s: %w", lock, err)
+	}
+	return fmt.Errorf("ship: hooks: another process holds the git index lock: %s (held since %s) — wait for it to finish, or delete the lock if the process that took it is gone", lock, info.ModTime().Format(time.RFC3339))
 }
 
 // shipHookConfigPath returns root's prek-recognized config file, or "" when

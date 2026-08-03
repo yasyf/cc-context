@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/vcs"
 )
 
 // TestMain re-execs the test binary as the ccx-ship-select diff tool: jj's
@@ -219,8 +221,8 @@ func TestShipJJPreflightRefusalAndEmptyGuardLive(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "nothing to commit — did a prior ship already land") {
 		t.Fatalf("third ship error = %v, want empty ship refusal", err)
 	}
-	if !strings.Contains(err.Error(), "jj bookmark move exact:main --to @- && jj git push --bookmark exact:main") {
-		t.Errorf("third ship error = %q, want exact:main push hint", err)
+	if !strings.Contains(err.Error(), `jj bookmark move 'exact:"main"' --to @- && jj git push --bookmark 'exact:"main"'`) {
+		t.Errorf("third ship error = %q, want shell-quoted exact:main push hint", err)
 	}
 }
 
@@ -331,7 +333,7 @@ func TestJJTrackUntrackedAtNameLive(t *testing.T) {
 
 	mustRun(t, base, "git", "clone", remote, clone)
 	mustRun(t, clone, "jj", "git", "init", "--colocate")
-	pat := jjExactPattern(branch)
+	pat := vcs.JJExactPattern(branch)
 	if before := mustRun(t, clone, "jj", "bookmark", "list", pat, "--all-remotes", "-T", jjRemoteBookmarkTemplate); !strings.Contains(before, "origin\tuntracked") {
 		t.Fatalf("precondition: %s@origin should be untracked, got %q", branch, before)
 	}

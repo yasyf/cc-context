@@ -192,6 +192,37 @@ func TestShipPRBodyFromStdin(t *testing.T) {
 	}
 }
 
+// TestShipPRGTWritesTheNewestPR proves a branch resubmitted after its first
+// pull request merged has its body written onto the live one. Verified against
+// github.com/yasyf/cc-context, whose yasyf/transcript-ccx-issues head carries
+// PRs #1 and #2: gh pr view resolves #2, the newest, and overwriting the
+// predecessor would leave the pull request under review bodyless.
+func TestShipPRGTWritesTheNewestPR(t *testing.T) {
+	log := setupShipGT(t, true)
+	seedPRViews(t, map[string]string{"feature": `{"number":3,"url":"https://github.com/x/pull/3","body":"the merged predecessor"}` + "\n" +
+		`{"number":9,"url":"https://github.com/x/pull/9","body":""}`})
+	body := writePRBody(t, "body.md", "why this change\n")
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #9 https://github.com/x/pull/9 · set PR #9 body`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	var edit []string
+	for _, inv := range readInvocations(t, log) {
+		if len(inv) > 2 && inv[0] == "gh" && inv[2] == "edit" {
+			edit = inv
+		}
+	}
+	wantEdit := []string{"gh", "pr", "edit", "9", "--repo", fakePRRepo, "--body-file", body}
+	if !reflect.DeepEqual(edit, wantEdit) {
+		t.Errorf("edit argv = %v, want %v", edit, wantEdit)
+	}
+}
+
 func TestShipPRGTBothFlags(t *testing.T) {
 	log := setupShipGT(t, true)
 	seedPRViews(t, map[string]string{"feature": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`})

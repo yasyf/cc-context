@@ -2,20 +2,21 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/yasyf/cc-context/internal/ghapi"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/vcs"
 )
 
 const (
@@ -55,10 +56,12 @@ type ghReview struct {
 	SubmittedAt time.Time `json:"submitted_at"`
 }
 
-type ghPRView struct {
+// ghPullRequest is the pull request shape every batch selects: what a target
+// needs to identify itself, and what reviewTerminalState reads.
+type ghPullRequest struct {
 	Number   int        `json:"number"`
-	State    string     `json:"state"`
 	URL      string     `json:"url"`
+	State    string     `json:"state"`
 	MergedAt *time.Time `json:"mergedAt"`
 }
 
@@ -131,11 +134,14 @@ func newReviewsCmd() *cobra.Command {
 				}
 			}
 
-			var targets []*prTarget
+			var (
+				client  reviewsClient
+				targets []*prTarget
+			)
 			if stack {
-				targets, err = resolveStackReviewTargets(cmd.Context(), cmd.OutOrStdout(), since)
+				client, targets, err = resolveStackReviewTargets(cmd.Context(), cmd.OutOrStdout(), since)
 			} else {
-				targets, err = resolveReviewTargets(cmd.Context(), args, since)
+				client, targets, err = resolveReviewTargets(cmd.Context(), args, since)
 			}
 			if err != nil {
 				return err
@@ -143,7 +149,7 @@ func newReviewsCmd() *cobra.Command {
 			if stack && len(targets) == 0 {
 				return errors.New("reviews: --stack found no stacked branches — run it from a stacked branch, not trunk")
 			}
-			return watchReviews(cmd.Context(), cmd.OutOrStdout(), targets, o)
+			return watchReviews(cmd.Context(), cmd.OutOrStdout(), client, targets, o)
 		},
 	}
 	cmd.Flags().StringVar(&sinceText, "since", "now", "events since RFC3339, duration ago, or all")
@@ -187,107 +193,265 @@ func parseSince(s string) (t time.Time, all bool, err error) {
 	return time.Time{}, false, fmt.Errorf("must be RFC3339, a duration, or all")
 }
 
-func resolveReviewTargets(ctx context.Context, operands []string, since time.Time) ([]*prTarget, error) {
-	if _, err := exec.LookPath("gh"); err != nil {
-		return nil, fmt.Errorf("reviews: gh: %w", err)
+// reviewsClient is the GitHub endpoint one watch polls: the API client plus the
+// repository every request is scoped to.
+type reviewsClient struct {
+	api   *ghapi.Client
+	owner string
+	repo  string
+}
+
+// reviewsAPI builds the client a watch polls through. A var so tests point the
+// watch at an httptest server instead of api.github.com.
+var reviewsAPI = ghapi.Default
+
+func resolveReviewsClient(ctx context.Context) (reviewsClient, error) {
+	repo, err := vcs.LookupRepo(ctx, workingDir(), false)
+	if err != nil {
+		return reviewsClient{}, fmt.Errorf("reviews: %w", err)
 	}
+	owner, name, ok := strings.Cut(repo.NameWithOwner, "/")
+	if !ok {
+		return reviewsClient{}, fmt.Errorf("reviews: %q is not owner/name", repo.NameWithOwner)
+	}
+	return reviewsClient{api: reviewsAPI(), owner: owner, repo: name}, nil
+}
+
+// reviewsAlias names one target's field in a batched query. A GraphQL alias
+// takes neither "/" nor "." nor "-", which branch names do, so the target's
+// position stands in for its name.
+func reviewsAlias(i int) string { return fmt.Sprintf("p%d", i) }
+
+func reviewsBatch(n int, decl string, field func(alias string) string) string {
+	decls := make([]string, 0, n+2)
+	decls = append(decls, "$owner: String!", "$repo: String!")
+	var fields strings.Builder
+	for i := range n {
+		alias := reviewsAlias(i)
+		decls = append(decls, "$"+alias+": "+decl)
+		fields.WriteString("    " + field(alias) + "\n")
+	}
+	return fmt.Sprintf("query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}",
+		strings.Join(decls, ", "), fields.String())
+}
+
+func reviewsNumberQuery(n int) string {
+	return reviewsBatch(n, "Int!", func(alias string) string {
+		return fmt.Sprintf("%s: pullRequest(number: $%s) { number url state mergedAt }", alias, alias)
+	})
+}
+
+// reviewsBranchQuery resolves each branch's pull request. It names no state
+// filter, because the gh pr view it replaced had none either and resolves a
+// merged pull request just as happily; and it orders descending because that is
+// the one gh picks — a branch resubmitted after its first pull request closed
+// carries two, and the watch belongs on the live one.
+func reviewsBranchQuery(n int) string {
+	return reviewsBatch(n, "String!", func(alias string) string {
+		return fmt.Sprintf(
+			"%s: pullRequests(headRefName: $%s, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url state mergedAt } }",
+			alias, alias)
+	})
+}
+
+type reviewsNumberBatch struct {
+	Repository map[string]ghPullRequest `json:"repository"`
+}
+
+type reviewsBranchBatch struct {
+	Repository map[string]struct {
+		Nodes []ghPullRequest `json:"nodes"`
+	} `json:"repository"`
+}
+
+// pullRequestsByNumber resolves every number in one query — the single call a
+// poll cycle makes for all its open targets' state.
+func (c reviewsClient) pullRequestsByNumber(ctx context.Context, numbers []int) (map[int]ghPullRequest, error) {
+	if len(numbers) == 0 {
+		return nil, nil
+	}
+	vars := map[string]any{"owner": c.owner, "repo": c.repo}
+	for i, number := range numbers {
+		vars[reviewsAlias(i)] = number
+	}
+	batch, err := ghapi.GraphQL[reviewsNumberBatch](ctx, c.api, reviewsNumberQuery(len(numbers)), vars)
+	if err != nil {
+		return nil, err
+	}
+	byNumber := make(map[int]ghPullRequest, len(numbers))
+	for i, number := range numbers {
+		byNumber[number] = batch.Repository[reviewsAlias(i)]
+	}
+	return byNumber, nil
+}
+
+// pullRequestsByBranch resolves every branch in one query. A branch with no
+// pull request is absent from the map rather than an error, which is what lets
+// a stack skip it and a named operand refuse.
+func (c reviewsClient) pullRequestsByBranch(ctx context.Context, branches []string) (map[string]ghPullRequest, error) {
+	if len(branches) == 0 {
+		return nil, nil
+	}
+	vars := map[string]any{"owner": c.owner, "repo": c.repo}
+	for i, branch := range branches {
+		vars[reviewsAlias(i)] = branch
+	}
+	batch, err := ghapi.GraphQL[reviewsBranchBatch](ctx, c.api, reviewsBranchQuery(len(branches)), vars)
+	if err != nil {
+		return nil, err
+	}
+	byBranch := make(map[string]ghPullRequest, len(branches))
+	for i, branch := range branches {
+		nodes := batch.Repository[reviewsAlias(i)].Nodes
+		if len(nodes) == 0 {
+			continue
+		}
+		byBranch[branch] = nodes[0]
+	}
+	return byBranch, nil
+}
+
+// reviewsResolveError maps GitHub's not-found onto the CLI's own sentinel, so a
+// named pull request that does not exist exits 3.
+func reviewsResolveError(err error) error {
+	if errors.Is(err, ghapi.ErrNotFound) {
+		return fmt.Errorf("reviews: resolve targets: %w: %w", ErrNotFound, err)
+	}
+	return fmt.Errorf("reviews: resolve targets: %w", err)
+}
+
+// reviewsOperand is one positional target: a pull request number, or a branch
+// whose head pull request stands in for it.
+type reviewsOperand struct {
+	text   string
+	number int
+}
+
+// reviewsOperands reads each operand as a pull request number or a branch name,
+// standing the current branch in for an empty operand list.
+func reviewsOperands(ctx context.Context, operands []string) ([]reviewsOperand, error) {
 	if len(operands) == 0 {
-		operands = []string{""}
-	}
-	targets := make([]*prTarget, 0, len(operands))
-	for _, operand := range operands {
-		view, err := viewReviewTarget(ctx, operand)
+		branch, err := gitCurrentBranch(ctx, "reviews")
 		if err != nil {
 			return nil, err
 		}
-		targets = append(targets, &prTarget{
-			Number:    view.Number,
-			URL:       view.URL,
-			watermark: since,
-			seen:      map[string]time.Time{},
-		})
+		if branch == "" {
+			return nil, errors.New("reviews: detached HEAD; name a pull request number or branch")
+		}
+		operands = []string{branch}
 	}
-	return targets, nil
+	ops := make([]reviewsOperand, 0, len(operands))
+	for _, operand := range operands {
+		number, err := strconv.Atoi(operand)
+		if err != nil || number <= 0 {
+			ops = append(ops, reviewsOperand{text: operand})
+			continue
+		}
+		ops = append(ops, reviewsOperand{text: operand, number: number})
+	}
+	return ops, nil
 }
 
-func viewReviewTarget(ctx context.Context, operand string) (ghPRView, error) {
-	argv := []string{"pr", "view"}
-	label := "current branch"
-	if operand != "" {
-		argv = append(argv, operand)
-		label = operand
-	}
-	argv = append(argv, "--json", "number,state,url,mergedAt")
-	out, err := render.RunCLI(ctx, "gh", argv)
+func resolveReviewTargets(ctx context.Context, operands []string, since time.Time) (reviewsClient, []*prTarget, error) {
+	client, err := resolveReviewsClient(ctx)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "no pull requests found") {
-			return ghPRView{}, fmt.Errorf("reviews: resolve %s: %w: %w", label, ErrNotFound, err)
+		return reviewsClient{}, nil, err
+	}
+	ops, err := reviewsOperands(ctx, operands)
+	if err != nil {
+		return reviewsClient{}, nil, err
+	}
+	var (
+		numbers  []int
+		branches []string
+	)
+	for _, op := range ops {
+		if op.number > 0 {
+			numbers = append(numbers, op.number)
+			continue
 		}
-		return ghPRView{}, fmt.Errorf("reviews: resolve %s: %w", label, err)
+		branches = append(branches, op.text)
 	}
-	var view ghPRView
-	if err := json.Unmarshal([]byte(out), &view); err != nil {
-		return ghPRView{}, fmt.Errorf("reviews: parse gh pr view %s: %w", label, err)
+	byNumber, err := client.pullRequestsByNumber(ctx, numbers)
+	if err != nil {
+		return reviewsClient{}, nil, reviewsResolveError(err)
 	}
-	return view, nil
+	byBranch, err := client.pullRequestsByBranch(ctx, branches)
+	if err != nil {
+		return reviewsClient{}, nil, reviewsResolveError(err)
+	}
+
+	targets := make([]*prTarget, 0, len(ops))
+	for _, op := range ops {
+		if op.number > 0 {
+			targets = append(targets, newReviewTarget(byNumber[op.number], since))
+			continue
+		}
+		pr, ok := byBranch[op.text]
+		if !ok {
+			return reviewsClient{}, nil, fmt.Errorf("reviews: resolve %s: %w", op.text, ErrNotFound)
+		}
+		targets = append(targets, newReviewTarget(pr, since))
+	}
+	return client, targets, nil
+}
+
+func newReviewTarget(pr ghPullRequest, since time.Time) *prTarget {
+	return &prTarget{Number: pr.Number, URL: pr.URL, watermark: since, seen: map[string]time.Time{}}
 }
 
 // resolveStackReviewTargets resolves review targets from the current
 // graphite downstack, skipping (with a note to w) a branch with no open PR
 // rather than failing the whole command.
-func resolveStackReviewTargets(ctx context.Context, w io.Writer, since time.Time) ([]*prTarget, error) {
+func resolveStackReviewTargets(ctx context.Context, w io.Writer, since time.Time) (reviewsClient, []*prTarget, error) {
 	l, err := resolveLane(ctx, "reviews", workingDir(), false)
 	if err != nil {
-		return nil, err
+		return reviewsClient{}, nil, err
 	}
 	if !l.gt {
 		if l.note != "" {
-			return nil, fmt.Errorf("reviews: --stack declined the graphite lane: %s", l.note)
+			return reviewsClient{}, nil, fmt.Errorf("reviews: --stack declined the graphite lane: %s", l.note)
 		}
-		return nil, errors.New("reviews: --stack requires a graphite repo")
+		return reviewsClient{}, nil, errors.New("reviews: --stack requires a graphite repo")
 	}
 	branches, err := stackBranches(ctx, "reviews")
 	if err != nil {
-		return nil, err
+		return reviewsClient{}, nil, err
 	}
 	return resolveBranchTargets(ctx, w, branches, since)
 }
 
-// resolveBranchTargets resolves each branch's open PR into a prTarget,
-// skipping (with a note to w) any branch with none — shared by ship's
+// resolveBranchTargets resolves every branch's pull request in one batched
+// query, skipping (with a note to w) any branch with none — shared by ship's
 // --reviews wiring and reviews --stack.
-func resolveBranchTargets(ctx context.Context, w io.Writer, branches []string, since time.Time) ([]*prTarget, error) {
+func resolveBranchTargets(ctx context.Context, w io.Writer, branches []string, since time.Time) (reviewsClient, []*prTarget, error) {
+	client, err := resolveReviewsClient(ctx)
+	if err != nil {
+		return reviewsClient{}, nil, err
+	}
+	byBranch, err := client.pullRequestsByBranch(ctx, branches)
+	if err != nil {
+		return reviewsClient{}, nil, reviewsResolveError(err)
+	}
 	var targets []*prTarget
 	for _, branch := range branches {
-		view, err := viewReviewTarget(ctx, branch)
-		if err != nil {
-			if errors.Is(err, ErrNotFound) {
-				if _, werr := fmt.Fprintf(w, "reviews: no open PR for %s\n", branch); werr != nil {
-					return nil, werr
-				}
-				continue
+		pr, ok := byBranch[branch]
+		if !ok {
+			if _, werr := fmt.Fprintf(w, "reviews: no open PR for %s\n", branch); werr != nil {
+				return reviewsClient{}, nil, werr
 			}
-			return nil, err
+			continue
 		}
-		targets = append(targets, &prTarget{
-			Number:    view.Number,
-			URL:       view.URL,
-			watermark: since,
-			seen:      map[string]time.Time{},
-		})
+		targets = append(targets, newReviewTarget(pr, since))
 	}
-	return targets, nil
+	return client, targets, nil
 }
 
 // shipWatchReviews resolves each branch's open PR and watches all that
 // resolve, for ship's --reviews flag. A branch with no open PR is skipped
 // with a note rather than failing the already-succeeded ship.
 func shipWatchReviews(ctx context.Context, w io.Writer, branches []string) error {
-	if _, err := exec.LookPath("gh"); err != nil {
-		_, err := fmt.Fprintln(w, "reviews: gh not found")
-		return err
-	}
-	targets, err := resolveBranchTargets(ctx, w, branches, time.Now())
+	client, targets, err := resolveBranchTargets(ctx, w, branches, time.Now())
 	if err != nil {
 		return err
 	}
@@ -298,28 +462,10 @@ func shipWatchReviews(ctx context.Context, w io.Writer, branches []string) error
 	if err != nil {
 		return err
 	}
-	return watchReviews(ctx, w, targets, reviewsOpts{interval: interval, budget: reviewsBodyBudget})
+	return watchReviews(ctx, w, client, targets, reviewsOpts{interval: interval, budget: reviewsBodyBudget})
 }
 
-func ghPages[T any](ctx context.Context, path string) ([]T, error) {
-	out, err := render.RunCLI(ctx, "gh", []string{"api", "--paginate", path})
-	if err != nil {
-		return nil, fmt.Errorf("reviews: gh api %s: %w", path, err)
-	}
-	decoder := json.NewDecoder(strings.NewReader(out))
-	var items []T
-	for {
-		var page []T
-		if err := decoder.Decode(&page); errors.Is(err, io.EOF) {
-			return items, nil
-		} else if err != nil {
-			return nil, fmt.Errorf("reviews: parse gh api %s: %w", path, err)
-		}
-		items = append(items, page...)
-	}
-}
-
-func watchReviews(ctx context.Context, w io.Writer, targets []*prTarget, o reviewsOpts) error {
+func watchReviews(ctx context.Context, w io.Writer, client reviewsClient, targets []*prTarget, o reviewsOpts) error {
 	for _, target := range targets {
 		if _, err := fmt.Fprintln(w, strings.Join([]string{
 			fmt.Sprintf("watching pr#%d", target.Number),
@@ -333,7 +479,7 @@ func watchReviews(ctx context.Context, w io.Writer, targets []*prTarget, o revie
 	open := targets
 	merged, closed, aborted := 0, 0, 0
 	for len(open) > 0 {
-		results := pollReviewCycle(ctx, open, o)
+		results := pollReviewCycle(ctx, client, open, o)
 		if ctx.Err() != nil {
 			if werr := writeReviewsCancellation(w, open, merged, closed); werr != nil {
 				return werr
@@ -429,41 +575,52 @@ type pollReviewResult struct {
 	err    error
 }
 
-// pollReviewCycle polls every target once, continuing past a per-target
-// failure so one broken PR never blocks another target's cycle.
-func pollReviewCycle(ctx context.Context, targets []*prTarget, o reviewsOpts) []pollReviewResult {
+// pollReviewCycle reads every open target's state in one batched query, then
+// polls each target's feeds, continuing past a per-target failure so one broken
+// PR never blocks another target's cycle. A failed batch fails every target:
+// none of them learned whether it is still open.
+func pollReviewCycle(ctx context.Context, client reviewsClient, targets []*prTarget, o reviewsOpts) []pollReviewResult {
 	results := make([]pollReviewResult, 0, len(targets))
+	numbers := make([]int, 0, len(targets))
 	for _, target := range targets {
-		poll, err := pollReviewTarget(ctx, target, o)
+		numbers = append(numbers, target.Number)
+	}
+	states, err := client.pullRequestsByNumber(ctx, numbers)
+	if err != nil {
+		for _, target := range targets {
+			results = append(results, pollReviewResult{target: target, err: fmt.Errorf("reviews: pr states: %w", err)})
+		}
+		return results
+	}
+	for _, target := range targets {
+		poll, err := pollReviewTarget(ctx, client, target, states[target.Number], o)
 		results = append(results, pollReviewResult{target: target, poll: poll, err: err})
 	}
 	return results
 }
 
-func pollReviewTarget(ctx context.Context, target *prTarget, o reviewsOpts) (reviewsPoll, error) {
-	base := fmt.Sprintf("repos/{owner}/{repo}/pulls/%d", target.Number)
+func pollReviewTarget(ctx context.Context, client reviewsClient, target *prTarget, pr ghPullRequest, o reviewsOpts) (reviewsPoll, error) {
+	base := fmt.Sprintf("/repos/%s/%s", client.owner, client.repo)
 	suffix := ""
 	if !o.all {
 		suffix = "&since=" + target.watermark.UTC().Format(time.RFC3339)
 	}
-	inline, err := ghPages[ghPRComment](ctx, base+"/comments?per_page=100"+suffix)
+	inline, err := ghapi.Paginate[ghPRComment](ctx, client.api,
+		fmt.Sprintf("%s/pulls/%d/comments?per_page=100%s", base, target.Number, suffix))
 	if err != nil {
 		return reviewsPoll{}, fmt.Errorf("reviews: pr#%d inline comments: %w", target.Number, err)
 	}
-	comments, err := ghPages[ghPRComment](ctx,
-		fmt.Sprintf("repos/{owner}/{repo}/issues/%d/comments?per_page=100%s", target.Number, suffix))
+	comments, err := ghapi.Paginate[ghPRComment](ctx, client.api,
+		fmt.Sprintf("%s/issues/%d/comments?per_page=100%s", base, target.Number, suffix))
 	if err != nil {
 		return reviewsPoll{}, fmt.Errorf("reviews: pr#%d issue comments: %w", target.Number, err)
 	}
-	reviews, err := ghPages[ghReview](ctx, base+"/reviews?per_page=100")
+	reviews, err := ghapi.Paginate[ghReview](ctx, client.api,
+		fmt.Sprintf("%s/pulls/%d/reviews?per_page=100", base, target.Number))
 	if err != nil {
 		return reviewsPoll{}, fmt.Errorf("reviews: pr#%d reviews: %w", target.Number, err)
 	}
-	view, err := viewReviewTarget(ctx, fmt.Sprintf("%d", target.Number))
-	if err != nil {
-		return reviewsPoll{}, err
-	}
-	terminal, err := reviewTerminalState(view)
+	terminal, err := reviewTerminalState(pr)
 	if err != nil {
 		return reviewsPoll{}, fmt.Errorf("reviews: pr#%d: %w", target.Number, err)
 	}
@@ -504,17 +661,17 @@ func pollReviewTarget(ctx context.Context, target *prTarget, o reviewsOpts) (rev
 	return poll, nil
 }
 
-func reviewTerminalState(view ghPRView) (string, error) {
-	if view.MergedAt != nil || view.State == "MERGED" {
+func reviewTerminalState(pr ghPullRequest) (string, error) {
+	if pr.MergedAt != nil || pr.State == "MERGED" {
 		return "merged", nil
 	}
-	switch view.State {
+	switch pr.State {
 	case "OPEN":
 		return "", nil
 	case "CLOSED":
 		return "closed", nil
 	default:
-		return "", fmt.Errorf("unexpected state %q", view.State)
+		return "", fmt.Errorf("unexpected state %q", pr.State)
 	}
 }
 

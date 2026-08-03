@@ -32,10 +32,15 @@ const (
 	// push phase's post-commit ancestry and rebase checks handle that state.
 	jjNearestBookmarkRevset = "heads(::@ & bookmarks())"
 	jjDescribeTemplate      = `commit_id.short() ++ "\n" ++ description.first_line()`
-	jjBookmarkTemplate      = `local_bookmarks.map(|b| b.name()).join(" ") ++ " "`
+	// jj renders a bookmark name it would otherwise reread as a symbol — one
+	// carrying an '@', a space, a quote — in its own quoted string syntax, whose
+	// escapes (\e, \xHH) are not JSON's. escape_json() emits the name as a JSON
+	// string instead, so one name per line decodes back to exactly what jj holds.
+	jjBookmarkTemplate = `local_bookmarks.map(|b| b.name().escape_json()).join("\n") ++ "\n"`
 	// jj exposes every local git ref of a colocated repo as <name>@git, which an
-	// unfiltered remote_bookmarks would make a trunk candidate of.
-	jjTrunkBookmarkTemplate = `remote_bookmarks.filter(|b| b.remote() != "git").map(|b| b.name()).join(" ") ++ " "`
+	// unfiltered remote_bookmarks would make a trunk candidate of. escape_json()
+	// carries the same reasoning as jjBookmarkTemplate above.
+	jjTrunkBookmarkTemplate = `remote_bookmarks.filter(|b| b.remote() != "git").map(|b| b.name().escape_json()).join("\n") ++ "\n"`
 
 	// jjRemoteBookmarkTemplate emits one "remote<TAB>tracked|untracked" line per
 	// entry of jj bookmark list <name> --all-remotes. Filtering the list to the
@@ -43,9 +48,6 @@ const (
 	// so the remote and tracked fields alone disambiguate — the name is never parsed
 	// back out of jj's template quoting.
 	jjRemoteBookmarkTemplate = `remote ++ "\t" ++ if(tracked, "tracked", "untracked") ++ "\n"`
-	jjAncestorRevsetFmt      = `bookmarks(exact:%q) & ::@-`
-	jjStackRevsetFmt         = `bookmarks(exact:%q)..@-`
-	jjConflictRevsetFmt      = `conflicts() & (bookmarks(exact:%q)..@-)::`
 	jjStackLineTemplate      = `commit_id.short() ++ " " ++ description.first_line() ++ "\n"`
 	jjOpIDTemplate           = `id`
 	jjAtStateTemplate        = `parents.len()`
@@ -249,7 +251,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 			return err
 		}
 	}
-	plan, planSeg, err := shipResolvePlan(ctx, l, o)
+	plan, planSeg, err := shipResolvePlan(ctx, cmd.ErrOrStderr(), l, o)
 	if err != nil {
 		return err
 	}
@@ -295,7 +297,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		}
 	}
 
-	branch, healSeg, err := shipBranchAfterCommit(ctx, kind, plan)
+	branch, healSeg, err := shipBranchAfterCommit(ctx, l.checkout, kind, plan)
 	if err != nil {
 		return err
 	}
@@ -323,6 +325,11 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	}
 
 	if o.noPush {
+		if kind == vcs.JJ && plan.action != branchCreate && branch != "" {
+			if err := jjMoveBookmark(ctx, branch); err != nil {
+				return err
+			}
+		}
 		segments = append(segments, "not pushed")
 		cmd.Println(strings.Join(segments, shipSep))
 		return nil
@@ -334,7 +341,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	var bodylessSegs []string
 	var gtStack []stackEntry
 	if gtLane {
-		prSeg, bodylessSegs, gtStack, err = shipPushGT(ctx, root, o, meta, branch)
+		prSeg, bodylessSegs, gtStack, err = shipPushGT(ctx, cmd.ErrOrStderr(), root, o, meta, branch)
 	} else {
 		remote, rebased, err = shipPush(ctx, kind, o, branch, preAmendSHA)
 	}
@@ -653,7 +660,8 @@ func shipRefuseEmptyJJ(ctx context.Context, root string, o shipOpts, plan branch
 	}
 	hint := ""
 	if plan.name != "" {
-		hint = fmt.Sprintf(" push it: jj bookmark move exact:%s --to @- && jj git push --bookmark exact:%s", plan.name, plan.name)
+		pat := shellSingleQuote(vcs.JJExactPattern(plan.name))
+		hint = fmt.Sprintf(" push it: jj bookmark move %s --to @- && jj git push --bookmark %s", pat, pat)
 	}
 	return fmt.Errorf("ship: nothing to commit%s — did a prior ship already land %s %q?%s", scope, short, subject, hint)
 }
@@ -690,10 +698,12 @@ func checkBranchFlags(cmd *cobra.Command, o shipOpts) error {
 
 // shipResolvePlan resolves where the commit goes, before any mutation, on
 // whichever lane is live. The second return is the preflight's own report
-// segment, which today only the graphite lane's auto-track produces.
-func shipResolvePlan(ctx context.Context, l lane, o shipOpts) (branchPlan, string, error) {
+// segment, which today only the graphite lane's auto-track produces. errW is the
+// graphite preflight's reporting channel: an auto-track gt declined says so in
+// gt's own words, which ship's recovery step would otherwise replace.
+func shipResolvePlan(ctx context.Context, errW io.Writer, l lane, o shipOpts) (branchPlan, string, error) {
 	if l.gt {
-		return shipPreflightGT(ctx, l, o)
+		return shipPreflightGT(ctx, errW, l, o)
 	}
 	switch l.kind {
 	case vcs.JJ:
@@ -728,12 +738,21 @@ func shipPreflightJJ(ctx context.Context, l lane, o shipOpts) (branchPlan, strin
 	if err != nil {
 		return branchPlan{}, "", err
 	}
+	unheld, beat := "", ""
+	if len(names) > 1 && !slices.Contains(names, o.branch) {
+		if unheld, beat, err = shipUnheldCandidate(ctx, l.checkout, names); err != nil {
+			return branchPlan{}, "", err
+		}
+	}
 	current, seg := trunk, ""
 	switch {
 	case len(names) == 1:
 		current = names[0]
 	case len(names) > 1 && slices.Contains(names, o.branch):
 		current = o.branch
+	case unheld != "":
+		current = unheld
+		seg = fmt.Sprintf("bookmark %s (chosen over %s)", unheld, beat)
 	case len(names) > 1 && slices.Contains(names, trunk):
 		others := slices.DeleteFunc(slices.Clone(names), func(n string) bool { return n == trunk })
 		current = trunk
@@ -749,14 +768,14 @@ func shipPreflightJJ(ctx context.Context, l lane, o shipOpts) (branchPlan, strin
 	// A --branch naming a bookmark that already exists is one ship appends to,
 	// wherever it sits: moving a jj bookmark strands no working copy the way a
 	// git checkout would.
-	probed := false
+	probed, explicitHeads := false, 0
 	if o.branch != "" {
-		heads, err := jjBookmarkHeads(ctx, o.branch)
+		explicitHeads, err = jjBookmarkHeads(ctx, o.branch)
 		if err != nil {
 			return branchPlan{}, "", err
 		}
 		probed = true
-		if heads > 0 {
+		if explicitHeads > 0 {
 			current, seg = o.branch, ""
 		}
 	}
@@ -768,6 +787,10 @@ func shipPreflightJJ(ctx context.Context, l lane, o shipOpts) (branchPlan, strin
 	plan, err := resolveBranchPlan(l, repo, o, current, trunk)
 	if err != nil {
 		return branchPlan{}, "", err
+	}
+	// jj bookmark move exits 0 on a bookmark that does not exist.
+	if plan.action == branchAppend && probed && plan.name == o.branch && explicitHeads == 0 {
+		return branchPlan{}, "", fmt.Errorf("ship: bookmark %q not found", o.branch)
 	}
 	// Only a push needs the target to resolve; a --no-push ship in a repository
 	// with no bookmark at all still commits, exactly as it did before.
@@ -789,6 +812,36 @@ func shipPreflightJJ(ctx context.Context, l lane, o shipOpts) (branchPlan, strin
 	return plan, seg, nil
 }
 
+// shipUnheldCandidate breaks a tie between nearest bookmarks by who has them
+// checked out: a candidate another working copy holds is that copy's bookmark,
+// not an equal alternative for this one. It answers only when exactly one
+// candidate is left standing, because holder data is not total — git names a
+// holder only while some checkout holds the branch, and a colocated jj working
+// copy is detached, so most refs report none and the trunk alias still decides
+// the tie. The second return names the candidates the answer beat; a jj
+// repository with no git backing shares no refs and so has no holders at all.
+func shipUnheldCandidate(ctx context.Context, ck vcs.Checkout, names []string) (string, string, error) {
+	if ck.CommonDir == "" {
+		return "", "", nil
+	}
+	holders, err := vcs.BranchHolders(ctx, ck)
+	if err != nil {
+		return "", "", fmt.Errorf("ship: %w", err)
+	}
+	var kept, held []string
+	for _, name := range names {
+		if holder := holders[name]; holder != "" && holder != ck.Root {
+			held = append(held, name+" held in "+holder)
+			continue
+		}
+		kept = append(kept, name)
+	}
+	if len(kept) != 1 {
+		return "", "", nil
+	}
+	return kept[0], strings.Join(held, ", "), nil
+}
+
 // jjBookmarkHeads counts the commits name resolves to. jj treats a bare NAMES
 // argument as a glob and no-ops with exit 0 on zero matches, and a conflicted
 // bookmark resolves to several commits, which rebase would silently treat as a
@@ -796,7 +849,7 @@ func shipPreflightJJ(ctx context.Context, l lane, o shipOpts) (branchPlan, strin
 // Zero heads is a count, not an error — it is how ship tells "create it" from
 // "append to it" — so only a conflicted bookmark refuses here.
 func jjBookmarkHeads(ctx context.Context, name string) (int, error) {
-	heads, err := jjLogLines(ctx, "ship", fmt.Sprintf(`bookmarks(exact:%q)`, name))
+	heads, err := jjLogLines(ctx, "ship", jjBookmarksRevset(name))
 	if err != nil {
 		return 0, err
 	}
@@ -807,7 +860,7 @@ func jjBookmarkHeads(ctx context.Context, name string) (int, error) {
 }
 
 func shipPreflightGitLane(ctx context.Context, l lane, o shipOpts) (branchPlan, error) {
-	current, err := gitCurrentBranch(ctx)
+	current, err := gitCurrentBranch(ctx, "ship")
 	if err != nil {
 		return branchPlan{}, err
 	}
@@ -844,17 +897,22 @@ func refuseExistingBranch(ctx context.Context, o shipOpts, plan branchPlan) erro
 }
 
 // gitCurrentBranch names the checked-out branch, empty on a detached HEAD.
-func gitCurrentBranch(ctx context.Context) (string, error) {
+func gitCurrentBranch(ctx context.Context, prefix string) (string, error) {
 	out, err := render.RunCLI(ctx, "git", []string{"branch", "--show-current"})
 	if err != nil {
-		return "", fmt.Errorf("ship: git branch --show-current: %w", err)
+		return "", fmt.Errorf("%s: git branch --show-current: %w", prefix, err)
 	}
 	return strings.TrimSpace(out), nil
 }
 
 // gitTrunkBranch reads the remote's default branch, empty when origin/HEAD does
 // not resolve — a local-only repository has no trunk, which reads as "not on
-// trunk" and leaves ship appending where it stands.
+// trunk" and leaves ship appending where it stands. That empty answer is the
+// unresolved case alone: origin/HEAD may be pointed at any ref, and
+// `git symbolic-ref --short refs/remotes/origin/HEAD` prints a tag as readily as
+// a branch at exit 0, so a target outside origin/ is an error the way
+// gitRemoteTrunk and worktreeTrunk already treat it — reporting "" there would
+// hand ship a tag to ship onto, or drop a trunk git named.
 func gitTrunkBranch(ctx context.Context) (string, error) {
 	ref := "refs/remotes/origin/HEAD"
 	out, code, _, err := render.RunCLIExitCode(ctx, "git", []string{"symbolic-ref", "--short", ref})
@@ -864,7 +922,11 @@ func gitTrunkBranch(ctx context.Context) (string, error) {
 	if code != 0 {
 		return "", nil
 	}
-	trunk, _ := strings.CutPrefix(strings.TrimSpace(out), "origin/")
+	target := strings.TrimSpace(out)
+	trunk, ok := strings.CutPrefix(target, "origin/")
+	if !ok || trunk == "" {
+		return "", fmt.Errorf("ship: %s points at %q, which names no branch of origin — run git remote set-head origin -a", ref, target)
+	}
 	return trunk, nil
 }
 
@@ -892,11 +954,11 @@ func shipTrunkRepo(ctx context.Context, l lane, o shipOpts, current, trunk strin
 // left HEAD detached with the branch ref lagging the true tip, and the recovery
 // was git checkout -B <branch> <sha> after reflog archaeology. jj has no
 // checkout to lose, so its target is the plan's.
-func shipBranchAfterCommit(ctx context.Context, kind vcs.Kind, plan branchPlan) (string, string, error) {
+func shipBranchAfterCommit(ctx context.Context, ck vcs.Checkout, kind vcs.Kind, plan branchPlan) (string, string, error) {
 	if kind != vcs.Git {
 		return plan.name, "", nil
 	}
-	branch, err := gitCurrentBranch(ctx)
+	branch, err := gitCurrentBranch(ctx, "ship")
 	if err != nil {
 		return "", "", err
 	}
@@ -909,9 +971,26 @@ func shipBranchAfterCommit(ctx context.Context, kind vcs.Kind, plan branchPlan) 
 	}
 	sha := strings.TrimSpace(out)
 	if _, err := render.RunCLI(ctx, "git", []string{"checkout", "-B", plan.name, sha}); err != nil {
-		return "", "", fmt.Errorf("ship: HEAD is detached at %s and git checkout -B %s failed: %w", sha, plan.name, err)
+		return "", "", shipHealRefused(ctx, ck, plan.name, sha, err)
 	}
 	return plan.name, "healed detached HEAD onto " + plan.name, nil
+}
+
+// shipHealRefused names the sibling working copy holding the branch a heal
+// could not take — the one reason git refuses the checkout that nothing about
+// this working copy's own state explains. A holder lookup that fails rides
+// along rather than replacing the failure it was asked to explain.
+func shipHealRefused(ctx context.Context, ck vcs.Checkout, branch, sha string, cause error) error {
+	refused := fmt.Errorf("ship: HEAD is detached at %s and git checkout -B %s failed: %w", sha, branch, cause)
+	holders, err := vcs.BranchHolders(ctx, ck)
+	if err != nil {
+		return errors.Join(refused, err)
+	}
+	holder := holders[branch]
+	if holder == "" || holder == ck.Root {
+		return refused
+	}
+	return fmt.Errorf("ship: HEAD is detached at %s and git checkout -B %s failed — that branch is checked out in %s: %w", sha, branch, holder, cause)
 }
 
 // branchSegment reports the branch a commit landed on. A created branch is
@@ -946,10 +1025,21 @@ func shipPushJJ(ctx context.Context, target string, amend bool) (int, error) {
 	if err := jjTrackUntrackedTarget(ctx, target); err != nil {
 		return 0, err
 	}
-	hint := fmt.Sprintf("jj git fetch && jj rebase -b @- --destination 'bookmarks(exact:%s)' && jj bookmark move exact:%s --to @- && jj git push --bookmark exact:%s", target, target, target)
+	pat := shellSingleQuote(vcs.JJExactPattern(target))
+	hint := fmt.Sprintf("jj git fetch && jj rebase -b @- --destination %s && jj bookmark move %s --to @- && jj git push --bookmark %s", shellSingleQuote(jjBookmarksRevset(target)), pat, pat)
 	return shipPushRetry(ctx, target, hint, func(ctx context.Context) (int, error) {
 		return shipPushJJOnce(ctx, target, amend)
 	})
+}
+
+// jjMoveBookmark advances target onto the commit ship just made: a jj bookmark
+// does not follow jj commit or jj squash the way a git branch ref follows git
+// commit, so every lane that leaves a commit behind moves it explicitly.
+func jjMoveBookmark(ctx context.Context, target string) error {
+	if _, err := render.RunCLI(ctx, "jj", []string{"bookmark", "move", vcs.JJExactPattern(target), "--to", "@-"}); err != nil {
+		return fmt.Errorf("ship: advance bookmark %q: %w", target, err)
+	}
+	return nil
 }
 
 // jjTrackUntrackedTarget tracks target's untracked remote counterpart before a
@@ -974,7 +1064,7 @@ func jjTrackUntrackedTarget(ctx context.Context, target string) error {
 			return err
 		}
 	}
-	if _, err := render.RunCLI(ctx, "jj", []string{"bookmark", "track", jjExactPattern(target), "--remote=" + remote}); err != nil {
+	if _, err := render.RunCLI(ctx, "jj", []string{"bookmark", "track", vcs.JJExactPattern(target), "--remote=" + remote}); err != nil {
 		return fmt.Errorf("ship: jj bookmark track %s --remote=%s: %w", target, remote, err)
 	}
 	return nil
@@ -990,7 +1080,7 @@ func jjTrackUntrackedTarget(ctx context.Context, target string) error {
 // implicit git import, and a counterpart fetched git-side would then go unseen,
 // leaving jj git push to refuse the bookmark it was this call's job to track.
 func jjUntrackedTargetRemotes(ctx context.Context, target string) ([]string, error) {
-	out, err := render.RunCLI(ctx, "jj", []string{"bookmark", "list", jjExactPattern(target), "--all-remotes", "-T", jjRemoteBookmarkTemplate})
+	out, err := render.RunCLI(ctx, "jj", []string{"bookmark", "list", vcs.JJExactPattern(target), "--all-remotes", "-T", jjRemoteBookmarkTemplate})
 	if err != nil {
 		return nil, fmt.Errorf("ship: jj bookmark list %s --all-remotes: %w", target, err)
 	}
@@ -1027,11 +1117,39 @@ func jjPushRemote(ctx context.Context) (string, error) {
 	}
 }
 
-// jjExactPattern renders name as jj's exact string pattern, exact:"…", quoting it
-// so a bookmark name carrying an '@' (or any character jj would otherwise read as a
-// bookmark@remote symbol or a glob metacharacter) is matched literally.
-func jjExactPattern(name string) string {
-	return `exact:"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(name) + `"`
+// jjBookmarksRevset resolves name to the commit its bookmark points at, matching
+// the name exactly rather than as the glob a bare argument would be. It spells
+// the pattern through vcs.JJExactPattern rather than Go's %q, whose \a, \b, \f,
+// \v, \u, and \U escapes jj's revset grammar rejects outright: a bookmark
+// carrying a character Go considers unprintable but git allows in a ref — a
+// non-breaking space, a zero-width joiner — would render as a revset jj 0.43
+// cannot parse.
+func jjBookmarksRevset(name string) string {
+	return `bookmarks(` + vcs.JJExactPattern(name) + `)`
+}
+
+// jjAncestorRevset selects name's bookmark when it already sits under @-.
+func jjAncestorRevset(name string) string {
+	return jjBookmarksRevset(name) + " & ::@-"
+}
+
+// jjStackRevset selects the commits @- carries above name's bookmark.
+func jjStackRevset(name string) string {
+	return jjBookmarksRevset(name) + "..@-"
+}
+
+// jjConflictRevset selects the conflicted commits in and above that stack.
+func jjConflictRevset(name string) string {
+	return "conflicts() & (" + jjStackRevset(name) + ")::"
+}
+
+// shellSingleQuote renders s as one shell word, so a recovery hint the operator
+// pastes reaches jj carrying the argument ship itself would have passed. A jj
+// pattern spells its own quotes, and a shell eats them: pasted bare,
+// exact:"foo@bar" arrives as exact:foo@bar, which jj refuses to parse as a
+// pattern at all.
+func shellSingleQuote(s string) string {
+	return `'` + strings.ReplaceAll(s, `'`, `'\''`) + `'`
 }
 
 // shipPushJJOnce is one push attempt: fetch, re-check the bookmark, rebase when
@@ -1042,7 +1160,7 @@ func shipPushJJOnce(ctx context.Context, target string, amend bool) (int, error)
 		return 0, fmt.Errorf("ship: jj git fetch: %w", err)
 	}
 
-	heads, err := jjLogLines(ctx, "ship", fmt.Sprintf(`bookmarks(exact:%q)`, target))
+	heads, err := jjLogLines(ctx, "ship", jjBookmarksRevset(target))
 	if err != nil {
 		return 0, err
 	}
@@ -1053,7 +1171,7 @@ func shipPushJJOnce(ctx context.Context, target string, amend bool) (int, error)
 		return 0, fmt.Errorf("ship: bookmark %q is conflicted (%d heads); resolve it (jj bookmark list --conflicted) before shipping", target, len(heads))
 	}
 
-	ancestors, err := jjBookmarkNames(ctx, "ship", fmt.Sprintf(jjAncestorRevsetFmt, target))
+	ancestors, err := jjBookmarkNames(ctx, "ship", jjAncestorRevset(target))
 	if err != nil {
 		return 0, err
 	}
@@ -1065,14 +1183,14 @@ func shipPushJJOnce(ctx context.Context, target string, amend bool) (int, error)
 		}
 	}
 
-	if _, err := render.RunCLI(ctx, "jj", []string{"bookmark", "move", "exact:" + target, "--to", "@-"}); err != nil {
-		return 0, fmt.Errorf("ship: advance bookmark %q: %w", target, err)
+	if err := jjMoveBookmark(ctx, target); err != nil {
+		return 0, err
 	}
 	moveOp, err := jjOpID(ctx)
 	if err != nil {
 		return 0, err
 	}
-	if _, err := render.RunCLI(ctx, "jj", []string{"git", "push", "--bookmark", "exact:" + target}); err != nil {
+	if _, err := render.RunCLI(ctx, "jj", []string{"git", "push", "--bookmark", vcs.JJExactPattern(target)}); err != nil {
 		return rebased, shipPushJJReject(ctx, target, moveOp, amend, err)
 	}
 	return rebased, nil
@@ -1172,7 +1290,7 @@ func shipPushGitOnce(ctx context.Context, remote, branch string) (int, error) {
 	}
 	rebased := 0
 	if present {
-		ancestor, err := gitIsAncestor(ctx, remoteRef, "HEAD")
+		ancestor, err := gitIsAncestor(ctx, "ship", remoteRef, "HEAD")
 		if err != nil {
 			return 0, err
 		}
@@ -1212,10 +1330,10 @@ func gitRefExists(ctx context.Context, ref string) (bool, error) {
 
 // gitIsAncestor reports whether maybe is an ancestor of ref (git merge-base
 // --is-ancestor: exit 0 yes, exit 1 no). Any other exit is an error.
-func gitIsAncestor(ctx context.Context, maybe, ref string) (bool, error) {
+func gitIsAncestor(ctx context.Context, prefix, maybe, ref string) (bool, error) {
 	_, code, stderr, err := render.RunCLIExitCode(ctx, "git", []string{"merge-base", "--is-ancestor", maybe, ref})
 	if err != nil {
-		return false, fmt.Errorf("ship: git merge-base --is-ancestor: %w", err)
+		return false, fmt.Errorf("%s: git merge-base --is-ancestor: %w", prefix, err)
 	}
 	switch code {
 	case 0:
@@ -1223,7 +1341,7 @@ func gitIsAncestor(ctx context.Context, maybe, ref string) (bool, error) {
 	case 1:
 		return false, nil
 	default:
-		return false, fmt.Errorf("ship: git merge-base --is-ancestor: exit %d: %s", code, strings.TrimSpace(stderr))
+		return false, fmt.Errorf("%s: git merge-base --is-ancestor: exit %d: %s", prefix, code, strings.TrimSpace(stderr))
 	}
 }
 
@@ -1281,7 +1399,18 @@ func jjBookmarkNames(ctx context.Context, prefix, rev string) ([]string, error) 
 	if err != nil {
 		return nil, fmt.Errorf("%s: jj bookmarks at %q: %w", prefix, rev, err)
 	}
-	return strings.Fields(out), nil
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" {
+			continue
+		}
+		var name string
+		if err := json.Unmarshal([]byte(line), &name); err != nil {
+			return nil, fmt.Errorf("%s: malformed jj bookmark name %q at %q: %w", prefix, line, rev, err)
+		}
+		names = append(names, name)
+	}
+	return names, nil
 }
 
 func jjTrunkBookmarkNames(ctx context.Context, prefix string) ([]string, error) {
@@ -1291,7 +1420,14 @@ func jjTrunkBookmarkNames(ctx context.Context, prefix string) ([]string, error) 
 	}
 	var names []string
 	seen := map[string]bool{}
-	for _, name := range strings.Fields(out) {
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" {
+			continue
+		}
+		var name string
+		if err := json.Unmarshal([]byte(line), &name); err != nil {
+			return nil, fmt.Errorf("%s: malformed jj trunk bookmark name %q: %w", prefix, line, err)
+		}
 		if !seen[name] {
 			names = append(names, name)
 			seen[name] = true
@@ -1327,7 +1463,7 @@ func jjOpID(ctx context.Context) (string, error) {
 }
 
 func jjRebaseOnto(ctx context.Context, target string) (int, error) {
-	stack, err := jjLogLines(ctx, "ship", fmt.Sprintf(jjStackRevsetFmt, target))
+	stack, err := jjLogLines(ctx, "ship", jjStackRevset(target))
 	if err != nil {
 		return 0, err
 	}
@@ -1335,7 +1471,7 @@ func jjRebaseOnto(ctx context.Context, target string) (int, error) {
 		return 0, fmt.Errorf("ship: %q..@- is empty — the commit already landed on %q; refusing to move the bookmark backwards", target, target)
 	}
 
-	if _, err := render.RunCLI(ctx, "jj", []string{"rebase", "-b", "@-", "--destination", fmt.Sprintf(`bookmarks(exact:%q)`, target)}); err != nil {
+	if _, err := render.RunCLI(ctx, "jj", []string{"rebase", "-b", "@-", "--destination", jjBookmarksRevset(target)}); err != nil {
 		return 0, fmt.Errorf("ship: jj rebase onto %q: %w", target, err)
 	}
 	rebaseOp, err := jjOpID(ctx)
@@ -1345,7 +1481,7 @@ func jjRebaseOnto(ctx context.Context, target string) (int, error) {
 
 	// rebase -b @- rewrites every descendant of the stack, including siblings
 	// of @; check the whole rewritten set without including conflicts below it.
-	conflicts, err := jjLogLines(ctx, "ship", fmt.Sprintf(jjConflictRevsetFmt, target))
+	conflicts, err := jjLogLines(ctx, "ship", jjConflictRevset(target))
 	cleanup := context.WithoutCancel(ctx)
 	if err != nil {
 		_, uerr := render.RunCLI(cleanup, "jj", []string{"op", "revert", rebaseOp})
@@ -1360,7 +1496,8 @@ func jjRebaseOnto(ctx context.Context, target string) (int, error) {
 		if _, uerr := render.RunCLI(cleanup, "jj", []string{"op", "revert", rebaseOp}); uerr != nil {
 			return 0, fmt.Errorf("ship: rebase onto %q conflicted and rollback failed: %w — run: jj op revert %s, then resolve manually", target, uerr, rebaseOp)
 		}
-		return 0, fmt.Errorf("ship: rebase onto %q conflicts in %d commit(s); rolled back to the pre-rebase state\nconflicted:\n  %s\nresolve manually: jj rebase -b @- --destination 'bookmarks(exact:%q)', fix the conflicts (jj status), then: jj bookmark move exact:%s --to @- && jj git push --bookmark exact:%s", target, len(conflicts), strings.Join(conflicts, "\n  "), target, target, target)
+		pat := shellSingleQuote(vcs.JJExactPattern(target))
+		return 0, fmt.Errorf("ship: rebase onto %q conflicts in %d commit(s); rolled back to the pre-rebase state\nconflicted:\n  %s\nresolve manually: jj rebase -b @- --destination %s, fix the conflicts (jj status), then: jj bookmark move %s --to @- && jj git push --bookmark %s", target, len(conflicts), strings.Join(conflicts, "\n  "), shellSingleQuote(jjBookmarksRevset(target)), pat, pat)
 	}
 	return len(stack), nil
 }

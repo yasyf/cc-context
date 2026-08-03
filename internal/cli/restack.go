@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -21,10 +22,21 @@ const (
 	gtSyncAuthRequired1 = "Please authenticate your Graphite CLI"
 	gtSyncAuthRequired2 = "Your Graphite auth token is invalid/expired"
 
+	// gtSyncSkippedPrefix and gtSyncSkippedReason bracket the branch name in the
+	// lines gt 1.8.6 prints — on stdout, at exit 0 — for a branch it declined to
+	// restack. Three reasons follow: gtSyncSkippedWorktree and a path, "frozen.",
+	// or "merging.". Only the first is a branch another working copy holds, so
+	// gtRestackPreflight can refuse ahead of only that one.
+	gtSyncSkippedPrefix   = "Did not restack branch "
+	gtSyncSkippedReason   = " because it is "
+	gtSyncSkippedWorktree = "checked out in worktree "
+
 	jjRestackAncestorRevset = "trunk() & ::@"
 	jjRestackStackRevset    = "trunk()..@"
 	jjRestackConflictRevset = "conflicts() & @::"
 )
+
+var errRestackDetached = errors.New("restack: detached HEAD — check out a branch before restacking")
 
 type restackOpts struct {
 	noGT bool
@@ -52,7 +64,7 @@ func runRestack(cmd *cobra.Command, o restackOpts) error {
 		return err
 	}
 	if l.gt {
-		summary, err := restackGT(ctx, cmd.ErrOrStderr())
+		summary, err := restackGT(ctx, l, cmd.ErrOrStderr())
 		if err != nil {
 			return err
 		}
@@ -79,7 +91,13 @@ func runRestack(cmd *cobra.Command, o restackOpts) error {
 	return nil
 }
 
-func restackGT(ctx context.Context, errW io.Writer) (string, error) {
+// restackGT reads the stack twice: the preflight refuses over the stack as it
+// stands, while the verdict measures the one sync left behind. gt sync deletes
+// the branches whose PRs merged or closed and reparents their children onto
+// trunk, so a verdict over the pre-sync list probes refs sync just deleted —
+// git merge-base exits 128 on a name that no longer resolves, turning a
+// successful sync into a failure.
+func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 	state, err := gtStateQuery(ctx, "restack")
 	if err != nil {
 		return "", err
@@ -88,63 +106,244 @@ func restackGT(ctx context.Context, errW io.Writer) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	beforeHead, beforeTrunk, err := gtRestackShas(ctx, trunk)
+	stack, err := gtRestackStack(ctx, state, trunk)
+	if err != nil {
+		return "", err
+	}
+	trunkHolder, err := gtRestackPreflight(ctx, l, stack, trunk)
 	if err != nil {
 		return "", err
 	}
 
-	argv := []string{"sync", "--no-interactive"}
-	if shipStreamCI(errW) {
-		var output strings.Builder
-		if err := render.RunCLIStream(ctx, "gt", argv, io.MultiWriter(errW, &output)); err != nil {
-			return "", classifyGTRestack(fmt.Errorf("%w: %s", err, strings.TrimSpace(output.String())))
-		}
-	} else if _, err := render.RunCLI(ctx, "gt", argv); err != nil {
-		return "", classifyGTRestack(err)
-	}
-
-	afterHead, afterTrunk, err := gtRestackShas(ctx, trunk)
+	output, err := gtSync(ctx, errW)
 	if err != nil {
 		return "", err
 	}
-	if beforeHead == afterHead && beforeTrunk == afterTrunk {
-		return "already up to date · trunk " + trunk, nil
+
+	synced, err := gtStateQuery(ctx, "restack")
+	if err != nil {
+		return "", err
 	}
-	return "restacked · trunk " + trunk, nil
+	stack, err = gtRestackStack(ctx, synced, trunk)
+	if err != nil {
+		return "", err
+	}
+
+	trunkRef, err := gtRestackTrunkRef(ctx, trunk)
+	if err != nil {
+		return "", err
+	}
+	restacked, skipped, err := gtRestackVerdict(ctx, trunkRef, stack, gtSyncSkipped(output))
+	if err != nil {
+		return "", err
+	}
+	return gtRestackSummary(trunk, trunkHolder, len(stack), restacked, skipped), nil
 }
 
-// gtRestackShas resolves HEAD's and trunk's current commit SHAs, so restackGT
-// can tell a no-op gt sync from one that actually moved something.
-func gtRestackShas(ctx context.Context, trunk string) (head, trunkSHA string, err error) {
-	head, err = gitRevParseSHA(ctx, "HEAD")
+// gtRestackTrunkRef names the ref the verdict measures the stack against: the
+// remote-tracking trunk, fully qualified, not the local branch. gt sync writes
+// refs/remotes/<remote>/<trunk> from the fetch before it tries to move the local
+// branch, and that second step is the one that fails — a sibling working copy
+// holding trunk with conflicting unstaged changes, or a trunk that cannot
+// fast-forward, leaves the local branch stale while gt still exits 0 without
+// declining a single branch. A stack measured against that ref reads as current
+// while it sits behind the trunk everyone else sees.
+//
+// The qualification is load-bearing. git resolves the short <remote>/<trunk>
+// through refs/tags and refs/heads before refs/remotes, so a local branch or tag
+// literally named origin/main answers merge-base in place of the ref show-ref
+// just verified; git warns on stderr and still exits 0, leaving the verdict to
+// count a stack that never moved as restacked.
+func gtRestackTrunkRef(ctx context.Context, trunk string) (string, error) {
+	remote, err := gitRemoteFor(ctx, "restack", trunk)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	trunkSHA, err = gitRevParseSHA(ctx, trunk)
+	ref := "refs/remotes/" + remote + "/" + trunk
+	_, code, stderr, err := render.RunCLIExitCode(ctx, "git", []string{"show-ref", "--verify", "--quiet", ref})
 	if err != nil {
-		return "", "", err
+		return "", fmt.Errorf("restack: git show-ref %s: %w", ref, err)
 	}
-	return head, trunkSHA, nil
-}
-
-// gitRevParseSHA resolves ref to its commit SHA.
-func gitRevParseSHA(ctx context.Context, ref string) (string, error) {
-	out, err := render.RunCLI(ctx, "git", []string{"rev-parse", ref})
-	if err != nil {
-		return "", fmt.Errorf("restack: git rev-parse %s: %w", ref, err)
-	}
-	return strings.TrimSpace(out), nil
-}
-
-func classifyGTRestack(err error) error {
-	msg := err.Error()
-	switch {
-	case strings.Contains(msg, gtSyncConflict):
-		return errors.New("restack: conflict — resolve the listed files, then gt continue (or gt abort); see the output above")
-	case strings.Contains(msg, gtSyncAuthRequired1) || strings.Contains(msg, gtSyncAuthRequired2):
-		return errors.New("restack: graphite auth required — run gt auth")
+	switch code {
+	case 0:
+		return ref, nil
+	case 1:
+		return "", fmt.Errorf("restack: %s does not exist — run git fetch %s %s", ref, remote, trunk)
 	default:
-		return fmt.Errorf("restack: gt sync: %w", err)
+		return "", fmt.Errorf("restack: git show-ref %s: exit %d: %s", ref, code, strings.TrimSpace(stderr))
+	}
+}
+
+// gtRestackStack lists the branches gt sync is asked to restack: the current
+// downstack, trunk excluded.
+func gtRestackStack(ctx context.Context, state gtState, trunk string) ([]string, error) {
+	branch, err := gitCurrentBranch(ctx, "restack")
+	if err != nil {
+		return nil, err
+	}
+	if branch == "" {
+		return nil, errRestackDetached
+	}
+	if branch == trunk {
+		return nil, nil
+	}
+	return gtDownstack("restack", state, branch, trunk)
+}
+
+// gtRestackPreflight refuses before gt sync runs when another working copy holds
+// a branch of the stack: git will not move a branch a sibling checkout has
+// checked out, so gt skips it and still exits 0. It returns the working copy
+// holding trunk, which gt declines to say anything about: a held trunk cannot be
+// pulled, so the whole stack reads as behind with nothing explaining why. An
+// empty string means nobody else holds it — BranchHolders names only the
+// branches some working copy has checked out, so a trunk no entry covers is one
+// this summary must not claim anything about.
+func gtRestackPreflight(ctx context.Context, l lane, stack []string, trunk string) (string, error) {
+	if len(stack) == 0 {
+		return "", nil
+	}
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	if err != nil {
+		return "", fmt.Errorf("restack: %w", err)
+	}
+	for _, branch := range stack {
+		holder := holders[branch]
+		if holder != "" && holder != l.checkout.Root {
+			return "", fmt.Errorf("restack: %s is checked out in %s — gt cannot restack a branch another working copy holds; restack from there, or release it first", branch, holder)
+		}
+	}
+	if holder := holders[trunk]; holder != l.checkout.Root {
+		return holder, nil
+	}
+	return "", nil
+}
+
+// gtSync runs gt sync and returns everything it printed, both streams
+// interleaved. gt splits one sync across the two and exits 0 either way: it
+// names a branch it declined to restack on stdout, and reports a trunk it could
+// not pull with an ERROR:-prefixed line on stderr. A caller that keeps only
+// stdout, or only the error, sees neither.
+//
+// Exit 0 stays a success — gtZeroSurfaces — because the verdict re-measures the
+// stack's ancestry itself, so a diagnostic explains a report ccx already made
+// rather than deciding it.
+func gtSync(ctx context.Context, errW io.Writer) (string, error) {
+	r, err := gtRun(ctx, []string{"sync", "--no-interactive"}, gtZeroSurfaces, errW)
+	if err != nil {
+		return "", classifyGTRestack(r, err)
+	}
+	for _, line := range r.Diagnostics() {
+		if _, werr := fmt.Fprintln(errW, line); werr != nil {
+			return "", fmt.Errorf("restack: report gt sync diagnostics: %w", werr)
+		}
+	}
+	return r.Output, nil
+}
+
+func gtSyncSkipped(output string) map[string]string {
+	skipped := make(map[string]string)
+	for _, line := range strings.Split(output, "\n") {
+		_, named, ok := strings.Cut(line, gtSyncSkippedPrefix)
+		if !ok {
+			continue
+		}
+		branch, reason, ok := strings.Cut(named, gtSyncSkippedReason)
+		if !ok {
+			continue
+		}
+		skipped[branch] = gtSkipReason(reason)
+	}
+	return skipped
+}
+
+// gtSkipReason renders gt's sentence tail as a label note: the period dropped,
+// and the worktree variant shortened to the path that answers it.
+func gtSkipReason(reason string) string {
+	reason = strings.TrimSuffix(strings.TrimSpace(reason), ".")
+	if worktree, ok := strings.CutPrefix(reason, gtSyncSkippedWorktree); ok {
+		return "checked out in " + worktree
+	}
+	return reason
+}
+
+// gtRestackVerdict counts the stack branches that ended up on trunkRef and
+// labels the rest, then appends every branch gt declined that the stack never
+// named. A branch gt declined never counts as restacked, however the ancestry
+// compares: gt reports what it did, while ancestry infers it. Where the two
+// disagree the label says so, since a decline over a branch already on trunk is
+// a different fact from one over a branch left behind it.
+func gtRestackVerdict(ctx context.Context, trunkRef string, stack []string, declined map[string]string) (int, []string, error) {
+	restacked := 0
+	named := make(map[string]bool, len(stack))
+	var skipped []string
+	for _, branch := range stack {
+		named[branch] = true
+		on, err := gitIsAncestor(ctx, "restack", trunkRef, branch)
+		if err != nil {
+			return 0, nil, fmt.Errorf("restack: check %s sits on %s: %w", branch, trunkRef, err)
+		}
+		reason, refused := declined[branch]
+		switch {
+		case !refused && on:
+			restacked++
+		case !refused:
+			skipped = append(skipped, gtSkipLabel(branch))
+		case on:
+			skipped = append(skipped, gtSkipLabel(branch, reason, "already on "+trunkRef))
+		default:
+			skipped = append(skipped, gtSkipLabel(branch, reason))
+		}
+	}
+
+	var elsewhere []string
+	for branch := range declined {
+		if !named[branch] {
+			elsewhere = append(elsewhere, branch)
+		}
+	}
+	slices.Sort(elsewhere)
+	for _, branch := range elsewhere {
+		skipped = append(skipped, gtSkipLabel(branch, declined[branch]))
+	}
+	return restacked, skipped, nil
+}
+
+func gtSkipLabel(branch string, notes ...string) string {
+	notes = slices.DeleteFunc(notes, func(note string) bool { return note == "" })
+	if len(notes) == 0 {
+		return branch
+	}
+	return branch + " (" + strings.Join(notes, "; ") + ")"
+}
+
+func gtRestackSummary(trunk, trunkHolder string, total, restacked int, skipped []string) string {
+	held := trunk
+	if trunkHolder != "" {
+		held = trunk + " (checked out in " + trunkHolder + ")"
+	}
+	summary := "synced · trunk " + held
+	if total > 0 {
+		summary = fmt.Sprintf("restacked %d of %d · trunk %s", restacked, total, held)
+	}
+	if len(skipped) > 0 {
+		summary += shipSep + "skipped " + strings.Join(skipped, ", ")
+	}
+	return summary
+}
+
+// classifyGTRestack reads a failed sync's whole interleaved output, not the
+// error text: gt writes its conflict banner to stdout and its ERROR:-led
+// diagnostics to stderr, so a classifier matching either stream alone matches
+// nothing the other one carried. gtAdvice replaces gt's sentence without
+// discarding it, so the run stays reachable through errors.As.
+func classifyGTRestack(r gtResult, cause error) error {
+	switch {
+	case strings.Contains(r.Output, gtSyncConflict):
+		return &gtAdvice{advice: "restack: conflict — resolve the listed files, then gt continue (or gt abort); see the output above", cause: cause}
+	case strings.Contains(r.Output, gtSyncAuthRequired1) || strings.Contains(r.Output, gtSyncAuthRequired2):
+		return &gtAdvice{advice: "restack: graphite auth required — run gt auth", cause: cause}
+	default:
+		return fmt.Errorf("restack: %w", cause)
 	}
 }
 
@@ -212,13 +411,12 @@ func jjRestackOntoTrunk(ctx context.Context, trunk string) (int, error) {
 }
 
 func restackGit(ctx context.Context) (string, error) {
-	out, err := render.RunCLI(ctx, "git", []string{"branch", "--show-current"})
+	branch, err := gitCurrentBranch(ctx, "restack")
 	if err != nil {
-		return "", fmt.Errorf("restack: git branch --show-current: %w", err)
+		return "", err
 	}
-	branch := strings.TrimSpace(out)
 	if branch == "" {
-		return "", errors.New("restack: detached HEAD — check out a branch before restacking")
+		return "", errRestackDetached
 	}
 	remote, err := gitRemoteFor(ctx, "restack", branch)
 	if err != nil {
@@ -233,7 +431,7 @@ func restackGit(ctx context.Context) (string, error) {
 		return "", err
 	}
 	remoteTrunk := remote + "/" + trunk
-	upToDate, err := gitIsAncestor(ctx, remoteTrunk, "HEAD")
+	upToDate, err := gitIsAncestor(ctx, "restack", remoteTrunk, "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("restack: compare HEAD with %s: %w", remoteTrunk, err)
 	}
@@ -274,7 +472,7 @@ func gitRemoteTrunk(ctx context.Context, prefix, remote string) (string, error) 
 
 	for _, trunk := range []string{"main", "master"} {
 		candidate := "refs/remotes/" + remote + "/" + trunk
-		_, code, stderr, err := render.RunCLIExitCode(ctx, "git", []string{"show-ref", "--verify", candidate})
+		_, code, stderr, err := render.RunCLIExitCode(ctx, "git", []string{"show-ref", "--verify", "--quiet", candidate})
 		if err != nil {
 			return "", fmt.Errorf("%s: git show-ref %s: %w", prefix, candidate, err)
 		}

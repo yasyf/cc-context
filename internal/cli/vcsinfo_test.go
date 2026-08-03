@@ -10,15 +10,18 @@ import (
 )
 
 // infoFakes overlays the ship fakes with the arms ccx vcs info needs — git
-// status/symbolic-ref/show-ref, the repository-wide for-each-ref that names each
-// branch's holding worktree, gt --version, and the batched downstack pull
+// status/symbolic-ref/show-ref, the repository-wide worktree listing that names
+// each branch's holding worktree, gt --version, and the batched downstack pull
 // request query, whose per-branch payload is $GH_PR_VIEW_<branch>. Each
 // wrapper handles its own arms and execs the renamed base fake for the rest, so
 // writeShipFakes stays untouched.
 //
-// GIT_BRANCH_HOLDERS is a space-separated branch=worktree list; unset means no
-// checkout holds any branch, which is what git reports for a detached working
-// copy and the default every report assertion here is written against.
+// GIT_BRANCH_HOLDERS is a space-separated branch=worktree list; a pair with an
+// empty path names a branch no checkout holds, which git reports by emitting no
+// record for it at all. Unset means no checkout holds any branch — what git
+// reports for a detached working copy, and the default every report assertion
+// here is written against. The record framing is measured off git 2.55: NUL
+// after every field, one more closing each record.
 func infoFakes(t *testing.T) {
 	t.Helper()
 	wd, err := os.Getwd()
@@ -54,12 +57,15 @@ func infoFakes(t *testing.T) {
     exit 0 ;;
   "show-ref --verify")
     `+logRec("git")+`    if [ -n "$GIT_SHOW_REF_FOUND" ]; then exit 0; fi
-    exit 1 ;;
+    if [ "$3" = --quiet ]; then exit 1; fi
+    printf "fatal: '%s' - not a valid ref\n" "$4" >&2
+    exit 128 ;;
   "--git-dir "*)
     case "$3" in
-      for-each-ref)
+      worktree)
         `+logRec("git")+`        for pair in $GIT_BRANCH_HOLDERS; do
-          printf '%s\0%s\n' "${pair%%=*}" "${pair#*=}"
+          name="${pair%%=*}"; path="${pair#*=}"
+          if [ -n "$path" ]; then printf 'worktree %s\0HEAD `+fakeHeadSHA+`\0branch refs/heads/%s\0\0' "$path" "$name"; fi
         done
         exit 0 ;;
     esac ;;

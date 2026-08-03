@@ -3,135 +3,303 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/ghapi"
 )
 
-func writeReviewsFakes(t *testing.T, dir string) {
-	t.Helper()
-	gh := `#!/bin/sh
-{ printf 'gh\0'; for a in "$@"; do printf '%s\0' "$a"; done; printf '\0'; } >> "$SHIP_LOG"
+// reviewsRepoPath prefixes every REST path the fake GitHub serves, matching the
+// repository setupReviews seeds into the lane cache.
+const reviewsRepoPath = "/repos/acme/repo/"
 
-case "$1 $2" in
-  "pr view")
-    if [ -n "$GH_PR_NOT_FOUND" ]; then
-      printf 'no pull requests found for branch "missing"\n' >&2
-      exit 1
-    fi
-    operand=
-    if [ "$3" != "--json" ]; then operand=$3; fi
-    # operands can be branch names with chars illegal in var names (dash rejects the eval); no external
-    # tools exist on the fake PATH, so route non-identifier operands to the un-keyed fallback vars instead
-    case $operand in
-      "" | *[!A-Za-z0-9_]*) key=DEFAULT ;;
-      *) key=$operand ;;
-    esac
-    eval 'open_json=${GH_PR_VIEW_JSON_'"$key"'-}'
-    if [ -z "$open_json" ]; then open_json=$GH_PR_VIEW_JSON; fi
-    eval 'marker=${GH_PR_VIEW_MARKER_'"$key"'-}'
-    if [ -z "$marker" ]; then
-      printf '%s' "$open_json"
-      exit 0
-    fi
-    count=0
-    if [ -r "$marker" ]; then IFS= read -r count < "$marker" || :; fi
-    count=${count:-0}
-    count=$((count + 1))
-    printf '%s' "$count" > "$marker"
-    eval 'open_calls=${GH_PR_VIEW_OPEN_CALLS_'"$key"'-0}'
-    if [ "$count" -le "$open_calls" ]; then
-      printf '%s' "$open_json"
-    else
-      eval 'fail_after=${GH_PR_VIEW_FAIL_AFTER_'"$key"'-}'
-      if [ -n "$fail_after" ]; then
-        printf 'no pull requests found for branch "%s"\n' "$key" >&2
-        exit 1
-      fi
-      eval 'done_json=${GH_PR_VIEW_DONE_JSON_'"$key"'-}'
-      printf '%s' "$done_json"
-    fi
-    ;;
-  "api --paginate")
-    path=$3
-    case "$path" in
-      */pulls/*) rest=${path#*/pulls/}; num=${rest%%/*} ;;
-      */issues/*) rest=${path#*/issues/}; num=${rest%%/*} ;;
-      *) num= ;;
-    esac
-    eval 'fail_marker=${GH_API_FAIL_MARKER_'"$num"'-}'
-    if [ -z "$fail_marker" ]; then fail_marker=$GH_API_FAIL_MARKER; fi
-    if [ -n "$fail_marker" ]; then
-      count=0
-      if [ -r "$fail_marker" ]; then IFS= read -r count < "$fail_marker" || :; fi
-      count=${count:-0}
-      if [ "$count" -gt 0 ]; then
-        count=$((count - 1))
-        printf '%s' "$count" > "$fail_marker"
-        printf 'gh: transient network timeout\n' >&2
-        exit 1
-      fi
-    fi
+func reviewsPRURL(number int) string {
+	return fmt.Sprintf("https://github.com/acme/repo/pull/%d", number)
+}
 
-    feed=
-    case "$path" in
-      */pulls/*/comments*) feed=INLINE ;;
-      */issues/*/comments*) feed=COMMENTS ;;
-      */pulls/*/reviews*) feed=REVIEWS ;;
-    esac
-    cycle=1
-    if [ -n "$GH_API_CYCLE_MARKER" ]; then
-      count=0
-      if [ -r "$GH_API_CYCLE_MARKER" ]; then IFS= read -r count < "$GH_API_CYCLE_MARKER" || :; fi
-      count=${count:-0}
-      if [ "$feed" = INLINE ]; then
-        count=$((count + 1))
-        printf '%s' "$count" > "$GH_API_CYCLE_MARKER"
-      fi
-      cycle=$count
-    fi
-    var=GH_${feed}_JSON
-    if [ "$cycle" -gt "${GH_API_SWITCH_AFTER:-999999}" ]; then var=${var}_2; fi
-    if [ -z "$feed" ]; then var=GH_API_JSON; fi
-    eval 'json=${'"$var"'-}'
-    printf '%s' "$json"
-    ;;
-  *)
-    printf 'fake gh: unmatched argv: %s\n' "$*" >&2
-    exit 2
-    ;;
-esac
-`
-	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(gh), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
-		t.Fatalf("write fake gh: %v", err)
+// reviewsPR is one pull request the fake GitHub knows: it answers OPEN for
+// openAnswers state reads — the resolution read included — and state after.
+type reviewsPR struct {
+	openAnswers int
+	state       string
+	merged      bool
+	answers     int
+}
+
+type reviewsGraphQL struct {
+	query string
+	vars  map[string]any
+}
+
+// reviewsServer is the fake GitHub the reviews tests poll: one GraphQL endpoint
+// answering batched state reads and three REST comment feeds per pull request.
+type reviewsServer struct {
+	t *testing.T
+
+	mu       sync.Mutex
+	prs      map[int]*reviewsPR
+	branches map[string][]int
+	feeds    map[string][]string
+	feedCall map[string]int
+	failREST map[int]int
+	requests []string
+	queries  []reviewsGraphQL
+}
+
+// pr registers a pull request. openAnswers state reads answer OPEN before the
+// transition to state; the resolution read at setup is the first of them.
+func (s *reviewsServer) pr(number, openAnswers int, state string, merged bool) {
+	s.prs[number] = &reviewsPR{openAnswers: openAnswers, state: state, merged: merged}
+}
+
+// branch registers the pull requests headed by name, oldest first, the order
+// GitHub's CREATED_AT ordering sorts them by.
+func (s *reviewsServer) branch(name string, numbers ...int) {
+	s.branches[name] = numbers
+}
+
+// feed queues one payload per poll of number's kind feed ("inline", "comment",
+// or "review"); the last payload repeats for every later poll.
+func (s *reviewsServer) feed(kind string, number int, payloads ...string) {
+	s.feeds[fmt.Sprintf("%s:%d", kind, number)] = payloads
+}
+
+// fail makes number's next count REST requests answer 500.
+func (s *reviewsServer) fail(number, count int) {
+	s.failREST[number] = count
+}
+
+// requestLog returns every request in order: "POST /graphql" for a batch, the
+// full URL for a REST feed.
+func (s *reviewsServer) requestLog() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.requests...)
+}
+
+func (s *reviewsServer) graphQLCalls() []reviewsGraphQL {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]reviewsGraphQL(nil), s.queries...)
+}
+
+func (s *reviewsServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r.URL.Path == "/graphql" {
+		s.serveGraphQL(w, r)
+		return
+	}
+	s.requests = append(s.requests, r.URL.String())
+	number, kind, ok := reviewsFeed(r.URL.Path)
+	if !ok {
+		http.Error(w, "unmatched "+r.URL.Path, http.StatusNotFound)
+		return
+	}
+	if left := s.failREST[number]; left > 0 {
+		s.failREST[number] = left - 1
+		http.Error(w, "transient upstream failure", http.StatusInternalServerError)
+		return
+	}
+	key := fmt.Sprintf("%s:%d", kind, number)
+	body := "[]"
+	if payloads := s.feeds[key]; len(payloads) > 0 {
+		body = payloads[min(s.feedCall[key], len(payloads)-1)]
+	}
+	s.feedCall[key]++
+	w.Header().Set("Content-Type", "application/json")
+	if _, err := io.WriteString(w, body); err != nil {
+		s.t.Errorf("write %s: %v", r.URL, err)
 	}
 }
 
-func setupReviews(t *testing.T) string {
+func (s *reviewsServer) serveGraphQL(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.t.Errorf("decode graphql request: %v", err)
+		http.Error(w, "undecodable request", http.StatusBadRequest)
+		return
+	}
+	s.requests = append(s.requests, r.Method+" "+r.URL.Path)
+	s.queries = append(s.queries, reviewsGraphQL{query: req.Query, vars: req.Variables})
+
+	fields := map[string]any{}
+	var missing []map[string]any
+	for name, raw := range req.Variables {
+		if name == "owner" || name == "repo" {
+			continue
+		}
+		switch value := raw.(type) {
+		case float64:
+			number := int(value)
+			pr, known := s.prs[number]
+			if !known {
+				missing = append(missing, map[string]any{
+					"type":    "NOT_FOUND",
+					"message": fmt.Sprintf("Could not resolve to a PullRequest with the number of %d.", number),
+				})
+				continue
+			}
+			fields[name] = s.answer(number, pr)
+		case string:
+			numbers := s.branches[value]
+			if len(numbers) == 0 {
+				fields[name] = map[string]any{"nodes": []any{}}
+				continue
+			}
+			number := reviewsHeadPR(numbers, req.Query)
+			pr, registered := s.prs[number]
+			if !registered {
+				missing = append(missing, map[string]any{
+					"type":    "NOT_FOUND",
+					"message": fmt.Sprintf("Could not resolve to a Repository with the name of %q.", value),
+				})
+				continue
+			}
+			fields[name] = map[string]any{"nodes": []any{s.answer(number, pr)}}
+		}
+	}
+
+	body := map[string]any{"data": map[string]any{"repository": fields}}
+	if len(missing) > 0 {
+		body = map[string]any{"data": nil, "errors": missing}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		s.t.Errorf("encode graphql response: %v", err)
+	}
+}
+
+// reviewsHeadPR picks the pull request a first:1 query lands on, reading the
+// CREATED_AT direction off the query the way GitHub does: DESC yields the
+// newest, ASC the oldest.
+func reviewsHeadPR(numbers []int, query string) int {
+	if strings.Contains(query, "direction: DESC") {
+		return numbers[len(numbers)-1]
+	}
+	return numbers[0]
+}
+
+func (s *reviewsServer) answer(number int, pr *reviewsPR) map[string]any {
+	pr.answers++
+	state := "OPEN"
+	var mergedAt any
+	if pr.answers > pr.openAnswers {
+		state = pr.state
+		if pr.merged {
+			mergedAt = "2026-07-20T19:00:00Z"
+		}
+	}
+	return map[string]any{
+		"number":   number,
+		"url":      reviewsPRURL(number),
+		"state":    state,
+		"mergedAt": mergedAt,
+	}
+}
+
+func reviewsFeed(path string) (int, string, bool) {
+	rest, ok := strings.CutPrefix(path, reviewsRepoPath)
+	if !ok {
+		return 0, "", false
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) != 3 {
+		return 0, "", false
+	}
+	number, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, "", false
+	}
+	switch parts[0] + "/" + parts[2] {
+	case "pulls/comments":
+		return number, "inline", true
+	case "issues/comments":
+		return number, "comment", true
+	case "pulls/reviews":
+		return number, "review", true
+	}
+	return 0, "", false
+}
+
+// setupReviews points the reviews command at a fake GitHub, with an empty PATH:
+// the token comes from the environment and the repository from the seeded lane
+// cache, so a watch that still spawns anything fails outright.
+func setupReviews(t *testing.T) *reviewsServer {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o750); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	empty := filepath.Join(dir, "empty")
+	if err := os.Mkdir(empty, 0o750); err != nil {
+		t.Fatalf("mkdir empty: %v", err)
+	}
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(old) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Setenv("PATH", empty)
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	seedLaneRecords(t, ".", laneSeed{nameWithOwner: "acme/repo", owner: "acme"})
+	t.Setenv(envReviewsPollInterval, "1ms")
+	return stubReviewsAPI(t)
+}
+
+// stubReviewsAPI points every watch this test starts at a fake GitHub and hands
+// it a token, so nothing resolves credentials or an endpoint off the machine.
+func stubReviewsAPI(t *testing.T) *reviewsServer {
+	t.Helper()
+	t.Setenv("GH_TOKEN", "reviews-test-token")
+	s := &reviewsServer{
+		t:        t,
+		prs:      map[int]*reviewsPR{},
+		branches: map[string][]int{},
+		feeds:    map[string][]string{},
+		feedCall: map[string]int{},
+		failREST: map[int]int{},
+	}
+	ts := httptest.NewServer(s)
+	t.Cleanup(ts.Close)
+	prior := reviewsAPI
+	reviewsAPI = func() *ghapi.Client { return ghapi.New(ts.URL) }
+	t.Cleanup(func() { reviewsAPI = prior })
+	return s
+}
+
+// writeReviewsGitFake installs the one executable reviews still needs: git,
+// which names the checked-out branch when no operand does.
+func writeReviewsGitFake(t *testing.T, branch string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake shell script is POSIX-only")
 	}
 	dir := t.TempDir()
-	binDir := filepath.Join(dir, "bin")
-	if err := os.Mkdir(binDir, 0o750); err != nil {
-		t.Fatalf("mkdir bin: %v", err)
+	script := "#!/bin/sh\ncase \"$*\" in\n  \"branch --show-current\") printf '" + branch + "\\n' ;;\n  *) exit 2 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
+		t.Fatalf("write fake git: %v", err)
 	}
-	writeReviewsFakes(t, binDir)
-	log := filepath.Join(dir, "reviews.log")
-	t.Setenv("PATH", binDir)
-	t.Setenv("SHIP_LOG", log)
-	t.Setenv(envReviewsPollInterval, "1ms")
-	t.Setenv("GH_INLINE_JSON", "[]")
-	t.Setenv("GH_COMMENTS_JSON", "[]")
-	t.Setenv("GH_REVIEWS_JSON", "[]")
-	return log
+	t.Setenv("PATH", dir)
 }
 
 func runReviewsCmd(t *testing.T, args ...string) (string, error) {
@@ -147,50 +315,10 @@ func runReviewsCmd(t *testing.T, args ...string) (string, error) {
 	return out.String(), err
 }
 
-func readReviewsInvocations(t *testing.T, log string) [][]string {
-	t.Helper()
-	data, err := os.ReadFile(log)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		t.Fatalf("read log: %v", err)
-	}
-	var got [][]string
-	for _, record := range strings.Split(string(data), "\x00\x00") {
-		record = strings.Trim(record, "\x00")
-		if record != "" {
-			got = append(got, strings.Split(record, "\x00"))
-		}
-	}
-	return got
-}
-
-func reviewsViewJSON(number int, state string, merged bool) string {
-	mergedAt := "null"
-	if merged {
-		mergedAt = `"2026-07-20T19:00:00Z"`
-	}
-	return fmt.Sprintf(
-		`{"number":%d,"state":%q,"url":"https://github.com/acme/repo/pull/%d","mergedAt":%s}`,
-		number, state, number, mergedAt,
-	)
-}
-
-func setReviewsTransition(t *testing.T, number, openCalls int, state string, merged bool) {
-	t.Helper()
-	key := fmt.Sprintf("%d", number)
-	marker := filepath.Join(t.TempDir(), "view.marker")
-	t.Setenv("GH_PR_VIEW_JSON_"+key, reviewsViewJSON(number, "OPEN", false))
-	t.Setenv("GH_PR_VIEW_MARKER_"+key, marker)
-	t.Setenv("GH_PR_VIEW_OPEN_CALLS_"+key, fmt.Sprintf("%d", openCalls))
-	t.Setenv("GH_PR_VIEW_DONE_JSON_"+key, reviewsViewJSON(number, state, merged))
-}
-
 func TestReviewsStreamsNewComment(t *testing.T) {
-	setupReviews(t)
-	setReviewsTransition(t, 7, 1, "MERGED", true)
-	t.Setenv("GH_COMMENTS_JSON", `[{
+	srv := setupReviews(t)
+	srv.pr(7, 1, "MERGED", true)
+	srv.feed("comment", 7, `[{
 		"id":101,
 		"body":"hello",
 		"user":{"login":"alice"},
@@ -216,9 +344,9 @@ func TestReviewsStreamsNewComment(t *testing.T) {
 }
 
 func TestReviewsDedupesAcrossPolls(t *testing.T) {
-	setupReviews(t)
-	setReviewsTransition(t, 7, 2, "MERGED", true)
-	t.Setenv("GH_COMMENTS_JSON", `[{
+	srv := setupReviews(t)
+	srv.pr(7, 2, "MERGED", true)
+	srv.feed("comment", 7, `[{
 		"id":101,
 		"body":"once",
 		"user":{"login":"alice"},
@@ -237,9 +365,9 @@ func TestReviewsDedupesAcrossPolls(t *testing.T) {
 }
 
 func TestReviewsAllKindsSortedAndSuppressed(t *testing.T) {
-	setupReviews(t)
-	setReviewsTransition(t, 7, 1, "MERGED", true)
-	t.Setenv("GH_INLINE_JSON", `[{
+	srv := setupReviews(t)
+	srv.pr(7, 1, "MERGED", true)
+	srv.feed("inline", 7, `[{
 		"id":301,
 		"body":"inline body",
 		"user":{"login":"inline-author"},
@@ -249,7 +377,7 @@ func TestReviewsAllKindsSortedAndSuppressed(t *testing.T) {
 		"created_at":"2026-07-20T18:03:00Z",
 		"updated_at":"2026-07-20T18:03:00Z"
 	}]`)
-	t.Setenv("GH_COMMENTS_JSON", `[{
+	srv.feed("comment", 7, `[{
 		"id":201,
 		"body":"issue body",
 		"user":{"login":"commenter"},
@@ -257,7 +385,7 @@ func TestReviewsAllKindsSortedAndSuppressed(t *testing.T) {
 		"created_at":"2026-07-20T18:02:00Z",
 		"updated_at":"2026-07-20T18:02:00Z"
 	}]`)
-	t.Setenv("GH_REVIEWS_JSON", `[
+	srv.feed("review", 7, `[
 		{"id":401,"state":"PENDING","body":"draft","user":{"login":"draft"},"html_url":"https://example/401","submitted_at":null},
 		{"id":402,"state":"COMMENTED","body":"","user":{"login":"container"},"html_url":"https://example/402","submitted_at":"2026-07-20T18:00:00Z"},
 		{"id":403,"state":"CHANGES_REQUESTED","body":"please fix","user":{"login":"reviewer"},"html_url":"https://example/403","submitted_at":"2026-07-20T18:01:00Z"},
@@ -293,20 +421,16 @@ func TestReviewsAllKindsSortedAndSuppressed(t *testing.T) {
 }
 
 func TestReviewsEditedReemit(t *testing.T) {
-	setupReviews(t)
-	setReviewsTransition(t, 7, 2, "MERGED", true)
-	cycle := filepath.Join(t.TempDir(), "api.marker")
-	t.Setenv("GH_API_CYCLE_MARKER", cycle)
-	t.Setenv("GH_API_SWITCH_AFTER", "1")
-	t.Setenv("GH_COMMENTS_JSON", `[{
+	srv := setupReviews(t)
+	srv.pr(7, 2, "MERGED", true)
+	srv.feed("comment", 7, `[{
 		"id":201,
 		"body":"first",
 		"user":{"login":"commenter"},
 		"html_url":"https://example/201",
 		"created_at":"2026-07-20T18:00:00Z",
 		"updated_at":"2026-07-20T18:01:00Z"
-	}]`)
-	t.Setenv("GH_COMMENTS_JSON_2", `[{
+	}]`, `[{
 		"id":201,
 		"body":"second",
 		"user":{"login":"commenter"},
@@ -340,8 +464,8 @@ func TestReviewsTerminalExit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setupReviews(t)
-			setReviewsTransition(t, 7, 1, tt.state, tt.merged)
+			srv := setupReviews(t)
+			srv.pr(7, 1, tt.state, tt.merged)
 
 			got, err := runReviewsCmd(t, "7", "--since", "all")
 			if err != nil {
@@ -357,9 +481,9 @@ func TestReviewsTerminalExit(t *testing.T) {
 }
 
 func TestReviewsMultiPRWaitsForAll(t *testing.T) {
-	log := setupReviews(t)
-	setReviewsTransition(t, 1, 1, "MERGED", true)
-	setReviewsTransition(t, 2, 2, "CLOSED", false)
+	srv := setupReviews(t)
+	srv.pr(1, 1, "MERGED", true)
+	srv.pr(2, 2, "CLOSED", false)
 
 	got, err := runReviewsCmd(t, "1", "2", "--since", "all")
 	if err != nil {
@@ -368,32 +492,60 @@ func TestReviewsMultiPRWaitsForAll(t *testing.T) {
 	if !strings.HasSuffix(got, "watch done · 1 merged · 1 closed\n") {
 		t.Errorf("completion summary mismatch:\n%s", got)
 	}
-	apiCounts := map[string]int{}
-	for _, invocation := range readReviewsInvocations(t, log) {
-		if len(invocation) == 4 && invocation[1] == "api" {
-			path := invocation[3]
-			switch {
-			case strings.Contains(path, "/pulls/1/"), strings.Contains(path, "/issues/1/"):
-				apiCounts["1"]++
-			case strings.Contains(path, "/pulls/2/"), strings.Contains(path, "/issues/2/"):
-				apiCounts["2"]++
-			}
+	restCounts := map[string]int{}
+	batches := 0
+	for _, request := range srv.requestLog() {
+		switch {
+		case request == "POST /graphql":
+			batches++
+		case strings.Contains(request, "/pulls/1/"), strings.Contains(request, "/issues/1/"):
+			restCounts["1"]++
+		case strings.Contains(request, "/pulls/2/"), strings.Contains(request, "/issues/2/"):
+			restCounts["2"]++
 		}
 	}
 	want := map[string]int{"1": 3, "2": 6}
-	if !reflect.DeepEqual(apiCounts, want) {
-		t.Errorf("API counts = %v, want %v", apiCounts, want)
+	if !reflect.DeepEqual(restCounts, want) {
+		t.Errorf("REST counts = %v, want %v", restCounts, want)
+	}
+	if batches != 3 {
+		t.Errorf("graphql batches = %d, want 3 (1 resolution + 2 cycles)", batches)
+	}
+}
+
+// TestReviewsPerCycleRequestBudget pins the poll cycle's cost: one batched
+// GraphQL state read plus three REST feeds per open target, holding flat as
+// cycles accumulate rather than growing with them.
+func TestReviewsPerCycleRequestBudget(t *testing.T) {
+	srv := setupReviews(t)
+	srv.pr(1, 3, "MERGED", true)
+	srv.pr(2, 3, "MERGED", true)
+
+	if _, err := runReviewsCmd(t, "1", "2", "--since", "all"); err != nil {
+		t.Fatalf("reviews error = %v", err)
+	}
+
+	var cycles []int
+	for _, request := range srv.requestLog() {
+		if request == "POST /graphql" {
+			cycles = append(cycles, 0)
+			continue
+		}
+		if len(cycles) == 0 {
+			t.Fatalf("REST request %q preceded every graphql batch", request)
+		}
+		cycles[len(cycles)-1]++
+	}
+	want := []int{0, 6, 6, 6}
+	if !reflect.DeepEqual(cycles, want) {
+		t.Errorf("REST requests per batch = %v, want %v", cycles, want)
 	}
 }
 
 func TestReviewsTransientFailureTolerance(t *testing.T) {
-	setupReviews(t)
-	setReviewsTransition(t, 7, 1, "MERGED", true)
-	failures := filepath.Join(t.TempDir(), "failures.marker")
-	if err := os.WriteFile(failures, []byte("3"), 0o600); err != nil {
-		t.Fatalf("write failures marker: %v", err)
-	}
-	t.Setenv("GH_API_FAIL_MARKER", failures)
+	srv := setupReviews(t)
+	srv.pr(7, 1, "MERGED", true)
+	srv.fail(7, 3)
 
 	got, err := runReviewsCmd(t, "7", "--since", "all")
 	if err != nil {
@@ -405,13 +557,9 @@ func TestReviewsTransientFailureTolerance(t *testing.T) {
 }
 
 func TestReviewsAbortsAfterMaxFailures(t *testing.T) {
-	setupReviews(t)
-	t.Setenv("GH_PR_VIEW_JSON_7", reviewsViewJSON(7, "OPEN", false))
-	failures := filepath.Join(t.TempDir(), "failures.marker")
-	if err := os.WriteFile(failures, []byte("5"), 0o600); err != nil {
-		t.Fatalf("write failures marker: %v", err)
-	}
-	t.Setenv("GH_API_FAIL_MARKER", failures)
+	srv := setupReviews(t)
+	srv.pr(7, 0, "OPEN", false)
+	srv.fail(7, 100)
 
 	got, err := runReviewsCmd(t, "7", "--since", "all")
 	if err == nil || !strings.Contains(err.Error(), "1 of 1 target(s) aborted") {
@@ -426,13 +574,13 @@ func TestReviewsAbortsAfterMaxFailures(t *testing.T) {
 }
 
 // TestReviewsMultiPRPartialFailureIsolation drives one healthy target (pr#1,
-// merges normally) alongside one persistently-failing target (pr#2, fails
-// every poll via its own GH_API_FAIL_MARKER_2): pr#1's events must still be
-// delivered, and only pr#2 aborts.
+// merges normally) alongside one persistently-failing target (pr#2, whose feeds
+// answer 500 every poll): pr#1's events must still be delivered, and only pr#2
+// aborts.
 func TestReviewsMultiPRPartialFailureIsolation(t *testing.T) {
-	setupReviews(t)
-	setReviewsTransition(t, 1, 1, "MERGED", true)
-	t.Setenv("GH_COMMENTS_JSON", `[{
+	srv := setupReviews(t)
+	srv.pr(1, 1, "MERGED", true)
+	srv.feed("comment", 1, `[{
 		"id":101,
 		"body":"healthy event",
 		"user":{"login":"alice"},
@@ -440,12 +588,8 @@ func TestReviewsMultiPRPartialFailureIsolation(t *testing.T) {
 		"created_at":"2026-07-20T18:00:00Z",
 		"updated_at":"2026-07-20T18:01:00Z"
 	}]`)
-	t.Setenv("GH_PR_VIEW_JSON_2", reviewsViewJSON(2, "OPEN", false))
-	failures := filepath.Join(t.TempDir(), "pr2-failures.marker")
-	if err := os.WriteFile(failures, []byte("5"), 0o600); err != nil {
-		t.Fatalf("write failures marker: %v", err)
-	}
-	t.Setenv("GH_API_FAIL_MARKER_2", failures)
+	srv.pr(2, 0, "OPEN", false)
+	srv.fail(2, 100)
 
 	got, err := runReviewsCmd(t, "1", "2", "--since", "all")
 	if err == nil || !strings.Contains(err.Error(), "1 of 2 target(s) aborted") {
@@ -463,9 +607,9 @@ func TestReviewsMultiPRPartialFailureIsolation(t *testing.T) {
 }
 
 func TestReviewsBudgetCapFooterIndented(t *testing.T) {
-	setupReviews(t)
-	setReviewsTransition(t, 7, 1, "MERGED", true)
-	t.Setenv("GH_COMMENTS_JSON", `[{
+	srv := setupReviews(t)
+	srv.pr(7, 1, "MERGED", true)
+	srv.feed("comment", 7, `[{
 		"id":201,
 		"body":"1234\n5678\n90",
 		"user":{"login":"commenter"},
@@ -484,24 +628,29 @@ func TestReviewsBudgetCapFooterIndented(t *testing.T) {
 	}
 }
 
+// TestReviewsResolution proves each operand form reaches the batch that can
+// answer it: a number resolves through pullRequest(number:), a branch — and the
+// checked-out branch an empty operand list stands for — through
+// pullRequests(headRefName:).
 func TestReviewsResolution(t *testing.T) {
 	tests := []struct {
-		name    string
-		args    []string
-		wantArg string
+		name      string
+		args      []string
+		gitBranch string
+		wantField string
+		wantVar   any
 	}{
-		{"number", []string{"7"}, "7"},
-		{"branch", []string{"feature/reviews"}, "feature/reviews"},
-		{"current branch", nil, "--json"},
+		{"number", []string{"7"}, "", "pullRequest(number: $p0)", float64(7)},
+		{"branch", []string{"feature/reviews"}, "", "pullRequests(headRefName: $p0", "feature/reviews"},
+		{"current branch", nil, "feature/reviews", "pullRequests(headRefName: $p0", "feature/reviews"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			log := setupReviews(t)
-			t.Setenv("GH_PR_VIEW_JSON", reviewsViewJSON(7, "OPEN", false))
-			if tt.wantArg == "7" {
-				setReviewsTransition(t, 7, 1, "MERGED", true)
-			} else {
-				setReviewsTransition(t, 7, 0, "MERGED", true)
+			srv := setupReviews(t)
+			srv.pr(7, 1, "MERGED", true)
+			srv.branch("feature/reviews", 7)
+			if tt.gitBranch != "" {
+				writeReviewsGitFake(t, tt.gitBranch)
 			}
 
 			args := append([]string{}, tt.args...)
@@ -509,37 +658,105 @@ func TestReviewsResolution(t *testing.T) {
 			if _, err := runReviewsCmd(t, args...); err != nil {
 				t.Fatalf("reviews error = %v", err)
 			}
-			invocations := readReviewsInvocations(t, log)
-			if len(invocations) == 0 || len(invocations[0]) < 4 {
-				t.Fatalf("first invocation = %v", invocations)
+			calls := srv.graphQLCalls()
+			if len(calls) == 0 {
+				t.Fatal("no graphql batch reached the server")
 			}
-			if got := invocations[0][3]; got != tt.wantArg {
-				t.Errorf("resolution operand = %q, want %q; invocation=%v", got, tt.wantArg, invocations[0])
+			if !strings.Contains(calls[0].query, tt.wantField) {
+				t.Errorf("resolution query = %q, want it to select %q", calls[0].query, tt.wantField)
+			}
+			if got := calls[0].vars["p0"]; got != tt.wantVar {
+				t.Errorf("resolution variable p0 = %#v, want %#v", got, tt.wantVar)
 			}
 		})
 	}
 }
 
-func TestReviewsNotFoundExitCode(t *testing.T) {
-	setupReviews(t)
-	t.Setenv("GH_PR_NOT_FOUND", "1")
+// TestReviewsBranchResolvesNewestPR proves a branch resubmitted after its first
+// pull request merged watches the live one, not the corpse. Verified against
+// github.com/yasyf/cc-context, whose yasyf/transcript-ccx-issues head carries
+// PRs #1 and #2: gh pr view resolves #2, the newest, which is the answer this
+// resolution must reproduce.
+func TestReviewsBranchResolvesNewestPR(t *testing.T) {
+	srv := setupReviews(t)
+	srv.pr(1, 0, "MERGED", true)
+	srv.pr(2, 1, "MERGED", true)
+	srv.branch("feature/resubmitted", 1, 2)
 
-	_, err := runReviewsCmd(t, "missing")
-	if err == nil {
-		t.Fatal("reviews error = nil, want not found")
+	out, err := runReviewsCmd(t, "feature/resubmitted", "--since", "all")
+	if err != nil {
+		t.Fatalf("reviews error = %v", err)
 	}
-	if code := ExitCode(err); code != 3 {
-		t.Errorf("ExitCode(error) = %d, want 3; error=%v", code, err)
+	if !strings.Contains(out, "watching pr#2") {
+		t.Errorf("output = %q, want it to watch pr#2, the newest pull request of the branch", out)
 	}
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("error = %v, want wrapped ErrNotFound", err)
+	if strings.Contains(out, "watching pr#1") {
+		t.Errorf("output = %q, want it to leave pr#1, the merged predecessor, alone", out)
+	}
+}
+
+func TestReviewsNotFoundExitCode(t *testing.T) {
+	tests := []struct {
+		name    string
+		operand string
+	}{
+		{"branch with no pull request", "missing"},
+		{"pull request number that does not exist", "404"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setupReviews(t)
+
+			_, err := runReviewsCmd(t, tt.operand)
+			if err == nil {
+				t.Fatal("reviews error = nil, want not found")
+			}
+			if code := ExitCode(err); code != 3 {
+				t.Errorf("ExitCode(error) = %d, want 3; error=%v", code, err)
+			}
+			if !errors.Is(err, ErrNotFound) {
+				t.Errorf("error = %v, want wrapped ErrNotFound", err)
+			}
+		})
+	}
+}
+
+// TestResolveBranchTargetsSkipsBranchWithoutPR proves a branch the batch
+// resolves to nothing is a note and a skip rather than a failure — the
+// distinction that keeps one PR-less branch from sinking a whole stack watch —
+// and that both branches cost one query, not one each.
+func TestResolveBranchTargetsSkipsBranchWithoutPR(t *testing.T) {
+	srv := setupReviews(t)
+	srv.pr(7, 0, "OPEN", false)
+	srv.branch("feature", 7)
+
+	var out bytes.Buffer
+	client, targets, err := resolveBranchTargets(context.Background(), &out, []string{"feature", "orphan"}, time.Time{})
+	if err != nil {
+		t.Fatalf("resolveBranchTargets error = %v", err)
+	}
+	if client.owner != "acme" || client.repo != "repo" {
+		t.Errorf("client scoped to %s/%s, want acme/repo", client.owner, client.repo)
+	}
+	if len(targets) != 1 || targets[0].Number != 7 || targets[0].URL != reviewsPRURL(7) {
+		t.Fatalf("targets = %+v, want just pr#7", targets)
+	}
+	if got := out.String(); got != "reviews: no open PR for orphan\n" {
+		t.Errorf("note = %q, want the orphan branch skipped with a note", got)
+	}
+	calls := srv.graphQLCalls()
+	if len(calls) != 1 {
+		t.Fatalf("graphql batches = %d, want 1 for both branches", len(calls))
+	}
+	if calls[0].vars["p0"] != "feature" || calls[0].vars["p1"] != "orphan" {
+		t.Errorf("batch variables = %#v, want p0=feature p1=orphan", calls[0].vars)
 	}
 }
 
 func TestReviewsSincePropagationAndWatermark(t *testing.T) {
-	log := setupReviews(t)
-	setReviewsTransition(t, 7, 2, "MERGED", true)
-	t.Setenv("GH_COMMENTS_JSON", `[{
+	srv := setupReviews(t)
+	srv.pr(7, 2, "MERGED", true)
+	srv.feed("comment", 7, `[{
 		"id":201,
 		"body":"new",
 		"user":{"login":"commenter"},
@@ -552,25 +769,25 @@ func TestReviewsSincePropagationAndWatermark(t *testing.T) {
 		t.Fatalf("reviews error = %v", err)
 	}
 	var inlinePaths []string
-	for _, invocation := range readReviewsInvocations(t, log) {
-		if len(invocation) == 4 && invocation[1] == "api" &&
-			strings.Contains(invocation[3], "/pulls/7/comments") {
-			inlinePaths = append(inlinePaths, invocation[3])
+	for _, request := range srv.requestLog() {
+		if strings.HasPrefix(request, "/repos/acme/repo/pulls/7/comments") {
+			inlinePaths = append(inlinePaths, request)
 		}
 	}
 	want := []string{
-		"repos/{owner}/{repo}/pulls/7/comments?per_page=100&since=2026-07-20T18:00:00Z",
-		"repos/{owner}/{repo}/pulls/7/comments?per_page=100&since=2026-07-20T18:01:00Z",
+		"/repos/acme/repo/pulls/7/comments?per_page=100&since=2026-07-20T18:00:00Z",
+		"/repos/acme/repo/pulls/7/comments?per_page=100&since=2026-07-20T18:01:00Z",
 	}
 	if !reflect.DeepEqual(inlinePaths, want) {
-		t.Errorf("inline API paths = %v, want %v", inlinePaths, want)
+		t.Errorf("inline REST paths = %v, want %v", inlinePaths, want)
 	}
 }
 
 func TestReviewsCancelSummary(t *testing.T) {
-	setupReviews(t)
+	t.Setenv("GH_TOKEN", "reviews-test-token")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+	client := reviewsClient{api: ghapi.New("http://127.0.0.1:1"), owner: "acme", repo: "repo"}
 	targets := []*prTarget{
 		{
 			Number:    7,
@@ -581,7 +798,7 @@ func TestReviewsCancelSummary(t *testing.T) {
 	}
 	var out bytes.Buffer
 
-	err := watchReviews(ctx, &out, targets, reviewsOpts{interval: time.Hour, all: true})
+	err := watchReviews(ctx, &out, client, targets, reviewsOpts{interval: time.Hour, all: true})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("watchReviews error = %v, want context.Canceled", err)
 	}
@@ -645,19 +862,24 @@ func TestReviewsStackNoTargets(t *testing.T) {
 
 func TestReviewsStackFailuresCarryReviewsPrefix(t *testing.T) {
 	tests := []struct {
-		name   string
-		branch string
-		state  string
-		want   string
+		name      string
+		branch    string
+		state     string
+		branchErr bool
+		want      string
 	}{
-		{"unparseable gt state", "feature", "not json", "reviews: parse gt state:"},
-		{"detached HEAD", "", `{"main":{"trunk":true}}`, "reviews: detached HEAD; no stack to resolve"},
+		{name: "unparseable gt state", branch: "feature", state: "not json", want: "reviews: parse gt state:"},
+		{name: "detached HEAD", state: `{"main":{"trunk":true}}`, want: "reviews: detached HEAD; no stack to resolve"},
+		{name: "git cannot name the branch", state: `{"main":{"trunk":true}}`, branchErr: true, want: "reviews: git branch --show-current:"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			setupShipGT(t, false)
 			t.Setenv("GIT_BRANCH", tt.branch)
 			t.Setenv("GT_STATE_JSON", tt.state)
+			if tt.branchErr {
+				t.Setenv("GIT_BRANCH_SHOW_FAIL", "1")
+			}
 
 			_, err := runReviewsCmd(t, "--stack")
 			if err == nil {
@@ -699,19 +921,6 @@ func TestWriteReviewEventSanitizesBody(t *testing.T) {
 	}
 	if !strings.Contains(got, "red") || !strings.Contains(got, "line2bell") {
 		t.Errorf("sanitized body lost content:\n%q", got)
-	}
-}
-
-func TestGhPagesConcatenatedArrays(t *testing.T) {
-	setupReviews(t)
-	t.Setenv("GH_API_JSON", `[{"id":1,"body":"one"}][{"id":2,"body":"two"}]`)
-
-	got, err := ghPages[ghPRComment](context.Background(), "pages")
-	if err != nil {
-		t.Fatalf("ghPages error = %v", err)
-	}
-	if len(got) != 2 || got[0].ID != 1 || got[1].ID != 2 {
-		t.Errorf("ghPages = %#v, want ids 1,2", got)
 	}
 }
 

@@ -2,10 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"errors"
+	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -23,14 +27,25 @@ func writeRestackFakes(t *testing.T, dir string, withGT bool) {
 		}
 	}
 
-	gt := "#!/bin/sh\n" + log("gt") + `case "$1" in
+	gt := "#!/bin/sh\n" + log("gt") + `DEFAULT_STATE='{"main":{"trunk":true},"feature":{"parents":[{"ref":"main"}]}}'
+SYNCED="$RESTACK_LOG.synced"
+case "$1" in
   sync)
+    if [ -n "$RESTACK_GT_STDOUT" ]; then printf '%s\n' "$RESTACK_GT_STDOUT"; fi
+    if [ -n "$RESTACK_GT_KILL" ]; then kill -9 $$; fi
     if [ -n "$RESTACK_GT_FAIL" ]; then
-      printf '%s\n' "$RESTACK_GT_STDERR" >&2
+      if [ -n "$RESTACK_GT_STDERR" ]; then printf '%s\n' "$RESTACK_GT_STDERR" >&2; fi
       exit 1
     fi
-    if [ -n "$RESTACK_SYNC_MARKER" ]; then : > "$RESTACK_SYNC_MARKER"; fi ;;
-  state) printf '%s' "${RESTACK_GT_STATE:-{\"main\":{\"trunk\":true}}}" ;;
+    if [ -n "$RESTACK_GT_SKIP" ]; then printf '%s\n' "$RESTACK_GT_SKIP"; fi
+    if [ -n "$RESTACK_GT_SYNC_STDERR" ]; then printf '%s\n' "$RESTACK_GT_SYNC_STDERR" >&2; fi
+    : > "$SYNCED" ;;
+  state)
+    if [ -n "$RESTACK_GT_STATE_AFTER" ] && [ -f "$SYNCED" ]; then
+      printf '%s' "$RESTACK_GT_STATE_AFTER"
+    else
+      printf '%s' "${RESTACK_GT_STATE:-$DEFAULT_STATE}"
+    fi ;;
   *) printf 'fake gt: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
 esac
 exit 0
@@ -42,7 +57,7 @@ case "$1 $2" in
   "log -r")
     if [ -n "$RESTACK_JJ_LOG_FAIL" ]; then printf 'jj log failed\n' >&2; exit 1; fi
     case "$3" in
-      "trunk()") printf '%s' "${RESTACK_JJ_TRUNK_NAMES:-main}" ;;
+      "trunk()") for b in ${RESTACK_JJ_TRUNK_NAMES:-main}; do printf '"%s"\n' "$b"; done ;;
       "trunk() & ::@")
         if [ -n "$RESTACK_JJ_UP_TO_DATE" ]; then printf 'aaaaaaa trunk\n'; fi ;;
       "trunk()..@") printf '%s' "${RESTACK_JJ_STACK:-bbbbbbb one
@@ -60,20 +75,11 @@ ccccccc two
 esac
 exit 0
 `
-	git := "#!/bin/sh\n" + log("git") + `case "$1 $2" in
+	git := "#!/bin/sh\n" + log("git") + `if [ "$1" = --git-dir ]; then shift 2; fi
+case "$1 $2" in
   "branch --show-current") printf '%s\n' "${RESTACK_GIT_BRANCH:-feature}" ;;
-  "rev-parse HEAD")
-    if [ -e "$RESTACK_SYNC_MARKER" ]; then
-      printf '%s' "${RESTACK_GIT_REV_HEAD_AFTER:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}"
-    else
-      printf '%s' "${RESTACK_GIT_REV_HEAD_BEFORE:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
-    fi ;;
-  "rev-parse main")
-    if [ -e "$RESTACK_SYNC_MARKER" ]; then
-      printf '%s' "${RESTACK_GIT_REV_TRUNK_AFTER:-dddddddddddddddddddddddddddddddddddddddd}"
-    else
-      printf '%s' "${RESTACK_GIT_REV_TRUNK_BEFORE:-cccccccccccccccccccccccccccccccccccccccc}"
-    fi ;;
+  "worktree list")
+    for h in $RESTACK_HOLDERS; do printf 'worktree %s\000branch refs/heads/%s\000\000' "${h#*=}" "${h%%=*}"; done ;;
   "config --get")
     case "$3" in
       ccx.nogt) if [ -n "$RESTACK_CONFIG_CCX_NOGT" ]; then printf '%s\n' "$RESTACK_CONFIG_CCX_NOGT"; else exit 1; fi ;;
@@ -84,13 +90,21 @@ exit 0
     if [ -n "$RESTACK_GIT_SYMBOLIC_MISS" ]; then exit 1; fi
     printf '%s/%s\n' "${RESTACK_GIT_REMOTE:-origin}" "${RESTACK_GIT_TRUNK:-main}" ;;
   "show-ref --verify")
-    case "$3" in
-      */main) if [ "$RESTACK_GIT_MAIN_REF" != 1 ]; then exit 1; fi ;;
-      */master) if [ "$RESTACK_GIT_MASTER_REF" != 1 ]; then exit 1; fi ;;
-      *) exit 1 ;;
-    esac ;;
+    ref=$3; if [ "$3" = --quiet ]; then ref=$4; fi
+    case "$ref" in
+      */main) if [ "$RESTACK_GIT_MAIN_REF" = 1 ]; then exit 0; fi ;;
+      */master) if [ "$RESTACK_GIT_MASTER_REF" = 1 ]; then exit 0; fi ;;
+    esac
+    if [ "$3" = --quiet ]; then exit 1; fi
+    printf "fatal: '%s' - not a valid ref\n" "$ref" >&2; exit 128 ;;
   "merge-base --is-ancestor")
-    if [ -z "$RESTACK_GIT_UP_TO_DATE" ]; then exit 1; fi ;;
+    case " $RESTACK_GIT_GONE_REFS " in
+      *" $4 "*) printf 'fatal: Not a valid object name %s\n' "$4" >&2; exit 128 ;;
+    esac
+    case "$4" in
+      HEAD) if [ -z "$RESTACK_GIT_UP_TO_DATE" ]; then exit 1; fi ;;
+      *) case " $RESTACK_GT_OFF_TRUNK " in *" $3 $4 "*) exit 1 ;; esac ;;
+    esac ;;
   "rev-list --count") printf '2' ;;
   "rebase --autostash")
     if [ -n "$RESTACK_GIT_REBASE_CONFLICT" ]; then
@@ -163,13 +177,50 @@ func setupRestack(t *testing.T, marker string, graphite, withGT bool) string {
 	// writes the developer's real ~/Library/Caches/cc-context.
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	t.Setenv("RESTACK_LOG", logPath)
-	if withGT {
-		t.Setenv("RESTACK_SYNC_MARKER", filepath.Join(dir, "sync.marker"))
-	}
 	if graphite {
 		seedLaneRecords(t, ".", laneSeed{})
+		// The gt lane resolves its verdict oracle from the remote-tracking trunk,
+		// which gt sync writes on every fetch; the git lane's tests own the
+		// absent-ref cases.
+		t.Setenv("RESTACK_GIT_MAIN_REF", "1")
 	}
 	return logPath
+}
+
+// restackWorktreeList is the BranchHolders read the gt preflight makes.
+func restackWorktreeList(t *testing.T) []string {
+	t.Helper()
+	return []string{"git", "--git-dir", filepath.Join(restackRoot(t), ".git"), "worktree", "list", "--porcelain", "-z", "--end-of-options"}
+}
+
+// restackRoot is the working copy root in the spelling git and vcs.Checkout both
+// canonicalize to.
+func restackRoot(t *testing.T) string {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	root, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", cwd, err)
+	}
+	return root
+}
+
+// seedRestackHolders hands the git fake a branch=worktree table, which its
+// worktree-list arm re-emits as the NUL-framed porcelain records
+// vcs.BranchHolders parses — the map is what the fake models, so a branch no
+// entry names is simply absent, as it is for a detached or bare checkout. It
+// travels as an environment variable the fake formats with builtins because PATH
+// holds only the fakes — there is no cat to read a file with.
+func seedRestackHolders(t *testing.T, holders map[string]string) {
+	t.Helper()
+	pairs := make([]string, 0, len(holders))
+	for _, branch := range slices.Sorted(maps.Keys(holders)) {
+		pairs = append(pairs, branch+"="+holders[branch])
+	}
+	t.Setenv("RESTACK_HOLDERS", strings.Join(pairs, " "))
 }
 
 func runRestackCmd(t *testing.T, args ...string) (string, string, error) {
@@ -224,52 +275,118 @@ func TestRestackGTSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restack: %v", err)
 	}
-	if out != "restacked · trunk main" {
-		t.Fatalf("output = %q, want %q", out, "restacked · trunk main")
+	if out != "restacked 1 of 1 · trunk main" {
+		t.Fatalf("output = %q, want %q", out, "restacked 1 of 1 · trunk main")
 	}
 	requireRestackRecords(t, logPath, [][]string{
 		nogtProbe,
 		{"gt", "state"},
-		{"git", "rev-parse", "HEAD"},
-		{"git", "rev-parse", "main"},
+		{"git", "branch", "--show-current"},
+		restackWorktreeList(t),
 		{"gt", "sync", "--no-interactive"},
-		{"git", "rev-parse", "HEAD"},
-		{"git", "rev-parse", "main"},
+		{"gt", "state"},
+		{"git", "branch", "--show-current"},
+		{"git", "config", "--get", "branch.main.remote"},
+		{"git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/main"},
+		{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "feature"},
 	})
 }
 
-func TestRestackGTNoOpReporting(t *testing.T) {
+// TestRestackGTVerdictReadsTheSyncedStack pins the verdict to the stack gt sync
+// left behind. Sync deletes the branches whose PRs landed and reparents their
+// children, so a verdict over the pre-sync list asks git about a ref sync just
+// deleted — merge-base exits 128 there, failing a restack that worked.
+func TestRestackGTVerdictReadsTheSyncedStack(t *testing.T) {
+	logPath := setupRestack(t, ".git", true, true)
+	t.Setenv("RESTACK_GT_STATE", restackStackState)
+	// b merged: sync deletes it and reparents c onto a.
+	t.Setenv("RESTACK_GT_STATE_AFTER", `{"main":{"trunk":true},"a":{"parents":[{"ref":"main"}]},"c":{"parents":[{"ref":"a"}]}}`)
+	t.Setenv("RESTACK_GIT_GONE_REFS", "b")
+	t.Setenv("RESTACK_GIT_BRANCH", "c")
+
+	out, _, err := runRestackCmd(t)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if want := "restacked 2 of 2 · trunk main"; out != want {
+		t.Fatalf("output = %q, want %q", out, want)
+	}
+	for _, record := range readRestackLog(t, logPath) {
+		if record[0] == "git" && record[1] == "merge-base" && record[len(record)-1] == "b" {
+			t.Errorf("verdict probed %v — b is the branch sync deleted", record)
+		}
+	}
+}
+
+// restackStackState tracks the stack c → b → a → main.
+const restackStackState = `{"main":{"trunk":true},"a":{"parents":[{"ref":"main"}]},"b":{"parents":[{"ref":"a"}]},"c":{"parents":[{"ref":"b"}]}}`
+
+func TestRestackGTPerBranchVerdict(t *testing.T) {
+	// offTrunk lists "<ref> <branch>" pairs git merge-base --is-ancestor answers
+	// no for, so a case pins which ref the verdict consulted, not just its answer.
 	tests := []struct {
-		name        string
-		headBefore  string
-		headAfter   string
-		trunkBefore string
-		trunkAfter  string
-		want        string
+		name     string
+		branch   string
+		offTrunk string
+		gtSkip   string
+		want     string
 	}{
 		{
-			name: "sync moved HEAD", headBefore: "aaaa", headAfter: "bbbb",
-			trunkBefore: "cccc", trunkAfter: "cccc",
-			want: "restacked · trunk main",
+			name:   "whole stack landed on trunk",
+			branch: "c",
+			want:   "restacked 3 of 3 · trunk main",
 		},
 		{
-			name: "sync moved trunk", headBefore: "aaaa", headAfter: "aaaa",
-			trunkBefore: "cccc", trunkAfter: "dddd",
-			want: "restacked · trunk main",
+			name:     "one branch never reached trunk",
+			branch:   "c",
+			offTrunk: "refs/remotes/origin/main b",
+			want:     "restacked 2 of 3 · trunk main · skipped b",
 		},
 		{
-			name: "sync was a no-op", headBefore: "aaaa", headAfter: "aaaa",
-			trunkBefore: "cccc", trunkAfter: "cccc",
-			want: "already up to date · trunk main",
+			name:     "gt named the working copy that blocked it",
+			branch:   "c",
+			offTrunk: "refs/remotes/origin/main b",
+			gtSkip:   "Did not restack branch b because it is checked out in worktree /w/b",
+			want:     "restacked 2 of 3 · trunk main · skipped b (checked out in /w/b)",
+		},
+		{
+			name:   "gt skipped a branch outside this stack",
+			branch: "c",
+			gtSkip: "Did not restack branch zz because it is checked out in worktree /w/zz",
+			want:   "restacked 3 of 3 · trunk main · skipped zz (checked out in /w/zz)",
+		},
+		{
+			name:   "gt declined a branch trunk is already an ancestor of",
+			branch: "c",
+			gtSkip: "Did not restack branch b because it is checked out in worktree /w/b",
+			want:   "restacked 2 of 3 · trunk main · skipped b (checked out in /w/b; already on refs/remotes/origin/main)",
+		},
+		{
+			name:   "gt declined a frozen branch already on trunk",
+			branch: "c",
+			gtSkip: "Did not restack branch b because it is frozen.",
+			want:   "restacked 2 of 3 · trunk main · skipped b (frozen; already on refs/remotes/origin/main)",
+		},
+		{
+			name:     "gt declined a branch mid-merge that never reached trunk",
+			branch:   "c",
+			offTrunk: "refs/remotes/origin/main b",
+			gtSkip:   "Did not restack branch b because it is merging.",
+			want:     "restacked 2 of 3 · trunk main · skipped b (merging)",
+		},
+		{
+			name:   "on trunk, nothing to restack",
+			branch: "main",
+			want:   "synced · trunk main",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			setupRestack(t, ".git", true, true)
-			t.Setenv("RESTACK_GIT_REV_HEAD_BEFORE", tt.headBefore)
-			t.Setenv("RESTACK_GIT_REV_HEAD_AFTER", tt.headAfter)
-			t.Setenv("RESTACK_GIT_REV_TRUNK_BEFORE", tt.trunkBefore)
-			t.Setenv("RESTACK_GIT_REV_TRUNK_AFTER", tt.trunkAfter)
+			t.Setenv("RESTACK_GT_STATE", restackStackState)
+			t.Setenv("RESTACK_GIT_BRANCH", tt.branch)
+			t.Setenv("RESTACK_GT_OFF_TRUNK", tt.offTrunk)
+			t.Setenv("RESTACK_GT_SKIP", tt.gtSkip)
 
 			out, _, err := runRestackCmd(t)
 			if err != nil {
@@ -282,16 +399,285 @@ func TestRestackGTNoOpReporting(t *testing.T) {
 	}
 }
 
+// TestRestackGTSurfacesSyncDiagnostics covers the half of a sync stdout alone
+// cannot see. gt 1.8.6 splits one sync across both streams — informational
+// output on stdout, severity-led lines on stderr — and exits 0 for both, so a
+// trunk gt could not pull leaves the summary reporting the stack as behind with
+// nothing saying why. Exit 0 stays a success, since the remote-trunk oracle
+// already reports the stack correctly; the lines explain that report rather than
+// override gt.
+func TestRestackGTSurfacesSyncDiagnostics(t *testing.T) {
+	tests := []struct {
+		name    string
+		stderr  string
+		want    string
+		wantErr []string
+		denyErr []string
+	}{
+		{
+			name:    "an error gt exited 0 on still reaches the user",
+			stderr:  "ERROR: Cannot pull trunk due to conflicting unstaged changes.",
+			want:    "restacked 1 of 1 · trunk main",
+			wantErr: []string{"ERROR: Cannot pull trunk due to conflicting unstaged changes."},
+		},
+		{
+			name:    "a warning reaches the user too",
+			stderr:  "WARNING: Your Graphite CLI is out of date.",
+			want:    "restacked 1 of 1 · trunk main",
+			wantErr: []string{"WARNING: Your Graphite CLI is out of date."},
+		},
+		{
+			name:    "unlabelled chatter stays out of the report",
+			stderr:  "Fetching from origin...\nERROR: Cannot pull trunk.",
+			want:    "restacked 1 of 1 · trunk main",
+			wantErr: []string{"ERROR: Cannot pull trunk."},
+			denyErr: []string{"Fetching from origin..."},
+		},
+		{
+			name: "a decline is read off whichever stream carried it",
+			// gt 1.8.6 was observed putting declines on stdout; the parser is fed
+			// both so which stream carries one is not a fact the summary depends on.
+			stderr: "Did not restack branch zz because it is frozen.",
+			want:   "restacked 1 of 1 · trunk main · skipped zz (frozen)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setupRestack(t, ".git", true, true)
+			t.Setenv("RESTACK_GT_SYNC_STDERR", tt.stderr)
+
+			out, errOut, err := runRestackCmd(t)
+			if err != nil {
+				t.Fatalf("restack: %v", err)
+			}
+			if out != tt.want {
+				t.Fatalf("output = %q, want %q", out, tt.want)
+			}
+			for _, want := range tt.wantErr {
+				if !strings.Contains(errOut, want) {
+					t.Errorf("stderr = %q, want it to carry %q", errOut, want)
+				}
+			}
+			for _, deny := range tt.denyErr {
+				if strings.Contains(errOut, deny) {
+					t.Errorf("stderr = %q, want it to withhold %q", errOut, deny)
+				}
+			}
+		})
+	}
+}
+
+// TestRestackGTStreamedSyncPrintsDiagnosticsOnce guards the two arms against
+// disagreeing the other way. The streaming arm already wires both of gt's
+// streams to the writer as they are produced, so a diagnostic pass there would
+// print every line the user just watched a second time.
+func TestRestackGTStreamedSyncPrintsDiagnosticsOnce(t *testing.T) {
+	setupRestack(t, ".git", true, true)
+	line := "ERROR: Cannot pull trunk due to conflicting unstaged changes."
+	t.Setenv("RESTACK_GT_SYNC_STDERR", line)
+	old := shipStreamCI
+	t.Cleanup(func() { shipStreamCI = old })
+	shipStreamCI = func(io.Writer) bool { return true }
+
+	out, errOut, err := runRestackCmd(t)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if out != "restacked 1 of 1 · trunk main" {
+		t.Fatalf("output = %q", out)
+	}
+	if got := strings.Count(errOut, line); got != 1 {
+		t.Fatalf("diagnostic printed %d times in %q, want exactly 1", got, errOut)
+	}
+}
+
+// TestRestackGTVerdictProbesTheQualifiedTrunkRef pins the ref spelling the
+// ancestry probe receives. git resolves a short origin/main through refs/tags
+// and refs/heads before refs/remotes, so a local branch or tag of that name
+// answers merge-base in place of the ref show-ref verified — measured on git
+// 2.55.0, where a decoy refs/heads/origin/main flipped
+// `merge-base --is-ancestor origin/main feature` from exit 1 to exit 0 while
+// only warning on stderr. The verdict would have counted a stack that never
+// moved as restacked.
+func TestRestackGTVerdictProbesTheQualifiedTrunkRef(t *testing.T) {
+	logPath := setupRestack(t, ".git", true, true)
+
+	if _, _, err := runRestackCmd(t); err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	probed := 0
+	for _, record := range readRestackLog(t, logPath) {
+		if len(record) < 4 || record[0] != "git" || record[1] != "merge-base" {
+			continue
+		}
+		probed++
+		if record[3] != "refs/remotes/origin/main" {
+			t.Errorf("ancestry probe asked %q, want the fully qualified refs/remotes/origin/main", record[3])
+		}
+	}
+	if probed == 0 {
+		t.Fatal("no ancestry probe ran — the test proves nothing")
+	}
+}
+
+// TestRestackGTMeasuresTheRemoteTrunk pins the decline-free stale-trunk path.
+// gt sync writes refs/remotes/origin/main from its fetch and only then tries to
+// move the local branch; when that second step fails — a sibling working copy
+// holding trunk with conflicting unstaged changes, measured against gt 1.8.6 —
+// gt exits 0, declines nothing, and leaves the local ref behind the remote. A
+// verdict that asks the local ref calls a stack that never moved current.
+func TestRestackGTMeasuresTheRemoteTrunk(t *testing.T) {
+	logPath := setupRestack(t, ".git", true, true)
+	t.Setenv("RESTACK_GT_STATE", restackStackState)
+	t.Setenv("RESTACK_GIT_BRANCH", "c")
+	t.Setenv("RESTACK_GT_OFF_TRUNK", "refs/remotes/origin/main a refs/remotes/origin/main b refs/remotes/origin/main c")
+
+	out, _, err := runRestackCmd(t)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	want := "restacked 0 of 3 · trunk main · skipped c, b, a"
+	if out != want {
+		t.Fatalf("output = %q, want %q", out, want)
+	}
+	for _, branch := range []string{"a", "b", "c"} {
+		found := false
+		for _, record := range readRestackLog(t, logPath) {
+			if reflect.DeepEqual(record, []string{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", branch}) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("no ancestry check of %s against refs/remotes/origin/main — the verdict asked the local trunk ref", branch)
+		}
+	}
+}
+
+// TestRestackGTNamesTheWorkingCopyHoldingTrunk covers the reason the stale-trunk
+// summary otherwise withholds. gt declines nothing when it cannot pull a held
+// trunk, so the stack reads as behind with no cause attached; the holder is the
+// cause, and BranchHolders already has it. It names only a holder git reports —
+// an unheld trunk, and one this working copy holds, both stay silent rather than
+// assert a working copy that is not there.
+func TestRestackGTNamesTheWorkingCopyHoldingTrunk(t *testing.T) {
+	tests := []struct {
+		name    string
+		holders map[string]string
+		want    string
+	}{
+		{
+			name:    "a sibling working copy holds trunk",
+			holders: map[string]string{"main": "/w/trunk"},
+			want:    "restacked 0 of 3 · trunk main (checked out in /w/trunk) · skipped c, b, a",
+		},
+		{
+			name: "git names no holder for trunk",
+			want: "restacked 0 of 3 · trunk main · skipped c, b, a",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setupRestack(t, ".git", true, true)
+			t.Setenv("RESTACK_GT_STATE", restackStackState)
+			t.Setenv("RESTACK_GIT_BRANCH", "c")
+			t.Setenv("RESTACK_GT_OFF_TRUNK", "refs/remotes/origin/main a refs/remotes/origin/main b refs/remotes/origin/main c")
+			if tt.holders != nil {
+				seedRestackHolders(t, tt.holders)
+			}
+
+			out, _, err := runRestackCmd(t)
+			if err != nil {
+				t.Fatalf("restack: %v", err)
+			}
+			if out != tt.want {
+				t.Fatalf("output = %q, want %q", out, tt.want)
+			}
+		})
+	}
+
+	t.Run("this working copy holds trunk", func(t *testing.T) {
+		setupRestack(t, ".git", true, true)
+		t.Setenv("RESTACK_GT_STATE", restackStackState)
+		t.Setenv("RESTACK_GIT_BRANCH", "c")
+		t.Setenv("RESTACK_GT_OFF_TRUNK", "refs/remotes/origin/main a refs/remotes/origin/main b refs/remotes/origin/main c")
+		seedRestackHolders(t, map[string]string{"main": restackRoot(t)})
+
+		out, _, err := runRestackCmd(t)
+		if err != nil {
+			t.Fatalf("restack: %v", err)
+		}
+		want := "restacked 0 of 3 · trunk main · skipped c, b, a"
+		if out != want {
+			t.Fatalf("output = %q, want %q", out, want)
+		}
+	})
+}
+
+func TestRestackGTRefusesMissingRemoteTrunk(t *testing.T) {
+	setupRestack(t, ".git", true, true)
+	t.Setenv("RESTACK_GIT_MAIN_REF", "")
+
+	_, _, err := runRestackCmd(t)
+	if err == nil {
+		t.Fatal("restack succeeded without a remote-tracking trunk, want a refusal")
+	}
+	want := "restack: refs/remotes/origin/main does not exist — run git fetch origin main"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+}
+
+func TestRestackGTRefusesBranchHeldElsewhere(t *testing.T) {
+	logPath := setupRestack(t, ".git", true, true)
+	t.Setenv("RESTACK_GT_STATE", restackStackState)
+	t.Setenv("RESTACK_GIT_BRANCH", "c")
+	seedRestackHolders(t, map[string]string{"c": restackRoot(t), "b": "/w/b"})
+
+	_, _, err := runRestackCmd(t)
+	if err == nil {
+		t.Fatal("restack succeeded, want a refusal naming the holder")
+	}
+	want := "restack: b is checked out in /w/b — gt cannot restack a branch another working copy holds; restack from there, or release it first"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+	requireRestackRecords(t, logPath, [][]string{
+		nogtProbe,
+		{"gt", "state"},
+		{"git", "branch", "--show-current"},
+		restackWorktreeList(t),
+	})
+}
+
+func TestRestackGTRunsWhenThisWorkingCopyHoldsTheStack(t *testing.T) {
+	setupRestack(t, ".git", true, true)
+	seedRestackHolders(t, map[string]string{"feature": restackRoot(t)})
+
+	out, _, err := runRestackCmd(t)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if out != "restacked 1 of 1 · trunk main" {
+		t.Fatalf("output = %q, want %q", out, "restacked 1 of 1 · trunk main")
+	}
+}
+
+// TestRestackGTFailures pins the classifier to gt's own streams. The conflict
+// banner rides stdout with stderr empty — reproduced twice against gt 1.8.6.
+// The auth rows drive stderr instead, so the two together prove neither stream
+// alone is enough. Every row also asserts gt's failure survives the advice that
+// replaces its sentence.
 func TestRestackGTFailures(t *testing.T) {
 	tests := []struct {
 		name   string
+		stdout string
 		stderr string
 		want   string
 		exact  bool
 	}{
 		{
 			name:   "conflict",
-			stderr: "Hit conflict restacking branch feature",
+			stdout: "Hit conflict restacking branch feature",
 			want:   "restack: conflict — resolve the listed files, then gt continue (or gt abort); see the output above",
 			exact:  true,
 		},
@@ -317,6 +703,7 @@ func TestRestackGTFailures(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			logPath := setupRestack(t, ".git", true, true)
 			t.Setenv("RESTACK_GT_FAIL", "1")
+			t.Setenv("RESTACK_GT_STDOUT", tt.stdout)
 			t.Setenv("RESTACK_GT_STDERR", tt.stderr)
 
 			_, _, err := runRestackCmd(t)
@@ -329,14 +716,42 @@ func TestRestackGTFailures(t *testing.T) {
 			if !tt.exact && !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %q, want substring %q", err, tt.want)
 			}
+			var gerr *gtError
+			if !errors.As(err, &gerr) {
+				t.Fatalf("error = %q, want gt's own failure reachable through errors.As", err)
+			}
+			if line := tt.stdout + tt.stderr; !strings.Contains(gerr.Output, line) {
+				t.Fatalf("gtError.Output = %q, want it to carry gt's line %q", gerr.Output, line)
+			}
 			requireRestackRecords(t, logPath, [][]string{
 				nogtProbe,
 				{"gt", "state"},
-				{"git", "rev-parse", "HEAD"},
-				{"git", "rev-parse", "main"},
+				{"git", "branch", "--show-current"},
+				restackWorktreeList(t),
 				{"gt", "sync", "--no-interactive"},
 			})
 		})
+	}
+}
+
+// TestRestackGTClassifiesWhatGTPrinted separates the two channels a classifier
+// could read. gt prints its conflict banner and is then killed, so the error
+// carries only the signal while the run's output carries the banner: a
+// classifier reading the error's prose — which is string-matching an error, the
+// thing this package does not do — recovers nothing, while one reading the run's
+// own output still hands back the recovery step.
+func TestRestackGTClassifiesWhatGTPrinted(t *testing.T) {
+	setupRestack(t, ".git", true, true)
+	t.Setenv("RESTACK_GT_STDOUT", "Hit conflict restacking branch feature")
+	t.Setenv("RESTACK_GT_KILL", "1")
+
+	_, _, err := runRestackCmd(t)
+	if err == nil {
+		t.Fatal("restack succeeded on a killed gt, want the conflict advice")
+	}
+	want := "restack: conflict — resolve the listed files, then gt continue (or gt abort); see the output above"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
 	}
 }
 
@@ -502,9 +917,42 @@ func TestRestackGitProbesMainWhenSymbolicHeadMissing(t *testing.T) {
 		t.Fatalf("output = %q", out)
 	}
 	records := readRestackLog(t, logPath)
-	want := []string{"git", "show-ref", "--verify", "refs/remotes/origin/main"}
+	want := []string{"git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/main"}
 	if len(records) < 5 || !reflect.DeepEqual(records[4], want) {
 		t.Fatalf("show-ref argv = %#v, want %#v", records, want)
+	}
+}
+
+// TestRestackGitFallsBackToMasterWhenMainAbsent covers the second candidate the
+// probe loop tries. git answers a missing ref with a fatal, not the 1 an absent
+// match reports, so a probe that does not ask for --quiet never reaches master.
+func TestRestackGitFallsBackToMasterWhenMainAbsent(t *testing.T) {
+	logPath := setupRestack(t, ".git", false, true)
+	t.Setenv("RESTACK_GIT_SYMBOLIC_MISS", "1")
+	t.Setenv("RESTACK_GIT_MASTER_REF", "1")
+
+	out, _, err := runRestackCmd(t)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if out != "fetched · rebased onto origin/master" {
+		t.Fatalf("output = %q, want %q", out, "fetched · rebased onto origin/master")
+	}
+	records := readRestackLog(t, logPath)
+	for _, want := range [][]string{
+		{"git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/main"},
+		{"git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/master"},
+		{"git", "rebase", "--autostash", "refs/remotes/origin/master"},
+	} {
+		found := false
+		for _, record := range records {
+			if reflect.DeepEqual(record, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("missing %#v in %#v", want, records)
+		}
 	}
 }
 
@@ -524,7 +972,7 @@ func TestRestackGitRefusesUnknownTrunk(t *testing.T) {
 	for _, wantRef := range []string{"refs/remotes/origin/main", "refs/remotes/origin/master"} {
 		found := false
 		for _, record := range records {
-			if reflect.DeepEqual(record, []string{"git", "show-ref", "--verify", wantRef}) {
+			if reflect.DeepEqual(record, []string{"git", "show-ref", "--verify", "--quiet", wantRef}) {
 				found = true
 			}
 		}

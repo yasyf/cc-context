@@ -52,14 +52,33 @@ func (e *errGTUntracked) Error() string {
 	return "gt state has no parent for " + e.Branch
 }
 
-// gtStateQuery runs gt state and parses its JSON.
+// gtReport re-emits the diagnostics gt printed to errW. It runs on the failure
+// path too, and that is the point: every gt failure ship reports replaces gt's
+// own sentence with a recovery step, so lines nobody re-emits are lines the
+// person who ran ship never sees. A streamed run reports none — they already
+// reached the terminal as gt wrote them.
+func gtReport(errW io.Writer, r gtResult) error {
+	for _, line := range r.Diagnostics() {
+		if _, err := fmt.Fprintln(errW, line); err != nil {
+			return fmt.Errorf("ship: report gt diagnostics: %w", err)
+		}
+	}
+	return nil
+}
+
+// gtStateQuery runs gt state and parses its JSON. It is the one gt run whose
+// streams stay apart — a diagnostic interleaved into the payload would break the
+// unmarshal — and the one with no channel to report on, so a WARNING: gt exits 0
+// with is dropped. An ERROR: at exit 0 is not: gt's own words are the only
+// evidence that the state it printed is not the state on disk, so the policy is
+// fatal and the whole output rides the error.
 func gtStateQuery(ctx context.Context, prefix string) (gtState, error) {
-	out, err := render.RunCLI(ctx, "gt", []string{"state"})
+	payload, _, err := gtCapture(ctx, []string{"state"}, gtZeroFatal)
 	if err != nil {
-		return nil, fmt.Errorf("%s: gt state: %w", prefix, err)
+		return nil, fmt.Errorf("%s: %w", prefix, err)
 	}
 	var state gtState
-	if err := json.Unmarshal([]byte(out), &state); err != nil {
+	if err := json.Unmarshal([]byte(payload), &state); err != nil {
 		return nil, fmt.Errorf("%s: parse gt state: %w", prefix, err)
 	}
 	return state, nil
@@ -103,7 +122,7 @@ func gtDownstack(prefix string, state gtState, branch, trunk string) ([]string, 
 // stackBranches lists the current downstack chain — current branch first, up
 // to (excluding) trunk — or nil when the current branch is trunk.
 func stackBranches(ctx context.Context, prefix string) ([]string, error) {
-	branch, err := gitCurrentBranch(ctx)
+	branch, err := gitCurrentBranch(ctx, prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -129,8 +148,8 @@ func stackBranches(ctx context.Context, prefix string) ([]string, error) {
 // runs, even under --no-push, so an unrestacked stack still refuses a commit.
 // An untracked branch is auto-adopted first; only a track that still leaves the
 // branch untracked refuses.
-func shipPreflightGT(ctx context.Context, l lane, o shipOpts) (branchPlan, string, error) {
-	branch, err := gitCurrentBranch(ctx)
+func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts) (branchPlan, string, error) {
+	branch, err := gitCurrentBranch(ctx, "ship")
 	if err != nil {
 		return branchPlan{}, "", err
 	}
@@ -146,7 +165,7 @@ func shipPreflightGT(ctx context.Context, l lane, o shipOpts) (branchPlan, strin
 	var seg string
 	if branch != "" && branch != trunk {
 		if _, tracked := state[branch]; !tracked {
-			if state, seg, err = gtTrack(ctx, o, branch); err != nil {
+			if state, seg, err = gtTrack(ctx, errW, o, branch); err != nil {
 				return branchPlan{}, "", err
 			}
 		}
@@ -182,14 +201,23 @@ func shipPreflightGT(ctx context.Context, l lane, o shipOpts) (branchPlan, strin
 // cut off another feature branch is adopted onto it and gt submit then publishes
 // that unrelated branch too; --parent therefore drops -f, and either way the
 // resolved parent is read back out of gt state and named in the report.
-func gtTrack(ctx context.Context, o shipOpts, branch string) (gtState, string, error) {
+//
+// A track that fails is reported as the one step that fixes it, so gt's own
+// sentence would otherwise vanish twice over: the advice replaces it, and a
+// canned message hides it from errors.Is. Both are kept — the diagnostics reach
+// errW, and gt's failure stays the advice's cause.
+func gtTrack(ctx context.Context, errW io.Writer, o shipOpts, branch string) (gtState, string, error) {
 	argv := []string{"track", "-f", "--no-interactive"}
 	if o.parent != "" {
 		argv = []string{"track", "--parent", o.parent, "--no-interactive"}
 	}
 	untracked := fmt.Errorf("ship: branch %s is not tracked by graphite — run gt track, or pass --no-gt", branch)
-	if _, err := render.RunCLI(ctx, "gt", argv); err != nil {
-		return nil, "", untracked
+	r, runErr := gtRun(ctx, argv, gtZeroFatal, errW)
+	if err := gtReport(errW, r); err != nil {
+		return nil, "", err
+	}
+	if runErr != nil {
+		return nil, "", &gtAdvice{advice: untracked.Error(), cause: runErr}
 	}
 	state, err := gtStateQuery(ctx, "ship")
 	if err != nil {
@@ -261,14 +289,18 @@ func shipRefuseEmptyGT(ctx context.Context, o shipOpts) error {
 // shipGTAdd stages the ship's paths (or everything, when unscoped) into the
 // real index through gt add — gt's own git-add passthrough — so the plain
 // staging step stays on the gt binary like every other gt-lane mutation.
-func shipGTAdd(ctx context.Context, o shipOpts) error {
+func shipGTAdd(ctx context.Context, errW io.Writer, o shipOpts) error {
 	addArgv := []string{"add", "--no-interactive", "-A"}
 	if len(o.paths) > 0 {
 		addArgv = append(addArgv, "--")
 		addArgv = append(addArgv, o.paths...)
 	}
-	if _, err := render.RunCLI(ctx, "gt", addArgv); err != nil {
-		return fmt.Errorf("ship: gt add: %w", err)
+	r, runErr := gtRun(ctx, addArgv, gtZeroFatal, errW)
+	if err := gtReport(errW, r); err != nil {
+		return err
+	}
+	if runErr != nil {
+		return fmt.Errorf("ship: %w", runErr)
 	}
 	return nil
 }
@@ -285,9 +317,9 @@ func shipCommitGT(ctx context.Context, errW io.Writer, root string, o shipOpts, 
 		if !o.noVerify && shipHasHookConfig(root) {
 			seg = "hooks hunk-skip"
 		}
-		return seg, shipCommitGTSelect(ctx, o, sel, plan)
+		return seg, shipCommitGTSelect(ctx, errW, o, sel, plan)
 	}
-	if err := shipGTAdd(ctx, o); err != nil {
+	if err := shipGTAdd(ctx, errW, o); err != nil {
 		return "", err
 	}
 	if !o.amend {
@@ -300,9 +332,12 @@ func shipCommitGT(ctx context.Context, errW io.Writer, root string, o shipOpts, 
 		return "", err
 	}
 	o.hooksRan = hooksRan
-	argv := gtCommitArgv(o, plan)
-	if _, err := render.RunCLI(ctx, "gt", argv); err != nil {
-		return "", fmt.Errorf("ship: gt %s: %w", argv[0], err)
+	r, runErr := gtRun(ctx, gtCommitArgv(o, plan), gtZeroFatal, errW)
+	if err := gtReport(errW, r); err != nil {
+		return "", err
+	}
+	if runErr != nil {
+		return "", fmt.Errorf("ship: %w", runErr)
 	}
 	return hookSeg, nil
 }
@@ -311,7 +346,7 @@ func shipCommitGT(ctx context.Context, errW io.Writer, root string, o shipOpts, 
 // technique as shipCommitGitSelect — gt shells out to git, which honors
 // GIT_INDEX_FILE, so running gt's verb under the same env commits only the temp
 // index. gt's only hunk surface is interactive -p, so staging stays on git.
-func shipCommitGTSelect(ctx context.Context, o shipOpts, sel *shipSelection, plan branchPlan) error {
+func shipCommitGTSelect(ctx context.Context, errW io.Writer, o shipOpts, sel *shipSelection, plan branchPlan) error {
 	idxFile, err := os.CreateTemp("", "ccx-ship-index-*")
 	if err != nil {
 		return fmt.Errorf("ship: create temp index: %w", err)
@@ -335,8 +370,12 @@ func shipCommitGTSelect(ctx context.Context, o shipOpts, sel *shipSelection, pla
 		}
 	}
 	argv := gtCommitArgv(o, plan)
-	if _, err := render.RunCLIEnv(ctx, "gt", argv, env); err != nil {
-		return fmt.Errorf("ship: gt %s: %w", argv[0], err)
+	r, runErr := gtRun(ctx, argv, gtZeroFatal, errW, env...)
+	if err := gtReport(errW, r); err != nil {
+		return err
+	}
+	if runErr != nil {
+		return fmt.Errorf("ship: %w", runErr)
 	}
 
 	restoreArgv := append([]string{"restore", "--staged", "--"}, gitRestorePaths(o.paths)...)
@@ -358,22 +397,40 @@ func gtSubmitArgv(o shipOpts) []string {
 	return argv
 }
 
-// classifyGTSubmit maps a failed gt submit's stderr to a specific recovery
-// step when gt's wording is recognized, or wraps the raw error otherwise.
-func classifyGTSubmit(err error) error {
-	msg := err.Error()
+// classifyGTSubmit maps a failed gt submit to a specific recovery step when gt's
+// wording is recognized, or wraps the failure verbatim otherwise. It reads the
+// whole interleaved output, not the error's text: gt splits one submit's report
+// across both streams, so a recognized sentence arrives on whichever one gt
+// picked. A recognized failure keeps gt's own error as the advice's cause, so
+// errors.As still reaches it behind the sentence that replaced it.
+func classifyGTSubmit(r gtResult, cause error) error {
 	switch {
-	case strings.Contains(msg, gtRestackNeeded1) || strings.Contains(msg, gtRestackNeeded2):
-		return errors.New("ship: stack drifted since preflight — run gt restack, then re-run ship")
-	case strings.Contains(msg, gtTrunkStale):
-		return errors.New("ship: trunk is out of sync — run gt sync (or ccx vcs restack), then re-run ship")
-	case strings.Contains(msg, gtRemoteChanged1) || strings.Contains(msg, gtRemoteChanged2):
-		return errors.New("ship: remote branch changed since last submit — reconcile manually (gt sync), then re-run ship")
-	case strings.Contains(msg, gtAuthRequired1) || strings.Contains(msg, gtAuthRequired2):
-		return errors.New("ship: graphite auth required — run gt auth")
+	case strings.Contains(r.Output, gtRestackNeeded1) || strings.Contains(r.Output, gtRestackNeeded2):
+		return &gtAdvice{advice: "ship: stack drifted since preflight — run gt restack, then re-run ship", cause: cause}
+	case strings.Contains(r.Output, gtTrunkStale):
+		return &gtAdvice{advice: "ship: trunk is out of sync — run gt sync (or ccx vcs restack), then re-run ship", cause: cause}
+	case strings.Contains(r.Output, gtRemoteChanged1) || strings.Contains(r.Output, gtRemoteChanged2):
+		return &gtAdvice{advice: "ship: remote branch changed since last submit — reconcile manually (gt sync), then re-run ship", cause: cause}
+	case strings.Contains(r.Output, gtAuthRequired1) || strings.Contains(r.Output, gtAuthRequired2):
+		return &gtAdvice{advice: "ship: graphite auth required — run gt auth", cause: cause}
 	default:
-		return fmt.Errorf("ship: gt submit: %w", err)
+		return fmt.Errorf("ship: %w", cause)
 	}
+}
+
+// gtSubmit runs one submit — the dry run or the real one — and reports whether
+// gt published anything. Exit 0 is not consent: gt exits 0 while printing an
+// ERROR: naming a submit it refused, and ccx has no second oracle for a push it
+// did not make, so the policy is fatal.
+func gtSubmit(ctx context.Context, errW io.Writer, argv []string) error {
+	r, runErr := gtRun(ctx, argv, gtZeroFatal, errW)
+	if err := gtReport(errW, r); err != nil {
+		return err
+	}
+	if runErr != nil {
+		return classifyGTSubmit(r, runErr)
+	}
+	return nil
 }
 
 // shipPushGT submits the downstack of the branch the commit landed on. The
@@ -388,7 +445,7 @@ func classifyGTSubmit(err error) error {
 // publish in the report.
 // The resolved downstack it returns is the one the pull request step then
 // backfills into, so the stack is walked and its pull requests fetched once.
-func shipPushGT(ctx context.Context, root string, o shipOpts, meta map[string]prMeta, branch string) (submitted string, bodyless []string, stack []stackEntry, err error) {
+func shipPushGT(ctx context.Context, errW io.Writer, root string, o shipOpts, meta map[string]prMeta, branch string) (submitted string, bodyless []string, stack []stackEntry, err error) {
 	state, err := gtStateQuery(ctx, "ship")
 	if err != nil {
 		return "", nil, nil, err
@@ -404,12 +461,12 @@ func shipPushGT(ctx context.Context, root string, o shipOpts, meta map[string]pr
 		}
 	}
 	if len(chain) > 1 {
-		if _, err := render.RunCLI(ctx, "gt", []string{"submit", "--dry-run", "--no-interactive"}); err != nil {
-			return "", nil, nil, classifyGTSubmit(err)
+		if err := gtSubmit(ctx, errW, []string{"submit", "--dry-run", "--no-interactive"}); err != nil {
+			return "", nil, nil, err
 		}
 	}
-	if _, err := render.RunCLI(ctx, "gt", gtSubmitArgv(o)); err != nil {
-		return "", nil, nil, classifyGTSubmit(err)
+	if err := gtSubmit(ctx, errW, gtSubmitArgv(o)); err != nil {
+		return "", nil, nil, err
 	}
 	submitted, bodyless, stack = gtPRSegment(ctx, root, branch, chain, meta)
 	return submitted, bodyless, stack, nil

@@ -386,8 +386,9 @@ func downstackPRAlias(i int) string {
 // downstackPRQuery renders one aliased pullRequests field per branch. It names
 // no state filter, because gh pr view — the per-branch call this replaced — has
 // none either and resolves a merged pull request just as happily; and it orders
-// ascending so a branch carrying more than one pull request resolves to the
-// same, oldest one on every run.
+// descending because that is the one gh picks. A branch resubmitted after its
+// first pull request closed carries two, and the oldest is the one ship must
+// never write a body onto.
 func downstackPRQuery(n int) string {
 	decls := make([]string, 0, n+2)
 	decls = append(decls, "$owner: String!", "$repo: String!")
@@ -395,7 +396,7 @@ func downstackPRQuery(n int) string {
 	for i := range n {
 		alias := downstackPRAlias(i)
 		decls = append(decls, "$"+alias+": String!")
-		fmt.Fprintf(&fields, "    %s: pullRequests(headRefName: $%s, first: 1, orderBy: {field: CREATED_AT, direction: ASC}) { nodes { number url body } }\n", alias, alias)
+		fmt.Fprintf(&fields, "    %s: pullRequests(headRefName: $%s, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url body } }\n", alias, alias)
 	}
 	return fmt.Sprintf("query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}", strings.Join(decls, ", "), fields.String())
 }

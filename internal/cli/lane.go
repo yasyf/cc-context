@@ -273,9 +273,12 @@ func gtReachable(ctx context.Context, root string) (gtVerdict, string) {
 	defer cancel()
 
 	// -q suppresses the ready line while keeping the exit code, so the predicate
-	// needs the unquiet form.
+	// needs the unquiet form. The probe keeps its own runner rather than gtRun's:
+	// only RunCLIProbeDir puts gt in its own process group, which is what stops an
+	// unauthenticated gt from hanging on the terminal it would prompt at, and only
+	// it returns what a killed child managed to write.
 	stdout, code, stderr, err := render.RunCLIProbeDir(probeCtx, root, "gt", []string{"auth", "--no-interactive"})
-	output := stdout + stderr
+	output := gtJoinStreams(stdout, stderr)
 	if err != nil {
 		return gtVerdictUnknown, "gt auth could not run: " + err.Error()
 	}

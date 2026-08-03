@@ -25,6 +25,10 @@ const (
 	dupHunkCurrent = "a\n"
 )
 
+// jjBookmarkMoveArgv is the move that lands the bookmark on the commit a
+// --no-push ship just made; the push path issues the same one.
+var jjBookmarkMoveArgv = []string{"jj", "bookmark", "move", vcs.JJExactPattern("main"), "--to", "@-"}
+
 // hunkRefFor renders the post-image ref (path:A-B#digest) for the i-th hunk
 // between base and current, matching what ccx vcs hunks prints.
 func hunkRefFor(t *testing.T, path, base, current string, i int) string {
@@ -101,8 +105,8 @@ func TestShipJJHunkArgv(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	inv := readInvocations(t, log)
-	if len(inv) != 7 {
-		t.Fatalf("want 7 jj invocations, got %d: %v", len(inv), inv)
+	if len(inv) != 8 {
+		t.Fatalf("want 8 jj invocations, got %d: %v", len(inv), inv)
 	}
 	if want := []string{"jj", "--ignore-working-copy", "root"}; !reflect.DeepEqual(inv[0], want) {
 		t.Errorf("repo root = %v, want %v", inv[0], want)
@@ -117,6 +121,9 @@ func TestShipJJHunkArgv(t *testing.T) {
 	if want := []string{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate}; !reflect.DeepEqual(inv[6], want) {
 		t.Errorf("describe = %v, want %v", inv[6], want)
 	}
+	if !reflect.DeepEqual(inv[7], jjBookmarkMoveArgv) {
+		t.Errorf("bookmark move = %v, want %v", inv[7], jjBookmarkMoveArgv)
+	}
 }
 
 func TestShipJJHunkOnlyArgv(t *testing.T) {
@@ -127,10 +134,13 @@ func TestShipJJHunkOnlyArgv(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	inv := readInvocations(t, log)
-	if len(inv) != 7 {
-		t.Fatalf("want 7 jj invocations, got %d: %v", len(inv), inv)
+	if len(inv) != 8 {
+		t.Fatalf("want 8 jj invocations, got %d: %v", len(inv), inv)
 	}
 	assertJJSelectCommit(t, inv[5], "commit", []string{"-m", "fix: frobnicate", "--", "f.txt"})
+	if !reflect.DeepEqual(inv[7], jjBookmarkMoveArgv) {
+		t.Errorf("bookmark move = %v, want %v", inv[7], jjBookmarkMoveArgv)
+	}
 }
 
 func TestShipHunkHooksAreReportedSkipped(t *testing.T) {
@@ -199,10 +209,13 @@ func TestShipJJHunkAmendArgv(t *testing.T) {
 				t.Fatalf("ship error = %v", err)
 			}
 			inv := readInvocations(t, log)
-			if len(inv) != 7 {
-				t.Fatalf("want 7 jj invocations, got %d: %v", len(inv), inv)
+			if len(inv) != 8 {
+				t.Fatalf("want 8 jj invocations, got %d: %v", len(inv), inv)
 			}
 			assertJJSelectCommit(t, inv[5], "squash", tt.tail)
+			if !reflect.DeepEqual(inv[7], jjBookmarkMoveArgv) {
+				t.Errorf("bookmark move = %v, want %v", inv[7], jjBookmarkMoveArgv)
+			}
 		})
 	}
 }
@@ -841,6 +854,38 @@ func TestShowFileBaseDistinguishesAbsentFromFailure(t *testing.T) {
 			t.Fatal("an unresolvable base tree must propagate, not swallow into an empty base")
 		}
 	})
+}
+
+// TestFileInBaseJJWhitespaceName pins the one reading of jj file list that is
+// not a guess: measured against jj 0.43.0, a path the base carries prints its
+// name back verbatim (a file named " " prints " \n") and a path it lacks prints
+// zero bytes, the warning going to stderr. Trimming the answer collapses the
+// first case into the second, and a base read as absent diffs the file's hunks
+// against nothing.
+func TestFileInBaseJJWhitespaceName(t *testing.T) {
+	requireLiveVCS(t, "git", "jj")
+	dir := setupLiveJJRepo(t, "base\n", "edited\n")
+	const spaceName = " "
+	if err := os.WriteFile(filepath.Join(dir, spaceName), []byte("x\n"), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("write %q: %v", spaceName, err)
+	}
+	mustRun(t, dir, "jj", "commit", "-m", "space-named file")
+
+	ctx := context.Background()
+	present, err := fileInBase(ctx, vcs.JJ, spaceName)
+	if err != nil {
+		t.Fatalf("fileInBase(%q) error = %v", spaceName, err)
+	}
+	if !present {
+		t.Errorf("fileInBase(%q) = false, want true — the base carries it", spaceName)
+	}
+	absent, err := fileInBase(ctx, vcs.JJ, "nope.txt")
+	if err != nil {
+		t.Fatalf("fileInBase(nope.txt) error = %v", err)
+	}
+	if absent {
+		t.Error("fileInBase(nope.txt) = true, want false")
+	}
 }
 
 // TestApplySelectionRefRoundTrip guards that the ref ccx vcs hunks emits
