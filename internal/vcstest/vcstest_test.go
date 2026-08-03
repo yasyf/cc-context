@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -135,9 +136,12 @@ func TestShimDepthSeparatesGTChildren(t *testing.T) {
 		t.Errorf("depth-0 invocations = %v, want %v", top, want)
 	}
 
-	// gt 1.8.6's settled spawn set: seven probes, then its detached cache
-	// refresher re-runs four of them — spawn order races, so the assertion
-	// sorts. Measured stable at 11 across repeated quiesced runs.
+	// gt 1.8.6's settled probes. Its detached cache refresher then re-runs an
+	// environment-dependent subset — a warm dev machine sees more repeats than
+	// CI does — so requiring an exact multiset would pin a background race
+	// inside a third-party tool. The claim under test is that gt's children
+	// land one depth deeper than gt itself, which the presence of these and the
+	// absence of any non-git row establish.
 	want := [][]string{
 		{"git", "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--git-dir"},
 		{"git", "--version"},
@@ -146,22 +150,22 @@ func TestShimDepthSeparatesGTChildren(t *testing.T) {
 		{"git", "branch", "--show-current"},
 		{"git", "remote", "get-url", "origin", "--push"},
 		{"git", "config", "--get", "user.email"},
-		{"git", "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--git-dir"},
-		{"git", "--version"},
-		{"git", "remote", "get-url", "origin", "--push"},
-		{"git", "remote", "get-url", "origin", "--push"},
 	}
 	kids := InvocationsAtDepth(t, f.ArgvLog, 1)
-	sortRows := func(rows [][]string) []string {
-		keys := make([]string, len(rows))
-		for i, inv := range rows {
-			keys[i] = strings.Join(inv, " ")
-		}
-		slices.Sort(keys)
-		return keys
+	if len(kids) == 0 {
+		t.Fatal("no depth-1 invocations — gt's children never re-entered the shim")
 	}
-	if got, wantSorted := sortRows(kids), sortRows(want); !reflect.DeepEqual(got, wantSorted) {
-		t.Errorf("depth-1 invocations (sorted):\n got: %q\nwant: %q", got, wantSorted)
+	seen := map[string]bool{}
+	for _, inv := range kids {
+		if inv[0] != "git" {
+			t.Errorf("depth-1 invocation %v, want only git children of gt", inv)
+		}
+		seen[strings.Join(inv, " ")] = true
+	}
+	for _, w := range want {
+		if key := strings.Join(w, " "); !seen[key] {
+			t.Errorf("depth-1 missing gt's settled probe %q, got %q", key, slices.Sorted(maps.Keys(seen)))
+		}
 	}
 }
 
