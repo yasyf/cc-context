@@ -2,16 +2,20 @@ package overview
 
 import (
 	"context"
+	"fmt"
 	"path"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/vcs"
 )
 
-// gitRunner is the git subprocess boundary; git is a package-level var so tests inject
-// canned transcripts instead of shelling out.
+// gitRunner is the git subprocess boundary for the ref and oid queries whose output
+// carries no path, so no NUL framing applies; git is a package-level var so tests
+// inject canned transcripts instead of shelling out. Every path-bearing query goes
+// through internal/vcs instead, which owns the framing.
 type gitRunner func(ctx context.Context, dir string, args ...string) (string, error)
 
 var git gitRunner = runGit
@@ -27,57 +31,89 @@ func gitAnswers(ctx context.Context, root string) bool {
 	return err == nil
 }
 
+// gitLines renders the git-backed overview lines for the repo at root, in order: the
+// state headline, then the churn line. A repository with no commits answers neither
+// probe, so it yields no lines at all; every other probe failure comes back as an
+// error rather than a silently missing line or segment.
+func gitLines(ctx context.Context, root string) ([]string, error) {
+	section, err := gitSection(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	if section == "" {
+		return nil, nil
+	}
+	hot, err := hotLine(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	return []string{section, hot}, nil
+}
+
+// headHasCommit reports whether root's HEAD names a commit, the state a repo with
+// no commits yet is in. `git rev-parse --verify --quiet HEAD` is the one form of
+// the question with a real tri-state — 1 and silent for a branch with no commits,
+// 0 for one with, 128 for a repository that cannot answer at all — so no failure
+// has to be read as an absence.
+func headHasCommit(ctx context.Context, root string) (bool, error) {
+	_, code, stderr, err := render.RunCLIExitCodeDir(ctx, root, "git", []string{"rev-parse", "--verify", "--quiet", "HEAD"})
+	if err != nil {
+		return false, fmt.Errorf("rev-parse HEAD: %w", err)
+	}
+	switch code {
+	case 0:
+		return true, nil
+	case 1:
+		return false, nil
+	default:
+		return false, fmt.Errorf("rev-parse HEAD: exit %d: %s", code, strings.TrimSpace(stderr))
+	}
+}
+
 // gitSection renders "git: main @ a1b2c3d "release: v0.22.0" · 3 dirty · 1240 commits"
 // for the repo at root. A detached HEAD drops the branch name. It returns "" when the
-// repo has no commits (the log probe fails); the caller gates on VCS presence.
-func gitSection(ctx context.Context, root string) string {
+// repo has no commits, which headHasCommit establishes on its own so that every probe
+// after it answers whenever it did — a failure there is returned rather than costing a
+// segment or, worse, reading as the commitless repo.
+func gitSection(ctx context.Context, root string) (string, error) {
+	hasCommit, err := headHasCommit(ctx, root)
+	if err != nil {
+		return "", err
+	}
+	if !hasCommit {
+		return "", nil
+	}
 	logOut, err := git(ctx, root, "log", "-1", "--format=%h%x00%s")
 	if err != nil {
-		return ""
+		return "", err
 	}
 	hash, subject, _ := strings.Cut(strings.TrimRight(logOut, "\n"), "\x00")
-	if hash == "" {
-		return ""
-	}
 
 	var b strings.Builder
 	b.WriteString("git: ")
-	if branch, err := git(ctx, root, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
-		if name := strings.TrimSpace(branch); name != "" && name != "HEAD" {
-			b.WriteString(name + " ")
-		}
+	branch, err := git(ctx, root, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if name := strings.TrimSpace(branch); name != "HEAD" {
+		b.WriteString(name + " ")
 	}
 	b.WriteString("@ " + hash + ` "` + subject + `"`)
 
-	if out, err := git(ctx, root, "status", "--porcelain", "-z"); err == nil {
-		if n := countPorcelain(out); n > 0 {
-			b.WriteString(" · " + strconv.Itoa(n) + " dirty")
-		}
+	dirty, err := vcs.GitStatus(ctx, vcs.GitArgs{Dir: root, Sub: []string{"status"}})
+	if err != nil {
+		return "", err
 	}
-	if out, err := git(ctx, root, "rev-list", "--count", "HEAD"); err == nil {
-		if n := strings.TrimSpace(out); n != "" {
-			b.WriteString(" · " + n + " commits")
-		}
+	if len(dirty) > 0 {
+		b.WriteString(" · " + strconv.Itoa(len(dirty)) + " dirty")
 	}
-	return b.String()
-}
 
-// countPorcelain counts changed-file entries in `git status --porcelain -z` output,
-// skipping the rename/copy origin-path field that trails an R/C entry.
-func countPorcelain(out string) int {
-	tokens := strings.Split(out, "\x00")
-	n := 0
-	for i := 0; i < len(tokens); i++ {
-		t := tokens[i]
-		if len(t) < 3 || t[2] != ' ' {
-			continue
-		}
-		n++
-		if t[0] == 'R' || t[0] == 'C' || t[1] == 'R' || t[1] == 'C' {
-			i++ // the next token is the origin path, not a new entry
-		}
+	commits, err := git(ctx, root, "rev-list", "--count", "HEAD")
+	if err != nil {
+		return "", err
 	}
-	return n
+	b.WriteString(" · " + strings.TrimSpace(commits) + " commits")
+	return b.String(), nil
 }
 
 // hotDirLimit caps how many hot directories the churn section lists.
@@ -85,24 +121,23 @@ const hotDirLimit = 5
 
 // hotLine renders "hot (90d): internal/cli (34), internal/web (21)" by aggregating the
 // files changed in the last 90 days to their leading two path segments, top by count.
-// It returns "" when the log probe fails or no files changed.
-func hotLine(ctx context.Context, root string) string {
-	out, err := git(ctx, root, "log", "--since=90.days", "--name-only", "--format=")
+// It returns "" when no files changed.
+func hotLine(ctx context.Context, root string) (string, error) {
+	changed, err := vcs.GitPaths(ctx, vcs.GitArgs{
+		Dir: root,
+		Sub: []string{"log", "--since=90.days", "--name-only", "--format="},
+	})
 	if err != nil {
-		return ""
+		return "", err
 	}
 	counts := map[string]int{}
-	for _, ln := range strings.Split(out, "\n") {
-		p := strings.TrimSpace(ln)
-		if p == "" {
-			continue
-		}
+	for _, p := range changed {
 		if key := hotKey(p); key != "" {
 			counts[key]++
 		}
 	}
 	if len(counts) == 0 {
-		return ""
+		return "", nil
 	}
 	type kv struct {
 		dir string
@@ -125,13 +160,13 @@ func hotLine(ctx context.Context, root string) string {
 	for i, x := range xs {
 		parts[i] = x.dir + " (" + strconv.Itoa(x.n) + ")"
 	}
-	return "hot (90d): " + strings.Join(parts, ", ")
+	return "hot (90d): " + strings.Join(parts, ", "), nil
 }
 
 // hotKey reduces a changed file path to its containing directory's leading two
 // segments (internal/cli/foo.go → internal/cli), or "" for a root-level file.
 func hotKey(p string) string {
-	dir := path.Dir(path.Clean(strings.TrimPrefix(p, "./")))
+	dir := path.Dir(path.Clean(p))
 	if dir == "." || dir == "/" || dir == "" {
 		return ""
 	}

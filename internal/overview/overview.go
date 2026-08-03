@@ -40,8 +40,13 @@ func Run(ctx context.Context, _ backend.Args) (string, error) {
 	writeLine(&b, manifestsLine(manifests))
 	writeLine(&b, testsLine(census.tests))
 	if gitAnswers(ctx, root) {
-		writeLine(&b, gitSection(ctx, root))
-		writeLine(&b, hotLine(ctx, root))
+		lines, err := gitLines(ctx, root)
+		if err != nil {
+			return "", err
+		}
+		for _, line := range lines {
+			writeLine(&b, line)
+		}
 	}
 	return b.String(), nil
 }

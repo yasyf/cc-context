@@ -1,6 +1,7 @@
 package vcs
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -235,9 +236,13 @@ func TestTranslateRevset(t *testing.T) {
 		{"@- maps to HEAD", "@-", translationHEAD},
 		{"bare @ is jj-only", "@", translationJJOnly},
 		{"staged maps to staged", "staged", translationStaged},
-		{"trunk()..@ is default branch", "trunk()..@", translationDefaultBranch},
-		{"main..@ is default branch", "main..@", translationDefaultBranch},
-		{"master..@ is default branch", "master..@", translationDefaultBranch},
+		{"trunk() is the one resolved source", "trunk()..@", translationDefaultBranch},
+		{"main..@ names the branch called main", "main..@", translationRangeVsWorking},
+		{"master..@ names the branch called master", "master..@", translationRangeVsWorking},
+		{"any <rev>..@ reads its left endpoint verbatim", "feature-x..@", translationRangeVsWorking},
+		{"bookmark@remote..@ is a jj name against the working copy", "main@origin..@", translationRangeVsWorking},
+		{"an empty left endpoint stays a jj revset", "..@", translationJJOnly},
+		{"symmetric ...@ is not a working-copy range", "main...@", translationJJOnly},
 		{"HEAD~1 is ref vs working", "HEAD~1", translationRefVsWorking},
 		{"git range passes through", "main..feat", translationPassthrough},
 		{"sha is ref vs working", "a1b2c3d", translationRefVsWorking},
@@ -295,6 +300,95 @@ func TestShowFileArgv(t *testing.T) {
 			}
 			if got := ShowFileArgv(tt.kind, tt.path); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("ShowFileArgv = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestJJPatterns pins the escape vocabulary jj 0.43 actually accepts: raw UTF-8
+// inside the quotes, and nothing escaped but the backslash and the double quote.
+// Go's %q is the trap — it spells every unprintable rune \uXXXX, and \u is a
+// fileset/revset syntax error in jj, so a zero-width joiner or a non-breaking
+// space would render a pattern jj refuses to parse.
+func TestJJPatterns(t *testing.T) {
+	tests := []struct {
+		name      string
+		in        string
+		wantRoot  string
+		wantExact string
+	}{
+		{
+			name: "plain path", in: "internal/cli/ship.go",
+			wantRoot: `root:"internal/cli/ship.go"`, wantExact: `exact:"internal/cli/ship.go"`,
+		},
+		{
+			name: "zero-width joiners stay raw", in: "\U0001F468\u200D\U0001F469\u200D\U0001F466.txt",
+			wantRoot:  "root:\"\U0001F468\u200D\U0001F469\u200D\U0001F466.txt\"",
+			wantExact: "exact:\"\U0001F468\u200D\U0001F469\u200D\U0001F466.txt\"",
+		},
+		{
+			name: "non-breaking space stays raw", in: "a\u00A0b",
+			wantRoot: "root:\"a\u00A0b\"", wantExact: "exact:\"a\u00A0b\"",
+		},
+		{
+			name: "quote and backslash escape", in: `a"b\c`,
+			wantRoot: `root:"a\"b\\c"`, wantExact: `exact:"a\"b\\c"`,
+		},
+		{
+			name: "at sign is not a remote symbol", in: "foo@bar",
+			wantRoot: `root:"foo@bar"`, wantExact: `exact:"foo@bar"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := JJRootPattern(tt.in); got != tt.wantRoot {
+				t.Errorf("JJRootPattern(%q) = %q, want %q", tt.in, got, tt.wantRoot)
+			}
+			if got := JJExactPattern(tt.in); got != tt.wantExact {
+				t.Errorf("JJExactPattern(%q) = %q, want %q", tt.in, got, tt.wantExact)
+			}
+		})
+	}
+}
+
+// TestGitRefValidSeparatesTheMissFromTheFailure drives gitRefValid against real
+// git, where the two answers are indistinguishable by exit code — an unknown
+// revision and a directory that is not a repository both exit 128 — so only a
+// child that could not start at all may come back as an error. Measured on git
+// 2.55: `rev-parse --quiet --end-of-options nope` exits 128, HEAD~1 exits 0.
+func TestGitRefValidSeparatesTheMissFromTheFailure(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo := initLiveGitRepo(t)
+
+	tests := []struct {
+		name    string
+		dir     string
+		ref     string
+		want    bool
+		wantErr bool
+	}{
+		{"a real revision", repo, "HEAD~1", true, false},
+		{"a multi-value endpoint", repo, "HEAD^!", true, false},
+		{"a revision that does not exist", repo, "nope", false, false},
+		{"an option-shaped revision", repo, "--output=" + filepath.Join(t.TempDir(), "pwned"), false, false},
+		{"a working directory that is not there", filepath.Join(t.TempDir(), "gone"), "HEAD", false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := gitRefValid(context.Background(), tt.dir, tt.ref)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("gitRefValid(%q) = (%v, nil), want the unrunnable child reported as an error", tt.ref, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("gitRefValid(%q): %v", tt.ref, err)
+			}
+			if got != tt.want {
+				t.Errorf("gitRefValid(%q) = %v, want %v", tt.ref, got, tt.want)
 			}
 		})
 	}

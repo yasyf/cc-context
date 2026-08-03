@@ -3,103 +3,239 @@ package overview
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
-// stubGit installs a canned git runner keyed by the space-joined argv and restores
-// the real runner when the test ends.
-func stubGit(t *testing.T, transcript map[string]string) {
+// gitRepo initializes a fresh git repo on branch main in a temp dir and returns its
+// path, isolating the whole test process from the developer's git config so the
+// production probes — which inherit os.Environ() — see the same repo the helper
+// built. It skips the test when git is not on PATH.
+func gitRepo(t *testing.T) string {
 	t.Helper()
-	prev := git
-	t.Cleanup(func() { git = prev })
-	git = func(_ context.Context, _ string, args ...string) (string, error) {
-		key := strings.Join(args, " ")
-		out, ok := transcript[key]
-		if !ok {
-			return "", fmt.Errorf("no canned output for %q", key)
-		}
-		return out, nil
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	dir := t.TempDir()
+	mustGit(t, dir, "init", "-q", "-b", "main")
+	mustGit(t, dir, "config", "user.email", "t@example.com")
+	mustGit(t, dir, "config", "user.name", "Test")
+	return dir
+}
+
+// mustGit runs git in dir through the same runner the production probes use and
+// returns its trimmed stdout, failing the test on a nonzero exit.
+func mustGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := render.RunCLIEnvDir(context.Background(), dir, "git", args, nil)
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimRight(out, "\n")
+}
+
+func write(t *testing.T, dir, name, content string) {
+	t.Helper()
+	p := filepath.Join(dir, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
+// zwjName carries a zero-width joiner, the byte class git quotes without -z; newline
+// and quote names cover the other two escapes.
+const (
+	zwjName     = "zwj\u200djoin.go"
+	newlineName = "new\nline.go"
+	quoteName   = `quote"name.go`
+)
+
 func TestGitSection(t *testing.T) {
-	tests := []struct {
-		name       string
-		transcript map[string]string
-		want       string
-	}{
-		{
-			name: "branch, dirty, commits",
-			transcript: map[string]string{
-				"log -1 --format=%h%x00%s":    "a1b2c3d\x00release: v0.22.0\n",
-				"rev-parse --abbrev-ref HEAD": "main\n",
-				"status --porcelain -z":       " M a.go\x00?? b.txt\x00",
-				"rev-list --count HEAD":       "1240\n",
-			},
-			want: `git: main @ a1b2c3d "release: v0.22.0" · 2 dirty · 1240 commits`,
-		},
-		{
-			name: "detached HEAD drops branch",
-			transcript: map[string]string{
-				"log -1 --format=%h%x00%s":    "deadbee\x00wip\n",
-				"rev-parse --abbrev-ref HEAD": "HEAD\n",
-				"status --porcelain -z":       "",
-				"rev-list --count HEAD":       "5\n",
-			},
-			want: `git: @ deadbee "wip" · 5 commits`,
-		},
+	dir := gitRepo(t)
+	write(t, dir, "a.go", "package a\n")
+	write(t, dir, "keep.go", "package a\n")
+	mustGit(t, dir, "add", "-A")
+	mustGit(t, dir, "commit", "-qm", "release: v0.22.0")
+	hash := mustGit(t, dir, "log", "-1", "--format=%h")
+
+	got, err := gitSection(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			stubGit(t, tt.transcript)
-			if got := gitSection(context.Background(), "/repo"); got != tt.want {
-				t.Errorf("gitSection = %q, want %q", got, tt.want)
-			}
-		})
+	want := fmt.Sprintf("git: main @ %s %q · 1 commits", hash, "release: v0.22.0")
+	if got != want {
+		t.Errorf("gitSection = %q, want %q", got, want)
+	}
+}
+
+// TestGitSectionCountsDirtyEntries pins the count against a rename, whose
+// porcelain entry spends a second token on the origin path, and against the three
+// filenames git quotes without -z.
+func TestGitSectionCountsDirtyEntries(t *testing.T) {
+	dir := gitRepo(t)
+	write(t, dir, "old.go", "package a\n")
+	write(t, dir, "mod.go", "package a\n")
+	mustGit(t, dir, "add", "-A")
+	mustGit(t, dir, "commit", "-qm", "init")
+	mustGit(t, dir, "mv", "old.go", "new.go")
+	write(t, dir, "mod.go", "package a\n\nvar X = 1\n")
+	write(t, dir, zwjName, "package a\n")
+	write(t, dir, newlineName, "package a\n")
+	write(t, dir, quoteName, "package a\n")
+	hash := mustGit(t, dir, "log", "-1", "--format=%h")
+
+	got, err := gitSection(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("git: main @ %s %q · 5 dirty · 1 commits", hash, "init")
+	if got != want {
+		t.Errorf("gitSection = %q, want %q", got, want)
+	}
+}
+
+func TestGitSectionDetachedHeadDropsBranch(t *testing.T) {
+	dir := gitRepo(t)
+	write(t, dir, "a.go", "package a\n")
+	mustGit(t, dir, "add", "-A")
+	mustGit(t, dir, "commit", "-qm", "wip")
+	mustGit(t, dir, "checkout", "-q", "--detach")
+	hash := mustGit(t, dir, "log", "-1", "--format=%h")
+
+	got, err := gitSection(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("git: @ %s %q · 1 commits", hash, "wip")
+	if got != want {
+		t.Errorf("gitSection = %q, want %q", got, want)
 	}
 }
 
 func TestGitSectionNoCommits(t *testing.T) {
-	prev := git
-	t.Cleanup(func() { git = prev })
-	git = func(_ context.Context, _ string, _ ...string) (string, error) {
-		return "", fmt.Errorf("fatal: your current branch does not have any commits yet")
+	dir := gitRepo(t)
+	got, err := gitSection(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("gitSection on a commitless repo: %v", err)
 	}
-	if got := gitSection(context.Background(), "/repo"); got != "" {
+	if got != "" {
 		t.Errorf("gitSection with no commits = %q, want \"\"", got)
 	}
 }
 
-func TestCountPorcelain(t *testing.T) {
-	tests := []struct {
-		name string
-		out  string
-		want int
-	}{
-		{"empty", "", 0},
-		{"single modified", " M a.go\x00", 1},
-		{"staged and untracked", "M  a\x00?? b\x00", 2},
-		{"rename skips origin path", "R  new\x00old\x00 M other\x00", 2},
+// TestGitSectionSurfacesStatusFailure pins the segment that used to vanish: a bare
+// repo answers log, rev-parse and rev-list but refuses status, and the section must
+// report that rather than render a clean-looking line with no dirty count.
+func TestGitSectionSurfacesStatusFailure(t *testing.T) {
+	src := gitRepo(t)
+	write(t, src, "a.go", "package a\n")
+	mustGit(t, src, "add", "-A")
+	mustGit(t, src, "commit", "-qm", "init")
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	mustGit(t, src, "clone", "-q", "--bare", src, bare)
+
+	got, err := gitSection(context.Background(), bare)
+	if err == nil {
+		t.Fatalf("gitSection on a bare repo = %q, want an error naming the status failure", got)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := countPorcelain(tt.out); got != tt.want {
-				t.Errorf("countPorcelain(%q) = %d, want %d", tt.out, got, tt.want)
-			}
-		})
+	if !strings.Contains(err.Error(), "must be run in a work tree") {
+		t.Errorf("gitSection error = %v, want git's work-tree refusal", err)
 	}
 }
 
+// TestGitSectionSurfacesLogFailure pins the swallow the commitless case used to
+// hide: a repo whose HEAD ref still resolves but whose object store is gone
+// answers rev-parse and fails log, and that is a failure to report, not the
+// repository having no commits yet.
+func TestGitSectionSurfacesLogFailure(t *testing.T) {
+	dir := gitRepo(t)
+	write(t, dir, "a.go", "package a\n")
+	mustGit(t, dir, "add", "-A")
+	mustGit(t, dir, "commit", "-qm", "init")
+	// The objects directory itself has to stay: without it git stops recognizing
+	// the directory as a repository at all, which is a different failure.
+	objects := filepath.Join(dir, ".git", "objects")
+	entries, err := os.ReadDir(objects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(objects, e.Name())); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, sectionErr := gitSection(context.Background(), dir)
+	if sectionErr == nil {
+		t.Fatalf("gitSection over a repo with no object store = %q, want an error", got)
+	}
+	if !strings.Contains(sectionErr.Error(), "bad object") {
+		t.Errorf("gitSection error = %v, want git's bad-object failure", sectionErr)
+	}
+}
+
+// TestGitLinesNoCommits pins the pairing: the churn probe fails on a
+// commitless repo exactly where the state probe does, so neither line is attempted.
+func TestGitLinesNoCommits(t *testing.T) {
+	dir := gitRepo(t)
+	lines, err := gitLines(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("gitLines on a commitless repo: %v", err)
+	}
+	if len(lines) != 0 {
+		t.Errorf("gitLines with no commits = %q, want none", lines)
+	}
+}
+
+// TestHotLine pins the churn aggregation against the three filenames git quotes
+// without -z: unquoted they all attribute to internal/cli, and a leading '"' never
+// reaches a directory key.
 func TestHotLine(t *testing.T) {
-	stubGit(t, map[string]string{
-		"log --since=90.days --name-only --format=": "internal/cli/a.go\ninternal/cli/b.go\n\ninternal/web/c.go\ncmd/ccx/main.go\nREADME.md\n",
-	})
-	// internal/cli leads at 2; cmd/ccx and internal/web tie at 1 → name-ascending;
+	dir := gitRepo(t)
+	for _, p := range []string{
+		"internal/cli/a.go",
+		"internal/cli/" + zwjName,
+		"internal/cli/" + newlineName,
+		"internal/cli/" + quoteName,
+		"internal/web/c.go",
+		"cmd/ccx/main.go",
+		"README.md",
+	} {
+		write(t, dir, p, "x\n")
+	}
+	mustGit(t, dir, "add", "-A")
+	mustGit(t, dir, "commit", "-qm", "init")
+
+	// internal/cli leads at 4; cmd/ccx and internal/web tie at 1 → name-ascending;
 	// the root-level README.md is not attributable to a dir and is dropped.
-	want := "hot (90d): internal/cli (2), cmd/ccx (1), internal/web (1)"
-	if got := hotLine(context.Background(), "/repo"); got != want {
+	want := "hot (90d): internal/cli (4), cmd/ccx (1), internal/web (1)"
+	got, err := hotLine(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
 		t.Errorf("hotLine = %q, want %q", got, want)
+	}
+}
+
+// TestHotLineSurfacesLogFailure pins the other half of the segment bug: a churn
+// probe that cannot answer is an error, not an omitted line.
+func TestHotLineSurfacesLogFailure(t *testing.T) {
+	dir := gitRepo(t)
+	got, err := hotLine(context.Background(), dir)
+	if err == nil {
+		t.Fatalf("hotLine on a commitless repo = %q, want an error", got)
 	}
 }
 

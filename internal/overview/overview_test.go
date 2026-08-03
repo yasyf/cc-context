@@ -55,26 +55,24 @@ func TestRunNoVCS(t *testing.T) {
 }
 
 // TestRunIncludesGitWhenGitAnswers proves the gate is "git answers", not a .git on
-// disk: when the stubbed git resolves --git-dir, the git and hot sections appear.
+// disk: run from a subdirectory of a repo, where nothing beside the files names the
+// repository, the git and hot sections still appear.
 func TestRunIncludesGitWhenGitAnswers(t *testing.T) {
-	stubGit(t, map[string]string{
-		"rev-parse --git-dir":                       ".git\n",
-		"log -1 --format=%h%x00%s":                  "a1b2c3d\x00init\n",
-		"rev-parse --abbrev-ref HEAD":               "main\n",
-		"status --porcelain -z":                     "",
-		"rev-list --count HEAD":                     "3\n",
-		"log --since=90.days --name-only --format=": "internal/x/a.go\n",
-	})
-	root := scaffold(t, map[string]string{"internal/x/a.go": "package x\n"})
-	t.Chdir(root)
+	repo := gitRepo(t)
+	write(t, repo, "sub/internal/x/a.go", "package x\n")
+	mustGit(t, repo, "add", "-A")
+	mustGit(t, repo, "commit", "-qm", "init")
+	hash := mustGit(t, repo, "log", "-1", "--format=%h")
+	t.Chdir(filepath.Join(repo, "sub"))
+
 	out, err := Run(context.Background(), backend.Args{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, `git: main @ a1b2c3d "init"`) {
+	if !strings.Contains(out, `git: main @ `+hash+` "init"`) {
 		t.Errorf("git section missing when git answers:\n%s", out)
 	}
-	if !strings.Contains(out, "hot (90d): internal/x") {
+	if !strings.Contains(out, "hot (90d): sub/internal") {
 		t.Errorf("hot section missing when git answers:\n%s", out)
 	}
 }

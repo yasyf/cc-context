@@ -5,9 +5,10 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // Kind identifies the VCS managing a working directory.
@@ -21,10 +22,6 @@ const (
 	// None is no recognized VCS.
 	None
 )
-
-// defaultBranchFallback names the branch assumed when origin/HEAD cannot be
-// resolved.
-const defaultBranchFallback = "main"
 
 // jjOnlyOperators are revset fragments git cannot express, so a source containing
 // any of them is a jj-only revset. Git's own ref suffixes
@@ -109,10 +106,32 @@ func ShowFileArgv(kind Kind, path string) []string {
 	case Git:
 		return []string{"git", "show", "--end-of-options", "HEAD:" + path}
 	case JJ:
-		return []string{"jj", "--ignore-working-copy", "file", "show", "-r", "@-", "--", fmt.Sprintf("root:%q", path)}
+		return []string{"jj", "--ignore-working-copy", "file", "show", "-r", "@-", "--", JJRootPattern(path)}
 	default:
 		panic(fmt.Sprintf("vcs.ShowFileArgv: kind %d is not Git or JJ", kind))
 	}
+}
+
+// jjStringLiteral escaper: jj 0.43's revset and fileset grammars share one string
+// literal, and its escape vocabulary is \t \r \n \0 \e \xHH — \a, \b, \f, \v, \u,
+// and \U are syntax errors. Raw UTF-8 is legal inside the quotes, so backslash and
+// double quote are the only bytes that need escaping. Go's %q is the trap: it
+// spells every unprintable rune \uXXXX, so a zero-width joiner or a non-breaking
+// space in a path or bookmark name renders a pattern jj refuses to parse. \xHH is
+// no substitute either — jj reads it as a per-rune Latin-1 codepoint, not a byte.
+var jjStringLiteral = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+
+// JJRootPattern renders a repo-root-relative path as jj's root-anchored fileset
+// pattern, root:"…".
+func JJRootPattern(path string) string {
+	return `root:"` + jjStringLiteral.Replace(path) + `"`
+}
+
+// JJExactPattern renders name as jj's exact string pattern, exact:"…", so a
+// bookmark name carrying an '@' (or any character jj would otherwise read as a
+// bookmark@remote symbol or a glob metacharacter) is matched literally.
+func JJExactPattern(name string) string {
+	return `exact:"` + jjStringLiteral.Replace(name) + `"`
 }
 
 type translation int
@@ -124,9 +143,12 @@ const (
 	translationWorkingTree
 	// translationHEAD maps jj's @- (working vs @-) to the @-..@ commit range.
 	translationHEAD
-	// translationDefaultBranch maps trunk()..@ / main..@ / master..@ to a
-	// branch..@ commit range.
+	// translationDefaultBranch maps trunk()..@ to a <trunk>..@ commit range,
+	// trunk being the branch the repository designates as its default.
 	translationDefaultBranch
+	// translationRangeVsWorking maps an explicit <rev>..@ range to that same
+	// range, the left endpoint read exactly as written.
+	translationRangeVsWorking
 	// translationRefVsWorking maps a single git ref R to the R..@ commit range.
 	translationRefVsWorking
 	// translationStaged marks the staged (index vs @-) diff.
@@ -136,7 +158,10 @@ const (
 )
 
 // translateRevset classifies a diff source into a translation strategy. It is a
-// pure function so the full matrix is table-testable.
+// pure function so the full matrix is table-testable. trunk() is the one source
+// whose branch this package resolves; every other name is the name the user
+// meant, so "master..@" diffs the branch called master rather than whichever
+// branch the repository designates as its trunk.
 func translateRevset(source string) translation {
 	switch source {
 	case "", "uncommitted":
@@ -147,13 +172,19 @@ func translateRevset(source string) translation {
 		return translationJJOnly
 	case stagedSource:
 		return translationStaged
-	case "trunk()..@", "main..@", "master..@":
+	case "trunk()..@":
 		return translationDefaultBranch
 	}
 	if isJJNativeRevset(source) {
 		return translationJJOnly
 	}
-	if strings.Contains(source, "..") {
+	if left, right, ok := strings.Cut(source, ".."); ok {
+		// A right endpoint of @ names the live working copy, which only jj can
+		// read: git resolves @ to HEAD, jj's @-, and would silently drop every
+		// uncommitted change from the after side.
+		if left != "" && right == "@" {
+			return translationRangeVsWorking
+		}
 		// git cannot rev-parse a range to disambiguate, so a range with an
 		// embedded-@ endpoint (a jj bookmark@remote) stays routed to jj; a plain
 		// git range passes through as a committed range.
@@ -193,19 +224,18 @@ func isJJNativeRevset(source string) bool {
 // gitRefValid reports whether ref parses to at least one real git revision via
 // `git rev-parse --quiet`. Unlike a `--verify … ^{commit}` check it accepts the
 // multi-value endpoints git's diff accepts (HEAD^@, HEAD^!, HEAD^-), which
-// resolve to several ids; a genuinely bogus ref exits nonzero.
-func gitRefValid(ctx context.Context, dir, ref string) bool {
-	return exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--quiet", ref).Run() == nil //nolint:gosec // fixed git argv; only the working dir and ref vary
-}
-
-func defaultBranch(ctx context.Context, dir string) (string, error) {
-	out, err := exec.CommandContext(ctx, "git", "-C", dir, "symbolic-ref", "refs/remotes/origin/HEAD").Output() //nolint:gosec // fixed git argv; only the working dir varies
+// resolve to several ids; a genuinely bogus ref exits nonzero. --end-of-options
+// is what makes the answer honest: without it rev-parse echoes an unrecognized
+// option back and exits 0, so "--output=/tmp/x" reads as a valid revision and
+// travels on into a diff that writes the file.
+//
+// The exit code answers only the ref question, so a child that could not run at
+// all — no git on PATH, a working directory that vanished — comes back as an
+// error rather than as a ref that does not exist.
+func gitRefValid(ctx context.Context, dir, ref string) (bool, error) {
+	_, code, _, err := render.RunCLIExitCodeDir(ctx, dir, "git", []string{"rev-parse", "--quiet", "--end-of-options", ref})
 	if err != nil {
-		return defaultBranchFallback, nil
+		return false, fmt.Errorf("rev-parse %q: %w", ref, err)
 	}
-	ref := strings.TrimSpace(string(out))
-	if name := strings.TrimPrefix(ref, "refs/remotes/origin/"); name != "" && name != ref {
-		return name, nil
-	}
-	return defaultBranchFallback, nil
+	return code == 0, nil
 }

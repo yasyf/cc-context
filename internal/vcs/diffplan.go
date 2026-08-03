@@ -1,14 +1,14 @@
 package vcs
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // DiffPlan is the resolved shape of one logical diff: the files that changed and
@@ -80,15 +80,18 @@ func diffLabel(source string) string {
 // gitDiffPlan builds a symbolic plan for a git working copy. The working-tree
 // source diffs HEAD against the on-disk worktree; a range or bare ref reads both
 // endpoints as committed blobs after validating each names a real revision.
+// Every endpoint a user typed reaches git as a GitRef through GitArgs, which
+// interposes --end-of-options ahead of it, so a source spelled like an option
+// ("--output=/tmp/x") is refused rather than obeyed.
 func gitDiffPlan(ctx context.Context, root, source string) (DiffPlan, error) {
 	if source == "" || source == "uncommitted" {
-		files, renames, err := gitNameStatus(ctx, root, "diff", "--name-status", "-M", "HEAD")
+		files, renames, err := gitDiffFiles(ctx, GitArgs{Dir: root, Sub: []string{"diff", "-M"}, Revs: []GitRef{HeadRef}})
 		if err != nil {
 			return DiffPlan{}, err
 		}
 		// git diff HEAD lists only tracked changes; append the untracked worktree
 		// files so a brand-new file still renders (Before empty, After worktree).
-		untracked, err := listLines(ctx, root, "git", "ls-files", "--others", "--exclude-standard")
+		untracked, err := GitPaths(ctx, GitArgs{Dir: root, Sub: []string{"ls-files", "--others", "--exclude-standard"}})
 		if err != nil {
 			return DiffPlan{}, err
 		}
@@ -104,41 +107,48 @@ func gitDiffPlan(ctx context.Context, root, source string) (DiffPlan, error) {
 	}
 
 	for _, ep := range splitDiffRange(source) {
-		if ep != "" && !gitRefValid(ctx, root, ep) {
+		if ep == "" {
+			continue
+		}
+		valid, err := gitRefValid(ctx, root, ep)
+		if err != nil {
+			return DiffPlan{}, err
+		}
+		if !valid {
 			return DiffPlan{}, fmt.Errorf("unknown git revision %q in diff source %q", ep, source)
 		}
 	}
 
 	var beforeRef string
 	var after func(string) ([]byte, error)
-	var filesArgv []string
+	var revs []GitRef
 	switch {
 	case strings.Contains(source, "..."):
 		left, right, _ := strings.Cut(source, "...")
-		base, err := gitMergeBase(ctx, root, orHEAD(left), orHEAD(right))
+		base, err := gitMergeBase(ctx, root, UnsafeRef(orHEAD(left)), UnsafeRef(orHEAD(right)))
 		if err != nil {
 			return DiffPlan{}, err
 		}
 		beforeRef = base
 		after = committedBlobFn(ctx, root, Git, orHEAD(right))
-		filesArgv = []string{"diff", "--name-status", "-M", source}
+		revs = []GitRef{UnsafeRef(source)}
 	case strings.Contains(source, ".."):
 		left, right, _ := strings.Cut(source, "..")
 		beforeRef = orHEAD(left)
 		if right == "" {
 			after = worktreeFn(root)
-			filesArgv = []string{"diff", "--name-status", "-M", beforeRef}
+			revs = []GitRef{UnsafeRef(beforeRef)}
 		} else {
 			after = committedBlobFn(ctx, root, Git, right)
-			filesArgv = []string{"diff", "--name-status", "-M", beforeRef, right}
+			revs = []GitRef{UnsafeRef(beforeRef), UnsafeRef(right)}
 		}
 	default:
 		beforeRef = source
 		after = worktreeFn(root)
-		filesArgv = []string{"diff", "--name-status", "-M", source}
+		revs = []GitRef{UnsafeRef(source)}
 	}
 
-	files, renames, err := gitNameStatus(ctx, root, filesArgv...)
+	files, renames, err := gitDiffFiles(ctx, GitArgs{Dir: root, Sub: []string{"diff", "-M"}, Revs: revs})
 	if err != nil {
 		return DiffPlan{}, err
 	}
@@ -152,10 +162,14 @@ func gitDiffPlan(ctx context.Context, root, source string) (DiffPlan, error) {
 	}, nil
 }
 
+// gitIndexRev addresses git's staged tree as a revision: `git show :0:path` reads
+// the stage-0 index entry.
+const gitIndexRev = ":0"
+
 // stagedPlan builds a symbolic plan for the git index: HEAD against the staged
 // tree (git show :0:path), reused verbatim in a colocated jj repo.
 func stagedPlan(ctx context.Context, root string) (DiffPlan, error) {
-	files, renames, err := gitNameStatus(ctx, root, "diff", "--cached", "--name-status", "-M")
+	files, renames, err := gitDiffFiles(ctx, GitArgs{Dir: root, Sub: []string{"diff", "--cached", "-M"}})
 	if err != nil {
 		return DiffPlan{}, err
 	}
@@ -165,26 +179,32 @@ func stagedPlan(ctx context.Context, root string) (DiffPlan, error) {
 		Symbolic: true,
 		Renames:  renames,
 		Before:   renameAware(committedBlobFn(ctx, root, Git, "HEAD"), renames),
-		After:    committedBlobFn(ctx, root, Git, ":0"),
+		After:    committedBlobFn(ctx, root, Git, gitIndexRev),
 	}, nil
 }
 
 // jjDiffPlan builds a plan for a jj working copy, classifying source through the
-// shared translateRevset matrix. Working-tree, ref, and default-branch sources
-// resolve to a symbolic <base>..@ pair (after side is the live worktree); a git
-// range reads both committed endpoints; a genuinely jj-only revset that may span
-// several commits yields a non-symbolic plan whose Raw runs `jj diff --git`.
+// shared translateRevset matrix. Working-tree, ref, and trunk sources resolve to
+// a symbolic <base>..@ pair (after side is the live worktree); a git range reads
+// both committed endpoints; a genuinely jj-only revset that may span several
+// commits yields a non-symbolic plan whose Raw runs `jj diff --git`. Only
+// trunk() consults the repository's designated default branch, and only through
+// ResolveTrunk against origin, the remote whose HEAD names it; a source naming a
+// branch names that branch.
 func jjDiffPlan(ctx context.Context, root, source string) (DiffPlan, error) {
 	label := diffLabel(source)
 	switch translateRevset(source) {
 	case translationWorkingTree, translationHEAD:
 		return symbolicJJ(ctx, root, label, "@-", "@", worktreeFn(root))
 	case translationDefaultBranch:
-		branch, err := defaultBranch(ctx, root)
+		trunk, err := ResolveTrunk(ctx, root, "origin")
 		if err != nil {
-			return DiffPlan{}, fmt.Errorf("resolve default branch for %q: %w", root, err)
+			return DiffPlan{}, fmt.Errorf("resolve trunk() for %q: %w", root, err)
 		}
-		return symbolicJJ(ctx, root, label, branch, "@", worktreeFn(root))
+		return symbolicJJ(ctx, root, label, trunk.Name(), "@", worktreeFn(root))
+	case translationRangeVsWorking:
+		left, _, _ := strings.Cut(source, "..")
+		return symbolicJJ(ctx, root, label, left, "@", worktreeFn(root))
 	case translationRefVsWorking:
 		if gitOnlyRevSyntax(source) && colocatedGit(root) {
 			return gitDiffPlan(ctx, root, source)
@@ -197,7 +217,7 @@ func jjDiffPlan(ctx context.Context, root, source string) (DiffPlan, error) {
 		left, right, _ := strings.Cut(source, "..")
 		return symbolicJJ(ctx, root, label, orHEAD(left), orHEAD(right), committedBlobFn(ctx, root, JJ, orHEAD(right)))
 	default:
-		files, err := listLines(ctx, root, "jj", "diff", "--name-only", "-r", source)
+		files, err := jjLines(ctx, root, "diff", "--name-only", "-r", source)
 		if err != nil {
 			return DiffPlan{}, err
 		}
@@ -224,26 +244,20 @@ func symbolicJJ(ctx context.Context, root, label, fromRev, toRev string, after f
 	}, nil
 }
 
-// gitNameStatus runs a `git <args…>` name-status enumeration (rename detection on
-// via -M) at root, returning the changed post-image paths and a post→pre rename
-// map. A rename or copy line is "R<sim>\told\tnew"; every other status is a single
-// tab-separated path.
-func gitNameStatus(ctx context.Context, root string, args ...string) (files []string, renames map[string]string, err error) {
-	lines, err := listLines(ctx, root, "git", args...)
+// gitDiffFiles runs a's name-status diff, returning the changed post-image paths
+// and a post→pre rename map. A copy names a pre-image too but is no rename: its
+// destination is new content, so Before reads the destination's own (absent)
+// blob rather than the source it was copied from.
+func gitDiffFiles(ctx context.Context, a GitArgs) (files []string, renames map[string]string, err error) {
+	entries, err := GitNameStatus(ctx, a)
 	if err != nil {
 		return nil, nil, err
 	}
-	for _, line := range lines {
-		fields := strings.Split(line, "\t")
-		if s := fields[0]; (s[0] == 'R' || s[0] == 'C') && len(fields) >= 3 {
-			old, dst := fields[1], fields[2]
-			files = append(files, dst)
-			if s[0] == 'R' {
-				renames = putRename(renames, dst, old)
-			}
-			continue
+	for _, e := range entries {
+		files = append(files, e.New)
+		if e.Renamed() {
+			renames = putRename(renames, e.New, e.Old)
 		}
-		files = append(files, fields[len(fields)-1])
 	}
 	return files, renames, nil
 }
@@ -253,7 +267,7 @@ func gitNameStatus(ctx context.Context, root string, args ...string) (files []st
 // "R <prefix>{old => new}<suffix>" (a copy as "C …"); every other status is
 // "<flag> <path>".
 func jjNameStatus(ctx context.Context, root, fromRev, toRev string) (files []string, renames map[string]string, err error) {
-	lines, err := listLines(ctx, root, "jj", "diff", "--summary", "--from", fromRev, "--to", toRev)
+	lines, err := jjLines(ctx, root, "diff", "--summary", "--from", fromRev, "--to", toRev)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -320,15 +334,19 @@ func renameAware(base func(string) ([]byte, error), renames map[string]string) f
 // equivalent `git show <rev>:path` / `jj file show -r <rev>` argv.
 func committedBlobFn(ctx context.Context, root string, kind Kind, rev string) func(string) ([]byte, error) {
 	return func(path string) ([]byte, error) {
-		if !treeHasPath(ctx, root, kind, rev, path) {
+		has, err := treeHasPath(ctx, root, kind, rev, path)
+		if err != nil {
+			return nil, err
+		}
+		if !has {
 			return nil, nil
 		}
 		argv := blobArgv(kind, rev, path)
-		out, err := runIn(ctx, root, argv[0], argv[1:]...)
+		out, err := render.RunCLIDir(ctx, root, argv[0], argv[1:])
 		if err != nil {
 			return nil, fmt.Errorf("read %s at %s: %w", path, rev, err)
 		}
-		return out, nil
+		return []byte(out), nil
 	}
 }
 
@@ -343,24 +361,55 @@ func blobArgv(kind Kind, rev, path string) []string {
 	case kind == Git:
 		return []string{"git", "show", "--end-of-options", rev + ":" + path}
 	default:
-		return []string{"jj", "--ignore-working-copy", "file", "show", "-r", rev, "--", fmt.Sprintf("root:%q", path)}
+		return []string{"jj", "--ignore-working-copy", "file", "show", "-r", rev, "--", JJRootPattern(path)}
 	}
 }
 
 // treeHasPath reports whether path exists in rev's tree, so a blob accessor can
-// yield empty bytes rather than error on a file one side lacks. git uses
-// `cat-file -e` (silent, exit-coded); jj uses `file list`, whose stdout is empty
-// for a path it does not track at rev.
-func treeHasPath(ctx context.Context, root string, kind Kind, rev, path string) bool {
-	switch kind {
-	case Git:
-		cmd := exec.CommandContext(ctx, "git", "cat-file", "-e", rev+":"+path) //nolint:gosec // fixed git argv; only root, rev, and a VCS-enumerated path vary
-		cmd.Dir = root
-		return cmd.Run() == nil
+// yield empty bytes rather than error on a file one side lacks. Every backend
+// enumerates rather than probes, because only an empty listing reads as absence:
+// `git cat-file -e` exits 128 both for a path the tree lacks and for a tree it
+// cannot read, and a failure read as "absent from the base" renders a
+// modification as a whole-file addition. The index is no tree to walk, so the
+// staged side lists the index itself.
+func treeHasPath(ctx context.Context, root string, kind Kind, rev, path string) (bool, error) {
+	switch {
+	case kind == Git && rev == gitIndexRev:
+		records, err := GitTreeRecords(ctx, GitArgs{Dir: root, Sub: []string{"ls-files", "--stage"}, Paths: []string{path}})
+		if err != nil {
+			return false, fmt.Errorf("list %s in the index: %w", path, err)
+		}
+		return hasStageZero(records), nil
+	case kind == Git:
+		records, err := GitTreeRecords(ctx, GitArgs{
+			Dir:   root,
+			Sub:   []string{"ls-tree", "--full-tree"},
+			Revs:  []GitRef{UnsafeRef(rev)},
+			Paths: []string{path},
+		})
+		if err != nil {
+			return false, fmt.Errorf("list %s at %s: %w", path, rev, err)
+		}
+		return len(records) > 0, nil
 	default:
-		out, err := runIn(ctx, root, "jj", "--ignore-working-copy", "file", "list", "-r", rev, "--", fmt.Sprintf("root:%q", path))
-		return err == nil && len(bytes.TrimSpace(out)) > 0
+		out, err := render.RunCLIDir(ctx, root, "jj", []string{"--ignore-working-copy", "file", "list", "-r", rev, "--", JJRootPattern(path)})
+		if err != nil {
+			return false, fmt.Errorf("list %s at %s: %w", path, rev, err)
+		}
+		return out != "", nil
 	}
+}
+
+// hasStageZero reports whether a `git ls-files --stage` listing carries a stage-0
+// entry; a conflicted path is listed at stages 1-3 and has no staged blob to read.
+// Each record's attribute field is "<mode> <object> <stage>".
+func hasStageZero(records []TreeRecord) bool {
+	for _, rec := range records {
+		if strings.HasSuffix(rec.Attrs, " 0") {
+			return true
+		}
+	}
+	return false
 }
 
 // worktreeFn returns a blob accessor reading path from the on-disk worktree,
@@ -382,22 +431,23 @@ func worktreeFn(root string) func(string) ([]byte, error) {
 // spanning revset.
 func jjRawFn(ctx context.Context, root, revset string) func(string) (string, error) {
 	return func(path string) (string, error) {
-		out, err := runIn(ctx, root, "jj", "diff", "--git", "-r", revset, "--", fmt.Sprintf("root:%q", path))
+		out, err := render.RunCLIDir(ctx, root, "jj", []string{"diff", "--git", "-r", revset, "--", JJRootPattern(path)})
 		if err != nil {
 			return "", fmt.Errorf("jj diff --git -r %q: %w", revset, err)
 		}
-		return string(out), nil
+		return out, nil
 	}
 }
 
 // gitMergeBase resolves the merge base of two revisions for a symmetric (A...B)
-// range's before side.
-func gitMergeBase(ctx context.Context, root, a, b string) (string, error) {
-	out, err := runIn(ctx, root, "git", "merge-base", a, b)
+// range's before side. --end-of-options keeps an endpoint spelled like an option
+// from reaching merge-base's own flag surface.
+func gitMergeBase(ctx context.Context, root string, a, b GitRef) (string, error) {
+	out, err := render.RunCLIDir(ctx, root, "git", []string{"merge-base", "--end-of-options", string(a), string(b)})
 	if err != nil {
 		return "", fmt.Errorf("merge-base %s %s: %w", a, b, err)
 	}
-	id := strings.TrimSpace(string(out))
+	id := strings.TrimSpace(out)
 	if id == "" {
 		return "", fmt.Errorf("merge-base %s %s: empty", a, b)
 	}
@@ -405,7 +455,9 @@ func gitMergeBase(ctx context.Context, root, a, b string) (string, error) {
 }
 
 // diffRoot resolves dir's repository root so every child process runs there and
-// path names stay root-relative across enumeration and blob reads.
+// path names stay root-relative across enumeration and blob reads. git offers no
+// NUL-framed form of --show-toplevel, so a root whose own name ends in
+// whitespace comes back trimmed.
 func diffRoot(ctx context.Context, dir string, kind Kind) (string, error) {
 	var argv []string
 	switch kind {
@@ -414,11 +466,11 @@ func diffRoot(ctx context.Context, dir string, kind Kind) (string, error) {
 	default:
 		argv = []string{"jj", "--ignore-working-copy", "workspace", "root"}
 	}
-	out, err := runIn(ctx, dir, argv[0], argv[1:]...)
+	out, err := render.RunCLIDir(ctx, dir, argv[0], argv[1:])
 	if err != nil {
 		return "", fmt.Errorf("resolve repo root for %q: %w", dir, err)
 	}
-	root := strings.TrimSpace(string(out))
+	root := strings.TrimSpace(out)
 	if root == "" {
 		return "", fmt.Errorf("resolve repo root for %q: empty", dir)
 	}
@@ -446,32 +498,20 @@ func orHEAD(ref string) string {
 	return ref
 }
 
-// listLines runs a name-listing command at dir and splits its stdout into
-// non-empty, whitespace-trimmed lines.
-func listLines(ctx context.Context, dir, name string, args ...string) ([]string, error) {
-	out, err := runIn(ctx, dir, name, args...)
+// jjLines runs jj at root and splits its stdout into non-empty,
+// whitespace-trimmed lines. Only jj comes through here: git's own listings are
+// NUL-framed by the shape helpers, so no git path in this package is ever split
+// on a newline it might itself contain.
+func jjLines(ctx context.Context, root string, args ...string) ([]string, error) {
+	out, err := render.RunCLIDir(ctx, root, "jj", args)
 	if err != nil {
 		return nil, err
 	}
 	var lines []string
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(out, "\n") {
 		if line = strings.TrimSpace(line); line != "" {
 			lines = append(lines, line)
 		}
 	}
 	return lines, nil
-}
-
-// runIn runs name at dir, returning stdout bytes and wrapping a nonzero exit with
-// the child's stderr.
-func runIn(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // name/args are fixed VCS verbs; only dir, revs, and VCS-enumerated paths vary
-	cmd.Dir = dir
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-	}
-	return stdout.Bytes(), nil
 }

@@ -622,9 +622,12 @@ func TestWorktreesPrunable(t *testing.T) {
 	}
 }
 
-// TestBranchHolders pins the map and the gap the doc promises: git names a
-// holder only while a checkout has the branch out, so a branch nobody holds is
-// absent rather than mapped to the empty string.
+// TestBranchHolders pins the map and every gap the doc promises, now that the
+// entries derive from the worktree list rather than from a ref query: a branch
+// nobody holds is absent rather than mapped to the empty string, a detached
+// checkout contributes nothing at all, and a checkout whose directory is gone
+// still holds its branch until someone prunes it — the answer git's own ref
+// query gave, so the derivation loses no entry.
 func TestBranchHolders(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -633,6 +636,14 @@ func TestBranchHolders(t *testing.T) {
 	runGit(t, main, "branch", "-M", "trunk")
 	linked := filepath.Join(t.TempDir(), "linked")
 	runGit(t, main, "worktree", "add", "-q", "-b", "feature", linked)
+	loose := filepath.Join(t.TempDir(), "loose")
+	runGit(t, main, "worktree", "add", "-q", "--detach", loose)
+	gone := filepath.Join(t.TempDir(), "gone")
+	runGit(t, main, "worktree", "add", "-q", "-b", "abandoned", gone)
+	gonePath := canon(t, gone)
+	if err := os.RemoveAll(gone); err != nil {
+		t.Fatalf("remove worktree: %v", err)
+	}
 	runGit(t, main, "branch", "unheld")
 
 	c, err := ResolveCheckout(main)
@@ -644,9 +655,34 @@ func TestBranchHolders(t *testing.T) {
 		t.Fatalf("BranchHolders: %v", err)
 	}
 	want := map[string]string{
-		"trunk":   canon(t, main),
-		"feature": canon(t, linked),
+		"trunk":     canon(t, main),
+		"feature":   canon(t, linked),
+		"abandoned": gonePath,
 	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("BranchHolders =\n\t%+v\nwant\n\t%+v", got, want)
+	}
+}
+
+// TestBranchHoldersBare covers the repository shape whose main checkout is no
+// checkout at all: the bare record carries neither branch nor HEAD, so it adds
+// no entry while the linked worktree beside it does.
+func TestBranchHoldersBare(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	seed := initLiveGitRepo(t)
+	runGit(t, seed, "branch", "-M", "trunk")
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	runGit(t, seed, "clone", "-q", "--bare", seed, bare)
+	linked := filepath.Join(t.TempDir(), "linked")
+	runGit(t, bare, "worktree", "add", "-q", linked, "trunk")
+
+	got, err := BranchHolders(context.Background(), Checkout{CommonDir: canon(t, bare)})
+	if err != nil {
+		t.Fatalf("BranchHolders: %v", err)
+	}
+	want := map[string]string{"trunk": canon(t, linked)}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("BranchHolders =\n\t%+v\nwant\n\t%+v", got, want)
 	}

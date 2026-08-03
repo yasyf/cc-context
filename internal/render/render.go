@@ -94,16 +94,7 @@ func RunCLI(ctx context.Context, bin string, argv []string) (string, error) {
 // RunCLIDir is RunCLI with the child's working directory pinned to dir, for a
 // command whose output paths are cwd-relative (e.g. jj diff --name-only).
 func RunCLIDir(ctx context.Context, dir, bin string, argv []string) (string, error) {
-	cmd, runCtx, cancel := newCmd(ctx, bin, argv)
-	defer cancel()
-	cmd.Dir = dir
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", failure(runCtx, bin, err, stderr.String())
-	}
-	return stdout.String(), nil
+	return RunCLIEnvDir(ctx, dir, bin, argv, nil)
 }
 
 // RunCLIEnv is RunCLI with extraEnv appended to the process environment, for
@@ -111,9 +102,21 @@ func RunCLIDir(ctx context.Context, dir, bin string, argv []string) (string, err
 // (e.g. GIT_INDEX_FILE). extraEnv extends os.Environ(), so a "KEY=value" element
 // overrides any inherited KEY per exec's last-wins rule.
 func RunCLIEnv(ctx context.Context, bin string, argv, extraEnv []string) (string, error) {
+	return RunCLIEnvDir(ctx, "", bin, argv, extraEnv)
+}
+
+// RunCLIEnvDir is RunCLI with both the child's working directory pinned to dir
+// and extraEnv appended to the process environment, for a command that needs an
+// env-only variable and a repo to run in (e.g. GIT_LITERAL_PATHSPECS over a
+// named worktree). An empty dir inherits the parent's working directory; a nil
+// extraEnv inherits the parent's environment unchanged.
+func RunCLIEnvDir(ctx context.Context, dir, bin string, argv, extraEnv []string) (string, error) {
 	cmd, runCtx, cancel := newCmd(ctx, bin, argv)
 	defer cancel()
-	cmd.Env = append(os.Environ(), extraEnv...)
+	cmd.Dir = dir
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -142,10 +145,21 @@ func RunCLIStdin(ctx context.Context, bin string, argv []string, stdin []byte) (
 // as they are produced. It does not buffer output; the returned error carries the
 // exit status only (any stderr already flowed to w).
 func RunCLIStream(ctx context.Context, bin string, argv []string, w io.Writer) error {
+	return RunCLIStreamEnv(ctx, bin, argv, w, nil)
+}
+
+// RunCLIStreamEnv is RunCLIStream with extraEnv appended to the process
+// environment, for a streamed command that also needs an env-only variable
+// (e.g. a gt verb run under GIT_INDEX_FILE). A nil extraEnv inherits the
+// parent's environment unchanged.
+func RunCLIStreamEnv(ctx context.Context, bin string, argv []string, w io.Writer, extraEnv []string) error {
 	cmd, runCtx, cancel := newCmd(ctx, bin, argv)
 	defer cancel()
 	cmd.Stdout = w
 	cmd.Stderr = w
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	if err := cmd.Run(); err != nil {
 		if timeout := timedOut(runCtx, bin, err); timeout != nil {
 			return timeout

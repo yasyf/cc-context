@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -331,58 +330,45 @@ type Worktree struct {
 // Worktrees lists every working copy registered against c's repository,
 // including c itself and the main one.
 func Worktrees(ctx context.Context, c Checkout) ([]Worktree, error) {
-	out, err := exec.CommandContext(ctx, "git", "--git-dir", c.CommonDir, "worktree", "list", "--porcelain", "-z").Output() //nolint:gosec // fixed git argv; only the git dir varies
+	records, err := GitPorcelainRecords(ctx, GitArgs{GitDir: c.CommonDir, Sub: []string{"worktree", "list"}})
 	if err != nil {
 		return nil, fmt.Errorf("git worktree list in %q: %w", c.CommonDir, err)
 	}
 	var list []Worktree
-	var wt Worktree
-	for _, attr := range strings.Split(string(out), "\x00") {
-		if attr == "" {
-			if wt.Path != "" {
-				list = append(list, wt)
-			}
-			wt = Worktree{}
-			continue
+	for _, rec := range records {
+		wt := Worktree{
+			Path:     rec["worktree"],
+			HEAD:     rec["HEAD"],
+			Branch:   strings.TrimPrefix(rec["branch"], "refs/heads/"),
+			Locked:   rec["locked"],
+			Prunable: rec["prunable"],
 		}
-		key, value, _ := strings.Cut(attr, " ")
-		switch key {
-		case "worktree":
-			wt.Path = value
-		case "HEAD":
-			wt.HEAD = value
-		case "branch":
-			wt.Branch = strings.TrimPrefix(value, "refs/heads/")
-		case "detached":
-			wt.Detached = true
-		case "bare":
-			wt.Bare = true
-		case "locked":
-			wt.Locked = value
-		case "prunable":
-			wt.Prunable = value
-		}
+		_, wt.Detached = rec["detached"]
+		_, wt.Bare = rec["bare"]
+		list = append(list, wt)
 	}
 	return list, nil
 }
 
 // BranchHolders maps a branch to the working copy that currently has it checked
-// out. The map is not total over the repository's branches: git reports a holder
-// only while some checkout holds the branch, so a branch no checkout holds —
-// including one a pruned worktree left behind — is simply absent, and absence
-// never means the branch does not exist.
+// out, derived from the same worktree list Worktrees reads: a checkout's branch
+// line is a full refs/heads ref, which names the branch exactly, where a
+// short-form ref query would hand back a spelling git itself re-lengthens
+// differently once a ref of the same name exists elsewhere. The map is not total
+// over the repository's branches: only a checkout holding a branch contributes
+// an entry, so a bare or detached checkout adds none and a branch nobody holds —
+// including one a pruned worktree left behind — is simply absent, which never
+// means the branch does not exist.
 func BranchHolders(ctx context.Context, c Checkout) (map[string]string, error) {
-	out, err := exec.CommandContext(ctx, "git", "--git-dir", c.CommonDir, "for-each-ref", "--format=%(refname:short)%00%(worktreepath)", "refs/heads/").Output() //nolint:gosec // fixed git argv; only the git dir varies
+	list, err := Worktrees(ctx, c)
 	if err != nil {
-		return nil, fmt.Errorf("git for-each-ref in %q: %w", c.CommonDir, err)
+		return nil, err
 	}
 	holders := make(map[string]string)
-	for _, line := range strings.Split(string(out), "\n") {
-		branch, path, _ := strings.Cut(line, "\x00")
-		if path == "" {
-			continue
+	for _, wt := range list {
+		if wt.Branch != "" {
+			holders[wt.Branch] = wt.Path
 		}
-		holders[branch] = path
 	}
 	return holders, nil
 }
