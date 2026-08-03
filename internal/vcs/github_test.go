@@ -49,11 +49,77 @@ func loadGHGolden(t *testing.T, name string) ghGolden {
 	return g
 }
 
+// ghArgvDeviation is the one argument a scenario could not be captured with:
+// recorded is what the capture had to pass, production what the real call passes
+// in its place — empty when production passes nothing there at all.
+type ghArgvDeviation struct{ recorded, production string }
+
+// ghArgvDeviations names every golden whose recorded argv cannot equal the
+// invocation production makes, so ghAssertServed still holds a served golden
+// against every other argument of the call it answers. testdata/gh/README.md,
+// "Where a recording deviates from production argv", carries the reasons: the
+// two foreign-repository views must name their repository, because production's
+// bare gh repo view reads the working directory's and neither of those is it;
+// and viewer-graphql asks for one organization where production asks for a
+// hundred, because the recorded account's memberships are mostly private and a
+// verbatim capture would publish them in a public repository.
+var ghArgvDeviations = map[string]ghArgvDeviation{
+	"repo-view-foreign": {recorded: "cli/cli"},
+	"repo-view-missing": {recorded: "yasyf/cc-context-does-not-exist"},
+	"viewer-graphql": {
+		recorded:   "query={viewer{login organizations(first:1){nodes{login}}}}",
+		production: "query={viewer{login organizations(first:100){nodes{login}}}}",
+	},
+}
+
+// ghWantArgv is the invocation a golden may honestly answer: the argv it was
+// recorded with, carrying whatever deviation it declares.
+func ghWantArgv(t *testing.T, name string) []string {
+	t.Helper()
+	argv := slices.Clone(loadGHGolden(t, name).Argv)
+	dev, ok := ghArgvDeviations[name]
+	if !ok {
+		return argv
+	}
+	i := slices.Index(argv, dev.recorded)
+	if i < 0 {
+		t.Fatalf("golden %s no longer holds the recorded %q — its ghArgvDeviations entry is stale", name, dev.recorded)
+	}
+	if dev.production == "" {
+		return slices.Delete(argv, i, i+1)
+	}
+	argv[i] = dev.production
+	return argv
+}
+
+// ghAssertServed holds every call the replay answered against the golden that
+// answered it. The script keys a response on the "$1 $2" pair alone, so without
+// this a golden recorded for one invocation is served for another and
+// production asking GitHub a different question passes unnoticed.
+func ghAssertServed(t *testing.T, log string, runs map[string][]string) {
+	t.Helper()
+	served := map[string]int{}
+	for i, argv := range ghCalls(t, log) {
+		verb := argv[0] + " " + argv[1]
+		served[verb]++
+		names := runs[verb]
+		if served[verb] > len(names) {
+			t.Errorf("gh call %d %q: the recorded %q runs are exhausted", i+1, argv, verb)
+			continue
+		}
+		name := names[served[verb]-1]
+		if want := ghWantArgv(t, name); !slices.Equal(argv, want) {
+			t.Errorf("gh call %d argv = %q, but golden %s answers %q", i+1, argv, name, want)
+		}
+	}
+}
+
 // ghReplay installs a gh that answers the Nth call for a verb — the "$1 $2" pair
 // keying runs — with the Nth golden named for it, and records every argv it saw
 // as an argc-prefixed NUL-framed record. GitHub is a network boundary, so the
-// binary stays a script; every byte it prints came off a real gh run, and a call
-// past the recorded runs exits 2 rather than inventing an answer.
+// binary stays a script; every byte it prints came off a real gh run, a call
+// past the recorded runs exits 2 rather than inventing an answer, and every call
+// is held against its golden's own argv when the test ends.
 func ghReplay(t *testing.T, runs map[string][]string) (argvLog string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -98,6 +164,7 @@ func ghReplay(t *testing.T, runs map[string][]string) (argvLog string) {
 		t.Fatalf("write gh replay: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() { ghAssertServed(t, argvLog, runs) })
 	return argvLog
 }
 
@@ -188,12 +255,6 @@ func TestRepoOwnership(t *testing.T) {
 			mine: true,
 		},
 		{
-			name:     "owner login differing only in case",
-			repo:     Repo{Owner: "YASYF", ViewerLogin: "yasyf", ViewerPermission: "READ", Affiliated: true},
-			mine:     true,
-			personal: true,
-		},
-		{
 			name: "zero value is nobody's",
 			repo: Repo{},
 		},
@@ -207,6 +268,51 @@ func TestRepoOwnership(t *testing.T) {
 				t.Errorf("Mine() = %v, want %v", got, tt.mine)
 			}
 			if got := tt.repo.Personal(); got != tt.personal {
+				t.Errorf("Personal() = %v, want %v", got, tt.personal)
+			}
+		})
+	}
+}
+
+// TestViewerAffiliation runs the ownership predicates against the login and
+// organizations gh really answered with rather than a literal Affiliated. GitHub
+// spells each account in the case its owner chose and compares them without one,
+// so the recorded PostPushr membership must still affiliate an owner spelled
+// postpushr, and the recorded yasyf an owner spelled YASYF.
+func TestViewerAffiliation(t *testing.T) {
+	f := vcstest.Repo(t)
+	ghReplay(t, map[string][]string{"api graphql": {"viewer-graphql"}})
+
+	v, err := lookupViewer(context.Background(), f.Dir, false)
+	if err != nil {
+		t.Fatalf("lookupViewer: %v", err)
+	}
+	if v.Login != "yasyf" || !slices.Equal(v.Orgs, []string{"PostPushr"}) {
+		t.Fatalf("viewer = %+v, want the login and organizations the golden recorded", v)
+	}
+
+	tests := []struct {
+		name                       string
+		owner                      string
+		affiliated, mine, personal bool
+	}{
+		{name: "the viewer itself", owner: "yasyf", affiliated: true, mine: true, personal: true},
+		{name: "the viewer in another case", owner: "YASYF", affiliated: true, mine: true, personal: true},
+		{name: "an organization the viewer belongs to", owner: "PostPushr", affiliated: true, mine: true},
+		{name: "that organization in another case", owner: "postpushr", affiliated: true, mine: true},
+		{name: "an owner the viewer has nothing to do with", owner: "cli"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := Repo{Owner: tt.owner, ViewerLogin: v.Login, ViewerPermission: "READ"}
+			repo.Affiliated = affiliated(repo.Owner, v)
+			if repo.Affiliated != tt.affiliated {
+				t.Errorf("Affiliated = %v, want %v", repo.Affiliated, tt.affiliated)
+			}
+			if got := repo.Mine(); got != tt.mine {
+				t.Errorf("Mine() = %v, want %v", got, tt.mine)
+			}
+			if got := repo.Personal(); got != tt.personal {
 				t.Errorf("Personal() = %v, want %v", got, tt.personal)
 			}
 		})
@@ -252,9 +358,6 @@ func TestLookupRepoCaches(t *testing.T) {
 	}
 	if !cold.Writable() || !cold.Mine() || !cold.Personal() {
 		t.Errorf("own repo: Writable() = %v, Mine() = %v, Personal() = %v, want all true", cold.Writable(), cold.Mine(), cold.Personal())
-	}
-	if got, want := ghCalls(t, log)[0], loadGHGolden(t, "repo-view-own").Argv; !slices.Equal(got, want) {
-		t.Errorf("gh repo view argv = %q, want the recorded %q — the golden no longer covers what production asks for", got, want)
 	}
 
 	warm, err := LookupRepo(ctx, f.Dir, false)

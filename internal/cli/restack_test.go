@@ -474,13 +474,39 @@ func restackGTRepo(t *testing.T, names ...string) *vcstest.Fixture {
 // a recorded run and passes every other verb through to the real gt. sync is the
 // one verb that cannot run here — it resolves the repository through Graphite's
 // API — so its bytes come from the corpus rather than from a sentence anyone
-// wrote. effect, when set, is the shell the recorded sync stands for: the local
-// gt and git commands that leave behind the repository state the recorded run
-// described. It returns the log of every sync argv served.
+// wrote, and they have to be bytes gt sync itself produced: another verb's
+// capture replayed here is a run gt never made. effect, when set, is the shell
+// the recorded sync stands for: the local gt and git commands that leave behind
+// the repository state the recorded run described. It returns the log of every
+// sync argv served.
 //
 // The golden arrives already loaded because loadGTGolden reads a path relative
 // to the package directory, which the fixture has already chdir'd out of.
 func restackGTSync(t *testing.T, f *vcstest.Fixture, g gtGolden, effect string) string {
+	t.Helper()
+	if g.argv[0] != "sync" {
+		t.Fatalf("golden %s was recorded from gt %s, so it is no answer to gt sync — record the sync scenario, or take restackGTSyncStandIn where the corpus says why sync cannot be recorded reaching it", g.name, g.argv[0])
+	}
+	return restackGTServeSync(t, f, g, effect)
+}
+
+// restackGTSyncStandIn serves a recorded gt restack as gt sync's answer, for the
+// restack phase sync cannot be recorded reaching: sync resolves the repository
+// through Graphite's API before that phase runs, so its declines, its conflict
+// banner and gt's rebase guard have no capture under sync, while the restacker
+// printing them is the same one either way. testdata/gt/sync-conflict.md is the
+// corpus's own record of that substitution for the conflict banner; the declines
+// and the rebase guard have no such record, since recording them under sync
+// needs a live Graphite token.
+func restackGTSyncStandIn(t *testing.T, f *vcstest.Fixture, g gtGolden, effect string) string {
+	t.Helper()
+	if g.argv[0] != "restack" {
+		t.Fatalf("golden %s was recorded from gt %s; only a gt restack capture stands in for gt sync's restack phase", g.name, g.argv[0])
+	}
+	return restackGTServeSync(t, f, g, effect)
+}
+
+func restackGTServeSync(t *testing.T, f *vcstest.Fixture, g gtGolden, effect string) string {
 	t.Helper()
 	dir := t.TempDir()
 	stdout := filepath.Join(dir, "stdout")
@@ -551,6 +577,7 @@ func TestRestackGTPerBranchVerdict(t *testing.T) {
 	tests := []struct {
 		name     string
 		golden   string
+		standIn  bool
 		onTrunk  bool
 		advance  bool
 		want     string
@@ -568,19 +595,22 @@ func TestRestackGTPerBranchVerdict(t *testing.T) {
 			want:    "restacked 0 of 1 · trunk main · skipped feat",
 		},
 		{
-			name:   "gt declined a frozen branch already on trunk",
-			golden: "restack-frozen",
-			want:   "restacked 0 of 1 · trunk main · skipped feat (frozen; already on main)",
+			name:    "gt declined a frozen branch already on trunk",
+			golden:  "restack-frozen",
+			standIn: true,
+			want:    "restacked 0 of 1 · trunk main · skipped feat (frozen; already on main)",
 		},
 		{
 			name:    "gt declined a frozen branch that never reached trunk",
 			golden:  "restack-frozen",
+			standIn: true,
 			advance: true,
 			want:    "restacked 0 of 1 · trunk main · skipped feat (frozen)",
 		},
 		{
 			name:     "gt named the working copy that blocked it",
 			golden:   "restack-worktree-held",
+			standIn:  true,
 			advance:  true,
 			wantLead: "restacked 0 of 1 · trunk main · skipped feat (checked out in /",
 		},
@@ -602,7 +632,11 @@ func TestRestackGTPerBranchVerdict(t *testing.T) {
 			if tt.onTrunk {
 				restackRun(t, f.Dir, "git", "switch", "-q", "main")
 			}
-			restackGTSync(t, f, g, "")
+			serve := restackGTSync
+			if tt.standIn {
+				serve = restackGTSyncStandIn
+			}
+			serve(t, f, g, "")
 
 			out, _, err := runRestackCmd(t)
 			if err != nil {
@@ -626,7 +660,9 @@ func TestRestackGTPerBranchVerdict(t *testing.T) {
 // children, so a verdict over the pre-sync list asks git about a ref sync just
 // deleted — merge-base exits 128 there, failing a restack that worked. The
 // interceptor performs that deletion with gt's own local verbs, so the state the
-// second gt state reads is one real gt wrote.
+// second gt state reads is one real gt wrote. Nothing captures a sync that
+// deleted a landed branch, so the quiet sync answers for the bytes: it declines
+// nothing, which leaves the verdict resting on that state alone.
 func TestRestackGTVerdictReadsTheSyncedStack(t *testing.T) {
 	g := loadGTGolden(t, "sync-quiet-exit0")
 	f := restackGTRepo(t, "a", "b")
@@ -739,16 +775,18 @@ func TestRestackGTStreamedSyncPrintsDiagnosticsOnce(t *testing.T) {
 // leaves the working copy where it was.
 func TestRestackGTFailures(t *testing.T) {
 	tests := []struct {
-		name   string
-		golden string
-		line   string
-		want   string
+		name    string
+		golden  string
+		standIn bool
+		line    string
+		want    string
 	}{
 		{
-			name:   "conflict",
-			golden: "restack-conflict",
-			line:   "Hit conflict restacking feat on main.",
-			want:   "restack: conflict — resolve the listed files, then gt continue (or gt abort); see the output above",
+			name:    "conflict",
+			golden:  "restack-conflict",
+			standIn: true,
+			line:    "Hit conflict restacking feat on main.",
+			want:    "restack: conflict — resolve the listed files, then gt continue (or gt abort); see the output above",
 		},
 		{
 			name:   "expired auth",
@@ -762,16 +800,21 @@ func TestRestackGTFailures(t *testing.T) {
 			line:   "ERROR: Could not determine the name of this repo",
 		},
 		{
-			name:   "blocked during a rebase",
-			golden: "restack-blocked-during-rebase",
-			line:   "ERROR: This operation is blocked during a rebase.",
+			name:    "blocked during a rebase",
+			golden:  "restack-blocked-during-rebase",
+			standIn: true,
+			line:    "ERROR: This operation is blocked during a rebase.",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			g := loadGTGolden(t, tt.golden)
 			f := restackGTRepo(t, "feat")
-			restackGTSync(t, f, g, "")
+			serve := restackGTSync
+			if tt.standIn {
+				serve = restackGTSyncStandIn
+			}
+			serve(t, f, g, "")
 			before := restackRev(t, f.Dir, "HEAD")
 
 			_, _, err := runRestackCmd(t)

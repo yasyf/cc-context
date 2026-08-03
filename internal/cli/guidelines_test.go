@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -27,24 +29,60 @@ type guidelinesGH struct {
 // two contact links, and three issue templates.
 var guidelinesPopulated = guidelinesGH{repoView: "guidelines-repo-view-populated"}
 
-// writeGuidelinesGH installs a fake gh into the fixture's shim directory and
-// answers off the environment. gh is a network boundary so the process is
-// faked, but every byte it prints came out of a real gh run. It frames its argv
-// the way the shim does, so vcstest.Invocations counts its calls beside git's.
+// guidelinesRecordedRepo names every guidelines golden whose recorded argv
+// carries an argument production does not send, and the one to drop. Only the
+// populated repo view does: `gh repo view` with no argument reads the working
+// directory's repository, and there is only one of those to record from, so
+// cli/cli had to be named positionally (testdata/gh/README.md § Where a
+// recording deviates from production argv). Every other guidelines golden was
+// captured with production's exact argv.
+var guidelinesRecordedRepo = map[string]string{"guidelines-repo-view-populated": "cli/cli"}
+
+const (
+	// guidelinesArgvSep joins an invocation into the one string a shell can
+	// compare against; a space could not, since one recorded argument holds one.
+	guidelinesArgvSep    = "\x1f"
+	guidelinesArgvSepEnv = "CCX_GH_ARGV_SEP"
+)
+
+// guidelinesProductionArgv is the argv production must send to earn g's bytes.
+func guidelinesProductionArgv(t *testing.T, g ghGolden) []string {
+	t.Helper()
+	extra, ok := guidelinesRecordedRepo[g.name]
+	if !ok {
+		return g.argv
+	}
+	i := slices.Index(g.argv, extra)
+	if i < 0 {
+		t.Fatalf("golden %s argv %q carries no %q — a re-recording made its guidelinesRecordedRepo entry stale", g.name, g.argv, extra)
+	}
+	return slices.Delete(slices.Clone(g.argv), i, i+1)
+}
+
+// guidelinesGHArgv frames one invocation the way the shim logs it — the tool
+// name, then its arguments — as the key the fake matches on.
+func guidelinesGHArgv(record []string) string {
+	return strings.Join(record, guidelinesArgvSep) + guidelinesArgvSep
+}
+
+// writeGuidelinesGH installs a fake gh into the fixture's shim directory. gh is
+// a network boundary so the process is faked, but every byte it prints came out
+// of a real gh run, and it prints them only for the argv that run was recorded
+// with: an invocation matching no golden is refused rather than answered with
+// bytes GitHub produced for a different request. It frames its argv the way the
+// shim does, so vcstest.Invocations counts its calls beside git's.
 func writeGuidelinesGH(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
 	script := "#!/bin/sh\n" +
 		`d="${CCX_SHIM_DEPTH:-0}"` + "\n" +
 		`printf '%s\0' "$d" "$(($#+1))" gh "$@" >> '` + f.ArgvLog + `'` + "\n" +
-		`case "$1" in
-  repo) printf '%s' "$GH_GUIDELINES_VIEW_JSON" ;;
-  api)
-    case "$2" in
-      *community/profile) printf '%s' "$GH_COMMUNITY_PROFILE_JSON" ;;
-      *) printf '%s' "$GH_CONTENTS_BODY" ;;
-    esac ;;
-  *) printf 'fake gh: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
-esac
+		`key="gh$` + guidelinesArgvSepEnv + `"` + "\n" +
+		`for a in "$@"; do key="$key$a$` + guidelinesArgvSepEnv + `"; done` + "\n" +
+		`if [ "$key" = "$CCX_GH_ARGV_REPO_VIEW" ]; then printf '%s' "$GH_GUIDELINES_VIEW_JSON"
+elif [ "$key" = "$CCX_GH_ARGV_PROFILE" ]; then printf '%s' "$GH_COMMUNITY_PROFILE_JSON"
+elif [ "$key" = "$CCX_GH_ARGV_CONTENTS" ]; then printf '%s' "$GH_CONTENTS_BODY"
+else printf 'fake gh: no golden was recorded for argv: %s\n' "$*" >&2; exit 2
+fi
 exit 0
 `
 	if err := os.WriteFile(filepath.Join(f.ShimBin, "gh"), []byte(script), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
@@ -55,27 +93,50 @@ exit 0
 // setupGuidelines stands a real repository up with a fake gh replaying gh's own
 // recorded payloads, and returns the repository root and the shim's argv log.
 // The goldens load before the fixture chdirs, since testdata is package-relative.
+// A fixture that registers no repo view narrows PATH to the shim directory:
+// systemPATH holds a real gh on CI, so dropping the fake is not enough to make
+// gh absent.
 func setupGuidelines(t *testing.T, gh guidelinesGH) (root, logPath string) {
 	t.Helper()
-	env := map[string]string{}
-	for name, scenario := range map[string]string{
-		"GH_GUIDELINES_VIEW_JSON":   gh.repoView,
-		"GH_COMMUNITY_PROFILE_JSON": gh.profile,
-		"GH_CONTENTS_BODY":          gh.contributing,
+	env := map[string]string{guidelinesArgvSepEnv: guidelinesArgvSep}
+	answers := map[string]string{}
+	for _, replay := range []struct{ scenario, payloadEnv, argvEnv string }{
+		{gh.repoView, "GH_GUIDELINES_VIEW_JSON", "CCX_GH_ARGV_REPO_VIEW"},
+		{gh.profile, "GH_COMMUNITY_PROFILE_JSON", "CCX_GH_ARGV_PROFILE"},
+		{gh.contributing, "GH_CONTENTS_BODY", "CCX_GH_ARGV_CONTENTS"},
 	} {
-		if scenario != "" {
-			env[name] = loadGHGolden(t, scenario).stdout
+		if replay.scenario == "" {
+			continue
 		}
+		golden := loadGHGolden(t, replay.scenario)
+		key := guidelinesGHArgv(append([]string{"gh"}, guidelinesProductionArgv(t, golden)...))
+		env[replay.payloadEnv], env[replay.argvEnv] = golden.stdout, key
+		answers[key] = replay.scenario
 	}
 
 	f := vcstest.Repo(t)
 	if gh.repoView != "" {
 		writeGuidelinesGH(t, f)
+		t.Cleanup(func() { assertGuidelinesGHArgv(t, f.ArgvLog, answers) })
+	} else {
+		t.Setenv("PATH", f.ShimBin)
 	}
 	for name, payload := range env {
 		t.Setenv(name, payload)
 	}
 	return f.Dir, f.ArgvLog
+}
+
+// assertGuidelinesGHArgv fails for every gh call no golden answers. The fake
+// already refuses to serve one; this names the argv, which the refusal itself
+// does not — the command degrades past a failed fetch.
+func assertGuidelinesGHArgv(t *testing.T, log string, answers map[string]string) {
+	t.Helper()
+	for _, record := range guidelinesGHCalls(t, log) {
+		if _, ok := answers[guidelinesGHArgv(record)]; !ok {
+			t.Errorf("gh %q matches no recorded golden; this fixture replays %v", record[1:], slices.Sorted(maps.Values(answers)))
+		}
+	}
 }
 
 func writeGuidelinesFile(t *testing.T, root, rel, body string) {
@@ -245,6 +306,11 @@ func TestGuidelinesContributingFallback(t *testing.T) {
 	gh := guidelinesPopulated
 	gh.profile, gh.contributing = "guidelines-profile-found", "guidelines-contributing-raw"
 	wantBody := loadGHGolden(t, "guidelines-contributing-raw").stdout
+	scenarios := []string{gh.repoView, gh.profile, gh.contributing}
+	want := make([][]string, 0, len(scenarios))
+	for _, scenario := range scenarios {
+		want = append(want, append([]string{"gh"}, guidelinesProductionArgv(t, loadGHGolden(t, scenario))...))
+	}
 	_, logPath := setupGuidelines(t, gh)
 
 	g := runGuidelinesJSON(t)
@@ -258,11 +324,6 @@ func TestGuidelinesContributingFallback(t *testing.T) {
 	}
 	if doc.Body != wantBody {
 		t.Errorf("body = %q, want the fetched file %q", doc.Body, wantBody)
-	}
-	want := [][]string{
-		{"gh", "repo", "view", "--json", guidelinesRepoFields},
-		{"gh", "api", "repos/cli/cli/community/profile"},
-		{"gh", "api", "https://api.github.com/repos/cli/cli/contents/.github/CONTRIBUTING.md", "-H", guidelinesRawAccept},
 	}
 	if got := guidelinesGHCalls(t, logPath); !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv records:\n got: %#v\nwant: %#v", got, want)
