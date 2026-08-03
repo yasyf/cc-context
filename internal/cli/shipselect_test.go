@@ -45,18 +45,6 @@ func hunkRange(h hunk.Hunk) string {
 	return strconv.Itoa(h.NewStart)
 }
 
-// setupHunkShip stands up a jj ship with a single hunk-scoped file on disk and
-// its committed base wired into the fake jj `file show`, returning the ship log.
-func setupHunkShip(t *testing.T, file string) string {
-	t.Helper()
-	log := setupShip(t, ".jj", false)
-	if err := os.WriteFile(file, []byte(hunkCurrent), 0o644); err != nil { //nolint:gosec // test fixture file
-		t.Fatalf("write %s: %v", file, err)
-	}
-	t.Setenv("JJ_FILE_SHOW_BASE", hunkBase)
-	return log
-}
-
 func writeRepoFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {

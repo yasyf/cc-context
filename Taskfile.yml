@@ -38,7 +38,7 @@ tasks:
     desc: Run the test suite with the race detector
     deps: [wasm, wasm-embed]
     cmds:
-      - go test -race -count=1 ./...
+      - go test -race -count=1 -timeout 30m ./...
 
   vet:
     desc: Vet the module

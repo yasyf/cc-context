@@ -934,39 +934,52 @@ func TestReviewsPollIntervalFloor(t *testing.T) {
 	}
 }
 
-// TestReviewsStackNoTargets drives --stack from trunk (stackBranches returns
-// no branches), which must refuse rather than silently reporting a 0/0 watch.
+// TestReviewsStackNoTargets drives --stack from trunk, where the real gt state
+// names main and nothing else, so stackBranches returns no branches — which
+// must refuse rather than silently reporting a 0/0 watch.
 func TestReviewsStackNoTargets(t *testing.T) {
-	setupShipGT(t, false)
-	t.Setenv("GIT_BRANCH", "main")
-	t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true}}`)
+	f := shipGTRepo(t)
+	shipGTReady(t, f)
+	head := shipHead(t, f)
 
 	_, err := runReviewsCmd(t, "--stack")
 	wantErr := "reviews: --stack found no stacked branches — run it from a stacked branch, not trunk"
 	if err == nil || err.Error() != wantErr {
 		t.Fatalf("reviews --stack error = %v, want %q", err, wantErr)
 	}
+	assertShipRefusedClean(t, f, head)
+}
+
+// pathWithoutGit points PATH at a directory holding gt alone, so the first git
+// call in reviews' stack resolution cannot resolve. The lane gate ahead of it
+// reads the checkout off disk and only looks gt up, so it still reaches the
+// graphite lane.
+func pathWithoutGit(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Symlink(filepath.Join(f.ShimBin, "gt"), filepath.Join(dir, "gt")); err != nil {
+		t.Fatalf("link gt: %v", err)
+	}
+	t.Setenv("PATH", dir)
 }
 
 func TestReviewsStackFailuresCarryReviewsPrefix(t *testing.T) {
 	tests := []struct {
-		name      string
-		branch    string
-		state     string
-		branchErr bool
-		want      string
+		name  string
+		opts  []vcstest.Opt
+		noGit bool
+		want  string
 	}{
-		{name: "unparseable gt state", branch: "feature", state: "not json", want: "reviews: parse gt state:"},
-		{name: "detached HEAD", state: `{"main":{"trunk":true}}`, want: "reviews: detached HEAD; no stack to resolve"},
-		{name: "git cannot name the branch", state: `{"main":{"trunk":true}}`, branchErr: true, want: "reviews: git branch --show-current:"},
+		{name: "detached HEAD", opts: []vcstest.Opt{vcstest.Detached()}, want: "reviews: detached HEAD; no stack to resolve"},
+		{name: "git cannot name the branch", noGit: true, want: "reviews: git branch --show-current:"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setupShipGT(t, false)
-			t.Setenv("GIT_BRANCH", tt.branch)
-			t.Setenv("GT_STATE_JSON", tt.state)
-			if tt.branchErr {
-				t.Setenv("GIT_BRANCH_SHOW_FAIL", "1")
+			f := shipGTRepo(t, tt.opts...)
+			shipGTReady(t, f)
+			head := shipHead(t, f)
+			if tt.noGit {
+				pathWithoutGit(t, f)
 			}
 
 			_, err := runReviewsCmd(t, "--stack")
@@ -976,6 +989,8 @@ func TestReviewsStackFailuresCarryReviewsPrefix(t *testing.T) {
 			if !strings.HasPrefix(err.Error(), tt.want) {
 				t.Errorf("error = %v, want it to lead with %q", err, tt.want)
 			}
+			t.Setenv("PATH", f.ShimBin)
+			assertShipRefusedClean(t, f, head)
 		})
 	}
 }

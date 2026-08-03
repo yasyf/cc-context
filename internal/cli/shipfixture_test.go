@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -180,6 +182,29 @@ func shipCommitted(t *testing.T, f *vcstest.Fixture, kind vcs.Kind) string {
 	return fmt.Sprintf("committed %s %q", gitAt(t, f.Dir, "log", "-1", "--format=%h"), gitAt(t, f.Dir, "log", "-1", "--format=%s"))
 }
 
+// shipEmptyRefusal renders the refusal an empty working copy earns, off the
+// commit @- actually carries and the bookmark the plan resolved.
+func shipEmptyRefusal(t *testing.T, f *vcstest.Fixture, scope, target string) string {
+	t.Helper()
+	pat := shellSingleQuote(vcs.JJExactPattern(target))
+	return fmt.Sprintf("ship: nothing to commit%s — did a prior ship already land %s %q? push it: jj bookmark move %s --to @- && jj git push --bookmark %s",
+		scope, jjAt(t, f.Dir, "@-", "commit_id.short()"), jjAt(t, f.Dir, "@-", "description.first_line()"), pat, pat)
+}
+
+// shipJJMergeWorkingCopy leaves @ a two-parent merge of divergent edits to
+// different files, so it carries no change of its own and jj reports an empty
+// diff — the one empty working copy ship commits anyway.
+func shipJJMergeWorkingCopy(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	writeShipFile(t, f.Dir, "a.txt", "a\n")
+	mustRun(t, f.Dir, "jj", "commit", "-m", "a")
+	left := jjRevID(t, f.Dir, "@-")
+	mustRun(t, f.Dir, "jj", "new", "main")
+	writeShipFile(t, f.Dir, "b.txt", "b\n")
+	mustRun(t, f.Dir, "jj", "commit", "-m", "b")
+	mustRun(t, f.Dir, "jj", "new", left, "@-")
+}
+
 // jjAt renders one template against one revision, trimmed.
 func jjAt(t *testing.T, dir, rev, template string) string {
 	t.Helper()
@@ -194,6 +219,406 @@ func shipResetLog(t *testing.T, f *vcstest.Fixture) {
 	if err := os.WriteFile(f.ArgvLog, nil, 0o600); err != nil {
 		t.Fatalf("truncate argv log: %v", err)
 	}
+}
+
+// shipGTRepo builds a real graphite repository behind the recording shim, with
+// a bare origin and its lane cache seeded, so ship reaches the gt lane without
+// a gh lookup or an auth probe.
+func shipGTRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
+	t.Helper()
+	return shipRepo(t, append([]vcstest.Opt{vcstest.GT(), vcstest.Remote()}, opts...)...)
+}
+
+// shipGTStack cuts one branch per name, each off the last with a commit of its
+// own, and adopts it with the real gt — so the stack gt state answers for is
+// one gt itself built. gt track is local: it writes .git/.graphite_metadata.db
+// and reaches no network.
+func shipGTStack(t *testing.T, f *vcstest.Fixture, names ...string) {
+	t.Helper()
+	for _, name := range names {
+		mustRun(t, f.Dir, "git", "switch", "-qc", name)
+		writeShipFile(t, f.Dir, name+".txt", name+"\n")
+		mustRun(t, f.Dir, "git", "add", name+".txt")
+		mustRun(t, f.Dir, "git", "commit", "-qm", name)
+		mustRun(t, f.Dir, "gt", "track", "-f", "--no-interactive")
+	}
+}
+
+// shipGTUntracked cuts a branch with a commit of its own and leaves it
+// untracked, the state a plain git switch produces and gt track adopts.
+func shipGTUntracked(t *testing.T, f *vcstest.Fixture, name string) {
+	t.Helper()
+	mustRun(t, f.Dir, "git", "switch", "-qc", name)
+	writeShipFile(t, f.Dir, name+".txt", name+"\n")
+	mustRun(t, f.Dir, "git", "add", name+".txt")
+	mustRun(t, f.Dir, "git", "commit", "-qm", name)
+}
+
+// shipDetachHook installs a post-commit hook that leaves HEAD detached, the
+// state a gt-lane commit in a linked worktree has twice produced, then runs
+// rest. GIT_INDEX_FILE reaches a hook as a repository-relative path, so a git
+// call the hook makes anywhere else needs it gone.
+func shipDetachHook(t *testing.T, f *vcstest.Fixture, rest string) {
+	t.Helper()
+	writeShipExecutable(t, filepath.Join(f.Dir, ".git", "hooks"), "post-commit",
+		"#!/bin/sh\nunset GIT_INDEX_FILE\ngit checkout -q --detach\n"+rest)
+}
+
+// shipGTReady leaves an edit for the ship to commit and opens the argv log
+// empty, so an invocation assertion reads only ship's own calls.
+func shipGTReady(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	writeShipFile(t, f.Dir, "f.txt", "dirty\n")
+	shipResetLog(t, f)
+}
+
+// shipGTFeature is the shape most graphite tests ship from: a gt-tracked
+// feature branch one deep on trunk main, an edit waiting, an empty argv log.
+func shipGTFeature(t *testing.T) *vcstest.Fixture {
+	t.Helper()
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "feature")
+	shipGTReady(t, f)
+	return f
+}
+
+// shipGTInvocations reads the tool calls ccx made, letting the log settle
+// first: gt leaves a detached cache refresher running past its own exit, whose
+// git calls would otherwise land after the assertion read them.
+func shipGTInvocations(t *testing.T, f *vcstest.Fixture) [][]string {
+	t.Helper()
+	vcstest.Quiesce(t, f.ArgvLog)
+	return vcstest.Invocations(t, f.ArgvLog)
+}
+
+// shipGTIntercept puts a gt ahead of the fixture's shim that answers verb with
+// body and execs the real gt for every other verb. The intercepted branch
+// records its own argv in the shim's framing, so a served verb lands in the
+// fixture's log beside the real ones.
+func shipGTIntercept(t *testing.T, f *vcstest.Fixture, verb, body string) {
+	t.Helper()
+	dir := t.TempDir()
+	writeShipExecutable(t, dir, "gt", "#!/bin/sh\n"+
+		"if [ \"$1\" = "+verb+" ]; then\n"+
+		shipRecordArgv("gt", f.ArgvLog)+
+		body+
+		"fi\n"+
+		"exec '"+filepath.Join(f.ShimBin, "gt")+"' \"$@\"\n")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// shipGTAuth answers the lane gate's probe from a recorded gt auth run. auth
+// resolves the repository through Graphite's API, so it is the one verb that
+// cannot run here — its bytes come from the corpus rather than from a sentence
+// anyone wrote, and they have to be bytes gt auth itself produced: another
+// verb's capture replayed here is a run gt never made.
+func shipGTAuth(t *testing.T, f *vcstest.Fixture, g gtGolden) {
+	t.Helper()
+	if g.argv[0] != "auth" {
+		t.Fatalf("golden %s was recorded from gt %s, so it is no answer to the gt auth probe — record the auth scenario", g.name, g.argv[0])
+	}
+	dir := t.TempDir()
+	stdout := filepath.Join(dir, "stdout")
+	stderr := filepath.Join(dir, "stderr")
+	writeShipFile(t, dir, "stdout", g.stdout)
+	writeShipFile(t, dir, "stderr", g.stderr)
+	shipGTIntercept(t, f, "auth",
+		"  cat '"+stdout+"'\n"+
+			"  cat '"+stderr+"' >&2\n"+
+			"  exit "+strconv.Itoa(g.exit)+"\n")
+}
+
+// shipGTAuthHang answers the probe with silence that never ends, the one state
+// no recording can hold: offline, gt prints its error and only then hangs, so
+// what the deadline aborts is a run that returned no exit code at all. exec so
+// the process-group kill reaps the sleep too — a surviving grandchild would
+// hold the stdout pipe open past the deadline.
+func shipGTAuthHang(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	shipGTIntercept(t, f, "auth", "  exec /bin/sleep 30\n")
+}
+
+// shipDivergeRemote advances origin's ref past the fixture by writing name in a
+// scratch clone of the bare origin and pushing it, so the ship's own fetch finds
+// a divergence the repository genuinely holds. A name the ship also commits
+// makes the rebase conflict for real.
+func shipDivergeRemote(t *testing.T, f *vcstest.Fixture, ref, name, content string) {
+	t.Helper()
+	base := filepath.Dir(f.Dir)
+	clone := filepath.Join(base, "upstream")
+	mustRun(t, base, "git", "clone", "-q", f.RemoteDir, clone)
+	mustRun(t, clone, "git", "config", "user.email", "t@t.t")
+	mustRun(t, clone, "git", "config", "user.name", "t")
+	writeShipFile(t, clone, name, content)
+	mustRun(t, clone, "git", "add", "-A")
+	mustRun(t, clone, "git", "commit", "-qm", "upstream")
+	mustRun(t, clone, "git", "push", "-q", "origin", "HEAD:"+ref)
+}
+
+// shipRaceRemote plays the concurrent session a retry exists for: on each of
+// its first n matching calls it lands one commit on origin from a scratch clone
+// before letting the call through, so the tool ccx runs meets a remote that
+// moved under it and refuses the push itself. name is the file each racing
+// commit rewrites — name a file the ship also commits and the replay that
+// follows conflicts for real. Its own git calls run one shim depth down, where
+// the invocation assertions do not see them, and that same depth marker keeps
+// the wrapper from racing its own children.
+func shipRaceRemote(t *testing.T, f *vcstest.Fixture, tool, match, name string, n int) {
+	t.Helper()
+	base := filepath.Dir(f.Dir)
+	clone := filepath.Join(base, "racer")
+	mustRun(t, base, "git", "clone", "-q", f.RemoteDir, clone)
+	mustRun(t, clone, "git", "config", "user.email", "r@r.r")
+	mustRun(t, clone, "git", "config", "user.name", "r")
+
+	marker := filepath.Join(t.TempDir(), "race.count")
+	if err := os.WriteFile(marker, []byte(strconv.Itoa(n)), 0o600); err != nil {
+		t.Fatalf("write race marker: %v", err)
+	}
+	dir, next := t.TempDir(), shipNextTool(t, tool)
+	writeShipExecutable(t, dir, tool, "#!/bin/sh\n"+
+		"if [ -z \"$CCX_SHIM_DEPTH\" ]; then\n"+
+		"  case \"$*\" in\n"+
+		"    "+match+")\n"+
+		"      count=$(cat '"+marker+"')\n"+
+		"      if [ \"$count\" -gt 0 ]; then\n"+
+		"        printf '%s' \"$((count - 1))\" > '"+marker+"'\n"+
+		"        CCX_SHIM_DEPTH=1 git -C '"+clone+"' pull -q --rebase origin main\n"+
+		"        printf 'racer %s\\n' \"$count\" > '"+filepath.Join(clone, name)+"'\n"+
+		"        CCX_SHIM_DEPTH=1 git -C '"+clone+"' add -A\n"+
+		"        CCX_SHIM_DEPTH=1 git -C '"+clone+"' commit -qm racer\n"+
+		"        CCX_SHIM_DEPTH=1 git -C '"+clone+"' push -q origin HEAD:main\n"+
+		"      fi ;;\n"+
+		"  esac\n"+
+		"fi\n"+
+		"exec '"+next+"' \"$@\"\n")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// shipNextTool resolves the tool a wrapper about to be installed must exec: the
+// one currently first on PATH, so wrappers stack in installation order instead
+// of each shadowing the last.
+func shipNextTool(t *testing.T, tool string) string {
+	t.Helper()
+	path, err := exec.LookPath(tool)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", tool, err)
+	}
+	return path
+}
+
+// shipOpDescription reads one operation's description out of jj's own log, so a
+// rollback assertion names what was undone rather than which id was passed.
+func shipOpDescription(t *testing.T, f *vcstest.Fixture, id string) string {
+	t.Helper()
+	out := mustRun(t, f.Dir, "jj", "--ignore-working-copy", "op", "log", "--no-graph", "-T", `id ++ "\t" ++ description ++ "\n"`)
+	for _, line := range strings.Split(out, "\n") {
+		if got, desc, ok := strings.Cut(line, "\t"); ok && got == id {
+			return desc
+		}
+	}
+	t.Fatalf("operation %s is not in jj's op log:\n%s", id, out)
+	return ""
+}
+
+// shipRevertedOps names every operation a ship rolled back, in the order it
+// undid them.
+func shipRevertedOps(invocations [][]string) []string {
+	var out []string
+	for _, inv := range invocations {
+		if len(inv) == 4 && inv[0] == "jj" && inv[1] == "op" && inv[2] == "revert" {
+			out = append(out, inv[3])
+		}
+	}
+	return out
+}
+
+// shipRemoteTip reports the commit remote carries for ref, empty when it
+// carries none.
+func shipRemoteTip(t *testing.T, f *vcstest.Fixture, remote, ref string) string {
+	t.Helper()
+	bare := gitAt(t, f.Dir, "remote", "get-url", remote)
+	out, _ := combinedRun(t, f.Dir, "git", "--git-dir="+bare, "rev-parse", "--verify", "--quiet", "refs/heads/"+ref)
+	return strings.TrimSpace(out)
+}
+
+// shipDeclineRemote installs a pre-receive hook in the bare origin that refuses
+// every push, the terminal rejection a protected branch answers with.
+func shipDeclineRemote(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	writeShipExecutable(t, filepath.Join(f.RemoteDir, "hooks"), "pre-receive", "#!/bin/sh\nexit 1\n")
+}
+
+// combinedRun runs name in dir and returns its output on both streams together
+// with the exit error, for a command whose failure output is the subject.
+func combinedRun(t *testing.T, dir, name string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command(name, args...) //nolint:gosec // fixed argv; dir is a TempDir, args are literals
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// shipSecondRemote adds a second bare remote carrying the trunk, so a
+// branch.<name>.remote setting has somewhere other than origin to name.
+func shipSecondRemote(t *testing.T, f *vcstest.Fixture, name string) {
+	t.Helper()
+	base := filepath.Dir(f.Dir)
+	bare := filepath.Join(base, name+".git")
+	mustRun(t, base, "git", "init", "-q", "--bare", "--initial-branch=main", bare)
+	mustRun(t, f.Dir, "git", "remote", "add", name, bare)
+	mustRun(t, f.Dir, "git", "push", "-q", name, "main")
+}
+
+// shipJJRemotes gives the trunk bookmark a counterpart on two remotes, tracked
+// only on the ones named, and points jj's push target at push when it is set —
+// the tie the branch plan breaks by reading git.push. A bookmark jj itself
+// pushed is tracked, so the counterparts are created through git and imported
+// by a fetch.
+func shipJJRemotes(t *testing.T, f *vcstest.Fixture, push string, tracked ...string) {
+	t.Helper()
+	base := filepath.Dir(f.Dir)
+	for _, name := range []string{"origin", "backup"} {
+		bare := filepath.Join(base, name+".git")
+		mustRun(t, base, "git", "init", "-q", "--bare", "--initial-branch=main", bare)
+		mustRun(t, f.Dir, "git", "remote", "add", name, bare)
+		mustRun(t, f.Dir, "git", "push", "-q", name, "main")
+	}
+	mustRun(t, f.Dir, "jj", "git", "fetch", "--remote", "origin", "--remote", "backup")
+	for _, name := range tracked {
+		mustRun(t, f.Dir, "jj", "bookmark", "track", "main@"+name)
+	}
+	if push != "" {
+		mustRun(t, f.Dir, "jj", "config", "set", "--repo", "git.push", push)
+	}
+	shipResetLog(t, f)
+}
+
+// shipRaceLanded plays the session that pushed this very commit and one more on
+// top before the ship's own fetch: a colocated git HEAD sits on @-, so the race
+// lands the ship's commit from the repository itself.
+func shipRaceLanded(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	base := filepath.Dir(f.Dir)
+	clone := filepath.Join(base, "racer")
+	mustRun(t, base, "git", "clone", "-q", f.RemoteDir, clone)
+	mustRun(t, clone, "git", "config", "user.email", "r@r.r")
+	mustRun(t, clone, "git", "config", "user.name", "r")
+	dir, next := t.TempDir(), shipNextTool(t, "jj")
+	writeShipExecutable(t, dir, "jj", "#!/bin/sh\n"+
+		"if [ -z \"$CCX_SHIM_DEPTH\" ]; then\n"+
+		"  case \"$*\" in\n"+
+		"    \"git fetch\")\n"+
+		"      CCX_SHIM_DEPTH=1 git -C '"+f.Dir+"' push -q origin HEAD:main\n"+
+		"      CCX_SHIM_DEPTH=1 git -C '"+clone+"' pull -q --rebase origin main\n"+
+		"      CCX_SHIM_DEPTH=1 git -C '"+clone+"' commit -q --allow-empty -m landed\n"+
+		"      CCX_SHIM_DEPTH=1 git -C '"+clone+"' push -q origin HEAD:main ;;\n"+
+		"  esac\n"+
+		"fi\n"+
+		"exec '"+next+"' \"$@\"\n")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// shipHoldBranch checks branch out in a linked worktree — the state git names a
+// holder for — and returns the path it reports. A colocated jj repository keeps
+// git's HEAD detached at @-, so even the trunk branch is free for a sibling
+// checkout to take.
+func shipHoldBranch(t *testing.T, f *vcstest.Fixture, branch string) string {
+	t.Helper()
+	path := filepath.Join(filepath.Dir(f.Dir), "wt", branch)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	mustRun(t, f.Dir, "git", "worktree", "add", "-q", path, branch)
+	return path
+}
+
+// shipJJPlainRepo builds a jj repository holding its git store inside .jj, with
+// no .git beside it — the one shape where ccx cannot reach git's hooks at all.
+// A colocated fixture goes up first for its shim and isolated environment; the
+// plain repository is its sibling, and the returned fixture points at it.
+func shipJJPlainRepo(t *testing.T) *vcstest.Fixture {
+	t.Helper()
+	f := shipRepo(t, vcstest.JJ())
+	base := filepath.Dir(f.Dir)
+	plain := *f
+	plain.Dir = filepath.Join(base, "plain")
+	mustRun(t, base, "jj", "git", "init", "--no-colocate", plain.Dir)
+	writeShipFile(t, plain.Dir, "f.txt", "base\n")
+	mustRun(t, plain.Dir, "jj", "commit", "-m", "init")
+	mustRun(t, plain.Dir, "jj", "bookmark", "create", "main", "-r", "@-")
+	t.Chdir(plain.Dir)
+	seedLaneRecords(t, plain.Dir, laneSeed{})
+	shipResetLog(t, &plain)
+	return &plain
+}
+
+// shipAmendable cuts a local wip commit past the trunk origin carries and
+// leaves a fresh edit for the amend to fold into it: jj protects the commit a
+// remote bookmark points at, so an --amend needs one of its own. The argv log
+// opens empty.
+func shipAmendable(t *testing.T, f *vcstest.Fixture, kind vcs.Kind) {
+	t.Helper()
+	if kind == vcs.JJ {
+		mustRun(t, f.Dir, "jj", "commit", "-m", "wip")
+	} else {
+		mustRun(t, f.Dir, "git", "add", "-A")
+		mustRun(t, f.Dir, "git", "commit", "-qm", "wip")
+	}
+	writeShipFile(t, f.Dir, "f.txt", "amended\n")
+	shipResetLog(t, f)
+}
+
+// shipAmbiguousTrunk pushes a second bookmark onto the commit jj's trunk()
+// revset resolves to, so the trunk template answers with two names and the
+// branch plan has nothing to pick between.
+func shipAmbiguousTrunk(t *testing.T) *vcstest.Fixture {
+	t.Helper()
+	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
+	mustRun(t, f.Dir, "jj", "bookmark", "create", "dev", "-r", "@-")
+	mustRun(t, f.Dir, "jj", "git", "push", "--bookmark", "dev")
+	shipResetLog(t, f)
+	return f
+}
+
+// shipJJBookmarks cuts one commit past the fixture's trunk and lands every name
+// on it, so heads(::@ & bookmarks()) resolves to exactly those bookmarks while
+// the trunk bookmark origin carries stays behind — the nearest-bookmark tie the
+// branch plan breaks. A name the repository already holds is moved rather than
+// created. It leaves an edit for the ship to commit and opens the argv log
+// empty.
+func shipJJBookmarks(t *testing.T, f *vcstest.Fixture, names ...string) {
+	t.Helper()
+	mustRun(t, f.Dir, "jj", "commit", "-m", "wip")
+	held := strings.Fields(jjAt(t, f.Dir, "all()", `local_bookmarks.map(|b| b.name()).join(" ") ++ " "`))
+	for _, name := range names {
+		if slices.Contains(held, name) {
+			mustRun(t, f.Dir, "jj", "bookmark", "move", name, "--to", "@-")
+			continue
+		}
+		mustRun(t, f.Dir, "jj", "bookmark", "create", name, "-r", "@-")
+	}
+	writeShipFile(t, f.Dir, "f.txt", "shipped\n")
+	shipResetLog(t, f)
+}
+
+// shipJJFails puts a jj ahead of the fixture's shim that answers every call
+// matching pattern by pointing the real jj at a repository that does not exist,
+// so both the failure and the bytes reporting it are jj's own. The intercepted
+// call is recorded as ccx made it and the redirected one runs a depth down,
+// where the invocation assertions do not see the flag that broke it; every
+// other call execs the shim untouched.
+func shipJJFails(t *testing.T, f *vcstest.Fixture, pattern string) {
+	t.Helper()
+	dir, shim := t.TempDir(), shipNextTool(t, "jj")
+	writeShipExecutable(t, dir, "jj", "#!/bin/sh\n"+
+		"case \"$*\" in\n"+
+		"  "+pattern+")\n"+
+		shipRecordArgv("jj", f.ArgvLog)+
+		"    CCX_SHIM_DEPTH=$((d+1)) exec '"+shim+"' --repository '"+filepath.Join(dir, "absent")+"' \"$@\" ;;\n"+
+		"esac\n"+
+		"exec '"+shim+"' \"$@\"\n")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // shipHookRepo commits the working copy with a prek config added to it and
@@ -710,21 +1135,6 @@ func setupShipGT(t *testing.T, withGh bool) string {
 	return log
 }
 
-// setupShipColocated is setupShip over a colocated jj working copy — a .jj with
-// a .git beside it — the shape that has a git ref namespace for sibling
-// checkouts to contend over, and so the only jj shape BranchHolders can answer
-// for. The re-seed is because the git dir moves the repository's cache key off
-// the root.
-func setupShipColocated(t *testing.T) string {
-	t.Helper()
-	log := setupShip(t, ".jj", true)
-	if err := os.Mkdir(".git", 0o750); err != nil {
-		t.Fatalf("mkdir .git: %v", err)
-	}
-	seedLaneRecords(t, ".", laneSeed{})
-	return log
-}
-
 func runShipCmd(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	cmd := newShipCmd()
@@ -786,6 +1196,21 @@ func normalizeTempPaths(invocations [][]string) [][]string {
 			if strings.Contains(arg, "ccx-pr-body-") {
 				inv[i] = "<pr-body>"
 			}
+		}
+	}
+	return invocations
+}
+
+// shipOpIDMark stands in for the operation id a rollback names, the one element
+// of a jj argv sequence no repository can predict ahead of the run.
+const shipOpIDMark = "<op>"
+
+// shipMaskOpIDs rewrites the operation id a jj op revert carries, so an argv
+// assertion names the rollback call without naming the operation.
+func shipMaskOpIDs(invocations [][]string) [][]string {
+	for _, inv := range invocations {
+		if len(inv) == 4 && inv[0] == "jj" && inv[1] == "op" && inv[2] == "revert" {
+			inv[3] = shipOpIDMark
 		}
 	}
 	return invocations
@@ -930,10 +1355,9 @@ func captureSlog(t *testing.T) *bytes.Buffer {
 
 // holderLookups counts the holder lookups a ship made, the measure of how lazy
 // the tiebreak is: every one is a subprocess the common path must not spawn.
-func holderLookups(t *testing.T, log string) int {
-	t.Helper()
+func holderLookups(invocations [][]string) int {
 	n := 0
-	for _, inv := range readInvocations(t, log) {
+	for _, inv := range invocations {
 		if inv[0] == "git" && len(inv) > 3 && inv[3] == "worktree" {
 			n++
 		}

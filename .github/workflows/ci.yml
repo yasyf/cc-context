@@ -81,7 +81,9 @@ jobs:
           echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
           test "$("$HOME/.npm-global/bin/gt" --version)" = "$gtver"
       - name: Test (race)
-        run: go test -race ./...
+        # internal/cli stands up real git/jj/gt repositories per test rather than
+        # faking their output, so it runs well past go test's 10m default.
+        run: go test -race -timeout 30m ./...
       - name: Build
         run: go build ./...
 

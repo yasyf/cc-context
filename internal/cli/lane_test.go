@@ -80,6 +80,20 @@ func clearLaneRecords(t *testing.T, dir string) {
 	clearGTRecord(t, dir)
 }
 
+// clearRepoRecord drops just the cached GitHub metadata, leaving the seeded gt
+// verdict in place, so the gate has to look the repository up while the probe
+// still answers from cache.
+func clearRepoRecord(t *testing.T, dir string) {
+	t.Helper()
+	repoPath, err := vcs.RepoCachePath(dir)
+	if err != nil {
+		t.Fatalf("resolve repo cache path: %v", err)
+	}
+	if err := os.Remove(repoPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("clear %s: %v", repoPath, err)
+	}
+}
+
 // clearGTRecord drops just the cached gt verdict, leaving the seeded GitHub
 // record in place. A test that wants a live probe still wants repo metadata
 // served from cache: clearing it too sends the report back to the fake gh,
@@ -96,10 +110,10 @@ func clearGTRecord(t *testing.T, dir string) {
 	}
 }
 
-// shortenGTProbe cuts the probe deadline for a test that waits it out, so
-// GT_AUTH_HANG costs a second rather than the field-derived cap. Still far
-// longer than spawning the fake gt, so the probe is aborted mid-run — the path
-// under test — never before it starts.
+// shortenGTProbe cuts the probe deadline for a test that waits it out, so a
+// hung gt auth costs a second rather than the field-derived cap. Still far
+// longer than spawning gt, so the probe is aborted mid-run — the path under
+// test — never before it starts.
 func shortenGTProbe(t *testing.T) {
 	t.Helper()
 	prior := gtProbeTimeout
@@ -137,7 +151,7 @@ func assertGTCommit(t *testing.T, invocations [][]string) {
 }
 
 func TestShipGateDemotesForeignRepo(t *testing.T) {
-	log := setupShipGT(t, false)
+	f := shipGTFeature(t)
 	seedLaneRecords(t, ".", foreignRepo)
 
 	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push")
@@ -148,9 +162,12 @@ func TestShipGateDemotesForeignRepo(t *testing.T) {
 	if !strings.HasPrefix(out, want) {
 		t.Errorf("report = %q, want it to lead with %q", out, want)
 	}
-	invocations := readInvocations(t, log)
+	invocations := shipGTInvocations(t, f)
 	assertNoGTCommit(t, invocations)
 	assertNoGT(t, invocations)
+	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
+		t.Errorf("HEAD subject = %q, want the commit the demoted lane cut itself", subject)
+	}
 }
 
 func TestShipGateKeepsOwnRepo(t *testing.T) {
@@ -165,7 +182,7 @@ func TestShipGateKeepsOwnRepo(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			log := setupShipGT(t, false)
+			f := shipGTFeature(t)
 			seedLaneRecords(t, ".", tt.seed)
 
 			got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
@@ -175,16 +192,22 @@ func TestShipGateKeepsOwnRepo(t *testing.T) {
 			if strings.HasPrefix(got, "lane ") {
 				t.Errorf("summary = %q, want no lane segment on an undemoted ship", got)
 			}
-			assertGTCommit(t, readInvocations(t, log))
+			assertGTCommit(t, shipGTInvocations(t, f))
+			if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
+				t.Errorf("HEAD subject = %q, want the commit gt cut on feature", subject)
+			}
 		})
 	}
 }
 
 // TestShipGateUnknownKeepsGT proves an unanswerable lookup — no gh at all —
-// leaves the graphite lane alone: unknown is never read as "not yours".
+// leaves the graphite lane alone: unknown is never read as "not yours". Only
+// the repository record is cleared; the shim directory alone is PATH, since a
+// system one carries a gh the lookup would then answer from.
 func TestShipGateUnknownKeepsGT(t *testing.T) {
-	log := setupShipGT(t, false)
-	clearLaneRecords(t, ".")
+	f := shipGTFeature(t)
+	clearRepoRecord(t, ".")
+	t.Setenv("PATH", f.ShimBin)
 	if path, err := exec.LookPath("gh"); err == nil {
 		t.Fatalf("gh resolved to %s; this test must run with none on PATH", path)
 	}
@@ -192,12 +215,15 @@ func TestShipGateUnknownKeepsGT(t *testing.T) {
 	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	invocations := readInvocations(t, log)
+	invocations := shipGTInvocations(t, f)
 	assertGTCommit(t, invocations)
 	for _, inv := range invocations {
 		if inv[0] == "gh" {
 			t.Errorf("gh ran with none on PATH: %v", inv)
 		}
+	}
+	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
+		t.Errorf("HEAD subject = %q, want the commit gt cut on feature", subject)
 	}
 }
 
@@ -283,64 +309,51 @@ func TestClassifyGTProbe(t *testing.T) {
 }
 
 // TestShipGateProbe drives the probe end to end through ship, with the cached
-// verdict cleared so gt auth actually runs. Only gt's own ready line keeps the
-// lane; every other answer, decline or non-answer alike, demotes with a note.
+// verdict cleared so gt auth actually runs and answers out of the recorded
+// corpus. Every recorded answer demotes — a decline, an unreachable server, and
+// an exit 0 that never confirms this repository alike — each carrying its own
+// note into the report, and the ship lands on the git lane regardless.
+//
+// The ready line that would keep the lane has no recording: gt prints it only
+// for a repository Graphite is permitted to submit to, so testdata/gt names it
+// NOT RECORDED and the positive arm lives in TestShipGateKeepsOwnRepo, off a
+// seeded verdict.
 func TestShipGateProbe(t *testing.T) {
 	tests := []struct {
-		name     string
-		stdout   string
-		stderr   string
-		exit     string
+		golden   string
 		wantNote string
 	}{
-		{name: "reachable", stdout: "✅ Ready to submit PRs to github.com/yasyf/cc-context"},
+		{golden: "auth-no-token", wantNote: "graphite has no auth token — run gt auth --token <token>"},
 		{
-			name: "not synced", stdout: "", exit: "1",
-			stderr:   "Error: yasyf does not have the necessary permissions to submit PRs to cli/cli",
-			wantNote: "Error: yasyf does not have the necessary permissions to submit PRs to cli/cli",
+			golden:   "auth-no-perms",
+			wantNote: "ERROR: Graphite does not have the necessary permissions to submit PRs to yasyf/cc-context.",
 		},
-		{
-			name: "server unreachable", stdout: "", exit: "1", stderr: gtProbeUnreadable,
-			wantNote: "graphite server unreachable",
-		},
-		{
-			name: "authenticated outside a repo", stdout: "Authenticated as: yasyf",
-			wantNote: "gt auth exited 0 without confirming this repo is submittable",
-		},
-		{
-			name: "unrecognized failure", stdout: "", exit: "1",
-			stderr:   "Error: gt rewrote this message in 2.0",
-			wantNote: "Error: gt rewrote this message in 2.0",
-		},
+		{golden: "auth-unreachable", wantNote: "graphite server unreachable"},
+		{golden: "auth-authenticated-elsewhere", wantNote: "gt auth exited 0 without confirming this repo is submittable"},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			log := setupShipGT(t, false)
-			clearLaneRecords(t, ".")
-			t.Setenv("GT_AUTH_STDOUT", tt.stdout)
-			t.Setenv("GT_AUTH_STDERR", tt.stderr)
-			t.Setenv("GT_AUTH_EXIT", tt.exit)
+		t.Run(tt.golden, func(t *testing.T) {
+			g := loadGTGolden(t, tt.golden)
+			f := shipGTFeature(t)
+			clearGTRecord(t, ".")
+			shipGTAuth(t, f, g)
 
 			out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push")
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			invocations := readInvocations(t, log)
+			invocations := shipGTInvocations(t, f)
 			if len(invocations) < 2 || invocations[1][0] != "gt" || invocations[1][1] != "auth" {
 				t.Fatalf("argv after the lane gate = %v, want gt auth", invocations)
-			}
-			if tt.wantNote == "" {
-				assertGTCommit(t, invocations)
-				if strings.HasPrefix(out, "lane ") {
-					t.Errorf("report = %q, want no lane segment", out)
-				}
-				return
 			}
 			want := "lane git (" + tt.wantNote + ")"
 			if !strings.HasPrefix(out, want) {
 				t.Errorf("report = %q, want it to lead with %q", out, want)
 			}
 			assertNoGTCommit(t, invocations)
+			if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
+				t.Errorf("HEAD subject = %q, want the commit the demoted lane cut itself", subject)
+			}
 		})
 	}
 }
@@ -350,9 +363,9 @@ func TestShipGateProbe(t *testing.T) {
 // Graphite may not accept, where demoting only lands a plain branch, and the
 // report names the reason so the demotion is never silent.
 func TestShipGateProbeTimeoutDemotes(t *testing.T) {
-	log := setupShipGT(t, false)
-	clearLaneRecords(t, ".")
-	t.Setenv("GT_AUTH_HANG", "1")
+	f := shipGTFeature(t)
+	clearGTRecord(t, ".")
+	shipGTAuthHang(t, f)
 	shortenGTProbe(t)
 
 	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push")
@@ -363,7 +376,10 @@ func TestShipGateProbeTimeoutDemotes(t *testing.T) {
 	if !strings.HasPrefix(out, want) {
 		t.Errorf("report = %q, want it to lead with %q", out, want)
 	}
-	assertNoGTCommit(t, readInvocations(t, log))
+	assertNoGTCommit(t, shipGTInvocations(t, f))
+	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
+		t.Errorf("HEAD subject = %q, want the commit the demoted lane cut itself", subject)
+	}
 }
 
 // TestGTReachabilityCaches proves each verdict is served for its own TTL: a
@@ -625,12 +641,14 @@ func TestKindLabel(t *testing.T) {
 // TestReviewsStackDeclinesForeignRepo proves the gate is shared: a demoted ship
 // never builds a stack, so reviews --stack must not go looking for one.
 func TestReviewsStackDeclinesForeignRepo(t *testing.T) {
-	setupShipGT(t, false)
+	f := shipGTFeature(t)
 	seedLaneRecords(t, ".", foreignRepo)
+	head := shipHead(t, f)
 
 	_, err := runReviewsCmd(t, "--stack")
 	wantErr := "reviews: --stack declined the graphite lane: " + foreignNote
 	if err == nil || err.Error() != wantErr {
 		t.Fatalf("reviews --stack error = %v, want %q", err, wantErr)
 	}
+	assertShipRefusedClean(t, f, head)
 }
