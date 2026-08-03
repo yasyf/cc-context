@@ -403,18 +403,18 @@ func TestRestackGTPerBranchVerdict(t *testing.T) {
 // cannot see. gt 1.8.6 splits one exit-0 sync across both streams — the phase
 // banners on stdout, severity-led lines on stderr — so a restack it declined
 // leaves the summary reporting the stack as behind with nothing saying why. The
-// warning row is gt 1.8.6's own bytes, captured from a sync whose checked-out
-// branch needed a restack and carried a conflicting unstaged edit: exit 0,
-// stdout ending at "🥞 Restacking branches...", the explanation on stderr alone.
-// The "could not be restacked cleanly" line recurs across 49 of the 9,346 real
-// gt runs on this machine, over 27 distinct branches, so it is the durable half
-// of the pair. Its remediation rides out with it: the unprefixed sentence gt
-// puts a blank line below the warning is the only thing telling the user what to
-// run, and the tips row is the other half of that bargain — the same unprefixed
-// stderr with no severity line above it stays unreported.
+// warning and tips rows drive the fake with recorded stderr rather than a
+// literal, so re-recording gt carries them: sync-decline-unstaged-exit0 is the
+// exit-0 decline whose explanation is on stderr alone, and sync-tips-exit0 is
+// the same stream shape carrying no severity line at all. The remediation rides
+// out with the warnings — the unprefixed sentence gt puts a blank line below
+// them is the only thing telling the user what to run — and the tips row is the
+// other half of that bargain, unreported for want of a severity line above it.
 // Exit 0 stays a success, since the remote-trunk oracle already reports the
 // stack correctly; the lines explain that report rather than override gt.
 func TestRestackGTSurfacesSyncDiagnostics(t *testing.T) {
+	declined := loadGTGolden(t, "sync-decline-unstaged-exit0").stderr
+	tips := loadGTGolden(t, "sync-tips-exit0").stderr
 	tests := []struct {
 		name    string
 		stderr  string
@@ -423,22 +423,20 @@ func TestRestackGTSurfacesSyncDiagnostics(t *testing.T) {
 		denyErr []string
 	}{
 		{
-			name: "the warnings gt exited 0 on still reach the user",
-			stderr: "WARNING: Did not restack checked out branch feature due to conflicting unstaged changes.\n" +
-				"WARNING: feature could not be restacked cleanly.\n\n" +
-				"Please resolve conflicts in the current stack with gt restack.",
-			want: "restacked 1 of 1 · trunk main",
+			name:   "the warnings gt exited 0 on still reach the user",
+			stderr: declined,
+			want:   "restacked 1 of 1 · trunk main",
 			wantErr: []string{
-				"WARNING: Did not restack checked out branch feature due to conflicting unstaged changes.",
-				"WARNING: feature could not be restacked cleanly.",
+				"WARNING: Did not restack checked out branch feat due to conflicting unstaged changes.",
+				"WARNING: feat could not be restacked cleanly.",
 				"Please resolve conflicts in the current stack with gt restack.",
 			},
 		},
 		{
 			name:    "tips alone leave the report silent",
-			stderr:  "\ntip: If you need to undo the operation you just ran, you can do so with gt undo. [runner.undo ●○○]\n",
+			stderr:  tips,
 			want:    "restacked 1 of 1 · trunk main",
-			denyErr: []string{"tip:", "gt undo"},
+			denyErr: []string{"tip:", "gt undo", "sync.explanation"},
 		},
 		{
 			name: "a decline is read off whichever stream carried it",

@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "sync",
+    "--no-interactive"
+  ],
+  "exit": 0,
+  "stdout": "🌲 Fetching branches from remote...\nmain fast-forwarded to 213603c8d9c5a7f3f3a6d2b175537d2e17cc6790.\n\n🥞 Restacking branches...\n\n",
+  "stderr": "WARNING: feat could not be restacked cleanly.\n\nPlease resolve conflicts in the current stack with gt restack.\n"
+}

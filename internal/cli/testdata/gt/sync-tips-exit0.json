@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "sync",
+    "--no-interactive"
+  ],
+  "exit": 0,
+  "stdout": "🌲 Fetching branches from remote...\nmain is up to date.\n\n🥞 Restacking branches...\nfeat does not need to be restacked on main.\n",
+  "stderr": "\ntip: gt sync is a core command that keeps your branches in sync with the latest changes to the remote repository. It:\n▸ pulls the latest changes to the trunk branch\n▸ prompts to delete any branches whose PRs have been merged or closed\n▸ syncs any remote changes to branches with open PRs\n▸ restacks all branches to incorporate the latest changes from trunk\n\nYou can use gt get to sync only the stack of the checked out branch. [sync.explanation ●○○]\n\n\ntip: If you need to undo the operation you just ran, you can do so with gt undo. [runner.undo ●○○]\n\n"
+}

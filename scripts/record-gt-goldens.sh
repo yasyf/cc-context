@@ -125,6 +125,47 @@ tracked_branch() {
 	gt track -f --no-interactive >/dev/null 2>&1
 }
 
+# graphite_identity points gt's repo resolution at a real GitHub repo while the
+# git remote stays local, which is what lets a scenario reach the phases past
+# resolution — the fast-forward and restack a sync-exit-0 shape needs. Without
+# it Graphite 404s on a file:// remote and the run dies at exit 1, which is what
+# sync-repo-404 records. Nothing is pushed to the named repo; gt only asks
+# Graphite about it.
+graphite_identity() {
+	python3 - .git/.graphite_repo_config <<'PY'
+import json, sys
+
+path = sys.argv[1]
+with open(path) as f:
+    config = json.load(f)
+config["owner"], config["name"] = "yasyf", "cc-context"
+with open(path, "w") as f:
+    json.dump(config, f, indent=2)
+PY
+}
+
+# tips_off silences gt's NUX tips for one scenario. Tips are unprefixed stderr,
+# so a scenario about a severity line reads better without them; the ones that
+# are about tips leave prepare's default (on) alone. This is the deterministic
+# switch — never exhaust the nux showCount instead, since that is a counter every
+# gt command in the same scenario also moves, which makes the captured bytes a
+# function of the setup rather than of the verb. sync-tips-exit0.md says how.
+tips_off() {
+	printf '{\n  "updateAutomatically": false,\n  "tips": false\n}\n' >"$HOME/.config/graphite/user_config"
+}
+
+# trunk_moved_under advances origin's trunk past the local one, so the next sync
+# fast-forwards trunk and then restacks branch onto it.
+trunk_moved_under() {
+	local branch=$1
+	git switch -q main
+	printf 'trunk\n' >f.txt
+	git commit -qam trunk
+	git push -q origin main
+	git reset --hard -q HEAD~1
+	git switch -q "$branch"
+}
+
 # capture runs gt in the current directory and writes the scenario's golden: the
 # argv, both streams, and the exit status, as one JSON container
 # (scripts/goldenjson.py, which says why the payloads are JSON strings).
@@ -382,6 +423,134 @@ real failure in neither the conflict nor the auth wording, wrapped verbatim.
 EOF
 }
 
+scenario_sync_decline_exit0() {
+	prepare sync-decline-exit0 live
+	tips_off
+	git init -q --bare "$work/sync-decline-exit0/bare.git"
+	graphite_repo sync-decline-exit0 "file://$work/sync-decline-exit0/bare.git"
+	graphite_identity
+	git push -q origin main
+	tracked_branch feat feat
+	trunk_moved_under feat
+	capture sync-decline-exit0 sync --no-interactive
+	readme sync-decline-exit0 <<'EOF'
+gt sync whose trunk fast-forwards and whose branch then will not restack onto
+it, tips off.
+
+Recorded live (CCX_GT_RECORD_TOKEN). **Exit 0**, and the shape gtZeroSurfaces
+and restack.go's zero-surfaces path exist for: stdout's restack section is
+empty, so the only account of what happened is on stderr. This is the trigger
+case for gtResult.Diagnostics — a WARNING: line, a blank line, and gt's
+unprefixed remediation, which is why the echo reports stderr whole rather than
+the severity lines alone.
+
+The remote is a local bare repo; the owner/name in .graphite_repo_config points
+Graphite's resolution at a real repository so the run reaches the fast-forward
+phase at all. Nothing is pushed there.
+EOF
+}
+
+scenario_sync_decline_unstaged_exit0() {
+	prepare sync-decline-unstaged-exit0 live
+	tips_off
+	git init -q --bare "$work/sync-decline-unstaged-exit0/bare.git"
+	graphite_repo sync-decline-unstaged-exit0 "file://$work/sync-decline-unstaged-exit0/bare.git"
+	graphite_identity
+	git push -q origin main
+	git switch -qc feat
+	echo a >a.txt
+	git add a.txt
+	git commit -qm feat
+	gt track -f --no-interactive >/dev/null 2>&1
+	trunk_moved_under feat
+	printf 'dirty\n' >f.txt
+	capture sync-decline-unstaged-exit0 sync --no-interactive
+	readme sync-decline-unstaged-exit0 <<'EOF'
+gt sync whose checked-out branch needs a restack and carries a conflicting
+unstaged edit, tips off.
+
+Recorded live (CCX_GT_RECORD_TOKEN). Exit 0, two WARNING: lines: gt names the
+working-tree cause as well as the outcome, where sync-decline-exit0's committed
+conflict produces only the outcome. Same unprefixed remediation below both.
+This is the two-warning shape restack_test.go asserts on.
+EOF
+}
+
+scenario_sync_tips_exit0() {
+	prepare sync-tips-exit0 live
+	git init -q --bare "$work/sync-tips-exit0/bare.git"
+	graphite_repo sync-tips-exit0 "file://$work/sync-tips-exit0/bare.git"
+	graphite_identity
+	git push -q origin main
+	tracked_branch feat feat
+	git switch -q main
+	capture sync-tips-exit0 sync --no-interactive
+	readme sync-tips-exit0 <<'EOF'
+A clean no-op gt sync with tips on: nothing to fast-forward, nothing to restack.
+
+Recorded live (CCX_GT_RECORD_TOKEN). Exit 0 with **stderr non-empty and no
+severity line on it** — the negative case gtResult.Diagnostics' gate exists for.
+Without that gate this stderr would be reported as a diagnostic on every
+ordinary ship, because gt's NUX tips are unprefixed stderr exactly as the
+remediation is. Pair with sync-quiet-exit0, the same sync with tips off.
+
+TIP BYTES ARE A FUNCTION OF THE WHOLE SCENARIO, NOT THE CAPTURED COMMAND. gt
+shows each nux a fixed number of times per HOME and records the count in
+$XDG_DATA_HOME/graphite/nuxes: init.welcome and tip.expert-message cap at 1 and
+are both spent by the gt init graphite_repo runs, runner.undo caps at 3. So the
+dots in [runner.undo ●○○] say "first showing", and tip.expert-message is absent
+here because gt init already used its only one. Add or remove a gt command
+anywhere in this scenario's setup and the dots move. A dot mismatch on a
+re-record means the setup changed — it is not licence to edit the expected
+bytes.
+EOF
+}
+
+scenario_sync_tips_and_warning_exit0() {
+	prepare sync-tips-and-warning-exit0 live
+	git init -q --bare "$work/sync-tips-and-warning-exit0/bare.git"
+	graphite_repo sync-tips-and-warning-exit0 "file://$work/sync-tips-and-warning-exit0/bare.git"
+	graphite_identity
+	git push -q origin main
+	tracked_branch feat feat
+	trunk_moved_under feat
+	capture sync-tips-and-warning-exit0 sync --no-interactive
+	readme sync-tips-and-warning-exit0 <<'EOF'
+gt sync that declines a restack with tips on, so both classes of unprefixed
+stderr land in one capture.
+
+Recorded live (CCX_GT_RECORD_TOKEN). Exit 0. The hard case for the echo's gate:
+a severity line is present, so the whole block is reported, tips included. It is
+also the proof that no rule short of the gate works — gt separates the
+remediation from its warning with the same "\n\n" it uses to separate the
+remediation from the tip block that follows, so any window wide enough to keep
+the first crosses the second.
+
+The tip-dot caveat on sync-tips-exit0 applies here too.
+EOF
+}
+
+scenario_sync_quiet_exit0() {
+	prepare sync-quiet-exit0 live
+	tips_off
+	git init -q --bare "$work/sync-quiet-exit0/bare.git"
+	graphite_repo sync-quiet-exit0 "file://$work/sync-quiet-exit0/bare.git"
+	graphite_identity
+	git push -q origin main
+	tracked_branch feat feat
+	git switch -q main
+	capture sync-quiet-exit0 sync --no-interactive
+	readme sync-quiet-exit0 <<'EOF'
+The everyday sync: nothing to do, tips off, stderr empty.
+
+Recorded live (CCX_GT_RECORD_TOKEN). Exit 0 with both streams saying only that
+there was nothing to do. It is the control for sync-tips-exit0 — same repo
+state, same argv, tips the only difference — which is what isolates the 573
+bytes that scenario puts on stderr as tips rather than as anything gt had to
+report.
+EOF
+}
+
 unrecordable_scenarios() {
 	unrecordable auth-ready <<'EOF'
 NOT RECORDED. gt auth in a repo Graphite is permitted to submit to — the ready
@@ -444,33 +613,6 @@ banner is recorded from gt restack instead — see restack-conflict, which carri
 the same gtSyncConflict sentence and is what classifyGTRestack matches.
 EOF
 
-	unrecordable sync-exit0-diagnostics <<'EOF'
-NOT RECORDED — settled, awaiting capture.
-
-gt sync that writes a diagnostic to stderr and exits 0 anyway. `gtZeroSurfaces`
-and restack.go's zero-surfaces path both turn on this behavior existing.
-
-The dispute is resolved: two measurements of gt 1.8.6 disagreed because they
-were about **different messages**.
-
-- `ERROR: Cannot pull trunk due to conflicting unstaged changes. ` exits **1**,
-  universally — 19 configurations including `--force`, `-q`, `-a`, and a real
-  PTY. The exit-0 pairing once recorded for it was false.
-- `WARNING: <branch> could not be restacked cleanly.` exits **0**, on a plain
-  `gt sync --no-interactive` with no `--force`, while stdout's restack section
-  stays empty. This is the real case, and it recurs: 56 of 9,346 real gt run
-  logs carry it.
-
-So the zero-surfaces path is live and correctly justified — the doc comment that
-cited the trunk-pull ERROR was pointing at the wrong message, not defending a
-behavior that does not exist. cc-notes `db6d174` records both exit codes and
-flags the superseded claim.
-
-Bytes for this shape have been captured (`WARNING:` + blank line + gt's
-`Please resolve conflicts in the current stack with gt restack.` remediation)
-and are held pending a recorder scenario, so this stays empty only until that
-write lands — not because anything is unknown.
-EOF
 }
 
 scenario_restack_conflict
@@ -488,6 +630,11 @@ if [ "$live" -eq 1 ]; then
 	scenario_auth_unreachable
 	scenario_submit_repo_unverified
 	scenario_sync_repo_404
+	scenario_sync_decline_exit0
+	scenario_sync_decline_unstaged_exit0
+	scenario_sync_tips_exit0
+	scenario_sync_tips_and_warning_exit0
+	scenario_sync_quiet_exit0
 else
 	echo "record-gt-goldens: skipped the live scenarios (--live + CCX_GT_RECORD_TOKEN records them)"
 fi

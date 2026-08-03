@@ -105,11 +105,13 @@ func TestGTRunPassesArgvThroughUntouched(t *testing.T) {
 // TestGTRunDiagnosticsGatesOnSeverity pins both halves of the echo's contract:
 // a severity-led stderr goes out whole — continuation lines included, since gt's
 // remediation is one — and a stderr with no severity line goes out not at all.
-// The tip rows are gt 1.8.6's own bytes: NUX tips are unprefixed stderr like the
-// remediation is, so the gate, not the shape of the line, is what keeps a fresh
-// install quiet.
+// Both tip rows and the decline row read their bytes out of the corpus, so a
+// re-recording carries them: NUX tips are unprefixed stderr exactly as gt's
+// remediation is, which is why the gate — not the shape of any line — is what
+// keeps an ordinary run quiet.
 func TestGTRunDiagnosticsGatesOnSeverity(t *testing.T) {
-	tips := "\ntip: Feeling like an expert? Disable tips in gt config [tip.expert-message ●]\n\n"
+	tips := loadGTGolden(t, "sync-tips-exit0").stderr
+	declined := loadGTGolden(t, "sync-decline-exit0")
 	tests := []struct {
 		name     string
 		result   gtResult
@@ -117,12 +119,9 @@ func TestGTRunDiagnosticsGatesOnSeverity(t *testing.T) {
 		wantErrs bool
 	}{
 		{
-			name: "a severity-led stderr goes out whole, remediation included",
-			result: gtResult{
-				Output: "🥞 Restacking branches...\nWARNING: feat could not be restacked cleanly.\n\nPlease resolve conflicts in the current stack with gt restack.\n",
-				Stderr: "WARNING: feat could not be restacked cleanly.\n\nPlease resolve conflicts in the current stack with gt restack.\n",
-			},
-			want: "WARNING: feat could not be restacked cleanly.\n\nPlease resolve conflicts in the current stack with gt restack.\n",
+			name:   "a severity-led stderr goes out whole, remediation included",
+			result: declined.result(),
+			want:   declined.stderr,
 		},
 		{
 			name:   "tips alone stay silent",

@@ -132,6 +132,22 @@ var gtGoldenCases = map[string]gtGoldenCase{
 	"restack-frozen": {
 		skipped: map[string]string{"feat": "frozen"},
 	},
+	// The five exit-0 syncs the echo exists for. None is a failure: gt did
+	// fast-forward the trunk, and restack's verdict re-measures the stack
+	// itself, so a WARNING: here explains a report ccx already made. The two
+	// with no severity line are the gate's negative case — tips are unprefixed
+	// stderr, so without the gate an ordinary sync would report them.
+	"sync-decline-exit0": {
+		diagnostics: 1,
+	},
+	"sync-decline-unstaged-exit0": {
+		diagnostics: 2,
+	},
+	"sync-tips-exit0":  {},
+	"sync-quiet-exit0": {},
+	"sync-tips-and-warning-exit0": {
+		diagnostics: 1,
+	},
 	"sync-no-remote": {
 		diagnostics: 1,
 		reported:    true,
@@ -385,35 +401,120 @@ func TestGTGoldenWalk(t *testing.T) {
 	}
 }
 
-// TestGTGoldenTrailingSpaceSurvivesLoad pins the loader against a read that
-// trims. gt's splog.error template ends its line with a space before the
-// newline, so every severity-prefixed scenario carries one, and that space is
-// the evidence these goldens exist to hold: loaded bytes must equal recorded
-// bytes exactly.
-func TestGTGoldenTrailingSpaceSurvivesLoad(t *testing.T) {
-	t.Parallel()
-	trailing := 0
-	for _, name := range slices.Sorted(maps.Keys(gtGoldenCases)) {
-		data, err := os.ReadFile(filepath.Join(gtGoldenDir, name+".json"))
-		if err != nil {
-			t.Fatalf("golden %s: %v", name, err)
-		}
-		var rec struct {
-			Stderr string `json:"stderr"`
-		}
-		if err := json.Unmarshal(data, &rec); err != nil {
-			t.Fatalf("golden %s: %v", name, err)
-		}
-		if !strings.Contains(rec.Stderr, " \n") {
-			continue
-		}
-		trailing++
-		if got := loadGTGolden(t, name).stderr; got != rec.Stderr {
-			t.Errorf("%s stderr = %q, want the recorded %q — the loader is trimming bytes gt wrote", name, got, rec.Stderr)
+// gtGoldenStream is what this repo's commit hooks would rewrite in one recorded
+// stream: lines ending in whitespace, which trailing-whitespace strips, and the
+// blank line a tip block ends on, which end-of-file-fixer collapses.
+type gtGoldenStream struct {
+	trailingWS int
+	blankTail  bool
+}
+
+// gtGoldenUnnormalized declares every recorded stream holding such a byte,
+// addressed as scenario.field. gt's splog.error template ends its line with a
+// space before the newline, and its tip block ends on a blank line; both are
+// evidence of what gt wrote, and both are what these goldens exist to hold. As
+// a JSON string a payload occupies no end of line and no end of file, so neither
+// hook can reach one. A hook that reached one anyway, or a hand-normalized
+// golden, drops its entry here; a re-recording that produces a new one must add
+// its entry.
+var gtGoldenUnnormalized = map[string]gtGoldenStream{
+	"auth-no-perms.stderr":                 {trailingWS: 1},
+	"auth-no-token.stderr":                 {trailingWS: 1},
+	"auth-unreachable.stderr":              {trailingWS: 1},
+	"restack-blocked-during-rebase.stderr": {trailingWS: 1},
+	"restack-frozen.stderr":                {blankTail: true},
+	"restack-worktree-held.stderr":         {blankTail: true},
+	"submit-repo-unverified.stderr":        {trailingWS: 1},
+	"submit-unauth.stderr":                 {trailingWS: 1},
+	"sync-auth-invalid.stderr":             {trailingWS: 1},
+	"sync-no-remote.stderr":                {trailingWS: 1},
+	"sync-repo-404.stderr":                 {trailingWS: 1},
+	// The exit-0 syncs. Their stdout ends on the blank line below gt's
+	// "Restacking branches..." banner — the very blankness that makes the
+	// stderr echo the only account of a decline — and the tip-bearing ones end
+	// stderr on a tip block's own closing blank line.
+	"sync-decline-exit0.stdout":          {blankTail: true},
+	"sync-decline-unstaged-exit0.stdout": {blankTail: true},
+	"sync-tips-and-warning-exit0.stderr": {blankTail: true},
+	"sync-tips-and-warning-exit0.stdout": {blankTail: true},
+	"sync-tips-exit0.stderr":             {blankTail: true},
+}
+
+// gtGoldenShape reads what the hooks would rewrite out of one payload.
+func gtGoldenShape(payload string) (gtGoldenStream, bool) {
+	shape := gtGoldenStream{blankTail: strings.HasSuffix(payload, "\n\n")}
+	for _, line := range strings.Split(payload, "\n") {
+		if strings.TrimRight(line, " \t\r") != line {
+			shape.trailingWS++
 		}
 	}
-	if trailing != 9 {
-		t.Errorf("%d recorded scenarios end a stderr line with gt's trailing space, want 9", trailing)
+	return shape, shape != (gtGoldenStream{})
+}
+
+// TestGTGoldenPayloadsAreUnnormalized is the alarm for a golden that stopped
+// being what gt wrote. It sweeps every recorded stream for the bytes this repo's
+// commit hooks rewrite and holds the result against gtGoldenUnnormalized, so a
+// payload that got normalized fails by name, as loudly as one that arrived
+// undeclared.
+func TestGTGoldenPayloadsAreUnnormalized(t *testing.T) {
+	t.Parallel()
+	got := map[string]gtGoldenStream{}
+	for _, name := range slices.Sorted(maps.Keys(gtGoldenCases)) {
+		g := loadGTGolden(t, name)
+		for _, field := range []string{"stdout", "stderr"} {
+			payload := g.stdout
+			if field == "stderr" {
+				payload = g.stderr
+			}
+			if shape, hostile := gtGoldenShape(payload); hostile {
+				got[name+"."+field] = shape
+			}
+		}
+	}
+
+	for _, addr := range slices.Sorted(maps.Keys(gtGoldenUnnormalized)) {
+		switch shape, ok := got[addr]; {
+		case !ok:
+			t.Errorf("%s no longer carries %+v — a hook or a hand edit normalized what gt wrote", addr, gtGoldenUnnormalized[addr])
+		case shape != gtGoldenUnnormalized[addr]:
+			t.Errorf("%s carries %+v, want %+v", addr, shape, gtGoldenUnnormalized[addr])
+		}
+	}
+	for _, addr := range slices.Sorted(maps.Keys(got)) {
+		if _, ok := gtGoldenUnnormalized[addr]; !ok {
+			t.Errorf("%s carries %+v but is undeclared — record it in gtGoldenUnnormalized so a later normalization fails here", addr, got[addr])
+		}
+	}
+}
+
+// gtGoldenSeverityLines reads the severity-led lines out of one recorded stream.
+func gtGoldenSeverityLines(payload string) []string {
+	var got []string
+	for _, line := range strings.Split(payload, "\n") {
+		if strings.HasPrefix(line, gtErrorPrefix) || strings.HasPrefix(line, gtWarningPrefix) {
+			got = append(got, line)
+		}
+	}
+	return got
+}
+
+// TestGTGoldenSeverityStaysOnStderr pins gt's splog contract over the recorded
+// corpus: gt writes every severity-led line to stderr, never to stdout. The
+// goldens keep the two streams apart, so a recording — or a rewrite of the
+// corpus — that crossed or trimmed them fails here rather than silently handing
+// a classifier a line from the wrong stream.
+func TestGTGoldenSeverityStaysOnStderr(t *testing.T) {
+	t.Parallel()
+	onStderr := 0
+	for _, name := range slices.Sorted(maps.Keys(gtGoldenCases)) {
+		g := loadGTGolden(t, name)
+		if got := gtGoldenSeverityLines(g.stdout); len(got) > 0 {
+			t.Errorf("%s stdout carries %q — gt writes severity-led lines to stderr, so the recorded streams got crossed", name, got)
+		}
+		onStderr += len(gtGoldenSeverityLines(g.stderr))
+	}
+	if onStderr == 0 {
+		t.Error("no recorded scenario carries a severity-led line on stderr, so nothing pins the split")
 	}
 }
 

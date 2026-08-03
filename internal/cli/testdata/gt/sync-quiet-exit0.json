@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "sync",
+    "--no-interactive"
+  ],
+  "exit": 0,
+  "stdout": "🌲 Fetching branches from remote...\nmain is up to date.\n\n🥞 Restacking branches...\nfeat does not need to be restacked on main.\n",
+  "stderr": ""
+}
