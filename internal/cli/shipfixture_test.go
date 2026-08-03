@@ -6,22 +6,116 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
-const (
-	fakeHeadSHA        = "abcdef0123456789abcdef0123456789abcdef01"
-	fakeRunListJSON    = `[{"databaseId":42,"workflowName":"ci","status":"in_progress","url":"https://github.com/x/actions/runs/42"}]`
-	fakeRunViewSuccess = `{"workflowName":"ci","conclusion":"success","startedAt":"2026-07-08T18:00:00Z","updatedAt":"2026-07-08T18:00:58Z","url":"https://github.com/x/actions/runs/42","jobs":[]}`
-	fakeRunViewFailure = `{"workflowName":"ci","conclusion":"failure","startedAt":"2026-07-08T18:00:00Z","updatedAt":"2026-07-08T18:01:00Z","url":"https://github.com/x/actions/runs/42","jobs":[{"name":"test","conclusion":"failure","steps":[{"name":"go test ./...","conclusion":"failure"}]}]}`
-)
+const fakeHeadSHA = "abcdef0123456789abcdef0123456789abcdef01"
+
+// ghPkgDir is this package's source directory, captured before any fixture
+// chdirs into its own repository and out of reach of the golden corpus's
+// relative path.
+var ghPkgDir = func() string {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		panic("cli: cannot locate the package source directory")
+	}
+	return filepath.Dir(file)
+}()
+
+// ghStdout replays one recorded gh run's stdout. Every byte a fake gh hands
+// back is a byte real gh printed; the scenarios live in testdata/gh/cli.
+func ghStdout(t *testing.T, scenario string) string {
+	t.Helper()
+	path := filepath.Join(ghPkgDir, ghGoldenDir, "cli", scenario+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("golden %s: %v", scenario, err)
+	}
+	var rec struct {
+		Stdout string `json:"stdout"`
+	}
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatalf("golden %s: %v", scenario, err)
+	}
+	return rec.Stdout
+}
+
+// fakeRunListJSON is the one CI payload still hand-modeled: the corpus holds a
+// four-run list and an empty one, and no ship test is about watching four runs
+// at once. Recording a single-run list needs a commit that triggered exactly
+// one workflow, captured with
+// `gh run list --commit <sha> --limit 50 --json databaseId,workflowName,status,url`.
+const fakeRunListJSON = `[{"databaseId":42,"workflowName":"ci","status":"in_progress","url":"https://github.com/x/actions/runs/42"}]`
+
+// shipRepo builds a real repository per opts behind vcstest's recording shim
+// and seeds its lane cache, so a ship under test drives git and jj themselves
+// and every byte it parses is one those tools produced.
+func shipRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
+	t.Helper()
+	f := vcstest.Repo(t, opts...)
+	seedLaneRecords(t, f.Dir, laneSeed{})
+	return f
+}
+
+// gitAt reads repository state back out of dir, trimmed. It resolves through
+// the shim like any other call, so a test asserting invocations reads the log
+// before its state assertions.
+func gitAt(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	return strings.TrimSpace(mustRun(t, dir, "git", args...))
+}
+
+// remoteCount counts branch's commits in f's bare origin — the measure of
+// whether a push actually landed.
+func remoteCount(t *testing.T, f *vcstest.Fixture, branch string) int {
+	t.Helper()
+	n, err := strconv.Atoi(gitAt(t, f.Dir, "--git-dir="+f.RemoteDir, "rev-list", "--count", branch))
+	if err != nil {
+		t.Fatalf("count %s in %s: %v", branch, f.RemoteDir, err)
+	}
+	return n
+}
+
+// gitBranchExists reports whether dir carries a local branch by that name.
+func gitBranchExists(t *testing.T, dir, branch string) bool {
+	t.Helper()
+	return gitAt(t, dir, "branch", "--list", "--format=%(refname:short)", branch) != ""
+}
+
+// writeShipUvx installs a uvx that fails its first n prek runs and passes
+// after, the timing window shipRunHooks' autofix retry turns on. No repository
+// state can express "the hook fails this time and not the next".
+func writeShipUvx(t *testing.T, dir string, n int) {
+	t.Helper()
+	marker := filepath.Join(t.TempDir(), "prek.marker")
+	if err := os.WriteFile(marker, []byte(strconv.Itoa(n)), 0o600); err != nil {
+		t.Fatalf("write prek marker: %v", err)
+	}
+	t.Setenv("SHIP_PREK_MARKER", marker)
+	script := `#!/bin/sh
+count=$(cat "$SHIP_PREK_MARKER")
+if [ "$count" -gt 0 ]; then
+  printf '%s' "$((count - 1))" > "$SHIP_PREK_MARKER"
+  printf 'files were modified by this hook\n' >&2
+  exit 1
+fi
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(dir, "uvx"), []byte(script), 0o700); err != nil { //nolint:gosec // a PATH entry must be owner-executable
+		t.Fatalf("write uvx: %v", err)
+	}
+}
 
 // writeShipFakes installs fake jj, git, and (when withGh) gh executables into
 // dir. Each records its argv into $SHIP_LOG as a NUL-delimited record (every
@@ -80,7 +174,7 @@ Error: Failed to push some bookmarks}" >&2
       count=${count:-0}
       count=$((count + 1))
       printf '%s' "$count" > "$JJ_DIVERGED_MARKER"
-      if [ "$count" -gt "${JJ_DIVERGED_SWITCH_AFTER:-1}" ]; then diverged=1; fi
+      if [ "$count" -gt 1 ]; then diverged=1; fi
     fi
     if [ -z "$diverged" ]; then printf '"x"\n'; fi ;;
   *"bookmarks(exact"*)
@@ -165,8 +259,7 @@ exit 0
   "switch "*)
     if [ -n "$GIT_SWITCH_BACK_FAIL" ]; then printf 'fatal: invalid reference: %s\n' "$2" >&2; exit 1; fi
     printf '%s\n' "$2" > "$SHIP_LOG.git-switched" ;;
-  "branch -D")
-    if [ -n "$GIT_BRANCH_DELETE_FAIL" ]; then printf "error: branch '%s' not found\n" "$3" >&2; exit 1; fi ;;
+  "branch -D") : ;;
   "checkout -B")
     if [ -n "$GIT_CHECKOUT_B_FAIL" ]; then printf "fatal: '%s' is already used by worktree at '%s'\n" "$3" "$GIT_CHECKOUT_B_FAIL" >&2; exit 1; fi
     printf '%s\n' "$3" > "$SHIP_LOG.git-switched"; : > "$SHIP_LOG.git-healed" ;;
@@ -177,7 +270,7 @@ exit 0
   "rev-parse --show-toplevel") printf '%s' "$SHIP_FAKE_ROOT" ;;
   "show --end-of-options") printf '%s' "$GIT_FILE_SHOW_BASE" ;;
   "ls-tree --full-tree") printf '100644 blob 1111111111111111111111111111111111111111\t%s\n' "$5" ;;
-  "hash-object -w") printf '%s' "${GIT_HASH_OID:-2222222222222222222222222222222222222222}" ;;
+  "hash-object -w") printf '%s' '2222222222222222222222222222222222222222' ;;
   "diff --cached")
     if [ "$3" = "--quiet" ]; then
       if [ -n "$GIT_STAGED_EMPTY" ]; then exit 0; else exit 1; fi
@@ -213,7 +306,7 @@ exit 0
       count=${count:-0}
       count=$((count + 1))
       printf '%s' "$count" > "$GIT_DIVERGED_MARKER"
-      if [ "$count" -gt "${GIT_DIVERGED_SWITCH_AFTER:-1}" ]; then exit 1; fi
+      if [ "$count" -gt 1 ]; then exit 1; fi
     fi ;;
   "rev-list --count") printf '2' ;;
   "rebase --autostash")
@@ -288,7 +381,7 @@ exit 0
       count=${count:-0}
       count=$((count + 1))
       printf '%s' "$count" > "$GT_STATE_JSON_MARKER"
-      if [ "$count" -gt "${GT_STATE_JSON_SWITCH_AFTER:-1}" ]; then printf '%s' "$GT_STATE_JSON_2"
+      if [ "$count" -gt 1 ]; then printf '%s' "$GT_STATE_JSON_2"
       else printf '%s' "$GT_STATE_JSON"; fi
     else
       printf '%s' "$GT_STATE_JSON"
@@ -347,9 +440,7 @@ exit 0
           sep=,
         done
         printf '}}}' ;;
-      *)
-        if [ -n "$GH_VIEWER_JSON" ]; then printf '%s' "$GH_VIEWER_JSON"
-        else printf '{"data":{"viewer":{"login":"yasyf","organizations":{"nodes":[]}}}}'; fi ;;
+      *) printf '%s' "$GH_VIEWER_GOLDEN" ;;
     esac ;;
   "pr view")
     if [ -n "$GH_PR_VIEW_NOT_FOUND" ]; then
@@ -456,6 +547,7 @@ func setupShip(t *testing.T, marker string, withGh bool) string {
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	seedLaneRecords(t, ".", laneSeed{})
 	t.Setenv("JJ_DIFF_NAMES", "f.txt\n")
+	t.Setenv("GH_VIEWER_GOLDEN", ghStdout(t, "viewer-graphql"))
 	// Zero the session id so subtests asserting bare commit argv stay green even
 	// when the suite runs inside a Claude Code session, which exports it.
 	t.Setenv(envClaudeSessionKey, "")

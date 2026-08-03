@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/vcs"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 func TestJJWorkingCopyFlag(t *testing.T) {
@@ -175,7 +176,7 @@ func TestShipCommitPushWatch(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			log := setupShip(t, tt.marker, true)
 			t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
-			t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewSuccess)
+			t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 			shipCIPollInterval = 0
 
 			got, err := runShipCmd(t, tt.args...)
@@ -887,7 +888,7 @@ func TestShipHooksPreserveHookableFilenames(t *testing.T) {
 func TestShipJJNeverInvokesGitCommit(t *testing.T) {
 	log := setupShip(t, ".jj", true)
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
-	t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewSuccess)
+	t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 	shipCIPollInterval = 0
 
 	if _, err := runShipCmd(t, "-m", "fix: frobnicate"); err != nil {
@@ -1449,16 +1450,23 @@ func TestShipJJEmptyAmendExempt(t *testing.T) {
 func TestShipGitDetachedHeadRefusesBeforeCommit(t *testing.T) {
 	for _, args := range [][]string{{"--no-watch"}, {"--no-push"}} {
 		t.Run(args[0], func(t *testing.T) {
-			log := setupShip(t, ".git", false)
-			t.Setenv("GIT_BRANCH", "")
+			f := shipRepo(t, vcstest.Remote(), vcstest.Detached(), vcstest.Dirty())
+			before := gitAt(t, f.Dir, "rev-parse", "HEAD")
 
 			_, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate"}, args...)...)
 			if err == nil || err.Error() != "ship: detached HEAD — check out a branch before shipping" {
 				t.Fatalf("ship error = %v, want detached HEAD refusal", err)
 			}
-			invocations := readInvocations(t, log)
-			assertInvocations(t, invocations, [][]string{{"git", "branch", "--show-current"}, gitTrunkArgv})
-			assertNoShipMutation(t, invocations)
+			assertNoShipMutation(t, vcstest.Invocations(t, f.ArgvLog))
+			if head := gitAt(t, f.Dir, "rev-parse", "HEAD"); head != before {
+				t.Errorf("HEAD = %s, want it unmoved at %s", head, before)
+			}
+			if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "" {
+				t.Errorf("branch = %q, want HEAD left detached", branch)
+			}
+			if gitAt(t, f.Dir, "status", "--porcelain") == "" {
+				t.Error("the refused edit must stay uncommitted")
+			}
 		})
 	}
 }
@@ -2056,31 +2064,32 @@ func TestShipGitPushRetry(t *testing.T) {
 	}
 }
 
+// TestShipNoWatchSkipsCI proves --no-watch still lands the whole jj lane: the
+// commit is cut, the trunk bookmark moves onto it, and the bare origin gains
+// the commit — with no gh call to confirm anything afterwards.
 func TestShipNoWatchSkipsCI(t *testing.T) {
-	log := setupShip(t, ".jj", true)
+	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
+	before := remoteCount(t, f, "main")
+
 	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · pushed main → origin`
-	if got != want {
+	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+		if inv[0] == "gh" {
+			t.Errorf("--no-watch must reach no gh call, got %v", inv)
+		}
+	}
+	head := strings.TrimSpace(mustRun(t, f.Dir, "jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", "commit_id.short()"))
+	if want := fmt.Sprintf(`committed %s "fix: frobnicate" · pushed main → origin`, head); got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	assertInvocations(t, readInvocations(t, log), [][]string{
-		{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-		{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-		{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-		{"jj", "diff", "--name-only"},
-		{"jj", "commit", "-m", "fix: frobnicate"},
-		{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
-		{"jj", "bookmark", "list", vcs.JJExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
-		{"jj", "git", "fetch"},
-		{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
-		{"jj", "--ignore-working-copy", "log", "-r", jjAncestorRevset("main"), "--no-graph", "-T", jjBookmarkTemplate},
-		{"jj", "bookmark", "move", vcs.JJExactPattern("main"), "--to", "@-"},
-		{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
-		{"jj", "git", "push", "--bookmark", vcs.JJExactPattern("main")},
-	})
+	if after := remoteCount(t, f, "main"); after != before+1 {
+		t.Errorf("remote main count = %d, want %d", after, before+1)
+	}
+	if subject := gitAt(t, f.Dir, "--git-dir="+f.RemoteDir, "log", "-1", "--format=%s", "main"); subject != "fix: frobnicate" {
+		t.Errorf("remote main tip = %q, want the shipped commit", subject)
+	}
 }
 
 func TestShipCIStates(t *testing.T) {
@@ -2111,7 +2120,7 @@ func TestShipCIStates(t *testing.T) {
 			name:      "failure",
 			withGh:    true,
 			runList:   fakeRunListJSON,
-			viewJSON:  fakeRunViewFailure,
+			viewJSON:  ghStdout(t, "run-view-failed"),
 			watchExit: "1",
 			summary:   `committed a1b2c3d "fix: frobnicate" · pushed main → origin · CI failure`,
 			wantErr:   true,
@@ -3323,14 +3332,14 @@ func TestShipNoRepoFails(t *testing.T) {
 func TestShipCISuccessReportLine(t *testing.T) {
 	setupShip(t, ".jj", true)
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
-	t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewSuccess)
+	t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 	shipCIPollInterval = 0
 
 	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := "ci · success · 58s · https://github.com/x/actions/runs/42"
+	want := "Guides · success · 12s · https://github.com/yasyf/cc-context/actions/runs/30744524405"
 	if !strings.Contains(out, want) {
 		t.Errorf("output missing run line %q\ngot:\n%s", want, out)
 	}
@@ -3339,19 +3348,19 @@ func TestShipCISuccessReportLine(t *testing.T) {
 func TestShipCIFailureDetail(t *testing.T) {
 	setupShip(t, ".jj", true)
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
-	t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewFailure)
+	t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-failed"))
 	t.Setenv("GH_WATCH_EXIT", "1")
-	t.Setenv("GH_LOG_FAILED", "test\tgo test ./...\t##[error]FAIL: TestFrobnicate (0.01s)\n")
+	t.Setenv("GH_LOG_FAILED", ghStdout(t, "run-log-failed"))
 	shipCIPollInterval = 0
 
-	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate")
+	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--budget", "0")
 	if err == nil {
 		t.Fatal("expected error on CI failure, got nil")
 	}
 	for _, want := range []string{
 		"· CI failure",
-		"failed: test · go test ./...",
-		"##[error]FAIL: TestFrobnicate",
+		"failed: autobump / autobump · Detect drift and bump",
+		"##[error]Process completed with exit code 1.",
 		"full log: gh run view 42 --log-failed",
 	} {
 		if !strings.Contains(out, want) {
@@ -3375,7 +3384,7 @@ func TestShipCIBudgetCapsLog(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			setupShip(t, ".jj", true)
 			t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
-			t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewFailure)
+			t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-failed"))
 			t.Setenv("GH_LOG_FAILED", bigLog)
 			shipCIPollInterval = 0
 
@@ -3402,7 +3411,7 @@ func TestShipCIBudgetCapsLog(t *testing.T) {
 func TestShipCIStripsANSI(t *testing.T) {
 	setupShip(t, ".jj", true)
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
-	t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewFailure)
+	t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-failed"))
 	t.Setenv("GH_LOG_FAILED", "\x1b[31mERROR\x1b[0m the build \x1b[1mboom\x1b[0m\n")
 	shipCIPollInterval = 0
 
@@ -3426,7 +3435,7 @@ func TestShipCITransientPollTolerated(t *testing.T) {
 	}
 	t.Setenv("GH_LIST_FAIL_MARKER", marker)
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
-	t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewSuccess)
+	t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 	shipCIPollInterval = 0
 
 	got, err := runShipCmd(t, "-m", "fix: frobnicate")
@@ -3488,7 +3497,7 @@ func TestShipCIViewFailureIsError(t *testing.T) {
 func TestShipCIWatchErrViewGreenIsSuccess(t *testing.T) {
 	setupShip(t, ".jj", true)
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
-	t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewSuccess)
+	t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 	t.Setenv("GH_WATCH_EXIT", "1") // watch drops, view says success — view wins
 	shipCIPollInterval = 0
 
@@ -3506,10 +3515,10 @@ func TestShipCIMultiRunWatchesAll(t *testing.T) {
 	t.Setenv("GH_RUN_LIST_JSON", `[`+
 		`{"databaseId":42,"workflowName":"ci","status":"completed","url":"https://x/42"},`+
 		`{"databaseId":43,"workflowName":"cc-notes","status":"completed","url":"https://x/43"}]`)
-	t.Setenv("GH_RUN_VIEW_JSON_42", fakeRunViewSuccess)
-	t.Setenv("GH_RUN_VIEW_JSON_43", `{"workflowName":"cc-notes","conclusion":"failure","startedAt":"2026-07-08T18:00:00Z","updatedAt":"2026-07-08T18:00:05Z","url":"https://x/43","jobs":[{"name":"notes","conclusion":"failure","steps":[{"name":"sync","conclusion":"failure"}]}]}`)
+	t.Setenv("GH_RUN_VIEW_JSON_42", ghStdout(t, "run-view-success"))
+	t.Setenv("GH_RUN_VIEW_JSON_43", ghStdout(t, "run-view-failed"))
 	t.Setenv("GH_WATCH_EXIT_43", "1")
-	t.Setenv("GH_LOG_FAILED_43", "notes sync exploded\n")
+	t.Setenv("GH_LOG_FAILED_43", ghStdout(t, "run-log-failed"))
 	shipCIPollInterval = 0
 
 	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate")
@@ -3527,9 +3536,9 @@ func TestShipCIMultiRunWatchesAll(t *testing.T) {
 	}
 	for _, want := range []string{
 		"· CI failure",
-		"ci · success",
-		"cc-notes · failure",
-		"failed: notes · sync",
+		"Guides · success",
+		"Autobump · failure",
+		"failed: autobump / autobump · Detect drift and bump",
 		"full log: gh run view 43 --log-failed",
 	} {
 		if !strings.Contains(out, want) {
@@ -3598,7 +3607,7 @@ func TestShipCISettleWatchesLateRuns(t *testing.T) {
 	t.Setenv("GH_RUN_LIST_JSON_2", `[`+
 		`{"databaseId":42,"workflowName":"ci","status":"completed","url":"https://x/42"},`+
 		`{"databaseId":44,"workflowName":"settle-late","status":"completed","url":"https://x/44"}]`)
-	t.Setenv("GH_RUN_VIEW_JSON_42", fakeRunViewSuccess)
+	t.Setenv("GH_RUN_VIEW_JSON_42", ghStdout(t, "run-view-success"))
 	t.Setenv("GH_RUN_VIEW_JSON_44", `{"workflowName":"settle-late","conclusion":"success","startedAt":"2026-07-08T18:00:00Z","updatedAt":"2026-07-08T18:00:10Z","url":"https://x/44","jobs":[]}`)
 	shipCIPollInterval = 0
 
@@ -3622,7 +3631,7 @@ func TestShipCISettleWatchesLateRuns(t *testing.T) {
 	if !watched["42"] || !watched["44"] {
 		t.Errorf("expected the settle pass to watch both runs, got %v", watched)
 	}
-	for _, want := range []string{"ci · success", "settle-late · success"} {
+	for _, want := range []string{"Guides · success", "settle-late · success"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing settle report line %q\ngot:\n%s", want, out)
 		}
@@ -3635,7 +3644,7 @@ func TestShipCIBudgetFloorsPerRunShare(t *testing.T) {
 	t.Setenv("GH_RUN_LIST_JSON", `[`+
 		`{"databaseId":42,"workflowName":"ci","status":"completed","url":"https://x/42"},`+
 		`{"databaseId":43,"workflowName":"cc-notes","status":"completed","url":"https://x/43"}]`)
-	t.Setenv("GH_RUN_VIEW_JSON_42", fakeRunViewFailure)
+	t.Setenv("GH_RUN_VIEW_JSON_42", ghStdout(t, "run-view-failed"))
 	t.Setenv("GH_RUN_VIEW_JSON_43", `{"workflowName":"cc-notes","conclusion":"failure","startedAt":"2026-07-08T18:00:00Z","updatedAt":"2026-07-08T18:00:05Z","url":"https://x/43","jobs":[{"name":"notes","conclusion":"failure","steps":[{"name":"sync","conclusion":"failure"}]}]}`)
 	t.Setenv("GH_LOG_FAILED_42", bigLog)
 	t.Setenv("GH_LOG_FAILED_43", bigLog)
@@ -3697,7 +3706,7 @@ func TestShipCIStreamingSeam(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			log := setupShip(t, ".jj", true)
 			t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
-			t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewSuccess)
+			t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 			shipCIPollInterval = 0
 
 			old := shipStreamCI
@@ -3922,7 +3931,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			t.Setenv("GIT_BRANCH", tt.branch)
 			t.Setenv("GT_STATE_JSON", tt.stateJSON)
 			t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
-			t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewSuccess)
+			t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 			t.Setenv("GH_PR_VIEW_JSON", `{"number":7,"url":"https://github.com/x/pull/7","body":"why"}`)
 			shipCIPollInterval = 0
 
@@ -3972,7 +3981,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 	t.Setenv("GT_STATE_JSON_2", `{"main":{"trunk":true},"fix-frobnicate":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
 	t.Setenv("GT_STATE_JSON_MARKER", filepath.Join(t.TempDir(), "gt-state"))
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
-	t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewSuccess)
+	t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 	t.Setenv("GH_PR_VIEW_JSON", `{"number":9,"url":"https://github.com/x/pull/9","body":"why"}`)
 	shipCIPollInterval = 0
 
@@ -4073,102 +4082,92 @@ func TestShipGTBodylessPR(t *testing.T) {
 // split: outside the graphite lane, trunk in your own repository is committed
 // to directly, and an org trunk gets a branch instead.
 func TestShipTrunkPersonalAppends(t *testing.T) {
-	setupShip(t, ".git", false)
-	t.Setenv("GIT_TRUNK", "main")
+	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 
 	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · branch main · not pushed`
-	if got != want {
+	head := gitAt(t, f.Dir, "log", "-1", "--format=%h")
+	if want := fmt.Sprintf(`committed %s "fix: frobnicate" · branch main · not pushed`, head); got != want {
 		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "main" {
+		t.Errorf("branch after ship = %q, want main", branch)
+	}
+	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "main"); subject != "fix: frobnicate" {
+		t.Errorf("main tip = %q, want the shipped commit", subject)
 	}
 }
 
 func TestShipTrunkOrgCreates(t *testing.T) {
-	log := setupShip(t, ".git", false)
-	t.Setenv("GIT_TRUNK", "main")
-	seedLaneRecords(t, ".", laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
+	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
+	seedLaneRecords(t, f.Dir, laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
 
 	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · created fix-frobnicate · not pushed`
-	if got != want {
+	head := gitAt(t, f.Dir, "log", "-1", "--format=%h")
+	if want := fmt.Sprintf(`committed %s "fix: frobnicate" · created fix-frobnicate · not pushed`, head); got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	assertInvocations(t, readInvocations(t, log), [][]string{
-		{"git", "branch", "--show-current"},
-		gitTrunkArgv,
-		{"git", "switch", "-c", "fix-frobnicate"},
-		{"git", "add", "-A"},
-		{"git", "commit", "-m", "fix: frobnicate"},
-		{"git", "branch", "--show-current"},
-		{"git", "log", "-1", "--format=%h%x00%s"},
-	})
+	if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "fix-frobnicate" {
+		t.Errorf("branch after ship = %q, want the branch ship cut", branch)
+	}
+	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "main"); subject != "init" {
+		t.Errorf("main tip = %q, want the org trunk left where it was", subject)
+	}
 }
 
-// TestShipGitNewBranch proves --new-branch cuts the branch with git switch -c
-// before the commit, so the commit lands on it rather than on trunk.
+// TestShipGitNewBranch proves --new-branch cuts the branch before the commit,
+// so the commit lands on it rather than on trunk.
 func TestShipGitNewBranch(t *testing.T) {
-	log := setupShip(t, ".git", false)
+	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 
 	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · created feat-x · not pushed`
-	if got != want {
+	head := gitAt(t, f.Dir, "log", "-1", "--format=%h")
+	if want := fmt.Sprintf(`committed %s "fix: frobnicate" · created feat-x · not pushed`, head); got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	assertInvocations(t, readInvocations(t, log), [][]string{
-		{"git", "branch", "--show-current"},
-		gitTrunkArgv,
-		{"git", "switch", "-c", "feat-x"},
-		{"git", "add", "-A"},
-		{"git", "commit", "-m", "fix: frobnicate"},
-		{"git", "branch", "--show-current"},
-		{"git", "log", "-1", "--format=%h%x00%s"},
-	})
+	if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "feat-x" {
+		t.Errorf("branch after ship = %q, want feat-x", branch)
+	}
+	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "feat-x"); subject != "fix: frobnicate" {
+		t.Errorf("feat-x tip = %q, want the shipped commit", subject)
+	}
+	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "main"); subject != "init" {
+		t.Errorf("main tip = %q, want trunk left where it was", subject)
+	}
 }
 
 // TestShipGitNewBranchRollback proves a refusal after the branch cut leaves the
-// working copy where it started: ship switches back, deletes the branch it cut,
-// and still reports the failure that refused the ship.
+// repository where it started: ship switches back, deletes the branch it cut,
+// leaves the edit uncommitted, and still reports the failure that refused it.
 func TestShipGitNewBranchRollback(t *testing.T) {
-	log := setupShip(t, ".git", false)
-	root, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	writeShipHookFiles(t, root, "f1.go")
-	t.Setenv("GIT_DIFF_NAMES", "f1.go\n")
-	marker := filepath.Join(root, "prek.marker")
-	if err := os.WriteFile(marker, []byte("2"), 0o600); err != nil {
-		t.Fatalf("write marker: %v", err)
-	}
-	t.Setenv("UVX_PREK_FAIL_MARKER", marker)
+	f := shipRepo(t, vcstest.Remote())
+	writeShipHookFiles(t, f.Dir, "f1.go")
+	writeShipUvx(t, f.ShimBin, 2)
 
-	_, err = runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x")
+	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x")
 	if err == nil || !strings.Contains(err.Error(), "ship: hooks:") {
 		t.Fatalf("ship error = %v, want the hook failure", err)
 	}
-	hookArgv := []string{"uvx", "prek", "run", "--cd", root, "--files", "f1.go"}
-	assertInvocations(t, readInvocations(t, log), [][]string{
-		{"git", "branch", "--show-current"},
-		gitTrunkArgv,
-		{"git", "switch", "-c", "feat-x"},
-		{"git", "add", "-A"},
-		{"git", "diff", "--cached", "--name-only", "--diff-filter=d", "-z"},
-		hookArgv,
-		{"git", "add", "-A"},
-		{"git", "diff", "--cached", "--name-only", "--diff-filter=d", "-z"},
-		hookArgv,
-		{"git", "switch", "main"},
-		{"git", "branch", "-D", "feat-x"},
-	})
+	if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "main" {
+		t.Errorf("branch after rollback = %q, want main", branch)
+	}
+	if gitBranchExists(t, f.Dir, "feat-x") {
+		t.Error("feat-x survived the rollback")
+	}
+	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "init" {
+		t.Errorf("HEAD subject = %q, want no commit cut", subject)
+	}
+	if status := gitAt(t, f.Dir, "status", "--porcelain", "--", "f1.go"); status == "" {
+		t.Error("f1.go is committed or gone; the rollback must leave the edit uncommitted")
+	}
 }
 
 // TestShipGitNewBranchRollbackFailure proves a rollback that cannot finish is
@@ -4320,77 +4319,111 @@ func TestShipIllegalBranchName(t *testing.T) {
 // to one that exists elsewhere.
 func TestShipBranchFlag(t *testing.T) {
 	t.Run("naming the current branch appends", func(t *testing.T) {
-		log := setupShip(t, ".git", false)
-		t.Setenv("GIT_BRANCH", "feature")
+		f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"), vcstest.Dirty())
 
 		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "feature")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
-		want := `committed a1b2c3d "fix: frobnicate" · branch feature · not pushed`
-		if got != want {
-			t.Errorf("summary = %q, want %q", got, want)
-		}
-		for _, inv := range readInvocations(t, log) {
+		for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
 			if inv[0] == "git" && inv[1] == "switch" {
 				t.Errorf("git switch ran for a branch already checked out: %v", inv)
 			}
 		}
+		head := gitAt(t, f.Dir, "log", "-1", "--format=%h")
+		if want := fmt.Sprintf(`committed %s "fix: frobnicate" · branch feature · not pushed`, head); got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+		if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "feature"); subject != "fix: frobnicate" {
+			t.Errorf("feature tip = %q, want the shipped commit", subject)
+		}
 	})
 
 	t.Run("naming an existing branch refuses", func(t *testing.T) {
-		log := setupShip(t, ".git", false)
-		t.Setenv("GIT_BRANCH", "feature")
+		f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"), vcstest.Dirty())
+		mustRun(t, f.Dir, "git", "branch", "other")
+		before := gitAt(t, f.Dir, "rev-parse", "HEAD")
+		setup := len(vcstest.Invocations(t, f.ArgvLog))
 
 		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "other")
 		wantErr := "ship: branch other already exists — check it out first; ship does not switch branches mid-commit"
 		if err == nil || err.Error() != wantErr {
 			t.Fatalf("error = %v, want %q", err, wantErr)
 		}
-		assertNoShipMutation(t, readInvocations(t, log))
+		assertNoShipMutation(t, vcstest.Invocations(t, f.ArgvLog)[setup:])
+		if head := gitAt(t, f.Dir, "rev-parse", "HEAD"); head != before {
+			t.Errorf("HEAD = %s, want it unmoved at %s", head, before)
+		}
 	})
 
 	t.Run("naming a missing branch creates it here", func(t *testing.T) {
-		setupShip(t, ".git", false)
-		t.Setenv("GIT_BRANCH", "feature")
-		t.Setenv("GIT_REMOTE_REF_MISSING", "1")
+		f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"), vcstest.Dirty())
 
 		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "other")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
-		want := `committed a1b2c3d "fix: frobnicate" · created other · not pushed`
-		if got != want {
+		head := gitAt(t, f.Dir, "log", "-1", "--format=%h")
+		if want := fmt.Sprintf(`committed %s "fix: frobnicate" · created other · not pushed`, head); got != want {
 			t.Errorf("summary = %q, want %q", got, want)
+		}
+		if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "other" {
+			t.Errorf("branch after ship = %q, want other", branch)
 		}
 	})
 
 	t.Run("naming an org trunk refuses without --allow-trunk", func(t *testing.T) {
-		log := setupShip(t, ".git", false)
-		t.Setenv("GIT_BRANCH", "feature")
-		t.Setenv("GIT_TRUNK", "main")
-		seedLaneRecords(t, ".", laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
+		f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"), vcstest.Dirty())
+		seedLaneRecords(t, f.Dir, laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
+		before := gitAt(t, f.Dir, "rev-parse", "HEAD")
 
 		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "main")
 		if err == nil || !strings.Contains(err.Error(), "pass --allow-trunk to advance it deliberately") {
 			t.Fatalf("error = %v, want the org-trunk refusal", err)
 		}
-		assertNoShipMutation(t, readInvocations(t, log))
+		assertNoShipMutation(t, vcstest.Invocations(t, f.ArgvLog))
+		if head := gitAt(t, f.Dir, "rev-parse", "HEAD"); head != before {
+			t.Errorf("HEAD = %s, want it unmoved at %s", head, before)
+		}
 	})
 }
 
 // TestShipAppendFlag proves --append refuses on trunk, where the branch it
 // would append to is the one ship exists to keep commits off.
+// TestShipTrunkTagRefuses drives the whole ship through an origin/HEAD pointed
+// at a tag — a state one git command reaches and no fake that prefixes its
+// answer with "origin/" can produce. symbolic-ref --short prints the tag at
+// exit 0, so ship must refuse rather than ship onto it.
+func TestShipTrunkTagRefuses(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
+	mustRun(t, f.Dir, "git", "tag", "v1")
+	mustRun(t, f.Dir, "git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/tags/v1")
+	before := gitAt(t, f.Dir, "rev-parse", "HEAD")
+	setup := len(vcstest.Invocations(t, f.ArgvLog))
+
+	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err == nil || !strings.Contains(err.Error(), `points at "v1", which names no branch of origin`) {
+		t.Fatalf("ship error = %v, want the tag-trunk refusal", err)
+	}
+	assertNoShipMutation(t, vcstest.Invocations(t, f.ArgvLog)[setup:])
+	if head := gitAt(t, f.Dir, "rev-parse", "HEAD"); head != before {
+		t.Errorf("HEAD = %s, want it unmoved at %s", head, before)
+	}
+}
+
 func TestShipAppendFlag(t *testing.T) {
-	log := setupShip(t, ".git", false)
-	t.Setenv("GIT_TRUNK", "main")
+	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
+	before := gitAt(t, f.Dir, "rev-parse", "HEAD")
 
 	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--append")
 	wantErr := "ship: append would commit onto trunk — pass --new-branch"
 	if err == nil || err.Error() != wantErr {
 		t.Fatalf("error = %v, want %q", err, wantErr)
 	}
-	assertNoShipMutation(t, readInvocations(t, log))
+	assertNoShipMutation(t, vcstest.Invocations(t, f.ArgvLog))
+	if head := gitAt(t, f.Dir, "rev-parse", "HEAD"); head != before {
+		t.Errorf("HEAD = %s, want it unmoved at %s", head, before)
+	}
 }
 
 // TestShipGTTrackReportsParent proves the parent gt track -f picked is named in
@@ -5065,7 +5098,7 @@ func TestShipReviewsWiring(t *testing.T) {
 		setupShip(t, ".git", true)
 		stubReviewsAPI(t)
 		t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
-		t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewSuccess)
+		t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 		shipCIPollInterval = 0
 
 		out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--reviews")
@@ -5092,7 +5125,7 @@ func TestShipReviewsWiring(t *testing.T) {
 		t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 			`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
 		t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
-		t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewSuccess)
+		t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 		t.Setenv("GH_PR_VIEW_NOT_FOUND", "1")
 		shipCIPollInterval = 0
 
@@ -5127,7 +5160,7 @@ func TestShipReviewsWiring(t *testing.T) {
 		setupShipGT(t, true)
 		stubReviewsAPI(t)
 		t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
-		t.Setenv("GH_RUN_VIEW_JSON", fakeRunViewFailure)
+		t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-failed"))
 		t.Setenv("GH_WATCH_EXIT", "1")
 		t.Setenv("GH_LOG_FAILED", "go test failed\n")
 		t.Setenv("GH_PR_VIEW_NOT_FOUND", "1")
