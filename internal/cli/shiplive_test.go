@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/vcs"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 // TestMain re-execs the test binary as the ccx-ship-select diff tool: jj's
@@ -734,7 +735,9 @@ func mapEqual(a, b map[string]bool) bool {
 // requireLiveGT skips a live gt test when gt is off PATH, isolates HOME,
 // XDG_CONFIG_HOME, and PATH (no brew) under a fresh TempDir, and clears
 // GRAPHITE_AUTH_TOKEN so gt never authenticates during a live test; sync
-// and submit are never invoked here.
+// and submit are never invoked here. The brew-free PATH is vcstest's: gt's
+// first run under a fresh HOME shells out to brew when it can find one,
+// racing its bootsnap cache write against cleanup.
 func requireLiveGT(t *testing.T) {
 	t.Helper()
 	requireLiveVCS(t, "git", "gt")
@@ -742,37 +745,7 @@ func requireLiveGT(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
 	t.Setenv("GRAPHITE_AUTH_TOKEN", "")
-	scrubBrewFromPATH(t)
-}
-
-// scrubBrewFromPATH rebuilds PATH from the resolved git/gt dirs plus the base
-// system dirs, dropping any Homebrew bin dir: gt's first run under a fresh
-// HOME shells out to brew, racing its bootsnap cache write against cleanup.
-func scrubBrewFromPATH(t *testing.T) {
-	t.Helper()
-	path := []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
-	seen := map[string]bool{}
-	for _, p := range path {
-		seen[p] = true
-	}
-	for _, bin := range []string{"git", "gt"} {
-		resolved, err := exec.LookPath(bin)
-		if err != nil {
-			t.Fatalf("resolve %s: %v", bin, err)
-		}
-		// A Homebrew formula's PATH entry is itself a symlink into a Cellar
-		// dir it shares with no other formula; resolve it or brew's own bin
-		// dir (holding the symlink) leaks back onto PATH.
-		target, err := filepath.EvalSymlinks(resolved)
-		if err != nil {
-			t.Fatalf("resolve symlink %s: %v", resolved, err)
-		}
-		if dir := filepath.Dir(target); !seen[dir] {
-			seen[dir] = true
-			path = append(path, dir)
-		}
-	}
-	t.Setenv("PATH", strings.Join(path, string(os.PathListSeparator)))
+	vcstest.LinkPATH(t, "git", "gt")
 }
 
 // setupLiveGTRepo stands up a config-isolated git repo with a graphite trunk
