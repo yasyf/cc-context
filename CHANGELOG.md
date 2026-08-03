@@ -22,6 +22,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `git init --separate-git-dir`, reports no `main-root` at all, because there
   is no main working copy — git's own `git worktree list` cannot recover one
   either.
+- **`ccx vcs worktree list|add|rm|repair`.** Management verbs for the working
+  copies `ccx vcs info` learned to place. `list` reports every checkout git
+  registers, each resolved to its shape, with branch, lock, and prunable state
+  inline and a `defect` where resolution fails — a dangling gitdir pointer is
+  that row's answer, never an exit 1, following the `checkout_error`
+  precedent — budget-capped with a withheld count, `--json` for the raw
+  report. `add` dispatches on the checkout's shape (`jj workspace add` from a
+  jj workspace, `git worktree add` from anything else) and mints the path
+  outside the repository tree, under
+  `$HOME/.ccx/worktrees/<basename>-<key>/<name>` — a pool keyed by repository
+  identity, the key an eight-character digest of the repo key, so every
+  sibling of one repository mints into the same directory however far apart
+  their roots sit; `--jj colocate` is refused
+  with jj's own words, since jj 0.43 rejects a colocated repo inside a git
+  worktree. `rm` removes only what `add` minted: a worktree merely sharing the
+  name is refused by the path it lives at and left to `git worktree remove`,
+  since resolving it by basename would hand rm a tree the user never pointed
+  ccx at. It refuses while the target holds trunk and names it — every
+  restack rebases onto it — except where no trunk resolves at all, a repo
+  with no remote, say — where the guard has nothing to protect and the add/rm
+  round trip closes; only the clean miss skips, a lookup that fails still
+  errors. A jj workspace is removed by forgetting it and deleting its tree,
+  because forget alone leaves a live-looking directory behind — and because
+  forget also drops changes jj never snapshotted, rm runs the dirty-tree
+  refusal git has and jj lacks, standing down only under `--force`, the flag
+  the git lane forwards to `git worktree remove`. The lookup-fails-still-errors
+  rule holds where rm resolves its target, too: a workspace whose `.jj/repo`
+  pointer is unreadable or resolves to nothing surfaces that failure instead
+  of `no working copy named "<name>"` — a refusal reading as a clean miss
+  invites deleting the tree by hand, stranding exactly the stale registry
+  entry forget-and-delete exists to avoid.
+  `repair` re-points a dangling gitdir pointer — the exact breakage
+  `info` could already diagnose and nothing could fix — running git from the
+  repository the pointer itself names; `--dry-run` prints the command instead
+  of running it.
 
 ### Changed
 - **`ccx vcs info` reports the states it used to exit 1 on.** A working copy whose
@@ -59,8 +94,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lookups. It is now a single `gh api graphql` naming every branch: on a
   two-branch stack, a ship with no PR flags went from 2 `gh` calls to 1, and
   one carrying `--pr-body-file` from 5 to 2. Selection is unchanged — no state
-  filter, matching `gh pr view`, and a branch with two open pull requests
-  resolves to the older one deterministically.
+  filter and newest first, both matching `gh pr view` — so a branch resubmitted
+  after its first pull request closed still resolves to the live one, and
+  `--pr-body-file` writes the body there rather than onto the corpse.
+- **`ccx vcs reviews` talks to GitHub's API directly instead of shelling out
+  to `gh`.** A watch ran four `gh` subprocesses per pull request per 30-second
+  poll cycle for its whole life — a three-branch stack watched for ten minutes
+  spawned ~243 processes — plus one per target at setup. A cycle is now one
+  GraphQL query resolving every open target's state, batched under aliases,
+  plus three REST reads per target, with zero subprocesses; setup is at most
+  two GraphQL calls however many targets. The new `internal/ghapi` client
+  resolves its token in gh's own precedence — `GH_TOKEN`, then `GITHUB_TOKEN`,
+  then `gh auth token` — so gh stays the sole authority over its
+  keyring-backed store, and re-resolves once on a 401, so a long watch
+  survives a rotated token. Pagination follows the `Link: rel="next"` header,
+  and a rate-limited request waits out a reset landing within 60s (at most 3
+  times) but returns immediately on anything further out: an hour-long
+  primary-limit reset is the watch's own 30-second cadence's problem, never
+  one call's. A branch with no pull request is now a query answering zero
+  nodes rather than an error whose text gets matched — the
+  `strings.Contains(err.Error(), "no pull requests found")` test is gone.
+- **`ccx vcs ship` breaks a nearest-bookmark tie by who holds the
+  candidates.** Two bookmarks at the same nearest position resolved through
+  the trunk alias alone; when a sibling working copy has one of them checked
+  out, that bookmark is the sibling's, not an equal alternative here. Ship now
+  keeps the one candidate no sibling holds and says so — `bookmark <kept>
+  (chosen over <other> held in <path>)` — answering only when exactly one is
+  left standing, because holder data is not total: a colocated jj working copy
+  is detached and reports no holder at all. The same lookup explains the one
+  heal git refuses for a reason outside this working copy's own state:
+  recovering a detached HEAD onto a branch a sibling holds now names the
+  holder instead of surfacing git's bare refusal.
 
 ### Fixed
 - **`ccx vcs info` failures named a command nobody ran.** Resolving the git lane's
@@ -78,6 +142,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   walker excludes VCS directories, not files, and ccx walks hidden entries, so
   `ccx repo find ".git"` returned a row from every linked worktree. Both now
   resolve through the common dir.
+- **`ccx vcs ship --no-push` left the jj bookmark behind.** The commit landed
+  in `@-` but the bookmark never moved — a jj bookmark does not follow
+  `jj commit` the way a git branch ref follows `git commit` — so after N
+  `--no-push` ships it sat N commits back. The failure was silent and
+  deferred: a later `jj git push` pushed the un-moved bookmark and reported
+  `Nothing changed`, so the commits looked pushed and were not — reproduced
+  live, four successive ships left `main` four commits behind. The move now
+  runs inside the `--no-push` branch only; the push path keeps its own,
+  because the rebase decision reads `bookmarks(exact:...) & ::@-` and jj's
+  `::@-` includes `@-` itself, so a bookmark moved early would suppress a
+  rebase the push still needs.
+- **`ccx vcs diff` rendered a modified file as a whole-file addition when its
+  name carries a rune Go's `%q` escapes.** The jj lane addressed every
+  per-file blob read with a `root:%q` fileset pattern, and `%q` spells a
+  zero-width joiner, a non-breaking space, or an ideographic space as
+  `\uXXXX` — an escape jj's string grammar does not have (its vocabulary is
+  `\t \r \n \0 \e \xHH`), so the pattern failed to parse. The existence probe
+  then swallowed exactly that failure: an `err == nil &&` read the parse
+  error as "path absent from the base revision", the base blob came back
+  empty, and the modification rendered as an addition of the whole file —
+  exit 0, nothing on stderr, a reviewer reading a diff that was not the diff.
+  `ccx vcs show` shares the plan machinery and told the same fiction, and the
+  same pattern fed ship's hunk selection, which refused such a path outright.
+  Both halves are fixed. Every fileset and revset pattern now goes through
+  one escaper writing the only two bytes jj's grammar needs escaped — `\` and
+  `"`; raw UTF-8 is legal inside the quotes. And the existence probe
+  enumerates instead of probing on both backends, so only an empty listing
+  reads as absence and every failure propagates: the git side moves off
+  `cat-file -e`, which exits 128 alike for a path the tree lacks and a tree
+  it cannot read, onto a `--literal-pathspecs` listing — a name carrying glob
+  metacharacters matches itself instead of its neighbors — with the index read
+  at stage 0, which a conflicted path never carries.
+- **A jj bookmark named with `@` could not ship.** `exact:foo@bar` reads to jj
+  as a symbol carrying a remote, so the bookmark move and
+  `jj git push --bookmark` both refused to parse it — after the commit had
+  already landed — and auto-discovery broke one step earlier: jj quotes a
+  name it would otherwise reread as a symbol, so the readback returned the
+  name quotes included and ship failed with `bookmark "\"foo@bar\"" not
+  found`. Every pattern and revset ship builds now carries the name as jj's
+  quoted exact string — Go's `%q`, which the revsets used, writes escapes
+  jj's grammar lacks, so a name carrying a rune like a non-breaking space
+  broke them the same way — the readback, trunk discovery included,
+  round-trips through `escape_json()` and a JSON decode rather than
+  reimplementing jj's own escape table, and the recovery hints arrive
+  shell-quoted, so the command a refusal says to paste is one jj accepts.
+  Such a bookmark is discovered, moved, and pushed intact.
+- **`ccx vcs restack` reported success over branches Graphite skipped.** gt
+  splits one sync across its two streams and exits 0 either way: it names a
+  branch it declined to restack — checked out in a worktree, frozen,
+  merging — on stdout, and reports a trunk it could not pull as an
+  `ERROR:`-prefixed line on stderr; off a terminal ccx discarded both on a
+  zero exit, and the verdict came from before/after SHA comparisons of HEAD
+  and the local trunk ref, which gt can fail to advance — a sibling checkout
+  holding trunk with conflicting unstaged changes, a trunk that cannot
+  fast-forward — while still exiting 0 without declining a single branch. So
+  a skipped branch read as restacked, a stack sitting behind the trunk
+  everyone else sees read as current, and the one line saying why never
+  reached the user. Every stack branch now takes its own ancestry verdict
+  against the remote-tracking trunk — the ref gt's own fetch writes before it
+  ever touches the local branch; one that does not exist refuses with the
+  `git fetch` to run, and the probe asks for it fully qualified, because git
+  resolves a short `origin/main` through local branches and tags first, so a
+  decoy named `origin/main` would answer in the verified ref's place with
+  nothing but a stderr warning. Everything gt printed is kept: a decline is
+  read off whichever stream carried it and believed over ancestry — a branch
+  gt named never counts as restacked, and one that nonetheless sits on trunk
+  says both facts rather than folding into either bucket —
+  `restacked 2 of 3 · trunk main · skipped b (frozen; already on refs/remotes/origin/main)`
+  vs `skipped b (merging)` — and gt's own `ERROR:`/`WARNING:` lines are
+  re-emitted to stderr, so a report that says the stack is behind arrives
+  with gt's reason why; exit 0 stays a success, since the verdict already
+  carries that fact. And the summary names the working copy holding trunk —
+  `trunk main (checked out in /w/trunk)` — because when the whole stack reads
+  behind with nothing declined, that checkout is where the pull stopped. A
+  pre-flight refuses before gt runs at all when another working copy holds a
+  stack branch, since git will not move a branch a sibling checkout has
+  checked out.
+- **A trunk that is not `main` surfaced git's raw fatal.** With a remote HEAD
+  nobody set, resolving the default branch falls back to probing
+  `refs/remotes/<remote>/main` then `master` — but the probe ran
+  `git show-ref --verify` without `--quiet`, and without it a missing ref is
+  a `fatal` at exit 128, never the exit 1 the fallback continues on. The
+  `master` arm was unreachable, so `ccx vcs restack` and `ccx vcs info`
+  answered any such repo whose trunk is not `main` with git's own
+  `not a valid ref` instead of the trunk — or instead of the
+  `git remote set-head` hint written for exactly that state.
+- **`ccx vcs ship` could adopt a git tag as trunk.** `git symbolic-ref
+  --short refs/remotes/origin/HEAD` prints whatever origin/HEAD names at
+  exit 0, a tag as readily as a branch, and ship trimmed `origin/` off the
+  answer without checking the trim took — so an origin/HEAD pointed at
+  `refs/tags/v1` made `v1` the trunk. No branch carries that name, so every
+  ship read as off-trunk, and the on-trunk protections — starting a branch on
+  someone else's repository rather than committing where a protect hook will
+  reject it — silently disarmed. A target outside `origin/` now refuses with
+  the `git remote set-head origin -a` to run; the empty answer keeps its one
+  meaning, the unresolved ref of a local-only repository. restack and info
+  already refused this through their own resolver; ship now matches.
+- **`ccx vcs ship`'s hook run refuses a held index lock and scrubs git's
+  environment from hook children.** A git index lock another process held
+  failed the hooks opaquely; ship now refuses up front with the lock's path
+  and mtime, because only the age separates a live sibling session (seconds)
+  from a crashed process's leftovers (hours) — and the lock checked is this
+  checkout's own, beside its index, which sibling worktrees do not share. And
+  hook children inherited `GIT_DIR`/`GIT_WORK_TREE`, each pinning git to
+  whatever checkout invoked ccx — which, invoked from a linked worktree, is
+  not the checkout being committed; both are scrubbed from the environment
+  prek's children see.
+- **The first `ccx format` after install could time out.** `runEngine` started
+  its 10s per-call deadline before the one-time WASM compile, so the compile
+  spent the call's own budget: a cold compile measured 0.35s on a warm host
+  and 10.4s under `-race` — past the whole limit. The engine now loads before
+  the call deadline starts, so a slow host's first conversion pays the compile
+  in full and the 10s bound only the call it was written for.
 
 ## [0.39.0] - 2026-07-28
 
