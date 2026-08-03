@@ -219,14 +219,16 @@ func gtRestackPreflight(ctx context.Context, l lane, stack []string, trunk strin
 }
 
 // gtSync runs gt sync and returns everything it printed, both streams
-// interleaved. gt splits one sync across the two and exits 0 either way: it
-// names a branch it declined to restack on stdout, and reports a trunk it could
-// not pull with an ERROR:-prefixed line on stderr. A caller that keeps only
-// stdout, or only the error, sees neither.
+// interleaved. gt 1.8.6 splits one exit-0 sync across the two: it names a
+// branch it declined on stdout, and warns on stderr about one it could not
+// restack — "WARNING: <b> could not be restacked cleanly." — while stdout's
+// restack section stays empty. A caller that keeps one stream sees half the
+// sync.
 //
 // Exit 0 stays a success — gtZeroSurfaces — because the verdict re-measures the
 // stack's ancestry itself, so a diagnostic explains a report ccx already made
-// rather than deciding it.
+// rather than deciding it. A trunk gt could neither pull nor fast-forward exits
+// 1 and reaches classifyGTRestack instead.
 func gtSync(ctx context.Context, errW io.Writer) (string, error) {
 	r, err := gtRun(ctx, []string{"sync", "--no-interactive"}, gtZeroSurfaces, errW)
 	if err != nil {

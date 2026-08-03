@@ -400,12 +400,17 @@ func TestRestackGTPerBranchVerdict(t *testing.T) {
 }
 
 // TestRestackGTSurfacesSyncDiagnostics covers the half of a sync stdout alone
-// cannot see. gt 1.8.6 splits one sync across both streams — informational
-// output on stdout, severity-led lines on stderr — and exits 0 for both, so a
-// trunk gt could not pull leaves the summary reporting the stack as behind with
-// nothing saying why. Exit 0 stays a success, since the remote-trunk oracle
-// already reports the stack correctly; the lines explain that report rather than
-// override gt.
+// cannot see. gt 1.8.6 splits one exit-0 sync across both streams — the phase
+// banners on stdout, severity-led lines on stderr — so a restack it declined
+// leaves the summary reporting the stack as behind with nothing saying why. The
+// warning row is gt 1.8.6's own bytes, captured from a sync whose checked-out
+// branch needed a restack and carried a conflicting unstaged edit: exit 0,
+// stdout ending at "🥞 Restacking branches...", the explanation on stderr alone.
+// The "could not be restacked cleanly" line recurs across 49 of the 9,346 real
+// gt runs on this machine, over 27 distinct branches, so it is the durable half
+// of the pair.
+// Exit 0 stays a success, since the remote-trunk oracle already reports the
+// stack correctly; the lines explain that report rather than override gt.
 func TestRestackGTSurfacesSyncDiagnostics(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -415,23 +420,16 @@ func TestRestackGTSurfacesSyncDiagnostics(t *testing.T) {
 		denyErr []string
 	}{
 		{
-			name:    "an error gt exited 0 on still reaches the user",
-			stderr:  "ERROR: Cannot pull trunk due to conflicting unstaged changes.",
-			want:    "restacked 1 of 1 · trunk main",
-			wantErr: []string{"ERROR: Cannot pull trunk due to conflicting unstaged changes."},
-		},
-		{
-			name:    "a warning reaches the user too",
-			stderr:  "WARNING: Your Graphite CLI is out of date.",
-			want:    "restacked 1 of 1 · trunk main",
-			wantErr: []string{"WARNING: Your Graphite CLI is out of date."},
-		},
-		{
-			name:    "unlabelled chatter stays out of the report",
-			stderr:  "Fetching from origin...\nERROR: Cannot pull trunk.",
-			want:    "restacked 1 of 1 · trunk main",
-			wantErr: []string{"ERROR: Cannot pull trunk."},
-			denyErr: []string{"Fetching from origin..."},
+			name: "the warnings gt exited 0 on still reach the user",
+			stderr: "WARNING: Did not restack checked out branch feature due to conflicting unstaged changes.\n" +
+				"WARNING: feature could not be restacked cleanly.\n\n" +
+				"Please resolve conflicts in the current stack with gt restack.",
+			want: "restacked 1 of 1 · trunk main",
+			wantErr: []string{
+				"WARNING: Did not restack checked out branch feature due to conflicting unstaged changes.",
+				"WARNING: feature could not be restacked cleanly.",
+			},
+			denyErr: []string{"Please resolve conflicts in the current stack with gt restack."},
 		},
 		{
 			name: "a decline is read off whichever stream carried it",
@@ -473,7 +471,7 @@ func TestRestackGTSurfacesSyncDiagnostics(t *testing.T) {
 // print every line the user just watched a second time.
 func TestRestackGTStreamedSyncPrintsDiagnosticsOnce(t *testing.T) {
 	setupRestack(t, ".git", true, true)
-	line := "ERROR: Cannot pull trunk due to conflicting unstaged changes."
+	line := "WARNING: Did not restack checked out branch feature due to conflicting unstaged changes."
 	t.Setenv("RESTACK_GT_SYNC_STDERR", line)
 	old := shipStreamCI
 	t.Cleanup(func() { shipStreamCI = old })
@@ -665,8 +663,13 @@ func TestRestackGTRunsWhenThisWorkingCopyHoldsTheStack(t *testing.T) {
 // TestRestackGTFailures pins the classifier to gt's own streams. The conflict
 // banner rides stdout with stderr empty — reproduced twice against gt 1.8.6.
 // The auth rows drive stderr instead, so the two together prove neither stream
-// alone is enough. Every row also asserts gt's failure survives the advice that
-// replaces its sentence.
+// alone is enough. The last two rows are the sentences gt 1.8.6 prints for a
+// trunk it could not move — a dirty worktree holding it, and a local trunk
+// diverged from remote — both exit 1 under --no-interactive without --force,
+// where the classifier's default arm must carry them through verbatim; the
+// trailing space is splog's, from an error template that always appends one.
+// Every row also asserts gt's failure survives the advice that replaces its
+// sentence.
 func TestRestackGTFailures(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -694,9 +697,14 @@ func TestRestackGTFailures(t *testing.T) {
 			exact:  true,
 		},
 		{
-			name:   "unknown",
-			stderr: "unclassified graphite failure",
-			want:   "unclassified graphite failure",
+			name:   "trunk held dirty",
+			stderr: "ERROR: Cannot pull trunk due to conflicting unstaged changes. ",
+			want:   "ERROR: Cannot pull trunk due to conflicting unstaged changes.",
+		},
+		{
+			name:   "trunk diverged",
+			stderr: "WARNING: main could not be fast-forwarded.",
+			want:   "WARNING: main could not be fast-forwarded.",
 		},
 	}
 	for _, tt := range tests {
