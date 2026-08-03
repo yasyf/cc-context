@@ -273,6 +273,198 @@ func TestRepoShimLeadsBrewFreePATH(t *testing.T) {
 	}
 }
 
+// mustNotSkip runs body as a subtest and fails when it skips: a skip reads as
+// a pass in the run summary, so a fixture that silently skipped would report
+// success having verified nothing.
+func mustNotSkip(t *testing.T, name string, body func(t *testing.T)) {
+	t.Helper()
+	var skipped bool
+	t.Run(name, func(t *testing.T) {
+		t.Cleanup(func() { skipped = t.Skipped() })
+		body(t)
+	})
+	if skipped {
+		t.Errorf("subtest %s skipped, want it to run", name)
+	}
+}
+
+// requireHostTool skips when tool really is absent from the host PATH, so the
+// mustNotSkip assertions below only fire on a shim that lost a tool it had.
+func requireHostTool(t *testing.T, tool string) {
+	t.Helper()
+	if _, err := exec.LookPath(tool); err != nil {
+		t.Skipf("%s not installed on the host", tool)
+	}
+}
+
+func TestSecondFixtureResolvesToolTheFirstDidNot(t *testing.T) {
+	requireHostTool(t, "jj")
+	mustNotSkip(t, "jj after git", func(t *testing.T) {
+		Repo(t)
+		f := Repo(t, JJ())
+		if v := out(t, f.Dir, "jj", "--version"); !strings.HasPrefix(v, "jj ") {
+			t.Errorf("jj --version = %q, want a jj version line", v)
+		}
+	})
+}
+
+func TestSecondFixtureKeepsFirstFixtureTools(t *testing.T) {
+	requireHostTool(t, "jj")
+	mustNotSkip(t, "git after jj", func(t *testing.T) {
+		Repo(t, JJ())
+		f := Repo(t, BrokenGitDir())
+		if v := out(t, f.Dir, "jj", "--version"); !strings.HasPrefix(v, "jj ") {
+			t.Errorf("jj --version = %q, want a jj version line", v)
+		}
+		got := Invocations(t, f.ArgvLog)
+		if want := [][]string{{"jj", "--version"}}; !reflect.DeepEqual(got, want) {
+			t.Errorf("Invocations() = %v, want %v — jj bypassed the second fixture's shim", got, want)
+		}
+	})
+}
+
+func TestSecondFixtureShimLeadsABrewFreePATHOverBothToolsets(t *testing.T) {
+	requireHostTool(t, "jj")
+	mustNotSkip(t, "shim after two fixtures", func(t *testing.T) {
+		Repo(t, JJ())
+		f := Repo(t)
+
+		for _, tool := range []string{"git", "jj"} {
+			resolved, err := exec.LookPath(tool)
+			if err != nil {
+				t.Fatalf("LookPath(%s): %v", tool, err)
+			}
+			if want := filepath.Join(f.ShimBin, tool); resolved != want {
+				t.Errorf("LookPath(%s) = %q, want the second fixture's shim at %q", tool, resolved, want)
+			}
+		}
+		path := os.Getenv("PATH")
+		if strings.Contains(path, "homebrew") || strings.Contains(path, "Homebrew") {
+			t.Errorf("PATH = %q, want no brew dir", path)
+		}
+		if want := toolPATH(f.ShimBin); path != want {
+			t.Errorf("PATH = %q, want %q", path, want)
+		}
+	})
+}
+
+func TestSecondFixtureShimWrapsTheRealBinary(t *testing.T) {
+	f1 := Repo(t)
+	f2 := Repo(t)
+
+	script, err := os.ReadFile(filepath.Join(f2.ShimBin, "git"))
+	if err != nil {
+		t.Fatalf("read the second fixture's shim: %v", err)
+	}
+	if strings.Contains(string(script), f1.ShimBin) {
+		t.Errorf("the second fixture's shim execs the first fixture's shim:\n%s", script)
+	}
+	if got := Invocations(t, f1.ArgvLog); got != nil {
+		t.Errorf("the second fixture's construction leaked into the first fixture's log: %v", got)
+	}
+
+	out(t, f2.Dir, "git", "--version")
+	got := Invocations(t, f2.ArgvLog)
+	if want := [][]string{{"git", "--version"}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("second fixture invocations = %v, want %v", got, want)
+	}
+	if got := Invocations(t, f1.ArgvLog); got != nil {
+		t.Errorf("the first fixture's log kept recording after the second took PATH: %v", got)
+	}
+}
+
+// TestLinkPATHNarrowsToItsOwnTools pins the contract that separates LinkPATH
+// from the shim: the shim accumulates so a second fixture keeps the first's
+// tools, but LinkPATH links only what it was asked for. Callers use it to take
+// a tool AWAY — to prove ccx refuses without it — which accumulating would
+// silently defeat.
+func TestLinkPATHNarrowsToItsOwnTools(t *testing.T) {
+	requireHostTool(t, "gt")
+	mustNotSkip(t, "gt dropped after a gt fixture", func(t *testing.T) {
+		Repo(t, GT())
+		if _, err := exec.LookPath("gt"); err != nil {
+			t.Fatalf("gt unreachable before LinkPATH: %v", err)
+		}
+		LinkPATH(t, "git")
+		if _, err := exec.LookPath("gt"); err == nil {
+			t.Error("gt still on PATH after LinkPATH(git), want it dropped")
+		}
+		if _, err := exec.LookPath("git"); err != nil {
+			t.Errorf("git unreachable after LinkPATH(git): %v", err)
+		}
+	})
+}
+
+func TestAbsentToolSkips(t *testing.T) {
+	var skipped bool
+	t.Run("absent", func(t *testing.T) {
+		t.Cleanup(func() { skipped = t.Skipped() })
+		resolveTools(t, []string{"ccx-no-such-binary-9f3a"})
+		t.Error("resolveTools returned for a tool that cannot exist, want a skip")
+	})
+	if !skipped {
+		t.Error("resolveTools did not skip for a tool that cannot exist")
+	}
+}
+
+func TestLookPath(t *testing.T) {
+	base := realTempDir(t)
+	binDir := filepath.Join(base, "bin")
+	mkdir(t, binDir)
+	tool := filepath.Join(binDir, "ccxlookme")
+	writeExec(t, tool, "#!/bin/sh\nexit 0\n")
+	plain := filepath.Join(binDir, "ccxplain")
+	writeFile(t, plain, "not executable\n")
+	mkdir(t, filepath.Join(binDir, "ccxdir"))
+	searchPATH := strings.Join([]string{filepath.Join(base, "absent"), binDir}, string(os.PathListSeparator))
+
+	tests := []struct {
+		name    string
+		lookup  string
+		want    string
+		wantErr bool
+	}{
+		{"bare name on the path", "ccxlookme", tool, false},
+		{"bare name absent", "ccxnothere", "", true},
+		{"bare name naming a non-executable", "ccxplain", "", true},
+		{"bare name naming a directory", "ccxdir", "", true},
+		{"path with a separator resolves to itself", tool, tool, false},
+		{"path with a separator to a non-executable", plain, "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := lookPath(searchPATH, tt.lookup)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("lookPath(%q) = %q, want an error", tt.lookup, got)
+				}
+				if !errors.Is(err, exec.ErrNotFound) {
+					t.Errorf("lookPath(%q) error = %v, want exec.ErrNotFound", tt.lookup, err)
+				}
+				if !strings.Contains(err.Error(), tt.lookup) {
+					t.Errorf("lookPath(%q) error = %v, want it to name the tool", tt.lookup, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("lookPath(%q): %v", tt.lookup, err)
+			}
+			if got != tt.want {
+				t.Errorf("lookPath(%q) = %q, want %q", tt.lookup, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLookPathIgnoresAnEmptyPathElement(t *testing.T) {
+	dir := realTempDir(t)
+	writeExec(t, filepath.Join(dir, "ccxlookme"), "#!/bin/sh\nexit 0\n")
+	t.Chdir(dir)
+	if got, err := lookPath(string(os.PathListSeparator), "ccxlookme"); err == nil {
+		t.Errorf("lookPath on an empty element = %q, want an error rather than the working directory", got)
+	}
+}
+
 func TestRepoStates(t *testing.T) {
 	tests := []struct {
 		name  string

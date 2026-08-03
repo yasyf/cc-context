@@ -108,8 +108,10 @@ func NoOriginHead() Opt { return func(c *config) { c.noOriginHead = true } }
 
 // Repo builds a real repository per opts under an isolated HOME and git/jj
 // config, installs the recording shim on a brew-free PATH, and chdirs into
-// it. Real binaries are resolved before any PATH change; fixture construction
-// runs by absolute path, so the shim log opens empty.
+// it. Real binaries resolve against the host PATH, so a second Repo in the
+// same test finds a tool the first did not request and keeps reaching the
+// ones it did; fixture construction runs by absolute path, so the shim log
+// opens empty.
 func Repo(t *testing.T, opts ...Opt) *Fixture {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -144,7 +146,7 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 
 	if cfg.brokenGitDir {
 		writeFile(t, filepath.Join(dir, ".git"), "gitdir: /nonexistent-repo\n")
-		f.ShimBin, f.ArgvLog = installShim(t, resolved)
+		f.ShimBin, f.ArgvLog = installShim(t)
 		t.Chdir(dir)
 		return f
 	}
@@ -233,7 +235,7 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 		writeFile(t, filepath.Join(dir, ".git", "index.lock"), "")
 	}
 
-	f.ShimBin, f.ArgvLog = installShim(t, resolved)
+	f.ShimBin, f.ArgvLog = installShim(t)
 	t.Chdir(dir)
 	return f
 }
