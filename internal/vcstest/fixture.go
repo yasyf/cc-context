@@ -136,7 +136,7 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 	resolved := resolveTools(t, tools)
 
 	base := realTempDir(t)
-	isolateEnv(t, base)
+	isolateEnv(t, base, resolved)
 
 	dir := filepath.Join(base, "repo")
 	mkdir(t, dir)
@@ -239,8 +239,10 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 }
 
 // isolateEnv points HOME, config, and cache environment at base so no fixture
-// reads or writes state outside its own temp tree.
-func isolateEnv(t *testing.T, base string) {
+// reads or writes state outside its own temp tree. Fixture construction runs
+// the tools by absolute path but under the brew-free PATH, so their
+// interpreters are linked where that PATH reaches them.
+func isolateEnv(t *testing.T, base string, tools []resolvedTool) {
 	t.Helper()
 	home := filepath.Join(base, "home")
 	mkdir(t, home)
@@ -257,7 +259,9 @@ func isolateEnv(t *testing.T, base string) {
 	t.Setenv("CLAUDE_PLUGIN_DATA", pluginData)
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
 	t.Setenv("GRAPHITE_AUTH_TOKEN", "")
-	t.Setenv("PATH", strings.Join(systemPATH, string(os.PathListSeparator)))
+	interp := filepath.Join(base, "interp")
+	linkInterpreters(t, interp, tools)
+	t.Setenv("PATH", toolPATH(interp))
 }
 
 // buildGitConflict leaves an unresolved merge of two edits to f.txt.

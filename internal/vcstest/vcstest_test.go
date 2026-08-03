@@ -165,6 +165,66 @@ func TestShimDepthSeparatesGTChildren(t *testing.T) {
 	}
 }
 
+// fakeScriptTool writes a tool whose shebang names its interpreter by name —
+// the shape npm's gt has, `#!/usr/bin/env node` — with the interpreter in a
+// directory of its own, and puts both on PATH. It returns the tool's path.
+func fakeScriptTool(t *testing.T) string {
+	t.Helper()
+	base := realTempDir(t)
+	interpDir := filepath.Join(base, "interp")
+	mkdir(t, interpDir)
+	writeExec(t, filepath.Join(interpDir, "ccxfakenode"), "#!/bin/sh\nshift\necho \"ran $*\"\n")
+
+	toolDir := filepath.Join(base, "tool")
+	mkdir(t, toolDir)
+	tool := filepath.Join(toolDir, "ccxfaketool")
+	writeExec(t, tool, "#!/usr/bin/env ccxfakenode\n")
+
+	t.Setenv("PATH", toolPATH(toolDir, interpDir))
+	return tool
+}
+
+func writeExec(t *testing.T, path, script string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // the fake tool must be owner-executable to run from PATH
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func TestScriptToolNeedsItsInterpreterOnPATH(t *testing.T) {
+	tool := fakeScriptTool(t)
+
+	// The condition CI hit: the brew-free PATH holds no node, so the
+	// shebang's env lookup fails and the exec returns 127 before the tool
+	// runs a line.
+	bare := exec.Command(tool) //nolint:gosec // the test wrote tool itself
+	bare.Env = []string{"PATH=" + strings.Join(systemPATH, string(os.PathListSeparator))}
+	var ee *exec.ExitError
+	if err := bare.Run(); !errors.As(err, &ee) || ee.ExitCode() != 127 {
+		t.Fatalf("run under a bare system PATH = %v, want exit 127", err)
+	}
+
+	_, log := Shim(t, filepath.Base(tool))
+	if got := strings.TrimSpace(out(t, t.TempDir(), filepath.Base(tool), "--version")); got != "ran --version" {
+		t.Errorf("shimmed run = %q, want %q", got, "ran --version")
+	}
+	got := Invocations(t, log)
+	if want := [][]string{{filepath.Base(tool), "--version"}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Invocations() = %v, want %v", got, want)
+	}
+}
+
+func TestIsolateEnvReachesScriptInterpreter(t *testing.T) {
+	tool := fakeScriptTool(t)
+	isolateEnv(t, realTempDir(t), resolveTools(t, []string{filepath.Base(tool)}))
+
+	// Fixture construction predates the shim and runs each tool by absolute
+	// path, but already under isolateEnv's PATH — the lane gt init takes.
+	if got := strings.TrimSpace(run(t, t.TempDir(), tool, "--version")); got != "ran --version" {
+		t.Errorf("run under isolateEnv's PATH = %q, want %q", got, "ran --version")
+	}
+}
+
 func TestInvocationsConcurrentAppend(t *testing.T) {
 	_, log := Shim(t, "git")
 	dir := t.TempDir()

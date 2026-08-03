@@ -1,6 +1,8 @@
 package vcstest
 
 import (
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,8 +17,9 @@ import (
 var systemPATH = []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
 
 type resolvedTool struct {
-	name string
-	path string
+	name        string
+	path        string
+	interpreter string
 }
 
 // Shim installs a recording passthrough for each tool and puts its bin
@@ -30,8 +33,25 @@ func Shim(t *testing.T, tools ...string) (binDir, logPath string) {
 	return installShim(t, resolveTools(t, tools))
 }
 
-// resolveTools resolves each tool against the current PATH, skipping the test
-// when one is not installed.
+// LinkPATH points PATH at a directory of symlinks to each named tool and to
+// the interpreters their shebangs name, ahead of the brew-free system
+// directories, skipping the test when a tool is not installed. It records
+// nothing — it is for tests that need the real tools reachable by name
+// without their own directories, Homebrew's among them, rejoining PATH.
+func LinkPATH(t *testing.T, tools ...string) {
+	t.Helper()
+	resolved := resolveTools(t, tools)
+	dir := filepath.Join(realTempDir(t), "bin")
+	mkdir(t, dir)
+	for _, tool := range resolved {
+		symlink(t, tool.path, filepath.Join(dir, tool.name))
+	}
+	linkInterpreters(t, dir, resolved)
+	t.Setenv("PATH", toolPATH(dir))
+}
+
+// resolveTools resolves each tool and its script interpreter against the
+// current PATH, skipping the test when one is not installed.
 func resolveTools(t *testing.T, tools []string) []resolvedTool {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -43,7 +63,7 @@ func resolveTools(t *testing.T, tools []string) []resolvedTool {
 		if err != nil {
 			t.Skipf("%s not installed", tool)
 		}
-		resolved = append(resolved, resolvedTool{name: tool, path: path})
+		resolved = append(resolved, resolvedTool{name: tool, path: path, interpreter: shebangInterpreter(t, path)})
 	}
 	return resolved
 }
@@ -70,8 +90,72 @@ func installShim(t *testing.T, tools []resolvedTool) (binDir, logPath string) {
 			t.Fatalf("write shim %s: %v", tool.name, err)
 		}
 	}
-	t.Setenv("PATH", strings.Join(append([]string{binDir}, systemPATH...), string(os.PathListSeparator)))
+	linkInterpreters(t, binDir, tools)
+	t.Setenv("PATH", toolPATH(binDir))
 	return binDir, logPath
+}
+
+// linkInterpreters symlinks the interpreter each script tool's shebang names
+// into dir. npm's gt is a `#!/usr/bin/env node` script, so node has to be
+// reachable on the replaced PATH or the exec fails with 127 — and node's own
+// directory cannot simply join PATH, since on a dev machine it is often
+// Homebrew's, which is what systemPATH exists to keep out.
+func linkInterpreters(t *testing.T, dir string, tools []resolvedTool) {
+	t.Helper()
+	mkdir(t, dir)
+	linked := map[string]bool{}
+	for _, tool := range tools {
+		if tool.interpreter == "" || linked[tool.interpreter] {
+			continue
+		}
+		linked[tool.interpreter] = true
+		symlink(t, tool.interpreter, filepath.Join(dir, filepath.Base(tool.interpreter)))
+	}
+}
+
+// shebangInterpreter returns the resolved path of the program a script's
+// shebang runs, or "" when path is not a script. The `#!/usr/bin/env prog`
+// form resolves prog against the current PATH, so this runs before PATH is
+// replaced.
+func shebangInterpreter(t *testing.T, path string) string {
+	t.Helper()
+	f, err := os.Open(path) //nolint:gosec // path is a LookPath-resolved vcs binary, not untrusted input
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	head := make([]byte, 512)
+	n, err := f.Read(head)
+	if err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	line, _, _ := strings.Cut(string(head[:n]), "\n")
+	if !strings.HasPrefix(line, "#!") {
+		return ""
+	}
+	fields := strings.Fields(line[2:])
+	prog := fields[0]
+	if filepath.Base(prog) == "env" {
+		prog = fields[1]
+	}
+	interpreter, err := exec.LookPath(prog)
+	if err != nil {
+		t.Fatalf("resolve %s interpreter %q: %v", path, prog, err)
+	}
+	return interpreter
+}
+
+// toolPATH joins lead ahead of the brew-free system directories.
+func toolPATH(lead ...string) string {
+	return strings.Join(append(lead, systemPATH...), string(os.PathListSeparator))
+}
+
+func symlink(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink %s -> %s: %v", link, target, err)
+	}
 }
 
 // shellQuote single-quotes s for embedding in the shim script.
