@@ -408,7 +408,10 @@ func TestRestackGTPerBranchVerdict(t *testing.T) {
 // stdout ending at "🥞 Restacking branches...", the explanation on stderr alone.
 // The "could not be restacked cleanly" line recurs across 49 of the 9,346 real
 // gt runs on this machine, over 27 distinct branches, so it is the durable half
-// of the pair.
+// of the pair. Its remediation rides out with it: the unprefixed sentence gt
+// puts a blank line below the warning is the only thing telling the user what to
+// run, and the tips row is the other half of that bargain — the same unprefixed
+// stderr with no severity line above it stays unreported.
 // Exit 0 stays a success, since the remote-trunk oracle already reports the
 // stack correctly; the lines explain that report rather than override gt.
 func TestRestackGTSurfacesSyncDiagnostics(t *testing.T) {
@@ -428,8 +431,14 @@ func TestRestackGTSurfacesSyncDiagnostics(t *testing.T) {
 			wantErr: []string{
 				"WARNING: Did not restack checked out branch feature due to conflicting unstaged changes.",
 				"WARNING: feature could not be restacked cleanly.",
+				"Please resolve conflicts in the current stack with gt restack.",
 			},
-			denyErr: []string{"Please resolve conflicts in the current stack with gt restack."},
+		},
+		{
+			name:    "tips alone leave the report silent",
+			stderr:  "\ntip: If you need to undo the operation you just ran, you can do so with gt undo. [runner.undo ●○○]\n",
+			want:    "restacked 1 of 1 · trunk main",
+			denyErr: []string{"tip:", "gt undo"},
 		},
 		{
 			name: "a decline is read off whichever stream carried it",

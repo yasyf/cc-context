@@ -47,18 +47,28 @@ const (
 
 // gtResult is one finished gt invocation.
 type gtResult struct {
-	// Output is everything gt printed, both streams together. gtRun hands
-	// os/exec one writer for stdout and stderr alike, which makes the child
-	// share a single fd across them, so its lines land in emission order with no
-	// second goroutine to race; gtCapture keeps the two apart (a diagnostic
-	// interleaved into gt state's JSON would break the parse) and joins them
-	// stdout-then-stderr, trading an ordering it has no parser for.
+	// Output is everything gt printed, both streams together. Emission order
+	// survives on one arm only: a streamed run hands os/exec one writer for
+	// stdout and stderr alike, so the child shares a single fd and no second
+	// goroutine races. The buffered arms keep the two apart — gtCapture because
+	// a diagnostic interleaved into gt state's JSON would break the parse, gtRun
+	// because Stderr has to be separable — and join them stdout-then-stderr,
+	// trading an ordering no reader of Output needs: they match substrings and
+	// scan whole lines.
 	//
-	// What neither offers is a stderr-only view, deliberately. gt splits one
-	// report across the two streams — a restack conflict banner on stdout, the
-	// ERROR: explaining a trunk it could not pull on stderr — so a classifier
-	// able to see half the evidence is one that silently matches nothing.
+	// Both views exist because the two readers need opposite things. A
+	// classifier needs Output: gt splits one report across the streams — a
+	// restack conflict banner on stdout, the ERROR: explaining a trunk it could
+	// not pull on stderr — so one able to see half the evidence silently matches
+	// nothing. The echo needs Stderr: stdout is already on screen, and gt's
+	// diagnostics carry unprefixed continuation lines that no rule can pick out
+	// of a merged buffer.
 	Output string
+	// Stderr is gt's stderr alone, for a caller re-emitting what the user has
+	// not already seen. A streamed run leaves it empty: that arm keeps both
+	// streams on one fd to preserve emission order, which is the trade that
+	// makes them inseparable, and it has nothing to re-emit anyway.
+	Stderr string
 	// Code is gt's exit status, and is not a verdict on its own: see
 	// gtZeroPolicy.
 	Code int
@@ -68,20 +78,33 @@ type gtResult struct {
 	streamed bool
 }
 
-// Diagnostics returns the severity-led lines gt printed, in order, for a caller
-// to re-emit. A streamed result reports none: the user has already seen every
-// line, so re-emitting would print each one twice.
-func (r gtResult) Diagnostics() []string {
-	if r.streamed {
-		return nil
+// Diagnostics returns gt's stderr whole when it led at least one line with a
+// severity prefix, and "" otherwise. Whole, because a diagnostic's remediation
+// is an unprefixed line of its own — "WARNING: <b> could not be restacked
+// cleanly." is followed, past a blank line, by "Please resolve conflicts in the
+// current stack with gt restack." — and gt delimits that line from the tip block
+// after it with the same "\n\n", so no rule recovers one without the other.
+// Gated, because gt's NUX tips are unprefixed stderr too: a run that only tipped
+// has nothing to report, and reporting it would make every fresh install noisy.
+// A streamed result reports nothing — the user watched the stream go by.
+func (r gtResult) Diagnostics() string {
+	if r.streamed || !gtSeverityLed(r.Stderr) {
+		return ""
 	}
-	var lines []string
-	for _, line := range strings.Split(r.Output, "\n") {
+	if strings.HasSuffix(r.Stderr, "\n") {
+		return r.Stderr
+	}
+	return r.Stderr + "\n"
+}
+
+// gtSeverityLed reports whether s has a line gt led with a severity prefix.
+func gtSeverityLed(s string) bool {
+	for _, line := range strings.Split(s, "\n") {
 		if strings.HasPrefix(line, gtErrorPrefix) || strings.HasPrefix(line, gtWarningPrefix) {
-			lines = append(lines, line)
+			return true
 		}
 	}
-	return lines
+	return false
 }
 
 // reportedError reports whether gt printed an ERROR: line. A WARNING: never
@@ -141,22 +164,32 @@ func (e *gtAdvice) Unwrap() error { return e.cause }
 // explanation of a gt that could not run or was killed.
 //
 // argv reaches gt exactly as given — the runner adds no flag of its own, and no
-// caller may add -q or --debug. Measured against gt 1.8.6: -q silences the
-// report entirely, so a `gt restack` that declined a branch prints nothing at
-// all, and --debug prepends thousands of bytes of JSON log records to stdout,
-// ahead of both the payload a parser reads and the lines a classifier matches.
-// extraEnv extends the child's environment for a verb that needs an env-only
-// variable (gt shells out to git, which honors GIT_INDEX_FILE); it is variadic
-// so policy stays a required positional and the ordinary call spells no env.
+// caller may add -q or --debug. -q is the tempting one, because it does silence
+// the NUX tips Diagnostics has to gate against; measured against gt 1.8.6 on an
+// otherwise identical run, it also empties stdout, taking with it the
+// "Did not restack branch <b> because it is checked out in worktree <w>." that
+// gtSyncSkipped reads — a silent loss traded for a visible one. --debug prepends
+// thousands of bytes of JSON log records to stdout, ahead of both the payload a
+// parser reads and the lines a classifier matches. extraEnv extends the child's
+// environment for a verb that needs an env-only variable (gt shells out to git,
+// which honors GIT_INDEX_FILE); it is variadic so policy stays a required
+// positional and the ordinary call spells no env.
 func gtRun(ctx context.Context, argv []string, policy gtZeroPolicy, errW io.Writer, extraEnv ...string) (gtResult, error) {
-	var buf bytes.Buffer
-	w := io.Writer(&buf)
+	var out, errBuf bytes.Buffer
+	outW, stderrW := io.Writer(&out), io.Writer(&errBuf)
 	streamed := shipStreamCI(errW)
 	if streamed {
-		w = io.MultiWriter(errW, &buf)
+		// One writer for both, so os/exec gives gt a single fd and the terminal
+		// shows its lines in the order it wrote them. Nothing reads Stderr on
+		// this arm, which is what makes the ordering worth more than the split.
+		both := io.MultiWriter(errW, &out)
+		outW, stderrW = both, both
 	}
-	code, err := gtStream(ctx, argv, w, extraEnv)
-	r := gtResult{Output: buf.String(), Code: code, streamed: streamed}
+	code, err := gtStream(ctx, argv, outW, stderrW, extraEnv)
+	r := gtResult{Output: out.String(), Code: code, streamed: streamed}
+	if !streamed {
+		r.Output, r.Stderr = gtJoinStreams(out.String(), errBuf.String()), errBuf.String()
+	}
 	if err != nil {
 		return r, err
 	}
@@ -173,18 +206,18 @@ func gtCapture(ctx context.Context, argv []string, policy gtZeroPolicy) (string,
 	if err != nil {
 		return "", gtResult{}, err
 	}
-	r := gtResult{Output: gtJoinStreams(stdout, stderr), Code: code}
+	r := gtResult{Output: gtJoinStreams(stdout, stderr), Stderr: stderr, Code: code}
 	return stdout, r, r.verdict(argv[0], policy)
 }
 
-// gtStream runs gt with both of the child's streams wired to w, and reports its
-// exit status. os/exec gives the child one fd for both when the two fields are
-// interface-equal, so w receives gt's lines in the order gt wrote them. A
+// gtStream runs gt with its stdout wired to outW and its stderr to errW, and
+// reports its exit status. Passing one writer as both keeps the child on a
+// single fd, so that writer receives gt's lines in the order gt wrote them. A
 // non-nil error means gt never ran or was killed — render has already explained
 // which — and is returned as it came, since the caller's own prefix is the
 // context worth adding.
-func gtStream(ctx context.Context, argv []string, w io.Writer, extraEnv []string) (int, error) {
-	err := render.RunCLIStreamEnv(ctx, "gt", argv, w, extraEnv)
+func gtStream(ctx context.Context, argv []string, outW, errW io.Writer, extraEnv []string) (int, error) {
+	err := render.RunCLIStreamSplitEnv(ctx, "gt", argv, outW, errW, extraEnv)
 	if err == nil {
 		return 0, nil
 	}

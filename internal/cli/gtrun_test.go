@@ -66,16 +66,25 @@ func gtRunReadArgv(t *testing.T, path string) []string {
 	return strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
 }
 
-func TestGTRunInterleavesStreamsInEmissionOrder(t *testing.T) {
+// TestGTRunBufferedRunCarriesBothStreams pins what a buffered Output owes a
+// classifier: every line of both streams, so a matcher cannot miss evidence the
+// other stream carried. It does not owe emission order — separating stderr costs
+// the single fd that ordering came from, and the streamed arm, which keeps the
+// fd, is where order still holds. No Output reader depends on it: they match
+// substrings and scan lines.
+func TestGTRunBufferedRunCarriesBothStreams(t *testing.T) {
 	gtRunFake(t, gtRunInterleaveScript)
 
 	r, err := gtRun(context.Background(), []string{"sync", "--no-interactive"}, gtZeroSurfaces, io.Discard)
 	if err != nil {
 		t.Fatalf("gtRun: %v", err)
 	}
-	want := "one-stdout\ntwo-stderr\nthree-stdout\nERROR: four-stderr\nfive-stdout\n"
+	want := "one-stdout\nthree-stdout\nfive-stdout\ntwo-stderr\nERROR: four-stderr\n"
 	if r.Output != want {
 		t.Errorf("Output = %q, want %q", r.Output, want)
+	}
+	if wantErr := "two-stderr\nERROR: four-stderr\n"; r.Stderr != wantErr {
+		t.Errorf("Stderr = %q, want %q", r.Stderr, wantErr)
 	}
 }
 
@@ -93,46 +102,59 @@ func TestGTRunPassesArgvThroughUntouched(t *testing.T) {
 	}
 }
 
-func TestGTRunDiagnosticsFiltersSeverityLines(t *testing.T) {
+// TestGTRunDiagnosticsGatesOnSeverity pins both halves of the echo's contract:
+// a severity-led stderr goes out whole — continuation lines included, since gt's
+// remediation is one — and a stderr with no severity line goes out not at all.
+// The tip rows are gt 1.8.6's own bytes: NUX tips are unprefixed stderr like the
+// remediation is, so the gate, not the shape of the line, is what keeps a fresh
+// install quiet.
+func TestGTRunDiagnosticsGatesOnSeverity(t *testing.T) {
+	tips := "\ntip: Feeling like an expert? Disable tips in gt config [tip.expert-message ●]\n\n"
 	tests := []struct {
 		name     string
 		result   gtResult
-		want     []string
+		want     string
 		wantErrs bool
 	}{
 		{
-			name: "keeps both prefixes and drops a diagnostic's continuation",
-			result: gtResult{Output: "Did not restack branch feat1 because it is checked out in worktree /tmp/wt.\n" +
-				"ERROR: Could not determine the name of this repo. \n" +
-				"WARNING: This command has been renamed and will be fully removed soon.\n" +
-				"You can now use gt aliases to configure your own command aliases.\n"},
-			want: []string{
-				"ERROR: Could not determine the name of this repo. ",
-				"WARNING: This command has been renamed and will be fully removed soon.",
+			name: "a severity-led stderr goes out whole, remediation included",
+			result: gtResult{
+				Output: "🥞 Restacking branches...\nWARNING: feat could not be restacked cleanly.\n\nPlease resolve conflicts in the current stack with gt restack.\n",
+				Stderr: "WARNING: feat could not be restacked cleanly.\n\nPlease resolve conflicts in the current stack with gt restack.\n",
 			},
+			want: "WARNING: feat could not be restacked cleanly.\n\nPlease resolve conflicts in the current stack with gt restack.\n",
+		},
+		{
+			name:   "tips alone stay silent",
+			result: gtResult{Output: "🥞 Restacking branches...\n" + tips, Stderr: tips},
+			want:   "",
+		},
+		{
+			name:     "a warning among tips still carries the whole block",
+			result:   gtResult{Output: tips + "ERROR: Could not determine the name of this repo. \n", Stderr: tips + "ERROR: Could not determine the name of this repo. \n"},
+			want:     tips + "ERROR: Could not determine the name of this repo. \n",
 			wantErrs: true,
 		},
 		{
-			name:   "a warning alone is not an error report",
-			result: gtResult{Output: "WARNING: This command has been renamed.\n"},
-			want:   []string{"WARNING: This command has been renamed."},
+			name:   "an indented severity word does not lead its line",
+			result: gtResult{Output: "  ERROR: indented\nplain\n", Stderr: "  ERROR: indented\nplain\n"},
+			want:   "",
 		},
 		{
-			name:   "an indented severity word does not lead its line",
-			result: gtResult{Output: "  ERROR: indented\nplain\n"},
-			want:   nil,
+			name:   "a missing trailing newline is supplied",
+			result: gtResult{Output: "WARNING: no newline", Stderr: "WARNING: no newline"},
+			want:   "WARNING: no newline\n",
 		},
 		{
 			name:     "a streamed result reports nothing twice",
-			result:   gtResult{Output: "ERROR: already shown\n", streamed: true},
-			want:     nil,
+			result:   gtResult{Output: "ERROR: already shown\n", Stderr: "ERROR: already shown\n", streamed: true},
+			want:     "",
 			wantErrs: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.result.Diagnostics()
-			if !slices.Equal(got, tt.want) {
+			if got := tt.result.Diagnostics(); got != tt.want {
 				t.Errorf("Diagnostics() = %q, want %q", got, tt.want)
 			}
 			if got := tt.result.reportedError(); got != tt.wantErrs {
@@ -160,8 +182,11 @@ func TestGTRunStreamsOnceToTerminal(t *testing.T) {
 	if r.Output != want {
 		t.Errorf("Output = %q, want %q — a streamed run still buffers for the classifier", r.Output, want)
 	}
-	if got := r.Diagnostics(); got != nil {
+	if got := r.Diagnostics(); got != "" {
 		t.Errorf("Diagnostics() = %q, want none — the user has already seen these lines", got)
+	}
+	if r.Stderr != "" {
+		t.Errorf("Stderr = %q, want empty — the streamed arm trades the split for emission order", r.Stderr)
 	}
 }
 
@@ -177,9 +202,12 @@ func TestGTRunBufferedRunReportsItsDiagnostics(t *testing.T) {
 	if errW.Len() != 0 {
 		t.Errorf("errW = %q, want empty — a buffered run streams nothing", errW.String())
 	}
-	want := []string{"ERROR: Could not pull trunk main"}
-	if got := r.Diagnostics(); !slices.Equal(got, want) {
+	want := "ERROR: Could not pull trunk main\n"
+	if got := r.Diagnostics(); got != want {
 		t.Errorf("Diagnostics() = %q, want %q", got, want)
+	}
+	if r.Stderr != want {
+		t.Errorf("Stderr = %q, want %q — the buffered arm keeps the streams apart", r.Stderr, want)
 	}
 }
 
@@ -294,8 +322,8 @@ func TestGTRunCaptureKeepsThePayloadParseable(t *testing.T) {
 	if !state["main"].Trunk {
 		t.Errorf("state = %+v, want main marked trunk", state)
 	}
-	want := []string{"WARNING: This command has been renamed and will be fully removed soon."}
-	if got := r.Diagnostics(); !slices.Equal(got, want) {
+	want := "WARNING: This command has been renamed and will be fully removed soon.\n"
+	if got := r.Diagnostics(); got != want {
 		t.Errorf("Diagnostics() = %q, want %q — Output must carry the stream the payload does not", got, want)
 	}
 }

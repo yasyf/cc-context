@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "restack",
+    "--no-interactive"
+  ],
+  "exit": 1,
+  "stdout": "",
+  "stderr": "ERROR: This operation is blocked during a rebase.\nYou can continue with gt continue after resolving conflicts or abort the rebase with gt abort. \n"
+}

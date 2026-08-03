@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "auth",
+    "--no-interactive"
+  ],
+  "exit": 1,
+  "stdout": "Authenticated as: yasyf\n",
+  "stderr": "ERROR: Graphite does not have the necessary permissions to submit PRs to yasyf/cc-context.\nPlease visit https://app.graphite.com/settings to configure GitHub access. \n"
+}

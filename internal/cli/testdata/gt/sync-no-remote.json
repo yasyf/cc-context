@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "sync",
+    "--no-interactive"
+  ],
+  "exit": 1,
+  "stdout": "",
+  "stderr": "\ntip: gt sync is a core command that keeps your branches in sync with the latest changes to the remote repository. It:\n▸ pulls the latest changes to the trunk branch\n▸ prompts to delete any branches whose PRs have been merged or closed\n▸ syncs any remote changes to branches with open PRs\n▸ restacks all branches to incorporate the latest changes from trunk\n\nYou can use gt get to sync only the stack of the checked out branch. [sync.explanation ●○○]\n\nERROR: Could not determine the name of this repo (e.g. 'graphite-cli' in the repo 'withgraphite/graphite-cli'). Please use `gt config` to manually set the repo name. \n"
+}

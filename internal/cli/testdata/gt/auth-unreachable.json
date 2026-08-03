@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "auth",
+    "--no-interactive"
+  ],
+  "exit": 1,
+  "stdout": "⚠️ Cannot reach Graphite's servers to complete your request\n",
+  "stderr": "ERROR: Could not connect to the Graphite server. Please try again. \n"
+}

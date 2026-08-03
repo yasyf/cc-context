@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "restack",
+    "--no-interactive"
+  ],
+  "exit": 0,
+  "stdout": "Did not restack branch feat because it is checked out in worktree /private/tmp/ccx-gt-record/restack-worktree-held/held.\n",
+  "stderr": "\ntip: If you need to undo the operation you just ran, you can do so with gt undo. [runner.undo ●○○]\n\n"
+}

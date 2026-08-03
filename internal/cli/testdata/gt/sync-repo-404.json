@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "sync",
+    "--no-interactive"
+  ],
+  "exit": 1,
+  "stdout": "",
+  "stderr": "\ntip: gt sync is a core command that keeps your branches in sync with the latest changes to the remote repository. It:\n▸ pulls the latest changes to the trunk branch\n▸ prompts to delete any branches whose PRs have been merged or closed\n▸ syncs any remote changes to branches with open PRs\n▸ restacks all branches to incorporate the latest changes from trunk\n\nYou can use gt get to sync only the stack of the checked out branch. [sync.explanation ●○○]\n\nERROR: Graphite encountered a 404 Not Found error when querying GitHub for your repo.\nThis may be due to an issue with the inferred owner and name of your repository or an authentication problem.\nYou can check and override the inferred owner and name in `gt config` -> `Repository level settings` -> `Remote repository`\nIf that does not solve your problem, check if you can see this repository in the Graphite web dashboard: https://app.graphite.dev/settings -- if it's missing, you may need to adjust your authentication settings.\nStill not working? Don't hesitate to reach out on our Community Slack server at https://community.graphite.dev \n"
+}

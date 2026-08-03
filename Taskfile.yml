@@ -22,6 +22,11 @@ tasks:
     cmds:
       - bash scripts/build-embed-wasm.sh
 
+  record-gt:
+    desc: Re-record internal/cli/testdata/gt from the real gt (-- --live adds the token-gated scenarios)
+    cmds:
+      - bash scripts/record-gt-goldens.sh {{.CLI_ARGS}}
+
   build:
     desc: Build the binary into ./bin
     deps: [wasm, wasm-embed]
@@ -59,3 +64,8 @@ tasks:
       - task: lint
       - task: test
       - task: build
+
+  record-gh:
+    desc: Re-record the gh goldens in internal/cli/testdata/gh from real gh output
+    cmds:
+      - bash scripts/record-gh-goldens.sh {{.CLI_ARGS}}

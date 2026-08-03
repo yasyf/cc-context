@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "submit",
+    "--no-interactive",
+    "--no-edit",
+    "--no-ai",
+    "--no-stack",
+    "--publish"
+  ],
+  "exit": 1,
+  "stdout": "",
+  "stderr": "WARNING: You can only submit to repos synced with Graphite.\nERROR: Graphite could not verify you have access to the repo private/tmp/ccx-gt-record/submit-repo-unverified/bare.\nThis may be due to an issue with the inferred owner and name of your repository or an authentication problem.\nYou can check and override the inferred owner and name in `gt config` -> `Repository level settings` -> `Remote repository`. If there is an extra `/` in your repo name, try removing it.\nIf that does not solve your problem, check if you can see this repository in the Graphite web dashboard: https://app.graphite.com/settings -- if it's missing, you may need to adjust your authentication settings.\nSee this page for more details: https://graphite.com/docs/other-authentication-methods\nStill not working? Don't hesitate to reach out on our Community Slack server at https://community.graphite.dev \n"
+}

@@ -234,8 +234,8 @@ func gtSync(ctx context.Context, errW io.Writer) (string, error) {
 	if err != nil {
 		return "", classifyGTRestack(r, err)
 	}
-	for _, line := range r.Diagnostics() {
-		if _, werr := fmt.Fprintln(errW, line); werr != nil {
+	if report := r.Diagnostics(); report != "" {
+		if _, werr := io.WriteString(errW, report); werr != nil {
 			return "", fmt.Errorf("restack: report gt sync diagnostics: %w", werr)
 		}
 	}

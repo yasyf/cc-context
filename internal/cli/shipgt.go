@@ -58,10 +58,12 @@ func (e *errGTUntracked) Error() string {
 // person who ran ship never sees. A streamed run reports none — they already
 // reached the terminal as gt wrote them.
 func gtReport(errW io.Writer, r gtResult) error {
-	for _, line := range r.Diagnostics() {
-		if _, err := fmt.Fprintln(errW, line); err != nil {
-			return fmt.Errorf("ship: report gt diagnostics: %w", err)
-		}
+	report := r.Diagnostics()
+	if report == "" {
+		return nil
+	}
+	if _, err := io.WriteString(errW, report); err != nil {
+		return fmt.Errorf("ship: report gt diagnostics: %w", err)
 	}
 	return nil
 }

@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "auth",
+    "--no-interactive"
+  ],
+  "exit": 1,
+  "stdout": "",
+  "stderr": "ERROR: No auth token set. Please run `gt auth --token <token>`. \n"
+}

@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "auth",
+    "--no-interactive"
+  ],
+  "exit": 0,
+  "stdout": "Authenticated as: yasyf\n",
+  "stderr": ""
+}

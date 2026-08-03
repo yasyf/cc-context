@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "restack",
+    "--no-interactive"
+  ],
+  "exit": 1,
+  "stdout": "Hit conflict restacking feat on main.\n\nUnmerged files:\nf.txt\n\nYou are here (resolving feat):\n◯  feat\n◯  main\n\nTo fix and continue your previous Graphite command:\n(1) resolve the listed merge conflicts\n(2) mark items as resolved by adding them one at a time with gt add <file>\n(3) run gt continue to continue executing your previous Graphite command\nIt's safe to cancel the ongoing rebase with gt abort.\n",
+  "stderr": ""
+}

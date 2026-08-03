@@ -153,10 +153,21 @@ func RunCLIStream(ctx context.Context, bin string, argv []string, w io.Writer) e
 // (e.g. a gt verb run under GIT_INDEX_FILE). A nil extraEnv inherits the
 // parent's environment unchanged.
 func RunCLIStreamEnv(ctx context.Context, bin string, argv []string, w io.Writer, extraEnv []string) error {
+	return RunCLIStreamSplitEnv(ctx, bin, argv, w, w, extraEnv)
+}
+
+// RunCLIStreamSplitEnv is RunCLIStreamEnv with the child's two streams wired to
+// separate writers, for a caller that must report one stream on its own. Which
+// form to pass is a real choice: one writer for both makes os/exec hand the
+// child a single fd, so its lines arrive in the order it wrote them but nothing
+// downstream can tell which stream carried one; two writers mean two pipes and
+// two copying goroutines, so the streams stay separable and their relative order
+// does not survive.
+func RunCLIStreamSplitEnv(ctx context.Context, bin string, argv []string, outW, errW io.Writer, extraEnv []string) error {
 	cmd, runCtx, cancel := newCmd(ctx, bin, argv)
 	defer cancel()
-	cmd.Stdout = w
-	cmd.Stderr = w
+	cmd.Stdout = outW
+	cmd.Stderr = errW
 	if len(extraEnv) > 0 {
 		cmd.Env = append(os.Environ(), extraEnv...)
 	}
