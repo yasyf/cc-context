@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "repo",
+    "view",
+    "yasyf/cc-context-does-not-exist",
+    "--json",
+    "nameWithOwner,owner,isPrivate,viewerPermission"
+  ],
+  "exit": 1,
+  "stdout": "",
+  "stderr": "GraphQL: Could not resolve to a Repository with the name 'yasyf/cc-context-does-not-exist'. (repository)\n"
+}

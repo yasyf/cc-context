@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "pr",
+    "list",
+    "--repo",
+    "cli/cli",
+    "--head",
+    "maxbeizer-fix-project-scope-error",
+    "--state",
+    "open",
+    "--json",
+    "number,url,isDraft",
+    "--limit",
+    "1"
+  ],
+  "exit": 0,
+  "stdout": "[{\"isDraft\":true,\"number\":14035,\"url\":\"https://github.com/cli/cli/pull/14035\"}]\n",
+  "stderr": ""
+}

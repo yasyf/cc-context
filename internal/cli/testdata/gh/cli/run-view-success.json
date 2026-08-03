@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "run",
+    "view",
+    "30744524405",
+    "--json",
+    "workflowName,conclusion,startedAt,updatedAt,url,jobs"
+  ],
+  "exit": 0,
+  "stdout": "{\"conclusion\":\"success\",\"jobs\":[{\"completedAt\":\"2026-08-02T10:50:25Z\",\"conclusion\":\"success\",\"databaseId\":91487748261,\"name\":\"guides / render\",\"startedAt\":\"2026-08-02T10:50:17Z\",\"status\":\"completed\",\"steps\":[{\"completedAt\":\"2026-08-02T10:50:19Z\",\"conclusion\":\"success\",\"name\":\"Set up job\",\"number\":1,\"startedAt\":\"2026-08-02T10:50:18Z\",\"status\":\"completed\"},{\"completedAt\":\"2026-08-02T10:50:20Z\",\"conclusion\":\"success\",\"name\":\"Run actions/checkout@v7\",\"number\":2,\"startedAt\":\"2026-08-02T10:50:19Z\",\"status\":\"completed\"},{\"completedAt\":\"2026-08-02T10:50:22Z\",\"conclusion\":\"success\",\"name\":\"Install latest cc-guides\",\"number\":3,\"startedAt\":\"2026-08-02T10:50:20Z\",\"status\":\"completed\"},{\"completedAt\":\"2026-08-02T10:50:22Z\",\"conclusion\":\"success\",\"name\":\"Render, reconcile, commit, push\",\"number\":4,\"startedAt\":\"2026-08-02T10:50:22Z\",\"status\":\"completed\"},{\"completedAt\":\"2026-08-02T10:50:22Z\",\"conclusion\":\"skipped\",\"name\":\"Self-check (only when a commit was pushed)\",\"number\":5,\"startedAt\":\"2026-08-02T10:50:22Z\",\"status\":\"completed\"},{\"completedAt\":\"2026-08-02T10:50:23Z\",\"conclusion\":\"success\",\"name\":\"Post Run actions/checkout@v7\",\"number\":10,\"startedAt\":\"2026-08-02T10:50:22Z\",\"status\":\"completed\"},{\"completedAt\":\"2026-08-02T10:50:23Z\",\"conclusion\":\"success\",\"name\":\"Complete job\",\"number\":11,\"startedAt\":\"2026-08-02T10:50:23Z\",\"status\":\"completed\"}],\"url\":\"https://github.com/yasyf/cc-context/actions/runs/30744524405/job/91487748261\"},{\"completedAt\":\"2026-08-02T10:50:15Z\",\"conclusion\":\"skipped\",\"databaseId\":91487748771,\"name\":\"guides / pr-check\",\"startedAt\":\"2026-08-02T10:50:15Z\",\"status\":\"completed\",\"steps\":[],\"url\":\"https://github.com/yasyf/cc-context/actions/runs/30744524405/job/91487748771\"}],\"startedAt\":\"2026-08-02T10:50:14Z\",\"updatedAt\":\"2026-08-02T10:50:26Z\",\"url\":\"https://github.com/yasyf/cc-context/actions/runs/30744524405\",\"workflowName\":\"Guides\"}\n",
+  "stderr": ""
+}

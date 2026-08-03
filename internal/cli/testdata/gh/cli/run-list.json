@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "run",
+    "list",
+    "--commit",
+    "8ce0dcf1c1b66a60e890985c77a52064c6cfcb49",
+    "--limit",
+    "50",
+    "--json",
+    "databaseId,workflowName,status,url"
+  ],
+  "exit": 0,
+  "stdout": "[{\"databaseId\":30694123117,\"status\":\"completed\",\"url\":\"https://github.com/yasyf/cc-context/actions/runs/30694123117\",\"workflowName\":\"Autobump\"},{\"databaseId\":30694123107,\"status\":\"completed\",\"url\":\"https://github.com/yasyf/cc-context/actions/runs/30694123107\",\"workflowName\":\"Guides\"},{\"databaseId\":30694122970,\"status\":\"completed\",\"url\":\"https://github.com/yasyf/cc-context/actions/runs/30694122970\",\"workflowName\":\"CI\"},{\"databaseId\":30694122965,\"status\":\"completed\",\"url\":\"https://github.com/yasyf/cc-context/actions/runs/30694122965\",\"workflowName\":\"cc-notes\"}]\n",
+  "stderr": ""
+}

@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "api",
+    "-i",
+    "graphql",
+    "-F",
+    "owner=cli",
+    "-F",
+    "repo=cli",
+    "-F",
+    "p0=99999999",
+    "-f",
+    "query=query($owner: String!, $repo: String!, $p0: Int!) {\n  repository(owner: $owner, name: $repo) {\n    p0: pullRequest(number: $p0) { number url state mergedAt }\n  }\n}"
+  ],
+  "exit": 1,
+  "status": 200,
+  "headers": [
+    "Content-Type: application/json; charset=utf-8"
+  ],
+  "body": "{\"data\":{\"repository\":{\"p0\":null}},\"errors\":[{\"type\":\"NOT_FOUND\",\"path\":[\"repository\",\"p0\"],\"locations\":[{\"line\":3,\"column\":5}],\"message\":\"Could not resolve to a PullRequest with the number of 99999999.\"}]}",
+  "stderr": "gh: Could not resolve to a PullRequest with the number of 99999999.\n"
+}

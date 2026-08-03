@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "pr",
+    "list",
+    "--repo",
+    "yasyf/cc-context",
+    "--head",
+    "no-such-branch",
+    "--state",
+    "open",
+    "--json",
+    "number,url,isDraft",
+    "--limit",
+    "1"
+  ],
+  "exit": 0,
+  "stdout": "[]\n",
+  "stderr": ""
+}

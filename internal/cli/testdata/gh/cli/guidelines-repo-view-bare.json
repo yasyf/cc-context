@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "repo",
+    "view",
+    "--json",
+    "nameWithOwner,pullRequestTemplates,codeOfConduct,contactLinks,issueTemplates"
+  ],
+  "exit": 0,
+  "stdout": "{\"codeOfConduct\":null,\"contactLinks\":[],\"issueTemplates\":[],\"nameWithOwner\":\"yasyf/cc-context\",\"pullRequestTemplates\":[]}\n",
+  "stderr": ""
+}

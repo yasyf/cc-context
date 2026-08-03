@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "pr",
+    "list",
+    "--repo",
+    "cli/cli",
+    "--head",
+    "o1/add-latest-pre-release-and-pin-flags-to-gh-extension-upgrade/nysoxynolqlo",
+    "--state",
+    "open",
+    "--json",
+    "number,url,isDraft",
+    "--limit",
+    "1"
+  ],
+  "exit": 0,
+  "stdout": "[{\"isDraft\":false,\"number\":13982,\"url\":\"https://github.com/cli/cli/pull/13982\"}]\n",
+  "stderr": ""
+}

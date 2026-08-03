@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "repo",
+    "view",
+    "--json",
+    "nameWithOwner,owner,isPrivate,viewerPermission"
+  ],
+  "exit": 0,
+  "stdout": "{\"isPrivate\":false,\"nameWithOwner\":\"yasyf/cc-context\",\"owner\":{\"id\":\"MDQ6VXNlcjcwOTY0NQ==\",\"login\":\"yasyf\"},\"viewerPermission\":\"ADMIN\"}\n",
+  "stderr": ""
+}

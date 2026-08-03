@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "api",
+    "-i",
+    "repos/cli/cli/pulls/13982/comments?per_page=100&since=2099-01-01T00:00:00Z"
+  ],
+  "exit": 0,
+  "status": 200,
+  "headers": [
+    "Content-Type: application/json; charset=utf-8",
+    "Etag: \"24cecb14b0c8da1ee49ceda557b29152160fbc1a319134a4190e5ea89fef8d22\""
+  ],
+  "body": "[]",
+  "stderr": ""
+}

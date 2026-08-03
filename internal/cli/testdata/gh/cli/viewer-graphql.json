@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "api",
+    "graphql",
+    "-f",
+    "query={viewer{login organizations(first:1){nodes{login}}}}"
+  ],
+  "exit": 0,
+  "stdout": "{\"data\":{\"viewer\":{\"login\":\"yasyf\",\"organizations\":{\"nodes\":[{\"login\":\"PostPushr\"}]}}}}",
+  "stderr": ""
+}

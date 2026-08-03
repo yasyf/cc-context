@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "run",
+    "view",
+    "30270014111",
+    "--json",
+    "workflowName,conclusion,startedAt,updatedAt,url,jobs"
+  ],
+  "exit": 0,
+  "stdout": "{\"conclusion\":\"failure\",\"jobs\":[{\"completedAt\":\"2026-07-27T13:23:08Z\",\"conclusion\":\"failure\",\"databaseId\":89989941378,\"name\":\"autobump / autobump\",\"startedAt\":\"2026-07-27T13:23:00Z\",\"status\":\"completed\",\"steps\":[{\"completedAt\":\"2026-07-27T13:23:01Z\",\"conclusion\":\"success\",\"name\":\"Set up job\",\"number\":1,\"startedAt\":\"2026-07-27T13:23:00Z\",\"status\":\"completed\"},{\"completedAt\":\"2026-07-27T13:23:02Z\",\"conclusion\":\"success\",\"name\":\"Run actions/checkout@v7\",\"number\":2,\"startedAt\":\"2026-07-27T13:23:01Z\",\"status\":\"completed\"},{\"completedAt\":\"2026-07-27T13:23:02Z\",\"conclusion\":\"success\",\"name\":\"Resolve pinned script ref\",\"number\":3,\"startedAt\":\"2026-07-27T13:23:02Z\",\"status\":\"completed\"},{\"completedAt\":\"2026-07-27T13:23:03Z\",\"conclusion\":\"success\",\"name\":\"Run actions/checkout@v7\",\"number\":4,\"startedAt\":\"2026-07-27T13:23:02Z\",\"status\":\"completed\"},{\"completedAt\":\"2026-07-27T13:23:05Z\",\"conclusion\":\"success\",\"name\":\"Run astral-sh/setup-uv@v8.2.0\",\"number\":5,\"startedAt\":\"2026-07-27T13:23:03Z\",\"status\":\"completed\"},{\"completedAt\":\"2026-07-27T13:23:06Z\",\"conclusion\":\"failure\",\"name\":\"Detect drift and bump\",\"number\":6,\"startedAt\":\"2026-07-27T13:23:05Z\",\"status\":\"completed\"},{\"completedAt\":\"2026-07-27T13:23:06Z\",\"conclusion\":\"skipped\",\"name\":\"Post Run astral-sh/setup-uv@v8.2.0\",\"number\":10,\"startedAt\":\"2026-07-27T13:23:06Z\",\"status\":\"completed\"},{\"completedAt\":\"2026-07-27T13:23:06Z\",\"conclusion\":\"success\",\"name\":\"Post Run actions/checkout@v7\",\"number\":11,\"startedAt\":\"2026-07-27T13:23:06Z\",\"status\":\"completed\"},{\"completedAt\":\"2026-07-27T13:23:07Z\",\"conclusion\":\"success\",\"name\":\"Post Run actions/checkout@v7\",\"number\":12,\"startedAt\":\"2026-07-27T13:23:06Z\",\"status\":\"completed\"},{\"completedAt\":\"2026-07-27T13:23:07Z\",\"conclusion\":\"success\",\"name\":\"Complete job\",\"number\":13,\"startedAt\":\"2026-07-27T13:23:07Z\",\"status\":\"completed\"}],\"url\":\"https://github.com/yasyf/cc-context/actions/runs/30270014111/job/89989941378\"}],\"startedAt\":\"2026-07-27T13:22:56Z\",\"updatedAt\":\"2026-07-27T13:23:09Z\",\"url\":\"https://github.com/yasyf/cc-context/actions/runs/30270014111\",\"workflowName\":\"Autobump\"}\n",
+  "stderr": ""
+}
