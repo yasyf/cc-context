@@ -12,7 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/ghapi"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 // reviewsRepoPath prefixes every REST path the fake GitHub serves, matching the
@@ -150,8 +151,10 @@ func (s *reviewsServer) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 			number := int(value)
 			pr, known := s.prs[number]
 			if !known {
+				fields[name] = nil
 				missing = append(missing, map[string]any{
 					"type":    "NOT_FOUND",
+					"path":    []any{"repository", name},
 					"message": fmt.Sprintf("Could not resolve to a PullRequest with the number of %d.", number),
 				})
 				continue
@@ -166,8 +169,10 @@ func (s *reviewsServer) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 			number := reviewsHeadPR(numbers, req.Query)
 			pr, registered := s.prs[number]
 			if !registered {
+				fields[name] = nil
 				missing = append(missing, map[string]any{
 					"type":    "NOT_FOUND",
+					"path":    []any{"repository", name},
 					"message": fmt.Sprintf("Could not resolve to a Repository with the name of %q.", value),
 				})
 				continue
@@ -176,9 +181,12 @@ func (s *reviewsServer) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// GitHub answers a partly-unresolvable batch with data still populated and
+	// the unresolvable field null beside the errors array, not with a null data —
+	// the shape recorded in testdata/gh/api/reviews-graphql-missing.json.
 	body := map[string]any{"data": map[string]any{"repository": fields}}
 	if len(missing) > 0 {
-		body = map[string]any{"data": nil, "errors": missing}
+		body["errors"] = missing
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(body); err != nil {
@@ -260,6 +268,14 @@ func setupReviews(t *testing.T) *reviewsServer {
 		t.Fatalf("chdir: %v", err)
 	}
 	t.Setenv("PATH", empty)
+	return setupReviewsHere(t)
+}
+
+// setupReviewsHere is setupReviews for a repository already standing at the
+// working directory, leaving PATH as its fixture installed it — the shape a
+// watch that has to ask real git which branch is checked out needs.
+func setupReviewsHere(t *testing.T) *reviewsServer {
+	t.Helper()
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	seedLaneRecords(t, ".", laneSeed{nameWithOwner: "acme/repo", owner: "acme"})
 	t.Setenv(envReviewsPollInterval, "1ms")
@@ -287,21 +303,6 @@ func stubReviewsAPI(t *testing.T) *reviewsServer {
 	return s
 }
 
-// writeReviewsGitFake installs the one executable reviews still needs: git,
-// which names the checked-out branch when no operand does.
-func writeReviewsGitFake(t *testing.T, branch string) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("fake shell script is POSIX-only")
-	}
-	dir := t.TempDir()
-	script := "#!/bin/sh\ncase \"$*\" in\n  \"branch --show-current\") printf '" + branch + "\\n' ;;\n  *) exit 2 ;;\nesac\n"
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
-		t.Fatalf("write fake git: %v", err)
-	}
-	t.Setenv("PATH", dir)
-}
-
 func runReviewsCmd(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	cmd := newReviewsCmd()
@@ -315,111 +316,142 @@ func runReviewsCmd(t *testing.T, args ...string) (string, error) {
 	return out.String(), err
 }
 
+// TestReviewsStreamsNewComment renders cli/cli#13982's recorded issue-comment
+// feed: two comments GitHub really served, one of them carrying the CRLF the
+// sanitizer has to strip before the body reaches a terminal.
 func TestReviewsStreamsNewComment(t *testing.T) {
+	comments := loadGHAPIGolden(t, "reviews-issue-comments").body
 	srv := setupReviews(t)
 	srv.pr(7, 1, "MERGED", true)
-	srv.feed("comment", 7, `[{
-		"id":101,
-		"body":"hello",
-		"user":{"login":"alice"},
-		"html_url":"https://github.com/acme/repo/pull/7#issuecomment-101",
-		"created_at":"2026-07-20T18:00:00Z",
-		"updated_at":"2026-07-20T18:01:00Z"
-	}]`)
+	srv.feed("comment", 7, comments)
 
 	got, err := runReviewsCmd(t, "7", "--since", "all")
 	if err != nil {
 		t.Fatalf("reviews error = %v", err)
 	}
-	want := "" +
-		"watching pr#7 · https://github.com/acme/repo/pull/7 · poll 1ms\n" +
-		"◆ comment · alice · pr#7 · 2026-07-20T18:01:00Z\n" +
-		"  hello\n" +
-		"↳ https://github.com/acme/repo/pull/7#issuecomment-101 · id 101\n\n" +
-		"◆ pr#7 merged · https://github.com/acme/repo/pull/7\n\n" +
-		"watch done · 1 merged · 0 closed\n"
-	if got != want {
-		t.Errorf("output mismatch\n got: %q\nwant: %q", got, want)
+	for _, want := range []string{
+		"watching pr#7 · https://github.com/acme/repo/pull/7 · poll 1ms\n",
+		"◆ comment · github-actions[bot] · pr#7 · 2026-07-27T15:06:57Z\n",
+		"  Thanks for your pull request! This is a large change (660 lines across 9 files) that doesn't reference a `help wanted` issue.\n",
+		"↳ https://github.com/cli/cli/pull/13982#issuecomment-5093042634 · id 5093042634\n",
+		"◆ comment · offbyone · pr#7 · 2026-08-02T04:10:21Z\n",
+		"  There are a lot of comments on here; can you clarify which ones are blockers versus commentary? \n",
+		"↳ https://github.com/cli/cli/pull/13982#issuecomment-5154974588 · id 5154974588\n",
+		"◆ pr#7 merged · https://github.com/acme/repo/pull/7\n",
+		"watch done · 1 merged · 0 closed\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "\r") {
+		t.Errorf("carriage return from the recorded body reached the terminal:\n%q", got)
 	}
 }
 
 func TestReviewsDedupesAcrossPolls(t *testing.T) {
+	comments := loadGHAPIGolden(t, "reviews-issue-comments").body
 	srv := setupReviews(t)
 	srv.pr(7, 2, "MERGED", true)
-	srv.feed("comment", 7, `[{
-		"id":101,
-		"body":"once",
-		"user":{"login":"alice"},
-		"html_url":"https://github.com/acme/repo/pull/7#issuecomment-101",
-		"created_at":"2026-07-20T18:00:00Z",
-		"updated_at":"2026-07-20T18:01:00Z"
-	}]`)
+	srv.feed("comment", 7, comments)
 
 	got, err := runReviewsCmd(t, "7", "--since", "all")
 	if err != nil {
 		t.Fatalf("reviews error = %v", err)
 	}
-	if count := strings.Count(got, "id 101"); count != 1 {
+	if count := strings.Count(got, "id 5093042634"); count != 1 {
 		t.Errorf("event count = %d, want 1\n%s", count, got)
 	}
 }
 
+// TestReviewsAllKindsSortedAndSuppressed drives all three of cli/cli's recorded
+// feeds through one watch: events from the three kinds interleave in timestamp
+// order, an inline comment whose line GitHub nulled reads as outdated, a
+// CHANGES_REQUESTED review carries the triage pointer, and the empty-bodied
+// COMMENTED review — the container GitHub wraps a batch of inline comments in —
+// is emitted not at all.
 func TestReviewsAllKindsSortedAndSuppressed(t *testing.T) {
+	inline := loadGHAPIGolden(t, "reviews-inline-comments-outdated").body
+	comments := loadGHAPIGolden(t, "reviews-issue-comments").body
+	reviews := loadGHAPIGolden(t, "reviews-reviews").body
 	srv := setupReviews(t)
 	srv.pr(7, 1, "MERGED", true)
-	srv.feed("inline", 7, `[{
-		"id":301,
-		"body":"inline body",
-		"user":{"login":"inline-author"},
-		"path":"internal/cli/reviews.go",
-		"line":null,
-		"html_url":"https://github.com/acme/repo/pull/7#discussion_r301",
-		"created_at":"2026-07-20T18:03:00Z",
-		"updated_at":"2026-07-20T18:03:00Z"
-	}]`)
-	srv.feed("comment", 7, `[{
-		"id":201,
-		"body":"issue body",
-		"user":{"login":"commenter"},
-		"html_url":"https://github.com/acme/repo/pull/7#issuecomment-201",
-		"created_at":"2026-07-20T18:02:00Z",
-		"updated_at":"2026-07-20T18:02:00Z"
-	}]`)
+	srv.feed("inline", 7, inline)
+	srv.feed("comment", 7, comments)
+	srv.feed("review", 7, reviews)
+
+	got, err := runReviewsCmd(t, "7", "--since", "all")
+	if err != nil {
+		t.Fatalf("reviews error = %v", err)
+	}
+	for _, want := range []string{
+		"◆ inline · Copilot · pr#7 · AGENTS.md:146 · 2026-07-28T21:52:43Z\n",
+		"◆ inline · Copilot · pr#7 · AGENTS.md (outdated) · 2026-07-28T21:52:43Z\n",
+		"◆ review · BagToad · pr#7 · changes_requested · 2026-07-28T05:42:11Z\n",
+		"↳ triage: spawn the cc-context:pr-review-triage agent with pr#7 and review id 4794142826\n",
+		"◆ review · copilot-pull-request-reviewer[bot] · pr#7 · commented · 2026-07-27T15:11:14Z\n",
+		"◆ pr#7 merged · https://github.com/acme/repo/pull/7\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "id 4837136847") {
+		t.Errorf("the empty-bodied COMMENTED review was emitted:\n%s", got)
+	}
+	if want := reviewsEmittedTimestamps(t, got); !slices.IsSortedFunc(want, time.Time.Compare) {
+		t.Errorf("emitted timestamps %v are out of order:\n%s", want, got)
+	}
+}
+
+// reviewsEmittedTimestamps reads the timestamp off every event header in out,
+// which is the trailing "· <RFC3339>" segment.
+func reviewsEmittedTimestamps(t *testing.T, out string) []time.Time {
+	t.Helper()
+	var stamps []time.Time
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "◆ ") || strings.Contains(line, " merged"+shipSep) {
+			continue
+		}
+		parts := strings.Split(line, shipSep)
+		stamp, err := time.Parse(time.RFC3339, parts[len(parts)-1])
+		if err != nil {
+			t.Fatalf("parse timestamp off %q: %v", line, err)
+		}
+		stamps = append(stamps, stamp)
+	}
+	if len(stamps) == 0 {
+		t.Fatalf("no event headers in:\n%s", out)
+	}
+	return stamps
+}
+
+// TestReviewsPendingReviewSuppressed is the one review shape no capture holds:
+// GitHub serves a PENDING review only to its own author, and the recorder's
+// token authors none. Its bytes are this test's own until
+// `gh api -i 'repos/OWNER/REPO/pulls/N/reviews?per_page=100'` runs under a token
+// holding an unsubmitted review on that pull request.
+func TestReviewsPendingReviewSuppressed(t *testing.T) {
+	srv := setupReviews(t)
+	srv.pr(7, 1, "MERGED", true)
 	srv.feed("review", 7, `[
-		{"id":401,"state":"PENDING","body":"draft","user":{"login":"draft"},"html_url":"https://example/401","submitted_at":null},
-		{"id":402,"state":"COMMENTED","body":"","user":{"login":"container"},"html_url":"https://example/402","submitted_at":"2026-07-20T18:00:00Z"},
-		{"id":403,"state":"CHANGES_REQUESTED","body":"please fix","user":{"login":"reviewer"},"html_url":"https://example/403","submitted_at":"2026-07-20T18:01:00Z"},
-		{"id":404,"state":"APPROVED","body":"","user":{"login":"approver"},"html_url":"https://example/404","submitted_at":"2026-07-20T18:04:00Z"}
+		{"id":401,"state":"PENDING","body":"draft","user":{"login":"draft"},"html_url":"https://example/401","submitted_at":null}
 	]`)
 
 	got, err := runReviewsCmd(t, "7", "--since", "all")
 	if err != nil {
 		t.Fatalf("reviews error = %v", err)
 	}
-	want := "" +
-		"watching pr#7 · https://github.com/acme/repo/pull/7 · poll 1ms\n" +
-		"◆ review · reviewer · pr#7 · changes_requested · 2026-07-20T18:01:00Z\n" +
-		"  please fix\n" +
-		"↳ https://example/403 · id 403\n" +
-		"↳ triage: spawn the cc-context:pr-review-triage agent with pr#7 and review id 403\n\n" +
-		"◆ comment · commenter · pr#7 · 2026-07-20T18:02:00Z\n" +
-		"  issue body\n" +
-		"↳ https://github.com/acme/repo/pull/7#issuecomment-201 · id 201\n\n" +
-		"◆ inline · inline-author · pr#7 · internal/cli/reviews.go (outdated) · 2026-07-20T18:03:00Z\n" +
-		"  inline body\n" +
-		"↳ https://github.com/acme/repo/pull/7#discussion_r301 · id 301\n\n" +
-		"◆ review · approver · pr#7 · approved · 2026-07-20T18:04:00Z\n" +
-		"↳ https://example/404 · id 404\n\n" +
-		"◆ pr#7 merged · https://github.com/acme/repo/pull/7\n\n" +
-		"watch done · 1 merged · 0 closed\n"
-	if got != want {
-		t.Errorf("output mismatch\n got: %q\nwant: %q", got, want)
-	}
-	if strings.Contains(got, "id 401") || strings.Contains(got, "id 402") {
-		t.Errorf("suppressed review emitted:\n%s", got)
+	if strings.Contains(got, "id 401") {
+		t.Errorf("pending review emitted:\n%s", got)
 	}
 }
 
+// TestReviewsEditedReemit needs one comment observed twice at two updated_at
+// values, which no single capture holds — the corpus records a feed at one
+// instant. Recording it means capturing
+// `gh api -i 'repos/OWNER/REPO/issues/N/comments?per_page=100'` before and after
+// a comment is edited; until then these two payloads are the test's own.
 func TestReviewsEditedReemit(t *testing.T) {
 	srv := setupReviews(t)
 	srv.pr(7, 2, "MERGED", true)
@@ -606,32 +638,34 @@ func TestReviewsMultiPRPartialFailureIsolation(t *testing.T) {
 	}
 }
 
+// TestReviewsBudgetCapFooterIndented caps a recorded three-line comment at a
+// budget that fits its first line, so render.Cap's omission footer lands inside
+// the event body and has to carry the body's own indentation.
 func TestReviewsBudgetCapFooterIndented(t *testing.T) {
+	comments := loadGHAPIGolden(t, "reviews-issue-comments").body
 	srv := setupReviews(t)
 	srv.pr(7, 1, "MERGED", true)
-	srv.feed("comment", 7, `[{
-		"id":201,
-		"body":"1234\n5678\n90",
-		"user":{"login":"commenter"},
-		"html_url":"https://example/201",
-		"created_at":"2026-07-20T18:00:00Z",
-		"updated_at":"2026-07-20T18:01:00Z"
-	}]`)
+	srv.feed("comment", 7, comments)
 
-	got, err := runReviewsCmd(t, "7", "--since", "all", "--budget", "2")
+	got, err := runReviewsCmd(t, "7", "--since", "all", "--budget", "26")
 	if err != nil {
 		t.Fatalf("reviews error = %v", err)
 	}
-	wantBody := "  1234\n  … +2 lines, ~2 tokens omitted — re-run with a larger --budget\n"
+	wantBody := "  There are a lot of comments on here; can you clarify which ones are blockers versus commentary? \n" +
+		"  \n  … +1 lines, ~"
 	if !strings.Contains(got, wantBody) {
 		t.Errorf("capped body missing or mis-indented:\n%s", got)
+	}
+	if !strings.Contains(got, "tokens omitted — re-run with a larger --budget") {
+		t.Errorf("omission footer missing:\n%s", got)
 	}
 }
 
 // TestReviewsResolution proves each operand form reaches the batch that can
 // answer it: a number resolves through pullRequest(number:), a branch — and the
 // checked-out branch an empty operand list stands for — through
-// pullRequests(headRefName:).
+// pullRequests(headRefName:). The empty-operand case stands on a real
+// repository, so the branch name is git's answer rather than a script's.
 func TestReviewsResolution(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -646,12 +680,15 @@ func TestReviewsResolution(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := setupReviews(t)
+			var srv *reviewsServer
+			if tt.gitBranch != "" {
+				vcstest.Repo(t, vcstest.Branch(tt.gitBranch))
+				srv = setupReviewsHere(t)
+			} else {
+				srv = setupReviews(t)
+			}
 			srv.pr(7, 1, "MERGED", true)
 			srv.branch("feature/reviews", 7)
-			if tt.gitBranch != "" {
-				writeReviewsGitFake(t, tt.gitBranch)
-			}
 
 			args := append([]string{}, tt.args...)
 			args = append(args, "--since", "all")
@@ -692,6 +729,57 @@ func TestReviewsBranchResolvesNewestPR(t *testing.T) {
 	}
 	if strings.Contains(out, "watching pr#1") {
 		t.Errorf("output = %q, want it to leave pr#1, the merged predecessor, alone", out)
+	}
+}
+
+// serveGHAPIGolden answers every request with one recorded GitHub response and
+// returns a client pointed at it.
+func serveGHAPIGolden(t *testing.T, g ghAPIGolden) *ghapi.Client {
+	t.Helper()
+	t.Setenv("GH_TOKEN", "reviews-test-token")
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(g.status)
+		if _, err := io.WriteString(w, g.body); err != nil {
+			t.Errorf("write %s: %v", g.name, err)
+		}
+	}))
+	t.Cleanup(ts.Close)
+	return ghapi.New(ts.URL)
+}
+
+// TestReviewsBatchParsesRecordedGraphQL drives GitHub's own recorded batch
+// answers through the resolver a poll cycle uses: the success envelope, whose
+// merged pull request carries the non-null mergedAt the terminal classifier
+// reads, and the unresolvable one, which keeps data populated and nulls only the
+// field it could not resolve.
+func TestReviewsBatchParsesRecordedGraphQL(t *testing.T) {
+	numbers := loadGHAPIGolden(t, "reviews-graphql-numbers")
+	missing := loadGHAPIGolden(t, "reviews-graphql-missing")
+
+	client := reviewsClient{api: serveGHAPIGolden(t, numbers), owner: "cli", repo: "cli"}
+	byNumber, err := client.pullRequestsByNumber(context.Background(), []int{13982, 13084})
+	if err != nil {
+		t.Fatalf("pullRequestsByNumber error = %v", err)
+	}
+	open := byNumber[13982]
+	if open.State != "OPEN" || open.URL != "https://github.com/cli/cli/pull/13982" {
+		t.Errorf("pr#13982 = %+v, want the recorded open pull request", open)
+	}
+	if terminal, err := reviewTerminalState(open); err != nil || terminal != "" {
+		t.Errorf("reviewTerminalState(open) = (%q, %v), want the watch to stay attached", terminal, err)
+	}
+	merged := byNumber[13084]
+	if merged.MergedAt == nil {
+		t.Fatalf("pr#13084 = %+v, want the recorded mergedAt", merged)
+	}
+	if terminal, err := reviewTerminalState(merged); err != nil || terminal != "merged" {
+		t.Errorf("reviewTerminalState(merged) = (%q, %v), want merged", terminal, err)
+	}
+
+	client = reviewsClient{api: serveGHAPIGolden(t, missing), owner: "cli", repo: "cli"}
+	if _, err := client.pullRequestsByNumber(context.Background(), []int{99999999}); !errors.Is(err, ghapi.ErrNotFound) {
+		t.Fatalf("pullRequestsByNumber error = %v, want ErrNotFound", err)
 	}
 }
 

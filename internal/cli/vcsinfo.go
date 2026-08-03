@@ -252,19 +252,26 @@ func infoGTStack(ctx context.Context, l lane, info *vcsInfo) {
 	}
 }
 
+// infoGit reports the git lane. A repository that designates no default branch
+// leaves the trunk line empty, the way infoJJ and infoGTStack already do: a
+// report's answer to a repo with no configured trunk is that it has none, not a
+// refusal to print the branch and dirtiness around it. A git that could not
+// answer at all still aborts.
 func infoGit(ctx context.Context, l lane, info *vcsInfo) error {
 	if err := infoGitBranch(ctx, l.root, info); err != nil {
 		return err
 	}
-	remote, err := gitRemoteFor(ctx, "info", info.Branch)
+	remote, err := vcs.GitRemoteFor(ctx, l.root, info.Branch)
 	if err != nil {
-		return err
+		return fmt.Errorf("info: %w", err)
 	}
-	trunk, err := gitRemoteTrunk(ctx, "info", remote)
-	if err != nil {
-		return err
+	trunk, err := vcs.ResolveTrunk(ctx, l.root, remote)
+	switch {
+	case err == nil:
+		info.Trunk = trunk.Name()
+	case !errors.Is(err, vcs.ErrNoTrunk):
+		return fmt.Errorf("info: %w", err)
 	}
-	info.Trunk = trunk
 	return infoGitDirty(ctx, l.root, info)
 }
 
@@ -307,11 +314,11 @@ func infoGitBranch(ctx context.Context, root string, info *vcsInfo) error {
 }
 
 func infoGitDirty(ctx context.Context, root string, info *vcsInfo) error {
-	out, err := render.RunCLIDir(ctx, root, "git", []string{"status", "--porcelain"})
+	entries, err := vcs.GitStatus(ctx, vcs.GitArgs{Dir: root, Sub: []string{"status"}})
 	if err != nil {
-		return fmt.Errorf("info: git status --porcelain: %w", err)
+		return fmt.Errorf("info: %w", err)
 	}
-	info.DirtyFiles = countInfoLines(out)
+	info.DirtyFiles = len(entries)
 	info.Dirty = info.DirtyFiles > 0
 	return nil
 }
@@ -465,6 +472,7 @@ func infoGitHub(ctx context.Context, l lane, o vcsInfoOpts, info *vcsInfo) error
 	return nil
 }
 
+// countInfoLines counts the non-empty lines of a jj path listing.
 func countInfoLines(out string) int {
 	n := 0
 	for _, line := range strings.Split(out, "\n") {

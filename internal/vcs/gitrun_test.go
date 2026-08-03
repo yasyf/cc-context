@@ -7,12 +7,15 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 // Every stream literal below was captured from git 2.55 with `od -c`; the shape
 // helpers exist because none of them can be guessed from the non-NUL forms.
 
 func TestParseNameStatusMeasuredStreams(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		stream string
@@ -60,6 +63,7 @@ func TestParseNameStatusMeasuredStreams(t *testing.T) {
 // --porcelain -z` puts the *new* name in the entry and the original in the token
 // after it, where `git diff --name-status -z` puts old first.
 func TestParseStatusMeasuredStreams(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		stream string
@@ -107,6 +111,7 @@ func TestParseStatusMeasuredStreams(t *testing.T) {
 // carry the paths in opposite order, so any caller that read "the token after the
 // status" positionally would report the wrong direction in one of them.
 func TestNameStatusAndStatusDisagreeOnRenameOrder(t *testing.T) {
+	t.Parallel()
 	ns, err := parseNameStatus(nulTokens("R100\x00old.go\x00new.go\x00"))
 	if err != nil {
 		t.Fatalf("parseNameStatus: %v", err)
@@ -128,6 +133,7 @@ func TestNameStatusAndStatusDisagreeOnRenameOrder(t *testing.T) {
 }
 
 func TestParseTreeRecordsMeasuredStreams(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		stream string
@@ -171,6 +177,7 @@ func TestParseTreeRecordsMeasuredStreams(t *testing.T) {
 }
 
 func TestParseNumstatMeasuredStreams(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		stream     string
@@ -244,6 +251,7 @@ func TestParseNumstatMeasuredStreams(t *testing.T) {
 }
 
 func TestParsePorcelainRecordsMeasuredStreams(t *testing.T) {
+	t.Parallel()
 	// git worktree list --porcelain -z, main checkout plus a detached linked one.
 	const stream = "worktree /private/tmp/ccx-shapes\x00HEAD d7c9da550c8ec71cd4482cb21640d5b3ba0a0d39\x00branch refs/heads/main\x00\x00" +
 		"worktree /private/tmp/ccx-shapes-wt2\x00HEAD d7c9da550c8ec71cd4482cb21640d5b3ba0a0d39\x00detached\x00\x00"
@@ -269,6 +277,7 @@ func TestParsePorcelainRecordsMeasuredStreams(t *testing.T) {
 }
 
 func TestParseLogNameStatusMeasuredStreams(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		stream string
@@ -337,6 +346,7 @@ func TestParseLogNameStatusMeasuredStreams(t *testing.T) {
 }
 
 func TestParseRejectsMalformedStreams(t *testing.T) {
+	t.Parallel()
 	if _, err := parseNameStatus(nulTokens("R100\x00old.go\x00")); err == nil {
 		t.Fatal("truncated rename accepted")
 	}
@@ -364,6 +374,7 @@ func TestParseRejectsMalformedStreams(t *testing.T) {
 // caller can hand git a flat argv, so --end-of-options always precedes the revs
 // and -- always precedes the pathspecs.
 func TestGitArgvInterposesSeparators(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		args     GitArgs
@@ -418,7 +429,7 @@ func TestGitArgvInterposesSeparators(t *testing.T) {
 // diff source spelled --output=<path> wrote that file before --end-of-options was
 // interposed.
 func TestGitRunRefusesOptionInjectionViaRev(t *testing.T) {
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	write(t, dir, "a.go", "package a\n")
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-qm", "init")
@@ -444,7 +455,7 @@ func TestGitRunRefusesOptionInjectionViaRev(t *testing.T) {
 // real git: "sub/[id].go" is a character class to git's default pathspec parser,
 // so without it the file's own name also selects its neighbors.
 func TestGitRunMatchesPathspecsLiterally(t *testing.T) {
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	write(t, dir, "sub/[id].go", "package a\n")
 	write(t, dir, "sub/i.go", "package a\n")
 	runGit(t, dir, "add", "-A")
@@ -484,7 +495,7 @@ func TestGitRunMatchesPathspecsLiterally(t *testing.T) {
 // failures are invisible to an argv assertion alone.
 func TestGitRunOmitsThePathspecSeparatorWhenThereAreNoPaths(t *testing.T) {
 	ctx := context.Background()
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	write(t, dir, "a.go", "package a\n")
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-qm", "init")
@@ -508,7 +519,7 @@ func TestGitRunOmitsThePathspecSeparatorWhenThereAreNoPaths(t *testing.T) {
 // parsers on its own.
 func TestShapeHelpersAgainstLiveGit(t *testing.T) {
 	ctx := context.Background()
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	write(t, dir, "a.go", "package a\n")
 	write(t, dir, "keep.go", "keep\n")
 	write(t, dir, "old.go", "oldname\n")
@@ -610,10 +621,11 @@ func TestShapeHelpersAgainstLiveGit(t *testing.T) {
 	})
 
 	t.Run("GitNumstat root commit", func(t *testing.T) {
+		// The fixture's own commit is the root; %P is empty there and nowhere else.
 		header, records, err := GitNumstat(ctx, GitArgs{
 			Dir:  dir,
 			Sub:  []string{"show"},
-			Revs: []GitRef{UnsafeRef("HEAD~1")},
+			Revs: []GitRef{UnsafeRef("HEAD~2")},
 		}, "%P")
 		if err != nil {
 			t.Fatalf("GitNumstat: %v", err)
@@ -621,8 +633,9 @@ func TestShapeHelpersAgainstLiveGit(t *testing.T) {
 		if len(header) != 1 || header[0] != "" {
 			t.Fatalf("header = %q, want one empty parent field", header)
 		}
-		if len(records) != 3 {
-			t.Fatalf("records = %+v, want 3", records)
+		want := []NumstatRecord{{Added: "1", Deleted: "0", Path: "f.txt"}}
+		if !slices.Equal(records, want) {
+			t.Fatalf("records = %+v, want %+v", records, want)
 		}
 	})
 
@@ -675,8 +688,8 @@ func TestShapeHelpersAgainstLiveGit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GitLogNameStatus: %v", err)
 		}
-		if len(commits) != 3 {
-			t.Fatalf("commits = %+v, want 3", commits)
+		if len(commits) != 4 {
+			t.Fatalf("commits = %+v, want 4", commits)
 		}
 		if commits[0].Fields[2] != "empty one" || len(commits[0].Entries) != 0 {
 			t.Fatalf("empty commit = %+v", commits[0])
@@ -691,7 +704,7 @@ func TestShapeHelpersAgainstLiveGit(t *testing.T) {
 // zero-width joiner, a newline, and a quote as C escapes inside a quoted string,
 // so a caller splitting on newlines sees a leading '"' glued to the name.
 func TestGitPathsKeepsUnquotableNames(t *testing.T) {
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	names := []string{"zwj\u200djoin.go", "new\nline.go", "quote\"name.go"}
 	for _, name := range names {
 		write(t, dir, name, "package a\n")
@@ -703,9 +716,67 @@ func TestGitPathsKeepsUnquotableNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GitPaths: %v", err)
 	}
-	want := []string{"new\nline.go", "quote\"name.go", "zwj\u200djoin.go"}
+	want := []string{"f.txt", "new\nline.go", "quote\"name.go", "zwj\u200djoin.go"}
 	if !slices.Equal(paths, want) {
 		t.Fatalf("paths = %q, want %q", paths, want)
+	}
+}
+
+// TestRenameOrderReversalAgainstLiveGit is the live half of
+// TestNameStatusAndStatusDisagreeOnRenameOrder: the reversal is measured from git
+// here rather than transcribed, so a hand-written expectation that had the two
+// shapes backwards would fail instead of agreeing with a fixture that shared its
+// mistake. The renamed path carries both byte classes git C-quotes under the
+// default core.quotePath — a zero-width joiner and a double quote — so the same
+// row proves the -z streams reach the parsers raw.
+func TestRenameOrderReversalAgainstLiveGit(t *testing.T) {
+	ctx := context.Background()
+	const (
+		oldPath = "zwj\u200dquote\"old.go"
+		newPath = "zwj\u200dquote\"new.go"
+	)
+	dir := vcstest.Repo(t).Dir
+	write(t, dir, oldPath, "package a\n")
+	runGit(t, dir, "add", "-A")
+	runGit(t, dir, "commit", "-qm", "init")
+	runGit(t, dir, "mv", oldPath, newPath)
+	runGit(t, dir, "add", "-A")
+
+	// The premise: with core.quotePath at its default this git escapes both names,
+	// so a listing read without -z carries neither path's bytes.
+	quoted := gitOutput(t, dir, "diff", "--cached", "--name-status", "-M")
+	if !strings.Contains(quoted, `\342\200\215`) || !strings.Contains(quoted, `\"`) {
+		t.Fatalf("name-status without -z = %q, want the zero-width joiner and quote C-escaped", quoted)
+	}
+	if strings.Contains(quoted, oldPath) || strings.Contains(quoted, newPath) {
+		t.Fatalf("name-status without -z = %q, want neither path's raw bytes", quoted)
+	}
+
+	ns, err := GitNameStatus(ctx, GitArgs{Dir: dir, Sub: []string{"diff", "--cached", "-M"}})
+	if err != nil {
+		t.Fatalf("GitNameStatus: %v", err)
+	}
+	wantNS := []NameStatusEntry{{Status: "R100", Old: oldPath, New: newPath}}
+	if !slices.Equal(ns, wantNS) {
+		t.Fatalf("GitNameStatus = %+v, want %+v", ns, wantNS)
+	}
+
+	st, err := GitStatus(ctx, GitArgs{Dir: dir, Sub: []string{"status"}})
+	if err != nil {
+		t.Fatalf("GitStatus: %v", err)
+	}
+	wantST := []StatusEntry{{X: 'R', Y: ' ', Path: newPath, Orig: oldPath}}
+	if !slices.Equal(st, wantST) {
+		t.Fatalf("GitStatus = %+v, want %+v", st, wantST)
+	}
+
+	// The reversal itself: the token each stream puts second names the opposite end
+	// of the same rename, so a positional read is wrong in exactly one of them.
+	if ns[0].New != st[0].Path || ns[0].Old != st[0].Orig {
+		t.Fatalf("the two shapes disagree on the rename itself: %+v vs %+v", ns[0], st[0])
+	}
+	if ns[0].New == ns[0].Old {
+		t.Fatalf("rename endpoints coincide (%q) — the row no longer covers the reversal", ns[0].New)
 	}
 }
 
@@ -716,16 +787,17 @@ func TestGitPathsKeepsUnquotableNames(t *testing.T) {
 // would cut "a\tb.go" down to "b.go" in both.
 func TestTabInAFilenameStaysInThePath(t *testing.T) {
 	ctx := context.Background()
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	const tabbed = "a\tb.go"
 	write(t, dir, tabbed, "package a\n")
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-qm", "init")
 
 	tree, err := GitTreeRecords(ctx, GitArgs{
-		Dir:  dir,
-		Sub:  []string{"ls-tree", "--full-tree"},
-		Revs: []GitRef{HeadRef},
+		Dir:   dir,
+		Sub:   []string{"ls-tree", "--full-tree"},
+		Revs:  []GitRef{HeadRef},
+		Paths: []string{tabbed},
 	})
 	if err != nil {
 		t.Fatalf("GitTreeRecords: %v", err)
@@ -757,7 +829,7 @@ func TestTabInAFilenameStaysInThePath(t *testing.T) {
 // does not exist. UnsafeRef is what makes it reachable, so the runner is where it
 // stops.
 func TestGitRunRefusesThePathspecSeparatorAsARev(t *testing.T) {
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	write(t, dir, "a.go", "package a\n")
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-qm", "init")

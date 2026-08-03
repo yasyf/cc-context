@@ -6,103 +6,120 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
 
-func TestParseCommits(t *testing.T) {
-	tests := []struct {
-		name string
-		out  string
-		want []historyCommit
-	}{
-		{
-			name: "empty",
-			out:  "",
-			want: nil,
-		},
-		{
-			name: "single record with name-status",
-			out:  "aaa1111\x002026-06-24\x00feat: rework dispatch\n\nM\tinternal/cli/run.go\n",
-			want: []historyCommit{{"aaa1111", "2026-06-24", "feat: rework dispatch", "internal/cli/run.go"}},
-		},
-		{
-			name: "multiple records, blank line before each status",
-			out:  "aaa1111\x002026-06-24\x00feat: x\n\nM\ta.go\nbbb2222\x002026-06-23\x00chore: y\n\nM\tb.go\n",
-			want: []historyCommit{
-				{"aaa1111", "2026-06-24", "feat: x", "a.go"},
-				{"bbb2222", "2026-06-23", "chore: y", "b.go"},
-			},
-		},
-		{
-			name: "rename status uses the destination path",
-			out:  "ccc3333\x002026-06-20\x00refactor: rename\n\nR090\told.go\tnew.go\n",
-			want: []historyCommit{{"ccc3333", "2026-06-20", "refactor: rename", "new.go"}},
-		},
-		{
-			name: "subject containing colon and spaces is preserved whole",
-			out:  "ddd4444\x002026-06-19\x00fix: keep a: b, c in subject\n\nM\tf.go\n",
-			want: []historyCommit{{"ddd4444", "2026-06-19", "fix: keep a: b, c in subject", "f.go"}},
-		},
+// TestHistoryCommitWalk drives the commit walk against a real repository: git's own
+// bytes supply every expected hash and date, and --follow carries the walk past a
+// rename so each commit is labelled with the name the file had then.
+func TestHistoryCommitWalk(t *testing.T) {
+	dir := historyRepo(t)
+	historyWrite(t, dir, "a.go", "package a\n")
+	historyGit(t, dir, "add", "-A")
+	historyGit(t, dir, "commit", "-qm", "feat: keep a: b, c in subject")
+	historyWrite(t, dir, "a.go", "package a\n\nfunc Foo() {}\n")
+	historyGit(t, dir, "commit", "-qam", "chore: edit")
+	historyGit(t, dir, "mv", "a.go", "b.go")
+	historyGit(t, dir, "commit", "-qm", "refactor: rename")
+
+	want := []historyCommit{
+		{historyShow(t, dir, "HEAD", "%h"), historyShow(t, dir, "HEAD", "%ad"), "refactor: rename", "b.go"},
+		{historyShow(t, dir, "HEAD~1", "%h"), historyShow(t, dir, "HEAD~1", "%ad"), "chore: edit", "a.go"},
+		{historyShow(t, dir, "HEAD~2", "%h"), historyShow(t, dir, "HEAD~2", "%ad"), "feat: keep a: b, c in subject", "a.go"},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := parseCommits(tt.out); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("parseCommits() = %#v, want %#v", got, tt.want)
-			}
-		})
+	got, err := logCommits(context.Background(), "b.go", 10)
+	if err != nil {
+		t.Fatalf("logCommits: %v", err)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("logCommits = %+v, want %+v", got, want)
+	}
+
+	capped, err := logCommits(context.Background(), "b.go", 2)
+	if err != nil {
+		t.Fatalf("logCommits -n 2: %v", err)
+	}
+	if !slices.Equal(capped, want[:2]) {
+		t.Fatalf("logCommits(-n 2) = %+v, want %+v", capped, want[:2])
 	}
 }
 
-func TestParseNumstat(t *testing.T) {
-	tests := []struct {
-		name        string
-		out         string
-		wantParents []string
-		wantAdded   int
-		wantDeleted int
-	}{
-		{
-			name:        "normal commit with one parent",
-			out:         "parent0\n\n7\t2\tinternal/cli/run.go\n",
-			wantParents: []string{"parent0"},
-			wantAdded:   7,
-			wantDeleted: 2,
-		},
-		{
-			name:        "root commit has no parents",
-			out:         "\n\n40\t0\tinternal/cli/run.go\n",
-			wantParents: []string{},
-			wantAdded:   40,
-			wantDeleted: 0,
-		},
-		{
-			name:        "merge commit lists two parents",
-			out:         "p1 p2\n\n1\t1\tf.go\n",
-			wantParents: []string{"p1", "p2"},
-			wantAdded:   1,
-			wantDeleted: 1,
-		},
-		{
-			name:        "binary file reports dash counts as zero",
-			out:         "parent0\n\n-\t-\tlogo.png\n",
-			wantParents: []string{"parent0"},
-			wantAdded:   0,
-			wantDeleted: 0,
-		},
+// TestHistoryPathspecIsLiteral pins GIT_LITERAL_PATHSPECS. "[id].go" is a real
+// filename here and also a glob matching the sibling i.go, so a globbing pathspec
+// folds the sibling's commit into the file's own history and mislabels the shared
+// root commit with the sibling's name.
+func TestHistoryPathspecIsLiteral(t *testing.T) {
+	dir := historyRepo(t)
+	historyWrite(t, dir, "[id].go", "package a\n")
+	historyWrite(t, dir, "i.go", "package a\n")
+	historyGit(t, dir, "add", "-A")
+	historyGit(t, dir, "commit", "-qm", "c1: add both")
+	historyWrite(t, dir, "[id].go", "package a\n\nfunc B() {}\n")
+	historyGit(t, dir, "commit", "-qam", "c2: bracket only")
+	historyWrite(t, dir, "i.go", "package a\n\nfunc C() {}\n")
+	historyGit(t, dir, "commit", "-qam", "c3: sibling only")
+
+	got, err := logCommits(context.Background(), "[id].go", 10)
+	if err != nil {
+		t.Fatalf("logCommits: %v", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			gotParents, gotAdded, gotDeleted := parseNumstat(tt.out)
-			if !reflect.DeepEqual(gotParents, tt.wantParents) {
-				t.Errorf("parents = %#v, want %#v", gotParents, tt.wantParents)
-			}
-			if gotAdded != tt.wantAdded || gotDeleted != tt.wantDeleted {
-				t.Errorf("(+%d/-%d), want (+%d/-%d)", gotAdded, gotDeleted, tt.wantAdded, tt.wantDeleted)
-			}
-		})
+	want := []historyCommit{
+		{historyShow(t, dir, "HEAD~1", "%h"), historyShow(t, dir, "HEAD~1", "%ad"), "c2: bracket only", "[id].go"},
+		{historyShow(t, dir, "HEAD~2", "%h"), historyShow(t, dir, "HEAD~2", "%ad"), "c1: add both", "[id].go"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("logCommits(%q) = %+v, want %+v", "[id].go", got, want)
+	}
+}
+
+// TestHistoryFollowsARenameToTheOldName drives the whole report across a rename:
+// the pre-rename commit's counts are only reachable when its diff is scoped by the
+// name the file carried then, so a report built from the newest name reads (+0/-0)
+// there.
+func TestHistoryFollowsARenameToTheOldName(t *testing.T) {
+	dir := historyRepo(t)
+	historyWrite(t, dir, "old.txt", "one\n")
+	historyGit(t, dir, "add", "-A")
+	historyGit(t, dir, "commit", "-qm", "c1: add")
+	historyWrite(t, dir, "old.txt", "one\ntwo\nthree\nfour\n")
+	historyGit(t, dir, "commit", "-qam", "c2: extend")
+	historyGit(t, dir, "mv", "old.txt", "new.txt")
+	historyGit(t, dir, "commit", "-qm", "c3: rename")
+
+	want := historyBlock(t, dir, "HEAD", "c3: rename", "(+4/-0)") +
+		historyBlock(t, dir, "HEAD~1", "c2: extend", "(+3/-0)") +
+		historyBlock(t, dir, "HEAD~2", "c1: add", "(added)")
+	if got := historyRun(t, "new.txt"); got != want {
+		t.Fatalf("history new.txt =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestHistoryReportsCountsForAnUnquotableName pins the -z discipline end to end.
+// Under default core.quotePath git renders a zero-width joiner and a quote as C
+// escapes inside a quoted name, and a report that carried the quoted spelling back
+// into the per-commit diff would scope it to a path that does not exist and
+// degrade every commit to (+0/-0).
+func TestHistoryReportsCountsForAnUnquotableName(t *testing.T) {
+	dir := historyRepo(t)
+	const name = "zwj\u200dq\"uote.txt"
+	historyWrite(t, dir, name, "one\n")
+	historyGit(t, dir, "add", "-A")
+	historyGit(t, dir, "commit", "-qm", "c1: add")
+	historyWrite(t, dir, name, "one\ntwo\nthree\n")
+	historyGit(t, dir, "commit", "-qam", "c2: extend")
+
+	quoted := historyGitOut(t, dir, "show", "--name-only", "--format=", "HEAD")
+	if !strings.Contains(quoted, `\342\200\215q\"uote.txt`) {
+		t.Fatalf("git rendered the name as %q; the quoting this test survives is not happening", quoted)
+	}
+
+	want := historyBlock(t, dir, "HEAD", "c2: extend", "(+2/-0)") +
+		historyBlock(t, dir, "HEAD~1", "c1: add", "(added)")
+	if got := historyRun(t, name); got != want {
+		t.Fatalf("history %q =\n%q\nwant\n%q", name, got, want)
 	}
 }
 
@@ -135,28 +152,13 @@ func TestResolveHistoryPath(t *testing.T) {
 }
 
 func TestHistoryCommandResolvesExtensionSibling(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	dir := t.TempDir()
-	historyGit(t, dir, "init", "-q")
-	historyGit(t, dir, "config", "user.email", "t@t.t")
-	historyGit(t, dir, "config", "user.name", "t")
+	dir := historyRepo(t)
 	historyWrite(t, dir, "source.go", "package source\n")
 	historyGit(t, dir, "add", "-A")
 	historyGit(t, dir, "commit", "-qm", "add source")
-	t.Chdir(dir)
 
-	cmd := newHistoryCmd()
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-	cmd.SetArgs([]string{"source"})
-	if err := cmd.ExecuteContext(context.Background()); err != nil {
-		t.Fatalf("history execute: %v\n%s", err, out.String())
-	}
 	wantPrefix := "# note: source → source.go\n"
-	if got := out.String(); !strings.HasPrefix(got, wantPrefix) || !strings.Contains(got, "add source\n    (added)\n") {
+	if got := historyRun(t, "source"); !strings.HasPrefix(got, wantPrefix) || !strings.Contains(got, "add source\n    (added)\n") {
 		t.Errorf("history output = %q, want prefix %q followed by commit summary", got, wantPrefix)
 	}
 }
@@ -166,32 +168,12 @@ func TestHistoryCommandResolvesExtensionSibling(t *testing.T) {
 // that --reveal-secrets prints it raw. (Changed-symbol names flow through the
 // same report-level mask.)
 func TestHistoryMasksSecretOutput(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	dir := t.TempDir()
-	historyGit(t, dir, "init", "-q")
-	historyGit(t, dir, "config", "user.email", "t@t.t")
-	historyGit(t, dir, "config", "user.name", "t")
+	dir := historyRepo(t)
 	historyWrite(t, dir, "conf.txt", "value = 1\n")
 	historyGit(t, dir, "add", "-A")
 	historyGit(t, dir, "commit", "-qm", "leak "+rawAWSKey+" in subject")
-	t.Chdir(dir)
 
-	history := func(args ...string) string {
-		t.Helper()
-		cmd := newHistoryCmd()
-		var out bytes.Buffer
-		cmd.SetOut(&out)
-		cmd.SetErr(&out)
-		cmd.SetArgs(args)
-		if err := cmd.ExecuteContext(context.Background()); err != nil {
-			t.Fatalf("history %v: %v\n%s", args, err, out.String())
-		}
-		return out.String()
-	}
-
-	got := history("conf.txt")
+	got := historyRun(t, "conf.txt")
 	if strings.Contains(got, rawAWSKey) {
 		t.Errorf("history output leaked the raw secret:\n%s", got)
 	}
@@ -203,7 +185,7 @@ func TestHistoryMasksSecretOutput(t *testing.T) {
 		t.Errorf("history output missing the secrets footer:\n%s", got)
 	}
 
-	reveal := history("conf.txt", "--reveal-secrets")
+	reveal := historyRun(t, "conf.txt", "--reveal-secrets")
 	if !strings.Contains(reveal, "leak "+rawAWSKey+" in subject") {
 		t.Errorf("history --reveal-secrets output missing the raw secret:\n%s", reveal)
 	}
@@ -218,33 +200,25 @@ func TestHistoryMasksSecretOutput(t *testing.T) {
 // comment-only commit with no symbol change degrades to the numstat. It needs git
 // and ast-grep.
 func TestCommitSummary(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
 	if _, err := exec.LookPath("ast-grep"); err != nil {
 		t.Skip("ast-grep not on PATH")
 	}
-	dir := t.TempDir()
-	historyGit(t, dir, "init", "-q")
-	historyGit(t, dir, "config", "user.email", "t@t.t")
-	historyGit(t, dir, "config", "user.name", "t")
+	dir := historyRepo(t)
 
 	historyWrite(t, dir, "a.go", "package a\n\nfunc Foo() int { return 1 }\nfunc Bar() int { return 2 }\n")
 	historyGit(t, dir, "add", "-A")
 	historyGit(t, dir, "commit", "-qm", "c1: root")
-	rootSha := historyShortSha(t, dir, "HEAD")
+	rootSha := historyShow(t, dir, "HEAD", "%h")
 
 	historyWrite(t, dir, "a.go", "package a\n\nfunc Foo() int { return 11 }\nfunc Baz() int { return 3 }\n")
 	historyGit(t, dir, "add", "-A")
 	historyGit(t, dir, "commit", "-qm", "c2: rework symbols")
-	symSha := historyShortSha(t, dir, "HEAD")
+	symSha := historyShow(t, dir, "HEAD", "%h")
 
 	historyWrite(t, dir, "a.go", "package a\n\nfunc Foo() int { return 11 }\nfunc Baz() int { return 3 }\n// trailing note\n")
 	historyGit(t, dir, "add", "-A")
 	historyGit(t, dir, "commit", "-qm", "c3: comment only")
-	commentSha := historyShortSha(t, dir, "HEAD")
-
-	t.Chdir(dir) // commitStat runs git in the cwd; ChangedSymbols resolves against dir
+	commentSha := historyShow(t, dir, "HEAD", "%h")
 
 	if got, err := commitSummary(context.Background(), dir, rootSha, "a.go"); err != nil || got != "(added)" {
 		t.Errorf("root commitSummary = %q, err %v, want %q", got, err, "(added)")
@@ -348,6 +322,65 @@ func TestHistoryLiveSmoke(t *testing.T) {
 	}
 }
 
+// historyRepo initializes a real git repository under a temp dir and chdirs into
+// it: logCommits and commitStat run git in the process working directory, and the
+// native diff resolves its repository from there too. The ambient git config is
+// detached on the environment rather than per-command, so the git children ccx
+// spawns are as isolated as the fixture's own.
+func historyRepo(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	dir := t.TempDir()
+	historyGit(t, dir, "init", "-q")
+	historyGit(t, dir, "config", "user.email", "t@t.t")
+	historyGit(t, dir, "config", "user.name", "t")
+	t.Chdir(dir)
+	return dir
+}
+
+// historyRun executes the history command with args and returns its output.
+func historyRun(t *testing.T, args ...string) string {
+	t.Helper()
+	cmd := newHistoryCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs(args)
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("history %v: %v\n%s", args, err, out.String())
+	}
+	return out.String()
+}
+
+// historyBlock renders the report block the command must print for rev, taking
+// the hash and date from git rather than restating them.
+func historyBlock(t *testing.T, dir, rev, subject, summary string) string {
+	t.Helper()
+	return historyShow(t, dir, rev, "%h") + " " + historyShow(t, dir, rev, "%ad") + " " + subject + "\n    " + summary + "\n"
+}
+
+// historyShow returns the value git's own --format placeholder reports for rev.
+func historyShow(t *testing.T, dir, rev, format string) string {
+	t.Helper()
+	return strings.TrimSuffix(historyGitOut(t, dir, "show", "-s", "--date=short", "--format="+format, rev), "\n")
+}
+
+// historyGitOut runs a git command in dir and returns its stdout.
+func historyGitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // fixed git argv; dir is a test TempDir, args are literals
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return string(out)
+}
+
 // historyGit runs a git command in dir with the developer's ambient config detached.
 func historyGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
@@ -364,15 +397,4 @@ func historyWrite(t *testing.T, dir, name, content string) {
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
 		t.Fatalf("write %s: %v", name, err)
 	}
-}
-
-// historyShortSha resolves rev to its abbreviated commit id in dir.
-func historyShortSha(t *testing.T, dir, rev string) string {
-	t.Helper()
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--short", rev) //nolint:gosec // fixed git argv; dir is a test TempDir
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("git rev-parse %s: %v", rev, err)
-	}
-	return strings.TrimSpace(string(out))
 }

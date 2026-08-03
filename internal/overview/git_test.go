@@ -4,30 +4,20 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
-// gitRepo initializes a fresh git repo on branch main in a temp dir and returns its
-// path, isolating the whole test process from the developer's git config so the
-// production probes — which inherit os.Environ() — see the same repo the helper
-// built. It skips the test when git is not on PATH.
-func gitRepo(t *testing.T) string {
+// commitlessRepo leaves HEAD unborn by deleting the fixture's only branch ref,
+// the state `git init` leaves and vcstest.Repo's own commit moves past.
+func commitlessRepo(t *testing.T) string {
 	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	dir := t.TempDir()
-	mustGit(t, dir, "init", "-q", "-b", "main")
-	mustGit(t, dir, "config", "user.email", "t@example.com")
-	mustGit(t, dir, "config", "user.name", "Test")
+	dir := vcstest.Repo(t).Dir
+	mustGit(t, dir, "update-ref", "-d", "refs/heads/main")
 	return dir
 }
 
@@ -62,7 +52,7 @@ const (
 )
 
 func TestGitSection(t *testing.T) {
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	write(t, dir, "a.go", "package a\n")
 	write(t, dir, "keep.go", "package a\n")
 	mustGit(t, dir, "add", "-A")
@@ -73,7 +63,7 @@ func TestGitSection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := fmt.Sprintf("git: main @ %s %q · 1 commits", hash, "release: v0.22.0")
+	want := fmt.Sprintf("git: main @ %s %q · 2 commits", hash, "release: v0.22.0")
 	if got != want {
 		t.Errorf("gitSection = %q, want %q", got, want)
 	}
@@ -83,7 +73,7 @@ func TestGitSection(t *testing.T) {
 // porcelain entry spends a second token on the origin path, and against the three
 // filenames git quotes without -z.
 func TestGitSectionCountsDirtyEntries(t *testing.T) {
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	write(t, dir, "old.go", "package a\n")
 	write(t, dir, "mod.go", "package a\n")
 	mustGit(t, dir, "add", "-A")
@@ -99,14 +89,14 @@ func TestGitSectionCountsDirtyEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := fmt.Sprintf("git: main @ %s %q · 5 dirty · 1 commits", hash, "init")
+	want := fmt.Sprintf("git: main @ %s %q · 5 dirty · 2 commits", hash, "init")
 	if got != want {
 		t.Errorf("gitSection = %q, want %q", got, want)
 	}
 }
 
 func TestGitSectionDetachedHeadDropsBranch(t *testing.T) {
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	write(t, dir, "a.go", "package a\n")
 	mustGit(t, dir, "add", "-A")
 	mustGit(t, dir, "commit", "-qm", "wip")
@@ -117,14 +107,14 @@ func TestGitSectionDetachedHeadDropsBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := fmt.Sprintf("git: @ %s %q · 1 commits", hash, "wip")
+	want := fmt.Sprintf("git: @ %s %q · 2 commits", hash, "wip")
 	if got != want {
 		t.Errorf("gitSection = %q, want %q", got, want)
 	}
 }
 
 func TestGitSectionNoCommits(t *testing.T) {
-	dir := gitRepo(t)
+	dir := commitlessRepo(t)
 	got, err := gitSection(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("gitSection on a commitless repo: %v", err)
@@ -138,7 +128,7 @@ func TestGitSectionNoCommits(t *testing.T) {
 // repo answers log, rev-parse and rev-list but refuses status, and the section must
 // report that rather than render a clean-looking line with no dirty count.
 func TestGitSectionSurfacesStatusFailure(t *testing.T) {
-	src := gitRepo(t)
+	src := vcstest.Repo(t).Dir
 	write(t, src, "a.go", "package a\n")
 	mustGit(t, src, "add", "-A")
 	mustGit(t, src, "commit", "-qm", "init")
@@ -159,7 +149,7 @@ func TestGitSectionSurfacesStatusFailure(t *testing.T) {
 // answers rev-parse and fails log, and that is a failure to report, not the
 // repository having no commits yet.
 func TestGitSectionSurfacesLogFailure(t *testing.T) {
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	write(t, dir, "a.go", "package a\n")
 	mustGit(t, dir, "add", "-A")
 	mustGit(t, dir, "commit", "-qm", "init")
@@ -188,7 +178,7 @@ func TestGitSectionSurfacesLogFailure(t *testing.T) {
 // TestGitLinesNoCommits pins the pairing: the churn probe fails on a
 // commitless repo exactly where the state probe does, so neither line is attempted.
 func TestGitLinesNoCommits(t *testing.T) {
-	dir := gitRepo(t)
+	dir := commitlessRepo(t)
 	lines, err := gitLines(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("gitLines on a commitless repo: %v", err)
@@ -202,7 +192,7 @@ func TestGitLinesNoCommits(t *testing.T) {
 // without -z: unquoted they all attribute to internal/cli, and a leading '"' never
 // reaches a directory key.
 func TestHotLine(t *testing.T) {
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	for _, p := range []string{
 		"internal/cli/a.go",
 		"internal/cli/" + zwjName,
@@ -232,7 +222,7 @@ func TestHotLine(t *testing.T) {
 // TestHotLineSurfacesLogFailure pins the other half of the segment bug: a churn
 // probe that cannot answer is an error, not an omitted line.
 func TestHotLineSurfacesLogFailure(t *testing.T) {
-	dir := gitRepo(t)
+	dir := commitlessRepo(t)
 	got, err := hotLine(context.Background(), dir)
 	if err == nil {
 		t.Fatalf("hotLine on a commitless repo = %q, want an error", got)
@@ -240,6 +230,7 @@ func TestHotLineSurfacesLogFailure(t *testing.T) {
 }
 
 func TestHotKey(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		path string
 		want string

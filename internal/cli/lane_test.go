@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/vcs"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 // laneSeed overrides the fields seedLaneRecords writes; the zero value seeds a
@@ -485,19 +487,33 @@ func TestGTReachabilityLocksProbe(t *testing.T) {
 	}
 }
 
+// TestShipGateRespectsNoGTConfig drives the gate over a real graphite repository
+// whose ccx.nogt is set with git itself: the opt-out is a git-config read, so a
+// knob standing in for one proves nothing about the key git actually answers
+// for. The demotion costs no gt at all — the gate reads the config before it
+// would ask Graphite anything.
 func TestShipGateRespectsNoGTConfig(t *testing.T) {
-	log := setupShipGT(t, false)
-	t.Setenv("GIT_CONFIG_CCX_NOGT", "true")
+	f := vcstest.Repo(t, vcstest.GT(), vcstest.Remote())
+	seedLaneRecords(t, ".", laneSeed{})
+	runTool(t, f.Dir, "git", "config", nogtKey, "true")
+	resetArgvLog(t, f)
 
-	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push")
+	l, err := resolveLane(context.Background(), "ship", f.Dir, false)
 	if err != nil {
-		t.Fatalf("ship error = %v", err)
+		t.Fatalf("resolveLane() error = %v", err)
 	}
-	want := "lane git (gt disabled for this repo (ccx.nogt))"
-	if !strings.HasPrefix(out, want) {
-		t.Errorf("report = %q, want it to lead with %q", out, want)
+	if l.gt {
+		t.Error("resolveLane() kept the gt lane over a set ccx.nogt")
 	}
-	assertNoGT(t, readInvocations(t, log))
+	if want := "gt disabled for this repo (" + nogtKey + ")"; l.note != want {
+		t.Errorf("lane note = %q, want %q", l.note, want)
+	}
+	vcstest.Quiesce(t, f.ArgvLog)
+	invocations := vcstest.Invocations(t, f.ArgvLog)
+	assertNoGT(t, invocations)
+	if want := [][]string{nogtProbe}; !reflect.DeepEqual(invocations, want) {
+		t.Errorf("invocations = %v, want %v — the gate stops at the config read", invocations, want)
+	}
 }
 
 // brokenCheckoutDir builds a working copy whose .git file points at an admin dir

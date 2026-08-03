@@ -3,19 +3,23 @@ package vcs
 import (
 	"context"
 	"errors"
-	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
-	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 const (
 	fakeFullID   = "1111111111111111111111111111111111111111"
 	fakeParentID = "2222222222222222222222222222222222222222"
 )
+
+// exoticSubject carries a double quote, an em dash, and a zero-width joiner —
+// the bytes a line-oriented header record would mangle and the reason the shared
+// record is NUL-framed.
+const exoticSubject = "He said \"don't\" — a\u200db"
 
 func TestParseCommit(t *testing.T) {
 	tests := []struct {
@@ -145,183 +149,261 @@ func TestJJShowRevset(t *testing.T) {
 	}
 }
 
-// TestShowBuildsArgv drives Show against a fake git and a fake jj that record
-// their argv and print a canned NUL-separated record. It proves Show selects the
-// VCS by Detect, defaults the ref per-VCS, and builds the exact underlying argv.
-func TestShowBuildsArgv(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake shell scripts are POSIX-only")
-	}
-	wantCommit := Commit{
-		ShortID: "abc1234",
-		Author:  "Ada Lovelace",
-		Email:   "ada@example.com",
-		Date:    "2026-07-02",
-		Subject: "Add the widget",
-		Body:    "Explain the widget.",
-		Range:   fakeParentID + ".." + fakeFullID,
-	}
-	tests := []struct {
-		name     string
-		marker   string
-		bin      string
-		ref      string
-		wantArgv func(dir string) []string
-	}{
-		{
-			name:   "git default ref",
-			marker: ".git",
-			bin:    "git",
-			ref:    "",
-			wantArgv: func(dir string) []string {
-				return []string{"-C", dir, "show", "--no-patch", "--format=" + gitShowFormat, "--date=short", "--end-of-options", "HEAD"}
-			},
-		},
-		{
-			name:   "git explicit ref",
-			marker: ".git",
-			bin:    "git",
-			ref:    "deadbeef",
-			wantArgv: func(dir string) []string {
-				return []string{"-C", dir, "show", "--no-patch", "--format=" + gitShowFormat, "--date=short", "--end-of-options", "deadbeef"}
-			},
-		},
-		{
-			name:   "jj default ref",
-			marker: ".jj",
-			bin:    "jj",
-			ref:    "",
-			wantArgv: func(string) []string {
-				return []string{"log", "--no-graph", "-r", "@-", "-T", jjShowTemplate}
-			},
-		},
-		{
-			name:   "jj native ref passes through untranslated",
-			marker: ".jj",
-			bin:    "jj",
-			ref:    "@",
-			wantArgv: func(string) []string {
-				return []string{"log", "--no-graph", "-r", "@", "-T", jjShowTemplate}
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := t.TempDir()
-			if err := os.Mkdir(filepath.Join(dir, tt.marker), 0o750); err != nil {
-				t.Fatalf("mkdir %s: %v", tt.marker, err)
-			}
-			record := filepath.Join(t.TempDir(), "argv")
-			fakeDir := writeFakeVCS(t, tt.bin)
-			t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-			t.Setenv("SHOW_RECORD", record)
+// TestShowGit drives Show against a real git repository whose history holds
+// every header shape the parser has to survive: a subject with a body, a subject
+// carrying bytes a line-oriented record would mangle, a merge whose range must
+// name the first parent, and the parentless root commit that has no range at all.
+func TestShowGit(t *testing.T) {
+	f := vcstest.Repo(t)
+	dir := f.Dir
 
-			got, err := Show(context.Background(), dir, tt.ref)
-			if err != nil {
-				t.Fatalf("Show(%q) error = %v", tt.ref, err)
-			}
-			if got != wantCommit {
-				t.Errorf("Show() = %+v, want %+v", got, wantCommit)
-			}
+	write(t, dir, "f.txt", "widget\n")
+	runGit(t, dir, "add", "f.txt")
+	runGit(t, dir, "commit", "-qm", "Add the widget\n\nExplain the widget.")
+	widget := gitOutput(t, dir, "rev-parse", "HEAD")
+	root := gitOutput(t, dir, "rev-parse", "HEAD~1")
 
-			gotArgv := readRecordedArgv(t, record)
-			wantArgv := tt.wantArgv(dir)
-			if !reflect.DeepEqual(gotArgv, wantArgv) {
-				t.Errorf("%s argv =\n%q\nwant\n%q", tt.bin, gotArgv, wantArgv)
-			}
-		})
-	}
-}
+	runGit(t, dir, "switch", "-qc", "exotic")
+	write(t, dir, "f.txt", "exotic\n")
+	runGit(t, dir, "add", "f.txt")
+	runGit(t, dir, "commit", "-qm", exoticSubject)
+	exotic := gitOutput(t, dir, "rev-parse", "HEAD")
 
-// TestShowGitRefs drives Show against a live git repo: a flag-shaped ref must
-// error as an unknown revision — --end-of-options keeps it from reaching git as
-// an option (the --output=<path> file-clobber vector) — while a real ref still
-// resolves to its commit.
-func TestShowGitRefs(t *testing.T) {
-	dir := initLiveGitRepo(t)
-	head := gitRevParse(t, dir, "HEAD")
-	parent := gitRevParse(t, dir, "HEAD~1")
-	pwned := filepath.Join(t.TempDir(), "pwned")
+	runGit(t, dir, "switch", "-qc", "side", root)
+	write(t, dir, "s.txt", "side\n")
+	runGit(t, dir, "add", "s.txt")
+	runGit(t, dir, "commit", "-qm", "side")
+	side := gitOutput(t, dir, "rev-parse", "HEAD")
+
+	runGit(t, dir, "switch", "-qc", "merged", widget)
+	runGit(t, dir, "merge", "-q", "--no-ff", "-m", "Merge side", side)
+	merge := gitOutput(t, dir, "rev-parse", "HEAD")
+	runGit(t, dir, "switch", "-q", "main")
 
 	tests := []struct {
-		id        string
-		ref       string
-		wantErr   bool
-		wantRange string
+		id      string
+		ref     string
+		want    Commit
+		wantErr bool
 	}{
-		{id: "flag-shaped ref errors without writing", ref: "--output=" + pwned, wantErr: true},
-		{id: "HEAD resolves", ref: "HEAD", wantRange: parent + ".." + head},
-		{id: "sha resolves", ref: head, wantRange: parent + ".." + head},
+		{
+			id:  "empty ref defaults to HEAD",
+			ref: "",
+			want: Commit{
+				ShortID: gitField(t, dir, widget, "%h"),
+				Author:  "t",
+				Email:   "t@t.t",
+				Date:    gitField(t, dir, widget, "%ad"),
+				Subject: "Add the widget",
+				Body:    "Explain the widget.",
+				Range:   root + ".." + widget,
+			},
+		},
+		{
+			id:  "sha resolves",
+			ref: widget,
+			want: Commit{
+				ShortID: gitField(t, dir, widget, "%h"),
+				Author:  "t",
+				Email:   "t@t.t",
+				Date:    gitField(t, dir, widget, "%ad"),
+				Subject: "Add the widget",
+				Body:    "Explain the widget.",
+				Range:   root + ".." + widget,
+			},
+		},
+		{
+			id:  "branch name resolves",
+			ref: "exotic",
+			want: Commit{
+				ShortID: gitField(t, dir, exotic, "%h"),
+				Author:  "t",
+				Email:   "t@t.t",
+				Date:    gitField(t, dir, exotic, "%ad"),
+				Subject: exoticSubject,
+				Range:   widget + ".." + exotic,
+			},
+		},
+		{
+			id:  "merge ranges against its first parent",
+			ref: merge,
+			want: Commit{
+				ShortID: gitField(t, dir, merge, "%h"),
+				Author:  "t",
+				Email:   "t@t.t",
+				Date:    gitField(t, dir, merge, "%ad"),
+				Subject: "Merge side",
+				Range:   widget + ".." + merge,
+			},
+		},
+		{id: "root commit has no range to diff", ref: root, wantErr: true},
+		{id: "unknown revision errors", ref: "no-such-ref", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {
 			got, err := Show(context.Background(), dir, tt.ref)
 			if tt.wantErr {
 				if err == nil {
-					t.Fatalf("Show(%q) err = nil, want error", tt.ref)
-				}
-				if _, statErr := os.Stat(pwned); !errors.Is(statErr, os.ErrNotExist) {
-					t.Errorf("flag-shaped ref wrote %q (stat err = %v), want it absent", pwned, statErr)
+					t.Fatalf("Show(%q) = %+v, want error", tt.ref, got)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("Show(%q) err = %v", tt.ref, err)
+				t.Fatalf("Show(%q) error = %v", tt.ref, err)
 			}
-			if got.Range != tt.wantRange {
-				t.Errorf("Show(%q).Range = %q, want %q", tt.ref, got.Range, tt.wantRange)
-			}
-			if got.Subject != "c" || got.Author != "t" || got.Email != "t@t.t" {
-				t.Errorf("Show(%q) header = %+v, want subject %q author %q email %q", tt.ref, got, "c", "t", "t@t.t")
-			}
-			if got.ShortID == "" || !strings.HasPrefix(head, got.ShortID) {
-				t.Errorf("ShortID %q is not a prefix of %q", got.ShortID, head)
+			if got != tt.want {
+				t.Errorf("Show(%q) =\n %+v\nwant\n %+v", tt.ref, got, tt.want)
 			}
 		})
 	}
 }
 
-// gitRevParse resolves ref to its full commit id via a real git rev-parse.
-func gitRevParse(t *testing.T, dir, ref string) string {
-	t.Helper()
-	out, err := exec.Command("git", "-C", dir, "rev-parse", ref).Output() //nolint:gosec // fixed git argv over a TempDir repo
+// TestShowGitFlagShapedRef proves --end-of-options keeps a flag-shaped ref a
+// revision rather than a git option — --output=<path> is a file-clobber vector.
+func TestShowGitFlagShapedRef(t *testing.T) {
+	f := vcstest.Repo(t)
+	pwned := filepath.Join(t.TempDir(), "pwned")
+
+	got, err := Show(context.Background(), f.Dir, "--output="+pwned)
+	if err == nil {
+		t.Fatalf("Show(--output=…) = %+v, want an unknown-revision error", got)
+	}
+	assertUnwritten(t, pwned)
+}
+
+// TestShowGitTargetsItsDirNotTheCWD pins git's -C to the directory Show was
+// given: the fixture the test runs inside holds only a parentless root commit,
+// so a Show that fell back to the working directory could not succeed here.
+func TestShowGitTargetsItsDirNotTheCWD(t *testing.T) {
+	// other is built first so the working directory ends in f, the parentless
+	// fixture: a Show that ignored its dir argument would answer from there.
+	other := vcstest.Repo(t).Dir
+	write(t, other, "seed.txt", "two\n")
+	runGit(t, other, "add", "-A")
+	runGit(t, other, "commit", "-qm", "c")
+	f := vcstest.Repo(t)
+
+	if got, err := Show(context.Background(), f.Dir, ""); err == nil {
+		t.Fatalf("Show(fixture) = %+v, want the root commit to have no range", got)
+	}
+	got, err := Show(context.Background(), other, "")
 	if err != nil {
-		t.Fatalf("git rev-parse %s: %v", ref, err)
+		t.Fatalf("Show(other) error = %v", err)
+	}
+	if got.Subject != "c" || got.Author != "t" || got.Email != "t@t.t" {
+		t.Errorf("Show(other) = %+v, want the second repo's commit", got)
+	}
+}
+
+// TestShowJJ drives Show against a real colocated jj repository: the default ref
+// is @-, jj-native revsets and change ids reach jj untranslated, and a git
+// symbolic ref resolves through git rev-parse before jj ever sees it.
+func TestShowJJ(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.JJ())
+	dir := f.Dir
+
+	write(t, dir, "f.txt", "widget\n")
+	runJJ(t, dir, "commit", "-m", "Add the widget\n\nExplain the widget.")
+
+	initID := jjField(t, dir, "@--", "commit_id")
+	widgetID := jjField(t, dir, "@-", "commit_id")
+	wcID := jjField(t, dir, "@", "commit_id")
+	widget := Commit{
+		ShortID: jjField(t, dir, "@-", "commit_id.short()"),
+		Author:  "t",
+		Email:   "t@t.t",
+		Date:    jjField(t, dir, "@-", `author.timestamp().format("%Y-%m-%d")`),
+		Subject: "Add the widget",
+		Body:    "Explain the widget.",
+		Range:   initID + ".." + widgetID,
+	}
+
+	tests := []struct {
+		id      string
+		ref     string
+		want    Commit
+		wantErr bool
+	}{
+		{id: "empty ref defaults to @-", ref: "", want: widget},
+		{
+			id:  "@ names the working copy",
+			ref: "@",
+			want: Commit{
+				ShortID: jjField(t, dir, "@", "commit_id.short()"),
+				Author:  "t",
+				Email:   "t@t.t",
+				Date:    jjField(t, dir, "@", `author.timestamp().format("%Y-%m-%d")`),
+				Range:   widgetID + ".." + wcID,
+			},
+		},
+		{id: "change id passes through to jj", ref: jjField(t, dir, "@-", "change_id"), want: widget},
+		{id: "git symbolic ref resolves before jj sees it", ref: "HEAD", want: widget},
+		{id: "unresolvable revset errors", ref: "no-such-revset", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			got, err := Show(context.Background(), dir, tt.ref)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Show(%q) = %+v, want error", tt.ref, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Show(%q) error = %v", tt.ref, err)
+			}
+			if got != tt.want {
+				t.Errorf("Show(%q) =\n %+v\nwant\n %+v", tt.ref, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestShowJJNativeRevsetNeverRunsGit reads the one observable the returned
+// commit cannot carry: a colocated repository answers @- through either binary,
+// so only the tool calls expose a translation that ran with nothing to translate.
+func TestShowJJNativeRevsetNeverRunsGit(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.JJ())
+	if got := vcstest.Invocations(t, f.ArgvLog); got != nil {
+		t.Fatalf("fixture construction leaked into the argv log: %v", got)
+	}
+
+	if _, err := Show(context.Background(), f.Dir, "@-"); err != nil {
+		t.Fatalf("Show(@-) error = %v", err)
+	}
+
+	got := vcstest.Invocations(t, f.ArgvLog)
+	if len(got) == 0 {
+		t.Fatal("Show(@-) ran no tool at all")
+	}
+	for _, argv := range got {
+		if argv[0] != "jj" {
+			t.Errorf("Show(@-) ran %v, want jj alone: @- is jj-native and needs no git resolution", argv)
+		}
+	}
+}
+
+// gitField reads one --format placeholder off sha through git log, so an
+// expectation is built by a different plumbing command than the one under test.
+func gitField(t *testing.T, dir, sha, placeholder string) string {
+	t.Helper()
+	return gitOutput(t, dir, "log", "-1", "--date=short", "--format="+placeholder, sha)
+}
+
+// jjField evaluates a jj template against rev and returns its stdout trimmed;
+// runJJ folds stderr in, which jj uses for the hints a commit id must not carry.
+func jjField(t *testing.T, dir, rev, template string) string {
+	t.Helper()
+	cmd := exec.Command("jj", "log", "--no-graph", "-r", rev, "-T", template) //nolint:gosec // fixed jj verb; dir is the fixture repo and the template is a test literal
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		stderr := ""
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			stderr = string(ee.Stderr)
+		}
+		t.Fatalf("jj log -r %s -T %s: %v\n%s", rev, template, err, stderr)
 	}
 	return strings.TrimSpace(string(out))
-}
-
-// writeFakeVCS writes an executable named bin that records its argv (one per
-// line) to $SHOW_RECORD and prints a canned NUL-separated commit record,
-// returning the directory to prepend to PATH.
-func writeFakeVCS(t *testing.T, bin string) string {
-	t.Helper()
-	dir := t.TempDir()
-	// Each NUL separator is its own printf: `\0` followed by a digit (the date and
-	// ids start with digits) is otherwise read as an octal escape, not a separator.
-	script := "#!/bin/sh\n" +
-		"printf '%s\\n' \"$@\" > \"$SHOW_RECORD\"\n" +
-		"printf 'abc1234'\n" +
-		"printf '\\0'; printf 'Ada Lovelace'\n" +
-		"printf '\\0'; printf 'ada@example.com'\n" +
-		"printf '\\0'; printf '2026-07-02'\n" +
-		"printf '\\0'; printf '" + fakeFullID + "'\n" +
-		"printf '\\0'; printf '" + fakeParentID + "'\n" +
-		"printf '\\0'; printf 'Add the widget\\n\\nExplain the widget.\\n'\n"
-	path := filepath.Join(dir, bin)
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // fake VCS script must be owner-executable
-		t.Fatalf("write fake %s: %v", bin, err)
-	}
-	return dir
-}
-
-// readRecordedArgv reads the newline-delimited argv the fake recorded, dropping
-// the trailing empty element from printf's final newline.
-func readRecordedArgv(t *testing.T, record string) []string {
-	t.Helper()
-	data, err := os.ReadFile(record)
-	if err != nil {
-		t.Fatalf("read record: %v", err)
-	}
-	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 }

@@ -86,38 +86,38 @@ func runHunks(cmd *cobra.Command, paths []string, budget int) error {
 
 // changedFiles enumerates the files that differ from the committed base — jj's
 // working copy against @-, git's worktree against HEAD — as root-relative paths.
-// git already emits root-relative names; jj emits them relative to the working
-// directory, so they normalize to root.
+// git's NUL-framed enumeration already emits them root-relative and unquoted; jj
+// emits them verbatim relative to the working directory, so they normalize to
+// root. Neither is trimmed: a name's own leading or trailing whitespace is part
+// of it, and a trimmed name addresses no file at all.
 func changedFiles(ctx context.Context, kind vcs.Kind, root string) ([]string, error) {
-	var bin string
-	var argv []string
 	switch kind {
-	case vcs.JJ:
-		bin, argv = "jj", []string{"diff", "--name-only"}
 	case vcs.Git:
-		bin, argv = "git", []string{"diff", "--name-only", "HEAD"}
-	default:
-		return nil, errors.New("hunks: unsupported vcs")
-	}
-	out, err := render.RunCLI(ctx, bin, argv)
-	if err != nil {
-		return nil, fmt.Errorf("hunks: list changed files: %w", err)
-	}
-	var files []string
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+		files, err := vcs.GitPaths(ctx, vcs.GitArgs{Sub: []string{"diff", "--name-only"}, Revs: []vcs.GitRef{vcs.HeadRef}})
+		if err != nil {
+			return nil, fmt.Errorf("hunks: list changed files: %w", err)
 		}
-		if kind == vcs.JJ {
-			line, err = rootRel(root, line)
+		return files, nil
+	case vcs.JJ:
+		out, err := render.RunCLI(ctx, "jj", []string{"diff", "--name-only"})
+		if err != nil {
+			return nil, fmt.Errorf("hunks: list changed files: %w", err)
+		}
+		var files []string
+		for _, line := range strings.Split(out, "\n") {
+			if line == "" {
+				continue
+			}
+			rel, err := rootRel(root, line)
 			if err != nil {
 				return nil, fmt.Errorf("hunks: %w", err)
 			}
+			files = append(files, rel)
 		}
-		files = append(files, line)
+		return files, nil
+	default:
+		return nil, errors.New("hunks: unsupported vcs")
 	}
-	return files, nil
 }
 
 // hunksReadCurrent reads path's working content, treating a missing file as an

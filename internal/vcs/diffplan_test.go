@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 // unquotableNames are the three names git cannot print outside a -z stream
@@ -18,21 +20,6 @@ import (
 // quote. The newline is the sharp one — a listing split on newlines reads it as
 // two files, neither of which exists.
 var unquotableNames = []string{"zwj\u200djoin.go", "new\nline.go", "quote\"name.go"}
-
-// gitRepo initializes a fresh git repo in a temp dir with a deterministic identity
-// (reusing the env-isolated runGit helper) and returns its path; it skips the test
-// when git is not on PATH.
-func gitRepo(t *testing.T) string {
-	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	dir := t.TempDir()
-	runGit(t, dir, "init", "-q")
-	runGit(t, dir, "config", "user.email", "t@example.com")
-	runGit(t, dir, "config", "user.name", "Test")
-	return dir
-}
 
 func write(t *testing.T, dir, name, content string) {
 	t.Helper()
@@ -62,7 +49,7 @@ func sortedFiles(p DiffPlan) []string {
 }
 
 func TestResolveDiffPlanGitUncommitted(t *testing.T) {
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	write(t, dir, "a.go", "package a\n\nfunc Foo() int { return 1 }\n")
 	write(t, dir, "keep.go", "package a\n\nvar Keep = 1\n")
 	runGit(t, dir, "add", "-A")
@@ -107,7 +94,7 @@ func TestResolveDiffPlanGitUncommitted(t *testing.T) {
 }
 
 func TestResolveDiffPlanGitStaged(t *testing.T) {
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	write(t, dir, "a.go", "package a\n\nvar X = 1\n")
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-qm", "init")
@@ -136,7 +123,7 @@ func TestResolveDiffPlanGitStaged(t *testing.T) {
 }
 
 func TestResolveDiffPlanGitRangeAndBareRef(t *testing.T) {
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	write(t, dir, "a.go", "package a\n\nvar X = 1\n")
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-qm", "c1")
@@ -178,7 +165,7 @@ func TestResolveDiffPlanGitRangeAndBareRef(t *testing.T) {
 }
 
 func TestResolveDiffPlanGitBogusRef(t *testing.T) {
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	write(t, dir, "a.go", "package a\n")
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-qm", "init")
@@ -195,7 +182,7 @@ func TestResolveDiffPlanGitBogusRef(t *testing.T) {
 // of the rev-parse gate ahead of it — handed the option directly, the argv builder
 // still puts --end-of-options in front of it.
 func TestResolveDiffPlanGitRefusesOptionInjection(t *testing.T) {
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	write(t, dir, "a.go", "package a\n")
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-qm", "c1")
@@ -259,7 +246,7 @@ func assertUnwritten(t *testing.T, path string) {
 // resolves, which renders a modification as a whole-file addition — and splits the
 // newline name into two entries that name no file at all.
 func TestResolveDiffPlanGitUnquotableNames(t *testing.T) {
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	for _, name := range unquotableNames {
 		write(t, dir, name, "one\ntwo\n")
 	}
@@ -304,7 +291,7 @@ const cleanV1 = "package a\n\nfunc Foo() int { return 1 }\n"
 // moved.go) reads the pre-image at the old path so the edit classifies. The old
 // path's deletion never vanishes into an all-new destination.
 func TestResolveDiffPlanGitRename(t *testing.T) {
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	write(t, dir, "mod.go", modV1)
 	write(t, dir, "clean.go", cleanV1)
 	runGit(t, dir, "add", "-A")
@@ -347,16 +334,7 @@ func TestResolveDiffPlanGitRename(t *testing.T) {
 // parsing jj's compact "R <prefix>{old => new}<suffix>" summary. It skips when jj
 // or git is absent.
 func TestResolveDiffPlanJJRename(t *testing.T) {
-	if _, err := exec.LookPath("jj"); err != nil {
-		t.Skip("jj not on PATH")
-	}
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	dir := t.TempDir()
-	runJJ(t, dir, "git", "init", "--colocate")
-	runJJ(t, dir, "config", "set", "--repo", "user.email", "t@example.com")
-	runJJ(t, dir, "config", "set", "--repo", "user.name", "Test")
+	dir := vcstest.Repo(t, vcstest.JJ()).Dir
 	write(t, dir, "mod.go", modV1)
 	write(t, dir, "clean.go", cleanV1)
 	runJJ(t, dir, "commit", "-m", "init")
@@ -400,16 +378,7 @@ func mustRename(t *testing.T, dir, old, newName string) {
 // TestResolveDiffPlanJJ exercises the jj working-tree lane against a real colocated
 // repo; it skips when jj is absent.
 func TestResolveDiffPlanJJ(t *testing.T) {
-	if _, err := exec.LookPath("jj"); err != nil {
-		t.Skip("jj not on PATH")
-	}
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	dir := t.TempDir()
-	runJJ(t, dir, "git", "init", "--colocate")
-	runJJ(t, dir, "config", "set", "--repo", "user.email", "t@example.com")
-	runJJ(t, dir, "config", "set", "--repo", "user.name", "Test")
+	dir := vcstest.Repo(t, vcstest.JJ()).Dir
 	write(t, dir, "a.go", "package a\n\nfunc Foo() int { return 1 }\n")
 	runJJ(t, dir, "commit", "-m", "init")
 	// mutate the working copy (@ vs @-).
@@ -434,16 +403,7 @@ func TestResolveDiffPlanJJ(t *testing.T) {
 }
 
 func TestResolveDiffPlanJJColocatedGitSyntax(t *testing.T) {
-	if _, err := exec.LookPath("jj"); err != nil {
-		t.Skip("jj not on PATH")
-	}
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	dir := t.TempDir()
-	runJJ(t, dir, "git", "init", "--colocate")
-	runJJ(t, dir, "config", "set", "--repo", "user.email", "t@example.com")
-	runJJ(t, dir, "config", "set", "--repo", "user.name", "Test")
+	dir := vcstest.Repo(t, vcstest.JJ()).Dir
 	write(t, dir, "a.go", "package a\n\nfunc Foo() int { return 1 }\n")
 	runJJ(t, dir, "commit", "-m", "one")
 	write(t, dir, "a.go", "package a\n\nfunc Foo() int { return 2 }\n")
@@ -483,16 +443,7 @@ func TestResolveDiffPlanJJColocatedGitSyntax(t *testing.T) {
 const zwjPath = "\U0001F468\u200D\U0001F469\u200D\U0001F466.txt"
 
 func TestResolveDiffPlanJJZWJPath(t *testing.T) {
-	if _, err := exec.LookPath("jj"); err != nil {
-		t.Skip("jj not on PATH")
-	}
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	dir := t.TempDir()
-	runJJ(t, dir, "git", "init", "--colocate")
-	runJJ(t, dir, "config", "set", "--repo", "user.email", "t@example.com")
-	runJJ(t, dir, "config", "set", "--repo", "user.name", "Test")
+	dir := vcstest.Repo(t, vcstest.JJ()).Dir
 	write(t, dir, "plain.txt", "one\ntwo\n")
 	write(t, dir, zwjPath, "one\ntwo\n")
 	runJJ(t, dir, "commit", "-m", "init")
@@ -524,21 +475,12 @@ func TestResolveDiffPlanJJZWJPath(t *testing.T) {
 // masterTrunkJJ stands up a colocated jj repo whose only branch is master,
 // carrying one committed revision of a.go and an uncommitted edit on top, so a
 // source naming main has nothing to resolve to and a rewrite cannot hide.
-func masterTrunkJJ(t *testing.T) string {
+func masterTrunkJJ(t *testing.T, opts ...vcstest.Opt) string {
 	t.Helper()
-	if _, err := exec.LookPath("jj"); err != nil {
-		t.Skip("jj not on PATH")
-	}
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	dir := t.TempDir()
-	runJJ(t, dir, "git", "init", "--colocate")
-	runJJ(t, dir, "config", "set", "--repo", "user.email", "t@example.com")
-	runJJ(t, dir, "config", "set", "--repo", "user.name", "Test")
+	dir := vcstest.Repo(t, append([]vcstest.Opt{vcstest.JJ(), vcstest.Trunk("master")}, opts...)...).Dir
 	write(t, dir, "a.go", "package a\n\nfunc Foo() int { return 1 }\n")
-	runJJ(t, dir, "commit", "-m", "init")
-	runJJ(t, dir, "bookmark", "create", "master", "-r", "@-")
+	runJJ(t, dir, "commit", "-m", "a.go v1")
+	runJJ(t, dir, "bookmark", "set", "master", "-r", "@-")
 	write(t, dir, "a.go", "package a\n\nfunc Foo() int { return 2 }\n")
 	return dir
 }
@@ -588,8 +530,7 @@ func TestResolveDiffPlanJJHonorsLiteralBranchNames(t *testing.T) {
 // that still consults the repository: trunk() reads refs/remotes/origin/HEAD, so
 // a master-trunk repo resolves to master rather than to a fabricated main.
 func TestResolveDiffPlanJJTrunkResolvesTheDesignatedBranch(t *testing.T) {
-	dir := masterTrunkJJ(t)
-	runGit(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+	dir := masterTrunkJJ(t, vcstest.Remote())
 
 	plan, err := ResolveDiffPlan(context.Background(), dir, "trunk()..@")
 	if err != nil {
@@ -618,16 +559,7 @@ func TestResolveDiffPlanJJTrunkWithoutADefaultBranch(t *testing.T) {
 // failure rather than as "absent from the base", the swallow that hid the
 // unparseable ZWJ fileset behind a phantom whole-file addition.
 func TestTreeHasPathJJReportsFailure(t *testing.T) {
-	if _, err := exec.LookPath("jj"); err != nil {
-		t.Skip("jj not on PATH")
-	}
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	dir := t.TempDir()
-	runJJ(t, dir, "git", "init", "--colocate")
-	runJJ(t, dir, "config", "set", "--repo", "user.email", "t@example.com")
-	runJJ(t, dir, "config", "set", "--repo", "user.name", "Test")
+	dir := vcstest.Repo(t, vcstest.JJ()).Dir
 	write(t, dir, "a.go", "package a\n")
 	runJJ(t, dir, "commit", "-m", "init")
 
@@ -649,16 +581,7 @@ func TestTreeHasPathJJReportsFailure(t *testing.T) {
 // whitespace still reads as present: `jj file list` prints that name and a
 // newline, so trimming the listing before measuring it erases the file.
 func TestTreeHasPathJJWhitespaceName(t *testing.T) {
-	if _, err := exec.LookPath("jj"); err != nil {
-		t.Skip("jj not on PATH")
-	}
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	dir := t.TempDir()
-	runJJ(t, dir, "git", "init", "--colocate")
-	runJJ(t, dir, "config", "set", "--repo", "user.email", "t@example.com")
-	runJJ(t, dir, "config", "set", "--repo", "user.name", "Test")
+	dir := vcstest.Repo(t, vcstest.JJ()).Dir
 	write(t, dir, " ", "one\n")
 	runJJ(t, dir, "commit", "-m", "init")
 
@@ -673,7 +596,7 @@ func TestTreeHasPathJJWhitespaceName(t *testing.T) {
 // two apart — it exits 128 for a path the tree lacks and for a rev or object store
 // it cannot read alike — so the probe has to enumerate to separate them.
 func TestTreeHasPathGitReportsFailure(t *testing.T) {
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	write(t, dir, "a.go", "package a\n")
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-qm", "init")
@@ -700,7 +623,7 @@ func TestTreeHasPathGitReportsFailure(t *testing.T) {
 // entry and as the three records a conflict spreads it across.
 func TestTreeHasPathGitIndex(t *testing.T) {
 	conflicted := unquotableNames[1]
-	dir := gitRepo(t)
+	dir := vcstest.Repo(t).Dir
 	write(t, dir, "c.txt", "base\n")
 	write(t, dir, "i.tsx", "i\n")
 	for _, name := range unquotableNames {

@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 // handFixtures stands up one working copy in each shape ResolveCheckout
@@ -313,12 +315,8 @@ func TestResolveCheckoutRelativeCommonDir(t *testing.T) {
 // hand-written fixtures above stay honest, and pins the thesis of the type: a
 // linked worktree and the main checkout key the same repository, byte for byte.
 func TestResolveCheckoutLive(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	main := initLiveGitRepo(t)
-	linked := filepath.Join(t.TempDir(), "linked")
-	runGit(t, main, "worktree", "add", "-q", "-b", "feature", linked)
+	f := vcstest.Repo(t, vcstest.Worktree("linked"))
+	main, linked := f.Dir, f.WorktreePath("linked")
 
 	mainCheckout, err := ResolveCheckout(main)
 	if err != nil {
@@ -350,7 +348,7 @@ func TestResolveCheckoutLive(t *testing.T) {
 	if linkedCheckout.RepoKey() != mainCheckout.RepoKey() {
 		t.Fatalf("RepoKey mismatch: linked %q, main %q", linkedCheckout.RepoKey(), mainCheckout.RepoKey())
 	}
-	if other, err := ResolveCheckout(initLiveGitRepo(t)); err != nil {
+	if other, err := ResolveCheckout(vcstest.Repo(t).Dir); err != nil {
 		t.Fatalf("ResolveCheckout of a second repo: %v", err)
 	} else if other.RepoKey() == mainCheckout.RepoKey() {
 		t.Errorf("separate repositories share the key %q", other.RepoKey())
@@ -362,10 +360,7 @@ func TestResolveCheckoutLive(t *testing.T) {
 // git resolves it before writing a linked worktree's pointer, so a main checkout
 // keeping the symlink spelling would key one repository under two names.
 func TestResolveCheckoutSymlinkedAdminLive(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	main := initLiveGitRepo(t)
+	main := vcstest.Repo(t).Dir
 	admin := filepath.Join(canon(t, t.TempDir()), "admin")
 	if err := os.Rename(filepath.Join(main, ".git"), admin); err != nil {
 		t.Fatalf("move admin dir: %v", err)
@@ -401,11 +396,7 @@ func TestResolveCheckoutSymlinkedAdminLive(t *testing.T) {
 // reports the common dir itself — so MainRoot stays empty rather than naming the
 // unrelated directory one level up.
 func TestResolveCheckoutNoMainRootLive(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	seed := initLiveGitRepo(t)
-	runGit(t, seed, "branch", "-M", "trunk")
+	seed := vcstest.Repo(t, vcstest.Trunk("trunk")).Dir
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	runGit(t, seed, "clone", "-q", "--bare", seed, bare)
 	fromBare := filepath.Join(t.TempDir(), "from-bare")
@@ -450,11 +441,8 @@ func TestResolveCheckoutNoMainRootLive(t *testing.T) {
 // absence is what says it owns the dir outright rather than sharing the
 // superproject's.
 func TestResolveCheckoutSubmoduleLive(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	main := initLiveGitRepo(t)
-	sub := initLiveGitRepo(t)
+	sub := vcstest.Repo(t).Dir
+	main := vcstest.Repo(t).Dir
 	runGit(t, main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor")
 
 	vendor := filepath.Join(main, "vendor")
@@ -478,14 +466,7 @@ func TestResolveCheckoutSubmoduleLive(t *testing.T) {
 // TestResolveCheckoutJJWorkspaceLive drives a real `jj workspace add`, so the
 // hand-written workspace fixtures stay honest about the layout jj writes.
 func TestResolveCheckoutJJWorkspaceLive(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	if _, err := exec.LookPath("jj"); err != nil {
-		t.Skip("jj not on PATH")
-	}
-	main := initLiveGitRepo(t)
-	runJJ(t, main, "git", "init", "--colocate")
+	main := vcstest.Repo(t, vcstest.JJ()).Dir
 	ws := filepath.Join(t.TempDir(), "ws")
 	runJJ(t, main, "workspace", "add", ws)
 
@@ -515,11 +496,7 @@ func TestResolveCheckoutJJWorkspaceLive(t *testing.T) {
 // TestWorktrees pins the porcelain parse over the attributes git emits for a
 // live checkout: a branch, a detached HEAD, and a lock carrying its reason.
 func TestWorktrees(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	main := initLiveGitRepo(t)
-	runGit(t, main, "branch", "-M", "trunk")
+	main := vcstest.Repo(t, vcstest.Trunk("trunk")).Dir
 	linked := filepath.Join(t.TempDir(), "linked")
 	runGit(t, main, "worktree", "add", "-q", "-b", "feature", linked)
 	held := filepath.Join(t.TempDir(), "held")
@@ -559,11 +536,7 @@ func TestWorktrees(t *testing.T) {
 // and no branch, and pins that the list is read from the common dir rather than
 // from any working copy.
 func TestWorktreesBare(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	seed := initLiveGitRepo(t)
-	runGit(t, seed, "branch", "-M", "trunk")
+	seed := vcstest.Repo(t, vcstest.Trunk("trunk")).Dir
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	runGit(t, seed, "clone", "-q", "--bare", seed, bare)
 	linked := filepath.Join(t.TempDir(), "linked")
@@ -586,16 +559,8 @@ func TestWorktreesBare(t *testing.T) {
 // rather than this package's contract: a worktree whose directory is gone keeps
 // its branch and carries a reason passed through verbatim.
 func TestWorktreesPrunable(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	main := initLiveGitRepo(t)
-	gone := filepath.Join(t.TempDir(), "gone")
-	runGit(t, main, "worktree", "add", "-q", "-b", "abandoned", gone)
-	gonePath := canon(t, gone)
-	if err := os.RemoveAll(gone); err != nil {
-		t.Fatalf("remove worktree: %v", err)
-	}
+	f := vcstest.Repo(t, vcstest.PrunableWorktree())
+	main, gonePath := f.Dir, f.WorktreePath("prunable")
 
 	c, err := ResolveCheckout(main)
 	if err != nil {
@@ -614,8 +579,8 @@ func TestWorktreesPrunable(t *testing.T) {
 	if found == nil {
 		t.Fatalf("Worktrees dropped the removed checkout %q: %+v", gonePath, got)
 	}
-	if found.Branch != "abandoned" {
-		t.Errorf("Branch = %q, want %q", found.Branch, "abandoned")
+	if found.Branch != "prunable" {
+		t.Errorf("Branch = %q, want %q", found.Branch, "prunable")
 	}
 	if found.Prunable == "" {
 		t.Errorf("Prunable = %q, want git's reason", found.Prunable)
@@ -629,11 +594,7 @@ func TestWorktreesPrunable(t *testing.T) {
 // still holds its branch until someone prunes it — the answer git's own ref
 // query gave, so the derivation loses no entry.
 func TestBranchHolders(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	main := initLiveGitRepo(t)
-	runGit(t, main, "branch", "-M", "trunk")
+	main := vcstest.Repo(t, vcstest.Trunk("trunk")).Dir
 	linked := filepath.Join(t.TempDir(), "linked")
 	runGit(t, main, "worktree", "add", "-q", "-b", "feature", linked)
 	loose := filepath.Join(t.TempDir(), "loose")
@@ -668,11 +629,7 @@ func TestBranchHolders(t *testing.T) {
 // checkout at all: the bare record carries neither branch nor HEAD, so it adds
 // no entry while the linked worktree beside it does.
 func TestBranchHoldersBare(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	seed := initLiveGitRepo(t)
-	runGit(t, seed, "branch", "-M", "trunk")
+	seed := vcstest.Repo(t, vcstest.Trunk("trunk")).Dir
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	runGit(t, seed, "clone", "-q", "--bare", seed, bare)
 	linked := filepath.Join(t.TempDir(), "linked")
@@ -719,6 +676,7 @@ func TestResolveCheckoutBrokenRootCanonical(t *testing.T) {
 }
 
 func TestBrokenCheckoutError(t *testing.T) {
+	t.Parallel()
 	err := &BrokenCheckout{Root: "/repo/wt", Target: "/repo/.git/worktrees/wt", Reason: "gitdir pointer resolves to nothing"}
 	want := `broken checkout "/repo/wt": gitdir pointer resolves to nothing: "/repo/.git/worktrees/wt"`
 	if got := err.Error(); got != want {

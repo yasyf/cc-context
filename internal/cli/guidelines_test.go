@@ -3,43 +3,41 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/vcs"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
-const (
-	fakeGuidelinesRepoView = `{"nameWithOwner":"acme/widget",` +
-		`"pullRequestTemplates":[{"filename":"PULL_REQUEST_TEMPLATE.md","body":"## Summary\n\n## Test plan\n"}],` +
-		`"codeOfConduct":{"key":"other","name":"Other","url":"https://github.com/acme/widget/blob/main/CODE-OF-CONDUCT.md"},` +
-		`"contactLinks":[{"about":"Ask in discussions","name":"Question","url":"https://example.test/discuss"}],` +
-		`"issueTemplates":[{"name":"Bug report","title":"","about":"Report a bug","body":"steps\nexpected\n"}]}`
+// guidelinesGH names the recorded gh runs one fixture's fake gh replays. A zero
+// value leaves gh off PATH entirely, which is the degradation path.
+type guidelinesGH struct {
+	repoView     string
+	profile      string
+	contributing string
+}
 
-	fakeGuidelinesMultiTemplate = `{"nameWithOwner":"acme/widget",` +
-		`"pullRequestTemplates":[{"filename":"beta.md","body":"beta body\n"},{"filename":"alpha.md","body":"alpha body\n"}],` +
-		`"codeOfConduct":null,"contactLinks":[],"issueTemplates":[]}`
+// guidelinesPopulated is cli/cli: a pull request template, a code of conduct,
+// two contact links, and three issue templates.
+var guidelinesPopulated = guidelinesGH{repoView: "guidelines-repo-view-populated"}
 
-	fakeGuidelinesProfile = `{"files":{"contributing":` +
-		`{"url":"https://api.github.com/repos/acme/widget/contents/.github/CONTRIBUTING.md"}}}`
-)
-
-// writeGuidelinesFakes installs a fake gh into dir. It records its argv into
-// $GUIDELINES_LOG as a NUL-delimited record (every field terminated by \0, the
-// record by one extra \0) and answers off env vars, so the guidelines command's
-// parsing paths run without the network.
-func writeGuidelinesFakes(t *testing.T, dir string) {
+// writeGuidelinesGH installs a fake gh into the fixture's shim directory and
+// answers off the environment. gh is a network boundary so the process is
+// faked, but every byte it prints came out of a real gh run. It frames its argv
+// the way the shim does, so vcstest.Invocations counts its calls beside git's.
+func writeGuidelinesGH(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
-	gh := `#!/bin/sh
-{ printf 'gh\0'; for a in "$@"; do printf '%s\0' "$a"; done; printf '\0'; } >> "$GUIDELINES_LOG"
-case "$1" in
-  repo)
-    if [ -n "$GH_REPO_VIEW_FAIL" ]; then printf 'gh: could not resolve a github repository\n' >&2; exit 1; fi
-    printf '%s' "$GH_GUIDELINES_VIEW_JSON" ;;
+	script := "#!/bin/sh\n" +
+		`d="${CCX_SHIM_DEPTH:-0}"` + "\n" +
+		`printf '%s\0' "$d" "$(($#+1))" gh "$@" >> '` + f.ArgvLog + `'` + "\n" +
+		`case "$1" in
+  repo) printf '%s' "$GH_GUIDELINES_VIEW_JSON" ;;
   api)
     case "$2" in
       *community/profile) printf '%s' "$GH_COMMUNITY_PROFILE_JSON" ;;
@@ -49,43 +47,35 @@ case "$1" in
 esac
 exit 0
 `
-	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(gh), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
+	if err := os.WriteFile(filepath.Join(f.ShimBin, "gh"), []byte(script), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
 		t.Fatalf("write fake gh: %v", err)
 	}
 }
 
-// setupGuidelines stands up a repo root with a fake gh on PATH and an isolated
-// cache, and returns the root and the argv log path.
-func setupGuidelines(t *testing.T, withGh bool) (root, logPath string) {
+// setupGuidelines stands a real repository up with a fake gh replaying gh's own
+// recorded payloads, and returns the repository root and the shim's argv log.
+// The goldens load before the fixture chdirs, since testdata is package-relative.
+func setupGuidelines(t *testing.T, gh guidelinesGH) (root, logPath string) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("fake shell scripts are POSIX-only")
+	env := map[string]string{}
+	for name, scenario := range map[string]string{
+		"GH_GUIDELINES_VIEW_JSON":   gh.repoView,
+		"GH_COMMUNITY_PROFILE_JSON": gh.profile,
+		"GH_CONTENTS_BODY":          gh.contributing,
+	} {
+		if scenario != "" {
+			env[name] = loadGHGolden(t, scenario).stdout
+		}
 	}
 
-	root = t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o750); err != nil {
-		t.Fatalf("mkdir .git: %v", err)
+	f := vcstest.Repo(t)
+	if gh.repoView != "" {
+		writeGuidelinesGH(t, f)
 	}
-	binDir := t.TempDir()
-	if withGh {
-		writeGuidelinesFakes(t, binDir)
+	for name, payload := range env {
+		t.Setenv(name, payload)
 	}
-
-	old, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(old) })
-	if err := os.Chdir(root); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-
-	logPath = filepath.Join(binDir, "gh.log")
-	t.Setenv("PATH", binDir)
-	t.Setenv("GUIDELINES_LOG", logPath)
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	t.Setenv("GH_GUIDELINES_VIEW_JSON", fakeGuidelinesRepoView)
-	return root, logPath
+	return f.Dir, f.ArgvLog
 }
 
 func writeGuidelinesFile(t *testing.T, root, rel, body string) {
@@ -97,6 +87,24 @@ func writeGuidelinesFile(t *testing.T, root, rel, body string) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write %s: %v", rel, err)
 	}
+}
+
+func guidelinesGit(t *testing.T, root string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...) //nolint:gosec // git resolves through the fixture's shim; args are test-authored
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// guidelinesCommitContributing writes CONTRIBUTING.md and commits it, so a later
+// branch switch really rewrites the file on disk.
+func guidelinesCommitContributing(t *testing.T, root, body string) {
+	t.Helper()
+	writeGuidelinesFile(t, root, "CONTRIBUTING.md", body)
+	guidelinesGit(t, root, "add", "CONTRIBUTING.md")
+	guidelinesGit(t, root, "commit", "-qm", "contributing")
 }
 
 func runGuidelinesCmd(t *testing.T, args ...string) (stdout, stderr string, err error) {
@@ -125,34 +133,23 @@ func runGuidelinesJSON(t *testing.T, args ...string) guidelines {
 	return g
 }
 
-func readGuidelinesLog(t *testing.T, path string) [][]string {
+// guidelinesGHCalls returns the fake gh's argv records, dropping the git calls
+// ccx made through the same shim log.
+func guidelinesGHCalls(t *testing.T, log string) [][]string {
 	t.Helper()
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		t.Fatalf("read guidelines log: %v", err)
-	}
 	var records [][]string
-	for _, record := range bytes.Split(data, []byte{0, 0}) {
-		if len(record) == 0 {
-			continue
+	for _, record := range vcstest.Invocations(t, log) {
+		if record[0] == "gh" {
+			records = append(records, record)
 		}
-		fields := bytes.Split(record, []byte{0})
-		row := make([]string, len(fields))
-		for i, field := range fields {
-			row[i] = string(field)
-		}
-		records = append(records, row)
 	}
 	return records
 }
 
-func countGuidelinesCalls(t *testing.T, path, subcommand string) int {
+func countGuidelinesCalls(t *testing.T, log, subcommand string) int {
 	t.Helper()
 	n := 0
-	for _, record := range readGuidelinesLog(t, path) {
+	for _, record := range guidelinesGHCalls(t, log) {
 		if len(record) > 1 && record[1] == subcommand {
 			n++
 		}
@@ -171,34 +168,49 @@ func guidelinesDocOf(t *testing.T, g guidelines, kind string) guidelinesDoc {
 	return guidelinesDoc{}
 }
 
-func TestGuidelinesMultiTemplateDirectory(t *testing.T) {
-	root, _ := setupGuidelines(t, true)
-	t.Setenv("GH_GUIDELINES_VIEW_JSON", fakeGuidelinesMultiTemplate)
-	writeGuidelinesFile(t, root, "CONTRIBUTING.md", "be nice\n")
-	writeGuidelinesFile(t, root, ".github/PULL_REQUEST_TEMPLATE/alpha.md", "alpha body\n")
-	writeGuidelinesFile(t, root, ".github/PULL_REQUEST_TEMPLATE/beta.md", "beta body\n")
+func decodeGuidelinesRepoView(t *testing.T, scenario string) guidelinesRepoView {
+	t.Helper()
+	var view guidelinesRepoView
+	if err := json.Unmarshal([]byte(loadGHGolden(t, scenario).stdout), &view); err != nil {
+		t.Fatalf("decode %s: %v", scenario, err)
+	}
+	return view
+}
 
-	g := runGuidelinesJSON(t)
+// TestGuidelinesMultiTemplateDirectory pins the multi-template sort. No recorded
+// repo view carries two templates — cli/cli has one and cc-context none — so the
+// view is the recorded one with its own template body repeated under two
+// filenames, built as a Go value rather than as bytes a fake gh claims gh
+// printed. Recording a real one needs a repository with a
+// .github/PULL_REQUEST_TEMPLATE/ directory:
+// `gh repo view <repo> --json nameWithOwner,pullRequestTemplates,codeOfConduct,contactLinks,issueTemplates`.
+func TestGuidelinesMultiTemplateDirectory(t *testing.T) {
+	t.Parallel()
+	view := decodeGuidelinesRepoView(t, "guidelines-repo-view-populated")
+	body := view.PullRequestTemplates[0].Body
+	view.PullRequestTemplates = []guidelinesPRTemplate{{Filename: "beta.md", Body: body}, {Filename: "alpha.md", Body: body}}
+
+	root := t.TempDir()
+	writeGuidelinesFile(t, root, ".github/PULL_REQUEST_TEMPLATE/alpha.md", body)
+	writeGuidelinesFile(t, root, ".github/PULL_REQUEST_TEMPLATE/beta.md", body)
 
 	var templates []guidelinesDoc
-	for _, doc := range g.Documents {
+	docs := guidelinesDocuments(root, guidelinesEnvelope{Repo: view}, nil, false)
+	for _, doc := range docs {
 		if doc.Kind == guidelinesKindPRTemplate {
 			templates = append(templates, doc)
 		}
 	}
 	if len(templates) != 2 {
-		t.Fatalf("pr-template documents = %d, want 2: %+v", len(templates), g.Documents)
+		t.Fatalf("pr-template documents = %d, want 2: %+v", len(templates), docs)
 	}
-	want := []struct{ path, body string }{
-		{".github/PULL_REQUEST_TEMPLATE/alpha.md", "alpha body\n"},
-		{".github/PULL_REQUEST_TEMPLATE/beta.md", "beta body\n"},
-	}
-	for i, tt := range want {
-		if templates[i].Path != tt.path {
-			t.Errorf("template %d path = %q, want %q", i, templates[i].Path, tt.path)
+	wantPaths := []string{".github/PULL_REQUEST_TEMPLATE/alpha.md", ".github/PULL_REQUEST_TEMPLATE/beta.md"}
+	for i, want := range wantPaths {
+		if templates[i].Path != want {
+			t.Errorf("template %d path = %q, want %q", i, templates[i].Path, want)
 		}
-		if templates[i].Body != tt.body {
-			t.Errorf("template %d body = %q, want %q", i, templates[i].Body, tt.body)
+		if templates[i].raw != body {
+			t.Errorf("template %d body = %q, want the recorded template", i, templates[i].raw)
 		}
 		if templates[i].Source != guidelinesSourceGitHub {
 			t.Errorf("template %d source = %q, want %q", i, templates[i].Source, guidelinesSourceGitHub)
@@ -207,9 +219,9 @@ func TestGuidelinesMultiTemplateDirectory(t *testing.T) {
 }
 
 func TestGuidelinesLocalContributingWins(t *testing.T) {
-	root, logPath := setupGuidelines(t, true)
-	t.Setenv("GH_COMMUNITY_PROFILE_JSON", fakeGuidelinesProfile)
-	t.Setenv("GH_CONTENTS_BODY", "remote contributing\n")
+	gh := guidelinesPopulated
+	gh.profile, gh.contributing = "guidelines-profile-found", "guidelines-contributing-raw"
+	root, logPath := setupGuidelines(t, gh)
 	writeGuidelinesFile(t, root, ".github/CONTRIBUTING.md", "local contributing\n")
 
 	g := runGuidelinesJSON(t)
@@ -230,9 +242,10 @@ func TestGuidelinesLocalContributingWins(t *testing.T) {
 }
 
 func TestGuidelinesContributingFallback(t *testing.T) {
-	_, logPath := setupGuidelines(t, true)
-	t.Setenv("GH_COMMUNITY_PROFILE_JSON", fakeGuidelinesProfile)
-	t.Setenv("GH_CONTENTS_BODY", "remote contributing\n")
+	gh := guidelinesPopulated
+	gh.profile, gh.contributing = "guidelines-profile-found", "guidelines-contributing-raw"
+	wantBody := loadGHGolden(t, "guidelines-contributing-raw").stdout
+	_, logPath := setupGuidelines(t, gh)
 
 	g := runGuidelinesJSON(t)
 
@@ -243,24 +256,51 @@ func TestGuidelinesContributingFallback(t *testing.T) {
 	if doc.Path != ".github/CONTRIBUTING.md" {
 		t.Errorf("path = %q, want %q", doc.Path, ".github/CONTRIBUTING.md")
 	}
-	if doc.Body != "remote contributing\n" {
-		t.Errorf("body = %q, want the fetched file", doc.Body)
+	if doc.Body != wantBody {
+		t.Errorf("body = %q, want the fetched file %q", doc.Body, wantBody)
 	}
 	want := [][]string{
 		{"gh", "repo", "view", "--json", guidelinesRepoFields},
-		{"gh", "api", "repos/acme/widget/community/profile"},
-		{"gh", "api", "https://api.github.com/repos/acme/widget/contents/.github/CONTRIBUTING.md", "-H", guidelinesRawAccept},
+		{"gh", "api", "repos/cli/cli/community/profile"},
+		{"gh", "api", "https://api.github.com/repos/cli/cli/contents/.github/CONTRIBUTING.md", "-H", guidelinesRawAccept},
 	}
-	if got := readGuidelinesLog(t, logPath); !reflect.DeepEqual(got, want) {
+	if got := guidelinesGHCalls(t, logPath); !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv records:\n got: %#v\nwant: %#v", got, want)
 	}
 }
 
-func TestGuidelinesBudgetTruncatesPerDocument(t *testing.T) {
-	root, _ := setupGuidelines(t, true)
-	writeGuidelinesFile(t, root, "CONTRIBUTING.md", strings.Repeat("a line of contributing guidance\n", 40))
+// TestGuidelinesBareRepoReportsEverythingMissing drives the pair of recorded
+// runs a repository with no contribution documents produces: an empty repo view
+// and a community profile naming no CONTRIBUTING, so the raw-contents fetch
+// never happens.
+func TestGuidelinesBareRepoReportsEverythingMissing(t *testing.T) {
+	_, logPath := setupGuidelines(t, guidelinesGH{repoView: "guidelines-repo-view-bare", profile: "guidelines-profile-none"})
 
-	g := runGuidelinesJSON(t, "--budget", "10")
+	g := runGuidelinesJSON(t)
+
+	if g.Repo != "yasyf/cc-context" {
+		t.Errorf("repo = %q, want yasyf/cc-context", g.Repo)
+	}
+	if len(g.Documents) != 0 {
+		t.Errorf("documents = %+v, want none", g.Documents)
+	}
+	if !reflect.DeepEqual(g.Missing, guidelinesKinds) {
+		t.Errorf("missing = %v, want every kind %v", g.Missing, guidelinesKinds)
+	}
+	if n := countGuidelinesCalls(t, logPath, "api"); n != 1 {
+		t.Errorf("gh api calls = %d, want 1 — the profile names no contributing, so nothing is fetched", n)
+	}
+}
+
+func TestGuidelinesBudgetTruncatesPerDocument(t *testing.T) {
+	view := decodeGuidelinesRepoView(t, "guidelines-repo-view-populated")
+	// One token over the recorded template, so it survives whole while a
+	// CONTRIBUTING twice its size does not.
+	budget := len(view.PullRequestTemplates[0].Body)/guidelinesCharsPerToken + 1
+	root, _ := setupGuidelines(t, guidelinesPopulated)
+	writeGuidelinesFile(t, root, "CONTRIBUTING.md", strings.Repeat("a line of contributing guidance\n", 2*budget*guidelinesCharsPerToken/32))
+
+	g := runGuidelinesJSON(t, "--budget", fmt.Sprint(budget))
 
 	doc := guidelinesDocOf(t, g, guidelinesKindContributing)
 	if !doc.Truncated {
@@ -269,8 +309,8 @@ func TestGuidelinesBudgetTruncatesPerDocument(t *testing.T) {
 	if doc.OmittedTokens <= 0 {
 		t.Errorf("omitted tokens = %d, want > 0", doc.OmittedTokens)
 	}
-	if doc.Tokens > 10 {
-		t.Errorf("tokens = %d, want <= the 10-token budget", doc.Tokens)
+	if doc.Tokens > budget {
+		t.Errorf("tokens = %d, want <= the %d-token budget", doc.Tokens, budget)
 	}
 	if strings.Contains(doc.Body, "omitted") {
 		t.Errorf("json body carries the human footer: %q", doc.Body)
@@ -281,7 +321,7 @@ func TestGuidelinesBudgetTruncatesPerDocument(t *testing.T) {
 		t.Error("pr-template truncated: the budget is per document, so a long CONTRIBUTING must not starve it")
 	}
 
-	out, _, err := runGuidelinesCmd(t, "--budget", "10")
+	out, _, err := runGuidelinesCmd(t, "--budget", fmt.Sprint(budget))
 	if err != nil {
 		t.Fatalf("guidelines: %v", err)
 	}
@@ -290,16 +330,26 @@ func TestGuidelinesBudgetTruncatesPerDocument(t *testing.T) {
 	}
 }
 
+// TestGuidelinesCacheWarm proves the contract the envelope is shaped around: the
+// GitHub payload caches for a day while the local documents re-read every run.
+// The second read happens on another branch, so git — not the test — is what
+// rewrote CONTRIBUTING.md on disk between them.
 func TestGuidelinesCacheWarm(t *testing.T) {
-	root, logPath := setupGuidelines(t, true)
-	writeGuidelinesFile(t, root, "CONTRIBUTING.md", "first\n")
+	root, logPath := setupGuidelines(t, guidelinesPopulated)
+	guidelinesCommitContributing(t, root, "first\n")
+	guidelinesGit(t, root, "switch", "-qc", "other")
+	guidelinesCommitContributing(t, root, "second\n")
+	guidelinesGit(t, root, "switch", "-q", "main")
 
 	first := runGuidelinesJSON(t)
 	if first.Cached {
 		t.Error("first run reported a cache hit")
 	}
+	if doc := guidelinesDocOf(t, first, guidelinesKindContributing); doc.Body != "first\n" {
+		t.Errorf("contributing body on main = %q, want %q", doc.Body, "first\n")
+	}
 
-	writeGuidelinesFile(t, root, "CONTRIBUTING.md", "second\n")
+	guidelinesGit(t, root, "switch", "-q", "other")
 	second := runGuidelinesJSON(t)
 	if !second.Cached {
 		t.Error("second run reported a cache miss")
@@ -308,7 +358,7 @@ func TestGuidelinesCacheWarm(t *testing.T) {
 		t.Errorf("gh repo view calls = %d, want 1", n)
 	}
 	if doc := guidelinesDocOf(t, second, guidelinesKindContributing); doc.Body != "second\n" {
-		t.Errorf("contributing body = %q, want the re-read local file", doc.Body)
+		t.Errorf("contributing body on other = %q, want the branch's own file", doc.Body)
 	}
 	if second.CachePath == "" {
 		t.Error("cache_path is empty")
@@ -322,7 +372,7 @@ func TestGuidelinesCacheWarm(t *testing.T) {
 }
 
 func TestGuidelinesRefreshRefetches(t *testing.T) {
-	root, logPath := setupGuidelines(t, true)
+	root, logPath := setupGuidelines(t, guidelinesPopulated)
 	writeGuidelinesFile(t, root, "CONTRIBUTING.md", "be nice\n")
 
 	runGuidelinesJSON(t)
@@ -337,7 +387,7 @@ func TestGuidelinesRefreshRefetches(t *testing.T) {
 }
 
 func TestGuidelinesWithoutGh(t *testing.T) {
-	root, _ := setupGuidelines(t, false)
+	root, _ := setupGuidelines(t, guidelinesGH{})
 	writeGuidelinesFile(t, root, "CONTRIBUTING.md", "be nice\n")
 	writeGuidelinesFile(t, root, ".github/ISSUE_TEMPLATE/config.yml", "blank_issues_enabled: false\n")
 
@@ -373,13 +423,13 @@ func TestGuidelinesWithoutGh(t *testing.T) {
 }
 
 func TestGuidelinesJSONFields(t *testing.T) {
-	root, _ := setupGuidelines(t, true)
+	root, _ := setupGuidelines(t, guidelinesPopulated)
 	writeGuidelinesFile(t, root, "CONTRIBUTING.md", "Sign your commits with a Signed-off-by trailer.\n")
 
 	g := runGuidelinesJSON(t)
 
-	if g.Repo != "acme/widget" {
-		t.Errorf("repo = %q, want acme/widget", g.Repo)
+	if g.Repo != "cli/cli" {
+		t.Errorf("repo = %q, want cli/cli", g.Repo)
 	}
 	if g.FetchedAt.IsZero() {
 		t.Error("fetched_at is the zero time")
@@ -393,35 +443,42 @@ func TestGuidelinesJSONFields(t *testing.T) {
 	}
 
 	coc := guidelinesDocOf(t, g, guidelinesKindCodeOfConduct)
-	if coc.Path != "https://github.com/acme/widget/blob/main/CODE-OF-CONDUCT.md" {
+	if coc.Path != "https://github.com/cli/cli/blob/trunk/.github/CODE-OF-CONDUCT.md" {
 		t.Errorf("code-of-conduct path = %q, want the reported url", coc.Path)
 	}
 	contact := guidelinesDocOf(t, g, guidelinesKindContactLinks)
-	if contact.Body != "Question — Ask in discussions (https://example.test/discuss)\n" {
-		t.Errorf("contact-links body = %q", contact.Body)
+	wantContact := "Ask a question on how to use GitHub CLI — For general-purpose questions and answers, see the Discussions section. (https://github.com/cli/cli/discussions)\n" +
+		"Ask a question about the GitHub API — Please check out the GitHub community forum for discussions about the GitHub API. (https://github.community/c/github-ecosystem/37)\n"
+	if contact.Body != wantContact {
+		t.Errorf("contact-links body = %q, want %q", contact.Body, wantContact)
 	}
 }
 
 func TestGuidelinesIssueTemplateBodies(t *testing.T) {
-	root, _ := setupGuidelines(t, true)
+	root, _ := setupGuidelines(t, guidelinesPopulated)
 	writeGuidelinesFile(t, root, "CONTRIBUTING.md", "be nice\n")
 
 	names := guidelinesDocOf(t, runGuidelinesJSON(t), guidelinesKindIssueTemplate)
-	if names.Body != "Bug report — Report a bug\n" {
-		t.Errorf("issue-template body = %q, want the names only", names.Body)
+	wantNames := "🐛 Bug report — Report a bug or unexpected behavior while using GitHub CLI\n" +
+		"🎨 Submit a design proposal — Submit a design to resolve an open issue that has both `needs-design` and `help-wanted` labels\n" +
+		"⭐ Submit a request — Surface a feature or problem that you think should be solved\n"
+	if names.Body != wantNames {
+		t.Errorf("issue-template body = %q, want the names only %q", names.Body, wantNames)
 	}
 	if names.Path != guidelinesIssueTemplateDir {
 		t.Errorf("issue-template path = %q, want %q", names.Path, guidelinesIssueTemplateDir)
 	}
 
 	full := guidelinesDocOf(t, runGuidelinesJSON(t, "--full"), guidelinesKindIssueTemplate)
-	if !strings.Contains(full.Body, "steps\nexpected") {
+	if !strings.Contains(full.Body, "### Describe the bug") {
 		t.Errorf("--full body = %q, want the template body", full.Body)
 	}
 }
 
 func TestGuidelinesHumanOutput(t *testing.T) {
-	root, _ := setupGuidelines(t, true)
+	view := decodeGuidelinesRepoView(t, "guidelines-repo-view-populated")
+	templateTokens := len(view.PullRequestTemplates[0].Body) / guidelinesCharsPerToken
+	root, _ := setupGuidelines(t, guidelinesPopulated)
 	writeGuidelinesFile(t, root, "CONTRIBUTING.md", "We follow Conventional Commits.\n")
 
 	out, _, err := runGuidelinesCmd(t)
@@ -429,8 +486,8 @@ func TestGuidelinesHumanOutput(t *testing.T) {
 		t.Fatalf("guidelines: %v", err)
 	}
 	for _, want := range []string{
-		"# guidelines acme/widget · 5 documents · fetched now\n",
-		"## pr-template PULL_REQUEST_TEMPLATE.md (github · 6 tokens)\n",
+		"# guidelines cli/cli · 5 documents · fetched now\n",
+		fmt.Sprintf("## pr-template PULL_REQUEST_TEMPLATE.md (github · %d tokens)\n", templateTokens),
 		"## contributing CONTRIBUTING.md (local · 8 tokens)\n",
 		"# missing: issue-config\n",
 		"# signals: signoff=no cla=no conventional-commits=yes\n",
@@ -450,39 +507,6 @@ func TestGuidelinesHumanOutput(t *testing.T) {
 	}
 }
 
-func newGuidelinesRepo(t *testing.T) string {
-	t.Helper()
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o750); err != nil {
-		t.Fatalf("mkdir .git: %v", err)
-	}
-	return root
-}
-
-// writeGuidelinesWorktree hand-builds the pointer files `git worktree add`
-// writes — a .git file naming an admin dir under mainRoot, and that dir's
-// commondir — so the layout classifies without a git binary. The pointer holds
-// mainRoot resolved, because that is the form git writes.
-func writeGuidelinesWorktree(t *testing.T, mainRoot string) string {
-	t.Helper()
-	resolved, err := filepath.EvalSymlinks(mainRoot)
-	if err != nil {
-		t.Fatalf("resolve %q: %v", mainRoot, err)
-	}
-	admin := filepath.Join(resolved, ".git", "worktrees", "wt")
-	if err := os.MkdirAll(admin, 0o750); err != nil {
-		t.Fatalf("mkdir admin dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte("../..\n"), 0o600); err != nil {
-		t.Fatalf("write commondir: %v", err)
-	}
-	linked := t.TempDir()
-	if err := os.WriteFile(filepath.Join(linked, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
-		t.Fatalf("write gitdir pointer: %v", err)
-	}
-	return linked
-}
-
 func mustGuidelinesCacheDir(t *testing.T, root string) string {
 	t.Helper()
 	dir, err := guidelinesCacheDir(root)
@@ -493,26 +517,26 @@ func mustGuidelinesCacheDir(t *testing.T, root string) string {
 }
 
 func TestGuidelinesCacheDirKeysTheRepository(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Worktree("wt"))
+	unrelated := vcstest.Repo(t)
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	mainRoot := newGuidelinesRepo(t)
-	mainDir := mustGuidelinesCacheDir(t, mainRoot)
+	mainDir := mustGuidelinesCacheDir(t, f.Dir)
 
 	tests := []struct {
 		name     string
-		root     func(t *testing.T) string
+		root     string
 		wantSame bool
 	}{
-		{"the main checkout", func(*testing.T) string { return mainRoot }, true},
-		{"a linked worktree", func(t *testing.T) string { return writeGuidelinesWorktree(t, mainRoot) }, true},
-		{"an unrelated repository", func(t *testing.T) string { return newGuidelinesRepo(t) }, false},
+		{"the main checkout", f.Dir, true},
+		{"a linked worktree", f.WorktreePath("wt"), true},
+		{"an unrelated repository", unrelated.Dir, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			root := tt.root(t)
-			dir := mustGuidelinesCacheDir(t, root)
-			repoPath, err := vcs.RepoCachePath(root)
+			dir := mustGuidelinesCacheDir(t, tt.root)
+			repoPath, err := vcs.RepoCachePath(tt.root)
 			if err != nil {
-				t.Fatalf("RepoCachePath(%q): %v", root, err)
+				t.Fatalf("RepoCachePath(%q): %v", tt.root, err)
 			}
 			if want := filepath.Dir(repoPath); dir != want {
 				t.Errorf("guidelinesCacheDir = %q, want the GitHub record's directory %q", dir, want)
@@ -525,6 +549,7 @@ func TestGuidelinesCacheDirKeysTheRepository(t *testing.T) {
 }
 
 func TestGuidelinesSignals(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		body string
@@ -540,6 +565,7 @@ func TestGuidelinesSignals(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := guidelinesSignals([]guidelinesDoc{{Kind: guidelinesKindContributing, raw: tt.body}})
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("guidelinesSignals(%q) = %v, want %v", tt.body, got, tt.want)

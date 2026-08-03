@@ -12,7 +12,21 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
+
+// gtGoldenAtExitZero pairs a recorded diagnostic with exit 0 — the run
+// gtZeroFatal exists to judge, and the one pairing the corpus cannot supply:
+// every gt 1.8.6 run that led stderr with ERROR: also exited nonzero, so no
+// recording holds both halves at once. The bytes stay gt's; only the status is
+// the test's own axis.
+func gtGoldenAtExitZero(t *testing.T, name string) gtGolden {
+	t.Helper()
+	g := loadGTGolden(t, name)
+	g.exit = 0
+	return g
+}
 
 // gtRunFake installs body as a fake gt on a PATH holding nothing else, so a
 // lookup can only find it. Absolute interpreter and helper paths keep working
@@ -102,16 +116,34 @@ func TestGTRunPassesArgvThroughUntouched(t *testing.T) {
 	}
 }
 
+// gtGoldenIndentSeverity indents every severity-led line of payload, which is
+// how a test reaches a line gt never writes: gt's splog puts the prefix at
+// column zero, so no recording holds an indented one, and the gate's column
+// rule needs the negative case.
+func gtGoldenIndentSeverity(payload string) string {
+	lines := strings.Split(payload, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, gtErrorPrefix) || strings.HasPrefix(line, gtWarningPrefix) {
+			lines[i] = "  " + line
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // TestGTRunDiagnosticsGatesOnSeverity pins both halves of the echo's contract:
 // a severity-led stderr goes out whole — continuation lines included, since gt's
 // remediation is one — and a stderr with no severity line goes out not at all.
-// Both tip rows and the decline row read their bytes out of the corpus, so a
-// re-recording carries them: NUX tips are unprefixed stderr exactly as gt's
-// remediation is, which is why the gate — not the shape of any line — is what
-// keeps an ordinary run quiet.
+// Every row reads its bytes out of the corpus, so a re-recording carries them:
+// NUX tips are unprefixed stderr exactly as gt's remediation is, which is why
+// the gate — not the shape of any line — is what keeps an ordinary run quiet.
+// The two rows the corpus cannot state directly — an indented prefix, a stderr
+// missing its final newline — reshape recorded bytes rather than invent them.
 func TestGTRunDiagnosticsGatesOnSeverity(t *testing.T) {
-	tips := loadGTGolden(t, "sync-tips-exit0").stderr
+	t.Parallel()
+	tips := loadGTGolden(t, "sync-tips-exit0")
 	declined := loadGTGolden(t, "sync-decline-exit0")
+	warned := loadGTGolden(t, "sync-tips-and-warning-exit0")
+	errored := loadGTGolden(t, "sync-repo-404")
 	tests := []struct {
 		name     string
 		result   gtResult
@@ -125,34 +157,40 @@ func TestGTRunDiagnosticsGatesOnSeverity(t *testing.T) {
 		},
 		{
 			name:   "tips alone stay silent",
-			result: gtResult{Output: "🥞 Restacking branches...\n" + tips, Stderr: tips},
+			result: tips.result(),
 			want:   "",
 		},
 		{
-			name:     "a warning among tips still carries the whole block",
-			result:   gtResult{Output: tips + "ERROR: Could not determine the name of this repo. \n", Stderr: tips + "ERROR: Could not determine the name of this repo. \n"},
-			want:     tips + "ERROR: Could not determine the name of this repo. \n",
+			name:   "a warning among tips still carries the whole block",
+			result: warned.result(),
+			want:   warned.stderr,
+		},
+		{
+			name:     "an error among tips still carries the whole block",
+			result:   errored.result(),
+			want:     errored.stderr,
 			wantErrs: true,
 		},
 		{
 			name:   "an indented severity word does not lead its line",
-			result: gtResult{Output: "  ERROR: indented\nplain\n", Stderr: "  ERROR: indented\nplain\n"},
+			result: gtResult{Output: gtGoldenIndentSeverity(declined.stderr), Stderr: gtGoldenIndentSeverity(declined.stderr)},
 			want:   "",
 		},
 		{
 			name:   "a missing trailing newline is supplied",
-			result: gtResult{Output: "WARNING: no newline", Stderr: "WARNING: no newline"},
-			want:   "WARNING: no newline\n",
+			result: gtResult{Output: strings.TrimSuffix(declined.stderr, "\n"), Stderr: strings.TrimSuffix(declined.stderr, "\n")},
+			want:   declined.stderr,
 		},
 		{
 			name:     "a streamed result reports nothing twice",
-			result:   gtResult{Output: "ERROR: already shown\n", Stderr: "ERROR: already shown\n", streamed: true},
+			result:   gtResult{Output: errored.result().Output, Stderr: errored.stderr, streamed: true},
 			want:     "",
 			wantErrs: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := tt.result.Diagnostics(); got != tt.want {
 				t.Errorf("Diagnostics() = %q, want %q", got, tt.want)
 			}
@@ -190,8 +228,9 @@ func TestGTRunStreamsOnceToTerminal(t *testing.T) {
 }
 
 func TestGTRunBufferedRunReportsItsDiagnostics(t *testing.T) {
+	want := loadGTGolden(t, "submit-unauth").stderr
 	gtRunFake(t, gtRunScript)
-	t.Setenv("GTRUN_STDERR", "ERROR: Could not pull trunk main")
+	t.Setenv("GTRUN_STDERR", strings.TrimSuffix(want, "\n"))
 
 	var errW bytes.Buffer
 	r, err := gtRun(context.Background(), []string{"sync"}, gtZeroSurfaces, &errW)
@@ -201,7 +240,6 @@ func TestGTRunBufferedRunReportsItsDiagnostics(t *testing.T) {
 	if errW.Len() != 0 {
 		t.Errorf("errW = %q, want empty — a buffered run streams nothing", errW.String())
 	}
-	want := "ERROR: Could not pull trunk main\n"
 	if got := r.Diagnostics(); got != want {
 		t.Errorf("Diagnostics() = %q, want %q", got, want)
 	}
@@ -210,79 +248,81 @@ func TestGTRunBufferedRunReportsItsDiagnostics(t *testing.T) {
 	}
 }
 
+// TestGTRunZeroPolicyDecidesExitZero pins the exit-status matrix over recorded
+// runs: which combination of exit code, severity line, and policy is a failure,
+// and how gtError words the one it is. The two exit-0-with-an-ERROR rows are the
+// pairing no recording holds — see gtGoldenAtExitZero.
 func TestGTRunZeroPolicyDecidesExitZero(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
-		name     string
-		stdout   string
-		stderr   string
-		exit     string
-		policy   gtZeroPolicy
-		wantErr  bool
-		wantCode int
-		wantMsg  string
+		name       string
+		golden     gtGolden
+		policy     gtZeroPolicy
+		wantErr    bool
+		wantStatus string
 	}{
 		{
-			name:   "exit 0 with no report succeeds under either policy",
-			stdout: "feat2 does not need to be restacked on feat1.",
+			name:   "exit 0 with no report succeeds under gtZeroFatal",
+			golden: loadGTGolden(t, "sync-quiet-exit0"),
 			policy: gtZeroFatal,
 		},
 		{
-			name:   "exit 0 with an ERROR is gt's own oracle under gtZeroSurfaces",
-			stdout: "Did not restack branch feat1 because it is checked out in worktree /tmp/wt.",
-			stderr: "ERROR: Could not pull trunk main",
+			name:   "exit 0 with no report succeeds under gtZeroSurfaces",
+			golden: loadGTGolden(t, "sync-quiet-exit0"),
 			policy: gtZeroSurfaces,
 		},
 		{
-			name:     "exit 0 with an ERROR is fatal under gtZeroFatal",
-			stderr:   "ERROR: Could not determine the name of this repo.",
-			policy:   gtZeroFatal,
-			wantErr:  true,
-			wantCode: 0,
-			wantMsg:  "gt submit: exit 0 but reported an error: ERROR: Could not determine the name of this repo.",
+			name:   "exit 0 with an ERROR is gt's own oracle under gtZeroSurfaces",
+			golden: gtGoldenAtExitZero(t, "sync-auth-invalid"),
+			policy: gtZeroSurfaces,
+		},
+		{
+			name:       "exit 0 with an ERROR is fatal under gtZeroFatal",
+			golden:     gtGoldenAtExitZero(t, "submit-unauth"),
+			policy:     gtZeroFatal,
+			wantErr:    true,
+			wantStatus: "exit 0 but reported an error",
 		},
 		{
 			name:   "a WARNING never turns exit 0 fatal",
-			stderr: "WARNING: This command has been renamed and will be fully removed soon.",
+			golden: loadGTGolden(t, "sync-decline-exit0"),
 			policy: gtZeroFatal,
 		},
 		{
-			name:     "a nonzero exit fails even where exit 0 would be surfaced",
-			stdout:   "Hit conflict restacking feat on main.",
-			exit:     "1",
-			policy:   gtZeroSurfaces,
-			wantErr:  true,
-			wantCode: 1,
-			wantMsg:  "gt submit: exit 1: Hit conflict restacking feat on main.",
+			name:       "a nonzero exit fails even where exit 0 would be surfaced",
+			golden:     loadGTGolden(t, "restack-conflict"),
+			policy:     gtZeroSurfaces,
+			wantErr:    true,
+			wantStatus: "exit 1",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gtRunFake(t, gtRunScript)
-			t.Setenv("GTRUN_STDOUT", tt.stdout)
-			t.Setenv("GTRUN_STDERR", tt.stderr)
-			t.Setenv("GTRUN_EXIT", tt.exit)
+			t.Parallel()
+			verb := tt.golden.argv[0]
+			r := tt.golden.result()
 
-			r, err := gtRun(context.Background(), []string{"submit", "--no-interactive"}, tt.policy, io.Discard)
+			err := r.verdict(verb, tt.policy)
 			if !tt.wantErr {
 				if err != nil {
-					t.Fatalf("gtRun: unexpected error %v", err)
+					t.Fatalf("verdict() = %v, want nil", err)
 				}
 				return
 			}
 			var ge *gtError
 			if !errors.As(err, &ge) {
-				t.Fatalf("gtRun error = %v, want a *gtError", err)
+				t.Fatalf("verdict() = %v, want a *gtError", err)
 			}
-			if ge.Code != tt.wantCode {
-				t.Errorf("Code = %d, want %d", ge.Code, tt.wantCode)
+			if ge.Code != tt.golden.exit {
+				t.Errorf("Code = %d, want %d", ge.Code, tt.golden.exit)
 			}
-			if ge.Verb != "submit" {
-				t.Errorf("Verb = %q, want %q", ge.Verb, "submit")
+			if ge.Verb != verb {
+				t.Errorf("Verb = %q, want %q", ge.Verb, verb)
 			}
-			if err.Error() != tt.wantMsg {
-				t.Errorf("Error() = %q, want %q", err.Error(), tt.wantMsg)
+			if want := "gt " + verb + ": " + tt.wantStatus + ": " + strings.TrimSpace(r.Output); err.Error() != want {
+				t.Errorf("Error() = %q, want %q", err.Error(), want)
 			}
-			if !strings.Contains(ge.Output, strings.TrimSpace(tt.stdout+"\n"+tt.stderr)) && ge.Output != r.Output {
+			if ge.Output != r.Output {
 				t.Errorf("Output = %q, want the run's whole output %q", ge.Output, r.Output)
 			}
 		})
@@ -305,15 +345,8 @@ func TestGTRunReportsAGtThatCannotRun(t *testing.T) {
 	}
 }
 
-func TestGTRunCaptureKeepsThePayloadParseable(t *testing.T) {
-	gtRunFake(t, gtRunScript)
-	t.Setenv("GTRUN_STDOUT", `{"main":{"trunk":true}}`)
-	t.Setenv("GTRUN_STDERR", "WARNING: This command has been renamed and will be fully removed soon.")
-
-	payload, r, err := gtCapture(context.Background(), []string{"state"}, gtZeroFatal)
-	if err != nil {
-		t.Fatalf("gtCapture: %v", err)
-	}
+func assertGTStateTrunk(t *testing.T, payload string) {
+	t.Helper()
 	var state gtState
 	if err := json.Unmarshal([]byte(payload), &state); err != nil {
 		t.Fatalf("unmarshal payload %q: %v", payload, err)
@@ -321,7 +354,36 @@ func TestGTRunCaptureKeepsThePayloadParseable(t *testing.T) {
 	if !state["main"].Trunk {
 		t.Errorf("state = %+v, want main marked trunk", state)
 	}
-	want := "WARNING: This command has been renamed and will be fully removed soon.\n"
+}
+
+// TestGTRunCaptureKeepsThePayloadParseable takes the payload from a real gt in a
+// real colocated repository — gt state is the one verb ccx parses, and gt is the
+// only oracle for its shape — then replays it beside a recorded diagnostic,
+// which is the pairing gtCapture exists for: a stderr line interleaved into that
+// JSON would break the unmarshal. gt writes nothing to stderr on a settled
+// repository, so the second half is the only place the split is observable.
+func TestGTRunCaptureKeepsThePayloadParseable(t *testing.T) {
+	want := loadGTGolden(t, "sync-decline-exit0").stderr
+	vcstest.Repo(t, vcstest.GT())
+
+	payload, r, err := gtCapture(context.Background(), []string{"state"}, gtZeroFatal)
+	if err != nil {
+		t.Fatalf("gtCapture: %v", err)
+	}
+	assertGTStateTrunk(t, payload)
+	if r.Code != 0 {
+		t.Errorf("Code = %d, want 0", r.Code)
+	}
+
+	gtRunFake(t, gtRunScript)
+	t.Setenv("GTRUN_STDOUT", strings.TrimSuffix(payload, "\n"))
+	t.Setenv("GTRUN_STDERR", strings.TrimSuffix(want, "\n"))
+
+	replayed, r, err := gtCapture(context.Background(), []string{"state"}, gtZeroFatal)
+	if err != nil {
+		t.Fatalf("gtCapture replay: %v", err)
+	}
+	assertGTStateTrunk(t, replayed)
 	if got := r.Diagnostics(); got != want {
 		t.Errorf("Diagnostics() = %q, want %q — Output must carry the stream the payload does not", got, want)
 	}
@@ -329,7 +391,7 @@ func TestGTRunCaptureKeepsThePayloadParseable(t *testing.T) {
 
 func TestGTRunCaptureAppliesItsPolicy(t *testing.T) {
 	gtRunFake(t, gtRunScript)
-	t.Setenv("GTRUN_STDERR", "ERROR: Could not determine the name of this repo.")
+	t.Setenv("GTRUN_STDERR", strings.TrimSuffix(gtGoldenAtExitZero(t, "submit-unauth").stderr, "\n"))
 
 	payload, _, err := gtCapture(context.Background(), []string{"state"}, gtZeroFatal)
 	var ge *gtError
@@ -345,18 +407,23 @@ func TestGTRunCaptureAppliesItsPolicy(t *testing.T) {
 }
 
 func TestGTRunJoinStreamsKeepsLinesWhole(t *testing.T) {
+	t.Parallel()
+	stdout := loadGTGolden(t, "sync-quiet-exit0").stdout
+	stderr := loadGTGolden(t, "submit-unauth").stderr
+	bare := strings.TrimSuffix(stdout, "\n")
 	tests := []struct {
 		name           string
 		stdout, stderr string
 		want           string
 	}{
-		{"newline-terminated stdout joins as is", "{}\n", "ERROR: nope\n", "{}\nERROR: nope\n"},
-		{"bare stdout gains the separator", "{}", "ERROR: nope\n", "{}\nERROR: nope\n"},
-		{"empty stderr adds nothing", "{}", "", "{}"},
-		{"empty stdout adds nothing", "", "ERROR: nope\n", "ERROR: nope\n"},
+		{"newline-terminated stdout joins as is", stdout, stderr, stdout + stderr},
+		{"bare stdout gains the separator", bare, stderr, bare + "\n" + stderr},
+		{"empty stderr adds nothing", bare, "", bare},
+		{"empty stdout adds nothing", "", stderr, stderr},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := gtJoinStreams(tt.stdout, tt.stderr); got != tt.want {
 				t.Errorf("gtJoinStreams(%q, %q) = %q, want %q", tt.stdout, tt.stderr, got, tt.want)
 			}
@@ -365,7 +432,12 @@ func TestGTRunJoinStreamsKeepsLinesWhole(t *testing.T) {
 }
 
 func TestGTRunAdviceKeepsGtsCauseReachable(t *testing.T) {
-	cause := &gtError{Verb: "submit", Code: 0, Output: "ERROR: Your Graphite auth token is invalid/expired\n"}
+	t.Parallel()
+	r := loadGTGolden(t, "submit-unauth").result()
+	cause := r.verdict("submit", gtZeroFatal)
+	if cause == nil {
+		t.Fatal("verdict() = nil, want the recorded refusal to fail")
+	}
 	err := error(&gtAdvice{advice: "ship: graphite auth required — run gt auth", cause: cause})
 
 	if got := err.Error(); got != "ship: graphite auth required — run gt auth" {
@@ -375,8 +447,8 @@ func TestGTRunAdviceKeepsGtsCauseReachable(t *testing.T) {
 	if !errors.As(err, &ge) {
 		t.Fatalf("errors.As reached no *gtError through %v", err)
 	}
-	if ge.Output != cause.Output {
-		t.Errorf("cause Output = %q, want %q", ge.Output, cause.Output)
+	if ge.Output != r.Output {
+		t.Errorf("cause Output = %q, want %q", ge.Output, r.Output)
 	}
 	if !errors.Is(err, cause) {
 		t.Error("errors.Is did not reach the cause")
@@ -388,17 +460,20 @@ func TestGTRunAdviceKeepsGtsCauseReachable(t *testing.T) {
 // reach the same runner every other verb does. A helper that took the env but
 // returned stdout alone would drop the sentence a lying exit 0 is judged on.
 func TestGTRunCarriesExtraEnvWithoutLosingAStream(t *testing.T) {
+	diagnostic := strings.TrimSuffix(gtGoldenAtExitZero(t, "submit-unauth").stderr, "\n")
 	gtRunFake(t, `printf 'index=%s\n' "$GIT_INDEX_FILE"
-printf 'ERROR: Could not create feature.\n' >&2
+printf '%s\n' "$GTRUN_STDERR" >&2
 exit 0
 `)
+	t.Setenv("GTRUN_STDERR", diagnostic)
+
 	var errW bytes.Buffer
 	r, err := gtRun(context.Background(), []string{"create", "feature"}, gtZeroFatal, &errW, "GIT_INDEX_FILE=/tmp/ccx-oracle-index")
 
 	if !strings.Contains(r.Output, "index=/tmp/ccx-oracle-index") {
 		t.Fatalf("Output = %q, want gt to have seen GIT_INDEX_FILE", r.Output)
 	}
-	if !strings.Contains(r.Output, gtErrorPrefix+"Could not create feature.") {
+	if !strings.Contains(r.Output, diagnostic) {
 		t.Fatalf("Output = %q, want the stderr diagnostic too", r.Output)
 	}
 	var ge *gtError

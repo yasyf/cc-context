@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 func TestDetect(t *testing.T) {
@@ -170,13 +172,9 @@ func TestGraphiteRepoUnreadable(t *testing.T) {
 // common dir the main worktree owns — the same common dir that keys both
 // checkouts onto one repository.
 func TestGraphiteRepoWorktree(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	main := initLiveGitRepo(t)
+	f := vcstest.Repo(t, vcstest.Worktree("feature"))
+	main, linked := f.Dir, f.WorktreePath("feature")
 	mustWriteFile(t, filepath.Join(main, ".git", ".graphite_repo_config"), "{}")
-	linked := filepath.Join(t.TempDir(), "wt")
-	runGit(t, main, "worktree", "add", "-q", "-b", "feature", linked)
 
 	tests := []struct {
 		name      string
@@ -186,7 +184,7 @@ func TestGraphiteRepoWorktree(t *testing.T) {
 	}{
 		{"main worktree", main, true, ShapeMain},
 		{"linked worktree resolves the common dir", linked, true, ShapeGitWorktree},
-		{"repo with no graphite config", initLiveGitRepo(t), false, ShapeMain},
+		{"repo with no graphite config", vcstest.Repo(t).Dir, false, ShapeMain},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -226,6 +224,7 @@ func mustRepoKey(t *testing.T, dir string) string {
 }
 
 func TestTranslateRevset(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		id     string
 		source string
@@ -270,6 +269,7 @@ func TestTranslateRevset(t *testing.T) {
 // TestShowFileArgv pins the base-image argv for each lane and that an absent VCS
 // panics rather than returning a silent empty argv.
 func TestShowFileArgv(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		kind      Kind
@@ -311,6 +311,7 @@ func TestShowFileArgv(t *testing.T) {
 // fileset/revset syntax error in jj, so a zero-width joiner or a non-breaking
 // space would render a pattern jj refuses to parse.
 func TestJJPatterns(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		in        string
@@ -357,10 +358,11 @@ func TestJJPatterns(t *testing.T) {
 // child that could not start at all may come back as an error. Measured on git
 // 2.55: `rev-parse --quiet --end-of-options nope` exits 128, HEAD~1 exits 0.
 func TestGitRefValidSeparatesTheMissFromTheFailure(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	repo := initLiveGitRepo(t)
+	repo := vcstest.Repo(t).Dir
+	// HEAD~1 needs a second commit behind the fixture's own.
+	write(t, repo, "seed.txt", "two\n")
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-qm", "c2")
 
 	tests := []struct {
 		name    string
@@ -399,25 +401,6 @@ func mustMkdir(t *testing.T, path string) {
 	if err := os.MkdirAll(path, 0o750); err != nil {
 		t.Fatalf("mkdir %q: %v", path, err)
 	}
-}
-
-// initLiveGitRepo stands up a real git repo with two commits, so a relative ref
-// like HEAD~1 resolves against real history.
-func initLiveGitRepo(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	runGit(t, dir, "init", "-q")
-	runGit(t, dir, "config", "user.email", "t@t.t")
-	runGit(t, dir, "config", "user.name", "t")
-	seed := filepath.Join(dir, "seed.txt")
-	for i, content := range []string{"one\n", "two\n"} {
-		if err := os.WriteFile(seed, []byte(content), 0o600); err != nil {
-			t.Fatalf("write seed rev %d: %v", i, err)
-		}
-		runGit(t, dir, "add", "-A")
-		runGit(t, dir, "commit", "-qm", "c")
-	}
-	return dir
 }
 
 func runGit(t *testing.T, dir string, args ...string) {

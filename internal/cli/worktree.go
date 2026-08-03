@@ -422,18 +422,8 @@ func removeGitWorktree(ctx context.Context, cmd *cobra.Command, l lane, wt vcs.W
 	if wt.Path == l.checkout.MainRoot {
 		return fmt.Errorf("worktree rm: %q is the repository's own working copy, not a linked worktree", wt.Path)
 	}
-	trunk, err := worktreeTrunk(ctx, wt.Branch)
-	if err != nil {
+	if err := guardTrunkHolder(ctx, l, wt); err != nil {
 		return err
-	}
-	if trunk != "" {
-		holders, err := vcs.BranchHolders(ctx, l.checkout)
-		if err != nil {
-			return fmt.Errorf("worktree rm: %w", err)
-		}
-		if holders[trunk] == wt.Path {
-			return fmt.Errorf("worktree rm: %q holds trunk %s — every restack rebases onto it; check out another branch there first", wt.Path, trunk)
-		}
 	}
 	argv := []string{"worktree", "remove"}
 	if force {
@@ -475,48 +465,33 @@ func removeJJWorkspace(ctx context.Context, cmd *cobra.Command, l lane, name, pa
 	return nil
 }
 
-// worktreeTrunk resolves the default branch of the remote branch tracks — the
-// same answer restack rebases onto and info reports, gitRemoteTrunk's probes
-// mirrored one for one — except that probes exhausted without a hit come back
-// "" instead of gitRemoteTrunk's error: where no trunk resolves there is
-// nothing restack could rebase onto, so the trunk-holder guard has nothing to
-// protect. Only that clean miss is the skip. A failure asking git stays an
-// error, and so does a remote HEAD that resolves outside <remote>/: git
-// answered the question and named a ref, so a "" there would skip the guard
-// over a trunk that exists.
-func worktreeTrunk(ctx context.Context, branch string) (string, error) {
-	remote, err := gitRemoteFor(ctx, "worktree rm", branch)
+// guardTrunkHolder refuses the one removal that is never safe: the checkout
+// holding trunk pins the branch every restack rebases onto. A repository that
+// designates no default branch has no trunk to protect — git remote add sets
+// none until set-head — so that provable miss, and only it, skips the guard.
+// Every other outcome surfaces: a git that could not answer is not a repository
+// without a trunk, and reading it as one would skip a destructive-operation
+// guard over a trunk that exists.
+func guardTrunkHolder(ctx context.Context, l lane, wt vcs.Worktree) error {
+	remote, err := vcs.GitRemoteFor(ctx, l.root, wt.Branch)
 	if err != nil {
-		return "", err
+		return fmt.Errorf("worktree rm: %w", err)
 	}
-	ref := "refs/remotes/" + remote + "/HEAD"
-	out, code, _, err := render.RunCLIExitCode(ctx, "git", []string{"symbolic-ref", "--short", ref})
+	trunk, err := vcs.ResolveTrunk(ctx, l.root, remote)
+	if errors.Is(err, vcs.ErrNoTrunk) {
+		return nil
+	}
 	if err != nil {
-		return "", fmt.Errorf("worktree rm: git symbolic-ref %s: %w", ref, err)
+		return fmt.Errorf("worktree rm: %w", err)
 	}
-	if code == 0 {
-		target := strings.TrimSpace(out)
-		trunk, ok := strings.CutPrefix(target, remote+"/")
-		if !ok || trunk == "" {
-			return "", fmt.Errorf("worktree rm: %s points at %q, which names no branch of %s — run git remote set-head %s -a", ref, target, remote, remote)
-		}
-		return trunk, nil
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	if err != nil {
+		return fmt.Errorf("worktree rm: %w", err)
 	}
-	for _, trunk := range []string{"main", "master"} {
-		candidate := "refs/remotes/" + remote + "/" + trunk
-		_, code, stderr, err := render.RunCLIExitCode(ctx, "git", []string{"show-ref", "--verify", "--quiet", candidate})
-		if err != nil {
-			return "", fmt.Errorf("worktree rm: git show-ref %s: %w", candidate, err)
-		}
-		switch code {
-		case 0:
-			return trunk, nil
-		case 1:
-		default:
-			return "", fmt.Errorf("worktree rm: git show-ref %s: exit %d: %s", candidate, code, strings.TrimSpace(stderr))
-		}
+	if holders[trunk.Name()] == wt.Path {
+		return fmt.Errorf("worktree rm: %q holds trunk %s — every restack rebases onto it; check out another branch there first", wt.Path, trunk.Name())
 	}
-	return "", nil
+	return nil
 }
 
 // jjWorkspaceOf reports whether path is a jj workspace of c's repository, read

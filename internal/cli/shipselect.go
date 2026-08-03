@@ -268,18 +268,19 @@ func showFileBase(ctx context.Context, kind vcs.Kind, path string) ([]byte, erro
 // fileInBase reports whether the root-relative path exists in the committed base.
 // It leans on commands that resolve the base tree from any working directory and
 // report absence as empty output, not an error: git ls-tree --full-tree and jj
-// file list. An error resolving the tree itself propagates. jj prints the name
-// back verbatim and nothing at all for a path the base lacks, so only zero bytes
-// read as absence — trimming would read a file named " " as missing and diff its
-// hunks against an empty base.
+// file list. An error resolving the tree itself propagates. git's listing decodes
+// to records, so presence is a record count and never a byte comparison; jj
+// prints the name back verbatim and nothing at all for a path the base lacks, so
+// only zero bytes read as absence — trimming would read a file named " " as
+// missing and diff its hunks against an empty base.
 func fileInBase(ctx context.Context, kind vcs.Kind, path string) (bool, error) {
 	switch kind {
 	case vcs.Git:
-		out, err := render.RunCLI(ctx, "git", []string{"ls-tree", "--full-tree", "HEAD", "--", path})
+		records, err := vcs.GitTreeRecords(ctx, gitBaseTreeArgs(path))
 		if err != nil {
 			return false, fmt.Errorf("read base tree %s: %w", path, err)
 		}
-		return strings.TrimSpace(out) != "", nil
+		return len(records) > 0, nil
 	case vcs.JJ:
 		out, err := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "file", "list", "-r", "@-", "--", vcs.JJRootPattern(path)})
 		if err != nil {

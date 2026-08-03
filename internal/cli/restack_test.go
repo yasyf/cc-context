@@ -4,224 +4,17 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
-	"runtime"
-	"slices"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/vcs"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
-
-// writeRestackFakes installs fake gt, jj, and git executables into dir. Each
-// records its argv as a NUL-delimited record so tests can assert exact calls.
-func writeRestackFakes(t *testing.T, dir string, withGT bool) {
-	t.Helper()
-	log := func(name string) string {
-		return "{ printf '" + name + "\\0'; for a in \"$@\"; do printf '%s\\0' \"$a\"; done; printf '\\0'; } >> \"$RESTACK_LOG\"\n"
-	}
-	write := func(name, body string) {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
-			t.Fatalf("write fake %s: %v", name, err)
-		}
-	}
-
-	gt := "#!/bin/sh\n" + log("gt") + `DEFAULT_STATE='{"main":{"trunk":true},"feature":{"parents":[{"ref":"main"}]}}'
-SYNCED="$RESTACK_LOG.synced"
-case "$1" in
-  sync)
-    if [ -n "$RESTACK_GT_STDOUT" ]; then printf '%s\n' "$RESTACK_GT_STDOUT"; fi
-    if [ -n "$RESTACK_GT_KILL" ]; then kill -9 $$; fi
-    if [ -n "$RESTACK_GT_FAIL" ]; then
-      if [ -n "$RESTACK_GT_STDERR" ]; then printf '%s\n' "$RESTACK_GT_STDERR" >&2; fi
-      exit 1
-    fi
-    if [ -n "$RESTACK_GT_SKIP" ]; then printf '%s\n' "$RESTACK_GT_SKIP"; fi
-    if [ -n "$RESTACK_GT_SYNC_STDERR" ]; then printf '%s\n' "$RESTACK_GT_SYNC_STDERR" >&2; fi
-    : > "$SYNCED" ;;
-  state)
-    if [ -n "$RESTACK_GT_STATE_AFTER" ] && [ -f "$SYNCED" ]; then
-      printf '%s' "$RESTACK_GT_STATE_AFTER"
-    else
-      printf '%s' "${RESTACK_GT_STATE:-$DEFAULT_STATE}"
-    fi ;;
-  *) printf 'fake gt: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
-esac
-exit 0
-`
-	jj := "#!/bin/sh\n" + log("jj") + `if [ "$1" = --ignore-working-copy ]; then shift; fi
-case "$1 $2" in
-  "git fetch")
-    if [ -n "$RESTACK_JJ_FETCH_FAIL" ]; then printf 'jj fetch failed\n' >&2; exit 1; fi ;;
-  "log -r")
-    if [ -n "$RESTACK_JJ_LOG_FAIL" ]; then printf 'jj log failed\n' >&2; exit 1; fi
-    case "$3" in
-      "trunk()") for b in ${RESTACK_JJ_TRUNK_NAMES:-main}; do printf '"%s"\n' "$b"; done ;;
-      "trunk() & ::@")
-        if [ -n "$RESTACK_JJ_UP_TO_DATE" ]; then printf 'aaaaaaa trunk\n'; fi ;;
-      "trunk()..@") printf '%s' "${RESTACK_JJ_STACK:-bbbbbbb one
-ccccccc two
-}" ;;
-      "conflicts() & @::") printf '%s' "$RESTACK_JJ_CONFLICTS" ;;
-      *) printf 'fake jj: unmatched revset: %s\n' "$3" >&2; exit 2 ;;
-    esac ;;
-  "rebase -b")
-    if [ -n "$RESTACK_JJ_REBASE_FAIL" ]; then printf 'jj rebase failed\n' >&2; exit 1; fi ;;
-  "op log") printf 'op123abc' ;;
-  "op revert")
-    if [ -n "$RESTACK_JJ_REVERT_FAIL" ]; then printf 'jj op revert failed\n' >&2; exit 1; fi ;;
-  *) printf 'fake jj: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
-esac
-exit 0
-`
-	git := "#!/bin/sh\n" + log("git") + `if [ "$1" = --git-dir ]; then shift 2; fi
-case "$1 $2" in
-  "branch --show-current") printf '%s\n' "${RESTACK_GIT_BRANCH:-feature}" ;;
-  "worktree list")
-    for h in $RESTACK_HOLDERS; do printf 'worktree %s\000branch refs/heads/%s\000\000' "${h#*=}" "${h%%=*}"; done ;;
-  "config --get")
-    case "$3" in
-      ccx.nogt) if [ -n "$RESTACK_CONFIG_CCX_NOGT" ]; then printf '%s\n' "$RESTACK_CONFIG_CCX_NOGT"; else exit 1; fi ;;
-      branch.*.remote) if [ -n "$RESTACK_GIT_REMOTE" ]; then printf '%s\n' "$RESTACK_GIT_REMOTE"; else exit 1; fi ;;
-      *) printf 'fake git: unmatched config key: %s\n' "$3" >&2; exit 2 ;;
-    esac ;;
-  "symbolic-ref --short")
-    if [ -n "$RESTACK_GIT_SYMBOLIC_MISS" ]; then exit 1; fi
-    printf '%s/%s\n' "${RESTACK_GIT_REMOTE:-origin}" "${RESTACK_GIT_TRUNK:-main}" ;;
-  "show-ref --verify")
-    ref=$3; if [ "$3" = --quiet ]; then ref=$4; fi
-    case "$ref" in
-      */main) if [ "$RESTACK_GIT_MAIN_REF" = 1 ]; then exit 0; fi ;;
-      */master) if [ "$RESTACK_GIT_MASTER_REF" = 1 ]; then exit 0; fi ;;
-    esac
-    if [ "$3" = --quiet ]; then exit 1; fi
-    printf "fatal: '%s' - not a valid ref\n" "$ref" >&2; exit 128 ;;
-  "merge-base --is-ancestor")
-    case " $RESTACK_GIT_GONE_REFS " in
-      *" $4 "*) printf 'fatal: Not a valid object name %s\n' "$4" >&2; exit 128 ;;
-    esac
-    case "$4" in
-      HEAD) if [ -z "$RESTACK_GIT_UP_TO_DATE" ]; then exit 1; fi ;;
-      *) case " $RESTACK_GT_OFF_TRUNK " in *" $3 $4 "*) exit 1 ;; esac ;;
-    esac ;;
-  "rev-list --count") printf '2' ;;
-  "rebase --autostash")
-    if [ -n "$RESTACK_GIT_REBASE_CONFLICT" ]; then
-      printf 'CONFLICT (content): Merge conflict in conflict.txt\n' >&2
-      exit 1
-    fi ;;
-  "rev-parse --verify")
-    if [ "$4" = REBASE_HEAD ] && [ -n "$RESTACK_GIT_REBASE_CONFLICT" ]; then exit 0; fi
-    exit 1 ;;
-  "diff --name-only") printf 'conflict.txt\n' ;;
-  "rebase --abort") : ;;
-  "merge --ff-only") : ;;
-  *)
-    if [ "$1" = fetch ]; then
-      if [ -n "$RESTACK_GIT_FETCH_FAIL" ]; then printf 'git fetch failed\n' >&2; exit 1; fi
-    else
-      printf 'fake git: unmatched argv: %s\n' "$*" >&2
-      exit 2
-    fi ;;
-esac
-exit 0
-`
-
-	if withGT {
-		write("gt", gt)
-	}
-	write("jj", jj)
-	write("git", git)
-}
-
-func setupRestack(t *testing.T, marker string, graphite, withGT bool) string {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("fake shell scripts are POSIX-only")
-	}
-
-	dir := t.TempDir()
-	if marker != "" {
-		if err := os.MkdirAll(filepath.Join(dir, marker), 0o750); err != nil {
-			t.Fatalf("mkdir %s: %v", marker, err)
-		}
-	}
-	if graphite {
-		gitDir := filepath.Join(dir, ".git")
-		if err := os.MkdirAll(gitDir, 0o750); err != nil {
-			t.Fatalf("mkdir .git: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(gitDir, ".graphite_repo_config"), []byte("{}"), 0o600); err != nil {
-			t.Fatalf("write graphite config: %v", err)
-		}
-	}
-	binDir := filepath.Join(dir, "bin")
-	if err := os.Mkdir(binDir, 0o750); err != nil {
-		t.Fatalf("mkdir bin: %v", err)
-	}
-	writeRestackFakes(t, binDir, withGT)
-
-	old, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(old) })
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-
-	logPath := filepath.Join(dir, "restack.log")
-	t.Setenv("PATH", binDir)
-	// Root the cache under the test's own dir so the lane gate never reads or
-	// writes the developer's real ~/Library/Caches/cc-context.
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	t.Setenv("RESTACK_LOG", logPath)
-	if graphite {
-		seedLaneRecords(t, ".", laneSeed{})
-		// The gt lane resolves its verdict oracle from the remote-tracking trunk,
-		// which gt sync writes on every fetch; the git lane's tests own the
-		// absent-ref cases.
-		t.Setenv("RESTACK_GIT_MAIN_REF", "1")
-	}
-	return logPath
-}
-
-// restackWorktreeList is the BranchHolders read the gt preflight makes.
-func restackWorktreeList(t *testing.T) []string {
-	t.Helper()
-	return []string{"git", "--git-dir", filepath.Join(restackRoot(t), ".git"), "worktree", "list", "--porcelain", "-z", "--end-of-options"}
-}
-
-// restackRoot is the working copy root in the spelling git and vcs.Checkout both
-// canonicalize to.
-func restackRoot(t *testing.T) string {
-	t.Helper()
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	root, err := filepath.EvalSymlinks(cwd)
-	if err != nil {
-		t.Fatalf("resolve %s: %v", cwd, err)
-	}
-	return root
-}
-
-// seedRestackHolders hands the git fake a branch=worktree table, which its
-// worktree-list arm re-emits as the NUL-framed porcelain records
-// vcs.BranchHolders parses — the map is what the fake models, so a branch no
-// entry names is simply absent, as it is for a detached or bare checkout. It
-// travels as an environment variable the fake formats with builtins because PATH
-// holds only the fakes — there is no cat to read a file with.
-func seedRestackHolders(t *testing.T, holders map[string]string) {
-	t.Helper()
-	pairs := make([]string, 0, len(holders))
-	for _, branch := range slices.Sorted(maps.Keys(holders)) {
-		pairs = append(pairs, branch+"="+holders[branch])
-	}
-	t.Setenv("RESTACK_HOLDERS", strings.Join(pairs, " "))
-}
 
 func runRestackCmd(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
@@ -236,161 +29,590 @@ func runRestackCmd(t *testing.T, args ...string) (string, string, error) {
 	return strings.TrimSpace(out.String()), errOut.String(), err
 }
 
-func readRestackLog(t *testing.T, path string) [][]string {
+// restackRun runs a real tool in dir through the recording shim, failing the
+// test on a nonzero exit.
+func restackRun(t *testing.T, dir, bin string, args ...string) string {
 	t.Helper()
-	data, err := os.ReadFile(path)
+	cmd := exec.Command(bin, args...) //nolint:gosec // bin resolves through the fixture's own shim and args are test-authored
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("%s %v in %s: %v\n%s", bin, args, dir, err, stderr.String())
+	}
+	return stdout.String()
+}
+
+// restackRev resolves rev to a commit id, or "" when it names nothing.
+func restackRev(t *testing.T, dir, rev string) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", rev+"^{commit}") //nolint:gosec // fixed git argv; rev is a test literal and dir a fixture TempDir
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func restackWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func restackRead(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path) //nolint:gosec // path is the fixture's own temp tree
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
+
+// restackAdvanceRemote pushes one commit to the fixture's origin from a clone of
+// it, so the fixture's own refs/remotes/<remote>/<trunk> stays behind until
+// restack fetches — the state every "the remote moved" case needs, built without
+// touching the working copy under test.
+func restackAdvanceRemote(t *testing.T, f *vcstest.Fixture, trunk, file, content string) {
+	t.Helper()
+	clone := filepath.Join(t.TempDir(), "upstream")
+	restackRun(t, filepath.Dir(clone), "git", "clone", "-q", "--branch", trunk, f.RemoteDir, clone)
+	restackRun(t, clone, "git", "config", "user.email", "t@t.t")
+	restackRun(t, clone, "git", "config", "user.name", "t")
+	restackWrite(t, filepath.Join(clone, file), content)
+	restackRun(t, clone, "git", "add", file)
+	restackRun(t, clone, "git", "commit", "-qm", "upstream")
+	restackRun(t, clone, "git", "push", "-q", "origin", trunk)
+}
+
+// restackReset drops every argv record the test's own fixture work wrote, so an
+// invocation assertion sees only what restack itself ran.
+func restackReset(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	vcstest.Quiesce(t, f.ArgvLog)
+	restackWrite(t, f.ArgvLog, "")
+}
+
+// restackUndesignatedTrunk leaves the repository with no default branch a fetch
+// can designate for it: origin/HEAD is unset, and the remote's own HEAD names a
+// branch the remote does not have — which is what git 2.44 and later need,
+// since they write refs/remotes/origin/HEAD during any fetch that finds the
+// answer.
+func restackUndesignatedTrunk(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	restackRun(t, f.Dir, "git", "--git-dir", f.RemoteDir, "symbolic-ref", "HEAD", "refs/heads/absent")
+}
+
+// restackSiblingPath mints a path for a sibling working copy with its symlinks
+// resolved, the spelling git reports back out of worktree list and the one every
+// summary naming a holder has to match.
+func restackSiblingPath(t *testing.T, name string) string {
+	t.Helper()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp dir: %v", err)
+	}
+	return filepath.Join(base, name)
+}
+
+func restackInvocations(t *testing.T, f *vcstest.Fixture) [][]string {
+	t.Helper()
+	vcstest.Quiesce(t, f.ArgvLog)
+	return vcstest.Invocations(t, f.ArgvLog)
+}
+
+// assertNoRestackMutation fails when restack moved a ref or replayed a commit.
+// A refusal must leave the working copy exactly as it found it, which the
+// surviving HEAD alone cannot prove: a rebase that landed and was aborted also
+// ends where it started.
+func assertNoRestackMutation(t *testing.T, invocations [][]string) {
+	t.Helper()
+	for _, inv := range invocations {
+		if len(inv) < 2 {
+			continue
+		}
+		switch inv[0] + " " + inv[1] {
+		case "git merge", "git rebase", "git commit", "git switch", "git checkout", "jj rebase", "jj commit":
+			t.Errorf("repository mutated before restack refused: %v", inv)
+		}
+	}
+}
+
+func TestRestackGitRebasesOntoTrunk(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Branch("feature"))
+	restackWrite(t, filepath.Join(f.Dir, "feature.txt"), "feature\n")
+	restackRun(t, f.Dir, "git", "add", "feature.txt")
+	restackRun(t, f.Dir, "git", "commit", "-qm", "feature")
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+
+	out, _, err := runRestackCmd(t)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if want := "fetched · rebased onto main"; out != want {
+		t.Fatalf("output = %q, want %q", out, want)
+	}
+	if restackRev(t, f.Dir, "refs/remotes/origin/main") == "" {
+		t.Fatal("refs/remotes/origin/main missing after a fetch restack claims to have made")
+	}
+	if _, err := os.Stat(filepath.Join(f.Dir, "upstream.txt")); err != nil {
+		t.Errorf("stat upstream.txt: %v — the rebase did not replay onto the fetched trunk", err)
+	}
+	if got := strings.TrimSpace(restackRun(t, f.Dir, "git", "rev-list", "--count", "refs/remotes/origin/main..HEAD")); got != "1" {
+		t.Errorf("commits above trunk = %s, want 1 (the feature commit, replayed once)", got)
+	}
+	if got := strings.TrimSpace(restackRun(t, f.Dir, "git", "branch", "--show-current")); got != "feature" {
+		t.Errorf("branch = %q, want feature", got)
+	}
+}
+
+func TestRestackGitFastForwardsTrunk(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote())
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+
+	out, _, err := runRestackCmd(t)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if want := "fetched · fast-forwarded main"; out != want {
+		t.Fatalf("output = %q, want %q", out, want)
+	}
+	if local, remote := restackRev(t, f.Dir, "refs/heads/main"), restackRev(t, f.Dir, "refs/remotes/origin/main"); local != remote {
+		t.Errorf("main = %s, refs/remotes/origin/main = %s — the fast-forward did not land", local, remote)
+	}
+	if got := restackRead(t, filepath.Join(f.Dir, "upstream.txt")); got != "upstream\n" {
+		t.Errorf("upstream.txt = %q, want the fetched trunk's content", got)
+	}
+}
+
+func TestRestackGitAlreadyUpToDate(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote())
+	before := restackRev(t, f.Dir, "HEAD")
+	restackReset(t, f)
+
+	out, _, err := runRestackCmd(t)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if want := "fetched · already up to date"; out != want {
+		t.Fatalf("output = %q, want %q", out, want)
+	}
+	if after := restackRev(t, f.Dir, "HEAD"); after != before {
+		t.Errorf("HEAD moved from %s to %s on an up-to-date restack", before, after)
+	}
+	assertNoRestackMutation(t, restackInvocations(t, f))
+}
+
+// TestRestackGitTargetsTheQualifiedTrunkRef is the decoy case. git resolves a
+// short origin/main through refs/heads before refs/remotes, so a local branch
+// literally named origin/main answers merge-base and merge --ff-only in place of
+// the remote-tracking ref — measured on git 2.55.0, which warns on stderr and
+// exits 0. Here the decoy sits on the commit the working copy already has, so a
+// restack that consults it reports "already up to date" and leaves the fetched
+// trunk on the floor.
+func TestRestackGitTargetsTheQualifiedTrunkRef(t *testing.T) {
+	tests := []struct {
+		name   string
+		branch string
+		want   string
+	}{
+		{name: "on trunk", want: "fetched · fast-forwarded main"},
+		{name: "on a branch", branch: "feature", want: "fetched · rebased onto main"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := []vcstest.Opt{vcstest.Remote()}
+			if tt.branch != "" {
+				opts = append(opts, vcstest.Branch(tt.branch))
+			}
+			f := vcstest.Repo(t, opts...)
+			restackRun(t, f.Dir, "git", "branch", "origin/main", "HEAD")
+			restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+			decoy := restackRev(t, f.Dir, "refs/heads/origin/main")
+
+			out, _, err := runRestackCmd(t)
+			if err != nil {
+				t.Fatalf("restack: %v", err)
+			}
+			if out != tt.want {
+				t.Fatalf("output = %q, want %q — the decoy refs/heads/origin/main answered in place of the remote-tracking ref", out, tt.want)
+			}
+			if got := restackRead(t, filepath.Join(f.Dir, "upstream.txt")); got != "upstream\n" {
+				t.Errorf("upstream.txt = %q, want the fetched trunk's content", got)
+			}
+			if got := restackRev(t, f.Dir, "refs/heads/origin/main"); got != decoy {
+				t.Errorf("decoy branch moved from %s to %s — restack wrote to it", decoy, got)
+			}
+		})
+	}
+}
+
+// TestRestackGitRefusesUndesignatedTrunk pins the refusal that replaced the old
+// main/master guess. A remote added by git remote add sets no origin/HEAD, and
+// restack is a mutating command: merging onto a branch nobody designated is a
+// wrong target, so it names the one command that designates one instead.
+func TestRestackGitRefusesUndesignatedTrunk(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote(), vcstest.NoOriginHead())
+	restackUndesignatedTrunk(t, f)
+	before := restackRev(t, f.Dir, "HEAD")
+	restackReset(t, f)
+
+	_, _, err := runRestackCmd(t)
+	if err == nil {
+		t.Fatal("restack succeeded with no designated trunk, want a refusal")
+	}
+	if !errors.Is(err, vcs.ErrNoTrunk) {
+		t.Errorf("error = %v, want it to reach vcs.ErrNoTrunk", err)
+	}
+	want := "restack: refs/remotes/origin/HEAD: " + vcs.ErrNoTrunk.Error() + " — run git remote set-head origin -a"
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err, want)
+	}
+	if after := restackRev(t, f.Dir, "HEAD"); after != before {
+		t.Errorf("HEAD moved from %s to %s on a refusal", before, after)
+	}
+	assertNoRestackMutation(t, restackInvocations(t, f))
+}
+
+// TestRestackGitRefusesTrunkOutsideTheRemote separates a miss from a
+// misconfiguration: origin/HEAD may legally be pointed at any ref, and a target
+// outside refs/remotes/origin/ is an answer git gave, not an absent one — so it
+// must not reach ErrNoTrunk, which callers branch on.
+func TestRestackGitRefusesTrunkOutsideTheRemote(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote())
+	restackRun(t, f.Dir, "git", "tag", "v1")
+	restackRun(t, f.Dir, "git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/tags/v1")
+	restackReset(t, f)
+
+	_, _, err := runRestackCmd(t)
+	if err == nil {
+		t.Fatal("restack succeeded with origin/HEAD pointing at a tag, want a refusal")
+	}
+	if errors.Is(err, vcs.ErrNoTrunk) {
+		t.Errorf("error = %v, want a misconfiguration rather than a missing trunk", err)
+	}
+	if !strings.Contains(err.Error(), "refs/tags/v1") {
+		t.Errorf("error = %q, want it to name the ref origin/HEAD points at", err)
+	}
+	assertNoRestackMutation(t, restackInvocations(t, f))
+}
+
+func TestRestackGitRefusesDetachedHEAD(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Detached())
+	restackReset(t, f)
+
+	_, _, err := runRestackCmd(t)
+	if !errors.Is(err, errRestackDetached) {
+		t.Fatalf("error = %v, want errRestackDetached", err)
+	}
+	assertNoRestackMutation(t, restackInvocations(t, f))
+}
+
+// TestRestackGitConflictAbortsBackToTheStartingState drives a real conflicting
+// rebase: the branch and the trunk edit the same line, so git stops mid-replay
+// and ccx has to abort rather than leave the working copy in a rebase.
+func TestRestackGitConflictAbortsBackToTheStartingState(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Branch("feature"))
+	restackWrite(t, filepath.Join(f.Dir, "f.txt"), "feature\n")
+	restackRun(t, f.Dir, "git", "commit", "-qam", "feature")
+	restackAdvanceRemote(t, f, "main", "f.txt", "upstream\n")
+	before := restackRev(t, f.Dir, "HEAD")
+
+	_, _, err := runRestackCmd(t)
+	if err == nil {
+		t.Fatal("restack succeeded over a conflicting rebase, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "conflicts in: f.txt; aborted back to the pre-rebase state") {
+		t.Fatalf("error = %q, want it to name the conflicted file and the abort", err)
+	}
+	if !strings.HasPrefix(err.Error(), "restack: ") {
+		t.Errorf("error = %q, want the restack prefix — gitRebaseOnto is shared with ship", err)
+	}
+	if after := restackRev(t, f.Dir, "HEAD"); after != before {
+		t.Errorf("HEAD = %s, want the pre-rebase %s", after, before)
+	}
+	if restackRev(t, f.Dir, "REBASE_HEAD") != "" {
+		t.Error("a rebase is still in progress — the abort did not run")
+	}
+	if got := restackRead(t, filepath.Join(f.Dir, "f.txt")); got != "feature\n" {
+		t.Errorf("f.txt = %q, want the branch's own content back", got)
+	}
+	if status := restackRun(t, f.Dir, "git", "status", "--porcelain"); status != "" {
+		t.Errorf("status = %q, want a clean working copy after the abort", status)
+	}
+}
+
+func TestRestackJJAlreadyUpToDate(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.JJ(), vcstest.Remote())
+	before := strings.TrimSpace(restackRun(t, f.Dir, "jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id"))
+
+	out, _, err := runRestackCmd(t)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if want := "fetched · already up to date"; out != want {
+		t.Fatalf("output = %q, want %q", out, want)
+	}
+	after := strings.TrimSpace(restackRun(t, f.Dir, "jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id"))
+	if after != before {
+		t.Errorf("@- moved from %s to %s on an up-to-date restack", before, after)
+	}
+}
+
+func TestRestackJJRebasesOntoTrunk(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.JJ(), vcstest.Remote())
+	restackWrite(t, filepath.Join(f.Dir, "one.txt"), "one\n")
+	restackRun(t, f.Dir, "jj", "commit", "-m", "one")
+	restackWrite(t, filepath.Join(f.Dir, "two.txt"), "two\n")
+	restackRun(t, f.Dir, "jj", "commit", "-m", "two")
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+
+	out, _, err := runRestackCmd(t)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if want := "fetched · rebased 3 commit(s) onto main"; out != want {
+		t.Fatalf("output = %q, want %q", out, want)
+	}
+	if onTrunk := restackRun(t, f.Dir, "jj", "log", "-r", "trunk() & ::@", "--no-graph", "-T", "commit_id"); strings.TrimSpace(onTrunk) == "" {
+		t.Error("@ does not descend from trunk() — the rebase did not land")
+	}
+	for _, name := range []string{"upstream.txt", "one.txt", "two.txt"} {
+		if _, err := os.Stat(filepath.Join(f.Dir, name)); err != nil {
+			t.Errorf("stat %s: %v", name, err)
+		}
+	}
+}
+
+// TestRestackJJConflictRollsBack drives a real conflicting jj rebase. jj records
+// the conflict in the commit rather than stopping, so ccx has to detect it after
+// the fact and revert the operation — a rollback that has to leave the working
+// copy exactly where it was.
+func TestRestackJJConflictRollsBack(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.JJ(), vcstest.Remote())
+	restackWrite(t, filepath.Join(f.Dir, "f.txt"), "local\n")
+	restackRun(t, f.Dir, "jj", "commit", "-m", "local")
+	restackAdvanceRemote(t, f, "main", "f.txt", "upstream\n")
+
+	_, _, err := runRestackCmd(t)
+	if err == nil {
+		t.Fatal("restack succeeded over a conflicting rebase, want a refusal")
+	}
+	for _, want := range []string{
+		`restack: rebase onto "main" conflicts in`,
+		"rolled back to the pre-rebase state",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want substring %q", err, want)
+		}
+	}
+	if conflicts := restackRun(t, f.Dir, "jj", "log", "-r", "conflicts() & @::", "--no-graph", "-T", "commit_id"); strings.TrimSpace(conflicts) != "" {
+		t.Errorf("conflicts remain at %q — the rollback did not run", strings.TrimSpace(conflicts))
+	}
+	if onTrunk := restackRun(t, f.Dir, "jj", "log", "-r", "trunk() & ::@", "--no-graph", "-T", "commit_id"); strings.TrimSpace(onTrunk) != "" {
+		t.Error("@ descends from trunk() — the conflicted rebase was left in place")
+	}
+	if got := restackRead(t, filepath.Join(f.Dir, "f.txt")); got != "local\n" {
+		t.Errorf("f.txt = %q, want the pre-rebase content", got)
+	}
+}
+
+// TestRestackRefusalsCarryRestackPrefix pins each lane's refusal to restack's
+// own prefix: these helpers are shared with ship, and an error leading with
+// ship: sends the reader to a command they never ran.
+func TestRestackRefusalsCarryRestackPrefix(t *testing.T) {
+	tests := []struct {
+		name        string
+		opts        []vcstest.Opt
+		undesignate bool
+	}{
+		{name: "git lane", opts: []vcstest.Opt{vcstest.Remote(), vcstest.NoOriginHead()}, undesignate: true},
+		{name: "jj lane", opts: []vcstest.Opt{vcstest.JJ()}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := vcstest.Repo(t, tt.opts...)
+			if tt.undesignate {
+				restackUndesignatedTrunk(t, f)
+			}
+
+			_, _, err := runRestackCmd(t)
+			if err == nil {
+				t.Fatal("restack succeeded with no trunk to restack onto, want a refusal")
+			}
+			if !strings.HasPrefix(err.Error(), "restack: ") {
+				t.Errorf("error = %v, want it to lead with restack's own prefix", err)
+			}
+			if strings.Contains(err.Error(), "ship:") {
+				t.Errorf("error = %v, want restack's prefix, not ship's", err)
+			}
+		})
+	}
+}
+
+// restackGTRepo builds a real gt-tracked stack: one branch per name, each cut
+// from the last with a commit of its own and tracked by the real gt, which is
+// what answers gt state for the rest of the test.
+func restackGTRepo(t *testing.T, names ...string) *vcstest.Fixture {
+	t.Helper()
+	f := vcstest.Repo(t, vcstest.Remote(), vcstest.GT())
+	seedLaneRecords(t, ".", laneSeed{})
+	for _, name := range names {
+		restackRun(t, f.Dir, "git", "switch", "-qc", name)
+		restackWrite(t, filepath.Join(f.Dir, name+".txt"), name+"\n")
+		restackRun(t, f.Dir, "git", "add", name+".txt")
+		restackRun(t, f.Dir, "git", "commit", "-qm", name)
+		restackRun(t, f.Dir, "gt", "track", "-f", "--no-interactive")
+	}
+	return f
+}
+
+// restackGTSync puts a gt ahead of the fixture's shim that answers gt sync from
+// a recorded run and passes every other verb through to the real gt. sync is the
+// one verb that cannot run here — it resolves the repository through Graphite's
+// API — so its bytes come from the corpus rather than from a sentence anyone
+// wrote. effect, when set, is the shell the recorded sync stands for: the local
+// gt and git commands that leave behind the repository state the recorded run
+// described. It returns the log of every sync argv served.
+//
+// The golden arrives already loaded because loadGTGolden reads a path relative
+// to the package directory, which the fixture has already chdir'd out of.
+func restackGTSync(t *testing.T, f *vcstest.Fixture, g gtGolden, effect string) string {
+	t.Helper()
+	dir := t.TempDir()
+	stdout := filepath.Join(dir, "stdout")
+	stderr := filepath.Join(dir, "stderr")
+	syncLog := filepath.Join(dir, "sync.log")
+	restackWrite(t, stdout, g.stdout)
+	restackWrite(t, stderr, g.stderr)
+
+	body := ""
+	if effect != "" {
+		body = "  if ! ( " + effect + " ) >/dev/null 2>&1; then printf 'restack test: sync effect failed\\n' >&2; exit 99; fi\n"
+	}
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = sync ]; then\n" +
+		"  { for a in \"$@\"; do printf '%s\\0' \"$a\"; done; printf '\\0'; } >> '" + syncLog + "'\n" +
+		body +
+		"  cat '" + stdout + "'\n" +
+		"  cat '" + stderr + "' >&2\n" +
+		"  exit " + strconv.Itoa(g.exit) + "\n" +
+		"fi\n" +
+		"exec '" + filepath.Join(f.ShimBin, "gt") + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "gt"), []byte(script), 0o700); err != nil { //nolint:gosec // the interceptor must be owner-executable to serve as a PATH entry
+		t.Fatalf("write gt interceptor: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return syncLog
+}
+
+// restackSyncArgv reads the argv of every gt sync the interceptor served.
+func restackSyncArgv(t *testing.T, log string) [][]string {
+	t.Helper()
+	data, err := os.ReadFile(log) //nolint:gosec // log is the interceptor's own path under the test's TempDir
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
-		t.Fatalf("read restack log: %v", err)
+		t.Fatalf("read sync log: %v", err)
 	}
 	var records [][]string
 	for _, record := range bytes.Split(data, []byte{0, 0}) {
 		if len(record) == 0 {
 			continue
 		}
-		fields := bytes.Split(record, []byte{0})
-		row := make([]string, len(fields))
-		for i, field := range fields {
-			row[i] = string(field)
-		}
-		records = append(records, row)
+		fields := strings.Split(strings.TrimSuffix(string(record), "\x00"), "\x00")
+		records = append(records, fields)
 	}
 	return records
 }
 
-func requireRestackRecords(t *testing.T, path string, want [][]string) {
-	t.Helper()
-	got := readRestackLog(t, path)
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("argv records:\n got: %#v\nwant: %#v", got, want)
-	}
-}
+// TestRestackGTSyncArgv pins the one flag gt sync is given. --no-interactive has
+// no observable of its own — it only keeps gt from prompting at a terminal no
+// test has — so argv is the only place it can be held.
+func TestRestackGTSyncArgv(t *testing.T) {
+	g := loadGTGolden(t, "sync-quiet-exit0")
+	f := restackGTRepo(t, "feat")
+	syncLog := restackGTSync(t, f, g, "")
 
-func TestRestackGTSuccess(t *testing.T) {
-	logPath := setupRestack(t, ".git", true, true)
-
-	out, _, err := runRestackCmd(t)
-	if err != nil {
+	if _, _, err := runRestackCmd(t); err != nil {
 		t.Fatalf("restack: %v", err)
 	}
-	if out != "restacked 1 of 1 · trunk main" {
-		t.Fatalf("output = %q, want %q", out, "restacked 1 of 1 · trunk main")
-	}
-	requireRestackRecords(t, logPath, [][]string{
-		nogtProbe,
-		{"gt", "state"},
-		{"git", "branch", "--show-current"},
-		restackWorktreeList(t),
-		{"gt", "sync", "--no-interactive"},
-		{"gt", "state"},
-		{"git", "branch", "--show-current"},
-		{"git", "config", "--get", "branch.main.remote"},
-		{"git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/main"},
-		{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "feature"},
-	})
-}
-
-// TestRestackGTVerdictReadsTheSyncedStack pins the verdict to the stack gt sync
-// left behind. Sync deletes the branches whose PRs landed and reparents their
-// children, so a verdict over the pre-sync list asks git about a ref sync just
-// deleted — merge-base exits 128 there, failing a restack that worked.
-func TestRestackGTVerdictReadsTheSyncedStack(t *testing.T) {
-	logPath := setupRestack(t, ".git", true, true)
-	t.Setenv("RESTACK_GT_STATE", restackStackState)
-	// b merged: sync deletes it and reparents c onto a.
-	t.Setenv("RESTACK_GT_STATE_AFTER", `{"main":{"trunk":true},"a":{"parents":[{"ref":"main"}]},"c":{"parents":[{"ref":"a"}]}}`)
-	t.Setenv("RESTACK_GIT_GONE_REFS", "b")
-	t.Setenv("RESTACK_GIT_BRANCH", "c")
-
-	out, _, err := runRestackCmd(t)
-	if err != nil {
-		t.Fatalf("restack: %v", err)
-	}
-	if want := "restacked 2 of 2 · trunk main"; out != want {
-		t.Fatalf("output = %q, want %q", out, want)
-	}
-	for _, record := range readRestackLog(t, logPath) {
-		if record[0] == "git" && record[1] == "merge-base" && record[len(record)-1] == "b" {
-			t.Errorf("verdict probed %v — b is the branch sync deleted", record)
-		}
+	want := [][]string{{"sync", "--no-interactive"}}
+	if got := restackSyncArgv(t, syncLog); !reflect.DeepEqual(got, want) {
+		t.Fatalf("gt sync argv = %v, want %v", got, want)
 	}
 }
-
-// restackStackState tracks the stack c → b → a → main.
-const restackStackState = `{"main":{"trunk":true},"a":{"parents":[{"ref":"main"}]},"b":{"parents":[{"ref":"a"}]},"c":{"parents":[{"ref":"b"}]}}`
 
 func TestRestackGTPerBranchVerdict(t *testing.T) {
-	// offTrunk lists "<ref> <branch>" pairs git merge-base --is-ancestor answers
-	// no for, so a case pins which ref the verdict consulted, not just its answer.
 	tests := []struct {
 		name     string
-		branch   string
-		offTrunk string
-		gtSkip   string
+		golden   string
+		onTrunk  bool
+		advance  bool
 		want     string
+		wantLead string
 	}{
 		{
-			name:   "whole stack landed on trunk",
-			branch: "c",
-			want:   "restacked 3 of 3 · trunk main",
+			name:   "the stack landed on trunk",
+			golden: "sync-quiet-exit0",
+			want:   "restacked 1 of 1 · trunk main",
 		},
 		{
-			name:     "one branch never reached trunk",
-			branch:   "c",
-			offTrunk: "refs/remotes/origin/main b",
-			want:     "restacked 2 of 3 · trunk main · skipped b",
-		},
-		{
-			name:     "gt named the working copy that blocked it",
-			branch:   "c",
-			offTrunk: "refs/remotes/origin/main b",
-			gtSkip:   "Did not restack branch b because it is checked out in worktree /w/b",
-			want:     "restacked 2 of 3 · trunk main · skipped b (checked out in /w/b)",
-		},
-		{
-			name:   "gt skipped a branch outside this stack",
-			branch: "c",
-			gtSkip: "Did not restack branch zz because it is checked out in worktree /w/zz",
-			want:   "restacked 3 of 3 · trunk main · skipped zz (checked out in /w/zz)",
-		},
-		{
-			name:   "gt declined a branch trunk is already an ancestor of",
-			branch: "c",
-			gtSkip: "Did not restack branch b because it is checked out in worktree /w/b",
-			want:   "restacked 2 of 3 · trunk main · skipped b (checked out in /w/b; already on refs/remotes/origin/main)",
+			name:    "a branch the sync left behind trunk",
+			golden:  "sync-quiet-exit0",
+			advance: true,
+			want:    "restacked 0 of 1 · trunk main · skipped feat",
 		},
 		{
 			name:   "gt declined a frozen branch already on trunk",
-			branch: "c",
-			gtSkip: "Did not restack branch b because it is frozen.",
-			want:   "restacked 2 of 3 · trunk main · skipped b (frozen; already on refs/remotes/origin/main)",
+			golden: "restack-frozen",
+			want:   "restacked 0 of 1 · trunk main · skipped feat (frozen; already on main)",
 		},
 		{
-			name:     "gt declined a branch mid-merge that never reached trunk",
-			branch:   "c",
-			offTrunk: "refs/remotes/origin/main b",
-			gtSkip:   "Did not restack branch b because it is merging.",
-			want:     "restacked 2 of 3 · trunk main · skipped b (merging)",
+			name:    "gt declined a frozen branch that never reached trunk",
+			golden:  "restack-frozen",
+			advance: true,
+			want:    "restacked 0 of 1 · trunk main · skipped feat (frozen)",
 		},
 		{
-			name:   "on trunk, nothing to restack",
-			branch: "main",
-			want:   "synced · trunk main",
+			name:     "gt named the working copy that blocked it",
+			golden:   "restack-worktree-held",
+			advance:  true,
+			wantLead: "restacked 0 of 1 · trunk main · skipped feat (checked out in /",
+		},
+		{
+			name:    "on trunk, nothing to restack",
+			golden:  "sync-quiet-exit0",
+			onTrunk: true,
+			want:    "synced · trunk main",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setupRestack(t, ".git", true, true)
-			t.Setenv("RESTACK_GT_STATE", restackStackState)
-			t.Setenv("RESTACK_GIT_BRANCH", tt.branch)
-			t.Setenv("RESTACK_GT_OFF_TRUNK", tt.offTrunk)
-			t.Setenv("RESTACK_GT_SKIP", tt.gtSkip)
+			g := loadGTGolden(t, tt.golden)
+			f := restackGTRepo(t, "feat")
+			if tt.advance {
+				restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+				restackRun(t, f.Dir, "git", "fetch", "-q", "origin")
+			}
+			if tt.onTrunk {
+				restackRun(t, f.Dir, "git", "switch", "-q", "main")
+			}
+			restackGTSync(t, f, g, "")
 
 			out, _, err := runRestackCmd(t)
 			if err != nil {
 				t.Fatalf("restack: %v", err)
+			}
+			if tt.wantLead != "" {
+				if !strings.HasPrefix(out, tt.wantLead) {
+					t.Fatalf("output = %q, want it to lead with %q", out, tt.wantLead)
+				}
+				return
 			}
 			if out != tt.want {
 				t.Fatalf("output = %q, want %q", out, tt.want)
@@ -399,33 +621,51 @@ func TestRestackGTPerBranchVerdict(t *testing.T) {
 	}
 }
 
+// TestRestackGTVerdictReadsTheSyncedStack pins the verdict to the stack gt sync
+// left behind. Sync deletes the branches whose PRs landed and reparents their
+// children, so a verdict over the pre-sync list asks git about a ref sync just
+// deleted — merge-base exits 128 there, failing a restack that worked. The
+// interceptor performs that deletion with gt's own local verbs, so the state the
+// second gt state reads is one real gt wrote.
+func TestRestackGTVerdictReadsTheSyncedStack(t *testing.T) {
+	g := loadGTGolden(t, "sync-quiet-exit0")
+	f := restackGTRepo(t, "a", "b")
+	restackGTSync(t, f, g,
+		"gt move --onto main --no-interactive && gt untrack a --no-interactive && git branch -D a")
+
+	out, _, err := runRestackCmd(t)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if want := "restacked 1 of 1 · trunk main"; out != want {
+		t.Fatalf("output = %q, want %q", out, want)
+	}
+	for _, inv := range restackInvocations(t, f) {
+		if len(inv) > 1 && inv[0] == "git" && inv[1] == "merge-base" && inv[len(inv)-1] == "a" {
+			t.Errorf("verdict probed %v — a is the branch the sync deleted", inv)
+		}
+	}
+}
+
 // TestRestackGTSurfacesSyncDiagnostics covers the half of a sync stdout alone
 // cannot see. gt 1.8.6 splits one exit-0 sync across both streams — the phase
 // banners on stdout, severity-led lines on stderr — so a restack it declined
 // leaves the summary reporting the stack as behind with nothing saying why. The
-// warning and tips rows drive the fake with recorded stderr rather than a
-// literal, so re-recording gt carries them: sync-decline-unstaged-exit0 is the
-// exit-0 decline whose explanation is on stderr alone, and sync-tips-exit0 is
-// the same stream shape carrying no severity line at all. The remediation rides
-// out with the warnings — the unprefixed sentence gt puts a blank line below
-// them is the only thing telling the user what to run — and the tips row is the
-// other half of that bargain, unreported for want of a severity line above it.
-// Exit 0 stays a success, since the remote-trunk oracle already reports the
-// stack correctly; the lines explain that report rather than override gt.
+// remediation rides out with the warnings: the unprefixed sentence gt puts a
+// blank line below them is the only thing telling the user what to run. Tips are
+// unprefixed stderr too, and are the gate's negative case — reporting them would
+// make every fresh install noisy. Exit 0 stays a success, since the
+// remote-trunk oracle already reports the stack correctly.
 func TestRestackGTSurfacesSyncDiagnostics(t *testing.T) {
-	declined := loadGTGolden(t, "sync-decline-unstaged-exit0").stderr
-	tips := loadGTGolden(t, "sync-tips-exit0").stderr
 	tests := []struct {
 		name    string
-		stderr  string
-		want    string
+		golden  string
 		wantErr []string
 		denyErr []string
 	}{
 		{
 			name:   "the warnings gt exited 0 on still reach the user",
-			stderr: declined,
-			want:   "restacked 1 of 1 · trunk main",
+			golden: "sync-decline-unstaged-exit0",
 			wantErr: []string{
 				"WARNING: Did not restack checked out branch feat due to conflicting unstaged changes.",
 				"WARNING: feat could not be restacked cleanly.",
@@ -434,29 +674,22 @@ func TestRestackGTSurfacesSyncDiagnostics(t *testing.T) {
 		},
 		{
 			name:    "tips alone leave the report silent",
-			stderr:  tips,
-			want:    "restacked 1 of 1 · trunk main",
+			golden:  "sync-tips-exit0",
 			denyErr: []string{"tip:", "gt undo", "sync.explanation"},
-		},
-		{
-			name: "a decline is read off whichever stream carried it",
-			// gt 1.8.6 was observed putting declines on stdout; the parser is fed
-			// both so which stream carries one is not a fact the summary depends on.
-			stderr: "Did not restack branch zz because it is frozen.",
-			want:   "restacked 1 of 1 · trunk main · skipped zz (frozen)",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setupRestack(t, ".git", true, true)
-			t.Setenv("RESTACK_GT_SYNC_STDERR", tt.stderr)
+			g := loadGTGolden(t, tt.golden)
+			f := restackGTRepo(t, "feat")
+			restackGTSync(t, f, g, "")
 
 			out, errOut, err := runRestackCmd(t)
 			if err != nil {
 				t.Fatalf("restack: %v", err)
 			}
-			if out != tt.want {
-				t.Fatalf("output = %q, want %q", out, tt.want)
+			if want := "restacked 1 of 1 · trunk main"; out != want {
+				t.Fatalf("output = %q, want %q", out, want)
 			}
 			for _, want := range tt.wantErr {
 				if !strings.Contains(errOut, want) {
@@ -477,9 +710,9 @@ func TestRestackGTSurfacesSyncDiagnostics(t *testing.T) {
 // streams to the writer as they are produced, so a diagnostic pass there would
 // print every line the user just watched a second time.
 func TestRestackGTStreamedSyncPrintsDiagnosticsOnce(t *testing.T) {
-	setupRestack(t, ".git", true, true)
-	line := "WARNING: Did not restack checked out branch feature due to conflicting unstaged changes."
-	t.Setenv("RESTACK_GT_SYNC_STDERR", line)
+	g := loadGTGolden(t, "sync-decline-exit0")
+	f := restackGTRepo(t, "feat")
+	restackGTSync(t, f, g, "")
 	old := shipStreamCI
 	t.Cleanup(func() { shipStreamCI = old })
 	shipStreamCI = func(io.Writer) bool { return true }
@@ -488,73 +721,132 @@ func TestRestackGTStreamedSyncPrintsDiagnosticsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restack: %v", err)
 	}
-	if out != "restacked 1 of 1 · trunk main" {
-		t.Fatalf("output = %q", out)
+	if want := "restacked 1 of 1 · trunk main"; out != want {
+		t.Fatalf("output = %q, want %q", out, want)
 	}
+	line := "WARNING: feat could not be restacked cleanly."
 	if got := strings.Count(errOut, line); got != 1 {
 		t.Fatalf("diagnostic printed %d times in %q, want exactly 1", got, errOut)
 	}
 }
 
-// TestRestackGTVerdictProbesTheQualifiedTrunkRef pins the ref spelling the
-// ancestry probe receives. git resolves a short origin/main through refs/tags
-// and refs/heads before refs/remotes, so a local branch or tag of that name
-// answers merge-base in place of the ref show-ref verified — measured on git
-// 2.55.0, where a decoy refs/heads/origin/main flipped
-// `merge-base --is-ancestor origin/main feature` from exit 1 to exit 0 while
-// only warning on stderr. The verdict would have counted a stack that never
-// moved as restacked.
-func TestRestackGTVerdictProbesTheQualifiedTrunkRef(t *testing.T) {
-	logPath := setupRestack(t, ".git", true, true)
+// TestRestackGTFailures pins the classifier to gt's own streams. The conflict
+// banner rides stdout with stderr empty, while the auth refusal drives stderr
+// instead, so the two together prove neither stream alone is enough. The last
+// rows are sentences this package recognizes nothing in, where the default arm
+// must carry gt's own words through verbatim. Every row also asserts gt's
+// failure survives the advice that replaces its sentence, and that a failed sync
+// leaves the working copy where it was.
+func TestRestackGTFailures(t *testing.T) {
+	tests := []struct {
+		name   string
+		golden string
+		line   string
+		want   string
+	}{
+		{
+			name:   "conflict",
+			golden: "restack-conflict",
+			line:   "Hit conflict restacking feat on main.",
+			want:   "restack: conflict — resolve the listed files, then gt continue (or gt abort); see the output above",
+		},
+		{
+			name:   "expired auth",
+			golden: "sync-auth-invalid",
+			line:   "ERROR: Your Graphite auth token is invalid/expired.",
+			want:   "restack: graphite auth required — run gt auth",
+		},
+		{
+			name:   "unrecognized failure carries gt's own words",
+			golden: "sync-no-remote",
+			line:   "ERROR: Could not determine the name of this repo",
+		},
+		{
+			name:   "blocked during a rebase",
+			golden: "restack-blocked-during-rebase",
+			line:   "ERROR: This operation is blocked during a rebase.",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := loadGTGolden(t, tt.golden)
+			f := restackGTRepo(t, "feat")
+			restackGTSync(t, f, g, "")
+			before := restackRev(t, f.Dir, "HEAD")
 
-	if _, _, err := runRestackCmd(t); err != nil {
-		t.Fatalf("restack: %v", err)
-	}
-	probed := 0
-	for _, record := range readRestackLog(t, logPath) {
-		if len(record) < 4 || record[0] != "git" || record[1] != "merge-base" {
-			continue
-		}
-		probed++
-		if record[3] != "refs/remotes/origin/main" {
-			t.Errorf("ancestry probe asked %q, want the fully qualified refs/remotes/origin/main", record[3])
-		}
-	}
-	if probed == 0 {
-		t.Fatal("no ancestry probe ran — the test proves nothing")
+			_, _, err := runRestackCmd(t)
+			if err == nil {
+				t.Fatal("restack succeeded on a failed sync, want failure")
+			}
+			var gerr *gtError
+			if !errors.As(err, &gerr) {
+				t.Fatalf("error = %q, want gt's own failure reachable through errors.As", err)
+			}
+			if !strings.Contains(gerr.Output, tt.line) {
+				t.Fatalf("gtError.Output = %q, want it to carry gt's line %q", gerr.Output, tt.line)
+			}
+			switch {
+			case tt.want != "":
+				if err.Error() != tt.want {
+					t.Fatalf("error = %q, want %q", err, tt.want)
+				}
+			default:
+				if want := "restack: " + gerr.Error(); err.Error() != want {
+					t.Fatalf("error = %q, want gt's failure wrapped verbatim as %q", err, want)
+				}
+			}
+			if after := restackRev(t, f.Dir, "HEAD"); after != before {
+				t.Errorf("HEAD moved from %s to %s on a failed sync", before, after)
+			}
+		})
 	}
 }
 
-// TestRestackGTMeasuresTheRemoteTrunk pins the decline-free stale-trunk path.
-// gt sync writes refs/remotes/origin/main from its fetch and only then tries to
-// move the local branch; when that second step fails — a sibling working copy
-// holding trunk with conflicting unstaged changes, measured against gt 1.8.6 —
-// gt exits 0, declines nothing, and leaves the local ref behind the remote. A
-// verdict that asks the local ref calls a stack that never moved current.
-func TestRestackGTMeasuresTheRemoteTrunk(t *testing.T) {
-	logPath := setupRestack(t, ".git", true, true)
-	t.Setenv("RESTACK_GT_STATE", restackStackState)
-	t.Setenv("RESTACK_GIT_BRANCH", "c")
-	t.Setenv("RESTACK_GT_OFF_TRUNK", "refs/remotes/origin/main a refs/remotes/origin/main b refs/remotes/origin/main c")
+// TestRestackGTRefusesMissingRemoteTrunk pins the verdict's own precondition: it
+// measures the stack against the remote-tracking trunk, so a repository that has
+// none is a refusal rather than a verdict measured against whatever the name
+// resolves to locally.
+func TestRestackGTRefusesMissingRemoteTrunk(t *testing.T) {
+	g := loadGTGolden(t, "sync-quiet-exit0")
+	f := restackGTRepo(t, "feat")
+	restackRun(t, f.Dir, "git", "update-ref", "-d", "refs/remotes/origin/main")
+	restackGTSync(t, f, g, "")
 
-	out, _, err := runRestackCmd(t)
-	if err != nil {
-		t.Fatalf("restack: %v", err)
+	_, _, err := runRestackCmd(t)
+	if err == nil {
+		t.Fatal("restack succeeded without a remote-tracking trunk, want a refusal")
 	}
-	want := "restacked 0 of 3 · trunk main · skipped c, b, a"
-	if out != want {
-		t.Fatalf("output = %q, want %q", out, want)
+	if !errors.Is(err, vcs.ErrNoTrunk) {
+		t.Errorf("error = %v, want it to reach vcs.ErrNoTrunk", err)
 	}
-	for _, branch := range []string{"a", "b", "c"} {
-		found := false
-		for _, record := range readRestackLog(t, logPath) {
-			if reflect.DeepEqual(record, []string{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", branch}) {
-				found = true
-			}
-		}
-		if !found {
-			t.Fatalf("no ancestry check of %s against refs/remotes/origin/main — the verdict asked the local trunk ref", branch)
-		}
+	want := "restack: refs/remotes/origin/main: " + vcs.ErrNoTrunk.Error() + " — run git fetch origin main"
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err, want)
+	}
+}
+
+// TestRestackGTRefusesBranchHeldElsewhere pins the preflight. git will not move a
+// branch a sibling checkout holds, so gt skips it and still exits 0; refusing
+// first is the only way the user learns which working copy to go to. The sync
+// log proves the refusal landed before gt ran, which the final state cannot
+// show.
+func TestRestackGTRefusesBranchHeldElsewhere(t *testing.T) {
+	g := loadGTGolden(t, "sync-quiet-exit0")
+	f := restackGTRepo(t, "a", "b")
+	held := restackSiblingPath(t, "held")
+	restackRun(t, f.Dir, "git", "worktree", "add", "-q", held, "a")
+	syncLog := restackGTSync(t, f, g, "")
+
+	_, _, err := runRestackCmd(t)
+	if err == nil {
+		t.Fatal("restack succeeded, want a refusal naming the holder")
+	}
+	want := "restack: a is checked out in " + held + " — gt cannot restack a branch another working copy holds; restack from there, or release it first"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+	if got := restackSyncArgv(t, syncLog); got != nil {
+		t.Errorf("gt sync ran %v — the preflight must refuse before it does", got)
 	}
 }
 
@@ -562,499 +854,75 @@ func TestRestackGTMeasuresTheRemoteTrunk(t *testing.T) {
 // summary otherwise withholds. gt declines nothing when it cannot pull a held
 // trunk, so the stack reads as behind with no cause attached; the holder is the
 // cause, and BranchHolders already has it. It names only a holder git reports —
-// an unheld trunk, and one this working copy holds, both stay silent rather than
-// assert a working copy that is not there.
+// an unheld trunk stays silent rather than assert a working copy that is not
+// there.
 func TestRestackGTNamesTheWorkingCopyHoldingTrunk(t *testing.T) {
 	tests := []struct {
-		name    string
-		holders map[string]string
-		want    string
+		name string
+		held bool
 	}{
-		{
-			name:    "a sibling working copy holds trunk",
-			holders: map[string]string{"main": "/w/trunk"},
-			want:    "restacked 0 of 3 · trunk main (checked out in /w/trunk) · skipped c, b, a",
-		},
-		{
-			name: "git names no holder for trunk",
-			want: "restacked 0 of 3 · trunk main · skipped c, b, a",
-		},
+		{name: "a sibling working copy holds trunk", held: true},
+		{name: "git names no holder for trunk"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setupRestack(t, ".git", true, true)
-			t.Setenv("RESTACK_GT_STATE", restackStackState)
-			t.Setenv("RESTACK_GIT_BRANCH", "c")
-			t.Setenv("RESTACK_GT_OFF_TRUNK", "refs/remotes/origin/main a refs/remotes/origin/main b refs/remotes/origin/main c")
-			if tt.holders != nil {
-				seedRestackHolders(t, tt.holders)
+			g := loadGTGolden(t, "sync-quiet-exit0")
+			f := restackGTRepo(t, "feat")
+			restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+			restackRun(t, f.Dir, "git", "fetch", "-q", "origin")
+			want := "restacked 0 of 1 · trunk main · skipped feat"
+			if tt.held {
+				held := restackSiblingPath(t, "trunk")
+				restackRun(t, f.Dir, "git", "worktree", "add", "-q", held, "main")
+				want = "restacked 0 of 1 · trunk main (checked out in " + held + ") · skipped feat"
 			}
+			restackGTSync(t, f, g, "")
 
 			out, _, err := runRestackCmd(t)
 			if err != nil {
 				t.Fatalf("restack: %v", err)
 			}
-			if out != tt.want {
-				t.Fatalf("output = %q, want %q", out, tt.want)
+			if out != want {
+				t.Fatalf("output = %q, want %q", out, want)
 			}
 		})
 	}
+}
 
-	t.Run("this working copy holds trunk", func(t *testing.T) {
-		setupRestack(t, ".git", true, true)
-		t.Setenv("RESTACK_GT_STATE", restackStackState)
-		t.Setenv("RESTACK_GIT_BRANCH", "c")
-		t.Setenv("RESTACK_GT_OFF_TRUNK", "refs/remotes/origin/main a refs/remotes/origin/main b refs/remotes/origin/main c")
-		seedRestackHolders(t, map[string]string{"main": restackRoot(t)})
+func TestRestackGraphiteFirst(t *testing.T) {
+	t.Run("colocated routes to gt", func(t *testing.T) {
+		g := loadGTGolden(t, "sync-quiet-exit0")
+		f := restackGTRepo(t, "feat")
+		restackGTSync(t, f, g, "")
 
 		out, _, err := runRestackCmd(t)
 		if err != nil {
 			t.Fatalf("restack: %v", err)
 		}
-		want := "restacked 0 of 3 · trunk main · skipped c, b, a"
-		if out != want {
+		if want := "restacked 1 of 1 · trunk main"; out != want {
 			t.Fatalf("output = %q, want %q", out, want)
 		}
 	})
-}
 
-func TestRestackGTRefusesMissingRemoteTrunk(t *testing.T) {
-	setupRestack(t, ".git", true, true)
-	t.Setenv("RESTACK_GIT_MAIN_REF", "")
-
-	_, _, err := runRestackCmd(t)
-	if err == nil {
-		t.Fatal("restack succeeded without a remote-tracking trunk, want a refusal")
-	}
-	want := "restack: refs/remotes/origin/main does not exist — run git fetch origin main"
-	if err.Error() != want {
-		t.Fatalf("error = %q, want %q", err, want)
-	}
-}
-
-func TestRestackGTRefusesBranchHeldElsewhere(t *testing.T) {
-	logPath := setupRestack(t, ".git", true, true)
-	t.Setenv("RESTACK_GT_STATE", restackStackState)
-	t.Setenv("RESTACK_GIT_BRANCH", "c")
-	seedRestackHolders(t, map[string]string{"c": restackRoot(t), "b": "/w/b"})
-
-	_, _, err := runRestackCmd(t)
-	if err == nil {
-		t.Fatal("restack succeeded, want a refusal naming the holder")
-	}
-	want := "restack: b is checked out in /w/b — gt cannot restack a branch another working copy holds; restack from there, or release it first"
-	if err.Error() != want {
-		t.Fatalf("error = %q, want %q", err, want)
-	}
-	requireRestackRecords(t, logPath, [][]string{
-		nogtProbe,
-		{"gt", "state"},
-		{"git", "branch", "--show-current"},
-		restackWorktreeList(t),
-	})
-}
-
-func TestRestackGTRunsWhenThisWorkingCopyHoldsTheStack(t *testing.T) {
-	setupRestack(t, ".git", true, true)
-	seedRestackHolders(t, map[string]string{"feature": restackRoot(t)})
-
-	out, _, err := runRestackCmd(t)
-	if err != nil {
-		t.Fatalf("restack: %v", err)
-	}
-	if out != "restacked 1 of 1 · trunk main" {
-		t.Fatalf("output = %q, want %q", out, "restacked 1 of 1 · trunk main")
-	}
-}
-
-// TestRestackGTFailures pins the classifier to gt's own streams. The conflict
-// banner rides stdout with stderr empty — reproduced twice against gt 1.8.6.
-// The auth rows drive stderr instead, so the two together prove neither stream
-// alone is enough. The last two rows are the sentences gt 1.8.6 prints for a
-// trunk it could not move — a dirty worktree holding it, and a local trunk
-// diverged from remote — both exit 1 under --no-interactive without --force,
-// where the classifier's default arm must carry them through verbatim; the
-// trailing space is splog's, from an error template that always appends one.
-// Every row also asserts gt's failure survives the advice that replaces its
-// sentence.
-func TestRestackGTFailures(t *testing.T) {
-	tests := []struct {
-		name   string
-		stdout string
-		stderr string
-		want   string
-		exact  bool
-	}{
-		{
-			name:   "conflict",
-			stdout: "Hit conflict restacking branch feature",
-			want:   "restack: conflict — resolve the listed files, then gt continue (or gt abort); see the output above",
-			exact:  true,
-		},
-		{
-			name:   "auth required",
-			stderr: "Please authenticate your Graphite CLI",
-			want:   "restack: graphite auth required — run gt auth",
-			exact:  true,
-		},
-		{
-			name:   "expired auth",
-			stderr: "Your Graphite auth token is invalid/expired",
-			want:   "restack: graphite auth required — run gt auth",
-			exact:  true,
-		},
-		{
-			name:   "trunk held dirty",
-			stderr: "ERROR: Cannot pull trunk due to conflicting unstaged changes. ",
-			want:   "ERROR: Cannot pull trunk due to conflicting unstaged changes.",
-		},
-		{
-			name:   "trunk diverged",
-			stderr: "WARNING: main could not be fast-forwarded.",
-			want:   "WARNING: main could not be fast-forwarded.",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			logPath := setupRestack(t, ".git", true, true)
-			t.Setenv("RESTACK_GT_FAIL", "1")
-			t.Setenv("RESTACK_GT_STDOUT", tt.stdout)
-			t.Setenv("RESTACK_GT_STDERR", tt.stderr)
-
-			_, _, err := runRestackCmd(t)
-			if err == nil {
-				t.Fatal("restack succeeded, want failure")
-			}
-			if tt.exact && err.Error() != tt.want {
-				t.Fatalf("error = %q, want %q", err, tt.want)
-			}
-			if !tt.exact && !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("error = %q, want substring %q", err, tt.want)
-			}
-			var gerr *gtError
-			if !errors.As(err, &gerr) {
-				t.Fatalf("error = %q, want gt's own failure reachable through errors.As", err)
-			}
-			if line := tt.stdout + tt.stderr; !strings.Contains(gerr.Output, line) {
-				t.Fatalf("gtError.Output = %q, want it to carry gt's line %q", gerr.Output, line)
-			}
-			requireRestackRecords(t, logPath, [][]string{
-				nogtProbe,
-				{"gt", "state"},
-				{"git", "branch", "--show-current"},
-				restackWorktreeList(t),
-				{"gt", "sync", "--no-interactive"},
-			})
-		})
-	}
-}
-
-// TestRestackGTClassifiesWhatGTPrinted separates the two channels a classifier
-// could read. gt prints its conflict banner and is then killed, so the error
-// carries only the signal while the run's output carries the banner: a
-// classifier reading the error's prose — which is string-matching an error, the
-// thing this package does not do — recovers nothing, while one reading the run's
-// own output still hands back the recovery step.
-func TestRestackGTClassifiesWhatGTPrinted(t *testing.T) {
-	setupRestack(t, ".git", true, true)
-	t.Setenv("RESTACK_GT_STDOUT", "Hit conflict restacking branch feature")
-	t.Setenv("RESTACK_GT_KILL", "1")
-
-	_, _, err := runRestackCmd(t)
-	if err == nil {
-		t.Fatal("restack succeeded on a killed gt, want the conflict advice")
-	}
-	want := "restack: conflict — resolve the listed files, then gt continue (or gt abort); see the output above"
-	if err.Error() != want {
-		t.Fatalf("error = %q, want %q", err, want)
-	}
-}
-
-func TestRestackHelperFailuresCarryRestackPrefix(t *testing.T) {
-	t.Run("gt lane", func(t *testing.T) {
-		setupRestack(t, ".git", true, true)
-		t.Setenv("RESTACK_GT_STATE", "not json")
-
-		_, _, err := runRestackCmd(t)
-		if err == nil {
-			t.Fatal("restack succeeded on unparseable gt state, want failure")
-		}
-		if !strings.HasPrefix(err.Error(), "restack: parse gt state:") {
-			t.Errorf("error = %v, want it to lead with restack's own prefix", err)
-		}
-		if strings.Contains(err.Error(), "ship:") {
-			t.Errorf("error = %v, want restack's prefix, not ship's", err)
-		}
-	})
-
-	t.Run("jj lane", func(t *testing.T) {
-		setupRestack(t, ".jj", false, false)
-		t.Setenv("RESTACK_JJ_LOG_FAIL", "1")
-
-		_, _, err := runRestackCmd(t)
-		if err == nil {
-			t.Fatal("restack succeeded on a failed jj log, want failure")
-		}
-		if !strings.HasPrefix(err.Error(), "restack: jj trunk bookmark:") {
-			t.Errorf("error = %v, want it to lead with restack's own prefix", err)
-		}
-		if strings.Contains(err.Error(), "ship:") {
-			t.Errorf("error = %v, want restack's prefix, not ship's", err)
-		}
-	})
-}
-
-func TestRestackGraphiteFirst(t *testing.T) {
-	t.Run("colocated routes to gt", func(t *testing.T) {
-		logPath := setupRestack(t, ".jj", true, true)
-
-		if _, _, err := runRestackCmd(t); err != nil {
-			t.Fatalf("restack: %v", err)
-		}
-		records := readRestackLog(t, logPath)
-		if len(records) < 2 || records[1][0] != "gt" {
-			t.Fatalf("argv after the lane gate = %#v, want a gt command (routed to the gt lane, not jj)", records)
-		}
-	})
-
-	t.Run("no gt routes to jj", func(t *testing.T) {
-		logPath := setupRestack(t, ".jj", true, true)
+	t.Run("no gt routes to the vcs lane", func(t *testing.T) {
+		f := restackGTRepo(t, "feat")
+		restackReset(t, f)
 
 		out, _, err := runRestackCmd(t, "--no-gt")
 		if err != nil {
 			t.Fatalf("restack --no-gt: %v", err)
 		}
-		if out != "fetched · rebased 2 commit(s) onto main" {
-			t.Fatalf("output = %q", out)
+		if want := "fetched · already up to date"; out != want {
+			t.Fatalf("output = %q, want %q", out, want)
 		}
-		for _, record := range readRestackLog(t, logPath) {
-			if record[0] == "gt" {
-				t.Fatalf("gt invoked under --no-gt: %#v", record)
-			}
-		}
+		assertNoGT(t, restackInvocations(t, f))
 	})
-}
-
-func TestRestackJJRebase(t *testing.T) {
-	logPath := setupRestack(t, ".jj", false, true)
-
-	out, _, err := runRestackCmd(t)
-	if err != nil {
-		t.Fatalf("restack: %v", err)
-	}
-	if out != "fetched · rebased 2 commit(s) onto main" {
-		t.Fatalf("output = %q", out)
-	}
-	requireRestackRecords(t, logPath, [][]string{
-		{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-		{"jj", "git", "fetch"},
-		{"jj", "--ignore-working-copy", "log", "-r", jjRestackAncestorRevset, "--no-graph", "-T", jjStackLineTemplate},
-		{"jj", "--ignore-working-copy", "log", "-r", jjRestackStackRevset, "--no-graph", "-T", jjStackLineTemplate},
-		{"jj", "rebase", "-b", "@", "--destination", "trunk()"},
-		{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
-		{"jj", "--ignore-working-copy", "log", "-r", jjRestackConflictRevset, "--no-graph", "-T", jjStackLineTemplate},
-	})
-}
-
-func TestRestackJJConflictRollsBack(t *testing.T) {
-	logPath := setupRestack(t, ".jj", false, true)
-	t.Setenv("RESTACK_JJ_CONFLICTS", "ddddddd conflict one\neeeeeee conflict two\n")
-
-	_, _, err := runRestackCmd(t)
-	if err == nil {
-		t.Fatal("restack succeeded, want conflict")
-	}
-	for _, want := range []string{
-		`restack: rebase onto "main" conflicts in 2 commit(s)`,
-		"rolled back to the pre-rebase state",
-		"ddddddd conflict one",
-		"eeeeeee conflict two",
-	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error = %q, want substring %q", err, want)
-		}
-	}
-	records := readRestackLog(t, logPath)
-	if got := records[len(records)-1]; !reflect.DeepEqual(got, []string{"jj", "op", "revert", "op123abc"}) {
-		t.Fatalf("last argv = %#v, want op revert", got)
-	}
-}
-
-func TestRestackJJAlreadyUpToDate(t *testing.T) {
-	logPath := setupRestack(t, ".jj", false, true)
-	t.Setenv("RESTACK_JJ_UP_TO_DATE", "1")
-
-	out, _, err := runRestackCmd(t)
-	if err != nil {
-		t.Fatalf("restack: %v", err)
-	}
-	if out != "fetched · already up to date" {
-		t.Fatalf("output = %q", out)
-	}
-	requireRestackRecords(t, logPath, [][]string{
-		{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
-		{"jj", "git", "fetch"},
-		{"jj", "--ignore-working-copy", "log", "-r", jjRestackAncestorRevset, "--no-graph", "-T", jjStackLineTemplate},
-	})
-}
-
-func TestRestackGitSymbolicHeadRebases(t *testing.T) {
-	logPath := setupRestack(t, ".git", false, true)
-
-	out, _, err := runRestackCmd(t)
-	if err != nil {
-		t.Fatalf("restack: %v", err)
-	}
-	if out != "fetched · rebased onto origin/main" {
-		t.Fatalf("output = %q", out)
-	}
-	requireRestackRecords(t, logPath, [][]string{
-		{"git", "branch", "--show-current"},
-		{"git", "config", "--get", "branch.feature.remote"},
-		{"git", "fetch", "origin"},
-		{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"},
-		{"git", "merge-base", "--is-ancestor", "origin/main", "HEAD"},
-		{"git", "rev-list", "--count", "refs/remotes/origin/main..HEAD"},
-		{"git", "rebase", "--autostash", "refs/remotes/origin/main"},
-	})
-}
-
-func TestRestackGitProbesMainWhenSymbolicHeadMissing(t *testing.T) {
-	logPath := setupRestack(t, ".git", false, true)
-	t.Setenv("RESTACK_GIT_SYMBOLIC_MISS", "1")
-	t.Setenv("RESTACK_GIT_MAIN_REF", "1")
-
-	out, _, err := runRestackCmd(t)
-	if err != nil {
-		t.Fatalf("restack: %v", err)
-	}
-	if out != "fetched · rebased onto origin/main" {
-		t.Fatalf("output = %q", out)
-	}
-	records := readRestackLog(t, logPath)
-	want := []string{"git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/main"}
-	if len(records) < 5 || !reflect.DeepEqual(records[4], want) {
-		t.Fatalf("show-ref argv = %#v, want %#v", records, want)
-	}
-}
-
-// TestRestackGitFallsBackToMasterWhenMainAbsent covers the second candidate the
-// probe loop tries. git answers a missing ref with a fatal, not the 1 an absent
-// match reports, so a probe that does not ask for --quiet never reaches master.
-func TestRestackGitFallsBackToMasterWhenMainAbsent(t *testing.T) {
-	logPath := setupRestack(t, ".git", false, true)
-	t.Setenv("RESTACK_GIT_SYMBOLIC_MISS", "1")
-	t.Setenv("RESTACK_GIT_MASTER_REF", "1")
-
-	out, _, err := runRestackCmd(t)
-	if err != nil {
-		t.Fatalf("restack: %v", err)
-	}
-	if out != "fetched · rebased onto origin/master" {
-		t.Fatalf("output = %q, want %q", out, "fetched · rebased onto origin/master")
-	}
-	records := readRestackLog(t, logPath)
-	for _, want := range [][]string{
-		{"git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/main"},
-		{"git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/master"},
-		{"git", "rebase", "--autostash", "refs/remotes/origin/master"},
-	} {
-		found := false
-		for _, record := range records {
-			if reflect.DeepEqual(record, want) {
-				found = true
-			}
-		}
-		if !found {
-			t.Fatalf("missing %#v in %#v", want, records)
-		}
-	}
-}
-
-func TestRestackGitRefusesUnknownTrunk(t *testing.T) {
-	logPath := setupRestack(t, ".git", false, true)
-	t.Setenv("RESTACK_GIT_SYMBOLIC_MISS", "1")
-
-	_, _, err := runRestackCmd(t)
-	if err == nil {
-		t.Fatal("restack succeeded, want refusal")
-	}
-	want := "restack: cannot resolve origin's default branch — run git remote set-head origin -a"
-	if err.Error() != want {
-		t.Fatalf("error = %q, want %q", err, want)
-	}
-	records := readRestackLog(t, logPath)
-	for _, wantRef := range []string{"refs/remotes/origin/main", "refs/remotes/origin/master"} {
-		found := false
-		for _, record := range records {
-			if reflect.DeepEqual(record, []string{"git", "show-ref", "--verify", "--quiet", wantRef}) {
-				found = true
-			}
-		}
-		if !found {
-			t.Fatalf("missing show-ref probe for %s in %#v", wantRef, records)
-		}
-	}
-}
-
-func TestRestackGitFastForwardsTrunk(t *testing.T) {
-	logPath := setupRestack(t, ".git", false, true)
-	t.Setenv("RESTACK_GIT_BRANCH", "main")
-
-	out, _, err := runRestackCmd(t)
-	if err != nil {
-		t.Fatalf("restack: %v", err)
-	}
-	if out != "fetched · fast-forwarded main" {
-		t.Fatalf("output = %q", out)
-	}
-	records := readRestackLog(t, logPath)
-	got := records[len(records)-1]
-	want := []string{"git", "merge", "--ff-only", "origin/main"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("last argv = %#v, want %#v", got, want)
-	}
-}
-
-func TestRestackGitAlreadyUpToDate(t *testing.T) {
-	logPath := setupRestack(t, ".git", false, true)
-	t.Setenv("RESTACK_GIT_UP_TO_DATE", "1")
-
-	out, _, err := runRestackCmd(t)
-	if err != nil {
-		t.Fatalf("restack: %v", err)
-	}
-	if out != "fetched · already up to date" {
-		t.Fatalf("output = %q", out)
-	}
-	records := readRestackLog(t, logPath)
-	for _, record := range records {
-		if len(record) > 1 && (record[1] == "rebase" || record[1] == "merge") {
-			t.Fatalf("unexpected update command: %#v", record)
-		}
-	}
-}
-
-func TestRestackGitConflictUsesExistingAbortPath(t *testing.T) {
-	logPath := setupRestack(t, ".git", false, true)
-	t.Setenv("RESTACK_GIT_REBASE_CONFLICT", "1")
-
-	_, _, err := runRestackCmd(t)
-	if err == nil {
-		t.Fatal("restack succeeded, want conflict")
-	}
-	if !strings.Contains(err.Error(), "conflicts in: conflict.txt; aborted back to the pre-rebase state") {
-		t.Fatalf("error = %q", err)
-	}
-	records := readRestackLog(t, logPath)
-	got := records[len(records)-1]
-	if !reflect.DeepEqual(got, []string{"git", "rebase", "--abort"}) {
-		t.Fatalf("last argv = %#v, want rebase --abort", got)
-	}
 }
 
 func TestRestackRefusesMissingGT(t *testing.T) {
-	logPath := setupRestack(t, ".git", true, false)
+	f := restackGTRepo(t, "feat")
+	restackReset(t, f)
+	vcstest.LinkPATH(t, "git")
 
 	_, _, err := runRestackCmd(t)
 	if err == nil {
@@ -1064,10 +932,11 @@ func TestRestackRefusesMissingGT(t *testing.T) {
 	if err.Error() != want {
 		t.Fatalf("error = %q, want %q", err, want)
 	}
-	requireRestackRecords(t, logPath, [][]string{nogtProbe})
+	assertNoRestackMutation(t, restackInvocations(t, f))
 }
 
 func TestRestackRegisteredWithRebaseAlias(t *testing.T) {
+	t.Parallel()
 	cmd := newVcsCmd()
 	found, args, err := cmd.Find([]string{"rebase"})
 	if err != nil {

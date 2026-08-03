@@ -3,103 +3,188 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
-// infoFakes overlays the ship fakes with the arms ccx vcs info needs — git
-// status/symbolic-ref/show-ref, the repository-wide worktree listing that names
-// each branch's holding worktree, gt --version, and the batched downstack pull
-// request query, whose per-branch payload is $GH_PR_VIEW_<branch>. Each
-// wrapper handles its own arms and execs the renamed base fake for the rest, so
-// writeShipFakes stays untouched.
-//
-// GIT_BRANCH_HOLDERS is a space-separated branch=worktree list; a pair with an
-// empty path names a branch no checkout holds, which git reports by emitting no
-// record for it at all. Unset means no checkout holds any branch — what git
-// reports for a detached working copy, and the default every report assertion
-// here is written against. The record framing is measured off git 2.55: NUL
-// after every field, one more closing each record.
-func infoFakes(t *testing.T) {
+// infoRepo builds a real repository per opts and seeds its lane cache, so the
+// gate resolves without a gh subprocess. Every report these tests assert is git,
+// jj, and gt answering for themselves.
+func infoRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	t.Helper()
-	wd, err := os.Getwd()
+	f := vcstest.Repo(t, opts...)
+	seedLaneRecords(t, ".", laneSeed{})
+	return f
+}
+
+// infoGTRepo builds a real graphite repository whose stack is main → branches,
+// each branch tracked on the one before it, and leaves the working copy on the
+// last. gt track is local — it writes .git/.graphite_metadata.db and reaches no
+// network — so the stack gt state reports here is one gt itself built.
+func infoGTRepo(t *testing.T, branches ...string) *vcstest.Fixture {
+	t.Helper()
+	f := vcstest.Repo(t, vcstest.GT(), vcstest.Remote())
+	parent := "main"
+	for i, branch := range branches {
+		runTool(t, f.Dir, "git", "switch", "-qc", branch)
+		writeInfoFile(t, f.Dir, fmt.Sprintf("b%d.txt", i), branch+"\n")
+		runTool(t, f.Dir, "git", "add", "-A")
+		runTool(t, f.Dir, "git", "commit", "-qm", branch)
+		runTool(t, f.Dir, "gt", "track", "--parent", parent, "--no-interactive")
+		parent = branch
+	}
+	seedLaneRecords(t, ".", laneSeed{})
+	return f
+}
+
+// gtVersion is the gt behind the fixture, read from gt itself so the report
+// assertion pins the segment's shape rather than the version this machine has.
+func gtVersion(t *testing.T, f *vcstest.Fixture) string {
+	t.Helper()
+	return strings.TrimSpace(runTool(t, f.Dir, "gt", "--version"))
+}
+
+// resetArgvLog drops the records the fixture's own setup commands wrote, so an
+// assertion over ccx's invocations reads only ccx's.
+func resetArgvLog(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	vcstest.Quiesce(t, f.ArgvLog)
+	if err := os.Remove(f.ArgvLog); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("reset argv log: %v", err)
+	}
+}
+
+func runTool(t *testing.T, dir, name string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(name, args...) //nolint:gosec // name resolves through the fixture's own shim PATH and args are fixture-authored
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("getwd: %v", err)
+		t.Fatalf("%s %v: %v\n%s", name, args, err, out)
 	}
-	binDir := filepath.Join(wd, "bin")
+	return string(out)
+}
 
-	logRec := func(name string) string {
-		return "{ printf '" + name + "\\0'; for a in \"$@\"; do printf '%s\\0' \"$a\"; done; printf '\\0'; } >> \"$SHIP_LOG\"\n"
+func writeInfoFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", name, err)
 	}
-	wrap := func(name, body string) bool {
-		base := filepath.Join(binDir, name)
-		src, err := os.ReadFile(base)
-		if err != nil {
-			return false
-		}
-		for path, content := range map[string][]byte{base + "-base": src, base: []byte(body)} {
-			if err := os.WriteFile(path, content, 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
-				t.Fatalf("write fake %s: %v", path, err)
-			}
-		}
-		return true
-	}
+}
 
-	wrap("git", "#!/bin/sh\n"+`case "$1 $2" in
-  "status --porcelain")
-    `+logRec("git")+`    printf '%s' "$GIT_STATUS_PORCELAIN"
-    exit 0 ;;
-  "symbolic-ref --short")
-    `+logRec("git")+`    if [ -z "$GIT_SYMBOLIC_REF" ]; then exit 1; fi
-    printf '%s\n' "$GIT_SYMBOLIC_REF"
-    exit 0 ;;
-  "show-ref --verify")
-    `+logRec("git")+`    if [ -n "$GIT_SHOW_REF_FOUND" ]; then exit 0; fi
-    if [ "$3" = --quiet ]; then exit 1; fi
-    printf "fatal: '%s' - not a valid ref\n" "$4" >&2
-    exit 128 ;;
-  "--git-dir "*)
-    case "$3" in
-      worktree)
-        `+logRec("git")+`        for pair in $GIT_BRANCH_HOLDERS; do
-          name="${pair%%=*}"; path="${pair#*=}"
-          if [ -n "$path" ]; then printf 'worktree %s\0HEAD `+fakeHeadSHA+`\0branch refs/heads/%s\0\0' "$path" "$name"; fi
-        done
-        exit 0 ;;
-    esac ;;
-esac
-exec git-base "$@"
-`)
-	wrap("gt", "#!/bin/sh\n"+`case "$1" in
-  --version)
-    `+logRec("gt")+`    printf '%s\n' "${GT_VERSION:-1.8.6}"
-    exit 0 ;;
-esac
-exec gt-base "$@"
-`)
-	wrap("gh", "#!/bin/sh\n"+`case "$1 $2" in
+// ghReplayKey names the invocation one recorded scenario answers. gh is a
+// network boundary, so it stays a script — but the script picks a payload, it
+// never composes one.
+func ghReplayKey(t *testing.T, g ghGolden) string {
+	t.Helper()
+	switch {
+	case slices.Equal(g.argv[:min(2, len(g.argv))], []string{"repo", "view"}):
+		return "REPO_VIEW"
+	case !slices.Equal(g.argv[:min(2, len(g.argv))], []string{"api", "graphql"}):
+		t.Fatalf("golden cli/%s: argv %q answers no invocation ccx vcs info makes", g.name, g.argv)
+		return ""
+	case slices.ContainsFunc(g.argv, func(a string) bool { return strings.Contains(a, "pullRequests") }):
+		return "DOWNSTACK"
+	default:
+		return "VIEWER"
+	}
+}
+
+// ghReplay installs a gh that answers each recorded scenario's invocation with
+// that scenario's own bytes, and records its argv into the fixture's log in the
+// shim's framing so a gh call is counted like a real tool's. An invocation no
+// loaded scenario answers exits 2 rather than inventing a payload. The goldens
+// are loaded by the caller because their loader spells a relative path and a
+// fixture has already left the package directory.
+func ghReplay(t *testing.T, f *vcstest.Fixture, goldens ...ghGolden) {
+	t.Helper()
+	for _, g := range goldens {
+		key := ghReplayKey(t, g)
+		t.Setenv("CCX_GH_STDOUT_"+key, g.stdout)
+		t.Setenv("CCX_GH_STDERR_"+key, g.stderr)
+		t.Setenv("CCX_GH_EXIT_"+key, strconv.Itoa(g.exit))
+	}
+	script := "#!/bin/sh\n" +
+		`d="${CCX_SHIM_DEPTH:-0}"` + "\n" +
+		`printf '%s\0' "$d" "$(($#+1))" gh "$@" >> ` + shQuote(f.ArgvLog) + "\n" +
+		`case "$1 $2" in
+  "repo view") key=REPO_VIEW ;;
   "api graphql")
     case "$*" in
-      *pullRequests*)
-        `+logRec("gh")+`        printf '{"data":{"repository":{'
-        sep=
-        for a in "$@"; do
-          case "$a" in b[0-9]*=*) ;; *) continue ;; esac
-          eval "json=\${GH_PR_VIEW_${a#*=}-}"
-          printf '%s"%s":{"nodes":[%s]}' "$sep" "${a%%=*}" "$json"
-          sep=,
-        done
-        printf '}}}'
-        exit 0 ;;
+      *pullRequests*) key=DOWNSTACK ;;
+      *) key=VIEWER ;;
     esac ;;
+  *) printf 'gh replay: no recorded scenario for: %s\n' "$*" >&2; exit 2 ;;
 esac
-exec gh-base "$@"
-`)
+eval "code=\${CCX_GH_EXIT_$key-unloaded}"
+if [ "$code" = unloaded ]; then printf 'gh replay: %s not loaded\n' "$key" >&2; exit 2; fi
+eval "printf '%s' \"\$CCX_GH_STDOUT_$key\""
+eval "printf '%s' \"\$CCX_GH_STDERR_$key\"" >&2
+exit "$code"
+`
+	writeExecutable(t, filepath.Join(f.ShimBin, "gh"), script)
+}
 
-	t.Setenv("GIT_STATUS_PORCELAIN", "")
-	t.Setenv("GIT_SYMBOLIC_REF", "origin/main")
+// gtAuthGolden makes gt auth — the one network verb the reachability probe runs
+// — answer with g's recorded bytes, leaving every local verb to the real gt.
+func gtAuthGolden(t *testing.T, f *vcstest.Fixture, g gtGolden) {
+	t.Helper()
+	if g.argv[0] != "auth" {
+		t.Fatalf("golden %s records gt %s, not the auth probe", g.name, g.argv[0])
+	}
+	t.Setenv("CCX_GT_AUTH_STDOUT", g.stdout)
+	t.Setenv("CCX_GT_AUTH_STDERR", g.stderr)
+	t.Setenv("CCX_GT_AUTH_EXIT", strconv.Itoa(g.exit))
+	gtAuthShim(t, f)
+}
+
+// gtAuthHangs leaves the probe unanswered past its deadline. It is a timing
+// fixture: it claims nothing about what gt prints, only that nobody answered.
+func gtAuthHangs(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	t.Setenv("CCX_GT_AUTH_HANG", "1")
+	gtAuthShim(t, f)
+}
+
+func gtAuthShim(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	shim := filepath.Join(f.ShimBin, "gt")
+	passthrough := filepath.Join(f.ShimBin, "gt-shim")
+	if err := os.Rename(shim, passthrough); err != nil {
+		t.Fatalf("rename gt shim: %v", err)
+	}
+	// exec so the probe's process-group kill reaps the sleep too: a surviving
+	// grandchild holds the stdout pipe open past the deadline.
+	script := "#!/bin/sh\n" +
+		`if [ "$1" = auth ]; then` + "\n" +
+		`  d="${CCX_SHIM_DEPTH:-0}"` + "\n" +
+		`  printf '%s\0' "$d" "$(($#+1))" gt "$@" >> ` + shQuote(f.ArgvLog) + "\n" +
+		`  if [ -n "$CCX_GT_AUTH_HANG" ]; then exec /bin/sleep 30; fi` + "\n" +
+		`  printf '%s' "$CCX_GT_AUTH_STDOUT"` + "\n" +
+		`  printf '%s' "$CCX_GT_AUTH_STDERR" >&2` + "\n" +
+		`  exit "$CCX_GT_AUTH_EXIT"` + "\n" +
+		"fi\n" +
+		"exec " + shQuote(passthrough) + ` "$@"` + "\n"
+	writeExecutable(t, shim, script)
+}
+
+func writeExecutable(t *testing.T, path, script string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // a PATH entry must be owner-executable
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func runVcsInfoCmd(t *testing.T, args ...string) (string, error) {
@@ -115,15 +200,17 @@ func runVcsInfoCmd(t *testing.T, args ...string) (string, error) {
 	return out.String(), err
 }
 
-// infoRoot is the repo root the report prints — the post-chdir cwd, which is
-// what DetectRoot resolves and setupShip echoes as SHIP_FAKE_ROOT.
-func infoRoot(t *testing.T) string {
+func runVcsInfoJSON(t *testing.T, args ...string) vcsInfo {
 	t.Helper()
-	wd, err := os.Getwd()
+	out, err := runVcsInfoCmd(t, append([]string{"--json"}, args...)...)
 	if err != nil {
-		t.Fatalf("getwd: %v", err)
+		t.Fatalf("info error = %v", err)
 	}
-	return wd
+	var got vcsInfo
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("unmarshal report: %v\n%s", err, out)
+	}
+	return got
 }
 
 func infoLine(t *testing.T, out, label string) string {
@@ -157,11 +244,45 @@ func assertNoInvocation(t *testing.T, invocations [][]string, want ...string) {
 	}
 }
 
+// downstackOne and downstackThree are the branches the recorded downstack
+// queries name. A fixture stacks exactly these, so the payloads replayed back
+// are GitHub's answers to the query ccx builds here.
+var (
+	downstackOne   = []string{"fix-ship-help-graphite-demote"}
+	downstackThree = []string{"fix-ship-help-graphite-demote", "yasyf/transcript-ccx-issues", "no-such-branch"}
+)
+
+// TestVcsInfoDownstackArgvIsTheRecordedOne pins the batched query production
+// builds to the one GitHub answered, so a replayed payload is the answer to
+// ccx's own call rather than to a query nobody makes.
+func TestVcsInfoDownstackArgvIsTheRecordedOne(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		golden   string
+		branches []string
+	}{
+		{"downstack-graphql-one", downstackOne},
+		{"downstack-graphql-three", downstackThree},
+	}
+	for _, tt := range tests {
+		t.Run(tt.golden, func(t *testing.T) {
+			t.Parallel()
+			want := loadGHGolden(t, tt.golden).argv
+			if got := ghDownstackPRArgv(tt.branches...)[1:]; !slices.Equal(got, want) {
+				t.Errorf("ghDownstackPRArgv() = %q, want the recorded %q", got, want)
+			}
+		})
+	}
+}
+
 func TestVcsInfoGTLane(t *testing.T) {
-	setupShipGT(t, true)
-	infoFakes(t)
-	t.Setenv("GIT_STATUS_PORCELAIN", " M a.txt\n M b.txt\n?? c.txt\n")
-	t.Setenv("GH_PR_VIEW_feature", `{"number":13,"url":"https://github.com/yasyf/cc-context/pull/13","body":"why"}`)
+	downstack := loadGHGolden(t, "downstack-graphql-one")
+	f := infoGTRepo(t, downstackOne...)
+	ghReplay(t, f, downstack)
+	version := gtVersion(t, f)
+	writeInfoFile(t, f.Dir, "f.txt", "dirty\n")
+	writeInfoFile(t, f.Dir, "b0.txt", "dirty\n")
+	writeInfoFile(t, f.Dir, "untracked.txt", "new\n")
 
 	out, err := runVcsInfoCmd(t)
 	if err != nil {
@@ -170,16 +291,16 @@ func TestVcsInfoGTLane(t *testing.T) {
 	want := strings.Join([]string{
 		"lane        gt",
 		"vcs         git",
-		"root        " + infoRoot(t),
-		"branch      feature",
+		"root        " + f.Dir,
+		"branch      fix-ship-help-graphite-demote",
 		"trunk       main",
 		"dirty       yes (3 files)",
-		"graphite    config live · gt 1.8.6 · reachable",
+		"graphite    config live · gt " + version + " · reachable",
 		"repo        yasyf/cc-context",
 		"visibility  private",
 		"permission  ADMIN",
 		"viewer      yasyf (affiliated: self)",
-		"downstack   feature → PR #13 (body)",
+		"downstack   fix-ship-help-graphite-demote → PR #3 (body)",
 		"",
 	}, "\n")
 	if out != want {
@@ -188,10 +309,7 @@ func TestVcsInfoGTLane(t *testing.T) {
 }
 
 func TestVcsInfoGitLaneNoGraphite(t *testing.T) {
-	setupShip(t, ".git", true)
-	infoFakes(t)
-	seedLaneRecords(t, ".", laneSeed{})
-	t.Setenv("GIT_STATUS_PORCELAIN", " M f.txt\n")
+	f := infoRepo(t, vcstest.Remote(), vcstest.Dirty())
 
 	out, err := runVcsInfoCmd(t)
 	if err != nil {
@@ -199,6 +317,10 @@ func TestVcsInfoGitLaneNoGraphite(t *testing.T) {
 	}
 	if got := infoLine(t, out, "lane"); got != "git" {
 		t.Errorf("lane = %q, want git", got)
+	}
+	head := strings.TrimSpace(runTool(t, f.Dir, "git", "symbolic-ref", "refs/remotes/origin/HEAD"))
+	if want := "refs/remotes/origin/main"; head != want {
+		t.Fatalf("fixture origin/HEAD = %q, want %q", head, want)
 	}
 	if got := infoLine(t, out, "trunk"); got != "main" {
 		t.Errorf("trunk = %q, want main", got)
@@ -214,10 +336,11 @@ func TestVcsInfoGitLaneNoGraphite(t *testing.T) {
 // TestVcsInfoJJLane proves the jj lane reports the bookmark ship would target
 // even when it is not trunk, rather than refusing the way shipPreflightJJ does.
 func TestVcsInfoJJLane(t *testing.T) {
-	setupShip(t, ".jj", true)
-	infoFakes(t)
-	seedLaneRecords(t, ".", laneSeed{})
-	t.Setenv("JJ_BOOKMARK_NAMES", "feature")
+	f := infoRepo(t, vcstest.JJ(), vcstest.Remote())
+	writeInfoFile(t, f.Dir, "g.txt", "feature\n")
+	runTool(t, f.Dir, "jj", "commit", "-m", "feature")
+	runTool(t, f.Dir, "jj", "bookmark", "create", "feature", "-r", "@-")
+	writeInfoFile(t, f.Dir, "f.txt", "dirty\n")
 
 	out, err := runVcsInfoCmd(t)
 	if err != nil {
@@ -240,19 +363,11 @@ func TestVcsInfoJJLane(t *testing.T) {
 // TestVcsInfoJJTrunkUnresolvable proves an ambiguous trunk bookmark drops the
 // trunk line rather than failing, the way shipPreflightJJ would.
 func TestVcsInfoJJTrunkUnresolvable(t *testing.T) {
-	setupShip(t, ".jj", true)
-	infoFakes(t)
-	seedLaneRecords(t, ".", laneSeed{})
-	t.Setenv("JJ_TRUNK_NAMES", "main dev")
+	f := infoRepo(t, vcstest.JJ(), vcstest.Remote())
+	runTool(t, f.Dir, "jj", "bookmark", "create", "dev", "-r", "main")
+	runTool(t, f.Dir, "jj", "git", "push", "--bookmark", "dev")
 
-	out, err := runVcsInfoCmd(t, "--json")
-	if err != nil {
-		t.Fatalf("info error = %v", err)
-	}
-	var got vcsInfo
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
-		t.Fatalf("unmarshal report: %v\n%s", err, out)
-	}
+	got := runVcsInfoJSON(t)
 	if got.Trunk != "" {
 		t.Errorf("trunk = %q, want empty on an ambiguous trunk bookmark", got.Trunk)
 	}
@@ -262,8 +377,8 @@ func TestVcsInfoJJTrunkUnresolvable(t *testing.T) {
 }
 
 func TestVcsInfoGraphiteDeclined(t *testing.T) {
-	setupShipGT(t, true)
-	infoFakes(t)
+	f := infoGTRepo(t, "feature")
+	version := gtVersion(t, f)
 	note := "cc-context is not synced with graphite (gt auth: does not have the necessary permissions)"
 	seedLaneRecords(t, ".", laneSeed{unreachable: true, note: note})
 
@@ -277,7 +392,7 @@ func TestVcsInfoGraphiteDeclined(t *testing.T) {
 	if got := infoLine(t, out, "lane-note"); got != "graphite declined: "+note {
 		t.Errorf("lane-note = %q, want the declining note", got)
 	}
-	if got := infoLine(t, out, "graphite"); got != "config live · gt 1.8.6 · unreachable" {
+	if got := infoLine(t, out, "graphite"); got != "config live · gt "+version+" · unreachable" {
 		t.Errorf("graphite = %q, want the unreachable probe verdict", got)
 	}
 	if strings.Contains(out, "downstack") {
@@ -290,20 +405,13 @@ func TestVcsInfoGraphiteDeclined(t *testing.T) {
 // both the lane note and the graphite line carry the reason, so the report never
 // claims a reachability it never established.
 func TestVcsInfoProbeUnknown(t *testing.T) {
-	setupShipGT(t, true)
-	infoFakes(t)
+	f := infoGTRepo(t)
+	version := gtVersion(t, f)
 	clearGTRecord(t, ".")
-	t.Setenv("GT_AUTH_HANG", "1")
+	gtAuthHangs(t, f)
 	shortenGTProbe(t)
 
-	out, err := runVcsInfoCmd(t, "--json")
-	if err != nil {
-		t.Fatalf("info error = %v", err)
-	}
-	var got vcsInfo
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
-		t.Fatalf("unmarshal report: %v\n%s", err, out)
-	}
+	got := runVcsInfoJSON(t)
 	wantReason := "gt auth did not answer within " + gtProbeTimeout.String()
 	if got.Lane != "git" {
 		t.Errorf("lane = %q, want git — an unknown verdict demotes", got.Lane)
@@ -320,51 +428,52 @@ func TestVcsInfoProbeUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
-	want := "config live · gt 1.8.6 · reachability unknown (" + wantReason + ")"
+	want := "config live · gt " + version + " · reachability unknown (" + wantReason + ")"
 	if line := infoLine(t, human, "graphite"); line != want {
 		t.Errorf("graphite = %q, want %q", line, want)
 	}
 }
 
 // TestVcsInfoRefreshLaneVerdict proves --refresh re-probes the verdict the lane
-// turns on rather than only the line describing it: a cached negative the user
-// has since fixed moves the lane itself, and every input is asked for once.
+// turns on rather than only the line describing it: a cached positive Graphite
+// has since withdrawn moves the lane itself, and every input is asked for once.
 func TestVcsInfoRefreshLaneVerdict(t *testing.T) {
-	const staleNote = "graphite has no auth token — run gt auth --token <token>"
 	tests := []struct {
 		name          string
 		args          []string
 		wantLane      string
-		wantReason    string
 		wantReachable gtVerdict
 		wantLookups   int
 	}{
-		{"refresh re-probes", []string{"--json", "--refresh"}, "gt", "", gtVerdictOK, 1},
-		{"no refresh serves the cached verdict", []string{"--json"}, "git", infoDeclinedPrefix + staleNote, gtVerdictDenied, 0},
+		{"refresh re-probes", []string{"--refresh"}, "git", gtVerdictDenied, 1},
+		{"no refresh serves the cached verdict", nil, "gt", gtVerdictOK, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			log := setupShipGT(t, true)
-			infoFakes(t)
-			seedLaneRecords(t, ".", laneSeed{unreachable: true, note: staleNote})
-			t.Setenv("GH_REPO_VIEW_JSON",
-				`{"nameWithOwner":"yasyf/cc-context","owner":{"login":"yasyf"},"isPrivate":true,"viewerPermission":"ADMIN"}`)
+			repoView := loadGHGolden(t, "repo-view-own")
+			viewer := loadGHGolden(t, "viewer-graphql")
+			probe := loadGTGolden(t, "auth-no-perms")
+			f := infoGTRepo(t)
+			ghReplay(t, f, repoView, viewer)
+			gtAuthGolden(t, f, probe)
+			resetArgvLog(t, f)
 
-			out, err := runVcsInfoCmd(t, tt.args...)
-			if err != nil {
-				t.Fatalf("info error = %v", err)
+			got := runVcsInfoJSON(t, tt.args...)
+			wantReason := ""
+			if tt.wantReachable == gtVerdictDenied {
+				// The note is gt's own refusal, quoted whole — the line it wrote
+				// first, read off the golden rather than through the matcher under
+				// test.
+				wantReason = infoDeclinedPrefix + strings.TrimSpace(strings.Split(probe.stderr, "\n")[0])
 			}
-			var got vcsInfo
-			if err := json.Unmarshal([]byte(out), &got); err != nil {
-				t.Fatalf("unmarshal report: %v\n%s", err, out)
-			}
-			if got.Lane != tt.wantLane || got.LaneReason != tt.wantReason {
-				t.Errorf("lane/lane_reason = %q/%q, want %q/%q", got.Lane, got.LaneReason, tt.wantLane, tt.wantReason)
+			if got.Lane != tt.wantLane || got.LaneReason != wantReason {
+				t.Errorf("lane/lane_reason = %q/%q, want %q/%q", got.Lane, got.LaneReason, tt.wantLane, wantReason)
 			}
 			if got.Graphite.Reachable != string(tt.wantReachable) {
 				t.Errorf("graphite.reachable = %q, want %q — the report contradicts its own lane", got.Graphite.Reachable, tt.wantReachable)
 			}
-			invocations := readInvocations(t, log)
+			vcstest.Quiesce(t, f.ArgvLog)
+			invocations := vcstest.Invocations(t, f.ArgvLog)
 			if n := countInvocations(invocations, "gt", "auth"); n != tt.wantLookups {
 				t.Errorf("gt auth ran %d times, want %d", n, tt.wantLookups)
 			}
@@ -376,40 +485,28 @@ func TestVcsInfoRefreshLaneVerdict(t *testing.T) {
 }
 
 func TestVcsInfoDetachedHead(t *testing.T) {
-	setupShip(t, ".git", true)
-	infoFakes(t)
-	seedLaneRecords(t, ".", laneSeed{})
-	t.Setenv("GIT_BRANCH", "")
+	infoRepo(t, vcstest.Remote(), vcstest.Detached())
 
-	out, err := runVcsInfoCmd(t, "--json")
-	if err != nil {
-		t.Fatalf("info error = %v", err)
-	}
-	var got vcsInfo
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
-		t.Fatalf("unmarshal report: %v\n%s", err, out)
-	}
+	got := runVcsInfoJSON(t)
 	if !got.Detached {
-		t.Errorf("detached = false, want true on an empty git branch --show-current")
+		t.Errorf("detached = false, want true on a detached HEAD")
 	}
 	if got.Branch != "" {
 		t.Errorf("branch = %q, want empty", got.Branch)
 	}
+	if got.Trunk != "main" {
+		t.Errorf("trunk = %q, want main — a detached HEAD still has a default branch", got.Trunk)
+	}
 }
 
 func TestVcsInfoWithoutGh(t *testing.T) {
-	setupShip(t, ".git", false)
-	infoFakes(t)
+	vcstest.Repo(t, vcstest.Remote())
 	clearLaneRecords(t, ".")
+	if path, err := exec.LookPath("gh"); err == nil {
+		t.Fatalf("gh resolved to %s; the fixture PATH must hold none", path)
+	}
 
-	out, err := runVcsInfoCmd(t, "--json")
-	if err != nil {
-		t.Fatalf("info error = %v", err)
-	}
-	var got vcsInfo
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
-		t.Fatalf("unmarshal report: %v\n%s", err, out)
-	}
+	got := runVcsInfoJSON(t)
 	if got.GitHub != nil {
 		t.Errorf("github = %+v, want null with no gh on PATH", got.GitHub)
 	}
@@ -419,30 +516,23 @@ func TestVcsInfoWithoutGh(t *testing.T) {
 }
 
 func TestVcsInfoJSON(t *testing.T) {
-	setupShipGT(t, true)
-	infoFakes(t)
-	t.Setenv("GIT_STATUS_PORCELAIN", "")
-	t.Setenv("GH_PR_VIEW_feature", `{"number":13,"url":"https://github.com/yasyf/cc-context/pull/13","body":"why"}`)
+	downstack := loadGHGolden(t, "downstack-graphql-one")
+	f := infoGTRepo(t, downstackOne...)
+	ghReplay(t, f, downstack)
+	version := gtVersion(t, f)
 
-	out, err := runVcsInfoCmd(t, "--json")
-	if err != nil {
-		t.Fatalf("info error = %v", err)
-	}
-	var got vcsInfo
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
-		t.Fatalf("unmarshal report: %v\n%s", err, out)
-	}
+	got := runVcsInfoJSON(t)
 	if got.Lane != "gt" || got.VCS != "git" || got.BranchKind != "branch" {
 		t.Errorf("lane/vcs/branch_kind = %q/%q/%q, want gt/git/branch", got.Lane, got.VCS, got.BranchKind)
 	}
-	if got.Root != infoRoot(t) || got.Branch != "feature" || got.Trunk != "main" {
+	if got.Root != f.Dir || got.Branch != downstackOne[0] || got.Trunk != "main" {
 		t.Errorf("root/branch/trunk = %q/%q/%q", got.Root, got.Branch, got.Trunk)
 	}
 	if got.Dirty || got.DirtyFiles != 0 || got.Detached {
 		t.Errorf("dirty/dirty_files/detached = %t/%d/%t, want false/0/false", got.Dirty, got.DirtyFiles, got.Detached)
 	}
-	if !got.Graphite.Config || !got.Graphite.CLI || got.Graphite.Version != "1.8.6" {
-		t.Errorf("graphite = %+v, want a live config on gt 1.8.6", got.Graphite)
+	if !got.Graphite.Config || !got.Graphite.CLI || got.Graphite.Version != version {
+		t.Errorf("graphite = %+v, want a live config on gt %s", got.Graphite, version)
 	}
 	if got.Graphite.Reachable != string(gtVerdictOK) {
 		t.Errorf("graphite.reachable = %q, want %q", got.Graphite.Reachable, gtVerdictOK)
@@ -453,41 +543,57 @@ func TestVcsInfoJSON(t *testing.T) {
 	if got.GitHubError != "" {
 		t.Errorf("github_error = %q, want empty", got.GitHubError)
 	}
-	want := []stackEntry{{Branch: "feature", PR: 13, URL: "https://github.com/yasyf/cc-context/pull/13", HasBody: true}}
+	want := []stackEntry{{Branch: downstackOne[0], PR: 3, URL: "https://github.com/yasyf/cc-context/pull/3", HasBody: true}}
 	if len(got.Downstack) != 1 || got.Downstack[0] != want[0] {
 		t.Errorf("downstack = %+v, want %+v", got.Downstack, want)
 	}
 }
 
-// TestVcsInfoDownstackBodies proves the whole submit set is reported base
-// first, each entry carrying whether its PR already has a body to draft into.
+// TestVcsInfoDownstackBodies proves the whole submit set is reported base first,
+// each entry carrying whether its PR already has a body to draft into. The
+// recorded query answers three branches: two with a pull request, one with none.
 func TestVcsInfoDownstackBodies(t *testing.T) {
-	setupShipGT(t, true)
-	infoFakes(t)
-	t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true},"base":{"parents":[{"ref":"main","sha":"aa"}]},"feature":{"parents":[{"ref":"base","sha":"bb"}]}}`)
-	t.Setenv("GH_PR_VIEW_base", `{"number":12,"url":"https://github.com/yasyf/cc-context/pull/12","body":"why"}`)
-	t.Setenv("GH_PR_VIEW_feature", `{"number":13,"url":"https://github.com/yasyf/cc-context/pull/13","body":"   "}`)
+	downstack := loadGHGolden(t, "downstack-graphql-three")
+	f := infoGTRepo(t, downstackThree...)
+	ghReplay(t, f, downstack)
 
 	out, err := runVcsInfoCmd(t)
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
-	want := "base → PR #12 (body) · feature → PR #13 (no body)"
+	want := "fix-ship-help-graphite-demote → PR #3 (body) · yasyf/transcript-ccx-issues → PR #2 (body) · no-such-branch"
 	if got := infoLine(t, out, "downstack"); got != want {
 		t.Errorf("downstack = %q, want %q", got, want)
 	}
 }
 
+// TestInfoDownstackValue pins the three shapes one stack entry renders as. The
+// empty-bodied pull request has no recorded payload behind it — every branch the
+// downstack corpus reaches carries a body — so the arm is pinned over the
+// decoded entry rather than over bytes nobody captured.
+func TestInfoDownstackValue(t *testing.T) {
+	t.Parallel()
+	entries := []stackEntry{
+		{Branch: "base", PR: 12, URL: "https://github.com/yasyf/cc-context/pull/12", HasBody: true},
+		{Branch: "mid", PR: 13, URL: "https://github.com/yasyf/cc-context/pull/13"},
+		{Branch: "tip"},
+	}
+	want := "base → PR #12 (body) · mid → PR #13 (no body) · tip"
+	if got := infoDownstackValue(entries); got != want {
+		t.Errorf("infoDownstackValue() = %q, want %q", got, want)
+	}
+}
+
 func TestVcsInfoUntrackedBranch(t *testing.T) {
-	setupShipGT(t, true)
-	infoFakes(t)
-	t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true}}`)
+	f := infoGTRepo(t)
+	version := gtVersion(t, f)
+	runTool(t, f.Dir, "git", "switch", "-qc", "feature")
 
 	out, err := runVcsInfoCmd(t)
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
-	want := "config live · gt 1.8.6 · reachable · branch untracked (gt track --parent main)"
+	want := "config live · gt " + version + " · reachable · branch untracked (gt track --parent main)"
 	if got := infoLine(t, out, "graphite"); got != want {
 		t.Errorf("graphite = %q, want %q", got, want)
 	}
@@ -496,121 +602,127 @@ func TestVcsInfoUntrackedBranch(t *testing.T) {
 	}
 }
 
-// TestVcsInfoBrokenAncestorChainReported proves an unresolvable parent chain is
-// the report's answer rather than its failure: a stack nobody can walk is the
-// state someone runs info to diagnose, and the branch and dirtiness around it
-// stay readable. The error text still carries info's own prefix — it must never
-// tell the reader to go look at ship.
-func TestVcsInfoBrokenAncestorChainReported(t *testing.T) {
-	setupShipGT(t, true)
-	infoFakes(t)
-	t.Setenv("GIT_BRANCH", "feature2")
-	t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true},"feature2":{"parents":[{"ref":"feature","sha":"bb"}]}}`)
+// TestVcsInfoGTStateFailureReported proves gt state failing is the report's
+// answer rather than its failure: a stack nobody can read is the state someone
+// runs info to diagnose, and the branch and dirtiness around it stay readable.
+// The error still carries info's own prefix — it must never tell the reader to
+// go look at ship.
+func TestVcsInfoGTStateFailureReported(t *testing.T) {
+	f := infoGTRepo(t, "feature")
+	writeInfoFile(t, f.Dir, filepath.Join(".git", ".graphite_metadata.db"), "not a database\n")
 
 	out, err := runVcsInfoCmd(t)
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
 	stack := infoLine(t, out, "stack")
-	want := "info: gt state has no parent for feature, an ancestor of feature2"
-	if !strings.Contains(stack, want) {
-		t.Errorf("stack = %q, want it to contain %q", stack, want)
+	if !strings.HasPrefix(stack, "info: gt state:") {
+		t.Errorf("stack = %q, want it to lead with info's own prefix", stack)
 	}
 	if strings.Contains(stack, "ship:") {
 		t.Errorf("stack = %q, want info's own prefix, not ship's", stack)
 	}
-	if got := infoLine(t, out, "branch"); got != "feature2" {
-		t.Errorf("branch = %q, want the report to survive the unresolvable stack", got)
+	if got := infoLine(t, out, "branch"); got != "feature" {
+		t.Errorf("branch = %q, want the report to survive the unreadable stack", got)
 	}
-	if strings.Contains(out, "downstack") {
-		t.Errorf("report names a downstack it could not resolve:\n%s", out)
+	if got := infoLine(t, out, "dirty"); got != "no" {
+		t.Errorf("dirty = %q, want the report to survive the unreadable stack", got)
 	}
-}
-
-// TestVcsInfoGTStateFailureCarriesInfoPrefix proves gt state info cannot parse
-// is reported, still under info's own prefix rather than ship's.
-func TestVcsInfoGTStateFailureCarriesInfoPrefix(t *testing.T) {
-	setupShipGT(t, true)
-	infoFakes(t)
-	t.Setenv("GT_STATE_JSON", "not json")
-
-	out, err := runVcsInfoCmd(t)
-	if err != nil {
-		t.Fatalf("info error = %v", err)
-	}
-	if got := infoLine(t, out, "stack"); !strings.HasPrefix(got, "info: parse gt state:") {
-		t.Errorf("stack = %q, want it to lead with info's own prefix", got)
-	}
-	if strings.Contains(out, "trunk") {
-		t.Errorf("report names a trunk gt state never gave it:\n%s", out)
+	for _, absent := range []string{"trunk", "downstack"} {
+		if strings.Contains(out, absent) {
+			t.Errorf("report names %q gt state never gave it:\n%s", absent, out)
+		}
 	}
 }
 
 // TestVcsInfoGitTrunkFailureCarriesInfoPrefix pins the git lane's half of the
-// same rule: gitRemoteTrunk is restack's helper, and its error would otherwise
-// send someone running info off to restack.
+// same rule: a git that cannot answer at all aborts the report, and the error is
+// info's — vcs.ResolveTrunk is shared, so an unprefixed one would send someone
+// running info off to restack.
 func TestVcsInfoGitTrunkFailureCarriesInfoPrefix(t *testing.T) {
-	setupShip(t, ".git", true)
-	infoFakes(t)
-	seedLaneRecords(t, ".", laneSeed{})
-	t.Setenv("GIT_SYMBOLIC_REF", "")
+	f := infoRepo(t, vcstest.Remote())
+	writeInfoFile(t, f.Dir, filepath.Join(".git", "refs", "remotes", "origin", "HEAD"), "not-a-ref\n")
 
 	out, err := runVcsInfoCmd(t)
 	if err == nil {
-		t.Fatalf("info succeeded with no resolvable default branch:\n%s", out)
+		t.Fatalf("info succeeded over a corrupt origin/HEAD:\n%s", out)
 	}
-	want := "info: cannot resolve origin's default branch"
-	if !strings.HasPrefix(err.Error(), want) {
-		t.Errorf("error = %v, want it to lead with %q", err, want)
+	if !strings.HasPrefix(err.Error(), "info: ") {
+		t.Errorf("error = %v, want it to lead with info's own prefix", err)
+	}
+	if !strings.Contains(err.Error(), "exit 128") {
+		t.Errorf("error = %v, want git's exit 128 surfaced", err)
 	}
 	if strings.Contains(err.Error(), "restack:") {
 		t.Errorf("error = %v, want info's own prefix, not restack's", err)
 	}
 }
 
+// TestVcsInfoGitTrunkMissRendersEmpty proves a repository that designates no
+// default branch reports an empty trunk instead of aborting: --quiet keeps the
+// miss (exit 1) apart from a git that broke (exit 128), and only the second is
+// worth withholding the rest of the report over.
+func TestVcsInfoGitTrunkMissRendersEmpty(t *testing.T) {
+	f := infoRepo(t, vcstest.Remote(), vcstest.NoOriginHead(), vcstest.Dirty())
+	// The miss must not be mistaken for a repository with no main branch at all:
+	// refs/remotes/origin/main is here, it is simply not designated.
+	runTool(t, f.Dir, "git", "rev-parse", "--verify", "refs/remotes/origin/main")
+
+	out, err := runVcsInfoCmd(t)
+	if err != nil {
+		t.Fatalf("info error = %v", err)
+	}
+	if strings.Contains(out, "trunk") {
+		t.Errorf("report names a trunk the repository designates none of:\n%s", out)
+	}
+	if got := infoLine(t, out, "branch"); got != "main" {
+		t.Errorf("branch = %q, want the rest of the report to survive", got)
+	}
+	if got := infoLine(t, out, "dirty"); got != "yes (1 file)" {
+		t.Errorf("dirty = %q, want the rest of the report to survive", got)
+	}
+}
+
 // TestVcsInfoTrunkHolder proves info names the working copy holding trunk — the
 // thing that explains a gt restack skipping a branch "because it is checked out
 // in worktree W" and still exiting 0 — and stays silent when no checkout holds
-// it, which is what git reports for a detached main working copy.
+// it, which is what git reports once trunk is nobody's current branch.
 func TestVcsInfoTrunkHolder(t *testing.T) {
 	tests := []struct {
-		name    string
-		holders string
-		want    string
+		name string
+		held bool
 	}{
-		{"trunk held elsewhere", "main=/wt/main feature=", "/wt/main"},
-		{"trunk held by nobody", "main= feature=", ""},
-		{"no checkout holds anything", "", ""},
+		{"trunk held elsewhere", true},
+		{"trunk held by nobody", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setupShipGT(t, true)
-			infoFakes(t)
-			t.Setenv("GIT_BRANCH_HOLDERS", tt.holders)
+			f := infoGTRepo(t, "feature")
+			want := ""
+			if tt.held {
+				want = f.WorktreePath("trunk")
+				if err := os.MkdirAll(filepath.Dir(want), 0o750); err != nil {
+					t.Fatalf("mkdir worktree parent: %v", err)
+				}
+				runTool(t, f.Dir, "git", "worktree", "add", "-q", want, "main")
+			}
 
-			out, err := runVcsInfoCmd(t, "--json")
-			if err != nil {
-				t.Fatalf("info error = %v", err)
-			}
-			var got vcsInfo
-			if err := json.Unmarshal([]byte(out), &got); err != nil {
-				t.Fatalf("unmarshal report: %v\n%s", err, out)
-			}
-			if got.TrunkHolder != tt.want {
-				t.Errorf("trunk_holder = %q, want %q", got.TrunkHolder, tt.want)
+			got := runVcsInfoJSON(t)
+			if got.TrunkHolder != want {
+				t.Errorf("trunk_holder = %q, want %q", got.TrunkHolder, want)
 			}
 			human, err := runVcsInfoCmd(t)
 			if err != nil {
 				t.Fatalf("info error = %v", err)
 			}
-			if tt.want == "" {
+			if want == "" {
 				if strings.Contains(human, "trunk-held") {
 					t.Errorf("report names a trunk holder nobody is:\n%s", human)
 				}
 				return
 			}
-			if line := infoLine(t, human, "trunk-held"); line != tt.want {
-				t.Errorf("trunk-held = %q, want %q", line, tt.want)
+			if line := infoLine(t, human, "trunk-held"); line != want {
+				t.Errorf("trunk-held = %q, want %q", line, want)
 			}
 		})
 	}
@@ -621,18 +733,9 @@ func TestVcsInfoTrunkHolder(t *testing.T) {
 // anything, so reporting a shape, a main root, and a repo key that all restate
 // root would be noise.
 func TestVcsInfoMainCheckoutHasNoWorktreeBlock(t *testing.T) {
-	setupShipGT(t, true)
-	infoFakes(t)
+	infoRepo(t, vcstest.Remote())
 
-	out, err := runVcsInfoCmd(t, "--json")
-	if err != nil {
-		t.Fatalf("info error = %v", err)
-	}
-	var got vcsInfo
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
-		t.Fatalf("unmarshal report: %v\n%s", err, out)
-	}
-	if got.Worktree != nil {
+	if got := runVcsInfoJSON(t); got.Worktree != nil {
 		t.Errorf("worktree = %+v, want none for the repository's own working copy", got.Worktree)
 	}
 }
@@ -641,36 +744,12 @@ func TestVcsInfoMainCheckoutHasNoWorktreeBlock(t *testing.T) {
 // rather than refusing, and that root stays this checkout's own tree — pointing
 // it at the main working copy would name bytes ccx is not looking at.
 func TestVcsInfoLinkedWorktree(t *testing.T) {
-	setupShip(t, "", true)
-	infoFakes(t)
-	root := infoRoot(t)
-	main, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("resolve main checkout: %v", err)
-	}
-	common := filepath.Join(main, ".git")
-	admin := filepath.Join(common, "worktrees", "wt")
-	if err := os.MkdirAll(admin, 0o750); err != nil {
-		t.Fatalf("mkdir admin: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte("../..\n"), 0o600); err != nil {
-		t.Fatalf("write commondir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
-		t.Fatalf("write gitdir pointer: %v", err)
-	}
-	// The lane cache keys on the repository, which the pointer only now names, so
-	// the seed a linked worktree reads has to be written after it.
+	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Worktree("feat"))
+	root := f.WorktreePath("feat")
+	t.Chdir(root)
 	seedLaneRecords(t, ".", laneSeed{})
 
-	out, err := runVcsInfoCmd(t, "--json")
-	if err != nil {
-		t.Fatalf("info error = %v", err)
-	}
-	var got vcsInfo
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
-		t.Fatalf("unmarshal report: %v\n%s", err, out)
-	}
+	got := runVcsInfoJSON(t)
 	if got.Root != root {
 		t.Errorf("root = %q, want this checkout's own tree %q", got.Root, root)
 	}
@@ -678,9 +757,9 @@ func TestVcsInfoLinkedWorktree(t *testing.T) {
 	// symlink-free, so two checkouts reaching one repository key it identically.
 	want := worktreeInfo{
 		Shape:     "git worktree",
-		MainRoot:  main,
-		CommonDir: common,
-		RepoKey:   common,
+		MainRoot:  f.Dir,
+		CommonDir: filepath.Join(f.Dir, ".git"),
+		RepoKey:   filepath.Join(f.Dir, ".git"),
 	}
 	if got.Worktree == nil || *got.Worktree != want {
 		t.Errorf("worktree = %+v, want %+v", got.Worktree, want)
@@ -692,21 +771,14 @@ func TestVcsInfoLinkedWorktree(t *testing.T) {
 // nothing is reported, not an exit 1, and the report stops there rather than
 // claiming a branch or a dirtiness it cannot read.
 func TestVcsInfoBrokenCheckoutReported(t *testing.T) {
-	setupShip(t, "", true)
-	infoFakes(t)
-	seedLaneRecords(t, ".", laneSeed{})
-	root := infoRoot(t)
-	dangling := filepath.Join(t.TempDir(), "gone")
-	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: "+dangling+"\n"), 0o600); err != nil {
-		t.Fatalf("write gitdir pointer: %v", err)
-	}
+	vcstest.Repo(t, vcstest.BrokenGitDir())
 
 	out, err := runVcsInfoCmd(t)
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
 	got := infoLine(t, out, "checkout")
-	for _, want := range []string{"gitdir pointer resolves to nothing", dangling} {
+	for _, want := range []string{"gitdir pointer resolves to nothing", "/nonexistent-repo"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("checkout = %q, want it to contain %q", got, want)
 		}
@@ -722,13 +794,16 @@ func TestVcsInfoBrokenCheckoutReported(t *testing.T) {
 // lookup outright: info is an orientation call, and the one round trip it still
 // makes is the downstack's own pull request lookup — one for the whole stack.
 func TestVcsInfoWarmCacheSkipsRepoView(t *testing.T) {
-	log := setupShipGT(t, true)
-	infoFakes(t)
+	downstack := loadGHGolden(t, "downstack-graphql-three")
+	f := infoGTRepo(t, downstackThree...)
+	ghReplay(t, f, downstack)
+	resetArgvLog(t, f)
 
 	if _, err := runVcsInfoCmd(t); err != nil {
 		t.Fatalf("info error = %v", err)
 	}
-	invocations := readInvocations(t, log)
+	vcstest.Quiesce(t, f.ArgvLog)
+	invocations := vcstest.Invocations(t, f.ArgvLog)
 	assertNoInvocation(t, invocations, "gh", "repo", "view")
 	assertNoInvocation(t, invocations, "gt", "auth")
 	var graphql [][]string
@@ -737,5 +812,5 @@ func TestVcsInfoWarmCacheSkipsRepoView(t *testing.T) {
 			graphql = append(graphql, inv)
 		}
 	}
-	assertInvocations(t, graphql, [][]string{ghDownstackPRArgv("feature")})
+	assertInvocations(t, graphql, [][]string{ghDownstackPRArgv(downstackThree...)})
 }

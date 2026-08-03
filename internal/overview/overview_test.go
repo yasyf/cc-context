@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 func TestRunNoVCS(t *testing.T) {
@@ -58,7 +59,7 @@ func TestRunNoVCS(t *testing.T) {
 // disk: run from a subdirectory of a repo, where nothing beside the files names the
 // repository, the git and hot sections still appear.
 func TestRunIncludesGitWhenGitAnswers(t *testing.T) {
-	repo := gitRepo(t)
+	repo := vcstest.Repo(t).Dir
 	write(t, repo, "sub/internal/x/a.go", "package x\n")
 	mustGit(t, repo, "add", "-A")
 	mustGit(t, repo, "commit", "-qm", "init")

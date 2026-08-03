@@ -3,46 +3,19 @@ package vcs
 import (
 	"context"
 	"errors"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 // These tests drive real git. The repo's own history is why: a fake modelled
 // `symbolic-ref`'s clean miss as exit 1 where git without --quiet exits 128, and
 // the resolver that conflated the two passed for as long as the fake lied.
 
-// remoteRepo returns a repository with one commit and a remote whose
-// remote-tracking branch exists but whose HEAD is left undesignated, the state a
-// plain `git remote add` produces.
-func remoteRepo(t *testing.T) string {
-	t.Helper()
-	dir := gitRepo(t)
-	write(t, dir, "a.go", "package a\n")
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "init")
-	runGit(t, dir, "remote", "add", "origin", "https://example.com/x.git")
-	runGit(t, dir, "update-ref", "refs/remotes/origin/main", "HEAD")
-	return dir
-}
-
-// brokenRepo returns a checkout whose .git pointer names a repository that does
-// not exist, so every git query there fails with exit 128 regardless of what
-// encloses the temp dir.
-func brokenRepo(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: /nonexistent-repo\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return dir
-}
-
 func TestResolveTrunkResolved(t *testing.T) {
-	dir := remoteRepo(t)
-	runGit(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	dir := vcstest.Repo(t, vcstest.Remote()).Dir
 
 	trunk, err := ResolveTrunk(context.Background(), dir, "origin")
 	if err != nil {
@@ -63,7 +36,7 @@ func TestResolveTrunkResolved(t *testing.T) {
 // designates no default branch answers ErrNoTrunk, distinguishable from a git
 // that could not answer at all.
 func TestResolveTrunkMissIsProvable(t *testing.T) {
-	dir := remoteRepo(t)
+	dir := vcstest.Repo(t, vcstest.Remote(), vcstest.NoOriginHead()).Dir
 
 	_, err := ResolveTrunk(context.Background(), dir, "origin")
 	if !errors.Is(err, ErrNoTrunk) {
@@ -75,7 +48,7 @@ func TestResolveTrunkMissIsProvable(t *testing.T) {
 }
 
 func TestResolveTrunkFailureIsNotAMiss(t *testing.T) {
-	_, err := ResolveTrunk(context.Background(), brokenRepo(t), "origin")
+	_, err := ResolveTrunk(context.Background(), vcstest.Repo(t, vcstest.BrokenGitDir()).Dir, "origin")
 	if err == nil {
 		t.Fatal("ResolveTrunk on a broken checkout succeeded")
 	}
@@ -92,8 +65,7 @@ func TestResolveTrunkFailureIsNotAMiss(t *testing.T) {
 // answers plumbing in place of the remote-tracking ref — with a warning on stderr
 // and exit 0. Trunk.Ref() is the qualified spelling that cannot be shadowed.
 func TestResolveTrunkRefBeatsTheDecoyBranch(t *testing.T) {
-	dir := remoteRepo(t)
-	runGit(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	dir := vcstest.Repo(t, vcstest.Remote()).Dir
 	// The decoy carries a commit the remote-tracking ref does not.
 	write(t, dir, "decoy.go", "package a\n")
 	runGit(t, dir, "add", "-A")
@@ -143,6 +115,12 @@ func isAncestor(t *testing.T, dir, rev string) bool {
 // trim-the-prefix decode turned refs/tags/v1 into the branch name "v1". The full
 // ref discriminates.
 func TestResolveTrunkRejectsATargetOutsideTheRemote(t *testing.T) {
+	// One fixture serves the table: every case overwrites origin/HEAD, the only
+	// state it reads, so no case can observe another's.
+	dir := vcstest.Repo(t, vcstest.Remote()).Dir
+	runGit(t, dir, "tag", "v1", "HEAD")
+	runGit(t, dir, "update-ref", "refs/remotes/upstream/main", "HEAD")
+
 	tests := []struct {
 		name   string
 		target string
@@ -153,9 +131,6 @@ func TestResolveTrunkRejectsATargetOutsideTheRemote(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dir := remoteRepo(t)
-			runGit(t, dir, "tag", "v1", "HEAD")
-			runGit(t, dir, "update-ref", "refs/remotes/upstream/main", "HEAD")
 			runGit(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", tt.target)
 
 			_, err := ResolveTrunk(context.Background(), dir, "origin")
@@ -173,7 +148,7 @@ func TestResolveTrunkRejectsATargetOutsideTheRemote(t *testing.T) {
 }
 
 func TestResolveTrunkNonOriginRemote(t *testing.T) {
-	dir := remoteRepo(t)
+	dir := vcstest.Repo(t, vcstest.Remote()).Dir
 	runGit(t, dir, "remote", "add", "upstream", "https://example.com/u.git")
 	runGit(t, dir, "update-ref", "refs/remotes/upstream/trunk", "HEAD")
 	runGit(t, dir, "symbolic-ref", "refs/remotes/upstream/HEAD", "refs/remotes/upstream/trunk")
@@ -188,7 +163,7 @@ func TestResolveTrunkNonOriginRemote(t *testing.T) {
 }
 
 func TestTrunkFromName(t *testing.T) {
-	dir := remoteRepo(t)
+	dir := vcstest.Repo(t, vcstest.Remote()).Dir
 
 	trunk, err := TrunkFromName(context.Background(), dir, "origin", "main")
 	if err != nil {
@@ -210,7 +185,7 @@ func TestTrunkFromName(t *testing.T) {
 	}
 
 	err = func() error {
-		_, err := TrunkFromName(context.Background(), brokenRepo(t), "origin", "main")
+		_, err := TrunkFromName(context.Background(), vcstest.Repo(t, vcstest.BrokenGitDir()).Dir, "origin", "main")
 		return err
 	}()
 	if err == nil || errors.Is(err, ErrNoTrunk) {
@@ -219,7 +194,7 @@ func TestTrunkFromName(t *testing.T) {
 }
 
 func TestGitRemoteFor(t *testing.T) {
-	dir := remoteRepo(t)
+	dir := vcstest.Repo(t, vcstest.Remote()).Dir
 
 	got, err := GitRemoteFor(context.Background(), dir, "main")
 	if err != nil {
@@ -238,7 +213,7 @@ func TestGitRemoteFor(t *testing.T) {
 		t.Fatalf("remote = %q, want upstream", got)
 	}
 
-	if _, err := GitRemoteFor(context.Background(), brokenRepo(t), "main"); err == nil {
+	if _, err := GitRemoteFor(context.Background(), vcstest.Repo(t, vcstest.BrokenGitDir()).Dir, "main"); err == nil {
 		t.Fatal("GitRemoteFor on a broken checkout succeeded")
 	}
 }

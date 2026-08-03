@@ -911,8 +911,8 @@ func gitCurrentBranch(ctx context.Context, prefix string) (string, error) {
 // unresolved case alone: origin/HEAD may be pointed at any ref, and
 // `git symbolic-ref --short refs/remotes/origin/HEAD` prints a tag as readily as
 // a branch at exit 0, so a target outside origin/ is an error the way
-// gitRemoteTrunk and worktreeTrunk already treat it — reporting "" there would
-// hand ship a tag to ship onto, or drop a trunk git named.
+// vcs.ResolveTrunk already treats it — reporting "" there would hand ship a tag
+// to ship onto, or drop a trunk git named.
 func gitTrunkBranch(ctx context.Context) (string, error) {
 	ref := "refs/remotes/origin/HEAD"
 	out, code, _, err := render.RunCLIExitCode(ctx, "git", []string{"symbolic-ref", "--short", ref})
@@ -1295,7 +1295,7 @@ func shipPushGitOnce(ctx context.Context, remote, branch string) (int, error) {
 			return 0, err
 		}
 		if !ancestor {
-			rebased, err = gitRebaseOnto(ctx, remote, branch)
+			rebased, err = gitRebaseOnto(ctx, "ship", remote, branch)
 			if err != nil {
 				return 0, err
 			}
@@ -1349,23 +1349,23 @@ func gitIsAncestor(ctx context.Context, prefix, maybe, ref string) (bool, error)
 // is dirty after a hunk-scoped ship), returning the number of local commits
 // replayed. A failed rebase is classified by gitRebaseFailure; an autostash pop
 // left unapplied is surfaced as a warning, not a failure.
-func gitRebaseOnto(ctx context.Context, remote, branch string) (int, error) {
+func gitRebaseOnto(ctx context.Context, prefix, remote, branch string) (int, error) {
 	remoteRef := "refs/remotes/" + remote + "/" + branch
 	countOut, err := render.RunCLI(ctx, "git", []string{"rev-list", "--count", remoteRef + "..HEAD"})
 	if err != nil {
-		return 0, fmt.Errorf("ship: git rev-list --count: %w", err)
+		return 0, fmt.Errorf(prefix+": git rev-list --count: %w", err)
 	}
 	count, err := strconv.Atoi(strings.TrimSpace(countOut))
 	if err != nil {
-		return 0, fmt.Errorf("ship: malformed rev-list count %q: %w", countOut, err)
+		return 0, fmt.Errorf(prefix+": malformed rev-list count %q: %w", countOut, err)
 	}
 
 	_, stderr, err := render.RunCLIKeepStderr(ctx, "git", []string{"rebase", "--autostash", remoteRef})
 	if err != nil {
-		return 0, gitRebaseFailure(ctx, remote, branch, err)
+		return 0, gitRebaseFailure(ctx, prefix, remote, branch, err)
 	}
 	if strings.Contains(stderr, "resulted in conflicts") {
-		slog.Warn("ship: rebase left autostashed changes unapplied — recover them with git stash pop", "branch", branch)
+		slog.Warn(prefix+": rebase left autostashed changes unapplied — recover them with git stash pop", "branch", branch)
 	}
 	return count, nil
 }
@@ -1374,24 +1374,24 @@ func gitRebaseOnto(ctx context.Context, remote, branch string) (int, error) {
 // (REBASE_HEAD resolves) conflicted mid-replay: list, abort (restoring the
 // autostash), report. Otherwise it failed before starting (hook, dirty index) —
 // return the raw error, no abort. Cleanup runs uncancellable.
-func gitRebaseFailure(ctx context.Context, remote, branch string, rebaseErr error) error {
+func gitRebaseFailure(ctx context.Context, prefix, remote, branch string, rebaseErr error) error {
 	cleanup := context.WithoutCancel(ctx)
 	inProgress, err := gitRefExists(cleanup, "REBASE_HEAD")
 	if err != nil {
 		return err
 	}
 	if !inProgress {
-		return fmt.Errorf("ship: git rebase onto %s/%s: %w", remote, branch, rebaseErr)
+		return fmt.Errorf(prefix+": git rebase onto %s/%s: %w", remote, branch, rebaseErr)
 	}
 	files, lerr := render.RunCLI(cleanup, "git", []string{"diff", "--name-only", "--diff-filter=U"})
 	if _, aerr := render.RunCLI(cleanup, "git", []string{"rebase", "--abort"}); aerr != nil {
-		return fmt.Errorf("ship: rebase onto %s/%s conflicted (%w) and abort failed: %w — run: git rebase --abort, then resolve manually", remote, branch, rebaseErr, aerr)
+		return fmt.Errorf(prefix+": rebase onto %s/%s conflicted (%w) and abort failed: %w — run: git rebase --abort, then resolve manually", remote, branch, rebaseErr, aerr)
 	}
 	if lerr != nil {
-		return fmt.Errorf("ship: rebase onto %s/%s conflicted (%w); aborted back to the pre-rebase state; listing the conflicted files also failed: %w — resolve manually: git fetch %s && git rebase --autostash %s/%s, fix the conflicts (git status), then git push %s %s", remote, branch, rebaseErr, lerr, remote, remote, branch, remote, branch)
+		return fmt.Errorf(prefix+": rebase onto %s/%s conflicted (%w); aborted back to the pre-rebase state; listing the conflicted files also failed: %w — resolve manually: git fetch %s && git rebase --autostash %s/%s, fix the conflicts (git status), then git push %s %s", remote, branch, rebaseErr, lerr, remote, remote, branch, remote, branch)
 	}
 	conflicted := strings.Join(strings.Fields(files), ", ")
-	return fmt.Errorf("ship: rebase onto %s/%s conflicts in: %s; aborted back to the pre-rebase state (%w) — resolve manually: git fetch %s && git rebase --autostash %s/%s, fix the conflicts (git status), then git push %s %s", remote, branch, conflicted, rebaseErr, remote, remote, branch, remote, branch)
+	return fmt.Errorf(prefix+": rebase onto %s/%s conflicts in: %s; aborted back to the pre-rebase state (%w) — resolve manually: git fetch %s && git rebase --autostash %s/%s, fix the conflicts (git status), then git push %s %s", remote, branch, conflicted, rebaseErr, remote, remote, branch, remote, branch)
 }
 
 func jjBookmarkNames(ctx context.Context, prefix, rev string) ([]string, error) {

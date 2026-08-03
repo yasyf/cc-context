@@ -13,6 +13,7 @@ import (
 	"github.com/yasyf/cc-context/internal/diff"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/secrets"
+	"github.com/yasyf/cc-context/internal/vcs"
 )
 
 func newHistoryCmd() *cobra.Command {
@@ -92,50 +93,27 @@ func runHistory(ctx context.Context, path string, n, budget int, reveal bool) (s
 }
 
 // logCommits runs the pinned `git log --follow --name-status` enumeration over
-// path and parses its records into per-commit hash, date, subject, and the file's
-// then-current name (following renames across the file's history).
+// path and reads each record's hash, date, subject, and the file's then-current
+// name (following renames across the file's history). The name comes from the
+// commit's last name-status entry — the rename destination on a rename, the
+// then-current name otherwise.
 func logCommits(ctx context.Context, path string, n int) ([]historyCommit, error) {
-	out, err := render.RunCLI(ctx, "git", []string{
-		"log", "--follow",
-		"--format=%h%x00%ad%x00%s",
-		"--date=short",
-		"-n", strconv.Itoa(n),
-		"--name-status",
-		"--", path,
-	})
+	records, err := vcs.GitLogNameStatus(ctx, vcs.GitArgs{
+		Sub:   []string{"log", "--follow", "--date=short", "-n", strconv.Itoa(n)},
+		Paths: []string{path},
+	}, "%h", "%ad", "%s")
 	if err != nil {
-		return nil, fmt.Errorf("git log %q: %w", path, err)
+		return nil, fmt.Errorf("history %q: %w", path, err)
 	}
-	return parseCommits(out), nil
-}
-
-// parseCommits decodes `git log --follow --name-status` output. Each commit is a
-// header line — three NUL-separated fields (%h, %ad, %s) — followed, after a blank
-// line, by one name-status line naming the file at that commit. Header lines are
-// identified by their NUL separators; the name-status line (tab-separated, no NUL)
-// sets the preceding commit's path.
-func parseCommits(out string) []historyCommit {
-	var commits []historyCommit
-	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		switch {
-		case strings.IndexByte(line, 0) >= 0:
-			f := strings.SplitN(line, "\x00", 3)
-			commits = append(commits, historyCommit{short: f[0], date: f[1], subject: f[2]})
-		case line == "":
-			continue
-		case len(commits) > 0:
-			commits[len(commits)-1].path = statusPath(line)
+	commits := make([]historyCommit, 0, len(records))
+	for _, r := range records {
+		c := historyCommit{short: r.Fields[0], date: r.Fields[1], subject: r.Fields[2]}
+		if len(r.Entries) > 0 {
+			c.path = r.Entries[len(r.Entries)-1].New
 		}
+		commits = append(commits, c)
 	}
-	return commits
-}
-
-// statusPath returns the file's path from a `--name-status` line, which is its last
-// tab-separated field: the destination on a rename or copy (`R<score>\told\tnew`) or
-// the sole path on an add, modify, or delete (`A\tpath`).
-func statusPath(line string) string {
-	f := strings.Split(line, "\t")
-	return f[len(f)-1]
+	return commits, nil
 }
 
 // commitSummary returns the indented symbol line for one commit: the changed
@@ -165,31 +143,21 @@ func commitSummary(ctx context.Context, dir, sha, path string) (string, error) {
 
 // commitStat returns sha's parent hashes and the file's added/deleted line counts
 // via a single `git show --numstat --format=%P`. Empty parents marks a root commit.
+// A binary file's "-" counts decode to zero.
 func commitStat(ctx context.Context, sha, path string) (parents []string, added, deleted int, err error) {
-	out, err := render.RunCLI(ctx, "git", []string{"show", "--numstat", "--format=%P", sha, "--", path})
+	header, records, err := vcs.GitNumstat(ctx, vcs.GitArgs{
+		Sub:   []string{"show"},
+		Revs:  []vcs.GitRef{vcs.UnsafeRef(sha)},
+		Paths: []string{path},
+	}, "%P")
 	if err != nil {
-		return nil, 0, 0, fmt.Errorf("git show %s: %w", sha, err)
+		return nil, 0, 0, fmt.Errorf("commit stat %s: %w", sha, err)
 	}
-	parents, added, deleted = parseNumstat(out)
-	return parents, added, deleted, nil
-}
-
-// parseNumstat decodes `git show --numstat --format=%P` output: the first line is
-// the space-separated parent hashes (empty for a root commit), followed by
-// "<added>\t<deleted>\t<path>" numstat rows. Binary files report "-" counts,
-// which decode to zero.
-func parseNumstat(out string) (parents []string, added, deleted int) {
-	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	parents = strings.Fields(lines[0])
-	for _, line := range lines[1:] {
-		f := strings.Split(line, "\t")
-		if len(f) < 3 {
-			continue
-		}
-		a, _ := strconv.Atoi(f[0])
-		d, _ := strconv.Atoi(f[1])
+	for _, r := range records {
+		a, _ := strconv.Atoi(r.Added)
+		d, _ := strconv.Atoi(r.Deleted)
 		added += a
 		deleted += d
 	}
-	return parents, added, deleted
+	return strings.Fields(header[0]), added, deleted, nil
 }

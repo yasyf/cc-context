@@ -129,49 +129,19 @@ func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 		return "", err
 	}
 
-	trunkRef, err := gtRestackTrunkRef(ctx, trunk)
+	remote, err := vcs.GitRemoteFor(ctx, "", trunk)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("restack: %w", err)
+	}
+	trunkRef, err := vcs.TrunkFromName(ctx, "", remote, trunk)
+	if err != nil {
+		return "", fmt.Errorf("restack: %w", err)
 	}
 	restacked, skipped, err := gtRestackVerdict(ctx, trunkRef, stack, gtSyncSkipped(output))
 	if err != nil {
 		return "", err
 	}
 	return gtRestackSummary(trunk, trunkHolder, len(stack), restacked, skipped), nil
-}
-
-// gtRestackTrunkRef names the ref the verdict measures the stack against: the
-// remote-tracking trunk, fully qualified, not the local branch. gt sync writes
-// refs/remotes/<remote>/<trunk> from the fetch before it tries to move the local
-// branch, and that second step is the one that fails — a sibling working copy
-// holding trunk with conflicting unstaged changes, or a trunk that cannot
-// fast-forward, leaves the local branch stale while gt still exits 0 without
-// declining a single branch. A stack measured against that ref reads as current
-// while it sits behind the trunk everyone else sees.
-//
-// The qualification is load-bearing. git resolves the short <remote>/<trunk>
-// through refs/tags and refs/heads before refs/remotes, so a local branch or tag
-// literally named origin/main answers merge-base in place of the ref show-ref
-// just verified; git warns on stderr and still exits 0, leaving the verdict to
-// count a stack that never moved as restacked.
-func gtRestackTrunkRef(ctx context.Context, trunk string) (string, error) {
-	remote, err := gitRemoteFor(ctx, "restack", trunk)
-	if err != nil {
-		return "", err
-	}
-	ref := "refs/remotes/" + remote + "/" + trunk
-	_, code, stderr, err := render.RunCLIExitCode(ctx, "git", []string{"show-ref", "--verify", "--quiet", ref})
-	if err != nil {
-		return "", fmt.Errorf("restack: git show-ref %s: %w", ref, err)
-	}
-	switch code {
-	case 0:
-		return ref, nil
-	case 1:
-		return "", fmt.Errorf("restack: %s does not exist — run git fetch %s %s", ref, remote, trunk)
-	default:
-		return "", fmt.Errorf("restack: git show-ref %s: exit %d: %s", ref, code, strings.TrimSpace(stderr))
-	}
 }
 
 // gtRestackStack lists the branches gt sync is asked to restack: the current
@@ -268,21 +238,29 @@ func gtSkipReason(reason string) string {
 	return reason
 }
 
-// gtRestackVerdict counts the stack branches that ended up on trunkRef and
-// labels the rest, then appends every branch gt declined that the stack never
-// named. A branch gt declined never counts as restacked, however the ancestry
-// compares: gt reports what it did, while ancestry infers it. Where the two
-// disagree the label says so, since a decline over a branch already on trunk is
-// a different fact from one over a branch left behind it.
-func gtRestackVerdict(ctx context.Context, trunkRef string, stack []string, declined map[string]string) (int, []string, error) {
+// gtRestackVerdict counts the stack branches that ended up on trunk and labels
+// the rest, then appends every branch gt declined that the stack never named. A
+// branch gt declined never counts as restacked, however the ancestry compares:
+// gt reports what it did, while ancestry infers it. Where the two disagree the
+// label says so, since a decline over a branch already on trunk is a different
+// fact from one over a branch left behind it.
+//
+// The measurement is against the remote-tracking trunk, never the local branch.
+// gt sync writes refs/remotes/<remote>/<trunk> from the fetch before it tries to
+// move the local branch, and that second step is the one that fails — a sibling
+// working copy holding trunk with conflicting unstaged changes, or a trunk that
+// cannot fast-forward, leaves the local branch stale while gt still exits 0
+// without declining a single branch. A stack measured against that ref reads as
+// current while it sits behind the trunk everyone else sees.
+func gtRestackVerdict(ctx context.Context, trunk vcs.Trunk, stack []string, declined map[string]string) (int, []string, error) {
 	restacked := 0
 	named := make(map[string]bool, len(stack))
 	var skipped []string
 	for _, branch := range stack {
 		named[branch] = true
-		on, err := gitIsAncestor(ctx, "restack", trunkRef, branch)
+		on, err := gitIsAncestor(ctx, "restack", string(trunk.Ref()), branch)
 		if err != nil {
-			return 0, nil, fmt.Errorf("restack: check %s sits on %s: %w", branch, trunkRef, err)
+			return 0, nil, fmt.Errorf("restack: check %s sits on %s: %w", branch, trunk.Ref(), err)
 		}
 		reason, refused := declined[branch]
 		switch {
@@ -291,7 +269,7 @@ func gtRestackVerdict(ctx context.Context, trunkRef string, stack []string, decl
 		case !refused:
 			skipped = append(skipped, gtSkipLabel(branch))
 		case on:
-			skipped = append(skipped, gtSkipLabel(branch, reason, "already on "+trunkRef))
+			skipped = append(skipped, gtSkipLabel(branch, reason, "already on "+trunk.Name()))
 		default:
 			skipped = append(skipped, gtSkipLabel(branch, reason))
 		}
@@ -420,71 +398,35 @@ func restackGit(ctx context.Context) (string, error) {
 	if branch == "" {
 		return "", errRestackDetached
 	}
-	remote, err := gitRemoteFor(ctx, "restack", branch)
+	remote, err := vcs.GitRemoteFor(ctx, "", branch)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("restack: %w", err)
 	}
 	if _, err := render.RunCLI(ctx, "git", []string{"fetch", remote}); err != nil {
 		return "", fmt.Errorf("restack: git fetch %s: %w", remote, err)
 	}
 
-	trunk, err := gitRemoteTrunk(ctx, "restack", remote)
+	trunk, err := vcs.ResolveTrunk(ctx, "", remote)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("restack: %w", err)
 	}
-	remoteTrunk := remote + "/" + trunk
-	upToDate, err := gitIsAncestor(ctx, "restack", remoteTrunk, "HEAD")
+	upToDate, err := gitIsAncestor(ctx, "restack", string(trunk.Ref()), "HEAD")
 	if err != nil {
-		return "", fmt.Errorf("restack: compare HEAD with %s: %w", remoteTrunk, err)
+		return "", fmt.Errorf("restack: compare HEAD with %s: %w", trunk.Ref(), err)
 	}
 	if upToDate {
 		return "fetched · already up to date", nil
 	}
 
-	if branch == trunk {
-		if _, err := render.RunCLI(ctx, "git", []string{"merge", "--ff-only", remoteTrunk}); err != nil {
-			return "", fmt.Errorf("restack: fast-forward %s to %s: %w — resolve manually: git fetch %s && git merge --ff-only %s", branch, remoteTrunk, err, remote, remoteTrunk)
+	if branch == trunk.Name() {
+		if _, err := render.RunCLI(ctx, "git", []string{"merge", "--ff-only", string(trunk.Ref())}); err != nil {
+			return "", fmt.Errorf("restack: fast-forward %s to %s: %w — resolve manually: git fetch %s && git merge --ff-only %s", branch, trunk.Ref(), err, remote, trunk.Ref())
 		}
-		return "fetched · fast-forwarded " + trunk, nil
+		return "fetched · fast-forwarded " + trunk.Name(), nil
 	}
 
-	if _, err := gitRebaseOnto(ctx, remote, trunk); err != nil {
+	if _, err := gitRebaseOnto(ctx, "restack", trunk.Remote(), trunk.Name()); err != nil {
 		return "", err
 	}
-	return "fetched · rebased onto " + remoteTrunk, nil
-}
-
-// gitRemoteTrunk resolves remote's default branch, prefixing every failure with
-// the command that asked — restack and info share it, and an error naming the
-// wrong one sends the reader to the wrong command.
-func gitRemoteTrunk(ctx context.Context, prefix, remote string) (string, error) {
-	ref := "refs/remotes/" + remote + "/HEAD"
-	unresolved := fmt.Errorf("%s: cannot resolve %s's default branch — run git remote set-head %s -a", prefix, remote, remote)
-	out, code, _, err := render.RunCLIExitCode(ctx, "git", []string{"symbolic-ref", "--short", ref})
-	if err != nil {
-		return "", fmt.Errorf("%s: git symbolic-ref %s: %w", prefix, ref, err)
-	}
-	if code == 0 {
-		name := strings.TrimSpace(out)
-		if trunk, ok := strings.CutPrefix(name, remote+"/"); ok && trunk != "" {
-			return trunk, nil
-		}
-		return "", unresolved
-	}
-
-	for _, trunk := range []string{"main", "master"} {
-		candidate := "refs/remotes/" + remote + "/" + trunk
-		_, code, stderr, err := render.RunCLIExitCode(ctx, "git", []string{"show-ref", "--verify", "--quiet", candidate})
-		if err != nil {
-			return "", fmt.Errorf("%s: git show-ref %s: %w", prefix, candidate, err)
-		}
-		switch code {
-		case 0:
-			return trunk, nil
-		case 1:
-		default:
-			return "", fmt.Errorf("%s: git show-ref %s: exit %d: %s", prefix, candidate, code, strings.TrimSpace(stderr))
-		}
-	}
-	return "", unresolved
+	return "fetched · rebased onto " + trunk.Name(), nil
 }
