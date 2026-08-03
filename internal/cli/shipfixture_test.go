@@ -17,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -68,6 +69,22 @@ func shipRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	return f
 }
 
+// shipOptsFor prefixes JJ() when a table row runs the jj lane, so one row set
+// covers both lanes without spelling the option list twice.
+func shipOptsFor(jj bool, opts ...vcstest.Opt) []vcstest.Opt {
+	if jj {
+		return append([]vcstest.Opt{vcstest.JJ()}, opts...)
+	}
+	return opts
+}
+
+func shipKind(jj bool) vcs.Kind {
+	if jj {
+		return vcs.JJ
+	}
+	return vcs.Git
+}
+
 // gitAt reads repository state back out of dir, trimmed. It resolves through
 // the shim like any other call, so a test asserting invocations reads the log
 // before its state assertions.
@@ -93,28 +110,134 @@ func gitBranchExists(t *testing.T, dir, branch string) bool {
 	return gitAt(t, dir, "branch", "--list", "--format=%(refname:short)", branch) != ""
 }
 
+// shipRecordArgv is the shim's own framing — depth, argc, then the argv — for a
+// faked process to prepend to its script, so its calls land in the fixture's log
+// beside the real tools'.
+func shipRecordArgv(name, log string) string {
+	return `d="${CCX_SHIM_DEPTH:-0}"` + "\n" +
+		`printf '%s\0' "$d" "$(($#+1))" ` + name + ` "$@" >> '` + log + `'` + "\n"
+}
+
+func writeShipExecutable(t *testing.T, dir, name, script string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o700); err != nil { //nolint:gosec // a PATH entry must be owner-executable
+		t.Fatalf("write %s: %v", name, err)
+	}
+}
+
 // writeShipUvx installs a uvx that fails its first n prek runs and passes
-// after, the timing window shipRunHooks' autofix retry turns on. No repository
-// state can express "the hook fails this time and not the next".
-func writeShipUvx(t *testing.T, dir string, n int) {
+// after, the timing window shipRunHooks' autofix retry turns on: no repository
+// state can express "the hook fails this time and not the next". effect is the
+// shell a failing run performs on the working copy, standing for the edit a
+// real auto-fixing hook leaves behind — so the changed set ship re-derives is
+// one the repository genuinely holds. Without this call there is no uvx at all:
+// vcstest's PATH holds the system directories alone, where uvx never lives.
+func writeShipUvx(t *testing.T, f *vcstest.Fixture, n int, effect string) {
 	t.Helper()
 	marker := filepath.Join(t.TempDir(), "prek.marker")
 	if err := os.WriteFile(marker, []byte(strconv.Itoa(n)), 0o600); err != nil {
 		t.Fatalf("write prek marker: %v", err)
 	}
 	t.Setenv("SHIP_PREK_MARKER", marker)
-	script := `#!/bin/sh
-count=$(cat "$SHIP_PREK_MARKER")
+	if effect != "" {
+		effect = "  ( " + effect + " ) || exit 99\n"
+	}
+	writeShipExecutable(t, f.ShimBin, "uvx", "#!/bin/sh\n"+shipRecordArgv("uvx", f.ArgvLog)+`count=$(cat "$SHIP_PREK_MARKER")
 if [ "$count" -gt 0 ]; then
   printf '%s' "$((count - 1))" > "$SHIP_PREK_MARKER"
-  printf 'files were modified by this hook\n' >&2
+`+effect+`  printf 'files were modified by this hook\n' >&2
   exit 1
 fi
 exit 0
-`
-	if err := os.WriteFile(filepath.Join(dir, "uvx"), []byte(script), 0o700); err != nil { //nolint:gosec // a PATH entry must be owner-executable
-		t.Fatalf("write uvx: %v", err)
+`)
+}
+
+// writeShipGH installs a fake gh into the fixture's shim directory. gh is a
+// network boundary, so the process is faked — but every byte it prints comes out
+// of the recorded corpus a test loads into these variables, never a sentence
+// anyone wrote here.
+func writeShipGH(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	t.Setenv("GH_VIEWER_GOLDEN", ghStdout(t, "viewer-graphql"))
+	writeShipExecutable(t, f.ShimBin, "gh", "#!/bin/sh\n"+shipRecordArgv("gh", f.ArgvLog)+shipGHBody)
+}
+
+// shipHead is the commit gh is asked about after a push, read back out of the
+// repository rather than invented.
+func shipHead(t *testing.T, f *vcstest.Fixture) string {
+	t.Helper()
+	return gitAt(t, f.Dir, "rev-parse", "HEAD")
+}
+
+// shipCommitted renders the report segment naming the commit ship just cut, off
+// the repository's own short id and subject. jj's short id is its own length,
+// so the lane picks which tool is asked.
+func shipCommitted(t *testing.T, f *vcstest.Fixture, kind vcs.Kind) string {
+	t.Helper()
+	if kind == vcs.JJ {
+		return fmt.Sprintf("committed %s %q", jjAt(t, f.Dir, "@-", "commit_id.short()"), jjAt(t, f.Dir, "@-", "description.first_line()"))
 	}
+	return fmt.Sprintf("committed %s %q", gitAt(t, f.Dir, "log", "-1", "--format=%h"), gitAt(t, f.Dir, "log", "-1", "--format=%s"))
+}
+
+// jjAt renders one template against one revision, trimmed.
+func jjAt(t *testing.T, dir, rev, template string) string {
+	t.Helper()
+	return strings.TrimSpace(mustRun(t, dir, "jj", "--ignore-working-copy", "log", "-r", rev, "--no-graph", "-T", template))
+}
+
+// shipResetLog drops the argv the test's own fixture work wrote, so an
+// invocation assertion sees only what ship itself ran.
+func shipResetLog(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	vcstest.Quiesce(t, f.ArgvLog)
+	if err := os.WriteFile(f.ArgvLog, nil, 0o600); err != nil {
+		t.Fatalf("truncate argv log: %v", err)
+	}
+}
+
+// shipHookRepo commits the working copy with a prek config added to it and
+// leaves names behind as the only change after, so the files a hook run is
+// scoped to are the test's own rather than the config that turned hooks on. It
+// installs a uvx that fails its first fail runs, performing effect on each
+// failing run; the argv log opens empty.
+func shipHookRepo(t *testing.T, f *vcstest.Fixture, kind vcs.Kind, fail int, effect string, names ...string) {
+	t.Helper()
+	writeShipFile(t, f.Dir, ".pre-commit-config.yaml", "repos: []\n")
+	if kind == vcs.JJ {
+		mustRun(t, f.Dir, "jj", "commit", "-m", "hooks")
+		mustRun(t, f.Dir, "jj", "bookmark", "move", "main", "--to", "@-")
+	} else {
+		mustRun(t, f.Dir, "git", "add", "-A")
+		mustRun(t, f.Dir, "git", "commit", "-qm", "hooks")
+	}
+	for _, name := range names {
+		writeShipFile(t, f.Dir, name, "x")
+	}
+	writeShipUvx(t, f, fail, effect)
+	shipResetLog(t, f)
+}
+
+func writeShipFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// shipInvocationsOf keeps the records tool made, dropping the rest.
+func shipInvocationsOf(invocations [][]string, tool string) [][]string {
+	var out [][]string
+	for _, inv := range invocations {
+		if inv[0] == tool {
+			out = append(out, inv)
+		}
+	}
+	return out
 }
 
 // writeShipFakes installs fake jj, git, and (when withGh) gh executables into
@@ -407,7 +530,35 @@ exit 0
 esac
 exit 0
 `
-	gh := "#!/bin/sh\n" + log("gh") + `case "$1 $2" in
+	gh := "#!/bin/sh\n" + log("gh") + shipGHBody
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
+			t.Fatalf("write fake %s: %v", name, err)
+		}
+	}
+	write("jj", jj)
+	write("git", git)
+	write("uvx", uvx)
+	write("gt", gt)
+	if withGh {
+		write("gh", gh)
+	}
+}
+
+// shipGHBody is the fake gh's dispatch, shared by the fixture on real
+// repositories and the one on the fakes: every payload it prints comes from a
+// variable the test loaded out of the recorded corpus. $GH_PR_BODY_DUMP copies
+// the bytes behind a --body-file out before gh returns, which is the only
+// window a body materialized from stdin has: ship deletes that temp file on the
+// way out, so the argv alone cannot say what was in it.
+const shipGHBody = `if [ -n "$GH_PR_BODY_DUMP" ]; then
+  take=
+  for a in "$@"; do
+    if [ -n "$take" ]; then cat "$a" > "$GH_PR_BODY_DUMP"; take=; fi
+    if [ "$a" = --body-file ]; then take=1; fi
+  done
+fi
+case "$1 $2" in
   "repo view") printf '%s' "$GH_REPO_VIEW_JSON" ;;
   "api graphql")
     case "$*" in
@@ -488,19 +639,6 @@ exit 0
 esac
 exit 0
 `
-	write := func(name, body string) {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
-			t.Fatalf("write fake %s: %v", name, err)
-		}
-	}
-	write("jj", jj)
-	write("git", git)
-	write("uvx", uvx)
-	write("gt", gt)
-	if withGh {
-		write("gh", gh)
-	}
-}
 
 // setupShip stands up an isolated repo of the given marker (".git" or ".jj"),
 // chdirs into it, puts the fakes on PATH, and points $SHIP_LOG at a fresh log.
@@ -670,10 +808,16 @@ var gitTrunkArgv = []string{"git", "symbolic-ref", "--short", "refs/remotes/orig
 // The CI watch's three gh calls, for want-lists long enough that spelling them
 // out buries the argv under test.
 var (
-	ghRunListArgv  = []string{"gh", "run", "list", "--commit", fakeHeadSHA, "--limit", "50", "--json", "databaseId,workflowName,status,url"}
+	ghRunListArgv  = ghRunListArgvFor(fakeHeadSHA)
 	ghRunWatchArgv = []string{"gh", "run", "watch", "42", "--exit-status"}
 	ghRunViewArgv  = []string{"gh", "run", "view", "42", "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"}
 )
+
+// ghRunListArgvFor is the CI watch's registration poll for the commit ship
+// pushed, which on a real repository is a sha only the repository can name.
+func ghRunListArgvFor(sha string) []string {
+	return []string{"gh", "run", "list", "--commit", sha, "--limit", "50", "--json", "databaseId,workflowName,status,url"}
+}
 
 // ghDownstackPRArgv is the one batched pull request lookup a gt-lane report
 // makes, in place of a gh pr view per branch. branches are base-first, the order

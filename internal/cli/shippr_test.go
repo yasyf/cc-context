@@ -2,16 +2,71 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/vcs"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 const fakePRRepo = "yasyf/cc-context"
+
+// fakePRCreateURL is the one pull request payload still hand-modeled: gh pr
+// create prints nothing but the URL of a pull request it just opened, so
+// recording one opens a real pull request (`task record-gh -- --write OWNER/N`).
+const fakePRCreateURL = "https://github.com/yasyf/cc-context/pull/12"
+
+// shipPRFixture builds a real repository with an edit waiting and a bare origin
+// to push it to, the shape every pull request test ships from, and puts the
+// recorded gh in front of it.
+func shipPRFixture(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
+	t.Helper()
+	f := shipRepo(t, append([]vcstest.Opt{vcstest.Remote(), vcstest.Dirty()}, opts...)...)
+	writeShipGH(t, f)
+	return f
+}
+
+// prFromListGolden is the pull request a recorded gh pr list resolves to, so an
+// assertion names the number and URL GitHub returned rather than ones written
+// here.
+func prFromListGolden(t *testing.T, scenario string) prState {
+	t.Helper()
+	var prs []prState
+	if err := json.Unmarshal([]byte(ghStdout(t, scenario)), &prs); err != nil {
+		t.Fatalf("golden %s: %v", scenario, err)
+	}
+	if len(prs) != 1 {
+		t.Fatalf("golden %s holds %d pull requests, want 1", scenario, len(prs))
+	}
+	return prs[0]
+}
+
+// shipPRPushed is the git lane's plan, commit, and push, the argv every pull
+// request test shares before its own gh calls. The remote-tracking ref for a
+// branch never pushed does not resolve, so the ancestry check behind it never
+// runs.
+func shipPRPushed(branch string) [][]string {
+	return [][]string{
+		{"git", "branch", "--show-current"},
+		gitTrunkArgv,
+		{"git", "add", "-A"},
+		{"git", "commit", "-m", "fix: frobnicate"},
+		{"git", "branch", "--show-current"},
+		{"git", "log", "-1", "--format=%h%x00%s"},
+		{"git", "config", "--get", "branch." + branch + ".remote"},
+		{"git", "fetch", "origin"},
+		{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/" + branch},
+		{"git", "push", "origin", branch},
+	}
+}
 
 // runShipCmdStdin runs ship with an explicit input stream, which every
 // --pr-body-file - test needs: cobra otherwise hands stdinPiped the test
@@ -73,122 +128,125 @@ func assertNoPRStep(t *testing.T, invocations [][]string) {
 }
 
 func TestShipPRCreateGitLane(t *testing.T) {
-	log := setupShip(t, ".git", true)
-	t.Setenv("GIT_BRANCH", "feature")
-	t.Setenv("GIT_TRUNK", "main")
-	t.Setenv("GH_PR_CREATE_OUT", "https://github.com/x/pull/12")
-	body := writePRBody(t, "body.md", "why this change\n")
+	f := shipPRFixture(t, vcstest.Branch("feature"))
+	t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-empty"))
+	t.Setenv("GH_PR_CREATE_OUT", fakePRCreateURL)
+	bodyDump := filepath.Join(t.TempDir(), "body")
+	t.Setenv("GH_PR_BODY_DUMP", bodyDump)
+	const bodyText = "why this change\n"
+	body := writePRBody(t, "body.md", bodyText)
 
 	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · pushed feature → origin · opened PR #12 https://github.com/x/pull/12`
-	if got != want {
+	invocations := vcstest.Invocations(t, f.ArgvLog)
+	assertInvocations(t, invocations, append(shipPRPushed("feature"),
+		[]string{"gh", "pr", "list", "--repo", fakePRRepo, "--head", "feature", "--state", "open", "--json", "number,url,isDraft", "--limit", "1"},
+		[]string{"gh", "pr", "create", "--repo", fakePRRepo, "--head", "feature", "--base", "main", "--title", "Better title", "--body-file", body},
+	))
+	if want := shipCommitted(t, f, vcs.Git) + " · pushed feature → origin · opened PR #12 " + fakePRCreateURL; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	assertInvocations(t, readInvocations(t, log), [][]string{
-		{"git", "branch", "--show-current"},
-		gitTrunkArgv,
-		{"git", "add", "-A"},
-		{"git", "commit", "-m", "fix: frobnicate"},
-		{"git", "branch", "--show-current"},
-		{"git", "log", "-1", "--format=%h%x00%s"},
-		{"git", "config", "--get", "branch.feature.remote"},
-		{"git", "fetch", "origin"},
-		{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/feature"},
-		{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/feature", "HEAD"},
-		{"git", "push", "origin", "feature"},
-		{"gh", "pr", "list", "--repo", fakePRRepo, "--head", "feature", "--state", "open", "--json", "number,url,isDraft", "--limit", "1"},
-		{"gh", "pr", "create", "--repo", fakePRRepo, "--head", "feature", "--base", "main", "--title", "Better title", "--body-file", body},
-	})
+	if got := readFileStr(t, bodyDump); got != bodyText {
+		t.Errorf("gh read a body of %q, want %q", got, bodyText)
+	}
+	if n := remoteCount(t, f, "feature"); n != 2 {
+		t.Errorf("origin feature holds %d commits, want the pushed one on top of init", n)
+	}
 }
 
 // TestShipPRCreateDefaults pins the two defaults a create falls back on: the
 // commit subject as the title, and an explicitly empty body. gh pr create
 // --fill would publish the Claude-Session-Id trailer, so it is never used.
 func TestShipPRCreateDefaults(t *testing.T) {
-	log := setupShip(t, ".git", true)
-	t.Setenv("GIT_BRANCH", "feature")
-	t.Setenv("GIT_TRUNK", "main")
-	t.Setenv("GH_PR_CREATE_OUT", "https://github.com/x/pull/12")
+	f := shipPRFixture(t, vcstest.Branch("feature"))
+	t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-empty"))
+	t.Setenv("GH_PR_CREATE_OUT", fakePRCreateURL)
 	t.Setenv(envClaudeSessionKey, "0d1e2f30-4a5b-6c7d-8e9f-a0b1c2d3e4f5")
 
 	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--draft"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	// The fakes' NUL argv log cannot carry an empty field — --body's empty value
-	// reads as the record terminator — so the create record ends at --body and
-	// --draft lands in the continuation.
-	invocations := readInvocations(t, log)
 	var create []string
-	var flat []string
-	for _, inv := range invocations {
+	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
 		if len(inv) > 2 && inv[0] == "gh" && inv[2] == "create" {
 			create = inv
 		}
-		flat = append(flat, inv...)
 	}
 	want := []string{
 		"gh", "pr", "create", "--repo", fakePRRepo, "--head", "feature", "--base", "main",
-		"--title", "fix: frobnicate", "--body",
+		"--title", "fix: frobnicate", "--body", "", "--draft",
 	}
 	if !reflect.DeepEqual(create, want) {
 		t.Errorf("create argv = %v, want %v", create, want)
 	}
-	if !slices.Contains(flat, "--draft") {
-		t.Error("--draft never reached gh pr create")
-	}
-	if slices.Contains(flat, "--fill") {
+	if slices.Contains(create, "--fill") {
 		t.Error("gh pr create --fill would publish the commit's Claude-Session-Id trailer")
+	}
+	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
+		t.Errorf("commit subject = %q, want the title the create defaulted to", subject)
+	}
+	if body := gitAt(t, f.Dir, "log", "-1", "--format=%b"); !strings.Contains(body, "Claude-Session-Id: 0d1e2f30-4a5b-6c7d-8e9f-a0b1c2d3e4f5") {
+		t.Errorf("commit body = %q, want the session trailer --fill would have published", body)
 	}
 }
 
 func TestShipPREditOnlyStatedFields(t *testing.T) {
-	log := setupShip(t, ".git", true)
-	t.Setenv("GIT_BRANCH", "feature")
-	t.Setenv("GIT_TRUNK", "main")
-	t.Setenv("GH_PR_LIST_JSON", `[{"number":12,"url":"https://github.com/x/pull/12","isDraft":false}]`)
+	f := shipPRFixture(t, vcstest.Branch("feature"))
+	pr := prFromListGolden(t, "pr-list-found")
+	t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-found"))
 	body := writePRBody(t, "body.md", "regenerated\n")
 
 	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · pushed feature → origin · updated PR #12 https://github.com/x/pull/12 (body)`
+	var prCalls [][]string
+	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+		if inv[0] == "gh" && inv[1] == "pr" {
+			prCalls = append(prCalls, inv)
+		}
+	}
+	assertInvocations(t, prCalls, [][]string{
+		{"gh", "pr", "list", "--repo", fakePRRepo, "--head", "feature", "--state", "open", "--json", "number,url,isDraft", "--limit", "1"},
+		{"gh", "pr", "edit", strconv.Itoa(pr.Number), "--repo", fakePRRepo, "--body-file", body},
+	})
+	want := fmt.Sprintf("%s · pushed feature → origin · updated PR #%d %s (body)", shipCommitted(t, f, vcs.Git), pr.Number, pr.URL)
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	var pr [][]string
-	for _, inv := range readInvocations(t, log) {
-		if inv[0] == "gh" && inv[1] == "pr" {
-			pr = append(pr, inv)
-		}
+	if n := remoteCount(t, f, "feature"); n != 2 {
+		t.Errorf("origin feature holds %d commits, want the pushed one on top of init", n)
 	}
-	assertInvocations(t, pr, [][]string{
-		{"gh", "pr", "list", "--repo", fakePRRepo, "--head", "feature", "--state", "open", "--json", "number,url,isDraft", "--limit", "1"},
-		{"gh", "pr", "edit", "12", "--repo", fakePRRepo, "--body-file", body},
-	})
 }
 
 func TestShipPRBodyFromStdin(t *testing.T) {
-	log := setupShip(t, ".git", true)
-	t.Setenv("GIT_BRANCH", "feature")
-	t.Setenv("GIT_TRUNK", "main")
-	t.Setenv("GH_PR_LIST_JSON", `[{"number":12,"url":"https://github.com/x/pull/12","isDraft":false}]`)
+	f := shipPRFixture(t, vcstest.Branch("feature"))
+	pr := prFromListGolden(t, "pr-list-found")
+	t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-found"))
+	bodyDump := filepath.Join(t.TempDir(), "body")
+	t.Setenv("GH_PR_BODY_DUMP", bodyDump)
+	const piped = "piped body\n"
 
-	if _, err := runShipCmdStdin(t, strings.NewReader("piped body\n"), "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", "-"); err != nil {
+	if _, err := runShipCmdStdin(t, strings.NewReader(piped), "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", "-"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	var edit []string
-	for _, inv := range normalizeTempPaths(readInvocations(t, log)) {
+	for _, inv := range normalizeTempPaths(vcstest.Invocations(t, f.ArgvLog)) {
 		if len(inv) > 2 && inv[0] == "gh" && inv[2] == "edit" {
 			edit = inv
 		}
 	}
-	want := []string{"gh", "pr", "edit", "12", "--repo", fakePRRepo, "--body-file", "<pr-body>"}
+	want := []string{"gh", "pr", "edit", strconv.Itoa(pr.Number), "--repo", fakePRRepo, "--body-file", "<pr-body>"}
 	if !reflect.DeepEqual(edit, want) {
 		t.Errorf("edit argv = %v, want %v", edit, want)
+	}
+	if got := readFileStr(t, bodyDump); got != piped {
+		t.Errorf("gh read a body of %q, want the piped %q", got, piped)
+	}
+	if n := remoteCount(t, f, "feature"); n != 2 {
+		t.Errorf("origin feature holds %d commits, want the pushed one on top of init", n)
 	}
 }
 
@@ -297,13 +355,14 @@ func TestShipPRGTBackfill(t *testing.T) {
 // pull request flag issues none of the step's gh verbs, in either lane.
 func TestShipPRUnusedCostsNothing(t *testing.T) {
 	t.Run("git lane", func(t *testing.T) {
-		log := setupShip(t, ".git", true)
-		t.Setenv("GIT_BRANCH", "feature")
-		t.Setenv("GIT_TRUNK", "main")
+		f := shipPRFixture(t, vcstest.Branch("feature"))
 		if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
-		assertNoPRStep(t, readInvocations(t, log))
+		assertNoPRStep(t, vcstest.Invocations(t, f.ArgvLog))
+		if n := remoteCount(t, f, "feature"); n != 2 {
+			t.Errorf("origin feature holds %d commits, want the pushed one on top of init", n)
+		}
 	})
 	t.Run("gt lane", func(t *testing.T) {
 		log := setupShipGT(t, true)
@@ -322,83 +381,78 @@ func TestShipPRUnusedCostsNothing(t *testing.T) {
 		assertInvocations(t, gh, [][]string{ghDownstackPRArgv("feature")})
 	})
 	t.Run("--no-pr", func(t *testing.T) {
-		log := setupShip(t, ".git", true)
-		t.Setenv("GIT_BRANCH", "feature")
-		t.Setenv("GIT_TRUNK", "main")
+		f := shipPRFixture(t, vcstest.Branch("feature"))
 		if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--no-pr", "--draft"); err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
-		assertNoPRStep(t, readInvocations(t, log))
+		assertNoPRStep(t, vcstest.Invocations(t, f.ArgvLog))
+		if n := remoteCount(t, f, "feature"); n != 2 {
+			t.Errorf("origin feature holds %d commits, want the pushed one on top of init", n)
+		}
 	})
 }
 
 func TestShipPROnTrunk(t *testing.T) {
-	log := setupShip(t, ".git", true)
-	t.Setenv("GIT_BRANCH", "main")
-	t.Setenv("GIT_TRUNK", "main")
+	f := shipPRFixture(t)
 
 	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · pushed main → origin · no PR (on trunk)`
-	if got != want {
+	assertNoPRStep(t, vcstest.Invocations(t, f.ArgvLog))
+	if want := shipCommitted(t, f, vcs.Git) + " · pushed main → origin · no PR (on trunk)"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	assertNoPRStep(t, readInvocations(t, log))
+	if n := remoteCount(t, f, "main"); n != 2 {
+		t.Errorf("origin main holds %d commits, want the pushed one on top of init", n)
+	}
 }
 
 func TestShipPRDraftTransitions(t *testing.T) {
 	tests := []struct {
-		name    string
-		listPR  string
-		flag    string
-		wantPR  []string
-		wantSeg string
+		name     string
+		scenario string
+		flag     string
+		undo     bool
+		wantSeg  string
 	}{
-		{
-			name:    "publish to draft",
-			listPR:  `[{"number":12,"url":"https://github.com/x/pull/12","isDraft":false}]`,
-			flag:    "--draft",
-			wantPR:  []string{"gh", "pr", "ready", "12", "--repo", fakePRRepo, "--undo"},
-			wantSeg: " · updated PR #12 https://github.com/x/pull/12 (draft)",
-		},
-		{
-			name:    "draft to ready",
-			listPR:  `[{"number":12,"url":"https://github.com/x/pull/12","isDraft":true}]`,
-			flag:    "--publish",
-			wantPR:  []string{"gh", "pr", "ready", "12", "--repo", fakePRRepo},
-			wantSeg: " · updated PR #12 https://github.com/x/pull/12 (ready)",
-		},
-		{
-			name:   "already in the stated state",
-			listPR: `[{"number":12,"url":"https://github.com/x/pull/12","isDraft":false}]`,
-			flag:   "--publish",
-		},
+		{name: "publish to draft", scenario: "pr-list-found", flag: "--draft", undo: true, wantSeg: "draft"},
+		{name: "draft to ready", scenario: "pr-list-draft", flag: "--publish", wantSeg: "ready"},
+		{name: "already in the stated state", scenario: "pr-list-found", flag: "--publish"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			log := setupShip(t, ".git", true)
-			t.Setenv("GIT_BRANCH", "feature")
-			t.Setenv("GIT_TRUNK", "main")
-			t.Setenv("GH_PR_LIST_JSON", tt.listPR)
+			f := shipPRFixture(t, vcstest.Branch("feature"))
+			pr := prFromListGolden(t, tt.scenario)
+			t.Setenv("GH_PR_LIST_JSON", ghStdout(t, tt.scenario))
 
 			got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", tt.flag)
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			want := `committed a1b2c3d "fix: frobnicate" · pushed feature → origin` + tt.wantSeg
-			if got != want {
-				t.Errorf("summary = %q, want %q", got, want)
-			}
 			var ready []string
-			for _, inv := range readInvocations(t, log) {
+			for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
 				if len(inv) > 2 && inv[0] == "gh" && inv[2] == "ready" {
 					ready = inv
 				}
 			}
-			if !reflect.DeepEqual(ready, tt.wantPR) {
-				t.Errorf("ready argv = %v, want %v", ready, tt.wantPR)
+			var wantReady []string
+			want := shipCommitted(t, f, vcs.Git) + " · pushed feature → origin"
+			if tt.wantSeg != "" {
+				wantReady = []string{"gh", "pr", "ready", strconv.Itoa(pr.Number), "--repo", fakePRRepo}
+				if tt.undo {
+					wantReady = append(wantReady, "--undo")
+				}
+				want += fmt.Sprintf(" · updated PR #%d %s (%s)", pr.Number, pr.URL, tt.wantSeg)
+			}
+			if !reflect.DeepEqual(ready, wantReady) {
+				t.Errorf("ready argv = %v, want %v", ready, wantReady)
+			}
+			if got != want {
+				t.Errorf("summary = %q, want %q", got, want)
+			}
+			if n := remoteCount(t, f, "feature"); n != 2 {
+				t.Errorf("origin feature holds %d commits, want the pushed one on top of init", n)
 			}
 		})
 	}
@@ -406,18 +460,21 @@ func TestShipPRDraftTransitions(t *testing.T) {
 
 func TestShipPRRefusals(t *testing.T) {
 	t.Run("unreadable body file refuses before the commit", func(t *testing.T) {
-		log := setupShip(t, ".git", true)
-		t.Setenv("GIT_BRANCH", "feature")
-		t.Setenv("GIT_TRUNK", "main")
+		f := shipPRFixture(t, vcstest.Branch("feature"))
+		head := shipHead(t, f)
+		shipResetLog(t, f)
 		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--pr-body-file", "/nonexistent/body.md")
 		if err == nil || !strings.HasPrefix(err.Error(), "ship: --pr-body-file /nonexistent/body.md:") {
 			t.Errorf("error = %v, want a --pr-body-file refusal", err)
 		}
-		assertNoShipMutation(t, readInvocations(t, log))
+		assertNoShipMutation(t, vcstest.Invocations(t, f.ArgvLog))
+		assertShipRefusedClean(t, f, head)
 	})
 
 	t.Run("stdin body from a terminal", func(t *testing.T) {
-		log := setupShip(t, ".git", true)
+		f := shipPRFixture(t, vcstest.Branch("feature"))
+		head := shipHead(t, f)
+		shipResetLog(t, f)
 		tty, err := os.Open(os.DevNull)
 		if err != nil {
 			t.Fatalf("open %s: %v", os.DevNull, err)
@@ -428,48 +485,71 @@ func TestShipPRRefusals(t *testing.T) {
 		if err == nil || err.Error() != wantErr {
 			t.Errorf("error = %v, want %q", err, wantErr)
 		}
-		assertNoShipMutation(t, readInvocations(t, log))
+		assertNoShipMutation(t, vcstest.Invocations(t, f.ArgvLog))
+		assertShipRefusedClean(t, f, head)
 	})
 
 	t.Run("stdin claimed twice", func(t *testing.T) {
-		setupShip(t, ".git", true)
+		f := shipPRFixture(t)
+		head := shipHead(t, f)
 		_, err := runShipCmdStdin(t, strings.NewReader("body\n"), "-m", "fix: frobnicate",
 			"--pr-body-file", "-", "--pr-body-file", "feature=-")
 		wantErr := `ship: only one --pr-body-file may read stdin ("-")`
 		if err == nil || err.Error() != wantErr {
 			t.Errorf("error = %v, want %q", err, wantErr)
 		}
+		assertShipRefusedClean(t, f, head)
 	})
 
 	t.Run("same branch named twice", func(t *testing.T) {
-		setupShip(t, ".git", true)
+		f := shipPRFixture(t)
+		head := shipHead(t, f)
 		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--pr-title", "one", "--pr-title", "two")
 		wantErr := "ship: --pr-title given twice for branch main"
 		if err == nil || err.Error() != wantErr {
 			t.Errorf("error = %v, want %q", err, wantErr)
 		}
+		assertShipRefusedClean(t, f, head)
 	})
 
 	t.Run("--no-push has no pull request to touch", func(t *testing.T) {
-		log := setupShip(t, ".git", true)
+		f := shipPRFixture(t, vcstest.Branch("feature"))
+		head := shipHead(t, f)
+		shipResetLog(t, f)
 		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--pr-title", "one")
 		wantErr := "ship: --pr-title/--pr-body-file require push (drop --no-push)"
 		if err == nil || err.Error() != wantErr {
 			t.Errorf("error = %v, want %q", err, wantErr)
 		}
-		if inv := readInvocations(t, log); inv != nil {
+		if inv := vcstest.Invocations(t, f.ArgvLog); inv != nil {
 			t.Errorf("no VCS command may run before the flag check, got %v", inv)
 		}
+		assertShipRefusedClean(t, f, head)
 	})
 
 	t.Run("--no-pr excludes the pr flags", func(t *testing.T) {
-		setupShip(t, ".git", true)
+		f := shipPRFixture(t, vcstest.Branch("feature"))
+		head := shipHead(t, f)
 		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-pr", "--pr-title", "one")
 		wantErr := "if any flags in the group [no-pr pr-title] are set none of the others can be; [no-pr pr-title] were all set"
 		if err == nil || err.Error() != wantErr {
 			t.Errorf("error = %v, want %q", err, wantErr)
 		}
+		assertShipRefusedClean(t, f, head)
 	})
+}
+
+// assertShipRefusedClean proves a refusal left the repository where it stood:
+// HEAD unmoved and the edit still pending, which is what a mutation the argv
+// log cannot see would disturb.
+func assertShipRefusedClean(t *testing.T, f *vcstest.Fixture, head string) {
+	t.Helper()
+	if got := shipHead(t, f); got != head {
+		t.Errorf("HEAD moved to %s, want the pre-ship %s", got, head)
+	}
+	if status := gitAt(t, f.Dir, "status", "--porcelain"); status != "M f.txt" {
+		t.Errorf("working copy = %q, want the untouched edit", status)
+	}
 }
 
 func TestSplitPRValue(t *testing.T) {
