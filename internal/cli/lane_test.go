@@ -207,7 +207,7 @@ func TestShipGateKeepsOwnRepo(t *testing.T) {
 func TestShipGateUnknownKeepsGT(t *testing.T) {
 	f := shipGTFeature(t)
 	clearRepoRecord(t, ".")
-	t.Setenv("PATH", f.ShimBin)
+	f.OnlyShimPATH(t)
 	if path, err := exec.LookPath("gh"); err == nil {
 		t.Fatalf("gh resolved to %s; this test must run with none on PATH", path)
 	}

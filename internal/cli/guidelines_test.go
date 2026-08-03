@@ -119,7 +119,7 @@ func setupGuidelines(t *testing.T, gh guidelinesGH) (root, logPath string) {
 		writeGuidelinesGH(t, f)
 		t.Cleanup(func() { assertGuidelinesGHArgv(t, f.ArgvLog, answers) })
 	} else {
-		t.Setenv("PATH", f.ShimBin)
+		f.OnlyShimPATH(t)
 	}
 	for name, payload := range env {
 		t.Setenv(name, payload)

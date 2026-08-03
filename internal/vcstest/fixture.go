@@ -28,6 +28,16 @@ func (f *Fixture) WorktreePath(name string) string {
 	return filepath.Join(filepath.Dir(f.Dir), "wt", name)
 }
 
+// OnlyShimPATH narrows PATH to the fixture's own shim directory, dropping the
+// brew-free system directories Repo leaves behind it. A test that needs a tool
+// ABSENT has to say so this way: systemPATH keeps /usr/bin, which is where CI
+// installs git and gh, while a developer's live in Homebrew's — so relying on
+// the brew-free PATH to hide a tool passes locally and fails on CI.
+func (f *Fixture) OnlyShimPATH(t *testing.T) {
+	t.Helper()
+	t.Setenv("PATH", f.ShimBin)
+}
+
 type config struct {
 	jj                 bool
 	gt                 bool

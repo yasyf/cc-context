@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -2038,6 +2039,11 @@ func TestShipCIStates(t *testing.T) {
 			f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 			if tt.withGh {
 				writeShipGH(t, f)
+			} else {
+				f.OnlyShimPATH(t)
+				if path, err := exec.LookPath("gh"); err == nil {
+					t.Fatalf("gh resolved to %s; this row must run with none on PATH", path)
+				}
 			}
 			if tt.runList != "" {
 				t.Setenv("GH_RUN_LIST_JSON", tt.runList)

@@ -503,7 +503,7 @@ func TestVcsInfoWithoutGh(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote())
 	// The fixture's brew-free PATH keeps /usr/bin, which is where CI installs
 	// gh, so only the shim directory alone holds no gh to find.
-	t.Setenv("PATH", f.ShimBin)
+	f.OnlyShimPATH(t)
 	clearLaneRecords(t, ".")
 	if path, err := exec.LookPath("gh"); err == nil {
 		t.Fatalf("gh resolved to %s; the fixture PATH must hold none", path)

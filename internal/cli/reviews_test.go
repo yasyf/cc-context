@@ -989,7 +989,7 @@ func TestReviewsStackFailuresCarryReviewsPrefix(t *testing.T) {
 			if !strings.HasPrefix(err.Error(), tt.want) {
 				t.Errorf("error = %v, want it to lead with %q", err, tt.want)
 			}
-			t.Setenv("PATH", f.ShimBin)
+			f.OnlyShimPATH(t)
 			assertShipRefusedClean(t, f, head)
 		})
 	}
