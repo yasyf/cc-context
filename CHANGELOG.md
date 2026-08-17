@@ -57,6 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `info` could already diagnose and nothing could fix — running git from the
   repository the pointer itself names; `--dry-run` prints the command instead
   of running it.
+- **`ccx vcs info` reports how each downstack pull request ended, and whether it
+  is green.** The one batched query the gt lane already ran for the whole stack
+  now also selects each pull request's `state`, `mergedAt`, and head-commit check
+  rollup: `--json` entries carry `state`, `merged`, `merged_at`, and `checks`, and
+  the report line reads `branch → PR #7 (body, merged, checks success)`. `merged`
+  is the verdict `state` alone cannot give. Graphite's merge queue squash-merges a
+  whole stack into one trunk commit, so every pull request it lands reports
+  `CLOSED` with a null `mergedAt` and no merge commit, closed by the queue's own
+  account — which is what separates one the queue landed from one a human
+  abandoned. That signature is Graphite's, so only the gt lane reads it.
 
 ### Changed
 - **`ccx vcs info` reports the states it used to exit 1 on.** A working copy whose
@@ -127,6 +137,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   holder instead of surfacing git's bare refusal.
 
 ### Fixed
+- **`ccx vcs reviews` ended a queue-merged watch as closed.** The terminal verdict
+  read `mergedAt` and a `MERGED` state alone, neither of which a pull request the
+  Graphite merge queue landed carries — so `ccx vcs reviews` and `ship --reviews`
+  both closed a watch of a successful merge with `◆ pr#N closed` and counted it in
+  the closed column. On the gt lane the closing account now settles it.
 - **`ccx vcs info` failures named a command nobody ran.** Resolving the git lane's
   trunk goes through two helpers ship and restack own, whose errors read
   `ship: git config branch.<b>.remote: …` and

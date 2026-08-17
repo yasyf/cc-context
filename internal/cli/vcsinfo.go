@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -72,12 +73,19 @@ type worktreeInfo struct {
 }
 
 // stackEntry is one branch in the graphite downstack and the pull request it
-// maps to, so a caller can tell which PRs a submit would leave bodyless.
+// maps to, so a caller can tell which PRs a submit would leave bodyless, which
+// have already landed, and which are red. Merged is the verdict State alone
+// cannot give: the Graphite merge queue closes what it merges, so a landed pull
+// request reports CLOSED with a null MergedAt.
 type stackEntry struct {
-	Branch  string `json:"branch"`
-	PR      int    `json:"pr,omitempty"`
-	URL     string `json:"url,omitempty"`
-	HasBody bool   `json:"has_body"`
+	Branch   string     `json:"branch"`
+	PR       int        `json:"pr,omitempty"`
+	URL      string     `json:"url,omitempty"`
+	HasBody  bool       `json:"has_body"`
+	State    string     `json:"state,omitempty"`
+	Merged   bool       `json:"merged"`
+	MergedAt *time.Time `json:"merged_at,omitempty"`
+	Checks   string     `json:"checks,omitempty"`
 }
 
 type vcsInfoOpts struct {
@@ -248,7 +256,7 @@ func infoGTStack(ctx context.Context, l lane, info *vcsInfo) {
 	case err != nil:
 		info.Graphite.StackError = err.Error()
 	default:
-		info.Downstack = infoDownstack(ctx, l.root, chain)
+		info.Downstack = infoDownstack(ctx, l, chain)
 	}
 }
 
@@ -327,7 +335,7 @@ func infoGitDirty(ctx context.Context, root string, info *vcsInfo) error {
 // entries carrying each branch's PR, in one round trip for the whole stack. A
 // branch with no PR, no gh to ask with, or a query GitHub refused still reports
 // its name: the caller needs the whole submit set.
-func infoDownstack(ctx context.Context, root string, chain []string) []stackEntry {
+func infoDownstack(ctx context.Context, l lane, chain []string) []stackEntry {
 	entries := make([]stackEntry, 0, len(chain))
 	for i := len(chain) - 1; i >= 0; i-- {
 		entries = append(entries, stackEntry{Branch: chain[i]})
@@ -338,7 +346,7 @@ func infoDownstack(ctx context.Context, root string, chain []string) []stackEntr
 	if _, err := exec.LookPath("gh"); err != nil {
 		return entries
 	}
-	resolveDownstackPRs(ctx, root, entries)
+	resolveDownstackPRs(ctx, l, entries)
 	return entries
 }
 
@@ -347,14 +355,14 @@ func infoDownstack(ctx context.Context, root string, chain []string) []stackEntr
 // so a list-based batch would have to over-fetch and filter, making --limit a
 // correctness knob. {owner} and {repo} are gh's own placeholders for the
 // repository of the working directory, so the batch needs no metadata lookup.
-func resolveDownstackPRs(ctx context.Context, root string, entries []stackEntry) {
+func resolveDownstackPRs(ctx context.Context, l lane, entries []stackEntry) {
 	argv := make([]string, 0, 8+2*len(entries))
 	argv = append(argv, "api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}")
 	for i, entry := range entries {
 		argv = append(argv, "-f", downstackPRAlias(i)+"="+entry.Branch)
 	}
 	argv = append(argv, "-f", "query="+downstackPRQuery(len(entries)))
-	out, err := render.RunCLIDir(ctx, root, "gh", argv)
+	out, err := render.RunCLIDir(ctx, l.root, "gh", argv)
 	if err != nil {
 		return
 	}
@@ -362,9 +370,19 @@ func resolveDownstackPRs(ctx context.Context, root string, entries []stackEntry)
 		Data struct {
 			Repository map[string]struct {
 				Nodes []struct {
-					Number int    `json:"number"`
-					URL    string `json:"url"`
-					Body   string `json:"body"`
+					Number  int    `json:"number"`
+					URL     string `json:"url"`
+					Body    string `json:"body"`
+					Commits struct {
+						Nodes []struct {
+							Commit struct {
+								StatusCheckRollup struct {
+									State string `json:"state"`
+								} `json:"statusCheckRollup"`
+							} `json:"commit"`
+						} `json:"nodes"`
+					} `json:"commits"`
+					prLanding
 				} `json:"nodes"`
 			} `json:"repository"`
 		} `json:"data"`
@@ -377,9 +395,16 @@ func resolveDownstackPRs(ctx context.Context, root string, entries []stackEntry)
 		if len(nodes) == 0 {
 			continue
 		}
-		entries[i].PR = nodes[0].Number
-		entries[i].URL = nodes[0].URL
-		entries[i].HasBody = strings.TrimSpace(nodes[0].Body) != ""
+		node := nodes[0]
+		entries[i].PR = node.Number
+		entries[i].URL = node.URL
+		entries[i].HasBody = strings.TrimSpace(node.Body) != ""
+		entries[i].State = node.State
+		entries[i].Merged = node.landed(l.gt)
+		entries[i].MergedAt = node.MergedAt
+		if commits := node.Commits.Nodes; len(commits) > 0 {
+			entries[i].Checks = commits[0].Commit.StatusCheckRollup.State
+		}
 	}
 }
 
@@ -390,12 +415,14 @@ func downstackPRAlias(i int) string {
 	return fmt.Sprintf("b%d", i)
 }
 
-// downstackPRQuery renders one aliased pullRequests field per branch. It names
-// no state filter, because gh pr view — the per-branch call this replaced — has
-// none either and resolves a merged pull request just as happily; and it orders
-// descending because that is the one gh picks. A branch resubmitted after its
-// first pull request closed carries two, and the oldest is the one ship must
-// never write a body onto.
+// downstackPRQuery renders one aliased pullRequests field per branch, selecting
+// what a caller weighing a submit needs of the whole stack in one round trip:
+// the body ship would overwrite, how each pull request ended, and the head
+// commit's check rollup. It names no state filter, because gh pr view — the
+// per-branch call this replaced — has none either and resolves a merged pull
+// request just as happily; and it orders descending because that is the one gh
+// picks. A branch resubmitted after its first pull request closed carries two,
+// and the oldest is the one ship must never write a body onto.
 func downstackPRQuery(n int) string {
 	decls := make([]string, 0, n+2)
 	decls = append(decls, "$owner: String!", "$repo: String!")
@@ -403,7 +430,9 @@ func downstackPRQuery(n int) string {
 	for i := range n {
 		alias := downstackPRAlias(i)
 		decls = append(decls, "$"+alias+": String!")
-		fmt.Fprintf(&fields, "    %s: pullRequests(headRefName: $%s, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url body } }\n", alias, alias)
+		fmt.Fprintf(&fields, "    %s: pullRequests(headRefName: $%s, first: 1, orderBy: {field: CREATED_AT, direction: DESC})"+
+			" { nodes { number url body %s commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } } }\n",
+			alias, alias, prLandingFields)
 	}
 	return fmt.Sprintf("query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}", strings.Join(decls, ", "), fields.String())
 }
@@ -603,11 +632,27 @@ func infoDownstackValue(entries []stackEntry) string {
 			segs = append(segs, e.Branch)
 			continue
 		}
-		body := "no body"
-		if e.HasBody {
-			body = "body"
-		}
-		segs = append(segs, fmt.Sprintf("%s → PR #%d (%s)", e.Branch, e.PR, body))
+		segs = append(segs, fmt.Sprintf("%s → PR #%d (%s)", e.Branch, e.PR, strings.Join(infoPRFacts(e), ", ")))
 	}
 	return strings.Join(segs, shipSep)
+}
+
+// infoPRFacts is what one pull request's parenthetical carries: whether ship
+// would find a body to preserve, how it ended, and its check rollup once it has
+// one. A merged verdict outranks the state it prints, which for a pull request
+// the graphite merge queue landed reads CLOSED.
+func infoPRFacts(e stackEntry) []string {
+	body := "no body"
+	if e.HasBody {
+		body = "body"
+	}
+	end := strings.ToLower(e.State)
+	if e.Merged {
+		end = "merged"
+	}
+	facts := []string{body, end}
+	if e.Checks != "" {
+		facts = append(facts, "checks "+strings.ToLower(e.Checks))
+	}
+	return facts
 }

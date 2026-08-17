@@ -12,13 +12,13 @@
     "-f",
     "p1=no-such-branch",
     "-f",
-    "query=query($owner: String!, $repo: String!, $p0: String!, $p1: String!) {\n  repository(owner: $owner, name: $repo) {\n    p0: pullRequests(headRefName: $p0, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url state mergedAt } }\n    p1: pullRequests(headRefName: $p1, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url state mergedAt } }\n  }\n}"
+    "query=query($owner: String!, $repo: String!, $p0: String!, $p1: String!) {\n  repository(owner: $owner, name: $repo) {\n    p0: pullRequests(headRefName: $p0, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url state mergedAt timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } } } }\n    p1: pullRequests(headRefName: $p1, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url state mergedAt timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } } } }\n  }\n}"
   ],
   "exit": 0,
   "status": 200,
   "headers": [
     "Content-Type: application/json; charset=utf-8"
   ],
-  "body": "{\"data\":{\"repository\":{\"p0\":{\"nodes\":[{\"number\":13982,\"url\":\"https://github.com/cli/cli/pull/13982\",\"state\":\"OPEN\",\"mergedAt\":null}]},\"p1\":{\"nodes\":[]}}}}",
+  "body": "{\"data\":{\"repository\":{\"p0\":{\"nodes\":[{\"number\":13982,\"url\":\"https://github.com/cli/cli/pull/13982\",\"state\":\"OPEN\",\"mergedAt\":null,\"timelineItems\":{\"nodes\":[]}}]},\"p1\":{\"nodes\":[]}}}}",
   "stderr": ""
 }

@@ -59,10 +59,9 @@ type ghReview struct {
 // ghPullRequest is the pull request shape every batch selects: what a target
 // needs to identify itself, and what reviewTerminalState reads.
 type ghPullRequest struct {
-	Number   int        `json:"number"`
-	URL      string     `json:"url"`
-	State    string     `json:"state"`
-	MergedAt *time.Time `json:"mergedAt"`
+	Number int    `json:"number"`
+	URL    string `json:"url"`
+	prLanding
 }
 
 type prTarget struct {
@@ -193,12 +192,15 @@ func parseSince(s string) (t time.Time, all bool, err error) {
 	return time.Time{}, false, fmt.Errorf("must be RFC3339, a duration, or all")
 }
 
-// reviewsClient is the GitHub endpoint one watch polls: the API client plus the
-// repository every request is scoped to.
+// reviewsClient is the GitHub endpoint one watch polls: the API client, the
+// repository every request is scoped to, and whether this working copy lands its
+// pull requests through Graphite — the lane whose merge queue closes what it
+// merges.
 type reviewsClient struct {
 	api   *ghapi.Client
 	owner string
 	repo  string
+	gt    bool
 }
 
 // reviewsAPI builds the client a watch polls through. A var so tests point the
@@ -206,6 +208,10 @@ type reviewsClient struct {
 var reviewsAPI = ghapi.Default
 
 func resolveReviewsClient(ctx context.Context) (reviewsClient, error) {
+	l, err := resolveLane(ctx, "reviews", workingDir(), false)
+	if err != nil {
+		return reviewsClient{}, err
+	}
 	repo, err := vcs.LookupRepo(ctx, workingDir(), false)
 	if err != nil {
 		return reviewsClient{}, fmt.Errorf("reviews: %w", err)
@@ -214,7 +220,7 @@ func resolveReviewsClient(ctx context.Context) (reviewsClient, error) {
 	if !ok {
 		return reviewsClient{}, fmt.Errorf("reviews: %q is not owner/name", repo.NameWithOwner)
 	}
-	return reviewsClient{api: reviewsAPI(), owner: owner, repo: name}, nil
+	return reviewsClient{api: reviewsAPI(), owner: owner, repo: name, gt: l.gt}, nil
 }
 
 // reviewsAlias names one target's field in a batched query. A GraphQL alias
@@ -237,7 +243,7 @@ func reviewsBatch(n int, decl string, field func(alias string) string) string {
 
 func reviewsNumberQuery(n int) string {
 	return reviewsBatch(n, "Int!", func(alias string) string {
-		return fmt.Sprintf("%s: pullRequest(number: $%s) { number url state mergedAt }", alias, alias)
+		return fmt.Sprintf("%s: pullRequest(number: $%s) { number url %s }", alias, alias, prLandingFields)
 	})
 }
 
@@ -249,8 +255,8 @@ func reviewsNumberQuery(n int) string {
 func reviewsBranchQuery(n int) string {
 	return reviewsBatch(n, "String!", func(alias string) string {
 		return fmt.Sprintf(
-			"%s: pullRequests(headRefName: $%s, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url state mergedAt } }",
-			alias, alias)
+			"%s: pullRequests(headRefName: $%s, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url %s } }",
+			alias, alias, prLandingFields)
 	})
 }
 
@@ -620,7 +626,7 @@ func pollReviewTarget(ctx context.Context, client reviewsClient, target *prTarge
 	if err != nil {
 		return reviewsPoll{}, fmt.Errorf("reviews: pr#%d reviews: %w", target.Number, err)
 	}
-	terminal, err := reviewTerminalState(pr)
+	terminal, err := reviewTerminalState(pr, client.gt)
 	if err != nil {
 		return reviewsPoll{}, fmt.Errorf("reviews: pr#%d: %w", target.Number, err)
 	}
@@ -661,8 +667,12 @@ func pollReviewTarget(ctx context.Context, client reviewsClient, target *prTarge
 	return poll, nil
 }
 
-func reviewTerminalState(pr ghPullRequest) (string, error) {
-	if pr.MergedAt != nil || pr.State == "MERGED" {
+// reviewTerminalState names the end a pull request reached, and is empty while
+// it is still open. A stack the Graphite merge queue landed reports CLOSED with
+// a null mergedAt, so on the gt lane the closing account is what tells a landed
+// pull request from an abandoned one.
+func reviewTerminalState(pr ghPullRequest, gt bool) (string, error) {
+	if pr.landed(gt) {
 		return "merged", nil
 	}
 	switch pr.State {

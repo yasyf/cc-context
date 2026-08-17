@@ -156,13 +156,19 @@ repo_fields='nameWithOwner,owner,isPrivate,viewerPermission'
 run_fields='workflowName,conclusion,startedAt,updatedAt,url,jobs'
 raw_accept='Accept: application/vnd.github.raw'
 
+# landing_fields is internal/cli/prlanding.go's prLandingFields, the selection
+# that tells a pull request the graphite merge queue landed — closed, with a null
+# mergedAt — from one a human abandoned.
+landing_fields='state mergedAt timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } }'
+checks_fields='commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }'
+
 downstack_query() {
 	local n="$1" decls fields i
 	decls='$owner: String!, $repo: String!'
 	fields=''
 	for ((i = 0; i < n; i++)); do
 		decls="$decls, \$b$i: String!"
-		fields="$fields    b$i: pullRequests(headRefName: \$b$i, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url body } }
+		fields="$fields    b$i: pullRequests(headRefName: \$b$i, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url body $landing_fields $checks_fields } }
 "
 	done
 	printf 'query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}' "$decls" "$fields"
@@ -179,9 +185,9 @@ reviews_query() {
 	for ((i = 0; i < n; i++)); do
 		decls="$decls, \$p$i: $decl"
 		case "$kind" in
-		number) fields="$fields    p$i: pullRequest(number: \$p$i) { number url state mergedAt }
+		number) fields="$fields    p$i: pullRequest(number: \$p$i) { number url $landing_fields }
 " ;;
-		branch) fields="$fields    p$i: pullRequests(headRefName: \$p$i, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url state mergedAt } }
+		branch) fields="$fields    p$i: pullRequests(headRefName: \$p$i, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url $landing_fields } }
 " ;;
 		esac
 	done

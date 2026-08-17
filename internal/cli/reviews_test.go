@@ -33,10 +33,12 @@ func reviewsPRURL(number int) string {
 
 // reviewsPR is one pull request the fake GitHub knows: it answers OPEN for
 // openAnswers state reads — the resolution read included — and state after.
+// closer is the account its CLOSED_EVENT names once it has closed.
 type reviewsPR struct {
 	openAnswers int
 	state       string
 	merged      bool
+	closer      string
 	answers     int
 }
 
@@ -64,6 +66,12 @@ type reviewsServer struct {
 // transition to state; the resolution read at setup is the first of them.
 func (s *reviewsServer) pr(number, openAnswers int, state string, merged bool) {
 	s.prs[number] = &reviewsPR{openAnswers: openAnswers, state: state, merged: merged}
+}
+
+// closedBy names the account number's close carries, the way GitHub reports one:
+// a bot for the graphite merge queue, a login for a human giving up.
+func (s *reviewsServer) closedBy(number int, login string) {
+	s.prs[number].closer = login
 }
 
 // branch registers the pull requests headed by name, oldest first, the order
@@ -208,17 +216,22 @@ func (s *reviewsServer) answer(number int, pr *reviewsPR) map[string]any {
 	pr.answers++
 	state := "OPEN"
 	var mergedAt any
+	closes := []any{}
 	if pr.answers > pr.openAnswers {
 		state = pr.state
 		if pr.merged {
 			mergedAt = "2026-07-20T19:00:00Z"
 		}
+		if pr.closer != "" {
+			closes = append(closes, map[string]any{"actor": map[string]any{"login": pr.closer}})
+		}
 	}
 	return map[string]any{
-		"number":   number,
-		"url":      reviewsPRURL(number),
-		"state":    state,
-		"mergedAt": mergedAt,
+		"number":        number,
+		"url":           reviewsPRURL(number),
+		"state":         state,
+		"mergedAt":      mergedAt,
+		"timelineItems": map[string]any{"nodes": closes},
 	}
 }
 
@@ -512,6 +525,56 @@ func TestReviewsTerminalExit(t *testing.T) {
 	}
 }
 
+// setupReviewsLane stands a watch on a real repository, graphite-tracked when
+// gt, so the lane the terminal verdict turns on is the one the gate resolves off
+// disk rather than a flag the test set.
+func setupReviewsLane(t *testing.T, gt bool) *reviewsServer {
+	t.Helper()
+	opts := []vcstest.Opt{vcstest.Remote()}
+	if gt {
+		opts = append(opts, vcstest.GT())
+	}
+	vcstest.Repo(t, opts...)
+	return setupReviewsHere(t)
+}
+
+// TestReviewsQueueMergedTerminal proves the watch calls a pull request the
+// Graphite merge queue landed merged rather than closed. The queue squash-merges
+// a whole stack into one trunk commit, so GitHub reports every pull request in
+// it CLOSED with a null mergedAt, and only the closing account separates that
+// from an abandonment. The signature is Graphite's: off the gt lane the same
+// close is a close, and a human's close is one on either lane.
+func TestReviewsQueueMergedTerminal(t *testing.T) {
+	tests := []struct {
+		name     string
+		gt       bool
+		closer   string
+		terminal string
+		counts   string
+	}{
+		{"the queue closed it on the graphite lane", true, graphiteQueueActor, "merged", "1 merged · 0 closed"},
+		{"the queue closed it off the graphite lane", false, graphiteQueueActor, "closed", "0 merged · 1 closed"},
+		{"a human closed it on the graphite lane", true, "octocat", "closed", "0 merged · 1 closed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := setupReviewsLane(t, tt.gt)
+			srv.pr(7, 1, "CLOSED", false)
+			srv.closedBy(7, tt.closer)
+
+			got, err := runReviewsCmd(t, "7", "--since", "all")
+			if err != nil {
+				t.Fatalf("reviews error = %v", err)
+			}
+			wantTail := "◆ pr#7 " + tt.terminal + " · https://github.com/acme/repo/pull/7\n\n" +
+				"watch done · " + tt.counts + "\n"
+			if !strings.HasSuffix(got, wantTail) {
+				t.Errorf("output tail = %q, want suffix %q", got, wantTail)
+			}
+		})
+	}
+}
+
 func TestReviewsMultiPRWaitsForAll(t *testing.T) {
 	srv := setupReviews(t)
 	srv.pr(1, 1, "MERGED", true)
@@ -751,8 +814,9 @@ func serveGHAPIGolden(t *testing.T, g ghAPIGolden) *ghapi.Client {
 // TestReviewsBatchParsesRecordedGraphQL drives GitHub's own recorded batch
 // answers through the resolver a poll cycle uses: the success envelope, whose
 // merged pull request carries the non-null mergedAt the terminal classifier
-// reads, and the unresolvable one, which keeps data populated and nulls only the
-// field it could not resolve.
+// reads and a close of its own — proof that the merge has to be read before the
+// closing account — and the unresolvable one, which keeps data populated and
+// nulls only the field it could not resolve.
 func TestReviewsBatchParsesRecordedGraphQL(t *testing.T) {
 	numbers := loadGHAPIGolden(t, "reviews-graphql-numbers")
 	missing := loadGHAPIGolden(t, "reviews-graphql-missing")
@@ -766,14 +830,17 @@ func TestReviewsBatchParsesRecordedGraphQL(t *testing.T) {
 	if open.State != "OPEN" || open.URL != "https://github.com/cli/cli/pull/13982" {
 		t.Errorf("pr#13982 = %+v, want the recorded open pull request", open)
 	}
-	if terminal, err := reviewTerminalState(open); err != nil || terminal != "" {
+	if terminal, err := reviewTerminalState(open, true); err != nil || terminal != "" {
 		t.Errorf("reviewTerminalState(open) = (%q, %v), want the watch to stay attached", terminal, err)
 	}
 	merged := byNumber[13084]
 	if merged.MergedAt == nil {
 		t.Fatalf("pr#13084 = %+v, want the recorded mergedAt", merged)
 	}
-	if terminal, err := reviewTerminalState(merged); err != nil || terminal != "merged" {
+	if got := merged.closedBy(); got != "babakks" {
+		t.Errorf("pr#13084 closedBy() = %q, want the account the recorded close names", got)
+	}
+	if terminal, err := reviewTerminalState(merged, true); err != nil || terminal != "merged" {
 		t.Errorf("reviewTerminalState(merged) = (%q, %v), want merged", terminal, err)
 	}
 

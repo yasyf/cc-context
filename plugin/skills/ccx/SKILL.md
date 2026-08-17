@@ -271,7 +271,12 @@ ccx vcs ship -m "fix: x" --budget 0              # uncapped failure-log excerpt
 
 `ccx vcs info` (alias `lane`) reports the lane a mutating command would take and
 why — vcs kind, branch, trunk, the Graphite gates, the GitHub repo record, and on
-the gt lane the downstack with each branch's PR. A linked worktree also reports
+the gt lane the downstack with each branch's PR: whether it has a body, how it
+ended, and its check rollup, in one batched query for the whole stack. The
+Graphite merge queue squash-merges a stack into one trunk commit, so a PR it
+landed reports `CLOSED` with no `mergedAt`; on the gt lane the report calls that
+merged, where reading the state alone reports a successful merge as an
+abandonment. A linked worktree also reports
 where it sits: its shape, the repository's own working copy, the common dir its
 siblings contend over, and the key that separates siblings from unrelated repos.
 Every git-backed checkout reports which working copy holds trunk, which is what

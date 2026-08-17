@@ -12,13 +12,13 @@
     "-F",
     "p1=13084",
     "-f",
-    "query=query($owner: String!, $repo: String!, $p0: Int!, $p1: Int!) {\n  repository(owner: $owner, name: $repo) {\n    p0: pullRequest(number: $p0) { number url state mergedAt }\n    p1: pullRequest(number: $p1) { number url state mergedAt }\n  }\n}"
+    "query=query($owner: String!, $repo: String!, $p0: Int!, $p1: Int!) {\n  repository(owner: $owner, name: $repo) {\n    p0: pullRequest(number: $p0) { number url state mergedAt timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } } }\n    p1: pullRequest(number: $p1) { number url state mergedAt timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } } }\n  }\n}"
   ],
   "exit": 0,
   "status": 200,
   "headers": [
     "Content-Type: application/json; charset=utf-8"
   ],
-  "body": "{\"data\":{\"repository\":{\"p0\":{\"number\":13982,\"url\":\"https://github.com/cli/cli/pull/13982\",\"state\":\"OPEN\",\"mergedAt\":null},\"p1\":{\"number\":13084,\"url\":\"https://github.com/cli/cli/pull/13084\",\"state\":\"MERGED\",\"mergedAt\":\"2026-04-15T13:12:28Z\"}}}}",
+  "body": "{\"data\":{\"repository\":{\"p0\":{\"number\":13982,\"url\":\"https://github.com/cli/cli/pull/13982\",\"state\":\"OPEN\",\"mergedAt\":null,\"timelineItems\":{\"nodes\":[]}},\"p1\":{\"number\":13084,\"url\":\"https://github.com/cli/cli/pull/13084\",\"state\":\"MERGED\",\"mergedAt\":\"2026-04-15T13:12:28Z\",\"timelineItems\":{\"nodes\":[{\"actor\":{\"login\":\"babakks\"}}]}}}}}",
   "stderr": ""
 }

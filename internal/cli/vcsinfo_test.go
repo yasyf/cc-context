@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -300,7 +301,7 @@ func TestVcsInfoGTLane(t *testing.T) {
 		"visibility  private",
 		"permission  ADMIN",
 		"viewer      yasyf (affiliated: self)",
-		"downstack   fix-ship-help-graphite-demote → PR #3 (body)",
+		"downstack   fix-ship-help-graphite-demote → PR #3 (body, merged, checks success)",
 		"",
 	}, "\n")
 	if out != want {
@@ -546,10 +547,35 @@ func TestVcsInfoJSON(t *testing.T) {
 	if got.GitHubError != "" {
 		t.Errorf("github_error = %q, want empty", got.GitHubError)
 	}
-	want := []stackEntry{{Branch: downstackOne[0], PR: 3, URL: "https://github.com/yasyf/cc-context/pull/3", HasBody: true}}
-	if len(got.Downstack) != 1 || got.Downstack[0] != want[0] {
-		t.Errorf("downstack = %+v, want %+v", got.Downstack, want)
+	if len(got.Downstack) != 1 {
+		t.Fatalf("downstack = %+v, want the one branch of the stack", got.Downstack)
 	}
+	entry := got.Downstack[0]
+	want := stackEntry{
+		Branch:   downstackOne[0],
+		PR:       3,
+		URL:      "https://github.com/yasyf/cc-context/pull/3",
+		HasBody:  true,
+		State:    "MERGED",
+		Merged:   true,
+		MergedAt: entry.MergedAt,
+		Checks:   "SUCCESS",
+	}
+	if entry != want {
+		t.Errorf("downstack entry = %+v, want %+v", entry, want)
+	}
+	if entry.MergedAt == nil || !entry.MergedAt.Equal(infoTime(t, "2026-07-29T10:32:39Z")) {
+		t.Errorf("downstack merged_at = %v, want the recorded 2026-07-29T10:32:39Z", entry.MergedAt)
+	}
+}
+
+func infoTime(t *testing.T, text string) time.Time {
+	t.Helper()
+	at, err := time.Parse(time.RFC3339, text)
+	if err != nil {
+		t.Fatalf("parse %q: %v", text, err)
+	}
+	return at
 }
 
 // TestVcsInfoDownstackBodies proves the whole submit set is reported base first,
@@ -564,24 +590,30 @@ func TestVcsInfoDownstackBodies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
-	want := "fix-ship-help-graphite-demote → PR #3 (body) · yasyf/transcript-ccx-issues → PR #2 (body) · no-such-branch"
+	want := "fix-ship-help-graphite-demote → PR #3 (body, merged, checks success) · " +
+		"yasyf/transcript-ccx-issues → PR #2 (body, merged, checks success) · no-such-branch"
 	if got := infoLine(t, out, "downstack"); got != want {
 		t.Errorf("downstack = %q, want %q", got, want)
 	}
 }
 
-// TestInfoDownstackValue pins the three shapes one stack entry renders as. The
-// empty-bodied pull request has no recorded payload behind it — every branch the
-// downstack corpus reaches carries a body — so the arm is pinned over the
-// decoded entry rather than over bytes nobody captured.
+// TestInfoDownstackValue pins the shapes one stack entry renders as, including
+// the pull request the graphite merge queue landed: it reports CLOSED, and the
+// line has to say merged anyway. The empty-bodied and closed pull requests have
+// no recorded payload behind them — every branch the downstack corpus reaches is
+// a merged one carrying a body — so those arms are pinned over the decoded entry
+// rather than over bytes nobody captured.
 func TestInfoDownstackValue(t *testing.T) {
 	t.Parallel()
 	entries := []stackEntry{
-		{Branch: "base", PR: 12, URL: "https://github.com/yasyf/cc-context/pull/12", HasBody: true},
-		{Branch: "mid", PR: 13, URL: "https://github.com/yasyf/cc-context/pull/13"},
+		{Branch: "base", PR: 12, URL: "https://github.com/yasyf/cc-context/pull/12", HasBody: true, State: "MERGED", Merged: true, Checks: "SUCCESS"},
+		{Branch: "queued", PR: 14, URL: "https://github.com/yasyf/cc-context/pull/14", HasBody: true, State: "CLOSED", Merged: true},
+		{Branch: "abandoned", PR: 15, URL: "https://github.com/yasyf/cc-context/pull/15", HasBody: true, State: "CLOSED"},
+		{Branch: "mid", PR: 13, URL: "https://github.com/yasyf/cc-context/pull/13", State: "OPEN", Checks: "PENDING"},
 		{Branch: "tip"},
 	}
-	want := "base → PR #12 (body) · mid → PR #13 (no body) · tip"
+	want := "base → PR #12 (body, merged, checks success) · queued → PR #14 (body, merged) · " +
+		"abandoned → PR #15 (body, closed) · mid → PR #13 (no body, open, checks pending) · tip"
 	if got := infoDownstackValue(entries); got != want {
 		t.Errorf("infoDownstackValue() = %q, want %q", got, want)
 	}

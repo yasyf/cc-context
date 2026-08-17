@@ -10,7 +10,7 @@
     "-F",
     "p0=99999999",
     "-f",
-    "query=query($owner: String!, $repo: String!, $p0: Int!) {\n  repository(owner: $owner, name: $repo) {\n    p0: pullRequest(number: $p0) { number url state mergedAt }\n  }\n}"
+    "query=query($owner: String!, $repo: String!, $p0: Int!) {\n  repository(owner: $owner, name: $repo) {\n    p0: pullRequest(number: $p0) { number url state mergedAt timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } } }\n  }\n}"
   ],
   "exit": 1,
   "status": 200,

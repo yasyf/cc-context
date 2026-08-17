@@ -447,7 +447,7 @@ func gtSubmit(ctx context.Context, errW io.Writer, argv []string) error {
 // publish in the report.
 // The resolved downstack it returns is the one the pull request step then
 // backfills into, so the stack is walked and its pull requests fetched once.
-func shipPushGT(ctx context.Context, errW io.Writer, root string, o shipOpts, meta map[string]prMeta, branch string) (submitted string, bodyless []string, stack []stackEntry, err error) {
+func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta map[string]prMeta, branch string) (submitted string, bodyless []string, stack []stackEntry, err error) {
 	state, err := gtStateQuery(ctx, "ship")
 	if err != nil {
 		return "", nil, nil, err
@@ -470,11 +470,11 @@ func shipPushGT(ctx context.Context, errW io.Writer, root string, o shipOpts, me
 	if err := gtSubmit(ctx, errW, gtSubmitArgv(o)); err != nil {
 		return "", nil, nil, err
 	}
-	submitted, bodyless, stack = gtPRSegment(ctx, root, branch, chain, meta)
+	submitted, bodyless, stack = gtPRSegment(ctx, l, branch, chain, meta)
 	return submitted, bodyless, stack, nil
 }
 
-func gtPRSegment(ctx context.Context, root, branch string, chain []string, meta map[string]prMeta) (submitted string, bodyless []string, stack []stackEntry) {
+func gtPRSegment(ctx context.Context, l lane, branch string, chain []string, meta map[string]prMeta) (submitted string, bodyless []string, stack []stackEntry) {
 	stackSeg := ""
 	if len(chain) > 1 {
 		names := make([]string, len(chain))
@@ -484,7 +484,7 @@ func gtPRSegment(ctx context.Context, root, branch string, chain []string, meta 
 		stackSeg = fmt.Sprintf(" (stack of %d: %s)", len(chain), strings.Join(names, ", "))
 	}
 	submitted = "submitted " + branch + stackSeg
-	stack = infoDownstack(ctx, root, chain)
+	stack = infoDownstack(ctx, l, chain)
 	for _, entry := range stack {
 		if entry.PR == 0 {
 			continue
