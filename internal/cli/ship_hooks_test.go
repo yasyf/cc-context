@@ -2,8 +2,10 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -230,5 +232,77 @@ func TestShipHookEnvKeepsEverythingElse(t *testing.T) {
 	}
 	if !sawIndexFile {
 		t.Error("shipHookEnv() dropped GIT_INDEX_FILE; only GIT_DIR and GIT_WORK_TREE are scrubbed")
+	}
+}
+
+// writeShipLoudUvx installs a uvx that prints on every run, not only a failing
+// one. writeShipUvx speaks only when it fails, so a test driving it cannot tell
+// a pass that was discarded from a pass that had nothing to say — the whole
+// distinction the streaming seam draws.
+func writeShipLoudUvx(t *testing.T, f *vcstest.Fixture, n int) {
+	t.Helper()
+	marker := filepath.Join(t.TempDir(), "prek.marker")
+	if err := os.WriteFile(marker, []byte(strconv.Itoa(n)), 0o600); err != nil {
+		t.Fatalf("write prek marker: %v", err)
+	}
+	t.Setenv("SHIP_PREK_MARKER", marker)
+	writeShipExecutable(t, f.ShimBin, "uvx", "#!/bin/sh\n"+shipRecordArgv("uvx", f.ArgvLog)+`printf 'prek: checking every hook\n'
+count=$(cat "$SHIP_PREK_MARKER")
+if [ "$count" -gt 0 ]; then
+  printf '%s' "$((count - 1))" > "$SHIP_PREK_MARKER"
+  printf 'files were modified by this hook\n' >&2
+  exit 1
+fi
+exit 0
+`)
+}
+
+// TestShipHooksStreamingSeam pins which prek pass reaches the caller's stderr.
+// The retry pass is the verdict and always reports; the first pass reports only
+// on a terminal, where a human watches both go by in order. Off one the only
+// reader is a capture, which would take the first pass's pre-fix output for a
+// verdict the retry may already have overturned.
+func TestShipHooksStreamingSeam(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		stream      bool
+		fail        int
+		wantSeg     string
+		wantMarkers int
+		wantLead    bool
+		wantRuns    int
+	}{
+		{"a clean pass streams on a terminal", true, 0, "hooks ok", 1, false, 1},
+		{"a clean pass stays out of a capture", false, 0, "hooks ok", 0, false, 1},
+		{"an auto-fix streams both passes on a terminal", true, 1, "hooks fixed", 2, true, 2},
+		{"an auto-fix shows a capture only the verdict pass", false, 1, "hooks fixed", 1, false, 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipRepo(t, vcstest.Remote())
+			shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
+			writeShipLoudUvx(t, f, tt.fail)
+			shipResetLog(t, f)
+
+			old := shipStreamCI
+			t.Cleanup(func() { shipStreamCI = old })
+			shipStreamCI = func(io.Writer) bool { return tt.stream }
+
+			out, errStr, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push")
+			if err != nil {
+				t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+			}
+			if !strings.Contains(out, tt.wantSeg) {
+				t.Errorf("summary = %q, want it to carry %q", out, tt.wantSeg)
+			}
+			if got := strings.Count(errStr, "prek: checking every hook"); got != tt.wantMarkers {
+				t.Errorf("prek passes on stderr = %d, want %d (stderr=%q)", got, tt.wantMarkers, errStr)
+			}
+			if got := strings.Contains(errStr, shipHookRetryLead); got != tt.wantLead {
+				t.Errorf("retry lead-in present = %v, want %v (stderr=%q)", got, tt.wantLead, errStr)
+			}
+			if got := len(shipInvocationsOf(vcstest.Invocations(t, f.ArgvLog), "uvx")); got != tt.wantRuns {
+				t.Errorf("uvx runs = %d, want %d", got, tt.wantRuns)
+			}
+		})
 	}
 }

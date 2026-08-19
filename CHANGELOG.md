@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`ccx vcs ship --no-commit` ships a change that is already committed.** With
+  the work committed and the working copy clean, ship refused — and the only way
+  through was `--amend`, which re-runs a commit-shaped mutation (`jj squash`,
+  `git commit --amend`, `gt modify`) over a commit that may already be pushed.
+  `--no-commit` drops the commit stage and runs the rest: it pushes the commit in
+  place and opens or updates its pull request, which is what the refusal's own
+  `jj bookmark move … && jj git push --bookmark …` hint spelled out by hand. The
+  motivating case is attaching a body to a PR `gt submit` opened bodyless. It
+  refuses a dirty working copy, since uncommitted work would otherwise be left
+  out of a branch and a pull request the same run updates, and it cuts no branch:
+  placing an existing commit onto a new one is a history rewrite, not a push. The
+  empty-working-copy refusal is unchanged for every run that does not pass it.
 - **`ccx vcs info` places a working copy inside its repository.** A linked
   checkout — `git worktree add`, `jj workspace add`, or a git worktree carrying
   its own colocated `.jj` — reports its `shape`, the repository's own working copy
@@ -127,6 +139,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   holder instead of surfacing git's bare refusal.
 
 ### Fixed
+- **`--new-branch` was refused over an ambiguity it makes irrelevant.** When
+  several bookmarks tied for nearest, ship refused before it ever consulted
+  `--new-branch` — so a flag whose whole meaning is "do not use the current
+  branch" was blocked on naming the current branch. The refusal's own advice
+  could not be followed either: `--branch` only breaks the tie by naming one of
+  the tied bookmarks, so in a repository where each candidate is held by a
+  worktree, the only way through was to hijack one of them. `--new-branch` now
+  settles the tie itself, and no longer pays for the unheld-candidate probe it
+  never used.
+- **`ccx vcs ship` submitted a graphite stack twice.** A downstack deeper than
+  one branch ran `gt submit --dry-run` before the real submit, paying a second
+  full network pass to print the branch list — a list ship had already resolved
+  locally, and printed wrong, since without `--no-stack` the dry run covered the
+  upstack the real submit drops. Its report was also discarded outright off a
+  terminal. Ship now names the chain from the downstack it already holds and
+  submits once. Nothing is lost from the pre-flight: `shipPreflightGT` already
+  refuses a `needs_restack` anywhere on the downstack, adopts an untracked
+  branch, and refuses `--amend` on trunk, all before any commit forms and with
+  no network round trip.
+- **`ccx vcs ship` ran the repo's pre-commit hooks in total silence.** The first
+  prek pass was spawned with a nil writer, which routes the child to
+  `/dev/null`, so a hook suite that takes minutes — a monorepo's formatters,
+  linters, and pipeline codegen — reported nothing at all while it ran, and
+  `--no-watch` did not shorten it, since it drops only the CI watch at the very
+  end. That pass now streams to stderr on a terminal, with a lead-in line
+  separating it from the auto-fix retry that runs the same hooks again. Off a
+  terminal it stays quiet: there the only reader is a capture, which would take
+  the first pass's pre-fix output for the verdict the retry actually decides.
 - **`ccx vcs info` failures named a command nobody ran.** Resolving the git lane's
   trunk goes through two helpers ship and restack own, whose errors read
   `ship: git config branch.<b>.remote: …` and
