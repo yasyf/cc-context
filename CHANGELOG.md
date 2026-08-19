@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.41.0] - 2026-08-19
 
 ### Added
 - **`ccx vcs ship --no-commit` ships a change that is already committed.** With
@@ -19,6 +19,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   out of a branch and a pull request the same run updates, and it cuts no branch:
   placing an existing commit onto a new one is a history rewrite, not a push. The
   empty-working-copy refusal is unchanged for every run that does not pass it.
+
+### Fixed
+- **`--new-branch` was refused over an ambiguity it makes irrelevant.** When
+  several bookmarks tied for nearest, ship refused before it ever consulted
+  `--new-branch` — so a flag whose whole meaning is "do not use the current
+  branch" was blocked on naming the current branch. The refusal's own advice
+  could not be followed either: `--branch` only breaks the tie by naming one of
+  the tied bookmarks, so in a repository where each candidate is held by a
+  worktree, the only way through was to hijack one of them. `--new-branch` now
+  settles the tie itself, and no longer pays for the unheld-candidate probe it
+  never used.
+- **`ccx vcs ship` submitted a graphite stack twice.** A downstack deeper than
+  one branch ran `gt submit --dry-run` before the real submit, paying a second
+  full network pass to print the branch list — a list ship had already resolved
+  locally, and printed wrong, since without `--no-stack` the dry run covered the
+  upstack the real submit drops. Its report was also discarded outright off a
+  terminal. Ship now names the chain from the downstack it already holds and
+  submits once. Nothing is lost from the pre-flight: `shipPreflightGT` already
+  refuses a `needs_restack` anywhere on the downstack, adopts an untracked
+  branch, and refuses `--amend` on trunk, all before any commit forms and with
+  no network round trip.
+- **`ccx vcs ship` ran the repo's pre-commit hooks in total silence.** The first
+  prek pass was spawned with a nil writer, which routes the child to
+  `/dev/null`, so a hook suite that takes minutes — a monorepo's formatters,
+  linters, and pipeline codegen — reported nothing at all while it ran, and
+  `--no-watch` did not shorten it, since it drops only the CI watch at the very
+  end. That pass now streams to stderr on a terminal, with a lead-in line
+  separating it from the auto-fix retry that runs the same hooks again. Off a
+  terminal it stays quiet: there the only reader is a capture, which would take
+  the first pass's pre-fix output for the verdict the retry actually decides.
+
+## [0.40.0] - 2026-08-17
+
+### Added
 - **`ccx vcs info` places a working copy inside its repository.** A linked
   checkout — `git worktree add`, `jj workspace add`, or a git worktree carrying
   its own colocated `.jj` — reports its `shape`, the repository's own working copy
@@ -154,34 +188,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Graphite merge queue landed carries — so `ccx vcs reviews` and `ship --reviews`
   both closed a watch of a successful merge with `◆ pr#N closed` and counted it in
   the closed column. On the gt lane the closing account now settles it.
-- **`--new-branch` was refused over an ambiguity it makes irrelevant.** When
-  several bookmarks tied for nearest, ship refused before it ever consulted
-  `--new-branch` — so a flag whose whole meaning is "do not use the current
-  branch" was blocked on naming the current branch. The refusal's own advice
-  could not be followed either: `--branch` only breaks the tie by naming one of
-  the tied bookmarks, so in a repository where each candidate is held by a
-  worktree, the only way through was to hijack one of them. `--new-branch` now
-  settles the tie itself, and no longer pays for the unheld-candidate probe it
-  never used.
-- **`ccx vcs ship` submitted a graphite stack twice.** A downstack deeper than
-  one branch ran `gt submit --dry-run` before the real submit, paying a second
-  full network pass to print the branch list — a list ship had already resolved
-  locally, and printed wrong, since without `--no-stack` the dry run covered the
-  upstack the real submit drops. Its report was also discarded outright off a
-  terminal. Ship now names the chain from the downstack it already holds and
-  submits once. Nothing is lost from the pre-flight: `shipPreflightGT` already
-  refuses a `needs_restack` anywhere on the downstack, adopts an untracked
-  branch, and refuses `--amend` on trunk, all before any commit forms and with
-  no network round trip.
-- **`ccx vcs ship` ran the repo's pre-commit hooks in total silence.** The first
-  prek pass was spawned with a nil writer, which routes the child to
-  `/dev/null`, so a hook suite that takes minutes — a monorepo's formatters,
-  linters, and pipeline codegen — reported nothing at all while it ran, and
-  `--no-watch` did not shorten it, since it drops only the CI watch at the very
-  end. That pass now streams to stderr on a terminal, with a lead-in line
-  separating it from the auto-fix retry that runs the same hooks again. Off a
-  terminal it stays quiet: there the only reader is a capture, which would take
-  the first pass's pre-fix output for the verdict the retry actually decides.
 - **`ccx vcs info` failures named a command nobody ran.** Resolving the git lane's
   trunk goes through two helpers ship and restack own, whose errors read
   `ship: git config branch.<b>.remote: …` and
