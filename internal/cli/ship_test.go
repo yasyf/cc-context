@@ -3877,7 +3877,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			}
 			// One gt submit at every depth: the chain is named from the downstack
 			// already resolved, not by a second submit run under --dry-run.
-			want := [][]string{
+			assertInvocations(t, readInvocations(t, log), [][]string{
 				nogtProbe,
 				{"git", "branch", "--show-current"},
 				{"gt", "state"},
@@ -3889,12 +3889,9 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				{"gt", "state"},
 				{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
 				ghDownstackPRArgv(tt.prBranches...),
-			}
-			assertInvocations(t, readInvocations(t, log), append(
-				want,
-				[]string{"git", "rev-parse", "HEAD"},
+				{"git", "rev-parse", "HEAD"},
 				ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
-			))
+			})
 		})
 	}
 }
