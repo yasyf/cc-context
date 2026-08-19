@@ -70,6 +70,16 @@ func resolveBranchPlan(l lane, r vcs.Repo, o shipOpts, current, trunk string) (b
 		return plan, nil
 	}
 
+	// --no-commit forms no commit either, and placing one that already exists
+	// onto a new branch would be a history rewrite, not a push.
+	if o.noCommit {
+		plan.action = branchAppend
+		if o.branch != "" {
+			plan.name = o.branch
+		}
+		return plan, nil
+	}
+
 	if o.newBranch != "" {
 		name, err := newBranchName(o)
 		if err != nil {

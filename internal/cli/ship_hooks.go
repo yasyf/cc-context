@@ -32,6 +32,10 @@ const shipHookIndexLock = "index.lock"
 // one being committed.
 var shipHookScrubbedEnv = []string{"GIT_DIR", "GIT_WORK_TREE"}
 
+// shipHookRetryLead separates the two streamed prek passes, which run the same
+// hooks over the same files and would otherwise read as one run repeating itself.
+const shipHookRetryLead = "ship: hooks: re-running prek over the auto-fixed files\n"
+
 // shipRunHooks runs prek (via uvx) over the files ship is about to commit, with
 // an auto-fix-then-verify policy: prek's exit code cannot tell a genuine failure
 // from files it modified in place, so a nonzero first run is re-staged for Git,
@@ -43,6 +47,9 @@ var shipHookScrubbedEnv = []string{"GIT_DIR", "GIT_WORK_TREE"}
 // The covered result reports whether this pass discharges the commit's hook
 // obligations, so the caller can suppress Git's duplicate run; a message-stage
 // config, which prek run --files never reaches, keeps it false.
+// The first pass streams to errW only on a terminal, where a human watches both
+// passes go by in order; off one it is discarded, since the auto-fix policy makes
+// its output a pre-fix snapshot the retry may already have repaired.
 func shipRunHooks(ctx context.Context, errW io.Writer, root string, kind vcs.Kind, o shipOpts) (seg string, covered bool, err error) {
 	if o.noVerify {
 		return "", false, nil
@@ -75,9 +82,14 @@ func shipRunHooks(ctx context.Context, errW io.Writer, root string, kind vcs.Kin
 	}
 	covered = !msgStage
 
+	streamed := shipStreamCI(errW)
+	var firstW io.Writer
+	if streamed {
+		firstW = errW
+	}
 	// Leading-dash filenames intentionally reach prek unchanged so it fails loudly.
 	argv := append([]string{"prek", "run", "--cd", root, "--files"}, files...)
-	if err := shipRunPrek(ctx, argv, nil); err == nil {
+	if err := shipRunPrek(ctx, argv, firstW); err == nil {
 		return "hooks ok", covered, nil
 	}
 	if kind == vcs.Git {
@@ -92,6 +104,11 @@ func shipRunHooks(ctx context.Context, errW io.Writer, root string, kind vcs.Kin
 	if len(files) == 0 {
 		return "", false, errors.New("ship: hooks: auto-fixes reverted every pending change; nothing to commit")
 	}
+	if streamed {
+		if _, err := io.WriteString(errW, shipHookRetryLead); err != nil {
+			return "", false, fmt.Errorf("ship: hooks: report the retry: %w", err)
+		}
+	}
 	argv = append([]string{"prek", "run", "--cd", root, "--files"}, files...)
 	if err := shipRunPrek(ctx, argv, errW); err != nil {
 		return "", false, fmt.Errorf("ship: hooks: %w — pre-commit hooks still failing after auto-fix; fix them or re-run with --no-verify", err)
@@ -102,8 +119,10 @@ func shipRunHooks(ctx context.Context, errW io.Writer, root string, kind vcs.Kin
 // shipRunPrek spawns prek with shipHookScrubbedEnv stripped from the child
 // environment, which is why it builds the command itself rather than going
 // through render (whose helpers only extend os.Environ, and an empty GIT_DIR is
-// fatal to git rather than absent). Output goes to w; a nil w routes the child
-// to /dev/null rather than a pipe nothing reads.
+// fatal to git rather than absent). Output goes to w on the pass a human can
+// watch, and a nil w routes the child to /dev/null: off a terminal the only
+// reader is a capture, which would take the first pass's pre-fix failures for
+// the verdict the retry pass actually decides.
 func shipRunPrek(ctx context.Context, argv []string, w io.Writer) error {
 	cmd := exec.CommandContext(ctx, "uvx", argv...) //nolint:gosec // argv is prek's fixed verb plus the files ship derived, not user free-text
 	cmd.Env = shipHookEnv()

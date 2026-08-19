@@ -182,6 +182,10 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts) (b
 		}
 	}
 
+	if o.noCommit && branch == trunk {
+		return branchPlan{}, "", errors.New("ship: --no-commit on trunk is refused in the graphite lane — there is no stacked branch to submit")
+	}
+
 	if o.amend && branch == trunk {
 		return branchPlan{}, "", errors.New("ship: --amend on trunk is refused in the graphite lane — create a stacked branch instead (gt create)")
 	}
@@ -441,10 +445,11 @@ func gtSubmit(ctx context.Context, errW io.Writer, argv []string) error {
 // a rejected submit reports gt's own recovery step.
 //
 // gt submit force-pushes "all branches in the current stack from trunk to the
-// current branch"; --no-stack only drops the upstack. So a submit that will
-// touch more than the current branch runs --dry-run first ("Reports the PRs
-// that would be submitted and terminates") and names every branch it will
-// publish in the report.
+// current branch", so a submit deeper than one branch names the chain first.
+// That name comes from the downstack already resolved here rather than from a
+// second gt submit --dry-run, which cost a full network pass to report a list
+// this function is holding — and reported it wrong, since without --no-stack it
+// covered the upstack the real submit drops.
 // The resolved downstack it returns is the one the pull request step then
 // backfills into, so the stack is walked and its pull requests fetched once.
 func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta map[string]prMeta, branch string) (submitted string, bodyless []string, stack []stackEntry, err error) {
@@ -462,10 +467,8 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 			return "", nil, nil, err
 		}
 	}
-	if len(chain) > 1 {
-		if err := gtSubmit(ctx, errW, []string{"submit", "--dry-run", "--no-interactive"}); err != nil {
-			return "", nil, nil, err
-		}
+	if err := gtAnnounceStack(errW, chain); err != nil {
+		return "", nil, nil, err
 	}
 	if err := gtSubmit(ctx, errW, gtSubmitArgv(o)); err != nil {
 		return "", nil, nil, err
@@ -474,14 +477,31 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 	return submitted, bodyless, stack, nil
 }
 
+// gtStackNames orders a downstack trunk-first, the direction a stack reads in.
+func gtStackNames(chain []string) []string {
+	names := make([]string, len(chain))
+	for i, b := range chain {
+		names[len(chain)-1-i] = b
+	}
+	return names
+}
+
+// gtAnnounceStack names the branches a submit is about to force-push, which for
+// a stack deeper than one branch is more than the one being shipped.
+func gtAnnounceStack(errW io.Writer, chain []string) error {
+	if len(chain) < 2 {
+		return nil
+	}
+	if _, err := fmt.Fprintf(errW, "ship: submitting %d branches: %s\n", len(chain), strings.Join(gtStackNames(chain), ", ")); err != nil {
+		return fmt.Errorf("ship: name the stack: %w", err)
+	}
+	return nil
+}
+
 func gtPRSegment(ctx context.Context, l lane, branch string, chain []string, meta map[string]prMeta) (submitted string, bodyless []string, stack []stackEntry) {
 	stackSeg := ""
 	if len(chain) > 1 {
-		names := make([]string, len(chain))
-		for i, b := range chain {
-			names[len(chain)-1-i] = b
-		}
-		stackSeg = fmt.Sprintf(" (stack of %d: %s)", len(chain), strings.Join(names, ", "))
+		stackSeg = fmt.Sprintf(" (stack of %d: %s)", len(chain), strings.Join(gtStackNames(chain), ", "))
 	}
 	submitted = "submitted " + branch + stackSeg
 	stack = infoDownstack(ctx, l, chain)

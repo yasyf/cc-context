@@ -3839,7 +3839,6 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 		name       string
 		branch     string
 		stateJSON  string
-		dryRun     bool
 		prBranches []string
 		wantSeg    string
 	}{
@@ -3855,7 +3854,6 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			branch: "feature2",
 			stateJSON: `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},` +
 				`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`,
-			dryRun:     true,
 			prBranches: []string{"feature", "feature2"},
 			wantSeg:    "submitted feature2 → PR #7 https://github.com/x/pull/7 (stack of 2: feature, feature2)",
 		},
@@ -3877,6 +3875,8 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			if summary := `committed a1b2c3d "fix: frobnicate" · ` + tt.wantSeg + ` · CI success`; got != summary {
 				t.Errorf("summary = %q, want %q", got, summary)
 			}
+			// One gt submit at every depth: the chain is named from the downstack
+			// already resolved, not by a second submit run under --dry-run.
 			want := [][]string{
 				nogtProbe,
 				{"git", "branch", "--show-current"},
@@ -3887,16 +3887,9 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"gt", "state"},
-			}
-			// gt submit force-pushes the whole downstack, so a stack deeper than
-			// one branch is reported by --dry-run before anything is pushed.
-			if tt.dryRun {
-				want = append(want, []string{"gt", "submit", "--dry-run", "--no-interactive"})
-			}
-			want = append(want,
-				[]string{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
+				{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
 				ghDownstackPRArgv(tt.prBranches...),
-			)
+			}
 			assertInvocations(t, readInvocations(t, log), append(
 				want,
 				[]string{"git", "rev-parse", "HEAD"},
@@ -5242,5 +5235,245 @@ func TestGitTrunkBranchLive(t *testing.T) {
 				t.Errorf("gitTrunkBranch() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestShipGTStackNamedBeforeSubmit pins what replaced the --dry-run pre-pass: the
+// branches a submit will force-push are named from the downstack ship already
+// resolved, and exactly one gt submit runs at any depth.
+func TestShipGTStackNamedBeforeSubmit(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		branch    string
+		stateJSON string
+		wantLine  string
+	}{
+		{
+			name:      "depth 1 names nothing",
+			branch:    "feature",
+			stateJSON: `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`,
+		},
+		{
+			name:   "depth 2 names the whole chain",
+			branch: "feature2",
+			stateJSON: `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},` +
+				`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`,
+			wantLine: "ship: submitting 2 branches: feature, feature2\n",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShipGT(t, true)
+			t.Setenv("GIT_BRANCH", tt.branch)
+			t.Setenv("GT_STATE_JSON", tt.stateJSON)
+			t.Setenv("GH_PR_VIEW_JSON", `{"number":7,"url":"https://github.com/x/pull/7","body":"why"}`)
+
+			_, errStr, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-watch")
+			if err != nil {
+				t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+			}
+			if tt.wantLine == "" {
+				if strings.Contains(errStr, "ship: submitting") {
+					t.Errorf("stderr names a stack for a lone branch: %q", errStr)
+				}
+			} else if !strings.Contains(errStr, tt.wantLine) {
+				t.Errorf("stderr = %q, want it to carry %q", errStr, tt.wantLine)
+			}
+			submits := 0
+			for _, inv := range readInvocations(t, log) {
+				if len(inv) > 1 && inv[0] == "gt" && inv[1] == "submit" {
+					submits++
+				}
+			}
+			if submits != 1 {
+				t.Errorf("gt submit ran %d times, want exactly 1", submits)
+			}
+		})
+	}
+}
+
+// shipHandCommit commits the working copy the way a user would, without ship:
+// the commit exists, the working copy is clean, and on jj the bookmark is left
+// behind at its old position — the exact state --no-commit is for.
+func shipHandCommit(t *testing.T, f *vcstest.Fixture, kind vcs.Kind, message string) {
+	t.Helper()
+	if kind == vcs.JJ {
+		mustRun(t, f.Dir, "jj", "commit", "-m", message)
+		return
+	}
+	mustRun(t, f.Dir, "git", "add", "-A")
+	mustRun(t, f.Dir, "git", "commit", "-qm", message)
+}
+
+// TestShipNoCommitShipsCommittedChange proves the flag does what the empty
+// refusal's manual hint describes: the commit already in place is pushed, and
+// no new one is cut.
+func TestShipNoCommitShipsCommittedChange(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		jj   bool
+	}{{name: "git"}, {name: "jj", jj: true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			kind := shipKind(tt.jj)
+			f := shipRepo(t, shipOptsFor(tt.jj, vcstest.Remote(), vcstest.Dirty())...)
+			shipHandCommit(t, f, kind, "fix: the change already committed")
+			head := shipHead(t, f)
+			shipResetLog(t, f)
+
+			got, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr")
+			if err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			if want := "already " + shipCommitted(t, f, kind); !strings.HasPrefix(got, want) {
+				t.Errorf("summary = %q, want it to open with %q", got, want)
+			}
+			for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+				if len(inv) > 1 && (inv[1] == "commit" || inv[1] == "squash") {
+					t.Errorf("--no-commit cut a commit: %v", inv)
+				}
+			}
+			if got := shipHead(t, f); got != head {
+				t.Errorf("HEAD moved to %s, want the hand-made %s", got, head)
+			}
+			if n := remoteCount(t, f, "main"); n != 2 {
+				t.Errorf("origin main holds %d commits, want the hand-made one pushed", n)
+			}
+		})
+	}
+}
+
+// TestShipWithoutNoCommitStillRefusesEmpty is the other half of the contract:
+// the same clean, already-committed tree still refuses without the flag, so the
+// new mode is an opt-out and not a weakening.
+func TestShipWithoutNoCommitStillRefusesEmpty(t *testing.T) {
+	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
+	shipHandCommit(t, f, vcs.JJ, "fix: the change already committed")
+	head := shipHead(t, f)
+	shipResetLog(t, f)
+
+	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err == nil {
+		t.Fatal("ship error = nil, want the empty-working-copy refusal")
+	}
+	if want := shipEmptyRefusal(t, f, "", "main"); err.Error() != want {
+		t.Errorf("ship error = %q, want %q", err, want)
+	}
+	if got := shipHead(t, f); got != head {
+		t.Errorf("HEAD moved to %s, want the pre-ship %s", got, head)
+	}
+}
+
+// TestShipNoCommitRefusesDirtyWorkingCopy pins the refusal that keeps uncommitted
+// work from being silently left out of a branch and a PR this same run updates.
+func TestShipNoCommitRefusesDirtyWorkingCopy(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		jj   bool
+	}{{name: "git"}, {name: "jj", jj: true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			kind := shipKind(tt.jj)
+			f := shipRepo(t, shipOptsFor(tt.jj, vcstest.Remote(), vcstest.Dirty())...)
+			shipHandCommit(t, f, kind, "fix: the change already committed")
+			writeShipFile(t, f.Dir, "leftover.go", "still working on this\n")
+			shipResetLog(t, f)
+
+			_, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr")
+			if err == nil {
+				t.Fatal("ship error = nil, want a refusal naming the uncommitted work")
+			}
+			if !strings.Contains(err.Error(), "--no-commit needs a clean working copy") {
+				t.Errorf("ship error = %q, want it to refuse a dirty working copy", err)
+			}
+			if !strings.Contains(err.Error(), "leftover.go") {
+				t.Errorf("ship error = %q, want it to name leftover.go", err)
+			}
+			if n := remoteCount(t, f, "main"); n != 1 {
+				t.Errorf("origin main holds %d commits, want the refusal to have pushed nothing", n)
+			}
+		})
+	}
+}
+
+// TestShipNoCommitRepeatsCleanly re-runs the mode against a branch already fully
+// pushed. Nothing upstream needs moving, which is a state no other ship reaches:
+// every other path advances the bookmark onto a commit it just cut.
+func TestShipNoCommitRepeatsCleanly(t *testing.T) {
+	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
+	shipHandCommit(t, f, vcs.JJ, "fix: the change already committed")
+	shipResetLog(t, f)
+
+	if _, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr"); err != nil {
+		t.Fatalf("first ship error = %v", err)
+	}
+	got, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr")
+	if err != nil {
+		t.Fatalf("second ship error = %v, want a clean no-op re-run", err)
+	}
+	if !strings.HasPrefix(got, "already committed") {
+		t.Errorf("summary = %q, want it to open with the already-committed segment", got)
+	}
+	if n := remoteCount(t, f, "main"); n != 2 {
+		t.Errorf("origin main holds %d commits, want the re-run to have added none", n)
+	}
+}
+
+// TestShipNoCommitFlagConflicts keeps --no-commit from combining with the flags
+// that only mean something when a commit is being formed.
+func TestShipNoCommitFlagConflicts(t *testing.T) {
+	for _, args := range [][]string{
+		{"--no-commit", "-m", "fix: frobnicate"},
+		{"--no-commit", "--amend"},
+		{"--no-commit", "--no-push"},
+		{"--no-commit", "--new-branch=feature"},
+		{"--no-commit", "--append"},
+		{"--no-commit", "--skip-hunk", "f.txt:1-2#abcd"},
+		{"--no-commit", "--only-hunk", "f.txt:1-2#abcd"},
+	} {
+		t.Run(strings.Join(args[1:], " "), func(t *testing.T) {
+			f := shipRepo(t, vcstest.JJ(), vcstest.Remote())
+			shipResetLog(t, f)
+			_, err := runShipCmd(t, args...)
+			if err == nil {
+				t.Fatalf("ship %v error = nil, want a mutual-exclusion refusal", args)
+			}
+			if !strings.Contains(err.Error(), "no-commit") {
+				t.Errorf("ship error = %q, want it to name no-commit", err)
+			}
+			if inv := vcstest.Invocations(t, f.ArgvLog); len(inv) > 0 {
+				t.Errorf("flag validation touched the repository: %v", inv)
+			}
+		})
+	}
+}
+
+// TestShipJJNewBranchClearsNearestAmbiguity is the companion to
+// TestShipJJMultipleNearestBookmarksFails: --new-branch names the branch
+// outright, so a tie among the nearest bookmarks settles nothing it uses.
+// Refusing there asked the caller to disambiguate a current branch they had just
+// said to leave, and the refusal's own advice could not be followed — --branch
+// only breaks the tie by naming one of the tied bookmarks, which in a repository
+// whose candidates are all held by worktrees means hijacking one of them.
+func TestShipJJNewBranchClearsNearestAmbiguity(t *testing.T) {
+	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
+	shipJJBookmarks(t, f, "feat-a", "feat-b")
+	shipResetLog(t, f)
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--new-branch=feat-c", "--no-pr", "--no-watch")
+	if err != nil {
+		t.Fatalf("ship error = %v, want --new-branch to settle the tie itself", err)
+	}
+	if want := shipCommitted(t, f, vcs.JJ) + " · created feat-c · pushed feat-c → origin"; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if n := remoteCount(t, f, "feat-c"); n != 3 {
+		t.Errorf("origin feat-c holds %d commits, want init, wip, and the shipped one", n)
+	}
+	// The tied bookmarks are the point: ship must touch neither, since moving
+	// either one is exactly the hijack --branch would have forced.
+	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+		for _, name := range []string{"feat-a", "feat-b"} {
+			if slices.Contains(inv, vcs.JJExactPattern(name)) {
+				t.Errorf("ship touched tied bookmark %s: %v", name, inv)
+			}
+		}
 	}
 }
