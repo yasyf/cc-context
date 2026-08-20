@@ -475,6 +475,58 @@ func TestShipHooksNoVerify(t *testing.T) {
 	}
 }
 
+// TestShipVerifyDefault pins where the repository's hooks run: the commit that
+// lands straight on trunk, and nothing else, since every other position is bound
+// for a pull request whose CI is the check. Whether prek ran is the assertion —
+// telling the commit verb to skip its own run saves nothing when ship already
+// paid for the same suite.
+func TestShipVerifyDefault(t *testing.T) {
+	tests := []struct {
+		name     string
+		branch   string
+		args     []string
+		noRemote bool
+		want     bool
+	}{
+		{name: "trunk append", want: true},
+		{name: "feature append", branch: "feature"},
+		{name: "new branch off trunk", args: []string{"--new-branch=feature"}},
+		{name: "feature append under --verify", branch: "feature", args: []string{"--verify"}, want: true},
+		{name: "trunk append under --no-verify", args: []string{"--no-verify"}},
+		{name: "no trunk to name", noRemote: true, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var opts []vcstest.Opt
+			if !tt.noRemote {
+				opts = append(opts, vcstest.Remote())
+			}
+			f := shipRepo(t, opts...)
+			if tt.branch != "" {
+				mustRun(t, f.Dir, "git", "switch", "-qc", tt.branch)
+			}
+			shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
+
+			got, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.args...)...)
+			if err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			ran := false
+			for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+				if inv[0] == "uvx" {
+					ran = true
+				}
+			}
+			if ran != tt.want {
+				t.Errorf("prek ran = %v, want %v", ran, tt.want)
+			}
+			if reported := strings.HasPrefix(got, "hooks ok"+shipSep); reported != tt.want {
+				t.Errorf("summary = %q, want a leading hook segment = %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestShipHooksNoConfig(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	writeShipUvx(t, f, 0, "")
@@ -1621,16 +1673,25 @@ func TestShipGitRebase(t *testing.T) {
 		},
 		{
 			// origin carries no counterpart for a branch nobody has pushed, so
-			// rev-parse exits 1 and the rebase is skipped outright.
+			// rev-parse exits 1 and the rebase is skipped outright. A branch that
+			// is not trunk runs no hooks either, which is what puts --no-verify on
+			// the commit and on the push that would otherwise run the pre-push half.
 			name:   "missing remote branch skips rebase",
 			opts:   []vcstest.Opt{vcstest.Branch("feature")},
 			branch: "feature",
 			remote: "origin",
-			want: append(plan,
-				[]string{"git", "config", "--get", "branch.feature.remote"},
-				[]string{"git", "fetch", "origin"},
-				[]string{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/feature"},
-				[]string{"git", "push", "origin", "feature"}),
+			want: [][]string{
+				{"git", "branch", "--show-current"},
+				gitTrunkArgv,
+				{"git", "add", "-A"},
+				{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
+				{"git", "branch", "--show-current"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				{"git", "config", "--get", "branch.feature.remote"},
+				{"git", "fetch", "origin"},
+				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/feature"},
+				{"git", "push", "--no-verify", "origin", "feature"},
+			},
 		},
 		{
 			// b.txt stays out of the scoped commit, so the rebase autostashes it
@@ -3178,6 +3239,24 @@ func TestShipRequiresMessage(t *testing.T) {
 	assertShipRefusedClean(t, f, head)
 }
 
+// TestShipRepeatableMessage pins -m to git commit's own semantics: several
+// values are the paragraphs of one message, not a value each one overwrites.
+func TestShipRepeatableMessage(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "-m", "Context: the widget drifted.", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if want := shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	body := gitAt(t, f.Dir, "log", "-1", "--format=%B")
+	if want := "fix: frobnicate\n\nContext: the widget drifted."; !strings.HasPrefix(body, want) {
+		t.Errorf("commit message = %q, want it to open with %q", body, want)
+	}
+}
+
 // TestShipNoRepoFails ships from a directory outside every repository the test
 // built: the fixture's shim still leads PATH, so a VCS call ship made would be
 // recorded.
@@ -3803,7 +3882,7 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 			{"gt", "state"},
 			{"gt", "add", "--no-interactive", "-A"},
 			{"git", "diff", "--cached", "--quiet"},
-			{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
+			{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
 			{"git", "branch", "--show-current"},
 			{"git", "log", "-1", "--format=%h%x00%s"},
 		})
@@ -3883,11 +3962,11 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				{"gt", "state"},
 				{"gt", "add", "--no-interactive", "-A"},
 				{"git", "diff", "--cached", "--quiet"},
-				{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
+				{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"gt", "state"},
-				{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
+				{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--no-verify", "--publish"},
 				ghDownstackPRArgv(tt.prBranches...),
 				{"git", "rev-parse", "HEAD"},
 				ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
@@ -3924,11 +4003,11 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		{"gt", "state"},
 		{"gt", "add", "--no-interactive", "-A"},
 		{"git", "diff", "--cached", "--quiet"},
-		{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"},
+		{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"gt", "state"},
-		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
+		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--no-verify", "--publish"},
 		ghDownstackPRArgv("fix-frobnicate"),
 		{"git", "rev-parse", "HEAD"},
 		ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
@@ -4132,10 +4211,10 @@ func TestShipGTCreateNamesExplicitly(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{"explicit name", []string{"--new-branch=newbranch"}, []string{"gt", "create", "newbranch", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
-		{"bare new-branch derives from the subject", []string{"--new-branch"}, []string{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
-		{"the deprecated --create alias still works", []string{"--create=newbranch"}, []string{"gt", "create", "newbranch", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
-		{"--parent stacks the branch onto it", []string{"--new-branch=newbranch", "--parent", "base"}, []string{"gt", "create", "newbranch", "--onto", "base", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
+		{"explicit name", []string{"--new-branch=newbranch"}, []string{"gt", "create", "newbranch", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"}},
+		{"bare new-branch derives from the subject", []string{"--new-branch"}, []string{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"}},
+		{"the deprecated --create alias still works", []string{"--create=newbranch"}, []string{"gt", "create", "newbranch", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"}},
+		{"--parent stacks the branch onto it", []string{"--new-branch=newbranch", "--parent", "base"}, []string{"gt", "create", "newbranch", "--onto", "base", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -4439,8 +4518,8 @@ func TestShipGTAmend(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{"with message", []string{"--amend", "-m", "fix: frobnicate"}, []string{"gt", "modify", "-m", "fix: frobnicate", "--no-interactive"}},
-		{"without message", []string{"--amend"}, []string{"gt", "modify", "--no-interactive"}},
+		{"with message", []string{"--amend", "-m", "fix: frobnicate"}, []string{"gt", "modify", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"}},
+		{"without message", []string{"--amend"}, []string{"gt", "modify", "--no-interactive", "--no-verify"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -4502,7 +4581,7 @@ func TestShipGTPathScoped(t *testing.T) {
 		{"gt", "state"},
 		{"gt", "add", "--no-interactive", "-A", "--", "src/a.go", "docs"},
 		{"git", "diff", "--cached", "--quiet"},
-		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
+		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 	})
@@ -4535,7 +4614,7 @@ func TestShipGTHunkScoped(t *testing.T) {
 	}
 	invocations := shipGTInvocations(t, f)
 	blob := gitAt(t, f.Dir, "rev-parse", "HEAD:f.txt")
-	if want := "hooks hunk-skip · " + shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
+	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	assertInvocations(t, invocations, [][]string{
@@ -4551,7 +4630,7 @@ func TestShipGTHunkScoped(t *testing.T) {
 		{"git", "ls-tree", "--full-tree", "-z", "--end-of-options", "HEAD", "--", "f.txt"},
 		{"git", "hash-object", "-w", "--stdin"},
 		{"git", "update-index", "--add", "--cacheinfo", "100644," + blob + ",f.txt"},
-		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
+		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
 		{"git", "restore", "--staged", "--", "f.txt"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
@@ -4599,22 +4678,88 @@ func TestShipGTHunkScopedRefusesALyingExitZero(t *testing.T) {
 	}
 }
 
+// shipGTStale advances base after feature was cut, which is what leaves the
+// stack unrestacked — gt state is the one oracle for that verdict — and leaves
+// the working copy back on feature with an edit waiting.
+func shipGTStale(t *testing.T, f *vcstest.Fixture, content string) {
+	t.Helper()
+	mustRun(t, f.Dir, "git", "switch", "-q", "base")
+	writeShipFile(t, f.Dir, "base2.txt", content)
+	mustRun(t, f.Dir, "git", "add", "base2.txt")
+	mustRun(t, f.Dir, "git", "commit", "-qm", "base2")
+	mustRun(t, f.Dir, "git", "switch", "-q", "feature")
+	shipGTReady(t, f)
+}
+
+// TestShipGTAutoRestacks pins the answer to an unrestacked downstack: gt owns
+// the rebase, so ship asks it for one and carries its own uncommitted edit
+// through, rather than refusing and leaving the caller to run the same command.
+func TestShipGTAutoRestacks(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base", "feature")
+	shipGTStale(t, f, "base2\n")
+	base := gitAt(t, f.Dir, "rev-parse", "base")
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if want := "restacked feature · " + shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if !slices.ContainsFunc(shipGTInvocations(t, f), func(inv []string) bool {
+		return slices.Equal(inv, []string{"gt", "restack", "--downstack", "--no-interactive"})
+	}) {
+		t.Error("gt restack never ran")
+	}
+	if got := gitAt(t, f.Dir, "merge-base", "HEAD", "base"); got != base {
+		t.Errorf("merge-base(HEAD, base) = %s, want base's own tip %s", got, base)
+	}
+	var state gtState
+	if err := json.Unmarshal([]byte(mustRun(t, f.Dir, "gt", "state")), &state); err != nil {
+		t.Fatalf("parse gt state: %v", err)
+	}
+	if state["feature"].NeedsRestack {
+		t.Error("gt state still marks feature unrestacked")
+	}
+}
+
 func TestShipGTRefusals(t *testing.T) {
-	t.Run("needs restack", func(t *testing.T) {
+	t.Run("restack conflict", func(t *testing.T) {
 		f := shipGTRepo(t)
 		shipGTStack(t, f, "base", "feature")
-		// A commit onto base after feature was cut is what leaves the stack
-		// unrestacked, and gt state is the one oracle for that verdict.
+		// feature's own commit wrote feature.txt, so a base that rewrites it is
+		// the conflict gt cannot resolve on its own.
 		mustRun(t, f.Dir, "git", "switch", "-q", "base")
-		writeShipFile(t, f.Dir, "base2.txt", "base2\n")
-		mustRun(t, f.Dir, "git", "add", "base2.txt")
+		writeShipFile(t, f.Dir, "feature.txt", "base wrote this\n")
+		mustRun(t, f.Dir, "git", "add", "feature.txt")
 		mustRun(t, f.Dir, "git", "commit", "-qm", "base2")
 		mustRun(t, f.Dir, "git", "switch", "-q", "feature")
 		shipGTReady(t, f)
+
+		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+		wantErr := "ship: gt restack could not finish — resolve the conflict and run gt continue (or gt abort), then re-run ship"
+		if err == nil || err.Error() != wantErr {
+			t.Fatalf("error = %v, want %q", err, wantErr)
+		}
+		assertNoGTCommit(t, shipGTInvocations(t, f))
+	})
+
+	t.Run("remote ahead of local", func(t *testing.T) {
+		f := shipGTRepo(t)
+		shipGTStack(t, f, "base", "feature")
+		// A commit pushed and then dropped locally is the branch someone else
+		// advanced: the restack rewrites feature and the submit force-pushes it.
+		writeShipFile(t, f.Dir, "u.txt", "upstream\n")
+		mustRun(t, f.Dir, "git", "add", "u.txt")
+		mustRun(t, f.Dir, "git", "commit", "-qm", "upstream")
+		mustRun(t, f.Dir, "git", "push", "-q", "origin", "feature")
+		mustRun(t, f.Dir, "git", "reset", "-q", "--hard", "HEAD~1")
+		shipGTStale(t, f, "base2\n")
 		head := shipHead(t, f)
 
 		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
-		wantErr := "ship: stack needs restack — run gt restack (gt continue / gt abort on conflict), then re-run ship"
+		wantErr := "ship: origin/feature carries 1 commit(s) feature does not — a restack here would force-push over them; run gt sync, then re-run ship"
 		if err == nil || err.Error() != wantErr {
 			t.Fatalf("error = %v, want %q", err, wantErr)
 		}
@@ -4661,7 +4806,7 @@ func TestShipGTRefusals(t *testing.T) {
 			{"gt", "state"},
 			{"gt", "add", "--no-interactive", "-A"},
 			{"git", "diff", "--cached", "--quiet"},
-			{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
+			{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
 			{"git", "branch", "--show-current"},
 			{"git", "log", "-1", "--format=%h%x00%s"},
 		})
@@ -4873,6 +5018,37 @@ func TestShipGTClassifySubmit(t *testing.T) {
 	})
 }
 
+// TestShipGTSubmitCarriesTheHookDecision pins the skip to the push half of the
+// lane: gt submit shells out to git push, so a submit that did not carry it
+// would run the pre-push hooks the commit was told to skip.
+func TestShipGTSubmitCarriesTheHookDecision(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "a stacked branch skips them", want: true},
+		{name: "--verify keeps them", args: []string{"--verify"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShipGT(t, false)
+			if _, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate"}, tt.args...)...); err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			var submit []string
+			for _, inv := range readInvocations(t, log) {
+				if inv[0] == "gt" && inv[1] == "submit" {
+					submit = inv
+				}
+			}
+			if got := slices.Contains(submit, "--no-verify"); got != tt.want {
+				t.Errorf("submit argv = %v, want --no-verify present = %v", submit, tt.want)
+			}
+		})
+	}
+}
+
 func TestShipGTDraftPublish(t *testing.T) {
 	tests := []struct {
 		name string
@@ -4896,7 +5072,7 @@ func TestShipGTDraftPublish(t *testing.T) {
 					submit = inv
 				}
 			}
-			want := []string{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", tt.want}
+			want := []string{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--no-verify", tt.want}
 			if !reflect.DeepEqual(submit, want) {
 				t.Errorf("submit argv = %v, want %v", submit, want)
 			}
@@ -5015,7 +5191,7 @@ func TestShipGTHooksSuppressGitRun(t *testing.T) {
 	shipGTStack(t, f, "feature")
 	shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push"); err != nil {
+	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--verify"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	var uvx, commit []string
@@ -5056,7 +5232,7 @@ func TestShipGTSessionTrailer(t *testing.T) {
 			commit = inv
 		}
 	}
-	want := []string{"gt", "modify", "-c", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid", "--no-interactive"}
+	want := []string{"gt", "modify", "-c", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid", "--no-interactive", "--no-verify"}
 	if !reflect.DeepEqual(commit, want) {
 		t.Errorf("commit argv = %v, want %v", commit, want)
 	}

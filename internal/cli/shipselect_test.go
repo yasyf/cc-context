@@ -232,7 +232,9 @@ func TestShipHunkHooksAreReportedSkipped(t *testing.T) {
 	writeShipHookFiles(t, f.Dir)
 	ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--only-hunk", ref, "f.txt")
+	// --verify because this fixture has no remote, so no trunk resolves and the
+	// derived default would skip the hooks before the hunk rule is reached.
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--verify", "--only-hunk", ref, "f.txt")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}

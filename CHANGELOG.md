@@ -4,6 +4,48 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.42.0] - 2026-08-19
+
+### Added
+- **`ccx vcs ship -m` is repeatable.** A second `-m` silently replaced the first,
+  so `-m "subject" -m "Context: …"` shipped the body alone as the whole commit
+  message — and a repository whose commit format mandates labelled paragraphs
+  could not be shipped through ccx at all. Every value is now a paragraph of one
+  message, a blank line between them, the way `git commit -m -m` and
+  `gt create -m -m` already read them. The subject a branch name is derived from
+  is still the first line of the first one.
+
+### Changed
+- **Ship runs the repository's hooks only where the commit lands straight on
+  trunk.** It ran prek before every commit, on a branch bound for a pull request
+  as readily as on trunk, so a monorepo's suite — formatters, linters, pipeline
+  codegen, minutes of it cold — was paid twice for one verdict: once locally, and
+  again in the CI that grades the pull request. Ship now reads the decision it
+  already made about where the commit goes. A commit appended to trunk is the one
+  position no pull request and no CI ever grades, so it is the one that runs
+  them; everywhere else — a graphite stack, any new branch, any branch that is
+  not trunk — they are skipped, and the skip reaches the push, since `gt submit`
+  and `git push` both shell out to git and would otherwise run the pre-push half
+  of the suite the commit just skipped. A repository that names no trunk at all runs
+  them too, since nothing downstream grades a commit there either. `--verify`
+  runs them wherever the commit lands and `--no-verify` skips them on trunk too;
+  either flag, passed explicitly, beats the derived default. The de-duplication is unchanged: a pass
+  ccx ran itself still tells the commit verb not to repeat it.
+
+### Fixed
+- **An unrestacked graphite stack was refused instead of restacked.** Ship
+  refused a `needs_restack` anywhere on the downstack and named `gt restack` as
+  the fix — a command it could run itself, from a working copy gt carries through
+  the rebase dirty and hands back untouched. In practice the refusal ended the
+  ship: the recovery was hand-rolled somewhere else and the run never came back.
+  Ship now runs `gt restack --downstack` in place and reports it as a
+  `restacked <branches>` segment. It still refuses what gt cannot settle — a
+  conflict, with `gt continue` and `gt abort` named as the way out, and a branch
+  gt skipped because another worktree holds it, named with gt's own reason — and
+  refuses before it starts when a branch's remote carries commits the local one
+  does not, since the submit that follows force-pushes every branch the restack
+  rewrote.
+
 ## [0.41.0] - 2026-08-19
 
 ### Added

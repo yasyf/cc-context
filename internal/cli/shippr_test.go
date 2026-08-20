@@ -52,19 +52,20 @@ func prFromListGolden(t *testing.T, scenario string) prState {
 // shipPRPushed is the git lane's plan, commit, and push, the argv every pull
 // request test shares before its own gh calls. The remote-tracking ref for a
 // branch never pushed does not resolve, so the ancestry check behind it never
-// runs.
+// runs, and a branch bound for a pull request runs no hooks, so the commit and
+// the push both carry --no-verify.
 func shipPRPushed(branch string) [][]string {
 	return [][]string{
 		{"git", "branch", "--show-current"},
 		gitTrunkArgv,
 		{"git", "add", "-A"},
-		{"git", "commit", "-m", "fix: frobnicate"},
+		{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"git", "config", "--get", "branch." + branch + ".remote"},
 		{"git", "fetch", "origin"},
 		{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/" + branch},
-		{"git", "push", "origin", branch},
+		{"git", "push", "--no-verify", "origin", branch},
 	}
 }
 
@@ -300,11 +301,11 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		{"gt", "state"},
 		{"gt", "add", "--no-interactive", "-A"},
 		{"git", "diff", "--cached", "--quiet"},
-		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive"},
+		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"gt", "state"},
-		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"},
+		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--no-verify", "--publish"},
 		ghDownstackPRArgv("feature"),
 		{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "Better title", "--body-file", body},
 	})

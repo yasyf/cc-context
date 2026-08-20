@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/render"
@@ -147,9 +148,10 @@ func stackBranches(ctx context.Context, prefix string) ([]string, error) {
 
 // shipPreflightGT resolves the branch decision and validates the current branch
 // against graphite's tracked state. Unlike the jj/git preflights it always
-// runs, even under --no-push, so an unrestacked stack still refuses a commit.
-// An untracked branch is auto-adopted first; only a track that still leaves the
-// branch untracked refuses.
+// runs, even under --no-push, so an unrestacked stack is settled before a
+// commit. An untracked branch is auto-adopted first and an unrestacked downstack
+// restacked in place; only a track that still leaves the branch untracked, or a
+// restack gt could not finish, refuses.
 func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts) (branchPlan, string, error) {
 	branch, err := gitCurrentBranch(ctx, "ship")
 	if err != nil {
@@ -164,21 +166,25 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts) (b
 		return branchPlan{}, "", err
 	}
 
-	var seg string
+	var segs []string
 	if branch != "" && branch != trunk {
 		if _, tracked := state[branch]; !tracked {
+			var seg string
 			if state, seg, err = gtTrack(ctx, errW, o, branch); err != nil {
 				return branchPlan{}, "", err
 			}
+			segs = append(segs, seg)
 		}
 		chain, err := gtDownstack("ship", state, branch, trunk)
 		if err != nil {
 			return branchPlan{}, "", err
 		}
-		for _, b := range chain {
-			if state[b].NeedsRestack {
-				return branchPlan{}, "", errors.New("ship: stack needs restack — run gt restack (gt continue / gt abort on conflict), then re-run ship")
+		if stale := gtNeedsRestack(state, chain); len(stale) > 0 {
+			seg, err := gtRestack(ctx, errW, chain, stale)
+			if err != nil {
+				return branchPlan{}, "", err
 			}
+			segs = append(segs, seg)
 		}
 	}
 
@@ -198,7 +204,88 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts) (b
 	if err != nil {
 		return branchPlan{}, "", err
 	}
-	return plan, seg, nil
+	return plan, strings.Join(segs, shipSep), nil
+}
+
+// gtNeedsRestack names every branch on chain that gt state marks unrestacked,
+// ordered trunk-first, the direction a stack reads in.
+func gtNeedsRestack(state gtState, chain []string) []string {
+	var stale []string
+	for _, b := range gtStackNames(chain) {
+		if state[b].NeedsRestack {
+			stale = append(stale, b)
+		}
+	}
+	return stale
+}
+
+// gtRestack restacks an unrestacked downstack in place rather than refusing it,
+// which is what the refusal it replaces asked the caller to do by hand. gt owns
+// the rebase, and it carries a dirty working copy through: ship's own edit is
+// still uncommitted here, and gt restack stashes and restores it.
+//
+// Every branch it rewrites is force-pushed by the submit that follows, so one
+// whose remote carries commits the local branch does not is refused first —
+// that push would drop them. The verdict is re-read from gt state rather than
+// taken from the exit code, because gt exits 0 over a branch it skipped, naming
+// the worktree holding it; that sentence becomes the refusal's reason.
+func gtRestack(ctx context.Context, errW io.Writer, chain, stale []string) (string, error) {
+	for _, b := range chain {
+		if err := gtRefuseRemoteAhead(ctx, b); err != nil {
+			return "", err
+		}
+	}
+	r, runErr := gtRun(ctx, []string{"restack", "--downstack", "--no-interactive"}, gtZeroSurfaces, errW)
+	if err := gtReport(errW, r); err != nil {
+		return "", err
+	}
+	if runErr != nil {
+		return "", &gtAdvice{advice: "ship: gt restack could not finish — resolve the conflict and run gt continue (or gt abort), then re-run ship", cause: runErr}
+	}
+	state, err := gtStateQuery(ctx, "ship")
+	if err != nil {
+		return "", err
+	}
+	if left := gtNeedsRestack(state, chain); len(left) > 0 {
+		reason := gtSyncSkipped(r.Output)[left[0]]
+		if reason == "" {
+			reason = "gt restack gave no reason"
+		}
+		return "", fmt.Errorf("ship: %s still needs restack after gt restack (%s) — restack it there, then re-run ship", left[0], reason)
+	}
+	return "restacked " + strings.Join(stale, ", "), nil
+}
+
+// gtRefuseRemoteAhead refuses when the remote's copy of branch carries commits
+// the local branch does not. Ship never fetches in this lane, so the comparison
+// is against the remote-tracking ref as it stands; a stale one under-reports,
+// which leaves gt's own force-with-lease as the second gate.
+func gtRefuseRemoteAhead(ctx context.Context, branch string) error {
+	remote, err := gitRemoteFor(ctx, "ship", branch)
+	if err != nil {
+		return err
+	}
+	ref := "refs/remotes/" + remote + "/" + branch
+	present, err := gitRefExists(ctx, ref)
+	if err != nil || !present {
+		return err
+	}
+	out, err := render.RunCLI(ctx, "git", []string{"rev-list", "--left-right", "--count", branch + "..." + ref})
+	if err != nil {
+		return fmt.Errorf("ship: git rev-list --left-right --count %s...%s: %w", branch, ref, err)
+	}
+	fields := strings.Fields(out)
+	if len(fields) != 2 {
+		return fmt.Errorf("ship: git rev-list --left-right --count %s...%s: unreadable count %q", branch, ref, strings.TrimSpace(out))
+	}
+	ahead, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return fmt.Errorf("ship: git rev-list --left-right --count %s...%s: unreadable count %q", branch, ref, strings.TrimSpace(out))
+	}
+	if ahead > 0 {
+		return fmt.Errorf("ship: %s/%s carries %d commit(s) %s does not — a restack here would force-push over them; run gt sync, then re-run ship", remote, branch, ahead, branch)
+	}
+	return nil
 }
 
 // gtTrack adopts an untracked branch, reporting the parent it landed on. gt
@@ -392,9 +479,14 @@ func shipCommitGTSelect(ctx context.Context, errW io.Writer, o shipOpts, sel *sh
 }
 
 // gtSubmitArgv builds the gt submit argv. --no-stack narrows to the current
-// branch's downstack and skips the upstack-inclusion prompt.
+// branch's downstack and skips the upstack-inclusion prompt. A submit shells out
+// to git push, so the run's hook decision rides along: without it a repository's
+// pre-push hook runs the suite the commit was told to skip.
 func gtSubmitArgv(o shipOpts) []string {
 	argv := []string{"submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack"}
+	if o.noVerify {
+		argv = append(argv, "--no-verify")
+	}
 	if o.draft {
 		argv = append(argv, "--draft")
 	} else {
