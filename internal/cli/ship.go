@@ -70,6 +70,8 @@ var (
 // can be stripped to plain text before it is budget-capped.
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
+var errShipMessageRequired = errors.New("ship: -m/--message is required unless --amend, --no-commit, or --pr-title")
+
 // shipStreamCI reports whether a child's output should stream live to w, which is
 // true only when w is a real terminal. It mirrors stdinPiped's device check.
 var shipStreamCI = func(w io.Writer) bool {
@@ -91,6 +93,7 @@ type shipOpts struct {
 	noWatch   bool
 	noVerify  bool
 	hooksRan  bool
+	yolo      bool
 	amend     bool
 	budget    int
 	paths     []string
@@ -155,9 +158,11 @@ Ship refuses an empty working copy (the usual cause: a prior ship already landed
 
 Where the commit goes is one decision, resolved before any mutation and reported as a branch <name> or created <name> segment. On a non-trunk branch or bookmark, ship appends to it. On trunk it appends in your own repositories — direct-to-main is deliberate there — and starts a branch named from the commit subject when GitHub says the repository is someone else's, since an org trunk rejects the commit through its protect-<trunk> hook and leaves it dangling; the graphite lane always starts a branch on trunk, because gt has no verb that commits onto it. A detached HEAD is refused rather than guessed at, and so are several trunk candidates unless --branch names one of them. --branch <name> commits onto that branch, creating it here when it does not exist and refusing when it exists somewhere else, since ship does not check branches out; --new-branch[=<name>] always starts one, deriving the name from the commit subject when bare (an explicit name must be spelled --new-branch=name, because cobra parses "--new-branch name" as a path operand to commit); --append refuses on trunk; --allow-trunk lets --branch advance a trunk you do not own. --bookmark is a jj-only alias of --branch, --create a deprecated alias of --new-branch. A new branch is cut with gt create (graphite), git switch -c (git), or jj bookmark create -r @- (jj).
 
-A live Graphite config (.git/.graphite_repo_config, or the git common dir's copy in a linked worktree) routes ship to the gt lane instead, even in colocated jj repos; --no-gt falls back to the jj/git detection above. Ship declines that lane, reporting a leading lane <kind> (<reason>) segment, when the repo sets ccx.nogt or when GitHub says the repo is someone else's — a public repo you neither administer nor share an owner or organization with. A lookup that cannot be made at all (gh off PATH, not signed in, no GitHub remote) keeps the gt lane. Ship also asks Graphite itself, before any commit forms, whether this repo is submittable — a live config only proves gt init once ran — and declines the lane when Graphite answers no (no auth token, no permissions); a probe that times out or cannot reach the Graphite server declines it too, because a lane nobody could confirm is not one to ride — the cost is that a blip on a genuinely synced repo lands a plain branch outside the stack, which is the safer half of that trade. Every verdict is cached between ships: a yes for a day, a no for an hour, an unanswered probe for a minute, so an outage costs one probe a minute rather than one per command. The gt lane commits through gt: gt create <name> starts a stacked branch, gt modify -c appends to one, and --amend amends the branch tip; an untracked branch is adopted first with gt track -f, or gt track --parent when --parent names one, and the resolved parent is reported. Instead of pushing, the lane submits the downstack with gt submit, published by default; --draft submits drafts, --publish makes the default explicit. A submit deeper than one branch names every branch it is about to force-push before it runs, since gt submit always force-pushes the whole downstack. Ship never fetches, rebases, or retries in the gt lane — gt owns restacking — so it refuses up front on needs_restack anywhere on the downstack (run gt restack, then re-run ship), on a branch gt track cannot adopt, and on --amend on trunk; a failed submit reports gt's own recovery step (gt restack, gt sync, or gt auth) instead of retrying. The report names the submitted branch and its PR: submitted <branch> → PR #<n> <url>.
+A live Graphite config (.git/.graphite_repo_config, or the git common dir's copy in a linked worktree) routes ship to the gt lane instead, even in colocated jj repos; --no-gt falls back to the jj/git detection above. Ship declines that lane, reporting a leading lane <kind> (<reason>) segment, when the repo sets ccx.nogt or when GitHub says the repo is someone else's — a public repo you neither administer nor share an owner or organization with. A lookup that cannot be made at all (gh off PATH, not signed in, no GitHub remote) keeps the gt lane. Ship also asks Graphite itself, before any commit forms, whether this repo is submittable — a live config only proves gt init once ran — and declines the lane when Graphite answers no (no auth token, no permissions); a probe that times out or cannot reach the Graphite server declines it too, because a lane nobody could confirm is not one to ride — the cost is that a blip on a genuinely synced repo lands a plain branch outside the stack, which is the safer half of that trade. Every verdict is cached between ships: a yes for a day, a no for an hour, an unanswered probe for a minute, so an outage costs one probe a minute rather than one per command. The gt lane commits through gt: gt create <name> starts a stacked branch, gt modify -c appends to one, and --amend amends the branch tip; an untracked branch is adopted first with gt track -f, or gt track --parent when --parent names one, and the resolved parent is reported. Instead of pushing, the lane submits the downstack with gt submit, published by default; --draft submits drafts, --publish makes the default explicit. A submit deeper than one branch names every branch it is about to force-push before it runs, since gt submit always force-pushes the whole downstack. Ship never fetches or retries in the gt lane — gt owns restacking — but it does recover an unrestacked downstack itself: needs_restack anywhere on the chain runs gt restack --no-interactive after the commit and reports a restacked segment. After, not before, because gt restack rebases and git refuses a rebase over the dirty working copy every ship starts from. A restack that conflicts or that gt state still reads as unrestacked is the one manual case left, and the refusal names the exact way out: the commit has already landed by then, so a plain re-run would refuse as an empty commit — resolve it, run gt continue (or gt abort, then gt restack), and submit the commit in place with the ccx vcs ship --no-commit line the refusal prints, which restates the PR flags this invocation carried. The lane still refuses up front on a branch gt track cannot adopt and on --amend on trunk; a failed submit reports gt's own recovery step (gt restack, gt sync, or gt auth) instead of retrying. The report names the submitted branch and its PR: submitted <branch> → PR #<n> <url>.
 
-Ship owns the pull request in every lane. --pr-title and --pr-body-file are repeatable and branch-scoped — <branch>=<value>, a bare value applying to the tip — because one gt submit opens a PR for every branch in the downstack; --pr-body-file takes "-" once to read the body from piped stdin. Outside the graphite lane ship opens the branch's PR when there is none (never with --fill, which would publish the commit's Claude-Session-Id trailer into the description) and edits exactly the fields this invocation restated when there is, so a description someone hand-edited survives a re-ship that does not mention it; a body given is replaced wholesale, never merged. On trunk it reports no PR (on trunk). In the graphite lane gt submit opens the PRs and ship restates the named branches afterwards, which is the only way a downstack PR gets a body at all. Every body file is read before the commit forms, so an unreadable path refuses with the working copy untouched, and a ship that names no PR flag makes no gh pr call. --draft and --publish apply in every lane, converting an existing PR in either direction; --no-pr skips the step.
+Ship owns the pull request in every lane. --pr-title and --pr-body-file are repeatable and branch-scoped — <branch>=<value>, a bare value applying to the tip — because one gt submit opens a PR for every branch in the downstack; --pr-body-file takes "-" once to read the body from piped stdin. Outside the graphite lane ship opens the branch's PR when there is none (never with --fill, which would publish the commit's Claude-Session-Id trailer into the description) and edits exactly the fields this invocation restated when there is, so a description someone hand-edited survives a re-ship that does not mention it; a body given is replaced wholesale, never merged. On trunk it reports no PR (on trunk). In the graphite lane gt submit opens the PRs and ship restates the named branches afterwards, which is the only way a downstack PR gets a body at all. Every body file is read before the commit forms, so an unreadable path refuses with the working copy untouched, and a ship that names no PR flag makes no gh pr call. --draft and --publish apply in every lane, converting an existing PR in either direction; --no-pr skips the step. -m is optional when an unscoped --pr-title is given: the title becomes the commit subject, and an unscoped --pr-body-file its body, with the <details> wrapper dropped, each ## Heading folded into a Heading: paragraph, and blank runs collapsed. Only an unscoped value can feed it — the tip's name is the branch plan, which that message is an input to.
+
+--yolo is the one switch for "skip the checks": it implies --no-verify, so ship's own prek pass never runs and the commit gt cuts carries --no-verify, and it drops every guard ship adds of its own, now and as more are added. It drops none today — the multi-branch gt submit --dry-run probe it was written for is gone, replaced by the branch list ship already holds — so against this version it is exactly --no-verify. It never drops a refusal git or gt would make anyway, and never the auto-restack, which is recovery rather than a guard.
 
 --reviews keeps listening after the CI watch: each new review comment on the pushed branch's PR — every submitted PR, in the gt lane — streams to stdout until all are merged or closed. The standalone surface, with attach and replay knobs (--since, --interval, --budget, --stack), is ccx vcs reviews.`,
 		Args: cobra.ArbitraryArgs,
@@ -171,6 +176,7 @@ Ship owns the pull request in every lane. --pr-title and --pr-body-file are repe
 	cmd.Flags().BoolVar(&o.noCommit, "no-commit", false, "push and update the PR for the commit already in place; cut no commit, and refuse a dirty working copy")
 	cmd.Flags().BoolVar(&o.noWatch, "no-watch", false, "push but do not watch CI")
 	cmd.Flags().BoolVar(&o.noVerify, "no-verify", false, "skip pre-commit hooks (uvx prek) before committing")
+	cmd.Flags().BoolVar(&o.yolo, "yolo", false, "skip every hook and ship-side guard: implies --no-verify, and drops any guard ship adds of its own")
 	cmd.Flags().BoolVar(&o.amend, "amend", false, "fold the working copy into the parent commit")
 	cmd.Flags().IntVar(&o.budget, "budget", shipLogBudget, "token budget for the CI failure log excerpt (0 = uncapped)")
 	cmd.Flags().StringArrayVar(&o.skipHunks, "skip-hunk", nil, "commit everything except this hunk ref (repeatable; refs from ccx vcs hunks)")
@@ -242,8 +248,19 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 			return errors.New("ship: --bookmark applies only to jj repositories")
 		}
 	}
+	if o.yolo {
+		o.noVerify = true
+	}
+	asGiven := o
+	prCleanup, err := materializePRBodyStdin(cmd, &o)
+	defer prCleanup()
+	if err != nil {
+		return err
+	}
 	if !o.amend && !o.noCommit && o.message == "" {
-		return errors.New("ship: -m/--message is required unless --amend or --no-commit")
+		if o.message, err = shipMessageFromPR(o); err != nil {
+			return err
+		}
 	}
 	if o.noCommit && len(o.paths) > 0 {
 		return errors.New("ship: --no-commit takes no paths — a path scopes a commit, and --no-commit cuts none")
@@ -272,8 +289,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		return err
 	}
 	prRun := shipPRRequested(cmd, l, o)
-	meta, prCleanup, err := resolvePRMeta(cmd, o, plan.name)
-	defer prCleanup()
+	meta, err := resolvePRMeta(cmd, o, plan.name)
 	if err != nil {
 		return err
 	}
@@ -324,6 +340,14 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		return err
 	}
 
+	resume := gtResumeCmd(asGiven)
+	restackSeg := ""
+	if plan.needsRestack {
+		if restackSeg, err = gtRestack(ctx, cmd.ErrOrStderr(), resume, branch); err != nil {
+			return err
+		}
+	}
+
 	short, subject, err := shipDescribe(ctx, kind)
 	if err != nil {
 		return err
@@ -345,6 +369,9 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	if healSeg != "" {
 		segments = append(segments, healSeg)
 	}
+	if restackSeg != "" {
+		segments = append(segments, restackSeg)
+	}
 
 	if o.noPush {
 		if kind == vcs.JJ && plan.action != branchCreate && branch != "" {
@@ -363,7 +390,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	var bodylessSegs []string
 	var gtStack []stackEntry
 	if gtLane {
-		prSeg, bodylessSegs, gtStack, err = shipPushGT(ctx, cmd.ErrOrStderr(), l, o, meta, branch)
+		prSeg, bodylessSegs, gtStack, err = shipPushGT(ctx, cmd.ErrOrStderr(), l, o, meta, branch, resume)
 	} else {
 		remote, rebased, err = shipPush(ctx, kind, o, branch, preAmendSHA)
 	}

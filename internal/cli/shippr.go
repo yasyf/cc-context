@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -71,47 +73,52 @@ func shipPRRequested(cmd *cobra.Command, l lane, o shipOpts) bool {
 	}
 }
 
-// resolvePRMeta parses the repeatable pull request flags into one entry per
-// branch, resolving a bare value against tip. It runs before any mutation and
-// checks every body file it is handed, so an unreadable path refuses with the
-// working copy untouched. The returned cleanup, always non-nil, removes the
-// temp file a "-" occurrence materialized stdin into.
-func resolvePRMeta(cmd *cobra.Command, o shipOpts, tip string) (map[string]prMeta, func(), error) {
+func materializePRBodyStdin(cmd *cobra.Command, o *shipOpts) (func(), error) {
 	cleanup := func() {}
+	taken := false
+	values := slices.Clone(o.prBodyFile)
+	for i, value := range values {
+		if _, path := splitPRValue(value, ""); path != prBodyStdin {
+			continue
+		}
+		switch {
+		case taken:
+			return cleanup, errors.New(`ship: only one --pr-body-file may read stdin ("-")`)
+		case !stdinPiped(cmd):
+			return cleanup, errors.New(`ship: --pr-body-file - reads the body from stdin, which is a terminal — pipe the body in or pass a path`)
+		}
+		tmp, remove, err := materializeStdin(cmd.InOrStdin())
+		if err != nil {
+			return cleanup, err
+		}
+		values[i] = strings.TrimSuffix(value, prBodyStdin) + tmp
+		cleanup, taken = remove, true
+	}
+	o.prBodyFile = values
+	return cleanup, nil
+}
+
+func resolvePRMeta(cmd *cobra.Command, o shipOpts, tip string) (map[string]prMeta, error) {
 	meta := map[string]prMeta{}
 	for _, value := range o.prTitle {
 		branch, title := splitPRValue(value, tip)
 		entry := meta[branch]
 		if entry.title != "" {
-			return nil, cleanup, fmt.Errorf("ship: --pr-title given twice for branch %s", branch)
+			return nil, fmt.Errorf("ship: --pr-title given twice for branch %s", branch)
 		}
 		entry.title = title
 		meta[branch] = entry
 	}
 
-	stdinTaken := false
 	for _, value := range o.prBodyFile {
 		branch, path := splitPRValue(value, tip)
 		entry := meta[branch]
 		if entry.bodyPath != "" {
-			return nil, cleanup, fmt.Errorf("ship: --pr-body-file given twice for branch %s", branch)
-		}
-		if path == prBodyStdin {
-			switch {
-			case stdinTaken:
-				return nil, cleanup, errors.New(`ship: only one --pr-body-file may read stdin ("-")`)
-			case !stdinPiped(cmd):
-				return nil, cleanup, errors.New(`ship: --pr-body-file - reads the body from stdin, which is a terminal — pipe the body in or pass a path`)
-			}
-			tmp, remove, err := materializeStdin(cmd.InOrStdin())
-			if err != nil {
-				return nil, cleanup, err
-			}
-			path, cleanup, stdinTaken = tmp, remove, true
+			return nil, fmt.Errorf("ship: --pr-body-file given twice for branch %s", branch)
 		}
 		body, err := os.ReadFile(path) //nolint:gosec // the caller names the body file
 		if err != nil {
-			return nil, cleanup, fmt.Errorf("ship: --pr-body-file %s: %w", path, err)
+			return nil, fmt.Errorf("ship: --pr-body-file %s: %w", path, err)
 		}
 		entry.bodyPath = path
 		entry.bodyBlank = strings.TrimSpace(string(body)) == ""
@@ -124,7 +131,7 @@ func resolvePRMeta(cmd *cobra.Command, o shipOpts, tip string) (map[string]prMet
 		entry.draft = &draft
 		meta[tip] = entry
 	}
-	return meta, cleanup, nil
+	return meta, nil
 }
 
 // splitPRValue splits a repeatable pull request flag value into the branch it
@@ -137,6 +144,61 @@ func splitPRValue(value, tip string) (branch, rest string) {
 		return tip, value
 	}
 	return name, rest
+}
+
+func unscopedPRValue(values []string) string {
+	for _, value := range values {
+		if branch, rest := splitPRValue(value, ""); branch == "" {
+			return rest
+		}
+	}
+	return ""
+}
+
+func shipMessageFromPR(o shipOpts) (string, error) {
+	title := unscopedPRValue(o.prTitle)
+	if title == "" {
+		return "", errShipMessageRequired
+	}
+	path := unscopedPRValue(o.prBodyFile)
+	if path == "" {
+		return title, nil
+	}
+	body, err := os.ReadFile(path) //nolint:gosec // the caller names the body file
+	if err != nil {
+		return "", fmt.Errorf("ship: --pr-body-file %s: %w", path, err)
+	}
+	if prose := commitBodyFromPR(string(body)); prose != "" {
+		return title + "\n\n" + prose, nil
+	}
+	return title, nil
+}
+
+var (
+	prHeadingRE = regexp.MustCompile(`^#{1,6}\s+(.*\S)\s*$`)
+	prSummaryRE = regexp.MustCompile(`^<summary>.*</summary>$`)
+)
+
+func commitBodyFromPR(body string) string {
+	var out []string
+	label := ""
+	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == "<details>" || trimmed == "</details>" || prSummaryRE.MatchString(trimmed):
+			continue
+		case prHeadingRE.MatchString(trimmed):
+			label = prHeadingRE.FindStringSubmatch(trimmed)[1] + ": "
+		case trimmed == "":
+			if len(out) > 0 && out[len(out)-1] != "" {
+				out = append(out, "")
+			}
+		default:
+			out = append(out, label+line)
+			label = ""
+		}
+	}
+	return strings.TrimRight(strings.Join(out, "\n"), "\n")
 }
 
 // materializeStdin writes r to a temp file, because ship needs the body as a

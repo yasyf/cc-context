@@ -4,6 +4,38 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`ccx vcs ship` restacks a graphite stack itself instead of refusing it.**
+  A `needs_restack` anywhere on the downstack used to end the ship with "run
+  `gt restack`, then re-run" — advice nobody parked on a dirty working copy can
+  take, since `gt restack` rebases and git refuses a rebase over uncommitted
+  changes. Ship now commits first and runs `gt restack --no-interactive` after,
+  reporting a `restacked` segment. `gt` exits 0 while declining a branch another
+  working copy holds, so the verdict is `gt state` re-read rather than the exit
+  code. A conflict is the one manual case left, and the refusal names the exact
+  way out: the commit has landed by then, so a plain re-run would refuse as an
+  empty commit — it prints the `ccx vcs ship --no-commit` line that submits it,
+  restating the `--pr-*` flags as the caller spelled them. A failed `gt submit`
+  now names the same resume line instead of "re-run ship", which had the same
+  defect.
+- **`ccx vcs ship --yolo`.** One switch for "skip the checks": it implies
+  `--no-verify`, so ship's own prek pass never runs and the commit gt cuts
+  carries `--no-verify`, and it drops every guard ship adds of its own, now and
+  as more are added. It drops none today — it was written to skip the
+  multi-branch `gt submit --dry-run` probe, which 0.41.0 removed in favour of the
+  branch list ship already holds — so against this release it is exactly
+  `--no-verify`. It never drops a refusal git or gt would make anyway, and never
+  the auto-restack, which is recovery rather than a guard.
+- **`-m` is optional when `--pr-title` names the tip.** The title becomes the
+  commit subject, and an unscoped `--pr-body-file` its body, with the
+  `<details>` wrapper dropped, each `## Heading` folded into a `Heading:`
+  paragraph, and blank runs collapsed — so one call writes the commit and the
+  pull request it lands as, instead of restating the same words twice. Only an
+  unscoped value can feed it: the tip's name comes from the branch plan, which
+  that message is an input to.
+
 ## [0.41.0] - 2026-08-19
 
 ### Added
@@ -37,9 +69,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upstack the real submit drops. Its report was also discarded outright off a
   terminal. Ship now names the chain from the downstack it already holds and
   submits once. Nothing is lost from the pre-flight: `shipPreflightGT` already
-  refuses a `needs_restack` anywhere on the downstack, adopts an untracked
-  branch, and refuses `--amend` on trunk, all before any commit forms and with
-  no network round trip.
+  reads `needs_restack` for the whole downstack, adopts an untracked branch, and
+  refuses `--amend` on trunk, all before any commit forms and with no network
+  round trip. (Unreleased since turned that read into an auto-restack that runs
+  after the commit rather than a refusal before it.)
 - **`ccx vcs ship` ran the repo's pre-commit hooks in total silence.** The first
   prek pass was spawned with a nil writer, which routes the child to
   `/dev/null`, so a hook suite that takes minutes — a monorepo's formatters,

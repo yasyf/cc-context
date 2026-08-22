@@ -156,6 +156,101 @@ func TestShipPRCreateGitLane(t *testing.T) {
 	}
 }
 
+func TestShipMessageFromPRFlags(t *testing.T) {
+	f := shipPRFixture(t, vcstest.Branch("feature"))
+	t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-empty"))
+	t.Setenv("GH_PR_CREATE_OUT", fakePRCreateURL)
+	body := writePRBody(t, "body.md", "## Context\n\nThe widget broke.\n\n<details>\n<summary>Design</summary>\n\n## Details\n\nRewrote it.\n</details>\n")
+
+	if _, err := runShipCmd(t, "--no-watch", "--pr-title", "fix: 🐛 frobnicate the widget", "--pr-body-file", body); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := "fix: 🐛 frobnicate the widget\n\nContext: The widget broke.\n\nDetails: Rewrote it."
+	if got := gitAt(t, f.Dir, "log", "-1", "--format=%B"); got != want {
+		t.Errorf("commit message = %q, want %q", got, want)
+	}
+}
+
+func TestShipMessageFromPRTitleAlone(t *testing.T) {
+	f := shipPRFixture(t, vcstest.Branch("feature"))
+	t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-empty"))
+	t.Setenv("GH_PR_CREATE_OUT", fakePRCreateURL)
+
+	if _, err := runShipCmd(t, "--no-watch", "--pr-title", "fix: frobnicate"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if got := gitAt(t, f.Dir, "log", "-1", "--format=%B"); got != "fix: frobnicate" {
+		t.Errorf("commit message = %q, want the title alone", got)
+	}
+
+	_, err := runShipCmd(t, "--no-watch", "--pr-title", "other=fix: frobnicate")
+	if err == nil || err.Error() != errShipMessageRequired.Error() {
+		t.Errorf("error = %v, want %v — a scoped title is not the tip's", err, errShipMessageRequired)
+	}
+}
+
+func TestShipMessageFromPRBodyStdin(t *testing.T) {
+	f := shipPRFixture(t, vcstest.Branch("feature"))
+	t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-empty"))
+	t.Setenv("GH_PR_CREATE_OUT", fakePRCreateURL)
+	bodyDump := filepath.Join(t.TempDir(), "body")
+	t.Setenv("GH_PR_BODY_DUMP", bodyDump)
+	const bodyText = "## Context\n\nThe widget broke.\n"
+
+	if _, err := runShipCmdStdin(t, strings.NewReader(bodyText), "--no-watch", "--pr-title", "fix: frobnicate", "--pr-body-file", "-"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if want := "fix: frobnicate\n\nContext: The widget broke."; gitAt(t, f.Dir, "log", "-1", "--format=%B") != want {
+		t.Errorf("commit message = %q, want %q", gitAt(t, f.Dir, "log", "-1", "--format=%B"), want)
+	}
+	if got := readFileStr(t, bodyDump); got != bodyText {
+		t.Errorf("gh read a body of %q, want the stdin body verbatim", got)
+	}
+}
+
+func TestCommitBodyFromPR(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "empty", body: "", want: ""},
+		{name: "plain prose survives", body: "why this change\n", want: "why this change"},
+		{
+			name: "a heading labels the paragraph under it",
+			body: "## Context\n\nThe widget broke.\nBadly.\n",
+			want: "Context: The widget broke.\nBadly.",
+		},
+		{
+			name: "the details wrapper drops away",
+			body: "<details>\n<summary>Changes</summary>\n\nRewrote it.\n</details>\n",
+			want: "Rewrote it.",
+		},
+		{
+			name: "blank runs collapse",
+			body: "one\n\n\n\ntwo\n\n\n",
+			want: "one\n\ntwo",
+		},
+		{
+			name: "a heading with nothing under it drops",
+			body: "## Empty\n\n## Context\n\nprose\n",
+			want: "Context: prose",
+		},
+		{
+			name: "crlf leaves no carriage return on the prose",
+			body: "## Context\r\n\r\nThe widget broke.\r\nBadly.\r\n",
+			want: "Context: The widget broke.\nBadly.",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := commitBodyFromPR(tt.body); got != tt.want {
+				t.Errorf("commitBodyFromPR() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestShipPRCreateDefaults pins the two defaults a create falls back on: the
 // commit subject as the title, and an explicitly empty body. gh pr create
 // --fill would publish the Claude-Session-Id trailer, so it is never used.

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/render"
@@ -121,6 +123,25 @@ func gtDownstack(prefix string, state gtState, branch, trunk string) ([]string, 
 	return chain, nil
 }
 
+func gtStackChain(ctx context.Context, prefix, branch string) (gtState, []string, error) {
+	state, err := gtStateQuery(ctx, prefix)
+	if err != nil {
+		return nil, nil, err
+	}
+	trunk, err := gtTrunkBranch(prefix, state)
+	if err != nil {
+		return nil, nil, err
+	}
+	if branch == trunk {
+		return state, nil, nil
+	}
+	chain, err := gtDownstack(prefix, state, branch, trunk)
+	if err != nil {
+		return nil, nil, err
+	}
+	return state, chain, nil
+}
+
 // stackBranches lists the current downstack chain — current branch first, up
 // to (excluding) trunk — or nil when the current branch is trunk.
 func stackBranches(ctx context.Context, prefix string) ([]string, error) {
@@ -131,25 +152,10 @@ func stackBranches(ctx context.Context, prefix string) ([]string, error) {
 	if branch == "" {
 		return nil, fmt.Errorf("%s: detached HEAD; no stack to resolve", prefix)
 	}
-	state, err := gtStateQuery(ctx, prefix)
-	if err != nil {
-		return nil, err
-	}
-	trunk, err := gtTrunkBranch(prefix, state)
-	if err != nil {
-		return nil, err
-	}
-	if branch == trunk {
-		return nil, nil
-	}
-	return gtDownstack(prefix, state, branch, trunk)
+	_, chain, err := gtStackChain(ctx, prefix, branch)
+	return chain, err
 }
 
-// shipPreflightGT resolves the branch decision and validates the current branch
-// against graphite's tracked state. Unlike the jj/git preflights it always
-// runs, even under --no-push, so an unrestacked stack still refuses a commit.
-// An untracked branch is auto-adopted first; only a track that still leaves the
-// branch untracked refuses.
 func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts) (branchPlan, string, error) {
 	branch, err := gitCurrentBranch(ctx, "ship")
 	if err != nil {
@@ -165,6 +171,7 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts) (b
 	}
 
 	var seg string
+	needsRestack := false
 	if branch != "" && branch != trunk {
 		if _, tracked := state[branch]; !tracked {
 			if state, seg, err = gtTrack(ctx, errW, o, branch); err != nil {
@@ -175,11 +182,7 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts) (b
 		if err != nil {
 			return branchPlan{}, "", err
 		}
-		for _, b := range chain {
-			if state[b].NeedsRestack {
-				return branchPlan{}, "", errors.New("ship: stack needs restack — run gt restack (gt continue / gt abort on conflict), then re-run ship")
-			}
-		}
+		needsRestack = slices.ContainsFunc(chain, func(b string) bool { return state[b].NeedsRestack })
 	}
 
 	if o.noCommit && branch == trunk {
@@ -198,7 +201,60 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts) (b
 	if err != nil {
 		return branchPlan{}, "", err
 	}
+	plan.needsRestack = needsRestack
 	return plan, seg, nil
+}
+
+func gtResumeCmd(o shipOpts) string {
+	if o.noPush {
+		return ""
+	}
+	argv := []string{"ccx vcs ship --no-commit"}
+	if o.draft {
+		argv = append(argv, "--draft")
+	}
+	for _, value := range o.prTitle {
+		argv = append(argv, "--pr-title "+strconv.Quote(value))
+	}
+	for _, value := range o.prBodyFile {
+		argv = append(argv, "--pr-body-file "+strconv.Quote(value))
+	}
+	return strings.Join(argv, " ")
+}
+
+func gtLandedSuffix(resume string) string {
+	if resume == "" {
+		return ". The commit already landed and nothing was pushed, so there is nothing left to re-run."
+	}
+	return ". The commit already landed, so a plain re-run refuses as an empty commit — submit it with: " + resume
+}
+
+func gtStuckAfterCommit(problem, resume string) string {
+	return "ship: " + problem + gtLandedSuffix(resume)
+}
+
+func gtRestack(ctx context.Context, errW io.Writer, resume, branch string) (string, error) {
+	r, runErr := gtRun(ctx, []string{"restack", "--no-interactive"}, gtZeroSurfaces, errW)
+	if err := gtReport(errW, r); err != nil {
+		return "", err
+	}
+	if runErr != nil {
+		if strings.Contains(r.Output, gtSyncConflict) {
+			advice := gtStuckAfterCommit("gt restack hit a conflict — resolve the listed files, then gt continue (or gt abort, then gt restack)", resume)
+			return "", &gtAdvice{advice: advice, cause: runErr}
+		}
+		return "", fmt.Errorf("ship: %w", runErr)
+	}
+	state, chain, err := gtStackChain(ctx, "ship", branch)
+	if err != nil {
+		return "", err
+	}
+	for _, b := range chain {
+		if state[b].NeedsRestack {
+			return "", errors.New(gtStuckAfterCommit("gt restack left "+b+" off its parent — see gt's output above", resume))
+		}
+	}
+	return "restacked", nil
 }
 
 // gtTrack adopts an untracked branch, reporting the parent it landed on. gt
@@ -412,11 +468,11 @@ func gtSubmitArgv(o shipOpts) []string {
 func classifyGTSubmit(r gtResult, cause error) error {
 	switch {
 	case strings.Contains(r.Output, gtRestackNeeded1) || strings.Contains(r.Output, gtRestackNeeded2):
-		return &gtAdvice{advice: "ship: stack drifted since preflight — run gt restack, then re-run ship", cause: cause}
+		return &gtAdvice{advice: "ship: stack drifted since preflight — run gt restack", cause: cause}
 	case strings.Contains(r.Output, gtTrunkStale):
-		return &gtAdvice{advice: "ship: trunk is out of sync — run gt sync (or ccx vcs restack), then re-run ship", cause: cause}
+		return &gtAdvice{advice: "ship: trunk is out of sync — run gt sync (or ccx vcs restack)", cause: cause}
 	case strings.Contains(r.Output, gtRemoteChanged1) || strings.Contains(r.Output, gtRemoteChanged2):
-		return &gtAdvice{advice: "ship: remote branch changed since last submit — reconcile manually (gt sync), then re-run ship", cause: cause}
+		return &gtAdvice{advice: "ship: remote branch changed since last submit — reconcile manually (gt sync)", cause: cause}
 	case strings.Contains(r.Output, gtAuthRequired1) || strings.Contains(r.Output, gtAuthRequired2):
 		return &gtAdvice{advice: "ship: graphite auth required — run gt auth", cause: cause}
 	default:
@@ -428,15 +484,20 @@ func classifyGTSubmit(r gtResult, cause error) error {
 // gt published anything. Exit 0 is not consent: gt exits 0 while printing an
 // ERROR: naming a submit it refused, and ccx has no second oracle for a push it
 // did not make, so the policy is fatal.
-func gtSubmit(ctx context.Context, errW io.Writer, argv []string) error {
+func gtSubmit(ctx context.Context, errW io.Writer, argv []string, resume string) error {
 	r, runErr := gtRun(ctx, argv, gtZeroFatal, errW)
 	if err := gtReport(errW, r); err != nil {
 		return err
 	}
-	if runErr != nil {
-		return classifyGTSubmit(r, runErr)
+	if runErr == nil {
+		return nil
 	}
-	return nil
+	err := classifyGTSubmit(r, runErr)
+	var advice *gtAdvice
+	if !errors.As(err, &advice) {
+		return err
+	}
+	return &gtAdvice{advice: advice.advice + gtLandedSuffix(resume), cause: advice.cause}
 }
 
 // shipPushGT submits the downstack of the branch the commit landed on. The
@@ -452,25 +513,15 @@ func gtSubmit(ctx context.Context, errW io.Writer, argv []string) error {
 // covered the upstack the real submit drops.
 // The resolved downstack it returns is the one the pull request step then
 // backfills into, so the stack is walked and its pull requests fetched once.
-func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta map[string]prMeta, branch string) (submitted string, bodyless []string, stack []stackEntry, err error) {
-	state, err := gtStateQuery(ctx, "ship")
+func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta map[string]prMeta, branch, resume string) (submitted string, bodyless []string, stack []stackEntry, err error) {
+	_, chain, err := gtStackChain(ctx, "ship", branch)
 	if err != nil {
 		return "", nil, nil, err
-	}
-	trunk, err := gtTrunkBranch("ship", state)
-	if err != nil {
-		return "", nil, nil, err
-	}
-	var chain []string
-	if branch != trunk {
-		if chain, err = gtDownstack("ship", state, branch, trunk); err != nil {
-			return "", nil, nil, err
-		}
 	}
 	if err := gtAnnounceStack(errW, chain); err != nil {
 		return "", nil, nil, err
 	}
-	if err := gtSubmit(ctx, errW, gtSubmitArgv(o)); err != nil {
+	if err := gtSubmit(ctx, errW, gtSubmitArgv(o), resume); err != nil {
 		return "", nil, nil, err
 	}
 	submitted, bodyless, stack = gtPRSegment(ctx, l, branch, chain, meta)

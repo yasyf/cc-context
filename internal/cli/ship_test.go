@@ -3169,8 +3169,8 @@ func TestShipRequiresMessage(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when message missing, got nil")
 	}
-	if !strings.Contains(err.Error(), "required") {
-		t.Errorf("error = %v, want it to mention message required", err)
+	if err.Error() != errShipMessageRequired.Error() {
+		t.Errorf("error = %v, want %v", err, errShipMessageRequired)
 	}
 	if inv := vcstest.Invocations(t, f.ArgvLog); inv != nil {
 		t.Errorf("no VCS command should run when message is missing, got %v", inv)
@@ -4599,29 +4599,177 @@ func TestShipGTHunkScopedRefusesALyingExitZero(t *testing.T) {
 	}
 }
 
-func TestShipGTRefusals(t *testing.T) {
-	t.Run("needs restack", func(t *testing.T) {
-		f := shipGTRepo(t)
-		shipGTStack(t, f, "base", "feature")
-		// A commit onto base after feature was cut is what leaves the stack
-		// unrestacked, and gt state is the one oracle for that verdict.
-		mustRun(t, f.Dir, "git", "switch", "-q", "base")
-		writeShipFile(t, f.Dir, "base2.txt", "base2\n")
-		mustRun(t, f.Dir, "git", "add", "base2.txt")
-		mustRun(t, f.Dir, "git", "commit", "-qm", "base2")
-		mustRun(t, f.Dir, "git", "switch", "-q", "feature")
-		shipGTReady(t, f)
-		head := shipHead(t, f)
+func shipGTUnrestacked(t *testing.T, f *vcstest.Fixture, file, content string) {
+	t.Helper()
+	shipGTStack(t, f, "base", "feature")
+	mustRun(t, f.Dir, "git", "switch", "-q", "base")
+	writeShipFile(t, f.Dir, file, content)
+	mustRun(t, f.Dir, "git", "add", file)
+	mustRun(t, f.Dir, "git", "commit", "-qm", "base2")
+	mustRun(t, f.Dir, "git", "switch", "-q", "feature")
+	shipGTReady(t, f)
+}
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
-		wantErr := "ship: stack needs restack — run gt restack (gt continue / gt abort on conflict), then re-run ship"
-		if err == nil || err.Error() != wantErr {
-			t.Fatalf("error = %v, want %q", err, wantErr)
-		}
-		assertNoGTCommit(t, shipGTInvocations(t, f))
-		assertShipRefusedClean(t, f, head)
+func TestShipGTAutoRestack(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTUnrestacked(t, f, "base2.txt", "base2\n")
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · restacked · not pushed"; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	restacked := slices.ContainsFunc(shipGTInvocations(t, f), func(inv []string) bool {
+		return len(inv) > 1 && inv[0] == "gt" && inv[1] == "restack"
 	})
+	if !restacked {
+		t.Error("ship ran no gt restack")
+	}
+	if behind := gitAt(t, f.Dir, "rev-list", "--count", "feature..base"); behind != "0" {
+		t.Errorf("base holds %s commit(s) feature does not, want the restack to have landed them under it", behind)
+	}
+}
 
+func shipGTConflicting(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	shipGTStack(t, f, "base")
+	writeShipFile(t, f.Dir, "c.txt", "base\n")
+	mustRun(t, f.Dir, "git", "add", "c.txt")
+	mustRun(t, f.Dir, "git", "commit", "-qm", "c")
+	mustRun(t, f.Dir, "git", "switch", "-qc", "feature")
+	writeShipFile(t, f.Dir, "c.txt", "feature\n")
+	mustRun(t, f.Dir, "git", "add", "c.txt")
+	mustRun(t, f.Dir, "git", "commit", "-qm", "feature")
+	mustRun(t, f.Dir, "gt", "track", "-f", "--no-interactive")
+	mustRun(t, f.Dir, "git", "switch", "-q", "base")
+	writeShipFile(t, f.Dir, "c.txt", "conflicting\n")
+	mustRun(t, f.Dir, "git", "add", "c.txt")
+	mustRun(t, f.Dir, "git", "commit", "-qm", "c conflict")
+	mustRun(t, f.Dir, "git", "switch", "-q", "feature")
+	shipGTReady(t, f)
+}
+
+func TestShipGTAutoRestackConflict(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTConflicting(t, f)
+
+	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	want := gtStuckAfterCommit("gt restack hit a conflict — resolve the listed files, then gt continue (or gt abort, then gt restack)", "")
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "feature"); subject != "fix: frobnicate" {
+		t.Errorf("feature tip = %q, want the commit that ran before the restack", subject)
+	}
+}
+
+func TestShipGTResumeAfterRestackConflict(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTConflicting(t, f)
+
+	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--no-pr")
+	if err == nil {
+		t.Fatal("want the restack conflict")
+	}
+	resume := gtResumeCmd(shipOpts{})
+	if resume != "ccx vcs ship --no-commit" {
+		t.Fatalf("resume = %q, want the bare --no-commit for a ship carrying no PR flags", resume)
+	}
+	if !strings.Contains(err.Error(), resume) {
+		t.Fatalf("error = %v, want it to name %q", err, resume)
+	}
+
+	writeShipFile(t, f.Dir, "c.txt", "resolved\n")
+	mustRun(t, f.Dir, "gt", "add", "c.txt")
+	mustRun(t, f.Dir, "gt", "continue", "--no-interactive")
+	shipGTIntercept(t, f, "submit", "  exit 0\n")
+	shipResetLog(t, f)
+
+	if _, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr"); err != nil {
+		t.Fatalf("resume ship error = %v", err)
+	}
+	var verbs []string
+	for _, inv := range shipGTInvocations(t, f) {
+		if len(inv) > 1 && inv[0] == "gt" {
+			verbs = append(verbs, inv[1])
+		}
+	}
+	if slices.Contains(verbs, "restack") {
+		t.Errorf("resume restacked again: %v", verbs)
+	}
+	for _, cut := range []string{"create", "modify", "add"} {
+		if slices.Contains(verbs, cut) {
+			t.Errorf("resume ran gt %s, but --no-commit cuts no commit: %v", cut, verbs)
+		}
+	}
+	if !slices.Contains(verbs, "submit") {
+		t.Errorf("resume ran no gt submit: %v", verbs)
+	}
+	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "feature"); subject != "fix: frobnicate" {
+		t.Errorf("feature tip = %q, want the commit the first ship landed", subject)
+	}
+	if behind := gitAt(t, f.Dir, "rev-list", "--count", "feature..base"); behind != "0" {
+		t.Errorf("base holds %s commit(s) feature does not, want gt continue to have finished the restack", behind)
+	}
+}
+
+func TestGTStuckAfterCommit(t *testing.T) {
+	tests := []struct {
+		name string
+		o    shipOpts
+		want string
+	}{
+		{
+			name: "no-push has nothing to resume",
+			o:    shipOpts{noPush: true},
+			want: "ship: stuck. The commit already landed and nothing was pushed, so there is nothing left to re-run.",
+		},
+		{
+			name: "a push names the resume that submits it",
+			o:    shipOpts{},
+			want: "ship: stuck. The commit already landed, so a plain re-run refuses as an empty commit — submit it with: ccx vcs ship --no-commit",
+		},
+		{
+			name: "the pr flags are restated as the caller spelled them",
+			o:    shipOpts{draft: true, prTitle: []string{"fix: 🐛 the widget"}, prBodyFile: []string{"-"}},
+			want: `ship: stuck. The commit already landed, so a plain re-run refuses as an empty commit — submit it with: ccx vcs ship --no-commit --draft --pr-title "fix: 🐛 the widget" --pr-body-file "-"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := gtStuckAfterCommit("stuck", gtResumeCmd(tt.o)); got != tt.want {
+				t.Errorf("gtStuckAfterCommit() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShipGTYoloImpliesNoVerify(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "feature")
+	shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
+
+	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--yolo"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	var commit []string
+	for _, inv := range shipGTInvocations(t, f) {
+		if inv[0] == "uvx" {
+			t.Errorf("uvx invoked despite --yolo: %v", inv)
+		}
+		if inv[0] == "gt" && inv[1] == "modify" {
+			commit = inv
+		}
+	}
+	want := []string{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"}
+	if !reflect.DeepEqual(commit, want) {
+		t.Errorf("commit argv = %v, want %v", commit, want)
+	}
+}
+
+func TestShipGTRefusals(t *testing.T) {
 	t.Run("staged empty", func(t *testing.T) {
 		f := shipGTRepo(t)
 		shipGTStack(t, f, "feature")
@@ -4791,6 +4939,10 @@ func TestShipGTExitZeroErrorRefuses(t *testing.T) {
 // with, on each stream and at each exit code it is known to use. The exit-0 rows
 // are the live repro this classification exists for: gt prints an ERROR: naming
 // a submit it did not make and exits 0, which ccx once reported as a success.
+func submitAdvice(problem string) string {
+	return gtStuckAfterCommit(problem, gtResumeCmd(shipOpts{}))
+}
+
 func TestShipGTClassifySubmit(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -4799,16 +4951,16 @@ func TestShipGTClassifySubmit(t *testing.T) {
 		exit    string
 		wantErr string
 	}{
-		{name: "restack needed (primary wording)", stderr: gtRestackNeeded1, wantErr: "ship: stack drifted since preflight — run gt restack, then re-run ship"},
-		{name: "restack needed (conflict wording)", stderr: gtRestackNeeded2 + "feature", wantErr: "ship: stack drifted since preflight — run gt restack, then re-run ship"},
-		{name: "trunk stale", stderr: gtTrunkStale, wantErr: "ship: trunk is out of sync — run gt sync (or ccx vcs restack), then re-run ship"},
-		{name: "remote changed (updated wording)", stderr: gtRemoteChanged1, wantErr: "ship: remote branch changed since last submit — reconcile manually (gt sync), then re-run ship"},
-		{name: "remote changed (lease wording)", stderr: gtRemoteChanged2, wantErr: "ship: remote branch changed since last submit — reconcile manually (gt sync), then re-run ship"},
-		{name: "auth required (please wording)", stderr: gtAuthRequired1, wantErr: "ship: graphite auth required — run gt auth"},
-		{name: "auth required (invalid wording)", stderr: gtAuthRequired2, wantErr: "ship: graphite auth required — run gt auth"},
+		{name: "restack needed (primary wording)", stderr: gtRestackNeeded1, wantErr: submitAdvice("stack drifted since preflight — run gt restack")},
+		{name: "restack needed (conflict wording)", stderr: gtRestackNeeded2 + "feature", wantErr: submitAdvice("stack drifted since preflight — run gt restack")},
+		{name: "trunk stale", stderr: gtTrunkStale, wantErr: submitAdvice("trunk is out of sync — run gt sync (or ccx vcs restack)")},
+		{name: "remote changed (updated wording)", stderr: gtRemoteChanged1, wantErr: submitAdvice("remote branch changed since last submit — reconcile manually (gt sync)")},
+		{name: "remote changed (lease wording)", stderr: gtRemoteChanged2, wantErr: submitAdvice("remote branch changed since last submit — reconcile manually (gt sync)")},
+		{name: "auth required (please wording)", stderr: gtAuthRequired1, wantErr: submitAdvice("graphite auth required — run gt auth")},
+		{name: "auth required (invalid wording)", stderr: gtAuthRequired2, wantErr: submitAdvice("graphite auth required — run gt auth")},
 		{
 			name: "the same wording on stdout classifies the same way", stdout: gtTrunkStale, exit: "1",
-			wantErr: "ship: trunk is out of sync — run gt sync (or ccx vcs restack), then re-run ship",
+			wantErr: submitAdvice("trunk is out of sync — run gt sync (or ccx vcs restack)"),
 		},
 		{
 			name:   "an exit-0 submit reporting an ERROR: is a failure, not a success",
@@ -4819,7 +4971,7 @@ func TestShipGTClassifySubmit(t *testing.T) {
 		{
 			name:   "an exit-0 ERROR: on stdout is classified, not just surfaced",
 			stdout: gtErrorPrefix + gtAuthRequired1, exit: "0",
-			wantErr: "ship: graphite auth required — run gt auth",
+			wantErr: submitAdvice("graphite auth required — run gt auth"),
 		},
 		{
 			name: "a WARNING: at exit 0 is not a failure", stderr: gtWarningPrefix + "This command has been renamed.",

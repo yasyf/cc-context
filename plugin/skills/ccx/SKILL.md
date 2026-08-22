@@ -248,7 +248,16 @@ request in every lane: `--pr-title`/`--pr-body-file` (repeatable, branch-scoped 
 branch's PR or edit exactly the fields restated — a hand-edited description
 survives a re-ship that does not mention it — `--draft`/`--publish` convert an
 existing PR in either direction, `--no-pr` opts out, and a ship naming no PR flag
-makes no `gh pr` call.
+makes no `gh pr` call. `-m` is optional when an unscoped `--pr-title` is given: the
+title becomes the commit subject and an unscoped `--pr-body-file` its body, with the
+`<details>` wrapper dropped and each `## Heading` folded into a `Heading:` paragraph.
+On the gt lane an unrestacked downstack is recovered rather than refused — ship
+commits, then runs `gt restack`, because a rebase cannot run over the dirty working
+copy the ship started from — leaving only a conflict manual, and the refusal names
+the `gt continue` and `ccx vcs ship --no-commit` steps back, since the commit has
+landed by then. `--yolo` is the one switch for "skip the checks": it implies
+`--no-verify` and drops every guard ship adds of its own, of which there are none
+today; it never drops a refusal git or gt would make anyway.
 
 The first line is the summary; each watched run adds
 a `workflow · conclusion · duration · url` line,
@@ -266,6 +275,7 @@ ccx vcs ship -m "wip" --no-push                  # commit only, skip push and CI
 ccx vcs ship --amend                             # fold the working copy into the parent
 ccx vcs ship -m "spike" --branch me/probe        # commit onto a named branch
 ccx vcs ship -m "feat: x" --new-branch --pr-title "Add X" --pr-body-file body.md
+ccx vcs ship --new-branch --pr-title "Add X" --pr-body-file body.md  # -m derived from them
 ccx vcs ship -m "fix: x" --budget 0              # uncapped failure-log excerpt
 ```
 
