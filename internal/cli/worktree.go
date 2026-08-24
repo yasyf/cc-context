@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,10 +14,6 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
-
-// worktreeKeyHex is how much of the repository key's digest names its pool:
-// enough to separate two repositories whose working copies share a basename.
-const worktreeKeyHex = 8
 
 // jjColocateRefusal is jj's own answer to `jj git init --colocate` inside a git
 // worktree.
@@ -106,7 +100,7 @@ func newWorktreeAddCmd() *cobra.Command {
 		Short: "Create a working copy named <name> under the repository's pool",
 		Long: `Create a working copy named <name> under the repository's pool.
 
-The path is minted at "$HOME/.ccx/worktrees/<main-basename>-<repo-key>/<name>",
+The path is minted at "$HOME/.claude/worktrees/<main-basename>/<name>",
 outside every repository tree so a worktree is never mistaken for repo content.
 --jj picks how the new copy attaches: "none" is a git worktree, "workspace" is a
 jj workspace, and "colocate" is impossible — jj refuses to create a colocated
@@ -341,12 +335,14 @@ func worktreeShapeOf(mode string) string {
 	return infoShape(vcs.ShapeGitWorktree)
 }
 
-// mintWorktreePath places name's working copy under $HOME/.ccx/worktrees, in a
-// pool keyed by the repository rather than by any one checkout's root, so every
-// sibling worktree of one repository mints into the same directory however far
-// apart their roots sit. The home prefix is resolved symlink-free — the
-// spelling git canonicalizes every registered path to — so a minted path
-// equals its registry entry byte for byte.
+// mintWorktreePath places name's working copy under
+// $HOME/.claude/worktrees/<main-basename>, where every other tool that cuts a
+// lane on this machine already puts one, so every sibling worktree of one
+// repository mints into the same directory however far apart their roots sit.
+// Two repositories sharing a basename share a pool, which is the price of a
+// path a person can read and a sweep can find. The home prefix is resolved
+// symlink-free — the spelling git canonicalizes every registered path to — so a
+// minted path equals its registry entry byte for byte.
 func mintWorktreePath(prefix string, c vcs.Checkout, name string) (string, error) {
 	if name == "" || name == "." || name == ".." || name != filepath.Base(name) {
 		return "", fmt.Errorf("%s: %q is not a worktree name — a name is one path element", prefix, name)
@@ -358,9 +354,7 @@ func mintWorktreePath(prefix string, c vcs.Checkout, name string) (string, error
 	if home, err = filepath.EvalSymlinks(home); err != nil {
 		return "", fmt.Errorf("%s: canonicalize home directory: %w", prefix, err)
 	}
-	sum := sha256.Sum256([]byte(c.RepoKey()))
-	pool := filepath.Base(c.MainRoot) + "-" + hex.EncodeToString(sum[:])[:worktreeKeyHex]
-	return filepath.Join(home, ".ccx", "worktrees", pool, name), nil
+	return filepath.Join(home, ".claude", "worktrees", filepath.Base(c.MainRoot), name), nil
 }
 
 func runWorktreeRm(cmd *cobra.Command, name string, force bool) error {

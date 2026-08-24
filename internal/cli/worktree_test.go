@@ -171,15 +171,14 @@ func TestWorktreeAddRmRoundTrip(t *testing.T) {
 	}
 	path := worktreeSummaryPath(t, out)
 	pool := filepath.Dir(path)
-	if want := filepath.Join(os.Getenv("HOME"), ".ccx", "worktrees"); filepath.Dir(pool) != want {
+	if want := filepath.Join(os.Getenv("HOME"), ".claude", "worktrees"); filepath.Dir(pool) != want {
 		t.Errorf("minted %q, want it under %q", path, want)
 	}
 	if filepath.Base(path) != "feat" {
 		t.Errorf("minted %q, want it to end in the name", path)
 	}
-	prefix := filepath.Base(dir) + "-"
-	if got := filepath.Base(pool); !strings.HasPrefix(got, prefix) || len(got) != len(prefix)+worktreeKeyHex {
-		t.Errorf("pool = %q, want %s<%d hex>", got, prefix, worktreeKeyHex)
+	if got, want := filepath.Base(pool), filepath.Base(dir); got != want {
+		t.Errorf("pool = %q, want %q", got, want)
 	}
 	if _, err := os.Stat(filepath.Join(path, "f.txt")); err != nil {
 		t.Errorf("minted worktree has no checkout: %v", err)
@@ -645,26 +644,29 @@ func TestWorktreeMode(t *testing.T) {
 	}
 }
 
-// TestWorktreeMintPathPool proves the pool is keyed by the repository: every
-// sibling checkout of one repository mints into the same directory, and a
-// same-named repository elsewhere gets its own.
+// TestWorktreeMintPathPool proves the pool is keyed by the main root's
+// basename: every sibling checkout of one repository mints into the same
+// directory, a differently named repository gets its own, and a same-named
+// repository elsewhere collides into that pool too — the accepted trade for
+// dropping the repo-key suffix.
 func TestWorktreeMintPathPool(t *testing.T) {
 	home := worktreeTempDir(t)
 	t.Setenv("HOME", home)
 	main := vcs.Checkout{Root: "/w/cc-context", Shape: vcs.ShapeMain, MainRoot: "/w/cc-context", CommonDir: "/w/cc-context/.git"}
 	sibling := vcs.Checkout{Root: "/w/wt", Shape: vcs.ShapeGitWorktree, MainRoot: "/w/cc-context", CommonDir: "/w/cc-context/.git"}
-	elsewhere := vcs.Checkout{Root: "/o/cc-context", Shape: vcs.ShapeMain, MainRoot: "/o/cc-context", CommonDir: "/o/cc-context/.git"}
+	elsewhere := vcs.Checkout{Root: "/o/other-repo", Shape: vcs.ShapeMain, MainRoot: "/o/other-repo", CommonDir: "/o/other-repo/.git"}
+	sameName := vcs.Checkout{Root: "/o/cc-context", Shape: vcs.ShapeMain, MainRoot: "/o/cc-context", CommonDir: "/o/cc-context/.git"}
 
 	got, err := mintWorktreePath("t", main, "feat")
 	if err != nil {
 		t.Fatalf("mintWorktreePath: %v", err)
 	}
 	pool := filepath.Dir(got)
-	if want := filepath.Join(home, ".ccx", "worktrees"); filepath.Dir(pool) != want {
+	if want := filepath.Join(home, ".claude", "worktrees"); filepath.Dir(pool) != want {
 		t.Errorf("minted %q, want it under %q", got, want)
 	}
-	if base := filepath.Base(pool); !strings.HasPrefix(base, "cc-context-") || len(base) != len("cc-context-")+worktreeKeyHex {
-		t.Errorf("pool = %q, want cc-context-<%d hex>", base, worktreeKeyHex)
+	if base := filepath.Base(pool); base != "cc-context" {
+		t.Errorf("pool = %q, want %q", base, "cc-context")
 	}
 	sib, err := mintWorktreePath("t", sibling, "feat")
 	if err != nil {
@@ -678,7 +680,14 @@ func TestWorktreeMintPathPool(t *testing.T) {
 		t.Fatalf("mintWorktreePath: %v", err)
 	}
 	if other == got {
-		t.Errorf("a same-named repository elsewhere minted %q, want a distinct pool", other)
+		t.Errorf("a differently named repository minted %q, want a distinct pool", other)
+	}
+	same, err := mintWorktreePath("t", sameName, "feat")
+	if err != nil {
+		t.Fatalf("mintWorktreePath: %v", err)
+	}
+	if same != got {
+		t.Errorf("a same-named repository elsewhere minted %q, want the shared pool %q", same, got)
 	}
 }
 

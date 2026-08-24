@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ccx vcs restack` is now `ccx vcs stack restack`**, keeping its `rebase`
   alias. The old path is gone rather than aliased: cobra matches an alias on a
   command's last path segment, so no alias spans the move.
+- **The worktree pool moved to `$HOME/.claude/worktrees/<main-basename>`.**
+  It minted at `$HOME/.ccx/worktrees/<main-basename>-<repo-key>` before, a path
+  no reaper on this machine scans — `~/.claude/worktrees/<repo>/<lane>` is the
+  convention every other tool already lives under, so ccx-minted worktrees
+  leaked past whatever swept the rest. The repo-key suffix is gone with it:
+  the pool is now keyed by the main root's basename alone, so two repositories
+  sharing a basename now share a pool too, accepted since nothing here relied
+  on the split.
 
 ### Fixed
 - **A Graphite stack spread across working copies restacks instead of
