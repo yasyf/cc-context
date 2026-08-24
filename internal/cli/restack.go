@@ -31,6 +31,10 @@ const (
 	gtSyncSkippedReason   = " because it is "
 	gtSyncSkippedWorktree = "checked out in worktree "
 
+	// gtSkipHeld leads the reason gtSkipReason renders for the worktree variant,
+	// and is the only decline a lane sweep can answer.
+	gtSkipHeld = "checked out in "
+
 	jjRestackAncestorRevset = "trunk() & ::@"
 	jjRestackStackRevset    = "trunk()..@"
 	jjRestackConflictRevset = "conflicts() & @::"
@@ -148,11 +152,7 @@ func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 			return "", err
 		}
 	}
-	swept, err := gtStateQuery(ctx, "restack")
-	if err != nil {
-		return "", err
-	}
-	declined := gtLaneStanding(swept, stack, mergeDeclines(gtSyncSkipped(output), laneDeclined))
+	declined := gtLaneResolved(mergeDeclines(gtSyncSkipped(output), laneDeclined), append(lanes, l.checkout.Root))
 
 	remote, err := vcs.GitRemoteFor(ctx, "", trunk)
 	if err != nil {
@@ -264,7 +264,7 @@ func gtSyncSkipped(output string) map[string]string {
 func gtSkipReason(reason string) string {
 	reason = strings.TrimSuffix(strings.TrimSpace(reason), ".")
 	if worktree, ok := strings.CutPrefix(reason, gtSyncSkippedWorktree); ok {
-		return "checked out in " + worktree
+		return gtSkipHeld + worktree
 	}
 	return reason
 }

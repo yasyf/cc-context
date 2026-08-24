@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -97,19 +98,23 @@ func gtRestackAt(ctx context.Context, errW io.Writer, dir string, classify gtLan
 	return r.Output, nil
 }
 
-// gtLaneStanding drops the declines a later lane made untrue. Every lane
-// declines the branches the other lanes own, so the raw sweep names almost the
-// whole stack; a decline over a chain branch that ended up restacked describes
-// nothing. A decline over a branch outside the chain is kept as gt gave it —
-// this sweep never tried to restack it, so it has no state to check it against.
-func gtLaneStanding(state gtState, chain []string, declined map[string]string) map[string]string {
-	inChain := make(map[string]bool, len(chain))
-	for _, branch := range chain {
-		inChain[branch] = true
+// gtLaneResolved drops the declines the sweep itself answered. Every lane
+// declines the branches the other lanes hold, so one sweep names most of the
+// stack, and a decline over a branch whose working copy was driven describes a
+// run that has since happened.
+//
+// The reason decides it, not the branch: only "checked out in <dir>" is a
+// decline a sweep can answer, and only when that dir is one it drove. "frozen."
+// and "merging." are reasons no lane resolves, and the caller's verdict is owed
+// them however wide the sweep went.
+func gtLaneResolved(declined map[string]string, driven []string) map[string]string {
+	moved := make(map[string]bool, len(driven))
+	for _, dir := range driven {
+		moved[dir] = true
 	}
 	standing := make(map[string]string, len(declined))
 	for branch, reason := range declined {
-		if inChain[branch] && !state[branch].NeedsRestack {
+		if held, ok := strings.CutPrefix(reason, gtSkipHeld); ok && moved[held] {
 			continue
 		}
 		standing[branch] = reason

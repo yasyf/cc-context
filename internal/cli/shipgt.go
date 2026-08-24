@@ -259,10 +259,9 @@ func gtRestack(ctx context.Context, errW io.Writer, l lane, resume, branch strin
 	if err != nil {
 		return "", err
 	}
-	standing := gtLaneStanding(state, chain, declined)
 	for _, b := range chain {
 		if state[b].NeedsRestack {
-			return "", errors.New(gtStuckAfterCommit(gtOffParent(b, standing[b]), resume))
+			return "", errors.New(gtStuckAfterCommit(gtOffParent(b, declined[b]), resume))
 		}
 	}
 	return gtLaneSegment(lanes), nil
