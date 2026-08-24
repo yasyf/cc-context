@@ -129,6 +129,11 @@ var gtGoldenCases = map[string]gtGoldenCase{
 	"restack-worktree-held": {
 		skippedPath: map[string]string{"feat": "checked out in "},
 	},
+	// The --cwd counterpart of restack-worktree-held: the same held branch, and
+	// gt restacks it because the run happens inside the working copy holding it.
+	// Nothing is declined, which is the point — a lane sweep's per-lane run is
+	// the one that moves the branch every other run reports as untouchable.
+	"restack-cwd-held": {},
 	"restack-frozen": {
 		skipped: map[string]string{"feat": "frozen"},
 	},
@@ -423,6 +428,7 @@ var gtGoldenUnnormalized = map[string]gtGoldenStream{
 	"auth-unreachable.stderr":              {trailingWS: 1},
 	"restack-blocked-during-rebase.stderr": {trailingWS: 1},
 	"restack-frozen.stderr":                {blankTail: true},
+	"restack-cwd-held.stderr":              {blankTail: true},
 	"restack-worktree-held.stderr":         {blankTail: true},
 	"submit-repo-unverified.stderr":        {trailingWS: 1},
 	"submit-unauth.stderr":                 {trailingWS: 1},

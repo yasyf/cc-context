@@ -25,8 +25,8 @@ const (
 	// gtSyncSkippedPrefix and gtSyncSkippedReason bracket the branch name in the
 	// lines gt 1.8.6 prints — on stdout, at exit 0 — for a branch it declined to
 	// restack. Three reasons follow: gtSyncSkippedWorktree and a path, "frozen.",
-	// or "merging.". Only the first is a branch another working copy holds, so
-	// gtRestackPreflight can refuse ahead of only that one.
+	// or "merging.". Only the first names a working copy gtLaneRestack can drive
+	// gt from; the other two are reasons no lane resolves.
 	gtSyncSkippedPrefix   = "Did not restack branch "
 	gtSyncSkippedReason   = " because it is "
 	gtSyncSkippedWorktree = "checked out in worktree "
@@ -110,7 +110,7 @@ func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	trunkHolder, err := gtRestackPreflight(ctx, l, stack, trunk)
+	trunkHolder, err := gtRestackTrunkHolder(ctx, l, stack, trunk)
 	if err != nil {
 		return "", err
 	}
@@ -129,6 +129,31 @@ func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 		return "", err
 	}
 
+	classify := func(dir string, r gtResult, cause error) error {
+		if strings.Contains(r.Output, gtSyncConflict) {
+			return &gtAdvice{advice: gtLaneConflict("restack", dir), cause: cause}
+		}
+		return classifyGTRestack(r, cause)
+	}
+	lanes, laneDeclined, err := gtLaneRestack(ctx, errW, "restack", l.checkout, gtBottomUp(stack), classify)
+	if err != nil {
+		return "", err
+	}
+	// gt sync restacked this working copy before the sweep, since it also fetches
+	// trunk and prunes merged branches. A sibling lane moving afterwards leaves
+	// the branches above it off their parents again, so this one restacks a
+	// second time — but only when a sibling actually moved.
+	if len(lanes) > 0 {
+		if _, err := gtRestackAt(ctx, errW, "", classify); err != nil {
+			return "", err
+		}
+	}
+	swept, err := gtStateQuery(ctx, "restack")
+	if err != nil {
+		return "", err
+	}
+	declined := gtLaneStanding(swept, stack, mergeDeclines(gtSyncSkipped(output), laneDeclined))
+
 	remote, err := vcs.GitRemoteFor(ctx, "", trunk)
 	if err != nil {
 		return "", fmt.Errorf("restack: %w", err)
@@ -137,7 +162,7 @@ func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("restack: %w", err)
 	}
-	restacked, skipped, err := gtRestackVerdict(ctx, trunkRef, stack, gtSyncSkipped(output))
+	restacked, skipped, err := gtRestackVerdict(ctx, trunkRef, stack, declined)
 	if err != nil {
 		return "", err
 	}
@@ -160,15 +185,15 @@ func gtRestackStack(ctx context.Context, state gtState, trunk string) ([]string,
 	return gtDownstack("restack", state, branch, trunk)
 }
 
-// gtRestackPreflight refuses before gt sync runs when another working copy holds
-// a branch of the stack: git will not move a branch a sibling checkout has
-// checked out, so gt skips it and still exits 0. It returns the working copy
-// holding trunk, which gt declines to say anything about: a held trunk cannot be
-// pulled, so the whole stack reads as behind with nothing explaining why. An
-// empty string means nobody else holds it — BranchHolders names only the
-// branches some working copy has checked out, so a trunk no entry covers is one
-// this summary must not claim anything about.
-func gtRestackPreflight(ctx context.Context, l lane, stack []string, trunk string) (string, error) {
+// gtRestackTrunkHolder names the working copy holding trunk, which gt declines
+// to say anything about: a held trunk cannot be pulled, so the whole stack reads
+// as behind with nothing explaining why. An empty string means nobody else holds
+// it — BranchHolders names only the branches some working copy has checked out,
+// so a trunk no entry covers is one this summary must not claim anything about.
+//
+// A stack branch some other working copy holds is no longer a refusal:
+// gtLaneRestack drives gt from that working copy instead.
+func gtRestackTrunkHolder(ctx context.Context, l lane, stack []string, trunk string) (string, error) {
 	if len(stack) == 0 {
 		return "", nil
 	}
@@ -176,16 +201,22 @@ func gtRestackPreflight(ctx context.Context, l lane, stack []string, trunk strin
 	if err != nil {
 		return "", fmt.Errorf("restack: %w", err)
 	}
-	for _, branch := range stack {
-		holder := holders[branch]
-		if holder != "" && holder != l.checkout.Root {
-			return "", fmt.Errorf("restack: %s is checked out in %s — gt cannot restack a branch another working copy holds; restack from there, or release it first", branch, holder)
-		}
-	}
 	if holder := holders[trunk]; holder != l.checkout.Root {
 		return holder, nil
 	}
 	return "", nil
+}
+
+// mergeDeclines folds one sweep's declines over another's, later runs last.
+func mergeDeclines(first, second map[string]string) map[string]string {
+	merged := make(map[string]string, len(first)+len(second))
+	for branch, reason := range first {
+		merged[branch] = reason
+	}
+	for branch, reason := range second {
+		merged[branch] = reason
+	}
+	return merged
 }
 
 // gtSync runs gt sync and returns everything it printed, both streams

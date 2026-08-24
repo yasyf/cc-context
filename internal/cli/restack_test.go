@@ -868,28 +868,33 @@ func TestRestackGTRefusesMissingRemoteTrunk(t *testing.T) {
 	}
 }
 
-// TestRestackGTRefusesBranchHeldElsewhere pins the preflight. git will not move a
-// branch a sibling checkout holds, so gt skips it and still exits 0; refusing
-// first is the only way the user learns which working copy to go to. The sync
-// log proves the refusal landed before gt ran, which the final state cannot
-// show.
-func TestRestackGTRefusesBranchHeldElsewhere(t *testing.T) {
+// TestRestackGTDrivesTheWorkingCopyHoldingABranch pins the sweep that replaced
+// the preflight's refusal. git will not move a branch a sibling checkout holds,
+// so gt declines it and still exits 0 — and the working copy holding it is the
+// one place it can move, which gt's own --cwd reaches. Refusing named that
+// working copy and stopped; driving it finishes the restack.
+func TestRestackGTDrivesTheWorkingCopyHoldingABranch(t *testing.T) {
 	g := loadGTGolden(t, "sync-quiet-exit0")
 	f := restackGTRepo(t, "a", "b")
 	held := restackSiblingPath(t, "held")
 	restackRun(t, f.Dir, "git", "worktree", "add", "-q", held, "a")
-	syncLog := restackGTSync(t, f, g, "")
+	restackGTSync(t, f, g, "")
 
-	_, _, err := runRestackCmd(t)
-	if err == nil {
-		t.Fatal("restack succeeded, want a refusal naming the holder")
+	out, _, err := runRestackCmd(t)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
 	}
-	want := "restack: a is checked out in " + held + " — gt cannot restack a branch another working copy holds; restack from there, or release it first"
-	if err.Error() != want {
-		t.Fatalf("error = %q, want %q", err, want)
+	if want := "restacked 2 of 2 · trunk main"; out != want {
+		t.Fatalf("output = %q, want %q", out, want)
 	}
-	if got := restackSyncArgv(t, syncLog); got != nil {
-		t.Errorf("gt sync ran %v — the preflight must refuse before it does", got)
+	drove := false
+	for _, inv := range restackInvocations(t, f) {
+		if len(inv) > 3 && inv[0] == "gt" && inv[1] == "restack" && inv[2] == "--cwd" && inv[3] == held {
+			drove = true
+		}
+	}
+	if !drove {
+		t.Errorf("restack never ran gt restack --cwd %s — the held branch cannot move from here", held)
 	}
 }
 

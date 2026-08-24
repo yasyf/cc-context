@@ -233,28 +233,59 @@ func gtStuckAfterCommit(problem, resume string) string {
 	return "ship: " + problem + gtLandedSuffix(resume)
 }
 
-func gtRestack(ctx context.Context, errW io.Writer, resume, branch string) (string, error) {
-	r, runErr := gtRun(ctx, []string{"restack", "--no-interactive"}, gtZeroSurfaces, errW)
-	if err := gtReport(errW, r); err != nil {
+func gtRestack(ctx context.Context, errW io.Writer, l lane, resume, branch string) (string, error) {
+	_, chain, err := gtStackChain(ctx, "ship", branch)
+	if err != nil {
 		return "", err
 	}
-	if runErr != nil {
+	classify := func(dir string, r gtResult, cause error) error {
 		if strings.Contains(r.Output, gtSyncConflict) {
-			advice := gtStuckAfterCommit("gt restack hit a conflict — resolve the listed files, then gt continue (or gt abort, then gt restack)", resume)
-			return "", &gtAdvice{advice: advice, cause: runErr}
+			return &gtAdvice{advice: gtStuckAfterCommit(gtRestackConflict(dir), resume), cause: cause}
 		}
-		return "", fmt.Errorf("ship: %w", runErr)
+		return fmt.Errorf("ship: %w", cause)
+	}
+	lanes, declined, err := gtLaneRestack(ctx, errW, "ship", l.checkout, gtBottomUp(chain), classify)
+	if err != nil {
+		return "", err
+	}
+	here, err := gtRestackAt(ctx, errW, "", classify)
+	if err != nil {
+		return "", err
+	}
+	for branch, reason := range gtSyncSkipped(here) {
+		declined[branch] = reason
 	}
 	state, chain, err := gtStackChain(ctx, "ship", branch)
 	if err != nil {
 		return "", err
 	}
+	standing := gtLaneStanding(state, chain, declined)
 	for _, b := range chain {
 		if state[b].NeedsRestack {
-			return "", errors.New(gtStuckAfterCommit("gt restack left "+b+" off its parent — see gt's output above", resume))
+			return "", errors.New(gtStuckAfterCommit(gtOffParent(b, standing[b]), resume))
 		}
 	}
-	return "restacked", nil
+	return gtLaneSegment(lanes), nil
+}
+
+// gtRestackConflict names the working copy a conflicted restack left mid-rebase,
+// since a sweep across lanes can stop in one nobody is looking at.
+func gtRestackConflict(dir string) string {
+	if dir == "" {
+		return "gt restack hit a conflict — resolve the listed files, then gt continue (or gt abort, then gt restack)"
+	}
+	return "gt restack hit a conflict in " + dir + " — resolve the listed files there, then gt continue (or gt abort, then gt restack)"
+}
+
+// gtOffParent explains a branch the sweep could not restack. gt says why on
+// stdout, which a non-streamed run never shows anyone, so the reason is carried
+// into the refusal rather than pointed at.
+func gtOffParent(branch, reason string) string {
+	problem := "gt restack left " + branch + " off its parent"
+	if reason == "" {
+		return problem + " — see gt's output above"
+	}
+	return problem + " (" + reason + ")"
 }
 
 // gtTrack adopts an untracked branch, reporting the parent it landed on. gt

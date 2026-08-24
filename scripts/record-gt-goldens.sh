@@ -260,6 +260,33 @@ Linux recording. Nothing reads the path itself; the tests read the shape.
 EOF
 }
 
+scenario_restack_cwd_held() {
+	prepare restack-cwd-held
+	graphite_repo restack-cwd-held
+	tracked_branch feat feat
+	git switch -q main
+	git worktree add -q "$work/restack-cwd-held/held" feat
+	printf 'trunk\n' >trunk.txt
+	git add trunk.txt
+	git commit -qm trunk
+	capture restack-cwd-held restack --cwd "$work/restack-cwd-held/held" --no-interactive
+	readme restack-cwd-held <<'EOF'
+gt restack driven with --cwd from the second worktree that holds the branch a
+plain restack declines.
+
+Recorded offline, no token. The counterpart to restack-worktree-held: the same
+repository, the same held branch, and gt restacks it because the run happens
+inside the working copy holding it. Pins that --cwd reaches a branch the
+invoking checkout cannot move, which is what gtLaneRestack sweeps a stack with,
+and that the run still declines whatever this lane does not hold — one gt run
+never restacks a whole stack spread across working copies.
+
+The recorded paths are the recorder's work root (CCX_GT_RECORD_ROOT, default
+/tmp/ccx-gt-record) as git resolves it, and --cwd puts one in the argv as well.
+Nothing reads the paths themselves; the tests read the shape.
+EOF
+}
+
 scenario_restack_frozen() {
 	prepare restack-frozen
 	graphite_repo restack-frozen
@@ -618,6 +645,7 @@ EOF
 scenario_restack_conflict
 scenario_restack_blocked_during_rebase
 scenario_restack_worktree_held
+scenario_restack_cwd_held
 scenario_restack_frozen
 scenario_sync_no_remote
 scenario_sync_auth_invalid

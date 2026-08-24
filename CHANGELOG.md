@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A Graphite stack spread across working copies restacks instead of
+  deadlocking.** git will not move a branch a sibling checkout has checked out,
+  so `gt restack` declines those branches, says so on stdout, and exits 0. Both
+  ccx commands built on that read the decline as failure: `ccx vcs ship` refused
+  with "gt restack left <branch> off its parent — see gt's output above", and
+  `ccx vcs restack` refused before it started. Neither refusal could be acted on,
+  because the way out was the command that had just failed, and "see gt's output
+  above" showed nothing at all outside a terminal — `gtReport` re-emits
+  severity-prefixed stderr, and gt writes that line to stdout with no prefix. Both
+  now drive gt once from each working copy holding a branch of the stack,
+  bottom-up and ending with this one, which is what `gt`'s own `--cwd` is for. A
+  lane's uncommitted work survives; gt stashes it itself. What is left is
+  reported with the reason gt gave rather than a pointer to output nobody saw,
+  and a conflict names the working copy it stopped in. Ship's segment reads
+  `restacked across N working copies` when the sweep was wider than one.
+
+## [0.42.0] - 2026-08-23
+
 ### Added
 - **`ccx vcs ship` restacks a graphite stack itself instead of refusing it.**
   A `needs_restack` anywhere on the downstack used to end the ship with "run

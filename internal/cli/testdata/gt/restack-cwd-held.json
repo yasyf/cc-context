@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "restack",
+    "--cwd",
+    "/private/tmp/ccx-gt-record/restack-cwd-held/held",
+    "--no-interactive"
+  ],
+  "exit": 0,
+  "stdout": "Restacked feat on main.\n",
+  "stderr": "\ntip: If you need to undo the operation you just ran, you can do so with gt undo. [runner.undo ●○○]\n\n"
+}

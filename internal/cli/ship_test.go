@@ -4632,6 +4632,49 @@ func TestShipGTAutoRestack(t *testing.T) {
 	}
 }
 
+// shipGTHeldParent is the parallel-lane shape: a two-branch stack whose lower
+// branch a second working copy holds, and a trunk that moved under both. gt
+// declines the held branch and exits 0, so this is the topology a sweep that
+// trusts one gt run reports as unrestacked forever.
+func shipGTHeldParent(t *testing.T, f *vcstest.Fixture) string {
+	t.Helper()
+	shipGTStack(t, f, "base", "feature")
+	mustRun(t, f.Dir, "git", "switch", "-q", "main")
+	writeShipFile(t, f.Dir, "trunk2.txt", "trunk2\n")
+	mustRun(t, f.Dir, "git", "add", "trunk2.txt")
+	mustRun(t, f.Dir, "git", "commit", "-qm", "trunk2")
+	mustRun(t, f.Dir, "git", "switch", "-q", "feature")
+	held := f.WorktreePath("held")
+	mustRun(t, f.Dir, "git", "worktree", "add", "-q", held, "base")
+	shipGTReady(t, f)
+	return held
+}
+
+func TestShipGTRestacksAcrossWorktrees(t *testing.T) {
+	f := shipGTRepo(t)
+	held := shipGTHeldParent(t, f)
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · restacked across 2 working copies · not pushed"; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if behind := gitAt(t, f.Dir, "rev-list", "--count", "base..main"); behind != "0" {
+		t.Errorf("main holds %s commit(s) base does not, want the held lane restacked onto trunk", behind)
+	}
+	if behind := gitAt(t, f.Dir, "rev-list", "--count", "feature..base"); behind != "0" {
+		t.Errorf("base holds %s commit(s) feature does not, want the whole stack restacked", behind)
+	}
+	drove := slices.ContainsFunc(shipGTInvocations(t, f), func(inv []string) bool {
+		return len(inv) > 3 && inv[0] == "gt" && inv[1] == "restack" && inv[2] == "--cwd" && inv[3] == held
+	})
+	if !drove {
+		t.Errorf("ship never ran gt restack --cwd %s", held)
+	}
+}
+
 func shipGTConflicting(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
 	shipGTStack(t, f, "base")
