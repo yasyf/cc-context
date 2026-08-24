@@ -986,11 +986,11 @@ func TestRestackRefusesMissingGT(t *testing.T) {
 func TestRestackRegisteredWithRebaseAlias(t *testing.T) {
 	t.Parallel()
 	cmd := newVcsCmd()
-	found, args, err := cmd.Find([]string{"rebase"})
+	found, args, err := cmd.Find([]string{"stack", "rebase"})
 	if err != nil {
-		t.Fatalf("find rebase: %v", err)
+		t.Fatalf("find stack rebase: %v", err)
 	}
 	if found.Name() != "restack" || len(args) != 0 {
-		t.Fatalf("find rebase = %s %#v, want restack", found.Name(), args)
+		t.Fatalf("find stack rebase = %s %#v, want restack", found.Name(), args)
 	}
 }

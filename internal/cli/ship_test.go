@@ -4155,7 +4155,7 @@ func TestShipGitNewBranchRollback(t *testing.T) {
 	writeShipHookFiles(t, f.Dir, "f1.go")
 	writeShipUvx(t, f, 2, "")
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x")
+	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--verify", "--new-branch=feat-x")
 	if err == nil || !strings.Contains(err.Error(), "ship: hooks:") {
 		t.Fatalf("ship error = %v, want the hook failure", err)
 	}
@@ -4185,7 +4185,7 @@ func TestShipGitNewBranchRollbackFailure(t *testing.T) {
 	lock := filepath.Join(f.Dir, ".git", "index.lock")
 	writeShipUvx(t, f, 2, `test "$(cat "$SHIP_PREK_MARKER")" != 0 || : > `+lock)
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x")
+	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--verify", "--new-branch=feat-x")
 	if err == nil {
 		t.Fatal("expected a refusal, got nil")
 	}

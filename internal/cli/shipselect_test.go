@@ -437,7 +437,7 @@ func TestShipGitHunkNewBranchRollback(t *testing.T) {
 	head := gitHead(t, f.Dir)
 	mark := argvMark(t, f)
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x", "--only-hunk", ref, "f.txt")
+	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--verify", "--new-branch=feat-x", "--only-hunk", ref, "f.txt")
 	if err == nil || !strings.Contains(err.Error(), "ship: git commit:") {
 		t.Fatalf("ship error = %v, want the temp-index commit failure", err)
 	}
