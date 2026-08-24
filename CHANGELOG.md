@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`ccx vcs ship -m` is repeatable.** A second `-m` silently replaced the first,
+  so `-m "subject" -m "Context: …"` shipped the body alone as the whole commit
+  message — and a repository whose commit format mandates labelled paragraphs
+  could not be shipped through ccx at all. Every value is now a paragraph of one
+  message, a blank line between them, the way `git commit -m -m` and
+  `gt create -m -m` already read them. The subject a branch name is derived from
+  is still the first line of the first one.
 - **`ccx vcs stack`, for a Graphite stack that spans one working copy per
   branch.** A stack worked by several agents at once wants a lane each, and
   nothing cut one: `ccx vcs worktree add` runs a bare `git worktree add` and
@@ -24,6 +31,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.git` for gt to read.
 
 ### Changed
+- **Ship runs the repository's hooks only where the commit lands straight on
+  trunk.** It ran prek before every commit, on a branch bound for a pull request
+  as readily as on trunk, so a monorepo's suite — formatters, linters, pipeline
+  codegen, minutes of it cold — was paid twice for one verdict: once locally, and
+  again in the CI that grades the pull request. Ship now reads the decision it
+  already made about where the commit goes. A commit appended to trunk is the one
+  position no pull request and no CI ever grades, so it is the one that runs
+  them; everywhere else — a graphite stack, any new branch, any branch that is
+  not trunk — they are skipped, and the skip reaches the push, since `gt submit`
+  and `git push` both shell out to git and would otherwise run the pre-push half
+  of the suite the commit just skipped. A repository that names no trunk at all
+  runs them too, since nothing downstream grades a commit there either.
+  `--verify` runs them wherever the commit lands and `--no-verify` skips them on
+  trunk too; either flag, passed explicitly, beats the derived default, as does
+  the `--yolo` that implies `--no-verify`. The de-duplication is unchanged: a
+  pass ccx ran itself still tells the commit verb not to repeat it.
 - **`ccx vcs restack` is now `ccx vcs stack restack`**, keeping its `rebase`
   alias. The old path is gone rather than aliased: cobra matches an alias on a
   command's last path segment, so no alias spans the move.

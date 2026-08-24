@@ -87,12 +87,24 @@ var shipStreamCI = func(w io.Writer) bool {
 }
 
 type shipOpts struct {
-	message   string
-	noPush    bool
-	noCommit  bool
-	noWatch   bool
-	noVerify  bool
-	hooksRan  bool
+	// messages is every -m the caller passed, in order; message is the commit
+	// message they make, one blank line between them, joined once in runShip
+	// before anything downstream reads it.
+	messages []string
+	message  string
+
+	noPush   bool
+	noCommit bool
+	noWatch  bool
+
+	// noVerify carries --no-verify until runShip resolves it against --verify and
+	// the branch plan, after which it is the run's whole answer to "run the
+	// repository's hooks". hooksRan is a separate fact: ccx ran prek itself, so
+	// the commit verb is told not to run the same suite again.
+	noVerify bool
+	verify   bool
+	hooksRan bool
+
 	yolo      bool
 	amend     bool
 	budget    int
@@ -158,6 +170,8 @@ Ship refuses an empty working copy (the usual cause: a prior ship already landed
 
 Where the commit goes is one decision, resolved before any mutation and reported as a branch <name> or created <name> segment. On a non-trunk branch or bookmark, ship appends to it. On trunk it appends in your own repositories — direct-to-main is deliberate there — and starts a branch named from the commit subject when GitHub says the repository is someone else's, since an org trunk rejects the commit through its protect-<trunk> hook and leaves it dangling; the graphite lane always starts a branch on trunk, because gt has no verb that commits onto it. A detached HEAD is refused rather than guessed at, and so are several trunk candidates unless --branch names one of them. --branch <name> commits onto that branch, creating it here when it does not exist and refusing when it exists somewhere else, since ship does not check branches out; --new-branch[=<name>] always starts one, deriving the name from the commit subject when bare (an explicit name must be spelled --new-branch=name, because cobra parses "--new-branch name" as a path operand to commit); --append refuses on trunk; --allow-trunk lets --branch advance a trunk you do not own. --bookmark is a jj-only alias of --branch, --create a deprecated alias of --new-branch. A new branch is cut with gt create (graphite), git switch -c (git), or jj bookmark create -r @- (jj).
 
+Hooks follow that same decision. Ship runs the repository's prek suite only where the commit lands straight on trunk — the one position no pull request and no CI ever grades — and on a repository that names no trunk at all, where nothing downstream grades a commit either. Every other position is bound for a pull request whose CI is the check, so the suite is skipped there rather than paid twice, and git's own hooks go with it: the commit verb, gt submit, and git push all carry --no-verify, since a submit and a push shell out to git and would otherwise run the pre-push half of the suite the commit just skipped. --verify runs them wherever the commit lands, --no-verify skips them on trunk too, and either flag passed explicitly beats the default.
+
 A live Graphite config (.git/.graphite_repo_config, or the git common dir's copy in a linked worktree) routes ship to the gt lane instead, even in colocated jj repos; --no-gt falls back to the jj/git detection above. Ship declines that lane, reporting a leading lane <kind> (<reason>) segment, when the repo sets ccx.nogt or when GitHub says the repo is someone else's — a public repo you neither administer nor share an owner or organization with. A lookup that cannot be made at all (gh off PATH, not signed in, no GitHub remote) keeps the gt lane. Ship also asks Graphite itself, before any commit forms, whether this repo is submittable — a live config only proves gt init once ran — and declines the lane when Graphite answers no (no auth token, no permissions); a probe that times out or cannot reach the Graphite server declines it too, because a lane nobody could confirm is not one to ride — the cost is that a blip on a genuinely synced repo lands a plain branch outside the stack, which is the safer half of that trade. Every verdict is cached between ships: a yes for a day, a no for an hour, an unanswered probe for a minute, so an outage costs one probe a minute rather than one per command. The gt lane commits through gt: gt create <name> starts a stacked branch, gt modify -c appends to one, and --amend amends the branch tip; an untracked branch is adopted first with gt track -f, or gt track --parent when --parent names one, and the resolved parent is reported. Instead of pushing, the lane submits the downstack with gt submit, published by default; --draft submits drafts, --publish makes the default explicit. A submit deeper than one branch names every branch it is about to force-push before it runs, since gt submit always force-pushes the whole downstack. Ship never fetches or retries in the gt lane — gt owns restacking — but it does recover an unrestacked downstack itself: needs_restack anywhere on the chain runs gt restack after the commit and reports a restacked segment. After, not before, because gt restack rebases and git refuses a rebase over the dirty working copy every ship starts from. A stack spread across working copies is restacked in place: git will not move a branch a sibling checkout has checked out, so one gt restack declines those branches and still exits 0, and ship instead drives gt once from each working copy holding a branch of the chain, bottom-up, ending with this one — the segment then reads restacked across N working copies. A lane's uncommitted work survives the rebase; gt stashes it itself. A restack that conflicts or that gt state still reads as unrestacked is the one manual case left, and the refusal names the exact way out — including which working copy a conflict stopped in, and the reason gt gave for a branch it declined, since gt says that on stdout and a non-streamed run never shows anyone: the commit has already landed by then, so a plain re-run would refuse as an empty commit — resolve it, run gt continue (or gt abort, then gt restack), and submit the commit in place with the ccx vcs ship --no-commit line the refusal prints, which restates the PR flags this invocation carried. The lane still refuses up front on a branch gt track cannot adopt and on --amend on trunk; a failed submit reports gt's own recovery step (gt restack, gt sync, or gt auth) instead of retrying. The report names the submitted branch and its PR: submitted <branch> → PR #<n> <url>.
 
 Ship owns the pull request in every lane. --pr-title and --pr-body-file are repeatable and branch-scoped — <branch>=<value>, a bare value applying to the tip — because one gt submit opens a PR for every branch in the downstack; --pr-body-file takes "-" once to read the body from piped stdin. Outside the graphite lane ship opens the branch's PR when there is none (never with --fill, which would publish the commit's Claude-Session-Id trailer into the description) and edits exactly the fields this invocation restated when there is, so a description someone hand-edited survives a re-ship that does not mention it; a body given is replaced wholesale, never merged. On trunk it reports no PR (on trunk). In the graphite lane gt submit opens the PRs and ship restates the named branches afterwards, which is the only way a downstack PR gets a body at all. Every body file is read before the commit forms, so an unreadable path refuses with the working copy untouched, and a ship that names no PR flag makes no gh pr call. --draft and --publish apply in every lane, converting an existing PR in either direction; --no-pr skips the step. -m is optional when an unscoped --pr-title is given: the title becomes the commit subject, and an unscoped --pr-body-file its body, with the <details> wrapper dropped, each ## Heading folded into a Heading: paragraph, and blank runs collapsed. Only an unscoped value can feed it — the tip's name is the branch plan, which that message is an input to.
@@ -171,11 +185,12 @@ Ship owns the pull request in every lane. --pr-title and --pr-body-file are repe
 			return runShip(cmd, o)
 		},
 	}
-	cmd.Flags().StringVarP(&o.message, "message", "m", "", "commit message")
+	cmd.Flags().StringArrayVarP(&o.messages, "message", "m", nil, "commit message; repeatable, each one its own paragraph")
 	cmd.Flags().BoolVar(&o.noPush, "no-push", false, "commit only; do not push or watch CI")
 	cmd.Flags().BoolVar(&o.noCommit, "no-commit", false, "push and update the PR for the commit already in place; cut no commit, and refuse a dirty working copy")
 	cmd.Flags().BoolVar(&o.noWatch, "no-watch", false, "push but do not watch CI")
-	cmd.Flags().BoolVar(&o.noVerify, "no-verify", false, "skip pre-commit hooks (uvx prek) before committing")
+	cmd.Flags().BoolVar(&o.noVerify, "no-verify", false, "skip the repository's hooks (uvx prek, and git's own) — the default everywhere a pull request's CI is the check")
+	cmd.Flags().BoolVar(&o.verify, "verify", false, "run the repository's hooks — the default when the commit lands straight on trunk, or on a repository that names no trunk")
 	cmd.Flags().BoolVar(&o.yolo, "yolo", false, "skip every hook and ship-side guard: implies --no-verify, and drops any guard ship adds of its own")
 	cmd.Flags().BoolVar(&o.amend, "amend", false, "fold the working copy into the parent commit")
 	cmd.Flags().IntVar(&o.budget, "budget", shipLogBudget, "token budget for the CI failure log excerpt (0 = uncapped)")
@@ -217,6 +232,8 @@ Ship owns the pull request in every lane. --pr-title and --pr-body-file are repe
 		{"no-commit", "append"},
 		{"no-commit", "skip-hunk"},
 		{"no-commit", "only-hunk"},
+		{"verify", "no-verify"},
+		{"verify", "yolo"},
 	} {
 		cmd.MarkFlagsMutuallyExclusive(group...)
 	}
@@ -225,6 +242,7 @@ Ship owns the pull request in every lane. --pr-title and --pr-body-file are repe
 
 func runShip(cmd *cobra.Command, o shipOpts) error {
 	ctx := cmd.Context()
+	o.message = strings.Join(o.messages, "\n\n")
 	if err := checkBranchFlags(cmd, o); err != nil {
 		return err
 	}
@@ -257,7 +275,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	if err != nil {
 		return err
 	}
-	if !o.amend && !o.noCommit && o.message == "" {
+	if !o.amend && !o.noCommit && len(o.messages) == 0 {
 		if o.message, err = shipMessageFromPR(o); err != nil {
 			return err
 		}
@@ -288,6 +306,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	if err != nil {
 		return err
 	}
+	o.noVerify = !shipVerify(cmd, o, plan)
 	prRun := shipPRRequested(cmd, l, o)
 	meta, err := resolvePRMeta(cmd, o, plan.name)
 	if err != nil {
@@ -783,6 +802,25 @@ func checkBranchFlags(cmd *cobra.Command, o shipOpts) error {
 	return nil
 }
 
+// shipVerify decides whether this ship runs the repository's hooks, from the
+// branch decision it already made: they run where the commit lands straight on
+// trunk, or on a repository that names no trunk — the positions no pull request
+// and no CI grades. Everywhere else a pull request's CI is the check, so a suite
+// that takes minutes is not paid twice for the same verdict.
+//
+// Either flag, passed explicitly, overrides that, as does the --yolo that
+// implies --no-verify; --no-verify=false reads as --verify.
+func shipVerify(cmd *cobra.Command, o shipOpts, plan branchPlan) bool {
+	switch {
+	case cmd.Flags().Changed("verify"):
+		return o.verify
+	case cmd.Flags().Changed("no-verify") || o.yolo:
+		return !o.noVerify
+	default:
+		return plan.action == branchAppend && (plan.trunk == "" || plan.name == plan.trunk)
+	}
+}
+
 // shipResolvePlan resolves where the commit goes, before any mutation, on
 // whichever lane is live. The second return is the preflight's own report
 // segment, which today only the graphite lane's auto-track produces. errW is the
@@ -1106,7 +1144,7 @@ func shipPush(ctx context.Context, kind vcs.Kind, o shipOpts, target, preAmendSH
 		rebased, err = shipPushJJ(ctx, target, o.amend)
 		return "origin", rebased, err
 	case vcs.Git:
-		return shipPushGit(ctx, o.amend, target, preAmendSHA)
+		return shipPushGit(ctx, o, target, preAmendSHA)
 	default:
 		return "", 0, errors.New("ship: push: unsupported vcs")
 	}
@@ -1306,19 +1344,30 @@ func shipPushJJReject(ctx context.Context, target, moveOp string, amend bool, pu
 	return &pushRejectedError{err: raw}
 }
 
-func shipPushGit(ctx context.Context, amend bool, branch, preAmendSHA string) (string, int, error) {
+func shipPushGit(ctx context.Context, o shipOpts, branch, preAmendSHA string) (string, int, error) {
 	remote, err := gitRemoteFor(ctx, "ship", branch)
 	if err != nil {
 		return "", 0, err
 	}
-	if amend {
-		return remote, 0, shipPushGitAmend(ctx, remote, branch, preAmendSHA)
+	if o.amend {
+		return remote, 0, shipPushGitAmend(ctx, remote, branch, preAmendSHA, o.noVerify)
 	}
 	hint := fmt.Sprintf("git fetch %s && git rebase --autostash %s/%s && git push %s %s", remote, remote, branch, remote, branch)
 	rebased, err := shipPushRetry(ctx, branch, hint, func(ctx context.Context) (int, error) {
-		return shipPushGitOnce(ctx, remote, branch)
+		return shipPushGitOnce(ctx, remote, branch, o.noVerify)
 	})
 	return remote, rebased, err
+}
+
+// gitPushArgv builds a push argv, carrying the run's hook decision to the
+// pre-push hook a push of its own would otherwise run — the same suite the
+// commit already skipped, over the same files.
+func gitPushArgv(noVerify bool, args ...string) []string {
+	argv := []string{"push"}
+	if noVerify {
+		argv = append(argv, "--no-verify")
+	}
+	return append(argv, args...)
 }
 
 // gitRemoteFor resolves the remote that branch.<branch>.remote configures, so a
@@ -1349,8 +1398,8 @@ func gitRemoteFor(ctx context.Context, prefix, branch string) (string, error) {
 // only on a non-fast-forward rejection force-pushes with a lease pinned to
 // preAmendSHA, so the force lands iff the remote still sits on the rewritten
 // commit. A stale or rejected lease is terminal.
-func shipPushGitAmend(ctx context.Context, remote, branch, preAmendSHA string) error {
-	_, err := render.RunCLI(ctx, "git", []string{"push", remote, branch})
+func shipPushGitAmend(ctx context.Context, remote, branch, preAmendSHA string, noVerify bool) error {
+	_, err := render.RunCLI(ctx, "git", gitPushArgv(noVerify, remote, branch))
 	if err == nil {
 		return nil
 	}
@@ -1358,7 +1407,7 @@ func shipPushGitAmend(ctx context.Context, remote, branch, preAmendSHA string) e
 		return fmt.Errorf("ship: git push: %w", err)
 	}
 	lease := fmt.Sprintf("--force-with-lease=%s:%s", branch, preAmendSHA)
-	if _, err := render.RunCLI(ctx, "git", []string{"push", remote, lease, branch}); err != nil {
+	if _, err := render.RunCLI(ctx, "git", gitPushArgv(noVerify, remote, lease, branch)); err != nil {
 		if gitPushStaleLease(err) || gitPushRejected(err) {
 			return fmt.Errorf("ship: %s/%s moved since your last sync — someone may have built on the commit you amended; fetch and reconcile manually before force-pushing: %w", remote, branch, err)
 		}
@@ -1370,7 +1419,7 @@ func shipPushGitAmend(ctx context.Context, remote, branch, preAmendSHA string) e
 // shipPushGitOnce is one non-amend push attempt: fetch the remote, rebase onto
 // <remote>/<branch> when it advanced past HEAD, then push. A rejected push moves
 // no local ref, so it re-enters as a *pushRejectedError with no rollback.
-func shipPushGitOnce(ctx context.Context, remote, branch string) (int, error) {
+func shipPushGitOnce(ctx context.Context, remote, branch string, noVerify bool) (int, error) {
 	if _, err := render.RunCLI(ctx, "git", []string{"fetch", remote}); err != nil {
 		return 0, fmt.Errorf("ship: git fetch %s: %w", remote, err)
 	}
@@ -1392,7 +1441,7 @@ func shipPushGitOnce(ctx context.Context, remote, branch string) (int, error) {
 			}
 		}
 	}
-	if _, err := render.RunCLI(ctx, "git", []string{"push", remote, branch}); err != nil {
+	if _, err := render.RunCLI(ctx, "git", gitPushArgv(noVerify, remote, branch)); err != nil {
 		raw := fmt.Errorf("ship: git push: %w", err)
 		if gitPushRejected(raw) {
 			return rebased, &pushRejectedError{err: raw}

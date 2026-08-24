@@ -479,9 +479,14 @@ func shipCommitGTSelect(ctx context.Context, errW io.Writer, o shipOpts, sel *sh
 }
 
 // gtSubmitArgv builds the gt submit argv. --no-stack narrows to the current
-// branch's downstack and skips the upstack-inclusion prompt.
+// branch's downstack and skips the upstack-inclusion prompt. A submit shells out
+// to git push, so the run's hook decision rides along: without it a repository's
+// pre-push hook runs the suite the commit was told to skip.
 func gtSubmitArgv(o shipOpts) []string {
 	argv := []string{"submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack"}
+	if o.noVerify {
+		argv = append(argv, "--no-verify")
+	}
 	if o.draft {
 		argv = append(argv, "--draft")
 	} else {
