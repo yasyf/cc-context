@@ -6,6 +6,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`ccx vcs stack`, for a Graphite stack that spans one working copy per
+  branch.** A stack worked by several agents at once wants a lane each, and
+  nothing cut one: `ccx vcs worktree add` runs a bare `git worktree add` and
+  knows nothing about Graphite, while `gt create` cuts its branch in the working
+  copy it runs from — the branch switch a lane per agent cannot afford.
+  `ccx vcs stack new <name>` cuts the branch directly in the new working copy, so
+  the calling one never moves, adopts it onto `--parent`, and prints the lane's
+  path. `ccx vcs stack list` names the working copy holding each branch, walking
+  the whole stack rather than the downstack — with a lane per branch, the ones
+  above this working copy are exactly the ones it cannot check out to ask about.
+  `ccx vcs stack submit` restacks every lane and then submits, in that order,
+  because `gt submit` validates that a branch sits on its parent before pushing.
+  In a jj repository a lane is a git worktree carrying its own colocated jj, so
+  it answers to git, gt and jj alike; a jj workspace would leave it with no
+  `.git` for gt to read.
+
+### Changed
+- **`ccx vcs restack` is now `ccx vcs stack restack`**, keeping its `rebase`
+  alias. The old path is gone rather than aliased: cobra matches an alias on a
+  command's last path segment, so no alias spans the move.
+
 ### Fixed
 - **A Graphite stack spread across working copies restacks instead of
   deadlocking.** git will not move a branch a sibling checkout has checked out,

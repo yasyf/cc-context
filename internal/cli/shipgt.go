@@ -501,7 +501,7 @@ func classifyGTSubmit(r gtResult, cause error) error {
 	case strings.Contains(r.Output, gtRestackNeeded1) || strings.Contains(r.Output, gtRestackNeeded2):
 		return &gtAdvice{advice: "ship: stack drifted since preflight — run gt restack", cause: cause}
 	case strings.Contains(r.Output, gtTrunkStale):
-		return &gtAdvice{advice: "ship: trunk is out of sync — run gt sync (or ccx vcs restack)", cause: cause}
+		return &gtAdvice{advice: "ship: trunk is out of sync — run gt sync (or ccx vcs stack restack)", cause: cause}
 	case strings.Contains(r.Output, gtRemoteChanged1) || strings.Contains(r.Output, gtRemoteChanged2):
 		return &gtAdvice{advice: "ship: remote branch changed since last submit — reconcile manually (gt sync)", cause: cause}
 	case strings.Contains(r.Output, gtAuthRequired1) || strings.Contains(r.Output, gtAuthRequired2):

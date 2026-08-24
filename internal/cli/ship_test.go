@@ -4996,14 +4996,14 @@ func TestShipGTClassifySubmit(t *testing.T) {
 	}{
 		{name: "restack needed (primary wording)", stderr: gtRestackNeeded1, wantErr: submitAdvice("stack drifted since preflight — run gt restack")},
 		{name: "restack needed (conflict wording)", stderr: gtRestackNeeded2 + "feature", wantErr: submitAdvice("stack drifted since preflight — run gt restack")},
-		{name: "trunk stale", stderr: gtTrunkStale, wantErr: submitAdvice("trunk is out of sync — run gt sync (or ccx vcs restack)")},
+		{name: "trunk stale", stderr: gtTrunkStale, wantErr: submitAdvice("trunk is out of sync — run gt sync (or ccx vcs stack restack)")},
 		{name: "remote changed (updated wording)", stderr: gtRemoteChanged1, wantErr: submitAdvice("remote branch changed since last submit — reconcile manually (gt sync)")},
 		{name: "remote changed (lease wording)", stderr: gtRemoteChanged2, wantErr: submitAdvice("remote branch changed since last submit — reconcile manually (gt sync)")},
 		{name: "auth required (please wording)", stderr: gtAuthRequired1, wantErr: submitAdvice("graphite auth required — run gt auth")},
 		{name: "auth required (invalid wording)", stderr: gtAuthRequired2, wantErr: submitAdvice("graphite auth required — run gt auth")},
 		{
 			name: "the same wording on stdout classifies the same way", stdout: gtTrunkStale, exit: "1",
-			wantErr: submitAdvice("trunk is out of sync — run gt sync (or ccx vcs restack)"),
+			wantErr: submitAdvice("trunk is out of sync — run gt sync (or ccx vcs stack restack)"),
 		},
 		{
 			name:   "an exit-0 submit reporting an ERROR: is a failure, not a success",

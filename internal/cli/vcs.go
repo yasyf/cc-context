@@ -13,7 +13,7 @@ func newVcsCmd() *cobra.Command {
 		newDiffCmd(),
 		newVcsInfoCmd(),
 		newGuidelinesCmd(),
-		newRestackCmd(),
+		newStackCmd(),
 		newReviewsCmd(),
 		newShipCmd(),
 		newShowCmd(),
