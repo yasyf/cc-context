@@ -4,6 +4,32 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.45.0] - 2026-08-25
+
+### Fixed
+- **`ccx vcs ship` can no longer adopt a branch other than the one it named.**
+  One ship printed gt refusing to reparent one branch while ccx reported a
+  different one untracked, and the remedy it printed, a bare `gt track`,
+  reproduced the same mismatch. The track verb named neither its branch nor a
+  working copy, so it adopted whatever gt resolved as current instead of the
+  branch ccx had computed and reported. It now names its branch positionally,
+  and every child ccx spawns runs in a stated working copy with `GIT_DIR` and
+  `GIT_WORK_TREE` dropped from its environment, since each outranks the working
+  directory for git and for gt through it. A ship from a linked worktree can no
+  longer be hijacked by an inherited git location.
+
+### Changed
+- **Every `render` runner takes a working copy, stated at the call site.**
+  `render.Dir` is a required parameter on all ten runners, and
+  `render.Ambient` is the explicit spelling for a child whose answer cannot
+  depend on a repository, the same required-positional shape as `gtZeroPolicy`.
+  The `*Dir` variants, the `--cwd` and `-C` argv spellings, and the raw `exec`
+  bypass are gone; `TestNoArgvWorkingDirectoryFlags` fails on any argv literal
+  that would bring one back. A restack conflict still reads "resolve the listed
+  files" when it stopped in the working copy you are standing in and names the
+  working copy only when it stopped elsewhere; the migration kept both
+  wordings.
+
 ## [0.44.0] - 2026-08-24
 
 ### Fixed
