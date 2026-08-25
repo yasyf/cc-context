@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.0] - 2026-08-24
+
+### Fixed
+- **A `Read` of a binary file is no longer blocked.** The large-Read guard
+  classified by extension — `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.pdf` and
+  `.ipynb` drew a hard block, everything else a windowed 100-line head — so
+  reading a screenshot came back BLOCKED, steering to `ccx code outline`, which
+  cannot open an image at all. That cost a turn and named an escape hatch that
+  does not exist. Claude renders an image; it does not read lines of it, its cost
+  is image tokens, not file bytes, and no line window applies. The guard now
+  reads the file instead of its name, and matches only one with no NUL byte in
+  its first 8000. That is git's own binary heuristic, and it needs no decode
+  step, so a multi-byte character split at the window edge cannot misclassify a
+  UTF-8 file. Every binary file passes untouched whatever it is called, and
+  `.ipynb`, which is JSON, now takes the window like the text it is.
+
 ## [0.43.0] - 2026-08-24
 
 ### Added
