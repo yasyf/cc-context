@@ -442,7 +442,7 @@ var engineTimeout = 120 * time.Second
 func execEngine(ctx context.Context, bin string, argv []string) (string, error) {
 	runCtx, cancel := context.WithTimeout(ctx, engineTimeout)
 	defer cancel()
-	out, err := render.RunCLIAllowExit(runCtx, bin, argv, exitNoMatch)
+	out, err := render.RunCLIAllowExit(runCtx, render.Ambient, bin, argv, exitNoMatch)
 	// A killed child surfaces as an opaque exit error, so the deadline is read
 	// off the context rather than the exit code.
 	if err != nil && ctx.Err() == nil && runCtx.Err() != nil {

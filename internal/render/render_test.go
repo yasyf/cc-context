@@ -3,6 +3,7 @@ package render
 import (
 	"bytes"
 	"context"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -37,7 +38,7 @@ func TestRunCLIStream(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var w bytes.Buffer
-			err := RunCLIStream(context.Background(), "/bin/sh", []string{"-c", tt.script}, &w)
+			err := RunCLIStream(context.Background(), Ambient, "/bin/sh", []string{"-c", tt.script}, &w)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("RunCLIStream err = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -109,7 +110,7 @@ func TestRunCLIRunTimeout(t *testing.T) {
 			}
 
 			start := time.Now()
-			out, err := RunCLI(ctx, "/bin/sh", []string{"-c", tt.script})
+			out, err := RunCLI(ctx, Ambient, "/bin/sh", []string{"-c", tt.script})
 			elapsed := time.Since(start)
 			if tt.wantOut != "" {
 				if err != nil {
@@ -185,7 +186,7 @@ func TestRunCLIAllowExit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := RunCLIAllowExit(context.Background(), "/bin/sh", []string{"-c", tt.script}, tt.okCodes...)
+			got, err := RunCLIAllowExit(context.Background(), Ambient, "/bin/sh", []string{"-c", tt.script}, tt.okCodes...)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("RunCLIAllowExit err = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -214,7 +215,7 @@ func TestRunCLIEnv(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := RunCLIEnv(context.Background(), "/bin/sh", []string{"-c", tt.script}, tt.extraEnv)
+			got, err := RunCLIEnv(context.Background(), Ambient, "/bin/sh", []string{"-c", tt.script}, tt.extraEnv)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("RunCLIEnv err = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -246,7 +247,7 @@ func TestRunCLIStdin(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := RunCLIStdin(context.Background(), "/bin/sh", []string{"-c", tt.script}, tt.stdin)
+			got, err := RunCLIStdin(context.Background(), Ambient, "/bin/sh", []string{"-c", tt.script}, tt.stdin)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("RunCLIStdin err = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -455,5 +456,36 @@ func TestCapNoNewlineFallsBackToHardCut(t *testing.T) {
 	}
 	if !strings.Contains(got, "omitted — re-run with a larger --budget") {
 		t.Errorf("missing footer on hard cut: %q", got)
+	}
+}
+
+func TestPinnedRunDropsGitLocation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh to read the environment")
+	}
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp dir: %v", err)
+	}
+	t.Setenv("GIT_DIR", "/tmp/wrong/.git")
+	t.Setenv("GIT_WORK_TREE", "/tmp/wrong")
+	t.Setenv("GIT_INDEX_FILE", "/tmp/wrong/index")
+
+	script := `printf 'GIT_DIR=%s GIT_WORK_TREE=%s GIT_INDEX_FILE=%s cwd=%s' "${GIT_DIR-<unset>}" "${GIT_WORK_TREE-<unset>}" "${GIT_INDEX_FILE-<unset>}" "$(pwd)"`
+	got, err := RunCLI(context.Background(), Dir(dir), "/bin/sh", []string{"-c", script})
+	if err != nil {
+		t.Fatalf("RunCLI err = %v", err)
+	}
+	want := "GIT_DIR=<unset> GIT_WORK_TREE=<unset> GIT_INDEX_FILE=/tmp/wrong/index cwd=" + dir
+	if got != want {
+		t.Errorf("pinned child env = %q, want %q", got, want)
+	}
+
+	got, err = RunCLI(context.Background(), Ambient, "/bin/sh", []string{"-c", script})
+	if err != nil {
+		t.Fatalf("RunCLI err = %v", err)
+	}
+	if !strings.HasPrefix(got, "GIT_DIR=/tmp/wrong/.git GIT_WORK_TREE=/tmp/wrong ") {
+		t.Errorf("ambient child env = %q, want the inherited GIT_DIR and GIT_WORK_TREE", got)
 	}
 }

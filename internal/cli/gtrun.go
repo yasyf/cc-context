@@ -174,7 +174,7 @@ func (e *gtAdvice) Unwrap() error { return e.cause }
 // environment for a verb that needs an env-only variable (gt shells out to git,
 // which honors GIT_INDEX_FILE); it is variadic so policy stays a required
 // positional and the ordinary call spells no env.
-func gtRun(ctx context.Context, argv []string, policy gtZeroPolicy, errW io.Writer, extraEnv ...string) (gtResult, error) {
+func gtRun(ctx context.Context, dir render.Dir, argv []string, policy gtZeroPolicy, errW io.Writer, extraEnv ...string) (gtResult, error) {
 	var out, errBuf bytes.Buffer
 	outW, stderrW := io.Writer(&out), io.Writer(&errBuf)
 	streamed := shipStreamCI(errW)
@@ -185,7 +185,7 @@ func gtRun(ctx context.Context, argv []string, policy gtZeroPolicy, errW io.Writ
 		both := io.MultiWriter(errW, &out)
 		outW, stderrW = both, both
 	}
-	code, err := gtStream(ctx, argv, outW, stderrW, extraEnv)
+	code, err := gtStream(ctx, dir, argv, outW, stderrW, extraEnv)
 	r := gtResult{Output: out.String(), Code: code, streamed: streamed}
 	if !streamed {
 		r.Output, r.Stderr = gtJoinStreams(out.String(), errBuf.String()), errBuf.String()
@@ -201,8 +201,8 @@ func gtRun(ctx context.Context, argv []string, policy gtZeroPolicy, errW io.Writ
 // state's JSON would break the unmarshal. The payload is returned on its own, so
 // a parser cannot be handed the diagnostics by accident, while Output still
 // carries both streams for a classifier to read whole.
-func gtCapture(ctx context.Context, argv []string, policy gtZeroPolicy) (string, gtResult, error) {
-	stdout, code, stderr, err := render.RunCLIExitCode(ctx, "gt", argv)
+func gtCapture(ctx context.Context, dir render.Dir, argv []string, policy gtZeroPolicy) (string, gtResult, error) {
+	stdout, code, stderr, err := render.RunCLIExitCode(ctx, dir, "gt", argv)
 	if err != nil {
 		return "", gtResult{}, err
 	}
@@ -216,8 +216,8 @@ func gtCapture(ctx context.Context, argv []string, policy gtZeroPolicy) (string,
 // non-nil error means gt never ran or was killed — render has already explained
 // which — and is returned as it came, since the caller's own prefix is the
 // context worth adding.
-func gtStream(ctx context.Context, argv []string, outW, errW io.Writer, extraEnv []string) (int, error) {
-	err := render.RunCLIStreamSplitEnv(ctx, "gt", argv, outW, errW, extraEnv)
+func gtStream(ctx context.Context, dir render.Dir, argv []string, outW, errW io.Writer, extraEnv []string) (int, error) {
+	err := render.RunCLIStreamSplitEnv(ctx, dir, "gt", argv, outW, errW, extraEnv)
 	if err == nil {
 		return 0, nil
 	}

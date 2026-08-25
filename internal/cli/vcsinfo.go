@@ -199,7 +199,7 @@ func infoGraphite(ctx context.Context, l lane, o vcsInfoOpts) (graphiteInfo, err
 		return g, nil
 	}
 	g.CLI = true
-	out, err := render.RunCLIDir(ctx, l.root, "gt", []string{"--version"})
+	out, err := render.RunCLI(ctx, l.dir(), "gt", []string{"--version"})
 	if err != nil {
 		return graphiteInfo{}, fmt.Errorf("info: gt --version: %w", err)
 	}
@@ -219,10 +219,10 @@ func infoGraphite(ctx context.Context, l lane, o vcsInfoOpts) (graphiteInfo, err
 // infoGT reports the gt lane, whose trunk is the branch gt state marks as one,
 // and whose downstack is what a gt submit would publish.
 func infoGT(ctx context.Context, l lane, info *vcsInfo) error {
-	if err := infoGitBranch(ctx, l.root, info); err != nil {
+	if err := infoGitBranch(ctx, l.dir(), info); err != nil {
 		return err
 	}
-	if err := infoGitDirty(ctx, l.root, info); err != nil {
+	if err := infoGitDirty(ctx, l.dir(), info); err != nil {
 		return err
 	}
 	infoGTStack(ctx, l, info)
@@ -234,7 +234,7 @@ func infoGT(ctx context.Context, l lane, info *vcsInfo) error {
 // report: an unresolvable stack is a diagnosis, and refusing to print the branch,
 // dirtiness, and repository around it withholds the rest of the answer too.
 func infoGTStack(ctx context.Context, l lane, info *vcsInfo) {
-	state, err := gtStateQuery(ctx, "info")
+	state, err := gtStateQuery(ctx, l.dir(), "info")
 	if err != nil {
 		info.Graphite.StackError = err.Error()
 		return
@@ -266,40 +266,40 @@ func infoGTStack(ctx context.Context, l lane, info *vcsInfo) {
 // refusal to print the branch and dirtiness around it. A git that could not
 // answer at all still aborts.
 func infoGit(ctx context.Context, l lane, info *vcsInfo) error {
-	if err := infoGitBranch(ctx, l.root, info); err != nil {
+	if err := infoGitBranch(ctx, l.dir(), info); err != nil {
 		return err
 	}
-	remote, err := vcs.GitRemoteFor(ctx, l.root, info.Branch)
+	remote, err := vcs.GitRemoteFor(ctx, l.dir(), info.Branch)
 	if err != nil {
 		return fmt.Errorf("info: %w", err)
 	}
-	trunk, err := vcs.ResolveTrunk(ctx, l.root, remote)
+	trunk, err := vcs.ResolveTrunk(ctx, l.dir(), remote)
 	switch {
 	case err == nil:
 		info.Trunk = trunk.Name()
 	case !errors.Is(err, vcs.ErrNoTrunk):
 		return fmt.Errorf("info: %w", err)
 	}
-	return infoGitDirty(ctx, l.root, info)
+	return infoGitDirty(ctx, l.dir(), info)
 }
 
 // infoJJ reports the bookmark ship would target — the same nearest-bookmark
 // revset shipPreflightJJ resolves — and the trunk bookmark, which is empty
 // unless it resolves to exactly one name.
 func infoJJ(ctx context.Context, l lane, info *vcsInfo) error {
-	names, err := jjBookmarkNames(ctx, "info", jjNearestBookmarkRevset)
+	names, err := jjBookmarkNames(ctx, l.dir(), "info", jjNearestBookmarkRevset)
 	if err != nil {
 		return err
 	}
 	info.Branch = strings.Join(names, " ")
-	trunkNames, err := jjTrunkBookmarkNames(ctx, "info")
+	trunkNames, err := jjTrunkBookmarkNames(ctx, l.dir(), "info")
 	if err != nil {
 		return err
 	}
 	if len(trunkNames) == 1 {
 		info.Trunk = trunkNames[0]
 	}
-	out, err := render.RunCLIDir(ctx, l.root, "jj", []string{"diff", "--name-only"})
+	out, err := render.RunCLI(ctx, l.dir(), "jj", []string{"diff", "--name-only"})
 	if err != nil {
 		return fmt.Errorf("info: jj diff --name-only: %w", err)
 	}
@@ -311,17 +311,17 @@ func infoJJ(ctx context.Context, l lane, info *vcsInfo) error {
 // infoGitBranch reads the checked-out branch. An empty answer is a detached
 // HEAD, which info reports rather than refusing — unlike shipPreflightGit,
 // which has a push to protect.
-func infoGitBranch(ctx context.Context, root string, info *vcsInfo) error {
-	out, err := render.RunCLIDir(ctx, root, "git", []string{"branch", "--show-current"})
+func infoGitBranch(ctx context.Context, root render.Dir, info *vcsInfo) error {
+	branch, err := gitCurrentBranch(ctx, root, "info")
 	if err != nil {
-		return fmt.Errorf("info: git branch --show-current: %w", err)
+		return err
 	}
-	info.Branch = strings.TrimSpace(out)
-	info.Detached = info.Branch == ""
+	info.Branch = branch
+	info.Detached = branch == ""
 	return nil
 }
 
-func infoGitDirty(ctx context.Context, root string, info *vcsInfo) error {
+func infoGitDirty(ctx context.Context, root render.Dir, info *vcsInfo) error {
 	entries, err := vcs.GitStatus(ctx, vcs.GitArgs{Dir: root, Sub: []string{"status"}})
 	if err != nil {
 		return fmt.Errorf("info: %w", err)
@@ -362,7 +362,7 @@ func resolveDownstackPRs(ctx context.Context, l lane, entries []stackEntry) {
 		argv = append(argv, "-f", downstackPRAlias(i)+"="+entry.Branch)
 	}
 	argv = append(argv, "-f", "query="+downstackPRQuery(len(entries)))
-	out, err := render.RunCLIDir(ctx, l.root, "gh", argv)
+	out, err := render.RunCLI(ctx, l.dir(), "gh", argv)
 	if err != nil {
 		return
 	}
@@ -489,7 +489,7 @@ func infoGitHub(ctx context.Context, l lane, o vcsInfoOpts, info *vcsInfo) error
 		info.GitHub = l.repo
 		return nil
 	}
-	repo, err := vcs.LookupRepo(ctx, l.root, o.refresh)
+	repo, err := vcs.LookupRepo(ctx, l.dir(), o.refresh)
 	switch {
 	case err == nil:
 		info.GitHub = &repo
@@ -551,7 +551,7 @@ func renderVcsInfo(info vcsInfo) string {
 	}
 	line("dirty", infoDirtyValue(info))
 	if info.Graphite.Config {
-		line("graphite", infoGraphiteValue(info.Graphite, info.Trunk))
+		line("graphite", infoGraphiteValue(info.Graphite, info.Branch, info.Trunk))
 	}
 	if info.Graphite.StackError != "" {
 		line("stack", info.Graphite.StackError)
@@ -582,7 +582,7 @@ func infoDirtyValue(info vcsInfo) string {
 	return fmt.Sprintf("yes (%d %s)", info.DirtyFiles, noun)
 }
 
-func infoGraphiteValue(g graphiteInfo, trunk string) string {
+func infoGraphiteValue(g graphiteInfo, branch, trunk string) string {
 	segs := []string{"config live"}
 	if g.CLI {
 		seg := "gt"
@@ -600,7 +600,7 @@ func infoGraphiteValue(g graphiteInfo, trunk string) string {
 		segs = append(segs, "reachability unknown ("+g.Reason+")")
 	}
 	if g.Untracked {
-		segs = append(segs, "branch untracked (gt track --parent "+trunk+")")
+		segs = append(segs, "branch untracked (gt track "+branch+" --parent "+trunk+")")
 	}
 	return strings.Join(segs, shipSep)
 }

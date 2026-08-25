@@ -58,7 +58,7 @@ func runHunks(cmd *cobra.Command, paths []string, budget int) error {
 		}
 	} else {
 		for i, p := range paths {
-			rel, err := rootRel(root, p)
+			rel, err := rootRel(string(root), p)
 			if err != nil {
 				return fmt.Errorf("hunks: %w", err)
 			}
@@ -67,11 +67,11 @@ func runHunks(cmd *cobra.Command, paths []string, budget int) error {
 	}
 	var b strings.Builder
 	for _, path := range paths {
-		base, err := showFileBase(ctx, kind, path)
+		base, err := showFileBase(ctx, root, kind, path)
 		if err != nil {
 			return fmt.Errorf("hunks: %w", err)
 		}
-		current, err := hunksReadCurrent(filepath.Join(root, path))
+		current, err := hunksReadCurrent(filepath.Join(string(root), path))
 		if err != nil {
 			return err
 		}
@@ -90,16 +90,16 @@ func runHunks(cmd *cobra.Command, paths []string, budget int) error {
 // emits them verbatim relative to the working directory, so they normalize to
 // root. Neither is trimmed: a name's own leading or trailing whitespace is part
 // of it, and a trimmed name addresses no file at all.
-func changedFiles(ctx context.Context, kind vcs.Kind, root string) ([]string, error) {
+func changedFiles(ctx context.Context, kind vcs.Kind, root render.Dir) ([]string, error) {
 	switch kind {
 	case vcs.Git:
-		files, err := vcs.GitPaths(ctx, vcs.GitArgs{Sub: []string{"diff", "--name-only"}, Revs: []vcs.GitRef{vcs.HeadRef}})
+		files, err := vcs.GitPaths(ctx, vcs.GitArgs{Dir: root, Sub: []string{"diff", "--name-only"}, Revs: []vcs.GitRef{vcs.HeadRef}})
 		if err != nil {
 			return nil, fmt.Errorf("hunks: list changed files: %w", err)
 		}
 		return files, nil
 	case vcs.JJ:
-		out, err := render.RunCLI(ctx, "jj", []string{"diff", "--name-only"})
+		out, err := render.RunCLI(ctx, root, "jj", []string{"diff", "--name-only"})
 		if err != nil {
 			return nil, fmt.Errorf("hunks: list changed files: %w", err)
 		}
@@ -108,7 +108,7 @@ func changedFiles(ctx context.Context, kind vcs.Kind, root string) ([]string, er
 			if line == "" {
 				continue
 			}
-			rel, err := rootRel(root, line)
+			rel, err := rootRel(string(root), line)
 			if err != nil {
 				return nil, fmt.Errorf("hunks: %w", err)
 			}

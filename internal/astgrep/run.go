@@ -77,7 +77,7 @@ func OutlineStdin(ctx context.Context, src []byte, lang string) ([]OutlineFile, 
 		return nil, err
 	}
 	argv := []string{"outline", "--stdin", "-l", lang, "--json=stream", "--view", "expanded"}
-	out, err := render.RunCLIStdin(ctx, bin, argv, src)
+	out, err := render.RunCLIStdin(ctx, render.Ambient, bin, argv, src)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +135,7 @@ func runArgv(ctx context.Context, op backend.Op, a backend.Args) (string, error)
 	if err != nil {
 		return "", err
 	}
-	return render.RunCLIAllowExit(ctx, resolved, argv, astGrepExitNoMatch)
+	return render.RunCLIAllowExit(ctx, render.Ambient, resolved, argv, astGrepExitNoMatch)
 }
 
 // argvFor builds the `ast-grep run`/`outline` argv for op (the binary is

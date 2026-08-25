@@ -13,6 +13,7 @@ import (
 
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/hunk"
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -824,7 +825,7 @@ func TestShowFileBaseDistinguishesAbsentFromFailure(t *testing.T) {
 		if err := os.WriteFile("untracked.txt", []byte("new\n"), 0o644); err != nil { //nolint:gosec // test fixture
 			t.Fatalf("write untracked: %v", err)
 		}
-		base, err := showFileBase(ctx, vcs.Git, "untracked.txt")
+		base, err := showFileBase(ctx, render.Dir(dir), vcs.Git, "untracked.txt")
 		if err != nil {
 			t.Fatalf("a new file must yield an empty base, got err %v", err)
 		}
@@ -833,11 +834,11 @@ func TestShowFileBaseDistinguishesAbsentFromFailure(t *testing.T) {
 		}
 	})
 	t.Run("unresolvable base tree propagates", func(t *testing.T) {
-		initCliGitRepo(t)                                                   // git init with no commit: HEAD is unborn
+		dir := initCliGitRepo(t)                                            // git init with no commit: HEAD is unborn
 		if err := os.WriteFile("f.txt", []byte("x\n"), 0o644); err != nil { //nolint:gosec // test fixture
 			t.Fatalf("write f.txt: %v", err)
 		}
-		if _, err := showFileBase(ctx, vcs.Git, "f.txt"); err == nil {
+		if _, err := showFileBase(ctx, render.Dir(dir), vcs.Git, "f.txt"); err == nil {
 			t.Fatal("an unresolvable base tree must propagate, not swallow into an empty base")
 		}
 	})
@@ -856,14 +857,14 @@ func TestFileInBaseJJWhitespaceName(t *testing.T) {
 	mustRun(t, f.Dir, "jj", "commit", "-m", "space-named file")
 
 	ctx := context.Background()
-	present, err := fileInBase(ctx, vcs.JJ, spaceName)
+	present, err := fileInBase(ctx, render.Dir(f.Dir), vcs.JJ, spaceName)
 	if err != nil {
 		t.Fatalf("fileInBase(%q) error = %v", spaceName, err)
 	}
 	if !present {
 		t.Errorf("fileInBase(%q) = false, want true — the base carries it", spaceName)
 	}
-	absent, err := fileInBase(ctx, vcs.JJ, "nope.txt")
+	absent, err := fileInBase(ctx, render.Dir(f.Dir), vcs.JJ, "nope.txt")
 	if err != nil {
 		t.Fatalf("fileInBase(nope.txt) error = %v", err)
 	}
@@ -1049,13 +1050,13 @@ func TestGitStageSelectedForeignHunk(t *testing.T) {
 			f := gitHunkRepo(t, tt.base, tt.current)
 			hunks := hunk.Compute([]byte(tt.base), []byte(tt.current))
 			sel := &shipSelection{
-				root:      f.Dir,
+				root:      render.Dir(f.Dir),
 				mode:      tt.mode,
 				files:     map[string][]anchor.Ref{"f.txt": {hunkRef(hunks[tt.selIdx])}},
 				preflight: map[string]map[string]int{"f.txt": tt.preflight(hunks)},
 			}
 			env := []string{"GIT_INDEX_FILE=" + filepath.Join(t.TempDir(), "idx")}
-			err := gitStageSelected(context.Background(), "f.txt", sel, env)
+			err := gitStageSelected(context.Background(), render.Dir(f.Dir), "f.txt", sel, env)
 			if tt.wantForeignIdx < 0 {
 				if err != nil {
 					t.Fatalf("gitStageSelected() = %v, want nil", err)

@@ -95,6 +95,8 @@ type lane struct {
 	verdict gtVerdict
 }
 
+func (l lane) dir() render.Dir { return render.Dir(l.root) }
+
 // gtRecord is one repo's cached gt-reachability verdict, stored beside its
 // GitHub metadata. Every verdict is written, each on its own TTL.
 type gtRecord struct {
@@ -146,7 +148,7 @@ func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh boo
 	if !graphite {
 		return l, nil
 	}
-	if gtDisabled(ctx, root) {
+	if gtDisabled(ctx, render.Dir(root)) {
 		l.note = "gt disabled for this repo (" + nogtKey + ")"
 		return l, nil
 	}
@@ -154,7 +156,7 @@ func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh boo
 		return lane{}, fmt.Errorf("%s: graphite config found but gt not on PATH — install graphite (brew install graphite) or pass --no-gt", name)
 	}
 
-	repo, err := vcs.LookupRepo(ctx, root, refresh)
+	repo, err := vcs.LookupRepo(ctx, render.Dir(root), refresh)
 	switch {
 	case errors.Is(err, vcs.ErrNoGitHub):
 		// Unknown is not "not yours": the gate only demotes on a positive answer.
@@ -209,8 +211,8 @@ func kindLabel(kind vcs.Kind) string {
 
 // gtDisabled reports whether root opts out of the graphite lane. An unset key
 // exits nonzero, which is the answer "not disabled", not a failure.
-func gtDisabled(ctx context.Context, root string) bool {
-	out, err := render.RunCLIDir(ctx, root, "git", []string{"config", "--get", nogtKey})
+func gtDisabled(ctx context.Context, root render.Dir) bool {
+	out, err := render.RunCLI(ctx, root, "git", []string{"config", "--get", nogtKey})
 	if err != nil {
 		return false
 	}
@@ -274,10 +276,10 @@ func gtReachable(ctx context.Context, root string) (gtVerdict, string) {
 
 	// -q suppresses the ready line while keeping the exit code, so the predicate
 	// needs the unquiet form. The probe keeps its own runner rather than gtRun's:
-	// only RunCLIProbeDir puts gt in its own process group, which is what stops an
+	// only RunCLIProbe puts gt in its own process group, which is what stops an
 	// unauthenticated gt from hanging on the terminal it would prompt at, and only
 	// it returns what a killed child managed to write.
-	stdout, code, stderr, err := render.RunCLIProbeDir(probeCtx, root, "gt", []string{"auth", "--no-interactive"})
+	stdout, code, stderr, err := render.RunCLIProbe(probeCtx, render.Dir(root), "gt", []string{"auth", "--no-interactive"})
 	output := gtJoinStreams(stdout, stderr)
 	if err != nil {
 		return gtVerdictUnknown, "gt auth could not run: " + err.Error()

@@ -67,18 +67,19 @@ type historyCommit struct {
 // commit subjects and changed-symbol names both — is masked in path's rule
 // context, the shared footer appended after the cap.
 func runHistory(ctx context.Context, path string, n, budget int, reveal bool) (string, error) {
-	commits, err := logCommits(ctx, path, n)
-	if err != nil {
-		return "", err
-	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("resolve cwd: %w", err)
 	}
+	dir := render.Dir(cwd)
+	commits, err := logCommits(ctx, dir, path, n)
+	if err != nil {
+		return "", err
+	}
 
 	var b strings.Builder
 	for _, c := range commits {
-		summary, err := commitSummary(ctx, cwd, c.short, c.path)
+		summary, err := commitSummary(ctx, dir, c.short, c.path)
 		if err != nil {
 			return "", err
 		}
@@ -97,8 +98,9 @@ func runHistory(ctx context.Context, path string, n, budget int, reveal bool) (s
 // name (following renames across the file's history). The name comes from the
 // commit's last name-status entry — the rename destination on a rename, the
 // then-current name otherwise.
-func logCommits(ctx context.Context, path string, n int) ([]historyCommit, error) {
+func logCommits(ctx context.Context, dir render.Dir, path string, n int) ([]historyCommit, error) {
 	records, err := vcs.GitLogNameStatus(ctx, vcs.GitArgs{
+		Dir:   dir,
 		Sub:   []string{"log", "--follow", "--date=short", "-n", strconv.Itoa(n)},
 		Paths: []string{path},
 	}, "%h", "%ad", "%s")
@@ -123,8 +125,8 @@ func logCommits(ctx context.Context, path string, n int) ([]historyCommit, error
 // no parent to diff against. The range uses the resolved parent id rather than
 // "sha^" so it resolves in a jj working copy too, where "^" is not a revset
 // operator. dir is the repo the commitStat and diff commands run against.
-func commitSummary(ctx context.Context, dir, sha, path string) (string, error) {
-	parents, added, deleted, err := commitStat(ctx, sha, path)
+func commitSummary(ctx context.Context, dir render.Dir, sha, path string) (string, error) {
+	parents, added, deleted, err := commitStat(ctx, dir, sha, path)
 	if err != nil {
 		return "", err
 	}
@@ -144,8 +146,9 @@ func commitSummary(ctx context.Context, dir, sha, path string) (string, error) {
 // commitStat returns sha's parent hashes and the file's added/deleted line counts
 // via a single `git show --numstat --format=%P`. Empty parents marks a root commit.
 // A binary file's "-" counts decode to zero.
-func commitStat(ctx context.Context, sha, path string) (parents []string, added, deleted int, err error) {
+func commitStat(ctx context.Context, dir render.Dir, sha, path string) (parents []string, added, deleted int, err error) {
 	header, records, err := vcs.GitNumstat(ctx, vcs.GitArgs{
+		Dir:   dir,
 		Sub:   []string{"show"},
 		Revs:  []vcs.GitRef{vcs.UnsafeRef(sha)},
 		Paths: []string{path},

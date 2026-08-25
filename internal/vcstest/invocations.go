@@ -44,6 +44,13 @@ func waitQuiet(log string) bool {
 	return true
 }
 
+// Invocation is one recorded tool call: the argv, and the working directory it
+// ran in.
+type Invocation struct {
+	Dir  string
+	Argv []string
+}
+
 // Invocations returns the depth-0 argv records in log — the tool calls ccx
 // itself made, without the children those tools spawned. A log never written
 // reads as no invocations.
@@ -55,6 +62,23 @@ func Invocations(t *testing.T, log string) [][]string {
 // InvocationsAtDepth returns log's argv records at the given spawn depth:
 // depth 1 holds the children a depth-0 tool spawned, and so on.
 func InvocationsAtDepth(t *testing.T, log string, depth int) [][]string {
+	t.Helper()
+	var out [][]string
+	for _, r := range RecordsAtDepth(t, log, depth) {
+		out = append(out, r.Argv)
+	}
+	return out
+}
+
+// Records returns the depth-0 invocations in log, each with the directory the
+// tool ran in.
+func Records(t *testing.T, log string) []Invocation {
+	t.Helper()
+	return RecordsAtDepth(t, log, 0)
+}
+
+// RecordsAtDepth is Records at the given spawn depth.
+func RecordsAtDepth(t *testing.T, log string, depth int) []Invocation {
 	t.Helper()
 	data, err := os.ReadFile(log) //nolint:gosec // log is the shim's own path, minted under the test's TempDir
 	if err != nil {
@@ -70,26 +94,27 @@ func InvocationsAtDepth(t *testing.T, log string, depth int) [][]string {
 		t.Fatalf("argv log %s: final record missing its trailing NUL", log)
 	}
 	fields := strings.Split(string(data[:len(data)-1]), "\x00")
-	var out [][]string
+	var out []Invocation
 	for i := 0; i < len(fields); {
-		if len(fields)-i < 2 {
+		if len(fields)-i < 3 {
 			t.Fatalf("argv log %s: dangling record header at field %d", log, i)
 		}
 		d, err := strconv.Atoi(fields[i])
 		if err != nil {
 			t.Fatalf("argv log %s: depth %q at field %d: %v", log, fields[i], i, err)
 		}
-		argc, err := strconv.Atoi(fields[i+1])
+		dir := fields[i+1]
+		argc, err := strconv.Atoi(fields[i+2])
 		if err != nil {
-			t.Fatalf("argv log %s: argc %q at field %d: %v", log, fields[i+1], i+1, err)
+			t.Fatalf("argv log %s: argc %q at field %d: %v", log, fields[i+2], i+2, err)
 		}
-		if argc < 1 || i+2+argc > len(fields) {
-			t.Fatalf("argv log %s: argc %d at field %d overruns the log", log, argc, i+1)
+		if argc < 1 || i+3+argc > len(fields) {
+			t.Fatalf("argv log %s: argc %d at field %d overruns the log", log, argc, i+2)
 		}
 		if d == depth {
-			out = append(out, slices.Clone(fields[i+2:i+2+argc]))
+			out = append(out, Invocation{Dir: dir, Argv: slices.Clone(fields[i+3 : i+3+argc])})
 		}
-		i += 2 + argc
+		i += 3 + argc
 	}
 	return out
 }

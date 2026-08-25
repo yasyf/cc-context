@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // gitdirPrefix opens the single line a .git file holds when it points at an
@@ -330,7 +332,7 @@ type Worktree struct {
 // Worktrees lists every working copy registered against c's repository,
 // including c itself and the main one.
 func Worktrees(ctx context.Context, c Checkout) ([]Worktree, error) {
-	records, err := GitPorcelainRecords(ctx, GitArgs{GitDir: c.CommonDir, Sub: []string{"worktree", "list"}})
+	records, err := GitPorcelainRecords(ctx, GitArgs{Dir: render.Dir(c.Root), GitDir: c.CommonDir, Sub: []string{"worktree", "list"}})
 	if err != nil {
 		return nil, fmt.Errorf("git worktree list in %q: %w", c.CommonDir, err)
 	}

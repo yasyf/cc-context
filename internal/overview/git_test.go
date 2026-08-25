@@ -25,7 +25,7 @@ func commitlessRepo(t *testing.T) string {
 // returns its trimmed stdout, failing the test on a nonzero exit.
 func mustGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	out, err := render.RunCLIEnvDir(context.Background(), dir, "git", args, nil)
+	out, err := render.RunCLIEnv(context.Background(), render.Dir(dir), "git", args, nil)
 	if err != nil {
 		t.Fatalf("git %v: %v", args, err)
 	}
@@ -59,7 +59,7 @@ func TestGitSection(t *testing.T) {
 	mustGit(t, dir, "commit", "-qm", "release: v0.22.0")
 	hash := mustGit(t, dir, "log", "-1", "--format=%h")
 
-	got, err := gitSection(context.Background(), dir)
+	got, err := gitSection(context.Background(), render.Dir(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestGitSectionCountsDirtyEntries(t *testing.T) {
 	write(t, dir, quoteName, "package a\n")
 	hash := mustGit(t, dir, "log", "-1", "--format=%h")
 
-	got, err := gitSection(context.Background(), dir)
+	got, err := gitSection(context.Background(), render.Dir(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestGitSectionDetachedHeadDropsBranch(t *testing.T) {
 	mustGit(t, dir, "checkout", "-q", "--detach")
 	hash := mustGit(t, dir, "log", "-1", "--format=%h")
 
-	got, err := gitSection(context.Background(), dir)
+	got, err := gitSection(context.Background(), render.Dir(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestGitSectionDetachedHeadDropsBranch(t *testing.T) {
 
 func TestGitSectionNoCommits(t *testing.T) {
 	dir := commitlessRepo(t)
-	got, err := gitSection(context.Background(), dir)
+	got, err := gitSection(context.Background(), render.Dir(dir))
 	if err != nil {
 		t.Fatalf("gitSection on a commitless repo: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestGitSectionSurfacesStatusFailure(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	mustGit(t, src, "clone", "-q", "--bare", src, bare)
 
-	got, err := gitSection(context.Background(), bare)
+	got, err := gitSection(context.Background(), render.Dir(bare))
 	if err == nil {
 		t.Fatalf("gitSection on a bare repo = %q, want an error naming the status failure", got)
 	}
@@ -166,7 +166,7 @@ func TestGitSectionSurfacesLogFailure(t *testing.T) {
 		}
 	}
 
-	got, sectionErr := gitSection(context.Background(), dir)
+	got, sectionErr := gitSection(context.Background(), render.Dir(dir))
 	if sectionErr == nil {
 		t.Fatalf("gitSection over a repo with no object store = %q, want an error", got)
 	}
@@ -179,7 +179,7 @@ func TestGitSectionSurfacesLogFailure(t *testing.T) {
 // commitless repo exactly where the state probe does, so neither line is attempted.
 func TestGitLinesNoCommits(t *testing.T) {
 	dir := commitlessRepo(t)
-	lines, err := gitLines(context.Background(), dir)
+	lines, err := gitLines(context.Background(), render.Dir(dir))
 	if err != nil {
 		t.Fatalf("gitLines on a commitless repo: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestHotLine(t *testing.T) {
 	// internal/cli leads at 4; cmd/ccx and internal/web tie at 1 → name-ascending;
 	// the root-level README.md is not attributable to a dir and is dropped.
 	want := "hot (90d): internal/cli (4), cmd/ccx (1), internal/web (1)"
-	got, err := hotLine(context.Background(), dir)
+	got, err := hotLine(context.Background(), render.Dir(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestHotLine(t *testing.T) {
 // probe that cannot answer is an error, not an omitted line.
 func TestHotLineSurfacesLogFailure(t *testing.T) {
 	dir := commitlessRepo(t)
-	got, err := hotLine(context.Background(), dir)
+	got, err := hotLine(context.Background(), render.Dir(dir))
 	if err == nil {
 		t.Fatalf("hotLine on a commitless repo = %q, want an error", got)
 	}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -61,7 +62,7 @@ func TestStackNewTracksTheParent(t *testing.T) {
 	if _, _, err := runStackCmd(t, "new", "feature"); err != nil {
 		t.Fatalf("stack new: %v", err)
 	}
-	state, err := gtStateQuery(t.Context(), "test")
+	state, err := gtStateQuery(t.Context(), render.Dir(f.Dir), "test")
 	if err != nil {
 		t.Fatalf("gt state: %v", err)
 	}

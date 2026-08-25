@@ -112,14 +112,6 @@ func gitBranchExists(t *testing.T, dir, branch string) bool {
 	return gitAt(t, dir, "branch", "--list", "--format=%(refname:short)", branch) != ""
 }
 
-// shipRecordArgv is the shim's own framing — depth, argc, then the argv — for a
-// faked process to prepend to its script, so its calls land in the fixture's log
-// beside the real tools'.
-func shipRecordArgv(name, log string) string {
-	return `d="${CCX_SHIM_DEPTH:-0}"` + "\n" +
-		`printf '%s\0' "$d" "$(($#+1))" ` + name + ` "$@" >> '` + log + `'` + "\n"
-}
-
 func writeShipExecutable(t *testing.T, dir, name, script string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o700); err != nil { //nolint:gosec // a PATH entry must be owner-executable
@@ -144,7 +136,7 @@ func writeShipUvx(t *testing.T, f *vcstest.Fixture, n int, effect string) {
 	if effect != "" {
 		effect = "  ( " + effect + " ) || exit 99\n"
 	}
-	writeShipExecutable(t, f.ShimBin, "uvx", "#!/bin/sh\n"+shipRecordArgv("uvx", f.ArgvLog)+`count=$(cat "$SHIP_PREK_MARKER")
+	writeShipExecutable(t, f.ShimBin, "uvx", "#!/bin/sh\n"+vcstest.RecordArgv("uvx", f.ArgvLog)+`count=$(cat "$SHIP_PREK_MARKER")
 if [ "$count" -gt 0 ]; then
   printf '%s' "$((count - 1))" > "$SHIP_PREK_MARKER"
 `+effect+`  printf 'files were modified by this hook\n' >&2
@@ -161,7 +153,7 @@ exit 0
 func writeShipGH(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
 	t.Setenv("GH_VIEWER_GOLDEN", ghStdout(t, "viewer-graphql"))
-	writeShipExecutable(t, f.ShimBin, "gh", "#!/bin/sh\n"+shipRecordArgv("gh", f.ArgvLog)+shipGHBody)
+	writeShipExecutable(t, f.ShimBin, "gh", "#!/bin/sh\n"+vcstest.RecordArgv("gh", f.ArgvLog)+shipGHBody)
 }
 
 // shipHead is the commit gh is asked about after a push, read back out of the
@@ -291,6 +283,12 @@ func shipGTInvocations(t *testing.T, f *vcstest.Fixture) [][]string {
 	return vcstest.Invocations(t, f.ArgvLog)
 }
 
+func shipGTRecords(t *testing.T, f *vcstest.Fixture) []vcstest.Invocation {
+	t.Helper()
+	vcstest.Quiesce(t, f.ArgvLog)
+	return vcstest.Records(t, f.ArgvLog)
+}
+
 // shipGTIntercept puts a gt ahead of the fixture's shim that answers verb with
 // body and execs the real gt for every other verb. The intercepted branch
 // records its own argv in the shim's framing, so a served verb lands in the
@@ -300,7 +298,7 @@ func shipGTIntercept(t *testing.T, f *vcstest.Fixture, verb, body string) {
 	dir := t.TempDir()
 	writeShipExecutable(t, dir, "gt", "#!/bin/sh\n"+
 		"if [ \"$1\" = "+verb+" ]; then\n"+
-		shipRecordArgv("gt", f.ArgvLog)+
+		vcstest.RecordArgv("gt", f.ArgvLog)+
 		body+
 		"fi\n"+
 		"exec '"+filepath.Join(f.ShimBin, "gt")+"' \"$@\"\n")
@@ -614,7 +612,7 @@ func shipJJFails(t *testing.T, f *vcstest.Fixture, pattern string) {
 	writeShipExecutable(t, dir, "jj", "#!/bin/sh\n"+
 		"case \"$*\" in\n"+
 		"  "+pattern+")\n"+
-		shipRecordArgv("jj", f.ArgvLog)+
+		vcstest.RecordArgv("jj", f.ArgvLog)+
 		"    CCX_SHIM_DEPTH=$((d+1)) exec '"+shim+"' --repository '"+filepath.Join(dir, "absent")+"' \"$@\" ;;\n"+
 		"esac\n"+
 		"exec '"+shim+"' \"$@\"\n")

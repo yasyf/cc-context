@@ -12,6 +12,7 @@ import (
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/hunk"
 	"github.com/yasyf/cc-context/internal/outline"
+	ccrender "github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/sniff"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -27,7 +28,7 @@ func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("diff: resolve cwd: %w", err)
 	}
-	plan, err := vcs.ResolveDiffPlan(ctx, cwd, a.Source)
+	plan, err := vcs.ResolveDiffPlan(ctx, ccrender.Dir(cwd), a.Source)
 	if err != nil {
 		return "", nil, err
 	}
@@ -48,7 +49,7 @@ func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 // "-name" removed, in file then position order. It powers the history summary,
 // which passes a committed range and a single file path; a non-symbolic plan
 // yields none.
-func ChangedSymbols(ctx context.Context, dir, source, path string) ([]string, error) {
+func ChangedSymbols(ctx context.Context, dir ccrender.Dir, source, path string) ([]string, error) {
 	plan, err := vcs.ResolveDiffPlan(ctx, dir, source)
 	if err != nil {
 		return nil, err

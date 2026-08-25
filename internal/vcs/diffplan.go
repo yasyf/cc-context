@@ -48,8 +48,8 @@ type DiffPlan struct {
 // repo-root-relative: the repo root is resolved once and every child process runs
 // there, so a jj working-directory-relative name-only listing lines up with the
 // root-anchored blob reads.
-func ResolveDiffPlan(ctx context.Context, dir, source string) (DiffPlan, error) {
-	kind := Detect(dir)
+func ResolveDiffPlan(ctx context.Context, dir render.Dir, source string) (DiffPlan, error) {
+	kind := Detect(string(dir))
 	if kind == None {
 		return DiffPlan{}, fmt.Errorf("diff: no git or jj repository in %q", dir)
 	}
@@ -83,7 +83,7 @@ func diffLabel(source string) string {
 // Every endpoint a user typed reaches git as a GitRef through GitArgs, which
 // interposes --end-of-options ahead of it, so a source spelled like an option
 // ("--output=/tmp/x") is refused rather than obeyed.
-func gitDiffPlan(ctx context.Context, root, source string) (DiffPlan, error) {
+func gitDiffPlan(ctx context.Context, root render.Dir, source string) (DiffPlan, error) {
 	if source == "" || source == "uncommitted" {
 		files, renames, err := gitDiffFiles(ctx, GitArgs{Dir: root, Sub: []string{"diff", "-M"}, Revs: []GitRef{HeadRef}})
 		if err != nil {
@@ -168,7 +168,7 @@ const gitIndexRev = ":0"
 
 // stagedPlan builds a symbolic plan for the git index: HEAD against the staged
 // tree (git show :0:path), reused verbatim in a colocated jj repo.
-func stagedPlan(ctx context.Context, root string) (DiffPlan, error) {
+func stagedPlan(ctx context.Context, root render.Dir) (DiffPlan, error) {
 	files, renames, err := gitDiffFiles(ctx, GitArgs{Dir: root, Sub: []string{"diff", "--cached", "-M"}})
 	if err != nil {
 		return DiffPlan{}, err
@@ -191,7 +191,7 @@ func stagedPlan(ctx context.Context, root string) (DiffPlan, error) {
 // trunk() consults the repository's designated default branch, and only through
 // ResolveTrunk against origin, the remote whose HEAD names it; a source naming a
 // branch names that branch.
-func jjDiffPlan(ctx context.Context, root, source string) (DiffPlan, error) {
+func jjDiffPlan(ctx context.Context, root render.Dir, source string) (DiffPlan, error) {
 	label := diffLabel(source)
 	switch translateRevset(source) {
 	case translationWorkingTree, translationHEAD:
@@ -229,7 +229,7 @@ func jjDiffPlan(ctx context.Context, root, source string) (DiffPlan, error) {
 // files via `jj diff --name-only --from --to` (root-relative because it runs at
 // the repo root). after is supplied so the working-copy lanes can read the live
 // worktree while a committed range reads toRev's blob.
-func symbolicJJ(ctx context.Context, root, label, fromRev, toRev string, after func(string) ([]byte, error)) (DiffPlan, error) {
+func symbolicJJ(ctx context.Context, root render.Dir, label, fromRev, toRev string, after func(string) ([]byte, error)) (DiffPlan, error) {
 	files, renames, err := jjNameStatus(ctx, root, fromRev, toRev)
 	if err != nil {
 		return DiffPlan{}, err
@@ -266,7 +266,7 @@ func gitDiffFiles(ctx context.Context, a GitArgs) (files []string, renames map[s
 // post-image paths and a post→pre rename map. jj renders a rename as
 // "R <prefix>{old => new}<suffix>" (a copy as "C …"); every other status is
 // "<flag> <path>".
-func jjNameStatus(ctx context.Context, root, fromRev, toRev string) (files []string, renames map[string]string, err error) {
+func jjNameStatus(ctx context.Context, root render.Dir, fromRev, toRev string) (files []string, renames map[string]string, err error) {
 	lines, err := jjLines(ctx, root, "diff", "--summary", "--from", fromRev, "--to", toRev)
 	if err != nil {
 		return nil, nil, err
@@ -332,7 +332,7 @@ func renameAware(base func(string) ([]byte, error), renames map[string]string) f
 // yielding empty bytes for a path absent from that tree (a file added or removed
 // across the diff). The @-/HEAD base reuses ShowFileArgv; other revs build the
 // equivalent `git show <rev>:path` / `jj file show -r <rev>` argv.
-func committedBlobFn(ctx context.Context, root string, kind Kind, rev string) func(string) ([]byte, error) {
+func committedBlobFn(ctx context.Context, root render.Dir, kind Kind, rev string) func(string) ([]byte, error) {
 	return func(path string) ([]byte, error) {
 		has, err := treeHasPath(ctx, root, kind, rev, path)
 		if err != nil {
@@ -342,7 +342,7 @@ func committedBlobFn(ctx context.Context, root string, kind Kind, rev string) fu
 			return nil, nil
 		}
 		argv := blobArgv(kind, rev, path)
-		out, err := render.RunCLIDir(ctx, root, argv[0], argv[1:])
+		out, err := render.RunCLI(ctx, root, argv[0], argv[1:])
 		if err != nil {
 			return nil, fmt.Errorf("read %s at %s: %w", path, rev, err)
 		}
@@ -372,7 +372,7 @@ func blobArgv(kind Kind, rev, path string) []string {
 // cannot read, and a failure read as "absent from the base" renders a
 // modification as a whole-file addition. The index is no tree to walk, so the
 // staged side lists the index itself.
-func treeHasPath(ctx context.Context, root string, kind Kind, rev, path string) (bool, error) {
+func treeHasPath(ctx context.Context, root render.Dir, kind Kind, rev, path string) (bool, error) {
 	switch {
 	case kind == Git && rev == gitIndexRev:
 		records, err := GitTreeRecords(ctx, GitArgs{Dir: root, Sub: []string{"ls-files", "--stage"}, Paths: []string{path}})
@@ -392,7 +392,7 @@ func treeHasPath(ctx context.Context, root string, kind Kind, rev, path string) 
 		}
 		return len(records) > 0, nil
 	default:
-		out, err := render.RunCLIDir(ctx, root, "jj", []string{"--ignore-working-copy", "file", "list", "-r", rev, "--", JJRootPattern(path)})
+		out, err := render.RunCLI(ctx, root, "jj", []string{"--ignore-working-copy", "file", "list", "-r", rev, "--", JJRootPattern(path)})
 		if err != nil {
 			return false, fmt.Errorf("list %s at %s: %w", path, rev, err)
 		}
@@ -414,9 +414,9 @@ func hasStageZero(records []TreeRecord) bool {
 
 // worktreeFn returns a blob accessor reading path from the on-disk worktree,
 // treating a missing file as empty bytes so a deletion still reads as empty.
-func worktreeFn(root string) func(string) ([]byte, error) {
+func worktreeFn(root render.Dir) func(string) ([]byte, error) {
 	return func(path string) ([]byte, error) {
-		data, err := os.ReadFile(filepath.Join(root, path)) //nolint:gosec // path is a VCS-enumerated change target, not untrusted input
+		data, err := os.ReadFile(filepath.Join(string(root), path)) //nolint:gosec // path is a VCS-enumerated change target, not untrusted input
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
@@ -429,9 +429,9 @@ func worktreeFn(root string) func(string) ([]byte, error) {
 
 // jjRawFn returns a Raw accessor running `jj diff --git` for one file of a
 // spanning revset.
-func jjRawFn(ctx context.Context, root, revset string) func(string) (string, error) {
+func jjRawFn(ctx context.Context, root render.Dir, revset string) func(string) (string, error) {
 	return func(path string) (string, error) {
-		out, err := render.RunCLIDir(ctx, root, "jj", []string{"diff", "--git", "-r", revset, "--", JJRootPattern(path)})
+		out, err := render.RunCLI(ctx, root, "jj", []string{"diff", "--git", "-r", revset, "--", JJRootPattern(path)})
 		if err != nil {
 			return "", fmt.Errorf("jj diff --git -r %q: %w", revset, err)
 		}
@@ -442,8 +442,8 @@ func jjRawFn(ctx context.Context, root, revset string) func(string) (string, err
 // gitMergeBase resolves the merge base of two revisions for a symmetric (A...B)
 // range's before side. --end-of-options keeps an endpoint spelled like an option
 // from reaching merge-base's own flag surface.
-func gitMergeBase(ctx context.Context, root string, a, b GitRef) (string, error) {
-	out, err := render.RunCLIDir(ctx, root, "git", []string{"merge-base", "--end-of-options", string(a), string(b)})
+func gitMergeBase(ctx context.Context, root render.Dir, a, b GitRef) (string, error) {
+	out, err := render.RunCLI(ctx, root, "git", []string{"merge-base", "--end-of-options", string(a), string(b)})
 	if err != nil {
 		return "", fmt.Errorf("merge-base %s %s: %w", a, b, err)
 	}
@@ -458,7 +458,7 @@ func gitMergeBase(ctx context.Context, root string, a, b GitRef) (string, error)
 // path names stay root-relative across enumeration and blob reads. git offers no
 // NUL-framed form of --show-toplevel, so a root whose own name ends in
 // whitespace comes back trimmed.
-func diffRoot(ctx context.Context, dir string, kind Kind) (string, error) {
+func diffRoot(ctx context.Context, dir render.Dir, kind Kind) (render.Dir, error) {
 	var argv []string
 	switch kind {
 	case Git:
@@ -466,7 +466,7 @@ func diffRoot(ctx context.Context, dir string, kind Kind) (string, error) {
 	default:
 		argv = []string{"jj", "--ignore-working-copy", "workspace", "root"}
 	}
-	out, err := render.RunCLIDir(ctx, dir, argv[0], argv[1:])
+	out, err := render.RunCLI(ctx, dir, argv[0], argv[1:])
 	if err != nil {
 		return "", fmt.Errorf("resolve repo root for %q: %w", dir, err)
 	}
@@ -474,7 +474,7 @@ func diffRoot(ctx context.Context, dir string, kind Kind) (string, error) {
 	if root == "" {
 		return "", fmt.Errorf("resolve repo root for %q: empty", dir)
 	}
-	return root, nil
+	return render.Dir(root), nil
 }
 
 // gitOnlyRevSyntax reports whether source uses revision syntax only git parses
@@ -485,8 +485,8 @@ func gitOnlyRevSyntax(source string) bool {
 
 // colocatedGit reports whether root also carries a git store, so git can resolve
 // git-syntax diff sources a jj working copy would reject.
-func colocatedGit(root string) bool {
-	_, err := os.Stat(filepath.Join(root, ".git"))
+func colocatedGit(root render.Dir) bool {
+	_, err := os.Stat(filepath.Join(string(root), ".git"))
 	return err == nil
 }
 
@@ -502,8 +502,8 @@ func orHEAD(ref string) string {
 // whitespace-trimmed lines. Only jj comes through here: git's own listings are
 // NUL-framed by the shape helpers, so no git path in this package is ever split
 // on a newline it might itself contain.
-func jjLines(ctx context.Context, root string, args ...string) ([]string, error) {
-	out, err := render.RunCLIDir(ctx, root, "jj", args)
+func jjLines(ctx context.Context, root render.Dir, args ...string) ([]string, error) {
+	out, err := render.RunCLI(ctx, root, "jj", args)
 	if err != nil {
 		return nil, err
 	}

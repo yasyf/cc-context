@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -1044,7 +1045,7 @@ func TestJJBookmarkNamesAtNameLive(t *testing.T) {
 	mustRun(t, dir, "git", "branch", "foo@bar", jjRevID(t, dir, "@-"))
 	mustRun(t, dir, "jj", "bookmark", "list")
 
-	names, err := jjBookmarkNames(context.Background(), "test", jjNearestBookmarkRevset)
+	names, err := jjBookmarkNames(context.Background(), render.Dir(dir), "test", jjNearestBookmarkRevset)
 	if err != nil {
 		t.Fatalf("jjBookmarkNames error = %v", err)
 	}
@@ -1069,7 +1070,7 @@ func TestJJTrunkBookmarkNamesAtNameLive(t *testing.T) {
 	mustRun(t, dir, "git", "push", "origin", "main", "foo@bar")
 	mustRun(t, dir, "jj", "bookmark", "list")
 
-	names, err := jjTrunkBookmarkNames(context.Background(), "test")
+	names, err := jjTrunkBookmarkNames(context.Background(), render.Dir(dir), "test")
 	if err != nil {
 		t.Fatalf("jjTrunkBookmarkNames error = %v", err)
 	}
@@ -2263,7 +2264,7 @@ func TestGitIsAncestorPrefix(t *testing.T) {
 		t.Run(prefix, func(t *testing.T) {
 			shipResetLog(t, f)
 
-			_, err := gitIsAncestor(context.Background(), prefix, "refs/heads/no-such-ref", "HEAD")
+			_, err := gitIsAncestor(context.Background(), render.Dir(f.Dir), prefix, "refs/heads/no-such-ref", "HEAD")
 			want := prefix + ": git merge-base --is-ancestor: exit 128: fatal: Not a valid object name refs/heads/no-such-ref"
 			if err == nil || err.Error() != want {
 				t.Fatalf("gitIsAncestor error = %v, want %q", err, want)
@@ -3781,7 +3782,7 @@ func TestWatchCIRunBounded(t *testing.T) {
 			t.Cleanup(func() { shipCIWatchTimeout = oldTimeout })
 
 			start := time.Now()
-			err := watchCIRun(context.Background(), io.Discard, "42")
+			err := watchCIRun(context.Background(), io.Discard, render.Ambient, "42")
 			elapsed := time.Since(start)
 			if err == nil {
 				t.Fatal("watchCIRun = nil, want the bound to kill a watch that never concludes")
@@ -4466,13 +4467,13 @@ func TestShipGTTrackReportsParent(t *testing.T) {
 	}{
 		{
 			name:      "gt track -f reports the ancestor it picked",
-			wantTrack: []string{"gt", "track", "-f", "--no-interactive"},
+			wantTrack: []string{"gt", "track", "feature", "-f", "--no-interactive"},
 			wantSeg:   "tracked feature onto base",
 		},
 		{
 			name:      "--parent drops -f, which would take precedence over it",
 			args:      []string{"--parent", "base"},
-			wantTrack: []string{"gt", "track", "--parent", "base", "--no-interactive"},
+			wantTrack: []string{"gt", "track", "feature", "--parent", "base", "--no-interactive"},
 			wantSeg:   "tracked feature onto base",
 		},
 	}
@@ -4745,11 +4746,11 @@ func TestShipGTRestacksAcrossWorktrees(t *testing.T) {
 	if behind := gitAt(t, f.Dir, "rev-list", "--count", "feature..base"); behind != "0" {
 		t.Errorf("base holds %s commit(s) feature does not, want the whole stack restacked", behind)
 	}
-	drove := slices.ContainsFunc(shipGTInvocations(t, f), func(inv []string) bool {
-		return len(inv) > 3 && inv[0] == "gt" && inv[1] == "restack" && inv[2] == "--cwd" && inv[3] == held
+	drove := slices.ContainsFunc(shipGTRecords(t, f), func(r vcstest.Invocation) bool {
+		return r.Dir == held && len(r.Argv) > 1 && r.Argv[0] == "gt" && r.Argv[1] == "restack"
 	})
 	if !drove {
-		t.Errorf("ship never ran gt restack --cwd %s", held)
+		t.Errorf("ship never ran gt restack in %s", held)
 	}
 }
 
@@ -4926,7 +4927,7 @@ func TestShipGTRefusals(t *testing.T) {
 			nogtProbe,
 			{"git", "branch", "--show-current"},
 			{"gt", "state"},
-			{"gt", "track", "-f", "--no-interactive"},
+			{"gt", "track", "feature", "-f", "--no-interactive"},
 			{"gt", "state"},
 			{"gt", "add", "--no-interactive", "-A"},
 			{"git", "diff", "--cached", "--quiet"},
@@ -4949,7 +4950,7 @@ func TestShipGTRefusals(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
-		wantErr := "ship: branch feature is not tracked by graphite — run gt track, or pass --no-gt"
+		wantErr := "ship: branch feature is not tracked by graphite — run gt track feature, or pass --no-gt"
 		if err.Error() != wantErr {
 			t.Errorf("error = %q, want %q", err.Error(), wantErr)
 		}
@@ -4957,7 +4958,7 @@ func TestShipGTRefusals(t *testing.T) {
 			nogtProbe,
 			{"git", "branch", "--show-current"},
 			{"gt", "state"},
-			{"gt", "track", "--parent", "nope", "--no-interactive"},
+			{"gt", "track", "feature", "--parent", "nope", "--no-interactive"},
 		})
 		assertShipRefusedClean(t, f, head)
 	})
@@ -4975,7 +4976,7 @@ func TestShipGTRefusals(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
-		wantErr := "ship: branch feature is not tracked by graphite — run gt track, or pass --no-gt"
+		wantErr := "ship: branch feature is not tracked by graphite — run gt track feature, or pass --no-gt"
 		if err.Error() != wantErr {
 			t.Errorf("error = %q, want %q", err.Error(), wantErr)
 		}
@@ -5002,7 +5003,7 @@ func TestShipGTRefusals(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
-		wantErr := "ship: branch feature is not tracked by graphite — run gt track, or pass --no-gt"
+		wantErr := "ship: branch feature is not tracked by graphite — run gt track feature, or pass --no-gt"
 		if err.Error() != wantErr {
 			t.Errorf("error = %q, want %q", err.Error(), wantErr)
 		}
@@ -5019,7 +5020,7 @@ func TestShipGTRefusals(t *testing.T) {
 			nogtProbe,
 			{"git", "branch", "--show-current"},
 			{"gt", "state"},
-			{"gt", "track", "-f", "--no-interactive"},
+			{"gt", "track", "feature", "-f", "--no-interactive"},
 		})
 	})
 }
@@ -5522,7 +5523,7 @@ func TestGitTrunkBranchLive(t *testing.T) {
 				mustRun(t, dir, "git", "symbolic-ref", "refs/remotes/origin/HEAD", tt.target)
 			}
 
-			got, err := gitTrunkBranch(context.Background())
+			got, err := gitTrunkBranch(context.Background(), render.Dir(dir))
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("gitTrunkBranch() = %q, nil; want an error naming %s", got, tt.target)
@@ -5776,5 +5777,46 @@ func TestShipJJNewBranchClearsNearestAmbiguity(t *testing.T) {
 				t.Errorf("ship touched tied bookmark %s: %v", name, inv)
 			}
 		}
+	}
+}
+
+// TestShipGTFromALinkedWorktreeTracksItsOwnBranch pins the failure that made
+// ccx name one branch and gt track another: an inherited GIT_DIR outranks the
+// working directory for git and for gt through it, so a ship from a linked
+// worktree adopted whatever the poisoned checkout had checked out.
+func TestShipGTFromALinkedWorktreeTracksItsOwnBranch(t *testing.T) {
+	f := shipGTRepo(t)
+	lane := f.WorktreePath("lane")
+	mustRun(t, f.Dir, "git", "worktree", "add", "-q", "-b", "lane", lane)
+	writeShipFile(t, lane, "lane.txt", "lane\n")
+	mustRun(t, lane, "git", "add", "lane.txt")
+	mustRun(t, lane, "git", "commit", "-qm", "lane")
+	writeShipFile(t, lane, "f.txt", "dirty\n")
+	shipResetLog(t, f)
+	t.Setenv("GIT_DIR", filepath.Join(f.Dir, ".git"))
+	t.Setenv("GIT_WORK_TREE", f.Dir)
+	t.Chdir(lane)
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if !strings.HasPrefix(got, "tracked lane onto main · ") {
+		t.Errorf("summary = %q, want it to lead with the worktree's own branch", got)
+	}
+	var track []string
+	for _, inv := range shipGTInvocations(t, f) {
+		if len(inv) > 2 && inv[0] == "gt" && inv[1] == "track" {
+			track = inv
+		}
+	}
+	if want := []string{"gt", "track", "lane", "-f", "--no-interactive"}; !reflect.DeepEqual(track, want) {
+		t.Errorf("track argv = %v, want %v", track, want)
+	}
+	if subject := gitAt(t, lane, "log", "-1", "--format=%s", "lane"); subject != "fix: frobnicate" {
+		t.Errorf("lane tip = %q, want the commit ship cut", subject)
+	}
+	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "main"); subject == "fix: frobnicate" {
+		t.Error("the commit landed on main, the branch GIT_DIR named rather than the one checked out")
 	}
 }

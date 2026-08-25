@@ -66,7 +66,7 @@ func resolveToken(ctx context.Context) (string, error) {
 	if gh == "" {
 		return "", fmt.Errorf("%w: gh is not on PATH and neither GH_TOKEN nor GITHUB_TOKEN is set", ErrNoToken)
 	}
-	out, err := render.RunCLI(ctx, gh, []string{"auth", "token"})
+	out, err := render.RunCLI(ctx, render.Ambient, gh, []string{"auth", "token"})
 	if err != nil {
 		return "", fmt.Errorf("%w: gh auth token: %w", ErrNoToken, err)
 	}

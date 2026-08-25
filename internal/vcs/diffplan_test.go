@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -63,7 +64,7 @@ func TestResolveDiffPlanGitUncommitted(t *testing.T) {
 	}
 	write(t, dir, "new.go", "package a\n\nfunc Bar() {}\n")
 
-	plan, err := ResolveDiffPlan(context.Background(), dir, "uncommitted")
+	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "uncommitted")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan: %v", err)
 	}
@@ -104,7 +105,7 @@ func TestResolveDiffPlanGitStaged(t *testing.T) {
 	// a further unstaged edit must not appear on the staged after side.
 	write(t, dir, "a.go", "package a\n\nvar X = 3\n")
 
-	plan, err := ResolveDiffPlan(context.Background(), dir, "staged")
+	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "staged")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestResolveDiffPlanGitRangeAndBareRef(t *testing.T) {
 	runGit(t, dir, "commit", "-qm", "c2")
 
 	// range HEAD~1..HEAD: committed endpoints, worktree untouched.
-	plan, err := ResolveDiffPlan(context.Background(), dir, "HEAD~1..HEAD")
+	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "HEAD~1..HEAD")
 	if err != nil {
 		t.Fatalf("range plan: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestResolveDiffPlanGitRangeAndBareRef(t *testing.T) {
 
 	// bare ref: HEAD~1 vs the current worktree.
 	write(t, dir, "a.go", "package a\n\nvar X = 9\n")
-	bare, err := ResolveDiffPlan(context.Background(), dir, "HEAD~1")
+	bare, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "HEAD~1")
 	if err != nil {
 		t.Fatalf("bare plan: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestResolveDiffPlanGitBogusRef(t *testing.T) {
 	write(t, dir, "a.go", "package a\n")
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-qm", "init")
-	if _, err := ResolveDiffPlan(context.Background(), dir, "no-such-ref..HEAD"); err == nil {
+	if _, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "no-such-ref..HEAD"); err == nil {
 		t.Fatal("want error for a bogus range endpoint")
 	}
 }
@@ -204,7 +205,7 @@ func TestResolveDiffPlanGitRefusesOptionInjection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			target := filepath.Join(t.TempDir(), "pwned.txt")
 			source := fmt.Sprintf(tt.shape, "--output="+target)
-			_, err := ResolveDiffPlan(context.Background(), dir, source)
+			_, err := ResolveDiffPlan(context.Background(), render.Dir(dir), source)
 			assertUnwritten(t, target)
 			if err == nil {
 				t.Fatalf("ResolveDiffPlan(%q) = nil error, want a refusal", source)
@@ -220,7 +221,7 @@ func TestResolveDiffPlanGitRefusesOptionInjection(t *testing.T) {
 	t.Run("past the validation gate", func(t *testing.T) {
 		target := filepath.Join(t.TempDir(), "pwned.txt")
 		_, _, err := gitDiffFiles(context.Background(), GitArgs{
-			Dir:  dir,
+			Dir:  render.Dir(dir),
 			Sub:  []string{"diff", "-M"},
 			Revs: []GitRef{UnsafeRef("--output=" + target)},
 		})
@@ -257,7 +258,7 @@ func TestResolveDiffPlanGitUnquotableNames(t *testing.T) {
 	}
 	write(t, dir, "untracked\nname.go", "brand new\n")
 
-	plan, err := ResolveDiffPlan(context.Background(), dir, "uncommitted")
+	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "uncommitted")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan: %v", err)
 	}
@@ -301,7 +302,7 @@ func TestResolveDiffPlanGitRename(t *testing.T) {
 	runGit(t, dir, "mv", "mod.go", "moved.go")     // rename with a subsequent edit
 	write(t, dir, "moved.go", modV2)
 
-	plan, err := ResolveDiffPlan(context.Background(), dir, "uncommitted")
+	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "uncommitted")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan: %v", err)
 	}
@@ -343,7 +344,7 @@ func TestResolveDiffPlanJJRename(t *testing.T) {
 	mustRename(t, dir, "mod.go", "moved.go")     // rename with a subsequent edit
 	write(t, dir, "moved.go", modV2)
 
-	plan, err := ResolveDiffPlan(context.Background(), dir, "")
+	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan: %v", err)
 	}
@@ -384,7 +385,7 @@ func TestResolveDiffPlanJJ(t *testing.T) {
 	// mutate the working copy (@ vs @-).
 	write(t, dir, "a.go", "package a\n\nfunc Foo() int { return 2 }\n")
 
-	plan, err := ResolveDiffPlan(context.Background(), dir, "")
+	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan: %v", err)
 	}
@@ -419,7 +420,7 @@ func TestResolveDiffPlanJJColocatedGitSyntax(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			plan, err := ResolveDiffPlan(context.Background(), dir, tt.source)
+			plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), tt.source)
 			if err != nil {
 				t.Fatalf("ResolveDiffPlan(%q): %v", tt.source, err)
 			}
@@ -451,7 +452,7 @@ func TestResolveDiffPlanJJZWJPath(t *testing.T) {
 	write(t, dir, zwjPath, "one\nTWO CHANGED\n")
 	write(t, dir, "added.txt", "brand new\n")
 
-	plan, err := ResolveDiffPlan(context.Background(), dir, "")
+	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan: %v", err)
 	}
@@ -511,13 +512,13 @@ func assertMasterAgainstWorking(t *testing.T, plan DiffPlan) {
 func TestResolveDiffPlanJJHonorsLiteralBranchNames(t *testing.T) {
 	dir := masterTrunkJJ(t)
 
-	plan, err := ResolveDiffPlan(context.Background(), dir, "master..@")
+	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "master..@")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan(master..@): %v", err)
 	}
 	assertMasterAgainstWorking(t, plan)
 
-	_, err = ResolveDiffPlan(context.Background(), dir, "main..@")
+	_, err = ResolveDiffPlan(context.Background(), render.Dir(dir), "main..@")
 	if err == nil {
 		t.Fatal("ResolveDiffPlan(main..@) succeeded in a repo with no main")
 	}
@@ -532,7 +533,7 @@ func TestResolveDiffPlanJJHonorsLiteralBranchNames(t *testing.T) {
 func TestResolveDiffPlanJJTrunkResolvesTheDesignatedBranch(t *testing.T) {
 	dir := masterTrunkJJ(t, vcstest.Remote())
 
-	plan, err := ResolveDiffPlan(context.Background(), dir, "trunk()..@")
+	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "trunk()..@")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan(trunk()..@): %v", err)
 	}
@@ -546,7 +547,7 @@ func TestResolveDiffPlanJJTrunkResolvesTheDesignatedBranch(t *testing.T) {
 func TestResolveDiffPlanJJTrunkWithoutADefaultBranch(t *testing.T) {
 	dir := masterTrunkJJ(t)
 
-	_, err := ResolveDiffPlan(context.Background(), dir, "trunk()..@")
+	_, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "trunk()..@")
 	if !errors.Is(err, ErrNoTrunk) {
 		t.Fatalf("ResolveDiffPlan(trunk()..@) error = %v, want ErrNoTrunk", err)
 	}
@@ -564,14 +565,14 @@ func TestTreeHasPathJJReportsFailure(t *testing.T) {
 	runJJ(t, dir, "commit", "-m", "init")
 
 	ctx := context.Background()
-	if _, err := treeHasPath(ctx, dir, JJ, "nosuchrev", "a.go"); err == nil {
+	if _, err := treeHasPath(ctx, render.Dir(dir), JJ, "nosuchrev", "a.go"); err == nil {
 		t.Error("treeHasPath at an unknown revision returned no error")
 	}
-	has, err := treeHasPath(ctx, dir, JJ, "@-", "a.go")
+	has, err := treeHasPath(ctx, render.Dir(dir), JJ, "@-", "a.go")
 	if err != nil || !has {
 		t.Errorf("treeHasPath(@-, a.go) = %v, %v; want true, nil", has, err)
 	}
-	has, err = treeHasPath(ctx, dir, JJ, "@-", "nope.go")
+	has, err = treeHasPath(ctx, render.Dir(dir), JJ, "@-", "nope.go")
 	if err != nil || has {
 		t.Errorf("treeHasPath(@-, nope.go) = %v, %v; want false, nil", has, err)
 	}
@@ -585,7 +586,7 @@ func TestTreeHasPathJJWhitespaceName(t *testing.T) {
 	write(t, dir, " ", "one\n")
 	runJJ(t, dir, "commit", "-m", "init")
 
-	has, err := treeHasPath(context.Background(), dir, JJ, "@-", " ")
+	has, err := treeHasPath(context.Background(), render.Dir(dir), JJ, "@-", " ")
 	if err != nil || !has {
 		t.Errorf("treeHasPath(@-, %q) = %v, %v; want true, nil", " ", has, err)
 	}
@@ -602,14 +603,14 @@ func TestTreeHasPathGitReportsFailure(t *testing.T) {
 	runGit(t, dir, "commit", "-qm", "init")
 
 	ctx := context.Background()
-	if _, err := treeHasPath(ctx, dir, Git, "nosuchrev", "a.go"); err == nil {
+	if _, err := treeHasPath(ctx, render.Dir(dir), Git, "nosuchrev", "a.go"); err == nil {
 		t.Error("treeHasPath at an unknown revision returned no error")
 	}
-	has, err := treeHasPath(ctx, dir, Git, "HEAD", "a.go")
+	has, err := treeHasPath(ctx, render.Dir(dir), Git, "HEAD", "a.go")
 	if err != nil || !has {
 		t.Errorf("treeHasPath(HEAD, a.go) = %v, %v; want true, nil", has, err)
 	}
-	has, err = treeHasPath(ctx, dir, Git, "HEAD", "nope.go")
+	has, err = treeHasPath(ctx, render.Dir(dir), Git, "HEAD", "nope.go")
 	if err != nil || has {
 		t.Errorf("treeHasPath(HEAD, nope.go) = %v, %v; want false, nil", has, err)
 	}
@@ -656,7 +657,7 @@ func TestTreeHasPathGitIndex(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			has, err := treeHasPath(context.Background(), dir, Git, gitIndexRev, tt.path)
+			has, err := treeHasPath(context.Background(), render.Dir(dir), Git, gitIndexRev, tt.path)
 			if err != nil || has != tt.want {
 				t.Errorf("treeHasPath(:0, %q) = %v, %v; want %v, nil", tt.path, has, err, tt.want)
 			}

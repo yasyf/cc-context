@@ -124,6 +124,12 @@ func restackInvocations(t *testing.T, f *vcstest.Fixture) [][]string {
 	return vcstest.Invocations(t, f.ArgvLog)
 }
 
+func restackRecords(t *testing.T, f *vcstest.Fixture) []vcstest.Invocation {
+	t.Helper()
+	vcstest.Quiesce(t, f.ArgvLog)
+	return vcstest.Records(t, f.ArgvLog)
+}
+
 // assertNoRestackMutation fails when restack moved a ref or replayed a commit.
 // A refusal must leave the working copy exactly as it found it, which the
 // surviving HEAD alone cannot prove: a rebase that landed and was aborted also
@@ -871,8 +877,9 @@ func TestRestackGTRefusesMissingRemoteTrunk(t *testing.T) {
 // TestRestackGTDrivesTheWorkingCopyHoldingABranch pins the sweep that replaced
 // the preflight's refusal. git will not move a branch a sibling checkout holds,
 // so gt declines it and still exits 0 — and the working copy holding it is the
-// one place it can move, which gt's own --cwd reaches. Refusing named that
-// working copy and stopped; driving it finishes the restack.
+// one place it can move, which the driven gt run's own cmd.Dir reaches.
+// Refusing named that working copy and stopped; driving it finishes the
+// restack.
 func TestRestackGTDrivesTheWorkingCopyHoldingABranch(t *testing.T) {
 	g := loadGTGolden(t, "sync-quiet-exit0")
 	f := restackGTRepo(t, "a", "b")
@@ -888,13 +895,13 @@ func TestRestackGTDrivesTheWorkingCopyHoldingABranch(t *testing.T) {
 		t.Fatalf("output = %q, want %q", out, want)
 	}
 	drove := false
-	for _, inv := range restackInvocations(t, f) {
-		if len(inv) > 3 && inv[0] == "gt" && inv[1] == "restack" && inv[2] == "--cwd" && inv[3] == held {
+	for _, r := range restackRecords(t, f) {
+		if r.Dir == held && len(r.Argv) > 1 && r.Argv[0] == "gt" && r.Argv[1] == "restack" {
 			drove = true
 		}
 	}
 	if !drove {
-		t.Errorf("restack never ran gt restack --cwd %s — the held branch cannot move from here", held)
+		t.Errorf("restack never ran gt restack in %s — the held branch cannot move from here", held)
 	}
 }
 

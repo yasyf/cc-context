@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -17,7 +18,7 @@ func TestRunNoVCS(t *testing.T) {
 	// the git/hot sections resolve to "" so the assertion holds regardless of Detect.
 	prev := git
 	t.Cleanup(func() { git = prev })
-	git = func(_ context.Context, _ string, _ ...string) (string, error) {
+	git = func(_ context.Context, _ render.Dir, _ ...string) (string, error) {
 		return "", fmt.Errorf("no git")
 	}
 

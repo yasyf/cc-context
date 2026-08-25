@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -340,7 +341,7 @@ func TestJJTrackUntrackedAtNameLive(t *testing.T) {
 	}
 	t.Chdir(clone)
 
-	if err := jjTrackUntrackedTarget(context.Background(), branch); err != nil {
+	if err := jjTrackUntrackedTarget(context.Background(), render.Dir(clone), branch); err != nil {
 		t.Fatalf("jjTrackUntrackedTarget(%q) = %v, want nil", branch, err)
 	}
 	after := mustRun(t, clone, "jj", "bookmark", "list", pat, "--all-remotes", "-T", jjRemoteBookmarkTemplate)

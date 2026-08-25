@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -436,7 +437,7 @@ func TestGitRunRefusesOptionInjectionViaRev(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "pwned.txt")
 	_, err := GitNameStatus(context.Background(), GitArgs{
-		Dir:  dir,
+		Dir:  render.Dir(dir),
 		Sub:  []string{"diff"},
 		Revs: []GitRef{UnsafeRef("--output=" + target)},
 	})
@@ -462,7 +463,7 @@ func TestGitRunMatchesPathspecsLiterally(t *testing.T) {
 	runGit(t, dir, "commit", "-qm", "init")
 
 	paths, err := GitPaths(context.Background(), GitArgs{
-		Dir:   dir,
+		Dir:   render.Dir(dir),
 		Sub:   []string{"ls-files"},
 		Paths: []string{"sub/[id].go"},
 	})
@@ -475,7 +476,7 @@ func TestGitRunMatchesPathspecsLiterally(t *testing.T) {
 
 	// And the magic prefix is inert too: it names a file that does not exist.
 	magic, err := GitPaths(context.Background(), GitArgs{
-		Dir:   dir,
+		Dir:   render.Dir(dir),
 		Sub:   []string{"ls-files"},
 		Paths: []string{":(exclude)sub/i.go"},
 	})
@@ -501,7 +502,7 @@ func TestGitRunOmitsThePathspecSeparatorWhenThereAreNoPaths(t *testing.T) {
 	runGit(t, dir, "commit", "-qm", "init")
 	write(t, dir, "a.go", "package a\nfunc Foo() {}\n")
 
-	entries, err := GitStatus(ctx, GitArgs{Dir: dir, Sub: []string{"status"}})
+	entries, err := GitStatus(ctx, GitArgs{Dir: render.Dir(dir), Sub: []string{"status"}})
 	if err != nil {
 		t.Fatalf("GitStatus: %v", err)
 	}
@@ -509,7 +510,7 @@ func TestGitRunOmitsThePathspecSeparatorWhenThereAreNoPaths(t *testing.T) {
 		t.Fatalf("entries = %+v, want the dirty a.go", entries)
 	}
 
-	if _, err := GitPorcelainRecords(ctx, GitArgs{Dir: dir, Sub: []string{"worktree", "list"}}); err != nil {
+	if _, err := GitPorcelainRecords(ctx, GitArgs{Dir: render.Dir(dir), Sub: []string{"worktree", "list"}}); err != nil {
 		t.Fatalf("GitPorcelainRecords: %v", err)
 	}
 }
@@ -535,7 +536,7 @@ func TestShapeHelpersAgainstLiveGit(t *testing.T) {
 	runGit(t, dir, "add", "-A")
 
 	t.Run("GitNameStatus", func(t *testing.T) {
-		entries, err := GitNameStatus(ctx, GitArgs{Dir: dir, Sub: []string{"diff", "--cached", "-M"}})
+		entries, err := GitNameStatus(ctx, GitArgs{Dir: render.Dir(dir), Sub: []string{"diff", "--cached", "-M"}})
 		if err != nil {
 			t.Fatalf("GitNameStatus: %v", err)
 		}
@@ -551,7 +552,7 @@ func TestShapeHelpersAgainstLiveGit(t *testing.T) {
 	})
 
 	t.Run("GitStatus", func(t *testing.T) {
-		entries, err := GitStatus(ctx, GitArgs{Dir: dir, Sub: []string{"status"}})
+		entries, err := GitStatus(ctx, GitArgs{Dir: render.Dir(dir), Sub: []string{"status"}})
 		if err != nil {
 			t.Fatalf("GitStatus: %v", err)
 		}
@@ -570,7 +571,7 @@ func TestShapeHelpersAgainstLiveGit(t *testing.T) {
 	})
 
 	t.Run("GitPaths", func(t *testing.T) {
-		paths, err := GitPaths(ctx, GitArgs{Dir: dir, Sub: []string{"diff", "--cached", "--name-only"}})
+		paths, err := GitPaths(ctx, GitArgs{Dir: render.Dir(dir), Sub: []string{"diff", "--cached", "--name-only"}})
 		if err != nil {
 			t.Fatalf("GitPaths: %v", err)
 		}
@@ -584,7 +585,7 @@ func TestShapeHelpersAgainstLiveGit(t *testing.T) {
 
 	t.Run("GitTreeRecords ls-tree", func(t *testing.T) {
 		records, err := GitTreeRecords(ctx, GitArgs{
-			Dir:   dir,
+			Dir:   render.Dir(dir),
 			Sub:   []string{"ls-tree", "--full-tree"},
 			Revs:  []GitRef{HeadRef},
 			Paths: []string{"a.go"},
@@ -599,7 +600,7 @@ func TestShapeHelpersAgainstLiveGit(t *testing.T) {
 
 	t.Run("GitNumstat rename", func(t *testing.T) {
 		header, records, err := GitNumstat(ctx, GitArgs{
-			Dir:  dir,
+			Dir:  render.Dir(dir),
 			Sub:  []string{"show", "-M"},
 			Revs: []GitRef{HeadRef},
 		}, "%P")
@@ -623,7 +624,7 @@ func TestShapeHelpersAgainstLiveGit(t *testing.T) {
 	t.Run("GitNumstat root commit", func(t *testing.T) {
 		// The fixture's own commit is the root; %P is empty there and nowhere else.
 		header, records, err := GitNumstat(ctx, GitArgs{
-			Dir:  dir,
+			Dir:  render.Dir(dir),
 			Sub:  []string{"show"},
 			Revs: []GitRef{UnsafeRef("HEAD~2")},
 		}, "%P")
@@ -641,7 +642,7 @@ func TestShapeHelpersAgainstLiveGit(t *testing.T) {
 
 	t.Run("GitPorcelainRecords", func(t *testing.T) {
 		records, err := GitPorcelainRecords(ctx, GitArgs{
-			Dir: dir,
+			Dir: render.Dir(dir),
 			Sub: []string{"worktree", "list"},
 		})
 		if err != nil {
@@ -657,7 +658,7 @@ func TestShapeHelpersAgainstLiveGit(t *testing.T) {
 
 	t.Run("GitLogNameStatus", func(t *testing.T) {
 		commits, err := GitLogNameStatus(ctx, GitArgs{
-			Dir:   dir,
+			Dir:   render.Dir(dir),
 			Sub:   []string{"log", "--follow", "--date=short"},
 			Paths: []string{"new.go"},
 		}, "%h", "%ad", "%s")
@@ -682,7 +683,7 @@ func TestShapeHelpersAgainstLiveGit(t *testing.T) {
 	t.Run("GitLogNameStatus skips an empty commit's records", func(t *testing.T) {
 		runGit(t, dir, "commit", "-q", "--allow-empty", "-m", "empty one")
 		commits, err := GitLogNameStatus(ctx, GitArgs{
-			Dir: dir,
+			Dir: render.Dir(dir),
 			Sub: []string{"log", "--date=short"},
 		}, "%h", "%ad", "%s")
 		if err != nil {
@@ -712,7 +713,7 @@ func TestGitPathsKeepsUnquotableNames(t *testing.T) {
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-qm", "init")
 
-	paths, err := GitPaths(context.Background(), GitArgs{Dir: dir, Sub: []string{"ls-files"}})
+	paths, err := GitPaths(context.Background(), GitArgs{Dir: render.Dir(dir), Sub: []string{"ls-files"}})
 	if err != nil {
 		t.Fatalf("GitPaths: %v", err)
 	}
@@ -752,7 +753,7 @@ func TestRenameOrderReversalAgainstLiveGit(t *testing.T) {
 		t.Fatalf("name-status without -z = %q, want neither path's raw bytes", quoted)
 	}
 
-	ns, err := GitNameStatus(ctx, GitArgs{Dir: dir, Sub: []string{"diff", "--cached", "-M"}})
+	ns, err := GitNameStatus(ctx, GitArgs{Dir: render.Dir(dir), Sub: []string{"diff", "--cached", "-M"}})
 	if err != nil {
 		t.Fatalf("GitNameStatus: %v", err)
 	}
@@ -761,7 +762,7 @@ func TestRenameOrderReversalAgainstLiveGit(t *testing.T) {
 		t.Fatalf("GitNameStatus = %+v, want %+v", ns, wantNS)
 	}
 
-	st, err := GitStatus(ctx, GitArgs{Dir: dir, Sub: []string{"status"}})
+	st, err := GitStatus(ctx, GitArgs{Dir: render.Dir(dir), Sub: []string{"status"}})
 	if err != nil {
 		t.Fatalf("GitStatus: %v", err)
 	}
@@ -794,7 +795,7 @@ func TestTabInAFilenameStaysInThePath(t *testing.T) {
 	runGit(t, dir, "commit", "-qm", "init")
 
 	tree, err := GitTreeRecords(ctx, GitArgs{
-		Dir:   dir,
+		Dir:   render.Dir(dir),
 		Sub:   []string{"ls-tree", "--full-tree"},
 		Revs:  []GitRef{HeadRef},
 		Paths: []string{tabbed},
@@ -812,7 +813,7 @@ func TestTabInAFilenameStaysInThePath(t *testing.T) {
 	write(t, dir, tabbed, "package a\nfunc Foo() {}\n")
 	runGit(t, dir, "commit", "-qam", "second")
 
-	_, stat, err := GitNumstat(ctx, GitArgs{Dir: dir, Sub: []string{"show"}, Revs: []GitRef{HeadRef}}, "%P")
+	_, stat, err := GitNumstat(ctx, GitArgs{Dir: render.Dir(dir), Sub: []string{"show"}, Revs: []GitRef{HeadRef}}, "%P")
 	if err != nil {
 		t.Fatalf("GitNumstat: %v", err)
 	}
@@ -835,7 +836,7 @@ func TestGitRunRefusesThePathspecSeparatorAsARev(t *testing.T) {
 	runGit(t, dir, "commit", "-qm", "init")
 
 	_, err := GitNameStatus(context.Background(), GitArgs{
-		Dir:  dir,
+		Dir:  render.Dir(dir),
 		Sub:  []string{"diff", "-M"},
 		Revs: []GitRef{UnsafeRef("--")},
 	})

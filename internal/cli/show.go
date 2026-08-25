@@ -48,7 +48,7 @@ func runShow(cmd *cobra.Command, ref string, a backend.Args) error {
 	if err != nil {
 		return fmt.Errorf("resolve cwd: %w", err)
 	}
-	commit, err := vcs.Show(cmd.Context(), cwd, ref)
+	commit, err := vcs.Show(cmd.Context(), render.Dir(cwd), ref)
 	if err != nil {
 		return err
 	}

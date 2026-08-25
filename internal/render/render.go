@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -32,16 +33,35 @@ var runTimeout = 10 * time.Minute
 // tell the guard's own expiry from a caller's deadline or a Ctrl-C.
 var errRunTimeout = errors.New("render: run timeout")
 
+type Dir string
+
+const Ambient Dir = ""
+
 // newCmd is every helper's child: bounded by withRunGuard, whose expiry SIGKILLs
 // the child alone and leaves waitDelay to bound a descendant that outlives it on
-// the inherited pipes. The process group belongs to RunCLIProbeDir, not here. The
+// the inherited pipes. The process group belongs to RunCLIProbe, not here. The
 // returned context is where timedOut reads the guard back off; cancel must be
 // deferred.
-func newCmd(ctx context.Context, bin string, argv []string) (*exec.Cmd, context.Context, context.CancelFunc) {
+func newCmd(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (*exec.Cmd, context.Context, context.CancelFunc) {
 	runCtx, cancel := withRunGuard(ctx)
 	cmd := exec.CommandContext(runCtx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
 	cmd.WaitDelay = waitDelay
+	cmd.Dir = string(dir)
+	cmd.Env = childEnv(dir, extraEnv)
 	return cmd, runCtx, cancel
+}
+
+func childEnv(dir Dir, extraEnv []string) []string {
+	if dir == Ambient && len(extraEnv) == 0 {
+		return nil
+	}
+	env := os.Environ()
+	if dir != Ambient {
+		env = slices.DeleteFunc(env, func(kv string) bool {
+			return strings.HasPrefix(kv, "GIT_DIR=") || strings.HasPrefix(kv, "GIT_WORK_TREE=")
+		})
+	}
+	return append(env, extraEnv...)
 }
 
 // withRunGuard bounds ctx by runTimeout only when ctx carries no deadline at all.
@@ -77,46 +97,19 @@ func failure(runCtx context.Context, bin string, err error, stderr string) error
 	return fmt.Errorf("%s: %w: %s", bin, err, strings.TrimSpace(stderr))
 }
 
-// RunCLI executes bin with argv, returning its stdout. A nonzero exit wraps the
-// child's stderr in the returned error.
-func RunCLI(ctx context.Context, bin string, argv []string) (string, error) {
-	cmd, runCtx, cancel := newCmd(ctx, bin, argv)
+// RunCLI executes bin with argv in dir, returning its stdout. A nonzero exit
+// wraps the child's stderr in the returned error.
+func RunCLI(ctx context.Context, dir Dir, bin string, argv []string) (string, error) {
+	return RunCLIEnv(ctx, dir, bin, argv, nil)
+}
+
+// RunCLIEnv is RunCLI with extraEnv appended to the child's environment, for a
+// caller that must set an env-only variable the flag surface cannot express
+// (e.g. GIT_INDEX_FILE). A "KEY=value" element overrides any inherited KEY per
+// exec's last-wins rule.
+func RunCLIEnv(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (string, error) {
+	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, extraEnv)
 	defer cancel()
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", failure(runCtx, bin, err, stderr.String())
-	}
-	return stdout.String(), nil
-}
-
-// RunCLIDir is RunCLI with the child's working directory pinned to dir, for a
-// command whose output paths are cwd-relative (e.g. jj diff --name-only).
-func RunCLIDir(ctx context.Context, dir, bin string, argv []string) (string, error) {
-	return RunCLIEnvDir(ctx, dir, bin, argv, nil)
-}
-
-// RunCLIEnv is RunCLI with extraEnv appended to the process environment, for
-// callers that must set an env-only variable the flag surface cannot express
-// (e.g. GIT_INDEX_FILE). extraEnv extends os.Environ(), so a "KEY=value" element
-// overrides any inherited KEY per exec's last-wins rule.
-func RunCLIEnv(ctx context.Context, bin string, argv, extraEnv []string) (string, error) {
-	return RunCLIEnvDir(ctx, "", bin, argv, extraEnv)
-}
-
-// RunCLIEnvDir is RunCLI with both the child's working directory pinned to dir
-// and extraEnv appended to the process environment, for a command that needs an
-// env-only variable and a repo to run in (e.g. GIT_LITERAL_PATHSPECS over a
-// named worktree). An empty dir inherits the parent's working directory; a nil
-// extraEnv inherits the parent's environment unchanged.
-func RunCLIEnvDir(ctx context.Context, dir, bin string, argv, extraEnv []string) (string, error) {
-	cmd, runCtx, cancel := newCmd(ctx, bin, argv)
-	defer cancel()
-	cmd.Dir = dir
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -128,8 +121,8 @@ func RunCLIEnvDir(ctx context.Context, dir, bin string, argv, extraEnv []string)
 
 // RunCLIStdin is RunCLI with stdin fed from the given bytes, for a command that
 // reads its payload from stdin (e.g. git hash-object --stdin).
-func RunCLIStdin(ctx context.Context, bin string, argv []string, stdin []byte) (string, error) {
-	cmd, runCtx, cancel := newCmd(ctx, bin, argv)
+func RunCLIStdin(ctx context.Context, dir Dir, bin string, argv []string, stdin []byte) (string, error) {
+	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, nil)
 	defer cancel()
 	cmd.Stdin = bytes.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
@@ -144,16 +137,15 @@ func RunCLIStdin(ctx context.Context, bin string, argv []string, stdin []byte) (
 // RunCLIStream executes bin with argv, wiring the child's stdout and stderr to w
 // as they are produced. It does not buffer output; the returned error carries the
 // exit status only (any stderr already flowed to w).
-func RunCLIStream(ctx context.Context, bin string, argv []string, w io.Writer) error {
-	return RunCLIStreamEnv(ctx, bin, argv, w, nil)
+func RunCLIStream(ctx context.Context, dir Dir, bin string, argv []string, w io.Writer) error {
+	return RunCLIStreamEnv(ctx, dir, bin, argv, w, nil)
 }
 
-// RunCLIStreamEnv is RunCLIStream with extraEnv appended to the process
+// RunCLIStreamEnv is RunCLIStream with extraEnv appended to the child's
 // environment, for a streamed command that also needs an env-only variable
-// (e.g. a gt verb run under GIT_INDEX_FILE). A nil extraEnv inherits the
-// parent's environment unchanged.
-func RunCLIStreamEnv(ctx context.Context, bin string, argv []string, w io.Writer, extraEnv []string) error {
-	return RunCLIStreamSplitEnv(ctx, bin, argv, w, w, extraEnv)
+// (e.g. a gt verb run under GIT_INDEX_FILE).
+func RunCLIStreamEnv(ctx context.Context, dir Dir, bin string, argv []string, w io.Writer, extraEnv []string) error {
+	return RunCLIStreamSplitEnv(ctx, dir, bin, argv, w, w, extraEnv)
 }
 
 // RunCLIStreamSplitEnv is RunCLIStreamEnv with the child's two streams wired to
@@ -163,14 +155,11 @@ func RunCLIStreamEnv(ctx context.Context, bin string, argv []string, w io.Writer
 // downstream can tell which stream carried one; two writers mean two pipes and
 // two copying goroutines, so the streams stay separable and their relative order
 // does not survive.
-func RunCLIStreamSplitEnv(ctx context.Context, bin string, argv []string, outW, errW io.Writer, extraEnv []string) error {
-	cmd, runCtx, cancel := newCmd(ctx, bin, argv)
+func RunCLIStreamSplitEnv(ctx context.Context, dir Dir, bin string, argv []string, outW, errW io.Writer, extraEnv []string) error {
+	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, extraEnv)
 	defer cancel()
 	cmd.Stdout = outW
 	cmd.Stderr = errW
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
 	if err := cmd.Run(); err != nil {
 		if timeout := timedOut(runCtx, bin, err); timeout != nil {
 			return timeout
@@ -187,8 +176,8 @@ func RunCLIStreamSplitEnv(ctx context.Context, bin string, argv []string, outW, 
 // still wrote to stderr is treated as a real failure and wrapped, as is any
 // non-listed nonzero exit. The exit code is read from the process error via
 // errors.As, never by string-matching.
-func RunCLIAllowExit(ctx context.Context, bin string, argv []string, okCodes ...int) (string, error) {
-	cmd, runCtx, cancel := newCmd(ctx, bin, argv)
+func RunCLIAllowExit(ctx context.Context, dir Dir, bin string, argv []string, okCodes ...int) (string, error) {
+	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, nil)
 	defer cancel()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -212,17 +201,9 @@ func RunCLIAllowExit(ctx context.Context, bin string, argv []string, okCodes ...
 // --is-ancestor, and still surface the stderr on an unexpected code. A nonzero
 // exit is not an error; err is non-nil only when the child could not run, or
 // when runTimeout killed it.
-func RunCLIExitCode(ctx context.Context, bin string, argv []string) (string, int, string, error) {
-	return RunCLIExitCodeDir(ctx, "", bin, argv)
-}
-
-// RunCLIExitCodeDir is RunCLIExitCode with the child's working directory pinned
-// to dir, for a command whose answer depends on which repo it runs in (e.g. gt
-// auth). An empty dir inherits the parent's working directory.
-func RunCLIExitCodeDir(ctx context.Context, dir, bin string, argv []string) (string, int, string, error) {
-	cmd, runCtx, cancel := newCmd(ctx, bin, argv)
+func RunCLIExitCode(ctx context.Context, dir Dir, bin string, argv []string) (string, int, string, error) {
+	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, nil)
 	defer cancel()
-	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -241,8 +222,8 @@ func RunCLIExitCodeDir(ctx context.Context, dir, bin string, argv []string) (str
 	return "", 0, "", fmt.Errorf("%s: %w: %s", bin, err, strings.TrimSpace(stderr.String()))
 }
 
-// RunCLIProbeDir is RunCLIExitCodeDir for a probe under a tight deadline: the
-// child leads its own process group and cancellation SIGKILLs the group, so a
+// RunCLIProbe is RunCLIExitCode for a probe under a tight deadline: the child
+// leads its own process group and cancellation SIGKILLs the group, so a
 // grandchild cannot outlive the deadline holding the output pipes open. Only a
 // probe earns that, because a group is not a session: a member that opens
 // /dev/tty for git's or ssh's prompt is stopped by SIGTTIN while the terminal's
@@ -250,10 +231,9 @@ func RunCLIExitCodeDir(ctx context.Context, dir, bin string, argv []string) (str
 // probe is non-interactive by construction and never prompts; a push may.
 // Whatever the child managed to write is returned even when it was killed, so the
 // caller can still read a reason off a partial answer.
-func RunCLIProbeDir(ctx context.Context, dir, bin string, argv []string) (string, int, string, error) {
-	cmd, runCtx, cancel := newCmd(ctx, bin, argv)
+func RunCLIProbe(ctx context.Context, dir Dir, bin string, argv []string) (string, int, string, error) {
+	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, nil)
 	defer cancel()
-	cmd.Dir = dir
 	configureProbeCommand(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -277,8 +257,8 @@ func RunCLIProbeDir(ctx context.Context, dir, bin string, argv []string) (string
 // a command that warns on stderr while exiting 0 (git rebase --autostash warns
 // that an autostash pop "resulted in conflicts" and exits 0). A nonzero exit wraps
 // the child's stderr in the returned error as RunCLI does.
-func RunCLIKeepStderr(ctx context.Context, bin string, argv []string) (stdout, stderr string, err error) {
-	cmd, runCtx, cancel := newCmd(ctx, bin, argv)
+func RunCLIKeepStderr(ctx context.Context, dir Dir, bin string, argv []string) (stdout, stderr string, err error) {
+	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, nil)
 	defer cancel()
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf

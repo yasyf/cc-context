@@ -21,7 +21,7 @@ import (
 // back in), then resyncs the real index for the shipped paths to the new HEAD.
 // resolveShipSelection has already validated every ref against a fresh diff, so a
 // drift or all-excluded refusal fires before any of this runs.
-func shipCommitGitSelect(ctx context.Context, o shipOpts, sel *shipSelection) error {
+func shipCommitGitSelect(ctx context.Context, dir render.Dir, o shipOpts, sel *shipSelection) error {
 	idxFile, err := os.CreateTemp("", "ccx-ship-index-*")
 	if err != nil {
 		return fmt.Errorf("ship: create temp index: %w", err)
@@ -31,25 +31,25 @@ func shipCommitGitSelect(ctx context.Context, o shipOpts, sel *shipSelection) er
 	defer func() { _ = os.Remove(idxPath) }()
 	env := []string{"GIT_INDEX_FILE=" + idxPath}
 
-	if _, err := render.RunCLIEnv(ctx, "git", []string{"read-tree", "HEAD"}, env); err != nil {
+	if _, err := render.RunCLIEnv(ctx, dir, "git", []string{"read-tree", "HEAD"}, env); err != nil {
 		return fmt.Errorf("ship: git read-tree: %w", err)
 	}
 	if addArgv, ok := gitSelectAddArgv(o.paths, sel); ok {
-		if _, err := render.RunCLIEnv(ctx, "git", addArgv, env); err != nil {
+		if _, err := render.RunCLIEnv(ctx, dir, "git", addArgv, env); err != nil {
 			return fmt.Errorf("ship: git add: %w", err)
 		}
 	}
 	for _, path := range sortedSelectionFiles(sel) {
-		if err := gitStageSelected(ctx, path, sel, env); err != nil {
+		if err := gitStageSelected(ctx, dir, path, sel, env); err != nil {
 			return err
 		}
 	}
-	if _, err := render.RunCLIEnv(ctx, "git", gitSelectCommitArgv(o), env); err != nil {
+	if _, err := render.RunCLIEnv(ctx, dir, "git", gitSelectCommitArgv(o), env); err != nil {
 		return fmt.Errorf("ship: git commit: %w", err)
 	}
 
 	restoreArgv := append([]string{"restore", "--staged", "--"}, gitRestorePaths(o.paths)...)
-	if _, err := render.RunCLI(ctx, "git", restoreArgv); err != nil {
+	if _, err := render.RunCLI(ctx, dir, "git", restoreArgv); err != nil {
 		return fmt.Errorf("ship: git restore --staged: %w", err)
 	}
 	return nil
@@ -59,12 +59,12 @@ func shipCommitGitSelect(ctx context.Context, o shipOpts, sel *shipSelection) er
 // index at it. It re-reads the committed base (resolveShipSelection discarded its
 // copy) and recomputes deterministically, so listing, pre-flight, and commit all
 // agree on the same hunks.
-func gitStageSelected(ctx context.Context, path string, sel *shipSelection, env []string) error {
-	base, err := showFileBase(ctx, vcs.Git, path)
+func gitStageSelected(ctx context.Context, dir render.Dir, path string, sel *shipSelection, env []string) error {
+	base, err := showFileBase(ctx, dir, vcs.Git, path)
 	if err != nil {
 		return err
 	}
-	current, err := os.ReadFile(filepath.Join(sel.root, path)) //nolint:gosec // the path is the caller's own ship target under the repo root, not untrusted input
+	current, err := os.ReadFile(filepath.Join(string(dir), path)) //nolint:gosec // the path is the caller's own ship target under the repo root, not untrusted input
 	if err != nil {
 		return fmt.Errorf("ship: read %s: %w", path, err)
 	}
@@ -76,16 +76,16 @@ func gitStageSelected(ctx context.Context, path string, sel *shipSelection, env 
 		return fmt.Errorf("ship: %w", err)
 	}
 	selected := hunk.Select(base, hunks, keep)
-	mode, err := gitFileMode(ctx, sel.root, path)
+	mode, err := gitFileMode(ctx, string(dir), path)
 	if err != nil {
 		return err
 	}
-	oid, err := render.RunCLIStdin(ctx, "git", []string{"hash-object", "-w", "--stdin"}, selected)
+	oid, err := render.RunCLIStdin(ctx, dir, "git", []string{"hash-object", "-w", "--stdin"}, selected)
 	if err != nil {
 		return fmt.Errorf("ship: git hash-object %s: %w", path, err)
 	}
 	cacheinfo := fmt.Sprintf("%s,%s,%s", mode, strings.TrimSpace(oid), path)
-	if _, err := render.RunCLIEnv(ctx, "git", []string{"update-index", "--add", "--cacheinfo", cacheinfo}, env); err != nil {
+	if _, err := render.RunCLIEnv(ctx, dir, "git", []string{"update-index", "--add", "--cacheinfo", cacheinfo}, env); err != nil {
 		return fmt.Errorf("ship: git update-index %s: %w", path, err)
 	}
 	return nil
@@ -115,7 +115,7 @@ func gitSelectAddArgv(paths []string, sel *shipSelection) ([]string, bool) {
 // selectionScoped reports whether the ship path p (typed cwd-relative) is one of
 // the hunk-scoped files, normalizing p to the selection's root-relative frame.
 func selectionScoped(sel *shipSelection, p string) bool {
-	rel, err := rootRel(sel.root, p)
+	rel, err := rootRel(string(sel.root), p)
 	if err != nil {
 		return false
 	}

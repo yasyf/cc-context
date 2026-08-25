@@ -95,7 +95,7 @@ func OutlinePaths(ctx context.Context, paths []string, o OutlineOpts) ([]Outline
 	if o.Lang != "" {
 		argv = append(argv, "-l", o.Lang)
 	}
-	out, err := render.RunCLI(ctx, bin, argv)
+	out, err := render.RunCLI(ctx, render.Ambient, bin, argv)
 	if err != nil {
 		return nil, err
 	}

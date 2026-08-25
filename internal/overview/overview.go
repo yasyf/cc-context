@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // maxEntries caps how many entry-point paths the entry section lists.
@@ -39,8 +40,8 @@ func Run(ctx context.Context, _ backend.Args) (string, error) {
 	writeLine(&b, entryLine(root))
 	writeLine(&b, manifestsLine(manifests))
 	writeLine(&b, testsLine(census.tests))
-	if gitAnswers(ctx, root) {
-		lines, err := gitLines(ctx, root)
+	if gitAnswers(ctx, render.Dir(root)) {
+		lines, err := gitLines(ctx, render.Dir(root))
 		if err != nil {
 			return "", err
 		}

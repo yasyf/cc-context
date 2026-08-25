@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -280,10 +281,10 @@ func TestRepoOwnership(t *testing.T) {
 // so the recorded PostPushr membership must still affiliate an owner spelled
 // postpushr, and the recorded yasyf an owner spelled YASYF.
 func TestViewerAffiliation(t *testing.T) {
-	f := vcstest.Repo(t)
+	vcstest.Repo(t)
 	ghReplay(t, map[string][]string{"api graphql": {"viewer-graphql"}})
 
-	v, err := lookupViewer(context.Background(), f.Dir, false)
+	v, err := lookupViewer(context.Background(), false)
 	if err != nil {
 		t.Fatalf("lookupViewer: %v", err)
 	}
@@ -346,7 +347,7 @@ func TestLookupRepoCaches(t *testing.T) {
 		ViewerPermission: "READ",
 	}
 
-	cold, err := LookupRepo(ctx, f.Dir, false)
+	cold, err := LookupRepo(ctx, render.Dir(f.Dir), false)
 	if err != nil {
 		t.Fatalf("cold LookupRepo: %v", err)
 	}
@@ -360,7 +361,7 @@ func TestLookupRepoCaches(t *testing.T) {
 		t.Errorf("own repo: Writable() = %v, Mine() = %v, Personal() = %v, want all true", cold.Writable(), cold.Mine(), cold.Personal())
 	}
 
-	warm, err := LookupRepo(ctx, f.Dir, false)
+	warm, err := LookupRepo(ctx, render.Dir(f.Dir), false)
 	if err != nil {
 		t.Fatalf("warm LookupRepo: %v", err)
 	}
@@ -368,7 +369,7 @@ func TestLookupRepoCaches(t *testing.T) {
 		t.Fatalf("warm LookupRepo = %+v, want the cached %+v — a second fetch would have answered cli/cli", got, own)
 	}
 
-	refreshed, err := LookupRepo(ctx, f.Dir, true)
+	refreshed, err := LookupRepo(ctx, render.Dir(f.Dir), true)
 	if err != nil {
 		t.Fatalf("refreshed LookupRepo: %v", err)
 	}
@@ -380,7 +381,7 @@ func TestLookupRepoCaches(t *testing.T) {
 	}
 
 	bumpRepoSchema(t, f.Dir)
-	bumped, err := LookupRepo(ctx, f.Dir, false)
+	bumped, err := LookupRepo(ctx, render.Dir(f.Dir), false)
 	if err != nil {
 		t.Fatalf("post-schema-bump LookupRepo: %v", err)
 	}
@@ -403,11 +404,11 @@ func TestLookupRepoSharesOneRecordAcrossWorktrees(t *testing.T) {
 	})
 	ctx := context.Background()
 
-	main, err := LookupRepo(ctx, f.Dir, false)
+	main, err := LookupRepo(ctx, render.Dir(f.Dir), false)
 	if err != nil {
 		t.Fatalf("LookupRepo(main): %v", err)
 	}
-	linked, err := LookupRepo(ctx, f.WorktreePath("feat"), false)
+	linked, err := LookupRepo(ctx, render.Dir(f.WorktreePath("feat")), false)
 	if err != nil {
 		t.Fatalf("LookupRepo(worktree): %v", err)
 	}
@@ -426,7 +427,7 @@ func TestLookupRepoUnresolvableName(t *testing.T) {
 	f := vcstest.Repo(t)
 	log := ghReplay(t, map[string][]string{"repo view": {"repo-view-missing"}})
 
-	repo, err := LookupRepo(context.Background(), f.Dir, false)
+	repo, err := LookupRepo(context.Background(), render.Dir(f.Dir), false)
 	if !errors.Is(err, ErrNoGitHub) {
 		t.Fatalf("LookupRepo = %+v, %v; want an error wrapping ErrNoGitHub", repo, err)
 	}
@@ -442,7 +443,7 @@ func TestLookupRepoWithoutGH(t *testing.T) {
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	t.Setenv("PATH", t.TempDir())
 
-	if _, err := LookupRepo(context.Background(), t.TempDir(), false); !errors.Is(err, ErrNoGitHub) {
+	if _, err := LookupRepo(context.Background(), render.Dir(t.TempDir()), false); !errors.Is(err, ErrNoGitHub) {
 		t.Fatalf("error = %v, want it to wrap ErrNoGitHub", err)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -89,7 +90,7 @@ func gtRunReadArgv(t *testing.T, path string) []string {
 func TestGTRunBufferedRunCarriesBothStreams(t *testing.T) {
 	gtRunFake(t, gtRunInterleaveScript)
 
-	r, err := gtRun(context.Background(), []string{"sync", "--no-interactive"}, gtZeroSurfaces, io.Discard)
+	r, err := gtRun(context.Background(), render.Ambient, []string{"sync", "--no-interactive"}, gtZeroSurfaces, io.Discard)
 	if err != nil {
 		t.Fatalf("gtRun: %v", err)
 	}
@@ -107,7 +108,7 @@ func TestGTRunPassesArgvThroughUntouched(t *testing.T) {
 	log := gtRunArgvLog(t)
 
 	want := []string{"submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"}
-	if _, err := gtRun(context.Background(), want, gtZeroFatal, io.Discard); err != nil {
+	if _, err := gtRun(context.Background(), render.Ambient, want, gtZeroFatal, io.Discard); err != nil {
 		t.Fatalf("gtRun: %v", err)
 	}
 	got := gtRunReadArgv(t, log)
@@ -208,7 +209,7 @@ func TestGTRunStreamsOnceToTerminal(t *testing.T) {
 	shipStreamCI = func(io.Writer) bool { return true }
 
 	var errW bytes.Buffer
-	r, err := gtRun(context.Background(), []string{"sync"}, gtZeroSurfaces, &errW)
+	r, err := gtRun(context.Background(), render.Ambient, []string{"sync"}, gtZeroSurfaces, &errW)
 	if err != nil {
 		t.Fatalf("gtRun: %v", err)
 	}
@@ -233,7 +234,7 @@ func TestGTRunBufferedRunReportsItsDiagnostics(t *testing.T) {
 	t.Setenv("GTRUN_STDERR", strings.TrimSuffix(want, "\n"))
 
 	var errW bytes.Buffer
-	r, err := gtRun(context.Background(), []string{"sync"}, gtZeroSurfaces, &errW)
+	r, err := gtRun(context.Background(), render.Ambient, []string{"sync"}, gtZeroSurfaces, &errW)
 	if err != nil {
 		t.Fatalf("gtRun: %v", err)
 	}
@@ -332,7 +333,7 @@ func TestGTRunZeroPolicyDecidesExitZero(t *testing.T) {
 func TestGTRunReportsAGtThatCannotRun(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
-	r, err := gtRun(context.Background(), []string{"state"}, gtZeroFatal, io.Discard)
+	r, err := gtRun(context.Background(), render.Ambient, []string{"state"}, gtZeroFatal, io.Discard)
 	if err == nil {
 		t.Fatal("gtRun: want an error for a gt that is not on PATH")
 	}
@@ -364,9 +365,9 @@ func assertGTStateTrunk(t *testing.T, payload string) {
 // repository, so the second half is the only place the split is observable.
 func TestGTRunCaptureKeepsThePayloadParseable(t *testing.T) {
 	want := loadGTGolden(t, "sync-decline-exit0").stderr
-	vcstest.Repo(t, vcstest.GT())
+	f := vcstest.Repo(t, vcstest.GT())
 
-	payload, r, err := gtCapture(context.Background(), []string{"state"}, gtZeroFatal)
+	payload, r, err := gtCapture(context.Background(), render.Dir(f.Dir), []string{"state"}, gtZeroFatal)
 	if err != nil {
 		t.Fatalf("gtCapture: %v", err)
 	}
@@ -379,7 +380,7 @@ func TestGTRunCaptureKeepsThePayloadParseable(t *testing.T) {
 	t.Setenv("GTRUN_STDOUT", strings.TrimSuffix(payload, "\n"))
 	t.Setenv("GTRUN_STDERR", strings.TrimSuffix(want, "\n"))
 
-	replayed, r, err := gtCapture(context.Background(), []string{"state"}, gtZeroFatal)
+	replayed, r, err := gtCapture(context.Background(), render.Dir(f.Dir), []string{"state"}, gtZeroFatal)
 	if err != nil {
 		t.Fatalf("gtCapture replay: %v", err)
 	}
@@ -393,7 +394,7 @@ func TestGTRunCaptureAppliesItsPolicy(t *testing.T) {
 	gtRunFake(t, gtRunScript)
 	t.Setenv("GTRUN_STDERR", strings.TrimSuffix(gtGoldenAtExitZero(t, "submit-unauth").stderr, "\n"))
 
-	payload, _, err := gtCapture(context.Background(), []string{"state"}, gtZeroFatal)
+	payload, _, err := gtCapture(context.Background(), render.Ambient, []string{"state"}, gtZeroFatal)
 	var ge *gtError
 	if !errors.As(err, &ge) {
 		t.Fatalf("gtCapture error = %v, want a *gtError", err)
@@ -468,7 +469,7 @@ exit 0
 	t.Setenv("GTRUN_STDERR", diagnostic)
 
 	var errW bytes.Buffer
-	r, err := gtRun(context.Background(), []string{"create", "feature"}, gtZeroFatal, &errW, "GIT_INDEX_FILE=/tmp/ccx-oracle-index")
+	r, err := gtRun(context.Background(), render.Ambient, []string{"create", "feature"}, gtZeroFatal, &errW, "GIT_INDEX_FILE=/tmp/ccx-oracle-index")
 
 	if !strings.Contains(r.Output, "index=/tmp/ccx-oracle-index") {
 		t.Fatalf("Output = %q, want gt to have seen GIT_INDEX_FILE", r.Output)

@@ -3,8 +3,9 @@ package vcs
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // Commit is a single commit's header metadata plus the git commit range whose
@@ -31,52 +32,50 @@ const jjShowTemplate = `commit_id.short() ++ "\x00" ++ author.name() ++ "\x00" +
 
 // Show resolves ref to its header metadata and single-commit diff range,
 // VCS-aware. An empty ref selects the last commit (jj: @-, git: HEAD).
-func Show(ctx context.Context, dir, ref string) (Commit, error) {
-	if Detect(dir) == JJ {
+func Show(ctx context.Context, dir render.Dir, ref string) (Commit, error) {
+	if Detect(string(dir)) == JJ {
 		return showJJ(ctx, dir, ref)
 	}
 	return showGit(ctx, dir, ref)
 }
 
-func showGit(ctx context.Context, dir, ref string) (Commit, error) {
+func showGit(ctx context.Context, dir render.Dir, ref string) (Commit, error) {
 	if ref == "" {
 		ref = "HEAD"
 	}
 	// --end-of-options keeps a flag-shaped ref (--output=…) a revision, never a
 	// git option; `--` would demote it to a pathspec instead.
-	out, err := exec.CommandContext(ctx, "git", "-C", dir, "show", "--no-patch", "--format="+gitShowFormat, "--date=short", "--end-of-options", ref).Output() //nolint:gosec // fixed git argv; only the working dir and ref vary
+	out, err := render.RunCLI(ctx, dir, "git", []string{"show", "--no-patch", "--format=" + gitShowFormat, "--date=short", "--end-of-options", ref})
 	if err != nil {
 		return Commit{}, fmt.Errorf("git show %q: %w", ref, err)
 	}
-	return parseCommit(string(out))
+	return parseCommit(out)
 }
 
-func showJJ(ctx context.Context, dir, ref string) (Commit, error) {
+func showJJ(ctx context.Context, dir render.Dir, ref string) (Commit, error) {
 	if ref == "" {
 		ref = "@-"
 	}
 	rev := jjShowRevset(ctx, dir, ref, gitCommitID)
-	cmd := exec.CommandContext(ctx, "jj", "log", "--no-graph", "-r", rev, "-T", jjShowTemplate) //nolint:gosec // fixed jj argv; only the working dir and revset vary
 	// run inside the working copy so relative revsets like @- resolve
-	cmd.Dir = dir
-	out, err := cmd.Output()
+	out, err := render.RunCLI(ctx, dir, "jj", []string{"log", "--no-graph", "-r", rev, "-T", jjShowTemplate})
 	if err != nil {
 		return Commit{}, fmt.Errorf("jj log -r %q: %w", rev, err)
 	}
-	return parseCommit(string(out))
+	return parseCommit(out)
 }
 
 // gitRefResolver resolves a git symbolic ref to its commit id within dir,
 // reporting ok=false when git cannot name it. It is injectable so the show-ref
 // translation is table-testable without a live repo.
-type gitRefResolver func(ctx context.Context, dir, ref string) (id string, ok bool)
+type gitRefResolver func(ctx context.Context, dir render.Dir, ref string) (id string, ok bool)
 
 // jjShowRevset translates a git symbolic ref (HEAD, HEAD~N, HEAD^, a branch, a
 // tag, a sha) into the git commit id jj resolves it to, because jj cannot name
 // git's symbolic refs. jj-native revsets (@, @-, set operators) short-circuit
 // untranslated, and a ref git cannot resolve (a jj change id) passes through for
 // jj to interpret.
-func jjShowRevset(ctx context.Context, dir, ref string, resolve gitRefResolver) string {
+func jjShowRevset(ctx context.Context, dir render.Dir, ref string, resolve gitRefResolver) string {
 	if isJJNativeRevset(ref) {
 		return ref
 	}
@@ -88,12 +87,12 @@ func jjShowRevset(ctx context.Context, dir, ref string, resolve gitRefResolver) 
 
 // gitCommitID resolves ref to its commit id via git rev-parse, peeling annotated
 // tags to the commit they point at. ok is false when git cannot resolve ref.
-func gitCommitID(ctx context.Context, dir, ref string) (string, bool) {
-	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}").Output() //nolint:gosec // fixed git argv; only the working dir and ref vary
+func gitCommitID(ctx context.Context, dir render.Dir, ref string) (string, bool) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", "--verify", "--quiet", ref + "^{commit}"})
 	if err != nil {
 		return "", false
 	}
-	id := strings.TrimSpace(string(out))
+	id := strings.TrimSpace(out)
 	if id == "" {
 		return "", false
 	}

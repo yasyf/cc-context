@@ -16,17 +16,17 @@ import (
 // carries no path, so no NUL framing applies; git is a package-level var so tests
 // inject canned transcripts instead of shelling out. Every path-bearing query goes
 // through internal/vcs instead, which owns the framing.
-type gitRunner func(ctx context.Context, dir string, args ...string) (string, error)
+type gitRunner func(ctx context.Context, dir render.Dir, args ...string) (string, error)
 
 var git gitRunner = runGit
 
-func runGit(ctx context.Context, dir string, args ...string) (string, error) {
-	return render.RunCLI(ctx, "git", append([]string{"-C", dir}, args...))
+func runGit(ctx context.Context, dir render.Dir, args ...string) (string, error) {
+	return render.RunCLI(ctx, dir, "git", args)
 }
 
 // gitAnswers reports whether git can read a repository at root, so a non-colocated
 // jj workspace (.jj, no .git) omits the git-backed sections instead of emitting "".
-func gitAnswers(ctx context.Context, root string) bool {
+func gitAnswers(ctx context.Context, root render.Dir) bool {
 	_, err := git(ctx, root, "rev-parse", "--git-dir")
 	return err == nil
 }
@@ -35,7 +35,7 @@ func gitAnswers(ctx context.Context, root string) bool {
 // state headline, then the churn line. A repository with no commits answers neither
 // probe, so it yields no lines at all; every other probe failure comes back as an
 // error rather than a silently missing line or segment.
-func gitLines(ctx context.Context, root string) ([]string, error) {
+func gitLines(ctx context.Context, root render.Dir) ([]string, error) {
 	section, err := gitSection(ctx, root)
 	if err != nil {
 		return nil, err
@@ -55,8 +55,8 @@ func gitLines(ctx context.Context, root string) ([]string, error) {
 // the question with a real tri-state — 1 and silent for a branch with no commits,
 // 0 for one with, 128 for a repository that cannot answer at all — so no failure
 // has to be read as an absence.
-func headHasCommit(ctx context.Context, root string) (bool, error) {
-	_, code, stderr, err := render.RunCLIExitCodeDir(ctx, root, "git", []string{"rev-parse", "--verify", "--quiet", "HEAD"})
+func headHasCommit(ctx context.Context, root render.Dir) (bool, error) {
+	_, code, stderr, err := render.RunCLIExitCode(ctx, root, "git", []string{"rev-parse", "--verify", "--quiet", "HEAD"})
 	if err != nil {
 		return false, fmt.Errorf("rev-parse HEAD: %w", err)
 	}
@@ -75,7 +75,7 @@ func headHasCommit(ctx context.Context, root string) (bool, error) {
 // repo has no commits, which headHasCommit establishes on its own so that every probe
 // after it answers whenever it did — a failure there is returned rather than costing a
 // segment or, worse, reading as the commitless repo.
-func gitSection(ctx context.Context, root string) (string, error) {
+func gitSection(ctx context.Context, root render.Dir) (string, error) {
 	hasCommit, err := headHasCommit(ctx, root)
 	if err != nil {
 		return "", err
@@ -122,7 +122,7 @@ const hotDirLimit = 5
 // hotLine renders "hot (90d): internal/cli (34), internal/web (21)" by aggregating the
 // files changed in the last 90 days to their leading two path segments, top by count.
 // It returns "" when no files changed.
-func hotLine(ctx context.Context, root string) (string, error) {
+func hotLine(ctx context.Context, root render.Dir) (string, error) {
 	changed, err := vcs.GitPaths(ctx, vcs.GitArgs{
 		Dir: root,
 		Sub: []string{"log", "--since=90.days", "--name-only", "--format="},

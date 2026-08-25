@@ -7,13 +7,15 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
 
 // gtLaneRestack restacks the branches of a stack that live in other working
 // copies, running gt once from each one, bottom-up. git will not move a branch a
 // sibling checkout has checked out, so a single gt restack declines those
-// branches and still exits 0 — gt's own --cwd is what reaches them.
+// branches and still exits 0 — running gt from that working copy's own dir is
+// what reaches them.
 //
 // chain is ordered bottom-up — trunk-adjacent first — and is driven in that
 // order, because restacking a branch leaves everything above it off its parent
@@ -36,7 +38,7 @@ func gtLaneRestack(ctx context.Context, errW io.Writer, prefix string, c vcs.Che
 	lanes := gtLanes(holders, c.Root, chain)
 	declined := make(map[string]string)
 	for _, dir := range lanes {
-		output, err := gtRestackAt(ctx, errW, dir, classify)
+		output, err := gtRestackAt(ctx, render.Dir(dir), errW, classify)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -50,8 +52,8 @@ func gtLaneRestack(ctx context.Context, errW io.Writer, prefix string, c vcs.Che
 // gtLaneClassifier turns one lane's failed gt restack into the caller's own
 // recovery step. The directory is passed because a conflict leaves that working
 // copy mid-rebase, and a message naming the wrong one sends someone to a clean
-// tree; an empty directory is this working copy.
-type gtLaneClassifier func(dir string, r gtResult, cause error) error
+// tree.
+type gtLaneClassifier func(dir render.Dir, r gtResult, cause error) error
 
 // gtLanes lists the sibling working copies to drive, keeping chain's bottom-up
 // order and dropping duplicates. This working copy is never among them: gt
@@ -74,21 +76,17 @@ func gtLanes(holders map[string]string, root string, chain []string) []string {
 // gtLaneConflict names the working copy a conflicted restack left mid-rebase.
 // A sweep stops in whichever lane conflicted, and gt continue only means
 // anything from there — pointed at the caller's own tree it finds no rebase.
-func gtLaneConflict(prefix, dir string) string {
-	if dir == "" {
+func gtLaneConflict(prefix string, here, dir render.Dir) string {
+	if dir == here {
 		return prefix + ": conflict — resolve the listed files, then gt continue (or gt abort); see the output above"
 	}
-	return prefix + ": conflict in " + dir + " — resolve the listed files there, then gt continue (or gt abort) from that working copy"
+	return fmt.Sprintf("%s: conflict in %s — resolve the listed files there, then gt continue (or gt abort) from that working copy", prefix, dir)
 }
 
-// gtRestackAt runs one gt restack, in dir when it names a working copy and in
-// this one when it is empty, returning everything gt printed.
-func gtRestackAt(ctx context.Context, errW io.Writer, dir string, classify gtLaneClassifier) (string, error) {
+// gtRestackAt runs one gt restack in dir, returning everything gt printed.
+func gtRestackAt(ctx context.Context, dir render.Dir, errW io.Writer, classify gtLaneClassifier) (string, error) {
 	argv := []string{"restack", "--no-interactive"}
-	if dir != "" {
-		argv = []string{"restack", "--cwd", dir, "--no-interactive"}
-	}
-	r, runErr := gtRun(ctx, argv, gtZeroSurfaces, errW)
+	r, runErr := gtRun(ctx, dir, argv, gtZeroSurfaces, errW)
 	if err := gtReport(errW, r); err != nil {
 		return "", err
 	}

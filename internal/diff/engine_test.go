@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	ccrender "github.com/yasyf/cc-context/internal/render"
 )
 
 // e2eGit runs a git command in dir with the developer's ambient config detached,
@@ -183,7 +184,7 @@ func TestChangedSymbols(t *testing.T) {
 	e2eGit(t, dir, "add", "-A")
 	e2eGit(t, dir, "commit", "-qm", "c2")
 
-	syms, err := ChangedSymbols(context.Background(), dir, "HEAD~1..HEAD", "a.go")
+	syms, err := ChangedSymbols(context.Background(), ccrender.Dir(dir), "HEAD~1..HEAD", "a.go")
 	if err != nil {
 		t.Fatalf("ChangedSymbols: %v", err)
 	}
@@ -232,7 +233,7 @@ func TestChangedSymbolsPathIsNotAGlob(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			syms, err := ChangedSymbols(context.Background(), dir, "HEAD~1..HEAD", tt.path)
+			syms, err := ChangedSymbols(context.Background(), ccrender.Dir(dir), "HEAD~1..HEAD", tt.path)
 			if err != nil {
 				t.Fatalf("ChangedSymbols: %v", err)
 			}

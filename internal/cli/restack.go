@@ -79,9 +79,9 @@ func runRestack(cmd *cobra.Command, o restackOpts) error {
 	var summary string
 	switch l.kind {
 	case vcs.JJ:
-		summary, err = restackJJ(ctx)
+		summary, err = restackJJ(ctx, l.dir())
 	case vcs.Git:
-		summary, err = restackGit(ctx)
+		summary, err = restackGit(ctx, l.dir())
 	default:
 		panic(fmt.Sprintf("restack: unsupported vcs kind %d", l.kind))
 	}
@@ -102,7 +102,7 @@ func runRestack(cmd *cobra.Command, o restackOpts) error {
 // git merge-base exits 128 on a name that no longer resolves, turning a
 // successful sync into a failure.
 func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
-	state, err := gtStateQuery(ctx, "restack")
+	state, err := gtStateQuery(ctx, l.dir(), "restack")
 	if err != nil {
 		return "", err
 	}
@@ -110,7 +110,7 @@ func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	stack, err := gtRestackStack(ctx, state, trunk)
+	stack, err := gtRestackStack(ctx, l.dir(), state, trunk)
 	if err != nil {
 		return "", err
 	}
@@ -119,23 +119,23 @@ func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 		return "", err
 	}
 
-	output, err := gtSync(ctx, errW)
+	output, err := gtSync(ctx, l.dir(), errW)
 	if err != nil {
 		return "", err
 	}
 
-	synced, err := gtStateQuery(ctx, "restack")
+	synced, err := gtStateQuery(ctx, l.dir(), "restack")
 	if err != nil {
 		return "", err
 	}
-	stack, err = gtRestackStack(ctx, synced, trunk)
+	stack, err = gtRestackStack(ctx, l.dir(), synced, trunk)
 	if err != nil {
 		return "", err
 	}
 
-	classify := func(dir string, r gtResult, cause error) error {
+	classify := func(dir render.Dir, r gtResult, cause error) error {
 		if strings.Contains(r.Output, gtSyncConflict) {
-			return &gtAdvice{advice: gtLaneConflict("restack", dir), cause: cause}
+			return &gtAdvice{advice: gtLaneConflict("restack", l.dir(), dir), cause: cause}
 		}
 		return classifyGTRestack(r, cause)
 	}
@@ -148,21 +148,21 @@ func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 	// the branches above it off their parents again, so this one restacks a
 	// second time — but only when a sibling actually moved.
 	if len(lanes) > 0 {
-		if _, err := gtRestackAt(ctx, errW, "", classify); err != nil {
+		if _, err := gtRestackAt(ctx, l.dir(), errW, classify); err != nil {
 			return "", err
 		}
 	}
 	declined := gtLaneResolved(mergeDeclines(gtSyncSkipped(output), laneDeclined), append(lanes, l.checkout.Root))
 
-	remote, err := vcs.GitRemoteFor(ctx, "", trunk)
+	remote, err := vcs.GitRemoteFor(ctx, l.dir(), trunk)
 	if err != nil {
 		return "", fmt.Errorf("restack: %w", err)
 	}
-	trunkRef, err := vcs.TrunkFromName(ctx, "", remote, trunk)
+	trunkRef, err := vcs.TrunkFromName(ctx, l.dir(), remote, trunk)
 	if err != nil {
 		return "", fmt.Errorf("restack: %w", err)
 	}
-	restacked, skipped, err := gtRestackVerdict(ctx, trunkRef, stack, declined)
+	restacked, skipped, err := gtRestackVerdict(ctx, l.dir(), trunkRef, stack, declined)
 	if err != nil {
 		return "", err
 	}
@@ -171,8 +171,8 @@ func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 
 // gtRestackStack lists the branches gt sync is asked to restack: the current
 // downstack, trunk excluded.
-func gtRestackStack(ctx context.Context, state gtState, trunk string) ([]string, error) {
-	branch, err := gitCurrentBranch(ctx, "restack")
+func gtRestackStack(ctx context.Context, dir render.Dir, state gtState, trunk string) ([]string, error) {
+	branch, err := gitCurrentBranch(ctx, dir, "restack")
 	if err != nil {
 		return nil, err
 	}
@@ -230,8 +230,8 @@ func mergeDeclines(first, second map[string]string) map[string]string {
 // stack's ancestry itself, so a diagnostic explains a report ccx already made
 // rather than deciding it. A trunk gt could neither pull nor fast-forward exits
 // 1 and reaches classifyGTRestack instead.
-func gtSync(ctx context.Context, errW io.Writer) (string, error) {
-	r, err := gtRun(ctx, []string{"sync", "--no-interactive"}, gtZeroSurfaces, errW)
+func gtSync(ctx context.Context, dir render.Dir, errW io.Writer) (string, error) {
+	r, err := gtRun(ctx, dir, []string{"sync", "--no-interactive"}, gtZeroSurfaces, errW)
 	if err != nil {
 		return "", classifyGTRestack(r, err)
 	}
@@ -283,13 +283,13 @@ func gtSkipReason(reason string) string {
 // cannot fast-forward, leaves the local branch stale while gt still exits 0
 // without declining a single branch. A stack measured against that ref reads as
 // current while it sits behind the trunk everyone else sees.
-func gtRestackVerdict(ctx context.Context, trunk vcs.Trunk, stack []string, declined map[string]string) (int, []string, error) {
+func gtRestackVerdict(ctx context.Context, dir render.Dir, trunk vcs.Trunk, stack []string, declined map[string]string) (int, []string, error) {
 	restacked := 0
 	named := make(map[string]bool, len(stack))
 	var skipped []string
 	for _, branch := range stack {
 		named[branch] = true
-		on, err := gitIsAncestor(ctx, "restack", string(trunk.Ref()), branch)
+		on, err := gitIsAncestor(ctx, dir, "restack", string(trunk.Ref()), branch)
 		if err != nil {
 			return 0, nil, fmt.Errorf("restack: check %s sits on %s: %w", branch, trunk.Ref(), err)
 		}
@@ -358,8 +358,8 @@ func classifyGTRestack(r gtResult, cause error) error {
 	}
 }
 
-func restackJJ(ctx context.Context) (string, error) {
-	trunkNames, err := jjTrunkBookmarkNames(ctx, "restack")
+func restackJJ(ctx context.Context, dir render.Dir) (string, error) {
+	trunkNames, err := jjTrunkBookmarkNames(ctx, dir, "restack")
 	if err != nil {
 		return "", err
 	}
@@ -368,10 +368,10 @@ func restackJJ(ctx context.Context) (string, error) {
 	}
 	trunk := trunkNames[0]
 
-	if _, err := render.RunCLI(ctx, "jj", []string{"git", "fetch"}); err != nil {
+	if _, err := render.RunCLI(ctx, dir, "jj", []string{"git", "fetch"}); err != nil {
 		return "", fmt.Errorf("restack: jj git fetch: %w", err)
 	}
-	ancestors, err := jjLogLines(ctx, "restack", jjRestackAncestorRevset)
+	ancestors, err := jjLogLines(ctx, dir, "restack", jjRestackAncestorRevset)
 	if err != nil {
 		return "", err
 	}
@@ -379,15 +379,15 @@ func restackJJ(ctx context.Context) (string, error) {
 		return "fetched · already up to date", nil
 	}
 
-	rebased, err := jjRestackOntoTrunk(ctx, trunk)
+	rebased, err := jjRestackOntoTrunk(ctx, dir, trunk)
 	if err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("fetched · rebased %d commit(s) onto %s", rebased, trunk), nil
 }
 
-func jjRestackOntoTrunk(ctx context.Context, trunk string) (int, error) {
-	stack, err := jjLogLines(ctx, "restack", jjRestackStackRevset)
+func jjRestackOntoTrunk(ctx context.Context, dir render.Dir, trunk string) (int, error) {
+	stack, err := jjLogLines(ctx, dir, "restack", jjRestackStackRevset)
 	if err != nil {
 		return 0, err
 	}
@@ -395,25 +395,25 @@ func jjRestackOntoTrunk(ctx context.Context, trunk string) (int, error) {
 		return 0, fmt.Errorf("restack: trunk %q is not an ancestor of @ but trunk()..@ is empty", trunk)
 	}
 
-	if _, err := render.RunCLI(ctx, "jj", []string{"rebase", "-b", "@", "--destination", "trunk()"}); err != nil {
+	if _, err := render.RunCLI(ctx, dir, "jj", []string{"rebase", "-b", "@", "--destination", "trunk()"}); err != nil {
 		return 0, fmt.Errorf("restack: jj rebase onto trunk %q: %w — retry manually: jj rebase -b @ --destination 'trunk()'", trunk, err)
 	}
-	rebaseOp, err := jjOpID(ctx)
+	rebaseOp, err := jjOpID(ctx, dir)
 	if err != nil {
 		return 0, fmt.Errorf("restack: read jj rebase operation: %w", err)
 	}
 
-	conflicts, err := jjLogLines(ctx, "restack", jjRestackConflictRevset)
+	conflicts, err := jjLogLines(ctx, dir, "restack", jjRestackConflictRevset)
 	cleanup := context.WithoutCancel(ctx)
 	if err != nil {
-		_, revertErr := render.RunCLI(cleanup, "jj", []string{"op", "revert", rebaseOp})
+		_, revertErr := render.RunCLI(cleanup, dir, "jj", []string{"op", "revert", rebaseOp})
 		if revertErr == nil {
 			return 0, fmt.Errorf("restack: conflict check after rebase onto %q failed (rebase rolled back): %w", trunk, err)
 		}
 		return 0, fmt.Errorf("restack: conflict check after rebase onto %q failed: %w; rollback also failed: %w — run: jj op revert %s", trunk, err, revertErr, rebaseOp)
 	}
 	if len(conflicts) > 0 {
-		if _, revertErr := render.RunCLI(cleanup, "jj", []string{"op", "revert", rebaseOp}); revertErr != nil {
+		if _, revertErr := render.RunCLI(cleanup, dir, "jj", []string{"op", "revert", rebaseOp}); revertErr != nil {
 			return 0, fmt.Errorf("restack: rebase onto %q conflicted and rollback failed: %w — run: jj op revert %s, then resolve manually", trunk, revertErr, rebaseOp)
 		}
 		return 0, fmt.Errorf("restack: rebase onto %q conflicts in %d commit(s); rolled back to the pre-rebase state\nconflicted:\n  %s\nresolve manually: jj rebase -b @ --destination 'trunk()', then fix the conflicts (jj status)", trunk, len(conflicts), strings.Join(conflicts, "\n  "))
@@ -421,27 +421,27 @@ func jjRestackOntoTrunk(ctx context.Context, trunk string) (int, error) {
 	return len(stack), nil
 }
 
-func restackGit(ctx context.Context) (string, error) {
-	branch, err := gitCurrentBranch(ctx, "restack")
+func restackGit(ctx context.Context, dir render.Dir) (string, error) {
+	branch, err := gitCurrentBranch(ctx, dir, "restack")
 	if err != nil {
 		return "", err
 	}
 	if branch == "" {
 		return "", errRestackDetached
 	}
-	remote, err := vcs.GitRemoteFor(ctx, "", branch)
+	remote, err := vcs.GitRemoteFor(ctx, dir, branch)
 	if err != nil {
 		return "", fmt.Errorf("restack: %w", err)
 	}
-	if _, err := render.RunCLI(ctx, "git", []string{"fetch", remote}); err != nil {
+	if _, err := render.RunCLI(ctx, dir, "git", []string{"fetch", remote}); err != nil {
 		return "", fmt.Errorf("restack: git fetch %s: %w", remote, err)
 	}
 
-	trunk, err := vcs.ResolveTrunk(ctx, "", remote)
+	trunk, err := vcs.ResolveTrunk(ctx, dir, remote)
 	if err != nil {
 		return "", fmt.Errorf("restack: %w", err)
 	}
-	upToDate, err := gitIsAncestor(ctx, "restack", string(trunk.Ref()), "HEAD")
+	upToDate, err := gitIsAncestor(ctx, dir, "restack", string(trunk.Ref()), "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("restack: compare HEAD with %s: %w", trunk.Ref(), err)
 	}
@@ -450,13 +450,13 @@ func restackGit(ctx context.Context) (string, error) {
 	}
 
 	if branch == trunk.Name() {
-		if _, err := render.RunCLI(ctx, "git", []string{"merge", "--ff-only", string(trunk.Ref())}); err != nil {
+		if _, err := render.RunCLI(ctx, dir, "git", []string{"merge", "--ff-only", string(trunk.Ref())}); err != nil {
 			return "", fmt.Errorf("restack: fast-forward %s to %s: %w — resolve manually: git fetch %s && git merge --ff-only %s", branch, trunk.Ref(), err, remote, trunk.Ref())
 		}
 		return "fetched · fast-forwarded " + trunk.Name(), nil
 	}
 
-	if _, err := gitRebaseOnto(ctx, "restack", trunk.Remote(), trunk.Name()); err != nil {
+	if _, err := gitRebaseOnto(ctx, dir, "restack", trunk.Remote(), trunk.Name()); err != nil {
 		return "", err
 	}
 	return "fetched · rebased onto " + trunk.Name(), nil

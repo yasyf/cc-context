@@ -231,7 +231,7 @@ func shipPRRepo(ctx context.Context, l lane, plan branchPlan) (string, error) {
 	if !l.gt && plan.trunk != "" && plan.name == plan.trunk {
 		return "", nil
 	}
-	repo, err := vcs.LookupRepo(ctx, l.root, false)
+	repo, err := vcs.LookupRepo(ctx, l.dir(), false)
 	if err != nil {
 		return "", fmt.Errorf("ship: a pull request needs GitHub metadata: %w", err)
 	}
@@ -244,7 +244,7 @@ func shipPRRepo(ctx context.Context, l lane, plan branchPlan) (string, error) {
 // survives a re-ship that does not mention it.
 func shipPR(ctx context.Context, l lane, nwo, branch, trunk, subject string, meta map[string]prMeta, stack []stackEntry) (string, error) {
 	if l.gt {
-		return shipPRGT(ctx, l, nwo, meta, stack)
+		return shipPRGT(ctx, nwo, meta, stack)
 	}
 	// A pull request from trunk into trunk is not a thing, and on a personal
 	// repository that is the normal place to ship from.
@@ -252,23 +252,23 @@ func shipPR(ctx context.Context, l lane, nwo, branch, trunk, subject string, met
 		return "no PR (on trunk)", nil
 	}
 	m := meta[branch]
-	pr, found, err := lookupPR(ctx, l.root, nwo, branch)
+	pr, found, err := lookupPR(ctx, nwo, branch)
 	if err != nil {
 		return "", err
 	}
 	if !found {
-		return shipPRCreate(ctx, l.root, nwo, branch, trunk, subject, m)
+		return shipPRCreate(ctx, nwo, branch, trunk, subject, m)
 	}
-	return shipPREdit(ctx, l.root, nwo, pr, m)
+	return shipPREdit(ctx, nwo, pr, m)
 }
 
 // lookupPR resolves branch's open pull request through gh pr list, which exits 0
 // with an empty array when there is none — unlike gh pr view, whose only signal
 // is a stderr string reviews.go has to match on. --state open matters: a merged
 // pull request on a reused branch name must never be edited.
-func lookupPR(ctx context.Context, root, nwo, branch string) (prState, bool, error) {
+func lookupPR(ctx context.Context, nwo, branch string) (prState, bool, error) {
 	argv := []string{"pr", "list", "--repo", nwo, "--head", branch, "--state", "open", "--json", "number,url,isDraft", "--limit", "1"}
-	out, err := render.RunCLIDir(ctx, root, "gh", argv)
+	out, err := render.RunCLI(ctx, render.Ambient, "gh", argv)
 	if err != nil {
 		return prState{}, false, fmt.Errorf("ship: gh pr list: %w", err)
 	}
@@ -287,7 +287,7 @@ func lookupPR(ctx context.Context, root, nwo, branch string) (prState, bool, err
 // the base repository to the parent and can target upstream. It never passes
 // --fill, which would publish withSessionTrailer's Claude-Session-Id line into
 // the description.
-func shipPRCreate(ctx context.Context, root, nwo, branch, trunk, subject string, m prMeta) (string, error) {
+func shipPRCreate(ctx context.Context, nwo, branch, trunk, subject string, m prMeta) (string, error) {
 	title := m.title
 	if title == "" {
 		title = subject
@@ -302,7 +302,7 @@ func shipPRCreate(ctx context.Context, root, nwo, branch, trunk, subject string,
 	if draft {
 		argv = append(argv, "--draft")
 	}
-	out, err := render.RunCLIDir(ctx, root, "gh", argv)
+	out, err := render.RunCLI(ctx, render.Ambient, "gh", argv)
 	if err != nil {
 		return "", fmt.Errorf("ship: gh pr create: %w", err)
 	}
@@ -320,10 +320,10 @@ func shipPRCreate(ctx context.Context, root, nwo, branch, trunk, subject string,
 
 // shipPREdit restates the fields this invocation named on an existing pull
 // request. Zero stated fields means zero calls.
-func shipPREdit(ctx context.Context, root, nwo string, pr prState, m prMeta) (string, error) {
+func shipPREdit(ctx context.Context, nwo string, pr prState, m prMeta) (string, error) {
 	fields := m.stated()
 	if len(fields) > 0 {
-		if _, err := render.RunCLIDir(ctx, root, "gh", prEditArgv(nwo, pr.Number, m)); err != nil {
+		if _, err := render.RunCLI(ctx, render.Ambient, "gh", prEditArgv(nwo, pr.Number, m)); err != nil {
 			return "", fmt.Errorf("ship: gh pr edit: %w", err)
 		}
 	}
@@ -336,7 +336,7 @@ func shipPREdit(ctx context.Context, root, nwo string, pr prState, m prMeta) (st
 			argv = append(argv, "--undo")
 			field = "draft"
 		}
-		if _, err := render.RunCLIDir(ctx, root, "gh", argv); err != nil {
+		if _, err := render.RunCLI(ctx, render.Ambient, "gh", argv); err != nil {
 			return "", fmt.Errorf("ship: gh pr ready: %w", err)
 		}
 		fields = append(fields, field)
@@ -364,7 +364,7 @@ func prEditArgv(nwo string, number int, m prMeta) []string {
 // the only way a downstack PR gets a body at all. A branch the caller did not
 // name has nothing to write, so it is left alone whether or not it already has
 // one.
-func shipPRGT(ctx context.Context, l lane, nwo string, meta map[string]prMeta, stack []stackEntry) (string, error) {
+func shipPRGT(ctx context.Context, nwo string, meta map[string]prMeta, stack []stackEntry) (string, error) {
 	segs := make([]string, 0, len(stack))
 	for i := len(stack) - 1; i >= 0; i-- {
 		entry := stack[i]
@@ -376,7 +376,7 @@ func shipPRGT(ctx context.Context, l lane, nwo string, meta map[string]prMeta, s
 		if entry.PR == 0 {
 			return "", fmt.Errorf("ship: --pr-title/--pr-body-file named %s, which has no pull request", entry.Branch)
 		}
-		if _, err := render.RunCLIDir(ctx, l.root, "gh", prEditArgv(nwo, entry.PR, m)); err != nil {
+		if _, err := render.RunCLI(ctx, render.Ambient, "gh", prEditArgv(nwo, entry.PR, m)); err != nil {
 			return "", fmt.Errorf("ship: gh pr edit: %w", err)
 		}
 		segs = append(segs, fmt.Sprintf("PR #%d %s", entry.PR, strings.Join(fields, "+")))

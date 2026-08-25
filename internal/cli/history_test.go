@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // TestHistoryCommitWalk drives the commit walk against a real repository: git's own
@@ -30,7 +32,7 @@ func TestHistoryCommitWalk(t *testing.T) {
 		{historyShow(t, dir, "HEAD~1", "%h"), historyShow(t, dir, "HEAD~1", "%ad"), "chore: edit", "a.go"},
 		{historyShow(t, dir, "HEAD~2", "%h"), historyShow(t, dir, "HEAD~2", "%ad"), "feat: keep a: b, c in subject", "a.go"},
 	}
-	got, err := logCommits(context.Background(), "b.go", 10)
+	got, err := logCommits(context.Background(), render.Dir(dir), "b.go", 10)
 	if err != nil {
 		t.Fatalf("logCommits: %v", err)
 	}
@@ -38,7 +40,7 @@ func TestHistoryCommitWalk(t *testing.T) {
 		t.Fatalf("logCommits = %+v, want %+v", got, want)
 	}
 
-	capped, err := logCommits(context.Background(), "b.go", 2)
+	capped, err := logCommits(context.Background(), render.Dir(dir), "b.go", 2)
 	if err != nil {
 		t.Fatalf("logCommits -n 2: %v", err)
 	}
@@ -62,7 +64,7 @@ func TestHistoryPathspecIsLiteral(t *testing.T) {
 	historyWrite(t, dir, "i.go", "package a\n\nfunc C() {}\n")
 	historyGit(t, dir, "commit", "-qam", "c3: sibling only")
 
-	got, err := logCommits(context.Background(), "[id].go", 10)
+	got, err := logCommits(context.Background(), render.Dir(dir), "[id].go", 10)
 	if err != nil {
 		t.Fatalf("logCommits: %v", err)
 	}
@@ -220,11 +222,11 @@ func TestCommitSummary(t *testing.T) {
 	historyGit(t, dir, "commit", "-qm", "c3: comment only")
 	commentSha := historyShow(t, dir, "HEAD", "%h")
 
-	if got, err := commitSummary(context.Background(), dir, rootSha, "a.go"); err != nil || got != "(added)" {
+	if got, err := commitSummary(context.Background(), render.Dir(dir), rootSha, "a.go"); err != nil || got != "(added)" {
 		t.Errorf("root commitSummary = %q, err %v, want %q", got, err, "(added)")
 	}
 
-	got, err := commitSummary(context.Background(), dir, symSha, "a.go")
+	got, err := commitSummary(context.Background(), render.Dir(dir), symSha, "a.go")
 	if err != nil {
 		t.Fatalf("symbol commitSummary err: %v", err)
 	}
@@ -234,7 +236,7 @@ func TestCommitSummary(t *testing.T) {
 		}
 	}
 
-	if got, err := commitSummary(context.Background(), dir, commentSha, "a.go"); err != nil || got != "(+1/-0)" {
+	if got, err := commitSummary(context.Background(), render.Dir(dir), commentSha, "a.go"); err != nil || got != "(+1/-0)" {
 		t.Errorf("comment-only commitSummary = %q, err %v, want %q", got, err, "(+1/-0)")
 	}
 }
@@ -272,7 +274,7 @@ func TestCommitSummaryJJ(t *testing.T) {
 	symSha := strings.TrimSpace(string(out))
 	t.Chdir(dir)
 
-	got, err := commitSummary(context.Background(), dir, symSha, "a.go")
+	got, err := commitSummary(context.Background(), render.Dir(dir), symSha, "a.go")
 	if err != nil {
 		t.Fatalf("commitSummary (jj lane) err: %v", err)
 	}

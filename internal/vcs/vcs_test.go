@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -379,7 +380,7 @@ func TestGitRefValidSeparatesTheMissFromTheFailure(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := gitRefValid(context.Background(), tt.dir, tt.ref)
+			got, err := gitRefValid(context.Background(), render.Dir(tt.dir), tt.ref)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("gitRefValid(%q) = (%v, nil), want the unrunnable child reported as an error", tt.ref, got)

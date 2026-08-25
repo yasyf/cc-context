@@ -22,8 +22,9 @@ const gitLiteralPathspecs = "GIT_LITERAL_PATHSPECS=1"
 // no flat argv for a caller to omit a separator from: a rev cannot be read as an
 // option and a path cannot be read as either.
 type GitArgs struct {
-	// Dir is the working directory the child runs in; empty inherits ccx's own.
-	Dir string
+	// Dir is the working directory the child runs in; render.Ambient inherits
+	// ccx's own.
+	Dir render.Dir
 	// GitDir is the repository passed as --git-dir, for a query about a repository
 	// other than the one Dir sits in; empty omits the flag.
 	GitDir string
@@ -46,7 +47,7 @@ func gitRun(ctx context.Context, a GitArgs, extraSub ...string) (string, error) 
 			return "", fmt.Errorf("%s: %q is git's pathspec separator, not a revision", strings.Join(a.Sub, " "), rev)
 		}
 	}
-	out, err := render.RunCLIEnvDir(ctx, a.Dir, "git", gitArgv(a, extraSub...), []string{gitLiteralPathspecs})
+	out, err := render.RunCLIEnv(ctx, a.Dir, "git", gitArgv(a, extraSub...), []string{gitLiteralPathspecs})
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", strings.Join(a.Sub, " "), err)
 	}

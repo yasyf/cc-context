@@ -100,7 +100,7 @@ func runStackNew(cmd *cobra.Command, name, parent string) error {
 		return errors.New("stack new: this repository is not on the graphite lane, and a stack is Graphite's — run gt init, or cut a plain working copy with ccx vcs worktree add")
 	}
 	if parent == "" {
-		if parent, err = gitCurrentBranch(ctx, "stack new"); err != nil {
+		if parent, err = gitCurrentBranch(ctx, l.dir(), "stack new"); err != nil {
 			return err
 		}
 	}
@@ -114,11 +114,11 @@ func runStackNew(cmd *cobra.Command, name, parent string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("stack new: mint pool for %q: %w", name, err)
 	}
-	if _, err := render.RunCLIDir(ctx, l.root, "git", []string{"worktree", "add", "-b", name, path, parent}); err != nil {
+	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "add", "-b", name, path, parent}); err != nil {
 		return fmt.Errorf("stack new: git worktree add %s: %w", path, err)
 	}
-	if err := stackFormLane(ctx, cmd.ErrOrStderr(), l, path, name, parent); err != nil {
-		return errors.Join(err, stackUnwindLane(ctx, l.root, path, name))
+	if err := stackFormLane(ctx, cmd.ErrOrStderr(), l, render.Dir(path), name, parent); err != nil {
+		return errors.Join(err, stackUnwindLane(ctx, l.dir(), path, name))
 	}
 	cmd.Println(strings.Join([]string{"cut " + name + " onto " + parent, path}, shipSep))
 	return nil
@@ -127,23 +127,23 @@ func runStackNew(cmd *cobra.Command, name, parent string) error {
 // stackFormLane finishes a lane the worktree already exists for: its own
 // colocated jj where the repository has one, then the Graphite adoption without
 // which no restack or submit reaches the branch.
-func stackFormLane(ctx context.Context, errW io.Writer, l lane, path, name, parent string) error {
+func stackFormLane(ctx context.Context, errW io.Writer, l lane, path render.Dir, name, parent string) error {
 	if l.checkout.Kind == vcs.JJ {
 		if err := stackColocateJJ(ctx, path, name); err != nil {
 			return err
 		}
 	}
-	return gtTrackAt(ctx, errW, path, parent)
+	return gtTrackAt(ctx, path, errW, parent)
 }
 
 // stackUnwindLane takes back a lane that only half formed. Left in place it
 // holds both the name and the branch, so the same stack new refuses on a retry
 // and the fix is two git commands nobody was told about.
-func stackUnwindLane(ctx context.Context, root, path, name string) error {
-	if _, err := render.RunCLIDir(ctx, root, "git", []string{"worktree", "remove", "--force", path}); err != nil {
+func stackUnwindLane(ctx context.Context, root render.Dir, path, name string) error {
+	if _, err := render.RunCLI(ctx, root, "git", []string{"worktree", "remove", "--force", path}); err != nil {
 		return fmt.Errorf("stack new: remove the half-formed lane at %s: %w", path, err)
 	}
-	if _, err := render.RunCLIDir(ctx, root, "git", []string{"branch", "-D", name}); err != nil {
+	if _, err := render.RunCLI(ctx, root, "git", []string{"branch", "-D", name}); err != nil {
 		return fmt.Errorf("stack new: delete the half-formed branch %s: %w", name, err)
 	}
 	return nil
@@ -159,11 +159,11 @@ func stackUnwindLane(ctx context.Context, root, path, name string) error {
 // does everywhere, and gt has no branch to read from a detached HEAD. The files
 // on disk are already the branch's, so HEAD is re-attached by name rather than
 // by checkout.
-func stackColocateJJ(ctx context.Context, path, name string) error {
-	if _, err := render.RunCLIDir(ctx, path, "jj", []string{"git", "init", "--git-repo", "."}); err != nil {
+func stackColocateJJ(ctx context.Context, path render.Dir, name string) error {
+	if _, err := render.RunCLI(ctx, path, "jj", []string{"git", "init", "--git-repo", "."}); err != nil {
 		return fmt.Errorf("stack new: jj git init --git-repo . in %s: %w", path, err)
 	}
-	if _, err := render.RunCLIDir(ctx, path, "git", []string{"symbolic-ref", "HEAD", "refs/heads/" + name}); err != nil {
+	if _, err := render.RunCLI(ctx, path, "git", []string{"symbolic-ref", "HEAD", "refs/heads/" + name}); err != nil {
 		return fmt.Errorf("stack new: re-attach HEAD to %s in %s: %w", name, path, err)
 	}
 	return nil
@@ -171,8 +171,8 @@ func stackColocateJJ(ctx context.Context, path, name string) error {
 
 // gtTrackAt adopts the branch a lane holds onto its parent, from inside that
 // lane: gt reads the branch to track from the working copy it runs in.
-func gtTrackAt(ctx context.Context, errW io.Writer, dir, parent string) error {
-	r, runErr := gtRun(ctx, []string{"track", "--cwd", dir, "--parent", parent, "--no-interactive"}, gtZeroFatal, errW)
+func gtTrackAt(ctx context.Context, dir render.Dir, errW io.Writer, parent string) error {
+	r, runErr := gtRun(ctx, dir, []string{"track", "--parent", parent, "--no-interactive"}, gtZeroFatal, errW)
 	if err := gtReport(errW, r); err != nil {
 		return err
 	}
@@ -188,7 +188,7 @@ func runStackList(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	stack, state, err := gtStackAll(ctx, "stack list")
+	stack, state, err := gtStackAll(ctx, l.dir(), "stack list")
 	if err != nil {
 		return err
 	}
@@ -207,15 +207,15 @@ func runStackList(cmd *cobra.Command) error {
 // gt state's parent map read backwards, and it is the half that matters here —
 // with a working copy per branch, the branches above this one are exactly the
 // ones this working copy cannot check out to ask about.
-func gtStackAll(ctx context.Context, prefix string) ([]string, gtState, error) {
-	branch, err := gitCurrentBranch(ctx, prefix)
+func gtStackAll(ctx context.Context, dir render.Dir, prefix string) ([]string, gtState, error) {
+	branch, err := gitCurrentBranch(ctx, dir, prefix)
 	if err != nil {
 		return nil, nil, err
 	}
 	if branch == "" {
 		return nil, nil, fmt.Errorf("%s: detached HEAD; no stack to resolve", prefix)
 	}
-	state, err := gtStateQuery(ctx, prefix)
+	state, err := gtStateQuery(ctx, dir, prefix)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -286,13 +286,13 @@ func runStackSubmit(cmd *cobra.Command, draft bool) error {
 	if !l.gt {
 		return errors.New("stack submit: this repository is not on the graphite lane, and a stack is Graphite's — ship the branch with ccx vcs ship instead")
 	}
-	chain, _, err := gtStackAll(ctx, "stack submit")
+	chain, _, err := gtStackAll(ctx, l.dir(), "stack submit")
 	if err != nil {
 		return err
 	}
-	classify := func(dir string, r gtResult, cause error) error {
+	classify := func(dir render.Dir, r gtResult, cause error) error {
 		if strings.Contains(r.Output, gtSyncConflict) {
-			return &gtAdvice{advice: gtLaneConflict("stack submit", dir), cause: cause}
+			return &gtAdvice{advice: gtLaneConflict("stack submit", l.dir(), dir), cause: cause}
 		}
 		return classifyGTRestack(r, cause)
 	}
@@ -300,14 +300,14 @@ func runStackSubmit(cmd *cobra.Command, draft bool) error {
 	if err != nil {
 		return err
 	}
-	if _, err := gtRestackAt(ctx, errW, "", classify); err != nil {
+	if _, err := gtRestackAt(ctx, l.dir(), errW, classify); err != nil {
 		return err
 	}
 	argv := []string{"submit", "--stack", "--no-interactive", "--no-edit", "--no-ai", "--publish"}
 	if draft {
 		argv = []string{"submit", "--stack", "--no-interactive", "--no-edit", "--no-ai", "--draft"}
 	}
-	r, runErr := gtRun(ctx, argv, gtZeroSurfaces, errW)
+	r, runErr := gtRun(ctx, l.dir(), argv, gtZeroSurfaces, errW)
 	if err := gtReport(errW, r); err != nil {
 		return err
 	}

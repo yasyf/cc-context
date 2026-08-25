@@ -67,10 +67,10 @@ func (h *hostEnv) resolve(t *testing.T, name string) resolvedTool {
 
 // Shim installs a recording passthrough for each tool and puts its bin
 // directory at the head of a brew-free PATH. Each invocation appends one
-// argc-prefixed NUL-framed record to the returned log — depth first, then
-// argc, then the argv — and execs the real binary, which was resolved against
-// the host PATH; children the tool spawns re-enter the shim one depth deeper
-// via CCX_SHIM_DEPTH.
+// NUL-framed record to the returned log — depth, working directory, argc, then
+// the argv — and execs the real binary, which was resolved against the host
+// PATH; children the tool spawns re-enter the shim one depth deeper via
+// CCX_SHIM_DEPTH.
 func Shim(t *testing.T, tools ...string) (binDir, logPath string) {
 	t.Helper()
 	resolveTools(t, tools)
@@ -131,9 +131,7 @@ func installShim(t *testing.T) (binDir, logPath string) {
 			// drain before TempDir removal races its writes.
 			t.Cleanup(func() { waitQuiet(logPath) })
 		}
-		script := "#!/bin/sh\n" +
-			`d="${CCX_SHIM_DEPTH:-0}"` + "\n" +
-			`printf '%s\0' "$d" "$(($#+1))" ` + shellQuote(tool.name) + ` "$@" >> ` + shellQuote(logPath) + "\n" +
+		script := "#!/bin/sh\n" + RecordArgv(tool.name, logPath) +
 			"CCX_SHIM_DEPTH=$((d+1)) exec " + shellQuote(tool.path) + ` "$@"` + "\n"
 		if err := os.WriteFile(filepath.Join(binDir, tool.name), []byte(script), 0o700); err != nil { //nolint:gosec // the shim must be owner-executable to serve as a PATH entry
 			t.Fatalf("write shim %s: %v", tool.name, err)
@@ -142,6 +140,14 @@ func installShim(t *testing.T) (binDir, logPath string) {
 	linkInterpreters(t, binDir, tools)
 	t.Setenv("PATH", toolPATH(binDir))
 	return binDir, logPath
+}
+
+// RecordArgv is the shim's own framing — depth, working directory, argc, then
+// the argv — as shell a faked process prepends to its script, so its calls land
+// in log beside the real tools'. It leaves d set for the caller's own exec line.
+func RecordArgv(name, log string) string {
+	return `d="${CCX_SHIM_DEPTH:-0}"` + "\n" +
+		`printf '%s\0' "$d" "$PWD" "$(($#+1))" ` + shellQuote(name) + ` "$@" >> ` + shellQuote(log) + "\n"
 }
 
 // linkInterpreters symlinks the interpreter each script tool's shebang names

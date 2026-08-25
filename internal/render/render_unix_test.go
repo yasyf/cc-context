@@ -29,12 +29,14 @@ func TestProcessGroupIsProbeOnly(t *testing.T) {
 	}{
 		{
 			name: "a plain child stays in ccx's process group",
-			run:  RunCLI,
+			run: func(ctx context.Context, bin string, argv []string) (string, error) {
+				return RunCLI(ctx, Ambient, bin, argv)
+			},
 		},
 		{
 			name: "a probe leads a process group of its own",
 			run: func(ctx context.Context, bin string, argv []string) (string, error) {
-				stdout, _, _, err := RunCLIProbeDir(ctx, "", bin, argv)
+				stdout, _, _, err := RunCLIProbe(ctx, Ambient, bin, argv)
 				return stdout, err
 			},
 			leadsOwn: true,
@@ -96,7 +98,7 @@ func TestRunCLIProbeDirKillsDescendants(t *testing.T) {
 	defer cancel()
 	probe := make(chan error, 1)
 	go func() {
-		_, _, _, err := RunCLIProbeDir(ctx, dir, script, nil)
+		_, _, _, err := RunCLIProbe(ctx, Dir(dir), script, nil)
 		probe <- err
 	}()
 

@@ -287,11 +287,11 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 	}
 	switch mode {
 	case jjModeWorkspace:
-		if _, err := render.RunCLIDir(ctx, l.root, "jj", []string{"workspace", "add", "--name", name, path}); err != nil {
+		if _, err := render.RunCLI(ctx, l.dir(), "jj", []string{"workspace", "add", "--name", name, path}); err != nil {
 			return fmt.Errorf("worktree add: jj workspace add %s: %w", name, err)
 		}
 	default:
-		if _, err := render.RunCLIDir(ctx, l.root, "git", []string{"worktree", "add", path}); err != nil {
+		if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "add", path}); err != nil {
 			return fmt.Errorf("worktree add: git worktree add %s: %w", path, err)
 		}
 	}
@@ -423,7 +423,7 @@ func removeGitWorktree(ctx context.Context, cmd *cobra.Command, l lane, wt vcs.W
 	if force {
 		argv = append(argv, "--force")
 	}
-	if _, err := render.RunCLIDir(ctx, l.root, "git", append(argv, wt.Path)); err != nil {
+	if _, err := render.RunCLI(ctx, l.dir(), "git", append(argv, wt.Path)); err != nil {
 		return fmt.Errorf("worktree rm: git worktree remove %s: %w", wt.Path, err)
 	}
 	cmd.Println(strings.Join([]string{"removed " + filepath.Base(wt.Path), infoShape(vcs.ShapeGitWorktree), wt.Path}, shipSep))
@@ -440,7 +440,7 @@ func removeGitWorktree(ctx context.Context, cmd *cobra.Command, l lane, wt vcs.W
 // --force says to discard it, the git path's semantics.
 func removeJJWorkspace(ctx context.Context, cmd *cobra.Command, l lane, name, path string, force bool) error {
 	if !force {
-		summary, err := render.RunCLIDir(ctx, path, "jj", []string{"diff", "--summary"})
+		summary, err := render.RunCLI(ctx, render.Dir(path), "jj", []string{"diff", "--summary"})
 		if err != nil {
 			return fmt.Errorf("worktree rm: jj diff --summary in %s: %w", path, err)
 		}
@@ -449,7 +449,7 @@ func removeJJWorkspace(ctx context.Context, cmd *cobra.Command, l lane, name, pa
 				path, strings.Join(strings.Split(changes, "\n"), ", "))
 		}
 	}
-	if _, err := render.RunCLIDir(ctx, l.root, "jj", []string{"workspace", "forget", name}); err != nil {
+	if _, err := render.RunCLI(ctx, l.dir(), "jj", []string{"workspace", "forget", name}); err != nil {
 		return fmt.Errorf("worktree rm: jj workspace forget %s: %w", name, err)
 	}
 	if err := os.RemoveAll(path); err != nil {
@@ -467,11 +467,11 @@ func removeJJWorkspace(ctx context.Context, cmd *cobra.Command, l lane, name, pa
 // without a trunk, and reading it as one would skip a destructive-operation
 // guard over a trunk that exists.
 func guardTrunkHolder(ctx context.Context, l lane, wt vcs.Worktree) error {
-	remote, err := vcs.GitRemoteFor(ctx, l.root, wt.Branch)
+	remote, err := vcs.GitRemoteFor(ctx, l.dir(), wt.Branch)
 	if err != nil {
 		return fmt.Errorf("worktree rm: %w", err)
 	}
-	trunk, err := vcs.ResolveTrunk(ctx, l.root, remote)
+	trunk, err := vcs.ResolveTrunk(ctx, l.dir(), remote)
 	if errors.Is(err, vcs.ErrNoTrunk) {
 		return nil
 	}
@@ -519,7 +519,7 @@ func runWorktreeRepair(cmd *cobra.Command, dryRun bool) error {
 		cmd.Println("dry-run" + shipSep + "git -C " + root + " " + strings.Join(argv, " "))
 		return nil
 	}
-	_, code, stderr, err := render.RunCLIExitCodeDir(ctx, root, "git", argv)
+	_, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(root), "git", argv)
 	if err != nil {
 		return fmt.Errorf("worktree repair: git worktree repair: %w", err)
 	}

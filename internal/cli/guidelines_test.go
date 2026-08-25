@@ -73,9 +73,7 @@ func guidelinesGHArgv(record []string) string {
 // shim does, so vcstest.Invocations counts its calls beside git's.
 func writeGuidelinesGH(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
-	script := "#!/bin/sh\n" +
-		`d="${CCX_SHIM_DEPTH:-0}"` + "\n" +
-		`printf '%s\0' "$d" "$(($#+1))" gh "$@" >> '` + f.ArgvLog + `'` + "\n" +
+	script := "#!/bin/sh\n" + vcstest.RecordArgv("gh", f.ArgvLog) +
 		`key="gh$` + guidelinesArgvSepEnv + `"` + "\n" +
 		`for a in "$@"; do key="$key$a$` + guidelinesArgvSepEnv + `"; done` + "\n" +
 		`if [ "$key" = "$CCX_GH_ARGV_REPO_VIEW" ]; then printf '%s' "$GH_GUIDELINES_VIEW_JSON"

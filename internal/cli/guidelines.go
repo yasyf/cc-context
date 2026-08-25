@@ -236,7 +236,7 @@ func runGuidelines(cmd *cobra.Command, o guidelinesOpts) error {
 
 	env, cached := loadGuidelines(path, time.Now(), o.refresh, !haveContributing)
 	if !cached {
-		env, err = refreshGuidelines(cmd, root, dir, path, !haveContributing)
+		env, err = refreshGuidelines(cmd, render.Dir(root), dir, path, !haveContributing)
 		if err != nil {
 			return err
 		}
@@ -265,7 +265,7 @@ func runGuidelines(cmd *cobra.Command, o guidelinesOpts) error {
 // refreshGuidelines fetches and caches the GitHub payload. A gh that cannot
 // answer degrades to the local documents with a note on stderr instead of
 // failing the command, and the failure is never cached.
-func refreshGuidelines(cmd *cobra.Command, root, dir, path string, needContributing bool) (guidelinesEnvelope, error) {
+func refreshGuidelines(cmd *cobra.Command, root render.Dir, dir, path string, needContributing bool) (guidelinesEnvelope, error) {
 	ctx := cmd.Context()
 	env, err := fetchGuidelines(ctx, root, needContributing)
 	if err != nil {
@@ -335,8 +335,8 @@ func storeGuidelines(ctx context.Context, dir, path string, env guidelinesEnvelo
 // fetchGuidelines batches every GitHub-side field into one gh repo view, adding
 // the community-profile lookup only when the local CONTRIBUTING candidates all
 // missed.
-func fetchGuidelines(ctx context.Context, root string, needContributing bool) (guidelinesEnvelope, error) {
-	out, err := render.RunCLIDir(ctx, root, "gh", []string{"repo", "view", "--json", guidelinesRepoFields})
+func fetchGuidelines(ctx context.Context, root render.Dir, needContributing bool) (guidelinesEnvelope, error) {
+	out, err := render.RunCLI(ctx, root, "gh", []string{"repo", "view", "--json", guidelinesRepoFields})
 	if err != nil {
 		return guidelinesEnvelope{}, fmt.Errorf("gh repo view: %w", err)
 	}
@@ -348,7 +348,7 @@ func fetchGuidelines(ctx context.Context, root string, needContributing bool) (g
 	if !needContributing {
 		return env, nil
 	}
-	file, err := fetchGuidelinesContributing(ctx, root, view.NameWithOwner)
+	file, err := fetchGuidelinesContributing(ctx, view.NameWithOwner)
 	if err != nil {
 		return guidelinesEnvelope{}, err
 	}
@@ -359,8 +359,8 @@ func fetchGuidelines(ctx context.Context, root string, needContributing bool) (g
 // fetchGuidelinesContributing resolves CONTRIBUTING server-side: GraphQL has no
 // contributingGuidelines field, but the community profile names the contents URL
 // of whichever candidate GitHub found.
-func fetchGuidelinesContributing(ctx context.Context, root, nwo string) (*guidelinesContributingFile, error) {
-	out, err := render.RunCLIDir(ctx, root, "gh", []string{"api", "repos/" + nwo + "/community/profile"})
+func fetchGuidelinesContributing(ctx context.Context, nwo string) (*guidelinesContributingFile, error) {
+	out, err := render.RunCLI(ctx, render.Ambient, "gh", []string{"api", "repos/" + nwo + "/community/profile"})
 	if err != nil {
 		return nil, fmt.Errorf("gh api community profile: %w", err)
 	}
@@ -378,7 +378,7 @@ func fetchGuidelinesContributing(ctx context.Context, root, nwo string) (*guidel
 		return nil, nil
 	}
 	url := profile.Files.Contributing.URL
-	body, err := render.RunCLIDir(ctx, root, "gh", []string{"api", url, "-H", guidelinesRawAccept})
+	body, err := render.RunCLI(ctx, render.Ambient, "gh", []string{"api", url, "-H", guidelinesRawAccept})
 	if err != nil {
 		return nil, fmt.Errorf("gh api %s: %w", url, err)
 	}

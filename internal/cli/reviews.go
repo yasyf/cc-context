@@ -201,6 +201,7 @@ type reviewsClient struct {
 	owner string
 	repo  string
 	gt    bool
+	dir   render.Dir
 }
 
 // reviewsAPI builds the client a watch polls through. A var so tests point the
@@ -212,7 +213,7 @@ func resolveReviewsClient(ctx context.Context) (reviewsClient, error) {
 	if err != nil {
 		return reviewsClient{}, err
 	}
-	repo, err := vcs.LookupRepo(ctx, workingDir(), false)
+	repo, err := vcs.LookupRepo(ctx, l.dir(), false)
 	if err != nil {
 		return reviewsClient{}, fmt.Errorf("reviews: %w", err)
 	}
@@ -220,7 +221,7 @@ func resolveReviewsClient(ctx context.Context) (reviewsClient, error) {
 	if !ok {
 		return reviewsClient{}, fmt.Errorf("reviews: %q is not owner/name", repo.NameWithOwner)
 	}
-	return reviewsClient{api: reviewsAPI(), owner: owner, repo: name, gt: l.gt}, nil
+	return reviewsClient{api: reviewsAPI(), owner: owner, repo: name, gt: l.gt, dir: l.dir()}, nil
 }
 
 // reviewsAlias names one target's field in a batched query. A GraphQL alias
@@ -335,9 +336,9 @@ type reviewsOperand struct {
 
 // reviewsOperands reads each operand as a pull request number or a branch name,
 // standing the current branch in for an empty operand list.
-func reviewsOperands(ctx context.Context, operands []string) ([]reviewsOperand, error) {
+func reviewsOperands(ctx context.Context, dir render.Dir, operands []string) ([]reviewsOperand, error) {
 	if len(operands) == 0 {
-		branch, err := gitCurrentBranch(ctx, "reviews")
+		branch, err := gitCurrentBranch(ctx, dir, "reviews")
 		if err != nil {
 			return nil, err
 		}
@@ -363,7 +364,7 @@ func resolveReviewTargets(ctx context.Context, operands []string, since time.Tim
 	if err != nil {
 		return reviewsClient{}, nil, err
 	}
-	ops, err := reviewsOperands(ctx, operands)
+	ops, err := reviewsOperands(ctx, client.dir, operands)
 	if err != nil {
 		return reviewsClient{}, nil, err
 	}
@@ -420,7 +421,7 @@ func resolveStackReviewTargets(ctx context.Context, w io.Writer, since time.Time
 		}
 		return reviewsClient{}, nil, errors.New("reviews: --stack requires a graphite repo")
 	}
-	branches, err := stackBranches(ctx, "reviews")
+	branches, err := stackBranches(ctx, l.dir(), "reviews")
 	if err != nil {
 		return reviewsClient{}, nil, err
 	}

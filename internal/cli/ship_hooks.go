@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -26,11 +25,6 @@ var shipHookConfigNames = []string{".pre-commit-config.yaml", ".pre-commit-confi
 // lock in Checkout.GitDir — CommonDir only for the repository's own working copy
 // — and never over the common dir's.
 const shipHookIndexLock = "index.lock"
-
-// shipHookScrubbedEnv are the variables a hook child must not inherit: each pins
-// git to whatever checkout invoked ccx, which from a linked worktree is not the
-// one being committed.
-var shipHookScrubbedEnv = []string{"GIT_DIR", "GIT_WORK_TREE"}
 
 // shipHookRetryLead separates the two streamed prek passes, which run the same
 // hooks over the same files and would otherwise read as one run repeating itself.
@@ -50,15 +44,15 @@ const shipHookRetryLead = "ship: hooks: re-running prek over the auto-fixed file
 // The first pass streams to errW only on a terminal, where a human watches both
 // passes go by in order; off one it is discarded, since the auto-fix policy makes
 // its output a pre-fix snapshot the retry may already have repaired.
-func shipRunHooks(ctx context.Context, errW io.Writer, root string, kind vcs.Kind, o shipOpts) (seg string, covered bool, err error) {
+func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Kind, o shipOpts) (seg string, covered bool, err error) {
 	if o.noVerify {
 		return "", false, nil
 	}
-	config := shipHookConfigPath(root)
+	config := shipHookConfigPath(string(dir))
 	if config == "" {
 		return "", false, nil
 	}
-	files, err := shipHookFiles(ctx, root, kind, o)
+	files, err := shipHookFiles(ctx, dir, kind, o)
 	if err != nil {
 		return "", false, err
 	}
@@ -66,14 +60,14 @@ func shipRunHooks(ctx context.Context, errW io.Writer, root string, kind vcs.Kin
 		return "", false, nil
 	}
 	if kind == vcs.JJ {
-		if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
+		if _, err := os.Stat(filepath.Join(string(dir), ".git")); err != nil {
 			return "hooks no-git", false, nil
 		}
 	}
 	if _, err := exec.LookPath("uvx"); err != nil {
 		return "hooks uvx-missing", false, nil
 	}
-	if err := shipRefuseIndexLock(root); err != nil {
+	if err := shipRefuseIndexLock(dir); err != nil {
 		return "", false, err
 	}
 	msgStage, err := shipHookConfigHasMsgStage(config)
@@ -88,16 +82,16 @@ func shipRunHooks(ctx context.Context, errW io.Writer, root string, kind vcs.Kin
 		firstW = errW
 	}
 	// Leading-dash filenames intentionally reach prek unchanged so it fails loudly.
-	argv := append([]string{"prek", "run", "--cd", root, "--files"}, files...)
-	if err := shipRunPrek(ctx, argv, firstW); err == nil {
+	argv := append([]string{"prek", "run", "--cd", string(dir), "--files"}, files...)
+	if err := shipRunPrek(ctx, dir, argv, firstW); err == nil {
 		return "hooks ok", covered, nil
 	}
 	if kind == vcs.Git {
-		if err := shipGitAdd(ctx, o); err != nil {
+		if err := shipGitAdd(ctx, dir, o); err != nil {
 			return "", false, err
 		}
 	}
-	files, err = shipHookFiles(ctx, root, kind, o)
+	files, err = shipHookFiles(ctx, dir, kind, o)
 	if err != nil {
 		return "", false, err
 	}
@@ -109,41 +103,24 @@ func shipRunHooks(ctx context.Context, errW io.Writer, root string, kind vcs.Kin
 			return "", false, fmt.Errorf("ship: hooks: report the retry: %w", err)
 		}
 	}
-	argv = append([]string{"prek", "run", "--cd", root, "--files"}, files...)
-	if err := shipRunPrek(ctx, argv, errW); err != nil {
+	argv = append([]string{"prek", "run", "--cd", string(dir), "--files"}, files...)
+	if err := shipRunPrek(ctx, dir, argv, errW); err != nil {
 		return "", false, fmt.Errorf("ship: hooks: %w — pre-commit hooks still failing after auto-fix; fix them or re-run with --no-verify", err)
 	}
 	return "hooks fixed", covered, nil
 }
 
-// shipRunPrek spawns prek with shipHookScrubbedEnv stripped from the child
-// environment, which is why it builds the command itself rather than going
-// through render (whose helpers only extend os.Environ, and an empty GIT_DIR is
-// fatal to git rather than absent). Output goes to w on the pass a human can
-// watch, and a nil w routes the child to /dev/null: off a terminal the only
-// reader is a capture, which would take the first pass's pre-fix failures for
-// the verdict the retry pass actually decides.
-func shipRunPrek(ctx context.Context, argv []string, w io.Writer) error {
-	cmd := exec.CommandContext(ctx, "uvx", argv...) //nolint:gosec // argv is prek's fixed verb plus the files ship derived, not user free-text
-	cmd.Env = shipHookEnv()
-	cmd.Stdout, cmd.Stderr = w, w
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("uvx: %w", err)
+// shipRunPrek spawns prek with uvx in dir, whose pin is what keeps GIT_DIR and
+// GIT_WORK_TREE off the hook child — each would otherwise point git at whatever
+// checkout invoked ccx, which from a linked worktree is not the one being
+// committed. Output goes to w on the pass a human can watch, and a nil w
+// discards it: off a terminal the only reader is a capture, which would take
+// the first pass's pre-fix failures for the verdict the retry pass decides.
+func shipRunPrek(ctx context.Context, dir render.Dir, argv []string, w io.Writer) error {
+	if w == nil {
+		w = io.Discard
 	}
-	return nil
-}
-
-func shipHookEnv() []string {
-	env := os.Environ()
-	kept := make([]string, 0, len(env))
-	for _, entry := range env {
-		name, _, _ := strings.Cut(entry, "=")
-		if slices.Contains(shipHookScrubbedEnv, name) {
-			continue
-		}
-		kept = append(kept, entry)
-	}
-	return kept
+	return render.RunCLIStream(ctx, dir, "uvx", argv, w)
 }
 
 // shipRefuseIndexLock refuses while another process holds the index lock of the
@@ -152,8 +129,8 @@ func shipHookEnv() []string {
 // git's own failure names neither the holder nor its age, and only the age
 // separates a live sibling session (seconds) from a crashed process's leftovers
 // (hours).
-func shipRefuseIndexLock(root string) error {
-	c, err := vcs.ResolveCheckout(root)
+func shipRefuseIndexLock(dir render.Dir) error {
+	c, err := vcs.ResolveCheckout(string(dir))
 	if err != nil {
 		return fmt.Errorf("ship: hooks: %w", err)
 	}
@@ -199,13 +176,13 @@ func shipHookConfigHasMsgStage(path string) (bool, error) {
 	return strings.Contains(string(data), "commit-msg"), nil
 }
 
-func shipChangedPaths(ctx context.Context, root string, kind vcs.Kind, o shipOpts) ([]string, error) {
+func shipChangedPaths(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpts) ([]string, error) {
 	var out string
 	switch kind {
 	case vcs.JJ:
 		argv := []string{"diff", "--name-only"}
 		if len(o.paths) > 0 {
-			rel, err := rootRelPaths(root, o.paths)
+			rel, err := rootRelPaths(string(dir), o.paths)
 			if err != nil {
 				return nil, fmt.Errorf("ship: hook files: %w", err)
 			}
@@ -213,7 +190,7 @@ func shipChangedPaths(ctx context.Context, root string, kind vcs.Kind, o shipOpt
 			argv = append(argv, rel...)
 		}
 		var err error
-		out, err = render.RunCLIDir(ctx, root, "jj", argv)
+		out, err = render.RunCLI(ctx, dir, "jj", argv)
 		if err != nil {
 			return nil, fmt.Errorf("ship: jj diff: %w", err)
 		}
@@ -224,7 +201,7 @@ func shipChangedPaths(ctx context.Context, root string, kind vcs.Kind, o shipOpt
 			argv = append(argv, o.paths...)
 		}
 		var err error
-		out, err = render.RunCLI(ctx, "git", argv)
+		out, err = render.RunCLI(ctx, dir, "git", argv)
 		if err != nil {
 			return nil, fmt.Errorf("ship: git diff: %w", err)
 		}
@@ -256,14 +233,14 @@ func shipChangedPaths(ctx context.Context, root string, kind vcs.Kind, o shipOpt
 // dropped (git's NUL lane is immune) — accepted, like leading-dash names. For
 // --amend this lists what is being folded; unchanged files already in the
 // amended commit are not re-hooked.
-func shipHookFiles(ctx context.Context, root string, kind vcs.Kind, o shipOpts) ([]string, error) {
-	changed, err := shipChangedPaths(ctx, root, kind, o)
+func shipHookFiles(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpts) ([]string, error) {
+	changed, err := shipChangedPaths(ctx, dir, kind, o)
 	if err != nil {
 		return nil, err
 	}
 	var files []string
 	for _, line := range changed {
-		if _, err := os.Lstat(filepath.Join(root, line)); err != nil {
+		if _, err := os.Lstat(filepath.Join(string(dir), line)); err != nil {
 			continue
 		}
 		files = append(files, line)

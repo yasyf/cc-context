@@ -232,8 +232,8 @@ func isJJNativeRevset(source string) bool {
 // The exit code answers only the ref question, so a child that could not run at
 // all — no git on PATH, a working directory that vanished — comes back as an
 // error rather than as a ref that does not exist.
-func gitRefValid(ctx context.Context, dir, ref string) (bool, error) {
-	_, code, _, err := render.RunCLIExitCodeDir(ctx, dir, "git", []string{"rev-parse", "--quiet", "--end-of-options", ref})
+func gitRefValid(ctx context.Context, dir render.Dir, ref string) (bool, error) {
+	_, code, _, err := render.RunCLIExitCode(ctx, dir, "git", []string{"rev-parse", "--quiet", "--end-of-options", ref})
 	if err != nil {
 		return false, fmt.Errorf("rev-parse %q: %w", ref, err)
 	}

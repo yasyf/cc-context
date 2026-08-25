@@ -92,8 +92,8 @@ func (r Repo) Personal() bool {
 // LookupRepo reads root's GitHub metadata, served from a 24h cache unless
 // refresh forces a refetch. Every reason the answer is unknowable wraps
 // ErrNoGitHub.
-func LookupRepo(ctx context.Context, root string, refresh bool) (Repo, error) {
-	path, err := RepoCachePath(root)
+func LookupRepo(ctx context.Context, root render.Dir, refresh bool) (Repo, error) {
+	path, err := RepoCachePath(string(root))
 	if err != nil {
 		return Repo{}, err
 	}
@@ -145,8 +145,8 @@ func RepoCachePath(root string) (string, error) {
 	return filepath.Join(dir, "repo.json"), nil
 }
 
-func fetchRepo(ctx context.Context, root string, refresh bool) (Repo, error) {
-	out, err := render.RunCLIDir(ctx, root, "gh", []string{"repo", "view", "--json", "nameWithOwner,owner,isPrivate,viewerPermission"})
+func fetchRepo(ctx context.Context, root render.Dir, refresh bool) (Repo, error) {
+	out, err := render.RunCLI(ctx, root, "gh", []string{"repo", "view", "--json", "nameWithOwner,owner,isPrivate,viewerPermission"})
 	if err != nil {
 		return Repo{}, fmt.Errorf("%w: gh repo view: %w", ErrNoGitHub, err)
 	}
@@ -162,7 +162,7 @@ func fetchRepo(ctx context.Context, root string, refresh bool) (Repo, error) {
 		return Repo{}, fmt.Errorf("parse gh repo view: %w", err)
 	}
 
-	v, err := lookupViewer(ctx, root, refresh)
+	v, err := lookupViewer(ctx, refresh)
 	if err != nil {
 		return Repo{}, err
 	}
@@ -179,7 +179,7 @@ func fetchRepo(ctx context.Context, root string, refresh bool) (Repo, error) {
 
 // lookupViewer reads the signed-in account, cached machine-wide on the same TTL
 // as a repo record: the login and org list are identical for every repository.
-func lookupViewer(ctx context.Context, root string, refresh bool) (viewer, error) {
+func lookupViewer(ctx context.Context, refresh bool) (viewer, error) {
 	dir, err := cache.Dir("github")
 	if err != nil {
 		return viewer{}, err
@@ -199,7 +199,7 @@ func lookupViewer(ctx context.Context, root string, refresh bool) (viewer, error
 				return nil
 			}
 		}
-		fetched, err := fetchViewer(ctx, root)
+		fetched, err := fetchViewer(ctx)
 		if err != nil {
 			return err
 		}
@@ -212,8 +212,8 @@ func lookupViewer(ctx context.Context, root string, refresh bool) (viewer, error
 	return v, nil
 }
 
-func fetchViewer(ctx context.Context, root string) (viewer, error) {
-	out, err := render.RunCLIDir(ctx, root, "gh", []string{"api", "graphql", "-f", viewerQuery})
+func fetchViewer(ctx context.Context) (viewer, error) {
+	out, err := render.RunCLI(ctx, render.Ambient, "gh", []string{"api", "graphql", "-f", viewerQuery})
 	if err != nil {
 		return viewer{}, fmt.Errorf("%w: gh api graphql: %w", ErrNoGitHub, err)
 	}

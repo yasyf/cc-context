@@ -250,7 +250,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	if err != nil {
 		return err
 	}
-	root, gtLane := l.root, l.gt
+	dir, gtLane := l.dir(), l.gt
 	kind := l.kind
 	if gtLane {
 		kind = vcs.Git
@@ -319,18 +319,18 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		}
 	}
 	if o.noCommit {
-		if err := shipRefuseDirty(ctx, root, kind, o); err != nil {
+		if err := shipRefuseDirty(ctx, dir, kind, o); err != nil {
 			return err
 		}
 	} else if kind == vcs.JJ && sel == nil && !o.amend {
-		if err := shipRefuseEmptyJJ(ctx, root, o, plan); err != nil {
+		if err := shipRefuseEmptyJJ(ctx, dir, o, plan); err != nil {
 			return err
 		}
 	}
 
 	var preAmendSHA string
 	if !o.noPush && kind == vcs.Git && o.amend && !gtLane {
-		out, rerr := render.RunCLI(ctx, "git", []string{"rev-parse", "HEAD"})
+		out, rerr := render.RunCLI(ctx, dir, "git", []string{"rev-parse", "HEAD"})
 		if rerr != nil {
 			return fmt.Errorf("ship: git rev-parse HEAD: %w", rerr)
 		}
@@ -340,21 +340,21 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	var hookSeg string
 	if !o.noCommit {
 		if gtLane {
-			hookSeg, err = shipCommitGT(ctx, cmd.ErrOrStderr(), root, o, sel, plan)
+			hookSeg, err = shipCommitGT(ctx, dir, cmd.ErrOrStderr(), o, sel, plan)
 		} else {
-			hookSeg, err = shipCommitLocal(ctx, cmd.ErrOrStderr(), root, kind, o, sel, plan)
+			hookSeg, err = shipCommitLocal(ctx, cmd.ErrOrStderr(), dir, kind, o, sel, plan)
 		}
 		if err != nil {
 			return err
 		}
 		if kind == vcs.JJ && plan.action == branchCreate {
-			if _, err := render.RunCLI(ctx, "jj", []string{"bookmark", "create", plan.name, "-r", "@-"}); err != nil {
+			if _, err := render.RunCLI(ctx, dir, "jj", []string{"bookmark", "create", plan.name, "-r", "@-"}); err != nil {
 				return fmt.Errorf("ship: jj bookmark create %s: %w", plan.name, err)
 			}
 		}
 	}
 
-	branch, healSeg, err := shipBranchAfterCommit(ctx, l.checkout, kind, plan)
+	branch, healSeg, err := shipBranchAfterCommit(ctx, dir, l.checkout, kind, plan)
 	if err != nil {
 		return err
 	}
@@ -367,7 +367,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		}
 	}
 
-	short, subject, err := shipDescribe(ctx, kind)
+	short, subject, err := shipDescribe(ctx, dir, kind)
 	if err != nil {
 		return err
 	}
@@ -394,7 +394,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 
 	if o.noPush {
 		if kind == vcs.JJ && plan.action != branchCreate && branch != "" {
-			if err := jjMoveBookmark(ctx, branch); err != nil {
+			if err := jjMoveBookmark(ctx, dir, branch); err != nil {
 				return err
 			}
 		}
@@ -411,13 +411,13 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	if gtLane {
 		prSeg, bodylessSegs, gtStack, err = shipPushGT(ctx, cmd.ErrOrStderr(), l, o, meta, branch, resume)
 	} else {
-		remote, rebased, err = shipPush(ctx, kind, o, branch, preAmendSHA)
+		remote, rebased, err = shipPush(ctx, dir, kind, o, branch, preAmendSHA)
 	}
 	if err != nil {
 		return err
 	}
 	if rebased > 0 {
-		short, subject, err = shipDescribe(ctx, kind)
+		short, subject, err = shipDescribe(ctx, dir, kind)
 		if err != nil {
 			return err
 		}
@@ -444,7 +444,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	var reviewBranches []string
 	if o.reviews {
 		if gtLane {
-			reviewBranches, err = stackBranches(ctx, "ship")
+			reviewBranches, err = stackBranches(ctx, dir, "ship")
 			if err != nil {
 				return err
 			}
@@ -461,7 +461,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		return nil
 	}
 
-	ciSeg, report, ciErr := shipWatchCI(ctx, cmd.ErrOrStderr(), kind, o.budget)
+	ciSeg, report, ciErr := shipWatchCI(ctx, cmd.ErrOrStderr(), dir, kind, o.budget)
 	if ciSeg == "" {
 		cmd.Println(strings.Join(segments, shipSep))
 		if o.reviews {
@@ -505,28 +505,28 @@ func withSessionTrailer(message string) string {
 // switches back and deletes the branch, so a refusal leaves the working copy
 // where it started. Deferred, so a new failure path inherits the rollback, and
 // scoped here, so the commit landing disarms it.
-func shipCommitLocal(ctx context.Context, errW io.Writer, root string, kind vcs.Kind, o shipOpts, sel *shipSelection, plan branchPlan) (seg string, err error) {
+func shipCommitLocal(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Kind, o shipOpts, sel *shipSelection, plan branchPlan) (seg string, err error) {
 	if kind == vcs.Git && plan.action == branchCreate {
-		if _, serr := render.RunCLI(ctx, "git", []string{"switch", "-c", plan.name}); serr != nil {
+		if _, serr := render.RunCLI(ctx, dir, "git", []string{"switch", "-c", plan.name}); serr != nil {
 			return "", fmt.Errorf("ship: git switch -c %s: %w", plan.name, serr)
 		}
 		defer func() {
 			if err != nil {
-				err = errors.Join(err, shipRestoreBranch(ctx, plan.from, plan.name))
+				err = errors.Join(err, shipRestoreBranch(ctx, dir, plan.from, plan.name))
 			}
 		}()
 	}
-	return shipCommit(ctx, errW, root, kind, o, sel)
+	return shipCommit(ctx, errW, dir, kind, o, sel)
 }
 
 // shipRestoreBranch puts the working copy back on from and deletes created. -D
 // is not a force: git switch -c refuses an existing name, so created is one this
 // run cut, with no commit on it. A step that fails names what it left behind.
-func shipRestoreBranch(ctx context.Context, from, created string) error {
-	if _, err := render.RunCLI(ctx, "git", []string{"switch", from}); err != nil {
+func shipRestoreBranch(ctx context.Context, dir render.Dir, from, created string) error {
+	if _, err := render.RunCLI(ctx, dir, "git", []string{"switch", from}); err != nil {
 		return fmt.Errorf("ship: rollback: git switch %s: %w — the working copy is left on %s", from, err, created)
 	}
-	if _, err := render.RunCLI(ctx, "git", []string{"branch", "-D", created}); err != nil {
+	if _, err := render.RunCLI(ctx, dir, "git", []string{"branch", "-D", created}); err != nil {
 		return fmt.Errorf("ship: rollback: git branch -D %s: %w — the branch ship cut is left behind", created, err)
 	}
 	return nil
@@ -536,29 +536,29 @@ func shipRestoreBranch(ctx context.Context, from, created string) error {
 // report "hooks hunk-skip" instead: external prek would inspect full worktree
 // files, not the partial content being committed through a throwaway index.
 // It returns the hook summary segment to prepend to the ship summary.
-func shipCommit(ctx context.Context, errW io.Writer, root string, kind vcs.Kind, o shipOpts, sel *shipSelection) (string, error) {
+func shipCommit(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Kind, o shipOpts, sel *shipSelection) (string, error) {
 	o.message = withSessionTrailer(o.message)
 	var seg string
 	if kind == vcs.Git && sel == nil {
-		if err := shipGitAdd(ctx, o); err != nil {
+		if err := shipGitAdd(ctx, dir, o); err != nil {
 			return "", err
 		}
 	}
-	if sel != nil && !o.noVerify && shipHasHookConfig(root) {
+	if sel != nil && !o.noVerify && shipHasHookConfig(string(dir)) {
 		seg = "hooks hunk-skip"
 	}
 	if sel == nil {
 		var err error
-		seg, o.hooksRan, err = shipRunHooks(ctx, errW, root, kind, o)
+		seg, o.hooksRan, err = shipRunHooks(ctx, errW, dir, kind, o)
 		if err != nil {
 			return "", err
 		}
 	}
 	switch kind {
 	case vcs.JJ:
-		return seg, shipCommitJJ(ctx, o, sel)
+		return seg, shipCommitJJ(ctx, dir, o, sel)
 	case vcs.Git:
-		return seg, shipCommitGit(ctx, o, sel)
+		return seg, shipCommitGit(ctx, dir, o, sel)
 	default:
 		return "", errors.New("ship: commit: unsupported vcs")
 	}
@@ -566,21 +566,21 @@ func shipCommit(ctx context.Context, errW io.Writer, root string, kind vcs.Kind,
 
 // shipGitAdd stages the ship's paths (or everything, when unscoped) into the real
 // index ahead of hook attempts and the commit.
-func shipGitAdd(ctx context.Context, o shipOpts) error {
+func shipGitAdd(ctx context.Context, dir render.Dir, o shipOpts) error {
 	addArgv := []string{"add", "-A"}
 	if len(o.paths) > 0 {
 		addArgv = append(addArgv, "--")
 		addArgv = append(addArgv, o.paths...)
 	}
-	if _, err := render.RunCLI(ctx, "git", addArgv); err != nil {
+	if _, err := render.RunCLI(ctx, dir, "git", addArgv); err != nil {
 		return fmt.Errorf("ship: git add: %w", err)
 	}
 	return nil
 }
 
-func shipCommitJJ(ctx context.Context, o shipOpts, sel *shipSelection) error {
+func shipCommitJJ(ctx context.Context, dir render.Dir, o shipOpts, sel *shipSelection) error {
 	if sel != nil {
-		return shipCommitJJSelect(ctx, o, sel)
+		return shipCommitJJSelect(ctx, dir, o, sel)
 	}
 	argv := make([]string, 0, 4+len(o.paths))
 	switch {
@@ -595,7 +595,7 @@ func shipCommitJJ(ctx context.Context, o shipOpts, sel *shipSelection) error {
 		argv = append(argv, "--")
 		argv = append(argv, o.paths...)
 	}
-	if _, err := render.RunCLI(ctx, "jj", argv); err != nil {
+	if _, err := render.RunCLI(ctx, dir, "jj", argv); err != nil {
 		return fmt.Errorf("ship: jj %s: %w", argv[0], err)
 	}
 	return nil
@@ -606,7 +606,7 @@ func shipCommitJJ(ctx context.Context, o shipOpts, sel *shipSelection) error {
 // ccx's own apply-selection subcommand, and lets jj drive the partial commit
 // inside its transaction. On failure it prefers the sidecar's structured reason
 // over raw jj stderr.
-func shipCommitJJSelect(ctx context.Context, o shipOpts, sel *shipSelection) error {
+func shipCommitJJSelect(ctx context.Context, dir render.Dir, o shipOpts, sel *shipSelection) error {
 	sidecar, err := os.CreateTemp("", "ccx-ship-result-*")
 	if err != nil {
 		return fmt.Errorf("ship: create result file: %w", err)
@@ -637,7 +637,7 @@ func shipCommitJJSelect(ctx context.Context, o shipOpts, sel *shipSelection) err
 	if err != nil {
 		return err
 	}
-	if _, err := render.RunCLI(ctx, "jj", argv); err != nil {
+	if _, err := render.RunCLI(ctx, dir, "jj", argv); err != nil {
 		if reason := readSidecar(sidecarPath); reason != "" {
 			return fmt.Errorf("ship: %s: %w", reason, err)
 		}
@@ -646,9 +646,9 @@ func shipCommitJJSelect(ctx context.Context, o shipOpts, sel *shipSelection) err
 	return nil
 }
 
-func shipCommitGit(ctx context.Context, o shipOpts, sel *shipSelection) error {
+func shipCommitGit(ctx context.Context, dir render.Dir, o shipOpts, sel *shipSelection) error {
 	if sel != nil {
-		return shipCommitGitSelect(ctx, o, sel)
+		return shipCommitGitSelect(ctx, dir, o, sel)
 	}
 	var argv []string
 	switch {
@@ -666,22 +666,22 @@ func shipCommitGit(ctx context.Context, o shipOpts, sel *shipSelection) error {
 		argv = append(argv, "--")
 		argv = append(argv, o.paths...)
 	}
-	if _, err := render.RunCLI(ctx, "git", argv); err != nil {
+	if _, err := render.RunCLI(ctx, dir, "git", argv); err != nil {
 		return fmt.Errorf("ship: git commit: %w", err)
 	}
 	return nil
 }
 
-func shipDescribe(ctx context.Context, kind vcs.Kind) (short, subject string, err error) {
+func shipDescribe(ctx context.Context, dir render.Dir, kind vcs.Kind) (short, subject string, err error) {
 	switch kind {
 	case vcs.Git:
-		out, rerr := render.RunCLI(ctx, "git", []string{"log", "-1", "--format=%h%x00%s"})
+		out, rerr := render.RunCLI(ctx, dir, "git", []string{"log", "-1", "--format=%h%x00%s"})
 		if rerr != nil {
 			return "", "", fmt.Errorf("ship: git log: %w", rerr)
 		}
 		return splitDescribe(out, "\x00")
 	case vcs.JJ:
-		out, rerr := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate})
+		out, rerr := render.RunCLI(ctx, dir, "jj", []string{"--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate})
 		if rerr != nil {
 			return "", "", fmt.Errorf("ship: jj log: %w", rerr)
 		}
@@ -712,16 +712,16 @@ func shipCommitSegment(noCommit bool, short, subject string) string {
 // changes. The mode pushes a commit that is already in place, so uncommitted
 // work would be left out of a branch and a pull request this same run updates,
 // and the report that could name it prints only once both have happened.
-func shipRefuseDirty(ctx context.Context, root string, kind vcs.Kind, o shipOpts) error {
+func shipRefuseDirty(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpts) error {
 	var items []string
 	if kind == vcs.JJ {
-		paths, err := shipChangedPaths(ctx, root, vcs.JJ, o)
+		paths, err := shipChangedPaths(ctx, dir, vcs.JJ, o)
 		if err != nil {
 			return err
 		}
 		items = paths
 	} else {
-		out, err := render.RunCLIDir(ctx, root, "git", []string{"status", "--porcelain"})
+		out, err := render.RunCLI(ctx, dir, "git", []string{"status", "--porcelain"})
 		if err != nil {
 			return fmt.Errorf("ship: git status: %w", err)
 		}
@@ -737,15 +737,15 @@ func shipRefuseDirty(ctx context.Context, root string, kind vcs.Kind, o shipOpts
 	return fmt.Errorf("ship: --no-commit needs a clean working copy — uncommitted: %s; drop --no-commit to ship that work, or stash it", strings.Join(items, ", "))
 }
 
-func shipRefuseEmptyJJ(ctx context.Context, root string, o shipOpts, plan branchPlan) error {
-	paths, err := shipChangedPaths(ctx, root, vcs.JJ, o)
+func shipRefuseEmptyJJ(ctx context.Context, dir render.Dir, o shipOpts, plan branchPlan) error {
+	paths, err := shipChangedPaths(ctx, dir, vcs.JJ, o)
 	if err != nil {
 		return err
 	}
 	if len(paths) > 0 {
 		return nil
 	}
-	state, err := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate})
+	state, err := render.RunCLI(ctx, dir, "jj", []string{"--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate})
 	if err != nil {
 		return fmt.Errorf("ship: jj working-copy state: %w", err)
 	}
@@ -756,7 +756,7 @@ func shipRefuseEmptyJJ(ctx context.Context, root string, o shipOpts, plan branch
 	if parents > 1 {
 		return nil
 	}
-	short, subject, err := shipDescribe(ctx, vcs.JJ)
+	short, subject, err := shipDescribe(ctx, dir, vcs.JJ)
 	if err != nil {
 		return err
 	}
@@ -842,7 +842,7 @@ func shipResolvePlan(ctx context.Context, errW io.Writer, l lane, o shipOpts) (b
 }
 
 func shipPreflightJJ(ctx context.Context, l lane, o shipOpts) (branchPlan, string, error) {
-	trunkNames, err := jjTrunkBookmarkNames(ctx, "ship")
+	trunkNames, err := jjTrunkBookmarkNames(ctx, l.dir(), "ship")
 	if err != nil {
 		return branchPlan{}, "", err
 	}
@@ -859,7 +859,7 @@ func shipPreflightJJ(ctx context.Context, l lane, o shipOpts) (branchPlan, strin
 		return branchPlan{}, "", fmt.Errorf("ship: cannot resolve the trunk bookmark from %q; pass --branch naming one of them", trunkNames)
 	}
 
-	names, err := jjBookmarkNames(ctx, "ship", jjNearestBookmarkRevset)
+	names, err := jjBookmarkNames(ctx, l.dir(), "ship", jjNearestBookmarkRevset)
 	if err != nil {
 		return branchPlan{}, "", err
 	}
@@ -899,7 +899,7 @@ func shipPreflightJJ(ctx context.Context, l lane, o shipOpts) (branchPlan, strin
 	// git checkout would.
 	probed, explicitHeads := false, 0
 	if o.branch != "" {
-		explicitHeads, err = jjBookmarkHeads(ctx, o.branch)
+		explicitHeads, err = jjBookmarkHeads(ctx, l.dir(), o.branch)
 		if err != nil {
 			return branchPlan{}, "", err
 		}
@@ -930,7 +930,7 @@ func shipPreflightJJ(ctx context.Context, l lane, o shipOpts) (branchPlan, strin
 		return branchPlan{}, "", fmt.Errorf("ship: cannot resolve the trunk bookmark from %q; pass --branch <name>", trunkNames)
 	}
 	if !probed || plan.name != o.branch {
-		heads, err := jjBookmarkHeads(ctx, plan.name)
+		heads, err := jjBookmarkHeads(ctx, l.dir(), plan.name)
 		if err != nil {
 			return branchPlan{}, "", err
 		}
@@ -977,8 +977,8 @@ func shipUnheldCandidate(ctx context.Context, ck vcs.Checkout, names []string) (
 // merge destination; resolving the exact name up front makes both fail loudly.
 // Zero heads is a count, not an error — it is how ship tells "create it" from
 // "append to it" — so only a conflicted bookmark refuses here.
-func jjBookmarkHeads(ctx context.Context, name string) (int, error) {
-	heads, err := jjLogLines(ctx, "ship", jjBookmarksRevset(name))
+func jjBookmarkHeads(ctx context.Context, dir render.Dir, name string) (int, error) {
+	heads, err := jjLogLines(ctx, dir, "ship", jjBookmarksRevset(name))
 	if err != nil {
 		return 0, err
 	}
@@ -989,11 +989,11 @@ func jjBookmarkHeads(ctx context.Context, name string) (int, error) {
 }
 
 func shipPreflightGitLane(ctx context.Context, l lane, o shipOpts) (branchPlan, error) {
-	current, err := gitCurrentBranch(ctx, "ship")
+	current, err := gitCurrentBranch(ctx, l.dir(), "ship")
 	if err != nil {
 		return branchPlan{}, err
 	}
-	trunk, err := gitTrunkBranch(ctx)
+	trunk, err := gitTrunkBranch(ctx, l.dir())
 	if err != nil {
 		return branchPlan{}, err
 	}
@@ -1005,17 +1005,17 @@ func shipPreflightGitLane(ctx context.Context, l lane, o shipOpts) (branchPlan, 
 	if err != nil {
 		return branchPlan{}, err
 	}
-	return plan, refuseExistingBranch(ctx, o, plan)
+	return plan, refuseExistingBranch(ctx, l.dir(), o, plan)
 }
 
 // refuseExistingBranch refuses a --branch that names an existing branch other
 // than the one checked out: reaching it would mean checking it out mid-ship,
 // which strands the working copy's changes on the branch being left.
-func refuseExistingBranch(ctx context.Context, o shipOpts, plan branchPlan) error {
+func refuseExistingBranch(ctx context.Context, dir render.Dir, o shipOpts, plan branchPlan) error {
 	if o.branch == "" || plan.action != branchCreate {
 		return nil
 	}
-	exists, err := gitRefExists(ctx, "refs/heads/"+plan.name)
+	exists, err := gitRefExists(ctx, dir, "refs/heads/"+plan.name)
 	if err != nil {
 		return err
 	}
@@ -1026,8 +1026,8 @@ func refuseExistingBranch(ctx context.Context, o shipOpts, plan branchPlan) erro
 }
 
 // gitCurrentBranch names the checked-out branch, empty on a detached HEAD.
-func gitCurrentBranch(ctx context.Context, prefix string) (string, error) {
-	out, err := render.RunCLI(ctx, "git", []string{"branch", "--show-current"})
+func gitCurrentBranch(ctx context.Context, dir render.Dir, prefix string) (string, error) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"branch", "--show-current"})
 	if err != nil {
 		return "", fmt.Errorf("%s: git branch --show-current: %w", prefix, err)
 	}
@@ -1042,9 +1042,9 @@ func gitCurrentBranch(ctx context.Context, prefix string) (string, error) {
 // a branch at exit 0, so a target outside origin/ is an error the way
 // vcs.ResolveTrunk already treats it — reporting "" there would hand ship a tag
 // to ship onto, or drop a trunk git named.
-func gitTrunkBranch(ctx context.Context) (string, error) {
+func gitTrunkBranch(ctx context.Context, dir render.Dir) (string, error) {
 	ref := "refs/remotes/origin/HEAD"
-	out, code, _, err := render.RunCLIExitCode(ctx, "git", []string{"symbolic-ref", "--short", ref})
+	out, code, _, err := render.RunCLIExitCode(ctx, dir, "git", []string{"symbolic-ref", "--short", ref})
 	if err != nil {
 		return "", fmt.Errorf("ship: git symbolic-ref %s: %w", ref, err)
 	}
@@ -1068,7 +1068,7 @@ func shipTrunkRepo(ctx context.Context, l lane, o shipOpts, current, trunk strin
 	if trunk == "" || (current != trunk && o.branch != trunk) {
 		return vcs.Repo{}, nil
 	}
-	repo, err := vcs.LookupRepo(ctx, l.root, false)
+	repo, err := vcs.LookupRepo(ctx, l.dir(), false)
 	if errors.Is(err, vcs.ErrNoGitHub) {
 		return vcs.Repo{}, nil
 	}
@@ -1083,23 +1083,23 @@ func shipTrunkRepo(ctx context.Context, l lane, o shipOpts, current, trunk strin
 // left HEAD detached with the branch ref lagging the true tip, and the recovery
 // was git checkout -B <branch> <sha> after reflog archaeology. jj has no
 // checkout to lose, so its target is the plan's.
-func shipBranchAfterCommit(ctx context.Context, ck vcs.Checkout, kind vcs.Kind, plan branchPlan) (string, string, error) {
+func shipBranchAfterCommit(ctx context.Context, dir render.Dir, ck vcs.Checkout, kind vcs.Kind, plan branchPlan) (string, string, error) {
 	if kind != vcs.Git {
 		return plan.name, "", nil
 	}
-	branch, err := gitCurrentBranch(ctx, "ship")
+	branch, err := gitCurrentBranch(ctx, dir, "ship")
 	if err != nil {
 		return "", "", err
 	}
 	if branch != "" {
 		return branch, "", nil
 	}
-	out, err := render.RunCLI(ctx, "git", []string{"rev-parse", "HEAD"})
+	out, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", "HEAD"})
 	if err != nil {
 		return "", "", fmt.Errorf("ship: git rev-parse HEAD: %w", err)
 	}
 	sha := strings.TrimSpace(out)
-	if _, err := render.RunCLI(ctx, "git", []string{"checkout", "-B", plan.name, sha}); err != nil {
+	if _, err := render.RunCLI(ctx, dir, "git", []string{"checkout", "-B", plan.name, sha}); err != nil {
 		return "", "", shipHealRefused(ctx, ck, plan.name, sha, err)
 	}
 	return plan.name, "healed detached HEAD onto " + plan.name, nil
@@ -1138,34 +1138,34 @@ func branchSegment(plan branchPlan, branch string, noPush bool) string {
 	}
 }
 
-func shipPush(ctx context.Context, kind vcs.Kind, o shipOpts, target, preAmendSHA string) (remote string, rebased int, err error) {
+func shipPush(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpts, target, preAmendSHA string) (remote string, rebased int, err error) {
 	switch kind {
 	case vcs.JJ:
-		rebased, err = shipPushJJ(ctx, target, o.amend)
+		rebased, err = shipPushJJ(ctx, dir, target, o.amend)
 		return "origin", rebased, err
 	case vcs.Git:
-		return shipPushGit(ctx, o, target, preAmendSHA)
+		return shipPushGit(ctx, dir, o, target, preAmendSHA)
 	default:
 		return "", 0, errors.New("ship: push: unsupported vcs")
 	}
 }
 
-func shipPushJJ(ctx context.Context, target string, amend bool) (int, error) {
-	if err := jjTrackUntrackedTarget(ctx, target); err != nil {
+func shipPushJJ(ctx context.Context, dir render.Dir, target string, amend bool) (int, error) {
+	if err := jjTrackUntrackedTarget(ctx, dir, target); err != nil {
 		return 0, err
 	}
 	pat := shellSingleQuote(vcs.JJExactPattern(target))
 	hint := fmt.Sprintf("jj git fetch && jj rebase -b @- --destination %s && jj bookmark move %s --to @- && jj git push --bookmark %s", shellSingleQuote(jjBookmarksRevset(target)), pat, pat)
 	return shipPushRetry(ctx, target, hint, func(ctx context.Context) (int, error) {
-		return shipPushJJOnce(ctx, target, amend)
+		return shipPushJJOnce(ctx, dir, target, amend)
 	})
 }
 
 // jjMoveBookmark advances target onto the commit ship just made: a jj bookmark
 // does not follow jj commit or jj squash the way a git branch ref follows git
 // commit, so every lane that leaves a commit behind moves it explicitly.
-func jjMoveBookmark(ctx context.Context, target string) error {
-	if _, err := render.RunCLI(ctx, "jj", []string{"bookmark", "move", vcs.JJExactPattern(target), "--to", "@-"}); err != nil {
+func jjMoveBookmark(ctx context.Context, dir render.Dir, target string) error {
+	if _, err := render.RunCLI(ctx, dir, "jj", []string{"bookmark", "move", vcs.JJExactPattern(target), "--to", "@-"}); err != nil {
 		return fmt.Errorf("ship: advance bookmark %q: %w", target, err)
 	}
 	return nil
@@ -1178,8 +1178,8 @@ func jjMoveBookmark(ctx context.Context, target string) error {
 // actually sits on, and when several remotes carry an untracked counterpart the one
 // the push targets. Tracking mutates no working-copy state, so a later push refusal
 // still leaves the tree untouched.
-func jjTrackUntrackedTarget(ctx context.Context, target string) error {
-	remotes, err := jjUntrackedTargetRemotes(ctx, target)
+func jjTrackUntrackedTarget(ctx context.Context, dir render.Dir, target string) error {
+	remotes, err := jjUntrackedTargetRemotes(ctx, dir, target)
 	if err != nil {
 		return err
 	}
@@ -1188,12 +1188,12 @@ func jjTrackUntrackedTarget(ctx context.Context, target string) error {
 	}
 	remote := remotes[0]
 	if len(remotes) > 1 {
-		remote, err = jjPushRemote(ctx)
+		remote, err = jjPushRemote(ctx, dir)
 		if err != nil {
 			return err
 		}
 	}
-	if _, err := render.RunCLI(ctx, "jj", []string{"bookmark", "track", vcs.JJExactPattern(target), "--remote=" + remote}); err != nil {
+	if _, err := render.RunCLI(ctx, dir, "jj", []string{"bookmark", "track", vcs.JJExactPattern(target), "--remote=" + remote}); err != nil {
 		return fmt.Errorf("ship: jj bookmark track %s --remote=%s: %w", target, remote, err)
 	}
 	return nil
@@ -1208,8 +1208,8 @@ func jjTrackUntrackedTarget(ctx context.Context, target string) error {
 // Deliberately runs without --ignore-working-copy: that flag suppresses jj's
 // implicit git import, and a counterpart fetched git-side would then go unseen,
 // leaving jj git push to refuse the bookmark it was this call's job to track.
-func jjUntrackedTargetRemotes(ctx context.Context, target string) ([]string, error) {
-	out, err := render.RunCLI(ctx, "jj", []string{"bookmark", "list", vcs.JJExactPattern(target), "--all-remotes", "-T", jjRemoteBookmarkTemplate})
+func jjUntrackedTargetRemotes(ctx context.Context, dir render.Dir, target string) ([]string, error) {
+	out, err := render.RunCLI(ctx, dir, "jj", []string{"bookmark", "list", vcs.JJExactPattern(target), "--all-remotes", "-T", jjRemoteBookmarkTemplate})
 	if err != nil {
 		return nil, fmt.Errorf("ship: jj bookmark list %s --all-remotes: %w", target, err)
 	}
@@ -1228,8 +1228,8 @@ func jjUntrackedTargetRemotes(ctx context.Context, target string) ([]string, err
 // origin when it is unset. jj derives the push remote from config, not from the
 // tracked bookmarks, so this mirrors jj's own resolution — used to break a tie when
 // more than one remote carries an untracked counterpart.
-func jjPushRemote(ctx context.Context) (string, error) {
-	out, code, stderr, err := render.RunCLIExitCode(ctx, "jj", []string{"--ignore-working-copy", "config", "get", "git.push"})
+func jjPushRemote(ctx context.Context, dir render.Dir) (string, error) {
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "jj", []string{"--ignore-working-copy", "config", "get", "git.push"})
 	if err != nil {
 		return "", fmt.Errorf("ship: jj config get git.push: %w", err)
 	}
@@ -1284,12 +1284,12 @@ func shellSingleQuote(s string) string {
 // shipPushJJOnce is one push attempt: fetch, re-check the bookmark, rebase when
 // the target diverged, advance the bookmark, then push. It snapshots the op log
 // right after the bookmark move so a rejected push can undo exactly that move.
-func shipPushJJOnce(ctx context.Context, target string, amend bool) (int, error) {
-	if _, err := render.RunCLI(ctx, "jj", []string{"git", "fetch"}); err != nil {
+func shipPushJJOnce(ctx context.Context, dir render.Dir, target string, amend bool) (int, error) {
+	if _, err := render.RunCLI(ctx, dir, "jj", []string{"git", "fetch"}); err != nil {
 		return 0, fmt.Errorf("ship: jj git fetch: %w", err)
 	}
 
-	heads, err := jjLogLines(ctx, "ship", jjBookmarksRevset(target))
+	heads, err := jjLogLines(ctx, dir, "ship", jjBookmarksRevset(target))
 	if err != nil {
 		return 0, err
 	}
@@ -1300,27 +1300,27 @@ func shipPushJJOnce(ctx context.Context, target string, amend bool) (int, error)
 		return 0, fmt.Errorf("ship: bookmark %q is conflicted (%d heads); resolve it (jj bookmark list --conflicted) before shipping", target, len(heads))
 	}
 
-	ancestors, err := jjBookmarkNames(ctx, "ship", jjAncestorRevset(target))
+	ancestors, err := jjBookmarkNames(ctx, dir, "ship", jjAncestorRevset(target))
 	if err != nil {
 		return 0, err
 	}
 	rebased := 0
 	if len(ancestors) == 0 {
-		rebased, err = jjRebaseOnto(ctx, target)
+		rebased, err = jjRebaseOnto(ctx, dir, target)
 		if err != nil {
 			return 0, err
 		}
 	}
 
-	if err := jjMoveBookmark(ctx, target); err != nil {
+	if err := jjMoveBookmark(ctx, dir, target); err != nil {
 		return 0, err
 	}
-	moveOp, err := jjOpID(ctx)
+	moveOp, err := jjOpID(ctx, dir)
 	if err != nil {
 		return 0, err
 	}
-	if _, err := render.RunCLI(ctx, "jj", []string{"git", "push", "--bookmark", vcs.JJExactPattern(target)}); err != nil {
-		return rebased, shipPushJJReject(ctx, target, moveOp, amend, err)
+	if _, err := render.RunCLI(ctx, dir, "jj", []string{"git", "push", "--bookmark", vcs.JJExactPattern(target)}); err != nil {
+		return rebased, shipPushJJReject(ctx, dir, target, moveOp, amend, err)
 	}
 	return rebased, nil
 }
@@ -1329,13 +1329,13 @@ func shipPushJJOnce(ctx context.Context, target string, amend bool) (int, error)
 // only the bookmark move (jj op revert moveOp, uncancellable so a cancelled ctx
 // leaves no advanced bookmark) and returns a *pushRejectedError to replay; a
 // non-rejection, a failed undo, or a rejected amend is terminal.
-func shipPushJJReject(ctx context.Context, target, moveOp string, amend bool, pushErr error) error {
+func shipPushJJReject(ctx context.Context, dir render.Dir, target, moveOp string, amend bool, pushErr error) error {
 	raw := fmt.Errorf("ship: jj git push: %w", pushErr)
 	if !jjPushRejected(raw) {
 		return raw
 	}
 	cleanup := context.WithoutCancel(ctx)
-	if _, uerr := render.RunCLI(cleanup, "jj", []string{"op", "revert", moveOp}); uerr != nil {
+	if _, uerr := render.RunCLI(cleanup, dir, "jj", []string{"op", "revert", moveOp}); uerr != nil {
 		return fmt.Errorf("ship: jj git push rejected (%w); reverting the bookmark move also failed: %w — run: jj op revert %s", pushErr, uerr, moveOp)
 	}
 	if amend {
@@ -1344,17 +1344,17 @@ func shipPushJJReject(ctx context.Context, target, moveOp string, amend bool, pu
 	return &pushRejectedError{err: raw}
 }
 
-func shipPushGit(ctx context.Context, o shipOpts, branch, preAmendSHA string) (string, int, error) {
-	remote, err := gitRemoteFor(ctx, "ship", branch)
+func shipPushGit(ctx context.Context, dir render.Dir, o shipOpts, branch, preAmendSHA string) (string, int, error) {
+	remote, err := gitRemoteFor(ctx, dir, "ship", branch)
 	if err != nil {
 		return "", 0, err
 	}
 	if o.amend {
-		return remote, 0, shipPushGitAmend(ctx, remote, branch, preAmendSHA, o.noVerify)
+		return remote, 0, shipPushGitAmend(ctx, dir, remote, branch, preAmendSHA, o.noVerify)
 	}
 	hint := fmt.Sprintf("git fetch %s && git rebase --autostash %s/%s && git push %s %s", remote, remote, branch, remote, branch)
 	rebased, err := shipPushRetry(ctx, branch, hint, func(ctx context.Context) (int, error) {
-		return shipPushGitOnce(ctx, remote, branch, o.noVerify)
+		return shipPushGitOnce(ctx, dir, remote, branch, o.noVerify)
 	})
 	return remote, rebased, err
 }
@@ -1375,8 +1375,8 @@ func gitPushArgv(noVerify bool, args ...string) []string {
 // same remote. git config --get exits 1 when unset; that and an empty value both
 // default to origin. Any other exit is an error, prefixed with the command that
 // asked — ship, restack, and info all do.
-func gitRemoteFor(ctx context.Context, prefix, branch string) (string, error) {
-	out, code, stderr, err := render.RunCLIExitCode(ctx, "git", []string{"config", "--get", "branch." + branch + ".remote"})
+func gitRemoteFor(ctx context.Context, dir render.Dir, prefix, branch string) (string, error) {
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"config", "--get", "branch." + branch + ".remote"})
 	if err != nil {
 		return "", fmt.Errorf("%s: git config branch.%s.remote: %w", prefix, branch, err)
 	}
@@ -1398,8 +1398,8 @@ func gitRemoteFor(ctx context.Context, prefix, branch string) (string, error) {
 // only on a non-fast-forward rejection force-pushes with a lease pinned to
 // preAmendSHA, so the force lands iff the remote still sits on the rewritten
 // commit. A stale or rejected lease is terminal.
-func shipPushGitAmend(ctx context.Context, remote, branch, preAmendSHA string, noVerify bool) error {
-	_, err := render.RunCLI(ctx, "git", gitPushArgv(noVerify, remote, branch))
+func shipPushGitAmend(ctx context.Context, dir render.Dir, remote, branch, preAmendSHA string, noVerify bool) error {
+	_, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, branch))
 	if err == nil {
 		return nil
 	}
@@ -1407,7 +1407,7 @@ func shipPushGitAmend(ctx context.Context, remote, branch, preAmendSHA string, n
 		return fmt.Errorf("ship: git push: %w", err)
 	}
 	lease := fmt.Sprintf("--force-with-lease=%s:%s", branch, preAmendSHA)
-	if _, err := render.RunCLI(ctx, "git", gitPushArgv(noVerify, remote, lease, branch)); err != nil {
+	if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, lease, branch)); err != nil {
 		if gitPushStaleLease(err) || gitPushRejected(err) {
 			return fmt.Errorf("ship: %s/%s moved since your last sync — someone may have built on the commit you amended; fetch and reconcile manually before force-pushing: %w", remote, branch, err)
 		}
@@ -1419,29 +1419,29 @@ func shipPushGitAmend(ctx context.Context, remote, branch, preAmendSHA string, n
 // shipPushGitOnce is one non-amend push attempt: fetch the remote, rebase onto
 // <remote>/<branch> when it advanced past HEAD, then push. A rejected push moves
 // no local ref, so it re-enters as a *pushRejectedError with no rollback.
-func shipPushGitOnce(ctx context.Context, remote, branch string, noVerify bool) (int, error) {
-	if _, err := render.RunCLI(ctx, "git", []string{"fetch", remote}); err != nil {
+func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch string, noVerify bool) (int, error) {
+	if _, err := render.RunCLI(ctx, dir, "git", []string{"fetch", remote}); err != nil {
 		return 0, fmt.Errorf("ship: git fetch %s: %w", remote, err)
 	}
 	remoteRef := "refs/remotes/" + remote + "/" + branch
-	present, err := gitRefExists(ctx, remoteRef)
+	present, err := gitRefExists(ctx, dir, remoteRef)
 	if err != nil {
 		return 0, err
 	}
 	rebased := 0
 	if present {
-		ancestor, err := gitIsAncestor(ctx, "ship", remoteRef, "HEAD")
+		ancestor, err := gitIsAncestor(ctx, dir, "ship", remoteRef, "HEAD")
 		if err != nil {
 			return 0, err
 		}
 		if !ancestor {
-			rebased, err = gitRebaseOnto(ctx, "ship", remote, branch)
+			rebased, err = gitRebaseOnto(ctx, dir, "ship", remote, branch)
 			if err != nil {
 				return 0, err
 			}
 		}
 	}
-	if _, err := render.RunCLI(ctx, "git", gitPushArgv(noVerify, remote, branch)); err != nil {
+	if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, branch)); err != nil {
 		raw := fmt.Errorf("ship: git push: %w", err)
 		if gitPushRejected(raw) {
 			return rebased, &pushRejectedError{err: raw}
@@ -1453,8 +1453,8 @@ func shipPushGitOnce(ctx context.Context, remote, branch string, noVerify bool) 
 
 // gitRefExists reports whether ref resolves (git rev-parse --verify --quiet: exit
 // 0 present, exit 1 missing). Any other exit is an error naming the code.
-func gitRefExists(ctx context.Context, ref string) (bool, error) {
-	_, code, stderr, err := render.RunCLIExitCode(ctx, "git", []string{"rev-parse", "--verify", "--quiet", ref})
+func gitRefExists(ctx context.Context, dir render.Dir, ref string) (bool, error) {
+	_, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"rev-parse", "--verify", "--quiet", ref})
 	if err != nil {
 		return false, fmt.Errorf("ship: git rev-parse %s: %w", ref, err)
 	}
@@ -1470,8 +1470,8 @@ func gitRefExists(ctx context.Context, ref string) (bool, error) {
 
 // gitIsAncestor reports whether maybe is an ancestor of ref (git merge-base
 // --is-ancestor: exit 0 yes, exit 1 no). Any other exit is an error.
-func gitIsAncestor(ctx context.Context, prefix, maybe, ref string) (bool, error) {
-	_, code, stderr, err := render.RunCLIExitCode(ctx, "git", []string{"merge-base", "--is-ancestor", maybe, ref})
+func gitIsAncestor(ctx context.Context, dir render.Dir, prefix, maybe, ref string) (bool, error) {
+	_, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"merge-base", "--is-ancestor", maybe, ref})
 	if err != nil {
 		return false, fmt.Errorf("%s: git merge-base --is-ancestor: %w", prefix, err)
 	}
@@ -1489,9 +1489,9 @@ func gitIsAncestor(ctx context.Context, prefix, maybe, ref string) (bool, error)
 // is dirty after a hunk-scoped ship), returning the number of local commits
 // replayed. A failed rebase is classified by gitRebaseFailure; an autostash pop
 // left unapplied is surfaced as a warning, not a failure.
-func gitRebaseOnto(ctx context.Context, prefix, remote, branch string) (int, error) {
+func gitRebaseOnto(ctx context.Context, dir render.Dir, prefix, remote, branch string) (int, error) {
 	remoteRef := "refs/remotes/" + remote + "/" + branch
-	countOut, err := render.RunCLI(ctx, "git", []string{"rev-list", "--count", remoteRef + "..HEAD"})
+	countOut, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", "--count", remoteRef + "..HEAD"})
 	if err != nil {
 		return 0, fmt.Errorf(prefix+": git rev-list --count: %w", err)
 	}
@@ -1500,9 +1500,9 @@ func gitRebaseOnto(ctx context.Context, prefix, remote, branch string) (int, err
 		return 0, fmt.Errorf(prefix+": malformed rev-list count %q: %w", countOut, err)
 	}
 
-	_, stderr, err := render.RunCLIKeepStderr(ctx, "git", []string{"rebase", "--autostash", remoteRef})
+	_, stderr, err := render.RunCLIKeepStderr(ctx, dir, "git", []string{"rebase", "--autostash", remoteRef})
 	if err != nil {
-		return 0, gitRebaseFailure(ctx, prefix, remote, branch, err)
+		return 0, gitRebaseFailure(ctx, dir, prefix, remote, branch, err)
 	}
 	if strings.Contains(stderr, "resulted in conflicts") {
 		slog.Warn(prefix+": rebase left autostashed changes unapplied — recover them with git stash pop", "branch", branch)
@@ -1514,17 +1514,17 @@ func gitRebaseOnto(ctx context.Context, prefix, remote, branch string) (int, err
 // (REBASE_HEAD resolves) conflicted mid-replay: list, abort (restoring the
 // autostash), report. Otherwise it failed before starting (hook, dirty index) —
 // return the raw error, no abort. Cleanup runs uncancellable.
-func gitRebaseFailure(ctx context.Context, prefix, remote, branch string, rebaseErr error) error {
+func gitRebaseFailure(ctx context.Context, dir render.Dir, prefix, remote, branch string, rebaseErr error) error {
 	cleanup := context.WithoutCancel(ctx)
-	inProgress, err := gitRefExists(cleanup, "REBASE_HEAD")
+	inProgress, err := gitRefExists(cleanup, dir, "REBASE_HEAD")
 	if err != nil {
 		return err
 	}
 	if !inProgress {
 		return fmt.Errorf(prefix+": git rebase onto %s/%s: %w", remote, branch, rebaseErr)
 	}
-	files, lerr := render.RunCLI(cleanup, "git", []string{"diff", "--name-only", "--diff-filter=U"})
-	if _, aerr := render.RunCLI(cleanup, "git", []string{"rebase", "--abort"}); aerr != nil {
+	files, lerr := render.RunCLI(cleanup, dir, "git", []string{"diff", "--name-only", "--diff-filter=U"})
+	if _, aerr := render.RunCLI(cleanup, dir, "git", []string{"rebase", "--abort"}); aerr != nil {
 		return fmt.Errorf(prefix+": rebase onto %s/%s conflicted (%w) and abort failed: %w — run: git rebase --abort, then resolve manually", remote, branch, rebaseErr, aerr)
 	}
 	if lerr != nil {
@@ -1534,8 +1534,8 @@ func gitRebaseFailure(ctx context.Context, prefix, remote, branch string, rebase
 	return fmt.Errorf(prefix+": rebase onto %s/%s conflicts in: %s; aborted back to the pre-rebase state (%w) — resolve manually: git fetch %s && git rebase --autostash %s/%s, fix the conflicts (git status), then git push %s %s", remote, branch, conflicted, rebaseErr, remote, remote, branch, remote, branch)
 }
 
-func jjBookmarkNames(ctx context.Context, prefix, rev string) ([]string, error) {
-	out, err := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "log", "-r", rev, "--no-graph", "-T", jjBookmarkTemplate})
+func jjBookmarkNames(ctx context.Context, dir render.Dir, prefix, rev string) ([]string, error) {
+	out, err := render.RunCLI(ctx, dir, "jj", []string{"--ignore-working-copy", "log", "-r", rev, "--no-graph", "-T", jjBookmarkTemplate})
 	if err != nil {
 		return nil, fmt.Errorf("%s: jj bookmarks at %q: %w", prefix, rev, err)
 	}
@@ -1553,8 +1553,8 @@ func jjBookmarkNames(ctx context.Context, prefix, rev string) ([]string, error) 
 	return names, nil
 }
 
-func jjTrunkBookmarkNames(ctx context.Context, prefix string) ([]string, error) {
-	out, err := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate})
+func jjTrunkBookmarkNames(ctx context.Context, dir render.Dir, prefix string) ([]string, error) {
+	out, err := render.RunCLI(ctx, dir, "jj", []string{"--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate})
 	if err != nil {
 		return nil, fmt.Errorf("%s: jj trunk bookmark: %w", prefix, err)
 	}
@@ -1576,8 +1576,8 @@ func jjTrunkBookmarkNames(ctx context.Context, prefix string) ([]string, error) 
 	return names, nil
 }
 
-func jjLogLines(ctx context.Context, prefix, rev string) ([]string, error) {
-	out, err := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "log", "-r", rev, "--no-graph", "-T", jjStackLineTemplate})
+func jjLogLines(ctx context.Context, dir render.Dir, prefix, rev string) ([]string, error) {
+	out, err := render.RunCLI(ctx, dir, "jj", []string{"--ignore-working-copy", "log", "-r", rev, "--no-graph", "-T", jjStackLineTemplate})
 	if err != nil {
 		return nil, fmt.Errorf("%s: jj log %q: %w", prefix, rev, err)
 	}
@@ -1590,8 +1590,8 @@ func jjLogLines(ctx context.Context, prefix, rev string) ([]string, error) {
 	return lines, nil
 }
 
-func jjOpID(ctx context.Context) (string, error) {
-	out, err := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate})
+func jjOpID(ctx context.Context, dir render.Dir) (string, error) {
+	out, err := render.RunCLI(ctx, dir, "jj", []string{"--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate})
 	if err != nil {
 		return "", fmt.Errorf("ship: jj op log: %w", err)
 	}
@@ -1602,8 +1602,8 @@ func jjOpID(ctx context.Context) (string, error) {
 	return opID, nil
 }
 
-func jjRebaseOnto(ctx context.Context, target string) (int, error) {
-	stack, err := jjLogLines(ctx, "ship", jjStackRevset(target))
+func jjRebaseOnto(ctx context.Context, dir render.Dir, target string) (int, error) {
+	stack, err := jjLogLines(ctx, dir, "ship", jjStackRevset(target))
 	if err != nil {
 		return 0, err
 	}
@@ -1611,20 +1611,20 @@ func jjRebaseOnto(ctx context.Context, target string) (int, error) {
 		return 0, fmt.Errorf("ship: %q..@- is empty — the commit already landed on %q; refusing to move the bookmark backwards", target, target)
 	}
 
-	if _, err := render.RunCLI(ctx, "jj", []string{"rebase", "-b", "@-", "--destination", jjBookmarksRevset(target)}); err != nil {
+	if _, err := render.RunCLI(ctx, dir, "jj", []string{"rebase", "-b", "@-", "--destination", jjBookmarksRevset(target)}); err != nil {
 		return 0, fmt.Errorf("ship: jj rebase onto %q: %w", target, err)
 	}
-	rebaseOp, err := jjOpID(ctx)
+	rebaseOp, err := jjOpID(ctx, dir)
 	if err != nil {
 		return 0, err
 	}
 
 	// rebase -b @- rewrites every descendant of the stack, including siblings
 	// of @; check the whole rewritten set without including conflicts below it.
-	conflicts, err := jjLogLines(ctx, "ship", jjConflictRevset(target))
+	conflicts, err := jjLogLines(ctx, dir, "ship", jjConflictRevset(target))
 	cleanup := context.WithoutCancel(ctx)
 	if err != nil {
-		_, uerr := render.RunCLI(cleanup, "jj", []string{"op", "revert", rebaseOp})
+		_, uerr := render.RunCLI(cleanup, dir, "jj", []string{"op", "revert", rebaseOp})
 		if uerr == nil {
 			return 0, fmt.Errorf("ship: conflict check after rebase onto %q failed (rebase rolled back): %w", target, err)
 		}
@@ -1633,7 +1633,7 @@ func jjRebaseOnto(ctx context.Context, target string) (int, error) {
 	if len(conflicts) > 0 {
 		// Undo only the rebase so a conflicted @ rolls back without touching a
 		// concurrent session's operations.
-		if _, uerr := render.RunCLI(cleanup, "jj", []string{"op", "revert", rebaseOp}); uerr != nil {
+		if _, uerr := render.RunCLI(cleanup, dir, "jj", []string{"op", "revert", rebaseOp}); uerr != nil {
 			return 0, fmt.Errorf("ship: rebase onto %q conflicted and rollback failed: %w — run: jj op revert %s, then resolve manually", target, uerr, rebaseOp)
 		}
 		pat := shellSingleQuote(vcs.JJExactPattern(target))
@@ -1645,21 +1645,21 @@ func jjRebaseOnto(ctx context.Context, target string) (int, error) {
 // shipWatchCI watches every CI run on the pushed commit and builds a per-run
 // report. Only a shipHeadSHA failure yields an empty segment; infra failures
 // return a segment so the summary still prints before the nonzero exit.
-func shipWatchCI(ctx context.Context, errW io.Writer, kind vcs.Kind, budget int) (string, []string, error) {
+func shipWatchCI(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Kind, budget int) (string, []string, error) {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return "CI gh-missing", nil, nil
 	}
-	sha, err := shipHeadSHA(ctx, kind)
+	sha, err := shipHeadSHA(ctx, dir, kind)
 	if err != nil {
 		return "", nil, err
 	}
-	runs, err := findCIRuns(ctx, sha)
+	runs, err := findCIRuns(ctx, dir, sha)
 	if err != nil {
 		report := []string{fmt.Sprintf("check: gh run list --commit %s", sha)}
 		return "CI error", report, err
 	}
 	if len(runs) == 0 {
-		hasWorkflows, err := shipHasWorkflows()
+		hasWorkflows, err := shipHasWorkflows(dir)
 		if err != nil {
 			return "CI error", nil, err
 		}
@@ -1668,14 +1668,14 @@ func shipWatchCI(ctx context.Context, errW io.Writer, kind vcs.Kind, budget int)
 		}
 		return "CI unconfirmed", nil, fmt.Errorf("ship: no CI run was registered for the pushed commit; workflows may be paths-filtered or dispatch-only (on: workflow_dispatch); confirm manually: gh run list --commit %s", sha)
 	}
-	return reportCIRuns(ctx, errW, sha, runs, budget)
+	return reportCIRuns(ctx, errW, dir, sha, runs, budget)
 }
 
 // reportCIRuns watches every run for sha and, after each batch, re-lists to catch
 // workflows that registered late; a run is watched, viewed, and reported exactly
 // once. A settle-time re-list failure takes the infra path with the report so far
 // preserved.
-func reportCIRuns(ctx context.Context, errW io.Writer, sha string, runs []ciRun, budget int) (string, []string, error) {
+func reportCIRuns(ctx context.Context, errW io.Writer, dir render.Dir, sha string, runs []ciRun, budget int) (string, []string, error) {
 	type redRun struct {
 		id   string
 		view ciView
@@ -1696,8 +1696,8 @@ func reportCIRuns(ctx context.Context, errW io.Writer, sha string, runs []ciRun,
 			n++
 			// Watch drives live progress; gh run view is the authoritative conclusion,
 			// so a dropped watch on a green run still passes.
-			_ = watchCIRun(ctx, errW, id)
-			view, err := viewCIRun(ctx, id)
+			_ = watchCIRun(ctx, errW, dir, id)
+			view, err := viewCIRun(ctx, dir, id)
 			if err != nil {
 				viewFailed = true
 				report = append(report,
@@ -1726,7 +1726,7 @@ func reportCIRuns(ctx context.Context, errW io.Writer, sha string, runs []ciRun,
 		if err := sleepCtx(ctx, shipCIPollInterval); err != nil {
 			return "CI error", report, err
 		}
-		more, err := findCIRuns(ctx, sha)
+		more, err := findCIRuns(ctx, dir, sha)
 		if err != nil {
 			report = append(report, fmt.Sprintf("check: gh run list --commit %s", sha))
 			return "CI error", report, err
@@ -1744,7 +1744,7 @@ func reportCIRuns(ctx context.Context, errW io.Writer, sha string, runs []ciRun,
 			per = 1
 		}
 		for _, r := range reds {
-			report = append(report, ciFailureDetail(ctx, r.id, r.view, per)...)
+			report = append(report, ciFailureDetail(ctx, dir, r.id, r.view, per)...)
 		}
 		return "CI failure", report, fmt.Errorf("ship: CI failed for %d run(s) on the pushed commit", len(reds))
 	}
@@ -1757,18 +1757,18 @@ func reportCIRuns(ctx context.Context, errW io.Writer, sha string, runs []ciRun,
 // watchCIRun blocks until run id concludes, streaming gh's progress to errW on a
 // real terminal and otherwise buffering it away. The wait is bounded by
 // shipCIWatchTimeout, an explicit deadline render's generic guard defers to.
-func watchCIRun(ctx context.Context, errW io.Writer, id string) error {
+func watchCIRun(ctx context.Context, errW io.Writer, dir render.Dir, id string) error {
 	watchCtx, cancel := context.WithTimeout(ctx, shipCIWatchTimeout)
 	defer cancel()
 	if shipStreamCI(errW) {
-		return render.RunCLIStream(watchCtx, "gh", []string{"run", "watch", id, "--exit-status", "--compact"}, errW)
+		return render.RunCLIStream(watchCtx, dir, "gh", []string{"run", "watch", id, "--exit-status", "--compact"}, errW)
 	}
-	_, err := render.RunCLI(watchCtx, "gh", []string{"run", "watch", id, "--exit-status"})
+	_, err := render.RunCLI(watchCtx, dir, "gh", []string{"run", "watch", id, "--exit-status"})
 	return err
 }
 
-func viewCIRun(ctx context.Context, id string) (ciView, error) {
-	out, err := render.RunCLI(ctx, "gh", []string{"run", "view", id, "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"})
+func viewCIRun(ctx context.Context, dir render.Dir, id string) (ciView, error) {
+	out, err := render.RunCLI(ctx, dir, "gh", []string{"run", "view", id, "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"})
 	if err != nil {
 		return ciView{}, fmt.Errorf("ship: gh run view %s: %w", id, err)
 	}
@@ -1791,7 +1791,7 @@ func ciRunLine(view ciView) string {
 // ciFailureDetail names each red job and its failed steps, appends the
 // ANSI-stripped, budget-capped --log-failed excerpt (fetch failure is non-fatal),
 // and always ends with the full-log pointer plus the ci-triage agent handoff.
-func ciFailureDetail(ctx context.Context, id string, view ciView, budget int) []string {
+func ciFailureDetail(ctx context.Context, dir render.Dir, id string, view ciView, budget int) []string {
 	var lines []string
 	for _, job := range view.Jobs {
 		if ciGreen(job.Conclusion) {
@@ -1809,7 +1809,7 @@ func ciFailureDetail(ctx context.Context, id string, view ciView, budget int) []
 		}
 		lines = append(lines, line)
 	}
-	if log, err := render.RunCLI(ctx, "gh", []string{"run", "view", id, "--log-failed"}); err != nil {
+	if log, err := render.RunCLI(ctx, dir, "gh", []string{"run", "view", id, "--log-failed"}); err != nil {
 		lines = append(lines, fmt.Sprintf("log unavailable: %v", err))
 	} else if excerpt := strings.TrimRight(render.Cap(ansiRE.ReplaceAllString(log, ""), budget), "\n"); excerpt != "" {
 		lines = append(lines, excerpt)
@@ -1841,8 +1841,8 @@ func ciDuration(start, end time.Time) string {
 	return fmt.Sprintf("%ds", int(d.Round(time.Second).Seconds()))
 }
 
-func shipHasWorkflows() (bool, error) {
-	entries, err := os.ReadDir(filepath.Join(workingDir(), ".github", "workflows"))
+func shipHasWorkflows(dir render.Dir) (bool, error) {
+	entries, err := os.ReadDir(filepath.Join(string(dir), ".github", "workflows"))
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
@@ -1858,16 +1858,16 @@ func shipHasWorkflows() (bool, error) {
 	return false, nil
 }
 
-func shipHeadSHA(ctx context.Context, kind vcs.Kind) (string, error) {
+func shipHeadSHA(ctx context.Context, dir render.Dir, kind vcs.Kind) (string, error) {
 	switch kind {
 	case vcs.Git:
-		out, err := render.RunCLI(ctx, "git", []string{"rev-parse", "HEAD"})
+		out, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", "HEAD"})
 		if err != nil {
 			return "", fmt.Errorf("ship: git rev-parse HEAD: %w", err)
 		}
 		return strings.TrimSpace(out), nil
 	case vcs.JJ:
-		out, err := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", "commit_id"})
+		out, err := render.RunCLI(ctx, dir, "jj", []string{"--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", "commit_id"})
 		if err != nil {
 			return "", fmt.Errorf("ship: jj log commit_id: %w", err)
 		}
@@ -1881,10 +1881,10 @@ func shipHeadSHA(ctx context.Context, kind vcs.Kind) (string, error) {
 // client-side compare). Transient list or parse errors are tolerated across the
 // window; an exhausted window returns the last error, or nil,nil for a clean
 // no-run.
-func findCIRuns(ctx context.Context, sha string) ([]ciRun, error) {
+func findCIRuns(ctx context.Context, dir render.Dir, sha string) ([]ciRun, error) {
 	var lastErr error
 	for i := 0; i < shipCIPollTries; i++ {
-		out, err := render.RunCLI(ctx, "gh", []string{"run", "list", "--commit", sha, "--limit", "50", "--json", "databaseId,workflowName,status,url"})
+		out, err := render.RunCLI(ctx, dir, "gh", []string{"run", "list", "--commit", sha, "--limit", "50", "--json", "databaseId,workflowName,status,url"})
 		switch {
 		case err != nil:
 			lastErr = fmt.Errorf("ship: gh run list: %w", err)

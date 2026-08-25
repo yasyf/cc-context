@@ -26,9 +26,9 @@ var ErrNoTrunk = errors.New("no default branch configured")
 // refs/remotes/<remote>/ is an error rather than a miss — git named a ref, so
 // reporting "no trunk" would discard an answer instead of surfacing a
 // misconfiguration.
-func ResolveTrunk(ctx context.Context, dir, remote string) (Trunk, error) {
+func ResolveTrunk(ctx context.Context, dir render.Dir, remote string) (Trunk, error) {
 	head := "refs/remotes/" + remote + "/HEAD"
-	out, code, stderr, err := render.RunCLIExitCodeDir(ctx, dir, "git", []string{"symbolic-ref", "--quiet", head})
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"symbolic-ref", "--quiet", head})
 	if err != nil {
 		return Trunk{}, fmt.Errorf("git symbolic-ref %s: %w", head, err)
 	}
@@ -53,9 +53,9 @@ func ResolveTrunk(ctx context.Context, dir, remote string) (Trunk, error) {
 // The verification is the point: the name arrives unqualified, and a caller that
 // pasted it straight into git plumbing would be answered by a local branch or
 // tag of the same name. A name with no remote-tracking ref is ErrNoTrunk.
-func TrunkFromName(ctx context.Context, dir, remote, name string) (Trunk, error) {
+func TrunkFromName(ctx context.Context, dir render.Dir, remote, name string) (Trunk, error) {
 	ref := RemoteBranchRef(remote, name)
-	_, code, stderr, err := render.RunCLIExitCodeDir(ctx, dir, "git", []string{"show-ref", "--verify", "--quiet", string(ref)})
+	_, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"show-ref", "--verify", "--quiet", string(ref)})
 	if err != nil {
 		return Trunk{}, fmt.Errorf("git show-ref %s: %w", ref, err)
 	}
@@ -73,9 +73,9 @@ func TrunkFromName(ctx context.Context, dir, remote, name string) (Trunk, error)
 // triangular or non-origin-only repository fetches, rebases, and pushes against
 // the same remote. git config --get exits 1 when the key is unset; that and an
 // empty value both mean origin. Any other exit is an error.
-func GitRemoteFor(ctx context.Context, dir, branch string) (string, error) {
+func GitRemoteFor(ctx context.Context, dir render.Dir, branch string) (string, error) {
 	key := "branch." + branch + ".remote"
-	out, code, stderr, err := render.RunCLIExitCodeDir(ctx, dir, "git", []string{"config", "--get", key})
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"config", "--get", key})
 	if err != nil {
 		return "", fmt.Errorf("git config %s: %w", key, err)
 	}

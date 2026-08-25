@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -105,7 +106,7 @@ func TestShipRefuseIndexLock(t *testing.T) {
 				shipWriteIndexLock(t, commonDir)
 			}
 
-			err := shipRefuseIndexLock(root)
+			err := shipRefuseIndexLock(render.Dir(root))
 			if !tt.wantErr {
 				if err != nil {
 					t.Fatalf("shipRefuseIndexLock() = %v, want nil", err)
@@ -134,7 +135,7 @@ func TestShipRefuseIndexLockPassesJJWithoutGit(t *testing.T) {
 	shipWriteIndexLock(t, root)
 	t.Chdir(root)
 
-	if err := shipRefuseIndexLock(root); err != nil {
+	if err := shipRefuseIndexLock(render.Dir(root)); err != nil {
 		t.Errorf("shipRefuseIndexLock() = %v, want nil — a jj repo with no git has no index", err)
 	}
 }
@@ -189,7 +190,7 @@ func TestShipHooksScrubGitEnv(t *testing.T) {
 	shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
 
 	dump := filepath.Join(t.TempDir(), "hook.env")
-	writeShipExecutable(t, f.ShimBin, "uvx", "#!/bin/sh\n"+shipRecordArgv("uvx", f.ArgvLog)+`{
+	writeShipExecutable(t, f.ShimBin, "uvx", "#!/bin/sh\n"+vcstest.RecordArgv("uvx", f.ArgvLog)+`{
   printf 'GIT_DIR=%s\n' "${GIT_DIR-<unset>}"
   printf 'GIT_WORK_TREE=%s\n' "${GIT_WORK_TREE-<unset>}"
   printf 'SHIP_HOOK_CONTROL=%s\n' "${SHIP_HOOK_CONTROL-<unset>}"
@@ -215,26 +216,6 @@ exit 0
 	}
 }
 
-func TestShipHookEnvKeepsEverythingElse(t *testing.T) {
-	t.Setenv("GIT_DIR", "/tmp/wrong/.git")
-	t.Setenv("GIT_WORK_TREE", "/tmp/wrong")
-	t.Setenv("GIT_INDEX_FILE", "/tmp/wrong/index")
-
-	var sawIndexFile bool
-	for _, entry := range shipHookEnv() {
-		name, _, _ := strings.Cut(entry, "=")
-		switch name {
-		case "GIT_DIR", "GIT_WORK_TREE":
-			t.Errorf("shipHookEnv() carries %s", entry)
-		case "GIT_INDEX_FILE":
-			sawIndexFile = true
-		}
-	}
-	if !sawIndexFile {
-		t.Error("shipHookEnv() dropped GIT_INDEX_FILE; only GIT_DIR and GIT_WORK_TREE are scrubbed")
-	}
-}
-
 // writeShipLoudUvx installs a uvx that prints on every run, not only a failing
 // one. writeShipUvx speaks only when it fails, so a test driving it cannot tell
 // a pass that was discarded from a pass that had nothing to say — the whole
@@ -246,7 +227,7 @@ func writeShipLoudUvx(t *testing.T, f *vcstest.Fixture, n int) {
 		t.Fatalf("write prek marker: %v", err)
 	}
 	t.Setenv("SHIP_PREK_MARKER", marker)
-	writeShipExecutable(t, f.ShimBin, "uvx", "#!/bin/sh\n"+shipRecordArgv("uvx", f.ArgvLog)+`printf 'prek: checking every hook\n'
+	writeShipExecutable(t, f.ShimBin, "uvx", "#!/bin/sh\n"+vcstest.RecordArgv("uvx", f.ArgvLog)+`printf 'prek: checking every hook\n'
 count=$(cat "$SHIP_PREK_MARKER")
 if [ "$count" -gt 0 ]; then
   printf '%s' "$((count - 1))" > "$SHIP_PREK_MARKER"

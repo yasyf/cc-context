@@ -37,7 +37,7 @@ func (m selectMode) String() string {
 // resolveShipSelection reads and resolves against fresh hunks before any commit
 // runs, and the jj diff tool re-resolves in-tree.
 type shipSelection struct {
-	root  string
+	root  render.Dir
 	mode  selectMode
 	files map[string][]anchor.Ref
 
@@ -89,7 +89,7 @@ func parseShipSelection(ctx context.Context, kind vcs.Kind, o shipOpts) (*shipSe
 	}
 	files := make(map[string][]anchor.Ref)
 	for i, p := range refs {
-		if !pathWithinShip(root, p.path, o.paths) {
+		if !pathWithinShip(string(root), p.path, o.paths) {
 			return nil, fmt.Errorf("ship: hunk ref %s is outside the shipped paths", raws[i])
 		}
 		files[p.path] = append(files[p.path], p.ref)
@@ -124,20 +124,20 @@ func pathWithinShip(root, refPath string, shipPaths []string) bool {
 // repoRoot returns the absolute working-copy root, the frame git blobs and jj
 // trees address files by; every selection path normalizes to it so a ship from a
 // subdirectory addresses the same file the VCS stores.
-func repoRoot(ctx context.Context, kind vcs.Kind) (string, error) {
+func repoRoot(ctx context.Context, kind vcs.Kind) (render.Dir, error) {
 	switch kind {
 	case vcs.Git:
-		out, err := render.RunCLI(ctx, "git", []string{"rev-parse", "--show-toplevel"})
+		out, err := render.RunCLI(ctx, render.Ambient, "git", []string{"rev-parse", "--show-toplevel"})
 		if err != nil {
 			return "", fmt.Errorf("git rev-parse --show-toplevel: %w", err)
 		}
-		return strings.TrimSpace(out), nil
+		return render.Dir(strings.TrimSpace(out)), nil
 	case vcs.JJ:
-		out, err := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "root"})
+		out, err := render.RunCLI(ctx, render.Ambient, "jj", []string{"--ignore-working-copy", "root"})
 		if err != nil {
 			return "", fmt.Errorf("jj root: %w", err)
 		}
-		return strings.TrimSpace(out), nil
+		return render.Dir(strings.TrimSpace(out)), nil
 	default:
 		return "", errors.New("repo root: unsupported vcs")
 	}
@@ -186,11 +186,11 @@ func cleanRel(path string) string {
 func resolveShipSelection(ctx context.Context, kind vcs.Kind, sel *shipSelection) error {
 	sel.preflight = make(map[string]map[string]int, len(sel.files))
 	for path, refs := range sel.files {
-		base, err := showFileBase(ctx, kind, path)
+		base, err := showFileBase(ctx, sel.root, kind, path)
 		if err != nil {
 			return err
 		}
-		current, err := os.ReadFile(filepath.Join(sel.root, path)) //nolint:gosec // the path is the caller's own ship target under the repo root, not untrusted input
+		current, err := os.ReadFile(filepath.Join(string(sel.root), path)) //nolint:gosec // the path is the caller's own ship target under the repo root, not untrusted input
 		if err != nil {
 			return fmt.Errorf("ship: read %s: %w", path, err)
 		}
@@ -249,8 +249,8 @@ func refuseForeignHunks(path string, mode selectMode, hunks []hunk.Hunk, known m
 // one insertion hunk. fileInBase distinguishes that legitimate absence from a
 // genuine VCS failure (an unreadable base tree), which propagates rather than
 // masquerading as an empty base.
-func showFileBase(ctx context.Context, kind vcs.Kind, path string) ([]byte, error) {
-	present, err := fileInBase(ctx, kind, path)
+func showFileBase(ctx context.Context, dir render.Dir, kind vcs.Kind, path string) ([]byte, error) {
+	present, err := fileInBase(ctx, dir, kind, path)
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +258,7 @@ func showFileBase(ctx context.Context, kind vcs.Kind, path string) ([]byte, erro
 		return nil, nil
 	}
 	argv := vcs.ShowFileArgv(kind, path)
-	out, err := render.RunCLI(ctx, argv[0], argv[1:])
+	out, err := render.RunCLI(ctx, dir, argv[0], argv[1:])
 	if err != nil {
 		return nil, fmt.Errorf("read base %s: %w", path, err)
 	}
@@ -273,7 +273,7 @@ func showFileBase(ctx context.Context, kind vcs.Kind, path string) ([]byte, erro
 // prints the name back verbatim and nothing at all for a path the base lacks, so
 // only zero bytes read as absence — trimming would read a file named " " as
 // missing and diff its hunks against an empty base.
-func fileInBase(ctx context.Context, kind vcs.Kind, path string) (bool, error) {
+func fileInBase(ctx context.Context, dir render.Dir, kind vcs.Kind, path string) (bool, error) {
 	switch kind {
 	case vcs.Git:
 		records, err := vcs.GitTreeRecords(ctx, gitBaseTreeArgs(path))
@@ -282,7 +282,7 @@ func fileInBase(ctx context.Context, kind vcs.Kind, path string) (bool, error) {
 		}
 		return len(records) > 0, nil
 	case vcs.JJ:
-		out, err := render.RunCLI(ctx, "jj", []string{"--ignore-working-copy", "file", "list", "-r", "@-", "--", vcs.JJRootPattern(path)})
+		out, err := render.RunCLI(ctx, dir, "jj", []string{"--ignore-working-copy", "file", "list", "-r", "@-", "--", vcs.JJRootPattern(path)})
 		if err != nil {
 			return false, fmt.Errorf("read base tree %s: %w", path, err)
 		}

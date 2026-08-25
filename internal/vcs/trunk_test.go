@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -17,7 +18,7 @@ import (
 func TestResolveTrunkResolved(t *testing.T) {
 	dir := vcstest.Repo(t, vcstest.Remote()).Dir
 
-	trunk, err := ResolveTrunk(context.Background(), dir, "origin")
+	trunk, err := ResolveTrunk(context.Background(), render.Dir(dir), "origin")
 	if err != nil {
 		t.Fatalf("ResolveTrunk: %v", err)
 	}
@@ -38,7 +39,7 @@ func TestResolveTrunkResolved(t *testing.T) {
 func TestResolveTrunkMissIsProvable(t *testing.T) {
 	dir := vcstest.Repo(t, vcstest.Remote(), vcstest.NoOriginHead()).Dir
 
-	_, err := ResolveTrunk(context.Background(), dir, "origin")
+	_, err := ResolveTrunk(context.Background(), render.Dir(dir), "origin")
 	if !errors.Is(err, ErrNoTrunk) {
 		t.Fatalf("err = %v, want ErrNoTrunk", err)
 	}
@@ -48,7 +49,7 @@ func TestResolveTrunkMissIsProvable(t *testing.T) {
 }
 
 func TestResolveTrunkFailureIsNotAMiss(t *testing.T) {
-	_, err := ResolveTrunk(context.Background(), vcstest.Repo(t, vcstest.BrokenGitDir()).Dir, "origin")
+	_, err := ResolveTrunk(context.Background(), render.Dir(vcstest.Repo(t, vcstest.BrokenGitDir()).Dir), "origin")
 	if err == nil {
 		t.Fatal("ResolveTrunk on a broken checkout succeeded")
 	}
@@ -72,7 +73,7 @@ func TestResolveTrunkRefBeatsTheDecoyBranch(t *testing.T) {
 	runGit(t, dir, "commit", "-qm", "decoy")
 	runGit(t, dir, "branch", "origin/main", "HEAD")
 
-	trunk, err := ResolveTrunk(context.Background(), dir, "origin")
+	trunk, err := ResolveTrunk(context.Background(), render.Dir(dir), "origin")
 	if err != nil {
 		t.Fatalf("ResolveTrunk: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestResolveTrunkRejectsATargetOutsideTheRemote(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			runGit(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", tt.target)
 
-			_, err := ResolveTrunk(context.Background(), dir, "origin")
+			_, err := ResolveTrunk(context.Background(), render.Dir(dir), "origin")
 			if err == nil {
 				t.Fatalf("ResolveTrunk accepted %s", tt.target)
 			}
@@ -153,7 +154,7 @@ func TestResolveTrunkNonOriginRemote(t *testing.T) {
 	runGit(t, dir, "update-ref", "refs/remotes/upstream/trunk", "HEAD")
 	runGit(t, dir, "symbolic-ref", "refs/remotes/upstream/HEAD", "refs/remotes/upstream/trunk")
 
-	trunk, err := ResolveTrunk(context.Background(), dir, "upstream")
+	trunk, err := ResolveTrunk(context.Background(), render.Dir(dir), "upstream")
 	if err != nil {
 		t.Fatalf("ResolveTrunk: %v", err)
 	}
@@ -165,7 +166,7 @@ func TestResolveTrunkNonOriginRemote(t *testing.T) {
 func TestTrunkFromName(t *testing.T) {
 	dir := vcstest.Repo(t, vcstest.Remote()).Dir
 
-	trunk, err := TrunkFromName(context.Background(), dir, "origin", "main")
+	trunk, err := TrunkFromName(context.Background(), render.Dir(dir), "origin", "main")
 	if err != nil {
 		t.Fatalf("TrunkFromName: %v", err)
 	}
@@ -173,19 +174,19 @@ func TestTrunkFromName(t *testing.T) {
 		t.Fatalf("trunk = %+v", trunk)
 	}
 
-	if _, err := TrunkFromName(context.Background(), dir, "origin", "absent"); !errors.Is(err, ErrNoTrunk) {
+	if _, err := TrunkFromName(context.Background(), render.Dir(dir), "origin", "absent"); !errors.Is(err, ErrNoTrunk) {
 		t.Fatalf("err = %v, want ErrNoTrunk", err)
 	}
 
 	// A name that only exists locally must not verify: the whole point is that the
 	// caller is about to hand this to plumbing, where refs/heads would answer.
 	runGit(t, dir, "branch", "local-only", "HEAD")
-	if _, err := TrunkFromName(context.Background(), dir, "origin", "local-only"); !errors.Is(err, ErrNoTrunk) {
+	if _, err := TrunkFromName(context.Background(), render.Dir(dir), "origin", "local-only"); !errors.Is(err, ErrNoTrunk) {
 		t.Fatalf("err = %v, want ErrNoTrunk for a local-only branch", err)
 	}
 
 	err = func() error {
-		_, err := TrunkFromName(context.Background(), vcstest.Repo(t, vcstest.BrokenGitDir()).Dir, "origin", "main")
+		_, err := TrunkFromName(context.Background(), render.Dir(vcstest.Repo(t, vcstest.BrokenGitDir()).Dir), "origin", "main")
 		return err
 	}()
 	if err == nil || errors.Is(err, ErrNoTrunk) {
@@ -196,7 +197,7 @@ func TestTrunkFromName(t *testing.T) {
 func TestGitRemoteFor(t *testing.T) {
 	dir := vcstest.Repo(t, vcstest.Remote()).Dir
 
-	got, err := GitRemoteFor(context.Background(), dir, "main")
+	got, err := GitRemoteFor(context.Background(), render.Dir(dir), "main")
 	if err != nil {
 		t.Fatalf("GitRemoteFor: %v", err)
 	}
@@ -205,7 +206,7 @@ func TestGitRemoteFor(t *testing.T) {
 	}
 
 	runGit(t, dir, "config", "branch.main.remote", "upstream")
-	got, err = GitRemoteFor(context.Background(), dir, "main")
+	got, err = GitRemoteFor(context.Background(), render.Dir(dir), "main")
 	if err != nil {
 		t.Fatalf("GitRemoteFor: %v", err)
 	}
@@ -213,7 +214,7 @@ func TestGitRemoteFor(t *testing.T) {
 		t.Fatalf("remote = %q, want upstream", got)
 	}
 
-	if _, err := GitRemoteFor(context.Background(), vcstest.Repo(t, vcstest.BrokenGitDir()).Dir, "main"); err == nil {
+	if _, err := GitRemoteFor(context.Background(), render.Dir(vcstest.Repo(t, vcstest.BrokenGitDir()).Dir), "main"); err == nil {
 		t.Fatal("GitRemoteFor on a broken checkout succeeded")
 	}
 }

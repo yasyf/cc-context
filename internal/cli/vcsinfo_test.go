@@ -113,9 +113,7 @@ func ghReplay(t *testing.T, f *vcstest.Fixture, goldens ...ghGolden) {
 		t.Setenv("CCX_GH_STDERR_"+key, g.stderr)
 		t.Setenv("CCX_GH_EXIT_"+key, strconv.Itoa(g.exit))
 	}
-	script := "#!/bin/sh\n" +
-		`d="${CCX_SHIM_DEPTH:-0}"` + "\n" +
-		`printf '%s\0' "$d" "$(($#+1))" gh "$@" >> ` + shQuote(f.ArgvLog) + "\n" +
+	script := "#!/bin/sh\n" + vcstest.RecordArgv("gh", f.ArgvLog) +
 		`case "$1 $2" in
   "repo view") key=REPO_VIEW ;;
   "api graphql")
@@ -166,8 +164,7 @@ func gtAuthShim(t *testing.T, f *vcstest.Fixture) {
 	// grandchild holds the stdout pipe open past the deadline.
 	script := "#!/bin/sh\n" +
 		`if [ "$1" = auth ]; then` + "\n" +
-		`  d="${CCX_SHIM_DEPTH:-0}"` + "\n" +
-		`  printf '%s\0' "$d" "$(($#+1))" gt "$@" >> ` + shQuote(f.ArgvLog) + "\n" +
+		vcstest.RecordArgv("gt", f.ArgvLog) +
 		`  if [ -n "$CCX_GT_AUTH_HANG" ]; then exec /bin/sleep 30; fi` + "\n" +
 		`  printf '%s' "$CCX_GT_AUTH_STDOUT"` + "\n" +
 		`  printf '%s' "$CCX_GT_AUTH_STDERR" >&2` + "\n" +
@@ -628,7 +625,7 @@ func TestVcsInfoUntrackedBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
-	want := "config live · gt " + version + " · reachable · branch untracked (gt track --parent main)"
+	want := "config live · gt " + version + " · reachable · branch untracked (gt track feature --parent main)"
 	if got := infoLine(t, out, "graphite"); got != want {
 		t.Errorf("graphite = %q, want %q", got, want)
 	}

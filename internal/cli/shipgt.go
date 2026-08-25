@@ -76,8 +76,8 @@ func gtReport(errW io.Writer, r gtResult) error {
 // with is dropped. An ERROR: at exit 0 is not: gt's own words are the only
 // evidence that the state it printed is not the state on disk, so the policy is
 // fatal and the whole output rides the error.
-func gtStateQuery(ctx context.Context, prefix string) (gtState, error) {
-	payload, _, err := gtCapture(ctx, []string{"state"}, gtZeroFatal)
+func gtStateQuery(ctx context.Context, dir render.Dir, prefix string) (gtState, error) {
+	payload, _, err := gtCapture(ctx, dir, []string{"state"}, gtZeroFatal)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", prefix, err)
 	}
@@ -123,8 +123,8 @@ func gtDownstack(prefix string, state gtState, branch, trunk string) ([]string, 
 	return chain, nil
 }
 
-func gtStackChain(ctx context.Context, prefix, branch string) (gtState, []string, error) {
-	state, err := gtStateQuery(ctx, prefix)
+func gtStackChain(ctx context.Context, dir render.Dir, prefix, branch string) (gtState, []string, error) {
+	state, err := gtStateQuery(ctx, dir, prefix)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -144,24 +144,24 @@ func gtStackChain(ctx context.Context, prefix, branch string) (gtState, []string
 
 // stackBranches lists the current downstack chain — current branch first, up
 // to (excluding) trunk — or nil when the current branch is trunk.
-func stackBranches(ctx context.Context, prefix string) ([]string, error) {
-	branch, err := gitCurrentBranch(ctx, prefix)
+func stackBranches(ctx context.Context, dir render.Dir, prefix string) ([]string, error) {
+	branch, err := gitCurrentBranch(ctx, dir, prefix)
 	if err != nil {
 		return nil, err
 	}
 	if branch == "" {
 		return nil, fmt.Errorf("%s: detached HEAD; no stack to resolve", prefix)
 	}
-	_, chain, err := gtStackChain(ctx, prefix, branch)
+	_, chain, err := gtStackChain(ctx, dir, prefix, branch)
 	return chain, err
 }
 
 func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts) (branchPlan, string, error) {
-	branch, err := gitCurrentBranch(ctx, "ship")
+	branch, err := gitCurrentBranch(ctx, l.dir(), "ship")
 	if err != nil {
 		return branchPlan{}, "", err
 	}
-	state, err := gtStateQuery(ctx, "ship")
+	state, err := gtStateQuery(ctx, l.dir(), "ship")
 	if err != nil {
 		return branchPlan{}, "", err
 	}
@@ -174,7 +174,7 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts) (b
 	needsRestack := false
 	if branch != "" && branch != trunk {
 		if _, tracked := state[branch]; !tracked {
-			if state, seg, err = gtTrack(ctx, errW, o, branch); err != nil {
+			if state, seg, err = gtTrack(ctx, l.dir(), errW, o, branch); err != nil {
 				return branchPlan{}, "", err
 			}
 		}
@@ -234,13 +234,13 @@ func gtStuckAfterCommit(problem, resume string) string {
 }
 
 func gtRestack(ctx context.Context, errW io.Writer, l lane, resume, branch string) (string, error) {
-	_, chain, err := gtStackChain(ctx, "ship", branch)
+	_, chain, err := gtStackChain(ctx, l.dir(), "ship", branch)
 	if err != nil {
 		return "", err
 	}
-	classify := func(dir string, r gtResult, cause error) error {
+	classify := func(dir render.Dir, r gtResult, cause error) error {
 		if strings.Contains(r.Output, gtSyncConflict) {
-			return &gtAdvice{advice: gtStuckAfterCommit(gtRestackConflict(dir), resume), cause: cause}
+			return &gtAdvice{advice: gtStuckAfterCommit(gtRestackConflict(l.dir(), dir), resume), cause: cause}
 		}
 		return fmt.Errorf("ship: %w", cause)
 	}
@@ -248,14 +248,14 @@ func gtRestack(ctx context.Context, errW io.Writer, l lane, resume, branch strin
 	if err != nil {
 		return "", err
 	}
-	here, err := gtRestackAt(ctx, errW, "", classify)
+	here, err := gtRestackAt(ctx, l.dir(), errW, classify)
 	if err != nil {
 		return "", err
 	}
 	for branch, reason := range gtSyncSkipped(here) {
 		declined[branch] = reason
 	}
-	state, chain, err := gtStackChain(ctx, "ship", branch)
+	state, chain, err := gtStackChain(ctx, l.dir(), "ship", branch)
 	if err != nil {
 		return "", err
 	}
@@ -269,11 +269,11 @@ func gtRestack(ctx context.Context, errW io.Writer, l lane, resume, branch strin
 
 // gtRestackConflict names the working copy a conflicted restack left mid-rebase,
 // since a sweep across lanes can stop in one nobody is looking at.
-func gtRestackConflict(dir string) string {
-	if dir == "" {
+func gtRestackConflict(here, dir render.Dir) string {
+	if dir == here {
 		return "gt restack hit a conflict — resolve the listed files, then gt continue (or gt abort, then gt restack)"
 	}
-	return "gt restack hit a conflict in " + dir + " — resolve the listed files there, then gt continue (or gt abort, then gt restack)"
+	return fmt.Sprintf("gt restack hit a conflict in %s — resolve the listed files there, then gt continue (or gt abort, then gt restack)", dir)
 }
 
 // gtOffParent explains a branch the sweep could not restack. gt says why on
@@ -298,20 +298,20 @@ func gtOffParent(branch, reason string) string {
 // sentence would otherwise vanish twice over: the advice replaces it, and a
 // canned message hides it from errors.Is. Both are kept — the diagnostics reach
 // errW, and gt's failure stays the advice's cause.
-func gtTrack(ctx context.Context, errW io.Writer, o shipOpts, branch string) (gtState, string, error) {
-	argv := []string{"track", "-f", "--no-interactive"}
+func gtTrack(ctx context.Context, dir render.Dir, errW io.Writer, o shipOpts, branch string) (gtState, string, error) {
+	argv := []string{"track", branch, "-f", "--no-interactive"}
 	if o.parent != "" {
-		argv = []string{"track", "--parent", o.parent, "--no-interactive"}
+		argv = []string{"track", branch, "--parent", o.parent, "--no-interactive"}
 	}
-	untracked := fmt.Errorf("ship: branch %s is not tracked by graphite — run gt track, or pass --no-gt", branch)
-	r, runErr := gtRun(ctx, argv, gtZeroFatal, errW)
+	untracked := fmt.Errorf("ship: branch %s is not tracked by graphite — run gt track %s, or pass --no-gt", branch, branch)
+	r, runErr := gtRun(ctx, dir, argv, gtZeroFatal, errW)
 	if err := gtReport(errW, r); err != nil {
 		return nil, "", err
 	}
 	if runErr != nil {
 		return nil, "", &gtAdvice{advice: untracked.Error(), cause: runErr}
 	}
-	state, err := gtStateQuery(ctx, "ship")
+	state, err := gtStateQuery(ctx, dir, "ship")
 	if err != nil {
 		return nil, "", err
 	}
@@ -356,8 +356,8 @@ func gtCommitArgv(o shipOpts, plan branchPlan) []string {
 // shipRefuseEmptyGT refuses a non-amend gt commit when the real index has no
 // staged changes: unlike git commit, gt create happily creates an empty
 // branch on an empty index.
-func shipRefuseEmptyGT(ctx context.Context, o shipOpts) error {
-	_, code, stderr, err := render.RunCLIExitCode(ctx, "git", []string{"diff", "--cached", "--quiet"})
+func shipRefuseEmptyGT(ctx context.Context, dir render.Dir, o shipOpts) error {
+	_, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"diff", "--cached", "--quiet"})
 	if err != nil {
 		return fmt.Errorf("ship: git diff --cached --quiet: %w", err)
 	}
@@ -367,7 +367,7 @@ func shipRefuseEmptyGT(ctx context.Context, o shipOpts) error {
 	if code != 0 {
 		return fmt.Errorf("ship: git diff --cached --quiet: exit %d: %s", code, strings.TrimSpace(stderr))
 	}
-	short, subject, err := shipDescribe(ctx, vcs.Git)
+	short, subject, err := shipDescribe(ctx, dir, vcs.Git)
 	if err != nil {
 		return err
 	}
@@ -381,13 +381,13 @@ func shipRefuseEmptyGT(ctx context.Context, o shipOpts) error {
 // shipGTAdd stages the ship's paths (or everything, when unscoped) into the
 // real index through gt add — gt's own git-add passthrough — so the plain
 // staging step stays on the gt binary like every other gt-lane mutation.
-func shipGTAdd(ctx context.Context, errW io.Writer, o shipOpts) error {
+func shipGTAdd(ctx context.Context, dir render.Dir, errW io.Writer, o shipOpts) error {
 	addArgv := []string{"add", "--no-interactive", "-A"}
 	if len(o.paths) > 0 {
 		addArgv = append(addArgv, "--")
 		addArgv = append(addArgv, o.paths...)
 	}
-	r, runErr := gtRun(ctx, addArgv, gtZeroFatal, errW)
+	r, runErr := gtRun(ctx, dir, addArgv, gtZeroFatal, errW)
 	if err := gtReport(errW, r); err != nil {
 		return err
 	}
@@ -402,29 +402,29 @@ func shipGTAdd(ctx context.Context, errW io.Writer, o shipOpts) error {
 // It never passes -a to gt: staging is shipGTAdd's job, same as the git lane
 // is shipGitAdd's. The branch name in plan was derived before this call appends
 // the session trailer, which is what keeps the trailer out of it.
-func shipCommitGT(ctx context.Context, errW io.Writer, root string, o shipOpts, sel *shipSelection, plan branchPlan) (string, error) {
+func shipCommitGT(ctx context.Context, dir render.Dir, errW io.Writer, o shipOpts, sel *shipSelection, plan branchPlan) (string, error) {
 	o.message = withSessionTrailer(o.message)
 	if sel != nil {
 		seg := ""
-		if !o.noVerify && shipHasHookConfig(root) {
+		if !o.noVerify && shipHasHookConfig(string(dir)) {
 			seg = "hooks hunk-skip"
 		}
-		return seg, shipCommitGTSelect(ctx, errW, o, sel, plan)
+		return seg, shipCommitGTSelect(ctx, dir, errW, o, sel, plan)
 	}
-	if err := shipGTAdd(ctx, errW, o); err != nil {
+	if err := shipGTAdd(ctx, dir, errW, o); err != nil {
 		return "", err
 	}
 	if !o.amend {
-		if err := shipRefuseEmptyGT(ctx, o); err != nil {
+		if err := shipRefuseEmptyGT(ctx, dir, o); err != nil {
 			return "", err
 		}
 	}
-	hookSeg, hooksRan, err := shipRunHooks(ctx, errW, root, vcs.Git, o)
+	hookSeg, hooksRan, err := shipRunHooks(ctx, errW, dir, vcs.Git, o)
 	if err != nil {
 		return "", err
 	}
 	o.hooksRan = hooksRan
-	r, runErr := gtRun(ctx, gtCommitArgv(o, plan), gtZeroFatal, errW)
+	r, runErr := gtRun(ctx, dir, gtCommitArgv(o, plan), gtZeroFatal, errW)
 	if err := gtReport(errW, r); err != nil {
 		return "", err
 	}
@@ -438,7 +438,7 @@ func shipCommitGT(ctx context.Context, errW io.Writer, root string, o shipOpts, 
 // technique as shipCommitGitSelect — gt shells out to git, which honors
 // GIT_INDEX_FILE, so running gt's verb under the same env commits only the temp
 // index. gt's only hunk surface is interactive -p, so staging stays on git.
-func shipCommitGTSelect(ctx context.Context, errW io.Writer, o shipOpts, sel *shipSelection, plan branchPlan) error {
+func shipCommitGTSelect(ctx context.Context, dir render.Dir, errW io.Writer, o shipOpts, sel *shipSelection, plan branchPlan) error {
 	idxFile, err := os.CreateTemp("", "ccx-ship-index-*")
 	if err != nil {
 		return fmt.Errorf("ship: create temp index: %w", err)
@@ -448,21 +448,21 @@ func shipCommitGTSelect(ctx context.Context, errW io.Writer, o shipOpts, sel *sh
 	defer func() { _ = os.Remove(idxPath) }()
 	env := []string{"GIT_INDEX_FILE=" + idxPath}
 
-	if _, err := render.RunCLIEnv(ctx, "git", []string{"read-tree", "HEAD"}, env); err != nil {
+	if _, err := render.RunCLIEnv(ctx, dir, "git", []string{"read-tree", "HEAD"}, env); err != nil {
 		return fmt.Errorf("ship: git read-tree: %w", err)
 	}
 	if addArgv, ok := gitSelectAddArgv(o.paths, sel); ok {
-		if _, err := render.RunCLIEnv(ctx, "git", addArgv, env); err != nil {
+		if _, err := render.RunCLIEnv(ctx, dir, "git", addArgv, env); err != nil {
 			return fmt.Errorf("ship: git add: %w", err)
 		}
 	}
 	for _, path := range sortedSelectionFiles(sel) {
-		if err := gitStageSelected(ctx, path, sel, env); err != nil {
+		if err := gitStageSelected(ctx, dir, path, sel, env); err != nil {
 			return err
 		}
 	}
 	argv := gtCommitArgv(o, plan)
-	r, runErr := gtRun(ctx, argv, gtZeroFatal, errW, env...)
+	r, runErr := gtRun(ctx, dir, argv, gtZeroFatal, errW, env...)
 	if err := gtReport(errW, r); err != nil {
 		return err
 	}
@@ -471,7 +471,7 @@ func shipCommitGTSelect(ctx context.Context, errW io.Writer, o shipOpts, sel *sh
 	}
 
 	restoreArgv := append([]string{"restore", "--staged", "--"}, gitRestorePaths(o.paths)...)
-	if _, err := render.RunCLI(ctx, "git", restoreArgv); err != nil {
+	if _, err := render.RunCLI(ctx, dir, "git", restoreArgv); err != nil {
 		return fmt.Errorf("ship: git restore --staged: %w", err)
 	}
 	return nil
@@ -519,8 +519,8 @@ func classifyGTSubmit(r gtResult, cause error) error {
 // gt published anything. Exit 0 is not consent: gt exits 0 while printing an
 // ERROR: naming a submit it refused, and ccx has no second oracle for a push it
 // did not make, so the policy is fatal.
-func gtSubmit(ctx context.Context, errW io.Writer, argv []string, resume string) error {
-	r, runErr := gtRun(ctx, argv, gtZeroFatal, errW)
+func gtSubmit(ctx context.Context, dir render.Dir, errW io.Writer, argv []string, resume string) error {
+	r, runErr := gtRun(ctx, dir, argv, gtZeroFatal, errW)
 	if err := gtReport(errW, r); err != nil {
 		return err
 	}
@@ -549,14 +549,14 @@ func gtSubmit(ctx context.Context, errW io.Writer, argv []string, resume string)
 // The resolved downstack it returns is the one the pull request step then
 // backfills into, so the stack is walked and its pull requests fetched once.
 func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta map[string]prMeta, branch, resume string) (submitted string, bodyless []string, stack []stackEntry, err error) {
-	_, chain, err := gtStackChain(ctx, "ship", branch)
+	_, chain, err := gtStackChain(ctx, l.dir(), "ship", branch)
 	if err != nil {
 		return "", nil, nil, err
 	}
 	if err := gtAnnounceStack(errW, chain); err != nil {
 		return "", nil, nil, err
 	}
-	if err := gtSubmit(ctx, errW, gtSubmitArgv(o), resume); err != nil {
+	if err := gtSubmit(ctx, l.dir(), errW, gtSubmitArgv(o), resume); err != nil {
 		return "", nil, nil, err
 	}
 	submitted, bodyless, stack = gtPRSegment(ctx, l, branch, chain, meta)
