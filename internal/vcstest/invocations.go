@@ -63,8 +63,12 @@ func Invocations(t *testing.T, log string) [][]string {
 // depth 1 holds the children a depth-0 tool spawned, and so on.
 func InvocationsAtDepth(t *testing.T, log string, depth int) [][]string {
 	t.Helper()
-	var out [][]string
-	for _, r := range RecordsAtDepth(t, log, depth) {
+	records := RecordsAtDepth(t, log, depth)
+	if len(records) == 0 {
+		return nil
+	}
+	out := make([][]string, 0, len(records))
+	for _, r := range records {
 		out = append(out, r.Argv)
 	}
 	return out

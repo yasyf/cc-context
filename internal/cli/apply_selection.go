@@ -85,7 +85,7 @@ func jjSelectArgv(o shipOpts, planPath string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ship: resolve executable: %w", err)
 	}
-	argv := make([]string, 0, 16+len(o.paths))
+	argv := make([]string, 0, 16+len(o.rootPaths))
 	if o.amend {
 		argv = append(argv, "squash")
 	} else {
@@ -105,9 +105,9 @@ func jjSelectArgv(o shipOpts, planPath string) ([]string, error) {
 	default:
 		argv = append(argv, "-m", o.message)
 	}
-	if len(o.paths) > 0 {
+	if len(o.rootPaths) > 0 {
 		argv = append(argv, "--")
-		argv = append(argv, o.paths...)
+		argv = append(argv, o.rootPaths...)
 	}
 	return argv, nil
 }

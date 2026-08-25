@@ -383,9 +383,9 @@ func shipRefuseEmptyGT(ctx context.Context, dir render.Dir, o shipOpts) error {
 // staging step stays on the gt binary like every other gt-lane mutation.
 func shipGTAdd(ctx context.Context, dir render.Dir, errW io.Writer, o shipOpts) error {
 	addArgv := []string{"add", "--no-interactive", "-A"}
-	if len(o.paths) > 0 {
+	if len(o.rootPaths) > 0 {
 		addArgv = append(addArgv, "--")
-		addArgv = append(addArgv, o.paths...)
+		addArgv = append(addArgv, o.rootPaths...)
 	}
 	r, runErr := gtRun(ctx, dir, addArgv, gtZeroFatal, errW)
 	if err := gtReport(errW, r); err != nil {
@@ -451,7 +451,7 @@ func shipCommitGTSelect(ctx context.Context, dir render.Dir, errW io.Writer, o s
 	if _, err := render.RunCLIEnv(ctx, dir, "git", []string{"read-tree", "HEAD"}, env); err != nil {
 		return fmt.Errorf("ship: git read-tree: %w", err)
 	}
-	if addArgv, ok := gitSelectAddArgv(o.paths, sel); ok {
+	if addArgv, ok := gitSelectAddArgv(o.rootPaths, sel); ok {
 		if _, err := render.RunCLIEnv(ctx, dir, "git", addArgv, env); err != nil {
 			return fmt.Errorf("ship: git add: %w", err)
 		}
@@ -470,7 +470,7 @@ func shipCommitGTSelect(ctx context.Context, dir render.Dir, errW io.Writer, o s
 		return fmt.Errorf("ship: %w", runErr)
 	}
 
-	restoreArgv := append([]string{"restore", "--staged", "--"}, gitRestorePaths(o.paths)...)
+	restoreArgv := append([]string{"restore", "--staged", "--"}, gitRestorePaths(o.rootPaths)...)
 	if _, err := render.RunCLI(ctx, dir, "git", restoreArgv); err != nil {
 		return fmt.Errorf("ship: git restore --staged: %w", err)
 	}

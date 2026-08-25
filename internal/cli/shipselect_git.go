@@ -34,7 +34,7 @@ func shipCommitGitSelect(ctx context.Context, dir render.Dir, o shipOpts, sel *s
 	if _, err := render.RunCLIEnv(ctx, dir, "git", []string{"read-tree", "HEAD"}, env); err != nil {
 		return fmt.Errorf("ship: git read-tree: %w", err)
 	}
-	if addArgv, ok := gitSelectAddArgv(o.paths, sel); ok {
+	if addArgv, ok := gitSelectAddArgv(o.rootPaths, sel); ok {
 		if _, err := render.RunCLIEnv(ctx, dir, "git", addArgv, env); err != nil {
 			return fmt.Errorf("ship: git add: %w", err)
 		}
@@ -48,7 +48,7 @@ func shipCommitGitSelect(ctx context.Context, dir render.Dir, o shipOpts, sel *s
 		return fmt.Errorf("ship: git commit: %w", err)
 	}
 
-	restoreArgv := append([]string{"restore", "--staged", "--"}, gitRestorePaths(o.paths)...)
+	restoreArgv := append([]string{"restore", "--staged", "--"}, gitRestorePaths(o.rootPaths)...)
 	if _, err := render.RunCLI(ctx, dir, "git", restoreArgv); err != nil {
 		return fmt.Errorf("ship: git restore --staged: %w", err)
 	}
@@ -112,14 +112,10 @@ func gitSelectAddArgv(paths []string, sel *shipSelection) ([]string, bool) {
 	return append([]string{"add", "-A", "--"}, whole...), true
 }
 
-// selectionScoped reports whether the ship path p (typed cwd-relative) is one of
-// the hunk-scoped files, normalizing p to the selection's root-relative frame.
+// selectionScoped reports whether the root-relative ship path p is one of the
+// hunk-scoped files.
 func selectionScoped(sel *shipSelection, p string) bool {
-	rel, err := rootRel(string(sel.root), p)
-	if err != nil {
-		return false
-	}
-	_, ok := sel.files[rel]
+	_, ok := sel.files[p]
 	return ok
 }
 

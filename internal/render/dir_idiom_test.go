@@ -15,6 +15,7 @@ import (
 func TestNoArgvWorkingDirectoryFlags(t *testing.T) {
 	root := repoRootForTest(t)
 	banned := []string{`"--cwd"`, `"-C", dir`, `"-C", root`}
+	var sources []string
 	err := filepath.WalkDir(filepath.Join(root, "internal"), func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -25,12 +26,18 @@ func TestNoArgvWorkingDirectoryFlags(t *testing.T) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
+		if strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
+			sources = append(sources, path)
 		}
-		src, err := os.ReadFile(path)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk internal: %v", err)
+	}
+	for _, path := range sources {
+		src, err := os.ReadFile(path) //nolint:gosec // path came from a walk of this repository's own tree
 		if err != nil {
-			return err
+			t.Fatalf("read %s: %v", path, err)
 		}
 		for _, b := range banned {
 			if strings.Contains(string(src), b) {
@@ -38,10 +45,6 @@ func TestNoArgvWorkingDirectoryFlags(t *testing.T) {
 				t.Errorf("%s builds %s into an argv; pass a render.Dir instead", rel, b)
 			}
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk internal: %v", err)
 	}
 }
 

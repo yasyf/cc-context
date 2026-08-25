@@ -181,13 +181,9 @@ func shipChangedPaths(ctx context.Context, dir render.Dir, kind vcs.Kind, o ship
 	switch kind {
 	case vcs.JJ:
 		argv := []string{"diff", "--name-only"}
-		if len(o.paths) > 0 {
-			rel, err := rootRelPaths(string(dir), o.paths)
-			if err != nil {
-				return nil, fmt.Errorf("ship: hook files: %w", err)
-			}
+		if len(o.rootPaths) > 0 {
 			argv = append(argv, "--")
-			argv = append(argv, rel...)
+			argv = append(argv, o.rootPaths...)
 		}
 		var err error
 		out, err = render.RunCLI(ctx, dir, "jj", argv)
@@ -196,9 +192,9 @@ func shipChangedPaths(ctx context.Context, dir render.Dir, kind vcs.Kind, o ship
 		}
 	case vcs.Git:
 		argv := []string{"diff", "--cached", "--name-only", "--diff-filter=d", "-z"}
-		if len(o.paths) > 0 {
+		if len(o.rootPaths) > 0 {
 			argv = append(argv, "--")
-			argv = append(argv, o.paths...)
+			argv = append(argv, o.rootPaths...)
 		}
 		var err error
 		out, err = render.RunCLI(ctx, dir, "git", argv)
@@ -253,11 +249,7 @@ func shipHookFiles(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpt
 func rootRelPaths(root string, paths []string) ([]string, error) {
 	rel := make([]string, 0, len(paths))
 	for _, p := range paths {
-		abs, err := filepath.Abs(p)
-		if err != nil {
-			return nil, err
-		}
-		r, err := filepath.Rel(root, abs)
+		r, err := rootRel(root, p)
 		if err != nil {
 			return nil, err
 		}

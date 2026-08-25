@@ -105,10 +105,13 @@ type shipOpts struct {
 	verify   bool
 	hooksRan bool
 
-	yolo      bool
-	amend     bool
-	budget    int
+	yolo   bool
+	amend  bool
+	budget int
+	// paths is the caller's own spelling, cwd-relative; rootPaths is the same
+	// set rebased onto the repository root, which is where every child runs.
 	paths     []string
+	rootPaths []string
 	skipHunks []string
 	onlyHunks []string
 
@@ -270,6 +273,9 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		o.noVerify = true
 	}
 	asGiven := o
+	if o.rootPaths, err = rootRelPaths(string(dir), o.paths); err != nil {
+		return fmt.Errorf("ship: %w", err)
+	}
 	prCleanup, err := materializePRBodyStdin(cmd, &o)
 	defer prCleanup()
 	if err != nil {
@@ -568,9 +574,9 @@ func shipCommit(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Ki
 // index ahead of hook attempts and the commit.
 func shipGitAdd(ctx context.Context, dir render.Dir, o shipOpts) error {
 	addArgv := []string{"add", "-A"}
-	if len(o.paths) > 0 {
+	if len(o.rootPaths) > 0 {
 		addArgv = append(addArgv, "--")
-		addArgv = append(addArgv, o.paths...)
+		addArgv = append(addArgv, o.rootPaths...)
 	}
 	if _, err := render.RunCLI(ctx, dir, "git", addArgv); err != nil {
 		return fmt.Errorf("ship: git add: %w", err)
@@ -582,7 +588,7 @@ func shipCommitJJ(ctx context.Context, dir render.Dir, o shipOpts, sel *shipSele
 	if sel != nil {
 		return shipCommitJJSelect(ctx, dir, o, sel)
 	}
-	argv := make([]string, 0, 4+len(o.paths))
+	argv := make([]string, 0, 4+len(o.rootPaths))
 	switch {
 	case o.amend && o.message != "":
 		argv = append(argv, "squash", "-m", o.message)
@@ -591,9 +597,9 @@ func shipCommitJJ(ctx context.Context, dir render.Dir, o shipOpts, sel *shipSele
 	default:
 		argv = append(argv, "commit", "-m", o.message)
 	}
-	if len(o.paths) > 0 {
+	if len(o.rootPaths) > 0 {
 		argv = append(argv, "--")
-		argv = append(argv, o.paths...)
+		argv = append(argv, o.rootPaths...)
 	}
 	if _, err := render.RunCLI(ctx, dir, "jj", argv); err != nil {
 		return fmt.Errorf("ship: jj %s: %w", argv[0], err)
@@ -662,9 +668,9 @@ func shipCommitGit(ctx context.Context, dir render.Dir, o shipOpts, sel *shipSel
 	if o.noVerify || o.hooksRan {
 		argv = append(argv, "--no-verify")
 	}
-	if len(o.paths) > 0 {
+	if len(o.rootPaths) > 0 {
 		argv = append(argv, "--")
-		argv = append(argv, o.paths...)
+		argv = append(argv, o.rootPaths...)
 	}
 	if _, err := render.RunCLI(ctx, dir, "git", argv); err != nil {
 		return fmt.Errorf("ship: git commit: %w", err)

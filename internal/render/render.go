@@ -33,8 +33,11 @@ var runTimeout = 10 * time.Minute
 // tell the guard's own expiry from a caller's deadline or a Ctrl-C.
 var errRunTimeout = errors.New("render: run timeout")
 
+// Dir is the working copy a child runs in, required by every runner.
 type Dir string
 
+// Ambient is ccx's own working directory, for a child whose answer cannot
+// depend on which repository it runs in.
 const Ambient Dir = ""
 
 // newCmd is every helper's child: bounded by withRunGuard, whose expiry SIGKILLs
