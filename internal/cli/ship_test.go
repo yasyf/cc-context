@@ -296,8 +296,9 @@ func TestShipHooksJJAmend(t *testing.T) {
 
 // TestShipHooksSubdirRunsAtRoot proves ship runs from the repository root
 // whatever directory it was invoked in: jj resolves a -- path against the
-// process's own cwd, so the root-relative sub/x.go it is handed here matches
-// nothing at all from sub/ — the ship would refuse with nothing to commit.
+// process's own cwd, so a path typed from sub/ is rebased onto the root every
+// child runs in — handed through as typed it would match nothing there, and the
+// ship would refuse with nothing to commit.
 func TestShipHooksSubdirRunsAtRoot(t *testing.T) {
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote())
 	shipHookRepo(t, f, vcs.JJ, 0, "", "sub/x.go")
@@ -313,7 +314,7 @@ func TestShipHooksSubdirRunsAtRoot(t *testing.T) {
 		{"jj", "diff", "--name-only", "--", "sub/x.go"},
 		{"jj", "diff", "--name-only", "--", "sub/x.go"},
 		{"uvx", "prek", "run", "--cd", f.Dir, "--files", "sub/x.go"},
-		{"jj", "commit", "-m", "fix: frobnicate", "--", "x.go"},
+		{"jj", "commit", "-m", "fix: frobnicate", "--", "sub/x.go"},
 		{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 		{"jj", "bookmark", "move", vcs.JJExactPattern("main"), "--to", "@-"},
 	})
