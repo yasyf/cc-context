@@ -36,6 +36,11 @@ LARGE_READ_BYTES = 20_000
 # block, with the note steering to `ccx code outline` + `--section` for the rest.
 READ_WINDOW_LINES = 100
 
+# How much of a file the text/binary sniff reads. A NUL byte in this prefix is git's own
+# binary heuristic, and it needs no decode step — so a multi-byte character split at the
+# window edge can never misclassify a UTF-8 file.
+SNIFF_BYTES = 8_000
+
 # `git diff` is allowed when scoped (a pathspec after `--`) or summarized (one of
 # these stat-only flags). A bare/range diff with no such narrowing is the bomb.
 GIT_DIFF_SUMMARY_FLAGS = ("--stat", "--numstat", "--shortstat", "--name-only", "--name-status", "--dirstat")
@@ -80,6 +85,17 @@ def is_large(path: Path) -> bool:
     and never reaches a token budget worth guarding.
     """
     return path.is_file() and path.stat().st_size > LARGE_READ_BYTES
+
+
+def is_text(path: Path) -> bool:
+    """Report whether ``path`` holds text a line window can bound.
+
+    A binary payload — an image, a PDF, a compiled object — has no line window to fall
+    back to and no ``ccx`` view, so the guards that steer a read toward a slice leave it
+    alone. Non-UTF-8 text (latin-1 and friends) still reads as text: it has lines.
+    """
+    with path.open("rb") as f:
+        return b"\0" not in f.read(SNIFF_BYTES)
 
 
 def carries_expansion(token: str, *, tilde_only: bool = False) -> bool:
