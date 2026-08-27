@@ -38,7 +38,7 @@ the read, search, edit, and diff commands take the same arguments as their CLI c
 `ccx format -- <cmd>`. Clients may show these under a client-assigned `mcp__…__`
 prefix; use the names as listed in the tool inventory.
 Use whichever is available; the workflow is identical. `ccx vcs ship`, `ccx vcs hunks`,
-`ccx vcs show`, `ccx vcs history`, `ccx vcs info`, `ccx vcs guidelines`, and
+`ccx vcs show`, `ccx vcs history`, `ccx vcs info`, `ccx vcs status`, `ccx vcs guidelines`, and
 `ccx repo locate` are CLI-only — there is no MCP tool for them.
 
 ## Workflow
@@ -293,6 +293,26 @@ Every git-backed checkout reports which working copy holds trunk, which is what
 explains a `gt restack` that skipped a branch and still exited 0. Inputs it cannot
 read — a gitdir pointer resolving to nothing, graphite state it cannot walk, an
 unreachable GitHub — are reported in the report rather than raised as errors.
+`ccx vcs status` answers the next question — what the whole stack is waiting on —
+in one batched query plus, only where the merge queue has been involved, two
+narrow follow-ups. Per branch, in stack order: its divergence from trunk, whether
+gt says it sits off its parent, its PR's mergeability (re-asked once when
+GitHub's first answer is `UNKNOWN`, which it usually is), the checks on the head
+and which of them the base branch's protection rule requires, and a `blocked`
+line per hold. Every standing review is named with the commit it was cast on: an
+approval three pushes stale still counts toward `reviewDecision`. CI is read
+through `statusCheckRollup`, never `gh run list`, so a repository on Buildkite
+reports its pipeline rather than "no CI".
+
+It also names **the commit the Graphite merge queue is holding**. The queue
+snapshots a PR when it admits it, so a push after that lands the older commit and
+drops the rest, silently, with every check green. No GitHub field carries the
+snapshot, so status reconstructs it from when the queue last looked — a merge
+label going on, and every draft PR the queue opened — against the branch's own
+head history, and names the commits a merge would leave behind. The same activity
+comment is what separates a label the queue consumed on admission from one it
+dropped on failure, which are otherwise the same absent label.
+
 `ccx vcs guidelines` (alias
 `contributing`) fetches and caches the repo's PR templates, `CONTRIBUTING.md`, code
 of conduct, and issue config, served verbatim so a PR body can reproduce the
@@ -300,6 +320,8 @@ template exactly:
 
 ```
 ccx vcs info                                     # which lane a ship would take, and why
+ccx vcs status                                   # every branch, its PR, and what blocks it
+ccx vcs status --json                            # the same report as a structure
 ccx vcs guidelines                               # PR templates + contribution rules, verbatim
 ```
 

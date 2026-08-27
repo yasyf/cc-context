@@ -32,6 +32,9 @@ outdated_pr=14003
 own_branch_one="fix-ship-help-graphite-demote"
 own_branch_two="yasyf/transcript-ccx-issues"
 own_sha="8ce0dcf1c1b66a60e890985c77a52064c6cfcb49"
+# A public issue comment of $foreign_repo, for the by-id fetch ccx vcs status
+# reads a Graphite merge-queue activity comment through.
+foreign_comment="IC_kwDODKw3uc8AAAABM0KrfA"
 run_success=30744524405
 run_failed=30270014111
 run_log_failed=30223463656
@@ -174,6 +177,49 @@ downstack_query() {
 	printf 'query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}' "$decls" "$fields"
 }
 
+# status_pr_fields is internal/cli/vcsstatusgh.go's statusPRFields, and
+# status_protection_fields its statusProtectionFields.
+# TestVcsStatusArgvIsTheRecordedOne fails if either drifts from the Go.
+status_pr_fields="number url body isDraft baseRefName headRefOid mergeable mergeStateStatus reviewDecision $landing_fields labels(first: 20) { nodes { name } } latestOpinionatedReviews(first: 20) { nodes { state author { login __typename } commit { oid } } } history: commits(last: 50) { nodes { commit { oid committedDate messageHeadline } } } checks: commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { nodes { __typename ... on CheckRun { name conclusion status } ... on StatusContext { context state } } } } } } } events: timelineItems(last: 100, itemTypes: [LABELED_EVENT, UNLABELED_EVENT, HEAD_REF_FORCE_PUSHED_EVENT]) { nodes { __typename ... on LabeledEvent { createdAt label { name } actor { login } } ... on UnlabeledEvent { createdAt label { name } actor { login } } ... on HeadRefForcePushedEvent { createdAt beforeCommit { oid } } } } comments(last: 40) { nodes { id author { login } } }"
+status_protection_fields='branchProtectionRules(first: 20) { nodes { pattern requiredStatusChecks { context } } }'
+
+status_query() {
+	local n="$1" decls fields i
+	decls='$owner: String!, $repo: String!'
+	fields=''
+	for ((i = 0; i < n; i++)); do
+		decls="$decls, \$b$i: String!"
+		fields="$fields    b$i: pullRequests(headRefName: \$b$i, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { ...prStatus } }
+"
+	done
+	printf 'query(%s) {\n  repository(owner: $owner, name: $repo) {\n    %s\n%s  }\n}\nfragment prStatus on PullRequest { %s }' \
+		"$decls" "$status_protection_fields" "$fields" "$status_pr_fields"
+}
+
+status_comment_query() {
+	local n="$1" decls vars i
+	decls=''
+	vars=''
+	for ((i = 0; i < n; i++)); do
+		[ "$i" -eq 0 ] || { decls="$decls, "; vars="$vars, "; }
+		decls="$decls\$c$i: ID!"
+		vars="$vars\$c$i"
+	done
+	printf 'query(%s) { nodes(ids: [%s]) { ... on IssueComment { id body } } }' "$decls" "$vars"
+}
+
+status_draft_query() {
+	local n="$1" decls fields i
+	decls='$owner: String!, $repo: String!'
+	fields=''
+	for ((i = 0; i < n; i++)); do
+		decls="$decls, \$d$i: Int!"
+		fields="$fields    d$i: pullRequest(number: \$d$i) { number createdAt }
+"
+	done
+	printf 'query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}' "$decls" "$fields"
+}
+
 reviews_query() {
 	local kind="$1" n="$2" decls fields i decl
 	case "$kind" in
@@ -227,6 +273,21 @@ record downstack-graphql-three api graphql \
 	-F 'owner={owner}' -F 'repo={repo}' \
 	-f "b0=$own_branch_one" -f "b1=$own_branch_two" -f "b2=no-such-branch" \
 	-f "query=$(downstack_query 3)"
+
+### ccx vcs status — the batched stack query, then the queue's own comment
+
+record status-graphql-one api graphql \
+	-F 'owner={owner}' -F 'repo={repo}' \
+	-f "b0=$own_branch_one" -f "query=$(status_query 1)"
+record status-graphql-three api graphql \
+	-F 'owner={owner}' -F 'repo={repo}' \
+	-f "b0=$own_branch_one" -f "b1=$own_branch_two" -f "b2=no-such-branch" \
+	-f "query=$(status_query 3)"
+record status-comment-graphql api graphql \
+	-f "c0=$foreign_comment" -f "query=$(status_comment_query 1)"
+record status-draft-graphql api graphql \
+	-F "owner=$foreign_owner" -F "repo=$foreign_name" \
+	-F "d0=$open_pr" -F "d1=$merged_pr" -f "query=$(status_draft_query 2)"
 
 ### ship's CI watch — gh run list / run view / run view --log-failed
 

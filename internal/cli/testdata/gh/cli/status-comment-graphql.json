@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "api",
+    "graphql",
+    "-f",
+    "c0=IC_kwDODKw3uc8AAAABM0KrfA",
+    "-f",
+    "query=query($c0: ID!) { nodes(ids: [$c0]) { ... on IssueComment { id body } } }"
+  ],
+  "exit": 0,
+  "stdout": "{\"data\":{\"nodes\":[{\"id\":\"IC_kwDODKw3uc8AAAABM0KrfA\",\"body\":\"There are a lot of comments on here; can you clarify which ones are blockers versus commentary? \\r\\n\\r\\nAh, I think I understand your use of emoji.\"}]}}",
+  "stderr": ""
+}

@@ -4,6 +4,40 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`ccx vcs status`, which says what the whole stack is waiting on.** Per
+  branch, in stack order: its divergence from trunk, whether gt says it sits off
+  its parent, its pull request's mergeability, the checks on its head and which
+  of them the base branch requires, every standing review and whether it was
+  cast on the head, and a `blocked` line per hold. Answering that by hand takes
+  a `gh` call per fact per branch; this takes one batched GraphQL round trip for
+  the whole stack, so it costs the same at four branches as at one, and reads CI
+  through `statusCheckRollup` rather than `gh run list` — a repository on
+  Buildkite has no Actions runs to find.
+
+  It also reports **the commit the Graphite merge queue is holding.** The queue
+  snapshots a pull request when it admits it, so a push after that lands the
+  older commit and drops the rest, silently and with every check green. Nothing
+  GitHub serves names that commit: the queue's draft pull request squashes each
+  source into one commit carrying its body, the `Graphite / mergeability_check`
+  run has an empty output, and `gt` has no queue verb. What GitHub does record is
+  when the queue last looked — a merge label going on, and every draft the queue
+  opened — and how the head moved since, which is enough to name the held sha and
+  the commits a merge would leave behind. A draft counts because the queue cuts a
+  new one when a group re-forms, and a re-formed draft picks the push up; dating
+  the snapshot from the label alone would cry drift over a queue that had already
+  caught up. Where neither exists the field says so rather than guessing.
+
+  Two states GitHub leaves indistinguishable are separated here. `mergeable`
+  answers `UNKNOWN` until GitHub has computed the merge commit, so an open pull
+  request that comes back unknown is asked once more before the report settles.
+  And the queue consumes the merge label on admission and drops it on failure, so
+  the label's absence means nothing on its own — the queue's own activity comment
+  is read for the verdict, which separates `queued` from `rejected` and quotes
+  the reason a rejection gives.
+
 ## [0.45.0] - 2026-08-25
 
 ### Fixed

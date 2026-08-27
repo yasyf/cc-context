@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "api",
+    "graphql",
+    "-F",
+    "owner=cli",
+    "-F",
+    "repo=cli",
+    "-F",
+    "d0=13982",
+    "-F",
+    "d1=13084",
+    "-f",
+    "query=query($owner: String!, $repo: String!, $d0: Int!, $d1: Int!) {\n  repository(owner: $owner, name: $repo) {\n    d0: pullRequest(number: $d0) { number createdAt }\n    d1: pullRequest(number: $d1) { number createdAt }\n  }\n}"
+  ],
+  "exit": 0,
+  "stdout": "{\"data\":{\"repository\":{\"d0\":{\"number\":13982,\"createdAt\":\"2026-07-27T15:06:16Z\"},\"d1\":{\"number\":13084,\"createdAt\":\"2026-04-02T18:00:23Z\"}}}}",
+  "stderr": ""
+}
