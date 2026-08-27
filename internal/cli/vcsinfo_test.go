@@ -90,13 +90,25 @@ func ghReplayKey(t *testing.T, g ghGolden) string {
 	case slices.Equal(g.argv[:min(2, len(g.argv))], []string{"repo", "view"}):
 		return "REPO_VIEW"
 	case !slices.Equal(g.argv[:min(2, len(g.argv))], []string{"api", "graphql"}):
-		t.Fatalf("golden cli/%s: argv %q answers no invocation ccx vcs info makes", g.name, g.argv)
+		t.Fatalf("golden cli/%s: argv %q answers no invocation a vcs report makes", g.name, g.argv)
 		return ""
-	case slices.ContainsFunc(g.argv, func(a string) bool { return strings.Contains(a, "pullRequests") }):
+	case ghArgvHas(g.argv, "prStatus"):
+		return "STATUS"
+	case ghArgvHas(g.argv, "nodes(ids:"):
+		return "COMMENTS"
+	case ghArgvHas(g.argv, "createdAt"):
+		return "DRAFTS"
+	case ghArgvHas(g.argv, "pullRequests"):
 		return "DOWNSTACK"
 	default:
 		return "VIEWER"
 	}
+}
+
+// ghArgvHas reports whether any argument carries marker, which is how one
+// recorded query is told from another.
+func ghArgvHas(argv []string, marker string) bool {
+	return slices.ContainsFunc(argv, func(a string) bool { return strings.Contains(a, marker) })
 }
 
 // ghReplay installs a gh that answers each recorded scenario's invocation with
@@ -118,6 +130,9 @@ func ghReplay(t *testing.T, f *vcstest.Fixture, goldens ...ghGolden) {
   "repo view") key=REPO_VIEW ;;
   "api graphql")
     case "$*" in
+      *prStatus*) key=STATUS ;;
+      *"nodes(ids:"*) key=COMMENTS ;;
+      *createdAt*) key=DRAFTS ;;
       *pullRequests*) key=DOWNSTACK ;;
       *) key=VIEWER ;;
     esac ;;
