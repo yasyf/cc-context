@@ -44,6 +44,7 @@ type vcsStatus struct {
 	Required   []string       `json:"required_checks,omitempty"`
 	StackError string         `json:"stack_error,omitempty"`
 	PRError    string         `json:"pr_error,omitempty"`
+	Probe      *statusProbe   `json:"queue_probe,omitempty"`
 	Branches   []statusBranch `json:"branches,omitempty"`
 }
 
@@ -59,6 +60,7 @@ type statusBranch struct {
 	Name         string         `json:"branch"`
 	Current      bool           `json:"current,omitempty"`
 	Holder       string         `json:"holder"`
+	Parent       string         `json:"parent,omitempty"`
 	NeedsRestack bool           `json:"needs_restack,omitempty"`
 	Diverge      *statusDiverge `json:"diverge,omitempty"`
 	PR           *statusPR      `json:"pr,omitempty"`
@@ -77,6 +79,7 @@ type statusPR struct {
 	HasBody        bool           `json:"has_body"`
 	Head           string         `json:"head"`
 	Base           string         `json:"base"`
+	Files          int            `json:"files"`
 	Mergeable      string         `json:"mergeable"`
 	MergeState     string         `json:"merge_state"`
 	ReviewDecision string         `json:"review_decision,omitempty"`
@@ -111,6 +114,7 @@ type vcsStatusOpts struct {
 	json    bool
 	refresh bool
 	noGT    bool
+	noProbe bool
 	budget  int
 }
 
@@ -130,7 +134,19 @@ That last one is the fact no GitHub field carries. The queue snapshots a pull
 request when it admits it, so a push after that lands the older commit and
 silently drops the rest; status reconstructs the snapshot from the queue's own
 activity comment and the branch's head history, and names the commits a merge
-would leave behind.`,
+would leave behind.
+
+Three things this repository's own queue taught the command. Graphite does not
+always post that activity comment — a pull request can enter the queue and merge
+without one — so the queue-gt line carries gt's own verdict from
+"gt merge --dry-run", which is read-only and answers even when the comment says
+nothing; --no-queue-probe skips it. The queue closes what it merges, so a landed
+pull request reads CLOSED with a null mergedAt, and status calls that merged on
+the gt lane rather than abandoned. And Graphite's stack metadata is repo-global,
+so concurrent gt runs can reparent a branch onto another lane's tip: a gt parent
+that disagrees with the pull request's own base is reported as a blocker, and
+the pull request's changed-file count is on the pr line, since a diff wider than
+the work is the tell.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runVcsStatus(cmd, o)
@@ -139,6 +155,7 @@ would leave behind.`,
 	cmd.Flags().BoolVar(&o.json, "json", false, "emit the report as JSON")
 	cmd.Flags().BoolVar(&o.refresh, "refresh", false, "refetch the cached GitHub metadata and graphite reachability")
 	cmd.Flags().BoolVar(&o.noGT, "no-gt", false, "ignore a live graphite config and report the current branch alone")
+	cmd.Flags().BoolVar(&o.noProbe, "no-queue-probe", false, "skip the gt merge --dry-run probe of the merge queue")
 	cmd.Flags().IntVar(&o.budget, "budget", statusBudget, "token budget for the human report (0 = uncapped)")
 	return cmd
 }
@@ -191,6 +208,9 @@ func collectVcsStatus(ctx context.Context, l lane, o vcsStatusOpts) (vcsStatus, 
 		return vcsStatus{}, err
 	}
 	statusResolvePRs(ctx, l, &st)
+	if l.gt && !o.noProbe {
+		st.Probe = queueProbe(ctx, l)
+	}
 	for i := range st.Branches {
 		st.Branches[i].Blockers = statusBlockers(st.Branches[i])
 	}
@@ -275,6 +295,7 @@ func statusLocalBranches(ctx context.Context, l lane, state gtState, branches []
 			Name:         name,
 			Current:      name == st.Branch,
 			Holder:       statusHolder(holders[name], l.checkout.Root),
+			Parent:       statusParent(state[name]),
 			NeedsRestack: state[name].NeedsRestack,
 		}
 		if hasTrunk {
@@ -373,6 +394,13 @@ func statusBlockers(b statusBranch) []string {
 		return append(out, "no pull request — run ccx vcs ship")
 	}
 	pr := b.PR
+	// Graphite's stack metadata is repo-global, so a concurrent gt run in
+	// another working copy can reparent this branch onto a lane it never sat
+	// on — which merges a diff nobody reviewed.
+	if b.Parent != "" && pr.Base != "" && b.Parent != pr.Base {
+		out = append(out, fmt.Sprintf("gt parents this on %s but PR #%d bases on %s — the branch was reparented; restack and re-submit",
+			b.Parent, pr.Number, pr.Base))
+	}
 	if q := pr.Queue; q != nil && q.Drifted() {
 		noun := plural(len(q.Dropped), "commit", "commits")
 		verb := fmt.Sprintf("is holding %s, so %d %s would not land", shortSHA(q.Held), len(q.Dropped), noun)
@@ -478,6 +506,9 @@ func renderVcsStatus(st vcsStatus) string {
 	if st.PRError != "" {
 		line("github", st.PRError)
 	}
+	if p := st.Probe; p != nil {
+		line("queue-gt", statusProbeValue(*p))
+	}
 	for _, branch := range st.Branches {
 		b.WriteString("\n")
 		renderStatusBranch(line, branch)
@@ -514,6 +545,16 @@ func renderStatusBranch(line func(string, string), branch statusBranch) {
 
 // statusDirtyValue counts the uncommitted paths and names the first few, so a
 // wide working copy cannot crowd the branches under it out of the report.
+// statusProbeValue renders gt's own verdict on the downstack, which is the only
+// answer that survives Graphite declining to post its activity comment.
+func statusProbeValue(p statusProbe) string {
+	segs := []string{string(p.Verdict)}
+	if p.Detail != "" {
+		segs = append(segs, p.Detail)
+	}
+	return strings.Join(segs, shipSep)
+}
+
 func statusDirtyValue(st vcsStatus) string {
 	if !st.Dirty {
 		return "no"
@@ -525,6 +566,16 @@ func statusDirtyValue(st vcsStatus) string {
 		named, rest = named[:statusDirtyPaths], fmt.Sprintf(", +%d more", len(st.DirtyFiles)-statusDirtyPaths)
 	}
 	return fmt.Sprintf("yes (%d %s)%s%s%s", len(st.DirtyFiles), noun, shipSep, strings.Join(named, ", "), rest)
+}
+
+// statusParent is the branch gt tracks this one on. Graphite's stack metadata
+// is repo-global rather than per-working-copy, so concurrent gt runs can move
+// it under a branch nobody reparented on purpose.
+func statusParent(state gtBranchState) string {
+	if len(state.Parents) == 0 {
+		return ""
+	}
+	return state.Parents[0].Ref
 }
 
 // statusHolder names the working copy holding a branch the way stack list does,
@@ -565,6 +616,9 @@ func statusPRValue(pr statusPR) string {
 	}
 	if !pr.HasBody {
 		segs = append(segs, "no body")
+	}
+	if pr.Files > 0 {
+		segs = append(segs, fmt.Sprintf("%d %s", pr.Files, plural(pr.Files, "file", "files")))
 	}
 	return strings.Join(append(segs, shortSHA(pr.Head), pr.URL), shipSep)
 }

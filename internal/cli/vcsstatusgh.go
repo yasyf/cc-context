@@ -16,6 +16,7 @@ import (
 // the same way info and reviews do, plus everything a landing verdict needs.
 const statusPRFields = "number url body isDraft baseRefName headRefOid mergeable mergeStateStatus reviewDecision " +
 	prLandingFields + " " +
+	"files(first: 1) { totalCount } " +
 	"labels(first: 20) { nodes { name } } " +
 	"latestOpinionatedReviews(first: 20) { nodes { state author { login __typename } commit { oid } } } " +
 	"history: commits(last: 50) { nodes { commit { oid committedDate messageHeadline } } } " +
@@ -98,7 +99,10 @@ type statusPRNode struct {
 	Mergeable        string `json:"mergeable"`
 	MergeStateStatus string `json:"mergeStateStatus"`
 	ReviewDecision   string `json:"reviewDecision"`
-	Labels           struct {
+	Files            struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"files"`
+	Labels struct {
 		Nodes []struct {
 			Name string `json:"name"`
 		} `json:"nodes"`
@@ -416,6 +420,7 @@ func statusBuildPR(node statusPRNode, gt bool, activity string, drafts map[int]t
 		HasBody:        strings.TrimSpace(node.Body) != "",
 		Head:           node.HeadRefOid,
 		Base:           node.BaseRefName,
+		Files:          node.Files.TotalCount,
 		Mergeable:      node.Mergeable,
 		MergeState:     node.MergeStateStatus,
 		ReviewDecision: node.ReviewDecision,
