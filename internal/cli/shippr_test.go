@@ -405,6 +405,41 @@ func TestShipPRGTBothFlags(t *testing.T) {
 	})
 }
 
+// TestShipPRGTAlreadyCommitted is the shape a fan-out hands back: a delegate's
+// branch, its work committed, a clean tree, and no -m to give. Ship submits it
+// instead of refusing an empty commit, and the flags still write the pull
+// request a bodiless gt submit opens.
+func TestShipPRGTAlreadyCommitted(t *testing.T) {
+	log := setupShipGT(t, true)
+	t.Setenv("GIT_STAGED_EMPTY", "1")
+	seedPRViews(t, map[string]string{"feature": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`})
+	body := writePRBody(t, "body.md", "why this change\n")
+
+	got, err := runShipCmd(t, "--no-watch", "--pr-title", "fix: 🐛 frobnicate the widget", "--pr-body-file", body)
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := shipLandedSegment + ` · already committed a1b2c3d "fix: frobnicate" · ` +
+		`submitted feature → PR #7 https://github.com/x/pull/7 · set PR #7 title+body`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	assertInvocations(t, readInvocations(t, log), [][]string{
+		nogtProbe,
+		{"git", "branch", "--show-current"},
+		{"gt", "state"},
+		{"gt", "add", "--no-interactive", "-A"},
+		{"git", "diff", "--cached", "--quiet"},
+		{"git", "rev-list", "--count", "main..HEAD"},
+		{"git", "branch", "--show-current"},
+		{"git", "log", "-1", "--format=%h%x00%s"},
+		{"gt", "state"},
+		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--no-verify", "--publish"},
+		ghDownstackPRArgv("feature"),
+		{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "fix: 🐛 frobnicate the widget", "--body-file", body},
+	})
+}
+
 // TestShipPRGTBackfill covers the case the branch-scoped flags exist for: one
 // gt submit opens a pull request for the whole downstack with no body, and only
 // the branches this invocation named get one written.

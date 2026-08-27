@@ -236,6 +236,14 @@ func shipGTStack(t *testing.T, f *vcstest.Fixture, names ...string) {
 	}
 }
 
+// shipGTLevel cuts a tracked branch with no commit of its own, which leaves it
+// level with trunk — a branch with nothing above trunk to submit.
+func shipGTLevel(t *testing.T, f *vcstest.Fixture, name string) {
+	t.Helper()
+	mustRun(t, f.Dir, "git", "switch", "-qc", name)
+	mustRun(t, f.Dir, "gt", "track", "-f", "--no-interactive")
+}
+
 // shipGTUntracked cuts a branch with a commit of its own and leaves it
 // untracked, the state a plain git switch produces and gt track adopts.
 func shipGTUntracked(t *testing.T, f *vcstest.Fixture, name string) {

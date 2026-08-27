@@ -234,6 +234,14 @@ the repository is someone else's, and a detached HEAD or an ambiguous trunk refu
 intent explicitly (`--bookmark` is the jj-only alias of `--branch`, `--create` the
 deprecated alias of `--new-branch`).
 
+A branch someone else already committed — a delegate's worktree, a `git commit` by
+hand, a codex lane — ships without a flag: with nothing left to commit over commits
+trunk does not carry, ship skips the commit and goes on to track, push, and the PR,
+reporting `nothing to commit — shipping as --no-commit`. `--no-commit` states that
+path outright, and refuses a dirty working copy rather than leave its changes out
+of the branch and the PR. A branch level with trunk still refuses: there is nothing
+to submit either way.
+
 A live Graphite config (`.git/.graphite_repo_config`, linked worktrees included)
 routes ship to the gt lane — commits through `gt create`/`gt modify`, the push a
 `gt submit` of the downstack, published by default — after three gates, each
@@ -276,6 +284,7 @@ ccx vcs ship --amend                             # fold the working copy into th
 ccx vcs ship -m "spike" --branch me/probe        # commit onto a named branch
 ccx vcs ship -m "feat: x" --new-branch --pr-title "Add X" --pr-body-file body.md
 ccx vcs ship --new-branch --pr-title "Add X" --pr-body-file body.md  # -m derived from them
+ccx vcs ship --pr-title "Add X" --pr-body-file body.md  # already committed: just submit it
 ccx vcs ship -m "fix: x" --budget 0              # uncapped failure-log excerpt
 ```
 

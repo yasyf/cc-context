@@ -72,6 +72,14 @@ var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
 var errShipMessageRequired = errors.New("ship: -m/--message is required unless --amend, --no-commit, or --pr-title")
 
+// errShipAlreadyCommitted is the empty-commit refusals' other answer: the work
+// this ship would have committed is already committed, so ship submits the
+// branch as it stands instead of refusing. Only runShip reads it, which is
+// where the switch to --no-commit's path is made.
+var errShipAlreadyCommitted = errors.New("ship: the branch already carries its commits")
+
+const shipLandedSegment = "nothing to commit — shipping as --no-commit"
+
 // shipStreamCI reports whether a child's output should stream live to w, which is
 // true only when w is a real terminal. It mirrors stdinPiped's device check.
 var shipStreamCI = func(w io.Writer) bool {
@@ -169,7 +177,7 @@ func newShipCmd() *cobra.Command {
 		Short: "Commit, push, and watch CI in one step",
 		Long: `Commit, push, and watch CI in one step.
 
-Ship refuses an empty working copy (the usual cause: a prior ship already landed the commit in @-) and resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>, autostashing uncommitted work); a rebase that would conflict is rolled back and reported instead of pushed. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
+Ship refuses an empty working copy only when the branch carries nothing above trunk either. Where it does carry commits trunk does not — work a delegate's worktree, a hand-made commit, or a codex lane already landed — there is nothing to cut and everything to submit, so ship skips the commit and goes on to push and the pull request, reporting "nothing to commit — shipping as --no-commit". --no-commit states that path outright and refuses a dirty working copy, whose changes would otherwise be left out of the branch and the pull request this same run updates; a path-scoped ship never takes the path at all, since a path scopes a commit and this path cuts none. Ship resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>, autostashing uncommitted work); a rebase that would conflict is rolled back and reported instead of pushed. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
 
 Where the commit goes is one decision, resolved before any mutation and reported as a branch <name> or created <name> segment. On a non-trunk branch or bookmark, ship appends to it. On trunk it appends in your own repositories — direct-to-main is deliberate there — and starts a branch named from the commit subject when GitHub says the repository is someone else's, since an org trunk rejects the commit through its protect-<trunk> hook and leaves it dangling; the graphite lane always starts a branch on trunk, because gt has no verb that commits onto it. A detached HEAD is refused rather than guessed at, and so are several trunk candidates unless --branch names one of them. --branch <name> commits onto that branch, creating it here when it does not exist and refusing when it exists somewhere else, since ship does not check branches out; --new-branch[=<name>] always starts one, deriving the name from the commit subject when bare (an explicit name must be spelled --new-branch=name, because cobra parses "--new-branch name" as a path operand to commit); --append refuses on trunk; --allow-trunk lets --branch advance a trunk you do not own. --bookmark is a jj-only alias of --branch, --create a deprecated alias of --new-branch. A new branch is cut with gt create (graphite), git switch -c (git), or jj bookmark create -r @- (jj).
 
@@ -190,7 +198,7 @@ Ship owns the pull request in every lane. --pr-title and --pr-body-file are repe
 	}
 	cmd.Flags().StringArrayVarP(&o.messages, "message", "m", nil, "commit message; repeatable, each one its own paragraph")
 	cmd.Flags().BoolVar(&o.noPush, "no-push", false, "commit only; do not push or watch CI")
-	cmd.Flags().BoolVar(&o.noCommit, "no-commit", false, "push and update the PR for the commit already in place; cut no commit, and refuse a dirty working copy")
+	cmd.Flags().BoolVar(&o.noCommit, "no-commit", false, "push and update the PR for the commit already in place; cut no commit, and refuse a dirty working copy — implied when there is nothing to commit and the branch is ahead of trunk")
 	cmd.Flags().BoolVar(&o.noWatch, "no-watch", false, "push but do not watch CI")
 	cmd.Flags().BoolVar(&o.noVerify, "no-verify", false, "skip the repository's hooks (uvx prek, and git's own) — the default everywhere a pull request's CI is the check")
 	cmd.Flags().BoolVar(&o.verify, "verify", false, "run the repository's hooks — the default when the commit lands straight on trunk, or on a repository that names no trunk")
@@ -324,12 +332,16 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 			return err
 		}
 	}
+	landedSeg := ""
 	if o.noCommit {
 		if err := shipRefuseDirty(ctx, dir, kind, o); err != nil {
 			return err
 		}
 	} else if kind == vcs.JJ && sel == nil && !o.amend {
-		if err := shipRefuseEmptyJJ(ctx, dir, o, plan); err != nil {
+		switch err := shipRefuseEmptyJJ(ctx, dir, o, plan); {
+		case errors.Is(err, errShipAlreadyCommitted):
+			o.noCommit, landedSeg = true, shipLandedSegment
+		case err != nil:
 			return err
 		}
 	}
@@ -350,10 +362,12 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		} else {
 			hookSeg, err = shipCommitLocal(ctx, cmd.ErrOrStderr(), dir, kind, o, sel, plan)
 		}
-		if err != nil {
+		switch {
+		case errors.Is(err, errShipAlreadyCommitted):
+			o.noCommit, landedSeg = true, shipLandedSegment
+		case err != nil:
 			return err
-		}
-		if kind == vcs.JJ && plan.action == branchCreate {
+		case kind == vcs.JJ && plan.action == branchCreate:
 			if _, err := render.RunCLI(ctx, dir, "jj", []string{"bookmark", "create", plan.name, "-r", "@-"}); err != nil {
 				return fmt.Errorf("ship: jj bookmark create %s: %w", plan.name, err)
 			}
@@ -381,7 +395,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	if l.note != "" {
 		segments = append(segments, fmt.Sprintf("lane %s (%s)", kindLabel(l.kind), l.note))
 	}
-	for _, seg := range []string{planSeg, hookSeg} {
+	for _, seg := range []string{planSeg, landedSeg, hookSeg} {
 		if seg != "" {
 			segments = append(segments, seg)
 		}
@@ -522,7 +536,7 @@ func shipCommitLocal(ctx context.Context, errW io.Writer, dir render.Dir, kind v
 			}
 		}()
 	}
-	return shipCommit(ctx, errW, dir, kind, o, sel)
+	return shipCommit(ctx, errW, dir, kind, o, sel, plan)
 }
 
 // shipRestoreBranch puts the working copy back on from and deletes created. -D
@@ -542,7 +556,7 @@ func shipRestoreBranch(ctx context.Context, dir render.Dir, from, created string
 // report "hooks hunk-skip" instead: external prek would inspect full worktree
 // files, not the partial content being committed through a throwaway index.
 // It returns the hook summary segment to prepend to the ship summary.
-func shipCommit(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Kind, o shipOpts, sel *shipSelection) (string, error) {
+func shipCommit(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Kind, o shipOpts, sel *shipSelection, plan branchPlan) (string, error) {
 	o.message = withSessionTrailer(o.message)
 	var seg string
 	if kind == vcs.Git && sel == nil {
@@ -564,7 +578,7 @@ func shipCommit(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Ki
 	case vcs.JJ:
 		return seg, shipCommitJJ(ctx, dir, o, sel)
 	case vcs.Git:
-		return seg, shipCommitGit(ctx, dir, o, sel)
+		return seg, shipCommitGit(ctx, dir, o, sel, plan)
 	default:
 		return "", errors.New("ship: commit: unsupported vcs")
 	}
@@ -652,7 +666,7 @@ func shipCommitJJSelect(ctx context.Context, dir render.Dir, o shipOpts, sel *sh
 	return nil
 }
 
-func shipCommitGit(ctx context.Context, dir render.Dir, o shipOpts, sel *shipSelection) error {
+func shipCommitGit(ctx context.Context, dir render.Dir, o shipOpts, sel *shipSelection, plan branchPlan) error {
 	if sel != nil {
 		return shipCommitGitSelect(ctx, dir, o, sel)
 	}
@@ -672,8 +686,11 @@ func shipCommitGit(ctx context.Context, dir render.Dir, o shipOpts, sel *shipSel
 		argv = append(argv, "--")
 		argv = append(argv, o.rootPaths...)
 	}
-	if _, err := render.RunCLI(ctx, dir, "git", argv); err != nil {
-		return fmt.Errorf("ship: git commit: %w", err)
+	if _, cerr := render.RunCLI(ctx, dir, "git", argv); cerr != nil {
+		if err := shipRefuseEmptyGit(ctx, dir, o, plan); err != nil {
+			return err
+		}
+		return fmt.Errorf("ship: git commit: %w", cerr)
 	}
 	return nil
 }
@@ -762,6 +779,13 @@ func shipRefuseEmptyJJ(ctx context.Context, dir render.Dir, o shipOpts, plan bra
 	if parents > 1 {
 		return nil
 	}
+	landed, err := shipAlreadyCommitted(ctx, dir, vcs.JJ, o, plan)
+	if err != nil {
+		return err
+	}
+	if landed {
+		return errShipAlreadyCommitted
+	}
 	short, subject, err := shipDescribe(ctx, dir, vcs.JJ)
 	if err != nil {
 		return err
@@ -776,6 +800,71 @@ func shipRefuseEmptyJJ(ctx context.Context, dir render.Dir, o shipOpts, plan bra
 		hint = fmt.Sprintf(" push it: jj bookmark move %s --to @- && jj git push --bookmark %s", pat, pat)
 	}
 	return fmt.Errorf("ship: nothing to commit%s — did a prior ship already land %s %q?%s", scope, short, subject, hint)
+}
+
+// shipRefuseEmptyGit refuses a commit over an empty index. Unlike git commit,
+// gt create happily creates an empty branch on one, so the graphite lane asks
+// before committing and the git lane asks once git has refused — which is also
+// what tells a genuinely empty index from git's other refusals.
+func shipRefuseEmptyGit(ctx context.Context, dir render.Dir, o shipOpts, plan branchPlan) error {
+	_, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"diff", "--cached", "--quiet"})
+	if err != nil {
+		return fmt.Errorf("ship: git diff --cached --quiet: %w", err)
+	}
+	if code == 1 {
+		return nil
+	}
+	if code != 0 {
+		return fmt.Errorf("ship: git diff --cached --quiet: exit %d: %s", code, strings.TrimSpace(stderr))
+	}
+	landed, err := shipAlreadyCommitted(ctx, dir, vcs.Git, o, plan)
+	if err != nil {
+		return err
+	}
+	if landed {
+		return errShipAlreadyCommitted
+	}
+	short, subject, err := shipDescribe(ctx, dir, vcs.Git)
+	if err != nil {
+		return err
+	}
+	scope := ""
+	if len(o.paths) > 0 {
+		scope = " in " + strings.Join(o.paths, ", ")
+	}
+	return fmt.Errorf("ship: nothing to commit%s — did a prior ship already land %s %q?", scope, short, subject)
+}
+
+// shipAlreadyCommitted reports work some other path already committed: nothing
+// left to commit, over a branch carrying commits trunk does not. Ship submits
+// that branch as it stands rather than refusing a commit it cannot cut. A
+// branch level with trunk has nothing to submit either, and a scoped ship is
+// not this case at all: a path scopes a commit, and this path cuts none.
+func shipAlreadyCommitted(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpts, plan branchPlan) (bool, error) {
+	if len(o.paths) > 0 || plan.trunk == "" || plan.action == branchCreate {
+		return false, nil
+	}
+	switch kind {
+	case vcs.JJ:
+		stack, err := jjLogLines(ctx, dir, "ship", jjStackRevset(plan.trunk))
+		if err != nil || len(stack) == 0 {
+			return false, err
+		}
+		conflicts, err := jjLogLines(ctx, dir, "ship", jjConflictRevset(plan.trunk))
+		return len(conflicts) == 0, err
+	case vcs.Git:
+		out, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", "--count", plan.trunk + "..HEAD"})
+		if err != nil {
+			return false, fmt.Errorf("ship: git rev-list --count %s..HEAD: %w", plan.trunk, err)
+		}
+		ahead, err := strconv.Atoi(strings.TrimSpace(out))
+		if err != nil {
+			return false, fmt.Errorf("ship: malformed rev-list count %q: %w", out, err)
+		}
+		return ahead > 0, nil
+	default:
+		return false, errors.New("ship: unsupported vcs")
+	}
 }
 
 // checkBranchFlags validates the branch-intent flags before any repository read.
