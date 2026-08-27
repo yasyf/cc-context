@@ -58,16 +58,24 @@ type statusContextNode struct {
 	State      string `json:"state"`
 }
 
+// statusRef is a GraphQL object referenced only by its object id.
+type statusRef struct {
+	OID string `json:"oid"`
+}
+
+// statusLabelRef is the label a labelled or unlabelled event carries.
+type statusLabelRef struct {
+	Name string `json:"name"`
+}
+
 // statusEventNode is one timeline event: a merge label going on or off, or a
 // force push whose beforeCommit is the head it replaced.
 type statusEventNode struct {
-	Typename     string    `json:"__typename"`
-	CreatedAt    time.Time `json:"createdAt"`
-	Label        *struct{ Name string } `json:"label"`
-	Actor        *statusActor           `json:"actor"`
-	BeforeCommit *struct {
-		OID string `json:"oid"`
-	} `json:"beforeCommit"`
+	Typename     string          `json:"__typename"`
+	CreatedAt    time.Time       `json:"createdAt"`
+	Label        *statusLabelRef `json:"label"`
+	Actor        *statusActor    `json:"actor"`
+	BeforeCommit *statusRef      `json:"beforeCommit"`
 }
 
 // statusRollup is the head commit's aggregate check state and the contexts
@@ -99,9 +107,7 @@ type statusPRNode struct {
 		Nodes []struct {
 			State  string       `json:"state"`
 			Author *statusActor `json:"author"`
-			Commit *struct {
-				OID string `json:"oid"`
-			} `json:"commit"`
+			Commit *statusRef   `json:"commit"`
 		} `json:"nodes"`
 	} `json:"latestOpinionatedReviews"`
 	History struct {
