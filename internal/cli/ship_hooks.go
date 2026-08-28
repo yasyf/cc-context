@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -26,9 +27,10 @@ var shipHookConfigNames = []string{".pre-commit-config.yaml", ".pre-commit-confi
 // — and never over the common dir's.
 const shipHookIndexLock = "index.lock"
 
-// shipHookRetryLead separates the two streamed prek passes, which run the same
-// hooks over the same files and would otherwise read as one run repeating itself.
-const shipHookRetryLead = "ship: hooks: re-running prek over the auto-fixed files\n"
+// shipHookFindingsLead precedes the first pass's output when that pass came back
+// nonzero. Ship adopts the auto-fixes and commits regardless, so this output is
+// the only place a genuine finding is ever shown; CI is what grades it.
+const shipHookFindingsLead = "ship: hooks: prek reported the following; auto-fixes were adopted and the commit proceeds — CI grades the result\n"
 
 // shipHookStartNotice announces the hook run to a caller that is not getting the
 // stream. Off a terminal the first pass is discarded, so without this line a
@@ -37,20 +39,21 @@ const shipHookRetryLead = "ship: hooks: re-running prek over the auto-fixed file
 // hand gets a commit no linter ever saw.
 const shipHookStartNotice = "ship: hooks: running prek over %d file(s) — a cold Go lint pass can take several minutes\n"
 
-// shipRunHooks runs prek (via uvx) over the files ship is about to commit, with
-// an auto-fix-then-verify policy: prek's exit code cannot tell a genuine failure
-// from files it modified in place, so a nonzero first run is re-staged for Git,
-// re-derived, and retried once before it is treated as a real failure. A flaky
-// hook that passes unchanged on retry is indistinguishable and reports "hooks
-// fixed". External hook execution retains the same staging window as a manual
-// git add followed by git commit. A later jj push-time auto-rebase may incorporate
-// upstream content the hooks did not inspect; upstream CI covers that boundary.
-// The covered result reports whether this pass discharges the commit's hook
-// obligations, so the caller can suppress Git's duplicate run; a message-stage
-// config, which prek run --files never reaches, keeps it false.
-// The first pass streams to errW only on a terminal, where a human watches both
-// passes go by in order; off one it is discarded, since the auto-fix policy makes
-// its output a pre-fix snapshot the retry may already have repaired.
+// shipRunHooks runs prek (via uvx) over the files ship is about to commit, once:
+// it adopts whatever the hooks fixed in place and lets the commit proceed, and
+// CI grades what remains. prek's exit code cannot separate a genuine finding
+// from files it modified, and the retry pass that used to resolve that ambiguity
+// doubled the most expensive thing ship does — the Go hooks declare
+// pass_filenames: false, so each pass analyzes the whole module however small
+// the commit — to answer a question CI answers anyway. A nonzero pass therefore
+// reports "hooks fixed" and its output is surfaced rather than swallowed, since
+// it is the only place a real finding is shown. External hook execution retains
+// the same staging window as a manual git add followed by git commit. A later jj
+// push-time auto-rebase may incorporate upstream content the hooks did not
+// inspect; upstream CI covers that boundary. The covered result reports whether
+// this pass discharges the commit's hook obligations, so the caller can suppress
+// Git's duplicate run; a message-stage config, which prek run --files never
+// reaches, keeps it false.
 func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Kind, o shipOpts) (seg string, covered bool, err error) {
 	if o.noVerify {
 		return "", false, nil
@@ -84,15 +87,16 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 	covered = !msgStage
 
 	streamed := shipStreamCI(errW)
-	var firstW io.Writer
+	var buf bytes.Buffer
+	var passW io.Writer = &buf
 	if streamed {
-		firstW = errW
+		passW = io.MultiWriter(errW, &buf)
 	} else if _, werr := fmt.Fprintf(errW, shipHookStartNotice, len(files)); werr != nil {
 		return "", false, fmt.Errorf("ship: hooks: announce the run: %w", werr)
 	}
 	// Leading-dash filenames intentionally reach prek unchanged so it fails loudly.
 	argv := append([]string{"prek", "run", "--cd", string(dir), "--files"}, files...)
-	if err := shipRunPrek(ctx, dir, argv, firstW); err == nil {
+	if err := shipRunPrek(ctx, dir, argv, passW); err == nil {
 		return "hooks ok", covered, nil
 	}
 	if kind == vcs.Git {
@@ -107,14 +111,13 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 	if len(files) == 0 {
 		return "", false, errors.New("ship: hooks: auto-fixes reverted every pending change; nothing to commit")
 	}
-	if streamed {
-		if _, err := io.WriteString(errW, shipHookRetryLead); err != nil {
-			return "", false, fmt.Errorf("ship: hooks: report the retry: %w", err)
+	if !streamed {
+		if _, werr := io.WriteString(errW, shipHookFindingsLead); werr != nil {
+			return "", false, fmt.Errorf("ship: hooks: report the findings: %w", werr)
 		}
-	}
-	argv = append([]string{"prek", "run", "--cd", string(dir), "--files"}, files...)
-	if err := shipRunPrek(ctx, dir, argv, errW); err != nil {
-		return "", false, fmt.Errorf("ship: hooks: %w — pre-commit hooks still failing after auto-fix; nothing was committed and the working copy is left staged, so finishing the commit by hand would skip these checks entirely; fix them or re-run with --no-verify", err)
+		if _, werr := errW.Write(buf.Bytes()); werr != nil {
+			return "", false, fmt.Errorf("ship: hooks: report the findings: %w", werr)
+		}
 	}
 	return "hooks fixed", covered, nil
 }

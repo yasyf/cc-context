@@ -238,11 +238,11 @@ exit 0
 `)
 }
 
-// TestShipHooksStreamingSeam pins which prek pass reaches the caller's stderr.
-// The retry pass is the verdict and always reports; the first pass reports only
-// on a terminal, where a human watches both go by in order. Off one the only
-// reader is a capture, which would take the first pass's pre-fix output for a
-// verdict the retry may already have overturned.
+// TestShipHooksStreamingSeam pins what the single prek pass shows the caller.
+// A clean pass streams on a terminal and stays silent in a capture. A pass that
+// reports something is surfaced either way — streamed live on a terminal, and
+// replayed behind the findings lead-in off one — because ship commits regardless
+// and this is the only place a finding is ever shown.
 func TestShipHooksStreamingSeam(t *testing.T) {
 	for _, tt := range []struct {
 		name        string
@@ -255,8 +255,8 @@ func TestShipHooksStreamingSeam(t *testing.T) {
 	}{
 		{"a clean pass streams on a terminal", true, 0, "hooks ok", 1, false, 1},
 		{"a clean pass stays out of a capture", false, 0, "hooks ok", 0, false, 1},
-		{"an auto-fix streams both passes on a terminal", true, 1, "hooks fixed", 2, true, 2},
-		{"an auto-fix shows a capture only the verdict pass", false, 1, "hooks fixed", 1, false, 2},
+		{"a finding streams once on a terminal, with no replay", true, 1, "hooks fixed", 1, false, 1},
+		{"a finding is replayed into a capture behind the lead-in", false, 1, "hooks fixed", 1, true, 1},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := shipRepo(t, vcstest.Remote())
@@ -278,8 +278,8 @@ func TestShipHooksStreamingSeam(t *testing.T) {
 			if got := strings.Count(errStr, "prek: checking every hook"); got != tt.wantMarkers {
 				t.Errorf("prek passes on stderr = %d, want %d (stderr=%q)", got, tt.wantMarkers, errStr)
 			}
-			if got := strings.Contains(errStr, shipHookRetryLead); got != tt.wantLead {
-				t.Errorf("retry lead-in present = %v, want %v (stderr=%q)", got, tt.wantLead, errStr)
+			if got := strings.Contains(errStr, shipHookFindingsLead); got != tt.wantLead {
+				t.Errorf("findings lead-in present = %v, want %v (stderr=%q)", got, tt.wantLead, errStr)
 			}
 			if got := len(shipInvocationsOf(vcstest.Invocations(t, f.ArgvLog), "uvx")); got != tt.wantRuns {
 				t.Errorf("uvx runs = %d, want %d", got, tt.wantRuns)
