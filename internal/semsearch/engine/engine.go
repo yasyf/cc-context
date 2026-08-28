@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/semsearch"
@@ -182,8 +184,26 @@ func load(ctx context.Context, emb index.Embedder, a backend.Args) (*index.Index
 // mutex, and a Close that frees it.
 var (
 	residentMu    sync.Mutex
-	residentIndex = map[indexKey]*index.Index{}
+	residentIndex = map[indexKey]*residentEntry{}
 )
+
+const (
+	// residentCap bounds the resident cache. A server almost always serves one
+	// workspace; a second entry covers the default-content then all-content
+	// pattern without letting one session retain an index per repo it names.
+	residentCap = 2
+	// residentIdleTTL is how long an index outlives its last query. A loaded
+	// monorepo index is hundreds of MB, so an abandoned session should not hold
+	// one indefinitely; the cost of being wrong is one reload.
+	residentIdleTTL = 15 * time.Minute
+	// residentSweepInterval is how often StartIdleSweeper checks the TTL.
+	residentSweepInterval = 5 * time.Minute
+)
+
+type residentEntry struct {
+	idx      *index.Index
+	lastUsed time.Time
+}
 
 // indexKey identifies a resident index by its resolved repo path and the
 // parameters that make two loads incompatible.
@@ -216,15 +236,70 @@ func loadCached(ctx context.Context, emb index.Embedder, a backend.Args) (*index
 
 	residentMu.Lock()
 	defer residentMu.Unlock()
-	if idx := residentIndex[key]; idx != nil {
-		return idx, content, nil
+	if e := residentIndex[key]; e != nil {
+		e.lastUsed = time.Now()
+		return e.idx, content, nil
 	}
 	idx, err := index.Load(ctx, emb, repo, content, chunker, ModelID)
 	if err != nil {
 		return nil, nil, err
 	}
-	residentIndex[key] = idx
+	evictOldest(residentCap - 1)
+	residentIndex[key] = &residentEntry{idx: idx, lastUsed: time.Now()}
 	return idx, content, nil
+}
+
+// evictOldest drops least-recently-used entries until at most n remain. The
+// caller holds residentMu.
+func evictOldest(n int) {
+	for len(residentIndex) > n {
+		var oldest indexKey
+		first := true
+		for k, e := range residentIndex {
+			if first || e.lastUsed.Before(residentIndex[oldest].lastUsed) {
+				oldest, first = k, false
+			}
+		}
+		delete(residentIndex, oldest)
+	}
+}
+
+// SweepIdle drops every resident index unused for longer than residentIdleTTL
+// and returns the freed pages to the OS. Go's scavenger reclaims a several
+// hundred MB index only over many minutes otherwise, so the eviction would not
+// show up as RSS relief without the explicit call.
+func SweepIdle() {
+	residentMu.Lock()
+	cutoff := time.Now().Add(-residentIdleTTL)
+	dropped := 0
+	for k, e := range residentIndex {
+		if e.lastUsed.Before(cutoff) {
+			delete(residentIndex, k)
+			dropped++
+		}
+	}
+	residentMu.Unlock()
+	if dropped > 0 {
+		debug.FreeOSMemory()
+	}
+}
+
+// StartIdleSweeper runs SweepIdle on a ticker until ctx is cancelled. The MCP
+// server starts it so a long-lived process releases an index it has stopped
+// querying; the one-shot CLI exits before the first tick and never calls it.
+func StartIdleSweeper(ctx context.Context) {
+	go func() {
+		t := time.NewTicker(residentSweepInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				SweepIdle()
+			}
+		}
+	}()
 }
 
 // CloseIndexCache drops every retained index so the process frees the memory.
@@ -233,7 +308,7 @@ func loadCached(ctx context.Context, emb index.Embedder, a backend.Args) (*index
 func CloseIndexCache() {
 	residentMu.Lock()
 	defer residentMu.Unlock()
-	residentIndex = map[indexKey]*index.Index{}
+	residentIndex = map[indexKey]*residentEntry{}
 }
 
 // resolveChunk returns the index of the chunk containing line in file, or -1 —

@@ -21,6 +21,7 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/ripgrep"
 	"github.com/yasyf/cc-context/internal/search"
+	"github.com/yasyf/cc-context/internal/semsearch/engine"
 	"github.com/yasyf/cc-context/internal/symbol"
 	"github.com/yasyf/cc-context/internal/version"
 )
@@ -234,6 +235,7 @@ const serverInstructions = "Single question → the matching ccx_* tool; pipelin
 func Serve(ctx context.Context) error {
 	p := proxy.New()
 	defer func() { _ = p.Close() }() //nolint:contextcheck // teardown runs after ctx is cancelled; Close uses a fresh context by design
+	engine.StartIdleSweeper(ctx)
 
 	var eng *codeexec.Engine
 	if codeexec.Supported() {

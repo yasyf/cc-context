@@ -4,7 +4,37 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.47.0] - 2026-08-28
+
+### Changed
+- **A warm `ccx mcp` server holds a third less memory, and gives it back when
+  idle.** A server that had served one semantic search sat near a gigabyte for
+  the rest of its life, whatever its age. The split was never age or workspace,
+  only whether the process had ever searched. Three changes, measured against a
+  123K-chunk workspace.
+
+  The BM25 index now stores one `{doc, tf}` int32 pair per (term, document)
+  pair. It previously held the same 12M occurrences twice over in string-keyed
+  maps, one of them a per-document term-count map that was written and never
+  read. That is 610 MB off a warm search, and about 25% faster.
+
+  The embed engine now sizes its WASM linear memory from a 256 MiB ceiling up
+  front. It used to grow a 26-page buffer through some twenty
+  reallocate-and-copy steps, to reach a model footprint that is fixed at 118 MB
+  anyway. The floor every searching process pays drops from 449 MB to 182 MB.
+
+  The resident index cache is now a two-entry LRU that drops an index unused for
+  fifteen minutes and returns the pages to the OS, so an abandoned session stops
+  holding a monorepo index.
+
+  Search results are byte-identical, verified query by query against the
+  previous release and by the existing parity and determinism suites. The BM25
+  change is representational only: each document contributes to a term's
+  accumulator at most once, so a posting list read in insertion order
+  accumulates exactly as map order did. The one behavior change is the idle
+  eviction, where the first search after a quiet fifteen minutes pays a reload.
+
+## [0.46.0] - 2026-08-27
 
 ### Added
 - **`ccx vcs status`, which says what the whole stack is waiting on.** Per

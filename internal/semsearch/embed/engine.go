@@ -41,9 +41,11 @@ const (
 	compileTimeout = 60 * time.Second
 	// loadTimeout bounds em_load_model decoding the weights into linear memory.
 	loadTimeout = 60 * time.Second
-	// maxMemoryPages caps the instance's linear memory at 1 GiB (64 KiB/page);
-	// the decoded model needs ~150 MB, so this is pure headroom.
-	maxMemoryPages = 16384
+	// maxMemoryPages caps the instance's linear memory at 256 MiB (64 KiB/page).
+	// The decoded model settles at 1804 pages (118 MB) and never grows with the
+	// corpus, so this is 2x headroom. It is also the size wazero commits up
+	// front under WithMemoryCapacityFromMax below, so headroom is not free.
+	maxMemoryPages = 4096
 )
 
 // maxU32Bytes is the u32 linear-address ceiling that every frame count, text
@@ -405,6 +407,7 @@ func newCompilerRuntime(ctx context.Context, compilationCache wazero.Compilation
 	}()
 	return wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler().
 		WithCompilationCache(compilationCache).
+		WithMemoryCapacityFromMax(true).
 		WithMemoryLimitPages(maxMemoryPages)), nil
 }
 
