@@ -33,10 +33,11 @@ type posting struct {
 // bit-identical while holding one int32 pair per pair instead of a map entry.
 type BM25 struct {
 	ids         map[string]int32 // chunk id → insertion index
-	docLengths  []int32          // insertion index → token count
+	docLengths  []int            // insertion index → token count
 	totalDocLen int
 	postings    map[string][]posting // term → postings, in insertion order
-	positions   []int32              // insertion index → doc-order position, -1 when absent
+	positions   []int                // insertion index → doc-order position, -1 when absent
+	nDocs       int32
 	nOrder      int
 }
 
@@ -53,9 +54,10 @@ func (b *BM25) AddDocument(chunkID string, tokens []string) {
 	if _, ok := b.ids[chunkID]; ok {
 		panic(fmt.Sprintf("rank: chunk_id already indexed: %s", chunkID))
 	}
-	doc := int32(len(b.docLengths))
+	doc := b.nDocs
+	b.nDocs++
 	b.ids[chunkID] = doc
-	b.docLengths = append(b.docLengths, int32(len(tokens)))
+	b.docLengths = append(b.docLengths, len(tokens))
 	b.totalDocLen += len(tokens)
 	counts := map[string]int32{}
 	for _, t := range tokens {
@@ -69,13 +71,13 @@ func (b *BM25) AddDocument(chunkID string, tokens []string) {
 // SetDocOrder fixes the chunk order that GetScores' output is aligned to.
 func (b *BM25) SetDocOrder(chunkIDs []string) {
 	b.nOrder = len(chunkIDs)
-	b.positions = make([]int32, len(b.docLengths))
+	b.positions = make([]int, len(b.docLengths))
 	for i := range b.positions {
 		b.positions[i] = -1
 	}
 	for i, id := range chunkIDs {
 		if doc, ok := b.ids[id]; ok {
-			b.positions[doc] = int32(i)
+			b.positions[doc] = i
 		}
 	}
 }
