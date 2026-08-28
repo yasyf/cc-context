@@ -1,3 +1,10 @@
+[tools]
+# Match go.mod's `go` directive. prek's golangci-lint hook env ships no Go of
+# its own and runs the ambient one under GOTOOLCHAIN=local, so a global
+# `go = "latest"` that lags go.mod fails the hook with "go.mod requires go >=
+# X (running go Y)" and silently disables the local lint gate.
+go = "1.26.6"
+
 [env]
 # TODO: drop once golangci-lint's cached issues carry checkout-relative
 # positions — v2.12.2 keys the issue cache checkout-independently but stores

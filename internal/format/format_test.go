@@ -3,6 +3,7 @@ package format
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -190,5 +191,78 @@ func TestRunEmptyArgv(t *testing.T) {
 	_, _, _, err := Run(context.Background(), nil, defaultOpts(), nil, &bytes.Buffer{})
 	if err == nil {
 		t.Fatal("Run() with empty argv: want error, got nil")
+	}
+}
+
+// oversizedJSON builds a valid JSON array whose encoding exceeds
+// maxConvertBytes, for the ceiling cases below.
+func oversizedJSON(t *testing.T) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	b.WriteString(`[`)
+	for i := 0; b.Len() <= maxConvertBytes; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"id":%d,"name":"row-%d-padding-padding-padding"}`, i, i)
+	}
+	b.WriteString(`]`)
+	return b.Bytes()
+}
+
+// TestConvertPayloadCeiling covers the maxConvertBytes guard: the default auto,
+// non-strict mode passes an oversized payload through verbatim (the same result
+// the engine's call timeout produced, without the memory it cost), while strict
+// mode and a forced encoder surface ErrPayloadTooLarge.
+func TestConvertPayloadCeiling(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	big := oversizedJSON(t)
+	if len(big) <= maxConvertBytes {
+		t.Fatalf("fixture is %d bytes, want > %d", len(big), maxConvertBytes)
+	}
+
+	tests := []struct {
+		name      string
+		opts      Options
+		wantErr   bool
+		converted bool
+	}{
+		{"auto non-strict passes through", Options{Format: FormatAuto, Indent: 2}, false, false},
+		{"strict surfaces the ceiling", Options{Format: FormatAuto, Indent: 2, Strict: true}, true, false},
+		{"forced encoder surfaces the ceiling", Options{Format: FormatTOON, Indent: 2}, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, converted, err := Convert(big, tt.opts)
+			if tt.wantErr {
+				if !errors.Is(err, ErrPayloadTooLarge) {
+					t.Fatalf("err = %v, want ErrPayloadTooLarge", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Convert() error = %v, want nil", err)
+			}
+			if converted != tt.converted {
+				t.Errorf("converted = %v, want %v", converted, tt.converted)
+			}
+			if out != string(big) {
+				t.Errorf("output was not the verbatim passthrough (%d bytes vs %d)", len(out), len(big))
+			}
+		})
+	}
+}
+
+// TestConvertUnderCeilingStillConverts pins that the guard does not disturb a
+// payload below the ceiling.
+func TestConvertUnderCeilingStillConverts(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	src := []byte(`[{"id":1,"name":"a"},{"id":2,"name":"b"}]`)
+	out, converted, err := Convert(src, defaultOpts())
+	if err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+	if !converted {
+		t.Fatalf("converted = false, want true (out=%q)", out)
 	}
 }

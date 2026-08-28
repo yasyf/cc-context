@@ -35,6 +35,19 @@ const (
 	FormatJSON     Format = "json"
 )
 
+// maxConvertBytes bounds the payload Convert hands the engine. The guest builds
+// an IR whose resident footprint is a large multiple of the input — measured at
+// roughly 50x on this encoder, so ~240 MB for a 4.8 MB payload — and Go does not
+// return that heap to the OS, so one oversized call fattens a long-lived process
+// for its whole life. A payload past this ceiling also already exceeds the
+// engine's call timeout and lands in the same passthrough this returns directly,
+// so the guard changes what such a call costs, not what it returns.
+const maxConvertBytes = 4 << 20
+
+// ErrPayloadTooLarge reports a payload past maxConvertBytes. Callers in the
+// default auto, non-strict mode never see it: they get the passthrough.
+var ErrPayloadTooLarge = errors.New("payload exceeds the conversion ceiling")
+
 // Delimiter is the character separating values inside TOON array scopes.
 type Delimiter uint8
 
@@ -80,6 +93,9 @@ type Options struct {
 func Convert(src []byte, opts Options) (out string, converted bool, err error) {
 	if len(bytes.TrimSpace(src)) == 0 {
 		return string(src), false, nil
+	}
+	if len(src) > maxConvertBytes {
+		return convertHostError(src, opts, fmt.Errorf("%w: %d bytes over the %d-byte ceiling", ErrPayloadTooLarge, len(src), maxConvertBytes))
 	}
 
 	res, err := runEngine(src, opts)

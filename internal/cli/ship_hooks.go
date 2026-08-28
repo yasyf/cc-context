@@ -30,6 +30,13 @@ const shipHookIndexLock = "index.lock"
 // hooks over the same files and would otherwise read as one run repeating itself.
 const shipHookRetryLead = "ship: hooks: re-running prek over the auto-fixed files\n"
 
+// shipHookStartNotice announces the hook run to a caller that is not getting the
+// stream. Off a terminal the first pass is discarded, so without this line a
+// prek suite whose Go linters take minutes is indistinguishable from a hang —
+// and the caller that concludes "hung", kills ship, and finishes the commit by
+// hand gets a commit no linter ever saw.
+const shipHookStartNotice = "ship: hooks: running prek over %d file(s) — a cold Go lint pass can take several minutes\n"
+
 // shipRunHooks runs prek (via uvx) over the files ship is about to commit, with
 // an auto-fix-then-verify policy: prek's exit code cannot tell a genuine failure
 // from files it modified in place, so a nonzero first run is re-staged for Git,
@@ -80,6 +87,8 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 	var firstW io.Writer
 	if streamed {
 		firstW = errW
+	} else if _, werr := fmt.Fprintf(errW, shipHookStartNotice, len(files)); werr != nil {
+		return "", false, fmt.Errorf("ship: hooks: announce the run: %w", werr)
 	}
 	// Leading-dash filenames intentionally reach prek unchanged so it fails loudly.
 	argv := append([]string{"prek", "run", "--cd", string(dir), "--files"}, files...)
@@ -105,7 +114,7 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 	}
 	argv = append([]string{"prek", "run", "--cd", string(dir), "--files"}, files...)
 	if err := shipRunPrek(ctx, dir, argv, errW); err != nil {
-		return "", false, fmt.Errorf("ship: hooks: %w — pre-commit hooks still failing after auto-fix; fix them or re-run with --no-verify", err)
+		return "", false, fmt.Errorf("ship: hooks: %w — pre-commit hooks still failing after auto-fix; nothing was committed and the working copy is left staged, so finishing the commit by hand would skip these checks entirely; fix them or re-run with --no-verify", err)
 	}
 	return "hooks fixed", covered, nil
 }
