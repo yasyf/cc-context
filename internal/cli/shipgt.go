@@ -353,31 +353,6 @@ func gtCommitArgv(o shipOpts, plan branchPlan) []string {
 	return argv
 }
 
-// shipRefuseEmptyGT refuses a non-amend gt commit when the real index has no
-// staged changes: unlike git commit, gt create happily creates an empty
-// branch on an empty index.
-func shipRefuseEmptyGT(ctx context.Context, dir render.Dir, o shipOpts) error {
-	_, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"diff", "--cached", "--quiet"})
-	if err != nil {
-		return fmt.Errorf("ship: git diff --cached --quiet: %w", err)
-	}
-	if code == 1 {
-		return nil
-	}
-	if code != 0 {
-		return fmt.Errorf("ship: git diff --cached --quiet: exit %d: %s", code, strings.TrimSpace(stderr))
-	}
-	short, subject, err := shipDescribe(ctx, dir, vcs.Git)
-	if err != nil {
-		return err
-	}
-	scope := ""
-	if len(o.paths) > 0 {
-		scope = " in " + strings.Join(o.paths, ", ")
-	}
-	return fmt.Errorf("ship: nothing to commit%s — did a prior ship already land %s %q?", scope, short, subject)
-}
-
 // shipGTAdd stages the ship's paths (or everything, when unscoped) into the
 // real index through gt add — gt's own git-add passthrough — so the plain
 // staging step stays on the gt binary like every other gt-lane mutation.
@@ -415,7 +390,7 @@ func shipCommitGT(ctx context.Context, dir render.Dir, errW io.Writer, o shipOpt
 		return "", err
 	}
 	if !o.amend {
-		if err := shipRefuseEmptyGT(ctx, dir, o); err != nil {
+		if err := shipRefuseEmptyGit(ctx, dir, o, plan); err != nil {
 			return "", err
 		}
 	}

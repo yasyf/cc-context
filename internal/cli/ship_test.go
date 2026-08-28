@@ -654,6 +654,7 @@ func TestShipHooksEmptyFilesSkipSoftGuards(t *testing.T) {
 			{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 			{"jj", "diff", "--name-only"},
 			{"jj", "--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate},
+			{"jj", "--ignore-working-copy", "log", "-r", jjStackRevset("main"), "--no-graph", "-T", jjStackLineTemplate},
 			{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 		})
 		for _, inv := range invocations {
@@ -1177,6 +1178,8 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 		return []string{"jj", "--ignore-working-copy", "log", "-r", jjBookmarksRevset(target), "--no-graph", "-T", jjStackLineTemplate}
 	}
 	atState := []string{"jj", "--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", jjAtStateTemplate}
+	aboveTrunk := []string{"jj", "--ignore-working-copy", "log", "-r", jjStackRevset("main"), "--no-graph", "-T", jjStackLineTemplate}
+	conflicted := []string{"jj", "--ignore-working-copy", "log", "-r", jjConflictRevset("main"), "--no-graph", "-T", jjStackLineTemplate}
 	describe := []string{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate}
 	diff := []string{"jj", "diff", "--name-only"}
 	tests := []struct {
@@ -1193,7 +1196,7 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			name:   "unscoped",
 			args:   []string{"-m", "fix: frobnicate", "--no-watch"},
 			target: "main",
-			want:   append(jjPlanArgv(), stack("main"), diff, atState, describe),
+			want:   append(jjPlanArgv(), stack("main"), diff, atState, aboveTrunk, describe),
 		},
 		{
 			name: "path scoped",
@@ -1215,7 +1218,7 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 				mustRun(t, f.Dir, "jj", "bookmark", "create", "someone/probe", "-r", "@-")
 			},
 			target: "someone/probe",
-			want:   append(jjPlanArgv(), stack("someone/probe"), diff, atState, describe),
+			want:   append(jjPlanArgv(), stack("someone/probe"), diff, atState, aboveTrunk, describe),
 		},
 		{
 			// The hint names the target under --no-push too: the branch plan
@@ -1226,7 +1229,7 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 				mustRun(t, f.Dir, "jj", "bookmark", "create", "someone/probe", "-r", "@-")
 			},
 			target: "someone/probe",
-			want:   append(jjPlanArgv(), stack("someone/probe"), diff, atState, describe),
+			want:   append(jjPlanArgv(), stack("someone/probe"), diff, atState, aboveTrunk, describe),
 		},
 		{
 			name: "description only working copy refuses",
@@ -1235,7 +1238,7 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 				mustRun(t, f.Dir, "jj", "describe", "-m", "description only")
 			},
 			target: "main",
-			want:   append(jjPlanArgv(), diff, atState, describe),
+			want:   append(jjPlanArgv(), diff, atState, aboveTrunk, describe),
 		},
 		{
 			name:    "merge working copy commits",
@@ -1248,6 +1251,8 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 				[]string{"jj", "bookmark", "move", vcs.JJExactPattern("main"), "--to", "@-"}),
 		},
 		{
+			// Its commits above trunk are work already committed, but they
+			// conflict, so the refusal stands rather than submitting them.
 			name: "conflicted single-parent working copy refuses",
 			args: []string{"-m", "fix: frobnicate", "--no-push"},
 			opts: []vcstest.Opt{vcstest.Conflicted()},
@@ -1255,7 +1260,7 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 				mustRun(t, f.Dir, "jj", "new")
 			},
 			target: "main",
-			want:   append(jjPlanArgv(), diff, atState, describe),
+			want:   append(jjPlanArgv(), diff, atState, aboveTrunk, conflicted, describe),
 		},
 		{
 			// @- is the root commit, whose id is all zeros and whose description
@@ -1266,7 +1271,7 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 				mustRun(t, f.Dir, "jj", "new", "root()")
 			},
 			target: "main",
-			want:   append(jjPlanArgv(), diff, atState, describe),
+			want:   append(jjPlanArgv(), diff, atState, aboveTrunk, describe),
 		},
 	}
 	for _, tt := range tests {
@@ -4895,7 +4900,7 @@ func TestShipGTYoloImpliesNoVerify(t *testing.T) {
 func TestShipGTRefusals(t *testing.T) {
 	t.Run("staged empty", func(t *testing.T) {
 		f := shipGTRepo(t)
-		shipGTStack(t, f, "feature")
+		shipGTLevel(t, f, "feature")
 		shipResetLog(t, f)
 		head := shipHead(t, f)
 
@@ -5644,21 +5649,64 @@ func TestShipNoCommitShipsCommittedChange(t *testing.T) {
 	}
 }
 
-// TestShipWithoutNoCommitStillRefusesEmpty is the other half of the contract:
-// the same clean, already-committed tree still refuses without the flag, so the
-// new mode is an opt-out and not a weakening.
-func TestShipWithoutNoCommitStillRefusesEmpty(t *testing.T) {
-	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
-	shipHandCommit(t, f, vcs.JJ, "fix: the change already committed")
+// TestShipAlreadyCommittedSubmitsInPlace is the other half of the contract: the
+// same clean, already-committed branch needs no flag at all. A delegate that
+// commits in its own working copy hands back this state, so ship submits what
+// is there rather than refusing the commit it cannot cut.
+func TestShipAlreadyCommittedSubmitsInPlace(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		jj   bool
+	}{{name: "git"}, {name: "jj", jj: true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			kind := shipKind(tt.jj)
+			f := shipRepo(t, shipOptsFor(tt.jj, vcstest.Remote(), vcstest.Dirty())...)
+			// A git branch follows the commit its own checkout made, so only a
+			// branch off trunk carries commits trunk does not; a jj bookmark
+			// stays where it was, which leaves main itself behind @-.
+			target := "main"
+			if !tt.jj {
+				target = "feature"
+				mustRun(t, f.Dir, "git", "switch", "-qc", target)
+			}
+			shipHandCommit(t, f, kind, "fix: the change already committed")
+			head := shipHead(t, f)
+			shipResetLog(t, f)
+
+			got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--no-pr")
+			if err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			want := shipLandedSegment + shipSep + "already " + shipCommitted(t, f, kind)
+			if !strings.HasPrefix(got, want) {
+				t.Errorf("summary = %q, want it to open with %q", got, want)
+			}
+			// The git lane reaches the empty commit through git's own refusal,
+			// so the attempt is in the log; what neither lane may do is land one.
+			if got := shipHead(t, f); got != head {
+				t.Errorf("HEAD moved to %s, want the hand-made %s", got, head)
+			}
+			if n := remoteCount(t, f, target); n != 2 {
+				t.Errorf("origin %s holds %d commits, want the hand-made one pushed", target, n)
+			}
+		})
+	}
+}
+
+// TestShipEmptyLevelWithTrunkRefuses is where the refusal still belongs: a clean
+// working copy over a branch carrying nothing above trunk has nothing to submit
+// either, so the empty commit is still refused rather than shipped.
+func TestShipEmptyLevelWithTrunkRefuses(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	mustRun(t, f.Dir, "git", "switch", "-qc", "feature")
 	head := shipHead(t, f)
 	shipResetLog(t, f)
 
 	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
-	if err == nil {
-		t.Fatal("ship error = nil, want the empty-working-copy refusal")
-	}
-	if want := shipEmptyRefusal(t, f, "", "main"); err.Error() != want {
-		t.Errorf("ship error = %q, want %q", err, want)
+	want := fmt.Sprintf("ship: nothing to commit — did a prior ship already land %s %q?",
+		gitAt(t, f.Dir, "log", "-1", "--format=%h"), gitAt(t, f.Dir, "log", "-1", "--format=%s"))
+	if err == nil || err.Error() != want {
+		t.Fatalf("ship error = %v, want %q", err, want)
 	}
 	if got := shipHead(t, f); got != head {
 		t.Errorf("HEAD moved to %s, want the pre-ship %s", got, head)
