@@ -385,8 +385,8 @@ func TestShipHooksAutoFixThenPass(t *testing.T) {
 			if want := "hooks fixed · " + shipCommitted(t, f, kind) + " · branch main · not pushed"; got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
-			if uvxCount != 2 {
-				t.Errorf("uvx invocation count = %d, want 2", uvxCount)
+			if uvxCount != 1 {
+				t.Errorf("uvx invocation count = %d, want 1 (the suite runs once)", uvxCount)
 			}
 			if !jj && gitAddCount != 2 {
 				t.Errorf("git add -A invocation count = %d, want 2", gitAddCount)
@@ -398,6 +398,10 @@ func TestShipHooksAutoFixThenPass(t *testing.T) {
 	}
 }
 
+// TestShipHooksRetryRederivesFiles proves the post-hook re-derive still decides
+// what gets committed even though it no longer feeds a second prek pass: the
+// fixer deletes the file ship staged and writes another, and the commit carries
+// the replacement alone.
 func TestShipHooksRetryRederivesFiles(t *testing.T) {
 	for _, jj := range []bool{true, false} {
 		t.Run(kindLabel(shipKind(jj)), func(t *testing.T) {
@@ -417,7 +421,6 @@ func TestShipHooksRetryRederivesFiles(t *testing.T) {
 			}
 			assertInvocations(t, shipInvocationsOf(vcstest.Invocations(t, f.ArgvLog), "uvx"), [][]string{
 				{"uvx", "prek", "run", "--cd", f.Dir, "--files", "first.go"},
-				{"uvx", "prek", "run", "--cd", f.Dir, "--files", "generated.go"},
 			})
 			if want := "hooks fixed · " + shipCommitted(t, f, kind) + " · branch main · not pushed"; got != want {
 				t.Errorf("summary = %q, want %q", got, want)
@@ -432,21 +435,25 @@ func TestShipHooksRetryRederivesFiles(t *testing.T) {
 	}
 }
 
+// TestShipHooksPersistentFailure proves a hook finding no longer blocks the
+// commit: ship runs the suite once, cannot tell a finding from a fix, commits
+// anyway, and surfaces the output so the finding is not swallowed. CI grades it.
 func TestShipHooksPersistentFailure(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote())
 	shipHookRepo(t, f, vcs.Git, 2, "", "f1.go")
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
-	if err == nil || !strings.Contains(err.Error(), "ship: hooks:") {
-		t.Fatalf("ship error = %v, want containing %q", err, "ship: hooks:")
+	got, errStr, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v, want the commit to proceed (stderr=%q)", err, errStr)
 	}
-	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
-		if inv[0] == "git" && len(inv) > 1 && inv[1] == "commit" {
-			t.Errorf("commit ran after persistent hook failure: %v", inv)
-		}
+	if !strings.Contains(got, "hooks fixed") {
+		t.Errorf("summary = %q, want it to carry %q", got, "hooks fixed")
 	}
-	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "hooks" {
-		t.Errorf("HEAD subject = %q, want no commit cut", subject)
+	if !strings.Contains(errStr, shipHookFindingsLead) {
+		t.Errorf("stderr = %q, want the findings lead-in", errStr)
+	}
+	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
+		t.Errorf("HEAD subject = %q, want the commit cut", subject)
 	}
 }
 
@@ -4156,15 +4163,19 @@ func TestShipGitNewBranch(t *testing.T) {
 
 // TestShipGitNewBranchRollback proves a refusal after the branch cut leaves the
 // repository where it started: ship switches back, deletes the branch it cut,
-// leaves the edit uncommitted, and still reports the failure that refused it.
+// and still reports the failure that refused it. The rollback undoes ship's own
+// branch cut and nothing else — the file the hook removed stays removed, since
+// restoring a hook's edits is not the rollback's job.
 func TestShipGitNewBranchRollback(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote())
-	writeShipHookFiles(t, f.Dir, "f1.go")
-	writeShipUvx(t, f, 2, "")
+	// A finding no longer refuses; an auto-fix that empties the change still does.
+	// shipHookRepo commits the prek config, so f1.go is the only pending change
+	// and removing it leaves the re-derive genuinely empty.
+	shipHookRepo(t, f, vcs.Git, 1, "rm -f f1.go", "f1.go")
 
 	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--verify", "--new-branch=feat-x")
 	if err == nil || !strings.Contains(err.Error(), "ship: hooks:") {
-		t.Fatalf("ship error = %v, want the hook failure", err)
+		t.Fatalf("ship error = %v, want the hook refusal", err)
 	}
 	if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "main" {
 		t.Errorf("branch after rollback = %q, want main", branch)
@@ -4172,31 +4183,29 @@ func TestShipGitNewBranchRollback(t *testing.T) {
 	if gitBranchExists(t, f.Dir, "feat-x") {
 		t.Error("feat-x survived the rollback")
 	}
-	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "init" {
+	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "hooks" {
 		t.Errorf("HEAD subject = %q, want no commit cut", subject)
 	}
-	if status := gitAt(t, f.Dir, "status", "--porcelain", "--", "f1.go"); status == "" {
-		t.Error("f1.go is committed or gone; the rollback must leave the edit uncommitted")
+	if _, err := os.Stat(filepath.Join(f.Dir, "f1.go")); !os.IsNotExist(err) {
+		t.Errorf("stat f1.go = %v, want it still removed; the rollback must not restore the hook's edits", err)
 	}
 }
 
 // TestShipGitNewBranchRollbackFailure proves a rollback that cannot finish is
-// reported alongside the refusal that triggered it, never instead of it.
-// TestShipGitNewBranchRollbackFailure proves a rollback that cannot finish is
 // reported alongside the refusal that triggered it, never instead of it. The
-// last failing hook run leaves an index.lock behind, which is what makes git
-// refuse the switch back — the same state a crashed git process leaves.
+// hook run leaves an index.lock behind, which is what makes git refuse the
+// switch back — the same state a crashed git process leaves.
 func TestShipGitNewBranchRollbackFailure(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote())
 	writeShipHookFiles(t, f.Dir, "f1.go")
 	lock := filepath.Join(f.Dir, ".git", "index.lock")
-	writeShipUvx(t, f, 2, `test "$(cat "$SHIP_PREK_MARKER")" != 0 || : > `+lock)
+	writeShipUvx(t, f, 1, "rm -f f1.go; : > "+lock)
 
 	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--verify", "--new-branch=feat-x")
 	if err == nil {
 		t.Fatal("expected a refusal, got nil")
 	}
-	for _, want := range []string{"ship: hooks:", "ship: rollback: git switch main", "the working copy is left on feat-x"} {
+	for _, want := range []string{"ship: rollback: git switch main", "the working copy is left on feat-x"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, want it to contain %q", err.Error(), want)
 		}
