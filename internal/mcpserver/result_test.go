@@ -9,7 +9,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/yasyf/cc-context/internal/backend"
-	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // rootLine is the "# root <abspath>\n" a rooted tool result carries for the
@@ -25,11 +24,6 @@ func rootLine(t *testing.T) string {
 
 // pinRoot pins root for the duration of the test, clearing the process-global
 // pin afterwards.
-func pinRoot(t *testing.T, root string) {
-	t.Helper()
-	workspace.SetRoot(root)
-	t.Cleanup(func() { workspace.SetRoot("") })
-}
 
 func TestWithRootLineJoinsHeaderBlock(t *testing.T) {
 	tests := []struct {
