@@ -65,7 +65,7 @@ type classCtx struct {
 // scans the repo for dependents, and renders the anchored report. Output is
 // uncapped — the caller Caps it.
 func Run(ctx context.Context, a backend.Args) (string, error) {
-	cwd, err := workspace.Root()
+	cwd, err := workspace.RootFrom(ctx)
 	if err != nil {
 		return "", fmt.Errorf("deps: resolve cwd: %w", err)
 	}

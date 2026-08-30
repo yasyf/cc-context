@@ -84,7 +84,7 @@ func OutlinePaths(ctx context.Context, paths []string, o OutlineOpts) ([]Outline
 	if err != nil {
 		return nil, err
 	}
-	dir, err := searchDir()
+	dir, err := searchDir(ctx)
 	if err != nil {
 		return nil, err
 	}

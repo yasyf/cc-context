@@ -145,7 +145,7 @@ func runSemantic(ctx context.Context, op backend.Op, a backend.Args) (string, er
 	}
 	repo := a.Path
 	if repo == "" {
-		if repo, err = workspace.Root(); err != nil {
+		if repo, err = workspace.RootFrom(ctx); err != nil {
 			return "", fmt.Errorf("dispatch: resolve cwd: %w", err)
 		}
 	}

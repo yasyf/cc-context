@@ -45,7 +45,7 @@ const maxBudget = 1 << 31
 // Run lists the files a.Globs select under the project root, rendered to a
 // budgeted listing. A zero a.Budget renders every row uncapped.
 func Run(ctx context.Context, a backend.Args) (string, error) {
-	cwd, err := workspace.Root()
+	cwd, err := workspace.RootFrom(ctx)
 	if err != nil {
 		return "", fmt.Errorf("find: resolve cwd: %w", err)
 	}

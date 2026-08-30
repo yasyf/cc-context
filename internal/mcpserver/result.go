@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"context"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -19,9 +20,11 @@ func textResult(text string) *mcp.CallToolResult {
 // rootHeaderResult is textResult for an op that answers out of a project root,
 // naming that root in the header block. The MCP server serves whichever tree it
 // was started in, and its cites are repo-relative, so without the root line an
-// answer from the wrong worktree reads exactly like one from the right tree.
-func rootHeaderResult(text string) (*mcp.CallToolResult, any, error) {
-	root, err := workspace.Root()
+// answer from the wrong worktree reads exactly like one from the right tree. It
+// reads ctx's root, the one the op itself resolved against, so a concurrent
+// re-pin cannot name one tree over another tree's answer.
+func rootHeaderResult(ctx context.Context, text string) (*mcp.CallToolResult, any, error) {
+	root, err := workspace.RootFrom(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -44,11 +47,11 @@ func withRootLine(text, root string) string {
 // opResult wraps text as op's tool result, rooted unless op answers from no
 // project root. It is every op-dispatching handler's whole result shaping, so a
 // handler that moves keeps the root line by carrying this one line with it.
-func opResult(op backend.Op, text string) (*mcp.CallToolResult, any, error) {
+func opResult(ctx context.Context, op backend.Op, text string) (*mcp.CallToolResult, any, error) {
 	if rootless(op) {
 		return textResult(text), nil, nil
 	}
-	return rootHeaderResult(text)
+	return rootHeaderResult(ctx, text)
 }
 
 // rootless reports whether op answers from no project root. Only the web ops

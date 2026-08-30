@@ -44,7 +44,7 @@ func presentEngines(t *testing.T) []namedEngine {
 // a test driving the internal chain runs its engine where production would.
 func testDir(t *testing.T) render.Dir {
 	t.Helper()
-	dir, err := searchDir()
+	dir, err := searchDir(context.Background())
 	if err != nil {
 		t.Fatalf("searchDir(): %v", err)
 	}

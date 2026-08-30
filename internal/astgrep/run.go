@@ -22,8 +22,8 @@ const astGrepExitNoMatch = 1
 
 // searchDir is the project root every ast-grep child runs in and every path it
 // prints is relative to; one resolution feeds both so they cannot drift.
-func searchDir() (render.Dir, error) {
-	root, err := workspace.Root()
+func searchDir(ctx context.Context) (render.Dir, error) {
+	root, err := workspace.RootFrom(ctx)
 	if err != nil {
 		return "", fmt.Errorf("astgrep: resolve cwd: %w", err)
 	}
@@ -35,7 +35,7 @@ func searchDir() (render.Dir, error) {
 // and returns the bounded output. It is the single orchestration shared by the
 // CLI and the MCP proxy so the two surfaces behave identically.
 func Run(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
-	dir, err := searchDir()
+	dir, err := searchDir(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -91,7 +91,7 @@ func OutlineStdin(ctx context.Context, src []byte, lang string) ([]OutlineFile, 
 	if err != nil {
 		return nil, err
 	}
-	dir, err := searchDir()
+	dir, err := searchDir(ctx)
 	if err != nil {
 		return nil, err
 	}

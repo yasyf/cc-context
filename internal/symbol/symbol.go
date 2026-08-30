@@ -44,7 +44,7 @@ var separators = []string{"::", "#", "."}
 // a.RevealSecrets. A miss degrades exact → case-insensitive → definition-
 // keyword text before failing with ErrNotFound. The output is not capped.
 func Run(ctx context.Context, a backend.Args) (string, []string, error) {
-	cwd, err := workspace.Root()
+	cwd, err := workspace.RootFrom(ctx)
 	if err != nil {
 		return "", nil, fmt.Errorf("symbol: resolve cwd: %w", err)
 	}

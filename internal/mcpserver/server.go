@@ -101,8 +101,8 @@ type ReadIn struct {
 // readArgs builds the read backend.Args from a ccx_code_read call, resolving the
 // path against the call's repo root and applying the default budget when the
 // caller sets none (the codeexec path leaves it zero).
-func readArgs(in ReadIn) (backend.Args, error) {
-	path, err := rootedPath(in.Repo, in.Path)
+func readArgs(ctx context.Context, in ReadIn) (backend.Args, error) {
+	path, err := rootedPath(ctx, in.Repo, in.Path)
 	if err != nil {
 		return backend.Args{}, err
 	}
@@ -141,14 +141,19 @@ type DepsIn struct {
 	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the output; 0 or omitted = default 2000"`
 }
 
-// depsArgs builds the deps backend.Args from a ccx_code_deps call, applying the
-// default budget when the caller sets none (the codeexec path leaves it zero).
-func depsArgs(in DepsIn) backend.Args {
-	a := backend.Args{Path: in.Path, Budget: in.Budget}
+// depsArgs builds the deps backend.Args from a ccx_code_deps call, resolving the
+// path against the call's root and applying the default budget when the caller
+// sets none (the codeexec path leaves it zero).
+func depsArgs(ctx context.Context, in DepsIn) (backend.Args, error) {
+	path, err := rootedPath(ctx, "", in.Path)
+	if err != nil {
+		return backend.Args{}, err
+	}
+	a := backend.Args{Path: path, Budget: in.Budget}
 	if a.Budget == 0 {
 		a.Budget = deps.DefaultBudget
 	}
-	return a
+	return a, nil
 }
 
 // GrepIn is the input for ccx_code_grep.
@@ -172,8 +177,8 @@ type GrepIn struct {
 // grepArgs builds the grep backend.Args from a ccx_code_grep call, resolving the
 // operands against the call's repo root and applying the default budget when the
 // caller sets none.
-func grepArgs(in GrepIn) (backend.Args, error) {
-	paths, err := rootedPaths(in.Repo, in.Paths)
+func grepArgs(ctx context.Context, in GrepIn) (backend.Args, error) {
+	paths, err := rootedPaths(ctx, in.Repo, in.Paths)
 	if err != nil {
 		return backend.Args{}, err
 	}
@@ -324,8 +329,12 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_related",
 		Description: "Find code semantically related to a file:line — follow-up to a search hit. Takes an anchored location too (f.go:12#a3fk). Covers code+docs by default; pass content to narrow (code|docs|config|all).",
-	}, handler(p, backend.OpRelated, func(in RelatedIn) backend.Args {
-		return backend.Args{Query: in.Location, Path: in.Repo, Kind: in.Content}
+	}, rootedHandler(p, backend.OpRelated, func(ctx context.Context, in RelatedIn) (backend.Args, error) {
+		repo, err := rootedPath(ctx, "", in.Repo)
+		if err != nil {
+			return backend.Args{}, err
+		}
+		return backend.Args{Query: in.Location, Path: repo, Kind: in.Content}, nil
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -348,7 +357,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_deps",
 		Description: "A file's imports (classified local/std/external) and the files that import it (used by), each anchored — budget-bounded, syntactic (not a build graph).",
-	}, handler(p, backend.OpDeps, depsArgs))
+	}, rootedHandler(p, backend.OpDeps, depsArgs))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_grep",
@@ -430,13 +439,18 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 // snippet knobs.
 func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, SearchIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in SearchIn) (*mcp.CallToolResult, any, error) {
+		ctx = pinCall(ctx)
 		snippet := in.MaxSnippetLines
 		if snippet == 0 {
 			snippet = defaultSnippetLines
 		}
+		repo, err := rootedPath(ctx, "", in.Repo)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
+		}
 		a := backend.Args{
 			Query:           in.Query,
-			Path:            in.Repo,
+			Path:            repo,
 			Mode:            in.Mode,
 			Lang:            in.Lang,
 			Kind:            in.Content,
@@ -447,11 +461,11 @@ func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, S
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		if op == backend.OpStructural && in.Repo != "" {
-			a.Paths = []string{in.Repo}
+		if op == backend.OpStructural && repo != "" {
+			a.Paths = []string{repo}
 		}
 		if op == backend.OpGrep {
-			if a.Paths, err = rootedPaths(in.Repo, nil); err != nil {
+			if a.Paths, err = rootedPaths(ctx, in.Repo, nil); err != nil {
 				return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 			}
 		}
@@ -459,7 +473,7 @@ func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, S
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return rootHeaderResult(out)
+		return rootHeaderResult(ctx, out)
 	}
 }
 
@@ -468,6 +482,7 @@ func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, S
 // engine.
 func editHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, EditIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in EditIn) (*mcp.CallToolResult, any, error) {
+		ctx = pinCall(ctx)
 		if (in.Content != nil) == in.Delete {
 			return nil, nil, fmt.Errorf("%s: provide exactly one of content or delete", req.Params.Name)
 		}
@@ -491,7 +506,7 @@ func editHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, Edi
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return rootHeaderResult(out)
+		return rootHeaderResult(ctx, out)
 	}
 }
 
@@ -500,7 +515,8 @@ func editHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, Edi
 // directories and the languages it outlines, the native fallback otherwise.
 func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, OutlineIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in OutlineIn) (*mcp.CallToolResult, any, error) {
-		path, err := rootedPath(in.Repo, in.Path)
+		ctx = pinCall(ctx)
+		path, err := rootedPath(ctx, in.Repo, in.Path)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
@@ -516,7 +532,7 @@ func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, 
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return rootHeaderResult(note + out)
+		return rootHeaderResult(ctx, note+out)
 	}
 }
 
@@ -563,23 +579,36 @@ func withNotes(text string, notes []string) string {
 	return text + "\n\n[notes]\n" + strings.Join(notes, "\n")
 }
 
+// pinCall snapshots the declared root into ctx for the whole of one tool call.
+// Calls run concurrently against one process-global pin, so an op and the root
+// header naming its answer both read this one snapshot rather than re-reading a
+// pin another call can move mid-flight.
+func pinCall(ctx context.Context) context.Context {
+	return workspace.WithRoot(ctx, workspace.Declared())
+}
+
 // callRoot resolves the root one tool call answers against: the repo the caller
-// named, else the root the MCP client declared. Empty means neither, and the op
-// resolves against the process working directory as it always has.
-func callRoot(repo string) (string, error) {
+// named, itself resolved against the declared root when it is relative, else the
+// root the MCP client declared. Empty means neither, and the op resolves against
+// the process working directory as it always has.
+func callRoot(ctx context.Context, repo string) (string, error) {
+	declared := workspace.DeclaredFrom(ctx)
 	if repo == "" {
-		return workspace.Declared(), nil
+		return declared, nil
 	}
-	return filepath.Abs(repo)
+	if declared == "" || filepath.IsAbs(repo) {
+		return filepath.Abs(repo)
+	}
+	return filepath.Join(declared, repo), nil
 }
 
 // rootedPath resolves a caller's path against callRoot. An absolute path, or a
 // "~" backend.ResolvePath expands later, already names its own file.
-func rootedPath(repo, path string) (string, error) {
+func rootedPath(ctx context.Context, repo, path string) (string, error) {
 	if path == "" || filepath.IsAbs(path) || strings.HasPrefix(path, "~") {
 		return path, nil
 	}
-	root, err := callRoot(repo)
+	root, err := callRoot(ctx, repo)
 	if err != nil {
 		return "", err
 	}
@@ -592,9 +621,9 @@ func rootedPath(repo, path string) (string, error) {
 // rootedPaths resolves a grep's operands against callRoot, making the root
 // itself the sole operand when the caller named none: the engines walk the
 // process working directory otherwise, whatever root the call names.
-func rootedPaths(repo string, paths []string) ([]string, error) {
+func rootedPaths(ctx context.Context, repo string, paths []string) ([]string, error) {
 	if len(paths) == 0 {
-		root, err := callRoot(repo)
+		root, err := callRoot(ctx, repo)
 		if err != nil {
 			return nil, err
 		}
@@ -605,7 +634,7 @@ func rootedPaths(repo string, paths []string) ([]string, error) {
 	}
 	rooted := make([]string, len(paths))
 	for i, path := range paths {
-		p, err := rootedPath(repo, path)
+		p, err := rootedPath(ctx, repo, path)
 		if err != nil {
 			return nil, err
 		}
@@ -618,14 +647,15 @@ func rootedPaths(repo string, paths []string) ([]string, error) {
 // the op and wraps the result text in a tool result; errors carry the called
 // tool's name as their prefix.
 func handler[In any](p *proxy.Proxy, op backend.Op, args func(In) backend.Args) func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, any, error) {
-	return rootedHandler(p, op, func(in In) (backend.Args, error) { return args(in), nil })
+	return rootedHandler(p, op, func(_ context.Context, in In) (backend.Args, error) { return args(in), nil })
 }
 
 // rootedHandler is handler for the tools whose Args builder resolves the
 // caller's paths against a repo root, which can fail.
-func rootedHandler[In any](p *proxy.Proxy, op backend.Op, args func(In) (backend.Args, error)) func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, any, error) {
+func rootedHandler[In any](p *proxy.Proxy, op backend.Op, args func(context.Context, In) (backend.Args, error)) func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
-		a, err := args(in)
+		ctx = pinCall(ctx)
+		a, err := args(ctx, in)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
@@ -633,7 +663,7 @@ func rootedHandler[In any](p *proxy.Proxy, op backend.Op, args func(In) (backend
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return opResult(op, out)
+		return opResult(ctx, op, out)
 	}
 }
 

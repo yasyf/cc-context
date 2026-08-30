@@ -24,7 +24,7 @@ import (
 // appends the shared footer after its cap. Output is uncapped — the caller
 // budget-caps it — and a.Full inlines per-file hunks.
 func Run(ctx context.Context, a backend.Args) (string, []string, error) {
-	cwd, err := workspace.Root()
+	cwd, err := workspace.RootFrom(ctx)
 	if err != nil {
 		return "", nil, fmt.Errorf("diff: resolve cwd: %w", err)
 	}

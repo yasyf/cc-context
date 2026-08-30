@@ -252,3 +252,136 @@ func TestGrepToolRepoRootsExplicitPaths(t *testing.T) {
 		t.Errorf("an operand should resolve against the named repo:\n%s", out)
 	}
 }
+
+// writeNested writes one file at a relative path under a fresh directory and
+// returns the root and the written file.
+func writeNested(t *testing.T, rel, content string) (dir, path string) {
+	t.Helper()
+	dir = t.TempDir()
+	path = filepath.Join(dir, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("make fixture dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	return dir, path
+}
+
+func TestReadToolRelativeRepoResolvesAgainstThePinnedRoot(t *testing.T) {
+	pinned, _ := writeNested(t, "vendor/f.txt", "pinned vendor\n")
+	cwd, _ := writeNested(t, "vendor/f.txt", "cwd vendor\n")
+	t.Chdir(cwd)
+	pinRoot(t, pinned)
+
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_code_read", map[string]any{"path": "f.txt", "repo": "vendor"})
+	if isErr {
+		t.Fatalf("ccx_code_read relative repo is error: %s", out)
+	}
+	if !strings.Contains(out, "pinned vendor\n") {
+		t.Errorf("a relative repo should resolve against the pinned root:\n%s", out)
+	}
+}
+
+func TestReadToolRelativeRepoFallsBackToCwdWithoutAPin(t *testing.T) {
+	cwd, _ := writeNested(t, "vendor/f.txt", "cwd vendor\n")
+	t.Chdir(cwd)
+
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_code_read", map[string]any{"path": "f.txt", "repo": "vendor"})
+	if isErr {
+		t.Fatalf("ccx_code_read relative repo is error: %s", out)
+	}
+	if !strings.Contains(out, "cwd vendor\n") {
+		t.Errorf("with nothing pinned a relative repo should resolve against the working directory:\n%s", out)
+	}
+}
+
+func TestGrepToolRelativeRepoSearchesUnderThePinnedRoot(t *testing.T) {
+	requireGrepEngine(t)
+	pinned, hit := writeNested(t, "vendor/pinned.go", "var needle = 1\n")
+	cwd, _ := writeNested(t, "vendor/cwd.go", "var needle = 2\n")
+	t.Chdir(cwd)
+	pinRoot(t, pinned)
+
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "needle", "repo": "vendor"})
+	if isErr {
+		t.Fatalf("ccx_code_grep relative repo is error: %s", out)
+	}
+	if !strings.Contains(out, "### "+hit+":") {
+		t.Errorf("a relative repo should search under the pinned root:\n%s", out)
+	}
+	if strings.Contains(out, "cwd.go") {
+		t.Errorf("grep leaked into the working directory's vendor tree:\n%s", out)
+	}
+}
+
+func TestSearchToolLiteralRelativeRepoSearchesUnderThePinnedRoot(t *testing.T) {
+	requireGrepEngine(t)
+	pinned, hit := writeNested(t, "vendor/pinned.go", "var needle = 1\n")
+	cwd, _ := writeNested(t, "vendor/cwd.go", "var needle = 2\n")
+	t.Chdir(cwd)
+	pinRoot(t, pinned)
+
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_code_search", map[string]any{"query": "needle", "mode": "literal", "repo": "vendor"})
+	if isErr {
+		t.Fatalf("ccx_code_search relative repo is error: %s", out)
+	}
+	if !strings.Contains(out, "### "+hit+":") {
+		t.Errorf("a literal search's relative repo should search under the pinned root:\n%s", out)
+	}
+	if strings.Contains(out, "cwd.go") {
+		t.Errorf("literal search leaked into the working directory's vendor tree:\n%s", out)
+	}
+}
+
+func TestDepsToolPinnedRootRootsRelativePath(t *testing.T) {
+	pinned, hit := writeTree(t, "a.go", "package a\n\nimport \"github.com/yasyf/pinnedpkg\"\n\nvar _ = pinnedpkg.X\n")
+	cwd, _ := writeTree(t, "a.go", "package a\n\nimport \"github.com/yasyf/cwdpkg\"\n\nvar _ = cwdpkg.X\n")
+	t.Chdir(cwd)
+	pinRoot(t, pinned)
+
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_code_deps", map[string]any{"path": "a.go"})
+	if isErr {
+		t.Fatalf("ccx_code_deps pinned is error: %s", out)
+	}
+	if !strings.Contains(out, hit) {
+		t.Errorf("deps should analyze the pinned root's file:\n%s", out)
+	}
+	if !strings.Contains(out, "pinnedpkg") || strings.Contains(out, "cwdpkg") {
+		t.Errorf("deps read the working directory's file instead of the pinned root's:\n%s", out)
+	}
+}
+
+func TestDepsToolReachesAFileOnlyThePinnedRootHas(t *testing.T) {
+	pinned, hit := writeNested(t, "sub/a.go", "package a\n\nimport \"github.com/yasyf/pinnedpkg\"\n\nvar _ = pinnedpkg.X\n")
+	t.Chdir(t.TempDir())
+	pinRoot(t, pinned)
+
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_code_deps", map[string]any{"path": "sub/a.go"})
+	if isErr {
+		t.Fatalf("ccx_code_deps should resolve the path against the pinned root: %s", out)
+	}
+	if !strings.Contains(out, hit) || !strings.Contains(out, "pinnedpkg") {
+		t.Errorf("deps should analyze the pinned root's file:\n%s", out)
+	}
+}
+
+func TestDepsToolWithoutARootReadsCwd(t *testing.T) {
+	cwd, _ := writeTree(t, "a.go", "package a\n\nimport \"github.com/yasyf/cwdpkg\"\n\nvar _ = cwdpkg.X\n")
+	t.Chdir(cwd)
+
+	cs := connectTestServer(t)
+	out, isErr := callText(t, cs, "ccx_code_deps", map[string]any{"path": "a.go"})
+	if isErr {
+		t.Fatalf("ccx_code_deps cwd is error: %s", out)
+	}
+	if !strings.Contains(out, "cwdpkg") {
+		t.Errorf("no root declared should analyze the working directory's file:\n%s", out)
+	}
+}

@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,7 +81,7 @@ func TestRootlessCoversOnlyWebOps(t *testing.T) {
 func TestRootHeaderResultNamesThePinnedRoot(t *testing.T) {
 	pinRoot(t, "/pinned/elsewhere")
 
-	res, _, err := rootHeaderResult("# read a.go:1#ab12 (1 of 9 lines)\npackage a\n")
+	res, _, err := rootHeaderResult(context.Background(), "# read a.go:1#ab12 (1 of 9 lines)\npackage a\n")
 	if err != nil {
 		t.Fatalf("rootHeaderResult: %v", err)
 	}

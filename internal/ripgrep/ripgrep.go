@@ -127,8 +127,8 @@ func heavy(elapsed time.Duration) bool {
 
 // searchDir is the project root the engine child runs in and every path it
 // prints is relative to; one resolution feeds both so they cannot drift.
-func searchDir() (render.Dir, error) {
-	root, err := workspace.Root()
+func searchDir(ctx context.Context) (render.Dir, error) {
+	root, err := workspace.RootFrom(ctx)
 	if err != nil {
 		return "", fmt.Errorf("ripgrep: resolve cwd: %w", err)
 	}
@@ -153,7 +153,7 @@ func Run(ctx context.Context, a backend.Args) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir, err := searchDir()
+	dir, err := searchDir(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -189,7 +189,7 @@ func Matches(ctx context.Context, a backend.Args) ([]FileMatch, error) {
 	if err != nil {
 		return nil, err
 	}
-	dir, err := searchDir()
+	dir, err := searchDir(ctx)
 	if err != nil {
 		return nil, err
 	}

@@ -90,7 +90,7 @@ func Related(ctx context.Context, emb index.Embedder, a backend.Args) ([]semsear
 		return nil, err
 	}
 
-	repoRel := repoRelative(idx.Root, file)
+	repoRel := repoRelative(ctx, idx.Root, file)
 	srcIdx := resolveChunk(idx.Chunks, repoRel, line)
 	if srcIdx < 0 {
 		return nil, fmt.Errorf("semsearch: no indexed chunk contains %s:%d", file, line)
@@ -161,7 +161,7 @@ func load(ctx context.Context, emb index.Embedder, a backend.Args) (*index.Index
 	if err != nil {
 		return nil, nil, err
 	}
-	repo, err := repoOrRoot(a.Path)
+	repo, err := repoOrRoot(ctx, a.Path)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -223,7 +223,7 @@ func loadCached(ctx context.Context, emb index.Embedder, a backend.Args) (*index
 	if err != nil {
 		return nil, nil, err
 	}
-	repo, err := repoOrRoot(a.Path)
+	repo, err := repoOrRoot(ctx, a.Path)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -335,10 +335,10 @@ func resolveChunk(chunks []semsearch.Chunk, file string, line int) int {
 // chunk paths use: it resolves the path against the project root, then
 // relativizes to the repo root, falling back to the cleaned input when it lies
 // outside the repo.
-func repoRelative(root, file string) string {
+func repoRelative(ctx context.Context, root, file string) string {
 	abs := file
 	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(mustRoot(), file)
+		abs = filepath.Join(mustRoot(ctx), file)
 	}
 	if rel, err := filepath.Rel(root, abs); err == nil && !strings.HasPrefix(rel, "..") {
 		return filepath.ToSlash(rel)
@@ -385,15 +385,15 @@ func hasCode(content []index.ContentType) bool {
 }
 
 // repoOrRoot returns path when set, else the project root.
-func repoOrRoot(path string) (string, error) {
+func repoOrRoot(ctx context.Context, path string) (string, error) {
 	if path != "" {
 		return path, nil
 	}
-	return workspace.Root()
+	return workspace.RootFrom(ctx)
 }
 
-func mustRoot() string {
-	root, err := workspace.Root()
+func mustRoot(ctx context.Context) string {
+	root, err := workspace.RootFrom(ctx)
 	if err != nil {
 		panic(fmt.Sprintf("engine: resolve root: %v", err))
 	}

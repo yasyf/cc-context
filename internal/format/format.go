@@ -155,7 +155,7 @@ func Run(ctx context.Context, argv []string, opts Options, in io.Reader, errOut 
 		return "", false, 0, errors.New("run: empty argv")
 	}
 
-	root, err := workspace.Root()
+	root, err := workspace.RootFrom(ctx)
 	if err != nil {
 		return "", false, 0, fmt.Errorf("run: resolve project root: %w", err)
 	}
