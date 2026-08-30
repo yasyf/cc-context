@@ -303,8 +303,9 @@ func TestGrepToolFilesWithMatchesRoutesToEngine(t *testing.T) {
 	if isErr {
 		t.Fatalf("ccx_code_grep filesWithMatches is error: %s", out)
 	}
-	if out != "sample.go\n" {
-		t.Errorf("ccx_code_grep filesWithMatches output = %q, want %q", out, "sample.go\n")
+	want := rootLine(t) + "sample.go\n"
+	if out != want {
+		t.Errorf("ccx_code_grep filesWithMatches output = %q, want %q", out, want)
 	}
 }
 
@@ -430,7 +431,7 @@ func TestGrepToolPathResolvesSibling(t *testing.T) {
 	if isErr {
 		t.Fatalf("ccx_code_grep sibling is error: %s", out)
 	}
-	wantPrefix := "# note: events → events.py\n# grep: \"def old\""
+	wantPrefix := "# note: events → events.py\n" + rootLine(t) + "# grep: \"def old\""
 	if !strings.HasPrefix(out, wantPrefix) || !strings.Contains(out, "### events.py:1") {
 		t.Errorf("ccx_code_grep sibling output = %q, want prefix %q and resolved path hit", out, wantPrefix)
 	}
@@ -550,7 +551,7 @@ func TestReplaceToolPreviewVsApply(t *testing.T) {
 	if isErr {
 		t.Fatalf("ccx_code_replace apply is error: %s", out)
 	}
-	if out != "# applied 2 rewrites across 2 files\n" {
+	if out != "# applied 2 rewrites across 2 files\n"+rootLine(t) {
 		t.Errorf("apply summary wrong: %q", out)
 	}
 }
@@ -580,7 +581,7 @@ func TestReplaceToolForceOverCap(t *testing.T) {
 	if isErr {
 		t.Fatalf("forced apply is error: %s", out)
 	}
-	if out != "# applied 21 rewrites across 21 files\n" {
+	if out != "# applied 21 rewrites across 21 files\n"+rootLine(t) {
 		t.Errorf("forced apply summary wrong: %q", out)
 	}
 }
@@ -657,7 +658,7 @@ func TestReadToolResolvesAnchor(t *testing.T) {
 	if isErr {
 		t.Fatalf("ccx_code_read is error: %s", out)
 	}
-	want := fmt.Sprintf("# anchor %s: line 2 → 3\n# read %s:3#%s (1 of 3 lines)\ngamma\n", gamma, file, gamma)
+	want := fmt.Sprintf("# anchor %s: line 2 → 3\n%s# read %s:3#%s (1 of 3 lines)\ngamma\n", gamma, rootLine(t), file, gamma)
 	if out != want {
 		t.Errorf("ccx_code_read out = %q, want %q", out, want)
 	}
@@ -677,7 +678,7 @@ func TestReadToolResolvesExtensionSibling(t *testing.T) {
 		t.Fatalf("ccx_code_read sibling is error: %s", out)
 	}
 	hash := anchor.Of("hello")
-	want := fmt.Sprintf("# note: %s → %s\n# read %s:1#%s (1 of 1 lines)\nhello\n", original, resolved, resolved, hash)
+	want := fmt.Sprintf("# note: %s → %s\n%s# read %s:1#%s (1 of 1 lines)\nhello\n", original, resolved, rootLine(t), resolved, hash)
 	if out != want {
 		t.Errorf("ccx_code_read sibling out = %q, want %q", out, want)
 	}
@@ -724,7 +725,7 @@ func TestEditToolWritesFile(t *testing.T) {
 	if got, _ := os.ReadFile(file); string(got) != "alpha\nBETA\ngamma\n" {
 		t.Errorf("file after edit = %q", got)
 	}
-	want := fmt.Sprintf("%s:%s → %s:%s\n- beta\n+ BETA\n", file, anchor.Format(2, beta), file, anchor.Format(2, anchor.Of("BETA")))
+	want := fmt.Sprintf("%s%s:%s → %s:%s\n- beta\n+ BETA\n", rootLine(t), file, anchor.Format(2, beta), file, anchor.Format(2, anchor.Of("BETA")))
 	if out != want {
 		t.Errorf("ccx_code_edit out = %q, want %q", out, want)
 	}
@@ -845,7 +846,7 @@ func TestEditToolDeleteWritesFile(t *testing.T) {
 	if got, _ := os.ReadFile(file); string(got) != "a\nc\n" {
 		t.Errorf("file after delete = %q", got)
 	}
-	want := fmt.Sprintf("%s:%s → %s:%s\n- b\n", file, anchor.Format(2, anchor.Of("b")), file, anchor.Format(2, anchor.Of("c")))
+	want := fmt.Sprintf("%s%s:%s → %s:%s\n- b\n", rootLine(t), file, anchor.Format(2, anchor.Of("b")), file, anchor.Format(2, anchor.Of("c")))
 	if out != want {
 		t.Errorf("ccx_code_edit delete out = %q, want %q", out, want)
 	}

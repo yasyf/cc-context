@@ -459,7 +459,7 @@ func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, S
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
+		return rootHeaderResult(out)
 	}
 }
 
@@ -491,7 +491,7 @@ func editHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, Edi
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
+		return rootHeaderResult(out)
 	}
 }
 
@@ -516,12 +516,15 @@ func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, 
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: note + out}}}, nil, nil
+		return rootHeaderResult(note + out)
 	}
 }
 
 // execHandler runs the script through the resident sandbox engine. MCP has no
-// stderr, so engine notes ride along as a trailing [notes] block.
+// stderr, so engine notes ride along as a trailing [notes] block. The result is
+// the script's own return value rather than a view ccx rendered, so it carries
+// no root line: a header prepended to a payload the caller chose is one its
+// caller cannot parse.
 func execHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolRequest, ExecIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in ExecIn) (*mcp.CallToolResult, any, error) {
 		if !codeexec.Supported() {
@@ -531,7 +534,7 @@ func execHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolReques
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: withNotes(out, notes)}}}, nil, nil
+		return textResult(withNotes(out, notes)), nil, nil
 	}
 }
 
@@ -547,7 +550,7 @@ func execToolsHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolR
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: withNotes(out, notes)}}}, nil, nil
+		return textResult(withNotes(out, notes)), nil, nil
 	}
 }
 
@@ -630,7 +633,7 @@ func rootedHandler[In any](p *proxy.Proxy, op backend.Op, args func(In) (backend
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
+		return opResult(op, out)
 	}
 }
 
@@ -665,10 +668,9 @@ func bashFormatHandler() func(context.Context, *mcp.CallToolRequest, BashFormatI
 		if code != 0 {
 			text += fmt.Sprintf("\n[exit %d]", code)
 		}
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: text}},
-			IsError: code != 0,
-		}, nil, nil
+		res := textResult(text)
+		res.IsError = code != 0
+		return res, nil, nil
 	}
 }
 
