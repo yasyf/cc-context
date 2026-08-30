@@ -8,6 +8,7 @@ import (
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/outline"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // applyFileCap bounds how many distinct files a single `replace --apply` may
@@ -19,26 +20,40 @@ const applyFileCap = 20
 // no-match; it is tolerated and distinguished from a real failure by empty stdout.
 const astGrepExitNoMatch = 1
 
+// searchDir is the project root every ast-grep child runs in and every path it
+// prints is relative to; one resolution feeds both so they cannot drift.
+func searchDir() (render.Dir, error) {
+	root, err := workspace.Root()
+	if err != nil {
+		return "", fmt.Errorf("astgrep: resolve cwd: %w", err)
+	}
+	return render.Dir(root), nil
+}
+
 // Run executes an ast-grep op (OpStructural, OpReplace, or OpStructOutline) end
 // to end — argv translation, child process, JSON parse, render, and budget cap —
 // and returns the bounded output. It is the single orchestration shared by the
 // CLI and the MCP proxy so the two surfaces behave identically.
 func Run(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
+	dir, err := searchDir()
+	if err != nil {
+		return "", err
+	}
 	switch op {
 	case backend.OpStructural:
-		return runStructural(ctx, a)
+		return runStructural(ctx, dir, a)
 	case backend.OpReplace:
-		return runReplace(ctx, a)
+		return runReplace(ctx, dir, a)
 	case backend.OpStructOutline:
-		return runStructOutline(ctx, a)
+		return runStructOutline(ctx, dir, a)
 	default:
 		return "", fmt.Errorf("astgrep: unsupported op %q", op)
 	}
 }
 
 // runStructural renders the search match list for a.Query.
-func runStructural(ctx context.Context, a backend.Args) (string, error) {
-	matches, err := matchesFor(ctx, backend.OpStructural, a)
+func runStructural(ctx context.Context, dir render.Dir, a backend.Args) (string, error) {
+	matches, err := matchesFor(ctx, dir, backend.OpStructural, a)
 	if err != nil {
 		return "", err
 	}
@@ -46,8 +61,8 @@ func runStructural(ctx context.Context, a backend.Args) (string, error) {
 }
 
 // runStructOutline renders the structural outline of a.Path (file or directory).
-func runStructOutline(ctx context.Context, a backend.Args) (string, error) {
-	out, err := runArgv(ctx, backend.OpStructOutline, a)
+func runStructOutline(ctx context.Context, dir render.Dir, a backend.Args) (string, error) {
+	out, err := runArgv(ctx, dir, backend.OpStructOutline, a)
 	if err != nil {
 		return "", err
 	}
@@ -62,7 +77,7 @@ func runStructOutline(ctx context.Context, a backend.Args) (string, error) {
 		}
 		files = WindowOutline(files, start, end)
 	}
-	out, ids := RenderOutline(files, anchor.NewFiles("."), DepthFor(a), a.RevealSecrets)
+	out, ids := RenderOutline(files, anchor.NewFiles(string(dir)), DepthFor(a), a.RevealSecrets)
 	return render.WithSecretsFooter(render.Cap(out, a.Budget), ids), nil
 }
 
@@ -76,8 +91,12 @@ func OutlineStdin(ctx context.Context, src []byte, lang string) ([]OutlineFile, 
 	if err != nil {
 		return nil, err
 	}
+	dir, err := searchDir()
+	if err != nil {
+		return nil, err
+	}
 	argv := []string{"outline", "--stdin", "-l", lang, "--json=stream", "--view", "expanded"}
-	out, err := render.RunCLIStdin(ctx, render.Ambient, bin, argv, src)
+	out, err := render.RunCLIStdin(ctx, dir, bin, argv, src)
 	if err != nil {
 		return nil, err
 	}
@@ -87,10 +106,10 @@ func OutlineStdin(ctx context.Context, src []byte, lang string) ([]OutlineFile, 
 // runReplace previews a.Pattern→a.Rewrite, or applies it when a.Apply is set. An
 // apply first counts the distinct files the preview would touch and refuses to
 // write more than applyFileCap of them unless a.Force is set.
-func runReplace(ctx context.Context, a backend.Args) (string, error) {
+func runReplace(ctx context.Context, dir render.Dir, a backend.Args) (string, error) {
 	preview := a
 	preview.Apply = false
-	matches, err := matchesFor(ctx, backend.OpReplace, preview)
+	matches, err := matchesFor(ctx, dir, backend.OpReplace, preview)
 	if err != nil {
 		return "", err
 	}
@@ -107,7 +126,7 @@ func runReplace(ctx context.Context, a backend.Args) (string, error) {
 		return "", fmt.Errorf("replace would modify %d files, exceeding the cap of %d; re-run with --force", files, applyFileCap)
 	}
 
-	if _, err := runArgv(ctx, backend.OpReplace, a); err != nil {
+	if _, err := runArgv(ctx, dir, backend.OpReplace, a); err != nil {
 		return "", err
 	}
 	return render.Cap(fmt.Sprintf("# applied %d rewrites across %d files\n", len(matches), files), a.Budget), nil
@@ -115,8 +134,8 @@ func runReplace(ctx context.Context, a backend.Args) (string, error) {
 
 // matchesFor runs op and parses its --json=stream output into matches. A clean
 // no-match (tolerated exit, empty stdout) parses to zero matches.
-func matchesFor(ctx context.Context, op backend.Op, a backend.Args) ([]Match, error) {
-	out, err := runArgv(ctx, op, a)
+func matchesFor(ctx context.Context, dir render.Dir, op backend.Op, a backend.Args) ([]Match, error) {
+	out, err := runArgv(ctx, dir, op, a)
 	if err != nil {
 		return nil, err
 	}
@@ -124,9 +143,9 @@ func matchesFor(ctx context.Context, op backend.Op, a backend.Args) ([]Match, er
 }
 
 // runArgv translates op into the ast-grep argv, resolves the binary on PATH
-// (enforcing the version floor), and runs it, tolerating the no-match exit so an
-// empty result is not mistaken for a failure.
-func runArgv(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
+// (enforcing the version floor), and runs it in dir, tolerating the no-match exit
+// so an empty result is not mistaken for a failure.
+func runArgv(ctx context.Context, dir render.Dir, op backend.Op, a backend.Args) (string, error) {
 	argv, err := argvFor(op, a)
 	if err != nil {
 		return "", err
@@ -135,7 +154,7 @@ func runArgv(ctx context.Context, op backend.Op, a backend.Args) (string, error)
 	if err != nil {
 		return "", err
 	}
-	return render.RunCLIAllowExit(ctx, render.Ambient, resolved, argv, astGrepExitNoMatch)
+	return render.RunCLIAllowExit(ctx, dir, resolved, argv, astGrepExitNoMatch)
 }
 
 // argvFor builds the `ast-grep run`/`outline` argv for op (the binary is

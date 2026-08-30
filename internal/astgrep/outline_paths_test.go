@@ -5,7 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // goFixture is a Go source with two imports, a struct with fields, a method whose
@@ -156,4 +159,45 @@ func TestOutlinePaths_Live(t *testing.T) {
 			t.Errorf("-l go --match Alpha names = %v, want %v", got, want)
 		}
 	})
+}
+
+// outlineTempRoot materializes one Go file declaring fn in a symlink-resolved
+// temp dir, and returns the dir.
+func outlineTempRoot(t *testing.T, fn string) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp root: %v", err)
+	}
+	src := "package a\n\nfunc " + fn + "() int {\n\treturn 1\n}\n"
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func TestPinnedRootIsWhereAstGrepRuns(t *testing.T) {
+	requireAstGrep(t)
+	pinned := outlineTempRoot(t, "PinnedOnly")
+	cwd := outlineTempRoot(t, "CwdOnly")
+	t.Chdir(cwd)
+
+	workspace.SetRoot(pinned)
+	t.Cleanup(func() { workspace.SetRoot("") })
+	files, err := OutlinePaths(context.Background(), []string{"a.go"}, OutlineOpts{})
+	if err != nil {
+		t.Fatalf("OutlinePaths pinned: %v", err)
+	}
+	if got := topNames(t, files); !slices.Contains(got, "PinnedOnly") {
+		t.Errorf("pinned outline = %v, want it to name PinnedOnly", got)
+	}
+
+	workspace.SetRoot("")
+	files, err = OutlinePaths(context.Background(), []string{"a.go"}, OutlineOpts{})
+	if err != nil {
+		t.Fatalf("OutlinePaths unpinned: %v", err)
+	}
+	if got := topNames(t, files); !slices.Contains(got, "CwdOnly") {
+		t.Errorf("unpinned outline = %v, want it to name CwdOnly", got)
+	}
 }

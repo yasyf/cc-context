@@ -14,14 +14,15 @@ import (
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // maxEntries caps how many entry-point paths the entry section lists.
 const maxEntries = 4
 
-// Run assembles the repo overview for the cwd, ordered most-orienting first so a
-// budget cap trims the git/churn tail gracefully. It is not itself capped; the
-// caller finalizes it through render.
+// Run assembles the repo overview for the project root, ordered most-orienting
+// first so a budget cap trims the git/churn tail gracefully. It is not itself
+// capped; the caller finalizes it through render.
 func Run(ctx context.Context, _ backend.Args) (string, error) {
 	root, err := resolveRoot()
 	if err != nil {
@@ -52,9 +53,9 @@ func Run(ctx context.Context, _ backend.Args) (string, error) {
 	return b.String(), nil
 }
 
-// resolveRoot resolves the cwd to an absolute path.
+// resolveRoot resolves the project root to an absolute path.
 func resolveRoot() (string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := workspace.Root()
 	if err != nil {
 		return "", fmt.Errorf("overview: resolve cwd: %w", err)
 	}

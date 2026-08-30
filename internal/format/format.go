@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // Format names an output encoding.
@@ -142,18 +144,24 @@ func ParseFormat(name string) (Format, error) {
 	}
 }
 
-// Run executes argv, capturing stdout and converting it via Convert; stderr is
-// written to errOut and stdin is forwarded from in. It returns the converted
-// stdout, whether a JSON re-encoding happened, and the child's exit code. A
-// non-zero child exit is reported through code with a nil error (the command
-// ran, it just failed); a spawn failure (binary not found, context cancelled) is
-// returned as err.
+// Run executes argv in the project root, capturing stdout and converting it via
+// Convert; stderr is written to errOut and stdin is forwarded from in. It returns
+// the converted stdout, whether a JSON re-encoding happened, and the child's exit
+// code. A non-zero child exit is reported through code with a nil error (the
+// command ran, it just failed); a spawn failure (binary not found, context
+// cancelled) is returned as err.
 func Run(ctx context.Context, argv []string, opts Options, in io.Reader, errOut io.Writer) (out string, converted bool, code int, err error) {
 	if len(argv) == 0 {
 		return "", false, 0, errors.New("run: empty argv")
 	}
 
+	root, err := workspace.Root()
+	if err != nil {
+		return "", false, 0, fmt.Errorf("run: resolve project root: %w", err)
+	}
+
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv is the wrapped command supplied by the caller
+	cmd.Dir = root
 	var stdout bytes.Buffer
 	cmd.Stdin = in
 	cmd.Stdout = &stdout

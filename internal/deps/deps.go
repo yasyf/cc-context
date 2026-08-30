@@ -14,6 +14,7 @@ import (
 
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // The classification labels a use carries. "unresolved" is the honest fallback
@@ -40,7 +41,7 @@ type useItem struct {
 	display string
 }
 
-// dependent is one file that imports the target: its cwd-relative path, the
+// dependent is one file that imports the target: its root-relative path, the
 // 1-based import line the scan matched, and — for a qualified-access language —
 // the target symbols it references.
 type dependent struct {
@@ -50,7 +51,7 @@ type dependent struct {
 }
 
 // classCtx carries the filesystem context classification and used-by scanning
-// consult: root is the cwd every dependent path and repo-dir probe resolves
+// consult: root is the project root every dependent path and repo-dir probe resolves
 // against, and mod is the resolved Go module (zero value for a non-Go file or a
 // file outside any module).
 type classCtx struct {
@@ -64,7 +65,7 @@ type classCtx struct {
 // scans the repo for dependents, and renders the anchored report. Output is
 // uncapped — the caller Caps it.
 func Run(ctx context.Context, a backend.Args) (string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := workspace.Root()
 	if err != nil {
 		return "", fmt.Errorf("deps: resolve cwd: %w", err)
 	}

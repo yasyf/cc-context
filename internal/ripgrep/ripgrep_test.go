@@ -16,6 +16,7 @@ import (
 
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 func TestRipgrepArgv(t *testing.T) {
@@ -284,10 +285,10 @@ func TestEscalatable(t *testing.T) {
 // failure is normalized to the clean no-match grep reports as exit 0, while a grep
 // engine error is returned untouched.
 func TestRun_RipgrepNoFilesNormalizes(t *testing.T) {
-	noFiles := func(context.Context, string, []string) (string, error) {
+	noFiles := func(context.Context, render.Dir, string, []string) (string, error) {
 		return "", errors.New("rg: exit status 2: No files were searched")
 	}
-	out, found, err := run(context.Background(), engineRipgrep, "rg", backend.Args{Query: "foo", Globs: []string{"*.zzz"}}, noFiles)
+	out, found, err := run(context.Background(), engineRipgrep, "rg", testDir(t), backend.Args{Query: "foo", Globs: []string{"*.zzz"}}, noFiles)
 	if err != nil {
 		t.Fatalf("run() err = %v, want nil (normalized no-match)", err)
 	}
@@ -299,10 +300,10 @@ func TestRun_RipgrepNoFilesNormalizes(t *testing.T) {
 	}
 
 	// The same signature from the grep engine is a real error, not a no-match.
-	boom := func(context.Context, string, []string) (string, error) {
+	boom := func(context.Context, render.Dir, string, []string) (string, error) {
 		return "", errors.New("grep: exit status 2: No files were searched")
 	}
-	if _, _, err := run(context.Background(), engineGrep, "grep", backend.Args{Query: "foo"}, boom); err == nil {
+	if _, _, err := run(context.Background(), engineGrep, "grep", testDir(t), backend.Args{Query: "foo"}, boom); err == nil {
 		t.Errorf("run() grep err = nil, want propagated error")
 	}
 }
@@ -311,14 +312,14 @@ func TestRun_RipgrepNoFilesNormalizes(t *testing.T) {
 // regex-parse error whose pattern carries a BRE escape, and leaves a bare parse
 // error unhinted.
 func TestRun_RipgrepRegexHintPropagates(t *testing.T) {
-	parseErr := func(context.Context, string, []string) (string, error) {
+	parseErr := func(context.Context, render.Dir, string, []string) (string, error) {
 		return "", errors.New("rg: exit status 2: regex parse error: unclosed group")
 	}
-	_, _, err := run(context.Background(), engineRipgrep, "rg", backend.Args{Query: `foo\|bar`, Regex: true}, parseErr)
+	_, _, err := run(context.Background(), engineRipgrep, "rg", testDir(t), backend.Args{Query: `foo\|bar`, Regex: true}, parseErr)
 	if err == nil || !strings.Contains(err.Error(), "hint: --regex is Rust syntax") {
 		t.Errorf("run() err = %v, want BRE hint appended", err)
 	}
-	_, _, err = run(context.Background(), engineRipgrep, "rg", backend.Args{Query: "foo(", Regex: true}, parseErr)
+	_, _, err = run(context.Background(), engineRipgrep, "rg", testDir(t), backend.Args{Query: "foo(", Regex: true}, parseErr)
 	if err == nil || strings.Contains(err.Error(), "hint:") {
 		t.Errorf("run() err = %v, want bare parse error without hint", err)
 	}
@@ -488,7 +489,7 @@ func TestParseFilesWithMatches(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseFilesWithMatches(tt.eng, tt.raw)
+			got, err := parseFilesWithMatches(tt.eng, testDir(t), tt.raw)
 			if err != nil {
 				t.Fatalf("parseFilesWithMatches() err = %v", err)
 			}
@@ -558,9 +559,9 @@ func TestRunCore_GrepValidatesSplits(t *testing.T) {
 		grepLn("2024-01-migrate.go", 6, "-", "// trailing"),
 		"",
 	}, "\n")
-	fake := func(context.Context, string, []string) (string, error) { return grepOut, nil }
+	fake := func(context.Context, render.Dir, string, []string) (string, error) { return grepOut, nil }
 
-	got, found, err := run(context.Background(), engineGrep, "grep", backend.Args{Query: "foo", IgnoreCase: true, Expand: 1}, fake)
+	got, found, err := run(context.Background(), engineGrep, "grep", testDir(t), backend.Args{Query: "foo", IgnoreCase: true, Expand: 1}, fake)
 	if err != nil {
 		t.Fatalf("run() err = %v", err)
 	}
@@ -730,7 +731,7 @@ func TestRunCore(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			calls := 0
-			fake := func(context.Context, string, []string) (string, error) {
+			fake := func(context.Context, render.Dir, string, []string) (string, error) {
 				if calls >= len(tt.runs) {
 					t.Fatalf("runner call %d exceeds %d canned results", calls+1, len(tt.runs))
 				}
@@ -738,7 +739,7 @@ func TestRunCore(t *testing.T) {
 				calls++
 				return result.out, result.err
 			}
-			got, found, err := run(context.Background(), tt.eng, "bin", tt.args, fake)
+			got, found, err := run(context.Background(), tt.eng, "bin", testDir(t), tt.args, fake)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("run() err = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -858,7 +859,7 @@ func TestRunCore_EscalationCostGate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			stubClock(t, tt.step)
 			calls := 0
-			fake := func(context.Context, string, []string) (string, error) {
+			fake := func(context.Context, render.Dir, string, []string) (string, error) {
 				if calls >= len(tt.runs) {
 					t.Fatalf("runner call %d exceeds %d canned results", calls+1, len(tt.runs))
 				}
@@ -866,7 +867,7 @@ func TestRunCore_EscalationCostGate(t *testing.T) {
 				calls++
 				return out, nil
 			}
-			got, _, err := run(context.Background(), tt.eng, "bin", tt.args, fake)
+			got, _, err := run(context.Background(), tt.eng, "bin", testDir(t), tt.args, fake)
 			if err != nil {
 				t.Fatalf("run() err = %v", err)
 			}
@@ -911,7 +912,7 @@ func TestExecEngine_TimeoutKillsChild(t *testing.T) {
 	engineTimeout = 200 * time.Millisecond
 
 	start := time.Now()
-	_, err := execEngine(context.Background(), bin, nil)
+	_, err := execEngine(context.Background(), render.Ambient, bin, nil)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -935,7 +936,7 @@ func TestExecEngine_ParentCancelIsNotADeadline(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, err := execEngine(ctx, bin, nil)
+	_, err := execEngine(ctx, render.Ambient, bin, nil)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -951,11 +952,11 @@ func TestExecEngine_ParentCancelIsNotADeadline(t *testing.T) {
 
 func TestRunCore_GlobFailFastSkipsRunner(t *testing.T) {
 	called := false
-	fake := func(context.Context, string, []string) (string, error) {
+	fake := func(context.Context, render.Dir, string, []string) (string, error) {
 		called = true
 		return "", nil
 	}
-	_, _, err := run(context.Background(), engineGrep, "grep", backend.Args{Query: "foo", Globs: []string{"{a,b}"}}, fake)
+	_, _, err := run(context.Background(), engineGrep, "grep", testDir(t), backend.Args{Query: "foo", Globs: []string{"{a,b}"}}, fake)
 	if err == nil {
 		t.Fatal("run() err = nil, want untranslatable-glob error")
 	}
@@ -1090,7 +1091,7 @@ func TestRunFoundness_Live(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resolveEngine() err = %v", err)
 			}
-			_, found, err := run(context.Background(), eng, bin, backend.Args{Query: tt.query, IgnoreCase: true, Budget: 1}, execEngine)
+			_, found, err := run(context.Background(), eng, bin, testDir(t), backend.Args{Query: tt.query, IgnoreCase: true, Budget: 1}, execEngine)
 			if err != nil {
 				t.Fatalf("run() err = %v", err)
 			}
@@ -1202,11 +1203,11 @@ func TestRun_LiveEnginesAgreeOnGlobPaths(t *testing.T) {
 	t.Chdir(dir)
 
 	args := backend.Args{Query: "needle", Paths: []string{"a.go", "b.txt", "sub"}, Globs: []string{"*.go"}}
-	rgOut, rgFound, err := run(context.Background(), engineRipgrep, rgBin, args, execEngine)
+	rgOut, rgFound, err := run(context.Background(), engineRipgrep, rgBin, testDir(t), args, execEngine)
 	if err != nil {
 		t.Fatalf("rg run: %v", err)
 	}
-	grepOut, grepFound, err := run(context.Background(), engineGrep, grepBin, args, execEngine)
+	grepOut, grepFound, err := run(context.Background(), engineGrep, grepBin, testDir(t), args, execEngine)
 	if err != nil {
 		t.Fatalf("grep run: %v", err)
 	}
@@ -1236,11 +1237,11 @@ func TestRun_LiveEnginesAgreeOnAutoRegex(t *testing.T) {
 	t.Chdir(dir)
 
 	args := backend.Args{Query: "foo|bar"}
-	rgOut, rgFound, err := run(context.Background(), engineRipgrep, rgBin, args, execEngine)
+	rgOut, rgFound, err := run(context.Background(), engineRipgrep, rgBin, testDir(t), args, execEngine)
 	if err != nil {
 		t.Fatalf("rg run: %v", err)
 	}
-	grepOut, grepFound, err := run(context.Background(), engineGrep, grepBin, args, execEngine)
+	grepOut, grepFound, err := run(context.Background(), engineGrep, grepBin, testDir(t), args, execEngine)
 	if err != nil {
 		t.Fatalf("grep run: %v", err)
 	}
@@ -1273,11 +1274,11 @@ func TestRun_LiveEnginesAgreeOnZeroGlob(t *testing.T) {
 	t.Chdir(dir)
 
 	args := backend.Args{Query: "needle", Globs: []string{"*.nomatchext"}}
-	rgOut, rgFound, err := run(context.Background(), engineRipgrep, rgBin, args, execEngine)
+	rgOut, rgFound, err := run(context.Background(), engineRipgrep, rgBin, testDir(t), args, execEngine)
 	if err != nil {
 		t.Fatalf("rg run: %v", err)
 	}
-	grepOut, grepFound, err := run(context.Background(), engineGrep, grepBin, args, execEngine)
+	grepOut, grepFound, err := run(context.Background(), engineGrep, grepBin, testDir(t), args, execEngine)
 	if err != nil {
 		t.Fatalf("grep run: %v", err)
 	}

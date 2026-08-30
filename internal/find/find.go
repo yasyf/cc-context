@@ -6,7 +6,6 @@ package find
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/sniff"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // DefaultBudget bounds find output when the caller sets none, mirroring
@@ -42,10 +42,10 @@ const maxTrailerBytes = 64
 // overflow (a math.MaxInt64 budget would wrap negative in the cutoff multiply).
 const maxBudget = 1 << 31
 
-// Run lists the files a.Globs select under the cwd, rendered to a budgeted
-// listing. A zero a.Budget renders every row uncapped.
+// Run lists the files a.Globs select under the project root, rendered to a
+// budgeted listing. A zero a.Budget renders every row uncapped.
 func Run(ctx context.Context, a backend.Args) (string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := workspace.Root()
 	if err != nil {
 		return "", fmt.Errorf("find: resolve cwd: %w", err)
 	}
