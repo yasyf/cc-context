@@ -4,6 +4,50 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.0] - 2026-08-29
+
+### Added
+- **`ccx vcs status` reads the Graphite merge queue through `gt merge --dry-run`
+  and catches a branch reparented out from under its pull request.** The queue
+  phase relied on graphite-app's `### Merge activity` comment, which is not
+  always posted — two pull requests merged the same day without one, leaving
+  the label-event fallback reading `labeled` for a pull request already
+  mid-merge, exactly the ambiguity the command exists to resolve. A
+  `queue-gt` line now carries `gt merge --dry-run`'s own verdict instead,
+  classified into `merging`/`merged`/`not queued`/`not mergeable`/`unknown`
+  and quoting gt's sentence; it is downstack-scoped and reported as its own
+  line, `--no-queue-probe` skips it, and it shares the 20s cap and process
+  group `gtReachable` already needs for a gt verb that can hang.
+
+  Graphite's stack metadata is repo-global, not per-working-copy, so a branch
+  can silently pick up another session's tip as its parent while its pull
+  request keeps the base it opened against — merging a diff nobody reviewed.
+  The check costs nothing extra: gt's parent from `gt state` against the pull
+  request's `baseRefName`, both already fetched. A mismatch is now a blocker,
+  `blocked gt parents this on someone-elses-lane but PR #12 bases on dev —
+  the branch was reparented; restack and re-submit`, and the pull request's
+  changed-file count rides beside it on the `pr` line so a diff wider than
+  the work is caught by eye.
+
+### Fixed
+- **`ccx vcs ship` runs its pre-commit hook suite once instead of twice.**
+  prek's exit code cannot separate a genuine finding from a file it just
+  fixed, so ship resolved that by running the whole suite again — doubling
+  the most expensive thing ship does, since both Go hooks declare
+  `pass_filenames: false` and analyze the entire module however small the
+  commit. Ship now runs the suite once, adopts what the hooks fixed, and
+  commits; CI grades what remains. A nonzero pass has its output surfaced
+  rather than swallowed, streamed on a terminal and replayed behind a
+  lead-in off one, since that is now the only place a real finding is
+  shown; a slow run is announced rather than looking like a hang, and a
+  failure says the working copy is left staged.
+- **The local lint gate works again.** prek's `golangci-lint` hook runs the
+  ambient Go under `GOTOOLCHAIN=local`, and mise's global `go = "latest"`
+  had lagged `go.mod`, so every invocation died with `go.mod requires go >=
+  1.26.6` — the gate was not slow, it was non-functional, and two gosec
+  findings had already reached CI on a commit it should have caught.
+  `mise.toml` now pins the toolchain `go.mod` asks for.
+
 ## [0.47.0] - 2026-08-28
 
 ### Changed
