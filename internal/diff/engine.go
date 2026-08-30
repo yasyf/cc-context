@@ -17,12 +17,12 @@ import (
 	"github.com/yasyf/cc-context/internal/workspace"
 )
 
-// Run resolves a.Source into a diff plan against the cwd's VCS, classifies each
-// changed file a.Globs select, and renders the structural diff, each file's
-// section secret-masked in that file's path context unless a.RevealSecrets. The
-// fired rule ids come back in file order — the caller appends the shared footer
-// after its cap. Output is uncapped — the caller budget-caps it — and a.Full
-// inlines per-file hunks.
+// Run resolves a.Source into a diff plan against the project root's VCS,
+// classifies each changed file a.Globs select, and renders the structural diff,
+// each file's section secret-masked in that file's path context unless
+// a.RevealSecrets. The fired rule ids come back in file order — the caller
+// appends the shared footer after its cap. Output is uncapped — the caller
+// budget-caps it — and a.Full inlines per-file hunks.
 func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 	cwd, err := workspace.Root()
 	if err != nil {

@@ -7,9 +7,12 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // namedEngine pairs a resolved engine with a label for subtest naming.
@@ -37,11 +40,22 @@ func presentEngines(t *testing.T) []namedEngine {
 	return out
 }
 
+// testDir resolves the search root the same way the exported entry points do, so
+// a test driving the internal chain runs its engine where production would.
+func testDir(t *testing.T) render.Dir {
+	t.Helper()
+	dir, err := searchDir()
+	if err != nil {
+		t.Fatalf("searchDir(): %v", err)
+	}
+	return dir
+}
+
 // matchesVia returns Matches-equivalent output for one specific engine, so a test
 // asserts identical hits from rg and system grep over the same fixture.
 func matchesVia(t *testing.T, e namedEngine, a backend.Args) []FileMatch {
 	t.Helper()
-	groups, _, err := searchGroups(context.Background(), e.eng, e.bin, a, execEngine)
+	groups, _, err := searchGroups(context.Background(), e.eng, e.bin, testDir(t), a, execEngine)
 	if err != nil {
 		t.Fatalf("searchGroups(%s): %v", e.name, err)
 	}
@@ -160,7 +174,7 @@ func TestSearchGroups_ReportsElapsed(t *testing.T) {
 	for _, e := range engines {
 		t.Run(e.name, func(t *testing.T) {
 			args := backend.Args{Query: "needle", Paths: []string{"a.go"}}
-			_, spent, err := searchGroups(context.Background(), e.eng, e.bin, args, execEngine)
+			_, spent, err := searchGroups(context.Background(), e.eng, e.bin, testDir(t), args, execEngine)
 			if err != nil {
 				t.Fatalf("searchGroups(%s): %v", e.name, err)
 			}
@@ -176,5 +190,64 @@ func TestSearchGroups_ReportsElapsed(t *testing.T) {
 func TestMatches_ValidatesContext(t *testing.T) {
 	if _, err := Matches(context.Background(), backend.Args{Query: "foo", Context: maxContext + 1}); err == nil {
 		t.Fatal("Matches() err = nil, want context-cap error")
+	}
+}
+
+// engineTempRoot materializes one file in a symlink-resolved temp dir seeded
+// with a bare .git, so the engine treats it as a self-contained search root.
+func engineTempRoot(t *testing.T, name, content string) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp root: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	return root
+}
+
+func matchedText(t *testing.T) string {
+	t.Helper()
+	matches, err := Matches(context.Background(), backend.Args{Query: "needle"})
+	if err != nil {
+		t.Fatalf("Matches(): %v", err)
+	}
+	var b strings.Builder
+	for _, m := range matches {
+		for _, l := range m.Lines {
+			b.WriteString(l.Text)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+func TestPinnedRootIsWhereTheEngineSearches(t *testing.T) {
+	presentEngines(t)
+	pinned := engineTempRoot(t, "pinned.go", "package pinned\n\nvar needle = \"pinnedtree\"\n")
+	cwd := engineTempRoot(t, "cwd.go", "package cwd\n\nvar needle = \"cwdtree\"\n")
+	t.Chdir(cwd)
+
+	workspace.SetRoot(pinned)
+	t.Cleanup(func() { workspace.SetRoot("") })
+	got := matchedText(t)
+	if !strings.Contains(got, "pinnedtree") {
+		t.Errorf("pinned search missing the pinned tree's content:\n%s", got)
+	}
+	if strings.Contains(got, "cwdtree") {
+		t.Errorf("pinned search reached the process cwd:\n%s", got)
+	}
+
+	workspace.SetRoot("")
+	got = matchedText(t)
+	if !strings.Contains(got, "cwdtree") {
+		t.Errorf("unpinned search missing the cwd's content:\n%s", got)
+	}
+	if strings.Contains(got, "pinnedtree") {
+		t.Errorf("unpinned search reached the pinned tree:\n%s", got)
 	}
 }

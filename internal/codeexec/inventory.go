@@ -20,7 +20,7 @@ import (
 const inventoryTTL = 15 * time.Minute
 
 // InventoryStore caches one discovery probe across Engine instances, keyed by
-// the probing working directory. A corrupt or missing record reads as a miss.
+// the project root it probed. A corrupt or missing record reads as a miss.
 type InventoryStore interface {
 	Load() (Inventory, time.Time, bool)
 	Save(Inventory, time.Time) error
@@ -83,9 +83,9 @@ type diskInventoryStore struct {
 	path string
 }
 
-// NewDiskInventoryStore returns the on-disk InventoryStore for the current
-// working directory, under the shared exec cache dir. `claude mcp list` output
-// is project-scoped, so the record is keyed by the cwd.
+// NewDiskInventoryStore returns the on-disk InventoryStore for the project root,
+// under the shared exec cache dir. `claude mcp list` output is project-scoped, so
+// the record is keyed by that root.
 func NewDiskInventoryStore() (InventoryStore, error) {
 	dir, err := cache.Dir("exec")
 	if err != nil {
@@ -98,10 +98,10 @@ func NewDiskInventoryStore() (InventoryStore, error) {
 	return newDiskInventoryStore(dir, cwd), nil
 }
 
-// newDiskInventoryStore keys the record file by cwd so tests can key arbitrary
-// directories without changing the process working directory.
-func newDiskInventoryStore(dir, cwd string) *diskInventoryStore {
-	sum := sha256.Sum256([]byte(cwd))
+// newDiskInventoryStore keys the record file by root so tests can key arbitrary
+// directories without pinning a project root.
+func newDiskInventoryStore(dir, root string) *diskInventoryStore {
+	sum := sha256.Sum256([]byte(root))
 	name := "inventory-" + hex.EncodeToString(sum[:])[:16] + ".json"
 	return &diskInventoryStore{path: filepath.Join(dir, name)}
 }

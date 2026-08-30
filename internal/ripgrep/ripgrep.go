@@ -125,10 +125,20 @@ func heavy(elapsed time.Duration) bool {
 	return elapsed > escalationElapsedCap
 }
 
-// runnerFn is the process boundary: it runs bin+argv and returns stdout,
+// searchDir is the project root the engine child runs in and every path it
+// prints is relative to; one resolution feeds both so they cannot drift.
+func searchDir() (render.Dir, error) {
+	root, err := workspace.Root()
+	if err != nil {
+		return "", fmt.Errorf("ripgrep: resolve cwd: %w", err)
+	}
+	return render.Dir(root), nil
+}
+
+// runnerFn is the process boundary: it runs bin+argv in dir and returns stdout,
 // tolerating the clean no-match exit. run takes it as a parameter so tests drive
 // the reshaper with a canned engine transcript instead of a real subprocess.
-type runnerFn func(ctx context.Context, bin string, argv []string) (string, error)
+type runnerFn func(ctx context.Context, dir render.Dir, bin string, argv []string) (string, error)
 
 // Run resolves rg (or system grep), searches for a.Query, and returns the hits
 // reshaped into the house grep format, content-anchored, secret-masked per file
@@ -143,7 +153,11 @@ func Run(ctx context.Context, a backend.Args) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out, _, err := run(ctx, eng, bin, a, execEngine)
+	dir, err := searchDir()
+	if err != nil {
+		return "", err
+	}
+	out, _, err := run(ctx, eng, bin, dir, a, execEngine)
 	return out, err
 }
 
@@ -175,7 +189,11 @@ func Matches(ctx context.Context, a backend.Args) ([]FileMatch, error) {
 	if err != nil {
 		return nil, err
 	}
-	groups, _, err := searchGroups(ctx, eng, bin, a, execEngine)
+	dir, err := searchDir()
+	if err != nil {
+		return nil, err
+	}
+	groups, _, err := searchGroups(ctx, eng, bin, dir, a, execEngine)
 	if err != nil {
 		return nil, err
 	}
@@ -199,11 +217,11 @@ func toFileMatches(groups []fileGroup) []FileMatch {
 // run is the engine-agnostic Run core: search into groups, then reshape and cap.
 // found is decided from parsed groups before reshape/cap — capping can cut the
 // no-match header and a matched header embeds the query, so never string-sniff.
-func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) (string, bool, error) {
+func run(ctx context.Context, eng engine, bin string, dir render.Dir, a backend.Args, exec runnerFn) (string, bool, error) {
 	if a.FilesWithMatches {
-		return runFilesWithMatches(ctx, eng, bin, a, exec)
+		return runFilesWithMatches(ctx, eng, bin, dir, a, exec)
 	}
-	groups, spent, err := searchGroups(ctx, eng, bin, a, exec)
+	groups, spent, err := searchGroups(ctx, eng, bin, dir, a, exec)
 	if err != nil {
 		return "", false, err
 	}
@@ -216,7 +234,7 @@ func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runne
 		} else {
 			ra := a
 			ra.Regex = true
-			rgroups, _, rerr := searchGroups(ctx, eng, bin, ra, exec)
+			rgroups, _, rerr := searchGroups(ctx, eng, bin, dir, ra, exec)
 			if rerr == nil {
 				if anyMatch(rgroups) {
 					groups = rgroups
@@ -227,10 +245,6 @@ func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runne
 			}
 		}
 	}
-	cwd, err := workspace.Root()
-	if err != nil {
-		return "", false, fmt.Errorf("ripgrep: resolve cwd: %w", err)
-	}
 	displayQuery := a.Query
 	var maskedIDs []string
 	if !a.RevealSecrets {
@@ -239,7 +253,7 @@ func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runne
 		displayQuery, fired = secrets.Mask(a.Query, "")
 		maskedIDs = append(maskedIDs, fired...)
 	}
-	reshaped := reshape(displayQuery, eng, groups, esc, anchor.NewFiles(cwd))
+	reshaped := reshape(displayQuery, eng, groups, esc, anchor.NewFiles(string(dir)))
 	found := anyMatch(groups)
 	out := render.Cap(reshaped, a.Budget)
 	if autoMode && !found && hasBREEscape(a.Query) {
@@ -301,8 +315,8 @@ func maskGroup(g *fileGroup, ids []string) []string {
 	return ids
 }
 
-func runFilesWithMatches(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) (string, bool, error) {
-	paths, spent, err := searchFilesWithMatches(ctx, eng, bin, a, exec)
+func runFilesWithMatches(ctx context.Context, eng engine, bin string, dir render.Dir, a backend.Args, exec runnerFn) (string, bool, error) {
+	paths, spent, err := searchFilesWithMatches(ctx, eng, bin, dir, a, exec)
 	if err != nil {
 		return "", false, err
 	}
@@ -313,7 +327,7 @@ func runFilesWithMatches(ctx context.Context, eng engine, bin string, a backend.
 		} else {
 			ra := a
 			ra.Regex = true
-			rpaths, _, rerr := searchFilesWithMatches(ctx, eng, bin, ra, exec)
+			rpaths, _, rerr := searchFilesWithMatches(ctx, eng, bin, dir, ra, exec)
 			if rerr == nil && len(rpaths) > 0 {
 				paths = rpaths
 			}
@@ -377,8 +391,8 @@ func escalatable(eng engine, q string) bool {
 // filter matching zero files is normalized to the clean no-match grep reports as
 // exit 0; a regex-parse failure carrying a BRE escape is hinted. The pass's
 // elapsed time rides along so an escalation can be priced before it is paid for.
-func searchGroups(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) ([]fileGroup, time.Duration, error) {
-	raw, spent, err := searchOutput(ctx, eng, bin, a, exec)
+func searchGroups(ctx context.Context, eng engine, bin string, dir render.Dir, a backend.Args, exec runnerFn) ([]fileGroup, time.Duration, error) {
+	raw, spent, err := searchOutput(ctx, eng, bin, dir, a, exec)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -389,25 +403,25 @@ func searchGroups(ctx context.Context, eng engine, bin string, a backend.Args, e
 	return groups, spent, nil
 }
 
-func searchFilesWithMatches(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) ([]string, time.Duration, error) {
-	raw, spent, err := searchOutput(ctx, eng, bin, a, exec)
+func searchFilesWithMatches(ctx context.Context, eng engine, bin string, dir render.Dir, a backend.Args, exec runnerFn) ([]string, time.Duration, error) {
+	raw, spent, err := searchOutput(ctx, eng, bin, dir, a, exec)
 	if err != nil {
 		return nil, 0, err
 	}
-	paths, err := parseFilesWithMatches(eng, raw)
+	paths, err := parseFilesWithMatches(eng, dir, raw)
 	if err != nil {
 		return nil, 0, err
 	}
 	return paths, spent, nil
 }
 
-func searchOutput(ctx context.Context, eng engine, bin string, a backend.Args, exec runnerFn) (string, time.Duration, error) {
+func searchOutput(ctx context.Context, eng engine, bin string, dir render.Dir, a backend.Args, exec runnerFn) (string, time.Duration, error) {
 	argv, err := buildArgv(eng, a)
 	if err != nil {
 		return "", 0, err
 	}
 	start := now()
-	raw, err := exec(ctx, bin, argv)
+	raw, err := exec(ctx, dir, bin, argv)
 	spent := now().Sub(start)
 	if err != nil {
 		if eng != engineRipgrep {
@@ -438,12 +452,13 @@ func anyMatch(groups []fileGroup) bool {
 // legitimate literal search of a 5 GB module cache lands near 24s.
 var engineTimeout = 120 * time.Second
 
-// execEngine is the real process boundary, tolerating the no-match exit and
-// bounding the child by engineTimeout.
-func execEngine(ctx context.Context, bin string, argv []string) (string, error) {
+// execEngine is the real process boundary, running the child in dir so the
+// engine searches the project root, tolerating the no-match exit and bounding
+// the child by engineTimeout.
+func execEngine(ctx context.Context, dir render.Dir, bin string, argv []string) (string, error) {
 	runCtx, cancel := context.WithTimeout(ctx, engineTimeout)
 	defer cancel()
-	out, err := render.RunCLIAllowExit(runCtx, render.Ambient, bin, argv, exitNoMatch)
+	out, err := render.RunCLIAllowExit(runCtx, dir, bin, argv, exitNoMatch)
 	// A killed child surfaces as an opaque exit error, so the deadline is read
 	// off the context rather than the exit code.
 	if err != nil && ctx.Err() == nil && runCtx.Err() != nil {
@@ -810,17 +825,13 @@ func parse(eng engine, raw string) ([]fileGroup, error) {
 	}
 }
 
-func parseFilesWithMatches(eng engine, raw string) ([]string, error) {
+func parseFilesWithMatches(eng engine, dir render.Dir, raw string) ([]string, error) {
 	switch eng {
 	case engineRipgrep, engineGrep:
 	default:
 		return nil, fmt.Errorf("ripgrep: unknown engine %d", eng)
 	}
-	cwd, err := workspace.Root()
-	if err != nil {
-		return nil, fmt.Errorf("ripgrep: resolve cwd: %w", err)
-	}
-	cwdPrefix := cwd
+	cwdPrefix := string(dir)
 	if !strings.HasSuffix(cwdPrefix, string(filepath.Separator)) {
 		cwdPrefix += string(filepath.Separator)
 	}
