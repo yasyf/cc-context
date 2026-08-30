@@ -23,11 +23,16 @@ func SetRoot(dir string) {
 // Root returns the pinned project root, falling back to the process working
 // directory when no client has declared one.
 func Root() (string, error) {
-	mu.RLock()
-	dir := pinned
-	mu.RUnlock()
-	if dir != "" {
+	if dir := Declared(); dir != "" {
 		return dir, nil
 	}
 	return os.Getwd()
+}
+
+// Declared returns the pinned project root, empty when no client has declared
+// one and ops resolve against the process working directory.
+func Declared() string {
+	mu.RLock()
+	defer mu.RUnlock()
+	return pinned
 }
