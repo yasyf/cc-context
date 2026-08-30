@@ -88,14 +88,30 @@ func TestRootTrackerNoRootsLeavesCwd(t *testing.T) {
 	}
 }
 
-func TestRootTrackerListErrorKeepsPin(t *testing.T) {
+func TestRootTrackerListErrorKeepsPinAndStaysArmed(t *testing.T) {
 	t.Cleanup(func() { workspace.SetRoot("") })
 	workspace.SetRoot("/Users/x/repo")
 	calls := 0
-	newRootTracker().sync(context.Background(), lister(&calls, nil, errors.New("no roots for you")))
+	flaky := func(context.Context) ([]*mcp.Root, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("no roots for you")
+		}
+		return []*mcp.Root{{URI: "file:///Users/x/worktree"}}, nil
+	}
+	tracker := newRootTracker()
 
+	tracker.sync(context.Background(), flaky)
 	if got, _ := workspace.Root(); got != "/Users/x/repo" {
 		t.Errorf("workspace.Root() = %q, want the pin untouched at /Users/x/repo", got)
+	}
+
+	tracker.sync(context.Background(), flaky)
+	if calls != 2 {
+		t.Errorf("roots/list issued %d times, want 2 (a failed resolution stays armed)", calls)
+	}
+	if got, _ := workspace.Root(); got != "/Users/x/worktree" {
+		t.Errorf("workspace.Root() = %q, want /Users/x/worktree once roots/list succeeds", got)
 	}
 }
 

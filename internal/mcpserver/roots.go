@@ -42,11 +42,11 @@ func (t *rootTracker) sync(ctx context.Context, roots rootLister) {
 	if !t.pending {
 		return
 	}
-	t.pending = false
 	list, err := roots(ctx)
 	if err != nil {
 		return
 	}
+	t.pending = false
 	workspace.SetRoot(firstLocalRoot(list))
 }
 
