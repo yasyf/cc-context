@@ -14,6 +14,7 @@ import (
 
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // The classification labels a use carries. "unresolved" is the honest fallback
@@ -64,7 +65,7 @@ type classCtx struct {
 // scans the repo for dependents, and renders the anchored report. Output is
 // uncapped — the caller Caps it.
 func Run(ctx context.Context, a backend.Args) (string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := workspace.Root()
 	if err != nil {
 		return "", fmt.Errorf("deps: resolve cwd: %w", err)
 	}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cache"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // inventoryTTL is how long an Engine trusts one `claude mcp list` probe before
@@ -90,7 +91,7 @@ func NewDiskInventoryStore() (InventoryStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve exec cache dir: %w", err)
 	}
-	cwd, err := os.Getwd()
+	cwd, err := workspace.Root()
 	if err != nil {
 		return nil, fmt.Errorf("resolve working directory: %w", err)
 	}

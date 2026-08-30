@@ -8,7 +8,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime/debug"
 	"sort"
@@ -21,6 +20,7 @@ import (
 	"github.com/yasyf/cc-context/internal/semsearch/embed"
 	"github.com/yasyf/cc-context/internal/semsearch/index"
 	"github.com/yasyf/cc-context/internal/semsearch/rank"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // defaultTopK matches semble's search/find_related default (top_k=5).
@@ -388,11 +388,11 @@ func repoOrCwd(path string) (string, error) {
 	if path != "" {
 		return path, nil
 	}
-	return os.Getwd()
+	return workspace.Root()
 }
 
 func mustGetwd() string {
-	wd, err := os.Getwd()
+	wd, err := workspace.Root()
 	if err != nil {
 		panic(fmt.Sprintf("engine: getwd: %v", err))
 	}

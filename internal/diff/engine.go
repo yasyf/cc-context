@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -15,6 +14,7 @@ import (
 	ccrender "github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/sniff"
 	"github.com/yasyf/cc-context/internal/vcs"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // Run resolves a.Source into a diff plan against the cwd's VCS, classifies each
@@ -24,7 +24,7 @@ import (
 // after its cap. Output is uncapped — the caller budget-caps it — and a.Full
 // inlines per-file hunks.
 func Run(ctx context.Context, a backend.Args) (string, []string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := workspace.Root()
 	if err != nil {
 		return "", nil, fmt.Errorf("diff: resolve cwd: %w", err)
 	}

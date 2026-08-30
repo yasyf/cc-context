@@ -14,6 +14,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // maxEntries caps how many entry-point paths the entry section lists.
@@ -54,7 +55,7 @@ func Run(ctx context.Context, _ backend.Args) (string, error) {
 
 // resolveRoot resolves the cwd to an absolute path.
 func resolveRoot() (string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := workspace.Root()
 	if err != nil {
 		return "", fmt.Errorf("overview: resolve cwd: %w", err)
 	}

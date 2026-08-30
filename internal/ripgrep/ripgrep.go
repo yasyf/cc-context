@@ -22,6 +22,7 @@ import (
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/secrets"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // exitNoMatch is the exit code both rg and grep return for a clean no-match; it
@@ -226,7 +227,7 @@ func run(ctx context.Context, eng engine, bin string, a backend.Args, exec runne
 			}
 		}
 	}
-	cwd, err := os.Getwd()
+	cwd, err := workspace.Root()
 	if err != nil {
 		return "", false, fmt.Errorf("ripgrep: resolve cwd: %w", err)
 	}
@@ -815,7 +816,7 @@ func parseFilesWithMatches(eng engine, raw string) ([]string, error) {
 	default:
 		return nil, fmt.Errorf("ripgrep: unknown engine %d", eng)
 	}
-	cwd, err := os.Getwd()
+	cwd, err := workspace.Root()
 	if err != nil {
 		return nil, fmt.Errorf("ripgrep: resolve cwd: %w", err)
 	}
