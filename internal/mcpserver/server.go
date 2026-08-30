@@ -642,7 +642,9 @@ func rootedHandler[In any](p *proxy.Proxy, op backend.Op, args func(In) (backend
 // Any captured stderr is appended as a neutral [stderr] section (many tools
 // write to stderr on success), [exit N] is appended only on a non-zero exit, and
 // only a non-zero exit flags the result as an error. A spawn failure is returned
-// as an error.
+// as an error. The result carries no root line: the caller names the argv and
+// the output format, so this returns a payload it will parse rather than a view
+// ccx shaped, and a header would break it.
 func bashFormatHandler() func(context.Context, *mcp.CallToolRequest, BashFormatIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in BashFormatIn) (*mcp.CallToolResult, any, error) {
 		fm, err := format.ParseFormat(in.Format)
