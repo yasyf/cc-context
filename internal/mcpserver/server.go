@@ -432,7 +432,7 @@ func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, S
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return rootedResult(out)
+		return rootHeaderResult(out)
 	}
 }
 
@@ -464,7 +464,7 @@ func editHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, Edi
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return rootedResult(out)
+		return rootHeaderResult(out)
 	}
 }
 
@@ -485,7 +485,7 @@ func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, 
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return rootedResult(note + out)
+		return rootHeaderResult(note + out)
 	}
 }
 

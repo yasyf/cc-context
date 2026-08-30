@@ -83,16 +83,16 @@ func TestRootlessCoversOnlyWebOps(t *testing.T) {
 	}
 }
 
-func TestRootedResultNamesThePinnedRoot(t *testing.T) {
+func TestRootHeaderResultNamesThePinnedRoot(t *testing.T) {
 	pinRoot(t, "/pinned/elsewhere")
 
-	res, _, err := rootedResult("# read a.go:1#ab12 (1 of 9 lines)\npackage a\n")
+	res, _, err := rootHeaderResult("# read a.go:1#ab12 (1 of 9 lines)\npackage a\n")
 	if err != nil {
-		t.Fatalf("rootedResult: %v", err)
+		t.Fatalf("rootHeaderResult: %v", err)
 	}
 	want := "# read a.go:1#ab12 (1 of 9 lines)\n# root /pinned/elsewhere\npackage a\n"
 	if got := res.Content[0].(*mcp.TextContent).Text; got != want {
-		t.Errorf("rootedResult text = %q, want %q", got, want)
+		t.Errorf("rootHeaderResult text = %q, want %q", got, want)
 	}
 }
 

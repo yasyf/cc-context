@@ -16,11 +16,11 @@ func textResult(text string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
 }
 
-// rootedResult is textResult for an op that answers out of a project root,
+// rootHeaderResult is textResult for an op that answers out of a project root,
 // naming that root in the header block. The MCP server serves whichever tree it
 // was started in, and its cites are repo-relative, so without the root line an
 // answer from the wrong worktree reads exactly like one from the right tree.
-func rootedResult(text string) (*mcp.CallToolResult, any, error) {
+func rootHeaderResult(text string) (*mcp.CallToolResult, any, error) {
 	root, err := workspace.Root()
 	if err != nil {
 		return nil, nil, err
@@ -48,7 +48,7 @@ func opResult(op backend.Op, text string) (*mcp.CallToolResult, any, error) {
 	if rootless(op) {
 		return textResult(text), nil, nil
 	}
-	return rootedResult(text)
+	return rootHeaderResult(text)
 }
 
 // rootless reports whether op answers from no project root. Only the web ops
