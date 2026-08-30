@@ -37,6 +37,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.46.0] - 2026-08-27
 
 ### Added
+- **`ccx vcs status` reads the merge queue through gt, not only through
+  Graphite's comment.** The activity comment the queue phase is derived from is
+  not always posted: pull requests enter the queue and merge without one, which
+  leaves the comment silent and the merge label already consumed — the two
+  states that are hardest to tell apart in the first place. A `queue-gt` line
+  now carries gt's own verdict from `gt merge --dry-run`, which reports what
+  would merge and terminates without merging anything, and which answers
+  `The stack is already merging` where nothing else does. `--no-queue-probe`
+  skips it; it is the only call in the command that reaches Graphite.
+- **A branch reparented out from under its pull request is a blocker.**
+  Graphite's stack metadata is repo-global rather than per-working-copy, so
+  concurrent `gt` runs in sibling checkouts can move a branch onto another
+  lane's tip. The pull request keeps its original base, the branch no longer
+  sits on it, and merging lands a diff nobody reviewed. `status` compares gt's
+  parent to the pull request's own `baseRefName` and names the disagreement, and
+  puts the pull request's changed-file count on the `pr` line, since a diff
+  wider than the work is how this is caught by eye.
+
 - **`ccx vcs status`, which says what the whole stack is waiting on.** Per
   branch, in stack order: its divergence from trunk, whether gt says it sits off
   its parent, its pull request's mergeability, the checks on its head and which

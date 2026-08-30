@@ -88,7 +88,7 @@ func TestVcsStatusGTLane(t *testing.T) {
 	ghReplay(t, f, status)
 	writeInfoFile(t, f.Dir, "f.txt", "dirty\n")
 
-	out, err := runVcsStatusCmd(t)
+	out, err := runVcsStatusCmd(t, "--no-queue-probe")
 	if err != nil {
 		t.Fatalf("status error = %v", err)
 	}
@@ -100,7 +100,7 @@ func TestVcsStatusGTLane(t *testing.T) {
 		"dirty       yes (1 file) · f.txt",
 		"",
 		"branch      fix-ship-help-graphite-demote · here · current · ahead 1 · behind 0",
-		"pr          #3 · merged · a1673e91 · https://github.com/yasyf/cc-context/pull/3",
+		"pr          #3 · merged · 2 files · a1673e91 · https://github.com/yasyf/cc-context/pull/3",
 		"checks      guides / render skipped · reconcile skipped · test (ubuntu-latest) success · " +
 			"test (macos-latest) success · lint success · guides / pr-check success · vuln success · " +
 			"hook-tests success · descriptor-agreement success · Socket Security: Project Report success · " +
@@ -120,7 +120,7 @@ func TestVcsStatusMergedPullRequestBlocksNothing(t *testing.T) {
 	f := infoGTRepo(t, downstackOne...)
 	ghReplay(t, f, status)
 
-	got := runVcsStatusJSON(t)
+	got := runVcsStatusJSON(t, "--no-queue-probe")
 	if len(got.Branches) != 1 {
 		t.Fatalf("branches = %d, want 1", len(got.Branches))
 	}
@@ -153,7 +153,7 @@ func TestVcsStatusBranchWithoutPullRequest(t *testing.T) {
 	ghReplay(t, f, status)
 	resetArgvLog(t, f)
 
-	got := runVcsStatusJSON(t)
+	got := runVcsStatusJSON(t, "--no-queue-probe")
 	if len(got.Branches) != 3 {
 		t.Fatalf("branches = %d, want 3", len(got.Branches))
 	}
@@ -204,6 +204,85 @@ func TestStatusChecksKeepsTheLatestRun(t *testing.T) {
 	}
 	if got := statusChecks(nil); got != nil {
 		t.Errorf("statusChecks(nil) = %+v, want nil", got)
+	}
+}
+
+// TestClassifyQueueProbe pins gt's own wording, which is the only answer left
+// when Graphite declines to post its activity comment — as it did on two pull
+// requests that entered the queue and merged the same day.
+func TestClassifyQueueProbe(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		output  string
+		code    int
+		verdict queueVerdict
+		detail  string
+	}{
+		{
+			name:    "already merging is the queue holding it",
+			output:  "🥞 Validating that this Graphite stack is ready to merge...\n\n🎉 The stack is already merging.\n",
+			verdict: queueMerging,
+			detail:  "The stack is already merging",
+		},
+		{
+			name:    "already merged",
+			output:  "Running merge in 'dry-run' mode. No PRs will be merged.\n\n🎉 The stack has already merged.\n",
+			verdict: queueMerged,
+			detail:  "The stack has already merged",
+		},
+		{
+			name:    "a clean dry run means nothing has it",
+			output:  "Running merge in 'dry-run' mode. No PRs will be merged.\n\nWould merge PR #10.\n",
+			verdict: queueReady,
+		},
+		{
+			name:    "an unrecognized failure quotes gt's first line",
+			output:  "gt exploded\nand kept going\n",
+			code:    1,
+			verdict: queueUnknown,
+			detail:  "gt exploded",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			verdict, detail := classifyQueueProbe(tt.output, tt.code)
+			if verdict != tt.verdict {
+				t.Errorf("verdict = %q, want %q", verdict, tt.verdict)
+			}
+			if detail != tt.detail {
+				t.Errorf("detail = %q, want %q", detail, tt.detail)
+			}
+		})
+	}
+}
+
+// TestStatusBlockersNamesAReparent covers the hazard of a repo-global stack:
+// concurrent gt runs move a branch under another lane's tip, and the pull
+// request keeps its original base while the branch no longer sits on it.
+func TestStatusBlockersNamesAReparent(t *testing.T) {
+	t.Parallel()
+	branch := statusBranch{
+		Name:   "feature",
+		Parent: "someone-elses-lane",
+		PR: &statusPR{
+			Number:         12,
+			State:          "OPEN",
+			Base:           "dev",
+			HasBody:        true,
+			Mergeable:      "MERGEABLE",
+			ReviewDecision: "APPROVED",
+		},
+	}
+	want := "gt parents this on someone-elses-lane but PR #12 bases on dev — the branch was reparented; restack and re-submit"
+	got := statusBlockers(branch)
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("statusBlockers() = %q, want exactly %q", got, want)
+	}
+	branch.Parent = "dev"
+	if got := statusBlockers(branch); len(got) != 0 {
+		t.Errorf("statusBlockers() = %q, want none once the parent and the base agree", got)
 	}
 }
 

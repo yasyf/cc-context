@@ -322,6 +322,18 @@ head history, and names the commits a merge would leave behind. The same activit
 comment is what separates a label the queue consumed on admission from one it
 dropped on failure, which are otherwise the same absent label.
 
+That comment is not always posted — PRs enter the queue and merge without one —
+so a `queue-gt` line carries gt's own verdict from `gt merge --dry-run`, which
+reports what would merge and terminates without merging anything, and says
+`The stack is already merging` where nothing else does. `--no-queue-probe` skips
+it. Two more facts this repo's queue taught the command: it closes what it
+merges, so a landed PR reads `CLOSED` with a null `mergedAt` and status calls
+that merged on the gt lane rather than abandoned; and its stack metadata is
+repo-global, so concurrent `gt` runs in sibling checkouts can reparent a branch
+onto another lane's tip — a gt parent that disagrees with the PR's own base is a
+blocker, and the PR's changed-file count is on the `pr` line, because a diff
+wider than the work is the tell.
+
 `ccx vcs guidelines` (alias
 `contributing`) fetches and caches the repo's PR templates, `CONTRIBUTING.md`, code
 of conduct, and issue config, served verbatim so a PR body can reproduce the
