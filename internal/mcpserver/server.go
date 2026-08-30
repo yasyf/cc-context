@@ -490,7 +490,10 @@ func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, 
 }
 
 // execHandler runs the script through the resident sandbox engine. MCP has no
-// stderr, so engine notes ride along as a trailing [notes] block.
+// stderr, so engine notes ride along as a trailing [notes] block. The result is
+// the script's own return value rather than a view ccx rendered, so it carries
+// no root line: a header prepended to a payload the caller chose is one its
+// caller cannot parse.
 func execHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolRequest, ExecIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in ExecIn) (*mcp.CallToolResult, any, error) {
 		if !codeexec.Supported() {
@@ -500,7 +503,7 @@ func execHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolReques
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return rootedResult(withNotes(out, notes))
+		return textResult(withNotes(out, notes)), nil, nil
 	}
 }
 

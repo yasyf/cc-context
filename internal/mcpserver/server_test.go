@@ -897,9 +897,8 @@ func TestExecToolRoundTrip(t *testing.T) {
 	if isErr {
 		t.Fatalf("ccx_exec is error: %s", out)
 	}
-	want := rootLine(t) + "42"
-	if out != want {
-		t.Errorf("ccx_exec out = %q, want %q", out, want)
+	if out != "42" {
+		t.Errorf("ccx_exec out = %q, want %q", out, "42")
 	}
 }
 

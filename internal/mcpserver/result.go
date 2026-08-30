@@ -9,8 +9,9 @@ import (
 	"github.com/yasyf/cc-context/internal/workspace"
 )
 
-// textResult wraps text as a tool result, for an op that resolves against no
-// project root.
+// textResult wraps text as a tool result verbatim, for a tool that resolves
+// against no project root, or whose result is a payload its caller chose rather
+// than a view ccx rendered.
 func textResult(text string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
 }
