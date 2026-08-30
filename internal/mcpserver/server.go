@@ -247,9 +247,12 @@ func Serve(ctx context.Context) error {
 		defer func() { _ = eng.Close() }()
 	}
 
+	roots := newRootTracker()
 	s := mcp.NewServer(&mcp.Implementation{Name: "cc-context", Version: version.String()}, &mcp.ServerOptions{
-		Instructions: serverInstructions,
+		Instructions:            serverInstructions,
+		RootsListChangedHandler: roots.rearm,
 	})
+	s.AddReceivingMiddleware(roots.middleware)
 	register(s, p, eng)
 
 	return s.Run(ctx, &mcp.StdioTransport{})
