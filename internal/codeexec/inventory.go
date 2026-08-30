@@ -116,7 +116,7 @@ func (s *diskInventoryStore) Load() (Inventory, time.Time, bool) {
 	if err != nil {
 		return Inventory{}, time.Time{}, false
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // sha256-derived name under ccx's own exec cache dir
 	if err != nil {
 		return Inventory{}, time.Time{}, false
 	}
