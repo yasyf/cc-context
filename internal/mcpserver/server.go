@@ -432,7 +432,7 @@ func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, S
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
+		return rootedResult(out)
 	}
 }
 
@@ -464,7 +464,7 @@ func editHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, Edi
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
+		return rootedResult(out)
 	}
 }
 
@@ -485,7 +485,7 @@ func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, 
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: note + out}}}, nil, nil
+		return rootedResult(note + out)
 	}
 }
 
@@ -500,7 +500,7 @@ func execHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolReques
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: withNotes(out, notes)}}}, nil, nil
+		return rootedResult(withNotes(out, notes))
 	}
 }
 
@@ -516,7 +516,7 @@ func execToolsHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolR
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: withNotes(out, notes)}}}, nil, nil
+		return textResult(withNotes(out, notes)), nil, nil
 	}
 }
 
@@ -538,7 +538,7 @@ func handler[In any](p *proxy.Proxy, op backend.Op, args func(In) backend.Args) 
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
+		return opResult(op, out)
 	}
 }
 
@@ -573,10 +573,9 @@ func bashFormatHandler() func(context.Context, *mcp.CallToolRequest, BashFormatI
 		if code != 0 {
 			text += fmt.Sprintf("\n[exit %d]", code)
 		}
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: text}},
-			IsError: code != 0,
-		}, nil, nil
+		res := textResult(text)
+		res.IsError = code != 0
+		return res, nil, nil
 	}
 }
 
