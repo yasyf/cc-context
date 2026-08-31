@@ -8,7 +8,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime/debug"
 	"sort"
@@ -21,6 +20,7 @@ import (
 	"github.com/yasyf/cc-context/internal/semsearch/embed"
 	"github.com/yasyf/cc-context/internal/semsearch/index"
 	"github.com/yasyf/cc-context/internal/semsearch/rank"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // defaultTopK matches semble's search/find_related default (top_k=5).
@@ -38,9 +38,9 @@ var ModelID = embed.CodePin.Repo + "@" + embed.CodePin.Revision
 // fused_parity_test.go; the engine layer adds the walker and cache on top and
 // is exercised by the fake-embedder tests here.
 
-// Search runs native semantic search over the repo (a.Path, else cwd) and
-// returns the ranked results. Content types come from a.Kind (default code+docs);
-// snippets are truncated to a.MaxSnippetLines (≤0 = full chunk).
+// Search runs native semantic search over the repo (a.Path, else the project
+// root) and returns the ranked results. Content types come from a.Kind (default
+// code+docs); snippets are truncated to a.MaxSnippetLines (≤0 = full chunk).
 func Search(ctx context.Context, emb index.Embedder, a backend.Args) ([]semsearch.Result, error) {
 	if strings.TrimSpace(a.Query) == "" {
 		return nil, nil
@@ -90,7 +90,7 @@ func Related(ctx context.Context, emb index.Embedder, a backend.Args) ([]semsear
 		return nil, err
 	}
 
-	repoRel := repoRelative(idx.Root, file)
+	repoRel := repoRelative(ctx, idx.Root, file)
 	srcIdx := resolveChunk(idx.Chunks, repoRel, line)
 	if srcIdx < 0 {
 		return nil, fmt.Errorf("semsearch: no indexed chunk contains %s:%d", file, line)
@@ -161,7 +161,7 @@ func load(ctx context.Context, emb index.Embedder, a backend.Args) (*index.Index
 	if err != nil {
 		return nil, nil, err
 	}
-	repo, err := repoOrCwd(a.Path)
+	repo, err := repoOrRoot(ctx, a.Path)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -223,7 +223,7 @@ func loadCached(ctx context.Context, emb index.Embedder, a backend.Args) (*index
 	if err != nil {
 		return nil, nil, err
 	}
-	repo, err := repoOrCwd(a.Path)
+	repo, err := repoOrRoot(ctx, a.Path)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -332,12 +332,13 @@ func resolveChunk(chunks []semsearch.Chunk, file string, line int) int {
 }
 
 // repoRelative normalizes a user-given file path to the repo-relative slash form
-// chunk paths use: it resolves the path against cwd, then relativizes to the
-// repo root, falling back to the cleaned input when it lies outside the repo.
-func repoRelative(root, file string) string {
+// chunk paths use: it resolves the path against the project root, then
+// relativizes to the repo root, falling back to the cleaned input when it lies
+// outside the repo.
+func repoRelative(ctx context.Context, root, file string) string {
 	abs := file
 	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(mustGetwd(), file)
+		abs = filepath.Join(mustRoot(ctx), file)
 	}
 	if rel, err := filepath.Rel(root, abs); err == nil && !strings.HasPrefix(rel, "..") {
 		return filepath.ToSlash(rel)
@@ -383,20 +384,20 @@ func hasCode(content []index.ContentType) bool {
 	return false
 }
 
-// repoOrCwd returns path when set, else the current working directory.
-func repoOrCwd(path string) (string, error) {
+// repoOrRoot returns path when set, else the project root.
+func repoOrRoot(ctx context.Context, path string) (string, error) {
 	if path != "" {
 		return path, nil
 	}
-	return os.Getwd()
+	return workspace.RootFrom(ctx)
 }
 
-func mustGetwd() string {
-	wd, err := os.Getwd()
+func mustRoot(ctx context.Context) string {
+	root, err := workspace.RootFrom(ctx)
 	if err != nil {
-		panic(fmt.Sprintf("engine: getwd: %v", err))
+		panic(fmt.Sprintf("engine: resolve root: %v", err))
 	}
-	return wd
+	return root
 }
 
 // splitLoc parses a "file:line" location into its file and 1-indexed line.

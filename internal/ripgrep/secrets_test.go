@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 const (
@@ -113,8 +114,8 @@ func TestRunMasksSecrets(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fake := func(context.Context, string, []string) (string, error) { return tt.out, nil }
-			got, found, err := run(context.Background(), engineRipgrep, "bin", tt.args, fake)
+			fake := func(context.Context, render.Dir, string, []string) (string, error) { return tt.out, nil }
+			got, found, err := run(context.Background(), engineRipgrep, "bin", testDir(t), tt.args, fake)
 			if err != nil {
 				t.Fatalf("run() err = %v", err)
 			}

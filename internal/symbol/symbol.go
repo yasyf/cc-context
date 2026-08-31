@@ -11,13 +11,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // DefaultBudget bounds symbol output when the caller sets none: the CLI and MCP
@@ -44,7 +44,7 @@ var separators = []string{"::", "#", "."}
 // a.RevealSecrets. A miss degrades exact → case-insensitive → definition-
 // keyword text before failing with ErrNotFound. The output is not capped.
 func Run(ctx context.Context, a backend.Args) (string, []string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := workspace.RootFrom(ctx)
 	if err != nil {
 		return "", nil, fmt.Errorf("symbol: resolve cwd: %w", err)
 	}

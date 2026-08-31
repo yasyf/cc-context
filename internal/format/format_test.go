@@ -5,8 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 func defaultOpts() Options {
@@ -264,5 +268,54 @@ func TestConvertUnderCeilingStillConverts(t *testing.T) {
 	}
 	if !converted {
 		t.Fatalf("converted = false, want true (out=%q)", out)
+	}
+}
+
+// runTempRoot materializes marker.txt carrying tag in a symlink-resolved temp
+// dir, and returns the dir.
+func runTempRoot(t *testing.T, tag string) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "marker.txt"), []byte(tag+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func runMarker(t *testing.T) string {
+	t.Helper()
+	out, _, code, err := Run(
+		context.Background(),
+		[]string{"cat", "marker.txt"},
+		defaultOpts(),
+		nil, &bytes.Buffer{},
+	)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("Run() code = %d, want 0", code)
+	}
+	return strings.TrimSpace(out)
+}
+
+func TestRunExecutesInThePinnedRoot(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	pinned := runTempRoot(t, "pinnedtree")
+	cwd := runTempRoot(t, "cwdtree")
+	t.Chdir(cwd)
+
+	workspace.SetRoot(pinned)
+	t.Cleanup(func() { workspace.SetRoot("") })
+	if got := runMarker(t); got != "pinnedtree" {
+		t.Errorf("pinned Run() read %q, want the pinned tree's %q", got, "pinnedtree")
+	}
+
+	workspace.SetRoot("")
+	if got := runMarker(t); got != "cwdtree" {
+		t.Errorf("unpinned Run() read %q, want the cwd's %q", got, "cwdtree")
 	}
 }

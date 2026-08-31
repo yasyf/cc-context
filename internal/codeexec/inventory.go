@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cache"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // inventoryTTL is how long an Engine trusts one `claude mcp list` probe before
@@ -19,7 +20,7 @@ import (
 const inventoryTTL = 15 * time.Minute
 
 // InventoryStore caches one discovery probe across Engine instances, keyed by
-// the probing working directory. A corrupt or missing record reads as a miss.
+// the project root it probed. A corrupt or missing record reads as a miss.
 type InventoryStore interface {
 	Load() (Inventory, time.Time, bool)
 	Save(Inventory, time.Time) error
@@ -79,34 +80,43 @@ func (s *memoryInventoryStore) Save(inv Inventory, probed time.Time) error {
 }
 
 type diskInventoryStore struct {
-	path string
+	dir  string
+	root func() (string, error)
 }
 
-// NewDiskInventoryStore returns the on-disk InventoryStore for the current
-// working directory, under the shared exec cache dir. `claude mcp list` output
-// is project-scoped, so the record is keyed by the cwd.
+// NewDiskInventoryStore returns the on-disk InventoryStore under the shared
+// exec cache dir. `claude mcp list` output is project-scoped, so the record is
+// keyed by the project root, resolved per call so a root switch reads its own
+// record rather than the previous root's.
 func NewDiskInventoryStore() (InventoryStore, error) {
 	dir, err := cache.Dir("exec")
 	if err != nil {
 		return nil, fmt.Errorf("resolve exec cache dir: %w", err)
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, fmt.Errorf("resolve working directory: %w", err)
-	}
-	return newDiskInventoryStore(dir, cwd), nil
+	return &diskInventoryStore{dir: dir, root: workspace.Root}, nil
 }
 
-// newDiskInventoryStore keys the record file by cwd so tests can key arbitrary
-// directories without changing the process working directory.
-func newDiskInventoryStore(dir, cwd string) *diskInventoryStore {
-	sum := sha256.Sum256([]byte(cwd))
-	name := "inventory-" + hex.EncodeToString(sum[:])[:16] + ".json"
-	return &diskInventoryStore{path: filepath.Join(dir, name)}
+// newDiskInventoryStore pins the record file to one root so tests can key
+// arbitrary directories without changing the process working directory.
+func newDiskInventoryStore(dir, root string) *diskInventoryStore {
+	return &diskInventoryStore{dir: dir, root: func() (string, error) { return root, nil }}
+}
+
+func (s *diskInventoryStore) path() (string, error) {
+	root, err := s.root()
+	if err != nil {
+		return "", fmt.Errorf("resolve project root: %w", err)
+	}
+	sum := sha256.Sum256([]byte(root))
+	return filepath.Join(s.dir, "inventory-"+hex.EncodeToString(sum[:])[:16]+".json"), nil
 }
 
 func (s *diskInventoryStore) Load() (Inventory, time.Time, bool) {
-	data, err := os.ReadFile(s.path)
+	path, err := s.path()
+	if err != nil {
+		return Inventory{}, time.Time{}, false
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // sha256-derived name under ccx's own exec cache dir
 	if err != nil {
 		return Inventory{}, time.Time{}, false
 	}
@@ -121,12 +131,16 @@ func (s *diskInventoryStore) Load() (Inventory, time.Time, bool) {
 }
 
 func (s *diskInventoryStore) Save(inv Inventory, probed time.Time) error {
+	path, err := s.path()
+	if err != nil {
+		return err
+	}
 	allow, deny := mcpFilterEnv()
 	data, err := json.Marshal(inventoryEnvelope{Probed: probed, Allow: allow, Deny: deny, Inventory: inv})
 	if err != nil {
 		return fmt.Errorf("encode inventory: %w", err)
 	}
-	if err := cache.Store(s.path, data, 0o600); err != nil {
+	if err := cache.Store(path, data, 0o600); err != nil {
 		return fmt.Errorf("store inventory: %w", err)
 	}
 	return nil

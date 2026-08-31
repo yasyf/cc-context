@@ -3,10 +3,13 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 func TestReadCommandNotFound(t *testing.T) {
@@ -27,5 +30,31 @@ func TestReadCommandNotFound(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Errorf("stdout = %q, want empty", out.String())
+	}
+}
+
+// TestReadCommandNamesNoRoot proves the "# root" line is the MCP surface's
+// alone: the CLI already answers in the shell whose cwd names the root, and a
+// root line there would be noise the goldens must carry.
+func TestReadCommandNamesNoRoot(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(file, []byte("alpha\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	workspace.SetRoot(dir)
+	t.Cleanup(func() { workspace.SetRoot("") })
+
+	cmd := newReadCmd()
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	cmd.SetArgs([]string{file, "--full"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if strings.Contains(out.String(), "# root ") {
+		t.Errorf("cli read stdout names a root: %q", out.String())
 	}
 }

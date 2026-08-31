@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // writeTree materializes files under root; a map value is the file's contents. It
@@ -600,4 +601,29 @@ func itoa2(i int) string {
 		return "0" + s
 	}
 	return s
+}
+
+func TestPinnedRootOverridesCwd(t *testing.T) {
+	pinned := tempRoot(t)
+	writeTree(t, pinned, map[string]string{"pinned.go": "package a\n"})
+	cwd := tempRoot(t)
+	writeTree(t, cwd, map[string]string{"cwd.go": "package b\n"})
+	t.Chdir(cwd)
+
+	workspace.SetRoot(pinned)
+	t.Cleanup(func() { workspace.SetRoot("") })
+	out, err := Run(context.Background(), backend.Args{Globs: []string{"*.go"}})
+	if err != nil {
+		t.Fatalf("Run pinned at %q: %v", pinned, err)
+	}
+	mustContain(t, out, "pinned.go")
+	mustNotContain(t, out, "cwd.go")
+
+	workspace.SetRoot("")
+	out, err = Run(context.Background(), backend.Args{Globs: []string{"*.go"}})
+	if err != nil {
+		t.Fatalf("Run unpinned at %q: %v", cwd, err)
+	}
+	mustContain(t, out, "cwd.go")
+	mustNotContain(t, out, "pinned.go")
 }

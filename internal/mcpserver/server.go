@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -24,6 +25,7 @@ import (
 	"github.com/yasyf/cc-context/internal/semsearch/engine"
 	"github.com/yasyf/cc-context/internal/symbol"
 	"github.com/yasyf/cc-context/internal/version"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // defaultSnippetLines bounds ccx_code_search result snippets when the caller
@@ -75,6 +77,7 @@ type RelatedIn struct {
 // OutlineIn is the input for ccx_code_outline.
 type OutlineIn struct {
 	Path          string `json:"path" jsonschema:"file or directory to outline"`
+	Repo          string `json:"repo,omitempty" jsonschema:"repo root a relative path resolves against; default project root"`
 	Section       string `json:"section,omitempty" jsonschema:"window a single-file (ast-grep) outline to a line range (\"40-95\" or \"40,95\")"`
 	Deep          bool   `json:"deep,omitempty" jsonschema:"ast-grep: include members (struct fields, class methods); default is top-level only"`
 	Full          bool   `json:"full,omitempty" jsonschema:"alias for deep: include members"`
@@ -88,20 +91,26 @@ type OutlineIn struct {
 // ReadIn is the input for ccx_code_read.
 type ReadIn struct {
 	Path          string `json:"path" jsonschema:"file to read"`
+	Repo          string `json:"repo,omitempty" jsonschema:"repo root a relative path resolves against; default project root"`
 	Section       string `json:"section,omitempty" jsonschema:"line range (\"40-95\"), heading (\"## Heading\"), or anchor (\"15-27#k2fa\" or bare \"k2fa\"); a shifted anchor re-resolves by content and prepends a \"# anchor …\" note"`
 	Full          bool   `json:"full,omitempty" jsonschema:"read the whole file"`
 	RevealSecrets bool   `json:"reveal_secrets,omitempty" jsonschema:"print detected secrets raw instead of masked"`
 	Budget        int    `json:"budget,omitempty" jsonschema:"token budget for the output; 0 or omitted = default 2000"`
 }
 
-// readArgs builds the read backend.Args from a ccx_code_read call, applying the
-// default budget when the caller sets none (the codeexec path leaves it zero).
-func readArgs(in ReadIn) backend.Args {
-	a := backend.Args{Path: in.Path, Section: in.Section, Full: in.Full, RevealSecrets: in.RevealSecrets, Budget: in.Budget}
+// readArgs builds the read backend.Args from a ccx_code_read call, resolving the
+// path against the call's repo root and applying the default budget when the
+// caller sets none (the codeexec path leaves it zero).
+func readArgs(ctx context.Context, in ReadIn) (backend.Args, error) {
+	path, err := rootedPath(ctx, in.Repo, in.Path)
+	if err != nil {
+		return backend.Args{}, err
+	}
+	a := backend.Args{Path: path, Section: in.Section, Full: in.Full, RevealSecrets: in.RevealSecrets, Budget: in.Budget}
 	if a.Budget == 0 {
 		a.Budget = read.DefaultBudget
 	}
-	return a
+	return a, nil
 }
 
 // SymbolIn is the input for ccx_code_symbol.
@@ -132,19 +141,25 @@ type DepsIn struct {
 	Budget int    `json:"budget,omitempty" jsonschema:"token budget for the output; 0 or omitted = default 2000"`
 }
 
-// depsArgs builds the deps backend.Args from a ccx_code_deps call, applying the
-// default budget when the caller sets none (the codeexec path leaves it zero).
-func depsArgs(in DepsIn) backend.Args {
-	a := backend.Args{Path: in.Path, Budget: in.Budget}
+// depsArgs builds the deps backend.Args from a ccx_code_deps call, resolving the
+// path against the call's root and applying the default budget when the caller
+// sets none (the codeexec path leaves it zero).
+func depsArgs(ctx context.Context, in DepsIn) (backend.Args, error) {
+	path, err := rootedPath(ctx, "", in.Path)
+	if err != nil {
+		return backend.Args{}, err
+	}
+	a := backend.Args{Path: path, Budget: in.Budget}
 	if a.Budget == 0 {
 		a.Budget = deps.DefaultBudget
 	}
-	return a
+	return a, nil
 }
 
 // GrepIn is the input for ccx_code_grep.
 type GrepIn struct {
 	Text             string   `json:"text" jsonschema:"text to search for"`
+	Repo             string   `json:"repo,omitempty" jsonschema:"repo root to search, and the root relative paths resolve against; default project root"`
 	Globs            []string `json:"globs,omitempty" jsonschema:"restrict to files matching these globs (ordered, gitignore-style; ! excludes, last match wins); a glob anchored at a real directory searches even under ignore rules"`
 	IgnoreCase       bool     `json:"ignoreCase,omitempty" jsonschema:"case-insensitive; runs the rg/grep engine"`
 	Word             bool     `json:"word,omitempty" jsonschema:"whole words only; runs the rg/grep engine"`
@@ -157,6 +172,21 @@ type GrepIn struct {
 	After            int      `json:"after,omitempty" jsonschema:"context lines after each match (-A)"`
 	Before           int      `json:"before,omitempty" jsonschema:"context lines before each match (-B)"`
 	Context          int      `json:"context,omitempty" jsonschema:"context lines around each match (-C)"`
+}
+
+// grepArgs builds the grep backend.Args from a ccx_code_grep call, resolving the
+// operands against the call's repo root and applying the default budget when the
+// caller sets none.
+func grepArgs(ctx context.Context, in GrepIn) (backend.Args, error) {
+	paths, err := rootedPaths(ctx, in.Repo, in.Paths)
+	if err != nil {
+		return backend.Args{}, err
+	}
+	a := backend.Args{Query: in.Text, Globs: in.Globs, IgnoreCase: in.IgnoreCase, Word: in.Word, Regex: in.Regex, FilesWithMatches: in.FilesWithMatches, Paths: paths, RevealSecrets: in.RevealSecrets, Budget: in.Budget, Expand: in.Expand, After: in.After, Before: in.Before, Context: in.Context}
+	if a.Budget == 0 {
+		a.Budget = ripgrep.DefaultBudget
+	}
+	return a, nil
 }
 
 // FindIn is the input for ccx_repo_find.
@@ -247,9 +277,12 @@ func Serve(ctx context.Context) error {
 		defer func() { _ = eng.Close() }()
 	}
 
+	roots := newRootTracker()
 	s := mcp.NewServer(&mcp.Implementation{Name: "cc-context", Version: version.String()}, &mcp.ServerOptions{
-		Instructions: serverInstructions,
+		Instructions:            serverInstructions,
+		RootsListChangedHandler: roots.rearm,
 	})
+	s.AddReceivingMiddleware(roots.middleware)
 	register(s, p, eng)
 
 	return s.Run(ctx, &mcp.StdioTransport{})
@@ -296,8 +329,12 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_related",
 		Description: "Find code semantically related to a file:line — follow-up to a search hit. Takes an anchored location too (f.go:12#a3fk). Covers code+docs by default; pass content to narrow (code|docs|config|all).",
-	}, handler(p, backend.OpRelated, func(in RelatedIn) backend.Args {
-		return backend.Args{Query: in.Location, Path: in.Repo, Kind: in.Content}
+	}, rootedHandler(p, backend.OpRelated, func(ctx context.Context, in RelatedIn) (backend.Args, error) {
+		repo, err := rootedPath(ctx, "", in.Repo)
+		if err != nil {
+			return backend.Args{}, err
+		}
+		return backend.Args{Query: in.Location, Path: repo, Kind: in.Content}, nil
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -310,7 +347,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 		Name:        "ccx_code_read",
 		Description: "Read a file by section, heading, anchor, or whole; pass section to avoid the entire file.",
 		Meta:        alwaysLoad,
-	}, handler(p, backend.OpRead, readArgs))
+	}, rootedHandler(p, backend.OpRead, readArgs))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_symbol",
@@ -320,19 +357,13 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_deps",
 		Description: "A file's imports (classified local/std/external) and the files that import it (used by), each anchored — budget-bounded, syntactic (not a build graph).",
-	}, handler(p, backend.OpDeps, depsArgs))
+	}, rootedHandler(p, backend.OpDeps, depsArgs))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_grep",
 		Description: "Grep literal or regex text across code — globbed or over explicit files; budget-bounded.",
 		Meta:        alwaysLoad,
-	}, handler(p, backend.OpGrep, func(in GrepIn) backend.Args {
-		a := backend.Args{Query: in.Text, Globs: in.Globs, IgnoreCase: in.IgnoreCase, Word: in.Word, Regex: in.Regex, FilesWithMatches: in.FilesWithMatches, Paths: in.Paths, RevealSecrets: in.RevealSecrets, Budget: in.Budget, Expand: in.Expand, After: in.After, Before: in.Before, Context: in.Context}
-		if a.Budget == 0 {
-			a.Budget = ripgrep.DefaultBudget
-		}
-		return a
-	}))
+	}, rootedHandler(p, backend.OpGrep, grepArgs))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_repo_find",
@@ -408,13 +439,18 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 // snippet knobs.
 func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, SearchIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in SearchIn) (*mcp.CallToolResult, any, error) {
+		ctx = pinCall(ctx)
 		snippet := in.MaxSnippetLines
 		if snippet == 0 {
 			snippet = defaultSnippetLines
 		}
+		repo, err := rootedPath(ctx, "", in.Repo)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
+		}
 		a := backend.Args{
 			Query:           in.Query,
-			Path:            in.Repo,
+			Path:            repo,
 			Mode:            in.Mode,
 			Lang:            in.Lang,
 			Kind:            in.Content,
@@ -425,14 +461,19 @@ func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, S
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		if op == backend.OpStructural && in.Repo != "" {
-			a.Paths = []string{in.Repo}
+		if op == backend.OpStructural && repo != "" {
+			a.Paths = []string{repo}
+		}
+		if op == backend.OpGrep {
+			if a.Paths, err = rootedPaths(ctx, in.Repo, nil); err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
+			}
 		}
 		out, err := p.Call(ctx, op, a)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
+		return rootHeaderResult(ctx, out)
 	}
 }
 
@@ -441,6 +482,7 @@ func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, S
 // engine.
 func editHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, EditIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in EditIn) (*mcp.CallToolResult, any, error) {
+		ctx = pinCall(ctx)
 		if (in.Content != nil) == in.Delete {
 			return nil, nil, fmt.Errorf("%s: provide exactly one of content or delete", req.Params.Name)
 		}
@@ -464,7 +506,7 @@ func editHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, Edi
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
+		return rootHeaderResult(ctx, out)
 	}
 }
 
@@ -473,7 +515,12 @@ func editHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, Edi
 // directories and the languages it outlines, the native fallback otherwise.
 func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, OutlineIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in OutlineIn) (*mcp.CallToolResult, any, error) {
-		a := backend.Args{Path: in.Path, Section: in.Section, Deep: in.Deep, Full: in.Full, Items: in.Items, Match: in.Match, Lang: in.Lang, RevealSecrets: in.RevealSecrets, Budget: in.Budget}
+		ctx = pinCall(ctx)
+		path, err := rootedPath(ctx, in.Repo, in.Path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
+		}
+		a := backend.Args{Path: path, Section: in.Section, Deep: in.Deep, Full: in.Full, Items: in.Items, Match: in.Match, Lang: in.Lang, RevealSecrets: in.RevealSecrets, Budget: in.Budget}
 		op, note, err := outline.Route(&a)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
@@ -485,12 +532,15 @@ func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, 
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: note + out}}}, nil, nil
+		return rootHeaderResult(ctx, note+out)
 	}
 }
 
 // execHandler runs the script through the resident sandbox engine. MCP has no
-// stderr, so engine notes ride along as a trailing [notes] block.
+// stderr, so engine notes ride along as a trailing [notes] block. The result is
+// the script's own return value rather than a view ccx rendered, so it carries
+// no root line: a header prepended to a payload the caller chose is one its
+// caller cannot parse.
 func execHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolRequest, ExecIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in ExecIn) (*mcp.CallToolResult, any, error) {
 		if !codeexec.Supported() {
@@ -500,7 +550,7 @@ func execHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolReques
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: withNotes(out, notes)}}}, nil, nil
+		return textResult(withNotes(out, notes)), nil, nil
 	}
 }
 
@@ -516,7 +566,7 @@ func execToolsHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolR
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: withNotes(out, notes)}}}, nil, nil
+		return textResult(withNotes(out, notes)), nil, nil
 	}
 }
 
@@ -529,16 +579,91 @@ func withNotes(text string, notes []string) string {
 	return text + "\n\n[notes]\n" + strings.Join(notes, "\n")
 }
 
+// pinCall snapshots the declared root into ctx for the whole of one tool call.
+// Calls run concurrently against one process-global pin, so an op and the root
+// header naming its answer both read this one snapshot rather than re-reading a
+// pin another call can move mid-flight.
+func pinCall(ctx context.Context) context.Context {
+	return workspace.WithRoot(ctx, workspace.Declared())
+}
+
+// callRoot resolves the root one tool call answers against: the repo the caller
+// named, itself resolved against the declared root when it is relative, else the
+// root the MCP client declared. Empty means neither, and the op resolves against
+// the process working directory as it always has.
+func callRoot(ctx context.Context, repo string) (string, error) {
+	declared := workspace.DeclaredFrom(ctx)
+	if repo == "" {
+		return declared, nil
+	}
+	if declared == "" || filepath.IsAbs(repo) {
+		return filepath.Abs(repo)
+	}
+	return filepath.Join(declared, repo), nil
+}
+
+// rootedPath resolves a caller's path against callRoot. An absolute path, or a
+// "~" backend.ResolvePath expands later, already names its own file.
+func rootedPath(ctx context.Context, repo, path string) (string, error) {
+	if path == "" || filepath.IsAbs(path) || strings.HasPrefix(path, "~") {
+		return path, nil
+	}
+	root, err := callRoot(ctx, repo)
+	if err != nil {
+		return "", err
+	}
+	if root == "" {
+		return path, nil
+	}
+	return filepath.Join(root, path), nil
+}
+
+// rootedPaths resolves a grep's operands against callRoot, making the root
+// itself the sole operand when the caller named none: the engines walk the
+// process working directory otherwise, whatever root the call names.
+func rootedPaths(ctx context.Context, repo string, paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		root, err := callRoot(ctx, repo)
+		if err != nil {
+			return nil, err
+		}
+		if root == "" {
+			return nil, nil
+		}
+		return []string{root}, nil
+	}
+	rooted := make([]string, len(paths))
+	for i, path := range paths {
+		p, err := rootedPath(ctx, repo, path)
+		if err != nil {
+			return nil, err
+		}
+		rooted[i] = p
+	}
+	return rooted, nil
+}
+
 // handler adapts a per-tool Args builder into an MCP tool handler that proxies
 // the op and wraps the result text in a tool result; errors carry the called
 // tool's name as their prefix.
 func handler[In any](p *proxy.Proxy, op backend.Op, args func(In) backend.Args) func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, any, error) {
+	return rootedHandler(p, op, func(_ context.Context, in In) (backend.Args, error) { return args(in), nil })
+}
+
+// rootedHandler is handler for the tools whose Args builder resolves the
+// caller's paths against a repo root, which can fail.
+func rootedHandler[In any](p *proxy.Proxy, op backend.Op, args func(context.Context, In) (backend.Args, error)) func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
-		out, err := p.Call(ctx, op, args(in))
+		ctx = pinCall(ctx)
+		a, err := args(ctx, in)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}}, nil, nil
+		out, err := p.Call(ctx, op, a)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
+		}
+		return opResult(ctx, op, out)
 	}
 }
 
@@ -547,7 +672,9 @@ func handler[In any](p *proxy.Proxy, op backend.Op, args func(In) backend.Args) 
 // Any captured stderr is appended as a neutral [stderr] section (many tools
 // write to stderr on success), [exit N] is appended only on a non-zero exit, and
 // only a non-zero exit flags the result as an error. A spawn failure is returned
-// as an error.
+// as an error. The result carries no root line: the caller names the argv and
+// the output format, so this returns a payload it will parse rather than a view
+// ccx shaped, and a header would break it.
 func bashFormatHandler() func(context.Context, *mcp.CallToolRequest, BashFormatIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in BashFormatIn) (*mcp.CallToolResult, any, error) {
 		fm, err := format.ParseFormat(in.Format)
@@ -573,10 +700,9 @@ func bashFormatHandler() func(context.Context, *mcp.CallToolRequest, BashFormatI
 		if code != 0 {
 			text += fmt.Sprintf("\n[exit %d]", code)
 		}
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: text}},
-			IsError: code != 0,
-		}, nil, nil
+		res := textResult(text)
+		res.IsError = code != 0
+		return res, nil, nil
 	}
 }
 

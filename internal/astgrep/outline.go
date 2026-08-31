@@ -84,6 +84,10 @@ func OutlinePaths(ctx context.Context, paths []string, o OutlineOpts) ([]Outline
 	if err != nil {
 		return nil, err
 	}
+	dir, err := searchDir(ctx)
+	if err != nil {
+		return nil, err
+	}
 	argv := append([]string{"outline"}, paths...)
 	argv = append(argv, "--json=stream", "--view", "expanded")
 	if o.Items != "" {
@@ -95,7 +99,7 @@ func OutlinePaths(ctx context.Context, paths []string, o OutlineOpts) ([]Outline
 	if o.Lang != "" {
 		argv = append(argv, "-l", o.Lang)
 	}
-	out, err := render.RunCLI(ctx, render.Ambient, bin, argv)
+	out, err := render.RunCLI(ctx, dir, bin, argv)
 	if err != nil {
 		return nil, err
 	}

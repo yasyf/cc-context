@@ -9,7 +9,6 @@ package dispatch
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +31,7 @@ import (
 	"github.com/yasyf/cc-context/internal/semsearch/index"
 	"github.com/yasyf/cc-context/internal/symbol"
 	"github.com/yasyf/cc-context/internal/web"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // Native reports whether op runs in-process here. Every op is native — the
@@ -145,7 +145,7 @@ func runSemantic(ctx context.Context, op backend.Op, a backend.Args) (string, er
 	}
 	repo := a.Path
 	if repo == "" {
-		if repo, err = os.Getwd(); err != nil {
+		if repo, err = workspace.RootFrom(ctx); err != nil {
 			return "", fmt.Errorf("dispatch: resolve cwd: %w", err)
 		}
 	}

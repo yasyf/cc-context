@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 func sampleInventory() Inventory {
@@ -13,6 +15,15 @@ func sampleInventory() Inventory {
 		Servers: []ServerSpec{{Name: "fake", Command: "fake-mcp", Argv: []string{"serve"}, Prefix: "fake"}},
 		Notes:   []string{"probe note"},
 	}
+}
+
+func mustPath(t *testing.T, store *diskInventoryStore) string {
+	t.Helper()
+	path, err := store.path()
+	if err != nil {
+		t.Fatalf("path: %v", err)
+	}
+	return path
 }
 
 func TestInventoryStoreRoundtrip(t *testing.T) {
@@ -57,7 +68,7 @@ func TestDiskInventoryStoreCorruptMiss(t *testing.T) {
 	if err := store.Save(sampleInventory(), time.Now()); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if err := os.WriteFile(store.path, []byte("{not json"), 0o600); err != nil {
+	if err := os.WriteFile(mustPath(t, store), []byte("{not json"), 0o600); err != nil {
 		t.Fatalf("corrupt: %v", err)
 	}
 	if _, _, ok := store.Load(); ok {
@@ -65,12 +76,12 @@ func TestDiskInventoryStoreCorruptMiss(t *testing.T) {
 	}
 }
 
-func TestDiskInventoryStoreCWDKeyed(t *testing.T) {
+func TestDiskInventoryStoreRootKeyed(t *testing.T) {
 	dir := t.TempDir()
 	a := newDiskInventoryStore(dir, "/project/a")
 	b := newDiskInventoryStore(dir, "/project/b")
-	if a.path == b.path {
-		t.Fatalf("distinct cwds share a path: %s", a.path)
+	if mustPath(t, a) == mustPath(t, b) {
+		t.Fatalf("distinct roots share a path: %s", mustPath(t, a))
 	}
 	if err := a.Save(Inventory{Hash: "a", Servers: []ServerSpec{{Name: "a", Prefix: "a"}}}, time.Now()); err != nil {
 		t.Fatalf("Save a: %v", err)
@@ -132,12 +143,36 @@ func TestDiskInventoryStoreInvalidEnvelope(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newDiskInventoryStore(t.TempDir(), "/p")
-			if err := os.WriteFile(store.path, []byte(tt.data), 0o600); err != nil {
+			if err := os.WriteFile(mustPath(t, store), []byte(tt.data), 0o600); err != nil {
 				t.Fatalf("write: %v", err)
 			}
 			if _, _, ok := store.Load(); ok {
 				t.Errorf("Load(%s) = hit, want miss", tt.data)
 			}
 		})
+	}
+}
+
+func TestDiskInventoryStoreFollowsRootChange(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Cleanup(func() { workspace.SetRoot("") })
+	store, err := NewDiskInventoryStore()
+	if err != nil {
+		t.Fatalf("NewDiskInventoryStore: %v", err)
+	}
+	workspace.SetRoot("/project/a")
+	if err := store.Save(sampleInventory(), time.Now()); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, _, ok := store.Load(); !ok {
+		t.Fatal("Load under the probing root = miss, want hit")
+	}
+	workspace.SetRoot("/project/b")
+	if _, _, ok := store.Load(); ok {
+		t.Error("Load after a root change = hit, want miss (a warm catalog must not outlive the switch)")
+	}
+	workspace.SetRoot("/project/a")
+	if _, _, ok := store.Load(); !ok {
+		t.Error("Load after switching back = miss, want hit")
 	}
 }
