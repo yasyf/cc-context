@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/search"
 	"github.com/yasyf/cc-context/internal/workspace"
@@ -383,5 +385,38 @@ func TestDepsToolWithoutARootReadsCwd(t *testing.T) {
 	}
 	if !strings.Contains(out, "cwdpkg") {
 		t.Errorf("no root declared should analyze the working directory's file:\n%s", out)
+	}
+}
+
+// TestRootedResultNamesRepo pins the root line to the tree that answered. A
+// caller passing repo redirects the read, so a line naming the declared root
+// instead would caption one tree's bytes with another tree's name — the exact
+// confusion the line exists to end.
+func TestRootedResultNamesRepo(t *testing.T) {
+	declared := t.TempDir()
+	other := t.TempDir()
+	pinRoot(t, declared)
+	ctx := workspace.WithRoot(context.Background(), declared)
+
+	for _, tt := range []struct {
+		name string
+		repo string
+		want string
+	}{
+		{name: "no repo names the declared root", repo: "", want: declared},
+		{name: "absolute repo names that repo", repo: other, want: other},
+		{name: "relative repo names it under the declared root", repo: "vendor", want: filepath.Join(declared, "vendor")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res, _, err := rootedResult(ctx, backend.OpRead, tt.repo, "# read a.go:1#ab12 (1 of 9 lines)\npackage a\n")
+			if err != nil {
+				t.Fatalf("rootedResult: %v", err)
+			}
+			text := res.Content[0].(*mcp.TextContent).Text
+			want := "# root " + tt.want
+			if !strings.Contains(text, want) {
+				t.Errorf("rootedResult text = %q, want a %q line", text, want)
+			}
+		})
 	}
 }
