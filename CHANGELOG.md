@@ -4,6 +4,27 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.50.0] - 2026-08-31
+
+### Fixed
+- **The `# root` line names the tree the call answered from, not the one the
+  client declared.** 0.50.0's predecessor gave thirteen MCP tools a root line
+  so an answer from the wrong worktree stops reading like an answer from the
+  right one, and gave `read`, `grep` and `outline` an explicit `repo` field so
+  a caller can redirect one call at another tree. The two disagreed: the line
+  was resolved from the declared root while `repo` was applied when the op
+  resolved its paths, so a call passing `repo` read one tree and was captioned
+  with another's name.
+
+  This is the failure the line exists to prevent, one layer up, and worse than
+  the silence it replaced — an unlabelled answer invites the check a confident
+  caption suppresses. `rootedResult` now resolves the effective root through
+  the existing `callRoot` and re-pins it for the header. Path resolution is
+  untouched; `callRoot` already gave the ops the right answer, and the fix
+  makes the header ask it the same question rather than a different one. Both
+  values still derive from the one snapshot `pinCall` took, so naming the
+  answering tree costs none of the protection against a concurrent re-pin.
+
 ## [0.49.0] - 2026-08-31
 
 ### Fixed
