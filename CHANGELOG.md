@@ -4,6 +4,57 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.49.0] - 2026-08-31
+
+### Fixed
+- **The MCP server resolves its project root from the client, not the cwd it
+  was spawned in.** The root came from `os.Getwd()`, frozen for the life of
+  the process, so no caller could redirect it: a subagent told to work in
+  another worktree, a session that moved lanes, or any agent passing a
+  repo-relative path got whatever tree the server was born in. Results
+  printed repo-relative with no root, so a wrong-tree answer looked exactly
+  like a right one and was unfalsifiable from the output alone — and with
+  many worktrees pinned to different commits, the answer was a real line
+  from a real file, just in a tree nobody asked about. The observed cost: a
+  cite from a stale worktree relayed upstream as a live wire bug that was a
+  completed rename, a message string copied from that same file into a test
+  fake that passed because only the status and code were asserted, and a
+  grep returning a file the working commit had deleted.
+
+  Claude Code already declares `roots` and answers `roots/list`, verified
+  against v2.1.251, which is why there is no environment-variable fallback.
+  `internal/workspace` is the one chokepoint the eleven op-package
+  resolutions read through; `internal/cli/*` deliberately does not, because
+  the CLI runs in the user's shell where cwd *is* the answer. The client's
+  first `file://` root is resolved on the first tool call, memoized, and
+  re-armed on `notifications/roots/list_changed` rather than re-read inline,
+  since the SDK dispatches notifications synchronously on the connection's
+  handler queue. A `ListRoots` error keeps the pin and stays armed; an empty
+  or non-`file://` list clears it and memoizes.
+
+  Fixing where ccx thinks it is was half the problem. `rg` and `ast-grep`
+  are spawned with `render.Ambient` and inherit the process cwd, so the Go
+  side alone would have left paths and anchors disagreeing where they had at
+  least been consistently wrong. All four spawn sites now take a threaded
+  `render.Dir`, and `format.Run` sets `cmd.Dir`. `runStructOutline` built
+  its anchor base from a literal `"."`, which is silently the process cwd
+  and which no search for `os.Getwd` would have found.
+
+### Added
+- **Thirteen MCP tools name the absolute root that answered, on a `# root`
+  line.** Four do not: the three web ops answer from no tree, `ccx_exec_tools`
+  is a catalog, and `ccx_exec` and `BashFormat` return a payload the caller
+  chose — a prefix turns `40+2` into something its caller cannot parse. The
+  rule is that the line goes on views ccx shaped, never on payloads it is
+  only carrying. The root is carried in the request context and resolved once
+  per call, because tool calls are concurrent and resolving it twice would
+  let a re-pin return one tree's bytes under another tree's header.
+- **`read`, `grep` and `outline` take the explicit `repo` field `search`
+  already had**, on one precedence ladder: explicit `repo`, then the client
+  root, then cwd. Threading it revealed that `ccx_code_search` accepted
+  `repo` and silently ignored it on `mode: "literal"`, searching the process
+  cwd with no error.
+
 ## [0.48.0] - 2026-08-29
 
 ### Added
