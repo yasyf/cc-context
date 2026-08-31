@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -22,6 +23,8 @@ const (
 	// so a match reports the diagnostic and drops its elaboration.
 	gtErrorPrefix   = "ERROR: "
 	gtWarningPrefix = "WARNING: "
+
+	gtTipPrefix = "tip: "
 )
 
 // gtZeroPolicy states what an exit-0 run that printed an ERROR: means for one gt
@@ -78,33 +81,176 @@ type gtResult struct {
 	streamed bool
 }
 
-// Diagnostics returns gt's stderr whole when it led at least one line with a
-// severity prefix, and "" otherwise. Whole, because a diagnostic's remediation
-// is an unprefixed line of its own — "WARNING: <b> could not be restacked
-// cleanly." is followed, past a blank line, by "Please resolve conflicts in the
-// current stack with gt restack." — and gt delimits that line from the tip block
-// after it with the same "\n\n", so no rule recovers one without the other.
-// Gated, because gt's NUX tips are unprefixed stderr too: a run that only tipped
-// has nothing to report, and reporting it would make every fresh install noisy.
-// A streamed result reports nothing — the user watched the stream go by.
+// Diagnostics returns the lines of gt's stderr that are about this run, and ""
+// when none are. Dropped are gt's NUX tips, which are unprefixed stderr with no
+// diagnostic above them, and its standing divergence reminder, which is about
+// the repository rather than the run. What survives keeps gt's own spacing: a
+// diagnostic's remediation is an unprefixed line of its own, and gt separates
+// the two with a blank line that has to travel with them. A streamed result
+// reports nothing — the user watched the stream go by.
 func (r gtResult) Diagnostics() string {
-	if r.streamed || !gtSeverityLed(r.Stderr) {
+	if r.streamed {
 		return ""
 	}
-	if strings.HasSuffix(r.Stderr, "\n") {
-		return r.Stderr
-	}
-	return r.Stderr + "\n"
+	return gtQuiet(r.Stderr)
 }
 
-// gtSeverityLed reports whether s has a line gt led with a severity prefix.
-func gtSeverityLed(s string) bool {
-	for _, line := range strings.Split(s, "\n") {
-		if strings.HasPrefix(line, gtErrorPrefix) || strings.HasPrefix(line, gtWarningPrefix) {
-			return true
+// gtSeverityBody splits a severity prefix off a line of gt's, reporting whether
+// it carried one.
+func gtSeverityBody(line string) (string, bool) {
+	if body, ok := strings.CutPrefix(line, gtErrorPrefix); ok {
+		return body, true
+	}
+	return strings.CutPrefix(line, gtWarningPrefix)
+}
+
+// gtDivergence drops gt's standing reminder that branches have diverged from
+// its tracking, and only that: the reminder's bullets and its three closing
+// sentences are dropped where they follow its opening line, so the same words
+// elsewhere still surface.
+type gtDivergence struct{ inside bool }
+
+func (d *gtDivergence) drop(line string) bool {
+	body, led := gtSeverityBody(line)
+	switch {
+	case !led:
+		d.inside = false
+		return false
+	case body == gtDiverged:
+		d.inside = true
+		return true
+	case d.inside && gtDivergenceDetail(body):
+		return true
+	}
+	d.inside = false
+	return false
+}
+
+func gtDivergenceDetail(body string) bool {
+	return strings.HasPrefix(body, gtDivergedBullet) ||
+		body == gtDivergedCause || body == gtDivergedTrack || body == gtDivergedUntrack
+}
+
+// gtTip drops one of gt's NUX tips, which opens with a tip: line and closes
+// with the bracketed tip id gt appends, spanning the blank lines and bullets
+// between. The id's own trailing glyphs count how often the tip has shown, so
+// the bracket is the only stable part of the closing line.
+type gtTip struct{ inside bool }
+
+func (t *gtTip) drop(line string) bool {
+	if _, led := gtSeverityBody(line); led {
+		t.inside = false
+		return false
+	}
+	if !t.inside && !strings.HasPrefix(line, gtTipPrefix) {
+		return false
+	}
+	t.inside = !strings.HasSuffix(strings.TrimRight(line, " "), "]")
+	return true
+}
+
+// gtNoise is everything gt writes that is not about this run: its NUX tips and
+// its standing divergence reminder.
+type gtNoise struct {
+	tip      gtTip
+	diverged gtDivergence
+}
+
+func (n *gtNoise) drop(line string) bool {
+	tip := n.tip.drop(line)
+	return n.diverged.drop(line) || tip
+}
+
+// gtQuiet returns s without the lines that are not about this run, terminated
+// by a newline, or "" when nothing is left.
+func gtQuiet(s string) string {
+	if s == "" {
+		return ""
+	}
+	var n gtNoise
+	kept := make([]string, 0, 8)
+	for _, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+		if n.drop(line) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	for len(kept) > 0 && strings.TrimSpace(kept[len(kept)-1]) == "" {
+		kept = kept[:len(kept)-1]
+	}
+	for len(kept) > 0 && strings.TrimSpace(kept[0]) == "" {
+		kept = kept[1:]
+	}
+	if !slices.ContainsFunc(kept, gtSeverityLed) {
+		return ""
+	}
+	return strings.Join(kept, "\n") + "\n"
+}
+
+// gtSeverityLed reports whether gt led the line with a severity prefix.
+func gtSeverityLed(line string) bool {
+	_, led := gtSeverityBody(line)
+	return led
+}
+
+// gtBlocks splits filtered diagnostics into gt's separate reports: one starts at
+// a severity-led line and runs to the next, carrying the blank line and the
+// unprefixed remediation gt writes under it.
+func gtBlocks(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var blocks []string
+	var cur []string
+	for _, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+		if _, led := gtSeverityBody(line); led && len(cur) > 0 {
+			blocks = append(blocks, strings.Join(cur, "\n"))
+			cur = cur[:0]
+		}
+		cur = append(cur, line)
+	}
+	if len(cur) > 0 {
+		blocks = append(blocks, strings.Join(cur, "\n"))
+	}
+	return blocks
+}
+
+// gtQuietWriter passes gt's output to w a line at a time, dropping the
+// divergence reminder. It filters that alone: a streamed run merges stdout into
+// the same writer, where an unprefixed line is gt's payload rather than a tip.
+type gtQuietWriter struct {
+	w        io.Writer
+	buf      []byte
+	diverged gtDivergence
+}
+
+func (q *gtQuietWriter) Write(p []byte) (int, error) {
+	q.buf = append(q.buf, p...)
+	for {
+		i := bytes.IndexByte(q.buf, '\n')
+		if i < 0 {
+			return len(p), nil
+		}
+		line := string(q.buf[:i])
+		q.buf = q.buf[i+1:]
+		if q.diverged.drop(line) {
+			continue
+		}
+		if _, err := io.WriteString(q.w, line+"\n"); err != nil {
+			return 0, err
 		}
 	}
-	return false
+}
+
+// Flush writes the trailing line gt left without a newline.
+func (q *gtQuietWriter) Flush() error {
+	line := string(q.buf)
+	q.buf = q.buf[:0]
+	if line == "" || q.diverged.drop(line) {
+		return nil
+	}
+	_, err := io.WriteString(q.w, line)
+	return err
 }
 
 // reportedError reports whether gt printed an ERROR: line. A WARNING: never
@@ -177,15 +323,22 @@ func (e *gtAdvice) Unwrap() error { return e.cause }
 func gtRun(ctx context.Context, dir render.Dir, argv []string, policy gtZeroPolicy, errW io.Writer, extraEnv ...string) (gtResult, error) {
 	var out, errBuf bytes.Buffer
 	outW, stderrW := io.Writer(&out), io.Writer(&errBuf)
+	var quiet *gtQuietWriter
 	streamed := shipStreamCI(errW)
 	if streamed {
 		// One writer for both, so os/exec gives gt a single fd and the terminal
 		// shows its lines in the order it wrote them. Nothing reads Stderr on
 		// this arm, which is what makes the ordering worth more than the split.
-		both := io.MultiWriter(errW, &out)
+		quiet = &gtQuietWriter{w: errW}
+		both := io.MultiWriter(quiet, &out)
 		outW, stderrW = both, both
 	}
 	code, err := gtStream(ctx, dir, argv, outW, stderrW, extraEnv)
+	if quiet != nil {
+		if ferr := quiet.Flush(); ferr != nil && err == nil {
+			err = ferr
+		}
+	}
 	r := gtResult{Output: out.String(), Code: code, streamed: streamed}
 	if !streamed {
 		r.Output, r.Stderr = gtJoinStreams(out.String(), errBuf.String()), errBuf.String()

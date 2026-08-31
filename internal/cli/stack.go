@@ -173,7 +173,7 @@ func stackColocateJJ(ctx context.Context, path render.Dir, name string) error {
 // lane: gt reads the branch to track from the working copy it runs in.
 func gtTrackAt(ctx context.Context, dir render.Dir, errW io.Writer, parent string) error {
 	r, runErr := gtRun(ctx, dir, []string{"track", "--parent", parent, "--no-interactive"}, gtZeroFatal, errW)
-	if err := gtReport(errW, r); err != nil {
+	if err := gtReport(ctx, errW, r); err != nil {
 		return err
 	}
 	if runErr != nil {
@@ -308,7 +308,7 @@ func runStackSubmit(cmd *cobra.Command, draft bool) error {
 		argv = []string{"submit", "--stack", "--no-interactive", "--no-edit", "--no-ai", "--draft"}
 	}
 	r, runErr := gtRun(ctx, l.dir(), argv, gtZeroSurfaces, errW)
-	if err := gtReport(errW, r); err != nil {
+	if err := gtReport(ctx, errW, r); err != nil {
 		return err
 	}
 	if runErr != nil {

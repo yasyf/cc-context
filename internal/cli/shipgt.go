@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -29,6 +29,15 @@ const (
 
 	gtAuthRequired1 = "Please authenticate your Graphite CLI"
 	gtAuthRequired2 = "Your Graphite auth token is invalid/expired"
+
+	// gtDiverged and its detail forms are gt 1.8.6's standing repo-wide
+	// reminder, repeated whole on every invocation, that no flag, env var or
+	// config suppresses. gtNoise matches these to drop it and nothing else.
+	gtDiverged        = "The following branches have diverged from Graphite's tracking:"
+	gtDivergedBullet  = "▸ "
+	gtDivergedCause   = "This can happen when a Git command run outside of Graphite changes the commit history of a branch."
+	gtDivergedTrack   = "You can use gt track <branch> to remediate a diverged branch."
+	gtDivergedUntrack = "To silence reminders about a diverged branch, untrack it with gt untrack <branch>."
 )
 
 // gtRef is one parent entry in a gt state branch record.
@@ -59,33 +68,73 @@ func (e *errGTUntracked) Error() string {
 // own sentence with a recovery step, so lines nobody re-emits are lines the
 // person who ran ship never sees. A streamed run reports none — they already
 // reached the terminal as gt wrote them.
-func gtReport(errW io.Writer, r gtResult) error {
-	report := r.Diagnostics()
-	if report == "" {
+func gtReport(ctx context.Context, errW io.Writer, r gtResult) error {
+	blocks := gtUnseen(ctx, gtBlocks(r.Diagnostics()))
+	if len(blocks) == 0 {
 		return nil
 	}
-	if _, err := io.WriteString(errW, report); err != nil {
+	if _, err := io.WriteString(errW, strings.Join(blocks, "\n")+"\n"); err != nil {
 		return fmt.Errorf("ship: report gt diagnostics: %w", err)
 	}
 	return nil
 }
 
-// gtStateQuery runs gt state and parses its JSON. It is the one gt run whose
-// streams stay apart — a diagnostic interleaved into the payload would break the
-// unmarshal — and the one with no channel to report on, so a WARNING: gt exits 0
-// with is dropped. An ERROR: at exit 0 is not: gt's own words are the only
-// evidence that the state it printed is not the state on disk, so the policy is
-// fatal and the whole output rides the error.
+type gtSeenKey struct{}
+
+// gtDedupe scopes a set of already-reported diagnostics to ctx. One ship makes
+// four or five gt calls, and gt repeats its repo-wide complaints on every one.
+func gtDedupe(ctx context.Context) context.Context {
+	return context.WithValue(ctx, gtSeenKey{}, map[string]bool{})
+}
+
+func gtUnseen(ctx context.Context, blocks []string) []string {
+	seen, ok := ctx.Value(gtSeenKey{}).(map[string]bool)
+	if !ok {
+		return blocks
+	}
+	unseen := blocks[:0]
+	for _, block := range blocks {
+		if seen[block] {
+			continue
+		}
+		seen[block] = true
+		unseen = append(unseen, block)
+	}
+	return unseen
+}
+
+// gtStateQuery reads the stack gt tracks out of gt's own SQLite metadata rather
+// than from gt state, which costs six to nine seconds in a large repository
+// because gt revalidates every ref on every invocation. gtmeta answers the same
+// question from one query and one for-each-ref; its conformance test is what
+// keeps the two answers the same.
 func gtStateQuery(ctx context.Context, dir render.Dir, prefix string) (gtState, error) {
-	payload, _, err := gtCapture(ctx, dir, []string{"state"}, gtZeroFatal)
+	commonDir, err := gtCommonDir(ctx, dir, prefix)
+	if err != nil {
+		return nil, err
+	}
+	tracked, err := gtmeta.Read(ctx, commonDir)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", prefix, err)
 	}
-	var state gtState
-	if err := json.Unmarshal([]byte(payload), &state); err != nil {
-		return nil, fmt.Errorf("%s: parse gt state: %w", prefix, err)
+	state := make(gtState, len(tracked))
+	for branch, s := range tracked {
+		entry := gtBranchState{Trunk: s.Trunk, NeedsRestack: s.NeedsRestack}
+		for _, parent := range s.Parents {
+			entry.Parents = append(entry.Parents, gtRef{Ref: parent.Ref, SHA: parent.SHA})
+		}
+		state[branch] = entry
 	}
 	return state, nil
+}
+
+func gtCommonDir(ctx context.Context, dir render.Dir, prefix string) (string, error) {
+	argv := []string{"rev-parse", "--path-format=absolute", "--git-common-dir"}
+	out, err := render.RunCLI(ctx, dir, "git", argv)
+	if err != nil {
+		return "", fmt.Errorf("%s: git rev-parse --git-common-dir: %w", prefix, err)
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // gtTrunkBranch returns the one branch state marks Trunk.
@@ -305,7 +354,7 @@ func gtTrack(ctx context.Context, dir render.Dir, errW io.Writer, o shipOpts, br
 	}
 	untracked := fmt.Errorf("ship: branch %s is not tracked by graphite — run gt track %s, or pass --no-gt", branch, branch)
 	r, runErr := gtRun(ctx, dir, argv, gtZeroFatal, errW)
-	if err := gtReport(errW, r); err != nil {
+	if err := gtReport(ctx, errW, r); err != nil {
 		return nil, "", err
 	}
 	if runErr != nil {
@@ -353,30 +402,10 @@ func gtCommitArgv(o shipOpts, plan branchPlan) []string {
 	return argv
 }
 
-// shipGTAdd stages the ship's paths (or everything, when unscoped) into the
-// real index through gt add — gt's own git-add passthrough — so the plain
-// staging step stays on the gt binary like every other gt-lane mutation.
-func shipGTAdd(ctx context.Context, dir render.Dir, errW io.Writer, o shipOpts) error {
-	addArgv := []string{"add", "--no-interactive", "-A"}
-	if len(o.rootPaths) > 0 {
-		addArgv = append(addArgv, "--")
-		addArgv = append(addArgv, o.rootPaths...)
-	}
-	r, runErr := gtRun(ctx, dir, addArgv, gtZeroFatal, errW)
-	if err := gtReport(errW, r); err != nil {
-		return err
-	}
-	if runErr != nil {
-		return fmt.Errorf("ship: %w", runErr)
-	}
-	return nil
-}
-
 // shipCommitGT stages, refuses an empty commit, runs pre-commit hooks (or
 // reports "hooks hunk-skip" for a hunk selection), then commits through gt.
-// It never passes -a to gt: staging is shipGTAdd's job, same as the git lane
-// is shipGitAdd's. The branch name in plan was derived before this call appends
-// the session trailer, which is what keeps the trailer out of it.
+// It never passes -a to gt: staging is shipGitAdd's job on both lanes, since
+// gt add is a git-add passthrough that costs a whole gt startup.
 func shipCommitGT(ctx context.Context, dir render.Dir, errW io.Writer, o shipOpts, sel *shipSelection, plan branchPlan) (string, error) {
 	o.message = withSessionTrailer(o.message)
 	if sel != nil {
@@ -386,7 +415,7 @@ func shipCommitGT(ctx context.Context, dir render.Dir, errW io.Writer, o shipOpt
 		}
 		return seg, shipCommitGTSelect(ctx, dir, errW, o, sel, plan)
 	}
-	if err := shipGTAdd(ctx, dir, errW, o); err != nil {
+	if err := shipGitAdd(ctx, dir, o); err != nil {
 		return "", err
 	}
 	if !o.amend {
@@ -400,7 +429,7 @@ func shipCommitGT(ctx context.Context, dir render.Dir, errW io.Writer, o shipOpt
 	}
 	o.hooksRan = hooksRan
 	r, runErr := gtRun(ctx, dir, gtCommitArgv(o, plan), gtZeroFatal, errW)
-	if err := gtReport(errW, r); err != nil {
+	if err := gtReport(ctx, errW, r); err != nil {
 		return "", err
 	}
 	if runErr != nil {
@@ -438,7 +467,7 @@ func shipCommitGTSelect(ctx context.Context, dir render.Dir, errW io.Writer, o s
 	}
 	argv := gtCommitArgv(o, plan)
 	r, runErr := gtRun(ctx, dir, argv, gtZeroFatal, errW, env...)
-	if err := gtReport(errW, r); err != nil {
+	if err := gtReport(ctx, errW, r); err != nil {
 		return err
 	}
 	if runErr != nil {
@@ -496,7 +525,7 @@ func classifyGTSubmit(r gtResult, cause error) error {
 // did not make, so the policy is fatal.
 func gtSubmit(ctx context.Context, dir render.Dir, errW io.Writer, argv []string, resume string) error {
 	r, runErr := gtRun(ctx, dir, argv, gtZeroFatal, errW)
-	if err := gtReport(errW, r); err != nil {
+	if err := gtReport(ctx, errW, r); err != nil {
 		return err
 	}
 	if runErr == nil {

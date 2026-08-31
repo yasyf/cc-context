@@ -219,15 +219,24 @@ func assertGTGolden(t *testing.T, g gtGolden, want gtGoldenCase) {
 	if severity != want.diagnostics {
 		t.Errorf("recorded stderr leads %d line(s) with a severity prefix, want %d", severity, want.diagnostics)
 	}
-	wantReport := ""
-	if want.diagnostics > 0 {
-		wantReport = r.Stderr
-		if !strings.HasSuffix(wantReport, "\n") {
-			wantReport += "\n"
+	report := r.Diagnostics()
+	switch {
+	case want.diagnostics == 0:
+		if report != "" {
+			t.Errorf("Diagnostics() = %q, want %q", report, "")
 		}
-	}
-	if got := r.Diagnostics(); got != wantReport {
-		t.Errorf("Diagnostics() = %q, want %q", got, wantReport)
+	default:
+		if !strings.HasSuffix(report, "\n") {
+			t.Errorf("Diagnostics() = %q, want a trailing newline", report)
+		}
+		if strings.Contains(report, gtTipPrefix) {
+			t.Errorf("Diagnostics() = %q, want gt's NUX tips dropped", report)
+		}
+		for _, line := range strings.Split(r.Stderr, "\n") {
+			if gtSeverityLed(line) && !strings.Contains(report, line) {
+				t.Errorf("Diagnostics() dropped the recorded %q", line)
+			}
+		}
 	}
 	if got := r.reportedError(); got != want.reported {
 		t.Errorf("reportedError() = %v, want %v", got, want.reported)

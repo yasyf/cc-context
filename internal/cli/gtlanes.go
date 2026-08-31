@@ -87,7 +87,7 @@ func gtLaneConflict(prefix string, here, dir render.Dir) string {
 func gtRestackAt(ctx context.Context, dir render.Dir, errW io.Writer, classify gtLaneClassifier) (string, error) {
 	argv := []string{"restack", "--no-interactive"}
 	r, runErr := gtRun(ctx, dir, argv, gtZeroSurfaces, errW)
-	if err := gtReport(errW, r); err != nil {
+	if err := gtReport(ctx, errW, r); err != nil {
 		return "", err
 	}
 	if runErr != nil {

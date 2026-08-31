@@ -132,18 +132,14 @@ func gtGoldenIndentSeverity(payload string) string {
 }
 
 // TestGTRunDiagnosticsGatesOnSeverity pins both halves of the echo's contract:
-// a severity-led stderr goes out whole — continuation lines included, since gt's
-// remediation is one — and a stderr with no severity line goes out not at all.
-// Every row reads its bytes out of the corpus, so a re-recording carries them:
-// NUX tips are unprefixed stderr exactly as gt's remediation is, which is why
-// the gate — not the shape of any line — is what keeps an ordinary run quiet.
-// The two rows the corpus cannot state directly — an indented prefix, a stderr
-// missing its final newline — reshape recorded bytes rather than invent them.
+// a severity-led stderr goes out with its remediation, and a stderr with no
+// severity line goes out not at all. The two rows the corpus cannot state
+// directly — an indented prefix, a stderr missing its final newline — reshape
+// recorded bytes rather than invent them.
 func TestGTRunDiagnosticsGatesOnSeverity(t *testing.T) {
 	t.Parallel()
 	tips := loadGTGolden(t, "sync-tips-exit0")
 	declined := loadGTGolden(t, "sync-decline-exit0")
-	warned := loadGTGolden(t, "sync-tips-and-warning-exit0")
 	errored := loadGTGolden(t, "sync-repo-404")
 	tests := []struct {
 		name     string
@@ -160,17 +156,6 @@ func TestGTRunDiagnosticsGatesOnSeverity(t *testing.T) {
 			name:   "tips alone stay silent",
 			result: tips.result(),
 			want:   "",
-		},
-		{
-			name:   "a warning among tips still carries the whole block",
-			result: warned.result(),
-			want:   warned.stderr,
-		},
-		{
-			name:     "an error among tips still carries the whole block",
-			result:   errored.result(),
-			want:     errored.stderr,
-			wantErrs: true,
 		},
 		{
 			name:   "an indented severity word does not lead its line",
@@ -483,5 +468,114 @@ exit 0
 	}
 	if ge.Code != 0 {
 		t.Errorf("Code = %d, want 0", ge.Code)
+	}
+}
+
+// gtDivergedStderr is gt 1.8.6's divergence reminder as it reached a terminal
+// in a repo with seven diverged branches, captured off gt state's stderr.
+const gtDivergedStderr = "WARNING: The following branches have diverged from Graphite's tracking:\n" +
+	"WARNING: ▸ nixci-s3-publish (and 1 descendant)\n" +
+	"WARNING: ▸ sand-journal-read-only-open-no-flock\n" +
+	"WARNING: ▸ yasyf/ssql-dev-docs\n" +
+	"WARNING: This can happen when a Git command run outside of Graphite changes the commit history of a branch.\n" +
+	"WARNING: You can use gt track <branch> to remediate a diverged branch.\n" +
+	"WARNING: To silence reminders about a diverged branch, untrack it with gt untrack <branch>.\n"
+
+func TestGTRunDiagnosticsDropsTheDivergenceReminder(t *testing.T) {
+	t.Parallel()
+	declined := loadGTGolden(t, "sync-decline-exit0")
+	tests := []struct {
+		name   string
+		stderr string
+		want   string
+	}{
+		{
+			name:   "the reminder alone reports nothing",
+			stderr: gtDivergedStderr,
+			want:   "",
+		},
+		{
+			name:   "a diagnostic under the reminder survives it",
+			stderr: gtDivergedStderr + declined.stderr,
+			want:   declined.stderr,
+		},
+		{
+			name:   "a diagnostic above the reminder survives it",
+			stderr: declined.stderr + gtDivergedStderr,
+			want:   declined.stderr,
+		},
+		{
+			name:   "the reminder's own words outside it still report",
+			stderr: gtWarningPrefix + gtDivergedUntrack + "\n",
+			want:   gtWarningPrefix + gtDivergedUntrack + "\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := gtResult{Output: tt.stderr, Stderr: tt.stderr}
+			if got := r.Diagnostics(); got != tt.want {
+				t.Errorf("Diagnostics() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGTRunDiagnosticsDropsTips pins that a NUX tip recorded beside a
+// diagnostic does not travel with it, while every severity-led line does.
+func TestGTRunDiagnosticsDropsTips(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"sync-tips-and-warning-exit0", "sync-repo-404"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			g := loadGTGolden(t, name)
+			report := g.result().Diagnostics()
+			if strings.Contains(report, gtTipPrefix) {
+				t.Errorf("Diagnostics() = %q, want gt's NUX tips dropped", report)
+			}
+			for _, line := range strings.Split(g.stderr, "\n") {
+				if gtSeverityLed(line) && !strings.Contains(report, line) {
+					t.Errorf("Diagnostics() dropped the recorded %q", line)
+				}
+			}
+		})
+	}
+}
+
+func TestGTQuietWriterDropsTheDivergenceReminderAsItStreams(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	q := &gtQuietWriter{w: &out}
+	payload := gtDivergedStderr + "restacked feat\n" + gtWarningPrefix + "real warning"
+	for i := 0; i < len(payload); i += 7 {
+		if _, err := q.Write([]byte(payload[i:min(i+7, len(payload))])); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	if err := q.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	want := "restacked feat\n" + gtWarningPrefix + "real warning"
+	if got := out.String(); got != want {
+		t.Errorf("streamed = %q, want %q", got, want)
+	}
+}
+
+func TestGTUnseenReportsARepeatedBlockOnce(t *testing.T) {
+	t.Parallel()
+	ctx := gtDedupe(context.Background())
+	r := gtResult{Output: gtDivergedStderr, Stderr: loadGTGolden(t, "sync-decline-exit0").stderr}
+	var first, second bytes.Buffer
+	if err := gtReport(ctx, &first, r); err != nil {
+		t.Fatalf("first report: %v", err)
+	}
+	if first.Len() == 0 {
+		t.Fatal("first report was empty")
+	}
+	if err := gtReport(ctx, &second, r); err != nil {
+		t.Fatalf("second report: %v", err)
+	}
+	if second.Len() != 0 {
+		t.Errorf("second report = %q, want it dropped as already seen", second.String())
 	}
 }
