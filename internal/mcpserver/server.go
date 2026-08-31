@@ -473,7 +473,7 @@ func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, S
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return rootHeaderResult(ctx, out)
+		return rootedResult(ctx, op, in.Repo, out)
 	}
 }
 
@@ -532,7 +532,7 @@ func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, 
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return rootHeaderResult(ctx, note+out)
+		return rootedResult(ctx, op, in.Repo, note+out)
 	}
 }
 
@@ -585,6 +585,29 @@ func withNotes(text string, notes []string) string {
 // pin another call can move mid-flight.
 func pinCall(ctx context.Context) context.Context {
 	return workspace.WithRoot(ctx, workspace.Declared())
+}
+
+// repoScoped is a tool input that names the repo root its call answers against.
+// The root line has to name the tree that actually answered, so a handler whose
+// input can redirect the call must surface that choice to the result.
+type repoScoped interface{ repoRoot() string }
+
+func (in SearchIn) repoRoot() string  { return in.Repo }
+func (in RelatedIn) repoRoot() string { return in.Repo }
+func (in OutlineIn) repoRoot() string { return in.Repo }
+func (in ReadIn) repoRoot() string    { return in.Repo }
+func (in GrepIn) repoRoot() string    { return in.Repo }
+
+// rootedResult is opResult naming the root the call answered from rather than
+// the declared one, which are different whenever the caller passed a repo. Both
+// derive from the single pinned snapshot pinCall took, so naming the answer's
+// tree costs none of the protection against a concurrent re-pin.
+func rootedResult(ctx context.Context, op backend.Op, repo, text string) (*mcp.CallToolResult, any, error) {
+	root, err := callRoot(ctx, repo)
+	if err != nil {
+		return nil, nil, err
+	}
+	return opResult(workspace.WithRoot(ctx, root), op, text)
 }
 
 // callRoot resolves the root one tool call answers against: the repo the caller
@@ -663,7 +686,11 @@ func rootedHandler[In any](p *proxy.Proxy, op backend.Op, args func(context.Cont
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return opResult(ctx, op, out)
+		repo := ""
+		if rs, ok := any(in).(repoScoped); ok {
+			repo = rs.repoRoot()
+		}
+		return rootedResult(ctx, op, repo, out)
 	}
 }
 
