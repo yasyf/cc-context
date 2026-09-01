@@ -4,6 +4,38 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.52.0] - 2026-09-01
+
+### Changed
+- **The graphite lane submits over Graphite's API instead of shelling out to
+  `gt submit`.** That call cost a Node startup plus a `git for-each-ref` over
+  every local branch — six seconds for work that is one HTTP request and a push
+  per branch. 0.51.0 took `gt state` and `gt add` off this path for the same
+  reason; `gt submit` was the last one left. `ccx vcs stack submit` still runs
+  the gt verb and is unchanged.
+
+  Ship now runs `is-repo-synced`, asks `pull-request-info` for each branch's
+  open pull request number, calls `pre-submit-pull-requests`, force-pushes each
+  branch base-first under a lease, and sends the whole downstack in one submit
+  call. The route schemas came out of gt's own debug traces, and they are what
+  makes this safe rather than a guess: `title` and `body` are optional on an
+  update, so a re-submit omits them and a description someone hand-edited
+  survives. Auth was the one piece the traces did not carry, and was confirmed
+  by proxying the real binary against the read-only `check-auth` route.
+
+  Each branch's lease is written back to gt's database immediately after its
+  own push — the irreversible step — so a failure later in the run cannot
+  strand a branch behind a remote head that same run just moved. Getting this
+  wrong wedges the retry, and the advice ccx would have printed for it does not
+  clear the stale lease.
+
+  Two behaviour changes. A created pull request now carries a body derived from
+  the commit, with the `Claude-Session-Id` trailer stripped; `gt submit
+  --no-edit` created them empty, which is why ship backfills descriptions
+  afterwards. And the lane now needs GitHub repository metadata, which gt used
+  to resolve for itself — the lane gate already reads it, but a graphite
+  repository without it now fails with a sentence saying so.
+
 ## [0.51.0] - 2026-09-01
 
 ### Changed
