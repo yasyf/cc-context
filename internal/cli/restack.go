@@ -22,18 +22,23 @@ const (
 	gtSyncAuthRequired1 = "Please authenticate your Graphite CLI"
 	gtSyncAuthRequired2 = "Your Graphite auth token is invalid/expired"
 
-	// gtSyncSkippedPrefix and gtSyncSkippedReason bracket the branch name in the
-	// lines gt 1.8.6 prints — on stdout, at exit 0 — for a branch it declined to
-	// restack. Three reasons follow: gtSyncSkippedWorktree and a path, "frozen.",
-	// or "merging.". Only the first names a working copy gtLaneRestack can drive
-	// gt from; the other two are reasons no lane resolves.
+	// gtSyncSkippedPrefix, gtSyncSkippedReason and gtSyncSkippedMerged bracket
+	// the branch name in the lines gt 1.8.6 prints — on stdout, at exit 0 — for a
+	// branch it declined to restack. The "is" bracket carries gtSyncSkippedWorktree
+	// and a path, "frozen." or "merging."; gt spells the merged decline "has been"
+	// instead, so it needs a bracket of its own. Only the worktree variant names a
+	// working copy gtLaneRestack can drive gt from.
 	gtSyncSkippedPrefix   = "Did not restack branch "
 	gtSyncSkippedReason   = " because it is "
+	gtSyncSkippedMerged   = " because it has been merged"
 	gtSyncSkippedWorktree = "checked out in worktree "
 
 	// gtSkipHeld leads the reason gtSkipReason renders for the worktree variant,
 	// and is the only decline a lane sweep can answer.
 	gtSkipHeld = "checked out in "
+
+	// gtSkipMerged is the decline that means the branch has nowhere left to go.
+	gtSkipMerged = "already merged"
 
 	jjRestackAncestorRevset = "trunk() & ::@"
 	jjRestackStackRevset    = "trunk()..@"
@@ -250,11 +255,13 @@ func gtSyncSkipped(output string) map[string]string {
 		if !ok {
 			continue
 		}
-		branch, reason, ok := strings.Cut(named, gtSyncSkippedReason)
-		if !ok {
+		if branch, reason, ok := strings.Cut(named, gtSyncSkippedReason); ok {
+			skipped[branch] = gtSkipReason(reason)
 			continue
 		}
-		skipped[branch] = gtSkipReason(reason)
+		if branch, _, ok := strings.Cut(named, gtSyncSkippedMerged); ok {
+			skipped[branch] = gtSkipMerged
+		}
 	}
 	return skipped
 }

@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A branch gt declined as already merged was reported as one sitting off its
+  parent.** gt brackets a decline as `Did not restack branch <b> because it is
+  <reason>`, and ccx cut its output on that literal — but the merged decline
+  reads `because it has been merged`, so the line matched nothing, the reason
+  was dropped, and the refusal degraded to `gt restack left <b> off its parent
+  — see gt's output above`, pointing at output a non-streamed run never shows.
+  The ship then went on to submit branches whose commits were already on trunk,
+  which Graphite answers with a 400.
+
+  The merged decline is recognized, and it no longer borrows the wording of a
+  branch a restack could fix: the refusal reads `<b> is already merged, so there
+  is nothing to submit — drop it with gt untrack <b>`.
+
 ## [0.54.0] - 2026-09-01
 
 ### Fixed

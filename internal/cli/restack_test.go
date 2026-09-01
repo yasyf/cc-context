@@ -1001,3 +1001,45 @@ func TestRestackRegisteredWithRebaseAlias(t *testing.T) {
 		t.Fatalf("find stack rebase = %s %#v, want restack", found.Name(), args)
 	}
 }
+
+// TestGTSyncSkippedReadsTheMergedDecline pins gt's second decline wording. gt
+// spells this one "has been merged" rather than "is <reason>", so a parser that
+// only cuts on the "is" bracket drops the line and leaves the refusal with no
+// reason to name — which is the whole answer for a branch that has nowhere left
+// to go.
+func TestGTSyncSkippedReadsTheMergedDecline(t *testing.T) {
+	t.Parallel()
+	output := strings.Join([]string{
+		"Did not restack branch yasyf/ssql-replica-chase-debug because it has been merged.",
+		"Did not restack branch feature because it is checked out in worktree /tmp/lane.",
+		"Did not restack branch frozen-one because it is frozen.",
+	}, "\n")
+	got := gtSyncSkipped(output)
+	want := map[string]string{
+		"yasyf/ssql-replica-chase-debug": gtSkipMerged,
+		"feature":                        gtSkipHeld + "/tmp/lane",
+		"frozen-one":                     "frozen",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("gtSyncSkipped() named %d branches, want %d: %v", len(got), len(want), got)
+	}
+	for branch, reason := range want {
+		if got[branch] != reason {
+			t.Errorf("gtSyncSkipped()[%q] = %q, want %q", branch, got[branch], reason)
+		}
+	}
+}
+
+// TestGTOffParentNamesAMergedBranch pins that a merged branch is not reported as
+// one sitting off its parent: no restack fixes it, and the submit that follows
+// is one Graphite refuses.
+func TestGTOffParentNamesAMergedBranch(t *testing.T) {
+	t.Parallel()
+	got := gtOffParent("yasyf/ssql-replica-chase-debug", gtSkipMerged)
+	if !strings.Contains(got, "already merged") || strings.Contains(got, "off its parent") {
+		t.Errorf("gtOffParent() = %q, want it to name the merge rather than the parent", got)
+	}
+	if !strings.Contains(got, "gt untrack yasyf/ssql-replica-chase-debug") {
+		t.Errorf("gtOffParent() = %q, want the step that clears it", got)
+	}
+}

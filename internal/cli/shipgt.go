@@ -339,6 +339,9 @@ func gtRestackConflict(here, dir render.Dir) string {
 // stdout, which a non-streamed run never shows anyone, so the reason is carried
 // into the refusal rather than pointed at.
 func gtOffParent(branch, reason string) string {
+	if reason == gtSkipMerged {
+		return branch + " is already merged, so there is nothing to submit — drop it with gt untrack " + branch
+	}
 	problem := "gt restack left " + branch + " off its parent"
 	if reason == "" {
 		return problem + " — see gt's output above"
