@@ -214,7 +214,7 @@ func TestGTRunStreamsOnceToTerminal(t *testing.T) {
 }
 
 func TestGTRunBufferedRunReportsItsDiagnostics(t *testing.T) {
-	want := loadGTGolden(t, "sync-auth-invalid").stderr
+	want := loadGTGolden(t, "auth-no-token").stderr
 	gtRunFake(t, gtRunScript)
 	t.Setenv("GTRUN_STDERR", strings.TrimSuffix(want, "\n"))
 
@@ -264,7 +264,7 @@ func TestGTRunZeroPolicyDecidesExitZero(t *testing.T) {
 		},
 		{
 			name:       "exit 0 with an ERROR is fatal under gtZeroFatal",
-			golden:     gtGoldenAtExitZero(t, "sync-auth-invalid"),
+			golden:     gtGoldenAtExitZero(t, "auth-no-token"),
 			policy:     gtZeroFatal,
 			wantErr:    true,
 			wantStatus: "exit 0 but reported an error",
@@ -377,7 +377,7 @@ func TestGTRunCaptureKeepsThePayloadParseable(t *testing.T) {
 
 func TestGTRunCaptureAppliesItsPolicy(t *testing.T) {
 	gtRunFake(t, gtRunScript)
-	t.Setenv("GTRUN_STDERR", strings.TrimSuffix(gtGoldenAtExitZero(t, "sync-auth-invalid").stderr, "\n"))
+	t.Setenv("GTRUN_STDERR", strings.TrimSuffix(gtGoldenAtExitZero(t, "auth-no-token").stderr, "\n"))
 
 	payload, _, err := gtCapture(context.Background(), render.Ambient, []string{"state"}, gtZeroFatal)
 	var ge *gtError
@@ -395,7 +395,7 @@ func TestGTRunCaptureAppliesItsPolicy(t *testing.T) {
 func TestGTRunJoinStreamsKeepsLinesWhole(t *testing.T) {
 	t.Parallel()
 	stdout := loadGTGolden(t, "sync-quiet-exit0").stdout
-	stderr := loadGTGolden(t, "sync-auth-invalid").stderr
+	stderr := loadGTGolden(t, "auth-no-token").stderr
 	bare := strings.TrimSuffix(stdout, "\n")
 	tests := []struct {
 		name           string
@@ -419,8 +419,8 @@ func TestGTRunJoinStreamsKeepsLinesWhole(t *testing.T) {
 
 func TestGTRunAdviceKeepsGtsCauseReachable(t *testing.T) {
 	t.Parallel()
-	r := loadGTGolden(t, "sync-auth-invalid").result()
-	cause := r.verdict("sync", gtZeroFatal)
+	r := loadGTGolden(t, "auth-no-token").result()
+	cause := r.verdict("auth", gtZeroFatal)
 	if cause == nil {
 		t.Fatal("verdict() = nil, want the recorded refusal to fail")
 	}
@@ -446,7 +446,7 @@ func TestGTRunAdviceKeepsGtsCauseReachable(t *testing.T) {
 // reach the same runner every other verb does. A helper that took the env but
 // returned stdout alone would drop the sentence a lying exit 0 is judged on.
 func TestGTRunCarriesExtraEnvWithoutLosingAStream(t *testing.T) {
-	diagnostic := strings.TrimSuffix(gtGoldenAtExitZero(t, "sync-auth-invalid").stderr, "\n")
+	diagnostic := strings.TrimSuffix(gtGoldenAtExitZero(t, "auth-no-token").stderr, "\n")
 	gtRunFake(t, `printf 'index=%s\n' "$GIT_INDEX_FILE"
 printf '%s\n' "$GTRUN_STDERR" >&2
 exit 0
