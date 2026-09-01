@@ -65,7 +65,7 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.unauthorized {
 		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"message":"invalid token"}`)
+		_, _ = fmt.Fprint(w, `{"message":"invalid token"}`)
 		return
 	}
 	switch r.URL.Path {

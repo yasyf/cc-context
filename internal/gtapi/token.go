@@ -34,7 +34,7 @@ func resolveToken() (string, error) {
 		return "", fmt.Errorf("%w: %w", ErrNoToken, err)
 	}
 	path := filepath.Join(home, ".config", "graphite", "auth")
-	payload, err := os.ReadFile(path)
+	payload, err := os.ReadFile(path) //nolint:gosec // the path is gt's own auth file under the user's home
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", ErrNoToken, err)
 	}

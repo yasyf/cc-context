@@ -336,7 +336,7 @@ func TestResolveTokenReadsAuthFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	dir := filepath.Join(home, ".config", "graphite")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "auth"), []byte(`{"authToken":"fixture-token"}`), 0o600); err != nil {

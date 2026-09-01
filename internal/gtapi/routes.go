@@ -34,6 +34,7 @@ func (c *Client) CheckAuth(ctx context.Context, repoOwner, repoName string) (Che
 // RepoSyncStatus is Graphite's answer to whether it mirrors a repo.
 type RepoSyncStatus string
 
+// The statuses Graphite reports for a repository it was asked about.
 const (
 	RepoSynced             RepoSyncStatus = "SYNCED"
 	RepoNotSyncedAddable   RepoSyncStatus = "NOT_SYNCED_ADDABLE"
@@ -71,6 +72,7 @@ type PullRequestInfoRequest struct {
 // PRState is a pull request's lifecycle state.
 type PRState string
 
+// The lifecycle states a pull request is reported in.
 const (
 	PROpen   PRState = "OPEN"
 	PRClosed PRState = "CLOSED"
@@ -168,6 +170,7 @@ func (c *Client) PreSubmitPullRequests(ctx context.Context, repoOwner, repoName 
 // SubmitAction distinguishes creating a PR from updating one.
 type SubmitAction string
 
+// The two actions a submit entry carries.
 const (
 	SubmitCreate SubmitAction = "create"
 	SubmitUpdate SubmitAction = "update"
