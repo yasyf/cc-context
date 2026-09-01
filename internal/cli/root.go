@@ -38,6 +38,9 @@ func NewRootCmd() *cobra.Command {
 		newFormatCmd(),
 		newMCPCmd(),
 	)
+	root.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
+		cmd.SetContext(gtDedupe(cmd.Context()))
+	}
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
 		if hint := flagErrorHint(cmd, err); hint != "" {
 			return fmt.Errorf("%w (%s)", err, hint)

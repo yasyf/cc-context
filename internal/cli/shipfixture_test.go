@@ -822,6 +822,10 @@ exit 0
     : > "$SHIP_LOG.git-committed" ;;
   "rev-parse HEAD") printf '%s' '` + fakeHeadSHA + `' ;;
   "rev-parse --show-toplevel") printf '%s' "$SHIP_FAKE_ROOT" ;;
+  "rev-parse --path-format=absolute")
+    dir=$GT_META_DIR
+    if [ -n "$GT_META_DIR_2" ] && [ -e "$SHIP_LOG.git-switched" ]; then dir=$GT_META_DIR_2; fi
+    printf '%s\n' "$dir" ;;
   "show --end-of-options") printf '%s' "$GIT_FILE_SHOW_BASE" ;;
   "ls-tree --full-tree") printf '100644 blob 1111111111111111111111111111111111111111\t%s\n' "$5" ;;
   "hash-object -w") printf '%s' '2222222222222222222222222222222222222222' ;;
@@ -889,6 +893,13 @@ exit 0
         fi ;;
     esac ;;
   "add"*|"read-tree"*|"update-index"*|"restore"*) : ;;
+  "--git-dir="*)
+    # The equals form, which gtmeta uses; the case below is the space form.
+    dir=${1#--git-dir=}
+    case "$2" in
+      for-each-ref) while IFS= read -r line; do printf '%s\n' "$line"; done < "$dir/` + vcstest.GraphiteRefsFile + `" ;;
+      *) printf 'fake git: unmatched --git-dir= argv: %s\n' "$*" >&2; exit 2 ;;
+    esac ;;
   "--git-dir "*)
     case "$3" in
       worktree)
@@ -927,21 +938,6 @@ exit 0
     if [ -n "$GT_AUTH_HANG" ]; then exec /bin/sleep 30; fi
     printf '%s\n' "${GT_AUTH_STDOUT-✅ Ready to submit PRs to github.com/yasyf/cc-context}"
     exit "${GT_AUTH_EXIT:-0}" ;;
-  state)
-    if [ -n "$GT_STATE_STDERR" ]; then printf '%s\n' "$GT_STATE_STDERR" >&2; fi
-    if [ -n "$GT_STATE_JSON_MARKER" ]; then
-      count=0
-      if [ -r "$GT_STATE_JSON_MARKER" ]; then IFS= read -r count < "$GT_STATE_JSON_MARKER" || :; fi
-      count=${count:-0}
-      count=$((count + 1))
-      printf '%s' "$count" > "$GT_STATE_JSON_MARKER"
-      if [ "$count" -gt 1 ]; then printf '%s' "$GT_STATE_JSON_2"
-      else printf '%s' "$GT_STATE_JSON"; fi
-    else
-      printf '%s' "$GT_STATE_JSON"
-    fi ;;
-  add)
-    if [ -n "$GT_ADD_STDERR" ]; then printf '%s\n' "$GT_ADD_STDERR" >&2; fi ;;
   track)
     if [ -n "$GT_TRACK_STDERR" ]; then printf '%s\n' "$GT_TRACK_STDERR" >&2; fi
     if [ -n "$GT_TRACK_FAIL" ]; then printf 'gt: track failed\n' >&2; exit 1; fi ;;
@@ -1136,9 +1132,47 @@ func setupShipGT(t *testing.T, withGh bool) string {
 		t.Fatalf("write .graphite_repo_config: %v", err)
 	}
 	t.Setenv("GIT_BRANCH", "feature")
-	t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
+	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
 	seedLaneRecords(t, ".", laneSeed{})
 	return log
+}
+
+// setGTState materializes stateJSON as the on-disk metadata gt keeps, in a
+// directory of its own, and points the fake git's common-dir lookup at it.
+func setGTState(t *testing.T, stateJSON string) {
+	t.Helper()
+	dir := t.TempDir()
+	vcstest.WriteGraphiteMeta(t, dir, stateJSON)
+	t.Setenv("GT_META_DIR", dir)
+}
+
+// setGTStateAfterCreate materializes the state that takes over once the fake gt
+// has cut a branch, the one shape a single metadata directory cannot hold.
+func setGTStateAfterCreate(t *testing.T, stateJSON string) string {
+	t.Helper()
+	dir := t.TempDir()
+	vcstest.WriteGraphiteMeta(t, dir, stateJSON)
+	t.Setenv("GT_META_DIR_2", dir)
+	return dir
+}
+
+// gtCommonDirArgv is the lookup every gtmeta read opens with, and gtRefsArgv the
+// branch listing it makes in the metadata directory that lookup answered with.
+var gtCommonDirArgv = []string{"git", "rev-parse", "--path-format=absolute", "--git-common-dir"}
+
+func gtRefsArgv() []string {
+	return gtRefsArgvIn(os.Getenv("GT_META_DIR"))
+}
+
+func gtRefsArgvIn(dir string) []string {
+	return []string{"git", "--git-dir=" + dir, "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads/"}
+}
+
+// gtRealRefsArgv is gtRefsArgv for a fixture holding a real repository, whose
+// common dir git itself names.
+func gtRealRefsArgv(t *testing.T, f *vcstest.Fixture) []string {
+	t.Helper()
+	return gtRefsArgvIn(gitAt(t, f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir"))
 }
 
 func runShipCmd(t *testing.T, args ...string) (string, error) {

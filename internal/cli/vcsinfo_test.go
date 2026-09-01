@@ -649,11 +649,11 @@ func TestVcsInfoUntrackedBranch(t *testing.T) {
 	}
 }
 
-// TestVcsInfoGTStateFailureReported proves gt state failing is the report's
-// answer rather than its failure: a stack nobody can read is the state someone
-// runs info to diagnose, and the branch and dirtiness around it stay readable.
-// The error still carries info's own prefix — it must never tell the reader to
-// go look at ship.
+// TestVcsInfoGTStateFailureReported proves an unreadable gt metadata database is
+// the report's answer rather than its failure: a stack nobody can read is the
+// state someone runs info to diagnose, and the branch and dirtiness around it
+// stay readable. The error still carries info's own prefix — it must never tell
+// the reader to go look at ship.
 func TestVcsInfoGTStateFailureReported(t *testing.T) {
 	f := infoGTRepo(t, "feature")
 	writeInfoFile(t, f.Dir, filepath.Join(".git", ".graphite_metadata.db"), "not a database\n")
@@ -663,7 +663,7 @@ func TestVcsInfoGTStateFailureReported(t *testing.T) {
 		t.Fatalf("info error = %v", err)
 	}
 	stack := infoLine(t, out, "stack")
-	if !strings.HasPrefix(stack, "info: gt state:") {
+	if !strings.HasPrefix(stack, "info: ") {
 		t.Errorf("stack = %q, want it to lead with info's own prefix", stack)
 	}
 	if strings.Contains(stack, "ship:") {
@@ -677,7 +677,7 @@ func TestVcsInfoGTStateFailureReported(t *testing.T) {
 	}
 	for _, absent := range []string{"trunk", "downstack"} {
 		if strings.Contains(out, absent) {
-			t.Errorf("report names %q gt state never gave it:\n%s", absent, out)
+			t.Errorf("report names %q the unreadable metadata never gave it:\n%s", absent, out)
 		}
 	}
 }
