@@ -4,6 +4,38 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.0] - 2026-09-01
+
+### Changed
+- **The graphite lane reads gt's stack from gt's own database, and stops
+  echoing gt's repo-wide nags.** A `ccx vcs ship` on that lane printed
+  twenty-four lines of `WARNING:` before any ship output, none of it about the
+  ship: it was gt's standing reminder that some branches have diverged from
+  its tracking, a repo-wide complaint with its own remedy, repeated in full on
+  every gt invocation and echoed once per gt call. No gt flag, environment
+  variable or config suppresses it, so the filtering had to happen here.
+
+  Two paths leaked it. Off a terminal, `Diagnostics` re-emitted gt's entire
+  stderr whenever any line led with a severity prefix, so one standing nag
+  dragged the whole block along; on a terminal, the streaming arm filtered
+  nothing at all. Both now drop the reminder and gt's NUX tips line by line,
+  keeping gt's own spacing, and a run-scoped set reports each block once
+  rather than once per gt call.
+
+  The same ship was slow for an unrelated reason: gt runs `git for-each-ref`
+  over every local branch and revalidates it on every call, so `gt state`
+  measured 9.2s in a 1791-branch repository. `internal/gtmeta` reads the
+  metadata directly — verified at 954/954 entries against a live `gt state`
+  with zero mismatches — and `gt add`, which was a `git add` passthrough,
+  is gone. `ccx vcs info` in that repository goes from 22.7s to 6.0s.
+
+### Added
+- **`ccx vcs prune`** deletes local branches already merged into trunk and
+  forgets the graphite metadata rows for branches that no longer exist. It
+  deletes with `git branch -d` and never `-D`, refuses any branch a worktree
+  holds, and names diverged branches without touching them — their remedy is
+  `gt track` or `gt untrack`, and guessing between the two loses work.
+
 ## [0.50.0] - 2026-08-31
 
 ### Fixed
