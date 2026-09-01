@@ -30,9 +30,9 @@ func TestReadTracksAGTStack(t *testing.T) {
 
 	t.Run("reports the trunk and each branch's parent", func(t *testing.T) {
 		assertState(t, read(t, commonDir), gtmeta.State{
-			"main":  {Trunk: true},
-			"feat1": {Parents: []gtmeta.Ref{{Ref: "main", SHA: trunkHead}}},
-			"feat2": {Parents: []gtmeta.Ref{{Ref: "feat1", SHA: feat1Head}}},
+			"main":  {Trunk: true, Head: trunkHead},
+			"feat1": {Head: feat1Head, Parents: []gtmeta.Ref{{Ref: "main", SHA: trunkHead}}},
+			"feat2": {Head: head(t, f.Dir, "feat2"), Parents: []gtmeta.Ref{{Ref: "feat1", SHA: feat1Head}}},
 		})
 	})
 
@@ -65,6 +65,36 @@ func TestReadTracksAGTStack(t *testing.T) {
 	})
 }
 
+func TestLastSubmittedRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	vcstest.WriteGraphiteMeta(t, dir, `{"main":{"trunk":true},"feat":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
+
+	got, err := gtmeta.LastSubmitted(t.Context(), dir)
+	if err != nil {
+		t.Fatalf("LastSubmitted: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("LastSubmitted = %v, want none before any submit", got)
+	}
+
+	want := gtmeta.Version{HeadSha: "0f0f", BaseSha: "deadbeef", BaseName: "main"}
+	if err := gtmeta.RecordSubmitted(t.Context(), dir, "feat", want); err != nil {
+		t.Fatalf("RecordSubmitted: %v", err)
+	}
+	got, err = gtmeta.LastSubmitted(t.Context(), dir)
+	if err != nil {
+		t.Fatalf("LastSubmitted: %v", err)
+	}
+	if len(got) != 1 || got["feat"] != want {
+		t.Errorf("LastSubmitted = %v, want feat recorded as %+v", got, want)
+	}
+
+	err = gtmeta.RecordSubmitted(t.Context(), dir, "absent", want)
+	if err == nil || !strings.Contains(err.Error(), `"absent" has no branch_metadata row`) {
+		t.Errorf("RecordSubmitted(absent) = %v, want a refusal naming the missing row", err)
+	}
+}
+
 func TestReadFailsWithoutGraphiteConfig(t *testing.T) {
 	f := vcstest.Repo(t)
 	_, err := gtmeta.Read(t.Context(), filepath.Join(f.Dir, ".git"))
@@ -94,6 +124,9 @@ func assertState(t *testing.T, got, want gtmeta.State) {
 		}
 		if g.Trunk != w.Trunk || g.NeedsRestack != w.NeedsRestack {
 			t.Errorf("branch %s: got trunk=%v restack=%v, want trunk=%v restack=%v", name, g.Trunk, g.NeedsRestack, w.Trunk, w.NeedsRestack)
+		}
+		if w.Head != "" && g.Head != w.Head {
+			t.Errorf("branch %s: got head %s, want %s", name, g.Head, w.Head)
 		}
 		if len(g.Parents) != len(w.Parents) {
 			t.Fatalf("branch %s: got parents %v, want %v", name, g.Parents, w.Parents)

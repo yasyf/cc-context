@@ -214,11 +214,13 @@ func shipResetLog(t *testing.T, f *vcstest.Fixture) {
 }
 
 // shipGTRepo builds a real graphite repository behind the recording shim, with
-// a bare origin and its lane cache seeded, so ship reaches the gt lane without
-// a gh lookup or an auth probe.
+// a bare origin, its lane cache seeded, and the Graphite API stubbed, so ship
+// reaches the gt lane without a gh lookup, an auth probe, or a live API call.
 func shipGTRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	t.Helper()
-	return shipRepo(t, append([]vcstest.Opt{vcstest.GT(), vcstest.Remote()}, opts...)...)
+	f := shipRepo(t, append([]vcstest.Opt{vcstest.GT(), vcstest.Remote()}, opts...)...)
+	stubGTAPI(t)
+	return f
 }
 
 // shipGTStack cuts one branch per name, each off the last with a commit of its
@@ -799,6 +801,7 @@ exit 0
 	gitIdxMark := "if [ -n \"$GIT_INDEX_FILE\" ]; then { printf 'idx\\0'; printf '%s\\0' \"${GIT_INDEX_FILE##*/}\"; printf '\\0'; } >> \"$SHIP_LOG\"; fi\n"
 	git := "#!/bin/sh\n" + gitIdxMark + log("git") + `case "$1 $2" in
   "log -1") printf '%s\0%s' 'a1b2c3d' 'fix: frobnicate' ;;
+  "log --reverse") printf 'fix: frobnicate\0%s\0\n' "$GIT_LOG_BODY" ;;
   "branch --show-current")
     if [ -n "$GIT_BRANCH_SHOW_FAIL" ]; then printf 'fatal: not a git repository\n' >&2; exit 128; fi
     branch=${GIT_BRANCH-main}
@@ -947,12 +950,6 @@ exit 0
   modify)
     if [ -n "$GT_MODIFY_STDERR" ]; then printf '%s\n' "$GT_MODIFY_STDERR" >&2; fi
     : > "$SHIP_LOG.git-committed" ;;
-  submit)
-    # Real gt splits one submit's report across both streams and exits 0 on some
-    # of the failures it reports, so the fake drives stream and exit code apart.
-    if [ -n "$GT_SUBMIT_STDOUT" ]; then printf '%s\n' "$GT_SUBMIT_STDOUT"; fi
-    if [ -n "$GT_SUBMIT_FAIL_STDERR" ]; then printf '%s\n' "$GT_SUBMIT_FAIL_STDERR" >&2; exit "${GT_SUBMIT_EXIT:-1}"; fi
-    exit "${GT_SUBMIT_EXIT:-0}" ;;
   *) printf 'fake gt: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
 esac
 exit 0
@@ -1134,6 +1131,7 @@ func setupShipGT(t *testing.T, withGh bool) string {
 	t.Setenv("GIT_BRANCH", "feature")
 	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
 	seedLaneRecords(t, ".", laneSeed{})
+	stubGTAPI(t)
 	return log
 }
 

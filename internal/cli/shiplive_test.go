@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
@@ -33,6 +34,11 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 		os.Exit(0)
+	}
+	// A test that reaches the graphite API without stubGTAPI would submit real
+	// pull requests with the developer's token; fail it loudly instead.
+	gtAPIClient = func() *gtapi.Client {
+		panic("cli: gtAPIClient called without stubGTAPI")
 	}
 	os.Exit(m.Run())
 }

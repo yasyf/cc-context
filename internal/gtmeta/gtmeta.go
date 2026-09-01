@@ -34,10 +34,12 @@ type Ref struct {
 	SHA string
 }
 
-// BranchState is one branch's tracked state.
+// BranchState is one branch's tracked state. Head is the branch's own ref, so
+// a caller submitting the stack need not re-ask git per branch.
 type BranchState struct {
 	Trunk        bool
 	NeedsRestack bool
+	Head         string
 	Parents      []Ref
 }
 
@@ -67,11 +69,12 @@ func Read(ctx context.Context, commonDir string) (State, error) {
 
 	state := State{}
 	for _, row := range rows {
-		if _, live := heads[row.branch]; !live {
+		head, live := heads[row.branch]
+		if !live {
 			continue
 		}
 		if row.branch == trunk {
-			state[row.branch] = BranchState{Trunk: true}
+			state[row.branch] = BranchState{Trunk: true, Head: head}
 			continue
 		}
 		parentHead, parentLive := heads[row.parent]
@@ -80,6 +83,7 @@ func Read(ctx context.Context, commonDir string) (State, error) {
 		}
 		state[row.branch] = BranchState{
 			NeedsRestack: row.parentRevision != parentHead,
+			Head:         head,
 			Parents:      []Ref{{Ref: row.parent, SHA: row.parentRevision}},
 		}
 	}
@@ -232,4 +236,80 @@ func Forget(ctx context.Context, commonDir string, branches []string) error {
 
 func writableDSN(path string) string {
 	return "file:" + (&url.URL{Path: path}).String() + "?_pragma=busy_timeout(5000)"
+}
+
+// Version is the branch_metadata.last_submitted_version blob: the shas gt
+// recorded for a branch's last submitted PR version, matching what gt itself
+// writes on submit.
+type Version struct {
+	HeadSha  string `json:"headSha"`
+	BaseSha  string `json:"baseSha"`
+	BaseName string `json:"baseName"`
+}
+
+// LastSubmitted reads every branch's last submitted version out of the
+// metadata database, skipping branches never submitted.
+func LastSubmitted(ctx context.Context, commonDir string) (map[string]Version, error) {
+	path := filepath.Join(commonDir, metadataDB)
+	db, err := sql.Open("sqlite", dsn(path))
+	if err != nil {
+		return nil, fmt.Errorf("gtmeta: open %q: %w", path, err)
+	}
+	defer func() { _ = db.Close() }()
+
+	cursor, err := db.QueryContext(ctx, `
+		SELECT branch_name, last_submitted_version
+		FROM branch_metadata
+		WHERE last_submitted_version IS NOT NULL AND last_submitted_version != ''`)
+	if err != nil {
+		return nil, fmt.Errorf("gtmeta: query %q: %w", path, err)
+	}
+	defer func() { _ = cursor.Close() }()
+
+	versions := map[string]Version{}
+	for cursor.Next() {
+		var branch, payload string
+		if err := cursor.Scan(&branch, &payload); err != nil {
+			return nil, fmt.Errorf("gtmeta: scan %q: %w", path, err)
+		}
+		var v Version
+		if err := json.Unmarshal([]byte(payload), &v); err != nil {
+			return nil, fmt.Errorf("gtmeta: parse last_submitted_version of %q in %q: %w", branch, path, err)
+		}
+		versions[branch] = v
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, fmt.Errorf("gtmeta: read %q: %w", path, err)
+	}
+	return versions, nil
+}
+
+// RecordSubmitted writes one branch's last_submitted_version, which is what
+// gt reads to decide the branch was ever submitted and which remote head its
+// next force-with-lease may replace. A branch without a row is an error: only
+// a tracked branch can have been submitted.
+func RecordSubmitted(ctx context.Context, commonDir, branch string, v Version) error {
+	path := filepath.Join(commonDir, metadataDB)
+	payload, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("gtmeta: encode last_submitted_version of %q: %w", branch, err)
+	}
+	db, err := sql.Open("sqlite", writableDSN(path))
+	if err != nil {
+		return fmt.Errorf("gtmeta: open %q: %w", path, err)
+	}
+	defer func() { _ = db.Close() }()
+
+	result, err := db.ExecContext(ctx, `UPDATE branch_metadata SET last_submitted_version = ? WHERE branch_name = ?`, string(payload), branch)
+	if err != nil {
+		return fmt.Errorf("gtmeta: record %q in %q: %w", branch, path, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("gtmeta: record %q in %q: %w", branch, path, err)
+	}
+	if affected != 1 {
+		return fmt.Errorf("gtmeta: %q has no branch_metadata row in %q", branch, path)
+	}
+	return nil
 }
