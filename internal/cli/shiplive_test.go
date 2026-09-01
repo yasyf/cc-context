@@ -760,6 +760,17 @@ func requireLiveGT(t *testing.T) {
 func setupLiveGTRepo(t *testing.T, base string) string {
 	t.Helper()
 	dir := t.TempDir()
+	// gt's detached background process keeps writing here after the command
+	// returns; cleanups run last-first, so this outlasts it and leaves
+	// testing's own removal nothing to race.
+	t.Cleanup(func() {
+		for range 100 {
+			if os.RemoveAll(dir) == nil {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
 	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
