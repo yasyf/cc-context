@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A Graphite refusal threw away everything Graphite said about it.** Every
+  non-2xx response was rendered by pulling a top-level `message` field out of
+  the body and falling back to net/http's status name when there wasn't one, so
+  a submit Graphite turned down reported `POST .../graphite/submit/pull-requests:
+  400 Bad Request` and nothing else — no branch, no field, no reason, and no way
+  to tell a stale base sha from a malformed entry without a proxy. A submit's
+  400 describes the entries it rejected rather than carrying a `message`, which
+  is exactly the response this dropped.
+
+  Refusals now also read `error` and `detail`, quote a validation list given
+  under `errors`, and otherwise quote the body itself, whitespace collapsed and
+  capped at 512 characters so a stray HTML error page cannot fill the terminal.
+  A response with no body at all still falls back to the status name.
+
 ## [0.53.0] - 2026-09-01
 
 ### Changed

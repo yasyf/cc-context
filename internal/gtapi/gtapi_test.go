@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/version"
@@ -358,5 +359,54 @@ func TestResolveTokenWithoutFileIsTyped(t *testing.T) {
 	_, err := resolveToken()
 	if !errors.Is(err, ErrNoToken) {
 		t.Fatalf("resolveToken error = %v, want ErrNoToken", err)
+	}
+}
+
+// TestStatusMessageKeepsWhatGraphiteSaid pins the refusal text a caller sees.
+// Only a body carrying nothing at all may fall back to net/http's status name:
+// a submit's 400 describes the entries it rejected without ever naming a
+// message field, and that description is the whole diagnosis.
+func TestStatusMessageKeepsWhatGraphiteSaid(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{"message", `{"message":"invalid token"}`, "invalid token"},
+		{"error", `{"error":"bad request"}`, "bad request"},
+		{"detail", `{"detail":"baseSha is not on the remote"}`, "baseSha is not on the remote"},
+		{"validation list", `{"errors":[{"path":"prs.0.baseSha"}]}`, `[{"path":"prs.0.baseSha"}]`},
+		{"unrecognized json", `{"code":"BAD_BASE","prs":[{"head":"feature"}]}`, `{"code":"BAD_BASE","prs":[{"head":"feature"}]}`},
+		{"plain text", "base branch not found\n", "base branch not found"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := statusMessage([]byte(tt.payload)); got != tt.want {
+				t.Errorf("statusMessage(%q) = %q, want %q", tt.payload, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStatusMessageBoundsAnUnrecognizedBody(t *testing.T) {
+	t.Parallel()
+	got := statusMessage([]byte("<html>" + strings.Repeat("x", 4096) + "</html>"))
+	if len(got) != statusBodyCap+len("…") {
+		t.Errorf("statusMessage() length = %d, want the body capped at %d plus the ellipsis", len(got), statusBodyCap)
+	}
+}
+
+// TestStatusErrorQuotesABodilessRefusal is the shape that read as a bare
+// "400 Bad Request": a submit Graphite refused, whose body names its cause
+// under no field this recognizes.
+func TestStatusErrorQuotesABodilessRefusal(t *testing.T) {
+	t.Parallel()
+	err := statusError(http.MethodPost, "https://api.graphite.com/v1/graphite/submit/pull-requests", http.StatusBadRequest,
+		[]byte(`{"prs":[{"head":"feature","reason":"baseSha not found on remote"}]}`))
+	if !strings.Contains(err.Error(), "baseSha not found on remote") {
+		t.Errorf("error = %q, want it to carry the reason Graphite gave", err.Error())
 	}
 }

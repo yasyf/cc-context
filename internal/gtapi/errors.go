@@ -74,10 +74,42 @@ func (e *SubmitError) Error() string {
 		len(e.Failed), len(e.Failed)+len(e.Submitted), strings.Join(texts, "; "))
 }
 
+// statusBodyCap bounds the body a refusal quotes when it names no message of
+// its own: room for a validation list, not for an HTML error page.
+const statusBodyCap = 512
+
 func statusError(method, target string, status int, payload []byte) *StatusError {
+	return &StatusError{Method: method, URL: target, Status: status, Message: statusMessage(payload)}
+}
+
+// statusMessage is what Graphite said about a refusal. Its error bodies are not
+// one shape — a submit's 400 names the entries it rejected rather than carrying
+// a message — so a body naming none of the fields here is quoted raw.
+func statusMessage(payload []byte) string {
 	var body struct {
-		Message string `json:"message"`
+		Message string          `json:"message"`
+		Error   string          `json:"error"`
+		Detail  string          `json:"detail"`
+		Errors  json.RawMessage `json:"errors"`
 	}
-	_ = json.Unmarshal(payload, &body)
-	return &StatusError{Method: method, URL: target, Status: status, Message: body.Message}
+	if err := json.Unmarshal(payload, &body); err == nil {
+		for _, named := range []string{body.Message, body.Error, body.Detail} {
+			if named != "" {
+				return named
+			}
+		}
+		if len(body.Errors) > 0 && string(body.Errors) != "null" {
+			return statusQuote(body.Errors)
+		}
+	}
+	return statusQuote(payload)
+}
+
+// statusQuote renders a body as one line short enough to sit inside an error.
+func statusQuote(payload []byte) string {
+	quoted := strings.Join(strings.Fields(string(payload)), " ")
+	if len(quoted) > statusBodyCap {
+		return quoted[:statusBodyCap] + "…"
+	}
+	return quoted
 }
