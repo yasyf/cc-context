@@ -748,7 +748,20 @@ func mapEqual(a, b map[string]bool) bool {
 func requireLiveGT(t *testing.T) {
 	t.Helper()
 	requireLiveVCS(t, "git", "gt")
-	home := t.TempDir()
+	// gt's detached writer recreates entries under HOME that a removal already
+	// swept, so this one is the fixture's own: testing has nothing left to race.
+	home, err := os.MkdirTemp("", "livegthome")
+	if err != nil {
+		t.Fatalf("mkdir temp home: %v", err)
+	}
+	t.Cleanup(func() {
+		for range 100 {
+			if os.RemoveAll(home) == nil {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
 	t.Setenv("GRAPHITE_AUTH_TOKEN", "")
