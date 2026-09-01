@@ -4815,7 +4815,7 @@ func TestShipGTAutoRestackConflict(t *testing.T) {
 	shipGTConflicting(t, f)
 
 	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
-	want := gtStuck("gt restack hit a conflict — resolve the listed files, then gt continue (or gt abort, then gt restack)", gtStuckSuffix(shipOpts{noPush: true}))
+	want := gtStuck("ship", "gt restack hit a conflict — resolve the listed files, then gt continue (or gt abort, then gt restack)", gtStuckSuffix(shipOpts{noPush: true}))
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
@@ -4831,7 +4831,7 @@ func TestShipGTNoCommitRestackConflict(t *testing.T) {
 	shipResetLog(t, f)
 
 	_, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr")
-	want := gtStuck("gt restack hit a conflict — resolve the listed files, then gt continue (or gt abort, then gt restack)", gtStuckSuffix(shipOpts{noCommit: true}))
+	want := gtStuck("ship", "gt restack hit a conflict — resolve the listed files, then gt continue (or gt abort, then gt restack)", gtStuckSuffix(shipOpts{noCommit: true}))
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
@@ -4924,7 +4924,7 @@ func TestGTStuck(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := gtStuck("stuck", gtStuckSuffix(tt.o)); got != tt.want {
+			if got := gtStuck("ship", "stuck", gtStuckSuffix(tt.o)); got != tt.want {
 				t.Errorf("gtStuck() = %q, want %q", got, tt.want)
 			}
 		})
@@ -5123,49 +5123,8 @@ func TestShipGTExitZeroErrorRefuses(t *testing.T) {
 	}
 }
 
-// TestClassifyGTSubmit drives every wording gt is known to refuse a submit
-// with through the classifier stack submit runs, so a reworded gt fails here.
 func submitAdvice(problem string) string {
-	return gtStuck(problem, gtStuckSuffix(shipOpts{}))
-}
-
-func TestClassifyGTSubmit(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name   string
-		output string
-		want   string
-	}{
-		{"restack needed (primary wording)", gtRestackNeeded1, "ship: stack drifted since preflight — run gt restack"},
-		{"restack needed (conflict wording)", gtRestackNeeded2 + "feature", "ship: stack drifted since preflight — run gt restack"},
-		{"trunk stale", gtTrunkStale, "ship: trunk is out of sync — run gt sync (or ccx vcs stack restack)"},
-		{"remote changed (updated wording)", gtRemoteChanged1, "ship: remote branch changed since last submit — reconcile manually (gt sync)"},
-		{"remote changed (lease wording)", gtRemoteChanged2, "ship: remote branch changed since last submit — reconcile manually (gt sync)"},
-		{"auth required (please wording)", gtAuthRequired1, "ship: graphite auth required — run gt auth"},
-		{"auth required (invalid wording)", gtAuthRequired2, "ship: graphite auth required — run gt auth"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			cause := errors.New("gt submit: exit 1")
-			got := classifyGTSubmit(gtResult{Output: tt.output, Code: 1}, cause)
-			if got.Error() != tt.want {
-				t.Errorf("classifyGTSubmit() = %q, want %q", got.Error(), tt.want)
-			}
-			if !errors.Is(got, cause) {
-				t.Error("classified error lost gt's own failure")
-			}
-		})
-	}
-
-	t.Run("unknown wording wraps verbatim", func(t *testing.T) {
-		t.Parallel()
-		cause := errors.New("some other gt error")
-		got := classifyGTSubmit(gtResult{Output: "some other gt error", Code: 1}, cause)
-		if got.Error() != "ship: some other gt error" {
-			t.Errorf("classifyGTSubmit() = %q, want gt's failure wrapped verbatim", got.Error())
-		}
-	})
+	return gtStuck("ship", problem, gtStuckSuffix(shipOpts{}))
 }
 
 // TestShipGTSubmitFailures drives every refusal the API submit path can meet:

@@ -163,3 +163,37 @@ func TestStackAllRefusesTrunk(t *testing.T) {
 		t.Errorf("error = %v, want it to name trunk", err)
 	}
 }
+
+// TestStackSubmitGoesThroughTheGraphiteAPI pins the one submit implementation:
+// stack submit force-pushes each branch and posts the stack to Graphite the way
+// ship does, rather than shelling out to a gt submit nothing else runs anymore.
+func TestStackSubmitGoesThroughTheGraphiteAPI(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	shipGTStack(t, f, "base", "feature")
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if !strings.Contains(out, "submitted 2 branches") {
+		t.Errorf("report = %q, want it to name both branches", out)
+	}
+	if n := api.submitCalls(); n != 1 {
+		t.Errorf("submit posts = %d, want exactly one for the whole stack", n)
+	}
+	for _, branch := range []string{"base", "feature"} {
+		if _, ok := api.lastSubmit()[branch]; !ok {
+			t.Errorf("the submit omitted %s", branch)
+		}
+		if !gitBranchExists(t, f.RemoteDir, branch) {
+			t.Errorf("origin lacks %s — the submit never pushed it", branch)
+		}
+	}
+	for _, inv := range shipGTInvocations(t, f) {
+		if len(inv) > 1 && inv[0] == "gt" && inv[1] == "submit" {
+			t.Errorf("stack submit shelled out to %v, want the API path", inv)
+		}
+	}
+}

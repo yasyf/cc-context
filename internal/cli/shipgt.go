@@ -17,20 +17,6 @@ import (
 )
 
 const (
-	// gtRestackNeeded{1,2} through gtAuthRequired{1,2} are gt 1.8.6's own
-	// wording for classifyGTSubmit; version-dependent, kept as lone constants
-	// so an upgrade is a one-line change (precedent: jjPushMovedSubstr).
-	gtRestackNeeded1 = "You must restack before submitting this stack."
-	gtRestackNeeded2 = "You must restack and resolve conflicts with "
-
-	gtTrunkStale = "Aborting submit because trunk branch is out of date"
-
-	gtRemoteChanged1 = "This branch has been updated remotely since you last submitted"
-	gtRemoteChanged2 = "Force-with-lease push failed due to external changes to the remote branch"
-
-	gtAuthRequired1 = "Please authenticate your Graphite CLI"
-	gtAuthRequired2 = "Your Graphite auth token is invalid/expired"
-
 	// gtDiverged and its detail forms are gt 1.8.6's standing repo-wide
 	// reminder, repeated whole on every invocation, that no flag, env var or
 	// config suppresses. gtNoise matches these to drop it and nothing else.
@@ -292,8 +278,18 @@ func gtStuckSuffix(o shipOpts) string {
 	return ". The commit already landed, so a plain re-run refuses as an empty commit — submit it with: " + resume
 }
 
-func gtStuck(problem, suffix string) string {
-	return "ship: " + problem + suffix
+// gtSubmit is one submit's parameters, shared by ship and stack submit: which
+// command is speaking, what its refusals append about the work already done,
+// and the two switches gt's own --draft and --no-verify flags map to.
+type gtSubmit struct {
+	prefix   string
+	suffix   string
+	draft    bool
+	noVerify bool
+}
+
+func gtStuck(prefix, problem, suffix string) string {
+	return prefix + ": " + problem + suffix
 }
 
 func gtRestack(ctx context.Context, errW io.Writer, l lane, suffix, branch string) (string, error) {
@@ -303,7 +299,7 @@ func gtRestack(ctx context.Context, errW io.Writer, l lane, suffix, branch strin
 	}
 	classify := func(dir render.Dir, r gtResult, cause error) error {
 		if strings.Contains(r.Output, gtSyncConflict) {
-			return &gtAdvice{advice: gtStuck(gtRestackConflict(l.dir(), dir), suffix), cause: cause}
+			return &gtAdvice{advice: gtStuck("ship", gtRestackConflict(l.dir(), dir), suffix), cause: cause}
 		}
 		return fmt.Errorf("ship: %w", cause)
 	}
@@ -324,7 +320,7 @@ func gtRestack(ctx context.Context, errW io.Writer, l lane, suffix, branch strin
 	}
 	for _, b := range chain {
 		if state[b].NeedsRestack {
-			return "", errors.New(gtStuck(gtOffParent(b, declined[b]), suffix))
+			return "", errors.New(gtStuck("ship", gtOffParent(b, declined[b]), suffix))
 		}
 	}
 	return gtLaneSegment(lanes), nil
@@ -495,28 +491,6 @@ func shipCommitGTSelect(ctx context.Context, dir render.Dir, errW io.Writer, o s
 	return nil
 }
 
-// classifyGTSubmit maps a failed gt submit — stack submit's, the one verb still
-// shelling out to gt — to a specific recovery step when gt's wording is
-// recognized, or wraps the failure verbatim otherwise. It reads the whole
-// interleaved output, not the error's text: gt splits one submit's report
-// across both streams, so a recognized sentence arrives on whichever one gt
-// picked. A recognized failure keeps gt's own error as the advice's cause, so
-// errors.As still reaches it behind the sentence that replaced it.
-func classifyGTSubmit(r gtResult, cause error) error {
-	switch {
-	case strings.Contains(r.Output, gtRestackNeeded1) || strings.Contains(r.Output, gtRestackNeeded2):
-		return &gtAdvice{advice: "ship: stack drifted since preflight — run gt restack", cause: cause}
-	case strings.Contains(r.Output, gtTrunkStale):
-		return &gtAdvice{advice: "ship: trunk is out of sync — run gt sync (or ccx vcs stack restack)", cause: cause}
-	case strings.Contains(r.Output, gtRemoteChanged1) || strings.Contains(r.Output, gtRemoteChanged2):
-		return &gtAdvice{advice: "ship: remote branch changed since last submit — reconcile manually (gt sync)", cause: cause}
-	case strings.Contains(r.Output, gtAuthRequired1) || strings.Contains(r.Output, gtAuthRequired2):
-		return &gtAdvice{advice: "ship: graphite auth required — run gt auth", cause: cause}
-	default:
-		return fmt.Errorf("ship: %w", cause)
-	}
-}
-
 // gtAPIClient is the Graphite API client the submit path calls; tests point it
 // at an httptest server.
 var gtAPIClient = gtapi.Default
@@ -544,10 +518,11 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 	if err != nil {
 		return "", nil, nil, err
 	}
-	if err := gtAnnounceStack(errW, chain); err != nil {
+	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: o.draft, noVerify: o.noVerify}
+	if err := gtAnnounceStack(errW, sub.prefix, gtBottomUp(chain)); err != nil {
 		return "", nil, nil, err
 	}
-	if err := gtSubmitStack(ctx, l, o, commonDir, state, trunk, chain, suffix); err != nil {
+	if err := gtSubmitStack(ctx, l, sub, commonDir, state, trunk, gtBottomUp(chain)); err != nil {
 		return "", nil, nil, err
 	}
 	submitted, bodyless, stack = gtPRSegment(ctx, l, branch, chain, meta)
@@ -572,22 +547,21 @@ type gtSubmitBranch struct {
 // branch, then post the whole downstack in one submit call. The pushes come
 // before the submit so the headSha Graphite records is always the one already
 // on the remote.
-func gtSubmitStack(ctx context.Context, l lane, o shipOpts, commonDir string, state gtState, trunk string, chain []string, suffix string) error {
-	owner, name, err := gtRepoOwnerName(ctx, l)
+func gtSubmitStack(ctx context.Context, l lane, s gtSubmit, commonDir string, state gtState, trunk string, branches []string) error {
+	owner, name, err := gtRepoOwnerName(ctx, l, s.prefix)
 	if err != nil {
 		return err
 	}
 	client := gtAPIClient()
 	sync, err := client.IsRepoSynced(ctx, owner, name)
 	if err != nil {
-		return gtSubmitFailure(err, suffix)
+		return gtSubmitFailure(err, s)
 	}
 	if sync.Status != gtapi.RepoSynced {
 		problem := fmt.Sprintf("graphite does not sync %s/%s (%s) — add the repo at app.graphite.dev, or pass --no-gt", owner, name, sync.Status)
-		return &gtAdvice{advice: gtStuck(problem, suffix), cause: fmt.Errorf("gtapi: is-repo-synced: %s %s", sync.Status, sync.Message)}
+		return &gtAdvice{advice: gtStuck(s.prefix, problem, s.suffix), cause: fmt.Errorf("gtapi: is-repo-synced: %s %s", sync.Status, sync.Message)}
 	}
 
-	branches := gtBottomUp(chain)
 	infos, err := client.PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{
 		RepoOwner:        owner,
 		RepoName:         name,
@@ -597,7 +571,7 @@ func gtSubmitStack(ctx context.Context, l lane, o shipOpts, commonDir string, st
 		Callsite:         "ccx",
 	})
 	if err != nil {
-		return gtSubmitFailure(err, suffix)
+		return gtSubmitFailure(err, s)
 	}
 	open := map[string]int{}
 	for _, pr := range infos {
@@ -608,9 +582,9 @@ func gtSubmitStack(ctx context.Context, l lane, o shipOpts, commonDir string, st
 
 	last, err := gtmeta.LastSubmitted(ctx, commonDir)
 	if err != nil {
-		return fmt.Errorf("ship: %w", err)
+		return fmt.Errorf("%s: %w", s.prefix, err)
 	}
-	plan, err := gtSubmitPlan(ctx, l.dir(), state, branches, open, last)
+	plan, err := gtSubmitPlan(ctx, l.dir(), s.prefix, state, branches, open, last)
 	if err != nil {
 		return err
 	}
@@ -620,18 +594,18 @@ func gtSubmitStack(ctx context.Context, l lane, o shipOpts, commonDir string, st
 		pre = append(pre, gtapi.PreSubmitBranch{HeadRefName: b.name, PRNumber: b.pr})
 	}
 	if _, err := client.PreSubmitPullRequests(ctx, owner, name, pre); err != nil {
-		return gtSubmitFailure(err, suffix)
+		return gtSubmitFailure(err, s)
 	}
 
 	// Each lease is recorded right after its own push — the irreversible step —
 	// so no later failure leaves it behind the remote head this run just moved.
 	for _, b := range plan {
-		if err := gtPushBranch(ctx, l.dir(), o, b, suffix); err != nil {
+		if err := gtPushBranch(ctx, l.dir(), s, b); err != nil {
 			return err
 		}
 		version := gtmeta.Version{HeadSha: b.head, BaseSha: b.baseSha, BaseName: b.base}
 		if err := gtmeta.RecordSubmitted(ctx, commonDir, b.name, version); err != nil {
-			return gtSubmitFailure(err, suffix)
+			return gtSubmitFailure(err, s)
 		}
 	}
 
@@ -639,27 +613,27 @@ func gtSubmitStack(ctx context.Context, l lane, o shipOpts, commonDir string, st
 		RepoOwner:       owner,
 		RepoName:        name,
 		TrunkBranchName: trunk,
-		PRs:             gtSubmitPRs(plan, o.draft),
+		PRs:             gtSubmitPRs(plan, s.draft),
 	}); err != nil {
-		return gtSubmitFailure(err, suffix)
+		return gtSubmitFailure(err, s)
 	}
 	return nil
 }
 
 // gtRepoOwnerName resolves the GitHub repository the API submit names, from
 // the lane's cached record when the gate already read it.
-func gtRepoOwnerName(ctx context.Context, l lane) (string, string, error) {
+func gtRepoOwnerName(ctx context.Context, l lane, prefix string) (string, string, error) {
 	repo := l.repo
 	if repo == nil {
 		looked, err := vcs.LookupRepo(ctx, l.dir(), false)
 		if err != nil {
-			return "", "", fmt.Errorf("ship: a graphite submit needs GitHub metadata: %w", err)
+			return "", "", fmt.Errorf("%s: a graphite submit needs GitHub metadata: %w", prefix, err)
 		}
 		repo = &looked
 	}
 	owner, name, ok := strings.Cut(repo.NameWithOwner, "/")
 	if !ok {
-		return "", "", fmt.Errorf("ship: malformed repository name %q", repo.NameWithOwner)
+		return "", "", fmt.Errorf("%s: malformed repository name %q", prefix, repo.NameWithOwner)
 	}
 	return owner, name, nil
 }
@@ -668,7 +642,7 @@ func gtRepoOwnerName(ctx context.Context, l lane) (string, string, error) {
 // head, its parent and the sha it is stacked on, its open PR, and the lease of
 // its last submitted version. A branch with no PR gets the title and body a
 // create requires.
-func gtSubmitPlan(ctx context.Context, dir render.Dir, state gtState, branches []string, open map[string]int, last map[string]gtmeta.Version) ([]gtSubmitBranch, error) {
+func gtSubmitPlan(ctx context.Context, dir render.Dir, prefix string, state gtState, branches []string, open map[string]int, last map[string]gtmeta.Version) ([]gtSubmitBranch, error) {
 	plan := make([]gtSubmitBranch, 0, len(branches))
 	for _, name := range branches {
 		s := state[name]
@@ -681,7 +655,7 @@ func gtSubmitPlan(ctx context.Context, dir render.Dir, state gtState, branches [
 			lease:   last[name].HeadSha,
 		}
 		if b.pr == 0 {
-			title, body, err := gtCreateMeta(ctx, dir, name, b.base)
+			title, body, err := gtCreateMeta(ctx, dir, prefix, name, b.base)
 			if err != nil {
 				return nil, err
 			}
@@ -696,14 +670,14 @@ func gtSubmitPlan(ctx context.Context, dir render.Dir, state gtState, branches [
 // --no-edit does: from the branch's first commit above its base. The
 // Claude-Session-Id trailer is dropped from the body, the same line the
 // non-graphite lane keeps out of descriptions by never passing --fill.
-func gtCreateMeta(ctx context.Context, dir render.Dir, branch, base string) (string, string, error) {
+func gtCreateMeta(ctx context.Context, dir render.Dir, prefix, branch, base string) (string, string, error) {
 	out, err := render.RunCLI(ctx, dir, "git", []string{"log", "--reverse", "--format=%s%x00%b%x00", base + ".." + branch})
 	if err != nil {
-		return "", "", fmt.Errorf("ship: git log %s..%s: %w", base, branch, err)
+		return "", "", fmt.Errorf("%s: git log %s..%s: %w", prefix, base, branch, err)
 	}
 	fields := strings.Split(out, "\x00")
 	if len(fields) < 3 {
-		return "", "", fmt.Errorf("ship: %s holds no commit above %s to derive a PR title from", branch, base)
+		return "", "", fmt.Errorf("%s: %s holds no commit above %s to derive a PR title from", prefix, branch, base)
 	}
 	return strings.TrimPrefix(fields[0], "\n"), gtStripSessionTrailer(fields[1]), nil
 }
@@ -723,13 +697,13 @@ func gtStripSessionTrailer(body string) string {
 // gtPushArgv is the push gt submit itself makes, recovered from its traces.
 // The hook decision rides along: without --no-verify a repository's pre-push
 // hook runs the suite the commit was told to skip.
-func gtPushArgv(o shipOpts, b gtSubmitBranch) []string {
+func gtPushArgv(s gtSubmit, b gtSubmitBranch) []string {
 	lease := "--force-with-lease"
 	if b.lease != "" {
 		lease += "=refs/heads/" + b.name + ":" + b.lease
 	}
 	argv := []string{"push", "origin", lease, "--progress", b.head + ":refs/heads/" + b.name}
-	if o.noVerify {
+	if s.noVerify {
 		argv = append(argv, "--no-verify")
 	}
 	return append(argv, "--atomic")
@@ -739,16 +713,16 @@ func gtPushArgv(o shipOpts, b gtSubmitBranch) []string {
 // version, so a remote someone else advanced is refused rather than
 // overwritten. No retry: a force-with-lease push is never rejected as
 // non-fast-forward, so a refusal here is terminal.
-func gtPushBranch(ctx context.Context, dir render.Dir, o shipOpts, b gtSubmitBranch, suffix string) error {
-	_, err := render.RunCLI(ctx, dir, "git", gtPushArgv(o, b))
+func gtPushBranch(ctx context.Context, dir render.Dir, s gtSubmit, b gtSubmitBranch) error {
+	_, err := render.RunCLI(ctx, dir, "git", gtPushArgv(s, b))
 	switch {
 	case err == nil:
 		return nil
 	case gitPushStaleLease(err):
 		problem := "remote " + b.name + " changed since last submit — reconcile manually (gt sync)"
-		return &gtAdvice{advice: gtStuck(problem, suffix), cause: err}
+		return &gtAdvice{advice: gtStuck(s.prefix, problem, s.suffix), cause: err}
 	default:
-		return fmt.Errorf("ship: git push %s: %w", b.name, err)
+		return fmt.Errorf("%s: git push %s: %w", s.prefix, b.name, err)
 	}
 }
 
@@ -780,15 +754,15 @@ func gtSubmitPRs(plan []gtSubmitBranch, draft bool) []gtapi.SubmitPR {
 // typed failure reachable as the advice's cause. A per-branch refusal names
 // both the branches that landed and the ones that did not, so a partial submit
 // is reported exactly.
-func gtSubmitFailure(err error, suffix string) error {
+func gtSubmitFailure(err error, s gtSubmit) error {
 	var submitErr *gtapi.SubmitError
 	switch {
 	case errors.Is(err, gtapi.ErrUnauthorized) || errors.Is(err, gtapi.ErrNoToken):
-		return &gtAdvice{advice: gtStuck("graphite auth required — run gt auth", suffix), cause: err}
+		return &gtAdvice{advice: gtStuck(s.prefix, "graphite auth required — run gt auth", s.suffix), cause: err}
 	case errors.As(err, &submitErr):
-		return &gtAdvice{advice: gtStuck(gtSubmitSplit(submitErr), suffix), cause: err}
+		return &gtAdvice{advice: gtStuck(s.prefix, gtSubmitSplit(submitErr), s.suffix), cause: err}
 	default:
-		return fmt.Errorf("ship: %w", err)
+		return fmt.Errorf("%s: %w", s.prefix, err)
 	}
 }
 
@@ -818,13 +792,14 @@ func gtStackNames(chain []string) []string {
 }
 
 // gtAnnounceStack names the branches a submit is about to force-push, which for
-// a stack deeper than one branch is more than the one being shipped.
-func gtAnnounceStack(errW io.Writer, chain []string) error {
-	if len(chain) < 2 {
+// a stack deeper than one branch is more than the one being shipped. Branches
+// arrive bottom-up, the direction a stack reads in.
+func gtAnnounceStack(errW io.Writer, prefix string, branches []string) error {
+	if len(branches) < 2 {
 		return nil
 	}
-	if _, err := fmt.Fprintf(errW, "ship: submitting %d branches: %s\n", len(chain), strings.Join(gtStackNames(chain), ", ")); err != nil {
-		return fmt.Errorf("ship: name the stack: %w", err)
+	if _, err := fmt.Fprintf(errW, "%s: submitting %d branches: %s\n", prefix, len(branches), strings.Join(branches, ", ")); err != nil {
+		return fmt.Errorf("%s: name the stack: %w", prefix, err)
 	}
 	return nil
 }

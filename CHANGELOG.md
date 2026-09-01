@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`ccx vcs stack submit` rides ship's Graphite API submit, so there is one
+  submit implementation left.** 0.52.0 moved ship off `gt submit` and left stack
+  submit as the last caller, which meant two submits with different failure
+  wording, different push flags, and only one of them maintaining gt's
+  `last_submitted_version` — a stack submit therefore left every branch's lease
+  behind the head it had just moved. Both now run `gtSubmitStack`: the same
+  repo-synced check, the same force-with-lease push per branch base-first, the
+  same single submit call, and the same lease written back after each push.
+
+  The submit's parameters became a `gtSubmit` value carrying the command's own
+  prefix, so a stack submit's refusals read `stack submit: …` rather than
+  `ship: …`. With no caller left, `classifyGTSubmit` and the seven `gt` sentences
+  it matched are gone, along with the recorded `submit-*` scenarios in the gt
+  golden corpus — that corpus exists to alarm when gt rewords a sentence ccx
+  matches, and ccx no longer matches any of `gt submit`'s.
+
 ### Fixed
 - **A `--no-commit` ship that got stuck told you to re-run the command you just
   ran.** Every graphite refusal after the commit stage — a conflicted restack, a

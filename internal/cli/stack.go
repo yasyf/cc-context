@@ -77,10 +77,12 @@ func newStackSubmitCmd() *cobra.Command {
 		Short: "Restack every lane, then submit the whole stack",
 		Long: `Restack every lane, then submit the whole stack.
 
-gt submit validates that a branch sits on its parent before it pushes, so a
-stack spread across working copies has to be restacked in each of them first —
-which is the sweep ccx vcs stack restack runs. This does both, in that order, so
-the submit meets a stack that is already in the shape gt demands.`,
+A submit pushes each branch onto the parent gt records for it, so a stack spread
+across working copies has to be restacked in each of them first — which is the
+sweep ccx vcs stack restack runs. This does both, in that order, so the submit
+meets a stack that is already in the shape Graphite expects. The submit itself is
+ccx vcs ship's: a force-with-lease push per branch under the lease of its last
+submitted version, then the whole stack posted to Graphite's API in one call.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runStackSubmit(cmd, draft)
@@ -303,16 +305,24 @@ func runStackSubmit(cmd *cobra.Command, draft bool) error {
 	if _, err := gtRestackAt(ctx, l.dir(), errW, classify); err != nil {
 		return err
 	}
-	argv := []string{"submit", "--stack", "--no-interactive", "--no-edit", "--no-ai", "--publish"}
-	if draft {
-		argv = []string{"submit", "--stack", "--no-interactive", "--no-edit", "--no-ai", "--draft"}
-	}
-	r, runErr := gtRun(ctx, l.dir(), argv, gtZeroSurfaces, errW)
-	if err := gtReport(ctx, errW, r); err != nil {
+	commonDir, err := gtCommonDir(ctx, l.dir(), "stack submit")
+	if err != nil {
 		return err
 	}
-	if runErr != nil {
-		return classifyGTSubmit(r, runErr)
+	state, err := gtStateAt(ctx, commonDir, "stack submit")
+	if err != nil {
+		return err
+	}
+	trunk, err := gtTrunkBranch("stack submit", state)
+	if err != nil {
+		return err
+	}
+	sub := gtSubmit{prefix: "stack submit", draft: draft}
+	if err := gtAnnounceStack(errW, sub.prefix, chain); err != nil {
+		return err
+	}
+	if err := gtSubmitStack(ctx, l, sub, commonDir, state, trunk, chain); err != nil {
+		return err
 	}
 	cmd.Println(strings.Join([]string{gtLaneSegment(lanes), fmt.Sprintf("submitted %d branches", len(chain))}, shipSep))
 	return nil

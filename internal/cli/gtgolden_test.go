@@ -68,9 +68,6 @@ const (
 	// restacks, and the sentences ccx matches are the restacker's — see the
 	// scenario READMEs.
 	gtFamilyRestack
-	// gtFamilySubmit is runStackSubmit's gt submit, classified by
-	// classifyGTSubmit under gtZeroFatal.
-	gtFamilySubmit
 )
 
 func gtGoldenFamily(t *testing.T, g gtGolden) gtFamily {
@@ -80,8 +77,6 @@ func gtGoldenFamily(t *testing.T, g gtGolden) gtFamily {
 		return gtFamilyProbe
 	case "sync", "restack":
 		return gtFamilyRestack
-	case "submit":
-		return gtFamilySubmit
 	default:
 		t.Fatalf("golden %s: no classifier owns gt %s", g.name, g.argv[0])
 		return 0
@@ -169,17 +164,6 @@ var gtGoldenCases = map[string]gtGoldenCase{
 		reported:    true,
 		wantErr:     true,
 	},
-	"submit-unauth": {
-		diagnostics: 1,
-		reported:    true,
-		wantErr:     true,
-		advice:      "ship: graphite auth required — run gt auth",
-	},
-	"submit-repo-unverified": {
-		diagnostics: 2,
-		reported:    true,
-		wantErr:     true,
-	},
 	"auth-no-token": {
 		diagnostics: 1,
 		reported:    true,
@@ -262,9 +246,6 @@ func assertGTGolden(t *testing.T, g gtGolden, want gtGoldenCase) {
 		err := r.verdict("sync", gtZeroSurfaces)
 		assertGTGoldenAdvice(t, r, err, want, classifyGTRestack, "restack: ")
 		assertGTGoldenSkipped(t, r, want)
-	case gtFamilySubmit:
-		err := r.verdict("submit", gtZeroFatal)
-		assertGTGoldenAdvice(t, r, err, want, classifyGTSubmit, "ship: ")
 	}
 }
 
@@ -321,8 +302,8 @@ func assertGTGoldenSkipped(t *testing.T, r gtResult, want gtGoldenCase) {
 }
 
 // TestGTGoldenClassifiers drives every pure gt classifier over the recorded
-// bytes: Diagnostics, reportedError, verdict, gtSyncSkipped, classifyGTRestack,
-// classifyGTSubmit and classifyGTProbe, none of which runs a process.
+// bytes: Diagnostics, reportedError, verdict, gtSyncSkipped, classifyGTRestack
+// and classifyGTProbe, none of which runs a process.
 func TestGTGoldenClassifiers(t *testing.T) {
 	t.Parallel()
 	for _, name := range slices.Sorted(maps.Keys(gtGoldenCases)) {
@@ -343,9 +324,6 @@ func gtGoldenFellThrough(t *testing.T, g gtGolden) bool {
 	case gtFamilyProbe:
 		verdict, note := classifyGTProbe(r.Output, r.Code)
 		return verdict == gtVerdictDenied && note == gtProbeFallbackNote(r.Output)
-	case gtFamilySubmit:
-		err := r.verdict("submit", gtZeroFatal)
-		return err != nil && classifyGTSubmit(r, err).Error() == "ship: "+err.Error()
 	default:
 		err := r.verdict("sync", gtZeroSurfaces)
 		return err != nil && classifyGTRestack(r, err).Error() == "restack: "+err.Error()
@@ -438,8 +416,6 @@ var gtGoldenUnnormalized = map[string]gtGoldenStream{
 	"restack-frozen.stderr":                {blankTail: true},
 	"restack-cwd-held.stderr":              {blankTail: true},
 	"restack-worktree-held.stderr":         {blankTail: true},
-	"submit-repo-unverified.stderr":        {trailingWS: 1},
-	"submit-unauth.stderr":                 {trailingWS: 1},
 	"sync-auth-invalid.stderr":             {trailingWS: 1},
 	"sync-no-remote.stderr":                {trailingWS: 1},
 	"sync-repo-404.stderr":                 {trailingWS: 1},

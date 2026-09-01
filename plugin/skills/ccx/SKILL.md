@@ -244,7 +244,8 @@ to submit either way.
 
 A live Graphite config (`.git/.graphite_repo_config`, linked worktrees included)
 routes ship to the gt lane — commits through `gt create`/`gt modify`, the push a
-`gt submit` of the downstack, published by default — after three gates, each
+force-with-lease per branch and one submit of the downstack over Graphite's API,
+published by default — after three gates, each
 demoting to jj/git with the reason in a leading `lane <kind> (<reason>)` segment:
 `ccx.nogt` set in git config, GitHub positively saying the repo is someone else's,
 and a cached probe of whether Graphite can actually submit here (a probe that
