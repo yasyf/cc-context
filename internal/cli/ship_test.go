@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/gtapi"
+	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
@@ -3933,6 +3935,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 		branch     string
 		stateJSON  string
 		prBranches []string
+		submitInv  [][]string
 		wantSeg    string
 	}{
 		{
@@ -3940,7 +3943,11 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			branch:     "feature",
 			stateJSON:  `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`,
 			prBranches: []string{"feature"},
-			wantSeg:    "submitted feature → PR #7 https://github.com/x/pull/7",
+			submitInv: [][]string{
+				gtCreateLogInv("main", "feature"),
+				gtPushInv("feature", vcstest.GraphiteLeafSHA),
+			},
+			wantSeg: "submitted feature → PR #7 https://github.com/x/pull/7",
 		},
 		{
 			name:   "depth 2",
@@ -3948,7 +3955,13 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			stateJSON: `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},` +
 				`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`,
 			prBranches: []string{"feature", "feature2"},
-			wantSeg:    "submitted feature2 → PR #7 https://github.com/x/pull/7 (stack of 2: feature, feature2)",
+			submitInv: [][]string{
+				gtCreateLogInv("main", "feature"),
+				gtCreateLogInv("feature", "feature2"),
+				gtPushInv("feature", "beadfeed"),
+				gtPushInv("feature2", vcstest.GraphiteLeafSHA),
+			},
+			wantSeg: "submitted feature2 → PR #7 https://github.com/x/pull/7 (stack of 2: feature, feature2)",
 		},
 	}
 	for _, tt := range tests {
@@ -3968,9 +3981,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			if summary := `committed a1b2c3d "fix: frobnicate" · ` + tt.wantSeg + ` · CI success`; got != summary {
 				t.Errorf("summary = %q, want %q", got, summary)
 			}
-			// One gt submit at every depth: the chain is named from the downstack
-			// already resolved, not by a second submit run under --dry-run.
-			assertInvocations(t, readInvocations(t, log), [][]string{
+			want := [][]string{
 				nogtProbe,
 				{"git", "branch", "--show-current"},
 				gtCommonDirArgv,
@@ -3982,11 +3993,14 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				{"git", "log", "-1", "--format=%h%x00%s"},
 				gtCommonDirArgv,
 				gtRefsArgv(),
-				{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--no-verify", "--publish"},
+			}
+			want = append(want, tt.submitInv...)
+			want = append(want,
 				ghDownstackPRArgv(tt.prBranches...),
-				{"git", "rev-parse", "HEAD"},
+				[]string{"git", "rev-parse", "HEAD"},
 				ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
-			})
+			)
+			assertInvocations(t, readInvocations(t, log), want)
 		})
 	}
 }
@@ -4024,7 +4038,8 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		gtCommonDirArgv,
 		gtRefsArgvIn(created),
-		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--no-verify", "--publish"},
+		gtCreateLogInv("main", "fix-frobnicate"),
+		gtPushInv("fix-frobnicate", vcstest.GraphiteLeafSHA),
 		ghDownstackPRArgv("fix-frobnicate"),
 		{"git", "rev-parse", "HEAD"},
 		ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
@@ -4828,14 +4843,14 @@ func TestShipGTResumeAfterRestackConflict(t *testing.T) {
 	writeShipFile(t, f.Dir, "c.txt", "resolved\n")
 	mustRun(t, f.Dir, "gt", "add", "c.txt")
 	mustRun(t, f.Dir, "gt", "continue", "--no-interactive")
-	shipGTIntercept(t, f, "submit", "  exit 0\n")
 	shipResetLog(t, f)
 
 	if _, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr"); err != nil {
 		t.Fatalf("resume ship error = %v", err)
 	}
+	invocations := shipGTInvocations(t, f)
 	var verbs []string
-	for _, inv := range shipGTInvocations(t, f) {
+	for _, inv := range invocations {
 		if len(inv) > 1 && inv[0] == "gt" {
 			verbs = append(verbs, inv[1])
 		}
@@ -4848,8 +4863,13 @@ func TestShipGTResumeAfterRestackConflict(t *testing.T) {
 			t.Errorf("resume ran gt %s, but --no-commit cuts no commit: %v", cut, verbs)
 		}
 	}
-	if !slices.Contains(verbs, "submit") {
-		t.Errorf("resume ran no gt submit: %v", verbs)
+	if refs := gtPushedRefs(invocations); !slices.Equal(refs, []string{"base", "feature"}) {
+		t.Errorf("resume pushed %v, want the whole downstack base, feature", refs)
+	}
+	for _, branch := range []string{"base", "feature"} {
+		if !gitBranchExists(t, f.RemoteDir, branch) {
+			t.Errorf("origin lacks %s — the resume submit never pushed it", branch)
+		}
 	}
 	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "feature"); subject != "fix: frobnicate" {
 		t.Errorf("feature tip = %q, want the commit the first ship landed", subject)
@@ -5082,99 +5102,159 @@ func TestShipGTExitZeroErrorRefuses(t *testing.T) {
 	}
 }
 
-// TestShipGTClassifySubmit drives every wording gt is known to refuse a submit
-// with, on each stream and at each exit code it is known to use. The exit-0 rows
-// are the live repro this classification exists for: gt prints an ERROR: naming
-// a submit it did not make and exits 0, which ccx once reported as a success.
+// TestClassifyGTSubmit drives every wording gt is known to refuse a submit
+// with through the classifier stack submit runs, so a reworded gt fails here.
 func submitAdvice(problem string) string {
 	return gtStuckAfterCommit(problem, gtResumeCmd(shipOpts{}))
 }
 
-func TestShipGTClassifySubmit(t *testing.T) {
+func TestClassifyGTSubmit(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
-		name    string
-		stderr  string
-		stdout  string
-		exit    string
-		wantErr string
+		name   string
+		output string
+		want   string
 	}{
-		{name: "restack needed (primary wording)", stderr: gtRestackNeeded1, wantErr: submitAdvice("stack drifted since preflight — run gt restack")},
-		{name: "restack needed (conflict wording)", stderr: gtRestackNeeded2 + "feature", wantErr: submitAdvice("stack drifted since preflight — run gt restack")},
-		{name: "trunk stale", stderr: gtTrunkStale, wantErr: submitAdvice("trunk is out of sync — run gt sync (or ccx vcs stack restack)")},
-		{name: "remote changed (updated wording)", stderr: gtRemoteChanged1, wantErr: submitAdvice("remote branch changed since last submit — reconcile manually (gt sync)")},
-		{name: "remote changed (lease wording)", stderr: gtRemoteChanged2, wantErr: submitAdvice("remote branch changed since last submit — reconcile manually (gt sync)")},
-		{name: "auth required (please wording)", stderr: gtAuthRequired1, wantErr: submitAdvice("graphite auth required — run gt auth")},
-		{name: "auth required (invalid wording)", stderr: gtAuthRequired2, wantErr: submitAdvice("graphite auth required — run gt auth")},
-		{
-			name: "the same wording on stdout classifies the same way", stdout: gtTrunkStale, exit: "1",
-			wantErr: submitAdvice("trunk is out of sync — run gt sync (or ccx vcs stack restack)"),
-		},
-		{
-			name:   "an exit-0 submit reporting an ERROR: is a failure, not a success",
-			stderr: gtErrorPrefix + "Could not submit feature: your Graphite token lacks write access.", exit: "0",
-			wantErr: "ship: gt submit: exit 0 but reported an error: " + gtErrorPrefix +
-				"Could not submit feature: your Graphite token lacks write access.",
-		},
-		{
-			name:   "an exit-0 ERROR: on stdout is classified, not just surfaced",
-			stdout: gtErrorPrefix + gtAuthRequired1, exit: "0",
-			wantErr: submitAdvice("graphite auth required — run gt auth"),
-		},
-		{
-			name: "a WARNING: at exit 0 is not a failure", stderr: gtWarningPrefix + "This command has been renamed.",
-			exit: "0",
-		},
+		{"restack needed (primary wording)", gtRestackNeeded1, "ship: stack drifted since preflight — run gt restack"},
+		{"restack needed (conflict wording)", gtRestackNeeded2 + "feature", "ship: stack drifted since preflight — run gt restack"},
+		{"trunk stale", gtTrunkStale, "ship: trunk is out of sync — run gt sync (or ccx vcs stack restack)"},
+		{"remote changed (updated wording)", gtRemoteChanged1, "ship: remote branch changed since last submit — reconcile manually (gt sync)"},
+		{"remote changed (lease wording)", gtRemoteChanged2, "ship: remote branch changed since last submit — reconcile manually (gt sync)"},
+		{"auth required (please wording)", gtAuthRequired1, "ship: graphite auth required — run gt auth"},
+		{"auth required (invalid wording)", gtAuthRequired2, "ship: graphite auth required — run gt auth"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			log := setupShipGT(t, false)
-			t.Setenv("GT_SUBMIT_FAIL_STDERR", tt.stderr)
-			t.Setenv("GT_SUBMIT_STDOUT", tt.stdout)
-			t.Setenv("GT_SUBMIT_EXIT", tt.exit)
-			_, errOut, err := runShipCmdFull(t, "-m", "fix: frobnicate")
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("ship error = %v, want a warning to leave the submit alone", err)
-				}
-				if !strings.Contains(errOut, tt.stderr) {
-					t.Errorf("stderr = %q, want it to carry gt's warning %q", errOut, tt.stderr)
-				}
-				return
+			t.Parallel()
+			cause := errors.New("gt submit: exit 1")
+			got := classifyGTSubmit(gtResult{Output: tt.output, Code: 1}, cause)
+			if got.Error() != tt.want {
+				t.Errorf("classifyGTSubmit() = %q, want %q", got.Error(), tt.want)
 			}
-			if err == nil {
-				t.Fatal("expected submit failure, got nil")
-			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Errorf("error = %q, want it to contain %q", err.Error(), tt.wantErr)
-			}
-			submits := 0
-			for _, inv := range readInvocations(t, log) {
-				if inv[0] == "gt" && inv[1] == "submit" {
-					submits++
-				}
-			}
-			if submits != 1 {
-				t.Errorf("submit ran %d times, want exactly 1 (gt owns restacking, ship never retries)", submits)
+			if !errors.Is(got, cause) {
+				t.Error("classified error lost gt's own failure")
 			}
 		})
 	}
 
-	t.Run("unknown stderr wraps verbatim", func(t *testing.T) {
-		setupShipGT(t, false)
-		t.Setenv("GT_SUBMIT_FAIL_STDERR", "some other gt error")
-		_, err := runShipCmd(t, "-m", "fix: frobnicate")
-		if err == nil {
-			t.Fatal("expected submit failure, got nil")
+	t.Run("unknown wording wraps verbatim", func(t *testing.T) {
+		t.Parallel()
+		cause := errors.New("some other gt error")
+		got := classifyGTSubmit(gtResult{Output: "some other gt error", Code: 1}, cause)
+		if got.Error() != "ship: some other gt error" {
+			t.Errorf("classifyGTSubmit() = %q, want gt's failure wrapped verbatim", got.Error())
 		}
-		if !strings.Contains(err.Error(), "ship: gt submit:") || !strings.Contains(err.Error(), "some other gt error") {
-			t.Errorf("error = %q, want it to wrap ship: gt submit: and the raw stderr", err.Error())
+	})
+}
+
+// TestShipGTSubmitFailures drives every refusal the API submit path can meet:
+// the typed gtapi errors, the stale push lease, and the per-branch refusal
+// whose report must name both the branches that landed and the ones that did
+// not.
+func TestShipGTSubmitFailures(t *testing.T) {
+	t.Run("unauthorized becomes the auth advice", func(t *testing.T) {
+		setupShipGT(t, false)
+		api := stubGTAPI(t)
+		api.unauthorized = true
+
+		_, err := runShipCmd(t, "-m", "fix: frobnicate")
+		want := submitAdvice("graphite auth required — run gt auth")
+		if err == nil || err.Error() != want {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
+		if !errors.Is(err, gtapi.ErrUnauthorized) {
+			t.Error("errors.Is did not reach gtapi.ErrUnauthorized behind the advice")
+		}
+	})
+
+	t.Run("an unsynced repo refuses before any push", func(t *testing.T) {
+		log := setupShipGT(t, false)
+		api := stubGTAPI(t)
+		api.synced = gtapi.RepoNotSyncedAddable
+
+		_, err := runShipCmd(t, "-m", "fix: frobnicate")
+		want := submitAdvice("graphite does not sync yasyf/cc-context (NOT_SYNCED_ADDABLE) — add the repo at app.graphite.dev, or pass --no-gt")
+		if err == nil || err.Error() != want {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
+		if refs := gtPushedRefs(readInvocations(t, log)); refs != nil {
+			t.Errorf("pushed %v before the sync refusal", refs)
+		}
+	})
+
+	t.Run("a pre-submit refusal wraps verbatim", func(t *testing.T) {
+		log := setupShipGT(t, false)
+		api := stubGTAPI(t)
+		api.presubmitError = "repo not initialized"
+
+		_, err := runShipCmd(t, "-m", "fix: frobnicate")
+		if err == nil || !strings.Contains(err.Error(), "ship: gtapi: pre-submit-pull-requests: repo not initialized") {
+			t.Fatalf("error = %v, want the pre-submit refusal wrapped verbatim", err)
+		}
+		if refs := gtPushedRefs(readInvocations(t, log)); refs != nil {
+			t.Errorf("pushed %v before the pre-submit refusal", refs)
+		}
+	})
+
+	t.Run("a stale lease is the remote-changed advice", func(t *testing.T) {
+		log := setupShipGT(t, false)
+		stubGTAPI(t)
+		lease := "cafecafecafecafecafecafecafecafecafecafe"
+		recorded := gtmeta.Version{HeadSha: lease, BaseSha: "deadbeef", BaseName: "main"}
+		if err := gtmeta.RecordSubmitted(t.Context(), os.Getenv("GT_META_DIR"), "feature", recorded); err != nil {
+			t.Fatalf("seed last_submitted_version: %v", err)
+		}
+		t.Setenv("GIT_LEASE_STALE", "1")
+
+		_, err := runShipCmd(t, "-m", "fix: frobnicate")
+		want := submitAdvice("remote feature changed since last submit — reconcile manually (gt sync)")
+		if err == nil || err.Error() != want {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
+		var push []string
+		for _, inv := range readInvocations(t, log) {
+			if len(inv) > 1 && inv[0] == "git" && inv[1] == "push" {
+				push = inv
+			}
+		}
+		if want := gtPushInvLease("feature", vcstest.GraphiteLeafSHA, lease); !reflect.DeepEqual(push, want) {
+			t.Errorf("push argv = %v, want the recorded lease pinned: %v", push, want)
+		}
+	})
+
+	t.Run("a per-branch refusal names both sides", func(t *testing.T) {
+		setupShipGT(t, false)
+		api := stubGTAPI(t)
+		t.Setenv("GIT_BRANCH", "feature2")
+		setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
+			`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
+		api.submitErrors["feature2"] = "base branch not found"
+
+		_, err := runShipCmd(t, "-m", "fix: frobnicate")
+		want := submitAdvice("graphite refused feature2 (base branch not found); landed feature → PR #100")
+		if err == nil || err.Error() != want {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
+		// Both branches pushed before the refusal, so both leases track the
+		// remote heads this run moved.
+		last, lerr := gtmeta.LastSubmitted(t.Context(), os.Getenv("GT_META_DIR"))
+		if lerr != nil {
+			t.Fatalf("LastSubmitted: %v", lerr)
+		}
+		want1 := gtmeta.Version{HeadSha: "beadfeed", BaseSha: "deadbeef", BaseName: "main"}
+		if last["feature"] != want1 {
+			t.Errorf("feature last_submitted_version = %+v, want %+v", last["feature"], want1)
+		}
+		want2 := gtmeta.Version{HeadSha: vcstest.GraphiteLeafSHA, BaseSha: "beadfeed", BaseName: "feature"}
+		if last["feature2"] != want2 {
+			t.Errorf("feature2 last_submitted_version = %+v, want %+v", last["feature2"], want2)
 		}
 	})
 }
 
 // TestShipGTSubmitCarriesTheHookDecision pins the skip to the push half of the
-// lane: gt submit shells out to git push, so a submit that did not carry it
-// would run the pre-push hooks the commit was told to skip.
+// lane: a push that did not carry it would run the pre-push hooks the commit
+// was told to skip.
 func TestShipGTSubmitCarriesTheHookDecision(t *testing.T) {
 	tests := []struct {
 		name string
@@ -5190,14 +5270,17 @@ func TestShipGTSubmitCarriesTheHookDecision(t *testing.T) {
 			if _, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate"}, tt.args...)...); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			var submit []string
+			var push []string
 			for _, inv := range readInvocations(t, log) {
-				if inv[0] == "gt" && inv[1] == "submit" {
-					submit = inv
+				if len(inv) > 1 && inv[0] == "git" && inv[1] == "push" {
+					push = inv
 				}
 			}
-			if got := slices.Contains(submit, "--no-verify"); got != tt.want {
-				t.Errorf("submit argv = %v, want --no-verify present = %v", submit, tt.want)
+			if push == nil {
+				t.Fatal("ship made no push")
+			}
+			if got := slices.Contains(push, "--no-verify"); got != tt.want {
+				t.Errorf("push argv = %v, want --no-verify present = %v", push, tt.want)
 			}
 		})
 	}
@@ -5205,30 +5288,25 @@ func TestShipGTSubmitCarriesTheHookDecision(t *testing.T) {
 
 func TestShipGTDraftPublish(t *testing.T) {
 	tests := []struct {
-		name string
-		args []string
-		want string
+		name  string
+		args  []string
+		draft bool
 	}{
-		{"draft", []string{"--draft"}, "--draft"},
-		{"default publishes", nil, "--publish"},
-		{"explicit publish", []string{"--publish"}, "--publish"},
+		{"draft", []string{"--draft"}, true},
+		{"default publishes", nil, false},
+		{"explicit publish", []string{"--publish"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			log := setupShipGT(t, false)
+			setupShipGT(t, false)
+			api := stubGTAPI(t)
 			args := append([]string{"-m", "fix: frobnicate"}, tt.args...)
 			if _, err := runShipCmd(t, args...); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			var submit []string
-			for _, inv := range readInvocations(t, log) {
-				if inv[0] == "gt" && inv[1] == "submit" {
-					submit = inv
-				}
-			}
-			want := []string{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--no-verify", tt.want}
-			if !reflect.DeepEqual(submit, want) {
-				t.Errorf("submit argv = %v, want %v", submit, want)
+			pr := api.lastSubmit()["feature"]
+			if got, ok := pr["draft"].(bool); !ok || got != tt.draft {
+				t.Errorf("submitted draft = %v, want %v — draft must be explicit either way, since omitting it leaves an existing draft PR a draft", pr["draft"], tt.draft)
 			}
 		})
 	}
@@ -5291,20 +5369,17 @@ func TestShipGTNoPush(t *testing.T) {
 	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	sawState, sawSubmit := false, false
+	sawState := false
 	for _, inv := range invocations {
 		if reflect.DeepEqual(inv, gtCommonDirArgv) {
 			sawState = true
-		}
-		if inv[0] == "gt" && inv[1] == "submit" {
-			sawSubmit = true
 		}
 	}
 	if !sawState {
 		t.Error("the graphite state read never ran — preflight must run even under --no-push")
 	}
-	if sawSubmit {
-		t.Error("gt submit ran despite --no-push")
+	if refs := gtPushedRefs(invocations); refs != nil {
+		t.Errorf("pushed %v despite --no-push", refs)
 	}
 	if gitBranchExists(t, f.RemoteDir, "feature") {
 		t.Error("origin carries feature — the commit was pushed despite --no-push")
@@ -5565,9 +5640,10 @@ func TestGitTrunkBranchLive(t *testing.T) {
 	}
 }
 
-// TestShipGTStackNamedBeforeSubmit pins what replaced the --dry-run pre-pass: the
-// branches a submit will force-push are named from the downstack ship already
-// resolved, and exactly one gt submit runs at any depth.
+// TestShipGTStackNamedBeforeSubmit pins the announcement: the branches a
+// submit will force-push are named from the downstack ship already resolved,
+// and the whole downstack goes to Graphite in exactly one submit call at any
+// depth.
 func TestShipGTStackNamedBeforeSubmit(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
@@ -5589,7 +5665,8 @@ func TestShipGTStackNamedBeforeSubmit(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			log := setupShipGT(t, true)
+			setupShipGT(t, true)
+			api := stubGTAPI(t)
 			t.Setenv("GIT_BRANCH", tt.branch)
 			setGTState(t, tt.stateJSON)
 			t.Setenv("GH_PR_VIEW_JSON", `{"number":7,"url":"https://github.com/x/pull/7","body":"why"}`)
@@ -5605,14 +5682,8 @@ func TestShipGTStackNamedBeforeSubmit(t *testing.T) {
 			} else if !strings.Contains(errStr, tt.wantLine) {
 				t.Errorf("stderr = %q, want it to carry %q", errStr, tt.wantLine)
 			}
-			submits := 0
-			for _, inv := range readInvocations(t, log) {
-				if len(inv) > 1 && inv[0] == "gt" && inv[1] == "submit" {
-					submits++
-				}
-			}
-			if submits != 1 {
-				t.Errorf("gt submit ran %d times, want exactly 1", submits)
+			if got := api.submitCalls(); got != 1 {
+				t.Errorf("the submit posted %d times, want exactly 1", got)
 			}
 		})
 	}

@@ -60,7 +60,7 @@ func (m prMeta) stated() []string {
 
 // shipPRRequested reports whether this invocation asked ship to touch a pull
 // request at all, so a ship that did not ask makes no gh pr call. A bare
-// --draft/--publish only counts outside the graphite lane: gt submit already
+// --draft/--publish only counts outside the graphite lane: the graphite submit already
 // owns the draft state of every PR it opens.
 func shipPRRequested(cmd *cobra.Command, l lane, o shipOpts) bool {
 	switch {
@@ -358,12 +358,10 @@ func prEditArgv(nwo string, number int, m prMeta) []string {
 	return argv
 }
 
-// shipPRGT backfills the pull requests gt submit just opened, over the downstack
-// the push step already resolved. The submit runs with --no-edit, so every PR it
-// creates arrives bodyless, and restating the branches this invocation named is
-// the only way a downstack PR gets a body at all. A branch the caller did not
-// name has nothing to write, so it is left alone whether or not it already has
-// one.
+// shipPRGT backfills the pull requests the submit just opened, over the
+// downstack the push step already resolved, restating exactly the branches
+// this invocation named. A branch the caller did not name has nothing to
+// write, so it is left alone whether or not it already has a body.
 func shipPRGT(ctx context.Context, nwo string, meta map[string]prMeta, stack []stackEntry) (string, error) {
 	segs := make([]string, 0, len(stack))
 	for i := len(stack) - 1; i >= 0; i-- {

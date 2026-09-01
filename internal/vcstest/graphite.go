@@ -37,9 +37,9 @@ const (
 	graphiteValidationValid = "VALID"
 )
 
-// graphiteLeafSHA stands at the head of a branch no other branch names as its
+// GraphiteLeafSHA stands at the head of a branch no other branch names as its
 // parent, where no revision has to agree with anything.
-const graphiteLeafSHA = "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+const GraphiteLeafSHA = "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
 
 type graphiteBranch struct {
 	Trunk   bool          `json:"trunk"`
@@ -74,7 +74,7 @@ func WriteGraphiteMeta(t *testing.T, commonDir, stateJSON string) {
 		if branch.Trunk {
 			trunk = name
 		}
-		heads[name] = graphiteLeafSHA
+		heads[name] = GraphiteLeafSHA
 	}
 	if trunk == "" {
 		t.Fatalf("gt state %q names no trunk branch", stateJSON)

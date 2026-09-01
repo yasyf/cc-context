@@ -68,8 +68,8 @@ const (
 	// restacks, and the sentences ccx matches are the restacker's — see the
 	// scenario READMEs.
 	gtFamilyRestack
-	// gtFamilySubmit is shipPushGT's gt submit, classified by classifyGTSubmit
-	// under gtZeroFatal.
+	// gtFamilySubmit is runStackSubmit's gt submit, classified by
+	// classifyGTSubmit under gtZeroFatal.
 	gtFamilySubmit
 )
 
@@ -529,17 +529,6 @@ func TestGTGoldenSeverityStaysOnStderr(t *testing.T) {
 	}
 	if onStderr == 0 {
 		t.Error("no recorded scenario carries a severity-led line on stderr, so nothing pins the split")
-	}
-}
-
-// TestGTGoldenSubmitArgvIsShipsOwn pins the submit golden to the argv ship
-// actually builds, so the recorded refusal is the answer to ccx's own call
-// rather than to a command nobody makes.
-func TestGTGoldenSubmitArgvIsShipsOwn(t *testing.T) {
-	t.Parallel()
-	g := loadGTGolden(t, "submit-unauth")
-	if got := gtSubmitArgv(shipOpts{}); !slices.Equal(got, g.argv) {
-		t.Errorf("gtSubmitArgv() = %q, want the recorded %q", got, g.argv)
 	}
 }
 

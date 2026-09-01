@@ -401,7 +401,8 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		gtCommonDirArgv,
 		gtRefsArgv(),
-		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--no-verify", "--publish"},
+		gtCreateLogInv("main", "feature"),
+		gtPushInv("feature", vcstest.GraphiteLeafSHA),
 		ghDownstackPRArgv("feature"),
 		{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "Better title", "--body-file", body},
 	})
@@ -438,7 +439,8 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		gtCommonDirArgv,
 		gtRefsArgv(),
-		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--no-verify", "--publish"},
+		gtCreateLogInv("main", "feature"),
+		gtPushInv("feature", vcstest.GraphiteLeafSHA),
 		ghDownstackPRArgv("feature"),
 		{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "fix: 🐛 frobnicate the widget", "--body-file", body},
 	})
