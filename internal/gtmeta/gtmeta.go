@@ -14,6 +14,8 @@ import (
 
 	"github.com/yasyf/cc-context/internal/render"
 
+	// modernc.org/sqlite registers the "sqlite" driver, and is the pure-Go one:
+	// a cgo driver would break ccx's cross-compiled release build.
 	_ "modernc.org/sqlite"
 )
 

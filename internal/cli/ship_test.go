@@ -3892,8 +3892,9 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 		assertInvocations(t, invocations, [][]string{
 			nogtProbe,
 			{"git", "branch", "--show-current"},
-			{"gt", "state"},
-			{"gt", "add", "--no-interactive", "-A"},
+			gtCommonDirArgv,
+			gtRealRefsArgv(t, f),
+			{"git", "add", "-A"},
 			{"git", "diff", "--cached", "--quiet"},
 			{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
 			{"git", "branch", "--show-current"},
@@ -3954,7 +3955,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			log := setupShipGT(t, true)
 			t.Setenv("GIT_BRANCH", tt.branch)
-			t.Setenv("GT_STATE_JSON", tt.stateJSON)
+			setGTState(t, tt.stateJSON)
 			t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
 			t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 			t.Setenv("GH_PR_VIEW_JSON", `{"number":7,"url":"https://github.com/x/pull/7","body":"why"}`)
@@ -3972,13 +3973,15 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			assertInvocations(t, readInvocations(t, log), [][]string{
 				nogtProbe,
 				{"git", "branch", "--show-current"},
-				{"gt", "state"},
-				{"gt", "add", "--no-interactive", "-A"},
+				gtCommonDirArgv,
+				gtRefsArgv(),
+				{"git", "add", "-A"},
 				{"git", "diff", "--cached", "--quiet"},
 				{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
-				{"gt", "state"},
+				gtCommonDirArgv,
+				gtRefsArgv(),
 				{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--no-verify", "--publish"},
 				ghDownstackPRArgv(tt.prBranches...),
 				{"git", "rev-parse", "HEAD"},
@@ -3994,9 +3997,8 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 func TestShipGTTrunkStacksBranch(t *testing.T) {
 	log := setupShipGT(t, true)
 	t.Setenv("GIT_BRANCH", "main")
-	t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true}}`)
-	t.Setenv("GT_STATE_JSON_2", `{"main":{"trunk":true},"fix-frobnicate":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
-	t.Setenv("GT_STATE_JSON_MARKER", filepath.Join(t.TempDir(), "gt-state"))
+	setGTState(t, `{"main":{"trunk":true}}`)
+	created := setGTStateAfterCreate(t, `{"main":{"trunk":true},"fix-frobnicate":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
 	t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 	t.Setenv("GH_PR_VIEW_JSON", `{"number":9,"url":"https://github.com/x/pull/9","body":"why"}`)
@@ -4013,13 +4015,15 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 	assertInvocations(t, readInvocations(t, log), [][]string{
 		nogtProbe,
 		{"git", "branch", "--show-current"},
-		{"gt", "state"},
-		{"gt", "add", "--no-interactive", "-A"},
+		gtCommonDirArgv,
+		gtRefsArgv(),
+		{"git", "add", "-A"},
 		{"git", "diff", "--cached", "--quiet"},
 		{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
-		{"gt", "state"},
+		gtCommonDirArgv,
+		gtRefsArgvIn(created),
 		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--no-verify", "--publish"},
 		ghDownstackPRArgv("fix-frobnicate"),
 		{"git", "rev-parse", "HEAD"},
@@ -4076,7 +4080,7 @@ func TestShipGTBodylessPR(t *testing.T) {
 	t.Run("a bodyless downstack under a bodied tip is named too", func(t *testing.T) {
 		setupShipGT(t, true)
 		t.Setenv("GIT_BRANCH", "feature2")
-		t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
+		setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 			`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
 		seedPRViews(t, map[string]string{
 			"feature":  `{"number":6,"url":"https://github.com/x/pull/6","body":""}`,
@@ -4309,11 +4313,11 @@ func TestShipCreateSwallowsPathOperand(t *testing.T) {
 		}
 		var add []string
 		for _, inv := range shipGTInvocations(t, f) {
-			if inv[0] == "gt" && inv[1] == "add" {
+			if inv[0] == "git" && inv[1] == "add" {
 				add = inv
 			}
 		}
-		if want := []string{"gt", "add", "--no-interactive", "-A", "--", "docs"}; !reflect.DeepEqual(add, want) {
+		if want := []string{"git", "add", "-A", "--", "docs"}; !reflect.DeepEqual(add, want) {
 			t.Errorf("add argv = %v, want %v", add, want)
 		}
 		if names := gitAt(t, f.Dir, "show", "--name-only", "--format=", "HEAD"); names != "docs/d.md" {
@@ -4590,11 +4594,13 @@ func TestShipGTPathScoped(t *testing.T) {
 	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "src/a.go", "docs"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	assertInvocations(t, shipGTInvocations(t, f), [][]string{
+	invocations := shipGTInvocations(t, f)
+	assertInvocations(t, invocations, [][]string{
 		nogtProbe,
 		{"git", "branch", "--show-current"},
-		{"gt", "state"},
-		{"gt", "add", "--no-interactive", "-A", "--", "src/a.go", "docs"},
+		gtCommonDirArgv,
+		gtRealRefsArgv(t, f),
+		{"git", "add", "-A", "--", "src/a.go", "docs"},
 		{"git", "diff", "--cached", "--quiet"},
 		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
 		{"git", "branch", "--show-current"},
@@ -4638,7 +4644,8 @@ func TestShipGTHunkScoped(t *testing.T) {
 		{"git", "ls-tree", "--full-tree", "-z", "--end-of-options", "HEAD", "--", "f.txt"},
 		{"git", "show", "--end-of-options", "HEAD:f.txt"},
 		{"git", "branch", "--show-current"},
-		{"gt", "state"},
+		gtCommonDirArgv,
+		gtRealRefsArgv(t, f),
 		{"git", "read-tree", "HEAD"},
 		{"git", "ls-tree", "--full-tree", "-z", "--end-of-options", "HEAD", "--", "f.txt"},
 		{"git", "show", "--end-of-options", "HEAD:f.txt"},
@@ -4941,10 +4948,12 @@ func TestShipGTRefusals(t *testing.T) {
 		assertInvocations(t, invocations, [][]string{
 			nogtProbe,
 			{"git", "branch", "--show-current"},
-			{"gt", "state"},
+			gtCommonDirArgv,
+			gtRealRefsArgv(t, f),
 			{"gt", "track", "feature", "-f", "--no-interactive"},
-			{"gt", "state"},
-			{"gt", "add", "--no-interactive", "-A"},
+			gtCommonDirArgv,
+			gtRealRefsArgv(t, f),
+			{"git", "add", "-A"},
 			{"git", "diff", "--cached", "--quiet"},
 			{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
 			{"git", "branch", "--show-current"},
@@ -4969,10 +4978,12 @@ func TestShipGTRefusals(t *testing.T) {
 		if err.Error() != wantErr {
 			t.Errorf("error = %q, want %q", err.Error(), wantErr)
 		}
-		assertInvocations(t, shipGTInvocations(t, f), [][]string{
+		invocations := shipGTInvocations(t, f)
+		assertInvocations(t, invocations, [][]string{
 			nogtProbe,
 			{"git", "branch", "--show-current"},
-			{"gt", "state"},
+			gtCommonDirArgv,
+			gtRealRefsArgv(t, f),
 			{"gt", "track", "feature", "--parent", "nope", "--no-interactive"},
 		})
 		assertShipRefusedClean(t, f, head)
@@ -5010,7 +5021,7 @@ func TestShipGTRefusals(t *testing.T) {
 	// no second oracle for a parent gt never wrote — so the ERROR: is the verdict.
 	t.Run("a track that reports an error at exit 0 still refuses", func(t *testing.T) {
 		log := setupShipGT(t, false)
-		t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true}}`)
+		setGTState(t, `{"main":{"trunk":true}}`)
 		line := gtErrorPrefix + "Cannot track feature: it has no commits of its own."
 		t.Setenv("GT_TRACK_STDERR", line)
 
@@ -5034,7 +5045,8 @@ func TestShipGTRefusals(t *testing.T) {
 		assertInvocations(t, readInvocations(t, log), [][]string{
 			nogtProbe,
 			{"git", "branch", "--show-current"},
-			{"gt", "state"},
+			gtCommonDirArgv,
+			gtRefsArgv(),
 			{"gt", "track", "feature", "-f", "--no-interactive"},
 		})
 	})
@@ -5051,8 +5063,6 @@ func TestShipGTExitZeroErrorRefuses(t *testing.T) {
 		env        string
 		wantPrefix string
 	}{
-		{name: "gt state", env: "GT_STATE_STDERR", wantPrefix: "ship: gt state: exit 0 but reported an error:"},
-		{name: "gt add", env: "GT_ADD_STDERR", wantPrefix: "ship: gt add: exit 0 but reported an error:"},
 		{name: "gt modify", env: "GT_MODIFY_STDERR", wantPrefix: "ship: gt modify: exit 0 but reported an error:"},
 	}
 	for _, tt := range tests {
@@ -5283,7 +5293,7 @@ func TestShipGTNoPush(t *testing.T) {
 	}
 	sawState, sawSubmit := false, false
 	for _, inv := range invocations {
-		if inv[0] == "gt" && inv[1] == "state" {
+		if reflect.DeepEqual(inv, gtCommonDirArgv) {
 			sawState = true
 		}
 		if inv[0] == "gt" && inv[1] == "submit" {
@@ -5291,7 +5301,7 @@ func TestShipGTNoPush(t *testing.T) {
 		}
 	}
 	if !sawState {
-		t.Error("gt state never ran — preflight must run even under --no-push")
+		t.Error("the graphite state read never ran — preflight must run even under --no-push")
 	}
 	if sawSubmit {
 		t.Error("gt submit ran despite --no-push")
@@ -5434,7 +5444,7 @@ func TestShipReviewsWiring(t *testing.T) {
 		log := setupShipGT(t, true)
 		api := stubReviewsAPI(t)
 		t.Setenv("GIT_BRANCH", "feature2")
-		t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
+		setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 			`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
 		t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
 		t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
@@ -5581,7 +5591,7 @@ func TestShipGTStackNamedBeforeSubmit(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			log := setupShipGT(t, true)
 			t.Setenv("GIT_BRANCH", tt.branch)
-			t.Setenv("GT_STATE_JSON", tt.stateJSON)
+			setGTState(t, tt.stateJSON)
 			t.Setenv("GH_PR_VIEW_JSON", `{"number":7,"url":"https://github.com/x/pull/7","body":"why"}`)
 
 			_, errStr, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-watch")

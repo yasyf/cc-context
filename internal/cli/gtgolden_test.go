@@ -220,12 +220,11 @@ func assertGTGolden(t *testing.T, g gtGolden, want gtGoldenCase) {
 		t.Errorf("recorded stderr leads %d line(s) with a severity prefix, want %d", severity, want.diagnostics)
 	}
 	report := r.Diagnostics()
-	switch {
-	case want.diagnostics == 0:
+	if want.diagnostics == 0 {
 		if report != "" {
 			t.Errorf("Diagnostics() = %q, want %q", report, "")
 		}
-	default:
+	} else {
 		if !strings.HasSuffix(report, "\n") {
 			t.Errorf("Diagnostics() = %q, want a trailing newline", report)
 		}

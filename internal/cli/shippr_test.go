@@ -392,13 +392,15 @@ func TestShipPRGTBothFlags(t *testing.T) {
 	assertInvocations(t, readInvocations(t, log), [][]string{
 		nogtProbe,
 		{"git", "branch", "--show-current"},
-		{"gt", "state"},
-		{"gt", "add", "--no-interactive", "-A"},
+		gtCommonDirArgv,
+		gtRefsArgv(),
+		{"git", "add", "-A"},
 		{"git", "diff", "--cached", "--quiet"},
 		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
-		{"gt", "state"},
+		gtCommonDirArgv,
+		gtRefsArgv(),
 		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--no-verify", "--publish"},
 		ghDownstackPRArgv("feature"),
 		{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "Better title", "--body-file", body},
@@ -427,13 +429,15 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 	assertInvocations(t, readInvocations(t, log), [][]string{
 		nogtProbe,
 		{"git", "branch", "--show-current"},
-		{"gt", "state"},
-		{"gt", "add", "--no-interactive", "-A"},
+		gtCommonDirArgv,
+		gtRefsArgv(),
+		{"git", "add", "-A"},
 		{"git", "diff", "--cached", "--quiet"},
 		{"git", "rev-list", "--count", "main..HEAD"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
-		{"gt", "state"},
+		gtCommonDirArgv,
+		gtRefsArgv(),
 		{"gt", "submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--no-verify", "--publish"},
 		ghDownstackPRArgv("feature"),
 		{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "fix: 🐛 frobnicate the widget", "--body-file", body},
@@ -446,7 +450,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 func TestShipPRGTBackfill(t *testing.T) {
 	log := setupShipGT(t, true)
 	t.Setenv("GIT_BRANCH", "feature2")
-	t.Setenv("GT_STATE_JSON", `{"main":{"trunk":true},`+
+	setGTState(t, `{"main":{"trunk":true},`+
 		`"base":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 		`"feature":{"parents":[{"ref":"base","sha":"beadfeed"}]},`+
 		`"feature2":{"parents":[{"ref":"feature","sha":"feedface"}]}}`)
