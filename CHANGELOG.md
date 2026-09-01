@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A `--no-commit` ship that got stuck told you to re-run the command you just
+  ran.** Every graphite refusal after the commit stage — a conflicted restack, a
+  branch gt left off its parent, a submit Graphite turned down — closed with "the
+  commit already landed, so a plain re-run refuses as an empty commit" and a
+  `ccx vcs ship --no-commit …` resume line restating the invocation's own PR
+  flags. Under `--no-commit` that line is the command that just failed, and no
+  commit landed for it to submit, so the advice was a loop over a claim that was
+  not true. Those refusals now say nothing was committed and the working copy is
+  untouched, which makes the same invocation the way back in once the problem is
+  fixed. The resume line is unchanged for a run that did cut a commit, including
+  one that found the commit already in place.
+
 ## [0.52.0] - 2026-09-01
 
 ### Changed

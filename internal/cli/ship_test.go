@@ -4815,12 +4815,28 @@ func TestShipGTAutoRestackConflict(t *testing.T) {
 	shipGTConflicting(t, f)
 
 	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
-	want := gtStuckAfterCommit("gt restack hit a conflict — resolve the listed files, then gt continue (or gt abort, then gt restack)", "")
+	want := gtStuck("gt restack hit a conflict — resolve the listed files, then gt continue (or gt abort, then gt restack)", gtStuckSuffix(shipOpts{noPush: true}))
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
 	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "feature"); subject != "fix: frobnicate" {
 		t.Errorf("feature tip = %q, want the commit that ran before the restack", subject)
+	}
+}
+
+func TestShipGTNoCommitRestackConflict(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTConflicting(t, f)
+	mustRun(t, f.Dir, "git", "checkout", "--", "f.txt")
+	shipResetLog(t, f)
+
+	_, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr")
+	want := gtStuck("gt restack hit a conflict — resolve the listed files, then gt continue (or gt abort, then gt restack)", gtStuckSuffix(shipOpts{noCommit: true}))
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+	if strings.Contains(err.Error(), gtResumeCmd(shipOpts{})) {
+		t.Errorf("error = %v, want no resume line — it would restate the command that just ran", err)
 	}
 }
 
@@ -4879,12 +4895,17 @@ func TestShipGTResumeAfterRestackConflict(t *testing.T) {
 	}
 }
 
-func TestGTStuckAfterCommit(t *testing.T) {
+func TestGTStuck(t *testing.T) {
 	tests := []struct {
 		name string
 		o    shipOpts
 		want string
 	}{
+		{
+			name: "no-commit cut nothing, so the same command is the way back in",
+			o:    shipOpts{noCommit: true, prTitle: []string{"fix: 🐛 the widget"}},
+			want: "ship: stuck. Nothing was committed and the working copy is untouched, so re-run this same command once it is fixed.",
+		},
 		{
 			name: "no-push has nothing to resume",
 			o:    shipOpts{noPush: true},
@@ -4903,8 +4924,8 @@ func TestGTStuckAfterCommit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := gtStuckAfterCommit("stuck", gtResumeCmd(tt.o)); got != tt.want {
-				t.Errorf("gtStuckAfterCommit() = %q, want %q", got, tt.want)
+			if got := gtStuck("stuck", gtStuckSuffix(tt.o)); got != tt.want {
+				t.Errorf("gtStuck() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -5105,7 +5126,7 @@ func TestShipGTExitZeroErrorRefuses(t *testing.T) {
 // TestClassifyGTSubmit drives every wording gt is known to refuse a submit
 // with through the classifier stack submit runs, so a reworded gt fails here.
 func submitAdvice(problem string) string {
-	return gtStuckAfterCommit(problem, gtResumeCmd(shipOpts{}))
+	return gtStuck(problem, gtStuckSuffix(shipOpts{}))
 }
 
 func TestClassifyGTSubmit(t *testing.T) {
