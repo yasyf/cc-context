@@ -4850,6 +4850,38 @@ func TestShipGTRestacksAStackSpreadAcrossWorkingCopies(t *testing.T) {
 	}
 }
 
+// TestShipGTRestackAppliesPrintedRefUpdates pins the restack against the git
+// versions that only print their ref updates. git replay moves refs itself in
+// an atomic transaction from 2.55 and writes nothing to stdout; 2.44 through
+// 2.54 instead print `update refs/heads/… <new> <old>` lines for git update-ref
+// --stdin, which is why the driver feeds back whatever it printed.
+//
+// replay.refAction=print selects that older behaviour on a new git, and is the
+// only way the path is covered at all: this machine and both CI runners are on
+// 2.55, so without it the branch that handles every git before 2.55 never runs.
+func TestShipGTRestackAppliesPrintedRefUpdates(t *testing.T) {
+	f := shipGTRepo(t)
+	held := shipGTHeldParent(t, f)
+	mustRun(t, f.Dir, "git", "config", "replay.refAction", "print")
+	shipResetLog(t, f)
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · restacked 2 branches across 2 working copies · not pushed"; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	for _, pair := range [][2]string{{"base", "main"}, {"feature", "base"}} {
+		if behind := gitAt(t, f.Dir, "rev-list", "--count", pair[0]+".."+pair[1]); behind != "0" {
+			t.Errorf("%s sits off %s by %s commit(s) — the printed ref updates were not applied", pair[0], pair[1], behind)
+		}
+	}
+	if head, want := gitAt(t, held, "rev-parse", "HEAD"), gitAt(t, f.Dir, "rev-parse", "base"); head != want {
+		t.Errorf("held HEAD = %s, want the restacked base %s", head, want)
+	}
+}
+
 // TestShipGTRestackLeavesARestackedBranchAlone pins that a restack rewrites only
 // what sits off its parent. A branch moved needlessly is a branch whose shas no
 // longer match the pull request they were pushed as, and the force-push that
