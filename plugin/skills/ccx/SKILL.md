@@ -261,10 +261,13 @@ makes no `gh pr` call. `-m` is optional when an unscoped `--pr-title` is given: 
 title becomes the commit subject and an unscoped `--pr-body-file` its body, with the
 `<details>` wrapper dropped and each `## Heading` folded into a `Heading:` paragraph.
 On the gt lane an unrestacked downstack is recovered rather than refused — ship
-commits, then runs `gt restack`, because a rebase cannot run over the dirty working
-copy the ship started from — leaving only a conflict manual, and the refusal names
-the `gt continue` and `ccx vcs ship --no-commit` steps back, since the commit has
-landed by then. `--yolo` is the one switch for "skip the checks": it implies
+commits, then rebases every branch of the chain sitting off its parent with `git
+replay`, which moves the refs without checking a branch out, so a branch a
+sibling working copy holds is not a special case; each holder is then reset onto
+its new head, its uncommitted work snapshotted beforehand and applied after,
+and a branch `gt freeze` is holding is left where it is. Only a
+conflict stays manual, and the refusal names the `gt restack --only --branch <b>`
+and `ccx vcs ship --no-commit` steps back, since the commit has landed by then. `--yolo` is the one switch for "skip the checks": it implies
 `--no-verify` and drops every guard ship adds of its own, of which there are none
 today; it never drops a refusal git or gt would make anyway.
 

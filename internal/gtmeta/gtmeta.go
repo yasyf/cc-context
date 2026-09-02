@@ -7,9 +7,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/render"
@@ -35,11 +37,15 @@ type Ref struct {
 }
 
 // BranchState is one branch's tracked state. Head is the branch's own ref, so
-// a caller submitting the stack need not re-ask git per branch.
+// a caller submitting the stack need not re-ask git per branch. State is the
+// hold gt has put the branch under — "frozen" for gt freeze, "merging" for a
+// branch mid-merge — and empty for a branch under no hold at all, which is
+// every branch most of the time.
 type BranchState struct {
 	Trunk        bool
 	NeedsRestack bool
 	Head         string
+	State        string
 	Parents      []Ref
 }
 
@@ -84,6 +90,7 @@ func Read(ctx context.Context, commonDir string) (State, error) {
 		state[row.branch] = BranchState{
 			NeedsRestack: row.parentRevision != parentHead,
 			Head:         head,
+			State:        row.state,
 			Parents:      []Ref{{Ref: row.parent, SHA: row.parentRevision}},
 		}
 	}
@@ -95,6 +102,7 @@ type branchRow struct {
 	parent         string
 	parentRevision string
 	validation     string
+	state          string
 }
 
 // readRows opens the database read-only so a concurrent gt is never blocked,
@@ -110,7 +118,8 @@ func readRows(ctx context.Context, path string) ([]branchRow, error) {
 		SELECT branch_name,
 		       COALESCE(parent_branch_name, ''),
 		       COALESCE(parent_branch_revision, ''),
-		       COALESCE(validation_result, '')
+		       COALESCE(validation_result, ''),
+		       COALESCE(state, '')
 		FROM branch_metadata`)
 	if err != nil {
 		return nil, fmt.Errorf("gtmeta: query %q: %w", path, err)
@@ -120,7 +129,7 @@ func readRows(ctx context.Context, path string) ([]branchRow, error) {
 	var rows []branchRow
 	for cursor.Next() {
 		var row branchRow
-		if err := cursor.Scan(&row.branch, &row.parent, &row.parentRevision, &row.validation); err != nil {
+		if err := cursor.Scan(&row.branch, &row.parent, &row.parentRevision, &row.validation, &row.state); err != nil {
 			return nil, fmt.Errorf("gtmeta: scan %q: %w", path, err)
 		}
 		rows = append(rows, row)
@@ -310,6 +319,47 @@ func RecordSubmitted(ctx context.Context, commonDir, branch string, v Version) e
 	}
 	if affected != 1 {
 		return fmt.Errorf("gtmeta: %q has no branch_metadata row in %q", branch, path)
+	}
+	return nil
+}
+
+// RecordRestacked writes each branch's parent_branch_revision, the column gt
+// compares against its parent's live head to decide the branch needs a restack.
+// Nothing else about a restacked branch changes: its parent's name is the same,
+// and its row stays valid. A branch without a row is an error, since only a
+// tracked branch can have been restacked.
+func RecordRestacked(ctx context.Context, commonDir string, revisions map[string]string) error {
+	if len(revisions) == 0 {
+		return nil
+	}
+	path := filepath.Join(commonDir, metadataDB)
+	db, err := sql.Open("sqlite", writableDSN(path))
+	if err != nil {
+		return fmt.Errorf("gtmeta: open %q: %w", path, err)
+	}
+	defer func() { _ = db.Close() }()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("gtmeta: begin on %q: %w", path, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, branch := range slices.Sorted(maps.Keys(revisions)) {
+		result, err := tx.ExecContext(ctx, `UPDATE branch_metadata SET parent_branch_revision = ? WHERE branch_name = ?`, revisions[branch], branch)
+		if err != nil {
+			return fmt.Errorf("gtmeta: record %q in %q: %w", branch, path, err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("gtmeta: record %q in %q: %w", branch, path, err)
+		}
+		if affected != 1 {
+			return fmt.Errorf("gtmeta: %q has no branch_metadata row in %q", branch, path)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("gtmeta: commit to %q: %w", path, err)
 	}
 	return nil
 }

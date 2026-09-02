@@ -65,6 +65,51 @@ func TestReadTracksAGTStack(t *testing.T) {
 	})
 }
 
+// TestRecordRestackedClearsNeedsRestack pins the one column a restack writes.
+// NeedsRestack is derived, not stored — gt compares parent_branch_revision
+// against the parent's live head — so a rebase nobody records reads as never
+// having happened.
+func TestRecordRestackedClearsNeedsRestack(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.GT())
+	run(t, f.Dir, "git", "switch", "-qc", "feat")
+	write(t, filepath.Join(f.Dir, "feat.txt"), "feat\n")
+	run(t, f.Dir, "git", "add", "feat.txt")
+	run(t, f.Dir, "git", "commit", "-qm", "feat")
+	run(t, f.Dir, "gt", "track", "-f", "--no-interactive")
+	run(t, f.Dir, "git", "switch", "-q", "main")
+	write(t, filepath.Join(f.Dir, "moved.txt"), "moved\n")
+	run(t, f.Dir, "git", "add", "moved.txt")
+	run(t, f.Dir, "git", "commit", "-qm", "moved")
+	commonDir := filepath.Join(f.Dir, ".git")
+
+	if !read(t, commonDir)["feat"].NeedsRestack {
+		t.Fatal("feat does not need a restack after trunk moved under it")
+	}
+	if err := gtmeta.RecordRestacked(t.Context(), commonDir, map[string]string{"feat": head(t, f.Dir, "main")}); err != nil {
+		t.Fatalf("RecordRestacked: %v", err)
+	}
+	state := read(t, commonDir)
+	if state["feat"].NeedsRestack {
+		t.Error("feat still needs a restack after its parent revision was recorded")
+	}
+	if got, want := state["feat"].Parents, []gtmeta.Ref{{Ref: "main", SHA: head(t, f.Dir, "main")}}; len(got) != 1 || got[0] != want[0] {
+		t.Errorf("parents = %v, want %v — a restack changes the revision, never the parent", got, want)
+	}
+}
+
+// TestRecordRestackedRefusesAnUntrackedBranch pins that the write is an update,
+// never an insert: a branch with no row was never tracked, and inventing one
+// would hand gt a stack entry nothing else agrees with.
+func TestRecordRestackedRefusesAnUntrackedBranch(t *testing.T) {
+	dir := t.TempDir()
+	vcstest.WriteGraphiteMeta(t, dir, `{"main":{"trunk":true}}`)
+
+	err := gtmeta.RecordRestacked(t.Context(), dir, map[string]string{"ghost": "deadbeef"})
+	if err == nil || !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("RecordRestacked = %v, want a refusal naming ghost", err)
+	}
+}
+
 func TestLastSubmittedRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	vcstest.WriteGraphiteMeta(t, dir, `{"main":{"trunk":true},"feat":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)

@@ -130,21 +130,59 @@ func TestStackNewColocatesJJInTheLane(t *testing.T) {
 	}
 }
 
-// TestGtLanesDrivesBottomUp pins the order the whole sweep rests on. gtLanes
-// keeps the order it is given, so a caller handing it a branch-first chain
-// drives the lanes top-down: a parent restacked after its child leaves the
-// child off its parent again, and nothing revisits it.
-func TestGtLanesDrivesBottomUp(t *testing.T) {
-	holders := map[string]string{"low": "/lanes/low", "high": "/lanes/high"}
+// TestGtBottomUpOrdersTheRestack pins the order the whole restack rests on: a
+// parent rebased after its child leaves the child off its parent again, and
+// nothing revisits it.
+func TestGtBottomUpOrdersTheRestack(t *testing.T) {
 	bottomUp := []string{"low", "mid", "high"}
-
-	got := gtLanes(holders, "/root", bottomUp)
-	want := []string{"/lanes/low", "/lanes/high"}
-	if !slices.Equal(got, want) {
-		t.Errorf("gtLanes(%v) = %v, want %v — the lane holding the lower branch is driven first", bottomUp, got, want)
-	}
 	if reversed := gtBottomUp([]string{"high", "mid", "low"}); !slices.Equal(reversed, bottomUp) {
 		t.Errorf("gtBottomUp = %v, want %v", reversed, bottomUp)
+	}
+}
+
+// TestGtRestackPlanFollowsParentsNotOrder pins the plan against the shape a
+// whole-stack walk produces: a tree, where one subtree sitting off its parent
+// says nothing about a sibling in another. Reading the chain positionally —
+// everything after the first stale branch moves — rewrites branches that were
+// already restacked, and their pull requests with them.
+func TestGtRestackPlanFollowsParentsNotOrder(t *testing.T) {
+	state := gtState{
+		"main":  {Trunk: true, Head: "trunk"},
+		"base":  {Head: "base", Parents: []gtRef{{Ref: "main", SHA: "trunk"}}},
+		"stale": {Head: "stale", NeedsRestack: true, Parents: []gtRef{{Ref: "base", SHA: "old-base"}}},
+		"above": {Head: "above", Parents: []gtRef{{Ref: "stale", SHA: "stale"}}},
+		"clean": {Head: "clean", Parents: []gtRef{{Ref: "base", SHA: "base"}}},
+	}
+	chain := []string{"base", "stale", "clean", "above"}
+
+	got, held := gtRestackPlan(state, chain)
+	want := []string{"stale", "above"}
+	if !slices.Equal(got, want) {
+		t.Errorf("gtRestackPlan(%v) = %v, want %v — clean sits on base and nothing moved under it", chain, got, want)
+	}
+	if len(held) != 0 {
+		t.Errorf("gtRestackPlan held %v, want nothing — gt is holding no branch here", held)
+	}
+}
+
+// TestGtRestackPlanLeavesAFrozenBranchAlone pins that gt's own hold is honoured.
+// gt freeze marks a branch not to be rebased, and gt restack declines it; a
+// restack that moves it anyway rebases work the user asked to be left alone,
+// and drags its children onto the result.
+func TestGtRestackPlanLeavesAFrozenBranchAlone(t *testing.T) {
+	state := gtState{
+		"main":   {Trunk: true, Head: "trunk"},
+		"frozen": {Head: "frozen", NeedsRestack: true, State: "frozen", Parents: []gtRef{{Ref: "main", SHA: "old-trunk"}}},
+		"above":  {Head: "above", Parents: []gtRef{{Ref: "frozen", SHA: "frozen"}}},
+	}
+	chain := []string{"frozen", "above"}
+
+	got, held := gtRestackPlan(state, chain)
+	if len(got) != 0 {
+		t.Errorf("gtRestackPlan moved %v, want nothing — frozen stays put and above still sits on it", got)
+	}
+	if held["frozen"] != "frozen" {
+		t.Errorf("gtRestackPlan held = %v, want frozen named with its hold", held)
 	}
 }
 

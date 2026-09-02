@@ -249,41 +249,19 @@ scenario_restack_worktree_held() {
 gt restack with the stack's branch checked out in a second worktree.
 
 Recorded offline, no token. gt declines the branch, says so on stdout, and still
-exits 0 — the exit-0-that-did-nothing case gtZeroSurfaces exists for. Pins
-gtSyncSkippedPrefix / gtSyncSkippedReason / gtSyncSkippedWorktree, which
-gtSyncSkipped cuts a branch and its reason out of, and pins that the line
-carries no ERROR: prefix, so reportedError stays false.
+exits 0 — the exit-0-that-did-nothing case gtZeroSurfaces exists for. ccx no
+longer runs gt restack at all, but gt sync prints this same sentence for the
+same reason, so this is what pins gtSyncSkippedPrefix / gtSyncSkippedReason /
+gtSyncSkippedWorktree, which gtSyncSkipped cuts a branch and its reason out of,
+and pins that the line carries no ERROR: prefix, so reportedError stays false.
+
+It also stands as the record of why the restack is git's now: the guard this
+output comes from is one gt keeps only sometimes — reached with declines
+already in hand it runs the rebase anyway and dies on git's exit 128.
 
 The recorded path is the recorder's work root (CCX_GT_RECORD_ROOT, default
 /tmp/ccx-gt-record) as git resolves it, so it differs between a macOS and a
 Linux recording. Nothing reads the path itself; the tests read the shape.
-EOF
-}
-
-scenario_restack_cwd_held() {
-	prepare restack-cwd-held
-	graphite_repo restack-cwd-held
-	tracked_branch feat feat
-	git switch -q main
-	git worktree add -q "$work/restack-cwd-held/held" feat
-	printf 'trunk\n' >trunk.txt
-	git add trunk.txt
-	git commit -qm trunk
-	capture restack-cwd-held restack --cwd "$work/restack-cwd-held/held" --no-interactive
-	readme restack-cwd-held <<'EOF'
-gt restack driven with --cwd from the second worktree that holds the branch a
-plain restack declines.
-
-Recorded offline, no token. The counterpart to restack-worktree-held: the same
-repository, the same held branch, and gt restacks it because the run happens
-inside the working copy holding it. Pins that --cwd reaches a branch the
-invoking checkout cannot move, which is what gtLaneRestack sweeps a stack with,
-and that the run still declines whatever this lane does not hold — one gt run
-never restacks a whole stack spread across working copies.
-
-The recorded paths are the recorder's work root (CCX_GT_RECORD_ROOT, default
-/tmp/ccx-gt-record) as git resolves it, and --cwd puts one in the argv as well.
-Nothing reads the paths themselves; the tests read the shape.
 EOF
 }
 
@@ -645,7 +623,6 @@ EOF
 scenario_restack_conflict
 scenario_restack_blocked_during_rebase
 scenario_restack_worktree_held
-scenario_restack_cwd_held
 scenario_restack_frozen
 scenario_sync_no_remote
 scenario_sync_auth_invalid

@@ -39,6 +39,7 @@ type gtBranchState struct {
 	Trunk        bool
 	NeedsRestack bool `json:"needs_restack"`
 	Head         string
+	State        string
 	Parents      []gtRef
 }
 
@@ -112,7 +113,7 @@ func gtStateAt(ctx context.Context, commonDir, prefix string) (gtState, error) {
 	}
 	state := make(gtState, len(tracked))
 	for branch, s := range tracked {
-		entry := gtBranchState{Trunk: s.Trunk, NeedsRestack: s.NeedsRestack, Head: s.Head}
+		entry := gtBranchState{Trunk: s.Trunk, NeedsRestack: s.NeedsRestack, Head: s.Head, State: s.State}
 		for _, parent := range s.Parents {
 			entry.Parents = append(entry.Parents, gtRef{Ref: parent.Ref, SHA: parent.SHA})
 		}
@@ -292,61 +293,59 @@ func gtStuck(prefix, problem, suffix string) string {
 	return prefix + ": " + problem + suffix
 }
 
-func gtRestack(ctx context.Context, errW io.Writer, l lane, suffix, branch string) (string, error) {
-	_, chain, err := gtStackChain(ctx, l.dir(), "ship", branch)
-	if err != nil {
-		return "", err
-	}
-	classify := func(dir render.Dir, r gtResult, cause error) error {
-		if strings.Contains(r.Output, gtSyncConflict) {
-			return &gtAdvice{advice: gtStuck("ship", gtRestackConflict(l.dir(), dir), suffix), cause: cause}
-		}
-		return fmt.Errorf("ship: %w", cause)
-	}
-	lanes, declined, err := gtLaneRestack(ctx, errW, "ship", l.checkout, gtBottomUp(chain), classify)
-	if err != nil {
-		return "", err
-	}
-	here, err := gtRestackAt(ctx, l.dir(), errW, classify)
-	if err != nil {
-		return "", err
-	}
-	for branch, reason := range gtSyncSkipped(here) {
-		declined[branch] = reason
-	}
+func gtRestack(ctx context.Context, l lane, suffix, branch string) (string, error) {
 	state, chain, err := gtStackChain(ctx, l.dir(), "ship", branch)
+	if err != nil {
+		return "", err
+	}
+	result, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), state, gtBottomUp(chain))
+	if err != nil {
+		var conflict *errRestackConflict
+		if errors.As(err, &conflict) {
+			return "", errors.New(gtStuck("ship", gtRestackStopped(err, conflict), suffix))
+		}
+		return "", err
+	}
+	state, chain, err = gtStackChain(ctx, l.dir(), "ship", branch)
 	if err != nil {
 		return "", err
 	}
 	for _, b := range chain {
 		if state[b].NeedsRestack {
-			return "", errors.New(gtStuck("ship", gtOffParent(b, declined[b]), suffix))
+			return "", errors.New(gtStuck("ship", gtOffParent(b, result.held[b]), suffix))
 		}
 	}
-	return gtLaneSegment(lanes), nil
+	return gtRestackSegment(result), nil
 }
 
-// gtRestackConflict names the working copy a conflicted restack left mid-rebase,
-// since a sweep across lanes can stop in one nobody is looking at.
-func gtRestackConflict(here, dir render.Dir) string {
-	if dir == here {
-		return "gt restack hit a conflict — resolve the listed files, then gt continue (or gt abort, then gt restack)"
+// gtRestackStopped leads with the failure that explains the rest and still
+// carries the rest. A conflict stops the replay, but the alignment and metadata
+// passes run anyway, and a working copy left stale or a database left disagreeing
+// with the refs is not something to hide behind the conflict that caused it.
+func gtRestackStopped(err error, lead error) string {
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return lead.Error()
 	}
-	return fmt.Sprintf("gt restack hit a conflict in %s — resolve the listed files there, then gt continue (or gt abort, then gt restack)", dir)
+	problem := lead.Error()
+	for _, also := range joined.Unwrap() {
+		if also != nil && !errors.Is(also, lead) {
+			problem += "; also " + also.Error()
+		}
+	}
+	return problem
 }
 
-// gtOffParent explains a branch the sweep could not restack. gt says why on
-// stdout, which a non-streamed run never shows anyone, so the reason is carried
-// into the refusal rather than pointed at.
-func gtOffParent(branch, reason string) string {
-	if reason == gtSkipMerged {
-		return branch + " is already merged, so there is nothing to submit — drop it with gt untrack " + branch
+// gtOffParent explains a branch the restack left where it was. A branch gt is
+// holding — gt freeze, a merge in progress — is one the restack was never
+// allowed to move, and saying so is the difference between a state the user
+// chose and a failure. Anything else is a branch gt still reads as unrestacked
+// after a pass that should have moved it, which nothing here can explain.
+func gtOffParent(branch, held string) string {
+	if held != "" {
+		return branch + " is " + held + ", so the restack left it off its parent — release it, or restack it by hand with gt restack --only --branch " + branch
 	}
-	problem := "gt restack left " + branch + " off its parent"
-	if reason == "" {
-		return problem + " — see gt's output above"
-	}
-	return problem + " (" + reason + ")"
+	return "restack left " + branch + " off its parent — restack it by hand with gt restack --only --branch " + branch
 }
 
 // gtTrack adopts an untracked branch, reporting the parent it landed on. gt

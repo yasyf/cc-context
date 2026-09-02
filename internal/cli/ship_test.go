@@ -4734,14 +4734,11 @@ func TestShipGTAutoRestack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · restacked · not pushed"; got != want {
+	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · restacked 1 branch · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	restacked := slices.ContainsFunc(shipGTInvocations(t, f), func(inv []string) bool {
-		return len(inv) > 1 && inv[0] == "gt" && inv[1] == "restack"
-	})
-	if !restacked {
-		t.Error("ship ran no gt restack")
+	if ran := shipGTRestackRuns(t, f); len(ran) > 0 {
+		t.Errorf("ship ran gt restack in %v — the restack is git's now", ran)
 	}
 	if behind := gitAt(t, f.Dir, "rev-list", "--count", "feature..base"); behind != "0" {
 		t.Errorf("base holds %s commit(s) feature does not, want the restack to have landed them under it", behind)
@@ -4749,9 +4746,10 @@ func TestShipGTAutoRestack(t *testing.T) {
 }
 
 // shipGTHeldParent is the parallel-lane shape: a two-branch stack whose lower
-// branch a second working copy holds, and a trunk that moved under both. gt
-// declines the held branch and exits 0, so this is the topology a sweep that
-// trusts one gt run reports as unrestacked forever.
+// branch a second working copy holds, and a trunk that moved under both. git
+// refuses to rebase a branch a sibling checkout holds, so this is the topology
+// every gt-driven restack stumbles on — declining the branch at exit 0 for
+// some, dying on git's own exit 128 for others.
 func shipGTHeldParent(t *testing.T, f *vcstest.Fixture) string {
 	t.Helper()
 	shipGTStack(t, f, "base", "feature")
@@ -4774,20 +4772,143 @@ func TestShipGTRestacksAcrossWorktrees(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · restacked across 2 working copies · not pushed"; got != want {
+	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · restacked 2 branches across 2 working copies · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	if behind := gitAt(t, f.Dir, "rev-list", "--count", "base..main"); behind != "0" {
-		t.Errorf("main holds %s commit(s) base does not, want the held lane restacked onto trunk", behind)
+		t.Errorf("main holds %s commit(s) base does not, want the held branch restacked onto trunk", behind)
 	}
 	if behind := gitAt(t, f.Dir, "rev-list", "--count", "feature..base"); behind != "0" {
 		t.Errorf("base holds %s commit(s) feature does not, want the whole stack restacked", behind)
 	}
-	drove := slices.ContainsFunc(shipGTRecords(t, f), func(r vcstest.Invocation) bool {
-		return r.Dir == held && len(r.Argv) > 1 && r.Argv[0] == "gt" && r.Argv[1] == "restack"
-	})
-	if !drove {
-		t.Errorf("ship never ran gt restack in %s", held)
+	if ran := shipGTRestackRuns(t, f); len(ran) > 0 {
+		t.Errorf("ship ran gt restack in %v — no working copy is driven anymore", ran)
+	}
+	if head, want := gitAt(t, held, "rev-parse", "HEAD"), gitAt(t, f.Dir, "rev-parse", "base"); head != want {
+		t.Errorf("held HEAD = %s, want the restacked base %s", head, want)
+	}
+	if dirt := gitAt(t, held, "status", "--porcelain"); dirt != "" {
+		t.Errorf("held reads dirty after the restack: %q — a moved ref leaves its holder's index behind", dirt)
+	}
+}
+
+// shipGTRestackRuns names every working copy ship drove gt restack in. The
+// restack moves refs with git replay and never checks a branch out, so the
+// answer is always none — a gt run here is the sweep this replaced.
+func shipGTRestackRuns(t *testing.T, f *vcstest.Fixture) []string {
+	t.Helper()
+	var dirs []string
+	for _, r := range shipGTRecords(t, f) {
+		if len(r.Argv) > 1 && r.Argv[0] == "gt" && r.Argv[1] == "restack" {
+			dirs = append(dirs, r.Dir)
+		}
+	}
+	return dirs
+}
+
+// TestShipGTRestacksAStackSpreadAcrossWorkingCopies is the shape that broke the
+// gt sweep: a chain deep enough that gt reaches a branch a sibling holds while
+// already carrying declines for others, where it stops honouring its own guard
+// and dies on git's "already used by worktree" instead. Nothing here asks gt to
+// rebase anything, so the topology stops mattering.
+func TestShipGTRestacksAStackSpreadAcrossWorkingCopies(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "one", "two", "three")
+	mustRun(t, f.Dir, "git", "switch", "-q", "main")
+	writeShipFile(t, f.Dir, "trunk2.txt", "trunk2\n")
+	mustRun(t, f.Dir, "git", "add", "trunk2.txt")
+	mustRun(t, f.Dir, "git", "commit", "-qm", "trunk2")
+	mustRun(t, f.Dir, "git", "switch", "-q", "three")
+	held := map[string]string{"one": f.WorktreePath("one"), "two": f.WorktreePath("two")}
+	for branch, dir := range held {
+		mustRun(t, f.Dir, "git", "worktree", "add", "-q", dir, branch)
+	}
+	shipGTReady(t, f)
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if want := shipCommitted(t, f, vcs.Git) + " · branch three · restacked 3 branches across 3 working copies · not pushed"; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if ran := shipGTRestackRuns(t, f); len(ran) > 0 {
+		t.Errorf("ship ran gt restack in %v — the restack never checks a branch out", ran)
+	}
+	for _, pair := range [][2]string{{"one", "main"}, {"two", "one"}, {"three", "two"}} {
+		if behind := gitAt(t, f.Dir, "rev-list", "--count", pair[0]+".."+pair[1]); behind != "0" {
+			t.Errorf("%s sits off %s by %s commit(s)", pair[0], pair[1], behind)
+		}
+	}
+	for branch, dir := range held {
+		if head, want := gitAt(t, dir, "rev-parse", "HEAD"), gitAt(t, f.Dir, "rev-parse", branch); head != want {
+			t.Errorf("%s HEAD = %s, want the restacked %s %s", dir, head, branch, want)
+		}
+		if dirt := gitAt(t, dir, "status", "--porcelain"); dirt != "" {
+			t.Errorf("%s reads dirty after the restack: %q", dir, dirt)
+		}
+	}
+}
+
+// TestShipGTRestackLeavesARestackedBranchAlone pins that a restack rewrites only
+// what sits off its parent. A branch moved needlessly is a branch whose shas no
+// longer match the pull request they were pushed as, and the force-push that
+// follows is one nobody asked for.
+func TestShipGTRestackLeavesARestackedBranchAlone(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base", "feature")
+	mustRun(t, f.Dir, "git", "switch", "-q", "base")
+	writeShipFile(t, f.Dir, "base2.txt", "base2\n")
+	mustRun(t, f.Dir, "git", "add", "base2.txt")
+	mustRun(t, f.Dir, "git", "commit", "-qm", "base2")
+	mustRun(t, f.Dir, "git", "switch", "-q", "feature")
+	shipGTReady(t, f)
+	before := gitAt(t, f.Dir, "rev-parse", "base")
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · restacked 1 branch · not pushed"; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if after := gitAt(t, f.Dir, "rev-parse", "base"); after != before {
+		t.Errorf("base moved from %s to %s — it already sat on trunk and nothing asked it to move", before, after)
+	}
+}
+
+// TestShipGTRestackKeepsAHolderUncommittedWork pins the property gt gave for
+// free by stashing a lane it rebased in place: a sibling working copy's own
+// uncommitted work is still there afterwards, and still staged if it was
+// staged. The restack resets that checkout hard onto the branch's new head, so
+// tracked work has to be snapshotted before the ref moves and applied after;
+// untracked work rides through the reset untouched.
+func TestShipGTRestackKeepsAHolderUncommittedWork(t *testing.T) {
+	f := shipGTRepo(t)
+	held := shipGTHeldParent(t, f)
+	writeShipFile(t, held, "scratch.txt", "work in progress\n")
+	writeShipFile(t, held, "base.txt", "edited\n")
+	writeShipFile(t, held, "staged.txt", "staged\n")
+	mustRun(t, held, "git", "add", "staged.txt")
+	before := gitAt(t, held, "status", "--porcelain")
+
+	if _, shipErr := runShipCmd(t, "-m", "fix: frobnicate", "--no-push"); shipErr != nil {
+		t.Fatalf("ship error = %v", shipErr)
+	}
+	if after := gitAt(t, held, "status", "--porcelain"); after != before {
+		t.Errorf("held status = %q, want %q — every kind of pending work back as it was, staged work included", after, before)
+	}
+	for name, want := range map[string]string{"scratch.txt": "work in progress\n", "base.txt": "edited\n", "staged.txt": "staged\n"} {
+		body, err := os.ReadFile(filepath.Join(held, name))
+		if err != nil || string(body) != want {
+			t.Errorf("%s = %q (%v), want %q", name, body, err, want)
+		}
+	}
+	if head, want := gitAt(t, held, "rev-parse", "HEAD"), gitAt(t, f.Dir, "rev-parse", "base"); head != want {
+		t.Errorf("held HEAD = %s, want the restacked base %s", head, want)
+	}
+	if stashes := gitAt(t, f.Dir, "stash", "list"); stashes != "" {
+		t.Errorf("stash list = %q, want nothing — the snapshot is a commit, never an entry on the shared stack", stashes)
 	}
 }
 
@@ -4810,12 +4931,35 @@ func shipGTConflicting(t *testing.T, f *vcstest.Fixture) {
 	shipGTReady(t, f)
 }
 
+// TestShipGTRestackConflictRestoresAHolder pins the failure path's own promise.
+// A holder whose branch the replay never reached is left exactly as it was:
+// the snapshot taken from it is a commit that touched neither its tree nor the
+// stash stack, so there is nothing to put back and nothing left behind.
+func TestShipGTRestackConflictRestoresAHolder(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTConflicting(t, f)
+	held := f.WorktreePath("held")
+	mustRun(t, f.Dir, "git", "worktree", "add", "-q", held, "base")
+	writeShipFile(t, held, "scratch.txt", "work in progress\n")
+	shipResetLog(t, f)
+
+	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push"); err == nil {
+		t.Fatal("want the restack conflict")
+	}
+	if dirt := gitAt(t, held, "status", "--porcelain"); dirt != "?? scratch.txt" {
+		t.Errorf("held status = %q, want the untracked scratch.txt back after the conflict", dirt)
+	}
+	if stashes := gitAt(t, f.Dir, "stash", "list"); stashes != "" {
+		t.Errorf("stash list = %q, want nothing left behind", stashes)
+	}
+}
+
 func TestShipGTAutoRestackConflict(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTConflicting(t, f)
 
 	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
-	want := gtStuck("ship", "gt restack hit a conflict — resolve the listed files, then gt continue (or gt abort, then gt restack)", gtStuckSuffix(shipOpts{noPush: true}))
+	want := gtStuck("ship", (&errRestackConflict{Branch: "feature", Onto: "base", Dir: f.Dir}).Error(), gtStuckSuffix(shipOpts{noPush: true}))
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
@@ -4831,7 +4975,7 @@ func TestShipGTNoCommitRestackConflict(t *testing.T) {
 	shipResetLog(t, f)
 
 	_, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr")
-	want := gtStuck("ship", "gt restack hit a conflict — resolve the listed files, then gt continue (or gt abort, then gt restack)", gtStuckSuffix(shipOpts{noCommit: true}))
+	want := gtStuck("ship", (&errRestackConflict{Branch: "feature", Onto: "base", Dir: f.Dir}).Error(), gtStuckSuffix(shipOpts{noCommit: true}))
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
@@ -4856,6 +5000,7 @@ func TestShipGTResumeAfterRestackConflict(t *testing.T) {
 		t.Fatalf("error = %v, want it to name %q", err, resume)
 	}
 
+	runAllowFail(t, f.Dir, "gt", "restack", "--only", "--branch", "feature", "--no-interactive")
 	writeShipFile(t, f.Dir, "c.txt", "resolved\n")
 	mustRun(t, f.Dir, "gt", "add", "c.txt")
 	mustRun(t, f.Dir, "gt", "continue", "--no-interactive")
@@ -4891,7 +5036,7 @@ func TestShipGTResumeAfterRestackConflict(t *testing.T) {
 		t.Errorf("feature tip = %q, want the commit the first ship landed", subject)
 	}
 	if behind := gitAt(t, f.Dir, "rev-list", "--count", "feature..base"); behind != "0" {
-		t.Errorf("base holds %s commit(s) feature does not, want gt continue to have finished the restack", behind)
+		t.Errorf("base holds %s commit(s) feature does not, want the hand restack to have finished it", behind)
 	}
 }
 

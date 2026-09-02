@@ -138,26 +138,24 @@ func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 		return "", err
 	}
 
-	classify := func(dir render.Dir, r gtResult, cause error) error {
-		if strings.Contains(r.Output, gtSyncConflict) {
-			return &gtAdvice{advice: gtLaneConflict("restack", l.dir(), dir), cause: cause}
-		}
-		return classifyGTRestack(r, cause)
-	}
-	lanes, laneDeclined, err := gtLaneRestack(ctx, errW, "restack", l.checkout, gtBottomUp(stack), classify)
+	// gt sync fetches trunk and prunes the merged branches, and restacks
+	// whatever it can reach on the way; the branches it declined are this pass's
+	// to move, and it moves them without checking any of them out.
+	result, err := gtRestackChain(ctx, "restack", l.checkout, l.dir(), synced, gtBottomUp(stack))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("restack: %w", err)
 	}
-	// gt sync restacked this working copy before the sweep, since it also fetches
-	// trunk and prunes merged branches. A sibling lane moving afterwards leaves
-	// the branches above it off their parents again, so this one restacks a
-	// second time — but only when a sibling actually moved.
-	if len(lanes) > 0 {
-		if _, err := gtRestackAt(ctx, l.dir(), errW, classify); err != nil {
-			return "", err
-		}
+	// gt sync named what it declined before this pass ran, so a branch it could
+	// not reach and this one moved is a decline that describes a run that has
+	// since happened. The holds gt is still under stand, and are the reason a
+	// branch this pass left alone was left alone.
+	declined := gtSyncSkipped(output)
+	for _, branch := range result.moved {
+		delete(declined, branch)
 	}
-	declined := gtLaneResolved(mergeDeclines(gtSyncSkipped(output), laneDeclined), append(lanes, l.checkout.Root))
+	for branch, held := range result.held {
+		declined[branch] = held
+	}
 
 	remote, err := vcs.GitRemoteFor(ctx, l.dir(), trunk)
 	if err != nil {
@@ -210,18 +208,6 @@ func gtRestackTrunkHolder(ctx context.Context, l lane, stack []string, trunk str
 		return holder, nil
 	}
 	return "", nil
-}
-
-// mergeDeclines folds one sweep's declines over another's, later runs last.
-func mergeDeclines(first, second map[string]string) map[string]string {
-	merged := make(map[string]string, len(first)+len(second))
-	for branch, reason := range first {
-		merged[branch] = reason
-	}
-	for branch, reason := range second {
-		merged[branch] = reason
-	}
-	return merged
 }
 
 // gtSync runs gt sync and returns everything it printed, both streams

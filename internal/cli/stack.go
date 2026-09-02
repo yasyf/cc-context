@@ -292,24 +292,21 @@ func runStackSubmit(cmd *cobra.Command, draft bool) error {
 	if err != nil {
 		return err
 	}
-	classify := func(dir render.Dir, r gtResult, cause error) error {
-		if strings.Contains(r.Output, gtSyncConflict) {
-			return &gtAdvice{advice: gtLaneConflict("stack submit", l.dir(), dir), cause: cause}
-		}
-		return classifyGTRestack(r, cause)
-	}
-	lanes, _, err := gtLaneRestack(ctx, errW, "stack submit", l.checkout, chain, classify)
-	if err != nil {
-		return err
-	}
-	if _, err := gtRestackAt(ctx, l.dir(), errW, classify); err != nil {
-		return err
-	}
 	commonDir, err := gtCommonDir(ctx, l.dir(), "stack submit")
 	if err != nil {
 		return err
 	}
 	state, err := gtStateAt(ctx, commonDir, "stack submit")
+	if err != nil {
+		return err
+	}
+	result, err := gtRestackChain(ctx, "stack submit", l.checkout, l.dir(), state, chain)
+	if err != nil {
+		return fmt.Errorf("stack submit: %w", err)
+	}
+	// The restack rewrote the heads the submit force-pushes, so the state it
+	// reads must be the one it left behind, not the one it was planned from.
+	state, err = gtStateAt(ctx, commonDir, "stack submit")
 	if err != nil {
 		return err
 	}
@@ -324,6 +321,6 @@ func runStackSubmit(cmd *cobra.Command, draft bool) error {
 	if err := gtSubmitStack(ctx, l, sub, commonDir, state, trunk, chain); err != nil {
 		return err
 	}
-	cmd.Println(strings.Join([]string{gtLaneSegment(lanes), fmt.Sprintf("submitted %d branches", len(chain))}, shipSep))
+	cmd.Println(strings.Join([]string{gtRestackSegment(result), fmt.Sprintf("submitted %d branches", len(chain))}, shipSep))
 	return nil
 }

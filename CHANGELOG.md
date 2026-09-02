@@ -4,6 +4,44 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **A stack is restacked with git, not with `gt restack`.** git will not rebase
+  a branch a sibling checkout has checked out, and gt answers that two ways: for
+  some branches it declines them on stdout and exits 0, for others it runs the
+  rebase anyway and dies on git's `fatal: '<b>' is already used by worktree`,
+  exit 128. ccx's sweep was built on the first answer: drive one `gt restack` from each
+  working copy holding a branch of the chain. The second answer aborted it
+  mid-stack, leaving half the chain rebased onto a parent the other half no
+  longer sat on.
+
+  The restack no longer asks gt, and no longer checks a branch out. ccx already
+  reads every branch's parent and the revision it was last restacked onto out of
+  Graphite's own database. It walks the chain bottom-up and replays each branch
+  sitting off its parent with `git replay --onto`, which computes the new
+  commits and moves the refs, leaving every working tree and index untouched. A branch another checkout holds is then not a special case at all,
+  and the topology that broke the sweep stops mattering. Each moved branch's
+  working copy is reset onto its new head afterwards, its uncommitted work
+  stashed before the ref moves and popped after — the property gt gave by
+  stashing a lane it rebased in place. `parent_branch_revision`, the one column
+  a restack changes, is written back so gt still reads the stack as restacked.
+
+  A branch already on its parent is left where it is, keeping the shas its pull
+  request was pushed as. Only branches gt reads as off their parent move,
+  plus the branches above those. That is inherited through each branch's own
+  parent: a whole-stack walk is a tree, and a stale branch in one subtree says
+  nothing about a sibling in another.
+  A conflict applies nothing and leaves no rebase open, so instead of `gt
+  continue` the refusal names the branch, the working copy holding it, and the
+  `gt restack --only --branch <b>` that resolves it interactively. The report
+  reads `restacked N branches`, and `across N working copies` when more than
+  one had to move.
+
+  `ccx vcs restack` still runs `gt sync` first — that fetches trunk and prunes
+  the merged branches, which is a different job — and the branches it declined
+  are the ones this pass moves.
+
 ## [0.55.0] - 2026-09-01
 
 ### Fixed

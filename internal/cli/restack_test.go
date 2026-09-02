@@ -874,13 +874,12 @@ func TestRestackGTRefusesMissingRemoteTrunk(t *testing.T) {
 	}
 }
 
-// TestRestackGTDrivesTheWorkingCopyHoldingABranch pins the sweep that replaced
-// the preflight's refusal. git will not move a branch a sibling checkout holds,
-// so gt declines it and still exits 0 — and the working copy holding it is the
-// one place it can move, which the driven gt run's own cmd.Dir reaches.
-// Refusing named that working copy and stopped; driving it finishes the
-// restack.
-func TestRestackGTDrivesTheWorkingCopyHoldingABranch(t *testing.T) {
+// TestRestackGTMovesABranchAnotherWorkingCopyHolds pins the case that replaced
+// the preflight's refusal and then the lane sweep. git will not rebase a branch
+// a sibling checkout holds, so gt either declines it at exit 0 or dies on git's
+// exit 128; git replay moves the ref without checking anything out, and the
+// holder is reset onto it afterwards.
+func TestRestackGTMovesABranchAnotherWorkingCopyHolds(t *testing.T) {
 	g := loadGTGolden(t, "sync-quiet-exit0")
 	f := restackGTRepo(t, "a", "b")
 	held := restackSiblingPath(t, "held")
@@ -894,14 +893,16 @@ func TestRestackGTDrivesTheWorkingCopyHoldingABranch(t *testing.T) {
 	if want := "restacked 2 of 2 · trunk main"; out != want {
 		t.Fatalf("output = %q, want %q", out, want)
 	}
-	drove := false
 	for _, r := range restackRecords(t, f) {
-		if r.Dir == held && len(r.Argv) > 1 && r.Argv[0] == "gt" && r.Argv[1] == "restack" {
-			drove = true
+		if len(r.Argv) > 1 && r.Argv[0] == "gt" && r.Argv[1] == "restack" {
+			t.Errorf("restack ran gt restack in %s — the restack is git's now", r.Dir)
 		}
 	}
-	if !drove {
-		t.Errorf("restack never ran gt restack in %s — the held branch cannot move from here", held)
+	if head, want := restackRun(t, held, "git", "rev-parse", "HEAD"), restackRun(t, f.Dir, "git", "rev-parse", "a"); head != want {
+		t.Errorf("held HEAD = %s, want the restacked a %s", head, want)
+	}
+	if dirt := restackRun(t, held, "git", "status", "--porcelain"); dirt != "" {
+		t.Errorf("held reads dirty after the restack: %q — a moved ref leaves its holder's index behind", dirt)
 	}
 }
 
@@ -1030,16 +1031,16 @@ func TestGTSyncSkippedReadsTheMergedDecline(t *testing.T) {
 	}
 }
 
-// TestGTOffParentNamesAMergedBranch pins that a merged branch is not reported as
-// one sitting off its parent: no restack fixes it, and the submit that follows
-// is one Graphite refuses.
-func TestGTOffParentNamesAMergedBranch(t *testing.T) {
+// TestRestackMergedNamesTheBranch pins that a branch already in its parent is
+// not reported as one sitting off it: no rebase moves it, and the submit that
+// would follow is one Graphite refuses.
+func TestRestackMergedNamesTheBranch(t *testing.T) {
 	t.Parallel()
-	got := gtOffParent("yasyf/ssql-replica-chase-debug", gtSkipMerged)
+	got := (&errRestackMerged{Branch: "yasyf/ssql-replica-chase-debug"}).Error()
 	if !strings.Contains(got, "already merged") || strings.Contains(got, "off its parent") {
-		t.Errorf("gtOffParent() = %q, want it to name the merge rather than the parent", got)
+		t.Errorf("errRestackMerged = %q, want it to name the merge rather than the parent", got)
 	}
 	if !strings.Contains(got, "gt untrack yasyf/ssql-replica-chase-debug") {
-		t.Errorf("gtOffParent() = %q, want the step that clears it", got)
+		t.Errorf("errRestackMerged = %q, want the step that clears it", got)
 	}
 }
