@@ -413,37 +413,50 @@ func TestShipPRGTBothFlags(t *testing.T) {
 // instead of refusing an empty commit, and the flags still write the pull
 // request a bodiless gt submit opens.
 func TestShipPRGTAlreadyCommitted(t *testing.T) {
-	log := setupShipGT(t, true)
-	t.Setenv("GIT_STAGED_EMPTY", "1")
-	seedPRViews(t, map[string]string{"feature": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`})
-	body := writePRBody(t, "body.md", "why this change\n")
+	for _, tt := range []struct {
+		name  string
+		paths []string
+		add   []string
+	}{
+		{name: "unscoped", add: []string{"git", "add", "-A"}},
+		{name: "path scoped", paths: []string{"src/a.go"}, add: []string{"git", "add", "-A", "--", "src/a.go"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			log := setupShipGT(t, true)
+			t.Setenv("GIT_STAGED_EMPTY", "1")
+			seedPRViews(t, map[string]string{"feature": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`})
+			body := writePRBody(t, "body.md", "why this change\n")
+			writeShipFile(t, ".", "src/a.go", "package a\n")
 
-	got, err := runShipCmd(t, "--no-watch", "--pr-title", "fix: 🐛 frobnicate the widget", "--pr-body-file", body)
-	if err != nil {
-		t.Fatalf("ship error = %v", err)
+			args := append([]string{"--no-watch", "--pr-title", "fix: 🐛 frobnicate the widget", "--pr-body-file", body}, tt.paths...)
+			got, err := runShipCmd(t, args...)
+			if err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			want := shipLandedSegment(shipOpts{paths: tt.paths}) + ` · already committed a1b2c3d "fix: frobnicate" · ` +
+				`submitted feature → PR #7 https://github.com/x/pull/7 · set PR #7 title+body`
+			if got != want {
+				t.Errorf("summary = %q, want %q", got, want)
+			}
+			assertInvocations(t, readInvocations(t, log), [][]string{
+				nogtProbe,
+				{"git", "branch", "--show-current"},
+				gtCommonDirArgv,
+				gtRefsArgv(),
+				tt.add,
+				{"git", "diff", "--cached", "--quiet"},
+				{"git", "rev-list", "--count", "main..HEAD"},
+				{"git", "branch", "--show-current"},
+				{"git", "log", "-1", "--format=%h%x00%s"},
+				gtCommonDirArgv,
+				gtRefsArgv(),
+				gtCreateLogInv("main", "feature"),
+				gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
+				ghDownstackPRArgv("feature"),
+				{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "fix: 🐛 frobnicate the widget", "--body-file", body},
+			})
+		})
 	}
-	want := shipLandedSegment + ` · already committed a1b2c3d "fix: frobnicate" · ` +
-		`submitted feature → PR #7 https://github.com/x/pull/7 · set PR #7 title+body`
-	if got != want {
-		t.Errorf("summary = %q, want %q", got, want)
-	}
-	assertInvocations(t, readInvocations(t, log), [][]string{
-		nogtProbe,
-		{"git", "branch", "--show-current"},
-		gtCommonDirArgv,
-		gtRefsArgv(),
-		{"git", "add", "-A"},
-		{"git", "diff", "--cached", "--quiet"},
-		{"git", "rev-list", "--count", "main..HEAD"},
-		{"git", "branch", "--show-current"},
-		{"git", "log", "-1", "--format=%h%x00%s"},
-		gtCommonDirArgv,
-		gtRefsArgv(),
-		gtCreateLogInv("main", "feature"),
-		gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
-		ghDownstackPRArgv("feature"),
-		{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "fix: 🐛 frobnicate the widget", "--body-file", body},
-	})
 }
 
 // TestShipPRGTBackfill covers the case the branch-scoped flags exist for: one

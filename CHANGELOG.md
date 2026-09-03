@@ -32,6 +32,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the pull requests that already landed and says every branch is pushed, since
   gt's loop has no rollback and ccx does not invent one.
 
+### Changed
+- **A path-scoped ship whose paths are already committed submits the branch
+  instead of refusing.** An empty ship on a branch ahead of trunk already
+  skips the commit and submits as `--no-commit`; naming a path switched that
+  off — a path scopes a commit, the reasoning went, and this path cuts none.
+  That reading is backwards for the case that actually happens. A scoped ship
+  is what a delegate runs in a shared working copy, and finding those paths
+  clean on a branch trunk sits behind means the work landed, not that there is
+  nothing to do. The refusal named no way back in either, so the delegate
+  half-recalled `--no-commit` and hand-rolled the pull request.
+
+  A scoped ship now takes the same path as an unscoped one: the commit is
+  skipped and the branch pushed and submitted as it stands, the report naming
+  the paths — `nothing to commit in <paths> — shipping as --no-commit`. The
+  refusal survives only where the branch is level with trunk, and it now says
+  so instead of asking whether a prior ship already landed the commit. An
+  explicit `--no-commit` alongside paths is still refused as the contradiction
+  it is: `--no-commit takes no paths — a path scopes a commit, and --no-commit
+  cuts none`.
+
 ## [0.56.0] - 2026-09-02
 
 ### Changed

@@ -174,10 +174,14 @@ func shipCommitted(t *testing.T, f *vcstest.Fixture, kind vcs.Kind) string {
 	return fmt.Sprintf("committed %s %q", gitAt(t, f.Dir, "log", "-1", "--format=%h"), gitAt(t, f.Dir, "log", "-1", "--format=%s"))
 }
 
-// shipEmptyRefusal renders the refusal an empty working copy earns, off the
-// commit @- actually carries and the bookmark the plan resolved.
-func shipEmptyRefusal(t *testing.T, f *vcstest.Fixture, scope, target string) string {
+// shipEmptyRefusal renders the refusal an empty working copy earns: the standing
+// that leaves nothing to submit, or else the commit @- carries plus the push hint
+// naming the bookmark the plan resolved.
+func shipEmptyRefusal(t *testing.T, f *vcstest.Fixture, scope, target, standing string) string {
 	t.Helper()
+	if standing != "" {
+		return fmt.Sprintf("ship: nothing to commit%s, and %s — nothing to submit", scope, standing)
+	}
 	pat := shellSingleQuote(vcs.JJExactPattern(target))
 	return fmt.Sprintf("ship: nothing to commit%s — did a prior ship already land %s %q? push it: jj bookmark move %s --to @- && jj git push --bookmark %s",
 		scope, jjAt(t, f.Dir, "@-", "commit_id.short()"), jjAt(t, f.Dir, "@-", "description.first_line()"), pat, pat)

@@ -1191,23 +1191,28 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 	conflicted := []string{"jj", "--ignore-working-copy", "log", "-r", jjConflictRevset("main"), "--no-graph", "-T", jjStackLineTemplate}
 	describe := []string{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate}
 	diff := []string{"jj", "diff", "--name-only"}
+	const nothingAbove = "the branch carries nothing above main"
 	tests := []struct {
-		name    string
-		args    []string
-		opts    []vcstest.Opt
-		build   func(t *testing.T, f *vcstest.Fixture)
-		target  string
-		scope   string
-		commits bool
-		want    [][]string
+		name     string
+		args     []string
+		opts     []vcstest.Opt
+		build    func(t *testing.T, f *vcstest.Fixture)
+		target   string
+		scope    string
+		standing string
+		commits  bool
+		want     [][]string
 	}{
 		{
-			name:   "unscoped",
-			args:   []string{"-m", "fix: frobnicate", "--no-watch"},
-			target: "main",
-			want:   append(jjPlanArgv(), stack("main"), diff, atState, aboveTrunk, describe),
+			name:     "unscoped",
+			args:     []string{"-m", "fix: frobnicate", "--no-watch"},
+			target:   "main",
+			standing: nothingAbove,
+			want:     append(jjPlanArgv(), stack("main"), diff, atState, aboveTrunk, describe),
 		},
 		{
+			// Scoping declares everything else out, so clean scoped paths over a
+			// branch level with trunk leave nothing to submit either.
 			name: "path scoped",
 			args: []string{"-m", "fix: frobnicate", "--no-watch", "src/a.go"},
 			build: func(t *testing.T, f *vcstest.Fixture) {
@@ -1215,30 +1220,33 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 				mustRun(t, f.Dir, "jj", "commit", "-m", "add a")
 				mustRun(t, f.Dir, "jj", "bookmark", "move", "main", "--to", "@-")
 			},
-			target: "main",
-			scope:  " in src/a.go",
+			target:   "main",
+			scope:    " in src/a.go",
+			standing: nothingAbove,
 			want: append(jjPlanArgv(), stack("main"),
-				[]string{"jj", "diff", "--name-only", "--", "src/a.go"}, atState, describe),
+				[]string{"jj", "diff", "--name-only", "--", "src/a.go"}, atState, aboveTrunk, describe),
 		},
 		{
-			name: "bookmark hint",
+			name: "explicit bookmark resolves",
 			args: []string{"-m", "fix: frobnicate", "--no-watch", "--bookmark", "someone/probe"},
 			build: func(t *testing.T, f *vcstest.Fixture) {
 				mustRun(t, f.Dir, "jj", "bookmark", "create", "someone/probe", "-r", "@-")
 			},
-			target: "someone/probe",
-			want:   append(jjPlanArgv(), stack("someone/probe"), diff, atState, aboveTrunk, describe),
+			target:   "someone/probe",
+			standing: nothingAbove,
+			want:     append(jjPlanArgv(), stack("someone/probe"), diff, atState, aboveTrunk, describe),
 		},
 		{
-			// The hint names the target under --no-push too: the branch plan
-			// resolves once for every lane, push or not.
-			name: "no push still names the target",
+			// The branch plan resolves the named bookmark under --no-push too,
+			// once for every lane, push or not.
+			name: "no push still resolves the target",
 			args: []string{"-m", "fix: frobnicate", "--no-push", "--bookmark", "someone/probe"},
 			build: func(t *testing.T, f *vcstest.Fixture) {
 				mustRun(t, f.Dir, "jj", "bookmark", "create", "someone/probe", "-r", "@-")
 			},
-			target: "someone/probe",
-			want:   append(jjPlanArgv(), stack("someone/probe"), diff, atState, aboveTrunk, describe),
+			target:   "someone/probe",
+			standing: nothingAbove,
+			want:     append(jjPlanArgv(), stack("someone/probe"), diff, atState, aboveTrunk, describe),
 		},
 		{
 			name: "description only working copy refuses",
@@ -1246,8 +1254,9 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			build: func(t *testing.T, f *vcstest.Fixture) {
 				mustRun(t, f.Dir, "jj", "describe", "-m", "description only")
 			},
-			target: "main",
-			want:   append(jjPlanArgv(), diff, atState, aboveTrunk, describe),
+			target:   "main",
+			standing: nothingAbove,
+			want:     append(jjPlanArgv(), diff, atState, aboveTrunk, describe),
 		},
 		{
 			name:    "merge working copy commits",
@@ -1268,19 +1277,22 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			build: func(t *testing.T, f *vcstest.Fixture) {
 				mustRun(t, f.Dir, "jj", "new")
 			},
-			target: "main",
-			want:   append(jjPlanArgv(), diff, atState, aboveTrunk, conflicted, describe),
+			target:   "main",
+			standing: "the commits above main are conflicted",
+			want:     append(jjPlanArgv(), diff, atState, aboveTrunk, conflicted, describe),
 		},
 		{
 			// @- is the root commit, whose id is all zeros and whose description
-			// is empty — the hint quotes both back rather than inventing a subject.
+			// is empty — the describe has to parse that rather than report it
+			// malformed.
 			name: "empty root refuses",
 			args: []string{"-m", "fix: frobnicate", "--no-push"},
 			build: func(t *testing.T, f *vcstest.Fixture) {
 				mustRun(t, f.Dir, "jj", "new", "root()")
 			},
-			target: "main",
-			want:   append(jjPlanArgv(), diff, atState, aboveTrunk, describe),
+			target:   "main",
+			standing: nothingAbove,
+			want:     append(jjPlanArgv(), diff, atState, aboveTrunk, describe),
 		},
 	}
 	for _, tt := range tests {
@@ -1313,7 +1325,7 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected empty ship refusal, got nil")
 			}
-			if want := shipEmptyRefusal(t, f, tt.scope, tt.target); err.Error() != want {
+			if want := shipEmptyRefusal(t, f, tt.scope, tt.target, tt.standing); err.Error() != want {
 				t.Errorf("error = %q, want %q", err, want)
 			}
 			assertNoShipMutation(t, invocations)
@@ -5138,8 +5150,7 @@ func TestShipGTRefusals(t *testing.T) {
 		head := shipHead(t, f)
 
 		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
-		wantErr := fmt.Sprintf("ship: nothing to commit — did a prior ship already land %s %q?",
-			gitAt(t, f.Dir, "log", "-1", "--format=%h"), gitAt(t, f.Dir, "log", "-1", "--format=%s"))
+		wantErr := "ship: nothing to commit, and the branch carries nothing above main — nothing to submit"
 		if err == nil || err.Error() != wantErr {
 			t.Fatalf("error = %v, want %q", err, wantErr)
 		}
@@ -6079,14 +6090,20 @@ func TestShipNoCommitShipsCommittedChange(t *testing.T) {
 }
 
 // TestShipAlreadyCommittedSubmitsInPlace is the other half of the contract: the
-// same clean, already-committed branch needs no flag at all. A delegate that
-// commits in its own working copy hands back this state, so ship submits what
-// is there rather than refusing the commit it cannot cut.
+// same clean, already-committed branch needs no flag at all, scoped to paths or
+// not. A delegate that commits in its own working copy hands back this state,
+// so ship submits what is there rather than refusing the commit it cannot cut.
 func TestShipAlreadyCommittedSubmitsInPlace(t *testing.T) {
 	for _, tt := range []struct {
-		name string
-		jj   bool
-	}{{name: "git"}, {name: "jj", jj: true}} {
+		name  string
+		jj    bool
+		paths []string
+	}{
+		{name: "git"},
+		{name: "jj", jj: true},
+		{name: "git path scoped", paths: []string{"f.txt"}},
+		{name: "jj path scoped", jj: true, paths: []string{"f.txt"}},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
 			kind := shipKind(tt.jj)
 			f := shipRepo(t, shipOptsFor(tt.jj, vcstest.Remote(), vcstest.Dirty())...)
@@ -6102,11 +6119,11 @@ func TestShipAlreadyCommittedSubmitsInPlace(t *testing.T) {
 			head := shipHead(t, f)
 			shipResetLog(t, f)
 
-			got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--no-pr")
+			got, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate", "--no-watch", "--no-pr"}, tt.paths...)...)
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			want := shipLandedSegment + shipSep + "already " + shipCommitted(t, f, kind)
+			want := shipLandedSegment(shipOpts{paths: tt.paths}) + shipSep + "already " + shipCommitted(t, f, kind)
 			if !strings.HasPrefix(got, want) {
 				t.Errorf("summary = %q, want it to open with %q", got, want)
 			}
@@ -6124,21 +6141,32 @@ func TestShipAlreadyCommittedSubmitsInPlace(t *testing.T) {
 
 // TestShipEmptyLevelWithTrunkRefuses is where the refusal still belongs: a clean
 // working copy over a branch carrying nothing above trunk has nothing to submit
-// either, so the empty commit is still refused rather than shipped.
+// either, so the empty commit is refused — and the refusal states that standing
+// rather than asking whether a prior ship landed something.
 func TestShipEmptyLevelWithTrunkRefuses(t *testing.T) {
-	f := shipRepo(t, vcstest.Remote())
-	mustRun(t, f.Dir, "git", "switch", "-qc", "feature")
-	head := shipHead(t, f)
-	shipResetLog(t, f)
+	for _, tt := range []struct {
+		name  string
+		paths []string
+		scope string
+	}{
+		{name: "unscoped"},
+		{name: "path scoped", paths: []string{"f.txt"}, scope: " in f.txt"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipRepo(t, vcstest.Remote())
+			mustRun(t, f.Dir, "git", "switch", "-qc", "feature")
+			head := shipHead(t, f)
+			shipResetLog(t, f)
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
-	want := fmt.Sprintf("ship: nothing to commit — did a prior ship already land %s %q?",
-		gitAt(t, f.Dir, "log", "-1", "--format=%h"), gitAt(t, f.Dir, "log", "-1", "--format=%s"))
-	if err == nil || err.Error() != want {
-		t.Fatalf("ship error = %v, want %q", err, want)
-	}
-	if got := shipHead(t, f); got != head {
-		t.Errorf("HEAD moved to %s, want the pre-ship %s", got, head)
+			_, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.paths...)...)
+			want := fmt.Sprintf("ship: nothing to commit%s, and the branch carries nothing above main — nothing to submit", tt.scope)
+			if err == nil || err.Error() != want {
+				t.Fatalf("ship error = %v, want %q", err, want)
+			}
+			if got := shipHead(t, f); got != head {
+				t.Errorf("HEAD moved to %s, want the pre-ship %s", got, head)
+			}
+		})
 	}
 }
 

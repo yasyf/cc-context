@@ -78,7 +78,16 @@ var errShipMessageRequired = errors.New("ship: -m/--message is required unless -
 // where the switch to --no-commit's path is made.
 var errShipAlreadyCommitted = errors.New("ship: the branch already carries its commits")
 
-const shipLandedSegment = "nothing to commit — shipping as --no-commit"
+func shipLandedSegment(o shipOpts) string {
+	return "nothing to commit" + shipScope(o) + " — shipping as --no-commit"
+}
+
+func shipScope(o shipOpts) string {
+	if len(o.paths) == 0 {
+		return ""
+	}
+	return " in " + strings.Join(o.paths, ", ")
+}
 
 // shipStreamCI reports whether a child's output should stream live to w, which is
 // true only when w is a real terminal. It mirrors stdinPiped's device check.
@@ -177,13 +186,13 @@ func newShipCmd() *cobra.Command {
 		Short: "Commit, push, and watch CI in one step",
 		Long: `Commit, push, and watch CI in one step.
 
-Ship refuses an empty working copy only when the branch carries nothing above trunk either. Where it does carry commits trunk does not — work a delegate's worktree, a hand-made commit, or a codex lane already landed — there is nothing to cut and everything to submit, so ship skips the commit and goes on to push and the pull request, reporting "nothing to commit — shipping as --no-commit". --no-commit states that path outright and refuses a dirty working copy, whose changes would otherwise be left out of the branch and the pull request this same run updates; a path-scoped ship never takes the path at all, since a path scopes a commit and this path cuts none. Ship resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>, autostashing uncommitted work); a rebase that would conflict is rolled back and reported instead of pushed. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
+Ship refuses an empty working copy only when the branch carries nothing above trunk either. Where it does carry commits trunk does not — work a delegate's worktree, a hand-made commit, or a codex lane already landed — there is nothing to cut and everything to submit, so ship skips the commit and goes on to push and the pull request, reporting "nothing to commit — shipping as --no-commit". A path-scoped ship whose scoped paths are clean takes that same path, naming them: scoping already declared everything else out, so finding them clean over a branch ahead of trunk means the work landed. --no-commit states the path outright and refuses a dirty working copy, whose changes would otherwise be left out of the branch and the pull request this same run updates; it is refused alongside paths, where the two spellings contradict each other. Where the branch carries nothing above trunk there is nothing to submit either, and the refusal says so. Ship resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>, autostashing uncommitted work); a rebase that would conflict is rolled back and reported instead of pushed. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
 
 Where the commit goes is one decision, resolved before any mutation and reported as a branch <name> or created <name> segment. On a non-trunk branch or bookmark, ship appends to it. On trunk it appends in your own repositories — direct-to-main is deliberate there — and starts a branch named from the commit subject when GitHub says the repository is someone else's, since an org trunk rejects the commit through its protect-<trunk> hook and leaves it dangling; the graphite lane always starts a branch on trunk, because gt has no verb that commits onto it. A detached HEAD is refused rather than guessed at, and so are several trunk candidates unless --branch names one of them. --branch <name> commits onto that branch, creating it here when it does not exist and refusing when it exists somewhere else, since ship does not check branches out; --new-branch[=<name>] always starts one, deriving the name from the commit subject when bare (an explicit name must be spelled --new-branch=name, because cobra parses "--new-branch name" as a path operand to commit); --append refuses on trunk; --allow-trunk lets --branch advance a trunk you do not own. --bookmark is a jj-only alias of --branch, --create a deprecated alias of --new-branch. A new branch is cut with gt create (graphite), git switch -c (git), or jj bookmark create -r @- (jj).
 
 Hooks follow that same decision. Ship runs the repository's prek suite only where the commit lands straight on trunk — the one position no pull request and no CI ever grades — and on a repository that names no trunk at all, where nothing downstream grades a commit either. Every other position is bound for a pull request whose CI is the check, so the suite is skipped there rather than paid twice, and git's own hooks go with it: the commit verb and every push ship makes carry --no-verify, since a push would otherwise run the pre-push half of the suite the commit just skipped. --verify runs them wherever the commit lands, --no-verify skips them on trunk too, and either flag passed explicitly beats the default.
 
-A live Graphite config (.git/.graphite_repo_config, or the git common dir's copy in a linked worktree) routes ship to the gt lane instead, even in colocated jj repos; --no-gt falls back to the jj/git detection above. Ship declines that lane, reporting a leading lane <kind> (<reason>) segment, when the repo sets ccx.nogt or when GitHub says the repo is someone else's — a public repo you neither administer nor share an owner or organization with. A lookup that cannot be made at all (gh off PATH, not signed in, no GitHub remote) keeps the gt lane. Ship also asks Graphite itself, before any commit forms, whether this repo is submittable — a live config only proves gt init once ran — and declines the lane when Graphite answers no (no auth token, no permissions); a probe that times out or cannot reach the Graphite server declines it too, because a lane nobody could confirm is not one to ride — the cost is that a blip on a genuinely synced repo lands a plain branch outside the stack, which is the safer half of that trade. Every verdict is cached between ships: a yes for a day, a no for an hour, an unanswered probe for a minute, so an outage costs one probe a minute rather than one per command. The gt lane commits through gt: gt create <name> starts a stacked branch, gt modify -c appends to one, and --amend amends the branch tip; an untracked branch is adopted first with gt track -f, or gt track --parent when --parent names one, and the resolved parent is reported. Instead of a plain push, the lane submits the downstack itself, over Graphite's API: every branch is force-pushed with git push --force-with-lease, under the lease of its last submitted version, and then the whole downstack goes to Graphite in one submit call, published by default; --draft submits drafts, --publish makes the default explicit. A branch that already has an open pull request is updated without restating its title or body, so a description someone hand-edited survives; a branch without one gets a pull request titled and bodied from its first commit above the base. A submit deeper than one branch names every branch it is about to force-push before it runs, since a submit always force-pushes the whole downstack. Ship never fetches or retries in the gt lane, but it does recover an unrestacked downstack itself, with git rather than gt: needs_restack anywhere on the chain rebases every branch of it that sits off its parent, bottom-up, after the commit. git replay computes the new commits and moves the refs without checking a branch out or touching an index, so a branch a sibling working copy holds is not a special case — which is the whole point, since git refuses to rebase such a branch and gt answers that by declining it at exit 0 for some branches and dying on git's exit 128 for others. A branch already sitting on its parent is left exactly where it is, keeping the shas its pull request was pushed as. Each moved branch's working copy is then reset onto its new head, its uncommitted work snapshotted beforehand and applied after, and the segment reads restacked N branches, across N working copies when more than this one had to move. A branch gt is holding — gt freeze, or a merge in progress — is left where it is whatever its parent did, and a refusal names the hold rather than calling it a branch off its parent. A conflict is the one manual case left: nothing is applied and no rebase is left open, so the refusal names the branch, the working copy holding it, and the gt restack --only --branch <b> that resolves it interactively — the commit has already landed by then, so a plain re-run would refuse as an empty commit; fix it, then submit the commit in place with the ccx vcs ship --no-commit line the refusal prints, which restates the PR flags this invocation carried. A branch whose commits are already in its parent is named as merged instead, with the gt untrack that clears it. A --no-commit run cut no commit of its own, so it prints no resume line at all — the same invocation is the way back in once the restack is fixed. The lane still refuses up front on a branch gt track cannot adopt and on --amend on trunk; a failed submit reports the recovery step instead of retrying — gt auth for a rejected token, gt sync for a remote branch that moved past its lease — and a submit Graphite refused in part names both the branches that landed and the ones it refused. The report names the submitted branch and its PR: submitted <branch> → PR #<n> <url>.
+A live Graphite config (.git/.graphite_repo_config, or the git common dir's copy in a linked worktree) routes ship to the gt lane instead, even in colocated jj repos; --no-gt falls back to the jj/git detection above. Ship declines that lane, reporting a leading lane <kind> (<reason>) segment, when the repo sets ccx.nogt or when GitHub says the repo is someone else's — a public repo you neither administer nor share an owner or organization with. A lookup that cannot be made at all (gh off PATH, not signed in, no GitHub remote) keeps the gt lane. Ship also asks Graphite itself, before any commit forms, whether this repo is submittable — a live config only proves gt init once ran — and declines the lane when Graphite answers no (no auth token, no permissions); a probe that times out or cannot reach the Graphite server declines it too, because a lane nobody could confirm is not one to ride — the cost is that a blip on a genuinely synced repo lands a plain branch outside the stack, which is the safer half of that trade. Every verdict is cached between ships: a yes for a day, a no for an hour, an unanswered probe for a minute, so an outage costs one probe a minute rather than one per command. The gt lane commits through gt: gt create <name> starts a stacked branch, gt modify -c appends to one, and --amend amends the branch tip; an untracked branch is adopted first with gt track -f, or gt track --parent when --parent names one, and the resolved parent is reported. Instead of a plain push, the lane submits the downstack itself, over Graphite's API: one atomic git push carries every branch's refspec at once, each under the lease of its last submitted version, so every branch moves or none does, and then each branch goes to Graphite in a submit call of its own, in stack order, published by default; --draft submits drafts, --publish makes the default explicit. A branch that already has an open pull request is updated without restating its title or body, so a description someone hand-edited survives; a branch without one gets a pull request titled and bodied from its first commit above the base. A submit deeper than one branch names every branch it is about to force-push before it runs, since a submit always force-pushes the whole downstack. Ship never fetches or retries in the gt lane, but it does recover an unrestacked downstack itself, with git rather than gt: needs_restack anywhere on the chain rebases every branch of it that sits off its parent, bottom-up, after the commit. git replay computes the new commits and moves the refs without checking a branch out or touching an index, so a branch a sibling working copy holds is not a special case — which is the whole point, since git refuses to rebase such a branch and gt answers that by declining it at exit 0 for some branches and dying on git's exit 128 for others. A branch already sitting on its parent is left exactly where it is, keeping the shas its pull request was pushed as. Each moved branch's working copy is then reset onto its new head, its uncommitted work snapshotted beforehand and applied after, and the segment reads restacked N branches, across N working copies when more than this one had to move. A branch gt is holding — gt freeze, or a merge in progress — is left where it is whatever its parent did, and a refusal names the hold rather than calling it a branch off its parent. A conflict is the one manual case left: nothing is applied and no rebase is left open, so the refusal names the branch, the working copy holding it, and the gt restack --only --branch <b> that resolves it interactively — the commit has already landed by then, so a plain re-run would refuse as an empty commit; fix it, then submit the commit in place with the ccx vcs ship --no-commit line the refusal prints, which restates the PR flags this invocation carried. A branch whose commits are already in its parent is named as merged instead, with the gt untrack that clears it. A --no-commit run cut no commit of its own, so it prints no resume line at all — the same invocation is the way back in once the restack is fixed. The lane still refuses up front on a branch gt track cannot adopt and on --amend on trunk; a failed submit reports the recovery step instead of retrying — gt auth for a rejected token, gt sync for a remote branch that moved past its lease — and a submit Graphite refused in part names both the branches that landed and the ones it refused. The report names the submitted branch and its PR: submitted <branch> → PR #<n> <url>.
 
 Ship owns the pull request in every lane. --pr-title and --pr-body-file are repeatable and branch-scoped — <branch>=<value>, a bare value applying to the tip — because one submit opens a PR for every branch in the downstack; --pr-body-file takes "-" once to read the body from piped stdin. Outside the graphite lane ship opens the branch's PR when there is none (never with --fill, which would publish the commit's Claude-Session-Id trailer into the description) and edits exactly the fields this invocation restated when there is, so a description someone hand-edited survives a re-ship that does not mention it; a body given is replaced wholesale, never merged. On trunk it reports no PR (on trunk). In the graphite lane the submit opens the PRs and ship restates the named branches afterwards, which is the only way a downstack PR gets a body at all. Every body file is read before the commit forms, so an unreadable path refuses with the working copy untouched, and a ship that names no PR flag makes no gh pr call. --draft and --publish apply in every lane, converting an existing PR in either direction; --no-pr skips the step. -m is optional when an unscoped --pr-title is given: the title becomes the commit subject, and an unscoped --pr-body-file its body, with the <details> wrapper dropped, each ## Heading folded into a Heading: paragraph, and blank runs collapsed. Only an unscoped value can feed it — the tip's name is the branch plan, which that message is an input to.
 
@@ -340,7 +349,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	} else if kind == vcs.JJ && sel == nil && !o.amend {
 		switch err := shipRefuseEmptyJJ(ctx, dir, o, plan); {
 		case errors.Is(err, errShipAlreadyCommitted):
-			o.noCommit, landedSeg = true, shipLandedSegment
+			o.noCommit, landedSeg = true, shipLandedSegment(o)
 		case err != nil:
 			return err
 		}
@@ -364,7 +373,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		}
 		switch {
 		case errors.Is(err, errShipAlreadyCommitted):
-			o.noCommit, landedSeg = true, shipLandedSegment
+			o.noCommit, landedSeg = true, shipLandedSegment(o)
 		case err != nil:
 			return err
 		case kind == vcs.JJ && plan.action == branchCreate:
@@ -779,7 +788,7 @@ func shipRefuseEmptyJJ(ctx context.Context, dir render.Dir, o shipOpts, plan bra
 	if parents > 1 {
 		return nil
 	}
-	landed, err := shipAlreadyCommitted(ctx, dir, vcs.JJ, o, plan)
+	landed, standing, err := shipAlreadyCommitted(ctx, dir, vcs.JJ, plan)
 	if err != nil {
 		return err
 	}
@@ -790,16 +799,15 @@ func shipRefuseEmptyJJ(ctx context.Context, dir render.Dir, o shipOpts, plan bra
 	if err != nil {
 		return err
 	}
-	scope := ""
-	if len(o.paths) > 0 {
-		scope = " in " + strings.Join(o.paths, ", ")
+	if standing != "" {
+		return fmt.Errorf("ship: nothing to commit%s, and %s — nothing to submit", shipScope(o), standing)
 	}
 	hint := ""
 	if plan.name != "" {
 		pat := shellSingleQuote(vcs.JJExactPattern(plan.name))
 		hint = fmt.Sprintf(" push it: jj bookmark move %s --to @- && jj git push --bookmark %s", pat, pat)
 	}
-	return fmt.Errorf("ship: nothing to commit%s — did a prior ship already land %s %q?%s", scope, short, subject, hint)
+	return fmt.Errorf("ship: nothing to commit%s — did a prior ship already land %s %q?%s", shipScope(o), short, subject, hint)
 }
 
 // shipRefuseEmptyGit refuses a commit over an empty index. Unlike git commit,
@@ -817,7 +825,7 @@ func shipRefuseEmptyGit(ctx context.Context, dir render.Dir, o shipOpts, plan br
 	if code != 0 {
 		return fmt.Errorf("ship: git diff --cached --quiet: exit %d: %s", code, strings.TrimSpace(stderr))
 	}
-	landed, err := shipAlreadyCommitted(ctx, dir, vcs.Git, o, plan)
+	landed, standing, err := shipAlreadyCommitted(ctx, dir, vcs.Git, plan)
 	if err != nil {
 		return err
 	}
@@ -828,42 +836,53 @@ func shipRefuseEmptyGit(ctx context.Context, dir render.Dir, o shipOpts, plan br
 	if err != nil {
 		return err
 	}
-	scope := ""
-	if len(o.paths) > 0 {
-		scope = " in " + strings.Join(o.paths, ", ")
+	if standing != "" {
+		return fmt.Errorf("ship: nothing to commit%s, and %s — nothing to submit", shipScope(o), standing)
 	}
-	return fmt.Errorf("ship: nothing to commit%s — did a prior ship already land %s %q?", scope, short, subject)
+	return fmt.Errorf("ship: nothing to commit%s — did a prior ship already land %s %q?", shipScope(o), short, subject)
 }
 
 // shipAlreadyCommitted reports work some other path already committed: nothing
-// left to commit, over a branch carrying commits trunk does not. Ship submits
-// that branch as it stands rather than refusing a commit it cannot cut. A
-// branch level with trunk has nothing to submit either, and a scoped ship is
-// not this case at all: a path scopes a commit, and this path cuts none.
-func shipAlreadyCommitted(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpts, plan branchPlan) (bool, error) {
-	if len(o.paths) > 0 || plan.trunk == "" || plan.action == branchCreate {
-		return false, nil
+// left to commit, scoped to paths or not, over a branch carrying commits trunk
+// does not. Ship submits that branch as it stands rather than refusing a commit
+// it cannot cut. Where it does not, standing is the clause the refusal prints
+// for why there is nothing to submit either, empty when no trunk resolved.
+func shipAlreadyCommitted(ctx context.Context, dir render.Dir, kind vcs.Kind, plan branchPlan) (landed bool, standing string, err error) {
+	if plan.trunk == "" || plan.action == branchCreate {
+		return false, "", nil
 	}
 	switch kind {
 	case vcs.JJ:
 		stack, err := jjLogLines(ctx, dir, "ship", jjStackRevset(plan.trunk))
-		if err != nil || len(stack) == 0 {
-			return false, err
+		if err != nil {
+			return false, "", err
+		}
+		if len(stack) == 0 {
+			return false, "the branch carries nothing above " + plan.trunk, nil
 		}
 		conflicts, err := jjLogLines(ctx, dir, "ship", jjConflictRevset(plan.trunk))
-		return len(conflicts) == 0, err
+		if err != nil {
+			return false, "", err
+		}
+		if len(conflicts) > 0 {
+			return false, "the commits above " + plan.trunk + " are conflicted", nil
+		}
+		return true, "", nil
 	case vcs.Git:
 		out, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", "--count", plan.trunk + "..HEAD"})
 		if err != nil {
-			return false, fmt.Errorf("ship: git rev-list --count %s..HEAD: %w", plan.trunk, err)
+			return false, "", fmt.Errorf("ship: git rev-list --count %s..HEAD: %w", plan.trunk, err)
 		}
 		ahead, err := strconv.Atoi(strings.TrimSpace(out))
 		if err != nil {
-			return false, fmt.Errorf("ship: malformed rev-list count %q: %w", out, err)
+			return false, "", fmt.Errorf("ship: malformed rev-list count %q: %w", out, err)
 		}
-		return ahead > 0, nil
+		if ahead == 0 {
+			return false, "the branch carries nothing above " + plan.trunk, nil
+		}
+		return true, "", nil
 	default:
-		return false, errors.New("ship: unsupported vcs")
+		return false, "", errors.New("ship: unsupported vcs")
 	}
 }
 

@@ -237,15 +237,18 @@ deprecated alias of `--new-branch`).
 A branch someone else already committed — a delegate's worktree, a `git commit` by
 hand, a codex lane — ships without a flag: with nothing left to commit over commits
 trunk does not carry, ship skips the commit and goes on to track, push, and the PR,
-reporting `nothing to commit — shipping as --no-commit`. `--no-commit` states that
-path outright, and refuses a dirty working copy rather than leave its changes out
-of the branch and the PR. A branch level with trunk still refuses: there is nothing
-to submit either way.
+reporting `nothing to commit — shipping as --no-commit`. Trailing paths do not
+block it: a scoped ship whose paths come up clean takes the same path, the report
+naming the paths. `--no-commit` states that path outright, takes no paths
+(`--no-commit takes no paths — a path scopes a commit, and --no-commit cuts none`),
+and refuses a dirty working copy rather than leave its changes out of the branch
+and the PR. A branch level with trunk still refuses: there is nothing to submit
+either way.
 
 A live Graphite config (`.git/.graphite_repo_config`, linked worktrees included)
-routes ship to the gt lane — commits through `gt create`/`gt modify`, the push a
-force-with-lease per branch and one submit of the downstack over Graphite's API,
-published by default — after three gates, each
+routes ship to the gt lane — commits through `gt create`/`gt modify`, the push one
+atomic force-with-lease of every branch and one submit call per branch over
+Graphite's API, published by default — after three gates, each
 demoting to jj/git with the reason in a leading `lane <kind> (<reason>)` segment:
 `ccx.nogt` set in git config, GitHub positively saying the repo is someone else's,
 and a cached probe of whether Graphite can actually submit here (a probe that
@@ -289,6 +292,7 @@ ccx vcs ship -m "spike" --branch me/probe        # commit onto a named branch
 ccx vcs ship -m "feat: x" --new-branch --pr-title "Add X" --pr-body-file body.md
 ccx vcs ship --new-branch --pr-title "Add X" --pr-body-file body.md  # -m derived from them
 ccx vcs ship --pr-title "Add X" --pr-body-file body.md  # already committed: just submit it
+ccx vcs ship -m "fix: x" internal/cli            # paths already committed: submits it too
 ccx vcs ship -m "fix: x" --budget 0              # uncapped failure-log excerpt
 ```
 

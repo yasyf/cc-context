@@ -236,11 +236,13 @@ func TestShipJJPreflightRefusalAndEmptyGuardLive(t *testing.T) {
 	}
 
 	_, err = runShipCmd(t, "-m", "y", "--no-watch")
-	if err == nil || !strings.Contains(err.Error(), "nothing to commit — did a prior ship already land") {
+	if err == nil || !strings.Contains(err.Error(), "nothing to commit, and the branch carries nothing above main — nothing to submit") {
 		t.Fatalf("third ship error = %v, want empty ship refusal", err)
 	}
-	if !strings.Contains(err.Error(), `jj bookmark move 'exact:"main"' --to @- && jj git push --bookmark 'exact:"main"'`) {
-		t.Errorf("third ship error = %q, want shell-quoted exact:main push hint", err)
+	// main already sits at @-, so no bookmark move recovers anything: the
+	// refusal states the standing and offers no push hint.
+	if strings.Contains(err.Error(), "push it:") {
+		t.Errorf("third ship error = %q, want no push hint where the bookmark is already at @-", err)
 	}
 }
 
