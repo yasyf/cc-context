@@ -218,13 +218,10 @@ func TestStackSubmitGoesThroughTheGraphiteAPI(t *testing.T) {
 	if !strings.Contains(out, "submitted 2 branches") {
 		t.Errorf("report = %q, want it to name both branches", out)
 	}
-	if n := api.submitCalls(); n != 1 {
-		t.Errorf("submit posts = %d, want exactly one for the whole stack", n)
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base", "feature"}) {
+		t.Errorf("submit posts = %v, want one per branch, base first", heads)
 	}
 	for _, branch := range []string{"base", "feature"} {
-		if _, ok := api.lastSubmit()[branch]; !ok {
-			t.Errorf("the submit omitted %s", branch)
-		}
 		if !gitBranchExists(t, f.RemoteDir, branch) {
 			t.Errorf("origin lacks %s — the submit never pushed it", branch)
 		}

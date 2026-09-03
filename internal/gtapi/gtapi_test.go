@@ -399,9 +399,10 @@ func TestStatusMessageBoundsAnUnrecognizedBody(t *testing.T) {
 	}
 }
 
-// TestStatusErrorQuotesABodilessRefusal is the shape that read as a bare
-// "400 Bad Request": a submit Graphite refused, whose body names its cause
-// under no field this recognizes.
+// TestStatusErrorQuotesABodilessRefusal covers what read as a bare "400 Bad
+// Request": a refusal whose body names its cause under no field this
+// recognizes. The body is synthetic — Graphite's real submit 400 was never
+// captured — so only the raw quoting it asserts is load-bearing.
 func TestStatusErrorQuotesABodilessRefusal(t *testing.T) {
 	t.Parallel()
 	err := statusError(http.MethodPost, "https://api.graphite.com/v1/graphite/submit/pull-requests", http.StatusBadRequest,

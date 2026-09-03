@@ -3945,7 +3945,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			prBranches: []string{"feature"},
 			submitInv: [][]string{
 				gtCreateLogInv("main", "feature"),
-				gtPushInv("feature", vcstest.GraphiteLeafSHA),
+				gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 			},
 			wantSeg: "submitted feature → PR #7 https://github.com/x/pull/7",
 		},
@@ -3958,8 +3958,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			submitInv: [][]string{
 				gtCreateLogInv("main", "feature"),
 				gtCreateLogInv("feature", "feature2"),
-				gtPushInv("feature", "beadfeed"),
-				gtPushInv("feature2", vcstest.GraphiteLeafSHA),
+				gtPushInv(gtHead("feature", "beadfeed"), gtHead("feature2", vcstest.GraphiteLeafSHA)),
 			},
 			wantSeg: "submitted feature2 → PR #7 https://github.com/x/pull/7 (stack of 2: feature, feature2)",
 		},
@@ -4039,7 +4038,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		gtCommonDirArgv,
 		gtRefsArgvIn(created),
 		gtCreateLogInv("main", "fix-frobnicate"),
-		gtPushInv("fix-frobnicate", vcstest.GraphiteLeafSHA),
+		gtPushInv(gtHead("fix-frobnicate", vcstest.GraphiteLeafSHA)),
 		ghDownstackPRArgv("fix-frobnicate"),
 		{"git", "rev-parse", "HEAD"},
 		ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
@@ -5358,7 +5357,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		stubGTAPI(t)
 		lease := "cafecafecafecafecafecafecafecafecafecafe"
 		recorded := gtmeta.Version{HeadSha: lease, BaseSha: "deadbeef", BaseName: "main"}
-		if err := gtmeta.RecordSubmitted(t.Context(), os.Getenv("GT_META_DIR"), "feature", recorded); err != nil {
+		if err := gtmeta.RecordSubmitted(t.Context(), os.Getenv("GT_META_DIR"), map[string]gtmeta.Version{"feature": recorded}); err != nil {
 			t.Fatalf("seed last_submitted_version: %v", err)
 		}
 		t.Setenv("GIT_LEASE_STALE", "1")
@@ -5374,7 +5373,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 				push = inv
 			}
 		}
-		if want := gtPushInvLease("feature", vcstest.GraphiteLeafSHA, lease); !reflect.DeepEqual(push, want) {
+		if want := gtPushInv(gtLeasedHead("feature", vcstest.GraphiteLeafSHA, lease)); !reflect.DeepEqual(push, want) {
 			t.Errorf("push argv = %v, want the recorded lease pinned: %v", push, want)
 		}
 	})
@@ -5388,7 +5387,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		api.submitErrors["feature2"] = "base branch not found"
 
 		_, err := runShipCmd(t, "-m", "fix: frobnicate")
-		want := submitAdvice("graphite refused feature2 (base branch not found); landed feature → PR #100")
+		want := submitAdvice("graphite refused feature2 (base branch not found); every branch is already pushed; landed feature → PR #100")
 		if err == nil || err.Error() != want {
 			t.Fatalf("error = %v, want %q", err, want)
 		}
@@ -5407,6 +5406,184 @@ func TestShipGTSubmitFailures(t *testing.T) {
 			t.Errorf("feature2 last_submitted_version = %+v, want %+v", last["feature2"], want2)
 		}
 	})
+}
+
+// TestShipGTResubmitUpdates covers the entry contract's other half: a branch
+// whose pull request is already open submits as an update naming it, and
+// restates no title, so a hand-edited description survives the re-ship.
+func TestShipGTResubmitUpdates(t *testing.T) {
+	setupShipGT(t, false)
+	api := stubGTAPI(t)
+	api.prs["feature"] = 41
+
+	if _, err := runShipCmd(t, "-m", "fix: frobnicate"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	entry := api.submitEntry("feature")
+	if entry.Action != gtapi.SubmitUpdate || entry.PRNumber != 41 {
+		t.Errorf("entry = %+v, want an update naming PR 41", entry)
+	}
+	if entry.Title != nil {
+		t.Errorf("entry restated the title %q, which would overwrite a hand-edited one", *entry.Title)
+	}
+}
+
+// TestShipGTSubmitsAnUpdateAndACreateSeparately covers the mixed stack that
+// broke in production: the branch below already has a pull request and the one
+// above does not, so the two actions have to go up as two posts rather than as
+// one array carrying both.
+func TestShipGTSubmitsAnUpdateAndACreateSeparately(t *testing.T) {
+	setupShipGT(t, false)
+	api := stubGTAPI(t)
+	api.prs["feature"] = 41
+	t.Setenv("GIT_BRANCH", "feature2")
+	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
+		`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
+
+	if _, err := runShipCmd(t, "-m", "fix: frobnicate"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"feature", "feature2"}) {
+		t.Fatalf("submit posts = %v, want one per branch bottom-up: feature, feature2", heads)
+	}
+	for i, body := range api.submitBodies() {
+		var req struct {
+			PRs []json.RawMessage `json:"prs"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("decode submit %d: %v", i, err)
+		}
+		if len(req.PRs) != 1 {
+			t.Errorf("submit %d carried %d entries, want the update and the create posted apart", i, len(req.PRs))
+		}
+	}
+	if update := api.submitEntry("feature"); update.Action != gtapi.SubmitUpdate || update.PRNumber != 41 {
+		t.Errorf("feature entry = %+v, want an update naming PR 41", update)
+	}
+	create := api.submitEntry("feature2")
+	if create.Action != gtapi.SubmitCreate || create.PRNumber != 0 {
+		t.Errorf("feature2 entry = %+v, want a create naming no pull request", create)
+	}
+	if create.Title == nil || *create.Title != "fix: frobnicate" {
+		t.Errorf("feature2 title = %v, want the commit subject graphite needs to create", create.Title)
+	}
+}
+
+// TestShipGTEmptySubjectRefusesBeforeTheSubmit covers the one field graphite
+// requires on a create that ccx derives rather than being given: a commit with
+// no subject leaves no title, so the submit refuses before it pushes anything.
+func TestShipGTEmptySubjectRefusesBeforeTheSubmit(t *testing.T) {
+	log := setupShipGT(t, false)
+	api := stubGTAPI(t)
+	t.Setenv("GIT_LOG_SUBJECT", "")
+
+	_, err := runShipCmd(t, "-m", "fix: frobnicate")
+	want := "ship: the first commit on feature above main has an empty subject, and graphite needs a title to create a pull request — give that commit a subject line"
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+	if refs := gtPushedRefs(readInvocations(t, log)); refs != nil {
+		t.Errorf("pushed %v despite having no title to submit", refs)
+	}
+	if heads := api.submitHeads(); len(heads) != 0 {
+		t.Errorf("submitted %v despite having no title", heads)
+	}
+}
+
+// TestShipGTSubmitsOneEntryPerPost pins the contract recovered from
+// graphite-cli: a stack goes up one entry per POST, base first, however deep it
+// is, and every branch moves in one atomic push before the first POST.
+func TestShipGTSubmitsOneEntryPerPost(t *testing.T) {
+	log := setupShipGT(t, false)
+	api := stubGTAPI(t)
+	t.Setenv("GIT_BRANCH", "feature2")
+	setGTState(t, `{"main":{"trunk":true},"base":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
+		`"feature":{"parents":[{"ref":"base","sha":"beadfeed"}]},`+
+		`"feature2":{"parents":[{"ref":"feature","sha":"cafebabe"}]}}`)
+
+	if _, err := runShipCmd(t, "-m", "fix: frobnicate"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base", "feature", "feature2"}) {
+		t.Errorf("submit posts = %v, want one per branch bottom-up: base, feature, feature2", heads)
+	}
+	for i, body := range api.submitBodies() {
+		var req struct {
+			PRs []json.RawMessage `json:"prs"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("decode submit %d: %v", i, err)
+		}
+		if len(req.PRs) != 1 {
+			t.Errorf("submit %d carried %d entries, want exactly 1 — graphite refuses a batched array", i, len(req.PRs))
+		}
+	}
+	var pushes [][]string
+	for _, inv := range readInvocations(t, log) {
+		if len(inv) > 1 && inv[0] == "git" && inv[1] == "push" {
+			pushes = append(pushes, inv)
+		}
+	}
+	want := [][]string{{
+		"git", "push", "origin",
+		"--force-with-lease", "--force-with-lease", "--force-with-lease",
+		"--progress",
+		"beadfeed:refs/heads/base", "cafebabe:refs/heads/feature", vcstest.GraphiteLeafSHA + ":refs/heads/feature2",
+		"--no-verify", "--atomic",
+	}}
+	if !reflect.DeepEqual(pushes, want) {
+		t.Errorf("pushes = %v, want the one atomic multi-ref push %v", pushes, want)
+	}
+}
+
+// TestShipGTSubmitBodyMatchesGT holds the stacked create's JSON against the body
+// gt itself was captured posting, adapted to what ccx legitimately sends: no
+// shouldRetarget and no reviewers, and a body derived from the commit rather
+// than the empty one gt submit --no-edit leaves.
+func TestShipGTSubmitBodyMatchesGT(t *testing.T) {
+	setupShipGT(t, false)
+	api := stubGTAPI(t)
+	t.Setenv("GIT_BRANCH", "feature2")
+	t.Setenv("GIT_LOG_BODY", "why this change")
+	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
+		`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
+
+	if _, err := runShipCmd(t, "-m", "fix: frobnicate"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	bodies := api.submitBodies()
+	if len(bodies) != 2 {
+		t.Fatalf("submit posts = %d, want one per branch", len(bodies))
+	}
+	want := `{"repoOwner":"yasyf","repoName":"cc-context","trunkBranchName":"main","mergeWhenReady":false,` +
+		`"rerequestReview":false,"prs":[{"action":"create","head":"feature2","headSha":"` + vcstest.GraphiteLeafSHA +
+		`","base":"feature","baseSha":"beadfeed","title":"fix: frobnicate","body":"why this change","draft":false}]}`
+	if got := string(bodies[1]); got != want {
+		t.Errorf("stacked create body =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// TestShipGTMidStackRefusalNamesWhatLanded covers what one entry per POST makes
+// possible: a refusal part-way up leaves the branches below it holding open pull
+// requests, and stops before the ones above, whose base pull request never
+// opened.
+func TestShipGTMidStackRefusalNamesWhatLanded(t *testing.T) {
+	setupShipGT(t, false)
+	api := stubGTAPI(t)
+	t.Setenv("GIT_BRANCH", "feature2")
+	setGTState(t, `{"main":{"trunk":true},"base":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
+		`"feature":{"parents":[{"ref":"base","sha":"beadfeed"}]},`+
+		`"feature2":{"parents":[{"ref":"feature","sha":"cafebabe"}]}}`)
+	api.submitErrors["feature"] = "base branch not found"
+
+	_, err := runShipCmd(t, "-m", "fix: frobnicate")
+	want := submitAdvice("graphite refused feature (base branch not found); every branch is already pushed; landed base → PR #100")
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base", "feature"}) {
+		t.Errorf("submit posts = %v, want the loop to stop at the branch graphite refused", heads)
+	}
 }
 
 // TestShipGTSubmitCarriesTheHookDecision pins the skip to the push half of the
@@ -5461,9 +5638,12 @@ func TestShipGTDraftPublish(t *testing.T) {
 			if _, err := runShipCmd(t, args...); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			pr := api.lastSubmit()["feature"]
-			if got, ok := pr["draft"].(bool); !ok || got != tt.draft {
-				t.Errorf("submitted draft = %v, want %v — draft must be explicit either way, since omitting it leaves an existing draft PR a draft", pr["draft"], tt.draft)
+			pr := api.submitEntry("feature")
+			if pr.Draft == nil {
+				t.Fatal("submit omitted draft — it must be explicit either way, since omitting it leaves an existing draft PR a draft")
+			}
+			if *pr.Draft != tt.draft {
+				t.Errorf("submitted draft = %v, want %v", *pr.Draft, tt.draft)
 			}
 		})
 	}
@@ -5799,26 +5979,28 @@ func TestGitTrunkBranchLive(t *testing.T) {
 
 // TestShipGTStackNamedBeforeSubmit pins the announcement: the branches a
 // submit will force-push are named from the downstack ship already resolved,
-// and the whole downstack goes to Graphite in exactly one submit call at any
-// depth.
+// and each of them goes to Graphite in a submit call of its own.
 func TestShipGTStackNamedBeforeSubmit(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
 		branch    string
 		stateJSON string
 		wantLine  string
+		wantHeads []string
 	}{
 		{
 			name:      "depth 1 names nothing",
 			branch:    "feature",
 			stateJSON: `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`,
+			wantHeads: []string{"feature"},
 		},
 		{
 			name:   "depth 2 names the whole chain",
 			branch: "feature2",
 			stateJSON: `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},` +
 				`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`,
-			wantLine: "ship: submitting 2 branches: feature, feature2\n",
+			wantLine:  "ship: submitting 2 branches: feature, feature2\n",
+			wantHeads: []string{"feature", "feature2"},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -5839,8 +6021,8 @@ func TestShipGTStackNamedBeforeSubmit(t *testing.T) {
 			} else if !strings.Contains(errStr, tt.wantLine) {
 				t.Errorf("stderr = %q, want it to carry %q", errStr, tt.wantLine)
 			}
-			if got := api.submitCalls(); got != 1 {
-				t.Errorf("the submit posted %d times, want exactly 1", got)
+			if heads := api.submitHeads(); !slices.Equal(heads, tt.wantHeads) {
+				t.Errorf("the submit posted %v, want one post per branch: %v", heads, tt.wantHeads)
 			}
 		})
 	}

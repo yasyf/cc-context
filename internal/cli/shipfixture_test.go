@@ -801,7 +801,7 @@ exit 0
 	gitIdxMark := "if [ -n \"$GIT_INDEX_FILE\" ]; then { printf 'idx\\0'; printf '%s\\0' \"${GIT_INDEX_FILE##*/}\"; printf '\\0'; } >> \"$SHIP_LOG\"; fi\n"
 	git := "#!/bin/sh\n" + gitIdxMark + log("git") + `case "$1 $2" in
   "log -1") printf '%s\0%s' 'a1b2c3d' 'fix: frobnicate' ;;
-  "log --reverse") printf 'fix: frobnicate\0%s\0\n' "$GIT_LOG_BODY" ;;
+  "log --reverse") printf '%s\0%s\0\n' "${GIT_LOG_SUBJECT-fix: frobnicate}" "$GIT_LOG_BODY" ;;
   "branch --show-current")
     if [ -n "$GIT_BRANCH_SHOW_FAIL" ]; then printf 'fatal: not a git repository\n' >&2; exit 128; fi
     branch=${GIT_BRANCH-main}

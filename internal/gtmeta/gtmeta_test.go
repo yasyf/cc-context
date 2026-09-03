@@ -123,7 +123,7 @@ func TestLastSubmittedRoundTrip(t *testing.T) {
 	}
 
 	want := gtmeta.Version{HeadSha: "0f0f", BaseSha: "deadbeef", BaseName: "main"}
-	if err := gtmeta.RecordSubmitted(t.Context(), dir, "feat", want); err != nil {
+	if err := gtmeta.RecordSubmitted(t.Context(), dir, map[string]gtmeta.Version{"feat": want}); err != nil {
 		t.Fatalf("RecordSubmitted: %v", err)
 	}
 	got, err = gtmeta.LastSubmitted(t.Context(), dir)
@@ -134,9 +134,40 @@ func TestLastSubmittedRoundTrip(t *testing.T) {
 		t.Errorf("LastSubmitted = %v, want feat recorded as %+v", got, want)
 	}
 
-	err = gtmeta.RecordSubmitted(t.Context(), dir, "absent", want)
+	err = gtmeta.RecordSubmitted(t.Context(), dir, map[string]gtmeta.Version{"absent": want})
 	if err == nil || !strings.Contains(err.Error(), `"absent" has no branch_metadata row`) {
 		t.Errorf("RecordSubmitted(absent) = %v, want a refusal naming the missing row", err)
+	}
+}
+
+// TestRecordSubmittedIsAllOrNothing pins the write to the atomic push it
+// records: an untracked branch anywhere in the map aborts the transaction, so
+// no branch is left holding a lease for a head the stack never submitted under.
+func TestRecordSubmittedIsAllOrNothing(t *testing.T) {
+	dir := t.TempDir()
+	vcstest.WriteGraphiteMeta(t, dir, `{"main":{"trunk":true},"feat":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
+		`"top":{"parents":[{"ref":"feat","sha":"0f0f"}]}}`)
+
+	seed := gtmeta.Version{HeadSha: "0f0f", BaseSha: "deadbeef", BaseName: "main"}
+	if err := gtmeta.RecordSubmitted(t.Context(), dir, map[string]gtmeta.Version{"feat": seed}); err != nil {
+		t.Fatalf("seed RecordSubmitted: %v", err)
+	}
+
+	err := gtmeta.RecordSubmitted(t.Context(), dir, map[string]gtmeta.Version{
+		"feat":  {HeadSha: "1a1a", BaseSha: "deadbeef", BaseName: "main"},
+		"top":   {HeadSha: "2b2b", BaseSha: "1a1a", BaseName: "feat"},
+		"ghost": {HeadSha: "3c3c", BaseSha: "2b2b", BaseName: "top"},
+	})
+	if err == nil || !strings.Contains(err.Error(), `"ghost" has no branch_metadata row`) {
+		t.Fatalf("RecordSubmitted = %v, want a refusal naming ghost", err)
+	}
+
+	last, err := gtmeta.LastSubmitted(t.Context(), dir)
+	if err != nil {
+		t.Fatalf("LastSubmitted: %v", err)
+	}
+	if len(last) != 1 || last["feat"] != seed {
+		t.Errorf("LastSubmitted = %v, want only the seeded %+v — the aborted batch wrote nothing", last, seed)
 	}
 }
 

@@ -83,8 +83,8 @@ func statusError(method, target string, status int, payload []byte) *StatusError
 }
 
 // statusMessage is what Graphite said about a refusal. Its error bodies are not
-// one shape — a submit's 400 names the entries it rejected rather than carrying
-// a message — so a body naming none of the fields here is quoted raw.
+// one shape, so a body naming none of the fields here is quoted raw rather than
+// dropped for a bare status line.
 func statusMessage(payload []byte) string {
 	var body struct {
 		Message string          `json:"message"`

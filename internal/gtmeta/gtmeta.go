@@ -293,32 +293,47 @@ func LastSubmitted(ctx context.Context, commonDir string) (map[string]Version, e
 	return versions, nil
 }
 
-// RecordSubmitted writes one branch's last_submitted_version, which is what
+// RecordSubmitted writes each branch's last_submitted_version, which is what
 // gt reads to decide the branch was ever submitted and which remote head its
-// next force-with-lease may replace. A branch without a row is an error: only
-// a tracked branch can have been submitted.
-func RecordSubmitted(ctx context.Context, commonDir, branch string, v Version) error {
-	path := filepath.Join(commonDir, metadataDB)
-	payload, err := json.Marshal(v)
-	if err != nil {
-		return fmt.Errorf("gtmeta: encode last_submitted_version of %q: %w", branch, err)
+// next force-with-lease may replace. One transaction, matching the atomic push
+// it records. A branch without a row is an error: only a tracked branch can
+// have been submitted.
+func RecordSubmitted(ctx context.Context, commonDir string, versions map[string]Version) error {
+	if len(versions) == 0 {
+		return nil
 	}
+	path := filepath.Join(commonDir, metadataDB)
 	db, err := sql.Open("sqlite", writableDSN(path))
 	if err != nil {
 		return fmt.Errorf("gtmeta: open %q: %w", path, err)
 	}
 	defer func() { _ = db.Close() }()
 
-	result, err := db.ExecContext(ctx, `UPDATE branch_metadata SET last_submitted_version = ? WHERE branch_name = ?`, string(payload), branch)
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("gtmeta: record %q in %q: %w", branch, path, err)
+		return fmt.Errorf("gtmeta: begin on %q: %w", path, err)
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("gtmeta: record %q in %q: %w", branch, path, err)
+	defer func() { _ = tx.Rollback() }()
+
+	for _, branch := range slices.Sorted(maps.Keys(versions)) {
+		payload, err := json.Marshal(versions[branch])
+		if err != nil {
+			return fmt.Errorf("gtmeta: encode last_submitted_version of %q: %w", branch, err)
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE branch_metadata SET last_submitted_version = ? WHERE branch_name = ?`, string(payload), branch)
+		if err != nil {
+			return fmt.Errorf("gtmeta: record %q in %q: %w", branch, path, err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("gtmeta: record %q in %q: %w", branch, path, err)
+		}
+		if affected != 1 {
+			return fmt.Errorf("gtmeta: %q has no branch_metadata row in %q", branch, path)
+		}
 	}
-	if affected != 1 {
-		return fmt.Errorf("gtmeta: %q has no branch_metadata row in %q", branch, path)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("gtmeta: commit to %q: %w", path, err)
 	}
 	return nil
 }

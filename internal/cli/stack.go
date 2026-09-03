@@ -81,8 +81,8 @@ A submit pushes each branch onto the parent gt records for it, so a stack spread
 across working copies has to be restacked in each of them first — which is the
 sweep ccx vcs stack restack runs. This does both, in that order, so the submit
 meets a stack that is already in the shape Graphite expects. The submit itself is
-ccx vcs ship's: a force-with-lease push per branch under the lease of its last
-submitted version, then the whole stack posted to Graphite's API in one call.`,
+ccx vcs ship's: one atomic push moving every branch, each under the lease of its
+last submitted version, then one post to Graphite's API per branch, bottom-up.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runStackSubmit(cmd, draft)

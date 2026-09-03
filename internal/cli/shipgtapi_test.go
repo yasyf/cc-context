@@ -5,10 +5,14 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -31,7 +35,45 @@ type gtAPIStub struct {
 	nextPR         int
 
 	routes  []string
-	submits []map[string]any
+	submits []gtStubSubmit
+}
+
+// gtStubSubmit is one submit post: the raw body ccx sent, and the lone entry
+// the recovered contract requires it to carry.
+type gtStubSubmit struct {
+	body  []byte
+	entry gtStubSubmitEntry
+}
+
+// gtStubSubmitRequest is a submit post typed to the zod schema recovered from
+// graphite-cli: repoOwner, repoName and trunkBranchName are required.
+type gtStubSubmitRequest struct {
+	RepoOwner             string              `json:"repoOwner"`
+	RepoName              string              `json:"repoName"`
+	TrunkBranchName       string              `json:"trunkBranchName"`
+	TargetTrunkBranchName string              `json:"targetTrunkBranchName"`
+	MergeWhenReady        bool                `json:"mergeWhenReady"`
+	RerequestReview       bool                `json:"rerequestReview"`
+	PRs                   []gtStubSubmitEntry `json:"prs"`
+}
+
+// gtStubSubmitEntry is one entry of that schema. Title and Draft are pointers
+// because an omitted field and an empty one differ: an update that restates
+// neither leaves the pull request's own alone.
+type gtStubSubmitEntry struct {
+	Action           gtapi.SubmitAction `json:"action"`
+	Head             string             `json:"head"`
+	HeadSha          string             `json:"headSha"`
+	Base             string             `json:"base"`
+	BaseSha          string             `json:"baseSha"`
+	PRNumber         int                `json:"prNumber"`
+	Title            *string            `json:"title"`
+	Body             *string            `json:"body"`
+	Draft            *bool              `json:"draft"`
+	Reviewers        []string           `json:"reviewers"`
+	ShouldRetarget   bool               `json:"shouldRetarget"`
+	RebaseOnlyChange bool               `json:"rebaseOnlyChange"`
+	MaintainRetarget bool               `json:"maintainRetarget"`
 }
 
 // stubGTAPI points gtAPIClient at a fresh stub for the test's duration. The
@@ -92,29 +134,88 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		s.write(w, map[string]any{"result": map[string]any{"retargetedPrs": []int{}}})
 	case gtStubSubmitRoute:
-		var req map[string]any
-		s.decode(r, &req)
-		s.submits = append(s.submits, req)
-		out := []map[string]any{}
-		for _, raw := range req["prs"].([]any) {
-			pr := raw.(map[string]any)
-			head := pr["head"].(string)
-			if message := s.submitErrors[head]; message != "" {
-				out = append(out, map[string]any{"head": head, "status": "error", "error": message})
-				continue
-			}
-			number, status := s.nextPR, "created"
-			if existing, ok := pr["prNumber"].(float64); ok {
-				number, status = int(existing), "updated"
-			} else {
-				s.nextPR++
-			}
-			out = append(out, map[string]any{"head": head, "prNumber": number, "prURL": gtStubPRURL(number), "status": status})
-		}
-		s.write(w, map[string]any{"prs": out})
+		s.submit(w, r)
 	default:
 		s.t.Errorf("unexpected graphite API request %s %s", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+// submit serves one submit post the way real gt sends one: every required
+// top-level field present, every field typed as the recovered schema declares
+// it, and exactly one entry in the array.
+func (s *gtAPIStub) submit(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		s.t.Errorf("read submit request: %v", err)
+		return
+	}
+	var req gtStubSubmitRequest
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		s.refuse(w, fmt.Sprintf("submit request %s does not match the recovered graphite schema: %v", body, err))
+		return
+	}
+	for _, field := range []struct{ name, value string }{
+		{"repoOwner", req.RepoOwner}, {"repoName", req.RepoName}, {"trunkBranchName", req.TrunkBranchName},
+	} {
+		if field.value == "" {
+			s.refuse(w, fmt.Sprintf("submit request omits %s, which the recovered graphite schema requires", field.name))
+			return
+		}
+	}
+	if len(req.PRs) != 1 {
+		s.refuse(w, fmt.Sprintf("submit posted %d entries, want exactly 1 — real gt posts one per request", len(req.PRs)))
+		return
+	}
+	entry := req.PRs[0]
+	s.submits = append(s.submits, gtStubSubmit{body: body, entry: entry})
+	s.requireSubmitFields(entry)
+
+	if message := s.submitErrors[entry.Head]; message != "" {
+		s.write(w, map[string]any{"prs": []map[string]any{{"head": entry.Head, "status": "error", "error": message}}})
+		return
+	}
+	number, status := s.nextPR, "created"
+	if entry.Action == gtapi.SubmitUpdate {
+		number, status = entry.PRNumber, "updated"
+	} else {
+		s.nextPR++
+	}
+	s.write(w, map[string]any{"prs": []map[string]any{{"head": entry.Head, "prNumber": number, "prURL": gtStubPRURL(number), "status": status}}})
+}
+
+// refuse answers a schema violation with the 400 graphite's handler returns,
+// and fails the test: ccx must never send a request this stub has to reject.
+func (s *gtAPIStub) refuse(w http.ResponseWriter, reason string) {
+	s.t.Error(reason)
+	w.WriteHeader(http.StatusBadRequest)
+	s.write(w, map[string]any{"prs": []map[string]any{{"reason": reason}}})
+}
+
+// requireSubmitFields enforces what the schema leaves to graphite's handler:
+// every entry names its action, head, headSha, base and baseSha; a create
+// carries the title graphite requires, an update the pull request number.
+func (s *gtAPIStub) requireSubmitFields(entry gtStubSubmitEntry) {
+	present := map[string]bool{
+		"head":    entry.Head != "",
+		"headSha": entry.HeadSha != "",
+		"base":    entry.Base != "",
+		"baseSha": entry.BaseSha != "",
+	}
+	switch entry.Action {
+	case gtapi.SubmitCreate:
+		present["title"] = entry.Title != nil && *entry.Title != ""
+	case gtapi.SubmitUpdate:
+		present["prNumber"] = entry.PRNumber != 0
+	default:
+		s.t.Errorf("submit entry action = %q, want create or update", entry.Action)
+	}
+	for _, field := range slices.Sorted(maps.Keys(present)) {
+		if !present[field] {
+			s.t.Errorf("submit entry %v omits %s, which the recovered graphite schema requires", entry.Head, field)
+		}
 	}
 }
 
@@ -134,47 +235,74 @@ func gtStubPRURL(number int) string {
 	return fmt.Sprintf("https://app.graphite.dev/github/pr/yasyf/cc-context/%d", number)
 }
 
-// submitCalls counts the submit posts the stub served, the API counterpart of
-// the exactly-one-gt-submit assertions.
-func (s *gtAPIStub) submitCalls() int {
+// submitHeads names the branch of every submit post, in the order the stub
+// served them — the bottom-up order a stack must be submitted in.
+func (s *gtAPIStub) submitHeads() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	n := 0
-	for _, route := range s.routes {
-		if route == gtStubSubmitRoute {
-			n++
+	heads := make([]string, 0, len(s.submits))
+	for _, submit := range s.submits {
+		heads = append(heads, submit.entry.Head)
+	}
+	return heads
+}
+
+// submitEntry returns the entry one branch was submitted under.
+func (s *gtAPIStub) submitEntry(head string) gtStubSubmitEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, submit := range s.submits {
+		if submit.entry.Head == head {
+			return submit.entry
 		}
 	}
-	return n
+	s.t.Fatalf("no submit reached the graphite API stub for %s", head)
+	return gtStubSubmitEntry{}
 }
 
-// lastSubmit returns the branch entries of the last submit post, keyed by
-// head.
-func (s *gtAPIStub) lastSubmit() map[string]map[string]any {
+// submitBodies returns the raw JSON of every submit post, in order.
+func (s *gtAPIStub) submitBodies() [][]byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.submits) == 0 {
-		s.t.Fatal("no submit reached the graphite API stub")
+	bodies := make([][]byte, 0, len(s.submits))
+	for _, submit := range s.submits {
+		bodies = append(bodies, slices.Clone(submit.body))
 	}
-	req := s.submits[len(s.submits)-1]
-	out := map[string]map[string]any{}
-	for _, raw := range req["prs"].([]any) {
-		pr := raw.(map[string]any)
-		out[pr["head"].(string)] = pr
-	}
-	return out
+	return bodies
 }
 
-// gtPushInv is the force-push an API submit makes for one branch, in its
-// default shape: a bare lease and the gt lane's default --no-verify.
-func gtPushInv(branch, sha string) []string {
-	return []string{"git", "push", "origin", "--force-with-lease", "--progress", sha + ":refs/heads/" + branch, "--no-verify", "--atomic"}
+// gtPushRef is one branch of the submit's force-push: the head the remote
+// branch moves to, under the lease of its last submitted version.
+type gtPushRef struct {
+	branch string
+	sha    string
+	lease  string
 }
 
-// gtPushInvLease is gtPushInv with the lease pinned to the last submitted
-// head.
-func gtPushInvLease(branch, sha, lease string) []string {
-	return []string{"git", "push", "origin", "--force-with-lease=refs/heads/" + branch + ":" + lease, "--progress", sha + ":refs/heads/" + branch, "--no-verify", "--atomic"}
+func gtHead(branch, sha string) gtPushRef { return gtPushRef{branch: branch, sha: sha} }
+
+// gtLeasedHead is gtHead with the lease pinned to the last submitted head.
+func gtLeasedHead(branch, sha, lease string) gtPushRef {
+	return gtPushRef{branch: branch, sha: sha, lease: lease}
+}
+
+// gtPushInv is the one atomic force-push an API submit makes for a whole stack:
+// every branch's lease, then every branch's refspec, plus the gt lane's default
+// --no-verify.
+func gtPushInv(refs ...gtPushRef) []string {
+	argv := []string{"git", "push", "origin"}
+	for _, ref := range refs {
+		lease := "--force-with-lease"
+		if ref.lease != "" {
+			lease += "=refs/heads/" + ref.branch + ":" + ref.lease
+		}
+		argv = append(argv, lease)
+	}
+	argv = append(argv, "--progress")
+	for _, ref := range refs {
+		argv = append(argv, ref.sha+":refs/heads/"+ref.branch)
+	}
+	return append(argv, "--no-verify", "--atomic")
 }
 
 // gtCreateLogInv is the commit read that derives a created PR's title and

@@ -4,6 +4,34 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.0] - 2026-09-02
+
+### Fixed
+- **A graphite submit of more than one branch came back `400 Bad Request`
+  after every branch had already been force-pushed.** 0.52.0 sent the whole
+  downstack in one submit call, a `prs` array with an entry per branch. gt
+  never sends more than one: its submit loop posts a single-entry array per
+  branch, bottom-up, and gt 1.8.6 submitting a two-branch stack through an
+  HTTPS recorder is two POSTs with one entry each. ccx's own single-entry
+  create succeeded. gt then created four branches off non-trunk bases with the
+  same recorded base shas ccx had sent, and succeeded four times. Both of
+  ccx's batched submits were refused, five creates in one array and then an
+  update and a create in one. The batched array is the one property both
+  failures share and no success has. What the server said about it was never
+  seen, since the failing run predates 0.54.0's body quoting. The request
+  schema recovered from the gt bundle permits the array outright, so the
+  handler is stricter than the contract it publishes. The pushes ran before
+  the submit, so a five-branch stack ended with five pushed branches and no
+  pull requests.
+
+  Ship now submits as gt does: one branch per call, in stack order. The push
+  is gt's too — one `git push --atomic` naming every ref, each under its own
+  `--force-with-lease`, so every branch moves or none does. The N single-ref
+  pushes it replaces each carried an `--atomic` of its own, covering exactly
+  one ref, which guaranteed nothing. A refusal partway through the loop names
+  the pull requests that already landed and says every branch is pushed, since
+  gt's loop has no rollback and ccx does not invent one.
+
 ## [0.56.0] - 2026-09-02
 
 ### Changed
@@ -66,9 +94,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the body and falling back to net/http's status name when there wasn't one, so
   a submit Graphite turned down reported `POST .../graphite/submit/pull-requests:
   400 Bad Request` and nothing else — no branch, no field, no reason, and no way
-  to tell a stale base sha from a malformed entry without a proxy. A submit's
-  400 describes the entries it rejected rather than carrying a `message`, which
-  is exactly the response this dropped.
+  to tell a stale base sha from a malformed entry without a proxy. The submit
+  400 that prompted this was never captured, so the render assumes nothing
+  about its shape and quotes the body whatever it carries.
 
   Refusals now also read `error` and `detail`, quote a validation list given
   under `errors`, and otherwise quote the body itself, whitespace collapsed and
