@@ -236,7 +236,7 @@ func TestShipJJPreflightRefusalAndEmptyGuardLive(t *testing.T) {
 	}
 
 	_, err = runShipCmd(t, "-m", "y", "--no-watch")
-	if err == nil || !strings.Contains(err.Error(), "nothing to commit, and the branch carries nothing above main — nothing to submit") {
+	if err == nil || !strings.Contains(err.Error(), "nothing to commit, and @- carries nothing above main — nothing to submit") {
 		t.Fatalf("third ship error = %v, want empty ship refusal", err)
 	}
 	// main already sits at @-, so no bookmark move recovers anything: the

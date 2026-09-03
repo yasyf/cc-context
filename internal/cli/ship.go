@@ -388,7 +388,9 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		return err
 	}
 
-	stuck := gtStuckSuffix(asGiven)
+	stuckOpts := asGiven
+	stuckOpts.noCommit = o.noCommit
+	stuck := gtStuckSuffix(stuckOpts)
 	restackSeg := ""
 	if plan.needsRestack {
 		if restackSeg, err = gtRestack(ctx, l, stuck, branch); err != nil {
@@ -696,8 +698,10 @@ func shipCommitGit(ctx context.Context, dir render.Dir, o shipOpts, sel *shipSel
 		argv = append(argv, o.rootPaths...)
 	}
 	if _, cerr := render.RunCLI(ctx, dir, "git", argv); cerr != nil {
-		if err := shipRefuseEmptyGit(ctx, dir, o, plan); err != nil {
-			return err
+		if !o.amend {
+			if err := shipRefuseEmptyGit(ctx, dir, o, plan); err != nil {
+				return err
+			}
 		}
 		return fmt.Errorf("ship: git commit: %w", cerr)
 	}
@@ -815,7 +819,12 @@ func shipRefuseEmptyJJ(ctx context.Context, dir render.Dir, o shipOpts, plan bra
 // before committing and the git lane asks once git has refused — which is also
 // what tells a genuinely empty index from git's other refusals.
 func shipRefuseEmptyGit(ctx context.Context, dir render.Dir, o shipOpts, plan branchPlan) error {
-	_, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"diff", "--cached", "--quiet"})
+	argv := []string{"diff", "--cached", "--quiet"}
+	if len(o.rootPaths) > 0 {
+		argv = append(argv, "--")
+		argv = append(argv, o.rootPaths...)
+	}
+	_, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", argv)
 	if err != nil {
 		return fmt.Errorf("ship: git diff --cached --quiet: %w", err)
 	}
@@ -858,14 +867,14 @@ func shipAlreadyCommitted(ctx context.Context, dir render.Dir, kind vcs.Kind, pl
 			return false, "", err
 		}
 		if len(stack) == 0 {
-			return false, "the branch carries nothing above " + plan.trunk, nil
+			return false, "@- carries nothing above " + plan.trunk, nil
 		}
 		conflicts, err := jjLogLines(ctx, dir, "ship", jjConflictRevset(plan.trunk))
 		if err != nil {
 			return false, "", err
 		}
 		if len(conflicts) > 0 {
-			return false, "the commits above " + plan.trunk + " are conflicted", nil
+			return false, "the commits above " + plan.trunk + ", or their descendants, are conflicted", nil
 		}
 		return true, "", nil
 	case vcs.Git:

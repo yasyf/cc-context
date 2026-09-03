@@ -416,10 +416,16 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
 		paths []string
+		scope string
 		add   []string
+		probe []string
 	}{
-		{name: "unscoped", add: []string{"git", "add", "-A"}},
-		{name: "path scoped", paths: []string{"src/a.go"}, add: []string{"git", "add", "-A", "--", "src/a.go"}},
+		{name: "unscoped", add: []string{"git", "add", "-A"}, probe: []string{"git", "diff", "--cached", "--quiet"}},
+		{
+			name: "path scoped", paths: []string{"src/a.go"}, scope: " in src/a.go",
+			add:   []string{"git", "add", "-A", "--", "src/a.go"},
+			probe: []string{"git", "diff", "--cached", "--quiet", "--", "src/a.go"},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			log := setupShipGT(t, true)
@@ -433,7 +439,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			want := shipLandedSegment(shipOpts{paths: tt.paths}) + ` · already committed a1b2c3d "fix: frobnicate" · ` +
+			want := "nothing to commit" + tt.scope + ` — shipping as --no-commit · already committed a1b2c3d "fix: frobnicate" · ` +
 				`submitted feature → PR #7 https://github.com/x/pull/7 · set PR #7 title+body`
 			if got != want {
 				t.Errorf("summary = %q, want %q", got, want)
@@ -444,7 +450,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 				gtCommonDirArgv,
 				gtRefsArgv(),
 				tt.add,
-				{"git", "diff", "--cached", "--quiet"},
+				tt.probe,
 				{"git", "rev-list", "--count", "main..HEAD"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},

@@ -1191,7 +1191,7 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 	conflicted := []string{"jj", "--ignore-working-copy", "log", "-r", jjConflictRevset("main"), "--no-graph", "-T", jjStackLineTemplate}
 	describe := []string{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate}
 	diff := []string{"jj", "diff", "--name-only"}
-	const nothingAbove = "the branch carries nothing above main"
+	const nothingAbove = "@- carries nothing above main"
 	tests := []struct {
 		name     string
 		args     []string
@@ -1211,8 +1211,6 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			want:     append(jjPlanArgv(), stack("main"), diff, atState, aboveTrunk, describe),
 		},
 		{
-			// Scoping declares everything else out, so clean scoped paths over a
-			// branch level with trunk leave nothing to submit either.
 			name: "path scoped",
 			args: []string{"-m", "fix: frobnicate", "--no-watch", "src/a.go"},
 			build: func(t *testing.T, f *vcstest.Fixture) {
@@ -1278,7 +1276,7 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 				mustRun(t, f.Dir, "jj", "new")
 			},
 			target:   "main",
-			standing: "the commits above main are conflicted",
+			standing: "the commits above main, or their descendants, are conflicted",
 			want:     append(jjPlanArgv(), diff, atState, aboveTrunk, conflicted, describe),
 		},
 		{
@@ -4627,7 +4625,7 @@ func TestShipGTPathScoped(t *testing.T) {
 		gtCommonDirArgv,
 		gtRealRefsArgv(t, f),
 		{"git", "add", "-A", "--", "src/a.go", "docs"},
-		{"git", "diff", "--cached", "--quiet"},
+		{"git", "diff", "--cached", "--quiet", "--", "src/a.go", "docs"},
 		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
@@ -5024,6 +5022,34 @@ func TestShipGTNoCommitRestackConflict(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), gtResumeCmd(shipOpts{})) {
 		t.Errorf("error = %v, want no resume line — it would restate the command that just ran", err)
+	}
+}
+
+// TestShipGTLandedRestackConflictResumes pins the recovery line a run that cut
+// no commit earns. The implicit switch to --no-commit leaves the working copy
+// exactly as it was, so the same invocation is the way back in — prescribing an
+// explicit --no-commit instead names a command the dirty guard would refuse.
+func TestShipGTLandedRestackConflictResumes(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		paths []string
+	}{
+		{name: "unscoped"},
+		{name: "path scoped", paths: []string{"f.txt"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipGTRepo(t)
+			shipGTConflicting(t, f)
+			mustRun(t, f.Dir, "git", "checkout", "--", "f.txt")
+			shipResetLog(t, f)
+
+			_, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate", "--no-watch", "--no-pr"}, tt.paths...)...)
+			want := gtStuck("ship", (&errRestackConflict{Branch: "feature", Onto: "base", Dir: f.Dir}).Error(),
+				". Nothing was committed and the working copy is untouched, so re-run this same command once it is fixed.")
+			if err == nil || err.Error() != want {
+				t.Fatalf("error = %v, want %q", err, want)
+			}
+		})
 	}
 }
 
@@ -6098,11 +6124,12 @@ func TestShipAlreadyCommittedSubmitsInPlace(t *testing.T) {
 		name  string
 		jj    bool
 		paths []string
+		scope string
 	}{
 		{name: "git"},
 		{name: "jj", jj: true},
-		{name: "git path scoped", paths: []string{"f.txt"}},
-		{name: "jj path scoped", jj: true, paths: []string{"f.txt"}},
+		{name: "git path scoped", paths: []string{"f.txt"}, scope: " in f.txt"},
+		{name: "jj path scoped", jj: true, paths: []string{"f.txt"}, scope: " in f.txt"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			kind := shipKind(tt.jj)
@@ -6123,7 +6150,7 @@ func TestShipAlreadyCommittedSubmitsInPlace(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			want := shipLandedSegment(shipOpts{paths: tt.paths}) + shipSep + "already " + shipCommitted(t, f, kind)
+			want := "nothing to commit" + tt.scope + " — shipping as --no-commit · already " + shipCommitted(t, f, kind)
 			if !strings.HasPrefix(got, want) {
 				t.Errorf("summary = %q, want it to open with %q", got, want)
 			}
@@ -6136,6 +6163,73 @@ func TestShipAlreadyCommittedSubmitsInPlace(t *testing.T) {
 				t.Errorf("origin %s holds %d commits, want the hand-made one pushed", target, n)
 			}
 		})
+	}
+}
+
+// TestShipAmendFailureIsReported pins that a git refusal under --amend reaches
+// the caller. git amends an unchanged tree happily, so an amend that fails never
+// means there was nothing to commit, and reading it as one pushes the commit the
+// amend was meant to replace.
+func TestShipAmendFailureIsReported(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		paths []string
+	}{
+		{name: "unscoped"},
+		{name: "path scoped", paths: []string{"f.txt"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
+			mustRun(t, f.Dir, "git", "switch", "-qc", "feature")
+			shipHandCommit(t, f, vcs.Git, "fix: the real commit")
+			head := shipHead(t, f)
+			// A merge in progress is the refusal git states outright — "you are
+			// in the middle of a merge -- cannot amend" — over a clean tree.
+			if err := os.WriteFile(filepath.Join(f.Dir, ".git", "MERGE_HEAD"), []byte(head+"\n"), 0o600); err != nil {
+				t.Fatalf("write MERGE_HEAD: %v", err)
+			}
+			shipResetLog(t, f)
+
+			_, err := runShipCmd(t, append([]string{"--amend", "-m", "fix: the replacement", "--no-watch", "--no-pr"}, tt.paths...)...)
+			if err == nil || !strings.Contains(err.Error(), "ship: git commit:") {
+				t.Fatalf("ship error = %v, want git's amend refusal reported", err)
+			}
+			if got := shipHead(t, f); got != head {
+				t.Errorf("HEAD moved to %s, want the un-amended %s", got, head)
+			}
+			if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: the real commit" {
+				t.Errorf("subject = %q, want the commit the failed amend left in place", subject)
+			}
+		})
+	}
+}
+
+// TestShipPathScopedLandedIgnoresUnrelatedStaged pins the empty-commit probe to
+// the ship's own paths. A shared working copy is where path scoping earns its
+// keep, so a concurrent session's staged work may not decide whether the scoped
+// paths have anything left to commit — nor be swept into the report.
+func TestShipPathScopedLandedIgnoresUnrelatedStaged(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
+	mustRun(t, f.Dir, "git", "switch", "-qc", "feature")
+	shipHandCommit(t, f, vcs.Git, "fix: the change already committed")
+	head := shipHead(t, f)
+	writeShipFile(t, f.Dir, "other.txt", "a concurrent session's work\n")
+	mustRun(t, f.Dir, "git", "add", "other.txt")
+	shipResetLog(t, f)
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--no-pr", "f.txt")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := "nothing to commit in f.txt — shipping as --no-commit · already " + shipCommitted(t, f, vcs.Git)
+	if !strings.HasPrefix(got, want) {
+		t.Errorf("summary = %q, want it to open with %q", got, want)
+	}
+	if got := shipHead(t, f); got != head {
+		t.Errorf("HEAD moved to %s, want the hand-made %s", got, head)
+	}
+	if staged := gitAt(t, f.Dir, "diff", "--cached", "--name-only"); staged != "other.txt" {
+		t.Errorf("staged = %q, want the concurrent session's work left staged", staged)
 	}
 }
 
