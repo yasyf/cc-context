@@ -1,6 +1,7 @@
 package gtmeta_test
 
 import (
+	"database/sql"
 	"errors"
 	"os"
 	"os/exec"
@@ -10,6 +11,10 @@ import (
 
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/vcstest"
+
+	// modernc.org/sqlite registers the "sqlite" driver these tests read the
+	// metadata database back through.
+	_ "modernc.org/sqlite"
 )
 
 // TestReadTracksAGTStack drives every case over one gt-tracked stack, each
@@ -108,6 +113,84 @@ func TestRecordRestackedRefusesAnUntrackedBranch(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "ghost") {
 		t.Errorf("RecordRestacked = %v, want a refusal naming ghost", err)
 	}
+}
+
+// TestReparentMovesARowAndItsNewParentsChildren pins both sides of a move. gt
+// walks its own tree through the children column, not the parent pointer:
+// measured against gt 1.8.6, a branch its new parent does not list back is
+// dropped from gt log entirely, while gt state still reports the new parent.
+func TestReparentMovesARowAndItsNewParentsChildren(t *testing.T) {
+	dir := t.TempDir()
+	vcstest.WriteGraphiteMeta(t, dir, `{"main":{"trunk":true},`+
+		`"mid":{"parents":[{"ref":"main","sha":"aaaa"}]},`+
+		`"gone":{"parents":[{"ref":"mid","sha":"bbbb"}]},`+
+		`"kid":{"parents":[{"ref":"gone","sha":"cccc"}]}}`)
+
+	if err := gtmeta.Reparent(t.Context(), dir, map[string]string{"kid": "mid"}); err != nil {
+		t.Fatalf("Reparent: %v", err)
+	}
+	tests := []struct {
+		branch   string
+		parent   string
+		revision string
+		children string
+	}{
+		{branch: "main", children: `["mid"]`},
+		{branch: "mid", parent: "main", revision: "aaaa", children: `["gone","kid"]`},
+		{branch: "gone", parent: "mid", revision: "bbbb", children: `[]`},
+		{branch: "kid", parent: "mid", revision: "cccc", children: `[]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.branch, func(t *testing.T) {
+			parent, revision, children := metaRow(t, dir, tt.branch)
+			if parent != tt.parent {
+				t.Errorf("parent = %q, want %q", parent, tt.parent)
+			}
+			if revision != tt.revision {
+				t.Errorf("parent revision = %q, want %q — a move leaves the revision as it stood", revision, tt.revision)
+			}
+			if children != tt.children {
+				t.Errorf("children = %s, want %s", children, tt.children)
+			}
+		})
+	}
+}
+
+// TestReparentRefusesAnUntrackedBranch pins the write as an update: a branch
+// with no row was never tracked, and the whole batch aborts rather than move
+// the branches ahead of it in isolation.
+func TestReparentRefusesAnUntrackedBranch(t *testing.T) {
+	dir := t.TempDir()
+	vcstest.WriteGraphiteMeta(t, dir, `{"main":{"trunk":true},`+
+		`"kid":{"parents":[{"ref":"gone","sha":"cccc"}]}}`)
+
+	err := gtmeta.Reparent(t.Context(), dir, map[string]string{"kid": "main", "ghost": "main"})
+	if err == nil || !strings.Contains(err.Error(), `"ghost" has no branch_metadata row`) {
+		t.Fatalf("Reparent = %v, want a refusal naming ghost", err)
+	}
+	parent, _, _ := metaRow(t, dir, "kid")
+	if parent != "gone" {
+		t.Errorf("kid's parent = %q, want gone — the aborted batch wrote nothing", parent)
+	}
+	if _, _, children := metaRow(t, dir, "main"); children != `[]` {
+		t.Errorf("main's children = %s, want [] — the aborted batch wrote nothing", children)
+	}
+}
+
+func metaRow(t *testing.T, commonDir, branch string) (parent, revision, children string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(commonDir, ".graphite_metadata.db"))
+	if err != nil {
+		t.Fatalf("open metadata in %s: %v", commonDir, err)
+	}
+	defer func() { _ = db.Close() }()
+
+	query := `SELECT COALESCE(parent_branch_name, ''), COALESCE(parent_branch_revision, ''), COALESCE(children, '')
+		FROM branch_metadata WHERE branch_name = ?`
+	if err := db.QueryRow(query, branch).Scan(&parent, &revision, &children); err != nil {
+		t.Fatalf("read %s in %s: %v", branch, commonDir, err)
+	}
+	return parent, revision, children
 }
 
 func TestLastSubmittedRoundTrip(t *testing.T) {
@@ -258,5 +341,27 @@ func write(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// TestForgetDisownsTheBranchFromItsParent pins the other half of the same tree
+// Reparent maintains: a forgotten branch left in its parent's children column is
+// a name gt walks into and finds no row for, which is the corruption a prune is
+// run to clear rather than to create.
+func TestForgetDisownsTheBranchFromItsParent(t *testing.T) {
+	dir := t.TempDir()
+	vcstest.WriteGraphiteMeta(t, dir, `{"main":{"trunk":true},`+
+		`"ghost":{"parents":[{"ref":"main","sha":"aaaa"}]},`+
+		`"mid":{"parents":[{"ref":"main","sha":"bbbb"}]},`+
+		`"kid":{"parents":[{"ref":"mid","sha":"cccc"}]}}`)
+
+	if err := gtmeta.Forget(t.Context(), dir, []string{"ghost", "untracked"}); err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
+	if _, _, children := metaRow(t, dir, "main"); children != `["mid"]` {
+		t.Errorf("main children = %s, want [\"mid\"] — ghost outlived its row", children)
+	}
+	if _, _, children := metaRow(t, dir, "mid"); children != `["kid"]` {
+		t.Errorf("mid children = %s, want [\"kid\"] — an unrelated row was rewritten", children)
 	}
 }

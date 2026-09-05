@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/url"
@@ -188,8 +189,11 @@ const validationTrunk = "TRUNK"
 // Row is one branch gt tracks and what a prune may do with it: a row whose
 // branch no longer has a ref is stale, and a live branch gt could not resolve
 // is diverged, whose remedy is gt track or gt untrack rather than deletion.
+// Parent is the branch gt recorded this one as sitting on, empty on the trunk
+// row, so a caller forgetting rows can see which survivors it would strand.
 type Row struct {
 	Branch   string
+	Parent   string
 	Stale    bool
 	Diverged bool
 }
@@ -208,13 +212,15 @@ func Rows(ctx context.Context, commonDir string) ([]Row, error) {
 	for _, row := range rows {
 		_, live := heads[row.branch]
 		resolved := row.validation == validationValid || row.validation == validationTrunk
-		out = append(out, Row{Branch: row.branch, Stale: !live, Diverged: live && !resolved})
+		out = append(out, Row{Branch: row.branch, Parent: row.parent, Stale: !live, Diverged: live && !resolved})
 	}
 	return out, nil
 }
 
 // Forget deletes branches' rows, which is what gt untrack does to one branch at
-// a time for a whole gt startup each.
+// a time for a whole gt startup each. The delete is two-sided like Reparent's
+// move: a name left in the parent's children column is one gt still walks into
+// and finds no row for, so each branch is disowned by its parent first.
 func Forget(ctx context.Context, commonDir string, branches []string) error {
 	if len(branches) == 0 {
 		return nil
@@ -233,6 +239,19 @@ func Forget(ctx context.Context, commonDir string, branches []string) error {
 	defer func() { _ = tx.Rollback() }()
 
 	for _, branch := range branches {
+		var parent string
+		row := tx.QueryRowContext(ctx, `SELECT COALESCE(parent_branch_name, '') FROM branch_metadata WHERE branch_name = ?`, branch)
+		switch err := row.Scan(&parent); {
+		case errors.Is(err, sql.ErrNoRows):
+			continue
+		case err != nil:
+			return fmt.Errorf("gtmeta: read parent of %q in %q: %w", branch, path, err)
+		}
+		if _, err := editChildren(ctx, tx, path, parent, func(children []string) []string {
+			return slices.DeleteFunc(children, func(child string) bool { return child == branch })
+		}); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM branch_metadata WHERE branch_name = ?`, branch); err != nil {
 			return fmt.Errorf("gtmeta: forget %q in %q: %w", branch, path, err)
 		}
@@ -241,6 +260,104 @@ func Forget(ctx context.Context, commonDir string, branches []string) error {
 		return fmt.Errorf("gtmeta: commit to %q: %w", path, err)
 	}
 	return nil
+}
+
+// Reparent moves each branch onto a new parent, which gt has no verb for. The
+// move is two-sided: gt walks its tree through the children column, so a branch
+// missing from its new parent's children vanishes from gt log even though gt
+// state reports the move. The parent revision stays put, so a moved branch
+// reads as needing the restack it does need.
+func Reparent(ctx context.Context, commonDir string, moves map[string]string) error {
+	if len(moves) == 0 {
+		return nil
+	}
+	path := filepath.Join(commonDir, metadataDB)
+	db, err := sql.Open("sqlite", writableDSN(path))
+	if err != nil {
+		return fmt.Errorf("gtmeta: open %q: %w", path, err)
+	}
+	defer func() { _ = db.Close() }()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("gtmeta: begin on %q: %w", path, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, branch := range slices.Sorted(maps.Keys(moves)) {
+		if err := reparentOne(ctx, tx, path, branch, moves[branch]); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("gtmeta: commit to %q: %w", path, err)
+	}
+	return nil
+}
+
+func reparentOne(ctx context.Context, tx *sql.Tx, path, branch, parent string) error {
+	previous, err := parentOf(ctx, tx, path, branch)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE branch_metadata SET parent_branch_name = ? WHERE branch_name = ?`, parent, branch); err != nil {
+		return fmt.Errorf("gtmeta: reparent %q onto %q in %q: %w", branch, parent, path, err)
+	}
+	adopted, err := editChildren(ctx, tx, path, parent, func(children []string) []string {
+		if slices.Contains(children, branch) {
+			return children
+		}
+		return append(children, branch)
+	})
+	if err != nil {
+		return err
+	}
+	if !adopted {
+		return fmt.Errorf("gtmeta: %q has no branch_metadata row in %q", parent, path)
+	}
+	_, err = editChildren(ctx, tx, path, previous, func(children []string) []string {
+		return slices.DeleteFunc(children, func(child string) bool { return child == branch })
+	})
+	return err
+}
+
+func parentOf(ctx context.Context, tx *sql.Tx, path, branch string) (string, error) {
+	var parent string
+	row := tx.QueryRowContext(ctx, `SELECT COALESCE(parent_branch_name, '') FROM branch_metadata WHERE branch_name = ?`, branch)
+	switch err := row.Scan(&parent); {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", fmt.Errorf("gtmeta: %q has no branch_metadata row in %q", branch, path)
+	case err != nil:
+		return "", fmt.Errorf("gtmeta: read parent of %q in %q: %w", branch, path, err)
+	}
+	return parent, nil
+}
+
+// editChildren rewrites parent's children through edit, reporting whether the
+// row was there to edit: the parent a moved branch leaves is often the row the
+// same prune is about to forget, and disowning a row that is already gone is
+// the move landing, not a failure.
+func editChildren(ctx context.Context, tx *sql.Tx, path, parent string, edit func([]string) []string) (bool, error) {
+	var payload string
+	row := tx.QueryRowContext(ctx, `SELECT COALESCE(children, '[]') FROM branch_metadata WHERE branch_name = ?`, parent)
+	switch err := row.Scan(&payload); {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("gtmeta: read children of %q in %q: %w", parent, path, err)
+	}
+	var children []string
+	if err := json.Unmarshal([]byte(payload), &children); err != nil {
+		return false, fmt.Errorf("gtmeta: parse children of %q in %q: %w", parent, path, err)
+	}
+	encoded, err := json.Marshal(edit(children))
+	if err != nil {
+		return false, fmt.Errorf("gtmeta: encode children of %q: %w", parent, err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE branch_metadata SET children = ? WHERE branch_name = ?`, string(encoded), parent); err != nil {
+		return false, fmt.Errorf("gtmeta: record children of %q in %q: %w", parent, path, err)
+	}
+	return true, nil
 }
 
 func writableDSN(path string) string {
