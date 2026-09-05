@@ -405,7 +405,7 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
 		gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 		ghDownstackPRArgv("feature"),
-		[]string{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "Better title", "--body-file", body},
+		{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "Better title", "--body-file", body},
 	})
 	assertInvocations(t, readInvocations(t, log), wantInv)
 }
@@ -462,7 +462,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 				gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
 				gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 				ghDownstackPRArgv("feature"),
-				[]string{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "fix: 🐛 frobnicate the widget", "--body-file", body},
+				{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "fix: 🐛 frobnicate the widget", "--body-file", body},
 			})
 			assertInvocations(t, readInvocations(t, log), wantInv)
 		})
