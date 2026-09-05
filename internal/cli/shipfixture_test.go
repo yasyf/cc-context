@@ -25,6 +25,11 @@ import (
 
 const fakeHeadSHA = "abcdef0123456789abcdef0123456789abcdef01"
 
+// fakeTrunkSHA is what the fake git resolves refs/remotes/<remote>/<trunk> to:
+// the commit a graphite submit anchors a branch stacked on trunk at, which is
+// deliberately neither the local trunk's sha nor any branch head.
+const fakeTrunkSHA = "7777777777777777777777777777777777777777"
+
 // ghPkgDir is this package's source directory, captured before any fixture
 // chdirs into its own repository and out of reach of the golden corpus's
 // relative path.
@@ -857,13 +862,25 @@ exit 0
       *) printf 'fake git: unmatched config key: %s\n' "$3" >&2; exit 2 ;;
     esac ;;
   fetch*) if [ -n "$GIT_FETCH_FAIL" ]; then printf 'git: cannot reach origin\n' >&2; exit 1; fi ;;
+  "show-ref --verify") if [ -n "$GIT_NO_REMOTE_TRUNK" ]; then exit 1; fi ;;
   "rev-parse --verify")
-    case "$4" in
-      REBASE_HEAD) if [ -n "$GIT_REBASE_CONFLICT" ]; then exit 0; else exit 1; fi ;;
-      *) if [ -n "$GIT_REMOTE_REF_MISSING" ]; then exit 1; fi ;;
+    case "$3" in
+      refs/remotes/*) printf '%s' "${GIT_TRUNK_SHA:-` + fakeTrunkSHA + `}" ;;
+      *)
+        case "$4" in
+          REBASE_HEAD) if [ -n "$GIT_REBASE_CONFLICT" ]; then exit 0; else exit 1; fi ;;
+          *) if [ -n "$GIT_REMOTE_REF_MISSING" ]; then exit 1; fi ;;
+        esac ;;
     esac ;;
   "merge-base --is-ancestor")
     if [ -n "$GIT_ANCESTOR_EXIT" ]; then printf 'fatal: not a valid object name\n' >&2; exit "$GIT_ANCESTOR_EXIT"; fi
+    # $GIT_CONTAINED lists the revs the remote trunk holds; a query against any
+    # other target keeps the repo-wide knobs below.
+    case "$4" in
+      refs/remotes/*)
+        for rev in $GIT_CONTAINED; do if [ "$rev" = "$3" ]; then exit 0; fi; done
+        exit 1 ;;
+    esac
     if [ -n "$GIT_DIVERGED" ]; then exit 1; fi
     if [ -n "$GIT_DIVERGED_MARKER" ]; then
       count=0

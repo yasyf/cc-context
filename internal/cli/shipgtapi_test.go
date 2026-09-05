@@ -311,6 +311,41 @@ func gtCreateLogInv(base, branch string) []string {
 	return []string{"git", "log", "--reverse", "--format=%s%x00%b%x00", base + ".." + branch}
 }
 
+// gtRemoteTrunk is the remote-tracking ref a submit anchors trunk on.
+func gtRemoteTrunk(trunk string) string { return "refs/remotes/origin/" + trunk }
+
+// gtTrunkInv is the trunk resolution a submit runs before it plans anything:
+// the remote HEAD tracks, a fetch of that one ref, and the check that it exists.
+func gtTrunkInv(trunk string) [][]string {
+	return [][]string{
+		{"git", "config", "--get", "branch.HEAD.remote"},
+		{"git", "fetch", "origin", trunk},
+		{"git", "show-ref", "--verify", "--quiet", gtRemoteTrunk(trunk)},
+	}
+}
+
+// gtContainedInv asks whether one head is already in the remote trunk.
+func gtContainedInv(trunk, head string) []string {
+	return []string{"git", "merge-base", "--is-ancestor", head, gtRemoteTrunk(trunk)}
+}
+
+// gtShipSubmitInv is the git work a ship does before its submit pushes:
+// resolve and fetch the remote trunk, ask whether the shipped branch and then
+// each branch of the stack is already in it, and read the base sha a
+// trunk-based branch submits under. Heads arrive bottom-up, shipped one last.
+func gtShipSubmitInv(trunk string, heads ...string) [][]string {
+	inv := append(gtTrunkInv(trunk), gtContainedInv(trunk, heads[len(heads)-1]))
+	for _, head := range heads {
+		inv = append(inv, gtContainedInv(trunk, head))
+	}
+	return append(inv, []string{"git", "rev-parse", "--verify", gtRemoteTrunk(trunk)})
+}
+
+// hasInvocation reports whether the argv log carries one exact invocation.
+func hasInvocation(invocations [][]string, want []string) bool {
+	return slices.ContainsFunc(invocations, func(inv []string) bool { return slices.Equal(inv, want) })
+}
+
 // gtPushedRefs reads the refspecs of every ship-made force-push out of the
 // argv log, branch names only.
 func gtPushedRefs(invocations [][]string) []string {

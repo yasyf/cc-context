@@ -389,7 +389,7 @@ func TestShipPRGTBothFlags(t *testing.T) {
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	assertInvocations(t, readInvocations(t, log), [][]string{
+	wantInv := [][]string{
 		nogtProbe,
 		{"git", "branch", "--show-current"},
 		gtCommonDirArgv,
@@ -401,11 +401,15 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		gtCommonDirArgv,
 		gtRefsArgv(),
-		gtCreateLogInv("main", "feature"),
+	}
+	wantInv = append(wantInv, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA)...)
+	wantInv = append(wantInv,
+		gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
 		gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 		ghDownstackPRArgv("feature"),
-		{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "Better title", "--body-file", body},
-	})
+		[]string{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "Better title", "--body-file", body},
+	)
+	assertInvocations(t, readInvocations(t, log), wantInv)
 }
 
 // TestShipPRGTAlreadyCommitted is the shape a fan-out hands back: a delegate's
@@ -444,7 +448,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 			if got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
-			assertInvocations(t, readInvocations(t, log), [][]string{
+			wantInv := [][]string{
 				nogtProbe,
 				{"git", "branch", "--show-current"},
 				gtCommonDirArgv,
@@ -456,11 +460,15 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 				{"git", "log", "-1", "--format=%h%x00%s"},
 				gtCommonDirArgv,
 				gtRefsArgv(),
-				gtCreateLogInv("main", "feature"),
+			}
+			wantInv = append(wantInv, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA)...)
+			wantInv = append(wantInv,
+				gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
 				gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 				ghDownstackPRArgv("feature"),
-				{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "fix: 🐛 frobnicate the widget", "--body-file", body},
-			})
+				[]string{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "fix: 🐛 frobnicate the widget", "--body-file", body},
+			)
+			assertInvocations(t, readInvocations(t, log), wantInv)
 		})
 	}
 }
