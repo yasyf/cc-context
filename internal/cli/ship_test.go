@@ -4053,7 +4053,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		gtCreateLogInv(gtRemoteTrunk("main"), "fix-frobnicate"),
 		gtPushInv(gtHead("fix-frobnicate", vcstest.GraphiteLeafSHA)),
 		ghDownstackPRArgv("fix-frobnicate"),
-		[]string{"git", "rev-parse", "HEAD"},
+		{"git", "rev-parse", "HEAD"},
 		ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
 	})
 	assertInvocations(t, readInvocations(t, log), wantInv)
