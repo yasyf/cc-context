@@ -4037,7 +4037,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	wantInv := [][]string{
+	wantInv := slices.Concat([][]string{
 		nogtProbe,
 		{"git", "branch", "--show-current"},
 		gtCommonDirArgv,
@@ -4049,15 +4049,13 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		gtCommonDirArgv,
 		gtRefsArgvIn(created),
-	}
-	wantInv = append(wantInv, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA)...)
-	wantInv = append(wantInv,
+	}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
 		gtCreateLogInv(gtRemoteTrunk("main"), "fix-frobnicate"),
 		gtPushInv(gtHead("fix-frobnicate", vcstest.GraphiteLeafSHA)),
 		ghDownstackPRArgv("fix-frobnicate"),
 		[]string{"git", "rev-parse", "HEAD"},
 		ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
-	)
+	})
 	assertInvocations(t, readInvocations(t, log), wantInv)
 }
 
