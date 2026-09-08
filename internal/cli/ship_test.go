@@ -3230,7 +3230,7 @@ func TestShipBookmarkGuardReadsTheSpelling(t *testing.T) {
 		if err == nil || err.Error() != wantErr {
 			t.Fatalf("error = %v, want %q", err, wantErr)
 		}
-		assertNoGTCommit(t, shipGTInvocations(t, f))
+		assertNoCommit(t, shipGTInvocations(t, f))
 		assertShipRefusedClean(t, f, head)
 	})
 
@@ -3908,7 +3908,9 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 			gtRealRefsArgv(t, f),
 			{"git", "add", "-A"},
 			{"git", "diff", "--cached", "--quiet"},
-			{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
+			{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
+			gtCommonDirArgv,
+			gtRealRefsArgv(t, f),
 			{"git", "branch", "--show-current"},
 			{"git", "log", "-1", "--format=%h%x00%s"},
 		})
@@ -3999,7 +4001,9 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				gtRefsArgv(),
 				{"git", "add", "-A"},
 				{"git", "diff", "--cached", "--quiet"},
-				{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
+				{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
+				gtCommonDirArgv,
+				gtRefsArgv(),
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 				gtRefsArgv(),
@@ -4272,7 +4276,7 @@ func TestShipGTCreateNamesExplicitly(t *testing.T) {
 			}
 			var commit []string
 			for _, inv := range shipGTInvocations(t, f) {
-				if inv[0] == "gt" && (inv[1] == "create" || inv[1] == "modify") {
+				if inv[0] == "gt" && inv[1] == "create" {
 					commit = inv
 				}
 			}
@@ -4300,7 +4304,7 @@ func TestShipCreateExplicitEmpty(t *testing.T) {
 			if err == nil || err.Error() != wantErr {
 				t.Fatalf("error = %v, want %q", err, wantErr)
 			}
-			assertNoGTCommit(t, shipGTInvocations(t, f))
+			assertNoCommit(t, shipGTInvocations(t, f))
 			assertShipRefusedClean(t, f, head)
 		})
 	}
@@ -4322,7 +4326,7 @@ func TestShipCreateSwallowsPathOperand(t *testing.T) {
 				t.Fatalf("error = %v, want %q", err, wantErr)
 			}
 			invocations := shipGTInvocations(t, f)
-			assertNoGTCommit(t, invocations)
+			assertNoCommit(t, invocations)
 			if invocations != nil {
 				t.Errorf("no VCS command may run before the path-operand refusal, got %v", invocations)
 			}
@@ -4563,8 +4567,8 @@ func TestShipGTAmend(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{"with message", []string{"--amend", "-m", "fix: frobnicate"}, []string{"gt", "modify", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"}},
-		{"without message", []string{"--amend"}, []string{"gt", "modify", "--no-interactive", "--no-verify"}},
+		{"with message", []string{"--amend", "-m", "fix: frobnicate"}, []string{"git", "commit", "--amend", "-m", "fix: frobnicate", "--no-verify"}},
+		{"without message", []string{"--amend"}, []string{"git", "commit", "--amend", "--no-edit", "--no-verify"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -4575,7 +4579,7 @@ func TestShipGTAmend(t *testing.T) {
 			}
 			var commit []string
 			for _, inv := range shipGTInvocations(t, f) {
-				if inv[0] == "gt" && inv[1] == "modify" {
+				if inv[0] == "git" && inv[1] == "commit" {
 					commit = inv
 				}
 				if inv[0] == "git" && inv[1] == "diff" {
@@ -4607,7 +4611,7 @@ func TestShipGTAmend(t *testing.T) {
 		if err.Error() != wantErr {
 			t.Errorf("error = %q, want %q", err.Error(), wantErr)
 		}
-		assertNoGTCommit(t, shipGTInvocations(t, f))
+		assertNoCommit(t, shipGTInvocations(t, f))
 		assertShipRefusedClean(t, f, head)
 	})
 }
@@ -4628,7 +4632,9 @@ func TestShipGTPathScoped(t *testing.T) {
 		gtRealRefsArgv(t, f),
 		{"git", "add", "-A", "--", "src/a.go", "docs"},
 		{"git", "diff", "--cached", "--quiet", "--", "src/a.go", "docs"},
-		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
+		{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
+		gtCommonDirArgv,
+		gtRealRefsArgv(t, f),
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 	})
@@ -4678,7 +4684,9 @@ func TestShipGTHunkScoped(t *testing.T) {
 		{"git", "ls-tree", "--full-tree", "-z", "--end-of-options", "HEAD", "--", "f.txt"},
 		{"git", "hash-object", "-w", "--stdin"},
 		{"git", "update-index", "--add", "--cacheinfo", "100644," + blob + ",f.txt"},
-		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
+		{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
+		gtCommonDirArgv,
+		gtRealRefsArgv(t, f),
 		{"git", "restore", "--staged", "--", "f.txt"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
@@ -4710,14 +4718,14 @@ func TestShipGTHunkScopedRefusesALyingExitZero(t *testing.T) {
 	}
 	writeShipHookFiles(t, root)
 	ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
-	const diagnostic = gtErrorPrefix + "Could not modify feature: its branch is frozen."
-	t.Setenv("GT_MODIFY_STDERR", diagnostic)
+	const diagnostic = gtErrorPrefix + "Could not create newbranch: its parent is frozen."
+	t.Setenv("GT_CREATE_STDERR", diagnostic)
 
-	got, stderr, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push", "--only-hunk", ref, "f.txt")
+	got, stderr, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push", "--new-branch=newbranch", "--only-hunk", ref, "f.txt")
 	if err == nil {
 		t.Fatalf("ship reported %q, want a refusal", got)
 	}
-	want := "ship: gt modify: exit 0 but reported an error: " + diagnostic
+	want := "ship: gt create: exit 0 but reported an error: " + diagnostic
 	if err.Error() != want {
 		t.Errorf("error = %q, want %q", err.Error(), want)
 	}
@@ -5160,11 +5168,11 @@ func TestShipGTYoloImpliesNoVerify(t *testing.T) {
 		if inv[0] == "uvx" {
 			t.Errorf("uvx invoked despite --yolo: %v", inv)
 		}
-		if inv[0] == "gt" && inv[1] == "modify" {
+		if inv[0] == "git" && inv[1] == "commit" {
 			commit = inv
 		}
 	}
-	want := []string{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"}
+	want := []string{"git", "commit", "-m", "fix: frobnicate", "--no-verify"}
 	if !reflect.DeepEqual(commit, want) {
 		t.Errorf("commit argv = %v, want %v", commit, want)
 	}
@@ -5182,7 +5190,7 @@ func TestShipGTRefusals(t *testing.T) {
 		if err == nil || err.Error() != wantErr {
 			t.Fatalf("error = %v, want %q", err, wantErr)
 		}
-		assertNoGTCommit(t, shipGTInvocations(t, f))
+		assertNoCommit(t, shipGTInvocations(t, f))
 		if got := shipHead(t, f); got != head {
 			t.Errorf("HEAD moved to %s, want the pre-ship %s", got, head)
 		}
@@ -5210,7 +5218,9 @@ func TestShipGTRefusals(t *testing.T) {
 			gtRealRefsArgv(t, f),
 			{"git", "add", "-A"},
 			{"git", "diff", "--cached", "--quiet"},
-			{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
+			{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
+			gtCommonDirArgv,
+			gtRealRefsArgv(t, f),
 			{"git", "branch", "--show-current"},
 			{"git", "log", "-1", "--format=%h%x00%s"},
 		})
@@ -5268,7 +5278,7 @@ func TestShipGTRefusals(t *testing.T) {
 		if !errors.As(err, &gtErr) {
 			t.Errorf("errors.As reached no *gtError through %#v — the advice discarded gt's failure", err)
 		}
-		assertNoGTCommit(t, shipGTInvocations(t, f))
+		assertNoCommit(t, shipGTInvocations(t, f))
 		assertShipRefusedClean(t, f, head)
 	})
 
@@ -5318,7 +5328,7 @@ func TestShipGTExitZeroErrorRefuses(t *testing.T) {
 		env        string
 		wantPrefix string
 	}{
-		{name: "gt modify", env: "GT_MODIFY_STDERR", wantPrefix: "ship: gt modify: exit 0 but reported an error:"},
+		{name: "gt create", env: "GT_CREATE_STDERR", wantPrefix: "ship: gt create: exit 0 but reported an error:"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -5326,7 +5336,7 @@ func TestShipGTExitZeroErrorRefuses(t *testing.T) {
 			line := gtErrorPrefix + "Could not reach the Graphite server."
 			t.Setenv(tt.env, line)
 
-			out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push")
+			out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push", "--new-branch=newbranch")
 			if err == nil {
 				t.Fatalf("ship reported %q, want a refusal — gt exited 0 saying it did not do the work", out)
 			}
@@ -5807,11 +5817,11 @@ func TestShipGTNoVerify(t *testing.T) {
 		if inv[0] == "uvx" {
 			t.Errorf("uvx invoked despite --no-verify: %v", inv)
 		}
-		if inv[0] == "gt" && inv[1] == "modify" {
+		if inv[0] == "git" && inv[1] == "commit" {
 			commit = inv
 		}
 	}
-	want := []string{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"}
+	want := []string{"git", "commit", "-m", "fix: frobnicate", "--no-verify"}
 	if !reflect.DeepEqual(commit, want) {
 		t.Errorf("commit argv = %v, want %v", commit, want)
 	}
@@ -5839,7 +5849,7 @@ func TestShipGTHooksSuppressGitRun(t *testing.T) {
 			}
 			uvx = inv
 		}
-		if inv[0] == "gt" && inv[1] == "modify" {
+		if inv[0] == "git" && inv[1] == "commit" {
 			commit = inv
 		}
 	}
@@ -5847,7 +5857,7 @@ func TestShipGTHooksSuppressGitRun(t *testing.T) {
 	if !reflect.DeepEqual(uvx, wantUVX) {
 		t.Errorf("uvx argv = %v, want %v", uvx, wantUVX)
 	}
-	want := []string{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"}
+	want := []string{"git", "commit", "-m", "fix: frobnicate", "--no-verify"}
 	if !reflect.DeepEqual(commit, want) {
 		t.Errorf("commit argv = %v, want %v", commit, want)
 	}
@@ -5865,11 +5875,11 @@ func TestShipGTSessionTrailer(t *testing.T) {
 	}
 	var commit []string
 	for _, inv := range shipGTInvocations(t, f) {
-		if inv[0] == "gt" && inv[1] == "modify" {
+		if inv[0] == "git" && inv[1] == "commit" {
 			commit = inv
 		}
 	}
-	want := []string{"gt", "modify", "-c", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid", "--no-interactive", "--no-verify"}
+	want := []string{"git", "commit", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid", "--no-verify"}
 	if !reflect.DeepEqual(commit, want) {
 		t.Errorf("commit argv = %v, want %v", commit, want)
 	}

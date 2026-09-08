@@ -378,7 +378,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	var hookSeg string
 	if !o.noCommit {
 		if gtLane {
-			hookSeg, err = shipCommitGT(ctx, dir, cmd.ErrOrStderr(), o, sel, plan)
+			hookSeg, err = shipCommitGT(ctx, l, cmd.ErrOrStderr(), o, sel, plan)
 		} else {
 			hookSeg, err = shipCommitLocal(ctx, cmd.ErrOrStderr(), dir, kind, o, sel, plan)
 		}

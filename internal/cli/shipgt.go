@@ -487,74 +487,133 @@ func gtRefuseLandedParent(ctx context.Context, dir render.Dir, state gtState, br
 	return fmt.Errorf("ship: gt track adopted %s onto %s, which %s/%s already contains — that parent holds no commit of its own, so a stack built on it submits a pull request graphite refuses; name a real parent with --parent <branch>, or clear the stale branch out with ccx vcs prune", branch, parent, tr.Remote(), tr.Name())
 }
 
-// gtCommitArgv picks modify vs create from the branch plan; amend always
-// modifies. A create always names the branch explicitly — gt would otherwise
-// "generate a branch name from the commit message", which by then carries the
-// Claude-Session-Id trailer — and gets --no-ai (modify has no --ai flag to pin).
+// gtCreates reports whether this commit starts a branch, the one commit gt
+// itself still runs: a new branch needs a branch_metadata row, and gtmeta has
+// no insert. An amend forms no new commit and so never creates.
+func gtCreates(o shipOpts, plan branchPlan) bool {
+	return !o.amend && plan.action == branchCreate
+}
+
+// gtCommitArgv is gt create's argv. It always names the branch explicitly — gt
+// would otherwise "generate a branch name from the commit message", which by
+// then carries the Claude-Session-Id trailer — and gets --no-ai.
 func gtCommitArgv(o shipOpts, plan branchPlan) []string {
-	var argv []string
-	switch {
-	case o.amend && o.message != "":
-		argv = []string{"modify", "-m", o.message}
-	case o.amend:
-		argv = []string{"modify"}
-	case plan.action == branchCreate:
-		argv = []string{"create", plan.name}
-		if plan.parent != "" {
-			argv = append(argv, "--onto", plan.parent)
-		}
-		argv = append(argv, "-m", o.message, "--no-ai")
-	default:
-		argv = []string{"modify", "-c", "-m", o.message}
+	argv := []string{"create", plan.name}
+	if plan.parent != "" {
+		argv = append(argv, "--onto", plan.parent)
 	}
-	argv = append(argv, "--no-interactive")
+	argv = append(argv, "-m", o.message, "--no-ai", "--no-interactive")
 	if o.noVerify || o.hooksRan {
 		argv = append(argv, "--no-verify")
 	}
 	return argv
 }
 
+// gtModifyArgv is git's spelling of the commit gt modify makes. It carries no
+// pathspec, exactly as gt carries none: shipGitAdd staged the ship's paths
+// already, and the commit is of the index.
+func gtModifyArgv(o shipOpts) []string {
+	var argv []string
+	switch {
+	case o.amend && o.message != "":
+		argv = []string{"commit", "--amend", "-m", o.message}
+	case o.amend:
+		argv = []string{"commit", "--amend", "--no-edit"}
+	default:
+		argv = []string{"commit", "-m", o.message}
+	}
+	if o.noVerify || o.hooksRan {
+		argv = append(argv, "--no-verify")
+	}
+	return argv
+}
+
+// gtCommit places the commit on the gt lane. A modify — an amend or an appended
+// commit — moves one ref and reparents nothing, so git commits it and the
+// branches above are replayed onto it carrying the parent revisions gt would
+// have recorded. A create still runs gt, for the branch_metadata row gtmeta
+// cannot insert.
+func gtCommit(ctx context.Context, l lane, errW io.Writer, o shipOpts, plan branchPlan, env []string) error {
+	if gtCreates(o, plan) {
+		r, runErr := gtRun(ctx, l.dir(), gtCommitArgv(o, plan), gtZeroFatal, errW, env...)
+		if err := gtReport(ctx, errW, r); err != nil {
+			return err
+		}
+		if runErr != nil {
+			return fmt.Errorf("ship: %w", runErr)
+		}
+		return nil
+	}
+	if _, err := render.RunCLIEnv(ctx, l.dir(), "git", gtModifyArgv(o), env); err != nil {
+		return fmt.Errorf("ship: git commit: %w", err)
+	}
+	return gtModifyRestack(ctx, l, o, plan.from)
+}
+
+// gtModifyRestack replays the branches above the one just committed onto its new
+// head, the other half of what gt modify does. State is re-read after the commit:
+// each child's recorded parent revision now names a head its parent has left,
+// which is the "needs restack" gtRestackPlan reads.
+func gtModifyRestack(ctx context.Context, l lane, o shipOpts, branch string) error {
+	commonDir, err := gtCommonDir(ctx, l.dir(), "ship")
+	if err != nil {
+		return err
+	}
+	state, err := gtStateAt(ctx, commonDir, "ship")
+	if err != nil {
+		return err
+	}
+	up, err := gtUpstack("ship", state, branch)
+	if err != nil {
+		return err
+	}
+	if _, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), commonDir, state, up); err != nil {
+		var conflict *errRestackConflict
+		if errors.As(err, &conflict) {
+			return errors.New(gtStuck("ship", gtRestackStopped(err, conflict), gtStuckSuffix(o)))
+		}
+		return err
+	}
+	return nil
+}
+
 // shipCommitGT stages, refuses an empty commit, runs pre-commit hooks (or
-// reports "hooks hunk-skip" for a hunk selection), then commits through gt.
-// It never passes -a to gt: staging is shipGitAdd's job on both lanes, since
-// gt add is a git-add passthrough that costs a whole gt startup.
-func shipCommitGT(ctx context.Context, dir render.Dir, errW io.Writer, o shipOpts, sel *shipSelection, plan branchPlan) (string, error) {
+// reports "hooks hunk-skip" for a hunk selection), then places the commit.
+// Staging is shipGitAdd's job on both lanes, since gt add is a git-add
+// passthrough that costs a whole gt startup.
+func shipCommitGT(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *shipSelection, plan branchPlan) (string, error) {
 	o.message = withSessionTrailer(o.message)
 	if sel != nil {
 		seg := ""
-		if !o.noVerify && shipHasHookConfig(string(dir)) {
+		if !o.noVerify && shipHasHookConfig(l.root) {
 			seg = "hooks hunk-skip"
 		}
-		return seg, shipCommitGTSelect(ctx, dir, errW, o, sel, plan)
+		return seg, shipCommitGTSelect(ctx, l, errW, o, sel, plan)
 	}
-	if err := shipGitAdd(ctx, dir, o); err != nil {
+	if err := shipGitAdd(ctx, l.dir(), o); err != nil {
 		return "", err
 	}
 	if !o.amend {
-		if err := shipRefuseEmptyGit(ctx, dir, o, plan); err != nil {
+		if err := shipRefuseEmptyGit(ctx, l.dir(), o, plan); err != nil {
 			return "", err
 		}
 	}
-	hookSeg, hooksRan, err := shipRunHooks(ctx, errW, dir, vcs.Git, o)
+	hookSeg, hooksRan, err := shipRunHooks(ctx, errW, l.dir(), vcs.Git, o)
 	if err != nil {
 		return "", err
 	}
 	o.hooksRan = hooksRan
-	r, runErr := gtRun(ctx, dir, gtCommitArgv(o, plan), gtZeroFatal, errW)
-	if err := gtReport(ctx, errW, r); err != nil {
+	if err := gtCommit(ctx, l, errW, o, plan, nil); err != nil {
 		return "", err
-	}
-	if runErr != nil {
-		return "", fmt.Errorf("ship: %w", runErr)
 	}
 	return hookSeg, nil
 }
 
 // shipCommitGTSelect commits a hunk selection through the same throwaway-index
 // technique as shipCommitGitSelect — gt shells out to git, which honors
-// GIT_INDEX_FILE, so running gt's verb under the same env commits only the temp
+// GIT_INDEX_FILE, so running the commit under the same env commits only the temp
 // index. gt's only hunk surface is interactive -p, so staging stays on git.
-func shipCommitGTSelect(ctx context.Context, dir render.Dir, errW io.Writer, o shipOpts, sel *shipSelection, plan branchPlan) error {
+func shipCommitGTSelect(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *shipSelection, plan branchPlan) error {
 	idxFile, err := os.CreateTemp("", "ccx-ship-index-*")
 	if err != nil {
 		return fmt.Errorf("ship: create temp index: %w", err)
@@ -564,30 +623,25 @@ func shipCommitGTSelect(ctx context.Context, dir render.Dir, errW io.Writer, o s
 	defer func() { _ = os.Remove(idxPath) }()
 	env := []string{"GIT_INDEX_FILE=" + idxPath}
 
-	if _, err := render.RunCLIEnv(ctx, dir, "git", []string{"read-tree", "HEAD"}, env); err != nil {
+	if _, err := render.RunCLIEnv(ctx, l.dir(), "git", []string{"read-tree", "HEAD"}, env); err != nil {
 		return fmt.Errorf("ship: git read-tree: %w", err)
 	}
 	if addArgv, ok := gitSelectAddArgv(o.rootPaths, sel); ok {
-		if _, err := render.RunCLIEnv(ctx, dir, "git", addArgv, env); err != nil {
+		if _, err := render.RunCLIEnv(ctx, l.dir(), "git", addArgv, env); err != nil {
 			return fmt.Errorf("ship: git add: %w", err)
 		}
 	}
 	for _, path := range sortedSelectionFiles(sel) {
-		if err := gitStageSelected(ctx, dir, path, sel, env); err != nil {
+		if err := gitStageSelected(ctx, l.dir(), path, sel, env); err != nil {
 			return err
 		}
 	}
-	argv := gtCommitArgv(o, plan)
-	r, runErr := gtRun(ctx, dir, argv, gtZeroFatal, errW, env...)
-	if err := gtReport(ctx, errW, r); err != nil {
+	if err := gtCommit(ctx, l, errW, o, plan, env); err != nil {
 		return err
-	}
-	if runErr != nil {
-		return fmt.Errorf("ship: %w", runErr)
 	}
 
 	restoreArgv := append([]string{"restore", "--staged", "--"}, gitRestorePaths(o.rootPaths)...)
-	if _, err := render.RunCLI(ctx, dir, "git", restoreArgv); err != nil {
+	if _, err := render.RunCLI(ctx, l.dir(), "git", restoreArgv); err != nil {
 		return fmt.Errorf("ship: git restore --staged: %w", err)
 	}
 	return nil

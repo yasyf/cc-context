@@ -967,12 +967,10 @@ exit 0
     if [ -n "$GT_TRACK_STDERR" ]; then printf '%s\n' "$GT_TRACK_STDERR" >&2; fi
     if [ -n "$GT_TRACK_FAIL" ]; then printf 'gt: track failed\n' >&2; exit 1; fi ;;
   create)
+    if [ -n "$GT_CREATE_STDERR" ]; then printf '%s\n' "$GT_CREATE_STDERR" >&2; fi
     printf '%s\n' "$2" > "$SHIP_LOG.git-switched"
     # PATH is the fake bin dir alone, so cp needs its absolute path.
     if [ -n "$GT_META_DIR_2" ]; then /bin/cp -R "$GT_META_DIR_2"/. "$GT_META_DIR"/; fi
-    : > "$SHIP_LOG.git-committed" ;;
-  modify)
-    if [ -n "$GT_MODIFY_STDERR" ]; then printf '%s\n' "$GT_MODIFY_STDERR" >&2; fi
     : > "$SHIP_LOG.git-committed" ;;
   *) printf 'fake gt: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
 esac
@@ -1427,12 +1425,16 @@ func holderLookups(invocations [][]string) int {
 	return n
 }
 
-// assertNoGTCommit fails the test if a gt create or modify ran, for a refusal
-// that must fire before any commit side effect.
-func assertNoGTCommit(t *testing.T, invocations [][]string) {
+// assertNoCommit fails the test if either lane's commit ran, for a refusal that
+// must fire before any commit side effect. gt create is the one commit gt still
+// places; a modify is a git commit of the index.
+func assertNoCommit(t *testing.T, invocations [][]string) {
 	t.Helper()
 	for _, inv := range invocations {
-		if len(inv) > 1 && inv[0] == "gt" && (inv[1] == "create" || inv[1] == "modify") {
+		if len(inv) < 2 {
+			continue
+		}
+		if (inv[0] == "gt" && inv[1] == "create") || (inv[0] == "git" && inv[1] == "commit") {
 			t.Errorf("commit ran before refusal: %v", inv)
 		}
 	}

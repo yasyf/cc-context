@@ -235,29 +235,11 @@ func gtStackAll(ctx context.Context, dir render.Dir, prefix string) ([]string, g
 		return nil, nil, err
 	}
 	slices.Reverse(stack)
-	children := make(map[string][]string, len(state))
-	for name, s := range state {
-		if len(s.Parents) > 0 {
-			children[s.Parents[0].Ref] = append(children[s.Parents[0].Ref], name)
-		}
+	up, err := gtUpstack(prefix, state, branch)
+	if err != nil {
+		return nil, nil, err
 	}
-	for _, kids := range children {
-		slices.Sort(kids)
-	}
-	seen := map[string]bool{branch: true}
-	for queue := []string{branch}; len(queue) > 0; {
-		cur := queue[0]
-		queue = queue[1:]
-		for _, kid := range children[cur] {
-			if seen[kid] {
-				return nil, nil, fmt.Errorf("%s: gt state parent chain cycles at %s", prefix, kid)
-			}
-			seen[kid] = true
-			stack = append(stack, kid)
-			queue = append(queue, kid)
-		}
-	}
-	return stack, state, nil
+	return append(stack, up...), state, nil
 }
 
 // stackListLine reads bottom-up, one branch per line, naming the working copy
