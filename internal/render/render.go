@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
 // charsPerToken is the crude chars-per-token ratio used to estimate budgets.
@@ -47,7 +49,7 @@ const Ambient Dir = ""
 // deferred.
 func newCmd(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (*exec.Cmd, context.Context, context.CancelFunc) {
 	runCtx, cancel := withRunGuard(ctx)
-	cmd := exec.CommandContext(runCtx, bin, argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	cmd := exec.CommandContext(runCtx, lookpath.Bin(bin), argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
 	cmd.WaitDelay = waitDelay
 	cmd.Dir = string(dir)
 	cmd.Env = childEnv(dir, extraEnv)
@@ -55,14 +57,14 @@ func newCmd(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (
 }
 
 func childEnv(dir Dir, extraEnv []string) []string {
-	if dir == Ambient && len(extraEnv) == 0 {
-		return nil
-	}
 	env := os.Environ()
 	if dir != Ambient {
 		env = slices.DeleteFunc(env, func(kv string) bool {
 			return strings.HasPrefix(kv, "GIT_DIR=") || strings.HasPrefix(kv, "GIT_WORK_TREE=")
 		})
+	}
+	if path := lookpath.GitPATH(); path != "" {
+		env = append(env, "PATH="+path)
 	}
 	return append(env, extraEnv...)
 }
