@@ -798,7 +798,7 @@ func gtSubmitPlan(ctx context.Context, dir render.Dir, prefix string, state gtSt
 			b.base, b.baseSha, from = tr.Name(), trunkHead, string(tr.Ref())
 		}
 		if b.pr == 0 {
-			title, body, err := gtCreateMeta(ctx, dir, prefix, name, from)
+			title, body, err := gtCreateMeta(ctx, dir, prefix, name, from, b.base)
 			if err != nil {
 				return nil, err
 			}
@@ -810,14 +810,14 @@ func gtSubmitPlan(ctx context.Context, dir render.Dir, prefix string, state gtSt
 }
 
 // gtCreateMeta derives a created PR's title and body from the branch's first
-// commit above its base — a deliberate divergence from gt submit --no-edit,
-// which creates PRs with empty bodies. The Claude-Session-Id trailer is
-// dropped from the body, the same line the non-graphite lane keeps out of
-// descriptions by never passing --fill.
-func gtCreateMeta(ctx context.Context, dir render.Dir, prefix, branch, base string) (string, string, error) {
-	out, err := render.RunCLI(ctx, dir, "git", []string{"log", "--reverse", "--format=%s%x00%b%x00", base + ".." + branch})
+// commit above rev — a deliberate divergence from gt submit --no-edit, which
+// creates PRs with empty bodies. Refusals name base, never rev. The
+// Claude-Session-Id trailer is dropped from the body, the same line the
+// non-graphite lane keeps out of descriptions by never passing --fill.
+func gtCreateMeta(ctx context.Context, dir render.Dir, prefix, branch, rev, base string) (string, string, error) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"log", "--reverse", "--format=%s%x00%b%x00", rev + ".." + branch})
 	if err != nil {
-		return "", "", fmt.Errorf("%s: git log %s..%s: %w", prefix, base, branch, err)
+		return "", "", fmt.Errorf("%s: git log %s..%s: %w", prefix, rev, branch, err)
 	}
 	fields := strings.Split(out, "\x00")
 	if len(fields) < 3 {

@@ -5433,12 +5433,13 @@ func TestShipGTSubmitFailures(t *testing.T) {
 			t.Fatalf("error = %v, want %q", err, want)
 		}
 		// Both branches pushed before the refusal, so both leases track the
-		// remote heads this run moved.
+		// remote heads this run moved; feature sits on trunk, so its base is
+		// the remote trunk's head.
 		last, lerr := gtmeta.LastSubmitted(t.Context(), os.Getenv("GT_META_DIR"))
 		if lerr != nil {
 			t.Fatalf("LastSubmitted: %v", lerr)
 		}
-		want1 := gtmeta.Version{HeadSha: "beadfeed", BaseSha: "deadbeef", BaseName: "main"}
+		want1 := gtmeta.Version{HeadSha: "beadfeed", BaseSha: fakeTrunkSHA, BaseName: "main"}
 		if last["feature"] != want1 {
 			t.Errorf("feature last_submitted_version = %+v, want %+v", last["feature"], want1)
 		}
