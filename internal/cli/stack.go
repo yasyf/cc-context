@@ -81,8 +81,10 @@ A submit pushes each branch onto the parent gt records for it, so a stack spread
 across working copies has to be restacked in each of them first — which is the
 sweep ccx vcs stack restack runs. This does both, in that order, so the submit
 meets a stack that is already in the shape Graphite expects. The submit itself is
-ccx vcs ship's: one atomic push moving every branch, each under the lease of its
-last submitted version, then one post to Graphite's API per branch, bottom-up.`,
+ccx vcs ship's: anchored on the remote trunk it fetches first, dropping the
+branches that trunk already holds and naming them, then one atomic push moving
+every branch left, each under the lease of its last submitted version, then one
+post to Graphite's API per branch, bottom-up.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runStackSubmit(cmd, draft)
@@ -314,13 +316,15 @@ func runStackSubmit(cmd *cobra.Command, draft bool) error {
 	if err != nil {
 		return err
 	}
+	tr, err := gtTrunkRef(ctx, l.dir(), "stack submit", trunk)
+	if err != nil {
+		return err
+	}
 	sub := gtSubmit{prefix: "stack submit", draft: draft}
-	if err := gtAnnounceStack(errW, sub.prefix, chain); err != nil {
+	submitted, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, chain)
+	if err != nil {
 		return err
 	}
-	if err := gtSubmitStack(ctx, l, sub, commonDir, state, trunk, chain); err != nil {
-		return err
-	}
-	cmd.Println(strings.Join([]string{gtRestackSegment(result), fmt.Sprintf("submitted %d branches", len(chain))}, shipSep))
+	cmd.Println(strings.Join([]string{gtRestackSegment(result), fmt.Sprintf("submitted %d branches", len(submitted))}, shipSep))
 	return nil
 }

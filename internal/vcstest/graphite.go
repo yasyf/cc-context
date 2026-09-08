@@ -107,6 +107,31 @@ func writeGraphiteFile(t *testing.T, path, content string) {
 	}
 }
 
+// graphiteChildren renders each branch's children column, the tree gt walks in
+// gt log: a row absent from its parent's children is a branch gt never reaches,
+// however the parent pointers read.
+func graphiteChildren(t *testing.T, state map[string]graphiteBranch) map[string]string {
+	t.Helper()
+	kids := make(map[string][]string, len(state))
+	for name := range state {
+		kids[name] = []string{}
+	}
+	for _, name := range slices.Sorted(maps.Keys(state)) {
+		for _, parent := range state[name].Parents {
+			kids[parent.Ref] = append(kids[parent.Ref], name)
+		}
+	}
+	encoded := make(map[string]string, len(kids))
+	for name, list := range kids {
+		payload, err := json.Marshal(list)
+		if err != nil {
+			t.Fatalf("marshal children of %s: %v", name, err)
+		}
+		encoded[name] = string(payload)
+	}
+	return encoded
+}
+
 func writeGraphiteRows(t *testing.T, path string, state map[string]graphiteBranch) {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)
@@ -118,17 +143,18 @@ func writeGraphiteRows(t *testing.T, path string, state map[string]graphiteBranc
 	if _, err := db.Exec(graphiteBranchMetadata); err != nil {
 		t.Fatalf("create branch_metadata in %s: %v", path, err)
 	}
-	const insert = `INSERT INTO branch_metadata (branch_name, parent_branch_name, parent_branch_revision, validation_result) VALUES (?, ?, ?, ?)`
+	children := graphiteChildren(t, state)
+	const insert = `INSERT INTO branch_metadata (branch_name, parent_branch_name, parent_branch_revision, validation_result, children) VALUES (?, ?, ?, ?, ?)`
 	for _, name := range slices.Sorted(maps.Keys(state)) {
 		branch := state[name]
 		if branch.Trunk {
-			if _, err := db.Exec(insert, name, nil, nil, graphiteValidationTrunk); err != nil {
+			if _, err := db.Exec(insert, name, nil, nil, graphiteValidationTrunk, children[name]); err != nil {
 				t.Fatalf("insert trunk %s into %s: %v", name, path, err)
 			}
 			continue
 		}
 		parent := branch.Parents[0]
-		if _, err := db.Exec(insert, name, parent.Ref, parent.SHA, graphiteValidationValid); err != nil {
+		if _, err := db.Exec(insert, name, parent.Ref, parent.SHA, graphiteValidationValid, children[name]); err != nil {
 			t.Fatalf("insert %s into %s: %v", name, path, err)
 		}
 	}

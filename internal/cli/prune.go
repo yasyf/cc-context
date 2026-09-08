@@ -22,8 +22,20 @@ func newPruneCmd() *cobra.Command {
 	var o pruneOpts
 	cmd := &cobra.Command{
 		Use:   "prune",
-		Short: "Delete local branches already merged into trunk, and forget their graphite rows",
-		Args:  cobra.NoArgs,
+		Short: "Delete local branches already merged into trunk, forget their graphite rows, and reparent the rows they leave behind",
+		Long: `Delete local branches already merged into trunk, forget their graphite rows, and reparent the rows they leave behind.
+
+A forgotten row leaves its children naming a parent gt no longer knows, and gt
+then refuses to resolve the whole stack above them, so every surviving row whose
+recorded parent this prune forgets moves onto the first ancestor it keeps — trunk
+once the chain runs out of tracked ancestors. gt has no verb for the move, so
+prune writes it into gt's metadata itself, on both sides, since gt walks its tree
+through each parent's list of children; the moved branch then reads as needing
+the restack it does need. Branches gt reports as diverged are named and never
+touched, since their remedy is gt track or gt untrack and guessing between them
+loses work, and merged branches a worktree holds are named as held, since git
+refuses to delete them.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runPrune(cmd, o)
 		},
@@ -34,14 +46,16 @@ func newPruneCmd() *cobra.Command {
 }
 
 // prunePlan is what one prune would do: merged branches to delete, graphite
-// rows for branches that no longer exist, and the branches gt reports as
-// diverged, which prune names and never touches — their remedy is gt track or
-// gt untrack, and guessing between them loses work.
+// rows for branches that no longer exist, the rows a forget would strand and
+// the parent each moves onto, and the branches gt reports as diverged, which
+// prune names and never touches — their remedy is gt track or gt untrack, and
+// guessing between them loses work.
 type prunePlan struct {
 	merged   []string
 	stale    []string
 	diverged []string
 	held     []string
+	reparent map[string]string
 }
 
 func runPrune(cmd *cobra.Command, o pruneOpts) error {
@@ -116,7 +130,69 @@ func prunePlanFor(ctx context.Context, dir render.Dir, l lane, trunk vcs.Trunk) 
 	}
 	sort.Strings(plan.stale)
 	sort.Strings(plan.diverged)
+	plan.reparent, err = pruneReparent(rows, pruneForgotten(plan), trunk.Name())
+	if err != nil {
+		return prunePlan{}, err
+	}
 	return plan, nil
+}
+
+// pruneForgotten names every graphite row this prune deletes: the branches it
+// deletes from git, plus the rows whose branch is already gone.
+func pruneForgotten(plan prunePlan) map[string]bool {
+	forgotten := make(map[string]bool, len(plan.merged)+len(plan.stale))
+	for _, branch := range plan.merged {
+		forgotten[branch] = true
+	}
+	for _, branch := range plan.stale {
+		forgotten[branch] = true
+	}
+	return forgotten
+}
+
+// pruneReparent moves every surviving row whose recorded parent this prune
+// forgets onto the first ancestor it keeps: a forgotten parent leaves its
+// children naming a branch that no longer exists, and gt then refuses to
+// resolve the whole stack above them.
+func pruneReparent(rows []gtmeta.Row, forgotten map[string]bool, trunk string) (map[string]string, error) {
+	parents := make(map[string]string, len(rows))
+	for _, row := range rows {
+		parents[row.Branch] = row.Parent
+	}
+	moves := make(map[string]string)
+	for _, row := range rows {
+		if forgotten[row.Branch] || !forgotten[row.Parent] {
+			continue
+		}
+		survivor, err := pruneSurvivor(parents, forgotten, trunk, row.Branch)
+		if err != nil {
+			return nil, err
+		}
+		moves[row.Branch] = survivor
+	}
+	return moves, nil
+}
+
+// pruneSurvivor walks branch's recorded parents past every row the prune
+// forgets, to the first row it keeps — trunk once the chain runs out of tracked
+// ancestors, since a branch gt does not track is no parent to record. A chain
+// that revisits a branch is a cycle prune refuses rather than writes back.
+func pruneSurvivor(parents map[string]string, forgotten map[string]bool, trunk, branch string) (string, error) {
+	seen := map[string]bool{branch: true}
+	for cur := branch; ; {
+		next, tracked := parents[cur]
+		if !tracked || next == "" {
+			return trunk, nil
+		}
+		if seen[next] {
+			return "", fmt.Errorf("prune: gt parent chain of %s cycles at %s — run gt track %s", branch, next, next)
+		}
+		if _, rowed := parents[next]; rowed && !forgotten[next] {
+			return next, nil
+		}
+		seen[next] = true
+		cur = next
+	}
 }
 
 // pruneHeldBranches names every branch a worktree has checked out, including
@@ -186,6 +262,9 @@ func pruneApply(ctx context.Context, dir render.Dir, l lane, plan prunePlan) err
 	if err != nil {
 		return err
 	}
+	if err := gtmeta.Reparent(ctx, commonDir, plan.reparent); err != nil {
+		return fmt.Errorf("prune: %w", err)
+	}
 	if err := gtmeta.Forget(ctx, commonDir, forget); err != nil {
 		return fmt.Errorf("prune: %w", err)
 	}
@@ -207,13 +286,16 @@ func pruneBatches(names []string, size int) [][]string {
 }
 
 func prunePlanReport(plan prunePlan, trunk vcs.Trunk, dryRun bool) string {
-	verb := "deleted"
+	deleted, forgot, reparented := "deleted", "forgot", "reparented"
 	if dryRun {
-		verb = "would delete"
+		deleted, forgot, reparented = "would delete", "would forget", "would reparent"
 	}
-	segs := []string{fmt.Sprintf("%s %d branches merged into %s%s", verb, len(plan.merged), trunk.Name(), pruneNames(plan.merged))}
+	segs := []string{fmt.Sprintf("%s %d branches merged into %s%s", deleted, len(plan.merged), trunk.Name(), pruneNames(plan.merged))}
 	if len(plan.stale) > 0 {
-		segs = append(segs, fmt.Sprintf("forgot %d graphite rows for deleted branches", len(plan.stale)))
+		segs = append(segs, fmt.Sprintf("%s %d graphite rows for deleted branches", forgot, len(plan.stale)))
+	}
+	if len(plan.reparent) > 0 {
+		segs = append(segs, fmt.Sprintf("%s %d graphite rows onto a surviving parent%s", reparented, len(plan.reparent), pruneNames(pruneMoveNames(plan.reparent))))
 	}
 	if len(plan.held) > 0 {
 		segs = append(segs, fmt.Sprintf("%d merged branches held by a worktree", len(plan.held)))
@@ -235,6 +317,17 @@ func pruneNames(branches []string) string {
 		return ": " + strings.Join(branches, ", ")
 	}
 	return fmt.Sprintf(": %s and %d more", strings.Join(branches[:pruneNameCap], ", "), len(branches)-pruneNameCap)
+}
+
+// pruneMoveNames renders each reparented row as the move it is, sorted so one
+// prune's report reads the same twice.
+func pruneMoveNames(moves map[string]string) []string {
+	names := make([]string, 0, len(moves))
+	for branch, parent := range moves {
+		names = append(names, branch+" → "+parent)
+	}
+	sort.Strings(names)
+	return names
 }
 
 const pruneNameCap = 10
