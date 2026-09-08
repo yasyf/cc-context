@@ -536,11 +536,11 @@ var gtAPIClient = gtapi.Default
 // shipPushGT submits the downstack of the branch the commit landed on, over
 // Graphite's HTTP API plus ccx's own git push in place of a gt submit process.
 // The downstack is re-read here, after the commit, because a gt create adds a
-// branch to it. It fetches the trunk ref and nothing else, and never rebases or
-// retries — gt owns restacking.
+// branch to it. It joins the trunk-ref fetch and reaches the network for nothing
+// else, and never rebases or retries — gt owns restacking.
 // The resolved downstack it returns is the one the pull request step then
 // backfills into, so the stack is walked and its pull requests fetched once.
-func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta map[string]prMeta, branch, suffix string) (submitted string, bodyless []string, stack []stackEntry, err error) {
+func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta map[string]prMeta, fetch *gtTrunkFetch, branch, suffix string) (submitted string, bodyless []string, stack []stackEntry, err error) {
 	commonDir, err := gtCommonDir(ctx, l.dir(), "ship")
 	if err != nil {
 		return "", nil, nil, err
@@ -553,7 +553,7 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 	if err != nil {
 		return "", nil, nil, err
 	}
-	tr, err := gtTrunkRef(ctx, l.dir(), "ship", trunk)
+	tr, err := fetch.join()
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -701,6 +701,39 @@ func gtTrunkRef(ctx context.Context, dir render.Dir, prefix, trunk string) (vcs.
 		return vcs.Trunk{}, fmt.Errorf("%s: git fetch %s %s: %w", prefix, remote, trunk, err)
 	}
 	return gtTrunkRefAt(ctx, dir, prefix, remote, trunk)
+}
+
+// gtTrunkFetch is one gtTrunkRef in flight, so the round trip runs under the
+// staging and the commit rather than after them: it reads nothing they produce,
+// and past the preflight nothing before the submit reads the ref it moves.
+type gtTrunkFetch struct {
+	done   chan struct{}
+	cancel context.CancelFunc
+	tr     vcs.Trunk
+	err    error
+}
+
+// gtStartTrunkFetch takes the trunk the preflight resolved, which no commit renames.
+func gtStartTrunkFetch(ctx context.Context, dir render.Dir, prefix, trunk string) *gtTrunkFetch {
+	ctx, cancel := context.WithCancel(ctx)
+	f := &gtTrunkFetch{done: make(chan struct{}), cancel: cancel}
+	go func() {
+		defer close(f.done)
+		f.tr, f.err = gtTrunkRef(ctx, dir, prefix, trunk)
+	}()
+	return f
+}
+
+func (f *gtTrunkFetch) join() (vcs.Trunk, error) {
+	<-f.done
+	return f.tr, f.err
+}
+
+// stop is join for a run that ended before the submit, waiting so no fetch
+// outlives the command.
+func (f *gtTrunkFetch) stop() {
+	f.cancel()
+	<-f.done
 }
 
 // gtTrunkRefOffline reads the remote-tracking trunk without fetching, for the
