@@ -5379,6 +5379,38 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		}
 	})
 
+	t.Run("a synced verdict is asked for once", func(t *testing.T) {
+		setupShipGT(t, false)
+		api := stubGTAPI(t)
+
+		for range 2 {
+			if _, err := runShipCmd(t, "-m", "fix: frobnicate"); err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+		}
+		if n := api.routeCount("/graphite/cli/is-repo-synced"); n != 1 {
+			t.Errorf("is-repo-synced requests = %d, want the second ship served from cache", n)
+		}
+		if n := api.routeCount("/graphite/cli/pull-request-info"); n != 2 {
+			t.Errorf("pull-request-info requests = %d, want one per ship — only the sync verdict caches", n)
+		}
+	})
+
+	t.Run("an unsynced verdict is re-asked", func(t *testing.T) {
+		setupShipGT(t, false)
+		api := stubGTAPI(t)
+		api.synced = gtapi.RepoNotSyncedAddable
+
+		for range 2 {
+			if _, err := runShipCmd(t, "-m", "fix: frobnicate"); err == nil {
+				t.Fatal("ship succeeded against an unsynced repo")
+			}
+		}
+		if n := api.routeCount("/graphite/cli/is-repo-synced"); n != 2 {
+			t.Errorf("is-repo-synced requests = %d, want a refusal nobody caches", n)
+		}
+	})
+
 	t.Run("a pre-submit refusal wraps verbatim", func(t *testing.T) {
 		log := setupShipGT(t, false)
 		api := stubGTAPI(t)

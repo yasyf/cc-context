@@ -376,6 +376,60 @@ func TestShipPRGTWritesTheNewestPR(t *testing.T) {
 	}
 }
 
+// TestShipPRGTSkipsDownstackQuery is the round trip a submit need not make:
+// graphite already named every branch's open pull request, and this ship writes
+// every body, so the batched gh query has nothing left to add.
+func TestShipPRGTSkipsDownstackQuery(t *testing.T) {
+	log := setupShipGT(t, true)
+	api := stubGTAPI(t)
+	api.prs["feature"] = 41
+	body := writePRBody(t, "body.md", "why this change\n")
+
+	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #41 ` + gtStubPRURL(41) + ` · set PR #41 body`
+	if got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	var gh [][]string
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "gh" {
+			gh = append(gh, inv)
+		}
+	}
+	assertInvocations(t, gh, [][]string{{"gh", "pr", "edit", "41", "--repo", fakePRRepo, "--body-file", body}})
+}
+
+// TestShipPRGTQueriesForABodylessBranch is the other half: a branch this ship
+// writes no body for is exactly the one the bodyless warning weighs, so the
+// batched query still runs even though graphite named both pull requests.
+func TestShipPRGTQueriesForABodylessBranch(t *testing.T) {
+	log := setupShipGT(t, true)
+	api := stubGTAPI(t)
+	api.prs["feature"], api.prs["feature2"] = 41, 42
+	t.Setenv("GIT_BRANCH", "feature2")
+	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
+		`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
+	seedPRViews(t, map[string]string{
+		"feature":  `{"number":41,"url":"https://github.com/x/pull/41","body":"written by hand"}`,
+		"feature2": `{"number":42,"url":"https://github.com/x/pull/42","body":""}`,
+	})
+	body := writePRBody(t, "body.md", "why this change\n")
+
+	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	var graphql [][]string
+	for _, inv := range readInvocations(t, log) {
+		if len(inv) > 2 && inv[0] == "gh" && inv[1] == "api" && inv[2] == "graphql" {
+			graphql = append(graphql, inv)
+		}
+	}
+	assertInvocations(t, graphql, [][]string{ghDownstackPRArgv("feature", "feature2")})
+}
+
 func TestShipPRGTBothFlags(t *testing.T) {
 	log := setupShipGT(t, true)
 	seedPRViews(t, map[string]string{"feature": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`})
