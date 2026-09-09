@@ -4,6 +4,101 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.0] - 2026-09-09
+
+### Changed
+- **ccx runs the git that PATH names, stepping past Apple's stub.** On macOS
+  `/usr/bin/git` is a stub that spawns and then execs the real git inside
+  `Xcode.app`, and an endpoint-security agent scans every exec off the sealed
+  system volume, so the stub pays that scan twice. Measured on a developer
+  laptop, `/usr/bin/git --version` takes 0.52s against 0.01s for Homebrew's git,
+  and 5.09s cold. `/usr/bin` precedes `/opt/homebrew/bin` on a default PATH, so
+  every one of ccx's roughly 16 git calls per ship paid it, as did the 20 more
+  that gt spawns.
+
+  `exec.LookPath`'s answer is now returned untouched unless it lands in
+  `/usr/bin` or `/bin`. Only then does ccx walk PATH past those directories for
+  the first executable `git`. The rule names the stub directories to step past
+  rather than an allowlist of good ones, so on Linux and on an Intel mac nothing
+  changes and no extra work happens. `CCX_GIT` names a git outright and skips
+  the search. Child processes inherit a PATH led by the resolved git's
+  directory, which is what lets gt's own git spawns benefit; that directory
+  already sits on PATH, so nothing new becomes reachable and only git's
+  resolution order changes.
+
+  Medians of five runs on a three-branch stack: `ccx vcs diff` 1.98s to 0.30s,
+  `ccx vcs info` 4.17s to 0.96s, `ccx vcs stack list` 2.67s to 0.31s. A shim
+  named `git` placed first on PATH recorded 22 invocations from one `gt modify`,
+  which is why `gt modify` drops from 17.8s to 6.4s.
+
+  ccx no longer checks the version of the git it picks. A git older than 2.44
+  sitting ahead of `/usr/bin` will fail `gt restack`, which needs
+  `git replay --onto`; the error names the missing subcommand, and `CCX_GIT`
+  overrides the choice. An earlier draft probed `git --version` to refuse such a
+  candidate, but the probe ran on the exec path under a context detached from
+  the caller's, breaking the timeout every `RunCLI` promises, and a probe that
+  timed out was remembered — so one contended probe at startup pinned the
+  process to the stub for its lifetime, silently, exactly when the machine was
+  busiest.
+
+- **The graphite lane places its commit with git, not by running `gt modify`.**
+  That subprocess was 67s of a profiled 104s ship: one Node boot and about 20
+  serial git children to produce one `git commit --amend`. ccx had already
+  replaced the other two gt processes on the hot path, reading graphite's
+  SQLite directly instead of running `gt state` and submitting through the
+  graphite API instead of `gt submit`.
+
+  Both forms of `gt modify`, the amend and the `-c` append, are now a
+  `git commit` of the index followed by the restack ccx already performs with
+  `git replay` and the `parent_branch_revision` write it already makes. The
+  hunk-scoped path, which commits a selection through a throwaway
+  `GIT_INDEX_FILE`, is covered too. On the real cc-context repository the commit
+  phase with no upstack is three git spawns and 2.3s.
+
+  `gt create` still runs gt. The two verbs differ in what they owe graphite's
+  database: a modify changes no branch's parent and creates no row, so its whole
+  metadata delta is the column ccx already writes, while a create needs a row
+  that does not exist yet and ccx has no insert path for one. `branch_revision`
+  and `parent_head_revision` are left as the existing restack path leaves them.
+  Graphite populates both but reads neither when deciding a restack — it derives
+  that from `parent_branch_revision` against the parent's live head — and
+  rewrites both on every invocation; setting them stale by hand on a real stack
+  left `gt state` and `gt log short` correct.
+
+  An upstack that will not replay reports the branch, the working copy holding
+  it, and the `gt restack --only --branch <b>` that resolves it, because the
+  commit has landed by then and a bare conflict would strand the caller.
+
+- **A ship reads graphite's tracked state once, not once per caller.** An
+  ordinary ship read gt's database and enumerated refs twice; an untracked
+  branch needing a restack with `--reviews` did it six times. One per-run memo
+  now holds both the git common dir and the state, dropped after the commit,
+  after a restack, and after a `gt track` — the three steps that move a head or
+  write a row. It resolves the common dir on the first read that needs one, so a
+  run that never reads gt's metadata does not pay the lookup. `gtmeta` also asks
+  `git for-each-ref --stdin` for the refs its rows name, rather than listing
+  every ref in the repository and discarding most of them.
+
+- **The graphite submit stops waiting on calls that do not depend on each
+  other.** `is-repo-synced` and `pull-request-info` run together, and the synced
+  verdict is remembered on disk for a day beside the reachability verdict ccx
+  already caches, under the same lock and schema version. Only a synced answer
+  is stored: every other verdict aborts the submit, so no later run is left to
+  serve a cached refusal, and remembering one would make someone who had just
+  added the repository wait it out. The submit still posts one pull request per
+  call, bottom-up, which is what gt does and what keeps a multi-branch submit
+  from being refused.
+
+  The pull request numbers graphite returns are also enough to skip the GitHub
+  query ccx made for the same branches, on a ship that already writes every
+  branch's body — the case where the bodyless-pull-request warning that query
+  feeds cannot fire. Any other ship still asks.
+
+- **The trunk fetch overlaps the staging and the commit.** It depends on nothing
+  the commit produces. It starts after the preflight rather than at the top of
+  the run, because the guard that refuses a landed parent reads the same ref the
+  fetch moves.
+
 ## [0.57.0] - 2026-09-02
 
 ### Fixed
