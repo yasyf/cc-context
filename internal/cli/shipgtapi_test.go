@@ -235,6 +235,19 @@ func gtStubPRURL(number int) string {
 	return fmt.Sprintf("https://app.graphite.dev/github/pr/yasyf/cc-context/%d", number)
 }
 
+// routeCount counts the requests the stub served on one route.
+func (s *gtAPIStub) routeCount(path string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, route := range s.routes {
+		if route == path {
+			n++
+		}
+	}
+	return n
+}
+
 // submitHeads names the branch of every submit post, in the order the stub
 // served them — the bottom-up order a stack must be submitted in.
 func (s *gtAPIStub) submitHeads() []string {

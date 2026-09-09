@@ -2,14 +2,20 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
+	"golang.org/x/sync/errgroup"
+
+	"github.com/yasyf/cc-context/internal/cache"
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
@@ -570,10 +576,11 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 		return "", nil, nil, errors.New(gtStuck("ship", problem, suffix))
 	}
 	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: o.draft, noVerify: o.noVerify}
-	if _, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, gtBottomUp(chain)); err != nil {
+	_, known, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, gtBottomUp(chain))
+	if err != nil {
 		return "", nil, nil, err
 	}
-	submitted, bodyless, stack = gtPRSegment(ctx, l, branch, chain, meta)
+	submitted, bodyless, stack = gtPRSegment(ctx, l, branch, chain, meta, known)
 	return submitted, bodyless, stack, nil
 }
 
@@ -595,59 +602,75 @@ type gtSubmitBranch struct {
 // open PR, force-push the rest in one atomic push, then post one entry per
 // branch bottom-up, as real gt does, reporting the branches that got one. The
 // push comes first so the headSha Graphite records is the one on the remote.
-func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, commonDir string, state gtState, tr vcs.Trunk, branches []string) ([]string, error) {
+//
+// The open pull requests it learned come back keyed by branch, so the report
+// step can answer from them instead of asking GitHub the same question again.
+func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, commonDir string, state gtState, tr vcs.Trunk, branches []string) ([]string, map[string]gtapi.PullRequestInfo, error) {
 	branches, contained, err := gtDropContained(ctx, l.dir(), s.prefix, tr, state, branches)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := gtAnnounceContained(errW, s.prefix, tr, contained); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := gtAnnounceStack(errW, s.prefix, branches); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(branches) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	owner, name, err := gtRepoOwnerName(ctx, l, s.prefix)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	client := gtAPIClient()
-	sync, err := client.IsRepoSynced(ctx, owner, name)
-	if err != nil {
-		return nil, gtSubmitFailure(err, s)
-	}
-	if sync.Status != gtapi.RepoSynced {
-		problem := fmt.Sprintf("graphite does not sync %s/%s (%s) — add the repo at app.graphite.dev, or pass --no-gt", owner, name, sync.Status)
-		return nil, &gtAdvice{advice: gtStuck(s.prefix, problem, s.suffix), cause: fmt.Errorf("gtapi: is-repo-synced: %s %s", sync.Status, sync.Message)}
-	}
-
-	infos, err := client.PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{
-		RepoOwner:        owner,
-		RepoName:         name,
-		PRNumbers:        []int{},
-		PRHeadRefNames:   branches,
-		TrunkBranchNames: []string{tr.Name()},
-		Callsite:         "ccx",
+	var synced gtapi.RepoSync
+	var infos []gtapi.PullRequestInfo
+	var infoErr error
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() (err error) {
+		synced, err = gtRepoSynced(gctx, client, l.root, owner, name)
+		return err
 	})
-	if err != nil {
-		return nil, gtSubmitFailure(err, s)
+	// pull-request-info's failure is held out of the group so an unsynced repo —
+	// the diagnosis worth reporting — is read first whichever call returns first.
+	g.Go(func() error {
+		infos, infoErr = client.PullRequestInfo(gctx, gtapi.PullRequestInfoRequest{
+			RepoOwner:        owner,
+			RepoName:         name,
+			PRNumbers:        []int{},
+			PRHeadRefNames:   branches,
+			TrunkBranchNames: []string{tr.Name()},
+			Callsite:         "ccx",
+		})
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return nil, nil, gtSubmitFailure(err, s)
 	}
+	if synced.Status != gtapi.RepoSynced {
+		problem := fmt.Sprintf("graphite does not sync %s/%s (%s) — add the repo at app.graphite.dev, or pass --no-gt", owner, name, synced.Status)
+		return nil, nil, &gtAdvice{advice: gtStuck(s.prefix, problem, s.suffix), cause: fmt.Errorf("gtapi: is-repo-synced: %s %s", synced.Status, synced.Message)}
+	}
+	if infoErr != nil {
+		return nil, nil, gtSubmitFailure(infoErr, s)
+	}
+	known := make(map[string]gtapi.PullRequestInfo, len(infos))
 	open := map[string]int{}
 	for _, pr := range infos {
 		if pr.State == gtapi.PROpen {
+			known[pr.HeadRefName] = pr
 			open[pr.HeadRefName] = pr.PRNumber
 		}
 	}
 
 	last, err := gtmeta.LastSubmitted(ctx, commonDir)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", s.prefix, err)
+		return nil, nil, fmt.Errorf("%s: %w", s.prefix, err)
 	}
 	plan, err := gtSubmitPlan(ctx, l.dir(), s.prefix, state, tr, branches, open, last)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	pre := make([]gtapi.PreSubmitBranch, 0, len(plan))
@@ -655,20 +678,20 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		pre = append(pre, gtapi.PreSubmitBranch{HeadRefName: b.name, PRNumber: b.pr})
 	}
 	if _, err := client.PreSubmitPullRequests(ctx, owner, name, pre); err != nil {
-		return nil, gtSubmitFailure(err, s)
+		return nil, nil, gtSubmitFailure(err, s)
 	}
 
 	// The leases are recorded right after the atomic push — the irreversible
 	// step — so no later failure leaves one behind a head this run just moved.
 	if err := gtPushStack(ctx, l.dir(), s, plan); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	versions := make(map[string]gtmeta.Version, len(plan))
 	for _, b := range plan {
 		versions[b.name] = gtmeta.Version{HeadSha: b.head, BaseSha: b.baseSha, BaseName: b.base}
 	}
 	if err := gtmeta.RecordSubmitted(ctx, commonDir, versions); err != nil {
-		return nil, gtSubmitFailure(err, s)
+		return nil, nil, gtSubmitFailure(err, s)
 	}
 
 	var landed []gtapi.SubmittedPR
@@ -680,11 +703,11 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			PRs:             []gtapi.SubmitPR{pr},
 		})
 		if err != nil {
-			return nil, gtSubmitFailure(gtSubmitPartial(err, pr.Head, landed), s)
+			return nil, nil, gtSubmitFailure(gtSubmitPartial(err, pr.Head, landed), s)
 		}
 		landed = append(landed, out...)
 	}
-	return branches, nil
+	return branches, known, nil
 }
 
 // gtTrunkRef resolves the remote-tracking trunk a submit anchors on, fetching
@@ -749,6 +772,84 @@ func gtDropContained(ctx context.Context, dir render.Dir, prefix string, tr vcs.
 		submit = append(submit, name)
 	}
 	return submit, contained, nil
+}
+
+// gtSyncSchema is the on-disk format version of the cached repo-sync verdict; a
+// mismatch reads as a miss.
+const gtSyncSchema = 1
+
+// gtSyncTTL bounds how long a cached sync verdict is served.
+const gtSyncTTL = 24 * time.Hour
+
+// gtSyncRecord is one repo's cached SYNCED verdict, a sibling of its GitHub
+// metadata record. Only that verdict is stored: every other one aborts the
+// submit, so no run is left to serve a cached refusal to.
+type gtSyncRecord struct {
+	Schema    int       `json:"schema"`
+	FetchedAt time.Time `json:"fetched_at"`
+}
+
+// gtRepoSynced asks Graphite whether it mirrors owner/name, serving a cached
+// verdict when one is on disk so a synced repository pays for the round trip at
+// most once a day.
+func gtRepoSynced(ctx context.Context, client *gtapi.Client, root, owner, name string) (gtapi.RepoSync, error) {
+	path, err := gtSyncCachePath(root)
+	if err != nil {
+		return gtapi.RepoSync{}, err
+	}
+	if readGTSyncRecord(path) {
+		return gtapi.RepoSync{Status: gtapi.RepoSynced}, nil
+	}
+
+	var synced gtapi.RepoSync
+	err = cache.WithLock(ctx, filepath.Dir(path), "gtsync", func() error {
+		// Re-read under the lock: a concurrent submit on the same repo has likely
+		// already paid for the answer this one was about to ask for.
+		if readGTSyncRecord(path) {
+			synced = gtapi.RepoSync{Status: gtapi.RepoSynced}
+			return nil
+		}
+		got, err := client.IsRepoSynced(ctx, owner, name)
+		if err != nil {
+			return err
+		}
+		synced = got
+		if got.Status != gtapi.RepoSynced {
+			return nil
+		}
+		data, err := json.Marshal(gtSyncRecord{Schema: gtSyncSchema, FetchedAt: time.Now()})
+		if err != nil {
+			return fmt.Errorf("marshal graphite sync verdict for %q: %w", root, err)
+		}
+		return cache.Store(path, data, 0o600)
+	})
+	if err != nil {
+		return gtapi.RepoSync{}, err
+	}
+	return synced, nil
+}
+
+// gtSyncCachePath resolves the cached sync verdict for the repository root
+// belongs to, a sibling of its GitHub metadata record and its gt-reachability
+// verdict. The key is the repository, so its linked worktrees share one answer.
+func gtSyncCachePath(root string) (string, error) {
+	repoPath, err := vcs.RepoCachePath(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(repoPath), "gtsync.json"), nil
+}
+
+func readGTSyncRecord(path string) bool {
+	data, err := os.ReadFile(path) //nolint:gosec // path is rooted at the cache dir and keyed by sha256 hex
+	if err != nil {
+		return false
+	}
+	var rec gtSyncRecord
+	if err := json.Unmarshal(data, &rec); err != nil || rec.Schema != gtSyncSchema {
+		return false
+	}
+	return time.Since(rec.FetchedAt) < gtSyncTTL
 }
 
 // gtRepoOwnerName resolves the GitHub repository the API submit names, from
@@ -1003,13 +1104,13 @@ func gtAnnounceContained(errW io.Writer, prefix string, tr vcs.Trunk, contained 
 	return nil
 }
 
-func gtPRSegment(ctx context.Context, l lane, branch string, chain []string, meta map[string]prMeta) (submitted string, bodyless []string, stack []stackEntry) {
+func gtPRSegment(ctx context.Context, l lane, branch string, chain []string, meta map[string]prMeta, known map[string]gtapi.PullRequestInfo) (submitted string, bodyless []string, stack []stackEntry) {
 	stackSeg := ""
 	if len(chain) > 1 {
 		stackSeg = fmt.Sprintf(" (stack of %d: %s)", len(chain), strings.Join(gtStackNames(chain), ", "))
 	}
 	submitted = "submitted " + branch + stackSeg
-	stack = infoDownstack(ctx, l, chain)
+	stack = gtSubmitDownstack(ctx, l, chain, meta, known)
 	for _, entry := range stack {
 		if entry.PR == 0 {
 			continue
@@ -1022,4 +1123,28 @@ func gtPRSegment(ctx context.Context, l lane, branch string, chain []string, met
 		}
 	}
 	return submitted, bodyless, stack
+}
+
+// gtSubmitDownstack resolves the submitted stack's pull requests from the
+// answer graphite already gave, when it covers every branch and this ship
+// writes every body. What gh adds beyond a number and a URL is the body the
+// bodyless warning weighs, and a branch given one is never warned about.
+// Anything less falls back to asking GitHub.
+func gtSubmitDownstack(ctx context.Context, l lane, chain []string, meta map[string]prMeta, known map[string]gtapi.PullRequestInfo) []stackEntry {
+	entries := make([]stackEntry, 0, len(chain))
+	for i := len(chain) - 1; i >= 0; i-- {
+		branch := chain[i]
+		pr, ok := known[branch]
+		if !ok || pr.PRNumber == 0 || pr.URL == "" || !meta[branch].writesBody() {
+			return infoDownstack(ctx, l, chain)
+		}
+		entries = append(entries, stackEntry{
+			Branch:  branch,
+			PR:      pr.PRNumber,
+			URL:     pr.URL,
+			HasBody: strings.TrimSpace(pr.Body) != "",
+			State:   string(pr.State),
+		})
+	}
+	return entries
 }
