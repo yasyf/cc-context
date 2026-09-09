@@ -164,7 +164,7 @@ func TestPruneRepairsAStackOverAForgottenParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveTrunk: %v", err)
 	}
-	plan, err := prunePlanFor(t.Context(), dir, gtLane, trunk)
+	plan, err := prunePlanFor(t.Context(), dir, gtLane, trunk, commonDir)
 	if err != nil {
 		t.Fatalf("prunePlanFor: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestPruneRepairsAStackOverAForgottenParent(t *testing.T) {
 		}
 	})
 
-	if err := pruneApply(t.Context(), dir, gtLane, plan); err != nil {
+	if err := pruneApply(t.Context(), dir, gtLane, plan, commonDir); err != nil {
 		t.Fatalf("pruneApply: %v", err)
 	}
 	want := "deleted 1 branches merged into main: worktree-wf · " +

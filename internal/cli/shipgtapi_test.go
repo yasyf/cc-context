@@ -235,6 +235,19 @@ func gtStubPRURL(number int) string {
 	return fmt.Sprintf("https://app.graphite.dev/github/pr/yasyf/cc-context/%d", number)
 }
 
+// routeCount counts the requests the stub served on one route.
+func (s *gtAPIStub) routeCount(path string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, route := range s.routes {
+		if route == path {
+			n++
+		}
+	}
+	return n
+}
+
 // submitHeads names the branch of every submit post, in the order the stub
 // served them — the bottom-up order a stack must be submitted in.
 func (s *gtAPIStub) submitHeads() []string {
@@ -324,17 +337,43 @@ func gtTrunkInv(trunk string) [][]string {
 	}
 }
 
+// gtDropTrunkInv takes the trunk resolution out of got so the calls around it
+// stay an exact sequence. Ship resolves the trunk on a goroutine overlapping the
+// commit, so its calls land where nothing fixes them, and CI has recorded logs
+// carrying only some of them. Only the fetch is required; a second occurrence of
+// any call stays in the result for the caller's exact comparison.
+func gtDropTrunkInv(t *testing.T, got [][]string, trunk string) [][]string {
+	t.Helper()
+	resolution := gtTrunkInv(trunk)
+	const fetch = 1
+	dropped := make([]bool, len(resolution))
+	rest := make([][]string, 0, len(got))
+	for _, inv := range got {
+		i := slices.IndexFunc(resolution, func(call []string) bool { return slices.Equal(inv, call) })
+		if i >= 0 && !dropped[i] {
+			dropped[i] = true
+			continue
+		}
+		rest = append(rest, inv)
+	}
+	if !dropped[fetch] {
+		t.Errorf("trunk resolution: no %v in the log\n%v", resolution[fetch], got)
+	}
+	return rest
+}
+
 // gtContainedInv asks whether one head is already in the remote trunk.
 func gtContainedInv(trunk, head string) []string {
 	return []string{"git", "merge-base", "--is-ancestor", head, gtRemoteTrunk(trunk)}
 }
 
-// gtShipSubmitInv is the git work a ship does before its submit pushes:
-// resolve and fetch the remote trunk, ask whether the shipped branch and then
-// each branch of the stack is already in it, and read the base sha a
-// trunk-based branch submits under. Heads arrive bottom-up, shipped one last.
+// gtShipSubmitInv is the git work a ship does before its submit pushes: ask
+// whether the shipped branch and then each branch of the stack is already in the
+// remote trunk, and read the base sha a trunk-based branch submits under. Heads
+// arrive bottom-up, shipped one last. The trunk resolution itself floats, so
+// gtDropTrunkInv accounts for it rather than this sequence.
 func gtShipSubmitInv(trunk string, heads ...string) [][]string {
-	inv := append(gtTrunkInv(trunk), gtContainedInv(trunk, heads[len(heads)-1]))
+	inv := [][]string{gtContainedInv(trunk, heads[len(heads)-1])}
 	for _, head := range heads {
 		inv = append(inv, gtContainedInv(trunk, head))
 	}

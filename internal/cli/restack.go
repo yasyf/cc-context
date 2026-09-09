@@ -107,7 +107,11 @@ func runRestack(cmd *cobra.Command, o restackOpts) error {
 // git merge-base exits 128 on a name that no longer resolves, turning a
 // successful sync into a failure.
 func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
-	state, err := gtStateQuery(ctx, l.dir(), "restack")
+	commonDir, err := gtCommonDir(ctx, l.dir(), "restack")
+	if err != nil {
+		return "", err
+	}
+	state, err := gtStateAt(ctx, commonDir, "restack")
 	if err != nil {
 		return "", err
 	}
@@ -129,7 +133,7 @@ func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 		return "", err
 	}
 
-	synced, err := gtStateQuery(ctx, l.dir(), "restack")
+	synced, err := gtStateAt(ctx, commonDir, "restack")
 	if err != nil {
 		return "", err
 	}
@@ -141,7 +145,7 @@ func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 	// gt sync fetches trunk and prunes the merged branches, and restacks
 	// whatever it can reach on the way; the branches it declined are this pass's
 	// to move, and it moves them without checking any of them out.
-	result, err := gtRestackChain(ctx, "restack", l.checkout, l.dir(), synced, gtBottomUp(stack))
+	result, err := gtRestackChain(ctx, "restack", l.checkout, l.dir(), commonDir, synced, gtBottomUp(stack))
 	if err != nil {
 		return "", fmt.Errorf("restack: %w", err)
 	}

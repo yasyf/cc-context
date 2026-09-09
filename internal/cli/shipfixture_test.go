@@ -689,8 +689,12 @@ func shipInvocationsOf(invocations [][]string, tool string) [][]string {
 // command's parsing paths run without a real VCS or network.
 func writeShipFakes(t *testing.T, dir string, withGh bool) {
 	t.Helper()
+	// One printf, so one write: a record built from several appends interleaves
+	// with a concurrently spawned sibling's, and the merged bytes parse as fewer
+	// records than were made. internal/vcstest's own RecordArgv frames its
+	// records the same way for the same reason.
 	log := func(name string) string {
-		return "{ printf '" + name + "\\0'; for a in \"$@\"; do printf '%s\\0' \"$a\"; done; printf '\\0'; } >> \"$SHIP_LOG\"\n"
+		return "printf '%s\\0' '" + name + "' \"$@\" '' >> \"$SHIP_LOG\"\n"
 	}
 
 	jj := "#!/bin/sh\n" + log("jj") + `if [ "$1" = --ignore-working-copy ]; then shift; fi
@@ -777,7 +781,7 @@ Error: Failed to push some bookmarks}" >&2
     if [ -n "$JJ_COMMIT_ID_FAIL" ]; then printf 'jj: commit id unavailable\n' >&2; exit 1; fi
     printf '%s' '` + fakeHeadSHA + `' ;;
   "diff --name-only"*)
-    if [ -n "$JJ_LOG_PWD" ]; then { printf 'pwd\0'; printf '%s\0' "$PWD"; printf '\0'; } >> "$SHIP_LOG"; fi
+    if [ -n "$JJ_LOG_PWD" ]; then printf '%s\0' pwd "$PWD" '' >> "$SHIP_LOG"; fi
     names=$JJ_DIFF_NAMES
     if [ -n "$SHIP_DIFF_NAMES_MARKER" ]; then
       count=0
@@ -807,7 +811,7 @@ exit 0
 `
 	// When GIT_INDEX_FILE is set, log a leading "idx" record naming the temp index
 	// basename so a test can assert which git calls carried the throwaway index.
-	gitIdxMark := "if [ -n \"$GIT_INDEX_FILE\" ]; then { printf 'idx\\0'; printf '%s\\0' \"${GIT_INDEX_FILE##*/}\"; printf '\\0'; } >> \"$SHIP_LOG\"; fi\n"
+	gitIdxMark := "if [ -n \"$GIT_INDEX_FILE\" ]; then printf '%s\\0' idx \"${GIT_INDEX_FILE##*/}\" '' >> \"$SHIP_LOG\"; fi\n"
 	git := "#!/bin/sh\n" + gitIdxMark + log("git") + `case "$1 $2" in
   "log -1") printf '%s\0%s' 'a1b2c3d' 'fix: frobnicate' ;;
   "log --reverse") printf '%s\0%s\0\n' "${GIT_LOG_SUBJECT-fix: frobnicate}" "$GIT_LOG_BODY" ;;
@@ -834,10 +838,7 @@ exit 0
     : > "$SHIP_LOG.git-committed" ;;
   "rev-parse HEAD") printf '%s' '` + fakeHeadSHA + `' ;;
   "rev-parse --show-toplevel") printf '%s' "$SHIP_FAKE_ROOT" ;;
-  "rev-parse --path-format=absolute")
-    dir=$GT_META_DIR
-    if [ -n "$GT_META_DIR_2" ] && [ -e "$SHIP_LOG.git-switched" ]; then dir=$GT_META_DIR_2; fi
-    printf '%s\n' "$dir" ;;
+  "rev-parse --path-format=absolute") printf '%s\n' "$GT_META_DIR" ;;
   "show --end-of-options") printf '%s' "$GIT_FILE_SHOW_BASE" ;;
   "ls-tree --full-tree") printf '100644 blob 1111111111111111111111111111111111111111\t%s\n' "$5" ;;
   "hash-object -w") printf '%s' '2222222222222222222222222222222222222222' ;;
@@ -967,6 +968,8 @@ exit 0
     if [ -n "$GT_TRACK_FAIL" ]; then printf 'gt: track failed\n' >&2; exit 1; fi ;;
   create)
     printf '%s\n' "$2" > "$SHIP_LOG.git-switched"
+    # PATH is the fake bin dir alone, so cp needs its absolute path.
+    if [ -n "$GT_META_DIR_2" ]; then /bin/cp -R "$GT_META_DIR_2"/. "$GT_META_DIR"/; fi
     : > "$SHIP_LOG.git-committed" ;;
   modify)
     if [ -n "$GT_MODIFY_STDERR" ]; then printf '%s\n' "$GT_MODIFY_STDERR" >&2; fi
@@ -1165,14 +1168,14 @@ func setGTState(t *testing.T, stateJSON string) {
 	t.Setenv("GT_META_DIR", dir)
 }
 
-// setGTStateAfterCreate materializes the state that takes over once the fake gt
-// has cut a branch, the one shape a single metadata directory cannot hold.
-func setGTStateAfterCreate(t *testing.T, stateJSON string) string {
+// setGTStateAfterCreate stages the state that takes over once the fake gt has
+// cut a branch. gt create copies it over the metadata directory in place, the
+// way a real gt rewrites the database the common dir already names.
+func setGTStateAfterCreate(t *testing.T, stateJSON string) {
 	t.Helper()
 	dir := t.TempDir()
 	vcstest.WriteGraphiteMeta(t, dir, stateJSON)
 	t.Setenv("GT_META_DIR_2", dir)
-	return dir
 }
 
 // gtCommonDirArgv is the lookup every gtmeta read opens with, and gtRefsArgv the
@@ -1184,7 +1187,7 @@ func gtRefsArgv() []string {
 }
 
 func gtRefsArgvIn(dir string) []string {
-	return []string{"git", "--git-dir=" + dir, "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads/"}
+	return []string{"git", "--git-dir=" + dir, "for-each-ref", "--format=%(refname:short) %(objectname)", "--stdin"}
 }
 
 // gtRealRefsArgv is gtRefsArgv for a fixture holding a real repository, whose

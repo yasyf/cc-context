@@ -2,14 +2,20 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
+	"golang.org/x/sync/errgroup"
+
+	"github.com/yasyf/cc-context/internal/cache"
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
@@ -131,6 +137,58 @@ func gtCommonDir(ctx context.Context, dir render.Dir, prefix string) (string, er
 	return strings.TrimSpace(out), nil
 }
 
+// gtCache memoizes one run's reads of gt's metadata: the git common dir, which
+// never moves, and the tracked state at it, which does. A ship otherwise re-reads
+// that state once per caller that asks — six times over for an untracked branch
+// that needs a restack. It never persists beyond the run.
+type gtCache struct {
+	dir       render.Dir
+	prefix    string
+	commonDir string
+	state     gtState
+}
+
+func newGTCache(dir render.Dir, prefix string) *gtCache {
+	return &gtCache{dir: dir, prefix: prefix}
+}
+
+// common resolves the git common dir on the first read that needs one, rather
+// than when the cache is built: a run that never reads gt's metadata should not
+// pay the lookup, and resolving it eagerly would put it ahead of the branch
+// lookup whose failure names the more useful command.
+func (c *gtCache) common(ctx context.Context) (string, error) {
+	if c.commonDir == "" {
+		commonDir, err := gtCommonDir(ctx, c.dir, c.prefix)
+		if err != nil {
+			return "", err
+		}
+		c.commonDir = commonDir
+	}
+	return c.commonDir, nil
+}
+
+// at answers from the memo, reading gt's metadata on a miss.
+func (c *gtCache) at(ctx context.Context) (gtState, error) {
+	if c.state != nil {
+		return c.state, nil
+	}
+	commonDir, err := c.common(ctx)
+	if err != nil {
+		return nil, err
+	}
+	state, err := gtStateAt(ctx, commonDir, c.prefix)
+	if err != nil {
+		return nil, err
+	}
+	c.state = state
+	return state, nil
+}
+
+// forget drops the memoized state, which every step that moves a head or
+// rewrites gt's rows must do: a state read before one names refs that have since
+// moved, and every reader downstream takes it for the truth.
+func (c *gtCache) forget() { c.state = nil }
+
 // gtTrunkBranch returns the one branch state marks Trunk.
 func gtTrunkBranch(prefix string, state gtState) (string, error) {
 	for name, s := range state {
@@ -166,19 +224,19 @@ func gtDownstack(prefix string, state gtState, branch, trunk string) ([]string, 
 	return chain, nil
 }
 
-func gtStackChain(ctx context.Context, dir render.Dir, prefix, branch string) (gtState, []string, error) {
-	state, err := gtStateQuery(ctx, dir, prefix)
+func gtStackChain(ctx context.Context, c *gtCache, branch string) (gtState, []string, error) {
+	state, err := c.at(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	trunk, err := gtTrunkBranch(prefix, state)
+	trunk, err := gtTrunkBranch(c.prefix, state)
 	if err != nil {
 		return nil, nil, err
 	}
 	if branch == trunk {
 		return state, nil, nil
 	}
-	chain, err := gtDownstack(prefix, state, branch, trunk)
+	chain, err := gtDownstack(c.prefix, state, branch, trunk)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -187,24 +245,24 @@ func gtStackChain(ctx context.Context, dir render.Dir, prefix, branch string) (g
 
 // stackBranches lists the current downstack chain — current branch first, up
 // to (excluding) trunk — or nil when the current branch is trunk.
-func stackBranches(ctx context.Context, dir render.Dir, prefix string) ([]string, error) {
-	branch, err := gitCurrentBranch(ctx, dir, prefix)
+func stackBranches(ctx context.Context, c *gtCache) ([]string, error) {
+	branch, err := gitCurrentBranch(ctx, c.dir, c.prefix)
 	if err != nil {
 		return nil, err
 	}
 	if branch == "" {
-		return nil, fmt.Errorf("%s: detached HEAD; no stack to resolve", prefix)
+		return nil, fmt.Errorf("%s: detached HEAD; no stack to resolve", c.prefix)
 	}
-	_, chain, err := gtStackChain(ctx, dir, prefix, branch)
+	_, chain, err := gtStackChain(ctx, c, branch)
 	return chain, err
 }
 
-func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts) (branchPlan, string, error) {
+func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c *gtCache) (branchPlan, string, error) {
 	branch, err := gitCurrentBranch(ctx, l.dir(), "ship")
 	if err != nil {
 		return branchPlan{}, "", err
 	}
-	state, err := gtStateQuery(ctx, l.dir(), "ship")
+	state, err := c.at(ctx)
 	if err != nil {
 		return branchPlan{}, "", err
 	}
@@ -217,7 +275,7 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts) (b
 	needsRestack := false
 	if branch != "" && branch != trunk {
 		if _, tracked := state[branch]; !tracked {
-			if state, seg, err = gtTrack(ctx, l.dir(), errW, o, branch); err != nil {
+			if state, seg, err = gtTrack(ctx, errW, o, branch, c); err != nil {
 				return branchPlan{}, "", err
 			}
 		}
@@ -293,12 +351,17 @@ func gtStuck(prefix, problem, suffix string) string {
 	return prefix + ": " + problem + suffix
 }
 
-func gtRestack(ctx context.Context, l lane, suffix, branch string) (string, error) {
-	state, chain, err := gtStackChain(ctx, l.dir(), "ship", branch)
+func gtRestack(ctx context.Context, l lane, suffix, branch string, c *gtCache) (string, error) {
+	state, chain, err := gtStackChain(ctx, c, branch)
 	if err != nil {
 		return "", err
 	}
-	result, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), state, gtBottomUp(chain))
+	commonDir, err := c.common(ctx)
+	if err != nil {
+		return "", err
+	}
+	result, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), commonDir, state, gtBottomUp(chain))
+	c.forget()
 	if err != nil {
 		var conflict *errRestackConflict
 		if errors.As(err, &conflict) {
@@ -306,7 +369,7 @@ func gtRestack(ctx context.Context, l lane, suffix, branch string) (string, erro
 		}
 		return "", err
 	}
-	state, chain, err = gtStackChain(ctx, l.dir(), "ship", branch)
+	state, chain, err = gtStackChain(ctx, c, branch)
 	if err != nil {
 		return "", err
 	}
@@ -359,20 +422,21 @@ func gtOffParent(branch, held string) string {
 // sentence would otherwise vanish twice over: the advice replaces it, and a
 // canned message hides it from errors.Is. Both are kept — the diagnostics reach
 // errW, and gt's failure stays the advice's cause.
-func gtTrack(ctx context.Context, dir render.Dir, errW io.Writer, o shipOpts, branch string) (gtState, string, error) {
+func gtTrack(ctx context.Context, errW io.Writer, o shipOpts, branch string, c *gtCache) (gtState, string, error) {
 	argv := []string{"track", branch, "-f", "--no-interactive"}
 	if o.parent != "" {
 		argv = []string{"track", branch, "--parent", o.parent, "--no-interactive"}
 	}
 	untracked := fmt.Errorf("ship: branch %s is not tracked by graphite — run gt track %s, or pass --no-gt", branch, branch)
-	r, runErr := gtRun(ctx, dir, argv, gtZeroFatal, errW)
+	r, runErr := gtRun(ctx, c.dir, argv, gtZeroFatal, errW)
+	c.forget()
 	if err := gtReport(ctx, errW, r); err != nil {
 		return nil, "", err
 	}
 	if runErr != nil {
 		return nil, "", &gtAdvice{advice: untracked.Error(), cause: runErr}
 	}
-	state, err := gtStateQuery(ctx, dir, "ship")
+	state, err := c.at(ctx)
 	if err != nil {
 		return nil, "", err
 	}
@@ -383,7 +447,7 @@ func gtTrack(ctx context.Context, dir render.Dir, errW io.Writer, o shipOpts, br
 	seg := "tracked " + branch
 	if len(s.Parents) > 0 {
 		parent := s.Parents[0].Ref
-		if err := gtRefuseLandedParent(ctx, dir, state, branch, parent); err != nil {
+		if err := gtRefuseLandedParent(ctx, c.dir, state, branch, parent); err != nil {
 			return nil, "", err
 		}
 		seg += " onto " + parent
@@ -536,16 +600,12 @@ var gtAPIClient = gtapi.Default
 // shipPushGT submits the downstack of the branch the commit landed on, over
 // Graphite's HTTP API plus ccx's own git push in place of a gt submit process.
 // The downstack is re-read here, after the commit, because a gt create adds a
-// branch to it. It fetches the trunk ref and nothing else, and never rebases or
-// retries — gt owns restacking.
+// branch to it. It joins the trunk-ref fetch and reaches the network for nothing
+// else, and never rebases or retries — gt owns restacking.
 // The resolved downstack it returns is the one the pull request step then
 // backfills into, so the stack is walked and its pull requests fetched once.
-func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta map[string]prMeta, branch, suffix string) (submitted string, bodyless []string, stack []stackEntry, err error) {
-	commonDir, err := gtCommonDir(ctx, l.dir(), "ship")
-	if err != nil {
-		return "", nil, nil, err
-	}
-	state, err := gtStateAt(ctx, commonDir, "ship")
+func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta map[string]prMeta, fetch *gtTrunkFetch, branch, suffix string, c *gtCache) (submitted string, bodyless []string, stack []stackEntry, err error) {
+	state, err := c.at(ctx)
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -553,7 +613,7 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 	if err != nil {
 		return "", nil, nil, err
 	}
-	tr, err := gtTrunkRef(ctx, l.dir(), "ship", trunk)
+	tr, err := fetch.join()
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -570,10 +630,15 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 		return "", nil, nil, errors.New(gtStuck("ship", problem, suffix))
 	}
 	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: o.draft, noVerify: o.noVerify}
-	if _, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, gtBottomUp(chain)); err != nil {
+	commonDir, err := c.common(ctx)
+	if err != nil {
 		return "", nil, nil, err
 	}
-	submitted, bodyless, stack = gtPRSegment(ctx, l, branch, chain, meta)
+	_, known, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, gtBottomUp(chain))
+	if err != nil {
+		return "", nil, nil, err
+	}
+	submitted, bodyless, stack = gtPRSegment(ctx, l, branch, chain, meta, known)
 	return submitted, bodyless, stack, nil
 }
 
@@ -595,59 +660,75 @@ type gtSubmitBranch struct {
 // open PR, force-push the rest in one atomic push, then post one entry per
 // branch bottom-up, as real gt does, reporting the branches that got one. The
 // push comes first so the headSha Graphite records is the one on the remote.
-func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, commonDir string, state gtState, tr vcs.Trunk, branches []string) ([]string, error) {
+//
+// The open pull requests it learned come back keyed by branch, so the report
+// step can answer from them instead of asking GitHub the same question again.
+func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, commonDir string, state gtState, tr vcs.Trunk, branches []string) ([]string, map[string]gtapi.PullRequestInfo, error) {
 	branches, contained, err := gtDropContained(ctx, l.dir(), s.prefix, tr, state, branches)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := gtAnnounceContained(errW, s.prefix, tr, contained); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := gtAnnounceStack(errW, s.prefix, branches); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(branches) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	owner, name, err := gtRepoOwnerName(ctx, l, s.prefix)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	client := gtAPIClient()
-	sync, err := client.IsRepoSynced(ctx, owner, name)
-	if err != nil {
-		return nil, gtSubmitFailure(err, s)
-	}
-	if sync.Status != gtapi.RepoSynced {
-		problem := fmt.Sprintf("graphite does not sync %s/%s (%s) — add the repo at app.graphite.dev, or pass --no-gt", owner, name, sync.Status)
-		return nil, &gtAdvice{advice: gtStuck(s.prefix, problem, s.suffix), cause: fmt.Errorf("gtapi: is-repo-synced: %s %s", sync.Status, sync.Message)}
-	}
-
-	infos, err := client.PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{
-		RepoOwner:        owner,
-		RepoName:         name,
-		PRNumbers:        []int{},
-		PRHeadRefNames:   branches,
-		TrunkBranchNames: []string{tr.Name()},
-		Callsite:         "ccx",
+	var synced gtapi.RepoSync
+	var infos []gtapi.PullRequestInfo
+	var infoErr error
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() (err error) {
+		synced, err = gtRepoSynced(gctx, client, l.root, owner, name)
+		return err
 	})
-	if err != nil {
-		return nil, gtSubmitFailure(err, s)
+	// pull-request-info's failure is held out of the group so an unsynced repo —
+	// the diagnosis worth reporting — is read first whichever call returns first.
+	g.Go(func() error {
+		infos, infoErr = client.PullRequestInfo(gctx, gtapi.PullRequestInfoRequest{
+			RepoOwner:        owner,
+			RepoName:         name,
+			PRNumbers:        []int{},
+			PRHeadRefNames:   branches,
+			TrunkBranchNames: []string{tr.Name()},
+			Callsite:         "ccx",
+		})
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return nil, nil, gtSubmitFailure(err, s)
 	}
+	if synced.Status != gtapi.RepoSynced {
+		problem := fmt.Sprintf("graphite does not sync %s/%s (%s) — add the repo at app.graphite.dev, or pass --no-gt", owner, name, synced.Status)
+		return nil, nil, &gtAdvice{advice: gtStuck(s.prefix, problem, s.suffix), cause: fmt.Errorf("gtapi: is-repo-synced: %s %s", synced.Status, synced.Message)}
+	}
+	if infoErr != nil {
+		return nil, nil, gtSubmitFailure(infoErr, s)
+	}
+	known := make(map[string]gtapi.PullRequestInfo, len(infos))
 	open := map[string]int{}
 	for _, pr := range infos {
 		if pr.State == gtapi.PROpen {
+			known[pr.HeadRefName] = pr
 			open[pr.HeadRefName] = pr.PRNumber
 		}
 	}
 
 	last, err := gtmeta.LastSubmitted(ctx, commonDir)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", s.prefix, err)
+		return nil, nil, fmt.Errorf("%s: %w", s.prefix, err)
 	}
 	plan, err := gtSubmitPlan(ctx, l.dir(), s.prefix, state, tr, branches, open, last)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	pre := make([]gtapi.PreSubmitBranch, 0, len(plan))
@@ -655,20 +736,20 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		pre = append(pre, gtapi.PreSubmitBranch{HeadRefName: b.name, PRNumber: b.pr})
 	}
 	if _, err := client.PreSubmitPullRequests(ctx, owner, name, pre); err != nil {
-		return nil, gtSubmitFailure(err, s)
+		return nil, nil, gtSubmitFailure(err, s)
 	}
 
 	// The leases are recorded right after the atomic push — the irreversible
 	// step — so no later failure leaves one behind a head this run just moved.
 	if err := gtPushStack(ctx, l.dir(), s, plan); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	versions := make(map[string]gtmeta.Version, len(plan))
 	for _, b := range plan {
 		versions[b.name] = gtmeta.Version{HeadSha: b.head, BaseSha: b.baseSha, BaseName: b.base}
 	}
 	if err := gtmeta.RecordSubmitted(ctx, commonDir, versions); err != nil {
-		return nil, gtSubmitFailure(err, s)
+		return nil, nil, gtSubmitFailure(err, s)
 	}
 
 	var landed []gtapi.SubmittedPR
@@ -680,11 +761,11 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			PRs:             []gtapi.SubmitPR{pr},
 		})
 		if err != nil {
-			return nil, gtSubmitFailure(gtSubmitPartial(err, pr.Head, landed), s)
+			return nil, nil, gtSubmitFailure(gtSubmitPartial(err, pr.Head, landed), s)
 		}
 		landed = append(landed, out...)
 	}
-	return branches, nil
+	return branches, known, nil
 }
 
 // gtTrunkRef resolves the remote-tracking trunk a submit anchors on, fetching
@@ -701,6 +782,39 @@ func gtTrunkRef(ctx context.Context, dir render.Dir, prefix, trunk string) (vcs.
 		return vcs.Trunk{}, fmt.Errorf("%s: git fetch %s %s: %w", prefix, remote, trunk, err)
 	}
 	return gtTrunkRefAt(ctx, dir, prefix, remote, trunk)
+}
+
+// gtTrunkFetch is one gtTrunkRef in flight, so the round trip runs under the
+// staging and the commit rather than after them: it reads nothing they produce,
+// and past the preflight nothing before the submit reads the ref it moves.
+type gtTrunkFetch struct {
+	done   chan struct{}
+	cancel context.CancelFunc
+	tr     vcs.Trunk
+	err    error
+}
+
+// gtStartTrunkFetch takes the trunk the preflight resolved, which no commit renames.
+func gtStartTrunkFetch(ctx context.Context, dir render.Dir, prefix, trunk string) *gtTrunkFetch {
+	ctx, cancel := context.WithCancel(ctx)
+	f := &gtTrunkFetch{done: make(chan struct{}), cancel: cancel}
+	go func() {
+		defer close(f.done)
+		f.tr, f.err = gtTrunkRef(ctx, dir, prefix, trunk)
+	}()
+	return f
+}
+
+func (f *gtTrunkFetch) join() (vcs.Trunk, error) {
+	<-f.done
+	return f.tr, f.err
+}
+
+// stop is join for a run that ended before the submit, waiting so no fetch
+// outlives the command.
+func (f *gtTrunkFetch) stop() {
+	f.cancel()
+	<-f.done
 }
 
 // gtTrunkRefOffline reads the remote-tracking trunk without fetching, for the
@@ -749,6 +863,84 @@ func gtDropContained(ctx context.Context, dir render.Dir, prefix string, tr vcs.
 		submit = append(submit, name)
 	}
 	return submit, contained, nil
+}
+
+// gtSyncSchema is the on-disk format version of the cached repo-sync verdict; a
+// mismatch reads as a miss.
+const gtSyncSchema = 1
+
+// gtSyncTTL bounds how long a cached sync verdict is served.
+const gtSyncTTL = 24 * time.Hour
+
+// gtSyncRecord is one repo's cached SYNCED verdict, a sibling of its GitHub
+// metadata record. Only that verdict is stored: every other one aborts the
+// submit, so no run is left to serve a cached refusal to.
+type gtSyncRecord struct {
+	Schema    int       `json:"schema"`
+	FetchedAt time.Time `json:"fetched_at"`
+}
+
+// gtRepoSynced asks Graphite whether it mirrors owner/name, serving a cached
+// verdict when one is on disk so a synced repository pays for the round trip at
+// most once a day.
+func gtRepoSynced(ctx context.Context, client *gtapi.Client, root, owner, name string) (gtapi.RepoSync, error) {
+	path, err := gtSyncCachePath(root)
+	if err != nil {
+		return gtapi.RepoSync{}, err
+	}
+	if readGTSyncRecord(path) {
+		return gtapi.RepoSync{Status: gtapi.RepoSynced}, nil
+	}
+
+	var synced gtapi.RepoSync
+	err = cache.WithLock(ctx, filepath.Dir(path), "gtsync", func() error {
+		// Re-read under the lock: a concurrent submit on the same repo has likely
+		// already paid for the answer this one was about to ask for.
+		if readGTSyncRecord(path) {
+			synced = gtapi.RepoSync{Status: gtapi.RepoSynced}
+			return nil
+		}
+		got, err := client.IsRepoSynced(ctx, owner, name)
+		if err != nil {
+			return err
+		}
+		synced = got
+		if got.Status != gtapi.RepoSynced {
+			return nil
+		}
+		data, err := json.Marshal(gtSyncRecord{Schema: gtSyncSchema, FetchedAt: time.Now()})
+		if err != nil {
+			return fmt.Errorf("marshal graphite sync verdict for %q: %w", root, err)
+		}
+		return cache.Store(path, data, 0o600)
+	})
+	if err != nil {
+		return gtapi.RepoSync{}, err
+	}
+	return synced, nil
+}
+
+// gtSyncCachePath resolves the cached sync verdict for the repository root
+// belongs to, a sibling of its GitHub metadata record and its gt-reachability
+// verdict. The key is the repository, so its linked worktrees share one answer.
+func gtSyncCachePath(root string) (string, error) {
+	repoPath, err := vcs.RepoCachePath(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(repoPath), "gtsync.json"), nil
+}
+
+func readGTSyncRecord(path string) bool {
+	data, err := os.ReadFile(path) //nolint:gosec // path is rooted at the cache dir and keyed by sha256 hex
+	if err != nil {
+		return false
+	}
+	var rec gtSyncRecord
+	if err := json.Unmarshal(data, &rec); err != nil || rec.Schema != gtSyncSchema {
+		return false
+	}
+	return time.Since(rec.FetchedAt) < gtSyncTTL
 }
 
 // gtRepoOwnerName resolves the GitHub repository the API submit names, from
@@ -1003,13 +1195,13 @@ func gtAnnounceContained(errW io.Writer, prefix string, tr vcs.Trunk, contained 
 	return nil
 }
 
-func gtPRSegment(ctx context.Context, l lane, branch string, chain []string, meta map[string]prMeta) (submitted string, bodyless []string, stack []stackEntry) {
+func gtPRSegment(ctx context.Context, l lane, branch string, chain []string, meta map[string]prMeta, known map[string]gtapi.PullRequestInfo) (submitted string, bodyless []string, stack []stackEntry) {
 	stackSeg := ""
 	if len(chain) > 1 {
 		stackSeg = fmt.Sprintf(" (stack of %d: %s)", len(chain), strings.Join(gtStackNames(chain), ", "))
 	}
 	submitted = "submitted " + branch + stackSeg
-	stack = infoDownstack(ctx, l, chain)
+	stack = gtSubmitDownstack(ctx, l, chain, meta, known)
 	for _, entry := range stack {
 		if entry.PR == 0 {
 			continue
@@ -1022,4 +1214,28 @@ func gtPRSegment(ctx context.Context, l lane, branch string, chain []string, met
 		}
 	}
 	return submitted, bodyless, stack
+}
+
+// gtSubmitDownstack resolves the submitted stack's pull requests from the
+// answer graphite already gave, when it covers every branch and this ship
+// writes every body. What gh adds beyond a number and a URL is the body the
+// bodyless warning weighs, and a branch given one is never warned about.
+// Anything less falls back to asking GitHub.
+func gtSubmitDownstack(ctx context.Context, l lane, chain []string, meta map[string]prMeta, known map[string]gtapi.PullRequestInfo) []stackEntry {
+	entries := make([]stackEntry, 0, len(chain))
+	for i := len(chain) - 1; i >= 0; i-- {
+		branch := chain[i]
+		pr, ok := known[branch]
+		if !ok || pr.PRNumber == 0 || pr.URL == "" || !meta[branch].writesBody() {
+			return infoDownstack(ctx, l, chain)
+		}
+		entries = append(entries, stackEntry{
+			Branch:  branch,
+			PR:      pr.PRNumber,
+			URL:     pr.URL,
+			HasBody: strings.TrimSpace(pr.Body) != "",
+			State:   string(pr.State),
+		})
+	}
+	return entries
 }

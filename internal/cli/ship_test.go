@@ -4002,7 +4002,6 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
-				gtCommonDirArgv,
 				gtRefsArgv(),
 			}
 			want = append(want, tt.submitInv...)
@@ -4011,7 +4010,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				[]string{"git", "rev-parse", "HEAD"},
 				ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
 			)
-			assertInvocations(t, readInvocations(t, log), want)
+			assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main"), want)
 		})
 	}
 }
@@ -4023,7 +4022,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 	log := setupShipGT(t, true)
 	t.Setenv("GIT_BRANCH", "main")
 	setGTState(t, `{"main":{"trunk":true}}`)
-	created := setGTStateAfterCreate(t, `{"main":{"trunk":true},"fix-frobnicate":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
+	setGTStateAfterCreate(t, `{"main":{"trunk":true},"fix-frobnicate":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
 	t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 	t.Setenv("GH_PR_VIEW_JSON", `{"number":9,"url":"https://github.com/x/pull/9","body":"why"}`)
@@ -4047,8 +4046,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
-		gtCommonDirArgv,
-		gtRefsArgvIn(created),
+		gtRefsArgv(),
 	}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
 		gtCreateLogInv(gtRemoteTrunk("main"), "fix-frobnicate"),
 		gtPushInv(gtHead("fix-frobnicate", vcstest.GraphiteLeafSHA)),
@@ -4056,7 +4054,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		{"git", "rev-parse", "HEAD"},
 		ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
 	})
-	assertInvocations(t, readInvocations(t, log), wantInv)
+	assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main"), wantInv)
 }
 
 func TestShipGTBodylessPR(t *testing.T) {
@@ -5209,7 +5207,6 @@ func TestShipGTRefusals(t *testing.T) {
 			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
 			{"gt", "track", "feature", "-f", "--no-interactive"},
-			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
 			{"git", "add", "-A"},
 			{"git", "diff", "--cached", "--quiet"},
@@ -5376,6 +5373,38 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		}
 		if refs := gtPushedRefs(readInvocations(t, log)); refs != nil {
 			t.Errorf("pushed %v before the sync refusal", refs)
+		}
+	})
+
+	t.Run("a synced verdict is asked for once", func(t *testing.T) {
+		setupShipGT(t, false)
+		api := stubGTAPI(t)
+
+		for range 2 {
+			if _, err := runShipCmd(t, "-m", "fix: frobnicate"); err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+		}
+		if n := api.routeCount("/graphite/cli/is-repo-synced"); n != 1 {
+			t.Errorf("is-repo-synced requests = %d, want the second ship served from cache", n)
+		}
+		if n := api.routeCount("/graphite/cli/pull-request-info"); n != 2 {
+			t.Errorf("pull-request-info requests = %d, want one per ship — only the sync verdict caches", n)
+		}
+	})
+
+	t.Run("an unsynced verdict is re-asked", func(t *testing.T) {
+		setupShipGT(t, false)
+		api := stubGTAPI(t)
+		api.synced = gtapi.RepoNotSyncedAddable
+
+		for range 2 {
+			if _, err := runShipCmd(t, "-m", "fix: frobnicate"); err == nil {
+				t.Fatal("ship succeeded against an unsynced repo")
+			}
+		}
+		if n := api.routeCount("/graphite/cli/is-repo-synced"); n != 2 {
+			t.Errorf("is-repo-synced requests = %d, want a refusal nobody caches", n)
 		}
 	})
 
@@ -6207,8 +6236,9 @@ func TestGTTrackRefusesALandedParent(t *testing.T) {
 				t.Setenv("GIT_NO_REMOTE_TRUNK", "1")
 			}
 
+			c := newGTCache(render.Dir(workingDir()), "ship")
 			var errW bytes.Buffer
-			_, seg, err := gtTrack(t.Context(), render.Dir(workingDir()), &errW, shipOpts{}, "feature")
+			_, seg, err := gtTrack(t.Context(), &errW, shipOpts{}, "feature", c)
 			if tt.wantErr != "" {
 				if err == nil || err.Error() != tt.wantErr {
 					t.Fatalf("error = %v, want %q", err, tt.wantErr)

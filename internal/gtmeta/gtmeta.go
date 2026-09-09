@@ -65,11 +65,11 @@ func Read(ctx context.Context, commonDir string) (State, error) {
 	if err != nil {
 		return nil, err
 	}
-	heads, err := readHeads(ctx, commonDir)
+	rows, err := readRows(ctx, filepath.Join(commonDir, metadataDB))
 	if err != nil {
 		return nil, err
 	}
-	rows, err := readRows(ctx, filepath.Join(commonDir, metadataDB))
+	heads, err := readHeads(ctx, commonDir, rowRefs(rows))
 	if err != nil {
 		return nil, err
 	}
@@ -163,11 +163,33 @@ func readTrunk(commonDir string) (string, error) {
 	return config.Trunk, nil
 }
 
-// readHeads reads every local branch's head in one pass. commonDir can be a
-// bare admin dir rather than a working copy, so git is pointed at it by --git-dir.
-func readHeads(ctx context.Context, commonDir string) (map[string]string, error) {
-	argv := []string{"--git-dir=" + commonDir, "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads/"}
-	out, err := render.RunCLI(ctx, render.Dir(commonDir), "git", argv)
+// rowRefs names the full refs the rows describe: every branch gt tracks and
+// every parent one records, which is the whole set a caller needs a head for.
+func rowRefs(rows []branchRow) []byte {
+	refs := make(map[string]bool, 2*len(rows))
+	for _, row := range rows {
+		refs[row.branch] = true
+		if row.parent != "" {
+			refs[row.parent] = true
+		}
+	}
+	var payload strings.Builder
+	for _, name := range slices.Sorted(maps.Keys(refs)) {
+		payload.WriteString("refs/heads/" + name + "\n")
+	}
+	return []byte(payload.String())
+}
+
+// readHeads reads the head of each named ref in one pass. It asks for the rows'
+// own refs rather than walking refs/heads/, whose cost grows with a repository's
+// whole branch count while gt tracks a fraction of it. commonDir can be a bare
+// admin dir rather than a working copy, so git is pointed at it by --git-dir.
+func readHeads(ctx context.Context, commonDir string, refs []byte) (map[string]string, error) {
+	if len(refs) == 0 {
+		return map[string]string{}, nil
+	}
+	argv := []string{"--git-dir=" + commonDir, "for-each-ref", "--format=%(refname:short) %(objectname)", "--stdin"}
+	out, err := render.RunCLIStdin(ctx, render.Dir(commonDir), "git", argv, refs)
 	if err != nil {
 		return nil, fmt.Errorf("gtmeta: list branches in %q: %w", commonDir, err)
 	}
@@ -200,11 +222,11 @@ type Row struct {
 
 // Rows reports every branch gt tracks, including the ones Read drops.
 func Rows(ctx context.Context, commonDir string) ([]Row, error) {
-	heads, err := readHeads(ctx, commonDir)
+	rows, err := readRows(ctx, filepath.Join(commonDir, metadataDB))
 	if err != nil {
 		return nil, err
 	}
-	rows, err := readRows(ctx, filepath.Join(commonDir, metadataDB))
+	heads, err := readHeads(ctx, commonDir, rowRefs(rows))
 	if err != nil {
 		return nil, err
 	}

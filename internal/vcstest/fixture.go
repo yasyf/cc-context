@@ -250,14 +250,13 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 	return f
 }
 
-// isolateEnv points HOME, config, and cache environment at base so no fixture
-// reads or writes state outside its own temp tree. Fixture construction runs
-// the tools by absolute path but under the brew-free PATH, so their
-// interpreters are linked where that PATH reaches them.
+// isolateEnv points HOME, config, and cache environment at a temp tree of this
+// test's own, so no fixture reads or writes state outside it. Fixture
+// construction runs the tools by absolute path but under the brew-free PATH, so
+// their interpreters are linked where that PATH reaches them.
 func isolateEnv(t *testing.T, base string, tools []resolvedTool) {
 	t.Helper()
-	home := filepath.Join(base, "home")
-	mkdir(t, home)
+	home := detachedHome(t)
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -358,6 +357,23 @@ func runExpectFail(t *testing.T, dir, bin string, args ...string) {
 	if err := cmd.Run(); err == nil {
 		t.Fatalf("%s %v: succeeded, want failure", bin, args)
 	}
+}
+
+// detachedHome returns the test's HOME, removed best-effort rather than through
+// t.TempDir: gt leaves a refresher writing under HOME for seconds after it
+// exits, and t.TempDir's RemoveAll reports that race as a cleanup failure.
+func detachedHome(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ccx-home")
+	if err != nil {
+		t.Fatalf("create home dir: %v", err)
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("resolve home dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(resolved) })
+	return resolved
 }
 
 // realTempDir returns a per-test temp dir with symlinks resolved, so paths
