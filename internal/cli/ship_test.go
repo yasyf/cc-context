@@ -4002,7 +4002,6 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
-				gtCommonDirArgv,
 				gtRefsArgv(),
 			}
 			want = append(want, tt.submitInv...)
@@ -4023,7 +4022,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 	log := setupShipGT(t, true)
 	t.Setenv("GIT_BRANCH", "main")
 	setGTState(t, `{"main":{"trunk":true}}`)
-	created := setGTStateAfterCreate(t, `{"main":{"trunk":true},"fix-frobnicate":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
+	setGTStateAfterCreate(t, `{"main":{"trunk":true},"fix-frobnicate":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
 	t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 	t.Setenv("GH_PR_VIEW_JSON", `{"number":9,"url":"https://github.com/x/pull/9","body":"why"}`)
@@ -4047,8 +4046,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
-		gtCommonDirArgv,
-		gtRefsArgvIn(created),
+		gtRefsArgv(),
 	}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
 		gtCreateLogInv(gtRemoteTrunk("main"), "fix-frobnicate"),
 		gtPushInv(gtHead("fix-frobnicate", vcstest.GraphiteLeafSHA)),
@@ -5209,7 +5207,6 @@ func TestShipGTRefusals(t *testing.T) {
 			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
 			{"gt", "track", "feature", "-f", "--no-interactive"},
-			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
 			{"git", "add", "-A"},
 			{"git", "diff", "--cached", "--quiet"},

@@ -453,7 +453,6 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		{"gt", "modify", "-c", "-m", "fix: frobnicate", "--no-interactive", "--no-verify"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
-		gtCommonDirArgv,
 		gtRefsArgv(),
 	}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
 		gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
@@ -510,7 +509,6 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 				{"git", "rev-list", "--count", "main..HEAD"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
-				gtCommonDirArgv,
 				gtRefsArgv(),
 			}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
 				gtCreateLogInv(gtRemoteTrunk("main"), "feature"),

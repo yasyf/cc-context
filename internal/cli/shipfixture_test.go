@@ -834,10 +834,7 @@ exit 0
     : > "$SHIP_LOG.git-committed" ;;
   "rev-parse HEAD") printf '%s' '` + fakeHeadSHA + `' ;;
   "rev-parse --show-toplevel") printf '%s' "$SHIP_FAKE_ROOT" ;;
-  "rev-parse --path-format=absolute")
-    dir=$GT_META_DIR
-    if [ -n "$GT_META_DIR_2" ] && [ -e "$SHIP_LOG.git-switched" ]; then dir=$GT_META_DIR_2; fi
-    printf '%s\n' "$dir" ;;
+  "rev-parse --path-format=absolute") printf '%s\n' "$GT_META_DIR" ;;
   "show --end-of-options") printf '%s' "$GIT_FILE_SHOW_BASE" ;;
   "ls-tree --full-tree") printf '100644 blob 1111111111111111111111111111111111111111\t%s\n' "$5" ;;
   "hash-object -w") printf '%s' '2222222222222222222222222222222222222222' ;;
@@ -967,6 +964,8 @@ exit 0
     if [ -n "$GT_TRACK_FAIL" ]; then printf 'gt: track failed\n' >&2; exit 1; fi ;;
   create)
     printf '%s\n' "$2" > "$SHIP_LOG.git-switched"
+    # PATH is the fake bin dir alone, so cp needs its absolute path.
+    if [ -n "$GT_META_DIR_2" ]; then /bin/cp -R "$GT_META_DIR_2"/. "$GT_META_DIR"/; fi
     : > "$SHIP_LOG.git-committed" ;;
   modify)
     if [ -n "$GT_MODIFY_STDERR" ]; then printf '%s\n' "$GT_MODIFY_STDERR" >&2; fi
@@ -1165,14 +1164,14 @@ func setGTState(t *testing.T, stateJSON string) {
 	t.Setenv("GT_META_DIR", dir)
 }
 
-// setGTStateAfterCreate materializes the state that takes over once the fake gt
-// has cut a branch, the one shape a single metadata directory cannot hold.
-func setGTStateAfterCreate(t *testing.T, stateJSON string) string {
+// setGTStateAfterCreate stages the state that takes over once the fake gt has
+// cut a branch. gt create copies it over the metadata directory in place, the
+// way a real gt rewrites the database the common dir already names.
+func setGTStateAfterCreate(t *testing.T, stateJSON string) {
 	t.Helper()
 	dir := t.TempDir()
 	vcstest.WriteGraphiteMeta(t, dir, stateJSON)
 	t.Setenv("GT_META_DIR_2", dir)
-	return dir
 }
 
 // gtCommonDirArgv is the lookup every gtmeta read opens with, and gtRefsArgv the
