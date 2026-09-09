@@ -302,7 +302,7 @@ func runStackSubmit(cmd *cobra.Command, draft bool) error {
 	if err != nil {
 		return err
 	}
-	result, err := gtRestackChain(ctx, "stack submit", l.checkout, l.dir(), state, chain)
+	result, err := gtRestackChain(ctx, "stack submit", l.checkout, l.dir(), commonDir, state, chain)
 	if err != nil {
 		return fmt.Errorf("stack submit: %w", err)
 	}

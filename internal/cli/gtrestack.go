@@ -67,14 +67,10 @@ type gtRestackResult struct {
 // working tree, reading as a whole-tree reverse diff until gtRestackAlign resets
 // it. That holder's uncommitted work is snapshotted beforehand and applied
 // after, which is what gt did for a lane it rebased in place.
-func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir render.Dir, state gtState, chain []string) (gtRestackResult, error) {
+func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir render.Dir, commonDir string, state gtState, chain []string) (gtRestackResult, error) {
 	movers, held := gtRestackPlan(state, chain)
 	if len(movers) == 0 {
 		return gtRestackResult{held: held}, nil
-	}
-	commonDir, err := gtCommonDir(ctx, dir, prefix)
-	if err != nil {
-		return gtRestackResult{}, err
 	}
 	holders, err := vcs.BranchHolders(ctx, c)
 	if err != nil {

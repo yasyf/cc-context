@@ -325,7 +325,13 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 			return err
 		}
 	}
-	plan, planSeg, err := shipResolvePlan(ctx, cmd.ErrOrStderr(), l, o)
+	var gtc *gtCache
+	if gtLane {
+		if gtc, err = newGTCache(ctx, dir, "ship"); err != nil {
+			return err
+		}
+	}
+	plan, planSeg, err := shipResolvePlan(ctx, cmd.ErrOrStderr(), l, o, gtc)
 	if err != nil {
 		return err
 	}
@@ -394,13 +400,16 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	if err != nil {
 		return err
 	}
+	if gtLane && !o.noCommit {
+		gtc.forget()
+	}
 
 	stuckOpts := asGiven
 	stuckOpts.noCommit = o.noCommit
 	stuck := gtStuckSuffix(stuckOpts)
 	restackSeg := ""
 	if plan.needsRestack {
-		if restackSeg, err = gtRestack(ctx, l, stuck, branch); err != nil {
+		if restackSeg, err = gtRestack(ctx, l, stuck, branch, gtc); err != nil {
 			return err
 		}
 	}
@@ -447,7 +456,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	var bodylessSegs []string
 	var gtStack []stackEntry
 	if gtLane {
-		prSeg, bodylessSegs, gtStack, err = shipPushGT(ctx, cmd.ErrOrStderr(), l, o, meta, trunkFetch, branch, stuck)
+		prSeg, bodylessSegs, gtStack, err = shipPushGT(ctx, cmd.ErrOrStderr(), l, o, meta, trunkFetch, branch, stuck, gtc)
 	} else {
 		remote, rebased, err = shipPush(ctx, dir, kind, o, branch, preAmendSHA)
 	}
@@ -482,7 +491,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	var reviewBranches []string
 	if o.reviews {
 		if gtLane {
-			reviewBranches, err = stackBranches(ctx, dir, "ship")
+			reviewBranches, err = stackBranches(ctx, gtc)
 			if err != nil {
 				return err
 			}
@@ -956,9 +965,9 @@ func shipVerify(cmd *cobra.Command, o shipOpts, plan branchPlan) bool {
 // segment, which today only the graphite lane's auto-track produces. errW is the
 // graphite preflight's reporting channel: an auto-track gt declined says so in
 // gt's own words, which ship's recovery step would otherwise replace.
-func shipResolvePlan(ctx context.Context, errW io.Writer, l lane, o shipOpts) (branchPlan, string, error) {
+func shipResolvePlan(ctx context.Context, errW io.Writer, l lane, o shipOpts, c *gtCache) (branchPlan, string, error) {
 	if l.gt {
-		return shipPreflightGT(ctx, errW, l, o)
+		return shipPreflightGT(ctx, errW, l, o, c)
 	}
 	switch l.kind {
 	case vcs.JJ:

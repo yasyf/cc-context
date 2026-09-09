@@ -137,6 +137,43 @@ func gtCommonDir(ctx context.Context, dir render.Dir, prefix string) (string, er
 	return strings.TrimSpace(out), nil
 }
 
+// gtCache memoizes one run's reads of gt's metadata: the git common dir, which
+// never moves, and the tracked state at it, which does. A ship otherwise re-reads
+// that state once per caller that asks — six times over for an untracked branch
+// that needs a restack. It never persists beyond the run.
+type gtCache struct {
+	dir       render.Dir
+	prefix    string
+	commonDir string
+	state     gtState
+}
+
+func newGTCache(ctx context.Context, dir render.Dir, prefix string) (*gtCache, error) {
+	commonDir, err := gtCommonDir(ctx, dir, prefix)
+	if err != nil {
+		return nil, err
+	}
+	return &gtCache{dir: dir, prefix: prefix, commonDir: commonDir}, nil
+}
+
+// at answers from the memo, reading gt's metadata on a miss.
+func (c *gtCache) at(ctx context.Context) (gtState, error) {
+	if c.state != nil {
+		return c.state, nil
+	}
+	state, err := gtStateAt(ctx, c.commonDir, c.prefix)
+	if err != nil {
+		return nil, err
+	}
+	c.state = state
+	return state, nil
+}
+
+// forget drops the memoized state, which every step that moves a head or
+// rewrites gt's rows must do: a state read before one names refs that have since
+// moved, and every reader downstream takes it for the truth.
+func (c *gtCache) forget() { c.state = nil }
+
 // gtTrunkBranch returns the one branch state marks Trunk.
 func gtTrunkBranch(prefix string, state gtState) (string, error) {
 	for name, s := range state {
@@ -172,19 +209,19 @@ func gtDownstack(prefix string, state gtState, branch, trunk string) ([]string, 
 	return chain, nil
 }
 
-func gtStackChain(ctx context.Context, dir render.Dir, prefix, branch string) (gtState, []string, error) {
-	state, err := gtStateQuery(ctx, dir, prefix)
+func gtStackChain(ctx context.Context, c *gtCache, branch string) (gtState, []string, error) {
+	state, err := c.at(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	trunk, err := gtTrunkBranch(prefix, state)
+	trunk, err := gtTrunkBranch(c.prefix, state)
 	if err != nil {
 		return nil, nil, err
 	}
 	if branch == trunk {
 		return state, nil, nil
 	}
-	chain, err := gtDownstack(prefix, state, branch, trunk)
+	chain, err := gtDownstack(c.prefix, state, branch, trunk)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -193,24 +230,24 @@ func gtStackChain(ctx context.Context, dir render.Dir, prefix, branch string) (g
 
 // stackBranches lists the current downstack chain — current branch first, up
 // to (excluding) trunk — or nil when the current branch is trunk.
-func stackBranches(ctx context.Context, dir render.Dir, prefix string) ([]string, error) {
-	branch, err := gitCurrentBranch(ctx, dir, prefix)
+func stackBranches(ctx context.Context, c *gtCache) ([]string, error) {
+	branch, err := gitCurrentBranch(ctx, c.dir, c.prefix)
 	if err != nil {
 		return nil, err
 	}
 	if branch == "" {
-		return nil, fmt.Errorf("%s: detached HEAD; no stack to resolve", prefix)
+		return nil, fmt.Errorf("%s: detached HEAD; no stack to resolve", c.prefix)
 	}
-	_, chain, err := gtStackChain(ctx, dir, prefix, branch)
+	_, chain, err := gtStackChain(ctx, c, branch)
 	return chain, err
 }
 
-func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts) (branchPlan, string, error) {
+func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c *gtCache) (branchPlan, string, error) {
 	branch, err := gitCurrentBranch(ctx, l.dir(), "ship")
 	if err != nil {
 		return branchPlan{}, "", err
 	}
-	state, err := gtStateQuery(ctx, l.dir(), "ship")
+	state, err := c.at(ctx)
 	if err != nil {
 		return branchPlan{}, "", err
 	}
@@ -223,7 +260,7 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts) (b
 	needsRestack := false
 	if branch != "" && branch != trunk {
 		if _, tracked := state[branch]; !tracked {
-			if state, seg, err = gtTrack(ctx, l.dir(), errW, o, branch); err != nil {
+			if state, seg, err = gtTrack(ctx, errW, o, branch, c); err != nil {
 				return branchPlan{}, "", err
 			}
 		}
@@ -299,12 +336,13 @@ func gtStuck(prefix, problem, suffix string) string {
 	return prefix + ": " + problem + suffix
 }
 
-func gtRestack(ctx context.Context, l lane, suffix, branch string) (string, error) {
-	state, chain, err := gtStackChain(ctx, l.dir(), "ship", branch)
+func gtRestack(ctx context.Context, l lane, suffix, branch string, c *gtCache) (string, error) {
+	state, chain, err := gtStackChain(ctx, c, branch)
 	if err != nil {
 		return "", err
 	}
-	result, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), state, gtBottomUp(chain))
+	result, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), c.commonDir, state, gtBottomUp(chain))
+	c.forget()
 	if err != nil {
 		var conflict *errRestackConflict
 		if errors.As(err, &conflict) {
@@ -312,7 +350,7 @@ func gtRestack(ctx context.Context, l lane, suffix, branch string) (string, erro
 		}
 		return "", err
 	}
-	state, chain, err = gtStackChain(ctx, l.dir(), "ship", branch)
+	state, chain, err = gtStackChain(ctx, c, branch)
 	if err != nil {
 		return "", err
 	}
@@ -365,20 +403,21 @@ func gtOffParent(branch, held string) string {
 // sentence would otherwise vanish twice over: the advice replaces it, and a
 // canned message hides it from errors.Is. Both are kept — the diagnostics reach
 // errW, and gt's failure stays the advice's cause.
-func gtTrack(ctx context.Context, dir render.Dir, errW io.Writer, o shipOpts, branch string) (gtState, string, error) {
+func gtTrack(ctx context.Context, errW io.Writer, o shipOpts, branch string, c *gtCache) (gtState, string, error) {
 	argv := []string{"track", branch, "-f", "--no-interactive"}
 	if o.parent != "" {
 		argv = []string{"track", branch, "--parent", o.parent, "--no-interactive"}
 	}
 	untracked := fmt.Errorf("ship: branch %s is not tracked by graphite — run gt track %s, or pass --no-gt", branch, branch)
-	r, runErr := gtRun(ctx, dir, argv, gtZeroFatal, errW)
+	r, runErr := gtRun(ctx, c.dir, argv, gtZeroFatal, errW)
+	c.forget()
 	if err := gtReport(ctx, errW, r); err != nil {
 		return nil, "", err
 	}
 	if runErr != nil {
 		return nil, "", &gtAdvice{advice: untracked.Error(), cause: runErr}
 	}
-	state, err := gtStateQuery(ctx, dir, "ship")
+	state, err := c.at(ctx)
 	if err != nil {
 		return nil, "", err
 	}
@@ -389,7 +428,7 @@ func gtTrack(ctx context.Context, dir render.Dir, errW io.Writer, o shipOpts, br
 	seg := "tracked " + branch
 	if len(s.Parents) > 0 {
 		parent := s.Parents[0].Ref
-		if err := gtRefuseLandedParent(ctx, dir, state, branch, parent); err != nil {
+		if err := gtRefuseLandedParent(ctx, c.dir, state, branch, parent); err != nil {
 			return nil, "", err
 		}
 		seg += " onto " + parent
@@ -546,12 +585,8 @@ var gtAPIClient = gtapi.Default
 // else, and never rebases or retries — gt owns restacking.
 // The resolved downstack it returns is the one the pull request step then
 // backfills into, so the stack is walked and its pull requests fetched once.
-func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta map[string]prMeta, fetch *gtTrunkFetch, branch, suffix string) (submitted string, bodyless []string, stack []stackEntry, err error) {
-	commonDir, err := gtCommonDir(ctx, l.dir(), "ship")
-	if err != nil {
-		return "", nil, nil, err
-	}
-	state, err := gtStateAt(ctx, commonDir, "ship")
+func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta map[string]prMeta, fetch *gtTrunkFetch, branch, suffix string, c *gtCache) (submitted string, bodyless []string, stack []stackEntry, err error) {
+	state, err := c.at(ctx)
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -576,7 +611,7 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 		return "", nil, nil, errors.New(gtStuck("ship", problem, suffix))
 	}
 	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: o.draft, noVerify: o.noVerify}
-	_, known, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, gtBottomUp(chain))
+	_, known, err := gtSubmitStack(ctx, l, errW, sub, c.commonDir, state, tr, gtBottomUp(chain))
 	if err != nil {
 		return "", nil, nil, err
 	}

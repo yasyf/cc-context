@@ -73,7 +73,11 @@ func runPrune(cmd *cobra.Command, o pruneOpts) error {
 	if err != nil {
 		return fmt.Errorf("prune: %w", err)
 	}
-	plan, err := prunePlanFor(ctx, dir, l, trunk)
+	commonDir, err := gtCommonDir(ctx, dir, "prune")
+	if err != nil {
+		return err
+	}
+	plan, err := prunePlanFor(ctx, dir, l, trunk, commonDir)
 	if err != nil {
 		return err
 	}
@@ -81,14 +85,14 @@ func runPrune(cmd *cobra.Command, o pruneOpts) error {
 		cmd.Println(prunePlanReport(plan, trunk, true))
 		return nil
 	}
-	if err := pruneApply(ctx, dir, l, plan); err != nil {
+	if err := pruneApply(ctx, dir, l, plan, commonDir); err != nil {
 		return err
 	}
 	cmd.Println(prunePlanReport(plan, trunk, false))
 	return nil
 }
 
-func prunePlanFor(ctx context.Context, dir render.Dir, l lane, trunk vcs.Trunk) (prunePlan, error) {
+func prunePlanFor(ctx context.Context, dir render.Dir, l lane, trunk vcs.Trunk, commonDir string) (prunePlan, error) {
 	held, err := pruneHeldBranches(ctx, dir)
 	if err != nil {
 		return prunePlan{}, err
@@ -109,10 +113,6 @@ func prunePlanFor(ctx context.Context, dir render.Dir, l lane, trunk vcs.Trunk) 
 		return plan, nil
 	}
 	live, err := pruneLiveBranches(ctx, dir)
-	if err != nil {
-		return prunePlan{}, err
-	}
-	commonDir, err := gtCommonDir(ctx, dir, "prune")
 	if err != nil {
 		return prunePlan{}, err
 	}
@@ -247,7 +247,7 @@ func pruneLiveBranches(ctx context.Context, dir render.Dir) (map[string]bool, er
 // pruneApply deletes with git branch -d, never -D: every branch in the plan
 // reached trunk, so a refusal means the plan went stale under a concurrent
 // checkout and the branch keeps its commits.
-func pruneApply(ctx context.Context, dir render.Dir, l lane, plan prunePlan) error {
+func pruneApply(ctx context.Context, dir render.Dir, l lane, plan prunePlan, commonDir string) error {
 	for _, batch := range pruneBatches(plan.merged, 200) {
 		argv := append([]string{"branch", "-d"}, batch...)
 		if _, err := render.RunCLI(ctx, dir, "git", argv); err != nil {
@@ -257,10 +257,6 @@ func pruneApply(ctx context.Context, dir render.Dir, l lane, plan prunePlan) err
 	forget := append(append([]string{}, plan.merged...), plan.stale...)
 	if !l.gt || len(forget) == 0 {
 		return nil
-	}
-	commonDir, err := gtCommonDir(ctx, dir, "prune")
-	if err != nil {
-		return err
 	}
 	if err := gtmeta.Reparent(ctx, commonDir, plan.reparent); err != nil {
 		return fmt.Errorf("prune: %w", err)
