@@ -140,14 +140,32 @@ func assertNoGT(t *testing.T, invocations [][]string) {
 	}
 }
 
+// assertNoGTCommit proves gt placed no commit on a lane that was demoted after
+// gt had already run: gt create is the only commit gt still places, and the git
+// commit beside it is the demoted lane cutting its own.
+func assertNoGTCommit(t *testing.T, invocations [][]string) {
+	t.Helper()
+	for _, inv := range invocations {
+		if len(inv) > 1 && inv[0] == "gt" && inv[1] == "create" {
+			t.Errorf("gt placed the commit on a demoted lane: %v", inv)
+		}
+	}
+}
+
+// assertGTCommit proves the graphite lane placed the commit. Only a create still
+// runs gt, so the other fingerprint is the graphite metadata read every gt-lane
+// commit is resolved against and the git lane never makes.
 func assertGTCommit(t *testing.T, invocations [][]string) {
 	t.Helper()
 	for _, inv := range invocations {
-		if len(inv) > 1 && inv[0] == "gt" && (inv[1] == "create" || inv[1] == "modify") {
+		if len(inv) > 1 && inv[0] == "gt" && inv[1] == "create" {
+			return
+		}
+		if reflect.DeepEqual(inv, gtCommonDirArgv) {
 			return
 		}
 	}
-	t.Errorf("no gt create/modify in %v, want the graphite lane", invocations)
+	t.Errorf("no gt create and no graphite metadata read in %v, want the graphite lane", invocations)
 }
 
 func TestShipGateDemotesForeignRepo(t *testing.T) {
@@ -163,7 +181,6 @@ func TestShipGateDemotesForeignRepo(t *testing.T) {
 		t.Errorf("report = %q, want it to lead with %q", out, want)
 	}
 	invocations := shipGTInvocations(t, f)
-	assertNoGTCommit(t, invocations)
 	assertNoGT(t, invocations)
 	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
 		t.Errorf("HEAD subject = %q, want the commit the demoted lane cut itself", subject)

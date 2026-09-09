@@ -41,6 +41,39 @@ func TestReadTracksAGTStack(t *testing.T) {
 		})
 	})
 
+	// gt revalidates the whole database on every invocation, so a stack it still
+	// reads back unchanged after a commit and a restack it never saw is a stack
+	// it agrees with.
+	t.Run("keeps a natively committed branch tracked", func(t *testing.T) {
+		run(t, f.Dir, "git", "switch", "-q", "feat1")
+		write(t, filepath.Join(f.Dir, "native.txt"), "native\n")
+		run(t, f.Dir, "git", "add", "native.txt")
+		run(t, f.Dir, "git", "commit", "-qm", "native")
+		committed := head(t, f.Dir, "feat1")
+
+		assertState(t, read(t, commonDir), gtmeta.State{
+			"main":  {Trunk: true, Head: trunkHead},
+			"feat1": {Head: committed, Parents: []gtmeta.Ref{{Ref: "main", SHA: trunkHead}}},
+			"feat2": {NeedsRestack: true, Parents: []gtmeta.Ref{{Ref: "feat1", SHA: feat1Head}}},
+		})
+
+		run(t, f.Dir, "git", "switch", "-q", "feat2")
+		run(t, f.Dir, "git", "rebase", "--onto", committed, feat1Head)
+		if err := gtmeta.RecordRestacked(t.Context(), commonDir, map[string]string{"feat2": committed}); err != nil {
+			t.Fatalf("RecordRestacked: %v", err)
+		}
+		feat1Head = committed
+
+		want := gtmeta.State{
+			"main":  {Trunk: true, Head: trunkHead},
+			"feat1": {Head: committed, Parents: []gtmeta.Ref{{Ref: "main", SHA: trunkHead}}},
+			"feat2": {Head: head(t, f.Dir, "feat2"), Parents: []gtmeta.Ref{{Ref: "feat1", SHA: committed}}},
+		}
+		assertState(t, read(t, commonDir), want)
+		run(t, f.Dir, "gt", "state")
+		assertState(t, read(t, commonDir), want)
+	})
+
 	t.Run("flags a branch whose parent moved", func(t *testing.T) {
 		run(t, f.Dir, "git", "switch", "-q", "main")
 		write(t, filepath.Join(f.Dir, "moved.txt"), "moved\n")

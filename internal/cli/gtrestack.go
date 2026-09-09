@@ -326,6 +326,38 @@ func gtRestackSegment(r gtRestackResult) string {
 	return segment
 }
 
+// gtUpstack lists the branches above branch, breadth-first, so a parent always
+// precedes its children — the order gtRestackChain has to be driven in. branch
+// itself is not in it. It is gt state's parent map read backwards, which is the
+// only way to reach the branches above this one when each sits in a working copy
+// of its own.
+func gtUpstack(prefix string, state gtState, branch string) ([]string, error) {
+	children := make(map[string][]string, len(state))
+	for name, s := range state {
+		if len(s.Parents) > 0 {
+			children[s.Parents[0].Ref] = append(children[s.Parents[0].Ref], name)
+		}
+	}
+	for _, kids := range children {
+		slices.Sort(kids)
+	}
+	var up []string
+	seen := map[string]bool{branch: true}
+	for queue := []string{branch}; len(queue) > 0; {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, kid := range children[cur] {
+			if seen[kid] {
+				return nil, fmt.Errorf("%s: gt state parent chain cycles at %s", prefix, kid)
+			}
+			seen[kid] = true
+			up = append(up, kid)
+			queue = append(queue, kid)
+		}
+	}
+	return up, nil
+}
+
 // gtBottomUp reverses a gtDownstack chain, which runs branch-first, into the
 // trunk-adjacent-first order a restack is driven in: rebasing a branch leaves
 // everything above it off its parent again, so a top-down pass converges only
