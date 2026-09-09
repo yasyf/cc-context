@@ -355,7 +355,12 @@ func gtDropTrunkInv(t *testing.T, got [][]string, trunk string) [][]string {
 		rest = append(rest, inv)
 	}
 	if matched != len(want) {
-		t.Errorf("trunk resolution: matched %d of %v, in order, from\n%v", matched, want, got)
+		present := make([]bool, len(want))
+		for i, w := range want {
+			present[i] = slices.ContainsFunc(got, func(inv []string) bool { return slices.Equal(inv, w) })
+		}
+		t.Errorf("trunk resolution: stopped at %v after %d in order; each call present in the log: %v; whole log\n%v",
+			want[matched], matched, present, got)
 	}
 	return rest
 }

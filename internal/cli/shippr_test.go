@@ -509,7 +509,8 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 				{"git", "rev-list", "--count", "main..HEAD"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
-				gtRefsArgv(),
+				// No second refs read: this ship cuts no commit, so nothing
+				// invalidates the state the preflight already cached.
 			}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
 				gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
 				gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
