@@ -324,17 +324,41 @@ func gtTrunkInv(trunk string) [][]string {
 	}
 }
 
+// gtDropTrunkInv takes the trunk resolution out of got so the calls around it
+// stay an exact sequence: ship fetches on a goroutine overlapping the commit, so
+// each of its three calls lands where nothing fixes it. All three must be there,
+// in this order relative to each other; anything unmatched stays in the result
+// for the caller's exact comparison to catch.
+func gtDropTrunkInv(t *testing.T, got [][]string, trunk string) [][]string {
+	t.Helper()
+	want := gtTrunkInv(trunk)
+	rest := make([][]string, 0, len(got))
+	matched := 0
+	for _, inv := range got {
+		if matched < len(want) && slices.Equal(inv, want[matched]) {
+			matched++
+			continue
+		}
+		rest = append(rest, inv)
+	}
+	if matched != len(want) {
+		t.Errorf("trunk resolution: matched %d of %v, in order, from\n%v", matched, want, got)
+	}
+	return rest
+}
+
 // gtContainedInv asks whether one head is already in the remote trunk.
 func gtContainedInv(trunk, head string) []string {
 	return []string{"git", "merge-base", "--is-ancestor", head, gtRemoteTrunk(trunk)}
 }
 
-// gtShipSubmitInv is the git work a ship does before its submit pushes:
-// resolve and fetch the remote trunk, ask whether the shipped branch and then
-// each branch of the stack is already in it, and read the base sha a
-// trunk-based branch submits under. Heads arrive bottom-up, shipped one last.
+// gtShipSubmitInv is the git work a ship does before its submit pushes: ask
+// whether the shipped branch and then each branch of the stack is already in the
+// remote trunk, and read the base sha a trunk-based branch submits under. Heads
+// arrive bottom-up, shipped one last. The trunk resolution itself floats, so
+// gtDropTrunkInv accounts for it rather than this sequence.
 func gtShipSubmitInv(trunk string, heads ...string) [][]string {
-	inv := append(gtTrunkInv(trunk), gtContainedInv(trunk, heads[len(heads)-1]))
+	inv := [][]string{gtContainedInv(trunk, heads[len(heads)-1])}
 	for _, head := range heads {
 		inv = append(inv, gtContainedInv(trunk, head))
 	}

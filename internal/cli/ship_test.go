@@ -4011,7 +4011,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				[]string{"git", "rev-parse", "HEAD"},
 				ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
 			)
-			assertInvocations(t, readInvocations(t, log), want)
+			assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main"), want)
 		})
 	}
 }
@@ -4056,7 +4056,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		{"git", "rev-parse", "HEAD"},
 		ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
 	})
-	assertInvocations(t, readInvocations(t, log), wantInv)
+	assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main"), wantInv)
 }
 
 func TestShipGTBodylessPR(t *testing.T) {
