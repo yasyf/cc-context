@@ -6207,8 +6207,12 @@ func TestGTTrackRefusesALandedParent(t *testing.T) {
 				t.Setenv("GIT_NO_REMOTE_TRUNK", "1")
 			}
 
+			c, err := newGTCache(t.Context(), render.Dir(workingDir()), "ship")
+			if err != nil {
+				t.Fatalf("newGTCache: %v", err)
+			}
 			var errW bytes.Buffer
-			_, seg, err := gtTrack(t.Context(), render.Dir(workingDir()), &errW, shipOpts{}, "feature")
+			_, seg, err := gtTrack(t.Context(), &errW, shipOpts{}, "feature", c)
 			if tt.wantErr != "" {
 				if err == nil || err.Error() != tt.wantErr {
 					t.Fatalf("error = %v, want %q", err, tt.wantErr)
