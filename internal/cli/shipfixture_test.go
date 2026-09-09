@@ -689,8 +689,12 @@ func shipInvocationsOf(invocations [][]string, tool string) [][]string {
 // command's parsing paths run without a real VCS or network.
 func writeShipFakes(t *testing.T, dir string, withGh bool) {
 	t.Helper()
+	// One printf, so one write: a record built from several appends interleaves
+	// with a concurrently spawned sibling's, and the merged bytes parse as fewer
+	// records than were made. internal/vcstest's own RecordArgv frames its
+	// records the same way for the same reason.
 	log := func(name string) string {
-		return "{ printf '" + name + "\\0'; for a in \"$@\"; do printf '%s\\0' \"$a\"; done; printf '\\0'; } >> \"$SHIP_LOG\"\n"
+		return "printf '%s\\0' '" + name + "' \"$@\" '' >> \"$SHIP_LOG\"\n"
 	}
 
 	jj := "#!/bin/sh\n" + log("jj") + `if [ "$1" = --ignore-working-copy ]; then shift; fi
@@ -777,7 +781,7 @@ Error: Failed to push some bookmarks}" >&2
     if [ -n "$JJ_COMMIT_ID_FAIL" ]; then printf 'jj: commit id unavailable\n' >&2; exit 1; fi
     printf '%s' '` + fakeHeadSHA + `' ;;
   "diff --name-only"*)
-    if [ -n "$JJ_LOG_PWD" ]; then { printf 'pwd\0'; printf '%s\0' "$PWD"; printf '\0'; } >> "$SHIP_LOG"; fi
+    if [ -n "$JJ_LOG_PWD" ]; then printf '%s\0' pwd "$PWD" '' >> "$SHIP_LOG"; fi
     names=$JJ_DIFF_NAMES
     if [ -n "$SHIP_DIFF_NAMES_MARKER" ]; then
       count=0
@@ -807,7 +811,7 @@ exit 0
 `
 	// When GIT_INDEX_FILE is set, log a leading "idx" record naming the temp index
 	// basename so a test can assert which git calls carried the throwaway index.
-	gitIdxMark := "if [ -n \"$GIT_INDEX_FILE\" ]; then { printf 'idx\\0'; printf '%s\\0' \"${GIT_INDEX_FILE##*/}\"; printf '\\0'; } >> \"$SHIP_LOG\"; fi\n"
+	gitIdxMark := "if [ -n \"$GIT_INDEX_FILE\" ]; then printf '%s\\0' idx \"${GIT_INDEX_FILE##*/}\" '' >> \"$SHIP_LOG\"; fi\n"
 	git := "#!/bin/sh\n" + gitIdxMark + log("git") + `case "$1 $2" in
   "log -1") printf '%s\0%s' 'a1b2c3d' 'fix: frobnicate' ;;
   "log --reverse") printf '%s\0%s\0\n' "${GIT_LOG_SUBJECT-fix: frobnicate}" "$GIT_LOG_BODY" ;;
