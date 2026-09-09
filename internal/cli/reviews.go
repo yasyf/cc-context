@@ -421,11 +421,7 @@ func resolveStackReviewTargets(ctx context.Context, w io.Writer, since time.Time
 		}
 		return reviewsClient{}, nil, errors.New("reviews: --stack requires a graphite repo")
 	}
-	c, err := newGTCache(ctx, l.dir(), "reviews")
-	if err != nil {
-		return reviewsClient{}, nil, err
-	}
-	branches, err := stackBranches(ctx, c)
+	branches, err := stackBranches(ctx, newGTCache(l.dir(), "reviews"))
 	if err != nil {
 		return reviewsClient{}, nil, err
 	}

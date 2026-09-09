@@ -84,6 +84,6 @@ func resolveGit() string {
 
 // executable reports whether path is a runnable file.
 func executable(path string) bool {
-	info, err := os.Stat(path)
+	info, err := os.Stat(path) //nolint:gosec // path is a PATH entry joined with "git", not user input
 	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
 }

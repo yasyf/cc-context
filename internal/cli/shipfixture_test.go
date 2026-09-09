@@ -1184,7 +1184,7 @@ func gtRefsArgv() []string {
 }
 
 func gtRefsArgvIn(dir string) []string {
-	return []string{"git", "--git-dir=" + dir, "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads/"}
+	return []string{"git", "--git-dir=" + dir, "for-each-ref", "--format=%(refname:short) %(objectname)", "--stdin"}
 }
 
 // gtRealRefsArgv is gtRefsArgv for a fixture holding a real repository, whose

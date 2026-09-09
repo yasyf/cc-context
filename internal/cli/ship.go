@@ -327,9 +327,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	}
 	var gtc *gtCache
 	if gtLane {
-		if gtc, err = newGTCache(ctx, dir, "ship"); err != nil {
-			return err
-		}
+		gtc = newGTCache(dir, "ship")
 	}
 	plan, planSeg, err := shipResolvePlan(ctx, cmd.ErrOrStderr(), l, o, gtc)
 	if err != nil {

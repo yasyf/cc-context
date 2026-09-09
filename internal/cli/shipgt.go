@@ -148,12 +148,23 @@ type gtCache struct {
 	state     gtState
 }
 
-func newGTCache(ctx context.Context, dir render.Dir, prefix string) (*gtCache, error) {
-	commonDir, err := gtCommonDir(ctx, dir, prefix)
-	if err != nil {
-		return nil, err
+func newGTCache(dir render.Dir, prefix string) *gtCache {
+	return &gtCache{dir: dir, prefix: prefix}
+}
+
+// common resolves the git common dir on the first read that needs one, rather
+// than when the cache is built: a run that never reads gt's metadata should not
+// pay the lookup, and resolving it eagerly would put it ahead of the branch
+// lookup whose failure names the more useful command.
+func (c *gtCache) common(ctx context.Context) (string, error) {
+	if c.commonDir == "" {
+		commonDir, err := gtCommonDir(ctx, c.dir, c.prefix)
+		if err != nil {
+			return "", err
+		}
+		c.commonDir = commonDir
 	}
-	return &gtCache{dir: dir, prefix: prefix, commonDir: commonDir}, nil
+	return c.commonDir, nil
 }
 
 // at answers from the memo, reading gt's metadata on a miss.
@@ -161,7 +172,11 @@ func (c *gtCache) at(ctx context.Context) (gtState, error) {
 	if c.state != nil {
 		return c.state, nil
 	}
-	state, err := gtStateAt(ctx, c.commonDir, c.prefix)
+	commonDir, err := c.common(ctx)
+	if err != nil {
+		return nil, err
+	}
+	state, err := gtStateAt(ctx, commonDir, c.prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -341,7 +356,11 @@ func gtRestack(ctx context.Context, l lane, suffix, branch string, c *gtCache) (
 	if err != nil {
 		return "", err
 	}
-	result, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), c.commonDir, state, gtBottomUp(chain))
+	commonDir, err := c.common(ctx)
+	if err != nil {
+		return "", err
+	}
+	result, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), commonDir, state, gtBottomUp(chain))
 	c.forget()
 	if err != nil {
 		var conflict *errRestackConflict
@@ -611,7 +630,11 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 		return "", nil, nil, errors.New(gtStuck("ship", problem, suffix))
 	}
 	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: o.draft, noVerify: o.noVerify}
-	_, known, err := gtSubmitStack(ctx, l, errW, sub, c.commonDir, state, tr, gtBottomUp(chain))
+	commonDir, err := c.common(ctx)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	_, known, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, gtBottomUp(chain))
 	if err != nil {
 		return "", nil, nil, err
 	}
