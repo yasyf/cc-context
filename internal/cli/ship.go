@@ -329,6 +329,13 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	if err != nil {
 		return err
 	}
+	// Must follow the preflight, whose landed-parent guard reads the ref this
+	// fetch moves.
+	var trunkFetch *gtTrunkFetch
+	if gtLane && !o.noPush {
+		trunkFetch = gtStartTrunkFetch(ctx, dir, "ship", plan.trunk)
+		defer trunkFetch.stop()
+	}
 	o.noVerify = !shipVerify(cmd, o, plan)
 	prRun := shipPRRequested(cmd, l, o)
 	meta, err := resolvePRMeta(cmd, o, plan.name)
@@ -440,7 +447,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	var bodylessSegs []string
 	var gtStack []stackEntry
 	if gtLane {
-		prSeg, bodylessSegs, gtStack, err = shipPushGT(ctx, cmd.ErrOrStderr(), l, o, meta, branch, stuck)
+		prSeg, bodylessSegs, gtStack, err = shipPushGT(ctx, cmd.ErrOrStderr(), l, o, meta, trunkFetch, branch, stuck)
 	} else {
 		remote, rebased, err = shipPush(ctx, dir, kind, o, branch, preAmendSHA)
 	}

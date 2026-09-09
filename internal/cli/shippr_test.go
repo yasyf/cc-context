@@ -461,7 +461,7 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		ghDownstackPRArgv("feature"),
 		{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "Better title", "--body-file", body},
 	})
-	assertInvocations(t, readInvocations(t, log), wantInv)
+	assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main"), wantInv)
 }
 
 // TestShipPRGTAlreadyCommitted is the shape a fan-out hands back: a delegate's
@@ -518,7 +518,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 				ghDownstackPRArgv("feature"),
 				{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "fix: 🐛 frobnicate the widget", "--body-file", body},
 			})
-			assertInvocations(t, readInvocations(t, log), wantInv)
+			assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main"), wantInv)
 		})
 	}
 }
