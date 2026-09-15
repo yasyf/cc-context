@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.1] - 2026-09-15
+
+### Fixed
+
+- **Fix hook failures caused by conflicting binrun versions.** The shim now
+  pins binrun v0.6.1 and installs it at `~/.daemonkit/binrun/<tag>/binrun`,
+  so plugins pinning different tags no longer replace each other's runner. It
+  checks `BINRUN_BIN`, the per-tag runner, then `binrun` on PATH before a
+  one-time download verified with SHA-256. The shim no longer reads or writes
+  `~/.daemonkit/bin/binrun`. Plugin binary behavior is unchanged.
+
 ## [0.58.0] - 2026-09-09
 
 ### Changed
