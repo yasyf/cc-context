@@ -182,7 +182,7 @@ func statusResolvePRs(ctx context.Context, l lane, st *vcsStatus) {
 			continue
 		}
 		required := statusRequired(rules, node.BaseRefName)
-		pr := statusBuildPR(*node, l.gt, activity[node.Number], drafts)
+		pr := statusBuildPR(*node, statusLanded(ctx, l, *node, activity[node.Number]), activity[node.Number], drafts)
 		for j, check := range pr.Checks {
 			pr.Checks[j].Required = slices.Contains(required, check.Name)
 		}
@@ -409,13 +409,28 @@ func statusDraftQuery(n int) string {
 	return fmt.Sprintf("query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}", strings.Join(decls, ", "), fields.String())
 }
 
+// statusLanded resolves whether a pull request reached the trunk. The queue's
+// activity comment is already in hand here, so the ambiguous close asks it
+// before anything that costs a round trip.
+func statusLanded(ctx context.Context, l lane, node statusPRNode, activity string) bool {
+	switch node.verdict(l.gt) {
+	case prLanded:
+		return true
+	case prQueueClosed:
+		return queueMergedLine.MatchString(activity) ||
+			prSquashOnBase(ctx, l.dir(), node.BaseRefName, node.Number) != ""
+	default:
+		return false
+	}
+}
+
 // statusBuildPR turns one answered pull request into the report's view of it.
-func statusBuildPR(node statusPRNode, gt bool, activity string, drafts map[int]time.Time) *statusPR {
+func statusBuildPR(node statusPRNode, landed bool, activity string, drafts map[int]time.Time) *statusPR {
 	pr := &statusPR{
 		Number:         node.Number,
 		URL:            node.URL,
 		State:          node.State,
-		Merged:         node.landed(gt),
+		Merged:         landed,
 		Draft:          node.IsDraft,
 		HasBody:        strings.TrimSpace(node.Body) != "",
 		Head:           node.HeadRefOid,
