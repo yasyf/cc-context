@@ -538,29 +538,46 @@ func setupReviewsLane(t *testing.T, gt bool) *reviewsServer {
 	return setupReviewsHere(t)
 }
 
+// reviewsQueueMergedComment is Graphite's merge-activity comment as it reads
+// once the queue has landed the pull request, shaped like the REST feed serves
+// one — the bot's login carrying the "[bot]" suffix GraphQL leaves off.
+const reviewsQueueMergedComment = `[{
+	"id":301,
+	"body":"### Merge activity\n\n* **Sep 15, 5:40 PM UTC**: ` + "`yasyf`" + ` added this pull request to the [Graphite merge queue](https://app.graphite.com/merges).\n* **Sep 15, 5:44 PM UTC**: Merged by the [Graphite merge queue](https://app.graphite.com/merges) via draft PR: [#20499](https://app.graphite.com).",
+	"user":{"login":"graphite-app[bot]"},
+	"html_url":"https://example/301",
+	"created_at":"2026-09-15T17:40:00Z",
+	"updated_at":"2026-09-15T17:44:00Z"
+}]`
+
 // TestReviewsQueueMergedTerminal proves the watch calls a pull request the
-// Graphite merge queue landed merged rather than closed. The queue squash-merges
-// a whole stack into one trunk commit, so GitHub reports every pull request in
-// it CLOSED with a null mergedAt, and only the closing account separates that
-// from an abandonment. The signature is Graphite's: off the gt lane the same
-// close is a close, and a human's close is one on either lane.
+// Graphite merge queue landed merged, and one the queue closed without landing
+// closed. The queue squash-merges a whole stack into one trunk commit, so GitHub
+// reports both CLOSED with a null mergedAt under the queue's own account; the
+// landing itself is the queue's "Merged by" line or the squash on the base
+// branch. Off the gt lane that close is a close, as is a human's on either lane.
 func TestReviewsQueueMergedTerminal(t *testing.T) {
 	tests := []struct {
 		name     string
 		gt       bool
 		closer   string
+		landed   bool
 		terminal string
 		counts   string
 	}{
-		{"the queue closed it on the graphite lane", true, graphiteQueueActor, "merged", "1 merged · 0 closed"},
-		{"the queue closed it off the graphite lane", false, graphiteQueueActor, "closed", "0 merged · 1 closed"},
-		{"a human closed it on the graphite lane", true, "octocat", "closed", "0 merged · 1 closed"},
+		{"the queue merged it on the graphite lane", true, graphiteQueueActor, true, "merged", "1 merged · 0 closed"},
+		{"the queue closed it without landing it", true, graphiteQueueActor, false, "closed", "0 merged · 1 closed"},
+		{"the queue merged it off the graphite lane", false, graphiteQueueActor, true, "closed", "0 merged · 1 closed"},
+		{"a human closed it on the graphite lane", true, "octocat", false, "closed", "0 merged · 1 closed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := setupReviewsLane(t, tt.gt)
 			srv.pr(7, 1, "CLOSED", false)
 			srv.closedBy(7, tt.closer)
+			if tt.landed {
+				srv.feed("comment", 7, reviewsQueueMergedComment)
+			}
 
 			got, err := runReviewsCmd(t, "7", "--since", "all")
 			if err != nil {
@@ -830,7 +847,7 @@ func TestReviewsBatchParsesRecordedGraphQL(t *testing.T) {
 	if open.State != "OPEN" || open.URL != "https://github.com/cli/cli/pull/13982" {
 		t.Errorf("pr#13982 = %+v, want the recorded open pull request", open)
 	}
-	if terminal, err := reviewTerminalState(open, true); err != nil || terminal != "" {
+	if terminal, err := reviewTerminalState(context.Background(), reviewsClient{gt: true}, open, nil); err != nil || terminal != "" {
 		t.Errorf("reviewTerminalState(open) = (%q, %v), want the watch to stay attached", terminal, err)
 	}
 	merged := byNumber[13084]
@@ -840,7 +857,7 @@ func TestReviewsBatchParsesRecordedGraphQL(t *testing.T) {
 	if got := merged.closedBy(); got != "babakks" {
 		t.Errorf("pr#13084 closedBy() = %q, want the account the recorded close names", got)
 	}
-	if terminal, err := reviewTerminalState(merged, true); err != nil || terminal != "merged" {
+	if terminal, err := reviewTerminalState(context.Background(), reviewsClient{gt: true}, merged, nil); err != nil || terminal != "merged" {
 		t.Errorf("reviewTerminalState(merged) = (%q, %v), want merged", terminal, err)
 	}
 

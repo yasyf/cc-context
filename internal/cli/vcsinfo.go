@@ -370,10 +370,11 @@ func resolveDownstackPRs(ctx context.Context, l lane, entries []stackEntry) {
 		Data struct {
 			Repository map[string]struct {
 				Nodes []struct {
-					Number  int    `json:"number"`
-					URL     string `json:"url"`
-					Body    string `json:"body"`
-					Commits struct {
+					Number      int    `json:"number"`
+					URL         string `json:"url"`
+					Body        string `json:"body"`
+					BaseRefName string `json:"baseRefName"`
+					Commits     struct {
 						Nodes []struct {
 							Commit struct {
 								StatusCheckRollup struct {
@@ -390,6 +391,8 @@ func resolveDownstackPRs(ctx context.Context, l lane, entries []stackEntry) {
 	if err := json.Unmarshal([]byte(out), &resp); err != nil {
 		return
 	}
+	var closes []prQueueClose
+	at := map[int]int{}
 	for i := range entries {
 		nodes := resp.Data.Repository[downstackPRAlias(i)].Nodes
 		if len(nodes) == 0 {
@@ -400,11 +403,20 @@ func resolveDownstackPRs(ctx context.Context, l lane, entries []stackEntry) {
 		entries[i].URL = node.URL
 		entries[i].HasBody = strings.TrimSpace(node.Body) != ""
 		entries[i].State = node.State
-		entries[i].Merged = node.landed(l.gt)
 		entries[i].MergedAt = node.MergedAt
 		if commits := node.Commits.Nodes; len(commits) > 0 {
 			entries[i].Checks = commits[0].Commit.StatusCheckRollup.State
 		}
+		switch node.verdict(l.gt) {
+		case prLanded:
+			entries[i].Merged = true
+		case prQueueClosed:
+			at[node.Number] = i
+			closes = append(closes, prQueueClose{Number: node.Number, Base: node.BaseRefName})
+		}
+	}
+	for number, landed := range resolveQueueLandings(ctx, l.dir(), closes) {
+		entries[at[number]].Merged = landed
 	}
 }
 
@@ -431,7 +443,7 @@ func downstackPRQuery(n int) string {
 		alias := downstackPRAlias(i)
 		decls = append(decls, "$"+alias+": String!")
 		fmt.Fprintf(&fields, "    %s: pullRequests(headRefName: $%s, first: 1, orderBy: {field: CREATED_AT, direction: DESC})"+
-			" { nodes { number url body %s commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } } }\n",
+			" { nodes { number url body baseRefName %s commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } } }\n",
 			alias, alias, prLandingFields)
 	}
 	return fmt.Sprintf("query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}", strings.Join(decls, ", "), fields.String())

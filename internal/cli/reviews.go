@@ -59,8 +59,9 @@ type ghReview struct {
 // ghPullRequest is the pull request shape every batch selects: what a target
 // needs to identify itself, and what reviewTerminalState reads.
 type ghPullRequest struct {
-	Number int    `json:"number"`
-	URL    string `json:"url"`
+	Number      int    `json:"number"`
+	URL         string `json:"url"`
+	BaseRefName string `json:"baseRefName"`
 	prLanding
 }
 
@@ -244,7 +245,7 @@ func reviewsBatch(n int, decl string, field func(alias string) string) string {
 
 func reviewsNumberQuery(n int) string {
 	return reviewsBatch(n, "Int!", func(alias string) string {
-		return fmt.Sprintf("%s: pullRequest(number: $%s) { number url %s }", alias, alias, prLandingFields)
+		return fmt.Sprintf("%s: pullRequest(number: $%s) { number url baseRefName %s }", alias, alias, prLandingFields)
 	})
 }
 
@@ -256,7 +257,7 @@ func reviewsNumberQuery(n int) string {
 func reviewsBranchQuery(n int) string {
 	return reviewsBatch(n, "String!", func(alias string) string {
 		return fmt.Sprintf(
-			"%s: pullRequests(headRefName: $%s, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url %s } }",
+			"%s: pullRequests(headRefName: $%s, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url baseRefName %s } }",
 			alias, alias, prLandingFields)
 	})
 }
@@ -627,7 +628,7 @@ func pollReviewTarget(ctx context.Context, client reviewsClient, target *prTarge
 	if err != nil {
 		return reviewsPoll{}, fmt.Errorf("reviews: pr#%d reviews: %w", target.Number, err)
 	}
-	terminal, err := reviewTerminalState(pr, client.gt)
+	terminal, err := reviewTerminalState(ctx, client, pr, comments)
 	if err != nil {
 		return reviewsPoll{}, fmt.Errorf("reviews: pr#%d: %w", target.Number, err)
 	}
@@ -670,20 +671,65 @@ func pollReviewTarget(ctx context.Context, client reviewsClient, target *prTarge
 
 // reviewTerminalState names the end a pull request reached, and is empty while
 // it is still open. A stack the Graphite merge queue landed reports CLOSED with
-// a null mergedAt, so on the gt lane the closing account is what tells a landed
-// pull request from an abandoned one.
-func reviewTerminalState(pr ghPullRequest, gt bool) (string, error) {
-	if pr.landed(gt) {
+// a null mergedAt, and so does one the queue dropped, so the close it leaves
+// behind is resolved against the trunk rather than read off the pull request.
+func reviewTerminalState(ctx context.Context, client reviewsClient, pr ghPullRequest, comments []ghPRComment) (string, error) {
+	switch pr.verdict(client.gt) {
+	case prLanded:
 		return "merged", nil
-	}
-	switch pr.State {
-	case "OPEN":
+	case prStillOpen:
 		return "", nil
-	case "CLOSED":
+	case prQueueClosed:
+		landed, err := reviewQueueLanded(ctx, client, pr, comments)
+		if err != nil {
+			return "", err
+		}
+		if landed {
+			return "merged", nil
+		}
 		return "closed", nil
-	default:
+	}
+	if pr.State != "CLOSED" {
 		return "", fmt.Errorf("unexpected state %q", pr.State)
 	}
+	return "closed", nil
+}
+
+// reviewQueueLanded resolves the queue's close. The poll has already fetched
+// this pull request's comments, so the queue's own account of itself is free;
+// the squash on the base branch answers a landing the queue never commented on;
+// and the re-read covers the watermark having hidden the comment that answers.
+func reviewQueueLanded(ctx context.Context, client reviewsClient, pr ghPullRequest, comments []ghPRComment) (bool, error) {
+	if queueActivityMerged(comments) {
+		return true, nil
+	}
+	if prSquashOnBase(ctx, client.dir, pr.BaseRefName, pr.Number) != "" {
+		return true, nil
+	}
+	all, err := ghapi.Paginate[ghPRComment](ctx, client.api,
+		fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100", client.owner, client.repo, pr.Number))
+	if err != nil {
+		return false, fmt.Errorf("queue landing: %w", err)
+	}
+	return queueActivityMerged(all), nil
+}
+
+// queueActivityMerged reports whether the queue's merge-activity comment is
+// among these and says the queue merged the pull request. REST spells the bot's
+// login with the "[bot]" suffix GraphQL leaves off, and both spellings are
+// matched exactly, so no neighbouring account quoting the line can answer for
+// the queue.
+func queueActivityMerged(comments []ghPRComment) bool {
+	for _, comment := range comments {
+		login := comment.User.Login
+		if login != graphiteQueueActor && login != graphiteQueueActor+"[bot]" {
+			continue
+		}
+		if queueMergedLine.MatchString(comment.Body) {
+			return true
+		}
+	}
+	return false
 }
 
 func cloneReviewSeen(seen map[string]time.Time) map[string]time.Time {

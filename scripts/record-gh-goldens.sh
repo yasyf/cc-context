@@ -171,7 +171,7 @@ downstack_query() {
 	fields=''
 	for ((i = 0; i < n; i++)); do
 		decls="$decls, \$b$i: String!"
-		fields="$fields    b$i: pullRequests(headRefName: \$b$i, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url body $landing_fields $checks_fields } }
+		fields="$fields    b$i: pullRequests(headRefName: \$b$i, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url body baseRefName $landing_fields $checks_fields } }
 "
 	done
 	printf 'query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}' "$decls" "$fields"
@@ -231,9 +231,9 @@ reviews_query() {
 	for ((i = 0; i < n; i++)); do
 		decls="$decls, \$p$i: $decl"
 		case "$kind" in
-		number) fields="$fields    p$i: pullRequest(number: \$p$i) { number url $landing_fields }
+		number) fields="$fields    p$i: pullRequest(number: \$p$i) { number url baseRefName $landing_fields }
 " ;;
-		branch) fields="$fields    p$i: pullRequests(headRefName: \$p$i, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url $landing_fields } }
+		branch) fields="$fields    p$i: pullRequests(headRefName: \$p$i, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url baseRefName $landing_fields } }
 " ;;
 		esac
 	done
