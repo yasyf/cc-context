@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.2] - 2026-09-15
+
+### Fixed
+
+- **Read a Graphite queue landing from the trunk, not the closing account.**
+  The queue squash-merges a stack into one trunk commit and closes every pull
+  request in it, so a landed one reads `CLOSED` with a null `mergedAt`. It
+  closes the pull requests it drops the same way, along with the children whose
+  base branch an unlanded parent deleted and its own `[Graphite MQ]` draft pull
+  requests, and `vcs status`, `vcs info --json` and `vcs reviews` reported all
+  of those as merged. That close is now a question rather than a verdict,
+  answered by the squash whose subject ends `(#<n>)` on the base branch or by
+  Graphite's own "Merged by the Graphite merge queue" line. Neither present
+  means genuinely closed. Each command reads evidence it has already fetched,
+  so the common path costs no extra request, and evidence that cannot be
+  fetched reads as not landed.
+
 ## [0.58.1] - 2026-09-15
 
 ### Fixed
