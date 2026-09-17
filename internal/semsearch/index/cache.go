@@ -240,15 +240,17 @@ func readVectors(dir string) (string, [][]float32, error) {
 	}
 	rows := int(rowsValue)
 	dims := int(dimsValue)
-	out := make([][]float32, rows)
+	// One backing array sliced per row, not one allocation per row: a monorepo's
+	// ~144k rows otherwise become that many separately-scanned 1 KiB heap objects.
+	flat := make([]float32, rows*dims)
 	off := generationEnd + 8
+	for i := range flat {
+		flat[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[off : off+4]))
+		off += 4
+	}
+	out := make([][]float32, rows)
 	for i := range out {
-		row := make([]float32, dims)
-		for j := range row {
-			row[j] = math.Float32frombits(binary.LittleEndian.Uint32(data[off : off+4]))
-			off += 4
-		}
-		out[i] = row
+		out[i] = flat[i*dims : (i+1)*dims : (i+1)*dims]
 	}
 	return generation, out, nil
 }
