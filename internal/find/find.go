@@ -98,7 +98,7 @@ func render(globs []string, displayRoot string, matches []match, seenExts map[st
 	if total == 0 {
 		// A zero match still discloses hidden files when there are any — that hint is
 		// more actionable than the extensions list, so it wins over it.
-		if hidden > 0 {
+		if hidden > 0 || capped {
 			b.WriteString(disclosureLine(hidden, capped))
 		} else if hint := zeroHint(displayRoot, seenExts); hint != "" {
 			b.WriteString(hint + "\n")
@@ -120,7 +120,7 @@ func render(globs []string, displayRoot string, matches []match, seenExts map[st
 			humanComma(total-cutoff), humanTokens(int(withheld)/bytesPerToken))
 	}
 
-	if hidden > 0 {
+	if hidden > 0 || capped {
 		b.WriteString(disclosureLine(hidden, capped))
 	}
 
@@ -137,13 +137,18 @@ func quoteGlobs(globs []string) string {
 }
 
 // disclosureLine names how many ignore-filtered files matched the glob and points
-// at the anchored-glob escape hatch.
+// at the anchored-glob escape hatch. A capped walk counted a floor, not a total, and
+// a zero floor says only that the cap arrived first.
 func disclosureLine(hidden int, capped bool) string {
-	count := humanComma(hidden)
-	if capped {
-		count += "+ (scan capped)"
+	const anchor = "anchor the glob at a real path (e.g. .venv/**/*.py) to include them.\n"
+	switch {
+	case capped && hidden == 0:
+		return "ignored files may be hidden — the scan stopped at its cap; " + anchor
+	case capped:
+		return fmt.Sprintf("%s+ ignored files hidden (scan capped) — %s", humanComma(hidden), anchor)
+	default:
+		return fmt.Sprintf("%s ignored files hidden — %s", humanComma(hidden), anchor)
 	}
-	return fmt.Sprintf("%s ignored files hidden — anchor the glob at a real path (e.g. .venv/**/*.py) to include them.\n", count)
 }
 
 // budgetCutoff returns how many leading rows fit the byte budget, using a per-row

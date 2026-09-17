@@ -179,11 +179,10 @@ func ignoredByRepo(cfg walkConfig, abs string) bool {
 	return cfg.matcher.Match(strings.Split(filepath.ToSlash(rel), "/"), false)
 }
 
-// countHidden reports how many additional files globs would select under root
-// once the ignore chain is disabled — the files the default walk hid. VCS stores
-// stay skipped so their internals never count. The count is clamped at zero against
-// a concurrent tree mutation; the bool reports that maxDisclosureVisits stopped the
-// walk early, making it a floor rather than a total.
+// countHidden reports how many additional files globs would select under root once
+// the ignore chain is disabled — the files the default walk hid, VCS stores aside.
+// The count is clamped at zero; the bool reports that maxDisclosureVisits stopped
+// the walk early, making the count a floor, possibly a zero one.
 func countHidden(ctx context.Context, root string, globs []string, shown int) (int, bool, error) {
 	queue := make(chan *gocodewalker.File, 256)
 	w := newWalker(root, queue)
@@ -240,10 +239,7 @@ func countHidden(ctx context.Context, root string, globs []string, shown int) (i
 	if stop != nil {
 		return 0, false, stop
 	}
-	if hidden := raw - shown; hidden > 0 {
-		return hidden, capped, nil
-	}
-	return 0, false, nil
+	return max(raw-shown, 0), capped, nil
 }
 
 // vcsStoreFile reports whether name is a VCS store that reached the walk as a
