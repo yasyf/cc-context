@@ -4,6 +4,39 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.59.0] - 2026-09-17
+
+### Changed
+
+- **`repo find` bounds the walk behind its ignore disclosure.** The footer
+  naming how many ignored files a glob also matched came from a second walk of
+  the whole tree with the ignore chain switched off. On a monorepo carrying
+  nested checkouts and `node_modules`, that one number cost 67-73 s of CPU,
+  56 s of it in the kernel. The walk now stops after 50,000 files, and the line
+  reports a floor — `3+ ignored files hidden (scan capped)` — rather than a
+  total. Where the budget buys no match at all, it says the scan stopped at its
+  cap instead of printing a bare `0`. The same listing costs about 3 s of CPU,
+  and the rows it prints are unchanged.
+
+### Fixed
+
+- **A warm semantic index no longer rewrites its whole cache.** `index.Load`
+  stored unconditionally. A fully warm hit re-marshalled the chunk corpus and
+  the vector matrix and reinstalled them — 295 MB on a large monorepo — to
+  write bytes identical to the ones already on disk. It now stores only when
+  the build differs from the manifest it read.
+
+- **A cold index build no longer peaks at nine gigabytes.** Chunking fanned out
+  to `runtime.NumCPU()` workers, each instantiating its own tree-sitter WASM
+  module. The embedding pass downstream serializes on one shared instance, so
+  that width bought nothing while the peak scaled with the core count. The
+  fan-out is now capped at eight. The vector matrix loads into a single backing
+  array rather than one allocation per row, the previous index is released
+  before the embedding pass, and a finished build hands its transient pages
+  back to the OS. Peak resident memory for a 143,828-chunk index falls from
+  9.31 GB to 1.97 GB, and a resident MCP server holding that index from
+  1244 MB to 1146 MB.
+
 ## [0.58.2] - 2026-09-15
 
 ### Fixed
