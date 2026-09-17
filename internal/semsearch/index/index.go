@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 
 	"golang.org/x/sync/errgroup"
 
@@ -18,6 +19,12 @@ import (
 // chunk corpus into WASM memory at once. model2vec is batch-invariant, so the
 // split does not change any vector.
 const embedBatchSize = 512
+
+// maxChunkWorkers caps the parallel chunking fan-out. Embedding downstream
+// serializes on one shared WASM instance, so chunking wider than a handful of cores
+// buys little — while one MCP server per session taking runtime.NumCPU() each
+// oversubscribes the machine by an order of magnitude.
+const maxChunkWorkers = 8
 
 // Embedder embeds raw text into fixed-width L2-normalized vectors — the resident
 // model2vec engine (internal/semsearch/embed) satisfies it.
@@ -81,8 +88,10 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 			Dims:    emb.Dims(),
 			Files:   built.files,
 		}
-		if err := store(dir, man, built.chunks, built.vectors); err != nil {
-			return err
+		if !unchanged(built, prev) {
+			if err := store(dir, man, built.chunks, built.vectors); err != nil {
+				return err
+			}
 		}
 		idx = &Index{
 			Root:       root,
@@ -97,7 +106,18 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 	if err != nil {
 		return nil, err
 	}
+	// A build's peak and a warm load's decode buffers both dwarf the index left
+	// behind; Go's scavenger would return those pages only over many minutes.
+	debug.FreeOSMemory()
 	return idx, nil
+}
+
+// unchanged reports whether built reproduces prev exactly, so rewriting the cache
+// would only burn a whole-corpus marshal and a 200 MB+ rewrite to install identical
+// bytes. Every file reused prev's chunks at a matching mtime, so equal file counts
+// mean equal sets: a deletion shortens the list and an addition re-embeds.
+func unchanged(built *buildResult, prev *persisted) bool {
+	return prev != nil && built.reindexed == 0 && len(built.files) == len(prev.manifest.Files)
 }
 
 // buildResult is the assembled corpus plus its manifest.
@@ -133,7 +153,7 @@ func build(ctx context.Context, emb Embedder, root string, exts []string, chunke
 
 	results := make([]fileResult, len(paths))
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(runtime.NumCPU())
+	g.SetLimit(min(runtime.NumCPU(), maxChunkWorkers))
 	for i, abs := range paths {
 		i, abs := i, abs
 		g.Go(func() error {
@@ -174,6 +194,10 @@ func build(ctx context.Context, emb Embedder, root string, exts []string, chunke
 
 	if len(res.chunks) == 0 {
 		return nil, fmt.Errorf("semsearch: no indexable files under %s", root)
+	}
+	results = nil
+	if prev != nil {
+		prev.chunks, prev.vectors = nil, nil
 	}
 
 	if len(toEmbed) > 0 {

@@ -179,11 +179,11 @@ func ignoredByRepo(cfg walkConfig, abs string) bool {
 	return cfg.matcher.Match(strings.Split(filepath.ToSlash(rel), "/"), false)
 }
 
-// countHidden reports how many additional files globs would select under root
-// once the ignore chain is disabled — the files the default walk hid. VCS stores
-// stay skipped so their internals never count. The result is clamped at zero
-// against a concurrent tree mutation between the two walks.
-func countHidden(ctx context.Context, root string, globs []string, shown int) (int, error) {
+// countHidden reports how many additional files globs would select under root once
+// the ignore chain is disabled — the files the default walk hid, VCS stores aside.
+// The count is clamped at zero; the bool reports that maxDisclosureVisits stopped
+// the walk early, making the count a floor, possibly a zero one.
+func countHidden(ctx context.Context, root string, globs []string, shown int) (int, bool, error) {
 	queue := make(chan *gocodewalker.File, 256)
 	w := newWalker(root, queue)
 	w.IgnoreGitIgnore = true
@@ -194,14 +194,20 @@ func countHidden(ctx context.Context, root string, globs []string, shown int) (i
 	errc := make(chan error, 1)
 	go func() { errc <- w.Start() }()
 
-	raw := 0
+	raw, visited := 0, 0
+	capped := false
 	var stop error
 	for f := range queue {
-		if stop != nil {
+		if stop != nil || capped {
 			continue // keep draining so Start can close the queue
 		}
 		if ctx.Err() != nil {
 			stop = fmt.Errorf("find: count walk cancelled: %w", ctx.Err())
+			w.Terminate()
+			continue
+		}
+		if visited++; visited > maxDisclosureVisits {
+			capped = true
 			w.Terminate()
 			continue
 		}
@@ -228,15 +234,12 @@ func countHidden(ctx context.Context, root string, globs []string, shown int) (i
 		raw++
 	}
 	if err := <-errc; err != nil {
-		return 0, fmt.Errorf("find: count walk %q: %w", root, err)
+		return 0, false, fmt.Errorf("find: count walk %q: %w", root, err)
 	}
 	if stop != nil {
-		return 0, stop
+		return 0, false, stop
 	}
-	if hidden := raw - shown; hidden > 0 {
-		return hidden, nil
-	}
-	return 0, nil
+	return max(raw-shown, 0), capped, nil
 }
 
 // vcsStoreFile reports whether name is a VCS store that reached the walk as a

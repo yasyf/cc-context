@@ -38,6 +38,12 @@ const footerReserveBytes = 512
 // the newline) so the budget cutoff is chosen before any file is probed.
 const maxTrailerBytes = 64
 
+// maxDisclosureVisits bounds the ignore-disclosure count walk, which runs with the
+// ignore chain off: unbounded, a monorepo carrying nested checkouts and node_modules
+// costs tens of seconds of kernel time for one advisory number. Past it the line
+// reports a floor. A var, not a const, so tests can lower it to reach the cap.
+var maxDisclosureVisits = 50_000
+
 // maxBudget clamps the effective token budget so budget*bytesPerToken cannot
 // overflow (a math.MaxInt64 budget would wrap negative in the cutoff multiply).
 const maxBudget = 1 << 31
@@ -67,9 +73,9 @@ func Run(ctx context.Context, a backend.Args) (string, error) {
 	}
 	sort.Slice(matches, func(i, j int) bool { return matches[i].rel < matches[j].rel })
 
-	hidden := 0
+	hidden, capped := 0, false
 	if !escaped {
-		if hidden, err = countHidden(ctx, absRoot, globs, len(matches)); err != nil {
+		if hidden, capped, err = countHidden(ctx, absRoot, globs, len(matches)); err != nil {
 			return "", err
 		}
 	}
@@ -78,12 +84,12 @@ func Run(ctx context.Context, a backend.Args) (string, error) {
 	if budget > maxBudget {
 		budget = maxBudget
 	}
-	return render(a.Globs, absRoot, matches, seenExts, hidden, budget), nil
+	return render(a.Globs, absRoot, matches, seenExts, hidden, capped, budget), nil
 }
 
 // render assembles the header, the rows that fit the budget, and the overflow and
 // ignore-disclosure footers.
-func render(globs []string, displayRoot string, matches []match, seenExts map[string]bool, hidden, budget int) string {
+func render(globs []string, displayRoot string, matches []match, seenExts map[string]bool, hidden int, capped bool, budget int) string {
 	displayRoot = filepath.ToSlash(displayRoot)
 	total := len(matches)
 	var b strings.Builder
@@ -92,8 +98,8 @@ func render(globs []string, displayRoot string, matches []match, seenExts map[st
 	if total == 0 {
 		// A zero match still discloses hidden files when there are any — that hint is
 		// more actionable than the extensions list, so it wins over it.
-		if hidden > 0 {
-			b.WriteString(disclosureLine(hidden))
+		if hidden > 0 || capped {
+			b.WriteString(disclosureLine(hidden, capped))
 		} else if hint := zeroHint(displayRoot, seenExts); hint != "" {
 			b.WriteString(hint + "\n")
 		}
@@ -114,8 +120,8 @@ func render(globs []string, displayRoot string, matches []match, seenExts map[st
 			humanComma(total-cutoff), humanTokens(int(withheld)/bytesPerToken))
 	}
 
-	if hidden > 0 {
-		b.WriteString(disclosureLine(hidden))
+	if hidden > 0 || capped {
+		b.WriteString(disclosureLine(hidden, capped))
 	}
 
 	return b.String()
@@ -131,9 +137,18 @@ func quoteGlobs(globs []string) string {
 }
 
 // disclosureLine names how many ignore-filtered files matched the glob and points
-// at the anchored-glob escape hatch.
-func disclosureLine(hidden int) string {
-	return fmt.Sprintf("%s ignored files hidden — anchor the glob at a real path (e.g. .venv/**/*.py) to include them.\n", humanComma(hidden))
+// at the anchored-glob escape hatch. A capped walk counted a floor, not a total, and
+// a zero floor says only that the cap arrived first.
+func disclosureLine(hidden int, capped bool) string {
+	const anchor = "anchor the glob at a real path (e.g. .venv/**/*.py) to include them.\n"
+	switch {
+	case capped && hidden == 0:
+		return "ignored files may be hidden — the scan stopped at its cap; " + anchor
+	case capped:
+		return fmt.Sprintf("%s+ ignored files hidden (scan capped) — %s", humanComma(hidden), anchor)
+	default:
+		return fmt.Sprintf("%s ignored files hidden — %s", humanComma(hidden), anchor)
+	}
 }
 
 // budgetCutoff returns how many leading rows fit the byte budget, using a per-row

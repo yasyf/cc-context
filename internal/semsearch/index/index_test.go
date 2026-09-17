@@ -279,3 +279,55 @@ func TestLoadNoIndexableFiles(t *testing.T) {
 		t.Fatal("Load over a repo with no indexable files should error")
 	}
 }
+
+func TestWarmLoadDoesNotRewriteCache(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	repo := writeIndexRepo(t)
+	ctx := context.Background()
+	emb := &countingEmbedder{}
+
+	if _, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x"); err != nil {
+		t.Fatalf("cold Load: %v", err)
+	}
+	dir, err := CacheDir(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cold, err := readManifest(dir)
+	if err != nil {
+		t.Fatalf("read manifest after cold Load: %v", err)
+	}
+
+	// store mints a fresh generation nonce, so an unchanged one proves it never ran.
+	for i := range 2 {
+		if _, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x"); err != nil {
+			t.Fatalf("warm Load %d: %v", i, err)
+		}
+		warm, err := readManifest(dir)
+		if err != nil {
+			t.Fatalf("read manifest after warm Load %d: %v", i, err)
+		}
+		if warm.Generation != cold.Generation {
+			t.Fatalf("warm Load %d rewrote the cache: generation %q became %q", i, cold.Generation, warm.Generation)
+		}
+	}
+
+	aPath := filepath.Join(repo, "a.go")
+	if err := os.WriteFile(aPath, []byte("package a\n\nfunc Alpha() int { return 7 }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(aPath, future, future); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x"); err != nil {
+		t.Fatalf("reindexing Load: %v", err)
+	}
+	changed, err := readManifest(dir)
+	if err != nil {
+		t.Fatalf("read manifest after reindexing Load: %v", err)
+	}
+	if changed.Generation == cold.Generation {
+		t.Errorf("a reindexing Load left generation %q — the cache was not rewritten", cold.Generation)
+	}
+}

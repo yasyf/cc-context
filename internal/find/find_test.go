@@ -627,3 +627,42 @@ func TestPinnedRootOverridesCwd(t *testing.T) {
 	mustContain(t, out, "cwd.go")
 	mustNotContain(t, out, "pinned.go")
 }
+
+func TestDisclosureCountCapped(t *testing.T) {
+	root := tempRoot(t)
+	files := map[string]string{".gitignore": "hidden/\n", "keep.go": "package a\n"}
+	for i := range 40 {
+		files["hidden/f"+strconv.Itoa(i)+".go"] = "package h\n"
+	}
+	writeTree(t, root, files)
+
+	prev := maxDisclosureVisits
+	t.Cleanup(func() { maxDisclosureVisits = prev })
+
+	maxDisclosureVisits = math.MaxInt
+	mustContain(t, run(t, "**/*.go", root, 0), "keep.go", "40 ignored files hidden")
+
+	// Below the tree's file count the walk stops early, so the count is a floor.
+	maxDisclosureVisits = 10
+	capped := run(t, "**/*.go", root, 0)
+	mustContain(t, capped, "keep.go", "ignored files hidden (scan capped)")
+	mustNotContain(t, capped, "40 ignored files hidden")
+}
+
+func TestDisclosureCapWithNoMatchesStillDiscloses(t *testing.T) {
+	root := tempRoot(t)
+	files := map[string]string{".gitignore": "hidden/\n", "keep.go": "package a\n"}
+	for i := range 40 {
+		files["hidden/f"+strconv.Itoa(i)+".txt"] = "x\n"
+	}
+	writeTree(t, root, files)
+
+	prev := maxDisclosureVisits
+	t.Cleanup(func() { maxDisclosureVisits = prev })
+	maxDisclosureVisits = 5
+
+	// The budget goes entirely to ignored files the glob does not select, so the
+	// floor is zero — the disclosure must still fire, or the count reads as exact.
+	out := run(t, "**/*.go", root, 0)
+	mustContain(t, out, "keep.go", "ignored files may be hidden — the scan stopped at its cap")
+}
