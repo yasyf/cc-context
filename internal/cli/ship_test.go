@@ -6499,16 +6499,22 @@ func TestShipEmptyLevelWithTrunkRefuses(t *testing.T) {
 
 // TestShipNoCommitRefusesDirtyWorkingCopy pins the refusal that keeps uncommitted
 // work from being silently left out of a branch and a PR this same run updates.
+// git's leftover has to be a tracked file — a new one there is untracked scratch
+// the mode exempts — where jj's new file is already part of the commit it pushes.
 func TestShipNoCommitRefusesDirtyWorkingCopy(t *testing.T) {
 	for _, tt := range []struct {
-		name string
-		jj   bool
-	}{{name: "git"}, {name: "jj", jj: true}} {
+		name     string
+		jj       bool
+		leftover string
+	}{
+		{name: "git", leftover: "f.txt"},
+		{name: "jj", jj: true, leftover: "leftover.go"},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
 			kind := shipKind(tt.jj)
 			f := shipRepo(t, shipOptsFor(tt.jj, vcstest.Remote(), vcstest.Dirty())...)
 			shipHandCommit(t, f, kind, "fix: the change already committed")
-			writeShipFile(t, f.Dir, "leftover.go", "still working on this\n")
+			writeShipFile(t, f.Dir, tt.leftover, "still working on this\n")
 			shipResetLog(t, f)
 
 			_, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr")
@@ -6518,11 +6524,55 @@ func TestShipNoCommitRefusesDirtyWorkingCopy(t *testing.T) {
 			if !strings.Contains(err.Error(), "--no-commit needs a clean working copy") {
 				t.Errorf("ship error = %q, want it to refuse a dirty working copy", err)
 			}
-			if !strings.Contains(err.Error(), "leftover.go") {
-				t.Errorf("ship error = %q, want it to name leftover.go", err)
+			if !strings.Contains(err.Error(), tt.leftover) {
+				t.Errorf("ship error = %q, want it to name %s", err, tt.leftover)
 			}
 			if n := remoteCount(t, f, "main"); n != 1 {
 				t.Errorf("origin main holds %d commits, want the refusal to have pushed nothing", n)
+			}
+		})
+	}
+}
+
+// TestShipNoCommitShipsOverUntrackedScratch is the worktree a lane leaves behind:
+// a committed branch beside a probe directory deliberately never staged. The
+// submit goes through, the report names what it left, and the scratch stays put.
+func TestShipNoCommitShipsOverUntrackedScratch(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
+	shipHandCommit(t, f, vcs.Git, "fix: the change already committed")
+	writeShipFile(t, f.Dir, ".xlprobe/fixture.bin", "hundreds of megabytes, pretend\n")
+	shipResetLog(t, f)
+
+	got, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr")
+	if err != nil {
+		t.Fatalf("ship error = %v, want untracked scratch to leave the submit alone", err)
+	}
+	if !strings.Contains(got, "left untracked: .xlprobe/") {
+		t.Errorf("summary = %q, want it to name the scratch it left out", got)
+	}
+	if n := remoteCount(t, f, "main"); n != 2 {
+		t.Errorf("origin main holds %d commits, want the already-made commit pushed", n)
+	}
+	if st := gitAt(t, f.Dir, "status", "--porcelain"); st != "?? .xlprobe/" {
+		t.Errorf("status = %q, want the scratch left in the worktree and nothing else", st)
+	}
+}
+
+// TestShipUntrackedSegment pins the cap: a worktree carrying scratch carries more
+// of it than a report should hold.
+func TestShipUntrackedSegment(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		paths []string
+		want  string
+	}{
+		{name: "none"},
+		{name: "named", paths: []string{".xlprobe/", "scratch.bin"}, want: "left untracked: .xlprobe/, scratch.bin"},
+		{name: "capped", paths: []string{"a", "b", "c", "d", "e"}, want: "left untracked: a, b, c and 2 more"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shipUntrackedSegment(tt.paths); got != tt.want {
+				t.Errorf("shipUntrackedSegment(%v) = %q, want %q", tt.paths, got, tt.want)
 			}
 		})
 	}
