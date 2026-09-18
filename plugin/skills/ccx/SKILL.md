@@ -241,9 +241,11 @@ reporting `nothing to commit — shipping as --no-commit`. Trailing paths do not
 block it: a scoped ship whose paths come up clean takes the same path, the report
 naming the paths. `--no-commit` states that path outright, takes no paths
 (`--no-commit takes no paths — a path scopes a commit, and --no-commit cuts none`),
-and refuses a dirty working copy rather than leave its changes out of the branch
-and the PR. A branch level with trunk still refuses: there is nothing to submit
-either way.
+and refuses changes to tracked files rather than leave them out of the branch and
+the PR. Git's untracked paths do not refuse it — a run cutting no commit carries
+no scratch into one — and the report names them as `left untracked: <paths>`; jj
+has nothing to exempt, a new file there already being part of `@`. A branch level
+with trunk still refuses: there is nothing to submit either way.
 
 A live Graphite config (`.git/.graphite_repo_config`, linked worktrees included)
 routes ship to the gt lane — commits through `gt create`/`gt modify`, the push one
