@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
-from captain_hook import CommandLine, Rewritten, WalkContext
+from captain_hook import Cmd, CommandLine, Rewritten, WalkContext
 from captain_hook.types import Action, HookResult
 from captain_hook.util.shell import normalize_executable, plain_words, resolve_cd
 
@@ -57,13 +57,15 @@ def make_evt(command: str, cwd: str | Path | None = None) -> SimpleNamespace:
     """A stand-in ``PreToolUseEvent`` for the guard functions under test.
 
     ``cwd`` pins ``evt.cwd`` so cd-dependent behavior is deterministic; omitted, it defaults to the
-    process cwd (which the cd-independent tests set via ``monkeypatch.chdir``). ``block`` mirrors the
-    real ``evt.block`` so a ``visit`` verdict returns a genuine ``HookResult``.
+    process cwd (which the cd-independent tests set via ``monkeypatch.chdir``). ``cmd`` is a real
+    :class:`~captain_hook.Cmd`, not a stand-in, so a guard reaching for ``calls()``/``Call`` sees the
+    same object the framework hands it. ``block`` mirrors the real ``evt.block`` so a ``visit`` verdict
+    returns a genuine ``HookResult``.
     """
-    line = CommandLine.parse(command)
+    effective = Path(cwd) if cwd is not None else Path.cwd()
     return SimpleNamespace(
-        cmd=SimpleNamespace(line=line, raw=command, q=line.q),
-        cwd=Path(cwd) if cwd is not None else Path.cwd(),
+        cmd=Cmd(CommandLine.parse(command), raw=command, cwd=effective),
+        cwd=effective,
         block=lambda message: HookResult.of(Action.block, message),
     )
 

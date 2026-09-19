@@ -8,6 +8,7 @@ from captain_hook import (
     Allow,
     BaseHookEvent,
     Block,
+    Call,
     CommandLine,
     CustomCommandLineCondition,
     Input,
@@ -401,12 +402,13 @@ class RgFlood(CustomCommandLineCondition):
     """Match a line carrying any unpiped ``rg`` occurrence.
 
     A cheap structural gate; :func:`rg_visit` is authoritative, returning a per-occurrence verdict.
-    Matching through ``cmd.unwrapped`` keeps wrapper prefixes transparent; a pure ``… | rg`` filter (no
-    unpiped rg) stays outside the registration entirely.
+    Matching on ``Call.name`` keeps wrapper prefixes transparent and reaches an absolute-path or quoted
+    spelling (``/opt/homebrew/bin/rg``, ``"rg"``); a pure ``… | rg`` filter (no unpiped rg) stays outside
+    the registration entirely.
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        return any(occ.command.unwrapped.executable == "rg" and occ.prev_op != "|" for occ in cl.occurrences)
+        return any(call.occurrence.prev_op != "|" for call in evt.cmd.calls("rg"))
 
 
 def rg_block(evt: PreToolUseEvent, cl: CommandLine, *, reason: str = "") -> str:
@@ -445,9 +447,10 @@ def rg_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | R
     old (or absent) to emit runs raw — infra unavailability never blocks. A block rides a
     :class:`HookResult` that aborts the walk, discarding any sibling rewrite.
     """
-    inner = occ.command.unwrapped
-    if inner.executable != "rg":
+    call = Call(evt.cmd, occ, ctx.cwd)
+    if call.name != "rg":
         return None
+    inner = call.command
     ops = rg_operands(inner)
     steer_ops = path_operands_raw(inner.args) if ops is None else ops
     if any(is_transcript_path(p) for p in steer_ops):
@@ -559,6 +562,9 @@ rewrite_command_occurrences(
         Input(command="rg -A " + "9" * 5000 + " -B 1 needle"): Allow(),
         # Wrapper transparency (2026-07-17): a wrapped tree rg stays gated (direct-only rewrite).
         Input(command="sudo rg foo ."): Block(),
+        Input(command="/opt/homebrew/bin/rg foo ."): Block(),
+        Input(command='"rg" foo .'): Block(),
+        Input(command="/opt/homebrew/bin/rg foo ~/.claude/projects/"): Block(pattern="cc-transcript"),
         # `ccx exec` pass-through is deliberate: sh("rg …") is in-sandbox and budget-capped on return.
         Input(
             command="ccx exec 'async def main(): return await sh(\"rg -n foo src/\")\nasyncio.run(main())'"
