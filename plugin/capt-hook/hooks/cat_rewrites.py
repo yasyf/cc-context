@@ -24,6 +24,7 @@ from captain_hook import (
     rewrite_command,
     rewrite_command_occurrences,
 )
+from captain_hook.util.shell import normalize_executable
 
 from .common import LARGE_READ_BYTES, ccx_bin, is_large
 
@@ -54,12 +55,15 @@ def bare_cat_files(occ: Occurrence) -> tuple[str, ...] | None:
 
     ``None`` when the occurrence is nested below top level (a ``$(…)``/``eval`` payload, whose
     splice can't survive its quote layers), is piped or carries a redirect (streaming/writing
-    uses, not a context dump), or when it is not a flagless ``cat`` read (executable ``cat``, at
-    least one arg, first arg not a flag). The line-level heredoc decline lives in
-    :func:`line_has_heredoc`, not here — a heredoc is a property of the whole line.
+    uses, not a context dump), or when it is not a flagless ``cat`` read (dequoted basename ``cat``,
+    so ``/bin/cat`` and ``"cat"`` are the same read, at least one arg, first arg not a flag). The
+    name is read off the occurrence's own head word, never its unwrapped one: a wrapper prefix
+    (``sudo cat``) keeps its own name and declines, so the rewrite can never drop the privilege the
+    invocation asked for. The line-level heredoc decline lives in :func:`line_has_heredoc`, not
+    here — a heredoc is a property of the whole line.
     """
     cmd = occ.command
-    if occ.nesting or occ.piped or cmd.redirects or cmd.executable != "cat":
+    if occ.nesting or occ.piped or cmd.redirects or normalize_executable(cmd.executable) != "cat":
         return None
     args = cmd.args
     if not args or args[0].startswith("-"):
@@ -71,12 +75,13 @@ def is_manifest_cat(occ: Occurrence) -> bool:
     """Whether ``occ`` is a bare single-file ``cat``/``bat`` of a repo-root manifest.
 
     The redundant raw dump :class:`ManifestCat` blocks — its rationale is redundancy with
-    ``ccx repo overview``, not size, so there is no size gate. Piped or redirected occurrences
-    decline (streaming/writing), and only a lone root-level manifest operand matches: a nested
-    copy (``internal/go.mod``) falls through to the size-gated :class:`BareCat` lane.
+    ``ccx repo overview``, not size, so there is no size gate. The dequoted basename names the read,
+    so ``/bin/cat go.mod`` and ``"cat" go.mod`` block alongside the bare spelling. Piped or redirected
+    occurrences decline (streaming/writing), and only a lone root-level manifest operand matches: a
+    nested copy (``internal/go.mod``) falls through to the size-gated :class:`BareCat` lane.
     """
     cmd = occ.command
-    if occ.piped or cmd.redirects or cmd.executable not in ("cat", "bat"):
+    if occ.piped or cmd.redirects or normalize_executable(cmd.executable) not in ("cat", "bat"):
         return False
     args = cmd.args
     return len(args) == 1 and not args[0].startswith("-") and is_root_manifest(args[0])
@@ -153,6 +158,9 @@ rewrite_command(
         # Any-occurrence: a manifest cat past a `;` now blocks the line (the incident — the old
         # cl.primary-only rule wrongly allowed this, dumping go.mod while the `echo` ran).
         Input(command="cat go.mod; echo x"): Block(pattern="ccx repo overview"),
+        Input(command="/bin/cat go.mod"): Block(pattern="ccx repo overview"),
+        Input(command='"cat" go.mod'): Block(pattern="ccx repo overview"),
+        Input(command="sudo cat go.mod"): Allow(),
         Input(command="cat internal/go.mod"): Allow(),  # nested copy, not the root manifest
         Input(command="cat main.go"): Allow(),  # not a manifest — the BareCat lane size-gates it
         Input(command="cat go.mod | grep module"): Allow(),  # piped, not a raw dump
@@ -175,6 +183,10 @@ rewrite_command_occurrences(
         Input(command="cat {file}", file=FileFixture(size=LARGE_READ_BYTES + 1, name="big.md")): Rewrite(
             pattern="code read /"
         ),
+        Input(command="/bin/cat {file}", file=FileFixture(size=LARGE_READ_BYTES + 1, name="big.md")): Rewrite(
+            pattern="code read /"
+        ),
+        Input(command="sudo cat {file}", file=FileFixture(size=LARGE_READ_BYTES + 1, name="big.md")): Allow(),
         # Size-gate: a small existing file stays a bare cat (bounded — no rewrite).
         Input(command="cat {file}", file=FileFixture(size=64, name="small.md")): Allow(),
         # Small out-of-repo absolute (bounded) and a nonexistent absolute (fails on its own) both pass.

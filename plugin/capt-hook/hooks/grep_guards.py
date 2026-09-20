@@ -9,6 +9,7 @@ from captain_hook import (
     Allow,
     BaseHookEvent,
     Block,
+    Call,
     CommandLine,
     CustomCommandLineCondition,
     Input,
@@ -541,12 +542,13 @@ class GrepFlood(CustomCommandLineCondition):
     """Match a line carrying any unpiped ``grep`` occurrence.
 
     A cheap structural gate; :func:`grep_visit` is authoritative, returning a per-occurrence verdict.
-    Matching through ``cmd.unwrapped`` keeps wrapper prefixes transparent; a pure ``… | grep`` filter
-    (no unpiped grep) stays outside the registration entirely.
+    Matching on ``Call.name`` keeps wrapper prefixes transparent and reaches an absolute-path or quoted
+    spelling (``/usr/bin/grep``, ``"grep"``); a pure ``… | grep`` filter (no unpiped grep) stays outside
+    the registration entirely.
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        return any(occ.command.unwrapped.executable == "grep" and occ.prev_op != "|" for occ in cl.occurrences)
+        return any(call.occurrence.prev_op != "|" for call in evt.cmd.calls("grep"))
 
 
 def grep_block(evt: PreToolUseEvent, cl: CommandLine, *, reason: str = "") -> str:
@@ -583,9 +585,10 @@ def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str |
     unavailability never blocks. A block rides a :class:`HookResult` that aborts the walk, discarding any
     sibling rewrite.
     """
-    inner = occ.command.unwrapped
-    if inner.executable != "grep":
+    call = Call(evt.cmd, occ, ctx.cwd)
+    if call.name != "grep":
         return None
+    inner = call.command
     ops = grep_operands(inner)
     steer_ops = path_operands_raw(inner.args) if ops is None else ops
     if any(is_transcript_path(p) for p in steer_ops):
@@ -722,6 +725,9 @@ rewrite_command_occurrences(
         # Wrapper transparency — the 2026-07-17 decision: a wrapped tree grep stays gated (direct-only rewrite).
         Input(command="sudo grep foo ."): Block(),
         Input(command="timeout 10 grep foo ."): Block(),
+        Input(command="/usr/bin/grep -rn foo ."): Block(),
+        Input(command='"grep" -rn foo .'): Block(),
+        Input(command="/usr/bin/grep -r foo ~/.claude/projects/"): Block(pattern="cc-transcript"),
         # Existing Allow neighbors — piped grep, non-grep, ccx exec pass-through:
         Input(command="ls | grep foo"): Allow(),
         Input(command="cat x | grep foo | sort"): Allow(),

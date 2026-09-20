@@ -22,6 +22,7 @@ from captain_hook import (
     rewrite_command,
     rewrite_command_occurrences,
 )
+from captain_hook.util.shell import normalize_executable
 
 from .common import carries_expansion, ccx_bin
 
@@ -32,8 +33,13 @@ WORKSPACE_ROOT = re.compile(r"^(?:~|\$(?:HOME|\{HOME\}))/Code/?$")
 
 
 def is_ls_recursive_command(cmd: Command) -> bool:
-    """Report whether ``cmd`` is ``ls`` with a recursive flag (bundled or ``--recursive``)."""
-    return cmd.executable == "ls" and any(
+    """Report whether ``cmd`` is ``ls`` with a recursive flag (bundled or ``--recursive``).
+
+    The dequoted basename names the listing, so ``/bin/ls -R`` and ``"ls" -R`` rewrite alongside the
+    bare spelling, while a wrapper prefix (``sudo ls -R``) keeps its own name and declines — the
+    rewrite can never drop the privilege the invocation asked for.
+    """
+    return normalize_executable(cmd.executable) == "ls" and any(
         x == "--recursive" or (x.startswith("-") and not x.startswith("--") and "R" in x) for x in cmd.args
     )
 
@@ -106,6 +112,9 @@ rewrite_command_occurrences(
         Input(command="ls -laR src"): Rewrite(pattern='repo find "src/**"'),
         Input(command="ls -R src"): Rewrite(pattern='repo find "src/**"'),
         Input(command="ls --recursive"): Rewrite(pattern='repo find "**"'),
+        Input(command="/bin/ls -R src"): Rewrite(pattern='repo find "src/**"'),
+        Input(command='"ls" -R'): Rewrite(pattern='repo find "**"'),
+        Input(command="sudo ls -R src"): Allow(),
         Input(command="ls -la"): Allow(),
         Input(command="ls"): Allow(),
         # A leading-`~` dir declines to rewrite — the double-quoted glob would freeze it; the shell expands it.
@@ -126,14 +135,16 @@ class LsWorkspaceRoot(CustomCommandLineCondition):
 
     ``ls ~/Code``, ``ls $HOME/Code``, and ``ls ~/go/pkg/mod/...`` dump every sibling repo
     or the whole module cache into context; the move is to resolve the one repo/module by
-    name. Plain ``ls`` and ``ls <subdir>`` inside a project stay allowed, flags and all.
+    name. The dequoted basename names the listing, so ``/bin/ls ~/Code`` and ``"ls" ~/Code``
+    block alongside the bare spelling. Plain ``ls`` and ``ls <subdir>`` inside a project stay
+    allowed, flags and all.
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
         return any(
             not occ.piped
             and not occ.command.redirects
-            and occ.command.executable == "ls"
+            and normalize_executable(occ.command.executable) == "ls"
             and any(is_scan_root(a) for a in occ.command.args if not a.startswith("-"))
             for occ in cl.occurrences
         )
@@ -157,6 +168,8 @@ rewrite_command(
         Input(command="ls $HOME/Code"): Block(pattern="ccx repo locate"),
         Input(command="ls -la ~/Code"): Block(pattern="ccx repo overview"),
         Input(command="ls ~/go/pkg/mod/github.com/foo"): Block(pattern="ccx repo locate"),
+        Input(command="/bin/ls ~/Code"): Block(pattern="ccx repo locate"),
+        Input(command='"ls" ~/Code'): Block(pattern="ccx repo locate"),
         Input(command="ls internal"): Allow(),  # a project subdir
         Input(command="ls"): Allow(),
         Input(command="ls src/Code"): Allow(),  # not the workspace root

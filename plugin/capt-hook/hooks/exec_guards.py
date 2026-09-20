@@ -34,6 +34,7 @@ from captain_hook import (
     Warn,
     nudge,
 )
+from captain_hook.util.shell import normalize_executable
 
 from .common import already_wrapped, head_has_json_output_flag
 
@@ -46,9 +47,10 @@ class JsonPipedToFilter(CustomCommandLineCondition):
     """Matches ``<cmd with a JSON-output flag> | jq/awk/cut/sed/python3 …``.
 
     The head command must carry a JSON-output flag and pipe (not ``&&``/``;``-chain)
-    into one of :data:`JSON_FILTERS`. An already-wrapped line is skipped — ``ccx format
-    -- <cmd --json> | jq`` still carries ``--json`` in its head args, but its output
-    is already compacted, so the steer would be noise.
+    into one of :data:`JSON_FILTERS`, named by its dequoted basename so ``/usr/bin/jq``
+    and ``"jq"`` steer alongside the bare spelling. An already-wrapped line is skipped —
+    ``ccx format -- <cmd --json> | jq`` still carries ``--json`` in its head args, but its
+    output is already compacted, so the steer would be noise.
     """
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
@@ -57,7 +59,7 @@ class JsonPipedToFilter(CustomCommandLineCondition):
         if not head_has_json_output_flag(cl):
             return False
         return any(
-            cmd.executable in JSON_FILTERS and cl.parts[i - 1][1] == "|"
+            normalize_executable(cmd.executable) in JSON_FILTERS and cl.parts[i - 1][1] == "|"
             for i, (cmd, _) in enumerate(cl.parts)
             if i > 0
         )
@@ -72,6 +74,8 @@ nudge(
         Input(command="gh pr list --json number,title | jq '.[].title'"): Warn(pattern="ccx exec"),
         Input(command="kubectl get pods -o json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'"): Warn(),
         Input(command="gh pr list --json x | jq '.[]' | head -5"): Warn(pattern="ccx exec"),
+        Input(command="gh pr list --json number,title | /usr/bin/jq '.[].title'"): Warn(pattern="ccx exec"),
+        Input(command='gh pr list --json number,title | "jq" .'): Warn(pattern="ccx exec"),
         Input(command="gh pr list --json number"): Allow(),  # unpiped — the format rewrite owns it
         Input(command="ps aux | awk '{print $1}'"): Allow(),  # non-JSON pipe
         Input(command="gh pr list --json x && echo done"): Allow(),  # chain, not a pipe

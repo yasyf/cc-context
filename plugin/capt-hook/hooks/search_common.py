@@ -20,6 +20,7 @@ from captain_hook import (
     Warn,
     nudge,
 )
+from captain_hook.util.shell import normalize_executable
 
 from .common import IDENT_ALT, ccx_bin, ccx_supports
 
@@ -312,9 +313,10 @@ def search_block(
     engine's own ``default``; when *every* operand is a session transcript (``~/.claude/projects/…``) the
     whole steer is :data:`TRANSCRIPT_STEER`; a *mixed* line — a transcript operand alongside an ordinary
     flood — keeps ``default`` and appends one :data:`TRANSCRIPT_APPEND` line so neither steer is lost.
-    Every occurrence is inspected through its unwrapped command, so wrapper-prefixed searches contribute
-    their operands too. An occurrence whose flags the arity walk can't map (``operands`` returns ``None``)
-    falls back to its raw path-like tokens, so an unparseable flag never blinds the transcript steer.
+    Every occurrence is inspected through its unwrapped command and named by its dequoted basename, so
+    wrapper-prefixed, absolute-path, and quoted searches contribute their operands too. An occurrence
+    whose flags the arity walk can't map (``operands`` returns ``None``) falls back to its raw path-like
+    tokens, so an unparseable flag never blinds the transcript steer.
     """
     command_line = cl or evt.cmd.line
     if not command_line:
@@ -322,7 +324,7 @@ def search_block(
     ops: list[str] = []
     for occ in command_line.occurrences:
         cmd = occ.command.unwrapped
-        if cmd.executable != exe:
+        if normalize_executable(cmd.executable) != exe:
             continue
         parsed = operands(cmd)
         ops.extend(path_operands_raw(cmd.args) if parsed is None else parsed)
