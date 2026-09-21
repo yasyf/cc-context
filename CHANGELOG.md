@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.59.1] - 2026-09-20
+
+### Fixed
+
+- **Executable paths and quotes no longer bypass Captain Hook guards.** Guard
+  matching now uses each command's normalized name, so spellings such as
+  `/usr/bin/grep`, `"grep"`, `/opt/homebrew/bin/rg`, and `/bin/cat` reach the
+  same transcript, dependency, recursive-search, and manifest policies as the
+  bare command names.
+
+- **Recursive grep searches rewrite before downstream pipeline filters.** A
+  tree search that feeds `grep -v`, `head`, `sort`, or another consumer now
+  becomes a bounded `ccx code grep`; only a grep that consumes pipe input stays
+  raw. The tautological GNU grep filter `--include=*` is also omitted from the
+  rewrite instead of becoming ripgrep's positive `--glob '*'`, which re-enabled
+  ignored dependency trees such as `node_modules`.
+
 ## [0.59.0] - 2026-09-17
 
 ### Changed
