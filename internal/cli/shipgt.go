@@ -286,12 +286,8 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 		needsRestack = slices.ContainsFunc(chain, func(b string) bool { return state[b].NeedsRestack })
 	}
 
-	if o.noCommit && branch == trunk {
-		return branchPlan{}, "", errors.New("ship: --no-commit on trunk is refused in the graphite lane — there is no stacked branch to submit")
-	}
-
-	if o.amend && branch == trunk {
-		return branchPlan{}, "", errors.New("ship: --amend on trunk is refused in the graphite lane — create a stacked branch instead (gt create)")
+	if err := gtTrunkFlagRefusal(o, branch, trunk); err != nil {
+		return branchPlan{}, "", err
 	}
 
 	repo, err := shipTrunkRepo(ctx, l, o, branch, trunk)
@@ -304,6 +300,23 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 	}
 	plan.needsRestack = needsRestack
 	return plan, seg, nil
+}
+
+// gtTrunkFlagRefusal is the refusal a flag earns on trunk in the graphite lane,
+// and nil where it earns none. It is a pure predicate over state both callers
+// already hold, so --dry-run reports the same refusal the run would make
+// without reaching the preflight that makes it.
+func gtTrunkFlagRefusal(o shipOpts, branch, trunk string) error {
+	if branch != trunk {
+		return nil
+	}
+	switch {
+	case o.noCommit:
+		return refuse("ship: --no-commit on trunk is refused in the graphite lane — there is no stacked branch to submit")
+	case o.amend:
+		return refuse("ship: --amend on trunk is refused in the graphite lane — create a stacked branch instead (gt create)")
+	}
+	return nil
 }
 
 func gtResumeCmd(o shipOpts) string {

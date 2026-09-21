@@ -259,3 +259,77 @@ func TestShipDryRunNamesTheRewrittenPaths(t *testing.T) {
 		t.Errorf("rewrites = %v, want exactly gen.txt", got)
 	}
 }
+
+// TestShipDryRunReportsTheRefusalTheRealRunMakes is the bar the report has to
+// clear to be worth printing: it must not read as permission for a ship that
+// would refuse. The dry run is compared against the real run word for word,
+// because a refusal the report paraphrases is one a reader cannot match to the
+// failure they get.
+func TestShipDryRunReportsTheRefusalTheRealRunMakes(t *testing.T) {
+	f := dryRunFixture(t)
+	writeShipFile(t, f.Dir, "untracked.txt", "another lane\n")
+
+	report := dryRunReport(t, "--no-commit")
+	refusals := dryRunValues(report, "refuses")
+	if len(refusals) != 1 {
+		t.Fatalf("refuses lines = %v, want the one --no-commit earns over a dirty working copy", refusals)
+	}
+
+	_, _, err := runShipCmdFull(t, "--no-commit")
+	if err == nil {
+		t.Fatal("the real ship accepted a dirty working copy under --no-commit")
+	}
+	if refusals[0] != err.Error() {
+		t.Errorf("dry run refusal = %q\nreal refusal    = %q", refusals[0], err.Error())
+	}
+}
+
+// TestShipDryRunReportsAnEmptyCommit covers a clean tree with nothing named on
+// a branch level with trunk: there is nothing to cut and nothing to submit, so
+// the run refuses and the report says so rather than printing a plan for a run
+// that never starts.
+func TestShipDryRunReportsAnEmptyCommit(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTLevel(t, f, "a")
+	shipResetLog(t, f)
+
+	report := dryRunReport(t, "-m", "fix: frobnicate", "--no-push")
+
+	refusals := dryRunValues(report, "refuses")
+	if len(refusals) != 1 || !strings.Contains(refusals[0], "nothing to commit") {
+		t.Fatalf("refuses lines = %v, want one naming an empty commit", refusals)
+	}
+}
+
+// TestShipDryRunSaysAnEmptyCommitShipsWhenTheBranchIsAhead is the other half,
+// and the one that keeps the refusal honest: a branch already carrying commits
+// trunk does not is shipped as --no-commit, not refused. Calling that a
+// refusal would be the same false certainty in the opposite direction.
+func TestShipDryRunSaysAnEmptyCommitShipsWhenTheBranchIsAhead(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "a")
+	shipResetLog(t, f)
+
+	report := dryRunReport(t, "-m", "fix: frobnicate", "--no-push")
+
+	if got := dryRunValues(report, "refuses"); len(got) != 0 {
+		t.Errorf("refuses lines = %v, want none — the branch is ahead of trunk, so the run ships it", got)
+	}
+	notes := strings.Join(dryRunValues(report, "note"), " | ")
+	if !strings.Contains(notes, "ships it as --no-commit") {
+		t.Errorf("notes = %q, want one saying the run ships the branch as --no-commit", notes)
+	}
+}
+
+// TestShipDryRunReportsNoRefusalWhenTheShipWouldRun is the negative control:
+// the refusal lines must be absent when there is nothing to refuse, or they
+// would read as noise and be ignored when they matter.
+func TestShipDryRunReportsNoRefusalWhenTheShipWouldRun(t *testing.T) {
+	dryRunFixture(t)
+
+	report := dryRunReport(t, "-m", "fix: frobnicate", "--no-push")
+
+	if got := dryRunValues(report, "refuses"); len(got) != 0 {
+		t.Errorf("refuses lines = %v, want none on a ship that would run", got)
+	}
+}

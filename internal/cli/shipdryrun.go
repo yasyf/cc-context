@@ -34,6 +34,9 @@ type shipDryRun struct {
 	staged []string
 	sweeps bool
 
+	plan     branchPlan
+	refusals []string
+
 	moves    []dryRunMove
 	prs      []dryRunPR
 	creates  []string
@@ -75,6 +78,9 @@ func runShipDryRun(ctx context.Context, cmd *cobra.Command, l lane, o shipOpts, 
 		return err
 	}
 	if err := dryRunScope(ctx, l, o, &r); err != nil {
+		return err
+	}
+	if err := dryRunRefusals(ctx, l, o, &r); err != nil {
 		return err
 	}
 	if l.gt {
@@ -213,6 +219,7 @@ func dryRunPlace(ctx context.Context, l lane, o shipOpts, r *shipDryRun) error {
 	if err != nil {
 		return err
 	}
+	r.plan = plan
 	if plan.action == branchCreate {
 		off := plan.parent
 		if off == "" {
@@ -222,6 +229,67 @@ func dryRunPlace(ctx context.Context, l lane, o shipOpts, r *shipDryRun) error {
 		return nil
 	}
 	r.place = "append to " + plan.name
+	return nil
+}
+
+// dryRunRefusals collects the refusals the run would make after the point
+// --dry-run stops at. Without them the report answers what a ship would do and
+// stays silent on whether it would run at all, which reads as permission: the
+// gap that let a --no-commit dry run print a clean plan for a ship that then
+// refused on an untracked file. Each one is the real check or the real
+// predicate, never a restatement of its wording.
+func dryRunRefusals(ctx context.Context, l lane, o shipOpts, r *shipDryRun) error {
+	checks := []func() error{}
+	if o.noCommit {
+		checks = append(checks, func() error { return shipRefuseDirty(ctx, l.dir(), l.kind, o) })
+	}
+	if l.gt {
+		checks = append(checks, func() error { return gtTrunkFlagRefusal(o, r.branch, r.trunk) })
+	}
+	if gitBacked(l) {
+		checks = append(checks, func() error { return refuseExistingBranch(ctx, l.dir(), o, r.plan) })
+	}
+	for _, check := range checks {
+		err := check()
+		var refusal *shipRefusal
+		switch {
+		case err == nil:
+		case errors.As(err, &refusal):
+			r.refusals = append(r.refusals, refusal.Error())
+		default:
+			return err
+		}
+	}
+	if o.noCommit || o.amend || len(r.named) > 0 {
+		return nil
+	}
+	return dryRunEmptyCommit(ctx, l, o, r)
+}
+
+// dryRunEmptyCommit answers what a ship with nothing to commit would do, which
+// is not one thing. A branch already carrying commits trunk does not has
+// nothing to cut and everything to submit, so the run ships it as --no-commit
+// rather than refusing; only where there is nothing to submit either does it
+// refuse. Reporting the refusal unconditionally would be the same false
+// certainty this report exists to remove, in the other direction.
+func dryRunEmptyCommit(ctx context.Context, l lane, o shipOpts, r *shipDryRun) error {
+	landed, standing, err := shipAlreadyCommitted(ctx, l.dir(), l.kind, r.plan)
+	if err != nil {
+		return err
+	}
+	if landed {
+		r.notes = append(r.notes, "nothing to commit"+shipScope(o)+", and the branch carries commits trunk does not — the run ships it as --no-commit")
+		return nil
+	}
+	if standing != "" {
+		r.refusals = append(r.refusals, "ship: nothing to commit"+shipScope(o)+", and "+standing+" — nothing to submit")
+		return nil
+	}
+	short, subject, err := shipDescribe(ctx, l.dir(), l.kind)
+	if err != nil {
+		return err
+	}
+	r.refusals = append(r.refusals, fmt.Sprintf("ship: nothing to commit%s — did a prior ship already land %s %q?", shipScope(o), short, subject))
 	return nil
 }
 
@@ -510,6 +578,9 @@ func renderShipDryRun(r shipDryRun) string {
 	}
 	if len(r.rewrites) > 0 {
 		line("rewrites", dryRunPathValue(r.rewrites))
+	}
+	for _, f := range r.refusals {
+		line("refuses", f)
 	}
 	for _, n := range r.notes {
 		line("note", n)

@@ -769,6 +769,15 @@ func shipCommitSegment(noCommit bool, short, subject string) string {
 // changes. The mode pushes a commit that is already in place, so uncommitted
 // work would be left out of a branch and a pull request this same run updates,
 // and the report that could name it prints only once both have happened.
+// shipRefusal is ship declining on purpose, as opposed to a probe that failed.
+// The two are indistinguishable by message, and --dry-run has to tell them
+// apart: a refusal is a line in its report, a failed probe is its exit.
+type shipRefusal struct{ msg string }
+
+func (e *shipRefusal) Error() string { return e.msg }
+
+func refuse(format string, a ...any) error { return &shipRefusal{msg: fmt.Sprintf(format, a...)} }
+
 func shipRefuseDirty(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpts) error {
 	var items []string
 	if kind == vcs.JJ {
@@ -791,7 +800,7 @@ func shipRefuseDirty(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipO
 	if len(items) == 0 {
 		return nil
 	}
-	return fmt.Errorf("ship: --no-commit needs a clean working copy — uncommitted: %s; drop --no-commit to ship that work, or stash it", strings.Join(items, ", "))
+	return refuse("ship: --no-commit needs a clean working copy — uncommitted: %s; drop --no-commit to ship that work, or stash it", strings.Join(items, ", "))
 }
 
 func shipRefuseEmptyJJ(ctx context.Context, dir render.Dir, o shipOpts, plan branchPlan) error {
@@ -1164,7 +1173,7 @@ func refuseExistingBranch(ctx context.Context, dir render.Dir, o shipOpts, plan 
 		return err
 	}
 	if exists {
-		return fmt.Errorf("ship: branch %s already exists — check it out first; ship does not switch branches mid-commit", plan.name)
+		return refuse("ship: branch %s already exists — check it out first; ship does not switch branches mid-commit", plan.name)
 	}
 	return nil
 }
