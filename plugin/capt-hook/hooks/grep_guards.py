@@ -35,6 +35,7 @@ from .search_common import (
     is_transcript_path,
     note_text,
     path_operands_raw,
+    resolve_operand,
     resolved_is_dir,
     search_block,
     unquote,
@@ -112,6 +113,18 @@ BOUNDED_VALUE_LONG = frozenset(
     }
 )
 BOUNDED_PATTERN_LONG = frozenset({"regexp", "file"})
+
+# An allowlist: a missing suffix costs one un-rewritten grep, a data suffix wrongly present
+# changes what runs. Logs, JSON, YAML and extensionless paths belong to raw grep/rg.
+SOURCE_SUFFIXES = frozenset(
+    {
+        ".bash", ".c", ".cc", ".cjs", ".clj", ".cljs", ".cpp", ".cs", ".cxx", ".dart",
+        ".erl", ".ex", ".exs", ".go", ".h", ".hh", ".hpp", ".hs", ".hxx", ".java",
+        ".js", ".jsx", ".kt", ".kts", ".lua", ".m", ".mjs", ".mm", ".php", ".pl",
+        ".proto", ".py", ".pyi", ".rb", ".rs", ".scala", ".sh", ".sql", ".svelte",
+        ".swift", ".ts", ".tsx", ".vue", ".zig", ".zsh",
+    }
+)
 
 
 def grep_targets(paths: list[str], include: str | None, *, cwd: Path | None) -> tuple[str, list[str]] | None:
@@ -534,6 +547,29 @@ def grep_tree_shaped(cmd: Command, *, cwd: Path | None) -> bool:
     return (grep_recursive(cmd.args) and not ops) or any(resolved_is_dir(p, cwd) for p in ops)
 
 
+def is_source_file(p: str, cwd: Path | None) -> bool:
+    """Whether one path operand names an existing file carrying a :data:`SOURCE_SUFFIXES` suffix.
+
+    Both halves are load-bearing. The suffix keeps a log / JSON / YAML / markdown target on the raw
+    engine; the stat keeps a missing, ``$VAR``, or unexpanded-glob operand off the rewrite, so an
+    operand whose shape the guard cannot see always runs raw.
+    """
+    path = resolve_operand(p, cwd)
+    return path is not None and path.suffix.lower() in SOURCE_SUFFIXES and path.is_file()
+
+
+def grep_source_shaped(cmd: Command, *, cwd: Path | None) -> bool:
+    """Whether a grep names explicit source files and nothing else — the bounded rewritable shape.
+
+    Bounded by its operands rather than a flood, so this shape never reaches the block lane: it
+    rewrites for ccx's anchors and line references, or runs raw. Every operand must clear
+    :func:`is_source_file`, so one log/JSON/absent sibling takes the whole occurrence back to raw
+    grep, and an operand-less grep (whose target is the cwd tree) is not this shape at all.
+    """
+    ops = grep_operands(cmd)
+    return bool(ops) and all(is_source_file(p, cwd) for p in ops)
+
+
 def grep_to(occ: Occurrence, *, cwd: Path | None = None) -> str | None:
     """The ``ccx code grep`` rewrite for a grep occurrence, or ``None`` when the emitter cannot map it."""
     parsed = grep_parse(occ, cwd=cwd)
@@ -578,11 +614,15 @@ def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str |
     ``node_modules/…``, ``.git/…``) or a directory operand the repo's own ``git check-ignore`` reports
     ignored (``dist/``, a generated tree) blocks with the dep-reader steer — all fire even through
     pipes, while an ignored plain file stays bounded and runs raw. A grep consuming a pipe runs verbatim
-    (post-processing). A grep that is not tree-shaped runs raw (explicit-file searches are bounded
-    by their operands). A tree-shaped grep whose raw text carries a ``$(…)``/backtick substitution runs raw
+    (post-processing). Two shapes reach the emitter: a tree-shaped flood, and a
+    :func:`grep_source_shaped` search over explicit source files. They differ only in what an
+    unmappable one does — the flood blocks with the steer, the bounded source search runs raw, since
+    a search its own operands already bound has nothing to steer away from. Everything else (a
+    log/JSON/YAML/absent operand, an operand-less non-recursive grep) runs raw before either fires.
+    A grep whose raw text carries a ``$(…)``/backtick substitution runs raw
     (the parser drops the operand, so a rewrite would silently widen scope). A path operand carrying a
     shell expansion or glob metachar forfeits the rewrite and runs raw (never a lossy emission). Otherwise
-    an unmappable shape (``-P``, an exotic regex, an unknown flag over ``.``) blocks with the flood steer
+    an unmappable *flood* (``-P``, an exotic regex, an unknown flag over ``.``) blocks with the steer
     naming the :class:`Decline`'s reason, while a mappable shape the local ``ccx`` binary is too old (or absent) to emit runs raw — infra
     unavailability never blocks. A block rides a :class:`HookResult` that aborts the walk, discarding any
     sibling rewrite.
@@ -599,7 +639,8 @@ def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str |
         return evt.block(DEP_STEER)
     if occ.prev_op == "|":
         return None
-    if not grep_tree_shaped(inner, cwd=ctx.cwd):
+    flood = grep_tree_shaped(inner, cwd=ctx.cwd)
+    if not flood and not grep_source_shaped(inner, cwd=ctx.cwd):
         return None
     if has_command_substitution(occ.command.raw):
         return None
@@ -607,13 +648,14 @@ def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str |
         return None
     parsed = grep_parse(occ, cwd=ctx.cwd)
     if isinstance(parsed, Decline):
-        return evt.block(grep_block(evt, evt.cmd.line, reason=parsed.reason))
+        return evt.block(grep_block(evt, evt.cmd.line, reason=parsed.reason)) if flood else None
     text = build_ccx_grep(parsed)
     if text is None:
         return None
     if ctx.spliceable:
         return Rewritten(text, note=note_text(occ.command.raw, parsed))
-    return evt.block(grep_block(evt, evt.cmd.line, reason="this tool call takes no in-place rewrite"))
+    reason = "this tool call takes no in-place rewrite"
+    return evt.block(grep_block(evt, evt.cmd.line, reason=reason)) if flood else None
 
 
 rewrite_command_occurrences(
@@ -679,6 +721,14 @@ rewrite_command_occurrences(
         Input(command="grep -i err app.log | head"): Allow(),
         Input(command="grep foo ghost.py | wc -l"): Allow(),
         Input(command="grep -oi points b_jetblue_jun.json"): Allow(),  # -o on a single data file → not tree-shaped
+        # The source-file lane's exclusions; its positive rows stat their operands, so they live in
+        # pytest (TestGrepSourceFileShape).
+        Input(command="grep -n adoptionPinRefusals build.log"): Allow(),  # .log is off SOURCE_SUFFIXES
+        Input(command="grep -n version package.json"): Allow(),  # .json is off SOURCE_SUFFIXES
+        Input(command="grep -n image compose.yaml"): Allow(),  # .yaml is off SOURCE_SUFFIXES
+        Input(command="cat api/src/Team.ts | grep adoptionPinRefusals"): Allow(),  # pipe filter
+        Input(command="grep -n adoptionPinRefusals api/src/Team.ts | head"): Allow(),  # downstream pipe
+        Input(command="grep -n adoptionPinRefusals ghost.ts"): Allow(),  # .ts but absent → runs raw
         Input(command="echo x > gen.json; grep -i points gen.json"): Allow(),  # created earlier in the compound
         Input(command="cd sub && grep foo notes.json"): Allow(),  # cd-relative file operand → not tree-shaped
         Input(command="grep -r foo src/ | head"): Allow(),

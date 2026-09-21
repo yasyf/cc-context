@@ -9,6 +9,10 @@ token-bounded rewrite exists:
 
 Unmapped forms, including ``jj log -p``, pass through unchanged.
 
+A fifth rewrite is about correctness rather than tokens: a bare ``gt restack`` ->
+``ccx vcs stack restack``, which fetches first and reaches the stack branches another
+working copy holds — branches a bare ``gt restack`` cannot touch at all.
+
 Scoped, summarized, or plumbing variants (``git diff -- <path>``, ``jj diff --stat``,
 ``git show HEAD:file``, ``git log --oneline``) never fire the guard at all.
 
@@ -75,6 +79,15 @@ GIT_SHOW_SUPPRESS_FLAGS = ("--no-patch", "-s")
 # The patch-emitting `git log` / `jj log` flags. Their presence turns a metadata log
 # into a per-commit full-patch dump.
 LOG_PATCH_FLAGS = ("-p", "--patch", "-u")
+
+# The note disclosing the `gt restack` substitution. `gt sync` has no counterpart here: ccx runs it
+# as one step of a longer pass, so rewriting it would restack branches the user never asked to move.
+GT_RESTACK_NOTE = (
+    "Rewrote `gt restack` → `ccx vcs stack restack`: a superset of the same restack. It fetches "
+    "first (`gt sync --no-interactive`, pruning merged branches and reparenting their children), "
+    "then moves every branch gt declined — including one another working copy has checked out, "
+    "which a bare `gt restack` cannot touch. `gt create` and `gt modify` are untouched."
+)
 
 # The one-shot steer shown when a session watches CI by hand instead of via `ccx vcs ship`.
 GH_RUN_WATCH_NUDGE = (
@@ -175,6 +188,16 @@ def is_git_show_pager(cmd: Command) -> bool:
     )
 
 
+def is_gt_restack(cmd: Command) -> bool:
+    """Report whether ``cmd`` is a bare ``gt restack`` — the whole-stack restack ccx supersedes.
+
+    Bare only. Every ``gt restack`` flag (``--branch``, ``-u``/``--upstack``, ``-d``/``--downstack``,
+    ``-o``/``--only``) scopes the restack to part of the stack and ``ccx vcs stack restack`` takes no
+    scoping flag, so a flagged restack has no faithful substitution and runs verbatim.
+    """
+    return cmd.executable == "gt" and list(cmd.args) == ["restack"]
+
+
 def is_log_patch_dump(cmd: Command) -> bool:
     """Report whether ``cmd`` is a patch-emitting ``git log`` or ``jj log``."""
     return (
@@ -231,6 +254,51 @@ class LogPatchDump(CustomCommandLineCondition):
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
         return any(occurrence_can_rewrite(occ) and is_log_patch_dump(occ.command) for occ in cl.occurrences)
+
+
+class GtRestack(CustomCommandLineCondition):
+    """Matches a bare ``gt restack`` — the restack ``ccx vcs stack restack`` strictly supersedes.
+
+    ``gt create`` and ``gt modify`` are commit mechanics ccx itself routes through gt, and a
+    flag-scoped restack has no ccx form; neither is matched.
+    """
+
+    def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
+        return any(occurrence_can_rewrite(occ) and is_gt_restack(occ.command) for occ in cl.occurrences)
+
+
+def gtrestack_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
+    if not occurrence_can_rewrite(occ) or not is_gt_restack(occ.command):
+        return None
+    if (ccx := ccx_bin()) is None:
+        return None
+    return " ".join([shlex.quote(ccx), "vcs", "stack", "restack"])
+
+
+rewrite_command_occurrences(
+    only_if=[GtRestack()],
+    to=gtrestack_to,
+    note=GT_RESTACK_NOTE,
+    tests={
+        Input(command="gt restack"): Rewrite(pattern="vcs stack restack"),
+        Input(command="cd repo && gt restack"): Rewrite(pattern="cd repo && "),  # sibling stays verbatim
+        Input(command="gt restack && gt submit"): Rewrite(pattern=" && gt submit"),  # submit untouched
+        # The commit mechanics CLAUDE.md deliberately routes through gt — never rewritten:
+        Input(command="gt create -m 'feat: x'"): Allow(),
+        Input(command="gt modify"): Allow(),
+        Input(command="gt modify -a"): Allow(),
+        Input(command="gt submit"): Allow(),
+        Input(command="gt sync"): Allow(),  # ccx runs sync inside restack; no standalone equivalent
+        # Scoped restacks have no `ccx vcs stack restack` form (it always drives the whole stack):
+        Input(command="gt restack --upstack"): Allow(),
+        Input(command="gt restack -d"): Allow(),
+        Input(command="gt restack --branch feat/x"): Allow(),
+        Input(command="gt restack | tee restack.log"): Allow(),  # piped → post-processing
+        Input(command="gt restack > out.txt"): Allow(),  # redirect → not rewritable in place
+        Input(command="GT_DEBUG=1 gt restack"): Allow(),  # env prefix → runs verbatim
+        Input(command="git restack"): Allow(),  # not gt
+    },
+)
 
 
 def gitdiff_args(cmd: Command) -> list[str] | None:

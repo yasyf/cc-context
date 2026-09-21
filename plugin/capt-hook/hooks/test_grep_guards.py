@@ -595,6 +595,118 @@ class TestGrepMultiFilePaths:
         assert grep_verdict("grep foo a.py b.py") is None
 
 
+class TestGrepSourceFileShape:
+    """A grep naming explicit source files rewrites for ccx's anchors, and every benign neighbour
+    the widening must not reach stays on the raw engine. Disk-dependent throughout — the shape
+    stats each operand — so it lives here, not in inline `tests={}`.
+    """
+
+    @pytest.fixture(autouse=True)
+    def tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        (tmp_path / "api" / "src").mkdir(parents=True)
+        (tmp_path / "api" / "src" / "Team.ts").write_text("adoptionPinRefusals\n")
+        (tmp_path / "a.py").write_text("x\n")
+        (tmp_path / "b.py").write_text("y\n")
+        (tmp_path / "build.log").write_text("adoptionPinRefusals\n")
+        (tmp_path / "tsconfig.json").write_text("{}\n")
+        (tmp_path / "compose.yaml").write_text("x: 1\n")
+        (tmp_path / "AGENTS.md").write_text("adoptionPinRefusals\n")
+        (tmp_path / "Makefile").write_text("all:\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
+        ccx_supports.cache_clear()
+        yield
+        ccx_supports.cache_clear()
+
+    @pytest.mark.parametrize(
+        "command, expected",
+        [
+            pytest.param(
+                "grep -n adoptionPinRefusals api/src/Team.ts",
+                "/fake/ccx code grep adoptionPinRefusals --glob api/src/Team.ts",
+                id="nested-ts-file",
+            ),
+            pytest.param("grep foo a.py", "/fake/ccx code grep foo --glob a.py", id="lone-py-file"),
+            pytest.param("grep -i foo a.py", "/fake/ccx code grep foo -i --glob a.py", id="ignore-case"),
+            pytest.param(
+                "grep -n foo a.py b.py", "/fake/ccx code grep foo -- a.py b.py", id="two-source-files"
+            ),
+            pytest.param(
+                "grep -n adoptionPinRefusals api/src/Team.ts | head",
+                "/fake/ccx code grep adoptionPinRefusals --glob api/src/Team.ts | head",
+                id="downstream-pipe",
+            ),
+        ],
+    )
+    def test_source_file_rewrites(self, monkeypatch: pytest.MonkeyPatch, command: str, expected: str) -> None:
+        probe(monkeypatch, REGEX_SUPPORTS_HELP)
+        assert grep_verdict(command) == expected
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param("cat api/src/Team.ts | grep adoptionPinRefusals", id="pipe-filter"),
+            pytest.param("grep -n adoptionPinRefusals build.log", id="log-target"),
+            pytest.param("grep -n name tsconfig.json", id="json-target"),
+            pytest.param("grep -n x compose.yaml", id="yaml-target"),
+            pytest.param("grep -n adoptionPinRefusals AGENTS.md", id="markdown-target"),
+            pytest.param("grep -n all Makefile", id="extensionless-target"),
+            pytest.param("grep -n foo /var/log/system.log", id="absolute-log"),
+            pytest.param("grep -n foo ghost.ts", id="missing-source-file"),
+            pytest.param("grep -n foo a.py build.log", id="one-non-source-sibling"),
+            pytest.param("grep -n foo $d/Team.ts", id="var-operand"),
+            pytest.param("grep -n foo api/src/*.ts", id="unexpanded-glob-operand"),
+        ],
+    )
+    def test_benign_neighbours_run_raw(self, monkeypatch: pytest.MonkeyPatch, command: str) -> None:
+        probe(monkeypatch, REGEX_SUPPORTS_HELP)
+        assert grep_verdict(command) is None
+
+    @pytest.mark.parametrize("command", ["grep -c foo a.py", "grep -v foo a.py", "grep -P 'x(?=y)' a.py"])
+    def test_unmappable_source_search_allows_never_blocks(
+        self, monkeypatch: pytest.MonkeyPatch, command: str
+    ) -> None:
+        # The bounded lane has nothing to steer away from: an unmappable shape runs raw, and a block
+        # here would be a regression — these same flags over `.` still block.
+        probe(monkeypatch, REGEX_SUPPORTS_HELP)
+        assert grep_verdict(command) is None
+
+    def test_old_binary_multi_file_still_allows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No `--regex` support → no multi-file operand form → infra unavailability runs raw.
+        probe(monkeypatch, SUPPORTS_HELP)
+        assert grep_verdict("grep -n foo a.py b.py") is None
+
+
+class TestGrepIncludeOverDir:
+    """The measured `grep -rn <pat> --include='*.<ext>' <dir>` shape, pinned as a regression: it was
+    already rewriting before the source-file widening, and must keep doing so.
+    """
+
+    @pytest.fixture(autouse=True)
+    def tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        (tmp_path / "infra" / "lib").mkdir(parents=True)
+        (tmp_path / "infra" / "lib" / "pins.ts").write_text("adoptionPinRefusals\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
+        ccx_supports.cache_clear()
+        yield
+        ccx_supports.cache_clear()
+
+    def test_include_over_dir_rewrites(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        probe(monkeypatch, REGEX_SUPPORTS_HELP)
+        assert grep_verdict("grep -rn 'adoptionPinRefusals' --include='*.ts' infra/lib/") == (
+            "/fake/ccx code grep adoptionPinRefusals --glob 'infra/lib/**/*.ts'"
+        )
+
+    def test_include_over_log_dir_keeps_the_block_lane(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An absolute dir has no repo-relative glob, so the flood lane still blocks rather than
+        # emitting a glob ccx would 0-match — the source widening does not reach this shape.
+        probe(monkeypatch, REGEX_SUPPORTS_HELP)
+        assert isinstance(grep_verdict("grep -rn foo --include='*.log' /var/log/"), HookResult)
+
+
 class TestGrepOccurrenceRewrite:
     def test_compound_splices_only_grep(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
