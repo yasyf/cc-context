@@ -16,6 +16,7 @@ import (
 // the same way info and reviews do, plus everything a landing verdict needs.
 const statusPRFields = "number url body isDraft baseRefName headRefOid mergeable mergeStateStatus reviewDecision " +
 	prLandingFields + " " +
+	"baseRef { name " + statusRuleFields + " } " +
 	"files(first: 1) { totalCount } " +
 	"labels(first: 20) { nodes { name } } " +
 	"latestOpinionatedReviews(first: 20) { nodes { state author { login __typename } commit { oid } } } " +
@@ -32,6 +33,38 @@ const statusPRFields = "number url body isDraft baseRefName headRefOid mergeable
 // without admin is answered with an empty list rather than an error, so it
 // costs nothing to ask and its emptiness proves nothing.
 const statusProtectionFields = "branchProtectionRules(first: 20) { nodes { pattern requiredStatusChecks { context } } }"
+
+// statusRuleFields asks the base branch which ruleset rules cover it. It is
+// asked alongside statusProtectionFields rather than instead of it: a base a
+// ruleset governs reports no required checks under branch protection, and a
+// base under the older protection reports none under rules.
+const statusRuleFields = "rules(first: 50) { nodes { type parameters { __typename " +
+	"... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } }"
+
+// statusRuleParameters is one ruleset rule payload, whose shape is its type.
+type statusRuleParameters struct {
+	Typename             string `json:"__typename"`
+	RequiredStatusChecks []struct {
+		Context string `json:"context"`
+	} `json:"requiredStatusChecks"`
+}
+
+// statusRule is one rule covering the base branch. Parameters is null for the
+// rules carrying none, such as NON_FAST_FORWARD.
+type statusRule struct {
+	Type       string                `json:"type"`
+	Parameters *statusRuleParameters `json:"parameters"`
+}
+
+// statusBaseRef is the base branch and the rules covering it. It is null for a
+// pull request whose base branch has since been deleted, which is the state a
+// landed stack leaves its children in.
+type statusBaseRef struct {
+	Name  string `json:"name"`
+	Rules struct {
+		Nodes []statusRule `json:"nodes"`
+	} `json:"rules"`
+}
 
 // statusProtectionRule is one branch protection rule and the contexts it makes
 // required.
@@ -90,15 +123,16 @@ type statusRollup struct {
 
 // statusPRNode is one pull request as GitHub answers statusPRFields.
 type statusPRNode struct {
-	Number           int    `json:"number"`
-	URL              string `json:"url"`
-	Body             string `json:"body"`
-	IsDraft          bool   `json:"isDraft"`
-	BaseRefName      string `json:"baseRefName"`
-	HeadRefOid       string `json:"headRefOid"`
-	Mergeable        string `json:"mergeable"`
-	MergeStateStatus string `json:"mergeStateStatus"`
-	ReviewDecision   string `json:"reviewDecision"`
+	Number           int            `json:"number"`
+	URL              string         `json:"url"`
+	Body             string         `json:"body"`
+	IsDraft          bool           `json:"isDraft"`
+	BaseRefName      string         `json:"baseRefName"`
+	BaseRef          *statusBaseRef `json:"baseRef"`
+	HeadRefOid       string         `json:"headRefOid"`
+	Mergeable        string         `json:"mergeable"`
+	MergeStateStatus string         `json:"mergeStateStatus"`
+	ReviewDecision   string         `json:"reviewDecision"`
 	Files            struct {
 		TotalCount int `json:"totalCount"`
 	} `json:"files"`
@@ -181,11 +215,12 @@ func statusResolvePRs(ctx context.Context, l lane, st *vcsStatus) {
 		if node == nil {
 			continue
 		}
-		required := statusRequired(rules, node.BaseRefName)
+		required := statusMerge(statusRequired(rules, node.BaseRefName), statusRulesetChecks(node.BaseRef))
 		pr := statusBuildPR(*node, statusLanded(ctx, l, *node, activity[node.Number]), activity[node.Number], drafts)
 		for j, check := range pr.Checks {
 			pr.Checks[j].Required = slices.Contains(required, check.Name)
 		}
+		pr.Required = required
 		st.Branches[i].PR = pr
 		st.Required = statusMerge(st.Required, required)
 	}
@@ -499,7 +534,7 @@ func statusChecks(rollup *statusRollup) []statusCheck {
 	var checks []statusCheck
 	at := map[string]int{}
 	for _, c := range rollup.Contexts.Nodes {
-		check := statusCheck{Name: c.Context, State: c.State}
+		check := statusCheck{Name: c.Context, State: c.State, External: true}
 		if c.Typename == "CheckRun" {
 			check = statusCheck{Name: c.Name, State: c.Conclusion}
 			if c.Conclusion == "" {

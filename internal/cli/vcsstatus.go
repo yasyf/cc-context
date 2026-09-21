@@ -85,6 +85,7 @@ type statusPR struct {
 	ReviewDecision string         `json:"review_decision,omitempty"`
 	Labels         []string       `json:"labels,omitempty"`
 	ChecksState    string         `json:"checks_state,omitempty"`
+	Required       []string       `json:"required_checks,omitempty"`
 	Checks         []statusCheck  `json:"checks,omitempty"`
 	Reviews        []statusReview `json:"reviews,omitempty"`
 	Queue          *statusQueue   `json:"queue,omitempty"`
@@ -93,10 +94,14 @@ type statusPR struct {
 // statusCheck is one check on the head commit. Required is membership of the
 // base branch's protection rule, and is false for every check when nobody may
 // read the rules — the report says nothing about requirements in that case.
+// External marks a check the API only relays: a build system reports one
+// aggregate status upstream, and the verdicts of the jobs inside it never
+// arrive here.
 type statusCheck struct {
 	Name     string `json:"name"`
 	State    string `json:"state"`
 	Required bool   `json:"required,omitempty"`
+	External bool   `json:"external,omitempty"`
 }
 
 // statusReview is one reviewer's standing verdict. Stale means it was cast on a
@@ -416,11 +421,7 @@ func statusBlockers(b statusBranch) []string {
 		return append(out, "the pull request is "+strings.ToLower(pr.State))
 	}
 	out = append(out, statusMergeBlockers(pr)...)
-	for _, c := range pr.Checks {
-		if c.Required && !statusCheckPassed(c.State) {
-			out = append(out, "required check "+c.Name+" is "+strings.ToLower(c.State))
-		}
-	}
+	out = append(out, statusCheckBlockers(pr)...)
 	for _, r := range pr.Reviews {
 		if r.Stale && r.State == "APPROVED" {
 			out = append(out, r.Author+"'s approval is stale — it was cast on "+shortSHA(r.Commit))
@@ -451,17 +452,6 @@ func statusMergeBlockers(pr *statusPR) []string {
 		out = append(out, "the pull request is not approved")
 	}
 	return out
-}
-
-// statusCheckPassed reports whether one check's state clears a merge. GitHub
-// spells a skipped check as a non-failure, and a neutral one as no opinion.
-func statusCheckPassed(state string) bool {
-	switch state {
-	case "SUCCESS", "SKIPPED", "NEUTRAL":
-		return true
-	default:
-		return false
-	}
 }
 
 // statusRequired collects the check contexts the rule covering base names. An
@@ -532,7 +522,13 @@ func renderStatusBranch(line func(string, string), branch statusBranch) {
 			}
 		}
 		if len(pr.Checks) > 0 {
-			line("checks", statusChecksValue(pr.Checks))
+			line("checks", statusChecksValue(*pr))
+			if notable := statusNotableValue(pr.Checks); notable != "" {
+				line("notable", notable)
+			}
+			if unverified := statusUnverifiedValue(pr.Checks); unverified != "" {
+				line("unverified", unverified)
+			}
 		}
 		if len(pr.Reviews) > 0 {
 			line("reviews", statusReviewsValue(pr.Reviews, pr.Head))
@@ -636,18 +632,6 @@ func statusMergeValue(pr statusPR) string {
 	}
 	if len(pr.Labels) > 0 {
 		segs = append(segs, "labels "+strings.Join(pr.Labels, ", "))
-	}
-	return strings.Join(segs, shipSep)
-}
-
-func statusChecksValue(checks []statusCheck) string {
-	segs := make([]string, 0, len(checks))
-	for _, c := range checks {
-		seg := c.Name + " " + strings.ToLower(c.State)
-		if c.Required {
-			seg += " (required)"
-		}
-		segs = append(segs, seg)
 	}
 	return strings.Join(segs, shipSep)
 }

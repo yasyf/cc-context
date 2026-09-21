@@ -101,10 +101,7 @@ func TestVcsStatusGTLane(t *testing.T) {
 		"",
 		"branch      fix-ship-help-graphite-demote · here · current · ahead 1 · behind 0",
 		"pr          #3 · merged · 2 files · a1673e91 · https://github.com/yasyf/cc-context/pull/3",
-		"checks      guides / render skipped · reconcile skipped · test (ubuntu-latest) success · " +
-			"test (macos-latest) success · lint success · guides / pr-check success · vuln success · " +
-			"hook-tests success · descriptor-agreement success · Socket Security: Project Report success · " +
-			"Socket Security: Pull Request Alerts success",
+		"checks      9 passed · 0 failed · 0 neutral · 2 skipped · 0 running · rollup success",
 		"",
 	}, "\n")
 	if out != want {
@@ -197,7 +194,7 @@ func TestStatusChecksKeepsTheLatestRun(t *testing.T) {
 	want := []statusCheck{
 		{Name: "label", State: "SUCCESS"},
 		{Name: "build", State: "IN_PROGRESS"},
-		{Name: "buildkite/tests", State: "PENDING"},
+		{Name: "buildkite/tests", State: "PENDING", External: true},
 	}
 	if got := statusChecks(rollup); !slices.Equal(got, want) {
 		t.Errorf("statusChecks() = %+v, want %+v", got, want)
