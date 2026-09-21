@@ -99,11 +99,10 @@ type gtGoldenCase struct {
 	// Empty means gt's wording is none this package recognizes, and the failure
 	// must be wrapped verbatim — the arm a reword falls into.
 	advice string
-	// verdict and note are classifyGTProbe's answer. note is ccx's own sentence;
-	// quotes instead names the marker whose whole line gt supplies as the note.
+	// verdict and note are classifyGTProbe's answer, note being ccx's own
+	// sentence for it.
 	verdict gtVerdict
 	note    string
-	quotes  string
 	// skipped is what gtSyncSkipped reads out of the output, and skippedPath the
 	// same for a reason ending in the recorder's own work root, matched by its
 	// lead because that path moves with the machine that recorded it.
@@ -169,7 +168,7 @@ var gtGoldenCases = map[string]gtGoldenCase{
 		diagnostics: 1,
 		reported:    true,
 		verdict:     gtVerdictDenied,
-		quotes:      gtProbeNoPerms,
+		note:        "graphite cannot submit to yasyf/cc-context — grant it access at " + gtGrantURL + ", or git config " + nogtKey + " true",
 	},
 	"auth-unreachable": {
 		diagnostics: 1,
@@ -226,16 +225,11 @@ func assertGTGolden(t *testing.T, g gtGolden, want gtGoldenCase) {
 		if verdict != want.verdict {
 			t.Errorf("classifyGTProbe() verdict = %q, want %q", verdict, want.verdict)
 		}
-		switch {
-		case want.quotes != "":
-			if !strings.Contains(note, want.quotes) {
-				t.Errorf("classifyGTProbe() note = %q, want gt's own line carrying %q", note, want.quotes)
-			}
-			if !slices.Contains(strings.Split(r.Output, "\n"), note) {
-				t.Errorf("classifyGTProbe() note = %q, which is no whole line of the recorded output", note)
-			}
-		case note != want.note:
+		if note != want.note {
 			t.Errorf("classifyGTProbe() note = %q, want %q", note, want.note)
+		}
+		if strings.Contains(note, "ERROR") {
+			t.Errorf("classifyGTProbe() note = %q — a lane ship declined before mutating anything is not an error", note)
 		}
 	case gtFamilyRestack:
 		err := r.verdict("sync", gtZeroSurfaces)

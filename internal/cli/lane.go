@@ -60,6 +60,10 @@ const (
 // cannot flood the report's one-line lane segment.
 const gtProbeNoteBudget = 200
 
+// gtGrantURL is where gt's own refusal sends someone to grant Graphite the
+// GitHub access it says it lacks.
+const gtGrantURL = "https://app.graphite.com/settings"
+
 // nogtKey is the git-config key that durably opts a repo out of the graphite
 // lane, so a repo carrying a stale Graphite config stops re-litigating it on
 // every ship.
@@ -315,7 +319,7 @@ func classifyGTProbe(output string, code int) (gtVerdict, string) {
 	case code == 0:
 		return gtVerdictUnknown, "gt auth exited 0 without confirming this repo is submittable"
 	case strings.Contains(output, gtProbeNoPerms):
-		return gtVerdictDenied, gtProbeLine(output, gtProbeNoPerms)
+		return gtVerdictDenied, gtProbeDeniedNote(output)
 	case strings.Contains(output, gtProbeNoToken):
 		return gtVerdictDenied, "graphite has no auth token — run gt auth --token <token>"
 	default:
@@ -339,8 +343,18 @@ func gtProbeFallbackNote(output string) string {
 	return "gt auth failed without output"
 }
 
-// gtProbeLine returns the whole output line carrying marker, so the note quotes
-// gt's own wording — which names the repo — rather than paraphrasing it.
+// gtProbeDeniedNote names the repository Graphite will not submit for, and what
+// grants it. The repo comes off gt's own line and the rest is dropped: this
+// verdict is a lane declined before anything mutated, which gt's ERROR: banner
+// would report as a failure on every command.
+func gtProbeDeniedNote(output string) string {
+	_, repo, _ := strings.Cut(gtProbeLine(output, gtProbeNoPerms), gtProbeNoPerms)
+	repo = strings.TrimSuffix(strings.TrimSpace(repo), ".")
+	return "graphite cannot submit to " + repo + " — grant it access at " + gtGrantURL + ", or git config " + nogtKey + " true"
+}
+
+// gtProbeLine returns the whole output line carrying marker, which is where
+// gt's own wording names the repository.
 func gtProbeLine(output, marker string) string {
 	for _, line := range strings.Split(output, "\n") {
 		if strings.Contains(line, marker) {
