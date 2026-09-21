@@ -4,6 +4,27 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.0] - 2026-09-21
+
+### Added
+
+- **A grep naming explicit source files rewrites to `ccx code grep`.** A search
+  already bounded by its own operands stayed on the raw engine, so
+  `grep -n <pattern> api/src/Team.ts` returned whole matching lines with no
+  anchors to chain from. It now becomes
+  `ccx code grep <pattern> --glob api/src/Team.ts` across 46 source suffixes,
+  with several operands mapping to the `-- <f1> <f2>` form. The bounded lane
+  never blocks: an unmappable shape runs raw, since a search its own operands
+  already bound has nothing to steer away from.
+
+- **Bare `gt restack` rewrites to `ccx vcs stack restack`.** The ccx form is a
+  correctness superset — it runs `gt sync --no-interactive` and then restacks
+  the branches gt declined, reaching a stack whose branches sit in different
+  working copies by driving gt from each of them. Only the bare form maps:
+  every `gt restack` flag scopes the restack, and ccx takes no scoping flag.
+  `gt sync` is deliberately not rewritten, because substituting the command
+  that contains it would move branches the caller never asked to move.
+
 ## [0.59.1] - 2026-09-20
 
 ### Fixed
