@@ -88,6 +88,7 @@ type statusPR struct {
 	ChecksState    string         `json:"checks_state,omitempty"`
 	Required       []string       `json:"required_checks,omitempty"`
 	Absent         []string       `json:"absent_checks,omitempty"`
+	Alerts         statusAlerts   `json:"alerts,omitzero"`
 	Checks         []statusCheck  `json:"checks,omitempty"`
 	Reviews        []statusReview `json:"reviews,omitempty"`
 	Queue          *statusQueue   `json:"queue,omitempty"`
@@ -575,6 +576,9 @@ func renderStatusBranch(line func(string, string), branch statusBranch) {
 		}
 		if absent := statusAbsentValue(pr.Absent, pr.Base); absent != "" {
 			line("absent", absent)
+		}
+		if alerts := statusAlertsValue(pr.Alerts); alerts != "" {
+			line("alerts", alerts)
 		}
 		if len(pr.Reviews) > 0 {
 			line("reviews", statusReviewsValue(pr.Reviews, pr.Head))

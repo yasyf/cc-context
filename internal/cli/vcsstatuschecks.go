@@ -82,6 +82,7 @@ func statusCheckBlockers(pr *statusPR) []string {
 	if len(pr.Checks) > 0 && statusGraded(pr.Checks) == 0 {
 		out = append(out, "nothing on this head reached a verdict — every check here skipped, held, or is still running")
 	}
+	out = append(out, statusAlertBlockers(pr.Alerts)...)
 	return append(out, statusRollupBlocker(pr)...)
 }
 
