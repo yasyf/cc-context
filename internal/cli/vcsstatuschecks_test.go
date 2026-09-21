@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -62,6 +63,7 @@ func TestStatusCheckBlockers(t *testing.T) {
 			name: "a skipped check no rule requires is not a blocker",
 			pr: statusPR{ChecksState: "SUCCESS", Checks: []statusCheck{
 				{Name: "guides / render", State: "SKIPPED"},
+				{Name: "lint", State: "SUCCESS"},
 			}},
 			want: "",
 		},
@@ -210,4 +212,70 @@ func TestStatusRulesetChecks(t *testing.T) {
 	if statusRulesetChecks(&statusBaseRef{Name: "dev"}) != nil {
 		t.Error("statusRulesetChecks invented a requirement from an empty rule set")
 	}
+}
+
+// prPeerChecks is the check set yasyf/cc-context PR #29 was graded with, which
+// is what a pull request against that base normally receives.
+var prPeerChecks = []string{
+	"guides / render", "reconcile", "test (ubuntu-latest)", "test (macos-latest)",
+	"lint", "guides / pr-check", "vuln", "hook-tests", "descriptor-agreement",
+	"Socket Security: Project Report", "Socket Security: Pull Request Alerts",
+}
+
+// TestStatusAbsentChecksSeesAnUngradedHead is the window that reads green while
+// nothing has graded the head: the only checks that have registered are a pass
+// and two skips, and every test written against check state agrees they are
+// fine. Named against the set the base normally produces, the gap is the answer.
+func TestStatusAbsentChecksSeesAnUngradedHead(t *testing.T) {
+	t.Parallel()
+	expected := statusExpectedChecks([][]string{prPeerChecks, prPeerChecks, prPeerChecks})
+	if len(expected) != len(prPeerChecks) {
+		t.Fatalf("expected %d checks, want all %d that every peer carried", len(expected), len(prPeerChecks))
+	}
+	head := []statusCheck{
+		{Name: "Socket Security: Pull Request Alerts", State: "NEUTRAL"},
+		{Name: "Socket Security: Project Report", State: "SUCCESS"},
+		{Name: "reconcile", State: "SKIPPED"},
+	}
+	absent := statusAbsentChecks(expected, head)
+	for _, want := range []string{"test (ubuntu-latest)", "test (macos-latest)", "lint", "vuln", "hook-tests"} {
+		if !slices.Contains(absent, want) {
+			t.Errorf("absent = %v, want it to name %q", absent, want)
+		}
+	}
+	if slices.Contains(absent, "reconcile") {
+		t.Errorf("absent = %v, want nothing that did report", absent)
+	}
+	if n := statusGraded(head); n != 1 {
+		t.Errorf("statusGraded = %d, want 1 — a skip grades nothing and a neutral withholds", n)
+	}
+	if statusAbsentChecks(expected, checksNamed(prPeerChecks)) != nil {
+		t.Error("a head carrying the full set still reported something absent")
+	}
+}
+
+// TestStatusExpectedChecksNeedsAMajority pins that a check only some pull
+// requests receive is not expected of all of them.
+func TestStatusExpectedChecksNeedsAMajority(t *testing.T) {
+	t.Parallel()
+	got := statusExpectedChecks([][]string{
+		{"lint", "test", "docs-only"},
+		{"lint", "test"},
+		{"lint", "test"},
+	})
+	want := []string{"lint", "test"}
+	if !slices.Equal(got, want) {
+		t.Errorf("statusExpectedChecks = %v, want %v", got, want)
+	}
+	if statusExpectedChecks(nil) != nil {
+		t.Error("statusExpectedChecks invented an expectation from no peers at all")
+	}
+}
+
+func checksNamed(names []string) []statusCheck {
+	checks := make([]statusCheck, 0, len(names))
+	for _, name := range names {
+		checks = append(checks, statusCheck{Name: name, State: "SUCCESS"})
+	}
+	return checks
 }

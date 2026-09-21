@@ -211,6 +211,7 @@ func statusResolvePRs(ctx context.Context, l lane, st *vcsStatus) {
 	activity := statusActivity(ctx, l, nodes)
 	drafts := statusDrafts(ctx, l, activity)
 	rules := resp.rules()
+	expected := statusPeers(ctx, l, statusBases(nodes))
 	for i, node := range nodes {
 		if node == nil {
 			continue
@@ -221,6 +222,7 @@ func statusResolvePRs(ctx context.Context, l lane, st *vcsStatus) {
 			pr.Checks[j].Required = slices.Contains(required, check.Name)
 		}
 		pr.Required = required
+		pr.Absent = statusAbsentChecks(expected[node.BaseRefName], pr.Checks)
 		st.Branches[i].PR = pr
 		st.Required = statusMerge(st.Required, required)
 	}
@@ -613,4 +615,86 @@ func statusMerge(into, add []string) []string {
 		}
 	}
 	return into
+}
+
+// statusPeerAlias names one base branch field in the batched peer query.
+func statusPeerAlias(i int) string { return fmt.Sprintf("e%d", i) }
+
+// statusPeerQuery asks, per base branch, what the pull requests that recently
+// merged into it were graded with. It selects context names only: the answer is
+// a set of check names, and the verdicts those peers got say nothing about this
+// head.
+func statusPeerQuery(n int) string {
+	decls := make([]string, 0, n+2)
+	decls = append(decls, "$owner: String!", "$repo: String!")
+	var fields strings.Builder
+	for i := range n {
+		alias := statusPeerAlias(i)
+		decls = append(decls, "$"+alias+": String!")
+		fmt.Fprintf(&fields, "    %s: pullRequests(baseRefName: $%s, states: MERGED, first: %d, orderBy: {field: UPDATED_AT, direction: DESC})"+
+			" { nodes { commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename "+
+			"... on CheckRun { name } ... on StatusContext { context } } } } } } } } }\n", alias, alias, statusPeerSamples)
+	}
+	return fmt.Sprintf("query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}",
+		strings.Join(decls, ", "), fields.String())
+}
+
+// statusPeers reads the check names each base branch normally grades, keyed by
+// base. A base nobody has merged into recently answers with nothing, and the
+// report then makes no claim about what is missing.
+func statusPeers(ctx context.Context, l lane, bases []string) map[string][]string {
+	if len(bases) == 0 {
+		return nil
+	}
+	argv := []string{"api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}"}
+	for i, base := range bases {
+		argv = append(argv, "-f", statusPeerAlias(i)+"="+base)
+	}
+	argv = append(argv, "-f", "query="+statusPeerQuery(len(bases)))
+	out, err := render.RunCLI(ctx, l.dir(), "gh", argv)
+	if err != nil {
+		return nil
+	}
+	var resp struct {
+		Data struct {
+			Repository map[string]struct {
+				Nodes []struct {
+					Commits struct {
+						Nodes []struct {
+							Commit struct {
+								StatusCheckRollup *statusRollup `json:"statusCheckRollup"`
+							} `json:"commit"`
+						} `json:"nodes"`
+					} `json:"commits"`
+				} `json:"nodes"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		return nil
+	}
+	expected := map[string][]string{}
+	for i, base := range bases {
+		var peers [][]string
+		for _, node := range resp.Data.Repository[statusPeerAlias(i)].Nodes {
+			if len(node.Commits.Nodes) == 0 {
+				continue
+			}
+			rollup := node.Commits.Nodes[0].Commit.StatusCheckRollup
+			if rollup == nil {
+				continue
+			}
+			var names []string
+			for _, c := range rollup.Contexts.Nodes {
+				if c.Name != "" {
+					names = append(names, c.Name)
+					continue
+				}
+				names = append(names, c.Context)
+			}
+			peers = append(peers, names)
+		}
+		expected[base] = statusExpectedChecks(peers)
+	}
+	return expected
 }
