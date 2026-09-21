@@ -80,11 +80,21 @@ func newStackSubmitCmd() *cobra.Command {
 A submit pushes each branch onto the parent gt records for it, so a stack spread
 across working copies has to be restacked in each of them first — which is the
 sweep ccx vcs stack restack runs. This does both, in that order, so the submit
-meets a stack that is already in the shape Graphite expects. The submit itself is
-ccx vcs ship's: anchored on the remote trunk it fetches first, dropping the
-branches that trunk already holds and naming them, then one atomic push moving
-every branch left, each under the lease of its last submitted version, then one
-post to Graphite's API per branch, bottom-up.`,
+meets a stack that is already in the shape Graphite expects.
+
+The trunk is fetched once, up front, and that one commit both restacks every
+lane and anchors the submit: the local trunk branch is fast-forwarded onto it,
+since gt measures a restack against the local ref, and the report names the
+commit pinned. A local trunk holding commits the remote does not is refused
+rather than restacked onto, because a restack would splice them into every
+branch of the stack; so is a branch whose recorded base reaches back over
+commits trunk already carries, which a replay would copy onto it. A chain that
+stops partway moves nothing — every ref it had moved goes back.
+
+The submit itself is ccx vcs ship's: dropping the branches that trunk already
+holds and naming them, then one atomic push moving every branch left, each under
+the lease of its last submitted version, then one post to Graphite's API per
+branch, bottom-up.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runStackSubmit(cmd, draft)
@@ -284,6 +294,30 @@ func runStackSubmit(cmd *cobra.Command, draft bool) error {
 	if err != nil {
 		return err
 	}
+	trunk, err := gtTrunkBranch("stack submit", state)
+	if err != nil {
+		return err
+	}
+	// Fetched once, here: the same commit restacks every lane and anchors the
+	// submit, where a second resolution would anchor the pull requests on a
+	// trunk the stack was never put on.
+	tr, err := gtTrunkRef(ctx, l.dir(), "stack submit", trunk)
+	if err != nil {
+		return err
+	}
+	pin, err := gtTrunkPin(ctx, "stack submit", l.checkout, l.dir(), tr, state[trunk].Head)
+	if err != nil {
+		return fmt.Errorf("stack submit: %w", err)
+	}
+	// The pin moves refs/heads/<trunk>, the ref needs-restack is measured
+	// against.
+	state, err = gtStateAt(ctx, commonDir, "stack submit")
+	if err != nil {
+		return err
+	}
+	if err := gtTrunkDrift(errW, "stack submit", state, chain, pin, string(tr.Ref())); err != nil {
+		return err
+	}
 	result, err := gtRestackChain(ctx, "stack submit", l.checkout, l.dir(), commonDir, state, chain)
 	if err != nil {
 		return fmt.Errorf("stack submit: %w", err)
@@ -294,11 +328,7 @@ func runStackSubmit(cmd *cobra.Command, draft bool) error {
 	if err != nil {
 		return err
 	}
-	trunk, err := gtTrunkBranch("stack submit", state)
-	if err != nil {
-		return err
-	}
-	tr, err := gtTrunkRef(ctx, l.dir(), "stack submit", trunk)
+	commits, files, err := gtSubmitWidth(ctx, "stack submit", l.dir(), tr, chain)
 	if err != nil {
 		return err
 	}
@@ -307,6 +337,12 @@ func runStackSubmit(cmd *cobra.Command, draft bool) error {
 	if err != nil {
 		return err
 	}
-	cmd.Println(strings.Join([]string{gtRestackSegment(result), fmt.Sprintf("submitted %d branches", len(submitted))}, shipSep))
+	segments := []string{
+		gtRestackSegment(result),
+		fmt.Sprintf("submitted %d branches", len(submitted)),
+		"trunk " + pin.String(),
+		fmt.Sprintf("proposing %d commit(s), %d file(s)", commits, files),
+	}
+	cmd.Println(strings.Join(segments, shipSep))
 	return nil
 }

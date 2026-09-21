@@ -232,3 +232,126 @@ func TestStackSubmitGoesThroughTheGraphiteAPI(t *testing.T) {
 		}
 	}
 }
+
+// TestStackSubmitReportsWhatItProposes pins the tell a hundred-file pull
+// request over a one-file change shows up as: the width the submit proposes
+// against the remote trunk, named in the report rather than discovered on
+// GitHub afterwards.
+func TestStackSubmitReportsWhatItProposes(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base", "feature")
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if want := "proposing 2 commit(s), 2 file(s)"; !strings.Contains(out, want) {
+		t.Errorf("report = %q, want %q — one commit and one file per branch", out, want)
+	}
+}
+
+// stackConflicting stacks feature on base and then puts a commit on trunk that
+// feature's own commit will not replay over, so a restack of the chain moves
+// base and stops on feature.
+func stackConflicting(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	shipGTStack(t, f, "base")
+	mustRun(t, f.Dir, "git", "switch", "-qc", "feature")
+	writeShipFile(t, f.Dir, "c.txt", "feature\n")
+	mustRun(t, f.Dir, "git", "add", "c.txt")
+	mustRun(t, f.Dir, "git", "commit", "-qm", "feature")
+	mustRun(t, f.Dir, "gt", "track", "-f", "--no-interactive")
+	restackAdvanceRemote(t, f, "main", "c.txt", "trunk\n")
+	mustRun(t, f.Dir, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Dir, "git", "switch", "-q", "main")
+	mustRun(t, f.Dir, "git", "merge", "-q", "--ff-only", "origin/main")
+	mustRun(t, f.Dir, "git", "switch", "-q", "feature")
+	shipResetLog(t, f)
+}
+
+// TestStackSubmitRestackConflictMovesNothing pins the atomicity a stack spread
+// across lanes rests on: a chain that stops partway leaves every branch where
+// it was. Keeping the moves it had already made left the bottom on the trunk it
+// had just reached with everything above it on the old one — two bases in one
+// stack, which only commit archaeology names and only a hand rebuild undoes.
+func TestStackSubmitRestackConflictMovesNothing(t *testing.T) {
+	f := shipGTRepo(t)
+	stackConflicting(t, f)
+	base := gitAt(t, f.Dir, "rev-parse", "base")
+	feature := gitAt(t, f.Dir, "rev-parse", "feature")
+
+	_, _, err := runStackCmd(t, "submit")
+	if err == nil {
+		t.Fatal("stack submit succeeded, want the conflict on feature")
+	}
+	if !strings.Contains(err.Error(), "the restack rolled back, so nothing moved — put back: base") {
+		t.Errorf("error = %v, want it to name what it rolled back", err)
+	}
+	if got := gitAt(t, f.Dir, "rev-parse", "base"); got != base {
+		t.Errorf("base = %s, want %s — it was restacked onto the new trunk while feature stayed on the old one", got, base)
+	}
+	if got := gitAt(t, f.Dir, "rev-parse", "feature"); got != feature {
+		t.Errorf("feature = %s, want %s", got, feature)
+	}
+}
+
+// TestStackSubmitRefusesADivergedTrunk pins the refusal that keeps another
+// lane's unlanded work out of the stack. A local trunk holding commits the
+// remote does not is indistinguishable from trunk's own here, and a restack
+// onto it lands them in every branch, where the pull requests then propose to
+// merge them.
+func TestStackSubmitRefusesADivergedTrunk(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base")
+	mustRun(t, f.Dir, "git", "switch", "-q", "main")
+	writeShipFile(t, f.Dir, "foreign.txt", "another lane's work\n")
+	mustRun(t, f.Dir, "git", "add", "foreign.txt")
+	mustRun(t, f.Dir, "git", "commit", "-qm", "foreign")
+	mustRun(t, f.Dir, "git", "switch", "-q", "base")
+	shipResetLog(t, f)
+	base := gitAt(t, f.Dir, "rev-parse", "base")
+
+	_, _, err := runStackCmd(t, "submit")
+	if err == nil {
+		t.Fatal("stack submit succeeded on a diverged trunk, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "main holds 1 commit(s) refs/remotes/origin/main does not") {
+		t.Errorf("error = %v, want it to name the drift", err)
+	}
+	if got := gitAt(t, f.Dir, "rev-parse", "base"); got != base {
+		t.Errorf("base = %s, want %s — nothing may move onto a diverged trunk", got, base)
+	}
+	if files := gitAt(t, f.Dir, "diff", "--name-only", "main...base"); strings.Contains(files, "foreign.txt") {
+		t.Errorf("base carries %q — the foreign commit reached the branch", files)
+	}
+}
+
+// TestStackSubmitRefusesADuplicatingSpan pins the width check. gt records the
+// revision a branch was stacked on, and a branch rebased outside gt leaves that
+// record behind its real base — so the span gt's metadata describes reaches back
+// over trunk commits the branch never owned, and replaying it copies every one
+// of them onto the branch.
+func TestStackSubmitRefusesADuplicatingSpan(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base")
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+	mustRun(t, f.Dir, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Dir, "git", "rebase", "-q", "origin/main")
+	shipResetLog(t, f)
+	base := gitAt(t, f.Dir, "rev-parse", "base")
+
+	_, _, err := runStackCmd(t, "submit")
+	if err == nil {
+		t.Fatal("stack submit succeeded on a span carrying trunk's own commits, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "would replay 2 commits but owns 1") {
+		t.Errorf("error = %v, want it to name the commits it would copy", err)
+	}
+	if !strings.Contains(err.Error(), "propose 2 files rather than the 1 it changed") {
+		t.Errorf("error = %v, want the file count that is the tell", err)
+	}
+	if got := gitAt(t, f.Dir, "rev-parse", "base"); got != base {
+		t.Errorf("base = %s, want %s — the refusal comes before any ref moves", got, base)
+	}
+}
