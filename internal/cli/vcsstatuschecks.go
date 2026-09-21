@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // statusNamedChecks caps how many checks the notable line names.
@@ -283,4 +286,23 @@ func statusBases(nodes []*statusPRNode) []string {
 		bases = append(bases, node.BaseRefName)
 	}
 	return bases
+}
+
+// statusHeadAlias names one branch head commit field in the batched query.
+func statusHeadAlias(i int) string { return fmt.Sprintf("h%d", i) }
+
+// statusHeads resolves each branch to the commit it points at, so a branch no
+// pull request names by head ref can still be looked up by what it carries. A
+// branch the VCS cannot resolve answers with the empty oid, which the query
+// then asks nothing about.
+func statusHeads(ctx context.Context, l lane, branches []string) []string {
+	heads := make([]string, len(branches))
+	for i, branch := range branches {
+		out, err := render.RunCLI(ctx, l.dir(), "git", []string{"rev-parse", "--verify", "--quiet", branch + "^{commit}"})
+		if err != nil {
+			continue
+		}
+		heads[i] = strings.TrimSpace(out)
+	}
+	return heads
 }

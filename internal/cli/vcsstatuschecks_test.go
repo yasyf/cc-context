@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -278,4 +279,58 @@ func checksNamed(names []string) []statusCheck {
 		checks = append(checks, statusCheck{Name: name, State: "SUCCESS"})
 	}
 	return checks
+}
+
+// TestStatusCommitNodeRequiresTheHeadToMatch pins the caveat on resolving a
+// pull request by commit. A commit associates with more than the pull request
+// it heads — a merge queue squash associates with the pull request it landed —
+// so only the one this commit is the head of may stand in for the branch.
+func TestStatusCommitNodeRequiresTheHeadToMatch(t *testing.T) {
+	t.Parallel()
+	head := "1111111111111111111111111111111111111111"
+	other := "2222222222222222222222222222222222222222"
+	both := "{\"associatedPullRequests\":{\"nodes\":[{\"number\":7,\"headRefOid\":\"" + other +
+		"\"},{\"number\":8,\"headRefOid\":\"" + head + "\"}]}}"
+	r := statusPRResponse{}
+	r.Data.Repository = map[string]json.RawMessage{statusHeadAlias(0): json.RawMessage(both)}
+
+	got := statusCommitNode(r, 0, head)
+	if got == nil || got.Number != 8 {
+		t.Fatalf("statusCommitNode = %+v, want the pull request this commit heads (#8)", got)
+	}
+	onlyMentions := "{\"associatedPullRequests\":{\"nodes\":[{\"number\":7,\"headRefOid\":\"" + other + "\"}]}}"
+	r.Data.Repository[statusHeadAlias(0)] = json.RawMessage(onlyMentions)
+	if node := statusCommitNode(r, 0, head); node != nil {
+		t.Errorf("statusCommitNode = #%d, want nothing — that pull request only mentions this commit", node.Number)
+	}
+	if node := statusCommitNode(r, 0, statusEmptyOID); node != nil {
+		t.Errorf("statusCommitNode = #%d for a branch that resolved to no commit", node.Number)
+	}
+}
+
+// TestStatusNodesPrefersTheHeadRefName pins that the commit lookup is only a
+// fallback: a branch still carrying its own name resolves by name, and the
+// commit field is read only when that comes back empty.
+func TestStatusNodesPrefersTheHeadRefName(t *testing.T) {
+	t.Parallel()
+	head := "1111111111111111111111111111111111111111"
+	byName := "{\"nodes\":[{\"number\":5,\"headRefOid\":\"" + head + "\"}]}"
+	byCommit := "{\"associatedPullRequests\":{\"nodes\":[{\"number\":9,\"headRefOid\":\"" + head + "\"}]}}"
+	r := statusPRResponse{}
+	r.Data.Repository = map[string]json.RawMessage{
+		downstackPRAlias(0): json.RawMessage(byName),
+		statusHeadAlias(0):  json.RawMessage(byCommit),
+	}
+	nodes := statusNodes(r, []string{"feature"})
+	if len(nodes) != 1 || nodes[0] == nil || nodes[0].Number != 5 {
+		t.Fatalf("statusNodes = %+v, want the head-ref match (#5)", nodes)
+	}
+	delete(r.Data.Repository, downstackPRAlias(0))
+	nodes = statusNodes(r, []string{"renamed"})
+	if len(nodes) != 1 || nodes[0] != nil {
+		t.Fatalf("statusNodes = %+v, want nothing by name — the commit lookup is a second round trip", nodes)
+	}
+	if node := statusCommitNode(r, 0, head); node == nil || node.Number != 9 {
+		t.Fatalf("statusCommitNode = %+v, want the commit fallback (#9)", node)
+	}
 }

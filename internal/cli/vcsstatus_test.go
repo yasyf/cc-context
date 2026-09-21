@@ -177,7 +177,13 @@ func TestVcsStatusBranchWithoutPullRequest(t *testing.T) {
 			graphql = append(graphql, inv)
 		}
 	}
-	assertInvocations(t, graphql, [][]string{ghStatusPRArgv(downstackThree...)})
+	if len(graphql) != 2 {
+		t.Fatalf("graphql calls = %d, want the batched name query plus one commit lookup for the branch it did not resolve", len(graphql))
+	}
+	assertInvocations(t, graphql[:1], [][]string{ghStatusPRArgv(downstackThree...)})
+	if !slices.Contains(graphql[1], "query="+statusCommitQuery(1)) {
+		t.Errorf("second call = %q, want the commit lookup for the one unresolved branch", graphql[1])
+	}
 }
 
 // TestStatusChecksKeepsTheLatestRun holds a re-run to one entry: the rollup

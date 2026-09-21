@@ -208,6 +208,7 @@ func statusResolvePRs(ctx context.Context, l lane, st *vcsStatus) {
 		}
 	}
 	nodes := statusNodes(resp, branches)
+	statusFillByCommit(ctx, l, branches, nodes)
 	activity := statusActivity(ctx, l, nodes)
 	drafts := statusDrafts(ctx, l, activity)
 	rules := resp.rules()
@@ -257,17 +258,7 @@ func (r statusPRResponse) rules() []statusProtectionRule {
 func statusNodes(r statusPRResponse, branches []string) []*statusPRNode {
 	nodes := make([]*statusPRNode, len(branches))
 	for i := range branches {
-		raw, ok := r.Data.Repository[downstackPRAlias(i)]
-		if !ok {
-			continue
-		}
-		var decoded struct {
-			Nodes []statusPRNode `json:"nodes"`
-		}
-		if err := json.Unmarshal(raw, &decoded); err != nil || len(decoded.Nodes) == 0 {
-			continue
-		}
-		nodes[i] = &decoded.Nodes[0]
+		nodes[i] = statusBranchNode(r, i)
 	}
 	return nodes
 }
@@ -697,4 +688,119 @@ func statusPeers(ctx context.Context, l lane, bases []string) map[string][]strin
 		expected[base] = statusExpectedChecks(peers)
 	}
 	return expected
+}
+
+// statusEmptyOID is the oid asked about for a branch that resolved to nothing.
+// It is a well-formed object id that no repository holds, so the field answers
+// null rather than the whole query failing its GitObjectID type check.
+const statusEmptyOID = "0000000000000000000000000000000000000000"
+
+// statusBranchNode decodes the pull request found by head ref name, which is
+// how a branch still carrying its own name resolves.
+func statusBranchNode(r statusPRResponse, i int) *statusPRNode {
+	raw, ok := r.Data.Repository[downstackPRAlias(i)]
+	if !ok {
+		return nil
+	}
+	var decoded struct {
+		Nodes []statusPRNode `json:"nodes"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil || len(decoded.Nodes) == 0 {
+		return nil
+	}
+	return &decoded.Nodes[0]
+}
+
+// statusCommitNode decodes the pull request whose head is this commit, which is
+// the only way a branch renamed off its pull request head ref resolves at all.
+//
+// A commit associates with more than the pull request it heads: the squash a
+// merge queue writes associates with the pull request it landed. So the head
+// oid has to match, and a pull request merely mentioning this commit is
+// discarded rather than reported as the branch pull request.
+func statusCommitNode(r statusPRResponse, i int, head string) *statusPRNode {
+	if head == statusEmptyOID {
+		return nil
+	}
+	raw, ok := r.Data.Repository[statusHeadAlias(i)]
+	if !ok {
+		return nil
+	}
+	var decoded struct {
+		Associated struct {
+			Nodes []statusPRNode `json:"nodes"`
+		} `json:"associatedPullRequests"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil
+	}
+	for i := range decoded.Associated.Nodes {
+		if decoded.Associated.Nodes[i].HeadRefOid == head {
+			return &decoded.Associated.Nodes[i]
+		}
+	}
+	return nil
+}
+
+// statusCommitQuery asks which pull requests each commit is associated with,
+// one aliased field per commit.
+func statusCommitQuery(n int) string {
+	decls := make([]string, 0, n)
+	var fields strings.Builder
+	for i := range n {
+		alias := statusHeadAlias(i)
+		decls = append(decls, "$"+alias+": GitObjectID!")
+		fmt.Fprintf(&fields, "    %s: object(oid: $%s) { ... on Commit { associatedPullRequests(first: 5, orderBy: {field: CREATED_AT, direction: DESC})"+
+			" { nodes { ...prStatus } } } }\n", alias, alias)
+	}
+	return fmt.Sprintf("query(%s, $owner: String!, $repo: String!) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}\nfragment prStatus on PullRequest { %s }",
+		strings.Join(decls, ", "), fields.String(), statusPRFields)
+}
+
+// statusFillByCommit resolves the branches no pull request names by head ref,
+// by the commit each of them points at. It is a second round trip and it is
+// made only for those branches: a branch still carrying the name its pull
+// request was opened from is already resolved, and that is nearly all of them.
+//
+// Without it a branch renamed off its pull request head ref reports no pull
+// request at all, so a landing reads as an absence.
+func statusFillByCommit(ctx context.Context, l lane, branches []string, nodes []*statusPRNode) {
+	var want []int
+	for i := range branches {
+		if nodes[i] == nil {
+			want = append(want, i)
+		}
+	}
+	if len(want) == 0 {
+		return
+	}
+	names := make([]string, 0, len(want))
+	for _, i := range want {
+		names = append(names, branches[i])
+	}
+	heads := statusHeads(ctx, l, names)
+	argv := []string{"api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}"}
+	asked := 0
+	for j, head := range heads {
+		if head == "" {
+			continue
+		}
+		argv = append(argv, "-f", statusHeadAlias(j)+"="+head)
+		asked++
+	}
+	if asked != len(heads) {
+		return
+	}
+	argv = append(argv, "-f", "query="+statusCommitQuery(len(heads)))
+	out, err := render.RunCLI(ctx, l.dir(), "gh", argv)
+	if err != nil {
+		return
+	}
+	var resp statusPRResponse
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		return
+	}
+	for j, i := range want {
+		nodes[i] = statusCommitNode(resp, j, heads[j])
+	}
 }
