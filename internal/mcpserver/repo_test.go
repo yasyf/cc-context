@@ -61,6 +61,22 @@ func requireGrepEngine(t *testing.T) {
 	}
 }
 
+// requireRipgrep gates a test on the engine whose glob translation it asserts:
+// the grep fallback refuses a mid-path wildcard outright. Outside CI a missing
+// ripgrep skips, since not every working copy carries one. In CI it fails, because
+// the install step is the only reason the guard runs at all and a silent skip
+// there would retire it without anyone noticing.
+func requireRipgrep(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("rg"); err == nil {
+		return
+	}
+	if os.Getenv("CI") != "" {
+		t.Fatal("ripgrep is not on PATH in CI; the glob tests assert translation only it performs")
+	}
+	t.Skip("ripgrep not installed")
+}
+
 func TestRepoSchemaSurface(t *testing.T) {
 	cs := connectTestServer(t)
 	res, err := cs.ListTools(context.Background(), nil)
@@ -437,7 +453,7 @@ func TestPinRepoNamesRepo(t *testing.T) {
 // engine that root as a path operand instead of running it there selected
 // nothing — a zero that reads exactly like an absence.
 func TestGrepToolSlashedGlobSelectsInsideTheNamedRepo(t *testing.T) {
-	requireGrepEngine(t)
+	requireRipgrep(t)
 	named, hit := writeNested(t, "internal/cli/named.go", "var needle = 1\n")
 	writeUnder(t, named, "other/skipped.go", "var needle = 2\n")
 	t.Chdir(t.TempDir())
