@@ -168,6 +168,28 @@ class TestGrepFilesWithMatches:
         assert grep_rewrite("grep -rn foo . -A 2") == "/fake/ccx code grep foo -A=2"
 
 
+class TestGrepPipeline:
+    @pytest.fixture(autouse=True)
+    def pin_ccx(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
+        monkeypatch.setattr(common, "ccx_bin", lambda: "/fake/ccx")
+        probe(monkeypatch, FILES_WITH_MATCHES_HELP)
+
+    def test_tree_search_feeding_filters_rewrites(self) -> None:
+        assert grep_verdict("grep -rn public_edge_test --include=* . | grep -v node_modules | head") == (
+            "/fake/ccx code grep public_edge_test | grep -v node_modules | head"
+        )
+        assert grep_verdict("grep -rni goldens -l . | grep -v node_modules") == (
+            "/fake/ccx code grep goldens -i -l | grep -v node_modules"
+        )
+
+    def test_filter_consuming_pipe_input_stays_raw(self) -> None:
+        assert grep_verdict("cat results.txt | grep goldens | head") is None
+
+    def test_explicit_file_search_feeding_pipe_stays_raw(self) -> None:
+        assert grep_verdict("grep goldens results.txt | head") is None
+
+
 class TestGrepNote:
     # Repo-wide shapes (no path) so the note is disk-independent: `grep_note` runs `grep_parse`,
     # which now classifies path operands against the filesystem.
@@ -228,6 +250,7 @@ class TestGrepPathGlobbing:
             ("grep foo file.py", "/fake/ccx code grep foo --glob file.py"),
             ("grep -rn foo src/ internal/", "/fake/ccx code grep foo --glob '{src,internal}/**'"),
             ("grep -rn --include='*.go' foo src/", "/fake/ccx code grep foo --glob 'src/**/*.go'"),
+            ("grep -rn --include='*' foo .", "/fake/ccx code grep foo"),
             ("grep -rn -C 3 foo src/", "/fake/ccx code grep foo --glob 'src/**' -C=3"),
             ("grep foo Makefile", "/fake/ccx code grep foo --glob Makefile"),  # extensionless FILE, not Makefile/**
             ("grep -rn foo v2.5", "/fake/ccx code grep foo --glob 'v2.5/**'"),  # dotted DIR, not a file glob
