@@ -124,6 +124,7 @@ type shipOpts struct {
 
 	yolo   bool
 	amend  bool
+	dryRun bool
 	budget int
 	// paths is the caller's own spelling, cwd-relative; rootPaths is the same
 	// set rebased onto the repository root, which is where every child runs.
@@ -196,6 +197,8 @@ A live Graphite config (.git/.graphite_repo_config, or the git common dir's copy
 
 Ship owns the pull request in every lane. --pr-title and --pr-body-file are repeatable and branch-scoped — <branch>=<value>, a bare value applying to the tip — because one submit opens a PR for every branch in the downstack; --pr-body-file takes "-" once to read the body from piped stdin. Outside the graphite lane ship opens the branch's PR when there is none (never with --fill, which would publish the commit's Claude-Session-Id trailer into the description) and edits exactly the fields this invocation restated when there is, so a description someone hand-edited survives a re-ship that does not mention it; a body given is replaced wholesale, never merged. On trunk it reports no PR (on trunk). In the graphite lane the submit opens the PRs and ship restates the named branches afterwards, which is the only way a downstack PR gets a body at all. Every body file is read before the commit forms, so an unreadable path refuses with the working copy untouched, and a ship that names no PR flag makes no gh pr call. --draft and --publish apply in every lane, converting an existing PR in either direction; --no-pr skips the step. -m is optional when an unscoped --pr-title is given: the title becomes the commit subject, and an unscoped --pr-body-file its body, with the <details> wrapper dropped, each ## Heading folded into a Heading: paragraph, and blank runs collapsed. Only an unscoped value can feed it — the tip's name is the branch plan, which that message is an input to.
 
+--dry-run is the opposite switch, and between them they spell the whole risk axis. It prints the decisions the run has already resolved and then stops before the first mutation: the branch the commit lands on, the parent a track would record and why that branch and not another, the named paths beside the staged ones the graphite commit takes with them, every ref a restack would rewrite and the working copy holding it, the open pull request heads a submit would force-push over, the titles it would derive for the ones it opens, and the paths the replay resolves anew. It fetches nothing, runs no gt verb and writes nothing, so the refs and the working copy are byte for byte what they were; --budget caps the report.
+
 --yolo is the one switch for "skip the checks": it implies --no-verify, so ship's own prek pass never runs and the commit gt cuts carries --no-verify, and it drops every guard ship adds of its own, now and as more are added. It drops none today — the multi-branch gt submit --dry-run probe it was written for is gone, replaced by the branch list ship already holds — so against this version it is exactly --no-verify. It never drops a refusal git or gt would make anyway, and never the auto-restack, which is recovery rather than a guard.
 
 --reviews keeps listening after the CI watch: each new review comment on the pushed branch's PR — every submitted PR, in the gt lane — streams to stdout until all are merged or closed. The standalone surface, with attach and replay knobs (--since, --interval, --budget, --stack), is ccx vcs reviews.`,
@@ -213,7 +216,8 @@ Ship owns the pull request in every lane. --pr-title and --pr-body-file are repe
 	cmd.Flags().BoolVar(&o.verify, "verify", false, "run the repository's hooks — the default when the commit lands straight on trunk, or on a repository that names no trunk")
 	cmd.Flags().BoolVar(&o.yolo, "yolo", false, "skip every hook and ship-side guard: implies --no-verify, and drops any guard ship adds of its own")
 	cmd.Flags().BoolVar(&o.amend, "amend", false, "fold the working copy into the parent commit")
-	cmd.Flags().IntVar(&o.budget, "budget", shipLogBudget, "token budget for the CI failure log excerpt (0 = uncapped)")
+	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "report what this ship would do — resolved parent, commit scope, the refs and pull request heads it would move — and do none of it")
+	cmd.Flags().IntVar(&o.budget, "budget", shipLogBudget, "token budget for the CI failure log excerpt, and for the --dry-run report (0 = uncapped)")
 	cmd.Flags().StringArrayVar(&o.skipHunks, "skip-hunk", nil, "commit everything except this hunk ref (repeatable; refs from ccx vcs hunks)")
 	cmd.Flags().StringArrayVar(&o.onlyHunks, "only-hunk", nil, "commit only this hunk ref in its file (repeatable; refs from ccx vcs hunks)")
 	cmd.Flags().StringVar(&o.branch, "branch", "", "commit onto this branch, creating it here when it does not exist")
@@ -328,6 +332,9 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	var gtc *gtCache
 	if gtLane {
 		gtc = newGTCache(dir, "ship")
+	}
+	if o.dryRun {
+		return runShipDryRun(ctx, cmd, l, o, gtc)
 	}
 	plan, planSeg, err := shipResolvePlan(ctx, cmd.ErrOrStderr(), l, o, gtc)
 	if err != nil {

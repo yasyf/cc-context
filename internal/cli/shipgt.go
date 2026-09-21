@@ -484,7 +484,22 @@ func gtRefuseLandedParent(ctx context.Context, dir render.Dir, state gtState, br
 	if !contained {
 		return nil
 	}
-	return fmt.Errorf("ship: gt track adopted %s onto %s, which %s/%s already contains — that parent holds no commit of its own, so a stack built on it submits a pull request graphite refuses; name a real parent with --parent <branch>, or clear the stale branch out with ccx vcs prune", branch, parent, tr.Remote(), tr.Name())
+	return fmt.Errorf("ship: %w", &errLandedParent{Branch: branch, Parent: parent, Remote: tr.Remote(), Trunk: tr.Name()})
+}
+
+// errLandedParent is an adopt that landed on a parent the remote trunk already
+// contains. It is typed because --dry-run reports the same finding as a note
+// rather than a refusal, and matching the message would be the only other way
+// to tell it apart from a failure reading the trunk.
+type errLandedParent struct {
+	Branch string
+	Parent string
+	Remote string
+	Trunk  string
+}
+
+func (e *errLandedParent) Error() string {
+	return fmt.Sprintf("gt track adopted %s onto %s, which %s/%s already contains — that parent holds no commit of its own, so a stack built on it submits a pull request graphite refuses; name a real parent with --parent <branch>, or clear the stale branch out with ccx vcs prune", e.Branch, e.Parent, e.Remote, e.Trunk)
 }
 
 // gtCreates reports whether this commit starts a branch, the one commit gt
