@@ -122,6 +122,8 @@ def grep_targets(paths: list[str], include: str | None, *, cwd: Path | None) -> 
     Everything else routes through :func:`grep_glob`: a directory, a lone file (``--glob file`` for
     old-binary compat), an ``--include``, or repo-wide widening yield a glob and no path operands.
     """
+    if include == "*":
+        include = None
     if include is None and not any(p in (".", "./") for p in paths) and len(paths) >= 2:
         if all(not resolved_is_dir(p, cwd) for p in paths):
             return "", [p.rstrip("/") for p in paths]
@@ -575,8 +577,8 @@ def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str |
     along): a transcript operand blocks with the cc-transcript steer; a dependency segment (``.venv/…``,
     ``node_modules/…``, ``.git/…``) or a directory operand the repo's own ``git check-ignore`` reports
     ignored (``dist/``, a generated tree) blocks with the dep-reader steer — all fire even through
-    pipes, while an ignored plain file stays bounded and runs raw. A grep consuming or feeding a pipe
-    runs verbatim (post-processing). A grep that is not tree-shaped runs raw (explicit-file searches are bounded
+    pipes, while an ignored plain file stays bounded and runs raw. A grep consuming a pipe runs verbatim
+    (post-processing). A grep that is not tree-shaped runs raw (explicit-file searches are bounded
     by their operands). A tree-shaped grep whose raw text carries a ``$(…)``/backtick substitution runs raw
     (the parser drops the operand, so a rewrite would silently widen scope). A path operand carrying a
     shell expansion or glob metachar forfeits the rewrite and runs raw (never a lossy emission). Otherwise
@@ -595,7 +597,7 @@ def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str |
         return evt.block(grep_block(evt, evt.cmd.line))
     if any(has_dependency_segment(p) for p in steer_ops) or any_git_ignored(steer_ops, cwd=ctx.cwd):
         return evt.block(DEP_STEER)
-    if occ.prev_op == "|" or occ.next_op == "|":
+    if occ.prev_op == "|":
         return None
     if not grep_tree_shaped(inner, cwd=ctx.cwd):
         return None
@@ -669,30 +671,31 @@ rewrite_command_occurrences(
         Input(command="grep -c needle *"): Allow(),  # unexpanded glob operand → not a dir → runs raw
         Input(command="grep -c needle file{1..10000}"): Allow(),  # unexpanded brace operand → runs raw
         Input(command="grep -r foo logs.json"): Allow(),  # -r on a missing operand → not a dir → runs raw
-        # The incident regression class: a bounded-output grep over a file the same compound creates,
-        # any downstream pipe present — every one runs raw now:
         Input(
             command="curl -sL -o /tmp/ch-live.html https://yasyf.github.io/captain-hook/ && "
             "wc -c < /tmp/ch-live.html && for m in 'id=\"links\"' gd-hero; do "
             "printf '%s: %s\\n' \"$m\" \"$(grep -c \"$m\" /tmp/ch-live.html)\"; done"
         ): Allow(),  # -c over a file the curl creates later in the same compound
-        Input(command="grep -i err app.log | head"): Allow(),  # a downstream pipe → post-processing
-        Input(command="grep foo ghost.py | wc -l"): Allow(),  # any pipe → post-processing, runs raw
+        Input(command="grep -i err app.log | head"): Allow(),
+        Input(command="grep foo ghost.py | wc -l"): Allow(),
         Input(command="grep -oi points b_jetblue_jun.json"): Allow(),  # -o on a single data file → not tree-shaped
         Input(command="echo x > gen.json; grep -i points gen.json"): Allow(),  # created earlier in the compound
         Input(command="cd sub && grep foo notes.json"): Allow(),  # cd-relative file operand → not tree-shaped
-        # Downstream pipe → allow (the pipe is the post-processing; the sink-quality walk is gone):
         Input(command="grep -r foo src/ | head"): Allow(),
-        Input(command="grep -r x . | head -n 100000"): Allow(),  # over-cap sink no longer matters — any pipe allows
-        Input(command="grep -r x . | head -c 100000000"): Allow(),  # a byte-count sink is irrelevant now
-        Input(command="grep -r x . | tee /tmp/out | head"): Allow(),  # tee is irrelevant — any pipe allows
-        Input(command="grep -rn foo | sed '1,20p'"): Allow(),  # unbounded sed no longer matters
-        Input(command="grep -r foo src/ | grep -v x"): Allow(),  # both greps piped → runs raw
-        # The `-v` incident: arity-known, so the filter stage yields no path operand and its pattern
-        # token can't reach the dep steer as a phantom target.
-        Input(command="grep -rn foo . | grep -v node_modules"): Allow(),
-        Input(command="grep -rn foo . | sort"): Allow(),  # non-sink terminal no longer matters
-        Input(command="grep -r foo . | tail -f"): Allow(),  # following tail no longer matters
+        Input(command="grep -r x . | head -n 100000"): Rewrite(pattern="code grep x"),
+        Input(command="grep -r x . | head -c 100000000"): Rewrite(pattern="code grep x"),
+        Input(command="grep -r x . | tee /tmp/out | head"): Rewrite(pattern="code grep x"),
+        Input(command="grep -rn foo | sed '1,20p'"): Rewrite(pattern="code grep foo"),
+        Input(command="grep -r foo src/ | grep -v x"): Allow(),
+        Input(command="grep -rn foo . | grep -v node_modules"): Rewrite(pattern="code grep foo"),
+        Input(command="grep -rn public_edge_test --include=* . | grep -v node_modules | head"): Rewrite(
+            pattern="code grep public_edge_test |"
+        ),
+        Input(command="grep -rni goldens -l . | grep -v node_modules"): Rewrite(
+            pattern="code grep goldens -i -l"
+        ),
+        Input(command="grep -rn foo . | sort"): Rewrite(pattern="code grep foo"),
+        Input(command="grep -r foo . | tail -f"): Rewrite(pattern="code grep foo"),
         # Transcript policy steer — fires even through a downstream pipe (checked before the pipe):
         Input(command="grep -r foo ~/.claude/projects/"): Block(pattern="cc-transcript"),
         Input(command="grep -r foo ~/.claude/projects/ | head"): Block(pattern="cc-transcript"),

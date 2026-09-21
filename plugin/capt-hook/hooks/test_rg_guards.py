@@ -261,7 +261,9 @@ class TestDependencyDirTargets:
     def test_invert_filter_stage_is_not_a_dep_target(self) -> None:
         # The incident: `-v` was missing from the arity table, so the filter stage fell back to raw
         # tokens and its PATTERN (`generated`, a git-ignored dir here) read as a dependency target.
-        assert grep_verdict("grep -rn foo . | grep -v generated") is None
+        assert grep_verdict("grep -rn foo . | grep -v generated") == (
+            "/fake/ccx code grep foo | grep -v generated"
+        )
         assert rg_verdict("rg -n foo . | rg -P generated") is None
 
     def test_invert_over_an_ignored_dir_still_blocks(self) -> None:
