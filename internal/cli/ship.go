@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -186,7 +185,7 @@ func newShipCmd() *cobra.Command {
 		Short: "Commit, push, and watch CI in one step",
 		Long: `Commit, push, and watch CI in one step.
 
-Ship refuses an empty working copy only when the branch carries nothing above trunk either. Where it does carry commits trunk does not — work a delegate's worktree, a hand-made commit, or a codex lane already landed — there is nothing to cut and everything to submit, so ship skips the commit and goes on to push and the pull request, reporting "nothing to commit — shipping as --no-commit". A path-scoped ship whose scoped paths are clean takes that same path, naming them: scoping already declared everything else out, so finding them clean over a branch ahead of trunk means the work landed. --no-commit states the path outright and refuses a dirty working copy, whose changes would otherwise be left out of the branch and the pull request this same run updates; it is refused alongside paths, where the two spellings contradict each other. Where the branch carries nothing above trunk there is nothing to submit either, and the refusal says so. Ship resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>, autostashing uncommitted work); a rebase that would conflict is rolled back and reported instead of pushed. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
+Ship refuses an empty working copy only when the branch carries nothing above trunk either. Where it does carry commits trunk does not — work a delegate's worktree, a hand-made commit, or a codex lane already landed — there is nothing to cut and everything to submit, so ship skips the commit and goes on to push and the pull request, reporting "nothing to commit — shipping as --no-commit". A path-scoped ship whose scoped paths are clean takes that same path, naming them: scoping already declared everything else out, so finding them clean over a branch ahead of trunk means the work landed. --no-commit states the path outright and refuses a dirty working copy, whose changes would otherwise be left out of the branch and the pull request this same run updates; it is refused alongside paths, where the two spellings contradict each other. Where the branch carries nothing above trunk there is nothing to submit either, and the refusal says so. Ship resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>); a rebase that would conflict is rolled back and reported instead of pushed. Uncommitted work the rebase has to move — every hunk a scoped ship deliberately left in the tree — is kept as a commit of its own rather than on refs/stash, which every working copy of a repository shares, and put back afterwards; work that will not go back leaves the commit holding it and the files in it named in the refusal. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
 
 Where the commit goes is one decision, resolved before any mutation and reported as a branch <name> or created <name> segment. On a non-trunk branch or bookmark, ship appends to it. On trunk it appends in your own repositories — direct-to-main is deliberate there — and starts a branch named from the commit subject when GitHub says the repository is someone else's, since an org trunk rejects the commit through its protect-<trunk> hook and leaves it dangling; the graphite lane always starts a branch on trunk, because gt has no verb that commits onto it. A detached HEAD is refused rather than guessed at, and so are several trunk candidates unless --branch names one of them. --branch <name> commits onto that branch, creating it here when it does not exist and refusing when it exists somewhere else, since ship does not check branches out; --new-branch[=<name>] always starts one, deriving the name from the commit subject when bare (an explicit name must be spelled --new-branch=name, because cobra parses "--new-branch name" as a path operand to commit); --append refuses on trunk; --allow-trunk lets --branch advance a trunk you do not own. --bookmark is a jj-only alias of --branch, --create a deprecated alias of --new-branch. A new branch is cut with gt create (graphite), git switch -c (git), or jj bookmark create -r @- (jj).
 
@@ -1622,10 +1621,11 @@ func gitIsAncestor(ctx context.Context, dir render.Dir, prefix, maybe, ref strin
 	}
 }
 
-// gitRebaseOnto rebases HEAD onto <remote>/<branch> with --autostash (the worktree
-// is dirty after a hunk-scoped ship), returning the number of local commits
-// replayed. A failed rebase is classified by gitRebaseFailure; an autostash pop
-// left unapplied is surfaced as a warning, not a failure.
+// gitRebaseOnto rebases HEAD onto <remote>/<branch>, returning the number of
+// local commits replayed. The worktree is dirty here by design — a hunk-scoped
+// ship leaves every excluded hunk in the tree — so the rebase moves work this
+// ship deliberately did not take, and gitHoldWorktree gives it back rather than
+// --autostash.
 func gitRebaseOnto(ctx context.Context, dir render.Dir, prefix, remote, branch string) (int, error) {
 	remoteRef := "refs/remotes/" + remote + "/" + branch
 	countOut, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", "--count", remoteRef + "..HEAD"})
@@ -1637,20 +1637,71 @@ func gitRebaseOnto(ctx context.Context, dir render.Dir, prefix, remote, branch s
 		return 0, fmt.Errorf(prefix+": malformed rev-list count %q: %w", countOut, err)
 	}
 
-	_, stderr, err := render.RunCLIKeepStderr(ctx, dir, "git", []string{"rebase", "--autostash", remoteRef})
+	held, err := gitHoldWorktree(ctx, dir, prefix)
 	if err != nil {
-		return 0, gitRebaseFailure(ctx, dir, prefix, remote, branch, err)
+		return 0, err
 	}
-	if strings.Contains(stderr, "resulted in conflicts") {
-		slog.Warn(prefix+": rebase left autostashed changes unapplied — recover them with git stash pop", "branch", branch)
+	if _, err := render.RunCLI(ctx, dir, "git", []string{"rebase", remoteRef}); err != nil {
+		return 0, errors.Join(gitRebaseFailure(ctx, dir, prefix, remote, branch, err), held.restore(ctx, dir, prefix))
+	}
+	if err := held.restore(ctx, dir, prefix); err != nil {
+		return 0, err
 	}
 	return count, nil
 }
 
-// gitRebaseFailure classifies a failed git rebase --autostash. A rebase in progress
-// (REBASE_HEAD resolves) conflicted mid-replay: list, abort (restoring the
-// autostash), report. Otherwise it failed before starting (hook, dirty index) —
-// return the raw error, no abort. Cleanup runs uncancellable.
+// worktreeHold is the uncommitted work a rebase had to move out of the way: the
+// paths it covers, and the commit it is kept as.
+type worktreeHold struct {
+	paths []string
+	sha   string
+}
+
+// gitHoldWorktree clears the worktree for a rebase, keeping its uncommitted work
+// as a commit. git stash create, never git stash push: refs/stash is shared by
+// every working copy, so an entry taken back by position hands one holder
+// another's work, and a bare "autostash" row names neither the branch it came
+// from nor the files in it.
+func gitHoldWorktree(ctx context.Context, dir render.Dir, prefix string) (worktreeHold, error) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"diff", "--name-only", "HEAD"})
+	if err != nil {
+		return worktreeHold{}, fmt.Errorf("%s: git diff --name-only HEAD: %w", prefix, err)
+	}
+	paths := strings.Fields(out)
+	if len(paths) == 0 {
+		return worktreeHold{}, nil
+	}
+	out, err = render.RunCLI(ctx, dir, "git", []string{"stash", "create", "ccx " + prefix + " rebase"})
+	if err != nil {
+		return worktreeHold{}, fmt.Errorf("%s: snapshot the uncommitted work before rebasing: %w", prefix, err)
+	}
+	sha := strings.TrimSpace(out)
+	if sha == "" {
+		return worktreeHold{}, nil
+	}
+	if _, err := render.RunCLI(ctx, dir, "git", []string{"reset", "--hard"}); err != nil {
+		return worktreeHold{}, fmt.Errorf("%s: clear the worktree for the rebase (the work is kept at %s): %w", prefix, sha, err)
+	}
+	return worktreeHold{paths: paths, sha: sha}, nil
+}
+
+// restore puts the held work back, and names where it is when it will not go.
+func (h worktreeHold) restore(ctx context.Context, dir render.Dir, prefix string) error {
+	if h.sha == "" {
+		return nil
+	}
+	if _, err := render.RunCLI(ctx, dir, "git", []string{"stash", "apply", "--index", h.sha}); err != nil {
+		return fmt.Errorf("%s: the uncommitted work in %s does not apply to the rebased branch — it is kept as %s, so put it back with git stash apply %s, never git stash pop, which takes whatever sits on top of a stack every working copy shares: %w",
+			prefix, strings.Join(h.paths, ", "), h.sha, h.sha, err)
+	}
+	return nil
+}
+
+// gitRebaseFailure classifies a failed rebase. A rebase in progress
+// (REBASE_HEAD resolves) conflicted mid-replay: list, abort, report. Otherwise
+// it failed before starting (hook, dirty index) — return the raw error, no
+// abort. The caller puts back the work it held either way. Cleanup runs
+// uncancellable.
 func gitRebaseFailure(ctx context.Context, dir render.Dir, prefix, remote, branch string, rebaseErr error) error {
 	cleanup := context.WithoutCancel(ctx)
 	inProgress, err := gitRefExists(cleanup, dir, "REBASE_HEAD")
