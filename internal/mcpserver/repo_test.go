@@ -35,6 +35,23 @@ func writeTree(t *testing.T, name, content string) (dir, path string) {
 	return dir, path
 }
 
+// requireCite fails unless out cites path as the root line's tree names it:
+// the header's "# root <dir>" plus the repo-relative "### <rel>:" the engine
+// printed from inside it.
+func requireCite(t *testing.T, out, root, path string) {
+	t.Helper()
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		t.Fatalf("relativize %s against %s: %v", path, root, err)
+	}
+	if !strings.Contains(out, "# root "+root) {
+		t.Errorf("output should name %s as its root:\n%s", root, out)
+	}
+	if !strings.Contains(out, "### "+rel+":") {
+		t.Errorf("output should cite %s:\n%s", rel, out)
+	}
+}
+
 func requireGrepEngine(t *testing.T) {
 	t.Helper()
 	_, rgErr := exec.LookPath("rg")
@@ -53,7 +70,7 @@ func TestRepoSchemaSurface(t *testing.T) {
 	want := map[string]string{
 		"ccx_code_read":    `"repo":{"description":"repo root a relative path resolves against; default project root","type":"string"}`,
 		"ccx_code_outline": `"repo":{"description":"repo root a relative path resolves against; default project root","type":"string"}`,
-		"ccx_code_grep":    `"repo":{"description":"repo root to search, and the root relative paths resolve against; default project root","type":"string"}`,
+		"ccx_code_grep":    `"repo":{"description":"repo root to search: the directory the engine runs in, which globs anchor at and relative paths resolve against; default project root","type":"string"}`,
 	}
 	for _, tool := range res.Tools {
 		description, ok := want[tool.Name]
@@ -183,9 +200,7 @@ func TestGrepToolRepoSearchesNamedRoot(t *testing.T) {
 	if isErr {
 		t.Fatalf("ccx_code_grep repo is error: %s", out)
 	}
-	if !strings.Contains(out, "### "+hit+":") {
-		t.Errorf("grep should search the named repo:\n%s", out)
-	}
+	requireCite(t, out, named, hit)
 	if strings.Contains(out, "pinned.go") || strings.Contains(out, "cwd.go") {
 		t.Errorf("grep leaked outside the named repo:\n%s", out)
 	}
@@ -203,9 +218,7 @@ func TestGrepToolPinnedRootBeatsCwd(t *testing.T) {
 	if isErr {
 		t.Fatalf("ccx_code_grep pinned is error: %s", out)
 	}
-	if !strings.Contains(out, "### "+hit+":") {
-		t.Errorf("grep should search the pinned root:\n%s", out)
-	}
+	requireCite(t, out, pinned, hit)
 	if strings.Contains(out, "cwd.go") {
 		t.Errorf("grep leaked into the working directory:\n%s", out)
 	}
@@ -231,9 +244,7 @@ func TestSearchToolLiteralSearchesNamedRepo(t *testing.T) {
 	if isErr {
 		t.Fatalf("ccx_code_search literal is error: %s", out)
 	}
-	if !strings.Contains(out, "### "+hit+":") {
-		t.Errorf("a literal search should search the named repo:\n%s", out)
-	}
+	requireCite(t, out, named, hit)
 	if strings.Contains(out, "cwd.go") {
 		t.Errorf("literal search leaked into the working directory:\n%s", out)
 	}
@@ -312,9 +323,7 @@ func TestGrepToolRelativeRepoSearchesUnderThePinnedRoot(t *testing.T) {
 	if isErr {
 		t.Fatalf("ccx_code_grep relative repo is error: %s", out)
 	}
-	if !strings.Contains(out, "### "+hit+":") {
-		t.Errorf("a relative repo should search under the pinned root:\n%s", out)
-	}
+	requireCite(t, out, filepath.Join(pinned, "vendor"), hit)
 	if strings.Contains(out, "cwd.go") {
 		t.Errorf("grep leaked into the working directory's vendor tree:\n%s", out)
 	}
@@ -332,9 +341,7 @@ func TestSearchToolLiteralRelativeRepoSearchesUnderThePinnedRoot(t *testing.T) {
 	if isErr {
 		t.Fatalf("ccx_code_search relative repo is error: %s", out)
 	}
-	if !strings.Contains(out, "### "+hit+":") {
-		t.Errorf("a literal search's relative repo should search under the pinned root:\n%s", out)
-	}
+	requireCite(t, out, filepath.Join(pinned, "vendor"), hit)
 	if strings.Contains(out, "cwd.go") {
 		t.Errorf("literal search leaked into the working directory's vendor tree:\n%s", out)
 	}
@@ -388,11 +395,11 @@ func TestDepsToolWithoutARootReadsCwd(t *testing.T) {
 	}
 }
 
-// TestRootedResultNamesRepo pins the root line to the tree that answered. A
-// caller passing repo redirects the read, so a line naming the declared root
-// instead would caption one tree's bytes with another tree's name — the exact
-// confusion the line exists to end.
-func TestRootedResultNamesRepo(t *testing.T) {
+// TestPinRepoNamesRepo pins the root line to the tree that answered. A caller
+// passing repo redirects the read, so a line naming the declared root instead
+// would caption one tree's bytes with another tree's name — the exact confusion
+// the line exists to end.
+func TestPinRepoNamesRepo(t *testing.T) {
 	declared := t.TempDir()
 	other := t.TempDir()
 	pinRoot(t, declared)
@@ -408,15 +415,62 @@ func TestRootedResultNamesRepo(t *testing.T) {
 		{name: "relative repo names it under the declared root", repo: "vendor", want: filepath.Join(declared, "vendor")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			res, _, err := rootedResult(ctx, backend.OpRead, tt.repo, "# read a.go:1#ab12 (1 of 9 lines)\npackage a\n")
+			runCtx, err := pinRepo(ctx, tt.repo)
 			if err != nil {
-				t.Fatalf("rootedResult: %v", err)
+				t.Fatalf("pinRepo: %v", err)
+			}
+			res, _, err := opResult(runCtx, backend.OpRead, "# read a.go:1#ab12 (1 of 9 lines)\npackage a\n")
+			if err != nil {
+				t.Fatalf("opResult: %v", err)
 			}
 			text := res.Content[0].(*mcp.TextContent).Text
 			want := "# root " + tt.want
 			if !strings.Contains(text, want) {
-				t.Errorf("rootedResult text = %q, want a %q line", text, want)
+				t.Errorf("opResult text = %q, want a %q line", text, want)
 			}
 		})
+	}
+}
+
+// TestGrepToolSlashedGlobSelectsInsideTheNamedRepo guards the glob filter. A
+// slashed glob anchors at the directory the engine runs in, so handing the
+// engine that root as a path operand instead of running it there selected
+// nothing — a zero that reads exactly like an absence.
+func TestGrepToolSlashedGlobSelectsInsideTheNamedRepo(t *testing.T) {
+	requireGrepEngine(t)
+	named, hit := writeNested(t, "internal/cli/named.go", "var needle = 1\n")
+	writeUnder(t, named, "other/skipped.go", "var needle = 2\n")
+	t.Chdir(t.TempDir())
+
+	cs := connectTestServer(t)
+	args := map[string]any{"text": "needle", "repo": named}
+	control, isErr := callText(t, cs, "ccx_code_grep", args)
+	if isErr {
+		t.Fatalf("ccx_code_grep control is error: %s", control)
+	}
+	if !strings.Contains(control, "skipped.go") {
+		t.Fatalf("the unglobbed control should reach both files:\n%s", control)
+	}
+
+	args["globs"] = []any{"internal/cli/*.go"}
+	out, isErr := callText(t, cs, "ccx_code_grep", args)
+	if isErr {
+		t.Fatalf("ccx_code_grep globs is error: %s", out)
+	}
+	requireCite(t, out, named, hit)
+	if strings.Contains(out, "skipped.go") {
+		t.Errorf("the glob should have excluded other/skipped.go:\n%s", out)
+	}
+}
+
+// writeUnder writes one file at a relative path under root.
+func writeUnder(t *testing.T, root, rel, content string) {
+	t.Helper()
+	path := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("make fixture dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
 	}
 }
