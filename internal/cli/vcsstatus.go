@@ -34,18 +34,19 @@ const statusDirtyPaths = 8
 // vcsStatus is every branch of the stack, what its pull request is waiting on,
 // and what would land if it merged now.
 type vcsStatus struct {
-	Lane       string         `json:"lane"`
-	Root       string         `json:"root"`
-	Repo       string         `json:"repo,omitempty"`
-	Branch     string         `json:"branch,omitempty"`
-	Trunk      string         `json:"trunk,omitempty"`
-	Dirty      bool           `json:"dirty"`
-	DirtyFiles []string       `json:"dirty_files,omitempty"`
-	Required   []string       `json:"required_checks,omitempty"`
-	StackError string         `json:"stack_error,omitempty"`
-	PRError    string         `json:"pr_error,omitempty"`
-	Probe      *statusProbe   `json:"queue_probe,omitempty"`
-	Branches   []statusBranch `json:"branches,omitempty"`
+	Lane       string          `json:"lane"`
+	Root       string          `json:"root"`
+	Repo       string          `json:"repo,omitempty"`
+	Branch     string          `json:"branch,omitempty"`
+	Trunk      string          `json:"trunk,omitempty"`
+	TrunkState *vcs.TrunkState `json:"trunk_state,omitempty"`
+	Dirty      bool            `json:"dirty"`
+	DirtyFiles []string        `json:"dirty_files,omitempty"`
+	Required   []string        `json:"required_checks,omitempty"`
+	StackError string          `json:"stack_error,omitempty"`
+	PRError    string          `json:"pr_error,omitempty"`
+	Probe      *statusProbe    `json:"queue_probe,omitempty"`
+	Branches   []statusBranch  `json:"branches,omitempty"`
 }
 
 // statusDiverge counts a branch against trunk, and is absent when no
@@ -130,6 +131,13 @@ mergeability, the checks on its head and which of them the base branch
 requires, every standing review and whether it was cast on the head, and what
 the Graphite merge queue is holding.
 
+Ahead of the branches is the ref they all rebase onto. A local trunk that has
+drifted from the remote's is reported with the working copy pinning it and that
+copy's uncommitted count, because git refuses to fetch into a branch checked out
+elsewhere and no lane can move it; a local trunk carrying commits the remote
+does not is named commit by commit, since a restack splices every one of them
+into every branch of the stack. A trunk that equals the remote's says nothing.
+
 That last one is the fact no GitHub field carries. The queue snapshots a pull
 request when it admits it, so a push after that lands the older commit and
 silently drops the rest; status reconstructs the snapshot from the queue's own
@@ -201,10 +209,25 @@ func collectVcsStatus(ctx context.Context, l lane, o vcsStatusOpts) (vcsStatus, 
 		return vcsStatus{}, err
 	}
 	branches, state := statusStack(ctx, l, &st)
+	// The worktree registry is git's, and a jj repository with no git backing
+	// resolves no trunk ref and holds no branch git can name: asking there is a
+	// failure, not an empty answer.
+	if !hasTrunk && len(branches) == 0 {
+		return st, nil
+	}
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	if err != nil {
+		return vcsStatus{}, fmt.Errorf("status: %w", err)
+	}
+	if hasTrunk {
+		if err := statusTrunkState(ctx, l, trunk, holders[trunk.Name()], &st); err != nil {
+			return vcsStatus{}, err
+		}
+	}
 	if len(branches) == 0 {
 		return st, nil
 	}
-	if err := statusLocalBranches(ctx, l, state, branches, trunk, hasTrunk, &st); err != nil {
+	if err := statusLocalBranches(ctx, l, holders, state, branches, trunk, hasTrunk, &st); err != nil {
 		return vcsStatus{}, err
 	}
 	statusResolvePRs(ctx, l, &st)
@@ -285,11 +308,7 @@ func statusStack(ctx context.Context, l lane, st *vcsStatus) ([]string, gtState)
 // statusLocalBranches fills what git and gt know about each branch: which
 // working copy holds it, whether gt says it sits off its parent, and how far it
 // has diverged from trunk.
-func statusLocalBranches(ctx context.Context, l lane, state gtState, branches []string, trunk vcs.Trunk, hasTrunk bool, st *vcsStatus) error {
-	holders, err := vcs.BranchHolders(ctx, l.checkout)
-	if err != nil {
-		return fmt.Errorf("status: %w", err)
-	}
+func statusLocalBranches(ctx context.Context, l lane, holders map[string]string, state gtState, branches []string, trunk vcs.Trunk, hasTrunk bool, st *vcsStatus) error {
 	for _, name := range branches {
 		b := statusBranch{
 			Name:         name,
@@ -338,6 +357,21 @@ func statusTrunkRef(ctx context.Context, l lane, st *vcsStatus) (vcs.Trunk, bool
 	default:
 		return vcs.Trunk{}, false, fmt.Errorf("status: %w", err)
 	}
+}
+
+// statusTrunkState reads the ref every restack rebases onto, and keeps the
+// answer only when something is wrong with it: a trunk that equals the remote's
+// is the normal case and says nothing worth a line.
+func statusTrunkState(ctx context.Context, l lane, trunk vcs.Trunk, holder string, st *vcsStatus) error {
+	state, err := vcs.ReadTrunkState(ctx, l.dir(), trunk, holder)
+	if err != nil {
+		return fmt.Errorf("status: %w", err)
+	}
+	if state.Healthy() {
+		return nil
+	}
+	st.TrunkState = &state
+	return nil
 }
 
 // statusGTTrunk is the branch gt calls trunk, which outranks origin's HEAD on
@@ -491,7 +525,15 @@ func renderVcsStatus(st vcsStatus) string {
 		line("repo", st.Repo)
 	}
 	if st.Trunk != "" {
-		line("trunk", st.Trunk)
+		line("trunk", statusTrunkValue(st))
+	}
+	for _, blocker := range statusTrunkBlockers(st) {
+		line("blocked", blocker)
+	}
+	if ts := st.TrunkState; ts != nil {
+		for _, c := range ts.Foreign {
+			line("foreign", c.SHA+" "+c.Subject)
+		}
 	}
 	line("dirty", statusDirtyValue(st))
 	if len(st.Required) > 0 {
@@ -566,6 +608,58 @@ func statusDirtyValue(st vcsStatus) string {
 		named, rest = named[:statusDirtyPaths], fmt.Sprintf(", +%d more", len(st.DirtyFiles)-statusDirtyPaths)
 	}
 	return fmt.Sprintf("yes (%d %s)%s%s%s", len(st.DirtyFiles), noun, shipSep, strings.Join(named, ", "), rest)
+}
+
+// statusTrunkValue names the trunk, and where it is unhealthy the working copy
+// pinning it and how far it stands from the remote.
+func statusTrunkValue(st vcsStatus) string {
+	ts := st.TrunkState
+	if ts == nil {
+		return st.Trunk
+	}
+	segs := []string{st.Trunk}
+	if ts.Behind > 0 {
+		segs = append(segs, fmt.Sprintf("behind %s/%s by %d", ts.Remote, ts.Trunk, ts.Behind))
+	}
+	if len(ts.Foreign) > 0 {
+		segs = append(segs, fmt.Sprintf("ahead by %d", len(ts.Foreign)))
+	}
+	if ts.Holder != "" {
+		held := "held by " + ts.Holder
+		switch {
+		case ts.Stale:
+			held += ", tree gone"
+		case ts.Dirty > 0:
+			held += fmt.Sprintf(", %d uncommitted %s", ts.Dirty, plural(ts.Dirty, "file", "files"))
+		}
+		segs = append(segs, held)
+	}
+	return strings.Join(segs, shipSep)
+}
+
+// statusTrunkBlockers names what an unhealthy trunk does to the whole stack,
+// worst first. The splice is Graphite's alone: gt restacks onto the local trunk
+// ref, where the git lane fetches and rebases onto the remote-tracking one and
+// never sees a local commit.
+func statusTrunkBlockers(st vcsStatus) []string {
+	ts := st.TrunkState
+	if ts == nil {
+		return nil
+	}
+	var out []string
+	if ts.Stale {
+		return append(out, fmt.Sprintf("%s holds %s but its tree is gone, so nothing can free the ref — run git worktree prune",
+			ts.Holder, ts.Trunk))
+	}
+	if n := len(ts.Foreign); n > 0 && st.Lane == "gt" {
+		out = append(out, fmt.Sprintf("local %s carries %d %s %s/%s does not — a restack splices them into every branch of the stack",
+			ts.Trunk, n, plural(n, "commit", "commits"), ts.Remote, ts.Trunk))
+	}
+	if ts.Behind > 0 && ts.Holder != "" {
+		out = append(out, fmt.Sprintf("%s holds %s, so git refuses to fetch into it and no sibling working copy can advance it — free it with ccx vcs worktree park",
+			ts.Holder, ts.Trunk))
+	}
+	return out
 }
 
 // statusParent is the branch gt tracks this one on. Graphite's stack metadata

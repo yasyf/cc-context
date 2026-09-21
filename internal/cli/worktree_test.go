@@ -728,3 +728,169 @@ func worktreeSummaryPath(t *testing.T, summary string) string {
 	}
 	return segs[2]
 }
+
+// parkRepo builds the shape park exists for: a main checkout holding trunk, a
+// lane worktree beside it, and an origin the lane can land on.
+func parkRepo(t *testing.T) (*vcstest.Fixture, string) {
+	t.Helper()
+	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Worktree("lane"))
+	return f, f.WorktreePath("lane")
+}
+
+// landOnRemoteTrunk lands one commit on origin's trunk from the lane, leaving
+// the local trunk ref one behind.
+func landOnRemoteTrunk(t *testing.T, lane, subject string) {
+	t.Helper()
+	mustRun(t, lane, "git", "fetch", "-q", "origin")
+	mustRun(t, lane, "git", "reset", "-q", "--hard", "refs/remotes/origin/main")
+	mustRun(t, lane, "git", "commit", "-q", "--allow-empty", "-m", subject)
+	mustRun(t, lane, "git", "push", "-q", "origin", "HEAD:main")
+	mustRun(t, lane, "git", "fetch", "-q", "origin")
+}
+
+func writeWorktreeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %q: %v", path, err)
+	}
+}
+
+// TestWorktreeParkFreesTheTrunkRef is the payoff: once nobody holds trunk, the
+// fetch git refused from a lane goes through.
+func TestWorktreeParkFreesTheTrunkRef(t *testing.T) {
+	f, lane := parkRepo(t)
+	landOnRemoteTrunk(t, lane, "landed one")
+	files := mustRun(t, f.Dir, "git", "status", "--porcelain")
+	head := mustRun(t, f.Dir, "git", "rev-parse", "HEAD")
+
+	out, err := runWorktreeCmd(t, "park")
+	if err != nil {
+		t.Fatalf("park error = %v", err)
+	}
+	if !strings.Contains(out, "freed main") || !strings.Contains(out, "advanced 1 to origin/main") {
+		t.Errorf("park summary = %q, want the freed ref and its advance named", out)
+	}
+	if branch := strings.TrimSpace(mustRun(t, f.Dir, "git", "branch", "--show-current")); branch != "" {
+		t.Errorf("branch = %q, want a detached HEAD", branch)
+	}
+	if got := mustRun(t, f.Dir, "git", "rev-parse", "HEAD"); got != head {
+		t.Errorf("HEAD = %q, want the %q it was parked at", got, head)
+	}
+	if got := mustRun(t, f.Dir, "git", "status", "--porcelain"); got != files {
+		t.Errorf("status = %q, want the %q it was before", got, files)
+	}
+	local := strings.TrimSpace(mustRun(t, f.Dir, "git", "rev-parse", "refs/heads/main"))
+	remote := strings.TrimSpace(mustRun(t, f.Dir, "git", "rev-parse", "refs/remotes/origin/main"))
+	if local != remote {
+		t.Errorf("refs/heads/main = %q, want origin's %q", local, remote)
+	}
+
+	landOnRemoteTrunk(t, lane, "landed two")
+	mustRun(t, lane, "git", "fetch", "origin", "main:main")
+}
+
+// TestWorktreeParkRefusesUncommittedWork holds park off the one thing it must
+// never touch, and proves the working copy came through byte for byte.
+func TestWorktreeParkRefusesUncommittedWork(t *testing.T) {
+	f, lane := parkRepo(t)
+	landOnRemoteTrunk(t, lane, "landed one")
+	writeWorktreeFile(t, filepath.Join(f.Dir, "f.txt"), "someone's work\n")
+	writeWorktreeFile(t, filepath.Join(f.Dir, "untracked.txt"), "more\n")
+	before := mustRun(t, f.Dir, "git", "status", "--porcelain")
+
+	_, err := runWorktreeCmd(t, "park")
+	if err == nil {
+		t.Fatal("park over a dirty trunk holder succeeded")
+	}
+	if !strings.Contains(err.Error(), "2 uncommitted files") {
+		t.Errorf("park error = %v, want the uncommitted count named", err)
+	}
+	if after := mustRun(t, f.Dir, "git", "status", "--porcelain"); after != before {
+		t.Errorf("status = %q, want the %q it was before", after, before)
+	}
+	if branch := strings.TrimSpace(mustRun(t, f.Dir, "git", "branch", "--show-current")); branch != "main" {
+		t.Errorf("branch = %q, want main still held", branch)
+	}
+}
+
+// TestWorktreeParkRefusesForeignCommits is the refusal about the ref rather
+// than the tree: the fast-forward park runs would drop them.
+func TestWorktreeParkRefusesForeignCommits(t *testing.T) {
+	f, _ := parkRepo(t)
+	mustRun(t, f.Dir, "git", "commit", "-q", "--allow-empty", "-m", "parked work one")
+	head := mustRun(t, f.Dir, "git", "rev-parse", "refs/heads/main")
+
+	_, err := runWorktreeCmd(t, "park")
+	if err == nil {
+		t.Fatal("park over a contaminated trunk succeeded")
+	}
+	if !strings.Contains(err.Error(), "parked work one") {
+		t.Errorf("park error = %v, want the foreign commit named", err)
+	}
+	if got := mustRun(t, f.Dir, "git", "rev-parse", "refs/heads/main"); got != head {
+		t.Errorf("refs/heads/main = %q, want the %q it was before", got, head)
+	}
+	if branch := strings.TrimSpace(mustRun(t, f.Dir, "git", "branch", "--show-current")); branch != "main" {
+		t.Errorf("branch = %q, want main still held", branch)
+	}
+}
+
+// TestWorktreeParkRefusesSeveralHolders covers what BranchHolders cannot say:
+// `git worktree add --force` puts trunk in two copies, and freeing one would
+// move HEAD under the other.
+func TestWorktreeParkRefusesSeveralHolders(t *testing.T) {
+	f, lane := parkRepo(t)
+	landOnRemoteTrunk(t, lane, "landed one")
+	second := f.WorktreePath("second")
+	mustRun(t, f.Dir, "git", "worktree", "add", "--force", "-f", second, "main")
+	head := mustRun(t, f.Dir, "git", "rev-parse", "refs/heads/main")
+
+	_, err := runWorktreeCmd(t, "park")
+	if err == nil {
+		t.Fatal("park over two trunk holders succeeded")
+	}
+	if !strings.Contains(err.Error(), "2 working copies hold main") {
+		t.Errorf("park error = %v, want both holders named", err)
+	}
+	if got := mustRun(t, f.Dir, "git", "rev-parse", "refs/heads/main"); got != head {
+		t.Errorf("refs/heads/main = %q, want the %q it was before", got, head)
+	}
+	if branch := strings.TrimSpace(mustRun(t, f.Dir, "git", "branch", "--show-current")); branch != "main" {
+		t.Errorf("branch = %q, want main still held", branch)
+	}
+}
+
+// TestWorktreeParkSeesUntrackedWorkUnderAHidingConfig is the gate that a
+// status.showUntrackedFiles=no would otherwise walk straight through, leaving
+// park to detach a checkout full of unsaved work.
+func TestWorktreeParkSeesUntrackedWorkUnderAHidingConfig(t *testing.T) {
+	f, lane := parkRepo(t)
+	landOnRemoteTrunk(t, lane, "landed one")
+	mustRun(t, f.Dir, "git", "config", "status.showUntrackedFiles", "no")
+	writeWorktreeFile(t, filepath.Join(f.Dir, "untracked.txt"), "unsaved\n")
+
+	_, err := runWorktreeCmd(t, "park")
+	if err == nil {
+		t.Fatal("park over a holder with untracked work succeeded")
+	}
+	if !strings.Contains(err.Error(), "1 uncommitted file") {
+		t.Errorf("park error = %v, want the untracked file counted", err)
+	}
+	if branch := strings.TrimSpace(mustRun(t, f.Dir, "git", "branch", "--show-current")); branch != "main" {
+		t.Errorf("branch = %q, want main still held", branch)
+	}
+}
+
+// TestWorktreeParkOnAFreeTrunkIsANoop keeps the command idempotent: a trunk no
+// working copy holds is the state park exists to reach.
+func TestWorktreeParkOnAFreeTrunkIsANoop(t *testing.T) {
+	vcstest.Repo(t, vcstest.Remote(), vcstest.Detached())
+
+	out, err := runWorktreeCmd(t, "park")
+	if err != nil {
+		t.Fatalf("park error = %v", err)
+	}
+	if !strings.Contains(out, "already free") {
+		t.Errorf("park summary = %q, want the free trunk reported", out)
+	}
+}

@@ -63,6 +63,7 @@ func newWorktreeCmd() *cobra.Command {
 		newWorktreeListCmd(),
 		newWorktreeAddCmd(),
 		newWorktreeRmCmd(),
+		newWorktreeParkCmd(),
 		newWorktreeRepairCmd(),
 	)
 	return cmd
@@ -136,6 +137,130 @@ leaves the tree on disk with a live-looking pointer otherwise.`,
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "remove a worktree with uncommitted changes")
 	return cmd
+}
+
+func newWorktreeParkCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "park",
+		Short: "Free the trunk ref by detaching the working copy that holds it",
+		Long: `Free the trunk ref by detaching the working copy that holds it.
+
+A checkout sitting on trunk pins the ref every restack rebases onto: git refuses
+to fetch into a branch checked out elsewhere, so no sibling working copy can
+advance it and the whole pool restacks onto a trunk that is weeks old. A shared
+checkout that exists only to host worktrees has no reason to hold it.
+
+Park detaches that checkout's HEAD at the commit it already stands on — no file
+in it changes — and fast-forwards the freed ref to the remote-tracking trunk
+already fetched, without touching the network. It is deliberately a command you
+run rather than something ccx does when it cuts a worktree: the checkout may be
+somebody's, and HEAD is theirs to move.
+
+It refuses on any uncommitted change there, which is work park must never touch,
+and on a local trunk carrying commits the remote does not, which the ref advance
+would discard.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runWorktreePark(cmd)
+		},
+	}
+	return cmd
+}
+
+func runWorktreePark(cmd *cobra.Command) error {
+	ctx := cmd.Context()
+	l, err := resolveLane(ctx, "worktree park", workingDir(), true)
+	if err != nil {
+		return err
+	}
+	branch, err := gitCurrentBranch(ctx, l.dir(), "worktree park")
+	if err != nil {
+		return err
+	}
+	remote, err := vcs.GitRemoteFor(ctx, l.dir(), branch)
+	if err != nil {
+		return fmt.Errorf("worktree park: %w", err)
+	}
+	trunk, err := vcs.ResolveTrunk(ctx, l.dir(), remote)
+	if err != nil {
+		return fmt.Errorf("worktree park: %w", err)
+	}
+	holders, err := vcs.TrunkHolders(ctx, l.checkout, trunk)
+	if err != nil {
+		return fmt.Errorf("worktree park: %w", err)
+	}
+	if len(holders) == 0 {
+		cmd.Println(strings.Join([]string{"already free", trunk.Name() + " is checked out in no working copy"}, shipSep))
+		return nil
+	}
+	if len(holders) > 1 {
+		return fmt.Errorf("worktree park: %d working copies hold %s (%s) — park frees one ref and would move HEAD under the rest; detach all but one by hand first",
+			len(holders), trunk.Name(), strings.Join(holders, ", "))
+	}
+	holder := holders[0]
+	local, target := vcs.LocalBranchRef(trunk.Name()), trunk.Ref()
+	// The ref is read before anything is measured and handed to update-ref as
+	// its expected old value, so a concurrent commit onto trunk fails the
+	// advance rather than being overwritten by it.
+	was, err := vcs.ResolveRef(ctx, l.dir(), local)
+	if err != nil {
+		return fmt.Errorf("worktree park: %w", err)
+	}
+	onto, err := vcs.ResolveRef(ctx, l.dir(), target)
+	if err != nil {
+		return fmt.Errorf("worktree park: %w", err)
+	}
+	state, err := vcs.ReadTrunkState(ctx, l.dir(), trunk, holder)
+	if err != nil {
+		return fmt.Errorf("worktree park: %w", err)
+	}
+	if err := parkRefusals(state); err != nil {
+		return err
+	}
+	if _, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"checkout", "--detach"}); err != nil {
+		return fmt.Errorf("worktree park: git checkout --detach in %s: %w", holder, err)
+	}
+	if state.Behind > 0 {
+		if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"update-ref", string(local), onto, was}); err != nil {
+			return fmt.Errorf("worktree park: git update-ref %s %s %s: %w — %s is detached and %s was left where it stood",
+				local, onto, was, err, holder, trunk.Name())
+		}
+	}
+	cmd.Println(strings.Join([]string{"parked " + holder, "freed " + trunk.Name(), parkAdvanced(state, remote)}, shipSep))
+	return nil
+}
+
+// parkRefusals is the pair of states park must not act on: work it would have
+// to touch, and commits the fast-forward would discard.
+func parkRefusals(state vcs.TrunkState) error {
+	if state.Stale {
+		return fmt.Errorf("worktree park: %s holds %s but its tree is gone — run git worktree prune, then park again",
+			state.Holder, state.Trunk)
+	}
+	if state.Dirty > 0 {
+		return fmt.Errorf("worktree park: %s holds %s with %d uncommitted %s — commit or move that work first; park never touches it",
+			state.Holder, state.Trunk, state.Dirty, plural(state.Dirty, "file", "files"))
+	}
+	if state.Contaminated() {
+		return fmt.Errorf("worktree park: local %s carries %d %s %s/%s does not (%s) — land or move them first; the fast-forward park runs would drop them",
+			state.Trunk, len(state.Foreign), plural(len(state.Foreign), "commit", "commits"), state.Remote, state.Trunk, parkForeign(state))
+	}
+	return nil
+}
+
+func parkForeign(state vcs.TrunkState) string {
+	segs := make([]string, 0, len(state.Foreign))
+	for _, c := range state.Foreign {
+		segs = append(segs, c.SHA+" "+c.Subject)
+	}
+	return strings.Join(segs, "; ")
+}
+
+func parkAdvanced(state vcs.TrunkState, remote string) string {
+	if state.Behind == 0 {
+		return "already at " + remote + "/" + state.Trunk
+	}
+	return fmt.Sprintf("advanced %d to %s/%s", state.Behind, remote, state.Trunk)
 }
 
 func newWorktreeRepairCmd() *cobra.Command {
