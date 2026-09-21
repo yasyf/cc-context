@@ -324,6 +324,12 @@ func gtCreateLogInv(base, branch string) []string {
 	return []string{"git", "log", "--reverse", "--format=%s%x00%b%x00", base + ".." + branch}
 }
 
+// gtCherryInv is the patch-identity read a submit makes per branch, naming the
+// commits the remote trunk already holds.
+func gtCherryInv(trunk, head, base string) []string {
+	return []string{"git", "cherry", "--abbrev=12", gtRemoteTrunk(trunk), head, base}
+}
+
 // gtRemoteTrunk is the remote-tracking ref a submit anchors trunk on.
 func gtRemoteTrunk(trunk string) string { return "refs/remotes/origin/" + trunk }
 

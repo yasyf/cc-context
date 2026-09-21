@@ -3958,6 +3958,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			submitInv: append(
 				gtShipSubmitInv("main", vcstest.GraphiteLeafSHA),
 				gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
+				gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
 				gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 			),
 			wantSeg: "submitted feature → PR #7 https://github.com/x/pull/7",
@@ -3972,6 +3973,8 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				gtShipSubmitInv("main", "beadfeed", vcstest.GraphiteLeafSHA),
 				gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
 				gtCreateLogInv("feature", "feature2"),
+				gtCherryInv("main", "beadfeed", fakeTrunkSHA),
+				gtCherryInv("main", vcstest.GraphiteLeafSHA, "beadfeed"),
 				gtPushInv(gtHead("feature", "beadfeed"), gtHead("feature2", vcstest.GraphiteLeafSHA)),
 			),
 			wantSeg: "submitted feature2 → PR #7 https://github.com/x/pull/7 (stack of 2: feature, feature2)",
@@ -4053,6 +4056,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		gtRefsArgv(),
 	}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
 		gtCreateLogInv(gtRemoteTrunk("main"), "fix-frobnicate"),
+		gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
 		gtPushInv(gtHead("fix-frobnicate", vcstest.GraphiteLeafSHA)),
 		ghDownstackPRArgv("fix-frobnicate"),
 		{"git", "rev-parse", "HEAD"},
