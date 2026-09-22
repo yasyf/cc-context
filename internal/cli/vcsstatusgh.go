@@ -16,6 +16,7 @@ import (
 // the same way info and reviews do, plus everything a landing verdict needs.
 const statusPRFields = "number url body isDraft baseRefName headRefOid mergeable mergeStateStatus reviewDecision " +
 	prLandingFields + " " +
+	"baseRef { name " + statusRuleFields + " } " +
 	"files(first: 1) { totalCount } " +
 	"labels(first: 20) { nodes { name } } " +
 	"latestOpinionatedReviews(first: 20) { nodes { state author { login __typename } commit { oid } } } " +
@@ -32,6 +33,38 @@ const statusPRFields = "number url body isDraft baseRefName headRefOid mergeable
 // without admin is answered with an empty list rather than an error, so it
 // costs nothing to ask and its emptiness proves nothing.
 const statusProtectionFields = "branchProtectionRules(first: 20) { nodes { pattern requiredStatusChecks { context } } }"
+
+// statusRuleFields asks the base branch which ruleset rules cover it. It is
+// asked alongside statusProtectionFields rather than instead of it: a base a
+// ruleset governs reports no required checks under branch protection, and a
+// base under the older protection reports none under rules.
+const statusRuleFields = "rules(first: 50) { nodes { type parameters { __typename " +
+	"... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } }"
+
+// statusRuleParameters is one ruleset rule payload, whose shape is its type.
+type statusRuleParameters struct {
+	Typename             string `json:"__typename"`
+	RequiredStatusChecks []struct {
+		Context string `json:"context"`
+	} `json:"requiredStatusChecks"`
+}
+
+// statusRule is one rule covering the base branch. Parameters is null for the
+// rules carrying none, such as NON_FAST_FORWARD.
+type statusRule struct {
+	Type       string                `json:"type"`
+	Parameters *statusRuleParameters `json:"parameters"`
+}
+
+// statusBaseRef is the base branch and the rules covering it. It is null for a
+// pull request whose base branch has since been deleted, which is the state a
+// landed stack leaves its children in.
+type statusBaseRef struct {
+	Name  string `json:"name"`
+	Rules struct {
+		Nodes []statusRule `json:"nodes"`
+	} `json:"rules"`
+}
 
 // statusProtectionRule is one branch protection rule and the contexts it makes
 // required.
@@ -90,15 +123,16 @@ type statusRollup struct {
 
 // statusPRNode is one pull request as GitHub answers statusPRFields.
 type statusPRNode struct {
-	Number           int    `json:"number"`
-	URL              string `json:"url"`
-	Body             string `json:"body"`
-	IsDraft          bool   `json:"isDraft"`
-	BaseRefName      string `json:"baseRefName"`
-	HeadRefOid       string `json:"headRefOid"`
-	Mergeable        string `json:"mergeable"`
-	MergeStateStatus string `json:"mergeStateStatus"`
-	ReviewDecision   string `json:"reviewDecision"`
+	Number           int            `json:"number"`
+	URL              string         `json:"url"`
+	Body             string         `json:"body"`
+	IsDraft          bool           `json:"isDraft"`
+	BaseRefName      string         `json:"baseRefName"`
+	BaseRef          *statusBaseRef `json:"baseRef"`
+	HeadRefOid       string         `json:"headRefOid"`
+	Mergeable        string         `json:"mergeable"`
+	MergeStateStatus string         `json:"mergeStateStatus"`
+	ReviewDecision   string         `json:"reviewDecision"`
 	Files            struct {
 		TotalCount int `json:"totalCount"`
 	} `json:"files"`
@@ -174,18 +208,22 @@ func statusResolvePRs(ctx context.Context, l lane, st *vcsStatus) {
 		}
 	}
 	nodes := statusNodes(resp, branches)
+	statusFillByCommit(ctx, l, branches, nodes)
 	activity := statusActivity(ctx, l, nodes)
 	drafts := statusDrafts(ctx, l, activity)
 	rules := resp.rules()
+	expected := statusPeers(ctx, l, statusBases(nodes))
 	for i, node := range nodes {
 		if node == nil {
 			continue
 		}
-		required := statusRequired(rules, node.BaseRefName)
+		required := statusMerge(statusRequired(rules, node.BaseRefName), statusRulesetChecks(node.BaseRef))
 		pr := statusBuildPR(*node, statusLanded(ctx, l, *node, activity[node.Number]), activity[node.Number], drafts)
 		for j, check := range pr.Checks {
 			pr.Checks[j].Required = slices.Contains(required, check.Name)
 		}
+		pr.Required = required
+		pr.Absent = statusAbsentChecks(expected[node.BaseRefName], pr.Checks)
 		st.Branches[i].PR = pr
 		st.Required = statusMerge(st.Required, required)
 	}
@@ -220,17 +258,7 @@ func (r statusPRResponse) rules() []statusProtectionRule {
 func statusNodes(r statusPRResponse, branches []string) []*statusPRNode {
 	nodes := make([]*statusPRNode, len(branches))
 	for i := range branches {
-		raw, ok := r.Data.Repository[downstackPRAlias(i)]
-		if !ok {
-			continue
-		}
-		var decoded struct {
-			Nodes []statusPRNode `json:"nodes"`
-		}
-		if err := json.Unmarshal(raw, &decoded); err != nil || len(decoded.Nodes) == 0 {
-			continue
-		}
-		nodes[i] = &decoded.Nodes[0]
+		nodes[i] = statusBranchNode(r, i)
 	}
 	return nodes
 }
@@ -499,7 +527,7 @@ func statusChecks(rollup *statusRollup) []statusCheck {
 	var checks []statusCheck
 	at := map[string]int{}
 	for _, c := range rollup.Contexts.Nodes {
-		check := statusCheck{Name: c.Context, State: c.State}
+		check := statusCheck{Name: c.Context, State: c.State, External: true}
 		if c.Typename == "CheckRun" {
 			check = statusCheck{Name: c.Name, State: c.Conclusion}
 			if c.Conclusion == "" {
@@ -578,4 +606,201 @@ func statusMerge(into, add []string) []string {
 		}
 	}
 	return into
+}
+
+// statusPeerAlias names one base branch field in the batched peer query.
+func statusPeerAlias(i int) string { return fmt.Sprintf("e%d", i) }
+
+// statusPeerQuery asks, per base branch, what the pull requests that recently
+// merged into it were graded with. It selects context names only: the answer is
+// a set of check names, and the verdicts those peers got say nothing about this
+// head.
+func statusPeerQuery(n int) string {
+	decls := make([]string, 0, n+2)
+	decls = append(decls, "$owner: String!", "$repo: String!")
+	var fields strings.Builder
+	for i := range n {
+		alias := statusPeerAlias(i)
+		decls = append(decls, "$"+alias+": String!")
+		fmt.Fprintf(&fields, "    %s: pullRequests(baseRefName: $%s, states: MERGED, first: %d, orderBy: {field: UPDATED_AT, direction: DESC})"+
+			" { nodes { commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename "+
+			"... on CheckRun { name } ... on StatusContext { context } } } } } } } } }\n", alias, alias, statusPeerSamples)
+	}
+	return fmt.Sprintf("query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}",
+		strings.Join(decls, ", "), fields.String())
+}
+
+// statusPeers reads the check names each base branch normally grades, keyed by
+// base. A base nobody has merged into recently answers with nothing, and the
+// report then makes no claim about what is missing.
+func statusPeers(ctx context.Context, l lane, bases []string) map[string][]string {
+	if len(bases) == 0 {
+		return nil
+	}
+	argv := []string{"api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}"}
+	for i, base := range bases {
+		argv = append(argv, "-f", statusPeerAlias(i)+"="+base)
+	}
+	argv = append(argv, "-f", "query="+statusPeerQuery(len(bases)))
+	out, err := render.RunCLI(ctx, l.dir(), "gh", argv)
+	if err != nil {
+		return nil
+	}
+	var resp struct {
+		Data struct {
+			Repository map[string]struct {
+				Nodes []struct {
+					Commits struct {
+						Nodes []struct {
+							Commit struct {
+								StatusCheckRollup *statusRollup `json:"statusCheckRollup"`
+							} `json:"commit"`
+						} `json:"nodes"`
+					} `json:"commits"`
+				} `json:"nodes"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		return nil
+	}
+	expected := map[string][]string{}
+	for i, base := range bases {
+		var peers [][]string
+		for _, node := range resp.Data.Repository[statusPeerAlias(i)].Nodes {
+			if len(node.Commits.Nodes) == 0 {
+				continue
+			}
+			rollup := node.Commits.Nodes[0].Commit.StatusCheckRollup
+			if rollup == nil {
+				continue
+			}
+			var names []string
+			for _, c := range rollup.Contexts.Nodes {
+				if c.Name != "" {
+					names = append(names, c.Name)
+					continue
+				}
+				names = append(names, c.Context)
+			}
+			peers = append(peers, names)
+		}
+		expected[base] = statusExpectedChecks(peers)
+	}
+	return expected
+}
+
+// statusEmptyOID is the oid asked about for a branch that resolved to nothing.
+// It is a well-formed object id that no repository holds, so the field answers
+// null rather than the whole query failing its GitObjectID type check.
+const statusEmptyOID = "0000000000000000000000000000000000000000"
+
+// statusBranchNode decodes the pull request found by head ref name, which is
+// how a branch still carrying its own name resolves.
+func statusBranchNode(r statusPRResponse, i int) *statusPRNode {
+	raw, ok := r.Data.Repository[downstackPRAlias(i)]
+	if !ok {
+		return nil
+	}
+	var decoded struct {
+		Nodes []statusPRNode `json:"nodes"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil || len(decoded.Nodes) == 0 {
+		return nil
+	}
+	return &decoded.Nodes[0]
+}
+
+// statusCommitNode decodes the pull request whose head is this commit, which is
+// the only way a branch renamed off its pull request head ref resolves at all.
+//
+// A commit associates with more than the pull request it heads: the squash a
+// merge queue writes associates with the pull request it landed. So the head
+// oid has to match, and a pull request merely mentioning this commit is
+// discarded rather than reported as the branch pull request.
+func statusCommitNode(r statusPRResponse, i int, head string) *statusPRNode {
+	if head == statusEmptyOID {
+		return nil
+	}
+	raw, ok := r.Data.Repository[statusHeadAlias(i)]
+	if !ok {
+		return nil
+	}
+	var decoded struct {
+		Associated struct {
+			Nodes []statusPRNode `json:"nodes"`
+		} `json:"associatedPullRequests"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil
+	}
+	for i := range decoded.Associated.Nodes {
+		if decoded.Associated.Nodes[i].HeadRefOid == head {
+			return &decoded.Associated.Nodes[i]
+		}
+	}
+	return nil
+}
+
+// statusCommitQuery asks which pull requests each commit is associated with,
+// one aliased field per commit.
+func statusCommitQuery(n int) string {
+	decls := make([]string, 0, n)
+	var fields strings.Builder
+	for i := range n {
+		alias := statusHeadAlias(i)
+		decls = append(decls, "$"+alias+": GitObjectID!")
+		fmt.Fprintf(&fields, "    %s: object(oid: $%s) { ... on Commit { associatedPullRequests(first: 5, orderBy: {field: CREATED_AT, direction: DESC})"+
+			" { nodes { ...prStatus } } } }\n", alias, alias)
+	}
+	return fmt.Sprintf("query(%s, $owner: String!, $repo: String!) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}\nfragment prStatus on PullRequest { %s }",
+		strings.Join(decls, ", "), fields.String(), statusPRFields)
+}
+
+// statusFillByCommit resolves the branches no pull request names by head ref,
+// by the commit each of them points at. It is a second round trip and it is
+// made only for those branches: a branch still carrying the name its pull
+// request was opened from is already resolved, and that is nearly all of them.
+//
+// Without it a branch renamed off its pull request head ref reports no pull
+// request at all, so a landing reads as an absence.
+func statusFillByCommit(ctx context.Context, l lane, branches []string, nodes []*statusPRNode) {
+	var want []int
+	for i := range branches {
+		if nodes[i] == nil {
+			want = append(want, i)
+		}
+	}
+	if len(want) == 0 {
+		return
+	}
+	names := make([]string, 0, len(want))
+	for _, i := range want {
+		names = append(names, branches[i])
+	}
+	heads := statusHeads(ctx, l, names)
+	argv := []string{"api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}"}
+	asked := 0
+	for j, head := range heads {
+		if head == "" {
+			continue
+		}
+		argv = append(argv, "-f", statusHeadAlias(j)+"="+head)
+		asked++
+	}
+	if asked != len(heads) {
+		return
+	}
+	argv = append(argv, "-f", "query="+statusCommitQuery(len(heads)))
+	out, err := render.RunCLI(ctx, l.dir(), "gh", argv)
+	if err != nil {
+		return
+	}
+	var resp statusPRResponse
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		return
+	}
+	for j, i := range want {
+		nodes[i] = statusCommitNode(resp, j, heads[j])
+	}
 }
