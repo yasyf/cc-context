@@ -4,6 +4,85 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.61.0] - 2026-09-21
+
+### Added
+
+- **`ccx vcs ship --dry-run` reports what a ship would do and does none of it.**
+  The plan names the commit, the push target, the rebase a moved remote would
+  force, and the pull request the run would open or update. It reports the
+  refusals a real run would earn too, rather than only the work: a dry run that
+  reads clean over a ship that would refuse is worse than no dry run.
+
+- **`ccx vcs worktree park` frees the ref a checkout pins.** A branch checked
+  out in another working copy cannot be moved, which is what a restack reaching
+  across worktrees runs into. Parking detaches that checkout so the ref is free,
+  and `ccx vcs status` now carries a trunk line reporting a local trunk that has
+  drifted from the remote instead of leaving it to be discovered by a failed
+  rebase.
+
+- **`ccx vcs status` lists the code-scanning alerts open on a head.** Alerts sit
+  on a different resource from checks, so a CodeQL check run can report success
+  or skipped while alerts stand open against the same commit. Status splits them
+  by whether the diff touches the file, and only the answerable half becomes a
+  blocker. A repository that has never analysed answers 404 and has nothing to
+  report; a viewer without the scope is reported as unreadable rather than as a
+  clean head.
+
+### Changed
+
+- **`ccx vcs status` reads the checks, not the rollup over them.** A neutral run
+  that holds the merge, a required check that skipped, a required check that
+  never reported, and a cancelled build with no failing check under it are each
+  now a blocker naming what happened. Required checks were the load-bearing bug:
+  `statusRequired` read only `branchProtectionRules`, and a base branch governed
+  by a repository ruleset reports an empty required list there — indistinguishable
+  from a base that requires nothing, so no check was ever marked required. Base
+  branch rules now come back on `baseRef` in the same batched round trip, unioned
+  with the protection rules. Status also learns what a base branch normally
+  grades, from the checks the last five pull requests merged into it carried, and
+  names what is absent on the head.
+
+### Fixed
+
+- **`ccx vcs ship` holds the work a rebase moves as a commit, not on the shared
+  stash.** `refs/stash` is shared by every working copy of a repository, so
+  `git rebase --autostash` builds one stack whose order says nothing about which
+  entry belongs to whom. What the rebase moves is never the ship's own work — a
+  scoped ship leaves every excluded hunk in the tree by construction — so in a
+  shared checkout it is another lane's. Ship now holds it as a commit of its own,
+  on the failure path too, and a restore that will not go back is a refusal naming
+  the commit and the files in it. It no longer advises `git stash pop`, which
+  takes whatever sits on top of the shared stack; `git stash apply <sha>` against
+  the named commit is the recovery.
+
+- **A stack submit refuses a branch proposing commits the remote trunk already
+  holds.** A copy made by a replay off a drifted base has a sha of its own and
+  ancestry cannot see where it came from, which is how a one-file change opens a
+  pull request showing a hundred. Patch identity can: the submit asks `git cherry`
+  per branch, bounded by that branch's planned base, and refuses before the push.
+  A restack now pins every lane to the remote trunk, unwinds a chain that stops
+  partway rather than leaving two bases in one stack, and refuses a pass that left
+  a branch behind trunk instead of reporting success over it.
+
+- **A repo Graphite cannot submit to is reported as a decline, not an `ERROR`.**
+  Ship never attempted the gt lane there — the cached reachability verdict demotes
+  before anything mutates — so quoting gt's `ERROR:` banner reported a designed
+  lane as a failure. The note now names the repository and carries the remedy.
+
+- **An MCP `ccx_code_grep` with a `globs` filter no longer returns a false zero
+  in a worktree.** A repo-scoped call passed the repository as a path operand
+  rather than running in it, so the glob matched nothing and the search reported
+  no matches over files that contain them.
+
+- **The grep fallback's include globs no longer lose to its hidden-path
+  excludes.** Both greps read `--include` and `--exclude` as one ordered list
+  where the last matching rule decides, and the engine emitted the excludes
+  first — so with `--glob '*.go'`, GNU grep 3.11 returned the non-matching files
+  the glob excluded and BSD grep returned the hidden files the excludes skip.
+  The includes now precede the excludes. Caught by the live engine-agreement
+  test the moment CI started installing ripgrep to compare against.
+
 ## [0.60.0] - 2026-09-21
 
 ### Added
