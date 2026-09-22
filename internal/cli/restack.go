@@ -46,6 +46,28 @@ const (
 
 var errRestackDetached = errors.New("restack: detached HEAD — check out a branch before restacking")
 
+// errRestackBehind is a pass that ended with a branch still off trunk. gt sync
+// exits 0 on failures it only prints — a GitHub timeout, say — so a caller
+// reading the exit code takes a stale base for a current one and meets it as a
+// red build over files the branch never changed.
+type errRestackBehind struct {
+	Trunk    string
+	Branches []string
+	Summary  string
+}
+
+func (e *errRestackBehind) Error() string {
+	return fmt.Sprintf("restack: %s still behind %s: %s — %s; re-run once the cause above is cleared, or move them by hand with gt restack --only --branch <b>",
+		gtBranchCount(len(e.Branches)), e.Trunk, strings.Join(e.Branches, ", "), e.Summary)
+}
+
+func gtBranchCount(n int) string {
+	if n == 1 {
+		return "1 branch"
+	}
+	return fmt.Sprintf("%d branches", n)
+}
+
 type restackOpts struct {
 	noGT bool
 }
@@ -183,11 +205,15 @@ func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 		declined[branch] = held
 	}
 
-	restacked, skipped, err := gtRestackVerdict(ctx, l.dir(), trunkRef, stack, declined)
+	restacked, skipped, behind, err := gtRestackVerdict(ctx, l.dir(), trunkRef, stack, declined)
 	if err != nil {
 		return "", err
 	}
-	return gtRestackSummary(pin, trunkHolder, len(stack), restacked, skipped), nil
+	summary := gtRestackSummary(pin, trunkHolder, len(stack), restacked, skipped)
+	if len(behind) > 0 {
+		return "", &errRestackBehind{Trunk: pin.String(), Branches: behind, Summary: summary}
+	}
+	return summary, nil
 }
 
 // gtRestackStack lists the branches gt sync is asked to restack: the current
@@ -294,17 +320,20 @@ func gtSkipReason(reason string) string {
 // cannot fast-forward, leaves the local branch stale while gt still exits 0
 // without declining a single branch. A stack measured against that ref reads as
 // current while it sits behind the trunk everyone else sees.
-func gtRestackVerdict(ctx context.Context, dir render.Dir, trunk vcs.Trunk, stack []string, declined map[string]string) (int, []string, error) {
+func gtRestackVerdict(ctx context.Context, dir render.Dir, trunk vcs.Trunk, stack []string, declined map[string]string) (int, []string, []string, error) {
 	restacked := 0
 	named := make(map[string]bool, len(stack))
-	var skipped []string
+	var skipped, behind []string
 	for _, branch := range stack {
 		named[branch] = true
 		on, err := gitIsAncestor(ctx, dir, "restack", string(trunk.Ref()), branch)
 		if err != nil {
-			return 0, nil, fmt.Errorf("restack: check %s sits on %s: %w", branch, trunk.Ref(), err)
+			return 0, nil, nil, fmt.Errorf("restack: check %s sits on %s: %w", branch, trunk.Ref(), err)
 		}
 		reason, refused := declined[branch]
+		if !on && !gtRestackHold(reason) {
+			behind = append(behind, gtSkipLabel(branch, reason))
+		}
 		switch {
 		case !refused && on:
 			restacked++
@@ -327,7 +356,15 @@ func gtRestackVerdict(ctx context.Context, dir render.Dir, trunk vcs.Trunk, stac
 	for _, branch := range elsewhere {
 		skipped = append(skipped, gtSkipLabel(branch, declined[branch]))
 	}
-	return restacked, skipped, nil
+	return restacked, skipped, behind, nil
+}
+
+// gtRestackHold reports whether a branch left behind trunk was left there on
+// purpose. gt freeze and a merge in progress are holds the operator asked for,
+// and a branch already merged has nowhere to go; everything else off trunk after
+// a restack is a restack that did not happen.
+func gtRestackHold(reason string) bool {
+	return reason == "frozen" || reason == "merging" || reason == gtSkipMerged
 }
 
 func gtSkipLabel(branch string, notes ...string) string {

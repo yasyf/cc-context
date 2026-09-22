@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -964,6 +965,38 @@ func TestRestackGTNamesTheWorkingCopyHoldingTrunk(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRestackGTRefusesABranchLeftBehind pins the exit code against the summary.
+// gt sync exits 0 on failures it only prints, so a branch can end the pass off
+// trunk with nothing having moved it; the summary said so honestly while the
+// command still reported success, and a caller reading the exit code took a
+// stale base for a current one.
+func TestRestackGTRefusesABranchLeftBehind(t *testing.T) {
+	g := loadGTGolden(t, "sync-quiet-exit0")
+	f := restackGTRepo(t, "feat")
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+	restackRun(t, f.Dir, "git", "fetch", "-q", "origin")
+	commonDir := gitAt(t, f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	remote := gitAt(t, f.Dir, "rev-parse", "refs/remotes/origin/main")
+	if err := gtmeta.RecordRestacked(t.Context(), commonDir, map[string]string{"feat": remote}); err != nil {
+		t.Fatalf("record feat as restacked: %v", err)
+	}
+	restackGTSync(t, f, g, "")
+	before := restackRev(t, f.Dir, "feat")
+
+	out, _, err := runRestackCmd(t)
+	if err == nil {
+		t.Fatalf("restack reported success over a branch still behind trunk: %q", out)
+	}
+	for _, want := range []string{"1 branch still behind main@", "feat"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name %q", err, want)
+		}
+	}
+	if after := restackRev(t, f.Dir, "feat"); after != before {
+		t.Errorf("feat = %s, want the unmoved %s — the refusal reports, it does not move anything", after, before)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -1641,16 +1642,15 @@ func TestShipGitRebase(t *testing.T) {
 	}
 	remoteRef := "refs/remotes/origin/main"
 	tests := []struct {
-		name     string
-		args     []string
-		opts     []vcstest.Opt
-		build    func(t *testing.T, f *vcstest.Fixture)
-		want     [][]string
-		branch   string
-		remote   string
-		rebased  int
-		wantErr  []string
-		wantWarn bool
+		name    string
+		args    []string
+		opts    []vcstest.Opt
+		build   func(t *testing.T, f *vcstest.Fixture)
+		want    [][]string
+		branch  string
+		remote  string
+		rebased int
+		wantErr []string
 	}{
 		{
 			name:   "no divergence pushes clean",
@@ -1677,7 +1677,8 @@ func TestShipGitRebase(t *testing.T) {
 				[]string{"git", "rev-parse", "--verify", "--quiet", remoteRef},
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
 				[]string{"git", "rev-list", "--count", remoteRef + "..HEAD"},
-				[]string{"git", "rebase", "--autostash", remoteRef},
+				[]string{"git", "diff", "--name-only", "HEAD"},
+				[]string{"git", "rebase", remoteRef},
 				[]string{"git", "push", "origin", "main"},
 				[]string{"git", "log", "-1", "--format=%h%x00%s"}),
 		},
@@ -1692,7 +1693,8 @@ func TestShipGitRebase(t *testing.T) {
 				[]string{"git", "rev-parse", "--verify", "--quiet", remoteRef},
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
 				[]string{"git", "rev-list", "--count", remoteRef + "..HEAD"},
-				[]string{"git", "rebase", "--autostash", remoteRef},
+				[]string{"git", "diff", "--name-only", "HEAD"},
+				[]string{"git", "rebase", remoteRef},
 				[]string{"git", "rev-parse", "--verify", "--quiet", "REBASE_HEAD"},
 				[]string{"git", "diff", "--name-only", "--diff-filter=U"},
 				[]string{"git", "rebase", "--abort"}),
@@ -1716,41 +1718,6 @@ func TestShipGitRebase(t *testing.T) {
 				{"git", "fetch", "origin"},
 				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/feature"},
 				{"git", "push", "--no-verify", "origin", "feature"},
-			},
-		},
-		{
-			// b.txt stays out of the scoped commit, so the rebase autostashes it
-			// onto an upstream that rewrote the same file: the pop conflicts and
-			// the changes stay in the stash.
-			name: "autostash pop conflict warns",
-			args: []string{"f.txt"},
-			build: func(t *testing.T, f *vcstest.Fixture) {
-				writeShipFile(t, f.Dir, "b.txt", "base\n")
-				mustRun(t, f.Dir, "git", "add", "b.txt")
-				mustRun(t, f.Dir, "git", "commit", "-qm", "add b")
-				mustRun(t, f.Dir, "git", "push", "-q", "origin", "main")
-				shipDivergeRemote(t, f, "main", "b.txt", "upstream\n")
-				writeShipFile(t, f.Dir, "b.txt", "mine\n")
-			},
-			branch:   "main",
-			remote:   "origin",
-			rebased:  1,
-			wantWarn: true,
-			want: [][]string{
-				{"git", "branch", "--show-current"},
-				gitTrunkArgv,
-				{"git", "add", "-A", "--", "f.txt"},
-				{"git", "commit", "-m", "fix: frobnicate", "--", "f.txt"},
-				{"git", "branch", "--show-current"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
-				{"git", "config", "--get", "branch.main.remote"},
-				{"git", "fetch", "origin"},
-				{"git", "rev-parse", "--verify", "--quiet", remoteRef},
-				{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
-				{"git", "rev-list", "--count", remoteRef + "..HEAD"},
-				{"git", "rebase", "--autostash", remoteRef},
-				{"git", "push", "origin", "main"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 			},
 		},
 		{
@@ -1784,7 +1751,8 @@ func TestShipGitRebase(t *testing.T) {
 				[]string{"git", "rev-parse", "--verify", "--quiet", remoteRef},
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
 				[]string{"git", "rev-list", "--count", remoteRef + "..HEAD"},
-				[]string{"git", "rebase", "--autostash", remoteRef},
+				[]string{"git", "diff", "--name-only", "HEAD"},
+				[]string{"git", "rebase", remoteRef},
 				[]string{"git", "rev-parse", "--verify", "--quiet", "REBASE_HEAD"}),
 			wantErr: []string{"ship: git rebase onto origin/main", "already a rebase-merge directory"},
 		},
@@ -1803,8 +1771,8 @@ func TestShipGitRebase(t *testing.T) {
 			got, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)...)
 			invocations := vcstest.Invocations(t, f.ArgvLog)
 			assertInvocations(t, invocations, tt.want)
-			if warned := strings.Contains(buf.String(), "git stash pop"); warned != tt.wantWarn {
-				t.Errorf("autostash warning = %v, want %v (log: %q)", warned, tt.wantWarn, buf.String())
+			if strings.Contains(buf.String(), "git stash pop") {
+				t.Errorf("log advises git stash pop (%q), which takes the top of a stack every working copy shares", buf.String())
 			}
 			if len(tt.wantErr) > 0 {
 				if err == nil {
@@ -1846,6 +1814,45 @@ func TestShipGitRebase(t *testing.T) {
 	}
 }
 
+// TestShipGitRebaseNamesWorkItCannotPutBack pins the contract for work a ship
+// deliberately left behind: a path-scoped ship leaves every other file in the
+// tree, the rebase has to move it, and a restore that will not apply names the
+// commit holding it and the files in it.
+func TestShipGitRebaseNamesWorkItCannotPutBack(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
+	writeShipFile(t, f.Dir, "b.txt", "base\n")
+	mustRun(t, f.Dir, "git", "add", "b.txt")
+	mustRun(t, f.Dir, "git", "commit", "-qm", "add b")
+	mustRun(t, f.Dir, "git", "push", "-q", "origin", "main")
+	shipDivergeRemote(t, f, "main", "b.txt", "upstream\n")
+	writeShipFile(t, f.Dir, "b.txt", "mine\n")
+	shipResetLog(t, f)
+	buf := captureSlog(t)
+
+	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "f.txt")
+	if err == nil {
+		t.Fatal("ship succeeded over work it could not put back, want a refusal")
+	}
+	for _, want := range []string{"b.txt", "does not apply to the rebased branch", "git stash apply", "never git stash pop"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name %q", err, want)
+		}
+	}
+	if strings.Contains(buf.String(), "git stash pop") {
+		t.Errorf("log advises git stash pop: %q", buf.String())
+	}
+	if list := gitAt(t, f.Dir, "stash", "list"); list != "" {
+		t.Errorf("stash list = %q, want nothing left on the stack every working copy shares", list)
+	}
+	sha := regexp.MustCompile(`[0-9a-f]{40}`).FindString(err.Error())
+	if sha == "" {
+		t.Fatalf("error = %q, want it to name the commit holding the work", err)
+	}
+	if files := gitAt(t, f.Dir, "stash", "show", "--name-only", sha); !strings.Contains(files, "b.txt") {
+		t.Errorf("%s holds %q, want the work it was keeping", sha, files)
+	}
+}
+
 // TestShipGitPushRetry covers the git lane against a remote that advances
 // mid-ship: a rejected push re-fetches, rebases onto the tip that beat it, and
 // pushes again, while a hook decline, a conflicting replay, and an amend are
@@ -1872,7 +1879,8 @@ func TestShipGitPushRetry(t *testing.T) {
 		{"git", "rev-parse", "--verify", "--quiet", remoteRef},
 		{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
 		{"git", "rev-list", "--count", remoteRef + "..HEAD"},
-		{"git", "rebase", "--autostash", remoteRef},
+		{"git", "diff", "--name-only", "HEAD"},
+		{"git", "rebase", remoteRef},
 		{"git", "push", "origin", "main"},
 	}
 	describe := []string{"git", "log", "-1", "--format=%h%x00%s"}
@@ -1915,7 +1923,8 @@ func TestShipGitPushRetry(t *testing.T) {
 				{"git", "rev-parse", "--verify", "--quiet", remoteRef},
 				{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
 				{"git", "rev-list", "--count", remoteRef + "..HEAD"},
-				{"git", "rebase", "--autostash", remoteRef},
+				{"git", "diff", "--name-only", "HEAD"},
+				{"git", "rebase", remoteRef},
 				{"git", "rev-parse", "--verify", "--quiet", "REBASE_HEAD"},
 				{"git", "diff", "--name-only", "--diff-filter=U"},
 				{"git", "rebase", "--abort"},
