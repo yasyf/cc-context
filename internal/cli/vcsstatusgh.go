@@ -17,7 +17,7 @@ import (
 const statusPRFields = "number url body isDraft baseRefName headRefOid mergeable mergeStateStatus reviewDecision " +
 	prLandingFields + " " +
 	"baseRef { name " + statusRuleFields + " } " +
-	"files(first: 1) { totalCount } " +
+	"files(first: 100) { totalCount nodes { path } } " +
 	"labels(first: 20) { nodes { name } } " +
 	"latestOpinionatedReviews(first: 20) { nodes { state author { login __typename } commit { oid } } } " +
 	"history: commits(last: 50) { nodes { commit { oid committedDate messageHeadline } } } " +
@@ -135,6 +135,9 @@ type statusPRNode struct {
 	ReviewDecision   string         `json:"reviewDecision"`
 	Files            struct {
 		TotalCount int `json:"totalCount"`
+		Nodes      []struct {
+			Path string `json:"path"`
+		} `json:"nodes"`
 	} `json:"files"`
 	Labels struct {
 		Nodes []struct {
@@ -227,6 +230,7 @@ func statusResolvePRs(ctx context.Context, l lane, st *vcsStatus) {
 		st.Branches[i].PR = pr
 		st.Required = statusMerge(st.Required, required)
 	}
+	statusFillAlerts(ctx, st, nodes)
 }
 
 // statusPRResponse is the batched query's payload: one aliased pull-request
