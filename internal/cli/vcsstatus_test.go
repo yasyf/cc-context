@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -181,6 +182,96 @@ func TestVcsStatusBranchWithoutPullRequest(t *testing.T) {
 		}
 	}
 	assertInvocations(t, graphql, [][]string{ghStatusPRArgv(downstackThree...)})
+}
+
+// TestVcsStatusHealthyTrunkIsSilent keeps the check off every report it has
+// nothing to say in: a trunk equal to the remote's adds no line at all.
+func TestVcsStatusHealthyTrunkIsSilent(t *testing.T) {
+	infoRepo(t, vcstest.Remote(), vcstest.Worktree("lane"))
+
+	got := runVcsStatusJSON(t, "--no-queue-probe")
+	if got.TrunkState != nil {
+		t.Fatalf("trunk state = %+v, want none", got.TrunkState)
+	}
+	out, err := runVcsStatusCmd(t, "--no-queue-probe")
+	if err != nil {
+		t.Fatalf("status error = %v", err)
+	}
+	if !strings.Contains(out, "trunk       main\n") {
+		t.Errorf("report = %q, want the bare trunk line", out)
+	}
+	for _, unwanted := range []string{"blocked", "foreign", "held by"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("report = %q, want no %q on a healthy trunk", out, unwanted)
+		}
+	}
+}
+
+// TestVcsStatusNamesAContaminatedTrunk is the report the whole check exists
+// for: the holder pinning the ref, and every commit a restack would splice out
+// of it into the stack.
+func TestVcsStatusNamesAContaminatedTrunk(t *testing.T) {
+	f := infoRepo(t, vcstest.Remote(), vcstest.Worktree("lane"))
+	runTool(t, f.Dir, "git", "commit", "-q", "--allow-empty", "-m", "parked work one")
+	runTool(t, f.Dir, "git", "commit", "-q", "--allow-empty", "-m", "parked work two")
+	writeInfoFile(t, f.Dir, "f.txt", "someone's work\n")
+
+	got := runVcsStatusJSON(t, "--no-queue-probe")
+	if got.TrunkState == nil {
+		t.Fatal("trunk state = none, want the contamination reported")
+	}
+	if got.TrunkState.Holder != f.Dir {
+		t.Errorf("holder = %q, want %q", got.TrunkState.Holder, f.Dir)
+	}
+	if got.TrunkState.Dirty != 1 {
+		t.Errorf("dirty = %d, want 1", got.TrunkState.Dirty)
+	}
+	if len(got.TrunkState.Foreign) != 2 {
+		t.Fatalf("foreign = %v, want 2 commits", got.TrunkState.Foreign)
+	}
+
+	out, err := runVcsStatusCmd(t, "--no-queue-probe")
+	if err != nil {
+		t.Fatalf("status error = %v", err)
+	}
+	for _, want := range []string{
+		"held by " + f.Dir,
+		"1 uncommitted file",
+		"parked work one",
+		"parked work two",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report = %q, want %q named", out, want)
+		}
+	}
+	// The splice is Graphite's: restackGit fetches and rebases onto the
+	// remote-tracking ref, so a local trunk commit never reaches this lane's
+	// branches and claiming otherwise would be false.
+	if strings.Contains(out, "splices them into every branch") {
+		t.Errorf("report = %q, want no splice blocker on the git lane", out)
+	}
+}
+
+// TestVcsStatusSpliceBlockerIsGraphiteOnly is the other half of the lane split:
+// gt restacks onto the local trunk ref, so there the splice is real.
+func TestVcsStatusSpliceBlockerIsGraphiteOnly(t *testing.T) {
+	st := vcsStatus{
+		Trunk: "main",
+		TrunkState: &vcs.TrunkState{
+			Trunk:   "main",
+			Remote:  "origin",
+			Foreign: []vcs.TrunkCommit{{SHA: "abc1234", Subject: "parked work one"}},
+		},
+	}
+	st.Lane = "git"
+	if got := statusTrunkBlockers(st); len(got) != 0 {
+		t.Errorf("git lane blockers = %q, want none", got)
+	}
+	st.Lane = "gt"
+	got := statusTrunkBlockers(st)
+	if len(got) != 1 || !strings.Contains(got[0], "splices them into every branch") {
+		t.Errorf("gt lane blockers = %q, want the splice named", got)
+	}
 }
 
 // TestStatusChecksKeepsTheLatestRun holds a re-run to one entry: the rollup
