@@ -159,7 +159,7 @@ func depsArgs(ctx context.Context, in DepsIn) (backend.Args, error) {
 // GrepIn is the input for ccx_code_grep.
 type GrepIn struct {
 	Text             string   `json:"text" jsonschema:"text to search for"`
-	Repo             string   `json:"repo,omitempty" jsonschema:"repo root to search, and the root relative paths resolve against; default project root"`
+	Repo             string   `json:"repo,omitempty" jsonschema:"repo root to search: the directory the engine runs in, which globs anchor at and relative paths resolve against; default project root"`
 	Globs            []string `json:"globs,omitempty" jsonschema:"restrict to files matching these globs (ordered, gitignore-style; ! excludes, last match wins); a glob anchored at a real directory searches even under ignore rules"`
 	IgnoreCase       bool     `json:"ignoreCase,omitempty" jsonschema:"case-insensitive; runs the rg/grep engine"`
 	Word             bool     `json:"word,omitempty" jsonschema:"whole words only; runs the rg/grep engine"`
@@ -469,11 +469,14 @@ func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, S
 				return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 			}
 		}
+		if ctx, err = pinRepo(ctx, in.Repo); err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
+		}
 		out, err := p.Call(ctx, op, a)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return rootedResult(ctx, op, in.Repo, out)
+		return opResult(ctx, op, out)
 	}
 }
 
@@ -528,11 +531,14 @@ func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, 
 		if _, _, err := outline.ValidateSection(a, op); err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
+		if ctx, err = pinRepo(ctx, in.Repo); err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
+		}
 		out, err := p.Call(ctx, op, a)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		return rootedResult(ctx, op, in.Repo, note+out)
+		return opResult(ctx, op, note+out)
 	}
 }
 
@@ -598,16 +604,19 @@ func (in OutlineIn) repoRoot() string { return in.Repo }
 func (in ReadIn) repoRoot() string    { return in.Repo }
 func (in GrepIn) repoRoot() string    { return in.Repo }
 
-// rootedResult is opResult naming the root the call answered from rather than
-// the declared one, which are different whenever the caller passed a repo. Both
-// derive from the single pinned snapshot pinCall took, so naming the answer's
-// tree costs none of the protection against a concurrent re-pin.
-func rootedResult(ctx context.Context, op backend.Op, repo, text string) (*mcp.CallToolResult, any, error) {
+// pinRepo moves the root a call answers from into ctx, so the op runs in the
+// repo the caller named and the result line names the tree that answered. It
+// is what makes a repo-scoped call behave as the CLI run from that directory:
+// the engine's own cwd is the root, which is where a slashed glob anchors.
+//
+// It is called after the args are built, never before: the operands resolve
+// against the declared root, and a relative repo joined twice names nothing.
+func pinRepo(ctx context.Context, repo string) (context.Context, error) {
 	root, err := callRoot(ctx, repo)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return opResult(workspace.WithRoot(ctx, root), op, text)
+	return workspace.WithRoot(ctx, root), nil
 }
 
 // callRoot resolves the root one tool call answers against: the repo the caller
@@ -641,19 +650,13 @@ func rootedPath(ctx context.Context, repo, path string) (string, error) {
 	return filepath.Join(root, path), nil
 }
 
-// rootedPaths resolves a grep's operands against callRoot, making the root
-// itself the sole operand when the caller named none: the engines walk the
-// process working directory otherwise, whatever root the call names.
+// rootedPaths resolves a grep's operands against callRoot. A call naming none
+// gets none: pinRepo runs the engine in the root already, and a root operand
+// would read as an explicit path, which turns off the anchoring a slashed -g
+// needs to match anything.
 func rootedPaths(ctx context.Context, repo string, paths []string) ([]string, error) {
 	if len(paths) == 0 {
-		root, err := callRoot(ctx, repo)
-		if err != nil {
-			return nil, err
-		}
-		if root == "" {
-			return nil, nil
-		}
-		return []string{root}, nil
+		return nil, nil
 	}
 	rooted := make([]string, len(paths))
 	for i, path := range paths {
@@ -682,15 +685,18 @@ func rootedHandler[In any](p *proxy.Proxy, op backend.Op, args func(context.Cont
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
-		out, err := p.Call(ctx, op, a)
-		if err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
-		}
 		repo := ""
 		if rs, ok := any(in).(repoScoped); ok {
 			repo = rs.repoRoot()
 		}
-		return rootedResult(ctx, op, repo, out)
+		if ctx, err = pinRepo(ctx, repo); err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
+		}
+		out, err := p.Call(ctx, op, a)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
+		}
+		return opResult(ctx, op, out)
 	}
 }
 

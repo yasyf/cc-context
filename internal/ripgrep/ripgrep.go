@@ -623,8 +623,12 @@ func ripgrepArgv(a backend.Args) []string {
 	return argv
 }
 
-// grepArgv builds `grep -rnHFI --null [-i] [-w] [-C N] --exclude-dir=.[!./]* --exclude=.[!./]*
-// [--include=G] -e <pattern> -- <root>` from flags common to BSD and GNU grep.
+// grepArgv builds `grep -rnHFI --null [-i] [-w] [-C N] [--include=G]
+// --exclude-dir=.[!./]* --exclude=.[!./]* -e <pattern> -- <root>` from flags
+// common to BSD and GNU grep. The includes must precede the excludes: both
+// engines read the two as one ordered list where the last matching rule decides,
+// so the other order defeats one of them — GNU 3.11 drops the glob, BSD drops
+// the hidden-path skip.
 // Files-only mode uses -l without --null. A
 // regex query swaps -rnHFI for -rnHEI (ERE, the closest dialect to rg's Rust regex).
 // The -H flag forces the filename prefix the parser splits on: GNU grep omits it
@@ -684,13 +688,12 @@ func grepArgv(a backend.Args) ([]string, error) {
 		argv = append(argv, "-C", strconv.Itoa(a.Expand))
 	}
 	argv = appendContext(argv, a)
-	argv = append(argv, "--exclude-dir=.[!./]*", "--exclude=.[!./]*")
-
 	includes, globRoot, err := translateGlobs(anchor, a.Globs)
 	if err != nil {
 		return nil, err
 	}
 	argv = appendIncludes(argv, includes)
+	argv = append(argv, "--exclude-dir=.[!./]*", "--exclude=.[!./]*")
 
 	if len(a.Paths) > 0 {
 		if globRoot != "" {

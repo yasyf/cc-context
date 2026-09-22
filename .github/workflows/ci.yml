@@ -61,6 +61,14 @@ jobs:
         run: cargo test --manifest-path format-core/Cargo.toml
       - name: Vet
         run: go vet ./...
+      - name: Install ripgrep (glob-capable grep engine)
+        # The grep fallback cannot translate a mid-path wildcard, so the MCP
+        # glob tests assert behaviour only this engine has. Without it they do
+        # not skip, they fail — and gating them to skip would leave the
+        # filter-fails-closed regression unguarded on every CI run.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: ripgrep
       - name: Install jj (live hunk-scoped ship tests)
         uses: taiki-e/install-action@v2
         with:
