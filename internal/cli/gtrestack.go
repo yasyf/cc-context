@@ -131,7 +131,7 @@ func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir rend
 	pin := gtTrunkPinned{name: trunk, sha: state[trunk].Head}
 	moves, replayErr := gtReplayChain(ctx, prefix, dir, state, pin, movers, holders)
 	if replayErr != nil {
-		return gtRestackResult{held: held}, gtRestackUnwind(ctx, prefix, dir, state, moves, replayErr)
+		return gtRestackResult{held: held}, gtRestackUnwind(ctx, dir, state, moves, replayErr)
 	}
 	realigned, alignErr := gtRestackAlign(ctx, prefix, holders, snapshots, moves)
 	recordErr := gtmeta.RecordRestacked(ctx, commonDir, gtRestackRevisions(moves))
@@ -425,7 +425,7 @@ func gtRestackFiles(ctx context.Context, prefix string, dir render.Dir, span str
 //
 // A ref that will not go back is the one case left to finish by hand, so the
 // refusal names each branch that moved and the sha it moved from.
-func gtRestackUnwind(ctx context.Context, prefix string, dir render.Dir, state gtState, moves []restackMove, cause error) error {
+func gtRestackUnwind(ctx context.Context, dir render.Dir, state gtState, moves []restackMove, cause error) error {
 	if len(moves) == 0 {
 		return cause
 	}

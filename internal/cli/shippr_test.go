@@ -458,6 +458,7 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		gtRefsArgv(),
 	}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
 		gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
+		gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
 		gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 		ghDownstackPRArgv("feature"),
 		{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "Better title", "--body-file", body},
@@ -515,6 +516,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 				// invalidates the state the preflight already cached.
 			}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
 				gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
+				gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
 				gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 				ghDownstackPRArgv("feature"),
 				{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "fix: 🐛 frobnicate the widget", "--body-file", body},
