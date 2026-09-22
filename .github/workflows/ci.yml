@@ -118,10 +118,18 @@ jobs:
           bash scripts/build-wasm.sh
           bash scripts/build-embed-wasm.sh
           bash scripts/build-chunk-grammars.sh
+      - name: Resolve the pinned golangci-lint version
+        id: golangci
+        # Single-sourced from mise.toml, the pin `task lint` resolves locally.
+        # A dropped pin fails here rather than floating back onto latest.
+        run: |
+          pin="$(sed -n 's/^golangci-lint = "\(.*\)"$/\1/p' mise.toml)"
+          test -n "$pin"
+          echo "version=v$pin" >> "$GITHUB_OUTPUT"
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: ${{ steps.golangci.outputs.version }}
 
   vuln:
     runs-on: ubuntu-latest

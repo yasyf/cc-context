@@ -50,12 +50,14 @@ tasks:
     desc: Lint with golangci-lint
     deps: [wasm, wasm-embed]
     cmds:
-      - golangci-lint run
+      # Through mise: a bare `golangci-lint` takes whatever GOBIN holds, which
+      # is how a stale 2.13.1 graded 48 findings CI never saw.
+      - mise exec -- golangci-lint run
 
   fmt:
     desc: Format with gofumpt + goimports (via golangci-lint)
     cmds:
-      - golangci-lint fmt
+      - mise exec -- golangci-lint fmt
 
   ci:
     desc: Everything CI runs
