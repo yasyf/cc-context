@@ -474,10 +474,9 @@ func TestVcsInfoRefreshLaneVerdict(t *testing.T) {
 			got := runVcsInfoJSON(t, tt.args...)
 			wantReason := ""
 			if tt.wantReachable == gtVerdictDenied {
-				// The note is gt's own refusal, quoted whole — the line it wrote
-				// first, read off the golden rather than through the matcher under
-				// test.
-				wantReason = infoDeclinedPrefix + strings.TrimSpace(strings.Split(probe.stderr, "\n")[0])
+				// The note is ccx's own sentence for a denied probe, read off the
+				// golden case rather than through the matcher under test.
+				wantReason = infoDeclinedPrefix + gtGoldenCases["auth-no-perms"].note
 			}
 			if got.Lane != tt.wantLane || got.LaneReason != wantReason {
 				t.Errorf("lane/lane_reason = %q/%q, want %q/%q", got.Lane, got.LaneReason, tt.wantLane, wantReason)

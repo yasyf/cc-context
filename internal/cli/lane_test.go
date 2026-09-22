@@ -271,7 +271,7 @@ func TestClassifyGTProbe(t *testing.T) {
 			output:  "Error: yasyf does not have the necessary permissions to submit PRs to cli/cli\n",
 			code:    1,
 			verdict: gtVerdictDenied,
-			note:    "Error: yasyf does not have the necessary permissions to submit PRs to cli/cli",
+			note:    "graphite cannot submit to cli/cli — grant it access at " + gtGrantURL + ", or git config " + nogtKey + " true",
 		},
 		{
 			name:    "no token",
@@ -343,7 +343,7 @@ func TestShipGateProbe(t *testing.T) {
 		{golden: "auth-no-token", wantNote: "graphite has no auth token — run gt auth --token <token>"},
 		{
 			golden:   "auth-no-perms",
-			wantNote: "ERROR: Graphite does not have the necessary permissions to submit PRs to yasyf/cc-context.",
+			wantNote: "graphite cannot submit to yasyf/cc-context — grant it access at " + gtGrantURL + ", or git config " + nogtKey + " true",
 		},
 		{golden: "auth-unreachable", wantNote: "graphite server unreachable"},
 		{golden: "auth-authenticated-elsewhere", wantNote: "gt auth exited 0 without confirming this repo is submittable"},

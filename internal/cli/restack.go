@@ -26,8 +26,7 @@ const (
 	// the branch name in the lines gt 1.8.6 prints — on stdout, at exit 0 — for a
 	// branch it declined to restack. The "is" bracket carries gtSyncSkippedWorktree
 	// and a path, "frozen." or "merging."; gt spells the merged decline "has been"
-	// instead, so it needs a bracket of its own. Only the worktree variant names a
-	// working copy gtLaneRestack can drive gt from.
+	// instead, so it needs a bracket of its own.
 	gtSyncSkippedPrefix   = "Did not restack branch "
 	gtSyncSkippedReason   = " because it is "
 	gtSyncSkippedMerged   = " because it has been merged"
@@ -141,6 +140,29 @@ func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	remote, err := vcs.GitRemoteFor(ctx, l.dir(), trunk)
+	if err != nil {
+		return "", fmt.Errorf("restack: %w", err)
+	}
+	trunkRef, err := vcs.TrunkFromName(ctx, l.dir(), remote, trunk)
+	if err != nil {
+		return "", fmt.Errorf("restack: %w", err)
+	}
+	// gt exits 0 on a sync that fetched the remote trunk and left the local
+	// branch behind it, so the pin is taken after the sync rather than assumed
+	// from it. State is re-read because the pin moves refs/heads/<trunk>, the
+	// ref needs-restack is measured against.
+	pin, err := gtTrunkPin(ctx, "restack", l.checkout, l.dir(), trunkRef, synced[trunk].Head)
+	if err != nil {
+		return "", fmt.Errorf("restack: %w", err)
+	}
+	synced, err = gtStateAt(ctx, commonDir, "restack")
+	if err != nil {
+		return "", err
+	}
+	if err := gtTrunkDrift(errW, "restack", synced, gtBottomUp(stack), pin, string(trunkRef.Ref())); err != nil {
+		return "", err
+	}
 
 	// gt sync fetches trunk and prunes the merged branches, and restacks
 	// whatever it can reach on the way; the branches it declined are this pass's
@@ -161,19 +183,11 @@ func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 		declined[branch] = held
 	}
 
-	remote, err := vcs.GitRemoteFor(ctx, l.dir(), trunk)
-	if err != nil {
-		return "", fmt.Errorf("restack: %w", err)
-	}
-	trunkRef, err := vcs.TrunkFromName(ctx, l.dir(), remote, trunk)
-	if err != nil {
-		return "", fmt.Errorf("restack: %w", err)
-	}
 	restacked, skipped, err := gtRestackVerdict(ctx, l.dir(), trunkRef, stack, declined)
 	if err != nil {
 		return "", err
 	}
-	return gtRestackSummary(trunk, trunkHolder, len(stack), restacked, skipped), nil
+	return gtRestackSummary(pin, trunkHolder, len(stack), restacked, skipped), nil
 }
 
 // gtRestackStack lists the branches gt sync is asked to restack: the current
@@ -199,7 +213,7 @@ func gtRestackStack(ctx context.Context, dir render.Dir, state gtState, trunk st
 // so a trunk no entry covers is one this summary must not claim anything about.
 //
 // A stack branch some other working copy holds is no longer a refusal:
-// gtLaneRestack drives gt from that working copy instead.
+// gtRestackChain replays it without a checkout and realigns its holder.
 func gtRestackTrunkHolder(ctx context.Context, l lane, stack []string, trunk string) (string, error) {
 	if len(stack) == 0 {
 		return "", nil
@@ -324,10 +338,13 @@ func gtSkipLabel(branch string, notes ...string) string {
 	return branch + " (" + strings.Join(notes, "; ") + ")"
 }
 
-func gtRestackSummary(trunk, trunkHolder string, total, restacked int, skipped []string) string {
-	held := trunk
+// gtRestackSummary names the commit the pass pinned, not just the branch: a
+// trunk that lands every few minutes makes "trunk main" a different base from
+// one minute to the next, and the sha is what makes the result reproducible.
+func gtRestackSummary(pin gtTrunkPinned, trunkHolder string, total, restacked int, skipped []string) string {
+	held := pin.String()
 	if trunkHolder != "" {
-		held = trunk + " (checked out in " + trunkHolder + ")"
+		held += " (checked out in " + trunkHolder + ")"
 	}
 	summary := "synced · trunk " + held
 	if total > 0 {

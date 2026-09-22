@@ -586,6 +586,7 @@ func TestRestackGTPerBranchVerdict(t *testing.T) {
 		standIn  bool
 		onTrunk  bool
 		advance  bool
+		freeze   bool
 		want     string
 		wantLead string
 	}{
@@ -595,30 +596,31 @@ func TestRestackGTPerBranchVerdict(t *testing.T) {
 			want:   "restacked 1 of 1 · trunk main",
 		},
 		{
-			name:    "a branch the sync left behind trunk",
+			name:    "the pass catches up a branch the sync left behind trunk",
 			golden:  "sync-quiet-exit0",
 			advance: true,
-			want:    "restacked 0 of 1 · trunk main · skipped feat",
+			want:    "restacked 1 of 1 · trunk main",
 		},
 		{
-			name:    "gt declined a frozen branch already on trunk",
+			name:    "a frozen branch already on trunk",
 			golden:  "restack-frozen",
 			standIn: true,
+			freeze:  true,
 			want:    "restacked 0 of 1 · trunk main · skipped feat (frozen; already on main)",
 		},
 		{
-			name:    "gt declined a frozen branch that never reached trunk",
+			name:    "a frozen branch that never reached trunk",
 			golden:  "restack-frozen",
 			standIn: true,
 			advance: true,
+			freeze:  true,
 			want:    "restacked 0 of 1 · trunk main · skipped feat (frozen)",
 		},
 		{
 			name:     "gt named the working copy that blocked it",
 			golden:   "restack-worktree-held",
 			standIn:  true,
-			advance:  true,
-			wantLead: "restacked 0 of 1 · trunk main · skipped feat (checked out in /",
+			wantLead: "restacked 0 of 1 · trunk main",
 		},
 		{
 			name:    "on trunk, nothing to restack",
@@ -635,6 +637,9 @@ func TestRestackGTPerBranchVerdict(t *testing.T) {
 				restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 				restackRun(t, f.Dir, "git", "fetch", "-q", "origin")
 			}
+			if tt.freeze {
+				restackRun(t, f.Dir, "gt", "freeze", "feat", "--no-interactive")
+			}
 			if tt.onTrunk {
 				restackRun(t, f.Dir, "git", "switch", "-q", "main")
 			}
@@ -648,17 +653,26 @@ func TestRestackGTPerBranchVerdict(t *testing.T) {
 			if err != nil {
 				t.Fatalf("restack: %v", err)
 			}
+			pinned := restackPinned(t, tt.want+tt.wantLead, f.Dir)
 			if tt.wantLead != "" {
-				if !strings.HasPrefix(out, tt.wantLead) {
-					t.Fatalf("output = %q, want it to lead with %q", out, tt.wantLead)
+				if !strings.HasPrefix(out, pinned) {
+					t.Fatalf("output = %q, want it to lead with %q", out, pinned)
 				}
 				return
 			}
-			if out != tt.want {
-				t.Fatalf("output = %q, want %q", out, tt.want)
+			if out != pinned {
+				t.Fatalf("output = %q, want %q", out, pinned)
 			}
 		})
 	}
+}
+
+// restackPinned names the commit the summary reports the pass pinned — the
+// remote trunk's head, which the pass fast-forwards the local branch onto.
+func restackPinned(t *testing.T, want, dir string) string {
+	t.Helper()
+	head := gitAt(t, dir, "rev-parse", "--short=12", "refs/remotes/origin/main")
+	return strings.Replace(want, "trunk main", "trunk main@"+head, 1)
 }
 
 // TestRestackGTVerdictReadsTheSyncedStack pins the verdict to the stack gt sync
@@ -679,7 +693,7 @@ func TestRestackGTVerdictReadsTheSyncedStack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restack: %v", err)
 	}
-	if want := "restacked 1 of 1 · trunk main"; out != want {
+	if want := restackPinned(t, "restacked 1 of 1 · trunk main", f.Dir); out != want {
 		t.Fatalf("output = %q, want %q", out, want)
 	}
 	for _, inv := range restackInvocations(t, f) {
@@ -730,7 +744,7 @@ func TestRestackGTSurfacesSyncDiagnostics(t *testing.T) {
 			if err != nil {
 				t.Fatalf("restack: %v", err)
 			}
-			if want := "restacked 1 of 1 · trunk main"; out != want {
+			if want := restackPinned(t, "restacked 1 of 1 · trunk main", f.Dir); out != want {
 				t.Fatalf("output = %q, want %q", out, want)
 			}
 			for _, want := range tt.wantErr {
@@ -763,7 +777,7 @@ func TestRestackGTStreamedSyncPrintsDiagnosticsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restack: %v", err)
 	}
-	if want := "restacked 1 of 1 · trunk main"; out != want {
+	if want := restackPinned(t, "restacked 1 of 1 · trunk main", f.Dir); out != want {
 		t.Fatalf("output = %q, want %q", out, want)
 	}
 	line := "WARNING: feat could not be restacked cleanly."
@@ -890,7 +904,7 @@ func TestRestackGTMovesABranchAnotherWorkingCopyHolds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restack: %v", err)
 	}
-	if want := "restacked 2 of 2 · trunk main"; out != want {
+	if want := restackPinned(t, "restacked 2 of 2 · trunk main", f.Dir); out != want {
 		t.Fatalf("output = %q, want %q", out, want)
 	}
 	for _, r := range restackRecords(t, f) {
@@ -926,11 +940,11 @@ func TestRestackGTNamesTheWorkingCopyHoldingTrunk(t *testing.T) {
 			f := restackGTRepo(t, "feat")
 			restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 			restackRun(t, f.Dir, "git", "fetch", "-q", "origin")
-			want := "restacked 0 of 1 · trunk main · skipped feat"
+			want, held := "restacked 1 of 1 · trunk main", ""
 			if tt.held {
-				held := restackSiblingPath(t, "trunk")
+				held = restackSiblingPath(t, "trunk")
 				restackRun(t, f.Dir, "git", "worktree", "add", "-q", held, "main")
-				want = "restacked 0 of 1 · trunk main (checked out in " + held + ") · skipped feat"
+				want = "restacked 1 of 1 · trunk main (checked out in " + held + ")"
 			}
 			restackGTSync(t, f, g, "")
 
@@ -938,10 +952,49 @@ func TestRestackGTNamesTheWorkingCopyHoldingTrunk(t *testing.T) {
 			if err != nil {
 				t.Fatalf("restack: %v", err)
 			}
-			if out != want {
+			if want := restackPinned(t, want, f.Dir); out != want {
 				t.Fatalf("output = %q, want %q", out, want)
 			}
+			if tt.held {
+				if local, remote := restackRev(t, held, "HEAD"), restackRev(t, f.Dir, "refs/remotes/origin/main"); local != remote {
+					t.Errorf("the holder's HEAD = %s, refs/remotes/origin/main = %s — the pin moved trunk without realigning the working copy holding it", local, remote)
+				}
+				if dirt := strings.TrimSpace(restackRun(t, held, "git", "status", "--porcelain")); dirt != "" {
+					t.Errorf("the holder's status = %q, want it clean — a ref advanced under a working copy reports the incoming commits as staged deletions, and committing there reverts them", dirt)
+				}
+			}
 		})
+	}
+}
+
+// TestRestackGTAdvancesAHeldTrunkWithoutStagingDeletions pins what makes moving
+// trunk under a sibling working copy safe: a bare ref advance leaves that copy
+// reporting the incoming commit's files as staged deletions, where a commit
+// reverts them.
+func TestRestackGTAdvancesAHeldTrunkWithoutStagingDeletions(t *testing.T) {
+	g := loadGTGolden(t, "sync-quiet-exit0")
+	f := restackGTRepo(t, "feat")
+	held := restackSiblingPath(t, "trunk")
+	restackRun(t, f.Dir, "git", "worktree", "add", "-q", held, "main")
+	restackWrite(t, filepath.Join(held, "wip.txt"), "work in progress\n")
+	restackRun(t, held, "git", "add", "wip.txt")
+	restackWrite(t, filepath.Join(held, "scratch.txt"), "untracked\n")
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+	restackRun(t, f.Dir, "git", "fetch", "-q", "origin")
+	restackGTSync(t, f, g, "")
+
+	if _, _, err := runRestackCmd(t); err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if local, remote := restackRev(t, held, "HEAD"), restackRev(t, f.Dir, "refs/remotes/origin/main"); local != remote {
+		t.Errorf("the holder's HEAD = %s, refs/remotes/origin/main = %s", local, remote)
+	}
+	want := "A  wip.txt\n?? scratch.txt"
+	if dirt := strings.TrimSpace(restackRun(t, held, "git", "status", "--porcelain")); dirt != want {
+		t.Errorf("the holder's status = %q, want %q — its own work, staged as it was staged, and no deletion of the incoming commit", dirt, want)
+	}
+	if got := restackRead(t, filepath.Join(held, "upstream.txt")); got != "upstream\n" {
+		t.Errorf("upstream.txt in the holder = %q, want the incoming commit's content", got)
 	}
 }
 
@@ -955,7 +1008,7 @@ func TestRestackGraphiteFirst(t *testing.T) {
 		if err != nil {
 			t.Fatalf("restack: %v", err)
 		}
-		if want := "restacked 1 of 1 · trunk main"; out != want {
+		if want := restackPinned(t, "restacked 1 of 1 · trunk main", f.Dir); out != want {
 			t.Fatalf("output = %q, want %q", out, want)
 		}
 	})
@@ -1028,6 +1081,31 @@ func TestGTSyncSkippedReadsTheMergedDecline(t *testing.T) {
 		if got[branch] != reason {
 			t.Errorf("gtSyncSkipped()[%q] = %q, want %q", branch, got[branch], reason)
 		}
+	}
+}
+
+// TestRestackGTReportsDriftNoBranchLandsOn pins the half of the drift rule that
+// does not refuse. A local trunk the remote cannot fast-forward is reported, and
+// the pass still runs, when no branch is being moved onto it — here the working
+// copy is parked on trunk itself, so there is no stack to inherit the drift.
+func TestRestackGTReportsDriftNoBranchLandsOn(t *testing.T) {
+	g := loadGTGolden(t, "sync-quiet-exit0")
+	f := restackGTRepo(t, "feat")
+	restackRun(t, f.Dir, "git", "switch", "-q", "main")
+	restackWrite(t, filepath.Join(f.Dir, "foreign.txt"), "another lane's work\n")
+	restackRun(t, f.Dir, "git", "add", "foreign.txt")
+	restackRun(t, f.Dir, "git", "commit", "-qm", "foreign")
+	restackGTSync(t, f, g, "")
+
+	out, errOut, err := runRestackCmd(t)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if !strings.Contains(errOut, "no branch of this stack lands on it") {
+		t.Errorf("stderr = %q, want the drift reported rather than hidden", errOut)
+	}
+	if !strings.HasPrefix(out, "synced · trunk main@") {
+		t.Errorf("summary = %q, want it to name the commit the pass pinned", out)
 	}
 }
 

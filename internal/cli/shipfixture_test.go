@@ -918,6 +918,9 @@ exit 0
         fi ;;
     esac ;;
   "add"*|"read-tree"*|"update-index"*|"restore"*) : ;;
+  # $GIT_CHERRY is what git cherry prints: empty is a branch carrying no commit
+  # the upstream already holds, which is every fixture that does not say so.
+  "cherry"*) printf '%s' "$GIT_CHERRY" ;;
   "--git-dir="*)
     # The equals form, which gtmeta uses; the case below is the space form.
     dir=${1#--git-dir=}

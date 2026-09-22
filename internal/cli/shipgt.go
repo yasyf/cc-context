@@ -784,6 +784,11 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	if err != nil {
 		return nil, nil, err
 	}
+	// The last point before anything mutates, and the one both ship and stack
+	// submit reach.
+	if err := gtRefuseInherited(ctx, s.prefix, l.dir(), tr, plan); err != nil {
+		return nil, nil, err
+	}
 
 	pre := make([]gtapi.PreSubmitBranch, 0, len(plan))
 	for _, b := range plan {
