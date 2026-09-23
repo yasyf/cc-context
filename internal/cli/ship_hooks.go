@@ -100,7 +100,7 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 		return "hooks ok", covered, nil
 	}
 	if kind == vcs.Git {
-		if err := shipGitAdd(ctx, dir, o); err != nil {
+		if _, err := shipGitAdd(ctx, dir, o); err != nil {
 			return "", false, err
 		}
 	}

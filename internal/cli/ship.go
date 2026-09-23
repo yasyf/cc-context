@@ -23,6 +23,7 @@ import (
 
 const (
 	shipSep          = " · "
+	shipSweptNamed   = 5
 	shipLogBudget    = 2000
 	shipCIQuietPolls = 2
 
@@ -589,22 +590,30 @@ func shipRestoreBranch(ctx context.Context, dir render.Dir, from, created string
 // It returns the hook summary segment to prepend to the ship summary.
 func shipCommit(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Kind, o shipOpts, sel *shipSelection, plan branchPlan) (string, error) {
 	o.message = withSessionTrailer(o.message)
-	var seg string
+	segs := make([]string, 0, 2)
 	if kind == vcs.Git && sel == nil {
-		if err := shipGitAdd(ctx, dir, o); err != nil {
-			return "", err
-		}
-	}
-	if sel != nil && !o.noVerify && shipHasHookConfig(string(dir)) {
-		seg = "hooks hunk-skip"
-	}
-	if sel == nil {
-		var err error
-		seg, o.hooksRan, err = shipRunHooks(ctx, errW, dir, kind, o)
+		sweptSeg, err := shipGitAdd(ctx, dir, o)
 		if err != nil {
 			return "", err
 		}
+		if sweptSeg != "" {
+			segs = append(segs, sweptSeg)
+		}
 	}
+	if sel != nil && !o.noVerify && shipHasHookConfig(string(dir)) {
+		segs = append(segs, "hooks hunk-skip")
+	}
+	if sel == nil {
+		hookSeg, ran, err := shipRunHooks(ctx, errW, dir, kind, o)
+		if err != nil {
+			return "", err
+		}
+		o.hooksRan = ran
+		if hookSeg != "" {
+			segs = append(segs, hookSeg)
+		}
+	}
+	seg := strings.Join(segs, shipSep)
 	switch kind {
 	case vcs.JJ:
 		return seg, shipCommitJJ(ctx, dir, o, sel)
@@ -616,17 +625,58 @@ func shipCommit(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Ki
 }
 
 // shipGitAdd stages the ship's paths (or everything, when unscoped) into the real
-// index ahead of hook attempts and the commit.
-func shipGitAdd(ctx context.Context, dir render.Dir, o shipOpts) error {
+// index ahead of hook attempts and the commit. An unscoped add runs --verbose and
+// returns the segment naming what it took: a checkout several sessions share can
+// hold another lane's work, and a commit that carried it off reads exactly like
+// one that did not. Scoped adds name their paths already, so they report nothing.
+func shipGitAdd(ctx context.Context, dir render.Dir, o shipOpts) (string, error) {
 	addArgv := []string{"add", "-A"}
 	if len(o.rootPaths) > 0 {
 		addArgv = append(addArgv, "--")
 		addArgv = append(addArgv, o.rootPaths...)
+	} else {
+		addArgv = append(addArgv, "--verbose")
 	}
-	if _, err := render.RunCLI(ctx, dir, "git", addArgv); err != nil {
-		return fmt.Errorf("ship: git add: %w", err)
+	out, err := render.RunCLI(ctx, dir, "git", addArgv)
+	if err != nil {
+		return "", fmt.Errorf("ship: git add: %w", err)
 	}
-	return nil
+	if len(o.rootPaths) > 0 {
+		return "", nil
+	}
+	return sweptSegment(parseAddVerbose(out)), nil
+}
+
+// parseAddVerbose reads the paths out of `git add --verbose`, whose every line is
+// a verb and a single-quoted path: add 'a/b.txt', remove 'a/c.txt'. A line in any
+// other shape is git talking about something other than a path, and is skipped.
+func parseAddVerbose(out string) []string {
+	paths := make([]string, 0, 8)
+	for _, line := range strings.Split(out, "\n") {
+		open := strings.IndexByte(line, '\'')
+		if open < 0 || !strings.HasSuffix(line, "'") || len(line) < open+2 {
+			continue
+		}
+		paths = append(paths, line[open+1:len(line)-1])
+	}
+	return paths
+}
+
+// sweptSegment names the paths an unscoped add staged, capped so a wide commit
+// still reports in one line.
+func sweptSegment(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	named := paths
+	if len(named) > shipSweptNamed {
+		named = named[:shipSweptNamed]
+	}
+	seg := fmt.Sprintf("swept %d path(s): %s", len(paths), strings.Join(named, ", "))
+	if len(paths) > len(named) {
+		seg += fmt.Sprintf(", and %d more", len(paths)-len(named))
+	}
+	return seg
 }
 
 func shipCommitJJ(ctx context.Context, dir render.Dir, o shipOpts, sel *shipSelection) error {

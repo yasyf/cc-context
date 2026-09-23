@@ -618,7 +618,8 @@ func shipCommitGT(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *
 		}
 		return seg, shipCommitGTSelect(ctx, l, errW, o, sel, plan)
 	}
-	if err := shipGitAdd(ctx, l.dir(), o); err != nil {
+	sweptSeg, err := shipGitAdd(ctx, l.dir(), o)
+	if err != nil {
 		return "", err
 	}
 	if !o.amend {
@@ -634,7 +635,13 @@ func shipCommitGT(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *
 	if err := gtCommit(ctx, l, errW, o, plan, nil); err != nil {
 		return "", err
 	}
-	return hookSeg, nil
+	segs := make([]string, 0, 2)
+	for _, seg := range []string{sweptSeg, hookSeg} {
+		if seg != "" {
+			segs = append(segs, seg)
+		}
+	}
+	return strings.Join(segs, shipSep), nil
 }
 
 // shipCommitGTSelect commits a hunk selection through the same throwaway-index
