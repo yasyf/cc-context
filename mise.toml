@@ -4,6 +4,9 @@
 # `go = "latest"` that lags go.mod fails the hook with "go.mod requires go >=
 # X (running go Y)" and silently disables the local lint gate.
 go = "1.26.6"
+# Single source for the lint gate's version: ci.yml reads this pin back, so
+# neither lane floats onto a release the other does not run.
+golangci-lint = "2.13.2"
 
 [env]
 # TODO: drop once golangci-lint's cached issues carry checkout-relative
