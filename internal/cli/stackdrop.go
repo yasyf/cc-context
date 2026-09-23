@@ -184,7 +184,7 @@ func dropPlanFor(ctx context.Context, l lane, state gtState, branch string) (dro
 		return dropPlan{}, fmt.Errorf("%s: %w", dropPrefix, err)
 	}
 	if holder := holders[branch]; holder != "" {
-		return dropPlan{}, fmt.Errorf("%s: %s is checked out in %s, and git deletes no branch a working copy holds — switch that one to %s first, or take the lane down with ccx vcs worktree remove",
+		return dropPlan{}, fmt.Errorf("%s: %s is checked out in %s, and git deletes no branch a working copy holds — switch that one to %s first, or take the lane down with ccx vcs worktree rm",
 			dropPrefix, branch, holder, plan.parent)
 	}
 	if plan.chain, err = gtUpstack(dropPrefix, state, branch); err != nil {
