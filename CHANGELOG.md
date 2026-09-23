@@ -4,6 +4,36 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.62.0] - 2026-09-23
+
+### Added
+
+- **`ccx vcs stack drop <branch>` removes a branch from a Graphite stack
+  without closing the pull requests above it.** GitHub closes a pull request
+  associated with a deleted branch, and its automatic retargeting only fires
+  once that branch's own PR has merged — closing it first doesn't qualify.
+  Drop reads the parent and children from gt's metadata, retargets every open
+  child PR onto the parent, and reads them back to confirm each stayed open
+  before it reparents gt's rows, replays the children, and deletes the local
+  and remote refs last. It refuses before mutating outside the Graphite lane,
+  on trunk, on an untracked branch, or when another working copy holds the
+  branch. `--repair` recovers a retarget that didn't take: it finds PRs whose
+  base ref is missing, puts a dead ref back at the local head of the branch
+  they're moving onto, reopens and retargets them, and deletes the
+  resurrected ref only once every PR sharing it reads back open.
+
+### Fixed
+
+- **`task lint` is pinned to golangci-lint 2.13.2 in `mise.toml`, resolved by
+  both the local gate and CI.** Neither lane pinned a version — the Taskfile
+  ran whatever `golangci-lint` PATH resolved to, and CI installed `latest` —
+  so 2.13.1 landing invented 48 findings (45 `prealloc`, 3 `gosec`) on an
+  untouched tree while CI, already on 2.13.2, stayed green. A local gate that
+  can never run clean gets ignored wholesale, which is how a lane running
+  `task lint` saw 49 findings and missed the one that mattered. `task lint`
+  and `task fmt` now run through `mise exec`, and CI reads the same pin out
+  of `mise.toml` instead of installing `latest`.
+
 ## [0.61.0] - 2026-09-21
 
 ### Added
