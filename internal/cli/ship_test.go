@@ -136,6 +136,17 @@ func swept(kind vcs.Kind, paths ...string) string {
 	return fmt.Sprintf("swept %d path(s): %s%s", len(paths), strings.Join(paths, ", "), shipSep)
 }
 
+// sweptUnscoped is swept for a table whose cases differ in scoping: a ship that
+// names paths on the command line reports no sweep.
+func sweptUnscoped(kind vcs.Kind, args []string, paths ...string) string {
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "-") && !slices.Contains([]string{"fix: frobnicate"}, arg) {
+			return ""
+		}
+	}
+	return swept(kind, paths...)
+}
+
 func TestShipCommitPushWatch(t *testing.T) {
 	tests := []struct {
 		name string
@@ -799,7 +810,7 @@ func TestShipHooksPreserveHookableFilenames(t *testing.T) {
 				t.Fatalf("ship error = %v", err)
 			}
 			invocations := vcstest.Invocations(t, f.ArgvLog)
-			if want := swept(vcs.Git, "café.go") + "hooks ok · " + shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
+			if want := swept(vcs.Git, tt.filename) + "hooks ok · " + shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
 			assertInvocations(t, shipInvocationsOf(invocations, "uvx"), [][]string{
@@ -990,7 +1001,7 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 				t.Fatalf("ship error = %v", err)
 			}
 			assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), tt.want)
-			if want := swept(kind, "f.txt", "docs/d.md", "src/a.go") + shipCommitted(t, f, kind) + " · branch main · not pushed"; got != want {
+			if want := sweptUnscoped(kind, tt.args, "f.txt", "docs/d.md", "src/a.go") + shipCommitted(t, f, kind) + " · branch main · not pushed"; got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
 			if n := remoteCount(t, f, "main"); n != 1 {
@@ -5228,7 +5239,7 @@ func TestShipGTRefusals(t *testing.T) {
 			t.Fatalf("ship error = %v", err)
 		}
 		invocations := shipGTInvocations(t, f)
-		if want := `tracked feature onto main · ` + shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
+		if want := `tracked feature onto main · ` + swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
 		assertInvocations(t, invocations, [][]string{
