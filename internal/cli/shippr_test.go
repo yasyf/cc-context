@@ -57,7 +57,7 @@ func shipPRPushed(branch string) [][]string {
 	return [][]string{
 		{"git", "branch", "--show-current"},
 		gitTrunkArgv,
-		{"git", "add", "-A"},
+		{"git", "add", "-A", "--verbose"},
 		{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
@@ -145,7 +145,7 @@ func TestShipPRCreateGitLane(t *testing.T) {
 		[]string{"gh", "pr", "list", "--repo", fakePRRepo, "--head", "feature", "--state", "open", "--json", "number,url,isDraft", "--limit", "1"},
 		[]string{"gh", "pr", "create", "--repo", fakePRRepo, "--head", "feature", "--base", "main", "--title", "Better title", "--body-file", body},
 	))
-	if want := shipCommitted(t, f, vcs.Git) + " · pushed feature → origin · opened PR #12 " + fakePRCreateURL; got != want {
+	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · pushed feature → origin · opened PR #12 " + fakePRCreateURL; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	if got := readFileStr(t, bodyDump); got != bodyText {
@@ -307,7 +307,7 @@ func TestShipPREditOnlyStatedFields(t *testing.T) {
 		{"gh", "pr", "list", "--repo", fakePRRepo, "--head", "feature", "--state", "open", "--json", "number,url,isDraft", "--limit", "1"},
 		{"gh", "pr", "edit", strconv.Itoa(pr.Number), "--repo", fakePRRepo, "--body-file", body},
 	})
-	want := fmt.Sprintf("%s · pushed feature → origin · updated PR #%d %s (body)", shipCommitted(t, f, vcs.Git), pr.Number, pr.URL)
+	want := swept(vcs.Git, "f.txt") + fmt.Sprintf("%s · pushed feature → origin · updated PR #%d %s (body)", shipCommitted(t, f, vcs.Git), pr.Number, pr.URL)
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
@@ -448,7 +448,7 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		{"git", "branch", "--show-current"},
 		gtCommonDirArgv,
 		gtRefsArgv(),
-		{"git", "add", "-A"},
+		{"git", "add", "-A", "--verbose"},
 		{"git", "diff", "--cached", "--quiet"},
 		{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
 		gtCommonDirArgv,
@@ -478,7 +478,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 		add   []string
 		probe []string
 	}{
-		{name: "unscoped", add: []string{"git", "add", "-A"}, probe: []string{"git", "diff", "--cached", "--quiet"}},
+		{name: "unscoped", add: []string{"git", "add", "-A", "--verbose"}, probe: []string{"git", "diff", "--cached", "--quiet"}},
 		{
 			name: "path scoped", paths: []string{"src/a.go"}, scope: " in src/a.go",
 			add:   []string{"git", "add", "-A", "--", "src/a.go"},
@@ -616,7 +616,7 @@ func TestShipPROnTrunk(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	assertNoPRStep(t, vcstest.Invocations(t, f.ArgvLog))
-	if want := shipCommitted(t, f, vcs.Git) + " · pushed main → origin · no PR (on trunk)"; got != want {
+	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · pushed main → origin · no PR (on trunk)"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	if n := remoteCount(t, f, "main"); n != 2 {
@@ -653,7 +653,7 @@ func TestShipPRDraftTransitions(t *testing.T) {
 				}
 			}
 			var wantReady []string
-			want := shipCommitted(t, f, vcs.Git) + " · pushed feature → origin"
+			want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · pushed feature → origin"
 			if tt.wantSeg != "" {
 				wantReady = []string{"gh", "pr", "ready", strconv.Itoa(pr.Number), "--repo", fakePRRepo}
 				if tt.undo {

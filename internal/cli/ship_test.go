@@ -127,6 +127,26 @@ func TestJJWorkingCopyFlag(t *testing.T) {
 	}
 }
 
+// swept is the segment an unscoped git ship prepends. The jj lane stages
+// through jj and never runs git add, so it reports nothing.
+func swept(kind vcs.Kind, paths ...string) string {
+	if kind != vcs.Git {
+		return ""
+	}
+	return fmt.Sprintf("swept %d path(s): %s%s", len(paths), strings.Join(paths, ", "), shipSep)
+}
+
+// sweptUnscoped is swept for a table whose cases differ in scoping: a ship that
+// names paths on the command line reports no sweep.
+func sweptUnscoped(kind vcs.Kind, args []string, paths ...string) string {
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "-") && !slices.Contains([]string{"fix: frobnicate"}, arg) {
+			return ""
+		}
+	}
+	return swept(kind, paths...)
+}
+
 func TestShipCommitPushWatch(t *testing.T) {
 	tests := []struct {
 		name string
@@ -166,7 +186,7 @@ func TestShipCommitPushWatch(t *testing.T) {
 				return [][]string{
 					{"git", "branch", "--show-current"},
 					gitTrunkArgv,
-					{"git", "add", "-A"},
+					{"git", "add", "-A", "--verbose"},
 					{"git", "commit", "-m", "fix: frobnicate"},
 					{"git", "branch", "--show-current"},
 					{"git", "log", "-1", "--format=%h%x00%s"},
@@ -199,7 +219,7 @@ func TestShipCommitPushWatch(t *testing.T) {
 			}
 			invocations := vcstest.Invocations(t, f.ArgvLog)
 			assertInvocations(t, invocations, tt.want(shipHead(t, f)))
-			if want := shipCommitted(t, f, shipKind(tt.jj)) + " · pushed main → origin · CI success"; got != want {
+			if want := swept(shipKind(tt.jj), "f.txt") + shipCommitted(t, f, shipKind(tt.jj)) + " · pushed main → origin · CI success"; got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
 			if n := remoteCount(t, f, "main"); n != 2 {
@@ -234,7 +254,7 @@ func TestShipHooksPass(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
-				{"git", "add", "-A"},
+				{"git", "add", "-A", "--verbose"},
 				{"git", "diff", "--cached", "--name-only", "--diff-filter=d", "-z"},
 				{"uvx", "prek", "run", "--cd", "ROOT", "--files", "f1.go"},
 				{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
@@ -262,7 +282,7 @@ func TestShipHooksPass(t *testing.T) {
 				t.Fatalf("ship error = %v", err)
 			}
 			assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), tt.want)
-			if want := "hooks ok · " + shipCommitted(t, f, kind) + " · branch main · not pushed"; got != want {
+			if want := swept(kind, "f1.go") + "hooks ok · " + shipCommitted(t, f, kind) + " · branch main · not pushed"; got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
 			if status := gitAt(t, f.Dir, "status", "--porcelain"); status != "" {
@@ -385,7 +405,7 @@ func TestShipHooksAutoFixThenPass(t *testing.T) {
 					gitAddCount++
 				}
 			}
-			if want := "hooks fixed · " + shipCommitted(t, f, kind) + " · branch main · not pushed"; got != want {
+			if want := swept(kind, "f1.go") + "hooks fixed · " + shipCommitted(t, f, kind) + " · branch main · not pushed"; got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
 			if uvxCount != 1 {
@@ -425,7 +445,7 @@ func TestShipHooksRetryRederivesFiles(t *testing.T) {
 			assertInvocations(t, shipInvocationsOf(vcstest.Invocations(t, f.ArgvLog), "uvx"), [][]string{
 				{"uvx", "prek", "run", "--cd", f.Dir, "--files", "first.go"},
 			})
-			if want := "hooks fixed · " + shipCommitted(t, f, kind) + " · branch main · not pushed"; got != want {
+			if want := swept(kind, "first.go") + "hooks fixed · " + shipCommitted(t, f, kind) + " · branch main · not pushed"; got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
 			if jj && jjDiffCount != 3 {
@@ -469,7 +489,7 @@ func TestShipHooksNoVerify(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	invocations := vcstest.Invocations(t, f.ArgvLog)
-	if want := shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
+	if want := swept(vcs.Git, "f1.go") + shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	var commit []string
@@ -533,8 +553,8 @@ func TestShipVerifyDefault(t *testing.T) {
 			if ran != tt.want {
 				t.Errorf("prek ran = %v, want %v", ran, tt.want)
 			}
-			if reported := strings.HasPrefix(got, "hooks ok"+shipSep); reported != tt.want {
-				t.Errorf("summary = %q, want a leading hook segment = %v", got, tt.want)
+			if reported := strings.Contains(got, "hooks ok"+shipSep); reported != tt.want {
+				t.Errorf("summary = %q, want a hook segment = %v", got, tt.want)
 			}
 		})
 	}
@@ -549,7 +569,7 @@ func TestShipHooksNoConfig(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	invocations := vcstest.Invocations(t, f.ArgvLog)
-	if want := shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
+	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	var commit []string
@@ -579,7 +599,7 @@ func TestShipHooksCommitMsgStage(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	invocations := vcstest.Invocations(t, f.ArgvLog)
-	if want := "hooks ok · " + shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
+	if want := swept(vcs.Git, ".pre-commit-config.yaml", "f1.go") + "hooks ok · " + shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	var commit []string
@@ -608,7 +628,7 @@ func TestShipHooksUvxMissing(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	invocations := vcstest.Invocations(t, f.ArgvLog)
-	if want := "hooks uvx-missing · " + shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
+	if want := swept(vcs.Git, "f1.go") + "hooks uvx-missing · " + shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	var commit []string
@@ -690,7 +710,7 @@ func TestShipHooksEmptyFilesSkipSoftGuards(t *testing.T) {
 			t.Fatalf("ship error = %v", err)
 		}
 		invocations := vcstest.Invocations(t, f.ArgvLog)
-		if want := shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
+		if want := swept(vcs.Git, "doomed.go") + shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
 		for _, inv := range invocations {
@@ -790,7 +810,7 @@ func TestShipHooksPreserveHookableFilenames(t *testing.T) {
 				t.Fatalf("ship error = %v", err)
 			}
 			invocations := vcstest.Invocations(t, f.ArgvLog)
-			if want := "hooks ok · " + shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
+			if want := swept(vcs.Git, tt.filename) + "hooks ok · " + shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
 			assertInvocations(t, shipInvocationsOf(invocations, "uvx"), [][]string{
@@ -846,7 +866,7 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
-				{"git", "add", "-A"},
+				{"git", "add", "-A", "--verbose"},
 				{"git", "commit", "-m", "fix: frobnicate"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
@@ -882,7 +902,7 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
-				{"git", "add", "-A"},
+				{"git", "add", "-A", "--verbose"},
 				{"git", "commit", "--amend", "--no-edit"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
@@ -894,7 +914,7 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
-				{"git", "add", "-A"},
+				{"git", "add", "-A", "--verbose"},
 				{"git", "commit", "--amend", "--no-edit", "--no-verify"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
@@ -981,7 +1001,7 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 				t.Fatalf("ship error = %v", err)
 			}
 			assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), tt.want)
-			if want := shipCommitted(t, f, kind) + " · branch main · not pushed"; got != want {
+			if want := sweptUnscoped(kind, tt.args, "f.txt", "docs/d.md", "src/a.go") + shipCommitted(t, f, kind) + " · branch main · not pushed"; got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
 			if n := remoteCount(t, f, "main"); n != 1 {
@@ -1416,7 +1436,7 @@ func TestShipDetachedHeadAfterCommitSelfHeals(t *testing.T) {
 	}
 	invocations := shipGTInvocations(t, f)
 	head := shipHead(t, f)
-	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · healed detached HEAD onto feature · not pushed"; got != want {
+	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · healed detached HEAD onto feature · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	var healed []string
@@ -1450,7 +1470,7 @@ func TestShipGitUsesPostCommitBranch(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	invocations := vcstest.Invocations(t, f.ArgvLog)
-	if want := shipCommitted(t, f, vcs.Git) + " · pushed other → origin"; got != want {
+	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · pushed other → origin"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	if n := remoteCount(t, f, "other"); n != 2 {
@@ -1459,7 +1479,7 @@ func TestShipGitUsesPostCommitBranch(t *testing.T) {
 	assertInvocations(t, invocations, [][]string{
 		{"git", "branch", "--show-current"},
 		gitTrunkArgv,
-		{"git", "add", "-A"},
+		{"git", "add", "-A", "--verbose"},
 		{"git", "commit", "-m", "fix: frobnicate"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
@@ -1498,7 +1518,7 @@ func TestShipSessionTrailer(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
-				{"git", "add", "-A"},
+				{"git", "add", "-A", "--verbose"},
 				{"git", "commit", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
@@ -1524,7 +1544,7 @@ func TestShipSessionTrailer(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
-				{"git", "add", "-A"},
+				{"git", "add", "-A", "--verbose"},
 				{"git", "commit", "--amend", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
@@ -1550,7 +1570,7 @@ func TestShipSessionTrailer(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
-				{"git", "add", "-A"},
+				{"git", "add", "-A", "--verbose"},
 				{"git", "commit", "--amend", "--no-edit"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
@@ -1572,7 +1592,7 @@ func TestShipSessionTrailer(t *testing.T) {
 				t.Fatalf("ship error = %v", err)
 			}
 			assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), tt.want)
-			if want := shipCommitted(t, f, kind) + " · branch main · not pushed"; got != want {
+			if want := swept(kind, "f.txt") + shipCommitted(t, f, kind) + " · branch main · not pushed"; got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
 			if body := gitAt(t, f.Dir, "log", "-1", "--format=%B"); body != tt.body {
@@ -1593,7 +1613,7 @@ func TestShipGitAmendFastForwardPush(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	invocations := vcstest.Invocations(t, f.ArgvLog)
-	if want := shipCommitted(t, f, vcs.Git) + " · pushed main → origin"; got != want {
+	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · pushed main → origin"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	if n := remoteCount(t, f, "main"); n != 2 {
@@ -1606,7 +1626,7 @@ func TestShipGitAmendFastForwardPush(t *testing.T) {
 		{"git", "branch", "--show-current"},
 		gitTrunkArgv,
 		{"git", "rev-parse", "HEAD"},
-		{"git", "add", "-A"},
+		{"git", "add", "-A", "--verbose"},
 		{"git", "commit", "--amend", "-m", "fix: frobnicate"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
@@ -1635,7 +1655,7 @@ func TestShipGitRebase(t *testing.T) {
 	plan := [][]string{
 		{"git", "branch", "--show-current"},
 		gitTrunkArgv,
-		{"git", "add", "-A"},
+		{"git", "add", "-A", "--verbose"},
 		{"git", "commit", "-m", "fix: frobnicate"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
@@ -1710,7 +1730,7 @@ func TestShipGitRebase(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
-				{"git", "add", "-A"},
+				{"git", "add", "-A", "--verbose"},
 				{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
@@ -1794,7 +1814,7 @@ func TestShipGitRebase(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			want := shipCommitted(t, f, vcs.Git)
+			want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git)
 			if tt.rebased > 0 {
 				want += fmt.Sprintf(" · rebased %d commit(s) onto %s", tt.rebased, tt.branch)
 			}
@@ -1861,7 +1881,7 @@ func TestShipGitPushRetry(t *testing.T) {
 	plan := [][]string{
 		{"git", "branch", "--show-current"},
 		gitTrunkArgv,
-		{"git", "add", "-A"},
+		{"git", "add", "-A", "--verbose"},
 		{"git", "commit", "-m", "fix: frobnicate"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
@@ -1948,7 +1968,7 @@ func TestShipGitPushRetry(t *testing.T) {
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
 				{"git", "rev-parse", "HEAD"},
-				{"git", "add", "-A"},
+				{"git", "add", "-A", "--verbose"},
 				{"git", "commit", "--amend", "-m", "fix: frobnicate"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
@@ -2010,7 +2030,7 @@ func TestShipGitPushRetry(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			summary := shipCommitted(t, f, vcs.Git) +
+			summary := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) +
 				fmt.Sprintf(" · rebased %d commit(s) onto main · pushed main → origin", tt.rebased)
 			if got != summary {
 				t.Errorf("summary = %q, want %q", got, summary)
@@ -2964,7 +2984,7 @@ func TestShipHealSuccessAsksNoHolder(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	invocations := shipGTInvocations(t, f)
-	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · healed detached HEAD onto feature · not pushed"; got != want {
+	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · healed detached HEAD onto feature · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	if n := holderLookups(invocations); n != 0 {
@@ -3282,7 +3302,7 @@ func TestShipRepeatableMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	if want := shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
+	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	body := gitAt(t, f.Dir, "log", "-1", "--format=%B")
@@ -3907,7 +3927,7 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 			t.Fatalf("ship error = %v", err)
 		}
 		invocations := shipGTInvocations(t, f)
-		if want := shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
+		if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
 		assertInvocations(t, invocations, [][]string{
@@ -3915,7 +3935,7 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 			{"git", "branch", "--show-current"},
 			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
-			{"git", "add", "-A"},
+			{"git", "add", "-A", "--verbose"},
 			{"git", "diff", "--cached", "--quiet"},
 			{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
 			gtCommonDirArgv,
@@ -4011,7 +4031,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				{"git", "branch", "--show-current"},
 				gtCommonDirArgv,
 				gtRefsArgv(),
-				{"git", "add", "-A"},
+				{"git", "add", "-A", "--verbose"},
 				{"git", "diff", "--cached", "--quiet"},
 				{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
 				gtCommonDirArgv,
@@ -4057,7 +4077,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		{"git", "branch", "--show-current"},
 		gtCommonDirArgv,
 		gtRefsArgv(),
-		{"git", "add", "-A"},
+		{"git", "add", "-A", "--verbose"},
 		{"git", "diff", "--cached", "--quiet"},
 		{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"},
 		{"git", "branch", "--show-current"},
@@ -4153,7 +4173,7 @@ func TestShipTrunkPersonalAppends(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	head := gitAt(t, f.Dir, "log", "-1", "--format=%h")
-	if want := fmt.Sprintf(`committed %s "fix: frobnicate" · branch main · not pushed`, head); got != want {
+	if want := swept(vcs.Git, "f.txt") + fmt.Sprintf(`committed %s "fix: frobnicate" · branch main · not pushed`, head); got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "main" {
@@ -4173,7 +4193,7 @@ func TestShipTrunkOrgCreates(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	head := gitAt(t, f.Dir, "log", "-1", "--format=%h")
-	if want := fmt.Sprintf(`committed %s "fix: frobnicate" · created fix-frobnicate · not pushed`, head); got != want {
+	if want := swept(vcs.Git, "f.txt") + fmt.Sprintf(`committed %s "fix: frobnicate" · created fix-frobnicate · not pushed`, head); got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "fix-frobnicate" {
@@ -4194,7 +4214,7 @@ func TestShipGitNewBranch(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	head := gitAt(t, f.Dir, "log", "-1", "--format=%h")
-	if want := fmt.Sprintf(`committed %s "fix: frobnicate" · created feat-x · not pushed`, head); got != want {
+	if want := swept(vcs.Git, "f.txt") + fmt.Sprintf(`committed %s "fix: frobnicate" · created feat-x · not pushed`, head); got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "feat-x" {
@@ -4423,7 +4443,7 @@ func TestShipBranchFlag(t *testing.T) {
 			}
 		}
 		head := gitAt(t, f.Dir, "log", "-1", "--format=%h")
-		if want := fmt.Sprintf(`committed %s "fix: frobnicate" · branch feature · not pushed`, head); got != want {
+		if want := swept(vcs.Git, "f.txt") + fmt.Sprintf(`committed %s "fix: frobnicate" · branch feature · not pushed`, head); got != want {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
 		if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "feature"); subject != "fix: frobnicate" {
@@ -4456,7 +4476,7 @@ func TestShipBranchFlag(t *testing.T) {
 			t.Fatalf("ship error = %v", err)
 		}
 		head := gitAt(t, f.Dir, "log", "-1", "--format=%h")
-		if want := fmt.Sprintf(`committed %s "fix: frobnicate" · created other · not pushed`, head); got != want {
+		if want := swept(vcs.Git, "f.txt") + fmt.Sprintf(`committed %s "fix: frobnicate" · created other · not pushed`, head); got != want {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
 		if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "other" {
@@ -4766,7 +4786,7 @@ func TestShipGTAutoRestack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · restacked 1 branch · not pushed"; got != want {
+	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · restacked 1 branch · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	if ran := shipGTRestackRuns(t, f); len(ran) > 0 {
@@ -4804,7 +4824,7 @@ func TestShipGTRestacksAcrossWorktrees(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · restacked 2 branches across 2 working copies · not pushed"; got != want {
+	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · restacked 2 branches across 2 working copies · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	if behind := gitAt(t, f.Dir, "rev-list", "--count", "base..main"); behind != "0" {
@@ -4861,7 +4881,7 @@ func TestShipGTRestacksAStackSpreadAcrossWorkingCopies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	if want := shipCommitted(t, f, vcs.Git) + " · branch three · restacked 3 branches across 3 working copies · not pushed"; got != want {
+	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch three · restacked 3 branches across 3 working copies · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	if ran := shipGTRestackRuns(t, f); len(ran) > 0 {
@@ -4901,7 +4921,7 @@ func TestShipGTRestackAppliesPrintedRefUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · restacked 2 branches across 2 working copies · not pushed"; got != want {
+	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · restacked 2 branches across 2 working copies · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	for _, pair := range [][2]string{{"base", "main"}, {"feature", "base"}} {
@@ -4933,7 +4953,7 @@ func TestShipGTRestackLeavesARestackedBranchAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · restacked 1 branch · not pushed"; got != want {
+	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · restacked 1 branch · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	if after := gitAt(t, f.Dir, "rev-parse", "base"); after != before {
@@ -5219,7 +5239,7 @@ func TestShipGTRefusals(t *testing.T) {
 			t.Fatalf("ship error = %v", err)
 		}
 		invocations := shipGTInvocations(t, f)
-		if want := `tracked feature onto main · ` + shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
+		if want := `tracked feature onto main · ` + swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
 		assertInvocations(t, invocations, [][]string{
@@ -5229,7 +5249,7 @@ func TestShipGTRefusals(t *testing.T) {
 			gtRealRefsArgv(t, f),
 			{"gt", "track", "feature", "-f", "--no-interactive"},
 			gtRealRefsArgv(t, f),
-			{"git", "add", "-A"},
+			{"git", "add", "-A", "--verbose"},
 			{"git", "diff", "--cached", "--quiet"},
 			{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
 			gtCommonDirArgv,
@@ -5797,7 +5817,7 @@ func TestShipGTNoPush(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	invocations := shipGTInvocations(t, f)
-	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
+	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	sawState := false
