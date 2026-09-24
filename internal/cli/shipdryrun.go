@@ -241,7 +241,7 @@ func dryRunPlace(ctx context.Context, l lane, o shipOpts, r *shipDryRun) error {
 func dryRunRefusals(ctx context.Context, l lane, o shipOpts, r *shipDryRun) error {
 	checks := []func() error{}
 	if o.noCommit {
-		checks = append(checks, func() error { return shipRefuseDirty(ctx, l.dir(), l.kind, o) })
+		checks = append(checks, func() error { _, err := shipRefuseDirty(ctx, l.dir(), l.kind, o); return err })
 	}
 	if l.gt {
 		checks = append(checks, func() error { return gtTrunkFlagRefusal(o, r.branch, r.trunk) })

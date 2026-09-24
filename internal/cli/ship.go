@@ -187,7 +187,7 @@ func newShipCmd() *cobra.Command {
 		Short: "Commit, push, and watch CI in one step",
 		Long: `Commit, push, and watch CI in one step.
 
-Ship refuses an empty working copy only when the branch carries nothing above trunk either. Where it does carry commits trunk does not — work a delegate's worktree, a hand-made commit, or a codex lane already landed — there is nothing to cut and everything to submit, so ship skips the commit and goes on to push and the pull request, reporting "nothing to commit — shipping as --no-commit". A path-scoped ship whose scoped paths are clean takes that same path, naming them: scoping already declared everything else out, so finding them clean over a branch ahead of trunk means the work landed. --no-commit states the path outright and refuses a dirty working copy, whose changes would otherwise be left out of the branch and the pull request this same run updates; it is refused alongside paths, where the two spellings contradict each other. Where the branch carries nothing above trunk there is nothing to submit either, and the refusal says so. Ship resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>); a rebase that would conflict is rolled back and reported instead of pushed. Uncommitted work the rebase has to move — every hunk a scoped ship deliberately left in the tree — is kept as a commit of its own rather than on refs/stash, which every working copy of a repository shares, and put back afterwards; work that will not go back leaves the commit holding it and the files in it named in the refusal. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
+Ship refuses an empty working copy only when the branch carries nothing above trunk either. Where it does carry commits trunk does not — work a delegate's worktree, a hand-made commit, or a codex lane already landed — there is nothing to cut and everything to submit, so ship skips the commit and goes on to push and the pull request, reporting "nothing to commit — shipping as --no-commit". A path-scoped ship whose scoped paths are clean takes that same path, naming them: scoping already declared everything else out, so finding them clean over a branch ahead of trunk means the work landed. --no-commit states the path outright and refuses a working copy holding changes to tracked files, which would otherwise be left out of the branch and the pull request this same run updates; git's untracked paths do not refuse it, since a run that cuts no commit was never going to carry a worktree's scratch into one, and the report names them as "left untracked: <paths>" instead. Under jj there is nothing to exempt: a new file is already part of the working-copy commit --no-commit pushes. --no-commit is refused alongside paths, where the two spellings contradict each other. Where the branch carries nothing above trunk there is nothing to submit either, and the refusal says so. Ship resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>); a rebase that would conflict is rolled back and reported instead of pushed. Uncommitted work the rebase has to move — every hunk a scoped ship deliberately left in the tree — is kept as a commit of its own rather than on refs/stash, which every working copy of a repository shares, and put back afterwards; work that will not go back leaves the commit holding it and the files in it named in the refusal. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
 
 Where the commit goes is one decision, resolved before any mutation and reported as a branch <name> or created <name> segment. On a non-trunk branch or bookmark, ship appends to it. On trunk it appends in your own repositories — direct-to-main is deliberate there — and starts a branch named from the commit subject when GitHub says the repository is someone else's, since an org trunk rejects the commit through its protect-<trunk> hook and leaves it dangling; the graphite lane always starts a branch on trunk, because gt has no verb that commits onto it. A detached HEAD is refused rather than guessed at, and so are several trunk candidates unless --branch names one of them. --branch <name> commits onto that branch, creating it here when it does not exist and refusing when it exists somewhere else, since ship does not check branches out; --new-branch[=<name>] always starts one, deriving the name from the commit subject when bare (an explicit name must be spelled --new-branch=name, because cobra parses "--new-branch name" as a path operand to commit); --append refuses on trunk; --allow-trunk lets --branch advance a trunk you do not own. --bookmark is a jj-only alias of --branch, --create a deprecated alias of --new-branch. A new branch is cut with gt create (graphite), git switch -c (git), or jj bookmark create -r @- (jj).
 
@@ -360,8 +360,9 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		}
 	}
 	landedSeg := ""
+	untrackedSeg := ""
 	if o.noCommit {
-		if err := shipRefuseDirty(ctx, dir, kind, o); err != nil {
+		if untrackedSeg, err = shipRefuseDirty(ctx, dir, kind, o); err != nil {
 			return err
 		}
 	} else if kind == vcs.JJ && sel == nil && !o.amend {
@@ -434,6 +435,9 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	}
 	committedSegment := len(segments)
 	segments = append(segments, shipCommitSegment(o.noCommit, short, subject))
+	if untrackedSeg != "" {
+		segments = append(segments, untrackedSeg)
+	}
 	if seg := branchSegment(plan, branch, o.noPush); seg != "" {
 		segments = append(segments, seg)
 	}
@@ -814,10 +818,6 @@ func shipCommitSegment(noCommit bool, short, subject string) string {
 	return fmt.Sprintf("committed %s %q", short, subject)
 }
 
-// shipRefuseDirty refuses --no-commit over a working copy that still holds
-// changes. The mode pushes a commit that is already in place, so uncommitted
-// work would be left out of a branch and a pull request this same run updates,
-// and the report that could name it prints only once both have happened.
 // shipRefusal is ship declining on purpose, as opposed to a probe that failed.
 // The two are indistinguishable by message, and --dry-run has to tell them
 // apart: a refusal is a line in its report, a failed probe is its exit.
@@ -827,29 +827,53 @@ func (e *shipRefusal) Error() string { return e.msg }
 
 func refuse(format string, a ...any) error { return &shipRefusal{msg: fmt.Sprintf(format, a...)} }
 
-func shipRefuseDirty(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpts) error {
-	var items []string
+// shipRefuseDirty refuses --no-commit over changes to files git tracks, which
+// the mode would leave out of the branch and pull request this run updates, and
+// returns the untracked paths it exempted. A commit already in place carries no
+// scratch; jj has none to exempt, where a new file is already in @.
+func shipRefuseDirty(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpts) (string, error) {
+	var items, untracked []string
 	if kind == vcs.JJ {
 		paths, err := shipChangedPaths(ctx, dir, vcs.JJ, o)
 		if err != nil {
-			return err
+			return "", err
 		}
 		items = paths
 	} else {
 		out, err := render.RunCLI(ctx, dir, "git", []string{"status", "--porcelain"})
 		if err != nil {
-			return fmt.Errorf("ship: git status: %w", err)
+			return "", fmt.Errorf("ship: git status: %w", err)
 		}
 		for _, line := range strings.Split(out, "\n") {
-			if strings.TrimSpace(line) != "" {
-				items = append(items, strings.TrimSpace(line))
+			switch entry := strings.TrimSpace(line); {
+			case entry == "":
+			case strings.HasPrefix(line, "?? "):
+				untracked = append(untracked, strings.TrimPrefix(line, "?? "))
+			default:
+				items = append(items, entry)
 			}
 		}
 	}
-	if len(items) == 0 {
-		return nil
+	if len(items) > 0 {
+		return "", refuse("ship: --no-commit needs a clean working copy — uncommitted: %s; drop --no-commit to ship that work, or stash it", strings.Join(items, ", "))
 	}
-	return refuse("ship: --no-commit needs a clean working copy — uncommitted: %s; drop --no-commit to ship that work, or stash it", strings.Join(items, ", "))
+	return shipUntrackedSegment(untracked), nil
+}
+
+// shipUntrackedNameCap caps the paths the segment names before it counts the
+// rest: a worktree carrying scratch carries more than a report should hold.
+const shipUntrackedNameCap = 3
+
+// shipUntrackedSegment names the untracked paths a --no-commit ship left out,
+// so the report says what did not reach the pull request.
+func shipUntrackedSegment(paths []string) string {
+	switch {
+	case len(paths) == 0:
+		return ""
+	case len(paths) <= shipUntrackedNameCap:
+		return "left untracked: " + strings.Join(paths, ", ")
+	}
+	return fmt.Sprintf("left untracked: %s and %d more", strings.Join(paths[:shipUntrackedNameCap], ", "), len(paths)-shipUntrackedNameCap)
 }
 
 func shipRefuseEmptyJJ(ctx context.Context, dir render.Dir, o shipOpts, plan branchPlan) error {
