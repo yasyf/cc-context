@@ -22,19 +22,42 @@ var stubDirs = []string{"/usr/bin", "/bin"}
 // once rather than once per child.
 var gitCache sync.Map
 
+// Env is the environment a resolution reads. A child's own environment governs
+// which git it gets, so a caller that hands its child a PATH of its own
+// resolves against that one rather than the process's.
+type Env struct {
+	Git  string
+	PATH string
+}
+
+// For reads the resolution inputs out of a child environment in exec's own
+// form, where a later entry overrides an earlier one.
+func For(env []string) Env {
+	var e Env
+	for _, kv := range env {
+		switch key, value, _ := strings.Cut(kv, "="); key {
+		case GitEnv:
+			e.Git = value
+		case "PATH":
+			e.PATH = value
+		}
+	}
+	return e
+}
+
 // Bin returns the executable to spawn for name: the preferred git for "git",
 // and name itself otherwise, left for exec to resolve against PATH. git is the
 // only binary ccx spawns with a stub in the system directories; gt, gh, jj, uv
 // and rg install outside them and already resolve to a real one.
-func Bin(name string) string {
+func (e Env) Bin(name string) string {
 	if name != "git" {
 		return name
 	}
-	key := os.Getenv(GitEnv) + "\x00" + os.Getenv("PATH")
+	key := e.Git + "\x00" + e.PATH
 	if hit, ok := gitCache.Load(key); ok {
 		return hit.(string)
 	}
-	git := resolveGit()
+	git := e.resolveGit()
 	gitCache.Store(key, git)
 	return git
 }
@@ -43,43 +66,44 @@ func Bin(name string) string {
 // of ccx's own, so a tool that spawns git itself — gt spawns around twenty per
 // run — reaches the same git. That directory is already on PATH, so only git's
 // resolution order changes. It returns "" when there is nothing to reorder.
-func GitPATH() string {
-	git := Bin("git")
+func (e Env) GitPATH() string {
+	git := e.Bin("git")
 	if !filepath.IsAbs(git) {
 		return ""
 	}
 	dir := filepath.Dir(git)
-	entries := filepath.SplitList(os.Getenv("PATH"))
+	entries := filepath.SplitList(e.PATH)
 	if len(entries) == 0 || entries[0] == dir || slices.Contains(stubDirs, dir) {
 		return ""
 	}
 	return strings.Join(append([]string{dir}, entries...), string(os.PathListSeparator))
 }
 
-// resolveGit returns the git PATH names with the system stub passed over, and
-// exec's own answer untouched whenever that answer is not the stub. It reads
-// the filesystem and nothing else — a resolution that spawned anything would
-// put an unbounded wait on every caller's exec path.
-func resolveGit() string {
-	if pinned := os.Getenv(GitEnv); pinned != "" {
-		return pinned
+// resolveGit returns the first git on PATH, passing over one in the system
+// directories while another is reachable and falling back to it when none is.
+// It reads the filesystem and nothing else — a resolution that spawned
+// anything would put an unbounded wait on every caller's exec path.
+func (e Env) resolveGit() string {
+	if e.Git != "" {
+		return e.Git
 	}
-	found := Find("git")
-	if found == "" {
-		return "git"
-	}
-	if !slices.Contains(stubDirs, filepath.Dir(found)) {
-		return found
-	}
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		if dir == "" || slices.Contains(stubDirs, dir) {
+	var stub string
+	for _, dir := range filepath.SplitList(e.PATH) {
+		candidate := filepath.Join(dir, "git")
+		if dir == "" || !executable(candidate) {
 			continue
 		}
-		if candidate := filepath.Join(dir, "git"); executable(candidate) {
+		if !slices.Contains(stubDirs, dir) {
 			return candidate
 		}
+		if stub == "" {
+			stub = candidate
+		}
 	}
-	return found
+	if stub != "" {
+		return stub
+	}
+	return "git"
 }
 
 // executable reports whether path is a runnable file.

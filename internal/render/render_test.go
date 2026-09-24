@@ -3,6 +3,7 @@ package render
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -226,6 +227,77 @@ func TestRunCLIEnv(t *testing.T) {
 				t.Errorf("RunCLIEnv err = %v, want it to carry the child stderr", err)
 			}
 		})
+	}
+}
+
+func TestWithEnvReachesTheChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh to read env")
+	}
+	tests := []struct {
+		name     string
+		ctx      func() context.Context
+		extraEnv []string
+		want     string
+	}{
+		{
+			"a context variable reaches the child",
+			func() context.Context { return WithEnv(context.Background(), "CCX_TEST_VAR=ctx") },
+			nil,
+			"ctx",
+		},
+		{
+			"a context variable overrides the inherited one",
+			func() context.Context { return WithEnv(context.Background(), "HOME=/ctx-home") },
+			nil,
+			"/ctx-home",
+		},
+		{
+			"extraEnv outranks the context",
+			func() context.Context { return WithEnv(context.Background(), "CCX_TEST_VAR=ctx") },
+			[]string{"CCX_TEST_VAR=call"},
+			"call",
+		},
+		{
+			"nesting accumulates, inner last",
+			func() context.Context {
+				return WithEnv(WithEnv(context.Background(), "CCX_TEST_VAR=outer"), "CCX_TEST_VAR=inner")
+			},
+			nil,
+			"inner",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := `printf '%s' "${CCX_TEST_VAR:-$HOME}"`
+			got, err := RunCLIEnv(tt.ctx(), Ambient, "/bin/sh", []string{"-c", script}, tt.extraEnv)
+			if err != nil {
+				t.Fatalf("RunCLIEnv: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("RunCLIEnv = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestWithEnvPATHResolvesTheChildsGit proves the resolution reads the context's
+// PATH rather than the process's: a fake git reachable only through the context
+// is the one spawned, which is what lets a test hand each child its own tools
+// without replacing the environment every other test in the binary shares.
+func TestWithEnvPATHResolvesTheChildsGit(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	want := filepath.Join(dir, "git")
+	if err := os.WriteFile(want, []byte("#!/bin/sh\n"), 0o700); err != nil { //nolint:gosec // a fake git must be executable to be resolved
+		t.Fatalf("write fake git: %v", err)
+	}
+	ctx := WithEnv(context.Background(), "PATH="+dir)
+	cmd, _, cancel := newCmd(ctx, Ambient, "git", nil, nil)
+	defer cancel()
+	if cmd.Path != want {
+		t.Fatalf("spawned %q, want the context's git %q", cmd.Path, want)
 	}
 }
 
