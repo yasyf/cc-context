@@ -1,7 +1,6 @@
 package vcs
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -50,11 +49,12 @@ func sortedFiles(p DiffPlan) []string {
 }
 
 func TestResolveDiffPlanGitUncommitted(t *testing.T) {
-	dir := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	dir := f.Dir
 	write(t, dir, "a.go", "package a\n\nfunc Foo() int { return 1 }\n")
 	write(t, dir, "keep.go", "package a\n\nvar Keep = 1\n")
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "init")
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "init")
 
 	// modify a.go, delete keep.go, and leave new.go purely untracked (never staged)
 	// so the plan must fold in `git ls-files --others` rather than only tracked diffs.
@@ -64,7 +64,7 @@ func TestResolveDiffPlanGitUncommitted(t *testing.T) {
 	}
 	write(t, dir, "new.go", "package a\n\nfunc Bar() {}\n")
 
-	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "uncommitted")
+	plan, err := ResolveDiffPlan(f.Context(), render.Dir(dir), "uncommitted")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan: %v", err)
 	}
@@ -95,17 +95,18 @@ func TestResolveDiffPlanGitUncommitted(t *testing.T) {
 }
 
 func TestResolveDiffPlanGitStaged(t *testing.T) {
-	dir := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	dir := f.Dir
 	write(t, dir, "a.go", "package a\n\nvar X = 1\n")
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "init")
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "init")
 
 	write(t, dir, "a.go", "package a\n\nvar X = 2\n")
-	runGit(t, dir, "add", "a.go")
+	runGit(t, f, dir, "add", "a.go")
 	// a further unstaged edit must not appear on the staged after side.
 	write(t, dir, "a.go", "package a\n\nvar X = 3\n")
 
-	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "staged")
+	plan, err := ResolveDiffPlan(f.Context(), render.Dir(dir), "staged")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan: %v", err)
 	}
@@ -124,17 +125,18 @@ func TestResolveDiffPlanGitStaged(t *testing.T) {
 }
 
 func TestResolveDiffPlanGitRangeAndBareRef(t *testing.T) {
-	dir := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	dir := f.Dir
 	write(t, dir, "a.go", "package a\n\nvar X = 1\n")
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "c1")
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "c1")
 	write(t, dir, "a.go", "package a\n\nvar X = 2\n")
 	write(t, dir, "b.go", "package a\n\nvar Y = 1\n")
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "c2")
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "c2")
 
 	// range HEAD~1..HEAD: committed endpoints, worktree untouched.
-	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "HEAD~1..HEAD")
+	plan, err := ResolveDiffPlan(f.Context(), render.Dir(dir), "HEAD~1..HEAD")
 	if err != nil {
 		t.Fatalf("range plan: %v", err)
 	}
@@ -153,7 +155,7 @@ func TestResolveDiffPlanGitRangeAndBareRef(t *testing.T) {
 
 	// bare ref: HEAD~1 vs the current worktree.
 	write(t, dir, "a.go", "package a\n\nvar X = 9\n")
-	bare, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "HEAD~1")
+	bare, err := ResolveDiffPlan(f.Context(), render.Dir(dir), "HEAD~1")
 	if err != nil {
 		t.Fatalf("bare plan: %v", err)
 	}
@@ -166,11 +168,12 @@ func TestResolveDiffPlanGitRangeAndBareRef(t *testing.T) {
 }
 
 func TestResolveDiffPlanGitBogusRef(t *testing.T) {
-	dir := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	dir := f.Dir
 	write(t, dir, "a.go", "package a\n")
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "init")
-	if _, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "no-such-ref..HEAD"); err == nil {
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "init")
+	if _, err := ResolveDiffPlan(f.Context(), render.Dir(dir), "no-such-ref..HEAD"); err == nil {
 		t.Fatal("want error for a bogus range endpoint")
 	}
 }
@@ -183,12 +186,13 @@ func TestResolveDiffPlanGitBogusRef(t *testing.T) {
 // of the rev-parse gate ahead of it — handed the option directly, the argv builder
 // still puts --end-of-options in front of it.
 func TestResolveDiffPlanGitRefusesOptionInjection(t *testing.T) {
-	dir := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	dir := f.Dir
 	write(t, dir, "a.go", "package a\n")
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "c1")
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "c1")
 	write(t, dir, "a.go", "package a\n\nvar X = 1\n")
-	runGit(t, dir, "commit", "-qam", "c2")
+	runGit(t, f, dir, "commit", "-qam", "c2")
 
 	// shape places the option-shaped endpoint into one branch of the switch; each
 	// case gets its own target, so a file one case writes cannot mask another.
@@ -205,7 +209,7 @@ func TestResolveDiffPlanGitRefusesOptionInjection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			target := filepath.Join(t.TempDir(), "pwned.txt")
 			source := fmt.Sprintf(tt.shape, "--output="+target)
-			_, err := ResolveDiffPlan(context.Background(), render.Dir(dir), source)
+			_, err := ResolveDiffPlan(f.Context(), render.Dir(dir), source)
 			assertUnwritten(t, target)
 			if err == nil {
 				t.Fatalf("ResolveDiffPlan(%q) = nil error, want a refusal", source)
@@ -220,7 +224,7 @@ func TestResolveDiffPlanGitRefusesOptionInjection(t *testing.T) {
 
 	t.Run("past the validation gate", func(t *testing.T) {
 		target := filepath.Join(t.TempDir(), "pwned.txt")
-		_, _, err := gitDiffFiles(context.Background(), GitArgs{
+		_, _, err := gitDiffFiles(f.Context(), GitArgs{
 			Dir:  render.Dir(dir),
 			Sub:  []string{"diff", "-M"},
 			Revs: []GitRef{UnsafeRef("--output=" + target)},
@@ -247,18 +251,19 @@ func assertUnwritten(t *testing.T, path string) {
 // resolves, which renders a modification as a whole-file addition — and splits the
 // newline name into two entries that name no file at all.
 func TestResolveDiffPlanGitUnquotableNames(t *testing.T) {
-	dir := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	dir := f.Dir
 	for _, name := range unquotableNames {
 		write(t, dir, name, "one\ntwo\n")
 	}
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "init")
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "init")
 	for _, name := range unquotableNames {
 		write(t, dir, name, "one\nTWO CHANGED\n")
 	}
 	write(t, dir, "untracked\nname.go", "brand new\n")
 
-	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "uncommitted")
+	plan, err := ResolveDiffPlan(f.Context(), render.Dir(dir), "uncommitted")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan: %v", err)
 	}
@@ -292,17 +297,18 @@ const cleanV1 = "package a\n\nfunc Foo() int { return 1 }\n"
 // moved.go) reads the pre-image at the old path so the edit classifies. The old
 // path's deletion never vanishes into an all-new destination.
 func TestResolveDiffPlanGitRename(t *testing.T) {
-	dir := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	dir := f.Dir
 	write(t, dir, "mod.go", modV1)
 	write(t, dir, "clean.go", cleanV1)
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "init")
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "init")
 
-	runGit(t, dir, "mv", "clean.go", "renamed.go") // clean rename, no edit
-	runGit(t, dir, "mv", "mod.go", "moved.go")     // rename with a subsequent edit
+	runGit(t, f, dir, "mv", "clean.go", "renamed.go") // clean rename, no edit
+	runGit(t, f, dir, "mv", "mod.go", "moved.go")     // rename with a subsequent edit
 	write(t, dir, "moved.go", modV2)
 
-	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "uncommitted")
+	plan, err := ResolveDiffPlan(f.Context(), render.Dir(dir), "uncommitted")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan: %v", err)
 	}
@@ -335,16 +341,17 @@ func TestResolveDiffPlanGitRename(t *testing.T) {
 // parsing jj's compact "R <prefix>{old => new}<suffix>" summary. It skips when jj
 // or git is absent.
 func TestResolveDiffPlanJJRename(t *testing.T) {
-	dir := vcstest.Repo(t, vcstest.JJ()).Dir
+	f := vcstest.Repo(t, vcstest.JJ())
+	dir := f.Dir
 	write(t, dir, "mod.go", modV1)
 	write(t, dir, "clean.go", cleanV1)
-	runJJ(t, dir, "commit", "-m", "init")
+	runJJ(t, f, dir, "commit", "-m", "init")
 
 	mustRename(t, dir, "clean.go", "renamed.go") // clean rename
 	mustRename(t, dir, "mod.go", "moved.go")     // rename with a subsequent edit
 	write(t, dir, "moved.go", modV2)
 
-	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "")
+	plan, err := ResolveDiffPlan(f.Context(), render.Dir(dir), "")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan: %v", err)
 	}
@@ -379,13 +386,14 @@ func mustRename(t *testing.T, dir, old, newName string) {
 // TestResolveDiffPlanJJ exercises the jj working-tree lane against a real colocated
 // repo; it skips when jj is absent.
 func TestResolveDiffPlanJJ(t *testing.T) {
-	dir := vcstest.Repo(t, vcstest.JJ()).Dir
+	f := vcstest.Repo(t, vcstest.JJ())
+	dir := f.Dir
 	write(t, dir, "a.go", "package a\n\nfunc Foo() int { return 1 }\n")
-	runJJ(t, dir, "commit", "-m", "init")
+	runJJ(t, f, dir, "commit", "-m", "init")
 	// mutate the working copy (@ vs @-).
 	write(t, dir, "a.go", "package a\n\nfunc Foo() int { return 2 }\n")
 
-	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "")
+	plan, err := ResolveDiffPlan(f.Context(), render.Dir(dir), "")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan: %v", err)
 	}
@@ -404,11 +412,12 @@ func TestResolveDiffPlanJJ(t *testing.T) {
 }
 
 func TestResolveDiffPlanJJColocatedGitSyntax(t *testing.T) {
-	dir := vcstest.Repo(t, vcstest.JJ()).Dir
+	f := vcstest.Repo(t, vcstest.JJ())
+	dir := f.Dir
 	write(t, dir, "a.go", "package a\n\nfunc Foo() int { return 1 }\n")
-	runJJ(t, dir, "commit", "-m", "one")
+	runJJ(t, f, dir, "commit", "-m", "one")
 	write(t, dir, "a.go", "package a\n\nfunc Foo() int { return 2 }\n")
-	runJJ(t, dir, "commit", "-m", "two")
+	runJJ(t, f, dir, "commit", "-m", "two")
 
 	// jj rejects HEAD~1/HEAD outright; a colocated repo resolves them via git.
 	tests := []struct {
@@ -420,7 +429,7 @@ func TestResolveDiffPlanJJColocatedGitSyntax(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), tt.source)
+			plan, err := ResolveDiffPlan(f.Context(), render.Dir(dir), tt.source)
 			if err != nil {
 				t.Fatalf("ResolveDiffPlan(%q): %v", tt.source, err)
 			}
@@ -444,15 +453,16 @@ func TestResolveDiffPlanJJColocatedGitSyntax(t *testing.T) {
 const zwjPath = "\U0001F468\u200D\U0001F469\u200D\U0001F466.txt"
 
 func TestResolveDiffPlanJJZWJPath(t *testing.T) {
-	dir := vcstest.Repo(t, vcstest.JJ()).Dir
+	f := vcstest.Repo(t, vcstest.JJ())
+	dir := f.Dir
 	write(t, dir, "plain.txt", "one\ntwo\n")
 	write(t, dir, zwjPath, "one\ntwo\n")
-	runJJ(t, dir, "commit", "-m", "init")
+	runJJ(t, f, dir, "commit", "-m", "init")
 	write(t, dir, "plain.txt", "one\nTWO CHANGED\n")
 	write(t, dir, zwjPath, "one\nTWO CHANGED\n")
 	write(t, dir, "added.txt", "brand new\n")
 
-	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "")
+	plan, err := ResolveDiffPlan(f.Context(), render.Dir(dir), "")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan: %v", err)
 	}
@@ -476,14 +486,15 @@ func TestResolveDiffPlanJJZWJPath(t *testing.T) {
 // masterTrunkJJ stands up a colocated jj repo whose only branch is master,
 // carrying one committed revision of a.go and an uncommitted edit on top, so a
 // source naming main has nothing to resolve to and a rewrite cannot hide.
-func masterTrunkJJ(t *testing.T, opts ...vcstest.Opt) string {
+func masterTrunkJJ(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	t.Helper()
-	dir := vcstest.Repo(t, append([]vcstest.Opt{vcstest.JJ(), vcstest.Trunk("master")}, opts...)...).Dir
+	f := vcstest.Repo(t, append([]vcstest.Opt{vcstest.JJ(), vcstest.Trunk("master")}, opts...)...)
+	dir := f.Dir
 	write(t, dir, "a.go", "package a\n\nfunc Foo() int { return 1 }\n")
-	runJJ(t, dir, "commit", "-m", "a.go v1")
-	runJJ(t, dir, "bookmark", "set", "master", "-r", "@-")
+	runJJ(t, f, dir, "commit", "-m", "a.go v1")
+	runJJ(t, f, dir, "bookmark", "set", "master", "-r", "@-")
 	write(t, dir, "a.go", "package a\n\nfunc Foo() int { return 2 }\n")
-	return dir
+	return f
 }
 
 // assertMasterAgainstWorking fails unless plan diffs the master revision against
@@ -510,15 +521,16 @@ func assertMasterAgainstWorking(t *testing.T, plan DiffPlan) {
 // repo it died with `Revision "main" doesn't exist` — naming a branch the user
 // never typed. A name in the source is now the name that reaches jj.
 func TestResolveDiffPlanJJHonorsLiteralBranchNames(t *testing.T) {
-	dir := masterTrunkJJ(t)
+	f := masterTrunkJJ(t)
+	dir := f.Dir
 
-	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "master..@")
+	plan, err := ResolveDiffPlan(f.Context(), render.Dir(dir), "master..@")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan(master..@): %v", err)
 	}
 	assertMasterAgainstWorking(t, plan)
 
-	_, err = ResolveDiffPlan(context.Background(), render.Dir(dir), "main..@")
+	_, err = ResolveDiffPlan(f.Context(), render.Dir(dir), "main..@")
 	if err == nil {
 		t.Fatal("ResolveDiffPlan(main..@) succeeded in a repo with no main")
 	}
@@ -531,9 +543,10 @@ func TestResolveDiffPlanJJHonorsLiteralBranchNames(t *testing.T) {
 // that still consults the repository: trunk() reads refs/remotes/origin/HEAD, so
 // a master-trunk repo resolves to master rather than to a fabricated main.
 func TestResolveDiffPlanJJTrunkResolvesTheDesignatedBranch(t *testing.T) {
-	dir := masterTrunkJJ(t, vcstest.Remote())
+	f := masterTrunkJJ(t, vcstest.Remote())
+	dir := f.Dir
 
-	plan, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "trunk()..@")
+	plan, err := ResolveDiffPlan(f.Context(), render.Dir(dir), "trunk()..@")
 	if err != nil {
 		t.Fatalf("ResolveDiffPlan(trunk()..@): %v", err)
 	}
@@ -545,9 +558,10 @@ func TestResolveDiffPlanJJTrunkResolvesTheDesignatedBranch(t *testing.T) {
 // regardless, which surfaced as jj rejecting a branch nobody named. The miss is
 // now ErrNoTrunk, carrying the command that fixes it.
 func TestResolveDiffPlanJJTrunkWithoutADefaultBranch(t *testing.T) {
-	dir := masterTrunkJJ(t)
+	f := masterTrunkJJ(t)
+	dir := f.Dir
 
-	_, err := ResolveDiffPlan(context.Background(), render.Dir(dir), "trunk()..@")
+	_, err := ResolveDiffPlan(f.Context(), render.Dir(dir), "trunk()..@")
 	if !errors.Is(err, ErrNoTrunk) {
 		t.Fatalf("ResolveDiffPlan(trunk()..@) error = %v, want ErrNoTrunk", err)
 	}
@@ -560,11 +574,12 @@ func TestResolveDiffPlanJJTrunkWithoutADefaultBranch(t *testing.T) {
 // failure rather than as "absent from the base", the swallow that hid the
 // unparseable ZWJ fileset behind a phantom whole-file addition.
 func TestTreeHasPathJJReportsFailure(t *testing.T) {
-	dir := vcstest.Repo(t, vcstest.JJ()).Dir
+	f := vcstest.Repo(t, vcstest.JJ())
+	dir := f.Dir
 	write(t, dir, "a.go", "package a\n")
-	runJJ(t, dir, "commit", "-m", "init")
+	runJJ(t, f, dir, "commit", "-m", "init")
 
-	ctx := context.Background()
+	ctx := f.Context()
 	if _, err := treeHasPath(ctx, render.Dir(dir), JJ, "nosuchrev", "a.go"); err == nil {
 		t.Error("treeHasPath at an unknown revision returned no error")
 	}
@@ -582,11 +597,12 @@ func TestTreeHasPathJJReportsFailure(t *testing.T) {
 // whitespace still reads as present: `jj file list` prints that name and a
 // newline, so trimming the listing before measuring it erases the file.
 func TestTreeHasPathJJWhitespaceName(t *testing.T) {
-	dir := vcstest.Repo(t, vcstest.JJ()).Dir
+	f := vcstest.Repo(t, vcstest.JJ())
+	dir := f.Dir
 	write(t, dir, " ", "one\n")
-	runJJ(t, dir, "commit", "-m", "init")
+	runJJ(t, f, dir, "commit", "-m", "init")
 
-	has, err := treeHasPath(context.Background(), render.Dir(dir), JJ, "@-", " ")
+	has, err := treeHasPath(f.Context(), render.Dir(dir), JJ, "@-", " ")
 	if err != nil || !has {
 		t.Errorf("treeHasPath(@-, %q) = %v, %v; want true, nil", " ", has, err)
 	}
@@ -597,12 +613,13 @@ func TestTreeHasPathJJWhitespaceName(t *testing.T) {
 // two apart — it exits 128 for a path the tree lacks and for a rev or object store
 // it cannot read alike — so the probe has to enumerate to separate them.
 func TestTreeHasPathGitReportsFailure(t *testing.T) {
-	dir := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	dir := f.Dir
 	write(t, dir, "a.go", "package a\n")
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "init")
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "init")
 
-	ctx := context.Background()
+	ctx := f.Context()
 	if _, err := treeHasPath(ctx, render.Dir(dir), Git, "nosuchrev", "a.go"); err == nil {
 		t.Error("treeHasPath at an unknown revision returned no error")
 	}
@@ -624,24 +641,25 @@ func TestTreeHasPathGitReportsFailure(t *testing.T) {
 // entry and as the three records a conflict spreads it across.
 func TestTreeHasPathGitIndex(t *testing.T) {
 	conflicted := unquotableNames[1]
-	dir := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	dir := f.Dir
 	write(t, dir, "c.txt", "base\n")
 	write(t, dir, "i.tsx", "i\n")
 	for _, name := range unquotableNames {
 		write(t, dir, name, "u\n")
 	}
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "base")
-	runGit(t, dir, "tag", "base")
-	runGit(t, dir, "checkout", "-q", "-b", "side")
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "base")
+	runGit(t, f, dir, "tag", "base")
+	runGit(t, f, dir, "checkout", "-q", "-b", "side")
 	write(t, dir, "c.txt", "side\n")
 	write(t, dir, conflicted, "side\n")
-	runGit(t, dir, "commit", "-qam", "side")
-	runGit(t, dir, "checkout", "-q", "-")
+	runGit(t, f, dir, "commit", "-qam", "side")
+	runGit(t, f, dir, "checkout", "-q", "-")
 	write(t, dir, "c.txt", "main\n")
 	write(t, dir, conflicted, "main\n")
-	runGit(t, dir, "commit", "-qam", "main")
-	runGit(t, dir, "read-tree", "-m", "base", "HEAD", "side")
+	runGit(t, f, dir, "commit", "-qam", "main")
+	runGit(t, f, dir, "read-tree", "-m", "base", "HEAD", "side")
 
 	tests := []struct {
 		name string
@@ -657,7 +675,7 @@ func TestTreeHasPathGitIndex(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			has, err := treeHasPath(context.Background(), render.Dir(dir), Git, gitIndexRev, tt.path)
+			has, err := treeHasPath(f.Context(), render.Dir(dir), Git, gitIndexRev, tt.path)
 			if err != nil || has != tt.want {
 				t.Errorf("treeHasPath(:0, %q) = %v, %v; want %v, nil", tt.path, has, err, tt.want)
 			}
@@ -665,10 +683,14 @@ func TestTreeHasPathGitIndex(t *testing.T) {
 	}
 }
 
-func runJJ(t *testing.T, dir string, args ...string) string {
+func runJJ(t *testing.T, f *vcstest.Fixture, dir string, args ...string) string {
 	t.Helper()
+	if dir == f.Dir {
+		return f.Out(t, "jj", args...)
+	}
 	cmd := exec.Command("jj", args...) //nolint:gosec // fixed jj verb; dir is a test TempDir and args are literals
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), f.Env()...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("jj %v: %v\n%s", args, err, out)

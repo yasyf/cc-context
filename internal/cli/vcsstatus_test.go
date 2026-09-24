@@ -22,7 +22,7 @@ func ghStatusPRArgv(branches ...string) []string {
 	return append(argv, "-f", "query="+statusPRQuery(len(branches)))
 }
 
-func runVcsStatusCmd(t *testing.T, args ...string) (string, error) {
+func runVcsStatusCmd(t *testing.T, f *vcstest.Fixture, args ...string) (string, error) {
 	t.Helper()
 	cmd := newVcsStatusCmd()
 	cmd.SilenceUsage = true
@@ -31,13 +31,13 @@ func runVcsStatusCmd(t *testing.T, args ...string) (string, error) {
 	cmd.SetOut(&out)
 	cmd.SetErr(&errBuf)
 	cmd.SetArgs(args)
-	err := cmd.Execute()
+	err := cmd.ExecuteContext(f.Context())
 	return out.String(), err
 }
 
-func runVcsStatusJSON(t *testing.T, args ...string) vcsStatus {
+func runVcsStatusJSON(t *testing.T, f *vcstest.Fixture, args ...string) vcsStatus {
 	t.Helper()
-	out, err := runVcsStatusCmd(t, append([]string{"--json"}, args...)...)
+	out, err := runVcsStatusCmd(t, f, append([]string{"--json"}, args...)...)
 	if err != nil {
 		t.Fatalf("status error = %v", err)
 	}
@@ -89,7 +89,7 @@ func TestVcsStatusGTLane(t *testing.T) {
 	ghReplay(t, f, status)
 	writeInfoFile(t, f.Dir, "f.txt", "dirty\n")
 
-	out, err := runVcsStatusCmd(t, "--no-queue-probe")
+	out, err := runVcsStatusCmd(t, f, "--no-queue-probe")
 	if err != nil {
 		t.Fatalf("status error = %v", err)
 	}
@@ -118,7 +118,7 @@ func TestVcsStatusMergedPullRequestBlocksNothing(t *testing.T) {
 	f := infoGTRepo(t, downstackOne...)
 	ghReplay(t, f, status)
 
-	got := runVcsStatusJSON(t, "--no-queue-probe")
+	got := runVcsStatusJSON(t, f, "--no-queue-probe")
 	if len(got.Branches) != 1 {
 		t.Fatalf("branches = %d, want 1", len(got.Branches))
 	}
@@ -151,7 +151,7 @@ func TestVcsStatusBranchWithoutPullRequest(t *testing.T) {
 	ghReplay(t, f, status)
 	resetArgvLog(t, f)
 
-	got := runVcsStatusJSON(t, "--no-queue-probe")
+	got := runVcsStatusJSON(t, f, "--no-queue-probe")
 	if len(got.Branches) != 3 {
 		t.Fatalf("branches = %d, want 3", len(got.Branches))
 	}
@@ -190,13 +190,13 @@ func TestVcsStatusBranchWithoutPullRequest(t *testing.T) {
 // TestVcsStatusHealthyTrunkIsSilent keeps the check off every report it has
 // nothing to say in: a trunk equal to the remote's adds no line at all.
 func TestVcsStatusHealthyTrunkIsSilent(t *testing.T) {
-	infoRepo(t, vcstest.Remote(), vcstest.Worktree("lane"))
+	f := infoRepo(t, vcstest.Remote(), vcstest.Worktree("lane"))
 
-	got := runVcsStatusJSON(t, "--no-queue-probe")
+	got := runVcsStatusJSON(t, f, "--no-queue-probe")
 	if got.TrunkState != nil {
 		t.Fatalf("trunk state = %+v, want none", got.TrunkState)
 	}
-	out, err := runVcsStatusCmd(t, "--no-queue-probe")
+	out, err := runVcsStatusCmd(t, f, "--no-queue-probe")
 	if err != nil {
 		t.Fatalf("status error = %v", err)
 	}
@@ -215,11 +215,11 @@ func TestVcsStatusHealthyTrunkIsSilent(t *testing.T) {
 // of it into the stack.
 func TestVcsStatusNamesAContaminatedTrunk(t *testing.T) {
 	f := infoRepo(t, vcstest.Remote(), vcstest.Worktree("lane"))
-	runTool(t, f.Dir, "git", "commit", "-q", "--allow-empty", "-m", "parked work one")
-	runTool(t, f.Dir, "git", "commit", "-q", "--allow-empty", "-m", "parked work two")
+	runTool(t, f, "git", "commit", "-q", "--allow-empty", "-m", "parked work one")
+	runTool(t, f, "git", "commit", "-q", "--allow-empty", "-m", "parked work two")
 	writeInfoFile(t, f.Dir, "f.txt", "someone's work\n")
 
-	got := runVcsStatusJSON(t, "--no-queue-probe")
+	got := runVcsStatusJSON(t, f, "--no-queue-probe")
 	if got.TrunkState == nil {
 		t.Fatal("trunk state = none, want the contamination reported")
 	}
@@ -233,7 +233,7 @@ func TestVcsStatusNamesAContaminatedTrunk(t *testing.T) {
 		t.Fatalf("foreign = %v, want 2 commits", got.TrunkState.Foreign)
 	}
 
-	out, err := runVcsStatusCmd(t, "--no-queue-probe")
+	out, err := runVcsStatusCmd(t, f, "--no-queue-probe")
 	if err != nil {
 		t.Fatalf("status error = %v", err)
 	}

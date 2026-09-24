@@ -281,16 +281,16 @@ func setupReviews(t *testing.T) *reviewsServer {
 		t.Fatalf("chdir: %v", err)
 	}
 	t.Setenv("PATH", empty)
-	return setupReviewsHere(t)
+	return setupReviewsHere(t, dir)
 }
 
-// setupReviewsHere is setupReviews for a repository already standing at the
-// working directory, leaving PATH as its fixture installed it — the shape a
-// watch that has to ask real git which branch is checked out needs.
-func setupReviewsHere(t *testing.T) *reviewsServer {
+// setupReviewsHere is setupReviews for a repository already standing at dir,
+// leaving PATH as its fixture installed it — the shape a watch that has to ask
+// real git which branch is checked out needs.
+func setupReviewsHere(t *testing.T, dir string) *reviewsServer {
 	t.Helper()
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	seedLaneRecords(t, ".", laneSeed{nameWithOwner: "acme/repo", owner: "acme"})
+	seedLaneRecords(t, dir, laneSeed{nameWithOwner: "acme/repo", owner: "acme"})
 	t.Setenv(envReviewsPollInterval, "1ms")
 	return stubReviewsAPI(t)
 }
@@ -326,6 +326,22 @@ func runReviewsCmd(t *testing.T, args ...string) (string, error) {
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs(args)
 	err := cmd.Execute()
+	return out.String(), err
+}
+
+// runReviewsCmdIn is runReviewsCmd for a caller whose args resolve against a
+// real repository, driving the command through f's environment and workspace
+// root instead of the process's.
+func runReviewsCmdIn(t *testing.T, f *vcstest.Fixture, args ...string) (string, error) {
+	t.Helper()
+	cmd := newReviewsCmd()
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs(args)
+	err := cmd.ExecuteContext(f.Context())
 	return out.String(), err
 }
 
@@ -528,14 +544,15 @@ func TestReviewsTerminalExit(t *testing.T) {
 // setupReviewsLane stands a watch on a real repository, graphite-tracked when
 // gt, so the lane the terminal verdict turns on is the one the gate resolves off
 // disk rather than a flag the test set.
-func setupReviewsLane(t *testing.T, gt bool) *reviewsServer {
+func setupReviewsLane(t *testing.T, gt bool) (*vcstest.Fixture, *reviewsServer) {
 	t.Helper()
 	opts := []vcstest.Opt{vcstest.Remote()}
 	if gt {
 		opts = append(opts, vcstest.GT())
 	}
-	vcstest.Repo(t, opts...)
-	return setupReviewsHere(t)
+	f := vcstest.Repo(t, opts...)
+	f.Isolate(t)
+	return f, setupReviewsHere(t, f.Dir)
 }
 
 // reviewsQueueMergedComment is Graphite's merge-activity comment as it reads
@@ -572,14 +589,14 @@ func TestReviewsQueueMergedTerminal(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := setupReviewsLane(t, tt.gt)
+			f, srv := setupReviewsLane(t, tt.gt)
 			srv.pr(7, 1, "CLOSED", false)
 			srv.closedBy(7, tt.closer)
 			if tt.landed {
 				srv.feed("comment", 7, reviewsQueueMergedComment)
 			}
 
-			got, err := runReviewsCmd(t, "7", "--since", "all")
+			got, err := runReviewsCmdIn(t, f, "7", "--since", "all")
 			if err != nil {
 				t.Fatalf("reviews error = %v", err)
 			}
@@ -761,9 +778,11 @@ func TestReviewsResolution(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var srv *reviewsServer
+			var f *vcstest.Fixture
 			if tt.gitBranch != "" {
-				vcstest.Repo(t, vcstest.Branch(tt.gitBranch))
-				srv = setupReviewsHere(t)
+				f = vcstest.Repo(t, vcstest.Branch(tt.gitBranch))
+				f.Isolate(t)
+				srv = setupReviewsHere(t, f.Dir)
 			} else {
 				srv = setupReviews(t)
 			}
@@ -772,7 +791,13 @@ func TestReviewsResolution(t *testing.T) {
 
 			args := append([]string{}, tt.args...)
 			args = append(args, "--since", "all")
-			if _, err := runReviewsCmd(t, args...); err != nil {
+			var err error
+			if f != nil {
+				_, err = runReviewsCmdIn(t, f, args...)
+			} else {
+				_, err = runReviewsCmd(t, args...)
+			}
+			if err != nil {
 				t.Fatalf("reviews error = %v", err)
 			}
 			calls := srv.graphQLCalls()
@@ -1074,6 +1099,7 @@ func TestReviewsStackFailuresCarryReviewsPrefix(t *testing.T) {
 				t.Errorf("error = %v, want it to lead with %q", err, tt.want)
 			}
 			f.OnlyShimPATH(t)
+			t.Setenv("PATH", f.PATH())
 			assertShipRefusedClean(t, f, head)
 		})
 	}

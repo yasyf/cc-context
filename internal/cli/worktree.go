@@ -169,7 +169,7 @@ would discard.`,
 
 func runWorktreePark(cmd *cobra.Command) error {
 	ctx := cmd.Context()
-	l, err := resolveLane(ctx, "worktree park", workingDir(), true)
+	l, err := resolveLane(ctx, "worktree park", workingDir(ctx), true)
 	if err != nil {
 		return err
 	}
@@ -286,7 +286,7 @@ gone rather than merely misplaced.`,
 
 func runWorktreeList(cmd *cobra.Command, asJSON bool, budget int) error {
 	ctx := cmd.Context()
-	l, err := resolveLaneReport(ctx, "worktree list", workingDir(), true, false)
+	l, err := resolveLaneReport(ctx, "worktree list", workingDir(ctx), true, false)
 	if err != nil {
 		return err
 	}
@@ -395,7 +395,7 @@ func worktreeSegments(e worktreeEntry) []string {
 
 func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 	ctx := cmd.Context()
-	l, err := resolveLane(ctx, "worktree add", workingDir(), true)
+	l, err := resolveLane(ctx, "worktree add", workingDir(ctx), true)
 	if err != nil {
 		return err
 	}
@@ -484,7 +484,7 @@ func mintWorktreePath(prefix string, c vcs.Checkout, name string) (string, error
 
 func runWorktreeRm(cmd *cobra.Command, name string, force bool) error {
 	ctx := cmd.Context()
-	l, err := resolveLane(ctx, "worktree rm", workingDir(), true)
+	l, err := resolveLane(ctx, "worktree rm", workingDir(ctx), true)
 	if err != nil {
 		return err
 	}
@@ -631,7 +631,7 @@ func jjWorkspaceOf(path string, c vcs.Checkout) (bool, error) {
 
 func runWorktreeRepair(cmd *cobra.Command, dryRun bool) error {
 	ctx := cmd.Context()
-	l, err := resolveLaneReport(ctx, "worktree repair", workingDir(), true, false)
+	l, err := resolveLaneReport(ctx, "worktree repair", workingDir(ctx), true, false)
 	if err != nil {
 		return err
 	}

@@ -89,7 +89,7 @@ func newRestackCmd() *cobra.Command {
 
 func runRestack(cmd *cobra.Command, o restackOpts) error {
 	ctx := cmd.Context()
-	l, err := resolveLane(ctx, "restack", workingDir(), o.noGT)
+	l, err := resolveLane(ctx, "restack", workingDir(ctx), o.noGT)
 	if err != nil {
 		return err
 	}

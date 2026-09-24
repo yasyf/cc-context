@@ -1,7 +1,6 @@
 package vcs
 
 import (
-	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -359,11 +358,12 @@ func TestJJPatterns(t *testing.T) {
 // child that could not start at all may come back as an error. Measured on git
 // 2.55: `rev-parse --quiet --end-of-options nope` exits 128, HEAD~1 exits 0.
 func TestGitRefValidSeparatesTheMissFromTheFailure(t *testing.T) {
-	repo := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	repo := f.Dir
 	// HEAD~1 needs a second commit behind the fixture's own.
 	write(t, repo, "seed.txt", "two\n")
-	runGit(t, repo, "add", "-A")
-	runGit(t, repo, "commit", "-qm", "c2")
+	runGit(t, f, repo, "add", "-A")
+	runGit(t, f, repo, "commit", "-qm", "c2")
 
 	tests := []struct {
 		name    string
@@ -380,7 +380,7 @@ func TestGitRefValidSeparatesTheMissFromTheFailure(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := gitRefValid(context.Background(), render.Dir(tt.dir), tt.ref)
+			got, err := gitRefValid(f.Context(), render.Dir(tt.dir), tt.ref)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("gitRefValid(%q) = (%v, nil), want the unrunnable child reported as an error", tt.ref, got)
@@ -404,18 +404,16 @@ func mustMkdir(t *testing.T, path string) {
 	}
 }
 
-func runGit(t *testing.T, dir string, args ...string) {
+func runGit(t *testing.T, f *vcstest.Fixture, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // fixed git argv; dir is a test TempDir, args are literals
-	cmd.Env = isolatedGitEnv()
+	if dir == f.Dir {
+		f.Out(t, "git", args...)
+		return
+	}
+	cmd := exec.Command("git", args...) //nolint:gosec // fixed git argv; dir is a test TempDir, args are literals
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), f.Env()...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
-}
-
-// isolatedGitEnv detaches git from the developer's ambient config so a global
-// setting like commit.gpgsign cannot break the test-repo commits; identity comes
-// from the repo-local user.name/user.email the helpers set.
-func isolatedGitEnv() []string {
-	return append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 }

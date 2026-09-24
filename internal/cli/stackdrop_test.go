@@ -28,9 +28,9 @@ type dropGH struct {
 	dir string
 }
 
-// installDropGH puts a stateful gh and a git wrapper on PATH ahead of the
-// fixture's shim. The wrapper models the one GitHub behaviour this verb exists
-// for: deleting a branch closes every pull request based on it.
+// installDropGH overwrites the fixture's own gh and git shims with a stateful
+// gh and a git wrapper. The wrapper models the one GitHub behaviour this verb
+// exists for: deleting a branch closes every pull request based on it.
 func installDropGH(t *testing.T, f *vcstest.Fixture, seeds map[string]dropSeed) *dropGH {
 	t.Helper()
 	gh := &dropGH{t: t, dir: t.TempDir()}
@@ -46,9 +46,8 @@ func installDropGH(t *testing.T, f *vcstest.Fixture, seeds map[string]dropSeed) 
 	t.Setenv("DROP_GH", gh.dir)
 	writeShipExecutable(t, f.ShimBin, "gh", "#!/bin/sh\n"+vcstest.RecordArgv("gh", f.ArgvLog)+dropGHBody)
 
-	dir, next := t.TempDir(), shipNextTool(t, "git")
-	writeShipExecutable(t, dir, "git", "#!/bin/sh\n"+dropGitBody+"exec '"+next+"' \"$@\"\n")
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	real := shipDisplaceShim(t, f, "git")
+	writeShipExecutable(t, f.ShimBin, "git", "#!/bin/sh\n"+dropGitBody+"exec '"+real+"' \"$@\"\n")
 	return gh
 }
 
@@ -163,8 +162,8 @@ func dropStep(t *testing.T, invocations [][]string, want ...string) int {
 func dropStack(t *testing.T, f *vcstest.Fixture, names ...string) {
 	t.Helper()
 	shipGTStack(t, f, names...)
-	mustRun(t, f.Dir, "git", append([]string{"push", "-q", "origin"}, names...)...)
-	mustRun(t, f.Dir, "git", "switch", "-q", names[0])
+	mustRun(t, f.Env(), f.Dir, "git", append([]string{"push", "-q", "origin"}, names...)...)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", names[0])
 	shipResetLog(t, f)
 }
 
@@ -193,7 +192,7 @@ func TestStackDropRetargetsEveryChildBeforeDeletingTheBranch(t *testing.T) {
 		"top": {number: 2, state: "OPEN", base: "mid"},
 	})
 
-	out, _, err := runStackCmd(t, "drop", "mid")
+	out, _, err := runStackCmd(t, f, "drop", "mid")
 	if err != nil {
 		t.Fatalf("stack drop: %v", err)
 	}
@@ -207,16 +206,16 @@ func TestStackDropRetargetsEveryChildBeforeDeletingTheBranch(t *testing.T) {
 	if got := gh.pr(2); got != "OPEN base" {
 		t.Errorf("top's PR = %q, want %q", got, "OPEN base")
 	}
-	if gitBranchExists(t, f.Dir, "mid") {
+	if gitBranchExists(t, f.Env(), f.Dir, "mid") {
 		t.Error("mid is still a local branch")
 	}
-	if gitBranchExists(t, f.RemoteDir, "mid") {
+	if gitBranchExists(t, f.Env(), f.RemoteDir, "mid") {
 		t.Error("origin still carries mid")
 	}
 	if parent := dropGTParent(t, f, "top"); parent != "base" {
 		t.Errorf("gt records top's parent as %q, want base", parent)
 	}
-	if subjects := gitAt(t, f.Dir, "log", "--format=%s", "base..top"); subjects != "top" {
+	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", "base..top"); subjects != "top" {
 		t.Errorf("base..top = %q, want top alone — the child keeps the dropped commit", subjects)
 	}
 	if !strings.Contains(out, "retargeted 1 onto base") {
@@ -236,7 +235,7 @@ func TestStackDropRefusesARetargetThatDidNotTake(t *testing.T) {
 	})
 	t.Setenv("DROP_GH_EDIT_NOOP", "1")
 
-	_, _, err := runStackCmd(t, "drop", "mid")
+	_, _, err := runStackCmd(t, f, "drop", "mid")
 	if err == nil {
 		t.Fatal("stack drop succeeded over a retarget that did not take")
 	}
@@ -246,10 +245,10 @@ func TestStackDropRefusesARetargetThatDidNotTake(t *testing.T) {
 	if got := gh.pr(2); got != "OPEN mid" {
 		t.Errorf("top's PR = %q, want it untouched at %q", got, "OPEN mid")
 	}
-	if !gitBranchExists(t, f.Dir, "mid") {
+	if !gitBranchExists(t, f.Env(), f.Dir, "mid") {
 		t.Error("mid was deleted locally after the verification refused")
 	}
-	if !gitBranchExists(t, f.RemoteDir, "mid") {
+	if !gitBranchExists(t, f.Env(), f.RemoteDir, "mid") {
 		t.Error("origin lost mid after the verification refused")
 	}
 }
@@ -261,14 +260,14 @@ func TestStackDropRefusesARetargetThatDidNotTake(t *testing.T) {
 func TestStackDropRepairWalksTheOrderGitHubAllows(t *testing.T) {
 	f := shipGTRepo(t)
 	dropStack(t, f, "base", "top")
-	mustRun(t, f.Dir, "git", "switch", "-q", "top")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "top")
 	gh := installDropGH(t, f, map[string]dropSeed{
 		"top": {number: 2, state: "CLOSED", base: "mid"},
 	})
 	gh.markDeleted("mid")
 	shipResetLog(t, f)
 
-	out, _, err := runStackCmd(t, "drop", "--repair")
+	out, _, err := runStackCmd(t, f, "drop", "--repair")
 	if err != nil {
 		t.Fatalf("stack drop --repair: %v", err)
 	}
@@ -287,7 +286,7 @@ func TestStackDropRepairWalksTheOrderGitHubAllows(t *testing.T) {
 	if got := gh.pr(2); got != "OPEN base" {
 		t.Errorf("top's PR = %q, want %q", got, "OPEN base")
 	}
-	if gitBranchExists(t, f.RemoteDir, "mid") {
+	if gitBranchExists(t, f.Env(), f.RemoteDir, "mid") {
 		t.Error("origin still carries the resurrected mid")
 	}
 	if !strings.Contains(out, "#2 mid → base") {
@@ -302,14 +301,14 @@ func TestStackDropRepairWalksTheOrderGitHubAllows(t *testing.T) {
 func TestStackDropRepairRefusesBeforeDeletingTheRefBack(t *testing.T) {
 	f := shipGTRepo(t)
 	dropStack(t, f, "base", "top")
-	mustRun(t, f.Dir, "git", "switch", "-q", "top")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "top")
 	gh := installDropGH(t, f, map[string]dropSeed{
 		"top": {number: 2, state: "CLOSED", base: "mid"},
 	})
 	gh.markDeleted("mid")
 	t.Setenv("DROP_GH_EDIT_NOOP", "1")
 
-	_, _, err := runStackCmd(t, "drop", "--repair")
+	_, _, err := runStackCmd(t, f, "drop", "--repair")
 	if err == nil {
 		t.Fatal("stack drop --repair succeeded over a retarget that did not take")
 	}
@@ -319,7 +318,7 @@ func TestStackDropRepairRefusesBeforeDeletingTheRefBack(t *testing.T) {
 	if got := gh.pr(2); got != "OPEN mid" {
 		t.Errorf("top's PR = %q, want it left open on the resurrected ref", got)
 	}
-	if !gitBranchExists(t, f.RemoteDir, "mid") {
+	if !gitBranchExists(t, f.Env(), f.RemoteDir, "mid") {
 		t.Error("origin lost the resurrected mid, which is what was holding the PR open")
 	}
 }
@@ -340,19 +339,19 @@ func TestStackDropRefusesToStrandTheDroppedCommits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gt common dir: %v", err)
 	}
-	base := gitAt(t, f.Dir, "rev-parse", "refs/heads/base")
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/heads/base")
 	if err := gtmeta.RecordRestacked(t.Context(), commonDir, map[string]string{"top": base}); err != nil {
 		t.Fatalf("record top as restacked onto base: %v", err)
 	}
 
-	_, _, err = runStackCmd(t, "drop", "mid")
+	_, _, err = runStackCmd(t, f, "drop", "mid")
 	if err == nil {
 		t.Fatal("stack drop succeeded while top still carried mid's commits")
 	}
 	if !strings.Contains(err.Error(), "top still carries mid's commits") {
 		t.Errorf("error = %v, want it to name the branch carrying them", err)
 	}
-	if !gitBranchExists(t, f.Dir, "mid") {
+	if !gitBranchExists(t, f.Env(), f.Dir, "mid") {
 		t.Error("mid was deleted over commits that never moved")
 	}
 }
@@ -364,7 +363,7 @@ func TestStackDropRefusesTheBranchAWorkingCopyHolds(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "base", "mid")
 
-	_, _, err := runStackCmd(t, "drop", "mid")
+	_, _, err := runStackCmd(t, f, "drop", "mid")
 	if err == nil {
 		t.Fatal("stack drop succeeded on the branch this checkout holds")
 	}
@@ -383,7 +382,7 @@ func TestStackDropDryRunMutatesNothing(t *testing.T) {
 		"top": {number: 2, state: "OPEN", base: "mid"},
 	})
 
-	out, _, err := runStackCmd(t, "drop", "mid", "--dry-run")
+	out, _, err := runStackCmd(t, f, "drop", "mid", "--dry-run")
 	if err != nil {
 		t.Fatalf("stack drop --dry-run: %v", err)
 	}
@@ -393,7 +392,7 @@ func TestStackDropDryRunMutatesNothing(t *testing.T) {
 	if got := gh.pr(2); got != "OPEN mid" {
 		t.Errorf("top's PR = %q, want it untouched at %q", got, "OPEN mid")
 	}
-	if !gitBranchExists(t, f.Dir, "mid") || !gitBranchExists(t, f.RemoteDir, "mid") {
+	if !gitBranchExists(t, f.Env(), f.Dir, "mid") || !gitBranchExists(t, f.Env(), f.RemoteDir, "mid") {
 		t.Error("the dry run deleted mid")
 	}
 	if parent := dropGTParent(t, f, "top"); parent != "mid" {
@@ -407,7 +406,7 @@ func TestStackDropRefusesTrunk(t *testing.T) {
 	f := shipGTRepo(t)
 	dropStack(t, f, "base")
 
-	_, _, err := runStackCmd(t, "drop", "main")
+	_, _, err := runStackCmd(t, f, "drop", "main")
 	if err == nil {
 		t.Fatal("stack drop succeeded on trunk")
 	}

@@ -113,7 +113,7 @@ func newVcsInfoCmd() *cobra.Command {
 
 func runVcsInfo(cmd *cobra.Command, o vcsInfoOpts) error {
 	ctx := cmd.Context()
-	l, err := resolveLaneReport(ctx, "info", workingDir(), o.noGT, o.refresh)
+	l, err := resolveLaneReport(ctx, "info", workingDir(ctx), o.noGT, o.refresh)
 	if err != nil {
 		return err
 	}

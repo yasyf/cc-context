@@ -221,7 +221,8 @@ func newGuidelinesCmd() *cobra.Command {
 }
 
 func runGuidelines(cmd *cobra.Command, o guidelinesOpts) error {
-	root, err := guidelinesRoot()
+	ctx := cmd.Context()
+	root, err := guidelinesRoot(ctx)
 	if err != nil {
 		return err
 	}
@@ -282,8 +283,8 @@ func refreshGuidelines(cmd *cobra.Command, root render.Dir, dir, path string, ne
 
 // guidelinesRoot resolves the repo root as an absolute, symlink-free path, so a
 // relative path and a symlinked one key the same cache entry.
-func guidelinesRoot() (string, error) {
-	c, err := vcs.ResolveCheckout(workingDir())
+func guidelinesRoot(ctx context.Context) (string, error) {
+	c, err := vcs.ResolveCheckout(workingDir(ctx))
 	if err != nil {
 		return "", fmt.Errorf("guidelines: %w", err)
 	}

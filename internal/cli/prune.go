@@ -60,8 +60,8 @@ type prunePlan struct {
 
 func runPrune(cmd *cobra.Command, o pruneOpts) error {
 	ctx := cmd.Context()
-	dir := render.Dir(workingDir())
-	l, err := resolveLane(ctx, "prune", workingDir(), o.noGT)
+	dir := render.Dir(workingDir(ctx))
+	l, err := resolveLane(ctx, "prune", workingDir(ctx), o.noGT)
 	if err != nil {
 		return err
 	}

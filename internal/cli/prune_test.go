@@ -142,14 +142,14 @@ func TestPruneReparent(t *testing.T) {
 func TestPruneRepairsAStackOverAForgottenParent(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote())
 	dir := render.Dir(f.Dir)
-	trunkHead := gitAt(t, f.Dir, "rev-parse", "main")
-	gitAt(t, f.Dir, "branch", "worktree-wf")
-	gitAt(t, f.Dir, "switch", "-qc", "feature")
+	trunkHead := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+	gitAt(t, f.Env(), f.Dir, "branch", "worktree-wf")
+	gitAt(t, f.Env(), f.Dir, "switch", "-qc", "feature")
 	if err := os.WriteFile(filepath.Join(f.Dir, "feature.txt"), []byte("feature\n"), 0o600); err != nil {
 		t.Fatalf("write feature.txt: %v", err)
 	}
-	gitAt(t, f.Dir, "add", "feature.txt")
-	gitAt(t, f.Dir, "commit", "-qm", "feature")
+	gitAt(t, f.Env(), f.Dir, "add", "feature.txt")
+	gitAt(t, f.Env(), f.Dir, "commit", "-qm", "feature")
 
 	commonDir, err := gtCommonDir(t.Context(), dir, "prune")
 	if err != nil {
@@ -188,7 +188,7 @@ func TestPruneRepairsAStackOverAForgottenParent(t *testing.T) {
 		if got := pruneParentOf(t, commonDir, "feature"); got != "worktree-wf" {
 			t.Errorf("feature's recorded parent = %q, want worktree-wf untouched before an apply", got)
 		}
-		if !gitBranchExists(t, f.Dir, "worktree-wf") {
+		if !gitBranchExists(t, f.Env(), f.Dir, "worktree-wf") {
 			t.Error("worktree-wf deleted before an apply")
 		}
 	})
@@ -202,7 +202,7 @@ func TestPruneRepairsAStackOverAForgottenParent(t *testing.T) {
 	if got := prunePlanReport(plan, trunk, false); got != want {
 		t.Errorf("prunePlanReport() = %q, want %q", got, want)
 	}
-	if gitBranchExists(t, f.Dir, "worktree-wf") {
+	if gitBranchExists(t, f.Env(), f.Dir, "worktree-wf") {
 		t.Error("worktree-wf survived the prune")
 	}
 	if got := pruneParentOf(t, commonDir, "feature"); got != "main" {

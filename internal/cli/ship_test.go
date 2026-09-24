@@ -35,7 +35,7 @@ func TestJJWorkingCopyFlag(t *testing.T) {
 			name: "commit and push",
 			run: func(t *testing.T) *vcstest.Fixture {
 				f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
-				_, _ = runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+				_, _ = runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch")
 				return f
 			},
 			wantAt: "fix: frobnicate",
@@ -45,7 +45,7 @@ func TestJJWorkingCopyFlag(t *testing.T) {
 			run: func(t *testing.T) *vcstest.Fixture {
 				f := shipRepo(t, vcstest.JJ(), vcstest.Dirty())
 				shipJJRemotes(t, f, "backup")
-				_, _ = runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+				_, _ = runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch")
 				return f
 			},
 			wantAt: "fix: frobnicate",
@@ -55,7 +55,7 @@ func TestJJWorkingCopyFlag(t *testing.T) {
 			run: func(t *testing.T) *vcstest.Fixture {
 				f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 				shipAmendable(t, f, vcs.JJ)
-				_, _ = runShipCmd(t, "--amend", "--no-push")
+				_, _ = runShipCmd(t, f.Context(), "--amend", "--no-push")
 				return f
 			},
 			wantAt: "wip",
@@ -64,7 +64,7 @@ func TestJJWorkingCopyFlag(t *testing.T) {
 			name: "create a bookmark",
 			run: func(t *testing.T) *vcstest.Fixture {
 				f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
-				_, _ = runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--bookmark", "someone/probe")
+				_, _ = runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch", "--bookmark", "someone/probe")
 				return f
 			},
 			wantAt: "fix: frobnicate",
@@ -75,7 +75,7 @@ func TestJJWorkingCopyFlag(t *testing.T) {
 				f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 				shipDivergeRemote(t, f, "main", "f.txt", "upstream\n")
 				shipResetLog(t, f)
-				_, _ = runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+				_, _ = runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch")
 				return f
 			},
 			wantAt: "fix: frobnicate",
@@ -85,7 +85,7 @@ func TestJJWorkingCopyFlag(t *testing.T) {
 			run: func(t *testing.T) *vcstest.Fixture {
 				f := jjHunkRepo(t, hunkBase, hunkCurrent)
 				ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
-				_, _ = runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--skip-hunk", ref, "f.txt")
+				_, _ = runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--skip-hunk", ref, "f.txt")
 				return f
 			},
 			wantAt: "fix: frobnicate",
@@ -115,7 +115,7 @@ func TestJJWorkingCopyFlag(t *testing.T) {
 				}
 				seen[verb] = true
 			}
-			if subject := jjAt(t, f.Dir, "@-", "description.first_line()"); subject != tt.wantAt {
+			if subject := jjAt(t, f.Env(), f.Dir, "@-", "description.first_line()"); subject != tt.wantAt {
 				t.Errorf("@- = %q, want %q — the scenario never reached the repository", subject, tt.wantAt)
 			}
 		})
@@ -213,7 +213,7 @@ func TestShipCommitPushWatch(t *testing.T) {
 			t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 			shipCIPollInterval = 0
 
-			got, err := runShipCmd(t, "-m", "fix: frobnicate")
+			got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate")
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -277,7 +277,7 @@ func TestShipHooksPass(t *testing.T) {
 				}
 			}
 
-			got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+			got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -285,7 +285,7 @@ func TestShipHooksPass(t *testing.T) {
 			if want := swept(kind, "f1.go") + "hooks ok · " + shipCommitted(t, f, kind) + " · branch main · not pushed"; got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
-			if status := gitAt(t, f.Dir, "status", "--porcelain"); status != "" {
+			if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); status != "" {
 				t.Errorf("working copy left dirty: %q", status)
 			}
 		})
@@ -296,7 +296,7 @@ func TestShipHooksJJAmend(t *testing.T) {
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote())
 	shipHookRepo(t, f, vcs.JJ, 0, "", "folded.go")
 
-	got, err := runShipCmd(t, "--amend", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "--amend", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -312,7 +312,7 @@ func TestShipHooksJJAmend(t *testing.T) {
 	if want := "hooks ok · " + shipCommitted(t, f, vcs.JJ) + " · branch main · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	if files := jjAt(t, f.Dir, "@-", `diff.files().map(|e| e.path()).join(" ")`); !strings.Contains(files, "folded.go") {
+	if files := jjAt(t, f.Env(), f.Dir, "@-", `diff.files().map(|e| e.path()).join(" ")`); !strings.Contains(files, "folded.go") {
 		t.Errorf("@- touches %q, want folded.go squashed into it", files)
 	}
 }
@@ -327,7 +327,7 @@ func TestShipHooksSubdirRunsAtRoot(t *testing.T) {
 	shipHookRepo(t, f, vcs.JJ, 0, "", "sub/x.go")
 	t.Chdir(filepath.Join(f.Dir, "sub"))
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "x.go")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "x.go")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -353,7 +353,7 @@ func TestShipHooksAutoFixLeavingNothingAborts(t *testing.T) {
 			f := shipRepo(t, shipOptsFor(jj, vcstest.Remote())...)
 			shipHookRepo(t, f, kind, 1, "rm f1.go", "f1.go")
 
-			_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+			_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 			if err == nil || !strings.Contains(err.Error(), "nothing to commit") {
 				t.Fatalf("ship error = %v, want nothing-to-commit", err)
 			}
@@ -378,7 +378,7 @@ func TestShipHooksAutoFixLeavingNothingAborts(t *testing.T) {
 			if jj && jjDiffCount != 3 {
 				t.Errorf("jj diff --name-only invocation count = %d, want 3", jjDiffCount)
 			}
-			if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "main"); subject != "hooks" {
+			if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s", "main"); subject != "hooks" {
 				t.Errorf("main tip = %q, want no commit cut", subject)
 			}
 		})
@@ -392,7 +392,7 @@ func TestShipHooksAutoFixThenPass(t *testing.T) {
 			f := shipRepo(t, shipOptsFor(jj, vcstest.Remote())...)
 			shipHookRepo(t, f, kind, 1, "printf 'fixed' > f1.go", "f1.go")
 
-			got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+			got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -414,7 +414,7 @@ func TestShipHooksAutoFixThenPass(t *testing.T) {
 			if !jj && gitAddCount != 2 {
 				t.Errorf("git add -A invocation count = %d, want 2", gitAddCount)
 			}
-			if got := gitAt(t, f.Dir, "show", "HEAD:f1.go"); got != "fixed" {
+			if got := gitAt(t, f.Env(), f.Dir, "show", "HEAD:f1.go"); got != "fixed" {
 				t.Errorf("committed f1.go = %q, want the auto-fixer's content", got)
 			}
 		})
@@ -432,7 +432,7 @@ func TestShipHooksRetryRederivesFiles(t *testing.T) {
 			f := shipRepo(t, shipOptsFor(jj, vcstest.Remote())...)
 			shipHookRepo(t, f, kind, 1, "rm first.go && printf x > generated.go", "first.go")
 
-			got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+			got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -451,7 +451,7 @@ func TestShipHooksRetryRederivesFiles(t *testing.T) {
 			if jj && jjDiffCount != 3 {
 				t.Errorf("jj diff --name-only invocation count = %d, want 3", jjDiffCount)
 			}
-			if files := gitAt(t, f.Dir, "show", "--name-only", "--format=", "HEAD"); files != "generated.go" {
+			if files := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); files != "generated.go" {
 				t.Errorf("committed files = %q, want the re-derived generated.go alone", files)
 			}
 		})
@@ -465,7 +465,7 @@ func TestShipHooksPersistentFailure(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote())
 	shipHookRepo(t, f, vcs.Git, 2, "", "f1.go")
 
-	got, errStr, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push")
+	got, errStr, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v, want the commit to proceed (stderr=%q)", err, errStr)
 	}
@@ -475,7 +475,7 @@ func TestShipHooksPersistentFailure(t *testing.T) {
 	if !strings.Contains(errStr, shipHookFindingsLead) {
 		t.Errorf("stderr = %q, want the findings lead-in", errStr)
 	}
-	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
+	if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
 		t.Errorf("HEAD subject = %q, want the commit cut", subject)
 	}
 }
@@ -484,7 +484,7 @@ func TestShipHooksNoVerify(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote())
 	shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--no-verify")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--no-verify")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -536,11 +536,11 @@ func TestShipVerifyDefault(t *testing.T) {
 			}
 			f := shipRepo(t, opts...)
 			if tt.branch != "" {
-				mustRun(t, f.Dir, "git", "switch", "-qc", tt.branch)
+				mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", tt.branch)
 			}
 			shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
 
-			got, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.args...)...)
+			got, err := runShipCmd(t, f.Context(), append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.args...)...)
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -564,7 +564,7 @@ func TestShipHooksNoConfig(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	writeShipUvx(t, f, 0, "")
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -594,7 +594,7 @@ func TestShipHooksCommitMsgStage(t *testing.T) {
 	shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
 	writeShipFile(t, f.Dir, ".pre-commit-config.yaml", "repos:\n  - repo: local\n    hooks:\n      - id: gitlint\n        stages: [commit-msg]\n")
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -623,7 +623,7 @@ func TestShipHooksUvxMissing(t *testing.T) {
 		t.Fatalf("remove uvx: %v", err)
 	}
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -648,7 +648,7 @@ func TestShipHooksJJNoGitMarker(t *testing.T) {
 	writeShipHookFiles(t, f.Dir, "f1.go")
 	writeShipUvx(t, f, 0, "")
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -661,7 +661,7 @@ func TestShipHooksJJNoGitMarker(t *testing.T) {
 			t.Errorf("uvx invoked for a jj repo without a .git marker: %v", inv)
 		}
 	}
-	if files := jjAt(t, f.Dir, "@-", `diff.files().map(|e| e.path()).join(" ")`); !strings.Contains(files, "f1.go") {
+	if files := jjAt(t, f.Env(), f.Dir, "@-", `diff.files().map(|e| e.path()).join(" ")`); !strings.Contains(files, "f1.go") {
 		t.Errorf("@- touches %q, want the unhooked change committed", files)
 	}
 }
@@ -674,7 +674,7 @@ func TestShipHooksEmptyFilesSkipSoftGuards(t *testing.T) {
 		f := shipRepo(t, vcstest.JJ(), vcstest.Remote())
 		shipHookRepo(t, f, vcs.JJ, 0, "")
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+		_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 		if err == nil || !strings.Contains(err.Error(), "nothing to commit") {
 			t.Fatalf("ship error = %v, want nothing-to-commit", err)
 		}
@@ -705,7 +705,7 @@ func TestShipHooksEmptyFilesSkipSoftGuards(t *testing.T) {
 			t.Fatalf("remove doomed.go: %v", err)
 		}
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+		got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -718,7 +718,7 @@ func TestShipHooksEmptyFilesSkipSoftGuards(t *testing.T) {
 				t.Errorf("uvx invoked with no changed files: %v", inv)
 			}
 		}
-		if files := gitAt(t, f.Dir, "show", "--name-only", "--format=", "HEAD"); files != "doomed.go" {
+		if files := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); files != "doomed.go" {
 			t.Errorf("committed files = %q, want the deletion", files)
 		}
 	})
@@ -728,7 +728,7 @@ func TestShipHooksScopedPaths(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote())
 	shipHookRepo(t, f, vcs.Git, 0, "", "src/a.go", "unscoped.go")
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "src/a.go")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "src/a.go")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -745,7 +745,7 @@ func TestShipHooksScopedPaths(t *testing.T) {
 	if want := "hooks ok · " + shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	if files := gitAt(t, f.Dir, "show", "--name-only", "--format=", "HEAD"); files != "src/a.go" {
+	if files := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); files != "src/a.go" {
 		t.Errorf("committed files = %q, want the scoped path alone", files)
 	}
 }
@@ -760,7 +760,7 @@ func TestShipHooksFiltersMissingFile(t *testing.T) {
 		t.Fatalf("remove gone.go: %v", err)
 	}
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -805,7 +805,7 @@ func TestShipHooksPreserveHookableFilenames(t *testing.T) {
 			shipHookRepo(t, f, vcs.Git, 0, "")
 			tt.create(t, filepath.Join(f.Dir, tt.filename))
 
-			got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+			got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -827,7 +827,7 @@ func TestShipJJNeverInvokesGitCommit(t *testing.T) {
 	t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 	shipCIPollInterval = 0
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate"); err != nil {
+	if _, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
@@ -989,14 +989,14 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			if tt.jj && slices.Contains(tt.args, "--amend") {
 				// jj protects the commit origin's bookmark carries, so an amend
 				// needs a local commit of its own to fold into.
-				mustRun(t, f.Dir, "jj", "commit", "-m", "wip")
+				mustRun(t, f.Env(), f.Dir, "jj", "commit", "-m", "wip")
 				writeShipFile(t, f.Dir, "f.txt", "amended\n")
 				shipResetLog(t, f)
 			}
 			writeShipFile(t, f.Dir, "src/a.go", "x")
 			writeShipFile(t, f.Dir, "docs/d.md", "x")
 
-			got, err := runShipCmd(t, tt.args...)
+			got, err := runShipCmd(t, f.Context(), tt.args...)
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -1027,17 +1027,17 @@ func TestShipJJNoPushMovesBookmarkLive(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			requireLiveVCS(t, "git", "jj")
 			dir := setupLiveJJRepo(t, "base\n", "edited\n")
-			mustRun(t, dir, "jj", "bookmark", "create", "main", "-r", "@-")
-			mustRun(t, dir, "jj", "commit", "-m", "unbookmarked")
+			mustRun(t, nil, dir, "jj", "bookmark", "create", "main", "-r", "@-")
+			mustRun(t, nil, dir, "jj", "commit", "-m", "unbookmarked")
 			if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("edited again\n"), 0o644); err != nil { //nolint:gosec // test fixture
 				t.Fatalf("write second edit: %v", err)
 			}
 
-			if _, err := runShipCmd(t, tt.args...); err != nil {
+			if _, err := runShipCmd(t, context.Background(), tt.args...); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 
-			if got, want := jjRevID(t, dir, `bookmarks(exact:"main")`), jjRevID(t, dir, "@-"); got != want {
+			if got, want := jjRevID(t, nil, dir, `bookmarks(exact:"main")`), jjRevID(t, nil, dir, "@-"); got != want {
 				t.Errorf("bookmark main = %s, want @- %s", got, want)
 			}
 		})
@@ -1051,18 +1051,18 @@ func TestShipJJNoPushMovesBookmarkLive(t *testing.T) {
 func TestShipJJNoPushMovesAtNamedBookmarkLive(t *testing.T) {
 	requireLiveVCS(t, "git", "jj")
 	dir := setupLiveJJRepo(t, "base\n", "edited\n")
-	mustRun(t, dir, "git", "branch", "foo@bar", jjRevID(t, dir, "@-"))
-	mustRun(t, dir, "jj", "bookmark", "list")
-	mustRun(t, dir, "jj", "commit", "-m", "unbookmarked")
+	mustRun(t, nil, dir, "git", "branch", "foo@bar", jjRevID(t, nil, dir, "@-"))
+	mustRun(t, nil, dir, "jj", "bookmark", "list")
+	mustRun(t, nil, dir, "jj", "commit", "-m", "unbookmarked")
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("edited again\n"), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write second edit: %v", err)
 	}
 
-	if _, err := runShipCmd(t, "-m", "second", "--no-push", "--bookmark", "foo@bar"); err != nil {
+	if _, err := runShipCmd(t, context.Background(), "-m", "second", "--no-push", "--bookmark", "foo@bar"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 
-	if got, want := jjRevID(t, dir, `bookmarks(exact:"foo@bar")`), jjRevID(t, dir, "@-"); got != want {
+	if got, want := jjRevID(t, nil, dir, `bookmarks(exact:"foo@bar")`), jjRevID(t, nil, dir, "@-"); got != want {
 		t.Errorf("bookmark foo@bar = %s, want @- %s", got, want)
 	}
 }
@@ -1074,8 +1074,8 @@ func TestShipJJNoPushMovesAtNamedBookmarkLive(t *testing.T) {
 func TestJJBookmarkNamesAtNameLive(t *testing.T) {
 	requireLiveVCS(t, "git", "jj")
 	dir := setupLiveJJRepo(t, "base\n", "edited\n")
-	mustRun(t, dir, "git", "branch", "foo@bar", jjRevID(t, dir, "@-"))
-	mustRun(t, dir, "jj", "bookmark", "list")
+	mustRun(t, nil, dir, "git", "branch", "foo@bar", jjRevID(t, nil, dir, "@-"))
+	mustRun(t, nil, dir, "jj", "bookmark", "list")
 
 	names, err := jjBookmarkNames(context.Background(), render.Dir(dir), "test", jjNearestBookmarkRevset)
 	if err != nil {
@@ -1095,12 +1095,12 @@ func TestJJTrunkBookmarkNamesAtNameLive(t *testing.T) {
 	requireLiveVCS(t, "git", "jj")
 	dir := setupLiveJJRepo(t, "base\n", "edited\n")
 	remote := filepath.Join(t.TempDir(), "remote.git")
-	mustRun(t, dir, "git", "init", "--bare", "--initial-branch=main", remote)
-	mustRun(t, dir, "git", "branch", "main", jjRevID(t, dir, "@-"))
-	mustRun(t, dir, "git", "branch", "foo@bar", jjRevID(t, dir, "@-"))
-	mustRun(t, dir, "git", "remote", "add", "origin", remote)
-	mustRun(t, dir, "git", "push", "origin", "main", "foo@bar")
-	mustRun(t, dir, "jj", "bookmark", "list")
+	mustRun(t, nil, dir, "git", "init", "--bare", "--initial-branch=main", remote)
+	mustRun(t, nil, dir, "git", "branch", "main", jjRevID(t, nil, dir, "@-"))
+	mustRun(t, nil, dir, "git", "branch", "foo@bar", jjRevID(t, nil, dir, "@-"))
+	mustRun(t, nil, dir, "git", "remote", "add", "origin", remote)
+	mustRun(t, nil, dir, "git", "push", "origin", "main", "foo@bar")
+	mustRun(t, nil, dir, "jj", "bookmark", "list")
 
 	names, err := jjTrunkBookmarkNames(context.Background(), render.Dir(dir), "test")
 	if err != nil {
@@ -1120,21 +1120,21 @@ func TestShipJJPushesAtNamedBookmarkLive(t *testing.T) {
 	const branch = "foo@bar"
 	dir := setupLiveJJRepo(t, "base\n", "edited\n")
 	remote := filepath.Join(t.TempDir(), "remote.git")
-	mustRun(t, dir, "git", "init", "--bare", "--initial-branch=main", remote)
-	mustRun(t, dir, "git", "branch", branch, jjRevID(t, dir, "@-"))
-	mustRun(t, dir, "git", "remote", "add", "origin", remote)
-	mustRun(t, dir, "git", "push", "origin", branch)
-	mustRun(t, dir, "jj", "bookmark", "list")
+	mustRun(t, nil, dir, "git", "init", "--bare", "--initial-branch=main", remote)
+	mustRun(t, nil, dir, "git", "branch", branch, jjRevID(t, nil, dir, "@-"))
+	mustRun(t, nil, dir, "git", "remote", "add", "origin", remote)
+	mustRun(t, nil, dir, "git", "push", "origin", branch)
+	mustRun(t, nil, dir, "jj", "bookmark", "list")
 
-	got, err := runShipCmd(t, "-m", "second", "--no-watch")
+	got, err := runShipCmd(t, context.Background(), "-m", "second", "--no-watch")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	if want := `committed ` + jjRevID(t, dir, "@-")[:12] + ` "second" · pushed foo@bar → origin`; got != want {
+	if want := `committed ` + jjRevID(t, nil, dir, "@-")[:12] + ` "second" · pushed foo@bar → origin`; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	pushed := strings.TrimSpace(mustRun(t, dir, "git", "--git-dir="+remote, "rev-parse", "refs/heads/"+branch))
-	if want := jjRevID(t, dir, "@-"); pushed != want {
+	pushed := strings.TrimSpace(mustRun(t, nil, dir, "git", "--git-dir="+remote, "rev-parse", "refs/heads/"+branch))
+	if want := jjRevID(t, nil, dir, "@-"); pushed != want {
 		t.Errorf("remote %s = %s, want the shipped commit %s", branch, pushed, want)
 	}
 }
@@ -1149,21 +1149,21 @@ func TestShipJJNothingToCommitHintPastesLive(t *testing.T) {
 	const branch = "foo@bar"
 	dir := setupLiveJJRepo(t, "base\n", "edited\n")
 	remote := filepath.Join(t.TempDir(), "remote.git")
-	mustRun(t, dir, "git", "init", "--bare", "--initial-branch=main", remote)
-	mustRun(t, dir, "git", "branch", branch, jjRevID(t, dir, "@-"))
-	mustRun(t, dir, "git", "remote", "add", "origin", remote)
-	mustRun(t, dir, "git", "push", "origin", branch)
-	mustRun(t, dir, "jj", "bookmark", "list")
-	if _, err := runShipCmd(t, "-m", "second", "--no-watch"); err != nil {
+	mustRun(t, nil, dir, "git", "init", "--bare", "--initial-branch=main", remote)
+	mustRun(t, nil, dir, "git", "branch", branch, jjRevID(t, nil, dir, "@-"))
+	mustRun(t, nil, dir, "git", "remote", "add", "origin", remote)
+	mustRun(t, nil, dir, "git", "push", "origin", branch)
+	mustRun(t, nil, dir, "jj", "bookmark", "list")
+	if _, err := runShipCmd(t, context.Background(), "-m", "second", "--no-watch"); err != nil {
 		t.Fatalf("first ship error = %v", err)
 	}
 
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("edited again\n"), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write third edit: %v", err)
 	}
-	mustRun(t, dir, "jj", "commit", "-m", "landed outside ship")
+	mustRun(t, nil, dir, "jj", "commit", "-m", "landed outside ship")
 
-	_, err := runShipCmd(t, "-m", "third", "--no-watch")
+	_, err := runShipCmd(t, context.Background(), "-m", "third", "--no-watch")
 	if err == nil {
 		t.Fatal("second ship error = nil, want nothing to commit")
 	}
@@ -1172,10 +1172,10 @@ func TestShipJJNothingToCommitHintPastesLive(t *testing.T) {
 		t.Fatalf("second ship error = %q, want a push hint", err)
 	}
 
-	mustRun(t, dir, "sh", "-c", hint)
+	mustRun(t, nil, dir, "sh", "-c", hint)
 
-	pushed := strings.TrimSpace(mustRun(t, dir, "git", "--git-dir="+remote, "rev-parse", "refs/heads/"+branch))
-	if want := jjRevID(t, dir, "@-"); pushed != want {
+	pushed := strings.TrimSpace(mustRun(t, nil, dir, "git", "--git-dir="+remote, "rev-parse", "refs/heads/"+branch))
+	if want := jjRevID(t, nil, dir, "@-"); pushed != want {
 		t.Errorf("remote %s = %s, want the commit the hint recovers %s", branch, pushed, want)
 	}
 }
@@ -1187,7 +1187,7 @@ func TestShipJJNothingToCommitHintPastesLive(t *testing.T) {
 func TestShipJJExplicitMissingBookmarkRefuses(t *testing.T) {
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 
-	_, err := runShipCmd(t, "--amend", "--no-push", "--branch", "missing")
+	_, err := runShipCmd(t, f.Context(), "--amend", "--no-push", "--branch", "missing")
 	if err == nil || err.Error() != `ship: bookmark "missing" not found` {
 		t.Errorf("ship error = %v, want bookmark \"missing\" not found", err)
 	}
@@ -1236,8 +1236,8 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			args: []string{"-m", "fix: frobnicate", "--no-watch", "src/a.go"},
 			build: func(t *testing.T, f *vcstest.Fixture) {
 				writeShipFile(t, f.Dir, "src/a.go", "package a\n")
-				mustRun(t, f.Dir, "jj", "commit", "-m", "add a")
-				mustRun(t, f.Dir, "jj", "bookmark", "move", "main", "--to", "@-")
+				mustRun(t, f.Env(), f.Dir, "jj", "commit", "-m", "add a")
+				mustRun(t, f.Env(), f.Dir, "jj", "bookmark", "move", "main", "--to", "@-")
 			},
 			target:   "main",
 			scope:    " in src/a.go",
@@ -1249,7 +1249,7 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			name: "explicit bookmark resolves",
 			args: []string{"-m", "fix: frobnicate", "--no-watch", "--bookmark", "someone/probe"},
 			build: func(t *testing.T, f *vcstest.Fixture) {
-				mustRun(t, f.Dir, "jj", "bookmark", "create", "someone/probe", "-r", "@-")
+				mustRun(t, f.Env(), f.Dir, "jj", "bookmark", "create", "someone/probe", "-r", "@-")
 			},
 			target:   "someone/probe",
 			standing: nothingAbove,
@@ -1261,7 +1261,7 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			name: "no push still resolves the target",
 			args: []string{"-m", "fix: frobnicate", "--no-push", "--bookmark", "someone/probe"},
 			build: func(t *testing.T, f *vcstest.Fixture) {
-				mustRun(t, f.Dir, "jj", "bookmark", "create", "someone/probe", "-r", "@-")
+				mustRun(t, f.Env(), f.Dir, "jj", "bookmark", "create", "someone/probe", "-r", "@-")
 			},
 			target:   "someone/probe",
 			standing: nothingAbove,
@@ -1271,7 +1271,7 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			name: "description only working copy refuses",
 			args: []string{"-m", "description only", "--no-push"},
 			build: func(t *testing.T, f *vcstest.Fixture) {
-				mustRun(t, f.Dir, "jj", "describe", "-m", "description only")
+				mustRun(t, f.Env(), f.Dir, "jj", "describe", "-m", "description only")
 			},
 			target:   "main",
 			standing: nothingAbove,
@@ -1294,7 +1294,7 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			args: []string{"-m", "fix: frobnicate", "--no-push"},
 			opts: []vcstest.Opt{vcstest.Conflicted()},
 			build: func(t *testing.T, f *vcstest.Fixture) {
-				mustRun(t, f.Dir, "jj", "new")
+				mustRun(t, f.Env(), f.Dir, "jj", "new")
 			},
 			target:   "main",
 			standing: "the commits above main, or their descendants, are conflicted",
@@ -1307,7 +1307,7 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			name: "empty root refuses",
 			args: []string{"-m", "fix: frobnicate", "--no-push"},
 			build: func(t *testing.T, f *vcstest.Fixture) {
-				mustRun(t, f.Dir, "jj", "new", "root()")
+				mustRun(t, f.Env(), f.Dir, "jj", "new", "root()")
 			},
 			target:   "main",
 			standing: nothingAbove,
@@ -1322,11 +1322,11 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 			}
 			before := ""
 			if !tt.commits {
-				before = jjRevID(t, f.Dir, "@-")
+				before = jjRevID(t, f.Env(), f.Dir, "@-")
 			}
 			shipResetLog(t, f)
 
-			got, err := runShipCmd(t, tt.args...)
+			got, err := runShipCmd(t, f.Context(), tt.args...)
 			invocations := vcstest.Invocations(t, f.ArgvLog)
 			assertInvocations(t, invocations, tt.want)
 			if tt.commits {
@@ -1348,7 +1348,7 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 				t.Errorf("error = %q, want %q", err, want)
 			}
 			assertNoShipMutation(t, invocations)
-			if head := jjRevID(t, f.Dir, "@-"); head != before {
+			if head := jjRevID(t, f.Env(), f.Dir, "@-"); head != before {
 				t.Errorf("@- = %s, want it unmoved at %s", head, before)
 			}
 		})
@@ -1360,7 +1360,7 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 // jj's own, truncated where a partial read ends.
 func TestSplitDescribeTruncated(t *testing.T) {
 	f := shipRepo(t, vcstest.JJ())
-	out := mustRun(t, f.Dir, "jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate)
+	out := mustRun(t, f.Env(), f.Dir, "jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate)
 	short, _, ok := strings.Cut(out, "\n")
 	if !ok {
 		t.Fatalf("jj describe output %q carries no separator", out)
@@ -1375,10 +1375,10 @@ func TestSplitDescribeTruncated(t *testing.T) {
 // refusal: the amend's whole point is folding a change that is already there.
 func TestShipJJEmptyAmendExempt(t *testing.T) {
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
-	mustRun(t, f.Dir, "jj", "commit", "-m", "wip")
+	mustRun(t, f.Env(), f.Dir, "jj", "commit", "-m", "wip")
 	shipResetLog(t, f)
 
-	got, err := runShipCmd(t, "--amend", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "--amend", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -1402,20 +1402,20 @@ func TestShipGitDetachedHeadRefusesBeforeCommit(t *testing.T) {
 	for _, args := range [][]string{{"--no-watch"}, {"--no-push"}} {
 		t.Run(args[0], func(t *testing.T) {
 			f := shipRepo(t, vcstest.Remote(), vcstest.Detached(), vcstest.Dirty())
-			before := gitAt(t, f.Dir, "rev-parse", "HEAD")
+			before := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 
-			_, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate"}, args...)...)
+			_, err := runShipCmd(t, f.Context(), append([]string{"-m", "fix: frobnicate"}, args...)...)
 			if err == nil || err.Error() != "ship: detached HEAD — check out a branch before shipping" {
 				t.Fatalf("ship error = %v, want detached HEAD refusal", err)
 			}
 			assertNoShipMutation(t, vcstest.Invocations(t, f.ArgvLog))
-			if head := gitAt(t, f.Dir, "rev-parse", "HEAD"); head != before {
+			if head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); head != before {
 				t.Errorf("HEAD = %s, want it unmoved at %s", head, before)
 			}
-			if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "" {
+			if branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); branch != "" {
 				t.Errorf("branch = %q, want HEAD left detached", branch)
 			}
-			if gitAt(t, f.Dir, "status", "--porcelain") == "" {
+			if gitAt(t, f.Env(), f.Dir, "status", "--porcelain") == "" {
 				t.Error("the refused edit must stay uncommitted")
 			}
 		})
@@ -1430,7 +1430,7 @@ func TestShipDetachedHeadAfterCommitSelfHeals(t *testing.T) {
 	shipDetachHook(t, f, "")
 	shipResetLog(t, f)
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -1448,10 +1448,10 @@ func TestShipDetachedHeadAfterCommitSelfHeals(t *testing.T) {
 	if want := []string{"git", "checkout", "-B", "feature", head}; !reflect.DeepEqual(healed, want) {
 		t.Errorf("heal argv = %v, want %v", healed, want)
 	}
-	if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "feature" {
+	if branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); branch != "feature" {
 		t.Errorf("branch = %q, want HEAD reattached to feature", branch)
 	}
-	if tip := gitAt(t, f.Dir, "rev-parse", "feature"); tip != head {
+	if tip := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); tip != head {
 		t.Errorf("feature = %s, want it moved to the commit at %s", tip, head)
 	}
 }
@@ -1465,7 +1465,7 @@ func TestShipGitUsesPostCommitBranch(t *testing.T) {
 	writeShipExecutable(t, filepath.Join(f.Dir, ".git", "hooks"), "post-commit",
 		"#!/bin/sh\ngit branch -f other HEAD\ngit symbolic-ref HEAD refs/heads/other\n")
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -1587,7 +1587,7 @@ func TestShipSessionTrailer(t *testing.T) {
 			}
 			t.Setenv(envClaudeSessionKey, "some-uuid")
 
-			got, err := runShipCmd(t, tt.args...)
+			got, err := runShipCmd(t, f.Context(), tt.args...)
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -1595,7 +1595,7 @@ func TestShipSessionTrailer(t *testing.T) {
 			if want := swept(kind, "f.txt") + shipCommitted(t, f, kind) + " · branch main · not pushed"; got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
-			if body := gitAt(t, f.Dir, "log", "-1", "--format=%B"); body != tt.body {
+			if body := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%B"); body != tt.body {
 				t.Errorf("commit message = %q, want %q", body, tt.body)
 			}
 		})
@@ -1608,7 +1608,7 @@ func TestShipGitAmendFastForwardPush(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	shipAmendable(t, f, vcs.Git)
 
-	got, err := runShipCmd(t, "--amend", "-m", "fix: frobnicate", "--no-watch")
+	got, err := runShipCmd(t, f.Context(), "--amend", "-m", "fix: frobnicate", "--no-watch")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -1619,7 +1619,7 @@ func TestShipGitAmendFastForwardPush(t *testing.T) {
 	if n := remoteCount(t, f, "main"); n != 2 {
 		t.Errorf("origin main holds %d commits, want the amended commit on top of init", n)
 	}
-	if subject := gitAt(t, f.Dir, "--git-dir="+f.RemoteDir, "log", "-1", "--format=%s", "main"); subject != "fix: frobnicate" {
+	if subject := gitAt(t, f.Env(), f.Dir, "--git-dir="+f.RemoteDir, "log", "-1", "--format=%s", "main"); subject != "fix: frobnicate" {
 		t.Errorf("origin main tip = %q, want the amended commit", subject)
 	}
 	assertInvocations(t, invocations, [][]string{
@@ -1744,7 +1744,7 @@ func TestShipGitRebase(t *testing.T) {
 			name: "resolves the configured remote",
 			build: func(t *testing.T, f *vcstest.Fixture) {
 				shipSecondRemote(t, f, "backup")
-				mustRun(t, f.Dir, "git", "config", "branch.main.remote", "backup")
+				mustRun(t, f.Env(), f.Dir, "git", "config", "branch.main.remote", "backup")
 			},
 			branch: "main",
 			remote: "backup",
@@ -1788,7 +1788,7 @@ func TestShipGitRebase(t *testing.T) {
 			shipResetLog(t, f)
 			buf := captureSlog(t)
 
-			got, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)...)
+			got, err := runShipCmd(t, f.Context(), append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)...)
 			invocations := vcstest.Invocations(t, f.ArgvLog)
 			assertInvocations(t, invocations, tt.want)
 			if strings.Contains(buf.String(), "git stash pop") {
@@ -1803,7 +1803,7 @@ func TestShipGitRebase(t *testing.T) {
 						t.Errorf("error = %q, want it to contain %q", err, want)
 					}
 				}
-				if parent := gitAt(t, f.Dir, "rev-parse", "HEAD^"); parent != before {
+				if parent := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD^"); parent != before {
 					t.Errorf("HEAD^ = %s, want the pre-ship %s — the branch did not come back", parent, before)
 				}
 				if n := remoteCount(t, f, "main"); n != remoteBefore {
@@ -1822,8 +1822,8 @@ func TestShipGitRebase(t *testing.T) {
 			if got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
-			bare := gitAt(t, f.Dir, "remote", "get-url", tt.remote)
-			pushed := gitAt(t, f.Dir, "--git-dir="+bare, "rev-parse", "refs/heads/"+tt.branch)
+			bare := gitAt(t, f.Env(), f.Dir, "remote", "get-url", tt.remote)
+			pushed := gitAt(t, f.Env(), f.Dir, "--git-dir="+bare, "rev-parse", "refs/heads/"+tt.branch)
 			if head := shipHead(t, f); pushed != head {
 				t.Errorf("%s/%s = %s, want the shipped HEAD %s", tt.remote, tt.branch, pushed, head)
 			}
@@ -1841,15 +1841,15 @@ func TestShipGitRebase(t *testing.T) {
 func TestShipGitRebaseNamesWorkItCannotPutBack(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	writeShipFile(t, f.Dir, "b.txt", "base\n")
-	mustRun(t, f.Dir, "git", "add", "b.txt")
-	mustRun(t, f.Dir, "git", "commit", "-qm", "add b")
-	mustRun(t, f.Dir, "git", "push", "-q", "origin", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "b.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "add b")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
 	shipDivergeRemote(t, f, "main", "b.txt", "upstream\n")
 	writeShipFile(t, f.Dir, "b.txt", "mine\n")
 	shipResetLog(t, f)
 	buf := captureSlog(t)
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "f.txt")
+	_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch", "f.txt")
 	if err == nil {
 		t.Fatal("ship succeeded over work it could not put back, want a refusal")
 	}
@@ -1861,14 +1861,14 @@ func TestShipGitRebaseNamesWorkItCannotPutBack(t *testing.T) {
 	if strings.Contains(buf.String(), "git stash pop") {
 		t.Errorf("log advises git stash pop: %q", buf.String())
 	}
-	if list := gitAt(t, f.Dir, "stash", "list"); list != "" {
+	if list := gitAt(t, f.Env(), f.Dir, "stash", "list"); list != "" {
 		t.Errorf("stash list = %q, want nothing left on the stack every working copy shares", list)
 	}
 	sha := regexp.MustCompile(`[0-9a-f]{40}`).FindString(err.Error())
 	if sha == "" {
 		t.Fatalf("error = %q, want it to name the commit holding the work", err)
 	}
-	if files := gitAt(t, f.Dir, "stash", "show", "--name-only", sha); !strings.Contains(files, "b.txt") {
+	if files := gitAt(t, f.Env(), f.Dir, "stash", "show", "--name-only", sha); !strings.Contains(files, "b.txt") {
 		t.Errorf("%s holds %q, want the work it was keeping", sha, files)
 	}
 }
@@ -1959,7 +1959,7 @@ func TestShipGitPushRetry(t *testing.T) {
 			args: []string{"--amend"},
 			build: func(t *testing.T, f *vcstest.Fixture) {
 				shipAmendable(t, f, vcs.Git)
-				mustRun(t, f.Dir, "git", "push", "-q", "origin", "main")
+				mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
 				shipDivergeRemote(t, f, "main", "u.txt", "upstream\n")
 			},
 			remoteCount: 3,
@@ -2004,7 +2004,7 @@ func TestShipGitPushRetry(t *testing.T) {
 			before := shipHead(t, f)
 			shipResetLog(t, f)
 
-			got, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)...)
+			got, err := runShipCmd(t, f.Context(), append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)...)
 			want := tt.want
 			if tt.lease {
 				want = append(want, []string{"git", "push", "origin", "--force-with-lease=main:" + before, "main"})
@@ -2022,7 +2022,7 @@ func TestShipGitPushRetry(t *testing.T) {
 						t.Errorf("error = %q, want it to contain %q", err, want)
 					}
 				}
-				if tip := gitAt(t, f.Dir, "--git-dir="+f.RemoteDir, "log", "-1", "--format=%s"); tip == "fix: frobnicate" {
+				if tip := gitAt(t, f.Env(), f.Dir, "--git-dir="+f.RemoteDir, "log", "-1", "--format=%s"); tip == "fix: frobnicate" {
 					t.Error("origin main carries the refused commit")
 				}
 				return
@@ -2035,7 +2035,7 @@ func TestShipGitPushRetry(t *testing.T) {
 			if got != summary {
 				t.Errorf("summary = %q, want %q", got, summary)
 			}
-			pushed := gitAt(t, f.Dir, "--git-dir="+f.RemoteDir, "rev-parse", "refs/heads/main")
+			pushed := gitAt(t, f.Env(), f.Dir, "--git-dir="+f.RemoteDir, "rev-parse", "refs/heads/main")
 			if head := shipHead(t, f); pushed != head {
 				t.Errorf("origin main = %s, want the shipped HEAD %s", pushed, head)
 			}
@@ -2052,18 +2052,18 @@ func TestShipGitPushRetry(t *testing.T) {
 func TestGitPushRejectedClassifies(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"))
 	writeShipFile(t, f.Dir, "g.txt", "feature\n")
-	mustRun(t, f.Dir, "git", "add", "-A")
-	mustRun(t, f.Dir, "git", "commit", "-qm", "feature")
-	mustRun(t, f.Dir, "git", "switch", "-q", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
 	writeShipFile(t, f.Dir, "f.txt", "mine\n")
-	mustRun(t, f.Dir, "git", "commit", "-qam", "mine")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qam", "mine")
 	shipDivergeRemote(t, f, "main", "u.txt", "upstream\n")
 	writeShipExecutable(t, filepath.Join(f.RemoteDir, "hooks"), "update",
 		"#!/bin/sh\ntest \"$1\" != refs/heads/feature\n")
 
-	mustRun(t, f.Dir, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
 
-	lone, err := combinedRun(t, f.Dir, "git", "push", "origin", "main")
+	lone, err := combinedRun(t, f.Env(), f.Dir, "git", "push", "origin", "main")
 	if err == nil {
 		t.Fatalf("git push succeeded, want main refused:\n%s", lone)
 	}
@@ -2074,7 +2074,7 @@ func TestGitPushRejectedClassifies(t *testing.T) {
 		t.Errorf("gitPushRejected = false for a lone non-fast-forward rejection:\n%s", lone)
 	}
 
-	mixed, err := combinedRun(t, f.Dir, "git", "push", "origin", "main", "feature")
+	mixed, err := combinedRun(t, f.Env(), f.Dir, "git", "push", "origin", "main", "feature")
 	if err == nil {
 		t.Fatalf("git push succeeded, want both refs refused:\n%s", mixed)
 	}
@@ -2093,7 +2093,7 @@ func TestShipNoWatchSkipsCI(t *testing.T) {
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	before := remoteCount(t, f, "main")
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -2102,14 +2102,14 @@ func TestShipNoWatchSkipsCI(t *testing.T) {
 			t.Errorf("--no-watch must reach no gh call, got %v", inv)
 		}
 	}
-	head := strings.TrimSpace(mustRun(t, f.Dir, "jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", "commit_id.short()"))
+	head := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", "commit_id.short()"))
 	if want := fmt.Sprintf(`committed %s "fix: frobnicate" · pushed main → origin`, head); got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	if after := remoteCount(t, f, "main"); after != before+1 {
 		t.Errorf("remote main count = %d, want %d", after, before+1)
 	}
-	if subject := gitAt(t, f.Dir, "--git-dir="+f.RemoteDir, "log", "-1", "--format=%s", "main"); subject != "fix: frobnicate" {
+	if subject := gitAt(t, f.Env(), f.Dir, "--git-dir="+f.RemoteDir, "log", "-1", "--format=%s", "main"); subject != "fix: frobnicate" {
 		t.Errorf("remote main tip = %q, want the shipped commit", subject)
 	}
 }
@@ -2156,6 +2156,7 @@ func TestShipCIStates(t *testing.T) {
 				writeShipGH(t, f)
 			} else {
 				f.OnlyShimPATH(t)
+				t.Setenv("PATH", f.PATH())
 				if path, err := exec.LookPath("gh"); err == nil {
 					t.Fatalf("gh resolved to %s; this row must run with none on PATH", path)
 				}
@@ -2171,7 +2172,7 @@ func TestShipCIStates(t *testing.T) {
 			}
 			shipCIPollInterval = 0
 
-			got, err := runShipCmd(t, "-m", "fix: frobnicate")
+			got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate")
 			if tt.wantErr && err == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -2204,7 +2205,7 @@ func TestShipCINoRunWithWorkflowIsUnconfirmed(t *testing.T) {
 	t.Setenv("GH_RUN_LIST_JSON", "[]")
 	shipCIPollInterval = 0
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate")
 	if err == nil {
 		t.Fatal("expected error when workflows exist but no run was registered")
 	}
@@ -2226,7 +2227,7 @@ func TestShipHeadSHAFailurePrintsCommitPushSummary(t *testing.T) {
 	writeShipGH(t, f)
 	shipJJFails(t, f, "*commit_id")
 
-	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate")
+	out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate")
 	if err == nil {
 		t.Fatal("expected head SHA error, got nil")
 	}
@@ -2284,8 +2285,8 @@ func TestJJRevsetsParseLive(t *testing.T) {
 	// jj's own bookmark-name parser refuses a non-breaking space, so the branch
 	// enters through git and jj imports it on the next command.
 	const branch = "feat\u00a0x"
-	mustRun(t, dir, "git", "branch", branch)
-	head := strings.TrimSpace(mustRun(t, dir, "jj", "log", "-r", "@-", "-T", "commit_id.short()", "--no-graph"))
+	mustRun(t, nil, dir, "git", "branch", branch)
+	head := strings.TrimSpace(mustRun(t, nil, dir, "jj", "log", "-r", "@-", "-T", "commit_id.short()", "--no-graph"))
 
 	tests := []struct {
 		name   string
@@ -2299,7 +2300,7 @@ func TestJJRevsetsParseLive(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := strings.TrimSpace(mustRun(t, dir, "jj", "log", "-r", tt.revset, "-T", "commit_id.short()", "--no-graph"))
+			got := strings.TrimSpace(mustRun(t, nil, dir, "jj", "log", "-r", tt.revset, "-T", "commit_id.short()", "--no-graph"))
 			if got != tt.want {
 				t.Errorf("jj log -r %s = %q, want %q", tt.revset, got, tt.want)
 			}
@@ -2318,7 +2319,7 @@ func TestGitIsAncestorPrefix(t *testing.T) {
 		t.Run(prefix, func(t *testing.T) {
 			shipResetLog(t, f)
 
-			_, err := gitIsAncestor(context.Background(), render.Dir(f.Dir), prefix, "refs/heads/no-such-ref", "HEAD")
+			_, err := gitIsAncestor(f.Context(), render.Dir(f.Dir), prefix, "refs/heads/no-such-ref", "HEAD")
 			want := prefix + ": git merge-base --is-ancestor: exit 128: fatal: Not a valid object name refs/heads/no-such-ref"
 			if err == nil || err.Error() != want {
 				t.Fatalf("gitIsAncestor error = %v, want %q", err, want)
@@ -2435,8 +2436,8 @@ func TestShipJJRebase(t *testing.T) {
 			args: []string{"--bookmark", "someone/probe"},
 			opts: []vcstest.Opt{vcstest.Remote()},
 			build: func(t *testing.T, f *vcstest.Fixture) {
-				mustRun(t, f.Dir, "jj", "bookmark", "create", "someone/probe", "-r", "@-")
-				mustRun(t, f.Dir, "jj", "git", "push", "--bookmark", "someone/probe")
+				mustRun(t, f.Env(), f.Dir, "jj", "bookmark", "create", "someone/probe", "-r", "@-")
+				mustRun(t, f.Env(), f.Dir, "jj", "git", "push", "--bookmark", "someone/probe")
 				shipDivergeRemote(t, f, "someone/probe", "u.txt", "upstream\n")
 			},
 			target:  "someone/probe",
@@ -2486,7 +2487,7 @@ func TestShipJJRebase(t *testing.T) {
 			name: "fetch failure is fatal",
 			opts: []vcstest.Opt{vcstest.Remote()},
 			build: func(t *testing.T, f *vcstest.Fixture) {
-				mustRun(t, f.Dir, "git", "remote", "set-url", "origin", filepath.Join(t.TempDir(), "absent.git"))
+				mustRun(t, f.Env(), f.Dir, "git", "remote", "set-url", "origin", filepath.Join(t.TempDir(), "absent.git"))
 			},
 			want:    slices.Concat(prologue("main"), [][]string{fetch}),
 			wantErr: []string{"ship: jj git fetch", "Could not find repository"},
@@ -2554,7 +2555,7 @@ func TestShipJJRebase(t *testing.T) {
 			}
 			shipResetLog(t, f)
 
-			got, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)...)
+			got, err := runShipCmd(t, f.Context(), append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)...)
 			assertInvocations(t, shipMaskOpIDs(vcstest.Invocations(t, f.ArgvLog)), tt.want)
 			target, remote := "main", "origin"
 			if tt.target != "" {
@@ -2572,7 +2573,7 @@ func TestShipJJRebase(t *testing.T) {
 						t.Errorf("error = %q, want it to contain %q", err, want)
 					}
 				}
-				if tip := shipRemoteTip(t, f, remote, target); tip == jjRevID(t, f.Dir, "@-") {
+				if tip := shipRemoteTip(t, f, remote, target); tip == jjRevID(t, f.Env(), f.Dir, "@-") {
 					t.Errorf("%s %s carries the commit ship refused to land", remote, target)
 				}
 				return
@@ -2588,7 +2589,7 @@ func TestShipJJRebase(t *testing.T) {
 			if got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
-			if tip, at := shipRemoteTip(t, f, remote, target), jjRevID(t, f.Dir, "@-"); tip != at {
+			if tip, at := shipRemoteTip(t, f, remote, target), jjRevID(t, f.Env(), f.Dir, "@-"); tip != at {
 				t.Errorf("%s %s = %s, want the shipped commit %s", remote, target, tip, at)
 			}
 		})
@@ -2605,7 +2606,7 @@ func TestShipJJPushRevertTargetsBookmarkMove(t *testing.T) {
 	shipRaceRemote(t, f, "jj", `"git push"*`, "u.txt", 1)
 	shipResetLog(t, f)
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
+	if _, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	reverted := shipRevertedOps(vcstest.Invocations(t, f.ArgvLog))
@@ -2615,7 +2616,7 @@ func TestShipJJPushRevertTargetsBookmarkMove(t *testing.T) {
 	if desc := shipOpDescription(t, f, reverted[0]); !strings.HasPrefix(desc, "point bookmark main to commit") {
 		t.Errorf("reverted operation = %q, want the bookmark move", desc)
 	}
-	if tip, at := shipRemoteTip(t, f, "origin", "main"), jjRevID(t, f.Dir, "@-"); tip != at {
+	if tip, at := shipRemoteTip(t, f, "origin", "main"), jjRevID(t, f.Env(), f.Dir, "@-"); tip != at {
 		t.Errorf("origin main = %s, want the replayed commit %s", tip, at)
 	}
 }
@@ -2629,7 +2630,7 @@ func TestShipJJPushRevertFailureIsTerminal(t *testing.T) {
 	shipRaceRemote(t, f, "jj", `"git push"*`, "u.txt", 1)
 	shipResetLog(t, f)
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+	_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch")
 	if err == nil {
 		t.Fatal("expected terminal error when op revert fails")
 	}
@@ -2650,7 +2651,7 @@ func TestShipJJPushRevertFailureIsTerminal(t *testing.T) {
 	if fetches != 1 {
 		t.Errorf("jj git fetch count = %d, want 1 (a failed undo must not retry)", fetches)
 	}
-	if tip := shipRemoteTip(t, f, "origin", "main"); tip == jjRevID(t, f.Dir, "@-") {
+	if tip := shipRemoteTip(t, f, "origin", "main"); tip == jjRevID(t, f.Env(), f.Dir, "@-") {
 		t.Error("origin main carries the commit the rejected push never landed")
 	}
 }
@@ -2661,11 +2662,11 @@ func TestShipJJPushRevertFailureIsTerminal(t *testing.T) {
 func TestShipJJRebasePreservesHookSummary(t *testing.T) {
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	shipHookRepo(t, f, vcs.JJ, 0, "", "f1.go")
-	mustRun(t, f.Dir, "jj", "git", "push", "--bookmark", "main")
+	mustRun(t, f.Env(), f.Dir, "jj", "git", "push", "--bookmark", "main")
 	shipDivergeRemote(t, f, "main", "u.txt", "upstream\n")
 	shipResetLog(t, f)
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -2679,7 +2680,7 @@ func TestShipJJRebasePreservesHookSummary(t *testing.T) {
 	if count := strings.Count(got, "committed "); count != 1 {
 		t.Errorf("committed segment count = %d, want 1 in %q", count, got)
 	}
-	if tip, at := shipRemoteTip(t, f, "origin", "main"), jjRevID(t, f.Dir, "@-"); tip != at {
+	if tip, at := shipRemoteTip(t, f, "origin", "main"), jjRevID(t, f.Env(), f.Dir, "@-"); tip != at {
 		t.Errorf("origin main = %s, want the rebased commit %s", tip, at)
 	}
 }
@@ -2691,7 +2692,7 @@ func TestShipJJNonTrunkBookmarkAppends(t *testing.T) {
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	shipJJBookmarks(t, f, "someone/probe")
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -2706,10 +2707,10 @@ func TestShipJJNonTrunkBookmarkAppends(t *testing.T) {
 		[]string{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 		[]string{"jj", "bookmark", "move", vcs.JJExactPattern("someone/probe"), "--to", "@-"},
 	))
-	if got, want := jjRevID(t, f.Dir, `bookmarks(exact:"someone/probe")`), jjRevID(t, f.Dir, "@-"); got != want {
+	if got, want := jjRevID(t, f.Env(), f.Dir, `bookmarks(exact:"someone/probe")`), jjRevID(t, f.Env(), f.Dir, "@-"); got != want {
 		t.Errorf("someone/probe = %s, want the commit at @- %s", got, want)
 	}
-	if got, want := jjRevID(t, f.Dir, `bookmarks(exact:"main")`), jjRevID(t, f.Dir, "@--"); got == want {
+	if got, want := jjRevID(t, f.Env(), f.Dir, `bookmarks(exact:"main")`), jjRevID(t, f.Env(), f.Dir, "@--"); got == want {
 		t.Errorf("trunk main moved to %s, want it left behind", got)
 	}
 }
@@ -2720,7 +2721,7 @@ func TestShipJJNonTrunkBookmarkPushesItself(t *testing.T) {
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	shipJJBookmarks(t, f, "someone/probe")
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -2745,7 +2746,7 @@ func TestShipJJMultipleNearestBookmarksFails(t *testing.T) {
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	shipJJBookmarks(t, f, "feat-a", "feat-b")
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate")
+	_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate")
 	if err == nil {
 		t.Fatal("expected error when several bookmarks are nearest, got nil")
 	}
@@ -2759,7 +2760,7 @@ func TestShipJJMultipleNearestBookmarksFails(t *testing.T) {
 		{"git", "--git-dir", filepath.Join(f.Dir, ".git"), "worktree", "list", "--porcelain", "-z", "--end-of-options"},
 	})
 	assertNoShipMutation(t, invocations)
-	if subject := jjAt(t, f.Dir, "@-", "description.first_line()"); subject != "wip" {
+	if subject := jjAt(t, f.Env(), f.Dir, "@-", "description.first_line()"); subject != "wip" {
 		t.Errorf("@- = %q, want no commit cut", subject)
 	}
 }
@@ -2769,7 +2770,7 @@ func TestShipJJNearestBookmarksResolve(t *testing.T) {
 		f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 		shipJJBookmarks(t, f, "feat-a", "main", "feat-b")
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+		got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -2785,7 +2786,7 @@ func TestShipJJNearestBookmarksResolve(t *testing.T) {
 		f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 		shipJJBookmarks(t, f, "feat-a", "feat-b")
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--branch", "feat-b")
+		got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch", "--branch", "feat-b")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -2801,17 +2802,17 @@ func TestShipJJNearestBookmarksResolve(t *testing.T) {
 		if n := remoteCount(t, f, "feat-b"); n != 3 {
 			t.Errorf("origin feat-b holds %d commits, want init, wip, and the shipped one", n)
 		}
-		if gitBranchExists(t, f.RemoteDir, "feat-a") {
+		if gitBranchExists(t, f.Env(), f.RemoteDir, "feat-a") {
 			t.Error("origin carries feat-a — the candidate --branch passed over was pushed")
 		}
 	})
 
 	t.Run("--branch naming a bookmark elsewhere retracts the trunk segment", func(t *testing.T) {
 		f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
-		mustRun(t, f.Dir, "jj", "bookmark", "create", "other", "-r", "@-")
+		mustRun(t, f.Env(), f.Dir, "jj", "bookmark", "create", "other", "-r", "@-")
 		shipJJBookmarks(t, f, "main", "feat-a")
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--branch", "other")
+		got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch", "--branch", "other")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -2836,7 +2837,7 @@ func TestShipJJBookmarkTieHolders(t *testing.T) {
 		other := shipHoldBranch(t, f, "main")
 		shipResetLog(t, f)
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+		got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -2859,7 +2860,7 @@ func TestShipJJBookmarkTieHolders(t *testing.T) {
 		f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 		shipJJBookmarks(t, f, "feat-a", "main", "feat-b")
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+		got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -2880,7 +2881,7 @@ func TestShipJJBookmarkTieHolders(t *testing.T) {
 		shipHoldBranch(t, f, "main")
 		shipResetLog(t, f)
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+		got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -2902,7 +2903,7 @@ func TestShipJJBookmarkTieHolders(t *testing.T) {
 		shipHoldBranch(t, f, "feat-b")
 		shipResetLog(t, f)
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--branch", "feat-b")
+		got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch", "--branch", "feat-b")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -2955,7 +2956,7 @@ func TestShipHealRefusedNamesHolder(t *testing.T) {
 			shipDetachHook(t, f, tt.rest)
 			shipResetLog(t, f)
 
-			_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+			_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 			if err == nil {
 				t.Fatal("expected an error when the heal checkout is refused, got nil")
 			}
@@ -2965,7 +2966,7 @@ func TestShipHealRefusedNamesHolder(t *testing.T) {
 			if n := holderLookups(shipGTInvocations(t, f)); n != 1 {
 				t.Errorf("holder lookups = %d, want the one the refusal needed", n)
 			}
-			if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "" {
+			if branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); branch != "" {
 				t.Errorf("branch = %q, want HEAD left detached by the refused heal", branch)
 			}
 		})
@@ -2979,7 +2980,7 @@ func TestShipHealSuccessAsksNoHolder(t *testing.T) {
 	shipDetachHook(t, f, "")
 	shipResetLog(t, f)
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -2990,7 +2991,7 @@ func TestShipHealSuccessAsksNoHolder(t *testing.T) {
 	if n := holderLookups(invocations); n != 0 {
 		t.Errorf("holder lookups = %d, want none from a heal that succeeded", n)
 	}
-	if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "feature" {
+	if branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); branch != "feature" {
 		t.Errorf("branch = %q, want HEAD reattached to feature", branch)
 	}
 }
@@ -3001,7 +3002,7 @@ func TestShipJJAmbiguousTrunkFails(t *testing.T) {
 	t.Run("two real remotes refuse", func(t *testing.T) {
 		f := shipAmbiguousTrunk(t)
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate")
+		_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate")
 		if err == nil {
 			t.Fatal("expected error when trunk is ambiguous, got nil")
 		}
@@ -3013,7 +3014,7 @@ func TestShipJJAmbiguousTrunkFails(t *testing.T) {
 			{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
 		})
 		assertNoShipMutation(t, invocations)
-		if subject := jjAt(t, f.Dir, "@-", "description.first_line()"); subject != "init" {
+		if subject := jjAt(t, f.Env(), f.Dir, "@-", "description.first_line()"); subject != "init" {
 			t.Errorf("@- = %q, want no commit cut", subject)
 		}
 	})
@@ -3023,10 +3024,10 @@ func TestShipJJAmbiguousTrunkFails(t *testing.T) {
 	// the filter is the only thing keeping it out of the candidate set.
 	t.Run("a local branch resting on trunk is not a candidate", func(t *testing.T) {
 		f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
-		mustRun(t, f.Dir, "jj", "bookmark", "create", "feat-x", "-r", "@-")
+		mustRun(t, f.Env(), f.Dir, "jj", "bookmark", "create", "feat-x", "-r", "@-")
 		shipResetLog(t, f)
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+		got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -3046,7 +3047,7 @@ func TestShipJJAmbiguousTrunkBranch(t *testing.T) {
 	t.Run("a --branch naming no candidate still refuses", func(t *testing.T) {
 		f := shipAmbiguousTrunk(t)
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "feature")
+		_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--branch", "feature")
 		if err == nil || !strings.Contains(err.Error(), `cannot resolve the trunk bookmark from ["dev" "main"]`) {
 			t.Fatalf("error = %v, want the trunk resolution refusal", err)
 		}
@@ -3055,7 +3056,7 @@ func TestShipJJAmbiguousTrunkBranch(t *testing.T) {
 			{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
 		})
 		assertNoShipMutation(t, invocations)
-		if subject := jjAt(t, f.Dir, "@-", "description.first_line()"); subject != "init" {
+		if subject := jjAt(t, f.Env(), f.Dir, "@-", "description.first_line()"); subject != "init" {
 			t.Errorf("@- = %q, want no commit cut", subject)
 		}
 	})
@@ -3064,12 +3065,12 @@ func TestShipJJAmbiguousTrunkBranch(t *testing.T) {
 		f := shipAmbiguousTrunk(t)
 		seedLaneRecords(t, f.Dir, laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "main")
+		_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--branch", "main")
 		if err == nil || !strings.Contains(err.Error(), "pass --allow-trunk to advance it deliberately") {
 			t.Fatalf("error = %v, want the org-trunk refusal", err)
 		}
 		assertNoShipMutation(t, vcstest.Invocations(t, f.ArgvLog))
-		if subject := jjAt(t, f.Dir, "@-", "description.first_line()"); subject != "init" {
+		if subject := jjAt(t, f.Env(), f.Dir, "@-", "description.first_line()"); subject != "init" {
 			t.Errorf("@- = %q, want no commit cut", subject)
 		}
 	})
@@ -3077,7 +3078,7 @@ func TestShipJJAmbiguousTrunkBranch(t *testing.T) {
 	t.Run("a trunk of your own it names is committed onto", func(t *testing.T) {
 		f := shipAmbiguousTrunk(t)
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--branch", "main", "--pr-title", "Better title")
+		got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch", "--branch", "main", "--pr-title", "Better title")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -3101,7 +3102,7 @@ func TestShipJJNoTrunkBookmark(t *testing.T) {
 	t.Run("a nearest bookmark is pushed regardless", func(t *testing.T) {
 		f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Trunk("mainline"), vcstest.Dirty())
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+		got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -3115,32 +3116,32 @@ func TestShipJJNoTrunkBookmark(t *testing.T) {
 
 	t.Run("no bookmark at all still commits under --no-push", func(t *testing.T) {
 		f := shipRepo(t, vcstest.JJ(), vcstest.Dirty())
-		mustRun(t, f.Dir, "jj", "bookmark", "delete", "main")
+		mustRun(t, f.Env(), f.Dir, "jj", "bookmark", "delete", "main")
 		shipResetLog(t, f)
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+		got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
 		if want := shipCommitted(t, f, vcs.JJ) + " · not pushed"; got != want {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
-		if subject := jjAt(t, f.Dir, "@-", "description.first_line()"); subject != "fix: frobnicate" {
+		if subject := jjAt(t, f.Env(), f.Dir, "@-", "description.first_line()"); subject != "fix: frobnicate" {
 			t.Errorf("@- = %q, want the commit ship cut", subject)
 		}
 	})
 
 	t.Run("no bookmark at all refuses a push", func(t *testing.T) {
 		f := shipRepo(t, vcstest.JJ(), vcstest.Dirty())
-		mustRun(t, f.Dir, "jj", "bookmark", "delete", "main")
+		mustRun(t, f.Env(), f.Dir, "jj", "bookmark", "delete", "main")
 		shipResetLog(t, f)
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+		_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch")
 		if err == nil || !strings.Contains(err.Error(), "cannot resolve the trunk bookmark") {
 			t.Fatalf("error = %v, want the trunk resolution refusal", err)
 		}
 		assertNoShipMutation(t, vcstest.Invocations(t, f.ArgvLog))
-		if subject := jjAt(t, f.Dir, "@-", "description.first_line()"); subject != "init" {
+		if subject := jjAt(t, f.Env(), f.Dir, "@-", "description.first_line()"); subject != "init" {
 			t.Errorf("@- = %q, want no commit cut", subject)
 		}
 	})
@@ -3148,10 +3149,10 @@ func TestShipJJNoTrunkBookmark(t *testing.T) {
 
 func TestShipJJBookmarkOverride(t *testing.T) {
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
-	mustRun(t, f.Dir, "jj", "bookmark", "create", "someone/probe", "-r", "@-")
+	mustRun(t, f.Env(), f.Dir, "jj", "bookmark", "create", "someone/probe", "-r", "@-")
 	shipResetLog(t, f)
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--bookmark", "someone/probe")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch", "--bookmark", "someone/probe")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -3185,7 +3186,7 @@ func TestShipJJBookmarkOverride(t *testing.T) {
 func TestShipJJNewBranch(t *testing.T) {
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--bookmark", "someone/probe")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch", "--bookmark", "someone/probe")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -3230,7 +3231,7 @@ func TestShipGitBookmarkFlagFails(t *testing.T) {
 	head := shipHead(t, f)
 	shipResetLog(t, f)
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--bookmark", "main")
+	_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--bookmark", "main")
 	if err == nil {
 		t.Fatal("expected error for --bookmark in a git repo, got nil")
 	}
@@ -3254,7 +3255,7 @@ func TestShipBookmarkGuardReadsTheSpelling(t *testing.T) {
 		shipGTReady(t, f)
 		head := shipHead(t, f)
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--bookmark", "main")
+		_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--bookmark", "main")
 		wantErr := "ship: --bookmark does not apply in the graphite lane; pass --no-gt to advance a jj bookmark instead"
 		if err == nil || err.Error() != wantErr {
 			t.Fatalf("error = %v, want %q", err, wantErr)
@@ -3265,11 +3266,11 @@ func TestShipBookmarkGuardReadsTheSpelling(t *testing.T) {
 
 	t.Run("--branch carries no such restriction", func(t *testing.T) {
 		f := shipGTFeature(t)
-		if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "feature"); err != nil {
+		if _, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--branch", "feature"); err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
 		assertGTCommit(t, shipGTInvocations(t, f))
-		if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
+		if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
 			t.Errorf("HEAD subject = %q, want the commit gt cut on feature", subject)
 		}
 	})
@@ -3280,7 +3281,7 @@ func TestShipRequiresMessage(t *testing.T) {
 	head := shipHead(t, f)
 	shipResetLog(t, f)
 
-	_, err := runShipCmd(t)
+	_, err := runShipCmd(t, f.Context())
 	if err == nil {
 		t.Fatal("expected error when message missing, got nil")
 	}
@@ -3298,14 +3299,14 @@ func TestShipRequiresMessage(t *testing.T) {
 func TestShipRepeatableMessage(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "-m", "Context: the widget drifted.", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "-m", "Context: the widget drifted.", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch main · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	body := gitAt(t, f.Dir, "log", "-1", "--format=%B")
+	body := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%B")
 	if want := "fix: frobnicate\n\nContext: the widget drifted."; !strings.HasPrefix(body, want) {
 		t.Errorf("commit message = %q, want it to open with %q", body, want)
 	}
@@ -3317,10 +3318,11 @@ func TestShipRepeatableMessage(t *testing.T) {
 func TestShipNoRepoFails(t *testing.T) {
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote())
 	writeShipGH(t, f)
-	t.Chdir(t.TempDir())
+	outside := t.TempDir()
+	t.Chdir(outside)
 	shipResetLog(t, f)
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate")
+	_, err := runShipCmd(t, f.ContextIn(outside), "-m", "fix: frobnicate")
 	if err == nil {
 		t.Fatal("expected error outside a repo, got nil")
 	}
@@ -3342,7 +3344,7 @@ func TestShipCISuccessReportLine(t *testing.T) {
 	t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 	shipCIPollInterval = 0
 
-	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate")
+	out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -3364,7 +3366,7 @@ func TestShipCIFailureDetail(t *testing.T) {
 	t.Setenv("GH_LOG_FAILED", ghStdout(t, "run-log-failed"))
 	shipCIPollInterval = 0
 
-	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--budget", "0")
+	out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate", "--budget", "0")
 	if err == nil {
 		t.Fatal("expected error on CI failure, got nil")
 	}
@@ -3404,7 +3406,7 @@ func TestShipCIBudgetCapsLog(t *testing.T) {
 			shipCIPollInterval = 0
 
 			args := append([]string{"-m", "fix: frobnicate"}, tt.args...)
-			out, _, err := runShipCmdFull(t, args...)
+			out, _, err := runShipCmdFull(t, f.Context(), args...)
 			if err == nil {
 				t.Fatal("expected error on CI failure, got nil")
 			}
@@ -3434,7 +3436,7 @@ func TestShipCIStripsANSI(t *testing.T) {
 	t.Setenv("GH_LOG_FAILED", "\x1b[31mERROR\x1b[0m the build \x1b[1mboom\x1b[0m\n")
 	shipCIPollInterval = 0
 
-	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate")
+	out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate")
 	if err == nil {
 		t.Fatal("expected error on CI failure, got nil")
 	}
@@ -3461,7 +3463,7 @@ func TestShipCITransientPollTolerated(t *testing.T) {
 	t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 	shipCIPollInterval = 0
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate")
 	if err != nil {
 		t.Fatalf("transient list error should be tolerated, got %v", err)
 	}
@@ -3490,7 +3492,7 @@ func TestShipCIAllPollsFailStillReports(t *testing.T) {
 	shipCIPollInterval = 0
 	t.Cleanup(func() { shipCIPollTries = 12 })
 
-	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate")
+	out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate")
 	if err == nil {
 		t.Fatal("expected error when every poll fails, got nil")
 	}
@@ -3516,7 +3518,7 @@ func TestShipCIViewFailureIsError(t *testing.T) {
 	// GH_RUN_VIEW_JSON unset: gh run view emits empty stdout, so the parse fails.
 	shipCIPollInterval = 0
 
-	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate")
+	out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate")
 	if err == nil {
 		t.Fatal("expected error when gh run view cannot be parsed, got nil")
 	}
@@ -3536,7 +3538,7 @@ func TestShipCIWatchErrViewGreenIsSuccess(t *testing.T) {
 	t.Setenv("GH_WATCH_EXIT", "1") // watch drops, view says success — view wins
 	shipCIPollInterval = 0
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate")
 	if err != nil {
 		t.Fatalf("view-green run should heal a dropped watch, got %v", err)
 	}
@@ -3560,7 +3562,7 @@ func TestShipCIMultiRunWatchesAll(t *testing.T) {
 	t.Setenv("GH_LOG_FAILED_43", ghStdout(t, "run-log-failed"))
 	shipCIPollInterval = 0
 
-	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate")
+	out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate")
 	if err == nil {
 		t.Fatal("expected error when one of several runs is red, got nil")
 	}
@@ -3605,7 +3607,7 @@ func TestShipCIMoreThanTenRunsWatchesAll(t *testing.T) {
 	t.Setenv("GH_RUN_LIST_JSON", runList.String())
 	shipCIPollInterval = 0
 
-	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate")
+	out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -3658,7 +3660,7 @@ func TestShipCISettleWatchesLateRuns(t *testing.T) {
 	t.Setenv("GH_RUN_VIEW_JSON_44", `{"workflowName":"settle-late","conclusion":"success","startedAt":"2026-07-08T18:00:00Z","updatedAt":"2026-07-08T18:00:10Z","url":"https://x/44","jobs":[]}`)
 	shipCIPollInterval = 0
 
-	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate")
+	out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -3702,7 +3704,7 @@ func TestShipCIBudgetFloorsPerRunShare(t *testing.T) {
 	shipCIPollInterval = 0
 
 	// --budget 1 with two red runs floors the per-run share to 1 (not 0 = uncapped).
-	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--budget", "1")
+	out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate", "--budget", "1")
 	if err == nil {
 		t.Fatal("expected error on CI failure, got nil")
 	}
@@ -3724,7 +3726,7 @@ func TestShipCIEmptyConclusionIsIndeterminate(t *testing.T) {
 	t.Setenv("GH_RUN_VIEW_JSON", `{"workflowName":"ci","conclusion":"","startedAt":"2026-07-08T18:00:00Z","updatedAt":"2026-07-08T18:00:05Z","url":"https://x/42","jobs":[]}`)
 	shipCIPollInterval = 0
 
-	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate")
+	out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate")
 	if err == nil {
 		t.Fatal("expected error when a run has not concluded, got nil")
 	}
@@ -3772,7 +3774,7 @@ func TestShipCIStreamingSeam(t *testing.T) {
 			t.Cleanup(func() { shipStreamCI = old })
 			shipStreamCI = func(io.Writer) bool { return tt.stream }
 
-			_, errStr, err := runShipCmdFull(t, "-m", "fix: frobnicate")
+			_, errStr, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate")
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -3918,11 +3920,11 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 	// and ship refuses a detached HEAD before it ever reaches one.
 	t.Run("graphite wins over a colocated jj repository", func(t *testing.T) {
 		f := shipRepo(t, vcstest.JJ(), vcstest.GT(), vcstest.Remote())
-		mustRun(t, f.Dir, "git", "switch", "-qc", "feature")
-		mustRun(t, f.Dir, "gt", "track", "-f", "--no-interactive")
+		mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
+		mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
 		shipGTReady(t, f)
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+		got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -3949,7 +3951,7 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 		f := shipRepo(t, vcstest.JJ(), vcstest.GT(), vcstest.Remote())
 		shipGTReady(t, f)
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--no-gt")
+		got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--no-gt")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -3964,7 +3966,7 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 			[]string{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate},
 			[]string{"jj", "bookmark", "move", vcs.JJExactPattern("main"), "--to", "@-"},
 		))
-		if tip := jjAt(t, f.Dir, "main", "description.first_line()"); tip != "fix: frobnicate" {
+		if tip := jjAt(t, f.Env(), f.Dir, "main", "description.first_line()"); tip != "fix: frobnicate" {
 			t.Errorf("main = %q, want the bookmark moved onto the new commit", tip)
 		}
 	})
@@ -4019,7 +4021,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			t.Setenv("GH_PR_VIEW_JSON", `{"number":7,"url":"https://github.com/x/pull/7","body":"why"}`)
 			shipCIPollInterval = 0
 
-			got, err := runShipCmd(t, "-m", "fix: frobnicate")
+			got, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate")
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -4064,7 +4066,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 	t.Setenv("GH_PR_VIEW_JSON", `{"number":9,"url":"https://github.com/x/pull/9","body":"why"}`)
 	shipCIPollInterval = 0
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate")
+	got, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -4099,7 +4101,7 @@ func TestShipGTBodylessPR(t *testing.T) {
 		setupShipGT(t, true)
 		t.Setenv("GH_PR_VIEW_JSON", `{"number":7,"url":"https://github.com/x/pull/7","body":"  "}`)
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+		got, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate", "--no-watch")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -4114,7 +4116,7 @@ func TestShipGTBodylessPR(t *testing.T) {
 		seedPRViews(t, map[string]string{"feature": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`})
 		body := writePRBody(t, "body.md", "why this change\n")
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		got, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -4129,7 +4131,7 @@ func TestShipGTBodylessPR(t *testing.T) {
 		seedPRViews(t, map[string]string{"feature": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`})
 		body := writePRBody(t, "empty.md", "  \n\t\n")
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		got, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -4150,7 +4152,7 @@ func TestShipGTBodylessPR(t *testing.T) {
 			"feature2": `{"number":7,"url":"https://github.com/x/pull/7","body":"why"}`,
 		})
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+		got, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate", "--no-watch")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -4168,18 +4170,18 @@ func TestShipGTBodylessPR(t *testing.T) {
 func TestShipTrunkPersonalAppends(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	head := gitAt(t, f.Dir, "log", "-1", "--format=%h")
+	head := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%h")
 	if want := swept(vcs.Git, "f.txt") + fmt.Sprintf(`committed %s "fix: frobnicate" · branch main · not pushed`, head); got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "main" {
+	if branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); branch != "main" {
 		t.Errorf("branch after ship = %q, want main", branch)
 	}
-	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "main"); subject != "fix: frobnicate" {
+	if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s", "main"); subject != "fix: frobnicate" {
 		t.Errorf("main tip = %q, want the shipped commit", subject)
 	}
 }
@@ -4188,18 +4190,18 @@ func TestShipTrunkOrgCreates(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	seedLaneRecords(t, f.Dir, laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	head := gitAt(t, f.Dir, "log", "-1", "--format=%h")
+	head := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%h")
 	if want := swept(vcs.Git, "f.txt") + fmt.Sprintf(`committed %s "fix: frobnicate" · created fix-frobnicate · not pushed`, head); got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "fix-frobnicate" {
+	if branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); branch != "fix-frobnicate" {
 		t.Errorf("branch after ship = %q, want the branch ship cut", branch)
 	}
-	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "main"); subject != "init" {
+	if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s", "main"); subject != "init" {
 		t.Errorf("main tip = %q, want the org trunk left where it was", subject)
 	}
 }
@@ -4209,21 +4211,21 @@ func TestShipTrunkOrgCreates(t *testing.T) {
 func TestShipGitNewBranch(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	head := gitAt(t, f.Dir, "log", "-1", "--format=%h")
+	head := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%h")
 	if want := swept(vcs.Git, "f.txt") + fmt.Sprintf(`committed %s "fix: frobnicate" · created feat-x · not pushed`, head); got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "feat-x" {
+	if branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); branch != "feat-x" {
 		t.Errorf("branch after ship = %q, want feat-x", branch)
 	}
-	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "feat-x"); subject != "fix: frobnicate" {
+	if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s", "feat-x"); subject != "fix: frobnicate" {
 		t.Errorf("feat-x tip = %q, want the shipped commit", subject)
 	}
-	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "main"); subject != "init" {
+	if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s", "main"); subject != "init" {
 		t.Errorf("main tip = %q, want trunk left where it was", subject)
 	}
 }
@@ -4240,17 +4242,17 @@ func TestShipGitNewBranchRollback(t *testing.T) {
 	// and removing it leaves the re-derive genuinely empty.
 	shipHookRepo(t, f, vcs.Git, 1, "rm -f f1.go", "f1.go")
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--verify", "--new-branch=feat-x")
+	_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--verify", "--new-branch=feat-x")
 	if err == nil || !strings.Contains(err.Error(), "ship: hooks:") {
 		t.Fatalf("ship error = %v, want the hook refusal", err)
 	}
-	if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "main" {
+	if branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); branch != "main" {
 		t.Errorf("branch after rollback = %q, want main", branch)
 	}
-	if gitBranchExists(t, f.Dir, "feat-x") {
+	if gitBranchExists(t, f.Env(), f.Dir, "feat-x") {
 		t.Error("feat-x survived the rollback")
 	}
-	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "hooks" {
+	if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s"); subject != "hooks" {
 		t.Errorf("HEAD subject = %q, want no commit cut", subject)
 	}
 	if _, err := os.Stat(filepath.Join(f.Dir, "f1.go")); !os.IsNotExist(err) {
@@ -4268,7 +4270,7 @@ func TestShipGitNewBranchRollbackFailure(t *testing.T) {
 	lock := filepath.Join(f.Dir, ".git", "index.lock")
 	writeShipUvx(t, f, 1, "rm -f f1.go; : > "+lock)
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--verify", "--new-branch=feat-x")
+	_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--verify", "--new-branch=feat-x")
 	if err == nil {
 		t.Fatal("expected a refusal, got nil")
 	}
@@ -4277,10 +4279,10 @@ func TestShipGitNewBranchRollbackFailure(t *testing.T) {
 			t.Errorf("error = %q, want it to contain %q", err.Error(), want)
 		}
 	}
-	if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "feat-x" {
+	if branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); branch != "feat-x" {
 		t.Errorf("branch = %q, want the working copy left where the failed rollback put it", branch)
 	}
-	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "init" {
+	if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s"); subject != "init" {
 		t.Errorf("HEAD subject = %q, want no commit cut", subject)
 	}
 }
@@ -4304,7 +4306,7 @@ func TestShipGTCreateNamesExplicitly(t *testing.T) {
 			shipGTStack(t, f, "base", "feature")
 			shipGTReady(t, f)
 			args := append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.args...)
-			if _, err := runShipCmd(t, args...); err != nil {
+			if _, err := runShipCmd(t, f.Context(), args...); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 			var commit []string
@@ -4316,10 +4318,10 @@ func TestShipGTCreateNamesExplicitly(t *testing.T) {
 			if !reflect.DeepEqual(commit, tt.want) {
 				t.Errorf("commit argv = %v, want %v", commit, tt.want)
 			}
-			if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != tt.want[2] {
+			if branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); branch != tt.want[2] {
 				t.Errorf("branch = %q, want the created %q", branch, tt.want[2])
 			}
-			if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
+			if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
 				t.Errorf("HEAD subject = %q, want the commit gt cut on the new branch", subject)
 			}
 		})
@@ -4332,7 +4334,7 @@ func TestShipCreateExplicitEmpty(t *testing.T) {
 			f := shipGTFeature(t)
 			head := shipHead(t, f)
 
-			_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", flag)
+			_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", flag)
 			wantErr := "ship: " + strings.TrimSuffix(flag, "=") + " requires a branch name or no value"
 			if err == nil || err.Error() != wantErr {
 				t.Fatalf("error = %v, want %q", err, wantErr)
@@ -4353,7 +4355,7 @@ func TestShipCreateSwallowsPathOperand(t *testing.T) {
 			head := shipHead(t, f)
 			shipResetLog(t, f)
 
-			_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", flag, "docs")
+			_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", flag, "docs")
 			wantErr := `ship: "docs" is not a path — did you mean --new-branch=docs?`
 			if err == nil || err.Error() != wantErr {
 				t.Fatalf("error = %v, want %q", err, wantErr)
@@ -4371,7 +4373,7 @@ func TestShipCreateSwallowsPathOperand(t *testing.T) {
 		f := shipGTFeature(t)
 		writeShipFile(t, f.Dir, "docs/d.md", "d\n")
 
-		if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--new-branch", "docs"); err != nil {
+		if _, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--new-branch", "docs"); err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
 		var add []string
@@ -4383,10 +4385,10 @@ func TestShipCreateSwallowsPathOperand(t *testing.T) {
 		if want := []string{"git", "add", "-A", "--", "docs"}; !reflect.DeepEqual(add, want) {
 			t.Errorf("add argv = %v, want %v", add, want)
 		}
-		if names := gitAt(t, f.Dir, "show", "--name-only", "--format=", "HEAD"); names != "docs/d.md" {
+		if names := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); names != "docs/d.md" {
 			t.Errorf("committed %q, want the path operand alone", names)
 		}
-		if status := gitAt(t, f.Dir, "status", "--porcelain"); status != "M f.txt" {
+		if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); status != "M f.txt" {
 			t.Errorf("working copy = %q, want the unscoped edit left behind", status)
 		}
 	})
@@ -4410,7 +4412,7 @@ func TestShipIllegalBranchName(t *testing.T) {
 			t.Run(flag.spelling+"="+name, func(t *testing.T) {
 				shipResetLog(t, f)
 
-				_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", flag.spelling+"="+name)
+				_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", flag.spelling+"="+name)
 				wantErr := fmt.Sprintf("ship: %s %q is not a legal branch name", flag.canonical, name)
 				if err == nil || err.Error() != wantErr {
 					t.Fatalf("error = %v, want %q", err, wantErr)
@@ -4433,7 +4435,7 @@ func TestShipBranchFlag(t *testing.T) {
 	t.Run("naming the current branch appends", func(t *testing.T) {
 		f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"), vcstest.Dirty())
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "feature")
+		got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--branch", "feature")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -4442,28 +4444,28 @@ func TestShipBranchFlag(t *testing.T) {
 				t.Errorf("git switch ran for a branch already checked out: %v", inv)
 			}
 		}
-		head := gitAt(t, f.Dir, "log", "-1", "--format=%h")
+		head := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%h")
 		if want := swept(vcs.Git, "f.txt") + fmt.Sprintf(`committed %s "fix: frobnicate" · branch feature · not pushed`, head); got != want {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
-		if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "feature"); subject != "fix: frobnicate" {
+		if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s", "feature"); subject != "fix: frobnicate" {
 			t.Errorf("feature tip = %q, want the shipped commit", subject)
 		}
 	})
 
 	t.Run("naming an existing branch refuses", func(t *testing.T) {
 		f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"), vcstest.Dirty())
-		mustRun(t, f.Dir, "git", "branch", "other")
-		before := gitAt(t, f.Dir, "rev-parse", "HEAD")
+		mustRun(t, f.Env(), f.Dir, "git", "branch", "other")
+		before := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 		setup := len(vcstest.Invocations(t, f.ArgvLog))
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "other")
+		_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--branch", "other")
 		wantErr := "ship: branch other already exists — check it out first; ship does not switch branches mid-commit"
 		if err == nil || err.Error() != wantErr {
 			t.Fatalf("error = %v, want %q", err, wantErr)
 		}
 		assertNoShipMutation(t, vcstest.Invocations(t, f.ArgvLog)[setup:])
-		if head := gitAt(t, f.Dir, "rev-parse", "HEAD"); head != before {
+		if head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); head != before {
 			t.Errorf("HEAD = %s, want it unmoved at %s", head, before)
 		}
 	})
@@ -4471,15 +4473,15 @@ func TestShipBranchFlag(t *testing.T) {
 	t.Run("naming a missing branch creates it here", func(t *testing.T) {
 		f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"), vcstest.Dirty())
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "other")
+		got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--branch", "other")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
-		head := gitAt(t, f.Dir, "log", "-1", "--format=%h")
+		head := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%h")
 		if want := swept(vcs.Git, "f.txt") + fmt.Sprintf(`committed %s "fix: frobnicate" · created other · not pushed`, head); got != want {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
-		if branch := gitAt(t, f.Dir, "branch", "--show-current"); branch != "other" {
+		if branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); branch != "other" {
 			t.Errorf("branch after ship = %q, want other", branch)
 		}
 	})
@@ -4487,14 +4489,14 @@ func TestShipBranchFlag(t *testing.T) {
 	t.Run("naming an org trunk refuses without --allow-trunk", func(t *testing.T) {
 		f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"), vcstest.Dirty())
 		seedLaneRecords(t, f.Dir, laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
-		before := gitAt(t, f.Dir, "rev-parse", "HEAD")
+		before := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--branch", "main")
+		_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--branch", "main")
 		if err == nil || !strings.Contains(err.Error(), "pass --allow-trunk to advance it deliberately") {
 			t.Fatalf("error = %v, want the org-trunk refusal", err)
 		}
 		assertNoShipMutation(t, vcstest.Invocations(t, f.ArgvLog))
-		if head := gitAt(t, f.Dir, "rev-parse", "HEAD"); head != before {
+		if head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); head != before {
 			t.Errorf("HEAD = %s, want it unmoved at %s", head, before)
 		}
 	})
@@ -4508,32 +4510,32 @@ func TestShipBranchFlag(t *testing.T) {
 // exit 0, so ship must refuse rather than ship onto it.
 func TestShipTrunkTagRefuses(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
-	mustRun(t, f.Dir, "git", "tag", "v1")
-	mustRun(t, f.Dir, "git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/tags/v1")
-	before := gitAt(t, f.Dir, "rev-parse", "HEAD")
+	mustRun(t, f.Env(), f.Dir, "git", "tag", "v1")
+	mustRun(t, f.Env(), f.Dir, "git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/tags/v1")
+	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 	setup := len(vcstest.Invocations(t, f.ArgvLog))
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err == nil || !strings.Contains(err.Error(), `points at "v1", which names no branch of origin`) {
 		t.Fatalf("ship error = %v, want the tag-trunk refusal", err)
 	}
 	assertNoShipMutation(t, vcstest.Invocations(t, f.ArgvLog)[setup:])
-	if head := gitAt(t, f.Dir, "rev-parse", "HEAD"); head != before {
+	if head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); head != before {
 		t.Errorf("HEAD = %s, want it unmoved at %s", head, before)
 	}
 }
 
 func TestShipAppendFlag(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
-	before := gitAt(t, f.Dir, "rev-parse", "HEAD")
+	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--append")
+	_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--append")
 	wantErr := "ship: append would commit onto trunk — pass --new-branch"
 	if err == nil || err.Error() != wantErr {
 		t.Fatalf("error = %v, want %q", err, wantErr)
 	}
 	assertNoShipMutation(t, vcstest.Invocations(t, f.ArgvLog))
-	if head := gitAt(t, f.Dir, "rev-parse", "HEAD"); head != before {
+	if head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); head != before {
 		t.Errorf("HEAD = %s, want it unmoved at %s", head, before)
 	}
 }
@@ -4566,7 +4568,7 @@ func TestShipGTTrackReportsParent(t *testing.T) {
 			shipGTUntracked(t, f, "feature")
 			shipGTReady(t, f)
 
-			got, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.args...)...)
+			got, err := runShipCmd(t, f.Context(), append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.args...)...)
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -4584,7 +4586,7 @@ func TestShipGTTrackReportsParent(t *testing.T) {
 				t.Errorf("track argv = %v, want %v", track, tt.wantTrack)
 			}
 			var state gtState
-			if err := json.Unmarshal([]byte(mustRun(t, f.Dir, "gt", "state")), &state); err != nil {
+			if err := json.Unmarshal([]byte(mustRun(t, f.Env(), f.Dir, "gt", "state")), &state); err != nil {
 				t.Fatalf("parse gt state: %v", err)
 			}
 			if parents := state["feature"].Parents; len(parents) != 1 || parents[0].Ref != "base" {
@@ -4607,7 +4609,7 @@ func TestShipGTAmend(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := shipGTFeature(t)
 			args := append(append([]string{}, tt.args...), "--no-push")
-			if _, err := runShipCmd(t, args...); err != nil {
+			if _, err := runShipCmd(t, f.Context(), args...); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 			var commit []string
@@ -4622,10 +4624,10 @@ func TestShipGTAmend(t *testing.T) {
 			if !reflect.DeepEqual(commit, tt.want) {
 				t.Errorf("commit argv = %v, want %v", commit, tt.want)
 			}
-			if n := gitAt(t, f.Dir, "rev-list", "--count", "main..feature"); n != "1" {
+			if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "main..feature"); n != "1" {
 				t.Errorf("feature holds %s commits over main, want the amended one", n)
 			}
-			if content := gitAt(t, f.Dir, "show", "HEAD:f.txt"); content != "dirty" {
+			if content := gitAt(t, f.Env(), f.Dir, "show", "HEAD:f.txt"); content != "dirty" {
 				t.Errorf("HEAD:f.txt = %q, want the amended edit", content)
 			}
 		})
@@ -4636,7 +4638,7 @@ func TestShipGTAmend(t *testing.T) {
 		shipGTReady(t, f)
 		head := shipHead(t, f)
 
-		_, err := runShipCmd(t, "--amend", "-m", "fix: frobnicate", "--no-push")
+		_, err := runShipCmd(t, f.Context(), "--amend", "-m", "fix: frobnicate", "--no-push")
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
@@ -4654,7 +4656,7 @@ func TestShipGTPathScoped(t *testing.T) {
 	writeShipFile(t, f.Dir, "src/a.go", "a\n")
 	writeShipFile(t, f.Dir, "docs/d.md", "d\n")
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "src/a.go", "docs"); err != nil {
+	if _, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "src/a.go", "docs"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	invocations := shipGTInvocations(t, f)
@@ -4671,10 +4673,10 @@ func TestShipGTPathScoped(t *testing.T) {
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 	})
-	if names := gitAt(t, f.Dir, "show", "--name-only", "--format=", "HEAD"); names != "docs/d.md\nsrc/a.go" {
+	if names := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); names != "docs/d.md\nsrc/a.go" {
 		t.Errorf("committed %q, want the scoped paths alone", names)
 	}
-	if status := gitAt(t, f.Dir, "status", "--porcelain"); status != "M f.txt" {
+	if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); status != "M f.txt" {
 		t.Errorf("working copy = %q, want the unscoped edit left behind", status)
 	}
 }
@@ -4687,19 +4689,19 @@ func TestShipGTHunkScoped(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "feature")
 	writeShipFile(t, f.Dir, "f.txt", hunkBase)
-	mustRun(t, f.Dir, "git", "add", "f.txt")
-	mustRun(t, f.Dir, "git", "commit", "-qm", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "f.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "base")
 	writeShipFile(t, f.Dir, "f.txt", hunkCurrent)
 	writeShipHookFiles(t, f.Dir)
 	shipResetLog(t, f)
 	ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--only-hunk", ref, "f.txt")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--only-hunk", ref, "f.txt")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	invocations := shipGTInvocations(t, f)
-	blob := gitAt(t, f.Dir, "rev-parse", "HEAD:f.txt")
+	blob := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD:f.txt")
 	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
@@ -4724,13 +4726,13 @@ func TestShipGTHunkScoped(t *testing.T) {
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 	})
-	if committed := gitAt(t, f.Dir, "show", "HEAD:f.txt"); committed != "A\nb\nc\nd\ne" {
+	if committed := gitAt(t, f.Env(), f.Dir, "show", "HEAD:f.txt"); committed != "A\nb\nc\nd\ne" {
 		t.Errorf("HEAD:f.txt = %q, want the first hunk alone", committed)
 	}
 	if worktree := readFileStr(t, filepath.Join(f.Dir, "f.txt")); worktree != hunkCurrent {
 		t.Errorf("worktree f.txt = %q, want it never rewritten", worktree)
 	}
-	if status := gitAt(t, f.Dir, "status", "--porcelain", "--", "f.txt"); status != "M f.txt" {
+	if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain", "--", "f.txt"); status != "M f.txt" {
 		t.Errorf("f.txt = %q, want the unselected hunk left uncommitted and unstaged", status)
 	}
 }
@@ -4754,7 +4756,7 @@ func TestShipGTHunkScopedRefusesALyingExitZero(t *testing.T) {
 	const diagnostic = gtErrorPrefix + "Could not create newbranch: its parent is frozen."
 	t.Setenv("GT_CREATE_STDERR", diagnostic)
 
-	got, stderr, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push", "--new-branch=newbranch", "--only-hunk", ref, "f.txt")
+	got, stderr, err := runShipCmdFull(t, context.Background(), "-m", "fix: frobnicate", "--no-push", "--new-branch=newbranch", "--only-hunk", ref, "f.txt")
 	if err == nil {
 		t.Fatalf("ship reported %q, want a refusal", got)
 	}
@@ -4770,11 +4772,11 @@ func TestShipGTHunkScopedRefusesALyingExitZero(t *testing.T) {
 func shipGTUnrestacked(t *testing.T, f *vcstest.Fixture, file, content string) {
 	t.Helper()
 	shipGTStack(t, f, "base", "feature")
-	mustRun(t, f.Dir, "git", "switch", "-q", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	writeShipFile(t, f.Dir, file, content)
-	mustRun(t, f.Dir, "git", "add", file)
-	mustRun(t, f.Dir, "git", "commit", "-qm", "base2")
-	mustRun(t, f.Dir, "git", "switch", "-q", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "add", file)
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "base2")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
 	shipGTReady(t, f)
 }
 
@@ -4782,7 +4784,7 @@ func TestShipGTAutoRestack(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTUnrestacked(t, f, "base2.txt", "base2\n")
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -4792,7 +4794,7 @@ func TestShipGTAutoRestack(t *testing.T) {
 	if ran := shipGTRestackRuns(t, f); len(ran) > 0 {
 		t.Errorf("ship ran gt restack in %v — the restack is git's now", ran)
 	}
-	if behind := gitAt(t, f.Dir, "rev-list", "--count", "feature..base"); behind != "0" {
+	if behind := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "feature..base"); behind != "0" {
 		t.Errorf("base holds %s commit(s) feature does not, want the restack to have landed them under it", behind)
 	}
 }
@@ -4805,13 +4807,13 @@ func TestShipGTAutoRestack(t *testing.T) {
 func shipGTHeldParent(t *testing.T, f *vcstest.Fixture) string {
 	t.Helper()
 	shipGTStack(t, f, "base", "feature")
-	mustRun(t, f.Dir, "git", "switch", "-q", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
 	writeShipFile(t, f.Dir, "trunk2.txt", "trunk2\n")
-	mustRun(t, f.Dir, "git", "add", "trunk2.txt")
-	mustRun(t, f.Dir, "git", "commit", "-qm", "trunk2")
-	mustRun(t, f.Dir, "git", "switch", "-q", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "trunk2.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "trunk2")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
 	held := f.WorktreePath("held")
-	mustRun(t, f.Dir, "git", "worktree", "add", "-q", held, "base")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
 	shipGTReady(t, f)
 	return held
 }
@@ -4820,26 +4822,26 @@ func TestShipGTRestacksAcrossWorktrees(t *testing.T) {
 	f := shipGTRepo(t)
 	held := shipGTHeldParent(t, f)
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · restacked 2 branches across 2 working copies · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	if behind := gitAt(t, f.Dir, "rev-list", "--count", "base..main"); behind != "0" {
+	if behind := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "base..main"); behind != "0" {
 		t.Errorf("main holds %s commit(s) base does not, want the held branch restacked onto trunk", behind)
 	}
-	if behind := gitAt(t, f.Dir, "rev-list", "--count", "feature..base"); behind != "0" {
+	if behind := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "feature..base"); behind != "0" {
 		t.Errorf("base holds %s commit(s) feature does not, want the whole stack restacked", behind)
 	}
 	if ran := shipGTRestackRuns(t, f); len(ran) > 0 {
 		t.Errorf("ship ran gt restack in %v — no working copy is driven anymore", ran)
 	}
-	if head, want := gitAt(t, held, "rev-parse", "HEAD"), gitAt(t, f.Dir, "rev-parse", "base"); head != want {
+	if head, want := gitAt(t, f.Env(), held, "rev-parse", "HEAD"), gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); head != want {
 		t.Errorf("held HEAD = %s, want the restacked base %s", head, want)
 	}
-	if dirt := gitAt(t, held, "status", "--porcelain"); dirt != "" {
+	if dirt := gitAt(t, f.Env(), held, "status", "--porcelain"); dirt != "" {
 		t.Errorf("held reads dirty after the restack: %q — a moved ref leaves its holder's index behind", dirt)
 	}
 }
@@ -4866,18 +4868,18 @@ func shipGTRestackRuns(t *testing.T, f *vcstest.Fixture) []string {
 func TestShipGTRestacksAStackSpreadAcrossWorkingCopies(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "one", "two", "three")
-	mustRun(t, f.Dir, "git", "switch", "-q", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
 	writeShipFile(t, f.Dir, "trunk2.txt", "trunk2\n")
-	mustRun(t, f.Dir, "git", "add", "trunk2.txt")
-	mustRun(t, f.Dir, "git", "commit", "-qm", "trunk2")
-	mustRun(t, f.Dir, "git", "switch", "-q", "three")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "trunk2.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "trunk2")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "three")
 	held := map[string]string{"one": f.WorktreePath("one"), "two": f.WorktreePath("two")}
 	for branch, dir := range held {
-		mustRun(t, f.Dir, "git", "worktree", "add", "-q", dir, branch)
+		mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", dir, branch)
 	}
 	shipGTReady(t, f)
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -4888,15 +4890,15 @@ func TestShipGTRestacksAStackSpreadAcrossWorkingCopies(t *testing.T) {
 		t.Errorf("ship ran gt restack in %v — the restack never checks a branch out", ran)
 	}
 	for _, pair := range [][2]string{{"one", "main"}, {"two", "one"}, {"three", "two"}} {
-		if behind := gitAt(t, f.Dir, "rev-list", "--count", pair[0]+".."+pair[1]); behind != "0" {
+		if behind := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", pair[0]+".."+pair[1]); behind != "0" {
 			t.Errorf("%s sits off %s by %s commit(s)", pair[0], pair[1], behind)
 		}
 	}
 	for branch, dir := range held {
-		if head, want := gitAt(t, dir, "rev-parse", "HEAD"), gitAt(t, f.Dir, "rev-parse", branch); head != want {
+		if head, want := gitAt(t, f.Env(), dir, "rev-parse", "HEAD"), gitAt(t, f.Env(), f.Dir, "rev-parse", branch); head != want {
 			t.Errorf("%s HEAD = %s, want the restacked %s %s", dir, head, branch, want)
 		}
-		if dirt := gitAt(t, dir, "status", "--porcelain"); dirt != "" {
+		if dirt := gitAt(t, f.Env(), dir, "status", "--porcelain"); dirt != "" {
 			t.Errorf("%s reads dirty after the restack: %q", dir, dirt)
 		}
 	}
@@ -4914,10 +4916,10 @@ func TestShipGTRestacksAStackSpreadAcrossWorkingCopies(t *testing.T) {
 func TestShipGTRestackAppliesPrintedRefUpdates(t *testing.T) {
 	f := shipGTRepo(t)
 	held := shipGTHeldParent(t, f)
-	mustRun(t, f.Dir, "git", "config", "replay.refAction", "print")
+	mustRun(t, f.Env(), f.Dir, "git", "config", "replay.refAction", "print")
 	shipResetLog(t, f)
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -4925,11 +4927,11 @@ func TestShipGTRestackAppliesPrintedRefUpdates(t *testing.T) {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	for _, pair := range [][2]string{{"base", "main"}, {"feature", "base"}} {
-		if behind := gitAt(t, f.Dir, "rev-list", "--count", pair[0]+".."+pair[1]); behind != "0" {
+		if behind := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", pair[0]+".."+pair[1]); behind != "0" {
 			t.Errorf("%s sits off %s by %s commit(s) — the printed ref updates were not applied", pair[0], pair[1], behind)
 		}
 	}
-	if head, want := gitAt(t, held, "rev-parse", "HEAD"), gitAt(t, f.Dir, "rev-parse", "base"); head != want {
+	if head, want := gitAt(t, f.Env(), held, "rev-parse", "HEAD"), gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); head != want {
 		t.Errorf("held HEAD = %s, want the restacked base %s", head, want)
 	}
 }
@@ -4941,22 +4943,22 @@ func TestShipGTRestackAppliesPrintedRefUpdates(t *testing.T) {
 func TestShipGTRestackLeavesARestackedBranchAlone(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "base", "feature")
-	mustRun(t, f.Dir, "git", "switch", "-q", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	writeShipFile(t, f.Dir, "base2.txt", "base2\n")
-	mustRun(t, f.Dir, "git", "add", "base2.txt")
-	mustRun(t, f.Dir, "git", "commit", "-qm", "base2")
-	mustRun(t, f.Dir, "git", "switch", "-q", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "base2.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "base2")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
 	shipGTReady(t, f)
-	before := gitAt(t, f.Dir, "rev-parse", "base")
+	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · restacked 1 branch · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	if after := gitAt(t, f.Dir, "rev-parse", "base"); after != before {
+	if after := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); after != before {
 		t.Errorf("base moved from %s to %s — it already sat on trunk and nothing asked it to move", before, after)
 	}
 }
@@ -4973,13 +4975,13 @@ func TestShipGTRestackKeepsAHolderUncommittedWork(t *testing.T) {
 	writeShipFile(t, held, "scratch.txt", "work in progress\n")
 	writeShipFile(t, held, "base.txt", "edited\n")
 	writeShipFile(t, held, "staged.txt", "staged\n")
-	mustRun(t, held, "git", "add", "staged.txt")
-	before := gitAt(t, held, "status", "--porcelain")
+	mustRun(t, f.Env(), held, "git", "add", "staged.txt")
+	before := gitAt(t, f.Env(), held, "status", "--porcelain")
 
-	if _, shipErr := runShipCmd(t, "-m", "fix: frobnicate", "--no-push"); shipErr != nil {
+	if _, shipErr := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push"); shipErr != nil {
 		t.Fatalf("ship error = %v", shipErr)
 	}
-	if after := gitAt(t, held, "status", "--porcelain"); after != before {
+	if after := gitAt(t, f.Env(), held, "status", "--porcelain"); after != before {
 		t.Errorf("held status = %q, want %q — every kind of pending work back as it was, staged work included", after, before)
 	}
 	for name, want := range map[string]string{"scratch.txt": "work in progress\n", "base.txt": "edited\n", "staged.txt": "staged\n"} {
@@ -4988,10 +4990,10 @@ func TestShipGTRestackKeepsAHolderUncommittedWork(t *testing.T) {
 			t.Errorf("%s = %q (%v), want %q", name, body, err, want)
 		}
 	}
-	if head, want := gitAt(t, held, "rev-parse", "HEAD"), gitAt(t, f.Dir, "rev-parse", "base"); head != want {
+	if head, want := gitAt(t, f.Env(), held, "rev-parse", "HEAD"), gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); head != want {
 		t.Errorf("held HEAD = %s, want the restacked base %s", head, want)
 	}
-	if stashes := gitAt(t, f.Dir, "stash", "list"); stashes != "" {
+	if stashes := gitAt(t, f.Env(), f.Dir, "stash", "list"); stashes != "" {
 		t.Errorf("stash list = %q, want nothing — the snapshot is a commit, never an entry on the shared stack", stashes)
 	}
 }
@@ -5000,18 +5002,18 @@ func shipGTConflicting(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
 	shipGTStack(t, f, "base")
 	writeShipFile(t, f.Dir, "c.txt", "base\n")
-	mustRun(t, f.Dir, "git", "add", "c.txt")
-	mustRun(t, f.Dir, "git", "commit", "-qm", "c")
-	mustRun(t, f.Dir, "git", "switch", "-qc", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "c")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
 	writeShipFile(t, f.Dir, "c.txt", "feature\n")
-	mustRun(t, f.Dir, "git", "add", "c.txt")
-	mustRun(t, f.Dir, "git", "commit", "-qm", "feature")
-	mustRun(t, f.Dir, "gt", "track", "-f", "--no-interactive")
-	mustRun(t, f.Dir, "git", "switch", "-q", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "feature")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	writeShipFile(t, f.Dir, "c.txt", "conflicting\n")
-	mustRun(t, f.Dir, "git", "add", "c.txt")
-	mustRun(t, f.Dir, "git", "commit", "-qm", "c conflict")
-	mustRun(t, f.Dir, "git", "switch", "-q", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "c conflict")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
 	shipGTReady(t, f)
 }
 
@@ -5023,17 +5025,17 @@ func TestShipGTRestackConflictRestoresAHolder(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTConflicting(t, f)
 	held := f.WorktreePath("held")
-	mustRun(t, f.Dir, "git", "worktree", "add", "-q", held, "base")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
 	writeShipFile(t, held, "scratch.txt", "work in progress\n")
 	shipResetLog(t, f)
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push"); err == nil {
+	if _, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push"); err == nil {
 		t.Fatal("want the restack conflict")
 	}
-	if dirt := gitAt(t, held, "status", "--porcelain"); dirt != "?? scratch.txt" {
+	if dirt := gitAt(t, f.Env(), held, "status", "--porcelain"); dirt != "?? scratch.txt" {
 		t.Errorf("held status = %q, want the untracked scratch.txt back after the conflict", dirt)
 	}
-	if stashes := gitAt(t, f.Dir, "stash", "list"); stashes != "" {
+	if stashes := gitAt(t, f.Env(), f.Dir, "stash", "list"); stashes != "" {
 		t.Errorf("stash list = %q, want nothing left behind", stashes)
 	}
 }
@@ -5042,12 +5044,12 @@ func TestShipGTAutoRestackConflict(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTConflicting(t, f)
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	want := gtStuck("ship", (&errRestackConflict{Branch: "feature", Onto: "base", Dir: f.Dir}).Error(), gtStuckSuffix(shipOpts{noPush: true}))
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
-	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "feature"); subject != "fix: frobnicate" {
+	if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s", "feature"); subject != "fix: frobnicate" {
 		t.Errorf("feature tip = %q, want the commit that ran before the restack", subject)
 	}
 }
@@ -5055,10 +5057,10 @@ func TestShipGTAutoRestackConflict(t *testing.T) {
 func TestShipGTNoCommitRestackConflict(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTConflicting(t, f)
-	mustRun(t, f.Dir, "git", "checkout", "--", "f.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "--", "f.txt")
 	shipResetLog(t, f)
 
-	_, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr")
+	_, err := runShipCmd(t, f.Context(), "--no-commit", "--no-watch", "--no-pr")
 	want := gtStuck("ship", (&errRestackConflict{Branch: "feature", Onto: "base", Dir: f.Dir}).Error(), gtStuckSuffix(shipOpts{noCommit: true}))
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
@@ -5083,10 +5085,10 @@ func TestShipGTLandedRestackConflictResumes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := shipGTRepo(t)
 			shipGTConflicting(t, f)
-			mustRun(t, f.Dir, "git", "checkout", "--", "f.txt")
+			mustRun(t, f.Env(), f.Dir, "git", "checkout", "--", "f.txt")
 			shipResetLog(t, f)
 
-			_, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate", "--no-watch", "--no-pr"}, tt.paths...)...)
+			_, err := runShipCmd(t, f.Context(), append([]string{"-m", "fix: frobnicate", "--no-watch", "--no-pr"}, tt.paths...)...)
 			want := gtStuck("ship", (&errRestackConflict{Branch: "feature", Onto: "base", Dir: f.Dir}).Error(),
 				". Nothing was committed and the working copy is untouched, so re-run this same command once it is fixed.")
 			if err == nil || err.Error() != want {
@@ -5100,7 +5102,7 @@ func TestShipGTResumeAfterRestackConflict(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTConflicting(t, f)
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--no-pr")
+	_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch", "--no-pr")
 	if err == nil {
 		t.Fatal("want the restack conflict")
 	}
@@ -5112,13 +5114,13 @@ func TestShipGTResumeAfterRestackConflict(t *testing.T) {
 		t.Fatalf("error = %v, want it to name %q", err, resume)
 	}
 
-	runAllowFail(t, f.Dir, "gt", "restack", "--only", "--branch", "feature", "--no-interactive")
+	runAllowFail(t, f.Env(), f.Dir, "gt", "restack", "--only", "--branch", "feature", "--no-interactive")
 	writeShipFile(t, f.Dir, "c.txt", "resolved\n")
-	mustRun(t, f.Dir, "gt", "add", "c.txt")
-	mustRun(t, f.Dir, "gt", "continue", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "gt", "add", "c.txt")
+	mustRun(t, f.Env(), f.Dir, "gt", "continue", "--no-interactive")
 	shipResetLog(t, f)
 
-	if _, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr"); err != nil {
+	if _, err := runShipCmd(t, f.Context(), "--no-commit", "--no-watch", "--no-pr"); err != nil {
 		t.Fatalf("resume ship error = %v", err)
 	}
 	invocations := shipGTInvocations(t, f)
@@ -5140,14 +5142,14 @@ func TestShipGTResumeAfterRestackConflict(t *testing.T) {
 		t.Errorf("resume pushed %v, want the whole downstack base, feature", refs)
 	}
 	for _, branch := range []string{"base", "feature"} {
-		if !gitBranchExists(t, f.RemoteDir, branch) {
+		if !gitBranchExists(t, f.Env(), f.RemoteDir, branch) {
 			t.Errorf("origin lacks %s — the resume submit never pushed it", branch)
 		}
 	}
-	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "feature"); subject != "fix: frobnicate" {
+	if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s", "feature"); subject != "fix: frobnicate" {
 		t.Errorf("feature tip = %q, want the commit the first ship landed", subject)
 	}
-	if behind := gitAt(t, f.Dir, "rev-list", "--count", "feature..base"); behind != "0" {
+	if behind := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "feature..base"); behind != "0" {
 		t.Errorf("base holds %s commit(s) feature does not, want the hand restack to have finished it", behind)
 	}
 }
@@ -5193,7 +5195,7 @@ func TestShipGTYoloImpliesNoVerify(t *testing.T) {
 	shipGTStack(t, f, "feature")
 	shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--yolo"); err != nil {
+	if _, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--yolo"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	var commit []string
@@ -5218,7 +5220,7 @@ func TestShipGTRefusals(t *testing.T) {
 		shipResetLog(t, f)
 		head := shipHead(t, f)
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+		_, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate", "--no-push")
 		wantErr := "ship: nothing to commit, and the branch carries nothing above main — nothing to submit"
 		if err == nil || err.Error() != wantErr {
 			t.Fatalf("error = %v, want %q", err, wantErr)
@@ -5234,7 +5236,7 @@ func TestShipGTRefusals(t *testing.T) {
 		shipGTUntracked(t, f, "feature")
 		shipGTReady(t, f)
 
-		got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+		got, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate", "--no-push")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -5268,7 +5270,7 @@ func TestShipGTRefusals(t *testing.T) {
 		head := shipHead(t, f)
 		shipResetLog(t, f)
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--parent", "nope")
+		_, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate", "--no-push", "--parent", "nope")
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
@@ -5296,7 +5298,7 @@ func TestShipGTRefusals(t *testing.T) {
 		shipGTReady(t, f)
 		head := shipHead(t, f)
 
-		_, errOut, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push", "--parent", "nope")
+		_, errOut, err := runShipCmdFull(t, context.Background(), "-m", "fix: frobnicate", "--no-push", "--parent", "nope")
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
@@ -5323,7 +5325,7 @@ func TestShipGTRefusals(t *testing.T) {
 		line := gtErrorPrefix + "Cannot track feature: it has no commits of its own."
 		t.Setenv("GT_TRACK_STDERR", line)
 
-		_, errOut, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push")
+		_, errOut, err := runShipCmdFull(t, context.Background(), "-m", "fix: frobnicate", "--no-push")
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
@@ -5369,7 +5371,7 @@ func TestShipGTExitZeroErrorRefuses(t *testing.T) {
 			line := gtErrorPrefix + "Could not reach the Graphite server."
 			t.Setenv(tt.env, line)
 
-			out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push", "--new-branch=newbranch")
+			out, _, err := runShipCmdFull(t, context.Background(), "-m", "fix: frobnicate", "--no-push", "--new-branch=newbranch")
 			if err == nil {
 				t.Fatalf("ship reported %q, want a refusal — gt exited 0 saying it did not do the work", out)
 			}
@@ -5394,7 +5396,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		api := stubGTAPI(t)
 		api.unauthorized = true
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate")
+		_, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate")
 		want := submitAdvice("graphite auth required — run gt auth")
 		if err == nil || err.Error() != want {
 			t.Fatalf("error = %v, want %q", err, want)
@@ -5409,7 +5411,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		api := stubGTAPI(t)
 		api.synced = gtapi.RepoNotSyncedAddable
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate")
+		_, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate")
 		want := submitAdvice("graphite does not sync yasyf/cc-context (NOT_SYNCED_ADDABLE) — add the repo at app.graphite.dev, or pass --no-gt")
 		if err == nil || err.Error() != want {
 			t.Fatalf("error = %v, want %q", err, want)
@@ -5424,7 +5426,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		api := stubGTAPI(t)
 
 		for range 2 {
-			if _, err := runShipCmd(t, "-m", "fix: frobnicate"); err != nil {
+			if _, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate"); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 		}
@@ -5442,7 +5444,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		api.synced = gtapi.RepoNotSyncedAddable
 
 		for range 2 {
-			if _, err := runShipCmd(t, "-m", "fix: frobnicate"); err == nil {
+			if _, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate"); err == nil {
 				t.Fatal("ship succeeded against an unsynced repo")
 			}
 		}
@@ -5456,7 +5458,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		api := stubGTAPI(t)
 		api.presubmitError = "repo not initialized"
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate")
+		_, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate")
 		if err == nil || !strings.Contains(err.Error(), "ship: gtapi: pre-submit-pull-requests: repo not initialized") {
 			t.Fatalf("error = %v, want the pre-submit refusal wrapped verbatim", err)
 		}
@@ -5475,7 +5477,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		}
 		t.Setenv("GIT_LEASE_STALE", "1")
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate")
+		_, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate")
 		want := submitAdvice("remote feature changed since last submit — reconcile manually (gt sync)")
 		if err == nil || err.Error() != want {
 			t.Fatalf("error = %v, want %q", err, want)
@@ -5499,7 +5501,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 			`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
 		api.submitErrors["feature2"] = "base branch not found"
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate")
+		_, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate")
 		want := submitAdvice("graphite refused feature2 (base branch not found); every branch is already pushed; landed feature → PR #100")
 		if err == nil || err.Error() != want {
 			t.Fatalf("error = %v, want %q", err, want)
@@ -5530,7 +5532,7 @@ func TestShipGTResubmitUpdates(t *testing.T) {
 	api := stubGTAPI(t)
 	api.prs["feature"] = 41
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate"); err != nil {
+	if _, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	entry := api.submitEntry("feature")
@@ -5554,7 +5556,7 @@ func TestShipGTSubmitsAnUpdateAndACreateSeparately(t *testing.T) {
 	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 		`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate"); err != nil {
+	if _, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	if heads := api.submitHeads(); !slices.Equal(heads, []string{"feature", "feature2"}) {
@@ -5591,7 +5593,7 @@ func TestShipGTEmptySubjectRefusesBeforeTheSubmit(t *testing.T) {
 	api := stubGTAPI(t)
 	t.Setenv("GIT_LOG_SUBJECT", "")
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate")
+	_, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate")
 	want := "ship: the first commit on feature above main has an empty subject, and graphite needs a title to create a pull request — give that commit a subject line"
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
@@ -5615,7 +5617,7 @@ func TestShipGTSubmitsOneEntryPerPost(t *testing.T) {
 		`"feature":{"parents":[{"ref":"base","sha":"beadfeed"}]},`+
 		`"feature2":{"parents":[{"ref":"feature","sha":"cafebabe"}]}}`)
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate"); err != nil {
+	if _, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base", "feature", "feature2"}) {
@@ -5662,7 +5664,7 @@ func TestShipGTSubmitBodyMatchesGT(t *testing.T) {
 	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 		`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate"); err != nil {
+	if _, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	bodies := api.submitBodies()
@@ -5690,7 +5692,7 @@ func TestShipGTMidStackRefusalNamesWhatLanded(t *testing.T) {
 		`"feature2":{"parents":[{"ref":"feature","sha":"cafebabe"}]}}`)
 	api.submitErrors["feature"] = "base branch not found"
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate")
+	_, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate")
 	want := submitAdvice("graphite refused feature (base branch not found); every branch is already pushed; landed base → PR #100")
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
@@ -5715,7 +5717,7 @@ func TestShipGTSubmitCarriesTheHookDecision(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			log := setupShipGT(t, false)
-			if _, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate"}, tt.args...)...); err != nil {
+			if _, err := runShipCmd(t, context.Background(), append([]string{"-m", "fix: frobnicate"}, tt.args...)...); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 			var push []string
@@ -5749,7 +5751,7 @@ func TestShipGTDraftPublish(t *testing.T) {
 			setupShipGT(t, false)
 			api := stubGTAPI(t)
 			args := append([]string{"-m", "fix: frobnicate"}, tt.args...)
-			if _, err := runShipCmd(t, args...); err != nil {
+			if _, err := runShipCmd(t, context.Background(), args...); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 			pr := api.submitEntry("feature")
@@ -5764,7 +5766,7 @@ func TestShipGTDraftPublish(t *testing.T) {
 
 	t.Run("draft and publish are mutually exclusive", func(t *testing.T) {
 		log := setupShipGT(t, false)
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--draft", "--publish")
+		_, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate", "--no-push", "--draft", "--publish")
 		wantErr := "if any flags in the group [draft publish] are set none of the others can be; [draft publish] were all set"
 		if err == nil || err.Error() != wantErr {
 			t.Errorf("error = %v, want %q", err, wantErr)
@@ -5783,7 +5785,7 @@ func TestShipGTFlagsOutsideGTLane(t *testing.T) {
 	head := shipHead(t, f)
 	shipResetLog(t, f)
 	wantErr := "ship: --parent applies only to graphite repos; pass --no-gt only when .git/.graphite_repo_config exists, or drop it"
-	_, err := runShipCmd(t, "--parent", "base", "--no-push")
+	_, err := runShipCmd(t, f.Context(), "--parent", "base", "--no-push")
 	if err == nil || err.Error() != wantErr {
 		t.Errorf("error = %v, want %q", err, wantErr)
 	}
@@ -5795,7 +5797,7 @@ func TestShipGTFlagsOutsideGTLane(t *testing.T) {
 
 func TestShipGTGHMissing(t *testing.T) {
 	log := setupShipGT(t, false)
-	got, err := runShipCmd(t, "-m", "fix: frobnicate")
+	got, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -5812,7 +5814,7 @@ func TestShipGTGHMissing(t *testing.T) {
 
 func TestShipGTNoPush(t *testing.T) {
 	f := shipGTFeature(t)
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -5832,7 +5834,7 @@ func TestShipGTNoPush(t *testing.T) {
 	if refs := gtPushedRefs(invocations); refs != nil {
 		t.Errorf("pushed %v despite --no-push", refs)
 	}
-	if gitBranchExists(t, f.RemoteDir, "feature") {
+	if gitBranchExists(t, f.Env(), f.RemoteDir, "feature") {
 		t.Error("origin carries feature — the commit was pushed despite --no-push")
 	}
 }
@@ -5842,7 +5844,7 @@ func TestShipGTNoVerify(t *testing.T) {
 	shipGTStack(t, f, "feature")
 	shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--no-verify"); err != nil {
+	if _, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--no-verify"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	var commit []string
@@ -5858,7 +5860,7 @@ func TestShipGTNoVerify(t *testing.T) {
 	if !reflect.DeepEqual(commit, want) {
 		t.Errorf("commit argv = %v, want %v", commit, want)
 	}
-	if names := gitAt(t, f.Dir, "show", "--name-only", "--format=", "HEAD"); names != "f1.go" {
+	if names := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); names != "f1.go" {
 		t.Errorf("committed %q, want the unverified change", names)
 	}
 }
@@ -5871,7 +5873,7 @@ func TestShipGTHooksSuppressGitRun(t *testing.T) {
 	shipGTStack(t, f, "feature")
 	shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--verify"); err != nil {
+	if _, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--verify"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	var uvx, commit []string
@@ -5894,7 +5896,7 @@ func TestShipGTHooksSuppressGitRun(t *testing.T) {
 	if !reflect.DeepEqual(commit, want) {
 		t.Errorf("commit argv = %v, want %v", commit, want)
 	}
-	if names := gitAt(t, f.Dir, "show", "--name-only", "--format=", "HEAD"); names != "f1.go" {
+	if names := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); names != "f1.go" {
 		t.Errorf("committed %q, want the hooked change", names)
 	}
 }
@@ -5903,7 +5905,7 @@ func TestShipGTSessionTrailer(t *testing.T) {
 	f := shipGTFeature(t)
 	t.Setenv(envClaudeSessionKey, "some-uuid")
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push"); err != nil {
+	if _, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	var commit []string
@@ -5916,7 +5918,7 @@ func TestShipGTSessionTrailer(t *testing.T) {
 	if !reflect.DeepEqual(commit, want) {
 		t.Errorf("commit argv = %v, want %v", commit, want)
 	}
-	if body := gitAt(t, f.Dir, "log", "-1", "--format=%B"); body != "fix: frobnicate\n\nClaude-Session-Id: some-uuid" {
+	if body := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%B"); body != "fix: frobnicate\n\nClaude-Session-Id: some-uuid" {
 		t.Errorf("commit message = %q, want the trailer gt recorded", body)
 	}
 }
@@ -5927,7 +5929,7 @@ func TestShipReviewsWiring(t *testing.T) {
 		head := shipHead(t, f)
 		shipResetLog(t, f)
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--reviews")
+		_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--reviews")
 		wantErr := "ship: --reviews requires push (drop --no-push)"
 		if err == nil || err.Error() != wantErr {
 			t.Errorf("error = %v, want %q", err, wantErr)
@@ -5946,7 +5948,7 @@ func TestShipReviewsWiring(t *testing.T) {
 		t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 		shipCIPollInterval = 0
 
-		out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--reviews")
+		out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate", "--reviews")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -5977,7 +5979,7 @@ func TestShipReviewsWiring(t *testing.T) {
 		t.Setenv("GH_PR_VIEW_NOT_FOUND", "1")
 		shipCIPollInterval = 0
 
-		out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--reviews")
+		out, _, err := runShipCmdFull(t, context.Background(), "-m", "fix: frobnicate", "--reviews")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -6014,7 +6016,7 @@ func TestShipReviewsWiring(t *testing.T) {
 		t.Setenv("GH_PR_VIEW_NOT_FOUND", "1")
 		shipCIPollInterval = 0
 
-		_, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--reviews")
+		_, _, err := runShipCmdFull(t, context.Background(), "-m", "fix: frobnicate", "--reviews")
 		if err == nil {
 			t.Fatal("expected a non-nil error from the failed CI run")
 		}
@@ -6068,10 +6070,10 @@ func TestGitTrunkBranchLive(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			requireLiveVCS(t, "git")
 			dir := setupLiveGitRepo(t, "base\n", "edited\n")
-			mustRun(t, dir, "git", "tag", "v1")
-			mustRun(t, dir, "git", "update-ref", "refs/remotes/origin/main", "HEAD")
+			mustRun(t, nil, dir, "git", "tag", "v1")
+			mustRun(t, nil, dir, "git", "update-ref", "refs/remotes/origin/main", "HEAD")
 			if tt.target != "" {
-				mustRun(t, dir, "git", "symbolic-ref", "refs/remotes/origin/HEAD", tt.target)
+				mustRun(t, nil, dir, "git", "symbolic-ref", "refs/remotes/origin/HEAD", tt.target)
 			}
 
 			got, err := gitTrunkBranch(context.Background(), render.Dir(dir))
@@ -6124,7 +6126,7 @@ func TestShipGTStackNamedBeforeSubmit(t *testing.T) {
 			setGTState(t, tt.stateJSON)
 			t.Setenv("GH_PR_VIEW_JSON", `{"number":7,"url":"https://github.com/x/pull/7","body":"why"}`)
 
-			_, errStr, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-watch")
+			_, errStr, err := runShipCmdFull(t, context.Background(), "-m", "fix: frobnicate", "--no-watch")
 			if err != nil {
 				t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
 			}
@@ -6149,7 +6151,7 @@ func TestShipGTAnchorsTheBaseOnTheRemoteTrunk(t *testing.T) {
 	log := setupShipGT(t, false)
 	api := stubGTAPI(t)
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
+	if _, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate", "--no-watch"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	entry := api.submitEntry("feature")
@@ -6185,7 +6187,7 @@ func TestShipGTSkipsBranchesTrunkContains(t *testing.T) {
 	t.Setenv("GIT_CONTAINED", "beadfeed")
 	t.Setenv("GH_PR_VIEW_JSON", `{"number":7,"url":"https://github.com/x/pull/7","body":"why"}`)
 
-	out, errStr, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-watch")
+	out, errStr, err := runShipCmdFull(t, context.Background(), "-m", "fix: frobnicate", "--no-watch")
 	if err != nil {
 		t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
 	}
@@ -6218,7 +6220,7 @@ func TestShipGTRefusesAShippedBranchTrunkContains(t *testing.T) {
 	t.Setenv("GIT_STAGED_EMPTY", "1")
 	t.Setenv("GIT_CONTAINED", vcstest.GraphiteLeafSHA)
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch")
+	_, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate", "--no-watch")
 	problem := "origin/main already contains feature, so it has no commit left to submit — clear it out with ccx vcs prune, or ship a branch carrying commits of its own"
 	want := gtStuck("ship", problem, gtStuckSuffix(shipOpts{noCommit: true}))
 	if err == nil || err.Error() != want {
@@ -6279,7 +6281,7 @@ func TestGTTrackRefusesALandedParent(t *testing.T) {
 				t.Setenv("GIT_NO_REMOTE_TRUNK", "1")
 			}
 
-			c := newGTCache(render.Dir(workingDir()), "ship")
+			c := newGTCache(render.Dir(workingDir(t.Context())), "ship")
 			var errW bytes.Buffer
 			_, seg, err := gtTrack(t.Context(), &errW, shipOpts{}, "feature", c)
 			if tt.wantErr != "" {
@@ -6304,11 +6306,11 @@ func TestGTTrackRefusesALandedParent(t *testing.T) {
 func shipHandCommit(t *testing.T, f *vcstest.Fixture, kind vcs.Kind, message string) {
 	t.Helper()
 	if kind == vcs.JJ {
-		mustRun(t, f.Dir, "jj", "commit", "-m", message)
+		mustRun(t, f.Env(), f.Dir, "jj", "commit", "-m", message)
 		return
 	}
-	mustRun(t, f.Dir, "git", "add", "-A")
-	mustRun(t, f.Dir, "git", "commit", "-qm", message)
+	mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", message)
 }
 
 // TestShipNoCommitShipsCommittedChange proves the flag does what the empty
@@ -6326,7 +6328,7 @@ func TestShipNoCommitShipsCommittedChange(t *testing.T) {
 			head := shipHead(t, f)
 			shipResetLog(t, f)
 
-			got, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr")
+			got, err := runShipCmd(t, f.Context(), "--no-commit", "--no-watch", "--no-pr")
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -6373,13 +6375,13 @@ func TestShipAlreadyCommittedSubmitsInPlace(t *testing.T) {
 			target := "main"
 			if !tt.jj {
 				target = "feature"
-				mustRun(t, f.Dir, "git", "switch", "-qc", target)
+				mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", target)
 			}
 			shipHandCommit(t, f, kind, "fix: the change already committed")
 			head := shipHead(t, f)
 			shipResetLog(t, f)
 
-			got, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate", "--no-watch", "--no-pr"}, tt.paths...)...)
+			got, err := runShipCmd(t, f.Context(), append([]string{"-m", "fix: frobnicate", "--no-watch", "--no-pr"}, tt.paths...)...)
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -6413,7 +6415,7 @@ func TestShipAmendFailureIsReported(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
-			mustRun(t, f.Dir, "git", "switch", "-qc", "feature")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
 			shipHandCommit(t, f, vcs.Git, "fix: the real commit")
 			head := shipHead(t, f)
 			// A merge in progress is the refusal git states outright — "you are
@@ -6423,14 +6425,14 @@ func TestShipAmendFailureIsReported(t *testing.T) {
 			}
 			shipResetLog(t, f)
 
-			_, err := runShipCmd(t, append([]string{"--amend", "-m", "fix: the replacement", "--no-watch", "--no-pr"}, tt.paths...)...)
+			_, err := runShipCmd(t, f.Context(), append([]string{"--amend", "-m", "fix: the replacement", "--no-watch", "--no-pr"}, tt.paths...)...)
 			if err == nil || !strings.Contains(err.Error(), "ship: git commit:") {
 				t.Fatalf("ship error = %v, want git's amend refusal reported", err)
 			}
 			if got := shipHead(t, f); got != head {
 				t.Errorf("HEAD moved to %s, want the un-amended %s", got, head)
 			}
-			if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: the real commit" {
+			if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s"); subject != "fix: the real commit" {
 				t.Errorf("subject = %q, want the commit the failed amend left in place", subject)
 			}
 		})
@@ -6443,14 +6445,14 @@ func TestShipAmendFailureIsReported(t *testing.T) {
 // paths have anything left to commit — nor be swept into the report.
 func TestShipPathScopedLandedIgnoresUnrelatedStaged(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
-	mustRun(t, f.Dir, "git", "switch", "-qc", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
 	shipHandCommit(t, f, vcs.Git, "fix: the change already committed")
 	head := shipHead(t, f)
 	writeShipFile(t, f.Dir, "other.txt", "a concurrent session's work\n")
-	mustRun(t, f.Dir, "git", "add", "other.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "other.txt")
 	shipResetLog(t, f)
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--no-pr", "f.txt")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-watch", "--no-pr", "f.txt")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -6461,7 +6463,7 @@ func TestShipPathScopedLandedIgnoresUnrelatedStaged(t *testing.T) {
 	if got := shipHead(t, f); got != head {
 		t.Errorf("HEAD moved to %s, want the hand-made %s", got, head)
 	}
-	if staged := gitAt(t, f.Dir, "diff", "--cached", "--name-only"); staged != "other.txt" {
+	if staged := gitAt(t, f.Env(), f.Dir, "diff", "--cached", "--name-only"); staged != "other.txt" {
 		t.Errorf("staged = %q, want the concurrent session's work left staged", staged)
 	}
 }
@@ -6481,11 +6483,11 @@ func TestShipEmptyLevelWithTrunkRefuses(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := shipRepo(t, vcstest.Remote())
-			mustRun(t, f.Dir, "git", "switch", "-qc", "feature")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
 			head := shipHead(t, f)
 			shipResetLog(t, f)
 
-			_, err := runShipCmd(t, append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.paths...)...)
+			_, err := runShipCmd(t, f.Context(), append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.paths...)...)
 			want := fmt.Sprintf("ship: nothing to commit%s, and the branch carries nothing above main — nothing to submit", tt.scope)
 			if err == nil || err.Error() != want {
 				t.Fatalf("ship error = %v, want %q", err, want)
@@ -6517,7 +6519,7 @@ func TestShipNoCommitRefusesDirtyWorkingCopy(t *testing.T) {
 			writeShipFile(t, f.Dir, tt.leftover, "still working on this\n")
 			shipResetLog(t, f)
 
-			_, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr")
+			_, err := runShipCmd(t, f.Context(), "--no-commit", "--no-watch", "--no-pr")
 			if err == nil {
 				t.Fatal("ship error = nil, want a refusal naming the uncommitted work")
 			}
@@ -6543,7 +6545,7 @@ func TestShipNoCommitShipsOverUntrackedScratch(t *testing.T) {
 	writeShipFile(t, f.Dir, ".xlprobe/fixture.bin", "hundreds of megabytes, pretend\n")
 	shipResetLog(t, f)
 
-	got, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr")
+	got, err := runShipCmd(t, f.Context(), "--no-commit", "--no-watch", "--no-pr")
 	if err != nil {
 		t.Fatalf("ship error = %v, want untracked scratch to leave the submit alone", err)
 	}
@@ -6553,7 +6555,7 @@ func TestShipNoCommitShipsOverUntrackedScratch(t *testing.T) {
 	if n := remoteCount(t, f, "main"); n != 2 {
 		t.Errorf("origin main holds %d commits, want the already-made commit pushed", n)
 	}
-	if st := gitAt(t, f.Dir, "status", "--porcelain"); st != "?? .xlprobe/" {
+	if st := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); st != "?? .xlprobe/" {
 		t.Errorf("status = %q, want the scratch left in the worktree and nothing else", st)
 	}
 }
@@ -6586,10 +6588,10 @@ func TestShipNoCommitRepeatsCleanly(t *testing.T) {
 	shipHandCommit(t, f, vcs.JJ, "fix: the change already committed")
 	shipResetLog(t, f)
 
-	if _, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr"); err != nil {
+	if _, err := runShipCmd(t, f.Context(), "--no-commit", "--no-watch", "--no-pr"); err != nil {
 		t.Fatalf("first ship error = %v", err)
 	}
-	got, err := runShipCmd(t, "--no-commit", "--no-watch", "--no-pr")
+	got, err := runShipCmd(t, f.Context(), "--no-commit", "--no-watch", "--no-pr")
 	if err != nil {
 		t.Fatalf("second ship error = %v, want a clean no-op re-run", err)
 	}
@@ -6616,7 +6618,7 @@ func TestShipNoCommitFlagConflicts(t *testing.T) {
 		t.Run(strings.Join(args[1:], " "), func(t *testing.T) {
 			f := shipRepo(t, vcstest.JJ(), vcstest.Remote())
 			shipResetLog(t, f)
-			_, err := runShipCmd(t, args...)
+			_, err := runShipCmd(t, f.Context(), args...)
 			if err == nil {
 				t.Fatalf("ship %v error = nil, want a mutual-exclusion refusal", args)
 			}
@@ -6642,7 +6644,7 @@ func TestShipJJNewBranchClearsNearestAmbiguity(t *testing.T) {
 	shipJJBookmarks(t, f, "feat-a", "feat-b")
 	shipResetLog(t, f)
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--new-branch=feat-c", "--no-pr", "--no-watch")
+	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--new-branch=feat-c", "--no-pr", "--no-watch")
 	if err != nil {
 		t.Fatalf("ship error = %v, want --new-branch to settle the tie itself", err)
 	}
@@ -6670,17 +6672,17 @@ func TestShipJJNewBranchClearsNearestAmbiguity(t *testing.T) {
 func TestShipGTFromALinkedWorktreeTracksItsOwnBranch(t *testing.T) {
 	f := shipGTRepo(t)
 	lane := f.WorktreePath("lane")
-	mustRun(t, f.Dir, "git", "worktree", "add", "-q", "-b", "lane", lane)
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "-b", "lane", lane)
 	writeShipFile(t, lane, "lane.txt", "lane\n")
-	mustRun(t, lane, "git", "add", "lane.txt")
-	mustRun(t, lane, "git", "commit", "-qm", "lane")
+	mustRun(t, f.Env(), lane, "git", "add", "lane.txt")
+	mustRun(t, f.Env(), lane, "git", "commit", "-qm", "lane")
 	writeShipFile(t, lane, "f.txt", "dirty\n")
 	shipResetLog(t, f)
 	t.Setenv("GIT_DIR", filepath.Join(f.Dir, ".git"))
 	t.Setenv("GIT_WORK_TREE", f.Dir)
 	t.Chdir(lane)
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(t, f.ContextIn(lane), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -6696,10 +6698,10 @@ func TestShipGTFromALinkedWorktreeTracksItsOwnBranch(t *testing.T) {
 	if want := []string{"gt", "track", "lane", "-f", "--no-interactive"}; !reflect.DeepEqual(track, want) {
 		t.Errorf("track argv = %v, want %v", track, want)
 	}
-	if subject := gitAt(t, lane, "log", "-1", "--format=%s", "lane"); subject != "fix: frobnicate" {
+	if subject := gitAt(t, f.Env(), lane, "log", "-1", "--format=%s", "lane"); subject != "fix: frobnicate" {
 		t.Errorf("lane tip = %q, want the commit ship cut", subject)
 	}
-	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s", "main"); subject == "fix: frobnicate" {
+	if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s", "main"); subject == "fix: frobnicate" {
 		t.Error("the commit landed on main, the branch GIT_DIR named rather than the one checked out")
 	}
 }

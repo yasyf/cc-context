@@ -6,6 +6,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -72,6 +73,7 @@ const fakeRunListJSON = `[{"databaseId":42,"workflowName":"ci","status":"in_prog
 func shipRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	t.Helper()
 	f := vcstest.Repo(t, opts...)
+	f.Isolate(t)
 	seedLaneRecords(t, f.Dir, laneSeed{})
 	return f
 }
@@ -95,16 +97,16 @@ func shipKind(jj bool) vcs.Kind {
 // gitAt reads repository state back out of dir, trimmed. It resolves through
 // the shim like any other call, so a test asserting invocations reads the log
 // before its state assertions.
-func gitAt(t *testing.T, dir string, args ...string) string {
+func gitAt(t *testing.T, env []string, dir string, args ...string) string {
 	t.Helper()
-	return strings.TrimSpace(mustRun(t, dir, "git", args...))
+	return strings.TrimSpace(mustRun(t, env, dir, "git", args...))
 }
 
 // remoteCount counts branch's commits in f's bare origin — the measure of
 // whether a push actually landed.
 func remoteCount(t *testing.T, f *vcstest.Fixture, branch string) int {
 	t.Helper()
-	n, err := strconv.Atoi(gitAt(t, f.Dir, "--git-dir="+f.RemoteDir, "rev-list", "--count", branch))
+	n, err := strconv.Atoi(gitAt(t, f.Env(), f.Dir, "--git-dir="+f.RemoteDir, "rev-list", "--count", branch))
 	if err != nil {
 		t.Fatalf("count %s in %s: %v", branch, f.RemoteDir, err)
 	}
@@ -112,9 +114,9 @@ func remoteCount(t *testing.T, f *vcstest.Fixture, branch string) int {
 }
 
 // gitBranchExists reports whether dir carries a local branch by that name.
-func gitBranchExists(t *testing.T, dir, branch string) bool {
+func gitBranchExists(t *testing.T, env []string, dir, branch string) bool {
 	t.Helper()
-	return gitAt(t, dir, "branch", "--list", "--format=%(refname:short)", branch) != ""
+	return gitAt(t, env, dir, "branch", "--list", "--format=%(refname:short)", branch) != ""
 }
 
 func writeShipExecutable(t *testing.T, dir, name, script string) {
@@ -122,6 +124,20 @@ func writeShipExecutable(t *testing.T, dir, name, script string) {
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o700); err != nil { //nolint:gosec // a PATH entry must be owner-executable
 		t.Fatalf("write %s: %v", name, err)
 	}
+}
+
+// shipDisplaceShim moves whatever f.ShimBin/tool currently resolves to — the
+// real binary, or an interceptor a prior call installed — into a fresh
+// directory and returns its new path, so an interceptor written over
+// f.ShimBin/tool can still exec what it displaced. Reusing a fixed name in
+// place would let a second interceptor on the same tool clobber the first.
+func shipDisplaceShim(t *testing.T, f *vcstest.Fixture, tool string) string {
+	t.Helper()
+	real := filepath.Join(t.TempDir(), tool)
+	if err := os.Rename(filepath.Join(f.ShimBin, tool), real); err != nil {
+		t.Fatalf("displace %s shim: %v", tool, err)
+	}
+	return real
 }
 
 // writeShipUvx installs a uvx that fails its first n prek runs and passes
@@ -165,7 +181,7 @@ func writeShipGH(t *testing.T, f *vcstest.Fixture) {
 // repository rather than invented.
 func shipHead(t *testing.T, f *vcstest.Fixture) string {
 	t.Helper()
-	return gitAt(t, f.Dir, "rev-parse", "HEAD")
+	return gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 }
 
 // shipCommitted renders the report segment naming the commit ship just cut, off
@@ -174,9 +190,9 @@ func shipHead(t *testing.T, f *vcstest.Fixture) string {
 func shipCommitted(t *testing.T, f *vcstest.Fixture, kind vcs.Kind) string {
 	t.Helper()
 	if kind == vcs.JJ {
-		return fmt.Sprintf("committed %s %q", jjAt(t, f.Dir, "@-", "commit_id.short()"), jjAt(t, f.Dir, "@-", "description.first_line()"))
+		return fmt.Sprintf("committed %s %q", jjAt(t, f.Env(), f.Dir, "@-", "commit_id.short()"), jjAt(t, f.Env(), f.Dir, "@-", "description.first_line()"))
 	}
-	return fmt.Sprintf("committed %s %q", gitAt(t, f.Dir, "log", "-1", "--format=%h"), gitAt(t, f.Dir, "log", "-1", "--format=%s"))
+	return fmt.Sprintf("committed %s %q", gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%h"), gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s"))
 }
 
 // shipEmptyRefusal renders the refusal an empty working copy earns: the standing
@@ -189,7 +205,7 @@ func shipEmptyRefusal(t *testing.T, f *vcstest.Fixture, scope, target, standing 
 	}
 	pat := shellSingleQuote(vcs.JJExactPattern(target))
 	return fmt.Sprintf("ship: nothing to commit%s — did a prior ship already land %s %q? push it: jj bookmark move %s --to @- && jj git push --bookmark %s",
-		scope, jjAt(t, f.Dir, "@-", "commit_id.short()"), jjAt(t, f.Dir, "@-", "description.first_line()"), pat, pat)
+		scope, jjAt(t, f.Env(), f.Dir, "@-", "commit_id.short()"), jjAt(t, f.Env(), f.Dir, "@-", "description.first_line()"), pat, pat)
 }
 
 // shipJJMergeWorkingCopy leaves @ a two-parent merge of divergent edits to
@@ -198,18 +214,18 @@ func shipEmptyRefusal(t *testing.T, f *vcstest.Fixture, scope, target, standing 
 func shipJJMergeWorkingCopy(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
 	writeShipFile(t, f.Dir, "a.txt", "a\n")
-	mustRun(t, f.Dir, "jj", "commit", "-m", "a")
-	left := jjRevID(t, f.Dir, "@-")
-	mustRun(t, f.Dir, "jj", "new", "main")
+	mustRun(t, f.Env(), f.Dir, "jj", "commit", "-m", "a")
+	left := jjRevID(t, f.Env(), f.Dir, "@-")
+	mustRun(t, f.Env(), f.Dir, "jj", "new", "main")
 	writeShipFile(t, f.Dir, "b.txt", "b\n")
-	mustRun(t, f.Dir, "jj", "commit", "-m", "b")
-	mustRun(t, f.Dir, "jj", "new", left, "@-")
+	mustRun(t, f.Env(), f.Dir, "jj", "commit", "-m", "b")
+	mustRun(t, f.Env(), f.Dir, "jj", "new", left, "@-")
 }
 
 // jjAt renders one template against one revision, trimmed.
-func jjAt(t *testing.T, dir, rev, template string) string {
+func jjAt(t *testing.T, env []string, dir, rev, template string) string {
 	t.Helper()
-	return strings.TrimSpace(mustRun(t, dir, "jj", "--ignore-working-copy", "log", "-r", rev, "--no-graph", "-T", template))
+	return strings.TrimSpace(mustRun(t, env, dir, "jj", "--ignore-working-copy", "log", "-r", rev, "--no-graph", "-T", template))
 }
 
 // shipResetLog drops the argv the test's own fixture work wrote, so an
@@ -239,11 +255,11 @@ func shipGTRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 func shipGTStack(t *testing.T, f *vcstest.Fixture, names ...string) {
 	t.Helper()
 	for _, name := range names {
-		mustRun(t, f.Dir, "git", "switch", "-qc", name)
+		mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", name)
 		writeShipFile(t, f.Dir, name+".txt", name+"\n")
-		mustRun(t, f.Dir, "git", "add", name+".txt")
-		mustRun(t, f.Dir, "git", "commit", "-qm", name)
-		mustRun(t, f.Dir, "gt", "track", "-f", "--no-interactive")
+		mustRun(t, f.Env(), f.Dir, "git", "add", name+".txt")
+		mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", name)
+		mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
 	}
 }
 
@@ -251,18 +267,18 @@ func shipGTStack(t *testing.T, f *vcstest.Fixture, names ...string) {
 // level with trunk — a branch with nothing above trunk to submit.
 func shipGTLevel(t *testing.T, f *vcstest.Fixture, name string) {
 	t.Helper()
-	mustRun(t, f.Dir, "git", "switch", "-qc", name)
-	mustRun(t, f.Dir, "gt", "track", "-f", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", name)
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
 }
 
 // shipGTUntracked cuts a branch with a commit of its own and leaves it
 // untracked, the state a plain git switch produces and gt track adopts.
 func shipGTUntracked(t *testing.T, f *vcstest.Fixture, name string) {
 	t.Helper()
-	mustRun(t, f.Dir, "git", "switch", "-qc", name)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", name)
 	writeShipFile(t, f.Dir, name+".txt", name+"\n")
-	mustRun(t, f.Dir, "git", "add", name+".txt")
-	mustRun(t, f.Dir, "git", "commit", "-qm", name)
+	mustRun(t, f.Env(), f.Dir, "git", "add", name+".txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", name)
 }
 
 // shipDetachHook installs a post-commit hook that leaves HEAD detached, the
@@ -308,20 +324,19 @@ func shipGTRecords(t *testing.T, f *vcstest.Fixture) []vcstest.Invocation {
 	return vcstest.Records(t, f.ArgvLog)
 }
 
-// shipGTIntercept puts a gt ahead of the fixture's shim that answers verb with
-// body and execs the real gt for every other verb. The intercepted branch
-// records its own argv in the shim's framing, so a served verb lands in the
-// fixture's log beside the real ones.
+// shipGTIntercept overwrites the fixture's own gt shim with one that answers
+// verb with body and execs the real gt for every other verb. The intercepted
+// branch records its own argv in the shim's framing, so a served verb lands in
+// the fixture's log beside the real ones.
 func shipGTIntercept(t *testing.T, f *vcstest.Fixture, verb, body string) {
 	t.Helper()
-	dir := t.TempDir()
-	writeShipExecutable(t, dir, "gt", "#!/bin/sh\n"+
+	real := shipDisplaceShim(t, f, "gt")
+	writeShipExecutable(t, f.ShimBin, "gt", "#!/bin/sh\n"+
 		"if [ \"$1\" = "+verb+" ]; then\n"+
 		vcstest.RecordArgv("gt", f.ArgvLog)+
 		body+
 		"fi\n"+
-		"exec '"+filepath.Join(f.ShimBin, "gt")+"' \"$@\"\n")
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		"exec '"+real+"' \"$@\"\n")
 }
 
 // shipGTAuth answers the lane gate's probe from a recorded gt auth run. auth
@@ -363,13 +378,13 @@ func shipDivergeRemote(t *testing.T, f *vcstest.Fixture, ref, name, content stri
 	t.Helper()
 	base := filepath.Dir(f.Dir)
 	clone := filepath.Join(base, "upstream")
-	mustRun(t, base, "git", "clone", "-q", f.RemoteDir, clone)
-	mustRun(t, clone, "git", "config", "user.email", "t@t.t")
-	mustRun(t, clone, "git", "config", "user.name", "t")
+	mustRun(t, f.Env(), base, "git", "clone", "-q", f.RemoteDir, clone)
+	mustRun(t, f.Env(), clone, "git", "config", "user.email", "t@t.t")
+	mustRun(t, f.Env(), clone, "git", "config", "user.name", "t")
 	writeShipFile(t, clone, name, content)
-	mustRun(t, clone, "git", "add", "-A")
-	mustRun(t, clone, "git", "commit", "-qm", "upstream")
-	mustRun(t, clone, "git", "push", "-q", "origin", "HEAD:"+ref)
+	mustRun(t, f.Env(), clone, "git", "add", "-A")
+	mustRun(t, f.Env(), clone, "git", "commit", "-qm", "upstream")
+	mustRun(t, f.Env(), clone, "git", "push", "-q", "origin", "HEAD:"+ref)
 }
 
 // shipRaceRemote plays the concurrent session a retry exists for: on each of
@@ -384,16 +399,16 @@ func shipRaceRemote(t *testing.T, f *vcstest.Fixture, tool, match, name string, 
 	t.Helper()
 	base := filepath.Dir(f.Dir)
 	clone := filepath.Join(base, "racer")
-	mustRun(t, base, "git", "clone", "-q", f.RemoteDir, clone)
-	mustRun(t, clone, "git", "config", "user.email", "r@r.r")
-	mustRun(t, clone, "git", "config", "user.name", "r")
+	mustRun(t, f.Env(), base, "git", "clone", "-q", f.RemoteDir, clone)
+	mustRun(t, f.Env(), clone, "git", "config", "user.email", "r@r.r")
+	mustRun(t, f.Env(), clone, "git", "config", "user.name", "r")
 
 	marker := filepath.Join(t.TempDir(), "race.count")
 	if err := os.WriteFile(marker, []byte(strconv.Itoa(n)), 0o600); err != nil {
 		t.Fatalf("write race marker: %v", err)
 	}
-	dir, next := t.TempDir(), shipNextTool(t, tool)
-	writeShipExecutable(t, dir, tool, "#!/bin/sh\n"+
+	real := shipDisplaceShim(t, f, tool)
+	writeShipExecutable(t, f.ShimBin, tool, "#!/bin/sh\n"+
 		"if [ -z \"$CCX_SHIM_DEPTH\" ]; then\n"+
 		"  case \"$*\" in\n"+
 		"    "+match+")\n"+
@@ -408,8 +423,7 @@ func shipRaceRemote(t *testing.T, f *vcstest.Fixture, tool, match, name string, 
 		"      fi ;;\n"+
 		"  esac\n"+
 		"fi\n"+
-		"exec '"+next+"' \"$@\"\n")
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		"exec '"+real+"' \"$@\"\n")
 }
 
 // shipNextTool resolves the tool a wrapper about to be installed must exec: the
@@ -428,7 +442,7 @@ func shipNextTool(t *testing.T, tool string) string {
 // rollback assertion names what was undone rather than which id was passed.
 func shipOpDescription(t *testing.T, f *vcstest.Fixture, id string) string {
 	t.Helper()
-	out := mustRun(t, f.Dir, "jj", "--ignore-working-copy", "op", "log", "--no-graph", "-T", `id ++ "\t" ++ description ++ "\n"`)
+	out := mustRun(t, f.Env(), f.Dir, "jj", "--ignore-working-copy", "op", "log", "--no-graph", "-T", `id ++ "\t" ++ description ++ "\n"`)
 	for _, line := range strings.Split(out, "\n") {
 		if got, desc, ok := strings.Cut(line, "\t"); ok && got == id {
 			return desc
@@ -454,8 +468,8 @@ func shipRevertedOps(invocations [][]string) []string {
 // carries none.
 func shipRemoteTip(t *testing.T, f *vcstest.Fixture, remote, ref string) string {
 	t.Helper()
-	bare := gitAt(t, f.Dir, "remote", "get-url", remote)
-	out, _ := combinedRun(t, f.Dir, "git", "--git-dir="+bare, "rev-parse", "--verify", "--quiet", "refs/heads/"+ref)
+	bare := gitAt(t, f.Env(), f.Dir, "remote", "get-url", remote)
+	out, _ := combinedRun(t, f.Env(), f.Dir, "git", "--git-dir="+bare, "rev-parse", "--verify", "--quiet", "refs/heads/"+ref)
 	return strings.TrimSpace(out)
 }
 
@@ -466,12 +480,14 @@ func shipDeclineRemote(t *testing.T, f *vcstest.Fixture) {
 	writeShipExecutable(t, filepath.Join(f.RemoteDir, "hooks"), "pre-receive", "#!/bin/sh\nexit 1\n")
 }
 
-// combinedRun runs name in dir and returns its output on both streams together
-// with the exit error, for a command whose failure output is the subject.
-func combinedRun(t *testing.T, dir, name string, args ...string) (string, error) {
+// combinedRun runs name in dir under f's environment and returns its output on
+// both streams together with the exit error, for a command whose failure
+// output is the subject.
+func combinedRun(t *testing.T, env []string, dir, name string, args ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command(name, args...) //nolint:gosec // fixed argv; dir is a TempDir, args are literals
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -482,9 +498,9 @@ func shipSecondRemote(t *testing.T, f *vcstest.Fixture, name string) {
 	t.Helper()
 	base := filepath.Dir(f.Dir)
 	bare := filepath.Join(base, name+".git")
-	mustRun(t, base, "git", "init", "-q", "--bare", "--initial-branch=main", bare)
-	mustRun(t, f.Dir, "git", "remote", "add", name, bare)
-	mustRun(t, f.Dir, "git", "push", "-q", name, "main")
+	mustRun(t, f.Env(), base, "git", "init", "-q", "--bare", "--initial-branch=main", bare)
+	mustRun(t, f.Env(), f.Dir, "git", "remote", "add", name, bare)
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", name, "main")
 }
 
 // shipJJRemotes gives the trunk bookmark a counterpart on two remotes, tracked
@@ -497,16 +513,16 @@ func shipJJRemotes(t *testing.T, f *vcstest.Fixture, push string, tracked ...str
 	base := filepath.Dir(f.Dir)
 	for _, name := range []string{"origin", "backup"} {
 		bare := filepath.Join(base, name+".git")
-		mustRun(t, base, "git", "init", "-q", "--bare", "--initial-branch=main", bare)
-		mustRun(t, f.Dir, "git", "remote", "add", name, bare)
-		mustRun(t, f.Dir, "git", "push", "-q", name, "main")
+		mustRun(t, f.Env(), base, "git", "init", "-q", "--bare", "--initial-branch=main", bare)
+		mustRun(t, f.Env(), f.Dir, "git", "remote", "add", name, bare)
+		mustRun(t, f.Env(), f.Dir, "git", "push", "-q", name, "main")
 	}
-	mustRun(t, f.Dir, "jj", "git", "fetch", "--remote", "origin", "--remote", "backup")
+	mustRun(t, f.Env(), f.Dir, "jj", "git", "fetch", "--remote", "origin", "--remote", "backup")
 	for _, name := range tracked {
-		mustRun(t, f.Dir, "jj", "bookmark", "track", "main@"+name)
+		mustRun(t, f.Env(), f.Dir, "jj", "bookmark", "track", "main@"+name)
 	}
 	if push != "" {
-		mustRun(t, f.Dir, "jj", "config", "set", "--repo", "git.push", push)
+		mustRun(t, f.Env(), f.Dir, "jj", "config", "set", "--repo", "git.push", push)
 	}
 	shipResetLog(t, f)
 }
@@ -518,11 +534,11 @@ func shipRaceLanded(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
 	base := filepath.Dir(f.Dir)
 	clone := filepath.Join(base, "racer")
-	mustRun(t, base, "git", "clone", "-q", f.RemoteDir, clone)
-	mustRun(t, clone, "git", "config", "user.email", "r@r.r")
-	mustRun(t, clone, "git", "config", "user.name", "r")
-	dir, next := t.TempDir(), shipNextTool(t, "jj")
-	writeShipExecutable(t, dir, "jj", "#!/bin/sh\n"+
+	mustRun(t, f.Env(), base, "git", "clone", "-q", f.RemoteDir, clone)
+	mustRun(t, f.Env(), clone, "git", "config", "user.email", "r@r.r")
+	mustRun(t, f.Env(), clone, "git", "config", "user.name", "r")
+	real := shipDisplaceShim(t, f, "jj")
+	writeShipExecutable(t, f.ShimBin, "jj", "#!/bin/sh\n"+
 		"if [ -z \"$CCX_SHIM_DEPTH\" ]; then\n"+
 		"  case \"$*\" in\n"+
 		"    \"git fetch\")\n"+
@@ -532,8 +548,7 @@ func shipRaceLanded(t *testing.T, f *vcstest.Fixture) {
 		"      CCX_SHIM_DEPTH=1 git -C '"+clone+"' push -q origin HEAD:main ;;\n"+
 		"  esac\n"+
 		"fi\n"+
-		"exec '"+next+"' \"$@\"\n")
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		"exec '"+real+"' \"$@\"\n")
 }
 
 // shipHoldBranch checks branch out in a linked worktree — the state git names a
@@ -546,7 +561,7 @@ func shipHoldBranch(t *testing.T, f *vcstest.Fixture, branch string) string {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
 	}
-	mustRun(t, f.Dir, "git", "worktree", "add", "-q", path, branch)
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", path, branch)
 	return path
 }
 
@@ -560,10 +575,10 @@ func shipJJPlainRepo(t *testing.T) *vcstest.Fixture {
 	base := filepath.Dir(f.Dir)
 	plain := *f
 	plain.Dir = filepath.Join(base, "plain")
-	mustRun(t, base, "jj", "git", "init", "--no-colocate", plain.Dir)
+	mustRun(t, f.Env(), base, "jj", "git", "init", "--no-colocate", plain.Dir)
 	writeShipFile(t, plain.Dir, "f.txt", "base\n")
-	mustRun(t, plain.Dir, "jj", "commit", "-m", "init")
-	mustRun(t, plain.Dir, "jj", "bookmark", "create", "main", "-r", "@-")
+	mustRun(t, f.Env(), plain.Dir, "jj", "commit", "-m", "init")
+	mustRun(t, f.Env(), plain.Dir, "jj", "bookmark", "create", "main", "-r", "@-")
 	t.Chdir(plain.Dir)
 	seedLaneRecords(t, plain.Dir, laneSeed{})
 	shipResetLog(t, &plain)
@@ -577,10 +592,10 @@ func shipJJPlainRepo(t *testing.T) *vcstest.Fixture {
 func shipAmendable(t *testing.T, f *vcstest.Fixture, kind vcs.Kind) {
 	t.Helper()
 	if kind == vcs.JJ {
-		mustRun(t, f.Dir, "jj", "commit", "-m", "wip")
+		mustRun(t, f.Env(), f.Dir, "jj", "commit", "-m", "wip")
 	} else {
-		mustRun(t, f.Dir, "git", "add", "-A")
-		mustRun(t, f.Dir, "git", "commit", "-qm", "wip")
+		mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
+		mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "wip")
 	}
 	writeShipFile(t, f.Dir, "f.txt", "amended\n")
 	shipResetLog(t, f)
@@ -592,8 +607,8 @@ func shipAmendable(t *testing.T, f *vcstest.Fixture, kind vcs.Kind) {
 func shipAmbiguousTrunk(t *testing.T) *vcstest.Fixture {
 	t.Helper()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
-	mustRun(t, f.Dir, "jj", "bookmark", "create", "dev", "-r", "@-")
-	mustRun(t, f.Dir, "jj", "git", "push", "--bookmark", "dev")
+	mustRun(t, f.Env(), f.Dir, "jj", "bookmark", "create", "dev", "-r", "@-")
+	mustRun(t, f.Env(), f.Dir, "jj", "git", "push", "--bookmark", "dev")
 	shipResetLog(t, f)
 	return f
 }
@@ -606,36 +621,36 @@ func shipAmbiguousTrunk(t *testing.T) *vcstest.Fixture {
 // empty.
 func shipJJBookmarks(t *testing.T, f *vcstest.Fixture, names ...string) {
 	t.Helper()
-	mustRun(t, f.Dir, "jj", "commit", "-m", "wip")
-	held := strings.Fields(jjAt(t, f.Dir, "all()", `local_bookmarks.map(|b| b.name()).join(" ") ++ " "`))
+	mustRun(t, f.Env(), f.Dir, "jj", "commit", "-m", "wip")
+	held := strings.Fields(jjAt(t, f.Env(), f.Dir, "all()", `local_bookmarks.map(|b| b.name()).join(" ") ++ " "`))
 	for _, name := range names {
 		if slices.Contains(held, name) {
-			mustRun(t, f.Dir, "jj", "bookmark", "move", name, "--to", "@-")
+			mustRun(t, f.Env(), f.Dir, "jj", "bookmark", "move", name, "--to", "@-")
 			continue
 		}
-		mustRun(t, f.Dir, "jj", "bookmark", "create", name, "-r", "@-")
+		mustRun(t, f.Env(), f.Dir, "jj", "bookmark", "create", name, "-r", "@-")
 	}
 	writeShipFile(t, f.Dir, "f.txt", "shipped\n")
 	shipResetLog(t, f)
 }
 
-// shipJJFails puts a jj ahead of the fixture's shim that answers every call
-// matching pattern by pointing the real jj at a repository that does not exist,
-// so both the failure and the bytes reporting it are jj's own. The intercepted
+// shipJJFails overwrites the fixture's own jj shim with one that answers every
+// call matching pattern by pointing the real jj at a repository that does not
+// exist, so both the failure and the bytes reporting it are jj's own. The intercepted
 // call is recorded as ccx made it and the redirected one runs a depth down,
 // where the invocation assertions do not see the flag that broke it; every
 // other call execs the shim untouched.
 func shipJJFails(t *testing.T, f *vcstest.Fixture, pattern string) {
 	t.Helper()
-	dir, shim := t.TempDir(), shipNextTool(t, "jj")
-	writeShipExecutable(t, dir, "jj", "#!/bin/sh\n"+
+	dir := t.TempDir()
+	real := shipDisplaceShim(t, f, "jj")
+	writeShipExecutable(t, f.ShimBin, "jj", "#!/bin/sh\n"+
 		"case \"$*\" in\n"+
 		"  "+pattern+")\n"+
 		vcstest.RecordArgv("jj", f.ArgvLog)+
-		"    CCX_SHIM_DEPTH=$((d+1)) exec '"+shim+"' --repository '"+filepath.Join(dir, "absent")+"' \"$@\" ;;\n"+
+		"    CCX_SHIM_DEPTH=$((d+1)) exec '"+real+"' --repository '"+filepath.Join(dir, "absent")+"' \"$@\" ;;\n"+
 		"esac\n"+
-		"exec '"+shim+"' \"$@\"\n")
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		"exec '"+real+"' \"$@\"\n")
 }
 
 // shipHookRepo commits the working copy with a prek config added to it and
@@ -647,11 +662,11 @@ func shipHookRepo(t *testing.T, f *vcstest.Fixture, kind vcs.Kind, fail int, eff
 	t.Helper()
 	writeShipFile(t, f.Dir, ".pre-commit-config.yaml", "repos: []\n")
 	if kind == vcs.JJ {
-		mustRun(t, f.Dir, "jj", "commit", "-m", "hooks")
-		mustRun(t, f.Dir, "jj", "bookmark", "move", "main", "--to", "@-")
+		mustRun(t, f.Env(), f.Dir, "jj", "commit", "-m", "hooks")
+		mustRun(t, f.Env(), f.Dir, "jj", "bookmark", "move", "main", "--to", "@-")
 	} else {
-		mustRun(t, f.Dir, "git", "add", "-A")
-		mustRun(t, f.Dir, "git", "commit", "-qm", "hooks")
+		mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
+		mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "hooks")
 	}
 	for _, name := range names {
 		writeShipFile(t, f.Dir, name, "x")
@@ -1195,17 +1210,17 @@ func gtRefsArgvIn(dir string) []string {
 // common dir git itself names.
 func gtRealRefsArgv(t *testing.T, f *vcstest.Fixture) []string {
 	t.Helper()
-	return gtRefsArgvIn(gitAt(t, f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+	return gtRefsArgvIn(gitAt(t, f.Env(), f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir"))
 }
 
-func runShipCmd(t *testing.T, args ...string) (string, error) {
+func runShipCmd(t *testing.T, ctx context.Context, args ...string) (string, error) {
 	t.Helper()
 	cmd := newShipCmd()
 	var out, errBuf bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errBuf)
 	cmd.SetArgs(args)
-	err := cmd.Execute()
+	err := cmd.ExecuteContext(ctx)
 	// A standalone ship command has no root to set SilenceUsage, so cobra appends
 	// its usage to stdout after an error; the summary is always the first line.
 	summary := out.String()
@@ -1217,7 +1232,7 @@ func runShipCmd(t *testing.T, args ...string) (string, error) {
 
 // runShipCmdFull runs ship with usage and cobra error echo silenced so the whole
 // captured stdout (summary plus every report line) can be asserted verbatim.
-func runShipCmdFull(t *testing.T, args ...string) (string, string, error) {
+func runShipCmdFull(t *testing.T, ctx context.Context, args ...string) (string, string, error) {
 	t.Helper()
 	cmd := newShipCmd()
 	cmd.SilenceUsage = true
@@ -1226,7 +1241,7 @@ func runShipCmdFull(t *testing.T, args ...string) (string, string, error) {
 	cmd.SetOut(&out)
 	cmd.SetErr(&errBuf)
 	cmd.SetArgs(args)
-	err := cmd.Execute()
+	err := cmd.ExecuteContext(ctx)
 	return out.String(), errBuf.String(), err
 }
 
@@ -1395,9 +1410,9 @@ func writeShipHookFiles(t *testing.T, root string, names ...string) {
 	}
 }
 
-func jjRevID(t *testing.T, dir, rev string) string {
+func jjRevID(t *testing.T, env []string, dir, rev string) string {
 	t.Helper()
-	out := mustRun(t, dir, "jj", "--ignore-working-copy", "log", "-r", rev, "--no-graph", "-T", `commit_id ++ "\n"`)
+	out := mustRun(t, env, dir, "jj", "--ignore-working-copy", "log", "-r", rev, "--no-graph", "-T", `commit_id ++ "\n"`)
 	ids := strings.Fields(out)
 	if len(ids) != 1 {
 		t.Fatalf("jj log -r %s resolved to %d commits, want 1: %q", rev, len(ids), out)

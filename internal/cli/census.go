@@ -1,11 +1,16 @@
 package cli
 
-import "os"
+import (
+	"context"
 
-// workingDir returns the current working directory, or "." if it cannot be read.
-func workingDir() string {
-	if wd, err := os.Getwd(); err == nil {
-		return wd
+	"github.com/yasyf/cc-context/internal/workspace"
+)
+
+// workingDir returns the project root ctx carries, falling back to the process
+// working directory when ctx declares none, or "." when that cannot be read.
+func workingDir(ctx context.Context) string {
+	if dir, err := workspace.RootFrom(ctx); err == nil {
+		return dir
 	}
 	return "."
 }

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -90,11 +89,11 @@ exit 0
 
 // setupGuidelines stands a real repository up with a fake gh replaying gh's own
 // recorded payloads, and returns the repository root and the shim's argv log.
-// The goldens load before the fixture chdirs, since testdata is package-relative.
+// The goldens load before Isolate chdirs, since testdata is package-relative.
 // A fixture that registers no repo view narrows PATH to the shim directory:
 // systemPATH holds a real gh on CI, so dropping the fake is not enough to make
 // gh absent.
-func setupGuidelines(t *testing.T, gh guidelinesGH) (root, logPath string) {
+func setupGuidelines(t *testing.T, gh guidelinesGH) (f *vcstest.Fixture, logPath string) {
 	t.Helper()
 	env := map[string]string{guidelinesArgvSepEnv: guidelinesArgvSep}
 	answers := map[string]string{}
@@ -112,7 +111,7 @@ func setupGuidelines(t *testing.T, gh guidelinesGH) (root, logPath string) {
 		answers[key] = replay.scenario
 	}
 
-	f := vcstest.Repo(t)
+	f = vcstest.Repo(t)
 	if gh.repoView != "" {
 		writeGuidelinesGH(t, f)
 		t.Cleanup(func() { assertGuidelinesGHArgv(t, f.ArgvLog, answers) })
@@ -122,7 +121,8 @@ func setupGuidelines(t *testing.T, gh guidelinesGH) (root, logPath string) {
 	for name, payload := range env {
 		t.Setenv(name, payload)
 	}
-	return f.Dir, f.ArgvLog
+	f.Isolate(t)
+	return f, f.ArgvLog
 }
 
 // assertGuidelinesGHArgv fails for every gh call no golden answers. The fake
@@ -148,25 +148,16 @@ func writeGuidelinesFile(t *testing.T, root, rel, body string) {
 	}
 }
 
-func guidelinesGit(t *testing.T, root string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...) //nolint:gosec // git resolves through the fixture's shim; args are test-authored
-	cmd.Dir = root
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-}
-
 // guidelinesCommitContributing writes CONTRIBUTING.md and commits it, so a later
 // branch switch really rewrites the file on disk.
-func guidelinesCommitContributing(t *testing.T, root, body string) {
+func guidelinesCommitContributing(t *testing.T, f *vcstest.Fixture, body string) {
 	t.Helper()
-	writeGuidelinesFile(t, root, "CONTRIBUTING.md", body)
-	guidelinesGit(t, root, "add", "CONTRIBUTING.md")
-	guidelinesGit(t, root, "commit", "-qm", "contributing")
+	writeGuidelinesFile(t, f.Dir, "CONTRIBUTING.md", body)
+	f.Out(t, "git", "add", "CONTRIBUTING.md")
+	f.Out(t, "git", "commit", "-qm", "contributing")
 }
 
-func runGuidelinesCmd(t *testing.T, args ...string) (stdout, stderr string, err error) {
+func runGuidelinesCmd(t *testing.T, f *vcstest.Fixture, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	cmd := newGuidelinesCmd()
 	cmd.SilenceUsage = true
@@ -175,13 +166,13 @@ func runGuidelinesCmd(t *testing.T, args ...string) (stdout, stderr string, err 
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
 	cmd.SetArgs(args)
-	err = cmd.Execute()
+	err = cmd.ExecuteContext(f.Context())
 	return out.String(), errOut.String(), err
 }
 
-func runGuidelinesJSON(t *testing.T, args ...string) guidelines {
+func runGuidelinesJSON(t *testing.T, f *vcstest.Fixture, args ...string) guidelines {
 	t.Helper()
-	out, errOut, err := runGuidelinesCmd(t, append([]string{"--json"}, args...)...)
+	out, errOut, err := runGuidelinesCmd(t, f, append([]string{"--json"}, args...)...)
 	if err != nil {
 		t.Fatalf("guidelines --json: %v (stderr %q)", err, errOut)
 	}
@@ -280,10 +271,10 @@ func TestGuidelinesMultiTemplateDirectory(t *testing.T) {
 func TestGuidelinesLocalContributingWins(t *testing.T) {
 	gh := guidelinesPopulated
 	gh.profile, gh.contributing = "guidelines-profile-found", "guidelines-contributing-raw"
-	root, logPath := setupGuidelines(t, gh)
-	writeGuidelinesFile(t, root, ".github/CONTRIBUTING.md", "local contributing\n")
+	f, logPath := setupGuidelines(t, gh)
+	writeGuidelinesFile(t, f.Dir, ".github/CONTRIBUTING.md", "local contributing\n")
 
-	g := runGuidelinesJSON(t)
+	g := runGuidelinesJSON(t, f)
 
 	doc := guidelinesDocOf(t, g, guidelinesKindContributing)
 	if doc.Source != guidelinesSourceLocal {
@@ -309,9 +300,9 @@ func TestGuidelinesContributingFallback(t *testing.T) {
 	for _, scenario := range scenarios {
 		want = append(want, append([]string{"gh"}, guidelinesProductionArgv(t, loadGHGolden(t, scenario))...))
 	}
-	_, logPath := setupGuidelines(t, gh)
+	f, logPath := setupGuidelines(t, gh)
 
-	g := runGuidelinesJSON(t)
+	g := runGuidelinesJSON(t, f)
 
 	doc := guidelinesDocOf(t, g, guidelinesKindContributing)
 	if doc.Source != guidelinesSourceGitHub {
@@ -333,9 +324,9 @@ func TestGuidelinesContributingFallback(t *testing.T) {
 // and a community profile naming no CONTRIBUTING, so the raw-contents fetch
 // never happens.
 func TestGuidelinesBareRepoReportsEverythingMissing(t *testing.T) {
-	_, logPath := setupGuidelines(t, guidelinesGH{repoView: "guidelines-repo-view-bare", profile: "guidelines-profile-none"})
+	f, logPath := setupGuidelines(t, guidelinesGH{repoView: "guidelines-repo-view-bare", profile: "guidelines-profile-none"})
 
-	g := runGuidelinesJSON(t)
+	g := runGuidelinesJSON(t, f)
 
 	if g.Repo != "yasyf/cc-context" {
 		t.Errorf("repo = %q, want yasyf/cc-context", g.Repo)
@@ -356,10 +347,10 @@ func TestGuidelinesBudgetTruncatesPerDocument(t *testing.T) {
 	// One token over the recorded template, so it survives whole while a
 	// CONTRIBUTING twice its size does not.
 	budget := len(view.PullRequestTemplates[0].Body)/guidelinesCharsPerToken + 1
-	root, _ := setupGuidelines(t, guidelinesPopulated)
-	writeGuidelinesFile(t, root, "CONTRIBUTING.md", strings.Repeat("a line of contributing guidance\n", 2*budget*guidelinesCharsPerToken/32))
+	f, _ := setupGuidelines(t, guidelinesPopulated)
+	writeGuidelinesFile(t, f.Dir, "CONTRIBUTING.md", strings.Repeat("a line of contributing guidance\n", 2*budget*guidelinesCharsPerToken/32))
 
-	g := runGuidelinesJSON(t, "--budget", fmt.Sprint(budget))
+	g := runGuidelinesJSON(t, f, "--budget", fmt.Sprint(budget))
 
 	doc := guidelinesDocOf(t, g, guidelinesKindContributing)
 	if !doc.Truncated {
@@ -380,7 +371,7 @@ func TestGuidelinesBudgetTruncatesPerDocument(t *testing.T) {
 		t.Error("pr-template truncated: the budget is per document, so a long CONTRIBUTING must not starve it")
 	}
 
-	out, _, err := runGuidelinesCmd(t, "--budget", fmt.Sprint(budget))
+	out, _, err := runGuidelinesCmd(t, f, "--budget", fmt.Sprint(budget))
 	if err != nil {
 		t.Fatalf("guidelines: %v", err)
 	}
@@ -394,13 +385,13 @@ func TestGuidelinesBudgetTruncatesPerDocument(t *testing.T) {
 // The second read happens on another branch, so git — not the test — is what
 // rewrote CONTRIBUTING.md on disk between them.
 func TestGuidelinesCacheWarm(t *testing.T) {
-	root, logPath := setupGuidelines(t, guidelinesPopulated)
-	guidelinesCommitContributing(t, root, "first\n")
-	guidelinesGit(t, root, "switch", "-qc", "other")
-	guidelinesCommitContributing(t, root, "second\n")
-	guidelinesGit(t, root, "switch", "-q", "main")
+	f, logPath := setupGuidelines(t, guidelinesPopulated)
+	guidelinesCommitContributing(t, f, "first\n")
+	f.Out(t, "git", "switch", "-qc", "other")
+	guidelinesCommitContributing(t, f, "second\n")
+	f.Out(t, "git", "switch", "-q", "main")
 
-	first := runGuidelinesJSON(t)
+	first := runGuidelinesJSON(t, f)
 	if first.Cached {
 		t.Error("first run reported a cache hit")
 	}
@@ -408,8 +399,8 @@ func TestGuidelinesCacheWarm(t *testing.T) {
 		t.Errorf("contributing body on main = %q, want %q", doc.Body, "first\n")
 	}
 
-	guidelinesGit(t, root, "switch", "-q", "other")
-	second := runGuidelinesJSON(t)
+	f.Out(t, "git", "switch", "-q", "other")
+	second := runGuidelinesJSON(t, f)
 	if !second.Cached {
 		t.Error("second run reported a cache miss")
 	}
@@ -431,11 +422,11 @@ func TestGuidelinesCacheWarm(t *testing.T) {
 }
 
 func TestGuidelinesRefreshRefetches(t *testing.T) {
-	root, logPath := setupGuidelines(t, guidelinesPopulated)
-	writeGuidelinesFile(t, root, "CONTRIBUTING.md", "be nice\n")
+	f, logPath := setupGuidelines(t, guidelinesPopulated)
+	writeGuidelinesFile(t, f.Dir, "CONTRIBUTING.md", "be nice\n")
 
-	runGuidelinesJSON(t)
-	second := runGuidelinesJSON(t, "--refresh")
+	runGuidelinesJSON(t, f)
+	second := runGuidelinesJSON(t, f, "--refresh")
 
 	if second.Cached {
 		t.Error("--refresh reported a cache hit")
@@ -446,11 +437,11 @@ func TestGuidelinesRefreshRefetches(t *testing.T) {
 }
 
 func TestGuidelinesWithoutGh(t *testing.T) {
-	root, _ := setupGuidelines(t, guidelinesGH{})
-	writeGuidelinesFile(t, root, "CONTRIBUTING.md", "be nice\n")
-	writeGuidelinesFile(t, root, ".github/ISSUE_TEMPLATE/config.yml", "blank_issues_enabled: false\n")
+	f, _ := setupGuidelines(t, guidelinesGH{})
+	writeGuidelinesFile(t, f.Dir, "CONTRIBUTING.md", "be nice\n")
+	writeGuidelinesFile(t, f.Dir, ".github/ISSUE_TEMPLATE/config.yml", "blank_issues_enabled: false\n")
 
-	out, errOut, err := runGuidelinesCmd(t, "--json")
+	out, errOut, err := runGuidelinesCmd(t, f, "--json")
 	if err != nil {
 		t.Fatalf("guidelines: %v", err)
 	}
@@ -473,8 +464,8 @@ func TestGuidelinesWithoutGh(t *testing.T) {
 	if !reflect.DeepEqual(g.Missing, want) {
 		t.Errorf("missing = %v, want %v", g.Missing, want)
 	}
-	if g.Repo != filepath.Base(root) {
-		t.Errorf("repo = %q, want the directory name %q", g.Repo, filepath.Base(root))
+	if g.Repo != filepath.Base(f.Dir) {
+		t.Errorf("repo = %q, want the directory name %q", g.Repo, filepath.Base(f.Dir))
 	}
 	if !g.FetchedAt.IsZero() {
 		t.Errorf("fetched_at = %v, want the zero time — nothing was fetched", g.FetchedAt)
@@ -482,10 +473,10 @@ func TestGuidelinesWithoutGh(t *testing.T) {
 }
 
 func TestGuidelinesJSONFields(t *testing.T) {
-	root, _ := setupGuidelines(t, guidelinesPopulated)
-	writeGuidelinesFile(t, root, "CONTRIBUTING.md", "Sign your commits with a Signed-off-by trailer.\n")
+	f, _ := setupGuidelines(t, guidelinesPopulated)
+	writeGuidelinesFile(t, f.Dir, "CONTRIBUTING.md", "Sign your commits with a Signed-off-by trailer.\n")
 
-	g := runGuidelinesJSON(t)
+	g := runGuidelinesJSON(t, f)
 
 	if g.Repo != "cli/cli" {
 		t.Errorf("repo = %q, want cli/cli", g.Repo)
@@ -514,10 +505,10 @@ func TestGuidelinesJSONFields(t *testing.T) {
 }
 
 func TestGuidelinesIssueTemplateBodies(t *testing.T) {
-	root, _ := setupGuidelines(t, guidelinesPopulated)
-	writeGuidelinesFile(t, root, "CONTRIBUTING.md", "be nice\n")
+	f, _ := setupGuidelines(t, guidelinesPopulated)
+	writeGuidelinesFile(t, f.Dir, "CONTRIBUTING.md", "be nice\n")
 
-	names := guidelinesDocOf(t, runGuidelinesJSON(t), guidelinesKindIssueTemplate)
+	names := guidelinesDocOf(t, runGuidelinesJSON(t, f), guidelinesKindIssueTemplate)
 	wantNames := "🐛 Bug report — Report a bug or unexpected behavior while using GitHub CLI\n" +
 		"🎨 Submit a design proposal — Submit a design to resolve an open issue that has both `needs-design` and `help-wanted` labels\n" +
 		"⭐ Submit a request — Surface a feature or problem that you think should be solved\n"
@@ -528,7 +519,7 @@ func TestGuidelinesIssueTemplateBodies(t *testing.T) {
 		t.Errorf("issue-template path = %q, want %q", names.Path, guidelinesIssueTemplateDir)
 	}
 
-	full := guidelinesDocOf(t, runGuidelinesJSON(t, "--full"), guidelinesKindIssueTemplate)
+	full := guidelinesDocOf(t, runGuidelinesJSON(t, f, "--full"), guidelinesKindIssueTemplate)
 	if !strings.Contains(full.Body, "### Describe the bug") {
 		t.Errorf("--full body = %q, want the template body", full.Body)
 	}
@@ -537,10 +528,10 @@ func TestGuidelinesIssueTemplateBodies(t *testing.T) {
 func TestGuidelinesHumanOutput(t *testing.T) {
 	view := decodeGuidelinesRepoView(t, "guidelines-repo-view-populated")
 	templateTokens := len(view.PullRequestTemplates[0].Body) / guidelinesCharsPerToken
-	root, _ := setupGuidelines(t, guidelinesPopulated)
-	writeGuidelinesFile(t, root, "CONTRIBUTING.md", "We follow Conventional Commits.\n")
+	f, _ := setupGuidelines(t, guidelinesPopulated)
+	writeGuidelinesFile(t, f.Dir, "CONTRIBUTING.md", "We follow Conventional Commits.\n")
 
-	out, _, err := runGuidelinesCmd(t)
+	out, _, err := runGuidelinesCmd(t, f)
 	if err != nil {
 		t.Fatalf("guidelines: %v", err)
 	}
@@ -557,7 +548,7 @@ func TestGuidelinesHumanOutput(t *testing.T) {
 		}
 	}
 
-	cached, _, err := runGuidelinesCmd(t)
+	cached, _, err := runGuidelinesCmd(t, f)
 	if err != nil {
 		t.Fatalf("guidelines (warm): %v", err)
 	}

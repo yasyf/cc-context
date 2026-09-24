@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -13,7 +14,15 @@ import (
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
-func runWorktreeCmd(t *testing.T, args ...string) (string, error) {
+func runWorktreeCmd(t *testing.T, f *vcstest.Fixture, args ...string) (string, error) {
+	t.Helper()
+	return runWorktreeCmdIn(t, f.Context(), args...)
+}
+
+// runWorktreeCmdIn is runWorktreeCmd rooted where the caller says, for a test
+// driving the command from a worktree or a relocated checkout rather than from
+// the fixture's own repository.
+func runWorktreeCmdIn(t *testing.T, ctx context.Context, args ...string) (string, error) {
 	t.Helper()
 	cmd := newWorktreeCmd()
 	cmd.SilenceUsage = true
@@ -22,7 +31,7 @@ func runWorktreeCmd(t *testing.T, args ...string) (string, error) {
 	cmd.SetOut(&out)
 	cmd.SetErr(&errBuf)
 	cmd.SetArgs(args)
-	err := cmd.Execute()
+	err := cmd.ExecuteContext(ctx)
 	return out.String(), err
 }
 
@@ -40,9 +49,9 @@ func worktreeTempDir(t *testing.T) string {
 
 // addPoolWorktree mints the working copy named name through ccx and returns the
 // path its summary reports.
-func addPoolWorktree(t *testing.T, name string) string {
+func addPoolWorktree(t *testing.T, f *vcstest.Fixture, name string) string {
 	t.Helper()
-	out, err := runWorktreeCmd(t, "add", name)
+	out, err := runWorktreeCmd(t, f, "add", name)
 	if err != nil {
 		t.Fatalf("add %s error = %v", name, err)
 	}
@@ -50,15 +59,15 @@ func addPoolWorktree(t *testing.T, name string) string {
 }
 
 // worktreeRegistered reports whether git's own registry still carries path.
-func worktreeRegistered(t *testing.T, repo, path string) bool {
+func worktreeRegistered(t *testing.T, env []string, repo, path string) bool {
 	t.Helper()
-	return strings.Contains(mustRun(t, repo, "git", "worktree", "list", "--porcelain"), "worktree "+path+"\n")
+	return strings.Contains(mustRun(t, env, repo, "git", "worktree", "list", "--porcelain"), "worktree "+path+"\n")
 }
 
 // addLinkedWorktree cuts a linked worktree at path, creating the pool directory
 // git itself will not. An empty commitish lets git name a new branch after the
 // path's own basename.
-func addLinkedWorktree(t *testing.T, repo, path, commitish string) {
+func addLinkedWorktree(t *testing.T, env []string, repo, path, commitish string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatalf("mkdir pool: %v", err)
@@ -67,15 +76,16 @@ func addLinkedWorktree(t *testing.T, repo, path, commitish string) {
 	if commitish != "" {
 		argv = append(argv, commitish)
 	}
-	mustRun(t, repo, "git", argv...)
+	mustRun(t, env, repo, "git", argv...)
 }
 
 func TestWorktreeListHealthy(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Worktree("feat"))
+	f.Isolate(t)
 	dir := f.Dir
 	linked := f.WorktreePath("feat")
 
-	out, err := runWorktreeCmd(t, "list", "--json")
+	out, err := runWorktreeCmd(t, f, "list", "--json")
 	if err != nil {
 		t.Fatalf("list error = %v", err)
 	}
@@ -99,7 +109,7 @@ func TestWorktreeListHealthy(t *testing.T) {
 		}
 	}
 
-	human, err := runWorktreeCmd(t, "list")
+	human, err := runWorktreeCmd(t, f, "list")
 	if err != nil {
 		t.Fatalf("list error = %v", err)
 	}
@@ -113,9 +123,10 @@ func TestWorktreeListHealthy(t *testing.T) {
 // whose own gitdir pointer resolves to nothing: that diagnosis is what someone
 // runs list to get, so it lands in the report at exit 0 rather than as a failure.
 func TestWorktreeListDanglingCheckout(t *testing.T) {
-	vcstest.Repo(t, vcstest.BrokenGitDir())
+	f := vcstest.Repo(t, vcstest.BrokenGitDir())
+	f.Isolate(t)
 
-	out, err := runWorktreeCmd(t, "list")
+	out, err := runWorktreeCmd(t, f, "list")
 	if err != nil {
 		t.Fatalf("list exited non-zero over a dangling pointer: %v", err)
 	}
@@ -138,7 +149,7 @@ func TestWorktreeListReportsBrokenSibling(t *testing.T) {
 	}
 	t.Chdir(relocated)
 
-	out, err := runWorktreeCmd(t, "list", "--json")
+	out, err := runWorktreeCmdIn(t, f.ContextIn(relocated), "list", "--json")
 	if err != nil {
 		t.Fatalf("list exited non-zero over a broken sibling: %v", err)
 	}
@@ -163,9 +174,10 @@ func TestWorktreeListReportsBrokenSibling(t *testing.T) {
 
 func TestWorktreeAddRmRoundTrip(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote())
+	f.Isolate(t)
 	dir := f.Dir
 
-	out, err := runWorktreeCmd(t, "add", "feat")
+	out, err := runWorktreeCmd(t, f, "add", "feat")
 	if err != nil {
 		t.Fatalf("add error = %v", err)
 	}
@@ -183,10 +195,10 @@ func TestWorktreeAddRmRoundTrip(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(path, "f.txt")); err != nil {
 		t.Errorf("minted worktree has no checkout: %v", err)
 	}
-	if got := strings.TrimSpace(mustRun(t, dir, "git", "branch", "--list", "feat")); got == "" {
+	if got := strings.TrimSpace(mustRun(t, f.Env(), dir, "git", "branch", "--list", "feat")); got == "" {
 		t.Errorf("git branch --list feat is empty, want the branch add named after the worktree")
 	}
-	listed, err := runWorktreeCmd(t, "list")
+	listed, err := runWorktreeCmd(t, f, "list")
 	if err != nil {
 		t.Fatalf("list error = %v", err)
 	}
@@ -194,13 +206,13 @@ func TestWorktreeAddRmRoundTrip(t *testing.T) {
 		t.Errorf("listing = %q, want it to carry the added worktree", listed)
 	}
 
-	if _, err := runWorktreeCmd(t, "rm", "feat"); err != nil {
+	if _, err := runWorktreeCmd(t, f, "rm", "feat"); err != nil {
 		t.Fatalf("rm error = %v", err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("stat %s after rm = %v, want the tree gone", path, err)
 	}
-	if worktreeRegistered(t, dir, path) {
+	if worktreeRegistered(t, f.Env(), dir, path) {
 		t.Errorf("git still registers %s, want it deregistered", path)
 	}
 }
@@ -212,10 +224,11 @@ func TestWorktreeRmRefusesTrunkHolder(t *testing.T) {
 	// Detached: git refuses to check a branch out twice, so trunk moves to the
 	// pool worktree only once the repository's own working copy lets go of it.
 	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Detached())
-	path := addPoolWorktree(t, "holder")
-	mustRun(t, path, "git", "checkout", "-q", "main")
+	f.Isolate(t)
+	path := addPoolWorktree(t, f, "holder")
+	mustRun(t, f.Env(), path, "git", "checkout", "-q", "main")
 
-	_, err := runWorktreeCmd(t, "rm", "holder")
+	_, err := runWorktreeCmd(t, f, "rm", "holder")
 	if err == nil {
 		t.Fatal("rm removed the checkout holding trunk")
 	}
@@ -227,7 +240,7 @@ func TestWorktreeRmRefusesTrunkHolder(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(path, "f.txt")); statErr != nil {
 		t.Errorf("the refused worktree was removed anyway: %v", statErr)
 	}
-	if !worktreeRegistered(t, f.Dir, path) {
+	if !worktreeRegistered(t, f.Env(), f.Dir, path) {
 		t.Errorf("git no longer registers %s, want the refusal to have changed nothing", path)
 	}
 }
@@ -239,11 +252,12 @@ func TestWorktreeRmRefusesTrunkHolder(t *testing.T) {
 // branch the pool worktree holds.
 func TestWorktreeRmSurfacesUnshapedRemoteHead(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Detached())
-	path := addPoolWorktree(t, "holder")
-	mustRun(t, path, "git", "checkout", "-q", "main")
-	mustRun(t, f.Dir, "git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/main")
+	f.Isolate(t)
+	path := addPoolWorktree(t, f, "holder")
+	mustRun(t, f.Env(), path, "git", "checkout", "-q", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/main")
 
-	_, err := runWorktreeCmd(t, "rm", "holder")
+	_, err := runWorktreeCmd(t, f, "rm", "holder")
 	if err == nil {
 		t.Fatal("rm removed the checkout holding trunk")
 	}
@@ -255,7 +269,7 @@ func TestWorktreeRmSurfacesUnshapedRemoteHead(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(path, "f.txt")); statErr != nil {
 		t.Errorf("the refused worktree was removed anyway: %v", statErr)
 	}
-	if !worktreeRegistered(t, f.Dir, path) {
+	if !worktreeRegistered(t, f.Env(), f.Dir, path) {
 		t.Errorf("git no longer registers %s, want the refusal to have changed nothing", path)
 	}
 }
@@ -266,15 +280,16 @@ func TestWorktreeRmSurfacesUnshapedRemoteHead(t *testing.T) {
 // and rm skips it instead of refusing over a branch that does not exist.
 func TestWorktreeRmNoTrunkSkipsHolderGuard(t *testing.T) {
 	f := vcstest.Repo(t)
-	path := addPoolWorktree(t, "feat")
+	f.Isolate(t)
+	path := addPoolWorktree(t, f, "feat")
 
-	if _, err := runWorktreeCmd(t, "rm", "feat"); err != nil {
+	if _, err := runWorktreeCmd(t, f, "rm", "feat"); err != nil {
 		t.Fatalf("rm error = %v", err)
 	}
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Errorf("stat %s after rm = %v, want the tree gone", path, statErr)
 	}
-	if worktreeRegistered(t, f.Dir, path) {
+	if worktreeRegistered(t, f.Env(), f.Dir, path) {
 		t.Errorf("git still registers %s, want it deregistered", path)
 	}
 }
@@ -286,19 +301,20 @@ func TestWorktreeRmNoTrunkSkipsHolderGuard(t *testing.T) {
 // removes rather than being refused over a branch nothing rebases onto.
 func TestWorktreeRmNoOriginHeadSkipsHolderGuard(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote(), vcstest.NoOriginHead(), vcstest.Detached())
-	path := addPoolWorktree(t, "holder")
-	mustRun(t, path, "git", "checkout", "-q", "main")
+	f.Isolate(t)
+	path := addPoolWorktree(t, f, "holder")
+	mustRun(t, f.Env(), path, "git", "checkout", "-q", "main")
 
-	if _, err := runWorktreeCmd(t, "rm", "holder"); err != nil {
+	if _, err := runWorktreeCmd(t, f, "rm", "holder"); err != nil {
 		t.Fatalf("rm error = %v", err)
 	}
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Errorf("stat %s after rm = %v, want the tree gone", path, statErr)
 	}
-	if worktreeRegistered(t, f.Dir, path) {
+	if worktreeRegistered(t, f.Env(), f.Dir, path) {
 		t.Errorf("git still registers %s, want it deregistered", path)
 	}
-	mustRun(t, f.Dir, "git", "rev-parse", "--verify", "refs/remotes/origin/main")
+	mustRun(t, f.Env(), f.Dir, "git", "rev-parse", "--verify", "refs/remotes/origin/main")
 }
 
 // TestWorktreeRmSurfacesTrunkLookupFailure proves the no-trunk skip never
@@ -310,12 +326,13 @@ func TestWorktreeRmNoOriginHeadSkipsHolderGuard(t *testing.T) {
 // TestWorktreeRmNoTrunkSkipsHolderGuard, where the removal closes.
 func TestWorktreeRmSurfacesTrunkLookupFailure(t *testing.T) {
 	f := vcstest.Repo(t)
-	path := addPoolWorktree(t, "feat")
+	f.Isolate(t)
+	path := addPoolWorktree(t, f, "feat")
 	if err := os.WriteFile(filepath.Join(f.Dir, ".git", "packed-refs"), []byte("garbage not a packed-refs line\n"), 0o600); err != nil {
 		t.Fatalf("corrupt packed-refs: %v", err)
 	}
 
-	_, err := runWorktreeCmd(t, "rm", "feat")
+	_, err := runWorktreeCmd(t, f, "rm", "feat")
 	if err == nil {
 		t.Fatal("rm treated a failing trunk lookup as no trunk")
 	}
@@ -338,8 +355,9 @@ func TestWorktreeRmSurfacesTrunkLookupFailure(t *testing.T) {
 // gitdir pointer resolves to nothing.
 func TestWorktreeRmSurfacesBrokenCheckout(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.BrokenGitDir())
+	f.Isolate(t)
 
-	_, err := runWorktreeCmd(t, "rm", "feat")
+	_, err := runWorktreeCmd(t, f, "rm", "feat")
 	if err == nil {
 		t.Fatal("rm claimed success in a checkout git cannot open")
 	}
@@ -362,12 +380,13 @@ func TestWorktreeRmSurfacesBrokenCheckout(t *testing.T) {
 // with the refusal naming the tree and pointing at git worktree remove.
 func TestWorktreeRmRefusesForeignCheckout(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote())
+	f.Isolate(t)
 	dir := f.Dir
 	foreign := filepath.Join(filepath.Dir(dir), "checkouts", "feat")
-	addLinkedWorktree(t, dir, foreign, "")
+	addLinkedWorktree(t, f.Env(), dir, foreign, "")
 
 	for _, args := range [][]string{{"rm", "feat"}, {"rm", "feat", "--force"}} {
-		_, err := runWorktreeCmd(t, args...)
+		_, err := runWorktreeCmd(t, f, args...)
 		if err == nil {
 			t.Fatalf("%v removed a checkout ccx never minted", args)
 		}
@@ -380,7 +399,7 @@ func TestWorktreeRmRefusesForeignCheckout(t *testing.T) {
 			t.Fatalf("%v removed the foreign checkout: %v", args, statErr)
 		}
 	}
-	if got := mustRun(t, dir, "git", "worktree", "list", "--porcelain"); !strings.Contains(got, "worktree "+foreign) {
+	if got := mustRun(t, f.Env(), dir, "git", "worktree", "list", "--porcelain"); !strings.Contains(got, "worktree "+foreign) {
 		t.Errorf("worktree list = %q, want the foreign checkout still registered", got)
 	}
 }
@@ -390,13 +409,14 @@ func TestWorktreeRmRefusesForeignCheckout(t *testing.T) {
 // removes the pool one and never touches its twin.
 func TestWorktreeRmPoolBesideNameTwin(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote())
+	f.Isolate(t)
 	dir := f.Dir
-	sha := strings.TrimSpace(mustRun(t, dir, "git", "rev-parse", "HEAD"))
+	sha := strings.TrimSpace(mustRun(t, f.Env(), dir, "git", "rev-parse", "HEAD"))
 	twin := filepath.Join(filepath.Dir(dir), "checkouts", "feat")
-	addLinkedWorktree(t, dir, twin, sha)
-	path := addPoolWorktree(t, "feat")
+	addLinkedWorktree(t, f.Env(), dir, twin, sha)
+	path := addPoolWorktree(t, f, "feat")
 
-	if _, err := runWorktreeCmd(t, "rm", "feat"); err != nil {
+	if _, err := runWorktreeCmd(t, f, "rm", "feat"); err != nil {
 		t.Fatalf("rm error = %v", err)
 	}
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
@@ -405,7 +425,7 @@ func TestWorktreeRmPoolBesideNameTwin(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(twin, "f.txt")); statErr != nil {
 		t.Errorf("rm reached the name twin outside the pool: %v", statErr)
 	}
-	if !worktreeRegistered(t, dir, twin) {
+	if !worktreeRegistered(t, f.Env(), dir, twin) {
 		t.Errorf("git no longer registers %s, want the name twin untouched", twin)
 	}
 }
@@ -414,9 +434,11 @@ func TestWorktreeRmPoolBesideNameTwin(t *testing.T) {
 // semantics: a workspace holding a never-snapshotted file is refused with the
 // change named, --force discards it, and a clean workspace removes plain.
 func TestWorktreeRmJJWorkspace(t *testing.T) {
-	dir := vcstest.Repo(t, vcstest.JJ()).Dir
+	f := vcstest.Repo(t, vcstest.JJ())
+	f.Isolate(t)
+	dir := f.Dir
 
-	out, err := runWorktreeCmd(t, "add", "feat", "--jj", "workspace")
+	out, err := runWorktreeCmd(t, f, "add", "feat", "--jj", "workspace")
 	if err != nil {
 		t.Fatalf("add error = %v", err)
 	}
@@ -426,7 +448,7 @@ func TestWorktreeRmJJWorkspace(t *testing.T) {
 		t.Fatalf("write unsaved.txt: %v", err)
 	}
 
-	_, err = runWorktreeCmd(t, "rm", "feat")
+	_, err = runWorktreeCmd(t, f, "rm", "feat")
 	if err == nil {
 		t.Fatal("rm destroyed a workspace holding unsnapshotted work")
 	}
@@ -439,22 +461,22 @@ func TestWorktreeRmJJWorkspace(t *testing.T) {
 		t.Errorf("unsaved.txt = %q after the refusal, want it untouched", got)
 	}
 
-	if _, err := runWorktreeCmd(t, "rm", "feat", "--force"); err != nil {
+	if _, err := runWorktreeCmd(t, f, "rm", "feat", "--force"); err != nil {
 		t.Fatalf("rm --force error = %v", err)
 	}
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Errorf("stat %s after rm --force = %v, want the tree gone", path, statErr)
 	}
-	if got := mustRun(t, dir, "jj", "workspace", "list"); strings.Contains(got, "feat") {
+	if got := mustRun(t, f.Env(), dir, "jj", "workspace", "list"); strings.Contains(got, "feat") {
 		t.Errorf("jj workspace list = %q, want feat forgotten", got)
 	}
 
-	out, err = runWorktreeCmd(t, "add", "tidy", "--jj", "workspace")
+	out, err = runWorktreeCmd(t, f, "add", "tidy", "--jj", "workspace")
 	if err != nil {
 		t.Fatalf("add error = %v", err)
 	}
 	tidy := worktreeSummaryPath(t, out)
-	if _, err := runWorktreeCmd(t, "rm", "tidy"); err != nil {
+	if _, err := runWorktreeCmd(t, f, "rm", "tidy"); err != nil {
 		t.Fatalf("rm of a clean workspace error = %v", err)
 	}
 	if _, statErr := os.Stat(tidy); !os.IsNotExist(statErr) {
@@ -468,9 +490,11 @@ func TestWorktreeRmJJWorkspace(t *testing.T) {
 // on disk, so reporting it as a name this repository never minted would send the
 // user to delete by hand the tree rm would have forgotten from jj first.
 func TestWorktreeRmSurfacesBrokenWorkspacePointer(t *testing.T) {
-	dir := vcstest.Repo(t, vcstest.JJ()).Dir
+	f := vcstest.Repo(t, vcstest.JJ())
+	f.Isolate(t)
+	dir := f.Dir
 
-	_, err := runWorktreeCmd(t, "rm", "never-minted")
+	_, err := runWorktreeCmd(t, f, "rm", "never-minted")
 	if err == nil || !errors.Is(err, ErrNotFound) {
 		t.Fatalf("rm of an unminted name error = %v, want %v", err, ErrNotFound)
 	}
@@ -478,7 +502,7 @@ func TestWorktreeRmSurfacesBrokenWorkspacePointer(t *testing.T) {
 		t.Errorf("error = %v, want the clean miss to name the working copy", err)
 	}
 
-	out, err := runWorktreeCmd(t, "add", "feat", "--jj", "workspace")
+	out, err := runWorktreeCmd(t, f, "add", "feat", "--jj", "workspace")
 	if err != nil {
 		t.Fatalf("add error = %v", err)
 	}
@@ -488,7 +512,7 @@ func TestWorktreeRmSurfacesBrokenWorkspacePointer(t *testing.T) {
 		t.Fatalf("truncate workspace pointer: %v", err)
 	}
 
-	_, err = runWorktreeCmd(t, "rm", "feat")
+	_, err = runWorktreeCmd(t, f, "rm", "feat")
 	if err == nil {
 		t.Fatal("rm claimed success over a workspace whose pointer resolves to nothing")
 	}
@@ -503,7 +527,7 @@ func TestWorktreeRmSurfacesBrokenWorkspacePointer(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(path, "f.txt")); statErr != nil {
 		t.Errorf("the unresolvable workspace was removed anyway: %v", statErr)
 	}
-	if got := mustRun(t, dir, "jj", "workspace", "list"); !strings.Contains(got, "feat") {
+	if got := mustRun(t, f.Env(), dir, "jj", "workspace", "list"); !strings.Contains(got, "feat") {
 		t.Errorf("jj workspace list = %q, want feat still registered", got)
 	}
 }
@@ -522,11 +546,11 @@ func TestWorktreeRepairDryRun(t *testing.T) {
 
 	pointer := filepath.Join(linked, ".git")
 	before := readFileStr(t, pointer)
-	if _, err := runGit(linked, "status", "--porcelain"); err == nil {
+	if _, err := runGit(f.Env(), linked, "status", "--porcelain"); err == nil {
 		t.Fatal("precondition: relocating the repository should have orphaned the worktree")
 	}
 
-	out, err := runWorktreeCmd(t, "repair", "--dry-run")
+	out, err := runWorktreeCmdIn(t, f.ContextIn(relocated), "repair", "--dry-run")
 	if err != nil {
 		t.Fatalf("repair --dry-run error = %v", err)
 	}
@@ -538,7 +562,7 @@ func TestWorktreeRepairDryRun(t *testing.T) {
 		t.Errorf("--dry-run rewrote the pointer to %q, want it left at %q", got, before)
 	}
 
-	out, err = runWorktreeCmd(t, "repair")
+	out, err = runWorktreeCmdIn(t, f.ContextIn(relocated), "repair")
 	if err != nil {
 		t.Fatalf("repair error = %v", err)
 	}
@@ -548,7 +572,7 @@ func TestWorktreeRepairDryRun(t *testing.T) {
 	if got := readFileStr(t, pointer); got == before {
 		t.Errorf("repair left the pointer at %q", got)
 	}
-	if _, err := runGit(linked, "status", "--porcelain"); err != nil {
+	if _, err := runGit(f.Env(), linked, "status", "--porcelain"); err != nil {
 		t.Errorf("worktree still orphaned after repair: %v", err)
 	}
 }
@@ -565,7 +589,7 @@ func TestWorktreeRepairFromBrokenCheckout(t *testing.T) {
 	}
 	t.Chdir(linked)
 
-	out, err := runWorktreeCmd(t, "repair", "--dry-run")
+	out, err := runWorktreeCmdIn(t, f.ContextIn(linked), "repair", "--dry-run")
 	if err != nil {
 		t.Fatalf("repair --dry-run error = %v", err)
 	}
@@ -574,7 +598,7 @@ func TestWorktreeRepairFromBrokenCheckout(t *testing.T) {
 		t.Errorf("repair --dry-run = %q, want %q", out, want)
 	}
 
-	_, err = runWorktreeCmd(t, "repair")
+	_, err = runWorktreeCmdIn(t, f.ContextIn(linked), "repair")
 	if err == nil {
 		t.Fatal("repair claimed success with the admin dir deleted")
 	}
@@ -584,9 +608,10 @@ func TestWorktreeRepairFromBrokenCheckout(t *testing.T) {
 }
 
 func TestWorktreeAddColocateRefused(t *testing.T) {
-	vcstest.Repo(t)
+	f := vcstest.Repo(t)
+	f.Isolate(t)
 
-	_, err := runWorktreeCmd(t, "add", "feat", "--jj", "colocate")
+	_, err := runWorktreeCmd(t, f, "add", "feat", "--jj", "colocate")
 	if err == nil {
 		t.Fatal("--jj colocate was accepted")
 	}
@@ -734,18 +759,19 @@ func worktreeSummaryPath(t *testing.T, summary string) string {
 func parkRepo(t *testing.T) (*vcstest.Fixture, string) {
 	t.Helper()
 	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Worktree("lane"))
+	f.Isolate(t)
 	return f, f.WorktreePath("lane")
 }
 
 // landOnRemoteTrunk lands one commit on origin's trunk from the lane, leaving
 // the local trunk ref one behind.
-func landOnRemoteTrunk(t *testing.T, lane, subject string) {
+func landOnRemoteTrunk(t *testing.T, f *vcstest.Fixture, lane, subject string) {
 	t.Helper()
-	mustRun(t, lane, "git", "fetch", "-q", "origin")
-	mustRun(t, lane, "git", "reset", "-q", "--hard", "refs/remotes/origin/main")
-	mustRun(t, lane, "git", "commit", "-q", "--allow-empty", "-m", subject)
-	mustRun(t, lane, "git", "push", "-q", "origin", "HEAD:main")
-	mustRun(t, lane, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Env(), lane, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Env(), lane, "git", "reset", "-q", "--hard", "refs/remotes/origin/main")
+	mustRun(t, f.Env(), lane, "git", "commit", "-q", "--allow-empty", "-m", subject)
+	mustRun(t, f.Env(), lane, "git", "push", "-q", "origin", "HEAD:main")
+	mustRun(t, f.Env(), lane, "git", "fetch", "-q", "origin")
 }
 
 func writeWorktreeFile(t *testing.T, path, content string) {
@@ -759,56 +785,56 @@ func writeWorktreeFile(t *testing.T, path, content string) {
 // fetch git refused from a lane goes through.
 func TestWorktreeParkFreesTheTrunkRef(t *testing.T) {
 	f, lane := parkRepo(t)
-	landOnRemoteTrunk(t, lane, "landed one")
-	files := mustRun(t, f.Dir, "git", "status", "--porcelain")
-	head := mustRun(t, f.Dir, "git", "rev-parse", "HEAD")
+	landOnRemoteTrunk(t, f, lane, "landed one")
+	files := mustRun(t, f.Env(), f.Dir, "git", "status", "--porcelain")
+	head := mustRun(t, f.Env(), f.Dir, "git", "rev-parse", "HEAD")
 
-	out, err := runWorktreeCmd(t, "park")
+	out, err := runWorktreeCmd(t, f, "park")
 	if err != nil {
 		t.Fatalf("park error = %v", err)
 	}
 	if !strings.Contains(out, "freed main") || !strings.Contains(out, "advanced 1 to origin/main") {
 		t.Errorf("park summary = %q, want the freed ref and its advance named", out)
 	}
-	if branch := strings.TrimSpace(mustRun(t, f.Dir, "git", "branch", "--show-current")); branch != "" {
+	if branch := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "git", "branch", "--show-current")); branch != "" {
 		t.Errorf("branch = %q, want a detached HEAD", branch)
 	}
-	if got := mustRun(t, f.Dir, "git", "rev-parse", "HEAD"); got != head {
+	if got := mustRun(t, f.Env(), f.Dir, "git", "rev-parse", "HEAD"); got != head {
 		t.Errorf("HEAD = %q, want the %q it was parked at", got, head)
 	}
-	if got := mustRun(t, f.Dir, "git", "status", "--porcelain"); got != files {
+	if got := mustRun(t, f.Env(), f.Dir, "git", "status", "--porcelain"); got != files {
 		t.Errorf("status = %q, want the %q it was before", got, files)
 	}
-	local := strings.TrimSpace(mustRun(t, f.Dir, "git", "rev-parse", "refs/heads/main"))
-	remote := strings.TrimSpace(mustRun(t, f.Dir, "git", "rev-parse", "refs/remotes/origin/main"))
+	local := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "git", "rev-parse", "refs/heads/main"))
+	remote := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "git", "rev-parse", "refs/remotes/origin/main"))
 	if local != remote {
 		t.Errorf("refs/heads/main = %q, want origin's %q", local, remote)
 	}
 
-	landOnRemoteTrunk(t, lane, "landed two")
-	mustRun(t, lane, "git", "fetch", "origin", "main:main")
+	landOnRemoteTrunk(t, f, lane, "landed two")
+	mustRun(t, f.Env(), lane, "git", "fetch", "origin", "main:main")
 }
 
 // TestWorktreeParkRefusesUncommittedWork holds park off the one thing it must
 // never touch, and proves the working copy came through byte for byte.
 func TestWorktreeParkRefusesUncommittedWork(t *testing.T) {
 	f, lane := parkRepo(t)
-	landOnRemoteTrunk(t, lane, "landed one")
+	landOnRemoteTrunk(t, f, lane, "landed one")
 	writeWorktreeFile(t, filepath.Join(f.Dir, "f.txt"), "someone's work\n")
 	writeWorktreeFile(t, filepath.Join(f.Dir, "untracked.txt"), "more\n")
-	before := mustRun(t, f.Dir, "git", "status", "--porcelain")
+	before := mustRun(t, f.Env(), f.Dir, "git", "status", "--porcelain")
 
-	_, err := runWorktreeCmd(t, "park")
+	_, err := runWorktreeCmd(t, f, "park")
 	if err == nil {
 		t.Fatal("park over a dirty trunk holder succeeded")
 	}
 	if !strings.Contains(err.Error(), "2 uncommitted files") {
 		t.Errorf("park error = %v, want the uncommitted count named", err)
 	}
-	if after := mustRun(t, f.Dir, "git", "status", "--porcelain"); after != before {
+	if after := mustRun(t, f.Env(), f.Dir, "git", "status", "--porcelain"); after != before {
 		t.Errorf("status = %q, want the %q it was before", after, before)
 	}
-	if branch := strings.TrimSpace(mustRun(t, f.Dir, "git", "branch", "--show-current")); branch != "main" {
+	if branch := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "git", "branch", "--show-current")); branch != "main" {
 		t.Errorf("branch = %q, want main still held", branch)
 	}
 }
@@ -817,20 +843,20 @@ func TestWorktreeParkRefusesUncommittedWork(t *testing.T) {
 // than the tree: the fast-forward park runs would drop them.
 func TestWorktreeParkRefusesForeignCommits(t *testing.T) {
 	f, _ := parkRepo(t)
-	mustRun(t, f.Dir, "git", "commit", "-q", "--allow-empty", "-m", "parked work one")
-	head := mustRun(t, f.Dir, "git", "rev-parse", "refs/heads/main")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--allow-empty", "-m", "parked work one")
+	head := mustRun(t, f.Env(), f.Dir, "git", "rev-parse", "refs/heads/main")
 
-	_, err := runWorktreeCmd(t, "park")
+	_, err := runWorktreeCmd(t, f, "park")
 	if err == nil {
 		t.Fatal("park over a contaminated trunk succeeded")
 	}
 	if !strings.Contains(err.Error(), "parked work one") {
 		t.Errorf("park error = %v, want the foreign commit named", err)
 	}
-	if got := mustRun(t, f.Dir, "git", "rev-parse", "refs/heads/main"); got != head {
+	if got := mustRun(t, f.Env(), f.Dir, "git", "rev-parse", "refs/heads/main"); got != head {
 		t.Errorf("refs/heads/main = %q, want the %q it was before", got, head)
 	}
-	if branch := strings.TrimSpace(mustRun(t, f.Dir, "git", "branch", "--show-current")); branch != "main" {
+	if branch := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "git", "branch", "--show-current")); branch != "main" {
 		t.Errorf("branch = %q, want main still held", branch)
 	}
 }
@@ -840,22 +866,22 @@ func TestWorktreeParkRefusesForeignCommits(t *testing.T) {
 // move HEAD under the other.
 func TestWorktreeParkRefusesSeveralHolders(t *testing.T) {
 	f, lane := parkRepo(t)
-	landOnRemoteTrunk(t, lane, "landed one")
+	landOnRemoteTrunk(t, f, lane, "landed one")
 	second := f.WorktreePath("second")
-	mustRun(t, f.Dir, "git", "worktree", "add", "--force", "-f", second, "main")
-	head := mustRun(t, f.Dir, "git", "rev-parse", "refs/heads/main")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "--force", "-f", second, "main")
+	head := mustRun(t, f.Env(), f.Dir, "git", "rev-parse", "refs/heads/main")
 
-	_, err := runWorktreeCmd(t, "park")
+	_, err := runWorktreeCmd(t, f, "park")
 	if err == nil {
 		t.Fatal("park over two trunk holders succeeded")
 	}
 	if !strings.Contains(err.Error(), "2 working copies hold main") {
 		t.Errorf("park error = %v, want both holders named", err)
 	}
-	if got := mustRun(t, f.Dir, "git", "rev-parse", "refs/heads/main"); got != head {
+	if got := mustRun(t, f.Env(), f.Dir, "git", "rev-parse", "refs/heads/main"); got != head {
 		t.Errorf("refs/heads/main = %q, want the %q it was before", got, head)
 	}
-	if branch := strings.TrimSpace(mustRun(t, f.Dir, "git", "branch", "--show-current")); branch != "main" {
+	if branch := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "git", "branch", "--show-current")); branch != "main" {
 		t.Errorf("branch = %q, want main still held", branch)
 	}
 }
@@ -865,18 +891,18 @@ func TestWorktreeParkRefusesSeveralHolders(t *testing.T) {
 // park to detach a checkout full of unsaved work.
 func TestWorktreeParkSeesUntrackedWorkUnderAHidingConfig(t *testing.T) {
 	f, lane := parkRepo(t)
-	landOnRemoteTrunk(t, lane, "landed one")
-	mustRun(t, f.Dir, "git", "config", "status.showUntrackedFiles", "no")
+	landOnRemoteTrunk(t, f, lane, "landed one")
+	mustRun(t, f.Env(), f.Dir, "git", "config", "status.showUntrackedFiles", "no")
 	writeWorktreeFile(t, filepath.Join(f.Dir, "untracked.txt"), "unsaved\n")
 
-	_, err := runWorktreeCmd(t, "park")
+	_, err := runWorktreeCmd(t, f, "park")
 	if err == nil {
 		t.Fatal("park over a holder with untracked work succeeded")
 	}
 	if !strings.Contains(err.Error(), "1 uncommitted file") {
 		t.Errorf("park error = %v, want the untracked file counted", err)
 	}
-	if branch := strings.TrimSpace(mustRun(t, f.Dir, "git", "branch", "--show-current")); branch != "main" {
+	if branch := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "git", "branch", "--show-current")); branch != "main" {
 		t.Errorf("branch = %q, want main still held", branch)
 	}
 }
@@ -884,9 +910,10 @@ func TestWorktreeParkSeesUntrackedWorkUnderAHidingConfig(t *testing.T) {
 // TestWorktreeParkOnAFreeTrunkIsANoop keeps the command idempotent: a trunk no
 // working copy holds is the state park exists to reach.
 func TestWorktreeParkOnAFreeTrunkIsANoop(t *testing.T) {
-	vcstest.Repo(t, vcstest.Remote(), vcstest.Detached())
+	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Detached())
+	f.Isolate(t)
 
-	out, err := runWorktreeCmd(t, "park")
+	out, err := runWorktreeCmd(t, f, "park")
 	if err != nil {
 		t.Fatalf("park error = %v", err)
 	}

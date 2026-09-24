@@ -14,10 +14,10 @@ func dryRunFixture(t *testing.T) *vcstest.Fixture {
 	t.Helper()
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "a", "b", "c")
-	mustRun(t, f.Dir, "git", "switch", "-q", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a")
 	writeShipFile(t, f.Dir, "a.txt", "moved on\n")
-	mustRun(t, f.Dir, "git", "commit", "-qam", "a moves on")
-	mustRun(t, f.Dir, "git", "switch", "-q", "c")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qam", "a moves on")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "c")
 	shipGTReady(t, f)
 	return f
 }
@@ -26,12 +26,12 @@ func dryRunFixture(t *testing.T) *vcstest.Fixture {
 // claim is graded against.
 func dryRunRefs(t *testing.T, f *vcstest.Fixture) string {
 	t.Helper()
-	return gitAt(t, f.Dir, "for-each-ref", "--format=%(refname) %(objectname)")
+	return gitAt(t, f.Env(), f.Dir, "for-each-ref", "--format=%(refname) %(objectname)")
 }
 
-func dryRunReport(t *testing.T, args ...string) string {
+func dryRunReport(t *testing.T, f *vcstest.Fixture, args ...string) string {
 	t.Helper()
-	out, errOut, err := runShipCmdFull(t, append([]string{"--dry-run"}, args...)...)
+	out, errOut, err := runShipCmdFull(t, f.Context(), append([]string{"--dry-run"}, args...)...)
 	if err != nil {
 		t.Fatalf("ship --dry-run error = %v\n%s", err, errOut)
 	}
@@ -67,14 +67,14 @@ func dryRunBranches(report, label string) []string {
 func TestShipDryRunMovesNoRef(t *testing.T) {
 	f := dryRunFixture(t)
 	refs := dryRunRefs(t, f)
-	tree := gitAt(t, f.Dir, "status", "--porcelain")
+	tree := gitAt(t, f.Env(), f.Dir, "status", "--porcelain")
 
-	report := dryRunReport(t, "-m", "fix: frobnicate")
+	report := dryRunReport(t, f, "-m", "fix: frobnicate")
 
 	if got := dryRunRefs(t, f); got != refs {
 		t.Errorf("refs moved across a dry run:\n got: %s\nwant: %s", got, refs)
 	}
-	if got := gitAt(t, f.Dir, "status", "--porcelain"); got != tree {
+	if got := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); got != tree {
 		t.Errorf("working copy moved across a dry run:\n got: %s\nwant: %s", got, tree)
 	}
 	invocations := shipGTInvocations(t, f)
@@ -99,7 +99,7 @@ func TestShipDryRunNamesTheTrackParent(t *testing.T) {
 	shipGTUntracked(t, f, "c")
 	shipGTReady(t, f)
 
-	report := dryRunReport(t, "-m", "fix: frobnicate")
+	report := dryRunReport(t, f, "-m", "fix: frobnicate")
 
 	parent := dryRunValues(report, "parent")
 	if len(parent) != 1 {
@@ -120,9 +120,9 @@ func TestShipDryRunSeparatesTheStagedIndex(t *testing.T) {
 	f := dryRunFixture(t)
 	writeShipFile(t, f.Dir, "named.txt", "named\n")
 	writeShipFile(t, f.Dir, "foreign.txt", "another lane\n")
-	mustRun(t, f.Dir, "git", "add", "foreign.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "foreign.txt")
 
-	report := dryRunReport(t, "-m", "fix: frobnicate", "named.txt")
+	report := dryRunReport(t, f, "-m", "fix: frobnicate", "named.txt")
 
 	commit := dryRunValues(report, "commit")
 	if len(commit) != 1 {
@@ -142,10 +142,10 @@ func TestShipDryRunPredictsTheRealShip(t *testing.T) {
 	f := dryRunFixture(t)
 	before := map[string]string{}
 	for _, branch := range []string{"main", "a", "b", "c"} {
-		before[branch] = gitAt(t, f.Dir, "rev-parse", branch)
+		before[branch] = gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
 	}
 
-	report := dryRunReport(t, "-m", "fix: frobnicate", "--no-push")
+	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--no-push")
 	predicted := map[string]bool{}
 	for _, name := range dryRunBranches(report, "restack") {
 		predicted[name] = true
@@ -155,14 +155,14 @@ func TestShipDryRunPredictsTheRealShip(t *testing.T) {
 	}
 
 	shipResetLog(t, f)
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push"); err != nil {
+	if _, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 
 	// c carries the commit, so it moves whether or not it is restacked.
 	predicted["c"] = true
 	for branch, was := range before {
-		moved := gitAt(t, f.Dir, "rev-parse", branch) != was
+		moved := gitAt(t, f.Env(), f.Dir, "rev-parse", branch) != was
 		if moved != predicted[branch] {
 			t.Errorf("%s moved = %v, dry run predicted %v", branch, moved, predicted[branch])
 		}
@@ -174,13 +174,13 @@ func TestShipDryRunPredictsTheRealShip(t *testing.T) {
 // stands. Ownership is the working copy holding the branch: one shared account
 // authors every lane, so the path is the only field telling them apart.
 func TestShipDryRunNamesTheMovingPRHeads(t *testing.T) {
-	dryRunFixture(t)
+	f := dryRunFixture(t)
 	stub := stubGTAPI(t)
 	stub.prs["a"] = 20001
 	stub.prs["b"] = 22285
 	stub.prs["c"] = 23277
 
-	report := dryRunReport(t, "-m", "fix: frobnicate")
+	report := dryRunReport(t, f, "-m", "fix: frobnicate")
 
 	heads := dryRunValues(report, "pr head")
 	if len(heads) != 3 {
@@ -212,11 +212,11 @@ func TestShipDryRunNamesTheMovingPRHeads(t *testing.T) {
 // title is the first, which is how a pull request has gone out under a title
 // nobody recognized.
 func TestShipDryRunNamesTheDerivedTitles(t *testing.T) {
-	dryRunFixture(t)
+	f := dryRunFixture(t)
 	stub := stubGTAPI(t)
 	stub.prs["b"] = 22285
 
-	report := dryRunReport(t, "-m", "fix: frobnicate")
+	report := dryRunReport(t, f, "-m", "fix: frobnicate")
 
 	creates := dryRunValues(report, "pr new")
 	want := []string{
@@ -240,20 +240,20 @@ func TestShipDryRunNamesTheDerivedTitles(t *testing.T) {
 func TestShipDryRunNamesTheRewrittenPaths(t *testing.T) {
 	f := shipGTRepo(t)
 	writeShipFile(t, f.Dir, "gen.txt", "rendered\n")
-	mustRun(t, f.Dir, "git", "add", "gen.txt")
-	mustRun(t, f.Dir, "git", "commit", "-qm", "render")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "gen.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "render")
 	shipGTStack(t, f, "a")
-	mustRun(t, f.Dir, "git", "switch", "-qc", "b")
-	mustRun(t, f.Dir, "git", "rm", "-q", "gen.txt")
-	mustRun(t, f.Dir, "git", "commit", "-qm", "b drops the rendered file")
-	mustRun(t, f.Dir, "gt", "track", "-f", "--no-interactive")
-	mustRun(t, f.Dir, "git", "switch", "-q", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "rm", "-q", "gen.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "b drops the rendered file")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a")
 	writeShipFile(t, f.Dir, "gen.txt", "re-rendered\n")
-	mustRun(t, f.Dir, "git", "commit", "-qam", "a re-renders")
-	mustRun(t, f.Dir, "git", "switch", "-q", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qam", "a re-renders")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "b")
 	shipGTReady(t, f)
 
-	report := dryRunReport(t, "-m", "fix: frobnicate", "--no-push")
+	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--no-push")
 
 	if got := dryRunValues(report, "rewrites"); len(got) != 1 || got[0] != "gen.txt" {
 		t.Errorf("rewrites = %v, want exactly gen.txt", got)
@@ -269,13 +269,13 @@ func TestShipDryRunReportsTheRefusalTheRealRunMakes(t *testing.T) {
 	f := dryRunFixture(t)
 	writeShipFile(t, f.Dir, "untracked.txt", "another lane\n")
 
-	report := dryRunReport(t, "--no-commit")
+	report := dryRunReport(t, f, "--no-commit")
 	refusals := dryRunValues(report, "refuses")
 	if len(refusals) != 1 {
 		t.Fatalf("refuses lines = %v, want the one --no-commit earns over a dirty working copy", refusals)
 	}
 
-	_, _, err := runShipCmdFull(t, "--no-commit")
+	_, _, err := runShipCmdFull(t, f.Context(), "--no-commit")
 	if err == nil {
 		t.Fatal("the real ship accepted a dirty working copy under --no-commit")
 	}
@@ -293,7 +293,7 @@ func TestShipDryRunReportsAnEmptyCommit(t *testing.T) {
 	shipGTLevel(t, f, "a")
 	shipResetLog(t, f)
 
-	report := dryRunReport(t, "-m", "fix: frobnicate", "--no-push")
+	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--no-push")
 
 	refusals := dryRunValues(report, "refuses")
 	if len(refusals) != 1 || !strings.Contains(refusals[0], "nothing to commit") {
@@ -310,7 +310,7 @@ func TestShipDryRunSaysAnEmptyCommitShipsWhenTheBranchIsAhead(t *testing.T) {
 	shipGTStack(t, f, "a")
 	shipResetLog(t, f)
 
-	report := dryRunReport(t, "-m", "fix: frobnicate", "--no-push")
+	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--no-push")
 
 	if got := dryRunValues(report, "refuses"); len(got) != 0 {
 		t.Errorf("refuses lines = %v, want none — the branch is ahead of trunk, so the run ships it", got)
@@ -325,9 +325,9 @@ func TestShipDryRunSaysAnEmptyCommitShipsWhenTheBranchIsAhead(t *testing.T) {
 // the refusal lines must be absent when there is nothing to refuse, or they
 // would read as noise and be ignored when they matter.
 func TestShipDryRunReportsNoRefusalWhenTheShipWouldRun(t *testing.T) {
-	dryRunFixture(t)
+	f := dryRunFixture(t)
 
-	report := dryRunReport(t, "-m", "fix: frobnicate", "--no-push")
+	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--no-push")
 
 	if got := dryRunValues(report, "refuses"); len(got) != 0 {
 		t.Errorf("refuses lines = %v, want none on a ship that would run", got)

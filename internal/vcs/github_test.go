@@ -281,10 +281,11 @@ func TestRepoOwnership(t *testing.T) {
 // so the recorded PostPushr membership must still affiliate an owner spelled
 // postpushr, and the recorded yasyf an owner spelled YASYF.
 func TestViewerAffiliation(t *testing.T) {
-	vcstest.Repo(t)
+	f := vcstest.Repo(t)
+	f.Isolate(t)
 	ghReplay(t, map[string][]string{"api graphql": {"viewer-graphql"}})
 
-	v, err := lookupViewer(context.Background(), false)
+	v, err := lookupViewer(f.Context(), false)
 	if err != nil {
 		t.Fatalf("lookupViewer: %v", err)
 	}
@@ -327,6 +328,7 @@ func TestViewerAffiliation(t *testing.T) {
 // rather than on a call count.
 func TestLookupRepoCaches(t *testing.T) {
 	f := vcstest.Repo(t)
+	f.Isolate(t)
 	log := ghReplay(t, map[string][]string{
 		"repo view":   {"repo-view-own", "repo-view-foreign", "repo-view-own"},
 		"api graphql": {"viewer-graphql", "viewer-graphql"},

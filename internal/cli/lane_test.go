@@ -170,9 +170,9 @@ func assertGTCommit(t *testing.T, invocations [][]string) {
 
 func TestShipGateDemotesForeignRepo(t *testing.T) {
 	f := shipGTFeature(t)
-	seedLaneRecords(t, ".", foreignRepo)
+	seedLaneRecords(t, f.Dir, foreignRepo)
 
-	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push")
+	out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -182,7 +182,7 @@ func TestShipGateDemotesForeignRepo(t *testing.T) {
 	}
 	invocations := shipGTInvocations(t, f)
 	assertNoGT(t, invocations)
-	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
+	if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
 		t.Errorf("HEAD subject = %q, want the commit the demoted lane cut itself", subject)
 	}
 }
@@ -200,9 +200,9 @@ func TestShipGateKeepsOwnRepo(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := shipGTFeature(t)
-			seedLaneRecords(t, ".", tt.seed)
+			seedLaneRecords(t, f.Dir, tt.seed)
 
-			got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+			got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -210,7 +210,7 @@ func TestShipGateKeepsOwnRepo(t *testing.T) {
 				t.Errorf("summary = %q, want no lane segment on an undemoted ship", got)
 			}
 			assertGTCommit(t, shipGTInvocations(t, f))
-			if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
+			if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
 				t.Errorf("HEAD subject = %q, want the commit gt cut on feature", subject)
 			}
 		})
@@ -223,13 +223,14 @@ func TestShipGateKeepsOwnRepo(t *testing.T) {
 // system one carries a gh the lookup would then answer from.
 func TestShipGateUnknownKeepsGT(t *testing.T) {
 	f := shipGTFeature(t)
-	clearRepoRecord(t, ".")
+	clearRepoRecord(t, f.Dir)
 	f.OnlyShimPATH(t)
+	t.Setenv("PATH", f.PATH())
 	if path, err := exec.LookPath("gh"); err == nil {
 		t.Fatalf("gh resolved to %s; this test must run with none on PATH", path)
 	}
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push"); err != nil {
+	if _, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	invocations := shipGTInvocations(t, f)
@@ -239,7 +240,7 @@ func TestShipGateUnknownKeepsGT(t *testing.T) {
 			t.Errorf("gh ran with none on PATH: %v", inv)
 		}
 	}
-	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
+	if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
 		t.Errorf("HEAD subject = %q, want the commit gt cut on feature", subject)
 	}
 }
@@ -352,10 +353,10 @@ func TestShipGateProbe(t *testing.T) {
 		t.Run(tt.golden, func(t *testing.T) {
 			g := loadGTGolden(t, tt.golden)
 			f := shipGTFeature(t)
-			clearGTRecord(t, ".")
+			clearGTRecord(t, f.Dir)
 			shipGTAuth(t, f, g)
 
-			out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push")
+			out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -368,7 +369,7 @@ func TestShipGateProbe(t *testing.T) {
 				t.Errorf("report = %q, want it to lead with %q", out, want)
 			}
 			assertNoGTCommit(t, invocations)
-			if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
+			if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
 				t.Errorf("HEAD subject = %q, want the commit the demoted lane cut itself", subject)
 			}
 		})
@@ -381,11 +382,11 @@ func TestShipGateProbe(t *testing.T) {
 // report names the reason so the demotion is never silent.
 func TestShipGateProbeTimeoutDemotes(t *testing.T) {
 	f := shipGTFeature(t)
-	clearGTRecord(t, ".")
+	clearGTRecord(t, f.Dir)
 	shipGTAuthHang(t, f)
 	shortenGTProbe(t)
 
-	out, _, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push")
+	out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -394,7 +395,7 @@ func TestShipGateProbeTimeoutDemotes(t *testing.T) {
 		t.Errorf("report = %q, want it to lead with %q", out, want)
 	}
 	assertNoGTCommit(t, shipGTInvocations(t, f))
-	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
+	if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
 		t.Errorf("HEAD subject = %q, want the commit the demoted lane cut itself", subject)
 	}
 }
@@ -527,11 +528,11 @@ func TestGTReachabilityLocksProbe(t *testing.T) {
 // would ask Graphite anything.
 func TestShipGateRespectsNoGTConfig(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.GT(), vcstest.Remote())
-	seedLaneRecords(t, ".", laneSeed{})
-	runTool(t, f.Dir, "git", "config", nogtKey, "true")
+	seedLaneRecords(t, f.Dir, laneSeed{})
+	runTool(t, f, "git", "config", nogtKey, "true")
 	resetArgvLog(t, f)
 
-	l, err := resolveLane(context.Background(), "ship", f.Dir, false)
+	l, err := resolveLane(f.Context(), "ship", f.Dir, false)
 	if err != nil {
 		t.Fatalf("resolveLane() error = %v", err)
 	}
@@ -659,10 +660,10 @@ func TestKindLabel(t *testing.T) {
 // never builds a stack, so reviews --stack must not go looking for one.
 func TestReviewsStackDeclinesForeignRepo(t *testing.T) {
 	f := shipGTFeature(t)
-	seedLaneRecords(t, ".", foreignRepo)
+	seedLaneRecords(t, f.Dir, foreignRepo)
 	head := shipHead(t, f)
 
-	_, err := runReviewsCmd(t, "--stack")
+	_, err := runReviewsCmdIn(t, f, "--stack")
 	wantErr := "reviews: --stack declined the graphite lane: " + foreignNote
 	if err == nil || err.Error() != wantErr {
 		t.Fatalf("reviews --stack error = %v, want %q", err, wantErr)

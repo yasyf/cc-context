@@ -59,12 +59,13 @@ func requireLiveVCS(t *testing.T, bins ...string) {
 	}
 }
 
-// mustRun runs name with args in dir, failing the test on a nonzero exit, and
-// returns its stdout.
-func mustRun(t *testing.T, dir, name string, args ...string) string {
+// mustRun runs name with args in dir under f's environment, failing the test
+// on a nonzero exit, and returns its stdout.
+func mustRun(t *testing.T, env []string, dir, name string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(name, args...) //nolint:gosec // fixed argv; dir is a TempDir, args are literals
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
 	out, err := cmd.Output()
 	if err != nil {
 		stderr := ""
@@ -77,13 +78,14 @@ func mustRun(t *testing.T, dir, name string, args ...string) string {
 	return string(out)
 }
 
-// runAllowFail runs name with args in dir and tolerates a nonzero exit, for a
-// step whose failure is the point — gt restack stopping in a conflict it is
-// about to have resolved by hand.
-func runAllowFail(t *testing.T, dir, name string, args ...string) {
+// runAllowFail runs name with args in dir under f's environment and tolerates
+// a nonzero exit, for a step whose failure is the point — gt restack stopping
+// in a conflict it is about to have resolved by hand.
+func runAllowFail(t *testing.T, env []string, dir, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...) //nolint:gosec // fixed argv; dir is a TempDir, args are literals
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
 	_ = cmd.Run()
 }
 
@@ -150,11 +152,11 @@ func setupLiveJJRepo(t *testing.T, base, current string) string {
 	t.Setenv("CCX_TEST_APPLY_SELECTION", "1")
 	t.Setenv(envClaudeSessionKey, "")
 
-	mustRun(t, dir, "jj", "git", "init", "--colocate")
+	mustRun(t, nil, dir, "jj", "git", "init", "--colocate")
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte(base), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write base: %v", err)
 	}
-	mustRun(t, dir, "jj", "commit", "-m", "init")
+	mustRun(t, nil, dir, "jj", "commit", "-m", "init")
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte(current), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write current: %v", err)
 	}
@@ -164,7 +166,7 @@ func setupLiveJJRepo(t *testing.T, base, current string) string {
 
 func jjFileShow(t *testing.T, dir, rev string) string {
 	t.Helper()
-	return mustRun(t, dir, "jj", "file", "show", "-r", rev, "--", "f.txt")
+	return mustRun(t, nil, dir, "jj", "file", "show", "-r", rev, "--", "f.txt")
 }
 
 func TestShipJJPreflightRefusalAndEmptyGuardLive(t *testing.T) {
@@ -183,53 +185,53 @@ func TestShipJJPreflightRefusalAndEmptyGuardLive(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv(envClaudeSessionKey, "")
 
-	mustRun(t, base, "git", "init", "--bare", "--initial-branch=main", remote)
+	mustRun(t, nil, base, "git", "init", "--bare", "--initial-branch=main", remote)
 	if err := os.Mkdir(seed, 0o750); err != nil {
 		t.Fatalf("mkdir seed: %v", err)
 	}
-	mustRun(t, seed, "git", "init", "--initial-branch=main")
+	mustRun(t, nil, seed, "git", "init", "--initial-branch=main")
 	if err := os.WriteFile(filepath.Join(seed, "f.txt"), []byte("base\n"), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write base: %v", err)
 	}
-	mustRun(t, seed, "git", "add", "f.txt")
-	mustRun(t, seed, "git", "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-m", "init")
-	mustRun(t, seed, "git", "branch", "dev")
-	mustRun(t, seed, "git", "remote", "add", "origin", remote)
-	mustRun(t, seed, "git", "push", "origin", "main", "dev")
-	mustRun(t, base, "jj", "git", "clone", "--colocate", remote, clone)
+	mustRun(t, nil, seed, "git", "add", "f.txt")
+	mustRun(t, nil, seed, "git", "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-m", "init")
+	mustRun(t, nil, seed, "git", "branch", "dev")
+	mustRun(t, nil, seed, "git", "remote", "add", "origin", remote)
+	mustRun(t, nil, seed, "git", "push", "origin", "main", "dev")
+	mustRun(t, nil, base, "jj", "git", "clone", "--colocate", remote, clone)
 	if err := os.WriteFile(filepath.Join(clone, "f.txt"), []byte("edited\n"), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write edit: %v", err)
 	}
 	t.Chdir(clone)
 
-	before, err := strconv.Atoi(strings.TrimSpace(mustRun(t, base, "git", "--git-dir="+remote, "rev-list", "--count", "main")))
+	before, err := strconv.Atoi(strings.TrimSpace(mustRun(t, nil, base, "git", "--git-dir="+remote, "rev-list", "--count", "main")))
 	if err != nil {
 		t.Fatalf("parse initial remote commit count: %v", err)
 	}
-	opBefore := strings.TrimSpace(mustRun(t, clone, "jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate))
-	_, err = runShipCmd(t, "-m", "x", "--no-watch")
+	opBefore := strings.TrimSpace(mustRun(t, nil, clone, "jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate))
+	_, err = runShipCmd(t, context.Background(), "-m", "x", "--no-watch")
 	if err == nil || !strings.Contains(err.Error(), "cannot resolve the trunk bookmark") {
 		t.Fatalf("first ship error = %v, want trunk resolution refusal", err)
 	}
-	if diff := mustRun(t, clone, "jj", "diff", "--name-only"); !strings.Contains(diff, "f.txt") {
+	if diff := mustRun(t, nil, clone, "jj", "diff", "--name-only"); !strings.Contains(diff, "f.txt") {
 		t.Errorf("jj diff after refusal = %q, want f.txt edit", diff)
 	}
-	afterRefusal, err := strconv.Atoi(strings.TrimSpace(mustRun(t, base, "git", "--git-dir="+remote, "rev-list", "--count", "main")))
+	afterRefusal, err := strconv.Atoi(strings.TrimSpace(mustRun(t, nil, base, "git", "--git-dir="+remote, "rev-list", "--count", "main")))
 	if err != nil {
 		t.Fatalf("parse post-refusal remote commit count: %v", err)
 	}
 	if afterRefusal != before {
 		t.Errorf("remote main count after refusal = %d, want %d", afterRefusal, before)
 	}
-	opAfter := strings.TrimSpace(mustRun(t, clone, "jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate))
+	opAfter := strings.TrimSpace(mustRun(t, nil, clone, "jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate))
 	if opAfter != opBefore {
 		t.Errorf("jj operation after refusal = %q, want unchanged %q", opAfter, opBefore)
 	}
 
-	if _, err := runShipCmd(t, "-m", "x", "--no-watch", "--bookmark", "main"); err != nil {
+	if _, err := runShipCmd(t, context.Background(), "-m", "x", "--no-watch", "--bookmark", "main"); err != nil {
 		t.Fatalf("second ship error = %v", err)
 	}
-	afterPush, err := strconv.Atoi(strings.TrimSpace(mustRun(t, base, "git", "--git-dir="+remote, "rev-list", "--count", "main")))
+	afterPush, err := strconv.Atoi(strings.TrimSpace(mustRun(t, nil, base, "git", "--git-dir="+remote, "rev-list", "--count", "main")))
 	if err != nil {
 		t.Fatalf("parse post-push remote commit count: %v", err)
 	}
@@ -237,7 +239,7 @@ func TestShipJJPreflightRefusalAndEmptyGuardLive(t *testing.T) {
 		t.Errorf("remote main count after push = %d, want %d", afterPush, before+1)
 	}
 
-	_, err = runShipCmd(t, "-m", "y", "--no-watch")
+	_, err = runShipCmd(t, context.Background(), "-m", "y", "--no-watch")
 	if err == nil || !strings.Contains(err.Error(), "nothing to commit, and @- carries nothing above main — nothing to submit") {
 		t.Fatalf("third ship error = %v, want empty ship refusal", err)
 	}
@@ -269,24 +271,24 @@ func TestShipJJAutoTrackUntrackedLive(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv(envClaudeSessionKey, "")
 
-	mustRun(t, base, "git", "init", "--bare", "--initial-branch=main", remote)
+	mustRun(t, nil, base, "git", "init", "--bare", "--initial-branch=main", remote)
 	if err := os.Mkdir(seed, 0o750); err != nil {
 		t.Fatalf("mkdir seed: %v", err)
 	}
-	mustRun(t, seed, "git", "init", "--initial-branch=main")
+	mustRun(t, nil, seed, "git", "init", "--initial-branch=main")
 	if err := os.WriteFile(filepath.Join(seed, "f.txt"), []byte("base\n"), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write base: %v", err)
 	}
-	mustRun(t, seed, "git", "add", "f.txt")
-	mustRun(t, seed, "git", "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-m", "init")
-	mustRun(t, seed, "git", "remote", "add", "origin", remote)
-	mustRun(t, seed, "git", "push", "origin", "main")
+	mustRun(t, nil, seed, "git", "add", "f.txt")
+	mustRun(t, nil, seed, "git", "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-m", "init")
+	mustRun(t, nil, seed, "git", "remote", "add", "origin", remote)
+	mustRun(t, nil, seed, "git", "push", "origin", "main")
 
 	// A git clone imports origin/main as a git remote-tracking ref; jj git init
 	// --colocate then sees a local main bookmark but leaves main@origin untracked.
-	mustRun(t, base, "git", "clone", remote, clone)
-	mustRun(t, clone, "jj", "git", "init", "--colocate")
-	if before := mustRun(t, clone, "jj", "bookmark", "list", "--remote", "origin", "-T", jjRemoteBookmarkTemplate); !strings.Contains(before, "origin\tuntracked") {
+	mustRun(t, nil, base, "git", "clone", remote, clone)
+	mustRun(t, nil, clone, "jj", "git", "init", "--colocate")
+	if before := mustRun(t, nil, clone, "jj", "bookmark", "list", "--remote", "origin", "-T", jjRemoteBookmarkTemplate); !strings.Contains(before, "origin\tuntracked") {
 		t.Fatalf("precondition: main@origin should be untracked, got %q", before)
 	}
 	if err := os.WriteFile(filepath.Join(clone, "f.txt"), []byte("edited\n"), 0o644); err != nil { //nolint:gosec // test fixture
@@ -294,23 +296,23 @@ func TestShipJJAutoTrackUntrackedLive(t *testing.T) {
 	}
 	t.Chdir(clone)
 
-	before, err := strconv.Atoi(strings.TrimSpace(mustRun(t, base, "git", "--git-dir="+remote, "rev-list", "--count", "main")))
+	before, err := strconv.Atoi(strings.TrimSpace(mustRun(t, nil, base, "git", "--git-dir="+remote, "rev-list", "--count", "main")))
 	if err != nil {
 		t.Fatalf("parse initial remote commit count: %v", err)
 	}
 
-	if _, err := runShipCmd(t, "-m", "x", "--no-watch"); err != nil {
+	if _, err := runShipCmd(t, context.Background(), "-m", "x", "--no-watch"); err != nil {
 		t.Fatalf("ship error = %v, want auto-track then successful push", err)
 	}
 
-	after, err := strconv.Atoi(strings.TrimSpace(mustRun(t, base, "git", "--git-dir="+remote, "rev-list", "--count", "main")))
+	after, err := strconv.Atoi(strings.TrimSpace(mustRun(t, nil, base, "git", "--git-dir="+remote, "rev-list", "--count", "main")))
 	if err != nil {
 		t.Fatalf("parse post-push remote commit count: %v", err)
 	}
 	if after != before+1 {
 		t.Errorf("remote main count after push = %d, want %d", after, before+1)
 	}
-	tracked := mustRun(t, clone, "jj", "bookmark", "list", "--remote", "origin", "--tracked", "-T", jjRemoteBookmarkTemplate)
+	tracked := mustRun(t, nil, clone, "jj", "bookmark", "list", "--remote", "origin", "--tracked", "-T", jjRemoteBookmarkTemplate)
 	if !strings.Contains(tracked, "origin\ttracked") {
 		t.Errorf("main@origin should be tracked after ship, got %q", tracked)
 	}
@@ -339,24 +341,24 @@ func TestJJTrackUntrackedAtNameLive(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv(envClaudeSessionKey, "")
 
-	mustRun(t, base, "git", "init", "--bare", "--initial-branch=main", remote)
+	mustRun(t, nil, base, "git", "init", "--bare", "--initial-branch=main", remote)
 	if err := os.Mkdir(seed, 0o750); err != nil {
 		t.Fatalf("mkdir seed: %v", err)
 	}
-	mustRun(t, seed, "git", "init", "--initial-branch=main")
+	mustRun(t, nil, seed, "git", "init", "--initial-branch=main")
 	if err := os.WriteFile(filepath.Join(seed, "f.txt"), []byte("base\n"), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write base: %v", err)
 	}
-	mustRun(t, seed, "git", "add", "f.txt")
-	mustRun(t, seed, "git", "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-m", "init")
-	mustRun(t, seed, "git", "branch", branch)
-	mustRun(t, seed, "git", "remote", "add", "origin", remote)
-	mustRun(t, seed, "git", "push", "origin", "main", branch)
+	mustRun(t, nil, seed, "git", "add", "f.txt")
+	mustRun(t, nil, seed, "git", "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-m", "init")
+	mustRun(t, nil, seed, "git", "branch", branch)
+	mustRun(t, nil, seed, "git", "remote", "add", "origin", remote)
+	mustRun(t, nil, seed, "git", "push", "origin", "main", branch)
 
-	mustRun(t, base, "git", "clone", remote, clone)
-	mustRun(t, clone, "jj", "git", "init", "--colocate")
+	mustRun(t, nil, base, "git", "clone", remote, clone)
+	mustRun(t, nil, clone, "jj", "git", "init", "--colocate")
 	pat := vcs.JJExactPattern(branch)
-	if before := mustRun(t, clone, "jj", "bookmark", "list", pat, "--all-remotes", "-T", jjRemoteBookmarkTemplate); !strings.Contains(before, "origin\tuntracked") {
+	if before := mustRun(t, nil, clone, "jj", "bookmark", "list", pat, "--all-remotes", "-T", jjRemoteBookmarkTemplate); !strings.Contains(before, "origin\tuntracked") {
 		t.Fatalf("precondition: %s@origin should be untracked, got %q", branch, before)
 	}
 	t.Chdir(clone)
@@ -364,7 +366,7 @@ func TestJJTrackUntrackedAtNameLive(t *testing.T) {
 	if err := jjTrackUntrackedTarget(context.Background(), render.Dir(clone), branch); err != nil {
 		t.Fatalf("jjTrackUntrackedTarget(%q) = %v, want nil", branch, err)
 	}
-	after := mustRun(t, clone, "jj", "bookmark", "list", pat, "--all-remotes", "-T", jjRemoteBookmarkTemplate)
+	after := mustRun(t, nil, clone, "jj", "bookmark", "list", pat, "--all-remotes", "-T", jjRemoteBookmarkTemplate)
 	if !strings.Contains(after, "origin\ttracked") {
 		t.Errorf("%s@origin should be tracked after track, got %q", branch, after)
 	}
@@ -430,7 +432,7 @@ func TestShipJJHunkScopedLive(t *testing.T) {
 			}
 			before := statOf(t, "f.txt")
 
-			if _, err := runShipCmd(t, "-m", "partial ship", "--no-push", tt.flag, refs[tt.hunkIdx], "f.txt"); err != nil {
+			if _, err := runShipCmd(t, context.Background(), "-m", "partial ship", "--no-push", tt.flag, refs[tt.hunkIdx], "f.txt"); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 
@@ -461,18 +463,18 @@ func setupLiveGitRepo(t *testing.T, base, current string) string {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv(envClaudeSessionKey, "")
 
-	mustRun(t, dir, "git", "init", "-q")
-	mustRun(t, dir, "git", "config", "user.email", "t@t.t")
-	mustRun(t, dir, "git", "config", "user.name", "t")
+	mustRun(t, nil, dir, "git", "init", "-q")
+	mustRun(t, nil, dir, "git", "config", "user.email", "t@t.t")
+	mustRun(t, nil, dir, "git", "config", "user.name", "t")
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte(base), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write base: %v", err)
 	}
-	mustRun(t, dir, "git", "add", "f.txt")
-	mustRun(t, dir, "git", "commit", "-qm", "init")
+	mustRun(t, nil, dir, "git", "add", "f.txt")
+	mustRun(t, nil, dir, "git", "commit", "-qm", "init")
 	if err := os.WriteFile(filepath.Join(dir, "staged.txt"), []byte("staged\n"), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write staged: %v", err)
 	}
-	mustRun(t, dir, "git", "add", "staged.txt")
+	mustRun(t, nil, dir, "git", "add", "staged.txt")
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte(current), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write current: %v", err)
 	}
@@ -540,11 +542,11 @@ func TestShipGitHunkScopedLive(t *testing.T) {
 			}
 			before := statOf(t, "f.txt")
 
-			if _, err := runShipCmd(t, "-m", "partial ship", "--no-push", tt.flag, refs[tt.hunkIdx], "f.txt"); err != nil {
+			if _, err := runShipCmd(t, context.Background(), "-m", "partial ship", "--no-push", tt.flag, refs[tt.hunkIdx], "f.txt"); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 
-			if got := mustRun(t, dir, "git", "show", "HEAD:f.txt"); got != tt.wantCommitted {
+			if got := mustRun(t, nil, dir, "git", "show", "HEAD:f.txt"); got != tt.wantCommitted {
 				t.Errorf("committed (HEAD:f.txt) = %q, want %q", got, tt.wantCommitted)
 			}
 			if got := readFileStr(t, "f.txt"); got != tt.current {
@@ -561,7 +563,7 @@ func TestShipGitHunkScopedLive(t *testing.T) {
 			if !mapEqual(status, want) {
 				t.Errorf("git status --porcelain = %v, want %v", status, want)
 			}
-			if _, err := runGit(dir, "show", "HEAD:staged.txt"); err == nil {
+			if _, err := runGit(nil, dir, "show", "HEAD:staged.txt"); err == nil {
 				t.Errorf("staged.txt must not be committed, but HEAD:staged.txt resolved")
 			}
 		})
@@ -578,24 +580,24 @@ func TestShipGitNewBranchRollbackLive(t *testing.T) {
 	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv(envClaudeSessionKey, "")
-	mustRun(t, dir, "git", "init", "-q")
-	mustRun(t, dir, "git", "config", "user.email", "t@t.t")
-	mustRun(t, dir, "git", "config", "user.name", "t")
+	mustRun(t, nil, dir, "git", "init", "-q")
+	mustRun(t, nil, dir, "git", "config", "user.email", "t@t.t")
+	mustRun(t, nil, dir, "git", "config", "user.name", "t")
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("a\n"), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write f.txt: %v", err)
 	}
-	mustRun(t, dir, "git", "add", "f.txt")
-	mustRun(t, dir, "git", "commit", "-qm", "init")
+	mustRun(t, nil, dir, "git", "add", "f.txt")
+	mustRun(t, nil, dir, "git", "commit", "-qm", "init")
 	t.Chdir(dir)
-	before := strings.TrimSpace(mustRun(t, dir, "git", "branch", "--show-current"))
+	before := strings.TrimSpace(mustRun(t, nil, dir, "git", "branch", "--show-current"))
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x"); err == nil {
+	if _, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x"); err == nil {
 		t.Fatal("expected the commit to refuse an empty working copy, got nil")
 	}
-	if got := strings.TrimSpace(mustRun(t, dir, "git", "branch", "--show-current")); got != before {
+	if got := strings.TrimSpace(mustRun(t, nil, dir, "git", "branch", "--show-current")); got != before {
 		t.Errorf("checked out %q after the refusal, want %q", got, before)
 	}
-	if out, err := runGit(dir, "rev-parse", "--verify", "refs/heads/feat-x"); err == nil {
+	if out, err := runGit(nil, dir, "rev-parse", "--verify", "refs/heads/feat-x"); err == nil {
 		t.Errorf("feat-x survived the refusal: %s", out)
 	}
 }
@@ -610,17 +612,17 @@ func initSubdirGitRepo(t *testing.T, base, current string) string {
 	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv(envClaudeSessionKey, "")
-	mustRun(t, dir, "git", "init", "-q")
-	mustRun(t, dir, "git", "config", "user.email", "t@t.t")
-	mustRun(t, dir, "git", "config", "user.name", "t")
+	mustRun(t, nil, dir, "git", "init", "-q")
+	mustRun(t, nil, dir, "git", "config", "user.email", "t@t.t")
+	mustRun(t, nil, dir, "git", "config", "user.name", "t")
 	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o750); err != nil {
 		t.Fatalf("mkdir sub: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "sub", "f.txt"), []byte(base), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write base: %v", err)
 	}
-	mustRun(t, dir, "git", "add", "-A")
-	mustRun(t, dir, "git", "commit", "-qm", "init")
+	mustRun(t, nil, dir, "git", "add", "-A")
+	mustRun(t, nil, dir, "git", "commit", "-qm", "init")
 	if err := os.WriteFile(filepath.Join(dir, "sub", "f.txt"), []byte(current), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write current: %v", err)
 	}
@@ -641,14 +643,14 @@ func TestShipGitHunkScopedSubdirLive(t *testing.T) {
 	before := statOf(t, "f.txt")
 
 	// Skip hunk 0 (a->A); the commit keeps only the E change.
-	if _, err := runShipCmd(t, "-m", "partial ship", "--no-push", "--skip-hunk", refs[0], "f.txt"); err != nil {
+	if _, err := runShipCmd(t, context.Background(), "-m", "partial ship", "--no-push", "--skip-hunk", refs[0], "f.txt"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 
-	if got := mustRun(t, dir, "git", "show", "HEAD:sub/f.txt"); got != "a\nb\nc\nd\nE\n" {
+	if got := mustRun(t, nil, dir, "git", "show", "HEAD:sub/f.txt"); got != "a\nb\nc\nd\nE\n" {
 		t.Errorf("committed (HEAD:sub/f.txt) = %q, want %q", got, "a\nb\nc\nd\nE\n")
 	}
-	if _, err := runGit(dir, "show", "HEAD:f.txt"); err == nil {
+	if _, err := runGit(nil, dir, "show", "HEAD:f.txt"); err == nil {
 		t.Errorf("a spurious root-level f.txt was committed")
 	}
 	if got := readFileStr(t, "f.txt"); got != current {
@@ -674,14 +676,14 @@ func initSubdirJJRepo(t *testing.T, base, current string) string {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("CCX_TEST_APPLY_SELECTION", "1")
 	t.Setenv(envClaudeSessionKey, "")
-	mustRun(t, dir, "jj", "git", "init", "--colocate")
+	mustRun(t, nil, dir, "jj", "git", "init", "--colocate")
 	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o750); err != nil {
 		t.Fatalf("mkdir sub: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "sub", "f.txt"), []byte(base), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write base: %v", err)
 	}
-	mustRun(t, dir, "jj", "commit", "-m", "init")
+	mustRun(t, nil, dir, "jj", "commit", "-m", "init")
 	if err := os.WriteFile(filepath.Join(dir, "sub", "f.txt"), []byte(current), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write current: %v", err)
 	}
@@ -701,14 +703,14 @@ func TestShipJJHunkScopedSubdirLive(t *testing.T) {
 	}
 	before := statOf(t, "f.txt")
 
-	if _, err := runShipCmd(t, "-m", "partial ship", "--no-push", "--skip-hunk", refs[0], "f.txt"); err != nil {
+	if _, err := runShipCmd(t, context.Background(), "-m", "partial ship", "--no-push", "--skip-hunk", refs[0], "f.txt"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 
-	if got := mustRun(t, dir, "jj", "file", "show", "-r", "@-", "--", "sub/f.txt"); got != "a\nb\nc\nd\nE\n" {
+	if got := mustRun(t, nil, dir, "jj", "file", "show", "-r", "@-", "--", "sub/f.txt"); got != "a\nb\nc\nd\nE\n" {
 		t.Errorf("committed (@-:sub/f.txt) = %q, want %q", got, "a\nb\nc\nd\nE\n")
 	}
-	if got := mustRun(t, dir, "jj", "file", "show", "-r", "@", "--", "sub/f.txt"); got != current {
+	if got := mustRun(t, nil, dir, "jj", "file", "show", "-r", "@", "--", "sub/f.txt"); got != current {
 		t.Errorf("remainder (@:sub/f.txt) = %q, want %q (the skipped hunk stays in the working copy)", got, current)
 	}
 	if got := readFileStr(t, "f.txt"); got != current {
@@ -719,11 +721,12 @@ func TestShipJJHunkScopedSubdirLive(t *testing.T) {
 	}
 }
 
-// runGit runs git in dir and returns its stdout and error, for probes whose
-// failure is the assertion.
-func runGit(dir string, args ...string) (string, error) {
+// runGit runs git in dir under f's environment and returns its stdout and
+// error, for probes whose failure is the assertion.
+func runGit(env []string, dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...) //nolint:gosec // fixed argv; dir is a TempDir, args are literals
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
 	out, err := cmd.Output()
 	return string(out), err
 }
@@ -731,7 +734,7 @@ func runGit(dir string, args ...string) (string, error) {
 // statusSet returns the porcelain status lines as a set.
 func statusSet(t *testing.T, dir string) map[string]bool {
 	t.Helper()
-	out := mustRun(t, dir, "git", "status", "--porcelain")
+	out := mustRun(t, nil, dir, "git", "status", "--porcelain")
 	set := map[string]bool{}
 	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
 		if line != "" {
@@ -803,15 +806,15 @@ func setupLiveGTRepo(t *testing.T, base string) string {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv(envClaudeSessionKey, "")
 
-	mustRun(t, dir, "git", "init", "-q", "-b", "main")
-	mustRun(t, dir, "git", "config", "user.email", "t@t.t")
-	mustRun(t, dir, "git", "config", "user.name", "t")
+	mustRun(t, nil, dir, "git", "init", "-q", "-b", "main")
+	mustRun(t, nil, dir, "git", "config", "user.email", "t@t.t")
+	mustRun(t, nil, dir, "git", "config", "user.name", "t")
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte(base), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write base: %v", err)
 	}
-	mustRun(t, dir, "git", "add", "f.txt")
-	mustRun(t, dir, "git", "commit", "-qm", "init")
-	mustRun(t, dir, "gt", "init", "--trunk", "main", "--no-interactive")
+	mustRun(t, nil, dir, "git", "add", "f.txt")
+	mustRun(t, nil, dir, "git", "commit", "-qm", "init")
+	mustRun(t, nil, dir, "gt", "init", "--trunk", "main", "--no-interactive")
 	t.Chdir(dir)
 	// The lane gate's reachability probe asks Graphite whether the repo is
 	// submittable, and requireLiveGT deliberately clears GRAPHITE_AUTH_TOKEN;
@@ -856,18 +859,18 @@ func TestShipLiveGT(t *testing.T) {
 		t.Fatalf("write excluded file: %v", err)
 	}
 
-	if _, err := runShipCmd(t, "-m", "first stacked commit", "--no-push", "f.txt"); err != nil {
+	if _, err := runShipCmd(t, context.Background(), "-m", "first stacked commit", "--no-push", "f.txt"); err != nil {
 		t.Fatalf("first ship error = %v", err)
 	}
 
-	branch := strings.TrimSpace(mustRun(t, dir, "git", "branch", "--show-current"))
+	branch := strings.TrimSpace(mustRun(t, nil, dir, "git", "branch", "--show-current"))
 	if branch == "main" {
 		t.Fatal("gt create did not check out a new branch")
 	}
-	if got := mustRun(t, dir, "git", "show", "HEAD:f.txt"); got != "scoped change\n" {
+	if got := mustRun(t, nil, dir, "git", "show", "HEAD:f.txt"); got != "scoped change\n" {
 		t.Errorf("HEAD:f.txt = %q, want %q", got, "scoped change\n")
 	}
-	if _, err := runGit(dir, "show", "HEAD:excluded.txt"); err == nil {
+	if _, err := runGit(nil, dir, "show", "HEAD:excluded.txt"); err == nil {
 		t.Error("excluded.txt must not be committed, but HEAD:excluded.txt resolved")
 	}
 	status := statusSet(t, dir)
@@ -875,7 +878,7 @@ func TestShipLiveGT(t *testing.T) {
 		t.Errorf("git status --porcelain = %v, want excluded.txt untracked", status)
 	}
 
-	stateOut := mustRun(t, dir, "gt", "state")
+	stateOut := mustRun(t, nil, dir, "gt", "state")
 	var state gtState
 	if err := json.Unmarshal([]byte(stateOut), &state); err != nil {
 		t.Fatalf("parse gt state: %v", err)
@@ -891,24 +894,24 @@ func TestShipLiveGT(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("second change\n"), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write second change: %v", err)
 	}
-	if _, err := runShipCmd(t, "-m", "second stacked commit", "--no-push", "f.txt"); err != nil {
+	if _, err := runShipCmd(t, context.Background(), "-m", "second stacked commit", "--no-push", "f.txt"); err != nil {
 		t.Fatalf("second ship error = %v", err)
 	}
-	if got := strings.TrimSpace(mustRun(t, dir, "git", "branch", "--show-current")); got != branch {
+	if got := strings.TrimSpace(mustRun(t, nil, dir, "git", "branch", "--show-current")); got != branch {
 		t.Fatalf("second ship switched branches: now on %q, want %q", got, branch)
 	}
-	log := mustRun(t, dir, "git", "log", "--oneline", "main.."+branch)
+	log := mustRun(t, nil, dir, "git", "log", "--oneline", "main.."+branch)
 	lines := strings.Split(strings.TrimRight(log, "\n"), "\n")
 	if len(lines) != 2 {
 		t.Errorf("commit count on %s = %d, want 2 (gt modify -c appends): %v", branch, len(lines), lines)
 	}
 
-	mustRun(t, dir, "git", "switch", "-q", "main")
-	mustRun(t, dir, "git", "switch", "-q", "-c", "untracked-branch")
+	mustRun(t, nil, dir, "git", "switch", "-q", "main")
+	mustRun(t, nil, dir, "git", "switch", "-q", "-c", "untracked-branch")
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("untracked change\n"), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write untracked change: %v", err)
 	}
-	got, err := runShipCmd(t, "-m", "untracked branch commit", "--no-push", "f.txt")
+	got, err := runShipCmd(t, context.Background(), "-m", "untracked branch commit", "--no-push", "f.txt")
 	if err != nil {
 		t.Fatalf("untracked-branch ship error = %v", err)
 	}
@@ -917,7 +920,7 @@ func TestShipLiveGT(t *testing.T) {
 			t.Errorf("summary = %q, want it to contain %q", got, want)
 		}
 	}
-	stateOut = mustRun(t, dir, "gt", "state")
+	stateOut = mustRun(t, nil, dir, "gt", "state")
 	if err := json.Unmarshal([]byte(stateOut), &state); err != nil {
 		t.Fatalf("parse gt state: %v", err)
 	}
@@ -941,7 +944,7 @@ func TestShipGTHunkScopedLive(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "staged.txt"), []byte("staged\n"), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write staged: %v", err)
 	}
-	mustRun(t, dir, "git", "add", "staged.txt")
+	mustRun(t, nil, dir, "git", "add", "staged.txt")
 	const current = "A\nb\nc\nd\nE\n"
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte(current), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write current: %v", err)
@@ -953,12 +956,12 @@ func TestShipGTHunkScopedLive(t *testing.T) {
 	}
 	before := statOf(t, "f.txt")
 
-	if _, err := runShipCmd(t, "-m", "partial ship", "--no-push", "--only-hunk", refs[0], "f.txt"); err != nil {
+	if _, err := runShipCmd(t, context.Background(), "-m", "partial ship", "--no-push", "--only-hunk", refs[0], "f.txt"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 
 	const wantCommitted = "A\nb\nc\nd\ne\n"
-	if got := mustRun(t, dir, "git", "show", "HEAD:f.txt"); got != wantCommitted {
+	if got := mustRun(t, nil, dir, "git", "show", "HEAD:f.txt"); got != wantCommitted {
 		t.Errorf("committed (HEAD:f.txt) = %q, want %q", got, wantCommitted)
 	}
 	if got := readFileStr(t, "f.txt"); got != current {
@@ -975,7 +978,7 @@ func TestShipGTHunkScopedLive(t *testing.T) {
 	if !mapEqual(status, want) {
 		t.Errorf("git status --porcelain = %v, want %v", status, want)
 	}
-	if _, err := runGit(dir, "show", "HEAD:staged.txt"); err == nil {
+	if _, err := runGit(nil, dir, "show", "HEAD:staged.txt"); err == nil {
 		t.Errorf("staged.txt must not be committed, but HEAD:staged.txt resolved")
 	}
 }

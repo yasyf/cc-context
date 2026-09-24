@@ -210,7 +210,7 @@ type reviewsClient struct {
 var reviewsAPI = ghapi.Default
 
 func resolveReviewsClient(ctx context.Context) (reviewsClient, error) {
-	l, err := resolveLane(ctx, "reviews", workingDir(), false)
+	l, err := resolveLane(ctx, "reviews", workingDir(ctx), false)
 	if err != nil {
 		return reviewsClient{}, err
 	}
@@ -412,7 +412,7 @@ func newReviewTarget(pr ghPullRequest, since time.Time) *prTarget {
 // graphite downstack, skipping (with a note to w) a branch with no open PR
 // rather than failing the whole command.
 func resolveStackReviewTargets(ctx context.Context, w io.Writer, since time.Time) (reviewsClient, []*prTarget, error) {
-	l, err := resolveLane(ctx, "reviews", workingDir(), false)
+	l, err := resolveLane(ctx, "reviews", workingDir(ctx), false)
 	if err != nil {
 		return reviewsClient{}, nil, err
 	}
