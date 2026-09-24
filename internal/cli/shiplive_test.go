@@ -40,7 +40,9 @@ func TestMain(m *testing.M) {
 	gtAPIClient = func() *gtapi.Client {
 		panic("cli: gtAPIClient called without stubGTAPI")
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	vcstest.Cleanup()
+	os.Exit(code)
 }
 
 // requireLiveVCS skips a live test on Windows or when any required binary is off

@@ -93,7 +93,7 @@ func restackAdvanceRemote(t *testing.T, f *vcstest.Fixture, trunk, file, content
 // invocation assertion sees only what restack itself ran.
 func restackReset(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
-	vcstest.Quiesce(t, f.ArgvLog)
+	f.Quiesce(t)
 	restackWrite(t, f.ArgvLog, "")
 }
 
@@ -121,13 +121,13 @@ func restackSiblingPath(t *testing.T, name string) string {
 
 func restackInvocations(t *testing.T, f *vcstest.Fixture) [][]string {
 	t.Helper()
-	vcstest.Quiesce(t, f.ArgvLog)
+	f.Quiesce(t)
 	return vcstest.Invocations(t, f.ArgvLog)
 }
 
 func restackRecords(t *testing.T, f *vcstest.Fixture) []vcstest.Invocation {
 	t.Helper()
-	vcstest.Quiesce(t, f.ArgvLog)
+	f.Quiesce(t)
 	return vcstest.Records(t, f.ArgvLog)
 }
 

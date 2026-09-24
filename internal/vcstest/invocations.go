@@ -1,7 +1,9 @@
 package vcstest
 
 import (
+	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -13,6 +15,10 @@ import (
 // detached child a tool left running past its own exit — gt state's cache
 // refresher spawns four more git processes after gt returns — are all in
 // before the caller reads them.
+//
+// Only a shim holding gt has such a child: ccx waits on every process it
+// starts, and the other tools leave nothing behind, so a fixture without gt
+// reads its log through [Fixture.Quiesce] without paying the window.
 func Quiesce(t *testing.T, log string) {
 	t.Helper()
 	if !waitQuiet(log) {
@@ -33,6 +39,38 @@ func waitQuiet(log string) bool {
 		if info, err := os.Stat(log); err == nil {
 			size = info.Size()
 		}
+		if size == last {
+			stable++
+		} else {
+			stable = 0
+		}
+		last = size
+		time.Sleep(50 * time.Millisecond)
+	}
+	return true
+}
+
+// waitQuietTree is waitQuiet over every file under root rather than one log,
+// for a tree whose writer leaves no log to watch.
+func waitQuietTree(root string) bool {
+	deadline := time.Now().Add(5 * time.Second)
+	last, stable := int64(-1), 0
+	for stable < 6 {
+		if time.Now().After(deadline) {
+			return false
+		}
+		var size int64
+		_ = filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+			size += info.Size() + 1
+			return nil
+		})
 		if size == last {
 			stable++
 		} else {
