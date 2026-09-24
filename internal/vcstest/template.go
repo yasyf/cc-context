@@ -37,6 +37,9 @@ func (c config) base() baseConfig {
 // into each later fixture that wants it. Building it is what a fixture costs —
 // `jj git init --colocate` and `gt init` are a second apiece, and the suite
 // stands up hundreds — while the tree it produces is the same every time.
+// base holds only what buildBase writes: the environment scratch the build
+// runs under sits beside it, since a fixture mints its own and copying one in
+// collides with it.
 type fixtureTemplate struct {
 	base string // holds repo/ and, with an origin, remote.git/
 	home string
@@ -89,7 +92,9 @@ func templateFor(t *testing.T, cfg baseConfig, tools []resolvedTool) *fixtureTem
 	mkdir(t, tmpl.base)
 	mkdir(t, tmpl.home)
 
-	applyEnv(t, tmpl.base, tmpl.home, tools)
+	scratch := filepath.Join(slot, "env")
+	mkdir(t, scratch)
+	applyEnv(t, scratch, tmpl.home, tools)
 	buildBase(t, cfg, tools, tmpl.base)
 	if cfg.gt {
 		// gt's cache refresher outlives gt init and keeps writing under the
