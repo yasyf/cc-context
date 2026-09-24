@@ -301,6 +301,31 @@ func TestWithEnvPATHResolvesTheChildsGit(t *testing.T) {
 	}
 }
 
+// TestWithEnvPATHResolvesEveryBinary covers the tools that have no stub to
+// route around. exec.Command searches the process's PATH and never the one on
+// cmd.Env, so a bare name handed to it ignores the context outright — the
+// resolution has to happen before the child is built, for jj and gt as much as
+// for git.
+func TestWithEnvPATHResolvesEveryBinary(t *testing.T) {
+	t.Parallel()
+	for _, bin := range []string{"jj", "gt", "gh"} {
+		t.Run(bin, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			want := filepath.Join(dir, bin)
+			if err := os.WriteFile(want, []byte("#!/bin/sh\n"), 0o700); err != nil { //nolint:gosec // a fake tool must be executable to be resolved
+				t.Fatalf("write fake %s: %v", bin, err)
+			}
+			ctx := WithEnv(context.Background(), "PATH="+dir)
+			cmd, _, cancel := newCmd(ctx, Ambient, bin, nil, nil)
+			defer cancel()
+			if cmd.Path != want {
+				t.Fatalf("spawned %q, want the context's %s %q", cmd.Path, bin, want)
+			}
+		})
+	}
+}
+
 func TestRunCLIStdin(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses /bin/sh to echo stdin")

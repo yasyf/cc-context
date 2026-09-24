@@ -45,13 +45,15 @@ func For(env []string) Env {
 	return e
 }
 
-// Bin returns the executable to spawn for name: the preferred git for "git",
-// and name itself otherwise, left for exec to resolve against PATH. git is the
+// Bin returns the executable to spawn for name, resolved against e.PATH: the
+// preferred git for "git", and the first match on PATH otherwise. git is the
 // only binary ccx spawns with a stub in the system directories; gt, gh, jj, uv
-// and rg install outside them and already resolve to a real one.
+// and rg install outside them and already resolve to a real one. Resolving
+// here rather than leaving it to exec is what makes e.PATH govern at all —
+// exec.Command searches the process's PATH, never the one on cmd.Env.
 func (e Env) Bin(name string) string {
 	if name != "git" {
-		return name
+		return e.find(name)
 	}
 	key := e.Git + "\x00" + e.PATH
 	if hit, ok := gitCache.Load(key); ok {
@@ -60,6 +62,20 @@ func (e Env) Bin(name string) string {
 	git := e.resolveGit()
 	gitCache.Store(key, git)
 	return git
+}
+
+// find returns name resolved against e.PATH, or name itself when PATH holds no
+// such executable, leaving exec to report the failure in its own words.
+func (e Env) find(name string) string {
+	if strings.ContainsRune(name, filepath.Separator) {
+		return name
+	}
+	for _, dir := range filepath.SplitList(e.PATH) {
+		if candidate := filepath.Join(dir, name); dir != "" && executable(candidate) {
+			return candidate
+		}
+	}
+	return name
 }
 
 // GitPATH returns the PATH a child inherits: the resolved git's directory ahead
