@@ -18,7 +18,7 @@ import (
 func trunkStateRepo(t *testing.T) (repo, lane string, trunk Trunk) {
 	t.Helper()
 	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Worktree("lane"))
-	resolved, err := ResolveTrunk(context.Background(), render.Dir(f.Dir), "origin")
+	resolved, err := ResolveTrunk(f.Context(), render.Dir(f.Dir), "origin")
 	if err != nil {
 		t.Fatalf("ResolveTrunk: %v", err)
 	}

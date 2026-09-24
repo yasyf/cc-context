@@ -242,7 +242,7 @@ func TestShowGit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {
-			got, err := Show(context.Background(), render.Dir(dir), tt.ref)
+			got, err := Show(f.Context(), render.Dir(dir), tt.ref)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("Show(%q) = %+v, want error", tt.ref, got)
@@ -265,7 +265,7 @@ func TestShowGitFlagShapedRef(t *testing.T) {
 	f := vcstest.Repo(t)
 	pwned := filepath.Join(t.TempDir(), "pwned")
 
-	got, err := Show(context.Background(), render.Dir(f.Dir), "--output="+pwned)
+	got, err := Show(f.Context(), render.Dir(f.Dir), "--output="+pwned)
 	if err == nil {
 		t.Fatalf("Show(--output=…) = %+v, want an unknown-revision error", got)
 	}
@@ -284,10 +284,10 @@ func TestShowGitTargetsItsDirNotTheCWD(t *testing.T) {
 	runGit(t, other, "commit", "-qm", "c")
 	f := vcstest.Repo(t)
 
-	if got, err := Show(context.Background(), render.Dir(f.Dir), ""); err == nil {
+	if got, err := Show(f.Context(), render.Dir(f.Dir), ""); err == nil {
 		t.Fatalf("Show(fixture) = %+v, want the root commit to have no range", got)
 	}
-	got, err := Show(context.Background(), render.Dir(other), "")
+	got, err := Show(f.Context(), render.Dir(other), "")
 	if err != nil {
 		t.Fatalf("Show(other) error = %v", err)
 	}
@@ -343,7 +343,7 @@ func TestShowJJ(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {
-			got, err := Show(context.Background(), render.Dir(dir), tt.ref)
+			got, err := Show(f.Context(), render.Dir(dir), tt.ref)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("Show(%q) = %+v, want error", tt.ref, got)
@@ -369,7 +369,7 @@ func TestShowJJNativeRevsetNeverRunsGit(t *testing.T) {
 		t.Fatalf("fixture construction leaked into the argv log: %v", got)
 	}
 
-	if _, err := Show(context.Background(), render.Dir(f.Dir), "@-"); err != nil {
+	if _, err := Show(f.Context(), render.Dir(f.Dir), "@-"); err != nil {
 		t.Fatalf("Show(@-) error = %v", err)
 	}
 

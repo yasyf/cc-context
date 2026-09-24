@@ -566,7 +566,7 @@ func TestWorktreesPrunable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveCheckout(%q): %v", main, err)
 	}
-	got, err := Worktrees(context.Background(), c)
+	got, err := Worktrees(f.Context(), c)
 	if err != nil {
 		t.Fatalf("Worktrees: %v", err)
 	}

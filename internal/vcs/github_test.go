@@ -331,7 +331,7 @@ func TestLookupRepoCaches(t *testing.T) {
 		"repo view":   {"repo-view-own", "repo-view-foreign", "repo-view-own"},
 		"api graphql": {"viewer-graphql", "viewer-graphql"},
 	})
-	ctx := context.Background()
+	ctx := f.Context()
 
 	own := Repo{
 		NameWithOwner:    "yasyf/cc-context",
@@ -402,7 +402,7 @@ func TestLookupRepoSharesOneRecordAcrossWorktrees(t *testing.T) {
 		"repo view":   {"repo-view-own"},
 		"api graphql": {"viewer-graphql"},
 	})
-	ctx := context.Background()
+	ctx := f.Context()
 
 	main, err := LookupRepo(ctx, render.Dir(f.Dir), false)
 	if err != nil {
@@ -427,7 +427,7 @@ func TestLookupRepoUnresolvableName(t *testing.T) {
 	f := vcstest.Repo(t)
 	log := ghReplay(t, map[string][]string{"repo view": {"repo-view-missing"}})
 
-	repo, err := LookupRepo(context.Background(), render.Dir(f.Dir), false)
+	repo, err := LookupRepo(f.Context(), render.Dir(f.Dir), false)
 	if !errors.Is(err, ErrNoGitHub) {
 		t.Fatalf("LookupRepo = %+v, %v; want an error wrapping ErrNoGitHub", repo, err)
 	}

@@ -75,6 +75,7 @@ func Shim(t *testing.T, tools ...string) (binDir, logPath string) {
 	t.Helper()
 	resolveTools(t, tools)
 	binDir, logPath, _ = installShim(t)
+	t.Setenv("PATH", toolPATH(binDir))
 	return binDir, logPath
 }
 
@@ -120,6 +121,12 @@ func resolveTools(t *testing.T, tools []string) []resolvedTool {
 // and log: a fixture's log holds the invocations made while its shim led
 // PATH, and the next call's takes over from there. settles reports whether
 // any installed tool writes to the log past its own exit.
+func (f *Fixture) installShim(t *testing.T) {
+	t.Helper()
+	f.ShimBin, f.ArgvLog, f.settles = installShim(t)
+	f.env = append(f.env, "PATH="+toolPATH(f.ShimBin))
+}
+
 func installShim(t *testing.T) (binDir, logPath string, settles bool) {
 	t.Helper()
 	base := realTempDir(t)
@@ -141,7 +148,6 @@ func installShim(t *testing.T) (binDir, logPath string, settles bool) {
 		}
 	}
 	linkInterpreters(t, binDir, tools)
-	t.Setenv("PATH", toolPATH(binDir))
 	return binDir, logPath, settles
 }
 

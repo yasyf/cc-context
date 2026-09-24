@@ -68,7 +68,7 @@ func TestShimEmptyArgvRoundTrip(t *testing.T) {
 func TestShimPassthrough(t *testing.T) {
 	f := Repo(t)
 
-	sha := strings.TrimSpace(out(t, f.Dir, "git", "rev-parse", "HEAD"))
+	sha := strings.TrimSpace(f.Out(t, "git", "rev-parse", "HEAD"))
 	if len(sha) != 40 {
 		t.Fatalf("rev-parse HEAD = %q, want a 40-hex sha", sha)
 	}
@@ -84,7 +84,7 @@ func TestShimPassthrough(t *testing.T) {
 		t.Errorf("broken git dir stderr = %q, want a fatal: line", stderr)
 	}
 
-	blob := strings.TrimSpace(out(t, f.Dir, "git", "rev-parse", "HEAD:f.txt"))
+	blob := strings.TrimSpace(f.Out(t, "git", "rev-parse", "HEAD:f.txt"))
 	hash := exec.Command("git", "hash-object", "--stdin")
 	hash.Dir = f.Dir
 	hash.Stdin = strings.NewReader("base\n")
@@ -125,7 +125,7 @@ func TestShimDepthSeparatesGTChildren(t *testing.T) {
 		t.Fatalf("fixture construction leaked into the argv log: %v", got)
 	}
 
-	state := out(t, f.Dir, "gt", "state")
+	state := f.Out(t, "gt", "state")
 	if !strings.Contains(state, `"trunk": true`) {
 		t.Fatalf("gt state = %q, want a trunk entry", state)
 	}
@@ -218,14 +218,14 @@ func TestScriptToolNeedsItsInterpreterOnPATH(t *testing.T) {
 	}
 }
 
-func TestIsolateEnvReachesScriptInterpreter(t *testing.T) {
+func TestFixtureEnvReachesScriptInterpreter(t *testing.T) {
 	tool := fakeScriptTool(t)
-	isolateEnv(t, realTempDir(t), resolveTools(t, []string{filepath.Base(tool)}))
+	env := fixtureEnv(t, realTempDir(t), detachedHome(t), resolveTools(t, []string{filepath.Base(tool)}))
 
 	// Fixture construction predates the shim and runs each tool by absolute
-	// path, but already under isolateEnv's PATH — the lane gt init takes.
-	if got := strings.TrimSpace(run(t, t.TempDir(), tool, "--version")); got != "ran --version" {
-		t.Errorf("run under isolateEnv's PATH = %q, want %q", got, "ran --version")
+	// path, but already under the fixture's PATH — the lane gt init takes.
+	if got := strings.TrimSpace(run(t, t.TempDir(), env, tool, "--version")); got != "ran --version" {
+		t.Errorf("run under the fixture's PATH = %q, want %q", got, "ran --version")
 	}
 }
 
@@ -265,14 +265,14 @@ func TestInvocationsConcurrentAppend(t *testing.T) {
 
 func TestRepoShimLeadsBrewFreePATH(t *testing.T) {
 	f := Repo(t)
-	resolved, err := exec.LookPath("git")
+	resolved, err := lookPath(f.PATH(), "git")
 	if err != nil {
-		t.Fatalf("LookPath(git): %v", err)
+		t.Fatalf("lookPath(git): %v", err)
 	}
 	if want := filepath.Join(f.ShimBin, "git"); resolved != want {
-		t.Errorf("LookPath(git) = %q, want the shim at %q", resolved, want)
+		t.Errorf("lookPath(git) = %q, want the shim at %q", resolved, want)
 	}
-	if path := os.Getenv("PATH"); strings.Contains(path, "homebrew") || strings.Contains(path, "Homebrew") {
+	if path := f.PATH(); strings.Contains(path, "homebrew") || strings.Contains(path, "Homebrew") {
 		t.Errorf("PATH = %q, want no brew dir", path)
 	}
 }
@@ -306,7 +306,7 @@ func TestSecondFixtureResolvesToolTheFirstDidNot(t *testing.T) {
 	mustNotSkip(t, "jj after git", func(t *testing.T) {
 		Repo(t)
 		f := Repo(t, JJ())
-		if v := out(t, f.Dir, "jj", "--version"); !strings.HasPrefix(v, "jj ") {
+		if v := f.Out(t, "jj", "--version"); !strings.HasPrefix(v, "jj ") {
 			t.Errorf("jj --version = %q, want a jj version line", v)
 		}
 	})
@@ -317,7 +317,7 @@ func TestSecondFixtureKeepsFirstFixtureTools(t *testing.T) {
 	mustNotSkip(t, "git after jj", func(t *testing.T) {
 		Repo(t, JJ())
 		f := Repo(t, BrokenGitDir())
-		if v := out(t, f.Dir, "jj", "--version"); !strings.HasPrefix(v, "jj ") {
+		if v := f.Out(t, "jj", "--version"); !strings.HasPrefix(v, "jj ") {
 			t.Errorf("jj --version = %q, want a jj version line", v)
 		}
 		got := Invocations(t, f.ArgvLog)
@@ -334,15 +334,15 @@ func TestSecondFixtureShimLeadsABrewFreePATHOverBothToolsets(t *testing.T) {
 		f := Repo(t)
 
 		for _, tool := range []string{"git", "jj"} {
-			resolved, err := exec.LookPath(tool)
+			resolved, err := lookPath(f.PATH(), tool)
 			if err != nil {
-				t.Fatalf("LookPath(%s): %v", tool, err)
+				t.Fatalf("lookPath(%s): %v", tool, err)
 			}
 			if want := filepath.Join(f.ShimBin, tool); resolved != want {
-				t.Errorf("LookPath(%s) = %q, want the second fixture's shim at %q", tool, resolved, want)
+				t.Errorf("lookPath(%s) = %q, want the second fixture's shim at %q", tool, resolved, want)
 			}
 		}
-		path := os.Getenv("PATH")
+		path := f.PATH()
 		if strings.Contains(path, "homebrew") || strings.Contains(path, "Homebrew") {
 			t.Errorf("PATH = %q, want no brew dir", path)
 		}
@@ -367,7 +367,7 @@ func TestSecondFixtureShimWrapsTheRealBinary(t *testing.T) {
 		t.Errorf("the second fixture's construction leaked into the first fixture's log: %v", got)
 	}
 
-	out(t, f2.Dir, "git", "--version")
+	f2.Out(t, "git", "--version")
 	got := Invocations(t, f2.ArgvLog)
 	if want := [][]string{{"git", "--version"}}; !reflect.DeepEqual(got, want) {
 		t.Errorf("second fixture invocations = %v, want %v", got, want)
@@ -478,16 +478,16 @@ func TestRepoStates(t *testing.T) {
 		{
 			name: "default",
 			check: func(t *testing.T, f *Fixture) {
-				if branch := strings.TrimSpace(out(t, f.Dir, "git", "branch", "--show-current")); branch != "main" {
+				if branch := strings.TrimSpace(f.Out(t, "git", "branch", "--show-current")); branch != "main" {
 					t.Errorf("branch = %q, want main", branch)
 				}
-				if count := strings.TrimSpace(out(t, f.Dir, "git", "rev-list", "--count", "HEAD")); count != "1" {
+				if count := strings.TrimSpace(f.Out(t, "git", "rev-list", "--count", "HEAD")); count != "1" {
 					t.Errorf("commit count = %s, want 1", count)
 				}
-				if status := out(t, f.Dir, "git", "status", "--porcelain"); status != "" {
+				if status := f.Out(t, "git", "status", "--porcelain"); status != "" {
 					t.Errorf("status = %q, want clean", status)
 				}
-				if remotes := out(t, f.Dir, "git", "remote"); remotes != "" {
+				if remotes := f.Out(t, "git", "remote"); remotes != "" {
 					t.Errorf("remotes = %q, want none", remotes)
 				}
 			},
@@ -496,7 +496,7 @@ func TestRepoStates(t *testing.T) {
 			name: "master trunk",
 			opts: []Opt{Trunk("master")},
 			check: func(t *testing.T, f *Fixture) {
-				if branch := strings.TrimSpace(out(t, f.Dir, "git", "branch", "--show-current")); branch != "master" {
+				if branch := strings.TrimSpace(f.Out(t, "git", "branch", "--show-current")); branch != "master" {
 					t.Errorf("branch = %q, want master", branch)
 				}
 			},
@@ -505,10 +505,10 @@ func TestRepoStates(t *testing.T) {
 			name: "branch",
 			opts: []Opt{Branch("feat")},
 			check: func(t *testing.T, f *Fixture) {
-				if branch := strings.TrimSpace(out(t, f.Dir, "git", "branch", "--show-current")); branch != "feat" {
+				if branch := strings.TrimSpace(f.Out(t, "git", "branch", "--show-current")); branch != "feat" {
 					t.Errorf("branch = %q, want feat", branch)
 				}
-				out(t, f.Dir, "git", "rev-parse", "--verify", "-q", "refs/heads/main")
+				f.Out(t, "git", "rev-parse", "--verify", "-q", "refs/heads/main")
 			},
 		},
 		{
@@ -524,8 +524,8 @@ func TestRepoStates(t *testing.T) {
 				if count := strings.TrimSpace(out(t, f.RemoteDir, "git", "rev-list", "--count", "main")); count != "1" {
 					t.Errorf("origin commit count = %s, want 1", count)
 				}
-				out(t, f.Dir, "git", "rev-parse", "--verify", "-q", "refs/remotes/origin/main")
-				if head := strings.TrimSpace(out(t, f.Dir, "git", "symbolic-ref", "refs/remotes/origin/HEAD")); head != "refs/remotes/origin/main" {
+				f.Out(t, "git", "rev-parse", "--verify", "-q", "refs/remotes/origin/main")
+				if head := strings.TrimSpace(f.Out(t, "git", "symbolic-ref", "refs/remotes/origin/HEAD")); head != "refs/remotes/origin/main" {
 					t.Errorf("origin/HEAD = %q, want refs/remotes/origin/main", head)
 				}
 			},
@@ -534,7 +534,7 @@ func TestRepoStates(t *testing.T) {
 			name: "no origin head",
 			opts: []Opt{Remote(), NoOriginHead()},
 			check: func(t *testing.T, f *Fixture) {
-				out(t, f.Dir, "git", "rev-parse", "--verify", "-q", "refs/remotes/origin/main")
+				f.Out(t, "git", "rev-parse", "--verify", "-q", "refs/remotes/origin/main")
 				if code, _ := exitCode(t, f.Dir, "git", "symbolic-ref", "-q", "refs/remotes/origin/HEAD"); code != 1 {
 					t.Errorf("symbolic-ref origin/HEAD exit = %d, want 1", code)
 				}
@@ -544,7 +544,7 @@ func TestRepoStates(t *testing.T) {
 			name: "master trunk without origin head",
 			opts: []Opt{Trunk("master"), Remote(), NoOriginHead()},
 			check: func(t *testing.T, f *Fixture) {
-				out(t, f.Dir, "git", "rev-parse", "--verify", "-q", "refs/remotes/origin/master")
+				f.Out(t, "git", "rev-parse", "--verify", "-q", "refs/remotes/origin/master")
 				if code, _ := exitCode(t, f.Dir, "git", "symbolic-ref", "-q", "refs/remotes/origin/HEAD"); code != 1 {
 					t.Errorf("symbolic-ref origin/HEAD exit = %d, want 1", code)
 				}
@@ -554,7 +554,7 @@ func TestRepoStates(t *testing.T) {
 			name: "detached",
 			opts: []Opt{Detached()},
 			check: func(t *testing.T, f *Fixture) {
-				out(t, f.Dir, "git", "rev-parse", "HEAD")
+				f.Out(t, "git", "rev-parse", "HEAD")
 				if code, _ := exitCode(t, f.Dir, "git", "symbolic-ref", "-q", "HEAD"); code != 1 {
 					t.Errorf("symbolic-ref HEAD exit = %d, want 1 (detached)", code)
 				}
@@ -564,7 +564,7 @@ func TestRepoStates(t *testing.T) {
 			name: "dirty",
 			opts: []Opt{Dirty()},
 			check: func(t *testing.T, f *Fixture) {
-				if status := out(t, f.Dir, "git", "status", "--porcelain"); status != " M f.txt\n" {
+				if status := f.Out(t, "git", "status", "--porcelain"); status != " M f.txt\n" {
 					t.Errorf("status = %q, want %q", status, " M f.txt\n")
 				}
 			},
@@ -573,7 +573,7 @@ func TestRepoStates(t *testing.T) {
 			name: "staged",
 			opts: []Opt{Staged()},
 			check: func(t *testing.T, f *Fixture) {
-				if status := out(t, f.Dir, "git", "status", "--porcelain"); status != "M  f.txt\n" {
+				if status := f.Out(t, "git", "status", "--porcelain"); status != "M  f.txt\n" {
 					t.Errorf("status = %q, want %q", status, "M  f.txt\n")
 				}
 			},
@@ -582,10 +582,10 @@ func TestRepoStates(t *testing.T) {
 			name: "conflicted",
 			opts: []Opt{Conflicted()},
 			check: func(t *testing.T, f *Fixture) {
-				if unmerged := out(t, f.Dir, "git", "ls-files", "-u"); unmerged == "" {
+				if unmerged := f.Out(t, "git", "ls-files", "-u"); unmerged == "" {
 					t.Error("ls-files -u empty, want unmerged f.txt entries")
 				}
-				if status := out(t, f.Dir, "git", "status", "--porcelain"); !strings.Contains(status, "UU f.txt") {
+				if status := f.Out(t, "git", "status", "--porcelain"); !strings.Contains(status, "UU f.txt") {
 					t.Errorf("status = %q, want UU f.txt", status)
 				}
 			},
@@ -599,10 +599,10 @@ func TestRepoStates(t *testing.T) {
 						t.Errorf("stat %s: %v", marker, err)
 					}
 				}
-				if desc := strings.TrimSpace(out(t, f.Dir, "jj", "log", "-r", "@-", "--no-graph", "-T", "description")); desc != "init" {
+				if desc := strings.TrimSpace(f.Out(t, "jj", "log", "-r", "@-", "--no-graph", "-T", "description")); desc != "init" {
 					t.Errorf("@- description = %q, want init", desc)
 				}
-				if bookmarks := out(t, f.Dir, "jj", "bookmark", "list", "-T", `name ++ "\n"`); !strings.Contains(bookmarks, "main") {
+				if bookmarks := f.Out(t, "jj", "bookmark", "list", "-T", `name ++ "\n"`); !strings.Contains(bookmarks, "main") {
 					t.Errorf("bookmarks = %q, want main", bookmarks)
 				}
 			},
@@ -611,20 +611,20 @@ func TestRepoStates(t *testing.T) {
 			name: "jj remote",
 			opts: []Opt{JJ(), Remote()},
 			check: func(t *testing.T, f *Fixture) {
-				if desc := strings.TrimSpace(out(t, f.Dir, "jj", "log", "-r", "trunk()", "--no-graph", "-T", "description")); desc != "init" {
+				if desc := strings.TrimSpace(f.Out(t, "jj", "log", "-r", "trunk()", "--no-graph", "-T", "description")); desc != "init" {
 					t.Errorf("trunk() description = %q, want init", desc)
 				}
 				if count := strings.TrimSpace(out(t, f.RemoteDir, "git", "rev-list", "--count", "main")); count != "1" {
 					t.Errorf("origin commit count = %s, want 1", count)
 				}
-				out(t, f.Dir, "git", "rev-parse", "--verify", "-q", "refs/remotes/origin/main")
+				f.Out(t, "git", "rev-parse", "--verify", "-q", "refs/remotes/origin/main")
 			},
 		},
 		{
 			name: "jj conflicted",
 			opts: []Opt{JJ(), Conflicted()},
 			check: func(t *testing.T, f *Fixture) {
-				if got := out(t, f.Dir, "jj", "log", "-r", "@", "--no-graph", "-T", `if(conflict, "conflicted", "clean")`); got != "conflicted" {
+				if got := f.Out(t, "jj", "log", "-r", "@", "--no-graph", "-T", `if(conflict, "conflicted", "clean")`); got != "conflicted" {
 					t.Errorf("@ conflict state = %q, want conflicted", got)
 				}
 			},
@@ -633,7 +633,7 @@ func TestRepoStates(t *testing.T) {
 			name: "conflicted bookmark",
 			opts: []Opt{JJ(), ConflictedBookmark()},
 			check: func(t *testing.T, f *Fixture) {
-				got := out(t, f.Dir, "jj", "bookmark", "list", "-T", `name ++ if(conflict, " conflicted") ++ "\n"`)
+				got := f.Out(t, "jj", "bookmark", "list", "-T", `name ++ if(conflict, " conflicted") ++ "\n"`)
 				if !strings.Contains(got, "feat conflicted") {
 					t.Errorf("bookmark list = %q, want feat conflicted", got)
 				}
@@ -643,7 +643,7 @@ func TestRepoStates(t *testing.T) {
 			name: "worktree",
 			opts: []Opt{Worktree("feat")},
 			check: func(t *testing.T, f *Fixture) {
-				porcelain := out(t, f.Dir, "git", "worktree", "list", "--porcelain")
+				porcelain := f.Out(t, "git", "worktree", "list", "--porcelain")
 				if !strings.Contains(porcelain, "worktree "+f.WorktreePath("feat")+"\n") {
 					t.Errorf("worktree list = %q, want %s", porcelain, f.WorktreePath("feat"))
 				}
@@ -656,7 +656,7 @@ func TestRepoStates(t *testing.T) {
 			name: "prunable worktree",
 			opts: []Opt{PrunableWorktree()},
 			check: func(t *testing.T, f *Fixture) {
-				if porcelain := out(t, f.Dir, "git", "worktree", "list", "--porcelain"); !strings.Contains(porcelain, "\nprunable") {
+				if porcelain := f.Out(t, "git", "worktree", "list", "--porcelain"); !strings.Contains(porcelain, "\nprunable") {
 					t.Errorf("worktree list = %q, want a prunable entry", porcelain)
 				}
 			},
@@ -665,7 +665,7 @@ func TestRepoStates(t *testing.T) {
 			name: "locked worktree",
 			opts: []Opt{LockedWorktree()},
 			check: func(t *testing.T, f *Fixture) {
-				if porcelain := out(t, f.Dir, "git", "worktree", "list", "--porcelain"); !strings.Contains(porcelain, "\nlocked") {
+				if porcelain := f.Out(t, "git", "worktree", "list", "--porcelain"); !strings.Contains(porcelain, "\nlocked") {
 					t.Errorf("worktree list = %q, want a locked entry", porcelain)
 				}
 			},
@@ -699,7 +699,7 @@ func TestRepoStates(t *testing.T) {
 				if _, err := os.Stat(filepath.Join(f.Dir, ".git", ".graphite_repo_config")); err != nil {
 					t.Fatalf("stat .graphite_repo_config: %v", err)
 				}
-				if state := out(t, f.Dir, "gt", "state"); !strings.Contains(state, `"trunk": true`) {
+				if state := f.Out(t, "gt", "state"); !strings.Contains(state, `"trunk": true`) {
 					t.Errorf("gt state = %q, want a trunk entry", state)
 				}
 			},
