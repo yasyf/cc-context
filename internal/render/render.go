@@ -49,24 +49,51 @@ const Ambient Dir = ""
 // deferred.
 func newCmd(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (*exec.Cmd, context.Context, context.CancelFunc) {
 	runCtx, cancel := withRunGuard(ctx)
-	cmd := exec.CommandContext(runCtx, lookpath.Bin(bin), argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	env, resolve := childEnv(ctx, dir, extraEnv)
+	cmd := exec.CommandContext(runCtx, resolve.Bin(bin), argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
 	cmd.WaitDelay = waitDelay
 	cmd.Dir = string(dir)
-	cmd.Env = childEnv(dir, extraEnv)
+	cmd.Env = env
 	return cmd, runCtx, cancel
 }
 
-func childEnv(dir Dir, extraEnv []string) []string {
+type envKey struct{}
+
+// WithEnv returns ctx carrying env for every child spawned through it, in
+// exec's own "K=V" form where a later entry overrides an earlier one. It sits
+// between the process environment and a call's own extraEnv, so a caller that
+// names a variable for one child still outranks it. Nesting accumulates: the
+// inner context's entries follow the outer's and win.
+func WithEnv(ctx context.Context, env ...string) context.Context {
+	return context.WithValue(ctx, envKey{}, append(EnvFrom(ctx), env...))
+}
+
+// EnvFrom returns the environment ctx carries for its children, nil when it
+// carries none.
+func EnvFrom(ctx context.Context) []string {
+	env, _ := ctx.Value(envKey{}).([]string)
+	return env
+}
+
+// childEnv returns the environment the child is given and the environment the
+// child's own binary is resolved against. They differ by one entry: GitPATH
+// reorders PATH so a tool that spawns git itself reaches the same one ccx
+// picked, which is the child's business and not a vote on which binary ccx
+// spawns. Resolving against the reordered PATH would let the git directory
+// outrank a directory the caller put first on purpose.
+func childEnv(ctx context.Context, dir Dir, extraEnv []string) ([]string, lookpath.Env) {
 	env := os.Environ()
 	if dir != Ambient {
 		env = slices.DeleteFunc(env, func(kv string) bool {
 			return strings.HasPrefix(kv, "GIT_DIR=") || strings.HasPrefix(kv, "GIT_WORK_TREE=")
 		})
 	}
-	if path := lookpath.GitPATH(); path != "" {
+	env = slices.Concat(env, EnvFrom(ctx))
+	resolve := lookpath.For(slices.Concat(env, extraEnv))
+	if path := resolve.GitPATH(); path != "" {
 		env = append(env, "PATH="+path)
 	}
-	return append(env, extraEnv...)
+	return slices.Concat(env, extraEnv), resolve
 }
 
 // withRunGuard bounds ctx by runTimeout only when ctx carries no deadline at all.
