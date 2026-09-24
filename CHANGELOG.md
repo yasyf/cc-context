@@ -4,6 +4,78 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.63.0] - 2026-09-24
+
+### Added
+
+- **An unscoped `ccx vcs ship` names the paths it swept into the commit.** With
+  no paths on the command line, ship stages `git add -A`. Git stages from the
+  repository root, not the working directory, so in a checkout several sessions
+  share the commit carries whatever anyone else left dirty, and reads exactly
+  like one that did not. The summary now leads with `swept N path(s): a, b, c`,
+  capped at five names with a count for the rest. The list comes from `git add
+  --verbose` instead of a second `git status`, so the ship still makes one
+  subprocess where it made one before, and a scoped ship reports nothing, its
+  paths being arguments already. This reports a sweep; it does not refuse one.
+
+### Changed
+
+- **CI restores the embedded WebAssembly artifacts from a shared cache,
+  cutting a measured full run from about 28 minutes to 16.3.** Five jobs
+  rebuilt the format-core engine, model2vec embedding engine, and tree-sitter
+  grammars independently, spending 1,508 seconds on redundant work per run;
+  four places in `ci.yml` repeated the toolchain setup and build block. One
+  composite action, `.github/actions/wasm`, now caches all three through
+  `actions/cache`, keyed on a hash of the build scripts and every source
+  input, and installs Rust and Zig only on a miss. A cache hit takes
+  2 seconds against 276 rebuilding; the `lint` job fell from 5.2 minutes to
+  61 seconds. The skip reads `steps.<id>.outputs.cache-hit`: a restore
+  preserves the artifacts' archived mtimes while checkout gives the sources
+  newer ones, so the build scripts' own staleness checks rebuild a valid
+  cache. `release.yml` still builds the artifacts in its own `pre-build` on
+  the `goreleaser` host.
+
+- **`internal/vcstest` copies a template per test instead of initializing
+  hundreds of repositories from scratch.** Trunk name, `jj`/`gt` ownership,
+  and presence of an origin key a template built once per process; branch,
+  worktree, conflict, detached-head, dirty, staged, and index-lock variants
+  still run on each copy. Construction fell from 1.49 seconds to 36 ms for
+  `gt` with a remote and from 1.03 seconds to about 30 ms for `jj` with one.
+  `internal/cli` fell from 971 to 719 seconds locally and from 574 to
+  413 seconds on CI's Ubuntu runner with `-race`. Only the `gt` shim keeps
+  the 300 ms teardown wait: its detached cache refresher outlives the command
+  and keeps writing under its `HOME` and into the argv log. Copying also
+  exposed Git's detached `maintenance run --auto`, which holds
+  `objects/maintenance.lock`; the template sets `maintenance.auto=false` and
+  `gc.auto=0` in both the working copy and bare remote to stop that writer.
+  The origin starts as a relative path so the pair survives copying, then
+  becomes the copy's own absolute path. Git resolves a relative remote URL
+  against the process working directory, so a command in a linked worktree
+  otherwise misses its origin.
+
+### Fixed
+
+- **`ccx vcs stack drop` now points to `ccx vcs worktree rm` when another
+  working copy holds the branch.** The refusal named `remove`, a verb that
+  never existed: `internal/cli/worktree.go` registered `rm` when the command
+  was created, seven weeks before the message was written. The regression
+  test `TestSuggestedCommandsAreRegistered` parses every non-test Go file,
+  extracts `ccx ...` invocations from string literals, and walks each down a
+  real root command tree. A walk that stops at a parent with subcommands
+  names a verb that parent doesn't have. The test caught the bad suggestion
+  on the unfixed tree and scans 52 invocations.
+
+- **`ccx vcs ship --no-commit` proceeds over untracked scratch.** The mode
+  pushes a commit already in place, so it refused any dirty working copy to
+  keep uncommitted work from being left out of the branch and pull request the
+  same run updates. It counted git's untracked paths as dirty, so a build
+  artifact or a `.worktrees/` directory refused the ship outright, though a run
+  that cuts no commit could only have left that scratch behind anyway. It now
+  refuses on changes to tracked files only and reports what it left as `left
+  untracked: <paths>`, capped at three names with a count for the rest. Under
+  jj there is nothing to exempt, a new file being part of the working-copy
+  commit `--no-commit` pushes.
+
 ## [0.62.0] - 2026-09-23
 
 ### Added
