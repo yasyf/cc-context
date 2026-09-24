@@ -49,8 +49,8 @@ const Ambient Dir = ""
 // deferred.
 func newCmd(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (*exec.Cmd, context.Context, context.CancelFunc) {
 	runCtx, cancel := withRunGuard(ctx)
-	env := childEnv(ctx, dir, extraEnv)
-	cmd := exec.CommandContext(runCtx, lookpath.For(env).Bin(bin), argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
+	env, resolve := childEnv(ctx, dir, extraEnv)
+	cmd := exec.CommandContext(runCtx, resolve.Bin(bin), argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
 	cmd.WaitDelay = waitDelay
 	cmd.Dir = string(dir)
 	cmd.Env = env
@@ -75,18 +75,25 @@ func EnvFrom(ctx context.Context) []string {
 	return env
 }
 
-func childEnv(ctx context.Context, dir Dir, extraEnv []string) []string {
+// childEnv returns the environment the child is given and the environment the
+// child's own binary is resolved against. They differ by one entry: GitPATH
+// reorders PATH so a tool that spawns git itself reaches the same one ccx
+// picked, which is the child's business and not a vote on which binary ccx
+// spawns. Resolving against the reordered PATH would let the git directory
+// outrank a directory the caller put first on purpose.
+func childEnv(ctx context.Context, dir Dir, extraEnv []string) ([]string, lookpath.Env) {
 	env := os.Environ()
 	if dir != Ambient {
 		env = slices.DeleteFunc(env, func(kv string) bool {
 			return strings.HasPrefix(kv, "GIT_DIR=") || strings.HasPrefix(kv, "GIT_WORK_TREE=")
 		})
 	}
-	env = append(env, EnvFrom(ctx)...)
-	if path := lookpath.For(env).GitPATH(); path != "" {
+	env = slices.Concat(env, EnvFrom(ctx))
+	resolve := lookpath.For(slices.Concat(env, extraEnv))
+	if path := resolve.GitPATH(); path != "" {
 		env = append(env, "PATH="+path)
 	}
-	return append(env, extraEnv...)
+	return slices.Concat(env, extraEnv), resolve
 }
 
 // withRunGuard bounds ctx by runTimeout only when ctx carries no deadline at all.
