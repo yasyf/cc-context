@@ -203,6 +203,12 @@ func buildBase(t *testing.T, cfg baseConfig, tools []resolvedTool, base string) 
 	git("init", "-q", "-b", cfg.trunk)
 	git("config", "user.email", "t@t.t")
 	git("config", "user.name", "t")
+	// git forks a detached `maintenance run --auto` off ordinary commands and
+	// takes objects/maintenance.lock in it. That outlives the build the same
+	// way gt's refresher does, and copying a template through it walks a lock
+	// file that is gone by the time it is read.
+	git("config", "maintenance.auto", "false")
+	git("config", "gc.auto", "0")
 	writeFile(t, filepath.Join(dir, "f.txt"), "base\n")
 	if cfg.jj {
 		jj("git", "init", "--colocate")
@@ -214,7 +220,10 @@ func buildBase(t *testing.T, cfg baseConfig, tools []resolvedTool, base string) 
 	}
 
 	if cfg.remote {
-		run(t, base, bin["git"], "init", "-q", "--bare", "--initial-branch="+cfg.trunk, filepath.Join(base, "remote.git"))
+		remote := filepath.Join(base, "remote.git")
+		run(t, base, bin["git"], "init", "-q", "--bare", "--initial-branch="+cfg.trunk, remote)
+		run(t, remote, bin["git"], "config", "maintenance.auto", "false")
+		run(t, remote, bin["git"], "config", "gc.auto", "0")
 		git("remote", "add", "origin", relativeOrigin)
 		if cfg.jj {
 			jj("git", "push", "--bookmark", cfg.trunk)
