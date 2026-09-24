@@ -152,7 +152,7 @@ func copyTree(t *testing.T, src, dst string) {
 			if err != nil {
 				return err
 			}
-			return os.Symlink(link, target)
+			return os.Symlink(link, target) //nolint:gosec // both ends are under temp roots this process made; the template is inert by the time it is copied
 		default:
 			return copyFile(path, target, info.Mode().Perm())
 		}
@@ -248,7 +248,7 @@ func pinOrigin(t *testing.T, base string) {
 		t.Fatalf("%s names no %s remote to pin", path, relativeOrigin)
 	}
 	pinned := strings.Replace(string(raw), want, "url = "+filepath.Join(base, "remote.git"), 1)
-	if err := os.WriteFile(path, []byte(pinned), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(pinned), 0o600); err != nil { //nolint:gosec // path is the fixture's own config under its t.TempDir
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
