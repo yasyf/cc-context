@@ -1,0 +1,41 @@
+name: WASM engines + grammars
+description: Restores the go:embed'd WASM artifacts from cache, building them only on a miss.
+
+inputs:
+  zig-version:
+    description: zig release used as the tree-sitter grammar wasm32-wasi cc.
+    default: 0.14.0
+
+runs:
+  using: composite
+  steps:
+    # The three artifacts are wasm32 and rev-pinned, so one cache serves every
+    # job and every runner OS. A hit also skips the rust and zig installs,
+    # which exist only to produce them.
+    - uses: actions/cache@v5
+      id: cache
+      with:
+        path: |
+          internal/format/formatcore.wasm
+          internal/semsearch/embed/embedcore.wasm
+          internal/semsearch/chunk/grammars
+        key: wasm-zig${{ inputs.zig-version }}-${{ hashFiles('scripts/build-wasm.sh', 'scripts/build-embed-wasm.sh', 'scripts/build-chunk-grammars.sh', 'format-core/core/**', 'format-core/wasm/**', 'format-core/Cargo.lock', 'format-core/Cargo.toml', 'format-core/rust-toolchain.toml', 'embed-core/**', 'internal/semsearch/chunk/wasm/bridge.c', 'internal/semsearch/chunk/wasm/wasm_endian.h') }}
+
+    - if: steps.cache.outputs.cache-hit != 'true'
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+
+    - if: steps.cache.outputs.cache-hit != 'true'
+      name: Install zig (tree-sitter grammar wasm cc)
+      uses: mlugg/setup-zig@v2
+      with:
+        version: ${{ inputs.zig-version }}
+
+    - if: steps.cache.outputs.cache-hit != 'true'
+      name: Build WASM engines + grammars (go:embed inputs)
+      shell: bash
+      run: |
+        bash scripts/build-wasm.sh
+        bash scripts/build-embed-wasm.sh
+        bash scripts/build-chunk-grammars.sh
