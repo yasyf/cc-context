@@ -57,7 +57,7 @@ func gtVersion(t *testing.T, f *vcstest.Fixture) string {
 // assertion over ccx's invocations reads only ccx's.
 func resetArgvLog(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
-	vcstest.Quiesce(t, f.ArgvLog)
+	f.Quiesce(t)
 	if err := os.Remove(f.ArgvLog); err != nil && !os.IsNotExist(err) {
 		t.Fatalf("reset argv log: %v", err)
 	}
@@ -484,7 +484,7 @@ func TestVcsInfoRefreshLaneVerdict(t *testing.T) {
 			if got.Graphite.Reachable != string(tt.wantReachable) {
 				t.Errorf("graphite.reachable = %q, want %q — the report contradicts its own lane", got.Graphite.Reachable, tt.wantReachable)
 			}
-			vcstest.Quiesce(t, f.ArgvLog)
+			f.Quiesce(t)
 			invocations := vcstest.Invocations(t, f.ArgvLog)
 			if n := countInvocations(invocations, "gt", "auth"); n != tt.wantLookups {
 				t.Errorf("gt auth ran %d times, want %d", n, tt.wantLookups)
@@ -848,7 +848,7 @@ func TestVcsInfoWarmCacheSkipsRepoView(t *testing.T) {
 	if _, err := runVcsInfoCmd(t); err != nil {
 		t.Fatalf("info error = %v", err)
 	}
-	vcstest.Quiesce(t, f.ArgvLog)
+	f.Quiesce(t)
 	invocations := vcstest.Invocations(t, f.ArgvLog)
 	assertNoInvocation(t, invocations, "gh", "repo", "view")
 	assertNoInvocation(t, invocations, "gt", "auth")

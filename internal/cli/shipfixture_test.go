@@ -216,7 +216,7 @@ func jjAt(t *testing.T, dir, rev, template string) string {
 // invocation assertion sees only what ship itself ran.
 func shipResetLog(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
-	vcstest.Quiesce(t, f.ArgvLog)
+	f.Quiesce(t)
 	if err := os.WriteFile(f.ArgvLog, nil, 0o600); err != nil {
 		t.Fatalf("truncate argv log: %v", err)
 	}
@@ -298,13 +298,13 @@ func shipGTFeature(t *testing.T) *vcstest.Fixture {
 // git calls would otherwise land after the assertion read them.
 func shipGTInvocations(t *testing.T, f *vcstest.Fixture) [][]string {
 	t.Helper()
-	vcstest.Quiesce(t, f.ArgvLog)
+	f.Quiesce(t)
 	return vcstest.Invocations(t, f.ArgvLog)
 }
 
 func shipGTRecords(t *testing.T, f *vcstest.Fixture) []vcstest.Invocation {
 	t.Helper()
-	vcstest.Quiesce(t, f.ArgvLog)
+	f.Quiesce(t)
 	return vcstest.Records(t, f.ArgvLog)
 }
 

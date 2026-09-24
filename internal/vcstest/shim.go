@@ -74,7 +74,8 @@ func (h *hostEnv) resolve(t *testing.T, name string) resolvedTool {
 func Shim(t *testing.T, tools ...string) (binDir, logPath string) {
 	t.Helper()
 	resolveTools(t, tools)
-	return installShim(t)
+	binDir, logPath, _ = installShim(t)
+	return binDir, logPath
 }
 
 // LinkPATH points PATH at a directory of symlinks to exactly the named tools
@@ -117,8 +118,9 @@ func resolveTools(t *testing.T, tools []string) []resolvedTool {
 // directory ahead of the base system directories, so a second fixture's PATH
 // still reaches the first fixture's tools. Each call mints its own directory
 // and log: a fixture's log holds the invocations made while its shim led
-// PATH, and the next call's takes over from there.
-func installShim(t *testing.T) (binDir, logPath string) {
+// PATH, and the next call's takes over from there. settles reports whether
+// any installed tool writes to the log past its own exit.
+func installShim(t *testing.T) (binDir, logPath string, settles bool) {
 	t.Helper()
 	base := realTempDir(t)
 	binDir = filepath.Join(base, "bin")
@@ -129,6 +131,7 @@ func installShim(t *testing.T) (binDir, logPath string) {
 		if tool.name == "gt" {
 			// gt's detached cache refresher outlives gt itself; let it
 			// drain before TempDir removal races its writes.
+			settles = true
 			t.Cleanup(func() { waitQuiet(logPath) })
 		}
 		script := "#!/bin/sh\n" + RecordArgv(tool.name, logPath) +
@@ -139,7 +142,7 @@ func installShim(t *testing.T) (binDir, logPath string) {
 	}
 	linkInterpreters(t, binDir, tools)
 	t.Setenv("PATH", toolPATH(binDir))
-	return binDir, logPath
+	return binDir, logPath, settles
 }
 
 // RecordArgv is the shim's own framing — depth, working directory, argc, then

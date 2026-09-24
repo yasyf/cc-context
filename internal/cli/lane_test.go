@@ -541,7 +541,7 @@ func TestShipGateRespectsNoGTConfig(t *testing.T) {
 	if want := "gt disabled for this repo (" + nogtKey + ")"; l.note != want {
 		t.Errorf("lane note = %q, want %q", l.note, want)
 	}
-	vcstest.Quiesce(t, f.ArgvLog)
+	f.Quiesce(t)
 	invocations := vcstest.Invocations(t, f.ArgvLog)
 	assertNoGT(t, invocations)
 	if want := [][]string{nogtProbe}; !reflect.DeepEqual(invocations, want) {

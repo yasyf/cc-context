@@ -171,7 +171,7 @@ func TestVcsStatusBranchWithoutPullRequest(t *testing.T) {
 	if got.Branches[2].Name != "no-such-branch" {
 		t.Errorf("stack order = %q, want the branch with no pull request last", got.Branches[2].Name)
 	}
-	vcstest.Quiesce(t, f.ArgvLog)
+	f.Quiesce(t)
 	var graphql [][]string
 	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
 		if len(inv) > 2 && inv[0] == "gh" && inv[1] == "api" && inv[2] == "graphql" {

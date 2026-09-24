@@ -20,6 +20,22 @@ type Fixture struct {
 	RemoteDir string
 	ShimBin   string
 	ArgvLog   string
+
+	// settles is set when the shim holds a tool that writes to the log past
+	// its own exit, which only gt does. See Quiesce.
+	settles bool
+}
+
+// Quiesce blocks until every invocation the fixture's shim recorded has
+// landed. It is [Quiesce] over the fixture's own log, skipped when no tool in
+// the shim leaves a detached writer behind — the wait is a settle window, so
+// paying it where nothing can still be writing is dead time on every read.
+func (f *Fixture) Quiesce(t *testing.T) {
+	t.Helper()
+	if !f.settles {
+		return
+	}
+	Quiesce(t, f.ArgvLog)
 }
 
 // WorktreePath returns the path at which Worktree, PrunableWorktree, or
@@ -148,17 +164,26 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 	resolved := resolveTools(t, tools)
 
 	base := realTempDir(t)
-	isolateEnv(t, base, resolved)
-
 	dir := filepath.Join(base, "repo")
-	mkdir(t, dir)
 	f := &Fixture{Dir: dir}
 
 	if cfg.brokenGitDir {
+		isolateEnv(t, base, resolved)
+		mkdir(t, dir)
 		writeFile(t, filepath.Join(dir, ".git"), "gitdir: /nonexistent-repo\n")
-		f.ShimBin, f.ArgvLog = installShim(t)
+		f.ShimBin, f.ArgvLog, f.settles = installShim(t)
 		t.Chdir(dir)
 		return f
+	}
+
+	tmpl := templateFor(t, cfg.base(), resolved)
+	home := detachedHome(t)
+	copyTree(t, tmpl.base, base)
+	copyTree(t, tmpl.home, home)
+	applyEnv(t, base, home, resolved)
+	if cfg.remote {
+		f.RemoteDir = filepath.Join(base, "remote.git")
+		pinOrigin(t, base)
 	}
 
 	bin := map[string]string{}
@@ -167,37 +192,6 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 	}
 	git := func(args ...string) string { return run(t, dir, bin["git"], args...) }
 	jj := func(args ...string) string { return run(t, dir, bin["jj"], args...) }
-
-	git("init", "-q", "-b", cfg.trunk)
-	git("config", "user.email", "t@t.t")
-	git("config", "user.name", "t")
-	writeFile(t, filepath.Join(dir, "f.txt"), "base\n")
-	if cfg.jj {
-		jj("git", "init", "--colocate")
-		jj("commit", "-m", "init")
-		jj("bookmark", "create", cfg.trunk, "-r", "@-")
-	} else {
-		git("add", "f.txt")
-		git("commit", "-qm", "init")
-	}
-
-	if cfg.remote {
-		f.RemoteDir = filepath.Join(base, "remote.git")
-		run(t, base, bin["git"], "init", "-q", "--bare", "--initial-branch="+cfg.trunk, f.RemoteDir)
-		git("remote", "add", "origin", f.RemoteDir)
-		if cfg.jj {
-			jj("git", "push", "--bookmark", cfg.trunk)
-		} else {
-			git("push", "-q", "origin", cfg.trunk)
-		}
-		if !cfg.noOriginHead {
-			git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/"+cfg.trunk)
-		}
-	}
-
-	if cfg.gt {
-		run(t, dir, bin["gt"], "init", "--trunk", cfg.trunk, "--no-interactive")
-	}
 
 	if cfg.branch != "" {
 		if cfg.jj {
@@ -245,7 +239,7 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 		writeFile(t, filepath.Join(dir, ".git", "index.lock"), "")
 	}
 
-	f.ShimBin, f.ArgvLog = installShim(t)
+	f.ShimBin, f.ArgvLog, f.settles = installShim(t)
 	t.Chdir(dir)
 	return f
 }
@@ -256,7 +250,13 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 // their interpreters are linked where that PATH reaches them.
 func isolateEnv(t *testing.T, base string, tools []resolvedTool) {
 	t.Helper()
-	home := detachedHome(t)
+	applyEnv(t, base, detachedHome(t), tools)
+}
+
+// applyEnv is isolateEnv over a home the caller already holds, so a template
+// build and every fixture copied from it name their own.
+func applyEnv(t *testing.T, base, home string, tools []resolvedTool) {
+	t.Helper()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
