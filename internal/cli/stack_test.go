@@ -781,7 +781,7 @@ func TestStackSubmitRefusesAPushFromElsewhere(t *testing.T) {
 	shipResetLog(t, f)
 
 	_, _, err := runStackCmd(t, f, "submit")
-	if err == nil || !strings.Contains(err.Error(), "remote base changed since last submit, by a push this repository did not make") {
+	if err == nil || !strings.Contains(err.Error(), "base has diverged from origin/base") {
 		t.Fatalf("stack submit = %v, want the foreign push refused", err)
 	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != foreign {

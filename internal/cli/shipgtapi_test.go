@@ -409,7 +409,8 @@ func gtContainedInv(trunk, head string) []string {
 // arrive bottom-up, shipped one last. The trunk resolution itself floats, so
 // gtDropTrunkInv accounts for it rather than this sequence.
 func gtShipSubmitInv(trunk string, heads ...string) [][]string {
-	inv := [][]string{gtContainedInv(trunk, heads[len(heads)-1]), {"git", "rev-parse", "--verify", gtRemoteTrunk(trunk)}}
+	inv := make([][]string, 0, 2+len(heads))
+	inv = append(inv, gtContainedInv(trunk, heads[len(heads)-1]), []string{"git", "rev-parse", "--verify", gtRemoteTrunk(trunk)})
 	for _, head := range heads {
 		inv = append(inv, []string{"git", "merge-base", "--is-ancestor", head, fakeTrunkSHA})
 	}
