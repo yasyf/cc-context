@@ -358,6 +358,7 @@ type gtSubmit struct {
 	suffix   string
 	draft    bool
 	noVerify bool
+	leases   map[string]string
 }
 
 func gtStuck(prefix, problem, suffix string) string {
@@ -742,6 +743,9 @@ type gtSubmitBranch struct {
 	title   string
 	body    string
 	lease   string
+	// leaseSet pins lease even when empty, where an empty lease means the
+	// branch must not exist on the remote yet.
+	leaseSet bool
 }
 
 // gtSubmitStack drives one submit over Graphite's API: drop the branches the
@@ -818,6 +822,11 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	plan, err := gtSubmitPlan(ctx, l.dir(), s.prefix, state, tr, branches, open, last)
 	if err != nil {
 		return nil, nil, err
+	}
+	for i, b := range plan {
+		if lease, ok := s.leases[b.name]; ok {
+			plan[i].lease, plan[i].leaseSet = lease, true
+		}
 	}
 	// The last point before anything mutates, and the one both ship and stack
 	// submit reach.
@@ -1136,7 +1145,7 @@ func gtPushArgv(s gtSubmit, plan []gtSubmitBranch) []string {
 	argv := []string{"push", "origin"}
 	for _, b := range plan {
 		lease := "--force-with-lease"
-		if b.lease != "" {
+		if b.lease != "" || b.leaseSet {
 			lease += "=refs/heads/" + b.name + ":" + b.lease
 		}
 		argv = append(argv, lease)
