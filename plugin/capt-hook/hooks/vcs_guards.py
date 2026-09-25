@@ -13,6 +13,9 @@ A fifth rewrite is about correctness rather than tokens: a bare ``gt restack`` -
 ``ccx vcs stack restack``, which fetches first and reaches the stack branches another
 working copy holds — branches a bare ``gt restack`` cannot touch at all.
 
+A trailing ``# ccx:raw`` comment, or ``CAPT_HOOK_CCX_RAW`` set for the session, runs any of these
+commands as written: no rewrite and no nudge.
+
 Scoped, summarized, or plumbing variants (``git diff -- <path>``, ``jj diff --stat``,
 ``git show HEAD:file``, ``git log --oneline``) never fire the guard at all.
 
@@ -44,6 +47,7 @@ from captain_hook import (
     rewrite_command_occurrences,
     session_state,
 )
+from captain_hook.util import reqenv
 from pydantic import BaseModel
 
 from .common import GIT_DIFF_SUMMARY_FLAGS, ccx_bin, is_single_command
@@ -86,8 +90,12 @@ GT_RESTACK_NOTE = (
     "Rewrote `gt restack` → `ccx vcs stack restack`: a superset of the same restack. It fetches "
     "first (`gt sync --no-interactive`, pruning merged branches and reparenting their children), "
     "then moves every branch gt declined — including one another working copy has checked out, "
-    "which a bare `gt restack` cannot touch. `gt create` and `gt modify` are untouched."
+    "which a bare `gt restack` cannot touch. `gt create` and `gt modify` are untouched. End a command "
+    "with `# ccx:raw` to run it as written."
 )
+
+RAW_MARKER = re.compile(r"#\s*ccx:raw\b")
+RAW_ENV = "CAPT_HOOK_CCX_RAW"
 
 # The one-shot steer shown when a session watches CI by hand instead of via `ccx vcs ship`.
 GH_RUN_WATCH_NUDGE = (
@@ -208,6 +216,14 @@ def is_log_patch_dump(cmd: Command) -> bool:
     )
 
 
+class RawRequested(CustomCommandLineCondition):
+    """Matches a line that opts out of every rewrite here: a ``# ccx:raw`` comment on it, or
+    ``CAPT_HOOK_CCX_RAW`` set for the session."""
+
+    def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
+        return RAW_MARKER.search(evt.cmd.raw) is not None or bool(reqenv.getenv(RAW_ENV))
+
+
 class GitDiffPager(CustomCommandLineCondition):
     """Matches a ``git diff`` that is neither path-scoped nor a stat-only summary.
 
@@ -277,6 +293,7 @@ def gtrestack_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
 
 rewrite_command_occurrences(
     only_if=[GtRestack()],
+    skip_if=[RawRequested()],
     to=gtrestack_to,
     note=GT_RESTACK_NOTE,
     tests={
@@ -297,6 +314,7 @@ rewrite_command_occurrences(
         Input(command="gt restack > out.txt"): Allow(),  # redirect → not rewritable in place
         Input(command="GT_DEBUG=1 gt restack"): Allow(),  # env prefix → runs verbatim
         Input(command="git restack"): Allow(),  # not gt
+        Input(command="gt restack # ccx:raw"): Allow(),
     },
 )
 
@@ -343,6 +361,7 @@ def gitdiff_note(evt: BaseHookEvent, pairs: list[tuple[Occurrence, str]]) -> str
 
 rewrite_command_occurrences(
     only_if=[GitDiffPager()],
+    skip_if=[RawRequested()],
     to=gitdiff_to,
     note=gitdiff_note,
     tests={
@@ -369,6 +388,7 @@ rewrite_command_occurrences(
         Input(command="git diff; echo done"): Rewrite(pattern="vcs diff; echo done"),
         Input(command="git diff > out.patch"): Allow(),
         Input(command="git diff | head"): Allow(),
+        Input(command="git diff # ccx:raw"): Allow(),
     },
 )
 
@@ -393,6 +413,7 @@ def jjdiff_note(evt: BaseHookEvent, pairs: list[tuple[Occurrence, str]]) -> str:
 
 rewrite_command_occurrences(
     only_if=[JjDiffPager()],
+    skip_if=[RawRequested()],
     to=jjdiff_to,
     note=jjdiff_note,
     tests={
@@ -449,6 +470,7 @@ def gitshow_note(evt: BaseHookEvent, pairs: list[tuple[Occurrence, str]]) -> str
 
 rewrite_command_occurrences(
     only_if=[GitShowPager()],
+    skip_if=[RawRequested()],
     to=gitshow_to,
     note=gitshow_note,
     tests={
@@ -560,6 +582,7 @@ def logpatch_note(evt: BaseHookEvent, pairs: list[tuple[Occurrence, str]]) -> st
 
 rewrite_command_occurrences(
     only_if=[LogPatchDump()],
+    skip_if=[RawRequested()],
     to=logpatch_to,
     note=logpatch_note,
     tests={
@@ -621,12 +644,14 @@ class GhRunWatchSingle(CustomCommandLineCondition):
 @on(
     Event.PreToolUse,
     only_if=[Tool("Bash"), GhRunWatchSingle()],
+    skip_if=[RawRequested()],
     tests={
         Input(command="gh run watch 123 --exit-status"): Warn(pattern="ccx vcs ship"),
         Input(command="gh run watch 123 --exit-status | tee run.log"): Allow(),  # piped → not single
         Input(command="cd repo && gh run watch 123"): Allow(),  # chained → not single
         Input(command="gh run view 123 --log-failed"): Allow(),  # failure drill-down, not a watch
         Input(command="gh pr list"): Allow(),
+        Input(command="gh run watch 123 --exit-status # ccx:raw"): Allow(),
     },
 )
 def steer_gh_run_watch_to_ship(evt: BaseHookEvent) -> HookResult | None:

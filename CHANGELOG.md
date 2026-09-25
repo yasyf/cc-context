@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`# ccx:raw` runs a git, jj, or gt command as written.** The capt-hook VCS
+  guards rewrite a bare `gt restack` to `ccx vcs stack restack` and
+  whole-patch `git diff`, `git show`, `jj diff`, and `git log -p` calls to
+  their `ccx vcs` views, and nudge a manual `gh run watch` toward
+  `ccx vcs ship`. A trailing `# ccx:raw` comment on the command, or
+  `CAPT_HOOK_CCX_RAW=1` set for the session, now skips all of them, so a
+  deliberate raw call is never swapped out from under its author. The
+  captain-hook graphite pack honors the same marker.
+
 - **A stack rebase regenerates conflicted generated files itself.** A
   repository lists its generated files and the command that rewrites them in
   a committed `.ccx.toml`, one `[[generated]]` table per command:
