@@ -341,6 +341,11 @@ func TestStackRebaseRunsTwoStacksSideBySide(t *testing.T) {
 
 func stackPlantRun(t *testing.T, f *vcstest.Fixture, age time.Duration, roots ...string) int {
 	t.Helper()
+	return stackPlantConflict(t, f, age, nil, roots...)
+}
+
+func stackPlantConflict(t *testing.T, f *vcstest.Fixture, age time.Duration, conflict *stackConflict, roots ...string) int {
+	t.Helper()
 	exited := exec.Command("true")
 	if err := exited.Run(); err != nil {
 		t.Fatal(err)
@@ -349,7 +354,7 @@ func stackPlantRun(t *testing.T, f *vcstest.Fixture, age time.Duration, roots ..
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := &stackRebaseRun{Trunk: "main", Roots: roots, Pid: exited.Process.Pid, Host: host, dir: stackRunDir(filepath.Join(f.Dir, ".git"), roots[0])}
+	run := &stackRebaseRun{Trunk: "main", Roots: roots, Pid: exited.Process.Pid, Host: host, Conflict: conflict, dir: stackRunDir(filepath.Join(f.Dir, ".git"), roots[0])}
 	if err := os.MkdirAll(run.dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -372,6 +377,17 @@ func TestStackRebaseRefusesARecentRunOfADeadProcess(t *testing.T) {
 	want := fmt.Sprintf("a stack rebase of base is already in progress (pid %d on ", pid)
 	if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), " exited, last saved 1m") {
 		t.Fatalf("err = %v, want the refusal naming base and its exited holder", err)
+	}
+}
+
+func TestStackRebaseKeepsAStaleRunWaitingOnItsWorkspace(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	ws := t.TempDir()
+	stackPlantConflict(t, f, stackStaleAfter+time.Minute, &stackConflict{Branch: "feature", Workspace: ws}, "base")
+
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err == nil || !strings.Contains(err.Error(), "a stack rebase of base is already in progress (stopped on feature in "+ws) {
+		t.Fatalf("err = %v, want the refusal naming the waiting workspace", err)
 	}
 }
 

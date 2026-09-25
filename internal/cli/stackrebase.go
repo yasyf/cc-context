@@ -186,16 +186,21 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 	if err != nil {
 		return err
 	}
-	run, err := stackPlan(ctx, l, commonDir, o)
-	if err != nil {
-		return err
-	}
 	runs, err := stackRuns(commonDir)
 	if err != nil {
 		return err
 	}
 	for _, other := range runs {
-		if !slices.ContainsFunc(run.Roots, func(root string) bool { return slices.Contains(other.Roots, root) }) {
+		if other.Conflict != nil && other.Conflict.Workspace == l.root {
+			return stackInProgress(other)
+		}
+	}
+	run, err := stackPlan(ctx, l, commonDir, o)
+	if err != nil {
+		return err
+	}
+	for _, other := range runs {
+		if !stackOverlaps(run, other) {
 			continue
 		}
 		if !stackStale(other) {
@@ -205,11 +210,8 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 			cmd.Println(fmt.Sprintf("would reclaim the stale stack rebase of %s (%s)", strings.Join(other.Roots, ", "), stackHolder(other)))
 			continue
 		}
-		if err := stackDropTempRefs(ctx, l.dir(), other); err != nil {
+		if err := stackReclaim(ctx, l, commonDir, other); err != nil {
 			return err
-		}
-		if err := stackClearRun(commonDir, other); err != nil {
-			return fmt.Errorf("stack rebase: reclaim the stale run of %s: %w", strings.Join(other.Roots, ", "), err)
 		}
 		cmd.Println(fmt.Sprintf("reclaimed the stale stack rebase of %s (%s)", strings.Join(other.Roots, ", "), stackHolder(other)))
 	}
@@ -232,6 +234,41 @@ func stackInProgress(run *stackRebaseRun) error {
 		where = fmt.Sprintf("stopped on %s in %s, %s", run.Conflict.Branch, run.Conflict.Workspace, where)
 	}
 	return fmt.Errorf("stack rebase: a stack rebase of %s is already in progress (%s) — ccx vcs stack continue, or ccx vcs stack abort, from one of its branches", strings.Join(run.Roots, ", "), where)
+}
+
+func stackOverlaps(run, other *stackRebaseRun) bool {
+	return slices.ContainsFunc(run.Branches, func(b stackRebaseBranch) bool { return other.branch(b.Name) != nil }) ||
+		slices.ContainsFunc(run.Roots, func(root string) bool { return slices.Contains(other.Roots, root) })
+}
+
+// stackReclaim takes a stale run's state aside with one rename, so of two
+// callers reclaiming the same run only one proceeds, and a run that saved
+// after the caller judged it stale is put back rather than dropped.
+func stackReclaim(ctx context.Context, l lane, commonDir string, run *stackRebaseRun) error {
+	roots := strings.Join(run.Roots, ", ")
+	tomb := fmt.Sprintf("%s.reclaim-%d", run.dir, os.Getpid())
+	if err := os.Rename(run.dir, tomb); err != nil {
+		return fmt.Errorf("stack rebase: reclaim the stale run of %s (another caller may have taken it — re-run): %w", roots, err)
+	}
+	info, err := os.Stat(stackStatePath(tomb))
+	if err != nil || !info.ModTime().Equal(run.saved) {
+		if err := os.Rename(tomb, run.dir); err != nil {
+			return fmt.Errorf("stack rebase: restore the run of %s from %s: %w", roots, tomb, err)
+		}
+		return fmt.Errorf("stack rebase: the run of %s saved again while it was being reclaimed — re-run", roots)
+	}
+	if err := stackDropTempRefs(ctx, l.dir(), run); err != nil {
+		return err
+	}
+	for _, root := range run.Roots[1:] {
+		if err := os.RemoveAll(stackRunDir(commonDir, root)); err != nil {
+			return fmt.Errorf("stack rebase: reclaim the stale run of %s: %w", roots, err)
+		}
+	}
+	if err := os.RemoveAll(tomb); err != nil {
+		return fmt.Errorf("stack rebase: reclaim the stale run of %s: %w", roots, err)
+	}
+	return nil
 }
 
 func stackHolder(run *stackRebaseRun) string {
@@ -932,6 +969,13 @@ func stackResolveRun(ctx context.Context) (lane, string, *stackRebaseRun, error)
 	if err != nil {
 		return lane{}, "", nil, err
 	}
+	if run.Host, err = os.Hostname(); err != nil {
+		return lane{}, "", nil, fmt.Errorf("stack rebase: %w", err)
+	}
+	run.Pid = os.Getpid()
+	if err := stackSaveRun(run); err != nil {
+		return lane{}, "", nil, err
+	}
 	if run.Conflict != nil && l.root == run.Conflict.Workspace {
 		if l, err = resolveLane(ctx, stackRebasePrefix, l.checkout.MainRoot, false); err != nil {
 			return lane{}, "", nil, err
@@ -1125,10 +1169,8 @@ func stackClaim(commonDir string, run *stackRebaseRun) error {
 	}
 	for i, root := range run.Roots {
 		dir := stackRunDir(commonDir, root)
-		if stackAbandonedClaim(dir) {
-			if err := os.RemoveAll(dir); err != nil {
-				return fmt.Errorf("stack rebase: reclaim %s: %w", dir, err)
-			}
+		if err := stackReclaimAbandoned(dir); err != nil {
+			return err
 		}
 		if err := os.Mkdir(dir, 0o750); err != nil {
 			for _, claimed := range run.Roots[:i] {
@@ -1144,13 +1186,29 @@ func stackClaim(commonDir string, run *stackRebaseRun) error {
 	return nil
 }
 
-func stackAbandonedClaim(dir string) bool {
+func stackReclaimAbandoned(dir string) error {
 	info, err := os.Stat(dir)
 	if err != nil || time.Since(info.ModTime()) < stackStaleAfter {
-		return false
+		return nil
 	}
-	_, err = os.Stat(stackStatePath(dir))
-	return errors.Is(err, fs.ErrNotExist)
+	if _, err := os.Stat(stackStatePath(dir)); !errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	tomb := fmt.Sprintf("%s.reclaim-%d", dir, os.Getpid())
+	if err := os.Rename(dir, tomb); err != nil {
+		return nil
+	}
+	moved, err := os.Stat(tomb)
+	if err != nil {
+		return fmt.Errorf("stack rebase: %w", err)
+	}
+	if _, err := os.Stat(stackStatePath(tomb)); !errors.Is(err, fs.ErrNotExist) || !moved.ModTime().Equal(info.ModTime()) {
+		if err := os.Rename(tomb, dir); err != nil {
+			return fmt.Errorf("stack rebase: restore %s from %s: %w", dir, tomb, err)
+		}
+		return nil
+	}
+	return os.RemoveAll(tomb)
 }
 
 func stackClearRun(commonDir string, run *stackRebaseRun) error {
@@ -1172,7 +1230,7 @@ func stackRuns(commonDir string) ([]*stackRebaseRun, error) {
 	}
 	var runs []*stackRebaseRun
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.Contains(e.Name(), ".reclaim-") {
 			continue
 		}
 		dir := filepath.Join(commonDir, stackRebaseStateDir, e.Name())
