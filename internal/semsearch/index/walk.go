@@ -1,6 +1,7 @@
 package index
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -36,14 +37,14 @@ type ignoreSpec struct {
 // extension is in extensions, honoring the fixed denylist plus each directory's
 // .gitignore and .sembleignore — a faithful port of semble's walk_files. It
 // returns absolute paths in directory-sorted order; symlinks are skipped.
-func WalkFiles(root string, extensions []string) ([]string, error) {
+func WalkFiles(ctx context.Context, root string, extensions []string) ([]string, error) {
 	extSet := make(map[string]bool, len(extensions))
 	for _, e := range extensions {
 		extSet[strings.ToLower(e)] = true
 	}
 	base := &ignoreSpec{base: root, patterns: parsePatterns(defaultIgnoredDirs)}
 	var out []string
-	if err := walk(root, []*ignoreSpec{base}, extSet, &out); err != nil {
+	if err := walk(ctx, root, []*ignoreSpec{base}, extSet, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -51,7 +52,10 @@ func WalkFiles(root string, extensions []string) ([]string, error) {
 
 // walk recurses one directory, threading the inherited ignore specs and
 // appending eligible files to out — semble's _walk.
-func walk(dir string, inherited []*ignoreSpec, extSet map[string]bool, out *[]string) error {
+func walk(ctx context.Context, dir string, inherited []*ignoreSpec, extSet map[string]bool, out *[]string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	specs := inherited
 	if spec := loadIgnoreForDir(dir); spec != nil {
 		specs = append(append([]*ignoreSpec(nil), inherited...), spec)
@@ -62,6 +66,9 @@ func walk(dir string, inherited []*ignoreSpec, extSet map[string]bool, out *[]st
 		return fmt.Errorf("read dir %q: %w", dir, err)
 	}
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			continue // never follow symlinks
 		}
@@ -72,7 +79,7 @@ func walk(dir string, inherited []*ignoreSpec, extSet map[string]bool, out *[]st
 			continue
 		}
 		if isDir {
-			if err := walk(full, specs, extSet, out); err != nil {
+			if err := walk(ctx, full, specs, extSet, out); err != nil {
 				return err
 			}
 			continue

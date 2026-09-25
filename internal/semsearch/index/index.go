@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strings"
 
 	"golang.org/x/sync/errgroup"
 
@@ -65,16 +66,19 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 		return nil, fmt.Errorf("semsearch: %q is not a directory", root)
 	}
 
-	dir, err := cacheDir(root)
+	contentK := ContentKey(content)
+	chunkerID := chunker.ID()
+	dir, err := variantCacheDir(root, modelID, contentK, chunkerID, emb.Dims())
 	if err != nil {
 		return nil, err
 	}
-	contentK := ContentKey(content)
-	chunkerID := chunker.ID()
 	exts := Extensions(content)
 
 	var idx *Index
 	err = cache.WithLock(ctx, dir, "index", func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		prev := loadPersisted(dir, modelID, contentK, chunkerID, emb.Dims())
 		built, berr := build(ctx, emb, root, exts, chunker, prev)
 		if berr != nil {
@@ -142,7 +146,7 @@ type fileResult struct {
 // build walks the repo, chunks changed files in parallel (reusing unchanged
 // ones from prev), then embeds every new chunk in one serialized pass.
 func build(ctx context.Context, emb Embedder, root string, exts []string, chunker Chunker, prev *persisted) (*buildResult, error) {
-	paths, err := WalkFiles(root, exts)
+	paths, err := WalkFiles(ctx, root, exts)
 	if err != nil {
 		return nil, err
 	}
@@ -155,6 +159,9 @@ func build(ctx context.Context, emb Embedder, root string, exts []string, chunke
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(min(runtime.NumCPU(), maxChunkWorkers))
 	for i, abs := range paths {
+		if gctx.Err() != nil {
+			break
+		}
 		i, abs := i, abs
 		g.Go(func() error {
 			if gctx.Err() != nil {
@@ -167,11 +174,17 @@ func build(ctx context.Context, emb Embedder, root string, exts []string, chunke
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	res := &buildResult{}
 	var toEmbed []string
 	var toEmbedSlots []int
 	for _, r := range results {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if !r.valid {
 			continue
 		}
@@ -216,17 +229,13 @@ func build(ctx context.Context, emb Embedder, root string, exts []string, chunke
 // chunks it. A read/stat error or a non-valid status marks the file skipped,
 // mirroring semble's suppress(OSError).
 func chunkFile(abs, root string, chunker Chunker, prevEntries map[string]fileManifest) fileResult {
-	status, err := getFileStatus(abs)
-	if err != nil || status != statusValid {
-		return fileResult{}
-	}
 	rel, err := filepath.Rel(root, abs)
 	if err != nil {
 		return fileResult{}
 	}
 	rel = filepath.ToSlash(rel)
 	fi, err := os.Stat(abs)
-	if err != nil {
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() > maxFileBytes {
 		return fileResult{}
 	}
 	mtime := fi.ModTime().UnixNano()
@@ -236,7 +245,7 @@ func chunkFile(abs, root string, chunker Chunker, prevEntries map[string]fileMan
 	}
 
 	text, err := readFileText(abs)
-	if err != nil {
+	if err != nil || (fi.Size() < emptyFileBytes && strings.TrimSpace(text) == "") {
 		return fileResult{}
 	}
 	return fileResult{

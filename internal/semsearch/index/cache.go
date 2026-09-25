@@ -68,6 +68,13 @@ func cacheDir(root string) (string, error) {
 	return cache.Dir("semsearch", hex.EncodeToString(sum[:]))
 }
 
+func variantCacheDir(root, model, content, chunker string, dims int) (string, error) {
+	repoKey := sha256.Sum256([]byte(root))
+	parameters := fmt.Sprintf("%d %q %q %q %d", schemaVersion, model, content, chunker, dims)
+	variantKey := sha256.Sum256([]byte(parameters))
+	return cache.Dir("semsearch", hex.EncodeToString(repoKey[:]), hex.EncodeToString(variantKey[:]))
+}
+
 // CacheDir resolves the persistent index-cache directory for root.
 func CacheDir(root string) (string, error) {
 	root, err := ResolveRoot(root)
