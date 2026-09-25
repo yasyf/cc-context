@@ -18,6 +18,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  CLI_SHARDS: 12
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -25,6 +28,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        shard: [rest, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -45,12 +49,7 @@ jobs:
         # Mirror the runtime launch flags (internal/codeexec/driver.go) so a PR's
         # checked-out uv.toml / pyproject cannot steer resolution here either.
         run: uv run --no-project --no-config --no-build --quiet --python "3.13" --with pydantic-monty==0.0.18 python -c "import pydantic_monty"
-      - uses: dtolnay/rust-toolchain@stable
       - uses: ./.github/actions/wasm
-      - name: Rust format-core tests (Rust suite + corpus gate)
-        run: cargo test --manifest-path format-core/Cargo.toml
-      - name: Vet
-        run: go vet ./...
       - name: Install ripgrep (glob-capable grep engine)
         # The grep fallback cannot translate a mid-path wildcard, so the MCP
         # glob tests assert behaviour only this engine has. Without it they do
@@ -81,7 +80,78 @@ jobs:
       - name: Test (race)
         # internal/cli stands up real git/jj/gt repositories per test rather than
         # faking their output, so it runs well past go test's 10m default.
-        run: go test -race -timeout 30m ./...
+        run: |
+          if [ "${{ matrix.shard }}" = rest ]; then
+            go list ./... | grep -v internal/cli | xargs go test -race -timeout 30m
+          else
+            go test -race -timeout 30m ./internal/cli/ \
+              -run "$(bash scripts/shard-tests.sh "${{ matrix.shard }}" "$CLI_SHARDS")"
+          fi
+
+  shard-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+      - uses: ./.github/actions/wasm
+      - name: Every internal/cli test lands in exactly one shard
+        run: bash scripts/shard-tests.sh --check "$CLI_SHARDS"
+
+  rust:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust format-core tests (Rust suite + corpus gate)
+        run: cargo test --manifest-path format-core/Cargo.toml
+
+  vet:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+      - uses: ./.github/actions/wasm
+      - name: Vet
+        run: go vet ./...
+
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+      - uses: ./.github/actions/wasm
       - name: Build
         run: go build ./...
 
