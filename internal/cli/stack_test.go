@@ -1258,6 +1258,48 @@ func TestStackNewOnTrunkCutsFromTheFetchedTrunk(t *testing.T) {
 	}
 }
 
+// TestStackNewCutsALaneOffTheGraphiteLane cuts lanes in a repository Graphite
+// cannot submit to: one stacked on the branch here, and one off trunk that
+// starts at the fetched remote trunk.
+func TestStackNewCutsALaneOffTheGraphiteLane(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote())
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "base")
+	writeShipFile(t, f.Dir, "base.txt", "base\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "base.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "base")
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "main")
+
+	out, _, err := runStackCmd(t, f, "new", "feature")
+	if err != nil {
+		t.Fatalf("stack new: %v", err)
+	}
+	path := out[strings.LastIndex(out, shipSep)+len(shipSep):]
+	if there := gitAt(t, f.Env(), path, "branch", "--show-current"); there != "feature" {
+		t.Errorf("the new working copy is on %q, want feature", there)
+	}
+	if head := gitAt(t, f.Env(), path, "rev-parse", "HEAD"); head != base {
+		t.Errorf("feature cut at %s, want base's head %s", head, base)
+	}
+	if here := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); here != "base" {
+		t.Errorf("the calling working copy is on %q, want base", here)
+	}
+
+	out, _, err = runStackCmd(t, f, "new", "lane", "--parent", "main")
+	if err != nil {
+		t.Fatalf("stack new --parent main: %v", err)
+	}
+	path = out[strings.LastIndex(out, shipSep)+len(shipSep):]
+	if head := gitAt(t, f.Env(), path, "rev-parse", "HEAD"); head != remote {
+		t.Errorf("lane cut at %s, want the remote trunk %s", head, remote)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "main"); got != local {
+		t.Errorf("local main moved to %s, want it left at %s", got, local)
+	}
+}
+
 // TestStackSubmitRestacksAChildOfAnAmendedParent is the restack stack submit
 // exists for: amending the parent's own commit leaves its child carrying the
 // old copy under another patch, and the child is still the parent's to move.
