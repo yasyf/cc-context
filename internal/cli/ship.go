@@ -1670,7 +1670,7 @@ func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch string,
 			return 0, err
 		}
 		if !ancestor {
-			rebased, err = gitRebaseOnto(ctx, dir, "ship", remote, branch)
+			rebased, err = gitRebaseOnto(ctx, dir, "ship", remote, branch, shipPushRecovery(remote, branch))
 			if err != nil {
 				return 0, err
 			}
@@ -1725,7 +1725,7 @@ func gitIsAncestor(ctx context.Context, dir render.Dir, prefix, maybe, ref strin
 // ship leaves every excluded hunk in the tree — so the rebase moves work this
 // ship deliberately did not take, and gitHoldWorktree gives it back rather than
 // --autostash.
-func gitRebaseOnto(ctx context.Context, dir render.Dir, prefix, remote, branch string) (int, error) {
+func gitRebaseOnto(ctx context.Context, dir render.Dir, prefix, remote, branch, recovery string) (int, error) {
 	remoteRef := "refs/remotes/" + remote + "/" + branch
 	countOut, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", "--count", remoteRef + "..HEAD"})
 	if err != nil {
@@ -1741,7 +1741,7 @@ func gitRebaseOnto(ctx context.Context, dir render.Dir, prefix, remote, branch s
 		return 0, err
 	}
 	if _, err := render.RunCLI(ctx, dir, "git", []string{"rebase", remoteRef}); err != nil {
-		return 0, errors.Join(gitRebaseFailure(ctx, dir, prefix, remote, branch, err), held.restore(ctx, dir, prefix))
+		return 0, errors.Join(gitRebaseFailure(ctx, dir, prefix, remote, branch, recovery, err), held.restore(ctx, dir, prefix))
 	}
 	if err := held.restore(ctx, dir, prefix); err != nil {
 		return 0, err
@@ -1801,7 +1801,7 @@ func (h worktreeHold) restore(ctx context.Context, dir render.Dir, prefix string
 // it failed before starting (hook, dirty index) — return the raw error, no
 // abort. The caller puts back the work it held either way. Cleanup runs
 // uncancellable.
-func gitRebaseFailure(ctx context.Context, dir render.Dir, prefix, remote, branch string, rebaseErr error) error {
+func gitRebaseFailure(ctx context.Context, dir render.Dir, prefix, remote, branch, recovery string, rebaseErr error) error {
 	cleanup := context.WithoutCancel(ctx)
 	inProgress, err := gitRefExists(cleanup, dir, "ship", "REBASE_HEAD")
 	if err != nil {
@@ -1815,10 +1815,24 @@ func gitRebaseFailure(ctx context.Context, dir render.Dir, prefix, remote, branc
 		return fmt.Errorf(prefix+": rebase onto %s/%s conflicted (%w) and abort failed: %w — run: git rebase --abort, then resolve manually", remote, branch, rebaseErr, aerr)
 	}
 	if lerr != nil {
-		return fmt.Errorf(prefix+": rebase onto %s/%s conflicted (%w); aborted back to the pre-rebase state; listing the conflicted files also failed: %w — resolve manually: git fetch %s && git rebase --autostash %s/%s, fix the conflicts (git status), then git push %s %s", remote, branch, rebaseErr, lerr, remote, remote, branch, remote, branch)
+		return fmt.Errorf(prefix+": rebase onto %s/%s conflicted (%w); aborted back to the pre-rebase state; listing the conflicted files also failed: %w — %s", remote, branch, rebaseErr, lerr, recovery)
 	}
 	conflicted := strings.Join(strings.Fields(files), ", ")
-	return fmt.Errorf(prefix+": rebase onto %s/%s conflicts in: %s; aborted back to the pre-rebase state (%w) — resolve manually: git fetch %s && git rebase --autostash %s/%s, fix the conflicts (git status), then git push %s %s", remote, branch, conflicted, rebaseErr, remote, remote, branch, remote, branch)
+	return fmt.Errorf(prefix+": rebase onto %s/%s conflicts in: %s; aborted back to the pre-rebase state (%w) — %s", remote, branch, conflicted, rebaseErr, recovery)
+}
+
+// gitRebaseRecovery is the manual replay of a rebase ccx rolled back, up to the
+// point where the caller's own next step differs.
+func gitRebaseRecovery(remote, branch string) string {
+	return fmt.Sprintf("resolve manually: git fetch %s && git rebase --autostash %s/%s, then fix the conflicts (git status)", remote, remote, branch)
+}
+
+// shipPushRecovery adds ship's own next step, and the verb for the case the
+// rebase reads as a conflict but is not one: a branch rewritten on purpose does
+// not want the remote's history replayed back onto it.
+func shipPushRecovery(remote, branch string) string {
+	return fmt.Sprintf("%s, then git push %s %s; if you rewrote %s on purpose, ccx vcs push moves %s/%s onto your head under a lease instead of replaying onto it",
+		gitRebaseRecovery(remote, branch), remote, branch, branch, remote, branch)
 }
 
 func jjBookmarkNames(ctx context.Context, dir render.Dir, prefix, rev string) ([]string, error) {

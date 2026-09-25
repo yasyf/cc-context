@@ -347,6 +347,12 @@ func TestRestackGitConflictAbortsBackToTheStartingState(t *testing.T) {
 	if !strings.HasPrefix(err.Error(), "restack: ") {
 		t.Errorf("error = %q, want the restack prefix — gitRebaseOnto is shared with ship", err)
 	}
+	if !strings.HasSuffix(err.Error(), "resolve manually: git fetch origin && git rebase --autostash origin/main, then fix the conflicts (git status)") {
+		t.Errorf("error = %q, want it to end at the conflicts — a restack pushes nothing", err)
+	}
+	if strings.Contains(err.Error(), "ccx vcs push") {
+		t.Errorf("error = %q, names ccx vcs push — a restack rebases onto trunk, which that verb does not move", err)
+	}
 	if after := restackRev(t, f, f.Dir, "HEAD"); after != before {
 		t.Errorf("HEAD = %s, want the pre-rebase %s", after, before)
 	}

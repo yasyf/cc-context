@@ -438,7 +438,7 @@ func restackGit(ctx context.Context, dir render.Dir) (string, error) {
 		return "fetched · fast-forwarded " + trunk.Name(), nil
 	}
 
-	if _, err := gitRebaseOnto(ctx, dir, "restack", trunk.Remote(), trunk.Name()); err != nil {
+	if _, err := gitRebaseOnto(ctx, dir, "restack", trunk.Remote(), trunk.Name(), gitRebaseRecovery(trunk.Remote(), trunk.Name())); err != nil {
 		return "", err
 	}
 	return "fetched · rebased onto " + trunk.Name(), nil
