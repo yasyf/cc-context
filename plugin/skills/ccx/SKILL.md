@@ -265,14 +265,16 @@ existing PR in either direction, `--no-pr` opts out, and a ship naming no PR fla
 makes no `gh pr` call. `-m` is optional when an unscoped `--pr-title` is given: the
 title becomes the commit subject and an unscoped `--pr-body-file` its body, with the
 `<details>` wrapper dropped and each `## Heading` folded into a `Heading:` paragraph.
-On the gt lane an unrestacked downstack is recovered rather than refused — ship
-commits, then rebases every branch of the chain sitting off its parent with `git
-replay`, which moves the refs without checking a branch out, so a branch a
-sibling working copy holds is not a special case; each holder is then reset onto
-its new head, its uncommitted work snapshotted beforehand and applied after,
-and a branch `gt freeze` is holding is left where it is. Only a
-conflict stays manual, and the refusal names the `gt restack --only --branch <b>`
-and `ccx vcs ship --no-commit` steps back, since the commit has landed by then. `--yolo` is the one switch for "skip the checks": it implies
+On the gt lane a pushing ship whose branch needs a restack or whose base is off
+the fetched trunk runs the stack rebase machinery over its downstack after the
+commit, reported as `restacked in isolation`. The working copy holding a moved
+branch must be clean and is moved onto its new head; another working copy
+holding a moved branch stops the run. A branch `gt freeze` is holding is left
+where it is. A conflict stops in a conflict workspace with rerere off;
+`ccx vcs stack continue` finishes the rebase, pushes, submits, and restates the PR
+flags the invocation carried. A `--no-push` ship still restacks with the older
+in-place replay, and its conflict refusal names `ccx vcs stack rebase`.
+`--yolo` is the one switch for "skip the checks": it implies
 `--no-verify` and drops every guard ship adds of its own, of which there are none
 today; it never drops a refusal git or gt would make anyway.
 

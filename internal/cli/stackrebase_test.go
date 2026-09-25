@@ -849,3 +849,111 @@ func TestStackRebaseDropsALandedBranchReplayedAfterItsLanding(t *testing.T) {
 		t.Errorf("feature holds %s commits over trunk, want its own 1", n)
 	}
 }
+
+// TestStackContinueFinishesARebaseGTLost pins the way out of a rebase ccx did
+// not start: a gt restack that lost its own operation mid-conflict, which gt
+// continue then refuses with "No Graphite operation to continue". stack
+// continue finishes it with rerere off rather than leaving raw git rebase
+// --continue as the only step left.
+func TestStackContinueFinishesARebaseGTLost(t *testing.T) {
+	f := shipGTRepo(t)
+	stackConflicting(t, f)
+	runAllowFail(t, f.Env(), f.Dir, "git", "-c", "rerere.enabled=false", "rebase", "main")
+	if !stackRebasing(f.Context(), render.Dir(f.Dir)) {
+		t.Fatal("fixture: the rebase did not stop on c.txt")
+	}
+	writeShipFile(t, f.Dir, "c.txt", "trunk\nfeature\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "continue")
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if stackRebasing(f.Context(), render.Dir(f.Dir)) {
+		t.Error("the rebase is still in progress")
+	}
+	if !strings.Contains(out, "finished the rebase of feature") {
+		t.Errorf("continue output = %q", out)
+	}
+	if !stackOnto(t, f, "main", "feature") {
+		t.Error("feature is not on the new trunk")
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "show", "feature:c.txt"); got != "trunk\nfeature" {
+		t.Errorf("feature's c.txt = %q, want the resolution", got)
+	}
+	var rerereOff bool
+	for _, inv := range shipGTInvocations(t, f) {
+		if slices.Contains(inv, "--continue") && slices.Contains(inv, "rerere.enabled=false") {
+			rerereOff = true
+		}
+	}
+	if !rerereOff {
+		t.Error("the continue ran with rerere on")
+	}
+}
+
+// TestStackContinueNamesAResolutionRerereReplayed pins the warning a stranded
+// rebase gets when rerere, on in the user's config, resolved a conflict from a
+// recording nobody rechecked: a stale one silently drops a branch's own hunks.
+func TestStackContinueNamesAResolutionRerereReplayed(t *testing.T) {
+	f := shipGTRepo(t)
+	stackConflicting(t, f)
+	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "config", "rerere.enabled", "true")
+	runAllowFail(t, f.Env(), f.Dir, "git", "rebase", "main")
+	writeShipFile(t, f.Dir, "c.txt", "stale\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "-c", "core.editor=true", "rebase", "--continue")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", feature)
+	runAllowFail(t, f.Env(), f.Dir, "git", "rebase", "main")
+	if got, err := os.ReadFile(filepath.Join(f.Dir, "c.txt")); err != nil || string(got) != "stale\n" {
+		t.Fatalf("fixture: c.txt = %q (%v), want rerere's replayed resolution", got, err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+
+	_, errOut, err := runStackCmd(t, f, "continue")
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if !strings.Contains(errOut, "rerere replayed a recorded resolution into c.txt") {
+		t.Errorf("stderr = %q, want c.txt named as rerere's", errOut)
+	}
+}
+
+// runAllowFail runs name with args in dir under f's environment and tolerates
+// a nonzero exit, for a step whose failure is the point — gt restack stopping
+// in a conflict it is about to have resolved by hand.
+func runAllowFail(t *testing.T, env []string, dir, name string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(name, args...) //nolint:gosec // fixed argv; dir is a TempDir, args are literals
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	_ = cmd.Run()
+}
+
+// TestStackContinueFinishesAfterARerereForget continues a stranded rebase whose
+// replayed resolution was forgotten and resolved by hand: rerere leaves that
+// conflict's preimage behind with no postimage beside it.
+func TestStackContinueFinishesAfterARerereForget(t *testing.T) {
+	f := shipGTRepo(t)
+	stackConflicting(t, f)
+	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "config", "rerere.enabled", "true")
+	runAllowFail(t, f.Env(), f.Dir, "git", "rebase", "main")
+	writeShipFile(t, f.Dir, "c.txt", "stale\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "-c", "core.editor=true", "rebase", "--continue")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", feature)
+	runAllowFail(t, f.Env(), f.Dir, "git", "rebase", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "rerere", "forget", "c.txt")
+	writeShipFile(t, f.Dir, "c.txt", "resolved\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+
+	if _, _, err := runStackCmd(t, f, "continue"); err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(f.Dir, "c.txt")); err != nil || string(got) != "resolved\n" {
+		t.Errorf("c.txt = %q (%v), want the hand resolution", got, err)
+	}
+}

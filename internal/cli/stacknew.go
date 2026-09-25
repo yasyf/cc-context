@@ -63,6 +63,12 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		}
 	}
 	start := parent
+	if !options.published {
+		start, err = stackNewStart(ctx, l, parent)
+		if err != nil {
+			return err
+		}
+	}
 	var receipt *stackPublication
 	var common string
 	if options.published {
@@ -141,7 +147,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 }
 
 func stackNewPath(ctx context.Context, checkout vcs.Checkout, name, requested string) (string, error) {
-	path, err := mintWorktreePath(ctx, "stack new", checkout, name)
+	path, err := mintWorktreePath(ctx, "stack new", checkout, strings.ReplaceAll(name, "/", "-"))
 	if err != nil {
 		return "", err
 	}
@@ -186,6 +192,25 @@ func stackNewPath(ctx context.Context, checkout vcs.Checkout, name, requested st
 		return "", err
 	}
 	return path, nil
+}
+
+func stackNewStart(ctx context.Context, l lane, parent string) (string, error) {
+	state, err := gtStateQuery(ctx, l.dir(), "stack new")
+	if err != nil {
+		return "", err
+	}
+	trunk, err := gtTrunkBranch("stack new", state)
+	if err != nil {
+		return "", err
+	}
+	if parent != trunk {
+		return parent, nil
+	}
+	tr, err := gtTrunkRef(ctx, l.dir(), "stack new", trunk)
+	if err != nil {
+		return "", err
+	}
+	return gtTrunkHead(ctx, l.dir(), "stack new", tr)
 }
 
 func stackConfigBool(ctx context.Context, dir render.Dir, key string, worktree bool) (bool, error) {
@@ -302,7 +327,7 @@ func stackVerifyNewParent(ctx context.Context, dir render.Dir, common string, re
 		return err
 	}
 	branch := stackRebaseBranch{Name: receipt.Branch, Local: source, Remote: receipt.Head}
-	if err := stackUsePublication(&branch, receipt, last[receipt.Branch]); err != nil {
+	if err := stackUsePublication(ctx, dir, &branch, receipt, last[receipt.Branch]); err != nil {
 		return err
 	}
 	tx := fmt.Sprintf("start\nverify %s %s\nverify %s %s\ncommit\n", gtRestackRef(receipt.Branch), receipt.Source, stackPublicationRef(receipt.Branch, "receipt"), receipt.OID)
