@@ -356,7 +356,7 @@ func TestStackSubmitFrozenBranches(t *testing.T) {
 				before[branch] = gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
 			}
 
-			out, _, err := runStackCmd(t, f, "submit")
+			out, _, err := runStackCmd(t, f, "submit", "--include", "feature", "--include", "tip")
 			if tt.frozen && tt.stale {
 				if err == nil || !strings.Contains(err.Error(), "feature is frozen") {
 					t.Fatalf("stack submit = %q, %v; want a frozen feature refusal", out, err)
@@ -713,5 +713,55 @@ func TestStackSubmitRestacksARejectedParentRevision(t *testing.T) {
 		if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); got != state[branch].Head {
 			t.Errorf("remote %s = %s, want %s", branch, got, state[branch].Head)
 		}
+	}
+}
+
+func stackLane(t *testing.T, f *vcstest.Fixture, name string) string {
+	t.Helper()
+	out, _, err := runStackCmd(t, f, "new", name)
+	if err != nil {
+		t.Fatalf("stack new %s: %v", name, err)
+	}
+	lane := out[strings.LastIndex(out, shipSep)+len(shipSep):]
+	writeShipFile(t, lane, name+".txt", name+"\n")
+	mustRun(t, f.Env(), lane, "git", "add", name+".txt")
+	mustRun(t, f.Env(), lane, "git", "commit", "-qm", name)
+	return lane
+}
+
+func TestStackSubmitSkipsABranchAnotherWorkingCopyHolds(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	shipGTStack(t, f, "base")
+	lane := stackLane(t, f, "feature")
+	shipResetLog(t, f)
+
+	_, errOut, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base"}) {
+		t.Errorf("submit posts = %v, want base alone — feature is another lane's", heads)
+	}
+	if gitBranchExists(t, f.Env(), f.RemoteDir, "feature") {
+		t.Error("origin carries feature — the submit pushed another lane's branch")
+	}
+	if want := "skipping feature (checked out in " + lane + ")"; !strings.Contains(errOut, want) {
+		t.Errorf("stderr = %q, want %q", errOut, want)
+	}
+}
+
+func TestStackSubmitIncludesANamedLane(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	shipGTStack(t, f, "base")
+	stackLane(t, f, "feature")
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "submit", "--include", "feature"); err != nil {
+		t.Fatalf("stack submit --include feature: %v", err)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base", "feature"}) {
+		t.Errorf("submit posts = %v, want base then feature", heads)
 	}
 }

@@ -97,6 +97,7 @@ flag, and Graphite state (including frozen).`,
 
 func newStackSubmitCmd() *cobra.Command {
 	var draft bool
+	var include []string
 	cmd := &cobra.Command{
 		Use:   "submit",
 		Short: "Restack every lane, then submit the whole stack",
@@ -116,16 +117,21 @@ branch of the stack; so is a branch whose recorded base reaches back over
 commits trunk already carries, which a replay would copy onto it. A chain that
 stops partway moves nothing — every ref it had moved goes back.
 
+A branch another working copy has checked out is that lane's, so it is skipped
+and named with the working copy holding it, along with every branch stacked
+above it; --include submits it anyway.
+
 The submit itself is ccx vcs ship's: dropping the branches that trunk already
 holds and naming them, then one atomic push moving every branch left, each under
 the lease of its last submitted version, then one post to Graphite's API per
 branch, bottom-up.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runStackSubmit(cmd, draft)
+			return runStackSubmit(cmd, draft, include)
 		},
 	}
 	cmd.Flags().BoolVar(&draft, "draft", false, "open new PRs as drafts")
+	cmd.Flags().StringArrayVar(&include, "include", nil, "submit this branch even though another working copy has it checked out (repeatable)")
 	return cmd
 }
 
@@ -315,7 +321,7 @@ func stackListLine(branch, holder, root string, state gtBranchState) string {
 	return strings.Join(fields, shipSep)
 }
 
-func runStackSubmit(cmd *cobra.Command, draft bool) error {
+func runStackSubmit(cmd *cobra.Command, draft bool, include []string) error {
 	ctx := cmd.Context()
 	errW := cmd.ErrOrStderr()
 	l, err := resolveLane(ctx, "stack submit", workingDir(ctx), false)
@@ -325,8 +331,19 @@ func runStackSubmit(cmd *cobra.Command, draft bool) error {
 	if !l.gt {
 		return errors.New("stack submit: this repository is not on the graphite lane, and a stack is Graphite's — ship the branch with ccx vcs ship instead")
 	}
-	chain, _, err := gtStackAll(ctx, l.dir(), "stack submit")
+	stack, stackState, err := gtStackAll(ctx, l.dir(), "stack submit")
 	if err != nil {
+		return err
+	}
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	if err != nil {
+		return fmt.Errorf("stack submit: %w", err)
+	}
+	chain, skipped, err := stackOwnBranches(stack, stackState, holders, l.checkout.Root, include)
+	if err != nil {
+		return err
+	}
+	if err := stackAnnounceSkipped(errW, skipped); err != nil {
 		return err
 	}
 	commonDir, err := gtCommonDir(ctx, l.dir(), "stack submit")
@@ -398,5 +415,55 @@ func runStackSubmit(cmd *cobra.Command, draft bool) error {
 		fmt.Sprintf("proposing %d commit(s), %d file(s)", commits, files),
 	}
 	cmd.Println(strings.Join(segments, shipSep))
+	return nil
+}
+
+type stackSkip struct {
+	branch string
+	holder string
+	on     string
+}
+
+func stackOwnBranches(stack []string, state gtState, holders map[string]string, root string, include []string) ([]string, []stackSkip, error) {
+	for _, name := range include {
+		if !slices.Contains(stack, name) {
+			return nil, nil, fmt.Errorf("stack submit: --include %s names no branch of this stack (%s)", name, strings.Join(stack, ", "))
+		}
+	}
+	skip := map[string]bool{}
+	var own []string
+	var skipped []stackSkip
+	for _, branch := range stack {
+		parent := state[branch].Parents[0].Ref
+		holder := holders[branch]
+		switch {
+		case skip[parent]:
+			skip[branch] = true
+			skipped = append(skipped, stackSkip{branch: branch, on: parent})
+		case holder != "" && holder != root && !slices.Contains(include, branch):
+			skip[branch] = true
+			skipped = append(skipped, stackSkip{branch: branch, holder: holder})
+		default:
+			own = append(own, branch)
+		}
+	}
+	return own, skipped, nil
+}
+
+func stackAnnounceSkipped(errW io.Writer, skipped []stackSkip) error {
+	if len(skipped) == 0 {
+		return nil
+	}
+	named := make([]string, 0, len(skipped))
+	for _, s := range skipped {
+		if s.holder != "" {
+			named = append(named, fmt.Sprintf("%s (checked out in %s)", s.branch, s.holder))
+			continue
+		}
+		named = append(named, fmt.Sprintf("%s (stacked on %s)", s.branch, s.on))
+	}
+	if _, err := fmt.Fprintf(errW, "stack submit: skipping %s — another lane owns them; pass --include <branch> to submit one anyway\n", strings.Join(named, ", ")); err != nil {
+		return fmt.Errorf("stack submit: name the skipped branches: %w", err)
+	}
 	return nil
 }
