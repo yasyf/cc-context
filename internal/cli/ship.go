@@ -110,9 +110,10 @@ type shipOpts struct {
 	messages []string
 	message  string
 
-	noPush   bool
-	noCommit bool
-	noWatch  bool
+	noPush       bool
+	noCommit     bool
+	noWatch      bool
+	expectRemote string
 
 	// noVerify carries --no-verify until runShip resolves it against --verify and
 	// the branch plan, after which it is the run's whole answer to "run the
@@ -211,6 +212,7 @@ Ship owns the pull request in every lane. --pr-title and --pr-body-file are repe
 	cmd.Flags().StringArrayVarP(&o.messages, "message", "m", nil, "commit message; repeatable, each one its own paragraph")
 	cmd.Flags().BoolVar(&o.noPush, "no-push", false, "commit only; do not push or watch CI")
 	cmd.Flags().BoolVar(&o.noCommit, "no-commit", false, "push and update the PR for the commit already in place; cut no commit, and refuse a dirty working copy — implied when there is nothing to commit and the branch is ahead of trunk")
+	cmd.Flags().StringVar(&o.expectRemote, "expect-remote", "", "publish an existing plain Git commit only if the remote branch still has this full commit ID; requires --no-commit")
 	cmd.Flags().BoolVar(&o.noWatch, "no-watch", false, "push but do not watch CI")
 	cmd.Flags().BoolVar(&o.noVerify, "no-verify", false, "skip the repository's hooks (uvx prek, and git's own) — the default everywhere a pull request's CI is the check")
 	cmd.Flags().BoolVar(&o.verify, "verify", false, "run the repository's hooks — the default when the commit lands straight on trunk, or on a repository that names no trunk")
@@ -281,6 +283,12 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	}
 	if !gtLane && o.parent != "" {
 		return errors.New("ship: --parent applies only to graphite repos; pass --no-gt only when .git/.graphite_repo_config exists, or drop it")
+	}
+	if cmd.Flags().Changed("expect-remote") {
+		if err := validateShipExpectedRemote(o, kind, gtLane); err != nil {
+			return err
+		}
+		o.expectRemote = strings.ToLower(o.expectRemote)
 	}
 	if cmd.Flags().Changed("bookmark") {
 		if gtLane {
@@ -414,7 +422,31 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	stuckOpts.noCommit = o.noCommit
 	stuck := gtStuckSuffix(stuckOpts)
 	restackSeg := ""
-	if plan.needsRestack {
+	if gtLane && !o.noPush {
+		tr, err := trunkFetch.join()
+		if err != nil {
+			return err
+		}
+		state, chain, err := gtStackChain(ctx, gtc, branch)
+		if err != nil {
+			return err
+		}
+		contains, err := gitIsAncestor(ctx, l.dir(), "ship", string(tr.Ref()), state[branch].Head)
+		if err != nil {
+			return err
+		}
+		if plan.needsRestack || !contains {
+			intent, err := stackShipOptions(o, meta, prNWO, branch)
+			if err != nil {
+				return err
+			}
+			if err := runStackRebase(cmd, stackRebaseOpts{members: gtBottomUp(chain), draft: o.draft, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent}); err != nil {
+				return err
+			}
+			gtc.forget()
+			restackSeg = "restacked in isolation"
+		}
+	} else if plan.needsRestack {
 		if restackSeg, err = gtRestack(ctx, l, stuck, branch, gtc); err != nil {
 			return err
 		}
@@ -493,6 +525,15 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		}
 		if seg != "" {
 			segments = append(segments, seg)
+		}
+	}
+	if gtLane && gtc.restack != nil {
+		common, err := gtc.common(ctx)
+		if err != nil {
+			return err
+		}
+		if err := stackClearRun(common, gtc.restack); err != nil {
+			return err
 		}
 	}
 	segments = append(segments, bodylessSegs...)
@@ -1575,6 +1616,9 @@ func shipPushGit(ctx context.Context, dir render.Dir, o shipOpts, branch, preAme
 	if err != nil {
 		return "", 0, err
 	}
+	if o.expectRemote != "" {
+		return remote, 0, shipPushGitExpected(ctx, dir, remote, branch, o.expectRemote, o.noVerify)
+	}
 	if o.amend {
 		return remote, 0, shipPushGitAmend(ctx, dir, remote, branch, preAmendSHA, o.noVerify)
 	}
@@ -1644,7 +1688,7 @@ func shipPushGitAmend(ctx context.Context, dir render.Dir, remote, branch, preAm
 	lease := fmt.Sprintf("--force-with-lease=%s:%s", branch, preAmendSHA)
 	if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, lease, branch)); err != nil {
 		if gitPushStaleLease(err) || gitPushRejected(err) {
-			return fmt.Errorf("ship: %s/%s moved since your last sync — someone may have built on the commit you amended; fetch and reconcile manually before force-pushing: %w", remote, branch, err)
+			return fmt.Errorf("ship: %s/%s does not match the pre-amend head — someone may have built on the commit you amended, or it was rebased locally; inspect and reconcile the remote, then verify its exact commit before running ccx vcs ship --no-gt --no-commit --expect-remote <full-remote-oid>: %w", remote, branch, err)
 		}
 		return fmt.Errorf("ship: git push: %w", err)
 	}

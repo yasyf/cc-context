@@ -3,10 +3,10 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -124,12 +124,6 @@ func restackInvocations(t *testing.T, f *vcstest.Fixture) [][]string {
 	t.Helper()
 	f.Quiesce(t)
 	return vcstest.Invocations(t, f.ArgvLog)
-}
-
-func restackRecords(t *testing.T, f *vcstest.Fixture) []vcstest.Invocation {
-	t.Helper()
-	f.Quiesce(t)
-	return vcstest.Records(t, f.ArgvLog)
 }
 
 // assertNoRestackMutation fails when restack moved a ref or replayed a commit.
@@ -326,38 +320,194 @@ func TestRestackGitRefusesDetachedHEAD(t *testing.T) {
 	assertNoRestackMutation(t, restackInvocations(t, f))
 }
 
-// TestRestackGitConflictAbortsBackToTheStartingState drives a real conflicting
-// rebase: the branch and the trunk edit the same line, so git stops mid-replay
-// and ccx has to abort rather than leave the working copy in a rebase.
-func TestRestackGitConflictAbortsBackToTheStartingState(t *testing.T) {
+// restackGitConflict leaves feature and the remote trunk editing the same line
+// of f.txt, so a restack of feature stops mid-replay.
+func restackGitConflict(t *testing.T) *vcstest.Fixture {
+	t.Helper()
 	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Branch("feature"))
 	f.Isolate(t)
 	restackWrite(t, filepath.Join(f.Dir, "f.txt"), "feature\n")
-	restackRun(t, f, f.Dir, "git", "commit", "-qam", "feature")
+	restackWrite(t, filepath.Join(f.Dir, "g.txt"), "committed\n")
+	restackRun(t, f, f.Dir, "git", "add", "f.txt", "g.txt")
+	restackRun(t, f, f.Dir, "git", "commit", "-qm", "feature")
 	restackAdvanceRemote(t, f, "main", "f.txt", "upstream\n")
+	return f
+}
+
+func TestRestackGitConflictStopsInAWorkspaceAndContinues(t *testing.T) {
+	f := restackGitConflict(t)
 	before := restackRev(t, f, f.Dir, "HEAD")
 
 	_, _, err := runRestackCmd(t, f)
 	if err == nil {
-		t.Fatal("restack succeeded over a conflicting rebase, want a refusal")
+		t.Fatal("restack succeeded over a conflicting rebase, want it to stop in a workspace")
 	}
-	if !strings.Contains(err.Error(), "conflicts in: f.txt; aborted back to the pre-rebase state") {
-		t.Fatalf("error = %q, want it to name the conflicted file and the abort", err)
+	for _, want := range []string{"feature does not rebase onto main cleanly", "f.txt", "ccx vcs stack continue", "ccx vcs stack abort"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("brief = %v, want %q", err, want)
+		}
 	}
-	if !strings.HasPrefix(err.Error(), "restack: ") {
-		t.Errorf("error = %q, want the restack prefix — gitRebaseOnto is shared with ship", err)
+	ws := stackWorkspaceOf(t, err)
+	if filepath.Base(ws) != "conflict-feature" {
+		t.Fatalf("workspace = %q, want a pool entry named conflict-feature", ws)
 	}
-	if after := restackRev(t, f, f.Dir, "HEAD"); after != before {
-		t.Errorf("HEAD = %s, want the pre-rebase %s", after, before)
+	if after := restackRev(t, f, f.Dir, "refs/heads/feature"); after != before {
+		t.Errorf("feature moved to %s before the conflict was resolved", after)
 	}
 	if restackRev(t, f, f.Dir, "REBASE_HEAD") != "" {
-		t.Error("a rebase is still in progress — the abort did not run")
+		t.Error("the working copy restack ran from is mid-rebase; the rebase belongs in the workspace")
 	}
-	if got := restackRead(t, filepath.Join(f.Dir, "f.txt")); got != "feature\n" {
-		t.Errorf("f.txt = %q, want the branch's own content back", got)
+
+	restackWrite(t, filepath.Join(ws, "f.txt"), "upstream\nfeature\n")
+	restackRun(t, f, ws, "git", "add", "f.txt")
+	if _, _, err := runStackCmd(t, f, "continue"); err != nil {
+		t.Fatalf("continue: %v", err)
 	}
-	if status := restackRun(t, f, f.Dir, "git", "status", "--porcelain"); status != "" {
-		t.Errorf("status = %q, want a clean working copy after the abort", status)
+	if !stackOnto(t, f, "refs/remotes/origin/main", "feature") {
+		t.Error("feature is not on the fetched trunk after continue")
+	}
+	if got := restackRev(t, f, f.Dir, "HEAD"); got != restackRev(t, f, f.Dir, "refs/heads/feature") {
+		t.Errorf("HEAD = %s, want the working copy reset onto the rebased feature", got)
+	}
+	if got := restackRead(t, filepath.Join(f.Dir, "f.txt")); got != "upstream\nfeature\n" {
+		t.Errorf("f.txt = %q, want the resolution", got)
+	}
+	if _, err := os.Stat(ws); !os.IsNotExist(err) {
+		t.Errorf("workspace %s left behind: %v", ws, err)
+	}
+	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
+		t.Errorf("run state left behind: %v", left)
+	}
+}
+
+// TestRestackGitRefusesUncommittedWork holds the git lane to the stack rebase
+// rule: the working copy a rebased branch is reset in must be clean, and the
+// refusal comes before any workspace opens or ref moves.
+func TestRestackGitRefusesUncommittedWork(t *testing.T) {
+	f := restackGitConflict(t)
+	restackWrite(t, filepath.Join(f.Dir, "g.txt"), "uncommitted\n")
+	before := restackRev(t, f, f.Dir, "HEAD")
+
+	_, _, err := runRestackCmd(t, f)
+	if err == nil || !strings.Contains(err.Error(), "has uncommitted work; no branches moved") {
+		t.Fatalf("restack over uncommitted work = %v, want a refusal", err)
+	}
+	if after := restackRev(t, f, f.Dir, "HEAD"); after != before {
+		t.Errorf("HEAD moved from %s to %s on a refusal", before, after)
+	}
+	if got := restackRead(t, filepath.Join(f.Dir, "g.txt")); got != "uncommitted\n" {
+		t.Errorf("g.txt = %q, want the uncommitted edit untouched", got)
+	}
+	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
+		t.Errorf("run state left behind: %v", left)
+	}
+}
+
+func TestRestackGitConflictAbortLeavesTheBranch(t *testing.T) {
+	f := restackGitConflict(t)
+	before := restackRev(t, f, f.Dir, "HEAD")
+
+	_, _, err := runRestackCmd(t, f)
+	if err == nil {
+		t.Fatal("restack succeeded over a conflicting rebase, want it to stop in a workspace")
+	}
+	ws := stackWorkspaceOf(t, err)
+	out, _, err := runStackCmd(t, f, "abort")
+	if err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	if out != "aborted · no branch moved" {
+		t.Errorf("abort output = %q", out)
+	}
+	if after := restackRev(t, f, f.Dir, "HEAD"); after != before {
+		t.Errorf("HEAD = %s, want the pre-restack %s", after, before)
+	}
+	if _, err := os.Stat(ws); !os.IsNotExist(err) {
+		t.Errorf("workspace %s left behind: %v", ws, err)
+	}
+	if _, _, err := runRestackCmd(t, f); err == nil || !strings.Contains(err.Error(), "does not rebase onto main cleanly") {
+		t.Errorf("restack after abort = %v, want the conflict again rather than a run in progress", err)
+	}
+}
+
+// TestRestackGitConflictRunsWithRerereOff records a resolution for the same
+// conflict, then restacks: a rebase with rerere on replays it into the file
+// and records a new preimage, where the workspace must show the conflict.
+func TestRestackGitConflictRunsWithRerereOff(t *testing.T) {
+	f := restackGitConflict(t)
+	restackRun(t, f, f.Dir, "git", "config", "rerere.enabled", "true")
+	restackRun(t, f, f.Dir, "git", "config", "rerere.autoUpdate", "true")
+	restackRun(t, f, f.Dir, "git", "fetch", "-q", "origin")
+	rehearsal := restackSiblingPath(t, "rehearsal")
+	restackRun(t, f, f.Dir, "git", "worktree", "add", "-q", "--detach", rehearsal, "feature")
+	if err := exec.Command("git", "-C", rehearsal, "rebase", "origin/main").Run(); err == nil { //nolint:gosec // fixed git argv over a fixture TempDir
+		t.Fatal("the rehearsal rebase applied cleanly, want the conflict it records a resolution for")
+	}
+	restackWrite(t, filepath.Join(rehearsal, "f.txt"), "stale resolution\n")
+	restackRun(t, f, rehearsal, "git", "add", "f.txt")
+	restackRun(t, f, rehearsal, "git", "rerere")
+	restackRun(t, f, rehearsal, "git", "rebase", "--abort")
+	restackRun(t, f, f.Dir, "git", "worktree", "remove", "--force", rehearsal)
+	cache := filepath.Join(f.Dir, ".git", "rr-cache")
+	recorded, err := os.ReadDir(cache)
+	if err != nil || len(recorded) != 1 {
+		t.Fatalf("rr-cache = %v (%v), want the one rehearsed resolution", recorded, err)
+	}
+	stamp := restackRun(t, f, f.Dir, "find", cache, "-type", "f")
+
+	_, _, err = runRestackCmd(t, f)
+	if err == nil {
+		t.Fatal("restack succeeded over a conflicting rebase, want it to stop in a workspace")
+	}
+	ws := stackWorkspaceOf(t, err)
+	if got := restackRead(t, filepath.Join(ws, "f.txt")); !strings.Contains(got, "<<<<<<<") {
+		t.Errorf("f.txt in the workspace = %q, want the conflict rather than the recorded resolution", got)
+	}
+	if after := restackRun(t, f, f.Dir, "find", cache, "-type", "f"); after != stamp {
+		t.Errorf("rr-cache changed during the restack:\nbefore:\n%s\nafter:\n%s", stamp, after)
+	}
+}
+
+// TestRestackGitFlattensABranchCarryingAMerge covers the span git replay
+// refuses: a branch that merged trunk in rebases flat, as git rebase does.
+func TestRestackGitFlattensABranchCarryingAMerge(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Branch("feature"))
+	f.Isolate(t)
+	restackWrite(t, filepath.Join(f.Dir, "feature.txt"), "feature\n")
+	restackRun(t, f, f.Dir, "git", "add", "feature.txt")
+	restackRun(t, f, f.Dir, "git", "commit", "-qm", "feature")
+	restackAdvanceRemote(t, f, "main", "first.txt", "first\n")
+	restackRun(t, f, f.Dir, "git", "fetch", "-q", "origin")
+	restackRun(t, f, f.Dir, "git", "merge", "-q", "--no-edit", "refs/remotes/origin/main")
+	restackAdvanceRemote(t, f, "main", "second.txt", "second\n")
+
+	out, _, err := runRestackCmd(t, f)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if want := "fetched · rebased onto main"; out != want {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+	if got := strings.TrimSpace(restackRun(t, f, f.Dir, "git", "rev-list", "--count", "refs/remotes/origin/main..HEAD")); got != "1" {
+		t.Errorf("commits above trunk = %s, want the feature commit alone", got)
+	}
+	if got := restackRead(t, filepath.Join(f.Dir, "second.txt")); got != "second\n" {
+		t.Errorf("second.txt = %q, want the fetched trunk's content", got)
+	}
+}
+
+// TestRestackGitConflictNeverAdvisesPushingTrunk pins the recovery a stopped
+// restack names: the branch restacked is feature, so no line of it may tell
+// the user to push main.
+func TestRestackGitConflictNeverAdvisesPushingTrunk(t *testing.T) {
+	f := restackGitConflict(t)
+
+	_, _, err := runRestackCmd(t, f)
+	if err == nil {
+		t.Fatal("restack succeeded over a conflicting rebase, want it to stop in a workspace")
+	}
+	if strings.Contains(err.Error(), "git push origin main") {
+		t.Errorf("error = %q, want no advice to push trunk from feature", err)
 	}
 }
 
@@ -483,6 +633,7 @@ func restackGTRepo(t *testing.T, names ...string) *vcstest.Fixture {
 	f.Isolate(t)
 	seedLaneRecords(t, f.Dir, laneSeed{})
 	stubGTAPI(t)
+	stubStackPRs(t, nil)
 	for _, name := range names {
 		restackRun(t, f, f.Dir, "git", "switch", "-qc", name)
 		restackWrite(t, filepath.Join(f.Dir, name+".txt"), name+"\n")
@@ -494,96 +645,74 @@ func restackGTRepo(t *testing.T, names ...string) *vcstest.Fixture {
 }
 
 func TestRestackGTPerBranchVerdict(t *testing.T) {
-	tests := []struct {
-		name    string
-		onTrunk bool
-		advance bool
-		freeze  bool
-		want    string
+	for _, tc := range []struct {
+		name                     string
+		advance, freeze, onTrunk bool
 	}{
-		{
-			name: "the stack landed on trunk",
-			want: "restacked 1 of 1 · trunk main",
-		},
-		{
-			name:    "the pass catches up a branch behind trunk",
-			advance: true,
-			want:    "restacked 1 of 1 · trunk main",
-		},
-		{
-			name:   "a frozen branch already on trunk",
-			freeze: true,
-			want:   "restacked 0 of 1 · trunk main · skipped feat (frozen; already on main)",
-		},
-		{
-			name:    "a frozen branch that never reached trunk",
-			advance: true,
-			freeze:  true,
-			want:    "restacked 0 of 1 · trunk main · skipped feat (frozen)",
-		},
-		{
-			name:    "on trunk, nothing to restack",
-			onTrunk: true,
-			want:    "synced · trunk main",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		{name: "already current"}, {name: "behind trunk", advance: true}, {name: "frozen current", freeze: true}, {name: "frozen behind", advance: true, freeze: true}, {name: "on trunk", onTrunk: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			f := restackGTRepo(t, "feat")
-			if tt.advance {
+			if tc.advance {
 				restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 			}
-			if tt.freeze {
+			if tc.freeze {
 				restackRun(t, f, f.Dir, "gt", "freeze", "feat", "--no-interactive")
 			}
-			if tt.onTrunk {
+			if tc.onTrunk {
 				restackRun(t, f, f.Dir, "git", "switch", "-q", "main")
 			}
-
+			before := restackRev(t, f, f.Dir, "main")
 			out, _, err := runRestackCmd(t, f)
-			if err != nil {
-				t.Fatalf("restack: %v", err)
+			if tc.freeze || tc.onTrunk {
+				if err == nil {
+					t.Fatal("expected refusal")
+				}
+				want := "frozen"
+				if tc.onTrunk {
+					want = "HEAD is not on a stack branch"
+				}
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %v, want %q", err, want)
+				}
+				return
 			}
-			if pinned := restackPinned(t, f, tt.want); out != pinned {
-				t.Fatalf("output = %q, want %q", out, pinned)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out, "onto main@") || !strings.Contains(out, "not pushed (--no-push)") {
+				t.Errorf("output = %q", out)
+			}
+			if got := restackRev(t, f, f.Dir, "main"); got != before {
+				t.Errorf("trunk moved to %s", got)
+			}
+			if !stackOnto(t, f, "origin/main", "feat") {
+				t.Error("feat did not reach remote trunk")
+			}
+			if gitBranchExists(t, f.Env(), f.RemoteDir, "feat") {
+				t.Error("restack pushed feat")
 			}
 		})
 	}
 }
 
-// restackPinned names the commit the summary reports the pass pinned — the
-// remote trunk's head, which the pass fast-forwards the local branch onto.
-func restackPinned(t *testing.T, f *vcstest.Fixture, want string) string {
-	t.Helper()
-	head := f.Out(t, "git", "rev-parse", "--short=12", "refs/remotes/origin/main")
-	return strings.Replace(want, "trunk main", "trunk main@"+strings.TrimSpace(head), 1)
-}
-
-// TestRestackGTMovesPastALandedParent pins the landed-parent move gt sync used
-// to make, asking Graphite about the stack's own branches only.
 func TestRestackGTMovesPastALandedParent(t *testing.T) {
 	f := restackGTRepo(t, "a", "b")
-	api := stubGTAPI(t)
-	api.merged["a"] = gtStubMerged{number: 10, head: restackRev(t, f, f.Dir, "a")}
+	stubStackPRs(t, map[string]*stackPR{"a": {Number: 10, Head: restackRev(t, f, f.Dir, "a"), State: "CLOSED", Landed: true}})
 	restackAdvanceRemote(t, f, "main", "a.txt", "a\n")
 
 	out, _, err := runRestackCmd(t, f)
 	if err != nil {
 		t.Fatalf("restack: %v", err)
 	}
-	if want := restackPinned(t, f, "restacked 1 of 1 · trunk main · skipped a (already merged)"); out != want {
-		t.Fatalf("output = %q, want %q", out, want)
+	if !strings.Contains(out, "dropped landed a") {
+		t.Fatalf("output = %q, want landed parent dropped", out)
 	}
 	if got := restackGTParent(t, f, "b"); got != "main" {
 		t.Errorf("b's gt parent = %q, want main — a landed", got)
 	}
 	if own := strings.TrimSpace(restackRun(t, f, f.Dir, "git", "rev-list", "--count", "refs/remotes/origin/main..b")); own != "1" {
 		t.Errorf("b carries %s commits over trunk, want only its own 1", own)
-	}
-	asked := slices.Concat(api.infoRequests()...)
-	slices.Sort(asked)
-	if want := []string{"a", "b"}; !slices.Equal(asked, want) {
-		t.Errorf("pull-request-info asked about %v, want exactly the stack %v", asked, want)
 	}
 	for _, inv := range restackInvocations(t, f) {
 		if len(inv) > 1 && inv[0] == "gt" && inv[1] == "sync" {
@@ -592,21 +721,14 @@ func TestRestackGTMovesPastALandedParent(t *testing.T) {
 	}
 }
 
-// TestRestackGTKeepsChildrenOfAParentThatMergedElsewhere pins that a parent
-// merged at another head keeps its children, and the child refuses as behind.
 func TestRestackGTKeepsChildrenOfAParentThatMergedElsewhere(t *testing.T) {
 	f := restackGTRepo(t, "a", "b")
-	api := stubGTAPI(t)
-	api.merged["a"] = gtStubMerged{number: 10, head: strings.Repeat("1", 40)}
+	stubStackPRs(t, map[string]*stackPR{"a": {Number: 10, Head: restackRev(t, f, f.Dir, "main"), State: "CLOSED", Landed: true}})
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 
 	_, _, err := runRestackCmd(t, f)
-	var behind *errRestackBehind
-	if !errors.As(err, &behind) {
-		t.Fatalf("restack error = %v, want *errRestackBehind", err)
-	}
-	if !slices.Equal(behind.Branches, []string{"b"}) {
-		t.Errorf("behind = %v, want [b]", behind.Branches)
+	if err == nil || !strings.Contains(err.Error(), "holds commits past it") {
+		t.Fatalf("restack = %v, want unlanded-work refusal", err)
 	}
 	if got := restackGTParent(t, f, "b"); got != "a" {
 		t.Errorf("b's gt parent = %q, want a — a merged at another head", got)
@@ -629,87 +751,56 @@ func restackGTParent(t *testing.T, f *vcstest.Fixture, branch string) string {
 	return ""
 }
 
-// TestRestackGTMovesABranchAnotherWorkingCopyHolds pins the case that replaced
-// the preflight's refusal and then the lane sweep. git will not rebase a branch
-// a sibling checkout holds, so gt either declines it at exit 0 or dies on git's
-// exit 128; git replay moves the ref without checking anything out, and the
-// holder is reset onto it afterwards.
-func TestRestackGTMovesABranchAnotherWorkingCopyHolds(t *testing.T) {
+func TestRestackGTRefusesAnotherWorkingCopyMover(t *testing.T) {
 	f := restackGTRepo(t, "a", "b")
 	held := restackSiblingPath(t, "held")
 	restackRun(t, f, f.Dir, "git", "worktree", "add", "-q", held, "a")
-
-	out, _, err := runRestackCmd(t, f)
-	if err != nil {
-		t.Fatalf("restack: %v", err)
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+	before := map[string]string{"a": restackRev(t, f, f.Dir, "a"), "b": restackRev(t, f, f.Dir, "b")}
+	_, _, err := runRestackCmd(t, f)
+	if err == nil || !strings.Contains(err.Error(), "checked out in "+held) {
+		t.Fatalf("restack = %v, want holder refusal", err)
 	}
-	if want := restackPinned(t, f, "restacked 2 of 2 · trunk main"); out != want {
-		t.Fatalf("output = %q, want %q", out, want)
-	}
-	for _, r := range restackRecords(t, f) {
-		if len(r.Argv) > 1 && r.Argv[0] == "gt" && r.Argv[1] == "restack" {
-			t.Errorf("restack ran gt restack in %s — the restack is git's now", r.Dir)
+	for branch, head := range before {
+		if got := restackRev(t, f, f.Dir, branch); got != head {
+			t.Errorf("%s moved to %s", branch, got)
 		}
 	}
-	if head, want := restackRun(t, f, held, "git", "rev-parse", "HEAD"), restackRun(t, f, f.Dir, "git", "rev-parse", "a"); head != want {
-		t.Errorf("held HEAD = %s, want the restacked a %s", head, want)
-	}
-	if dirt := restackRun(t, f, held, "git", "status", "--porcelain"); dirt != "" {
-		t.Errorf("held reads dirty after the restack: %q — a moved ref leaves its holder's index behind", dirt)
+	if dirt := strings.TrimSpace(restackRun(t, f, held, "git", "status", "--porcelain")); dirt != "" {
+		t.Errorf("held dirty: %s", dirt)
 	}
 }
 
-// TestRestackGTNamesTheWorkingCopyHoldingTrunk covers the reason the stale-trunk
-// summary otherwise withholds. gt declines nothing when it cannot pull a held
-// trunk, so the stack reads as behind with no cause attached; the holder is the
-// cause, and BranchHolders already has it. It names only a holder git reports —
-// an unheld trunk stays silent rather than assert a working copy that is not
-// there.
-func TestRestackGTNamesTheWorkingCopyHoldingTrunk(t *testing.T) {
-	tests := []struct {
-		name string
-		held bool
-	}{
-		{name: "a sibling working copy holds trunk", held: true},
-		{name: "git names no holder for trunk"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+func TestRestackGTLeavesLocalTrunkUntouched(t *testing.T) {
+	for _, heldTrunk := range []bool{false, true} {
+		t.Run(fmt.Sprint(heldTrunk), func(t *testing.T) {
 			f := restackGTRepo(t, "feat")
-			restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
-			restackRun(t, f, f.Dir, "git", "fetch", "-q", "origin")
-			want, held := "restacked 1 of 1 · trunk main", ""
-			if tt.held {
+			before := restackRev(t, f, f.Dir, "main")
+			held := ""
+			if heldTrunk {
 				held = restackSiblingPath(t, "trunk")
 				restackRun(t, f, f.Dir, "git", "worktree", "add", "-q", held, "main")
-				want = "restacked 1 of 1 · trunk main (checked out in " + held + ")"
 			}
-
-			out, _, err := runRestackCmd(t, f)
-			if err != nil {
-				t.Fatalf("restack: %v", err)
+			restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+			if _, _, err := runRestackCmd(t, f); err != nil {
+				t.Fatal(err)
 			}
-			if want := restackPinned(t, f, want); out != want {
-				t.Fatalf("output = %q, want %q", out, want)
+			if got := restackRev(t, f, f.Dir, "main"); got != before {
+				t.Errorf("trunk moved to %s", got)
 			}
-			if tt.held {
-				if local, remote := restackRev(t, f, held, "HEAD"), restackRev(t, f, f.Dir, "refs/remotes/origin/main"); local != remote {
-					t.Errorf("the holder's HEAD = %s, refs/remotes/origin/main = %s — the pin moved trunk without realigning the working copy holding it", local, remote)
+			if held != "" {
+				if got := restackRev(t, f, held, "HEAD"); got != before {
+					t.Errorf("holder HEAD moved to %s", got)
 				}
 				if dirt := strings.TrimSpace(restackRun(t, f, held, "git", "status", "--porcelain")); dirt != "" {
-					t.Errorf("the holder's status = %q, want it clean — a ref advanced under a working copy reports the incoming commits as staged deletions, and committing there reverts them", dirt)
+					t.Errorf("holder dirty: %s", dirt)
 				}
 			}
 		})
 	}
 }
 
-// TestRestackGTRefusesABranchLeftBehind pins the exit code against the summary.
-// gt sync exits 0 on failures it only prints, so a branch can end the pass off
-// trunk with nothing having moved it; the summary said so honestly while the
-// command still reported success, and a caller reading the exit code took a
-// stale base for a current one.
-func TestRestackGTRefusesABranchLeftBehind(t *testing.T) {
+func TestRestackGTRepairsIncorrectRestackMetadata(t *testing.T) {
 	f := restackGTRepo(t, "feat")
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 	restackRun(t, f, f.Dir, "git", "fetch", "-q", "origin")
@@ -720,28 +811,26 @@ func TestRestackGTRefusesABranchLeftBehind(t *testing.T) {
 	}
 	before := restackRev(t, f, f.Dir, "feat")
 
-	out, _, err := runRestackCmd(t, f)
-	if err == nil {
-		t.Fatalf("restack reported success over a branch still behind trunk: %q", out)
+	_, _, err := runRestackCmd(t, f)
+	if err != nil {
+		t.Fatalf("repair stale metadata: %v", err)
 	}
-	for _, want := range []string{"1 branch still behind main@", "feat"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error = %q, want it to name %q", err, want)
-		}
+	if after := restackRev(t, f, f.Dir, "feat"); after == before {
+		t.Error("feature remained stale")
 	}
-	if after := restackRev(t, f, f.Dir, "feat"); after != before {
-		t.Errorf("feat = %s, want the unmoved %s — the refusal reports, it does not move anything", after, before)
+	if !stackOnto(t, f, "origin/main", "feat") {
+		t.Error("feature is not on remote trunk")
+	}
+	if got := strings.TrimSpace(restackRun(t, f, f.Dir, "git", "rev-list", "--count", "origin/main..feat")); got != "1" {
+		t.Errorf("feature has %s commits, want 1", got)
 	}
 }
 
-// TestRestackGTAdvancesAHeldTrunkWithoutStagingDeletions pins what makes moving
-// trunk under a sibling working copy safe: a bare ref advance leaves that copy
-// reporting the incoming commit's files as staged deletions, where a commit
-// reverts them.
-func TestRestackGTAdvancesAHeldTrunkWithoutStagingDeletions(t *testing.T) {
+func TestRestackGTPreservesDirtyTrunkWithoutStagingDeletions(t *testing.T) {
 	f := restackGTRepo(t, "feat")
 	held := restackSiblingPath(t, "trunk")
 	restackRun(t, f, f.Dir, "git", "worktree", "add", "-q", held, "main")
+	before := restackRev(t, f, held, "HEAD")
 	restackWrite(t, filepath.Join(held, "wip.txt"), "work in progress\n")
 	restackRun(t, f, held, "git", "add", "wip.txt")
 	restackWrite(t, filepath.Join(held, "scratch.txt"), "untracked\n")
@@ -751,15 +840,15 @@ func TestRestackGTAdvancesAHeldTrunkWithoutStagingDeletions(t *testing.T) {
 	if _, _, err := runRestackCmd(t, f); err != nil {
 		t.Fatalf("restack: %v", err)
 	}
-	if local, remote := restackRev(t, f, held, "HEAD"), restackRev(t, f, f.Dir, "refs/remotes/origin/main"); local != remote {
-		t.Errorf("the holder's HEAD = %s, refs/remotes/origin/main = %s", local, remote)
+	if got := restackRev(t, f, held, "HEAD"); got != before {
+		t.Errorf("trunk moved to %s", got)
 	}
 	want := "A  wip.txt\n?? scratch.txt"
 	if dirt := strings.TrimSpace(restackRun(t, f, held, "git", "status", "--porcelain")); dirt != want {
 		t.Errorf("the holder's status = %q, want %q — its own work, staged as it was staged, and no deletion of the incoming commit", dirt, want)
 	}
-	if got := restackRead(t, filepath.Join(held, "upstream.txt")); got != "upstream\n" {
-		t.Errorf("upstream.txt in the holder = %q, want the incoming commit's content", got)
+	if _, err := os.Stat(filepath.Join(held, "upstream.txt")); !os.IsNotExist(err) {
+		t.Errorf("upstream file reached untouched trunk: %v", err)
 	}
 }
 
@@ -771,8 +860,8 @@ func TestRestackGraphiteFirst(t *testing.T) {
 		if err != nil {
 			t.Fatalf("restack: %v", err)
 		}
-		if want := restackPinned(t, f, "restacked 1 of 1 · trunk main"); out != want {
-			t.Fatalf("output = %q, want %q", out, want)
+		if !strings.Contains(out, "onto main@") || !strings.Contains(out, "not pushed (--no-push)") {
+			t.Errorf("output = %q", out)
 		}
 	})
 
@@ -823,10 +912,6 @@ func TestStackRebaseIsItsOwnCommand(t *testing.T) {
 	}
 }
 
-// TestRestackGTReportsDriftNoBranchLandsOn pins the half of the drift rule that
-// does not refuse. A local trunk the remote cannot fast-forward is reported, and
-// the pass still runs, when no branch is being moved onto it — here the working
-// copy is parked on trunk itself, so there is no stack to inherit the drift.
 func TestRestackGTReportsDriftNoBranchLandsOn(t *testing.T) {
 	f := restackGTRepo(t, "feat")
 	restackRun(t, f, f.Dir, "git", "switch", "-q", "main")
@@ -834,15 +919,16 @@ func TestRestackGTReportsDriftNoBranchLandsOn(t *testing.T) {
 	restackRun(t, f, f.Dir, "git", "add", "foreign.txt")
 	restackRun(t, f, f.Dir, "git", "commit", "-qm", "foreign")
 
-	out, errOut, err := runRestackCmd(t, f)
-	if err != nil {
-		t.Fatalf("restack: %v", err)
+	before := restackRev(t, f, f.Dir, "main")
+	_, errOut, err := runRestackCmd(t, f)
+	if err == nil || !strings.Contains(err.Error(), "HEAD is not on a stack branch") {
+		t.Fatalf("restack = %v, want trunk refusal", err)
 	}
-	if !strings.Contains(errOut, "no branch of this stack lands on it") {
-		t.Errorf("stderr = %q, want the drift reported rather than hidden", errOut)
+	if strings.Contains(errOut, "holds") {
+		t.Errorf("unexpected drift warning: %q", errOut)
 	}
-	if !strings.HasPrefix(out, "synced · trunk main@") {
-		t.Errorf("summary = %q, want it to name the commit the pass pinned", out)
+	if got := restackRev(t, f, f.Dir, "main"); got != before {
+		t.Errorf("trunk moved to %s", got)
 	}
 }
 
@@ -857,5 +943,41 @@ func TestRestackMergedNamesTheBranch(t *testing.T) {
 	}
 	if !strings.Contains(got, "gt untrack yasyf/ssql-replica-chase-debug") {
 		t.Errorf("errRestackMerged = %q, want the step that clears it", got)
+	}
+}
+
+func TestRestackGTConflictContinuesWithoutPushing(t *testing.T) {
+	f := shipGTRepo(t)
+	stackConflicting(t, f)
+	before := map[string]string{"base": restackRev(t, f, f.Dir, "base"), "feature": restackRev(t, f, f.Dir, "feature")}
+	_, _, err := runRestackCmd(t, f)
+	if err == nil || !strings.Contains(err.Error(), "ccx vcs stack continue") {
+		t.Fatalf("restack = %v, want durable conflict", err)
+	}
+	for branch, head := range before {
+		if got := restackRev(t, f, f.Dir, branch); got != head {
+			t.Errorf("%s moved before conflict resolved", branch)
+		}
+	}
+	run, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !run.NoPush {
+		t.Error("restack continuation can push")
+	}
+	ws := run.Conflict.Workspace
+	restackWrite(t, filepath.Join(ws, "c.txt"), "resolved\n")
+	restackRun(t, f, ws, "git", "add", "c.txt")
+	if _, _, err := runStackCmdIn(t, f, ws, "continue"); err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if !stackOnto(t, f, "origin/main", "feature") {
+		t.Error("feature not on remote trunk")
+	}
+	for branch := range before {
+		if gitBranchExists(t, f.Env(), f.RemoteDir, branch) {
+			t.Errorf("restack pushed %s", branch)
+		}
 	}
 }
