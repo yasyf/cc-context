@@ -13,6 +13,7 @@ import (
 
 func TestStackSubmitLeavesDirtyTrunkAndItsIndexLockUntouched(t *testing.T) {
 	f := stackRebaseRepo(t, "feature")
+	source := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 	trunk := restackSiblingPath(t, "trunk")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", trunk, "main")
 	old := gitAt(t, f.Env(), trunk, "rev-parse", "HEAD")
@@ -36,22 +37,23 @@ func TestStackSubmitLeavesDirtyTrunkAndItsIndexLockUntouched(t *testing.T) {
 	if got, err := os.ReadFile(index); err != nil || string(got) != "another process" {
 		t.Fatalf("lock changed: %q %v", got, err)
 	}
-	if !stackOnto(t, f, "origin/main", "feature") {
-		t.Fatal("feature missed fresh remote trunk")
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != source {
+		t.Fatalf("source feature moved: %s != %s", got, source)
 	}
-	state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
+	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	if remote == source || !stackOnto(t, f, "origin/main", remote) {
+		t.Fatalf("published feature %s missed fresh remote trunk", remote)
+	}
+	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "feature")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state["feature"].NeedsRestack {
-		t.Fatal("freshly submitted feature still needs restack")
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main")
+	if receipt == nil || receipt.Source != source || receipt.SourceBase != old || receipt.Head != remote || receipt.Base != base || receipt.Parent != "main" {
+		t.Fatalf("publication receipt = %+v, want source %s, source base %s, head %s, base %s on main", receipt, source, old, remote, base)
 	}
-	if state["main"].Head != gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main") {
-		t.Fatal("effective trunk did not use origin")
-	}
-
-	if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); local != remote {
-		t.Fatalf("not pushed: %s != %s", local, remote)
+	if staged, unstaged := gitAt(t, f.Env(), f.Dir, "diff", "--cached"), gitAt(t, f.Env(), f.Dir, "diff"); staged != "" || unstaged != "" {
+		t.Fatalf("source checkout changed: staged=%q unstaged=%q", staged, unstaged)
 	}
 }
 
@@ -60,6 +62,7 @@ func TestStackSubmitKeepsConflictForContinue(t *testing.T) {
 	stubStackPRs(t, nil)
 	stackConflicting(t, f)
 	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	sourceBase := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	_, _, err := runStackCmd(t, f, "submit")
 	if err == nil || !strings.Contains(err.Error(), "ccx vcs stack continue") || strings.Contains(err.Error(), "gt restack") {
 		t.Fatalf("conflict: %v", err)
@@ -76,8 +79,29 @@ func TestStackSubmitKeepsConflictForContinue(t *testing.T) {
 	if _, _, err := runStackCmdIn(t, f, run.Conflict.Workspace, "continue"); err != nil {
 		t.Fatal(err)
 	}
-	if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); local != remote {
-		t.Fatalf("continue did not push: %s != %s", local, remote)
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != before {
+		t.Fatalf("continue moved source feature: %s != %s", got, before)
+	}
+	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	parent := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	if remote == before || !stackOnto(t, f, parent, remote) || !stackOnto(t, f, "origin/main", remote) {
+		t.Fatalf("continued publication %s lost its published parent %s or fresh trunk", remote, parent)
+	}
+	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt == nil || receipt.Source != before || receipt.SourceBase != sourceBase || receipt.Head != remote || receipt.Base != parent || receipt.Parent != "base" {
+		t.Fatalf("continued publication receipt = %+v", receipt)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "show", "feature:c.txt"); got != "trunk\nfeature" {
+		t.Fatalf("published resolution = %q", got)
+	}
+	if got, err := os.ReadFile(filepath.Join(f.Dir, "c.txt")); err != nil || string(got) != "feature\n" {
+		t.Fatalf("source conflict file changed: %q %v", got, err)
+	}
+	if staged, unstaged := gitAt(t, f.Env(), f.Dir, "diff", "--cached"), gitAt(t, f.Env(), f.Dir, "diff"); staged != "" || unstaged != "" {
+		t.Fatalf("source checkout changed after continue: staged=%q unstaged=%q", staged, unstaged)
 	}
 }
 
@@ -135,16 +159,6 @@ func TestStackShipIntentSurvivesRemovedBodyFile(t *testing.T) {
 	}
 }
 
-func TestStackPublishedHeadsRejectsConcurrentCommit(t *testing.T) {
-	run := &stackRebaseRun{Branches: []stackRebaseBranch{{Name: "feature", NewHead: "reviewed"}}}
-	if err := stackCheckPublishedHeads(gtState{"feature": {Head: "concurrent"}}, run); err == nil {
-		t.Fatal("accepted a concurrent commit")
-	}
-	if err := stackCheckPublishedHeads(gtState{"feature": {Head: "reviewed"}}, run); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func stackOnlyTestRun(commonDir string) (*stackRebaseRun, error) {
 	runs, err := stackRuns(commonDir)
 	if err != nil {
@@ -173,6 +187,8 @@ func TestShipPreservesAnotherStacksConflictRun(t *testing.T) {
 	}
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
 	shipGTStack(t, f, "other")
+	source := gitAt(t, f.Env(), f.Dir, "rev-parse", "other")
+	sourceBase := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	if _, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--no-pr"); err != nil {
 		t.Fatal(err)
@@ -184,7 +200,19 @@ func TestShipPreservesAnotherStacksConflictRun(t *testing.T) {
 	if _, err := os.Stat(first.Conflict.Workspace); err != nil {
 		t.Fatal(err)
 	}
-	if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "other"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "other"); local != remote {
-		t.Fatal("second stack was not pushed")
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "other"); got != source {
+		t.Fatalf("second stack source moved: %s != %s", got, source)
+	}
+	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "other")
+	if remote == source || !stackOnto(t, f, "origin/main", remote) {
+		t.Fatalf("second stack publication %s missed fresh remote trunk", remote)
+	}
+	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main")
+	if receipt == nil || receipt.Source != source || receipt.SourceBase != sourceBase || receipt.Head != remote || receipt.Base != base || receipt.Parent != "main" {
+		t.Fatalf("second stack publication receipt = %+v", receipt)
 	}
 }

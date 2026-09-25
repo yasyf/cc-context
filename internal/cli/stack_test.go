@@ -340,6 +340,7 @@ func TestStackSubmitFrozenBranches(t *testing.T) {
 				before[branch] = gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
 			}
 
+			sources := stackRebaseSourceSnapshot(t, f, branches...)
 			out, _, err := runStackCmd(t, f, "submit", "--include", "feature", "--include", "tip")
 			if tt.frozen {
 				if err == nil || !strings.Contains(err.Error(), "is frozen") {
@@ -361,20 +362,14 @@ func TestStackSubmitFrozenBranches(t *testing.T) {
 			if err != nil {
 				t.Fatalf("stack submit: %v", err)
 			}
-			if !strings.Contains(out, "submitted 3 branches") {
-				t.Errorf("report = %q, want all three branches submitted", out)
+			if !strings.Contains(out, "published 3 branches · source checkouts unchanged") {
+				t.Errorf("report = %q, want all three branches published without moving sources", out)
 			}
 			if heads := api.submitHeads(); !slices.Equal(heads, branches) {
 				t.Errorf("submitted %v, want %v", heads, branches)
 			}
-			parent := "main"
 			for _, branch := range branches {
-				head := gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
-				if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); got != head {
-					t.Errorf("remote %s = %s, want local %s", branch, got, head)
-				}
-				mustRun(t, f.Env(), f.Dir, "git", "merge-base", "--is-ancestor", parent, branch)
-				parent = branch
+				stackAssertRebasePublication(t, f, sources[branch])
 			}
 		})
 	}
@@ -426,10 +421,6 @@ func TestStackSubmitRepairsIncorrectRestackMetadata(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack(branches...))
 	api := stubGTAPI(t)
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
-	remote := map[string]string{}
-	for _, branch := range branches {
-		remote[branch] = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch)
-	}
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "--allow-empty", "-qm", "advance base")
 	before := map[string]string{}
@@ -447,25 +438,20 @@ func TestStackSubmitRepairsIncorrectRestackMetadata(t *testing.T) {
 	if state["feature"].NeedsRestack {
 		t.Fatal("feature metadata still requests a restack")
 	}
+	sources := stackRebaseSourceSnapshot(t, f, branches...)
 	shipResetLog(t, f)
 
 	_, _, err = runStackCmd(t, f, "submit")
 	if err != nil {
 		t.Fatalf("repair metadata: %v", err)
 	}
-	if !stackOnto(t, f, "base", "feature") {
-		t.Error("feature is not on the updated base")
-	}
-	if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "base..feature"); got != "1" {
+	base := stackAssertRebasePublication(t, f, sources["base"])
+	feature := stackAssertRebasePublication(t, f, sources["feature"])
+	if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", base+".."+feature); got != "1" {
 		t.Errorf("feature owns %s commits, want 1", got)
 	}
 	if heads := api.submitHeads(); !slices.Equal(heads, branches) {
 		t.Errorf("submitted %v, want %v", heads, branches)
-	}
-	for _, branch := range branches {
-		if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", branch), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); local != remote {
-			t.Errorf("%s remote=%s local=%s", branch, remote, local)
-		}
 	}
 }
 
@@ -822,15 +808,14 @@ func TestStackSubmitPushesOverARemoteReplayOfItsLastSubmittedHead(t *testing.T) 
 	mustRun(t, f.Env(), filepath.Dir(clone), "git", "clone", "-q", "--branch", "base", f.RemoteDir, clone)
 	mustRun(t, f.Env(), clone, "git", "-c", "user.email=app@graphite.dev", "-c", "user.name=graphite-app", "rebase", "-q", "origin/main")
 	mustRun(t, f.Env(), clone, "git", "push", "-q", "--force", "origin", "base")
+	sources := stackRebaseSourceSnapshot(t, f, "base")
 	shipResetLog(t, f)
 
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit = %v, want a patch-equivalent remote replay pushed over", err)
 	}
-	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"), gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != want {
-		t.Errorf("remote base = %s, want the local head %s", got, want)
-	}
-	if !stackOnto(t, f, "origin/main", "base") {
+	published := stackAssertRebasePublication(t, f, sources["base"])
+	if !stackOnto(t, f, "origin/main", published) {
 		t.Error("base is not on the new trunk")
 	}
 }
