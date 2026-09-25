@@ -26,11 +26,14 @@ func regenRepo(t *testing.T, run string) *vcstest.Fixture {
 	return f
 }
 
-func regenBranch(t *testing.T, f *vcstest.Fixture, files map[string]string) {
+func regenBranch(t *testing.T, f *vcstest.Fixture, files map[string]string, removed ...string) {
 	t.Helper()
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
 	for name, content := range files {
 		writeShipFile(t, f.Dir, name, content)
+	}
+	for _, name := range removed {
+		mustRun(t, f.Env(), f.Dir, "git", "rm", "-q", name)
 	}
 	mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "feature")
@@ -213,6 +216,23 @@ func TestStackRebaseKeepsAReplayedDeletionOfAGeneratedFile(t *testing.T) {
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "ls-tree", "--name-only", "feature", "gen/"); got != "gen/other.txt" {
 		t.Errorf("feature's gen/ = %q, want gen/out.txt still deleted", got)
+	}
+}
+
+func TestStackRebaseKeepsDeletedOutputOfSharedGenerator(t *testing.T) {
+	f := regenRepo(t, "echo regenerated > gen/out.txt; echo refreshed > gen/other.txt")
+	regenBranch(t, f, map[string]string{"gen/other.txt": "feature\n"}, "gen/out.txt")
+	regenAdvanceTrunk(t, f, [2]string{"gen/out.txt", "trunk\n"}, [2]string{"gen/other.txt", "trunk\n"})
+
+	out, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if !strings.Contains(out, "regenerated gen/other.txt") {
+		t.Errorf("output = %q, want shared generator to run", out)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "ls-tree", "--name-only", "feature", "--", "gen/out.txt"); got != "" {
+		t.Errorf("feature carries %q, want deleted output absent", got)
 	}
 }
 

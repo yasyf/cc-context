@@ -66,7 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ccx vcs stack continue`. Neither runs its generator. The `[[generated]]`
   declaration is read from the conflict workspace's index instead of the
   rebase's `HEAD`, so a commit that removes or changes an entry takes effect
-  at its own stop.
+  at its own stop. When a generator also owns a kept file, the deletion is
+  staged after that generator runs so it cannot restore the deleted file.
 
 - **`ccx vcs stack rebase` and `stack submit` keep working when GitHub
   refuses GraphQL.** They read each branch's pull request through GitHub's
