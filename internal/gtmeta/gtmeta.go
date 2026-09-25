@@ -355,6 +355,9 @@ func reparentOne(ctx context.Context, tx *sql.Tx, path, branch, parent string) e
 	if err != nil {
 		return err
 	}
+	if previous == parent {
+		return nil
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE branch_metadata SET parent_branch_name = ? WHERE branch_name = ?`, parent, branch); err != nil {
 		return fmt.Errorf("gtmeta: reparent %q onto %q in %q: %w", branch, parent, path, err)
 	}

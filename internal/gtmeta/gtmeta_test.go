@@ -460,3 +460,17 @@ func setValidation(t *testing.T, commonDir, branch, result string) {
 		t.Fatalf("set %s validation: %v", branch, err)
 	}
 }
+
+func TestReparentSameParentKeepsChildMembership(t *testing.T) {
+	dir := t.TempDir()
+	vcstest.WriteGraphiteMeta(t, dir, `{"main":{"trunk":true},"parent":{"parents":[{"ref":"main","sha":"aaaa"}]},"child":{"parents":[{"ref":"parent","sha":"bbbb"}]}}`)
+	if err := gtmeta.Reparent(t.Context(), dir, map[string]string{"child": "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, children := metaRow(t, dir, "parent"); children != `["child"]` {
+		t.Fatalf("same-parent update lost membership: %s", children)
+	}
+	if parent, revision, _ := metaRow(t, dir, "child"); parent != "parent" || revision != "bbbb" {
+		t.Fatalf("same-parent update changed boundary: %s %s", parent, revision)
+	}
+}

@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -51,7 +49,7 @@ func newStackCmd() *cobra.Command {
 }
 
 func newStackNewCmd() *cobra.Command {
-	var parent string
+	var options stackNewOpts
 	cmd := &cobra.Command{
 		Use:   "new <name>",
 		Short: "Cut a branch stacked on this one, in a working copy of its own",
@@ -64,15 +62,26 @@ gt adopts the branch onto --parent (the branch checked out here by default), and
 the new working copy's path is the last thing printed, ready to hand to whoever
 works the lane.
 
+--published-parent uses the parent's recorded publication only when its source,
+remote head, and submission metadata still match. --sparse copies this checkout's
+per-worktree sparse configuration before populating the child. --no-checkout leaves
+files unmaterialized instead. --path names a new location outside both checkouts.
+Sparse and no-checkout creation require a Git checkout.
+
 In a jj repository the lane is a git worktree carrying its own colocated jj, cut
 with "jj git init --git-repo .": every lane then answers to git, gt and jj alike.
 A jj workspace would not — it has no .git for gt to read.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runStackNew(cmd, args[0], parent)
+			return runStackNew(cmd, args[0], options)
 		},
 	}
-	cmd.Flags().StringVar(&parent, "parent", "", "branch to stack the new one on (default: the branch checked out here)")
+	cmd.Flags().StringVar(&options.parent, "parent", "", "branch to stack the new one on (default: the branch checked out here)")
+	cmd.Flags().BoolVar(&options.published, "published-parent", false, "start at the parent's verified publication receipt")
+	cmd.Flags().BoolVar(&options.sparse, "sparse", false, "inherit this checkout's sparse patterns before materializing files")
+	cmd.Flags().BoolVar(&options.noCheckout, "no-checkout", false, "create the tracked child without materializing files")
+	cmd.Flags().StringVar(&options.path, "path", "", "new destination outside the source and main checkout")
+	cmd.MarkFlagsMutuallyExclusive("sparse", "no-checkout")
 	return cmd
 }
 
@@ -135,40 +144,6 @@ branch, bottom-up.`,
 	return cmd
 }
 
-func runStackNew(cmd *cobra.Command, name, parent string) error {
-	ctx := cmd.Context()
-	l, err := resolveLane(ctx, "stack new", workingDir(ctx), false)
-	if err != nil {
-		return err
-	}
-	if !l.gt {
-		return errors.New("stack new: this repository is not on the graphite lane, and a stack is Graphite's — run gt init, or cut a plain working copy with ccx vcs worktree add")
-	}
-	if parent == "" {
-		if parent, err = gitCurrentBranch(ctx, l.dir(), "stack new"); err != nil {
-			return err
-		}
-	}
-	if parent == "" {
-		return errors.New("stack new: HEAD is detached here, so there is no branch to stack on — check one out, or name it with --parent")
-	}
-	path, err := mintWorktreePath(ctx, "stack new", l.checkout, name)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return fmt.Errorf("stack new: mint pool for %q: %w", name, err)
-	}
-	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "add", "-b", name, path, parent}); err != nil {
-		return fmt.Errorf("stack new: git worktree add %s: %w", path, err)
-	}
-	if err := stackFormLane(ctx, cmd.ErrOrStderr(), l, render.Dir(path), name, parent); err != nil {
-		return errors.Join(err, stackUnwindLane(ctx, l.dir(), path, name))
-	}
-	cmd.Println(strings.Join([]string{"cut " + name + " onto " + parent, path}, shipSep))
-	return nil
-}
-
 // stackFormLane finishes a lane the worktree already exists for: its own
 // colocated jj where the repository has one, then the Graphite adoption without
 // which no restack or submit reaches the branch.
@@ -179,19 +154,6 @@ func stackFormLane(ctx context.Context, errW io.Writer, l lane, path render.Dir,
 		}
 	}
 	return gtTrackAt(ctx, path, errW, parent)
-}
-
-// stackUnwindLane takes back a lane that only half formed. Left in place it
-// holds both the name and the branch, so the same stack new refuses on a retry
-// and the fix is two git commands nobody was told about.
-func stackUnwindLane(ctx context.Context, root render.Dir, path, name string) error {
-	if _, err := render.RunCLI(ctx, root, "git", []string{"worktree", "remove", "--force", path}); err != nil {
-		return fmt.Errorf("stack new: remove the half-formed lane at %s: %w", path, err)
-	}
-	if _, err := render.RunCLI(ctx, root, "git", []string{"branch", "-D", name}); err != nil {
-		return fmt.Errorf("stack new: delete the half-formed branch %s: %w", name, err)
-	}
-	return nil
 }
 
 // stackColocateJJ gives a lane its own colocated jj. --colocate is refused
