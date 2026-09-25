@@ -1,1 +1,1 @@
-{"v":1,"lamport":5,"ops":[{"kind":"add_criterion","id":"caf09829bb1fd5ca64df53938a38f008","text":"Stack submit refuses frozen stale or inconsistent ancestry without publishing and successfully restacks and pushes worktree-held unfrozen descendants","script":""}]}
+{"v":1,"lamport":6,"ops":[{"kind":"renew"}]}
