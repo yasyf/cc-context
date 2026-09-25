@@ -4,6 +4,30 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.65.1] - 2026-09-25
+
+### Fixed
+
+- **Graphite stacks stay whole after a branch is rebased outside
+  `gt`.** Branches marked `BAD_PARENT_REVISION` or `INVALID_PARENT` remain in
+  the stack and need a restack. When the recorded parent revision is no
+  longer in a branch's history, restack replays its commits from the
+  merge-base with its parent and clears the stale validation result.
+
+- **Restacking with `ccx vcs stack restack` avoids Graphite timeouts in
+  repositories with many tracked branches.** It asks Graphite about only
+  the current branch and its ancestors, then fetches trunk from trunk's own
+  remote and replays the stack without `gt sync`. When a parent merged at its
+  current local head, its surviving children move to the first ancestor
+  that has not landed. Parents with local commits beyond the merged head
+  keep their children.
+
+- **An orphaned plugin cache no longer shadows a newer `ccx`
+  install.** If a cache directory is marked `.orphaned_at` and has a newer
+  live sibling version, its launcher runs the newest live sibling's
+  `bin/ccx` with the original arguments. Existing sessions with an old
+  plugin directory on `PATH` pick up the newer install.
+
 ## [0.65.0] - 2026-09-25
 
 ### Added
