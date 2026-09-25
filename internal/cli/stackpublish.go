@@ -82,7 +82,7 @@ func stackReadPublication(ctx context.Context, dir render.Dir, branch string) (*
 	return &receipt, nil
 }
 
-func stackUsePublication(b *stackRebaseBranch, receipt *stackPublication, submitted gtmeta.Version) error {
+func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBranch, receipt *stackPublication, submitted gtmeta.Version) error {
 	if receipt == nil {
 		return nil
 	}
@@ -99,17 +99,48 @@ func stackUsePublication(b *stackRebaseBranch, receipt *stackPublication, submit
 	if submitted.HeadSha != receipt.Head || submitted.BaseSha != receipt.Base || submitted.BaseName != receipt.Parent {
 		return fmt.Errorf("stack rebase: %s publication metadata changed; reconcile its source and published versions before retrying", b.Name)
 	}
+	base := receipt.Base
 	if b.Remote != receipt.Head {
-		return fmt.Errorf("stack rebase: %s remote changed after its isolated publication; not adopting the new remote head", b.Name)
+		replayed, err := stackReplayedPublication(ctx, dir, b.Remote, receipt)
+		if err != nil {
+			return err
+		}
+		if replayed == "" {
+			return fmt.Errorf("stack rebase: %s remote changed after its isolated publication; not adopting the new remote head", b.Name)
+		}
+		base = replayed
 	}
 	if b.Local != receipt.Source {
 		return nil
 	}
-	b.Head = receipt.Head
+	b.Head = b.Remote
 	b.HeadRef = stackTempRef(b.Name)
-	b.OldBase = receipt.Base
+	b.OldBase = base
 	b.SourceBase = receipt.SourceBase
 	return nil
+}
+
+func stackReplayedPublication(ctx context.Context, dir render.Dir, remote string, receipt *stackPublication) (string, error) {
+	own, err := gtRevCount(ctx, stackRebasePrefix, dir, receipt.Base+".."+receipt.Head)
+	if err != nil {
+		return "", err
+	}
+	base, err := stackRevParse(ctx, dir, fmt.Sprintf("%s~%d", remote, own))
+	if err != nil {
+		return "", err
+	}
+	theirs, err := stackPatchSeries(ctx, dir, base, remote)
+	if err != nil {
+		return "", err
+	}
+	ours, err := stackPatchSeries(ctx, dir, receipt.Base, receipt.Head)
+	if err != nil {
+		return "", err
+	}
+	if theirs == nil || ours == nil || !slices.Equal(theirs, ours) {
+		return "", nil
+	}
+	return base, nil
 }
 
 func stackPublicationState(state gtState, run *stackRebaseRun) gtState {

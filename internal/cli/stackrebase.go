@@ -490,7 +490,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		b.Local = source.Head
 		if !o.noPush {
 			b.HeadRef = stackTempRef(name)
-			if err := stackUsePublication(&b, receipt, submitted[name]); err != nil {
+			if err := stackUsePublication(ctx, l.dir(), &b, receipt, submitted[name]); err != nil {
 				return nil, err
 			}
 		}
