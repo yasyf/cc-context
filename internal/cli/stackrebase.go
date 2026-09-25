@@ -457,17 +457,20 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	byName := map[string]*stackRebaseBranch{}
 	for _, name := range members {
 		ours := submitted[name].HeadSha
-		if vetted := o.vetted[name]; vetted != "" && vetted == remotes[name] {
-			ours = vetted
+		if vetted := o.vetted[name]; vetted != "" && vetted == remotes[name] { ours = vetted }
+		source := state[name]
+		effective := source
+		var receipt *stackPublication
+		if !o.noPush {
+			receipt, err = stackReadPublication(ctx, l.dir(), name)
+			if err != nil { return nil, err }
+			if receipt != nil && receipt.Source == source.Head { effective.Head = receipt.Head }
 		}
-		b, err := stackSnapshot(ctx, l.dir(), tr, state[name], name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin)
-		if err != nil {
-			return nil, err
-		}
+		b, err := stackSnapshot(ctx, l.dir(), tr, effective, name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin)
+		if err != nil { return nil, err }
+		b.Local = source.Head
 		if !o.noPush {
 			b.HeadRef = stackTempRef(name)
-			receipt, err := stackReadPublication(ctx, l.dir(), name)
-			if err != nil { return nil, err }
 			if err := stackUsePublication(&b, receipt, submitted[name]); err != nil { return nil, err }
 		}
 		byName[name] = &b

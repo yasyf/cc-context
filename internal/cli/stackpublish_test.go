@@ -152,3 +152,21 @@ func TestStackPublicationReceiptIdentitySurvivesRunSave(t *testing.T) {
 	if err != nil || saved.Branches[0].Publication.OID != run.Branches[0].Publication.OID { t.Fatalf("lost receipt compare-and-swap identity: %#v %v", saved, err) }
 	if err := os.RemoveAll(run.dir); err != nil { t.Fatal(err) }
 }
+
+func TestStackPublicationDropsItsLandedPublishedParent(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	baseSource := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	childSource := shipHead(t, f)
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil { t.Fatal(err) }
+	basePublished := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	stackAdvanceTrunk(t, f, "base.txt", "base\n")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", ":refs/heads/base")
+	stubStackPRs(t, map[string]*stackPR{"base": {Number: 5, State: "CLOSED", Landed: true, Head: basePublished}})
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil { t.Fatal(err) }
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != baseSource { t.Fatal("landed source moved") }
+	if got := shipHead(t, f); got != childSource { t.Fatal("child source moved") }
+	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "feature")
+	if err != nil || receipt == nil || receipt.Parent != "main" { t.Fatalf("child did not publish over landed parent: %#v %v", receipt, err) }
+	if count := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main.."+receipt.Head); count != "1" { t.Fatalf("published child retained %s commits", count) }
+}

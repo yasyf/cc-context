@@ -58,13 +58,14 @@ func stackUsePublication(b *stackRebaseBranch, receipt *stackPublication, submit
 		return nil
 	}
 	b.Publication = receipt
+	b.WasParent = receipt.Parent
+	if b.Landed != "" { return nil }
 	if submitted.HeadSha != receipt.Head || submitted.BaseSha != receipt.Base || submitted.BaseName != receipt.Parent {
 		return fmt.Errorf("stack rebase: %s publication metadata changed; reconcile its source and published versions before retrying", b.Name)
 	}
 	if b.Remote != receipt.Head {
 		return fmt.Errorf("stack rebase: %s remote changed after its isolated publication; not adopting the new remote head", b.Name)
 	}
-	b.WasParent = receipt.Parent
 	if b.Local != receipt.Source {
 		return nil
 	}
