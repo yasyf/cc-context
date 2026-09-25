@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -28,13 +29,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: chunkdump <dir>")
 		os.Exit(2)
 	}
-	if err := run(os.Args[1]); err != nil {
+	if err := run(context.Background(), os.Args[1]); err != nil {
 		fmt.Fprintln(os.Stderr, "chunkdump:", err)
 		os.Exit(1)
 	}
 }
 
-func run(root string) error {
+func run(ctx context.Context, root string) error {
 	enc := json.NewEncoder(os.Stdout)
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error { //nolint:gosec // walking the user-supplied root is the tool's purpose
 		if err != nil {
@@ -52,7 +53,7 @@ func run(root string) error {
 			return fmt.Errorf("relativize %s: %w", path, err)
 		}
 		rel = filepath.ToSlash(rel)
-		for _, c := range chunk.Chunk(rel, content) {
+		for _, c := range chunk.Chunk(ctx, rel, content) {
 			if err := enc.Encode(record{Path: c.Path, StartLine: c.StartLine, EndLine: c.EndLine, Content: c.Content}); err != nil {
 				return err
 			}

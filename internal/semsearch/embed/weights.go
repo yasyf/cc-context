@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cache"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // ErrWeightsUnavailable marks the model weights as neither cached nor
@@ -45,12 +46,12 @@ type modelBlobs struct {
 }
 
 // resolveWeights returns the pinned model blobs, downloading any that are
-// missing or checksum-stale into cache.Dir("semsearch", "models", <repo>,
-// pin.Revision) — namespaced by repo and revision so multiple model pins never
+// missing or checksum-stale into cache.DirFrom(ctx, "semsearch", "models",
+// <repo>, pin.Revision) — namespaced by repo and revision so model pins never
 // collide. The whole resolve runs under a cross-process lock so concurrent
 // engines never race the same download.
 func resolveWeights(ctx context.Context, pin ModelPin) (*modelBlobs, error) {
-	dir, err := cache.Dir("semsearch", "models", sanitizeRepo(pin.Repo), pin.Revision)
+	dir, err := cache.DirFrom(ctx, "semsearch", "models", sanitizeRepo(pin.Repo), pin.Revision)
 	if err != nil {
 		return nil, fmt.Errorf("resolve model cache dir: %w", err)
 	}
@@ -109,7 +110,7 @@ func ensureFile(ctx context.Context, dir string, pin ModelPin, wf WeightFile) ([
 // network) becomes ErrWeightsUnavailable so callers can skip offline; a non-2xx
 // status is a hard error, since it means the pin itself is wrong.
 func download(ctx context.Context, pin ModelPin, wf WeightFile) ([]byte, error) {
-	url := fmt.Sprintf("%s/%s/resolve/%s/%s", endpoint(), pin.Repo, pin.Revision, wf.Name)
+	url := fmt.Sprintf("%s/%s/resolve/%s/%s", endpoint(ctx), pin.Repo, pin.Revision, wf.Name)
 	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -145,8 +146,8 @@ func verifyChecksum(data []byte, want string) error {
 
 // endpoint honors the HuggingFace HF_ENDPOINT override (mirror hosts) and falls
 // back to the public hub.
-func endpoint() string {
-	if e := os.Getenv("HF_ENDPOINT"); e != "" {
+func endpoint(ctx context.Context) string {
+	if e := render.Getenv(ctx, "HF_ENDPOINT"); e != "" {
 		return e
 	}
 	return "https://huggingface.co"

@@ -55,7 +55,7 @@ var grammarSnippets = map[string]string{
 func TestGrammarsParse(t *testing.T) {
 	for lang, src := range grammarSnippets {
 		t.Run(lang, func(t *testing.T) {
-			root, ok := defaultParser.parse(lang, []byte(src))
+			root, ok := defaultParser.parse(t.Context(), lang, []byte(src))
 			if !ok {
 				t.Fatalf("%s: parse ok=false (grammar missing or trapped)", lang)
 			}
@@ -73,7 +73,7 @@ func TestGrammarsParse(t *testing.T) {
 // against tree-sitter's output, proving pre-order + child-count reconstruction
 // (including anonymous nodes like `def`, `(`, `:`, `+`) is exact.
 func TestParseTreeStructure(t *testing.T) {
-	root, ok := defaultParser.parse("python", []byte("def f(x):\n    return x + 1\n"))
+	root, ok := defaultParser.parse(t.Context(), "python", []byte("def f(x):\n    return x + 1\n"))
 	if !ok {
 		t.Fatal("python parse ok=false")
 	}
@@ -154,7 +154,7 @@ func TestReconstructTreeClampsDepth(t *testing.T) {
 // succeeds (AST-chunked) and the compile context carries far more than the call
 // budget's worth of time.
 func TestCompileUsesInitBudgetNotCallBudget(t *testing.T) {
-	eng, err := loadTSEngine()
+	eng, err := loadTSEngine(t.Context())
 	if err != nil {
 		t.Fatalf("loadTSEngine: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestCompileUsesInitBudgetNotCallBudget(t *testing.T) {
 	}
 	defer func() { compileModule = orig }()
 
-	_, ok := defaultParser.parse("python", []byte("def f(x):\n    return x + 1\n"))
+	_, ok := defaultParser.parse(t.Context(), "python", []byte("def f(x):\n    return x + 1\n"))
 	if !ok {
 		t.Fatal("python parse ok=false; a slow-or-uncached compile must not downgrade to line chunking")
 	}

@@ -66,7 +66,7 @@ func TestChunkCorpusGoldens(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read corpus %s: %v", f.FilePath, err)
 		}
-		for _, c := range Chunk(f.FilePath, content) {
+		for _, c := range Chunk(t.Context(), f.FilePath, content) {
 			got = append(got, goldenChunk{Path: c.Path, StartLine: c.StartLine, EndLine: c.EndLine})
 		}
 	}
@@ -104,7 +104,7 @@ func TestMidLineSplitContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	chunks := Chunk("web/sessionStore.ts", content)
+	chunks := Chunk(t.Context(), "web/sessionStore.ts", content)
 	if len(chunks) != 3 {
 		t.Fatalf("chunk count = %d, want 3", len(chunks))
 	}
@@ -142,7 +142,7 @@ func TestChunkCorpusClassification(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read corpus %s: %v", f.FilePath, err)
 		}
-		got := len(Chunk(f.FilePath, content))
+		got := len(Chunk(t.Context(), f.FilePath, content))
 		if got != f.ChunkCount {
 			t.Errorf("%s (%s): chunk count = %d, want %d [%s]",
 				f.FilePath, f.Language, got, f.ChunkCount, f.Classification)

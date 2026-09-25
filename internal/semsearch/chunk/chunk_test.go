@@ -1,6 +1,7 @@
 package chunk
 
 import (
+	"context"
 	"reflect"
 	"runtime"
 	"strings"
@@ -15,7 +16,7 @@ type fakeParser struct {
 	ok   bool
 }
 
-func (f fakeParser) parse(string, []byte) (node, bool) { return f.root, f.ok }
+func (f fakeParser) parse(context.Context, string, []byte) (node, bool) { return f.root, f.ok }
 
 func TestChunkSourceASTPath(t *testing.T) {
 	// A root over minChunkSize with three ~30-byte siblings packs into two
@@ -28,7 +29,7 @@ func TestChunkSourceASTPath(t *testing.T) {
 		leaf(18, 29), // "line three\n"
 		leaf(29, srcLen),
 	)
-	got := chunkSource(src, "x.fake", "python", fakeParser{root: root, ok: true})
+	got := chunkSource(t.Context(), src, "x.fake", "python", fakeParser{root: root, ok: true})
 	if len(got) != 1 {
 		t.Fatalf("chunk count = %d, want 1 (all siblings fit 750)", len(got))
 	}
@@ -43,7 +44,7 @@ func TestChunkSourceASTPath(t *testing.T) {
 func TestChunkSourceLineFallback(t *testing.T) {
 	// ok=false (no grammar) falls back to line chunking regardless of language.
 	src := "a = 1\nb = 2\nc = 3\n"
-	got := chunkSource(src, "x.py", "python", fakeParser{ok: false})
+	got := chunkSource(t.Context(), src, "x.py", "python", fakeParser{ok: false})
 	if len(got) != 1 {
 		t.Fatalf("chunk count = %d, want 1", len(got))
 	}
@@ -57,7 +58,7 @@ func TestChunkSourceLineFallback(t *testing.T) {
 // intermediate allocation DecodeReplace would make.
 func TestChunkOversizedSkipsDecode(t *testing.T) {
 	content := []byte(strings.Repeat("x = 1\n", 200_000)) // ~1.2 MB of valid Python
-	if got := Chunk("big.py", content); got != nil {
+	if got := Chunk(t.Context(), "big.py", content); got != nil {
 		t.Fatalf("Chunk() = %d chunks, want nil for oversized input", len(got))
 	}
 
@@ -66,7 +67,7 @@ func TestChunkOversizedSkipsDecode(t *testing.T) {
 	runtime.GC()
 	runtime.ReadMemStats(&before)
 	for range iters {
-		Chunk("big.py", content)
+		Chunk(t.Context(), "big.py", content)
 	}
 	runtime.ReadMemStats(&after)
 
@@ -94,7 +95,7 @@ func TestChunkGates(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Chunk(tt.path, []byte(tt.content))
+			got := Chunk(t.Context(), tt.path, []byte(tt.content))
 			if tt.wantEmpty && len(got) != 0 {
 				t.Errorf("Chunk() = %d chunks, want 0", len(got))
 			}
@@ -129,7 +130,7 @@ func TestChunkLanguageDetectionFallback(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Chunk(tt.path, []byte(content))
+			got := Chunk(t.Context(), tt.path, []byte(content))
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("Chunk() = %#v, want %#v", got, tt.want)
 			}

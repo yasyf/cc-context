@@ -126,7 +126,7 @@ func readBenchSemsearchQueries(path string) ([]string, error) {
 func writeBenchSemsearchTiming(
 	ctx context.Context, out io.Writer, emb index.Embedder, repo string, queries []string,
 ) error {
-	dir, err := index.CacheDir(repo)
+	dir, err := index.CacheDir(ctx, repo)
 	if err != nil {
 		return fmt.Errorf("resolve semantic-search cache: %w", err)
 	}

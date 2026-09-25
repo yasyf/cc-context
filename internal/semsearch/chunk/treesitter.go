@@ -52,8 +52,8 @@ var defaultParser parser = tsParser{}
 // parse returns the parse tree for lang, or ok=false to trigger line chunking —
 // both when no grammar is embedded (expected, matching semble's unsupported
 // languages) and when the WASM engine fails (logged; keeps chunking running).
-func (tsParser) parse(lang string, src []byte) (node, bool) {
-	root, ok, err := tsParse(lang, src)
+func (tsParser) parse(ctx context.Context, lang string, src []byte) (node, bool) {
+	root, ok, err := tsParse(ctx, lang, src)
 	if err != nil {
 		slog.Warn("semsearch/chunk: tree-sitter unavailable, falling back to line chunking",
 			"language", lang, "error", err)
@@ -62,8 +62,8 @@ func (tsParser) parse(lang string, src []byte) (node, bool) {
 	return root, ok
 }
 
-func tsParse(lang string, src []byte) (node, bool, error) {
-	eng, err := loadTSEngine()
+func tsParse(ctx context.Context, lang string, src []byte) (node, bool, error) {
+	eng, err := loadTSEngine(ctx)
 	if err != nil {
 		return node{}, false, err
 	}
@@ -71,7 +71,7 @@ func tsParse(lang string, src []byte) (node, bool, error) {
 	// A grammar's one-time cold compile runs under the generous init budget, not
 	// the per-parse deadline; on subsequent parses compiledFor returns the cached
 	// module and the wide budget is inert.
-	compileCtx, cancelCompile := context.WithTimeout(context.Background(), tsInitTimeout)
+	compileCtx, cancelCompile := context.WithTimeout(ctx, tsInitTimeout)
 	defer cancelCompile()
 	compiled, ok, err := eng.compiledFor(compileCtx, lang)
 	if err != nil {
@@ -81,7 +81,7 @@ func tsParse(lang string, src []byte) (node, bool, error) {
 		return node{}, false, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), tsCallTimeout)
+	ctx, cancel := context.WithTimeout(ctx, tsCallTimeout)
 	defer cancel()
 	mod, err := eng.runtime.InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithName(""))
 	if err != nil {
@@ -98,17 +98,17 @@ func tsParse(lang string, src []byte) (node, bool, error) {
 
 // loadTSEngine builds the process-wide runtime on first use, caching only
 // success so a transient cold-compile timeout is retried rather than pinned.
-func loadTSEngine() (*tsEngine, error) {
+func loadTSEngine(ctx context.Context) (*tsEngine, error) {
 	tsEngineMu.Lock()
 	defer tsEngineMu.Unlock()
 	if tsEngineInst != nil {
 		return tsEngineInst, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), tsInitTimeout)
+	ctx, cancel := context.WithTimeout(ctx, tsInitTimeout)
 	defer cancel()
 
-	dir, err := cache.Dir("wasm")
+	dir, err := cache.DirFrom(ctx, "wasm")
 	if err != nil {
 		return nil, fmt.Errorf("resolve wasm cache dir: %w", err)
 	}
