@@ -346,76 +346,7 @@ func runStackSubmit(cmd *cobra.Command, draft bool, include []string) error {
 	if err := stackAnnounceSkipped(errW, skipped); err != nil {
 		return err
 	}
-	commonDir, err := gtCommonDir(ctx, l.dir(), "stack submit")
-	if err != nil {
-		return err
-	}
-	state, err := gtStateAt(ctx, commonDir, "stack submit")
-	if err != nil {
-		return err
-	}
-	trunk, err := gtTrunkBranch("stack submit", state)
-	if err != nil {
-		return err
-	}
-	// Fetched once, here: the same commit restacks every lane and anchors the
-	// submit, where a second resolution would anchor the pull requests on a
-	// trunk the stack was never put on.
-	tr, err := gtTrunkRef(ctx, l.dir(), "stack submit", trunk)
-	if err != nil {
-		return err
-	}
-	pin, err := gtTrunkPin(ctx, "stack submit", l.checkout, l.dir(), tr, state[trunk].Head)
-	if err != nil {
-		return fmt.Errorf("stack submit: %w", err)
-	}
-	// The pin moves refs/heads/<trunk>, the ref needs-restack is measured
-	// against.
-	state, err = gtStateAt(ctx, commonDir, "stack submit")
-	if err != nil {
-		return err
-	}
-	if err := gtTrunkDrift(errW, "stack submit", state, chain, pin, string(tr.Ref())); err != nil {
-		return err
-	}
-	_, held := gtRestackPlan(state, chain)
-	for _, branch := range chain {
-		if reason := held[branch]; reason != "" {
-			return errors.New(gtStuck("stack submit", gtOffParent(branch, reason), ""))
-		}
-	}
-	result, err := gtRestackChain(ctx, "stack submit", l.checkout, l.dir(), commonDir, state, chain)
-	if err != nil {
-		return fmt.Errorf("stack submit: %w", err)
-	}
-	// The restack rewrote the heads the submit force-pushes, so the state it
-	// reads must be the one it left behind, not the one it was planned from.
-	state, err = gtStateAt(ctx, commonDir, "stack submit")
-	if err != nil {
-		return err
-	}
-	for _, branch := range chain {
-		if state[branch].NeedsRestack {
-			return errors.New(gtStuck("stack submit", gtOffParent(branch, result.held[branch]), ""))
-		}
-	}
-	commits, files, err := gtSubmitWidth(ctx, "stack submit", l.dir(), tr, chain)
-	if err != nil {
-		return err
-	}
-	sub := gtSubmit{prefix: "stack submit", draft: draft}
-	submitted, _, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, chain)
-	if err != nil {
-		return err
-	}
-	segments := []string{
-		gtRestackSegment(result),
-		fmt.Sprintf("submitted %d branches", len(submitted)),
-		"trunk " + pin.String(),
-		fmt.Sprintf("proposing %d commit(s), %d file(s)", commits, files),
-	}
-	cmd.Println(strings.Join(segments, shipSep))
-	return nil
+	return runStackRebase(cmd, stackRebaseOpts{members: chain, draft: draft})
 }
 
 type stackSkip struct {

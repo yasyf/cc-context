@@ -4,40 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
 
 const (
-	// gtSkipMerged is the decline that means the branch has nowhere left to go.
-	gtSkipMerged = "already merged"
-
 	jjRestackAncestorRevset = "trunk() & ::@"
 	jjRestackStackRevset    = "trunk()..@"
 	jjRestackConflictRevset = "conflicts() & @::"
 )
 
 var errRestackDetached = errors.New("restack: detached HEAD — check out a branch before restacking")
-
-// errRestackBehind is a pass that ended with a branch still off trunk, which
-// exit 0 would let a caller take for a current base.
-type errRestackBehind struct {
-	Trunk    string
-	Branches []string
-	Summary  string
-}
-
-func (e *errRestackBehind) Error() string {
-	return fmt.Sprintf("restack: %s still behind %s: %s — %s; re-run once the cause above is cleared, or move them by hand with gt restack --only --branch <b>",
-		gtBranchCount(len(e.Branches)), e.Trunk, strings.Join(e.Branches, ", "), e.Summary)
-}
 
 func gtBranchCount(n int) string {
 	if n == 1 {
@@ -71,12 +52,7 @@ func runRestack(cmd *cobra.Command, o restackOpts) error {
 		return err
 	}
 	if l.gt {
-		summary, err := restackGT(ctx, l, cmd.ErrOrStderr())
-		if err != nil {
-			return err
-		}
-		cmd.Println(summary)
-		return nil
+		return runStackRebase(cmd, stackRebaseOpts{noPush: true})
 	}
 
 	var summary string
@@ -96,248 +72,6 @@ func runRestack(cmd *cobra.Command, o restackOpts) error {
 	}
 	cmd.Println(summary)
 	return nil
-}
-
-// restackGT re-reads the stack after gtRestackLanded, which moves every branch
-// stacked on a landed parent onto the first ancestor that has not landed.
-func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
-	commonDir, err := gtCommonDir(ctx, l.dir(), "restack")
-	if err != nil {
-		return "", err
-	}
-	state, err := gtStateAt(ctx, commonDir, "restack")
-	if err != nil {
-		return "", err
-	}
-	trunk, err := gtTrunkBranch("restack", state)
-	if err != nil {
-		return "", err
-	}
-	stack, err := gtRestackStack(ctx, l.dir(), state, trunk)
-	if err != nil {
-		return "", err
-	}
-	trunkHolder, err := gtRestackTrunkHolder(ctx, l, stack, trunk)
-	if err != nil {
-		return "", err
-	}
-	declined, err := gtRestackLanded(ctx, l, commonDir, trunk, stack)
-	if err != nil {
-		return "", err
-	}
-	remote, err := vcs.GitRemoteFor(ctx, l.dir(), trunk)
-	if err != nil {
-		return "", fmt.Errorf("restack: %w", err)
-	}
-	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"fetch", remote, trunk}); err != nil {
-		return "", fmt.Errorf("restack: git fetch %s %s: %w", remote, trunk, err)
-	}
-	trunkRef, err := gtTrunkRefAt(ctx, l.dir(), "restack", remote, trunk)
-	if err != nil {
-		return "", err
-	}
-
-	landed, err := gtStateAt(ctx, commonDir, "restack")
-	if err != nil {
-		return "", err
-	}
-	stack, err = gtRestackStack(ctx, l.dir(), landed, trunk)
-	if err != nil {
-		return "", err
-	}
-	pin, err := gtTrunkPin(ctx, "restack", l.checkout, l.dir(), trunkRef, landed[trunk].Head)
-	if err != nil {
-		return "", fmt.Errorf("restack: %w", err)
-	}
-	// Re-read because the pin moves refs/heads/<trunk>, the ref needs-restack is
-	// measured against.
-	pinned, err := gtStateAt(ctx, commonDir, "restack")
-	if err != nil {
-		return "", err
-	}
-	for _, branch := range stack {
-		if held := pinned[branch].State; held != "" {
-			declined[branch] = held
-		}
-	}
-	chain := gtBottomUp(slices.DeleteFunc(slices.Clone(stack), func(branch string) bool {
-		_, skip := declined[branch]
-		return skip
-	}))
-	if err := gtTrunkDrift(errW, "restack", pinned, chain, pin, string(trunkRef.Ref())); err != nil {
-		return "", err
-	}
-
-	result, err := gtRestackChain(ctx, "restack", l.checkout, l.dir(), commonDir, pinned, chain)
-	if err != nil {
-		return "", fmt.Errorf("restack: %w", err)
-	}
-	for branch, held := range result.held {
-		declined[branch] = held
-	}
-
-	restacked, skipped, behind, err := gtRestackVerdict(ctx, l.dir(), trunkRef, stack, declined)
-	if err != nil {
-		return "", err
-	}
-	summary := gtRestackSummary(pin, trunkHolder, len(stack), restacked, skipped)
-	if len(behind) > 0 {
-		return "", &errRestackBehind{Trunk: pin.String(), Branches: behind, Summary: summary}
-	}
-	return summary, nil
-}
-
-// gtRestackLanded asks Graphite about the stack's own branches only: gt sync asks
-// about every tracked branch, which times Graphite out in a large repository. It
-// runs before the trunk fetch, so every merge it reports is in the fetched trunk,
-// and compares against heads read after the answer. A parent merged at another
-// head keeps its children, which may build on commits the merge never took.
-func gtRestackLanded(ctx context.Context, l lane, commonDir, trunk string, stack []string) (map[string]string, error) {
-	merged, err := gtMergedHeads(ctx, l, "restack", trunk, stack)
-	if err != nil {
-		return nil, err
-	}
-	state, err := gtStateAt(ctx, commonDir, "restack")
-	if err != nil {
-		return nil, err
-	}
-	declined := make(map[string]string, len(merged))
-	landed := make(map[string]bool, len(merged))
-	for branch, head := range merged {
-		declined[branch] = gtSkipMerged
-		if state[branch].Head == head {
-			landed[branch] = true
-		}
-	}
-	if len(landed) == 0 {
-		return declined, nil
-	}
-	rows, err := gtmeta.Rows(ctx, commonDir)
-	if err != nil {
-		return nil, fmt.Errorf("restack: %w", err)
-	}
-	moves, err := pruneReparent(rows, landed, trunk)
-	if err != nil {
-		return nil, err
-	}
-	if err := gtmeta.Reparent(ctx, commonDir, moves); err != nil {
-		return nil, fmt.Errorf("restack: %w", err)
-	}
-	return declined, nil
-}
-
-// gtRestackStack lists the current downstack, trunk excluded.
-func gtRestackStack(ctx context.Context, dir render.Dir, state gtState, trunk string) ([]string, error) {
-	branch, err := gitCurrentBranch(ctx, dir, "restack")
-	if err != nil {
-		return nil, err
-	}
-	if branch == "" {
-		return nil, errRestackDetached
-	}
-	if branch == trunk {
-		return nil, nil
-	}
-	return gtDownstack("restack", state, branch, trunk)
-}
-
-// gtRestackTrunkHolder names the working copy holding trunk, which gt declines
-// to say anything about: a held trunk cannot be pulled, so the whole stack reads
-// as behind with nothing explaining why. An empty string means nobody else holds
-// it — BranchHolders names only the branches some working copy has checked out,
-// so a trunk no entry covers is one this summary must not claim anything about.
-//
-// A stack branch some other working copy holds is no longer a refusal:
-// gtRestackChain replays it without a checkout and realigns its holder.
-func gtRestackTrunkHolder(ctx context.Context, l lane, stack []string, trunk string) (string, error) {
-	if len(stack) == 0 {
-		return "", nil
-	}
-	holders, err := vcs.BranchHolders(ctx, l.checkout)
-	if err != nil {
-		return "", fmt.Errorf("restack: %w", err)
-	}
-	if holder := holders[trunk]; holder != l.checkout.Root {
-		return holder, nil
-	}
-	return "", nil
-}
-
-// gtRestackVerdict counts the stack branches that ended up on trunk and labels
-// the rest, then appends every declined branch the stack never named. It
-// measures against the remote-tracking trunk, since a local trunk the pin could
-// not fast-forward would read a stale stack as current.
-func gtRestackVerdict(ctx context.Context, dir render.Dir, trunk vcs.Trunk, stack []string, declined map[string]string) (int, []string, []string, error) {
-	restacked := 0
-	named := make(map[string]bool, len(stack))
-	var skipped, behind []string
-	for _, branch := range stack {
-		named[branch] = true
-		on, err := gitIsAncestor(ctx, dir, "restack", string(trunk.Ref()), branch)
-		if err != nil {
-			return 0, nil, nil, fmt.Errorf("restack: check %s sits on %s: %w", branch, trunk.Ref(), err)
-		}
-		reason, refused := declined[branch]
-		if !on && !gtRestackHold(reason) {
-			behind = append(behind, gtSkipLabel(branch, reason))
-		}
-		switch {
-		case !refused && on:
-			restacked++
-		case !refused:
-			skipped = append(skipped, gtSkipLabel(branch))
-		case on:
-			skipped = append(skipped, gtSkipLabel(branch, reason, "already on "+trunk.Name()))
-		default:
-			skipped = append(skipped, gtSkipLabel(branch, reason))
-		}
-	}
-
-	var elsewhere []string
-	for branch := range declined {
-		if !named[branch] {
-			elsewhere = append(elsewhere, branch)
-		}
-	}
-	slices.Sort(elsewhere)
-	for _, branch := range elsewhere {
-		skipped = append(skipped, gtSkipLabel(branch, declined[branch]))
-	}
-	return restacked, skipped, behind, nil
-}
-
-// gtRestackHold reports whether a branch left behind trunk was left there on
-// purpose. gt freeze and a merge in progress are holds the operator asked for,
-// and a branch already merged has nowhere to go; everything else off trunk after
-// a restack is a restack that did not happen.
-func gtRestackHold(reason string) bool {
-	return reason == "frozen" || reason == "merging" || reason == gtSkipMerged
-}
-
-func gtSkipLabel(branch string, notes ...string) string {
-	notes = slices.DeleteFunc(notes, func(note string) bool { return note == "" })
-	if len(notes) == 0 {
-		return branch
-	}
-	return branch + " (" + strings.Join(notes, "; ") + ")"
-}
-
-// gtRestackSummary names the commit the pass pinned, not just the branch: a
-// trunk that lands every few minutes makes "trunk main" a different base from
-// one minute to the next, and the sha is what makes the result reproducible.
-func gtRestackSummary(pin gtTrunkPinned, trunkHolder string, total, restacked int, skipped []string) string {
-	held := pin.String()
-	if trunkHolder != "" {
-		held += " (checked out in " + trunkHolder + ")"
-	}
-	summary := "synced · trunk " + held
-	if total > 0 {
-		summary = fmt.Sprintf("restacked %d of %d · trunk %s", restacked, total, held)
-	}
-	if len(skipped) > 0 {
-		summary += shipSep + "skipped " + strings.Join(skipped, ", ")
-	}
-	return summary
 }
 
 func restackJJ(ctx context.Context, dir render.Dir) (string, error) {

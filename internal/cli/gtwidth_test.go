@@ -8,13 +8,7 @@ import (
 	"github.com/yasyf/cc-context/internal/gtmeta"
 )
 
-// TestStackSubmitRefusesCommitsTrunkAlreadyHolds pins the submit-time half of
-// the width rule: a branch carrying a patch the remote trunk already holds
-// proposes work it does not own, and ancestry cannot see it, since the copy has
-// a sha of its own. gt is told the branch is restacked — the row a replay
-// writes — so nothing moves it and the copy reaches the submit, which is the
-// state a bad run leaves behind.
-func TestStackSubmitRefusesCommitsTrunkAlreadyHolds(t *testing.T) {
+func TestStackSubmitDropsCommitsTrunkAlreadyHolds(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "base")
 	writeShipFile(t, f.Dir, "own.txt", "the branch's own work\n")
@@ -31,15 +25,17 @@ func TestStackSubmitRefusesCommitsTrunkAlreadyHolds(t *testing.T) {
 	}
 	shipResetLog(t, f)
 
-	_, _, err := runStackCmd(t, f, "submit")
-	if err == nil {
-		t.Fatal("stack submit succeeded carrying a commit trunk already holds, want a refusal")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "already holds, so its pull request proposes work the branch does not own") {
-		t.Errorf("error = %v, want it to name the inherited commit", err)
+	if got := gitAt(t, f.Env(), f.Dir, "diff", "--name-only", "origin/main...base"); got != "own.txt" {
+		t.Fatalf("submitted inherited files: %s", got)
 	}
-	if gitBranchExists(t, f.Env(), f.RemoteDir, "base") {
-		t.Error("origin holds base — the refusal must come before the push")
+	if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main..base"); got != "1" {
+		t.Fatalf("submitted %s commits, want only own work", got)
+	}
+	if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); local != remote {
+		t.Fatal("repaired branch was not pushed")
 	}
 }
 
