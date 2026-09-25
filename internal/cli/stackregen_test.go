@@ -185,3 +185,88 @@ func TestStackRebaseScrubsGitEnvFromTheGenerator(t *testing.T) {
 		t.Errorf("feature's gen/out.txt = %q, want the regenerated a, f, t", got)
 	}
 }
+
+func TestStackRebaseKeepsAReplayedDeletionOfAGeneratedFile(t *testing.T) {
+	f := regenRepo(t, "echo regenerated > gen/out.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "rm", "-q", "gen/out.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "feature")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
+	regenAdvanceTrunk(t, f, [2]string{"gen/out.txt", "a\nt\n"})
+
+	plan, _, err := runStackCmd(t, f, "rebase", "--dry-run")
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if strings.Contains(plan, "regenerates gen/out.txt") {
+		t.Errorf("plan = %q, want no regeneration planned for a deleted path", plan)
+	}
+	out, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if strings.Contains(out, "regenerated gen/out.txt") {
+		t.Errorf("output = %q, want no generator run for a deleted path", out)
+	}
+	if !stackOnto(t, f, "origin/main", "feature") {
+		t.Error("feature is not on the new trunk")
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "ls-tree", "--name-only", "feature", "gen/"); got != "gen/other.txt" {
+		t.Errorf("feature's gen/ = %q, want gen/out.txt still deleted", got)
+	}
+}
+
+func TestStackContinueCommitsAHumanDeletionOfAGeneratedFile(t *testing.T) {
+	f := regenRepo(t, "echo regenerated > gen/out.txt")
+	regenBranch(t, f, map[string]string{"src/a.txt": "a-feature\n", "gen/out.txt": "a-feature\n"})
+	regenAdvanceTrunk(t, f, [2]string{"src/a.txt", "a-trunk\n"}, [2]string{"gen/out.txt", "a-trunk\n"})
+
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err == nil {
+		t.Fatal("stack rebase succeeded, want the mixed conflict to stop")
+	}
+	ws := stackWorkspaceOf(t, err)
+	writeShipFile(t, ws, "src/a.txt", "a-both\n")
+	mustRun(t, f.Env(), ws, "git", "add", "src/a.txt")
+	mustRun(t, f.Env(), ws, "git", "rm", "-q", "gen/out.txt")
+
+	out, _, err := runStackCmdIn(t, f, ws, "continue")
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if strings.Contains(out, "regenerated gen/out.txt") {
+		t.Errorf("continue output = %q, want no generator run for a path resolved as deleted", out)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "ls-tree", "--name-only", "feature", "gen/"); got != "gen/other.txt" {
+		t.Errorf("feature's gen/ = %q, want gen/out.txt deleted as resolved", got)
+	}
+}
+
+func TestStackContinueReadsTheGeneratorsFromTheReplayedCommit(t *testing.T) {
+	f := regenRepo(t, "echo \"unknown command 'write'\" >&2; exit 1")
+	regenBranch(t, f, map[string]string{regenFile: "", "src/a.txt": "a-feature\n", "gen/out.txt": "a by hand\n"})
+	regenAdvanceTrunk(t, f, [2]string{"src/a.txt", "a-trunk\n"}, [2]string{"gen/out.txt", "a-trunk\n"})
+
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err == nil {
+		t.Fatal("stack rebase succeeded, want the conflict to stop")
+	}
+	if strings.Contains(err.Error(), "generated, rerun") || strings.Contains(err.Error(), "unknown command") {
+		t.Errorf("brief = %v, want gen/out.txt left to the human now that the replayed commit retires its generator", err)
+	}
+	ws := stackWorkspaceOf(t, err)
+	writeShipFile(t, ws, "src/a.txt", "a-both\n")
+	writeShipFile(t, ws, "gen/out.txt", "a-both by hand\n")
+	mustRun(t, f.Env(), ws, "git", "add", "src/a.txt", "gen/out.txt")
+
+	out, _, err := runStackCmdIn(t, f, ws, "continue")
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if strings.Contains(out, "regenerated") {
+		t.Errorf("continue output = %q, want the retired generator never run", out)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "show", "feature:gen/out.txt"); got != "a-both by hand" {
+		t.Errorf("feature's gen/out.txt = %q, want the human's resolution", got)
+	}
+}

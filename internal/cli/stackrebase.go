@@ -970,9 +970,8 @@ func stackAdvance(ctx context.Context, cmd *cobra.Command, run *stackRebaseRun, 
 			return err
 		}
 		if len(unmerged) > 0 || len(c.Generated) > 0 {
-			gens, err := regenLoad(ctx, ws, "HEAD")
-			if err != nil && len(unmerged) > 0 {
-				c.Generated = nil
+			gens, err := regenStaged(ctx, ws)
+			if err != nil {
 				return stackStopped(ctx, run, b, unmerged, err.Error())
 			}
 			declared := regenDeclared(gens, unmerged)
@@ -1107,7 +1106,7 @@ func stackResume(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	if err != nil {
 		return err
 	}
-	gens, err := regenLoad(ctx, ws, "HEAD")
+	gens, err := regenStaged(ctx, ws)
 	if rest := slices.DeleteFunc(unmerged, func(p string) bool { return regenOwner(gens, p) != nil }); len(rest) > 0 {
 		if err != nil {
 			return fmt.Errorf("stack rebase: %s still has unresolved files: %s — resolve them and git add them first; nothing regenerates them: %w", c.Workspace, strings.Join(rest, ", "), err)
