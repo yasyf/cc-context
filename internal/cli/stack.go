@@ -117,8 +117,10 @@ lane and anchors the submit: the local trunk branch is fast-forwarded onto it,
 since gt measures a restack against the local ref, and the report names the
 commit pinned. A local trunk holding commits the remote does not is refused
 rather than restacked onto, because a restack would splice them into every
-branch of the stack. A chain that stops partway moves nothing — every ref it had
-moved goes back.
+branch of the stack. No ref moves until every branch kept has replayed. A branch
+that conflicts is left where it was, along with everything stacked on it, and
+named with the ccx vcs stack rebase that resolves it; the rest of the stack is
+restacked and submitted, and the command still exits non-zero.
 
 A branch whose pull request already landed — the merge queue's squash leaves its
 head out of trunk's history — is dropped: its children move onto its parent and
@@ -445,5 +447,8 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts) error {
 		fmt.Sprintf("proposing %d commit(s), %d file(s)", commits, files),
 	)
 	cmd.Println(strings.Join(segments, shipSep))
+	if len(pass.refused) > 0 {
+		return gtRefusedErr("stack submit", pass.refused)
+	}
 	return nil
 }

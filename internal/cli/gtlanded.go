@@ -249,6 +249,24 @@ type gtStackPass struct {
 	prs       gtStackPRs
 	landed    []gtLanded
 	result    gtRestackResult
+	refused   []gtRefused
+}
+
+// gtRefused is a branch whose replay conflicted, and the branches it takes out
+// of the submit with it: itself and everything stacked on it.
+type gtRefused struct {
+	conflict *errRestackConflict
+	left     []string
+}
+
+// gtRefusedErr names what a submit left behind for a conflict, with the step
+// that resolves each.
+func gtRefusedErr(prefix string, refused []gtRefused) error {
+	problems := make([]string, 0, len(refused))
+	for _, r := range refused {
+		problems = append(problems, fmt.Sprintf("left %s unsubmitted: %s", strings.Join(r.left, ", "), r.conflict.Error()))
+	}
+	return errors.New(gtStuck(prefix, strings.Join(problems, "; "), "; then run this again"))
 }
 
 // gtStackRestack fetches trunk once, pins the local trunk branch onto it, drops
@@ -316,8 +334,21 @@ func gtStackRestack(ctx context.Context, errW io.Writer, l lane, s gtSubmit, cha
 			return gtStackPass{}, errors.New(gtStuck(s.prefix, gtOffParent(branch, reason), ""))
 		}
 	}
-	if pass.result, err = gtRestackChain(ctx, s.prefix, l.checkout, l.dir(), commonDir, state, pass.chain); err != nil {
+	for {
+		pass.result, err = gtRestackChain(ctx, s.prefix, l.checkout, l.dir(), commonDir, state, pass.chain)
+		var conflict *errRestackConflict
+		if !errors.As(err, &conflict) {
+			break
+		}
+		left := gtAbove(state, pass.chain, []string{conflict.Branch})
+		pass.refused = append(pass.refused, gtRefused{conflict: conflict, left: left})
+		pass.chain = slices.DeleteFunc(pass.chain, func(branch string) bool { return slices.Contains(left, branch) })
+	}
+	if err != nil {
 		return gtStackPass{}, fmt.Errorf("%s: %w", s.prefix, err)
+	}
+	if len(pass.chain) == 0 && len(pass.refused) > 0 {
+		return gtStackPass{}, gtRefusedErr(s.prefix, pass.refused)
 	}
 	if pass.state, err = gtStateAt(ctx, commonDir, s.prefix); err != nil {
 		return gtStackPass{}, err

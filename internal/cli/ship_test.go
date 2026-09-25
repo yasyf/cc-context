@@ -5038,7 +5038,7 @@ func TestShipGTAutoRestackConflict(t *testing.T) {
 	shipGTConflicting(t, f)
 
 	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
-	want := gtStuck("ship", (&errRestackConflict{Branch: "feature", Onto: "base", Dir: f.Dir}).Error(), gtStuckSuffix(shipOpts{noPush: true}))
+	want := gtStuck("ship", (&errRestackConflict{Branch: "feature", Onto: "base"}).Error(), gtStuckSuffix(shipOpts{noPush: true}))
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
@@ -5054,7 +5054,7 @@ func TestShipGTNoCommitRestackConflict(t *testing.T) {
 	shipResetLog(t, f)
 
 	_, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--no-pr")
-	want := gtStuck("ship", (&errRestackConflict{Branch: "feature", Onto: "base", Dir: f.Dir}).Error(), gtStuckSuffix(shipOpts{noCommit: true}))
+	want := gtStuck("ship", (&errRestackConflict{Branch: "feature", Onto: "base"}).Error(), gtStuckSuffix(shipOpts{noCommit: true}))
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
@@ -5082,7 +5082,7 @@ func TestShipGTLandedRestackConflictResumes(t *testing.T) {
 			shipResetLog(t, f)
 
 			_, err := runShipCmd(f.Context(), t, append([]string{"-m", "fix: frobnicate", "--no-watch", "--no-pr"}, tt.paths...)...)
-			want := gtStuck("ship", (&errRestackConflict{Branch: "feature", Onto: "base", Dir: f.Dir}).Error(),
+			want := gtStuck("ship", (&errRestackConflict{Branch: "feature", Onto: "base"}).Error(),
 				". Nothing was committed and the working copy is untouched, so re-run this same command once it is fixed.")
 			if err == nil || err.Error() != want {
 				t.Fatalf("error = %v, want %q", err, want)

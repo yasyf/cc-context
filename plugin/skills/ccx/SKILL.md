@@ -271,8 +271,8 @@ replay`, which moves the refs without checking a branch out, so a branch a
 sibling working copy holds is not a special case; each holder is then reset onto
 its new head, its uncommitted work snapshotted beforehand and applied after,
 and a branch `gt freeze` is holding is left where it is. Only a
-conflict stays manual, and the refusal names the `gt restack --only --branch <b>`
-and `ccx vcs ship --no-commit` steps back, since the commit has landed by then. `--yolo` is the one switch for "skip the checks": it implies
+conflict stays manual, and the refusal names the `ccx vcs stack rebase --no-push`
+(rerere off, resumed by `ccx vcs stack continue`) and `ccx vcs ship --no-commit` steps back, since the commit has landed by then. `--yolo` is the one switch for "skip the checks": it implies
 `--no-verify` and drops every guard ship adds of its own, of which there are none
 today; it never drops a refusal git or gt would make anyway.
 

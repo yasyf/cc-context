@@ -21,20 +21,19 @@ import (
 type errRestackConflict struct {
 	Branch string
 	Onto   string
-	Dir    string
 }
 
-// Error carries the way out as well as the fact, because nothing is left
-// mid-rebase for gt continue to continue: a replay that conflicts applies
-// nothing. The step is gt's own interactive restack of that one branch, driven
-// from the checkout holding it.
+// Error carries the way out as well as the fact, because a replay that
+// conflicts applies nothing and leaves nothing mid-rebase.
 func (e *errRestackConflict) Error() string {
-	step := "gt restack --only --branch " + e.Branch
-	if e.Dir == "" {
-		return fmt.Sprintf("%s does not rebase onto %s cleanly — rebase it by hand with %s", e.Branch, e.Onto, step)
-	}
-	return fmt.Sprintf("%s does not rebase onto %s cleanly — rebase it by hand in %s with %s", e.Branch, e.Onto, e.Dir, step)
+	return fmt.Sprintf("%s does not rebase onto %s cleanly — rebase it with %s", e.Branch, e.Onto, gtRebaseStep)
 }
+
+// gtRebaseStep is where a branch the replay cannot move goes: ccx's own stack
+// rebase, which rebases with rerere off and resumes through its own continue.
+// gt restack replays whatever rerere recorded, stale resolutions included, and
+// can lose its operation mid-conflict, leaving raw git rebase --continue.
+const gtRebaseStep = "ccx vcs stack rebase --no-push, which stops in a conflict workspace with rerere off for ccx vcs stack continue"
 
 // errRestackMerged is a branch whose commits are already in its parent. No
 // rebase moves it anywhere — replaying it would re-apply commits the parent
@@ -107,7 +106,7 @@ func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir rend
 	}
 
 	pin := gtTrunkPinned{name: trunk, sha: state[trunk].Head}
-	moves, empty, replayErr := gtReplayChain(ctx, prefix, dir, state, pin, movers, holders)
+	moves, empty, replayErr := gtReplayChain(ctx, prefix, dir, state, pin, movers)
 	for _, branch := range empty {
 		held[branch] = gtHoldEmpty
 	}
@@ -177,7 +176,7 @@ type restackMove struct {
 	stayed bool
 }
 
-func gtReplayChain(ctx context.Context, prefix string, dir render.Dir, state gtState, pin gtTrunkPinned, movers []string, holders map[string]string) ([]restackMove, []string, error) {
+func gtReplayChain(ctx context.Context, prefix string, dir render.Dir, state gtState, pin gtTrunkPinned, movers []string) ([]restackMove, []string, error) {
 	var moves []restackMove
 	var empty []string
 	heads := map[string]string{pin.name: pin.sha}
@@ -220,7 +219,7 @@ func gtReplayChain(ctx context.Context, prefix string, dir render.Dir, state gtS
 		head, err := gtReplay(ctx, prefix, dir, base, branch, s, span...)
 		if err != nil {
 			if errors.Is(err, errReplayConflict) {
-				return moves, empty, &errRestackConflict{Branch: branch, Onto: parent.Ref, Dir: holders[branch]}
+				return moves, empty, &errRestackConflict{Branch: branch, Onto: parent.Ref}
 			}
 			return moves, empty, err
 		}

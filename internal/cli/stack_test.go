@@ -493,15 +493,17 @@ func TestStackSubmitRefusesIncorrectRestackMetadata(t *testing.T) {
 	}
 }
 
-// TestStackSubmitRestackConflictMovesNothing pins the atomicity a stack spread
-// across lanes rests on: a chain that stops partway leaves every branch where
-// it was. Keeping the moves it had already made left the bottom on the trunk it
-// had just reached with everything above it on the old one — two bases in one
-// stack, which only commit archaeology names and only a hand rebuild undoes.
-func TestStackSubmitRestackConflictMovesNothing(t *testing.T) {
+// TestStackSubmitSubmitsTheCleanPrefixOfAConflict pins what a conflict above a
+// clean branch costs: that branch and what sits on it, nothing below. base
+// restacks onto the new trunk and is submitted; feature is left where it was,
+// its ref, its remote and gt's record of its base alike, and the refusal names
+// it with the stack rebase that resolves it. The replay still publishes only
+// after every branch it keeps has replayed, so native gt never reads a
+// half-moved stack.
+func TestStackSubmitSubmitsTheCleanPrefixOfAConflict(t *testing.T) {
 	f := shipGTRepo(t)
+	api := stubGTAPI(t)
 	stackConflicting(t, f)
-	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 	commonDir := gitAt(t, f.Env(), f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	before, err := gtmeta.Read(f.Context(), commonDir)
@@ -521,25 +523,42 @@ func TestStackSubmitRestackConflictMovesNothing(t *testing.T) {
 		"fi\n"+
 		"exec "+shellSingleQuote(realGit)+" \"$@\"\n")
 
-	_, _, err = runStackCmd(t, f, "submit")
+	out, _, err := runStackCmd(t, f, "submit")
 	if err == nil {
-		t.Fatal("stack submit succeeded, want the conflict on feature")
+		t.Fatal("stack submit succeeded, want feature's conflict reported")
 	}
-	if !strings.Contains(err.Error(), "no branches moved") {
-		t.Errorf("error = %v, want an unchanged-stack refusal", err)
+	for _, want := range []string{"left feature unsubmitted", "feature does not rebase onto base cleanly", "ccx vcs stack rebase --no-push"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want %q", err, want)
+		}
 	}
-	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != base {
-		t.Errorf("base = %s, want %s — it was restacked onto the new trunk while feature stayed on the old one", got, base)
+	if !strings.Contains(out, "submitted 1 branches") {
+		t.Errorf("report = %q, want base submitted", out)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base"}) {
+		t.Errorf("submit posts = %v, want base alone", heads)
+	}
+	if !stackOnto(t, f, "origin/main", "base") {
+		t.Error("base was not restacked onto the new trunk")
+	}
+	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"), gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != want {
+		t.Errorf("origin base = %s, want the restacked %s", got, want)
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != feature {
-		t.Errorf("feature = %s, want %s", got, feature)
+		t.Errorf("feature = %s, want it left at %s", got, feature)
+	}
+	if gitBranchExists(t, f.Env(), f.RemoteDir, "feature") {
+		t.Error("origin has feature — the submit pushed the branch that conflicted")
 	}
 	after, err := gtmeta.Read(f.Context(), commonDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(after, before) {
-		t.Errorf("metadata after concurrent native validation = %#v, want %#v", after, before)
+	if got, want := after["feature"], before["feature"]; got.Head != want.Head || !reflect.DeepEqual(got.Parents, want.Parents) {
+		t.Errorf("feature's record = %#v, want its head and recorded base unchanged from %#v", got, want)
+	}
+	if !after["feature"].NeedsRestack {
+		t.Error("gt reads feature as restacked, want it named off its moved parent")
 	}
 	state, err := os.ReadFile(observed)
 	if err != nil {
@@ -554,7 +573,24 @@ func TestStackSubmitRestackConflictMovesNothing(t *testing.T) {
 	if !native["base"].NeedsRestack {
 		t.Errorf("native gt observed a temporary replayed base: %s", state)
 	}
-	mustRun(t, f.Env(), f.Dir, "gt", "restack", "--only", "--branch", "base", "--no-interactive")
+}
+
+// TestRestackRefusalsRouteThroughStackRebase pins where every branch a replay
+// cannot move is sent: ccx vcs stack rebase, which rebases with rerere off and
+// resumes through ccx vcs stack continue. gt restack replays whatever rerere
+// recorded, and it has lost its own operation mid-conflict, leaving raw git
+// rebase --continue as the only way out.
+func TestRestackRefusalsRouteThroughStackRebase(t *testing.T) {
+	for _, msg := range []string{
+		(&errRestackConflict{Branch: "feature", Onto: "base"}).Error(),
+		gtOffParent("feature", ""),
+		(&errSubmitInherited{Branch: "feature", Trunk: "main", Commits: []string{"abc1234"}}).Error(),
+		(&errRestackBehind{Trunk: "main", Branches: []string{"feature"}, Summary: "conflict"}).Error(),
+	} {
+		if strings.Contains(msg, "gt restack") || !strings.Contains(msg, "ccx vcs stack rebase") {
+			t.Errorf("refusal = %q, want ccx vcs stack rebase rather than gt restack", msg)
+		}
+	}
 }
 
 func TestStackSubmitRestackPublishesAtomically(t *testing.T) {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -148,7 +149,14 @@ func newStackContinueCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "continue",
 		Short: "Resume a stack rebase after resolving its conflict workspace",
-		Args:  cobra.NoArgs,
+		Long: `Resume a stack rebase after resolving its conflict workspace.
+
+With no stack rebase in progress, a rebase stopped in this working copy — one a
+gt restack left behind after losing its own operation, which gt continue then
+refuses — is finished here instead, with rerere off. Every file rerere had
+already resolved from a recorded resolution is named first, since a stale
+recording silently drops a branch's own changes.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runStackContinue(cmd)
 		},
@@ -730,6 +738,9 @@ func stackBriefIntent(s *strings.Builder, side, name string, pr *stackPR) {
 func runStackContinue(cmd *cobra.Command) error {
 	ctx := cmd.Context()
 	l, commonDir, run, err := stackResolveRun(ctx)
+	if errors.Is(err, errNoStackRebase) {
+		return stackContinueStranded(ctx, cmd)
+	}
 	if err != nil {
 		return err
 	}
@@ -737,6 +748,163 @@ func runStackContinue(cmd *cobra.Command) error {
 		return stackDrive(ctx, cmd, l, commonDir, run)
 	}
 	return stackResume(ctx, cmd, l, commonDir, run)
+}
+
+var errNoStackRebase = errors.New("stack rebase: no stack rebase is in progress in this repository")
+
+// stackContinueStranded finishes a rebase ccx did not start, stopped in this
+// working copy. It continues with rerere off, and names first every file rerere
+// resolved from a recording, which nobody but rerere has checked.
+func stackContinueStranded(ctx context.Context, cmd *cobra.Command) error {
+	ws := render.Dir(workingDir(ctx))
+	if !stackRebasing(ctx, ws) {
+		return errNoStackRebase
+	}
+	replays, files, err := stackRerereReplayed(ctx, ws)
+	if err != nil {
+		return err
+	}
+	if replays > 0 {
+		where := "the files this rebase stopped on"
+		if len(files) > 0 {
+			where = strings.Join(files, ", ")
+		}
+		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "stack continue: warning: rerere replayed a recorded resolution into %s — check each against both sides of its conflict before submitting\n", where); err != nil {
+			return err
+		}
+	}
+	unmerged, err := stackUnmerged(ctx, string(ws))
+	if err != nil {
+		return err
+	}
+	for len(unmerged) == 0 && stackRebasing(ctx, ws) {
+		argv := append(slices.Clone(stackGitNoRerere), "rebase", "--continue")
+		_, code, stderr, err := render.RunCLIExitCode(ctx, ws, "git", argv)
+		if err != nil {
+			return fmt.Errorf("stack continue: git rebase --continue in %s: %w", ws, err)
+		}
+		if code == 0 {
+			continue
+		}
+		if unmerged, err = stackUnmerged(ctx, string(ws)); err != nil {
+			return err
+		}
+		if len(unmerged) == 0 {
+			return fmt.Errorf("stack continue: git rebase --continue in %s failed: %s", ws, strings.TrimSpace(stderr))
+		}
+	}
+	if len(unmerged) > 0 {
+		return fmt.Errorf("stack continue: %s still has unresolved files: %s — resolve them, git add them, then run ccx vcs stack continue again", ws, strings.Join(unmerged, ", "))
+	}
+	branch, err := gitCurrentBranch(ctx, ws, "stack continue")
+	if err != nil {
+		return err
+	}
+	head, err := stackRevParse(ctx, ws, "HEAD")
+	if err != nil {
+		return err
+	}
+	cmd.Println(fmt.Sprintf("finished the rebase of %s at %.12s — ccx vcs stack submit records it with gt and submits it", branch, head))
+	return nil
+}
+
+// stackRerereReplayed counts the recorded resolutions rerere applied during the
+// rebase stopped in ws, and names the files each landed in. rerere writes a
+// conflict's thisimage only when it replays a recording, so one written since
+// the rebase began is a replay; a file holding its postimage is where it went.
+func stackRerereReplayed(ctx context.Context, ws render.Dir) (int, []string, error) {
+	onto, err := stackRebaseOnto(ctx, ws)
+	if err != nil {
+		return 0, nil, err
+	}
+	began, err := os.Stat(onto)
+	if err != nil {
+		return 0, nil, fmt.Errorf("stack continue: %w", err)
+	}
+	cache, err := stackGitPath(ctx, ws, "rr-cache")
+	if err != nil {
+		return 0, nil, err
+	}
+	conflicts, err := os.ReadDir(cache)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil, nil
+	}
+	if err != nil {
+		return 0, nil, fmt.Errorf("stack continue: %w", err)
+	}
+	var postimages [][]byte
+	for _, conflict := range conflicts {
+		images, err := filepath.Glob(filepath.Join(cache, conflict.Name(), "thisimage*"))
+		if err != nil {
+			return 0, nil, fmt.Errorf("stack continue: %w", err)
+		}
+		for _, image := range images {
+			info, err := os.Stat(image)
+			if err != nil {
+				return 0, nil, fmt.Errorf("stack continue: %w", err)
+			}
+			if info.ModTime().Before(began.ModTime()) {
+				continue
+			}
+			post, err := os.ReadFile(filepath.Join(filepath.Dir(image), "postimage"+strings.TrimPrefix(filepath.Base(image), "thisimage")))
+			if err != nil {
+				return 0, nil, fmt.Errorf("stack continue: %w", err)
+			}
+			postimages = append(postimages, post)
+		}
+	}
+	if len(postimages) == 0 {
+		return 0, nil, nil
+	}
+	base, err := os.ReadFile(onto) //nolint:gosec // onto is git's own rebase state file, resolved by git rev-parse --git-path
+	if err != nil {
+		return 0, nil, fmt.Errorf("stack continue: %w", err)
+	}
+	root, err := render.RunCLI(ctx, ws, "git", []string{"rev-parse", "--show-toplevel"})
+	if err != nil {
+		return 0, nil, fmt.Errorf("stack continue: git rev-parse --show-toplevel: %w", err)
+	}
+	changed, err := render.RunCLI(ctx, ws, "git", []string{"diff", "--name-only", strings.TrimSpace(string(base))})
+	if err != nil {
+		return 0, nil, fmt.Errorf("stack continue: list the files this rebase changed: %w", err)
+	}
+	var files []string
+	for _, file := range strings.Fields(changed) {
+		content, err := os.ReadFile(filepath.Join(strings.TrimSpace(root), file)) //nolint:gosec // file is a path git diff listed under the repo root
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return 0, nil, fmt.Errorf("stack continue: %w", err)
+		}
+		if slices.ContainsFunc(postimages, func(post []byte) bool { return bytes.Equal(post, content) }) {
+			files = append(files, file)
+		}
+	}
+	return len(postimages), files, nil
+}
+
+// stackRebaseOnto is the onto file of the rebase stopped in ws, written once as
+// the rebase begins.
+func stackRebaseOnto(ctx context.Context, ws render.Dir) (string, error) {
+	for _, dir := range []string{"rebase-merge", "rebase-apply"} {
+		path, err := stackGitPath(ctx, ws, dir+"/onto")
+		if err != nil {
+			return "", err
+		}
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("stack continue: the rebase in %s has no onto file", ws)
+}
+
+func stackGitPath(ctx context.Context, ws render.Dir, name string) (string, error) {
+	out, err := render.RunCLI(ctx, ws, "git", []string{"rev-parse", "--path-format=absolute", "--git-path", name})
+	if err != nil {
+		return "", fmt.Errorf("stack continue: git rev-parse --git-path %s: %w", name, err)
+	}
+	return strings.TrimSpace(out), nil
 }
 
 func stackResume(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun) error {
@@ -867,7 +1035,7 @@ func stackResolveRun(ctx context.Context) (lane, string, *stackRebaseRun, error)
 	}
 	run, err := stackLoadRun(commonDir)
 	if errors.Is(err, fs.ErrNotExist) {
-		return lane{}, "", nil, errors.New("stack rebase: no stack rebase is in progress in this repository")
+		return lane{}, "", nil, errNoStackRebase
 	}
 	if err != nil {
 		return lane{}, "", nil, err

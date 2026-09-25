@@ -422,9 +422,9 @@ func gtRestackStopped(err error, lead error) string {
 // after a pass that should have moved it, which nothing here can explain.
 func gtOffParent(branch, held string) string {
 	if held != "" {
-		return branch + " is " + held + ", so the restack left it off its parent — release it, or restack it by hand with gt restack --only --branch " + branch
+		return branch + " is " + held + ", so the restack left it off its parent — release it, then run this again"
 	}
-	return "restack left " + branch + " off its parent — restack it by hand with gt restack --only --branch " + branch
+	return "restack left " + branch + " off its parent — rebase it with " + gtRebaseStep
 }
 
 // gtTrack adopts an untracked branch, reporting the parent it landed on. gt
@@ -574,7 +574,7 @@ func gtOnto(ctx context.Context, l lane, branch, parent string) (string, bool, e
 	head, err := gtReplay(ctx, "ship", l.dir(), onto, branch, gtBranchState{Head: was}, fork+".."+gtRestackRef(branch))
 	if err != nil {
 		if errors.Is(err, errReplayConflict) {
-			return "", false, fmt.Errorf("ship: %w", &errRestackConflict{Branch: branch, Onto: parent, Dir: holders[branch]})
+			return "", false, fmt.Errorf("ship: %w", &errRestackConflict{Branch: branch, Onto: parent})
 		}
 		return "", false, err
 	}
