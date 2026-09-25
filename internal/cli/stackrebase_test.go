@@ -3,11 +3,14 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
@@ -333,6 +336,59 @@ func TestStackRebaseRunsTwoStacksSideBySide(t *testing.T) {
 	}
 	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
 		t.Errorf("run state left behind: %v", left)
+	}
+}
+
+func stackPlantRun(t *testing.T, f *vcstest.Fixture, age time.Duration, roots ...string) int {
+	t.Helper()
+	exited := exec.Command("true")
+	if err := exited.Run(); err != nil {
+		t.Fatal(err)
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := &stackRebaseRun{Trunk: "main", Roots: roots, Pid: exited.Process.Pid, Host: host, dir: stackRunDir(filepath.Join(f.Dir, ".git"), roots[0])}
+	if err := os.MkdirAll(run.dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := stackSaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	then := time.Now().Add(-age)
+	if err := os.Chtimes(stackStatePath(run.dir), then, then); err != nil {
+		t.Fatal(err)
+	}
+	return run.Pid
+}
+
+func TestStackRebaseRefusesARecentRunOfADeadProcess(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	pid := stackPlantRun(t, f, time.Minute, "base")
+
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	want := fmt.Sprintf("a stack rebase of base is already in progress (pid %d on ", pid)
+	if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), " exited, last saved 1m") {
+		t.Fatalf("err = %v, want the refusal naming base and its exited holder", err)
+	}
+}
+
+func TestStackRebaseReclaimsAStaleRun(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	stackPlantRun(t, f, stackStaleAfter+time.Minute, "base")
+
+	out, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if !strings.Contains(out, "reclaimed the stale stack rebase of base") {
+		t.Errorf("output = %q, want the reclaim line", out)
+	}
+	if !stackOnto(t, f, "origin/main", "base") {
+		t.Error("base is not on the new trunk")
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -27,6 +28,7 @@ const (
 	stackBriefLines     = 25
 	stackCulprits       = 10
 	stackVerdictTries   = 4
+	stackStaleAfter     = 5 * time.Minute
 )
 
 // stackGitNoRerere keeps every rebase this command drives from replaying a
@@ -78,9 +80,12 @@ type stackRebaseRun struct {
 	NoPush   bool                `json:"no_push"`
 	Applied  bool                `json:"applied,omitempty"`
 	Roots    []string            `json:"roots"`
+	Pid      int                 `json:"pid"`
+	Host     string              `json:"host"`
 	Branches []stackRebaseBranch `json:"branches"`
 	Conflict *stackConflict      `json:"conflict,omitempty"`
 	dir      string
+	saved    time.Time
 }
 
 func (r *stackRebaseRun) branch(name string) *stackRebaseBranch {
@@ -190,9 +195,23 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 		return err
 	}
 	for _, other := range runs {
-		if slices.ContainsFunc(run.Roots, func(root string) bool { return slices.Contains(other.Roots, root) }) {
+		if !slices.ContainsFunc(run.Roots, func(root string) bool { return slices.Contains(other.Roots, root) }) {
+			continue
+		}
+		if !stackStale(other) {
 			return stackInProgress(other)
 		}
+		if o.dryRun {
+			cmd.Println(fmt.Sprintf("would reclaim the stale stack rebase of %s (%s)", strings.Join(other.Roots, ", "), stackHolder(other)))
+			continue
+		}
+		if err := stackDropTempRefs(ctx, l.dir(), other); err != nil {
+			return err
+		}
+		if err := stackClearRun(commonDir, other); err != nil {
+			return fmt.Errorf("stack rebase: reclaim the stale run of %s: %w", strings.Join(other.Roots, ", "), err)
+		}
+		cmd.Println(fmt.Sprintf("reclaimed the stale stack rebase of %s (%s)", strings.Join(other.Roots, ", "), stackHolder(other)))
 	}
 	cmd.Println(strings.Join(stackPlanLines(run), "\n"))
 	if o.dryRun {
@@ -208,11 +227,39 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 }
 
 func stackInProgress(run *stackRebaseRun) error {
-	where := ""
+	where := stackHolder(run)
 	if run.Conflict != nil {
-		where = fmt.Sprintf(" (stopped on %s in %s)", run.Conflict.Branch, run.Conflict.Workspace)
+		where = fmt.Sprintf("stopped on %s in %s, %s", run.Conflict.Branch, run.Conflict.Workspace, where)
 	}
-	return fmt.Errorf("stack rebase: a stack rebase of %s is already in progress%s — ccx vcs stack continue, or ccx vcs stack abort", strings.Join(run.Roots, ", "), where)
+	return fmt.Errorf("stack rebase: a stack rebase of %s is already in progress (%s) — ccx vcs stack continue, or ccx vcs stack abort, from one of its branches", strings.Join(run.Roots, ", "), where)
+}
+
+func stackHolder(run *stackRebaseRun) string {
+	state := "exited"
+	if stackPidAlive(run) {
+		state = "running"
+	}
+	return fmt.Sprintf("pid %d on %s %s, last saved %s ago", run.Pid, run.Host, state, time.Since(run.saved).Round(time.Second))
+}
+
+// stackStale reports a run whose process died mid-replay: a run stopped on a
+// conflict has exited by design and waits on its workspace, and an applied run
+// has moved refs that only continue records.
+func stackStale(run *stackRebaseRun) bool {
+	host, _ := os.Hostname()
+	if run.Host != host || run.Applied || stackPidAlive(run) || time.Since(run.saved) < stackStaleAfter {
+		return false
+	}
+	if run.Conflict == nil {
+		return true
+	}
+	_, err := os.Stat(run.Conflict.Workspace)
+	return errors.Is(err, fs.ErrNotExist)
+}
+
+func stackPidAlive(run *stackRebaseRun) bool {
+	err := syscall.Kill(run.Pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts) (*stackRebaseRun, error) {
@@ -273,7 +320,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		return nil, err
 	}
 
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Roots: roots}
+	host, err := os.Hostname()
+	if err != nil {
+		return nil, fmt.Errorf("stack rebase: %w", err)
+	}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Roots: roots, Pid: os.Getpid(), Host: host}
 	byName := map[string]*stackRebaseBranch{}
 	for _, name := range members {
 		b, err := stackSnapshot(ctx, l.dir(), tr, state[name], name, remotes[name], prs[name], slices.Contains(o.landed, name), pin)
@@ -1073,7 +1124,13 @@ func stackClaim(commonDir string, run *stackRebaseRun) error {
 		return fmt.Errorf("stack rebase: %w", err)
 	}
 	for i, root := range run.Roots {
-		if err := os.Mkdir(stackRunDir(commonDir, root), 0o750); err != nil {
+		dir := stackRunDir(commonDir, root)
+		if stackAbandonedClaim(dir) {
+			if err := os.RemoveAll(dir); err != nil {
+				return fmt.Errorf("stack rebase: reclaim %s: %w", dir, err)
+			}
+		}
+		if err := os.Mkdir(dir, 0o750); err != nil {
 			for _, claimed := range run.Roots[:i] {
 				_ = os.Remove(stackRunDir(commonDir, claimed))
 			}
@@ -1085,6 +1142,15 @@ func stackClaim(commonDir string, run *stackRebaseRun) error {
 	}
 	run.dir = stackRunDir(commonDir, run.Roots[0])
 	return nil
+}
+
+func stackAbandonedClaim(dir string) bool {
+	info, err := os.Stat(dir)
+	if err != nil || time.Since(info.ModTime()) < stackStaleAfter {
+		return false
+	}
+	_, err = os.Stat(stackStatePath(dir))
+	return errors.Is(err, fs.ErrNotExist)
 }
 
 func stackClearRun(commonDir string, run *stackRebaseRun) error {
@@ -1110,14 +1176,18 @@ func stackRuns(commonDir string) ([]*stackRebaseRun, error) {
 			continue
 		}
 		dir := filepath.Join(commonDir, stackRebaseStateDir, e.Name())
-		data, err := os.ReadFile(stackStatePath(dir))
+		info, err := os.Stat(stackStatePath(dir))
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		if err != nil {
 			return nil, fmt.Errorf("stack rebase: %w", err)
 		}
-		run := &stackRebaseRun{dir: dir}
+		data, err := os.ReadFile(stackStatePath(dir))
+		if err != nil {
+			return nil, fmt.Errorf("stack rebase: %w", err)
+		}
+		run := &stackRebaseRun{dir: dir, saved: info.ModTime()}
 		if err := json.Unmarshal(data, run); err != nil {
 			return nil, fmt.Errorf("stack rebase: read %s: %w", stackStatePath(dir), err)
 		}
