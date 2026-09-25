@@ -812,6 +812,39 @@ func TestShipAmendPushesOverTheHeadItLastSubmitted(t *testing.T) {
 	}
 }
 
+func TestShipOverAFrozenParentRestacksOnlyTheChild(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("first stack submit: %v", err)
+	}
+	mustRun(t, f.Env(), f.Dir, "gt", "freeze", "--no-interactive")
+	frozen := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	shipGTStack(t, f, "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	writeShipFile(t, f.Dir, "more.txt", "more\n")
+	shipResetLog(t, f)
+
+	if _, _, err := runShipCmdFull(f.Context(), t, "-m", "more", "--no-watch", "more.txt"); err != nil {
+		t.Fatalf("ship = %v, want the child shipped over its frozen parent", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != frozen {
+		t.Errorf("local base = %s, want the frozen head %s left alone", got, frozen)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != frozen {
+		t.Errorf("remote base = %s, want the frozen head %s left alone", got, frozen)
+	}
+	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"), gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != want {
+		t.Errorf("remote feature = %s, want the local head %s", got, want)
+	}
+	if !stackOnto(t, f, frozen, "feature") {
+		t.Error("feature left its frozen parent")
+	}
+	if stackOnto(t, f, "origin/main", "feature") {
+		t.Error("feature moved onto the new trunk past its frozen parent")
+	}
+}
+
 func TestStackSubmitPushesOverARemoteReplayOfItsLastSubmittedHead(t *testing.T) {
 	f := shipGTRepo(t)
 	stubStackPRs(t, nil)

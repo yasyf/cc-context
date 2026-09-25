@@ -63,6 +63,7 @@ type stackRebaseBranch struct {
 	HeadRef   string   `json:"head_ref"`
 	OldBase   string   `json:"old_base"`
 	Landed    string   `json:"landed,omitempty"`
+	Held      string   `json:"held,omitempty"`
 	PR        *stackPR `json:"pr,omitempty"`
 	NewBase   string   `json:"new_base,omitempty"`
 	NewHead   string   `json:"new_head,omitempty"`
@@ -413,13 +414,16 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			b.Parent = byName[b.Parent].Parent
 		}
 	}
+	if err := stackCheckHeld(ctx, l.dir(), trunk, byName); err != nil {
+		return nil, err
+	}
 	order, err := stackOrder(trunk, byName)
 	if err != nil {
 		return nil, err
 	}
 	for _, name := range order {
 		b := byName[name]
-		if b.Landed == "" {
+		if b.Landed == "" && b.Held == "" {
 			if b.OldBase, err = stackOldBase(ctx, l.dir(), trunk, pin, state[name], b, byName); err != nil {
 				return nil, err
 			}
@@ -510,14 +514,11 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branch
 }
 
 func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, name, remote, submitted string, pr *stackPR, declared bool, pin string) (stackRebaseBranch, error) {
-	if s.State != "" {
-		return stackRebaseBranch{}, fmt.Errorf("stack rebase: %s is %s in gt — unfreeze it, or rebase a stack without it", name, s.State)
-	}
 	b := stackRebaseBranch{
 		Name: name, WasParent: s.Parents[0].Ref, Local: s.Head, Remote: remote,
-		Head: s.Head, HeadRef: gtRestackRef(name), PR: pr,
+		Head: s.Head, HeadRef: gtRestackRef(name), PR: pr, Held: s.State,
 	}
-	if remote != "" && remote != s.Head {
+	if b.Held == "" && remote != "" && remote != s.Head {
 		ahead, err := gitIsAncestor(ctx, dir, stackRebasePrefix, remote, s.Head)
 		if err != nil {
 			return b, err
@@ -607,6 +608,37 @@ func stackPatchSeries(ctx context.Context, dir render.Dir, pin, head string) ([]
 		series = append(series, id)
 	}
 	return series, nil
+}
+
+func stackCheckHeld(ctx context.Context, dir render.Dir, trunk string, byName map[string]*stackRebaseBranch) error {
+	var held []string
+	live := false
+	for _, name := range slices.Sorted(maps.Keys(byName)) {
+		b := byName[name]
+		switch {
+		case b.Landed != "":
+		case b.Held == "":
+			live = true
+		default:
+			held = append(held, name)
+		}
+	}
+	for _, name := range held {
+		b := byName[name]
+		ok := b.Parent == b.WasParent
+		if ok && b.Parent != trunk {
+			parent := byName[b.Parent]
+			on, err := gitIsAncestor(ctx, dir, stackRebasePrefix, parent.Head, b.Head)
+			if err != nil {
+				return err
+			}
+			ok = parent.Held != "" && on
+		}
+		if !ok || !live {
+			return fmt.Errorf("stack rebase: %s is %s in gt — unfreeze it, or rebase a stack without it", name, b.Held)
+		}
+	}
+	return nil
 }
 
 func stackOrder(trunk string, byName map[string]*stackRebaseBranch) ([]string, error) {
@@ -702,9 +734,12 @@ func stackPlanLines(run *stackRebaseRun) []string {
 	lines = append(lines, fmt.Sprintf("plan · trunk %s@%.12s", run.Trunk, run.Pin))
 	for _, b := range run.Branches {
 		fields := []string{b.Name}
-		if b.Landed != "" {
+		switch {
+		case b.Landed != "":
 			fields = append(fields, "drop ("+b.Landed+")")
-		} else {
+		case b.Held != "":
+			fields = append(fields, "left alone ("+b.Held+")")
+		default:
 			parent := "onto " + b.Parent
 			if b.Parent != b.WasParent {
 				parent += " (was " + b.WasParent + ")"
@@ -726,6 +761,10 @@ func stackDrive(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	for i := range run.Branches {
 		b := &run.Branches[i]
 		if b.Landed != "" || b.NewHead != "" {
+			continue
+		}
+		if b.Held != "" {
+			b.NewHead = b.Head
 			continue
 		}
 		b.NewBase = run.headOf(b.Parent)
@@ -1090,6 +1129,9 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	for _, b := range run.Branches {
 		if b.Landed != "" {
 			dropped = append(dropped, b.Name)
+			continue
+		}
+		if b.Held != "" {
 			continue
 		}
 		live = append(live, b.Name)

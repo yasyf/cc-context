@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   graphite-app restack), is pushed under a lease on that remote head instead
   of being refused as diverged. A remote holding a commit this repository
   never submitted is still refused.
+- **`ccx vcs ship` and `ccx vcs stack submit` leave a frozen parent alone.**
+  A branch gt holds (`gt freeze`, or a merge in progress) is no longer a
+  refusal: it keeps its head, is not pushed, and its children restack onto
+  that head and open their pull requests against it.
 
 ### Upgrade
 

@@ -787,6 +787,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	if err := gtAnnounceContained(errW, s.prefix, tr, contained); err != nil {
 		return nil, nil, err
 	}
+	branches, held := gtDropHeld(state, branches)
 	if err := gtAnnounceStack(errW, s.prefix, branches); err != nil {
 		return nil, nil, err
 	}
@@ -842,7 +843,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", s.prefix, err)
 	}
-	plan, err := gtSubmitPlan(ctx, l.dir(), s.prefix, state, tr, branches, open, last)
+	plan, err := gtSubmitPlan(ctx, l.dir(), s.prefix, state, tr, branches, held, open, last)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1003,6 +1004,20 @@ func gtDropContained(ctx context.Context, dir render.Dir, prefix string, tr vcs.
 	return submit, contained, nil
 }
 
+// gtDropHeld splits off the downstack branches gt is holding, which a submit
+// leaves where they are and never pushes. The branch being submitted is kept
+// whatever its state.
+func gtDropHeld(state gtState, branches []string) (submit, held []string) {
+	for i, name := range branches {
+		if state[name].State != "" && i < len(branches)-1 {
+			held = append(held, name)
+			continue
+		}
+		submit = append(submit, name)
+	}
+	return submit, held
+}
+
 // gtSyncSchema is the on-disk format version of the cached repo-sync verdict; a
 // mismatch reads as a miss.
 const gtSyncSchema = 1
@@ -1103,7 +1118,7 @@ func gtRepoOwnerName(ctx context.Context, l lane, prefix string) (string, string
 // head, its open PR, and the lease of its last submitted version. A branch with
 // no PR gets the title and body a create requires. One not stacked on another
 // branch of this submit is anchored on the remote trunk, not on gt's local sha.
-func gtSubmitPlan(ctx context.Context, dir render.Dir, prefix string, state gtState, tr vcs.Trunk, branches []string, open map[string]int, last map[string]gtmeta.Version) ([]gtSubmitBranch, error) {
+func gtSubmitPlan(ctx context.Context, dir render.Dir, prefix string, state gtState, tr vcs.Trunk, branches, held []string, open map[string]int, last map[string]gtmeta.Version) ([]gtSubmitBranch, error) {
 	trunkHead := state[tr.Name()].Head
 	stacked := make(map[string]bool, len(branches))
 	for _, name := range branches {
@@ -1121,7 +1136,11 @@ func gtSubmitPlan(ctx context.Context, dir render.Dir, prefix string, state gtSt
 			lease:   last[name].HeadSha,
 		}
 		from := b.base
-		if !stacked[b.base] {
+		switch {
+		case stacked[b.base]:
+		case slices.Contains(held, b.base):
+			b.baseSha = state[b.base].Head
+		default:
 			b.base, b.baseSha, from = tr.Name(), trunkHead, trunkHead
 		}
 		if b.pr == 0 {
