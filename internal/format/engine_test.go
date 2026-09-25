@@ -9,41 +9,30 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 )
 
-// TestLoadEngineRetriesAfterFailedInit proves loadEngine caches only success: a
-// failed compile leaves the engine uninitialized so a later call retries, rather
+// TestEngineLoaderRetriesAfterFailedInit proves a loader caches only success: a
+// failed compile leaves its engine uninitialized so a later call retries, rather
 // than pinning the error for the process lifetime the way a plain sync.Once
-// would. The seam is the package-level wasmModule var — swapping in unloadable
-// bytes forces initEngine to fail without a mock.
-func TestLoadEngineRetriesAfterFailedInit(t *testing.T) {
-	engineMu.Lock()
-	savedInst, savedBytes := engineInst, wasmModule
-	engineInst = nil
-	engineMu.Unlock()
-	t.Cleanup(func() {
-		engineMu.Lock()
-		engineInst, wasmModule = savedInst, savedBytes
-		engineMu.Unlock()
-	})
+// would. Unloadable module bytes force the failure without a mock.
+func TestEngineLoaderRetriesAfterFailedInit(t *testing.T) {
+	t.Parallel()
+	loader := &engineLoader{module: []byte("\x00not a wasm module")}
 
-	wasmModule = []byte("\x00not a wasm module")
-	if _, err := loadEngine(t.Context()); err == nil {
-		t.Fatal("loadEngine(t.Context()) with unloadable wasm: want error, got nil")
+	if _, err := loader.load(t.Context()); err == nil {
+		t.Fatal("load with unloadable wasm: want error, got nil")
 	}
-	engineMu.Lock()
-	cached := engineInst
-	engineMu.Unlock()
-	if cached != nil {
-		t.Fatal("loadEngine(t.Context()) cached an engine after a failed init")
+	if loader.engine != nil {
+		t.Fatal("load cached an engine after a failed init")
 	}
 
-	wasmModule = savedBytes
-	eng, err := loadEngine(t.Context())
+	loader.module = wasmModule
+	eng, err := loader.load(t.Context())
 	if err != nil {
-		t.Fatalf("loadEngine(t.Context()) retry after failure: %v", err)
+		t.Fatalf("load retry after failure: %v", err)
 	}
 	if eng == nil {
-		t.Fatal("loadEngine(t.Context()) retry returned a nil engine")
+		t.Fatal("load retry returned a nil engine")
 	}
+	t.Cleanup(func() { _ = eng.runtime.Close(context.WithoutCancel(t.Context())) })
 }
 
 // TestInitEngineResolvesTheCacheDirOffTheContext proves the wasm compilation
@@ -57,7 +46,7 @@ func TestInitEngineResolvesTheCacheDirOffTheContext(t *testing.T) {
 		t.Fatalf("fixture root %q is the process value; the test cannot discriminate", root)
 	}
 
-	eng, err := initEngine(render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+root))
+	eng, err := initEngine(render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+root), wasmModule)
 	if err != nil {
 		t.Fatalf("initEngine: %v", err)
 	}

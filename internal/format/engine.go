@@ -40,39 +40,43 @@ type engine struct {
 	compiled wazero.CompiledModule
 }
 
-var (
-	engineMu   sync.Mutex
-	engineInst *engine
-)
+// engineLoader compiles module once and caches only success: a failed init
+// leaves engine nil and returns the error uncached, so the next call retries.
+// sync.Once would pin a transient cold-compile timeout into
+// errEngineUnavailable for the process lifetime, fatal for the long-lived MCP
+// server.
+type engineLoader struct {
+	mu     sync.Mutex
+	module []byte
+	engine *engine
+}
+
+var defaultLoader = &engineLoader{module: wasmModule}
 
 // errEngineUnavailable marks a load/compile failure (e.g. the compiler-backend
 // guard) — always loud, unlike a per-call trap that follows passthrough policy.
 var errEngineUnavailable = errors.New("format engine unavailable")
 
-// loadEngine returns the process-wide engine, compiling it on first use under a
-// dedicated initTimeout budget. It caches only success: a failed init leaves
-// engineInst nil and returns the error uncached, so the next call retries. A
-// plain sync.Once is the wrong primitive here — pinning whatever the first init
-// returns would lock a transient cold-compile timeout into errEngineUnavailable
-// for the process lifetime, fatal for the long-lived MCP server.
+// load returns the loader's engine, compiling it on first use under a dedicated
+// initTimeout budget.
 //
 // The compile keeps the values ctx carries and drops its cancellation: the
 // engine outlives the call that happens to build it.
-func loadEngine(ctx context.Context) (*engine, error) {
-	engineMu.Lock()
-	defer engineMu.Unlock()
-	if engineInst != nil {
-		return engineInst, nil
+func (l *engineLoader) load(ctx context.Context) (*engine, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.engine != nil {
+		return l.engine, nil
 	}
 
 	initCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), initTimeout)
 	defer cancel()
 
-	eng, err := initEngine(initCtx)
+	eng, err := initEngine(initCtx, l.module)
 	if err != nil {
 		return nil, err
 	}
-	engineInst = eng
+	l.engine = eng
 	return eng, nil
 }
 
@@ -95,9 +99,9 @@ func newCompilerRuntime(ctx context.Context, compilationCache wazero.Compilation
 		WithCloseOnContextDone(true)), nil
 }
 
-// initEngine resolves the on-disk compilation cache and compiles the module
-// behind wazero's compiler backend.
-func initEngine(ctx context.Context) (*engine, error) {
+// initEngine resolves the on-disk compilation cache and compiles module behind
+// wazero's compiler backend.
+func initEngine(ctx context.Context, module []byte) (*engine, error) {
 	dir, err := cache.Dir(ctx, "wasm")
 	if err != nil {
 		return nil, fmt.Errorf("resolve wasm cache dir: %w", err)
@@ -112,7 +116,7 @@ func initEngine(ctx context.Context) (*engine, error) {
 		return nil, err
 	}
 
-	compiled, err := rt.CompileModule(ctx, wasmModule)
+	compiled, err := rt.CompileModule(ctx, module)
 	if err != nil {
 		_ = rt.Close(ctx)
 		return nil, fmt.Errorf("compile formatcore.wasm: %w", err)
@@ -150,7 +154,7 @@ type wasmResponse struct {
 // runEngine runs src and opts through one one-shot module instance. The error
 // return is a host failure (trap/timeout/limit); a domain error rides in errKind.
 func runEngine(ctx context.Context, src []byte, opts Options) (engineResult, error) {
-	eng, err := loadEngine(ctx)
+	eng, err := defaultLoader.load(ctx)
 	if err != nil {
 		return engineResult{}, errors.Join(errEngineUnavailable, err)
 	}
