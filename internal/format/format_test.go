@@ -22,7 +22,7 @@ func defaultOpts() Options {
 // survive TOON's float64 canonicalization, so the engine skips TOON and auto
 // falls through to a verbatim encoder that keeps every digit.
 func TestConvertAutoSkipsLossyTOON(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
 	const pi = "3.14159265358979323846264338"
 	var b strings.Builder
 	for i := range 400 {
@@ -41,7 +41,7 @@ func TestConvertAutoSkipsLossyTOON(t *testing.T) {
 }
 
 func TestConvertStrict(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
 	opts := Options{Format: FormatAuto, Indent: 2, Delimiter: DelimiterComma, Strict: true}
 	_, converted, err := Convert(t.Context(), []byte("not json"), opts)
 	if err == nil {
@@ -57,7 +57,7 @@ func TestConvertStrict(t *testing.T) {
 // non-JSON auto-mode input each return src verbatim with converted=false and no
 // error, so the wrapper never corrupts non-JSON stdout.
 func TestConvertPassthrough(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
 	tests := []struct {
 		name string
 		src  string
@@ -68,6 +68,7 @@ func TestConvertPassthrough(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, converted, err := Convert(t.Context(), []byte(tt.src), defaultOpts())
 			if err != nil {
 				t.Fatalf("Convert() error = %v, want nil", err)
@@ -85,7 +86,7 @@ func TestConvertPassthrough(t *testing.T) {
 // TestConvertForcedShapeError pins the loud failure when a forced format cannot
 // represent the payload: an explicit format never falls back to passthrough.
 func TestConvertForcedShapeError(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
 	_, converted, err := Convert(t.Context(), []byte(`{"a":1}`), Options{Format: FormatCSV, Indent: 2, Delimiter: DelimiterComma})
 	if err == nil {
 		t.Fatal("Convert(csv on object): want error, got nil")
@@ -98,7 +99,7 @@ func TestConvertForcedShapeError(t *testing.T) {
 // TestConvertUnknownFormat pins the loud failure on a format name the engine
 // cannot parse.
 func TestConvertUnknownFormat(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
 	_, converted, err := Convert(t.Context(), []byte(`{"a":1}`), Options{Format: Format("bogus"), Indent: 2, Delimiter: DelimiterComma})
 	if err == nil {
 		t.Fatal("Convert(bogus format): want error, got nil")
@@ -109,9 +110,9 @@ func TestConvertUnknownFormat(t *testing.T) {
 }
 
 func TestRunConvertsStdout(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
 	out, converted, code, err := Run(
-		context.Background(),
+		t.Context(),
 		[]string{"sh", "-c", `printf '[{"a":1},{"a":2}]'`},
 		Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 		nil, &bytes.Buffer{},
@@ -131,10 +132,10 @@ func TestRunConvertsStdout(t *testing.T) {
 }
 
 func TestRunNonZeroExitCapturesStderr(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
 	var stderr bytes.Buffer
 	out, converted, code, err := Run(
-		context.Background(),
+		t.Context(),
 		[]string{"sh", "-c", `echo boom 1>&2; echo not-json; exit 3`},
 		defaultOpts(),
 		nil, &stderr,
@@ -157,8 +158,9 @@ func TestRunNonZeroExitCapturesStderr(t *testing.T) {
 }
 
 func TestRunSpawnFailure(t *testing.T) {
+	t.Parallel()
 	_, _, _, err := Run(
-		context.Background(),
+		t.Context(),
 		[]string{"this-binary-does-not-exist-xyz"},
 		defaultOpts(),
 		nil, &bytes.Buffer{},
@@ -169,10 +171,10 @@ func TestRunSpawnFailure(t *testing.T) {
 }
 
 func TestRunForwardsStdin(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
 	in := strings.NewReader(`{"a":1}`)
 	out, converted, code, err := Run(
-		context.Background(),
+		t.Context(),
 		[]string{"sh", "-c", "cat"},
 		Options{Format: FormatTOON, Indent: 2, Delimiter: DelimiterComma},
 		in, &bytes.Buffer{},
@@ -192,7 +194,8 @@ func TestRunForwardsStdin(t *testing.T) {
 }
 
 func TestRunEmptyArgv(t *testing.T) {
-	_, _, _, err := Run(context.Background(), nil, defaultOpts(), nil, &bytes.Buffer{})
+	t.Parallel()
+	_, _, _, err := Run(t.Context(), nil, defaultOpts(), nil, &bytes.Buffer{})
 	if err == nil {
 		t.Fatal("Run() with empty argv: want error, got nil")
 	}
@@ -219,7 +222,7 @@ func oversizedJSON(t *testing.T) []byte {
 // the engine's call timeout produced, without the memory it cost), while strict
 // mode and a forced encoder surface ErrPayloadTooLarge.
 func TestConvertPayloadCeiling(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
 	big := oversizedJSON(t)
 	if len(big) <= maxConvertBytes {
 		t.Fatalf("fixture is %d bytes, want > %d", len(big), maxConvertBytes)
@@ -237,6 +240,7 @@ func TestConvertPayloadCeiling(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			out, converted, err := Convert(t.Context(), big, tt.opts)
 			if tt.wantErr {
 				if !errors.Is(err, ErrPayloadTooLarge) {
@@ -260,7 +264,7 @@ func TestConvertPayloadCeiling(t *testing.T) {
 // TestConvertUnderCeilingStillConverts pins that the guard does not disturb a
 // payload below the ceiling.
 func TestConvertUnderCeilingStillConverts(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
 	src := []byte(`[{"id":1,"name":"a"},{"id":2,"name":"b"}]`)
 	out, converted, err := Convert(t.Context(), src, defaultOpts())
 	if err != nil {
@@ -285,14 +289,11 @@ func runTempRoot(t *testing.T, tag string) string {
 	return root
 }
 
-func runMarker(t *testing.T) string {
+// runIn runs argv through Run in the root ctx resolves, returning its trimmed
+// stdout.
+func runIn(ctx context.Context, t *testing.T, argv ...string) string {
 	t.Helper()
-	out, _, code, err := Run(
-		context.Background(),
-		[]string{"cat", "marker.txt"},
-		defaultOpts(),
-		nil, &bytes.Buffer{},
-	)
+	out, _, code, err := Run(ctx, argv, defaultOpts(), nil, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -302,20 +303,27 @@ func runMarker(t *testing.T) string {
 	return strings.TrimSpace(out)
 }
 
-func TestRunExecutesInThePinnedRoot(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	pinned := runTempRoot(t, "pinnedtree")
-	cwd := runTempRoot(t, "cwdtree")
-	t.Chdir(cwd)
-
-	workspace.SetRoot(pinned)
-	t.Cleanup(func() { workspace.SetRoot("") })
-	if got := runMarker(t); got != "pinnedtree" {
-		t.Errorf("pinned Run() read %q, want the pinned tree's %q", got, "pinnedtree")
+// TestRunExecutesInTheRootTheContextResolves covers both arms of the resolution
+// Run drives: a context declaring a project root runs the child there, and one
+// declaring none falls back to the directory ccx itself stands in.
+func TestRunExecutesInTheRootTheContextResolves(t *testing.T) {
+	t.Parallel()
+	declared := runTempRoot(t, "declaredtree")
+	ctx := workspace.WithRoot(t.Context(), declared)
+	if got := runIn(ctx, t, "cat", "marker.txt"); got != "declaredtree" {
+		t.Errorf("declared Run() read %q, want the declared tree's %q", got, "declaredtree")
 	}
 
-	workspace.SetRoot("")
-	if got := runMarker(t); got != "cwdtree" {
-		t.Errorf("unpinned Run() read %q, want the cwd's %q", got, "cwdtree")
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	cwd, err = filepath.EvalSymlinks(cwd)
+	if err != nil {
+		t.Fatalf("resolve cwd: %v", err)
+	}
+	ctx = workspace.WithRoot(ctx, "")
+	if got := runIn(ctx, t, "pwd", "-P"); got != cwd {
+		t.Errorf("undeclared Run() ran in %q, want ccx's own %q", got, cwd)
 	}
 }

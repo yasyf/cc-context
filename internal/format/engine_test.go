@@ -15,7 +15,6 @@ import (
 // would. The seam is the package-level wasmModule var — swapping in unloadable
 // bytes forces initEngine to fail without a mock.
 func TestLoadEngineRetriesAfterFailedInit(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	engineMu.Lock()
 	savedInst, savedBytes := engineInst, wasmModule
 	engineInst = nil
