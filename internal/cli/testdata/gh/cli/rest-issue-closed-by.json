@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "api",
+    "repos/{owner}/{repo}/issues/64",
+    "--jq",
+    ".closed_by.login // \"\""
+  ],
+  "exit": 0,
+  "stdout": "yasyf\n",
+  "stderr": ""
+}

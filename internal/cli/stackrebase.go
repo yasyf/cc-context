@@ -1486,62 +1486,36 @@ func stackSaveRun(run *stackRebaseRun) error {
 }
 
 func stackQueryPRs(ctx context.Context, dir render.Dir, trunk string, branches []string) (map[string]*stackPR, error) {
-	argv := make([]string, 0, 8+2*len(branches))
-	argv = append(argv, "api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}")
-	for i, branch := range branches {
-		argv = append(argv, "-f", downstackPRAlias(i)+"="+branch)
-	}
-	argv = append(argv, "-f", "query="+stackPRQuery(len(branches)))
-	out, err := render.RunCLI(ctx, dir, "gh", argv)
-	if err != nil {
-		return nil, fmt.Errorf("gh api graphql: %w", err)
-	}
-	var resp struct {
-		Data struct {
-			Repository map[string]struct {
-				Nodes []struct {
-					Number      int    `json:"number"`
-					URL         string `json:"url"`
-					Title       string `json:"title"`
-					Body        string `json:"body"`
-					BaseRefName string `json:"baseRefName"`
-					HeadRefOid  string `json:"headRefOid"`
-					Mergeable   string `json:"mergeable"`
-					Labels      struct {
-						Nodes []struct {
-							Name string `json:"name"`
-						} `json:"nodes"`
-					} `json:"labels"`
-					prLanding
-				} `json:"nodes"`
-			} `json:"repository"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		return nil, fmt.Errorf("parse gh api graphql: %w", err)
-	}
 	prs := map[string]*stackPR{}
 	var closes []prQueueClose
 	byNumber := map[int]*stackPR{}
-	for i, branch := range branches {
-		nodes := resp.Data.Repository[downstackPRAlias(i)].Nodes
-		if len(nodes) == 0 {
+	for _, branch := range branches {
+		p, found, err := ghNewestPull(ctx, dir, branch)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
 			continue
 		}
-		n := nodes[0]
+		if p.State == "open" {
+			if p, err = ghPullAt(ctx, dir, p.Number); err != nil {
+				return nil, err
+			}
+		}
+		landing, err := ghLanding(ctx, dir, p, true)
+		if err != nil {
+			return nil, err
+		}
 		pr := &stackPR{
-			Number: n.Number, URL: n.URL, Title: n.Title, Body: n.Body, State: n.State,
-			Base: n.BaseRefName, Head: n.HeadRefOid, Mergeable: n.Mergeable,
+			Number: p.Number, URL: p.HTMLURL, Title: p.Title, Body: p.Body, State: landing.State,
+			Base: p.Base.Ref, Head: p.Head.SHA, Mergeable: p.mergeable(), Labels: p.labelNames(),
 		}
-		for _, label := range n.Labels.Nodes {
-			pr.Labels = append(pr.Labels, label.Name)
-		}
-		switch n.verdict(true) {
+		switch landing.verdict(true) {
 		case prLanded:
 			pr.Landed = true
 		case prQueueClosed:
-			closes = append(closes, prQueueClose{Number: n.Number, Base: trunk})
-			byNumber[n.Number] = pr
+			closes = append(closes, prQueueClose{Number: p.Number, Base: trunk})
+			byNumber[p.Number] = pr
 		}
 		prs[branch] = pr
 	}
@@ -1549,20 +1523,6 @@ func stackQueryPRs(ctx context.Context, dir render.Dir, trunk string, branches [
 		byNumber[number].Landed = landed
 	}
 	return prs, nil
-}
-
-func stackPRQuery(n int) string {
-	decls := make([]string, 0, 2+n)
-	decls = append(decls, "$owner: String!", "$repo: String!")
-	var fields strings.Builder
-	for i := range n {
-		alias := downstackPRAlias(i)
-		decls = append(decls, "$"+alias+": String!")
-		fmt.Fprintf(&fields, "    %s: pullRequests(headRefName: $%s, first: 1, orderBy: {field: CREATED_AT, direction: DESC})"+
-			" { nodes { number url title body baseRefName headRefOid mergeable labels(first: 20) { nodes { name } } %s } }\n",
-			alias, alias, prLandingFields)
-	}
-	return fmt.Sprintf("query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}", strings.Join(decls, ", "), fields.String())
 }
 
 func stackCheckPublishedHeads(state gtState, run *stackRebaseRun) error {
