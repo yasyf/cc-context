@@ -866,6 +866,7 @@ exit 0
       refs/remotes/*) printf '%s' "${GIT_TRUNK_SHA:-` + fakeTrunkSHA + `}" ;;
       *)
         case "$4" in
+          refs/ccx/published/*) exit 1 ;;
           REBASE_HEAD) if [ -n "$GIT_REBASE_CONFLICT" ]; then exit 0; else exit 1; fi ;;
           *) if [ -n "$GIT_REMOTE_REF_MISSING" ]; then exit 1; fi ;;
         esac ;;

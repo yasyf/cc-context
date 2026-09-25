@@ -248,12 +248,13 @@ func TestSymbolAliasGrokRegistered(t *testing.T) {
 // depends on: a release build prints exactly the v-prefixed tag, nothing else.
 func TestVersionPrintsBareTag(t *testing.T) {
 	t.Parallel()
-	old := version.Version
-	version.Version = "v9.9.9"
-	t.Cleanup(func() { version.Version = old })
 
 	var out bytes.Buffer
 	root := cli.NewRootCmd()
+	if root.Version != version.String() {
+		t.Fatalf("root version = %q, want build version %q", root.Version, version.String())
+	}
+	root.Version = "v9.9.9"
 	root.SetOut(&out)
 	root.SetErr(&out)
 	root.SetArgs([]string{"--version"})

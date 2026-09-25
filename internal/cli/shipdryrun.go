@@ -540,7 +540,7 @@ func dryRunCreates(ctx context.Context, l lane, state gtState, chain []string, o
 		if !stacked[base] {
 			base, from = tr.Name(), string(tr.Ref())
 		}
-		title, _, err := gtCreateMeta(ctx, l.dir(), "ship", branch, from, base)
+		title, _, err := gtCreateMeta(ctx, l.dir(), "ship", branch, branch, from, base)
 		if err != nil {
 			r.notes = append(r.notes, err.Error())
 			continue

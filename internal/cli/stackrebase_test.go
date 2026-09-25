@@ -76,10 +76,49 @@ func stackParent(t *testing.T, f *vcstest.Fixture, branch string) string {
 	return state[branch].Parents[0].Ref
 }
 
-func TestStackRebaseMovesAndPushesTheWholeStack(t *testing.T) {
+func stackRebaseSourceSnapshot(t *testing.T, f *vcstest.Fixture, branches ...string) map[string]stackPublication {
+	t.Helper()
+	sources := map[string]stackPublication{}
+	for _, branch := range branches {
+		parent := stackParent(t, f, branch)
+		sources[branch] = stackPublication{
+			Branch:     branch,
+			Source:     gitAt(t, f.Env(), f.Dir, "rev-parse", branch),
+			SourceBase: gitAt(t, f.Env(), f.Dir, "merge-base", branch, parent),
+			Parent:     parent,
+		}
+	}
+	return sources
+}
+
+func stackAssertRebasePublication(t *testing.T, f *vcstest.Fixture, source stackPublication) string {
+	t.Helper()
+	branch := source.Branch
+	if local := gitAt(t, f.Env(), f.Dir, "rev-parse", branch); local != source.Source {
+		t.Errorf("local %s = %s, want unchanged %s", branch, local, source.Source)
+	}
+	want := source
+	want.Head = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch)
+	want.Base = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", source.Parent)
+	want.OID = gitAt(t, f.Env(), f.Dir, "rev-parse", stackPublicationRef(branch, "receipt"))
+	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), branch)
+	if err != nil || receipt == nil {
+		t.Fatalf("publication for %s = %+v, %v", branch, receipt, err)
+	}
+	if *receipt != want {
+		t.Errorf("publication for %s = %+v, want %+v", branch, *receipt, want)
+	}
+	if !stackOnto(t, f, want.Base, want.Head) {
+		t.Errorf("published %s is not on published %s", branch, source.Parent)
+	}
+	return want.Head
+}
+
+func TestStackRebasePublishesTheWholeStackWithoutMovingSources(t *testing.T) {
 	f := stackRebaseRepo(t, "base", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	sources := stackRebaseSourceSnapshot(t, f, "base", "feature")
 	shipResetLog(t, f)
 
 	out, _, err := runStackCmd(t, f, "rebase")
@@ -87,19 +126,16 @@ func TestStackRebaseMovesAndPushesTheWholeStack(t *testing.T) {
 		t.Fatalf("stack rebase: %v", err)
 	}
 	for _, branch := range []string{"base", "feature"} {
-		if !stackOnto(t, f, "origin/main", branch) {
-			t.Errorf("%s is not on the new trunk", branch)
+		published := stackAssertRebasePublication(t, f, sources[branch])
+		if !stackOnto(t, f, "origin/main", published) {
+			t.Errorf("published %s is not on the new trunk", branch)
 		}
-		local := gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
-		if remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); remote != local {
-			t.Errorf("origin %s = %s, want the rebased %s", branch, remote, local)
-		}
-		if !strings.Contains(out, branch+shipSep+"no pull request"+shipSep+"head "+local[:12]) {
+		if !strings.Contains(out, branch+shipSep+"no pull request"+shipSep+"head "+published[:12]) {
 			t.Errorf("output = %q, want a verdict line for %s", out, branch)
 		}
 	}
-	if !strings.Contains(out, "rebased 2 branches onto main@") {
-		t.Errorf("output = %q, want the summary", out)
+	if !strings.Contains(out, "published 2 branches · source checkouts unchanged") {
+		t.Errorf("output = %q, want the publication summary", out)
 	}
 	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
 		t.Errorf("run state left behind: %v", left)
@@ -140,6 +176,7 @@ func TestStackRebasePushesWithADivergedLocalTrunk(t *testing.T) {
 	localTrunk := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	sources := stackRebaseSourceSnapshot(t, f, "base", "feature")
 	shipResetLog(t, f)
 
 	_, errOut, err := runStackCmd(t, f, "rebase")
@@ -153,15 +190,12 @@ func TestStackRebasePushesWithADivergedLocalTrunk(t *testing.T) {
 		t.Errorf("local main = %s, want unchanged %s", got, localTrunk)
 	}
 	for _, branch := range []string{"base", "feature"} {
-		if !stackOnto(t, f, "origin/main", branch) {
-			t.Errorf("%s is not on the remote trunk", branch)
+		published := stackAssertRebasePublication(t, f, sources[branch])
+		if !stackOnto(t, f, "origin/main", published) {
+			t.Errorf("published %s is not on the remote trunk", branch)
 		}
-		if stackOnto(t, f, localTrunk, branch) {
-			t.Errorf("%s carries the local trunk's unpushed commit", branch)
-		}
-		local := gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
-		if remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); remote != local {
-			t.Errorf("origin %s = %s, want the rebased %s", branch, remote, local)
+		if stackOnto(t, f, localTrunk, published) {
+			t.Errorf("published %s carries the local trunk's unpushed commit", branch)
 		}
 	}
 }
@@ -579,16 +613,21 @@ func TestStackRebasePushesOverItsOwnLastSubmission(t *testing.T) {
 	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
 		t.Fatalf("stack rebase --no-push: %v", err)
 	}
+	sourceBase := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main")
 	stackAdvanceTrunk(t, f, "later.txt", "later\n")
+	sources := stackRebaseSourceSnapshot(t, f, "base", "feature")
+	base := sources["base"]
+	base.SourceBase = sourceBase
+	sources["base"] = base
 	shipResetLog(t, f)
 
 	if _, _, err := runStackCmd(t, f, "rebase"); err != nil {
 		t.Fatalf("stack rebase over its own last submission: %v", err)
 	}
 	for _, branch := range []string{"base", "feature"} {
-		local := gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
-		if remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); remote != local {
-			t.Errorf("origin %s = %s, want the rebased %s", branch, remote, local)
+		published := stackAssertRebasePublication(t, f, sources[branch])
+		if !stackOnto(t, f, "origin/main", published) {
+			t.Errorf("published %s is not on the new trunk", branch)
 		}
 	}
 }
@@ -619,15 +658,17 @@ func TestStackRebaseTakesARemoteThatIsAhead(t *testing.T) {
 	mustRun(t, f.Env(), clone, "git", "-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-qm", "more")
 	mustRun(t, f.Env(), clone, "git", "push", "-q", "origin", "base")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	sources := stackRebaseSourceSnapshot(t, f, "base")
 	shipResetLog(t, f)
 
 	if _, _, err := runStackCmd(t, f, "rebase"); err != nil {
 		t.Fatalf("stack rebase: %v", err)
 	}
-	if got := gitAt(t, f.Env(), f.Dir, "show", "base:more.txt"); got != "more" {
+	published := stackAssertRebasePublication(t, f, sources["base"])
+	if got := gitAt(t, f.Env(), f.Dir, "show", published+":more.txt"); got != "more" {
 		t.Errorf("base lost the remote's commit: more.txt = %q", got)
 	}
-	if !stackOnto(t, f, "origin/main", "base") {
+	if !stackOnto(t, f, "origin/main", published) {
 		t.Error("base is not on the new trunk")
 	}
 	if refs := gitAt(t, f.Env(), f.Dir, "for-each-ref", "refs/heads/"+stackRebaseStateDir); refs != "" {
@@ -743,6 +784,7 @@ func TestStackContinueDropsAParentThatLandedMidRun(t *testing.T) {
 	stackConflicting(t, f)
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
 	landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	source := stackRebaseSourceSnapshot(t, f, "feature")["feature"]
 	_, _, err := runStackCmd(t, f, "rebase")
 	if err == nil {
 		t.Fatal("stack rebase succeeded, want the conflict to stop")
@@ -758,23 +800,27 @@ func TestStackContinueDropsAParentThatLandedMidRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("continue: %v", err)
 	}
-	if !strings.Contains(out, "dropped landed base") {
-		t.Errorf("output = %q, want base dropped as landed", out)
+	for _, want := range []string{"base landed while the run was stopped", "replanning without it"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output = %q, want %q", out, want)
+		}
 	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "for-each-ref", "refs/heads/base"); got != "" {
 		t.Errorf("origin base = %q, want the landed branch never pushed back", got)
 	}
-	if got := stackParent(t, f, "feature"); got != "main" {
-		t.Errorf("feature's gt parent = %s, want main", got)
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != landedAt {
+		t.Errorf("source base = %s, want unchanged %s", got, landedAt)
 	}
-	if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main..feature"); n != "1" {
-		t.Errorf("feature holds %s commits over trunk, want its own 1", n)
+	if got := stackParent(t, f, "feature"); got != source.Parent {
+		t.Errorf("feature's gt parent = %s, want unchanged %s", got, source.Parent)
 	}
-	if got := gitAt(t, f.Env(), f.Dir, "show", "feature:c.txt"); got != "resolved" {
-		t.Errorf("feature's c.txt = %q, want the resolution kept", got)
+	source.Parent = "main"
+	published := stackAssertRebasePublication(t, f, source)
+	if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main.."+published); n != "1" {
+		t.Errorf("published feature holds %s commits over trunk, want its own 1", n)
 	}
-	if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); local != remote {
-		t.Errorf("origin feature = %s, want the replayed %s", remote, local)
+	if got := gitAt(t, f.Env(), f.Dir, "show", published+":c.txt"); got != "resolved" {
+		t.Errorf("published feature's c.txt = %q, want the resolution kept", got)
 	}
 	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
 		t.Errorf("run state left behind: %v", left)

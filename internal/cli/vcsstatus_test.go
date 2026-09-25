@@ -209,10 +209,7 @@ func TestVcsStatusHealthyTrunkIsSilent(t *testing.T) {
 	}
 }
 
-// TestVcsStatusNamesAContaminatedTrunk is the report the whole check exists
-// for: the holder pinning the ref, and every commit a restack would splice out
-// of it into the stack.
-func TestVcsStatusNamesAContaminatedTrunk(t *testing.T) {
+func TestVcsStatusNamesALocallyChangedTrunk(t *testing.T) {
 	f := infoRepo(t, vcstest.Remote(), vcstest.Worktree("lane"))
 	runTool(t, f, "git", "commit", "-q", "--allow-empty", "-m", "parked work one")
 	runTool(t, f, "git", "commit", "-q", "--allow-empty", "-m", "parked work two")
@@ -220,7 +217,7 @@ func TestVcsStatusNamesAContaminatedTrunk(t *testing.T) {
 
 	got := runVcsStatusJSON(t, f, "--no-queue-probe")
 	if got.TrunkState == nil {
-		t.Fatal("trunk state = none, want the contamination reported")
+		t.Fatal("trunk state = none, want the local changes reported")
 	}
 	if got.TrunkState.Holder != f.Dir {
 		t.Errorf("holder = %q, want %q", got.TrunkState.Holder, f.Dir)
@@ -246,34 +243,54 @@ func TestVcsStatusNamesAContaminatedTrunk(t *testing.T) {
 			t.Errorf("report = %q, want %q named", out, want)
 		}
 	}
-	// The splice is Graphite's: restackGit fetches and rebases onto the
-	// remote-tracking ref, so a local trunk commit never reaches this lane's
-	// branches and claiming otherwise would be false.
-	if strings.Contains(out, "splices them into every branch") {
-		t.Errorf("report = %q, want no splice blocker on the git lane", out)
+	for _, unwanted := range []string{"blocked", "splices them", "worktree park"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("report = %q, want no %q for local trunk state", out, unwanted)
+		}
 	}
 }
 
-// TestVcsStatusSpliceBlockerIsGraphiteOnly is the other half of the lane split:
-// gt restacks onto the local trunk ref, so there the splice is real.
-func TestVcsStatusSpliceBlockerIsGraphiteOnly(t *testing.T) {
+func TestVcsStatusTrunkStateIsInformational(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		state vcs.TrunkState
+		want  []string
+	}{
+		{"held behind and dirty", vcs.TrunkState{Trunk: "dev", Remote: "origin", Behind: 3, Holder: "/tmp/primary", Dirty: 2}, []string{"behind origin/dev by 3", "held by /tmp/primary, 2 uncommitted files"}},
+		{"locally diverged", vcs.TrunkState{Trunk: "dev", Remote: "origin", Behind: 2, Holder: "/tmp/primary", Foreign: []vcs.TrunkCommit{{SHA: "abc1234", Subject: "local work"}}}, []string{"behind origin/dev by 2", "ahead by 1", "held by /tmp/primary", "foreign     abc1234 local work"}},
+		{"stale holder", vcs.TrunkState{Trunk: "dev", Remote: "origin", Behind: 1, Holder: "/tmp/removed", Stale: true}, []string{"behind origin/dev by 1", "held by /tmp/removed, tree gone"}},
+	}
+	for _, lane := range []string{"git", "gt"} {
+		for _, tc := range cases {
+			t.Run(lane+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				out := renderVcsStatus(vcsStatus{Lane: lane, Trunk: "dev", TrunkState: &tc.state})
+				for _, want := range tc.want {
+					if !strings.Contains(out, want) {
+						t.Errorf("report = %q, want %q", out, want)
+					}
+				}
+				for _, unwanted := range []string{"blocked", "splices", "fetch into", "worktree park", "worktree prune"} {
+					if strings.Contains(out, unwanted) {
+						t.Errorf("report = %q, want no %q for local trunk state", out, unwanted)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestVcsStatusRetainsBranchBlockersWithHeldTrunk(t *testing.T) {
 	t.Parallel()
 	st := vcsStatus{
-		Trunk: "main",
-		TrunkState: &vcs.TrunkState{
-			Trunk:   "main",
-			Remote:  "origin",
-			Foreign: []vcs.TrunkCommit{{SHA: "abc1234", Subject: "parked work one"}},
-		},
+		Lane: "gt", Trunk: "dev",
+		TrunkState: &vcs.TrunkState{Trunk: "dev", Remote: "origin", Behind: 1, Holder: "/tmp/primary", Dirty: 1},
+		Branches:   []statusBranch{{Name: "feature", Blockers: []string{"required check failed"}}},
 	}
-	st.Lane = "git"
-	if got := statusTrunkBlockers(st); len(got) != 0 {
-		t.Errorf("git lane blockers = %q, want none", got)
-	}
-	st.Lane = "gt"
-	got := statusTrunkBlockers(st)
-	if len(got) != 1 || !strings.Contains(got[0], "splices them into every branch") {
-		t.Errorf("gt lane blockers = %q, want the splice named", got)
+	out := renderVcsStatus(st)
+	if !strings.Contains(out, "blocked     required check failed") || strings.Count(out, "blocked") != 1 {
+		t.Errorf("report = %q, want exactly the branch's real blocker", out)
 	}
 }
 

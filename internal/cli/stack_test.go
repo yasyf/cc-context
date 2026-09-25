@@ -255,7 +255,7 @@ func TestStackSubmitGoesThroughTheGraphiteAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
-	if !strings.Contains(out, "submitted 2 branches") {
+	if !strings.Contains(out, "published 2 branches · source checkouts unchanged") {
 		t.Errorf("report = %q, want it to name both branches", out)
 	}
 	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base", "feature"}) {
@@ -340,6 +340,7 @@ func TestStackSubmitFrozenBranches(t *testing.T) {
 				before[branch] = gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
 			}
 
+			sources := stackRebaseSourceSnapshot(t, f, branches...)
 			out, _, err := runStackCmd(t, f, "submit", "--include", "feature", "--include", "tip")
 			if tt.frozen {
 				if err == nil || !strings.Contains(err.Error(), "is frozen") {
@@ -361,20 +362,14 @@ func TestStackSubmitFrozenBranches(t *testing.T) {
 			if err != nil {
 				t.Fatalf("stack submit: %v", err)
 			}
-			if !strings.Contains(out, "submitted 3 branches") {
-				t.Errorf("report = %q, want all three branches submitted", out)
+			if !strings.Contains(out, "published 3 branches · source checkouts unchanged") {
+				t.Errorf("report = %q, want all three branches published without moving sources", out)
 			}
 			if heads := api.submitHeads(); !slices.Equal(heads, branches) {
 				t.Errorf("submitted %v, want %v", heads, branches)
 			}
-			parent := "main"
 			for _, branch := range branches {
-				head := gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
-				if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); got != head {
-					t.Errorf("remote %s = %s, want local %s", branch, got, head)
-				}
-				mustRun(t, f.Env(), f.Dir, "git", "merge-base", "--is-ancestor", parent, branch)
-				parent = branch
+				stackAssertRebasePublication(t, f, sources[branch])
 			}
 		})
 	}
@@ -426,10 +421,6 @@ func TestStackSubmitRepairsIncorrectRestackMetadata(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack(branches...))
 	api := stubGTAPI(t)
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
-	remote := map[string]string{}
-	for _, branch := range branches {
-		remote[branch] = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch)
-	}
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "--allow-empty", "-qm", "advance base")
 	before := map[string]string{}
@@ -447,25 +438,20 @@ func TestStackSubmitRepairsIncorrectRestackMetadata(t *testing.T) {
 	if state["feature"].NeedsRestack {
 		t.Fatal("feature metadata still requests a restack")
 	}
+	sources := stackRebaseSourceSnapshot(t, f, branches...)
 	shipResetLog(t, f)
 
 	_, _, err = runStackCmd(t, f, "submit")
 	if err != nil {
 		t.Fatalf("repair metadata: %v", err)
 	}
-	if !stackOnto(t, f, "base", "feature") {
-		t.Error("feature is not on the updated base")
-	}
-	if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "base..feature"); got != "1" {
+	base := stackAssertRebasePublication(t, f, sources["base"])
+	feature := stackAssertRebasePublication(t, f, sources["feature"])
+	if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", base+".."+feature); got != "1" {
 		t.Errorf("feature owns %s commits, want 1", got)
 	}
 	if heads := api.submitHeads(); !slices.Equal(heads, branches) {
 		t.Errorf("submitted %v, want %v", heads, branches)
-	}
-	for _, branch := range branches {
-		if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", branch), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); local != remote {
-			t.Errorf("%s remote=%s local=%s", branch, remote, local)
-		}
 	}
 }
 
@@ -545,7 +531,7 @@ func TestStackSubmitRestackPublishesAtomically(t *testing.T) {
 		"exec "+shellSingleQuote(realGit)+" \"$@\"\n")
 
 	_, _, err := runStackCmd(t, f, "submit")
-	if err == nil || !strings.Contains(err.Error(), "branch moved locally") {
+	if err == nil || !strings.Contains(err.Error(), "a source branch moved") {
 		t.Fatalf("stack submit = %v, want a failed ref transaction", err)
 	}
 	for branch, want := range map[string]string{"base": base, "feature": concurrent} {
@@ -657,25 +643,28 @@ func TestStackSubmitRestacksARejectedParentRevision(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
+	sources := stackRebaseSourceSnapshot(t, f, "base", "feature")
+	before, err := gtmeta.Read(f.Context(), commonDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 
 	_, _, err = runStackCmd(t, f, "submit")
 	if err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
-	state, err := gtmeta.ReadOrigin(f.Context(), commonDir)
+	state, err := gtmeta.Read(f.Context(), commonDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for branch, parent := range map[string]string{"base": "main", "feature": "base"} {
-		if state[branch].NeedsRestack {
-			t.Errorf("%s still needs restack", branch)
+	for _, branch := range []string{"base", "feature"} {
+		if !reflect.DeepEqual(state[branch], before[branch]) {
+			t.Errorf("source %s metadata = %+v, want unchanged %+v", branch, state[branch], before[branch])
 		}
-		if got := gitAt(t, f.Env(), f.Dir, "rev-parse", branch+"^"); got != state[parent].Head {
-			t.Errorf("%s parent = %s, want %s", branch, got, state[parent].Head)
-		}
-		if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); got != state[branch].Head {
-			t.Errorf("remote %s = %s, want %s", branch, got, state[branch].Head)
+		published := stackAssertRebasePublication(t, f, sources[branch])
+		if !stackOnto(t, f, "origin/main", published) {
+			t.Errorf("published %s is not on the new trunk", branch)
 		}
 	}
 }
@@ -737,7 +726,31 @@ func stackCommit(t *testing.T, f *vcstest.Fixture, file string) {
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", file)
 }
 
-func TestStackSubmitLeasesOnAHeadThisRepositoryPushed(t *testing.T) {
+func stackAssertSubmitRefusesChangedPublicationRemote(t *testing.T, f *vcstest.Fixture, branch string) {
+	t.Helper()
+	source := gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
+	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch)
+	receiptRef := stackPublicationRef(branch, "receipt")
+	receipt := gitAt(t, f.Env(), f.Dir, "rev-parse", receiptRef)
+	_, _, err := runStackCmd(t, f, "submit")
+	if err == nil || !strings.Contains(err.Error(), branch+" remote changed after its isolated publication; not adopting the new remote head") {
+		t.Fatalf("stack submit = %v, want the changed publication remote refused", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", branch); got != source {
+		t.Errorf("source %s = %s, want unchanged %s", branch, got, source)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); got != remote {
+		t.Errorf("remote %s = %s, want unchanged %s", branch, got, remote)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", receiptRef); got != receipt {
+		t.Errorf("publication receipt = %s, want unchanged %s", got, receipt)
+	}
+	if pushes := stackPublicationPushes(t, f); pushes != 0 {
+		t.Errorf("refused submit ran %d pushes, want none", pushes)
+	}
+}
+
+func TestStackSubmitRefusesADirectPushAfterPublication(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "base")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
@@ -748,12 +761,7 @@ func TestStackSubmitLeasesOnAHeadThisRepositoryPushed(t *testing.T) {
 	stackCommit(t, f, "local.txt")
 	shipResetLog(t, f)
 
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
-		t.Fatalf("stack submit: %v", err)
-	}
-	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"), gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != want {
-		t.Errorf("remote base = %s, want the local head %s", got, want)
-	}
+	stackAssertSubmitRefusesChangedPublicationRemote(t, f, "base")
 }
 
 func TestShipAmendPushesOverTheHeadItLastSubmitted(t *testing.T) {
@@ -769,8 +777,10 @@ func TestShipAmendPushesOverTheHeadItLastSubmitted(t *testing.T) {
 	if _, _, err := runShipCmdFull(f.Context(), t, "--amend", "--no-watch", "base.txt"); err != nil {
 		t.Fatalf("ship --amend = %v, want the amend pushed over the head this repository submitted", err)
 	}
-	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"), gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != want {
-		t.Errorf("remote base = %s, want the amended head %s", got, want)
+	source := stackRebaseSourceSnapshot(t, f, "base")["base"]
+	published := stackAssertRebasePublication(t, f, source)
+	if !stackOnto(t, f, "origin/main", published) {
+		t.Error("published amend is not on the new trunk")
 	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "show", "base:base.txt"); got != "base amended" {
 		t.Errorf("remote base.txt = %q, want the amend", got)
@@ -810,7 +820,7 @@ func TestShipOverAFrozenParentRestacksOnlyTheChild(t *testing.T) {
 	}
 }
 
-func TestStackSubmitPushesOverARemoteReplayOfItsLastSubmittedHead(t *testing.T) {
+func TestStackSubmitRefusesARemoteReplayAfterPublication(t *testing.T) {
 	f := shipGTRepo(t)
 	stubStackPRs(t, nil)
 	shipGTStack(t, f, "base")
@@ -824,18 +834,10 @@ func TestStackSubmitPushesOverARemoteReplayOfItsLastSubmittedHead(t *testing.T) 
 	mustRun(t, f.Env(), clone, "git", "push", "-q", "--force", "origin", "base")
 	shipResetLog(t, f)
 
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
-		t.Fatalf("stack submit = %v, want a patch-equivalent remote replay pushed over", err)
-	}
-	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"), gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != want {
-		t.Errorf("remote base = %s, want the local head %s", got, want)
-	}
-	if !stackOnto(t, f, "origin/main", "base") {
-		t.Error("base is not on the new trunk")
-	}
+	stackAssertSubmitRefusesChangedPublicationRemote(t, f, "base")
 }
 
-func TestStackSubmitLeasesOnARemoteRewriteOfAnUnmovedHead(t *testing.T) {
+func TestStackSubmitRefusesARemoteRewriteAfterPublication(t *testing.T) {
 	f := shipGTRepo(t)
 	stubStackPRs(t, nil)
 	shipGTStack(t, f, "base")
@@ -848,12 +850,7 @@ func TestStackSubmitLeasesOnARemoteRewriteOfAnUnmovedHead(t *testing.T) {
 	mustRun(t, f.Env(), clone, "git", "push", "-q", "--force", "origin", "base")
 	shipResetLog(t, f)
 
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
-		t.Fatalf("stack submit = %v, want the rewritten remote leased on and replaced", err)
-	}
-	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"), gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != want {
-		t.Errorf("remote base = %s, want the local head %s", got, want)
-	}
+	stackAssertSubmitRefusesChangedPublicationRemote(t, f, "base")
 }
 
 func TestStackSubmitRefusesAForeignMergeCarryingItsOwnChange(t *testing.T) {

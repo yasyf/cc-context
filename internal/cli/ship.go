@@ -435,7 +435,11 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		if err != nil {
 			return err
 		}
-		if plan.needsRestack || !contains {
+		published, err := stackHasPublication(ctx, l.dir(), chain)
+		if err != nil {
+			return err
+		}
+		if plan.needsRestack || !contains || published {
 			intent, err := stackShipOptions(o, meta, prNWO, branch)
 			if err != nil {
 				return err
@@ -513,6 +517,9 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		segments = append(segments, fmt.Sprintf("rebased %d commit(s) onto %s", rebased, branch))
 	}
 	if gtLane {
+		if gtc.restack != nil {
+			segments = append(segments, fmt.Sprintf("published %.12s · source checkouts unchanged", gtc.restack.branch(branch).NewHead))
+		}
 		segments = append(segments, prSeg)
 	} else {
 		segments = append(segments, fmt.Sprintf("pushed %s → %s", branch, remote))
@@ -532,7 +539,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		if err != nil {
 			return err
 		}
-		if err := stackClearRun(common, gtc.restack); err != nil {
+		if err := stackCompletePublication(ctx, dir, common, gtc.restack); err != nil {
 			return err
 		}
 	}
@@ -558,7 +565,14 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		return nil
 	}
 
-	ciSeg, report, ciErr := shipWatchCI(ctx, cmd.ErrOrStderr(), dir, kind, o.budget)
+	var ciSeg string
+	var report []string
+	var ciErr error
+	if gtLane && gtc.restack != nil {
+		ciSeg, report, ciErr = shipWatchCIHead(ctx, cmd.ErrOrStderr(), dir, gtc.restack.branch(branch).NewHead, o.budget)
+	} else {
+		ciSeg, report, ciErr = shipWatchCI(ctx, cmd.ErrOrStderr(), dir, kind, o.budget)
+	}
 	if ciSeg == "" {
 		cmd.Println(strings.Join(segments, shipSep))
 		if o.reviews {
@@ -1993,6 +2007,13 @@ func shipWatchCI(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.K
 	sha, err := shipHeadSHA(ctx, dir, kind)
 	if err != nil {
 		return "", nil, err
+	}
+	return shipWatchCIHead(ctx, errW, dir, sha, budget)
+}
+
+func shipWatchCIHead(ctx context.Context, errW io.Writer, dir render.Dir, sha string, budget int) (string, []string, error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return "CI gh-missing", nil, nil
 	}
 	runs, err := findCIRuns(ctx, dir, sha)
 	if err != nil {

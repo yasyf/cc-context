@@ -366,9 +366,6 @@ func statusTrunkRef(ctx context.Context, l lane, st *vcsStatus) (vcs.Trunk, bool
 	}
 }
 
-// statusTrunkState reads the ref every restack rebases onto, and keeps the
-// answer only when something is wrong with it: a trunk that equals the remote's
-// is the normal case and says nothing worth a line.
 func statusTrunkState(ctx context.Context, l lane, trunk vcs.Trunk, holder string, st *vcsStatus) error {
 	state, err := vcs.ReadTrunkState(ctx, l.dir(), trunk, holder)
 	if err != nil {
@@ -519,9 +516,6 @@ func renderVcsStatus(st vcsStatus) string {
 	if st.Trunk != "" {
 		line("trunk", statusTrunkValue(st))
 	}
-	for _, blocker := range statusTrunkBlockers(st) {
-		line("blocked", blocker)
-	}
 	if ts := st.TrunkState; ts != nil {
 		for _, c := range ts.Foreign {
 			line("foreign", c.SHA+" "+c.Subject)
@@ -639,31 +633,6 @@ func statusTrunkValue(st vcsStatus) string {
 		segs = append(segs, held)
 	}
 	return strings.Join(segs, shipSep)
-}
-
-// statusTrunkBlockers names what an unhealthy trunk does to the whole stack,
-// worst first. The splice is Graphite's alone: gt restacks onto the local trunk
-// ref, where the git lane fetches and rebases onto the remote-tracking one and
-// never sees a local commit.
-func statusTrunkBlockers(st vcsStatus) []string {
-	ts := st.TrunkState
-	if ts == nil {
-		return nil
-	}
-	var out []string
-	if ts.Stale {
-		return append(out, fmt.Sprintf("%s holds %s but its tree is gone, so nothing can free the ref — run git worktree prune",
-			ts.Holder, ts.Trunk))
-	}
-	if n := len(ts.Foreign); n > 0 && st.Lane == "gt" {
-		out = append(out, fmt.Sprintf("local %s carries %d %s %s/%s does not — a restack splices them into every branch of the stack",
-			ts.Trunk, n, plural(n, "commit", "commits"), ts.Remote, ts.Trunk))
-	}
-	if ts.Behind > 0 && ts.Holder != "" {
-		out = append(out, fmt.Sprintf("%s holds %s, so git refuses to fetch into it and no sibling working copy can advance it — free it with ccx vcs worktree park",
-			ts.Holder, ts.Trunk))
-	}
-	return out
 }
 
 // statusParent is the branch gt tracks this one on. Graphite's stack metadata

@@ -7,7 +7,6 @@ import (
 	"strconv"
 
 	"github.com/spf13/cobra"
-	"github.com/yasyf/cc-context/internal/vcs"
 )
 
 type stackShipMeta struct {
@@ -72,7 +71,7 @@ func stackFinishShip(ctx context.Context, cmd *cobra.Command, l lane, run *stack
 		}
 	}
 	if !intent.NoWatch {
-		segment, report, err := shipWatchCI(ctx, cmd.ErrOrStderr(), l.dir(), vcs.Git, intent.Budget)
+		segment, report, err := shipWatchCIHead(ctx, cmd.ErrOrStderr(), l.dir(), run.branch(intent.Branch).NewHead, intent.Budget)
 		if segment != "" {
 			cmd.Println(segment)
 		}

@@ -56,19 +56,21 @@ func (p *stackPR) String() string {
 }
 
 type stackRebaseBranch struct {
-	Name      string   `json:"name"`
-	Parent    string   `json:"parent"`
-	WasParent string   `json:"was_parent"`
-	Local     string   `json:"local"`
-	Remote    string   `json:"remote,omitempty"`
-	Head      string   `json:"head"`
-	HeadRef   string   `json:"head_ref"`
-	OldBase   string   `json:"old_base"`
-	Landed    string   `json:"landed,omitempty"`
-	Held      string   `json:"held,omitempty"`
-	PR        *stackPR `json:"pr,omitempty"`
-	NewBase   string   `json:"new_base,omitempty"`
-	NewHead   string   `json:"new_head,omitempty"`
+	Name        string            `json:"name"`
+	Parent      string            `json:"parent"`
+	WasParent   string            `json:"was_parent"`
+	Local       string            `json:"local"`
+	Remote      string            `json:"remote,omitempty"`
+	Head        string            `json:"head"`
+	HeadRef     string            `json:"head_ref"`
+	OldBase     string            `json:"old_base"`
+	SourceBase  string            `json:"source_base"`
+	Publication *stackPublication `json:"publication,omitempty"`
+	Landed      string            `json:"landed,omitempty"`
+	Held        string            `json:"held,omitempty"`
+	PR          *stackPR          `json:"pr,omitempty"`
+	NewBase     string            `json:"new_base,omitempty"`
+	NewHead     string            `json:"new_head,omitempty"`
 }
 
 type stackConflict struct {
@@ -79,25 +81,29 @@ type stackConflict struct {
 }
 
 type stackRebaseRun struct {
-	Trunk     string `json:"trunk"`
-	Pin       string `json:"pin"`
-	NoPush    bool   `json:"no_push"`
-	Git       bool   `json:"git,omitempty"`
-	Origin    string `json:"origin"`
-	Draft     bool   `json:"draft,omitempty"`
-	NoVerify  bool   `json:"no_verify,omitempty"`
-	deferPush bool
-	Ship      *stackShipIntent    `json:"ship,omitempty"`
-	Aligned   bool                `json:"aligned,omitempty"`
-	Applied   bool                `json:"applied,omitempty"`
-	Branches  []stackRebaseBranch `json:"branches"`
-	Conflict  *stackConflict      `json:"conflict,omitempty"`
-	Roots     []string            `json:"roots"`
-	Pid       int                 `json:"pid"`
-	Started   string              `json:"started"`
-	Host      string              `json:"host"`
-	dir       string
-	saved     time.Time
+	Trunk       string `json:"trunk"`
+	Pin         string `json:"pin"`
+	NoPush      bool   `json:"no_push"`
+	Git         bool   `json:"git,omitempty"`
+	Origin      string `json:"origin"`
+	Draft       bool   `json:"draft,omitempty"`
+	NoVerify    bool   `json:"no_verify,omitempty"`
+	deferPush   bool
+	Ship        *stackShipIntent         `json:"ship,omitempty"`
+	Aligned     bool                     `json:"aligned,omitempty"`
+	Applied     bool                     `json:"applied,omitempty"`
+	Publishing  bool                     `json:"publishing,omitempty"`
+	PushTargets []stackPublicationTarget `json:"push_targets,omitempty"`
+	Pushed      bool                     `json:"pushed,omitempty"`
+	Receipted   bool                     `json:"receipted,omitempty"`
+	Branches    []stackRebaseBranch      `json:"branches"`
+	Conflict    *stackConflict           `json:"conflict,omitempty"`
+	Roots       []string                 `json:"roots"`
+	Pid         int                      `json:"pid"`
+	Started     string                   `json:"started"`
+	Host        string                   `json:"host"`
+	dir         string
+	saved       time.Time
 }
 
 func (r *stackRebaseRun) branch(name string) *stackRebaseBranch {
@@ -127,6 +133,7 @@ type stackRebaseOpts struct {
 	noVerify  bool
 	deferPush bool
 	vetted    map[string]string
+	replayed  map[string]stackRebaseBranch
 	result    **stackRebaseRun
 	ship      *stackShipIntent
 }
@@ -324,6 +331,9 @@ func stackReclaim(ctx context.Context, l lane, commonDir string, run *stackRebas
 		}
 		return fmt.Errorf("stack rebase: the run of %s saved again while it was being reclaimed — re-run", roots)
 	}
+	if err := stackDropPublicationPins(ctx, l.dir(), run); err != nil {
+		return err
+	}
 	if err := stackDropTempRefs(ctx, l.dir(), run); err != nil {
 		return err
 	}
@@ -351,7 +361,7 @@ func stackHolder(run *stackRebaseRun) string {
 // has moved refs that only continue records.
 func stackStale(run *stackRebaseRun) bool {
 	host, _ := os.Hostname()
-	if run.Host != host || run.Applied || stackPidAlive(run) || time.Since(run.saved) < stackStaleAfter {
+	if run.Host != host || run.Applied || run.Publishing || stackPidAlive(run) || time.Since(run.saved) < stackStaleAfter {
 		return false
 	}
 	if run.Conflict == nil {
@@ -454,9 +464,44 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		if vetted := o.vetted[name]; vetted != "" && vetted == remotes[name] {
 			ours = vetted
 		}
-		b, err := stackSnapshot(ctx, l.dir(), tr, state[name], name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin)
+		source := state[name]
+		effective := source
+		var receipt *stackPublication
+		if !o.noPush {
+			receipt, err = stackReadPublication(ctx, l.dir(), name)
+			if err != nil {
+				return nil, err
+			}
+			if receipt != nil && receipt.Source == source.Head {
+				effective.Head = receipt.Head
+			}
+		}
+		prepared, replayed := o.replayed[name]
+		if replayed {
+			if source.Head != prepared.Local {
+				return nil, fmt.Errorf("stack rebase: %s source changed during replanning; checkout untouched", name)
+			}
+			effective.Head = prepared.NewHead
+		}
+		b, err := stackSnapshot(ctx, l.dir(), tr, effective, name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin)
 		if err != nil {
 			return nil, err
+		}
+		b.Local = source.Head
+		if !o.noPush {
+			b.HeadRef = stackTempRef(name)
+			if err := stackUsePublication(&b, receipt, submitted[name]); err != nil {
+				return nil, err
+			}
+		}
+		if replayed {
+			b.Head = prepared.NewHead
+			b.WasParent = prepared.Parent
+			b.SourceBase = prepared.SourceBase
+			b.OldBase = prepared.NewBase
+			if b.Landed != "" {
+				b.NewHead = prepared.NewHead
+			}
 		}
 		byName[name] = &b
 	}
@@ -485,8 +530,13 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	for _, name := range order {
 		b := byName[name]
 		if b.Landed == "" && b.Held == "" {
-			if b.OldBase, err = stackOldBase(ctx, l.dir(), trunk, pin, state[name], b, byName); err != nil {
-				return nil, err
+			if b.OldBase == "" {
+				if b.OldBase, err = stackOldBase(ctx, l.dir(), trunk, pin, state[name], b, byName); err != nil {
+					return nil, err
+				}
+				if b.SourceBase == "" {
+					b.SourceBase = b.OldBase
+				}
 			}
 			if err := stackOwnWork(ctx, l.dir(), tr, pin, b); err != nil {
 				return nil, err
@@ -1215,6 +1265,16 @@ func runStackAbort(cmd *cobra.Command, stack string) error {
 	if err != nil {
 		return err
 	}
+	if run.Publishing || run.Pushed {
+		if !run.Receipted {
+			return errors.New("stack abort: publication receipts are incomplete; run ccx vcs stack continue before discarding recovery state")
+		}
+		if err := stackCompletePublication(ctx, l.dir(), commonDir, run); err != nil {
+			return err
+		}
+		cmd.Println("aborted pending publication metadata · published commits and source checkouts unchanged")
+		return nil
+	}
 	if run.Applied {
 		return errors.New("stack abort: the rewritten stack is already written locally, so there is nothing left to abort — ccx vcs stack continue finishes recording and pushing it")
 	}
@@ -1222,6 +1282,9 @@ func runStackAbort(cmd *cobra.Command, stack string) error {
 		if err := stackDropWorkspace(ctx, l, c.Workspace); err != nil {
 			return err
 		}
+	}
+	if err := stackDropPublicationPins(ctx, l.dir(), run); err != nil {
+		return err
 	}
 	if err := stackDropTempRefs(ctx, l.dir(), run); err != nil {
 		return err
@@ -1274,13 +1337,14 @@ func stackResolveRun(ctx context.Context, stack string) (lane, string, *stackReb
 }
 
 func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun) error {
+	if !run.NoPush {
+		return stackFinishPublication(ctx, cmd, l, commonDir, run)
+	}
 	prefix := stackRebasePrefix
-	errW := cmd.ErrOrStderr()
 	var moves []restackMove
-	var movers, live, dropped []string
+	var movers, dropped []string
 	reparent := map[string]string{}
 	revisions := map[string]string{}
-	leases := map[string]string{}
 	for _, b := range run.Branches {
 		if b.Landed != "" {
 			dropped = append(dropped, b.Name)
@@ -1289,8 +1353,6 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 		if b.Held != "" {
 			continue
 		}
-		live = append(live, b.Name)
-		leases[b.Name] = b.Remote
 		revisions[b.Name] = b.NewBase
 		if b.Parent != b.WasParent {
 			reparent[b.Name] = b.Parent
@@ -1348,10 +1410,6 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	); err != nil {
 		return fmt.Errorf("%s: the branches are rewritten, but recording the stack in gt failed — fix the cause and run ccx vcs stack continue: %w", prefix, errors.Join(err, alignErr))
 	}
-	tr, err := gtTrunkRefOffline(ctx, l.dir(), prefix, run.Trunk)
-	if err != nil {
-		return err
-	}
 
 	summary := []string{fmt.Sprintf("rebased %s onto %s@%.12s", gtBranchCount(len(movers)), run.Trunk, run.Pin)}
 	if len(dropped) > 0 {
@@ -1364,80 +1422,51 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	if alignErr != nil {
 		return alignErr
 	}
-	if !run.NoPush && !run.deferPush {
-		if landed, err := stackLandedSince(ctx, l.dir(), run.Trunk, live); err != nil {
-			return err
-		} else if len(landed) > 0 {
-			return stackReplanLanded(ctx, cmd, l, commonDir, run, landed)
-		}
-		state, err := gtStateAt(ctx, commonDir, prefix)
-		if err != nil {
-			return err
-		}
-		if err := stackCheckPublishedHeads(state, run); err != nil {
-			return err
-		}
-		leases, err = stackPublishLeases(ctx, commonDir, run)
-		if err != nil {
-			return err
-		}
-		sub := gtSubmit{prefix: prefix, suffix: " — the local stack is rewritten; reconcile the remote, then run ccx vcs stack continue", leases: leases, trunkHead: run.Pin, draft: run.Draft, noVerify: run.NoVerify}
-		commits, files, err := gtSubmitWidth(ctx, prefix, l.dir(), run.Pin, live)
-		if err != nil {
-			return err
-		}
-		submitted, _, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, live)
-		if err != nil {
-			return err
-		}
-		cmd.Println(fmt.Sprintf("submitted %d branches%sproposing %d commit(s), %d file(s)", len(submitted), shipSep, commits, files))
-	}
-	if run.deferPush {
-		return nil
-	}
-	if run.Ship != nil && !run.NoPush {
-		if err := stackFinishShip(ctx, cmd, l, run); err != nil {
-			return err
-		}
-	}
 	if err := stackClearRun(commonDir, run); err != nil {
 		return fmt.Errorf("%s: clear the run state: %w", prefix, err)
 	}
-	if run.NoPush {
-		cmd.Println("not pushed (--no-push)")
-		return nil
-	}
-	return stackVerdict(ctx, cmd, l.dir(), run, live)
+	cmd.Println("not pushed (--no-push)")
+	return nil
 }
 
 func stackLandedSince(ctx context.Context, dir render.Dir, trunk string, live []string) ([]string, error) {
 	prs, err := stackPRLookup(ctx, dir, trunk, live)
 	if err != nil {
-		return nil, fmt.Errorf("stack rebase: the stack is rewritten locally, but reading its pull requests before the push failed — run ccx vcs stack continue: %w", err)
+		return nil, fmt.Errorf("stack rebase: reading the stack pull requests before the push failed — run ccx vcs stack continue: %w", err)
 	}
 	return slices.DeleteFunc(slices.Clone(live), func(name string) bool { return prs[name] == nil || !prs[name].Landed }), nil
 }
 
 func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun, landed []string) error {
+	if err := stackCheckSources(ctx, l.dir(), run); err != nil {
+		return err
+	}
 	var members []string
 	vetted := map[string]string{}
+	replayed := map[string]stackRebaseBranch{}
 	for _, b := range run.Branches {
 		if b.Landed == "" {
 			members = append(members, b.Name)
 			vetted[b.Name] = b.Remote
+			replayed[b.Name] = b
 		}
 	}
-	if err := stackClearRun(commonDir, run); err != nil {
-		return fmt.Errorf("%s: clear the run state: %w", stackRebasePrefix, err)
-	}
-	cmd.Println(fmt.Sprintf("%s landed while the run was stopped%snothing pushed%sreplanning without it", strings.Join(landed, ", "), shipSep, shipSep))
-	runs, err := stackRuns(commonDir)
+	next, err := stackPlan(ctx, l, commonDir, stackRebaseOpts{
+		members: members, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, noVerify: run.NoVerify, ship: run.Ship,
+	})
 	if err != nil {
 		return err
 	}
-	return stackBegin(ctx, cmd, l, commonDir, runs, stackRebaseOpts{
-		members: members, landed: landed, vetted: vetted, draft: run.Draft, noVerify: run.NoVerify, ship: run.Ship,
-	})
+	if !slices.Equal(run.Roots, next.Roots) {
+		return errors.New("stack rebase: stack roots changed during replanning; original recovery state retained")
+	}
+	next.dir = run.dir
+	if err := stackSaveRun(next); err != nil {
+		return err
+	}
+	cmd.Println(fmt.Sprintf("%s landed while the run was stopped%snothing pushed%sreplanning without it", strings.Join(landed, ", "), shipSep, shipSep))
+	cmd.Println(strings.Join(stackPlanLines(next), "\n"))
+	return stackDrive(ctx, cmd, l, commonDir, next)
 }
 
 // stackFinishGit writes a git-lane restack's branch and moves the working copy
@@ -1785,31 +1814,6 @@ func stackQueryPRs(ctx context.Context, dir render.Dir, trunk string, branches [
 		byNumber[number].Landed = landed
 	}
 	return prs, nil
-}
-
-func stackCheckPublishedHeads(state gtState, run *stackRebaseRun) error {
-	for _, b := range run.Branches {
-		if b.Landed == "" && state[b.Name].Head != b.NewHead {
-			return fmt.Errorf("stack rebase: %s changed after restacking (expected %.12s, found %.12s); nothing pushed", b.Name, b.NewHead, state[b.Name].Head)
-		}
-	}
-	return nil
-}
-
-func stackPublishLeases(ctx context.Context, commonDir string, run *stackRebaseRun) (map[string]string, error) {
-	last, err := gtmeta.LastSubmitted(ctx, commonDir)
-	if err != nil {
-		return nil, err
-	}
-	leases := map[string]string{}
-	for _, b := range run.Branches {
-		lease := b.Remote
-		if last[b.Name].HeadSha == b.NewHead && b.NewHead != b.Local {
-			lease = b.NewHead
-		}
-		leases[b.Name] = lease
-	}
-	return leases, nil
 }
 
 func stackCheckHolders(ctx context.Context, origin string, movers []string, holders map[string]string) error {

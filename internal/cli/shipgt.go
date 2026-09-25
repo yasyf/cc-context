@@ -351,12 +351,13 @@ func gtStuckSuffix(o shipOpts) string {
 // command is speaking, what its refusals append about the work already done,
 // and the two switches gt's own --draft and --no-verify flags map to.
 type gtSubmit struct {
-	prefix    string
-	suffix    string
-	draft     bool
-	noVerify  bool
-	leases    map[string]string
-	trunkHead string
+	prefix      string
+	suffix      string
+	draft       bool
+	noVerify    bool
+	leases      map[string]string
+	trunkHead   string
+	publication *stackRebaseRun
 }
 
 func gtStuck(prefix, problem, suffix string) string {
@@ -705,6 +706,9 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 	if err != nil {
 		return "", nil, nil, err
 	}
+	if c.restack != nil {
+		state = stackPublicationState(state, c.restack)
+	}
 	chain, err := gtDownstack("ship", state, branch, trunk)
 	if err != nil {
 		return "", nil, nil, err
@@ -719,18 +723,9 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 	}
 	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: o.draft, noVerify: o.noVerify}
 	if c.restack != nil {
-		if err := stackCheckPublishedHeads(state, c.restack); err != nil {
-			return "", nil, nil, err
-		}
+		sub.publication = c.restack
 		sub.trunkHead = c.restack.Pin
-		common, err := c.common(ctx)
-		if err != nil {
-			return "", nil, nil, err
-		}
-		sub.leases, err = stackPublishLeases(ctx, common, c.restack)
-		if err != nil {
-			return "", nil, nil, err
-		}
+		sub.leases = stackPublicationLeases(c.restack)
 	}
 	commonDir, err := c.common(ctx)
 	if err != nil {
@@ -792,6 +787,11 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		return nil, nil, err
 	}
 	if len(branches) == 0 {
+		if s.publication != nil {
+			if err := stackRecordPublication(ctx, l.dir(), s.publication, nil); err != nil {
+				return nil, nil, err
+			}
+		}
 		return nil, nil, nil
 	}
 	owner, name, err := gtRepoOwnerName(ctx, l, s.prefix)
@@ -878,9 +878,11 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		return nil, nil, gtSubmitFailure(err, s)
 	}
 
-	// The leases are recorded right after the atomic push — the irreversible
-	// step — so no later failure leaves one behind a head this run just moved.
-	if err := gtPushStack(ctx, l.dir(), s, plan); err != nil {
+	if s.publication != nil {
+		if err := stackPushPublication(ctx, l.dir(), s, plan); err != nil {
+			return nil, nil, err
+		}
+	} else if err := gtPushStack(ctx, l.dir(), s, plan); err != nil {
 		return nil, nil, err
 	}
 	versions := make(map[string]gtmeta.Version, len(plan))
@@ -889,6 +891,14 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	}
 	if err := gtmeta.RecordSubmitted(ctx, commonDir, versions); err != nil {
 		return nil, nil, gtSubmitFailure(err, s)
+	}
+	if s.publication != nil {
+		if err := stackRecordPublication(ctx, l.dir(), s.publication, plan); err != nil {
+			return nil, nil, err
+		}
+		if err := stackCheckSources(ctx, l.dir(), s.publication); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	var landed []gtapi.SubmittedPR
@@ -1135,16 +1145,15 @@ func gtSubmitPlan(ctx context.Context, dir render.Dir, prefix string, state gtSt
 			pr:      open[name],
 			lease:   last[name].HeadSha,
 		}
-		from := b.base
 		switch {
 		case stacked[b.base]:
 		case slices.Contains(held, b.base):
 			b.baseSha = state[b.base].Head
 		default:
-			b.base, b.baseSha, from = tr.Name(), trunkHead, trunkHead
+			b.base, b.baseSha = tr.Name(), trunkHead
 		}
 		if b.pr == 0 {
-			title, body, err := gtCreateMeta(ctx, dir, prefix, name, from, b.base)
+			title, body, err := gtCreateMeta(ctx, dir, prefix, b.name, b.head, b.baseSha, b.base)
 			if err != nil {
 				return nil, err
 			}
@@ -1160,10 +1169,10 @@ func gtSubmitPlan(ctx context.Context, dir render.Dir, prefix string, state gtSt
 // creates PRs with empty bodies. Refusals name base, never rev. The
 // Claude-Session-Id trailer is dropped from the body, the same line the
 // non-graphite lane keeps out of descriptions by never passing --fill.
-func gtCreateMeta(ctx context.Context, dir render.Dir, prefix, branch, rev, base string) (string, string, error) {
-	out, err := render.RunCLI(ctx, dir, "git", []string{"log", "--reverse", "--format=%s%x00%b%x00", rev + ".." + branch})
+func gtCreateMeta(ctx context.Context, dir render.Dir, prefix, branch, head, rev, base string) (string, string, error) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"log", "--reverse", "--format=%s%x00%b%x00", rev + ".." + head})
 	if err != nil {
-		return "", "", fmt.Errorf("%s: git log %s..%s: %w", prefix, rev, branch, err)
+		return "", "", fmt.Errorf("%s: git log %s..%s: %w", prefix, rev, head, err)
 	}
 	fields := strings.Split(out, "\x00")
 	if len(fields) < 3 {
