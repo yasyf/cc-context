@@ -25,7 +25,7 @@ func TestSearchOutputBounds(t *testing.T) {
 		t.Fatalf("at limit: buffer = %q, context = %v", w.buffer.String(), ctx.Err())
 	}
 	n, err := w.Write([]byte("9"))
-	if n != 0 || err == nil || err != w.err {
+	if n != 0 || err == nil || !errors.Is(err, w.err) {
 		t.Fatalf("overflow Write = %d, %v; stored error = %v", n, err, w.err)
 	}
 	if w.buffer.String() != "12345678" || !errors.Is(ctx.Err(), context.Canceled) {
