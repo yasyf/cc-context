@@ -37,10 +37,10 @@ func regenBranch(t *testing.T, f *vcstest.Fixture, files map[string]string) {
 	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
 }
 
-func regenAdvanceTrunk(t *testing.T, f *vcstest.Fixture, files ...string) {
+func regenAdvanceTrunk(t *testing.T, f *vcstest.Fixture, files ...[2]string) {
 	t.Helper()
-	for i := 0; i < len(files); i += 2 {
-		restackAdvanceRemote(t, f, "main", files[i], files[i+1])
+	for _, file := range files {
+		restackAdvanceRemote(t, f, "main", file[0], file[1])
 	}
 	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
 	shipResetLog(t, f)
@@ -49,7 +49,7 @@ func regenAdvanceTrunk(t *testing.T, f *vcstest.Fixture, files ...string) {
 func TestStackRebaseRegeneratesAGeneratedOnlyConflict(t *testing.T) {
 	f := regenRepo(t, regenCat)
 	regenBranch(t, f, map[string]string{"src/f.txt": "f\n", "gen/out.txt": "a\nf\n"})
-	regenAdvanceTrunk(t, f, "src/t.txt", "t\n", "gen/out.txt", "a\nt\n")
+	regenAdvanceTrunk(t, f, [2]string{"src/t.txt", "t\n"}, [2]string{"gen/out.txt", "a\nt\n"})
 
 	plan, _, err := runStackCmd(t, f, "rebase", "--dry-run")
 	if err != nil {
@@ -83,7 +83,7 @@ func TestStackRebaseRegeneratesAGeneratedOnlyConflict(t *testing.T) {
 func TestStackRebaseLeavesAnUnconflictedGeneratedFileAlone(t *testing.T) {
 	f := regenRepo(t, "echo regenerated > gen/other.txt; "+regenCat)
 	regenBranch(t, f, map[string]string{"gen/other.txt": "stale by hand\n"})
-	regenAdvanceTrunk(t, f, "src/t.txt", "t\n")
+	regenAdvanceTrunk(t, f, [2]string{"src/t.txt", "t\n"})
 
 	out, _, err := runStackCmd(t, f, "rebase", "--no-push")
 	if err != nil {
@@ -103,7 +103,7 @@ func TestStackRebaseLeavesAnUnconflictedGeneratedFileAlone(t *testing.T) {
 func TestStackContinueRegeneratesAfterAMixedConflict(t *testing.T) {
 	f := regenRepo(t, regenCat)
 	regenBranch(t, f, map[string]string{"src/a.txt": "a-feature\n", "src/f.txt": "f\n", "gen/out.txt": "a-feature\nf\n"})
-	regenAdvanceTrunk(t, f, "src/a.txt", "a-trunk\n", "gen/out.txt", "a-trunk\n")
+	regenAdvanceTrunk(t, f, [2]string{"src/a.txt", "a-trunk\n"}, [2]string{"gen/out.txt", "a-trunk\n"})
 	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 
 	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
@@ -137,14 +137,14 @@ func TestStackContinueRegeneratesAfterAMixedConflict(t *testing.T) {
 func TestStackRebaseStopsCleanlyOnAFailingGenerator(t *testing.T) {
 	f := regenRepo(t, "echo generated half > gen/out.txt; echo boom >&2; exit 3")
 	regenBranch(t, f, map[string]string{"src/f.txt": "f\n", "gen/out.txt": "a\nf\n"})
-	regenAdvanceTrunk(t, f, "gen/out.txt", "a\nt\n")
+	regenAdvanceTrunk(t, f, [2]string{"gen/out.txt", "a\nt\n"})
 	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 
 	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
 	if err == nil {
 		t.Fatal("stack rebase succeeded over a failing generator")
 	}
-	for _, want := range []string{"regenerating gen/out.txt failed, and nothing was staged", "exited 3", "boom", "echo generated half > gen/out.txt"} {
+	for _, want := range []string{"regenerating gen/out.txt failed, and nothing was committed", "exited 3", "boom", "echo generated half > gen/out.txt"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %v, want %q", err, want)
 		}
@@ -164,7 +164,7 @@ func TestStackRebaseStopsCleanlyOnAFailingGenerator(t *testing.T) {
 func TestStackRebaseScrubsGitEnvFromTheGenerator(t *testing.T) {
 	f := regenRepo(t, `for v in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR; do eval "test -z \"\${$v+set}\"" || { echo "$v leaked" >&2; exit 9; }; done; `+regenCat)
 	regenBranch(t, f, map[string]string{"src/f.txt": "f\n", "gen/out.txt": "a\nf\n"})
-	regenAdvanceTrunk(t, f, "src/t.txt", "t\n", "gen/out.txt", "a\nt\n")
+	regenAdvanceTrunk(t, f, [2]string{"src/t.txt", "t\n"}, [2]string{"gen/out.txt", "a\nt\n"})
 	t.Setenv("GIT_DIR", filepath.Join(t.TempDir(), "leaked"))
 	t.Setenv("GIT_WORK_TREE", t.TempDir())
 

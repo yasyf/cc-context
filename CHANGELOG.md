@@ -21,16 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   When every file a replayed commit conflicts on is listed there, `ccx vcs
   stack rebase`, `restack`, and `submit` resolve the stop without a human.
   Each listed file starts from the replayed commit's copy. Each owning
-  command runs once from the conflict workspace's root, with `GIT_DIR`,
-  `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_PREFIX`, and `GIT_COMMON_DIR`
-  unset. The listed files are staged and the rebase continues.
+  command runs once from the conflict workspace's root, with every variable
+  `git rev-parse --local-env-vars` names unset, `GIT_DIR` and
+  `GIT_INDEX_FILE` among them. The listed files are staged and the rebase continues.
 
   Each staged file prints a `regenerated <path> · <command>` line. A stop
   that also conflicts on another file waits for the human as before, and
   `ccx vcs stack continue` reruns the commands for the listed files once the
   rest are resolved. A command that exits nonzero, leaves a conflict marker,
   or writes a file outside its `paths` stops the run with its exit code and
-  stderr tail and stages nothing. `--dry-run` names, per branch, the
+  stderr tail and commits nothing. `--dry-run` names, per branch, the
   commands a conflict runs. No git config, hook, or merge driver is
   involved.
 

@@ -22,10 +22,14 @@ const (
 	regenTailLines = 20
 )
 
-// regenScrubbed is the git environment a generator never inherits: a hook or
+// regenScrubbed is what git rev-parse --local-env-vars names: a hook or
 // wrapper that exported one would point the generator's own git calls at
-// another repository, or at the conflict workspace's index.
-var regenScrubbed = []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX", "GIT_COMMON_DIR"}
+// another repository, object store, index, or config.
+var regenScrubbed = []string{
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY",
+	"GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS",
+	"GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR",
+}
 
 // regenGenerator is one [[generated]] entry of .ccx.toml: the files a command
 // rewrites, as repository-relative doublestar patterns, and the command sh runs
@@ -200,7 +204,7 @@ func regenTouched(ctx context.Context, dir render.Dir) ([]string, error) {
 }
 
 func regenNoMarkers(ws, path string) error {
-	raw, err := os.ReadFile(filepath.Join(ws, path))
+	raw, err := os.ReadFile(filepath.Join(ws, path)) //nolint:gosec // path is a git-listed file of ccx's own conflict workspace, not untrusted input
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
@@ -223,36 +227,32 @@ func regenTail(out string) string {
 	return "  " + strings.Join(lines, "\n  ")
 }
 
-// stackRegenPlan names, per branch, the declared generators a conflict would
-// run: those owning a path both the branch and what it lands on changed.
+// stackRegenPlan names, per moving branch, the declared generators a conflict
+// would run: those owning a path the branch changed that trunk also moved.
 func stackRegenPlan(ctx context.Context, dir render.Dir, run *stackRebaseRun) ([]string, error) {
+	gens, err := regenLoad(ctx, dir, run.Pin)
+	if err != nil {
+		return []string{"generated" + shipSep + err.Error() + shipSep + "their conflicts stop for a human"}, nil
+	}
+	if len(gens) == 0 {
+		return nil, nil
+	}
 	var lines []string
 	for _, b := range run.Branches {
 		if b.Landed != "" {
 			continue
 		}
-		onto := []string{run.Pin}
-		if parent := run.branch(b.Parent); parent != nil {
-			onto = append(onto, parent.Head)
+		fork := &b
+		for parent := run.branch(fork.Parent); parent != nil && parent.Landed == ""; parent = run.branch(fork.Parent) {
+			fork = parent
 		}
-		gens, err := regenLoad(ctx, dir, onto[len(onto)-1])
+		upstream, err := regenChanged(ctx, dir, fork.OldBase, run.Pin)
 		if err != nil {
 			return nil, err
-		}
-		if len(gens) == 0 {
-			continue
 		}
 		own, err := regenChanged(ctx, dir, b.OldBase, b.Head)
 		if err != nil {
 			return nil, err
-		}
-		var upstream []string
-		for _, rev := range onto {
-			changed, err := regenChanged(ctx, dir, b.OldBase, rev)
-			if err != nil {
-				return nil, err
-			}
-			upstream = append(upstream, changed...)
 		}
 		both := regenDeclared(gens, slices.DeleteFunc(own, func(p string) bool { return !slices.Contains(upstream, p) }))
 		for i := range gens {
