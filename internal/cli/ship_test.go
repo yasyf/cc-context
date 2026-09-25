@@ -1906,7 +1906,7 @@ func TestPushArgvLeavesUnseenRemoteTipsUnfetched(t *testing.T) {
 
 	check := exec.Command("git", "cat-file", "-e", unseen) //nolint:gosec // fixed argv over a sha the test made
 	check.Dir = clone
-	check.Env = append(os.Environ(), append(env, "GIT_NO_LAZY_FETCH=1")...)
+	check.Env = append(append(os.Environ(), env...), "GIT_NO_LAZY_FETCH=1")
 	if check.Run() == nil {
 		t.Errorf("push fetched %s, a remote tip it never needed", unseen)
 	}
