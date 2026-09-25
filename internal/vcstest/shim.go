@@ -74,8 +74,9 @@ func (h *hostEnv) resolve(t *testing.T, name string) resolvedTool {
 func Shim(t *testing.T, tools ...string) (binDir, logPath string) {
 	t.Helper()
 	resolveTools(t, tools)
-	binDir, logPath, _ = installShim(t)
+	_, binDir, logPath = installShim(t)
 	t.Setenv("PATH", toolPATH(binDir))
+	t.Setenv("CCX_ARGV_LOG", logPath)
 	return binDir, logPath
 }
 
@@ -119,44 +120,47 @@ func resolveTools(t *testing.T, tools []string) []resolvedTool {
 // directory ahead of the base system directories, so a second fixture's PATH
 // still reaches the first fixture's tools. Each call mints its own directory
 // and log: a fixture's log holds the invocations made while its shim led
-// PATH, and the next call's takes over from there. settles reports whether
-// any installed tool writes to the log past its own exit.
+// PATH, and the next call's takes over from there. The directory is removed
+// best-effort rather than through t.TempDir, because gt leaves a refresher
+// spawning git under the shim for seconds after it exits and RemoveAll
+// reports that race as a cleanup failure.
 func (f *Fixture) installShim(t *testing.T) {
 	t.Helper()
-	f.ShimBin, f.ArgvLog, f.settles = installShim(t)
-	f.env = append(f.env, "PATH="+toolPATH(f.ShimBin))
+	f.shimDir, f.ShimBin, f.ArgvLog = installShim(t)
+	f.env = append(f.env, "PATH="+toolPATH(f.ShimBin), "CCX_ARGV_LOG="+f.ArgvLog)
 }
 
-func installShim(t *testing.T) (binDir, logPath string, settles bool) {
+func installShim(t *testing.T) (base, binDir, logPath string) {
 	t.Helper()
-	base := realTempDir(t)
+	base = detachedDir(t, "ccx-shim")
 	binDir = filepath.Join(base, "bin")
 	mkdir(t, binDir)
-	logPath = filepath.Join(base, "argv.log")
+	logPath = filepath.Join(base, argvLogName(0))
 	tools := hostEnvFor(t).tools
 	for _, tool := range tools {
-		if tool.name == "gt" {
-			// gt's detached cache refresher outlives gt itself; let it
-			// drain before TempDir removal races its writes.
-			settles = true
-			t.Cleanup(func() { waitQuiet(logPath) })
-		}
-		script := "#!/bin/sh\n" + RecordArgv(tool.name, logPath) +
+		script := "#!/bin/sh\n" + RecordArgv(tool.name) +
 			"CCX_SHIM_DEPTH=$((d+1)) exec " + shellQuote(tool.path) + ` "$@"` + "\n"
 		if err := os.WriteFile(filepath.Join(binDir, tool.name), []byte(script), 0o700); err != nil { //nolint:gosec // the shim must be owner-executable to serve as a PATH entry
 			t.Fatalf("write shim %s: %v", tool.name, err)
 		}
 	}
 	linkInterpreters(t, binDir, tools)
-	return binDir, logPath, settles
+	return base, binDir, logPath
+}
+
+func argvLogName(generation int) string {
+	return fmt.Sprintf("argv.%d.log", generation)
 }
 
 // RecordArgv is the shim's own framing — depth, working directory, argc, then
-// the argv — as shell a faked process prepends to its script, so its calls land
-// in log beside the real tools'. It leaves d set for the caller's own exec line.
-func RecordArgv(name, log string) string {
+// the argv — as shell a faked process prepends to its script, so its calls
+// land beside the real tools'. The destination comes from the environment
+// rather than being baked in, which is what makes [Fixture.RotateLog] a
+// boundary a running process cannot cross. It leaves d set for the caller's
+// own exec line.
+func RecordArgv(name string) string {
 	return `d="${CCX_SHIM_DEPTH:-0}"` + "\n" +
-		`printf '%s\0' "$d" "$PWD" "$(($#+1))" ` + shellQuote(name) + ` "$@" >> ` + shellQuote(log) + "\n"
+		`printf '%s\0' "$d" "$PWD" "$(($#+1))" ` + shellQuote(name) + ` "$@" >> "$CCX_ARGV_LOG"` + "\n"
 }
 
 // linkInterpreters symlinks the interpreter each script tool's shebang names

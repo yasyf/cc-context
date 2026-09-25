@@ -129,7 +129,7 @@ func TestShimDepthSeparatesGTChildren(t *testing.T) {
 	if !strings.Contains(state, `"trunk": true`) {
 		t.Fatalf("gt state = %q, want a trunk entry", state)
 	}
-	Quiesce(t, f.ArgvLog)
+	f.Quiesce(t)
 
 	top := Invocations(t, f.ArgvLog)
 	if want := [][]string{{"gt", "state"}}; !reflect.DeepEqual(top, want) {
@@ -220,7 +220,7 @@ func TestScriptToolNeedsItsInterpreterOnPATH(t *testing.T) {
 
 func TestFixtureEnvReachesScriptInterpreter(t *testing.T) {
 	tool := fakeScriptTool(t)
-	env := fixtureEnv(t, realTempDir(t), detachedHome(t), resolveTools(t, []string{filepath.Base(tool)}))
+	env := fixtureEnv(t, realTempDir(t), detachedDir(t, "ccx-home"), resolveTools(t, []string{filepath.Base(tool)}))
 
 	// Fixture construction predates the shim and runs each tool by absolute
 	// path, but already under the fixture's PATH — the lane gt init takes.
@@ -711,6 +711,53 @@ func TestRepoStates(t *testing.T) {
 			f := Repo(t, tt.opts...)
 			t.Logf("fixture %s built in %s", tt.name, time.Since(start))
 			tt.check(t, f)
+		})
+	}
+}
+
+// TestRotateLogStrandsTheDetachedRefresher is the claim [Fixture.RotateLog]
+// rests on, and the reason a read no longer waits: gt's cache refresher runs
+// git a tenth of a second after gt exits, and it writes to the generation it
+// was born holding, never to the one the assertion reads.
+func TestRotateLogStrandsTheDetachedRefresher(t *testing.T) {
+	f := Repo(t, GT(), Remote())
+	_ = f.Out(t, "gt", "state")
+	f.RotateLog(t)
+
+	time.Sleep(time.Second)
+	if got := RecordsAtDepth(t, f.ArgvLog, 1); len(got) != 0 {
+		t.Errorf("rotated log carries %v, want nothing the previous generation spawned", got)
+	}
+	if got := Invocations(t, f.ArgvLog); len(got) != 0 {
+		t.Errorf("rotated log carries depth-0 %v, want an empty generation", got)
+	}
+}
+
+// TestGTStackTemplate proves the tracked shape a template carries is the one
+// gt itself reports, for both forms of gt track.
+func TestGTStackTemplate(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		opt  Opt
+		file string
+	}{
+		{"inferred parent", GTStack("base", "feature"), "feature.txt"},
+		{"named parent", GTParentStack("base", "feature"), "b1.txt"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := Repo(t, GT(), Remote(), tt.opt)
+			if got := strings.TrimSpace(f.Out(t, "git", "branch", "--show-current")); got != "feature" {
+				t.Errorf("branch = %q, want feature", got)
+			}
+			if _, err := os.Stat(filepath.Join(f.Dir, tt.file)); err != nil {
+				t.Errorf("stat %s: %v", tt.file, err)
+			}
+			state := f.Out(t, "gt", "state")
+			for _, want := range []string{`"base"`, `"feature"`} {
+				if !strings.Contains(state, want) {
+					t.Errorf("gt state = %q, want it to carry %s", state, want)
+				}
+			}
 		})
 	}
 }

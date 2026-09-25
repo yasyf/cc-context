@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 func TestStackSubmitLeavesDirtyTrunkAndItsIndexLockUntouched(t *testing.T) {
@@ -55,7 +56,7 @@ func TestStackSubmitLeavesDirtyTrunkAndItsIndexLockUntouched(t *testing.T) {
 }
 
 func TestStackSubmitKeepsConflictForContinue(t *testing.T) {
-	f := shipGTRepo(t)
+	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubStackPRs(t, nil)
 	stackConflicting(t, f)
 	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
@@ -156,7 +157,7 @@ func stackOnlyTestRun(commonDir string) (*stackRebaseRun, error) {
 }
 
 func TestShipPreservesAnotherStacksConflictRun(t *testing.T) {
-	f := shipGTRepo(t)
+	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stackConflicting(t, f)
 	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err == nil {
 		t.Fatal("expected first stack conflict")

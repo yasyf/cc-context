@@ -4347,8 +4347,7 @@ func TestShipGTCreateNamesExplicitly(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := shipGTRepo(t)
-			shipGTStack(t, f, "base", "feature")
+			f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 			shipGTReady(t, f)
 			args := append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.args...)
 			if _, err := runShipCmd(f.Context(), t, args...); err != nil {
@@ -4608,8 +4607,7 @@ func TestShipGTTrackReportsParent(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := shipGTRepo(t)
-			shipGTStack(t, f, "base")
+			f := shipGTRepo(t, vcstest.GTStack("base"))
 			shipGTUntracked(t, f, "feature")
 			shipGTReady(t, f)
 
@@ -4731,8 +4729,7 @@ func TestShipGTPathScoped(t *testing.T) {
 // file is never rewritten, and the real index is restored afterwards — which is
 // what the temp GIT_INDEX_FILE buys, and what the repository can attest to.
 func TestShipGTHunkScoped(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "feature")
+	f := shipGTRepo(t, vcstest.GTStack("feature"))
 	writeShipFile(t, f.Dir, "f.txt", hunkBase)
 	mustRun(t, f.Env(), f.Dir, "git", "add", "f.txt")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "base")
@@ -4814,20 +4811,20 @@ func TestShipGTHunkScopedRefusesALyingExitZero(t *testing.T) {
 	}
 }
 
-func shipGTUnrestacked(t *testing.T, f *vcstest.Fixture, file, content string) {
+func shipGTUnrestacked(t *testing.T, file, content string) *vcstest.Fixture {
 	t.Helper()
-	shipGTStack(t, f, "base", "feature")
+	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	writeShipFile(t, f.Dir, file, content)
 	mustRun(t, f.Env(), f.Dir, "git", "add", file)
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "base2")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
 	shipGTReady(t, f)
+	return f
 }
 
 func TestShipGTAutoRestack(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTUnrestacked(t, f, "base2.txt", "base2\n")
+	f := shipGTUnrestacked(t, "base2.txt", "base2\n")
 
 	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
@@ -4849,9 +4846,9 @@ func TestShipGTAutoRestack(t *testing.T) {
 // refuses to rebase a branch a sibling checkout holds, so this is the topology
 // every gt-driven restack stumbles on — declining the branch at exit 0 for
 // some, dying on git's own exit 128 for others.
-func shipGTHeldParent(t *testing.T, f *vcstest.Fixture) string {
+func shipGTHeldParent(t *testing.T) (*vcstest.Fixture, string) {
 	t.Helper()
-	shipGTStack(t, f, "base", "feature")
+	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
 	writeShipFile(t, f.Dir, "trunk2.txt", "trunk2\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "trunk2.txt")
@@ -4861,12 +4858,11 @@ func shipGTHeldParent(t *testing.T, f *vcstest.Fixture) string {
 	held := f.WorktreePath("held")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
 	shipGTReady(t, f)
-	return held
+	return f, held
 }
 
 func TestShipGTRestacksAcrossWorktrees(t *testing.T) {
-	f := shipGTRepo(t)
-	held := shipGTHeldParent(t, f)
+	f, held := shipGTHeldParent(t)
 	before := gitAt(t, f.Env(), held, "rev-parse", "HEAD")
 	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 	if err == nil || !strings.Contains(err.Error(), "is checked out in "+held) {
@@ -4895,8 +4891,7 @@ func shipGTRestackRuns(t *testing.T, f *vcstest.Fixture) []string {
 }
 
 func TestShipGTRestacksAStackSpreadAcrossWorkingCopies(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "one", "two", "three")
+	f := shipGTRepo(t, vcstest.GTStack("one", "two", "three"))
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
 	writeShipFile(t, f.Dir, "trunk2.txt", "trunk2\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "trunk2.txt")
@@ -4928,8 +4923,7 @@ func TestShipGTRestacksAStackSpreadAcrossWorkingCopies(t *testing.T) {
 }
 
 func TestShipGTRestackAppliesPrintedRefUpdates(t *testing.T) {
-	f := shipGTRepo(t)
-	held := shipGTHeldParent(t, f)
+	f, held := shipGTHeldParent(t)
 	before := gitAt(t, f.Env(), held, "rev-parse", "HEAD")
 	mustRun(t, f.Env(), held, "git", "switch", "--detach", "-q")
 	mustRun(t, f.Env(), f.Dir, "git", "config", "replay.refAction", "print")
@@ -4957,8 +4951,7 @@ func TestShipGTRestackAppliesPrintedRefUpdates(t *testing.T) {
 // longer match the pull request they were pushed as, and the force-push that
 // follows is one nobody asked for.
 func TestShipGTRestackLeavesARestackedBranchAlone(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "base", "feature")
+	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	writeShipFile(t, f.Dir, "base2.txt", "base2\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "base2.txt")
@@ -4980,8 +4973,7 @@ func TestShipGTRestackLeavesARestackedBranchAlone(t *testing.T) {
 }
 
 func TestShipGTRestackKeepsAHolderUncommittedWork(t *testing.T) {
-	f := shipGTRepo(t)
-	held := shipGTHeldParent(t, f)
+	f, held := shipGTHeldParent(t)
 	writeShipFile(t, held, "scratch.txt", "work in progress\n")
 	writeShipFile(t, held, "base.txt", "edited\n")
 	writeShipFile(t, held, "staged.txt", "staged\n")
@@ -5008,9 +5000,9 @@ func TestShipGTRestackKeepsAHolderUncommittedWork(t *testing.T) {
 	}
 }
 
-func shipGTConflicting(t *testing.T, f *vcstest.Fixture) {
+func shipGTConflicting(t *testing.T) *vcstest.Fixture {
 	t.Helper()
-	shipGTStack(t, f, "base")
+	f := shipGTRepo(t, vcstest.GTStack("base"))
 	writeShipFile(t, f.Dir, "c.txt", "base\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "c")
@@ -5025,6 +5017,7 @@ func shipGTConflicting(t *testing.T, f *vcstest.Fixture) {
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "c conflict")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
 	shipGTReady(t, f)
+	return f
 }
 
 // TestShipGTRestackConflictRestoresAHolder pins the failure path's own promise.
@@ -5032,8 +5025,7 @@ func shipGTConflicting(t *testing.T, f *vcstest.Fixture) {
 // the snapshot taken from it is a commit that touched neither its tree nor the
 // stash stack, so there is nothing to put back and nothing left behind.
 func TestShipGTRestackConflictRestoresAHolder(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTConflicting(t, f)
+	f := shipGTConflicting(t)
 	held := f.WorktreePath("held")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
 	writeShipFile(t, held, "scratch.txt", "work in progress\n")
@@ -5051,8 +5043,7 @@ func TestShipGTRestackConflictRestoresAHolder(t *testing.T) {
 }
 
 func TestShipGTAutoRestackConflict(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTConflicting(t, f)
+	f := shipGTConflicting(t)
 
 	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 	want := gtStuck("ship", (&errRestackConflict{Branch: "feature", Onto: "base", Dir: f.Dir}).Error(), gtStuckSuffix(shipOpts{noPush: true}))
@@ -5065,8 +5056,7 @@ func TestShipGTAutoRestackConflict(t *testing.T) {
 }
 
 func TestShipGTNoCommitRestackConflict(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTConflicting(t, f)
+	f := shipGTConflicting(t)
 	mustRun(t, f.Env(), f.Dir, "git", "checkout", "--", "f.txt")
 	shipResetLog(t, f)
 
@@ -5089,8 +5079,7 @@ func TestShipGTLandedRestackConflictResumes(t *testing.T) {
 		{name: "path scoped", paths: []string{"f.txt"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			f := shipGTRepo(t)
-			shipGTConflicting(t, f)
+			f := shipGTConflicting(t)
 			mustRun(t, f.Env(), f.Dir, "git", "checkout", "--", "f.txt")
 			shipResetLog(t, f)
 
@@ -5104,8 +5093,7 @@ func TestShipGTLandedRestackConflictResumes(t *testing.T) {
 }
 
 func TestShipGTResumeAfterRestackConflict(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTConflicting(t, f)
+	f := shipGTConflicting(t)
 
 	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--no-pr")
 	if err == nil {
@@ -5193,8 +5181,7 @@ func TestGTStuck(t *testing.T) {
 }
 
 func TestShipGTYoloImpliesNoVerify(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "feature")
+	f := shipGTRepo(t, vcstest.GTStack("feature"))
 	shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
 
 	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--yolo"); err != nil {
@@ -5842,8 +5829,7 @@ func TestShipGTNoPush(t *testing.T) {
 }
 
 func TestShipGTNoVerify(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "feature")
+	f := shipGTRepo(t, vcstest.GTStack("feature"))
 	shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
 
 	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--no-verify"); err != nil {
@@ -5871,8 +5857,7 @@ func TestShipGTNoVerify(t *testing.T) {
 // guarantee: ccx's own prek pass, then --no-verify so gt's commit does not
 // fire the same hooks again through git.
 func TestShipGTHooksSuppressGitRun(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "feature")
+	f := shipGTRepo(t, vcstest.GTStack("feature"))
 	shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
 
 	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--verify"); err != nil {

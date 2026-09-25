@@ -13,8 +13,7 @@ import (
 // the shape every restack question in the field is asked from.
 func dryRunFixture(t *testing.T) *vcstest.Fixture {
 	t.Helper()
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "a", "b", "c")
+	f := shipGTRepo(t, vcstest.GTStack("a", "b", "c"))
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a")
 	writeShipFile(t, f.Dir, "a.txt", "moved on\n")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qam", "a moves on")
@@ -95,8 +94,7 @@ func TestShipDryRunMovesNoRef(t *testing.T) {
 // tracked ancestor, not onto trunk, and every branch above that ancestor rides
 // out with the submit built on it.
 func TestShipDryRunNamesTheTrackParent(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "a", "b")
+	f := shipGTRepo(t, vcstest.GTStack("a", "b"))
 	shipGTUntracked(t, f, "c")
 	shipGTReady(t, f)
 
@@ -336,8 +334,7 @@ func TestShipDryRunReportsAnEmptyCommit(t *testing.T) {
 // trunk does not is shipped as --no-commit, not refused. Calling that a
 // refusal would be the same false certainty in the opposite direction.
 func TestShipDryRunSaysAnEmptyCommitShipsWhenTheBranchIsAhead(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "a")
+	f := shipGTRepo(t, vcstest.GTStack("a"))
 	shipResetLog(t, f)
 
 	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--no-push")

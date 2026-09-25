@@ -6,11 +6,11 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/gtmeta"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 func TestStackSubmitDropsCommitsTrunkAlreadyHolds(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "base")
+	f := shipGTRepo(t, vcstest.GTStack("base"))
 	writeShipFile(t, f.Dir, "own.txt", "the branch's own work\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "own.txt")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "own")

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,17 +33,8 @@ func infoRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 // network — so the stack gt state reports here is one gt itself built.
 func infoGTRepo(t *testing.T, branches ...string) *vcstest.Fixture {
 	t.Helper()
-	f := vcstest.Repo(t, vcstest.GT(), vcstest.Remote())
+	f := vcstest.Repo(t, vcstest.GT(), vcstest.Remote(), vcstest.GTParentStack(branches...))
 	f.Isolate(t)
-	parent := "main"
-	for i, branch := range branches {
-		runTool(t, f, "git", "switch", "-qc", branch)
-		writeInfoFile(t, f.Dir, fmt.Sprintf("b%d.txt", i), branch+"\n")
-		runTool(t, f, "git", "add", "-A")
-		runTool(t, f, "git", "commit", "-qm", branch)
-		runTool(t, f, "gt", "track", "--parent", parent, "--no-interactive")
-		parent = branch
-	}
 	seedLaneRecords(t, f.Dir, laneSeed{})
 	return f
 }
@@ -60,10 +50,7 @@ func gtVersion(t *testing.T, f *vcstest.Fixture) string {
 // assertion over ccx's invocations reads only ccx's.
 func resetArgvLog(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
-	f.Quiesce(t)
-	if err := os.Remove(f.ArgvLog); err != nil && !os.IsNotExist(err) {
-		t.Fatalf("reset argv log: %v", err)
-	}
+	f.RotateLog(t)
 }
 
 func runTool(t *testing.T, f *vcstest.Fixture, name string, args ...string) string {
@@ -122,7 +109,7 @@ func ghReplay(t *testing.T, f *vcstest.Fixture, goldens ...ghGolden) {
 		t.Setenv("CCX_GH_STDERR_"+key, g.stderr)
 		t.Setenv("CCX_GH_EXIT_"+key, strconv.Itoa(g.exit))
 	}
-	script := "#!/bin/sh\n" + vcstest.RecordArgv("gh", f.ArgvLog) +
+	script := "#!/bin/sh\n" + vcstest.RecordArgv("gh") +
 		`case "$1 $2" in
   "repo view") key=REPO_VIEW ;;
   "api graphql")
@@ -176,7 +163,7 @@ func gtAuthShim(t *testing.T, f *vcstest.Fixture) {
 	// grandchild holds the stdout pipe open past the deadline.
 	script := "#!/bin/sh\n" +
 		`if [ "$1" = auth ]; then` + "\n" +
-		vcstest.RecordArgv("gt", f.ArgvLog) +
+		vcstest.RecordArgv("gt") +
 		`  if [ -n "$CCX_GT_AUTH_HANG" ]; then exec /bin/sleep 30; fi` + "\n" +
 		`  printf '%s' "$CCX_GT_AUTH_STDOUT"` + "\n" +
 		`  printf '%s' "$CCX_GT_AUTH_STDERR" >&2` + "\n" +
@@ -494,7 +481,6 @@ func TestVcsInfoRefreshLaneVerdict(t *testing.T) {
 			if got.Graphite.Reachable != string(tt.wantReachable) {
 				t.Errorf("graphite.reachable = %q, want %q — the report contradicts its own lane", got.Graphite.Reachable, tt.wantReachable)
 			}
-			f.Quiesce(t)
 			invocations := vcstest.Invocations(t, f.ArgvLog)
 			if n := countInvocations(invocations, "gt", "auth"); n != tt.wantLookups {
 				t.Errorf("gt auth ran %d times, want %d", n, tt.wantLookups)
@@ -861,7 +847,6 @@ func TestVcsInfoWarmCacheSkipsRepoView(t *testing.T) {
 	if _, err := runVcsInfoCmd(t, f); err != nil {
 		t.Fatalf("info error = %v", err)
 	}
-	f.Quiesce(t)
 	invocations := vcstest.Invocations(t, f.ArgvLog)
 	assertNoInvocation(t, invocations, "gh", "repo", "view")
 	assertNoInvocation(t, invocations, "gt", "auth")

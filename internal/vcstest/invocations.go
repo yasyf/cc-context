@@ -11,21 +11,6 @@ import (
 	"time"
 )
 
-// Quiesce blocks until log has stopped growing for 300ms, so records from a
-// detached child a tool left running past its own exit — gt state's cache
-// refresher spawns four more git processes after gt returns — are all in
-// before the caller reads them.
-//
-// Only a shim holding gt has such a child: ccx waits on every process it
-// starts, and the other tools leave nothing behind, so a fixture without gt
-// reads its log through [Fixture.Quiesce] without paying the window.
-func Quiesce(t *testing.T, log string) {
-	t.Helper()
-	if !waitQuiet(log) {
-		t.Fatalf("argv log %s still growing after 5s", log)
-	}
-}
-
 // waitQuiet reports whether log's size held still for six 50ms polls within a
 // 5s deadline; a missing log counts as still.
 func waitQuiet(log string) bool {
@@ -50,8 +35,9 @@ func waitQuiet(log string) bool {
 	return true
 }
 
-// waitQuietTree is waitQuiet over every file under root rather than one log,
-// for a tree whose writer leaves no log to watch.
+// waitQuietTree blocks until every file under root has held its size for six
+// 50ms polls within a 5s deadline, for a tree whose writer leaves no log to
+// watch.
 func waitQuietTree(root string) bool {
 	deadline := time.Now().Add(5 * time.Second)
 	last, stable := int64(-1), 0

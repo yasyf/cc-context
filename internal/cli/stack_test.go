@@ -35,8 +35,7 @@ func runStackCmd(t *testing.T, f *vcstest.Fixture, args ...string) (string, stri
 // in the working copy it runs from, which is exactly the branch-switch a lane
 // per agent cannot afford.
 func TestStackNewCutsTheBranchInItsOwnWorkingCopy(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "base")
+	f := shipGTRepo(t, vcstest.GTStack("base"))
 
 	out, _, err := runStackCmd(t, f, "new", "feature")
 	if err != nil {
@@ -60,8 +59,7 @@ func TestStackNewCutsTheBranchInItsOwnWorkingCopy(t *testing.T) {
 // TestStackNewTracksTheParent pins the Graphite half: a lane whose branch gt does
 // not know is a lane no restack or submit reaches.
 func TestStackNewTracksTheParent(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "base")
+	f := shipGTRepo(t, vcstest.GTStack("base"))
 
 	if _, _, err := runStackCmd(t, f, "new", "feature"); err != nil {
 		t.Fatalf("stack new: %v", err)
@@ -85,8 +83,7 @@ func TestStackNewTracksTheParent(t *testing.T) {
 // which this one cannot check out to ask about, so a listing that walked only
 // the downstack would show a stack of one and hide every lane above it.
 func TestStackListNamesTheWorkingCopyHoldingEachBranch(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "base")
+	f := shipGTRepo(t, vcstest.GTStack("base"))
 	out, _, err := runStackCmd(t, f, "new", "feature")
 	if err != nil {
 		t.Fatalf("stack new: %v", err)
@@ -116,8 +113,7 @@ func TestStackListJSON(t *testing.T) {
 			name = "needs-restack"
 		}
 		t.Run(name, func(t *testing.T) {
-			f := shipGTRepo(t)
-			shipGTStack(t, f, "base", "middle")
+			f := shipGTRepo(t, vcstest.GTStack("base", "middle"))
 			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 			lane := filepath.Join(t.TempDir(), "feature lane")
 			mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-qb", "feature", lane, "middle")
@@ -158,8 +154,7 @@ func TestStackListJSON(t *testing.T) {
 // jj then detaches git's HEAD at the working-copy commit's parent, which would
 // leave gt with no branch to read, so the lane re-attaches by name.
 func TestStackNewColocatesJJInTheLane(t *testing.T) {
-	f := shipGTRepo(t, vcstest.JJ())
-	shipGTStack(t, f, "base")
+	f := shipGTRepo(t, vcstest.JJ(), vcstest.GTStack("base"))
 
 	out, _, err := runStackCmd(t, f, "new", "feature")
 	if err != nil {
@@ -249,9 +244,8 @@ func TestStackAllRefusesTrunk(t *testing.T) {
 }
 
 func TestStackSubmitGoesThroughTheGraphiteAPI(t *testing.T) {
-	f := shipGTRepo(t)
+	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 	api := stubGTAPI(t)
-	shipGTStack(t, f, "base", "feature")
 	shipResetLog(t, f)
 
 	out, _, err := runStackCmd(t, f, "submit")
@@ -277,8 +271,7 @@ func TestStackSubmitGoesThroughTheGraphiteAPI(t *testing.T) {
 }
 
 func TestStackSubmitReportsWhatItProposes(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "base", "feature")
+	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 	shipResetLog(t, f)
 
 	out, _, err := runStackCmd(t, f, "submit")
@@ -292,7 +285,6 @@ func TestStackSubmitReportsWhatItProposes(t *testing.T) {
 
 func stackConflicting(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
-	shipGTStack(t, f, "base")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
 	writeShipFile(t, f.Dir, "c.txt", "feature\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
@@ -320,10 +312,9 @@ func TestStackSubmitFrozenBranches(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := shipGTRepo(t)
-			api := stubGTAPI(t)
 			branches := []string{"base", "feature", "tip"}
-			shipGTStack(t, f, branches...)
+			f := shipGTRepo(t, vcstest.GTStack(branches...))
+			api := stubGTAPI(t)
 			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature", "tip")
 			remote := map[string]string{}
 			for _, branch := range branches {
@@ -428,10 +419,9 @@ func TestStackSubmitFrozenSiblingStopsReplay(t *testing.T) {
 }
 
 func TestStackSubmitRepairsIncorrectRestackMetadata(t *testing.T) {
-	f := shipGTRepo(t)
-	api := stubGTAPI(t)
 	branches := []string{"base", "feature"}
-	shipGTStack(t, f, branches...)
+	f := shipGTRepo(t, vcstest.GTStack(branches...))
+	api := stubGTAPI(t)
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
 	remote := map[string]string{}
 	for _, branch := range branches {
@@ -477,7 +467,7 @@ func TestStackSubmitRepairsIncorrectRestackMetadata(t *testing.T) {
 }
 
 func TestStackSubmitRestackConflictMovesNothing(t *testing.T) {
-	f := shipGTRepo(t)
+	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stackConflicting(t, f)
 	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
@@ -538,8 +528,7 @@ func TestStackSubmitRestackConflictMovesNothing(t *testing.T) {
 }
 
 func TestStackSubmitRestackPublishesAtomically(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "base", "feature")
+	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 	concurrent := gitAt(t, f.Env(), f.Dir, "commit-tree", feature+"^{tree}", "-p", feature, "-m", "concurrent change")
@@ -572,8 +561,7 @@ func TestStackSubmitRestackPublishesAtomically(t *testing.T) {
 }
 
 func TestStackSubmitIgnoresDivergedLocalTrunk(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "base")
+	f := shipGTRepo(t, vcstest.GTStack("base"))
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
 	writeShipFile(t, f.Dir, "foreign.txt", "another lane's work\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "foreign.txt")
@@ -602,8 +590,7 @@ func TestStackSubmitIgnoresDivergedLocalTrunk(t *testing.T) {
 }
 
 func TestStackSubmitDoesNotDuplicateAnAlreadyRebasedSpan(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "base")
+	f := shipGTRepo(t, vcstest.GTStack("base"))
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
 	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "origin/main")
@@ -626,8 +613,7 @@ func TestStackSubmitDoesNotDuplicateAnAlreadyRebasedSpan(t *testing.T) {
 }
 
 func TestStackListKeepsTheStackWholeAcrossARejectedRevision(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "a", "b", "c")
+	f := shipGTRepo(t, vcstest.GTStack("a", "b", "c"))
 	db, err := sql.Open("sqlite", filepath.Join(f.Dir, ".git", ".graphite_metadata.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -652,8 +638,7 @@ func TestStackListKeepsTheStackWholeAcrossARejectedRevision(t *testing.T) {
 }
 
 func TestStackSubmitRestacksARejectedParentRevision(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "base", "feature")
+	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 	oldBase := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "--amend", "-qm", "rewritten base")

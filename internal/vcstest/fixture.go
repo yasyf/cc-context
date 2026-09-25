@@ -33,9 +33,11 @@ type Fixture struct {
 	// package running in parallel.
 	env []string
 
-	// settles is set when the shim holds a tool that writes to the log past
-	// its own exit, which only gt does. See Quiesce.
-	settles bool
+	// shimDir holds the shim's binaries and every generation of its log; see
+	// [Fixture.RotateLog] for what a generation is.
+	shimDir  string
+	logGen   int
+	isolated bool
 }
 
 // Context returns the context a test drives ccx with: every child spawned
@@ -54,16 +56,32 @@ func (f *Fixture) ContextIn(dir string) context.Context {
 // rather than through ccx.
 func (f *Fixture) Env() []string { return slices.Clone(f.env) }
 
-// Quiesce blocks until every invocation the fixture's shim recorded has
-// landed. It is [Quiesce] over the fixture's own log, skipped when no tool in
-// the shim leaves a detached writer behind — the wait is a settle window, so
-// paying it where nothing can still be writing is dead time on every read.
+// Quiesce blocks until the current log has stopped growing for 300ms, so the
+// records a detached child wrote past its parent's exit are all in before the
+// caller reads them: gt state's cache refresher runs more git a tenth of a
+// second after gt returns. Only a test asserting on the depth-1 records needs
+// it — a depth-0 read is complete the moment ccx returns, and
+// [Fixture.RotateLog] is what keeps a later generation clean.
 func (f *Fixture) Quiesce(t *testing.T) {
 	t.Helper()
-	if !f.settles {
-		return
+	if !waitQuiet(f.ArgvLog) {
+		t.Fatalf("argv log %s still growing after 5s", f.ArgvLog)
 	}
-	Quiesce(t, f.ArgvLog)
+}
+
+// RotateLog points the shim at a fresh log, so a later read sees only the
+// invocations made after the call. Truncating one shared log cannot do that:
+// gt leaves a cache refresher running past its own exit, and the shim reads
+// its destination from the environment, so the refresher's late git calls go
+// to the generation it was born holding and no later read reaches them.
+func (f *Fixture) RotateLog(t *testing.T) {
+	t.Helper()
+	f.logGen++
+	f.ArgvLog = filepath.Join(f.shimDir, argvLogName(f.logGen))
+	f.env = append(f.env, "CCX_ARGV_LOG="+f.ArgvLog)
+	if f.isolated {
+		t.Setenv("CCX_ARGV_LOG", f.ArgvLog)
+	}
 }
 
 // Isolate installs the fixture's environment over the process's and chdirs
@@ -79,6 +97,7 @@ func (f *Fixture) Isolate(t *testing.T) {
 		t.Setenv(key, value)
 	}
 	t.Chdir(f.Dir)
+	f.isolated = true
 }
 
 // Out runs bin in the fixture's repository under the fixture's environment and
@@ -132,6 +151,7 @@ type config struct {
 	staged             bool
 	conflicted         bool
 	conflictedBookmark bool
+	stack              gtStack
 	worktree           string
 	prunableWorktree   bool
 	lockedWorktree     bool
@@ -156,6 +176,23 @@ func Remote() Opt { return func(c *config) { c.remote = true } }
 
 // Branch cuts and checks out the named branch (a bookmark at @- under JJ).
 func Branch(name string) Opt { return func(c *config) { c.branch = name } }
+
+// GTStack cuts one branch per name on top of the trunk, each off the last
+// with a commit of its own touching <name>.txt, and adopts it with gt track
+// -f. The shape keys the fixture's template, so a stack is built by the real
+// gt once per distinct list of names and copied into every later fixture
+// asking for it.
+func GTStack(names ...string) Opt {
+	return func(c *config) { c.stack = gtStack{names: strings.Join(names, "\x00")} }
+}
+
+// GTParentStack is GTStack naming each branch's parent to gt track rather than
+// letting it infer one, and numbering the file each commit touches b<i>.txt.
+func GTParentStack(names ...string) Opt {
+	return func(c *config) {
+		c.stack = gtStack{names: strings.Join(names, "\x00"), parented: true, numbered: true}
+	}
+}
 
 // Trunk names the initial branch; the default is main.
 func Trunk(name string) Opt { return func(c *config) { c.trunk = name } }
@@ -220,6 +257,9 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 	if cfg.conflictedBookmark && !cfg.jj {
 		t.Fatal("ConflictedBookmark requires JJ")
 	}
+	if cfg.stack.names != "" && !cfg.gt {
+		t.Fatal("GTStack requires GT")
+	}
 
 	tools := []string{"git"}
 	if cfg.jj {
@@ -235,7 +275,7 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 	f := &Fixture{Dir: dir}
 
 	if cfg.brokenGitDir {
-		f.env = fixtureEnv(t, base, detachedHome(t), resolved)
+		f.env = fixtureEnv(t, base, detachedDir(t, "ccx-home"), resolved)
 		mkdir(t, dir)
 		writeFile(t, filepath.Join(dir, ".git"), "gitdir: /nonexistent-repo\n")
 		f.installShim(t)
@@ -243,7 +283,7 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 	}
 
 	tmpl := templateFor(t, cfg.base(), resolved)
-	home := detachedHome(t)
+	home := detachedDir(t, "ccx-home")
 	copyTree(t, tmpl.base, base)
 	copyTree(t, tmpl.home, home)
 	f.env = fixtureEnv(t, base, home, resolved)
@@ -258,6 +298,11 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 	}
 	git := func(args ...string) string { return run(t, dir, f.env, bin["git"], args...) }
 	jj := func(args ...string) string { return run(t, dir, f.env, bin["jj"], args...) }
+
+	// The copy gave every file a new inode and ctime, so the index reports
+	// unchanged content as modified until something reads the whole tree —
+	// and `git stash create` exits 1 against that index before anything does.
+	git("update-index", "--refresh")
 
 	if cfg.branch != "" {
 		if cfg.jj {
@@ -422,18 +467,19 @@ func runExpectFail(t *testing.T, dir string, env []string, bin string, args ...s
 	}
 }
 
-// detachedHome returns the test's HOME, removed best-effort rather than through
-// t.TempDir: gt leaves a refresher writing under HOME for seconds after it
-// exits, and t.TempDir's RemoveAll reports that race as a cleanup failure.
-func detachedHome(t *testing.T) string {
+// detachedDir returns a temp dir removed best-effort rather than through
+// t.TempDir: gt leaves a refresher writing under the test's HOME and shim for
+// seconds after it exits, and t.TempDir's RemoveAll reports that race as a
+// cleanup failure.
+func detachedDir(t *testing.T, prefix string) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "ccx-home")
+	dir, err := os.MkdirTemp("", prefix)
 	if err != nil {
-		t.Fatalf("create home dir: %v", err)
+		t.Fatalf("create %s dir: %v", prefix, err)
 	}
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
-		t.Fatalf("resolve home dir: %v", err)
+		t.Fatalf("resolve %s dir: %v", prefix, err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(resolved) })
 	return resolved

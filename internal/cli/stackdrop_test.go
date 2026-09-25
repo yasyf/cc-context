@@ -44,7 +44,7 @@ func installDropGH(t *testing.T, f *vcstest.Fixture, seeds map[string]dropSeed) 
 		gh.write(filepath.Join("branch", branch), fmt.Sprint(seed.number))
 	}
 	t.Setenv("DROP_GH", gh.dir)
-	writeShipExecutable(t, f.ShimBin, "gh", "#!/bin/sh\n"+vcstest.RecordArgv("gh", f.ArgvLog)+dropGHBody)
+	writeShipExecutable(t, f.ShimBin, "gh", "#!/bin/sh\n"+vcstest.RecordArgv("gh")+dropGHBody)
 
 	realBin := shipDisplaceShim(t, f, "git")
 	writeShipExecutable(t, f.ShimBin, "git", "#!/bin/sh\n"+dropGitBody+"exec '"+realBin+"' \"$@\"\n")
@@ -176,12 +176,13 @@ func dropStep(t *testing.T, invocations [][]string, want ...string) int {
 // dropStack builds a gt stack whose branches all sit on origin, leaves the
 // working copy on the bottom one so nothing holds the branch under test, and
 // opens the argv log empty.
-func dropStack(t *testing.T, f *vcstest.Fixture, names ...string) {
+func dropStack(t *testing.T, names ...string) *vcstest.Fixture {
 	t.Helper()
-	shipGTStack(t, f, names...)
+	f := shipGTRepo(t, vcstest.GTStack(names...))
 	mustRun(t, f.Env(), f.Dir, "git", append([]string{"push", "-q", "origin"}, names...)...)
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", names[0])
 	shipResetLog(t, f)
+	return f
 }
 
 func dropGTParent(t *testing.T, f *vcstest.Fixture, branch string) string {
@@ -202,8 +203,7 @@ func dropGTParent(t *testing.T, f *vcstest.Fixture, branch string) string {
 // deleted, so a drop that deletes first loses the child's pull request with
 // nothing warning — gt delete reports success and the local stack looks right.
 func TestStackDropRetargetsEveryChildBeforeDeletingTheBranch(t *testing.T) {
-	f := shipGTRepo(t)
-	dropStack(t, f, "base", "mid", "top")
+	f := dropStack(t, "base", "mid", "top")
 	gh := installDropGH(t, f, map[string]dropSeed{
 		"mid": {number: 1, state: "OPEN", base: "base"},
 		"top": {number: 2, state: "OPEN", base: "mid"},
@@ -244,8 +244,7 @@ func TestStackDropRetargetsEveryChildBeforeDeletingTheBranch(t *testing.T) {
 // halves: the retarget is read back before anything is deleted, so a move
 // GitHub did not make costs a refusal rather than the child's pull request.
 func TestStackDropRefusesARetargetThatDidNotTake(t *testing.T) {
-	f := shipGTRepo(t)
-	dropStack(t, f, "base", "mid", "top")
+	f := dropStack(t, "base", "mid", "top")
 	gh := installDropGH(t, f, map[string]dropSeed{
 		"mid": {number: 1, state: "OPEN", base: "base"},
 		"top": {number: 2, state: "OPEN", base: "mid"},
@@ -275,8 +274,7 @@ func TestStackDropRefusesARetargetThatDidNotTake(t *testing.T) {
 // the ref goes back first, the reopen and the retarget happen while it does,
 // and it goes again last.
 func TestStackDropRepairWalksTheOrderGitHubAllows(t *testing.T) {
-	f := shipGTRepo(t)
-	dropStack(t, f, "base", "top")
+	f := dropStack(t, "base", "top")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "top")
 	gh := installDropGH(t, f, map[string]dropSeed{
 		"top": {number: 2, state: "CLOSED", base: "mid"},
@@ -316,8 +314,7 @@ func TestStackDropRepairWalksTheOrderGitHubAllows(t *testing.T) {
 // open, so deleting it while a retarget has not taken closes the pull request
 // the repair was called to reopen.
 func TestStackDropRepairRefusesBeforeDeletingTheRefBack(t *testing.T) {
-	f := shipGTRepo(t)
-	dropStack(t, f, "base", "top")
+	f := dropStack(t, "base", "top")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "top")
 	gh := installDropGH(t, f, map[string]dropSeed{
 		"top": {number: 2, state: "CLOSED", base: "mid"},
@@ -341,8 +338,7 @@ func TestStackDropRepairRefusesBeforeDeletingTheRefBack(t *testing.T) {
 }
 
 func TestStackDropReplaysAChildGTRecordsAsCarryingTheDroppedCommits(t *testing.T) {
-	f := shipGTRepo(t)
-	dropStack(t, f, "base", "mid", "top")
+	f := dropStack(t, "base", "mid", "top")
 	installDropGH(t, f, map[string]dropSeed{
 		"mid": {number: 1, state: "OPEN", base: "base"},
 		"top": {number: 2, state: "OPEN", base: "mid"},
@@ -368,8 +364,7 @@ func TestStackDropReplaysAChildGTRecordsAsCarryingTheDroppedCommits(t *testing.T
 }
 
 func TestStackDropReplaysABranchReparentedPastTheDroppedOne(t *testing.T) {
-	f := shipGTRepo(t)
-	dropStack(t, f, "landed", "feature")
+	f := dropStack(t, "landed", "feature")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "--delete", "landed")
 	installDropGH(t, f, map[string]dropSeed{"feature": {number: 2, state: "OPEN", base: "main"}})
@@ -407,8 +402,7 @@ func TestStackDropReplaysABranchReparentedPastTheDroppedOne(t *testing.T) {
 // comes before any lookup: git deletes no branch a checkout has out, so a drop
 // that tried would fail after retargeting every child.
 func TestStackDropRefusesTheBranchAWorkingCopyHolds(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "base", "mid")
+	f := shipGTRepo(t, vcstest.GTStack("base", "mid"))
 
 	_, _, err := runStackCmd(t, f, "drop", "mid")
 	if err == nil {
@@ -422,8 +416,7 @@ func TestStackDropRefusesTheBranchAWorkingCopyHolds(t *testing.T) {
 // TestStackDropDryRunMutatesNothing pins that the plan is read-only: it names
 // the retarget and touches neither GitHub nor a ref.
 func TestStackDropDryRunMutatesNothing(t *testing.T) {
-	f := shipGTRepo(t)
-	dropStack(t, f, "base", "mid", "top")
+	f := dropStack(t, "base", "mid", "top")
 	gh := installDropGH(t, f, map[string]dropSeed{
 		"mid": {number: 1, state: "OPEN", base: "base"},
 		"top": {number: 2, state: "OPEN", base: "mid"},
@@ -450,8 +443,7 @@ func TestStackDropDryRunMutatesNothing(t *testing.T) {
 // TestStackDropRefusesTrunk pins the scope: trunk is every stack's floor, and a
 // drop of it would retarget and delete the branch everything else sits on.
 func TestStackDropRefusesTrunk(t *testing.T) {
-	f := shipGTRepo(t)
-	dropStack(t, f, "base")
+	f := dropStack(t, "base")
 
 	_, _, err := runStackCmd(t, f, "drop", "main")
 	if err == nil {
