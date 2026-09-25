@@ -1177,7 +1177,7 @@ func TestStackSubmitSkipsAnEmptyChildOfABranch(t *testing.T) {
 // the child, checked out in another lane's working copy, would conflict on the
 // new trunk. The parent restacks and is submitted; the child is not touched.
 func TestStackSubmitShipsTheParentPastAConflictingChildLane(t *testing.T) {
-	f := shipGTRepo(t)
+	f := shipGTRepo(t, vcstest.GTStack("base"))
 	api := stubGTAPI(t)
 	stackConflicting(t, f)
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
@@ -1193,8 +1193,12 @@ func TestStackSubmitShipsTheParentPastAConflictingChildLane(t *testing.T) {
 	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base"}) {
 		t.Errorf("submit posts = %v, want base alone", heads)
 	}
-	if !stackOnto(t, f, "origin/main", "base") {
-		t.Error("base is not on the new trunk")
+	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt == nil || !stackOnto(t, f, "origin/main", receipt.Head) {
+		t.Errorf("base publication = %+v, want a head on the new trunk", receipt)
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != feature {
 		t.Errorf("feature moved to %s, want it left at %s", got, feature)
@@ -1274,8 +1278,17 @@ func TestStackSubmitRestacksAChildOfAnAmendedParent(t *testing.T) {
 	if strings.Contains(errOut, "left c alone") {
 		t.Errorf("stderr = %q, want c restacked, not left as a stray", errOut)
 	}
-	if behind := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "c..p"); behind != "0" {
-		t.Errorf("p holds %s commit(s) c does not, want c restacked onto p", behind)
+	parent := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "p")
+	child := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "c")
+	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt == nil || receipt.Parent != "p" || receipt.Base != parent || receipt.Head != child {
+		t.Fatalf("child publication = %+v, want head %s on p at %s", receipt, child, parent)
+	}
+	if behind := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", child+".."+parent); behind != "0" {
+		t.Errorf("published p holds %s commit(s) published c does not", behind)
 	}
 	if heads := api.submitHeads(); !slices.Equal(heads, []string{"p", "c"}) {
 		t.Errorf("submit posts = %v, want p then c", heads)
