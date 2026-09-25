@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 9 * * *"
   workflow_dispatch:
     inputs:
       commit:
@@ -12,23 +14,25 @@ on:
         type: string
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ inputs.commit || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 permissions:
   contents: read
 
 env:
-  CLI_SHARDS: 12
+  CLI_SHARDS: 8
+  # internal/web and the semsearch tree are 163s of the other packages' 279s.
+  # The light leg is their complement, so no package can fall outside both.
+  HEAVY_PKGS: internal/web|internal/semsearch
 
 jobs:
-  test:
+  testbin:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        shard: [rest, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -38,55 +42,82 @@ jobs:
           go-version-file: go.mod
           check-latest: true
           cache: true
-      - uses: astral-sh/setup-uv@v8.2.0
-        with:
-          cache-suffix: codeexec
-      - name: Install ast-grep (structural search/replace/outline engine)
-        run: |
-          uv tool install ast-grep-cli
-          uv tool dir --bin >> "$GITHUB_PATH"
-      - name: Warm the codeexec sandbox runtime
-        # Mirror the runtime launch flags (internal/codeexec/driver.go) so a PR's
-        # checked-out uv.toml / pyproject cannot steer resolution here either.
-        run: uv run --no-project --no-config --no-build --quiet --python "3.13" --with pydantic-monty==0.0.18 python -c "import pydantic_monty"
       - uses: ./.github/actions/wasm
-      - name: Install ripgrep (glob-capable grep engine)
-        # The grep fallback cannot translate a mid-path wildcard, so the MCP
-        # glob tests assert behaviour only this engine has. Without it they do
-        # not skip, they fail — and gating them to skip would leave the
-        # filter-fails-closed regression unguarded on every CI run.
-        uses: taiki-e/install-action@v2
-        with:
-          tool: ripgrep
-      - name: Install jj (live hunk-scoped ship tests)
-        uses: taiki-e/install-action@v2
-        with:
-          # Pinned: the vcs tests depend on jj 0.43 specifics (revset escape
-          # vocabulary, escape_json(), the colocated-worktree refusal). Bumping
-          # this means re-running the affected live-jj tests, not just CI.
-          tool: jj-cli@0.43.0
-      - name: Install gt (live Graphite-lane tests)
-        # The version is single-sourced from the same file the gt goldens are
-        # recorded against, so CI cannot install a gt that disagrees with them.
-        # Bumping it means re-running `task record-gt`; a missing file fails
-        # here rather than silently installing latest, and the version assert
-        # turns a skipped optionalDependency into a red step instead of ~66
-        # tests that quietly skip.
+      - name: Compile the internal/cli race binary and bin its shards
+        # The -race link dominates a shard's fixed cost, so it is paid once here
+        # instead of once per shard. Binning off the binary's own -test.list
+        # keeps that to one compile rather than two.
         run: |
-          gtver="$(cat internal/cli/testdata/gt/VERSION)"
-          npm install -g --prefix "$HOME/.npm-global" "@withgraphite/graphite-cli@$gtver"
-          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
-          test "$("$HOME/.npm-global/bin/gt" --version)" = "$gtver"
+          go test -c -race -o cli.test ./internal/cli/
+          SHARD_TEST_BIN="$PWD/cli.test" bash scripts/shard-tests.sh --all "$CLI_SHARDS" >shards.tsv
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cli-test-${{ matrix.os }}
+          path: |
+            cli.test
+            shards.tsv
+          compression-level: 1
+          retention-days: 1
+
+  test:
+    needs: testbin
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      - uses: ./.github/actions/cli-test-env
+      - uses: actions/download-artifact@v8
+        with:
+          name: cli-test-${{ matrix.os }}
+      - name: Test (race)
+        # The binary resolves testdata goldens against its working directory, so
+        # it runs from the package it was compiled from, not the repo root.
+        working-directory: internal/cli
+        run: |
+          run="$(awk -F'\t' -v want="${{ matrix.shard }}" '$1 == want { print $2 }' "$GITHUB_WORKSPACE/shards.tsv")"
+          # An empty -test.run selects every test rather than none.
+          test -n "$run"
+          chmod +x "$GITHUB_WORKSPACE/cli.test"
+          # A cobra command reached without SetArgs falls back to os.Args, where
+          # a detached `30m` reads as a subcommand.
+          # -test.v is what makes shard-weights.json re-recordable from a green
+          # run's logs, on the hardware the weights balance.
+          "$GITHUB_WORKSPACE/cli.test" -test.v "-test.timeout=30m" "-test.run=$run"
+
+  test-pkgs:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        group: [heavy, light]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+      - uses: ./.github/actions/cli-test-env
+      - uses: ./.github/actions/wasm
       - name: Test (race)
         # internal/cli stands up real git/jj/gt repositories per test rather than
         # faking their output, so it runs well past go test's 10m default.
         run: |
-          if [ "${{ matrix.shard }}" = rest ]; then
-            go list ./... | grep -v internal/cli | xargs go test -race -timeout 30m
+          if [ "${{ matrix.group }}" = heavy ]; then
+            pkgs="$(go list ./... | grep -E "$HEAVY_PKGS")"
           else
-            go test -race -timeout 30m ./internal/cli/ \
-              -run "$(bash scripts/shard-tests.sh "${{ matrix.shard }}" "$CLI_SHARDS")"
+            pkgs="$(go list ./... | grep -vE "internal/cli|$HEAVY_PKGS")"
           fi
+          echo "$pkgs" | xargs go test -race -timeout 30m
 
   shard-coverage:
     runs-on: ubuntu-latest
@@ -108,7 +139,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -122,7 +153,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -141,7 +172,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
     steps:
       - uses: actions/checkout@v7
         with:

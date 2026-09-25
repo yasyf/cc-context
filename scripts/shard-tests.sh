@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Prints one shard's anchored -run regex for internal/cli. --check proves the
-# shards partition it: a test in no shard never runs and CI stays green.
+# Prints one shard's anchored -run regex for internal/cli, or every shard's with
+# --all. --check proves the shards partition it: a test in no shard never runs
+# and CI stays green.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -10,12 +11,18 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 usage() {
-	echo "usage: shard-tests.sh <index> <total> | shard-tests.sh --check <total>" >&2
+	echo "usage: shard-tests.sh <index> <total> | shard-tests.sh --all <total> | shard-tests.sh --check <total>" >&2
 	exit 2
 }
 
+# SHARD_TEST_BIN reuses an already-compiled test binary, so CI can bin the
+# shards without paying a second compile to enumerate the tests.
 list() {
-	(cd "$root" && go test -list "$1" "$pkg") | grep -E '^Test' | sort
+	if [ -n "${SHARD_TEST_BIN:-}" ]; then
+		(cd "$root/internal/cli" && "$SHARD_TEST_BIN" -test.list "$1")
+	else
+		(cd "$root" && go test -list "$1" "$pkg")
+	fi | grep -E '^Test' | sort
 }
 
 partition() {
@@ -62,6 +69,12 @@ check() {
 if [ "${1:-}" = "--check" ]; then
 	[ $# -eq 2 ] || usage
 	check "$2"
+	exit 0
+fi
+
+if [ "${1:-}" = "--all" ]; then
+	[ $# -eq 2 ] || usage
+	partition "$2"
 	exit 0
 fi
 
