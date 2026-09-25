@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -86,6 +88,9 @@ func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir rend
 	moves, replayErr := gtReplayChain(ctx, prefix, dir, state, pin, movers, holders)
 	if replayErr != nil {
 		return gtRestackResult{held: held}, fmt.Errorf("%w; no branches moved", replayErr)
+	}
+	if err := gtRestackRefuseClobbers(ctx, prefix, holders, moves); err != nil {
+		return gtRestackResult{held: held}, err
 	}
 	if err := gtRestackPublish(ctx, prefix, dir, state, moves); err != nil {
 		return gtRestackResult{held: held}, err
@@ -369,6 +374,37 @@ func gtRestackHead(ctx context.Context, prefix string, dir render.Dir, branch st
 		return "", fmt.Errorf("%s: git rev-parse %s: %w", prefix, branch, err)
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// gtRestackRefuseClobbers refuses, before any ref moves, a move whose new head
+// adds a path the holding working copy already has a file at. The holder check
+// clears untracked files but never lists ignored ones, and read-tree -u
+// replaces an ignored file without a word.
+func gtRestackRefuseClobbers(ctx context.Context, prefix string, holders map[string]string, moves []restackMove) error {
+	for _, m := range moves {
+		holder := holders[m.branch]
+		if holder == "" {
+			continue
+		}
+		out, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"diff", "--name-only", "-z", "--no-renames", "--diff-filter=A", m.previous, m.head})
+		if err != nil {
+			return fmt.Errorf("%s: git diff %s %s: %w", prefix, shortSHA(m.previous), shortSHA(m.head), err)
+		}
+		var clobbered []string
+		for _, path := range strings.Split(out, "\x00") {
+			if path == "" {
+				continue
+			}
+			if _, err := os.Lstat(filepath.Join(holder, path)); err == nil {
+				clobbered = append(clobbered, path)
+			}
+		}
+		if len(clobbered) > 0 {
+			return fmt.Errorf("%s: moving %s would overwrite %s in %s, which git ignores there but the new head tracks; no branches moved — move them aside, then retry",
+				prefix, m.branch, strings.Join(clobbered, ", "), holder)
+		}
+	}
+	return nil
 }
 
 func gtRestackAlign(ctx context.Context, prefix string, holders map[string]string, moves []restackMove) ([]string, error) {

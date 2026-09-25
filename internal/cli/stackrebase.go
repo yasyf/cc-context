@@ -1766,6 +1766,9 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 		if err := stackCheckHolders(ctx, run.Origin, movers, holders); err != nil {
 			return err
 		}
+		if err := gtRestackRefuseClobbers(ctx, prefix, holders, moves); err != nil {
+			return err
+		}
 		run.Applied = true
 		if err := stackSaveRun(run); err != nil {
 			return err
@@ -1874,6 +1877,9 @@ func stackFinishGit(ctx context.Context, cmd *cobra.Command, l lane, commonDir s
 			return fmt.Errorf("restack: %w", err)
 		}
 		if err := stackCheckHolders(ctx, run.Origin, []string{b.Name}, holders); err != nil {
+			return err
+		}
+		if err := gtRestackRefuseClobbers(ctx, "restack", holders, []restackMove{move}); err != nil {
 			return err
 		}
 		if err := stackWriteRefs(ctx, l.dir(), run); err != nil {

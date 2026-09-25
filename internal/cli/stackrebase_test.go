@@ -273,6 +273,33 @@ func TestStackRebaseRefusesDirtyOriginBeforeMovingRefs(t *testing.T) {
 	}
 }
 
+// TestStackRebaseRefusesToOverwriteAnIgnoredFile pins the file git status never
+// lists: an ignored file at a path the new trunk tracks, which read-tree -u
+// would replace without a word once the refs had already moved.
+func TestStackRebaseRefusesToOverwriteAnIgnoredFile(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	stackAdvanceTrunk(t, f, "gen.txt", "upstream\n")
+	restackWrite(t, filepath.Join(f.Dir, ".git", "info", "exclude"), "gen.txt\n")
+	writeShipFile(t, f.Dir, "gen.txt", "mine\n")
+	before := map[string]string{}
+	for _, branch := range []string{"base", "feature"} {
+		before[branch] = gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
+	}
+
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err == nil || !strings.Contains(err.Error(), "gen.txt") {
+		t.Fatalf("rebase = %v, want a refusal naming gen.txt", err)
+	}
+	for branch, head := range before {
+		if got := gitAt(t, f.Env(), f.Dir, "rev-parse", branch); got != head {
+			t.Errorf("%s moved to %s before the refusal", branch, got)
+		}
+	}
+	if got := restackRead(t, filepath.Join(f.Dir, "gen.txt")); got != "mine\n" {
+		t.Errorf("gen.txt = %q, want the ignored file left as it was", got)
+	}
+}
+
 func TestStackRebaseConflictOpensAWorkspaceAndContinues(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubStackPRs(t, map[string]*stackPR{"feature": {Number: 7, Title: "feature work", Body: "adds c.txt", State: "OPEN"}})
