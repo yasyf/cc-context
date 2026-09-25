@@ -726,14 +726,14 @@ func stackCommit(t *testing.T, f *vcstest.Fixture, file string) {
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", file)
 }
 
-func stackAssertSubmitRefusesChangedPublicationRemote(t *testing.T, f *vcstest.Fixture, branch string) {
+func stackAssertSubmitRefusesChangedPublicationRemote(t *testing.T, f *vcstest.Fixture, branch, want string) {
 	t.Helper()
 	source := gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
 	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch)
 	receiptRef := stackPublicationRef(branch, "receipt")
 	receipt := gitAt(t, f.Env(), f.Dir, "rev-parse", receiptRef)
 	_, _, err := runStackCmd(t, f, "submit")
-	if err == nil || !strings.Contains(err.Error(), branch+" remote changed after its isolated publication; not adopting the new remote head") {
+	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("stack submit = %v, want the changed publication remote refused", err)
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", branch); got != source {
@@ -761,7 +761,7 @@ func TestStackSubmitRefusesADirectPushAfterPublication(t *testing.T) {
 	stackCommit(t, f, "local.txt")
 	shipResetLog(t, f)
 
-	stackAssertSubmitRefusesChangedPublicationRemote(t, f, "base")
+	stackAssertSubmitRefusesChangedPublicationRemote(t, f, "base", "base remote changed after its isolated publication; not adopting the new remote head")
 }
 
 func TestShipAmendPushesOverTheHeadItLastSubmitted(t *testing.T) {
@@ -820,10 +820,11 @@ func TestShipOverAFrozenParentRestacksOnlyTheChild(t *testing.T) {
 	}
 }
 
-func TestStackSubmitRefusesARemoteReplayAfterPublication(t *testing.T) {
+func TestStackSubmitAdoptsARemoteReplayAfterPublication(t *testing.T) {
 	f := shipGTRepo(t)
 	stubStackPRs(t, nil)
 	shipGTStack(t, f, "base")
+	source := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("first stack submit: %v", err)
 	}
@@ -832,9 +833,24 @@ func TestStackSubmitRefusesARemoteReplayAfterPublication(t *testing.T) {
 	mustRun(t, f.Env(), filepath.Dir(clone), "git", "clone", "-q", "--branch", "base", f.RemoteDir, clone)
 	mustRun(t, f.Env(), clone, "git", "-c", "user.email=app@graphite.dev", "-c", "user.name=graphite-app", "rebase", "-q", "origin/main")
 	mustRun(t, f.Env(), clone, "git", "push", "-q", "--force", "origin", "base")
+	replayed := gitAt(t, f.Env(), clone, "rev-parse", "HEAD")
+	stackAdvanceTrunk(t, f, "later.txt", "later\n")
 	shipResetLog(t, f)
 
-	stackAssertSubmitRefusesChangedPublicationRemote(t, f, "base")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit over a replay of its own publication = %v, want the replay adopted", err)
+	}
+	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	if !stackOnto(t, f, "origin/main", remote) || gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main.."+remote) != "1" || gitAt(t, f.Env(), f.Dir, "diff", replayed, remote, "--", "base.txt") != "" {
+		t.Fatalf("published base %s is not the adopted %s replayed onto the new trunk", remote, replayed)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != source {
+		t.Errorf("source base = %s, want unchanged %s", got, source)
+	}
+	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "base")
+	if err != nil || receipt == nil || receipt.Source != source || receipt.Head != remote {
+		t.Fatalf("receipt = %+v, %v, want source %s published as %s", receipt, err, source, remote)
+	}
 }
 
 func TestStackSubmitRefusesARemoteRewriteAfterPublication(t *testing.T) {
@@ -846,11 +862,13 @@ func TestStackSubmitRefusesARemoteRewriteAfterPublication(t *testing.T) {
 	}
 	clone := filepath.Join(t.TempDir(), "graphite-app")
 	mustRun(t, f.Env(), filepath.Dir(clone), "git", "clone", "-q", "--branch", "base", f.RemoteDir, clone)
+	writeShipFile(t, clone, "rewrite.txt", "rewritten by graphite-app\n")
+	mustRun(t, f.Env(), clone, "git", "add", "rewrite.txt")
 	mustRun(t, f.Env(), clone, "git", "-c", "user.email=app@graphite.dev", "-c", "user.name=graphite-app", "commit", "-q", "--amend", "--no-edit")
 	mustRun(t, f.Env(), clone, "git", "push", "-q", "--force", "origin", "base")
 	shipResetLog(t, f)
 
-	stackAssertSubmitRefusesChangedPublicationRemote(t, f, "base")
+	stackAssertSubmitRefusesChangedPublicationRemote(t, f, "base", "base has diverged from origin/base")
 }
 
 func TestStackSubmitRefusesAForeignMergeCarryingItsOwnChange(t *testing.T) {
