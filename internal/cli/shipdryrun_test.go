@@ -121,12 +121,12 @@ func TestShipDryRunNamesTheTrackParent(t *testing.T) {
 func TestShipDryRunOrdersOnlyContainedTrackedBranches(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "x", "y")
-	mustRun(t, f.Dir, "git", "switch", "-q", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
 	shipGTStack(t, f, "a", "b")
 	shipGTUntracked(t, f, "c")
 	shipGTReady(t, f)
 
-	report := dryRunReport(t, "-m", "fix: frobnicate")
+	report := dryRunReport(t, f, "-m", "fix: frobnicate")
 
 	if parent := dryRunValues(report, "parent"); len(parent) != 1 || !strings.HasPrefix(parent[0], "b"+shipSep) {
 		t.Fatalf("parent = %v, want the nearest tracked ancestor b", parent)

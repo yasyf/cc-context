@@ -598,7 +598,7 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 		tipBody := writePRBody(t, "tip.md", "tip body\n")
 		midBody := writePRBody(t, "mid.md", "mid body\n")
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch",
+		_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch",
 			"--pr-title", "Tip title", "--pr-body-file", tipBody, "--pr-body-file", "feature="+midBody)
 		if err == nil {
 			t.Fatal("ship succeeded over a refused restate")
@@ -620,7 +620,7 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 		t.Setenv("GH_PR_EDIT_FAIL", "gh: API rate limit exceeded (HTTP 403)")
 		body := writePRBody(t, "body.md", "regenerated\n")
 
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
 		if err == nil {
 			t.Fatal("ship succeeded over a refused restate")
 		}
@@ -634,12 +634,12 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 		}
 	})
 	t.Run("piped body and a pending publish", func(t *testing.T) {
-		shipPRFixture(t, vcstest.Branch("feature"))
+		f := shipPRFixture(t, vcstest.Branch("feature"))
 		pr := prFromListGolden(t, "pr-list-draft")
 		t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-draft"))
 		t.Setenv("GH_PR_EDIT_FAIL", "gh: API rate limit exceeded (HTTP 403)")
 
-		_, err := runShipCmdStdin(t, strings.NewReader("piped body\n"), "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", "-", "--publish")
+		_, err := runShipCmdStdin(t, f, strings.NewReader("piped body\n"), "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", "-", "--publish")
 		if err == nil {
 			t.Fatal("ship succeeded over a refused restate")
 		}
