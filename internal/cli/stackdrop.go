@@ -86,7 +86,7 @@ func runStackDrop(cmd *cobra.Command, args []string, o dropOpts) error {
 	case !o.repair && len(args) == 0:
 		return fmt.Errorf("%s: name the branch to drop", dropPrefix)
 	}
-	l, err := resolveLane(ctx, dropPrefix, workingDir(), false)
+	l, err := resolveLane(ctx, dropPrefix, workingDir(ctx), false)
 	if err != nil {
 		return err
 	}

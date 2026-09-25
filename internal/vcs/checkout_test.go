@@ -1,7 +1,6 @@
 package vcs
 
 import (
-	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -360,7 +359,8 @@ func TestResolveCheckoutLive(t *testing.T) {
 // git resolves it before writing a linked worktree's pointer, so a main checkout
 // keeping the symlink spelling would key one repository under two names.
 func TestResolveCheckoutSymlinkedAdminLive(t *testing.T) {
-	main := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	main := f.Dir
 	admin := filepath.Join(canon(t, t.TempDir()), "admin")
 	if err := os.Rename(filepath.Join(main, ".git"), admin); err != nil {
 		t.Fatalf("move admin dir: %v", err)
@@ -369,7 +369,7 @@ func TestResolveCheckoutSymlinkedAdminLive(t *testing.T) {
 		t.Fatalf("symlink admin dir: %v", err)
 	}
 	linked := filepath.Join(t.TempDir(), "linked")
-	runGit(t, main, "worktree", "add", "-q", "-b", "feature", linked)
+	runGit(t, f, main, "worktree", "add", "-q", "-b", "feature", linked)
 
 	mainCheckout, err := ResolveCheckout(main)
 	if err != nil {
@@ -396,21 +396,22 @@ func TestResolveCheckoutSymlinkedAdminLive(t *testing.T) {
 // reports the common dir itself — so MainRoot stays empty rather than naming the
 // unrelated directory one level up.
 func TestResolveCheckoutNoMainRootLive(t *testing.T) {
-	seed := vcstest.Repo(t, vcstest.Trunk("trunk")).Dir
+	f := vcstest.Repo(t, vcstest.Trunk("trunk"))
+	seed := f.Dir
 	bare := filepath.Join(t.TempDir(), "bare.git")
-	runGit(t, seed, "clone", "-q", "--bare", seed, bare)
+	runGit(t, f, seed, "clone", "-q", "--bare", seed, bare)
 	fromBare := filepath.Join(t.TempDir(), "from-bare")
-	runGit(t, bare, "worktree", "add", "-q", fromBare, "trunk")
+	runGit(t, f, bare, "worktree", "add", "-q", fromBare, "trunk")
 
 	base := t.TempDir()
 	admin := filepath.Join(base, "admin")
 	separate := filepath.Join(base, "main")
-	runGit(t, base, "init", "-q", "--separate-git-dir", admin, separate)
-	runGit(t, separate, "config", "user.email", "t@t.t")
-	runGit(t, separate, "config", "user.name", "t")
-	runGit(t, separate, "commit", "-q", "--allow-empty", "-m", "c")
+	runGit(t, f, base, "init", "-q", "--separate-git-dir", admin, separate)
+	runGit(t, f, separate, "config", "user.email", "t@t.t")
+	runGit(t, f, separate, "config", "user.name", "t")
+	runGit(t, f, separate, "commit", "-q", "--allow-empty", "-m", "c")
 	fromSeparate := filepath.Join(t.TempDir(), "from-separate")
-	runGit(t, separate, "worktree", "add", "-q", "-b", "feature", fromSeparate)
+	runGit(t, f, separate, "worktree", "add", "-q", "-b", "feature", fromSeparate)
 
 	tests := []struct {
 		name      string
@@ -442,8 +443,9 @@ func TestResolveCheckoutNoMainRootLive(t *testing.T) {
 // superproject's.
 func TestResolveCheckoutSubmoduleLive(t *testing.T) {
 	sub := vcstest.Repo(t).Dir
-	main := vcstest.Repo(t).Dir
-	runGit(t, main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor")
+	f := vcstest.Repo(t)
+	main := f.Dir
+	runGit(t, f, main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor")
 
 	vendor := filepath.Join(main, "vendor")
 	got, err := ResolveCheckout(vendor)
@@ -466,9 +468,10 @@ func TestResolveCheckoutSubmoduleLive(t *testing.T) {
 // TestResolveCheckoutJJWorkspaceLive drives a real `jj workspace add`, so the
 // hand-written workspace fixtures stay honest about the layout jj writes.
 func TestResolveCheckoutJJWorkspaceLive(t *testing.T) {
-	main := vcstest.Repo(t, vcstest.JJ()).Dir
+	f := vcstest.Repo(t, vcstest.JJ())
+	main := f.Dir
 	ws := filepath.Join(t.TempDir(), "ws")
-	runJJ(t, main, "workspace", "add", ws)
+	runJJ(t, f, main, "workspace", "add", ws)
 
 	got, err := ResolveCheckout(ws)
 	if err != nil {
@@ -496,21 +499,22 @@ func TestResolveCheckoutJJWorkspaceLive(t *testing.T) {
 // TestWorktrees pins the porcelain parse over the attributes git emits for a
 // live checkout: a branch, a detached HEAD, and a lock carrying its reason.
 func TestWorktrees(t *testing.T) {
-	main := vcstest.Repo(t, vcstest.Trunk("trunk")).Dir
+	f := vcstest.Repo(t, vcstest.Trunk("trunk"))
+	main := f.Dir
 	linked := filepath.Join(t.TempDir(), "linked")
-	runGit(t, main, "worktree", "add", "-q", "-b", "feature", linked)
+	runGit(t, f, main, "worktree", "add", "-q", "-b", "feature", linked)
 	held := filepath.Join(t.TempDir(), "held")
-	runGit(t, main, "worktree", "add", "-q", "-b", "held", held)
-	runGit(t, main, "worktree", "lock", "--reason", "an agent has it", held)
+	runGit(t, f, main, "worktree", "add", "-q", "-b", "held", held)
+	runGit(t, f, main, "worktree", "lock", "--reason", "an agent has it", held)
 	loose := filepath.Join(t.TempDir(), "loose")
-	runGit(t, main, "worktree", "add", "-q", "--detach", loose)
-	head := gitOutput(t, main, "rev-parse", "HEAD")
+	runGit(t, f, main, "worktree", "add", "-q", "--detach", loose)
+	head := gitOutput(t, f, main, "rev-parse", "HEAD")
 
 	c, err := ResolveCheckout(main)
 	if err != nil {
 		t.Fatalf("ResolveCheckout(%q): %v", main, err)
 	}
-	got, err := Worktrees(context.Background(), c)
+	got, err := Worktrees(f.Context(), c)
 	if err != nil {
 		t.Fatalf("Worktrees: %v", err)
 	}
@@ -536,19 +540,20 @@ func TestWorktrees(t *testing.T) {
 // and no branch, and pins that the list is read from the common dir rather than
 // from any working copy.
 func TestWorktreesBare(t *testing.T) {
-	seed := vcstest.Repo(t, vcstest.Trunk("trunk")).Dir
+	f := vcstest.Repo(t, vcstest.Trunk("trunk"))
+	seed := f.Dir
 	bare := filepath.Join(t.TempDir(), "bare.git")
-	runGit(t, seed, "clone", "-q", "--bare", seed, bare)
+	runGit(t, f, seed, "clone", "-q", "--bare", seed, bare)
 	linked := filepath.Join(t.TempDir(), "linked")
-	runGit(t, bare, "worktree", "add", "-q", linked, "trunk")
+	runGit(t, f, bare, "worktree", "add", "-q", linked, "trunk")
 
-	got, err := Worktrees(context.Background(), Checkout{CommonDir: canon(t, bare)})
+	got, err := Worktrees(f.Context(), Checkout{CommonDir: canon(t, bare)})
 	if err != nil {
 		t.Fatalf("Worktrees: %v", err)
 	}
 	want := []Worktree{
 		{Path: canon(t, bare), Bare: true},
-		{Path: canon(t, linked), HEAD: gitOutput(t, seed, "rev-parse", "HEAD"), Branch: "trunk"},
+		{Path: canon(t, linked), HEAD: gitOutput(t, f, seed, "rev-parse", "HEAD"), Branch: "trunk"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Worktrees =\n\t%+v\nwant\n\t%+v", got, want)
@@ -566,7 +571,7 @@ func TestWorktreesPrunable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveCheckout(%q): %v", main, err)
 	}
-	got, err := Worktrees(context.Background(), c)
+	got, err := Worktrees(f.Context(), c)
 	if err != nil {
 		t.Fatalf("Worktrees: %v", err)
 	}
@@ -594,24 +599,25 @@ func TestWorktreesPrunable(t *testing.T) {
 // still holds its branch until someone prunes it — the answer git's own ref
 // query gave, so the derivation loses no entry.
 func TestBranchHolders(t *testing.T) {
-	main := vcstest.Repo(t, vcstest.Trunk("trunk")).Dir
+	f := vcstest.Repo(t, vcstest.Trunk("trunk"))
+	main := f.Dir
 	linked := filepath.Join(t.TempDir(), "linked")
-	runGit(t, main, "worktree", "add", "-q", "-b", "feature", linked)
+	runGit(t, f, main, "worktree", "add", "-q", "-b", "feature", linked)
 	loose := filepath.Join(t.TempDir(), "loose")
-	runGit(t, main, "worktree", "add", "-q", "--detach", loose)
+	runGit(t, f, main, "worktree", "add", "-q", "--detach", loose)
 	gone := filepath.Join(t.TempDir(), "gone")
-	runGit(t, main, "worktree", "add", "-q", "-b", "abandoned", gone)
+	runGit(t, f, main, "worktree", "add", "-q", "-b", "abandoned", gone)
 	gonePath := canon(t, gone)
 	if err := os.RemoveAll(gone); err != nil {
 		t.Fatalf("remove worktree: %v", err)
 	}
-	runGit(t, main, "branch", "unheld")
+	runGit(t, f, main, "branch", "unheld")
 
 	c, err := ResolveCheckout(main)
 	if err != nil {
 		t.Fatalf("ResolveCheckout(%q): %v", main, err)
 	}
-	got, err := BranchHolders(context.Background(), c)
+	got, err := BranchHolders(f.Context(), c)
 	if err != nil {
 		t.Fatalf("BranchHolders: %v", err)
 	}
@@ -629,13 +635,14 @@ func TestBranchHolders(t *testing.T) {
 // checkout at all: the bare record carries neither branch nor HEAD, so it adds
 // no entry while the linked worktree beside it does.
 func TestBranchHoldersBare(t *testing.T) {
-	seed := vcstest.Repo(t, vcstest.Trunk("trunk")).Dir
+	f := vcstest.Repo(t, vcstest.Trunk("trunk"))
+	seed := f.Dir
 	bare := filepath.Join(t.TempDir(), "bare.git")
-	runGit(t, seed, "clone", "-q", "--bare", seed, bare)
+	runGit(t, f, seed, "clone", "-q", "--bare", seed, bare)
 	linked := filepath.Join(t.TempDir(), "linked")
-	runGit(t, bare, "worktree", "add", "-q", linked, "trunk")
+	runGit(t, f, bare, "worktree", "add", "-q", linked, "trunk")
 
-	got, err := BranchHolders(context.Background(), Checkout{CommonDir: canon(t, bare)})
+	got, err := BranchHolders(f.Context(), Checkout{CommonDir: canon(t, bare)})
 	if err != nil {
 		t.Fatalf("BranchHolders: %v", err)
 	}
@@ -737,10 +744,14 @@ func canon(t *testing.T, path string) string {
 	return resolved
 }
 
-func gitOutput(t *testing.T, dir string, args ...string) string {
+func gitOutput(t *testing.T, f *vcstest.Fixture, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // fixed git argv; dir is a test TempDir, args are literals
-	cmd.Env = isolatedGitEnv()
+	if dir == f.Dir {
+		return strings.TrimSpace(f.Out(t, "git", args...))
+	}
+	cmd := exec.Command("git", args...) //nolint:gosec // fixed git argv; dir is a test TempDir, args are literals
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), f.Env()...)
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("git %v: %v", args, err)

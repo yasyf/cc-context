@@ -161,7 +161,7 @@ func TestShipHooksRefuseHeldIndexLock(t *testing.T) {
 			shipResetLog(t, f)
 			lock := shipWriteIndexLock(t, filepath.Join(f.Dir, ".git"))
 
-			_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push")
+			_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 			if err == nil {
 				t.Fatalf("ship error = nil, want a refusal naming %s", lock)
 			}
@@ -204,14 +204,14 @@ exit 0
 	t.Setenv("GIT_DIR", filepath.Join(f.Dir, ".git"))
 	t.Setenv("GIT_WORK_TREE", f.Dir)
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push"); err != nil {
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	want := "GIT_DIR=<unset>\nGIT_WORK_TREE=<unset>\nSHIP_HOOK_CONTROL=kept\n"
 	if got := readFileStr(t, dump); got != want {
 		t.Errorf("hook child env = %q, want %q", got, want)
 	}
-	if committed := gitAt(t, f.Dir, "show", "--name-only", "--format=", "HEAD"); committed != "f1.go" {
+	if committed := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); committed != "f1.go" {
 		t.Errorf("commit holds %q, want the file the hook ran over", committed)
 	}
 }
@@ -268,7 +268,7 @@ func TestShipHooksStreamingSeam(t *testing.T) {
 			t.Cleanup(func() { shipStreamCI = old })
 			shipStreamCI = func(io.Writer) bool { return tt.stream }
 
-			out, errStr, err := runShipCmdFull(t, "-m", "fix: frobnicate", "--no-push")
+			out, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 			if err != nil {
 				t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
 			}

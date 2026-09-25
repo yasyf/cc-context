@@ -1,7 +1,6 @@
 package vcs
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -430,13 +429,14 @@ func TestGitArgvInterposesSeparators(t *testing.T) {
 // diff source spelled --output=<path> wrote that file before --end-of-options was
 // interposed.
 func TestGitRunRefusesOptionInjectionViaRev(t *testing.T) {
-	dir := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	dir := f.Dir
 	write(t, dir, "a.go", "package a\n")
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "init")
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "init")
 
 	target := filepath.Join(t.TempDir(), "pwned.txt")
-	_, err := GitNameStatus(context.Background(), GitArgs{
+	_, err := GitNameStatus(f.Context(), GitArgs{
 		Dir:  render.Dir(dir),
 		Sub:  []string{"diff"},
 		Revs: []GitRef{UnsafeRef("--output=" + target)},
@@ -456,13 +456,14 @@ func TestGitRunRefusesOptionInjectionViaRev(t *testing.T) {
 // real git: "sub/[id].go" is a character class to git's default pathspec parser,
 // so without it the file's own name also selects its neighbors.
 func TestGitRunMatchesPathspecsLiterally(t *testing.T) {
-	dir := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	dir := f.Dir
 	write(t, dir, "sub/[id].go", "package a\n")
 	write(t, dir, "sub/i.go", "package a\n")
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "init")
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "init")
 
-	paths, err := GitPaths(context.Background(), GitArgs{
+	paths, err := GitPaths(f.Context(), GitArgs{
 		Dir:   render.Dir(dir),
 		Sub:   []string{"ls-files"},
 		Paths: []string{"sub/[id].go"},
@@ -475,7 +476,7 @@ func TestGitRunMatchesPathspecsLiterally(t *testing.T) {
 	}
 
 	// And the magic prefix is inert too: it names a file that does not exist.
-	magic, err := GitPaths(context.Background(), GitArgs{
+	magic, err := GitPaths(f.Context(), GitArgs{
 		Dir:   render.Dir(dir),
 		Sub:   []string{"ls-files"},
 		Paths: []string{":(exclude)sub/i.go"},
@@ -495,11 +496,12 @@ func TestGitRunMatchesPathspecsLiterally(t *testing.T) {
 // worktree list`, which takes no pathspec at all, rejects it with exit 129. Both
 // failures are invisible to an argv assertion alone.
 func TestGitRunOmitsThePathspecSeparatorWhenThereAreNoPaths(t *testing.T) {
-	ctx := context.Background()
-	dir := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	dir := f.Dir
+	ctx := f.Context()
 	write(t, dir, "a.go", "package a\n")
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "init")
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "init")
 	write(t, dir, "a.go", "package a\nfunc Foo() {}\n")
 
 	entries, err := GitStatus(ctx, GitArgs{Dir: render.Dir(dir), Sub: []string{"status"}})
@@ -519,21 +521,22 @@ func TestGitRunOmitsThePathspecSeparatorWhenThereAreNoPaths(t *testing.T) {
 // a fake that emitted newline-terminated or reordered tokens could not green the
 // parsers on its own.
 func TestShapeHelpersAgainstLiveGit(t *testing.T) {
-	ctx := context.Background()
-	dir := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	dir := f.Dir
+	ctx := f.Context()
 	write(t, dir, "a.go", "package a\n")
 	write(t, dir, "keep.go", "keep\n")
 	write(t, dir, "old.go", "oldname\n")
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "init")
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "init")
 
 	write(t, dir, "a.go", "package a\nfunc Foo() {}\n")
 	if err := os.Remove(filepath.Join(dir, "keep.go")); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, dir, "mv", "old.go", "new.go")
+	runGit(t, f, dir, "mv", "old.go", "new.go")
 	write(t, dir, "fresh.go", "fresh\n")
-	runGit(t, dir, "add", "-A")
+	runGit(t, f, dir, "add", "-A")
 
 	t.Run("GitNameStatus", func(t *testing.T) {
 		entries, err := GitNameStatus(ctx, GitArgs{Dir: render.Dir(dir), Sub: []string{"diff", "--cached", "-M"}})
@@ -581,7 +584,7 @@ func TestShapeHelpersAgainstLiveGit(t *testing.T) {
 		}
 	})
 
-	runGit(t, dir, "commit", "-qm", "second")
+	runGit(t, f, dir, "commit", "-qm", "second")
 
 	t.Run("GitTreeRecords ls-tree", func(t *testing.T) {
 		records, err := GitTreeRecords(ctx, GitArgs{
@@ -681,7 +684,7 @@ func TestShapeHelpersAgainstLiveGit(t *testing.T) {
 	})
 
 	t.Run("GitLogNameStatus skips an empty commit's records", func(t *testing.T) {
-		runGit(t, dir, "commit", "-q", "--allow-empty", "-m", "empty one")
+		runGit(t, f, dir, "commit", "-q", "--allow-empty", "-m", "empty one")
 		commits, err := GitLogNameStatus(ctx, GitArgs{
 			Dir: render.Dir(dir),
 			Sub: []string{"log", "--date=short"},
@@ -705,15 +708,16 @@ func TestShapeHelpersAgainstLiveGit(t *testing.T) {
 // zero-width joiner, a newline, and a quote as C escapes inside a quoted string,
 // so a caller splitting on newlines sees a leading '"' glued to the name.
 func TestGitPathsKeepsUnquotableNames(t *testing.T) {
-	dir := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	dir := f.Dir
 	names := []string{"zwj\u200djoin.go", "new\nline.go", "quote\"name.go"}
 	for _, name := range names {
 		write(t, dir, name, "package a\n")
 	}
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "init")
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "init")
 
-	paths, err := GitPaths(context.Background(), GitArgs{Dir: render.Dir(dir), Sub: []string{"ls-files"}})
+	paths, err := GitPaths(f.Context(), GitArgs{Dir: render.Dir(dir), Sub: []string{"ls-files"}})
 	if err != nil {
 		t.Fatalf("GitPaths: %v", err)
 	}
@@ -731,21 +735,22 @@ func TestGitPathsKeepsUnquotableNames(t *testing.T) {
 // default core.quotePath — a zero-width joiner and a double quote — so the same
 // row proves the -z streams reach the parsers raw.
 func TestRenameOrderReversalAgainstLiveGit(t *testing.T) {
-	ctx := context.Background()
 	const (
 		oldPath = "zwj\u200dquote\"old.go"
 		newPath = "zwj\u200dquote\"new.go"
 	)
-	dir := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	dir := f.Dir
+	ctx := f.Context()
 	write(t, dir, oldPath, "package a\n")
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "init")
-	runGit(t, dir, "mv", oldPath, newPath)
-	runGit(t, dir, "add", "-A")
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "init")
+	runGit(t, f, dir, "mv", oldPath, newPath)
+	runGit(t, f, dir, "add", "-A")
 
 	// The premise: with core.quotePath at its default this git escapes both names,
 	// so a listing read without -z carries neither path's bytes.
-	quoted := gitOutput(t, dir, "diff", "--cached", "--name-status", "-M")
+	quoted := gitOutput(t, f, dir, "diff", "--cached", "--name-status", "-M")
 	if !strings.Contains(quoted, `\342\200\215`) || !strings.Contains(quoted, `\"`) {
 		t.Fatalf("name-status without -z = %q, want the zero-width joiner and quote C-escaped", quoted)
 	}
@@ -787,12 +792,13 @@ func TestRenameOrderReversalAgainstLiveGit(t *testing.T) {
 // ahead of the path. A parser that split on every tab and took the last field
 // would cut "a\tb.go" down to "b.go" in both.
 func TestTabInAFilenameStaysInThePath(t *testing.T) {
-	ctx := context.Background()
-	dir := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	dir := f.Dir
+	ctx := f.Context()
 	const tabbed = "a\tb.go"
 	write(t, dir, tabbed, "package a\n")
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "init")
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "init")
 
 	tree, err := GitTreeRecords(ctx, GitArgs{
 		Dir:   render.Dir(dir),
@@ -811,7 +817,7 @@ func TestTabInAFilenameStaysInThePath(t *testing.T) {
 	}
 
 	write(t, dir, tabbed, "package a\nfunc Foo() {}\n")
-	runGit(t, dir, "commit", "-qam", "second")
+	runGit(t, f, dir, "commit", "-qam", "second")
 
 	_, stat, err := GitNumstat(ctx, GitArgs{Dir: render.Dir(dir), Sub: []string{"show"}, Revs: []GitRef{HeadRef}}, "%P")
 	if err != nil {
@@ -830,12 +836,13 @@ func TestTabInAFilenameStaysInThePath(t *testing.T) {
 // does not exist. UnsafeRef is what makes it reachable, so the runner is where it
 // stops.
 func TestGitRunRefusesThePathspecSeparatorAsARev(t *testing.T) {
-	dir := vcstest.Repo(t).Dir
+	f := vcstest.Repo(t)
+	dir := f.Dir
 	write(t, dir, "a.go", "package a\n")
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "init")
+	runGit(t, f, dir, "add", "-A")
+	runGit(t, f, dir, "commit", "-qm", "init")
 
-	_, err := GitNameStatus(context.Background(), GitArgs{
+	_, err := GitNameStatus(f.Context(), GitArgs{
 		Dir:  render.Dir(dir),
 		Sub:  []string{"diff", "-M"},
 		Revs: []GitRef{UnsafeRef("--")},

@@ -12,7 +12,7 @@ import (
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
-func runStackCmd(t *testing.T, args ...string) (string, string, error) {
+func runStackCmd(t *testing.T, f *vcstest.Fixture, args ...string) (string, string, error) {
 	t.Helper()
 	cmd := newStackCmd()
 	cmd.SilenceUsage = true
@@ -21,7 +21,7 @@ func runStackCmd(t *testing.T, args ...string) (string, string, error) {
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
 	cmd.SetArgs(args)
-	err := cmd.Execute()
+	err := cmd.ExecuteContext(f.Context())
 	return strings.TrimSpace(out.String()), errOut.String(), err
 }
 
@@ -34,7 +34,7 @@ func TestStackNewCutsTheBranchInItsOwnWorkingCopy(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "base")
 
-	out, _, err := runStackCmd(t, "new", "feature")
+	out, _, err := runStackCmd(t, f, "new", "feature")
 	if err != nil {
 		t.Fatalf("stack new: %v", err)
 	}
@@ -45,10 +45,10 @@ func TestStackNewCutsTheBranchInItsOwnWorkingCopy(t *testing.T) {
 	if base := filepath.Base(path); base != "feature" {
 		t.Errorf("minted %q, want a pool entry named feature", path)
 	}
-	if here := gitAt(t, f.Dir, "branch", "--show-current"); here != "base" {
+	if here := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); here != "base" {
 		t.Errorf("the calling working copy is on %q, want base — stack new must not switch it", here)
 	}
-	if there := gitAt(t, path, "branch", "--show-current"); there != "feature" {
+	if there := gitAt(t, f.Env(), path, "branch", "--show-current"); there != "feature" {
 		t.Errorf("the new working copy is on %q, want feature", there)
 	}
 }
@@ -59,7 +59,7 @@ func TestStackNewTracksTheParent(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "base")
 
-	if _, _, err := runStackCmd(t, "new", "feature"); err != nil {
+	if _, _, err := runStackCmd(t, f, "new", "feature"); err != nil {
 		t.Fatalf("stack new: %v", err)
 	}
 	state, err := gtStateQuery(t.Context(), render.Dir(f.Dir), "test")
@@ -83,13 +83,13 @@ func TestStackNewTracksTheParent(t *testing.T) {
 func TestStackListNamesTheWorkingCopyHoldingEachBranch(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "base")
-	out, _, err := runStackCmd(t, "new", "feature")
+	out, _, err := runStackCmd(t, f, "new", "feature")
 	if err != nil {
 		t.Fatalf("stack new: %v", err)
 	}
 	lane := out[strings.LastIndex(out, shipSep)+len(shipSep):]
 
-	out, _, err = runStackCmd(t, "list")
+	out, _, err = runStackCmd(t, f, "list")
 	if err != nil {
 		t.Fatalf("stack list: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestStackNewColocatesJJInTheLane(t *testing.T) {
 	f := shipGTRepo(t, vcstest.JJ())
 	shipGTStack(t, f, "base")
 
-	out, _, err := runStackCmd(t, "new", "feature")
+	out, _, err := runStackCmd(t, f, "new", "feature")
 	if err != nil {
 		t.Fatalf("stack new: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestStackNewColocatesJJInTheLane(t *testing.T) {
 			t.Errorf("lane %s has no %s: %v — it must answer to git, gt and jj alike", lane, dir, statErr)
 		}
 	}
-	if there := gitAt(t, lane, "branch", "--show-current"); there != "feature" {
+	if there := gitAt(t, f.Env(), lane, "branch", "--show-current"); there != "feature" {
 		t.Errorf("lane HEAD = %q, want feature — jj detaches it at @- and the lane must re-attach", there)
 	}
 }
@@ -193,7 +193,7 @@ func TestStackAllRefusesTrunk(t *testing.T) {
 	f := shipGTRepo(t)
 	_ = f
 
-	_, _, err := runStackCmd(t, "list")
+	_, _, err := runStackCmd(t, f, "list")
 	if err == nil {
 		t.Fatal("stack list succeeded on trunk, want a refusal naming trunk")
 	}
@@ -211,7 +211,7 @@ func TestStackSubmitGoesThroughTheGraphiteAPI(t *testing.T) {
 	shipGTStack(t, f, "base", "feature")
 	shipResetLog(t, f)
 
-	out, _, err := runStackCmd(t, "submit")
+	out, _, err := runStackCmd(t, f, "submit")
 	if err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestStackSubmitGoesThroughTheGraphiteAPI(t *testing.T) {
 		t.Errorf("submit posts = %v, want one per branch, base first", heads)
 	}
 	for _, branch := range []string{"base", "feature"} {
-		if !gitBranchExists(t, f.RemoteDir, branch) {
+		if !gitBranchExists(t, f.Env(), f.RemoteDir, branch) {
 			t.Errorf("origin lacks %s — the submit never pushed it", branch)
 		}
 	}
@@ -242,7 +242,7 @@ func TestStackSubmitReportsWhatItProposes(t *testing.T) {
 	shipGTStack(t, f, "base", "feature")
 	shipResetLog(t, f)
 
-	out, _, err := runStackCmd(t, "submit")
+	out, _, err := runStackCmd(t, f, "submit")
 	if err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
@@ -257,16 +257,16 @@ func TestStackSubmitReportsWhatItProposes(t *testing.T) {
 func stackConflicting(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
 	shipGTStack(t, f, "base")
-	mustRun(t, f.Dir, "git", "switch", "-qc", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
 	writeShipFile(t, f.Dir, "c.txt", "feature\n")
-	mustRun(t, f.Dir, "git", "add", "c.txt")
-	mustRun(t, f.Dir, "git", "commit", "-qm", "feature")
-	mustRun(t, f.Dir, "gt", "track", "-f", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "feature")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
 	restackAdvanceRemote(t, f, "main", "c.txt", "trunk\n")
-	mustRun(t, f.Dir, "git", "fetch", "-q", "origin")
-	mustRun(t, f.Dir, "git", "switch", "-q", "main")
-	mustRun(t, f.Dir, "git", "merge", "-q", "--ff-only", "origin/main")
-	mustRun(t, f.Dir, "git", "switch", "-q", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "merge", "-q", "--ff-only", "origin/main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
 	shipResetLog(t, f)
 }
 
@@ -278,20 +278,20 @@ func stackConflicting(t *testing.T, f *vcstest.Fixture) {
 func TestStackSubmitRestackConflictMovesNothing(t *testing.T) {
 	f := shipGTRepo(t)
 	stackConflicting(t, f)
-	base := gitAt(t, f.Dir, "rev-parse", "base")
-	feature := gitAt(t, f.Dir, "rev-parse", "feature")
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 
-	_, _, err := runStackCmd(t, "submit")
+	_, _, err := runStackCmd(t, f, "submit")
 	if err == nil {
 		t.Fatal("stack submit succeeded, want the conflict on feature")
 	}
 	if !strings.Contains(err.Error(), "the restack rolled back, so nothing moved — put back: base") {
 		t.Errorf("error = %v, want it to name what it rolled back", err)
 	}
-	if got := gitAt(t, f.Dir, "rev-parse", "base"); got != base {
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != base {
 		t.Errorf("base = %s, want %s — it was restacked onto the new trunk while feature stayed on the old one", got, base)
 	}
-	if got := gitAt(t, f.Dir, "rev-parse", "feature"); got != feature {
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != feature {
 		t.Errorf("feature = %s, want %s", got, feature)
 	}
 }
@@ -304,25 +304,25 @@ func TestStackSubmitRestackConflictMovesNothing(t *testing.T) {
 func TestStackSubmitRefusesADivergedTrunk(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "base")
-	mustRun(t, f.Dir, "git", "switch", "-q", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
 	writeShipFile(t, f.Dir, "foreign.txt", "another lane's work\n")
-	mustRun(t, f.Dir, "git", "add", "foreign.txt")
-	mustRun(t, f.Dir, "git", "commit", "-qm", "foreign")
-	mustRun(t, f.Dir, "git", "switch", "-q", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "foreign.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "foreign")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	shipResetLog(t, f)
-	base := gitAt(t, f.Dir, "rev-parse", "base")
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 
-	_, _, err := runStackCmd(t, "submit")
+	_, _, err := runStackCmd(t, f, "submit")
 	if err == nil {
 		t.Fatal("stack submit succeeded on a diverged trunk, want a refusal")
 	}
 	if !strings.Contains(err.Error(), "main holds 1 commit(s) refs/remotes/origin/main does not") {
 		t.Errorf("error = %v, want it to name the drift", err)
 	}
-	if got := gitAt(t, f.Dir, "rev-parse", "base"); got != base {
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != base {
 		t.Errorf("base = %s, want %s — nothing may move onto a diverged trunk", got, base)
 	}
-	if files := gitAt(t, f.Dir, "diff", "--name-only", "main...base"); strings.Contains(files, "foreign.txt") {
+	if files := gitAt(t, f.Env(), f.Dir, "diff", "--name-only", "main...base"); strings.Contains(files, "foreign.txt") {
 		t.Errorf("base carries %q — the foreign commit reached the branch", files)
 	}
 }
@@ -336,12 +336,12 @@ func TestStackSubmitRefusesADuplicatingSpan(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "base")
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
-	mustRun(t, f.Dir, "git", "fetch", "-q", "origin")
-	mustRun(t, f.Dir, "git", "rebase", "-q", "origin/main")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "origin/main")
 	shipResetLog(t, f)
-	base := gitAt(t, f.Dir, "rev-parse", "base")
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 
-	_, _, err := runStackCmd(t, "submit")
+	_, _, err := runStackCmd(t, f, "submit")
 	if err == nil {
 		t.Fatal("stack submit succeeded on a span carrying trunk's own commits, want a refusal")
 	}
@@ -351,7 +351,7 @@ func TestStackSubmitRefusesADuplicatingSpan(t *testing.T) {
 	if !strings.Contains(err.Error(), "propose 2 files rather than the 1 it changed") {
 		t.Errorf("error = %v, want the file count that is the tell", err)
 	}
-	if got := gitAt(t, f.Dir, "rev-parse", "base"); got != base {
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != base {
 		t.Errorf("base = %s, want %s — the refusal comes before any ref moves", got, base)
 	}
 }

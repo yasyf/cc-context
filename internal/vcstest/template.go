@@ -94,8 +94,7 @@ func templateFor(t *testing.T, cfg baseConfig, tools []resolvedTool) *fixtureTem
 
 	scratch := filepath.Join(slot, "env")
 	mkdir(t, scratch)
-	applyEnv(t, scratch, tmpl.home, tools)
-	buildBase(t, cfg, tools, tmpl.base)
+	buildBase(t, cfg, tools, tmpl.base, fixtureEnv(t, scratch, tmpl.home, tools))
 	if cfg.gt {
 		// gt's cache refresher outlives gt init and keeps writing under the
 		// home it ran with. Copying a template while that is still going
@@ -188,7 +187,7 @@ func copyFile(src, dst string, perm fs.FileMode) error {
 // the working copy, its initial commit, and the bare origin it pushes to.
 // The origin is wired as a path relative to the working copy, so the pair
 // keeps working wherever the template is copied.
-func buildBase(t *testing.T, cfg baseConfig, tools []resolvedTool, base string) {
+func buildBase(t *testing.T, cfg baseConfig, tools []resolvedTool, base string, env []string) {
 	t.Helper()
 	dir := filepath.Join(base, "repo")
 	mkdir(t, dir)
@@ -197,8 +196,8 @@ func buildBase(t *testing.T, cfg baseConfig, tools []resolvedTool, base string) 
 	for _, tool := range tools {
 		bin[tool.name] = tool.path
 	}
-	git := func(args ...string) string { return run(t, dir, bin["git"], args...) }
-	jj := func(args ...string) string { return run(t, dir, bin["jj"], args...) }
+	git := func(args ...string) string { return run(t, dir, env, bin["git"], args...) }
+	jj := func(args ...string) string { return run(t, dir, env, bin["jj"], args...) }
 
 	git("init", "-q", "-b", cfg.trunk)
 	git("config", "user.email", "t@t.t")
@@ -221,9 +220,9 @@ func buildBase(t *testing.T, cfg baseConfig, tools []resolvedTool, base string) 
 
 	if cfg.remote {
 		remote := filepath.Join(base, "remote.git")
-		run(t, base, bin["git"], "init", "-q", "--bare", "--initial-branch="+cfg.trunk, remote)
-		run(t, remote, bin["git"], "config", "maintenance.auto", "false")
-		run(t, remote, bin["git"], "config", "gc.auto", "0")
+		run(t, base, env, bin["git"], "init", "-q", "--bare", "--initial-branch="+cfg.trunk, remote)
+		run(t, remote, env, bin["git"], "config", "maintenance.auto", "false")
+		run(t, remote, env, bin["git"], "config", "gc.auto", "0")
 		git("remote", "add", "origin", relativeOrigin)
 		if cfg.jj {
 			jj("git", "push", "--bookmark", cfg.trunk)
@@ -236,7 +235,7 @@ func buildBase(t *testing.T, cfg baseConfig, tools []resolvedTool, base string) 
 	}
 
 	if cfg.gt {
-		run(t, dir, bin["gt"], "init", "--trunk", cfg.trunk, "--no-interactive")
+		run(t, dir, env, bin["gt"], "init", "--trunk", cfg.trunk, "--no-interactive")
 	}
 }
 

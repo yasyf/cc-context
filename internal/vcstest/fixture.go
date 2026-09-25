@@ -4,13 +4,19 @@
 package vcstest
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // Fixture is a real repository built by Repo, with the recording shim
@@ -21,10 +27,32 @@ type Fixture struct {
 	ShimBin   string
 	ArgvLog   string
 
+	// env is the fixture's environment in exec's "K=V" form, carried rather
+	// than installed: a fixture that replaced the process's would decide HOME
+	// and PATH for every other test in the binary, which is what stops the
+	// package running in parallel.
+	env []string
+
 	// settles is set when the shim holds a tool that writes to the log past
 	// its own exit, which only gt does. See Quiesce.
 	settles bool
 }
+
+// Context returns the context a test drives ccx with: every child spawned
+// through it gets the fixture's environment, and every command that resolves
+// the project root gets the fixture's repository. It replaces the HOME, PATH
+// and chdir a fixture used to impose on the whole test binary.
+func (f *Fixture) Context() context.Context { return f.ContextIn(f.Dir) }
+
+// ContextIn is [Fixture.Context] rooted at dir, for a test driving ccx from a
+// worktree the fixture cut rather than from the repository itself.
+func (f *Fixture) ContextIn(dir string) context.Context {
+	return workspace.WithRoot(render.WithEnv(context.Background(), f.env...), dir)
+}
+
+// Env returns the fixture's environment, for a test that spawns a tool itself
+// rather than through ccx.
+func (f *Fixture) Env() []string { return slices.Clone(f.env) }
 
 // Quiesce blocks until every invocation the fixture's shim recorded has
 // landed. It is [Quiesce] over the fixture's own log, skipped when no tool in
@@ -37,6 +65,33 @@ func (f *Fixture) Quiesce(t *testing.T) {
 	}
 	Quiesce(t, f.ArgvLog)
 }
+
+// Isolate installs the fixture's environment over the process's and chdirs
+// into its repository, for a test whose subject reads the environment in
+// process rather than handing it to a child — CLAUDE_PLUGIN_DATA through
+// cache.Dir, or HOME through os.UserCacheDir. Everything else should take
+// [Fixture.Context] instead: this is what keeps a test out of t.Parallel(),
+// since t.Setenv panics there and the process has only one working directory.
+func (f *Fixture) Isolate(t *testing.T) {
+	t.Helper()
+	for _, kv := range f.env {
+		key, value, _ := strings.Cut(kv, "=")
+		t.Setenv(key, value)
+	}
+	t.Chdir(f.Dir)
+}
+
+// Out runs bin in the fixture's repository under the fixture's environment and
+// returns its stdout, failing the test on a nonzero exit. It is how a test
+// spawns a tool the way ccx does, now that a fixture carries its PATH rather
+// than installing it over the process's.
+func (f *Fixture) Out(t *testing.T, bin string, args ...string) string {
+	t.Helper()
+	return run(t, f.Dir, f.env, bin, args...)
+}
+
+// PATH is the PATH the fixture's children resolve against.
+func (f *Fixture) PATH() string { return lookpath.For(f.env).PATH }
 
 // WorktreePath returns the path at which Worktree, PrunableWorktree, or
 // LockedWorktree placed the named worktree.
@@ -51,7 +106,14 @@ func (f *Fixture) WorktreePath(name string) string {
 // the brew-free PATH to hide a tool passes locally and fails on CI.
 func (f *Fixture) OnlyShimPATH(t *testing.T) {
 	t.Helper()
-	t.Setenv("PATH", f.ShimBin)
+	f.env = append(f.env, "PATH="+f.ShimBin)
+}
+
+// PrependPATH adds dir ahead of the fixture's current PATH, for a tool a test
+// installs into the fixture after Repo already built it. [Fixture.Context]
+// reads f.env live, so a call before Context() still reaches every child.
+func (f *Fixture) PrependPATH(dir string) {
+	f.env = append(f.env, "PATH="+dir+string(os.PathListSeparator)+f.PATH())
 }
 
 type config struct {
@@ -168,11 +230,10 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 	f := &Fixture{Dir: dir}
 
 	if cfg.brokenGitDir {
-		isolateEnv(t, base, resolved)
+		f.env = fixtureEnv(t, base, detachedHome(t), resolved)
 		mkdir(t, dir)
 		writeFile(t, filepath.Join(dir, ".git"), "gitdir: /nonexistent-repo\n")
-		f.ShimBin, f.ArgvLog, f.settles = installShim(t)
-		t.Chdir(dir)
+		f.installShim(t)
 		return f
 	}
 
@@ -180,7 +241,7 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 	home := detachedHome(t)
 	copyTree(t, tmpl.base, base)
 	copyTree(t, tmpl.home, home)
-	applyEnv(t, base, home, resolved)
+	f.env = fixtureEnv(t, base, home, resolved)
 	if cfg.remote {
 		f.RemoteDir = filepath.Join(base, "remote.git")
 		pinOrigin(t, base)
@@ -190,8 +251,8 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 	for _, tool := range resolved {
 		bin[tool.name] = tool.path
 	}
-	git := func(args ...string) string { return run(t, dir, bin["git"], args...) }
-	jj := func(args ...string) string { return run(t, dir, bin["jj"], args...) }
+	git := func(args ...string) string { return run(t, dir, f.env, bin["git"], args...) }
+	jj := func(args ...string) string { return run(t, dir, f.env, bin["jj"], args...) }
 
 	if cfg.branch != "" {
 		if cfg.jj {
@@ -201,25 +262,25 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 		}
 	}
 	if cfg.worktree != "" {
-		addWorktree(t, dir, bin["git"], f.WorktreePath(cfg.worktree))
+		addWorktree(t, dir, f.env, bin["git"], f.WorktreePath(cfg.worktree))
 	}
 	if cfg.prunableWorktree {
 		path := f.WorktreePath("prunable")
-		addWorktree(t, dir, bin["git"], path)
+		addWorktree(t, dir, f.env, bin["git"], path)
 		if err := os.RemoveAll(path); err != nil {
 			t.Fatalf("remove worktree %s: %v", path, err)
 		}
 	}
 	if cfg.lockedWorktree {
 		path := f.WorktreePath("locked")
-		addWorktree(t, dir, bin["git"], path)
+		addWorktree(t, dir, f.env, bin["git"], path)
 		git("worktree", "lock", path)
 	}
 	if cfg.conflicted {
 		if cfg.jj {
 			buildJJConflict(t, dir, jj)
 		} else {
-			buildGitConflict(t, dir, bin["git"], git)
+			buildGitConflict(t, dir, f.env, bin["git"], git)
 		}
 	}
 	if cfg.conflictedBookmark {
@@ -239,44 +300,39 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 		writeFile(t, filepath.Join(dir, ".git", "index.lock"), "")
 	}
 
-	f.ShimBin, f.ArgvLog, f.settles = installShim(t)
-	t.Chdir(dir)
+	f.installShim(t)
 	return f
 }
 
-// isolateEnv points HOME, config, and cache environment at a temp tree of this
-// test's own, so no fixture reads or writes state outside it. Fixture
-// construction runs the tools by absolute path but under the brew-free PATH, so
-// their interpreters are linked where that PATH reaches them.
-func isolateEnv(t *testing.T, base string, tools []resolvedTool) {
+// fixtureEnv builds the environment that points HOME, config, and cache at a
+// temp tree of the caller's own, so no fixture reads or writes state outside
+// it. Fixture construction runs the tools by absolute path but under the
+// brew-free PATH, so their interpreters are linked where that PATH reaches
+// them. It is returned rather than installed: see [Fixture.env].
+func fixtureEnv(t *testing.T, base, home string, tools []resolvedTool) []string {
 	t.Helper()
-	applyEnv(t, base, detachedHome(t), tools)
-}
-
-// applyEnv is isolateEnv over a home the caller already holds, so a template
-// build and every fixture copied from it name their own.
-func applyEnv(t *testing.T, base, home string, tools []resolvedTool) {
-	t.Helper()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	jjCfg := filepath.Join(base, "jjconfig.toml")
 	writeFile(t, jjCfg, "user.name=\"t\"\nuser.email=\"t@t.t\"\n")
-	t.Setenv("JJ_CONFIG", jjCfg)
 	pluginData := filepath.Join(base, "plugin-data")
 	mkdir(t, pluginData)
-	t.Setenv("CLAUDE_PLUGIN_DATA", pluginData)
-	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
-	t.Setenv("GRAPHITE_AUTH_TOKEN", "")
 	interp := filepath.Join(base, "interp")
 	linkInterpreters(t, interp, tools)
-	t.Setenv("PATH", toolPATH(interp))
+	return []string{
+		"HOME=" + home,
+		"XDG_CONFIG_HOME=" + filepath.Join(home, "xdg-config"),
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"JJ_CONFIG=" + jjCfg,
+		"CLAUDE_PLUGIN_DATA=" + pluginData,
+		"CLAUDE_CODE_SESSION_ID=",
+		"GRAPHITE_AUTH_TOKEN=",
+		"PATH=" + toolPATH(interp),
+	}
 }
 
 // buildGitConflict leaves an unresolved merge of two edits to f.txt.
-func buildGitConflict(t *testing.T, dir, gitBin string, git func(...string) string) {
+func buildGitConflict(t *testing.T, dir string, env []string, gitBin string, git func(...string) string) {
 	t.Helper()
 	current := strings.TrimSpace(git("branch", "--show-current"))
 	git("switch", "-qc", "conflict-side")
@@ -287,7 +343,7 @@ func buildGitConflict(t *testing.T, dir, gitBin string, git func(...string) stri
 	writeFile(t, filepath.Join(dir, "f.txt"), "ours\n")
 	git("add", "f.txt")
 	git("commit", "-qm", "ours")
-	runExpectFail(t, dir, gitBin, "merge", "conflict-side")
+	runExpectFail(t, dir, env, gitBin, "merge", "conflict-side")
 }
 
 // buildJJConflict leaves @ as a conflicted merge of two divergent edits.
@@ -324,18 +380,19 @@ func buildConflictedBookmark(t *testing.T, dir string, jj func(...string) string
 
 // addWorktree cuts a linked worktree at path, letting git name its branch
 // after the path's basename.
-func addWorktree(t *testing.T, repo, gitBin, path string) {
+func addWorktree(t *testing.T, repo string, env []string, gitBin, path string) {
 	t.Helper()
 	mkdir(t, filepath.Dir(path))
-	run(t, repo, gitBin, "worktree", "add", "-q", path)
+	run(t, repo, env, gitBin, "worktree", "add", "-q", path)
 }
 
 // run executes bin with args in dir and returns its stdout, failing the test
 // on a nonzero exit.
-func run(t *testing.T, dir, bin string, args ...string) string {
+func run(t *testing.T, dir string, env []string, bin string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command(bin, args...) //nolint:gosec // bin is a LookPath-resolved vcs binary and args are fixture-authored, never user input
+	cmd := exec.Command(lookpath.For(env).Bin(bin), args...) //nolint:gosec // bin is a LookPath-resolved vcs binary and args are fixture-authored, never user input
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
 	out, err := cmd.Output()
 	if err != nil {
 		stderr := ""
@@ -350,10 +407,11 @@ func run(t *testing.T, dir, bin string, args ...string) string {
 
 // runExpectFail executes bin with args in dir and fails the test if the
 // command succeeds — the fixture's claimed state requires the failure.
-func runExpectFail(t *testing.T, dir, bin string, args ...string) {
+func runExpectFail(t *testing.T, dir string, env []string, bin string, args ...string) {
 	t.Helper()
-	cmd := exec.Command(bin, args...) //nolint:gosec // bin is a LookPath-resolved vcs binary and args are fixture-authored, never user input
+	cmd := exec.Command(lookpath.For(env).Bin(bin), args...) //nolint:gosec // bin is a LookPath-resolved vcs binary and args are fixture-authored, never user input
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
 	if err := cmd.Run(); err == nil {
 		t.Fatalf("%s %v: succeeded, want failure", bin, args)
 	}

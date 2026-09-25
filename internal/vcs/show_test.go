@@ -3,6 +3,7 @@ package vcs
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -159,27 +160,27 @@ func TestShowGit(t *testing.T) {
 	dir := f.Dir
 
 	write(t, dir, "f.txt", "widget\n")
-	runGit(t, dir, "add", "f.txt")
-	runGit(t, dir, "commit", "-qm", "Add the widget\n\nExplain the widget.")
-	widget := gitOutput(t, dir, "rev-parse", "HEAD")
-	root := gitOutput(t, dir, "rev-parse", "HEAD~1")
+	runGit(t, f, dir, "add", "f.txt")
+	runGit(t, f, dir, "commit", "-qm", "Add the widget\n\nExplain the widget.")
+	widget := gitOutput(t, f, dir, "rev-parse", "HEAD")
+	root := gitOutput(t, f, dir, "rev-parse", "HEAD~1")
 
-	runGit(t, dir, "switch", "-qc", "exotic")
+	runGit(t, f, dir, "switch", "-qc", "exotic")
 	write(t, dir, "f.txt", "exotic\n")
-	runGit(t, dir, "add", "f.txt")
-	runGit(t, dir, "commit", "-qm", exoticSubject)
-	exotic := gitOutput(t, dir, "rev-parse", "HEAD")
+	runGit(t, f, dir, "add", "f.txt")
+	runGit(t, f, dir, "commit", "-qm", exoticSubject)
+	exotic := gitOutput(t, f, dir, "rev-parse", "HEAD")
 
-	runGit(t, dir, "switch", "-qc", "side", root)
+	runGit(t, f, dir, "switch", "-qc", "side", root)
 	write(t, dir, "s.txt", "side\n")
-	runGit(t, dir, "add", "s.txt")
-	runGit(t, dir, "commit", "-qm", "side")
-	side := gitOutput(t, dir, "rev-parse", "HEAD")
+	runGit(t, f, dir, "add", "s.txt")
+	runGit(t, f, dir, "commit", "-qm", "side")
+	side := gitOutput(t, f, dir, "rev-parse", "HEAD")
 
-	runGit(t, dir, "switch", "-qc", "merged", widget)
-	runGit(t, dir, "merge", "-q", "--no-ff", "-m", "Merge side", side)
-	merge := gitOutput(t, dir, "rev-parse", "HEAD")
-	runGit(t, dir, "switch", "-q", "main")
+	runGit(t, f, dir, "switch", "-qc", "merged", widget)
+	runGit(t, f, dir, "merge", "-q", "--no-ff", "-m", "Merge side", side)
+	merge := gitOutput(t, f, dir, "rev-parse", "HEAD")
+	runGit(t, f, dir, "switch", "-q", "main")
 
 	tests := []struct {
 		id      string
@@ -191,10 +192,10 @@ func TestShowGit(t *testing.T) {
 			id:  "empty ref defaults to HEAD",
 			ref: "",
 			want: Commit{
-				ShortID: gitField(t, dir, widget, "%h"),
+				ShortID: gitField(t, f, dir, widget, "%h"),
 				Author:  "t",
 				Email:   "t@t.t",
-				Date:    gitField(t, dir, widget, "%ad"),
+				Date:    gitField(t, f, dir, widget, "%ad"),
 				Subject: "Add the widget",
 				Body:    "Explain the widget.",
 				Range:   root + ".." + widget,
@@ -204,10 +205,10 @@ func TestShowGit(t *testing.T) {
 			id:  "sha resolves",
 			ref: widget,
 			want: Commit{
-				ShortID: gitField(t, dir, widget, "%h"),
+				ShortID: gitField(t, f, dir, widget, "%h"),
 				Author:  "t",
 				Email:   "t@t.t",
-				Date:    gitField(t, dir, widget, "%ad"),
+				Date:    gitField(t, f, dir, widget, "%ad"),
 				Subject: "Add the widget",
 				Body:    "Explain the widget.",
 				Range:   root + ".." + widget,
@@ -217,10 +218,10 @@ func TestShowGit(t *testing.T) {
 			id:  "branch name resolves",
 			ref: "exotic",
 			want: Commit{
-				ShortID: gitField(t, dir, exotic, "%h"),
+				ShortID: gitField(t, f, dir, exotic, "%h"),
 				Author:  "t",
 				Email:   "t@t.t",
-				Date:    gitField(t, dir, exotic, "%ad"),
+				Date:    gitField(t, f, dir, exotic, "%ad"),
 				Subject: exoticSubject,
 				Range:   widget + ".." + exotic,
 			},
@@ -229,10 +230,10 @@ func TestShowGit(t *testing.T) {
 			id:  "merge ranges against its first parent",
 			ref: merge,
 			want: Commit{
-				ShortID: gitField(t, dir, merge, "%h"),
+				ShortID: gitField(t, f, dir, merge, "%h"),
 				Author:  "t",
 				Email:   "t@t.t",
-				Date:    gitField(t, dir, merge, "%ad"),
+				Date:    gitField(t, f, dir, merge, "%ad"),
 				Subject: "Merge side",
 				Range:   widget + ".." + merge,
 			},
@@ -242,7 +243,7 @@ func TestShowGit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {
-			got, err := Show(context.Background(), render.Dir(dir), tt.ref)
+			got, err := Show(f.Context(), render.Dir(dir), tt.ref)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("Show(%q) = %+v, want error", tt.ref, got)
@@ -265,7 +266,7 @@ func TestShowGitFlagShapedRef(t *testing.T) {
 	f := vcstest.Repo(t)
 	pwned := filepath.Join(t.TempDir(), "pwned")
 
-	got, err := Show(context.Background(), render.Dir(f.Dir), "--output="+pwned)
+	got, err := Show(f.Context(), render.Dir(f.Dir), "--output="+pwned)
 	if err == nil {
 		t.Fatalf("Show(--output=…) = %+v, want an unknown-revision error", got)
 	}
@@ -278,16 +279,17 @@ func TestShowGitFlagShapedRef(t *testing.T) {
 func TestShowGitTargetsItsDirNotTheCWD(t *testing.T) {
 	// other is built first so the working directory ends in f, the parentless
 	// fixture: a Show that ignored its dir argument would answer from there.
-	other := vcstest.Repo(t).Dir
+	fOther := vcstest.Repo(t)
+	other := fOther.Dir
 	write(t, other, "seed.txt", "two\n")
-	runGit(t, other, "add", "-A")
-	runGit(t, other, "commit", "-qm", "c")
+	runGit(t, fOther, other, "add", "-A")
+	runGit(t, fOther, other, "commit", "-qm", "c")
 	f := vcstest.Repo(t)
 
-	if got, err := Show(context.Background(), render.Dir(f.Dir), ""); err == nil {
+	if got, err := Show(f.Context(), render.Dir(f.Dir), ""); err == nil {
 		t.Fatalf("Show(fixture) = %+v, want the root commit to have no range", got)
 	}
-	got, err := Show(context.Background(), render.Dir(other), "")
+	got, err := Show(f.Context(), render.Dir(other), "")
 	if err != nil {
 		t.Fatalf("Show(other) error = %v", err)
 	}
@@ -304,16 +306,16 @@ func TestShowJJ(t *testing.T) {
 	dir := f.Dir
 
 	write(t, dir, "f.txt", "widget\n")
-	runJJ(t, dir, "commit", "-m", "Add the widget\n\nExplain the widget.")
+	runJJ(t, f, dir, "commit", "-m", "Add the widget\n\nExplain the widget.")
 
-	initID := jjField(t, dir, "@--", "commit_id")
-	widgetID := jjField(t, dir, "@-", "commit_id")
-	wcID := jjField(t, dir, "@", "commit_id")
+	initID := jjField(t, f, dir, "@--", "commit_id")
+	widgetID := jjField(t, f, dir, "@-", "commit_id")
+	wcID := jjField(t, f, dir, "@", "commit_id")
 	widget := Commit{
-		ShortID: jjField(t, dir, "@-", "commit_id.short()"),
+		ShortID: jjField(t, f, dir, "@-", "commit_id.short()"),
 		Author:  "t",
 		Email:   "t@t.t",
-		Date:    jjField(t, dir, "@-", `author.timestamp().format("%Y-%m-%d")`),
+		Date:    jjField(t, f, dir, "@-", `author.timestamp().format("%Y-%m-%d")`),
 		Subject: "Add the widget",
 		Body:    "Explain the widget.",
 		Range:   initID + ".." + widgetID,
@@ -330,20 +332,20 @@ func TestShowJJ(t *testing.T) {
 			id:  "@ names the working copy",
 			ref: "@",
 			want: Commit{
-				ShortID: jjField(t, dir, "@", "commit_id.short()"),
+				ShortID: jjField(t, f, dir, "@", "commit_id.short()"),
 				Author:  "t",
 				Email:   "t@t.t",
-				Date:    jjField(t, dir, "@", `author.timestamp().format("%Y-%m-%d")`),
+				Date:    jjField(t, f, dir, "@", `author.timestamp().format("%Y-%m-%d")`),
 				Range:   widgetID + ".." + wcID,
 			},
 		},
-		{id: "change id passes through to jj", ref: jjField(t, dir, "@-", "change_id"), want: widget},
+		{id: "change id passes through to jj", ref: jjField(t, f, dir, "@-", "change_id"), want: widget},
 		{id: "git symbolic ref resolves before jj sees it", ref: "HEAD", want: widget},
 		{id: "unresolvable revset errors", ref: "no-such-revset", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {
-			got, err := Show(context.Background(), render.Dir(dir), tt.ref)
+			got, err := Show(f.Context(), render.Dir(dir), tt.ref)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("Show(%q) = %+v, want error", tt.ref, got)
@@ -369,7 +371,7 @@ func TestShowJJNativeRevsetNeverRunsGit(t *testing.T) {
 		t.Fatalf("fixture construction leaked into the argv log: %v", got)
 	}
 
-	if _, err := Show(context.Background(), render.Dir(f.Dir), "@-"); err != nil {
+	if _, err := Show(f.Context(), render.Dir(f.Dir), "@-"); err != nil {
 		t.Fatalf("Show(@-) error = %v", err)
 	}
 
@@ -386,17 +388,21 @@ func TestShowJJNativeRevsetNeverRunsGit(t *testing.T) {
 
 // gitField reads one --format placeholder off sha through git log, so an
 // expectation is built by a different plumbing command than the one under test.
-func gitField(t *testing.T, dir, sha, placeholder string) string {
+func gitField(t *testing.T, f *vcstest.Fixture, dir, sha, placeholder string) string {
 	t.Helper()
-	return gitOutput(t, dir, "log", "-1", "--date=short", "--format="+placeholder, sha)
+	return gitOutput(t, f, dir, "log", "-1", "--date=short", "--format="+placeholder, sha)
 }
 
 // jjField evaluates a jj template against rev and returns its stdout trimmed;
 // runJJ folds stderr in, which jj uses for the hints a commit id must not carry.
-func jjField(t *testing.T, dir, rev, template string) string {
+func jjField(t *testing.T, f *vcstest.Fixture, dir, rev, template string) string {
 	t.Helper()
+	if dir == f.Dir {
+		return strings.TrimSpace(f.Out(t, "jj", "log", "--no-graph", "-r", rev, "-T", template))
+	}
 	cmd := exec.Command("jj", "log", "--no-graph", "-r", rev, "-T", template) //nolint:gosec // fixed jj verb; dir is the fixture repo and the template is a test literal
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), f.Env()...)
 	out, err := cmd.Output()
 	if err != nil {
 		stderr := ""

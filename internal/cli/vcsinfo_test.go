@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -22,7 +23,8 @@ import (
 func infoRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	t.Helper()
 	f := vcstest.Repo(t, opts...)
-	seedLaneRecords(t, ".", laneSeed{})
+	f.Isolate(t)
+	seedLaneRecords(t, f.Dir, laneSeed{})
 	return f
 }
 
@@ -33,16 +35,17 @@ func infoRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 func infoGTRepo(t *testing.T, branches ...string) *vcstest.Fixture {
 	t.Helper()
 	f := vcstest.Repo(t, vcstest.GT(), vcstest.Remote())
+	f.Isolate(t)
 	parent := "main"
 	for i, branch := range branches {
-		runTool(t, f.Dir, "git", "switch", "-qc", branch)
+		runTool(t, f, "git", "switch", "-qc", branch)
 		writeInfoFile(t, f.Dir, fmt.Sprintf("b%d.txt", i), branch+"\n")
-		runTool(t, f.Dir, "git", "add", "-A")
-		runTool(t, f.Dir, "git", "commit", "-qm", branch)
-		runTool(t, f.Dir, "gt", "track", "--parent", parent, "--no-interactive")
+		runTool(t, f, "git", "add", "-A")
+		runTool(t, f, "git", "commit", "-qm", branch)
+		runTool(t, f, "gt", "track", "--parent", parent, "--no-interactive")
 		parent = branch
 	}
-	seedLaneRecords(t, ".", laneSeed{})
+	seedLaneRecords(t, f.Dir, laneSeed{})
 	return f
 }
 
@@ -50,7 +53,7 @@ func infoGTRepo(t *testing.T, branches ...string) *vcstest.Fixture {
 // assertion pins the segment's shape rather than the version this machine has.
 func gtVersion(t *testing.T, f *vcstest.Fixture) string {
 	t.Helper()
-	return strings.TrimSpace(runTool(t, f.Dir, "gt", "--version"))
+	return strings.TrimSpace(runTool(t, f, "gt", "--version"))
 }
 
 // resetArgvLog drops the records the fixture's own setup commands wrote, so an
@@ -63,15 +66,9 @@ func resetArgvLog(t *testing.T, f *vcstest.Fixture) {
 	}
 }
 
-func runTool(t *testing.T, dir, name string, args ...string) string {
+func runTool(t *testing.T, f *vcstest.Fixture, name string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command(name, args...) //nolint:gosec // name resolves through the fixture's own shim PATH and args are fixture-authored
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("%s %v: %v\n%s", name, args, err, out)
-	}
-	return string(out)
+	return f.Out(t, name, args...)
 }
 
 func writeInfoFile(t *testing.T, dir, name, content string) {
@@ -200,22 +197,35 @@ func shQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-func runVcsInfoCmd(t *testing.T, args ...string) (string, error) {
+func runVcsInfoCmd(t *testing.T, f *vcstest.Fixture, args ...string) (string, error) {
 	t.Helper()
-	cmd := newVcsInfoCmd()
+	return runVcsInfoCmdIn(f.Context(), t, args...)
+}
+
+// runVcsInfoCmdIn is runVcsInfoCmd rooted where the caller says, for a test
+// reporting on a worktree rather than the fixture's own repository.
+func runVcsInfoCmdIn(ctx context.Context, t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	cmd := newVcsInfoCmd() //nolint:contextcheck // ExecuteContext(ctx) below is what sets cmd's context; contextcheck cannot see through cobra's two-step wiring
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 	var out, errBuf bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errBuf)
 	cmd.SetArgs(args)
-	err := cmd.Execute()
+	err := cmd.ExecuteContext(ctx)
 	return out.String(), err
 }
 
-func runVcsInfoJSON(t *testing.T, args ...string) vcsInfo {
+func runVcsInfoJSON(t *testing.T, f *vcstest.Fixture, args ...string) vcsInfo {
 	t.Helper()
-	out, err := runVcsInfoCmd(t, append([]string{"--json"}, args...)...)
+	return runVcsInfoJSONIn(f.Context(), t, args...)
+}
+
+// runVcsInfoJSONIn is runVcsInfoJSON rooted where the caller says.
+func runVcsInfoJSONIn(ctx context.Context, t *testing.T, args ...string) vcsInfo {
+	t.Helper()
+	out, err := runVcsInfoCmdIn(ctx, t, append([]string{"--json"}, args...)...)
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
@@ -297,7 +307,7 @@ func TestVcsInfoGTLane(t *testing.T) {
 	writeInfoFile(t, f.Dir, "b0.txt", "dirty\n")
 	writeInfoFile(t, f.Dir, "untracked.txt", "new\n")
 
-	out, err := runVcsInfoCmd(t)
+	out, err := runVcsInfoCmd(t, f)
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
@@ -324,14 +334,14 @@ func TestVcsInfoGTLane(t *testing.T) {
 func TestVcsInfoGitLaneNoGraphite(t *testing.T) {
 	f := infoRepo(t, vcstest.Remote(), vcstest.Dirty())
 
-	out, err := runVcsInfoCmd(t)
+	out, err := runVcsInfoCmd(t, f)
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
 	if got := infoLine(t, out, "lane"); got != "git" {
 		t.Errorf("lane = %q, want git", got)
 	}
-	head := strings.TrimSpace(runTool(t, f.Dir, "git", "symbolic-ref", "refs/remotes/origin/HEAD"))
+	head := strings.TrimSpace(runTool(t, f, "git", "symbolic-ref", "refs/remotes/origin/HEAD"))
 	if want := "refs/remotes/origin/main"; head != want {
 		t.Fatalf("fixture origin/HEAD = %q, want %q", head, want)
 	}
@@ -351,11 +361,11 @@ func TestVcsInfoGitLaneNoGraphite(t *testing.T) {
 func TestVcsInfoJJLane(t *testing.T) {
 	f := infoRepo(t, vcstest.JJ(), vcstest.Remote())
 	writeInfoFile(t, f.Dir, "g.txt", "feature\n")
-	runTool(t, f.Dir, "jj", "commit", "-m", "feature")
-	runTool(t, f.Dir, "jj", "bookmark", "create", "feature", "-r", "@-")
+	runTool(t, f, "jj", "commit", "-m", "feature")
+	runTool(t, f, "jj", "bookmark", "create", "feature", "-r", "@-")
 	writeInfoFile(t, f.Dir, "f.txt", "dirty\n")
 
-	out, err := runVcsInfoCmd(t)
+	out, err := runVcsInfoCmd(t, f)
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
@@ -377,10 +387,10 @@ func TestVcsInfoJJLane(t *testing.T) {
 // trunk line rather than failing, the way shipPreflightJJ would.
 func TestVcsInfoJJTrunkUnresolvable(t *testing.T) {
 	f := infoRepo(t, vcstest.JJ(), vcstest.Remote())
-	runTool(t, f.Dir, "jj", "bookmark", "create", "dev", "-r", "main")
-	runTool(t, f.Dir, "jj", "git", "push", "--bookmark", "dev")
+	runTool(t, f, "jj", "bookmark", "create", "dev", "-r", "main")
+	runTool(t, f, "jj", "git", "push", "--bookmark", "dev")
 
-	got := runVcsInfoJSON(t)
+	got := runVcsInfoJSON(t, f)
 	if got.Trunk != "" {
 		t.Errorf("trunk = %q, want empty on an ambiguous trunk bookmark", got.Trunk)
 	}
@@ -393,9 +403,9 @@ func TestVcsInfoGraphiteDeclined(t *testing.T) {
 	f := infoGTRepo(t, "feature")
 	version := gtVersion(t, f)
 	note := "cc-context is not synced with graphite (gt auth: does not have the necessary permissions)"
-	seedLaneRecords(t, ".", laneSeed{unreachable: true, note: note})
+	seedLaneRecords(t, f.Dir, laneSeed{unreachable: true, note: note})
 
-	out, err := runVcsInfoCmd(t)
+	out, err := runVcsInfoCmd(t, f)
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
@@ -420,11 +430,11 @@ func TestVcsInfoGraphiteDeclined(t *testing.T) {
 func TestVcsInfoProbeUnknown(t *testing.T) {
 	f := infoGTRepo(t)
 	version := gtVersion(t, f)
-	clearGTRecord(t, ".")
+	clearGTRecord(t, f.Dir)
 	gtAuthHangs(t, f)
 	shortenGTProbe(t)
 
-	got := runVcsInfoJSON(t)
+	got := runVcsInfoJSON(t, f)
 	wantReason := "gt auth did not answer within " + gtProbeTimeout.String()
 	if got.Lane != "git" {
 		t.Errorf("lane = %q, want git — an unknown verdict demotes", got.Lane)
@@ -437,7 +447,7 @@ func TestVcsInfoProbeUnknown(t *testing.T) {
 			got.Graphite.Reachable, got.Graphite.Reason, gtVerdictUnknown, wantReason)
 	}
 
-	human, err := runVcsInfoCmd(t)
+	human, err := runVcsInfoCmd(t, f)
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
@@ -471,7 +481,7 @@ func TestVcsInfoRefreshLaneVerdict(t *testing.T) {
 			gtAuthGolden(t, f, probe)
 			resetArgvLog(t, f)
 
-			got := runVcsInfoJSON(t, tt.args...)
+			got := runVcsInfoJSON(t, f, tt.args...)
 			wantReason := ""
 			if tt.wantReachable == gtVerdictDenied {
 				// The note is ccx's own sentence for a denied probe, read off the
@@ -497,9 +507,9 @@ func TestVcsInfoRefreshLaneVerdict(t *testing.T) {
 }
 
 func TestVcsInfoDetachedHead(t *testing.T) {
-	infoRepo(t, vcstest.Remote(), vcstest.Detached())
+	f := infoRepo(t, vcstest.Remote(), vcstest.Detached())
 
-	got := runVcsInfoJSON(t)
+	got := runVcsInfoJSON(t, f)
 	if !got.Detached {
 		t.Errorf("detached = false, want true on a detached HEAD")
 	}
@@ -516,12 +526,13 @@ func TestVcsInfoWithoutGh(t *testing.T) {
 	// The fixture's brew-free PATH keeps /usr/bin, which is where CI installs
 	// gh, so only the shim directory alone holds no gh to find.
 	f.OnlyShimPATH(t)
-	clearLaneRecords(t, ".")
+	f.Isolate(t)
+	clearLaneRecords(t, f.Dir)
 	if path, err := exec.LookPath("gh"); err == nil {
 		t.Fatalf("gh resolved to %s; the fixture PATH must hold none", path)
 	}
 
-	got := runVcsInfoJSON(t)
+	got := runVcsInfoJSON(t, f)
 	if got.GitHub != nil {
 		t.Errorf("github = %+v, want null with no gh on PATH", got.GitHub)
 	}
@@ -536,7 +547,7 @@ func TestVcsInfoJSON(t *testing.T) {
 	ghReplay(t, f, downstack)
 	version := gtVersion(t, f)
 
-	got := runVcsInfoJSON(t)
+	got := runVcsInfoJSON(t, f)
 	if got.Lane != "gt" || got.VCS != "git" || got.BranchKind != "branch" {
 		t.Errorf("lane/vcs/branch_kind = %q/%q/%q, want gt/git/branch", got.Lane, got.VCS, got.BranchKind)
 	}
@@ -597,7 +608,7 @@ func TestVcsInfoDownstackBodies(t *testing.T) {
 	f := infoGTRepo(t, downstackThree...)
 	ghReplay(t, f, downstack)
 
-	out, err := runVcsInfoCmd(t)
+	out, err := runVcsInfoCmd(t, f)
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
@@ -633,9 +644,9 @@ func TestInfoDownstackValue(t *testing.T) {
 func TestVcsInfoUntrackedBranch(t *testing.T) {
 	f := infoGTRepo(t)
 	version := gtVersion(t, f)
-	runTool(t, f.Dir, "git", "switch", "-qc", "feature")
+	runTool(t, f, "git", "switch", "-qc", "feature")
 
-	out, err := runVcsInfoCmd(t)
+	out, err := runVcsInfoCmd(t, f)
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
@@ -657,7 +668,7 @@ func TestVcsInfoGTStateFailureReported(t *testing.T) {
 	f := infoGTRepo(t, "feature")
 	writeInfoFile(t, f.Dir, filepath.Join(".git", ".graphite_metadata.db"), "not a database\n")
 
-	out, err := runVcsInfoCmd(t)
+	out, err := runVcsInfoCmd(t, f)
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
@@ -689,7 +700,7 @@ func TestVcsInfoGitTrunkFailureCarriesInfoPrefix(t *testing.T) {
 	f := infoRepo(t, vcstest.Remote())
 	writeInfoFile(t, f.Dir, filepath.Join(".git", "refs", "remotes", "origin", "HEAD"), "not-a-ref\n")
 
-	out, err := runVcsInfoCmd(t)
+	out, err := runVcsInfoCmd(t, f)
 	if err == nil {
 		t.Fatalf("info succeeded over a corrupt origin/HEAD:\n%s", out)
 	}
@@ -712,9 +723,9 @@ func TestVcsInfoGitTrunkMissRendersEmpty(t *testing.T) {
 	f := infoRepo(t, vcstest.Remote(), vcstest.NoOriginHead(), vcstest.Dirty())
 	// The miss must not be mistaken for a repository with no main branch at all:
 	// refs/remotes/origin/main is here, it is simply not designated.
-	runTool(t, f.Dir, "git", "rev-parse", "--verify", "refs/remotes/origin/main")
+	runTool(t, f, "git", "rev-parse", "--verify", "refs/remotes/origin/main")
 
-	out, err := runVcsInfoCmd(t)
+	out, err := runVcsInfoCmd(t, f)
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
@@ -750,14 +761,14 @@ func TestVcsInfoTrunkHolder(t *testing.T) {
 				if err := os.MkdirAll(filepath.Dir(want), 0o750); err != nil {
 					t.Fatalf("mkdir worktree parent: %v", err)
 				}
-				runTool(t, f.Dir, "git", "worktree", "add", "-q", want, "main")
+				runTool(t, f, "git", "worktree", "add", "-q", want, "main")
 			}
 
-			got := runVcsInfoJSON(t)
+			got := runVcsInfoJSON(t, f)
 			if got.TrunkHolder != want {
 				t.Errorf("trunk_holder = %q, want %q", got.TrunkHolder, want)
 			}
-			human, err := runVcsInfoCmd(t)
+			human, err := runVcsInfoCmd(t, f)
 			if err != nil {
 				t.Fatalf("info error = %v", err)
 			}
@@ -779,9 +790,9 @@ func TestVcsInfoTrunkHolder(t *testing.T) {
 // anything, so reporting a shape, a main root, and a repo key that all restate
 // root would be noise.
 func TestVcsInfoMainCheckoutHasNoWorktreeBlock(t *testing.T) {
-	infoRepo(t, vcstest.Remote())
+	f := infoRepo(t, vcstest.Remote())
 
-	if got := runVcsInfoJSON(t); got.Worktree != nil {
+	if got := runVcsInfoJSON(t, f); got.Worktree != nil {
 		t.Errorf("worktree = %+v, want none for the repository's own working copy", got.Worktree)
 	}
 }
@@ -791,11 +802,12 @@ func TestVcsInfoMainCheckoutHasNoWorktreeBlock(t *testing.T) {
 // it at the main working copy would name bytes ccx is not looking at.
 func TestVcsInfoLinkedWorktree(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Worktree("feat"))
+	f.Isolate(t)
 	root := f.WorktreePath("feat")
 	t.Chdir(root)
 	seedLaneRecords(t, ".", laneSeed{})
 
-	got := runVcsInfoJSON(t)
+	got := runVcsInfoJSONIn(f.ContextIn(root), t)
 	if got.Root != root {
 		t.Errorf("root = %q, want this checkout's own tree %q", got.Root, root)
 	}
@@ -817,9 +829,10 @@ func TestVcsInfoLinkedWorktree(t *testing.T) {
 // nothing is reported, not an exit 1, and the report stops there rather than
 // claiming a branch or a dirtiness it cannot read.
 func TestVcsInfoBrokenCheckoutReported(t *testing.T) {
-	vcstest.Repo(t, vcstest.BrokenGitDir())
+	f := vcstest.Repo(t, vcstest.BrokenGitDir())
+	f.Isolate(t)
 
-	out, err := runVcsInfoCmd(t)
+	out, err := runVcsInfoCmd(t, f)
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
@@ -845,7 +858,7 @@ func TestVcsInfoWarmCacheSkipsRepoView(t *testing.T) {
 	ghReplay(t, f, downstack)
 	resetArgvLog(t, f)
 
-	if _, err := runVcsInfoCmd(t); err != nil {
+	if _, err := runVcsInfoCmd(t, f); err != nil {
 		t.Fatalf("info error = %v", err)
 	}
 	f.Quiesce(t)

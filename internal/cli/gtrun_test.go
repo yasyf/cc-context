@@ -352,7 +352,7 @@ func TestGTRunCaptureKeepsThePayloadParseable(t *testing.T) {
 	want := loadGTGolden(t, "sync-decline-exit0").stderr
 	f := vcstest.Repo(t, vcstest.GT())
 
-	payload, r, err := gtCapture(context.Background(), render.Dir(f.Dir), []string{"state"}, gtZeroFatal)
+	payload, r, err := gtCapture(f.Context(), render.Dir(f.Dir), []string{"state"}, gtZeroFatal)
 	if err != nil {
 		t.Fatalf("gtCapture: %v", err)
 	}

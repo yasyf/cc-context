@@ -177,7 +177,7 @@ the work is the tell.`,
 
 func runVcsStatus(cmd *cobra.Command, o vcsStatusOpts) error {
 	ctx := cmd.Context()
-	l, err := resolveLaneReport(ctx, "status", workingDir(), o.noGT, o.refresh)
+	l, err := resolveLaneReport(ctx, "status", workingDir(ctx), o.noGT, o.refresh)
 	if err != nil {
 		return err
 	}

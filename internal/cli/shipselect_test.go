@@ -62,10 +62,11 @@ func gitHunkRepo(t *testing.T, base, current string) *vcstest.Fixture {
 	f := vcstest.Repo(t)
 	writeRepoFile(t, f.Dir, "f.txt", base)
 	writeRepoFile(t, f.Dir, "staged.txt", "staged\n")
-	mustRun(t, f.Dir, "git", "add", "f.txt")
-	mustRun(t, f.Dir, "git", "commit", "-qm", "base")
-	mustRun(t, f.Dir, "git", "add", "staged.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "f.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "staged.txt")
 	writeRepoFile(t, f.Dir, "f.txt", current)
+	f.Isolate(t)
 	return f
 }
 
@@ -77,8 +78,9 @@ func jjHunkRepo(t *testing.T, base, current string) *vcstest.Fixture {
 	f := vcstest.Repo(t, vcstest.JJ())
 	t.Setenv("CCX_TEST_APPLY_SELECTION", "1")
 	writeRepoFile(t, f.Dir, "f.txt", base)
-	mustRun(t, f.Dir, "jj", "commit", "-m", "base")
+	mustRun(t, f.Env(), f.Dir, "jj", "commit", "-m", "base")
 	writeRepoFile(t, f.Dir, "f.txt", current)
+	f.Isolate(t)
 	return f
 }
 
@@ -122,15 +124,15 @@ func argvHasPrefix(inv, prefix []string) bool {
 
 // gitHead returns dir's HEAD commit id, the value that must not move across a
 // refused ship.
-func gitHead(t *testing.T, dir string) string {
+func gitHead(t *testing.T, env []string, dir string) string {
 	t.Helper()
-	return strings.TrimSpace(mustRun(t, dir, "git", "rev-parse", "HEAD"))
+	return strings.TrimSpace(mustRun(t, env, dir, "git", "rev-parse", "HEAD"))
 }
 
 // gitCommitCount returns how many commits HEAD carries.
-func gitCommitCount(t *testing.T, dir string) int {
+func gitCommitCount(t *testing.T, env []string, dir string) int {
 	t.Helper()
-	n, err := strconv.Atoi(strings.TrimSpace(mustRun(t, dir, "git", "rev-list", "--count", "HEAD")))
+	n, err := strconv.Atoi(strings.TrimSpace(mustRun(t, env, dir, "git", "rev-list", "--count", "HEAD")))
 	if err != nil {
 		t.Fatalf("parse commit count: %v", err)
 	}
@@ -138,15 +140,15 @@ func gitCommitCount(t *testing.T, dir string) int {
 }
 
 // jjRevContent returns f.txt's content at rev.
-func jjRevContent(t *testing.T, dir, rev string) string {
+func jjRevContent(t *testing.T, env []string, dir, rev string) string {
 	t.Helper()
-	return mustRun(t, dir, "jj", "file", "show", "-r", rev, "--", "f.txt")
+	return mustRun(t, env, dir, "jj", "file", "show", "-r", rev, "--", "f.txt")
 }
 
 // jjRevDescription returns rev's first description line.
-func jjRevDescription(t *testing.T, dir, rev string) string {
+func jjRevDescription(t *testing.T, env []string, dir, rev string) string {
 	t.Helper()
-	return strings.TrimSpace(mustRun(t, dir, "jj", "log", "-r", rev, "--no-graph", "-T", "description.first_line()"))
+	return strings.TrimSpace(mustRun(t, env, dir, "jj", "log", "-r", rev, "--no-graph", "-T", "description.first_line()"))
 }
 
 // writeFailingPreCommitHook installs a native git pre-commit hook that always
@@ -198,17 +200,17 @@ func TestShipJJHunkSelection(t *testing.T) {
 			before := statOf(t, "f.txt")
 
 			args := append(append([]string{}, tt.args...), ref, "--no-push", "f.txt")
-			if _, err := runShipCmd(t, args...); err != nil {
+			if _, err := runShipCmd(f.Context(), t, args...); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 
-			if got := jjRevContent(t, f.Dir, "@-"); got != tt.wantCommitted {
+			if got := jjRevContent(t, f.Env(), f.Dir, "@-"); got != tt.wantCommitted {
 				t.Errorf("committed (@-) = %q, want %q", got, tt.wantCommitted)
 			}
-			if got := jjRevContent(t, f.Dir, "@"); got != hunkCurrent {
+			if got := jjRevContent(t, f.Env(), f.Dir, "@"); got != hunkCurrent {
 				t.Errorf("remainder (@) = %q, want %q (the excluded hunk stays in the working copy)", got, hunkCurrent)
 			}
-			if got := jjRevDescription(t, f.Dir, "@-"); got != tt.wantDescription {
+			if got := jjRevDescription(t, f.Env(), f.Dir, "@-"); got != tt.wantDescription {
 				t.Errorf("@- description = %q, want %q", got, tt.wantDescription)
 			}
 			if got := readFileStr(t, "f.txt"); got != hunkCurrent {
@@ -219,8 +221,8 @@ func TestShipJJHunkSelection(t *testing.T) {
 			}
 			// The bookmark ship reported must be the one it moved: main sat a commit
 			// behind @- until the ship landed it there.
-			bookmarked := strings.TrimSpace(mustRun(t, f.Dir, "jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", "commit_id"))
-			at := strings.TrimSpace(mustRun(t, f.Dir, "jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id"))
+			bookmarked := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "jj", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", "commit_id"))
+			at := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id"))
 			if bookmarked != at {
 				t.Errorf("bookmark main sits at %s, want the committed %s", bookmarked, at)
 			}
@@ -233,14 +235,14 @@ func TestShipHunkHooksAreReportedSkipped(t *testing.T) {
 	writeShipHookFiles(t, f.Dir)
 	ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--only-hunk", ref, "f.txt")
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--only-hunk", ref, "f.txt")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	// Any path that actually reached prek reports a different hook segment (or
 	// fails outright, since the brew-free PATH carries no uvx), so the segment is
 	// the proof the external hook run was skipped rather than attempted.
-	sha := strings.TrimSpace(mustRun(t, f.Dir, "jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id.short()"))
+	sha := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id.short()"))
 	want := fmt.Sprintf("hooks hunk-skip · committed %s %q · branch main · not pushed", sha, "fix: frobnicate")
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
@@ -252,11 +254,11 @@ func TestShipHunkNoVerifySilencesHookSegment(t *testing.T) {
 	writeShipHookFiles(t, f.Dir)
 	ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--no-verify", "--only-hunk", ref, "f.txt")
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--no-verify", "--only-hunk", ref, "f.txt")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	sha := strings.TrimSpace(mustRun(t, f.Dir, "jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id.short()"))
+	sha := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id.short()"))
 	want := fmt.Sprintf("committed %s %q · branch main · not pushed", sha, "fix: frobnicate")
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
@@ -319,7 +321,7 @@ func hunkRefusalCases(t *testing.T) []hunkRefusalCase {
 func assertHunkRefusal(t *testing.T, f *vcstest.Fixture, mark int, tt hunkRefusalCase) {
 	t.Helper()
 	args := append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.args...)
-	_, err := runShipCmd(t, args...)
+	_, err := runShipCmd(f.Context(), t, args...)
 	if err == nil {
 		t.Fatal("expected refusal, got nil")
 	}
@@ -337,14 +339,14 @@ func TestShipJJHunkRefusals(t *testing.T) {
 	for _, tt := range hunkRefusalCases(t) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := jjHunkRepo(t, hunkBase, hunkCurrent)
-			head := strings.TrimSpace(mustRun(t, f.Dir, "jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id"))
+			head := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id"))
 
 			assertHunkRefusal(t, f, argvMark(t, f), tt)
 
-			if got := strings.TrimSpace(mustRun(t, f.Dir, "jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id")); got != head {
+			if got := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id")); got != head {
 				t.Errorf("@- moved to %s, want the pre-ship %s", got, head)
 			}
-			if got := jjRevContent(t, f.Dir, "@"); got != hunkCurrent {
+			if got := jjRevContent(t, f.Env(), f.Dir, "@"); got != hunkCurrent {
 				t.Errorf("working copy = %q, want the untouched %q", got, hunkCurrent)
 			}
 		})
@@ -355,11 +357,11 @@ func TestShipGitHunkRefusals(t *testing.T) {
 	for _, tt := range hunkRefusalCases(t) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := gitHunkRepo(t, hunkBase, hunkCurrent)
-			head := gitHead(t, f.Dir)
+			head := gitHead(t, f.Env(), f.Dir)
 
 			assertHunkRefusal(t, f, argvMark(t, f), tt)
 
-			if got := gitHead(t, f.Dir); got != head {
+			if got := gitHead(t, f.Env(), f.Dir); got != head {
 				t.Errorf("HEAD moved to %s, want the pre-ship %s", got, head)
 			}
 			if got := readFileStr(t, "f.txt"); got != hunkCurrent {
@@ -382,18 +384,18 @@ func TestShipGitHunkTempIndexIsolation(t *testing.T) {
 	before := statOf(t, "f.txt")
 	mark := argvMark(t, f)
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--skip-hunk", ref, "f.txt", "g.txt"); err != nil {
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--skip-hunk", ref, "f.txt", "g.txt"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 
 	const wantCommitted = "a\nb\nc\nd\nE\n"
-	if got := mustRun(t, f.Dir, "git", "show", "HEAD:f.txt"); got != wantCommitted {
+	if got := mustRun(t, f.Env(), f.Dir, "git", "show", "HEAD:f.txt"); got != wantCommitted {
 		t.Errorf("committed (HEAD:f.txt) = %q, want %q", got, wantCommitted)
 	}
-	if got := mustRun(t, f.Dir, "git", "show", "HEAD:g.txt"); got != "whole\n" {
+	if got := mustRun(t, f.Env(), f.Dir, "git", "show", "HEAD:g.txt"); got != "whole\n" {
 		t.Errorf("committed (HEAD:g.txt) = %q, want the whole-shipped sibling", got)
 	}
-	if out, err := runGit(f.Dir, "show", "HEAD:staged.txt"); err == nil {
+	if out, err := runGit(f.Env(), f.Dir, "show", "HEAD:staged.txt"); err == nil {
 		t.Errorf("the pre-staged sibling was swept into the commit: %s", out)
 	}
 	status := statusSet(t, f.Dir)
@@ -435,21 +437,21 @@ func TestShipGitHunkNewBranchRollback(t *testing.T) {
 	f := gitHunkRepo(t, hunkBase, hunkCurrent)
 	writeFailingPreCommitHook(t, f.Dir)
 	ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
-	head := gitHead(t, f.Dir)
+	head := gitHead(t, f.Env(), f.Dir)
 	mark := argvMark(t, f)
 
-	_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--verify", "--new-branch=feat-x", "--only-hunk", ref, "f.txt")
+	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--verify", "--new-branch=feat-x", "--only-hunk", ref, "f.txt")
 	if err == nil || !strings.Contains(err.Error(), "ship: git commit:") {
 		t.Fatalf("ship error = %v, want the temp-index commit failure", err)
 	}
 
-	if got := strings.TrimSpace(mustRun(t, f.Dir, "git", "branch", "--show-current")); got != "main" {
+	if got := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "git", "branch", "--show-current")); got != "main" {
 		t.Errorf("checked out %q after the refusal, want main", got)
 	}
-	if out, err := runGit(f.Dir, "rev-parse", "--verify", "refs/heads/feat-x"); err == nil {
+	if out, err := runGit(f.Env(), f.Dir, "rev-parse", "--verify", "refs/heads/feat-x"); err == nil {
 		t.Errorf("feat-x survived the refusal: %s", out)
 	}
-	if got := gitHead(t, f.Dir); got != head {
+	if got := gitHead(t, f.Env(), f.Dir); got != head {
 		t.Errorf("HEAD moved to %s, want the pre-ship %s", got, head)
 	}
 	assertArgvOrder(t, shipInvocations(t, f, mark), [][]string{
@@ -483,13 +485,13 @@ func TestShipGitHunkNoVerify(t *testing.T) {
 				writeShipHookFiles(t, f.Dir)
 			}
 			ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
-			before := gitCommitCount(t, f.Dir)
+			before := gitCommitCount(t, f.Env(), f.Dir)
 
 			args := []string{"-m", "fix: frobnicate", "--no-push", "--only-hunk", ref, "f.txt"}
 			if tt.noVerify {
 				args = append(args, "--no-verify")
 			}
-			_, err := runShipCmd(t, args...)
+			_, err := runShipCmd(f.Context(), t, args...)
 			want := before
 			if tt.wantCommit {
 				want++
@@ -499,7 +501,7 @@ func TestShipGitHunkNoVerify(t *testing.T) {
 			} else if err == nil {
 				t.Fatal("expected the refusing pre-commit hook to fail the ship, got nil")
 			}
-			if got := gitCommitCount(t, f.Dir); got != want {
+			if got := gitCommitCount(t, f.Env(), f.Dir); got != want {
 				t.Errorf("commit count = %d, want %d", got, want)
 			}
 		})
@@ -519,22 +521,22 @@ func TestShipGitHunkAmend(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := gitHunkRepo(t, hunkBase, hunkCurrent)
 			ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
-			before := gitCommitCount(t, f.Dir)
+			before := gitCommitCount(t, f.Env(), f.Dir)
 			mark := argvMark(t, f)
 
 			args := append(append([]string{}, tt.args...), "--no-push", "--skip-hunk", ref, "f.txt")
-			if _, err := runShipCmd(t, args...); err != nil {
+			if _, err := runShipCmd(f.Context(), t, args...); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 
-			if got := gitCommitCount(t, f.Dir); got != before {
+			if got := gitCommitCount(t, f.Env(), f.Dir); got != before {
 				t.Errorf("commit count = %d, want the unchanged %d (an amend rewrites, never appends)", got, before)
 			}
-			if got := strings.TrimSpace(mustRun(t, f.Dir, "git", "log", "-1", "--format=%s")); got != tt.wantSubject {
+			if got := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "git", "log", "-1", "--format=%s")); got != tt.wantSubject {
 				t.Errorf("HEAD subject = %q, want %q", got, tt.wantSubject)
 			}
 			const wantCommitted = "a\nb\nc\nd\nE\n"
-			if got := mustRun(t, f.Dir, "git", "show", "HEAD:f.txt"); got != wantCommitted {
+			if got := mustRun(t, f.Env(), f.Dir, "git", "show", "HEAD:f.txt"); got != wantCommitted {
 				t.Errorf("committed (HEAD:f.txt) = %q, want %q", got, wantCommitted)
 			}
 			// With only a hunk-scoped path, no whole file is staged, so no add runs.
@@ -854,9 +856,9 @@ func TestFileInBaseJJWhitespaceName(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.JJ())
 	const spaceName = " "
 	writeRepoFile(t, f.Dir, spaceName, "x\n")
-	mustRun(t, f.Dir, "jj", "commit", "-m", "space-named file")
+	mustRun(t, f.Env(), f.Dir, "jj", "commit", "-m", "space-named file")
 
-	ctx := context.Background()
+	ctx := f.Context()
 	present, err := fileInBase(ctx, render.Dir(f.Dir), vcs.JJ, spaceName)
 	if err != nil {
 		t.Fatalf("fileInBase(%q) error = %v", spaceName, err)
@@ -882,11 +884,12 @@ func TestVcsHunksListsNamesGitEscapes(t *testing.T) {
 	const quoted = "we\u200did\"name.txt"
 	const spaced = " lead.txt"
 	f := vcstest.Repo(t)
+	f.Isolate(t)
 	for _, name := range []string{quoted, spaced} {
 		writeRepoFile(t, f.Dir, name, hunkBase)
 	}
-	mustRun(t, f.Dir, "git", "add", "-A")
-	mustRun(t, f.Dir, "git", "commit", "-qm", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "base")
 	for _, name := range []string{quoted, spaced} {
 		writeRepoFile(t, f.Dir, name, hunkCurrent)
 	}
@@ -909,11 +912,11 @@ func TestVcsHunksListsNamesGitEscapes(t *testing.T) {
 		}
 	}
 
-	if _, err := runShipCmd(t, "-m", "partial ship", "--no-push", "--only-hunk", listed[quoted][0], quoted); err != nil {
+	if _, err := runShipCmd(f.Context(), t, "-m", "partial ship", "--no-push", "--only-hunk", listed[quoted][0], quoted); err != nil {
 		t.Fatalf("ship error = %v, want the listed ref to address the file", err)
 	}
 	const wantCommitted = "A\nb\nc\nd\ne\n"
-	if got := mustRun(t, f.Dir, "git", "show", "HEAD:"+quoted); got != wantCommitted {
+	if got := mustRun(t, f.Env(), f.Dir, "git", "show", "HEAD:"+quoted); got != wantCommitted {
 		t.Errorf("committed (HEAD:%q) = %q, want %q", quoted, got, wantCommitted)
 	}
 }
@@ -1056,7 +1059,7 @@ func TestGitStageSelectedForeignHunk(t *testing.T) {
 				preflight: map[string]map[string]int{"f.txt": tt.preflight(hunks)},
 			}
 			env := []string{"GIT_INDEX_FILE=" + filepath.Join(t.TempDir(), "idx")}
-			err := gitStageSelected(context.Background(), render.Dir(f.Dir), "f.txt", sel, env)
+			err := gitStageSelected(f.Context(), render.Dir(f.Dir), "f.txt", sel, env)
 			if tt.wantForeignIdx < 0 {
 				if err != nil {
 					t.Fatalf("gitStageSelected() = %v, want nil", err)

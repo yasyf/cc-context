@@ -43,7 +43,7 @@ is the committed content (git HEAD, jj @-), the current is the working copy.`,
 // from, so a listed ref always resolves at ship time.
 func runHunks(cmd *cobra.Command, paths []string, budget int) error {
 	ctx := cmd.Context()
-	kind := vcs.Detect(workingDir())
+	kind := vcs.Detect(workingDir(ctx))
 	if kind == vcs.None {
 		return errors.New("hunks: no git or jj repository in the working directory")
 	}

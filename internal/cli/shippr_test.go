@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -71,7 +72,7 @@ func shipPRPushed(branch string) [][]string {
 // runShipCmdStdin runs ship with an explicit input stream, which every
 // --pr-body-file - test needs: cobra otherwise hands stdinPiped the test
 // binary's own stdin.
-func runShipCmdStdin(t *testing.T, in io.Reader, args ...string) (string, error) {
+func runShipCmdStdin(t *testing.T, f *vcstest.Fixture, in io.Reader, args ...string) (string, error) {
 	t.Helper()
 	cmd := newShipCmd()
 	var out, errBuf bytes.Buffer
@@ -79,7 +80,7 @@ func runShipCmdStdin(t *testing.T, in io.Reader, args ...string) (string, error)
 	cmd.SetErr(&errBuf)
 	cmd.SetIn(in)
 	cmd.SetArgs(args)
-	err := cmd.Execute()
+	err := cmd.ExecuteContext(f.Context())
 	summary := out.String()
 	if i := strings.IndexByte(summary, '\n'); i >= 0 {
 		summary = summary[:i]
@@ -136,7 +137,7 @@ func TestShipPRCreateGitLane(t *testing.T) {
 	const bodyText = "why this change\n"
 	body := writePRBody(t, "body.md", bodyText)
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -162,11 +163,11 @@ func TestShipMessageFromPRFlags(t *testing.T) {
 	t.Setenv("GH_PR_CREATE_OUT", fakePRCreateURL)
 	body := writePRBody(t, "body.md", "## Context\n\nThe widget broke.\n\n<details>\n<summary>Design</summary>\n\n## Details\n\nRewrote it.\n</details>\n")
 
-	if _, err := runShipCmd(t, "--no-watch", "--pr-title", "fix: 🐛 frobnicate the widget", "--pr-body-file", body); err != nil {
+	if _, err := runShipCmd(f.Context(), t, "--no-watch", "--pr-title", "fix: 🐛 frobnicate the widget", "--pr-body-file", body); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	want := "fix: 🐛 frobnicate the widget\n\nContext: The widget broke.\n\nDetails: Rewrote it."
-	if got := gitAt(t, f.Dir, "log", "-1", "--format=%B"); got != want {
+	if got := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%B"); got != want {
 		t.Errorf("commit message = %q, want %q", got, want)
 	}
 }
@@ -176,14 +177,14 @@ func TestShipMessageFromPRTitleAlone(t *testing.T) {
 	t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-empty"))
 	t.Setenv("GH_PR_CREATE_OUT", fakePRCreateURL)
 
-	if _, err := runShipCmd(t, "--no-watch", "--pr-title", "fix: frobnicate"); err != nil {
+	if _, err := runShipCmd(f.Context(), t, "--no-watch", "--pr-title", "fix: frobnicate"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	if got := gitAt(t, f.Dir, "log", "-1", "--format=%B"); got != "fix: frobnicate" {
+	if got := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%B"); got != "fix: frobnicate" {
 		t.Errorf("commit message = %q, want the title alone", got)
 	}
 
-	_, err := runShipCmd(t, "--no-watch", "--pr-title", "other=fix: frobnicate")
+	_, err := runShipCmd(f.Context(), t, "--no-watch", "--pr-title", "other=fix: frobnicate")
 	if err == nil || err.Error() != errShipMessageRequired.Error() {
 		t.Errorf("error = %v, want %v — a scoped title is not the tip's", err, errShipMessageRequired)
 	}
@@ -197,11 +198,11 @@ func TestShipMessageFromPRBodyStdin(t *testing.T) {
 	t.Setenv("GH_PR_BODY_DUMP", bodyDump)
 	const bodyText = "## Context\n\nThe widget broke.\n"
 
-	if _, err := runShipCmdStdin(t, strings.NewReader(bodyText), "--no-watch", "--pr-title", "fix: frobnicate", "--pr-body-file", "-"); err != nil {
+	if _, err := runShipCmdStdin(t, f, strings.NewReader(bodyText), "--no-watch", "--pr-title", "fix: frobnicate", "--pr-body-file", "-"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	if want := "fix: frobnicate\n\nContext: The widget broke."; gitAt(t, f.Dir, "log", "-1", "--format=%B") != want {
-		t.Errorf("commit message = %q, want %q", gitAt(t, f.Dir, "log", "-1", "--format=%B"), want)
+	if want := "fix: frobnicate\n\nContext: The widget broke."; gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%B") != want {
+		t.Errorf("commit message = %q, want %q", gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%B"), want)
 	}
 	if got := readFileStr(t, bodyDump); got != bodyText {
 		t.Errorf("gh read a body of %q, want the stdin body verbatim", got)
@@ -260,7 +261,7 @@ func TestShipPRCreateDefaults(t *testing.T) {
 	t.Setenv("GH_PR_CREATE_OUT", fakePRCreateURL)
 	t.Setenv(envClaudeSessionKey, "0d1e2f30-4a5b-6c7d-8e9f-a0b1c2d3e4f5")
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--draft"); err != nil {
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--draft"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	var create []string
@@ -279,10 +280,10 @@ func TestShipPRCreateDefaults(t *testing.T) {
 	if slices.Contains(create, "--fill") {
 		t.Error("gh pr create --fill would publish the commit's Claude-Session-Id trailer")
 	}
-	if subject := gitAt(t, f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
+	if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
 		t.Errorf("commit subject = %q, want the title the create defaulted to", subject)
 	}
-	if body := gitAt(t, f.Dir, "log", "-1", "--format=%b"); !strings.Contains(body, "Claude-Session-Id: 0d1e2f30-4a5b-6c7d-8e9f-a0b1c2d3e4f5") {
+	if body := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%b"); !strings.Contains(body, "Claude-Session-Id: 0d1e2f30-4a5b-6c7d-8e9f-a0b1c2d3e4f5") {
 		t.Errorf("commit body = %q, want the session trailer --fill would have published", body)
 	}
 }
@@ -293,7 +294,7 @@ func TestShipPREditOnlyStatedFields(t *testing.T) {
 	t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-found"))
 	body := writePRBody(t, "body.md", "regenerated\n")
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -324,7 +325,7 @@ func TestShipPRBodyFromStdin(t *testing.T) {
 	t.Setenv("GH_PR_BODY_DUMP", bodyDump)
 	const piped = "piped body\n"
 
-	if _, err := runShipCmdStdin(t, strings.NewReader(piped), "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", "-"); err != nil {
+	if _, err := runShipCmdStdin(t, f, strings.NewReader(piped), "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", "-"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	var edit []string
@@ -356,7 +357,7 @@ func TestShipPRGTWritesTheNewestPR(t *testing.T) {
 		`{"number":9,"url":"https://github.com/x/pull/9","body":""}`})
 	body := writePRBody(t, "body.md", "why this change\n")
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+	got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -385,7 +386,7 @@ func TestShipPRGTSkipsDownstackQuery(t *testing.T) {
 	api.prs["feature"] = 41
 	body := writePRBody(t, "body.md", "why this change\n")
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+	got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -418,7 +419,7 @@ func TestShipPRGTQueriesForABodylessBranch(t *testing.T) {
 	})
 	body := writePRBody(t, "body.md", "why this change\n")
 
-	if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body); err != nil {
+	if _, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	var graphql [][]string
@@ -435,7 +436,7 @@ func TestShipPRGTBothFlags(t *testing.T) {
 	seedPRViews(t, map[string]string{"feature": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`})
 	body := writePRBody(t, "body.md", "why this change\n")
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
+	got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -493,7 +494,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 			writeShipFile(t, ".", "src/a.go", "package a\n")
 
 			args := append([]string{"--no-watch", "--pr-title", "fix: 🐛 frobnicate the widget", "--pr-body-file", body}, tt.paths...)
-			got, err := runShipCmd(t, args...)
+			got, err := runShipCmd(context.Background(), t, args...)
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -544,7 +545,7 @@ func TestShipPRGTBackfill(t *testing.T) {
 	tipBody := writePRBody(t, "tip.md", "tip body\n")
 	midBody := writePRBody(t, "mid.md", "mid body\n")
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch",
+	got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch",
 		"--pr-body-file", tipBody, "--pr-body-file", "feature="+midBody)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
@@ -572,7 +573,7 @@ func TestShipPRGTBackfill(t *testing.T) {
 func TestShipPRUnusedCostsNothing(t *testing.T) {
 	t.Run("git lane", func(t *testing.T) {
 		f := shipPRFixture(t, vcstest.Branch("feature"))
-		if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
+		if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
 		assertNoPRStep(t, vcstest.Invocations(t, f.ArgvLog))
@@ -583,7 +584,7 @@ func TestShipPRUnusedCostsNothing(t *testing.T) {
 	t.Run("gt lane", func(t *testing.T) {
 		log := setupShipGT(t, true)
 		t.Setenv("GH_PR_VIEW_JSON", `{"number":7,"url":"https://github.com/x/pull/7"}`)
-		if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
+		if _, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
 		invocations := readInvocations(t, log)
@@ -598,7 +599,7 @@ func TestShipPRUnusedCostsNothing(t *testing.T) {
 	})
 	t.Run("--no-pr", func(t *testing.T) {
 		f := shipPRFixture(t, vcstest.Branch("feature"))
-		if _, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--no-pr", "--draft"); err != nil {
+		if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--no-pr", "--draft"); err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
 		assertNoPRStep(t, vcstest.Invocations(t, f.ArgvLog))
@@ -611,7 +612,7 @@ func TestShipPRUnusedCostsNothing(t *testing.T) {
 func TestShipPROnTrunk(t *testing.T) {
 	f := shipPRFixture(t)
 
-	got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title")
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -642,7 +643,7 @@ func TestShipPRDraftTransitions(t *testing.T) {
 			pr := prFromListGolden(t, tt.scenario)
 			t.Setenv("GH_PR_LIST_JSON", ghStdout(t, tt.scenario))
 
-			got, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", tt.flag)
+			got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", tt.flag)
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -679,7 +680,7 @@ func TestShipPRRefusals(t *testing.T) {
 		f := shipPRFixture(t, vcstest.Branch("feature"))
 		head := shipHead(t, f)
 		shipResetLog(t, f)
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--pr-body-file", "/nonexistent/body.md")
+		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--pr-body-file", "/nonexistent/body.md")
 		if err == nil || !strings.HasPrefix(err.Error(), "ship: --pr-body-file /nonexistent/body.md:") {
 			t.Errorf("error = %v, want a --pr-body-file refusal", err)
 		}
@@ -696,7 +697,7 @@ func TestShipPRRefusals(t *testing.T) {
 			t.Fatalf("open %s: %v", os.DevNull, err)
 		}
 		t.Cleanup(func() { _ = tty.Close() })
-		_, err = runShipCmdStdin(t, tty, "-m", "fix: frobnicate", "--pr-body-file", "-")
+		_, err = runShipCmdStdin(t, f, tty, "-m", "fix: frobnicate", "--pr-body-file", "-")
 		wantErr := `ship: --pr-body-file - reads the body from stdin, which is a terminal — pipe the body in or pass a path`
 		if err == nil || err.Error() != wantErr {
 			t.Errorf("error = %v, want %q", err, wantErr)
@@ -708,7 +709,7 @@ func TestShipPRRefusals(t *testing.T) {
 	t.Run("stdin claimed twice", func(t *testing.T) {
 		f := shipPRFixture(t)
 		head := shipHead(t, f)
-		_, err := runShipCmdStdin(t, strings.NewReader("body\n"), "-m", "fix: frobnicate",
+		_, err := runShipCmdStdin(t, f, strings.NewReader("body\n"), "-m", "fix: frobnicate",
 			"--pr-body-file", "-", "--pr-body-file", "feature=-")
 		wantErr := `ship: only one --pr-body-file may read stdin ("-")`
 		if err == nil || err.Error() != wantErr {
@@ -720,7 +721,7 @@ func TestShipPRRefusals(t *testing.T) {
 	t.Run("same branch named twice", func(t *testing.T) {
 		f := shipPRFixture(t)
 		head := shipHead(t, f)
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--pr-title", "one", "--pr-title", "two")
+		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--pr-title", "one", "--pr-title", "two")
 		wantErr := "ship: --pr-title given twice for branch main"
 		if err == nil || err.Error() != wantErr {
 			t.Errorf("error = %v, want %q", err, wantErr)
@@ -732,7 +733,7 @@ func TestShipPRRefusals(t *testing.T) {
 		f := shipPRFixture(t, vcstest.Branch("feature"))
 		head := shipHead(t, f)
 		shipResetLog(t, f)
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-push", "--pr-title", "one")
+		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--pr-title", "one")
 		wantErr := "ship: --pr-title/--pr-body-file require push (drop --no-push)"
 		if err == nil || err.Error() != wantErr {
 			t.Errorf("error = %v, want %q", err, wantErr)
@@ -746,7 +747,7 @@ func TestShipPRRefusals(t *testing.T) {
 	t.Run("--no-pr excludes the pr flags", func(t *testing.T) {
 		f := shipPRFixture(t, vcstest.Branch("feature"))
 		head := shipHead(t, f)
-		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-pr", "--pr-title", "one")
+		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-pr", "--pr-title", "one")
 		wantErr := "if any flags in the group [no-pr pr-title] are set none of the others can be; [no-pr pr-title] were all set"
 		if err == nil || err.Error() != wantErr {
 			t.Errorf("error = %v, want %q", err, wantErr)
@@ -763,7 +764,7 @@ func assertShipRefusedClean(t *testing.T, f *vcstest.Fixture, head string) {
 	if got := shipHead(t, f); got != head {
 		t.Errorf("HEAD moved to %s, want the pre-ship %s", got, head)
 	}
-	if status := gitAt(t, f.Dir, "status", "--porcelain"); status != "M f.txt" {
+	if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); status != "M f.txt" {
 		t.Errorf("working copy = %q, want the untouched edit", status)
 	}
 }

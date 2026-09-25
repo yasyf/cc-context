@@ -107,7 +107,7 @@ branch, bottom-up.`,
 
 func runStackNew(cmd *cobra.Command, name, parent string) error {
 	ctx := cmd.Context()
-	l, err := resolveLane(ctx, "stack new", workingDir(), false)
+	l, err := resolveLane(ctx, "stack new", workingDir(ctx), false)
 	if err != nil {
 		return err
 	}
@@ -199,7 +199,7 @@ func gtTrackAt(ctx context.Context, dir render.Dir, errW io.Writer, parent strin
 
 func runStackList(cmd *cobra.Command) error {
 	ctx := cmd.Context()
-	l, err := resolveLaneReport(ctx, "stack list", workingDir(), true, false)
+	l, err := resolveLaneReport(ctx, "stack list", workingDir(ctx), true, false)
 	if err != nil {
 		return err
 	}
@@ -276,7 +276,7 @@ func stackListLine(branch, holder, root string, state gtBranchState) string {
 func runStackSubmit(cmd *cobra.Command, draft bool) error {
 	ctx := cmd.Context()
 	errW := cmd.ErrOrStderr()
-	l, err := resolveLane(ctx, "stack submit", workingDir(), false)
+	l, err := resolveLane(ctx, "stack submit", workingDir(ctx), false)
 	if err != nil {
 		return err
 	}
