@@ -110,7 +110,7 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch string, noVe
 	if tip == head {
 		return fmt.Sprintf("%s/%s already at %s — nothing to push", remote, branch, shortOID(head)), nil
 	}
-	ancestor, err := gitIsAncestor(ctx, dir, "push", remoteRef, "HEAD")
+	ancestor, err := gitIsAncestor(ctx, dir, "push", tip, head)
 	if err != nil {
 		return "", err
 	}
