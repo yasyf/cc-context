@@ -5332,7 +5332,7 @@ func TestShipGTRefusals(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
-		wantErr := "ship: branch feature is not tracked by graphite — run gt track feature, or pass --no-gt"
+		wantErr := "ship: gt track could not adopt feature onto nope — pass --no-gt to ship it without graphite"
 		if err.Error() != wantErr {
 			t.Errorf("error = %q, want %q", err.Error(), wantErr)
 		}
@@ -5342,6 +5342,7 @@ func TestShipGTRefusals(t *testing.T) {
 			{"git", "branch", "--show-current"},
 			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
+			{"git", "rev-parse", "--verify", "--quiet", "refs/heads/nope"},
 			{"gt", "track", "feature", "--parent", "nope", "--no-interactive"},
 		})
 		assertShipRefusedClean(t, f, head)
@@ -5360,7 +5361,7 @@ func TestShipGTRefusals(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
-		wantErr := "ship: branch feature is not tracked by graphite — run gt track feature, or pass --no-gt"
+		wantErr := "ship: gt track could not adopt feature onto nope — pass --no-gt to ship it without graphite"
 		if err.Error() != wantErr {
 			t.Errorf("error = %q, want %q", err.Error(), wantErr)
 		}
@@ -5387,7 +5388,7 @@ func TestShipGTRefusals(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
-		wantErr := "ship: branch feature is not tracked by graphite — run gt track feature, or pass --no-gt"
+		wantErr := "ship: gt track could not adopt feature — name the branch it was cut from with --parent <branch>, or pass --no-gt"
 		if err.Error() != wantErr {
 			t.Errorf("error = %q, want %q", err.Error(), wantErr)
 		}
@@ -6340,7 +6341,7 @@ func TestGTTrackRefusesALandedParent(t *testing.T) {
 
 			c := newGTCache(render.Dir(workingDir(t.Context())), "ship")
 			var errW bytes.Buffer
-			_, seg, err := gtTrack(t.Context(), &errW, shipOpts{}, "feature", c)
+			_, seg, err := gtTrack(t.Context(), &errW, lane{}, shipOpts{}, "feature", c)
 			if tt.wantErr != "" {
 				if err == nil || err.Error() != tt.wantErr {
 					t.Fatalf("error = %v, want %q", err, tt.wantErr)
