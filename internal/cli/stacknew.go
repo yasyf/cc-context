@@ -35,8 +35,8 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	if err != nil {
 		return err
 	}
-	if !l.gt {
-		return errors.New("stack new: this repository is not on the graphite lane, and a stack is Graphite's — run gt init, or cut a plain working copy with ccx vcs worktree add")
+	if options.published && !l.gt {
+		return errors.New("stack new: --published-parent requires the graphite lane")
 	}
 	if (options.sparse || options.noCheckout) && l.checkout.Kind != vcs.Git {
 		return errors.New("stack new: sparse and no-checkout creation require a Git checkout")
@@ -195,11 +195,7 @@ func stackNewPath(ctx context.Context, checkout vcs.Checkout, name, requested st
 }
 
 func stackNewStart(ctx context.Context, l lane, parent string) (string, error) {
-	state, err := gtStateQuery(ctx, l.dir(), "stack new")
-	if err != nil {
-		return "", err
-	}
-	trunk, err := gtTrunkBranch("stack new", state)
+	trunk, err := stackNewTrunk(ctx, l)
 	if err != nil {
 		return "", err
 	}
@@ -211,6 +207,25 @@ func stackNewStart(ctx context.Context, l lane, parent string) (string, error) {
 		return "", err
 	}
 	return gtTrunkHead(ctx, l.dir(), "stack new", tr)
+}
+
+func stackNewTrunk(ctx context.Context, l lane) (string, error) {
+	if !l.gt {
+		remote, err := vcs.GitRemoteFor(ctx, l.dir(), "HEAD")
+		if err != nil {
+			return "", fmt.Errorf("stack new: %w", err)
+		}
+		tr, err := vcs.ResolveTrunk(ctx, l.dir(), remote)
+		if err != nil {
+			return "", fmt.Errorf("stack new: %w", err)
+		}
+		return tr.Name(), nil
+	}
+	state, err := gtStateQuery(ctx, l.dir(), "stack new")
+	if err != nil {
+		return "", err
+	}
+	return gtTrunkBranch("stack new", state)
 }
 
 func stackConfigBool(ctx context.Context, dir render.Dir, key string, worktree bool) (bool, error) {

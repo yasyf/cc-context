@@ -71,6 +71,10 @@ per-worktree sparse configuration before populating the child. --no-checkout lea
 files unmaterialized instead. --path names a new location outside both checkouts.
 Sparse and no-checkout creation require a Git checkout.
 
+Outside the graphite lane the branch is cut the same way and nothing records
+its parent: ship opens its pull request against trunk, and a restack replays it
+onto trunk.
+
 In a jj repository the lane is a git worktree carrying its own colocated jj, cut
 with "jj git init --git-repo .": every lane then answers to git, gt and jj alike.
 A jj workspace would not — it has no .git for gt to read.`,
@@ -168,6 +172,9 @@ func stackFormLane(ctx context.Context, errW io.Writer, l lane, path render.Dir,
 		if err := stackColocateJJ(ctx, path, name); err != nil {
 			return err
 		}
+	}
+	if !l.gt {
+		return nil
 	}
 	return gtTrackAt(ctx, path, errW, parent)
 }
