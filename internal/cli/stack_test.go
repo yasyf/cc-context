@@ -791,6 +791,27 @@ func TestStackSubmitPushesALocalRestackOverItsLastSubmittedHeads(t *testing.T) {
 	}
 }
 
+func TestShipAmendPushesOverTheHeadItLastSubmitted(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("first stack submit: %v", err)
+	}
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	writeShipFile(t, f.Dir, "base.txt", "base amended\n")
+	shipResetLog(t, f)
+
+	if _, _, err := runShipCmdFull(f.Context(), t, "--amend", "--no-watch", "base.txt"); err != nil {
+		t.Fatalf("ship --amend = %v, want the amend pushed over the head this repository submitted", err)
+	}
+	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"), gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != want {
+		t.Errorf("remote base = %s, want the amended head %s", got, want)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "show", "base:base.txt"); got != "base amended" {
+		t.Errorf("remote base.txt = %q, want the amend", got)
+	}
+}
+
 func TestStackSubmitPushesOverARemoteReplayOfItsLastSubmittedHead(t *testing.T) {
 	f := shipGTRepo(t)
 	stubStackPRs(t, nil)
