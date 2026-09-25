@@ -8,22 +8,30 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // TestDriverPathVerifiesContent proves a tampered cached driver is rewritten
 // on the next resolve instead of being trusted by filename.
 func TestDriverPathVerifiesContent(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	path, err := driverPath(t.Context())
+	t.Parallel()
+	dir := t.TempDir()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+dir)
+	path, err := driverPath(ctx)
 	if err != nil {
 		t.Fatalf("driverPath error: %v", err)
+	}
+	if !strings.HasPrefix(path, dir) {
+		t.Fatalf("driverPath = %q, want it under the cache root ctx carries (%q)", path, dir)
 	}
 	if err := os.WriteFile(path, []byte("print('tampered')\n"), 0o600); err != nil {
 		t.Fatalf("tamper: %v", err)
 	}
-	again, err := driverPath(t.Context())
+	again, err := driverPath(ctx)
 	if err != nil {
 		t.Fatalf("driverPath after tamper error: %v", err)
 	}
@@ -45,6 +53,7 @@ func TestDriverPathVerifiesContent(t *testing.T) {
 // pipe (a per-call read would leave the grandchild alive for the full
 // duration limit).
 func TestDriverStdinEOFAnyPhase(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

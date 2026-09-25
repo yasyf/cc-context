@@ -11,12 +11,15 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // The grandchild never execs: a process inside execve cannot act on a pending
 // SIGKILL. Its death is observed as the kernel closing the FIFO write end at
 // exit, which an unreaped zombie or a recycled PID cannot fake.
 func TestDiscoverCancelKillsDescendants(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	pidPath := filepath.Join(dir, "grandchild.pid")
 	livePath := filepath.Join(dir, "grandchild.live")
@@ -26,17 +29,18 @@ func TestDiscoverCancelKillsDescendants(t *testing.T) {
 			t.Fatalf("mkfifo %s: %v", p, err)
 		}
 	}
-	t.Setenv("CCX_TEST_GRANDCHILD_PID", pidPath)
-	t.Setenv("CCX_TEST_GRANDCHILD_LIVE", livePath)
-	t.Setenv("CCX_TEST_GRANDCHILD_BLOCK", blockPath)
-	writeFakeClaude(t, "#!/bin/sh\n"+
+	probeCtx := fakeClaudeCtx(render.WithEnv(t.Context(),
+		"CCX_TEST_GRANDCHILD_PID="+pidPath,
+		"CCX_TEST_GRANDCHILD_LIVE="+livePath,
+		"CCX_TEST_GRANDCHILD_BLOCK="+blockPath,
+		"CCX_EXEC_MCP_TIMEOUT=5m",
+	), t, "#!/bin/sh\n"+
 		"( trap '' TERM; exec 3>\"$CCX_TEST_GRANDCHILD_LIVE\"; read x < \"$CCX_TEST_GRANDCHILD_BLOCK\" ) &\n"+
 		"printf '%s\\n' \"$!\" > \"$CCX_TEST_GRANDCHILD_PID\"\n"+
 		"trap '' TERM\n"+
 		"wait\n")
-	t.Setenv("CCX_EXEC_MCP_TIMEOUT", "5m")
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(probeCtx)
 	defer cancel()
 	probe := make(chan error, 1)
 	go func() {

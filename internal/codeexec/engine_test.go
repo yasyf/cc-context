@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // fakeDiscovery serves a fixed inventory and counts probes, for TTL and gate
@@ -42,9 +44,15 @@ type discoverer interface {
 	discover(context.Context) (Inventory, error)
 }
 
+// engineCtx carries the CCX_EXEC_MCP mode the engine resolves against, over
+// the cleared filters filterCtx pins.
+func engineCtx(t *testing.T, mode string) context.Context {
+	t.Helper()
+	return render.WithEnv(filterCtx(t, "", ""), "CCX_EXEC_MCP="+mode)
+}
+
 func newTestEngine(t *testing.T, d discoverer, opts ...Option) (*Engine, *fakeConnector) {
 	t.Helper()
-	t.Setenv("CCX_EXEC_MCP", "")
 	conn := newFakeConnector()
 	conn.servers["fake"] = echoServer()
 	opts = append([]Option{WithDiscover(d.discover), WithConnect(conn.connect)}, opts...)
@@ -65,8 +73,9 @@ func seedInventory(ctx context.Context, t *testing.T, inv Inventory, probedAt ti
 }
 
 func TestEngineExecReflected(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
-	ctx := context.Background()
+	ctx := engineCtx(t, "")
 	d := &fakeDiscovery{inv: fakeInventory()}
 	e, conn := newTestEngine(t, d)
 
@@ -87,8 +96,9 @@ func TestEngineExecReflected(t *testing.T) {
 }
 
 func TestEngineExecUnscannedReflected(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
-	ctx := context.Background()
+	ctx := engineCtx(t, "")
 	d := &fakeDiscovery{inv: fakeInventory()}
 	e, conn := newTestEngine(t, d)
 
@@ -109,11 +119,11 @@ func TestEngineExecUnscannedReflected(t *testing.T) {
 }
 
 func TestEngineOff(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
-	ctx := context.Background()
+	ctx := engineCtx(t, "off")
 	d := &fakeDiscovery{inv: fakeInventory()}
 	e, conn := newTestEngine(t, d)
-	t.Setenv("CCX_EXEC_MCP", "off")
 
 	out, notes, err := e.Exec(ctx, "40 + 2", 0)
 	if err != nil {
@@ -141,8 +151,9 @@ func TestEngineOff(t *testing.T) {
 // filtered): Tools is ungated and surfaces the skip note, while a non-referencing
 // Exec is gated silently to builtins.
 func TestEngineEmptyInventory(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
-	ctx := context.Background()
+	ctx := engineCtx(t, "")
 	d := &fakeDiscovery{inv: Inventory{Notes: []string{"skipped railway: denied by CCX_EXEC_MCP_DENY"}}}
 	e, conn := newTestEngine(t, d)
 
@@ -173,7 +184,8 @@ func TestEngineEmptyInventory(t *testing.T) {
 // the gate never masks the TTL) with an injected clock: two calls within the
 // window probe once, a call past it re-probes.
 func TestEngineInventoryTTL(t *testing.T) {
-	ctx := context.Background()
+	t.Parallel()
+	ctx := engineCtx(t, "")
 	d := &fakeDiscovery{inv: fakeInventory()}
 	base := time.Now()
 	now := base
@@ -201,8 +213,9 @@ func TestEngineInventoryTTL(t *testing.T) {
 // TestEngineGateSkipsDiscovery pins Gate 1: any cached inventory, fresh or
 // stale, short-circuits a non-referencing script before any probe.
 func TestEngineGateSkipsDiscovery(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
-	ctx := context.Background()
+	ctx := engineCtx(t, "")
 	tests := []struct {
 		name string
 		age  time.Duration
@@ -212,6 +225,7 @@ func TestEngineGateSkipsDiscovery(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			d := &fakeDiscovery{err: errors.New("probe must not run")}
 			base := time.Now()
 			store := seedInventory(ctx, t, fakeInventory(), base.Add(-tt.age))
@@ -242,8 +256,9 @@ func TestEngineGateSkipsDiscovery(t *testing.T) {
 // probe, and when the probe fails the cached inventory still reflects, with a
 // note naming the failure and the cache age.
 func TestEngineStaleFallback(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
-	ctx := context.Background()
+	ctx := engineCtx(t, "")
 	d := &fakeDiscovery{err: errors.New("claude mcp list timed out after 1s")}
 	base := time.Now()
 	age := inventoryTTL + 5*time.Minute
@@ -274,8 +289,9 @@ func TestEngineStaleFallback(t *testing.T) {
 // TestEngineNoCacheProbeFailure guards the Discover contract flip: with no
 // cache, a probe failure degrades to a note plus builtins, never a hard error.
 func TestEngineNoCacheProbeFailure(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
-	ctx := context.Background()
+	ctx := engineCtx(t, "")
 	d := &fakeDiscovery{err: errors.New("claude not on PATH")}
 	e, conn := newTestEngine(t, d)
 
@@ -300,14 +316,14 @@ func TestEngineNoCacheProbeFailure(t *testing.T) {
 // TestEngineRefreshProbes pins CCX_EXEC_MCP=refresh: it bypasses Gate 1 and the
 // TTL, so even a non-referencing Exec and Tools re-probe a fresh cache.
 func TestEngineRefreshProbes(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
-	ctx := context.Background()
+	ctx := engineCtx(t, "refresh")
 	d := &fakeDiscovery{inv: fakeInventory()}
 	base := time.Now()
 	store := seedInventory(ctx, t, fakeInventory(), base)
 	e, _ := newTestEngine(t, d, WithInventoryStore(store))
 	e.now = func() time.Time { return base }
-	t.Setenv("CCX_EXEC_MCP", "refresh")
 
 	if _, _, err := e.Exec(ctx, "1 + 1", 0); err != nil {
 		t.Fatalf("Exec: %v", err)
@@ -326,8 +342,9 @@ func TestEngineRefreshProbes(t *testing.T) {
 // TestEngineToolsNeverGated pins that Tools is ungated: a stale cache forces a
 // probe on Tools, and the fresh cache then gates a non-referencing Exec.
 func TestEngineToolsNeverGated(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
-	ctx := context.Background()
+	ctx := engineCtx(t, "")
 	d := &fakeDiscovery{inv: fakeInventory()}
 	base := time.Now()
 	store := seedInventory(ctx, t, fakeInventory(), base.Add(-inventoryTTL-time.Minute))
@@ -349,7 +366,8 @@ func TestEngineToolsNeverGated(t *testing.T) {
 }
 
 func TestEngineToolsPreamble(t *testing.T) {
-	ctx := context.Background()
+	t.Parallel()
+	ctx := engineCtx(t, "")
 	d := &fakeDiscovery{inv: fakeInventory()}
 	e, _ := newTestEngine(t, d)
 
@@ -377,6 +395,7 @@ func TestEngineToolsPreamble(t *testing.T) {
 }
 
 func TestMergeBuiltinWins(t *testing.T) {
+	t.Parallel()
 	marker := func(out string) HostFunc {
 		return func(context.Context, Call) (any, error) { return out, nil }
 	}
@@ -405,7 +424,8 @@ func TestMergeBuiltinWins(t *testing.T) {
 // TestEngineBadTimeoutHardError pins that an invalid CCX_EXEC_MCP_TIMEOUT
 // (errBadTimeout) fails Exec and Tools loudly, never degrading to a fallback note.
 func TestEngineBadTimeoutHardError(t *testing.T) {
-	ctx := context.Background()
+	t.Parallel()
+	ctx := engineCtx(t, "")
 	d := &fakeDiscovery{err: fmt.Errorf("probe timeout: %w", errBadTimeout)}
 	base := time.Now()
 	store := seedInventory(ctx, t, fakeInventory(), base.Add(-inventoryTTL-time.Minute))
@@ -441,7 +461,8 @@ func (d *blockingDiscovery) discover(context.Context) (Inventory, error) {
 // against a hanging claude serializes to exactly one probe: the waiters adopt
 // the winner's recorded failure instead of each re-probing.
 func TestEngineConcurrentProbeCollapse(t *testing.T) {
-	ctx := context.Background()
+	t.Parallel()
+	ctx := engineCtx(t, "")
 	d := &blockingDiscovery{
 		started: make(chan struct{}, 1),
 		release: make(chan struct{}),

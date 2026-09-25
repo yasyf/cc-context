@@ -34,6 +34,7 @@ func kw(pairs ...string) map[string]any {
 }
 
 func TestOpsArgMapping(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		fn      string
@@ -182,6 +183,7 @@ func TestOpsArgMapping(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			fake := &fakeCaller{out: "ok"}
 			fn := Ops(fake)[tt.fn]
 			if fn == nil {
@@ -207,6 +209,7 @@ func TestOpsArgMapping(t *testing.T) {
 // TestOpsNumArgErrors proves a None or type-mismatched numeric argument raises
 // a labeled error instead of silently mapping to zero.
 func TestOpsNumArgErrors(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		fn   string
@@ -227,6 +230,7 @@ func TestOpsNumArgErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			fake := &fakeCaller{out: "ok"}
 			_, err := Ops(fake)[tt.fn](context.Background(), tt.call)
 			if err == nil {
@@ -247,6 +251,7 @@ func TestOpsNumArgErrors(t *testing.T) {
 // TestOpsPathsArgErrors proves a paths argument that is not a list of strings
 // raises a labeled error instead of silently dropping the operands.
 func TestOpsPathsArgErrors(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		call Call
@@ -262,6 +267,7 @@ func TestOpsPathsArgErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			fake := &fakeCaller{out: "ok"}
 			_, err := Ops(fake)["grep"](context.Background(), tt.call)
 			if err == nil {
@@ -282,6 +288,7 @@ func TestOpsPathsArgErrors(t *testing.T) {
 // TestOpsNumArgErrorRaises proves the labeled argument error crosses into the
 // sandbox as a raised exception, not a zero value.
 func TestOpsNumArgErrorRaises(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	rt := NewRuntime(Ops(&fakeCaller{out: "ok"}))
 	_, err := rt.Run(context.Background(), "import asyncio\nasyncio.run(grep(\"x\", expand=None))", 0)
@@ -298,6 +305,7 @@ func TestOpsNumArgErrorRaises(t *testing.T) {
 // TestOpsThroughRuntime proves Python kwargs flow through the sandbox into
 // backend.Args.
 func TestOpsThroughRuntime(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	fake := &fakeCaller{out: "FILE BODY"}
 	rt := NewRuntime(Ops(fake))
@@ -316,6 +324,7 @@ func TestOpsThroughRuntime(t *testing.T) {
 // TestOpsRejectsUnknownKwargs proves a keyword the op does not accept fails
 // loudly, naming the accepted keywords, instead of being silently discarded.
 func TestOpsRejectsUnknownKwargs(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		fn      string
@@ -328,6 +337,7 @@ func TestOpsRejectsUnknownKwargs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			fake := &fakeCaller{out: "ok"}
 			_, err := Ops(fake)[tt.fn](context.Background(), tt.call)
 			if err == nil {
@@ -349,6 +359,7 @@ func TestOpsRejectsUnknownKwargs(t *testing.T) {
 // the backend on the ast-grep lane and applies the shared ValidateSection guard,
 // rejecting a windowed directory outline before dispatch.
 func TestOutlineSectionExecParity(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	goFile := filepath.Join(dir, "a.go")
 	if err := os.WriteFile(goFile, []byte("package a\n"), 0o600); err != nil {
@@ -393,6 +404,7 @@ func TestOutlineSectionExecParity(t *testing.T) {
 // Ops() host function, and every Ops() host function must be documented in
 // staticTools.
 func TestStaticToolsMatchOps(t *testing.T) {
+	t.Parallel()
 	ops := Ops(nil)
 
 	documented := make(map[string]bool, len(staticTools))

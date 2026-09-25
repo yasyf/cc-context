@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // fakeConnector dials in-memory MCP servers by spec name, counting connects
@@ -162,10 +164,14 @@ func sampleCatalog(hash string) *Catalog {
 }
 
 func TestStoreRoundtrip(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	disk, err := NewDiskStore(t.Context())
+	t.Parallel()
+	dir := t.TempDir()
+	disk, err := NewDiskStore(render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+dir))
 	if err != nil {
 		t.Fatalf("NewDiskStore: %v", err)
+	}
+	if got := disk.(*diskStore).path(); !strings.HasPrefix(got, dir) {
+		t.Fatalf("disk store path = %q, want it under the cache root ctx carries (%q)", got, dir)
 	}
 	tests := []struct {
 		name  string
@@ -176,6 +182,7 @@ func TestStoreRoundtrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if _, ok := tt.store.Load(); ok {
 				t.Fatal("Load on empty store = true, want miss")
 			}
@@ -198,6 +205,7 @@ func TestStoreRoundtrip(t *testing.T) {
 }
 
 func TestResolveCatalogHashHitSpawnsNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := NewMemoryStore()
 	cached := sampleCatalog("live")
@@ -219,6 +227,7 @@ func TestResolveCatalogHashHitSpawnsNothing(t *testing.T) {
 }
 
 func TestResolveCatalogStaleHashRebuilds(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := NewMemoryStore()
 	if err := store.Save(sampleCatalog("stale")); err != nil {
@@ -245,6 +254,7 @@ func TestResolveCatalogStaleHashRebuilds(t *testing.T) {
 }
 
 func TestResolveCatalogConcurrentBuildOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := NewMemoryStore()
 	conn := newFakeConnector()
@@ -278,6 +288,7 @@ func TestResolveCatalogConcurrentBuildOnce(t *testing.T) {
 }
 
 func TestBuildCatalog(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	conn := newFakeConnector()
 	conn.servers["healthy"] = storeServer()
@@ -345,6 +356,7 @@ func TestBuildCatalog(t *testing.T) {
 }
 
 func TestClassify(t *testing.T) {
+	t.Parallel()
 	open := true
 	stdio := ServerSpec{Name: "s", Command: "s-mcp"}
 	remote := ServerSpec{Name: "s", URL: "https://example.com/mcp"}
@@ -374,6 +386,7 @@ func TestClassify(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := classify(tt.spec, tt.tools); got != tt.want {
 				t.Errorf("classify() = %q, want %q", got, tt.want)
 			}
@@ -382,6 +395,7 @@ func TestClassify(t *testing.T) {
 }
 
 func TestFirstSentence(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		desc string
@@ -395,6 +409,7 @@ func TestFirstSentence(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := firstSentence(tt.desc); got != tt.want {
 				t.Errorf("firstSentence(%q) = %q, want %q", tt.desc, got, tt.want)
 			}
@@ -403,6 +418,7 @@ func TestFirstSentence(t *testing.T) {
 }
 
 func TestSchemaParams(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		schema any
@@ -419,6 +435,7 @@ func TestSchemaParams(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := schemaParams(tt.schema); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("schemaParams() = %v, want %v", got, tt.want)
 			}

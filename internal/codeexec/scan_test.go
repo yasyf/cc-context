@@ -6,6 +6,7 @@ import (
 )
 
 func TestReferenced(t *testing.T) {
+	t.Parallel()
 	funcToServer := map[string]string{
 		"fake_echo":  "fake",
 		"other_tool": "other",
@@ -31,6 +32,7 @@ func TestReferenced(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := referenced(tt.script, funcToServer)
 			if len(got) == 0 {
 				got = nil
@@ -43,6 +45,7 @@ func TestReferenced(t *testing.T) {
 }
 
 func TestReferencesMCP(t *testing.T) {
+	t.Parallel()
 	servers := []ServerSpec{{Name: "fake", Prefix: "fake"}, {Name: "other", Prefix: "other"}}
 	tests := []struct {
 		name    string
@@ -63,6 +66,7 @@ func TestReferencesMCP(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := referencesMCP(tt.script, tt.servers); got != tt.want {
 				t.Errorf("referencesMCP(%q) = %v, want %v", tt.script, got, tt.want)
 			}

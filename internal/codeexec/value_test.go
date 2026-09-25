@@ -10,6 +10,7 @@ import (
 )
 
 func TestDecodeValue(t *testing.T) {
+	t.Parallel()
 	big100 := new(big.Int).Lsh(big.NewInt(1), 100)
 	tests := []struct {
 		name string
@@ -35,6 +36,7 @@ func TestDecodeValue(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := decodeValue(json.RawMessage(tt.raw))
 			if err != nil {
 				t.Fatalf("decodeValue(%s) error: %v", tt.raw, err)
@@ -47,6 +49,7 @@ func TestDecodeValue(t *testing.T) {
 }
 
 func TestDecodeValueNaN(t *testing.T) {
+	t.Parallel()
 	got, err := decodeValue(json.RawMessage(`{"$float":"nan"}`))
 	if err != nil {
 		t.Fatalf("decodeValue error: %v", err)
@@ -60,6 +63,7 @@ func TestDecodeValueNaN(t *testing.T) {
 // TestDecodeDictKeyCollision proves distinct keys that stringify identically
 // ({1: …, "1": …}) fail loudly instead of silently dropping a value.
 func TestDecodeDictKeyCollision(t *testing.T) {
+	t.Parallel()
 	_, err := decodeValue(json.RawMessage(`{"$dict":[[1,"int"],["1","str"]]}`))
 	if err == nil {
 		t.Fatal("decodeValue = nil error, want key-collision failure")
@@ -73,6 +77,7 @@ func TestDecodeDictKeyCollision(t *testing.T) {
 // ("-0.0" stays a negative-zero float64), encode emits "-0", and that
 // re-decodes as int64(0).
 func TestNegativeZeroRoundTrip(t *testing.T) {
+	t.Parallel()
 	got, err := decodeValue(json.RawMessage("-0.0"))
 	if err != nil {
 		t.Fatalf("decodeValue(-0.0) error: %v", err)
@@ -100,6 +105,7 @@ func TestNegativeZeroRoundTrip(t *testing.T) {
 // TestWireDepthCap pins the nesting boundary on both directions: 64 levels
 // pass, 65 fail loudly.
 func TestWireDepthCap(t *testing.T) {
+	t.Parallel()
 	deep := func(n int) json.RawMessage {
 		return json.RawMessage(strings.Repeat("[", n) + "1" + strings.Repeat("]", n))
 	}
@@ -122,6 +128,7 @@ func TestWireDepthCap(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := tt.run()
 			if !tt.wantErr {
 				if err != nil {
@@ -139,6 +146,7 @@ func TestWireDepthCap(t *testing.T) {
 // TestBigIntRendersDigitExact pins the bigint path end to end: the wire number
 // decodes to *big.Int and renders through json.Marshal without losing a digit.
 func TestBigIntRendersDigitExact(t *testing.T) {
+	t.Parallel()
 	const digits = "1267650600228229401496703205376"
 	val, err := decodeValue(json.RawMessage(digits))
 	if err != nil {
@@ -151,6 +159,7 @@ func TestBigIntRendersDigitExact(t *testing.T) {
 
 // TestBytesRenderRaw pins the $bytes path: decoded []byte renders raw.
 func TestBytesRenderRaw(t *testing.T) {
+	t.Parallel()
 	val, err := decodeValue(json.RawMessage(`{"$bytes":[104,105]}`))
 	if err != nil {
 		t.Fatalf("decodeValue error: %v", err)
@@ -161,6 +170,7 @@ func TestBytesRenderRaw(t *testing.T) {
 }
 
 func TestEncodeValue(t *testing.T) {
+	t.Parallel()
 	big100 := new(big.Int).Lsh(big.NewInt(1), 100)
 	tests := []struct {
 		name string
@@ -180,6 +190,7 @@ func TestEncodeValue(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := encodeValue(tt.v)
 			if err != nil {
 				t.Fatalf("encodeValue(%#v) error: %v", tt.v, err)
@@ -193,6 +204,7 @@ func TestEncodeValue(t *testing.T) {
 
 // TestEncodeDecodeRoundTrip proves host returns survive the wire both ways.
 func TestEncodeDecodeRoundTrip(t *testing.T) {
+	t.Parallel()
 	values := []any{
 		"text",
 		int64(42),
