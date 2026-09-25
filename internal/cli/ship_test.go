@@ -5861,7 +5861,8 @@ func TestShipGTGHMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · submitted feature · CI gh-missing`
+	want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #100 ` + gtStubPRURL(100) +
+		` · bodyless PR #100 feature · CI gh-missing`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
