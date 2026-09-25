@@ -1282,7 +1282,7 @@ func refuseExistingBranch(ctx context.Context, dir render.Dir, o shipOpts, plan 
 	if o.branch == "" || plan.action != branchCreate {
 		return nil
 	}
-	exists, err := gitRefExists(ctx, dir, "refs/heads/"+plan.name)
+	exists, err := gitRefExists(ctx, dir, "ship", "refs/heads/"+plan.name)
 	if err != nil {
 		return err
 	}
@@ -1703,7 +1703,7 @@ func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch string,
 		return 0, fmt.Errorf("ship: git fetch %s: %w", remote, err)
 	}
 	remoteRef := "refs/remotes/" + remote + "/" + branch
-	present, err := gitRefExists(ctx, dir, remoteRef)
+	present, err := gitRefExists(ctx, dir, "ship", remoteRef)
 	if err != nil {
 		return 0, err
 	}
@@ -1732,10 +1732,10 @@ func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch string,
 
 // gitRefExists reports whether ref resolves (git rev-parse --verify --quiet: exit
 // 0 present, exit 1 missing). Any other exit is an error naming the code.
-func gitRefExists(ctx context.Context, dir render.Dir, ref string) (bool, error) {
+func gitRefExists(ctx context.Context, dir render.Dir, prefix, ref string) (bool, error) {
 	_, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"rev-parse", "--verify", "--quiet", ref})
 	if err != nil {
-		return false, fmt.Errorf("ship: git rev-parse %s: %w", ref, err)
+		return false, fmt.Errorf("%s: git rev-parse %s: %w", prefix, ref, err)
 	}
 	switch code {
 	case 0:
@@ -1743,7 +1743,7 @@ func gitRefExists(ctx context.Context, dir render.Dir, ref string) (bool, error)
 	case 1:
 		return false, nil
 	default:
-		return false, fmt.Errorf("ship: git rev-parse %s: exit %d: %s", ref, code, strings.TrimSpace(stderr))
+		return false, fmt.Errorf("%s: git rev-parse %s: exit %d: %s", prefix, ref, code, strings.TrimSpace(stderr))
 	}
 }
 
@@ -1847,7 +1847,7 @@ func (h worktreeHold) restore(ctx context.Context, dir render.Dir, prefix string
 // uncancellable.
 func gitRebaseFailure(ctx context.Context, dir render.Dir, prefix, remote, branch string, rebaseErr error) error {
 	cleanup := context.WithoutCancel(ctx)
-	inProgress, err := gitRefExists(cleanup, dir, "REBASE_HEAD")
+	inProgress, err := gitRefExists(cleanup, dir, "ship", "REBASE_HEAD")
 	if err != nil {
 		return err
 	}
