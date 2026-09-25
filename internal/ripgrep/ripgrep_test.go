@@ -716,7 +716,7 @@ func TestRunCore(t *testing.T) {
 		{"metachar-free miss does not rerun", engineRipgrep, backend.Args{Query: "foo", IgnoreCase: true}, []runnerResult{{}}, false, false, 1, []string{`# grep: "foo" — no matches`}, []string{"literal or regex"}, "", ""},
 		{"forced regex miss does not rerun", engineRipgrep, backend.Args{Query: "foo|bar", Regex: true}, []runnerResult{{}}, false, false, 1, []string{`# grep: "foo|bar" — no matches`}, []string{"literal or regex"}, "", ""},
 		{"forced BRE regex miss has no hint", engineRipgrep, backend.Args{Query: `absent\|other`, Regex: true}, []runnerResult{{}}, false, false, 1, nil, nil, "# grep: \"absent\\\\|other\" — no matches\n", ""},
-		{"regex rerun error leaves literal verdict", engineRipgrep, backend.Args{Query: "foo|bar"}, []runnerResult{{}, {err: errors.New("regex boom")}}, false, false, 2, []string{`# grep: "foo|bar" — no matches`}, []string{"literal or regex"}, "", ""},
+		{"regex rerun error propagates", engineRipgrep, backend.Args{Query: "foo|bar"}, []runnerResult{{}, {err: errors.New("regex boom")}}, true, false, 2, nil, nil, "", ""},
 		{"BRE escape miss includes hint", engineRipgrep, backend.Args{Query: `\(foo\|bar\)`}, []runnerResult{{}, {}}, false, false, 2, []string{`# grep: "\\(foo\\|bar\\)" — no matches (literal or regex)`, regexHintLine}, nil, "", ""},
 		{"grep backslash miss does not escalate", engineGrep, backend.Args{Query: `\v`}, []runnerResult{{}}, false, false, 1, []string{`# grep: "\\v" — no matches`}, []string{"literal or regex", "auto-regex"}, "", ""},
 		{"rg backslash miss still escalates", engineRipgrep, backend.Args{Query: `\v`}, []runnerResult{{}, {}}, false, false, 2, []string{`# grep: "\\v" — no matches (literal or regex)`}, nil, "", ""},

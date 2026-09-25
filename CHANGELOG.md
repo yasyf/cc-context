@@ -18,12 +18,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `continue --stack <bottom branch>` and `abort --stack <bottom branch>`
   name a run from any working copy, and `abort` clears a run whose conflict
   workspace is already gone.
-- **`ccx vcs stack submit` and `ccx vcs ship` push a local restack over the
-  heads they last submitted.** A branch whose remote head is the one gt
-  recorded at its last submit, or a replay carrying the same patches (a
-  graphite-app restack), is pushed under a lease on that remote head instead
-  of being refused as diverged. A remote holding a commit this repository
-  never submitted is still refused.
+- **`ccx vcs stack submit` and `ccx vcs ship` push over a replay of their
+  own last submission.** A remote head whose commits above trunk carry the
+  same ordered patches as the head gt last submitted, such as a graphite-app
+  restack, is leased on and replaced instead of refused as diverged. A remote
+  holding a merge, or a patch this repository never submitted, is still
+  refused.
+
+- **A stack rebase never takes over a run another process still drives.**
+  A rebase, `continue`, or `abort` refuses a run that another live process
+  still drives, matched by pid and process start time. A rebase checks this
+  before planning when its branch belongs to such a run. A run is marked
+  applied before its branch refs are written, so a crash in between leaves
+  a run that `continue` finishes.
+
+- **A stack that `stack rebase --no-push` or a printed `gt restack` step
+  rewrote can be pushed again.** The divergence check accepts a remote head
+  equal to the branch's last submitted head and pushes under a lease on it.
+  A remote that a foreign push moved is still refused.
+
 - **`ccx vcs ship` and `ccx vcs stack submit` leave a frozen parent alone.**
   A branch gt holds (`gt freeze`, or a merge in progress) is no longer a
   refusal: it keeps its head, is not pushed, and its children restack onto

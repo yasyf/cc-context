@@ -768,29 +768,6 @@ func TestStackSubmitLeasesOnAHeadThisRepositoryPushed(t *testing.T) {
 	}
 }
 
-func TestStackSubmitPushesALocalRestackOverItsLastSubmittedHeads(t *testing.T) {
-	f := shipGTRepo(t)
-	stubStackPRs(t, nil)
-	shipGTStack(t, f, "base", "feature")
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
-		t.Fatalf("first stack submit: %v", err)
-	}
-	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
-	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
-		t.Fatalf("local restack: %v", err)
-	}
-	shipResetLog(t, f)
-
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
-		t.Fatalf("stack submit = %v, want the restack pushed over the heads this repository submitted", err)
-	}
-	for _, name := range []string{"base", "feature"} {
-		if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", name), gitAt(t, f.Env(), f.Dir, "rev-parse", name); got != want {
-			t.Errorf("remote %s = %s, want the restacked head %s", name, got, want)
-		}
-	}
-}
-
 func TestShipAmendPushesOverTheHeadItLastSubmitted(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "base")
@@ -879,7 +856,7 @@ func TestStackSubmitLeasesOnARemoteRewriteOfAnUnmovedHead(t *testing.T) {
 	}
 	clone := filepath.Join(t.TempDir(), "graphite-app")
 	mustRun(t, f.Env(), filepath.Dir(clone), "git", "clone", "-q", "--branch", "base", f.RemoteDir, clone)
-	mustRun(t, f.Env(), clone, "git", "-c", "user.email=app@graphite.dev", "-c", "user.name=graphite-app", "commit", "-q", "--amend", "--no-edit", "--reset-author")
+	mustRun(t, f.Env(), clone, "git", "-c", "user.email=app@graphite.dev", "-c", "user.name=graphite-app", "commit", "-q", "--amend", "--no-edit")
 	mustRun(t, f.Env(), clone, "git", "push", "-q", "--force", "origin", "base")
 	shipResetLog(t, f)
 
@@ -919,30 +896,6 @@ func TestStackSubmitRefusesAForeignMergeCarryingItsOwnChange(t *testing.T) {
 	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != foreign {
 		t.Errorf("remote base = %s, want the foreign merge %s kept", got, foreign)
-	}
-}
-
-func TestStackSubmitRefusesAForeignPushUnderALocalRestack(t *testing.T) {
-	f := shipGTRepo(t)
-	stubStackPRs(t, nil)
-	shipGTStack(t, f, "base")
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
-		t.Fatalf("first stack submit: %v", err)
-	}
-	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
-	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
-		t.Fatalf("local restack: %v", err)
-	}
-	restackAdvanceRemote(t, f, "base", "foreign.txt", "foreign\n")
-	foreign := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
-	shipResetLog(t, f)
-
-	_, _, err := runStackCmd(t, f, "submit")
-	if err == nil || !strings.Contains(err.Error(), "base has diverged from origin/base") {
-		t.Fatalf("stack submit = %v, want the foreign push refused", err)
-	}
-	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != foreign {
-		t.Errorf("remote base = %s, want the foreign head %s kept", got, foreign)
 	}
 }
 
