@@ -30,6 +30,7 @@ type gtAPIStub struct {
 	syncMessage    string
 	prs            map[string]int
 	merged         map[string]gtStubMerged
+	bodies         map[string]string
 	unauthorized   bool
 	presubmitError string
 	submitErrors   map[string]string
@@ -95,6 +96,7 @@ func stubGTAPI(t *testing.T) *gtAPIStub {
 		synced:       gtapi.RepoSynced,
 		prs:          map[string]int{},
 		merged:       map[string]gtStubMerged{},
+		bodies:       map[string]string{},
 		submitErrors: map[string]string{},
 		nextPR:       100,
 	}
@@ -132,9 +134,14 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 		prs := []map[string]any{}
 		for _, branch := range req.PRHeadRefNames {
 			if number := s.prs[branch]; number != 0 {
-				prs = append(prs, map[string]any{
-					"prNumber": number, "headRefName": branch, "state": "OPEN", "url": gtStubPRURL(number),
-				})
+				pr := map[string]any{
+					"prNumber": number, "headRefName": branch, "state": "OPEN", "url": gtStubPRURL(number), "body": s.bodies[branch],
+				}
+				if entry, ok := s.lastEntry(branch); ok {
+					pr["baseRefName"] = entry.Base
+					pr["versions"] = []map[string]any{{"headSha": entry.HeadSha, "baseSha": entry.BaseSha, "baseName": entry.Base, "createdAt": "2026-09-02T00:00:00.000Z"}}
+				}
+				prs = append(prs, pr)
 			}
 			if m, ok := s.merged[branch]; ok {
 				prs = append(prs, map[string]any{
@@ -285,6 +292,17 @@ func (s *gtAPIStub) submitHeads() []string {
 		heads = append(heads, submit.entry.Head)
 	}
 	return heads
+}
+
+// lastEntry is the entry branch was last submitted under, the version Graphite
+// reports as its pull request's newest. The caller holds s.mu.
+func (s *gtAPIStub) lastEntry(branch string) (gtStubSubmitEntry, bool) {
+	for _, submit := range slices.Backward(s.submits) {
+		if submit.entry.Head == branch {
+			return submit.entry, true
+		}
+	}
+	return gtStubSubmitEntry{}, false
 }
 
 // submitEntry returns the entry one branch was submitted under.

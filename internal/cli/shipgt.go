@@ -731,11 +731,11 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 	if err != nil {
 		return "", nil, nil, err
 	}
-	_, known, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, gtBottomUp(chain))
+	_, entries, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, gtBottomUp(chain), branch)
 	if err != nil {
 		return "", nil, nil, err
 	}
-	submitted, bodyless, stack = gtPRSegment(ctx, l, branch, chain, meta, known)
+	submitted, bodyless, stack = gtPRSegment(branch, chain, meta, entries)
 	return submitted, bodyless, stack, nil
 }
 
@@ -759,11 +759,14 @@ type gtSubmitBranch struct {
 // remote trunk already holds, confirm the repo is synced, learn each branch's
 // open PR, force-push the rest in one atomic push, then post one entry per
 // branch bottom-up, as real gt does, reporting the branches that got one. The
-// push comes first so the headSha Graphite records is the one on the remote.
+// push comes first so the headSha Graphite records is the one on the remote. A
+// branch other than tip whose open pull request already carries exactly this
+// head and base is left out of both, so another lane's pull request is never
+// resubmitted unchanged.
 //
-// The open pull requests it learned come back keyed by branch, so the report
-// step can answer from them instead of asking GitHub the same question again.
-func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, commonDir string, state gtState, tr vcs.Trunk, branches []string) ([]string, map[string]gtapi.PullRequestInfo, error) {
+// Every branch's pull request comes back as Graphite answered for it, so the
+// report step never asks GitHub the same question again.
+func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, commonDir string, state gtState, tr vcs.Trunk, branches []string, tip string) ([]string, map[string]stackEntry, error) {
 	if s.trunkHead == "" {
 		pin, err := gtTrunkHead(ctx, l.dir(), s.prefix, tr)
 		if err != nil {
@@ -783,9 +786,6 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		return nil, nil, err
 	}
 	branches, held := gtDropHeld(state, branches)
-	if err := gtAnnounceStack(errW, s.prefix, branches); err != nil {
-		return nil, nil, err
-	}
 	if len(branches) == 0 {
 		if s.publication != nil {
 			if err := stackRecordPublication(ctx, l.dir(), s.publication, nil); err != nil {
@@ -832,10 +832,12 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	}
 	known := make(map[string]gtapi.PullRequestInfo, len(infos))
 	open := map[string]int{}
+	entries := map[string]stackEntry{}
 	for _, pr := range infos {
 		if pr.State == gtapi.PROpen {
 			known[pr.HeadRefName] = pr
 			open[pr.HeadRefName] = pr.PRNumber
+			entries[pr.HeadRefName] = stackEntry{Branch: pr.HeadRefName, PR: pr.PRNumber, URL: pr.URL, HasBody: strings.TrimSpace(pr.Body) != "", State: string(pr.State)}
 		}
 	}
 
@@ -851,6 +853,13 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		if lease, ok := s.leases[b.name]; ok {
 			plan[i].lease, plan[i].leaseSet = lease, true
 		}
+	}
+	plan, unchanged := gtDropUnchanged(plan, last, known, tip)
+	if err := gtAnnounceUnchanged(errW, s.prefix, unchanged); err != nil {
+		return nil, nil, err
+	}
+	if err := gtAnnounceStack(errW, s.prefix, gtPlanNames(plan)); err != nil {
+		return nil, nil, err
 	}
 	if err := gtRefuseInherited(ctx, s.prefix, l.dir(), tr, s.trunkHead, plan); err != nil {
 		return nil, nil, err
@@ -868,6 +877,9 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		if !contains {
 			return nil, nil, errors.New(gtStuck(s.prefix, gtOffParent(branch, state[branch].State), s.suffix))
 		}
+	}
+	if len(plan) == 0 {
+		return nil, entries, nil
 	}
 
 	pre := make([]gtapi.PreSubmitBranch, 0, len(plan))
@@ -902,7 +914,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	}
 
 	var landed []gtapi.SubmittedPR
-	for _, pr := range gtSubmitPRs(plan, s.draft) {
+	for i, pr := range gtSubmitPRs(plan, s.draft) {
 		out, err := client.SubmitPullRequests(ctx, gtapi.SubmitRequest{
 			RepoOwner:       owner,
 			RepoName:        name,
@@ -913,8 +925,44 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			return nil, nil, gtSubmitFailure(gtSubmitPartial(err, pr.Head, landed), s)
 		}
 		landed = append(landed, out...)
+		if plan[i].pr != 0 {
+			continue
+		}
+		for _, created := range out {
+			entries[created.Head] = stackEntry{Branch: created.Head, PR: created.PRNumber, URL: created.PRURL, HasBody: strings.TrimSpace(plan[i].body) != "", State: string(gtapi.PROpen)}
+		}
 	}
-	return branches, known, nil
+	return gtPlanNames(plan), entries, nil
+}
+
+// gtDropUnchanged splits off every branch below tip whose open pull request
+// both gt's record and Graphite's newest version hold at exactly the head,
+// base and base sha it would be submitted at now: submitting it again changes
+// nothing, and a Graphite refusal on it would fail the tip's submit.
+func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, known map[string]gtapi.PullRequestInfo, tip string) (submit []gtSubmitBranch, unchanged []string) {
+	for _, b := range plan {
+		now := gtmeta.Version{HeadSha: b.head, BaseSha: b.baseSha, BaseName: b.base}
+		pr, open := known[b.name]
+		newest := pr.Newest()
+		if b.name != tip && b.pr != 0 && open && last[b.name] == now && pr.BaseRefName == b.base && newest.HeadSha == b.head && newest.BaseSha == b.baseSha {
+			unchanged = append(unchanged, b.name)
+			continue
+		}
+		submit = append(submit, b)
+	}
+	return submit, unchanged
+}
+
+// gtAnnounceUnchanged names the branches a submit left alone because their pull
+// requests already carry what it would have pushed.
+func gtAnnounceUnchanged(errW io.Writer, prefix string, unchanged []string) error {
+	if len(unchanged) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintf(errW, "%s: not resubmitting %s, unchanged since its last submit: %s\n", prefix, gtBranchCount(len(unchanged)), strings.Join(unchanged, ", ")); err != nil {
+		return fmt.Errorf("%s: name the unchanged branches: %w", prefix, err)
+	}
+	return nil
 }
 
 // gtTrunkRef resolves the remote-tracking trunk a submit anchors on, fetching
@@ -1417,13 +1465,13 @@ func gtAnnounceContained(errW io.Writer, prefix string, tr vcs.Trunk, contained 
 	return nil
 }
 
-func gtPRSegment(ctx context.Context, l lane, branch string, chain []string, meta map[string]prMeta, known map[string]gtapi.PullRequestInfo) (submitted string, bodyless []string, stack []stackEntry) {
+func gtPRSegment(branch string, chain []string, meta map[string]prMeta, entries map[string]stackEntry) (submitted string, bodyless []string, stack []stackEntry) {
 	stackSeg := ""
 	if len(chain) > 1 {
 		stackSeg = fmt.Sprintf(" (stack of %d: %s)", len(chain), strings.Join(gtStackNames(chain), ", "))
 	}
 	submitted = "submitted " + branch + stackSeg
-	stack = gtSubmitDownstack(ctx, l, chain, meta, known)
+	stack = gtSubmitDownstack(chain, entries)
 	for _, entry := range stack {
 		if entry.PR == 0 {
 			continue
@@ -1438,26 +1486,18 @@ func gtPRSegment(ctx context.Context, l lane, branch string, chain []string, met
 	return submitted, bodyless, stack
 }
 
-// gtSubmitDownstack resolves the submitted stack's pull requests from the
-// answer graphite already gave, when it covers every branch and this ship
-// writes every body. What gh adds beyond a number and a URL is the body the
-// bodyless warning weighs, and a branch given one is never warned about.
-// Anything less falls back to asking GitHub.
-func gtSubmitDownstack(ctx context.Context, l lane, chain []string, meta map[string]prMeta, known map[string]gtapi.PullRequestInfo) []stackEntry {
-	entries := make([]stackEntry, 0, len(chain))
-	for i := len(chain) - 1; i >= 0; i-- {
-		branch := chain[i]
-		pr, ok := known[branch]
-		if !ok || pr.PRNumber == 0 || pr.URL == "" || !meta[branch].writesBody() {
-			return infoDownstack(ctx, l, chain)
+// gtSubmitDownstack lays the submitted stack's pull requests out trunk-first
+// from what Graphite answered — the open pull requests it knew of and the ones
+// the submit opened — so reporting a submit spends no GitHub API call. A branch
+// with neither has no pull request.
+func gtSubmitDownstack(chain []string, entries map[string]stackEntry) []stackEntry {
+	stack := make([]stackEntry, 0, len(chain))
+	for _, branch := range gtStackNames(chain) {
+		entry, ok := entries[branch]
+		if !ok {
+			entry = stackEntry{Branch: branch}
 		}
-		entries = append(entries, stackEntry{
-			Branch:  branch,
-			PR:      pr.PRNumber,
-			URL:     pr.URL,
-			HasBody: strings.TrimSpace(pr.Body) != "",
-			State:   string(pr.State),
-		})
+		stack = append(stack, entry)
 	}
-	return entries
+	return stack
 }

@@ -41,7 +41,7 @@ func stackShipOptions(o shipOpts, meta map[string]prMeta, repo, branch string) (
 	return intent, nil
 }
 
-func stackFinishShip(ctx context.Context, cmd *cobra.Command, l lane, run *stackRebaseRun) error {
+func stackFinishShip(ctx context.Context, cmd *cobra.Command, l lane, run *stackRebaseRun, submitted map[string]stackEntry) error {
 	intent := run.Ship
 	meta := map[string]prMeta{}
 	for name, saved := range intent.Meta {
@@ -60,7 +60,7 @@ func stackFinishShip(ctx context.Context, cmd *cobra.Command, l lane, run *stack
 			chain = append(chain, b.Name)
 		}
 	}
-	_, _, entries := gtPRSegment(ctx, l, intent.Branch, chain, meta, nil)
+	_, _, entries := gtPRSegment(intent.Branch, chain, meta, submitted)
 	if len(meta) > 0 {
 		segment, err := shipPRGT(ctx, intent.Repo, meta, entries)
 		if err != nil {

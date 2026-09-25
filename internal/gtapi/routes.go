@@ -115,6 +115,18 @@ type PullRequestInfo struct {
 	CliTrunk              string            `json:"cliTrunk"`
 }
 
+// Newest is the pull request's newest submitted version, zero when Graphite
+// recorded none.
+func (p PullRequestInfo) Newest() PRVersion {
+	newest := PRVersion{}
+	for _, v := range p.Versions {
+		if v.CreatedAt >= newest.CreatedAt {
+			newest = v
+		}
+	}
+	return newest
+}
+
 // PullRequestInfo fetches Graphite's record of the named pull requests.
 func (c *Client) PullRequestInfo(ctx context.Context, req PullRequestInfoRequest) ([]PullRequestInfo, error) {
 	payload, err := c.post(ctx, "/graphite/cli/pull-request-info", req)
