@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -19,13 +18,15 @@ import (
 
 const dropPrefix = "stack drop"
 
-const dropPRFields = "number,url,state,baseRefName"
-
 type dropPR struct {
-	Number      int    `json:"number"`
-	URL         string `json:"url"`
-	State       string `json:"state"`
-	BaseRefName string `json:"baseRefName"`
+	Number      int
+	URL         string
+	State       string
+	BaseRefName string
+}
+
+func dropPRFrom(p ghPull) dropPR {
+	return dropPR{Number: p.Number, URL: p.HTMLURL, State: p.graphQLState(), BaseRefName: p.Base.Ref}
 }
 
 type dropOpts struct {
@@ -494,7 +495,7 @@ func dropRepairApply(ctx context.Context, l lane, nwo, remote string, jobs []rep
 			return err
 		}
 		if err := dropRepairGroup(ctx, l, nwo, remote, dead, sha, group); err != nil {
-			return errors.Join(err, dropRepairStranded(remote, dead, group))
+			return errors.Join(err, dropRepairStranded(nwo, remote, dead, group))
 		}
 	}
 	return dropVerifyRepair(ctx, nwo, jobs)
@@ -523,10 +524,10 @@ func dropRepairGroup(ctx context.Context, l lane, nwo, remote string, dead deadR
 // dropRepairStranded names the state a failed repair leaves and the commands
 // that finish it: the resurrected ref is still on the remote, and deleting it
 // before every pull request has moved off it closes them again.
-func dropRepairStranded(remote string, dead deadRef, group []repairJob) error {
+func dropRepairStranded(nwo, remote string, dead deadRef, group []repairJob) error {
 	steps := make([]string, 0, len(group)+1)
 	for _, job := range group {
-		steps = append(steps, fmt.Sprintf("gh pr edit %d --base %s", job.pr.Number, job.base))
+		steps = append(steps, ghCommand(dropRetargetArgv(nwo, job.pr.Number, job.base)))
 	}
 	steps = append(steps, "git push "+remote+" --delete "+dead.ref)
 	return fmt.Errorf("%s: %s is back on %s and every pull request above must move off it before it goes again — finish with: %s",
@@ -642,53 +643,53 @@ func dropRemoteHeads(ctx context.Context, dir render.Dir, remote string) (map[st
 	return heads, nil
 }
 
-// dropPRForBranch resolves branch's pull request through gh pr list, which
-// exits 0 with an empty array when there is none. state scopes it: a drop
-// retargets the open ones, a repair has to see the closed one a deletion left.
+// dropPRForBranch resolves branch's newest pull request, and finds none in an
+// empty list. state scopes it: a drop retargets the open ones, a repair has to
+// see the closed one a deletion left.
 func dropPRForBranch(ctx context.Context, nwo, branch, state string) (dropPR, bool, error) {
-	argv := []string{"pr", "list", "--repo", nwo, "--head", branch, "--state", state, "--json", dropPRFields, "--limit", "1"}
-	out, err := render.RunCLI(ctx, render.Ambient, "gh", argv)
+	out, err := render.RunCLI(ctx, render.Ambient, "gh", ghPullsByHeadArgv(nwo, branch, state))
 	if err != nil {
-		return dropPR{}, false, fmt.Errorf("%s: gh pr list: %w", dropPrefix, err)
+		return dropPR{}, false, fmt.Errorf("%s: list pull requests of %s: %w", dropPrefix, branch, err)
 	}
-	var prs []dropPR
+	var prs []ghPull
 	if err := json.Unmarshal([]byte(out), &prs); err != nil {
-		return dropPR{}, false, fmt.Errorf("%s: parse gh pr list: %w", dropPrefix, err)
+		return dropPR{}, false, fmt.Errorf("%s: parse pull requests of %s: %w", dropPrefix, branch, err)
 	}
 	if len(prs) == 0 {
 		return dropPR{}, false, nil
 	}
-	return prs[0], true, nil
+	return dropPRFrom(prs[0]), true, nil
 }
 
 // dropPRAt reads one pull request by number, the address every verification
 // uses: a branch-keyed lookup cannot answer for a pull request whose head
 // branch was just deleted, and that is the read that has to work.
 func dropPRAt(ctx context.Context, nwo string, number int) (dropPR, error) {
-	argv := []string{"pr", "view", strconv.Itoa(number), "--repo", nwo, "--json", dropPRFields}
-	out, err := render.RunCLI(ctx, render.Ambient, "gh", argv)
+	out, err := render.RunCLI(ctx, render.Ambient, "gh", []string{"api", ghPullPath(nwo, number)})
 	if err != nil {
-		return dropPR{}, fmt.Errorf("%s: gh pr view %d: %w", dropPrefix, number, err)
+		return dropPR{}, fmt.Errorf("%s: read PR #%d: %w", dropPrefix, number, err)
 	}
-	var pr dropPR
+	var pr ghPull
 	if err := json.Unmarshal([]byte(out), &pr); err != nil {
-		return dropPR{}, fmt.Errorf("%s: parse gh pr view %d: %w", dropPrefix, number, err)
+		return dropPR{}, fmt.Errorf("%s: parse PR #%d: %w", dropPrefix, number, err)
 	}
-	return pr, nil
+	return dropPRFrom(pr), nil
+}
+
+func dropRetargetArgv(nwo string, number int, base string) []string {
+	return ghPatchPullArgv(nwo, number, "-f", "base="+base)
 }
 
 func dropRetarget(ctx context.Context, nwo string, number int, base string) error {
-	argv := []string{"pr", "edit", strconv.Itoa(number), "--repo", nwo, "--base", base}
-	if _, err := render.RunCLI(ctx, render.Ambient, "gh", argv); err != nil {
-		return fmt.Errorf("%s: gh pr edit %d --base %s: %w", dropPrefix, number, base, err)
+	if _, err := render.RunCLI(ctx, render.Ambient, "gh", dropRetargetArgv(nwo, number, base)); err != nil {
+		return fmt.Errorf("%s: retarget PR #%d onto %s: %w", dropPrefix, number, base, err)
 	}
 	return nil
 }
 
 func dropReopen(ctx context.Context, nwo string, number int) error {
-	argv := []string{"pr", "reopen", strconv.Itoa(number), "--repo", nwo}
-	if _, err := render.RunCLI(ctx, render.Ambient, "gh", argv); err != nil {
-		return fmt.Errorf("%s: gh pr reopen %d: %w", dropPrefix, number, err)
+	if _, err := render.RunCLI(ctx, render.Ambient, "gh", ghPatchPullArgv(nwo, number, "-f", "state=open")); err != nil {
+		return fmt.Errorf("%s: reopen PR #%d: %w", dropPrefix, number, err)
 	}
 	return nil
 }

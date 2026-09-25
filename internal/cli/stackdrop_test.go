@@ -74,36 +74,53 @@ func (g *dropGH) markDeleted(ref string) {
 	g.write(filepath.Join("deleted", ref), "")
 }
 
-// dropGHBody answers the four verbs a drop issues out of the state directory,
-// and refuses the two things GitHub itself refuses: changing a closed pull
-// request's base, and reopening one whose base ref is gone.
+// dropGHBody answers the four REST calls a drop issues out of the state
+// directory, and refuses the two things GitHub itself refuses: changing a
+// closed pull request's base, and reopening one whose base ref is gone.
 const dropGHBody = `S=$DROP_GH
-after() { key=$1; shift; while [ $# -gt 0 ]; do if [ "$1" = "$key" ]; then printf '%s' "$2"; return 0; fi; shift; done; }
-render() { read -r st bs < "$S/pr/$1"; printf '{"number":%s,"url":"https://github.com/yasyf/cc-context/pull/%s","state":"%s","baseRefName":"%s"}' "$1" "$1" "$st" "$bs"; }
-case "$1 $2" in
-  "pr list")
-    branch=$(after --head "$@")
-    want=$(after --state "$@")
+field() { key=$1; shift; while [ $# -gt 0 ]; do case "$1" in "$key"=*) printf '%s' "${1#*=}"; return 0 ;; esac; shift; done; }
+render() {
+  read -r st bs < "$S/pr/$1"
+  case "$st" in OPEN) rest=open ;; *) rest=closed ;; esac
+  merged=null; if [ "$st" = MERGED ]; then merged='"2026-09-01T00:00:00Z"'; fi
+  printf '{"number":%s,"html_url":"https://github.com/yasyf/cc-context/pull/%s","state":"%s","merged_at":%s,"base":{"ref":"%s"}}' "$1" "$1" "$rest" "$merged" "$bs"
+}
+if [ "$1" != api ]; then printf 'fake gh: unmatched argv: %s\n' "$*" >&2; exit 2; fi
+method=GET path= prev=
+for a in "$@"; do
+  case "$a" in repos/*) path=$a ;; esac
+  if [ "$prev" = -X ]; then method=$a; fi
+  prev=$a
+done
+case "$method $path" in
+  "GET "*/pulls)
+    head=$(field head "$@")
+    branch=${head#*:}
+    want=$(field state "$@")
     if [ ! -r "$S/branch/$branch" ]; then printf '[]'; exit 0; fi
     read -r n < "$S/branch/$branch"
     read -r st bs < "$S/pr/$n"
     if [ "$want" = open ] && [ "$st" != OPEN ]; then printf '[]'; exit 0; fi
     printf '['; render "$n"; printf ']' ;;
-  "pr view") render "$3" ;;
-  "pr edit")
-    read -r st bs < "$S/pr/$3"
-    if [ "$st" != OPEN ]; then
-      printf 'GraphQL: Cannot change the base branch of a closed pull request. (updatePullRequest)\n' >&2
-      exit 1
+  "GET "*/pulls/*) render "${path##*/}" ;;
+  "PATCH "*/pulls/*)
+    n=${path##*/}
+    read -r st bs < "$S/pr/$n"
+    base=$(field base "$@")
+    if [ -n "$base" ]; then
+      if [ "$st" != OPEN ]; then
+        printf 'gh: Cannot change the base branch of a closed pull request. (HTTP 422)\n' >&2
+        exit 1
+      fi
+      if [ -z "$DROP_GH_EDIT_NOOP" ]; then printf '%s %s\n' "$st" "$base" > "$S/pr/$n"; fi
     fi
-    if [ -z "$DROP_GH_EDIT_NOOP" ]; then printf '%s %s\n' "$st" "$(after --base "$@")" > "$S/pr/$3"; fi ;;
-  "pr reopen")
-    read -r st bs < "$S/pr/$3"
-    if [ -e "$S/deleted/$bs" ]; then
-      printf 'API call failed: GraphQL: Could not open the pull request. (reopenPullRequest)\n' >&2
-      exit 1
-    fi
-    printf 'OPEN %s\n' "$bs" > "$S/pr/$3" ;;
+    if [ "$(field state "$@")" = open ]; then
+      if [ -e "$S/deleted/$bs" ]; then
+        printf 'gh: Validation Failed (HTTP 422)\n' >&2
+        exit 1
+      fi
+      printf 'OPEN %s\n' "$bs" > "$S/pr/$n"
+    fi ;;
   *) printf 'fake gh: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
 esac
 exit 0
@@ -198,7 +215,7 @@ func TestStackDropRetargetsEveryChildBeforeDeletingTheBranch(t *testing.T) {
 	}
 
 	invocations := shipGTInvocations(t, f)
-	retarget := dropStep(t, invocations, "gh", "pr", "edit", "2", "--base", "base")
+	retarget := dropStep(t, invocations, "gh", "api", "PATCH", "repos/yasyf/cc-context/pulls/2", "base=base")
 	deleted := dropStep(t, invocations, "git", "push", "--delete", "mid")
 	if retarget > deleted {
 		t.Errorf("retargeted top's PR at step %d, after the delete at step %d — GitHub closes a PR whose base goes first", retarget, deleted)
@@ -277,8 +294,8 @@ func TestStackDropRepairWalksTheOrderGitHubAllows(t *testing.T) {
 	// nothing about either.
 	invocations := shipGTInvocations(t, f)
 	pushed := dropStep(t, invocations, "git", "push", "origin", "refs/heads/base:refs/heads/mid")
-	reopened := dropStep(t, invocations, "gh", "pr", "reopen", "2")
-	retargeted := dropStep(t, invocations, "gh", "pr", "edit", "2", "--base", "base")
+	reopened := dropStep(t, invocations, "gh", "api", "PATCH", "repos/yasyf/cc-context/pulls/2", "state=open")
+	retargeted := dropStep(t, invocations, "gh", "api", "PATCH", "repos/yasyf/cc-context/pulls/2", "base=base")
 	redeleted := dropStep(t, invocations, "git", "push", "--delete", "mid")
 	if pushed >= reopened || reopened >= retargeted || retargeted >= redeleted {
 		t.Errorf("steps ran at push=%d reopen=%d retarget=%d delete=%d, want that order", pushed, reopened, retargeted, redeleted)
@@ -312,7 +329,7 @@ func TestStackDropRepairRefusesBeforeDeletingTheRefBack(t *testing.T) {
 	if err == nil {
 		t.Fatal("stack drop --repair succeeded over a retarget that did not take")
 	}
-	if !strings.Contains(err.Error(), "finish with: gh pr edit 2 --base base") {
+	if !strings.Contains(err.Error(), "finish with: gh api -X PATCH repos/yasyf/cc-context/pulls/2 --silent -f base=base") {
 		t.Errorf("error = %v, want it to name the state and the commands that finish it", err)
 	}
 	if got := gh.pr(2); got != "OPEN mid" {

@@ -1000,7 +1000,7 @@ exit 0
 // shipGHBody is the fake gh's dispatch, shared by the fixture on real
 // repositories and the one on the fakes: every payload it prints comes from a
 // variable the test loaded out of the recorded corpus. $GH_PR_BODY_DUMP copies
-// the bytes behind a --body-file out before gh returns, which is the only
+// the bytes behind a --body-file or body=@ out before gh returns, which is the only
 // window a body materialized from stdin has: ship deletes that temp file on the
 // way out, so the argv alone cannot say what was in it.
 const shipGHBody = `if [ -n "$GH_PR_BODY_DUMP" ]; then
@@ -1008,10 +1008,13 @@ const shipGHBody = `if [ -n "$GH_PR_BODY_DUMP" ]; then
   for a in "$@"; do
     if [ -n "$take" ]; then cat "$a" > "$GH_PR_BODY_DUMP"; take=; fi
     if [ "$a" = --body-file ]; then take=1; fi
+    case "$a" in body=@*) cat "${a#body=@}" > "$GH_PR_BODY_DUMP" ;; esac
   done
 fi
 case "$1 $2" in
   "repo view") printf '%s' "$GH_REPO_VIEW_JSON" ;;
+  "api -X")
+    if [ -n "$GH_PR_EDIT_FAIL" ]; then printf '%s\n' "$GH_PR_EDIT_FAIL" >&2; exit 1; fi ;;
   "api graphql")
     case "$*" in
       *pullRequests*)

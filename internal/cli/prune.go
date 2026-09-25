@@ -3,11 +3,15 @@ package cli
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 
+	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
@@ -24,6 +28,11 @@ func newPruneCmd() *cobra.Command {
 		Use:   "prune",
 		Short: "Delete local branches already merged into trunk, forget their graphite rows, and reparent the rows they leave behind",
 		Long: `Delete local branches already merged into trunk, forget their graphite rows, and reparent the rows they leave behind.
+
+A squash landing leaves no ancestry for git to see, so on the graphite lane a
+branch also counts as merged when Graphite reports its pull request MERGED at
+exactly the branch's local head; a branch carrying a commit the merged pull
+request did not is left alone, and the delete refuses if the head moved since.
 
 A forgotten row leaves its children naming a parent gt no longer knows, and gt
 then refuses to resolve the whole stack above them, so every surviving row whose
@@ -52,6 +61,7 @@ refuses to delete them.`,
 // guessing between them loses work.
 type prunePlan struct {
 	merged   []string
+	squashed map[string]string
 	stale    []string
 	diverged []string
 	held     []string
@@ -120,16 +130,43 @@ func prunePlanFor(ctx context.Context, dir render.Dir, l lane, trunk vcs.Trunk, 
 	if err != nil {
 		return prunePlan{}, fmt.Errorf("prune: %w", err)
 	}
+	diverged := map[string]bool{}
 	for _, row := range rows {
+		_, alive := live[row.Branch]
 		switch {
-		case row.Stale, !live[row.Branch]:
+		case row.Stale, !alive:
 			plan.stale = append(plan.stale, row.Branch)
 		case row.Diverged:
 			plan.diverged = append(plan.diverged, row.Branch)
+			diverged[row.Branch] = true
 		}
 	}
 	sort.Strings(plan.stale)
 	sort.Strings(plan.diverged)
+	candidates := make(map[string]string, len(live))
+	for branch, head := range live {
+		if branch != trunk.Name() && !diverged[branch] {
+			candidates[branch] = head
+		}
+	}
+	for _, branch := range merged {
+		delete(candidates, branch)
+	}
+	squashed, err := pruneSquashLanded(ctx, l, trunk, candidates)
+	if err != nil {
+		return prunePlan{}, err
+	}
+	for branch, head := range squashed {
+		if held[branch] {
+			plan.held = append(plan.held, branch)
+			continue
+		}
+		if plan.squashed == nil {
+			plan.squashed = map[string]string{}
+		}
+		plan.squashed[branch] = head
+	}
+	sort.Strings(plan.held)
 	plan.reparent, err = pruneReparent(rows, pruneForgotten(plan), trunk.Name())
 	if err != nil {
 		return prunePlan{}, err
@@ -140,8 +177,11 @@ func prunePlanFor(ctx context.Context, dir render.Dir, l lane, trunk vcs.Trunk, 
 // pruneForgotten names every graphite row this prune deletes: the branches it
 // deletes from git, plus the rows whose branch is already gone.
 func pruneForgotten(plan prunePlan) map[string]bool {
-	forgotten := make(map[string]bool, len(plan.merged)+len(plan.stale))
+	forgotten := make(map[string]bool, len(plan.merged)+len(plan.squashed)+len(plan.stale))
 	for _, branch := range plan.merged {
+		forgotten[branch] = true
+	}
+	for branch := range plan.squashed {
 		forgotten[branch] = true
 	}
 	for _, branch := range plan.stale {
@@ -230,23 +270,95 @@ func pruneMergedBranches(ctx context.Context, dir render.Dir, trunk vcs.Trunk) (
 	return merged, nil
 }
 
-func pruneLiveBranches(ctx context.Context, dir render.Dir) (map[string]bool, error) {
-	out, err := render.RunCLI(ctx, dir, "git", []string{"for-each-ref", "--format=%(refname:short)", "refs/heads/"})
+// pruneLiveBranches maps every local branch to its head.
+func pruneLiveBranches(ctx context.Context, dir render.Dir) (map[string]string, error) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"for-each-ref", "--format=%(refname:lstrip=2) %(objectname)", "refs/heads/"})
 	if err != nil {
 		return nil, fmt.Errorf("prune: git for-each-ref: %w", err)
 	}
-	live := make(map[string]bool)
-	for _, name := range strings.Split(strings.TrimSpace(out), "\n") {
-		if name = strings.TrimSpace(name); name != "" {
-			live[name] = true
+	live := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if name, head, ok := strings.Cut(strings.TrimSpace(line), " "); ok {
+			live[name] = head
 		}
 	}
 	return live, nil
 }
 
-// pruneApply deletes with git branch -d, never -D: every branch in the plan
-// reached trunk, so a refusal means the plan went stale under a concurrent
-// checkout and the branch keeps its commits.
+// pruneLandedBatch bounds the head refs one pull-request-info request names.
+const pruneLandedBatch = 100
+
+// pruneSquashLanded asks Graphite which candidates landed as a squash, and
+// returns each one whose merged pull request's newest version is exactly the
+// branch's local head: a branch that moved past what merged carries work the
+// squash never took.
+func pruneSquashLanded(ctx context.Context, l lane, trunk vcs.Trunk, heads map[string]string) (map[string]string, error) {
+	if len(heads) == 0 {
+		return nil, nil
+	}
+	owner, name, err := gtRepoOwnerName(ctx, l, "prune")
+	if err != nil {
+		return nil, err
+	}
+	branches := make([]string, 0, len(heads))
+	for branch := range heads {
+		branches = append(branches, branch)
+	}
+	sort.Strings(branches)
+	client := gtAPIClient()
+	var mu sync.Mutex
+	landed := map[string]string{}
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(4)
+	for batch := range slices.Chunk(branches, pruneLandedBatch) {
+		g.Go(func() error {
+			infos, err := client.PullRequestInfo(gctx, gtapi.PullRequestInfoRequest{
+				RepoOwner:        owner,
+				RepoName:         name,
+				PRNumbers:        []int{},
+				PRHeadRefNames:   batch,
+				TrunkBranchNames: []string{trunk.Name()},
+				Callsite:         "ccx",
+			})
+			if err != nil {
+				return fmt.Errorf("prune: graphite pull-request-info: %w", err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			for _, pr := range infos {
+				head, asked := heads[pr.HeadRefName]
+				if asked && pr.State == gtapi.PRMerged && pruneMergedHead(pr) == head {
+					landed[pr.HeadRefName] = head
+				}
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	return landed, nil
+}
+
+// pruneMergedHead is the head of a pull request's newest version, empty when
+// Graphite recorded none.
+func pruneMergedHead(pr gtapi.PullRequestInfo) string {
+	newest := gtapi.PRVersion{}
+	for _, v := range pr.Versions {
+		if v.CreatedAt >= newest.CreatedAt {
+			newest = v
+		}
+	}
+	return newest.HeadSha
+}
+
+// pruneApply deletes with git branch -d, never -D: every merged branch in the
+// plan reached trunk, so a refusal means the plan went stale under a concurrent
+// checkout and the branch keeps its commits. A squash-landed branch never
+// reached trunk, so git branch -d would refuse it; it goes in one git update-ref
+// transaction that deletes each ref only at the head its merged pull request
+// carried, and refuses them all if one moved. update-ref, unlike git branch,
+// deletes a branch a worktree has out, so the holders are read again first.
 func pruneApply(ctx context.Context, dir render.Dir, l lane, plan prunePlan, commonDir string) error {
 	for _, batch := range pruneBatches(plan.merged, 200) {
 		argv := append([]string{"branch", "-d"}, batch...)
@@ -254,7 +366,26 @@ func pruneApply(ctx context.Context, dir render.Dir, l lane, plan prunePlan, com
 			return fmt.Errorf("prune: git branch -d: %w", err)
 		}
 	}
-	forget := append(append([]string{}, plan.merged...), plan.stale...)
+	squashed := pruneSquashedNames(plan)
+	if len(squashed) > 0 {
+		held, err := pruneHeldBranches(ctx, dir)
+		if err != nil {
+			return err
+		}
+		for _, branch := range squashed {
+			if held[branch] {
+				return fmt.Errorf("prune: a worktree checked out %s after the plan; re-run prune", branch)
+			}
+		}
+		var tx strings.Builder
+		for _, branch := range squashed {
+			fmt.Fprintf(&tx, "delete refs/heads/%s %s\n", branch, plan.squashed[branch])
+		}
+		if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "--stdin"}, []byte(tx.String())); err != nil {
+			return fmt.Errorf("prune: git update-ref --stdin: %w", err)
+		}
+	}
+	forget := slices.Concat(plan.merged, squashed, plan.stale)
 	if !l.gt || len(forget) == 0 {
 		return nil
 	}
@@ -287,6 +418,9 @@ func prunePlanReport(plan prunePlan, trunk vcs.Trunk, dryRun bool) string {
 		deleted, forgot, reparented = "would delete", "would forget", "would reparent"
 	}
 	segs := []string{fmt.Sprintf("%s %d branches merged into %s%s", deleted, len(plan.merged), trunk.Name(), pruneNames(plan.merged))}
+	if squashed := pruneSquashedNames(plan); len(squashed) > 0 {
+		segs = append(segs, fmt.Sprintf("%s %d branches whose pull request squash-landed%s", deleted, len(squashed), pruneNames(squashed)))
+	}
 	if len(plan.stale) > 0 {
 		segs = append(segs, fmt.Sprintf("%s %d graphite rows for deleted branches", forgot, len(plan.stale)))
 	}
@@ -300,6 +434,15 @@ func prunePlanReport(plan prunePlan, trunk vcs.Trunk, dryRun bool) string {
 		segs = append(segs, fmt.Sprintf("%d diverged, left alone — gt track or gt untrack each", len(plan.diverged)))
 	}
 	return strings.Join(segs, shipSep)
+}
+
+func pruneSquashedNames(plan prunePlan) []string {
+	names := make([]string, 0, len(plan.squashed))
+	for branch := range plan.squashed {
+		names = append(names, branch)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // pruneNames lists the branches a prune deletes, which is the one part worth
