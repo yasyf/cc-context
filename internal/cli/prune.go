@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -293,21 +294,30 @@ const pruneLandedBatch = 100
 // branch's local head: a branch that moved past what merged carries work the
 // squash never took.
 func pruneSquashLanded(ctx context.Context, l lane, trunk vcs.Trunk, heads map[string]string) (map[string]string, error) {
-	if len(heads) == 0 {
-		return nil, nil
-	}
-	owner, name, err := gtRepoOwnerName(ctx, l, "prune")
+	merged, err := gtMergedHeads(ctx, l, "prune", trunk, slices.Sorted(maps.Keys(heads)))
 	if err != nil {
 		return nil, err
 	}
-	branches := make([]string, 0, len(heads))
-	for branch := range heads {
-		branches = append(branches, branch)
+	landed := map[string]string{}
+	for branch, head := range merged {
+		if heads[branch] == head {
+			landed[branch] = head
+		}
 	}
-	sort.Strings(branches)
+	return landed, nil
+}
+
+func gtMergedHeads(ctx context.Context, l lane, prefix string, trunk vcs.Trunk, branches []string) (map[string]string, error) {
+	if len(branches) == 0 {
+		return nil, nil
+	}
+	owner, name, err := gtRepoOwnerName(ctx, l, prefix)
+	if err != nil {
+		return nil, err
+	}
 	client := gtAPIClient()
 	var mu sync.Mutex
-	landed := map[string]string{}
+	merged := map[string]string{}
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(4)
 	for batch := range slices.Chunk(branches, pruneLandedBatch) {
@@ -321,14 +331,13 @@ func pruneSquashLanded(ctx context.Context, l lane, trunk vcs.Trunk, heads map[s
 				Callsite:         "ccx",
 			})
 			if err != nil {
-				return fmt.Errorf("prune: graphite pull-request-info: %w", err)
+				return fmt.Errorf("%s: graphite pull-request-info: %w", prefix, err)
 			}
 			mu.Lock()
 			defer mu.Unlock()
 			for _, pr := range infos {
-				head, asked := heads[pr.HeadRefName]
-				if asked && pr.State == gtapi.PRMerged && pruneMergedHead(pr) == head {
-					landed[pr.HeadRefName] = head
+				if pr.State == gtapi.PRMerged && slices.Contains(batch, pr.HeadRefName) {
+					merged[pr.HeadRefName] = pruneMergedHead(pr)
 				}
 			}
 			return nil
@@ -337,7 +346,7 @@ func pruneSquashLanded(ctx context.Context, l lane, trunk vcs.Trunk, heads map[s
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
-	return landed, nil
+	return merged, nil
 }
 
 // pruneMergedHead is the head of a pull request's newest version, empty when
