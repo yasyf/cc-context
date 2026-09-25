@@ -408,6 +408,86 @@ func TestStackRebaseReclaimsAStaleRun(t *testing.T) {
 	}
 }
 
+func stackPlantLive(t *testing.T, f *vcstest.Fixture, branches ...string) *stackRebaseRun {
+	t.Helper()
+	live := exec.Command("sleep", "60")
+	if err := live.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = live.Process.Kill(); _ = live.Wait() })
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := &stackRebaseRun{Trunk: "main", Roots: branches[:1], Pid: live.Process.Pid, Started: stackProcStart(live.Process.Pid), Host: host, dir: stackRunDir(filepath.Join(f.Dir, ".git"), branches[0])}
+	for _, b := range branches {
+		run.Branches = append(run.Branches, stackRebaseBranch{Name: b})
+	}
+	if err := os.MkdirAll(run.dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := stackSaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	return run
+}
+
+func TestStackContinueRefusesARunAnotherProcessDrives(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	live := stackPlantLive(t, f, "base", "feature")
+
+	for _, verb := range []string{"continue", "abort"} {
+		_, _, err := runStackCmd(t, f, verb)
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("pid %d on ", live.Pid)) || !strings.Contains(err.Error(), "is still driving the stack rebase of base") {
+			t.Fatalf("%s beside a live run = %v, want the refusal naming its pid", verb, err)
+		}
+	}
+	if runs, err := stackRuns(filepath.Join(f.Dir, ".git")); err != nil || len(runs) != 1 {
+		t.Fatalf("runs = %v, %v, want the live run kept", runs, err)
+	}
+}
+
+func TestStackRebaseRefusesALiveRunBeforePlanning(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	stackPlantLive(t, f, "base", "feature")
+	prev := stackPRLookup
+	stackPRLookup = func(context.Context, render.Dir, string, []string) (map[string]*stackPR, error) {
+		t.Error("the rebase planned beside a live run of its own branch")
+		return nil, nil
+	}
+	t.Cleanup(func() { stackPRLookup = prev })
+
+	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err == nil || !strings.Contains(err.Error(), "a stack rebase of base is already in progress") {
+		t.Fatalf("rebase beside a live run = %v, want the in-progress refusal", err)
+	}
+}
+
+func TestStackPidAliveRejectsAReusedPid(t *testing.T) {
+	run := &stackRebaseRun{Pid: os.Getpid(), Started: stackProcStart(os.Getpid())}
+	if !stackPidAlive(run) {
+		t.Fatalf("stackPidAlive(own pid, own start %q) = false", run.Started)
+	}
+	run.Started = "Thu Jan  1 00:00:00 1970"
+	if stackPidAlive(run) {
+		t.Error("stackPidAlive took a live pid with another start time for the run's process")
+	}
+}
+
+func TestStackWriteRefsTakesARefAlreadyWritten(t *testing.T) {
+	f := stackRebaseRepo(t, "base")
+	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	moved := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+	run := &stackRebaseRun{Branches: []stackRebaseBranch{{Name: "base", Local: local, NewHead: moved}}}
+	for range 2 {
+		if err := stackWriteRefs(f.Context(), render.Dir(f.Dir), run); err != nil {
+			t.Fatalf("stackWriteRefs: %v", err)
+		}
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != moved {
+		t.Errorf("base = %s, want %s", got, moved)
+	}
+}
+
 func TestStackAbortDropsTheRun(t *testing.T) {
 	f := shipGTRepo(t)
 	stubStackPRs(t, nil)

@@ -8,8 +8,10 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -81,6 +83,7 @@ type stackRebaseRun struct {
 	Applied  bool                `json:"applied,omitempty"`
 	Roots    []string            `json:"roots"`
 	Pid      int                 `json:"pid"`
+	Started  string              `json:"started"`
 	Host     string              `json:"host"`
 	Branches []stackRebaseBranch `json:"branches"`
 	Conflict *stackConflict      `json:"conflict,omitempty"`
@@ -196,9 +199,17 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 	if err != nil {
 		return err
 	}
+	current, err := gitCurrentBranch(ctx, l.dir(), stackRebasePrefix)
+	if err != nil {
+		return err
+	}
+	var gated []*stackRebaseRun
 	for _, other := range runs {
-		if other.Conflict != nil && other.Conflict.Workspace == l.root {
-			return stackInProgress(other)
+		if (other.Conflict != nil && other.Conflict.Workspace == l.root) || (current != "" && other.branch(current) != nil) {
+			if err := stackGate(ctx, cmd, l, commonDir, other, o.dryRun); err != nil {
+				return err
+			}
+			gated = append(gated, other)
 		}
 	}
 	run, err := stackPlan(ctx, l, commonDir, o)
@@ -206,20 +217,12 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 		return err
 	}
 	for _, other := range runs {
-		if !stackOverlaps(run, other) {
+		if slices.Contains(gated, other) || !stackOverlaps(run, other) {
 			continue
 		}
-		if !stackStale(other) {
-			return stackInProgress(other)
-		}
-		if o.dryRun {
-			cmd.Println(fmt.Sprintf("would reclaim the stale stack rebase of %s (%s)", strings.Join(other.Roots, ", "), stackHolder(other)))
-			continue
-		}
-		if err := stackReclaim(ctx, l, commonDir, other); err != nil {
+		if err := stackGate(ctx, cmd, l, commonDir, other, o.dryRun); err != nil {
 			return err
 		}
-		cmd.Println(fmt.Sprintf("reclaimed the stale stack rebase of %s (%s)", strings.Join(other.Roots, ", "), stackHolder(other)))
 	}
 	cmd.Println(strings.Join(stackPlanLines(run), "\n"))
 	if o.dryRun {
@@ -232,6 +235,23 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 		return err
 	}
 	return stackDrive(ctx, cmd, l, commonDir, run)
+}
+
+// stackGate refuses a rebase over a run in progress, or reclaims the run when
+// it is stale.
+func stackGate(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, other *stackRebaseRun, dryRun bool) error {
+	if !stackStale(other) {
+		return stackInProgress(other)
+	}
+	if dryRun {
+		cmd.Println(fmt.Sprintf("would reclaim the stale stack rebase of %s (%s)", strings.Join(other.Roots, ", "), stackHolder(other)))
+		return nil
+	}
+	if err := stackReclaim(ctx, l, commonDir, other); err != nil {
+		return err
+	}
+	cmd.Println(fmt.Sprintf("reclaimed the stale stack rebase of %s (%s)", strings.Join(other.Roots, ", "), stackHolder(other)))
+	return nil
 }
 
 func stackInProgress(run *stackRebaseRun) error {
@@ -300,9 +320,21 @@ func stackStale(run *stackRebaseRun) bool {
 	return errors.Is(err, fs.ErrNotExist)
 }
 
+// stackPidAlive also matches the process's start time, so a pid the kernel
+// reused for another process after the run's own exited reads as exited.
 func stackPidAlive(run *stackRebaseRun) bool {
-	err := syscall.Kill(run.Pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	if err := syscall.Kill(run.Pid, 0); err != nil && !errors.Is(err, syscall.EPERM) {
+		return false
+	}
+	return stackProcStart(run.Pid) == run.Started
+}
+
+func stackProcStart(pid int) string {
+	out, err := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // a fixed ps argv around a numeric pid
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts) (*stackRebaseRun, error) {
@@ -367,7 +399,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Roots: roots, Pid: os.Getpid(), Host: host}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host}
 	byName := map[string]*stackRebaseBranch{}
 	for _, name := range members {
 		b, err := stackSnapshot(ctx, l.dir(), tr, state[name], name, remotes[name], prs[name], slices.Contains(o.landed, name), pin)
@@ -992,10 +1024,14 @@ func stackResolveRun(ctx context.Context, stack string) (lane, string, *stackReb
 	if err != nil {
 		return lane{}, "", nil, err
 	}
-	if run.Host, err = os.Hostname(); err != nil {
+	host, err := os.Hostname()
+	if err != nil {
 		return lane{}, "", nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run.Pid = os.Getpid()
+	if run.Pid != os.Getpid() && (run.Host != host || stackPidAlive(run)) {
+		return lane{}, "", nil, fmt.Errorf("stack rebase: pid %d on %s is still driving the stack rebase of %s — wait for it to finish", run.Pid, run.Host, strings.Join(run.Roots, ", "))
+	}
+	run.Pid, run.Started, run.Host = os.Getpid(), stackProcStart(os.Getpid()), host
 	if err := stackSaveRun(run); err != nil {
 		return lane{}, "", nil, err
 	}
@@ -1042,14 +1078,17 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 		if err != nil {
 			return err
 		}
-		if err := stackWriteRefs(ctx, l.dir(), run); err != nil {
-			return err
-		}
 		run.Applied = true
 		if err := stackSaveRun(run); err != nil {
 			return err
 		}
+		if err := stackWriteRefs(ctx, l.dir(), run); err != nil {
+			run.Applied = false
+			return errors.Join(err, stackSaveRun(run))
+		}
 		realigned, alignErr = gtRestackAlign(ctx, prefix, holders, snapshots, moves)
+	} else if err := stackWriteRefs(ctx, l.dir(), run); err != nil {
+		return err
 	}
 	if err := errors.Join(
 		gtmeta.Reparent(ctx, commonDir, reparent),
@@ -1113,7 +1152,15 @@ func stackWriteRefs(ctx context.Context, dir render.Dir, run *stackRebaseRun) er
 		switch {
 		case b.Landed != "":
 		case b.NewHead != b.Local:
-			fmt.Fprintf(&tx, "update %s %s %s\n", gtRestackRef(b.Name), b.NewHead, b.Local)
+			at, err := stackRevParse(ctx, dir, gtRestackRef(b.Name))
+			if err != nil {
+				return err
+			}
+			if at == b.NewHead {
+				fmt.Fprintf(&tx, "verify %s %s\n", gtRestackRef(b.Name), b.NewHead)
+			} else {
+				fmt.Fprintf(&tx, "update %s %s %s\n", gtRestackRef(b.Name), b.NewHead, b.Local)
+			}
 		default:
 			fmt.Fprintf(&tx, "verify %s %s\n", gtRestackRef(b.Name), b.Local)
 		}

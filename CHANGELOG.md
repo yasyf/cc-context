@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name a run from any working copy, and `abort` clears a run whose conflict
   workspace is already gone.
 
+- **A stack rebase never takes over a run another process still drives.**
+  A rebase, `continue`, or `abort` refuses a run that another live process
+  still drives, matched by pid and process start time. A rebase checks this
+  before planning when its branch belongs to such a run. A run is marked
+  applied before its branch refs are written, so a crash in between leaves
+  a run that `continue` finishes.
+
 ### Upgrade
 
 - A stack rebase started by 0.65.x keeps its state in
