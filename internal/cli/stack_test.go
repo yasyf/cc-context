@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"slices"
@@ -353,5 +354,31 @@ func TestStackSubmitRefusesADuplicatingSpan(t *testing.T) {
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != base {
 		t.Errorf("base = %s, want %s — the refusal comes before any ref moves", got, base)
+	}
+}
+
+func TestStackListKeepsTheStackWholeAcrossARejectedRevision(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "a", "b", "c")
+	db, err := sql.Open("sqlite", filepath.Join(f.Dir, ".git", ".graphite_metadata.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for branch, result := range map[string]string{"b": "BAD_PARENT_REVISION", "c": "INVALID_PARENT"} {
+		if _, err := db.Exec(`UPDATE branch_metadata SET validation_result = ? WHERE branch_name = ?`, result, branch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = db.Close()
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a")
+
+	out, _, err := runStackCmd(t, f, "list")
+	if err != nil {
+		t.Fatalf("stack list: %v", err)
+	}
+	for _, branch := range []string{"a", "b", "c"} {
+		if !strings.Contains(out, branch+shipSep) {
+			t.Errorf("stack list = %q, want %s in the one stack", out, branch)
+		}
 	}
 }
