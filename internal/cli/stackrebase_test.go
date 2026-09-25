@@ -984,3 +984,53 @@ func TestStackContinueFinishesAfterARerereForget(t *testing.T) {
 		t.Errorf("c.txt = %q (%v), want the hand resolution", got, err)
 	}
 }
+
+func TestStackContinuePublishesARunSavedWithoutSourceBases(t *testing.T) {
+	for _, landed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("landed=%t", landed), func(t *testing.T) {
+			f := shipGTRepo(t, vcstest.GTStack("base"))
+			stubStackPRs(t, nil)
+			stackConflicting(t, f)
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+			landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+			sources := stackRebaseSourceSnapshot(t, f, "base", "feature")
+			_, _, err := runStackCmd(t, f, "rebase")
+			if err == nil {
+				t.Fatal("stack rebase succeeded, want the conflict to stop")
+			}
+			ws := stackWorkspaceOf(t, err)
+			run, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range run.Branches {
+				run.Branches[i].SourceBase = ""
+			}
+			if err := stackSaveRun(run); err != nil {
+				t.Fatal(err)
+			}
+			published := []string{"base", "feature"}
+			if landed {
+				restackAdvanceRemote(t, f, "main", "base.txt", "base\n")
+				mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "--delete", "base")
+				stubStackPRs(t, map[string]*stackPR{"base": {Number: 5, Title: "base", State: "CLOSED", Head: landedAt, Landed: true}})
+				feature := sources["feature"]
+				feature.Parent = "main"
+				sources["feature"] = feature
+				published = []string{"feature"}
+			}
+			writeShipFile(t, ws, "c.txt", "resolved\n")
+			mustRun(t, f.Env(), ws, "git", "add", "c.txt")
+
+			if _, _, err := runStackCmdIn(t, f, ws, "continue"); err != nil {
+				t.Fatalf("continue: %v", err)
+			}
+			for _, branch := range published {
+				stackAssertRebasePublication(t, f, sources[branch])
+			}
+			if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
+				t.Errorf("run state left behind: %v", left)
+			}
+		})
+	}
+}
