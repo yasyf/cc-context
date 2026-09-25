@@ -42,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   equal to the branch's last submitted head and pushes under a lease on it.
   A remote that a foreign push moved is still refused.
 
+- **`ccx vcs ship` and `ccx vcs stack submit` leave a frozen parent alone.**
+  A branch gt holds (`gt freeze`, or a merge in progress) is no longer a
+  refusal: it keeps its head, is not pushed, and its children restack onto
+  that head and open their pull requests against it.
+
 ### Upgrade
 
 - A stack rebase started by 0.65.x keeps its state in

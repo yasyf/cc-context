@@ -57,7 +57,7 @@ func stackFinishShip(ctx context.Context, cmd *cobra.Command, l lane, run *stack
 	}
 	var chain []string
 	for i := len(run.Branches) - 1; i >= 0; i-- {
-		if b := run.Branches[i]; b.Landed == "" {
+		if b := run.Branches[i]; b.Landed == "" && b.Held == "" {
 			chain = append(chain, b.Name)
 		}
 	}
