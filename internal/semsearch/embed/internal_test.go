@@ -46,7 +46,7 @@ func TestWriteBlobFreesOnWriteFailure(t *testing.T) {
 	f := &fakeBlobWriter{ptr: 4242, writeOK: false}
 	data := []byte("payload bytes")
 
-	_, err := writeBlob(context.Background(), f, data)
+	_, err := writeBlob(context.Background(), f, data, maxU32Bytes)
 	if err == nil {
 		t.Fatal("writeBlob: want error on write failure, got nil")
 	}
@@ -62,7 +62,7 @@ func TestWriteBlobNoFreeOnSuccess(t *testing.T) {
 	t.Parallel()
 	f := &fakeBlobWriter{ptr: 4242, writeOK: true}
 
-	ptr, err := writeBlob(context.Background(), f, []byte("payload"))
+	ptr, err := writeBlob(context.Background(), f, []byte("payload"), maxU32Bytes)
 	if err != nil {
 		t.Fatalf("writeBlob: %v", err)
 	}
@@ -75,12 +75,9 @@ func TestWriteBlobNoFreeOnSuccess(t *testing.T) {
 }
 
 func TestWriteBlobRejectsOverU32(t *testing.T) {
-	orig := maxU32Bytes
-	defer func() { maxU32Bytes = orig }()
-	maxU32Bytes = 4
-
+	t.Parallel()
 	f := &fakeBlobWriter{ptr: 1, writeOK: true}
-	_, err := writeBlob(context.Background(), f, []byte("over the limit"))
+	_, err := writeBlob(context.Background(), f, []byte("over the limit"), 4)
 	if err == nil || !strings.Contains(err.Error(), "u32 linear-address limit") {
 		t.Fatalf("writeBlob over-u32 err = %v, want u32 limit rejection", err)
 	}
@@ -90,9 +87,7 @@ func TestWriteBlobRejectsOverU32(t *testing.T) {
 }
 
 func TestFrameBatchBounds(t *testing.T) {
-	orig := maxU32Bytes
-	defer func() { maxU32Bytes = orig }()
-
+	t.Parallel()
 	tests := []struct {
 		name    string
 		limit   uint64
@@ -105,8 +100,8 @@ func TestFrameBatchBounds(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			maxU32Bytes = tt.limit
-			buf, err := frameBatch(tt.texts)
+			t.Parallel()
+			buf, err := frameBatch(tt.texts, tt.limit)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("frameBatch(%q) err = %v, want containing %q", tt.texts, err, tt.wantErr)
 			}
@@ -119,7 +114,7 @@ func TestFrameBatchBounds(t *testing.T) {
 
 func TestFrameBatchRoundTrip(t *testing.T) {
 	t.Parallel()
-	buf, err := frameBatch([]string{"ab", "c"})
+	buf, err := frameBatch([]string{"ab", "c"}, maxU32Bytes)
 	if err != nil {
 		t.Fatalf("frameBatch: %v", err)
 	}
@@ -215,10 +210,7 @@ func TestCloseIdempotentReleasesHandles(t *testing.T) {
 // --- E4: weight download is size-bounded before verification ----------------
 
 func TestDownloadBounded(t *testing.T) {
-	orig := maxWeightFileBytes
-	defer func() { maxWeightFileBytes = orig }()
-	maxWeightFileBytes = 1024
-
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(make([]byte, 4096)) // exceeds the 1024-byte cap
@@ -226,7 +218,7 @@ func TestDownloadBounded(t *testing.T) {
 	defer srv.Close()
 	ctx := render.WithEnv(t.Context(), "HF_ENDPOINT="+srv.URL)
 
-	_, err := download(ctx, CodePin, WeightFile{Name: "config.json", SHA256: "unused"})
+	_, err := download(ctx, CodePin, WeightFile{Name: "config.json", SHA256: "unused"}, 1024)
 	if err == nil || !strings.Contains(err.Error(), "cap") {
 		t.Fatalf("download over-cap err = %v, want bounded-read rejection", err)
 	}
@@ -238,10 +230,7 @@ func TestDownloadBounded(t *testing.T) {
 }
 
 func TestDownloadTimesOut(t *testing.T) {
-	orig := downloadTimeout
-	defer func() { downloadTimeout = orig }()
-	downloadTimeout = 50 * time.Millisecond
-
+	t.Parallel()
 	block := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		<-block // accept, then stall past the deadline
@@ -249,9 +238,10 @@ func TestDownloadTimesOut(t *testing.T) {
 	// LIFO: unblock the handler before Close waits on the in-flight request.
 	defer srv.Close()
 	defer close(block)
-	ctx := render.WithEnv(t.Context(), "HF_ENDPOINT="+srv.URL)
+	ctx, cancel := context.WithTimeout(render.WithEnv(t.Context(), "HF_ENDPOINT="+srv.URL), 50*time.Millisecond)
+	defer cancel()
 
-	_, err := download(ctx, CodePin, WeightFile{Name: "config.json", SHA256: "unused"})
+	_, err := download(ctx, CodePin, WeightFile{Name: "config.json", SHA256: "unused"}, maxWeightFileBytes)
 	// A stalled mirror surfaces as the skippable offline sentinel, not a hard
 	// error, and carries the deadline cause for diagnosis.
 	if !errors.Is(err, ErrWeightsUnavailable) {
@@ -275,7 +265,7 @@ func TestDownloadNormalVerifies(t *testing.T) {
 	defer srv.Close()
 	ctx := render.WithEnv(t.Context(), "HF_ENDPOINT="+srv.URL)
 
-	got, err := download(ctx, CodePin, WeightFile{Name: "config.json", SHA256: want})
+	got, err := download(ctx, CodePin, WeightFile{Name: "config.json", SHA256: want}, maxWeightFileBytes)
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}

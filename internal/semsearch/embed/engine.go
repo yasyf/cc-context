@@ -50,9 +50,8 @@ const (
 
 // maxU32Bytes is the u32 linear-address ceiling that every frame count, text
 // length, and total blob size must fit: the ABI passes each as a WASM u32, so a
-// larger value would narrow silently and hand the guest a corrupt view. A var,
-// not a const, so bounds tests can lower it to exercise the rejection path.
-var maxU32Bytes uint64 = math.MaxUint32
+// larger value would narrow silently and hand the guest a corrupt view.
+const maxU32Bytes uint64 = math.MaxUint32
 
 // Engine is a resident model2vec inference engine. Construct it with New and
 // release its WASM instance with Close. Encode is safe for concurrent use;
@@ -181,17 +180,17 @@ func (e *Engine) load(ctx context.Context, b *modelBlobs) error {
 	ctx, cancel := context.WithTimeout(ctx, loadTimeout)
 	defer cancel()
 
-	tokPtr, err := writeBlob(ctx, e, b.tokenizer)
+	tokPtr, err := writeBlob(ctx, e, b.tokenizer, maxU32Bytes)
 	if err != nil {
 		return err
 	}
 	defer e.freeBlob(ctx, tokPtr, b.tokenizer)
-	modelPtr, err := writeBlob(ctx, e, b.model)
+	modelPtr, err := writeBlob(ctx, e, b.model, maxU32Bytes)
 	if err != nil {
 		return err
 	}
 	defer e.freeBlob(ctx, modelPtr, b.model)
-	cfgPtr, err := writeBlob(ctx, e, b.config)
+	cfgPtr, err := writeBlob(ctx, e, b.config, maxU32Bytes)
 	if err != nil {
 		return err
 	}
@@ -221,11 +220,11 @@ func (e *Engine) load(ctx context.Context, b *modelBlobs) error {
 // encodeBatch frames texts, runs one em_encode, and copies the flat matrix out.
 // The caller holds e.mu (or is the single-threaded New).
 func (e *Engine) encodeBatch(ctx context.Context, texts []string) ([][]float32, error) {
-	frame, err := frameBatch(texts)
+	frame, err := frameBatch(texts, maxU32Bytes)
 	if err != nil {
 		return nil, err
 	}
-	inPtr, err := writeBlob(ctx, e, frame)
+	inPtr, err := writeBlob(ctx, e, frame, maxU32Bytes)
 	if err != nil {
 		return nil, err
 	}
@@ -272,11 +271,11 @@ func (e *Engine) guestFree(ctx context.Context, ptr, n uint32) {
 }
 
 // writeBlob reserves a WASM buffer and copies data into it, returning its
-// address. It rejects a blob larger than the u32 linear-address space before
-// reserving, and releases the reservation if the copy fails, so a failed write
-// leaks nothing. The caller frees a successful reservation with free.
-func writeBlob(ctx context.Context, w blobWriter, data []byte) (uint32, error) {
-	if uint64(len(data)) > maxU32Bytes {
+// address. It rejects a blob larger than limit before reserving, and releases
+// the reservation if the copy fails, so a failed write leaks nothing. The caller
+// frees a successful reservation with free.
+func writeBlob(ctx context.Context, w blobWriter, data []byte, limit uint64) (uint32, error) {
+	if uint64(len(data)) > limit {
 		return 0, fmt.Errorf("blob of %d bytes exceeds the u32 linear-address limit", len(data))
 	}
 	ptr, err := w.guestAlloc(ctx, uint32(len(data))) //nolint:gosec // guarded by the u32 check above
@@ -304,19 +303,19 @@ func (e *Engine) free(ctx context.Context, ptr, n uint32) {
 
 // frameBatch encodes texts as [u32 count] then, per text, [u32 byte_len][utf8].
 // It errors when the batch count, any text length, or the total frame size
-// exceeds what the u32 ABI can address, rather than narrowing silently.
-func frameBatch(texts []string) ([]byte, error) {
-	if uint64(len(texts)) > maxU32Bytes {
+// exceeds limit, rather than narrowing silently.
+func frameBatch(texts []string, limit uint64) ([]byte, error) {
+	if uint64(len(texts)) > limit {
 		return nil, fmt.Errorf("batch of %d texts exceeds the u32 frame-count limit", len(texts))
 	}
 	total := uint64(4)
 	for _, t := range texts {
-		if uint64(len(t)) > maxU32Bytes {
+		if uint64(len(t)) > limit {
 			return nil, fmt.Errorf("text of %d bytes exceeds the u32 frame-length limit", len(t))
 		}
 		total += 4 + uint64(len(t))
 	}
-	if total > maxU32Bytes {
+	if total > limit {
 		return nil, fmt.Errorf("framed batch of %d bytes exceeds the u32 address limit", total)
 	}
 	buf := make([]byte, 0, total)
