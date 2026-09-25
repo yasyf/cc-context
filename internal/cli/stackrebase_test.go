@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -552,6 +553,55 @@ func TestStackRebaseRefusesADivergedRemote(t *testing.T) {
 	f := stackRebaseRepo(t, "base")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "base amended")
+	shipResetLog(t, f)
+
+	_, _, err := runStackCmd(t, f, "rebase")
+	if err == nil || !strings.Contains(err.Error(), "base has diverged from origin/base") {
+		t.Fatalf("err = %v, want the divergence refusal", err)
+	}
+}
+
+func stackRecordSubmitted(t *testing.T, f *vcstest.Fixture, branches ...string) {
+	t.Helper()
+	versions := map[string]gtmeta.Version{}
+	for _, b := range branches {
+		versions[b] = gtmeta.Version{HeadSha: gitAt(t, f.Env(), f.Dir, "rev-parse", b)}
+	}
+	if err := gtmeta.RecordSubmitted(f.Context(), filepath.Join(f.Dir, ".git"), versions); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStackRebasePushesOverItsOwnLastSubmission(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	stackRecordSubmitted(t, f, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
+		t.Fatalf("stack rebase --no-push: %v", err)
+	}
+	stackAdvanceTrunk(t, f, "later.txt", "later\n")
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "rebase"); err != nil {
+		t.Fatalf("stack rebase over its own last submission: %v", err)
+	}
+	for _, branch := range []string{"base", "feature"} {
+		local := gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
+		if remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); remote != local {
+			t.Errorf("origin %s = %s, want the rebased %s", branch, remote, local)
+		}
+	}
+}
+
+func TestStackRebaseRefusesAForeignPushOverItsLastSubmission(t *testing.T) {
+	f := stackRebaseRepo(t, "base")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
+	stackRecordSubmitted(t, f, "base")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "base amended")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "-f", "origin", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", "HEAD@{1}")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "base amended locally")
 	shipResetLog(t, f)
 
 	_, _, err := runStackCmd(t, f, "rebase")

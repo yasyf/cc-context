@@ -412,6 +412,10 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
+	submitted, err := gtmeta.LastSubmitted(ctx, commonDir)
+	if err != nil {
+		return nil, fmt.Errorf("stack rebase: %w", err)
+	}
 
 	host, err := os.Hostname()
 	if err != nil {
@@ -420,7 +424,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host}
 	byName := map[string]*stackRebaseBranch{}
 	for _, name := range members {
-		b, err := stackSnapshot(ctx, l.dir(), tr, state[name], name, remotes[name], prs[name], slices.Contains(o.landed, name), pin)
+		b, err := stackSnapshot(ctx, l.dir(), tr, state[name], name, remotes[name], submitted[name].HeadSha, prs[name], slices.Contains(o.landed, name), pin)
 		if err != nil {
 			return nil, err
 		}
@@ -537,7 +541,10 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branch
 	return heads, nil
 }
 
-func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, name, remote string, pr *stackPR, declared bool, pin string) (stackRebaseBranch, error) {
+// stackSnapshot takes a remote that equals the branch's last submitted head
+// as ours even when local no longer contains it: every rewrite a rebase or
+// restack makes diverges from the head it last pushed.
+func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, name, remote, submitted string, pr *stackPR, declared bool, pin string) (stackRebaseBranch, error) {
 	if s.State != "" {
 		return stackRebaseBranch{}, fmt.Errorf("stack rebase: %s is %s in gt — unfreeze it, or rebase a stack without it", name, s.State)
 	}
@@ -557,7 +564,7 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 		switch {
 		case behind:
 			b.Head, b.HeadRef = remote, stackTempRef(name)
-		case !ahead:
+		case !ahead && remote != submitted:
 			return b, fmt.Errorf("stack rebase: %s has diverged from %s/%s (local %.12s, remote %.12s) — someone pushed to it; reconcile the two by hand, then re-run", name, tr.Remote(), name, s.Head, remote)
 		}
 	}
