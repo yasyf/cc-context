@@ -298,10 +298,11 @@ record status-draft-graphql api graphql \
 ### ccx vcs stack rebase — REST pull request reads, one branch at a time
 
 # rest_pulls_head is internal/cli/ghrest.go's ghNewestPull endpoint: the branch
-# query-escaped, the owner inside the endpoint where gh fills {owner}.
+# query-escaped, the owner inside the endpoint where gh fills {owner}, and the
+# colon escaped so gh never reads :owner, :repo or :branch as a placeholder.
 rest_pulls_head() {
 	local repo="$1" owner="$2" branch="$3"
-	printf '%s/pulls?head=%s:%s&state=all&sort=created&direction=desc&per_page=1' \
+	printf '%s/pulls?head=%s%%3A%s&state=all&sort=created&direction=desc&per_page=1' \
 		"$repo" "$owner" "$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote_plus(sys.argv[1]))' "$branch")"
 }
 

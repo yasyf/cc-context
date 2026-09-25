@@ -50,7 +50,7 @@ func ghRecordedRoute(t *testing.T, scenario string) ghRoute {
 }
 
 func ghNewestPullArgv(branch string) []string {
-	return []string{"api", "repos/{owner}/{repo}/pulls?head={owner}:" + strings.ReplaceAll(branch, "/", "%2F") + "&state=all&sort=created&direction=desc&per_page=1"}
+	return []string{"api", "repos/{owner}/{repo}/pulls?head={owner}%3A" + strings.ReplaceAll(branch, "/", "%2F") + "&state=all&sort=created&direction=desc&per_page=1"}
 }
 
 func assertNoGraphQL(t *testing.T, calls string) {

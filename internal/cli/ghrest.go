@@ -14,6 +14,7 @@ import (
 
 // gh substitutes {owner} and {repo} only inside the endpoint, never in -f
 // fields, so an owner-qualified filter rides in the endpoint's query string.
+// Its colon goes escaped: gh also expands a bare :owner, :repo or :branch.
 const ghRepoPath = "repos/{owner}/{repo}"
 
 // ghPull is one pull request as GitHub's REST API reports it. The pull request
@@ -68,7 +69,7 @@ func (p ghPull) labelNames() []string {
 }
 
 func ghNewestPull(ctx context.Context, dir render.Dir, branch string) (ghPull, bool, error) {
-	endpoint := ghRepoPath + "/pulls?head={owner}:" + url.QueryEscape(branch) + "&state=all&sort=created&direction=desc&per_page=1"
+	endpoint := ghRepoPath + "/pulls?head={owner}%3A" + url.QueryEscape(branch) + "&state=all&sort=created&direction=desc&per_page=1"
 	out, err := render.RunCLI(ctx, dir, "gh", []string{"api", endpoint})
 	if err != nil {
 		return ghPull{}, false, fmt.Errorf("gh api: list the pull requests of %s: %w", branch, err)
