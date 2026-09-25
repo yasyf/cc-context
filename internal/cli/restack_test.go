@@ -94,8 +94,7 @@ func restackAdvanceRemote(t *testing.T, f *vcstest.Fixture, trunk, file, content
 // invocation assertion sees only what restack itself ran.
 func restackReset(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
-	f.Quiesce(t)
-	restackWrite(t, f.ArgvLog, "")
+	f.RotateLog(t)
 }
 
 // restackUndesignatedTrunk leaves the repository with no default branch a fetch
@@ -122,7 +121,6 @@ func restackSiblingPath(t *testing.T, name string) string {
 
 func restackInvocations(t *testing.T, f *vcstest.Fixture) [][]string {
 	t.Helper()
-	f.Quiesce(t)
 	return vcstest.Invocations(t, f.ArgvLog)
 }
 
@@ -629,18 +627,11 @@ func TestRestackRefusalsCarryRestackPrefix(t *testing.T) {
 // reporting no pull request merged; a test that needs one installs its own.
 func restackGTRepo(t *testing.T, names ...string) *vcstest.Fixture {
 	t.Helper()
-	f := vcstest.Repo(t, vcstest.Remote(), vcstest.GT())
+	f := vcstest.Repo(t, vcstest.Remote(), vcstest.GT(), vcstest.GTStack(names...))
 	f.Isolate(t)
 	seedLaneRecords(t, f.Dir, laneSeed{})
 	stubGTAPI(t)
 	stubStackPRs(t, nil)
-	for _, name := range names {
-		restackRun(t, f, f.Dir, "git", "switch", "-qc", name)
-		restackWrite(t, filepath.Join(f.Dir, name+".txt"), name+"\n")
-		restackRun(t, f, f.Dir, "git", "add", name+".txt")
-		restackRun(t, f, f.Dir, "git", "commit", "-qm", name)
-		restackRun(t, f, f.Dir, "gt", "track", "-f", "--no-interactive")
-	}
 	return f
 }
 
@@ -947,7 +938,7 @@ func TestRestackMergedNamesTheBranch(t *testing.T) {
 }
 
 func TestRestackGTConflictContinuesWithoutPushing(t *testing.T) {
-	f := shipGTRepo(t)
+	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stackConflicting(t, f)
 	before := map[string]string{"base": restackRev(t, f, f.Dir, "base"), "feature": restackRev(t, f, f.Dir, "feature")}
 	_, _, err := runRestackCmd(t, f)

@@ -1,6 +1,7 @@
 package vcstest
 
 import (
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -12,15 +13,32 @@ import (
 
 // baseConfig is the part of a config that decides what the repository looks
 // like before any per-test variation is applied: the trunk's name, which tools
-// own the working copy, and whether an origin exists. Two fixtures agreeing on
-// it get byte-identical trees out of the same tool calls, which is what makes
-// the build cacheable.
+// own the working copy, whether an origin exists, and the tracked branches
+// standing on the trunk. Two fixtures agreeing on it get byte-identical trees
+// out of the same tool calls, which is what makes the build cacheable.
 type baseConfig struct {
 	trunk        string
 	jj           bool
 	gt           bool
 	remote       bool
 	noOriginHead bool
+	stack        gtStack
+}
+
+// gtStack is the tracked branch shape a template carries on top of its trunk,
+// and part of its key. Every argument buildGTStack varies is a field of its
+// own, so no two shapes can share a key and be handed each other's repository.
+type gtStack struct {
+	names    string
+	parented bool
+	numbered bool
+}
+
+func (s gtStack) branches() []string {
+	if s.names == "" {
+		return nil
+	}
+	return strings.Split(s.names, "\x00")
 }
 
 func (c config) base() baseConfig {
@@ -30,6 +48,7 @@ func (c config) base() baseConfig {
 		gt:           c.gt,
 		remote:       c.remote,
 		noOriginHead: c.noOriginHead,
+		stack:        c.stack,
 	}
 }
 
@@ -87,7 +106,7 @@ func templateFor(t *testing.T, cfg baseConfig, tools []resolvedTool) *fixtureTem
 		templateDir = resolved
 	}
 
-	slot := filepath.Join(templateDir, templateName(cfg))
+	slot := filepath.Join(templateDir, fmt.Sprintf("%02d-%s", len(templates), templateName(cfg)))
 	tmpl := &fixtureTemplate{base: filepath.Join(slot, "base"), home: filepath.Join(slot, "home")}
 	mkdir(t, tmpl.base)
 	mkdir(t, tmpl.home)
@@ -124,7 +143,22 @@ func templateName(cfg baseConfig) string {
 			name += "-" + part.tag
 		}
 	}
+	for _, branch := range cfg.stack.branches() {
+		name += "-" + strings.Map(pathSafe, branch)
+	}
 	return name
+}
+
+// pathSafe maps the characters a branch name may carry that a directory name
+// should not. A slot is disambiguated by its index, so two shapes mapping to
+// one name stay two templates.
+func pathSafe(r rune) rune {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		return r
+	default:
+		return '-'
+	}
 }
 
 // copyTree copies src's contents into dst, which must already exist. It
@@ -236,6 +270,31 @@ func buildBase(t *testing.T, cfg baseConfig, tools []resolvedTool, base string, 
 
 	if cfg.gt {
 		run(t, dir, env, bin["gt"], "init", "--trunk", cfg.trunk, "--no-interactive")
+		buildGTStack(t, cfg, dir, env, bin["gt"], git)
+	}
+}
+
+// buildGTStack cuts cfg's stack on top of the trunk. gt track is local — it
+// writes .git/.graphite_metadata.db and reaches no network — so the stack gt
+// state answers for is one gt itself built.
+func buildGTStack(t *testing.T, cfg baseConfig, dir string, env []string, gtBin string, git func(...string) string) {
+	t.Helper()
+	parent := cfg.trunk
+	for i, name := range cfg.stack.branches() {
+		git("switch", "-qc", name)
+		file := name + ".txt"
+		if cfg.stack.numbered {
+			file = fmt.Sprintf("b%d.txt", i)
+		}
+		writeFile(t, filepath.Join(dir, file), name+"\n")
+		git("add", file)
+		git("commit", "-qm", name)
+		if cfg.stack.parented {
+			run(t, dir, env, gtBin, "track", "--parent", parent, "--no-interactive")
+		} else {
+			run(t, dir, env, gtBin, "track", "-f", "--no-interactive")
+		}
+		parent = name
 	}
 }
 

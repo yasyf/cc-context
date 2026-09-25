@@ -190,7 +190,7 @@ func TestShipHooksScrubGitEnv(t *testing.T) {
 	shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
 
 	dump := filepath.Join(t.TempDir(), "hook.env")
-	writeShipExecutable(t, f.ShimBin, "uvx", "#!/bin/sh\n"+vcstest.RecordArgv("uvx", f.ArgvLog)+`{
+	writeShipExecutable(t, f.ShimBin, "uvx", "#!/bin/sh\n"+vcstest.RecordArgv("uvx")+`{
   printf 'GIT_DIR=%s\n' "${GIT_DIR-<unset>}"
   printf 'GIT_WORK_TREE=%s\n' "${GIT_WORK_TREE-<unset>}"
   printf 'SHIP_HOOK_CONTROL=%s\n' "${SHIP_HOOK_CONTROL-<unset>}"
@@ -227,7 +227,7 @@ func writeShipLoudUvx(t *testing.T, f *vcstest.Fixture, n int) {
 		t.Fatalf("write prek marker: %v", err)
 	}
 	t.Setenv("SHIP_PREK_MARKER", marker)
-	writeShipExecutable(t, f.ShimBin, "uvx", "#!/bin/sh\n"+vcstest.RecordArgv("uvx", f.ArgvLog)+`printf 'prek: checking every hook\n'
+	writeShipExecutable(t, f.ShimBin, "uvx", "#!/bin/sh\n"+vcstest.RecordArgv("uvx")+`printf 'prek: checking every hook\n'
 count=$(cat "$SHIP_PREK_MARKER")
 if [ "$count" -gt 0 ]; then
   printf '%s' "$((count - 1))" > "$SHIP_PREK_MARKER"

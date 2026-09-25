@@ -47,9 +47,8 @@ func runStackCmdIn(t *testing.T, f *vcstest.Fixture, dir string, args ...string)
 
 func stackRebaseRepo(t *testing.T, names ...string) *vcstest.Fixture {
 	t.Helper()
-	f := shipGTRepo(t)
+	f := shipGTRepo(t, vcstest.GTStack(names...))
 	stubStackPRs(t, nil)
-	shipGTStack(t, f, names...)
 	return f
 }
 
@@ -241,7 +240,7 @@ func TestStackRebaseRefusesDirtyOriginBeforeMovingRefs(t *testing.T) {
 }
 
 func TestStackRebaseConflictOpensAWorkspaceAndContinues(t *testing.T) {
-	f := shipGTRepo(t)
+	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubStackPRs(t, map[string]*stackPR{"feature": {Number: 7, Title: "feature work", Body: "adds c.txt", State: "OPEN"}})
 	stackConflicting(t, f)
 	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
@@ -524,7 +523,7 @@ func TestStackWriteRefsTakesARefAlreadyWritten(t *testing.T) {
 }
 
 func TestStackAbortDropsTheRun(t *testing.T) {
-	f := shipGTRepo(t)
+	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubStackPRs(t, nil)
 	stackConflicting(t, f)
 	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
@@ -679,7 +678,7 @@ func TestGTPushArgvPinsAnAbsentRemote(t *testing.T) {
 }
 
 func TestStackContinueRefusesConcurrentLocalAdvance(t *testing.T) {
-	f := shipGTRepo(t)
+	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubStackPRs(t, nil)
 	stackConflicting(t, f)
 	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
@@ -708,7 +707,7 @@ func TestStackContinueRefusesConcurrentLocalAdvance(t *testing.T) {
 }
 
 func TestStackContinueRefusesConcurrentRemoteAdvance(t *testing.T) {
-	f := shipGTRepo(t)
+	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubStackPRs(t, nil)
 	stackConflicting(t, f)
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
@@ -739,7 +738,7 @@ func TestStackContinueRefusesConcurrentRemoteAdvance(t *testing.T) {
 }
 
 func TestStackContinueDropsAParentThatLandedMidRun(t *testing.T) {
-	f := shipGTRepo(t)
+	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubStackPRs(t, nil)
 	stackConflicting(t, f)
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")

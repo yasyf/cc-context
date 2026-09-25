@@ -157,7 +157,7 @@ func writeShipUvx(t *testing.T, f *vcstest.Fixture, n int, effect string) {
 	if effect != "" {
 		effect = "  ( " + effect + " ) || exit 99\n"
 	}
-	writeShipExecutable(t, f.ShimBin, "uvx", "#!/bin/sh\n"+vcstest.RecordArgv("uvx", f.ArgvLog)+`count=$(cat "$SHIP_PREK_MARKER")
+	writeShipExecutable(t, f.ShimBin, "uvx", "#!/bin/sh\n"+vcstest.RecordArgv("uvx")+`count=$(cat "$SHIP_PREK_MARKER")
 if [ "$count" -gt 0 ]; then
   printf '%s' "$((count - 1))" > "$SHIP_PREK_MARKER"
 `+effect+`  printf 'files were modified by this hook\n' >&2
@@ -174,7 +174,7 @@ exit 0
 func writeShipGH(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
 	t.Setenv("GH_VIEWER_GOLDEN", ghStdout(t, "viewer-graphql"))
-	writeShipExecutable(t, f.ShimBin, "gh", "#!/bin/sh\n"+vcstest.RecordArgv("gh", f.ArgvLog)+shipGHBody)
+	writeShipExecutable(t, f.ShimBin, "gh", "#!/bin/sh\n"+vcstest.RecordArgv("gh")+shipGHBody)
 }
 
 // shipHead is the commit gh is asked about after a push, read back out of the
@@ -232,10 +232,7 @@ func jjAt(t *testing.T, env []string, dir, rev, template string) string {
 // invocation assertion sees only what ship itself ran.
 func shipResetLog(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
-	f.Quiesce(t)
-	if err := os.WriteFile(f.ArgvLog, nil, 0o600); err != nil {
-		t.Fatalf("truncate argv log: %v", err)
-	}
+	f.RotateLog(t)
 }
 
 // shipGTRepo builds a real graphite repository behind the recording shim, with
@@ -304,24 +301,21 @@ func shipGTReady(t *testing.T, f *vcstest.Fixture) {
 // feature branch one deep on trunk main, an edit waiting, an empty argv log.
 func shipGTFeature(t *testing.T) *vcstest.Fixture {
 	t.Helper()
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "feature")
+	f := shipGTRepo(t, vcstest.GTStack("feature"))
 	shipGTReady(t, f)
 	return f
 }
 
-// shipGTInvocations reads the tool calls ccx made, letting the log settle
-// first: gt leaves a detached cache refresher running past its own exit, whose
-// git calls would otherwise land after the assertion read them.
+// shipGTInvocations reads the tool calls ccx made. They are all in by the time
+// ccx returns, and gt's detached cache refresher writes to the generation
+// shipResetLog already rotated away from.
 func shipGTInvocations(t *testing.T, f *vcstest.Fixture) [][]string {
 	t.Helper()
-	f.Quiesce(t)
 	return vcstest.Invocations(t, f.ArgvLog)
 }
 
 func shipGTRecords(t *testing.T, f *vcstest.Fixture) []vcstest.Invocation {
 	t.Helper()
-	f.Quiesce(t)
 	return vcstest.Records(t, f.ArgvLog)
 }
 
@@ -334,7 +328,7 @@ func shipGTIntercept(t *testing.T, f *vcstest.Fixture, verb, body string) {
 	realBin := shipDisplaceShim(t, f, "gt")
 	writeShipExecutable(t, f.ShimBin, "gt", "#!/bin/sh\n"+
 		"if [ \"$1\" = "+verb+" ]; then\n"+
-		vcstest.RecordArgv("gt", f.ArgvLog)+
+		vcstest.RecordArgv("gt")+
 		body+
 		"fi\n"+
 		"exec '"+realBin+"' \"$@\"\n")
@@ -636,7 +630,7 @@ func shipJJFails(t *testing.T, f *vcstest.Fixture, pattern string) {
 	writeShipExecutable(t, f.ShimBin, "jj", "#!/bin/sh\n"+
 		"case \"$*\" in\n"+
 		"  "+pattern+")\n"+
-		vcstest.RecordArgv("jj", f.ArgvLog)+
+		vcstest.RecordArgv("jj")+
 		"    CCX_SHIM_DEPTH=$((d+1)) exec '"+realBin+"' --repository '"+filepath.Join(dir, "absent")+"' \"$@\" ;;\n"+
 		"esac\n"+
 		"exec '"+realBin+"' \"$@\"\n")
