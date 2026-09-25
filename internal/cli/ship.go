@@ -110,9 +110,10 @@ type shipOpts struct {
 	messages []string
 	message  string
 
-	noPush   bool
-	noCommit bool
-	noWatch  bool
+	noPush       bool
+	noCommit     bool
+	noWatch      bool
+	expectRemote string
 
 	// noVerify carries --no-verify until runShip resolves it against --verify and
 	// the branch plan, after which it is the run's whole answer to "run the
@@ -211,6 +212,7 @@ Ship owns the pull request in every lane. --pr-title and --pr-body-file are repe
 	cmd.Flags().StringArrayVarP(&o.messages, "message", "m", nil, "commit message; repeatable, each one its own paragraph")
 	cmd.Flags().BoolVar(&o.noPush, "no-push", false, "commit only; do not push or watch CI")
 	cmd.Flags().BoolVar(&o.noCommit, "no-commit", false, "push and update the PR for the commit already in place; cut no commit, and refuse a dirty working copy — implied when there is nothing to commit and the branch is ahead of trunk")
+	cmd.Flags().StringVar(&o.expectRemote, "expect-remote", "", "publish an existing plain Git commit only if the remote branch still has this full commit ID; requires --no-commit")
 	cmd.Flags().BoolVar(&o.noWatch, "no-watch", false, "push but do not watch CI")
 	cmd.Flags().BoolVar(&o.noVerify, "no-verify", false, "skip the repository's hooks (uvx prek, and git's own) — the default everywhere a pull request's CI is the check")
 	cmd.Flags().BoolVar(&o.verify, "verify", false, "run the repository's hooks — the default when the commit lands straight on trunk, or on a repository that names no trunk")
@@ -281,6 +283,12 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	}
 	if !gtLane && o.parent != "" {
 		return errors.New("ship: --parent applies only to graphite repos; pass --no-gt only when .git/.graphite_repo_config exists, or drop it")
+	}
+	if cmd.Flags().Changed("expect-remote") {
+		if err := validateShipExpectedRemote(o, kind, gtLane); err != nil {
+			return err
+		}
+		o.expectRemote = strings.ToLower(o.expectRemote)
 	}
 	if cmd.Flags().Changed("bookmark") {
 		if gtLane {
@@ -414,7 +422,31 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	stuckOpts.noCommit = o.noCommit
 	stuck := gtStuckSuffix(stuckOpts)
 	restackSeg := ""
-	if plan.needsRestack {
+	if gtLane && !o.noPush {
+		tr, err := trunkFetch.join()
+		if err != nil {
+			return err
+		}
+		state, chain, err := gtStackChain(ctx, gtc, branch)
+		if err != nil {
+			return err
+		}
+		contains, err := gitIsAncestor(ctx, l.dir(), "ship", string(tr.Ref()), state[branch].Head)
+		if err != nil {
+			return err
+		}
+		if plan.needsRestack || !contains {
+			intent, err := stackShipOptions(o, meta, prNWO, branch)
+			if err != nil {
+				return err
+			}
+			if err := runStackRebase(cmd, stackRebaseOpts{members: gtBottomUp(chain), draft: o.draft, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent}); err != nil {
+				return err
+			}
+			gtc.forget()
+			restackSeg = "restacked in isolation"
+		}
+	} else if plan.needsRestack {
 		if restackSeg, err = gtRestack(ctx, l, stuck, branch, gtc); err != nil {
 			return err
 		}
@@ -493,6 +525,15 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		}
 		if seg != "" {
 			segments = append(segments, seg)
+		}
+	}
+	if gtLane && gtc.restack != nil {
+		common, err := gtc.common(ctx)
+		if err != nil {
+			return err
+		}
+		if err := stackClearRun(common, gtc.restack); err != nil {
+			return err
 		}
 	}
 	segments = append(segments, bodylessSegs...)
@@ -1575,6 +1616,9 @@ func shipPushGit(ctx context.Context, dir render.Dir, o shipOpts, branch, preAme
 	if err != nil {
 		return "", 0, err
 	}
+	if o.expectRemote != "" {
+		return remote, 0, shipPushGitExpected(ctx, dir, remote, branch, o.expectRemote, o.noVerify)
+	}
 	if o.amend {
 		return remote, 0, shipPushGitAmend(ctx, dir, remote, branch, preAmendSHA, o.noVerify)
 	}
@@ -1644,7 +1688,7 @@ func shipPushGitAmend(ctx context.Context, dir render.Dir, remote, branch, preAm
 	lease := fmt.Sprintf("--force-with-lease=%s:%s", branch, preAmendSHA)
 	if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, lease, branch)); err != nil {
 		if gitPushStaleLease(err) || gitPushRejected(err) {
-			return fmt.Errorf("ship: %s/%s moved since your last sync — someone may have built on the commit you amended; fetch and reconcile manually before force-pushing: %w", remote, branch, err)
+			return fmt.Errorf("ship: %s/%s does not match the pre-amend head — someone may have built on the commit you amended, or it was rebased locally; inspect and reconcile the remote, then verify its exact commit before running ccx vcs ship --no-gt --no-commit --expect-remote <full-remote-oid>: %w", remote, branch, err)
 		}
 		return fmt.Errorf("ship: git push: %w", err)
 	}
@@ -1670,7 +1714,7 @@ func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch string,
 			return 0, err
 		}
 		if !ancestor {
-			rebased, err = gitRebaseOnto(ctx, dir, "ship", remote, branch, shipPushRecovery(remote, branch))
+			rebased, err = gitRebaseOnto(ctx, dir, "ship", remote, branch)
 			if err != nil {
 				return 0, err
 			}
@@ -1725,7 +1769,7 @@ func gitIsAncestor(ctx context.Context, dir render.Dir, prefix, maybe, ref strin
 // ship leaves every excluded hunk in the tree — so the rebase moves work this
 // ship deliberately did not take, and gitHoldWorktree gives it back rather than
 // --autostash.
-func gitRebaseOnto(ctx context.Context, dir render.Dir, prefix, remote, branch, recovery string) (int, error) {
+func gitRebaseOnto(ctx context.Context, dir render.Dir, prefix, remote, branch string) (int, error) {
 	remoteRef := "refs/remotes/" + remote + "/" + branch
 	countOut, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", "--count", remoteRef + "..HEAD"})
 	if err != nil {
@@ -1741,7 +1785,7 @@ func gitRebaseOnto(ctx context.Context, dir render.Dir, prefix, remote, branch, 
 		return 0, err
 	}
 	if _, err := render.RunCLI(ctx, dir, "git", []string{"rebase", remoteRef}); err != nil {
-		return 0, errors.Join(gitRebaseFailure(ctx, dir, prefix, remote, branch, recovery, err), held.restore(ctx, dir, prefix))
+		return 0, errors.Join(gitRebaseFailure(ctx, dir, prefix, remote, branch, err), held.restore(ctx, dir, prefix))
 	}
 	if err := held.restore(ctx, dir, prefix); err != nil {
 		return 0, err
@@ -1801,7 +1845,7 @@ func (h worktreeHold) restore(ctx context.Context, dir render.Dir, prefix string
 // it failed before starting (hook, dirty index) — return the raw error, no
 // abort. The caller puts back the work it held either way. Cleanup runs
 // uncancellable.
-func gitRebaseFailure(ctx context.Context, dir render.Dir, prefix, remote, branch, recovery string, rebaseErr error) error {
+func gitRebaseFailure(ctx context.Context, dir render.Dir, prefix, remote, branch string, rebaseErr error) error {
 	cleanup := context.WithoutCancel(ctx)
 	inProgress, err := gitRefExists(cleanup, dir, "ship", "REBASE_HEAD")
 	if err != nil {
@@ -1815,24 +1859,20 @@ func gitRebaseFailure(ctx context.Context, dir render.Dir, prefix, remote, branc
 		return fmt.Errorf(prefix+": rebase onto %s/%s conflicted (%w) and abort failed: %w — run: git rebase --abort, then resolve manually", remote, branch, rebaseErr, aerr)
 	}
 	if lerr != nil {
-		return fmt.Errorf(prefix+": rebase onto %s/%s conflicted (%w); aborted back to the pre-rebase state; listing the conflicted files also failed: %w — %s", remote, branch, rebaseErr, lerr, recovery)
+		return fmt.Errorf(prefix+": rebase onto %s/%s conflicted (%w); aborted back to the pre-rebase state; listing the conflicted files also failed: %w — %s", remote, branch, rebaseErr, lerr, gitRebaseRecovery(remote, branch))
 	}
 	conflicted := strings.Join(strings.Fields(files), ", ")
-	return fmt.Errorf(prefix+": rebase onto %s/%s conflicts in: %s; aborted back to the pre-rebase state (%w) — %s", remote, branch, conflicted, rebaseErr, recovery)
+	return fmt.Errorf(prefix+": rebase onto %s/%s conflicts in: %s; aborted back to the pre-rebase state (%w) — %s", remote, branch, conflicted, rebaseErr, gitRebaseRecovery(remote, branch))
 }
 
-// gitRebaseRecovery is the manual replay of a rebase ccx rolled back, up to the
-// point where the caller's own next step differs.
+// gitRebaseRecovery names the way out of a rebase ccx rolled back. Every rebase
+// it reports replays a branch onto its own remote counterpart, so the second
+// clause holds for all of them: the conflict is spurious when the local history
+// is a deliberate rewrite, and ccx vcs push moves the remote rather than
+// replaying it back over the work that replaced it.
 func gitRebaseRecovery(remote, branch string) string {
-	return fmt.Sprintf("resolve manually: git fetch %s && git rebase --autostash %s/%s, then fix the conflicts (git status)", remote, remote, branch)
-}
-
-// shipPushRecovery adds ship's own next step, and the verb for the case the
-// rebase reads as a conflict but is not one: a branch rewritten on purpose does
-// not want the remote's history replayed back onto it.
-func shipPushRecovery(remote, branch string) string {
-	return fmt.Sprintf("%s, then git push %s %s; if you rewrote %s on purpose, ccx vcs push moves %s/%s onto your head under a lease instead of replaying onto it",
-		gitRebaseRecovery(remote, branch), remote, branch, branch, remote, branch)
+	return fmt.Sprintf("resolve manually: git fetch %s && git rebase --autostash %s/%s, fix the conflicts (git status), then git push %s %s; if you rewrote %s on purpose, ccx vcs push moves %s/%s onto your head under a lease instead of replaying onto it",
+		remote, remote, branch, remote, branch, branch, remote, branch)
 }
 
 func jjBookmarkNames(ctx context.Context, dir render.Dir, prefix, rev string) ([]string, error) {

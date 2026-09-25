@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -146,8 +147,8 @@ func TestStackRebasePushesWithADivergedLocalTrunk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stack rebase: %v", err)
 	}
-	if !strings.Contains(errOut, "local main holds 1 commit(s) refs/remotes/origin/main does not") {
-		t.Errorf("stderr = %q, want the local trunk warning", errOut)
+	if strings.Contains(errOut, "local main holds") {
+		t.Errorf("stderr = %q, want no local trunk warning", errOut)
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "main"); got != localTrunk {
 		t.Errorf("local main = %s, want unchanged %s", got, localTrunk)
@@ -186,22 +187,56 @@ func TestStackRebaseLinearizesSiblings(t *testing.T) {
 	}
 }
 
-func TestStackRebaseMovesABranchAnotherWorkingCopyHolds(t *testing.T) {
+func TestStackRebaseRefusesABranchAnotherWorkingCopyHolds(t *testing.T) {
 	f := stackRebaseRepo(t, "base", "feature")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	held := restackSiblingPath(t, "held")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
-	shipResetLog(t, f)
-
-	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
-		t.Fatalf("stack rebase: %v", err)
+	before := map[string]string{}
+	for _, branch := range []string{"base", "feature"} {
+		before[branch] = gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
 	}
-	if head, want := gitAt(t, f.Env(), held, "rev-parse", "HEAD"), gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); head != want {
-		t.Errorf("held HEAD = %s, want the rebased feature %s", head, want)
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err == nil || !strings.Contains(err.Error(), "checked out in "+held) {
+		t.Fatalf("rebase = %v, want holder refusal", err)
+	}
+	for branch, head := range before {
+		if got := gitAt(t, f.Env(), f.Dir, "rev-parse", branch); got != head {
+			t.Errorf("%s moved to %s before refusal", branch, got)
+		}
 	}
 	if dirt := gitAt(t, f.Env(), held, "status", "--porcelain"); dirt != "" {
 		t.Errorf("held reads dirty: %q", dirt)
+	}
+	mustRun(t, f.Env(), held, "git", "switch", "--detach", "-q")
+	if _, _, err := runStackCmd(t, f, "continue"); err != nil {
+		t.Fatalf("continue after detaching holder: %v", err)
+	}
+	if !stackOnto(t, f, "origin/main", "feature") {
+		t.Error("feature did not reach pinned trunk")
+	}
+}
+
+func TestStackRebaseRefusesDirtyOriginBeforeMovingRefs(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	writeShipFile(t, f.Dir, "feature.txt", "uncommitted\n")
+	before := map[string]string{}
+	for _, branch := range []string{"base", "feature"} {
+		before[branch] = gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
+	}
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err == nil || !strings.Contains(err.Error(), "uncommitted work") {
+		t.Fatalf("rebase = %v, want dirty refusal", err)
+	}
+	for branch, head := range before {
+		if got := gitAt(t, f.Env(), f.Dir, "rev-parse", branch); got != head {
+			t.Errorf("%s moved to %s before refusal", branch, got)
+		}
+	}
+	if got := restackRead(t, filepath.Join(f.Dir, "feature.txt")); got != "uncommitted\n" {
+		t.Errorf("work changed to %q", got)
 	}
 }
 
@@ -408,6 +443,86 @@ func TestStackRebaseReclaimsAStaleRun(t *testing.T) {
 	}
 }
 
+func stackPlantLive(t *testing.T, f *vcstest.Fixture, branches ...string) *stackRebaseRun {
+	t.Helper()
+	live := exec.Command("sleep", "60")
+	if err := live.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = live.Process.Kill(); _ = live.Wait() })
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := &stackRebaseRun{Trunk: "main", Roots: branches[:1], Pid: live.Process.Pid, Started: stackProcStart(live.Process.Pid), Host: host, dir: stackRunDir(filepath.Join(f.Dir, ".git"), branches[0])}
+	for _, b := range branches {
+		run.Branches = append(run.Branches, stackRebaseBranch{Name: b})
+	}
+	if err := os.MkdirAll(run.dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := stackSaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	return run
+}
+
+func TestStackContinueRefusesARunAnotherProcessDrives(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	live := stackPlantLive(t, f, "base", "feature")
+
+	for _, verb := range []string{"continue", "abort"} {
+		_, _, err := runStackCmd(t, f, verb)
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("pid %d on ", live.Pid)) || !strings.Contains(err.Error(), "is still driving the stack rebase of base") {
+			t.Fatalf("%s beside a live run = %v, want the refusal naming its pid", verb, err)
+		}
+	}
+	if runs, err := stackRuns(filepath.Join(f.Dir, ".git")); err != nil || len(runs) != 1 {
+		t.Fatalf("runs = %v, %v, want the live run kept", runs, err)
+	}
+}
+
+func TestStackRebaseRefusesALiveRunBeforePlanning(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	stackPlantLive(t, f, "base", "feature")
+	prev := stackPRLookup
+	stackPRLookup = func(context.Context, render.Dir, string, []string) (map[string]*stackPR, error) {
+		t.Error("the rebase planned beside a live run of its own branch")
+		return nil, nil
+	}
+	t.Cleanup(func() { stackPRLookup = prev })
+
+	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err == nil || !strings.Contains(err.Error(), "a stack rebase of base is already in progress") {
+		t.Fatalf("rebase beside a live run = %v, want the in-progress refusal", err)
+	}
+}
+
+func TestStackPidAliveRejectsAReusedPid(t *testing.T) {
+	run := &stackRebaseRun{Pid: os.Getpid(), Started: stackProcStart(os.Getpid())}
+	if !stackPidAlive(run) {
+		t.Fatalf("stackPidAlive(own pid, own start %q) = false", run.Started)
+	}
+	run.Started = "Thu Jan  1 00:00:00 1970"
+	if stackPidAlive(run) {
+		t.Error("stackPidAlive took a live pid with another start time for the run's process")
+	}
+}
+
+func TestStackWriteRefsTakesARefAlreadyWritten(t *testing.T) {
+	f := stackRebaseRepo(t, "base")
+	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	moved := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+	run := &stackRebaseRun{Branches: []stackRebaseBranch{{Name: "base", Local: local, NewHead: moved}}}
+	for range 2 {
+		if err := stackWriteRefs(f.Context(), render.Dir(f.Dir), run); err != nil {
+			t.Fatalf("stackWriteRefs: %v", err)
+		}
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != moved {
+		t.Errorf("base = %s, want %s", got, moved)
+	}
+}
+
 func TestStackAbortDropsTheRun(t *testing.T) {
 	f := shipGTRepo(t)
 	stubStackPRs(t, nil)
@@ -438,6 +553,55 @@ func TestStackRebaseRefusesADivergedRemote(t *testing.T) {
 	f := stackRebaseRepo(t, "base")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "base amended")
+	shipResetLog(t, f)
+
+	_, _, err := runStackCmd(t, f, "rebase")
+	if err == nil || !strings.Contains(err.Error(), "base has diverged from origin/base") {
+		t.Fatalf("err = %v, want the divergence refusal", err)
+	}
+}
+
+func stackRecordSubmitted(t *testing.T, f *vcstest.Fixture, branches ...string) {
+	t.Helper()
+	versions := map[string]gtmeta.Version{}
+	for _, b := range branches {
+		versions[b] = gtmeta.Version{HeadSha: gitAt(t, f.Env(), f.Dir, "rev-parse", b)}
+	}
+	if err := gtmeta.RecordSubmitted(f.Context(), filepath.Join(f.Dir, ".git"), versions); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStackRebasePushesOverItsOwnLastSubmission(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	stackRecordSubmitted(t, f, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
+		t.Fatalf("stack rebase --no-push: %v", err)
+	}
+	stackAdvanceTrunk(t, f, "later.txt", "later\n")
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "rebase"); err != nil {
+		t.Fatalf("stack rebase over its own last submission: %v", err)
+	}
+	for _, branch := range []string{"base", "feature"} {
+		local := gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
+		if remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); remote != local {
+			t.Errorf("origin %s = %s, want the rebased %s", branch, remote, local)
+		}
+	}
+}
+
+func TestStackRebaseRefusesAForeignPushOverItsLastSubmission(t *testing.T) {
+	f := stackRebaseRepo(t, "base")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
+	stackRecordSubmitted(t, f, "base")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "base amended")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "-f", "origin", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", "HEAD@{1}")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "base amended locally")
 	shipResetLog(t, f)
 
 	_, _, err := runStackCmd(t, f, "rebase")
@@ -511,5 +675,65 @@ func TestGTPushArgvPinsAnAbsentRemote(t *testing.T) {
 	argv := gtPushArgv(gtSubmit{}, []gtSubmitBranch{{name: "new", head: "abc", leaseSet: true}})
 	if !slices.Contains(argv, "--force-with-lease=refs/heads/new:") {
 		t.Errorf("argv = %v, want the lease to require the branch absent", argv)
+	}
+}
+
+func TestStackContinueRefusesConcurrentLocalAdvance(t *testing.T) {
+	f := shipGTRepo(t)
+	stubStackPRs(t, nil)
+	stackConflicting(t, f)
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err == nil {
+		t.Fatal("expected conflict")
+	}
+	run, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := run.Conflict.Workspace
+	writeShipFile(t, ws, "c.txt", "resolved\n")
+	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "--allow-empty", "-qm", "concurrent work")
+	advanced := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	_, _, err = runStackCmd(t, f, "continue")
+	if err == nil || !strings.Contains(err.Error(), "branch moved locally") {
+		t.Fatalf("continue = %v, want ref transaction refusal", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != advanced {
+		t.Errorf("concurrent work replaced with %s", got)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != base {
+		t.Errorf("base partially moved to %s", got)
+	}
+}
+
+func TestStackContinueRefusesConcurrentRemoteAdvance(t *testing.T) {
+	f := shipGTRepo(t)
+	stubStackPRs(t, nil)
+	stackConflicting(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	if _, _, err := runStackCmd(t, f, "rebase"); err == nil {
+		t.Fatal("expected conflict")
+	}
+	run, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := run.Conflict.Workspace
+	writeShipFile(t, ws, "c.txt", "resolved\n")
+	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
+	restackAdvanceRemote(t, f, "feature", "concurrent.txt", "concurrent\n")
+	advanced := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	_, _, err = runStackCmd(t, f, "continue")
+	if err == nil {
+		t.Fatal("continue overwrote a remote advance")
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != advanced {
+		t.Errorf("remote work replaced with %s", got)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != base {
+		t.Errorf("remote base partially moved to %s", got)
 	}
 }

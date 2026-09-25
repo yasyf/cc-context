@@ -1,0 +1,62 @@
+name: internal/cli test environment
+description: The external binaries internal/cli's tests drive as real subprocesses.
+
+# Go is not here: a shard runs a prebuilt binary and compiles nothing, and no
+# test in the package looks up `go` on PATH. The jobs that build add setup-go
+# themselves.
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@v8.2.0
+      with:
+        cache-suffix: codeexec
+
+    - name: Install ast-grep (structural search/replace/outline engine)
+      shell: bash
+      run: |
+        uv tool install ast-grep-cli
+        uv tool dir --bin >> "$GITHUB_PATH"
+
+    - name: Warm the codeexec sandbox runtime
+      # Mirror the runtime launch flags (internal/codeexec/driver.go) so a PR's
+      # checked-out uv.toml / pyproject cannot steer resolution here either.
+      shell: bash
+      run: uv run --no-project --no-config --no-build --quiet --python "3.13" --with pydantic-monty==0.0.18 python -c "import pydantic_monty"
+
+    - name: Install ripgrep (glob-capable grep engine)
+      # The grep fallback cannot translate a mid-path wildcard, so the MCP glob
+      # tests assert behaviour only this engine has. Without it they do not
+      # skip, they fail.
+      uses: taiki-e/install-action@v2
+      with:
+        tool: ripgrep
+
+    - name: Install jj (live hunk-scoped ship tests)
+      uses: taiki-e/install-action@v2
+      with:
+        # Pinned: the vcs tests depend on jj 0.43 specifics (revset escape
+        # vocabulary, escape_json(), the colocated-worktree refusal). Bumping
+        # this means re-running the affected live-jj tests, not just CI.
+        tool: jj-cli@0.43.0
+
+    - name: Cache the pinned gt npm global
+      id: gt
+      uses: actions/cache@v5
+      with:
+        path: ~/.npm-global
+        key: gt-${{ runner.os }}-${{ hashFiles('internal/cli/testdata/gt/VERSION') }}
+
+    - if: steps.gt.outputs.cache-hit != 'true'
+      name: Install gt (live Graphite-lane tests)
+      shell: bash
+      run: npm install -g --prefix "$HOME/.npm-global" "@withgraphite/graphite-cli@$(cat internal/cli/testdata/gt/VERSION)"
+
+    - name: Put the pinned gt on PATH
+      # Single-sourced from the file the gt goldens are recorded against, so
+      # neither a stale cache nor a floated install can disagree with them.
+      # Bumping it means re-running `task record-gt`.
+      shell: bash
+      run: |
+        gtver="$(cat internal/cli/testdata/gt/VERSION)"
+        echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+        test "$("$HOME/.npm-global/bin/gt" --version)" = "$gtver"

@@ -32,6 +32,11 @@ outdated_pr=14003
 own_branch_one="fix-ship-help-graphite-demote"
 own_branch_two="yasyf/transcript-ccx-issues"
 own_sha="8ce0dcf1c1b66a60e890985c77a52064c6cfcb49"
+# A branch of $own_repo whose one pull request closed unmerged, and the fork that
+# $open_pr's head lives on.
+own_branch_closed="stack-rebase-per-root"
+own_closed_pr=64
+open_pr_fork="offbyone"
 # A public issue comment of $foreign_repo, for the by-id fetch ccx vcs status
 # reads a Graphite merge-queue activity comment through.
 foreign_comment="IC_kwDODKw3uc8AAAABM0KrfA"
@@ -289,6 +294,26 @@ record status-comment-graphql api graphql \
 record status-draft-graphql api graphql \
 	-F "owner=$foreign_owner" -F "repo=$foreign_name" \
 	-F "d0=$open_pr" -F "d1=$merged_pr" -f "query=$(status_draft_query 2)"
+
+### ccx vcs stack rebase — REST pull request reads, one branch at a time
+
+# rest_pulls_head is internal/cli/ghrest.go's ghNewestPull endpoint: the branch
+# query-escaped, the owner inside the endpoint where gh fills {owner}, and the
+# colon escaped so gh never reads :owner, :repo or :branch as a placeholder.
+rest_pulls_head() {
+	local repo="$1" owner="$2" branch="$3"
+	printf '%s/pulls?head=%s%%3A%s&state=all&sort=created&direction=desc&per_page=1' \
+		"$repo" "$owner" "$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote_plus(sys.argv[1]))' "$branch")"
+}
+
+record rest-pulls-head-merged api "$(rest_pulls_head 'repos/{owner}/{repo}' '{owner}' "$own_branch_one")"
+record rest-pulls-head-newest api "$(rest_pulls_head 'repos/{owner}/{repo}' '{owner}' "$own_branch_two")"
+record rest-pulls-head-closed api "$(rest_pulls_head 'repos/{owner}/{repo}' '{owner}' "$own_branch_closed")"
+record rest-pulls-head-none api "$(rest_pulls_head 'repos/{owner}/{repo}' '{owner}' no-such-branch)"
+record rest-pulls-head-open api "$(rest_pulls_head "repos/$foreign_repo" "$open_pr_fork" "$open_pr_branch")"
+record rest-pull-open api "repos/$foreign_repo/pulls/$open_pr"
+record rest-issue-closed-by api "repos/{owner}/{repo}/issues/$own_closed_pr" --jq '.closed_by.login // ""'
+record rest-issue-comments api --paginate --slurp "repos/$foreign_repo/issues/$open_pr/comments?per_page=100"
 
 ### ship's CI watch — gh run list / run view / run view --log-failed
 

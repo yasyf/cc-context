@@ -6,7 +6,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A stack rebase regenerates conflicted generated files itself.** A
+  repository lists its generated files and the command that rewrites them in
+  a committed `.ccx.toml`, one `[[generated]]` table per command:
+
+  ```toml
+  [[generated]]
+  paths = ["api/src/gql/schema.generated.*"]
+  run = "yarn grats"
+  ```
+
+  When every file a replayed commit conflicts on is listed there, `ccx vcs
+  stack rebase`, `restack`, and `submit` resolve the stop without a human.
+  Each listed file starts from the replayed commit's copy. Each owning
+  command runs once from the conflict workspace's root, with every variable
+  `git rev-parse --local-env-vars` names unset, `GIT_DIR` and
+  `GIT_INDEX_FILE` among them. The listed files are staged and the rebase continues.
+
+  Each staged file prints a `regenerated <path> · <command>` line. A stop
+  that also conflicts on another file waits for the human as before, and
+  `ccx vcs stack continue` reruns the commands for the listed files once the
+  rest are resolved. A command that exits nonzero, leaves a conflict marker,
+  or writes a file outside its `paths` stops the run with its exit code and
+  stderr tail and commits nothing. `--dry-run` names, per branch, the
+  commands a conflict runs. No git config, hook, or merge driver is
+  involved.
+
 ### Fixed
+
+- **`ccx vcs stack rebase` and `stack submit` keep working when GitHub
+  refuses GraphQL.** They read each branch's pull request through GitHub's
+  REST API, so a GraphQL budget another tool used up, or a GraphQL
+  secondary rate limit, no longer blocks a restack or a push.
 
 - **`ccx vcs stack rebase` runs on separate stacks no longer block each
   other.** Each run keeps its state under its stack's root branch, so lanes
@@ -15,13 +48,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rebase of a stack already in progress is refused with the holder's pid,
   host, and age. A run whose process died before it applied anything, with
   no conflict workspace waiting, is reclaimed after five minutes.
+  `continue --stack <bottom branch>` and `abort --stack <bottom branch>`
+  name a run from any working copy, and `abort` clears a run whose conflict
+  workspace is already gone.
+- **`ccx vcs stack submit` and `ccx vcs ship` push over a replay of their
+  own last submission.** A remote head whose commits above trunk carry the
+  same ordered patches as the head gt last submitted, such as a graphite-app
+  restack, is leased on and replaced instead of refused as diverged. A remote
+  holding a merge, or a patch this repository never submitted, is still
+  refused.
+
+- **A stack rebase never takes over a run another process still drives.**
+  A rebase, `continue`, or `abort` refuses a run that another live process
+  still drives, matched by pid and process start time. A rebase checks this
+  before planning when its branch belongs to such a run. A run is marked
+  applied before its branch refs are written, so a crash in between leaves
+  a run that `continue` finishes.
+
+- **A stack that `stack rebase --no-push` or a printed `gt restack` step
+  rewrote can be pushed again.** The divergence check accepts a remote head
+  equal to the branch's last submitted head and pushes under a lease on it.
+  A remote that a foreign push moved is still refused.
+
+- **`ccx vcs ship` and `ccx vcs stack submit` leave a frozen parent alone.**
+  A branch gt holds (`gt freeze`, or a merge in progress) is no longer a
+  refusal: it keeps its head, is not pushed, and its children restack onto
+  that head and open their pull requests against it.
 
 ### Upgrade
 
 - A stack rebase started by 0.65.x keeps its state in
-  `.git/ccx-stack-rebase/state.json`, which this release no longer reads.
-  Finish or abort that run with the old binary before upgrading, or delete
-  the file.
+  `.git/ccx-stack-rebase/state.json`. This release refuses to run beside
+  that file and names the `rm -r` to run once the old run is finished or
+  aborted with the old binary. When its last run clears, this release also
+  removes `.git/ccx-stack-rebase/`, which 0.65.x reads as a held lock.
 
 ## [0.65.1] - 2026-09-25
 

@@ -78,17 +78,6 @@ func mustRun(t *testing.T, env []string, dir, name string, args ...string) strin
 	return string(out)
 }
 
-// runAllowFail runs name with args in dir under f's environment and tolerates
-// a nonzero exit, for a step whose failure is the point — gt restack stopping
-// in a conflict it is about to have resolved by hand.
-func runAllowFail(t *testing.T, env []string, dir, name string, args ...string) {
-	t.Helper()
-	cmd := exec.Command(name, args...) //nolint:gosec // fixed argv; dir is a TempDir, args are literals
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), env...)
-	_ = cmd.Run()
-}
-
 // statSnapshot captures a file's mtime and size so a test can assert the worktree
 // file is untouched across a hunk-scoped commit.
 type statSnapshot struct {
