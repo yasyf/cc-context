@@ -45,23 +45,19 @@ func (e *errRestackMerged) Error() string {
 	return e.Branch + " is already merged, so there is nothing to submit — drop it with gt untrack " + e.Branch
 }
 
-// errRestackDuplicates is a branch whose replay span reaches back past commits
-// trunk already carries. Replaying it copies those commits onto the branch, and
-// the pull request then proposes every file they touch rather than the ones the
-// branch changed — the hundred-file diff behind a one-file change.
+// errRestackDuplicates is a branch whose replay would carry commits its parent
+// already holds under other shas: the branch was rebased outside gt onto a copy
+// of its parent that has since been rewritten again. Replaying them applies each
+// one twice, and the pull request then proposes the parent's work as its own.
 type errRestackDuplicates struct {
-	Branch    string
-	Parent    string
-	Trunk     string
-	Span      int
-	Own       int
-	SpanFiles int
-	OwnFiles  int
+	Branch  string
+	Parent  string
+	Commits []string
 }
 
 func (e *errRestackDuplicates) Error() string {
-	return fmt.Sprintf("%s would replay %d commits but owns %d — the rest are already in %s, so the restack would copy them onto the branch and its pull request would propose %d files rather than the %d it changed; re-record its base with gt track --force --parent %s",
-		e.Branch, e.Span, e.Own, e.Trunk, e.SpanFiles, e.OwnFiles, e.Parent)
+	return fmt.Sprintf("%s carries %d commit(s) %s already holds under other shas (%s), so a replay would apply them twice — rebase %s onto %s by hand, then re-record it with gt track --force --parent %s %s",
+		e.Branch, len(e.Commits), e.Parent, strings.Join(e.Commits, ", "), e.Branch, e.Parent, e.Parent, e.Branch)
 }
 
 // errTrunkDiverged is a local trunk holding commits its remote does not. Every
@@ -80,12 +76,15 @@ func (e *errTrunkDiverged) Error() string {
 }
 
 // gtRestackResult is what one restack did: the branches whose refs moved, the
-// working copies reset onto them, and the branches gt is holding frozen, which
+// branches already on their parent whose recorded base alone moved, the working
+// copies reset onto the moved ones, and the branches gt is holding frozen, which
 // are left exactly where they are.
 type gtRestackResult struct {
-	moved     []string
-	realigned []string
-	held      map[string]string
+	moved      []string
+	rerecorded []string
+	empty      []string
+	realigned  []string
+	held       map[string]string
 }
 
 func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir render.Dir, commonDir string, state gtState, chain []string) (gtRestackResult, error) {
@@ -108,7 +107,10 @@ func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir rend
 	}
 
 	pin := gtTrunkPinned{name: trunk, sha: state[trunk].Head}
-	moves, replayErr := gtReplayChain(ctx, prefix, dir, state, pin, movers, holders)
+	moves, empty, replayErr := gtReplayChain(ctx, prefix, dir, state, pin, movers, holders)
+	for _, branch := range empty {
+		held[branch] = gtHoldEmpty
+	}
 	if replayErr != nil {
 		return gtRestackResult{held: held}, fmt.Errorf("%w; no branches moved", replayErr)
 	}
@@ -120,7 +122,8 @@ func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir rend
 	if recordErr != nil {
 		recordErr = fmt.Errorf("%s: %w", prefix, recordErr)
 	}
-	result := gtRestackResult{moved: gtRestackBranches(moves), realigned: realigned, held: held}
+	moved, rerecorded := gtRestackBranches(moves)
+	result := gtRestackResult{moved: moved, rerecorded: rerecorded, empty: empty, realigned: realigned, held: held}
 	return result, errors.Join(alignErr, recordErr)
 }
 
@@ -159,14 +162,24 @@ func gtRestackPlan(state gtState, chain []string) ([]string, map[string]string) 
 	return movers, held
 }
 
+// gtHoldEmpty is why a tracked branch with no commit of its own is left where it
+// is: it is a lane nobody has committed to yet, and it has nothing to replay.
+const gtHoldEmpty = "empty, with no commit of its own yet"
+
+// restackMove is one branch the replay settled: where its ref now points, and
+// the revision its parent stood at when it landed there — the pair gt's metadata
+// compares to decide the branch is restacked. stayed marks a branch rebased
+// outside gt that already sat on that revision: its record moves, its ref never.
 type restackMove struct {
 	branch string
 	head   string
 	parent string
+	stayed bool
 }
 
-func gtReplayChain(ctx context.Context, prefix string, dir render.Dir, state gtState, pin gtTrunkPinned, movers []string, holders map[string]string) ([]restackMove, error) {
+func gtReplayChain(ctx context.Context, prefix string, dir render.Dir, state gtState, pin gtTrunkPinned, movers []string, holders map[string]string) ([]restackMove, []string, error) {
 	var moves []restackMove
+	var empty []string
 	heads := map[string]string{pin.name: pin.sha}
 	for _, branch := range movers {
 		s := state[branch]
@@ -177,29 +190,44 @@ func gtReplayChain(ctx context.Context, prefix string, dir render.Dir, state gtS
 		}
 		merged, err := gitIsAncestor(ctx, dir, prefix, gtRestackRef(branch), base)
 		if err != nil {
-			return moves, err
-		}
-		if merged {
-			return moves, &errRestackMerged{Branch: branch}
+			return moves, empty, err
 		}
 		from, err := gtRestackFrom(ctx, prefix, dir, state, branch)
 		if err != nil {
-			return moves, err
+			return moves, empty, err
 		}
-		if err := gtRestackOwnWork(ctx, prefix, dir, pin, branch, parent.Ref, from); err != nil {
-			return moves, err
+		if merged {
+			if from != s.Head {
+				return moves, empty, &errRestackMerged{Branch: branch}
+			}
+			empty = append(empty, branch)
+			continue
 		}
-		head, err := gtReplay(ctx, prefix, dir, base, from, branch, s)
+		recorded := gtRef{Ref: parent.Ref, SHA: from}
+		on, err := gtRestackAlreadyOn(ctx, prefix, dir, branch, recorded, base)
+		if err != nil {
+			return moves, empty, err
+		}
+		if on {
+			heads[branch] = s.Head
+			moves = append(moves, restackMove{branch: branch, head: s.Head, parent: base, stayed: true})
+			continue
+		}
+		span, err := gtRestackSpan(ctx, prefix, dir, pin, branch, recorded, base)
+		if err != nil {
+			return moves, empty, err
+		}
+		head, err := gtReplay(ctx, prefix, dir, base, branch, s, span...)
 		if err != nil {
 			if errors.Is(err, errReplayConflict) {
-				return moves, &errRestackConflict{Branch: branch, Onto: parent.Ref, Dir: holders[branch]}
+				return moves, empty, &errRestackConflict{Branch: branch, Onto: parent.Ref, Dir: holders[branch]}
 			}
-			return moves, err
+			return moves, empty, err
 		}
 		heads[branch] = head
 		moves = append(moves, restackMove{branch: branch, head: head, parent: base})
 	}
-	return moves, nil
+	return moves, empty, nil
 }
 
 // gtRestackFrom is where a branch's own commits start: the parent revision gt
@@ -306,38 +334,104 @@ func gtTrunkFastForward(ctx context.Context, prefix string, c vcs.Checkout, dir 
 	return err
 }
 
-// gtRestackOwnWork refuses a replay whose span reaches back past commits trunk
-// already carries. The span is what gt recorded as the branch's parent revision
-// through to its head, and a branch rebased outside gt leaves that revision
-// behind its real base — so the span picks up the trunk commits in between and
-// the replay copies every one of them onto the branch. The pull request that
-// follows proposes those commits' files as the branch's own, which is the
-// hundred-file diff over a one-file change.
-func gtRestackOwnWork(ctx context.Context, prefix string, dir render.Dir, pin gtTrunkPinned, branch, parent, parentSHA string) error {
-	span := parentSHA + ".." + gtRestackRef(branch)
+// gtRestackAlreadyOn reports a branch rebased outside gt onto base: base is in
+// its history and every commit above base is its own, counted from gt's recorded
+// parent revision. A branch that merely contains base still carries whatever
+// sits between them — a dropped or landed parent's commits — and must replay.
+func gtRestackAlreadyOn(ctx context.Context, prefix string, dir render.Dir, branch string, parent gtRef, base string) (bool, error) {
+	contains, err := gitIsAncestor(ctx, dir, prefix, base, gtRestackRef(branch))
+	if err != nil || !contains {
+		return false, err
+	}
+	above, err := gtRevCount(ctx, prefix, dir, base+".."+gtRestackRef(branch))
+	if err != nil {
+		return false, err
+	}
+	own, err := gtRevCount(ctx, prefix, dir, parent.SHA+".."+gtRestackRef(branch), "--not", base)
+	if err != nil {
+		return false, err
+	}
+	return above == own, nil
+}
+
+// gtRestackSpan names the commits a replay of branch onto base carries: gt's
+// recorded parent revision through to the head. A branch rebased outside gt
+// leaves that revision behind, so the span reaches trunk commits the pin already
+// holds, and those are excluded rather than copied. A commit the parent holds
+// under another sha is refused: no exclusion by ancestry can see it.
+func gtRestackSpan(ctx context.Context, prefix string, dir render.Dir, pin gtTrunkPinned, branch string, parent gtRef, base string) ([]string, error) {
+	span := parent.SHA + ".." + gtRestackRef(branch)
 	replayed, err := gtRevCount(ctx, prefix, dir, span)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	own, err := gtRevCount(ctx, prefix, dir, span, "--not", pin.sha)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if replayed == own {
-		return nil
+		return []string{span}, nil
 	}
-	spanFiles, err := gtRestackFileCount(ctx, prefix, dir, span)
+	revs := []string{span, "^" + pin.sha}
+	dups, err := gtRestackCopies(ctx, prefix, dir, base, branch, revs)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	ownFiles, err := gtRestackFileCount(ctx, prefix, dir, pin.sha+"..."+gtRestackRef(branch))
+	if len(dups) > 0 {
+		return nil, &errRestackDuplicates{Branch: branch, Parent: parent.Ref, Commits: dups}
+	}
+	return revs, nil
+}
+
+// gtRestackCopies lists the commits of revs that are patch-equivalent to a
+// commit base carries and branch does not, short shas oldest first.
+func gtRestackCopies(ctx context.Context, prefix string, dir render.Dir, base, branch string, revs []string) ([]string, error) {
+	marks, err := gtCherryMarks(ctx, prefix, dir, base, gtRestackRef(branch))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return &errRestackDuplicates{
-		Branch: branch, Parent: parent, Trunk: pin.name,
-		Span: replayed, Own: own, SpanFiles: spanFiles, OwnFiles: ownFiles,
+	out, err := render.RunCLI(ctx, dir, "git", append([]string{"rev-list", "--reverse"}, revs...))
+	if err != nil {
+		return nil, fmt.Errorf("%s: git rev-list %s: %w", prefix, strings.Join(revs, " "), err)
 	}
+	copies := map[string]bool{}
+	for _, m := range marks {
+		if !m.own {
+			copies[m.sha] = true
+		}
+	}
+	var dups []string
+	for _, sha := range strings.Fields(out) {
+		if copies[sha] {
+			dups = append(dups, shortSHA(sha))
+		}
+	}
+	return dups, nil
+}
+
+// gtCherryMark is one commit on the branch side of a comparison against its
+// parent, and whether it is the branch's own — no commit on the parent side
+// carries the same patch.
+type gtCherryMark struct {
+	sha string
+	own bool
+}
+
+// gtCherryMarks walks the commits head holds and parent does not, oldest first,
+// marking each by patch identity against the commits parent holds and head does
+// not: the one comparison that recognizes a parent's commit after a rewrite gave
+// it a new sha.
+func gtCherryMarks(ctx context.Context, prefix string, dir render.Dir, parent, head string) ([]gtCherryMark, error) {
+	span := parent + "..." + head
+	out, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", "--cherry-mark", "--right-only", "--no-merges", "--reverse", "--topo-order", span})
+	if err != nil {
+		return nil, fmt.Errorf("%s: git rev-list --cherry-mark %s: %w", prefix, span, err)
+	}
+	var marks []gtCherryMark
+	for _, line := range strings.Fields(out) {
+		marks = append(marks, gtCherryMark{sha: line[1:], own: line[0] == '+'})
+	}
+	return marks, nil
 }
 
 func gtRevCount(ctx context.Context, prefix string, dir render.Dir, span string, args ...string) (int, error) {
@@ -351,16 +445,6 @@ func gtRevCount(ctx context.Context, prefix string, dir render.Dir, span string,
 		return 0, fmt.Errorf("%s: read a commit count from %q: %w", prefix, out, err)
 	}
 	return count, nil
-}
-
-// gtRestackFileCount counts the files a range changes, which is the measure a
-// pull request is read by: a diff wider than the work is the tell.
-func gtRestackFileCount(ctx context.Context, prefix string, dir render.Dir, span string) (int, error) {
-	files, err := gtRestackFiles(ctx, prefix, dir, span)
-	if err != nil {
-		return 0, err
-	}
-	return len(files), nil
 }
 
 // gtSubmitWidth measures what a stack proposes against the remote trunk: the
@@ -411,6 +495,9 @@ func gtRestackPublish(ctx context.Context, prefix string, dir render.Dir, state 
 	var updates strings.Builder
 	updates.WriteString("start\n")
 	for _, m := range moves {
+		if m.stayed {
+			continue
+		}
 		fmt.Fprintf(&updates, "update %s %s %s\n", gtRestackRef(m.branch), m.head, state[m.branch].Head)
 	}
 	updates.WriteString("prepare\ncommit\n")
@@ -420,12 +507,15 @@ func gtRestackPublish(ctx context.Context, prefix string, dir render.Dir, state 
 	return nil
 }
 
-func gtRestackBranches(moves []restackMove) []string {
-	branches := make([]string, len(moves))
-	for i, m := range moves {
-		branches[i] = m.branch
+func gtRestackBranches(moves []restackMove) (moved, rerecorded []string) {
+	for _, m := range moves {
+		if m.stayed {
+			rerecorded = append(rerecorded, m.branch)
+			continue
+		}
+		moved = append(moved, m.branch)
 	}
-	return branches
+	return moved, rerecorded
 }
 
 func gtRestackRevisions(moves []restackMove) map[string]string {
@@ -443,10 +533,10 @@ func gtRestackRevisions(moves []restackMove) map[string]string {
 // verbatim — an unknown `replay` subcommand on a git too old for it, say.
 var errReplayConflict = errors.New("replay: conflict")
 
-func gtReplay(ctx context.Context, prefix string, dir render.Dir, base, from, branch string, state gtBranchState) (string, error) {
+func gtReplay(ctx context.Context, prefix string, dir render.Dir, base, branch string, state gtBranchState, revs ...string) (string, error) {
 	ref := gtRestackRef(branch)
-	span := from + ".." + ref
-	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"-c", "replay.refAction=print", "replay", "--onto", base, span})
+	span := strings.Join(revs, " ")
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", append([]string{"-c", "replay.refAction=print", "replay", "--onto", base}, revs...))
 	if err != nil {
 		return "", fmt.Errorf("%s: git replay: %w", prefix, err)
 	}
@@ -497,9 +587,16 @@ func gtRestackSnapshots(ctx context.Context, prefix string, movers []string, hol
 		if holder == "" {
 			continue
 		}
+		dirty, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"status", "--porcelain", "--untracked-files=no"})
+		if err != nil {
+			return nil, fmt.Errorf("%s: read the uncommitted work in %s before restacking %s: git status --porcelain --untracked-files=no: %w", prefix, holder, branch, err)
+		}
+		if strings.TrimSpace(dirty) == "" {
+			continue
+		}
 		out, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"stash", "create", "ccx restack"})
 		if err != nil {
-			return nil, fmt.Errorf("%s: snapshot the uncommitted work in %s before restacking %s: %w", prefix, holder, branch, err)
+			return nil, fmt.Errorf("%s: snapshot the uncommitted work in %s before restacking %s: git stash create: %w", prefix, holder, branch, err)
 		}
 		if sha := strings.TrimSpace(out); sha != "" {
 			snapshots[holder] = sha
@@ -524,7 +621,7 @@ func gtRestackAlign(ctx context.Context, prefix string, holders map[string]strin
 	var failures []error
 	for _, m := range moves {
 		holder := holders[m.branch]
-		if holder == "" {
+		if holder == "" || m.stayed {
 			continue
 		}
 		if _, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"reset", "--hard", m.head}); err != nil {
@@ -548,7 +645,17 @@ func gtRestackAlign(ctx context.Context, prefix string, holders map[string]strin
 // be. A chain already on its parents moved nothing, and says so rather than
 // claiming a restack.
 func gtRestackSegment(r gtRestackResult) string {
+	var notes []string
+	if len(r.rerecorded) > 0 {
+		notes = append(notes, "re-recorded the base of "+strings.Join(r.rerecorded, ", "))
+	}
+	if len(r.empty) > 0 {
+		notes = append(notes, "skipped empty "+strings.Join(r.empty, ", "))
+	}
 	if len(r.moved) == 0 {
+		if len(notes) > 0 {
+			return strings.Join(notes, shipSep)
+		}
 		return "already restacked"
 	}
 	segment := fmt.Sprintf("restacked %d branches", len(r.moved))
@@ -558,7 +665,7 @@ func gtRestackSegment(r gtRestackResult) string {
 	if len(r.realigned) > 1 {
 		segment += fmt.Sprintf(" across %d working copies", len(r.realigned))
 	}
-	return segment
+	return strings.Join(append([]string{segment}, notes...), shipSep)
 }
 
 // gtUpstack lists the branches above branch, breadth-first, so a parent always

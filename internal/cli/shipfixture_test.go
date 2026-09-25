@@ -26,11 +26,6 @@ import (
 
 const fakeHeadSHA = "abcdef0123456789abcdef0123456789abcdef01"
 
-// fakeTrunkSHA is what the fake git resolves refs/remotes/<remote>/<trunk> to:
-// the commit a graphite submit anchors a branch stacked on trunk at, which is
-// deliberately neither the local trunk's sha nor any branch head.
-const fakeTrunkSHA = "7777777777777777777777777777777777777777"
-
 // ghPkgDir is this package's source directory, captured before any fixture
 // chdirs into its own repository and out of reach of the golden corpus's
 // relative path.
@@ -869,7 +864,13 @@ exit 0
   "show-ref --verify") if [ -n "$GIT_NO_REMOTE_TRUNK" ]; then exit 1; fi ;;
   "rev-parse --verify")
     case "$3" in
-      refs/remotes/*) printf '%s' "${GIT_TRUNK_SHA:-` + fakeTrunkSHA + `}" ;;
+      # The remote trunk stands where the local one does, as it does once ship
+      # has pinned it: the fake moves no ref, so a pin it had to make would fail.
+      refs/remotes/*)
+        want=${3#refs/remotes/*/}
+        while IFS=' ' read -r name sha; do
+          if [ "$name" = "$want" ]; then printf '%s' "$sha"; fi
+        done < "$GT_META_DIR/` + vcstest.GraphiteRefsFile + `" ;;
       *)
         case "$4" in
           REBASE_HEAD) if [ -n "$GIT_REBASE_CONFLICT" ]; then exit 0; else exit 1; fi ;;
@@ -1024,24 +1025,8 @@ case "$1 $2" in
         sep=
         for a in "$@"; do
           case "$a" in b[0-9]*=*) ;; *) continue ;; esac
-          branch=${a#*=}
           node=
-          if [ -z "$GH_PR_VIEW_NOT_FOUND" ]; then
-            if [ -n "$GH_PR_VIEW_DIR" ] && [ -r "$GH_PR_VIEW_DIR/$branch" ]; then
-              # One node per line, oldest first, the order GitHub's CREATED_AT
-              # sorts by; a first:1 query lands on the end the direction names.
-              first= last=
-              while IFS= read -r line || [ -n "$line" ]; do
-                [ -n "$line" ] || continue
-                [ -n "$first" ] || first=$line
-                last=$line
-              done < "$GH_PR_VIEW_DIR/$branch"
-              node=$first
-              case "$*" in *"direction: DESC"*) node=$last ;; esac
-            else
-              node=$GH_PR_VIEW_JSON
-            fi
-          fi
+          if [ -z "$GH_PR_VIEW_NOT_FOUND" ]; then node=$GH_PR_VIEW_JSON; fi
           printf '%s"%s":{"nodes":[%s]}' "$sep" "${a%%=*}" "$node"
           sep=,
         done
@@ -1052,11 +1037,6 @@ case "$1 $2" in
     if [ -n "$GH_PR_VIEW_NOT_FOUND" ]; then
       printf 'no pull requests found for branch "%s"\n' "$3" >&2
       exit 1
-    fi
-    if [ -n "$GH_PR_VIEW_DIR" ] && [ -r "$GH_PR_VIEW_DIR/$3" ]; then
-      IFS= read -r branchpr < "$GH_PR_VIEW_DIR/$3" || :
-      printf '%s' "$branchpr"
-      exit 0
     fi
     printf '%s' "$GH_PR_VIEW_JSON" ;;
   "pr list") printf '%s' "${GH_PR_LIST_JSON:-[]}" ;;

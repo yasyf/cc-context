@@ -3932,7 +3932,7 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 		if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
-		assertInvocations(t, invocations, [][]string{
+		assertInvocations(t, invocations, slices.Concat([][]string{
 			nogtProbe,
 			{"git", "branch", "--show-current"},
 			gtCommonDirArgv,
@@ -3943,8 +3943,10 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
 			{"git", "branch", "--show-current"},
+			gtRealRefsArgv(t, f),
+		}, gtNoPushPinInv("main"), [][]string{
 			{"git", "log", "-1", "--format=%h%x00%s"},
-		})
+		}))
 	})
 
 	t.Run("--no-gt falls back to jj", func(t *testing.T) {
@@ -3974,44 +3976,41 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 
 func TestShipGTStackedHappyPath(t *testing.T) {
 	tests := []struct {
-		name       string
-		branch     string
-		stateJSON  string
-		prBranches []string
-		submitInv  [][]string
-		wantSeg    string
+		name      string
+		branch    string
+		stateJSON string
+		submitInv [][]string
+		wantSeg   string
 	}{
 		{
-			name:       "depth 1",
-			branch:     "feature",
-			stateJSON:  `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`,
-			prBranches: []string{"feature"},
+			name:      "depth 1",
+			branch:    "feature",
+			stateJSON: `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`,
 			submitInv: append(
 				gtShipSubmitInv("main", vcstest.GraphiteLeafSHA),
 				gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
-				gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
+				gtCherryInv("main", vcstest.GraphiteLeafSHA, "deadbeef"),
 				[]string{"git", "merge-base", "--is-ancestor", "deadbeef", vcstest.GraphiteLeafSHA},
 				gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 			),
-			wantSeg: "submitted feature → PR #7 https://github.com/x/pull/7",
+			wantSeg: "submitted feature → PR #100 " + gtStubPRURL(100),
 		},
 		{
 			name:   "depth 2",
 			branch: "feature2",
 			stateJSON: `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},` +
 				`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`,
-			prBranches: []string{"feature", "feature2"},
 			submitInv: append(
 				gtShipSubmitInv("main", "beadfeed", vcstest.GraphiteLeafSHA),
 				gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
 				gtCreateLogInv("feature", "feature2"),
-				gtCherryInv("main", "beadfeed", fakeTrunkSHA),
+				gtCherryInv("main", "beadfeed", "deadbeef"),
 				gtCherryInv("main", vcstest.GraphiteLeafSHA, "beadfeed"),
 				[]string{"git", "merge-base", "--is-ancestor", "deadbeef", "beadfeed"},
 				[]string{"git", "merge-base", "--is-ancestor", "beadfeed", vcstest.GraphiteLeafSHA},
 				gtPushInv(gtHead("feature", "beadfeed"), gtHead("feature2", vcstest.GraphiteLeafSHA)),
 			),
-			wantSeg: "submitted feature2 → PR #7 https://github.com/x/pull/7 (stack of 2: feature, feature2)",
+			wantSeg: "submitted feature2 → PR #101 " + gtStubPRURL(101) + " (stack of 2: feature, feature2)",
 		},
 	}
 	for _, tt := range tests {
@@ -4021,7 +4020,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			setGTState(t, tt.stateJSON)
 			t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
 			t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
-			t.Setenv("GH_PR_VIEW_JSON", `{"number":7,"url":"https://github.com/x/pull/7","body":"why"}`)
+			t.Setenv("GIT_LOG_BODY", "why")
 			shipCIPollInterval = 0
 
 			got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate")
@@ -4042,12 +4041,12 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				gtCommonDirArgv,
 				gtRefsArgv(),
 				{"git", "branch", "--show-current"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				gtRefsArgv(),
 			}
+			want = append(want, gtShipPinInv("main", vcstest.GraphiteLeafSHA)...)
+			want = append(want, []string{"git", "log", "-1", "--format=%h%x00%s"})
 			want = append(want, tt.submitInv...)
 			want = append(want,
-				ghDownstackPRArgv(tt.prBranches...),
 				[]string{"git", "rev-parse", "HEAD"},
 				ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
 			)
@@ -4066,14 +4065,14 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 	setGTStateAfterCreate(t, `{"main":{"trunk":true},"fix-frobnicate":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
 	t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
-	t.Setenv("GH_PR_VIEW_JSON", `{"number":9,"url":"https://github.com/x/pull/9","body":"why"}`)
+	t.Setenv("GIT_LOG_BODY", "why")
 	shipCIPollInterval = 0
 
 	got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · created fix-frobnicate · submitted fix-frobnicate → PR #9 https://github.com/x/pull/9 · CI success`
+	want := `committed a1b2c3d "fix: frobnicate" · created fix-frobnicate · submitted fix-frobnicate → PR #100 ` + gtStubPRURL(100) + ` · CI success`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
@@ -4086,14 +4085,14 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		{"git", "diff", "--cached", "--quiet"},
 		{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"},
 		{"git", "branch", "--show-current"},
-		{"git", "log", "-1", "--format=%h%x00%s"},
 		gtRefsArgv(),
+	}, gtShipPinInv("main", vcstest.GraphiteLeafSHA), [][]string{
+		{"git", "log", "-1", "--format=%h%x00%s"},
 	}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
 		gtCreateLogInv(gtRemoteTrunk("main"), "fix-frobnicate"),
-		gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
+		gtCherryInv("main", vcstest.GraphiteLeafSHA, "deadbeef"),
 		{"git", "merge-base", "--is-ancestor", "deadbeef", vcstest.GraphiteLeafSHA},
 		gtPushInv(gtHead("fix-frobnicate", vcstest.GraphiteLeafSHA)),
-		ghDownstackPRArgv("fix-frobnicate"),
 		{"git", "rev-parse", "HEAD"},
 		ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
 	})
@@ -4101,15 +4100,17 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 }
 
 func TestShipGTBodylessPR(t *testing.T) {
+	url := func(n int) string { return gtStubPRURL(n) }
 	t.Run("a bodyless submit is reported", func(t *testing.T) {
 		setupShipGT(t, true)
-		t.Setenv("GH_PR_VIEW_JSON", `{"number":7,"url":"https://github.com/x/pull/7","body":"  "}`)
+		api := stubGTAPI(t)
+		api.prs["feature"], api.bodies["feature"] = 7, "  "
 
 		got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
-		want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #7 https://github.com/x/pull/7 · bodyless PR #7 feature`
+		want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #7 ` + url(7) + ` · bodyless PR #7 feature`
 		if got != want {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
@@ -4117,14 +4118,14 @@ func TestShipGTBodylessPR(t *testing.T) {
 
 	t.Run("a body this ship writes settles it", func(t *testing.T) {
 		setupShipGT(t, true)
-		seedPRViews(t, map[string]string{"feature": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`})
+		stubGTAPI(t).prs["feature"] = 7
 		body := writePRBody(t, "body.md", "why this change\n")
 
 		got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
-		want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #7 https://github.com/x/pull/7 · set PR #7 body`
+		want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #7 ` + url(7) + ` · set PR #7 body`
 		if got != want {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
@@ -4132,14 +4133,14 @@ func TestShipGTBodylessPR(t *testing.T) {
 
 	t.Run("an empty body file settles nothing", func(t *testing.T) {
 		setupShipGT(t, true)
-		seedPRViews(t, map[string]string{"feature": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`})
+		stubGTAPI(t).prs["feature"] = 7
 		body := writePRBody(t, "empty.md", "  \n\t\n")
 
 		got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
-		want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #7 https://github.com/x/pull/7 · ` +
+		want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #7 ` + url(7) + ` · ` +
 			`set PR #7 body · bodyless PR #7 feature`
 		if got != want {
 			t.Errorf("summary = %q, want %q", got, want)
@@ -4151,16 +4152,15 @@ func TestShipGTBodylessPR(t *testing.T) {
 		t.Setenv("GIT_BRANCH", "feature2")
 		setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 			`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
-		seedPRViews(t, map[string]string{
-			"feature":  `{"number":6,"url":"https://github.com/x/pull/6","body":""}`,
-			"feature2": `{"number":7,"url":"https://github.com/x/pull/7","body":"why"}`,
-		})
+		api := stubGTAPI(t)
+		api.prs["feature"], api.prs["feature2"] = 6, 7
+		api.bodies["feature2"] = "why"
 
 		got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
-		want := `committed a1b2c3d "fix: frobnicate" · submitted feature2 → PR #7 https://github.com/x/pull/7 ` +
+		want := `committed a1b2c3d "fix: frobnicate" · submitted feature2 → PR #7 ` + url(7) + ` ` +
 			`(stack of 2: feature, feature2) · bodyless PR #6 feature`
 		if got != want {
 			t.Errorf("summary = %q, want %q", got, want)
@@ -4664,7 +4664,7 @@ func TestShipGTPathScoped(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	invocations := shipGTInvocations(t, f)
-	assertInvocations(t, invocations, [][]string{
+	assertInvocations(t, invocations, slices.Concat([][]string{
 		nogtProbe,
 		{"git", "branch", "--show-current"},
 		gtCommonDirArgv,
@@ -4675,8 +4675,10 @@ func TestShipGTPathScoped(t *testing.T) {
 		gtCommonDirArgv,
 		gtRealRefsArgv(t, f),
 		{"git", "branch", "--show-current"},
+		gtRealRefsArgv(t, f),
+	}, gtNoPushPinInv("main"), [][]string{
 		{"git", "log", "-1", "--format=%h%x00%s"},
-	})
+	}))
 	if names := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); names != "docs/d.md\nsrc/a.go" {
 		t.Errorf("committed %q, want the scoped paths alone", names)
 	}
@@ -4709,7 +4711,7 @@ func TestShipGTHunkScoped(t *testing.T) {
 	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	assertInvocations(t, invocations, [][]string{
+	assertInvocations(t, invocations, slices.Concat([][]string{
 		nogtProbe,
 		{"git", "rev-parse", "--show-toplevel"},
 		{"git", "ls-tree", "--full-tree", "-z", "--end-of-options", "HEAD", "--", "f.txt"},
@@ -4728,8 +4730,10 @@ func TestShipGTHunkScoped(t *testing.T) {
 		gtRealRefsArgv(t, f),
 		{"git", "restore", "--staged", "--", "f.txt"},
 		{"git", "branch", "--show-current"},
+		gtRealRefsArgv(t, f),
+	}, gtNoPushPinInv("main"), [][]string{
 		{"git", "log", "-1", "--format=%h%x00%s"},
-	})
+	}))
 	if committed := gitAt(t, f.Env(), f.Dir, "show", "HEAD:f.txt"); committed != "A\nb\nc\nd\ne" {
 		t.Errorf("HEAD:f.txt = %q, want the first hunk alone", committed)
 	}
@@ -4811,11 +4815,8 @@ func TestShipGTAutoRestack(t *testing.T) {
 func shipGTHeldParent(t *testing.T, f *vcstest.Fixture) string {
 	t.Helper()
 	shipGTStack(t, f, "base", "feature")
-	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
-	writeShipFile(t, f.Dir, "trunk2.txt", "trunk2\n")
-	mustRun(t, f.Env(), f.Dir, "git", "add", "trunk2.txt")
-	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "trunk2")
-	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
+	restackAdvanceRemote(t, f, "main", "trunk2.txt", "trunk2\n")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
 	held := f.WorktreePath("held")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
 	shipGTReady(t, f)
@@ -4872,11 +4873,8 @@ func shipGTRestackRuns(t *testing.T, f *vcstest.Fixture) []string {
 func TestShipGTRestacksAStackSpreadAcrossWorkingCopies(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "one", "two", "three")
-	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
-	writeShipFile(t, f.Dir, "trunk2.txt", "trunk2\n")
-	mustRun(t, f.Env(), f.Dir, "git", "add", "trunk2.txt")
-	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "trunk2")
-	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "three")
+	restackAdvanceRemote(t, f, "main", "trunk2.txt", "trunk2\n")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
 	held := map[string]string{"one": f.WorktreePath("one"), "two": f.WorktreePath("two")}
 	for branch, dir := range held {
 		mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", dir, branch)
@@ -5239,7 +5237,7 @@ func TestShipGTRefusals(t *testing.T) {
 		if want := `tracked feature onto main · ` + swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
-		assertInvocations(t, invocations, [][]string{
+		assertInvocations(t, invocations, slices.Concat([][]string{
 			nogtProbe,
 			{"git", "branch", "--show-current"},
 			gtCommonDirArgv,
@@ -5252,8 +5250,10 @@ func TestShipGTRefusals(t *testing.T) {
 			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
 			{"git", "branch", "--show-current"},
+			gtRealRefsArgv(t, f),
+		}, gtNoPushPinInv("main"), [][]string{
 			{"git", "log", "-1", "--format=%h%x00%s"},
-		})
+		}))
 	})
 
 	// --parent names a branch gt cannot find, which is a track gt itself refuses
@@ -5269,7 +5269,7 @@ func TestShipGTRefusals(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
-		wantErr := "ship: branch feature is not tracked by graphite — run gt track feature, or pass --no-gt"
+		wantErr := "ship: gt track could not adopt feature onto nope — pass --no-gt to ship it without graphite"
 		if err.Error() != wantErr {
 			t.Errorf("error = %q, want %q", err.Error(), wantErr)
 		}
@@ -5279,6 +5279,7 @@ func TestShipGTRefusals(t *testing.T) {
 			{"git", "branch", "--show-current"},
 			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
+			{"git", "rev-parse", "--verify", "--quiet", "refs/heads/nope"},
 			{"gt", "track", "feature", "--parent", "nope", "--no-interactive"},
 		})
 		assertShipRefusedClean(t, f, head)
@@ -5297,7 +5298,7 @@ func TestShipGTRefusals(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
-		wantErr := "ship: branch feature is not tracked by graphite — run gt track feature, or pass --no-gt"
+		wantErr := "ship: gt track could not adopt feature onto nope — pass --no-gt to ship it without graphite"
 		if err.Error() != wantErr {
 			t.Errorf("error = %q, want %q", err.Error(), wantErr)
 		}
@@ -5324,7 +5325,7 @@ func TestShipGTRefusals(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
-		wantErr := "ship: branch feature is not tracked by graphite — run gt track feature, or pass --no-gt"
+		wantErr := "ship: gt track could not adopt feature — name the branch it was cut from with --parent <branch>, or pass --no-gt"
 		if err.Error() != wantErr {
 			t.Errorf("error = %q, want %q", err.Error(), wantErr)
 		}
@@ -5508,7 +5509,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		if lerr != nil {
 			t.Fatalf("LastSubmitted: %v", lerr)
 		}
-		want1 := gtmeta.Version{HeadSha: "beadfeed", BaseSha: fakeTrunkSHA, BaseName: "main"}
+		want1 := gtmeta.Version{HeadSha: "beadfeed", BaseSha: "deadbeef", BaseName: "main"}
 		if last["feature"] != want1 {
 			t.Errorf("feature last_submitted_version = %+v, want %+v", last["feature"], want1)
 		}
@@ -5792,11 +5793,12 @@ func TestShipGTFlagsOutsideGTLane(t *testing.T) {
 
 func TestShipGTGHMissing(t *testing.T) {
 	log := setupShipGT(t, false)
+	t.Setenv("GIT_LOG_BODY", "why")
 	got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · submitted feature · CI gh-missing`
+	want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #100 ` + gtStubPRURL(100) + ` · CI gh-missing`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
@@ -5984,7 +5986,9 @@ func TestShipReviewsWiring(t *testing.T) {
 				batched = append(batched, inv)
 			}
 		}
-		assertInvocations(t, batched, [][]string{ghDownstackPRArgv("feature", "feature2")})
+		if len(batched) != 0 {
+			t.Errorf("ship asked GitHub for the downstack's pull requests %v — Graphite's submit already answered", batched)
+		}
 
 		calls := api.graphQLCalls()
 		if len(calls) != 1 {
@@ -6139,36 +6143,6 @@ func TestShipGTStackNamedBeforeSubmit(t *testing.T) {
 	}
 }
 
-// TestShipGTAnchorsTheBaseOnTheRemoteTrunk pins where a trunk-based branch's
-// base comes from: the remote-tracking trunk the submit fetched, never gt's
-// record of a local trunk a stale checkout leaves behind origin's.
-func TestShipGTAnchorsTheBaseOnTheRemoteTrunk(t *testing.T) {
-	log := setupShipGT(t, false)
-	api := stubGTAPI(t)
-
-	if _, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
-		t.Fatalf("ship error = %v", err)
-	}
-	entry := api.submitEntry("feature")
-	if entry.Base != "main" {
-		t.Errorf("entry base = %q, want the plain branch name graphite takes", entry.Base)
-	}
-	if entry.BaseSha != fakeTrunkSHA {
-		t.Errorf("entry baseSha = %q, want the remote trunk %q rather than gt's recorded deadbeef", entry.BaseSha, fakeTrunkSHA)
-	}
-	if want := gtCreateLogInv(gtRemoteTrunk("main"), "feature"); !hasInvocation(readInvocations(t, log), want) {
-		t.Errorf("no invocation matched %v — the create's title came from a range against the local trunk", want)
-	}
-	last, err := gtmeta.LastSubmitted(t.Context(), os.Getenv("GT_META_DIR"))
-	if err != nil {
-		t.Fatalf("LastSubmitted: %v", err)
-	}
-	want := gtmeta.Version{HeadSha: vcstest.GraphiteLeafSHA, BaseSha: fakeTrunkSHA, BaseName: "main"}
-	if last["feature"] != want {
-		t.Errorf("feature last_submitted_version = %+v, want %+v", last["feature"], want)
-	}
-}
-
 // TestShipGTSkipsBranchesTrunkContains is the incident the anchoring exists
 // for: a harness worktree branch holding nothing origin's trunk lacks sat in
 // the chain, read as a stack member against a local trunk nine commits behind,
@@ -6196,8 +6170,8 @@ func TestShipGTSkipsBranchesTrunkContains(t *testing.T) {
 		t.Errorf("pushed %v, want feature alone", refs)
 	}
 	entry := api.submitEntry("feature")
-	if entry.Base != "main" || entry.BaseSha != fakeTrunkSHA {
-		t.Errorf("entry base = %s at %s, want main at %s — a skipped parent leaves the remote trunk as the base", entry.Base, entry.BaseSha, fakeTrunkSHA)
+	if entry.Base != "main" || entry.BaseSha != "deadbeef" {
+		t.Errorf("entry base = %s at %s, want main at %s — a skipped parent leaves the remote trunk as the base", entry.Base, entry.BaseSha, "deadbeef")
 	}
 	if want := gtCreateLogInv(gtRemoteTrunk("main"), "feature"); !hasInvocation(readInvocations(t, log), want) {
 		t.Errorf("no invocation matched %v — the create's title came from a range against the skipped parent", want)
@@ -6278,7 +6252,7 @@ func TestGTTrackRefusesALandedParent(t *testing.T) {
 
 			c := newGTCache(render.Dir(workingDir(t.Context())), "ship")
 			var errW bytes.Buffer
-			_, seg, err := gtTrack(t.Context(), &errW, shipOpts{}, "feature", c)
+			_, seg, err := gtTrack(t.Context(), &errW, lane{}, shipOpts{}, "feature", c)
 			if tt.wantErr != "" {
 				if err == nil || err.Error() != tt.wantErr {
 					t.Fatalf("error = %v, want %q", err, tt.wantErr)

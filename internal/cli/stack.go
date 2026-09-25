@@ -53,16 +53,21 @@ func newStackCmd() *cobra.Command {
 func newStackNewCmd() *cobra.Command {
 	var parent string
 	cmd := &cobra.Command{
-		Use:   "new <name>",
+		Use:   "new <branch>",
 		Short: "Cut a branch stacked on this one, in a working copy of its own",
-		Long: `Cut a branch named <name> stacked on this one, in a working copy of its own.
+		Long: `Cut a branch named <branch> stacked on this one, in a working copy of its own.
 
 The branch is created directly in the new working copy, so the one you run this
 from never changes branch — which is what makes a stack workable by several
 agents at once, one lane each. The path is minted under the repository's pool,
 gt adopts the branch onto --parent (the branch checked out here by default), and
 the new working copy's path is the last thing printed, ready to hand to whoever
-works the lane.
+works the lane. A slash in the branch name, as in owner/topic, becomes a dash in
+the working copy's name.
+
+A lane cut onto trunk starts at the remote trunk, fetched first, and the local
+trunk branch is fast-forwarded onto it; a local trunk holding commits the remote
+does not is refused.
 
 In a jj repository the lane is a git worktree carrying its own colocated jj, cut
 with "jj git init --git-repo .": every lane then answers to git, gt and jj alike.
@@ -96,7 +101,7 @@ flag, and Graphite state (including frozen).`,
 }
 
 func newStackSubmitCmd() *cobra.Command {
-	var draft bool
+	var o shipOpts
 	cmd := &cobra.Command{
 		Use:   "submit",
 		Short: "Restack every lane, then submit the whole stack",
@@ -112,20 +117,38 @@ lane and anchors the submit: the local trunk branch is fast-forwarded onto it,
 since gt measures a restack against the local ref, and the report names the
 commit pinned. A local trunk holding commits the remote does not is refused
 rather than restacked onto, because a restack would splice them into every
-branch of the stack; so is a branch whose recorded base reaches back over
-commits trunk already carries, which a replay would copy onto it. A chain that
-stops partway moves nothing — every ref it had moved goes back.
+branch of the stack. A chain that stops partway moves nothing — every ref it had
+moved goes back.
+
+A branch whose pull request already landed — the merge queue's squash leaves its
+head out of trunk's history — is dropped: its children move onto its parent and
+replay their own commits alone, and gt forgets it. A branch rebased outside gt
+has its recorded base moved to where it sits, and a replay leaves out the trunk
+commits a stale record reaches back over; one carrying a copy of its parent's
+commit under another sha is refused.
 
 The submit itself is ccx vcs ship's: dropping the branches that trunk already
-holds and naming them, then one atomic push moving every branch left, each under
-the lease of its last submitted version, then one post to Graphite's API per
-branch, bottom-up.`,
+holds and naming them, and the ones whose open pull request already carries
+exactly this head and base, then one atomic push moving every branch left, each
+under the lease of its last submitted version, then one post to Graphite's API
+per branch, bottom-up.
+
+A branch above this one whose open pull request targets another base, or that
+carries none of its recorded parent's commits, belongs to another lane: it is
+named and left alone, along with everything stacked on it. A tracked branch
+with no commit of its own yet is skipped rather than refused.
+
+--pr-title and --pr-body-file restate the pull requests the submit leaves open,
+as ccx vcs ship's do: <branch>=<value> names a branch of the stack, and a bare
+value names the branch checked out here.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runStackSubmit(cmd, draft)
+			return runStackSubmit(cmd, o)
 		},
 	}
-	cmd.Flags().BoolVar(&draft, "draft", false, "open new PRs as drafts")
+	cmd.Flags().BoolVar(&o.draft, "draft", false, "open new PRs as drafts")
+	cmd.Flags().StringArrayVar(&o.prTitle, "pr-title", nil, "title for a pull request: <branch>=<title>, or a bare title for the branch checked out here (repeatable)")
+	cmd.Flags().StringArrayVar(&o.prBodyFile, "pr-body-file", nil, "body file for a pull request: <branch>=<path>, or a bare path for the branch checked out here; - reads stdin (repeatable)")
 	return cmd
 }
 
@@ -146,14 +169,18 @@ func runStackNew(cmd *cobra.Command, name, parent string) error {
 	if parent == "" {
 		return errors.New("stack new: HEAD is detached here, so there is no branch to stack on — check one out, or name it with --parent")
 	}
-	path, err := mintWorktreePath("stack new", l.checkout, name)
+	start, err := stackNewStart(ctx, l, parent)
+	if err != nil {
+		return err
+	}
+	path, err := mintWorktreePath("stack new", l.checkout, strings.ReplaceAll(name, "/", "-"))
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("stack new: mint pool for %q: %w", name, err)
 	}
-	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "add", "-b", name, path, parent}); err != nil {
+	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "add", "-b", name, path, start}); err != nil {
 		return fmt.Errorf("stack new: git worktree add %s: %w", path, err)
 	}
 	if err := stackFormLane(ctx, cmd.ErrOrStderr(), l, render.Dir(path), name, parent); err != nil {
@@ -161,6 +188,36 @@ func runStackNew(cmd *cobra.Command, name, parent string) error {
 	}
 	cmd.Println(strings.Join([]string{"cut " + name + " onto " + parent, path}, shipSep))
 	return nil
+}
+
+// stackNewStart is the commit a new lane is cut from. A lane on trunk starts at
+// the freshly fetched remote trunk, with the local trunk fast-forwarded onto it,
+// so gt tracks it without a restack pending; a local trunk the remote cannot
+// fast-forward is refused rather than cut from.
+func stackNewStart(ctx context.Context, l lane, parent string) (string, error) {
+	state, err := gtStateQuery(ctx, l.dir(), "stack new")
+	if err != nil {
+		return "", err
+	}
+	trunk, err := gtTrunkBranch("stack new", state)
+	if err != nil {
+		return "", err
+	}
+	if parent != trunk {
+		return parent, nil
+	}
+	tr, err := gtTrunkRef(ctx, l.dir(), "stack new", trunk)
+	if err != nil {
+		return "", err
+	}
+	pin, err := gtTrunkPin(ctx, "stack new", l.checkout, l.dir(), tr, state[trunk].Head)
+	if err != nil {
+		return "", fmt.Errorf("stack new: %w", err)
+	}
+	if pin.diverged > 0 {
+		return "", fmt.Errorf("stack new: %w", &errTrunkDiverged{Trunk: trunk, Remote: string(tr.Ref()), Ahead: pin.diverged})
+	}
+	return pin.sha, nil
 }
 
 // stackFormLane finishes a lane the worktree already exists for: its own
@@ -315,7 +372,7 @@ func stackListLine(branch, holder, root string, state gtBranchState) string {
 	return strings.Join(fields, shipSep)
 }
 
-func runStackSubmit(cmd *cobra.Command, draft bool) error {
+func runStackSubmit(cmd *cobra.Command, o shipOpts) error {
 	ctx := cmd.Context()
 	errW := cmd.ErrOrStderr()
 	l, err := resolveLane(ctx, "stack submit", workingDir(ctx), false)
@@ -329,74 +386,64 @@ func runStackSubmit(cmd *cobra.Command, draft bool) error {
 	if err != nil {
 		return err
 	}
-	commonDir, err := gtCommonDir(ctx, l.dir(), "stack submit")
+	prCleanup, err := materializePRBodyStdin(cmd, &o)
+	defer prCleanup()
 	if err != nil {
 		return err
 	}
-	state, err := gtStateAt(ctx, commonDir, "stack submit")
+	current, err := gitCurrentBranch(ctx, l.dir(), "stack submit")
 	if err != nil {
 		return err
 	}
-	trunk, err := gtTrunkBranch("stack submit", state)
+	meta, err := resolvePRMeta(cmd, o, current)
 	if err != nil {
 		return err
 	}
-	// Fetched once, here: the same commit restacks every lane and anchors the
-	// submit, where a second resolution would anchor the pull requests on a
-	// trunk the stack was never put on.
-	tr, err := gtTrunkRef(ctx, l.dir(), "stack submit", trunk)
-	if err != nil {
-		return err
-	}
-	pin, err := gtTrunkPin(ctx, "stack submit", l.checkout, l.dir(), tr, state[trunk].Head)
-	if err != nil {
-		return fmt.Errorf("stack submit: %w", err)
-	}
-	// The pin moves refs/heads/<trunk>, the ref needs-restack is measured
-	// against.
-	state, err = gtStateAt(ctx, commonDir, "stack submit")
-	if err != nil {
-		return err
-	}
-	if err := gtTrunkDrift(errW, "stack submit", state, chain, pin, string(tr.Ref())); err != nil {
-		return err
-	}
-	_, held := gtRestackPlan(state, chain)
-	for _, branch := range chain {
-		if reason := held[branch]; reason != "" {
-			return errors.New(gtStuck("stack submit", gtOffParent(branch, reason), ""))
+	for branch, m := range meta {
+		if len(m.stated()) > 0 && !slices.Contains(chain, branch) {
+			return fmt.Errorf("stack submit: --pr-title/--pr-body-file named %s, which is not in this stack", branch)
 		}
 	}
-	result, err := gtRestackChain(ctx, "stack submit", l.checkout, l.dir(), commonDir, state, chain)
-	if err != nil {
-		return fmt.Errorf("stack submit: %w", err)
-	}
-	// The restack rewrote the heads the submit force-pushes, so the state it
-	// reads must be the one it left behind, not the one it was planned from.
-	state, err = gtStateAt(ctx, commonDir, "stack submit")
+	sub := gtSubmit{prefix: "stack submit", draft: o.draft}
+	pass, err := gtStackRestack(ctx, errW, l, sub, chain)
 	if err != nil {
 		return err
 	}
-	for _, branch := range chain {
-		if state[branch].NeedsRestack {
-			return errors.New(gtStuck("stack submit", gtOffParent(branch, result.held[branch]), ""))
+	for branch, m := range meta {
+		if len(m.stated()) > 0 && !slices.Contains(pass.chain, branch) {
+			return fmt.Errorf("stack submit: --pr-title/--pr-body-file named %s, which this submit leaves out", branch)
 		}
 	}
-	commits, files, err := gtSubmitWidth(ctx, "stack submit", l.dir(), tr, chain)
+	commits, files, err := gtSubmitWidth(ctx, "stack submit", l.dir(), pass.tr, pass.chain)
 	if err != nil {
 		return err
 	}
-	sub := gtSubmit{prefix: "stack submit", draft: draft}
-	submitted, _, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, chain)
+	submitted, entries, err := gtSubmitStack(ctx, l, errW, sub, pass.commonDir, pass.state, pass.tr, pass.chain, pass.prs, "")
 	if err != nil {
 		return err
 	}
-	segments := []string{
-		gtRestackSegment(result),
+	stack := make([]stackEntry, 0, len(pass.chain))
+	for _, branch := range pass.chain {
+		entry := entries[branch]
+		entry.Branch = branch
+		stack = append(stack, entry)
+	}
+	restated, err := shipPRGT(ctx, pass.prs.owner+"/"+pass.prs.name, meta, stack)
+	if err != nil {
+		return err
+	}
+	segments := []string{gtRestackSegment(pass.result)}
+	if seg := gtLandedSegment(pass.landed); seg != "" {
+		segments = append(segments, seg)
+	}
+	if restated != "" {
+		segments = append(segments, restated)
+	}
+	segments = append(segments,
 		fmt.Sprintf("submitted %d branches", len(submitted)),
-		"trunk " + pin.String(),
+		"trunk "+pass.pin.String(),
 		fmt.Sprintf("proposing %d commit(s), %d file(s)", commits, files),
-	}
+	)
 	cmd.Println(strings.Join(segments, shipSep))
 	return nil
 }

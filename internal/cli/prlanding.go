@@ -111,9 +111,15 @@ func prSquashOnBase(ctx context.Context, dir render.Dir, base string, number int
 	if base == "" {
 		return ""
 	}
+	return prSquashOn(ctx, dir, "origin/"+base, number)
+}
+
+// prSquashOn is prSquashOnBase for a caller already holding the ref the squash
+// would be on.
+func prSquashOn(ctx context.Context, dir render.Dir, ref string, number int) string {
 	out, err := render.RunCLI(ctx, dir, "git", []string{
 		"log", "--format=%H%x09%s", "--extended-regexp",
-		fmt.Sprintf("--grep=\\(#%d\\)", number), "-" + strconv.Itoa(prSquashCandidates), "origin/" + base,
+		fmt.Sprintf("--grep=\\(#%d\\)", number), "-" + strconv.Itoa(prSquashCandidates), ref,
 	})
 	if err != nil {
 		return ""

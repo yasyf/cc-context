@@ -209,10 +209,10 @@ scenario_restack_conflict() {
 gt restack over a branch whose commit conflicts with trunk's.
 
 Recorded offline, no token. gt writes the conflict banner to stdout and exits 1.
-Pins gtSyncConflict ("Hit conflict restacking"), the sentence classifyGTRestack
-turns into the gt continue / gt abort advice. gt sync prints the same banner
-when its restack phase conflicts, and sync cannot run offline, so restack is
-where the wording is recorded.
+Pins verdict rejecting exit 1 under gtZeroSurfaces without an ERROR: prefix.
+The banner stays as gt's own output for the stream tests. gt sync prints the
+same banner when its restack phase conflicts, and sync cannot run offline, so
+restack is where the wording is recorded.
 EOF
 }
 
@@ -231,8 +231,8 @@ gt restack run a second time, with the conflicted rebase from the first still
 open.
 
 Recorded offline, no token. Exit 1 with an ERROR:-led diagnostic on stderr and
-nothing on stdout. Pins an unrecognized failure — classifyGTRestack wraps it
-verbatim — and the ERROR: prefix Diagnostics and reportedError read.
+nothing on stdout. Pins the ERROR: prefix Diagnostics and reportedError read,
+and verdict rejecting exit 1.
 EOF
 }
 
@@ -249,11 +249,10 @@ scenario_restack_worktree_held() {
 gt restack with the stack's branch checked out in a second worktree.
 
 Recorded offline, no token. gt declines the branch, says so on stdout, and still
-exits 0 — the exit-0-that-did-nothing case gtZeroSurfaces exists for. ccx no
-longer runs gt restack at all, but gt sync prints this same sentence for the
-same reason, so this is what pins gtSyncSkippedPrefix / gtSyncSkippedReason /
-gtSyncSkippedWorktree, which gtSyncSkipped cuts a branch and its reason out of,
-and pins that the line carries no ERROR: prefix, so reportedError stays false.
+exits 0 — the exit-0-that-did-nothing case gtZeroSurfaces exists for. gt sync
+prints this same sentence for the same reason. Pins verdict keeping that exit
+a success and reportedError staying false without an ERROR: prefix. The decline
+wording stays as gt's own output for the stream tests.
 
 It also stands as the record of why the restack is git's now: the guard this
 output comes from is one gt keeps only sometimes — reached with declines
@@ -279,8 +278,9 @@ scenario_restack_frozen() {
 gt restack over a frozen branch (gt freeze).
 
 Recorded offline, no token. The second reason gt gives for declining a branch at
-exit 0, and the one with no trailing path: gtSyncSkipped renders it as the bare
-word gt used.
+exit 0, and the one with no trailing path. Pins verdict keeping exit 0 a success
+under gtZeroSurfaces and reportedError staying false without an ERROR: prefix.
+The decline wording stays as gt's own output for the stream tests.
 EOF
 }
 
@@ -293,8 +293,8 @@ gt sync in a repo with no git remote.
 
 Recorded offline, no token. Exit 1: gt resolves the repo through its own API
 before touching git, so with no remote to name the repo it never gets that far.
-Pins an unrecognized sync failure — classifyGTRestack wraps it verbatim — plus
-the tip block gt writes to stderr ahead of its ERROR: line.
+Pins Diagnostics dropping the tip block gt writes to stderr ahead of its
+ERROR: line, reportedError reading that prefix, and verdict rejecting exit 1.
 EOF
 }
 
@@ -309,9 +309,10 @@ gt sync in a repo with a remote, with no Graphite token.
 
 Recorded with no token but a reachable network — the answer comes from
 Graphite's server, so recording this one behind the offline proxy would capture
-the connection failure instead. Exit 1. Pins gtSyncAuthRequired2 ("Your Graphite
-auth token is invalid/expired"), which classifyGTRestack turns into the gt auth
-advice; gt words a missing token that way once a remote exists to ask about.
+the connection failure instead. Exit 1. Pins Diagnostics and reportedError
+reading the ERROR: prefix and verdict rejecting exit 1. gt says "Your Graphite
+auth token is invalid/expired" for a missing token once a remote exists to ask
+about.
 EOF
 }
 
@@ -423,8 +424,9 @@ scenario_sync_repo_404() {
 gt sync with a valid token against a repo Graphite cannot resolve — the remote is
 a local bare repo, so nothing is fetched from anywhere.
 
-Recorded live (CCX_GT_RECORD_TOKEN). Exit 1. classifyGTRestack's default arm: a
-real failure in neither the conflict nor the auth wording, wrapped verbatim.
+Recorded live (CCX_GT_RECORD_TOKEN). Exit 1. Pins Diagnostics keeping the ERROR:
+line and its remediation while dropping tips, reportedError reading the prefix,
+and verdict rejecting exit 1.
 EOF
 }
 
@@ -614,8 +616,8 @@ NOT RECORDED. gt sync hitting a conflict while restacking after it pulls trunk.
 
 What it needs: a token and a permitted repo whose trunk moved under a stack that
 conflicts with it. gt sync cannot get past repository resolution offline, so the
-banner is recorded from gt restack instead — see restack-conflict, which carries
-the same gtSyncConflict sentence and is what classifyGTRestack matches.
+banner is recorded from gt restack instead — see restack-conflict, which keeps
+gt's own output for the stream tests. This unrecorded scenario pins nothing.
 EOF
 
 }

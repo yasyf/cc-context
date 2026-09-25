@@ -30,6 +30,9 @@ type gtAPIStub struct {
 	syncMessage    string
 	prs            map[string]int
 	merged         map[string]gtStubMerged
+	bodies         map[string]string
+	bases          map[string]string
+	landed         map[string]gtStubLanded
 	unauthorized   bool
 	presubmitError string
 	submitErrors   map[string]string
@@ -44,6 +47,14 @@ type gtAPIStub struct {
 // newest version carried.
 type gtStubMerged struct {
 	number int
+	head   string
+}
+
+// gtStubLanded is a pull request Graphite reports as no longer open: its
+// number, the state it ended in, and the head of its newest version.
+type gtStubLanded struct {
+	number int
+	state  gtapi.PRState
 	head   string
 }
 
@@ -95,6 +106,9 @@ func stubGTAPI(t *testing.T) *gtAPIStub {
 		synced:       gtapi.RepoSynced,
 		prs:          map[string]int{},
 		merged:       map[string]gtStubMerged{},
+		bodies:       map[string]string{},
+		bases:        map[string]string{},
+		landed:       map[string]gtStubLanded{},
 		submitErrors: map[string]string{},
 		nextPR:       100,
 	}
@@ -132,8 +146,22 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 		prs := []map[string]any{}
 		for _, branch := range req.PRHeadRefNames {
 			if number := s.prs[branch]; number != 0 {
+				pr := map[string]any{
+					"prNumber": number, "headRefName": branch, "state": "OPEN", "url": gtStubPRURL(number), "body": s.bodies[branch],
+				}
+				if entry, ok := s.lastEntry(branch); ok {
+					pr["baseRefName"] = entry.Base
+					pr["versions"] = []map[string]any{{"headSha": entry.HeadSha, "baseSha": entry.BaseSha, "baseName": entry.Base, "createdAt": "2026-09-02T00:00:00.000Z"}}
+				}
+				if base, ok := s.bases[branch]; ok {
+					pr["baseRefName"] = base
+				}
+				prs = append(prs, pr)
+			}
+			if l, ok := s.landed[branch]; ok {
 				prs = append(prs, map[string]any{
-					"prNumber": number, "headRefName": branch, "state": "OPEN", "url": gtStubPRURL(number),
+					"prNumber": l.number, "headRefName": branch, "state": l.state, "url": gtStubPRURL(l.number),
+					"versions": []map[string]any{{"headSha": l.head, "createdAt": "2026-09-02T00:00:00.000Z"}},
 				})
 			}
 			if m, ok := s.merged[branch]; ok {
@@ -287,6 +315,17 @@ func (s *gtAPIStub) submitHeads() []string {
 	return heads
 }
 
+// lastEntry is the entry branch was last submitted under, the version Graphite
+// reports as its pull request's newest. The caller holds s.mu.
+func (s *gtAPIStub) lastEntry(branch string) (gtStubSubmitEntry, bool) {
+	for _, submit := range slices.Backward(s.submits) {
+		if submit.entry.Head == branch {
+			return submit.entry, true
+		}
+	}
+	return gtStubSubmitEntry{}, false
+}
+
 // submitEntry returns the entry one branch was submitted under.
 func (s *gtAPIStub) submitEntry(head string) gtStubSubmitEntry {
 	s.mu.Lock()
@@ -400,13 +439,30 @@ func gtContainedInv(trunk, head string) []string {
 	return []string{"git", "merge-base", "--is-ancestor", head, gtRemoteTrunk(trunk)}
 }
 
-// gtShipSubmitInv is the git work a ship does before its submit pushes: ask
-// whether the shipped branch and then each branch of the stack is already in the
-// remote trunk, and read the base sha a trunk-based branch submits under. Heads
-// arrive bottom-up, shipped one last. The trunk resolution itself floats, so
-// gtDropTrunkInv accounts for it rather than this sequence.
+// gtShipPinInv is the git work a pushing ship does once its trunk fetch lands:
+// ask whether the shipped branch is already in the remote trunk, then read the
+// remote trunk's head to pin the local trunk to, which the fixtures leave level.
+func gtShipPinInv(trunk, shipped string) [][]string {
+	return [][]string{gtContainedInv(trunk, shipped), {"git", "rev-parse", "--verify", gtRemoteTrunk(trunk)}}
+}
+
+// gtNoPushPinInv is the pin a --no-push ship makes after its commit: the
+// remote-tracking trunk it already has, read without a fetch.
+func gtNoPushPinInv(trunk string) [][]string {
+	return [][]string{
+		{"git", "config", "--get", "branch.HEAD.remote"},
+		{"git", "show-ref", "--verify", "--quiet", gtRemoteTrunk(trunk)},
+		{"git", "rev-parse", "--verify", gtRemoteTrunk(trunk)},
+	}
+}
+
+// gtShipSubmitInv is the git work a ship's submit does before it pushes: ask
+// whether each branch of the stack is already in the remote trunk, and read the
+// base sha a trunk-based branch submits under. Heads arrive bottom-up. The trunk
+// resolution itself floats, so gtDropTrunkInv accounts for it rather than this
+// sequence.
 func gtShipSubmitInv(trunk string, heads ...string) [][]string {
-	inv := [][]string{gtContainedInv(trunk, heads[len(heads)-1])}
+	var inv [][]string
 	for _, head := range heads {
 		inv = append(inv, gtContainedInv(trunk, head))
 	}
