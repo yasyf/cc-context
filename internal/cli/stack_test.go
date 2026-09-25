@@ -674,3 +674,44 @@ func TestStackListKeepsTheStackWholeAcrossARejectedRevision(t *testing.T) {
 		}
 	}
 }
+
+func TestStackSubmitRestacksARejectedParentRevision(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base", "feature")
+	oldBase := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "--amend", "-qm", "rewritten base")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", "base", oldBase, "feature")
+	commonDir := gitAt(t, f.Env(), f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	db, err := sql.Open("sqlite", filepath.Join(commonDir, ".graphite_metadata.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE branch_metadata SET validation_result = ? WHERE branch_name = ?`, "BAD_PARENT_REVISION", "feature"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+
+	_, _, err = runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	state, err := gtmeta.Read(f.Context(), commonDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for branch, parent := range map[string]string{"base": "main", "feature": "base"} {
+		if state[branch].NeedsRestack {
+			t.Errorf("%s still needs restack", branch)
+		}
+		if got := gitAt(t, f.Env(), f.Dir, "rev-parse", branch+"^"); got != state[parent].Head {
+			t.Errorf("%s parent = %s, want %s", branch, got, state[parent].Head)
+		}
+		if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); got != state[branch].Head {
+			t.Errorf("remote %s = %s, want %s", branch, got, state[branch].Head)
+		}
+	}
+}
