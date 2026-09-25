@@ -37,18 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   equal to the branch's last submitted head and pushes under a lease on it.
   A remote that a foreign push moved is still refused.
 
-- **A stack rebase never takes over a run another process still drives.**
-  A rebase, `continue`, or `abort` refuses a run that another live process
-  still drives, matched by pid and process start time. A rebase checks this
-  before planning when its branch belongs to such a run. A run is marked
-  applied before its branch refs are written, so a crash in between leaves
-  a run that `continue` finishes.
-
-- **A stack that `stack rebase --no-push` or a printed `gt restack` step
-  rewrote can be pushed again.** The divergence check accepts a remote head
-  equal to the branch's last submitted head and pushes under a lease on it.
-  A remote that a foreign push moved is still refused.
-
 ### Upgrade
 
 - A stack rebase started by 0.65.x keeps its state in
