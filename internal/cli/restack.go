@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -36,7 +37,17 @@ func newRestackCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "restack",
 		Short: "Fetch and restack the working-copy stack onto trunk",
-		Args:  cobra.NoArgs,
+		Long: `Fetch and restack the working-copy stack onto trunk.
+
+On the gt lane this is ccx vcs stack rebase --no-push. jj rebases the
+working-copy stack onto trunk() and rolls a conflict back. On plain git, trunk
+itself is fast-forwarded, and any other branch is replayed onto the fetched
+trunk without a checkout, then the working copy holding it, which must be
+clean, is moved onto the new head. A conflict moves nothing: the rebase stops in
+a conflict-<branch> workspace with rerere off, and ccx vcs stack continue
+finishes it once the files are resolved and added, or ccx vcs stack abort drops
+it.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runRestack(cmd, o)
 		},
@@ -60,11 +71,11 @@ func runRestack(cmd *cobra.Command, o restackOpts) error {
 	case vcs.JJ:
 		summary, err = restackJJ(ctx, l.dir())
 	case vcs.Git:
-		summary, err = restackGit(ctx, l.dir())
+		summary, err = restackGit(ctx, cmd, l)
 	default:
 		panic(fmt.Sprintf("restack: unsupported vcs kind %d", l.kind))
 	}
-	if err != nil {
+	if err != nil || summary == "" {
 		return err
 	}
 	if l.note != "" {
@@ -137,7 +148,13 @@ func jjRestackOntoTrunk(ctx context.Context, dir render.Dir, trunk string) (int,
 	return len(stack), nil
 }
 
-func restackGit(ctx context.Context, dir render.Dir) (string, error) {
+// restackGit fast-forwards trunk in place, and rebases any other branch as a
+// one-branch stack rebase: a conflict stops in a workspace of its own, with
+// rerere off, for ccx vcs stack continue or ccx vcs stack abort. The working
+// copy holding the branch must be clean, as a stack rebase requires. A rebase
+// finished here prints its own summary and returns an empty one.
+func restackGit(ctx context.Context, cmd *cobra.Command, l lane) (string, error) {
+	dir := l.dir()
 	branch, err := gitCurrentBranch(ctx, dir, "restack")
 	if err != nil {
 		return "", err
@@ -172,8 +189,73 @@ func restackGit(ctx context.Context, dir render.Dir) (string, error) {
 		return "fetched · fast-forwarded " + trunk.Name(), nil
 	}
 
-	if _, err := gitRebaseOnto(ctx, dir, "restack", trunk.Remote(), trunk.Name()); err != nil {
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	if err != nil {
+		return "", fmt.Errorf("restack: %w", err)
+	}
+	if err := stackCheckHolders(ctx, l.checkout.Root, []string{branch}, holders); err != nil {
 		return "", err
 	}
-	return "fetched · rebased onto " + trunk.Name(), nil
+	run, err := restackGitRun(ctx, dir, l.checkout.Root, branch, trunk)
+	if err != nil {
+		return "", err
+	}
+	commonDir, err := gtCommonDir(ctx, dir, "restack")
+	if err != nil {
+		return "", err
+	}
+	runs, err := stackRuns(commonDir)
+	if err != nil {
+		return "", err
+	}
+	if err := stackAdmit(ctx, cmd, l, commonDir, runs, run, false); err != nil {
+		return "", err
+	}
+	if err := stackClaim(commonDir, run); err != nil {
+		return "", err
+	}
+	if err := stackSaveRun(run); err != nil {
+		return "", err
+	}
+	return "", stackDrive(ctx, cmd, l, commonDir, run)
+}
+
+// restackGitRun plans branch as a one-branch stack on the fetched trunk,
+// replayed from where it forked.
+func restackGitRun(ctx context.Context, dir render.Dir, origin, branch string, trunk vcs.Trunk) (*stackRebaseRun, error) {
+	pin, err := stackRevParse(ctx, dir, string(trunk.Ref()))
+	if err != nil {
+		return nil, err
+	}
+	head, err := stackRevParse(ctx, dir, gtRestackRef(branch))
+	if err != nil {
+		return nil, err
+	}
+	base, err := stackMergeBase(ctx, dir, pin, head)
+	if err != nil {
+		return nil, err
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		return nil, fmt.Errorf("restack: %w", err)
+	}
+	return &stackRebaseRun{
+		Trunk:  trunk.Name(),
+		Pin:    pin,
+		NoPush: true,
+		Git:    true,
+		Origin: origin,
+		Roots:  []string{branch},
+		Pid:    os.Getpid(),
+		Host:   host,
+		Branches: []stackRebaseBranch{{
+			Name:      branch,
+			Parent:    trunk.Name(),
+			WasParent: trunk.Name(),
+			Local:     head,
+			Head:      head,
+			HeadRef:   gtRestackRef(branch),
+			OldBase:   base,
+		}},
+	}, nil
 }
