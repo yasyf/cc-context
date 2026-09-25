@@ -458,7 +458,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 
 	short, subject, err := shipDescribe(ctx, dir, kind)
 	if err != nil {
-		return err
+		return shipSettleRestack(ctx, l, gtc, err)
 	}
 	segments := make([]string, 0, 8)
 	if l.note != "" {
@@ -506,7 +506,16 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		remote, rebased, err = shipPush(ctx, dir, kind, o, branch, preAmendSHA)
 	}
 	if err != nil {
-		return err
+		return shipSettleRestack(ctx, l, gtc, err)
+	}
+	if gtLane && gtc.restack != nil {
+		common, err := gtc.common(ctx)
+		if err != nil {
+			return err
+		}
+		if err := stackCompletePublication(ctx, dir, common, gtc.restack); err != nil {
+			return err
+		}
 	}
 	if rebased > 0 {
 		short, subject, err = shipDescribe(ctx, dir, kind)
@@ -532,15 +541,6 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		}
 		if seg != "" {
 			segments = append(segments, seg)
-		}
-	}
-	if gtLane && gtc.restack != nil {
-		common, err := gtc.common(ctx)
-		if err != nil {
-			return err
-		}
-		if err := stackCompletePublication(ctx, dir, common, gtc.restack); err != nil {
-			return err
 		}
 	}
 	segments = append(segments, bodylessSegs...)
@@ -589,6 +589,18 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		return errors.Join(ciErr, shipReviewsWatch(ctx, cmd.OutOrStdout(), reviewBranches))
 	}
 	return ciErr
+}
+
+func shipSettleRestack(ctx context.Context, l lane, c *gtCache, cause error) error {
+	if c == nil || c.restack == nil {
+		return cause
+	}
+	common, err := c.common(ctx)
+	if err != nil {
+		return errors.Join(cause, err)
+	}
+	_, err = stackSettle(ctx, l, common, c.restack)
+	return errors.Join(cause, err)
 }
 
 // shipReviewsWatch wraps shipWatchReviews with %v, not %w: the watch's
