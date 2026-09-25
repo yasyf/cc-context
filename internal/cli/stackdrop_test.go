@@ -340,12 +340,7 @@ func TestStackDropRepairRefusesBeforeDeletingTheRefBack(t *testing.T) {
 	}
 }
 
-// TestStackDropRefusesToStrandTheDroppedCommits pins the local read-back. gt's
-// rows can claim a child is restacked while its ref still sits on the branch
-// being dropped — the state a conflicted replay leaves behind — and deleting
-// the branch then takes its commits out of the stack's history and leaves them
-// in the child.
-func TestStackDropRefusesToStrandTheDroppedCommits(t *testing.T) {
+func TestStackDropReplaysAChildGTRecordsAsCarryingTheDroppedCommits(t *testing.T) {
 	f := shipGTRepo(t)
 	dropStack(t, f, "base", "mid", "top")
 	installDropGH(t, f, map[string]dropSeed{
@@ -361,15 +356,50 @@ func TestStackDropRefusesToStrandTheDroppedCommits(t *testing.T) {
 		t.Fatalf("record top as restacked onto base: %v", err)
 	}
 
-	_, _, err = runStackCmd(t, f, "drop", "mid")
-	if err == nil {
-		t.Fatal("stack drop succeeded while top still carried mid's commits")
+	if _, _, err := runStackCmd(t, f, "drop", "mid"); err != nil {
+		t.Fatalf("stack drop: %v", err)
 	}
-	if !strings.Contains(err.Error(), "top still carries mid's commits") {
-		t.Errorf("error = %v, want it to name the branch carrying them", err)
+	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", "base..top"); subjects != "top" {
+		t.Errorf("base..top = %q, want top alone — mid's commit left the stack with mid", subjects)
 	}
-	if !gitBranchExists(t, f.Env(), f.Dir, "mid") {
-		t.Error("mid was deleted over commits that never moved")
+	if gitBranchExists(t, f.Env(), f.Dir, "mid") {
+		t.Error("mid is still a local branch")
+	}
+}
+
+func TestStackDropReplaysABranchReparentedPastTheDroppedOne(t *testing.T) {
+	f := shipGTRepo(t)
+	dropStack(t, f, "landed", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "--delete", "landed")
+	installDropGH(t, f, map[string]dropSeed{"feature": {number: 2, state: "OPEN", base: "main"}})
+	commonDir, err := gtCommonDir(t.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatalf("gt common dir: %v", err)
+	}
+	if err := gtmeta.Reparent(t.Context(), commonDir, map[string]string{"feature": "main"}); err != nil {
+		t.Fatalf("reparent feature onto main: %v", err)
+	}
+	main := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/heads/main")
+	if err := gtmeta.RecordRestacked(t.Context(), commonDir, map[string]string{"feature": main}); err != nil {
+		t.Fatalf("record feature as restacked onto main: %v", err)
+	}
+	landed := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/heads/landed")
+
+	if _, _, err := runStackCmd(t, f, "drop", "landed"); err != nil {
+		t.Fatalf("stack drop: %v", err)
+	}
+	if stackOnto(t, f, landed, "feature") {
+		t.Errorf("feature still carries landed's commit %s", landed)
+	}
+	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", "main..feature"); subjects != "feature" {
+		t.Errorf("main..feature = %q, want feature alone", subjects)
+	}
+	if parent := dropGTParent(t, f, "feature"); parent != "main" {
+		t.Errorf("gt records feature's parent as %q, want main", parent)
+	}
+	if gitBranchExists(t, f.Env(), f.Dir, "landed") {
+		t.Error("landed is still a local branch")
 	}
 }
 

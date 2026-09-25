@@ -737,3 +737,70 @@ func TestStackContinueRefusesConcurrentRemoteAdvance(t *testing.T) {
 		t.Errorf("remote base partially moved to %s", got)
 	}
 }
+
+func TestStackContinueDropsAParentThatLandedMidRun(t *testing.T) {
+	f := shipGTRepo(t)
+	stubStackPRs(t, nil)
+	stackConflicting(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	_, _, err := runStackCmd(t, f, "rebase")
+	if err == nil {
+		t.Fatal("stack rebase succeeded, want the conflict to stop")
+	}
+	ws := stackWorkspaceOf(t, err)
+	restackAdvanceRemote(t, f, "main", "base.txt", "base\n")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "--delete", "base")
+	stubStackPRs(t, map[string]*stackPR{"base": {Number: 5, Title: "base", State: "CLOSED", Head: landedAt, Landed: true}})
+	writeShipFile(t, ws, "c.txt", "resolved\n")
+	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
+
+	out, _, err := runStackCmdIn(t, f, ws, "continue")
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if !strings.Contains(out, "dropped landed base") {
+		t.Errorf("output = %q, want base dropped as landed", out)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "for-each-ref", "refs/heads/base"); got != "" {
+		t.Errorf("origin base = %q, want the landed branch never pushed back", got)
+	}
+	if got := stackParent(t, f, "feature"); got != "main" {
+		t.Errorf("feature's gt parent = %s, want main", got)
+	}
+	if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main..feature"); n != "1" {
+		t.Errorf("feature holds %s commits over trunk, want its own 1", n)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "show", "feature:c.txt"); got != "resolved" {
+		t.Errorf("feature's c.txt = %q, want the resolution kept", got)
+	}
+	if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); local != remote {
+		t.Errorf("origin feature = %s, want the replayed %s", remote, local)
+	}
+	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
+		t.Errorf("run state left behind: %v", left)
+	}
+}
+
+func TestStackRebaseDropsALandedBranchReplayedAfterItsLanding(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "origin/main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
+	stackAdvanceTrunk(t, f, "base.txt", "base\n")
+	stubStackPRs(t, map[string]*stackPR{"base": {Number: 5, Title: "base", State: "CLOSED", Head: landedAt, Landed: true}})
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if !strings.Contains(out, "base"+shipSep+"drop (#5 landed)") {
+		t.Errorf("plan = %q, want base dropped", out)
+	}
+	if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main..feature"); n != "1" {
+		t.Errorf("feature holds %s commits over trunk, want its own 1", n)
+	}
+}
