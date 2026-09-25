@@ -80,6 +80,9 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		if err := stackVerifyNewParent(ctx, l.dir(), common, receipt); err != nil {
 			return err
 		}
+		if err := stackVerifyNewRemote(ctx, l.dir(), receipt); err != nil {
+			return err
+		}
 		start = receipt.Head
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
@@ -96,7 +99,14 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	created := render.Dir(path)
 	finish := func() error {
 		if options.sparse {
-			if err := stackWriteSparse(ctx, created, sparse); err != nil {
+			head, err := stackRevParse(ctx, created, "HEAD")
+			if err != nil {
+				return err
+			}
+			if receipt != nil && head != receipt.Head {
+				return errors.New("stack new: child ref changed before sparse population")
+			}
+			if err := stackWriteSparse(ctx, created, sparse, head); err != nil {
 				return err
 			}
 		}
@@ -114,13 +124,17 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		if err := stackVerifyNewParent(ctx, l.dir(), common, receipt); err != nil {
 			return err
 		}
+		head, err := stackRevParse(ctx, created, "HEAD")
+		if err != nil {
+			return err
+		}
+		if head != receipt.Head {
+			return errors.New("stack new: child ref changed during creation")
+		}
 		return nil
 	}
 	if err := finish(); err != nil {
-		if receipt != nil {
-			err = errors.Join(err, gtmeta.Forget(ctx, common, []string{name}))
-		}
-		return errors.Join(err, stackUnwindLane(ctx, l.dir(), path, name))
+		return fmt.Errorf("stack new: child %s at %s is incomplete; its worktree, ref, and metadata were retained for inspection: %w", name, path, err)
 	}
 	cmd.Println(strings.Join([]string{"cut " + name + " onto " + parent, path}, shipSep))
 	return nil
@@ -220,7 +234,7 @@ func stackReadSparse(ctx context.Context, dir render.Dir) (stackSparse, error) {
 	return stackSparse{patterns: patterns, cone: cone}, nil
 }
 
-func stackWriteSparse(ctx context.Context, dir render.Dir, sparse stackSparse) error {
+func stackWriteSparse(ctx context.Context, dir render.Dir, sparse stackSparse, head string) error {
 	out, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", "--path-format=absolute", "--git-path", "info/sparse-checkout"})
 	if err != nil {
 		return err
@@ -229,7 +243,7 @@ func stackWriteSparse(ctx context.Context, dir render.Dir, sparse stackSparse) e
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, sparse.patterns, 0o644); err != nil {
+	if err := os.WriteFile(path, sparse.patterns, 0o600); err != nil {
 		return err
 	}
 	for _, setting := range [][2]string{{"core.sparseCheckout", "true"}, {"core.sparseCheckoutCone", strconv.FormatBool(sparse.cone)}} {
@@ -237,8 +251,40 @@ func stackWriteSparse(ctx context.Context, dir render.Dir, sparse stackSparse) e
 			return err
 		}
 	}
-	if _, err := render.RunCLI(ctx, dir, "git", []string{"read-tree", "--reset", "-u", "HEAD"}); err != nil {
-		return fmt.Errorf("stack new: populate sparse child: %w", err)
+	out, err = render.RunCLI(ctx, dir, "git", []string{"rev-parse", "--path-format=absolute", "--git-path", "index"})
+	if err != nil {
+		return err
+	}
+	index := strings.TrimSpace(out)
+	scratch, err := os.MkdirTemp(filepath.Dir(index), "ccx-stack-new-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(scratch) }()
+	privateTree := filepath.Join(scratch, "tree")
+	privateIndex := filepath.Join(scratch, "index")
+	if err := os.Mkdir(privateTree, 0o700); err != nil {
+		return err
+	}
+	extraEnv := []string{"GIT_WORK_TREE=" + privateTree, "GIT_INDEX_FILE=" + privateIndex}
+	if _, err := render.RunCLIEnv(ctx, dir, "git", []string{"-c", "core.splitIndex=false", "read-tree", "-m", "-u", head}, extraEnv); err != nil {
+		return fmt.Errorf("stack new: prepare sparse child: %w", err)
+	}
+	return stackInstallSparseIndex(ctx, dir, privateIndex, index)
+}
+
+func stackInstallSparseIndex(ctx context.Context, dir render.Dir, privateIndex, index string) (err error) {
+	lockPath := index + ".lock"
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("stack new: acquire new child index lock: %w", err)
+	}
+	defer func() { err = errors.Join(err, lock.Close(), os.Remove(lockPath)) }()
+	if err := os.Link(privateIndex, index); err != nil {
+		return fmt.Errorf("stack new: child index already exists or could not be installed: %w", err)
+	}
+	if _, err := render.RunCLI(ctx, dir, "git", []string{"checkout-index", "--all"}); err != nil {
+		return fmt.Errorf("stack new: populate sparse child without overwriting files: %w", err)
 	}
 	return nil
 }
@@ -255,15 +301,7 @@ func stackVerifyNewParent(ctx context.Context, dir render.Dir, common string, re
 	if err != nil {
 		return err
 	}
-	remote, err := vcs.GitRemoteFor(ctx, dir, gtRestackRef(receipt.Branch))
-	if err != nil {
-		return err
-	}
-	heads, err := stackRemoteHeads(ctx, dir, remote, []string{receipt.Branch})
-	if err != nil {
-		return err
-	}
-	branch := stackRebaseBranch{Name: receipt.Branch, Local: source, Remote: heads[receipt.Branch]}
+	branch := stackRebaseBranch{Name: receipt.Branch, Local: source, Remote: receipt.Head}
 	if err := stackUsePublication(&branch, receipt, last[receipt.Branch]); err != nil {
 		return err
 	}
@@ -286,4 +324,26 @@ func stackTrackPublished(ctx context.Context, dir render.Dir, errW io.Writer, co
 		return err
 	}
 	return gtmeta.RecordRestacked(ctx, common, map[string]string{name: receipt.Head})
+}
+
+func stackVerifyNewRemote(ctx context.Context, dir render.Dir, receipt *stackPublication) error {
+	remote, err := vcs.GitRemoteFor(ctx, dir, gtRestackRef(receipt.Branch))
+	if err != nil {
+		return err
+	}
+	out, err := render.RunCLI(ctx, dir, "git", []string{"ls-remote", "--heads", remote, gtRestackRef(receipt.Branch)})
+	if err != nil {
+		return err
+	}
+	head := ""
+	for line := range strings.Lines(out) {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[1] == gtRestackRef(receipt.Branch) {
+			head = fields[0]
+		}
+	}
+	if head != receipt.Head {
+		return fmt.Errorf("stack new: %s remote changed after publication; expected %s, found %s", receipt.Branch, receipt.Head, head)
+	}
+	return nil
 }

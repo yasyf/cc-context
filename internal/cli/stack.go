@@ -156,19 +156,6 @@ func stackFormLane(ctx context.Context, errW io.Writer, l lane, path render.Dir,
 	return gtTrackAt(ctx, path, errW, parent)
 }
 
-// stackUnwindLane takes back a lane that only half formed. Left in place it
-// holds both the name and the branch, so the same stack new refuses on a retry
-// and the fix is two git commands nobody was told about.
-func stackUnwindLane(ctx context.Context, root render.Dir, path, name string) error {
-	if _, err := render.RunCLI(ctx, root, "git", []string{"worktree", "remove", "--force", path}); err != nil {
-		return fmt.Errorf("stack new: remove the half-formed lane at %s: %w", path, err)
-	}
-	if _, err := render.RunCLI(ctx, root, "git", []string{"branch", "-D", name}); err != nil {
-		return fmt.Errorf("stack new: delete the half-formed branch %s: %w", name, err)
-	}
-	return nil
-}
-
 // stackColocateJJ gives a lane its own colocated jj. --colocate is refused
 // inside a git worktree and a bare jj git init takes the same path, so the
 // repository is named instead: --git-repo . resolves to the worktree's own
