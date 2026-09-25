@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -20,6 +21,10 @@ import (
 
 // prBodyStdin is the --pr-body-file value that reads the body from stdin.
 const prBodyStdin = "-"
+
+// prBodyTempPrefix names the temp file a body read from stdin is materialized
+// into.
+const prBodyTempPrefix = "ccx-pr-body-"
 
 // prURLMarker separates a pull request URL's repository from its number.
 const prURLMarker = "/pull/"
@@ -205,7 +210,7 @@ func commitBodyFromPR(body string) string {
 // path: gh takes --body-file, ship may need the body twice in one run when a
 // create races into an edit, and it has to be readable before the commit forms.
 func materializeStdin(r io.Reader) (string, func(), error) {
-	f, err := os.CreateTemp("", "ccx-pr-body-*")
+	f, err := os.CreateTemp("", prBodyTempPrefix+"*")
 	if err != nil {
 		return "", nil, fmt.Errorf("ship: create pr body file: %w", err)
 	}
@@ -322,25 +327,32 @@ func shipPRCreate(ctx context.Context, nwo, branch, trunk, subject string, m prM
 // request. Zero stated fields means zero calls.
 func shipPREdit(ctx context.Context, nwo string, pr prState, m prMeta) (string, error) {
 	fields := m.stated()
-	if len(fields) > 0 {
-		argv := prEditArgv(nwo, pr.Number, m)
-		if _, err := render.RunCLI(ctx, render.Ambient, "gh", argv); err != nil {
-			return "", prRestateError("the push", []string{ghCommand(argv)}, err)
+	// REST has no draft toggle, so a transition is gh pr ready's own verb — and
+	// only a real transition is worth a call.
+	var ready []string
+	readyField := ""
+	if m.draft != nil && *m.draft != pr.IsDraft {
+		ready = []string{"pr", "ready", strconv.Itoa(pr.Number), "--repo", nwo}
+		readyField = "ready"
+		if *m.draft {
+			ready = append(ready, "--undo")
+			readyField = "draft"
 		}
 	}
-	// gh pr edit has no draft toggle, so a transition is its own verb — and only
-	// a real transition is worth a call.
-	if m.draft != nil && *m.draft != pr.IsDraft {
-		argv := []string{"pr", "ready", strconv.Itoa(pr.Number), "--repo", nwo}
-		field := "ready"
-		if *m.draft {
-			argv = append(argv, "--undo")
-			field = "draft"
+	if len(fields) > 0 {
+		if _, err := render.RunCLI(ctx, render.Ambient, "gh", prEditArgv(nwo, pr.Number, m)); err != nil {
+			retry := []string{ghCommand(prRetryArgv(nwo, pr.Number, m))}
+			if ready != nil {
+				retry = append(retry, ghCommand(ready))
+			}
+			return "", prRestateError("the push", retry, err)
 		}
-		if _, err := render.RunCLI(ctx, render.Ambient, "gh", argv); err != nil {
-			return "", prRestateError("the push", []string{ghCommand(argv)}, err)
+	}
+	if ready != nil {
+		if _, err := render.RunCLI(ctx, render.Ambient, "gh", ready); err != nil {
+			return "", prRestateError("the push", []string{ghCommand(ready)}, err)
 		}
-		fields = append(fields, field)
+		fields = append(fields, readyField)
 	}
 	if len(fields) == 0 {
 		return "", nil
@@ -360,6 +372,17 @@ func prEditArgv(nwo string, number int, m prMeta) []string {
 		fields = append(fields, "-F", "body=@"+m.bodyPath)
 	}
 	return ghPatchPullArgv(nwo, number, fields...)
+}
+
+// prRetryArgv is prEditArgv as a person re-runs it. A body ship read from stdin
+// lives in a temp file ship deletes on the way out, so its retry reads stdin
+// again.
+func prRetryArgv(nwo string, number int, m prMeta) []string {
+	if m.bodyPath != "" && filepath.Dir(m.bodyPath) == filepath.Clean(os.TempDir()) &&
+		strings.HasPrefix(filepath.Base(m.bodyPath), prBodyTempPrefix) {
+		m.bodyPath = prBodyStdin
+	}
+	return prEditArgv(nwo, number, m)
 }
 
 // prRestateError reports a restate that failed after the branch already
@@ -407,7 +430,7 @@ func prRestatesLeft(nwo string, meta map[string]prMeta, stack []stackEntry) []st
 		if entry.PR == 0 || len(m.stated()) == 0 {
 			continue
 		}
-		left = append(left, ghCommand(prEditArgv(nwo, entry.PR, m)))
+		left = append(left, ghCommand(prRetryArgv(nwo, entry.PR, m)))
 	}
 	return left
 }

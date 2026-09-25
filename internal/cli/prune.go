@@ -357,7 +357,8 @@ func pruneMergedHead(pr gtapi.PullRequestInfo) string {
 // checkout and the branch keeps its commits. A squash-landed branch never
 // reached trunk, so git branch -d would refuse it; it goes in one git update-ref
 // transaction that deletes each ref only at the head its merged pull request
-// carried, and refuses them all if one moved.
+// carried, and refuses them all if one moved. update-ref, unlike git branch,
+// deletes a branch a worktree has out, so the holders are read again first.
 func pruneApply(ctx context.Context, dir render.Dir, l lane, plan prunePlan, commonDir string) error {
 	for _, batch := range pruneBatches(plan.merged, 200) {
 		argv := append([]string{"branch", "-d"}, batch...)
@@ -367,6 +368,15 @@ func pruneApply(ctx context.Context, dir render.Dir, l lane, plan prunePlan, com
 	}
 	squashed := pruneSquashedNames(plan)
 	if len(squashed) > 0 {
+		held, err := pruneHeldBranches(ctx, dir)
+		if err != nil {
+			return err
+		}
+		for _, branch := range squashed {
+			if held[branch] {
+				return fmt.Errorf("prune: a worktree checked out %s after the plan; re-run prune", branch)
+			}
+		}
 		var tx strings.Builder
 		for _, branch := range squashed {
 			fmt.Fprintf(&tx, "delete refs/heads/%s %s\n", branch, plan.squashed[branch])

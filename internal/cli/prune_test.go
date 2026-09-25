@@ -345,6 +345,28 @@ func TestPruneRefusesASquashBranchThatMoved(t *testing.T) {
 	}
 }
 
+// TestPruneRefusesASquashBranchCheckedOutAfterThePlan pins the other guard:
+// update-ref deletes a checked-out branch without a word, so a worktree that
+// took the branch after the plan stops the delete.
+func TestPruneRefusesASquashBranchCheckedOutAfterThePlan(t *testing.T) {
+	f, dir, trunk, commonDir := pruneSquashFixture(t, "landed")
+	api := stubGTAPI(t)
+	api.merged["landed"] = gtStubMerged{number: 10, head: gitAt(t, f.Dir, "rev-parse", "landed")}
+
+	plan, err := prunePlanFor(t.Context(), dir, pruneGTLane, trunk, commonDir)
+	if err != nil {
+		t.Fatalf("prunePlanFor: %v", err)
+	}
+	gitAt(t, f.Dir, "worktree", "add", "-q", filepath.Join(t.TempDir(), "landed"), "landed")
+
+	if err := pruneApply(t.Context(), dir, pruneGTLane, plan, commonDir); err == nil {
+		t.Fatal("pruneApply deleted a branch a worktree checked out after the plan")
+	}
+	if !gitBranchExists(t, f.Dir, "landed") {
+		t.Error("landed was deleted out from under its worktree")
+	}
+}
+
 // TestPruneBatchesTheSquashLookup pins the request size: a repository with
 // thousands of branches asks Graphite in bounded batches, not one request
 // naming every branch.

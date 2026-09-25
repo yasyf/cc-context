@@ -604,7 +604,7 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 			t.Fatal("ship succeeded over a refused restate")
 		}
 		want := `ship: the push and graphite submit already happened; only the pull request restate failed — finish it with: ` +
-			`gh api -X PATCH repos/yasyf/cc-context/pulls/7 --silent -f "title=Tip title" -F body=@` + tipBody +
+			`gh api -X PATCH repos/yasyf/cc-context/pulls/7 --silent -f 'title=Tip title' -F body=@` + tipBody +
 			` && gh api -X PATCH repos/yasyf/cc-context/pulls/6 --silent -F body=@` + midBody + `: `
 		if !strings.HasPrefix(err.Error(), want) {
 			t.Errorf("error = %q, want prefix %q", err, want)
@@ -631,6 +631,22 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 		}
 		if n := remoteCount(t, f, "feature"); n != 2 {
 			t.Errorf("origin feature holds %d commits, want the push the restate followed", n)
+		}
+	})
+	t.Run("piped body and a pending publish", func(t *testing.T) {
+		shipPRFixture(t, vcstest.Branch("feature"))
+		pr := prFromListGolden(t, "pr-list-draft")
+		t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-draft"))
+		t.Setenv("GH_PR_EDIT_FAIL", "gh: API rate limit exceeded (HTTP 403)")
+
+		_, err := runShipCmdStdin(t, strings.NewReader("piped body\n"), "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", "-", "--publish")
+		if err == nil {
+			t.Fatal("ship succeeded over a refused restate")
+		}
+		want := fmt.Sprintf("finish it with: gh api -X PATCH repos/yasyf/cc-context/pulls/%d --silent -F body=@- && gh pr ready %d --repo yasyf/cc-context: ",
+			pr.Number, pr.Number)
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to carry %q", err, want)
 		}
 	})
 }

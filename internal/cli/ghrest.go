@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -62,7 +61,7 @@ func ghCommand(argv []string) string {
 			parts = append(parts, arg)
 			continue
 		}
-		parts = append(parts, strconv.Quote(arg))
+		parts = append(parts, shellSingleQuote(arg))
 	}
 	return strings.Join(parts, " ")
 }
