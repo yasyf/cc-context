@@ -297,9 +297,6 @@ func TestStackSubmitReportsWhatItProposes(t *testing.T) {
 	}
 }
 
-// stackConflicting stacks feature on base and then puts a commit on trunk that
-// feature's own commit will not replay over, so a restack of the chain moves
-// base and stops on feature.
 func stackConflicting(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
 	shipGTStack(t, f, "base")
@@ -504,19 +501,91 @@ func TestStackSubmitRestackConflictMovesNothing(t *testing.T) {
 	stackConflicting(t, f)
 	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	commonDir := gitAt(t, f.Env(), f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	before, err := gtmeta.Read(f.Context(), commonDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := filepath.Join(t.TempDir(), "state.json")
+	realGit := shipDisplaceShim(t, f, "git")
+	writeShipExecutable(t, f.ShimBin, "git", "#!/bin/sh\n"+
+		"if [ -z \"$CCX_SHIM_DEPTH\" ]; then\n"+
+		"  case \"$*\" in\n"+
+		"    'replay --onto '*|'-c replay.refAction=print replay --onto '*)\n"+
+		"      "+shellSingleQuote(realGit)+" \"$@\" || exit \"$?\"\n"+
+		"      CCX_SHIM_DEPTH=1 gt state --no-interactive > "+shellSingleQuote(observed)+"\n"+
+		"      exit \"$?\" ;;\n"+
+		"  esac\n"+
+		"fi\n"+
+		"exec "+shellSingleQuote(realGit)+" \"$@\"\n")
 
-	_, _, err := runStackCmd(t, f, "submit")
+	_, _, err = runStackCmd(t, f, "submit")
 	if err == nil {
 		t.Fatal("stack submit succeeded, want the conflict on feature")
 	}
-	if !strings.Contains(err.Error(), "the restack rolled back, so nothing moved — put back: base") {
-		t.Errorf("error = %v, want it to name what it rolled back", err)
+	if !strings.Contains(err.Error(), "no branches moved") {
+		t.Errorf("error = %v, want an unchanged-stack refusal", err)
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != base {
 		t.Errorf("base = %s, want %s — it was restacked onto the new trunk while feature stayed on the old one", got, base)
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != feature {
 		t.Errorf("feature = %s, want %s", got, feature)
+	}
+	after, err := gtmeta.Read(f.Context(), commonDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Errorf("metadata after concurrent native validation = %#v, want %#v", after, before)
+	}
+	state, err := os.ReadFile(observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var native map[string]struct {
+		NeedsRestack bool `json:"needs_restack"`
+	}
+	if err := json.Unmarshal(state, &native); err != nil {
+		t.Fatal(err)
+	}
+	if !native["base"].NeedsRestack {
+		t.Errorf("native gt observed a temporary replayed base: %s", state)
+	}
+	mustRun(t, f.Env(), f.Dir, "gt", "restack", "--only", "--branch", "base", "--no-interactive")
+}
+
+func TestStackSubmitRestackPublishesAtomically(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base", "feature")
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	concurrent := gitAt(t, f.Env(), f.Dir, "commit-tree", feature+"^{tree}", "-p", feature, "-m", "concurrent change")
+	restackAdvanceRemote(t, f, "main", "advanced.txt", "advanced\n")
+	realGit := shipDisplaceShim(t, f, "git")
+	writeShipExecutable(t, f.ShimBin, "git", "#!/bin/sh\n"+
+		"if [ -z \"$CCX_SHIM_DEPTH\" ] && [ \"$*\" = 'update-ref --stdin' ]; then\n"+
+		"  CCX_SHIM_DEPTH=1 "+shellSingleQuote(realGit)+" update-ref refs/heads/feature "+concurrent+" "+feature+" || exit \"$?\"\n"+
+		"  CCX_SHIM_DEPTH=1 gt freeze base --no-interactive >&2 || exit \"$?\"\n"+
+		"fi\n"+
+		"exec "+shellSingleQuote(realGit)+" \"$@\"\n")
+
+	_, _, err := runStackCmd(t, f, "submit")
+	if err == nil || !strings.Contains(err.Error(), "publish restacked branches") {
+		t.Fatalf("stack submit = %v, want a failed ref transaction", err)
+	}
+	for branch, want := range map[string]string{"base": base, "feature": concurrent} {
+		if got := gitAt(t, f.Env(), f.Dir, "rev-parse", branch); got != want {
+			t.Errorf("%s = %s, want %s", branch, got, want)
+		}
+	}
+	commonDir := gitAt(t, f.Env(), f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	state, err := gtmeta.Read(f.Context(), commonDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state["base"].State != "frozen" {
+		t.Errorf("base state = %q, want the concurrent freeze preserved", state["base"].State)
 	}
 }
 

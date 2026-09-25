@@ -4908,15 +4908,6 @@ func TestShipGTRestacksAStackSpreadAcrossWorkingCopies(t *testing.T) {
 	}
 }
 
-// TestShipGTRestackAppliesPrintedRefUpdates pins the restack against the git
-// versions that only print their ref updates. git replay moves refs itself in
-// an atomic transaction from 2.55 and writes nothing to stdout; 2.44 through
-// 2.54 instead print `update refs/heads/… <new> <old>` lines for git update-ref
-// --stdin, which is why the driver feeds back whatever it printed.
-//
-// replay.refAction=print selects that older behaviour on a new git, and is the
-// only way the path is covered at all: this machine and both CI runners are on
-// 2.55, so without it the branch that handles every git before 2.55 never runs.
 func TestShipGTRestackAppliesPrintedRefUpdates(t *testing.T) {
 	f := shipGTRepo(t)
 	held := shipGTHeldParent(t, f)
