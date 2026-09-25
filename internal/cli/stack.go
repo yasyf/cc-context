@@ -29,6 +29,9 @@ func newStackCmd() *cobra.Command {
 		newRestackCmd(),
 		newStackSubmitCmd(),
 		newStackDropCmd(),
+		newStackRebaseCmd(),
+		newStackContinueCmd(),
+		newStackAbortCmd(),
 	)
 	return cmd
 }

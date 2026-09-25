@@ -809,15 +809,17 @@ func TestRestackRefusesMissingGT(t *testing.T) {
 	assertNoRestackMutation(t, restackInvocations(t, f))
 }
 
-func TestRestackRegisteredWithRebaseAlias(t *testing.T) {
+func TestStackRebaseIsItsOwnCommand(t *testing.T) {
 	t.Parallel()
 	cmd := newVcsCmd()
-	found, args, err := cmd.Find([]string{"stack", "rebase"})
-	if err != nil {
-		t.Fatalf("find stack rebase: %v", err)
-	}
-	if found.Name() != "restack" || len(args) != 0 {
-		t.Fatalf("find stack rebase = %s %#v, want restack", found.Name(), args)
+	for _, name := range []string{"restack", "rebase", "continue", "abort"} {
+		found, args, err := cmd.Find([]string{"stack", name})
+		if err != nil {
+			t.Fatalf("find stack %s: %v", name, err)
+		}
+		if found.Name() != name || len(args) != 0 {
+			t.Fatalf("find stack %s = %s %#v", name, found.Name(), args)
+		}
 	}
 }
 
