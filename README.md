@@ -152,6 +152,7 @@ Each command is a token-bounded stand-in for a primitive an agent would otherwis
 | `ccx code read <file> --section A-B` | Read a line range or a `## Heading` instead of the whole file |
 | `ccx vcs diff [uncommitted\|staged\|<ref>]` | VCS-aware structural diff; defaults to uncommitted |
 | `ccx vcs status` | Every branch of the stack, its pull request, and what blocks each from landing |
+| `ccx vcs pr status <n>...` | Whether each pull request is queued in the Graphite merge queue, not queued, or landed |
 | `ccx web outline <url>` | Heading tree of a web page with stable `§` section refs |
 | `ccx web read <url> --section <ref>` | Read one section of a page, with prev/next nav, instead of the whole thing |
 | `ccx web search <url> "<question>"` | Ask a page a question; top-k relevant chunks with `§` cites |

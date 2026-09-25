@@ -344,6 +344,13 @@ onto another lane's tip — a gt parent that disagrees with the PR's own base is
 blocker, and the PR's changed-file count is on the `pr` line, because a diff
 wider than the work is the tell.
 
+`ccx vcs pr status <n>...` answers the narrower question about any pull request
+by number, from any checkout, and `-R owner/name` names another repo. It prints
+`queued`, `not queued`, or `landed`. It reads Graphite's own record, the one gt reads, so a
+PR enqueued from the Graphite web UI reads `queued` with no merge label on it,
+and a stale merge label the queue dropped reads `not queued`. `landed` means the
+squash Graphite recorded is reachable from the base branch on GitHub.
+
 `ccx vcs guidelines` (alias
 `contributing`) fetches and caches the repo's PR templates, `CONTRIBUTING.md`, code
 of conduct, and issue config, served verbatim so a PR body can reproduce the
@@ -353,6 +360,7 @@ template exactly:
 ccx vcs info                                     # which lane a ship would take, and why
 ccx vcs status                                   # every branch, its PR, and what blocks it
 ccx vcs status --json                            # the same report as a structure
+ccx vcs pr status 123 124                         # queued, not queued, or landed, per PR
 ccx vcs guidelines                               # PR templates + contribution rules, verbatim
 ```
 
