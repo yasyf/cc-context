@@ -1,6 +1,7 @@
 package index
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -45,7 +46,7 @@ func TestWalkFiles(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	got, err := WalkFiles(root, []string{".go", ".md"})
+	got, err := WalkFiles(context.Background(), root, []string{".go", ".md"})
 	if err != nil {
 		t.Fatalf("WalkFiles: %v", err)
 	}

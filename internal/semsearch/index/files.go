@@ -7,6 +7,7 @@ package index
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -132,45 +133,20 @@ func DetectLanguage(path string) string {
 	return extensionToLanguage[strings.ToLower(extOf(path))]
 }
 
-// fileStatus classifies a candidate file for indexing — semble's FileStatus.
-type fileStatus int
-
-const (
-	statusValid fileStatus = iota
-	statusTooLarge
-	statusEmpty
-)
-
-// getFileStatus applies semble's size + whitespace-only gates (get_file_status
-// with write_time=None): a file over maxFileBytes is too large; a file under
-// emptyFileBytes whose content is whitespace-only is empty; otherwise valid.
-func getFileStatus(path string) (fileStatus, error) {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return statusValid, fmt.Errorf("stat %q: %w", path, err)
-	}
-	size := fi.Size()
-	if size > maxFileBytes {
-		return statusTooLarge, nil
-	}
-	if size < emptyFileBytes {
-		text, err := readFileText(path)
-		if err != nil {
-			return statusValid, err
-		}
-		if strings.TrimSpace(text) == "" {
-			return statusEmpty, nil
-		}
-	}
-	return statusValid, nil
-}
-
 // readFileText reads a file as UTF-8 with invalid bytes replaced by U+FFFD,
 // mirroring semble's read_file_text (read_text(errors="replace")).
 func readFileText(path string) (string, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // walked repo file under the caller's own tree
+	file, err := os.Open(path) //nolint:gosec // walked repo file under the caller's own tree
+	if err != nil {
+		return "", fmt.Errorf("open %q: %w", path, err)
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, maxFileBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("read %q: %w", path, err)
+	}
+	if len(data) > maxFileBytes {
+		return "", fmt.Errorf("index file %q exceeds %d bytes", path, maxFileBytes)
 	}
 	return chunk.DecodeReplace(data), nil
 }

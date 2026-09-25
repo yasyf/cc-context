@@ -2,6 +2,7 @@ package index
 
 import (
 	"context"
+	"errors"
 	"hash/fnv"
 	"io"
 	"math"
@@ -180,6 +181,21 @@ func TestLoadInvalidation(t *testing.T) {
 			if emb.encoded != len(got.Chunks) {
 				t.Errorf("re-embedded %d texts, want all %d chunks", emb.encoded, len(got.Chunks))
 			}
+			emb.encoded = 0
+			reused, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reused.Reindexed != 0 || emb.encoded != 0 {
+				t.Fatalf("returning to the original parameters rebuilt %d files and encoded %d chunks", reused.Reindexed, emb.encoded)
+			}
+			reused, err = Load(ctx, emb, repo, tc.content, tc.chunker, tc.model)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reused.Reindexed != 0 || emb.encoded != 0 {
+				t.Fatalf("returning to the alternate parameters rebuilt %d files and encoded %d chunks", reused.Reindexed, emb.encoded)
+			}
 		})
 	}
 }
@@ -259,6 +275,14 @@ func TestLoadDimsMismatchRebuilds(t *testing.T) {
 	if d := vecDims(got.Vectors); d != 16 {
 		t.Errorf("rebuilt vectors dims = %d, want 16 (stale 8-dim cache rejected)", d)
 	}
+	small.encoded = 0
+	reused, err := Load(ctx, small, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused.Reindexed != 0 || small.encoded != 0 || vecDims(reused.Vectors) != 8 {
+		t.Fatalf("original dimensions were not reused: reindexed=%d encoded=%d dims=%d", reused.Reindexed, small.encoded, vecDims(reused.Vectors))
+	}
 }
 
 func vecDims(vectors [][]float32) int {
@@ -289,7 +313,11 @@ func TestWarmLoadDoesNotRewriteCache(t *testing.T) {
 	if _, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x"); err != nil {
 		t.Fatalf("cold Load: %v", err)
 	}
-	dir, err := CacheDir(repo)
+	resolved, err := ResolveRoot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := variantCacheDir(resolved, "model-x", ContentKey([]ContentType{ContentCode}), DefaultChunker().ID(), emb.Dims())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,5 +357,38 @@ func TestWarmLoadDoesNotRewriteCache(t *testing.T) {
 	}
 	if changed.Generation == cold.Generation {
 		t.Errorf("a reindexing Load left generation %q — the cache was not rewritten", cold.Generation)
+	}
+}
+
+func TestBuildCancelledBeforeTraversal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := build(ctx, &countingEmbedder{}, filepath.Join(t.TempDir(), "missing"), []string{".go"}, DefaultChunker(), nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("build error = %v, want cancellation before filesystem access", err)
+	}
+}
+
+func TestChunkFileWarmHitDoesNotReadContent(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "cached.go")
+	if err := os.WriteFile(path, []byte("package cached\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	if _, err := os.ReadFile(path); err == nil {
+		t.Skip("filesystem permits reading mode 000 files")
+	}
+	previous := fileManifest{Path: "cached.go", MtimeNs: info.ModTime().UnixNano(), Count: 1}
+	got := chunkFile(path, root, DefaultChunker(), map[string]fileManifest{"cached.go": previous})
+	if !got.valid || !got.reuse || got.prev != previous {
+		t.Fatalf("warm unreadable file = %+v, want cached contents without reading", got)
 	}
 }
