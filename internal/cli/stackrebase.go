@@ -380,6 +380,10 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
+	submitted, err := gtmeta.LastSubmitted(ctx, commonDir)
+	if err != nil {
+		return nil, err
+	}
 
 	host, err := os.Hostname()
 	if err != nil {
@@ -388,7 +392,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Host: host}
 	byName := map[string]*stackRebaseBranch{}
 	for _, name := range members {
-		b, err := stackSnapshot(ctx, l.dir(), tr, state[name], name, remotes[name], prs[name], slices.Contains(o.landed, name), pin)
+		b, err := stackSnapshot(ctx, l.dir(), tr, state[name], name, remotes[name], submitted[name].HeadSha, prs[name], slices.Contains(o.landed, name), pin)
 		if err != nil {
 			return nil, err
 		}
@@ -505,7 +509,7 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branch
 	return heads, nil
 }
 
-func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, name, remote string, pr *stackPR, declared bool, pin string) (stackRebaseBranch, error) {
+func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, name, remote, submitted string, pr *stackPR, declared bool, pin string) (stackRebaseBranch, error) {
 	if s.State != "" {
 		return stackRebaseBranch{}, fmt.Errorf("stack rebase: %s is %s in gt — unfreeze it, or rebase a stack without it", name, s.State)
 	}
@@ -526,6 +530,13 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 		case behind:
 			b.Head, b.HeadRef = remote, stackTempRef(name)
 		case !ahead:
+			ours, err := stackRemoteIsOurs(ctx, dir, remote, submitted, pin)
+			if err != nil {
+				return b, err
+			}
+			if ours {
+				break
+			}
 			return b, fmt.Errorf("stack rebase: %s has diverged from %s/%s (local %.12s, remote %.12s) — someone pushed to it; reconcile the two by hand, then re-run", name, tr.Remote(), name, s.Head, remote)
 		}
 	}
@@ -553,6 +564,27 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 		return b, fmt.Errorf("stack rebase: %s's pull request #%d closed without landing — reopen it, drop the branch with ccx vcs stack drop %s, or pass --landed %s if it did land", name, pr.Number, name, name)
 	}
 	return b, nil
+}
+
+func stackRemoteIsOurs(ctx context.Context, dir render.Dir, remote, submitted, pin string) (bool, error) {
+	if submitted == "" {
+		return false, nil
+	}
+	if remote == submitted {
+		return true, nil
+	}
+	for _, pair := range [][2]string{{submitted, remote}, {remote, submitted}} {
+		out, err := render.RunCLI(ctx, dir, "git", []string{"cherry", pair[0], pair[1], pin})
+		if err != nil {
+			return false, fmt.Errorf("%s: git cherry %s %s %s: %w", stackRebasePrefix, pair[0], pair[1], pin, err)
+		}
+		for line := range strings.Lines(out) {
+			if strings.HasPrefix(line, "+ ") {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
 }
 
 func stackOrder(trunk string, byName map[string]*stackRebaseBranch) ([]string, error) {

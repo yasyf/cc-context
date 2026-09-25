@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `continue --stack <bottom branch>` and `abort --stack <bottom branch>`
   name a run from any working copy, and `abort` clears a run whose conflict
   workspace is already gone.
+- **`ccx vcs stack submit` and `ccx vcs ship` push a local restack over the
+  heads they last submitted.** A branch whose remote head is the one gt
+  recorded at its last submit, or a replay carrying the same patches (a
+  graphite-app restack), is pushed under a lease on that remote head instead
+  of being refused as diverged. A remote holding a commit this repository
+  never submitted is still refused.
 
 ### Upgrade
 
