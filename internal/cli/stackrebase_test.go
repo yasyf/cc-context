@@ -98,8 +98,8 @@ func TestStackRebaseMovesAndPushesTheWholeStack(t *testing.T) {
 	if !strings.Contains(out, "rebased 2 branches onto main@") {
 		t.Errorf("output = %q, want the summary", out)
 	}
-	if _, err := os.Stat(stackStatePath(filepath.Join(f.Dir, ".git"))); !os.IsNotExist(err) {
-		t.Errorf("run state left behind: %v", err)
+	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
+		t.Errorf("run state left behind: %v", left)
 	}
 }
 
@@ -224,8 +224,7 @@ func TestStackRebaseConflictOpensAWorkspaceAndContinues(t *testing.T) {
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != feature {
 		t.Errorf("feature moved to %s before the conflict was resolved", got)
 	}
-	_, rest, _ := strings.Cut(err.Error(), "workspace: ")
-	ws, _, _ := strings.Cut(rest, " (detached")
+	ws := stackWorkspaceOf(t, err)
 	if filepath.Base(ws) != "conflict-feature" {
 		t.Fatalf("workspace = %q, want a pool entry named conflict-feature", ws)
 	}
@@ -259,6 +258,81 @@ func TestStackRebaseConflictOpensAWorkspaceAndContinues(t *testing.T) {
 	}
 	if _, err := os.Stat(ws); !os.IsNotExist(err) {
 		t.Errorf("workspace %s left behind: %v", ws, err)
+	}
+}
+
+func stackWorkspaceOf(t *testing.T, err error) string {
+	t.Helper()
+	_, rest, _ := strings.Cut(err.Error(), "workspace: ")
+	ws, _, _ := strings.Cut(rest, " (detached")
+	if ws == "" {
+		t.Fatalf("no workspace in %v", err)
+	}
+	return ws
+}
+
+func TestStackRebaseRunsTwoStacksSideBySide(t *testing.T) {
+	f := shipGTRepo(t)
+	stubStackPRs(t, nil)
+	shipGTStack(t, f, "a-base")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "a-top")
+	writeShipFile(t, f.Dir, "c.txt", "a\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "a-top")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "b-top")
+	writeShipFile(t, f.Dir, "d.txt", "b\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "d.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "b-top")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
+	restackAdvanceRemote(t, f, "main", "c.txt", "trunk\n")
+	restackAdvanceRemote(t, f, "main", "d.txt", "trunk\n")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a-top")
+	held := restackSiblingPath(t, "held")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "b-top")
+	shipResetLog(t, f)
+
+	_, _, errA := runStackCmd(t, f, "rebase", "--no-push")
+	if errA == nil {
+		t.Fatal("stack rebase of a succeeded, want the conflict on a-top")
+	}
+	_, _, errB := runStackCmdIn(t, f, held, "rebase", "--no-push")
+	if errB == nil || !strings.Contains(errB.Error(), "b-top does not rebase onto main cleanly") {
+		t.Fatalf("stack rebase of b = %v, want its own conflict, not a refusal", errB)
+	}
+	wsA, wsB := stackWorkspaceOf(t, errA), stackWorkspaceOf(t, errB)
+	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err == nil || !strings.Contains(err.Error(), "a stack rebase of a-base is already in progress") {
+		t.Fatalf("second rebase of a = %v, want the in-progress refusal", err)
+	}
+
+	if _, _, err := runStackCmd(t, f, "continue"); err == nil || !strings.Contains(err.Error(), wsA+" still has unresolved files: c.txt") {
+		t.Fatalf("continue from a-top = %v, want a's unresolved c.txt", err)
+	}
+	writeShipFile(t, wsB, "d.txt", "trunk\nb\n")
+	mustRun(t, f.Env(), wsB, "git", "add", "d.txt")
+	aTop := gitAt(t, f.Env(), f.Dir, "rev-parse", "a-top")
+	if out, _, err := runStackCmdIn(t, f, wsB, "continue"); err != nil || !strings.Contains(out, "resolved b-top") {
+		t.Fatalf("continue from b's workspace = %q, %v", out, err)
+	}
+	if !stackOnto(t, f, "origin/main", "b-top") {
+		t.Error("b-top is not on the new trunk")
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "a-top"); got != aTop {
+		t.Errorf("finishing b moved a-top to %s", got)
+	}
+
+	writeShipFile(t, wsA, "c.txt", "trunk\na\n")
+	mustRun(t, f.Env(), wsA, "git", "add", "c.txt")
+	if out, _, err := runStackCmd(t, f, "continue"); err != nil || !strings.Contains(out, "resolved a-top") {
+		t.Fatalf("continue from a-top = %q, %v", out, err)
+	}
+	if !stackOnto(t, f, "a-base", "a-top") || !stackOnto(t, f, "origin/main", "a-base") {
+		t.Error("stack a did not land on the new trunk")
+	}
+	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
+		t.Errorf("run state left behind: %v", left)
 	}
 }
 
