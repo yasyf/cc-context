@@ -75,6 +75,23 @@ func EnvFrom(ctx context.Context) []string {
 	return env
 }
 
+// Home returns the home directory of the environment ctx carries for its
+// children, falling back to the process's own. It is [os.UserHomeDir] against
+// the environment a child spawned through ctx would get.
+func Home(ctx context.Context) (string, error) {
+	if home := Getenv(ctx, "HOME"); home != "" {
+		return home, nil
+	}
+	return os.UserHomeDir()
+}
+
+// LookPath returns the path to name on the PATH a child spawned through ctx
+// resolves against, and "" when it is absent. It is [os/exec.LookPath] against
+// the environment RunCLI would hand that child, rather than the process's.
+func LookPath(ctx context.Context, name string) string {
+	return lookpath.For(slices.Concat(os.Environ(), EnvFrom(ctx))).Find(name)
+}
+
 // Getenv returns the value key carries for work ctx drives: the environment
 // ctx carries for its children outranks the process's, last entry winning as
 // exec resolves it. It is what a caller reads in process when the work a child

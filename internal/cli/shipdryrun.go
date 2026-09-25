@@ -315,7 +315,7 @@ func dryRunScope(ctx context.Context, l lane, o shipOpts, r *shipDryRun) error {
 		return fmt.Errorf("ship: %w", err)
 	}
 	for _, e := range entries {
-		if pathWithinShip(l.root, e.Path, o.paths) {
+		if pathWithinShip(ctx, l.root, e.Path, o.paths) {
 			r.named = append(r.named, e.Path)
 			continue
 		}

@@ -325,9 +325,7 @@ func TestShipHooksJJAmend(t *testing.T) {
 func TestShipHooksSubdirRunsAtRoot(t *testing.T) {
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote())
 	shipHookRepo(t, f, vcs.JJ, 0, "", "sub/x.go")
-	t.Chdir(filepath.Join(f.Dir, "sub"))
-
-	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "x.go")
+	got, err := runShipCmd(f.ContextIn(filepath.Join(f.Dir, "sub")), t, "-m", "fix: frobnicate", "--no-push", "x.go")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -1585,7 +1583,7 @@ func TestShipSessionTrailer(t *testing.T) {
 			if slices.Contains(tt.args, "--amend") {
 				shipAmendable(t, f, kind)
 			}
-			t.Setenv(envClaudeSessionKey, "some-uuid")
+			f.Setenv(envClaudeSessionKey, "some-uuid")
 
 			got, err := runShipCmd(f.Context(), t, tt.args...)
 			if err != nil {
@@ -3925,7 +3923,7 @@ func TestWithSessionTrailer(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(envClaudeSessionKey, tt.id)
-			if got := withSessionTrailer(tt.message); got != tt.want {
+			if got := withSessionTrailer(context.Background(), tt.message); got != tt.want {
 				t.Errorf("withSessionTrailer(%q) = %q, want %q", tt.message, got, tt.want)
 			}
 		})
@@ -5209,7 +5207,7 @@ func TestShipGTRefusals(t *testing.T) {
 		shipResetLog(t, f)
 		head := shipHead(t, f)
 
-		_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-push")
+		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 		wantErr := "ship: nothing to commit, and the branch carries nothing above main — nothing to submit"
 		if err == nil || err.Error() != wantErr {
 			t.Fatalf("error = %v, want %q", err, wantErr)
@@ -5225,7 +5223,7 @@ func TestShipGTRefusals(t *testing.T) {
 		shipGTUntracked(t, f, "feature")
 		shipGTReady(t, f)
 
-		got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-push")
+		got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -5259,7 +5257,7 @@ func TestShipGTRefusals(t *testing.T) {
 		head := shipHead(t, f)
 		shipResetLog(t, f)
 
-		_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "nope")
+		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "nope")
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
@@ -5287,7 +5285,7 @@ func TestShipGTRefusals(t *testing.T) {
 		shipGTReady(t, f)
 		head := shipHead(t, f)
 
-		_, errOut, err := runShipCmdFull(context.Background(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "nope")
+		_, errOut, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "nope")
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
@@ -5890,7 +5888,7 @@ func TestShipGTHooksSuppressGitRun(t *testing.T) {
 
 func TestShipGTSessionTrailer(t *testing.T) {
 	f := shipGTFeature(t)
-	t.Setenv(envClaudeSessionKey, "some-uuid")
+	f.Setenv(envClaudeSessionKey, "some-uuid")
 
 	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push"); err != nil {
 		t.Fatalf("ship error = %v", err)

@@ -316,16 +316,16 @@ func stubReviewsAPI(t *testing.T) *reviewsServer {
 	return s
 }
 
-func runReviewsCmd(t *testing.T, args ...string) (string, error) {
+func runReviewsCmd(ctx context.Context, t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	cmd := newReviewsCmd()
+	cmd := newReviewsCmd() //nolint:contextcheck // ExecuteContext(ctx) below is what sets cmd's context; contextcheck cannot see through cobra's two-step wiring
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs(args)
-	err := cmd.Execute()
+	err := cmd.ExecuteContext(ctx)
 	return out.String(), err
 }
 
@@ -354,7 +354,7 @@ func TestReviewsStreamsNewComment(t *testing.T) {
 	srv.pr(7, 1, "MERGED", true)
 	srv.feed("comment", 7, comments)
 
-	got, err := runReviewsCmd(t, "7", "--since", "all")
+	got, err := runReviewsCmd(context.Background(), t, "7", "--since", "all")
 	if err != nil {
 		t.Fatalf("reviews error = %v", err)
 	}
@@ -384,7 +384,7 @@ func TestReviewsDedupesAcrossPolls(t *testing.T) {
 	srv.pr(7, 2, "MERGED", true)
 	srv.feed("comment", 7, comments)
 
-	got, err := runReviewsCmd(t, "7", "--since", "all")
+	got, err := runReviewsCmd(context.Background(), t, "7", "--since", "all")
 	if err != nil {
 		t.Fatalf("reviews error = %v", err)
 	}
@@ -409,7 +409,7 @@ func TestReviewsAllKindsSortedAndSuppressed(t *testing.T) {
 	srv.feed("comment", 7, comments)
 	srv.feed("review", 7, reviews)
 
-	got, err := runReviewsCmd(t, "7", "--since", "all")
+	got, err := runReviewsCmd(context.Background(), t, "7", "--since", "all")
 	if err != nil {
 		t.Fatalf("reviews error = %v", err)
 	}
@@ -467,7 +467,7 @@ func TestReviewsPendingReviewSuppressed(t *testing.T) {
 		{"id":401,"state":"PENDING","body":"draft","user":{"login":"draft"},"html_url":"https://example/401","submitted_at":null}
 	]`)
 
-	got, err := runReviewsCmd(t, "7", "--since", "all")
+	got, err := runReviewsCmd(context.Background(), t, "7", "--since", "all")
 	if err != nil {
 		t.Fatalf("reviews error = %v", err)
 	}
@@ -500,7 +500,7 @@ func TestReviewsEditedReemit(t *testing.T) {
 		"updated_at":"2026-07-20T18:02:00Z"
 	}]`)
 
-	got, err := runReviewsCmd(t, "7", "--since", "all")
+	got, err := runReviewsCmd(context.Background(), t, "7", "--since", "all")
 	if err != nil {
 		t.Fatalf("reviews error = %v", err)
 	}
@@ -528,7 +528,7 @@ func TestReviewsTerminalExit(t *testing.T) {
 			srv := setupReviews(t)
 			srv.pr(7, 1, tt.state, tt.merged)
 
-			got, err := runReviewsCmd(t, "7", "--since", "all")
+			got, err := runReviewsCmd(context.Background(), t, "7", "--since", "all")
 			if err != nil {
 				t.Fatalf("reviews error = %v", err)
 			}
@@ -614,7 +614,7 @@ func TestReviewsMultiPRWaitsForAll(t *testing.T) {
 	srv.pr(1, 1, "MERGED", true)
 	srv.pr(2, 2, "CLOSED", false)
 
-	got, err := runReviewsCmd(t, "1", "2", "--since", "all")
+	got, err := runReviewsCmd(context.Background(), t, "1", "2", "--since", "all")
 	if err != nil {
 		t.Fatalf("reviews error = %v", err)
 	}
@@ -650,7 +650,7 @@ func TestReviewsPerCycleRequestBudget(t *testing.T) {
 	srv.pr(1, 3, "MERGED", true)
 	srv.pr(2, 3, "MERGED", true)
 
-	if _, err := runReviewsCmd(t, "1", "2", "--since", "all"); err != nil {
+	if _, err := runReviewsCmd(context.Background(), t, "1", "2", "--since", "all"); err != nil {
 		t.Fatalf("reviews error = %v", err)
 	}
 
@@ -676,7 +676,7 @@ func TestReviewsTransientFailureTolerance(t *testing.T) {
 	srv.pr(7, 1, "MERGED", true)
 	srv.fail(7, 3)
 
-	got, err := runReviewsCmd(t, "7", "--since", "all")
+	got, err := runReviewsCmd(context.Background(), t, "7", "--since", "all")
 	if err != nil {
 		t.Fatalf("reviews error = %v", err)
 	}
@@ -690,7 +690,7 @@ func TestReviewsAbortsAfterMaxFailures(t *testing.T) {
 	srv.pr(7, 0, "OPEN", false)
 	srv.fail(7, 100)
 
-	got, err := runReviewsCmd(t, "7", "--since", "all")
+	got, err := runReviewsCmd(context.Background(), t, "7", "--since", "all")
 	if err == nil || !strings.Contains(err.Error(), "1 of 1 target(s) aborted") {
 		t.Fatalf("reviews error = %v, want a 1-of-1 aborted error", err)
 	}
@@ -720,7 +720,7 @@ func TestReviewsMultiPRPartialFailureIsolation(t *testing.T) {
 	srv.pr(2, 0, "OPEN", false)
 	srv.fail(2, 100)
 
-	got, err := runReviewsCmd(t, "1", "2", "--since", "all")
+	got, err := runReviewsCmd(context.Background(), t, "1", "2", "--since", "all")
 	if err == nil || !strings.Contains(err.Error(), "1 of 2 target(s) aborted") {
 		t.Fatalf("reviews error = %v, want a 1-of-2 aborted error", err)
 	}
@@ -744,7 +744,7 @@ func TestReviewsBudgetCapFooterIndented(t *testing.T) {
 	srv.pr(7, 1, "MERGED", true)
 	srv.feed("comment", 7, comments)
 
-	got, err := runReviewsCmd(t, "7", "--since", "all", "--budget", "26")
+	got, err := runReviewsCmd(context.Background(), t, "7", "--since", "all", "--budget", "26")
 	if err != nil {
 		t.Fatalf("reviews error = %v", err)
 	}
@@ -795,7 +795,7 @@ func TestReviewsResolution(t *testing.T) {
 			if f != nil {
 				_, err = runReviewsCmdIn(t, f, args...)
 			} else {
-				_, err = runReviewsCmd(t, args...)
+				_, err = runReviewsCmd(context.Background(), t, args...)
 			}
 			if err != nil {
 				t.Fatalf("reviews error = %v", err)
@@ -825,7 +825,7 @@ func TestReviewsBranchResolvesNewestPR(t *testing.T) {
 	srv.pr(2, 1, "MERGED", true)
 	srv.branch("feature/resubmitted", 1, 2)
 
-	out, err := runReviewsCmd(t, "feature/resubmitted", "--since", "all")
+	out, err := runReviewsCmd(context.Background(), t, "feature/resubmitted", "--since", "all")
 	if err != nil {
 		t.Fatalf("reviews error = %v", err)
 	}
@@ -904,7 +904,7 @@ func TestReviewsNotFoundExitCode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			setupReviews(t)
 
-			_, err := runReviewsCmd(t, tt.operand)
+			_, err := runReviewsCmd(context.Background(), t, tt.operand)
 			if err == nil {
 				t.Fatal("reviews error = nil, want not found")
 			}
@@ -962,7 +962,7 @@ func TestReviewsSincePropagationAndWatermark(t *testing.T) {
 		"updated_at":"2026-07-20T18:01:00Z"
 	}]`)
 
-	if _, err := runReviewsCmd(t, "7", "--since", "2026-07-20T18:00:00Z"); err != nil {
+	if _, err := runReviewsCmd(context.Background(), t, "7", "--since", "2026-07-20T18:00:00Z"); err != nil {
 		t.Fatalf("reviews error = %v", err)
 	}
 	var inlinePaths []string
@@ -1012,7 +1012,7 @@ func TestReviewsBadEnvInterval(t *testing.T) {
 	setupReviews(t)
 	t.Setenv(envReviewsPollInterval, "garbage")
 
-	_, err := runReviewsCmd(t, "7")
+	_, err := runReviewsCmd(context.Background(), t, "7")
 	if !errors.Is(err, errBadReviewsPollInterval) {
 		t.Fatalf("reviews error = %v, want errBadReviewsPollInterval", err)
 	}
@@ -1051,7 +1051,7 @@ func TestReviewsStackNoTargets(t *testing.T) {
 	shipGTReady(t, f)
 	head := shipHead(t, f)
 
-	_, err := runReviewsCmd(t, "--stack")
+	_, err := runReviewsCmd(f.Context(), t, "--stack")
 	wantErr := "reviews: --stack found no stacked branches — run it from a stacked branch, not trunk"
 	if err == nil || err.Error() != wantErr {
 		t.Fatalf("reviews --stack error = %v, want %q", err, wantErr)
@@ -1062,13 +1062,15 @@ func TestReviewsStackNoTargets(t *testing.T) {
 // pathWithoutGit points PATH at a directory holding gt alone, so the first git
 // call in reviews' stack resolution cannot resolve. The lane gate ahead of it
 // reads the checkout off disk and only looks gt up, so it still reaches the
-// graphite lane.
+// graphite lane. Both PATHs have to lose git: lookpath falls back to the bare
+// name when its own PATH holds none, and exec then searches the process's.
 func pathWithoutGit(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.Symlink(filepath.Join(f.ShimBin, "gt"), filepath.Join(dir, "gt")); err != nil {
 		t.Fatalf("link gt: %v", err)
 	}
+	f.Setenv("PATH", dir)
 	t.Setenv("PATH", dir)
 }
 
@@ -1091,7 +1093,7 @@ func TestReviewsStackFailuresCarryReviewsPrefix(t *testing.T) {
 				pathWithoutGit(t, f)
 			}
 
-			_, err := runReviewsCmd(t, "--stack")
+			_, err := runReviewsCmd(f.Context(), t, "--stack")
 			if err == nil {
 				t.Fatal("reviews --stack succeeded, want failure")
 			}

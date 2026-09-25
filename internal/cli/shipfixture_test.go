@@ -73,7 +73,6 @@ const fakeRunListJSON = `[{"databaseId":42,"workflowName":"ci","status":"in_prog
 func shipRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	t.Helper()
 	f := vcstest.Repo(t, opts...)
-	f.Isolate(t)
 	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{})
 	return f
 }
@@ -153,7 +152,7 @@ func writeShipUvx(t *testing.T, f *vcstest.Fixture, n int, effect string) {
 	if err := os.WriteFile(marker, []byte(strconv.Itoa(n)), 0o600); err != nil {
 		t.Fatalf("write prek marker: %v", err)
 	}
-	t.Setenv("SHIP_PREK_MARKER", marker)
+	f.Setenv("SHIP_PREK_MARKER", marker)
 	if effect != "" {
 		effect = "  ( " + effect + " ) || exit 99\n"
 	}
@@ -173,7 +172,7 @@ exit 0
 // anyone wrote here.
 func writeShipGH(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
-	t.Setenv("GH_VIEWER_GOLDEN", ghStdout(t, "viewer-graphql"))
+	f.Setenv("GH_VIEWER_GOLDEN", ghStdout(t, "viewer-graphql"))
 	writeShipExecutable(t, f.ShimBin, "gh", "#!/bin/sh\n"+vcstest.RecordArgv("gh")+shipGHBody)
 }
 

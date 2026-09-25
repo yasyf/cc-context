@@ -403,7 +403,7 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 	if err != nil {
 		return err
 	}
-	path, err := mintWorktreePath("worktree add", l.checkout, name)
+	path, err := mintWorktreePath(ctx, "worktree add", l.checkout, name)
 	if err != nil {
 		return err
 	}
@@ -468,11 +468,11 @@ func worktreeShapeOf(mode string) string {
 // path a person can read and a sweep can find. The home prefix is resolved
 // symlink-free — the spelling git canonicalizes every registered path to — so a
 // minted path equals its registry entry byte for byte.
-func mintWorktreePath(prefix string, c vcs.Checkout, name string) (string, error) {
+func mintWorktreePath(ctx context.Context, prefix string, c vcs.Checkout, name string) (string, error) {
 	if name == "" || name == "." || name == ".." || name != filepath.Base(name) {
 		return "", fmt.Errorf("%s: %q is not a worktree name — a name is one path element", prefix, name)
 	}
-	home, err := os.UserHomeDir()
+	home, err := render.Home(ctx)
 	if err != nil {
 		return "", fmt.Errorf("%s: resolve home directory: %w", prefix, err)
 	}
@@ -488,7 +488,7 @@ func runWorktreeRm(cmd *cobra.Command, name string, force bool) error {
 	if err != nil {
 		return err
 	}
-	minted, err := mintWorktreePath("worktree rm", l.checkout, name)
+	minted, err := mintWorktreePath(ctx, "worktree rm", l.checkout, name)
 	if err != nil {
 		return err
 	}

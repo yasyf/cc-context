@@ -226,7 +226,7 @@ func writeShipLoudUvx(t *testing.T, f *vcstest.Fixture, n int) {
 	if err := os.WriteFile(marker, []byte(strconv.Itoa(n)), 0o600); err != nil {
 		t.Fatalf("write prek marker: %v", err)
 	}
-	t.Setenv("SHIP_PREK_MARKER", marker)
+	f.Setenv("SHIP_PREK_MARKER", marker)
 	writeShipExecutable(t, f.ShimBin, "uvx", "#!/bin/sh\n"+vcstest.RecordArgv("uvx")+`printf 'prek: checking every hook\n'
 count=$(cat "$SHIP_PREK_MARKER")
 if [ "$count" -gt 0 ]; then

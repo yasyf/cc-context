@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
@@ -67,11 +66,7 @@ type historyCommit struct {
 // commit subjects and changed-symbol names both — is masked in path's rule
 // context, the shared footer appended after the cap.
 func runHistory(ctx context.Context, path string, n, budget int, reveal bool) (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("resolve cwd: %w", err)
-	}
-	dir := render.Dir(cwd)
+	dir := render.Dir(workingDir(ctx))
 	commits, err := logCommits(ctx, dir, path, n)
 	if err != nil {
 		return "", err
