@@ -233,7 +233,7 @@ func regenTail(out string) string {
 func stackRegenPlan(ctx context.Context, dir render.Dir, run *stackRebaseRun) ([]string, error) {
 	var lines []string
 	for _, b := range run.Branches {
-		if b.Landed != "" {
+		if b.Landed != "" || b.Held != "" {
 			continue
 		}
 		own, err := regenChanged(ctx, dir, b.OldBase, b.Head)
@@ -253,10 +253,14 @@ func stackRegenPlan(ctx context.Context, dir render.Dir, run *stackRebaseRun) ([
 			continue
 		}
 		fork := &b
-		for parent := run.branch(fork.Parent); parent != nil && parent.Landed == ""; parent = run.branch(fork.Parent) {
+		for parent := run.branch(fork.Parent); parent != nil && parent.Held == ""; parent = run.branch(fork.Parent) {
 			fork = parent
 		}
-		upstream, err := regenChanged(ctx, dir, fork.OldBase, run.Pin)
+		onto := run.Pin
+		if parent := run.branch(fork.Parent); parent != nil {
+			onto = parent.Head
+		}
+		upstream, err := regenChanged(ctx, dir, fork.OldBase, onto)
 		if err != nil {
 			return nil, err
 		}
