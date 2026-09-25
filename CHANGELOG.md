@@ -15,13 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rebase of a stack already in progress is refused with the holder's pid,
   host, and age. A run whose process died before it applied anything, with
   no conflict workspace waiting, is reclaimed after five minutes.
+  `continue --stack <bottom branch>` and `abort --stack <bottom branch>`
+  name a run from any working copy, and `abort` clears a run whose conflict
+  workspace is already gone.
 
 ### Upgrade
 
 - A stack rebase started by 0.65.x keeps its state in
-  `.git/ccx-stack-rebase/state.json`, which this release no longer reads.
-  Finish or abort that run with the old binary before upgrading, or delete
-  the file.
+  `.git/ccx-stack-rebase/state.json`. This release refuses to run beside
+  that file and names the `rm -r` to run once the old run is finished or
+  aborted with the old binary. When its last run clears, this release also
+  removes `.git/ccx-stack-rebase/`, which 0.65.x reads as a held lock.
 
 ## [0.65.1] - 2026-09-25
 

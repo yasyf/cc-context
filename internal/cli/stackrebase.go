@@ -164,25 +164,31 @@ names its pushed head, parent, and mergeability. Labels are never touched.`,
 }
 
 func newStackContinueCmd() *cobra.Command {
-	return &cobra.Command{
+	var stack string
+	cmd := &cobra.Command{
 		Use:   "continue",
 		Short: "Resume a stack rebase after resolving its conflict workspace",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runStackContinue(cmd)
+			return runStackContinue(cmd, stack)
 		},
 	}
+	cmd.Flags().StringVar(&stack, "stack", "", "the run to resume, named by its stack's bottom branch")
+	return cmd
 }
 
 func newStackAbortCmd() *cobra.Command {
-	return &cobra.Command{
+	var stack string
+	cmd := &cobra.Command{
 		Use:   "abort",
 		Short: "Drop a stopped stack rebase; nothing it planned has moved",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runStackAbort(cmd)
+			return runStackAbort(cmd, stack)
 		},
 	}
+	cmd.Flags().StringVar(&stack, "stack", "", "the run to drop, named by its stack's bottom branch")
+	return cmd
 }
 
 func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
@@ -837,9 +843,9 @@ func stackBriefIntent(s *strings.Builder, side, name string, pr *stackPR) {
 	}
 }
 
-func runStackContinue(cmd *cobra.Command) error {
+func runStackContinue(cmd *cobra.Command, stack string) error {
 	ctx := cmd.Context()
-	l, commonDir, run, err := stackResolveRun(ctx)
+	l, commonDir, run, err := stackResolveRun(ctx, stack)
 	if err != nil {
 		return err
 	}
@@ -937,9 +943,31 @@ func stackRevParse(ctx context.Context, dir render.Dir, rev string) (string, err
 	return strings.TrimSpace(out), nil
 }
 
-func runStackAbort(cmd *cobra.Command) error {
+func stackDropWorkspace(ctx context.Context, l lane, ws string) error {
+	listed, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "list", "--porcelain"})
+	if err != nil {
+		return fmt.Errorf("stack abort: git worktree list: %w", err)
+	}
+	if !slices.Contains(strings.Split(listed, "\n"), "worktree "+ws) {
+		if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "prune"}); err != nil {
+			return fmt.Errorf("stack abort: git worktree prune: %w", err)
+		}
+		return nil
+	}
+	if stackRebasing(ctx, render.Dir(ws)) {
+		if _, err := render.RunCLI(ctx, render.Dir(ws), "git", []string{"rebase", "--abort"}); err != nil {
+			return fmt.Errorf("stack abort: git rebase --abort in %s: %w", ws, err)
+		}
+	}
+	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "remove", "--force", ws}); err != nil {
+		return fmt.Errorf("stack abort: remove %s: %w", ws, err)
+	}
+	return nil
+}
+
+func runStackAbort(cmd *cobra.Command, stack string) error {
 	ctx := cmd.Context()
-	l, commonDir, run, err := stackResolveRun(ctx)
+	l, commonDir, run, err := stackResolveRun(ctx, stack)
 	if err != nil {
 		return err
 	}
@@ -947,13 +975,8 @@ func runStackAbort(cmd *cobra.Command) error {
 		return errors.New("stack abort: the rewritten stack is already written locally, so there is nothing left to abort — ccx vcs stack continue finishes recording and pushing it")
 	}
 	if c := run.Conflict; c != nil {
-		if stackRebasing(ctx, render.Dir(c.Workspace)) {
-			if _, err := render.RunCLI(ctx, render.Dir(c.Workspace), "git", []string{"rebase", "--abort"}); err != nil {
-				return fmt.Errorf("stack abort: git rebase --abort in %s: %w", c.Workspace, err)
-			}
-		}
-		if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "remove", "--force", c.Workspace}); err != nil {
-			return fmt.Errorf("stack abort: remove %s: %w", c.Workspace, err)
+		if err := stackDropWorkspace(ctx, l, c.Workspace); err != nil {
+			return err
 		}
 	}
 	if err := stackDropTempRefs(ctx, l.dir(), run); err != nil {
@@ -966,7 +989,7 @@ func runStackAbort(cmd *cobra.Command) error {
 	return nil
 }
 
-func stackResolveRun(ctx context.Context) (lane, string, *stackRebaseRun, error) {
+func stackResolveRun(ctx context.Context, stack string) (lane, string, *stackRebaseRun, error) {
 	l, err := resolveLane(ctx, stackRebasePrefix, workingDir(ctx), false)
 	if err != nil {
 		return lane{}, "", nil, err
@@ -983,7 +1006,7 @@ func stackResolveRun(ctx context.Context) (lane, string, *stackRebaseRun, error)
 	if err != nil {
 		return lane{}, "", nil, err
 	}
-	run, err := stackRunFor(runs, l.root, current)
+	run, err := stackRunFor(runs, stack, l.root, current)
 	if err != nil {
 		return lane{}, "", nil, err
 	}
@@ -1260,16 +1283,26 @@ func stackReclaimAbandoned(dir string) error {
 	return os.RemoveAll(tomb)
 }
 
+// stackClearRun removes the state directory once its last run is gone: the
+// 0.65.x binary claims its lock by creating that directory, so an empty one
+// refuses every lane still running it.
 func stackClearRun(commonDir string, run *stackRebaseRun) error {
 	for _, root := range run.Roots {
 		if err := os.RemoveAll(stackRunDir(commonDir, root)); err != nil {
 			return err
 		}
 	}
+	err := os.Remove(filepath.Join(commonDir, stackRebaseStateDir))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTEMPTY) && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
 	return nil
 }
 
 func stackRuns(commonDir string) ([]*stackRebaseRun, error) {
+	if err := stackRefuseFlatState(filepath.Join(commonDir, stackRebaseStateDir)); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(filepath.Join(commonDir, stackRebaseStateDir))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -1303,9 +1336,36 @@ func stackRuns(commonDir string) ([]*stackRebaseRun, error) {
 	return runs, nil
 }
 
-func stackRunFor(runs []*stackRebaseRun, root, branch string) (*stackRebaseRun, error) {
+func stackRefuseFlatState(dir string) error {
+	data, err := os.ReadFile(stackStatePath(dir))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stack rebase: %w", err)
+	}
+	var old stackRebaseRun
+	if err := json.Unmarshal(data, &old); err != nil {
+		return fmt.Errorf("stack rebase: read %s: %w", stackStatePath(dir), err)
+	}
+	names := make([]string, 0, len(old.Branches))
+	for _, b := range old.Branches {
+		names = append(names, b.Name)
+	}
+	return fmt.Errorf("stack rebase: %s holds a stack rebase of %s started by ccx 0.65.x, which this version cannot drive — finish or abort it with that version, or once nothing drives it: rm -r %s", stackStatePath(dir), strings.Join(names, ", "), dir)
+}
+
+func stackRunFor(runs []*stackRebaseRun, stack, root, branch string) (*stackRebaseRun, error) {
 	if len(runs) == 0 {
 		return nil, errors.New("stack rebase: no stack rebase is in progress in this repository")
+	}
+	if stack != "" {
+		for _, run := range runs {
+			if slices.Contains(run.Roots, stack) {
+				return run, nil
+			}
+		}
+		return nil, fmt.Errorf("stack rebase: no stack rebase of %s is in progress — %s", stack, stackRunChoices(runs))
 	}
 	for _, run := range runs {
 		if run.Conflict != nil && run.Conflict.Workspace == root {
@@ -1320,11 +1380,15 @@ func stackRunFor(runs []*stackRebaseRun, root, branch string) (*stackRebaseRun, 
 	if len(runs) == 1 {
 		return runs[0], nil
 	}
-	var stacks []string
+	return nil, fmt.Errorf("stack rebase: %d stack rebases are in progress — run this from one of the stack's branches or its conflict workspace, or name it: %s", len(runs), stackRunChoices(runs))
+}
+
+func stackRunChoices(runs []*stackRebaseRun) string {
+	choices := make([]string, 0, len(runs))
 	for _, run := range runs {
-		stacks = append(stacks, strings.Join(run.Roots, "+"))
+		choices = append(choices, "--stack "+run.Roots[0])
 	}
-	return nil, fmt.Errorf("stack rebase: %d stack rebases are in progress (%s) — run this from a working copy on one of the stack's branches, or from its conflict workspace", len(runs), strings.Join(stacks, ", "))
+	return strings.Join(choices, ", ")
 }
 
 func stackSaveRun(run *stackRebaseRun) error {
