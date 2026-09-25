@@ -4,6 +4,102 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.64.2] - 2026-09-25
+
+### Changed
+
+- **`ccx vcs ship` restates a pull request's title, body, and draft state over
+  `gh api` instead of `gh pr edit`, and a restate that fails after the push
+  reports the commands to finish it with.** `gh pr edit` spends the same
+  rate-limited GraphQL budget as `gh pr list` and `gh pr view`, which must not
+  fail a step whose push already landed. The restate now runs `gh api -X
+  PATCH repos/<nwo>/pulls/<n>` with `-f title=` and `-F body=@<path>`, and the
+  draft toggle stays on `gh pr ready`, REST having none of its own. A REST
+  call that fails after the branch is already on GitHub used to read as the
+  whole ship having failed; the error instead names what already happened and
+  prints the exact `gh api`/`gh pr ready` commands, quoted for a shell, that
+  finish only the restate — one shipped through Graphite's own submit lists
+  every restate still queued behind the one that failed.
+
+- **`ccx vcs prune` deletes a branch whose pull request landed as a squash,
+  not only one `git branch -d` can fast-forward.** A squash leaves no ancestry
+  for git to see, so a squash-merged branch used to survive every prune
+  indefinitely. Prune now asks Graphite's pull-request-info record, batched
+  100 branches per request across four requests at a time, for the merged
+  state of every branch merge left uncovered, and counts one as landed only
+  when its local head is exactly the head of the pull request's newest
+  version — a branch that moved past what merged carries work the squash
+  never took, and is left alone. Because a squash-landed branch never reached
+  trunk, `git branch -d` would refuse it; prune deletes it instead through one
+  `git update-ref --stdin` transaction pinned to the recorded head, and
+  refuses the batch outright if a worktree has since checked one of them out.
+
+- **`ccx vcs ship --dry-run` finds the branch a track would adopt onto with
+  one `git for-each-ref` instead of one ancestry check per tracked branch.**
+  The nearest-tracked lookup used to walk every tracked branch and ask git
+  whether each was an ancestor of the one being shipped, one process per
+  candidate. It now asks `git for-each-ref --merged=<branch>` once, which
+  names only the branches already contained, and filters that list down to
+  the tracked ones before ranking them — the same answer, since an untracked
+  or non-containing branch was never going to win, for one subprocess instead
+  of N.
+
+## [0.64.1] - 2026-09-25
+
+### Fixed
+
+- **`ccx vcs pr status` resolves its working directory again.** #48 read
+  `workingDir()` with no arguments; #47, merged the same day, had changed
+  `workingDir` to take the command's context, and the two branched far enough
+  apart that neither rebased onto the other's change before landing. Main
+  stopped compiling, and the v0.64.0 release build failed with no binaries
+  shipped. `runVcsPRStatus` now passes `ctx` through.
+
+## [0.64.0] - 2026-09-25
+
+### Added
+
+- **`ccx vcs pr status <number>...` reports a pull request's Graphite
+  merge-queue state by number: queued, not queued, or landed.** The answer
+  comes from Graphite's own pull-request-info record, the one `gt` itself
+  reads, rather than GitHub's label or state: a pull request enqueued from
+  the Graphite web UI reads queued with no merge label at all, and a label
+  left on one the queue already dropped means nothing. Landed is decided by
+  reachability, not GitHub's own state — the queue closes what it lands, so a
+  landed pull request reads `CLOSED` with a null `mergedAt`, and status
+  instead confirms that Graphite's recorded squash commit is reachable from
+  the base branch through a `gh api .../compare` call, with the base path-
+  escaped since `gh` sends the endpoint as given and a branch name may carry
+  `#` or `%`. A queued pull request names the commit the queue admitted; a
+  push after admission does not move it, since the queue lands that commit
+  and drops the rest.
+
+### Changed
+
+- **`internal/vcstest` fixtures carry their git, `gt`, and `gh` environment on
+  the context instead of installing it into the process's own.** Every
+  command that used to read `os.Environ()` and `PATH` now resolves through an
+  environment a test hands down explicitly, so parallel fixtures stop
+  fighting over process-global state. `internal/render` gained `WithEnv` to
+  carry a child's environment on `context.Context` and `internal/lookpath`
+  gained an `Env` type so `git` and every other spawned binary resolve
+  against that carried environment rather than the ambient one — the change
+  that made `workingDir` take a context at all, which `ccx vcs pr status`'s
+  own fix in 0.64.1 depends on.
+
+- **Child processes resolve their binary against a `PATH` carried on
+  `context.Context`, not the ambient process environment.** `render.WithEnv`
+  layers a call's environment between the process's and an individual
+  command's own `extraEnv`, and `lookpath.Env` resolves `git` and every other
+  child binary against whichever `PATH` that produces. The reordering
+  `GitPATH` does — putting the resolved git's directory ahead of the rest, so
+  a tool like `gt` that spawns roughly twenty gits per run reaches the same
+  one — governs only what a child inherits, never what ccx itself resolves
+  against, so a caller's own `PATH` entry still outranks it.
+
+Note: 0.64.0's tag was cut but its release build failed to compile (see
+0.64.1), so no binaries shipped for this version.
+
 ## [0.63.0] - 2026-09-24
 
 ### Added
