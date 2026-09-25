@@ -436,7 +436,9 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 			return err
 		}
 		published, err := stackHasPublication(ctx, l.dir(), chain)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		if plan.needsRestack || !contains || published {
 			intent, err := stackShipOptions(o, meta, prNWO, branch)
 			if err != nil {
@@ -515,7 +517,9 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		segments = append(segments, fmt.Sprintf("rebased %d commit(s) onto %s", rebased, branch))
 	}
 	if gtLane {
-		if gtc.restack != nil { segments = append(segments, fmt.Sprintf("published %.12s · source checkouts unchanged", gtc.restack.branch(branch).NewHead)) }
+		if gtc.restack != nil {
+			segments = append(segments, fmt.Sprintf("published %.12s · source checkouts unchanged", gtc.restack.branch(branch).NewHead))
+		}
 		segments = append(segments, prSeg)
 	} else {
 		segments = append(segments, fmt.Sprintf("pushed %s → %s", branch, remote))
@@ -1997,7 +2001,9 @@ func jjRebaseOnto(ctx context.Context, dir render.Dir, target string) (int, erro
 // report. Only a shipHeadSHA failure yields an empty segment; infra failures
 // return a segment so the summary still prints before the nonzero exit.
 func shipWatchCI(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Kind, budget int) (string, []string, error) {
-	if _, err := exec.LookPath("gh"); err != nil { return "CI gh-missing", nil, nil }
+	if _, err := exec.LookPath("gh"); err != nil {
+		return "CI gh-missing", nil, nil
+	}
 	sha, err := shipHeadSHA(ctx, dir, kind)
 	if err != nil {
 		return "", nil, err

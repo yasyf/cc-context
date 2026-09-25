@@ -56,21 +56,21 @@ func (p *stackPR) String() string {
 }
 
 type stackRebaseBranch struct {
-	Name      string   `json:"name"`
-	Parent    string   `json:"parent"`
-	WasParent string   `json:"was_parent"`
-	Local     string   `json:"local"`
-	Remote    string   `json:"remote,omitempty"`
-	Head      string   `json:"head"`
-	HeadRef   string   `json:"head_ref"`
-	OldBase   string   `json:"old_base"`
-	SourceBase string `json:"source_base"`
+	Name        string            `json:"name"`
+	Parent      string            `json:"parent"`
+	WasParent   string            `json:"was_parent"`
+	Local       string            `json:"local"`
+	Remote      string            `json:"remote,omitempty"`
+	Head        string            `json:"head"`
+	HeadRef     string            `json:"head_ref"`
+	OldBase     string            `json:"old_base"`
+	SourceBase  string            `json:"source_base"`
 	Publication *stackPublication `json:"publication,omitempty"`
-	Landed    string   `json:"landed,omitempty"`
-	Held      string   `json:"held,omitempty"`
-	PR        *stackPR `json:"pr,omitempty"`
-	NewBase   string   `json:"new_base,omitempty"`
-	NewHead   string   `json:"new_head,omitempty"`
+	Landed      string            `json:"landed,omitempty"`
+	Held        string            `json:"held,omitempty"`
+	PR          *stackPR          `json:"pr,omitempty"`
+	NewBase     string            `json:"new_base,omitempty"`
+	NewHead     string            `json:"new_head,omitempty"`
 }
 
 type stackConflict struct {
@@ -81,28 +81,29 @@ type stackConflict struct {
 }
 
 type stackRebaseRun struct {
-	Trunk     string `json:"trunk"`
-	Pin       string `json:"pin"`
-	NoPush    bool   `json:"no_push"`
-	Git       bool   `json:"git,omitempty"`
-	Origin    string `json:"origin"`
-	Draft     bool   `json:"draft,omitempty"`
-	NoVerify  bool   `json:"no_verify,omitempty"`
-	deferPush bool
-	Ship      *stackShipIntent    `json:"ship,omitempty"`
-	Aligned   bool                `json:"aligned,omitempty"`
-	Applied   bool                `json:"applied,omitempty"`
-	Publishing bool `json:"publishing,omitempty"`
-	Pushed bool `json:"pushed,omitempty"`
-	Receipted bool `json:"receipted,omitempty"`
-	Branches  []stackRebaseBranch `json:"branches"`
-	Conflict  *stackConflict      `json:"conflict,omitempty"`
-	Roots     []string            `json:"roots"`
-	Pid       int                 `json:"pid"`
-	Started   string              `json:"started"`
-	Host      string              `json:"host"`
-	dir       string
-	saved     time.Time
+	Trunk       string `json:"trunk"`
+	Pin         string `json:"pin"`
+	NoPush      bool   `json:"no_push"`
+	Git         bool   `json:"git,omitempty"`
+	Origin      string `json:"origin"`
+	Draft       bool   `json:"draft,omitempty"`
+	NoVerify    bool   `json:"no_verify,omitempty"`
+	deferPush   bool
+	Ship        *stackShipIntent         `json:"ship,omitempty"`
+	Aligned     bool                     `json:"aligned,omitempty"`
+	Applied     bool                     `json:"applied,omitempty"`
+	Publishing  bool                     `json:"publishing,omitempty"`
+	PushTargets []stackPublicationTarget `json:"push_targets,omitempty"`
+	Pushed      bool                     `json:"pushed,omitempty"`
+	Receipted   bool                     `json:"receipted,omitempty"`
+	Branches    []stackRebaseBranch      `json:"branches"`
+	Conflict    *stackConflict           `json:"conflict,omitempty"`
+	Roots       []string                 `json:"roots"`
+	Pid         int                      `json:"pid"`
+	Started     string                   `json:"started"`
+	Host        string                   `json:"host"`
+	dir         string
+	saved       time.Time
 }
 
 func (r *stackRebaseRun) branch(name string) *stackRebaseBranch {
@@ -132,6 +133,7 @@ type stackRebaseOpts struct {
 	noVerify  bool
 	deferPush bool
 	vetted    map[string]string
+	replayed  map[string]stackRebaseBranch
 	result    **stackRebaseRun
 	ship      *stackShipIntent
 }
@@ -329,7 +331,9 @@ func stackReclaim(ctx context.Context, l lane, commonDir string, run *stackRebas
 		}
 		return fmt.Errorf("stack rebase: the run of %s saved again while it was being reclaimed — re-run", roots)
 	}
-	if err := stackDropPublicationPins(ctx, l.dir(), run); err != nil { return err }
+	if err := stackDropPublicationPins(ctx, l.dir(), run); err != nil {
+		return err
+	}
 	if err := stackDropTempRefs(ctx, l.dir(), run); err != nil {
 		return err
 	}
@@ -457,21 +461,47 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	byName := map[string]*stackRebaseBranch{}
 	for _, name := range members {
 		ours := submitted[name].HeadSha
-		if vetted := o.vetted[name]; vetted != "" && vetted == remotes[name] { ours = vetted }
+		if vetted := o.vetted[name]; vetted != "" && vetted == remotes[name] {
+			ours = vetted
+		}
 		source := state[name]
 		effective := source
 		var receipt *stackPublication
 		if !o.noPush {
 			receipt, err = stackReadPublication(ctx, l.dir(), name)
-			if err != nil { return nil, err }
-			if receipt != nil && receipt.Source == source.Head { effective.Head = receipt.Head }
+			if err != nil {
+				return nil, err
+			}
+			if receipt != nil && receipt.Source == source.Head {
+				effective.Head = receipt.Head
+			}
+		}
+		prepared, replayed := o.replayed[name]
+		if replayed {
+			if source.Head != prepared.Local {
+				return nil, fmt.Errorf("stack rebase: %s source changed during replanning; checkout untouched", name)
+			}
+			effective.Head = prepared.NewHead
 		}
 		b, err := stackSnapshot(ctx, l.dir(), tr, effective, name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin)
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		b.Local = source.Head
 		if !o.noPush {
 			b.HeadRef = stackTempRef(name)
-			if err := stackUsePublication(&b, receipt, submitted[name]); err != nil { return nil, err }
+			if err := stackUsePublication(&b, receipt, submitted[name]); err != nil {
+				return nil, err
+			}
+		}
+		if replayed {
+			b.Head = prepared.NewHead
+			b.WasParent = prepared.Parent
+			b.SourceBase = prepared.SourceBase
+			b.OldBase = prepared.NewBase
+			if b.Landed != "" {
+				b.NewHead = prepared.NewHead
+			}
 		}
 		byName[name] = &b
 	}
@@ -501,8 +531,12 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		b := byName[name]
 		if b.Landed == "" && b.Held == "" {
 			if b.OldBase == "" {
-				if b.OldBase, err = stackOldBase(ctx, l.dir(), trunk, pin, state[name], b, byName); err != nil { return nil, err }
-				b.SourceBase = b.OldBase
+				if b.OldBase, err = stackOldBase(ctx, l.dir(), trunk, pin, state[name], b, byName); err != nil {
+					return nil, err
+				}
+				if b.SourceBase == "" {
+					b.SourceBase = b.OldBase
+				}
 			}
 			if err := stackOwnWork(ctx, l.dir(), tr, pin, b); err != nil {
 				return nil, err
@@ -1232,8 +1266,12 @@ func runStackAbort(cmd *cobra.Command, stack string) error {
 		return err
 	}
 	if run.Publishing || run.Pushed {
-		if !run.Receipted { return errors.New("stack abort: publication receipts are incomplete; run ccx vcs stack continue before discarding recovery state") }
-		if err := stackCompletePublication(ctx, l.dir(), commonDir, run); err != nil { return err }
+		if !run.Receipted {
+			return errors.New("stack abort: publication receipts are incomplete; run ccx vcs stack continue before discarding recovery state")
+		}
+		if err := stackCompletePublication(ctx, l.dir(), commonDir, run); err != nil {
+			return err
+		}
 		cmd.Println("aborted pending publication metadata · published commits and source checkouts unchanged")
 		return nil
 	}
@@ -1245,7 +1283,9 @@ func runStackAbort(cmd *cobra.Command, stack string) error {
 			return err
 		}
 	}
-	if err := stackDropPublicationPins(ctx, l.dir(), run); err != nil { return err }
+	if err := stackDropPublicationPins(ctx, l.dir(), run); err != nil {
+		return err
+	}
 	if err := stackDropTempRefs(ctx, l.dir(), run); err != nil {
 		return err
 	}
@@ -1297,7 +1337,9 @@ func stackResolveRun(ctx context.Context, stack string) (lane, string, *stackReb
 }
 
 func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun) error {
-	if !run.NoPush { return stackFinishPublication(ctx, cmd, l, commonDir, run) }
+	if !run.NoPush {
+		return stackFinishPublication(ctx, cmd, l, commonDir, run)
+	}
 	prefix := stackRebasePrefix
 	var moves []restackMove
 	var movers, dropped []string
@@ -1396,27 +1438,35 @@ func stackLandedSince(ctx context.Context, dir render.Dir, trunk string, live []
 }
 
 func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun, landed []string) error {
+	if err := stackCheckSources(ctx, l.dir(), run); err != nil {
+		return err
+	}
 	var members []string
 	vetted := map[string]string{}
+	replayed := map[string]stackRebaseBranch{}
 	for _, b := range run.Branches {
 		if b.Landed == "" {
 			members = append(members, b.Name)
 			vetted[b.Name] = b.Remote
+			replayed[b.Name] = b
 		}
 	}
-	if err := stackDropPublicationPins(ctx, l.dir(), run); err != nil { return err }
-	if err := stackDropTempRefs(ctx, l.dir(), run); err != nil { return err }
-	if err := stackClearRun(commonDir, run); err != nil {
-		return fmt.Errorf("%s: clear the run state: %w", stackRebasePrefix, err)
-	}
-	cmd.Println(fmt.Sprintf("%s landed while the run was stopped%snothing pushed%sreplanning without it", strings.Join(landed, ", "), shipSep, shipSep))
-	runs, err := stackRuns(commonDir)
+	next, err := stackPlan(ctx, l, commonDir, stackRebaseOpts{
+		members: members, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, noVerify: run.NoVerify, ship: run.Ship,
+	})
 	if err != nil {
 		return err
 	}
-	return stackBegin(ctx, cmd, l, commonDir, runs, stackRebaseOpts{
-		members: members, landed: landed, vetted: vetted, draft: run.Draft, noVerify: run.NoVerify, ship: run.Ship,
-	})
+	if !slices.Equal(run.Roots, next.Roots) {
+		return errors.New("stack rebase: stack roots changed during replanning; original recovery state retained")
+	}
+	next.dir = run.dir
+	if err := stackSaveRun(next); err != nil {
+		return err
+	}
+	cmd.Println(fmt.Sprintf("%s landed while the run was stopped%snothing pushed%sreplanning without it", strings.Join(landed, ", "), shipSep, shipSep))
+	cmd.Println(strings.Join(stackPlanLines(next), "\n"))
+	return stackDrive(ctx, cmd, l, commonDir, next)
 }
 
 // stackFinishGit writes a git-lane restack's branch and moves the working copy

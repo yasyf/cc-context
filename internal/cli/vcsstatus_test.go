@@ -251,43 +251,47 @@ func TestVcsStatusNamesALocallyChangedTrunk(t *testing.T) {
 }
 
 func TestVcsStatusTrunkStateIsInformational(t *testing.T) {
- t.Parallel()
- cases := []struct {
-  name string
-  state vcs.TrunkState
-  want []string
- }{
-  {"held behind and dirty", vcs.TrunkState{Trunk:"dev",Remote:"origin",Behind:3,Holder:"/tmp/primary",Dirty:2}, []string{"behind origin/dev by 3", "held by /tmp/primary, 2 uncommitted files"}},
-  {"locally diverged", vcs.TrunkState{Trunk:"dev",Remote:"origin",Behind:2,Holder:"/tmp/primary",Foreign:[]vcs.TrunkCommit{{SHA:"abc1234",Subject:"local work"}}}, []string{"behind origin/dev by 2", "ahead by 1", "held by /tmp/primary", "foreign     abc1234 local work"}},
-  {"stale holder", vcs.TrunkState{Trunk:"dev",Remote:"origin",Behind:1,Holder:"/tmp/removed",Stale:true}, []string{"behind origin/dev by 1", "held by /tmp/removed, tree gone"}},
- }
- for _,lane:=range []string{"git","gt"} {
-  for _,tc:=range cases {
-   t.Run(lane+"/"+tc.name,func(t *testing.T){
-    t.Parallel()
-    out:=renderVcsStatus(vcsStatus{Lane:lane,Trunk:"dev",TrunkState:&tc.state})
-    for _,want:=range tc.want {
-     if !strings.Contains(out,want) { t.Errorf("report = %q, want %q",out,want) }
-    }
-    for _,unwanted:=range []string{"blocked", "splices", "fetch into", "worktree park", "worktree prune"} {
-     if strings.Contains(out,unwanted) { t.Errorf("report = %q, want no %q for local trunk state",out,unwanted) }
-    }
-   })
-  }
- }
+	t.Parallel()
+	cases := []struct {
+		name  string
+		state vcs.TrunkState
+		want  []string
+	}{
+		{"held behind and dirty", vcs.TrunkState{Trunk: "dev", Remote: "origin", Behind: 3, Holder: "/tmp/primary", Dirty: 2}, []string{"behind origin/dev by 3", "held by /tmp/primary, 2 uncommitted files"}},
+		{"locally diverged", vcs.TrunkState{Trunk: "dev", Remote: "origin", Behind: 2, Holder: "/tmp/primary", Foreign: []vcs.TrunkCommit{{SHA: "abc1234", Subject: "local work"}}}, []string{"behind origin/dev by 2", "ahead by 1", "held by /tmp/primary", "foreign     abc1234 local work"}},
+		{"stale holder", vcs.TrunkState{Trunk: "dev", Remote: "origin", Behind: 1, Holder: "/tmp/removed", Stale: true}, []string{"behind origin/dev by 1", "held by /tmp/removed, tree gone"}},
+	}
+	for _, lane := range []string{"git", "gt"} {
+		for _, tc := range cases {
+			t.Run(lane+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				out := renderVcsStatus(vcsStatus{Lane: lane, Trunk: "dev", TrunkState: &tc.state})
+				for _, want := range tc.want {
+					if !strings.Contains(out, want) {
+						t.Errorf("report = %q, want %q", out, want)
+					}
+				}
+				for _, unwanted := range []string{"blocked", "splices", "fetch into", "worktree park", "worktree prune"} {
+					if strings.Contains(out, unwanted) {
+						t.Errorf("report = %q, want no %q for local trunk state", out, unwanted)
+					}
+				}
+			})
+		}
+	}
 }
 
 func TestVcsStatusRetainsBranchBlockersWithHeldTrunk(t *testing.T) {
- t.Parallel()
- st:=vcsStatus{
-  Lane:"gt",Trunk:"dev",
-  TrunkState:&vcs.TrunkState{Trunk:"dev",Remote:"origin",Behind:1,Holder:"/tmp/primary",Dirty:1},
-  Branches:[]statusBranch{{Name:"feature",Blockers:[]string{"required check failed"}}},
- }
- out:=renderVcsStatus(st)
- if !strings.Contains(out,"blocked     required check failed") || strings.Count(out,"blocked")!=1 {
-  t.Errorf("report = %q, want exactly the branch's real blocker",out)
- }
+	t.Parallel()
+	st := vcsStatus{
+		Lane: "gt", Trunk: "dev",
+		TrunkState: &vcs.TrunkState{Trunk: "dev", Remote: "origin", Behind: 1, Holder: "/tmp/primary", Dirty: 1},
+		Branches:   []statusBranch{{Name: "feature", Blockers: []string{"required check failed"}}},
+	}
+	out := renderVcsStatus(st)
+	if !strings.Contains(out, "blocked     required check failed") || strings.Count(out, "blocked") != 1 {
+		t.Errorf("report = %q, want exactly the branch's real blocker", out)
+	}
 }
 
 // TestStatusChecksKeepsTheLatestRun holds a re-run to one entry: the rollup

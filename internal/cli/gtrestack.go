@@ -264,41 +264,6 @@ func gtRestackFileCount(ctx context.Context, prefix string, dir render.Dir, span
 	return len(files), nil
 }
 
-// gtSubmitWidth measures what a stack proposes against the remote trunk: the
-// commits and the changed files a reviewer sees. A branch trunk already
-// contains is left out, since the submit drops it. The number is the tell a
-// hundred-file pull request over a one-file change shows up as, which is why
-// the report carries it rather than leaving it to be found on GitHub.
-func gtSubmitWidth(ctx context.Context, prefix string, dir render.Dir, trunk string, branches []string) (int, int, error) {
-	files := map[string]bool{}
-	var live []string
-	for _, branch := range branches {
-		contained, err := gitIsAncestor(ctx, dir, prefix, gtRestackRef(branch), trunk)
-		if err != nil {
-			return 0, 0, err
-		}
-		if contained {
-			continue
-		}
-		live = append(live, gtRestackRef(branch))
-		changed, err := gtRestackFiles(ctx, prefix, dir, trunk+"..."+gtRestackRef(branch))
-		if err != nil {
-			return 0, 0, err
-		}
-		for _, f := range changed {
-			files[f] = true
-		}
-	}
-	if len(live) == 0 {
-		return 0, 0, nil
-	}
-	commits, err := gtRevCount(ctx, prefix, dir, live[0], append(live[1:], "--not", trunk)...)
-	if err != nil {
-		return 0, 0, err
-	}
-	return commits, len(files), nil
-}
-
 func gtRestackFiles(ctx context.Context, prefix string, dir render.Dir, span string) ([]string, error) {
 	out, err := render.RunCLI(ctx, dir, "git", []string{"diff", "--name-only", span})
 	if err != nil {

@@ -351,12 +351,12 @@ func gtStuckSuffix(o shipOpts) string {
 // command is speaking, what its refusals append about the work already done,
 // and the two switches gt's own --draft and --no-verify flags map to.
 type gtSubmit struct {
-	prefix    string
-	suffix    string
-	draft     bool
-	noVerify  bool
-	leases    map[string]string
-	trunkHead string
+	prefix      string
+	suffix      string
+	draft       bool
+	noVerify    bool
+	leases      map[string]string
+	trunkHead   string
 	publication *stackRebaseRun
 }
 
@@ -706,7 +706,9 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 	if err != nil {
 		return "", nil, nil, err
 	}
-	if c.restack != nil { state = stackPublicationState(state, c.restack) }
+	if c.restack != nil {
+		state = stackPublicationState(state, c.restack)
+	}
 	chain, err := gtDownstack("ship", state, branch, trunk)
 	if err != nil {
 		return "", nil, nil, err
@@ -786,7 +788,9 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	}
 	if len(branches) == 0 {
 		if s.publication != nil {
-			if err := stackRecordPublication(ctx, l.dir(), s.publication, nil); err != nil { return nil, nil, err }
+			if err := stackRecordPublication(ctx, l.dir(), s.publication, nil); err != nil {
+				return nil, nil, err
+			}
 		}
 		return nil, nil, nil
 	}
@@ -875,7 +879,9 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	}
 
 	if s.publication != nil {
-		if err := stackPushPublication(ctx, l.dir(), s, plan); err != nil { return nil, nil, err }
+		if err := stackPushPublication(ctx, l.dir(), s, plan); err != nil {
+			return nil, nil, err
+		}
 	} else if err := gtPushStack(ctx, l.dir(), s, plan); err != nil {
 		return nil, nil, err
 	}
@@ -887,8 +893,12 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		return nil, nil, gtSubmitFailure(err, s)
 	}
 	if s.publication != nil {
-		if err := stackRecordPublication(ctx, l.dir(), s.publication, plan); err != nil { return nil, nil, err }
-		if err := stackCheckSources(ctx, l.dir(), s.publication); err != nil { return nil, nil, err }
+		if err := stackRecordPublication(ctx, l.dir(), s.publication, plan); err != nil {
+			return nil, nil, err
+		}
+		if err := stackCheckSources(ctx, l.dir(), s.publication); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	var landed []gtapi.SubmittedPR

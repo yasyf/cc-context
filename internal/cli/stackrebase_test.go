@@ -780,6 +780,7 @@ func TestStackContinueDropsAParentThatLandedMidRun(t *testing.T) {
 	stackConflicting(t, f)
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
 	landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	source := stackRebaseSourceSnapshot(t, f, "feature")["feature"]
 	_, _, err := runStackCmd(t, f, "rebase")
 	if err == nil {
 		t.Fatal("stack rebase succeeded, want the conflict to stop")
@@ -795,23 +796,27 @@ func TestStackContinueDropsAParentThatLandedMidRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("continue: %v", err)
 	}
-	if !strings.Contains(out, "dropped landed base") {
-		t.Errorf("output = %q, want base dropped as landed", out)
+	for _, want := range []string{"base landed while the run was stopped", "replanning without it"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output = %q, want %q", out, want)
+		}
 	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "for-each-ref", "refs/heads/base"); got != "" {
 		t.Errorf("origin base = %q, want the landed branch never pushed back", got)
 	}
-	if got := stackParent(t, f, "feature"); got != "main" {
-		t.Errorf("feature's gt parent = %s, want main", got)
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != landedAt {
+		t.Errorf("source base = %s, want unchanged %s", got, landedAt)
 	}
-	if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main..feature"); n != "1" {
-		t.Errorf("feature holds %s commits over trunk, want its own 1", n)
+	if got := stackParent(t, f, "feature"); got != source.Parent {
+		t.Errorf("feature's gt parent = %s, want unchanged %s", got, source.Parent)
 	}
-	if got := gitAt(t, f.Env(), f.Dir, "show", "feature:c.txt"); got != "resolved" {
-		t.Errorf("feature's c.txt = %q, want the resolution kept", got)
+	source.Parent = "main"
+	published := stackAssertRebasePublication(t, f, source)
+	if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main.."+published); n != "1" {
+		t.Errorf("published feature holds %s commits over trunk, want its own 1", n)
 	}
-	if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); local != remote {
-		t.Errorf("origin feature = %s, want the replayed %s", remote, local)
+	if got := gitAt(t, f.Env(), f.Dir, "show", published+":c.txt"); got != "resolved" {
+		t.Errorf("published feature's c.txt = %q, want the resolution kept", got)
 	}
 	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
 		t.Errorf("run state left behind: %v", left)
