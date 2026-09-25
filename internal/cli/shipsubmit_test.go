@@ -113,6 +113,9 @@ func TestShipGTLeavesAnUnchangedDownstackBranchAlone(t *testing.T) {
 	if heads := api.submitHeads()[posted:]; !slices.Equal(heads, []string{"feature"}) {
 		t.Errorf("submit posts = %v, want feature alone", heads)
 	}
+	if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Equal(refs, []string{"base", "feature"}) {
+		t.Errorf("pushed %v, want base kept in the atomic push under its lease", refs)
+	}
 	if want := "submitted feature → PR #101 " + gtStubPRURL(101); !strings.Contains(got, want) {
 		t.Errorf("summary = %q, want it to carry %q", got, want)
 	}
@@ -138,5 +141,26 @@ func TestShipGTReportsFromGraphiteAlone(t *testing.T) {
 		if len(inv) > 2 && inv[0] == "gh" && inv[1] == "api" && inv[2] == "graphql" {
 			t.Errorf("ship ran %v — the submit's report is Graphite's", inv)
 		}
+	}
+}
+
+// TestShipGTResubmitsAnUnchangedBranchToChangeItsDraftState keeps --draft
+// meaning what it says on a branch whose pull request is otherwise unchanged.
+func TestShipGTResubmitsAnUnchangedBranchToChangeItsDraftState(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	shipGTStack(t, f, "base", "feature")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	api.prs["base"], api.prs["feature"] = 100, 101
+	posted := len(api.submitHeads())
+	shipGTReady(t, f)
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--draft"); err != nil {
+		t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+	}
+	if heads := api.submitHeads()[posted:]; !slices.Equal(heads, []string{"base", "feature"}) {
+		t.Errorf("submit posts = %v, want base resubmitted as a draft too", heads)
 	}
 }

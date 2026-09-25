@@ -382,6 +382,12 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		}
 	}
 
+	if plan.moveOntoParent {
+		if planSeg, plan.needsRestack, err = gtMoveOntoParent(ctx, cmd.ErrOrStderr(), l, o, gtc); err != nil {
+			return err
+		}
+	}
+
 	var preAmendSHA string
 	if !o.noPush && kind == vcs.Git && o.amend && !gtLane {
 		out, rerr := render.RunCLI(ctx, dir, "git", []string{"rev-parse", "HEAD"})

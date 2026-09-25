@@ -197,3 +197,23 @@ func TestShipGTParentRefusesABranchAboveIt(t *testing.T) {
 		t.Errorf("a's parent = %s, want it left on main", parent)
 	}
 }
+
+// TestShipGTParentMovesNothingWhenALaterCheckRefuses holds the move to the
+// same rule as every other write: a ship refused for a dirty --no-commit
+// checkout leaves the branch where it was, on the parent gt recorded.
+func TestShipGTParentMovesNothingWhenALaterCheckRefuses(t *testing.T) {
+	f := shipGTRepo(t)
+	shipParentRewritten(t, f, "main")
+	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "c")
+	writeShipFile(t, f.Dir, "dirty.txt", "dirty\n")
+
+	if _, err := runShipCmd(f.Context(), t, "--no-commit", "--no-push", "--parent", "p"); err == nil {
+		t.Fatal("ship succeeded over a dirty --no-commit checkout")
+	}
+	if after := gitAt(t, f.Env(), f.Dir, "rev-parse", "c"); after != before {
+		t.Errorf("c moved from %s to %s on a refusal", before, after)
+	}
+	if parent := shipParentOf(t, f, "c"); parent != "main" {
+		t.Errorf("c's parent = %s, want it left on main", parent)
+	}
+}

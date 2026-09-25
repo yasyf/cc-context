@@ -5342,7 +5342,7 @@ func TestShipGTRefusals(t *testing.T) {
 			{"git", "branch", "--show-current"},
 			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
-			{"git", "rev-parse", "--verify", "--quiet", "refs/heads/nope"},
+			{"git", "branch", "--show-current"},
 			{"gt", "track", "feature", "--parent", "nope", "--no-interactive"},
 		})
 		assertShipRefusedClean(t, f, head)

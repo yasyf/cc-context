@@ -166,6 +166,10 @@ func dryRunReparent(ctx context.Context, l lane, o shipOpts, state gtState, was 
 		r.refusals = append(r.refusals, fmt.Sprintf("ship: --parent %s names a branch graphite does not track, so %s cannot be recorded on it — track %s first", o.parent, r.branch, o.parent))
 		return nil
 	}
+	if held := state[r.branch].State; held != "" {
+		r.refusals = append(r.refusals, fmt.Sprintf("ship: %s is %s, so ship leaves it on %s — release it, then ship again", r.branch, held, was))
+		return nil
+	}
 	up, err := gtUpstack("ship", state, r.branch)
 	if err != nil {
 		return err
@@ -185,25 +189,18 @@ func dryRunReparent(ctx context.Context, l lane, o shipOpts, state gtState, was 
 // dryRunOnto names the replay gtOnto would make to put the branch on --parent,
 // or records the refusal it would make instead.
 func dryRunOnto(ctx context.Context, l lane, r *shipDryRun) (string, error) {
-	on, err := gitIsAncestor(ctx, l.dir(), "ship", gtRestackRef(r.parent), gtRestackRef(r.branch))
-	if err != nil {
-		return "", err
-	}
+	m, err := gtOntoPlan(ctx, l, r.branch, r.parent)
 	r.onto = r.parent
-	if on {
-		return "", nil
-	}
-	fork, own, err := gtOwnFork(ctx, l.dir(), r.branch, r.parent)
 	var refusal *shipRefusal
 	if errors.As(err, &refusal) {
 		r.refusals = append(r.refusals, refusal.Error())
 		return "", nil
 	}
-	if err != nil {
+	if err != nil || m.head == "" {
 		return "", err
 	}
-	r.fork = fork
-	return fmt.Sprintf(", replaying its %d own commit(s) onto %s, which is no longer in its history", own, r.parent), nil
+	r.fork = m.fork
+	return fmt.Sprintf(", replaying its %d own commit(s) onto %s, which is no longer in its history", m.own, r.parent), nil
 }
 
 // dryRunTrack resolves the parent gt track would record without running it. gt
