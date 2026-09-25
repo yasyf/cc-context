@@ -6,6 +6,7 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,11 +42,12 @@ type gtAPIStub struct {
 	submits   []gtStubSubmit
 }
 
-// gtStubMerged is a pull request Graphite reports MERGED, and the head its
-// newest version carried.
+// gtStubMerged is a pull request Graphite reports MERGED, or CLOSED when state
+// says so, and the head its newest version carried.
 type gtStubMerged struct {
 	number int
 	head   string
+	state  gtapi.PRState
 }
 
 // gtStubSubmit is one submit post: the raw body ccx sent, and the lone entry
@@ -145,7 +147,7 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			if m, ok := s.merged[branch]; ok {
 				prs = append(prs, map[string]any{
-					"prNumber": m.number, "headRefName": branch, "state": "MERGED", "url": gtStubPRURL(m.number),
+					"prNumber": m.number, "headRefName": branch, "state": cmp.Or(m.state, gtapi.PRMerged), "url": gtStubPRURL(m.number),
 					"versions": []map[string]any{
 						{"headSha": m.head, "createdAt": "2026-09-02T00:00:00.000Z"},
 						{"headSha": strings.Repeat("0", 40), "createdAt": "2026-09-01T00:00:00.000Z"},

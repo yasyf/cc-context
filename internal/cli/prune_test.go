@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
@@ -320,6 +322,41 @@ func TestPruneSeesSquashLandings(t *testing.T) {
 		if !gitBranchExists(t, f.Env(), f.Dir, branch) {
 			t.Errorf("%s was deleted", branch)
 		}
+	}
+}
+
+// TestPruneSeesAQueueLandingGraphiteRecordsClosed pins the landing the merge
+// queue leaves: Graphite records the pull request CLOSED, and only the squash
+// subject on trunk says it landed. The branch goes with its git config; a
+// CLOSED pull request with no squash is an abandonment and survives.
+func TestPruneSeesAQueueLandingGraphiteRecordsClosed(t *testing.T) {
+	f, dir, trunk, commonDir := pruneSquashFixture(t, "queued", "abandoned")
+	api := stubGTAPI(t)
+	api.merged["queued"] = gtStubMerged{number: 30, head: gitAt(t, f.Env(), f.Dir, "rev-parse", "queued"), state: gtapi.PRClosed}
+	api.merged["abandoned"] = gtStubMerged{number: 31, head: gitAt(t, f.Env(), f.Dir, "rev-parse", "abandoned"), state: gtapi.PRClosed}
+	restackSquashRemote(t, f, "main", "queued (#30)", "queued")
+	gitAt(t, f.Env(), f.Dir, "fetch", "-q", "origin")
+	gitAt(t, f.Env(), f.Dir, "config", "branch.queued.remote", "origin")
+	gitAt(t, f.Env(), f.Dir, "config", "branch.queued.merge", "refs/heads/queued")
+
+	plan, err := prunePlanFor(t.Context(), dir, pruneGTLane, trunk, commonDir)
+	if err != nil {
+		t.Fatalf("prunePlanFor: %v", err)
+	}
+	if got := pruneSquashedNames(plan); !slices.Equal(got, []string{"queued"}) {
+		t.Fatalf("squashed = %v, want [queued]", got)
+	}
+	if err := pruneApply(t.Context(), dir, pruneGTLane, plan, commonDir); err != nil {
+		t.Fatalf("pruneApply: %v", err)
+	}
+	if gitBranchExists(t, f.Env(), f.Dir, "queued") {
+		t.Error("queued survived the prune")
+	}
+	if config := restackRead(t, filepath.Join(f.Dir, ".git", "config")); strings.Contains(config, `[branch "queued"]`) {
+		t.Errorf("queued's git config survived the prune:\n%s", config)
+	}
+	if !gitBranchExists(t, f.Env(), f.Dir, "abandoned") {
+		t.Error("abandoned was deleted with no squash on trunk")
 	}
 }
 
