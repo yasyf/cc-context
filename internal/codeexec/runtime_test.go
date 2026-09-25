@@ -10,14 +10,14 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/backend"
-	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // requireUV skips a test that spawns the real sandbox driver when uv is
 // absent.
 func requireUV(t *testing.T) {
 	t.Helper()
-	if !Supported() {
+	if !Supported(t.Context()) {
 		t.Skip(UnsupportedReason)
 	}
 }
@@ -291,14 +291,13 @@ func TestHostCallValve(t *testing.T) {
 // TestRunUVMissing proves the launch failure names uv and the pinned
 // requirement when uv is off PATH.
 func TestRunUVMissing(t *testing.T) {
-	orig := lookpath.Find
-	lookpath.Find = func(string) string { return "" }
-	t.Cleanup(func() { lookpath.Find = orig })
+	t.Parallel()
+	ctx := render.WithEnv(t.Context(), "PATH="+t.TempDir())
 
-	if Supported() {
-		t.Fatal("Supported() = true with uv stubbed off PATH")
+	if Supported(ctx) {
+		t.Fatal("Supported() = true with uv off the PATH the context carries")
 	}
-	_, err := testRuntime().Run(context.Background(), "40 + 2", 0)
+	_, err := testRuntime().Run(ctx, "40 + 2", 0)
 	if err == nil {
 		t.Fatal("Run = nil error, want launch failure")
 	}

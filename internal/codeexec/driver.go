@@ -10,12 +10,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cache"
-	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 //go:embed driver.py
@@ -44,7 +45,7 @@ type driverProc struct {
 }
 
 func launchDriver(ctx context.Context) (*driverProc, error) {
-	uv := lookpath.Find("uv")
+	uv := render.LookPath(ctx, "uv")
 	if uv == "" {
 		return nil, fmt.Errorf("codeexec: uv not on PATH — needed to run the %s sandbox driver (brew install uv)", montyRequirement)
 	}
@@ -58,6 +59,7 @@ func launchDriver(ctx context.Context) (*driverProc, error) {
 	// would orphan. The parent env is inherited deliberately: an attacker
 	// who controls it controls ccx itself.
 	cmd := exec.CommandContext(ctx, uv, "run", "--no-project", "--no-config", "--no-build", "--quiet", "--python", driverPython, "--with", montyRequirement, "python", path) //nolint:gosec // argv is fixed: uv from PATH runs the cached driver against a pinned requirement
+	cmd.Env = slices.Concat(os.Environ(), render.EnvFrom(ctx))
 	cmd.Dir = filepath.Dir(path)
 	cmd.WaitDelay = 5 * time.Second
 	stdin, err := cmd.StdinPipe()
