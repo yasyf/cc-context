@@ -84,13 +84,12 @@ GIT_SHOW_SUPPRESS_FLAGS = ("--no-patch", "-s")
 # into a per-commit full-patch dump.
 LOG_PATCH_FLAGS = ("-p", "--patch", "-u")
 
-# The note disclosing the `gt restack` substitution. `gt sync` has no counterpart here: ccx runs it
-# as one step of a longer pass, so rewriting it would restack branches the user never asked to move.
+# The note disclosing the `gt restack` substitution. `gt sync` has no ccx twin, so it is never rewritten.
 GT_RESTACK_NOTE = (
-    "Rewrote `gt restack` → `ccx vcs stack restack`: a superset of the same restack. It fetches "
-    "first (`gt sync --no-interactive`, pruning merged branches and reparenting their children), "
-    "then moves every branch gt declined — including one another working copy has checked out, "
-    "which a bare `gt restack` cannot touch. `gt create` and `gt modify` are untouched. End a command "
+    "Rewrote `gt restack` → `ccx vcs stack restack`: the same restack, replayed from each branch's "
+    "recorded base without gt sync. It fetches trunk first and drops every branch whose pull request "
+    "landed, moving its children onto what it sat on; a conflict stops in a workspace for "
+    "`ccx vcs stack continue`. `gt create` and `gt modify` are untouched. End a command "
     "with `# ccx:raw` to run it as written."
 )
 
@@ -305,7 +304,7 @@ rewrite_command_occurrences(
         Input(command="gt modify"): Allow(),
         Input(command="gt modify -a"): Allow(),
         Input(command="gt submit"): Allow(),
-        Input(command="gt sync"): Allow(),  # ccx runs sync inside restack; no standalone equivalent
+        Input(command="gt sync"): Allow(),
         # Scoped restacks have no `ccx vcs stack restack` form (it always drives the whole stack):
         Input(command="gt restack --upstack"): Allow(),
         Input(command="gt restack -d"): Allow(),
