@@ -1718,7 +1718,7 @@ func TestShipGitRebase(t *testing.T) {
 				[]string{"git", "rev-parse", "--verify", "--quiet", "REBASE_HEAD"},
 				[]string{"git", "diff", "--name-only", "--diff-filter=U"},
 				[]string{"git", "rebase", "--abort"}),
-			wantErr: []string{"rebase onto origin/main conflicts in: f.txt", "resolve manually"},
+			wantErr: []string{"rebase onto origin/main conflicts in: f.txt", "resolve manually", "if you rewrote main on purpose, ccx vcs push moves origin/main onto your head"},
 		},
 		{
 			// rev-parse exits 1 on a branch nobody has pushed, so the rebase is

@@ -1859,10 +1859,20 @@ func gitRebaseFailure(ctx context.Context, dir render.Dir, prefix, remote, branc
 		return fmt.Errorf(prefix+": rebase onto %s/%s conflicted (%w) and abort failed: %w — run: git rebase --abort, then resolve manually", remote, branch, rebaseErr, aerr)
 	}
 	if lerr != nil {
-		return fmt.Errorf(prefix+": rebase onto %s/%s conflicted (%w); aborted back to the pre-rebase state; listing the conflicted files also failed: %w — resolve manually: git fetch %s && git rebase --autostash %s/%s, fix the conflicts (git status), then git push %s %s", remote, branch, rebaseErr, lerr, remote, remote, branch, remote, branch)
+		return fmt.Errorf(prefix+": rebase onto %s/%s conflicted (%w); aborted back to the pre-rebase state; listing the conflicted files also failed: %w — %s", remote, branch, rebaseErr, lerr, gitRebaseRecovery(remote, branch))
 	}
 	conflicted := strings.Join(strings.Fields(files), ", ")
-	return fmt.Errorf(prefix+": rebase onto %s/%s conflicts in: %s; aborted back to the pre-rebase state (%w) — resolve manually: git fetch %s && git rebase --autostash %s/%s, fix the conflicts (git status), then git push %s %s", remote, branch, conflicted, rebaseErr, remote, remote, branch, remote, branch)
+	return fmt.Errorf(prefix+": rebase onto %s/%s conflicts in: %s; aborted back to the pre-rebase state (%w) — %s", remote, branch, conflicted, rebaseErr, gitRebaseRecovery(remote, branch))
+}
+
+// gitRebaseRecovery names the way out of a rebase ccx rolled back. Every rebase
+// it reports replays a branch onto its own remote counterpart, so the second
+// clause holds for all of them: the conflict is spurious when the local history
+// is a deliberate rewrite, and ccx vcs push moves the remote rather than
+// replaying it back over the work that replaced it.
+func gitRebaseRecovery(remote, branch string) string {
+	return fmt.Sprintf("resolve manually: git fetch %s && git rebase --autostash %s/%s, fix the conflicts (git status), then git push %s %s; if you rewrote %s on purpose, ccx vcs push moves %s/%s onto your head under a lease instead of replaying onto it",
+		remote, remote, branch, remote, branch, branch, remote, branch)
 }
 
 func jjBookmarkNames(ctx context.Context, dir render.Dir, prefix, rev string) ([]string, error) {
