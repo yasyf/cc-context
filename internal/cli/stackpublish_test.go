@@ -326,3 +326,40 @@ func TestStackPublicationRecoversUnrecordedPushAfterSourceMoves(t *testing.T) {
 		})
 	}
 }
+
+func TestVcsPushRepublishesAFixOnThePublishedHead(t *testing.T) {
+	f := stackRebaseRepo(t, "a", "b")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatal(err)
+	}
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "b")
+	stubStackPRs(t, map[string]*stackPR{"a": {Number: 41, State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "a")}})
+	restackSquashRemote(t, f, "main", "a (#41)", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "b", "--parent", "main", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", published)
+	fix := pushCommit(t, f, "fix.txt", "fix\n", "fix")
+	if _, err := runVcsPushCmd(f.Context(), t); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "b")
+	if err != nil || receipt == nil || receipt.Source != fix || receipt.Head != fix || receipt.Parent != "main" {
+		t.Fatalf("pushed receipt = %+v %v, want source and head %s on main", receipt, err, fix)
+	}
+	for _, field := range []string{"source", "head"} {
+		if got := gitAt(t, f.Env(), f.Dir, "rev-parse", stackPublicationRef("b", field)); got != fix {
+			t.Errorf("published %s = %s, want %s", field, got, fix)
+		}
+	}
+	if _, _, err := runStackCmd(t, f, "rebase", "--dry-run"); err != nil {
+		t.Fatalf("rebase dry run after push: %v", err)
+	}
+	shipResetLog(t, f)
+	if _, _, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch"); err != nil {
+		t.Fatalf("ship after push: %v", err)
+	}
+	if count := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main..origin/b"); count != "2" {
+		t.Fatalf("republished b carries %s commits above trunk, want its own and the fix", count)
+	}
+}

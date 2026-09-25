@@ -40,7 +40,10 @@ of this branch reaches is work this branch has never held — a divergence, not 
 rewrite — and push refuses it, naming the commits the force would drop.
 
 Push moves one branch and nothing else. A graphite stack's bases live in
-Graphite's own record, which only ccx vcs stack submit writes.`,
+Graphite's own record, which only ccx vcs stack submit writes. A branch a stack
+submit published carries a publication receipt, and push rewrites it to the head
+it pushed, as ship does, so the next ship or stack rebase reads that head as the
+branch's published version rather than as someone else's push.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runVcsPush(cmd, o)
@@ -74,21 +77,77 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 	if err != nil {
 		return err
 	}
-	summary, err := vcsPushGit(ctx, dir, remote, branch, o.noVerify)
+	head, err := gitRevParse(ctx, dir, "push", "HEAD")
 	if err != nil {
 		return err
+	}
+	receipt, prior, err := vcsPushPublication(ctx, dir, branch, head)
+	if err != nil {
+		return err
+	}
+	summary, err := vcsPushGit(ctx, dir, remote, branch, head, o.noVerify)
+	if err != nil {
+		return err
+	}
+	if receipt != nil {
+		var tx strings.Builder
+		tx.WriteString("start\n")
+		if err := stackReceiptTx(ctx, dir, &tx, *receipt, prior); err != nil {
+			return err
+		}
+		tx.WriteString("commit\n")
+		if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "--stdin"}, []byte(tx.String())); err != nil {
+			return fmt.Errorf("push: record %s's publication at %s: %w", branch, shortOID(head), err)
+		}
 	}
 	cmd.Println(summary)
 	return nil
 }
 
-func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch string, noVerify bool) (string, error) {
+func vcsPushPublication(ctx context.Context, dir render.Dir, branch, head string) (*stackPublication, string, error) {
+	prior, err := stackReadPublication(ctx, dir, branch)
+	if err != nil || prior == nil {
+		return nil, "", err
+	}
+	state, err := gtStateQuery(ctx, dir, "push")
+	if err != nil {
+		return nil, "", err
+	}
+	parents := state[branch].Parents
+	if len(parents) == 0 {
+		return nil, "", nil
+	}
+	parent := parents[0]
+	base := ""
+	for _, candidate := range []string{prior.Base, parent.SHA} {
+		held, err := gitIsAncestor(ctx, dir, "push", candidate, head)
+		if err != nil {
+			return nil, "", err
+		}
+		if !held {
+			continue
+		}
+		if base == "" {
+			base = candidate
+			continue
+		}
+		further, err := gitIsAncestor(ctx, dir, "push", base, candidate)
+		if err != nil {
+			return nil, "", err
+		}
+		if further {
+			base = candidate
+		}
+	}
+	if base == "" {
+		return nil, "", fmt.Errorf("push: %s's published base %s and its parent %s at %s are both off HEAD, so no base marks its own commits; publish it with ccx vcs stack submit instead", branch, shortOID(prior.Base), parent.Ref, shortOID(parent.SHA))
+	}
+	return &stackPublication{Branch: branch, Source: head, SourceBase: base, Head: head, Base: base, Parent: parent.Ref}, prior.OID, nil
+}
+
+func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string, noVerify bool) (string, error) {
 	if _, err := render.RunCLI(ctx, dir, "git", []string{"fetch", remote}); err != nil {
 		return "", fmt.Errorf("push: git fetch %s: %w", remote, err)
-	}
-	head, err := gitRevParse(ctx, dir, "push", "HEAD")
-	if err != nil {
-		return "", err
 	}
 	ref := "refs/heads/" + branch
 	refspec := head + ":" + ref
