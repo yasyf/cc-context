@@ -228,18 +228,28 @@ func regenTail(out string) string {
 }
 
 // stackRegenPlan names, per moving branch, the declared generators a conflict
-// would run: those owning a path the branch changed that trunk also moved.
+// would run: those owning a path the branch changed that trunk also moved. The
+// declaration is trunk's, or the branch's own when the branch changes it.
 func stackRegenPlan(ctx context.Context, dir render.Dir, run *stackRebaseRun) ([]string, error) {
-	gens, err := regenLoad(ctx, dir, run.Pin)
-	if err != nil {
-		return []string{"generated" + shipSep + err.Error() + shipSep + "their conflicts stop for a human"}, nil
-	}
-	if len(gens) == 0 {
-		return nil, nil
-	}
 	var lines []string
 	for _, b := range run.Branches {
 		if b.Landed != "" {
+			continue
+		}
+		own, err := regenChanged(ctx, dir, b.OldBase, b.Head)
+		if err != nil {
+			return nil, err
+		}
+		declaredAt := run.Pin
+		if slices.Contains(own, regenFile) {
+			declaredAt = b.Head
+		}
+		gens, err := regenLoad(ctx, dir, declaredAt)
+		if err != nil {
+			lines = append(lines, b.Name+shipSep+err.Error()+shipSep+"its generated conflicts stop for a human")
+			continue
+		}
+		if len(gens) == 0 {
 			continue
 		}
 		fork := &b
@@ -247,10 +257,6 @@ func stackRegenPlan(ctx context.Context, dir render.Dir, run *stackRebaseRun) ([
 			fork = parent
 		}
 		upstream, err := regenChanged(ctx, dir, fork.OldBase, run.Pin)
-		if err != nil {
-			return nil, err
-		}
-		own, err := regenChanged(ctx, dir, b.OldBase, b.Head)
 		if err != nil {
 			return nil, err
 		}
