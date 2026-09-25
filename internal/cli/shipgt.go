@@ -1222,8 +1222,9 @@ func gtPushFailure(s gtSubmit, plan []gtSubmitBranch, err error) error {
 var gtStaleRefPattern = regexp.MustCompile(`-> (\S+) \(stale info\)`)
 
 func gtStaleRefs(err error) []string {
-	var refs []string
-	for _, m := range gtStaleRefPattern.FindAllStringSubmatch(err.Error(), -1) {
+	matches := gtStaleRefPattern.FindAllStringSubmatch(err.Error(), -1)
+	refs := make([]string, 0, len(matches))
+	for _, m := range matches {
 		refs = append(refs, m[1])
 	}
 	return refs
