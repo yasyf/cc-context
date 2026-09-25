@@ -354,11 +354,12 @@ func gtStuckSuffix(o shipOpts) string {
 // command is speaking, what its refusals append about the work already done,
 // and the two switches gt's own --draft and --no-verify flags map to.
 type gtSubmit struct {
-	prefix   string
-	suffix   string
-	draft    bool
-	noVerify bool
-	leases   map[string]string
+	prefix    string
+	suffix    string
+	draft     bool
+	noVerify  bool
+	leases    map[string]string
+	trunkHead string
 }
 
 func gtStuck(prefix, problem, suffix string) string {
@@ -833,7 +834,11 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	}
 	for _, branch := range branches {
 		parent := state[branch].Parents[0].Ref
-		contains, err := gitIsAncestor(ctx, l.dir(), s.prefix, state[parent].Head, state[branch].Head)
+		parentHead := state[parent].Head
+		if parent == tr.Name() && s.trunkHead != "" {
+			parentHead = s.trunkHead
+		}
+		contains, err := gitIsAncestor(ctx, l.dir(), s.prefix, parentHead, state[branch].Head)
 		if err != nil {
 			return nil, nil, err
 		}
