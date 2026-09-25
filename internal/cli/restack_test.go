@@ -972,3 +972,20 @@ func TestRestackGTConflictContinuesWithoutPushing(t *testing.T) {
 		}
 	}
 }
+
+// restackSquashRemote lands names on origin's trunk as one squash commit
+// carrying the subject the Graphite merge queue writes — what a queue landing
+// leaves behind, with none of the branches' own commits reaching trunk.
+func restackSquashRemote(t *testing.T, f *vcstest.Fixture, trunk, subject string, names ...string) {
+	t.Helper()
+	clone := filepath.Join(t.TempDir(), "upstream")
+	restackRun(t, f, filepath.Dir(clone), "git", "clone", "-q", "--branch", trunk, f.RemoteDir, clone)
+	restackRun(t, f, clone, "git", "config", "user.email", "t@t.t")
+	restackRun(t, f, clone, "git", "config", "user.name", "t")
+	for _, name := range names {
+		restackWrite(t, filepath.Join(clone, name+".txt"), name+"\n")
+		restackRun(t, f, clone, "git", "add", name+".txt")
+	}
+	restackRun(t, f, clone, "git", "commit", "-qm", subject)
+	restackRun(t, f, clone, "git", "push", "-q", "origin", trunk)
+}

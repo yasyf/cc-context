@@ -922,3 +922,334 @@ func TestStackSubmitRefusesAPushFromElsewhere(t *testing.T) {
 		t.Errorf("remote base = %s, want the foreign head %s kept", got, foreign)
 	}
 }
+
+// stackBesideBase cuts base and name from trunk while both sit on it, adopts
+// name onto base the way gt track does for two branches at one commit, and only
+// then gives base a commit: gt records name as base's child though it carries
+// none of base's work. With own set, name takes a commit of its own as well.
+func stackBesideBase(t *testing.T, f *vcstest.Fixture, name string, own bool) {
+	t.Helper()
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "base")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", name)
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "base", "--no-interactive")
+	if own {
+		writeShipFile(t, f.Dir, name+".txt", name+"\n")
+		mustRun(t, f.Env(), f.Dir, "git", "add", name+".txt")
+		mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", name)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	writeShipFile(t, f.Dir, "base.txt", "base\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "base.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "base")
+	if parent := dropGTParent(t, f, name); parent != "base" {
+		t.Fatalf("gt parent of %s = %s, want base", name, parent)
+	}
+}
+
+// TestStackSubmitLeavesAStrayBranchAlone is #25109: a branch gt parents on this
+// stack whose pull request targets trunk and whose history carries none of its
+// parent's work belongs to another lane, and a submit run from the stack below
+// it must neither replay it onto that parent nor push it.
+func TestStackSubmitLeavesAStrayBranchAlone(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		pr   bool
+	}{
+		{name: "its pull request targets trunk", pr: true},
+		{name: "it has no pull request"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipGTRepo(t)
+			api := stubGTAPI(t)
+			stackBesideBase(t, f, "stray", true)
+			if tt.pr {
+				stubStackPRs(t, map[string]*stackPR{"stray": {Number: 41, Title: "stray", State: "OPEN", Base: "main"}})
+			}
+			stray := gitAt(t, f.Env(), f.Dir, "rev-parse", "stray")
+			shipResetLog(t, f)
+
+			_, errOut, err := runStackCmd(t, f, "submit")
+			if err != nil {
+				t.Fatalf("stack submit: %v", err)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "stray"); got != stray {
+				t.Errorf("stray moved to %s, want it left at %s", got, stray)
+			}
+			if heads := api.submitHeads(); !slices.Equal(heads, []string{"base"}) {
+				t.Errorf("submit posts = %v, want base alone", heads)
+			}
+			if !strings.Contains(errOut, "left stray alone") {
+				t.Errorf("stderr = %q, want it to name the branch it left alone", errOut)
+			}
+		})
+	}
+}
+
+// TestStackSubmitLeavesAStrayBesideItsGrandparent is a stray cut from its gt
+// parent's own parent: it shares that grandparent's commits with the parent, and
+// still carries none of the parent's own.
+func TestStackSubmitLeavesAStrayBesideItsGrandparent(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	shipGTStack(t, f, "a")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "p")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "a", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "stray")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "p", "--no-interactive")
+	writeShipFile(t, f.Dir, "stray.txt", "stray\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "stray.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "stray")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
+	writeShipFile(t, f.Dir, "p.txt", "p\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "p.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "p")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a")
+	stray := gitAt(t, f.Env(), f.Dir, "rev-parse", "stray")
+	shipResetLog(t, f)
+
+	_, errOut, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "stray"); got != stray {
+		t.Errorf("stray moved to %s, want it left at %s", got, stray)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"a", "p"}) {
+		t.Errorf("submit posts = %v, want a and p", heads)
+	}
+	if !strings.Contains(errOut, "gt track --force --parent a stray") {
+		t.Errorf("stderr = %q, want it to re-record stray onto a", errOut)
+	}
+}
+
+// TestStackSubmitLeavesAStrayAboveALandedBranch runs the submit from a branch
+// that landed: dropping it must not take the stray check with it.
+func TestStackSubmitLeavesAStrayAboveALandedBranch(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	shipGTStack(t, f, "a", "b", "stray")
+	stubStackPRs(t, map[string]*stackPR{
+		"a":     {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "a")},
+		"stray": {Number: 42, Title: "stray", State: "OPEN", Base: "main"},
+	})
+	restackSquashRemote(t, f, "main", "a (#41)", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a")
+	stray := gitAt(t, f.Env(), f.Dir, "rev-parse", "stray")
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "stray"); got != stray {
+		t.Errorf("stray moved to %s, want it left at %s", got, stray)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"b"}) {
+		t.Errorf("submit posts = %v, want b alone", heads)
+	}
+}
+
+// TestStackSubmitRefusesPRFieldsForABranchLeftOut names a stray in
+// --pr-title: the submit leaves that branch alone, so it must not restate its
+// pull request either.
+func TestStackSubmitRefusesPRFieldsForABranchLeftOut(t *testing.T) {
+	f := shipGTRepo(t)
+	stubGTAPI(t)
+	writeShipGH(t, f)
+	stackBesideBase(t, f, "stray", true)
+	stubStackPRs(t, map[string]*stackPR{"stray": {Number: 41, Title: "stray", State: "OPEN", Base: "main"}})
+	shipResetLog(t, f)
+
+	_, _, err := runStackCmd(t, f, "submit", "--pr-title", "stray=Stray title")
+	if err == nil || !strings.Contains(err.Error(), "leaves out") {
+		t.Fatalf("stack submit error = %v, want a refusal naming stray", err)
+	}
+	for _, inv := range shipGTInvocations(t, f) {
+		if isPREdit(inv) || gtPushedRefs([][]string{inv}) != nil {
+			t.Errorf("ran %v before refusing", inv)
+		}
+	}
+}
+
+// TestStackSubmitWritesPRTitlesAndBodies gives stack submit the branch-scoped
+// title and body flags ship carries: a bare value applies to the branch checked
+// out here, a <branch>= value to that branch.
+func TestStackSubmitWritesPRTitlesAndBodies(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	writeShipGH(t, f)
+	shipGTStack(t, f, "base", "feature")
+	api.prs["base"], api.prs["feature"] = 5, 6
+	seedPRViews(t, map[string]string{
+		"base":    `{"number":5,"url":"https://github.com/x/pull/5","body":""}`,
+		"feature": `{"number":6,"url":"https://github.com/x/pull/6","body":""}`,
+	})
+	body := writePRBody(t, "base.md", "base body\n")
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "submit", "--pr-title", "Feature title", "--pr-body-file", "base="+body); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	var edits []string
+	for _, inv := range shipGTInvocations(t, f) {
+		if isPREdit(inv) {
+			edits = append(edits, strings.Join(inv[4:], " "))
+		}
+	}
+	slices.Sort(edits)
+	if len(edits) != 2 ||
+		!strings.HasPrefix(edits[0], "repos/"+fakePRRepo+"/pulls/5 --silent -F body=@") ||
+		edits[1] != "repos/"+fakePRRepo+"/pulls/6 --silent -f title=Feature title" {
+		t.Errorf("restates = %q, want base's body on #5 and feature's title on #6", edits)
+	}
+}
+
+// TestStackSubmitSkipsAnEmptyChild pins an in-progress lane: a tracked child
+// with no commit past its recorded parent is a lane nobody has committed to yet,
+// not a landed one, and it must neither be dropped from gt nor abort the submit
+// of the stack below it.
+func TestStackSubmitSkipsAnEmptyChild(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	stackBesideBase(t, f, "lane", false)
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+	lane := gitAt(t, f.Env(), f.Dir, "rev-parse", "lane")
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "lane"); got != lane {
+		t.Errorf("lane moved to %s, want it left at %s", got, lane)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base"}) {
+		t.Errorf("submit posts = %v, want base alone", heads)
+	}
+	if !strings.Contains(out, "skipped empty lane") {
+		t.Errorf("report = %q, want it to name the empty lane", out)
+	}
+	if parent := dropGTParent(t, f, "lane"); parent != "base" {
+		t.Errorf("gt parent of lane = %q, want base still tracked", parent)
+	}
+}
+
+// TestStackSubmitSkipsAnEmptyChildOfABranch is an empty lane on an unpublished
+// branch: nothing trunk holds, and no commit to open a pull request from.
+func TestStackSubmitSkipsAnEmptyChildOfABranch(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		advance bool
+	}{
+		{name: "its parent moved on", advance: true},
+		{name: "its parent stayed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipGTRepo(t)
+			api := stubGTAPI(t)
+			shipGTStack(t, f, "base")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "lane")
+			mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "base", "--no-interactive")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+			if tt.advance {
+				writeShipFile(t, f.Dir, "more.txt", "more\n")
+				mustRun(t, f.Env(), f.Dir, "git", "add", "more.txt")
+				mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "more")
+			}
+			shipResetLog(t, f)
+
+			out, _, err := runStackCmd(t, f, "submit")
+			if err != nil {
+				t.Fatalf("stack submit: %v", err)
+			}
+			if heads := api.submitHeads(); !slices.Equal(heads, []string{"base"}) {
+				t.Errorf("submit posts = %v, want base alone", heads)
+			}
+			if !strings.Contains(out, "skipped empty lane") {
+				t.Errorf("report = %q, want it to name the empty lane", out)
+			}
+		})
+	}
+}
+
+// TestStackSubmitShipsTheParentPastAConflictingChildLane is the lane shape
+// behind #69's clean-prefix report: the parent's lane runs stack submit while
+// the child, checked out in another lane's working copy, would conflict on the
+// new trunk. The parent restacks and is submitted; the child is not touched.
+func TestStackSubmitShipsTheParentPastAConflictingChildLane(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	stackConflicting(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	child := restackSiblingPath(t, "child")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", child, "feature")
+	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	shipResetLog(t, f)
+
+	_, errOut, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base"}) {
+		t.Errorf("submit posts = %v, want base alone", heads)
+	}
+	if !stackOnto(t, f, "origin/main", "base") {
+		t.Error("base is not on the new trunk")
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != feature {
+		t.Errorf("feature moved to %s, want it left at %s", got, feature)
+	}
+	if !strings.Contains(errOut, "feature (checked out in "+child+")") {
+		t.Errorf("stderr = %q, want it to name the child lane it skipped", errOut)
+	}
+}
+
+// TestStackNewTakesASlashedBranchName cuts a branch whose name carries the
+// owner/topic convention: the branch keeps the slash, and the working copy's one
+// path element folds it into a dash.
+func TestStackNewTakesASlashedBranchName(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base")
+
+	out, _, err := runStackCmd(t, f, "new", "yasyf/feature")
+	if err != nil {
+		t.Fatalf("stack new: %v", err)
+	}
+	path := out[strings.LastIndex(out, shipSep)+len(shipSep):]
+	if base := filepath.Base(path); base != "yasyf-feature" {
+		t.Errorf("minted %q, want a pool entry named yasyf-feature", path)
+	}
+	if there := gitAt(t, f.Env(), path, "branch", "--show-current"); there != "yasyf/feature" {
+		t.Errorf("the new working copy is on %q, want yasyf/feature", there)
+	}
+	if parent := dropGTParent(t, f, "yasyf/feature"); parent != "base" {
+		t.Errorf("gt parent = %s, want base", parent)
+	}
+}
+
+// TestStackNewOnTrunkCutsFromTheFetchedTrunk cuts a lane straight off trunk
+// while the local trunk lags the remote: the lane starts where a pull request
+// is measured, the remote trunk, not on the stale local branch, and the local
+// trunk is left where it is.
+func TestStackNewOnTrunkCutsFromTheFetchedTrunk(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base")
+	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "main")
+
+	out, _, err := runStackCmd(t, f, "new", "lane", "--parent", "main")
+	if err != nil {
+		t.Fatalf("stack new: %v", err)
+	}
+	path := out[strings.LastIndex(out, shipSep)+len(shipSep):]
+	if head := gitAt(t, f.Env(), path, "rev-parse", "HEAD"); head != remote {
+		t.Errorf("lane cut at %s, want the remote trunk %s", head, remote)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "main"); got != local {
+		t.Errorf("local main moved to %s, want it left at %s", got, local)
+	}
+	if parent := dropGTParent(t, f, "lane"); parent != "main" {
+		t.Errorf("gt parent = %s, want main", parent)
+	}
+}

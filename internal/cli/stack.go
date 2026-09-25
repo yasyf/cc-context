@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 
@@ -60,7 +61,9 @@ from never changes branch — which is what makes a stack workable by several
 agents at once, one lane each. The path is minted under the repository's pool,
 gt adopts the branch onto --parent (the branch checked out here by default), and
 the new working copy's path is the last thing printed, ready to hand to whoever
-works the lane.
+works the lane. A slash in the branch name becomes a dash in the working copy's
+directory name: owner/topic becomes owner-topic. A lane cut onto trunk starts at
+the freshly fetched remote trunk, leaving the local trunk branch where it is.
 
 --published-parent uses the parent's recorded publication only when its source,
 remote head, and submission metadata still match. --sparse copies this checkout's
@@ -105,41 +108,54 @@ flag, and Graphite state (including frozen).`,
 }
 
 func newStackSubmitCmd() *cobra.Command {
-	var draft bool
+	var o shipOpts
 	var include []string
 	cmd := &cobra.Command{
 		Use:   "submit",
 		Short: "Restack every lane, then submit the whole stack",
-		Long: `Restack every lane, then submit the whole stack.
+		Long: `Rebase this lane's branches, then push and submit them.
 
-A submit pushes each branch onto the parent gt records for it, so a stack spread
-across working copies has to be restacked in each of them first — which is the
-sweep ccx vcs stack restack runs. This does both, in that order, so the submit
-meets a stack that is already in the shape Graphite expects.
+Submit runs ccx vcs stack rebase over this lane's branches: it fetches the remote
+trunk and replays each branch from its recorded base onto that trunk. The local
+trunk branch and other working copies are left untouched. A branch whose pull
+request landed through a merge queue squash is dropped, and its children move
+onto what it sat on, leaving its squashed commits behind.
 
-The trunk is fetched once, up front, and that one commit both restacks every
-lane and anchors the submit: the local trunk branch is fast-forwarded onto it,
-since gt measures a restack against the local ref, and the report names the
-commit pinned. A local trunk holding commits the remote does not is refused
-rather than restacked onto, because a restack would splice them into every
-branch of the stack; so is a branch whose recorded base reaches back over
-commits trunk already carries, which a replay would copy onto it. A chain that
-stops partway moves nothing — every ref it had moved goes back.
+A conflict stops the run before any ref moves, in a conflict workspace with
+rerere off. After resolution, ccx vcs stack continue finishes the rebase, pushes,
+and submits; ccx vcs stack abort drops the run. A moved branch held by another
+working copy, or uncommitted work in the invoking checkout, stops publication
+before any branch moves.
 
 A branch another working copy has checked out is that lane's, so it is skipped
 and named with the working copy holding it, along with every branch stacked
 above it; --include submits it anyway.
 
-The submit itself is ccx vcs ship's: dropping the branches that trunk already
-holds and naming them, then one atomic push moving every branch left, each under
-the lease of its last submitted version, then one post to Graphite's API per
-branch, bottom-up.`,
+Above the branch checked out here, a branch belongs to another lane when the
+rest of the record contradicts its gt parent: its open pull request is based on
+neither that parent nor the branch a landed parent leaves it on, or its history
+carries none of the parent's own commits. It and everything stacked on it are
+left alone and named on stderr with the step to re-record the parent.
+
+A tracked branch with no commit past the parent revision gt recorded is an
+empty lane nobody has committed to yet. It and everything stacked on it are
+left where they are, neither dropped nor forgotten by gt, and reported as
+"skipped empty <branch>".
+
+Every remaining branch is force-pushed in one atomic push under the lease of
+its last submitted version, then posted to Graphite's API one branch at a time,
+bottom-up. --pr-title and --pr-body-file take ship's <branch>=<value> form; a bare
+value names the branch checked out here. They restate those pull requests after
+the push and survive a conflict stop. Naming a branch outside the stack, or one
+the run leaves out, is refused before anything moves.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runStackSubmit(cmd, draft, include)
+			return runStackSubmit(cmd, o, include)
 		},
 	}
-	cmd.Flags().BoolVar(&draft, "draft", false, "open new PRs as drafts")
+	cmd.Flags().BoolVar(&o.draft, "draft", false, "open new PRs as drafts")
+	cmd.Flags().StringArrayVar(&o.prTitle, "pr-title", nil, "title for a pull request: <branch>=<title>, or a bare title for the branch checked out here (repeatable)")
+	cmd.Flags().StringArrayVar(&o.prBodyFile, "pr-body-file", nil, "body file for a pull request: <branch>=<path>, or a bare path for the branch checked out here; - reads stdin (repeatable)")
 	cmd.Flags().StringArrayVar(&include, "include", nil, "submit this branch even though another working copy has it checked out (repeatable)")
 	return cmd
 }
@@ -283,7 +299,7 @@ func stackListLine(branch, holder, root string, state gtBranchState) string {
 	return strings.Join(fields, shipSep)
 }
 
-func runStackSubmit(cmd *cobra.Command, draft bool, include []string) error {
+func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string) error {
 	ctx := cmd.Context()
 	errW := cmd.ErrOrStderr()
 	l, err := resolveLane(ctx, "stack submit", workingDir(ctx), false)
@@ -294,6 +310,11 @@ func runStackSubmit(cmd *cobra.Command, draft bool, include []string) error {
 		return errors.New("stack submit: this repository is not on the graphite lane, and a stack is Graphite's — ship the branch with ccx vcs ship instead")
 	}
 	stack, stackState, err := gtStackAll(ctx, l.dir(), "stack submit")
+	if err != nil {
+		return err
+	}
+	intent, cleanup, err := stackSubmitIntent(cmd, l, o, stack)
+	defer cleanup()
 	if err != nil {
 		return err
 	}
@@ -308,7 +329,52 @@ func runStackSubmit(cmd *cobra.Command, draft bool, include []string) error {
 	if err := stackAnnounceSkipped(errW, skipped); err != nil {
 		return err
 	}
-	return runStackRebase(cmd, stackRebaseOpts{members: chain, draft: draft})
+	return runStackRebase(cmd, stackRebaseOpts{members: chain, draft: o.draft, ship: intent})
+}
+
+// stackSubmitIntent carries --pr-title and --pr-body-file into the run as a ship
+// intent, so the pull requests are restated once the stack is pushed, even
+// when a conflict stops the run and ccx vcs stack continue finishes it. No
+// field named means no intent and no restate.
+func stackSubmitIntent(cmd *cobra.Command, l lane, o shipOpts, stack []string) (*stackShipIntent, func(), error) {
+	ctx := cmd.Context()
+	cleanup, err := materializePRBodyStdin(cmd, &o)
+	if err != nil {
+		return nil, cleanup, err
+	}
+	current, err := gitCurrentBranch(ctx, l.dir(), "stack submit")
+	if err != nil {
+		return nil, cleanup, err
+	}
+	meta, err := resolvePRMeta(cmd, o, current)
+	if err != nil {
+		return nil, cleanup, err
+	}
+	for _, branch := range slices.Sorted(maps.Keys(meta)) {
+		if len(meta[branch].stated()) == 0 {
+			delete(meta, branch)
+			continue
+		}
+		if !slices.Contains(stack, branch) {
+			return nil, cleanup, fmt.Errorf("stack submit: --pr-title/--pr-body-file named %s, which is not in this stack", branch)
+		}
+		m := meta[branch]
+		m.draft = nil
+		meta[branch] = m
+	}
+	if len(meta) == 0 {
+		return nil, cleanup, nil
+	}
+	repo, err := vcs.LookupRepo(ctx, l.dir(), false)
+	if err != nil {
+		return nil, cleanup, fmt.Errorf("stack submit: restating a pull request needs GitHub metadata: %w", err)
+	}
+	intent, err := stackShipOptions(o, meta, repo.NameWithOwner, current)
+	if err != nil {
+		return nil, cleanup, fmt.Errorf("stack submit: %w", err)
+	}
+	intent.NoWatch = true
+	return intent, cleanup, nil
 }
 
 type stackSkip struct {

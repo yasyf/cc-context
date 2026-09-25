@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -104,6 +105,16 @@ type stackRebaseRun struct {
 	Host        string                   `json:"host"`
 	dir         string
 	saved       time.Time
+	left        []stackLeft
+}
+
+// stackLeft is a branch of the stack a run leaves exactly where it is: an
+// empty lane nobody has committed to yet, another lane's branch gt parents on
+// this stack, or a branch stacked on either.
+type stackLeft struct {
+	branch string
+	empty  bool
+	why    string
 }
 
 func (r *stackRebaseRun) branch(name string) *stackRebaseBranch {
@@ -152,9 +163,11 @@ Every branch's local and remote head is recorded before anything moves, and each
 branch is replayed from the base it was recorded on (--onto <new parent>
 <recorded old parent>), so a push partway through never changes what a child is
 rebased from. A branch whose pull request landed is dropped and its children
-move onto what it sat on, leaving its squashed commits behind. Other working copies and local trunk are left untouched. A branch held by
-another working copy, or uncommitted work in the invoking checkout, stops
-publication before any branch moves.
+move onto what it sat on, leaving its squashed commits behind. Other working
+copies and local trunk are left untouched. A branch held by another working copy,
+or uncommitted work in the invoking checkout, stops publication before any branch
+moves. Empty lanes and another lane's branches above the one checked out here are
+left where they are and named rather than rebased.
 
 A conflict stops the run before any ref moves: the rebase is left in progress
 in a workspace of its own, with both sides' intent written out, and
@@ -185,7 +198,14 @@ func newStackContinueCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "continue",
 		Short: "Resume a stack rebase after resolving its conflict workspace",
-		Args:  cobra.NoArgs,
+		Long: `Resume a stack rebase after resolving its conflict workspace.
+
+With no stack rebase in progress, continue finishes a rebase stopped in this
+working copy — one a hand-run gt restack left behind after losing its own
+operation, which gt continue then refuses. rerere is off. Every file rerere had
+already filled from a recorded resolution is named first as a warning, since a
+stale recording silently drops a branch's own changes.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runStackContinue(cmd, stack)
 		},
@@ -251,6 +271,12 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 		*o.result = run
 	}
 	if err := stackAdmit(ctx, cmd, l, commonDir, others, run, o.dryRun); err != nil {
+		return err
+	}
+	if err := stackShipCovers(run, o.ship); err != nil {
+		return err
+	}
+	if err := stackAnnounceLeft(cmd, run.left); err != nil {
 		return err
 	}
 	cmd.Println(strings.Join(stackPlanLines(run), "\n"))
@@ -440,6 +466,10 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
+	members, left, err := stackKept(ctx, l.dir(), state, tr, current, members, prs, overrides, o.landed)
+	if err != nil {
+		return nil, err
+	}
 	pin, err := gtTrunkHead(ctx, l.dir(), prefix, tr)
 	if err != nil {
 		return nil, err
@@ -457,7 +487,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left}
 	byName := map[string]*stackRebaseBranch{}
 	for _, name := range members {
 		ours := submitted[name].HeadSha
@@ -545,6 +575,128 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		run.Branches = append(run.Branches, *b)
 	}
 	return run, nil
+}
+
+// stackKept drops from members every branch the run must leave where it is,
+// in members' parents-first order. A branch with no commit past the parent
+// revision gt recorded is an empty lane, not a landed one: dropping it would
+// make gt forget a lane nobody has committed to yet. A branch above the one
+// checked out here whose gt parent the rest of the record contradicts belongs
+// to another lane: gt track adopts a branch cut at the same commit as another
+// onto it, and a run that trusted that record replayed another lane's work
+// onto this stack and pushed it. Everything stacked on either goes with it.
+func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, current string, members []string, prs map[string]*stackPR, overrides map[string]string, landed []string) ([]string, []stackLeft, error) {
+	above := map[string]bool{}
+	if current != "" && current != tr.Name() {
+		up, err := gtUpstack(stackRebasePrefix, state, current)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, name := range up {
+			above[name] = true
+		}
+	}
+	isLanded := func(name string) bool {
+		return slices.Contains(landed, name) || (prs[name] != nil && prs[name].Landed)
+	}
+	gone := map[string]bool{}
+	var kept []string
+	var left []stackLeft
+	for _, name := range members {
+		s := state[name]
+		parent := s.Parents[0].Ref
+		_, overridden := overrides[name]
+		switch {
+		case gone[parent]:
+			left = append(left, stackLeft{branch: name, why: "it sits on " + parent + ", which is left where it is"})
+		case !isLanded(name) && s.Parents[0].SHA == s.Head:
+			left = append(left, stackLeft{branch: name, empty: true})
+		case above[name] && !overridden:
+			effective := parent
+			for effective != tr.Name() && isLanded(effective) {
+				effective = state[effective].Parents[0].Ref
+			}
+			why, err := stackStrayReason(ctx, dir, state, tr, name, parent, effective, prs[name])
+			if err != nil {
+				return nil, nil, err
+			}
+			if why == "" {
+				kept = append(kept, name)
+				continue
+			}
+			left = append(left, stackLeft{branch: name, why: why})
+		default:
+			kept = append(kept, name)
+			continue
+		}
+		gone[name] = true
+	}
+	return kept, left, nil
+}
+
+// stackStrayReason names the evidence that branch belongs to another lane: an
+// open pull request based on neither its gt parent nor the ancestor that
+// parent's landing leaves it on, or a history carrying none of the parent's own
+// commits under any sha.
+func stackStrayReason(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, branch, parent, effective string, pr *stackPR) (string, error) {
+	if pr != nil && pr.State == "OPEN" && pr.Base != "" && pr.Base != parent && pr.Base != effective {
+		return fmt.Sprintf("gt records its parent as %s, but its pull request #%d is based on %s — re-record it with gt track --force --parent %s %s", parent, pr.Number, pr.Base, pr.Base, branch), nil
+	}
+	if parent == tr.Name() {
+		return "", nil
+	}
+	below := state[parent].Parents[0].Ref
+	outside := []string{"^" + string(tr.Ref())}
+	if below != tr.Name() {
+		outside = append(outside, "^"+gtRestackRef(below))
+	}
+	parentOwn, err := gtRevCount(ctx, stackRebasePrefix, dir, gtRestackRef(parent), outside...)
+	if err != nil || parentOwn == 0 {
+		return "", err
+	}
+	own, err := gtRevCount(ctx, stackRebasePrefix, dir, gtRestackRef(branch), outside...)
+	if err != nil || own == 0 {
+		return "", err
+	}
+	missing, err := gtRevCount(ctx, stackRebasePrefix, dir, gtRestackRef(parent)+"..."+gtRestackRef(branch), append([]string{"--left-only", "--cherry-pick"}, outside...)...)
+	if err != nil || missing < parentOwn {
+		return "", err
+	}
+	return fmt.Sprintf("gt records its parent as %s, but it carries none of %s's commits — re-record it with gt track --force --parent %s %s, or run ccx vcs stack submit from %s's working copy to put it on %s", parent, parent, below, branch, branch, parent), nil
+}
+
+// stackAnnounceLeft names every branch a run leaves where it is: the empty
+// lanes in the report, the rest with the evidence behind them.
+func stackAnnounceLeft(cmd *cobra.Command, left []stackLeft) error {
+	var empty []string
+	for _, l := range left {
+		if l.empty {
+			empty = append(empty, l.branch)
+			continue
+		}
+		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "stack rebase: left %s alone: %s\n", l.branch, l.why); err != nil {
+			return err
+		}
+	}
+	if len(empty) > 0 {
+		cmd.Println("skipped empty " + strings.Join(empty, ", ") + ", with no commit of its own yet")
+	}
+	return nil
+}
+
+// stackShipCovers refuses, before anything moves, a --pr-title or
+// --pr-body-file naming a branch the run leaves out: its pull request is one
+// nothing will push to.
+func stackShipCovers(run *stackRebaseRun, ship *stackShipIntent) error {
+	if ship == nil {
+		return nil
+	}
+	for _, name := range slices.Sorted(maps.Keys(ship.Meta)) {
+		if b := run.branch(name); b == nil || b.Landed != "" {
+			return fmt.Errorf("stack rebase: --pr-title/--pr-body-file named %s, which this run leaves out", name)
+		}
+	}
+	return nil
 }
 
 func stackOverrides(o stackRebaseOpts) (map[string]string, error) {
@@ -1150,6 +1302,9 @@ func stackBriefIntent(s *strings.Builder, side, name string, pr *stackPR) {
 func runStackContinue(cmd *cobra.Command, stack string) error {
 	ctx := cmd.Context()
 	l, commonDir, run, err := stackResolveRun(ctx, stack)
+	if errors.Is(err, errNoStackRebase) && stack == "" {
+		return stackContinueStranded(ctx, cmd)
+	}
 	if err != nil {
 		return err
 	}
@@ -1157,6 +1312,171 @@ func runStackContinue(cmd *cobra.Command, stack string) error {
 		return stackDrive(ctx, cmd, l, commonDir, run)
 	}
 	return stackResume(ctx, cmd, l, commonDir, run)
+}
+
+var errNoStackRebase = errors.New("stack rebase: no stack rebase is in progress in this repository")
+
+// stackContinueStranded finishes a rebase ccx did not start, stopped in this
+// working copy — one a gt restack left behind after losing its own operation,
+// which gt continue then refuses. It continues with rerere off, and names
+// first every file rerere resolved from a recording, which nobody but rerere
+// has checked.
+func stackContinueStranded(ctx context.Context, cmd *cobra.Command) error {
+	ws := render.Dir(workingDir(ctx))
+	if !stackRebasing(ctx, ws) {
+		return errNoStackRebase
+	}
+	replays, files, err := stackRerereReplayed(ctx, ws)
+	if err != nil {
+		return err
+	}
+	if replays > 0 {
+		where := "the files this rebase stopped on"
+		if len(files) > 0 {
+			where = strings.Join(files, ", ")
+		}
+		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "stack continue: warning: rerere replayed a recorded resolution into %s — check each against both sides of its conflict before submitting\n", where); err != nil {
+			return err
+		}
+	}
+	unmerged, err := stackUnmerged(ctx, string(ws))
+	if err != nil {
+		return err
+	}
+	if len(unmerged) > 0 {
+		return fmt.Errorf("stack continue: %s still has unresolved files: %s — resolve them, git add them, then run ccx vcs stack continue again", ws, strings.Join(unmerged, ", "))
+	}
+	argv := append(slices.Clone(stackGitNoRerere), "rebase", "--continue")
+	_, code, stderr, err := render.RunCLIExitCode(ctx, ws, "git", argv)
+	if err != nil {
+		return fmt.Errorf("stack continue: git rebase --continue in %s: %w", ws, err)
+	}
+	if unmerged, err = stackUnmerged(ctx, string(ws)); err != nil {
+		return err
+	}
+	switch {
+	case len(unmerged) > 0:
+		return fmt.Errorf("stack continue: the rebase in %s stopped on another conflict: %s — resolve them, git add them, then run ccx vcs stack continue again", ws, strings.Join(unmerged, ", "))
+	case code != 0:
+		return fmt.Errorf("stack continue: git rebase --continue in %s failed: %s", ws, strings.TrimSpace(stderr))
+	case stackRebasing(ctx, ws):
+		return fmt.Errorf("stack continue: the rebase in %s paused where its todo list asks to — make the change it stopped for, then run ccx vcs stack continue again", ws)
+	}
+	branch, err := gitCurrentBranch(ctx, ws, "stack continue")
+	if err != nil {
+		return err
+	}
+	head, err := stackRevParse(ctx, ws, "HEAD")
+	if err != nil {
+		return err
+	}
+	cmd.Println(fmt.Sprintf("finished the rebase of %s at %.12s — ccx vcs stack submit records it with gt and submits it", branch, head))
+	return nil
+}
+
+// stackRerereReplayed counts the recorded resolutions rerere applied during the
+// rebase stopped in ws, and names the files each landed in. rerere writes a
+// conflict's thisimage only when it replays a recording, so one written since
+// the rebase began is a replay; a file holding its postimage is where it went.
+func stackRerereReplayed(ctx context.Context, ws render.Dir) (int, []string, error) {
+	onto, err := stackRebaseOnto(ctx, ws)
+	if err != nil {
+		return 0, nil, err
+	}
+	began, err := os.Stat(onto)
+	if err != nil {
+		return 0, nil, fmt.Errorf("stack continue: %w", err)
+	}
+	cache, err := stackGitPath(ctx, ws, "rr-cache")
+	if err != nil {
+		return 0, nil, err
+	}
+	conflicts, err := os.ReadDir(cache)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil, nil
+	}
+	if err != nil {
+		return 0, nil, fmt.Errorf("stack continue: %w", err)
+	}
+	var postimages [][]byte
+	for _, conflict := range conflicts {
+		images, err := filepath.Glob(filepath.Join(cache, conflict.Name(), "thisimage*"))
+		if err != nil {
+			return 0, nil, fmt.Errorf("stack continue: %w", err)
+		}
+		for _, image := range images {
+			info, err := os.Stat(image)
+			if err != nil {
+				return 0, nil, fmt.Errorf("stack continue: %w", err)
+			}
+			if info.ModTime().Before(began.ModTime()) {
+				continue
+			}
+			post, err := os.ReadFile(filepath.Join(filepath.Dir(image), "postimage"+strings.TrimPrefix(filepath.Base(image), "thisimage"))) //nolint:gosec // a postimage beside the thisimage git's own rr-cache listed
+			if err != nil {
+				return 0, nil, fmt.Errorf("stack continue: %w", err)
+			}
+			postimages = append(postimages, post)
+		}
+	}
+	if len(postimages) == 0 {
+		return 0, nil, nil
+	}
+	base, err := os.ReadFile(onto) //nolint:gosec // onto is git's own rebase state file, resolved by git rev-parse --git-path
+	if err != nil {
+		return 0, nil, fmt.Errorf("stack continue: %w", err)
+	}
+	orig, err := os.ReadFile(filepath.Join(filepath.Dir(onto), "orig-head")) //nolint:gosec // orig-head sits beside onto in git's own rebase state
+	if err != nil {
+		return 0, nil, fmt.Errorf("stack continue: %w", err)
+	}
+	root, err := render.RunCLI(ctx, ws, "git", []string{"rev-parse", "--show-toplevel"})
+	if err != nil {
+		return 0, nil, fmt.Errorf("stack continue: git rev-parse --show-toplevel: %w", err)
+	}
+	span := strings.TrimSpace(string(base)) + "..." + strings.TrimSpace(string(orig))
+	rebased, err := render.RunCLI(ctx, ws, "git", []string{"diff", "-z", "--name-only", span})
+	if err != nil {
+		return 0, nil, fmt.Errorf("stack continue: list the files the rebased commits change: git diff %s: %w", span, err)
+	}
+	var files []string
+	for file := range strings.SplitSeq(strings.TrimRight(rebased, "\x00"), "\x00") {
+		path := filepath.Join(strings.TrimSpace(root), file)
+		if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		content, err := os.ReadFile(path) //nolint:gosec // path is one git diff listed under the repo root
+		if err != nil {
+			return 0, nil, fmt.Errorf("stack continue: %w", err)
+		}
+		if slices.ContainsFunc(postimages, func(post []byte) bool { return bytes.Equal(post, content) }) {
+			files = append(files, file)
+		}
+	}
+	return len(postimages), files, nil
+}
+
+// stackRebaseOnto is the onto file of the rebase stopped in ws, written once as
+// the rebase begins.
+func stackRebaseOnto(ctx context.Context, ws render.Dir) (string, error) {
+	for _, dir := range []string{"rebase-merge", "rebase-apply"} {
+		path, err := stackGitPath(ctx, ws, dir+"/onto")
+		if err != nil {
+			return "", err
+		}
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("stack continue: the rebase in %s has no onto file", ws)
+}
+
+func stackGitPath(ctx context.Context, ws render.Dir, name string) (string, error) {
+	out, err := render.RunCLI(ctx, ws, "git", []string{"rev-parse", "--path-format=absolute", "--git-path", name})
+	if err != nil {
+		return "", fmt.Errorf("stack continue: git rev-parse --git-path %s: %w", name, err)
+	}
+	return strings.TrimSpace(out), nil
 }
 
 func stackResume(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun) error {
@@ -1778,7 +2098,7 @@ func stackRefuseFlatState(dir string) error {
 
 func stackRunFor(runs []*stackRebaseRun, stack, root, branch string) (*stackRebaseRun, error) {
 	if len(runs) == 0 {
-		return nil, errors.New("stack rebase: no stack rebase is in progress in this repository")
+		return nil, errNoStackRebase
 	}
 	if stack != "" {
 		for _, run := range runs {
