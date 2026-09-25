@@ -327,7 +327,7 @@ func stackVerifyNewParent(ctx context.Context, dir render.Dir, common string, re
 		return err
 	}
 	branch := stackRebaseBranch{Name: receipt.Branch, Local: source, Remote: receipt.Head}
-	if err := stackUsePublication(&branch, receipt, last[receipt.Branch]); err != nil {
+	if err := stackUsePublication(ctx, dir, &branch, receipt, last[receipt.Branch]); err != nil {
 		return err
 	}
 	tx := fmt.Sprintf("start\nverify %s %s\nverify %s %s\ncommit\n", gtRestackRef(receipt.Branch), receipt.Source, stackPublicationRef(receipt.Branch, "receipt"), receipt.OID)
