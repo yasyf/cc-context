@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -149,7 +148,7 @@ func Run(ctx context.Context, a backend.Args) (string, error) {
 	if err := validateContext(a); err != nil {
 		return "", err
 	}
-	eng, bin, err := resolveEngine()
+	eng, bin, err := resolveEngine(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -185,7 +184,7 @@ func Matches(ctx context.Context, a backend.Args) ([]FileMatch, error) {
 	if err := validateContext(a); err != nil {
 		return nil, err
 	}
-	eng, bin, err := resolveEngine()
+	eng, bin, err := resolveEngine(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -533,11 +532,11 @@ func hasBREEscape(q string) bool {
 
 // resolveEngine prefers ripgrep and falls back to system grep; neither on PATH is
 // a fatal error carrying an install hint.
-func resolveEngine() (engine, string, error) {
-	if bin, err := exec.LookPath("rg"); err == nil {
+func resolveEngine(ctx context.Context) (engine, string, error) {
+	if bin := render.LookPath(ctx, "rg"); bin != "" {
 		return engineRipgrep, bin, nil
 	}
-	if bin, err := exec.LookPath("grep"); err == nil {
+	if bin := render.LookPath(ctx, "grep"); bin != "" {
 		return engineGrep, bin, nil
 	}
 	return 0, "", fmt.Errorf("ccx code grep -i/-w/-E and multi-file search need ripgrep or grep on PATH; install ripgrep: brew install ripgrep")

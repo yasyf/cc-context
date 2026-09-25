@@ -969,8 +969,7 @@ func TestRunCore_GlobFailFastSkipsRunner(t *testing.T) {
 }
 
 func TestResolveEngine_Neither(t *testing.T) {
-	t.Setenv("PATH", "")
-	_, _, err := resolveEngine()
+	_, _, err := resolveEngine(render.WithEnv(t.Context(), "PATH="))
 	if err == nil {
 		t.Fatal("resolveEngine() err = nil, want error when neither engine on PATH")
 	}
@@ -1087,7 +1086,7 @@ func TestRunFoundness_Live(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			eng, bin, err := resolveEngine()
+			eng, bin, err := resolveEngine(t.Context())
 			if err != nil {
 				t.Fatalf("resolveEngine() err = %v", err)
 			}

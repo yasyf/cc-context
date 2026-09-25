@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -102,7 +101,7 @@ func LookupRepo(ctx context.Context, root render.Dir, refresh bool) (Repo, error
 			return repo, nil
 		}
 	}
-	if _, err := exec.LookPath("gh"); err != nil {
+	if render.LookPath(ctx, "gh") == "" {
 		return Repo{}, fmt.Errorf("%w: gh not on PATH", ErrNoGitHub)
 	}
 

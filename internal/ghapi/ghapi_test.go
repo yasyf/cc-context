@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/version"
 )
 
@@ -32,9 +33,7 @@ func fixedToken(token string) func(context.Context) (string, error) {
 }
 
 func TestPaginateSendsHeadersAndDecodes(t *testing.T) {
-	t.Setenv("GH_TOKEN", "env-token")
-	t.Setenv("GITHUB_TOKEN", "")
-	stubGH(t, "")
+	ctx := render.WithEnv(t.Context(), "GH_TOKEN=env-token", "GITHUB_TOKEN=", "PATH="+stubGH(t, ""))
 
 	var requests atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -58,7 +57,7 @@ func TestPaginateSendsHeadersAndDecodes(t *testing.T) {
 	}))
 	t.Cleanup(ts.Close)
 
-	got, err := Paginate[item](context.Background(), New(ts.URL), "/repos/o/r/pulls/12")
+	got, err := Paginate[item](ctx, New(ts.URL), "/repos/o/r/pulls/12")
 	if err != nil {
 		t.Fatalf("Paginate: %v", err)
 	}

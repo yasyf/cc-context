@@ -1,14 +1,13 @@
 package astgrep
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
-	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // writeVersionFake writes a POSIX ast-grep stub in a fresh temp dir that answers
@@ -45,26 +44,19 @@ func TestResolveBin(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			orig := lookpath.Find
-			t.Cleanup(func() { lookpath.Find = orig })
-
 			var configured, made string
+			pathDir := t.TempDir()
 			switch {
 			case tt.versionOut == "":
-				lookpath.Find = func(string) string { return "" }
 			case tt.configured:
 				made = writeVersionFake(t, tt.versionOut)
 				configured = made
-				lookpath.Find = func(string) string {
-					t.Fatal("resolveBin consulted PATH despite a configured bin")
-					return ""
-				}
 			default:
 				made = writeVersionFake(t, tt.versionOut)
-				lookpath.Find = func(string) string { return made }
+				pathDir = filepath.Dir(made)
 			}
 
-			got, err := resolveBin(context.Background(), configured)
+			got, err := resolveBin(render.WithEnv(t.Context(), "PATH="+pathDir), configured)
 			if tt.wantErrSubstr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErrSubstr) {
 					t.Fatalf("resolveBin err = %v, want substring %q", err, tt.wantErrSubstr)
@@ -88,13 +80,10 @@ func TestResolveBinReprobesAfterFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake ast-grep scripts are POSIX-only")
 	}
-	orig := lookpath.Find
-	t.Cleanup(func() { lookpath.Find = orig })
-
 	path := writeVersionFake(t, "ast-grep 0.43.0")
-	lookpath.Find = func(string) string { return path }
+	ctx := render.WithEnv(t.Context(), "PATH="+filepath.Dir(path))
 
-	if _, err := resolveBin(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "ccx needs ast-grep >= 0.44.0") {
+	if _, err := resolveBin(ctx, ""); err == nil || !strings.Contains(err.Error(), "ccx needs ast-grep >= 0.44.0") {
 		t.Fatalf("first resolve err = %v, want below-floor error", err)
 	}
 
@@ -102,7 +91,7 @@ func TestResolveBinReprobesAfterFailure(t *testing.T) {
 	if err := os.WriteFile(path, []byte(upgraded), 0o700); err != nil { //nolint:gosec // fake engine must be owner-executable
 		t.Fatalf("upgrade fake ast-grep in place: %v", err)
 	}
-	got, err := resolveBin(context.Background(), "")
+	got, err := resolveBin(ctx, "")
 	if err != nil {
 		t.Fatalf("resolve after in-place upgrade: %v", err)
 	}

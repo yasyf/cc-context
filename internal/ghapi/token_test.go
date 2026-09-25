@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // gh stubs: the argv guard makes every non-`auth token` call a failure, so the
@@ -20,25 +20,18 @@ const (
 	ghFails     = ghArgvGuard + "echo 'gh: not logged in' >&2\nexit 1\n"
 )
 
-// stubGH installs script as the only executable lookpath.Find resolves, under
-// the name gh. An empty script reports gh absent.
-func stubGH(t *testing.T, script string) {
+// stubGH writes script as a gh executable in a fresh directory and returns that
+// directory, to be carried as PATH on the context under test. An empty script
+// leaves the directory empty, reporting gh absent.
+func stubGH(t *testing.T, script string) string {
 	t.Helper()
-	path := ""
+	dir := t.TempDir()
 	if script != "" {
-		path = filepath.Join(t.TempDir(), "gh")
-		if err := os.WriteFile(path, []byte(script), 0o755); err != nil { //nolint:gosec // test-only stub must be executable
+		if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil { //nolint:gosec // test-only stub must be executable
 			t.Fatalf("write gh stub: %v", err)
 		}
 	}
-	prev := lookpath.Find
-	lookpath.Find = func(name string) string {
-		if name == "gh" {
-			return path
-		}
-		return ""
-	}
-	t.Cleanup(func() { lookpath.Find = prev })
+	return dir
 }
 
 func TestResolveToken(t *testing.T) {
@@ -60,11 +53,12 @@ func TestResolveToken(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("GH_TOKEN", tt.ghEnv)
-			t.Setenv("GITHUB_TOKEN", tt.githubEnv)
-			stubGH(t, tt.gh)
+			ctx := render.WithEnv(t.Context(),
+				"GH_TOKEN="+tt.ghEnv,
+				"GITHUB_TOKEN="+tt.githubEnv,
+				"PATH="+stubGH(t, tt.gh))
 
-			got, err := resolveToken(context.Background())
+			got, err := resolveToken(ctx)
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("resolveToken error = %v, want %v", err, tt.wantErr)

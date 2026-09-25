@@ -1,12 +1,13 @@
 package locate
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // goScript is a fake `go` that answers `env GOMODCACHE` from $FAKE_GOMODCACHE and
@@ -189,27 +190,25 @@ func TestLocate(t *testing.T) {
 
 			binDir := t.TempDir()
 			cache := t.TempDir()
+			// VIRTUAL_ENV is carried empty so a dev's active venv cannot shadow the fake python3.
+			env := []string{"PATH=" + binDir, "VIRTUAL_ENV="}
 			if tt.withGo {
 				writeScript(t, binDir, "go", goScript)
-				t.Setenv("FAKE_GOMODCACHE", cache)
 				goList := ""
 				if tt.goList != nil {
 					goList = tt.goList(cache)
 				}
-				t.Setenv("FAKE_GOLIST", goList)
+				env = append(env, "FAKE_GOMODCACHE="+cache, "FAKE_GOLIST="+goList)
 				for _, v := range tt.cacheMods {
 					mustMkdir(t, filepath.Join(cache, encodeModulePath(tt.query)+"@"+v))
 				}
 			}
 			if tt.withPython {
 				writeScript(t, binDir, "python3", pyScript)
-				t.Setenv("FAKE_PYPATH", tt.pyPath)
-				t.Setenv("FAKE_PYVERSION", tt.pyVersion)
+				env = append(env, "FAKE_PYPATH="+tt.pyPath, "FAKE_PYVERSION="+tt.pyVersion)
 			}
-			t.Setenv("VIRTUAL_ENV", "") // a dev's active venv must not shadow the fake python3
-			t.Setenv("PATH", binDir)
 
-			got, err := Locate(context.Background(), tt.query, ws)
+			got, err := Locate(render.WithEnv(t.Context(), env...), tt.query, ws)
 			if err != nil {
 				t.Fatalf("Locate() error = %v", err)
 			}
@@ -222,8 +221,8 @@ func TestLocate(t *testing.T) {
 }
 
 func TestLocateMissingWorkspaceIsNoError(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	got, err := Locate(context.Background(), "anything", filepath.Join(t.TempDir(), "does-not-exist"))
+	ctx := render.WithEnv(t.Context(), "PATH="+t.TempDir())
+	got, err := Locate(ctx, "anything", filepath.Join(t.TempDir(), "does-not-exist"))
 	if err != nil {
 		t.Fatalf("Locate() error = %v, want nil", err)
 	}
@@ -268,13 +267,28 @@ func TestResolvePythonPrefersVenv(t *testing.T) {
 
 	pathBin := t.TempDir()
 	writeScript(t, pathBin, "python3", "#!/bin/sh\nprintf '%s\\t%s\\n' /path/site-packages/foo 2.0.0\n")
-	t.Setenv("VIRTUAL_ENV", "")
-	t.Setenv("PATH", pathBin)
+	// VIRTUAL_ENV is carried empty so a dev's active venv cannot shadow ./.venv.
+	ctx := render.WithEnv(t.Context(), "PATH="+pathBin, "VIRTUAL_ENV=")
 
-	got := resolvePython(context.Background(), "foo")
+	got := resolvePython(ctx, "foo")
 	want := []Result{{Kind: KindPackage, Path: "/venv/site-packages/foo", Version: "1.0.0"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("resolvePython() = %#v, want %#v", got, want)
+	}
+}
+
+func TestPythonInterpreterReadsVirtualEnvOffTheContext(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell scripts are POSIX-only")
+	}
+	venv := t.TempDir()
+	venvBin := filepath.Join(venv, "bin")
+	mustMkdir(t, venvBin)
+	writeScript(t, venvBin, "python3", "#!/bin/sh\nexit 0\n")
+
+	ctx := render.WithEnv(t.Context(), "VIRTUAL_ENV="+venv, "PATH="+t.TempDir())
+	if got, want := pythonInterpreter(ctx), filepath.Join(venvBin, "python3"); got != want {
+		t.Errorf("pythonInterpreter = %q, want %q", got, want)
 	}
 }
 
@@ -296,6 +310,7 @@ func TestEncodeModulePath(t *testing.T) {
 }
 
 func TestCompareVersions(t *testing.T) {
+
 	tests := []struct {
 		name string
 		a, b string

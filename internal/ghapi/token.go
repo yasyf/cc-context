@@ -3,11 +3,9 @@ package ghapi
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 
-	"github.com/yasyf/cc-context/internal/lookpath"
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -58,11 +56,11 @@ func (s *tokenSource) refresh(ctx context.Context, stale string) error {
 // stays the sole authority over the credential store.
 func resolveToken(ctx context.Context) (string, error) {
 	for _, name := range envTokens {
-		if token := strings.TrimSpace(os.Getenv(name)); token != "" {
+		if token := strings.TrimSpace(render.Getenv(ctx, name)); token != "" {
 			return token, nil
 		}
 	}
-	gh := lookpath.Find("gh")
+	gh := render.LookPath(ctx, "gh")
 	if gh == "" {
 		return "", fmt.Errorf("%w: gh is not on PATH and neither GH_TOKEN nor GITHUB_TOKEN is set", ErrNoToken)
 	}

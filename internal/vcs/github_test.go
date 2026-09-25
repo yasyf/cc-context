@@ -165,7 +165,6 @@ func ghReplay(t *testing.T, f *vcstest.Fixture, runs map[string][]string) (argvL
 	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o700); err != nil { //nolint:gosec // the replay must be owner-executable to serve as a PATH entry
 		t.Fatalf("write gh replay: %v", err)
 	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	f.PrependPATH(binDir)
 	t.Cleanup(func() { ghAssertServed(t, argvLog, runs) })
 	return argvLog
@@ -444,11 +443,14 @@ func TestLookupRepoUnresolvableName(t *testing.T) {
 }
 
 func TestLookupRepoWithoutGH(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	t.Setenv("PATH", t.TempDir())
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir(), "PATH="+t.TempDir())
 
-	if _, err := LookupRepo(context.Background(), render.Dir(t.TempDir()), false); !errors.Is(err, ErrNoGitHub) {
+	_, err := LookupRepo(ctx, render.Dir(t.TempDir()), false)
+	if !errors.Is(err, ErrNoGitHub) {
 		t.Fatalf("error = %v, want it to wrap ErrNoGitHub", err)
+	}
+	if want := "gh not on PATH"; !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %v, want %q: gh must be absent from the PATH the context carries, not merely unable to answer", err, want)
 	}
 }
 
