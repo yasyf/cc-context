@@ -235,13 +235,14 @@ func run(ctx context.Context, eng engine, bin string, dir render.Dir, a backend.
 			ra := a
 			ra.Regex = true
 			rgroups, _, rerr := searchGroups(ctx, eng, bin, dir, ra, exec)
-			if rerr == nil {
-				if anyMatch(rgroups) {
-					groups = rgroups
-					esc = escAutoRegex
-				} else {
-					esc = escBothMissed
-				}
+			if rerr != nil {
+				return "", false, rerr
+			}
+			if anyMatch(rgroups) {
+				groups = rgroups
+				esc = escAutoRegex
+			} else {
+				esc = escBothMissed
 			}
 		}
 	}
@@ -328,7 +329,10 @@ func runFilesWithMatches(ctx context.Context, eng engine, bin string, dir render
 			ra := a
 			ra.Regex = true
 			rpaths, _, rerr := searchFilesWithMatches(ctx, eng, bin, dir, ra, exec)
-			if rerr == nil && len(rpaths) > 0 {
+			if rerr != nil {
+				return "", false, rerr
+			}
+			if len(rpaths) > 0 {
 				paths = rpaths
 			}
 		}
@@ -392,25 +396,55 @@ func escalatable(eng engine, q string) bool {
 // exit 0; a regex-parse failure carrying a BRE escape is hinted. The pass's
 // elapsed time rides along so an escalation can be priced before it is paid for.
 func searchGroups(ctx context.Context, eng engine, bin string, dir render.Dir, a backend.Args, exec runnerFn) ([]fileGroup, time.Duration, error) {
-	raw, spent, err := searchOutput(ctx, eng, bin, dir, a, exec)
+	ctx, cancel := context.WithTimeout(ctx, engineTimeout)
+	defer cancel()
+	plans, err := searchPlans(eng, dir, a)
 	if err != nil {
 		return nil, 0, err
 	}
-	groups, err := parse(eng, raw)
-	if err != nil {
-		return nil, 0, err
+	var parts [][]fileGroup
+	var spent time.Duration
+	for _, plan := range plans {
+		raw, elapsed, err := searchOutput(ctx, eng, bin, dir, plan, exec)
+		if err != nil {
+			return nil, 0, err
+		}
+		spent += elapsed
+		groups, err := parse(eng, raw)
+		if err != nil {
+			return nil, 0, err
+		}
+		parts = append(parts, groups)
 	}
-	return groups, spent, nil
+	return mergeGroups(dir, parts), spent, nil
 }
 
 func searchFilesWithMatches(ctx context.Context, eng engine, bin string, dir render.Dir, a backend.Args, exec runnerFn) ([]string, time.Duration, error) {
-	raw, spent, err := searchOutput(ctx, eng, bin, dir, a, exec)
+	ctx, cancel := context.WithTimeout(ctx, engineTimeout)
+	defer cancel()
+	plans, err := searchPlans(eng, dir, a)
 	if err != nil {
 		return nil, 0, err
 	}
-	paths, err := parseFilesWithMatches(eng, dir, raw)
-	if err != nil {
-		return nil, 0, err
+	var paths []string
+	seen := map[string]bool{}
+	var spent time.Duration
+	for _, plan := range plans {
+		raw, elapsed, err := searchOutput(ctx, eng, bin, dir, plan, exec)
+		if err != nil {
+			return nil, 0, err
+		}
+		spent += elapsed
+		found, err := parseFilesWithMatches(eng, dir, raw)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, path := range found {
+			if !seen[path] {
+				seen[path] = true
+				paths = append(paths, path)
+			}
+		}
 	}
 	return paths, spent, nil
 }
@@ -458,7 +492,7 @@ var engineTimeout = 120 * time.Second
 func execEngine(ctx context.Context, dir render.Dir, bin string, argv []string) (string, error) {
 	runCtx, cancel := context.WithTimeout(ctx, engineTimeout)
 	defer cancel()
-	out, err := render.RunCLIAllowExit(runCtx, dir, bin, argv, exitNoMatch)
+	out, err := execSearch(runCtx, dir, bin, argv)
 	// A killed child surfaces as an opaque exit error, so the deadline is read
 	// off the context rather than the exit code.
 	if err != nil && ctx.Err() == nil && runCtx.Err() != nil {

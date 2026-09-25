@@ -165,7 +165,7 @@ type GrepIn struct {
 	Word             bool     `json:"word,omitempty" jsonschema:"whole words only; runs the rg/grep engine"`
 	Regex            bool     `json:"regex,omitempty" jsonschema:"force regex (auto-detected on zero literal matches); runs the rg/grep engine"`
 	FilesWithMatches bool     `json:"filesWithMatches,omitempty" jsonschema:"list only the paths of files with matches"`
-	Paths            []string `json:"paths,omitempty" jsonschema:"search these files, resolving a unique extension sibling; runs the rg/grep engine"`
+	Paths            []string `json:"paths,omitempty" jsonschema:"search these files or directories; directory operands preserve ignore rules, and naming an ignored path explicitly searches it; resolves a unique extension sibling"`
 	RevealSecrets    bool     `json:"reveal_secrets,omitempty" jsonschema:"print detected secrets raw instead of masked"`
 	Budget           int      `json:"budget,omitempty" jsonschema:"token budget for the output"`
 	Expand           int      `json:"expand,omitempty" jsonschema:"context lines around each hit"`
