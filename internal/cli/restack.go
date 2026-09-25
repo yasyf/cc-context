@@ -20,19 +20,6 @@ const (
 
 var errRestackDetached = errors.New("restack: detached HEAD — check out a branch before restacking")
 
-// errRestackBehind is a pass that ended with a branch still off trunk, which
-// exit 0 would let a caller take for a current base.
-type errRestackBehind struct {
-	Trunk    string
-	Branches []string
-	Summary  string
-}
-
-func (e *errRestackBehind) Error() string {
-	return fmt.Sprintf("restack: %s still behind %s: %s — %s; re-run once the cause above is cleared, or run ccx vcs stack rebase to resolve them in an isolated workspace",
-		gtBranchCount(len(e.Branches)), e.Trunk, strings.Join(e.Branches, ", "), e.Summary)
-}
-
 func gtBranchCount(n int) string {
 	if n == 1 {
 		return "1 branch"

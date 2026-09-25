@@ -474,7 +474,6 @@ func TestStackSubmitRepairsIncorrectRestackMetadata(t *testing.T) {
 			t.Errorf("%s remote=%s local=%s", branch, remote, local)
 		}
 	}
-
 }
 
 func TestStackSubmitRestackConflictMovesNothing(t *testing.T) {
@@ -600,7 +599,6 @@ func TestStackSubmitIgnoresDivergedLocalTrunk(t *testing.T) {
 	if files := gitAt(t, f.Env(), f.Dir, "diff", "--name-only", "origin/main...base"); strings.Contains(files, "foreign.txt") {
 		t.Errorf("base inherited foreign work: %s", files)
 	}
-
 }
 
 func TestStackSubmitDoesNotDuplicateAnAlreadyRebasedSpan(t *testing.T) {
@@ -625,7 +623,6 @@ func TestStackSubmitDoesNotDuplicateAnAlreadyRebasedSpan(t *testing.T) {
 	if got := gitAt(t, f.Env(), f.Dir, "diff", "--name-only", "origin/main...base"); got != "base.txt" {
 		t.Errorf("submitted changes = %q, want base.txt", got)
 	}
-
 }
 
 func TestStackListKeepsTheStackWholeAcrossARejectedRevision(t *testing.T) {

@@ -24,7 +24,7 @@ type errRestackConflict struct {
 }
 
 func (e *errRestackConflict) Error() string {
-    return fmt.Sprintf("%s does not rebase onto %s cleanly — run ccx vcs stack rebase to resolve it in an isolated workspace", e.Branch, e.Onto)
+	return fmt.Sprintf("%s does not rebase onto %s cleanly — run ccx vcs stack rebase to resolve it in an isolated workspace", e.Branch, e.Onto)
 }
 
 // errRestackMerged is a branch whose commits are already in its parent. No
@@ -78,7 +78,9 @@ func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir rend
 		return gtRestackResult{}, fmt.Errorf("%s: %w", prefix, err)
 	}
 
-	if err := stackCheckHolders(ctx, c.Root, movers, holders); err != nil { return gtRestackResult{held: held}, err }
+	if err := stackCheckHolders(ctx, c.Root, movers, holders); err != nil {
+		return gtRestackResult{held: held}, err
+	}
 
 	pin := gtTrunkPinned{name: trunk, sha: state[trunk].Head}
 	moves, replayErr := gtReplayChain(ctx, prefix, dir, state, pin, movers, holders)
@@ -133,9 +135,9 @@ func gtRestackPlan(state gtState, chain []string) ([]string, map[string]string) 
 }
 
 type restackMove struct {
-	branch string
-	head   string
-	parent string
+	branch   string
+	head     string
+	parent   string
 	previous string
 }
 
@@ -201,10 +203,9 @@ func gtRestackFrom(ctx context.Context, prefix string, dir render.Dir, state gtS
 // local branch holds that the remote does not — drift the local ref could not be
 // fast-forwarded past.
 type gtTrunkPinned struct {
-	name     string
-	sha      string
+	name string
+	sha  string
 }
-
 
 // gtRestackOwnWork refuses a replay whose span reaches back past commits trunk
 // already carries. The span is what gt recorded as the branch's parent revision
@@ -376,16 +377,18 @@ func gtRestackHead(ctx context.Context, prefix string, dir render.Dir, branch st
 }
 
 func gtRestackAlign(ctx context.Context, prefix string, holders map[string]string, moves []restackMove) ([]string, error) {
-    var aligned []string
-    for _, m := range moves {
-        holder := holders[m.branch]
-        if holder == "" { continue }
-        if _, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"read-tree", "-m", "-u", m.previous, m.head}); err != nil {
-            return aligned, fmt.Errorf("%s: branches moved but %s could not be aligned without overwriting local changes; preserve those changes and run ccx vcs stack continue: %w", prefix, holder, err)
-        }
-        aligned = append(aligned, holder)
-    }
-    return aligned, nil
+	var aligned []string
+	for _, m := range moves {
+		holder := holders[m.branch]
+		if holder == "" {
+			continue
+		}
+		if _, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"read-tree", "-m", "-u", m.previous, m.head}); err != nil {
+			return aligned, fmt.Errorf("%s: branches moved but %s could not be aligned without overwriting local changes; preserve those changes and run ccx vcs stack continue: %w", prefix, holder, err)
+		}
+		aligned = append(aligned, holder)
+	}
+	return aligned, nil
 }
 
 // gtRestackSegment reports a restack in the words of what it did: the branches

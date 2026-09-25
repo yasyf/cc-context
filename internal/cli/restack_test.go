@@ -126,12 +126,6 @@ func restackInvocations(t *testing.T, f *vcstest.Fixture) [][]string {
 	return vcstest.Invocations(t, f.ArgvLog)
 }
 
-func restackRecords(t *testing.T, f *vcstest.Fixture) []vcstest.Invocation {
-	t.Helper()
-	f.Quiesce(t)
-	return vcstest.Records(t, f.ArgvLog)
-}
-
 // assertNoRestackMutation fails when restack moved a ref or replayed a commit.
 // A refusal must leave the working copy exactly as it found it, which the
 // surviving HEAD alone cannot prove: a rebase that landed and was aborted also
@@ -546,14 +540,6 @@ func TestRestackGTPerBranchVerdict(t *testing.T) {
 	}
 }
 
-// restackPinned names the commit the summary reports the pass pinned — the
-// remote trunk's head, which the pass fast-forwards the local branch onto.
-func restackPinned(t *testing.T, f *vcstest.Fixture, want string) string {
-	t.Helper()
-	head := f.Out(t, "git", "rev-parse", "--short=12", "refs/remotes/origin/main")
-	return strings.Replace(want, "trunk main", "trunk main@"+strings.TrimSpace(head), 1)
-}
-
 func TestRestackGTMovesPastALandedParent(t *testing.T) {
 	f := restackGTRepo(t, "a", "b")
 	stubStackPRs(t, map[string]*stackPR{"a": {Number: 10, Head: restackRev(t, f, f.Dir, "a"), State: "CLOSED", Landed: true}})
@@ -682,7 +668,6 @@ func TestRestackGTRepairsIncorrectRestackMetadata(t *testing.T) {
 	if got := strings.TrimSpace(restackRun(t, f, f.Dir, "git", "rev-list", "--count", "origin/main..feat")); got != "1" {
 		t.Errorf("feature has %s commits, want 1", got)
 	}
-
 }
 
 func TestRestackGTPreservesDirtyTrunkWithoutStagingDeletions(t *testing.T) {
@@ -709,7 +694,6 @@ func TestRestackGTPreservesDirtyTrunkWithoutStagingDeletions(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(held, "upstream.txt")); !os.IsNotExist(err) {
 		t.Errorf("upstream file reached untouched trunk: %v", err)
 	}
-
 }
 
 func TestRestackGraphiteFirst(t *testing.T) {
@@ -790,7 +774,6 @@ func TestRestackGTReportsDriftNoBranchLandsOn(t *testing.T) {
 	if got := restackRev(t, f, f.Dir, "main"); got != before {
 		t.Errorf("trunk moved to %s", got)
 	}
-
 }
 
 // TestRestackMergedNamesTheBranch pins that a branch already in its parent is

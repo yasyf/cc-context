@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
- "maps"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -147,7 +147,7 @@ type gtCache struct {
 	prefix    string
 	commonDir string
 	state     gtState
-	restack *stackRebaseRun
+	restack   *stackRebaseRun
 }
 
 func newGTCache(dir render.Dir, prefix string) *gtCache {
@@ -220,7 +220,7 @@ func gtDownstack(prefix string, state gtState, branch, trunk string) ([]string, 
 		case cur == branch:
 			return nil, fmt.Errorf("%s: %w", prefix, &errGTUntracked{Branch: cur})
 		default:
-			return nil, fmt.Errorf("%s: gt state has no parent for %s, an ancestor of %s — the stack is unresolvable; run gt track %s, or gt restack", prefix, cur, branch, cur)
+			return nil, fmt.Errorf("%s: gt state has no parent for %s, an ancestor of %s — the stack is unresolvable; repair its parent with gt track %s, then run ccx vcs stack submit", prefix, cur, branch, cur)
 		}
 	}
 	return chain, nil
@@ -723,14 +723,20 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 		return "", nil, nil, errors.New(gtStuck("ship", problem, suffix))
 	}
 	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: o.draft, noVerify: o.noVerify}
-    if c.restack != nil {
-        if err := stackCheckPublishedHeads(state, c.restack); err != nil { return "", nil, nil, err }
-        sub.trunkHead = c.restack.Pin
-        common, err := c.common(ctx)
-        if err != nil { return "", nil, nil, err }
-        sub.leases, err = stackPublishLeases(ctx, common, c.restack)
-        if err != nil { return "", nil, nil, err }
-    }
+	if c.restack != nil {
+		if err := stackCheckPublishedHeads(state, c.restack); err != nil {
+			return "", nil, nil, err
+		}
+		sub.trunkHead = c.restack.Pin
+		common, err := c.common(ctx)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		sub.leases, err = stackPublishLeases(ctx, common, c.restack)
+		if err != nil {
+			return "", nil, nil, err
+		}
+	}
 	commonDir, err := c.common(ctx)
 	if err != nil {
 		return "", nil, nil, err
@@ -769,14 +775,16 @@ type gtSubmitBranch struct {
 // step can answer from them instead of asking GitHub the same question again.
 func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, commonDir string, state gtState, tr vcs.Trunk, branches []string) ([]string, map[string]gtapi.PullRequestInfo, error) {
 	if s.trunkHead == "" {
-        pin, err := gtTrunkHead(ctx, l.dir(), s.prefix, tr)
-        if err != nil { return nil, nil, err }
-        s.trunkHead = pin
-    }
-    state = maps.Clone(state)
-    trunk := state[tr.Name()]
-    trunk.Head = s.trunkHead
-    state[tr.Name()] = trunk
+		pin, err := gtTrunkHead(ctx, l.dir(), s.prefix, tr)
+		if err != nil {
+			return nil, nil, err
+		}
+		s.trunkHead = pin
+	}
+	state = maps.Clone(state)
+	trunk := state[tr.Name()]
+	trunk.Head = s.trunkHead
+	state[tr.Name()] = trunk
 	branches, contained, err := gtDropContained(ctx, l.dir(), s.prefix, tr, state, branches)
 	if err != nil {
 		return nil, nil, err
@@ -1199,7 +1207,7 @@ func gtPushStack(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmi
 	case err == nil:
 		return nil
 	case gitPushStaleLease(err):
-		problem := "remote " + strings.Join(gtPlanNames(plan), ", ") + " changed since last submit — reconcile manually (gt sync)"
+		problem := "remote " + strings.Join(gtPlanNames(plan), ", ") + " changed since last submit — run ccx vcs stack rebase to reconcile the recorded heads"
 		return &gtAdvice{advice: gtStuck(s.prefix, problem, s.suffix), cause: err}
 	default:
 		return fmt.Errorf("%s: git push %s: %w", s.prefix, strings.Join(gtPlanNames(plan), ", "), err)

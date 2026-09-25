@@ -348,13 +348,15 @@ func gtPushInv(refs ...gtPushRef) []string {
 // gtCreateLogInv is the commit read that derives a created PR's title and
 // body.
 func gtCreateLogInv(base, branch string) []string {
-	if strings.HasPrefix(base, "refs/remotes/") { base = fakeTrunkSHA }
+	if strings.HasPrefix(base, "refs/remotes/") {
+		base = fakeTrunkSHA
+	}
 	return []string{"git", "log", "--reverse", "--format=%s%x00%b%x00", base + ".." + branch}
 }
 
 // gtCherryInv is the patch-identity read a submit makes per branch, naming the
 // commits the remote trunk already holds.
-func gtCherryInv(trunk, head, base string) []string {
+func gtCherryInv(_ string, head, base string) []string {
 	return []string{"git", "cherry", "--abbrev=12", fakeTrunkSHA, head, base}
 }
 
@@ -407,9 +409,11 @@ func gtContainedInv(trunk, head string) []string {
 // arrive bottom-up, shipped one last. The trunk resolution itself floats, so
 // gtDropTrunkInv accounts for it rather than this sequence.
 func gtShipSubmitInv(trunk string, heads ...string) [][]string {
-    inv := [][]string{gtContainedInv(trunk, heads[len(heads)-1]), {"git", "rev-parse", "--verify", gtRemoteTrunk(trunk)}}
-    for _, head := range heads { inv = append(inv, []string{"git", "merge-base", "--is-ancestor", head, fakeTrunkSHA}) }
-    return inv
+	inv := [][]string{gtContainedInv(trunk, heads[len(heads)-1]), {"git", "rev-parse", "--verify", gtRemoteTrunk(trunk)}}
+	for _, head := range heads {
+		inv = append(inv, []string{"git", "merge-base", "--is-ancestor", head, fakeTrunkSHA})
+	}
+	return inv
 }
 
 // hasInvocation reports whether the argv log carries one exact invocation.

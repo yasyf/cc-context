@@ -4082,8 +4082,8 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				gtRefsArgv(),
 				{"git", "branch", "--show-current"},
 				gtRefsArgv(),
-                {"git", "merge-base", "--is-ancestor", gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA},
-                {"git", "log", "-1", "--format=%h%x00%s"},
+				{"git", "merge-base", "--is-ancestor", gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA},
+				{"git", "log", "-1", "--format=%h%x00%s"},
 			}
 			want = append(want, tt.submitInv...)
 			want = append(want,
@@ -4127,8 +4127,8 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"},
 		{"git", "branch", "--show-current"},
 		gtRefsArgv(),
-        {"git", "merge-base", "--is-ancestor", gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA},
-        {"git", "log", "-1", "--format=%h%x00%s"},
+		{"git", "merge-base", "--is-ancestor", gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA},
+		{"git", "log", "-1", "--format=%h%x00%s"},
 	}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
 		gtCreateLogInv(gtRemoteTrunk("main"), "fix-frobnicate"),
 		gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
@@ -4864,13 +4864,19 @@ func shipGTHeldParent(t *testing.T, f *vcstest.Fixture) string {
 }
 
 func TestShipGTRestacksAcrossWorktrees(t *testing.T) {
-    f := shipGTRepo(t)
-    held := shipGTHeldParent(t, f)
-    before := gitAt(t, f.Env(), held, "rev-parse", "HEAD")
-    _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
-    if err == nil || !strings.Contains(err.Error(), "is checked out in "+held) { t.Fatalf("ship = %v", err) }
-    if after := gitAt(t, f.Env(), held, "rev-parse", "HEAD"); after != before { t.Fatal("other checkout moved") }
-    if dirt := gitAt(t, f.Env(), held, "status", "--porcelain"); dirt != "" { t.Fatalf("other checkout changed: %s", dirt) }
+	f := shipGTRepo(t)
+	held := shipGTHeldParent(t, f)
+	before := gitAt(t, f.Env(), held, "rev-parse", "HEAD")
+	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+	if err == nil || !strings.Contains(err.Error(), "is checked out in "+held) {
+		t.Fatalf("ship = %v", err)
+	}
+	if after := gitAt(t, f.Env(), held, "rev-parse", "HEAD"); after != before {
+		t.Fatal("other checkout moved")
+	}
+	if dirt := gitAt(t, f.Env(), held, "status", "--porcelain"); dirt != "" {
+		t.Fatalf("other checkout changed: %s", dirt)
+	}
 }
 
 // shipGTRestackRuns names every working copy ship drove gt restack in. The
@@ -4901,14 +4907,22 @@ func TestShipGTRestacksAStackSpreadAcrossWorkingCopies(t *testing.T) {
 	}
 	shipGTReady(t, f)
 
-    before := map[string]string{}
-    for branch, dir := range held { before[branch] = gitAt(t, f.Env(), dir, "rev-parse", "HEAD") }
-    _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
-    if err == nil || !strings.Contains(err.Error(), "is checked out in") { t.Fatalf("ship = %v", err) }
-    for branch, dir := range held {
-        if got := gitAt(t, f.Env(), dir, "rev-parse", "HEAD"); got != before[branch] { t.Fatalf("%s moved", branch) }
-        if dirt := gitAt(t, f.Env(), dir, "status", "--porcelain"); dirt != "" { t.Fatalf("%s changed: %s", branch, dirt) }
-    }
+	before := map[string]string{}
+	for branch, dir := range held {
+		before[branch] = gitAt(t, f.Env(), dir, "rev-parse", "HEAD")
+	}
+	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+	if err == nil || !strings.Contains(err.Error(), "is checked out in") {
+		t.Fatalf("ship = %v", err)
+	}
+	for branch, dir := range held {
+		if got := gitAt(t, f.Env(), dir, "rev-parse", "HEAD"); got != before[branch] {
+			t.Fatalf("%s moved", branch)
+		}
+		if dirt := gitAt(t, f.Env(), dir, "status", "--porcelain"); dirt != "" {
+			t.Fatalf("%s changed: %s", branch, dirt)
+		}
+	}
 }
 
 func TestShipGTRestackAppliesPrintedRefUpdates(t *testing.T) {
@@ -5054,7 +5068,9 @@ func TestShipGTNoCommitRestackConflict(t *testing.T) {
 
 	_, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--no-pr")
 
-        if err == nil || !strings.Contains(err.Error(), "ccx vcs stack continue") || strings.Contains(err.Error(), "gt restack") { t.Fatalf("conflict = %v", err) }
+	if err == nil || !strings.Contains(err.Error(), "ccx vcs stack continue") || strings.Contains(err.Error(), "gt restack") {
+		t.Fatalf("conflict = %v", err)
+	}
 	if strings.Contains(err.Error(), gtResumeCmd(shipOpts{})) {
 		t.Errorf("error = %v, want no resume line — it would restate the command that just ran", err)
 	}
@@ -5076,7 +5092,9 @@ func TestShipGTLandedRestackConflictResumes(t *testing.T) {
 
 			_, err := runShipCmd(f.Context(), t, append([]string{"-m", "fix: frobnicate", "--no-watch", "--no-pr"}, tt.paths...)...)
 
-        if err == nil || !strings.Contains(err.Error(), "ccx vcs stack continue") || strings.Contains(err.Error(), "gt restack") { t.Fatalf("conflict = %v", err) }
+			if err == nil || !strings.Contains(err.Error(), "ccx vcs stack continue") || strings.Contains(err.Error(), "gt restack") {
+				t.Fatalf("conflict = %v", err)
+			}
 		})
 	}
 }
@@ -5089,13 +5107,19 @@ func TestShipGTResumeAfterRestackConflict(t *testing.T) {
 	if err == nil {
 		t.Fatal("want the restack conflict")
 	}
-    if !strings.Contains(err.Error(), "ccx vcs stack continue") { t.Fatalf("conflict = %v", err) }
-    run, err := stackLoadRun(filepath.Join(f.Dir, ".git"))
-    if err != nil { t.Fatal(err) }
-    writeShipFile(t, run.Conflict.Workspace, "c.txt", "resolved\n")
-    mustRun(t, f.Env(), run.Conflict.Workspace, "git", "add", "c.txt")
-    shipResetLog(t, f)
-    if _, _, err := runStackCmd(t, f, "continue"); err != nil { t.Fatalf("continue: %v", err) }
+	if !strings.Contains(err.Error(), "ccx vcs stack continue") {
+		t.Fatalf("conflict = %v", err)
+	}
+	run, err := stackLoadRun(filepath.Join(f.Dir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeShipFile(t, run.Conflict.Workspace, "c.txt", "resolved\n")
+	mustRun(t, f.Env(), run.Conflict.Workspace, "git", "add", "c.txt")
+	shipResetLog(t, f)
+	if _, _, err := runStackCmd(t, f, "continue"); err != nil {
+		t.Fatalf("continue: %v", err)
+	}
 
 	invocations := shipGTInvocations(t, f)
 	var verbs []string
