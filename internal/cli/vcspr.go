@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -37,14 +38,18 @@ type prQueueReport struct {
 // prCommitOnBase reports whether sha is reachable from the base branch on
 // GitHub; tests replace it to keep the compare off the network.
 var prCommitOnBase = func(ctx context.Context, repo, base, sha string) (bool, error) {
-	out, err := render.RunCLI(ctx, render.Ambient, "gh", []string{
-		"api", fmt.Sprintf("repos/%s/compare/%s...%s?per_page=1", repo, base, sha), "--jq", ".status",
-	})
+	out, err := render.RunCLI(ctx, render.Ambient, "gh", []string{"api", prCompareEndpoint(repo, base, sha), "--jq", ".status"})
 	if err != nil {
 		return false, fmt.Errorf("pr status: compare %s with %s: %w", sha, base, err)
 	}
 	status := strings.TrimSpace(out)
 	return status == "behind" || status == "identical", nil
+}
+
+// prCompareEndpoint escapes the base, since gh sends the endpoint path as given
+// and a branch name may carry # or %.
+func prCompareEndpoint(repo, base, sha string) string {
+	return fmt.Sprintf("repos/%s/compare/%s...%s?per_page=1", repo, url.PathEscape(base), sha)
 }
 
 type vcsPRStatusOpts struct {

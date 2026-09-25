@@ -69,6 +69,21 @@ func TestClassifyPRQueue(t *testing.T) {
 	}
 }
 
+func TestPRCompareEndpoint(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ base, want string }{
+		{"dev", "repos/Forge-AI/monorepo/compare/dev...9cc33f05?per_page=1"},
+		{"yasyf/rv2-slack", "repos/Forge-AI/monorepo/compare/yasyf%2Frv2-slack...9cc33f05?per_page=1"},
+		{"feature#123", "repos/Forge-AI/monorepo/compare/feature%23123...9cc33f05?per_page=1"},
+		{"feature%work", "repos/Forge-AI/monorepo/compare/feature%25work...9cc33f05?per_page=1"},
+	}
+	for _, tt := range tests {
+		if got := prCompareEndpoint("Forge-AI/monorepo", tt.base, "9cc33f05"); got != tt.want {
+			t.Errorf("prCompareEndpoint(%q) = %q, want %q", tt.base, got, tt.want)
+		}
+	}
+}
+
 // stubPRInfo serves pull-request-info from the recorded payloads and records
 // each request's numbers and repository.
 func stubPRInfo(t *testing.T, payloads ...string) *[]gtapi.PullRequestInfoRequest {
