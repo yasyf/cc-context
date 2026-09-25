@@ -1265,35 +1265,77 @@ func runStackAbort(cmd *cobra.Command, stack string) error {
 	if err != nil {
 		return err
 	}
-	if run.Publishing || run.Pushed {
-		if !run.Receipted {
-			return errors.New("stack abort: publication receipts are incomplete; run ccx vcs stack continue before discarding recovery state")
-		}
-		if err := stackCompletePublication(ctx, l.dir(), commonDir, run); err != nil {
-			return err
-		}
-		cmd.Println("aborted pending publication metadata · published commits and source checkouts unchanged")
-		return nil
+	outcome, err := stackSettle(ctx, l, commonDir, run)
+	if err != nil {
+		return err
 	}
-	if run.Applied {
-		return errors.New("stack abort: the rewritten stack is already written locally, so there is nothing left to abort — ccx vcs stack continue finishes recording and pushing it")
+	cmd.Println(outcome)
+	return nil
+}
+
+func stackSettle(ctx context.Context, l lane, commonDir string, run *stackRebaseRun) (string, error) {
+	dir := l.dir()
+	if err := stackRecoverPublication(ctx, dir, run); err != nil {
+		return "", err
+	}
+	outcome := "aborted · no branch moved"
+	switch {
+	case run.Receipted:
+		return "aborted pending publication metadata · published commits and source checkouts unchanged", stackCompletePublication(ctx, dir, commonDir, run)
+	case run.Pushed:
+		held, err := stackRemoteMatchesPublication(ctx, dir, "origin", run.PushTargets)
+		if err != nil {
+			return "", err
+		}
+		if held {
+			return "", errors.New("stack rebase: the stack is pushed, but its publication receipts are not recorded — ccx vcs stack continue records them")
+		}
+		outcome = "aborted · the remote moved off the pushed stack, so no receipt was recorded · source checkouts unchanged"
+	case run.Applied:
+		held, err := stackRewriteHeld(ctx, dir, run)
+		if err != nil {
+			return "", err
+		}
+		if held {
+			return "", errors.New("stack abort: the rewritten stack is already written locally, so there is nothing left to abort — ccx vcs stack continue finishes recording and pushing it")
+		}
+		outcome = "aborted · the branches no longer hold the rewrite, so every branch stays where it is"
 	}
 	if c := run.Conflict; c != nil {
 		if err := stackDropWorkspace(ctx, l, c.Workspace); err != nil {
-			return err
+			return "", err
 		}
 	}
-	if err := stackDropPublicationPins(ctx, l.dir(), run); err != nil {
-		return err
+	if err := stackDropPublicationPins(ctx, dir, run); err != nil {
+		return "", err
 	}
-	if err := stackDropTempRefs(ctx, l.dir(), run); err != nil {
-		return err
+	if err := stackDropTempRefs(ctx, dir, run); err != nil {
+		return "", err
 	}
 	if err := stackClearRun(commonDir, run); err != nil {
-		return fmt.Errorf("stack abort: %w", err)
+		return "", fmt.Errorf("stack abort: %w", err)
 	}
-	cmd.Println("aborted · no branch moved")
-	return nil
+	return outcome, nil
+}
+
+func stackRewriteHeld(ctx context.Context, dir render.Dir, run *stackRebaseRun) (bool, error) {
+	for _, b := range run.Branches {
+		if b.Landed != "" {
+			continue
+		}
+		present, err := gitRefExists(ctx, dir, stackRebasePrefix, gtRestackRef(b.Name))
+		if err != nil || !present {
+			return false, err
+		}
+		at, err := stackRevParse(ctx, dir, gtRestackRef(b.Name))
+		if err != nil {
+			return false, err
+		}
+		if at != b.NewHead {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func stackResolveRun(ctx context.Context, stack string) (lane, string, *stackRebaseRun, error) {

@@ -137,7 +137,7 @@ func stackCheckSources(ctx context.Context, dir render.Dir, run *stackRebaseRun)
 	}
 	tx.WriteString("commit\n")
 	if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "--stdin"}, []byte(tx.String())); err != nil {
-		return fmt.Errorf("stack publication: a source branch moved; all source refs and working copies were left untouched: %w", err)
+		return fmt.Errorf("stack publication: a source branch moved; all source refs and working copies were left untouched — ccx vcs stack abort drops the run: %w", err)
 	}
 	return nil
 }
@@ -268,7 +268,7 @@ func stackPushPublication(ctx context.Context, dir render.Dir, s gtSubmit, plan 
 		return err
 	}
 	if !matched {
-		return errors.New("stack publication: remote heads changed after publication; retained the original receipts and source checkouts")
+		return errors.New("stack publication: remote heads changed after publication; retained the original receipts and source checkouts — ccx vcs stack abort drops the run")
 	}
 	return nil
 }
