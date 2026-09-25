@@ -5,8 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -69,18 +73,73 @@ func TestClassifyPRQueue(t *testing.T) {
 	}
 }
 
-func TestPRCompareEndpoint(t *testing.T) {
-	t.Parallel()
-	tests := []struct{ base, want string }{
-		{"dev", "repos/Forge-AI/monorepo/compare/dev...9cc33f05?per_page=1"},
-		{"yasyf/rv2-slack", "repos/Forge-AI/monorepo/compare/yasyf%2Frv2-slack...9cc33f05?per_page=1"},
-		{"feature#123", "repos/Forge-AI/monorepo/compare/feature%23123...9cc33f05?per_page=1"},
-		{"feature%work", "repos/Forge-AI/monorepo/compare/feature%25work...9cc33f05?per_page=1"},
+func stubPRGraphQL(t *testing.T, response string) string {
+	t.Helper()
+	dir := t.TempDir()
+	responsePath := filepath.Join(dir, "response.json")
+	if err := os.WriteFile(responsePath, []byte(response), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	program := "#!/bin/sh\nprintf 'call\\n' >> \"$GH_CALLS\"\nprintf '%s\\n' \"$@\" > \"$GH_ARGS\"\ncat \"$GH_RESPONSE\"\n"
+	writeShipExecutable(t, dir, "gh", program)
+	argsPath := filepath.Join(dir, "args")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GH_CALLS", filepath.Join(dir, "calls"))
+	t.Setenv("GH_ARGS", argsPath)
+	t.Setenv("GH_RESPONSE", responsePath)
+	return dir
+}
+
+func TestPRCommitsOnBaseBatchesGraphQL(t *testing.T) {
+	dir := stubPRGraphQL(t, `{"data":{"repository":{"b0":{"c0":{"status":"BEHIND"},"c1":{"status":"IDENTICAL"},"c2":{"status":"AHEAD"}},"b1":{"c0":{"status":"DIVERGED"}}}}}`)
+	candidates := []prCommitCandidate{
+		{number: 1, base: "dev", sha: "a"},
+		{number: 2, base: "dev", sha: "b"},
+		{number: 3, base: "feature/work", sha: "c"},
+		{number: 4, base: "dev", sha: "d"},
+	}
+	got, err := prCommitsOnBase(context.Background(), "Forge-AI/monorepo", candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[int]bool{1: true, 2: true, 3: false, 4: false}; !maps.Equal(got, want) {
+		t.Errorf("reachability = %v, want %v", got, want)
+	}
+	calls, err := os.ReadFile(filepath.Join(dir, "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(calls) != "call\n" {
+		t.Errorf("gh calls = %q, want one", calls)
+	}
+	args, err := os.ReadFile(filepath.Join(dir, "args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"api\ngraphql\n", "b0=refs/heads/dev", "b1=refs/heads/feature/work", "s0_0=a", "s0_1=b", "s0_2=d", "s1_0=c", "c0: compare(headRef: $s0_0)", "c1: compare(headRef: $s0_1)", "c2: compare(headRef: $s0_2)"} {
+		if !strings.Contains(string(args), want) {
+			t.Errorf("gh args missing %q: %s", want, args)
+		}
+	}
+}
+
+func TestPRCommitsOnBaseRefusesUnverified(t *testing.T) {
+	tests := []struct {
+		name, response, want string
+	}{
+		{"missing branch", `{"data":{"repository":{"b0":null}}}`, `base branch "dev" not found`},
+		{"missing comparison", `{"data":{"repository":{"b0":{"c0":null}}}}`, "compare a with dev: no result"},
+		{"unknown status", `{"data":{"repository":{"b0":{"c0":{"status":"UNKNOWN"}}}}}`, `unknown status "UNKNOWN"`},
+		{"GraphQL error", `{"errors":[{"message":"query failed"}]}`, "query failed"},
 	}
 	for _, tt := range tests {
-		if got := prCompareEndpoint("Forge-AI/monorepo", tt.base, "9cc33f05"); got != tt.want {
-			t.Errorf("prCompareEndpoint(%q) = %q, want %q", tt.base, got, tt.want)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			stubPRGraphQL(t, tt.response)
+			_, err := prCommitsOnBase(context.Background(), "Forge-AI/monorepo", []prCommitCandidate{{number: 1, base: "dev", sha: "a"}})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("err = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 
@@ -109,15 +168,19 @@ func stubPRInfo(t *testing.T, payloads ...string) *[]gtapi.PullRequestInfoReques
 	return &asked
 }
 
-func stubCommitOnBase(t *testing.T, onBase map[string]bool) *[]string {
+func stubCommitsOnBase(t *testing.T, onBase map[string]bool) *[][]prCommitCandidate {
 	t.Helper()
-	var compared []string
-	prev := prCommitOnBase
-	prCommitOnBase = func(_ context.Context, repo, base, sha string) (bool, error) {
-		compared = append(compared, repo+" "+base+"..."+sha)
-		return onBase[sha], nil
+	var compared [][]prCommitCandidate
+	prev := prCommitsOnBase
+	prCommitsOnBase = func(_ context.Context, _ string, candidates []prCommitCandidate) (map[int]bool, error) {
+		compared = append(compared, slices.Clone(candidates))
+		got := make(map[int]bool, len(candidates))
+		for _, candidate := range candidates {
+			got[candidate.number] = onBase[candidate.sha]
+		}
+		return got, nil
 	}
-	t.Cleanup(func() { prCommitOnBase = prev })
+	t.Cleanup(func() { prCommitsOnBase = prev })
 	return &compared
 }
 
@@ -139,7 +202,7 @@ func runPRStatusCmd(t *testing.T, args ...string) (string, error) {
 // recorded squash costs a compare against the base.
 func TestPRStatusReportsEachQueueState(t *testing.T) {
 	asked := stubPRInfo(t, prInfoLanded, prInfoOpen, prInfoQueued)
-	compared := stubCommitOnBase(t, map[string]bool{"9cc33f055dc4db19da6eb13a210a810297ccdc05": true})
+	compared := stubCommitsOnBase(t, map[string]bool{"9cc33f055dc4db19da6eb13a210a810297ccdc05": true})
 
 	out, err := runPRStatusCmd(t, "--repo", "Forge-AI/monorepo", "25121", "#25131", "25116")
 	if err != nil {
@@ -158,14 +221,14 @@ func TestPRStatusReportsEachQueueState(t *testing.T) {
 	if req.RepoOwner != "Forge-AI" || req.RepoName != "monorepo" || !slices.Equal(req.PRNumbers, []int{25121, 25131, 25116}) || !req.Consistent {
 		t.Errorf("request = %+v, want Forge-AI/monorepo #25121 #25131 #25116, consistent", req)
 	}
-	if want := []string{"Forge-AI/monorepo dev...9cc33f055dc4db19da6eb13a210a810297ccdc05"}; !slices.Equal(*compared, want) {
+	if want := [][]prCommitCandidate{{{number: 25116, base: "dev", sha: "9cc33f055dc4db19da6eb13a210a810297ccdc05"}}}; !reflect.DeepEqual(*compared, want) {
 		t.Errorf("compares = %v, want %v", *compared, want)
 	}
 }
 
 func TestPRStatusJSON(t *testing.T) {
 	stubPRInfo(t, prInfoQueued)
-	stubCommitOnBase(t, nil)
+	compared := stubCommitsOnBase(t, nil)
 
 	out, err := runPRStatusCmd(t, "--repo", "Forge-AI/monorepo", "--json", "25121")
 	if err != nil {
@@ -178,6 +241,9 @@ func TestPRStatusJSON(t *testing.T) {
 	want := []prQueueReport{{Number: 25121, Queue: prQueueQueued, State: "OPEN", Base: "dev", Enqueued: "b103a57671412a4e260ecd9763ba764e66053d15"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("report = %+v, want %+v", got, want)
+	}
+	if len(*compared) != 0 {
+		t.Errorf("compares = %v, want none", *compared)
 	}
 }
 
@@ -194,7 +260,7 @@ func TestPRStatusRefuses(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stubPRInfo(t, prInfoQueued)
-			stubCommitOnBase(t, nil)
+			stubCommitsOnBase(t, nil)
 			if _, err := runPRStatusCmd(t, tt.args...); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("err = %v, want it to contain %q", err, tt.want)
 			}

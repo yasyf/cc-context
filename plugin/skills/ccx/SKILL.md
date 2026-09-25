@@ -345,7 +345,10 @@ blocker, and the PR's changed-file count is on the `pr` line, because a diff
 wider than the work is the tell.
 
 `ccx vcs pr status <n>...` answers the narrower question about any pull request
-by number, from any checkout, and `-R owner/name` names another repo. It prints
+by number, from any checkout, and `-R owner/name` names another repo. Pass all
+numbers in one invocation, such as `ccx vcs pr status 25655 25665 25652`;
+the command fetches their statuses together and prints one line per PR in input
+order. Do not run it in a shell loop or truncate its output with `head`. It prints
 `queued`, `not queued`, or `landed`. It reads Graphite's own record, the one gt reads, so a
 PR enqueued from the Graphite web UI reads `queued` with no merge label on it,
 and a stale merge label the queue dropped reads `not queued`. `landed` means the

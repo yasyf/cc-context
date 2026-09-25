@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -35,21 +34,95 @@ type prQueueReport struct {
 	Squash   string       `json:"squash,omitempty"`
 }
 
-// prCommitOnBase reports whether sha is reachable from the base branch on
-// GitHub; tests replace it to keep the compare off the network.
-var prCommitOnBase = func(ctx context.Context, repo, base, sha string) (bool, error) {
-	out, err := render.RunCLI(ctx, render.Ambient, "gh", []string{"api", prCompareEndpoint(repo, base, sha), "--jq", ".status"})
-	if err != nil {
-		return false, fmt.Errorf("pr status: compare %s with %s: %w", sha, base, err)
-	}
-	status := strings.TrimSpace(out)
-	return status == "behind" || status == "identical", nil
+type prCommitCandidate struct {
+	number int
+	base   string
+	sha    string
 }
 
-// prCompareEndpoint escapes the base, since gh sends the endpoint path as given
-// and a branch name may carry # or %.
-func prCompareEndpoint(repo, base, sha string) string {
-	return fmt.Sprintf("repos/%s/compare/%s...%s?per_page=1", repo, url.PathEscape(base), sha)
+type prComparisonGroup struct {
+	base       string
+	candidates []prCommitCandidate
+}
+
+var prCommitsOnBase = func(ctx context.Context, repo string, candidates []prCommitCandidate) (map[int]bool, error) {
+	owner, name, _ := strings.Cut(repo, "/")
+	groups := make([]prComparisonGroup, 0)
+	groupIndex := make(map[string]int)
+	for _, candidate := range candidates {
+		index, ok := groupIndex[candidate.base]
+		if !ok {
+			index = len(groups)
+			groupIndex[candidate.base] = index
+			groups = append(groups, prComparisonGroup{base: candidate.base})
+		}
+		groups[index].candidates = append(groups[index].candidates, candidate)
+	}
+	argv := []string{"api", "graphql", "-f", "owner=" + owner, "-f", "repo=" + name}
+	for i, group := range groups {
+		argv = append(argv, "-f", fmt.Sprintf("b%d=refs/heads/%s", i, group.base))
+		for j, candidate := range group.candidates {
+			argv = append(argv, "-f", fmt.Sprintf("s%d_%d=%s", i, j, candidate.sha))
+		}
+	}
+	argv = append(argv, "-f", "query="+prCompareQuery(groups))
+	out, err := render.RunCLI(ctx, render.Ambient, "gh", argv)
+	if err != nil {
+		return nil, fmt.Errorf("pr status: gh api graphql: %w", err)
+	}
+	var resp struct {
+		Data struct {
+			Repository map[string]map[string]*struct {
+				Status string `json:"status"`
+			} `json:"repository"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		return nil, fmt.Errorf("pr status: parse gh api graphql: %w", err)
+	}
+	if len(resp.Errors) > 0 {
+		return nil, fmt.Errorf("pr status: gh api graphql: %s", resp.Errors[0].Message)
+	}
+	onBase := make(map[int]bool, len(candidates))
+	for i, group := range groups {
+		ref := resp.Data.Repository[fmt.Sprintf("b%d", i)]
+		if ref == nil {
+			return nil, fmt.Errorf("pr status: base branch %q not found", group.base)
+		}
+		for j, candidate := range group.candidates {
+			comparison := ref[fmt.Sprintf("c%d", j)]
+			if comparison == nil {
+				return nil, fmt.Errorf("pr status: compare %s with %s: no result", candidate.sha, group.base)
+			}
+			switch comparison.Status {
+			case "BEHIND", "IDENTICAL":
+				onBase[candidate.number] = true
+			case "AHEAD", "DIVERGED":
+				onBase[candidate.number] = false
+			default:
+				return nil, fmt.Errorf("pr status: compare %s with %s: unknown status %q", candidate.sha, group.base, comparison.Status)
+			}
+		}
+	}
+	return onBase, nil
+}
+
+func prCompareQuery(groups []prComparisonGroup) string {
+	decls := []string{"$owner: String!", "$repo: String!"}
+	var fields strings.Builder
+	for i, group := range groups {
+		decls = append(decls, fmt.Sprintf("$b%d: String!", i))
+		fmt.Fprintf(&fields, "    b%d: ref(qualifiedName: $b%d) {\n", i, i)
+		for j := range group.candidates {
+			decls = append(decls, fmt.Sprintf("$s%d_%d: String!", i, j))
+			fmt.Fprintf(&fields, "      c%d: compare(headRef: $s%d_%d) { status }\n", j, i, j)
+		}
+		fields.WriteString("    }\n")
+	}
+	return fmt.Sprintf("query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}", strings.Join(decls, ", "), fields.String())
 }
 
 type vcsPRStatusOpts struct {
@@ -74,6 +147,9 @@ func newVcsPRStatusCmd() *cobra.Command {
 		Use:   "status <number>...",
 		Short: "Report whether each pull request is queued, not queued, or landed",
 		Long: `Report whether each pull request is queued, not queued, or landed.
+
+Pass all pull request numbers in one invocation. The command fetches their
+statuses together and prints one result per pull request in input order.
 
 The answer comes from Graphite's own record of the pull request, the one gt
 reads, so a pull request enqueued from the Graphite web UI reads queued even
@@ -150,20 +226,27 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int) ([]prQueueR
 	for _, info := range infos {
 		byNumber[info.PRNumber] = info
 	}
-	reports := make([]prQueueReport, 0, len(numbers))
+	candidates := make([]prCommitCandidate, 0, len(numbers))
 	for _, number := range numbers {
 		info, ok := byNumber[number]
 		if !ok {
 			return nil, fmt.Errorf("pr status: graphite has no record of %s#%d", repo, number)
 		}
-		onBase := false
 		if info.MergeCommitSha != "" {
-			onBase, err = prCommitOnBase(ctx, repo, info.BaseRefName, info.MergeCommitSha)
-			if err != nil {
-				return nil, err
-			}
+			candidates = append(candidates, prCommitCandidate{number: number, base: info.BaseRefName, sha: info.MergeCommitSha})
 		}
-		reports = append(reports, classifyPRQueue(info, onBase))
+	}
+	onBase := map[int]bool{}
+	if len(candidates) > 0 {
+		onBase, err = prCommitsOnBase(ctx, repo, candidates)
+		if err != nil {
+			return nil, err
+		}
+	}
+	reports := make([]prQueueReport, 0, len(numbers))
+	for _, number := range numbers {
+		info := byNumber[number]
+		reports = append(reports, classifyPRQueue(info, onBase[number]))
 	}
 	return reports, nil
 }
