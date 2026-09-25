@@ -68,7 +68,7 @@ func runFormatFilter(cmd *cobra.Command, opts format.Options, budget int) error 
 	if err != nil {
 		return fmt.Errorf("read stdin: %w", err)
 	}
-	out, converted, err := format.Convert(data, opts)
+	out, converted, err := format.Convert(cmd.Context(), data, opts)
 	if err != nil {
 		return err
 	}

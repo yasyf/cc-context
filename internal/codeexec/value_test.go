@@ -144,7 +144,7 @@ func TestBigIntRendersDigitExact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeValue error: %v", err)
 	}
-	if got := rendered(val, ""); got != digits {
+	if got := rendered(t.Context(), val, ""); got != digits {
 		t.Errorf("rendered = %q, want %q", got, digits)
 	}
 }
@@ -155,7 +155,7 @@ func TestBytesRenderRaw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeValue error: %v", err)
 	}
-	if got := rendered(val, ""); got != "hi" {
+	if got := rendered(t.Context(), val, ""); got != "hi" {
 		t.Errorf("rendered = %q, want %q", got, "hi")
 	}
 }

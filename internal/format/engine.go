@@ -55,17 +55,20 @@ var errEngineUnavailable = errors.New("format engine unavailable")
 // plain sync.Once is the wrong primitive here — pinning whatever the first init
 // returns would lock a transient cold-compile timeout into errEngineUnavailable
 // for the process lifetime, fatal for the long-lived MCP server.
-func loadEngine() (*engine, error) {
+//
+// The compile keeps the values ctx carries and drops its cancellation: the
+// engine outlives the call that happens to build it.
+func loadEngine(ctx context.Context) (*engine, error) {
 	engineMu.Lock()
 	defer engineMu.Unlock()
 	if engineInst != nil {
 		return engineInst, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), initTimeout)
+	initCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), initTimeout)
 	defer cancel()
 
-	eng, err := initEngine(ctx)
+	eng, err := initEngine(initCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +98,7 @@ func newCompilerRuntime(ctx context.Context, compilationCache wazero.Compilation
 // initEngine resolves the on-disk compilation cache and compiles the module
 // behind wazero's compiler backend.
 func initEngine(ctx context.Context) (*engine, error) {
-	dir, err := cache.Dir("wasm")
+	dir, err := cache.DirFrom(ctx, "wasm")
 	if err != nil {
 		return nil, fmt.Errorf("resolve wasm cache dir: %w", err)
 	}
@@ -146,13 +149,13 @@ type wasmResponse struct {
 
 // runEngine runs src and opts through one one-shot module instance. The error
 // return is a host failure (trap/timeout/limit); a domain error rides in errKind.
-func runEngine(src []byte, opts Options) (engineResult, error) {
-	eng, err := loadEngine()
+func runEngine(ctx context.Context, src []byte, opts Options) (engineResult, error) {
+	eng, err := loadEngine(ctx)
 	if err != nil {
 		return engineResult{}, errors.Join(errEngineUnavailable, err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	callCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), callTimeout)
 	defer cancel()
 
 	req := wasmRequest{Src: string(src), Indent: opts.Indent, Delimiter: opts.Delimiter.char()}
@@ -165,13 +168,13 @@ func runEngine(src []byte, opts Options) (engineResult, error) {
 		return engineResult{}, fmt.Errorf("marshal wasm request: %w", err)
 	}
 
-	mod, err := eng.runtime.InstantiateModule(ctx, eng.compiled, wazero.NewModuleConfig().WithName(""))
+	mod, err := eng.runtime.InstantiateModule(callCtx, eng.compiled, wazero.NewModuleConfig().WithName(""))
 	if err != nil {
 		return engineResult{}, fmt.Errorf("instantiate formatcore.wasm: %w", err)
 	}
-	defer func() { _ = mod.Close(ctx) }()
+	defer func() { _ = mod.Close(callCtx) }()
 
-	respBytes, err := callFormat(ctx, mod, reqBytes)
+	respBytes, err := callFormat(callCtx, mod, reqBytes)
 	if err != nil {
 		return engineResult{}, err
 	}

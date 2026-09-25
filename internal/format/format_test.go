@@ -28,7 +28,7 @@ func TestConvertAutoSkipsLossyTOON(t *testing.T) {
 	for i := range 400 {
 		fmt.Fprintf(&b, "{\"v\":%s,\"n\":null,\"id\":%d}\n", pi, i)
 	}
-	got, converted, err := Convert([]byte(b.String()), defaultOpts())
+	got, converted, err := Convert(t.Context(), []byte(b.String()), defaultOpts())
 	if err != nil {
 		t.Fatalf("Convert() error = %v", err)
 	}
@@ -43,7 +43,7 @@ func TestConvertAutoSkipsLossyTOON(t *testing.T) {
 func TestConvertStrict(t *testing.T) {
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	opts := Options{Format: FormatAuto, Indent: 2, Delimiter: DelimiterComma, Strict: true}
-	_, converted, err := Convert([]byte("not json"), opts)
+	_, converted, err := Convert(t.Context(), []byte("not json"), opts)
 	if err == nil {
 		t.Fatal("Convert(strict) on bad JSON: want error, got nil")
 	}
@@ -68,7 +68,7 @@ func TestConvertPassthrough(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, converted, err := Convert([]byte(tt.src), defaultOpts())
+			got, converted, err := Convert(t.Context(), []byte(tt.src), defaultOpts())
 			if err != nil {
 				t.Fatalf("Convert() error = %v, want nil", err)
 			}
@@ -86,7 +86,7 @@ func TestConvertPassthrough(t *testing.T) {
 // represent the payload: an explicit format never falls back to passthrough.
 func TestConvertForcedShapeError(t *testing.T) {
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	_, converted, err := Convert([]byte(`{"a":1}`), Options{Format: FormatCSV, Indent: 2, Delimiter: DelimiterComma})
+	_, converted, err := Convert(t.Context(), []byte(`{"a":1}`), Options{Format: FormatCSV, Indent: 2, Delimiter: DelimiterComma})
 	if err == nil {
 		t.Fatal("Convert(csv on object): want error, got nil")
 	}
@@ -99,7 +99,7 @@ func TestConvertForcedShapeError(t *testing.T) {
 // cannot parse.
 func TestConvertUnknownFormat(t *testing.T) {
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	_, converted, err := Convert([]byte(`{"a":1}`), Options{Format: Format("bogus"), Indent: 2, Delimiter: DelimiterComma})
+	_, converted, err := Convert(t.Context(), []byte(`{"a":1}`), Options{Format: Format("bogus"), Indent: 2, Delimiter: DelimiterComma})
 	if err == nil {
 		t.Fatal("Convert(bogus format): want error, got nil")
 	}
@@ -237,7 +237,7 @@ func TestConvertPayloadCeiling(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, converted, err := Convert(big, tt.opts)
+			out, converted, err := Convert(t.Context(), big, tt.opts)
 			if tt.wantErr {
 				if !errors.Is(err, ErrPayloadTooLarge) {
 					t.Fatalf("err = %v, want ErrPayloadTooLarge", err)
@@ -262,7 +262,7 @@ func TestConvertPayloadCeiling(t *testing.T) {
 func TestConvertUnderCeilingStillConverts(t *testing.T) {
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	src := []byte(`[{"id":1,"name":"a"},{"id":2,"name":"b"}]`)
-	out, converted, err := Convert(src, defaultOpts())
+	out, converted, err := Convert(t.Context(), src, defaultOpts())
 	if err != nil {
 		t.Fatalf("Convert() error = %v", err)
 	}

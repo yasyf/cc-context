@@ -92,7 +92,7 @@ type Options struct {
 // converted=false — unless opts.Strict, which returns the error. The passthrough
 // is a deliberate exception to the no-defensive-coding rule: the wrapper must
 // never corrupt non-JSON output.
-func Convert(src []byte, opts Options) (out string, converted bool, err error) {
+func Convert(ctx context.Context, src []byte, opts Options) (out string, converted bool, err error) {
 	if len(bytes.TrimSpace(src)) == 0 {
 		return string(src), false, nil
 	}
@@ -100,7 +100,7 @@ func Convert(src []byte, opts Options) (out string, converted bool, err error) {
 		return convertHostError(src, opts, fmt.Errorf("%w: %d bytes over the %d-byte ceiling", ErrPayloadTooLarge, len(src), maxConvertBytes))
 	}
 
-	res, err := runEngine(src, opts)
+	res, err := runEngine(ctx, src, opts)
 	if err != nil {
 		if errors.Is(err, errEngineUnavailable) {
 			return "", false, err
@@ -169,7 +169,7 @@ func Run(ctx context.Context, argv []string, opts Options, in io.Reader, errOut 
 
 	runErr := cmd.Run()
 
-	out, converted, cerr := Convert(stdout.Bytes(), opts) //nolint:contextcheck // the engine pins its own init/call deadlines, deliberately decoupled from caller cancellation (see loadEngine)
+	out, converted, cerr := Convert(ctx, stdout.Bytes(), opts)
 	if cerr != nil {
 		return "", false, 0, fmt.Errorf("convert stdout: %w", cerr)
 	}
