@@ -42,6 +42,7 @@ func (f *fakeBlobWriter) guestFree(_ context.Context, ptr, n uint32) {
 }
 
 func TestWriteBlobFreesOnWriteFailure(t *testing.T) {
+	t.Parallel()
 	f := &fakeBlobWriter{ptr: 4242, writeOK: false}
 	data := []byte("payload bytes")
 
@@ -58,6 +59,7 @@ func TestWriteBlobFreesOnWriteFailure(t *testing.T) {
 }
 
 func TestWriteBlobNoFreeOnSuccess(t *testing.T) {
+	t.Parallel()
 	f := &fakeBlobWriter{ptr: 4242, writeOK: true}
 
 	ptr, err := writeBlob(context.Background(), f, []byte("payload"))
@@ -116,6 +118,7 @@ func TestFrameBatchBounds(t *testing.T) {
 }
 
 func TestFrameBatchRoundTrip(t *testing.T) {
+	t.Parallel()
 	buf, err := frameBatch([]string{"ab", "c"})
 	if err != nil {
 		t.Fatalf("frameBatch: %v", err)
@@ -144,6 +147,7 @@ func (c *errObservedContext) Err() error {
 }
 
 func TestEncodePreCanceled(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -158,6 +162,7 @@ func TestEncodePreCanceled(t *testing.T) {
 }
 
 func TestEncodeCanceledWhileWaiting(t *testing.T) {
+	t.Parallel()
 	var eng Engine
 	eng.mu.Lock()
 
@@ -184,6 +189,7 @@ func TestEncodeCanceledWhileWaiting(t *testing.T) {
 // --- E2: Close releases the cache and is idempotent -------------------------
 
 func TestCloseIdempotentReleasesHandles(t *testing.T) {
+	t.Parallel()
 	eng, err := New(context.Background(), CodePin)
 	if errors.Is(err, ErrWeightsUnavailable) {
 		t.Skip("model weights unavailable (offline, empty cache) — skipping")
@@ -218,9 +224,9 @@ func TestDownloadBounded(t *testing.T) {
 		_, _ = w.Write(make([]byte, 4096)) // exceeds the 1024-byte cap
 	}))
 	defer srv.Close()
-	t.Setenv("HF_ENDPOINT", srv.URL)
+	ctx := render.WithEnv(t.Context(), "HF_ENDPOINT="+srv.URL)
 
-	_, err := download(context.Background(), CodePin, WeightFile{Name: "config.json", SHA256: "unused"})
+	_, err := download(ctx, CodePin, WeightFile{Name: "config.json", SHA256: "unused"})
 	if err == nil || !strings.Contains(err.Error(), "cap") {
 		t.Fatalf("download over-cap err = %v, want bounded-read rejection", err)
 	}
@@ -243,9 +249,9 @@ func TestDownloadTimesOut(t *testing.T) {
 	// LIFO: unblock the handler before Close waits on the in-flight request.
 	defer srv.Close()
 	defer close(block)
-	t.Setenv("HF_ENDPOINT", srv.URL)
+	ctx := render.WithEnv(t.Context(), "HF_ENDPOINT="+srv.URL)
 
-	_, err := download(context.Background(), CodePin, WeightFile{Name: "config.json", SHA256: "unused"})
+	_, err := download(ctx, CodePin, WeightFile{Name: "config.json", SHA256: "unused"})
 	// A stalled mirror surfaces as the skippable offline sentinel, not a hard
 	// error, and carries the deadline cause for diagnosis.
 	if !errors.Is(err, ErrWeightsUnavailable) {
@@ -257,6 +263,7 @@ func TestDownloadTimesOut(t *testing.T) {
 }
 
 func TestDownloadNormalVerifies(t *testing.T) {
+	t.Parallel()
 	body := []byte(`{"hidden_size":256}`)
 	sum := sha256.Sum256(body)
 	want := hex.EncodeToString(sum[:])
@@ -266,9 +273,9 @@ func TestDownloadNormalVerifies(t *testing.T) {
 		_, _ = w.Write(body)
 	}))
 	defer srv.Close()
-	t.Setenv("HF_ENDPOINT", srv.URL)
+	ctx := render.WithEnv(t.Context(), "HF_ENDPOINT="+srv.URL)
 
-	got, err := download(context.Background(), CodePin, WeightFile{Name: "config.json", SHA256: want})
+	got, err := download(ctx, CodePin, WeightFile{Name: "config.json", SHA256: want})
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}
@@ -284,6 +291,7 @@ func TestDownloadNormalVerifies(t *testing.T) {
 // on the context the download runs under, so it outranks whatever the process
 // exports.
 func TestEndpointResolvesFromContext(t *testing.T) {
+	t.Parallel()
 	ctx := render.WithEnv(t.Context(), "HF_ENDPOINT=https://mirror.invalid")
 	if got := endpoint(ctx); got != "https://mirror.invalid" {
 		t.Fatalf("endpoint = %q, want the context's mirror", got)

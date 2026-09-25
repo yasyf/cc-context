@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/semsearch"
 )
 
@@ -77,9 +78,9 @@ func writeIndexRepo(t *testing.T) string {
 }
 
 func TestLoadBuildAndWarmReload(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
 	repo := writeIndexRepo(t)
-	ctx := context.Background()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
 
 	emb := &countingEmbedder{}
 	idx, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x")
@@ -116,9 +117,9 @@ func TestLoadBuildAndWarmReload(t *testing.T) {
 }
 
 func TestLoadPartialReindex(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
 	repo := writeIndexRepo(t)
-	ctx := context.Background()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
 
 	emb := &countingEmbedder{}
 	if _, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x"); err != nil {
@@ -151,7 +152,7 @@ func TestLoadPartialReindex(t *testing.T) {
 }
 
 func TestLoadInvalidation(t *testing.T) {
-	ctx := context.Background()
+	t.Parallel()
 	cases := []struct {
 		name    string
 		model   string
@@ -164,7 +165,8 @@ func TestLoadInvalidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+			t.Parallel()
+			ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
 			repo := writeIndexRepo(t)
 			emb := &countingEmbedder{}
 			if _, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x"); err != nil {
@@ -223,9 +225,9 @@ func (d *dimsEmbedder) Encode(_ context.Context, texts []string) ([][]float32, e
 // modelID it passes here), so the cached vectors must be discarded and rebuilt
 // rather than served stale against new-weights query embeddings.
 func TestLoadRevisionBumpRebuilds(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
 	repo := writeIndexRepo(t)
-	ctx := context.Background()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
 
 	emb := &countingEmbedder{}
 	if _, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "minishlab/potion-code-16M-v2@rev1"); err != nil {
@@ -250,9 +252,9 @@ func TestLoadRevisionBumpRebuilds(t *testing.T) {
 // string) must be rejected by loadPersisted and rebuilt, so mismatched vectors
 // never reach rank.Cosine (which would panic).
 func TestLoadDimsMismatchRebuilds(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
 	repo := writeIndexRepo(t)
-	ctx := context.Background()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
 
 	small := &dimsEmbedder{dims: 8}
 	cold, err := Load(ctx, small, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x")
@@ -293,21 +295,22 @@ func vecDims(vectors [][]float32) int {
 }
 
 func TestLoadNoIndexableFiles(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
 	repo := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repo, "data.json"), []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	emb := &countingEmbedder{}
-	if _, err := Load(context.Background(), emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x"); err == nil {
+	if _, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x"); err == nil {
 		t.Fatal("Load over a repo with no indexable files should error")
 	}
 }
 
 func TestWarmLoadDoesNotRewriteCache(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
 	repo := writeIndexRepo(t)
-	ctx := context.Background()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
 	emb := &countingEmbedder{}
 
 	if _, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x"); err != nil {
@@ -361,6 +364,7 @@ func TestWarmLoadDoesNotRewriteCache(t *testing.T) {
 }
 
 func TestBuildCancelledBeforeTraversal(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := build(ctx, &countingEmbedder{}, filepath.Join(t.TempDir(), "missing"), []string{".go"}, DefaultChunker(), nil)
@@ -370,6 +374,7 @@ func TestBuildCancelledBeforeTraversal(t *testing.T) {
 }
 
 func TestChunkFileWarmHitDoesNotReadContent(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	path := filepath.Join(root, "cached.go")
 	if err := os.WriteFile(path, []byte("package cached\n"), 0o600); err != nil {

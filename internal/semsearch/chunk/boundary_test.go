@@ -14,6 +14,7 @@ func parent(start, end uint32, kids ...node) node {
 }
 
 func TestMergeAdjacent(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		chunks  []boundary
@@ -58,6 +59,7 @@ func TestMergeAdjacent(t *testing.T) {
 }
 
 func TestMergeNodeInner(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		root    node
@@ -111,6 +113,7 @@ func TestMergeNodeInner(t *testing.T) {
 }
 
 func TestChunkLines(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		src     string

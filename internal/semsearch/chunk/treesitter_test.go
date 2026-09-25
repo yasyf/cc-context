@@ -53,6 +53,7 @@ var grammarSnippets = map[string]string{
 // parses — the per-language status check. ok=false means the grammar is missing
 // or the module trapped, which would silently degrade to line chunking.
 func TestGrammarsParse(t *testing.T) {
+	t.Parallel()
 	for lang, src := range grammarSnippets {
 		t.Run(lang, func(t *testing.T) {
 			root, ok := defaultParser.parse(t.Context(), lang, []byte(src))
@@ -73,6 +74,7 @@ func TestGrammarsParse(t *testing.T) {
 // against tree-sitter's output, proving pre-order + child-count reconstruction
 // (including anonymous nodes like `def`, `(`, `:`, `+`) is exact.
 func TestParseTreeStructure(t *testing.T) {
+	t.Parallel()
 	root, ok := defaultParser.parse(t.Context(), "python", []byte("def f(x):\n    return x + 1\n"))
 	if !ok {
 		t.Fatal("python parse ok=false")
@@ -129,6 +131,7 @@ func chainDepth(root node) int {
 // stack frames and cannot exhaust the Go stack. Trees shallower than the guard
 // are materialized in full, unchanged.
 func TestReconstructTreeClampsDepth(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		nodes     int

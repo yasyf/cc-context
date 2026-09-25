@@ -9,6 +9,7 @@ import (
 )
 
 func TestParseContent(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		spec    string
@@ -36,6 +37,7 @@ func TestParseContent(t *testing.T) {
 }
 
 func TestExtensionsExcludesDataLanguages(t *testing.T) {
+	t.Parallel()
 	exts := Extensions([]ContentType{ContentCode, ContentDocs})
 	set := map[string]bool{}
 	for _, e := range exts {
@@ -59,6 +61,7 @@ func TestExtensionsExcludesDataLanguages(t *testing.T) {
 }
 
 func TestDetectLanguage(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		path string
 		want string
@@ -81,6 +84,7 @@ func TestDetectLanguage(t *testing.T) {
 }
 
 func TestChunkFileEligibility(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	write := func(name string, body []byte) string {
 		p := filepath.Join(dir, name)
@@ -118,6 +122,7 @@ func TestChunkFileEligibility(t *testing.T) {
 }
 
 func TestReadFileTextRejectsOversizedContent(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "large.go")
 	if err := os.WriteFile(path, []byte(strings.Repeat("x", maxFileBytes+1)), 0o600); err != nil {
 		t.Fatal(err)

@@ -58,6 +58,7 @@ func sortChunks(cs []goldenChunk) {
 // TestChunkCorpusGoldens is the parity gate: chunking every corpus file must
 // reproduce semble 0.5.2's exact chunk boundaries (testdata/goldens/chunks.json).
 func TestChunkCorpusGoldens(t *testing.T) {
+	t.Parallel()
 	doc := loadGoldens(t)
 
 	var got []goldenChunk
@@ -100,6 +101,7 @@ func TestChunkCorpusGoldens(t *testing.T) {
 // that line. The committed goldens store only line spans (lossy at this split),
 // so the byte-exact boundary is asserted through chunk content.
 func TestMidLineSplitContent(t *testing.T) {
+	t.Parallel()
 	content, err := os.ReadFile(filepath.Join(corpusDir, "web/sessionStore.ts"))
 	if err != nil {
 		t.Fatal(err)
@@ -136,6 +138,7 @@ func tail(s string) string {
 // TestChunkCorpusClassification checks each file's chunk count against the
 // golden, covering the file gates and the data/unsupported exclusions.
 func TestChunkCorpusClassification(t *testing.T) {
+	t.Parallel()
 	doc := loadGoldens(t)
 	for _, f := range doc.Files {
 		content, err := os.ReadFile(filepath.Join(corpusDir, f.FilePath))

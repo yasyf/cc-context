@@ -6,6 +6,7 @@ import (
 )
 
 func TestPythonStrip(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		in   string
@@ -27,6 +28,7 @@ func TestPythonStrip(t *testing.T) {
 }
 
 func TestDecodeReplace(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		in   []byte
@@ -61,6 +63,7 @@ func TestDecodeReplace(t *testing.T) {
 }
 
 func TestSplitLineSpans(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		src  string
@@ -93,6 +96,7 @@ func TestSplitLineSpans(t *testing.T) {
 }
 
 func TestCountNewlines(t *testing.T) {
+	t.Parallel()
 	src := []byte("a\nb\nc")
 	tests := []struct {
 		end  int

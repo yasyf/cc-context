@@ -58,6 +58,7 @@ func mustEngine(tb testing.TB) *embed.Engine {
 }
 
 func TestEncodeParity(t *testing.T) {
+	t.Parallel()
 	g := loadGolden(t)
 	eng := mustEngine(t)
 	defer func() { _ = eng.Close(context.Background()) }()
@@ -115,6 +116,7 @@ func l2norm(v []float32) float64 {
 }
 
 func TestEncodeDeterministic(t *testing.T) {
+	t.Parallel()
 	g := loadGolden(t)
 	eng := mustEngine(t)
 	defer func() { _ = eng.Close(context.Background()) }()
@@ -137,6 +139,7 @@ func TestEncodeDeterministic(t *testing.T) {
 }
 
 func TestEncodeEmptyBatch(t *testing.T) {
+	t.Parallel()
 	eng := mustEngine(t)
 	defer func() { _ = eng.Close(context.Background()) }()
 
@@ -150,6 +153,7 @@ func TestEncodeEmptyBatch(t *testing.T) {
 }
 
 func TestEncodeBatchInvariant(t *testing.T) {
+	t.Parallel()
 	g := loadGolden(t)
 	eng := mustEngine(t)
 	defer func() { _ = eng.Close(context.Background()) }()
@@ -172,6 +176,7 @@ func TestEncodeBatchInvariant(t *testing.T) {
 }
 
 func TestCosine(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		a, b []float32
@@ -193,6 +198,7 @@ func TestCosine(t *testing.T) {
 }
 
 func TestCosinePanicsOnLengthMismatch(t *testing.T) {
+	t.Parallel()
 	defer func() {
 		if recover() == nil {
 			t.Fatal("expected panic on length mismatch")
