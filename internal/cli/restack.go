@@ -75,10 +75,9 @@ type restackOpts struct {
 func newRestackCmd() *cobra.Command {
 	var o restackOpts
 	cmd := &cobra.Command{
-		Use:     "restack",
-		Aliases: []string{"rebase"},
-		Short:   "Fetch and restack the working-copy stack onto trunk",
-		Args:    cobra.NoArgs,
+		Use:   "restack",
+		Short: "Fetch and restack the working-copy stack onto trunk",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runRestack(cmd, o)
 		},
