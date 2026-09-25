@@ -36,6 +36,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A parent whose pull request lands mid-run is dropped, not pushed.**
+  Before it pushes, `ccx vcs stack continue` checks the stack's pull requests
+  again. If one landed while the run was stopped, its branch is never pushed
+  back. The run is replanned with that branch landed, so its children are
+  replayed onto trunk without its commits. A landed branch whose local head
+  is a replay of the landed head is also recognized as landed, where before
+  it was refused as holding commits past the landing.
+
+- **`ccx vcs stack drop` replays a branch that still carries the dropped
+  commits.** gt can record a branch's parent revision below the dropped
+  branch's head, for example after `gt track --parent` reparented it past the
+  dropped branch. That branch is replayed from the dropped branch's head.
+  Before, the drop refused with a `gt restack --only --branch` remedy that
+  gt treated as a no-op.
+
 - **A stack rebase no longer regenerates a generated file the replayed
   commit deletes.** A conflicted listed file the replayed commit deletes
   stays deleted, and so does one the human resolved with `git rm` before

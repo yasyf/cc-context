@@ -126,6 +126,7 @@ type stackRebaseOpts struct {
 	draft     bool
 	noVerify  bool
 	deferPush bool
+	vetted    map[string]string
 	result    **stackRebaseRun
 	ship      *stackShipIntent
 }
@@ -230,6 +231,11 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 			gated = append(gated, other)
 		}
 	}
+	rest := slices.DeleteFunc(slices.Clone(runs), func(other *stackRebaseRun) bool { return slices.Contains(gated, other) })
+	return stackBegin(ctx, cmd, l, commonDir, rest, o)
+}
+
+func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, others []*stackRebaseRun, o stackRebaseOpts) error {
 	run, err := stackPlan(ctx, l, commonDir, o)
 	if err != nil {
 		return err
@@ -237,8 +243,7 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 	if o.result != nil {
 		*o.result = run
 	}
-	rest := slices.DeleteFunc(slices.Clone(runs), func(other *stackRebaseRun) bool { return slices.Contains(gated, other) })
-	if err := stackAdmit(ctx, cmd, l, commonDir, rest, run, o.dryRun); err != nil {
+	if err := stackAdmit(ctx, cmd, l, commonDir, others, run, o.dryRun); err != nil {
 		return err
 	}
 	cmd.Println(strings.Join(stackPlanLines(run), "\n"))
@@ -445,7 +450,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host}
 	byName := map[string]*stackRebaseBranch{}
 	for _, name := range members {
-		b, err := stackSnapshot(ctx, l.dir(), tr, state[name], name, remotes[name], submitted[name].HeadSha, prs[name], slices.Contains(o.landed, name), pin)
+		ours := submitted[name].HeadSha
+		if vetted := o.vetted[name]; vetted != "" && vetted == remotes[name] {
+			ours = vetted
+		}
+		b, err := stackSnapshot(ctx, l.dir(), tr, state[name], name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin)
 		if err != nil {
 			return nil, err
 		}
@@ -608,6 +617,11 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 			within, err := gitIsAncestor(ctx, dir, stackRebasePrefix, b.Head, pr.Head)
 			if err != nil {
 				return b, err
+			}
+			if !within {
+				if within, err = stackRemoteReplays(ctx, dir, b.Head, pr.Head, pin); err != nil {
+					return b, err
+				}
 			}
 			if !within {
 				return b, fmt.Errorf("stack rebase: %s's pull request #%d landed at %.12s, but the branch holds commits past it (%.12s) — move them to a new branch, or pass --landed %s to drop them too", name, pr.Number, pr.Head, b.Head, name)
@@ -1351,6 +1365,11 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 		return alignErr
 	}
 	if !run.NoPush && !run.deferPush {
+		if landed, err := stackLandedSince(ctx, l.dir(), run.Trunk, live); err != nil {
+			return err
+		} else if len(landed) > 0 {
+			return stackReplanLanded(ctx, cmd, l, commonDir, run, landed)
+		}
 		state, err := gtStateAt(ctx, commonDir, prefix)
 		if err != nil {
 			return err
@@ -1389,6 +1408,36 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 		return nil
 	}
 	return stackVerdict(ctx, cmd, l.dir(), run, live)
+}
+
+func stackLandedSince(ctx context.Context, dir render.Dir, trunk string, live []string) ([]string, error) {
+	prs, err := stackPRLookup(ctx, dir, trunk, live)
+	if err != nil {
+		return nil, fmt.Errorf("stack rebase: the stack is rewritten locally, but reading its pull requests before the push failed — run ccx vcs stack continue: %w", err)
+	}
+	return slices.DeleteFunc(slices.Clone(live), func(name string) bool { return prs[name] == nil || !prs[name].Landed }), nil
+}
+
+func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun, landed []string) error {
+	var members []string
+	vetted := map[string]string{}
+	for _, b := range run.Branches {
+		if b.Landed == "" {
+			members = append(members, b.Name)
+			vetted[b.Name] = b.Remote
+		}
+	}
+	if err := stackClearRun(commonDir, run); err != nil {
+		return fmt.Errorf("%s: clear the run state: %w", stackRebasePrefix, err)
+	}
+	cmd.Println(fmt.Sprintf("%s landed while the run was stopped%snothing pushed%sreplanning without it", strings.Join(landed, ", "), shipSep, shipSep))
+	runs, err := stackRuns(commonDir)
+	if err != nil {
+		return err
+	}
+	return stackBegin(ctx, cmd, l, commonDir, runs, stackRebaseOpts{
+		members: members, landed: landed, vetted: vetted, draft: run.Draft, noVerify: run.NoVerify, ship: run.Ship,
+	})
 }
 
 // stackFinishGit writes a git-lane restack's branch and moves the working copy

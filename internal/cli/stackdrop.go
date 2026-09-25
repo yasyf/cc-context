@@ -296,7 +296,31 @@ func dropLocal(ctx context.Context, l lane, commonDir string, plan dropPlan) (gt
 	if err != nil {
 		return gtRestackResult{}, err
 	}
-	result, err := gtRestackChain(ctx, dropPrefix, l.checkout, l.dir(), commonDir, state, plan.chain)
+	carriers, err := dropCarriers(ctx, l.dir(), state, plan.branch)
+	if err != nil {
+		return gtRestackResult{}, err
+	}
+	chain := slices.Clone(plan.chain)
+	if len(carriers) > 0 {
+		if err := gtmeta.RecordRestacked(ctx, commonDir, carriers); err != nil {
+			return gtRestackResult{}, fmt.Errorf("%s: %w", dropPrefix, err)
+		}
+		if state, err = gtStateAt(ctx, commonDir, dropPrefix); err != nil {
+			return gtRestackResult{}, err
+		}
+		for _, carrier := range slices.Sorted(maps.Keys(carriers)) {
+			up, err := gtUpstack(dropPrefix, state, carrier)
+			if err != nil {
+				return gtRestackResult{}, err
+			}
+			for _, name := range append([]string{carrier}, up...) {
+				if !slices.Contains(chain, name) {
+					chain = append(chain, name)
+				}
+			}
+		}
+	}
+	result, err := gtRestackChain(ctx, dropPrefix, l.checkout, l.dir(), commonDir, state, chain)
 	if err != nil {
 		return result, fmt.Errorf("%s: %w", dropPrefix, err)
 	}
@@ -310,6 +334,39 @@ func dropLocal(ctx context.Context, l lane, commonDir string, plan dropPlan) (gt
 		return result, fmt.Errorf("%s: git branch -D %s: %w", dropPrefix, plan.branch, err)
 	}
 	return result, nil
+}
+
+func dropCarriers(ctx context.Context, dir render.Dir, state gtState, branch string) (map[string]string, error) {
+	head, err := gtRestackHead(ctx, dropPrefix, dir, branch)
+	if err != nil {
+		return nil, err
+	}
+	empty, err := gitIsAncestor(ctx, dir, dropPrefix, head, gtRestackRef(state[branch].Parents[0].Ref))
+	if err != nil || empty {
+		return nil, err
+	}
+	carriers := map[string]string{}
+	for _, name := range slices.Sorted(maps.Keys(state)) {
+		s := state[name]
+		if name == branch || len(s.Parents) == 0 {
+			continue
+		}
+		carried, err := gitIsAncestor(ctx, dir, dropPrefix, head, gtRestackRef(name))
+		if err != nil {
+			return nil, err
+		}
+		if !carried {
+			continue
+		}
+		recorded, err := gitIsAncestor(ctx, dir, dropPrefix, head, s.Parents[0].SHA)
+		if err != nil {
+			return nil, err
+		}
+		if !recorded {
+			carriers[name] = head
+		}
+	}
+	return carriers, nil
 }
 
 // dropStrandCheck refuses to delete a branch whose commits are still in the
@@ -334,8 +391,8 @@ func dropStrandCheck(ctx context.Context, dir render.Dir, state gtState, branch 
 			return err
 		}
 		if carried {
-			return fmt.Errorf("%s: %s still carries %s's commits, so deleting it would strand them — restack it with gt restack --only --branch %s and run the drop again",
-				dropPrefix, name, branch, name)
+			return fmt.Errorf("%s: %s still carries %s's commits after the replay, so deleting it would strand them; nothing was deleted",
+				dropPrefix, name, branch)
 		}
 	}
 	return nil
