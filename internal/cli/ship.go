@@ -414,7 +414,31 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	stuckOpts.noCommit = o.noCommit
 	stuck := gtStuckSuffix(stuckOpts)
 	restackSeg := ""
-	if plan.needsRestack {
+	if gtLane && !o.noPush {
+		tr, err := trunkFetch.join()
+		if err != nil {
+			return err
+		}
+		state, chain, err := gtStackChain(ctx, gtc, branch)
+		if err != nil {
+			return err
+		}
+		contains, err := gitIsAncestor(ctx, l.dir(), "ship", string(tr.Ref()), state[branch].Head)
+		if err != nil {
+			return err
+		}
+		if plan.needsRestack || !contains {
+			intent, err := stackShipOptions(o, meta, prNWO, branch)
+			if err != nil {
+				return err
+			}
+			if err := runStackRebase(cmd, stackRebaseOpts{members: gtBottomUp(chain), draft: o.draft, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent}); err != nil {
+				return err
+			}
+			gtc.forget()
+			restackSeg = "restacked in isolation"
+		}
+	} else if plan.needsRestack {
 		if restackSeg, err = gtRestack(ctx, l, stuck, branch, gtc); err != nil {
 			return err
 		}
@@ -493,6 +517,15 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		}
 		if seg != "" {
 			segments = append(segments, seg)
+		}
+	}
+	if gtLane && gtc.restack != nil {
+		common, err := gtc.common(ctx)
+		if err != nil {
+			return err
+		}
+		if err := stackClearRun(common, gtc.restack); err != nil {
+			return err
 		}
 	}
 	segments = append(segments, bodylessSegs...)

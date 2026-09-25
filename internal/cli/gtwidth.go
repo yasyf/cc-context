@@ -19,8 +19,8 @@ type errSubmitInherited struct {
 }
 
 func (e *errSubmitInherited) Error() string {
-	return fmt.Sprintf("%s carries %d commit(s) %s already holds, so its pull request proposes work the branch does not own: %s — rebase it onto %s (gt restack --only --branch %s) before submitting",
-		e.Branch, len(e.Commits), e.Trunk, strings.Join(e.Commits, ", "), e.Trunk, e.Branch)
+	return fmt.Sprintf("%s carries %d commit(s) %s already holds, so its pull request proposes work the branch does not own: %s — run ccx vcs stack rebase to resolve the stack before submitting",
+		e.Branch, len(e.Commits), e.Trunk, strings.Join(e.Commits, ", "))
 }
 
 // gtRefuseInherited refuses a submit whose branches carry commits the remote
@@ -28,9 +28,9 @@ func (e *errSubmitInherited) Error() string {
 // by a replay off a drifted base has a sha of its own and no ancestry says so.
 // Each branch is limited to its own commits by its base, so a stacked branch
 // does not re-report its downstack's.
-func gtRefuseInherited(ctx context.Context, prefix string, dir render.Dir, tr vcs.Trunk, plan []gtSubmitBranch) error {
+func gtRefuseInherited(ctx context.Context, prefix string, dir render.Dir, tr vcs.Trunk, pin string, plan []gtSubmitBranch) error {
 	for _, b := range plan {
-		copies, err := gtCherryCopies(ctx, prefix, dir, string(tr.Ref()), b.head, b.baseSha)
+		copies, err := gtCherryCopies(ctx, prefix, dir, pin, b.head, b.baseSha)
 		if err != nil {
 			return err
 		}

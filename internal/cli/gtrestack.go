@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,16 +23,8 @@ type errRestackConflict struct {
 	Dir    string
 }
 
-// Error carries the way out as well as the fact, because nothing is left
-// mid-rebase for gt continue to continue: a replay that conflicts applies
-// nothing. The step is gt's own interactive restack of that one branch, driven
-// from the checkout holding it.
 func (e *errRestackConflict) Error() string {
-	step := "gt restack --only --branch " + e.Branch
-	if e.Dir == "" {
-		return fmt.Sprintf("%s does not rebase onto %s cleanly — rebase it by hand with %s", e.Branch, e.Onto, step)
-	}
-	return fmt.Sprintf("%s does not rebase onto %s cleanly — rebase it by hand in %s with %s", e.Branch, e.Onto, e.Dir, step)
+	return fmt.Sprintf("%s does not rebase onto %s cleanly — run ccx vcs stack rebase to resolve it in an isolated workspace", e.Branch, e.Onto)
 }
 
 // errRestackMerged is a branch whose commits are already in its parent. No
@@ -64,21 +55,6 @@ func (e *errRestackDuplicates) Error() string {
 		e.Branch, e.Span, e.Own, e.Trunk, e.SpanFiles, e.OwnFiles, e.Parent)
 }
 
-// errTrunkDiverged is a local trunk holding commits its remote does not. Every
-// lane of a restack lands on trunk's commit, so restacking onto a drifted local
-// branch splices that drift into every branch of the stack, and the pull
-// requests then propose to land another lane's unlanded work.
-type errTrunkDiverged struct {
-	Trunk  string
-	Remote string
-	Ahead  int
-}
-
-func (e *errTrunkDiverged) Error() string {
-	return fmt.Sprintf("%s holds %d commit(s) %s does not, and restacking onto it would splice them into every branch of the stack — reconcile it first with gt sync, or with git branch -f %s %s if those commits are disposable",
-		e.Trunk, e.Ahead, e.Remote, e.Trunk, e.Remote)
-}
-
 // gtRestackResult is what one restack did: the branches whose refs moved, the
 // working copies reset onto them, and the branches gt is holding frozen, which
 // are left exactly where they are.
@@ -102,9 +78,8 @@ func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir rend
 		return gtRestackResult{}, fmt.Errorf("%s: %w", prefix, err)
 	}
 
-	snapshots, snapErr := gtRestackSnapshots(ctx, prefix, movers, holders)
-	if snapErr != nil {
-		return gtRestackResult{held: held}, snapErr
+	if err := stackCheckHolders(ctx, c.Root, movers, holders); err != nil {
+		return gtRestackResult{held: held}, err
 	}
 
 	pin := gtTrunkPinned{name: trunk, sha: state[trunk].Head}
@@ -115,7 +90,7 @@ func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir rend
 	if err := gtRestackPublish(ctx, prefix, dir, state, moves); err != nil {
 		return gtRestackResult{held: held}, err
 	}
-	realigned, alignErr := gtRestackAlign(ctx, prefix, holders, snapshots, moves)
+	realigned, alignErr := gtRestackAlign(ctx, prefix, holders, moves)
 	recordErr := gtmeta.RecordRestacked(ctx, commonDir, gtRestackRevisions(moves))
 	if recordErr != nil {
 		recordErr = fmt.Errorf("%s: %w", prefix, recordErr)
@@ -160,9 +135,10 @@ func gtRestackPlan(state gtState, chain []string) ([]string, map[string]string) 
 }
 
 type restackMove struct {
-	branch string
-	head   string
-	parent string
+	branch   string
+	head     string
+	parent   string
+	previous string
 }
 
 func gtReplayChain(ctx context.Context, prefix string, dir render.Dir, state gtState, pin gtTrunkPinned, movers []string, holders map[string]string) ([]restackMove, error) {
@@ -197,7 +173,7 @@ func gtReplayChain(ctx context.Context, prefix string, dir render.Dir, state gtS
 			return moves, err
 		}
 		heads[branch] = head
-		moves = append(moves, restackMove{branch: branch, head: head, parent: base})
+		moves = append(moves, restackMove{branch: branch, head: head, parent: base, previous: s.Head})
 	}
 	return moves, nil
 }
@@ -227,83 +203,8 @@ func gtRestackFrom(ctx context.Context, prefix string, dir render.Dir, state gtS
 // local branch holds that the remote does not — drift the local ref could not be
 // fast-forwarded past.
 type gtTrunkPinned struct {
-	name     string
-	sha      string
-	diverged int
-}
-
-func (p gtTrunkPinned) String() string { return fmt.Sprintf("%s@%.12s", p.name, p.sha) }
-
-// gtTrunkPin fixes the commit every lane of a restack lands on — the remote
-// trunk, which is the only ref a pull request is measured against — and puts
-// the local trunk branch on it. Both halves are required: gt records a restack
-// against the local ref, since gtmeta reads refs/heads/<trunk>, so a pin the
-// local branch does not carry is one the next command reads as a branch still
-// needing a restack and rebases back onto whatever the local ref holds.
-//
-// A local trunk the remote cannot fast-forward is left where it is and reported
-// as drift: gtTrunkDrift decides what that costs.
-func gtTrunkPin(ctx context.Context, prefix string, c vcs.Checkout, dir render.Dir, tr vcs.Trunk, local string) (gtTrunkPinned, error) {
-	pinned, err := gtTrunkHead(ctx, dir, prefix, tr)
-	if err != nil {
-		return gtTrunkPinned{}, err
-	}
-	pin := gtTrunkPinned{name: tr.Name(), sha: pinned}
-	if pinned == local {
-		return pin, nil
-	}
-	behind, err := gitIsAncestor(ctx, dir, prefix, local, pinned)
-	if err != nil {
-		return gtTrunkPinned{}, fmt.Errorf("%s: compare %s with %s: %w", prefix, tr.Name(), tr.Ref(), err)
-	}
-	if !behind {
-		ahead, err := gtRevCount(ctx, prefix, dir, string(tr.Ref())+".."+gtRestackRef(tr.Name()))
-		if err != nil {
-			return gtTrunkPinned{}, err
-		}
-		return gtTrunkPinned{name: tr.Name(), sha: local, diverged: ahead}, nil
-	}
-	return pin, gtTrunkFastForward(ctx, prefix, c, dir, tr, local, pinned)
-}
-
-// gtTrunkDrift refuses a restack that would land a branch on a drifted trunk,
-// and reports the drift otherwise: a branch whose parent is trunk inherits
-// every commit trunk holds, while a branch stacked on a branch inherits none of
-// them.
-func gtTrunkDrift(errW io.Writer, prefix string, state gtState, chain []string, pin gtTrunkPinned, remote string) error {
-	if pin.diverged == 0 {
-		return nil
-	}
-	drift := &errTrunkDiverged{Trunk: pin.name, Remote: remote, Ahead: pin.diverged}
-	movers, _ := gtRestackPlan(state, chain)
-	for _, branch := range movers {
-		if state[branch].Parents[0].Ref == pin.name {
-			return fmt.Errorf("%s: %w", prefix, drift)
-		}
-	}
-	_, err := fmt.Fprintf(errW, "%s: warning: %s holds %d commit(s) %s does not; no branch of this stack lands on it, so none inherited them — reconcile it with gt sync\n",
-		prefix, pin.name, pin.diverged, remote)
-	return err
-}
-
-// gtTrunkFastForward moves the local trunk branch onto the pin, realigning the
-// working copy holding it exactly as a moved stack branch is realigned: the ref
-// moves without a checkout, so its holder's tree has to be reset onto it and
-// the uncommitted work it was snapshotted with applied back.
-func gtTrunkFastForward(ctx context.Context, prefix string, c vcs.Checkout, dir render.Dir, tr vcs.Trunk, local, pinned string) error {
-	holders, err := vcs.BranchHolders(ctx, c)
-	if err != nil {
-		return fmt.Errorf("%s: %w", prefix, err)
-	}
-	snapshots, err := gtRestackSnapshots(ctx, prefix, []string{tr.Name()}, holders)
-	if err != nil {
-		return err
-	}
-	if _, err := render.RunCLI(ctx, dir, "git", []string{"update-ref", gtRestackRef(tr.Name()), pinned, local}); err != nil {
-		return fmt.Errorf("%s: fast-forward %s to %s: %w", prefix, tr.Name(), tr.Ref(), err)
-	}
-	_, err = gtRestackAlign(ctx, prefix, holders, snapshots, []restackMove{{branch: tr.Name(), head: pinned, parent: local}})
-	return err
+	name string
+	sha  string
 }
 
 // gtRestackOwnWork refuses a replay whose span reaches back past commits trunk
@@ -368,8 +269,7 @@ func gtRestackFileCount(ctx context.Context, prefix string, dir render.Dir, span
 // contains is left out, since the submit drops it. The number is the tell a
 // hundred-file pull request over a one-file change shows up as, which is why
 // the report carries it rather than leaving it to be found on GitHub.
-func gtSubmitWidth(ctx context.Context, prefix string, dir render.Dir, tr vcs.Trunk, branches []string) (int, int, error) {
-	trunk := string(tr.Ref())
+func gtSubmitWidth(ctx context.Context, prefix string, dir render.Dir, trunk string, branches []string) (int, int, error) {
 	files := map[string]bool{}
 	var live []string
 	for _, branch := range branches {
@@ -476,78 +376,19 @@ func gtRestackHead(ctx context.Context, prefix string, dir render.Dir, branch st
 	return strings.TrimSpace(out), nil
 }
 
-// gtRestackSnapshots records the uncommitted work of every working copy holding
-// a branch about to move, before any ref moves. After it moves, that working
-// copy's own diff against its new HEAD is the whole restack in reverse, so a
-// snapshot taken then cannot tell the two apart — this one is taken while the
-// answer still means something.
-//
-// git stash create, never git stash push: refs/stash is shared by every working
-// copy of a repository, so two holders pushing onto it build one stack whose
-// order says nothing about which entry belongs to whom, and popping it back by
-// position hands each holder the other's work. create writes the entry as a
-// plain commit, touches no ref and no stack, and leaves the working copy alone —
-// so a holder that never moves needs nothing restored, and each snapshot is
-// addressed by the sha it actually is. Untracked files are outside it and stay
-// outside it: git reset --hard does not remove them.
-func gtRestackSnapshots(ctx context.Context, prefix string, movers []string, holders map[string]string) (map[string]string, error) {
-	snapshots := make(map[string]string)
-	for _, branch := range movers {
-		holder := holders[branch]
-		if holder == "" {
-			continue
-		}
-		dirty, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"status", "--porcelain", "--untracked-files=no"})
-		if err != nil {
-			return nil, fmt.Errorf("%s: read the uncommitted work in %s before restacking %s: git status --porcelain --untracked-files=no: %w", prefix, holder, branch, err)
-		}
-		if strings.TrimSpace(dirty) == "" {
-			continue
-		}
-		out, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"stash", "create", "ccx restack"})
-		if err != nil {
-			return nil, fmt.Errorf("%s: snapshot the uncommitted work in %s before restacking %s: git stash create: %w", prefix, holder, branch, err)
-		}
-		if sha := strings.TrimSpace(out); sha != "" {
-			snapshots[holder] = sha
-		}
-	}
-	return snapshots, nil
-}
-
-// gtRestackAlign resets each moved branch's working copy onto its new head and
-// applies the snapshot taken from it. The reset is hard by design: the tree it
-// throws away is the pre-restack checkout, and the work worth keeping was
-// snapshotted before the ref moved. A working copy whose branch never moved is
-// left untouched — its tree was never disturbed, so there is nothing to put
-// back.
-//
-// --index restores what was staged as staged, since a snapshot that comes back
-// entirely unstaged has quietly rewritten somebody's in-progress commit. An
-// apply that conflicts leaves the work in the tree with markers and names the
-// commit it came from, which is the one address that survives this call.
-func gtRestackAlign(ctx context.Context, prefix string, holders map[string]string, snapshots map[string]string, moves []restackMove) ([]string, error) {
-	var realigned []string
-	var failures []error
+func gtRestackAlign(ctx context.Context, prefix string, holders map[string]string, moves []restackMove) ([]string, error) {
+	var aligned []string
 	for _, m := range moves {
 		holder := holders[m.branch]
 		if holder == "" {
 			continue
 		}
-		if _, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"reset", "--hard", m.head}); err != nil {
-			failures = append(failures, fmt.Errorf("%s: reset %s to the restacked %s: %w", prefix, holder, m.branch, err))
-			continue
+		if _, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"read-tree", "-m", "-u", m.previous, m.head}); err != nil {
+			return aligned, fmt.Errorf("%s: branches moved but %s could not be aligned without overwriting local changes; preserve those changes and run ccx vcs stack continue: %w", prefix, holder, err)
 		}
-		realigned = append(realigned, holder)
-		snapshot := snapshots[holder]
-		if snapshot == "" {
-			continue
-		}
-		if _, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"stash", "apply", "--index", snapshot}); err != nil {
-			failures = append(failures, fmt.Errorf("%s: the uncommitted work from %s does not apply to the restacked %s — resolve it there, or recover it with git stash apply %s: %w", prefix, holder, m.branch, snapshot, err))
-		}
+		aligned = append(aligned, holder)
 	}
-	return realigned, errors.Join(failures...)
+	return aligned, nil
 }
 
 // gtRestackSegment reports a restack in the words of what it did: the branches
