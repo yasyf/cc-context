@@ -71,6 +71,7 @@ type goldenQueries struct {
 }
 
 func TestGoldenBM25Tokens(t *testing.T) {
+	t.Parallel()
 	chunks := loadGoldenChunks(t)
 	want := mustReadGolden[goldenTokens](t, "goldens/bm25_tokens.json")
 	if len(want.Documents) != goldenDocumentCount {
@@ -90,6 +91,7 @@ func TestGoldenBM25Tokens(t *testing.T) {
 }
 
 func TestGoldenBM25Scores(t *testing.T) {
+	t.Parallel()
 	chunks := loadGoldenChunks(t)
 	queries := mustReadGolden[goldenQueries](t, "queries.json")
 	want := mustReadGolden[goldenScores](t, "goldens/bm25_scores.json")
@@ -138,6 +140,7 @@ func TestGoldenBM25Scores(t *testing.T) {
 }
 
 func TestGoldenQueryClassification(t *testing.T) {
+	t.Parallel()
 	queries := mustReadGolden[goldenQueries](t, "queries.json")
 	if len(queries.Queries) != goldenQueryCount {
 		t.Fatalf("query count = %d, want %d", len(queries.Queries), goldenQueryCount)

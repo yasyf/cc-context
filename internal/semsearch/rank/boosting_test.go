@@ -19,6 +19,7 @@ func scoreOf(t *testing.T, cands []scored, idx int) float64 {
 }
 
 func TestIsSymbolQuery(t *testing.T) {
+	t.Parallel()
 	// Expected values from the semble 0.5.2 oracle (is_symbol_query).
 	tests := []struct {
 		query string
@@ -51,6 +52,7 @@ func TestIsSymbolQuery(t *testing.T) {
 }
 
 func TestResolveAlpha(t *testing.T) {
+	t.Parallel()
 	explicit := 0.7
 	tests := []struct {
 		name  string
@@ -72,6 +74,7 @@ func TestResolveAlpha(t *testing.T) {
 }
 
 func TestExtractSymbolName(t *testing.T) {
+	t.Parallel()
 	tests := []struct{ query, want string }{
 		{"Sinatra::Base", "Base"},
 		{"my->method", "method"},
@@ -89,6 +92,7 @@ func TestExtractSymbolName(t *testing.T) {
 }
 
 func TestStemMatches(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		stem, name string
 		want       bool
@@ -108,6 +112,7 @@ func TestStemMatches(t *testing.T) {
 }
 
 func TestBoostMultiChunkFiles(t *testing.T) {
+	t.Parallel()
 	// Expected values from the semble 0.5.2 oracle (boost_multi_chunk_files).
 	chunks := []semsearch.Chunk{
 		mkChunk("a.py", 1, ""),  // 0
@@ -126,6 +131,7 @@ func TestBoostMultiChunkFiles(t *testing.T) {
 }
 
 func TestApplyQueryBoostSymbol(t *testing.T) {
+	t.Parallel()
 	// Expected values from the semble 0.5.2 oracle (apply_query_boost, symbol branch).
 	chunks := []semsearch.Chunk{
 		mkChunk("helpers.py", 1, "def helper(): pass"),                         // 0
@@ -147,6 +153,7 @@ func TestApplyQueryBoostSymbol(t *testing.T) {
 }
 
 func TestApplyQueryBoostNLStem(t *testing.T) {
+	t.Parallel()
 	// Expected values from the semble 0.5.2 oracle (apply_query_boost, NL stem branch).
 	chunks := []semsearch.Chunk{
 		mkChunk("session.py", 1, "def login(): pass"), // 0
@@ -167,6 +174,7 @@ func TestApplyQueryBoostNLStem(t *testing.T) {
 // bounded to 256 entries (semble's lru_cache(maxsize=256)); feeding more than 256
 // distinct symbols must not grow it without limit.
 func TestDefinitionPatternCacheBounded(t *testing.T) {
+	t.Parallel()
 	for i := 0; i < definitionPatternCacheMax+100; i++ {
 		definitionPattern(fmt.Sprintf("Sym%dUnique", i))
 	}
@@ -183,6 +191,7 @@ func TestDefinitionPatternCacheBounded(t *testing.T) {
 }
 
 func TestApplyQueryBoostNLEmbedded(t *testing.T) {
+	t.Parallel()
 	// Expected values from the semble 0.5.2 oracle (apply_query_boost, NL embedded-symbol branch).
 	chunks := []semsearch.Chunk{
 		mkChunk("state.py", 1, "class StateManager:\n pass"), // 0

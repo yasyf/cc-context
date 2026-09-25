@@ -7,6 +7,7 @@ import (
 )
 
 func TestRankEndToEnd(t *testing.T) {
+	t.Parallel()
 	// End-to-end hybrid search. Expected fused scores are the semble 0.5.2 oracle
 	// output for the same leg composition (search() with the two legs mocked to
 	// this membership): the semantic leg ranks c0 over c1, the BM25 leg (query
@@ -54,6 +55,7 @@ func TestRankEndToEnd(t *testing.T) {
 }
 
 func TestRankSymbolQueryRoutesToBM25Alpha(t *testing.T) {
+	t.Parallel()
 	// A symbol query resolves alpha=0.3 and applies the definition boost, floating
 	// the defining chunk to the top even though the semantic leg favours the other.
 	chunks := []semsearch.Chunk{

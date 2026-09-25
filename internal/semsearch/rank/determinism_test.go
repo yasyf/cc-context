@@ -17,6 +17,7 @@ import (
 // still orders deterministically, and the result set json-marshals (a NaN would
 // make json.Marshal fail with "unsupported value: NaN").
 func TestRankZeroQueryVectorScoresZero(t *testing.T) {
+	t.Parallel()
 	chunks := []semsearch.Chunk{
 		mkChunk("auth/session.py", 1, "def login(session):\n    return session.user"),
 		mkChunk("db/query.py", 3, "def run_query(sql):\n    return execute(sql)"),
@@ -61,6 +62,7 @@ func TestRankZeroQueryVectorScoresZero(t *testing.T) {
 // bit-identically on every call. The pre-fix map-order float64 accumulation
 // varied run to run.
 func TestBM25GetScoresDeterministic(t *testing.T) {
+	t.Parallel()
 	bm := buildDeterminismBM25()
 	// A query whose terms span a wide range of contribution magnitudes: "index"
 	// is rare (high idf), "the" is common (low idf), and the target doc repeats
@@ -80,6 +82,7 @@ func TestBM25GetScoresDeterministic(t *testing.T) {
 // identical term frequencies for the query terms accumulate exactly-equal scores,
 // so the canonical tie-break — not float noise — decides their order.
 func TestBM25TrueTiesExactlyEqual(t *testing.T) {
+	t.Parallel()
 	bm := NewBM25()
 	// Docs 0 and 1 are true ties: same tokens (hence same length and same tf for
 	// every query term), distinct ids. Doc 2 is filler for a realistic corpus.
@@ -102,6 +105,7 @@ func TestBM25TrueTiesExactlyEqual(t *testing.T) {
 // equivalence over a tie-bearing fixture across many runs: the prebuilt index and
 // a per-call rebuild yield byte-identical result sets, and each is stable.
 func TestRankBM25PrebuiltEqualsRebuiltDeterministic(t *testing.T) {
+	t.Parallel()
 	chunks := []semsearch.Chunk{
 		mkChunk("pkg/parse.go", 1, "func Parse(token, stream, reader) {}"),
 		mkChunk("pkg/parse2.go", 1, "func Parse(token, stream, reader) {}"),
@@ -131,6 +135,7 @@ func TestRankBM25PrebuiltEqualsRebuiltDeterministic(t *testing.T) {
 // at alpha 0.5 their fused scores are exactly equal; only the corpus-index final
 // tie-break makes TopK reproducible (the union set is built from a Go map).
 func TestRankTotalOrderSharedPathStartLine(t *testing.T) {
+	t.Parallel()
 	chunks := []semsearch.Chunk{
 		{Path: "min.js", StartLine: 1, EndLine: 2, Content: "widget widget"}, // 0: higher BM25 (tf=2), lower cosine
 		{Path: "min.js", StartLine: 1, EndLine: 3, Content: "widget"},        // 1: lower BM25 (tf=1), higher cosine

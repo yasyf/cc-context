@@ -3,6 +3,7 @@ package rank
 import "testing"
 
 func TestEnrichForBM25(t *testing.T) {
+	t.Parallel()
 	// Expected values from the semble 0.5.2 oracle (enrich_for_bm25).
 	tests := []struct {
 		name string
@@ -24,6 +25,7 @@ func TestEnrichForBM25(t *testing.T) {
 }
 
 func TestBM25GetScores(t *testing.T) {
+	t.Parallel()
 	// 3-doc corpus; expected scores from the semble 0.5.2 formula (k1=1.5, b=0.75,
 	// idf=log(1+(N-df+0.5)/(df+0.5))) accumulated in float32, matching semble's
 	// numpy float32 array. The two-term sum is exactly twice the single-term score
@@ -60,6 +62,7 @@ func TestBM25GetScores(t *testing.T) {
 }
 
 func TestBM25DuplicateIDPanics(t *testing.T) {
+	t.Parallel()
 	defer func() {
 		if recover() == nil {
 			t.Fatal("AddDocument with duplicate id did not panic")

@@ -11,6 +11,7 @@ import (
 // byte-identical result set to the nil (per-call rebuild) path over a
 // multi-chunk fixture where BM25 legs matter and multiple chunks match.
 func TestRankPrebuiltBM25MatchesRebuilt(t *testing.T) {
+	t.Parallel()
 	chunks := []semsearch.Chunk{
 		mkChunk("auth/session.py", 1, "def login(session):\n    return session.user"),
 		mkChunk("auth/session.py", 10, "def logout(session):\n    session.clear()"),
