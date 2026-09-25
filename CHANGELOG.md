@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack rebase` and `stack submit` keep working when GitHub
+  refuses GraphQL.** They read each branch's pull request through GitHub's
+  REST API, so a GraphQL budget another tool used up, or a GraphQL
+  secondary rate limit, no longer blocks a restack or a push.
+
 - **`ccx vcs stack rebase` runs on separate stacks no longer block each
   other.** Each run keeps its state under its stack's root branch, so lanes
   rebase different stacks side by side. `continue` and `abort` act on the

@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "api",
+    "repos/{owner}/{repo}/pulls?head={owner}%3Ano-such-branch&state=all&sort=created&direction=desc&per_page=1"
+  ],
+  "exit": 0,
+  "stdout": "[]",
+  "stderr": ""
+}

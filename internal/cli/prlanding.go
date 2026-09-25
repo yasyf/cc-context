@@ -40,12 +40,14 @@ type prLanding struct {
 	State         string     `json:"state"`
 	MergedAt      *time.Time `json:"mergedAt"`
 	TimelineItems struct {
-		Nodes []struct {
-			Actor struct {
-				Login string `json:"login"`
-			} `json:"actor"`
-		} `json:"nodes"`
+		Nodes []prCloseEvent `json:"nodes"`
 	} `json:"timelineItems"`
+}
+
+type prCloseEvent struct {
+	Actor struct {
+		Login string `json:"login"`
+	} `json:"actor"`
 }
 
 // prLandingVerdict is how far a pull request's own fields settle its fate.
@@ -159,69 +161,29 @@ func resolveQueueLandings(ctx context.Context, dir render.Dir, closes []prQueueC
 	return landed
 }
 
-// prQueueActivity fetches the Graphite merge-activity comment of every pull
-// request named, in one round trip, and answers nothing for the ones that have
-// none. Only a queue close reaches here, so the kilobytes of bot commentary this
-// selection also carries are spent on the few pull requests that need them.
 func prQueueActivity(ctx context.Context, dir render.Dir, numbers []int) map[int]string {
-	if len(numbers) == 0 {
-		return nil
-	}
-	argv := []string{"api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}"}
-	for i, number := range numbers {
-		argv = append(argv, "-F", fmt.Sprintf("%s=%d", prActivityAlias(i), number))
-	}
-	argv = append(argv, "-f", "query="+prActivityQuery(len(numbers)))
-	out, err := render.RunCLI(ctx, dir, "gh", argv)
-	if err != nil {
-		return nil
-	}
-	var resp struct {
-		Data struct {
-			Repository map[string]struct {
-				Comments struct {
-					Nodes []struct {
-						Author *struct {
-							Login string `json:"login"`
-						} `json:"author"`
-						Body string `json:"body"`
-					} `json:"nodes"`
-				} `json:"comments"`
-			} `json:"repository"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		return nil
-	}
 	activity := make(map[int]string, len(numbers))
-	for i, number := range numbers {
-		for _, comment := range resp.Data.Repository[prActivityAlias(i)].Comments.Nodes {
-			if comment.Author != nil && comment.Author.Login == graphiteQueueActor {
-				activity[number] = comment.Body
+	for _, number := range numbers {
+		out, err := render.RunCLI(ctx, dir, "gh", []string{"api", "--paginate", "--slurp", fmt.Sprintf("%s/issues/%d/comments?per_page=100", ghRepoPath, number)})
+		if err != nil {
+			continue
+		}
+		var pages [][]struct {
+			User struct {
+				Login string `json:"login"`
+			} `json:"user"`
+			Body string `json:"body"`
+		}
+		if err := json.Unmarshal([]byte(out), &pages); err != nil {
+			continue
+		}
+		for _, page := range pages {
+			for _, comment := range page {
+				if comment.User.Login == graphiteQueueActor+"[bot]" {
+					activity[number] = comment.Body
+				}
 			}
 		}
 	}
 	return activity
-}
-
-// prActivityAlias names one pull request's field in the batched activity query.
-func prActivityAlias(i int) string {
-	return fmt.Sprintf("a%d", i)
-}
-
-// prActivityQuery renders one aliased pullRequest field per number, selecting
-// the tail of its comments — Graphite edits its one merge-activity comment in
-// place, so the landing bullet arrives on a comment as old as the enqueue.
-func prActivityQuery(n int) string {
-	decls := make([]string, 0, n+2)
-	decls = append(decls, "$owner: String!", "$repo: String!")
-	var fields strings.Builder
-	for i := range n {
-		alias := prActivityAlias(i)
-		decls = append(decls, "$"+alias+": Int!")
-		fmt.Fprintf(&fields, "    %s: pullRequest(number: $%s) { comments(last: 100) { nodes { author { login } body } } }\n",
-			alias, alias)
-	}
-	return fmt.Sprintf("query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}",
-		strings.Join(decls, ", "), fields.String())
 }
