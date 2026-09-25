@@ -89,7 +89,7 @@ func parseShipSelection(ctx context.Context, kind vcs.Kind, o shipOpts) (*shipSe
 	}
 	files := make(map[string][]anchor.Ref)
 	for i, p := range refs {
-		if !pathWithinShip(string(root), p.path, o.paths) {
+		if !pathWithinShip(ctx, string(root), p.path, o.paths) {
 			return nil, fmt.Errorf("ship: hunk ref %s is outside the shipped paths", raws[i])
 		}
 		files[p.path] = append(files[p.path], p.ref)
@@ -100,14 +100,15 @@ func parseShipSelection(ctx context.Context, kind vcs.Kind, o shipOpts) (*shipSe
 // pathWithinShip reports whether the root-relative refPath is covered by the
 // shipped paths: an empty path set is a whole-repo ship (everything covered),
 // otherwise refPath must equal a shipped path or sit beneath a shipped directory,
-// both normalized to the root-relative frame (ship paths are typed cwd-relative).
-func pathWithinShip(root, refPath string, shipPaths []string) bool {
+// both normalized to the root-relative frame (ship paths are typed relative to
+// the working directory ctx resolves).
+func pathWithinShip(ctx context.Context, root, refPath string, shipPaths []string) bool {
 	if len(shipPaths) == 0 {
 		return true
 	}
 	rp := cleanRel(refPath)
 	for _, p := range shipPaths {
-		sp, err := rootRel(root, p)
+		sp, err := rootRel(ctx, root, p)
 		if err != nil {
 			continue
 		}
@@ -125,15 +126,16 @@ func pathWithinShip(root, refPath string, shipPaths []string) bool {
 // trees address files by; every selection path normalizes to it so a ship from a
 // subdirectory addresses the same file the VCS stores.
 func repoRoot(ctx context.Context, kind vcs.Kind) (render.Dir, error) {
+	dir := render.Dir(workingDir(ctx))
 	switch kind {
 	case vcs.Git:
-		out, err := render.RunCLI(ctx, render.Ambient, "git", []string{"rev-parse", "--show-toplevel"})
+		out, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", "--show-toplevel"})
 		if err != nil {
 			return "", fmt.Errorf("git rev-parse --show-toplevel: %w", err)
 		}
 		return render.Dir(strings.TrimSpace(out)), nil
 	case vcs.JJ:
-		out, err := render.RunCLI(ctx, render.Ambient, "jj", []string{"--ignore-working-copy", "root"})
+		out, err := render.RunCLI(ctx, dir, "jj", []string{"--ignore-working-copy", "root"})
 		if err != nil {
 			return "", fmt.Errorf("jj root: %w", err)
 		}
@@ -143,14 +145,15 @@ func repoRoot(ctx context.Context, kind vcs.Kind) (render.Dir, error) {
 	}
 }
 
-// rootRel converts a path as typed — cwd-relative or absolute — to a
-// slash-separated path relative to root. Both sides resolve their symlinks first
-// so a /var vs /private/var frame split (macOS, where the VCS reports the physical
-// root but os.Getwd reports the logical cwd) does not yield a ../.. path.
-func rootRel(root, path string) (string, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("resolve %s: %w", path, err)
+// rootRel converts a path as typed — relative to the working directory ctx
+// resolves to, or absolute — to a slash-separated path relative to root. Both
+// sides resolve their symlinks first so a /var vs /private/var frame split
+// (macOS, where the VCS reports the physical root but the working directory is
+// the logical one) does not yield a ../.. path.
+func rootRel(ctx context.Context, root, path string) (string, error) {
+	abs := path
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(workingDir(ctx), abs)
 	}
 	rel, err := filepath.Rel(evalSymlinks(root), evalSymlinks(abs))
 	if err != nil {
@@ -276,7 +279,7 @@ func showFileBase(ctx context.Context, dir render.Dir, kind vcs.Kind, path strin
 func fileInBase(ctx context.Context, dir render.Dir, kind vcs.Kind, path string) (bool, error) {
 	switch kind {
 	case vcs.Git:
-		records, err := vcs.GitTreeRecords(ctx, gitBaseTreeArgs(path))
+		records, err := vcs.GitTreeRecords(ctx, gitBaseTreeArgs(dir, path))
 		if err != nil {
 			return false, fmt.Errorf("read base tree %s: %w", path, err)
 		}

@@ -64,6 +64,16 @@ func (e Env) Bin(name string) string {
 	return git
 }
 
+// Find returns name resolved against e.PATH, or "" when PATH holds no such
+// executable. It is the presence check matching what [Env.Bin] would spawn,
+// for a caller that has to know a tool is absent before it runs it.
+func (e Env) Find(name string) string {
+	if resolved := e.find(name); resolved != name {
+		return resolved
+	}
+	return ""
+}
+
 // find returns name resolved against e.PATH, or name itself when PATH holds no
 // such executable, leaving exec to report the failure in its own words.
 func (e Env) find(name string) string {

@@ -34,9 +34,9 @@ type laneSeed struct {
 // seedLaneRecords writes dir's cached GitHub metadata and gt-reachability
 // verdict, so the lane gate resolves from cache without a gh subprocess. The
 // JSON mirrors the envelopes internal/vcs and lane.go persist.
-func seedLaneRecords(t *testing.T, dir string, seed laneSeed) {
+func seedLaneRecords(ctx context.Context, t *testing.T, dir string, seed laneSeed) {
 	t.Helper()
-	repoPath, err := vcs.RepoCachePath(dir)
+	repoPath, err := vcs.RepoCachePath(ctx, dir)
 	if err != nil {
 		t.Fatalf("resolve repo cache path: %v", err)
 	}
@@ -68,24 +68,24 @@ func seedLaneRecords(t *testing.T, dir string, seed laneSeed) {
 
 // clearLaneRecords empties dir's lane cache, so the gate has to look the repo
 // up rather than read a seeded verdict.
-func clearLaneRecords(t *testing.T, dir string) {
+func clearLaneRecords(ctx context.Context, t *testing.T, dir string) {
 	t.Helper()
-	repoPath, err := vcs.RepoCachePath(dir)
+	repoPath, err := vcs.RepoCachePath(ctx, dir)
 	if err != nil {
 		t.Fatalf("resolve repo cache path: %v", err)
 	}
 	if err := os.Remove(repoPath); err != nil && !os.IsNotExist(err) {
 		t.Fatalf("clear %s: %v", repoPath, err)
 	}
-	clearGTRecord(t, dir)
+	clearGTRecord(ctx, t, dir)
 }
 
 // clearRepoRecord drops just the cached GitHub metadata, leaving the seeded gt
 // verdict in place, so the gate has to look the repository up while the probe
 // still answers from cache.
-func clearRepoRecord(t *testing.T, dir string) {
+func clearRepoRecord(ctx context.Context, t *testing.T, dir string) {
 	t.Helper()
-	repoPath, err := vcs.RepoCachePath(dir)
+	repoPath, err := vcs.RepoCachePath(ctx, dir)
 	if err != nil {
 		t.Fatalf("resolve repo cache path: %v", err)
 	}
@@ -98,9 +98,9 @@ func clearRepoRecord(t *testing.T, dir string) {
 // record in place. A test that wants a live probe still wants repo metadata
 // served from cache: clearing it too sends the report back to the fake gh,
 // failing the test on an unrelated lookup.
-func clearGTRecord(t *testing.T, dir string) {
+func clearGTRecord(ctx context.Context, t *testing.T, dir string) {
 	t.Helper()
-	repoPath, err := vcs.RepoCachePath(dir)
+	repoPath, err := vcs.RepoCachePath(ctx, dir)
 	if err != nil {
 		t.Fatalf("resolve repo cache path: %v", err)
 	}
@@ -170,7 +170,7 @@ func assertGTCommit(t *testing.T, invocations [][]string) {
 
 func TestShipGateDemotesForeignRepo(t *testing.T) {
 	f := shipGTFeature(t)
-	seedLaneRecords(t, f.Dir, foreignRepo)
+	seedLaneRecords(f.Context(), t, f.Dir, foreignRepo)
 
 	out, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
@@ -200,7 +200,7 @@ func TestShipGateKeepsOwnRepo(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := shipGTFeature(t)
-			seedLaneRecords(t, f.Dir, tt.seed)
+			seedLaneRecords(f.Context(), t, f.Dir, tt.seed)
 
 			got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 			if err != nil {
@@ -223,7 +223,7 @@ func TestShipGateKeepsOwnRepo(t *testing.T) {
 // system one carries a gh the lookup would then answer from.
 func TestShipGateUnknownKeepsGT(t *testing.T) {
 	f := shipGTFeature(t)
-	clearRepoRecord(t, f.Dir)
+	clearRepoRecord(f.Context(), t, f.Dir)
 	f.OnlyShimPATH(t)
 	t.Setenv("PATH", f.PATH())
 	if path, err := exec.LookPath("gh"); err == nil {
@@ -246,6 +246,7 @@ func TestShipGateUnknownKeepsGT(t *testing.T) {
 }
 
 func TestClassifyGTProbe(t *testing.T) {
+	t.Parallel()
 	const unconfirmed = "gt auth exited 0 without confirming this repo is submittable"
 	tests := []struct {
 		name    string
@@ -353,7 +354,7 @@ func TestShipGateProbe(t *testing.T) {
 		t.Run(tt.golden, func(t *testing.T) {
 			g := loadGTGolden(t, tt.golden)
 			f := shipGTFeature(t)
-			clearGTRecord(t, f.Dir)
+			clearGTRecord(f.Context(), t, f.Dir)
 			shipGTAuth(t, f, g)
 
 			out, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
@@ -382,7 +383,7 @@ func TestShipGateProbe(t *testing.T) {
 // report names the reason so the demotion is never silent.
 func TestShipGateProbeTimeoutDemotes(t *testing.T) {
 	f := shipGTFeature(t)
-	clearGTRecord(t, f.Dir)
+	clearGTRecord(f.Context(), t, f.Dir)
 	shipGTAuthHang(t, f)
 	shortenGTProbe(t)
 
@@ -423,7 +424,7 @@ func TestGTReachabilityCaches(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 			dir := t.TempDir()
-			path, err := gtCachePath(dir)
+			path, err := gtCachePath(context.Background(), dir)
 			if err != nil {
 				t.Fatalf("gt cache path: %v", err)
 			}
@@ -456,7 +457,7 @@ func TestGTReachabilityCachesUnknownBriefly(t *testing.T) {
 	if err != nil || verdict != gtVerdictUnknown || note == "" {
 		t.Fatalf("gtReachability() = (%q, %q, %v), want (%q, a reason, nil)", verdict, note, err, gtVerdictUnknown)
 	}
-	path, err := gtCachePath(dir)
+	path, err := gtCachePath(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("gt cache path: %v", err)
 	}
@@ -527,8 +528,9 @@ func TestGTReachabilityLocksProbe(t *testing.T) {
 // for. The demotion costs no gt at all — the gate reads the config before it
 // would ask Graphite anything.
 func TestShipGateRespectsNoGTConfig(t *testing.T) {
+	t.Parallel()
 	f := vcstest.Repo(t, vcstest.GT(), vcstest.Remote())
-	seedLaneRecords(t, f.Dir, laneSeed{})
+	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{})
 	runTool(t, f, "git", "config", nogtKey, "true")
 	resetArgvLog(t, f)
 
@@ -588,6 +590,7 @@ func brokenCheckoutDir(t *testing.T) (string, string) {
 // checkout nobody resolved. Both roots come off the partial checkout, so the
 // report's root line and its checkout line name one path in one spelling.
 func TestResolveLaneBrokenCheckout(t *testing.T) {
+	t.Parallel()
 	dir, root := brokenCheckoutDir(t)
 	target := filepath.Join(root, "gone", "worktrees", "wt")
 
@@ -625,6 +628,7 @@ func TestResolveLaneBrokenCheckout(t *testing.T) {
 // ResolveCheckout answers "no repository" without failing, and a directory
 // outside one is refused by every caller, the reporting ones included.
 func TestResolveLaneNoRepository(t *testing.T) {
+	t.Parallel()
 	const want = "info: no git or jj repository in the working directory"
 	l, err := resolveLaneReport(context.Background(), "info", t.TempDir(), false, false)
 	if err == nil || err.Error() != want {
@@ -638,6 +642,7 @@ func TestResolveLaneNoRepository(t *testing.T) {
 // TestKindLabel pins a label for every kind, None included: a reported broken
 // checkout can carry one now, and a panic is not a diagnosis.
 func TestKindLabel(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		kind vcs.Kind
 		want string
@@ -659,7 +664,7 @@ func TestKindLabel(t *testing.T) {
 // never builds a stack, so reviews --stack must not go looking for one.
 func TestReviewsStackDeclinesForeignRepo(t *testing.T) {
 	f := shipGTFeature(t)
-	seedLaneRecords(t, f.Dir, foreignRepo)
+	seedLaneRecords(f.Context(), t, f.Dir, foreignRepo)
 	head := shipHead(t, f)
 
 	_, err := runReviewsCmdIn(t, f, "--stack")

@@ -631,6 +631,7 @@ func TestWorktreeAddColocateRefused(t *testing.T) {
 }
 
 func TestWorktreeMode(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		requested string
@@ -682,7 +683,7 @@ func TestWorktreeMintPathPool(t *testing.T) {
 	elsewhere := vcs.Checkout{Root: "/o/other-repo", Shape: vcs.ShapeMain, MainRoot: "/o/other-repo", CommonDir: "/o/other-repo/.git"}
 	sameName := vcs.Checkout{Root: "/o/cc-context", Shape: vcs.ShapeMain, MainRoot: "/o/cc-context", CommonDir: "/o/cc-context/.git"}
 
-	got, err := mintWorktreePath("t", main, "feat")
+	got, err := mintWorktreePath(context.Background(), "t", main, "feat")
 	if err != nil {
 		t.Fatalf("mintWorktreePath: %v", err)
 	}
@@ -693,21 +694,21 @@ func TestWorktreeMintPathPool(t *testing.T) {
 	if base := filepath.Base(pool); base != "cc-context" {
 		t.Errorf("pool = %q, want %q", base, "cc-context")
 	}
-	sib, err := mintWorktreePath("t", sibling, "feat")
+	sib, err := mintWorktreePath(context.Background(), "t", sibling, "feat")
 	if err != nil {
 		t.Fatalf("mintWorktreePath: %v", err)
 	}
 	if sib != got {
 		t.Errorf("sibling minted %q, want the repository's own pool %q", sib, got)
 	}
-	other, err := mintWorktreePath("t", elsewhere, "feat")
+	other, err := mintWorktreePath(context.Background(), "t", elsewhere, "feat")
 	if err != nil {
 		t.Fatalf("mintWorktreePath: %v", err)
 	}
 	if other == got {
 		t.Errorf("a differently named repository minted %q, want a distinct pool", other)
 	}
-	same, err := mintWorktreePath("t", sameName, "feat")
+	same, err := mintWorktreePath(context.Background(), "t", sameName, "feat")
 	if err != nil {
 		t.Fatalf("mintWorktreePath: %v", err)
 	}
@@ -732,7 +733,7 @@ func TestWorktreeMintPathRejectsName(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := mintWorktreePath("t", c, tt.given)
+			got, err := mintWorktreePath(context.Background(), "t", c, tt.given)
 			if err == nil {
 				t.Fatalf("mintWorktreePath(%q) = %q, want a refusal", tt.given, got)
 			}

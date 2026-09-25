@@ -37,6 +37,7 @@ func runEdit(t *testing.T, stdin string, argv ...string) (string, error) {
 }
 
 func TestEditCommandAnchoredReplace(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "f.txt")
 	if err := os.WriteFile(path, []byte("alpha\nbeta\ngamma\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -58,6 +59,7 @@ func TestEditCommandAnchoredReplace(t *testing.T) {
 }
 
 func TestEditCommandContentFromStdin(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "f.txt")
 	if err := os.WriteFile(path, []byte("a\nb\nc\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -77,6 +79,7 @@ func TestEditCommandContentFromStdin(t *testing.T) {
 }
 
 func TestEditCommandDelete(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "f.txt")
 	if err := os.WriteFile(path, []byte("a\nb\nc\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -94,6 +97,7 @@ func TestEditCommandDelete(t *testing.T) {
 // alongside --content is a no-op flag, not the missing half of the exclusive pair:
 // the guard keys off the resolved --delete value, so the content edit applies.
 func TestEditCommandContentWithExplicitDeleteFalse(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "f.txt")
 	if err := os.WriteFile(path, []byte("a\nb\nc\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -113,6 +117,7 @@ func TestEditCommandContentWithExplicitDeleteFalse(t *testing.T) {
 }
 
 func TestEditCommandRequiresExactlyOneOfContentDelete(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "f.txt")
 	const content = "a\nb\nc\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -141,6 +146,7 @@ func TestEditCommandRequiresExactlyOneOfContentDelete(t *testing.T) {
 }
 
 func TestEditCommandMatchReplace(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "f.txt")
 	if err := os.WriteFile(path, []byte("alpha\nbeta\ngamma\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -162,6 +168,7 @@ func TestEditCommandMatchReplace(t *testing.T) {
 }
 
 func TestEditCommandMatchScopedByAt(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "f.txt")
 	if err := os.WriteFile(path, []byte("beta\nalpha\nbeta\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -183,6 +190,7 @@ func TestEditCommandMatchScopedByAt(t *testing.T) {
 }
 
 func TestEditCommandEmptyMatchRejected(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "f.txt")
 	const content = "alpha\nbeta\ngamma\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -199,6 +207,7 @@ func TestEditCommandEmptyMatchRejected(t *testing.T) {
 }
 
 func TestEditCommandAllRequiresMatch(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "f.txt")
 	const content = "alpha\nbeta\ngamma\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -218,6 +227,7 @@ func TestEditCommandAllRequiresMatch(t *testing.T) {
 // the "--content -" stdin read: an --all without --match errors without the
 // failReader's Read ever firing, so a malformed invocation never blocks on stdin.
 func TestEditCommandAllRequiresMatchBeforeStdin(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "f.txt")
 	const content = "alpha\nbeta\ngamma\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -241,6 +251,7 @@ func TestEditCommandAllRequiresMatchBeforeStdin(t *testing.T) {
 }
 
 func TestEditCommandRequiresAtOrMatch(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "f.txt")
 	const content = "alpha\nbeta\ngamma\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {

@@ -222,6 +222,7 @@ func TestShipMessageFromPRBodyStdin(t *testing.T) {
 }
 
 func TestCommitBodyFromPR(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		body string
@@ -271,7 +272,7 @@ func TestShipPRCreateDefaults(t *testing.T) {
 	f := shipPRFixture(t, vcstest.Branch("feature"))
 	t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-empty"))
 	t.Setenv("GH_PR_CREATE_OUT", fakePRCreateURL)
-	t.Setenv(envClaudeSessionKey, "0d1e2f30-4a5b-6c7d-8e9f-a0b1c2d3e4f5")
+	f.Setenv(envClaudeSessionKey, "0d1e2f30-4a5b-6c7d-8e9f-a0b1c2d3e4f5")
 
 	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--draft"); err != nil {
 		t.Fatalf("ship error = %v", err)
@@ -697,6 +698,7 @@ func TestShipPRUnusedCostsNothing(t *testing.T) {
 }
 
 func TestShipPROnTrunk(t *testing.T) {
+	t.Parallel()
 	f := shipPRFixture(t)
 
 	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title")
@@ -763,6 +765,7 @@ func TestShipPRDraftTransitions(t *testing.T) {
 }
 
 func TestShipPRRefusals(t *testing.T) {
+	t.Parallel()
 	t.Run("unreadable body file refuses before the commit", func(t *testing.T) {
 		f := shipPRFixture(t, vcstest.Branch("feature"))
 		head := shipHead(t, f)
@@ -857,6 +860,7 @@ func assertShipRefusedClean(t *testing.T, f *vcstest.Fixture, head string) {
 }
 
 func TestSplitPRValue(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		value      string
@@ -881,6 +885,7 @@ func TestSplitPRValue(t *testing.T) {
 }
 
 func TestPRNumberFromURL(t *testing.T) {
+	t.Parallel()
 	if n, err := prNumberFromURL("https://github.com/yasyf/cc-context/pull/12"); err != nil || n != 12 {
 		t.Errorf("prNumberFromURL = (%d, %v), want (12, nil)", n, err)
 	}

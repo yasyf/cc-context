@@ -609,7 +609,7 @@ func gtModifyRestack(ctx context.Context, l lane, o shipOpts, branch string) err
 // Staging is shipGitAdd's job on both lanes, since gt add is a git-add
 // passthrough that costs a whole gt startup.
 func shipCommitGT(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *shipSelection, plan branchPlan) (string, error) {
-	o.message = withSessionTrailer(o.message)
+	o.message = withSessionTrailer(ctx, o.message)
 	if sel != nil {
 		seg := ""
 		if !o.noVerify && shipHasHookConfig(l.root) {
@@ -1037,7 +1037,7 @@ type gtSyncRecord struct {
 // verdict when one is on disk so a synced repository pays for the round trip at
 // most once a day.
 func gtRepoSynced(ctx context.Context, client *gtapi.Client, root, owner, name string) (gtapi.RepoSync, error) {
-	path, err := gtSyncCachePath(root)
+	path, err := gtSyncCachePath(ctx, root)
 	if err != nil {
 		return gtapi.RepoSync{}, err
 	}
@@ -1076,8 +1076,8 @@ func gtRepoSynced(ctx context.Context, client *gtapi.Client, root, owner, name s
 // gtSyncCachePath resolves the cached sync verdict for the repository root
 // belongs to, a sibling of its GitHub metadata record and its gt-reachability
 // verdict. The key is the repository, so its linked worktrees share one answer.
-func gtSyncCachePath(root string) (string, error) {
-	repoPath, err := vcs.RepoCachePath(root)
+func gtSyncCachePath(ctx context.Context, root string) (string, error) {
+	repoPath, err := vcs.RepoCachePath(ctx, root)
 	if err != nil {
 		return "", err
 	}

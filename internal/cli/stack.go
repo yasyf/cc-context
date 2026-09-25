@@ -152,7 +152,7 @@ func runStackNew(cmd *cobra.Command, name, parent string) error {
 	if parent == "" {
 		return errors.New("stack new: HEAD is detached here, so there is no branch to stack on — check one out, or name it with --parent")
 	}
-	path, err := mintWorktreePath("stack new", l.checkout, name)
+	path, err := mintWorktreePath(ctx, "stack new", l.checkout, name)
 	if err != nil {
 		return err
 	}

@@ -133,6 +133,14 @@ func (f *Fixture) OnlyShimPATH(t *testing.T) {
 	f.env = append(f.env, "PATH="+f.ShimBin)
 }
 
+// Setenv adds key=value to the fixture's environment, for a variable a test
+// installs into a tool the fixture spawns. It is [Fixture.PrependPATH] for
+// anything that is not PATH, and the way a test names a variable without
+// t.Setenv, which decides it for the whole binary and bars t.Parallel().
+func (f *Fixture) Setenv(key, value string) {
+	f.env = append(f.env, key+"="+value)
+}
+
 // PrependPATH adds dir ahead of the fixture's current PATH, for a tool a test
 // installs into the fixture after Repo already built it. [Fixture.Context]
 // reads f.env live, so a call before Context() still reaches every child.

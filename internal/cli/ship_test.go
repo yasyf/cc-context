@@ -230,6 +230,7 @@ func TestShipCommitPushWatch(t *testing.T) {
 }
 
 func TestShipHooksPass(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		jj   bool
@@ -293,6 +294,7 @@ func TestShipHooksPass(t *testing.T) {
 }
 
 func TestShipHooksJJAmend(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote())
 	shipHookRepo(t, f, vcs.JJ, 0, "", "folded.go")
 
@@ -323,11 +325,10 @@ func TestShipHooksJJAmend(t *testing.T) {
 // child runs in — handed through as typed it would match nothing there, and the
 // ship would refuse with nothing to commit.
 func TestShipHooksSubdirRunsAtRoot(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote())
 	shipHookRepo(t, f, vcs.JJ, 0, "", "sub/x.go")
-	t.Chdir(filepath.Join(f.Dir, "sub"))
-
-	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "x.go")
+	got, err := runShipCmd(f.ContextIn(filepath.Join(f.Dir, "sub")), t, "-m", "fix: frobnicate", "--no-push", "x.go")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -347,6 +348,7 @@ func TestShipHooksSubdirRunsAtRoot(t *testing.T) {
 }
 
 func TestShipHooksAutoFixLeavingNothingAborts(t *testing.T) {
+	t.Parallel()
 	for _, jj := range []bool{true, false} {
 		t.Run(kindLabel(shipKind(jj)), func(t *testing.T) {
 			kind := shipKind(jj)
@@ -386,6 +388,7 @@ func TestShipHooksAutoFixLeavingNothingAborts(t *testing.T) {
 }
 
 func TestShipHooksAutoFixThenPass(t *testing.T) {
+	t.Parallel()
 	for _, jj := range []bool{true, false} {
 		t.Run(kindLabel(shipKind(jj)), func(t *testing.T) {
 			kind := shipKind(jj)
@@ -426,6 +429,7 @@ func TestShipHooksAutoFixThenPass(t *testing.T) {
 // fixer deletes the file ship staged and writes another, and the commit carries
 // the replacement alone.
 func TestShipHooksRetryRederivesFiles(t *testing.T) {
+	t.Parallel()
 	for _, jj := range []bool{true, false} {
 		t.Run(kindLabel(shipKind(jj)), func(t *testing.T) {
 			kind := shipKind(jj)
@@ -462,6 +466,7 @@ func TestShipHooksRetryRederivesFiles(t *testing.T) {
 // commit: ship runs the suite once, cannot tell a finding from a fix, commits
 // anyway, and surfaces the output so the finding is not swallowed. CI grades it.
 func TestShipHooksPersistentFailure(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote())
 	shipHookRepo(t, f, vcs.Git, 2, "", "f1.go")
 
@@ -481,6 +486,7 @@ func TestShipHooksPersistentFailure(t *testing.T) {
 }
 
 func TestShipHooksNoVerify(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote())
 	shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
 
@@ -513,6 +519,7 @@ func TestShipHooksNoVerify(t *testing.T) {
 // telling the commit verb to skip its own run saves nothing when ship already
 // paid for the same suite.
 func TestShipVerifyDefault(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		branch   string
@@ -561,6 +568,7 @@ func TestShipVerifyDefault(t *testing.T) {
 }
 
 func TestShipHooksNoConfig(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	writeShipUvx(t, f, 0, "")
 
@@ -590,6 +598,7 @@ func TestShipHooksNoConfig(t *testing.T) {
 // TestShipHooksCommitMsgStage pins the one config shape ship must not suppress:
 // prek run --files never reaches the message stages --no-verify would silence.
 func TestShipHooksCommitMsgStage(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote())
 	shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
 	writeShipFile(t, f.Dir, ".pre-commit-config.yaml", "repos:\n  - repo: local\n    hooks:\n      - id: gitlint\n        stages: [commit-msg]\n")
@@ -617,6 +626,7 @@ func TestShipHooksCommitMsgStage(t *testing.T) {
 // TestShipHooksUvxMissing takes the fixture's uvx away entirely: vcstest's PATH
 // carries the system directories alone, where uvx never lives.
 func TestShipHooksUvxMissing(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote())
 	shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
 	if err := os.Remove(filepath.Join(f.ShimBin, "uvx")); err != nil {
@@ -670,6 +680,7 @@ func TestShipHooksJJNoGitMarker(t *testing.T) {
 // an empty file list: a jj working copy with nothing in it at all, and a git
 // change that is a deletion alone, which --diff-filter=d empties.
 func TestShipHooksEmptyFilesSkipSoftGuards(t *testing.T) {
+	t.Parallel()
 	t.Run("jj with nothing to commit", func(t *testing.T) {
 		f := shipRepo(t, vcstest.JJ(), vcstest.Remote())
 		shipHookRepo(t, f, vcs.JJ, 0, "")
@@ -725,6 +736,7 @@ func TestShipHooksEmptyFilesSkipSoftGuards(t *testing.T) {
 }
 
 func TestShipHooksScopedPaths(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote())
 	shipHookRepo(t, f, vcs.Git, 0, "", "src/a.go", "unscoped.go")
 
@@ -753,6 +765,7 @@ func TestShipHooksScopedPaths(t *testing.T) {
 // TestShipHooksFiltersMissingFile runs the jj lane, where a deletion reaches the
 // hook file list at all: git's own --diff-filter=d has already dropped it.
 func TestShipHooksFiltersMissingFile(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote())
 	writeShipFile(t, f.Dir, "gone.go", "x")
 	shipHookRepo(t, f, vcs.JJ, 0, "", "f1.go")
@@ -773,6 +786,7 @@ func TestShipHooksFiltersMissingFile(t *testing.T) {
 }
 
 func TestShipHooksPreserveHookableFilenames(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		filename string
@@ -841,6 +855,7 @@ func TestShipJJNeverInvokesGitCommit(t *testing.T) {
 }
 
 func TestShipCommitOnlyVariants(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		jj   bool
@@ -1185,6 +1200,7 @@ func TestShipJJNothingToCommitHintPastesLive(t *testing.T) {
 // matches nothing, so an unrefused --no-push ship would report a branch the
 // repository never had, over a commit already landed.
 func TestShipJJExplicitMissingBookmarkRefuses(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 
 	_, err := runShipCmd(f.Context(), t, "--amend", "--no-push", "--branch", "missing")
@@ -1204,6 +1220,7 @@ func TestShipJJExplicitMissingBookmarkRefuses(t *testing.T) {
 // mutation, with the hint naming the bookmark the plan resolved, and that a
 // merge working copy is the one shape that commits anyway.
 func TestShipJJEmptyRefuses(t *testing.T) {
+	t.Parallel()
 	stack := func(target string) []string {
 		return []string{"jj", "--ignore-working-copy", "log", "-r", jjBookmarksRevset(target), "--no-graph", "-T", jjStackLineTemplate}
 	}
@@ -1359,6 +1376,7 @@ func TestShipJJEmptyRefuses(t *testing.T) {
 // is reported as malformed rather than parsed as a bare short id. The bytes are
 // jj's own, truncated where a partial read ends.
 func TestSplitDescribeTruncated(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ())
 	out := mustRun(t, f.Env(), f.Dir, "jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate)
 	short, _, ok := strings.Cut(out, "\n")
@@ -1374,6 +1392,7 @@ func TestSplitDescribeTruncated(t *testing.T) {
 // TestShipJJEmptyAmendExempt proves --amend skips the empty-working-copy
 // refusal: the amend's whole point is folding a change that is already there.
 func TestShipJJEmptyAmendExempt(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	mustRun(t, f.Env(), f.Dir, "jj", "commit", "-m", "wip")
 	shipResetLog(t, f)
@@ -1399,6 +1418,7 @@ func TestShipJJEmptyAmendExempt(t *testing.T) {
 // rather than guessed at, under --no-push too: the plan resolves before any
 // mutation on every lane.
 func TestShipGitDetachedHeadRefusesBeforeCommit(t *testing.T) {
+	t.Parallel()
 	for _, args := range [][]string{{"--no-watch"}, {"--no-push"}} {
 		t.Run(args[0], func(t *testing.T) {
 			f := shipRepo(t, vcstest.Remote(), vcstest.Detached(), vcstest.Dirty())
@@ -1461,6 +1481,7 @@ func TestShipDetachedHeadAfterCommitSelfHeals(t *testing.T) {
 // post-commit hook is what moves it here, which is the shape that produced the
 // bug: the branch under HEAD is not ship's to assume across a commit.
 func TestShipGitUsesPostCommitBranch(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	writeShipExecutable(t, filepath.Join(f.Dir, ".git", "hooks"), "post-commit",
 		"#!/bin/sh\ngit branch -f other HEAD\ngit symbolic-ref HEAD refs/heads/other\n")
@@ -1491,6 +1512,7 @@ func TestShipGitUsesPostCommitBranch(t *testing.T) {
 }
 
 func TestShipSessionTrailer(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		jj   bool
@@ -1585,7 +1607,7 @@ func TestShipSessionTrailer(t *testing.T) {
 			if slices.Contains(tt.args, "--amend") {
 				shipAmendable(t, f, kind)
 			}
-			t.Setenv(envClaudeSessionKey, "some-uuid")
+			f.Setenv(envClaudeSessionKey, "some-uuid")
 
 			got, err := runShipCmd(f.Context(), t, tt.args...)
 			if err != nil {
@@ -1605,6 +1627,7 @@ func TestShipSessionTrailer(t *testing.T) {
 // TestShipGitAmendFastForwardPush amends a commit origin has never seen, so the
 // amended tip still fast-forwards the remote branch.
 func TestShipGitAmendFastForwardPush(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	shipAmendable(t, f, vcs.Git)
 
@@ -1652,6 +1675,7 @@ func TestShipGitAmendFastForwardPush(t *testing.T) {
 // one aborts back to where it started, and a rebase that never begins is
 // reported as itself rather than as a conflict.
 func TestShipGitRebase(t *testing.T) {
+	t.Parallel()
 	plan := [][]string{
 		{"git", "branch", "--show-current"},
 		gitTrunkArgv,
@@ -1839,6 +1863,7 @@ func TestShipGitRebase(t *testing.T) {
 // tree, the rebase has to move it, and a restore that will not apply names the
 // commit holding it and the files in it.
 func TestShipGitRebaseNamesWorkItCannotPutBack(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	writeShipFile(t, f.Dir, "b.txt", "base\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "b.txt")
@@ -1917,6 +1942,7 @@ func TestPushArgvLeavesUnseenRemoteTipsUnfetched(t *testing.T) {
 // pushes again, while a hook decline, a conflicting replay, and an amend are
 // each terminal on the first refusal.
 func TestShipGitPushRetry(t *testing.T) {
+	t.Parallel()
 	plan := [][]string{
 		{"git", "branch", "--show-current"},
 		gitTrunkArgv,
@@ -2089,6 +2115,7 @@ func TestShipGitPushRetry(t *testing.T) {
 // tokens: a push that mixes a non-fast-forward ref with a hook-declined one is
 // terminal, however the two lines are ordered. The bytes are one real git push's.
 func TestGitPushRejectedClassifies(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"))
 	writeShipFile(t, f.Dir, "g.txt", "feature\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
@@ -2129,6 +2156,7 @@ func TestGitPushRejectedClassifies(t *testing.T) {
 // commit is cut, the trunk bookmark moves onto it, and the bare origin gains
 // the commit — with no gh call to confirm anything afterwards.
 func TestShipNoWatchSkipsCI(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	before := remoteCount(t, f, "main")
 
@@ -2262,6 +2290,7 @@ func TestShipCINoRunWithWorkflowIsUnconfirmed(t *testing.T) {
 }
 
 func TestShipHeadSHAFailurePrintsCommitPushSummary(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	writeShipGH(t, f)
 	shipJJFails(t, f, "*commit_id")
@@ -2293,6 +2322,7 @@ func TestShipHeadSHAFailurePrintsCommitPushSummary(t *testing.T) {
 }
 
 func TestJJExactPattern(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		in   string
@@ -2353,6 +2383,7 @@ func TestJJRevsetsParseLive(t *testing.T) {
 // restack shares the helper, and a hardcoded one reads "restack: … : ship: …".
 // git answers a ref no repository holds with a fatal at exit 128.
 func TestGitIsAncestorPrefix(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote())
 	for _, prefix := range []string{"ship", "restack"} {
 		t.Run(prefix, func(t *testing.T) {
@@ -2375,6 +2406,7 @@ func TestGitIsAncestorPrefix(t *testing.T) {
 // is replayed and the bookmark advanced only after, and every refusal past the
 // commit leaves the bookmark where the fetch found it.
 func TestShipJJRebase(t *testing.T) {
+	t.Parallel()
 	stack := func(target string) []string {
 		return []string{"jj", "--ignore-working-copy", "log", "-r", jjBookmarksRevset(target), "--no-graph", "-T", jjStackLineTemplate}
 	}
@@ -2640,6 +2672,7 @@ func TestShipJJRebase(t *testing.T) {
 // operation the rollback names is the move, so the rebase survives to be
 // replayed onto the tip that beat it.
 func TestShipJJPushRevertTargetsBookmarkMove(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	shipDivergeRemote(t, f, "main", "u.txt", "upstream\n")
 	shipRaceRemote(t, f, "jj", `"git push"*`, "u.txt", 1)
@@ -2664,6 +2697,7 @@ func TestShipJJPushRevertTargetsBookmarkMove(t *testing.T) {
 // the ship where it stands: the manual revert is named and no second attempt
 // fetches.
 func TestShipJJPushRevertFailureIsTerminal(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	shipJJFails(t, f, `"op revert"*`)
 	shipRaceRemote(t, f, "jj", `"git push"*`, "u.txt", 1)
@@ -2699,6 +2733,7 @@ func TestShipJJPushRevertFailureIsTerminal(t *testing.T) {
 // rebase the push runs into: the report carries one hooks segment and one
 // commit segment, not a second pass's copy of either.
 func TestShipJJRebasePreservesHookSummary(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	shipHookRepo(t, f, vcs.JJ, 0, "", "f1.go")
 	mustRun(t, f.Env(), f.Dir, "jj", "git", "push", "--bookmark", "main")
@@ -2728,6 +2763,7 @@ func TestShipJJRebasePreservesHookSummary(t *testing.T) {
 // trunk" refusal is gone: the answer it demanded was always the bookmark the
 // working copy already sat on, so ship appends to it and names it in the report.
 func TestShipJJNonTrunkBookmarkAppends(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	shipJJBookmarks(t, f, "someone/probe")
 
@@ -2757,6 +2793,7 @@ func TestShipJJNonTrunkBookmarkAppends(t *testing.T) {
 // TestShipJJNonTrunkBookmarkPushesItself proves the appended bookmark is the one
 // pushed, not trunk.
 func TestShipJJNonTrunkBookmarkPushesItself(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	shipJJBookmarks(t, f, "someone/probe")
 
@@ -2782,6 +2819,7 @@ func TestShipJJNonTrunkBookmarkPushesItself(t *testing.T) {
 }
 
 func TestShipJJMultipleNearestBookmarksFails(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	shipJJBookmarks(t, f, "feat-a", "feat-b")
 
@@ -2805,6 +2843,7 @@ func TestShipJJMultipleNearestBookmarksFails(t *testing.T) {
 }
 
 func TestShipJJNearestBookmarksResolve(t *testing.T) {
+	t.Parallel()
 	t.Run("trunk among the candidates wins, and the report says so", func(t *testing.T) {
 		f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 		shipJJBookmarks(t, f, "feat-a", "main", "feat-b")
@@ -2870,6 +2909,7 @@ func TestShipJJNearestBookmarksResolve(t *testing.T) {
 // no holder answers for is still decided exactly as it was before — the common
 // case, since git names a holder only while some checkout holds the branch.
 func TestShipJJBookmarkTieHolders(t *testing.T) {
+	t.Parallel()
 	t.Run("a candidate another working copy holds loses the tie", func(t *testing.T) {
 		f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 		shipJJBookmarks(t, f, "main", "feat-a")
@@ -3038,6 +3078,7 @@ func TestShipHealSuccessAsksNoHolder(t *testing.T) {
 // TestShipJJAmbiguousTrunkFails proves several trunk candidates are refused,
 // listing them: that is genuine ambiguity, not something to guess at.
 func TestShipJJAmbiguousTrunkFails(t *testing.T) {
+	t.Parallel()
 	t.Run("two real remotes refuse", func(t *testing.T) {
 		f := shipAmbiguousTrunk(t)
 
@@ -3083,6 +3124,7 @@ func TestShipJJAmbiguousTrunkFails(t *testing.T) {
 // candidates only by naming one of them, and that the name it picks becomes the
 // trunk every guard downstream compares against.
 func TestShipJJAmbiguousTrunkBranch(t *testing.T) {
+	t.Parallel()
 	t.Run("a --branch naming no candidate still refuses", func(t *testing.T) {
 		f := shipAmbiguousTrunk(t)
 
@@ -3102,7 +3144,7 @@ func TestShipJJAmbiguousTrunkBranch(t *testing.T) {
 
 	t.Run("the candidate it names is the trunk the guards weigh", func(t *testing.T) {
 		f := shipAmbiguousTrunk(t)
-		seedLaneRecords(t, f.Dir, laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
+		seedLaneRecords(f.Context(), t, f.Dir, laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
 
 		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--branch", "main")
 		if err == nil || !strings.Contains(err.Error(), "pass --allow-trunk to advance it deliberately") {
@@ -3138,6 +3180,7 @@ func TestShipJJAmbiguousTrunkBranch(t *testing.T) {
 // still refuses. jj's trunk() revset knows main, master, and trunk by name, so
 // a repository whose branch is none of those has no trunk bookmark at all.
 func TestShipJJNoTrunkBookmark(t *testing.T) {
+	t.Parallel()
 	t.Run("a nearest bookmark is pushed regardless", func(t *testing.T) {
 		f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Trunk("mainline"), vcstest.Dirty())
 
@@ -3187,6 +3230,7 @@ func TestShipJJNoTrunkBookmark(t *testing.T) {
 }
 
 func TestShipJJBookmarkOverride(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	mustRun(t, f.Env(), f.Dir, "jj", "bookmark", "create", "someone/probe", "-r", "@-")
 	shipResetLog(t, f)
@@ -3223,6 +3267,7 @@ func TestShipJJBookmarkOverride(t *testing.T) {
 // creates it: jj bookmark create -r @- runs after the commit, and the push
 // targets the new bookmark rather than trunk.
 func TestShipJJNewBranch(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 
 	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--bookmark", "someone/probe")
@@ -3266,6 +3311,7 @@ func TestShipJJNewBranch(t *testing.T) {
 }
 
 func TestShipGitBookmarkFlagFails(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	head := shipHead(t, f)
 	shipResetLog(t, f)
@@ -3316,6 +3362,7 @@ func TestShipBookmarkGuardReadsTheSpelling(t *testing.T) {
 }
 
 func TestShipRequiresMessage(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	head := shipHead(t, f)
 	shipResetLog(t, f)
@@ -3336,6 +3383,7 @@ func TestShipRequiresMessage(t *testing.T) {
 // TestShipRepeatableMessage pins -m to git commit's own semantics: several
 // values are the paragraphs of one message, not a value each one overwrites.
 func TestShipRepeatableMessage(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 
 	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "-m", "Context: the widget drifted.", "--no-push")
@@ -3890,6 +3938,7 @@ func TestWatchCIRunBounded(t *testing.T) {
 }
 
 func TestCIDuration(t *testing.T) {
+	t.Parallel()
 	start := time.Date(2026, 7, 8, 18, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name  string
@@ -3925,7 +3974,7 @@ func TestWithSessionTrailer(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(envClaudeSessionKey, tt.id)
-			if got := withSessionTrailer(tt.message); got != tt.want {
+			if got := withSessionTrailer(context.Background(), tt.message); got != tt.want {
 				t.Errorf("withSessionTrailer(%q) = %q, want %q", tt.message, got, tt.want)
 			}
 		})
@@ -3933,6 +3982,7 @@ func TestWithSessionTrailer(t *testing.T) {
 }
 
 func TestCIGreen(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		conclusion string
 		want       bool
@@ -3954,6 +4004,7 @@ func TestCIGreen(t *testing.T) {
 }
 
 func TestShipGTPrecedenceOverJJ(t *testing.T) {
+	t.Parallel()
 	// jj git init --colocate leaves git's HEAD detached, so the graphite half
 	// checks a branch out with git first: the gt lane commits onto a git branch,
 	// and ship refuses a detached HEAD before it ever reaches one.
@@ -4213,6 +4264,7 @@ func TestShipGTBodylessPR(t *testing.T) {
 // split: outside the graphite lane, trunk in your own repository is committed
 // to directly, and an org trunk gets a branch instead.
 func TestShipTrunkPersonalAppends(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 
 	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
@@ -4232,8 +4284,9 @@ func TestShipTrunkPersonalAppends(t *testing.T) {
 }
 
 func TestShipTrunkOrgCreates(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
-	seedLaneRecords(t, f.Dir, laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
+	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
 
 	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
@@ -4254,6 +4307,7 @@ func TestShipTrunkOrgCreates(t *testing.T) {
 // TestShipGitNewBranch proves --new-branch cuts the branch before the commit,
 // so the commit lands on it rather than on trunk.
 func TestShipGitNewBranch(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 
 	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x")
@@ -4281,6 +4335,7 @@ func TestShipGitNewBranch(t *testing.T) {
 // branch cut and nothing else — the file the hook removed stays removed, since
 // restoring a hook's edits is not the rollback's job.
 func TestShipGitNewBranchRollback(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote())
 	// A finding no longer refuses; an auto-fix that empties the change still does.
 	// shipHookRepo commits the prek config, so f1.go is the only pending change
@@ -4310,6 +4365,7 @@ func TestShipGitNewBranchRollback(t *testing.T) {
 // hook run leaves an index.lock behind, which is what makes git refuse the
 // switch back — the same state a crashed git process leaves.
 func TestShipGitNewBranchRollbackFailure(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote())
 	writeShipHookFiles(t, f.Dir, "f1.go")
 	lock := filepath.Join(f.Dir, ".git", "index.lock")
@@ -4442,6 +4498,7 @@ func TestShipCreateSwallowsPathOperand(t *testing.T) {
 // before any lane work: only a derived name passes through legalBranchName
 // otherwise, leaving the refusal to whichever backend's argv parser ran first.
 func TestShipIllegalBranchName(t *testing.T) {
+	t.Parallel()
 	// Every row refuses before touching the repository, so one fixture serves
 	// the whole matrix.
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
@@ -4476,6 +4533,7 @@ func TestShipIllegalBranchName(t *testing.T) {
 // already checked out, cutting one that does not exist, and refusing to switch
 // to one that exists elsewhere.
 func TestShipBranchFlag(t *testing.T) {
+	t.Parallel()
 	t.Run("naming the current branch appends", func(t *testing.T) {
 		f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"), vcstest.Dirty())
 
@@ -4532,7 +4590,7 @@ func TestShipBranchFlag(t *testing.T) {
 
 	t.Run("naming an org trunk refuses without --allow-trunk", func(t *testing.T) {
 		f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"), vcstest.Dirty())
-		seedLaneRecords(t, f.Dir, laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
+		seedLaneRecords(f.Context(), t, f.Dir, laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
 		before := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 
 		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--branch", "main")
@@ -4553,6 +4611,7 @@ func TestShipBranchFlag(t *testing.T) {
 // answer with "origin/" can produce. symbolic-ref --short prints the tag at
 // exit 0, so ship must refuse rather than ship onto it.
 func TestShipTrunkTagRefuses(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	mustRun(t, f.Env(), f.Dir, "git", "tag", "v1")
 	mustRun(t, f.Env(), f.Dir, "git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/tags/v1")
@@ -4570,6 +4629,7 @@ func TestShipTrunkTagRefuses(t *testing.T) {
 }
 
 func TestShipAppendFlag(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 
@@ -5145,6 +5205,7 @@ func TestShipGTResumeAfterRestackConflict(t *testing.T) {
 }
 
 func TestGTStuck(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		o    shipOpts
@@ -5209,7 +5270,7 @@ func TestShipGTRefusals(t *testing.T) {
 		shipResetLog(t, f)
 		head := shipHead(t, f)
 
-		_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-push")
+		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 		wantErr := "ship: nothing to commit, and the branch carries nothing above main — nothing to submit"
 		if err == nil || err.Error() != wantErr {
 			t.Fatalf("error = %v, want %q", err, wantErr)
@@ -5225,7 +5286,7 @@ func TestShipGTRefusals(t *testing.T) {
 		shipGTUntracked(t, f, "feature")
 		shipGTReady(t, f)
 
-		got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-push")
+		got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -5259,7 +5320,7 @@ func TestShipGTRefusals(t *testing.T) {
 		head := shipHead(t, f)
 		shipResetLog(t, f)
 
-		_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "nope")
+		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "nope")
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
@@ -5287,7 +5348,7 @@ func TestShipGTRefusals(t *testing.T) {
 		shipGTReady(t, f)
 		head := shipHead(t, f)
 
-		_, errOut, err := runShipCmdFull(context.Background(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "nope")
+		_, errOut, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "nope")
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
@@ -5770,6 +5831,7 @@ func TestShipGTDraftPublish(t *testing.T) {
 // stopped being graphite-only when ship took over the pull request in every
 // lane, where they toggle the draft state through gh.
 func TestShipGTFlagsOutsideGTLane(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	head := shipHead(t, f)
 	shipResetLog(t, f)
@@ -5890,7 +5952,7 @@ func TestShipGTHooksSuppressGitRun(t *testing.T) {
 
 func TestShipGTSessionTrailer(t *testing.T) {
 	f := shipGTFeature(t)
-	t.Setenv(envClaudeSessionKey, "some-uuid")
+	f.Setenv(envClaudeSessionKey, "some-uuid")
 
 	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push"); err != nil {
 		t.Fatalf("ship error = %v", err)
@@ -6304,6 +6366,7 @@ func shipHandCommit(t *testing.T, f *vcstest.Fixture, kind vcs.Kind, message str
 // refusal's manual hint describes: the commit already in place is pushed, and
 // no new one is cut.
 func TestShipNoCommitShipsCommittedChange(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name string
 		jj   bool
@@ -6342,6 +6405,7 @@ func TestShipNoCommitShipsCommittedChange(t *testing.T) {
 // not. A delegate that commits in its own working copy hands back this state,
 // so ship submits what is there rather than refusing the commit it cannot cut.
 func TestShipAlreadyCommittedSubmitsInPlace(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name  string
 		jj    bool
@@ -6393,6 +6457,7 @@ func TestShipAlreadyCommittedSubmitsInPlace(t *testing.T) {
 // means there was nothing to commit, and reading it as one pushes the commit the
 // amend was meant to replace.
 func TestShipAmendFailureIsReported(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name  string
 		paths []string
@@ -6431,6 +6496,7 @@ func TestShipAmendFailureIsReported(t *testing.T) {
 // keep, so a concurrent session's staged work may not decide whether the scoped
 // paths have anything left to commit — nor be swept into the report.
 func TestShipPathScopedLandedIgnoresUnrelatedStaged(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
 	shipHandCommit(t, f, vcs.Git, "fix: the change already committed")
@@ -6460,6 +6526,7 @@ func TestShipPathScopedLandedIgnoresUnrelatedStaged(t *testing.T) {
 // either, so the empty commit is refused — and the refusal states that standing
 // rather than asking whether a prior ship landed something.
 func TestShipEmptyLevelWithTrunkRefuses(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name  string
 		paths []string
@@ -6491,6 +6558,7 @@ func TestShipEmptyLevelWithTrunkRefuses(t *testing.T) {
 // git's leftover has to be a tracked file — a new one there is untracked scratch
 // the mode exempts — where jj's new file is already part of the commit it pushes.
 func TestShipNoCommitRefusesDirtyWorkingCopy(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name     string
 		jj       bool
@@ -6527,6 +6595,7 @@ func TestShipNoCommitRefusesDirtyWorkingCopy(t *testing.T) {
 // a committed branch beside a probe directory deliberately never staged. The
 // submit goes through, the report names what it left, and the scratch stays put.
 func TestShipNoCommitShipsOverUntrackedScratch(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	shipHandCommit(t, f, vcs.Git, "fix: the change already committed")
 	writeShipFile(t, f.Dir, ".xlprobe/fixture.bin", "hundreds of megabytes, pretend\n")
@@ -6550,6 +6619,7 @@ func TestShipNoCommitShipsOverUntrackedScratch(t *testing.T) {
 // TestShipUntrackedSegment pins the cap: a worktree carrying scratch carries more
 // of it than a report should hold.
 func TestShipUntrackedSegment(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name  string
 		paths []string
@@ -6571,6 +6641,7 @@ func TestShipUntrackedSegment(t *testing.T) {
 // pushed. Nothing upstream needs moving, which is a state no other ship reaches:
 // every other path advances the bookmark onto a commit it just cut.
 func TestShipNoCommitRepeatsCleanly(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	shipHandCommit(t, f, vcs.JJ, "fix: the change already committed")
 	shipResetLog(t, f)
@@ -6593,6 +6664,7 @@ func TestShipNoCommitRepeatsCleanly(t *testing.T) {
 // TestShipNoCommitFlagConflicts keeps --no-commit from combining with the flags
 // that only mean something when a commit is being formed.
 func TestShipNoCommitFlagConflicts(t *testing.T) {
+	t.Parallel()
 	for _, args := range [][]string{
 		{"--no-commit", "-m", "fix: frobnicate"},
 		{"--no-commit", "--amend"},
@@ -6627,6 +6699,7 @@ func TestShipNoCommitFlagConflicts(t *testing.T) {
 // only breaks the tie by naming one of the tied bookmarks, which in a repository
 // whose candidates are all held by worktrees means hijacking one of them.
 func TestShipJJNewBranchClearsNearestAmbiguity(t *testing.T) {
+	t.Parallel()
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	shipJJBookmarks(t, f, "feat-a", "feat-b")
 	shipResetLog(t, f)

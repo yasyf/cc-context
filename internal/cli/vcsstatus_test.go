@@ -257,6 +257,7 @@ func TestVcsStatusNamesAContaminatedTrunk(t *testing.T) {
 // TestVcsStatusSpliceBlockerIsGraphiteOnly is the other half of the lane split:
 // gt restacks onto the local trunk ref, so there the splice is real.
 func TestVcsStatusSpliceBlockerIsGraphiteOnly(t *testing.T) {
+	t.Parallel()
 	st := vcsStatus{
 		Trunk: "main",
 		TrunkState: &vcs.TrunkState{

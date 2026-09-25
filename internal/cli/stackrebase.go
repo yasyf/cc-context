@@ -929,7 +929,7 @@ func stackDropTempRefs(ctx context.Context, dir render.Dir, run *stackRebaseRun)
 }
 
 func stackOpenConflict(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun, b *stackRebaseBranch) error {
-	ws, err := mintWorktreePath(stackRebasePrefix, l.checkout, "conflict-"+strings.ReplaceAll(b.Name, "/", "-"))
+	ws, err := mintWorktreePath(ctx, stackRebasePrefix, l.checkout, "conflict-"+strings.ReplaceAll(b.Name, "/", "-"))
 	if err != nil {
 		return err
 	}

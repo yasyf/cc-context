@@ -13,6 +13,7 @@ import (
 )
 
 func TestReadCommandNotFound(t *testing.T) {
+	t.Parallel()
 	cmd := newReadCmd()
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
@@ -37,6 +38,7 @@ func TestReadCommandNotFound(t *testing.T) {
 // alone: the CLI already answers in the shell whose cwd names the root, and a
 // root line there would be noise the goldens must carry.
 func TestReadCommandNamesNoRoot(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	file := filepath.Join(dir, "f.txt")
 	if err := os.WriteFile(file, []byte("alpha\n"), 0o600); err != nil {

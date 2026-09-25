@@ -8,6 +8,7 @@ import (
 )
 
 func TestExpansionHint(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  error
@@ -32,6 +33,7 @@ func TestExpansionHint(t *testing.T) {
 }
 
 func TestOutlineUnexpandedTildeErrorCarriesHintSignal(t *testing.T) {
+	t.Parallel()
 	cmd := NewRootCmd()
 	var out bytes.Buffer
 	cmd.SetOut(&out)

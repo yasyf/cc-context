@@ -23,7 +23,7 @@ func infoRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	t.Helper()
 	f := vcstest.Repo(t, opts...)
 	f.Isolate(t)
-	seedLaneRecords(t, f.Dir, laneSeed{})
+	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{})
 	return f
 }
 
@@ -35,7 +35,7 @@ func infoGTRepo(t *testing.T, branches ...string) *vcstest.Fixture {
 	t.Helper()
 	f := vcstest.Repo(t, vcstest.GT(), vcstest.Remote(), vcstest.GTParentStack(branches...))
 	f.Isolate(t)
-	seedLaneRecords(t, f.Dir, laneSeed{})
+	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{})
 	return f
 }
 
@@ -390,7 +390,7 @@ func TestVcsInfoGraphiteDeclined(t *testing.T) {
 	f := infoGTRepo(t, "feature")
 	version := gtVersion(t, f)
 	note := "cc-context is not synced with graphite (gt auth: does not have the necessary permissions)"
-	seedLaneRecords(t, f.Dir, laneSeed{unreachable: true, note: note})
+	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{unreachable: true, note: note})
 
 	out, err := runVcsInfoCmd(t, f)
 	if err != nil {
@@ -417,7 +417,7 @@ func TestVcsInfoGraphiteDeclined(t *testing.T) {
 func TestVcsInfoProbeUnknown(t *testing.T) {
 	f := infoGTRepo(t)
 	version := gtVersion(t, f)
-	clearGTRecord(t, f.Dir)
+	clearGTRecord(f.Context(), t, f.Dir)
 	gtAuthHangs(t, f)
 	shortenGTProbe(t)
 
@@ -513,7 +513,7 @@ func TestVcsInfoWithoutGh(t *testing.T) {
 	// gh, so only the shim directory alone holds no gh to find.
 	f.OnlyShimPATH(t)
 	f.Isolate(t)
-	clearLaneRecords(t, f.Dir)
+	clearLaneRecords(f.Context(), t, f.Dir)
 	if path, err := exec.LookPath("gh"); err == nil {
 		t.Fatalf("gh resolved to %s; the fixture PATH must hold none", path)
 	}
@@ -791,7 +791,7 @@ func TestVcsInfoLinkedWorktree(t *testing.T) {
 	f.Isolate(t)
 	root := f.WorktreePath("feat")
 	t.Chdir(root)
-	seedLaneRecords(t, ".", laneSeed{})
+	seedLaneRecords(context.Background(), t, ".", laneSeed{})
 
 	got := runVcsInfoJSONIn(f.ContextIn(root), t)
 	if got.Root != root {

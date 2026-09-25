@@ -629,7 +629,7 @@ func restackGTRepo(t *testing.T, names ...string) *vcstest.Fixture {
 	t.Helper()
 	f := vcstest.Repo(t, vcstest.Remote(), vcstest.GT(), vcstest.GTStack(names...))
 	f.Isolate(t)
-	seedLaneRecords(t, f.Dir, laneSeed{})
+	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{})
 	stubGTAPI(t)
 	stubStackPRs(t, nil)
 	return f

@@ -149,8 +149,9 @@ func gitRestorePaths(paths []string) []string {
 // gitBaseTreeArgs looks the root-relative path up in HEAD's tree: --full-tree
 // resolves a root-relative path from any working directory, and the path reaches
 // git as a pathspec, matched literally.
-func gitBaseTreeArgs(path string) vcs.GitArgs {
+func gitBaseTreeArgs(dir render.Dir, path string) vcs.GitArgs {
 	return vcs.GitArgs{
+		Dir:   dir,
 		Sub:   []string{"ls-tree", "--full-tree"},
 		Revs:  []vcs.GitRef{vcs.HeadRef},
 		Paths: []string{path},
@@ -162,7 +163,7 @@ func gitBaseTreeArgs(path string) vcs.GitArgs {
 // HEAD — a newly added file. The temp index is seeded from HEAD, so HEAD's mode
 // is the mode the staged blob inherits.
 func gitFileMode(ctx context.Context, root, path string) (string, error) {
-	records, err := vcs.GitTreeRecords(ctx, gitBaseTreeArgs(path))
+	records, err := vcs.GitTreeRecords(ctx, gitBaseTreeArgs(render.Dir(root), path))
 	if err != nil {
 		return "", fmt.Errorf("ship: git ls-tree %s: %w", path, err)
 	}

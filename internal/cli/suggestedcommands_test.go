@@ -24,6 +24,7 @@ var reSuggestedCommand = regexp.MustCompile(`\bccx((?: +[a-z][a-z0-9-]*)+)`)
 // reader to the tree that message is printed by. A refusal naming a verb cobra
 // does not carry sends them to an unknown-command error while already stuck.
 func TestSuggestedCommandsAreRegistered(t *testing.T) {
+	t.Parallel()
 	root := cli.NewRootCmd()
 	repo := repoRootFromCaller(t)
 	checked := 0

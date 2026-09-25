@@ -15,6 +15,7 @@ import (
 // TestAnchorHashArg proves `anchor hash <text>` prints exactly the content hash
 // anchor.Of derives for that line.
 func TestAnchorHashArg(t *testing.T) {
+	t.Parallel()
 	got := runCCX(t, "anchor", "hash", "func Foo()")
 	want := anchor.Of("func Foo()").String() + "\n"
 	if got != want {
@@ -25,6 +26,7 @@ func TestAnchorHashArg(t *testing.T) {
 // TestAnchorHashStdin proves an absent arg and a bare "-" both read the line from
 // stdin, matching the --content - convention.
 func TestAnchorHashStdin(t *testing.T) {
+	t.Parallel()
 	for _, args := range [][]string{{"anchor", "hash"}, {"anchor", "hash", "-"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			var out bytes.Buffer
@@ -48,6 +50,7 @@ func TestAnchorHashStdin(t *testing.T) {
 // line+hash and a unique bare hash resolve silently, while a stale line hint
 // re-anchors by content and prints the move note.
 func TestAnchorResolve(t *testing.T) {
+	t.Parallel()
 	file := writeAnchorFixture(t)
 	beta := anchor.Of("beta")
 	gamma := anchor.Of("gamma")
@@ -73,6 +76,7 @@ func TestAnchorResolve(t *testing.T) {
 // TestAnchorResolveErrors proves each malformed, missing, or ambiguous ref exits
 // non-zero carrying the anchor package's own error text.
 func TestAnchorResolveErrors(t *testing.T) {
+	t.Parallel()
 	file := writeAnchorFixture(t)
 	dup := filepath.Join(t.TempDir(), "dup.txt")
 	if err := os.WriteFile(dup, []byte("same\nsame\n"), 0o600); err != nil {

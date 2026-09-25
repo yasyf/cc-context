@@ -231,7 +231,7 @@ func gtDisabled(ctx context.Context, root render.Dir) bool {
 // is what makes storing it safe. Not storing it would leave every command during
 // an outage paying a fresh 20s probe to re-derive the same answer.
 func gtReachability(ctx context.Context, root string, refresh bool) (gtVerdict, string, error) {
-	path, err := gtCachePath(root)
+	path, err := gtCachePath(ctx, root)
 	if err != nil {
 		return "", "", err
 	}
@@ -368,8 +368,8 @@ func gtProbeLine(output, marker string) string {
 // belongs to, a sibling of its GitHub metadata record. The key is the
 // repository, not the checkout, so a repository's linked worktrees share one
 // verdict and the single probe behind it.
-func gtCachePath(root string) (string, error) {
-	repoPath, err := vcs.RepoCachePath(root)
+func gtCachePath(ctx context.Context, root string) (string, error) {
+	repoPath, err := vcs.RepoCachePath(ctx, root)
 	if err != nil {
 		return "", err
 	}

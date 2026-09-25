@@ -302,7 +302,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		o.noVerify = true
 	}
 	asGiven := o
-	if o.rootPaths, err = rootRelPaths(string(dir), o.paths); err != nil {
+	if o.rootPaths, err = rootRelPaths(ctx, string(dir), o.paths); err != nil {
 		return fmt.Errorf("ship: %w", err)
 	}
 	prCleanup, err := materializePRBodyStdin(cmd, &o)
@@ -589,8 +589,8 @@ func shipReviewsWatch(ctx context.Context, w io.Writer, branches []string) error
 
 const envClaudeSessionKey = "CLAUDE_CODE_SESSION_ID"
 
-func withSessionTrailer(message string) string {
-	id := os.Getenv(envClaudeSessionKey)
+func withSessionTrailer(ctx context.Context, message string) string {
+	id := render.Getenv(ctx, envClaudeSessionKey)
 	if id == "" || message == "" {
 		return message
 	}
@@ -634,7 +634,7 @@ func shipRestoreBranch(ctx context.Context, dir render.Dir, from, created string
 // files, not the partial content being committed through a throwaway index.
 // It returns the hook summary segment to prepend to the ship summary.
 func shipCommit(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Kind, o shipOpts, sel *shipSelection, plan branchPlan) (string, error) {
-	o.message = withSessionTrailer(o.message)
+	o.message = withSessionTrailer(ctx, o.message)
 	segs := make([]string, 0, 2)
 	if kind == vcs.Git && sel == nil {
 		sweptSeg, err := shipGitAdd(ctx, dir, o)
@@ -1062,7 +1062,7 @@ func checkBranchFlags(cmd *cobra.Command, o shipOpts) error {
 		return nil
 	}
 	for _, path := range o.paths {
-		if _, err := os.Stat(path); err != nil {
+		if _, err := os.Stat(filepath.Join(workingDir(cmd.Context()), path)); err != nil {
 			return fmt.Errorf("ship: %q is not a path — did you mean --new-branch=%s?", path, path)
 		}
 	}

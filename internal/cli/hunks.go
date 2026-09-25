@@ -58,7 +58,7 @@ func runHunks(cmd *cobra.Command, paths []string, budget int) error {
 		}
 	} else {
 		for i, p := range paths {
-			rel, err := rootRel(string(root), p)
+			rel, err := rootRel(ctx, string(root), p)
 			if err != nil {
 				return fmt.Errorf("hunks: %w", err)
 			}
@@ -108,7 +108,7 @@ func changedFiles(ctx context.Context, kind vcs.Kind, root render.Dir) ([]string
 			if line == "" {
 				continue
 			}
-			rel, err := rootRel(string(root), line)
+			rel, err := rootRel(ctx, string(root), line)
 			if err != nil {
 				return nil, fmt.Errorf("hunks: %w", err)
 			}

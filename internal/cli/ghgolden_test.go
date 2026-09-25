@@ -13,7 +13,7 @@ import (
 // ghGoldenDir holds one JSON file per recorded gh run, written by
 // scripts/record-gh-goldens.sh. Its README.md describes the layout: cli/ is what
 // a PATH fake replays, api/ what an httptest.Server serves.
-const ghGoldenDir = "testdata/gh"
+var ghGoldenDir = filepath.Join(ghPkgDir, "testdata", "gh")
 
 // ghGoldenFields is the exact key set each kind's container carries. Decoding
 // ignores a key that is not there, so without this a half-written scenario would

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -74,7 +73,7 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 			return "hooks no-git", false, nil
 		}
 	}
-	if _, err := exec.LookPath("uvx"); err != nil {
+	if render.LookPath(ctx, "uvx") == "" {
 		return "hooks uvx-missing", false, nil
 	}
 	if err := shipRefuseIndexLock(dir); err != nil {
@@ -256,12 +255,12 @@ func shipHookFiles(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpt
 	return files, nil
 }
 
-// rootRelPaths rebases cwd-relative ship paths onto root, for the jj diff that
-// runs with its working directory pinned there.
-func rootRelPaths(root string, paths []string) ([]string, error) {
+// rootRelPaths rebases ship paths onto root, for the jj diff that runs with its
+// working directory pinned there.
+func rootRelPaths(ctx context.Context, root string, paths []string) ([]string, error) {
 	rel := make([]string, 0, len(paths))
 	for _, p := range paths {
-		r, err := rootRel(root, p)
+		r, err := rootRel(ctx, root, p)
 		if err != nil {
 			return nil, err
 		}

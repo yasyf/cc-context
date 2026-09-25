@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -44,11 +43,7 @@ func newShowCmd() *cobra.Command {
 // header (subject, body, author) is masked pathlessly, its fired rules joining
 // the footer.
 func runShow(cmd *cobra.Command, ref string, a backend.Args) error {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("resolve cwd: %w", err)
-	}
-	commit, err := vcs.Show(cmd.Context(), render.Dir(cwd), ref)
+	commit, err := vcs.Show(cmd.Context(), render.Dir(workingDir(cmd.Context())), ref)
 	if err != nil {
 		return err
 	}

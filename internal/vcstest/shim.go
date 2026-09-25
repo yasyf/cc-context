@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -34,35 +36,71 @@ type hostEnv struct {
 	tools []resolvedTool
 }
 
-var host *hostEnv
+var (
+	hostMu sync.Mutex
+	hosts  = map[string]*hostEnv{}
+)
 
 // hostEnvFor captures the PATH the first time the running test resolves a
 // tool, before any vcstest call has replaced it, and drops it when that test
 // ends — t.Setenv restores PATH at the same point, so the next test captures
-// its own.
+// its own. It is keyed on the top-level test so a subtest shares its parent's,
+// and held under a lock because parallel tests reach it at once: a single
+// package-level capture let one test's cleanup drop the entry a concurrent
+// test was still resolving through, and the shim it then wrote held only the
+// tools that survived the drop.
 func hostEnvFor(t *testing.T) *hostEnv {
 	t.Helper()
-	if host == nil {
-		host = &hostEnv{path: os.Getenv("PATH")}
-		t.Cleanup(func() { host = nil })
+	key, _, _ := strings.Cut(t.Name(), "/")
+	hostMu.Lock()
+	defer hostMu.Unlock()
+	if h, ok := hosts[key]; ok {
+		return h
 	}
-	return host
+	h := &hostEnv{path: os.Getenv("PATH")}
+	hosts[key] = h
+	t.Cleanup(func() {
+		hostMu.Lock()
+		defer hostMu.Unlock()
+		delete(hosts, key)
+	})
+	return h
 }
 
 func (h *hostEnv) resolve(t *testing.T, name string) resolvedTool {
 	t.Helper()
+	hostMu.Lock()
 	for _, tool := range h.tools {
 		if tool.name == name {
+			hostMu.Unlock()
 			return tool
 		}
 	}
-	path, err := lookPath(h.path, name)
+	path := h.path
+	hostMu.Unlock()
+
+	resolved, err := lookPath(path, name)
 	if err != nil {
 		t.Skipf("%s not installed: %v", name, err)
 	}
-	tool := resolvedTool{name: name, path: path, interpreter: shebangInterpreter(t, h.path, path)}
+	tool := resolvedTool{name: name, path: resolved, interpreter: shebangInterpreter(t, path, resolved)}
+	hostMu.Lock()
+	defer hostMu.Unlock()
+	for _, have := range h.tools {
+		if have.name == name {
+			return have
+		}
+	}
 	h.tools = append(h.tools, tool)
 	return tool
+}
+
+// snapshot returns what the running test has resolved so far, for a caller
+// that walks the set while a parallel sibling may still be adding to it.
+func (h *hostEnv) snapshot() []resolvedTool {
+	hostMu.Lock()
+	defer hostMu.Unlock()
+	return slices.Clone(h.tools)
 }
 
 // Shim installs a recording passthrough for each tool and puts its bin
@@ -136,7 +174,7 @@ func installShim(t *testing.T) (base, binDir, logPath string) {
 	binDir = filepath.Join(base, "bin")
 	mkdir(t, binDir)
 	logPath = filepath.Join(base, argvLogName(0))
-	tools := hostEnvFor(t).tools
+	tools := hostEnvFor(t).snapshot()
 	for _, tool := range tools {
 		script := "#!/bin/sh\n" + RecordArgv(tool.name) +
 			"CCX_SHIM_DEPTH=$((d+1)) exec " + shellQuote(tool.path) + ` "$@"` + "\n"

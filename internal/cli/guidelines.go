@@ -226,7 +226,7 @@ func runGuidelines(cmd *cobra.Command, o guidelinesOpts) error {
 	if err != nil {
 		return err
 	}
-	dir, err := guidelinesCacheDir(root)
+	dir, err := guidelinesCacheDir(ctx, root)
 	if err != nil {
 		return err
 	}
@@ -294,8 +294,8 @@ func guidelinesRoot(ctx context.Context) (string, error) {
 // guidelinesCacheDir resolves the per-repo cache directory out of the GitHub
 // metadata record's own path, so the documents — pure repository identity —
 // cannot drift into a per-checkout entry.
-func guidelinesCacheDir(root string) (string, error) {
-	repoPath, err := vcs.RepoCachePath(root)
+func guidelinesCacheDir(ctx context.Context, root string) (string, error) {
+	repoPath, err := vcs.RepoCachePath(ctx, root)
 	if err != nil {
 		return "", err
 	}

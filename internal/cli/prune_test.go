@@ -15,6 +15,7 @@ import (
 )
 
 func TestPruneReparent(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		rows      []gtmeta.Row
@@ -143,6 +144,7 @@ func TestPruneReparent(t *testing.T) {
 // stack, so forgetting its row without moving the child leaves gtDownstack
 // unable to resolve that stack at all.
 func TestPruneRepairsAStackOverAForgottenParent(t *testing.T) {
+	t.Parallel()
 	f := vcstest.Repo(t, vcstest.Remote())
 	dir := render.Dir(f.Dir)
 	trunkHead := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")

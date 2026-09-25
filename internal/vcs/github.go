@@ -93,7 +93,7 @@ func (r Repo) Personal() bool {
 // refresh forces a refetch. Every reason the answer is unknowable wraps
 // ErrNoGitHub.
 func LookupRepo(ctx context.Context, root render.Dir, refresh bool) (Repo, error) {
-	path, err := RepoCachePath(string(root))
+	path, err := RepoCachePath(ctx, string(root))
 	if err != nil {
 		return Repo{}, err
 	}
@@ -132,13 +132,13 @@ func LookupRepo(ctx context.Context, root render.Dir, refresh bool) (Repo, error
 // a repository's linked worktrees share one record rather than each paying
 // their own `gh repo view`. It is exported so tests can seed or clear the
 // record.
-func RepoCachePath(root string) (string, error) {
+func RepoCachePath(ctx context.Context, root string) (string, error) {
 	c, err := ResolveCheckout(root)
 	if err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256([]byte(c.RepoKey()))
-	dir, err := cache.Dir("github", hex.EncodeToString(sum[:]))
+	dir, err := cache.DirFrom(ctx, "github", hex.EncodeToString(sum[:]))
 	if err != nil {
 		return "", err
 	}
@@ -180,7 +180,7 @@ func fetchRepo(ctx context.Context, root render.Dir, refresh bool) (Repo, error)
 // lookupViewer reads the signed-in account, cached machine-wide on the same TTL
 // as a repo record: the login and org list are identical for every repository.
 func lookupViewer(ctx context.Context, refresh bool) (viewer, error) {
-	dir, err := cache.Dir("github")
+	dir, err := cache.DirFrom(ctx, "github")
 	if err != nil {
 		return viewer{}, err
 	}
