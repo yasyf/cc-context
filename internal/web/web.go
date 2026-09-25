@@ -14,7 +14,6 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/yasyf/cc-context/internal/backend"
-	"github.com/yasyf/cc-context/internal/lookpath"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/semsearch/embed"
 )
@@ -149,11 +148,11 @@ func escalateThin(ctx context.Context, norm string, page *Page) {
 // counts — decided by the cheap literal localTarget predicate (no DNS here).
 func renderLanesAvailable(ctx context.Context, normURL string) bool {
 	if u, err := url.Parse(normURL); err == nil && localTarget(u.Hostname()) {
-		return lookpath.Find(agentBrowserBin) != ""
+		return render.LookPath(ctx, agentBrowserBin) != ""
 	}
 	return render.Getenv(ctx, envJinaKey) != "" ||
 		render.Getenv(ctx, envFirecrawlKey) != "" ||
-		lookpath.Find(agentBrowserBin) != ""
+		render.LookPath(ctx, agentBrowserBin) != ""
 }
 
 // thinNote returns the advisory a thin page carries, worded against the render

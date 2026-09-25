@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // agentBrowserBin is the local browser-automation CLI the render escalation's
@@ -56,7 +56,7 @@ type batchResult struct {
 // session is closed best-effort afterward. It is the render escalation's terminal
 // lane, so a rendered bot challenge returns a plain error, never errStealthRequired.
 func (t *tiers) agentBrowser(ctx context.Context, targetURL string, targetLocal bool) (FetchResult, error) {
-	bin := lookpath.Find(agentBrowserBin)
+	bin := render.LookPath(ctx, agentBrowserBin)
 	if bin == "" {
 		return FetchResult{}, fmt.Errorf("web: render escalation needs %s on PATH", agentBrowserBin)
 	}

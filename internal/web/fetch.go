@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yasyf/cc-context/internal/lookpath"
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -196,7 +195,7 @@ func (t *tiers) renderFetch(ctx context.Context, normURL string) (FetchResult, b
 			runs = append(runs, laneRun{TierFirecrawlRender, func() (FetchResult, error) { return t.firecrawl(ctx, normURL, key, true) }})
 		}
 	}
-	if lookpath.Find(agentBrowserBin) != "" {
+	if render.LookPath(ctx, agentBrowserBin) != "" {
 		runs = append(runs, laneRun{TierAgentBrowser, func() (FetchResult, error) { return t.agentBrowser(ctx, normURL, local) }})
 	}
 	if len(runs) == 0 {

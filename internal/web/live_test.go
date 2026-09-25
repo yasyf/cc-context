@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/backend"
-	"github.com/yasyf/cc-context/internal/lookpath"
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -53,7 +52,7 @@ func TestLiveJinaRenderPass(t *testing.T) {
 // live page, skipping when the binary is absent.
 func TestLiveAgentBrowserRenderedRead(t *testing.T) {
 	requireLiveOptIn(t)
-	if lookpath.Find(agentBrowserBin) == "" {
+	if render.LookPath(t.Context(), agentBrowserBin) == "" {
 		t.Skipf("%s not on PATH", agentBrowserBin)
 	}
 	res, err := newTiers().agentBrowser(t.Context(), "https://example.com", false)

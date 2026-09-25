@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cache"
-	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 //go:embed pdf_driver.py
@@ -39,7 +39,7 @@ var parsePDFFn = parsePDF
 // driver as a one-shot uv subprocess. The bytes are streamed to the driver's
 // stdin and the markdown read back from stdout; uv must be on PATH.
 func parsePDF(ctx context.Context, data []byte) (string, error) {
-	uv := lookpath.Find("uv")
+	uv := render.LookPath(ctx, "uv")
 	if uv == "" {
 		return "", errors.New("web: pdf extraction requires uv on PATH (brew install uv)")
 	}

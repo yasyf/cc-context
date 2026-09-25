@@ -953,9 +953,8 @@ func TestRunPanicsOnNonWebOp(t *testing.T) {
 }
 
 func TestRunThinNoLaneServesNoteAllOps(t *testing.T) {
-	ctx := webCtx(t)
+	ctx := webCtx(t, "PATH=")
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
-	disableAgentBrowser(t)
 	withFetch(t, markdownFetch("loading", "App", nil))
 	withRenderPage(t, func(context.Context, string) (FetchResult, bool, error) {
 		return FetchResult{}, false, errors.New("no render lane available")
@@ -981,9 +980,8 @@ func TestRunThinNoLaneServesNoteAllOps(t *testing.T) {
 }
 
 func TestRunThinEscalatesServesRendered(t *testing.T) {
-	ctx := webCtx(t)
+	ctx := webCtx(t, "PATH=")
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
-	disableAgentBrowser(t)
 	withFetch(t, markdownFetch("loading", "App", nil))
 	rendered := "# Rendered\n\n" + strings.Repeat("real rendered prose here. ", 20)
 	withRenderPage(t, func(context.Context, string) (FetchResult, bool, error) {
@@ -1007,9 +1005,8 @@ func TestRunThinEscalatesServesRendered(t *testing.T) {
 }
 
 func TestRunThinStillThinKeepsLargest(t *testing.T) {
-	ctx := webCtx(t, envJinaKey+"=jina-key")
+	ctx := webCtx(t, envJinaKey+"=jina-key", "PATH=")
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
-	disableAgentBrowser(t)
 	withFetch(t, markdownFetch("hi", "App", nil))
 	larger := "still thin but a good deal larger than the original body"
 	withRenderPage(t, func(context.Context, string) (FetchResult, bool, error) {
@@ -1033,9 +1030,8 @@ func TestRunThinStillThinKeepsLargest(t *testing.T) {
 }
 
 func TestRunThinNoteSurvivesCacheHit(t *testing.T) {
-	ctx := webCtx(t)
+	ctx := webCtx(t, "PATH=")
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
-	disableAgentBrowser(t)
 	var calls atomic.Int32
 	withFetch(t, markdownFetch("loading", "App", &calls))
 	withRenderPage(t, func(context.Context, string) (FetchResult, bool, error) {
@@ -1079,9 +1075,8 @@ func TestRunNotThinNeverCallsRenderPage(t *testing.T) {
 }
 
 func TestRunThinReEscalatesOn304(t *testing.T) {
-	ctx := webCtx(t)
+	ctx := webCtx(t, "PATH=")
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
-	disableAgentBrowser(t)
 
 	// A stale Thin page whose origin will 304: without re-escalation it would trap
 	// Thin forever, breaking the note's own "re-run with --refresh" promise.
@@ -1123,8 +1118,7 @@ func TestRunThinReEscalatesOn304(t *testing.T) {
 }
 
 func TestThinNoteLocalTargetNamesAgentBrowser(t *testing.T) {
-	ctx := webCtx(t, envJinaKey+"=jina-key")
-	disableAgentBrowser(t)
+	ctx := webCtx(t, envJinaKey+"=jina-key", "PATH=")
 
 	note := thinNote(ctx, &Page{URL: "http://localhost:3000/app", Thin: true})
 	if !strings.Contains(note, "install agent-browser") {

@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
+	"time"
 )
 
 // abEntry is one command's entry in a faked `batch --json` output array; a nil
@@ -67,13 +67,15 @@ func sessionField(line string) string {
 	return ""
 }
 
-// stubAgentBrowser installs a fake agent-browser on PATH (via a lookpath.Find
-// override) whose `batch` drains stdin, prints batchOut, and exits with exitCode,
-// and whose `close` exits 0. Every invocation's argv is appended to the returned
-// log file so a test can assert the session handed to `close`. exitCode lets a
-// test reproduce the production behavior that batch exits non-zero whenever any
-// command fails, even a tolerated one.
-func stubAgentBrowser(t *testing.T, batchOut string, exitCode int) string {
+// stubAgentBrowser installs a fake agent-browser whose `batch` drains stdin,
+// prints batchOut and exits with exitCode, and whose `close` exits 0. It
+// returns a ctx resolving that stub and nothing else, plus a log file every
+// invocation's argv is appended to, so a test can assert the session handed to
+// `close`.
+//
+// exitCode reproduces the production behavior that batch exits non-zero
+// whenever any command fails, even a tolerated one.
+func stubAgentBrowser(ctx context.Context, t *testing.T, batchOut string, exitCode int) (context.Context, string) {
 	t.Helper()
 	dir := t.TempDir()
 	batchFile := filepath.Join(dir, "batch.json")
@@ -95,31 +97,55 @@ for arg in "$@"; do
 done
 exit 0
 `, argvLog, batchFile, exitCode)
-	installStub(t, dir, script)
-	return argvLog
+	return installStub(ctx, t, dir, script), argvLog
 }
 
-// installStub writes script as an executable agent-browser in dir and points
-// lookpath.Find at it (and only it).
-func installStub(t *testing.T, dir, script string) {
+// installStub writes script as an executable agent-browser in dir and returns a
+// ctx whose PATH holds dir alone, so the stub is the only binary the code under
+// test resolves.
+func installStub(ctx context.Context, t *testing.T, dir, script string) context.Context {
 	t.Helper()
 	stub := filepath.Join(dir, agentBrowserBin)
 	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil { //nolint:gosec // test-only stub must be executable
 		t.Fatalf("write stub: %v", err)
 	}
-	prev := lookpath.Find
-	lookpath.Find = func(name string) string {
-		if name == agentBrowserBin {
-			return stub
-		}
-		return ""
+	return render.WithEnv(ctx, "PATH="+dir)
+}
+
+// TestAgentBrowserBinaryFromContextPATH proves the lane resolves agent-browser
+// against the PATH the context carries when the process's holds nothing: the
+// process PATH is emptied to a bare directory and the stub is reachable only
+// through ctx. The stub sticks to shell builtins because the child it spawns
+// inherits that empty process PATH.
+func TestAgentBrowserBinaryFromContextPATH(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	const rendered = "# Rendered\n\nreal rendered content here."
+	ctx := installStub(webCtx(t), t, t.TempDir(), fmt.Sprintf(`#!/bin/sh
+while IFS= read -r _; do :; done
+printf '%%s\n' %s
+`, shellQuote(mustJSON(t, okBatch(rendered, "T")))))
+
+	res, err := abTiers().agentBrowser(ctx, "https://example.com/app", false)
+	if err != nil {
+		t.Fatalf("agentBrowser: %v", err)
 	}
-	t.Cleanup(func() { lookpath.Find = prev })
+	if res.Markdown != rendered {
+		t.Errorf("Markdown = %q, want the stub output reached through the context PATH", res.Markdown)
+	}
+}
+
+// shellQuote wraps s in single quotes for a /bin/sh script; s carries none of
+// its own.
+func shellQuote(s string) string {
+	if strings.Contains(s, "'") {
+		panic("shellQuote: value carries a single quote")
+	}
+	return "'" + s + "'"
 }
 
 func TestAgentBrowserParsesBatchOutput(t *testing.T) {
 	ctx := webCtx(t)
-	argvLog := stubAgentBrowser(t, mustJSON(t, okBatch("# Rendered\n\nreal rendered content here.", "Rendered Title")), 0)
+	ctx, argvLog := stubAgentBrowser(ctx, t, mustJSON(t, okBatch("# Rendered\n\nreal rendered content here.", "Rendered Title")), 0)
 
 	res, err := abTiers().agentBrowser(ctx, "https://example.com/app", false)
 	if err != nil {
@@ -157,7 +183,7 @@ func TestAgentBrowserToleratesWaitFailure(t *testing.T) {
 	entries := okBatch("# Rendered\n\nreal content.", "T")
 	entries[1] = abEntry{Command: []string{"wait"}, Error: "Operation timed out.", Result: nil, Success: false}
 	// batch exits 1 because the wait step failed, yet the read still succeeded.
-	stubAgentBrowser(t, mustJSON(t, entries), 1)
+	ctx, _ = stubAgentBrowser(ctx, t, mustJSON(t, entries), 1)
 
 	res, err := abTiers().agentBrowser(ctx, "https://example.com/app", false)
 	if err != nil {
@@ -174,7 +200,7 @@ func TestAgentBrowserOpenFailureErrors(t *testing.T) {
 	entries[0] = abEntry{Command: []string{"open"}, Error: "Navigation failed: net::ERR_UNSAFE_PORT", Result: nil, Success: false}
 	// A failed open still lets read return the browser error page; the open gate
 	// must reject it rather than serve that page.
-	stubAgentBrowser(t, mustJSON(t, entries), 1)
+	ctx, _ = stubAgentBrowser(ctx, t, mustJSON(t, entries), 1)
 
 	_, err := abTiers().agentBrowser(ctx, "https://example.com/app", false)
 	if err == nil {
@@ -187,7 +213,7 @@ func TestAgentBrowserOpenFailureErrors(t *testing.T) {
 
 func TestAgentBrowserEmptyReadErrors(t *testing.T) {
 	ctx := webCtx(t)
-	stubAgentBrowser(t, mustJSON(t, okBatch("   \n\t ", "T")), 0)
+	ctx, _ = stubAgentBrowser(ctx, t, mustJSON(t, okBatch("   \n\t ", "T")), 0)
 
 	_, err := abTiers().agentBrowser(ctx, "https://example.com/app", false)
 	if err == nil || !strings.Contains(err.Error(), "empty content") {
@@ -199,7 +225,7 @@ func TestAgentBrowserChallengeNotServed(t *testing.T) {
 	ctx := webCtx(t)
 	// A rendered interstitial: the title marker trips challengeSignature, so the
 	// terminal lane returns a plain error rather than serve the challenge.
-	stubAgentBrowser(t, mustJSON(t, okBatch("Checking your browser before accessing the site.", "Just a moment...")), 0)
+	ctx, _ = stubAgentBrowser(ctx, t, mustJSON(t, okBatch("Checking your browser before accessing the site.", "Just a moment...")), 0)
 
 	_, err := abTiers().agentBrowser(ctx, "https://example.com/app", false)
 	if err == nil || !strings.Contains(err.Error(), "challenge") {
@@ -210,7 +236,7 @@ func TestAgentBrowserChallengeNotServed(t *testing.T) {
 func TestAgentBrowserTimeoutKillsGroup(t *testing.T) {
 	ctx := webCtx(t)
 	dir := t.TempDir()
-	installStub(t, dir, `#!/bin/sh
+	ctx = installStub(ctx, t, dir, `#!/bin/sh
 for arg in "$@"; do
   if [ "$arg" = batch ]; then
     sleep 30
@@ -240,7 +266,7 @@ func TestAgentBrowserRefusesLocalRedirect(t *testing.T) {
 	ctx := webCtx(t)
 	// A public target whose rendered final URL is a loopback address: the SSRF
 	// guard must refuse it rather than cache local content under the public URL.
-	stubAgentBrowser(t, mustJSON(t, batchWithFinal("# Admin\n\nprivate internal content.", "http://127.0.0.1:8080/admin")), 0)
+	ctx, _ = stubAgentBrowser(ctx, t, mustJSON(t, batchWithFinal("# Admin\n\nprivate internal content.", "http://127.0.0.1:8080/admin")), 0)
 
 	_, err := abTiers().agentBrowser(ctx, "https://example.com/app", false)
 	if err == nil || !strings.Contains(err.Error(), "local address") {
@@ -252,7 +278,7 @@ func TestAgentBrowserLocalTargetAllowed(t *testing.T) {
 	ctx := webCtx(t)
 	// A local original target (localhost dev SPA) is a designed use, so a local
 	// final URL is served rather than refused.
-	stubAgentBrowser(t, mustJSON(t, batchWithFinal("# Dev\n\n"+strings.Repeat("local dev content. ", 10), "http://localhost:1234/app")), 0)
+	ctx, _ = stubAgentBrowser(ctx, t, mustJSON(t, batchWithFinal("# Dev\n\n"+strings.Repeat("local dev content. ", 10), "http://localhost:1234/app")), 0)
 
 	res, err := abTiers().agentBrowser(ctx, "http://localhost:1234/app", true)
 	if err != nil {
@@ -278,7 +304,7 @@ func TestAgentBrowserNoFinalURLFailsClosed(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := webCtx(t)
-			stubAgentBrowser(t, mustJSON(t, batchWithFinal("# X\n\nsome rendered content.", tt.final)), 0)
+			ctx, _ = stubAgentBrowser(ctx, t, mustJSON(t, batchWithFinal("# X\n\nsome rendered content.", tt.final)), 0)
 			_, err := abTiers().agentBrowser(ctx, "https://example.com/app", false)
 			if err == nil || !strings.Contains(err.Error(), "no verifiable final URL") {
 				t.Fatalf("err = %v, want a fail-closed no-verifiable-final-URL error", err)
@@ -291,7 +317,7 @@ func TestAgentBrowserLocalTargetLenientFinal(t *testing.T) {
 	ctx := webCtx(t)
 	// A local dev SPA is allowed to be sloppy about the final URL: an empty one
 	// falls back to the target URL and serves.
-	stubAgentBrowser(t, mustJSON(t, batchWithFinal("# Dev\n\n"+strings.Repeat("local content. ", 10), "")), 0)
+	ctx, _ = stubAgentBrowser(ctx, t, mustJSON(t, batchWithFinal("# Dev\n\n"+strings.Repeat("local content. ", 10), "")), 0)
 
 	res, err := abTiers().agentBrowser(ctx, "http://localhost:5173/app", true)
 	if err != nil {
@@ -304,7 +330,7 @@ func TestAgentBrowserLocalTargetLenientFinal(t *testing.T) {
 
 func TestAgentBrowserSessionUnique(t *testing.T) {
 	ctx := webCtx(t)
-	argvLog := stubAgentBrowser(t, mustJSON(t, okBatch("# Rendered\n\nreal rendered content.", "T")), 0)
+	ctx, argvLog := stubAgentBrowser(ctx, t, mustJSON(t, okBatch("# Rendered\n\nreal rendered content.", "T")), 0)
 	ts := abTiers()
 
 	if _, err := ts.agentBrowser(ctx, "https://example.com/a", false); err != nil {

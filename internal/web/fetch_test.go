@@ -16,7 +16,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/yasyf/cc-context/internal/lookpath"
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -1350,10 +1349,7 @@ func TestFetchPlainHTTPContentTypeRouting(t *testing.T) {
 // parsePDF: with uv forced off the PATH, the parser's uv-missing failure surfaces
 // from the plainHTTP tier, which only fires when detectBodyKind picked bodyPDF.
 func TestFetchPlainHTTPPDFRoutesToParser(t *testing.T) {
-	ctx := webCtx(t)
-	orig := lookpath.Find
-	t.Cleanup(func() { lookpath.Find = orig })
-	lookpath.Find = func(string) string { return "" }
+	ctx := webCtx(t, "PATH=")
 
 	ts := testTiers(t, services{jina: status(http.StatusTooManyRequests)})
 	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
@@ -1407,7 +1403,7 @@ func TestPlainHTTPPDFParseNotBoundByFetchDeadline(t *testing.T) {
 func TestParsePDF(t *testing.T) {
 	t.Parallel()
 	ctx := webCtx(t)
-	if lookpath.Find("uv") == "" {
+	if render.LookPath(ctx, "uv") == "" {
 		t.Skip("parsePDF needs uv on PATH (brew install uv)")
 	}
 	data, err := os.ReadFile("testdata/sample.pdf")

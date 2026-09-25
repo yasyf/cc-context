@@ -8,23 +8,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	"github.com/yasyf/cc-context/internal/lookpath"
 )
-
-// disableAgentBrowser stubs lookpath.Find to report every binary absent, so a
-// render-chain test exercising only the hosted lanes never spawns the real
-// agent-browser that may be installed on the dev host.
-func disableAgentBrowser(t *testing.T) {
-	t.Helper()
-	prev := lookpath.Find
-	lookpath.Find = func(string) string { return "" }
-	t.Cleanup(func() { lookpath.Find = prev })
-}
 
 func TestRenderFetchLinkLocalRefused(t *testing.T) {
 	ctx := webCtx(t)
-	stubAgentBrowser(t, "[]", 0) // the only lane available; it must never launch
+	ctx, _ = stubAgentBrowser(ctx, t, "[]", 0) // the only lane available; it must never launch
 	ts := testTiers(t, services{})
 	ts.onAttempt = func(tier Tier, err error) {
 		t.Errorf("render lane %s ran for a link-local target (err=%v)", tier, err)
@@ -37,8 +25,7 @@ func TestRenderFetchLinkLocalRefused(t *testing.T) {
 }
 
 func TestRenderFetchJinaRenderHeaders(t *testing.T) {
-	ctx := webCtx(t, envJinaKey+"=jina-key")
-	disableAgentBrowser(t)
+	ctx := webCtx(t, envJinaKey+"=jina-key", "PATH=")
 
 	var gotHeaders http.Header
 	ts := testTiers(t, services{
@@ -86,8 +73,7 @@ func TestRenderFetchJinaRenderHeaders(t *testing.T) {
 }
 
 func TestRenderFetchOrderJinaThenFirecrawl(t *testing.T) {
-	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key")
-	disableAgentBrowser(t)
+	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key", "PATH=")
 
 	var attempts []Tier
 	var waitFor int
@@ -143,8 +129,7 @@ func TestRenderFetchOrderJinaThenFirecrawl(t *testing.T) {
 }
 
 func TestRenderFetchTerminalAcceptsLargestThin(t *testing.T) {
-	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key")
-	disableAgentBrowser(t)
+	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key", "PATH=")
 
 	var jinaHits, fcHits atomic.Int32
 	ts := testTiers(t, services{
@@ -174,8 +159,7 @@ func TestRenderFetchTerminalAcceptsLargestThin(t *testing.T) {
 }
 
 func TestRenderFetchNoLaneAvailableErrors(t *testing.T) {
-	ctx := webCtx(t)
-	disableAgentBrowser(t)
+	ctx := webCtx(t, "PATH=")
 	ts := testTiers(t, services{}) // any hosted-tier hit fails the test
 
 	_, _, err := ts.renderFetch(ctx, remoteTargetURL)
@@ -185,8 +169,7 @@ func TestRenderFetchNoLaneAvailableErrors(t *testing.T) {
 }
 
 func TestRenderFetchChallengeSkipsLane(t *testing.T) {
-	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key")
-	disableAgentBrowser(t)
+	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key", "PATH=")
 
 	ts := testTiers(t, services{
 		jina: jinaClean(t, challengeBody, "Just a moment..."),
@@ -208,8 +191,7 @@ func TestRenderFetchChallengeSkipsLane(t *testing.T) {
 }
 
 func TestRenderFetchGoneLaneSkipsNotAborts(t *testing.T) {
-	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key")
-	disableAgentBrowser(t)
+	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key", "PATH=")
 
 	var fcHits atomic.Int32
 	ts := testTiers(t, services{
@@ -244,7 +226,7 @@ func TestRenderFetchLocalTargetAgentBrowserOnly(t *testing.T) {
 	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key")
 	// Keys are set but must be ignored: the hosted lanes can't reach a local
 	// target, so any jina/firecrawl hit trips the guard handlers below.
-	stubAgentBrowser(t, mustJSON(t, okBatch("# Local\n\n"+strings.Repeat("rendered local content. ", 10), "Local")), 0)
+	ctx, _ = stubAgentBrowser(ctx, t, mustJSON(t, okBatch("# Local\n\n"+strings.Repeat("rendered local content. ", 10), "Local")), 0)
 
 	ts := testTiers(t, services{})
 	var attempts []Tier
