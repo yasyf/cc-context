@@ -72,9 +72,10 @@ type stackRebaseBranch struct {
 }
 
 type stackConflict struct {
-	Branch    string `json:"branch"`
-	Workspace string `json:"workspace"`
-	Brief     string `json:"brief"`
+	Branch    string   `json:"branch"`
+	Workspace string   `json:"workspace"`
+	Brief     string   `json:"brief"`
+	Generated []string `json:"generated,omitempty"`
 }
 
 type stackRebaseRun struct {
@@ -151,6 +152,9 @@ A conflict stops the run before any ref moves: the rebase is left in progress
 in a workspace of its own, with both sides' intent written out, and
 ccx vcs stack continue resumes the rest of the stack from there
 (ccx vcs stack abort drops it). rerere is off for every rebase it drives.
+A stop whose conflicts are all files .ccx.toml lists under [[generated]] does
+not wait: each owning command runs once in the workspace and the rebase
+continues.
 
 After the rewrite, gt's parents are recorded, the stack is force-pushed under
 the remote heads recorded at the start, and one verdict line per pull request
@@ -238,6 +242,13 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 		return err
 	}
 	cmd.Println(strings.Join(stackPlanLines(run), "\n"))
+	regen, err := stackRegenPlan(ctx, l.dir(), run)
+	if err != nil {
+		return err
+	}
+	if len(regen) > 0 {
+		cmd.Println(strings.Join(regen, "\n"))
+	}
 	if o.dryRun {
 		return nil
 	}
@@ -923,27 +934,87 @@ func stackOpenConflict(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 		return fmt.Errorf("stack rebase: git rebase in %s: %w", ws, err)
 	}
 	run.Conflict = &stackConflict{Branch: b.Name, Workspace: ws, Brief: stackBriefPath(run.dir, b.Name)}
-	if code == 0 {
-		if b.NewHead, err = stackRevParse(ctx, render.Dir(ws), "HEAD"); err != nil {
-			return err
-		}
-		if err := stackSaveRun(run); err != nil {
-			return err
-		}
-		return stackCloseWorkspace(ctx, cmd, l, commonDir, run)
-	}
-	unmerged, err := stackUnmerged(ctx, ws)
-	if err != nil {
+	if err := stackSaveRun(run); err != nil {
 		return err
 	}
-	if len(unmerged) == 0 {
-		return fmt.Errorf("stack rebase: git rebase in %s stopped without a conflict: %s", ws, strings.TrimSpace(stderr))
+	if code != 0 {
+		unmerged, err := stackUnmerged(ctx, ws)
+		if err != nil {
+			return err
+		}
+		if len(unmerged) == 0 {
+			return fmt.Errorf("stack rebase: git rebase in %s stopped without a conflict: %s", ws, strings.TrimSpace(stderr))
+		}
+		if err := stackAdvance(ctx, cmd, run, b); err != nil {
+			return err
+		}
 	}
-	return stackStopped(ctx, run, b, unmerged)
+	if b.NewHead, err = stackRevParse(ctx, render.Dir(ws), "HEAD"); err != nil {
+		return err
+	}
+	if err := stackSaveRun(run); err != nil {
+		return err
+	}
+	return stackCloseWorkspace(ctx, cmd, l, commonDir, run)
 }
 
-func stackStopped(ctx context.Context, run *stackRebaseRun, b *stackRebaseBranch, unmerged []string) error {
+// stackAdvance drives the workspace's rebase to its end. A stop whose conflicts
+// are all declared generated paths is regenerated and continued; any other stop,
+// or a generator that fails, is left to the human with its brief.
+func stackAdvance(ctx context.Context, cmd *cobra.Command, run *stackRebaseRun, b *stackRebaseBranch) error {
+	c := run.Conflict
+	ws := render.Dir(c.Workspace)
+	for stackRebasing(ctx, ws) {
+		unmerged, err := stackUnmerged(ctx, c.Workspace)
+		if err != nil {
+			return err
+		}
+		if len(unmerged) > 0 || len(c.Generated) > 0 {
+			gens, err := regenLoad(ctx, ws, "HEAD")
+			if err != nil && len(unmerged) > 0 {
+				c.Generated = nil
+				return stackStopped(ctx, run, b, unmerged, err.Error())
+			}
+			declared := regenDeclared(gens, unmerged)
+			pending := regenDeclared(gens, slices.Compact(slices.Sorted(slices.Values(slices.Concat(declared, c.Generated)))))
+			if len(declared) < len(unmerged) {
+				c.Generated = pending
+				return stackStopped(ctx, run, b, unmerged, "")
+			}
+			if len(pending) == 0 {
+				c.Generated = nil
+			} else if err := stackRegenerate(ctx, cmd, c.Workspace, gens, pending); err != nil {
+				c.Generated = pending
+				return stackStopped(ctx, run, b, unmerged, "stack rebase: regenerating "+strings.Join(pending, ", ")+" failed, and nothing was committed: "+err.Error())
+			}
+			c.Generated = nil
+			if err := stackSaveRun(run); err != nil {
+				return err
+			}
+		}
+		argv := append(slices.Clone(stackGitNoRerere), "rebase", "--continue")
+		_, code, stderr, err := render.RunCLIExitCode(ctx, ws, "git", argv)
+		if err != nil {
+			return fmt.Errorf("stack rebase: git rebase --continue in %s: %w", ws, err)
+		}
+		if code == 0 {
+			continue
+		}
+		if unmerged, err = stackUnmerged(ctx, c.Workspace); err != nil {
+			return err
+		}
+		if len(unmerged) == 0 {
+			return fmt.Errorf("stack rebase: git rebase --continue in %s failed: %s", ws, strings.TrimSpace(stderr))
+		}
+	}
+	return nil
+}
+
+func stackStopped(ctx context.Context, run *stackRebaseRun, b *stackRebaseBranch, unmerged []string, lead string) error {
 	brief := stackBrief(ctx, run, b, unmerged)
+	if lead != "" {
+		brief = lead + "\n" + brief
+	}
 	if err := os.WriteFile(run.Conflict.Brief, []byte(brief), 0o600); err != nil {
 		return fmt.Errorf("stack rebase: write the conflict brief: %w", err)
 	}
@@ -972,6 +1043,9 @@ func stackBrief(ctx context.Context, run *stackRebaseRun, b *stackRebaseBranch, 
 	s.WriteString("conflicted files:\n")
 	for _, f := range unmerged {
 		fmt.Fprintf(&s, "  %s\n", f)
+	}
+	if len(run.Conflict.Generated) > 0 {
+		fmt.Fprintf(&s, "generated, rerun from %s by continue: %s\n", regenFile, strings.Join(run.Conflict.Generated, ", "))
 	}
 	stackBriefIntent(&s, "this branch", b.Name, b.PR)
 	if parent := run.branch(b.Parent); parent != nil {
@@ -1033,25 +1107,15 @@ func stackResume(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	if err != nil {
 		return err
 	}
-	if len(unmerged) > 0 {
-		return fmt.Errorf("stack rebase: %s still has unresolved files: %s — resolve them and git add them first", c.Workspace, strings.Join(unmerged, ", "))
-	}
-	for stackRebasing(ctx, ws) {
-		argv := append(slices.Clone(stackGitNoRerere), "rebase", "--continue")
-		_, code, stderr, err := render.RunCLIExitCode(ctx, ws, "git", argv)
+	gens, err := regenLoad(ctx, ws, "HEAD")
+	if rest := slices.DeleteFunc(unmerged, func(p string) bool { return regenOwner(gens, p) != nil }); len(rest) > 0 {
 		if err != nil {
-			return fmt.Errorf("stack rebase: git rebase --continue in %s: %w", ws, err)
+			return fmt.Errorf("stack rebase: %s still has unresolved files: %s — resolve them and git add them first; nothing regenerates them: %w", c.Workspace, strings.Join(rest, ", "), err)
 		}
-		if code == 0 {
-			continue
-		}
-		if unmerged, err = stackUnmerged(ctx, c.Workspace); err != nil {
-			return err
-		}
-		if len(unmerged) == 0 {
-			return fmt.Errorf("stack rebase: git rebase --continue in %s failed: %s", ws, strings.TrimSpace(stderr))
-		}
-		return stackStopped(ctx, run, b, unmerged)
+		return fmt.Errorf("stack rebase: %s still has unresolved files: %s — resolve them and git add them first", c.Workspace, strings.Join(rest, ", "))
+	}
+	if err := stackAdvance(ctx, cmd, run, b); err != nil {
+		return err
 	}
 	head, err := stackRevParse(ctx, ws, "HEAD")
 	if err != nil {
