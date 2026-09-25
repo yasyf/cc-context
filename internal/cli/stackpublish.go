@@ -215,34 +215,12 @@ func stackRecordPublication(ctx context.Context, dir render.Dir, run *stackRebas
 		if receipt.SourceBase == "" {
 			return fmt.Errorf("stack publication: %s has no captured source base", b.Name)
 		}
-		payload, err := json.Marshal(receipt)
-		if err != nil {
-			return err
-		}
-		out, err := render.RunCLIStdin(ctx, dir, "git", []string{"hash-object", "-w", "--stdin"}, payload)
-		if err != nil {
-			return fmt.Errorf("stack publication: write %s receipt: %w", b.Name, err)
-		}
-		oid := strings.TrimSpace(out)
-		prior, err := stackReadPublication(ctx, dir, b.Name)
-		if err != nil {
-			return err
-		}
 		expected := ""
 		if b.Publication != nil {
 			expected = b.Publication.OID
 		}
-		ref := stackPublicationRef(b.Name, "receipt")
-		switch {
-		case prior != nil && prior.OID == oid:
-			fmt.Fprintf(&tx, "verify %s %s\n", ref, oid)
-		case expected == "":
-			fmt.Fprintf(&tx, "create %s %s\n", ref, oid)
-		default:
-			fmt.Fprintf(&tx, "update %s %s %s\n", ref, oid, expected)
-		}
-		for _, pin := range []struct{ name, oid string }{{"source", receipt.Source}, {"source-base", receipt.SourceBase}, {"head", receipt.Head}, {"base", receipt.Base}} {
-			fmt.Fprintf(&tx, "update %s %s\n", stackPublicationRef(b.Name, pin.name), pin.oid)
+		if err := stackReceiptTx(ctx, dir, &tx, receipt, expected); err != nil {
+			return err
 		}
 	}
 	tx.WriteString("commit\n")
@@ -251,6 +229,35 @@ func stackRecordPublication(ctx context.Context, dir render.Dir, run *stackRebas
 	}
 	run.Receipted = true
 	return stackSaveRun(run)
+}
+
+func stackReceiptTx(ctx context.Context, dir render.Dir, tx *strings.Builder, receipt stackPublication, expected string) error {
+	payload, err := json.Marshal(receipt)
+	if err != nil {
+		return err
+	}
+	out, err := render.RunCLIStdin(ctx, dir, "git", []string{"hash-object", "-w", "--stdin"}, payload)
+	if err != nil {
+		return fmt.Errorf("stack publication: write %s receipt: %w", receipt.Branch, err)
+	}
+	oid := strings.TrimSpace(out)
+	prior, err := stackReadPublication(ctx, dir, receipt.Branch)
+	if err != nil {
+		return err
+	}
+	ref := stackPublicationRef(receipt.Branch, "receipt")
+	switch {
+	case prior != nil && prior.OID == oid:
+		fmt.Fprintf(tx, "verify %s %s\n", ref, oid)
+	case expected == "":
+		fmt.Fprintf(tx, "create %s %s\n", ref, oid)
+	default:
+		fmt.Fprintf(tx, "update %s %s %s\n", ref, oid, expected)
+	}
+	for _, pin := range []struct{ name, oid string }{{"source", receipt.Source}, {"source-base", receipt.SourceBase}, {"head", receipt.Head}, {"base", receipt.Base}} {
+		fmt.Fprintf(tx, "update %s %s\n", stackPublicationRef(receipt.Branch, pin.name), pin.oid)
+	}
+	return nil
 }
 
 func stackRemoteMatchesPublication(ctx context.Context, dir render.Dir, remote string, targets []stackPublicationTarget) (bool, error) {

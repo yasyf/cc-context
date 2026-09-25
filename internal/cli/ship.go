@@ -389,18 +389,18 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	}
 
 	var preAmendSHA string
-	if !o.noPush && kind == vcs.Git && o.amend && !gtLane {
-		out, rerr := render.RunCLI(ctx, dir, "git", []string{"rev-parse", "HEAD"})
-		if rerr != nil {
-			return fmt.Errorf("ship: git rev-parse HEAD: %w", rerr)
+	if !o.noPush && o.amend && (gtLane || kind == vcs.Git) {
+		if preAmendSHA, err = gitRevParse(ctx, dir, "ship", "HEAD"); err != nil {
+			return err
 		}
-		preAmendSHA = strings.TrimSpace(out)
 	}
 
 	var hookSeg string
 	if !o.noCommit {
 		if gtLane {
-			hookSeg, err = shipCommitGT(ctx, l, cmd.ErrOrStderr(), o, sel, plan)
+			if hookSeg, err = shipCommitGT(ctx, l, cmd.ErrOrStderr(), o, sel, plan); err != nil && preAmendSHA != "" {
+				err = shipAmendKept(ctx, dir, preAmendSHA, err)
+			}
 		} else {
 			hookSeg, err = shipCommitLocal(ctx, cmd.ErrOrStderr(), dir, kind, o, sel, plan)
 		}
@@ -451,6 +451,9 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 				return err
 			}
 			if err := runStackRebase(cmd, stackRebaseOpts{members: gtBottomUp(chain), draft: o.draft, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent}); err != nil {
+				if preAmendSHA != "" && gtc.restack == nil {
+					return shipAmendKept(ctx, dir, preAmendSHA, err)
+				}
 				return err
 			}
 			gtc.forget()
@@ -1702,6 +1705,17 @@ func gitRemoteFor(ctx context.Context, dir render.Dir, prefix, branch string) (s
 	default:
 		return "", fmt.Errorf("%s: git config branch.%s.remote: exit %d: %s", prefix, branch, code, strings.TrimSpace(stderr))
 	}
+}
+
+func shipAmendKept(ctx context.Context, dir render.Dir, preAmendSHA string, err error) error {
+	head, headErr := gitRevParse(ctx, dir, "ship", "HEAD")
+	if headErr != nil {
+		return errors.Join(err, headErr)
+	}
+	if head == preAmendSHA {
+		return err
+	}
+	return fmt.Errorf("%w\nship: the amend stays committed as %s and unpublished — publish it with ccx vcs stack submit once that is resolved, or undo it with git reset --soft %s", err, shortOID(head), preAmendSHA)
 }
 
 // shipPushGitAmend pushes an amended commit without ever fetching. It tries a
