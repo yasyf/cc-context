@@ -129,14 +129,16 @@ func stackRegenerate(ctx context.Context, cmd *cobra.Command, ws string, gens []
 	if err != nil {
 		return err
 	}
-	var live []string
+	var live, deleted []string
 	for _, p := range paths {
-		kept, err := regenSettle(ctx, dir, p, slices.Contains(unmerged, p))
+		kept, err := regenSettle(ctx, dir, ws, p, slices.Contains(unmerged, p))
 		if err != nil {
 			return err
 		}
 		if kept {
 			live = append(live, p)
+		} else {
+			deleted = append(deleted, p)
 		}
 	}
 	ran := regenCovering(gens, live)
@@ -165,6 +167,9 @@ func stackRegenerate(ctx context.Context, cmd *cobra.Command, ws string, gens []
 	outputs := slices.Clone(live)
 	var stray []string
 	for _, p := range touched {
+		if slices.Contains(deleted, p) {
+			continue
+		}
 		if regenOwner(ran, p) == nil {
 			stray = append(stray, p)
 			continue
@@ -181,6 +186,16 @@ func stackRegenerate(ctx context.Context, cmd *cobra.Command, ws string, gens []
 			return err
 		}
 	}
+	for _, p := range deleted {
+		if err := os.Remove(filepath.Join(ws, p)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("stack rebase: remove deleted output %s: %w", p, err)
+		}
+	}
+	if len(deleted) > 0 {
+		if _, err := render.RunCLI(ctx, dir, "git", append([]string{"--literal-pathspecs", "rm", "-q", "-f", "--ignore-unmatch", "--"}, deleted...)); err != nil {
+			return fmt.Errorf("stack rebase: stage deleted outputs in %s: %w", ws, err)
+		}
+	}
 	if len(outputs) > 0 {
 		if _, err := render.RunCLI(ctx, dir, "git", append([]string{"--literal-pathspecs", "add", "-A", "--"}, outputs...)); err != nil {
 			return fmt.Errorf("stack rebase: stage the regenerated paths in %s: %w", ws, err)
@@ -191,13 +206,16 @@ func stackRegenerate(ctx context.Context, cmd *cobra.Command, ws string, gens []
 	} else if len(left) > 0 {
 		return fmt.Errorf("still conflicted after regenerating: %s", strings.Join(left, ", "))
 	}
+	for _, p := range deleted {
+		cmd.Println("deleted " + p + shipSep + "the replayed commit deletes it")
+	}
 	for _, p := range outputs {
 		cmd.Println("regenerated " + p + shipSep + regenOwner(ran, p).Run)
 	}
 	return nil
 }
 
-func regenSettle(ctx context.Context, dir render.Dir, path string, conflicted bool) (kept bool, err error) {
+func regenSettle(ctx context.Context, dir render.Dir, ws, path string, conflicted bool) (kept bool, err error) {
 	stages, err := render.RunCLI(ctx, dir, "git", []string{"--literal-pathspecs", "ls-files", "-s", "--", path})
 	if err != nil {
 		return false, fmt.Errorf("stack rebase: read the index stages of %s: %w", path, err)
@@ -213,7 +231,7 @@ func regenSettle(ctx context.Context, dir render.Dir, path string, conflicted bo
 			return true, nil
 		}
 	}
-	if _, err := render.RunCLI(ctx, dir, "git", []string{"--literal-pathspecs", "rm", "-q", "--", path}); err != nil {
+	if err := os.Remove(filepath.Join(ws, path)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, fmt.Errorf("stack rebase: drop %s, which the replayed commit deletes: %w", path, err)
 	}
 	return false, nil
