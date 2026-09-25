@@ -43,7 +43,7 @@ func parsePDF(ctx context.Context, data []byte) (string, error) {
 	if uv == "" {
 		return "", errors.New("web: pdf extraction requires uv on PATH (brew install uv)")
 	}
-	driver, err := pdfDriverPath()
+	driver, err := pdfDriverPath(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -101,8 +101,8 @@ func parsePDF(ctx context.Context, data []byte) (string, error) {
 // pdfDriverPath installs the embedded driver into the web cache dir,
 // content-addressed so a ccx upgrade never runs a stale driver. A cache hit is
 // trusted only after its bytes match the embedded source.
-func pdfDriverPath() (string, error) {
-	dir, err := cache.Dir("web")
+func pdfDriverPath(ctx context.Context) (string, error) {
+	dir, err := cache.DirFrom(ctx, "web")
 	if err != nil {
 		return "", err
 	}

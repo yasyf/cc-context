@@ -709,6 +709,7 @@ func TestRunOutlineDegenerateHint(t *testing.T) {
 }
 
 func TestRunSearchHybrid(t *testing.T) {
+	ctx := t.Context()
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	fake := &fakeEmbedder{}
@@ -736,7 +737,7 @@ func TestRunSearchHybrid(t *testing.T) {
 	}
 
 	// A first search persists the chunk vectors for reuse.
-	page, err := Load(fixtureURL, EmbedModelID)
+	page, err := Load(ctx, fixtureURL, EmbedModelID)
 	if err != nil || page == nil {
 		t.Fatalf("Load after search: page=%v err=%v", page, err)
 	}
@@ -805,6 +806,7 @@ func TestRunForceRefetch(t *testing.T) {
 }
 
 func TestRunNotModifiedPreservesVectors(t *testing.T) {
+	ctx := t.Context()
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	base := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
 	defer setClock(base)()
@@ -812,7 +814,7 @@ func TestRunNotModifiedPreservesVectors(t *testing.T) {
 	// A stale cached page carrying vectors; the refetch will 304.
 	prior := attachVectors(indexedPage(fixtureURL, fixtureMarkdown))
 	prior.FetchedAt = base.Add(-48 * time.Hour)
-	if err := Save(prior); err != nil {
+	if err := Save(ctx, prior); err != nil {
 		t.Fatalf("seed Save: %v", err)
 	}
 	wantVecs := len(prior.Vectors)
@@ -828,7 +830,7 @@ func TestRunNotModifiedPreservesVectors(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	got, err := Load(fixtureURL, EmbedModelID)
+	got, err := Load(ctx, fixtureURL, EmbedModelID)
 	if err != nil || got == nil {
 		t.Fatalf("Load: page=%v err=%v", got, err)
 	}
@@ -841,13 +843,14 @@ func TestRunNotModifiedPreservesVectors(t *testing.T) {
 }
 
 func TestRunContentUnchangedPreservesVectors(t *testing.T) {
+	ctx := t.Context()
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	base := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
 	defer setClock(base)()
 
 	prior := attachVectors(indexedPage(fixtureURL, fixtureMarkdown))
 	prior.FetchedAt = base.Add(-48 * time.Hour)
-	if err := Save(prior); err != nil {
+	if err := Save(ctx, prior); err != nil {
 		t.Fatalf("seed Save: %v", err)
 	}
 	wantVecs := len(prior.Vectors)
@@ -859,7 +862,7 @@ func TestRunContentUnchangedPreservesVectors(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	got, err := Load(fixtureURL, EmbedModelID)
+	got, err := Load(ctx, fixtureURL, EmbedModelID)
 	if err != nil || got == nil {
 		t.Fatalf("Load: page=%v err=%v", got, err)
 	}
@@ -869,13 +872,14 @@ func TestRunContentUnchangedPreservesVectors(t *testing.T) {
 }
 
 func TestRunContentChangedDropsVectors(t *testing.T) {
+	ctx := t.Context()
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	base := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
 	defer setClock(base)()
 
 	prior := attachVectors(indexedPage(fixtureURL, fixtureMarkdown))
 	prior.FetchedAt = base.Add(-48 * time.Hour)
-	if err := Save(prior); err != nil {
+	if err := Save(ctx, prior); err != nil {
 		t.Fatalf("seed Save: %v", err)
 	}
 
@@ -886,7 +890,7 @@ func TestRunContentChangedDropsVectors(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	got, err := Load(fixtureURL, "")
+	got, err := Load(ctx, fixtureURL, "")
 	if err != nil || got == nil {
 		t.Fatalf("Load: page=%v err=%v", got, err)
 	}
@@ -928,6 +932,7 @@ func TestRunPanicsOnNonWebOp(t *testing.T) {
 }
 
 func TestRunThinNoLaneServesNoteAllOps(t *testing.T) {
+	ctx := t.Context()
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	isolateKeys(t)
@@ -947,7 +952,7 @@ func TestRunThinNoLaneServesNoteAllOps(t *testing.T) {
 			t.Errorf("op %v output missing the thin note %q:\n%s", op, wantNote, out)
 		}
 	}
-	page, err := Load(fixtureURL, EmbedModelID)
+	page, err := Load(ctx, fixtureURL, EmbedModelID)
 	if err != nil || page == nil {
 		t.Fatalf("Load: page=%v err=%v", page, err)
 	}
@@ -957,6 +962,7 @@ func TestRunThinNoLaneServesNoteAllOps(t *testing.T) {
 }
 
 func TestRunThinEscalatesServesRendered(t *testing.T) {
+	ctx := t.Context()
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	isolateKeys(t)
@@ -977,13 +983,14 @@ func TestRunThinEscalatesServesRendered(t *testing.T) {
 	if strings.Contains(out, "static content") {
 		t.Errorf("a non-thin rendered page carried a thin note:\n%s", out)
 	}
-	page, _ := Load(fixtureURL, EmbedModelID)
+	page, _ := Load(ctx, fixtureURL, EmbedModelID)
 	if page == nil || page.Thin {
 		t.Errorf("page.Thin = %v, want false (rendered result is not thin)", page != nil && page.Thin)
 	}
 }
 
 func TestRunThinStillThinKeepsLargest(t *testing.T) {
+	ctx := t.Context()
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	isolateKeys(t)
@@ -1005,7 +1012,7 @@ func TestRunThinStillThinKeepsLargest(t *testing.T) {
 	if !strings.Contains(out, "may genuinely have little static content") {
 		t.Errorf("thin read missing the lane-available note:\n%s", out)
 	}
-	page, _ := Load(fixtureURL, EmbedModelID)
+	page, _ := Load(ctx, fixtureURL, EmbedModelID)
 	if page == nil || !page.Thin {
 		t.Errorf("page.Thin = %v, want true", page != nil && page.Thin)
 	}
@@ -1059,6 +1066,7 @@ func TestRunNotThinNeverCallsRenderPage(t *testing.T) {
 }
 
 func TestRunThinReEscalatesOn304(t *testing.T) {
+	ctx := t.Context()
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	isolateKeys(t)
@@ -1069,7 +1077,7 @@ func TestRunThinReEscalatesOn304(t *testing.T) {
 	prior := samplePage(fixtureURL, 1, 0, EmbedModelID)
 	prior.Thin = true
 	prior.FetchedAt = timeNow().Add(-48 * time.Hour)
-	if err := Save(prior); err != nil {
+	if err := Save(ctx, prior); err != nil {
 		t.Fatalf("seed Save: %v", err)
 	}
 
@@ -1094,7 +1102,7 @@ func TestRunThinReEscalatesOn304(t *testing.T) {
 	if strings.Contains(out, "static content") {
 		t.Errorf("re-escalated page still carries a thin note:\n%s", out)
 	}
-	page, _ := Load(fixtureURL, EmbedModelID)
+	page, _ := Load(ctx, fixtureURL, EmbedModelID)
 	if page == nil || page.Thin {
 		t.Errorf("page.Thin = %v, want false after 304 re-escalation", page != nil && page.Thin)
 	}
@@ -1104,11 +1112,12 @@ func TestRunThinReEscalatesOn304(t *testing.T) {
 }
 
 func TestThinNoteLocalTargetNamesAgentBrowser(t *testing.T) {
+	ctx := t.Context()
 	isolateKeys(t)
 	t.Setenv(envJinaKey, "jina-key") // a hosted key is set but cannot reach a local target
 	disableAgentBrowser(t)
 
-	note := thinNote(&Page{URL: "http://localhost:3000/app", Thin: true})
+	note := thinNote(ctx, &Page{URL: "http://localhost:3000/app", Thin: true})
 	if !strings.Contains(note, "install agent-browser") {
 		t.Errorf("local thin note = %q, want it to name agent-browser install", note)
 	}

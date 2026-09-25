@@ -11,13 +11,13 @@ import (
 	"mime"
 	"net"
 	"net/http"
-	"os"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/version"
 )
 
@@ -218,17 +218,17 @@ func (t *tiers) refuseLocalRedirect(req *http.Request, via []*http.Request) erro
 
 // jina fetches targetURL through the r.jina.ai reader, returning markdown. It
 // requests the JSON envelope so a target failure carried as an HTTP-200 body
-// warning (the "200-trap") is caught instead of cached. When render is set it
+// warning (the "200-trap") is caught instead of cached. When renderJS is set it
 // forces headless-browser rendering (X-Engine) with a mutation-idle wait and
 // pulls the full link summary, the thin-content escalation's first lane; the
 // link summary rides on FetchResult.Links for renderFetch to append after
 // thinness is classified.
-func (t *tiers) jina(ctx context.Context, targetURL string, render bool) (FetchResult, error) {
+func (t *tiers) jina(ctx context.Context, targetURL string, renderJS bool) (FetchResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, jinaTimeout)
 	defer cancel()
 
 	tier := TierJina
-	if render {
+	if renderJS {
 		tier = TierJinaRender
 	}
 
@@ -238,13 +238,13 @@ func (t *tiers) jina(ctx context.Context, targetURL string, render bool) (FetchR
 	}
 	req.Header.Set("X-Respond-With", "markdown")
 	req.Header.Set("Accept", "application/json")
-	if render {
+	if renderJS {
 		req.Header.Set("X-Engine", "browser")
 		req.Header.Set("X-Respond-Timing", "mutation-idle")
 		req.Header.Set("X-No-Cache", "true")
 		req.Header.Set("X-With-Links-Summary", "all")
 	}
-	if key := os.Getenv(envJinaKey); key != "" {
+	if key := render.Getenv(ctx, envJinaKey); key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
 
@@ -302,7 +302,7 @@ func (t *tiers) jina(ctx context.Context, targetURL string, render bool) (FetchR
 	res := FetchResult{Tier: tier, FinalURL: final, Title: env.Data.Title, Markdown: env.Data.Content}
 	// Carry the link summary unrendered: renderFetch classifies thinness on the
 	// content alone, then appends the ## Links section to the winning body.
-	if render {
+	if renderJS {
 		res.Links = env.Data.Links
 	}
 	return res, nil
@@ -390,15 +390,15 @@ func (t *tiers) exa(ctx context.Context, targetURL, key string) (FetchResult, er
 
 // firecrawl fetches targetURL through Firecrawl's /v2/scrape endpoint, returning
 // markdown. The target's own status rides in data.metadata.statusCode, so a
-// service-level 200 can still report a gone target. When render is set it waits
+// service-level 200 can still report a gone target. When renderJS is set it waits
 // firecrawlRenderWaitMS for client-side scripts to paint, the thin-content
 // escalation's second lane.
-func (t *tiers) firecrawl(ctx context.Context, targetURL, key string, render bool) (FetchResult, error) {
+func (t *tiers) firecrawl(ctx context.Context, targetURL, key string, renderJS bool) (FetchResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, firecrawlTimeout)
 	defer cancel()
 
 	tier := TierFirecrawl
-	if render {
+	if renderJS {
 		tier = TierFirecrawlRender
 	}
 
@@ -408,7 +408,7 @@ func (t *tiers) firecrawl(ctx context.Context, targetURL, key string, render boo
 		OnlyMainContent bool     `json:"onlyMainContent"`
 		WaitFor         int      `json:"waitFor,omitempty"`
 	}{URL: targetURL, Formats: []string{"markdown"}, OnlyMainContent: true}
-	if render {
+	if renderJS {
 		reqBody.WaitFor = firecrawlRenderWaitMS
 	}
 
