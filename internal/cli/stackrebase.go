@@ -361,7 +361,8 @@ func stackMembers(state gtState, trunk string, seeds []string) ([]string, error)
 }
 
 func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branches []string) (map[string]string, error) {
-	argv := []string{"ls-remote", remote}
+	argv := make([]string, 0, 2+len(branches))
+	argv = append(argv, "ls-remote", remote)
 	for _, b := range branches {
 		argv = append(argv, gtRestackRef(b))
 	}
@@ -527,7 +528,8 @@ func stackOwnWork(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string,
 }
 
 func stackPlanLines(run *stackRebaseRun) []string {
-	lines := []string{fmt.Sprintf("plan · trunk %s@%.12s", run.Trunk, run.Pin)}
+	lines := make([]string, 0, 1+len(run.Branches))
+	lines = append(lines, fmt.Sprintf("plan · trunk %s@%.12s", run.Trunk, run.Pin))
 	for _, b := range run.Branches {
 		fields := []string{b.Name}
 		if b.Landed != "" {
@@ -941,7 +943,7 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	if trunkPin, err := gtTrunkPin(ctx, prefix, l.checkout, l.dir(), tr, state[run.Trunk].Head); err != nil {
 		return errors.Join(err, alignErr)
 	} else if trunkPin.diverged > 0 {
-		fmt.Fprintf(errW, "%s: warning: local %s holds %d commit(s) %s does not; the stack sits on %s, not on them\n", prefix, run.Trunk, trunkPin.diverged, tr.Ref(), tr.Ref())
+		_, _ = fmt.Fprintf(errW, "%s: warning: local %s holds %d commit(s) %s does not; the stack sits on %s, not on them\n", prefix, run.Trunk, trunkPin.diverged, tr.Ref(), tr.Ref())
 	}
 	summary := []string{fmt.Sprintf("rebased %s onto %s@%.12s", gtBranchCount(len(movers)), run.Trunk, run.Pin)}
 	if len(dropped) > 0 {
@@ -1081,7 +1083,8 @@ func stackSaveRun(commonDir string, run *stackRebaseRun) error {
 }
 
 func stackQueryPRs(ctx context.Context, dir render.Dir, trunk string, branches []string) (map[string]*stackPR, error) {
-	argv := []string{"api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}"}
+	argv := make([]string, 0, 8+2*len(branches))
+	argv = append(argv, "api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}")
 	for i, branch := range branches {
 		argv = append(argv, "-f", downstackPRAlias(i)+"="+branch)
 	}
@@ -1146,7 +1149,8 @@ func stackQueryPRs(ctx context.Context, dir render.Dir, trunk string, branches [
 }
 
 func stackPRQuery(n int) string {
-	decls := []string{"$owner: String!", "$repo: String!"}
+	decls := make([]string, 0, 2+n)
+	decls = append(decls, "$owner: String!", "$repo: String!")
 	var fields strings.Builder
 	for i := range n {
 		alias := downstackPRAlias(i)
