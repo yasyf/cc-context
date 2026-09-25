@@ -1816,39 +1816,6 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	if alignErr != nil {
 		return alignErr
 	}
-	var entries map[string]stackEntry
-	if !run.NoPush && !run.deferPush {
-		state, err := gtStateAt(ctx, commonDir, prefix)
-		if err != nil {
-			return err
-		}
-		if err := stackCheckPublishedHeads(state, run); err != nil {
-			return err
-		}
-		leases, err = stackPublishLeases(ctx, commonDir, run)
-		if err != nil {
-			return err
-		}
-		sub := gtSubmit{prefix: prefix, suffix: " — the local stack is rewritten; reconcile the remote, then run ccx vcs stack continue", leases: leases, trunkHead: run.Pin, draft: run.Draft, noVerify: run.NoVerify}
-		commits, files, err := gtSubmitWidth(ctx, prefix, l.dir(), run.Pin, live)
-		if err != nil {
-			return err
-		}
-		submitted, submittedEntries, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, live, "")
-		if err != nil {
-			return err
-		}
-		entries = submittedEntries
-		cmd.Println(fmt.Sprintf("submitted %d branches%sproposing %d commit(s), %d file(s)", len(submitted), shipSep, commits, files))
-	}
-	if run.deferPush {
-		return nil
-	}
-	if run.Ship != nil && !run.NoPush {
-		if err := stackFinishShip(ctx, cmd, l, run, entries); err != nil {
-			return err
-		}
-	}
 	if err := stackClearRun(commonDir, run); err != nil {
 		return fmt.Errorf("%s: clear the run state: %w", prefix, err)
 	}

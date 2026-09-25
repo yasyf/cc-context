@@ -566,7 +566,7 @@ func gtReplayable(ctx context.Context, dir render.Dir, state gtState, parent str
 	if _, tracked := state[parent]; !tracked {
 		return false, nil
 	}
-	return gitRefExists(ctx, dir, gtRestackRef(parent))
+	return gitRefExists(ctx, dir, "ship", gtRestackRef(parent))
 }
 
 // gtReparentRefusal is every refusal moving a tracked branch onto parent can
