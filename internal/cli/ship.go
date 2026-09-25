@@ -1585,11 +1585,18 @@ func shipPushGit(ctx context.Context, dir render.Dir, o shipOpts, branch, preAme
 	return remote, rebased, err
 }
 
+// pushArgv opens every push ccx runs. Following tags makes git resolve every
+// remote branch tip, and in a partial clone each tip it lacks is a lazy fetch
+// of that tip's whole commit and tree history.
+func pushArgv(args ...string) []string {
+	return append([]string{"push", "--no-follow-tags"}, args...)
+}
+
 // gitPushArgv builds a push argv, carrying the run's hook decision to the
 // pre-push hook a push of its own would otherwise run — the same suite the
 // commit already skipped, over the same files.
 func gitPushArgv(noVerify bool, args ...string) []string {
-	argv := []string{"push"}
+	argv := pushArgv()
 	if noVerify {
 		argv = append(argv, "--no-verify")
 	}

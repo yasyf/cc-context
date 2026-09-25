@@ -194,7 +194,7 @@ func TestShipCommitPushWatch(t *testing.T) {
 					{"git", "fetch", "origin"},
 					{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
 					{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
-					{"git", "push", "origin", "main"},
+					{"git", "push", "--no-follow-tags", "origin", "main"},
 					{"git", "rev-parse", "HEAD"},
 					ghRunListArgvFor(sha),
 					ghRunWatchArgv,
@@ -1486,7 +1486,7 @@ func TestShipGitUsesPostCommitBranch(t *testing.T) {
 		{"git", "config", "--get", "branch.other.remote"},
 		{"git", "fetch", "origin"},
 		{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/other"},
-		{"git", "push", "origin", "other"},
+		{"git", "push", "--no-follow-tags", "origin", "other"},
 	})
 }
 
@@ -1631,7 +1631,7 @@ func TestShipGitAmendFastForwardPush(t *testing.T) {
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"git", "config", "--get", "branch.main.remote"},
-		{"git", "push", "origin", "main"},
+		{"git", "push", "--no-follow-tags", "origin", "main"},
 	})
 	// An amend of an unpushed commit fast-forwards: a plain push lands with no
 	// force at all, and the lane must never fetch (a fetch would refresh the lease).
@@ -1681,7 +1681,7 @@ func TestShipGitRebase(t *testing.T) {
 				[]string{"git", "fetch", "origin"},
 				[]string{"git", "rev-parse", "--verify", "--quiet", remoteRef},
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
-				[]string{"git", "push", "origin", "main"}),
+				[]string{"git", "push", "--no-follow-tags", "origin", "main"}),
 		},
 		{
 			name: "diverged rebases then pushes",
@@ -1699,7 +1699,7 @@ func TestShipGitRebase(t *testing.T) {
 				[]string{"git", "rev-list", "--count", remoteRef + "..HEAD"},
 				[]string{"git", "diff", "--name-only", "HEAD"},
 				[]string{"git", "rebase", remoteRef},
-				[]string{"git", "push", "origin", "main"},
+				[]string{"git", "push", "--no-follow-tags", "origin", "main"},
 				[]string{"git", "log", "-1", "--format=%h%x00%s"}),
 		},
 		{
@@ -1737,7 +1737,7 @@ func TestShipGitRebase(t *testing.T) {
 				{"git", "config", "--get", "branch.feature.remote"},
 				{"git", "fetch", "origin"},
 				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/feature"},
-				{"git", "push", "--no-verify", "origin", "feature"},
+				{"git", "push", "--no-follow-tags", "--no-verify", "origin", "feature"},
 			},
 		},
 		{
@@ -1753,7 +1753,7 @@ func TestShipGitRebase(t *testing.T) {
 				[]string{"git", "fetch", "backup"},
 				[]string{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/backup/main"},
 				[]string{"git", "merge-base", "--is-ancestor", "refs/remotes/backup/main", "HEAD"},
-				[]string{"git", "push", "backup", "main"}),
+				[]string{"git", "push", "--no-follow-tags", "backup", "main"}),
 		},
 		{
 			// A crashed rebase left its state directory behind, so this one exits
@@ -1873,6 +1873,45 @@ func TestShipGitRebaseNamesWorkItCannotPutBack(t *testing.T) {
 	}
 }
 
+// TestPushArgvLeavesUnseenRemoteTipsUnfetched pushes from a blob:none partial
+// clone that follows tags by config while origin carries a branch tip the
+// clone never fetched. A push that resolves that tip lazily fetches its whole
+// history, one fetch per unseen branch.
+func TestPushArgvLeavesUnseenRemoteTipsUnfetched(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	seed := filepath.Join(root, "seed")
+	clone := filepath.Join(root, "clone")
+	env := []string{"GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_CONFIG_NOSYSTEM=1"}
+	commit := func(dir, msg string) {
+		writeShipFile(t, dir, "f.txt", msg+"\n")
+		mustRun(t, env, dir, "git", "add", "f.txt")
+		mustRun(t, env, dir, "git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", msg)
+	}
+	mustRun(t, env, root, "git", "init", "-q", "--bare", "--initial-branch=main", origin)
+	mustRun(t, env, origin, "git", "config", "uploadpack.allowFilter", "true")
+	mustRun(t, env, root, "git", "init", "-q", "--initial-branch=main", seed)
+	commit(seed, "base")
+	mustRun(t, env, seed, "git", "push", "-q", origin, "main")
+	mustRun(t, env, root, "git", "clone", "-q", "--filter=blob:none", "file://"+origin, clone)
+	mustRun(t, env, clone, "git", "config", "push.followTags", "true")
+	mustRun(t, env, seed, "git", "switch", "-qc", "other")
+	commit(seed, "unseen")
+	mustRun(t, env, seed, "git", "push", "-q", origin, "other")
+	unseen := gitAt(t, env, seed, "rev-parse", "HEAD")
+	commit(clone, "mine")
+
+	mustRun(t, env, clone, "git", pushArgv("-q", "origin", "main")...)
+
+	check := exec.Command("git", "cat-file", "-e", unseen) //nolint:gosec // fixed argv over a sha the test made
+	check.Dir = clone
+	check.Env = append(os.Environ(), append(env, "GIT_NO_LAZY_FETCH=1")...)
+	if check.Run() == nil {
+		t.Errorf("push fetched %s, a remote tip it never needed", unseen)
+	}
+}
+
 // TestShipGitPushRetry covers the git lane against a remote that advances
 // mid-ship: a rejected push re-fetches, rebases onto the tip that beat it, and
 // pushes again, while a hook decline, a conflicting replay, and an amend are
@@ -1892,7 +1931,7 @@ func TestShipGitPushRetry(t *testing.T) {
 		{"git", "fetch", "origin"},
 		{"git", "rev-parse", "--verify", "--quiet", remoteRef},
 		{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
-		{"git", "push", "origin", "main"},
+		{"git", "push", "--no-follow-tags", "origin", "main"},
 	}
 	rebasingAttempt := [][]string{
 		{"git", "fetch", "origin"},
@@ -1901,7 +1940,7 @@ func TestShipGitPushRetry(t *testing.T) {
 		{"git", "rev-list", "--count", remoteRef + "..HEAD"},
 		{"git", "diff", "--name-only", "HEAD"},
 		{"git", "rebase", remoteRef},
-		{"git", "push", "origin", "main"},
+		{"git", "push", "--no-follow-tags", "origin", "main"},
 	}
 	describe := []string{"git", "log", "-1", "--format=%h%x00%s"}
 	tests := []struct {
@@ -1973,7 +2012,7 @@ func TestShipGitPushRetry(t *testing.T) {
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.main.remote"},
-				{"git", "push", "origin", "main"},
+				{"git", "push", "--no-follow-tags", "origin", "main"},
 			},
 			wantErr: []string{"built on the commit you amended"},
 		},
@@ -2007,7 +2046,7 @@ func TestShipGitPushRetry(t *testing.T) {
 			got, err := runShipCmd(f.Context(), t, append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)...)
 			want := tt.want
 			if tt.lease {
-				want = append(want, []string{"git", "push", "origin", "--force-with-lease=main:" + before, "main"})
+				want = append(want, []string{"git", "push", "--no-follow-tags", "origin", "--force-with-lease=main:" + before, "main"})
 			}
 			assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), want)
 			if n := remoteCount(t, f, "main"); n != tt.remoteCount {
@@ -5636,7 +5675,7 @@ func TestShipGTSubmitsOneEntryPerPost(t *testing.T) {
 		}
 	}
 	want := [][]string{{
-		"git", "push", "origin",
+		"git", "push", "--no-follow-tags", "origin",
 		"--force-with-lease", "--force-with-lease", "--force-with-lease",
 		"--progress",
 		"beadfeed:refs/heads/base", "cafebabe:refs/heads/feature", vcstest.GraphiteLeafSHA + ":refs/heads/feature2",

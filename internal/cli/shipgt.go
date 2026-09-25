@@ -1155,7 +1155,7 @@ func gtStripSessionTrailer(body string) string {
 // rides along: without --no-verify a repository's pre-push hook runs the suite
 // the commit was told to skip.
 func gtPushArgv(s gtSubmit, plan []gtSubmitBranch) []string {
-	argv := []string{"push", "origin"}
+	argv := pushArgv("origin")
 	for _, b := range plan {
 		lease := "--force-with-lease"
 		if b.lease != "" || b.leaseSet {

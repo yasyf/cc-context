@@ -330,7 +330,7 @@ func gtLeasedHead(branch, sha, lease string) gtPushRef {
 // every branch's lease, then every branch's refspec, plus the gt lane's default
 // --no-verify.
 func gtPushInv(refs ...gtPushRef) []string {
-	argv := []string{"git", "push", "origin"}
+	argv := []string{"git", "push", "--no-follow-tags", "origin"}
 	for _, ref := range refs {
 		lease := "--force-with-lease"
 		if ref.lease != "" {
