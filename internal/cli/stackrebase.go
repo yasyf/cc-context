@@ -573,18 +573,40 @@ func stackRemoteIsOurs(ctx context.Context, dir render.Dir, remote, submitted, p
 	if remote == submitted {
 		return true, nil
 	}
-	for _, pair := range [][2]string{{submitted, remote}, {remote, submitted}} {
-		out, err := render.RunCLI(ctx, dir, "git", []string{"cherry", pair[0], pair[1], pin})
-		if err != nil {
-			return false, fmt.Errorf("%s: git cherry %s %s %s: %w", stackRebasePrefix, pair[0], pair[1], pin, err)
-		}
-		for line := range strings.Lines(out) {
-			if strings.HasPrefix(line, "+ ") {
-				return false, nil
-			}
-		}
+	theirs, err := stackPatchSeries(ctx, dir, pin, remote)
+	if err != nil {
+		return false, err
 	}
-	return true, nil
+	ours, err := stackPatchSeries(ctx, dir, pin, submitted)
+	if err != nil {
+		return false, err
+	}
+	return theirs != nil && ours != nil && slices.Equal(theirs, ours), nil
+}
+
+func stackPatchSeries(ctx context.Context, dir render.Dir, pin, head string) ([]string, error) {
+	span := pin + ".." + head
+	merges, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", "--merges", span})
+	if err != nil {
+		return nil, fmt.Errorf("%s: git rev-list --merges %s: %w", stackRebasePrefix, span, err)
+	}
+	if strings.TrimSpace(merges) != "" {
+		return nil, nil
+	}
+	patches, err := render.RunCLI(ctx, dir, "git", []string{"log", "--reverse", "--no-merges", "--format=commit %H", "-p", span})
+	if err != nil {
+		return nil, fmt.Errorf("%s: git log -p %s: %w", stackRebasePrefix, span, err)
+	}
+	ids, err := render.RunCLIStdin(ctx, dir, "git", []string{"patch-id", "--stable"}, []byte(patches))
+	if err != nil {
+		return nil, fmt.Errorf("%s: git patch-id %s: %w", stackRebasePrefix, span, err)
+	}
+	series := []string{}
+	for line := range strings.Lines(ids) {
+		id, _, _ := strings.Cut(line, " ")
+		series = append(series, id)
+	}
+	return series, nil
 }
 
 func stackOrder(trunk string, byName map[string]*stackRebaseBranch) ([]string, error) {
@@ -1532,7 +1554,7 @@ func stackPublishLeases(ctx context.Context, commonDir string, run *stackRebaseR
 	leases := map[string]string{}
 	for _, b := range run.Branches {
 		lease := b.Remote
-		if last[b.Name].HeadSha == b.NewHead {
+		if last[b.Name].HeadSha == b.NewHead && b.NewHead != b.Local {
 			lease = b.NewHead
 		}
 		leases[b.Name] = lease
