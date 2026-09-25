@@ -275,7 +275,7 @@ func stackWriteSparse(ctx context.Context, dir render.Dir, sparse stackSparse, h
 
 func stackInstallSparseIndex(ctx context.Context, dir render.Dir, privateIndex, index string) (err error) {
 	lockPath := index + ".lock"
-	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // lockPath is the new child's Git index lock
 	if err != nil {
 		return fmt.Errorf("stack new: acquire new child index lock: %w", err)
 	}
