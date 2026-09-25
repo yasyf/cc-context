@@ -69,6 +69,32 @@ func TestVcsPushFastForward(t *testing.T) {
 	}
 }
 
+// TestVcsPushIgnoresConfiguredRefspec pins the push to the commit it graded and
+// the branch it graded it against: a configured remote.<name>.push would
+// otherwise redirect a bare branch argument at another ref, with a force this
+// run never decided on.
+func TestVcsPushIgnoresConfiguredRefspec(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main:victim")
+	mustRun(t, f.Env(), f.Dir, "git", "config", "remote.origin.push", "+refs/heads/main:refs/heads/victim")
+	victim := pushCommit(t, f, "v.txt", "v\n", "test: 🧪 victim")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "--force", "origin", "HEAD:victim")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", "HEAD~1")
+	head := pushCommit(t, f, "a.txt", "a\n", "test: 🧪 a")
+	shipResetLog(t, f)
+
+	if _, err := runVcsPushCmd(f.Context(), t); err != nil {
+		t.Fatalf("push error = %v", err)
+	}
+	if remote := shipRemoteTip(t, f, "origin", "main"); remote != head {
+		t.Errorf("origin main = %s, want %s", remote, head)
+	}
+	if remote := shipRemoteTip(t, f, "origin", "victim"); remote != victim {
+		t.Errorf("origin victim = %s, want the untouched %s", remote, victim)
+	}
+}
+
 func TestVcsPushCreatesRemoteBranch(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote())
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feat")
@@ -136,7 +162,7 @@ func TestVcsPushRewriteLeasesTheHeadItGraded(t *testing.T) {
 	if remote := shipRemoteTip(t, f, "origin", "feat"); remote != head {
 		t.Errorf("origin feat = %s, want %s", remote, head)
 	}
-	lease := "--force-with-lease=feat:" + tip
+	lease := "--force-with-lease=refs/heads/feat:" + tip
 	leased := false
 	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
 		for _, arg := range inv {

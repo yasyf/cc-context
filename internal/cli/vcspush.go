@@ -90,13 +90,15 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch string, noVe
 	if err != nil {
 		return "", err
 	}
+	ref := "refs/heads/" + branch
+	refspec := head + ":" + ref
 	remoteRef := "refs/remotes/" + remote + "/" + branch
 	present, err := gitRefExists(ctx, dir, "push", remoteRef)
 	if err != nil {
 		return "", err
 	}
 	if !present {
-		if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, branch)); err != nil {
+		if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, refspec)); err != nil {
 			return "", fmt.Errorf("push: git push: %w", err)
 		}
 		return fmt.Sprintf("pushed %s → %s · created %s/%s at %s", branch, remote, remote, branch, shortOID(head)), nil
@@ -113,7 +115,7 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch string, noVe
 		return "", err
 	}
 	if ancestor {
-		if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, branch)); err != nil {
+		if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, refspec)); err != nil {
 			return "", fmt.Errorf("push: git push: %w", err)
 		}
 		return fmt.Sprintf("pushed %s → %s · %s..%s", branch, remote, shortOID(tip), shortOID(head)), nil
@@ -130,8 +132,8 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch string, noVe
 		return "", fmt.Errorf("push: %s/%s carries %d commit(s) %s has never held, so this is a divergence, not a rewrite, and the force would drop them:\n%s\nfetch and reconcile first: git fetch %s && git rebase %s/%s",
 			remote, branch, len(unheld), branch, strings.Join(unheld, "\n"), remote, remote, branch)
 	}
-	lease := fmt.Sprintf("--force-with-lease=%s:%s", branch, tip)
-	if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, lease, branch)); err != nil {
+	lease := fmt.Sprintf("--force-with-lease=%s:%s", ref, tip)
+	if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, lease, refspec)); err != nil {
 		if gitPushStaleLease(err) || gitPushRejected(err) {
 			return "", fmt.Errorf("push: %s/%s moved off %s after this run graded it — someone pushed mid-run; fetch and reconcile before moving it again: %w", remote, branch, shortOID(tip), err)
 		}
