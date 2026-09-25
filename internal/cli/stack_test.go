@@ -741,3 +741,50 @@ func TestStackSubmitIncludesANamedLane(t *testing.T) {
 		t.Errorf("submit posts = %v, want base then feature", heads)
 	}
 }
+
+func stackCommit(t *testing.T, f *vcstest.Fixture, file string) {
+	t.Helper()
+	writeShipFile(t, f.Dir, file, file+"\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", file)
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", file)
+}
+
+func TestStackSubmitLeasesOnAHeadThisRepositoryPushed(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("first stack submit: %v", err)
+	}
+	stackCommit(t, f, "pushed.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
+	stackCommit(t, f, "local.txt")
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"), gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != want {
+		t.Errorf("remote base = %s, want the local head %s", got, want)
+	}
+}
+
+func TestStackSubmitRefusesAPushFromElsewhere(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("first stack submit: %v", err)
+	}
+	restackAdvanceRemote(t, f, "base", "foreign.txt", "foreign\n")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "base")
+	foreign := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	stackCommit(t, f, "local.txt")
+	shipResetLog(t, f)
+
+	_, _, err := runStackCmd(t, f, "submit")
+	if err == nil || !strings.Contains(err.Error(), "remote base changed since last submit, by a push this repository did not make") {
+		t.Fatalf("stack submit = %v, want the foreign push refused", err)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != foreign {
+		t.Errorf("remote base = %s, want the foreign head %s kept", got, foreign)
+	}
+}

@@ -4928,6 +4928,8 @@ func TestShipGTRestacksAStackSpreadAcrossWorkingCopies(t *testing.T) {
 func TestShipGTRestackAppliesPrintedRefUpdates(t *testing.T) {
 	f := shipGTRepo(t)
 	held := shipGTHeldParent(t, f)
+	before := gitAt(t, f.Env(), held, "rev-parse", "HEAD")
+	mustRun(t, f.Env(), held, "git", "switch", "--detach", "-q")
 	mustRun(t, f.Env(), f.Dir, "git", "config", "replay.refAction", "print")
 	shipResetLog(t, f)
 
@@ -4935,7 +4937,7 @@ func TestShipGTRestackAppliesPrintedRefUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · restacked 2 branches across 2 working copies · not pushed"; got != want {
+	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · restacked 2 branches · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	for _, pair := range [][2]string{{"base", "main"}, {"feature", "base"}} {
@@ -4943,7 +4945,7 @@ func TestShipGTRestackAppliesPrintedRefUpdates(t *testing.T) {
 			t.Errorf("%s sits off %s by %s commit(s) — the printed ref updates were not applied", pair[0], pair[1], behind)
 		}
 	}
-	if head, want := gitAt(t, f.Env(), held, "rev-parse", "HEAD"), gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); head != want {
+	if head, want := gitAt(t, f.Env(), held, "rev-parse", "HEAD"), before; head != want {
 		t.Errorf("held HEAD = %s, want the restacked base %s", head, want)
 	}
 }
@@ -5476,7 +5478,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		t.Setenv("GIT_LEASE_STALE", "1")
 
 		_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate")
-		want := submitAdvice("remote feature changed since last submit — reconcile manually (gt sync)")
+		want := submitAdvice("remote feature changed since last submit, by a push this repository did not make — fetch it and fold in what it added, then submit again")
 		if err == nil || err.Error() != want {
 			t.Fatalf("error = %v, want %q", err, want)
 		}

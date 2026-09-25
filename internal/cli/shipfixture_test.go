@@ -902,10 +902,11 @@ exit 0
     if [ -n "$GIT_AUTOSTASH_WARN" ]; then printf 'Created autostash: 54f649e\nYour local changes are stashed, however applying them\nresulted in conflicts.  You can either resolve the conflicts\nand then discard the stash with "git stash drop".\nSuccessfully rebased and updated refs/heads/main.\n' >&2; fi ;;
   "rebase --abort") : ;;
   "diff --name-only") printf 'f.txt\n' ;;
+  "reflog show") printf 'cafecafecafecafecafecafecafecafecafecafe fetch: fast-forward\n' ;;
   "push"*)
     case "$*" in
       *--force-with-lease=*)
-        if [ -n "$GIT_LEASE_STALE" ]; then printf '! [rejected] main -> main (stale info)\nerror: failed to push some refs\n' >&2; exit 1; fi ;;
+        if [ -n "$GIT_LEASE_STALE" ]; then printf '! [rejected] feature -> feature (stale info)\nerror: failed to push some refs\n' >&2; exit 1; fi ;;
       *)
         if [ -n "$GIT_PUSH_FAIL_STDERR" ]; then printf '%s\n' "$GIT_PUSH_FAIL_STDERR" >&2; exit 1; fi
         if [ -n "$GIT_AMEND_PLAIN_NONFF" ]; then printf '! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs\n' >&2; exit 1; fi
