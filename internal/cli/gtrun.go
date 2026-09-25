@@ -312,14 +312,13 @@ func (e *gtAdvice) Unwrap() error { return e.cause }
 // argv reaches gt exactly as given — the runner adds no flag of its own, and no
 // caller may add -q or --debug. -q is the tempting one, because it does silence
 // the NUX tips Diagnostics has to gate against; measured against gt 1.8.6 on an
-// otherwise identical run, it also empties stdout, taking with it the
-// "Did not restack branch <b> because it is checked out in worktree <w>." that
-// gtSyncSkipped reads — a silent loss traded for a visible one. --debug prepends
-// thousands of bytes of JSON log records to stdout, ahead of both the payload a
-// parser reads and the lines a classifier matches. extraEnv extends the child's
-// environment for a verb that needs an env-only variable (gt shells out to git,
-// which honors GIT_INDEX_FILE); it is variadic so policy stays a required
-// positional and the ordinary call spells no env.
+// otherwise identical run, it also empties stdout, taking with it every line gt
+// names a declined branch on — a silent loss traded for a visible one. --debug
+// prepends thousands of bytes of JSON log records to stdout, ahead of both the
+// payload a parser reads and the lines a classifier matches. extraEnv extends
+// the child's environment for a verb that needs an env-only variable (gt shells
+// out to git, which honors GIT_INDEX_FILE); it is variadic so policy stays a
+// required positional and the ordinary call spells no env.
 func gtRun(ctx context.Context, dir render.Dir, argv []string, policy gtZeroPolicy, errW io.Writer, extraEnv ...string) (gtResult, error) {
 	var out, errBuf bytes.Buffer
 	outW, stderrW := io.Writer(&out), io.Writer(&errBuf)

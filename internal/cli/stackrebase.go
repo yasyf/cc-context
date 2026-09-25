@@ -961,7 +961,7 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 		if err != nil {
 			return err
 		}
-		sub := gtSubmit{prefix: prefix, suffix: " — the local stack is rewritten; reconcile the remote, then run ccx vcs stack continue", leases: leases}
+		sub := gtSubmit{prefix: prefix, suffix: " — the local stack is rewritten; reconcile the remote, then run ccx vcs stack continue", leases: leases, trunkHead: run.Pin}
 		if _, _, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, live); err != nil {
 			return err
 		}

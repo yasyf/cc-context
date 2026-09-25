@@ -2,7 +2,6 @@ package cli
 
 import (
 	"encoding/json"
-	"errors"
 	"maps"
 	"os"
 	"path/filepath"
@@ -63,10 +62,8 @@ type gtFamily int
 const (
 	// gtFamilyProbe is gtReachable's gt auth, classified by classifyGTProbe.
 	gtFamilyProbe gtFamily = iota
-	// gtFamilyRestack is gtSync's gt sync, classified by classifyGTRestack
-	// under gtZeroSurfaces. A recorded gt restack belongs here too: sync
-	// restacks, and the sentences ccx matches are the restacker's — see the
-	// scenario READMEs.
+	// gtFamilyRestack is gt sync and gt restack, which ccx no longer runs; the
+	// recordings pin only the exit-0 policy.
 	gtFamilyRestack
 )
 
@@ -95,42 +92,24 @@ type gtGoldenCase struct {
 	reported    bool
 	// wantErr is whether the verb's own gtZeroPolicy calls this run a failure.
 	wantErr bool
-	// advice is the recovery step the classifier replaces gt's sentence with.
-	// Empty means gt's wording is none this package recognizes, and the failure
-	// must be wrapped verbatim — the arm a reword falls into.
-	advice string
 	// verdict and note are classifyGTProbe's answer, note being ccx's own
 	// sentence for it.
 	verdict gtVerdict
 	note    string
-	// skipped is what gtSyncSkipped reads out of the output, and skippedPath the
-	// same for a reason ending in the recorder's own work root, matched by its
-	// lead because that path moves with the machine that recorded it.
-	skipped     map[string]string
-	skippedPath map[string]string
 }
 
 var gtGoldenCases = map[string]gtGoldenCase{
 	"restack-conflict": {
 		wantErr: true,
-		advice:  "restack: conflict — resolve the listed files, then gt continue (or gt abort); see the output above",
 	},
 	"restack-blocked-during-rebase": {
 		diagnostics: 1,
 		reported:    true,
 		wantErr:     true,
 	},
-	"restack-worktree-held": {
-		skippedPath: map[string]string{"feat": "checked out in "},
-	},
-	"restack-frozen": {
-		skipped: map[string]string{"feat": "frozen"},
-	},
-	// The five exit-0 syncs the echo exists for. None is a failure: gt did
-	// fast-forward the trunk, and restack's verdict re-measures the stack
-	// itself, so a WARNING: here explains a report ccx already made. The two
-	// with no severity line are the gate's negative case — tips are unprefixed
-	// stderr, so without the gate an ordinary sync would report them.
+	"restack-worktree-held": {},
+	"restack-frozen":        {},
+	// The five exit-0 syncs; none is a failure under gtZeroSurfaces.
 	"sync-decline-exit0": {
 		diagnostics: 1,
 	},
@@ -151,7 +130,6 @@ var gtGoldenCases = map[string]gtGoldenCase{
 		diagnostics: 1,
 		reported:    true,
 		wantErr:     true,
-		advice:      "restack: graphite auth required — run gt auth",
 	},
 	"sync-repo-404": {
 		diagnostics: 1,
@@ -232,67 +210,15 @@ func assertGTGolden(t *testing.T, g gtGolden, want gtGoldenCase) {
 			t.Errorf("classifyGTProbe() note = %q — a lane ship declined before mutating anything is not an error", note)
 		}
 	case gtFamilyRestack:
-		err := r.verdict("sync", gtZeroSurfaces)
-		assertGTGoldenAdvice(t, r, err, want, classifyGTRestack, "restack: ")
-		assertGTGoldenSkipped(t, r, want)
-	}
-}
-
-// assertGTGoldenAdvice checks the policy verdict, then the recovery step the
-// classifier reads off the run. A case naming no advice must reach the arm that
-// wraps gt's failure verbatim, and gt's own error must stay reachable through
-// it either way.
-func assertGTGoldenAdvice(t *testing.T, r gtResult, err error, want gtGoldenCase, classify func(gtResult, error) error, prefix string) {
-	t.Helper()
-	if (err != nil) != want.wantErr {
-		t.Fatalf("verdict() = %v, want an error: %v", err, want.wantErr)
-	}
-	if err == nil {
-		return
-	}
-	got := classify(r, err)
-	if !errors.Is(got, err) {
-		t.Errorf("classified error %v does not reach gt's own failure %v", got, err)
-	}
-	if want.advice != "" {
-		if got.Error() != want.advice {
-			t.Errorf("classified error = %q, want %q — gt likely reworded the sentence this arm matches", got.Error(), want.advice)
-		}
-		return
-	}
-	if got.Error() != prefix+err.Error() {
-		t.Errorf("classified error = %q, want gt's failure wrapped verbatim as %q", got.Error(), prefix+err.Error())
-	}
-}
-
-func assertGTGoldenSkipped(t *testing.T, r gtResult, want gtGoldenCase) {
-	t.Helper()
-	got := gtSyncSkipped(r.Output)
-	branches := slices.Sorted(maps.Keys(got))
-	wantBranches := slices.Concat(slices.Collect(maps.Keys(want.skipped)), slices.Collect(maps.Keys(want.skippedPath)))
-	slices.Sort(wantBranches)
-	if !slices.Equal(branches, wantBranches) {
-		t.Fatalf("gtSyncSkipped() named %q, want %q", branches, wantBranches)
-	}
-	for branch, reason := range want.skipped {
-		if got[branch] != reason {
-			t.Errorf("gtSyncSkipped()[%q] = %q, want %q", branch, got[branch], reason)
-		}
-	}
-	for branch, lead := range want.skippedPath {
-		reason := got[branch]
-		if !strings.HasPrefix(reason, lead) {
-			t.Errorf("gtSyncSkipped()[%q] = %q, want it to lead with %q", branch, reason, lead)
-		}
-		if path := strings.TrimPrefix(reason, lead); !strings.HasPrefix(path, "/") || strings.HasSuffix(path, ".") {
-			t.Errorf("gtSyncSkipped()[%q] = %q, want an absolute path with gt's sentence-ending period dropped", branch, reason)
+		if err := r.verdict(g.argv[0], gtZeroSurfaces); (err != nil) != want.wantErr {
+			t.Errorf("verdict() = %v, want an error: %v", err, want.wantErr)
 		}
 	}
 }
 
 // TestGTGoldenClassifiers drives every pure gt classifier over the recorded
-// bytes: Diagnostics, reportedError, verdict, gtSyncSkipped, classifyGTRestack
-// and classifyGTProbe, none of which runs a process.
+// bytes: Diagnostics, reportedError, verdict and classifyGTProbe, none of which
+// runs a process.
 func TestGTGoldenClassifiers(t *testing.T) {
 	t.Parallel()
 	for _, name := range slices.Sorted(maps.Keys(gtGoldenCases)) {
@@ -314,8 +240,7 @@ func gtGoldenFellThrough(t *testing.T, g gtGolden) bool {
 		verdict, note := classifyGTProbe(r.Output, r.Code)
 		return verdict == gtVerdictDenied && note == gtProbeFallbackNote(r.Output)
 	default:
-		err := r.verdict("sync", gtZeroSurfaces)
-		return err != nil && classifyGTRestack(r, err).Error() == "restack: "+err.Error()
+		return r.verdict(g.argv[0], gtZeroSurfaces) != nil
 	}
 }
 
@@ -368,7 +293,7 @@ func TestGTGoldenWalk(t *testing.T) {
 			if len(g.argv) == 0 || g.argv[0] == "" {
 				t.Fatalf("%s argv = %q, want the verb gt was given", name, g.argv)
 			}
-			if got, wantFell := gtGoldenFellThrough(t, g), want.wantErr && want.advice == ""; got != wantFell {
+			if got, wantFell := gtGoldenFellThrough(t, g), want.wantErr; got != wantFell {
 				t.Errorf("%s falls through to gt's own words = %v, want %v — gt reworded what this scenario pins", name, got, wantFell)
 			}
 		})

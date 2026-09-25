@@ -30,6 +30,15 @@ const (
 // validationValid is what gt records for a branch whose parent it resolved.
 const validationValid = "VALID"
 
+// validationStale and validationStaleParent are gt's verdicts for a branch whose
+// recorded parent revision is no longer in its history, and for every branch
+// above one. The parent name still holds, so dropping them would cut the stack
+// in two at the first branch rebased outside gt.
+const (
+	validationStale       = "BAD_PARENT_REVISION"
+	validationStaleParent = "INVALID_PARENT"
+)
+
 // Ref is one parent entry: the parent branch's name, and the revision it stood
 // at when the child was last restacked onto it.
 type Ref struct {
@@ -85,13 +94,18 @@ func Read(ctx context.Context, commonDir string) (State, error) {
 			continue
 		}
 		parentHead, parentLive := heads[row.parent]
-		if row.validation != validationValid || !parentLive {
+		stale := row.validation == validationStale || row.validation == validationStaleParent
+		if (row.validation != validationValid && !stale) || !parentLive {
 			continue
 		}
+		held := row.state
+		if held == "none" {
+			held = ""
+		}
 		state[row.branch] = BranchState{
-			NeedsRestack: row.parentRevision != parentHead,
+			NeedsRestack: stale || row.parentRevision != parentHead,
 			Head:         head,
-			State:        row.state,
+			State:        held,
 			Parents:      []Ref{{Ref: row.parent, SHA: row.parentRevision}},
 		}
 	}
@@ -500,7 +514,7 @@ func RecordRestacked(ctx context.Context, commonDir string, revisions map[string
 	defer func() { _ = tx.Rollback() }()
 
 	for _, branch := range slices.Sorted(maps.Keys(revisions)) {
-		result, err := tx.ExecContext(ctx, `UPDATE branch_metadata SET parent_branch_revision = ? WHERE branch_name = ?`, revisions[branch], branch)
+		result, err := tx.ExecContext(ctx, `UPDATE branch_metadata SET parent_branch_revision = ?, validation_result = ? WHERE branch_name = ?`, revisions[branch], validationValid, branch)
 		if err != nil {
 			return fmt.Errorf("gtmeta: record %q in %q: %w", branch, path, err)
 		}

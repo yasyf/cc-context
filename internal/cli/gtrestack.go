@@ -88,27 +88,6 @@ type gtRestackResult struct {
 	held      map[string]string
 }
 
-// gtRestackChain rebases every branch of chain that sits off its parent onto
-// that parent, bottom-up.
-//
-// It never runs gt, and it never checks a branch out: git replay computes the
-// new commits and moves the refs without touching a working tree or an index,
-// so a branch a sibling checkout holds is not a special case at all. That is
-// the whole reason this exists — gt restack rebases, and git refuses to rebase
-// a branch another working copy has checked out, which gt answers by declining
-// the branch on stdout at exit 0 for some of them and dying on git's exit 128
-// for others. A sweep built on that guard stops mid-stack on the second kind.
-//
-// The price is that a moved ref leaves its holder's HEAD ahead of its index and
-// working tree, reading as a whole-tree reverse diff until gtRestackAlign resets
-// it. That holder's uncommitted work is snapshotted beforehand and applied
-// after, which is what gt did for a lane it rebased in place.
-//
-// Every lane lands on the one commit state's trunk row stands at, and a chain
-// that stops partway moves nothing: gtRestackUnwind puts back the refs the
-// replay had already moved, so the stack the caller is left with is the one it
-// handed over rather than a bottom on the new trunk under branches still on the
-// old one.
 func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir render.Dir, commonDir string, state gtState, chain []string) (gtRestackResult, error) {
 	movers, held := gtRestackPlan(state, chain)
 	if len(movers) == 0 {
@@ -131,7 +110,10 @@ func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir rend
 	pin := gtTrunkPinned{name: trunk, sha: state[trunk].Head}
 	moves, replayErr := gtReplayChain(ctx, prefix, dir, state, pin, movers, holders)
 	if replayErr != nil {
-		return gtRestackResult{held: held}, gtRestackUnwind(ctx, dir, state, moves, replayErr)
+		return gtRestackResult{held: held}, fmt.Errorf("%w; no branches moved", replayErr)
+	}
+	if err := gtRestackPublish(ctx, prefix, dir, state, moves); err != nil {
+		return gtRestackResult{held: held}, err
 	}
 	realigned, alignErr := gtRestackAlign(ctx, prefix, holders, snapshots, moves)
 	recordErr := gtmeta.RecordRestacked(ctx, commonDir, gtRestackRevisions(moves))
@@ -139,7 +121,7 @@ func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir rend
 		recordErr = fmt.Errorf("%s: %w", prefix, recordErr)
 	}
 	result := gtRestackResult{moved: gtRestackBranches(moves), realigned: realigned, held: held}
-	return result, errors.Join(replayErr, alignErr, recordErr)
+	return result, errors.Join(alignErr, recordErr)
 }
 
 // gtRestackPlan names the branches to move: every branch gt reads as sitting off
@@ -177,23 +159,12 @@ func gtRestackPlan(state gtState, chain []string) ([]string, map[string]string) 
 	return movers, held
 }
 
-// restackMove is one branch the replay moved: where its ref now points, and the
-// revision its parent stood at when it landed there — the pair gt's metadata
-// compares to decide the branch is restacked.
 type restackMove struct {
 	branch string
 	head   string
 	parent string
 }
 
-// gtReplayChain replays each mover onto the commit its parent now stands at,
-// feeding every new head forward to that parent's own children. It reports the
-// moves it made along with the failure that stopped it, so the caller can put
-// them back: a chain left half-moved is a stack split across two bases, which
-// nothing but commit archaeology can name afterwards.
-//
-// The trunk row's head is the pin: every lane whose parent is trunk lands on
-// that one commit, whatever the local branch does while the chain runs.
 func gtReplayChain(ctx context.Context, prefix string, dir render.Dir, state gtState, pin gtTrunkPinned, movers []string, holders map[string]string) ([]restackMove, error) {
 	var moves []restackMove
 	heads := map[string]string{pin.name: pin.sha}
@@ -211,23 +182,44 @@ func gtReplayChain(ctx context.Context, prefix string, dir render.Dir, state gtS
 		if merged {
 			return moves, &errRestackMerged{Branch: branch}
 		}
-		if err := gtRestackOwnWork(ctx, prefix, dir, pin, branch, parent.Ref, parent.SHA); err != nil {
+		from, err := gtRestackFrom(ctx, prefix, dir, state, branch)
+		if err != nil {
 			return moves, err
 		}
-		if err := gtReplay(ctx, prefix, dir, base, parent.SHA+".."+gtRestackRef(branch)); err != nil {
+		if err := gtRestackOwnWork(ctx, prefix, dir, pin, branch, parent.Ref, from); err != nil {
+			return moves, err
+		}
+		head, err := gtReplay(ctx, prefix, dir, base, from, branch, s)
+		if err != nil {
 			if errors.Is(err, errReplayConflict) {
 				return moves, &errRestackConflict{Branch: branch, Onto: parent.Ref, Dir: holders[branch]}
 			}
-			return moves, err
-		}
-		head, err := gtRestackHead(ctx, prefix, dir, branch)
-		if err != nil {
 			return moves, err
 		}
 		heads[branch] = head
 		moves = append(moves, restackMove{branch: branch, head: head, parent: base})
 	}
 	return moves, nil
+}
+
+// gtRestackFrom is where a branch's own commits start: the parent revision gt
+// recorded, or — when a rebase outside gt took that revision out of the
+// branch's history — the fork point from the parent as it stands, which is
+// where git rebase itself would start.
+func gtRestackFrom(ctx context.Context, prefix string, dir render.Dir, state gtState, branch string) (string, error) {
+	parent := state[branch].Parents[0]
+	recorded, err := gitIsAncestor(ctx, dir, prefix, parent.SHA, gtRestackRef(branch))
+	if err != nil {
+		return "", err
+	}
+	if recorded {
+		return parent.SHA, nil
+	}
+	out, err := render.RunCLI(ctx, dir, "git", []string{"merge-base", gtRestackRef(branch), state[parent.Ref].Head})
+	if err != nil {
+		return "", fmt.Errorf("%s: git merge-base %s %s: %w", prefix, branch, parent.Ref, err)
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // gtTrunkPinned is the commit one restack lands every lane on: trunk's branch
@@ -415,36 +407,17 @@ func gtRestackFiles(ctx context.Context, prefix string, dir render.Dir, span str
 	return strings.Fields(out), nil
 }
 
-// gtRestackUnwind puts every ref the replay moved back where it stood. A chain
-// that stopped partway otherwise leaves the bottom on the trunk it had just
-// reached with everything above it on the old one — two bases in one stack,
-// which reads as a healthy branch and a stale copy until somebody rebuilds it
-// from commit archaeology. Nothing else has to come back: the align pass has
-// not run, so no working copy was reset, and gt's metadata is written only for
-// a chain that finished.
-//
-// A ref that will not go back is the one case left to finish by hand, so the
-// refusal names each branch that moved and the sha it moved from.
-func gtRestackUnwind(ctx context.Context, dir render.Dir, state gtState, moves []restackMove, cause error) error {
-	if len(moves) == 0 {
-		return cause
+func gtRestackPublish(ctx context.Context, prefix string, dir render.Dir, state gtState, moves []restackMove) error {
+	var updates strings.Builder
+	updates.WriteString("start\n")
+	for _, m := range moves {
+		fmt.Fprintf(&updates, "update %s %s %s\n", gtRestackRef(m.branch), m.head, state[m.branch].Head)
 	}
-	cleanup := context.WithoutCancel(ctx)
-	var stuck []string
-	var put []string
-	for _, m := range slices.Backward(moves) {
-		was := state[m.branch].Head
-		if _, err := render.RunCLI(cleanup, dir, "git", []string{"update-ref", gtRestackRef(m.branch), was, m.head}); err != nil {
-			stuck = append(stuck, fmt.Sprintf("%s is at %.12s and belongs at %.12s", m.branch, m.head, was))
-			continue
-		}
-		put = append(put, m.branch)
+	updates.WriteString("prepare\ncommit\n")
+	if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "--stdin"}, []byte(updates.String())); err != nil {
+		return fmt.Errorf("%s: publish restacked branches: %w", prefix, err)
 	}
-	if len(stuck) > 0 {
-		return fmt.Errorf("%w; the restack could not be rolled back, so reset these by hand: %s", cause, strings.Join(stuck, ", "))
-	}
-	slices.Reverse(put)
-	return fmt.Errorf("%w; the restack rolled back, so nothing moved — put back: %s", cause, strings.Join(put, ", "))
+	return nil
 }
 
 func gtRestackBranches(moves []restackMove) []string {
@@ -470,35 +443,24 @@ func gtRestackRevisions(moves []restackMove) map[string]string {
 // verbatim — an unknown `replay` subcommand on a git too old for it, say.
 var errReplayConflict = errors.New("replay: conflict")
 
-// gtReplay rebases one range onto base without a working tree, and applies the
-// ref updates itself when git only printed them: git replay updates refs in an
-// atomic transaction from 2.55 and writes nothing, while every earlier version
-// prints `update refs/heads/… <new> <old>` lines for git update-ref --stdin.
-// Feeding whatever it printed back is both behaviours in one path — an empty
-// stdout is an update-ref that does nothing.
-//
-// The caller's range must end at the branch's ref, never at the sha it stands
-// at: git replay infers the refs to update from the range it is given, and a
-// raw sha names none — it would compute the new commits and move nothing,
-// reporting a restack it did not do.
-func gtReplay(ctx context.Context, prefix string, dir render.Dir, base, span string) error {
-	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"replay", "--onto", base, span})
+func gtReplay(ctx context.Context, prefix string, dir render.Dir, base, from, branch string, state gtBranchState) (string, error) {
+	ref := gtRestackRef(branch)
+	span := from + ".." + ref
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"-c", "replay.refAction=print", "replay", "--onto", base, span})
 	if err != nil {
-		return fmt.Errorf("%s: git replay: %w", prefix, err)
+		return "", fmt.Errorf("%s: git replay: %w", prefix, err)
 	}
 	if code != 0 {
 		if strings.TrimSpace(stderr) == "" {
-			return errReplayConflict
+			return "", errReplayConflict
 		}
-		return fmt.Errorf("%s: git replay --onto %s %s: %s", prefix, base, span, strings.TrimSpace(stderr))
+		return "", fmt.Errorf("%s: git replay --onto %s %s: %s", prefix, base, span, strings.TrimSpace(stderr))
 	}
-	if strings.TrimSpace(out) == "" {
-		return nil
+	update := strings.Fields(out)
+	if len(update) != 4 || update[0] != "update" || update[1] != ref || update[3] != state.Head {
+		return "", fmt.Errorf("%s: git replay for %s returned an unexpected ref update: %q", prefix, branch, strings.TrimSpace(out))
 	}
-	if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "--stdin"}, []byte(out)); err != nil {
-		return fmt.Errorf("%s: git update-ref after replaying %s: %w", prefix, span, err)
-	}
-	return nil
+	return update[2], nil
 }
 
 // gtRestackRef qualifies a branch name, so every lookup names the branch rather

@@ -3,12 +3,10 @@ package cli
 import (
 	"bytes"
 	"errors"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
-	"strconv"
+	"slices"
 	"strings"
 	"testing"
 
@@ -477,12 +475,14 @@ func TestRestackRefusalsCarryRestackPrefix(t *testing.T) {
 
 // restackGTRepo builds a real gt-tracked stack: one branch per name, each cut
 // from the last with a commit of its own and tracked by the real gt, which is
-// what answers gt state for the rest of the test.
+// what answers gt state for the rest of the test. Graphite's API is the stub,
+// reporting no pull request merged; a test that needs one installs its own.
 func restackGTRepo(t *testing.T, names ...string) *vcstest.Fixture {
 	t.Helper()
 	f := vcstest.Repo(t, vcstest.Remote(), vcstest.GT())
 	f.Isolate(t)
 	seedLaneRecords(t, f.Dir, laneSeed{})
+	stubGTAPI(t)
 	for _, name := range names {
 		restackRun(t, f, f.Dir, "git", "switch", "-qc", name)
 		restackWrite(t, filepath.Join(f.Dir, name+".txt"), name+"\n")
@@ -493,167 +493,45 @@ func restackGTRepo(t *testing.T, names ...string) *vcstest.Fixture {
 	return f
 }
 
-// restackGTSync puts a gt ahead of the fixture's shim that answers gt sync from
-// a recorded run and passes every other verb through to the real gt. sync is the
-// one verb that cannot run here — it resolves the repository through Graphite's
-// API — so its bytes come from the corpus rather than from a sentence anyone
-// wrote, and they have to be bytes gt sync itself produced: another verb's
-// capture replayed here is a run gt never made. effect, when set, is the shell
-// the recorded sync stands for: the local gt and git commands that leave behind
-// the repository state the recorded run described. It returns the log of every
-// sync argv served.
-//
-// The golden arrives already loaded because loadGTGolden reads a path relative
-// to the package directory, which the fixture has already chdir'd out of.
-func restackGTSync(t *testing.T, f *vcstest.Fixture, g gtGolden, effect string) string {
-	t.Helper()
-	if g.argv[0] != "sync" {
-		t.Fatalf("golden %s was recorded from gt %s, so it is no answer to gt sync — record the sync scenario, or take restackGTSyncStandIn where the corpus says why sync cannot be recorded reaching it", g.name, g.argv[0])
-	}
-	return restackGTServeSync(t, f, g, effect)
-}
-
-// restackGTSyncStandIn serves a recorded gt restack as gt sync's answer, for the
-// restack phase sync cannot be recorded reaching: sync resolves the repository
-// through Graphite's API before that phase runs, so its declines, its conflict
-// banner and gt's rebase guard have no capture under sync, while the restacker
-// printing them is the same one either way. testdata/gt/sync-conflict.md is the
-// corpus's own record of that substitution for the conflict banner; the declines
-// and the rebase guard have no such record, since recording them under sync
-// needs a live Graphite token.
-func restackGTSyncStandIn(t *testing.T, f *vcstest.Fixture, g gtGolden, effect string) string {
-	t.Helper()
-	if g.argv[0] != "restack" {
-		t.Fatalf("golden %s was recorded from gt %s; only a gt restack capture stands in for gt sync's restack phase", g.name, g.argv[0])
-	}
-	return restackGTServeSync(t, f, g, effect)
-}
-
-func restackGTServeSync(t *testing.T, f *vcstest.Fixture, g gtGolden, effect string) string {
-	t.Helper()
-	dir := t.TempDir()
-	stdout := filepath.Join(dir, "stdout")
-	stderr := filepath.Join(dir, "stderr")
-	syncLog := filepath.Join(dir, "sync.log")
-	restackWrite(t, stdout, g.stdout)
-	restackWrite(t, stderr, g.stderr)
-
-	realBin := shipDisplaceShim(t, f, "gt")
-
-	body := ""
-	if effect != "" {
-		body = "  if ! ( " + effect + " ) >/dev/null 2>&1; then printf 'restack test: sync effect failed\\n' >&2; exit 99; fi\n"
-	}
-	script := "#!/bin/sh\n" +
-		"if [ \"$1\" = sync ]; then\n" +
-		"  { for a in \"$@\"; do printf '%s\\0' \"$a\"; done; printf '\\0'; } >> '" + syncLog + "'\n" +
-		body +
-		"  cat '" + stdout + "'\n" +
-		"  cat '" + stderr + "' >&2\n" +
-		"  exit " + strconv.Itoa(g.exit) + "\n" +
-		"fi\n" +
-		"exec '" + realBin + "' \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(f.ShimBin, "gt"), []byte(script), 0o700); err != nil { //nolint:gosec // the interceptor must be owner-executable to serve as a PATH entry
-		t.Fatalf("write gt interceptor: %v", err)
-	}
-	return syncLog
-}
-
-// restackSyncArgv reads the argv of every gt sync the interceptor served.
-func restackSyncArgv(t *testing.T, log string) [][]string {
-	t.Helper()
-	data, err := os.ReadFile(log) //nolint:gosec // log is the interceptor's own path under the test's TempDir
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		t.Fatalf("read sync log: %v", err)
-	}
-	var records [][]string
-	for _, record := range bytes.Split(data, []byte{0, 0}) {
-		if len(record) == 0 {
-			continue
-		}
-		fields := strings.Split(strings.TrimSuffix(string(record), "\x00"), "\x00")
-		records = append(records, fields)
-	}
-	return records
-}
-
-// TestRestackGTSyncArgv pins the one flag gt sync is given. --no-interactive has
-// no observable of its own — it only keeps gt from prompting at a terminal no
-// test has — so argv is the only place it can be held.
-func TestRestackGTSyncArgv(t *testing.T) {
-	g := loadGTGolden(t, "sync-quiet-exit0")
-	f := restackGTRepo(t, "feat")
-	syncLog := restackGTSync(t, f, g, "")
-
-	if _, _, err := runRestackCmd(t, f); err != nil {
-		t.Fatalf("restack: %v", err)
-	}
-	want := [][]string{{"sync", "--no-interactive"}}
-	if got := restackSyncArgv(t, syncLog); !reflect.DeepEqual(got, want) {
-		t.Fatalf("gt sync argv = %v, want %v", got, want)
-	}
-}
-
 func TestRestackGTPerBranchVerdict(t *testing.T) {
 	tests := []struct {
-		name     string
-		golden   string
-		standIn  bool
-		onTrunk  bool
-		advance  bool
-		freeze   bool
-		want     string
-		wantLead string
+		name    string
+		onTrunk bool
+		advance bool
+		freeze  bool
+		want    string
 	}{
 		{
-			name:   "the stack landed on trunk",
-			golden: "sync-quiet-exit0",
-			want:   "restacked 1 of 1 · trunk main",
+			name: "the stack landed on trunk",
+			want: "restacked 1 of 1 · trunk main",
 		},
 		{
-			name:    "the pass catches up a branch the sync left behind trunk",
-			golden:  "sync-quiet-exit0",
+			name:    "the pass catches up a branch behind trunk",
 			advance: true,
 			want:    "restacked 1 of 1 · trunk main",
 		},
 		{
-			name:    "a frozen branch already on trunk",
-			golden:  "restack-frozen",
-			standIn: true,
-			freeze:  true,
-			want:    "restacked 0 of 1 · trunk main · skipped feat (frozen; already on main)",
+			name:   "a frozen branch already on trunk",
+			freeze: true,
+			want:   "restacked 0 of 1 · trunk main · skipped feat (frozen; already on main)",
 		},
 		{
 			name:    "a frozen branch that never reached trunk",
-			golden:  "restack-frozen",
-			standIn: true,
 			advance: true,
 			freeze:  true,
 			want:    "restacked 0 of 1 · trunk main · skipped feat (frozen)",
 		},
 		{
-			name:     "gt named the working copy that blocked it",
-			golden:   "restack-worktree-held",
-			standIn:  true,
-			wantLead: "restacked 0 of 1 · trunk main",
-		},
-		{
 			name:    "on trunk, nothing to restack",
-			golden:  "sync-quiet-exit0",
 			onTrunk: true,
 			want:    "synced · trunk main",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			g := loadGTGolden(t, tt.golden)
 			f := restackGTRepo(t, "feat")
 			if tt.advance {
 				restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
-				restackRun(t, f, f.Dir, "git", "fetch", "-q", "origin")
 			}
 			if tt.freeze {
 				restackRun(t, f, f.Dir, "gt", "freeze", "feat", "--no-interactive")
@@ -661,24 +539,12 @@ func TestRestackGTPerBranchVerdict(t *testing.T) {
 			if tt.onTrunk {
 				restackRun(t, f, f.Dir, "git", "switch", "-q", "main")
 			}
-			serve := restackGTSync
-			if tt.standIn {
-				serve = restackGTSyncStandIn
-			}
-			serve(t, f, g, "")
 
 			out, _, err := runRestackCmd(t, f)
 			if err != nil {
 				t.Fatalf("restack: %v", err)
 			}
-			pinned := restackPinned(t, f, tt.want+tt.wantLead)
-			if tt.wantLead != "" {
-				if !strings.HasPrefix(out, pinned) {
-					t.Fatalf("output = %q, want it to lead with %q", out, pinned)
-				}
-				return
-			}
-			if out != pinned {
+			if pinned := restackPinned(t, f, tt.want); out != pinned {
 				t.Fatalf("output = %q, want %q", out, pinned)
 			}
 		})
@@ -693,217 +559,74 @@ func restackPinned(t *testing.T, f *vcstest.Fixture, want string) string {
 	return strings.Replace(want, "trunk main", "trunk main@"+strings.TrimSpace(head), 1)
 }
 
-// TestRestackGTVerdictReadsTheSyncedStack pins the verdict to the stack gt sync
-// left behind. Sync deletes the branches whose PRs landed and reparents their
-// children, so a verdict over the pre-sync list asks git about a ref sync just
-// deleted — merge-base exits 128 there, failing a restack that worked. The
-// interceptor performs that deletion with gt's own local verbs, so the state the
-// second gt state reads is one real gt wrote. Nothing captures a sync that
-// deleted a landed branch, so the quiet sync answers for the bytes: it declines
-// nothing, which leaves the verdict resting on that state alone.
-func TestRestackGTVerdictReadsTheSyncedStack(t *testing.T) {
-	g := loadGTGolden(t, "sync-quiet-exit0")
+// TestRestackGTMovesPastALandedParent pins the landed-parent move gt sync used
+// to make, asking Graphite about the stack's own branches only.
+func TestRestackGTMovesPastALandedParent(t *testing.T) {
 	f := restackGTRepo(t, "a", "b")
-	restackGTSync(t, f, g,
-		"gt move --onto main --no-interactive && gt untrack a --no-interactive && git branch -D a")
+	api := stubGTAPI(t)
+	api.merged["a"] = gtStubMerged{number: 10, head: restackRev(t, f, f.Dir, "a")}
+	restackAdvanceRemote(t, f, "main", "a.txt", "a\n")
 
 	out, _, err := runRestackCmd(t, f)
 	if err != nil {
 		t.Fatalf("restack: %v", err)
 	}
-	if want := restackPinned(t, f, "restacked 1 of 1 · trunk main"); out != want {
+	if want := restackPinned(t, f, "restacked 1 of 1 · trunk main · skipped a (already merged)"); out != want {
 		t.Fatalf("output = %q, want %q", out, want)
 	}
+	if got := restackGTParent(t, f, "b"); got != "main" {
+		t.Errorf("b's gt parent = %q, want main — a landed", got)
+	}
+	if own := strings.TrimSpace(restackRun(t, f, f.Dir, "git", "rev-list", "--count", "refs/remotes/origin/main..b")); own != "1" {
+		t.Errorf("b carries %s commits over trunk, want only its own 1", own)
+	}
+	asked := slices.Concat(api.infoRequests()...)
+	slices.Sort(asked)
+	if want := []string{"a", "b"}; !slices.Equal(asked, want) {
+		t.Errorf("pull-request-info asked about %v, want exactly the stack %v", asked, want)
+	}
 	for _, inv := range restackInvocations(t, f) {
-		if len(inv) > 1 && inv[0] == "git" && inv[1] == "merge-base" && inv[len(inv)-1] == "a" {
-			t.Errorf("verdict probed %v — a is the branch the sync deleted", inv)
+		if len(inv) > 1 && inv[0] == "gt" && inv[1] == "sync" {
+			t.Errorf("restack ran %v", inv)
 		}
 	}
 }
 
-// TestRestackGTSurfacesSyncDiagnostics covers the half of a sync stdout alone
-// cannot see. gt 1.8.6 splits one exit-0 sync across both streams — the phase
-// banners on stdout, severity-led lines on stderr — so a restack it declined
-// leaves the summary reporting the stack as behind with nothing saying why. The
-// remediation rides out with the warnings: the unprefixed sentence gt puts a
-// blank line below them is the only thing telling the user what to run. Tips are
-// unprefixed stderr too, and are the gate's negative case — reporting them would
-// make every fresh install noisy. Exit 0 stays a success, since the
-// remote-trunk oracle already reports the stack correctly.
-func TestRestackGTSurfacesSyncDiagnostics(t *testing.T) {
-	tests := []struct {
-		name    string
-		golden  string
-		wantErr []string
-		denyErr []string
-	}{
-		{
-			name:   "the warnings gt exited 0 on still reach the user",
-			golden: "sync-decline-unstaged-exit0",
-			wantErr: []string{
-				"WARNING: Did not restack checked out branch feat due to conflicting unstaged changes.",
-				"WARNING: feat could not be restacked cleanly.",
-				"Please resolve conflicts in the current stack with gt restack.",
-			},
-		},
-		{
-			name:    "tips alone leave the report silent",
-			golden:  "sync-tips-exit0",
-			denyErr: []string{"tip:", "gt undo", "sync.explanation"},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			g := loadGTGolden(t, tt.golden)
-			f := restackGTRepo(t, "feat")
-			restackGTSync(t, f, g, "")
-
-			out, errOut, err := runRestackCmd(t, f)
-			if err != nil {
-				t.Fatalf("restack: %v", err)
-			}
-			if want := restackPinned(t, f, "restacked 1 of 1 · trunk main"); out != want {
-				t.Fatalf("output = %q, want %q", out, want)
-			}
-			for _, want := range tt.wantErr {
-				if !strings.Contains(errOut, want) {
-					t.Errorf("stderr = %q, want it to carry %q", errOut, want)
-				}
-			}
-			for _, deny := range tt.denyErr {
-				if strings.Contains(errOut, deny) {
-					t.Errorf("stderr = %q, want it to withhold %q", errOut, deny)
-				}
-			}
-		})
-	}
-}
-
-// TestRestackGTStreamedSyncPrintsDiagnosticsOnce guards the two arms against
-// disagreeing the other way. The streaming arm already wires both of gt's
-// streams to the writer as they are produced, so a diagnostic pass there would
-// print every line the user just watched a second time.
-func TestRestackGTStreamedSyncPrintsDiagnosticsOnce(t *testing.T) {
-	g := loadGTGolden(t, "sync-decline-exit0")
-	f := restackGTRepo(t, "feat")
-	restackGTSync(t, f, g, "")
-	old := shipStreamCI
-	t.Cleanup(func() { shipStreamCI = old })
-	shipStreamCI = func(io.Writer) bool { return true }
-
-	out, errOut, err := runRestackCmd(t, f)
-	if err != nil {
-		t.Fatalf("restack: %v", err)
-	}
-	if want := restackPinned(t, f, "restacked 1 of 1 · trunk main"); out != want {
-		t.Fatalf("output = %q, want %q", out, want)
-	}
-	line := "WARNING: feat could not be restacked cleanly."
-	if got := strings.Count(errOut, line); got != 1 {
-		t.Fatalf("diagnostic printed %d times in %q, want exactly 1", got, errOut)
-	}
-}
-
-// TestRestackGTFailures pins the classifier to gt's own streams. The conflict
-// banner rides stdout with stderr empty, while the auth refusal drives stderr
-// instead, so the two together prove neither stream alone is enough. The last
-// rows are sentences this package recognizes nothing in, where the default arm
-// must carry gt's own words through verbatim. Every row also asserts gt's
-// failure survives the advice that replaces its sentence, and that a failed sync
-// leaves the working copy where it was.
-func TestRestackGTFailures(t *testing.T) {
-	tests := []struct {
-		name    string
-		golden  string
-		standIn bool
-		line    string
-		want    string
-	}{
-		{
-			name:    "conflict",
-			golden:  "restack-conflict",
-			standIn: true,
-			line:    "Hit conflict restacking feat on main.",
-			want:    "restack: conflict — resolve the listed files, then gt continue (or gt abort); see the output above",
-		},
-		{
-			name:   "expired auth",
-			golden: "sync-auth-invalid",
-			line:   "ERROR: Your Graphite auth token is invalid/expired.",
-			want:   "restack: graphite auth required — run gt auth",
-		},
-		{
-			name:   "unrecognized failure carries gt's own words",
-			golden: "sync-no-remote",
-			line:   "ERROR: Could not determine the name of this repo",
-		},
-		{
-			name:    "blocked during a rebase",
-			golden:  "restack-blocked-during-rebase",
-			standIn: true,
-			line:    "ERROR: This operation is blocked during a rebase.",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			g := loadGTGolden(t, tt.golden)
-			f := restackGTRepo(t, "feat")
-			serve := restackGTSync
-			if tt.standIn {
-				serve = restackGTSyncStandIn
-			}
-			serve(t, f, g, "")
-			before := restackRev(t, f, f.Dir, "HEAD")
-
-			_, _, err := runRestackCmd(t, f)
-			if err == nil {
-				t.Fatal("restack succeeded on a failed sync, want failure")
-			}
-			var gerr *gtError
-			if !errors.As(err, &gerr) {
-				t.Fatalf("error = %q, want gt's own failure reachable through errors.As", err)
-			}
-			if !strings.Contains(gerr.Output, tt.line) {
-				t.Fatalf("gtError.Output = %q, want it to carry gt's line %q", gerr.Output, tt.line)
-			}
-			switch {
-			case tt.want != "":
-				if err.Error() != tt.want {
-					t.Fatalf("error = %q, want %q", err, tt.want)
-				}
-			default:
-				if want := "restack: " + gerr.Error(); err.Error() != want {
-					t.Fatalf("error = %q, want gt's failure wrapped verbatim as %q", err, want)
-				}
-			}
-			if after := restackRev(t, f, f.Dir, "HEAD"); after != before {
-				t.Errorf("HEAD moved from %s to %s on a failed sync", before, after)
-			}
-		})
-	}
-}
-
-// TestRestackGTRefusesMissingRemoteTrunk pins the verdict's own precondition: it
-// measures the stack against the remote-tracking trunk, so a repository that has
-// none is a refusal rather than a verdict measured against whatever the name
-// resolves to locally.
-func TestRestackGTRefusesMissingRemoteTrunk(t *testing.T) {
-	g := loadGTGolden(t, "sync-quiet-exit0")
-	f := restackGTRepo(t, "feat")
-	restackRun(t, f, f.Dir, "git", "update-ref", "-d", "refs/remotes/origin/main")
-	restackGTSync(t, f, g, "")
+// TestRestackGTKeepsChildrenOfAParentThatMergedElsewhere pins that a parent
+// merged at another head keeps its children, and the child refuses as behind.
+func TestRestackGTKeepsChildrenOfAParentThatMergedElsewhere(t *testing.T) {
+	f := restackGTRepo(t, "a", "b")
+	api := stubGTAPI(t)
+	api.merged["a"] = gtStubMerged{number: 10, head: strings.Repeat("1", 40)}
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 
 	_, _, err := runRestackCmd(t, f)
-	if err == nil {
-		t.Fatal("restack succeeded without a remote-tracking trunk, want a refusal")
+	var behind *errRestackBehind
+	if !errors.As(err, &behind) {
+		t.Fatalf("restack error = %v, want *errRestackBehind", err)
 	}
-	if !errors.Is(err, vcs.ErrNoTrunk) {
-		t.Errorf("error = %v, want it to reach vcs.ErrNoTrunk", err)
+	if !slices.Equal(behind.Branches, []string{"b"}) {
+		t.Errorf("behind = %v, want [b]", behind.Branches)
 	}
-	want := "restack: refs/remotes/origin/main: " + vcs.ErrNoTrunk.Error() + " — run git fetch origin main"
-	if err.Error() != want {
-		t.Errorf("error = %q, want %q", err, want)
+	if got := restackGTParent(t, f, "b"); got != "a" {
+		t.Errorf("b's gt parent = %q, want a — a merged at another head", got)
 	}
+}
+
+func restackGTParent(t *testing.T, f *vcstest.Fixture, branch string) string {
+	t.Helper()
+	commonDir := gitAt(t, f.Env(), f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	rows, err := gtmeta.Rows(t.Context(), commonDir)
+	if err != nil {
+		t.Fatalf("gtmeta.Rows: %v", err)
+	}
+	for _, row := range rows {
+		if row.Branch == branch {
+			return row.Parent
+		}
+	}
+	t.Fatalf("gt tracks no %s", branch)
+	return ""
 }
 
 // TestRestackGTMovesABranchAnotherWorkingCopyHolds pins the case that replaced
@@ -912,11 +635,9 @@ func TestRestackGTRefusesMissingRemoteTrunk(t *testing.T) {
 // exit 128; git replay moves the ref without checking anything out, and the
 // holder is reset onto it afterwards.
 func TestRestackGTMovesABranchAnotherWorkingCopyHolds(t *testing.T) {
-	g := loadGTGolden(t, "sync-quiet-exit0")
 	f := restackGTRepo(t, "a", "b")
 	held := restackSiblingPath(t, "held")
 	restackRun(t, f, f.Dir, "git", "worktree", "add", "-q", held, "a")
-	restackGTSync(t, f, g, "")
 
 	out, _, err := runRestackCmd(t, f)
 	if err != nil {
@@ -954,7 +675,6 @@ func TestRestackGTNamesTheWorkingCopyHoldingTrunk(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			g := loadGTGolden(t, "sync-quiet-exit0")
 			f := restackGTRepo(t, "feat")
 			restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 			restackRun(t, f, f.Dir, "git", "fetch", "-q", "origin")
@@ -964,7 +684,6 @@ func TestRestackGTNamesTheWorkingCopyHoldingTrunk(t *testing.T) {
 				restackRun(t, f, f.Dir, "git", "worktree", "add", "-q", held, "main")
 				want = "restacked 1 of 1 · trunk main (checked out in " + held + ")"
 			}
-			restackGTSync(t, f, g, "")
 
 			out, _, err := runRestackCmd(t, f)
 			if err != nil {
@@ -991,7 +710,6 @@ func TestRestackGTNamesTheWorkingCopyHoldingTrunk(t *testing.T) {
 // command still reported success, and a caller reading the exit code took a
 // stale base for a current one.
 func TestRestackGTRefusesABranchLeftBehind(t *testing.T) {
-	g := loadGTGolden(t, "sync-quiet-exit0")
 	f := restackGTRepo(t, "feat")
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 	restackRun(t, f, f.Dir, "git", "fetch", "-q", "origin")
@@ -1000,7 +718,6 @@ func TestRestackGTRefusesABranchLeftBehind(t *testing.T) {
 	if err := gtmeta.RecordRestacked(t.Context(), commonDir, map[string]string{"feat": remote}); err != nil {
 		t.Fatalf("record feat as restacked: %v", err)
 	}
-	restackGTSync(t, f, g, "")
 	before := restackRev(t, f, f.Dir, "feat")
 
 	out, _, err := runRestackCmd(t, f)
@@ -1022,7 +739,6 @@ func TestRestackGTRefusesABranchLeftBehind(t *testing.T) {
 // reporting the incoming commit's files as staged deletions, where a commit
 // reverts them.
 func TestRestackGTAdvancesAHeldTrunkWithoutStagingDeletions(t *testing.T) {
-	g := loadGTGolden(t, "sync-quiet-exit0")
 	f := restackGTRepo(t, "feat")
 	held := restackSiblingPath(t, "trunk")
 	restackRun(t, f, f.Dir, "git", "worktree", "add", "-q", held, "main")
@@ -1031,7 +747,6 @@ func TestRestackGTAdvancesAHeldTrunkWithoutStagingDeletions(t *testing.T) {
 	restackWrite(t, filepath.Join(held, "scratch.txt"), "untracked\n")
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 	restackRun(t, f, f.Dir, "git", "fetch", "-q", "origin")
-	restackGTSync(t, f, g, "")
 
 	if _, _, err := runRestackCmd(t, f); err != nil {
 		t.Fatalf("restack: %v", err)
@@ -1050,9 +765,7 @@ func TestRestackGTAdvancesAHeldTrunkWithoutStagingDeletions(t *testing.T) {
 
 func TestRestackGraphiteFirst(t *testing.T) {
 	t.Run("colocated routes to gt", func(t *testing.T) {
-		g := loadGTGolden(t, "sync-quiet-exit0")
 		f := restackGTRepo(t, "feat")
-		restackGTSync(t, f, g, "")
 
 		out, _, err := runRestackCmd(t, f)
 		if err != nil {
@@ -1110,46 +823,16 @@ func TestStackRebaseIsItsOwnCommand(t *testing.T) {
 	}
 }
 
-// TestGTSyncSkippedReadsTheMergedDecline pins gt's second decline wording. gt
-// spells this one "has been merged" rather than "is <reason>", so a parser that
-// only cuts on the "is" bracket drops the line and leaves the refusal with no
-// reason to name — which is the whole answer for a branch that has nowhere left
-// to go.
-func TestGTSyncSkippedReadsTheMergedDecline(t *testing.T) {
-	t.Parallel()
-	output := strings.Join([]string{
-		"Did not restack branch yasyf/ssql-replica-chase-debug because it has been merged.",
-		"Did not restack branch feature because it is checked out in worktree /tmp/lane.",
-		"Did not restack branch frozen-one because it is frozen.",
-	}, "\n")
-	got := gtSyncSkipped(output)
-	want := map[string]string{
-		"yasyf/ssql-replica-chase-debug": gtSkipMerged,
-		"feature":                        gtSkipHeld + "/tmp/lane",
-		"frozen-one":                     "frozen",
-	}
-	if len(got) != len(want) {
-		t.Fatalf("gtSyncSkipped() named %d branches, want %d: %v", len(got), len(want), got)
-	}
-	for branch, reason := range want {
-		if got[branch] != reason {
-			t.Errorf("gtSyncSkipped()[%q] = %q, want %q", branch, got[branch], reason)
-		}
-	}
-}
-
 // TestRestackGTReportsDriftNoBranchLandsOn pins the half of the drift rule that
 // does not refuse. A local trunk the remote cannot fast-forward is reported, and
 // the pass still runs, when no branch is being moved onto it — here the working
 // copy is parked on trunk itself, so there is no stack to inherit the drift.
 func TestRestackGTReportsDriftNoBranchLandsOn(t *testing.T) {
-	g := loadGTGolden(t, "sync-quiet-exit0")
 	f := restackGTRepo(t, "feat")
 	restackRun(t, f, f.Dir, "git", "switch", "-q", "main")
 	restackWrite(t, filepath.Join(f.Dir, "foreign.txt"), "another lane's work\n")
 	restackRun(t, f, f.Dir, "git", "add", "foreign.txt")
 	restackRun(t, f, f.Dir, "git", "commit", "-qm", "foreign")
-	restackGTSync(t, f, g, "")
 
 	out, errOut, err := runRestackCmd(t, f)
 	if err != nil {

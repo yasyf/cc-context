@@ -2,6 +2,7 @@ package gtmeta_test
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -39,6 +40,24 @@ func TestReadTracksAGTStack(t *testing.T) {
 			"feat1": {Head: feat1Head, Parents: []gtmeta.Ref{{Ref: "main", SHA: trunkHead}}},
 			"feat2": {Head: head(t, f.Dir, "feat2"), Parents: []gtmeta.Ref{{Ref: "feat1", SHA: feat1Head}}},
 		})
+	})
+
+	t.Run("normalizes an unfrozen branch", func(t *testing.T) {
+		run(t, f.Dir, "gt", "freeze", "feat1", "--no-interactive")
+		if got := read(t, commonDir)["feat1"].State; got != "frozen" {
+			t.Fatalf("frozen state = %q, want frozen", got)
+		}
+		run(t, f.Dir, "gt", "unfreeze", "feat1", "--no-interactive")
+		var native map[string]struct{ State string }
+		if err := json.Unmarshal([]byte(run(t, f.Dir, "gt", "state", "--no-interactive")), &native); err != nil {
+			t.Fatalf("decode native gt state: %v", err)
+		}
+		if got := native["feat1"].State; got != "" {
+			t.Fatalf("native unfrozen state = %q, want no hold", got)
+		}
+		if got := read(t, commonDir)["feat1"].State; got != "" {
+			t.Errorf("unfrozen state = %q, want no hold", got)
+		}
 	})
 
 	// gt revalidates the whole database on every invocation, so a stack it still
@@ -396,5 +415,48 @@ func TestForgetDisownsTheBranchFromItsParent(t *testing.T) {
 	}
 	if _, _, children := metaRow(t, dir, "mid"); children != `["kid"]` {
 		t.Errorf("mid children = %s, want [\"kid\"] — an unrelated row was rewritten", children)
+	}
+}
+
+func TestReadKeepsBranchesAboveARevisionGtRejected(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.GT())
+	for _, name := range []string{"feat1", "feat2", "feat3"} {
+		run(t, f.Dir, "git", "switch", "-qc", name)
+		write(t, filepath.Join(f.Dir, name+".txt"), name+"\n")
+		run(t, f.Dir, "git", "add", name+".txt")
+		run(t, f.Dir, "git", "commit", "-qm", name)
+		run(t, f.Dir, "gt", "track", "-f", "--no-interactive")
+	}
+	commonDir := filepath.Join(f.Dir, ".git")
+	setValidation(t, commonDir, "feat2", "BAD_PARENT_REVISION")
+	setValidation(t, commonDir, "feat3", "INVALID_PARENT")
+
+	state := read(t, commonDir)
+	for _, name := range []string{"feat2", "feat3"} {
+		s, ok := state[name]
+		if !ok {
+			t.Fatalf("%s dropped from the stack: %v", name, names(state))
+		}
+		if !s.NeedsRestack {
+			t.Errorf("%s does not need a restack, want one", name)
+		}
+	}
+	if err := gtmeta.RecordRestacked(t.Context(), commonDir, map[string]string{"feat2": head(t, f.Dir, "feat1")}); err != nil {
+		t.Fatalf("RecordRestacked: %v", err)
+	}
+	if read(t, commonDir)["feat2"].NeedsRestack {
+		t.Error("feat2 still needs a restack after its revision was recorded")
+	}
+}
+
+func setValidation(t *testing.T, commonDir, branch, result string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(commonDir, ".graphite_metadata.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`UPDATE branch_metadata SET validation_result = ? WHERE branch_name = ?`, result, branch); err != nil {
+		t.Fatalf("set %s validation: %v", branch, err)
 	}
 }

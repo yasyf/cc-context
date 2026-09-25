@@ -128,6 +128,41 @@ func TestStackRebaseDropsASquashLandedParent(t *testing.T) {
 	}
 }
 
+func TestStackRebasePushesWithADivergedLocalTrunk(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	writeShipFile(t, f.Dir, "local.txt", "local\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "local.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "local trunk work")
+	localTrunk := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	shipResetLog(t, f)
+
+	_, errOut, err := runStackCmd(t, f, "rebase")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if !strings.Contains(errOut, "local main holds 1 commit(s) refs/remotes/origin/main does not") {
+		t.Errorf("stderr = %q, want the local trunk warning", errOut)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "main"); got != localTrunk {
+		t.Errorf("local main = %s, want unchanged %s", got, localTrunk)
+	}
+	for _, branch := range []string{"base", "feature"} {
+		if !stackOnto(t, f, "origin/main", branch) {
+			t.Errorf("%s is not on the remote trunk", branch)
+		}
+		if stackOnto(t, f, localTrunk, branch) {
+			t.Errorf("%s carries the local trunk's unpushed commit", branch)
+		}
+		local := gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
+		if remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); remote != local {
+			t.Errorf("origin %s = %s, want the rebased %s", branch, remote, local)
+		}
+	}
+}
+
 func TestStackRebaseLinearizesSiblings(t *testing.T) {
 	f := stackRebaseRepo(t, "a")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
