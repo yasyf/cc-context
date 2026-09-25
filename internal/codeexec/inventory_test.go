@@ -1,6 +1,7 @@
 package codeexec
 
 import (
+	"context"
 	"os"
 	"reflect"
 	"testing"
@@ -17,9 +18,9 @@ func sampleInventory() Inventory {
 	}
 }
 
-func mustPath(t *testing.T, store *diskInventoryStore) string {
+func mustPath(ctx context.Context, t *testing.T, store *diskInventoryStore) string {
 	t.Helper()
-	path, err := store.path()
+	path, err := store.path(ctx)
 	if err != nil {
 		t.Fatalf("path: %v", err)
 	}
@@ -27,8 +28,9 @@ func mustPath(t *testing.T, store *diskInventoryStore) string {
 }
 
 func TestInventoryStoreRoundtrip(t *testing.T) {
+	ctx := t.Context()
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	disk, err := NewDiskInventoryStore()
+	disk, err := NewDiskInventoryStore(ctx)
 	if err != nil {
 		t.Fatalf("NewDiskInventoryStore: %v", err)
 	}
@@ -41,15 +43,15 @@ func TestInventoryStoreRoundtrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, _, ok := tt.store.Load(); ok {
+			if _, _, ok := tt.store.Load(ctx); ok {
 				t.Fatal("Load on empty store = true, want miss")
 			}
 			inv := sampleInventory()
 			probed := time.Now().UTC()
-			if err := tt.store.Save(inv, probed); err != nil {
+			if err := tt.store.Save(ctx, inv, probed); err != nil {
 				t.Fatalf("Save: %v", err)
 			}
-			got, at, ok := tt.store.Load()
+			got, at, ok := tt.store.Load(ctx)
 			if !ok {
 				t.Fatal("Load after Save = miss")
 			}
@@ -64,42 +66,45 @@ func TestInventoryStoreRoundtrip(t *testing.T) {
 }
 
 func TestDiskInventoryStoreCorruptMiss(t *testing.T) {
+	ctx := t.Context()
 	store := newDiskInventoryStore(t.TempDir(), "/some/project")
-	if err := store.Save(sampleInventory(), time.Now()); err != nil {
+	if err := store.Save(ctx, sampleInventory(), time.Now()); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if err := os.WriteFile(mustPath(t, store), []byte("{not json"), 0o600); err != nil {
+	if err := os.WriteFile(mustPath(ctx, t, store), []byte("{not json"), 0o600); err != nil {
 		t.Fatalf("corrupt: %v", err)
 	}
-	if _, _, ok := store.Load(); ok {
+	if _, _, ok := store.Load(ctx); ok {
 		t.Error("Load on corrupt file = true, want miss")
 	}
 }
 
 func TestDiskInventoryStoreRootKeyed(t *testing.T) {
+	ctx := t.Context()
 	dir := t.TempDir()
 	a := newDiskInventoryStore(dir, "/project/a")
 	b := newDiskInventoryStore(dir, "/project/b")
-	if mustPath(t, a) == mustPath(t, b) {
-		t.Fatalf("distinct roots share a path: %s", mustPath(t, a))
+	if mustPath(ctx, t, a) == mustPath(ctx, t, b) {
+		t.Fatalf("distinct roots share a path: %s", mustPath(ctx, t, a))
 	}
-	if err := a.Save(Inventory{Hash: "a", Servers: []ServerSpec{{Name: "a", Prefix: "a"}}}, time.Now()); err != nil {
+	if err := a.Save(ctx, Inventory{Hash: "a", Servers: []ServerSpec{{Name: "a", Prefix: "a"}}}, time.Now()); err != nil {
 		t.Fatalf("Save a: %v", err)
 	}
-	if err := b.Save(Inventory{Hash: "b", Servers: []ServerSpec{{Name: "b", Prefix: "b"}}}, time.Now()); err != nil {
+	if err := b.Save(ctx, Inventory{Hash: "b", Servers: []ServerSpec{{Name: "b", Prefix: "b"}}}, time.Now()); err != nil {
 		t.Fatalf("Save b: %v", err)
 	}
-	if got, _, ok := a.Load(); !ok || got.Hash != "a" {
+	if got, _, ok := a.Load(ctx); !ok || got.Hash != "a" {
 		t.Errorf("a.Load = %+v ok=%v, want hash a", got, ok)
 	}
-	if got, _, ok := b.Load(); !ok || got.Hash != "b" {
+	if got, _, ok := b.Load(ctx); !ok || got.Hash != "b" {
 		t.Errorf("b.Load = %+v ok=%v, want hash b", got, ok)
 	}
 }
 
 func TestInventoryStoreEnvFingerprint(t *testing.T) {
+	ctx := t.Context()
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	disk, err := NewDiskInventoryStore()
+	disk, err := NewDiskInventoryStore(ctx)
 	if err != nil {
 		t.Fatalf("NewDiskInventoryStore: %v", err)
 	}
@@ -113,18 +118,18 @@ func TestInventoryStoreEnvFingerprint(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("CCX_EXEC_MCP_DENY", "railway")
-			if err := tt.store.Save(sampleInventory(), time.Now()); err != nil {
+			if err := tt.store.Save(ctx, sampleInventory(), time.Now()); err != nil {
 				t.Fatalf("Save: %v", err)
 			}
-			if _, _, ok := tt.store.Load(); !ok {
+			if _, _, ok := tt.store.Load(ctx); !ok {
 				t.Error("Load under the same DENY = miss, want hit")
 			}
 			t.Setenv("CCX_EXEC_MCP_DENY", "auggie")
-			if _, _, ok := tt.store.Load(); ok {
+			if _, _, ok := tt.store.Load(ctx); ok {
 				t.Error("Load after flipping DENY = hit, want miss (a filter change must invalidate)")
 			}
 			t.Setenv("CCX_EXEC_MCP_DENY", "railway")
-			if _, _, ok := tt.store.Load(); !ok {
+			if _, _, ok := tt.store.Load(ctx); !ok {
 				t.Error("Load after restoring DENY = miss, want hit")
 			}
 		})
@@ -132,6 +137,7 @@ func TestInventoryStoreEnvFingerprint(t *testing.T) {
 }
 
 func TestDiskInventoryStoreInvalidEnvelope(t *testing.T) {
+	ctx := t.Context()
 	tests := []struct {
 		name string
 		data string
@@ -143,10 +149,10 @@ func TestDiskInventoryStoreInvalidEnvelope(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newDiskInventoryStore(t.TempDir(), "/p")
-			if err := os.WriteFile(mustPath(t, store), []byte(tt.data), 0o600); err != nil {
+			if err := os.WriteFile(mustPath(ctx, t, store), []byte(tt.data), 0o600); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			if _, _, ok := store.Load(); ok {
+			if _, _, ok := store.Load(ctx); ok {
 				t.Errorf("Load(%s) = hit, want miss", tt.data)
 			}
 		})
@@ -154,25 +160,26 @@ func TestDiskInventoryStoreInvalidEnvelope(t *testing.T) {
 }
 
 func TestDiskInventoryStoreFollowsRootChange(t *testing.T) {
+	ctx := t.Context()
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	t.Cleanup(func() { workspace.SetRoot("") })
-	store, err := NewDiskInventoryStore()
+	store, err := NewDiskInventoryStore(ctx)
 	if err != nil {
 		t.Fatalf("NewDiskInventoryStore: %v", err)
 	}
 	workspace.SetRoot("/project/a")
-	if err := store.Save(sampleInventory(), time.Now()); err != nil {
+	if err := store.Save(ctx, sampleInventory(), time.Now()); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if _, _, ok := store.Load(); !ok {
+	if _, _, ok := store.Load(ctx); !ok {
 		t.Fatal("Load under the probing root = miss, want hit")
 	}
 	workspace.SetRoot("/project/b")
-	if _, _, ok := store.Load(); ok {
+	if _, _, ok := store.Load(ctx); ok {
 		t.Error("Load after a root change = hit, want miss (a warm catalog must not outlive the switch)")
 	}
 	workspace.SetRoot("/project/a")
-	if _, _, ok := store.Load(); !ok {
+	if _, _, ok := store.Load(ctx); !ok {
 		t.Error("Load after switching back = miss, want hit")
 	}
 }

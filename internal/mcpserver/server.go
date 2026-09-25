@@ -269,7 +269,7 @@ func Serve(ctx context.Context) error {
 
 	var eng *codeexec.Engine
 	if codeexec.Supported() {
-		inventories, err := codeexec.NewDiskInventoryStore()
+		inventories, err := codeexec.NewDiskInventoryStore(ctx)
 		if err != nil {
 			return err
 		}

@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // ServerSpec identifies one discovered MCP server and how to reach it: a stdio
@@ -48,8 +50,8 @@ var errBadTimeout = errors.New("invalid CCX_EXEC_MCP_TIMEOUT")
 // probeTimeout is the deadline for one probe: CCX_EXEC_MCP_TIMEOUT (a
 // time.ParseDuration string) when set, else discoverTimeout. An unparsable
 // value wraps errBadTimeout so the engine fails fast rather than falling back.
-func probeTimeout() (time.Duration, error) {
-	raw := os.Getenv("CCX_EXEC_MCP_TIMEOUT")
+func probeTimeout(ctx context.Context) (time.Duration, error) {
+	raw := render.Getenv(ctx, "CCX_EXEC_MCP_TIMEOUT")
 	if raw == "" {
 		return discoverTimeout, nil
 	}
@@ -71,16 +73,18 @@ var serverLine = regexp.MustCompile(`^(.+?): (.+?) - (.+)$`)
 // timeout, or non-zero exit — returns an error, so the engine can tell it apart
 // from a probe that succeeded with zero servers.
 func Discover(ctx context.Context) (Inventory, error) {
-	if _, err := exec.LookPath("claude"); err != nil {
+	claude := render.LookPath(ctx, "claude")
+	if claude == "" {
 		return Inventory{}, errors.New("claude not on PATH")
 	}
-	timeout, err := probeTimeout()
+	timeout, err := probeTimeout(ctx)
 	if err != nil {
 		return Inventory{}, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "claude", "mcp", "list")
+	cmd := exec.CommandContext(ctx, claude, "mcp", "list") //nolint:gosec // argv is fixed; claude is resolved against the PATH ctx carries for its children
+	cmd.Env = slices.Concat(os.Environ(), render.EnvFrom(ctx))
 	cmd.WaitDelay = probeWaitDelay
 	configureProbeCommand(cmd)
 	out, err := cmd.Output()
@@ -90,7 +94,7 @@ func Discover(ctx context.Context) (Inventory, error) {
 		}
 		return Inventory{}, fmt.Errorf("claude mcp list failed: %w", err)
 	}
-	return inventoryOf(string(out)), nil
+	return inventoryOf(ctx, string(out)), nil
 }
 
 // inventoryOf parses `claude mcp list` output and applies the deterministic
@@ -98,10 +102,10 @@ func Discover(ctx context.Context) (Inventory, error) {
 // built-in self-recursion denies (cc-context, plugin:cc-review:*, a ccx
 // command), CCX_EXEC_MCP_DENY, and the session-channel heuristic.
 // CCX_EXEC_MCP_ALLOW overrides every skip except the built-in denies.
-func inventoryOf(out string) Inventory {
+func inventoryOf(ctx context.Context, out string) Inventory {
 	var inv Inventory
-	allow := csvSet(os.Getenv("CCX_EXEC_MCP_ALLOW"))
-	deny := csvSet(os.Getenv("CCX_EXEC_MCP_DENY"))
+	allow := csvSet(render.Getenv(ctx, "CCX_EXEC_MCP_ALLOW"))
+	deny := csvSet(render.Getenv(ctx, "CCX_EXEC_MCP_DENY"))
 	for _, line := range strings.Split(out, "\n") {
 		m := serverLine.FindStringSubmatch(strings.TrimSpace(line))
 		if m == nil {

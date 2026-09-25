@@ -90,8 +90,8 @@ type diskStore struct {
 
 // NewDiskStore returns the shared on-disk CatalogStore under the ccx cache
 // dir; its lock serializes catalog builds across concurrent CLI invocations.
-func NewDiskStore() (CatalogStore, error) {
-	dir, err := cache.Dir("exec")
+func NewDiskStore(ctx context.Context) (CatalogStore, error) {
+	dir, err := cache.DirFrom(ctx, "exec")
 	if err != nil {
 		return nil, fmt.Errorf("resolve exec cache dir: %w", err)
 	}

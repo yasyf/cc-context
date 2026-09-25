@@ -37,11 +37,11 @@ func newExecCmd() *cobra.Command {
 					return err
 				}
 			}
-			store, err := codeexec.NewDiskStore()
+			store, err := codeexec.NewDiskStore(cmd.Context())
 			if err != nil {
 				return err
 			}
-			inventories, err := codeexec.NewDiskInventoryStore()
+			inventories, err := codeexec.NewDiskInventoryStore(cmd.Context())
 			if err != nil {
 				return err
 			}

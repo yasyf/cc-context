@@ -48,7 +48,7 @@ func launchDriver(ctx context.Context) (*driverProc, error) {
 	if uv == "" {
 		return nil, fmt.Errorf("codeexec: uv not on PATH — needed to run the %s sandbox driver (brew install uv)", montyRequirement)
 	}
-	path, err := driverPath()
+	path, err := driverPath(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -90,8 +90,8 @@ func (d *driverProc) kill() {
 // is trusted only after its bytes match the embedded source — the filename
 // alone would let anything that can write the cache dir swap in its own
 // driver for every later run.
-func driverPath() (string, error) {
-	dir, err := cache.Dir("codeexec")
+func driverPath(ctx context.Context) (string, error) {
+	dir, err := cache.DirFrom(ctx, "codeexec")
 	if err != nil {
 		return "", err
 	}
