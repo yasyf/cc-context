@@ -326,38 +326,175 @@ func TestRestackGitRefusesDetachedHEAD(t *testing.T) {
 	assertNoRestackMutation(t, restackInvocations(t, f))
 }
 
-// TestRestackGitConflictAbortsBackToTheStartingState drives a real conflicting
-// rebase: the branch and the trunk edit the same line, so git stops mid-replay
-// and ccx has to abort rather than leave the working copy in a rebase.
-func TestRestackGitConflictAbortsBackToTheStartingState(t *testing.T) {
+// restackGitConflict leaves feature and the remote trunk editing the same line
+// of f.txt, so a restack of feature stops mid-replay.
+func restackGitConflict(t *testing.T) *vcstest.Fixture {
+	t.Helper()
 	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Branch("feature"))
 	f.Isolate(t)
 	restackWrite(t, filepath.Join(f.Dir, "f.txt"), "feature\n")
-	restackRun(t, f, f.Dir, "git", "commit", "-qam", "feature")
+	restackWrite(t, filepath.Join(f.Dir, "g.txt"), "committed\n")
+	restackRun(t, f, f.Dir, "git", "add", "f.txt", "g.txt")
+	restackRun(t, f, f.Dir, "git", "commit", "-qm", "feature")
 	restackAdvanceRemote(t, f, "main", "f.txt", "upstream\n")
+	return f
+}
+
+func TestRestackGitConflictStopsInAWorkspaceAndContinues(t *testing.T) {
+	f := restackGitConflict(t)
+	restackWrite(t, filepath.Join(f.Dir, "g.txt"), "uncommitted\n")
 	before := restackRev(t, f, f.Dir, "HEAD")
 
 	_, _, err := runRestackCmd(t, f)
 	if err == nil {
-		t.Fatal("restack succeeded over a conflicting rebase, want a refusal")
+		t.Fatal("restack succeeded over a conflicting rebase, want it to stop in a workspace")
 	}
-	if !strings.Contains(err.Error(), "conflicts in: f.txt; aborted back to the pre-rebase state") {
-		t.Fatalf("error = %q, want it to name the conflicted file and the abort", err)
+	for _, want := range []string{"feature does not rebase onto main cleanly", "f.txt", "ccx vcs stack continue", "ccx vcs stack abort"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("brief = %v, want %q", err, want)
+		}
 	}
-	if !strings.HasPrefix(err.Error(), "restack: ") {
-		t.Errorf("error = %q, want the restack prefix — gitRebaseOnto is shared with ship", err)
+	ws := stackWorkspaceOf(t, err)
+	if filepath.Base(ws) != "conflict-feature" {
+		t.Fatalf("workspace = %q, want a pool entry named conflict-feature", ws)
 	}
-	if after := restackRev(t, f, f.Dir, "HEAD"); after != before {
-		t.Errorf("HEAD = %s, want the pre-rebase %s", after, before)
+	if after := restackRev(t, f, f.Dir, "refs/heads/feature"); after != before {
+		t.Errorf("feature moved to %s before the conflict was resolved", after)
 	}
 	if restackRev(t, f, f.Dir, "REBASE_HEAD") != "" {
-		t.Error("a rebase is still in progress — the abort did not run")
+		t.Error("the working copy restack ran from is mid-rebase; the rebase belongs in the workspace")
 	}
-	if got := restackRead(t, filepath.Join(f.Dir, "f.txt")); got != "feature\n" {
-		t.Errorf("f.txt = %q, want the branch's own content back", got)
+
+	restackWrite(t, filepath.Join(ws, "f.txt"), "upstream\nfeature\n")
+	restackRun(t, f, ws, "git", "add", "f.txt")
+	if _, _, err := runStackCmd(t, f, "continue"); err != nil {
+		t.Fatalf("continue: %v", err)
 	}
-	if status := restackRun(t, f, f.Dir, "git", "status", "--porcelain"); status != "" {
-		t.Errorf("status = %q, want a clean working copy after the abort", status)
+	if !stackOnto(t, f, "refs/remotes/origin/main", "feature") {
+		t.Error("feature is not on the fetched trunk after continue")
+	}
+	if got := restackRev(t, f, f.Dir, "HEAD"); got != restackRev(t, f, f.Dir, "refs/heads/feature") {
+		t.Errorf("HEAD = %s, want the working copy reset onto the rebased feature", got)
+	}
+	if got := restackRead(t, filepath.Join(f.Dir, "f.txt")); got != "upstream\nfeature\n" {
+		t.Errorf("f.txt = %q, want the resolution", got)
+	}
+	if got := restackRead(t, filepath.Join(f.Dir, "g.txt")); got != "uncommitted\n" {
+		t.Errorf("g.txt = %q, want the uncommitted edit carried over", got)
+	}
+	if _, err := os.Stat(ws); !os.IsNotExist(err) {
+		t.Errorf("workspace %s left behind: %v", ws, err)
+	}
+	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
+		t.Errorf("run state left behind: %v", left)
+	}
+}
+
+func TestRestackGitConflictAbortLeavesTheBranch(t *testing.T) {
+	f := restackGitConflict(t)
+	before := restackRev(t, f, f.Dir, "HEAD")
+
+	_, _, err := runRestackCmd(t, f)
+	if err == nil {
+		t.Fatal("restack succeeded over a conflicting rebase, want it to stop in a workspace")
+	}
+	ws := stackWorkspaceOf(t, err)
+	out, _, err := runStackCmd(t, f, "abort")
+	if err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	if out != "aborted · no branch moved" {
+		t.Errorf("abort output = %q", out)
+	}
+	if after := restackRev(t, f, f.Dir, "HEAD"); after != before {
+		t.Errorf("HEAD = %s, want the pre-restack %s", after, before)
+	}
+	if _, err := os.Stat(ws); !os.IsNotExist(err) {
+		t.Errorf("workspace %s left behind: %v", ws, err)
+	}
+	if _, _, err := runRestackCmd(t, f); err == nil || !strings.Contains(err.Error(), "does not rebase onto main cleanly") {
+		t.Errorf("restack after abort = %v, want the conflict again rather than a run in progress", err)
+	}
+}
+
+// TestRestackGitConflictRunsWithRerereOff records a resolution for the same
+// conflict, then restacks: a rebase with rerere on replays it into the file
+// and records a new preimage, where the workspace must show the conflict.
+func TestRestackGitConflictRunsWithRerereOff(t *testing.T) {
+	f := restackGitConflict(t)
+	restackRun(t, f, f.Dir, "git", "config", "rerere.enabled", "true")
+	restackRun(t, f, f.Dir, "git", "config", "rerere.autoUpdate", "true")
+	restackRun(t, f, f.Dir, "git", "fetch", "-q", "origin")
+	rehearsal := restackSiblingPath(t, "rehearsal")
+	restackRun(t, f, f.Dir, "git", "worktree", "add", "-q", "--detach", rehearsal, "feature")
+	if err := exec.Command("git", "-C", rehearsal, "rebase", "origin/main").Run(); err == nil { //nolint:gosec // fixed git argv over a fixture TempDir
+		t.Fatal("the rehearsal rebase applied cleanly, want the conflict it records a resolution for")
+	}
+	restackWrite(t, filepath.Join(rehearsal, "f.txt"), "stale resolution\n")
+	restackRun(t, f, rehearsal, "git", "add", "f.txt")
+	restackRun(t, f, rehearsal, "git", "rerere")
+	restackRun(t, f, rehearsal, "git", "rebase", "--abort")
+	restackRun(t, f, f.Dir, "git", "worktree", "remove", "--force", rehearsal)
+	cache := filepath.Join(f.Dir, ".git", "rr-cache")
+	recorded, err := os.ReadDir(cache)
+	if err != nil || len(recorded) != 1 {
+		t.Fatalf("rr-cache = %v (%v), want the one rehearsed resolution", recorded, err)
+	}
+	stamp := restackRun(t, f, f.Dir, "find", cache, "-type", "f")
+
+	_, _, err = runRestackCmd(t, f)
+	if err == nil {
+		t.Fatal("restack succeeded over a conflicting rebase, want it to stop in a workspace")
+	}
+	ws := stackWorkspaceOf(t, err)
+	if got := restackRead(t, filepath.Join(ws, "f.txt")); !strings.Contains(got, "<<<<<<<") {
+		t.Errorf("f.txt in the workspace = %q, want the conflict rather than the recorded resolution", got)
+	}
+	if after := restackRun(t, f, f.Dir, "find", cache, "-type", "f"); after != stamp {
+		t.Errorf("rr-cache changed during the restack:\nbefore:\n%s\nafter:\n%s", stamp, after)
+	}
+}
+
+// TestRestackGitFlattensABranchCarryingAMerge covers the span git replay
+// refuses: a branch that merged trunk in rebases flat, as git rebase does.
+func TestRestackGitFlattensABranchCarryingAMerge(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Branch("feature"))
+	f.Isolate(t)
+	restackWrite(t, filepath.Join(f.Dir, "feature.txt"), "feature\n")
+	restackRun(t, f, f.Dir, "git", "add", "feature.txt")
+	restackRun(t, f, f.Dir, "git", "commit", "-qm", "feature")
+	restackAdvanceRemote(t, f, "main", "first.txt", "first\n")
+	restackRun(t, f, f.Dir, "git", "fetch", "-q", "origin")
+	restackRun(t, f, f.Dir, "git", "merge", "-q", "--no-edit", "refs/remotes/origin/main")
+	restackAdvanceRemote(t, f, "main", "second.txt", "second\n")
+
+	out, _, err := runRestackCmd(t, f)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if want := "fetched · rebased onto main"; out != want {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+	if got := strings.TrimSpace(restackRun(t, f, f.Dir, "git", "rev-list", "--count", "refs/remotes/origin/main..HEAD")); got != "1" {
+		t.Errorf("commits above trunk = %s, want the feature commit alone", got)
+	}
+	if got := restackRead(t, filepath.Join(f.Dir, "second.txt")); got != "second\n" {
+		t.Errorf("second.txt = %q, want the fetched trunk's content", got)
+	}
+}
+
+// TestRestackGitConflictNeverAdvisesPushingTrunk pins the recovery a stopped
+// restack names: the branch restacked is feature, so no line of it may tell
+// the user to push main.
+func TestRestackGitConflictNeverAdvisesPushingTrunk(t *testing.T) {
+	f := restackGitConflict(t)
+
+	_, _, err := runRestackCmd(t, f)
+	if err == nil {
+		t.Fatal("restack succeeded over a conflicting rebase, want it to stop in a workspace")
+	}
+	if strings.Contains(err.Error(), "git push origin main") {
+		t.Errorf("error = %q, want no advice to push trunk from feature", err)
 	}
 }
 

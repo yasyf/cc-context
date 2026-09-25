@@ -78,6 +78,7 @@ type stackRebaseRun struct {
 	Trunk    string              `json:"trunk"`
 	Pin      string              `json:"pin"`
 	NoPush   bool                `json:"no_push"`
+	Git      bool                `json:"git,omitempty"`
 	Applied  bool                `json:"applied,omitempty"`
 	Roots    []string            `json:"roots"`
 	Pid      int                 `json:"pid"`
@@ -199,21 +200,8 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 	if err != nil {
 		return err
 	}
-	for _, other := range runs {
-		if !stackOverlaps(run, other) {
-			continue
-		}
-		if !stackStale(other) {
-			return stackInProgress(other)
-		}
-		if o.dryRun {
-			cmd.Println(fmt.Sprintf("would reclaim the stale stack rebase of %s (%s)", strings.Join(other.Roots, ", "), stackHolder(other)))
-			continue
-		}
-		if err := stackReclaim(ctx, l, commonDir, other); err != nil {
-			return err
-		}
-		cmd.Println(fmt.Sprintf("reclaimed the stale stack rebase of %s (%s)", strings.Join(other.Roots, ", "), stackHolder(other)))
+	if err := stackAdmit(ctx, cmd, l, commonDir, runs, run, o.dryRun); err != nil {
+		return err
 	}
 	cmd.Println(strings.Join(stackPlanLines(run), "\n"))
 	if o.dryRun {
@@ -226,6 +214,28 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 		return err
 	}
 	return stackDrive(ctx, cmd, l, commonDir, run)
+}
+
+// stackAdmit refuses a run that overlaps one still live, and reclaims every
+// overlapping run whose process died mid-replay.
+func stackAdmit(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, runs []*stackRebaseRun, run *stackRebaseRun, dryRun bool) error {
+	for _, other := range runs {
+		if !stackOverlaps(run, other) {
+			continue
+		}
+		if !stackStale(other) {
+			return stackInProgress(other)
+		}
+		if dryRun {
+			cmd.Println(fmt.Sprintf("would reclaim the stale stack rebase of %s (%s)", strings.Join(other.Roots, ", "), stackHolder(other)))
+			continue
+		}
+		if err := stackReclaim(ctx, l, commonDir, other); err != nil {
+			return err
+		}
+		cmd.Println(fmt.Sprintf("reclaimed the stale stack rebase of %s (%s)", strings.Join(other.Roots, ", "), stackHolder(other)))
+	}
+	return nil
 }
 
 func stackInProgress(run *stackRebaseRun) error {
@@ -656,7 +666,7 @@ func stackDrive(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 			continue
 		}
 		head, err := stackReplay(ctx, l.dir(), b)
-		if errors.Is(err, errReplayConflict) {
+		if errors.Is(err, errReplayConflict) || errors.Is(err, errReplayMerges) {
 			return stackOpenConflict(ctx, cmd, l, commonDir, run, b)
 		}
 		if err != nil {
@@ -667,8 +677,15 @@ func stackDrive(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	if err := stackSaveRun(run); err != nil {
 		return err
 	}
+	if run.Git {
+		return stackFinishGit(ctx, cmd, l, commonDir, run)
+	}
 	return stackFinish(ctx, cmd, l, commonDir, run)
 }
+
+// errReplayMerges marks a span git replay refuses to replay: it carries a merge,
+// which a rebase in the conflict workspace flattens instead.
+var errReplayMerges = errors.New("replay: merge commits")
 
 // stackReplay computes a branch's rebased head without moving any ref:
 // replay.refAction=print makes git 2.55 print the update it would otherwise
@@ -680,6 +697,13 @@ func stackReplay(ctx context.Context, dir render.Dir, b *stackRebaseBranch) (str
 	}
 	if own == 0 {
 		return b.NewBase, nil
+	}
+	merges, err := gtRevCount(ctx, stackRebasePrefix, dir, b.OldBase+".."+b.Head, "--merges")
+	if err != nil {
+		return "", err
+	}
+	if merges > 0 {
+		return "", errReplayMerges
 	}
 	if b.HeadRef != gtRestackRef(b.Name) {
 		if _, err := render.RunCLI(ctx, dir, "git", []string{"update-ref", b.HeadRef, b.Head}); err != nil {
@@ -743,7 +767,13 @@ func stackOpenConflict(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	}
 	run.Conflict = &stackConflict{Branch: b.Name, Workspace: ws, Brief: stackBriefPath(run.dir, b.Name)}
 	if code == 0 {
-		return stackResume(ctx, cmd, l, commonDir, run)
+		if b.NewHead, err = stackRevParse(ctx, render.Dir(ws), "HEAD"); err != nil {
+			return err
+		}
+		if err := stackSaveRun(run); err != nil {
+			return err
+		}
+		return stackCloseWorkspace(ctx, cmd, l, commonDir, run)
 	}
 	unmerged, err := stackUnmerged(ctx, ws)
 	if err != nil {
@@ -798,7 +828,11 @@ func stackBrief(ctx context.Context, run *stackRebaseRun, b *stackRebaseBranch, 
 		}
 	}
 	fmt.Fprintf(&s, "next: resolve the files in %s and git add them, then run ccx vcs stack continue from any working copy of this repository; ccx vcs stack abort drops the run.\n", ws)
-	s.WriteString("never git rebase --continue by hand: continue drives it with rerere off, then rebases and pushes the rest of the stack.")
+	if run.NoPush {
+		s.WriteString("never git rebase --continue by hand: continue drives it with rerere off, then rebases the rest of the stack.")
+	} else {
+		s.WriteString("never git rebase --continue by hand: continue drives it with rerere off, then rebases and pushes the rest of the stack.")
+	}
 	return s.String()
 }
 
@@ -1078,6 +1112,45 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 		return nil
 	}
 	return stackVerdict(ctx, cmd, l.dir(), run, live)
+}
+
+// stackFinishGit writes a git-lane restack's branch and resets every working
+// copy holding it onto the new head, carrying its uncommitted work over.
+func stackFinishGit(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun) error {
+	prefix := "restack"
+	b := run.Branches[0]
+	var realigned []string
+	var alignErr error
+	if !run.Applied {
+		holders, err := vcs.BranchHolders(ctx, l.checkout)
+		if err != nil {
+			return fmt.Errorf("%s: %w", prefix, err)
+		}
+		snapshots, err := gtRestackSnapshots(ctx, prefix, []string{b.Name}, holders)
+		if err != nil {
+			return err
+		}
+		if err := stackWriteRefs(ctx, l.dir(), run); err != nil {
+			return err
+		}
+		run.Applied = true
+		if err := stackSaveRun(run); err != nil {
+			return err
+		}
+		realigned, alignErr = gtRestackAlign(ctx, prefix, holders, snapshots, []restackMove{{branch: b.Name, head: b.NewHead, parent: b.NewBase}})
+	}
+	if err := errors.Join(stackDropTempRefs(ctx, l.dir(), run), stackClearRun(commonDir, run)); err != nil {
+		return fmt.Errorf("%s: %s is rebased, but clearing the run failed: %w", prefix, b.Name, errors.Join(err, alignErr))
+	}
+	summary := "fetched" + shipSep + "rebased onto " + run.Trunk
+	if len(realigned) > 1 {
+		summary += shipSep + "reset " + strings.Join(realigned, ", ")
+	}
+	if l.note != "" {
+		summary = fmt.Sprintf("lane %s (%s)%s%s", kindLabel(l.kind), l.note, shipSep, summary)
+	}
+	cmd.Println(summary)
+	return alignErr
 }
 
 // stackWriteRefs moves every rewritten branch in one transaction and verifies

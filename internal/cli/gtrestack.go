@@ -497,9 +497,16 @@ func gtRestackSnapshots(ctx context.Context, prefix string, movers []string, hol
 		if holder == "" {
 			continue
 		}
+		dirty, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"status", "--porcelain", "--untracked-files=no"})
+		if err != nil {
+			return nil, fmt.Errorf("%s: read the uncommitted work in %s before restacking %s: git status --porcelain --untracked-files=no: %w", prefix, holder, branch, err)
+		}
+		if strings.TrimSpace(dirty) == "" {
+			continue
+		}
 		out, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"stash", "create", "ccx restack"})
 		if err != nil {
-			return nil, fmt.Errorf("%s: snapshot the uncommitted work in %s before restacking %s: %w", prefix, holder, branch, err)
+			return nil, fmt.Errorf("%s: snapshot the uncommitted work in %s before restacking %s: git stash create: %w", prefix, holder, branch, err)
 		}
 		if sha := strings.TrimSpace(out); sha != "" {
 			snapshots[holder] = sha

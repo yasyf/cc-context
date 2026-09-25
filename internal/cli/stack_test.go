@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
@@ -811,4 +812,67 @@ func TestStackSubmitRefusesAPushFromElsewhere(t *testing.T) {
 	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != foreign {
 		t.Errorf("remote base = %s, want the foreign head %s kept", got, foreign)
 	}
+}
+
+func stackHeldFeature(t *testing.T, f *vcstest.Fixture) string {
+	t.Helper()
+	shipGTStack(t, f, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	held := restackSiblingPath(t, "held")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "feature")
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+	shipResetLog(t, f)
+	return held
+}
+
+func TestStackSubmitSnapshotsOnlyADirtyWorkingCopy(t *testing.T) {
+	t.Run("clean", func(t *testing.T) {
+		f := shipGTRepo(t)
+		stubGTAPI(t)
+		held := stackHeldFeature(t, f)
+		touched := time.Now().Add(time.Hour)
+		if err := os.Chtimes(filepath.Join(held, "feature.txt"), touched, touched); err != nil {
+			t.Fatalf("touch feature.txt: %v", err)
+		}
+
+		if _, _, err := runStackCmd(t, f, "submit", "--include", "feature"); err != nil {
+			t.Fatalf("stack submit: %v", err)
+		}
+		for _, inv := range shipGTInvocations(t, f) {
+			if len(inv) > 2 && inv[0] == "git" && inv[1] == "stash" && inv[2] == "create" {
+				t.Errorf("ran %v over a clean working copy", inv)
+			}
+		}
+	})
+	t.Run("staged, with the tree put back", func(t *testing.T) {
+		f := shipGTRepo(t)
+		stubGTAPI(t)
+		held := stackHeldFeature(t, f)
+		writeShipFile(t, held, "feature.txt", "staged\n")
+		mustRun(t, f.Env(), held, "git", "add", "feature.txt")
+		writeShipFile(t, held, "feature.txt", "feature\n")
+
+		if _, _, err := runStackCmd(t, f, "submit", "--include", "feature"); err != nil {
+			t.Fatalf("stack submit: %v", err)
+		}
+		if staged := gitAt(t, f.Env(), held, "show", ":feature.txt"); staged != "staged" {
+			t.Errorf("index holds %q for feature.txt, want the staged edit kept", staged)
+		}
+	})
+	t.Run("dirty with its index locked", func(t *testing.T) {
+		f := shipGTRepo(t)
+		stubGTAPI(t)
+		held := stackHeldFeature(t, f)
+		writeShipFile(t, held, "feature.txt", "edited\n")
+		gitDir := gitAt(t, f.Env(), held, "rev-parse", "--absolute-git-dir")
+		writeShipFile(t, gitDir, "index.lock", "")
+
+		_, _, err := runStackCmd(t, f, "submit", "--include", "feature")
+		if err == nil {
+			t.Fatal("stack submit succeeded over a locked index")
+		}
+		if !strings.Contains(err.Error(), "git stash create") {
+			t.Errorf("error = %v, want it to name the command that failed", err)
+		}
+	})
 }
