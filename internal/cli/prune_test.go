@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/gtmeta"
@@ -164,7 +167,8 @@ func TestPruneRepairsAStackOverAForgottenParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveTrunk: %v", err)
 	}
-	plan, err := prunePlanFor(t.Context(), dir, gtLane, trunk, commonDir)
+	stubGTAPI(t)
+	plan, err := prunePlanFor(t.Context(), dir, pruneGTLane, trunk, commonDir)
 	if err != nil {
 		t.Fatalf("prunePlanFor: %v", err)
 	}
@@ -193,7 +197,7 @@ func TestPruneRepairsAStackOverAForgottenParent(t *testing.T) {
 		}
 	})
 
-	if err := pruneApply(t.Context(), dir, gtLane, plan, commonDir); err != nil {
+	if err := pruneApply(t.Context(), dir, pruneGTLane, plan, commonDir); err != nil {
 		t.Fatalf("pruneApply: %v", err)
 	}
 	want := "deleted 1 branches merged into main: worktree-wf · " +
@@ -222,6 +226,161 @@ func TestPruneRepairsAStackOverAForgottenParent(t *testing.T) {
 	}
 	if state["feature"].NeedsRestack {
 		t.Error("feature reads as needing a restack, but its recorded revision is main's head")
+	}
+}
+
+// pruneGTLane is the graphite lane with its repository already resolved, so a
+// squash lookup names it without asking gh.
+var pruneGTLane = lane{kind: vcs.Git, gt: true, repo: &personalRepo}
+
+// pruneSquashFixture cuts each branch off main with a commit of its own, tracks
+// every one of them on main, and returns the repository ready to plan.
+func pruneSquashFixture(t *testing.T, branches ...string) (*vcstest.Fixture, render.Dir, vcs.Trunk, string) {
+	t.Helper()
+	f := vcstest.Repo(t, vcstest.Remote())
+	dir := render.Dir(f.Dir)
+	trunkHead := gitAt(t, f.Dir, "rev-parse", "main")
+	state := `{"main":{"trunk":true}`
+	for _, branch := range branches {
+		gitAt(t, f.Dir, "switch", "-qc", branch, "main")
+		if err := os.WriteFile(filepath.Join(f.Dir, branch+".txt"), []byte(branch+"\n"), 0o600); err != nil {
+			t.Fatalf("write %s.txt: %v", branch, err)
+		}
+		gitAt(t, f.Dir, "add", branch+".txt")
+		gitAt(t, f.Dir, "commit", "-qm", branch)
+		state += `,"` + branch + `":{"parents":[{"ref":"main","sha":"` + trunkHead + `"}]}`
+	}
+	gitAt(t, f.Dir, "switch", "-q", "main")
+	commonDir, err := gtCommonDir(t.Context(), dir, "prune")
+	if err != nil {
+		t.Fatalf("gtCommonDir: %v", err)
+	}
+	vcstest.WriteGraphiteMeta(t, commonDir, state+"}")
+	trunk, err := vcs.ResolveTrunk(t.Context(), dir, "origin")
+	if err != nil {
+		t.Fatalf("ResolveTrunk: %v", err)
+	}
+	return f, dir, trunk, commonDir
+}
+
+// TestPruneSeesSquashLandings pins the landing git branch --merged cannot see:
+// a pull request Graphite reports MERGED at the branch's own head is deleted,
+// while one whose branch moved past the merged head, one a worktree holds, one
+// gt reports as diverged, and one with no merged pull request all survive.
+func TestPruneSeesSquashLandings(t *testing.T) {
+	f, dir, trunk, commonDir := pruneSquashFixture(t, "landed", "moved", "held", "diverged", "open")
+	api := stubGTAPI(t)
+	for i, branch := range []string{"landed", "held", "diverged"} {
+		api.merged[branch] = gtStubMerged{number: 10 + i, head: gitAt(t, f.Dir, "rev-parse", branch)}
+	}
+	api.merged["moved"] = gtStubMerged{number: 20, head: gitAt(t, f.Dir, "rev-parse", "moved")}
+	gitAt(t, f.Dir, "switch", "-q", "moved")
+	gitAt(t, f.Dir, "commit", "-q", "--allow-empty", "-m", "past the merge")
+	gitAt(t, f.Dir, "switch", "-q", "main")
+	gitAt(t, f.Dir, "worktree", "add", "-q", filepath.Join(t.TempDir(), "held"), "held")
+	pruneMarkDiverged(t, commonDir, "diverged")
+
+	plan, err := prunePlanFor(t.Context(), dir, pruneGTLane, trunk, commonDir)
+	if err != nil {
+		t.Fatalf("prunePlanFor: %v", err)
+	}
+	if got := pruneSquashedNames(plan); !slices.Equal(got, []string{"landed"}) {
+		t.Fatalf("squashed = %v, want [landed]", got)
+	}
+	if !slices.Equal(plan.held, []string{"held"}) {
+		t.Errorf("held = %v, want [held]", plan.held)
+	}
+	if !slices.Equal(plan.diverged, []string{"diverged"}) {
+		t.Errorf("diverged = %v, want [diverged]", plan.diverged)
+	}
+	want := "would delete 0 branches merged into main · would delete 1 branches whose pull request squash-landed: landed · " +
+		"1 merged branches held by a worktree · 1 diverged, left alone — gt track or gt untrack each"
+	if got := prunePlanReport(plan, trunk, true); got != want {
+		t.Errorf("dry-run report = %q, want %q", got, want)
+	}
+
+	if err := pruneApply(t.Context(), dir, pruneGTLane, plan, commonDir); err != nil {
+		t.Fatalf("pruneApply: %v", err)
+	}
+	if gitBranchExists(t, f.Dir, "landed") {
+		t.Error("landed survived the prune")
+	}
+	rows, err := gtmeta.Rows(t.Context(), commonDir)
+	if err != nil {
+		t.Fatalf("gtmeta.Rows: %v", err)
+	}
+	for _, row := range rows {
+		if row.Branch == "landed" {
+			t.Error("landed's graphite row survived the prune")
+		}
+	}
+	for _, branch := range []string{"moved", "held", "diverged", "open"} {
+		if !gitBranchExists(t, f.Dir, branch) {
+			t.Errorf("%s was deleted", branch)
+		}
+	}
+}
+
+// TestPruneRefusesASquashBranchThatMoved pins the delete's own guard: the plan
+// read the branch at its merged head, and a commit landing on it before the
+// apply is work the squash never took.
+func TestPruneRefusesASquashBranchThatMoved(t *testing.T) {
+	f, dir, trunk, commonDir := pruneSquashFixture(t, "landed")
+	api := stubGTAPI(t)
+	api.merged["landed"] = gtStubMerged{number: 10, head: gitAt(t, f.Dir, "rev-parse", "landed")}
+
+	plan, err := prunePlanFor(t.Context(), dir, pruneGTLane, trunk, commonDir)
+	if err != nil {
+		t.Fatalf("prunePlanFor: %v", err)
+	}
+	gitAt(t, f.Dir, "switch", "-q", "landed")
+	gitAt(t, f.Dir, "commit", "-q", "--allow-empty", "-m", "after the plan")
+	gitAt(t, f.Dir, "switch", "-q", "main")
+
+	if err := pruneApply(t.Context(), dir, pruneGTLane, plan, commonDir); err == nil {
+		t.Fatal("pruneApply deleted a branch that moved past its merged head")
+	}
+	if got := gitAt(t, f.Dir, "log", "-1", "--format=%s", "landed"); got != "after the plan" {
+		t.Errorf("landed's head = %q, want the commit made after the plan", got)
+	}
+}
+
+// TestPruneBatchesTheSquashLookup pins the request size: a repository with
+// thousands of branches asks Graphite in bounded batches, not one request
+// naming every branch.
+func TestPruneBatchesTheSquashLookup(t *testing.T) {
+	f, dir, trunk, commonDir := pruneSquashFixture(t, "seed")
+	head := gitAt(t, f.Dir, "rev-parse", "seed")
+	for i := range pruneLandedBatch + 50 {
+		gitAt(t, f.Dir, "branch", fmt.Sprintf("b%03d", i), head)
+	}
+	api := stubGTAPI(t)
+
+	if _, err := prunePlanFor(t.Context(), dir, pruneGTLane, trunk, commonDir); err != nil {
+		t.Fatalf("prunePlanFor: %v", err)
+	}
+	requests := api.infoRequests()
+	asked := 0
+	for _, heads := range requests {
+		if len(heads) > pruneLandedBatch {
+			t.Errorf("one request named %d branches, want at most %d", len(heads), pruneLandedBatch)
+		}
+		asked += len(heads)
+	}
+	if len(requests) != 2 || asked != pruneLandedBatch+51 {
+		t.Errorf("%d requests naming %d branches, want 2 naming %d", len(requests), asked, pruneLandedBatch+51)
+	}
+}
+
+func pruneMarkDiverged(t *testing.T, commonDir, branch string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(commonDir, ".graphite_metadata.db"))
+	if err != nil {
+		t.Fatalf("open graphite metadata: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`UPDATE branch_metadata SET validation_result = 'BAD_PARENT_NAME' WHERE branch_name = ?`, branch); err != nil {
+		t.Fatalf("mark %s diverged: %v", branch, err)
 	}
 }
 

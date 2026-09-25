@@ -323,8 +323,9 @@ func shipPRCreate(ctx context.Context, nwo, branch, trunk, subject string, m prM
 func shipPREdit(ctx context.Context, nwo string, pr prState, m prMeta) (string, error) {
 	fields := m.stated()
 	if len(fields) > 0 {
-		if _, err := render.RunCLI(ctx, render.Ambient, "gh", prEditArgv(nwo, pr.Number, m)); err != nil {
-			return "", fmt.Errorf("ship: gh pr edit: %w", err)
+		argv := prEditArgv(nwo, pr.Number, m)
+		if _, err := render.RunCLI(ctx, render.Ambient, "gh", argv); err != nil {
+			return "", prRestateError("the push", []string{ghCommand(argv)}, err)
 		}
 	}
 	// gh pr edit has no draft toggle, so a transition is its own verb — and only
@@ -337,7 +338,7 @@ func shipPREdit(ctx context.Context, nwo string, pr prState, m prMeta) (string, 
 			field = "draft"
 		}
 		if _, err := render.RunCLI(ctx, render.Ambient, "gh", argv); err != nil {
-			return "", fmt.Errorf("ship: gh pr ready: %w", err)
+			return "", prRestateError("the push", []string{ghCommand(argv)}, err)
 		}
 		fields = append(fields, field)
 	}
@@ -347,15 +348,26 @@ func shipPREdit(ctx context.Context, nwo string, pr prState, m prMeta) (string, 
 	return fmt.Sprintf("updated PR #%d %s (%s)", pr.Number, pr.URL, strings.Join(fields, ", ")), nil
 }
 
+// prEditArgv restates the stated fields through REST. -F body=@path sends the
+// file's bytes as the string they are, where a bare -F would coerce a body
+// reading "true" or "42" into JSON.
 func prEditArgv(nwo string, number int, m prMeta) []string {
-	argv := []string{"pr", "edit", strconv.Itoa(number), "--repo", nwo}
+	var fields []string
 	if m.title != "" {
-		argv = append(argv, "--title", m.title)
+		fields = append(fields, "-f", "title="+m.title)
 	}
 	if m.bodyPath != "" {
-		argv = append(argv, "--body-file", m.bodyPath)
+		fields = append(fields, "-F", "body=@"+m.bodyPath)
 	}
-	return argv
+	return ghPatchPullArgv(nwo, number, fields...)
+}
+
+// prRestateError reports a restate that failed after the branch already
+// reached GitHub, naming the commands that finish only the restate, so a
+// caller does not read the whole ship as failed and re-run it.
+func prRestateError(done string, retry []string, err error) error {
+	return fmt.Errorf("ship: %s already happened; only the pull request restate failed — finish it with: %s: %w",
+		done, strings.Join(retry, " && "), err)
 }
 
 // shipPRGT backfills the pull requests the submit just opened, over the
@@ -375,7 +387,7 @@ func shipPRGT(ctx context.Context, nwo string, meta map[string]prMeta, stack []s
 			return "", fmt.Errorf("ship: --pr-title/--pr-body-file named %s, which has no pull request", entry.Branch)
 		}
 		if _, err := render.RunCLI(ctx, render.Ambient, "gh", prEditArgv(nwo, entry.PR, m)); err != nil {
-			return "", fmt.Errorf("ship: gh pr edit: %w", err)
+			return "", prRestateError("the push and graphite submit", prRestatesLeft(nwo, meta, stack[:i+1]), err)
 		}
 		segs = append(segs, fmt.Sprintf("PR #%d %s", entry.PR, strings.Join(fields, "+")))
 	}
@@ -383,6 +395,21 @@ func shipPRGT(ctx context.Context, nwo string, meta map[string]prMeta, stack []s
 		return "", nil
 	}
 	return "set " + strings.Join(segs, ", "), nil
+}
+
+// prRestatesLeft is every restate shipPRGT had yet to make when one failed, in
+// the order it makes them.
+func prRestatesLeft(nwo string, meta map[string]prMeta, stack []stackEntry) []string {
+	var left []string
+	for i := len(stack) - 1; i >= 0; i-- {
+		entry := stack[i]
+		m := meta[entry.Branch]
+		if entry.PR == 0 || len(m.stated()) == 0 {
+			continue
+		}
+		left = append(left, ghCommand(prEditArgv(nwo, entry.PR, m)))
+	}
+	return left
 }
 
 // prNumberFromURL reads the pull request number off the URL gh pr create prints,

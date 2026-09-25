@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -110,6 +111,35 @@ func TestShipDryRunNamesTheTrackParent(t *testing.T) {
 	}
 	if !strings.Contains(parent[0], "nearest tracked ancestor") {
 		t.Errorf("parent = %q, want it to say why b was resolved", parent[0])
+	}
+}
+
+// TestShipDryRunOrdersOnlyContainedTrackedBranches pins the cost of that answer:
+// one for-each-ref names the tracked branches the untracked one contains, and
+// only those are ordered, so a repository with thousands of tracked siblings
+// costs no ancestry check per sibling.
+func TestShipDryRunOrdersOnlyContainedTrackedBranches(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "x", "y")
+	mustRun(t, f.Dir, "git", "switch", "-q", "main")
+	shipGTStack(t, f, "a", "b")
+	shipGTUntracked(t, f, "c")
+	shipGTReady(t, f)
+
+	report := dryRunReport(t, "-m", "fix: frobnicate")
+
+	if parent := dryRunValues(report, "parent"); len(parent) != 1 || !strings.HasPrefix(parent[0], "b"+shipSep) {
+		t.Fatalf("parent = %v, want the nearest tracked ancestor b", parent)
+	}
+	for _, inv := range shipGTInvocations(t, f) {
+		if !slices.Contains(inv, "--is-ancestor") {
+			continue
+		}
+		for _, sibling := range []string{"refs/heads/x", "refs/heads/y"} {
+			if slices.Contains(inv, sibling) {
+				t.Errorf("ancestry check %v ran on %s, which c does not contain", inv, sibling)
+			}
+		}
 	}
 }
 

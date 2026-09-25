@@ -112,12 +112,24 @@ func seedPRViews(t *testing.T, payloads map[string]string) {
 	t.Setenv("GH_PR_VIEW_DIR", dir)
 }
 
+// ghPREditArgv is the REST restate ship makes of one pull request.
+func ghPREditArgv(number int, fields ...string) []string {
+	return append([]string{"gh", "api", "-X", "PATCH", fmt.Sprintf("repos/%s/pulls/%d", fakePRRepo, number), "--silent"}, fields...)
+}
+
+func isPREdit(inv []string) bool {
+	return len(inv) > 3 && inv[0] == "gh" && inv[1] == "api" && inv[2] == "-X" && inv[3] == "PATCH"
+}
+
 // assertNoPRStep fails on any gh verb only the pull request step issues. The
 // batched lookup behind the gt lane's submit report is deliberately not one —
 // it is a gh api graphql call, and every verb named here mutates or lists.
 func assertNoPRStep(t *testing.T, invocations [][]string) {
 	t.Helper()
 	for _, inv := range invocations {
+		if isPREdit(inv) {
+			t.Errorf("pull request step ran without a pr flag: %v", inv)
+		}
 		if len(inv) < 3 || inv[0] != "gh" || inv[1] != "pr" {
 			continue
 		}
@@ -300,13 +312,13 @@ func TestShipPREditOnlyStatedFields(t *testing.T) {
 	}
 	var prCalls [][]string
 	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
-		if inv[0] == "gh" && inv[1] == "pr" {
+		if inv[0] == "gh" && (inv[1] == "pr" || isPREdit(inv)) {
 			prCalls = append(prCalls, inv)
 		}
 	}
 	assertInvocations(t, prCalls, [][]string{
 		{"gh", "pr", "list", "--repo", fakePRRepo, "--head", "feature", "--state", "open", "--json", "number,url,isDraft", "--limit", "1"},
-		{"gh", "pr", "edit", strconv.Itoa(pr.Number), "--repo", fakePRRepo, "--body-file", body},
+		ghPREditArgv(pr.Number, "-F", "body=@"+body),
 	})
 	want := swept(vcs.Git, "f.txt") + fmt.Sprintf("%s · pushed feature → origin · updated PR #%d %s (body)", shipCommitted(t, f, vcs.Git), pr.Number, pr.URL)
 	if got != want {
@@ -330,11 +342,11 @@ func TestShipPRBodyFromStdin(t *testing.T) {
 	}
 	var edit []string
 	for _, inv := range normalizeTempPaths(vcstest.Invocations(t, f.ArgvLog)) {
-		if len(inv) > 2 && inv[0] == "gh" && inv[2] == "edit" {
+		if isPREdit(inv) {
 			edit = inv
 		}
 	}
-	want := []string{"gh", "pr", "edit", strconv.Itoa(pr.Number), "--repo", fakePRRepo, "--body-file", "<pr-body>"}
+	want := ghPREditArgv(pr.Number, "-F", "<pr-body>")
 	if !reflect.DeepEqual(edit, want) {
 		t.Errorf("edit argv = %v, want %v", edit, want)
 	}
@@ -367,11 +379,11 @@ func TestShipPRGTWritesTheNewestPR(t *testing.T) {
 	}
 	var edit []string
 	for _, inv := range readInvocations(t, log) {
-		if len(inv) > 2 && inv[0] == "gh" && inv[2] == "edit" {
+		if isPREdit(inv) {
 			edit = inv
 		}
 	}
-	wantEdit := []string{"gh", "pr", "edit", "9", "--repo", fakePRRepo, "--body-file", body}
+	wantEdit := ghPREditArgv(9, "-F", "body=@"+body)
 	if !reflect.DeepEqual(edit, wantEdit) {
 		t.Errorf("edit argv = %v, want %v", edit, wantEdit)
 	}
@@ -400,7 +412,7 @@ func TestShipPRGTSkipsDownstackQuery(t *testing.T) {
 			gh = append(gh, inv)
 		}
 	}
-	assertInvocations(t, gh, [][]string{{"gh", "pr", "edit", "41", "--repo", fakePRRepo, "--body-file", body}})
+	assertInvocations(t, gh, [][]string{ghPREditArgv(41, "-F", "body=@"+body)})
 }
 
 // TestShipPRGTQueriesForABodylessBranch is the other half: a branch this ship
@@ -462,7 +474,7 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
 		gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 		ghDownstackPRArgv("feature"),
-		{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "Better title", "--body-file", body},
+		ghPREditArgv(7, "-f", "title=Better title", "-F", "body=@"+body),
 	})
 	assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main"), wantInv)
 }
@@ -520,7 +532,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 				gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
 				gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 				ghDownstackPRArgv("feature"),
-				{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--title", "fix: 🐛 frobnicate the widget", "--body-file", body},
+				ghPREditArgv(7, "-f", "title=fix: 🐛 frobnicate the widget", "-F", "body=@"+body),
 			})
 			assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main"), wantInv)
 		})
@@ -563,8 +575,63 @@ func TestShipPRGTBackfill(t *testing.T) {
 	}
 	assertInvocations(t, gh, [][]string{
 		ghDownstackPRArgv("base", "feature", "feature2"),
-		{"gh", "pr", "edit", "7", "--repo", fakePRRepo, "--body-file", tipBody},
-		{"gh", "pr", "edit", "6", "--repo", fakePRRepo, "--body-file", midBody},
+		ghPREditArgv(7, "-F", "body=@"+tipBody),
+		ghPREditArgv(6, "-F", "body=@"+midBody),
+	})
+}
+
+// TestShipPRRestateFailureNamesTheRetry pins a restate GitHub refuses after the
+// branch already reached it: the error says what already happened and names the
+// commands that finish only the restate, the one refused and every one after it.
+func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
+	t.Run("graphite lane", func(t *testing.T) {
+		log := setupShipGT(t, true)
+		t.Setenv("GIT_BRANCH", "feature2")
+		setGTState(t, `{"main":{"trunk":true},`+
+			`"feature":{"parents":[{"ref":"main","sha":"beadfeed"}]},`+
+			`"feature2":{"parents":[{"ref":"feature","sha":"feedface"}]}}`)
+		seedPRViews(t, map[string]string{
+			"feature":  `{"number":6,"url":"https://github.com/x/pull/6","body":""}`,
+			"feature2": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`,
+		})
+		t.Setenv("GH_PR_EDIT_FAIL", "gh: API rate limit exceeded (HTTP 403)")
+		tipBody := writePRBody(t, "tip.md", "tip body\n")
+		midBody := writePRBody(t, "mid.md", "mid body\n")
+
+		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch",
+			"--pr-title", "Tip title", "--pr-body-file", tipBody, "--pr-body-file", "feature="+midBody)
+		if err == nil {
+			t.Fatal("ship succeeded over a refused restate")
+		}
+		want := `ship: the push and graphite submit already happened; only the pull request restate failed — finish it with: ` +
+			`gh api -X PATCH repos/yasyf/cc-context/pulls/7 --silent -f "title=Tip title" -F body=@` + tipBody +
+			` && gh api -X PATCH repos/yasyf/cc-context/pulls/6 --silent -F body=@` + midBody + `: `
+		if !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("error = %q, want prefix %q", err, want)
+		}
+		if pushed := gtPushedRefs(readInvocations(t, log)); len(pushed) == 0 {
+			t.Error("no push ran before the restate")
+		}
+	})
+	t.Run("git lane", func(t *testing.T) {
+		f := shipPRFixture(t, vcstest.Branch("feature"))
+		pr := prFromListGolden(t, "pr-list-found")
+		t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-found"))
+		t.Setenv("GH_PR_EDIT_FAIL", "gh: API rate limit exceeded (HTTP 403)")
+		body := writePRBody(t, "body.md", "regenerated\n")
+
+		_, err := runShipCmd(t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		if err == nil {
+			t.Fatal("ship succeeded over a refused restate")
+		}
+		want := fmt.Sprintf("ship: the push already happened; only the pull request restate failed — finish it with: "+
+			"gh api -X PATCH repos/yasyf/cc-context/pulls/%d --silent -F body=@%s: ", pr.Number, body)
+		if !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("error = %q, want prefix %q", err, want)
+		}
+		if n := remoteCount(t, f, "feature"); n != 2 {
+			t.Errorf("origin feature holds %d commits, want the push the restate followed", n)
+		}
 	})
 }
 
