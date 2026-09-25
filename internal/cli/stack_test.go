@@ -768,6 +768,104 @@ func TestStackSubmitLeasesOnAHeadThisRepositoryPushed(t *testing.T) {
 	}
 }
 
+func TestShipAmendPushesOverTheHeadItLastSubmitted(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("first stack submit: %v", err)
+	}
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	writeShipFile(t, f.Dir, "base.txt", "base amended\n")
+	shipResetLog(t, f)
+
+	if _, _, err := runShipCmdFull(f.Context(), t, "--amend", "--no-watch", "base.txt"); err != nil {
+		t.Fatalf("ship --amend = %v, want the amend pushed over the head this repository submitted", err)
+	}
+	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"), gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != want {
+		t.Errorf("remote base = %s, want the amended head %s", got, want)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "show", "base:base.txt"); got != "base amended" {
+		t.Errorf("remote base.txt = %q, want the amend", got)
+	}
+}
+
+func TestStackSubmitPushesOverARemoteReplayOfItsLastSubmittedHead(t *testing.T) {
+	f := shipGTRepo(t)
+	stubStackPRs(t, nil)
+	shipGTStack(t, f, "base")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("first stack submit: %v", err)
+	}
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	clone := filepath.Join(t.TempDir(), "graphite-app")
+	mustRun(t, f.Env(), filepath.Dir(clone), "git", "clone", "-q", "--branch", "base", f.RemoteDir, clone)
+	mustRun(t, f.Env(), clone, "git", "-c", "user.email=app@graphite.dev", "-c", "user.name=graphite-app", "rebase", "-q", "origin/main")
+	mustRun(t, f.Env(), clone, "git", "push", "-q", "--force", "origin", "base")
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit = %v, want a patch-equivalent remote replay pushed over", err)
+	}
+	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"), gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != want {
+		t.Errorf("remote base = %s, want the local head %s", got, want)
+	}
+	if !stackOnto(t, f, "origin/main", "base") {
+		t.Error("base is not on the new trunk")
+	}
+}
+
+func TestStackSubmitLeasesOnARemoteRewriteOfAnUnmovedHead(t *testing.T) {
+	f := shipGTRepo(t)
+	stubStackPRs(t, nil)
+	shipGTStack(t, f, "base")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("first stack submit: %v", err)
+	}
+	clone := filepath.Join(t.TempDir(), "graphite-app")
+	mustRun(t, f.Env(), filepath.Dir(clone), "git", "clone", "-q", "--branch", "base", f.RemoteDir, clone)
+	mustRun(t, f.Env(), clone, "git", "-c", "user.email=app@graphite.dev", "-c", "user.name=graphite-app", "commit", "-q", "--amend", "--no-edit")
+	mustRun(t, f.Env(), clone, "git", "push", "-q", "--force", "origin", "base")
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit = %v, want the rewritten remote leased on and replaced", err)
+	}
+	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"), gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != want {
+		t.Errorf("remote base = %s, want the local head %s", got, want)
+	}
+}
+
+func TestStackSubmitRefusesAForeignMergeCarryingItsOwnChange(t *testing.T) {
+	f := shipGTRepo(t)
+	stubStackPRs(t, nil)
+	shipGTStack(t, f, "base")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("first stack submit: %v", err)
+	}
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
+		t.Fatalf("local restack: %v", err)
+	}
+	clone := filepath.Join(t.TempDir(), "other")
+	mustRun(t, f.Env(), filepath.Dir(clone), "git", "clone", "-q", "--branch", "base", f.RemoteDir, clone)
+	id := []string{"-c", "user.email=t@t.t", "-c", "user.name=t"}
+	mustRun(t, f.Env(), clone, "git", append(slices.Clone(id), "merge", "-q", "--no-ff", "--no-commit", "origin/main")...)
+	writeShipFile(t, clone, "foreign.txt", "foreign\n")
+	mustRun(t, f.Env(), clone, "git", "add", "foreign.txt")
+	mustRun(t, f.Env(), clone, "git", append(slices.Clone(id), "commit", "-qm", "merge main")...)
+	mustRun(t, f.Env(), clone, "git", "push", "-q", "origin", "base")
+	foreign := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	shipResetLog(t, f)
+
+	_, _, err := runStackCmd(t, f, "submit")
+	if err == nil || !strings.Contains(err.Error(), "base has diverged from origin/base") {
+		t.Fatalf("stack submit = %v, want the foreign merge refused", err)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != foreign {
+		t.Errorf("remote base = %s, want the foreign merge %s kept", got, foreign)
+	}
+}
+
 func TestStackSubmitRefusesAPushFromElsewhere(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "base")

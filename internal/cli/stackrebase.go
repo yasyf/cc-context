@@ -574,6 +574,13 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 		case behind:
 			b.Head, b.HeadRef = remote, stackTempRef(name)
 		case !ahead && remote != submitted:
+			replay, err := stackRemoteReplays(ctx, dir, remote, submitted, pin)
+			if err != nil {
+				return b, err
+			}
+			if replay {
+				break
+			}
 			return b, fmt.Errorf("stack rebase: %s has diverged from %s/%s (local %.12s, remote %.12s) — someone pushed to it; reconcile the two by hand, then re-run", name, tr.Remote(), name, s.Head, remote)
 		}
 	}
@@ -601,6 +608,55 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 		return b, fmt.Errorf("stack rebase: %s's pull request #%d closed without landing — reopen it, drop the branch with ccx vcs stack drop %s, or pass --landed %s if it did land", name, pr.Number, name, name)
 	}
 	return b, nil
+}
+
+func stackRemoteReplays(ctx context.Context, dir render.Dir, remote, submitted, pin string) (bool, error) {
+	if submitted == "" {
+		return false, nil
+	}
+	theirs, err := stackPatchSeries(ctx, dir, pin, remote)
+	if err != nil {
+		return false, err
+	}
+	ours, err := stackPatchSeries(ctx, dir, pin, submitted)
+	if err != nil {
+		return false, err
+	}
+	return theirs != nil && ours != nil && slices.Equal(theirs, ours), nil
+}
+
+func stackPatchSeries(ctx context.Context, dir render.Dir, pin, head string) ([]string, error) {
+	span := pin + ".." + head
+	merges, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", "--merges", span})
+	if err != nil {
+		return nil, fmt.Errorf("%s: git rev-list --merges %s: %w", stackRebasePrefix, span, err)
+	}
+	if strings.TrimSpace(merges) != "" {
+		return nil, nil
+	}
+	patches, err := render.RunCLI(ctx, dir, "git", []string{"log", "--reverse", "--no-merges", "--format=commit %H", "-p", span})
+	if err != nil {
+		return nil, fmt.Errorf("%s: git log -p %s: %w", stackRebasePrefix, span, err)
+	}
+	ids, err := render.RunCLIStdin(ctx, dir, "git", []string{"patch-id", "--stable"}, []byte(patches))
+	if err != nil {
+		return nil, fmt.Errorf("%s: git patch-id %s: %w", stackRebasePrefix, span, err)
+	}
+	authored, err := render.RunCLI(ctx, dir, "git", []string{"log", "--no-merges", "-z", "--format=%H%n%an <%ae> %at%n%B", span})
+	if err != nil {
+		return nil, fmt.Errorf("%s: git log %s: %w", stackRebasePrefix, span, err)
+	}
+	messages := map[string]string{}
+	for entry := range strings.SplitSeq(authored, "\x00") {
+		sha, message, _ := strings.Cut(entry, "\n")
+		messages[sha] = message
+	}
+	series := []string{}
+	for line := range strings.Lines(ids) {
+		id, sha, _ := strings.Cut(strings.TrimSpace(line), " ")
+		series = append(series, id+"\n"+messages[sha])
+	}
+	return series, nil
 }
 
 func stackOrder(trunk string, byName map[string]*stackRebaseBranch) ([]string, error) {
@@ -1634,7 +1690,7 @@ func stackPublishLeases(ctx context.Context, commonDir string, run *stackRebaseR
 	leases := map[string]string{}
 	for _, b := range run.Branches {
 		lease := b.Remote
-		if last[b.Name].HeadSha == b.NewHead {
+		if last[b.Name].HeadSha == b.NewHead && b.NewHead != b.Local {
 			lease = b.NewHead
 		}
 		leases[b.Name] = lease
