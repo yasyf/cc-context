@@ -1742,6 +1742,9 @@ func stackResolveRun(ctx context.Context, stack string) (lane, string, *stackReb
 		return lane{}, "", nil, fmt.Errorf("stack rebase: pid %d on %s is still driving the stack rebase of %s — wait for it to finish", run.Pid, run.Host, strings.Join(run.Roots, ", "))
 	}
 	run.Pid, run.Started, run.Host = os.Getpid(), stackProcStart(os.Getpid()), host
+	if _, err := os.Stat(run.Origin); run.Origin != "" && errors.Is(err, fs.ErrNotExist) {
+		run.Origin = l.root
+	}
 	if err := stackSaveRun(run); err != nil {
 		return lane{}, "", nil, err
 	}
