@@ -109,7 +109,7 @@ func runVcsPRStatus(cmd *cobra.Command, args []string, o vcsPRStatusOpts) error 
 	}
 	repo := o.repo
 	if repo == "" {
-		looked, err := vcs.LookupRepo(ctx, render.Dir(workingDir()), false)
+		looked, err := vcs.LookupRepo(ctx, render.Dir(workingDir(ctx)), false)
 		if err != nil {
 			return fmt.Errorf("pr status: name the repository with --repo: %w", err)
 		}
