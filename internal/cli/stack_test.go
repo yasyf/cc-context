@@ -386,14 +386,14 @@ func TestStackSubmitFrozenBranches(t *testing.T) {
 			if heads := api.submitHeads(); !slices.Equal(heads, branches) {
 				t.Errorf("submitted %v, want %v", heads, branches)
 			}
-			for i, branch := range branches {
+			parent := "main"
+			for _, branch := range branches {
 				head := gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
 				if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); got != head {
 					t.Errorf("remote %s = %s, want local %s", branch, got, head)
 				}
-				if i > 0 {
-					mustRun(t, f.Env(), f.Dir, "git", "merge-base", "--is-ancestor", branches[i-1], branch)
-				}
+				mustRun(t, f.Env(), f.Dir, "git", "merge-base", "--is-ancestor", parent, branch)
+				parent = branch
 			}
 		})
 	}
