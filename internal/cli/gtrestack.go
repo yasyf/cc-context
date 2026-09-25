@@ -211,10 +211,14 @@ func gtReplayChain(ctx context.Context, prefix string, dir render.Dir, state gtS
 		if merged {
 			return moves, &errRestackMerged{Branch: branch}
 		}
-		if err := gtRestackOwnWork(ctx, prefix, dir, pin, branch, parent.Ref, parent.SHA); err != nil {
+		from, err := gtRestackFrom(ctx, prefix, dir, state, branch)
+		if err != nil {
 			return moves, err
 		}
-		if err := gtReplay(ctx, prefix, dir, base, parent.SHA+".."+gtRestackRef(branch)); err != nil {
+		if err := gtRestackOwnWork(ctx, prefix, dir, pin, branch, parent.Ref, from); err != nil {
+			return moves, err
+		}
+		if err := gtReplay(ctx, prefix, dir, base, from+".."+gtRestackRef(branch)); err != nil {
 			if errors.Is(err, errReplayConflict) {
 				return moves, &errRestackConflict{Branch: branch, Onto: parent.Ref, Dir: holders[branch]}
 			}
@@ -228,6 +232,26 @@ func gtReplayChain(ctx context.Context, prefix string, dir render.Dir, state gtS
 		moves = append(moves, restackMove{branch: branch, head: head, parent: base})
 	}
 	return moves, nil
+}
+
+// gtRestackFrom is where a branch's own commits start: the parent revision gt
+// recorded, or — when a rebase outside gt took that revision out of the
+// branch's history — the fork point from the parent as it stands, which is
+// where git rebase itself would start.
+func gtRestackFrom(ctx context.Context, prefix string, dir render.Dir, state gtState, branch string) (string, error) {
+	parent := state[branch].Parents[0]
+	recorded, err := gitIsAncestor(ctx, dir, prefix, parent.SHA, gtRestackRef(branch))
+	if err != nil {
+		return "", err
+	}
+	if recorded {
+		return parent.SHA, nil
+	}
+	out, err := render.RunCLI(ctx, dir, "git", []string{"merge-base", gtRestackRef(branch), state[parent.Ref].Head})
+	if err != nil {
+		return "", fmt.Errorf("%s: git merge-base %s %s: %w", prefix, branch, parent.Ref, err)
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // gtTrunkPinned is the commit one restack lands every lane on: trunk's branch
