@@ -25,9 +25,9 @@ type gtGolden struct {
 }
 
 // result rebuilds the run a classifier is handed. The two streams are joined
-// the way gtCapture joins them, which is the one join ccx makes over streams it
-// kept apart; gtRun's own interleaving is not reconstructible from two files,
-// and no classifier reads anything finer than a line.
+// the way gtRun's buffered arm joins them; the streamed arm's interleaving is
+// not reconstructible from two files, and no classifier reads anything finer
+// than a line.
 func (g gtGolden) result() gtResult {
 	return gtResult{Output: gtJoinStreams(g.stdout, g.stderr), Stderr: g.stderr, Code: g.exit}
 }
@@ -62,9 +62,8 @@ type gtFamily int
 const (
 	// gtFamilyProbe is gtReachable's gt auth, classified by classifyGTProbe.
 	gtFamilyProbe gtFamily = iota
-	// gtFamilyRestack is gt sync and gt restack, which ccx no longer runs; the
-	// recordings pin only the exit-0 policy.
-	gtFamilyRestack
+	// gtFamilyRun is a verb gtRun drives, whose only classifier is verdict.
+	gtFamilyRun
 )
 
 func gtGoldenFamily(t *testing.T, g gtGolden) gtFamily {
@@ -72,8 +71,8 @@ func gtGoldenFamily(t *testing.T, g gtGolden) gtFamily {
 	switch g.argv[0] {
 	case "auth":
 		return gtFamilyProbe
-	case "sync", "restack":
-		return gtFamilyRestack
+	case "create", "modify":
+		return gtFamilyRun
 	default:
 		t.Fatalf("golden %s: no classifier owns gt %s", g.name, g.argv[0])
 		return 0
@@ -90,8 +89,6 @@ type gtGoldenCase struct {
 	// a WARNING:.
 	diagnostics int
 	reported    bool
-	// wantErr is whether the verb's own gtZeroPolicy calls this run a failure.
-	wantErr bool
 	// verdict and note are classifyGTProbe's answer, note being ccx's own
 	// sentence for it.
 	verdict gtVerdict
@@ -99,42 +96,10 @@ type gtGoldenCase struct {
 }
 
 var gtGoldenCases = map[string]gtGoldenCase{
-	"restack-conflict": {
-		wantErr: true,
-	},
-	"restack-blocked-during-rebase": {
+	"create-quiet-exit0": {},
+	"modify-tips-exit0":  {},
+	"modify-decline-exit0": {
 		diagnostics: 1,
-		reported:    true,
-		wantErr:     true,
-	},
-	"restack-worktree-held": {},
-	"restack-frozen":        {},
-	// The five exit-0 syncs; none is a failure under gtZeroSurfaces.
-	"sync-decline-exit0": {
-		diagnostics: 1,
-	},
-	"sync-decline-unstaged-exit0": {
-		diagnostics: 2,
-	},
-	"sync-tips-exit0":  {},
-	"sync-quiet-exit0": {},
-	"sync-tips-and-warning-exit0": {
-		diagnostics: 1,
-	},
-	"sync-no-remote": {
-		diagnostics: 1,
-		reported:    true,
-		wantErr:     true,
-	},
-	"sync-auth-invalid": {
-		diagnostics: 1,
-		reported:    true,
-		wantErr:     true,
-	},
-	"sync-repo-404": {
-		diagnostics: 1,
-		reported:    true,
-		wantErr:     true,
 	},
 	"auth-no-token": {
 		diagnostics: 1,
@@ -209,9 +174,9 @@ func assertGTGolden(t *testing.T, g gtGolden, want gtGoldenCase) {
 		if strings.Contains(note, "ERROR") {
 			t.Errorf("classifyGTProbe() note = %q — a lane ship declined before mutating anything is not an error", note)
 		}
-	case gtFamilyRestack:
-		if err := r.verdict(g.argv[0], gtZeroSurfaces); (err != nil) != want.wantErr {
-			t.Errorf("verdict() = %v, want an error: %v", err, want.wantErr)
+	case gtFamilyRun:
+		if err := r.verdict(g.argv[0]); err != nil {
+			t.Errorf("verdict() = %v, want nil", err)
 		}
 	}
 }
@@ -240,7 +205,7 @@ func gtGoldenFellThrough(t *testing.T, g gtGolden) bool {
 		verdict, note := classifyGTProbe(r.Output, r.Code)
 		return verdict == gtVerdictDenied && note == gtProbeFallbackNote(r.Output)
 	default:
-		return r.verdict(g.argv[0], gtZeroSurfaces) != nil
+		return r.verdict(g.argv[0]) != nil
 	}
 }
 
@@ -285,16 +250,15 @@ func TestGTGoldenWalk(t *testing.T) {
 				}
 				return
 			}
-			want, ok := gtGoldenCases[name]
-			if !ok {
+			if _, ok := gtGoldenCases[name]; !ok {
 				t.Fatalf("%s is recorded but no gtGoldenCase says what it classifies to", name)
 			}
 			g := loadGTGolden(t, name)
 			if len(g.argv) == 0 || g.argv[0] == "" {
 				t.Fatalf("%s argv = %q, want the verb gt was given", name, g.argv)
 			}
-			if got, wantFell := gtGoldenFellThrough(t, g), want.wantErr; got != wantFell {
-				t.Errorf("%s falls through to gt's own words = %v, want %v — gt reworded what this scenario pins", name, got, wantFell)
+			if gtGoldenFellThrough(t, g) {
+				t.Errorf("%s falls through to gt's own words — gt reworded what this scenario pins", name)
 			}
 		})
 	}
@@ -323,24 +287,14 @@ type gtGoldenStream struct {
 // golden, drops its entry here; a re-recording that produces a new one must add
 // its entry.
 var gtGoldenUnnormalized = map[string]gtGoldenStream{
-	"auth-no-perms.stderr":                 {trailingWS: 1},
-	"auth-no-token.stderr":                 {trailingWS: 1},
-	"auth-unreachable.stderr":              {trailingWS: 1},
-	"restack-blocked-during-rebase.stderr": {trailingWS: 1},
-	"restack-frozen.stderr":                {blankTail: true},
-	"restack-worktree-held.stderr":         {blankTail: true},
-	"sync-auth-invalid.stderr":             {trailingWS: 1},
-	"sync-no-remote.stderr":                {trailingWS: 1},
-	"sync-repo-404.stderr":                 {trailingWS: 1},
-	// The exit-0 syncs. Their stdout ends on the blank line below gt's
-	// "Restacking branches..." banner — the very blankness that makes the
-	// stderr echo the only account of a decline — and the tip-bearing ones end
-	// stderr on a tip block's own closing blank line.
-	"sync-decline-exit0.stdout":          {blankTail: true},
-	"sync-decline-unstaged-exit0.stdout": {blankTail: true},
-	"sync-tips-and-warning-exit0.stderr": {blankTail: true},
-	"sync-tips-and-warning-exit0.stdout": {blankTail: true},
-	"sync-tips-exit0.stderr":             {blankTail: true},
+	"auth-no-perms.stderr":    {trailingWS: 1},
+	"auth-no-token.stderr":    {trailingWS: 1},
+	"auth-unreachable.stderr": {trailingWS: 1},
+	// A tip block ends on its own closing blank line, and gt modify leaves a
+	// blank line under git's commit summary when it goes on to restack.
+	"modify-decline-exit0.stderr": {blankTail: true},
+	"modify-decline-exit0.stdout": {blankTail: true},
+	"modify-tips-exit0.stderr":    {blankTail: true},
 }
 
 // gtGoldenShape reads what the hooks would rewrite out of one payload.
