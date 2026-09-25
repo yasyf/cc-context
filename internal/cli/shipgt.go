@@ -269,18 +269,19 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 	}
 
 	var seg string
-	needsRestack := false
+	moves := false
 	if branch != "" && branch != trunk {
-		if _, tracked := state[branch]; !tracked {
-			if state, seg, err = gtTrack(ctx, errW, o, branch, c); err != nil {
+		switch _, tracked := state[branch]; {
+		case !tracked && o.parent != "":
+			if err := gtAdoptRefusal(ctx, l, state, branch, o.parent, c); err != nil {
+				return branchPlan{}, "", err
+			}
+			moves = true
+		case !tracked:
+			if state, seg, err = gtTrack(ctx, errW, l, o, branch, c); err != nil {
 				return branchPlan{}, "", err
 			}
 		}
-		chain, err := gtDownstack("ship", state, branch, trunk)
-		if err != nil {
-			return branchPlan{}, "", err
-		}
-		needsRestack = slices.ContainsFunc(chain, func(b string) bool { return state[b].NeedsRestack })
 	}
 
 	if err := gtTrunkFlagRefusal(o, branch, trunk); err != nil {
@@ -295,8 +296,61 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 	if err != nil {
 		return branchPlan{}, "", err
 	}
-	plan.needsRestack = needsRestack
-	return plan, seg, nil
+	if branch == "" || branch == trunk {
+		return plan, seg, nil
+	}
+	if s := state[branch]; !moves && plan.action != branchCreate && o.parent != "" && s.Parents[0].Ref != o.parent {
+		if _, err := gtReparentRefusal(ctx, l, state, branch, o.parent, c); err != nil {
+			return branchPlan{}, "", err
+		}
+		moves = true
+	}
+	if moves {
+		plan.moveOntoParent = true
+		return plan, seg, nil
+	}
+	plan.needsRestack, err = gtNeedsRestack(state, branch, trunk)
+	return plan, seg, err
+}
+
+// gtNeedsRestack reports whether any branch of branch's downstack is off its
+// parent.
+func gtNeedsRestack(state gtState, branch, trunk string) (bool, error) {
+	chain, err := gtDownstack("ship", state, branch, trunk)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(chain, func(b string) bool { return state[b].NeedsRestack }), nil
+}
+
+// gtMoveOntoParent applies the move the preflight cleared: an untracked branch
+// is adopted onto --parent, a tracked one re-parented onto it. It runs after
+// every other refusal, so a ship that stops short of its commit never leaves
+// the branch moved.
+func gtMoveOntoParent(ctx context.Context, errW io.Writer, l lane, o shipOpts, c *gtCache) (string, bool, error) {
+	branch, err := gitCurrentBranch(ctx, l.dir(), "ship")
+	if err != nil {
+		return "", false, err
+	}
+	state, err := c.at(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	var seg string
+	if _, tracked := state[branch]; tracked {
+		state, seg, err = gtReparent(ctx, l, branch, o.parent, c)
+	} else {
+		state, seg, err = gtTrack(ctx, errW, l, o, branch, c)
+	}
+	if err != nil {
+		return "", false, err
+	}
+	trunk, err := gtTrunkBranch("ship", state)
+	if err != nil {
+		return "", false, err
+	}
+	needsRestack, err := gtNeedsRestack(state, branch, trunk)
+	return seg, needsRestack, err
 }
 
 // gtTrunkFlagRefusal is the refusal a flag earns on trunk in the graphite lane,
@@ -435,12 +489,33 @@ func gtOffParent(branch, held string) string {
 // sentence would otherwise vanish twice over: the advice replaces it, and a
 // canned message hides it from errors.Is. Both are kept — the diagnostics reach
 // errW, and gt's failure stays the advice's cause.
-func gtTrack(ctx context.Context, errW io.Writer, o shipOpts, branch string, c *gtCache) (gtState, string, error) {
+//
+// A --parent gt track would refuse, because the parent was rewritten after the
+// branch was cut from it, first has the branch's own commits replayed onto it.
+func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch string, c *gtCache) (gtState, string, error) {
 	argv := []string{"track", branch, "-f", "--no-interactive"}
+	replayed := ""
+	untracked := fmt.Errorf("ship: gt track could not adopt %s — name the branch it was cut from with --parent <branch>, or pass --no-gt", branch)
 	if o.parent != "" {
 		argv = []string{"track", branch, "--parent", o.parent, "--no-interactive"}
+		untracked = fmt.Errorf("ship: gt track could not adopt %s onto %s — pass --no-gt to ship it without graphite", branch, o.parent)
+		state, err := c.at(ctx)
+		if err != nil {
+			return nil, "", err
+		}
+		if err := gtAdoptRefusal(ctx, l, state, branch, o.parent, c); err != nil {
+			return nil, "", err
+		}
+		replaying, err := gtReplayable(ctx, c.dir, state, o.parent)
+		if err != nil {
+			return nil, "", err
+		}
+		if replaying {
+			if replayed, _, _, err = gtOnto(ctx, l, branch, o.parent); err != nil {
+				return nil, "", err
+			}
+		}
 	}
-	untracked := fmt.Errorf("ship: branch %s is not tracked by graphite — run gt track %s, or pass --no-gt", branch, branch)
 	r, runErr := gtRun(ctx, c.dir, argv, errW)
 	c.forget()
 	if err := gtReport(ctx, errW, r); err != nil {
@@ -465,7 +540,215 @@ func gtTrack(ctx context.Context, errW io.Writer, o shipOpts, branch string, c *
 		}
 		seg += " onto " + parent
 	}
-	return state, seg, nil
+	return state, seg + replayed, nil
+}
+
+// gtAdoptRefusal is every refusal adopting an untracked branch onto parent
+// can make before gt track runs: a parent the remote trunk already contains,
+// and a parent rewritten after the branch was cut from it whose replay would
+// fail. A parent gt does not know is left for gt track to refuse in its own
+// words.
+func gtAdoptRefusal(ctx context.Context, l lane, state gtState, branch, parent string, c *gtCache) error {
+	replaying, err := gtReplayable(ctx, c.dir, state, parent)
+	if err != nil || !replaying {
+		return err
+	}
+	if err := gtRefuseLandedParent(ctx, c.dir, state, branch, parent); err != nil {
+		return err
+	}
+	_, err = gtOntoPlan(ctx, l, branch, parent)
+	return err
+}
+
+// gtReplayable reports whether parent is a branch gt tracks and git holds, the
+// only kind a branch can be replayed onto before gt records it there.
+func gtReplayable(ctx context.Context, dir render.Dir, state gtState, parent string) (bool, error) {
+	if _, tracked := state[parent]; !tracked {
+		return false, nil
+	}
+	return gitRefExists(ctx, dir, "ship", gtRestackRef(parent))
+}
+
+// gtReparentRefusal is every refusal moving a tracked branch onto parent can
+// make, checked before anything moves; it returns the move's replay.
+func gtReparentRefusal(ctx context.Context, l lane, state gtState, branch, parent string, c *gtCache) (gtOntoMove, error) {
+	if _, tracked := state[parent]; !tracked {
+		return gtOntoMove{}, refuse("ship: --parent %s names a branch graphite does not track, so %s cannot be recorded on it — track %s first", parent, branch, parent)
+	}
+	if held := state[branch].State; held != "" {
+		return gtOntoMove{}, refuse("ship: %s is %s, so ship leaves it on %s — release it, then ship again", branch, held, state[branch].Parents[0].Ref)
+	}
+	up, err := gtUpstack("ship", state, branch)
+	if err != nil {
+		return gtOntoMove{}, err
+	}
+	if parent == branch || slices.Contains(up, parent) {
+		return gtOntoMove{}, refuse("ship: --parent %s names %s or a branch stacked above it, so %s cannot move onto it", parent, branch, branch)
+	}
+	if err := gtRefuseLandedParent(ctx, c.dir, state, branch, parent); err != nil {
+		return gtOntoMove{}, err
+	}
+	return gtOntoPlan(ctx, l, branch, parent)
+}
+
+// gtReparent moves a tracked branch onto the parent --parent names, which gt
+// has no verb for short of an untrack and a re-track: its own commits are
+// replayed onto the parent when the parent is no longer in its history, and the
+// record then names the parent at the head the branch now sits on. The branches
+// above it are left for their own lanes to restack.
+func gtReparent(ctx context.Context, l lane, branch, parent string, c *gtCache) (gtState, string, error) {
+	state, err := c.at(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err := gtReparentRefusal(ctx, l, state, branch, parent, c); err != nil {
+		return nil, "", err
+	}
+	commonDir, err := c.common(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	was := state[branch].Parents[0].Ref
+	replayed, onto, moved, ontoErr := gtOnto(ctx, l, branch, parent)
+	if ontoErr != nil && !moved {
+		return nil, "", ontoErr
+	}
+	if err := gtmeta.Reparent(ctx, commonDir, map[string]string{branch: parent}); err != nil {
+		return nil, "", fmt.Errorf("ship: %w", err)
+	}
+	if err := gtmeta.RecordRestacked(ctx, commonDir, map[string]string{branch: onto}); err != nil {
+		return nil, "", fmt.Errorf("ship: %w", err)
+	}
+	c.forget()
+	if ontoErr != nil {
+		return nil, "", ontoErr
+	}
+	if state, err = c.at(ctx); err != nil {
+		return nil, "", err
+	}
+	return state, "reparented " + branch + " from " + was + " onto " + parent + replayed, nil
+}
+
+// gtOntoMove is the replay that puts a branch on its parent's head, computed
+// without moving anything: git replay writes objects, never refs. A zero head
+// means the branch already carries the parent's head.
+type gtOntoMove struct {
+	onto    string
+	fork    string
+	was     string
+	head    string
+	own     int
+	holders map[string]string
+}
+
+// gtOntoPlan computes the replay gtOnto makes and refuses the ones it cannot:
+// a branch whose own commits sit among copies of the parent's, a replay that
+// conflicts, and one that would overwrite uncommitted work in the working copy
+// holding the branch. The commits parent carries no patch of are the branch's
+// own, and they alone are replayed.
+func gtOntoPlan(ctx context.Context, l lane, branch, parent string) (gtOntoMove, error) {
+	onto, err := gtRestackHead(ctx, "ship", l.dir(), parent)
+	if err != nil {
+		return gtOntoMove{}, err
+	}
+	on, err := gitIsAncestor(ctx, l.dir(), "ship", onto, gtRestackRef(branch))
+	if err != nil || on {
+		return gtOntoMove{onto: onto}, err
+	}
+	fork, own, err := gtOwnFork(ctx, l.dir(), branch, parent)
+	if err != nil {
+		return gtOntoMove{}, err
+	}
+	was, err := gtRestackHead(ctx, "ship", l.dir(), branch)
+	if err != nil {
+		return gtOntoMove{}, err
+	}
+	head, err := gtReplay(ctx, "ship", l.dir(), onto, fork, branch, gtBranchState{Head: was})
+	if errors.Is(err, errReplayConflict) {
+		return gtOntoMove{}, refuse("ship: %s's own commits do not replay onto %s cleanly — rebase them onto %s by hand, then ship again", branch, parent, parent)
+	}
+	if err != nil {
+		return gtOntoMove{}, err
+	}
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	if err != nil {
+		return gtOntoMove{}, fmt.Errorf("ship: %w", err)
+	}
+	if holder := holders[branch]; holder != "" {
+		if _, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"read-tree", "-m", "-u", "-n", was, head}); err != nil {
+			return gtOntoMove{}, refuse("ship: replaying %s onto %s would overwrite uncommitted changes in %s — commit or set them aside, then ship again: %v", branch, parent, holder, err)
+		}
+	}
+	return gtOntoMove{onto: onto, fork: fork, was: was, head: head, own: own, holders: holders}, nil
+}
+
+// gtOnto puts branch on parent's head before gt records parent under it,
+// moving the ref and the working copy holding it by the replay gtOntoPlan
+// computes. It returns the report segment, the parent head the branch now sits
+// on, and whether the branch ref moved.
+func gtOnto(ctx context.Context, l lane, branch, parent string) (string, string, bool, error) {
+	m, err := gtOntoPlan(ctx, l, branch, parent)
+	if err != nil || m.head == "" {
+		return "", m.onto, false, err
+	}
+	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"update-ref", gtRestackRef(branch), m.head, m.was}); err != nil {
+		return "", "", false, fmt.Errorf("ship: move %s onto %s: %w", branch, parent, err)
+	}
+	if _, err := gtRestackAlign(ctx, "ship", m.holders, []restackMove{{branch: branch, head: m.head, parent: m.onto, previous: m.was}}); err != nil {
+		return "", m.onto, true, err
+	}
+	return fmt.Sprintf(" (replayed its %d own commit(s))", m.own), m.onto, true, nil
+}
+
+// gtOwnFork finds where branch's own work starts above parent: the commit below
+// the first one parent carries no patch of. It refuses a branch with no work of
+// its own, and one whose own commits have a copy of parent's among them, which
+// no single replay range can leave out.
+func gtOwnFork(ctx context.Context, dir render.Dir, branch, parent string) (string, int, error) {
+	marks, err := gtCherryMarks(ctx, "ship", dir, gtRestackRef(parent), gtRestackRef(branch))
+	if err != nil {
+		return "", 0, err
+	}
+	first := slices.IndexFunc(marks, func(m gtCherryMark) bool { return m.own })
+	if first < 0 {
+		return "", 0, refuse("ship: %s holds no commit of its own above %s — every commit on it is already on %s under another sha", branch, parent, parent)
+	}
+	var copies []string
+	for _, m := range marks[first:] {
+		if !m.own {
+			copies = append(copies, shortSHA(m.sha))
+		}
+	}
+	if len(copies) > 0 {
+		return "", 0, refuse("ship: %s is not in the history of %s, and %s interleaves copies of %s's commits (%s) with its own, so no replay onto %s leaves them out — rebase it onto %s by hand with git rebase -i %s, then ship again",
+			parent, branch, branch, parent, strings.Join(copies, ", "), parent, parent, parent)
+	}
+	return marks[first].sha + "^", len(marks) - first, nil
+}
+
+// gtCherryMark is one commit on the branch side of a comparison against its
+// parent, and whether it is the branch's own — no commit on the parent side
+// carries the same patch.
+type gtCherryMark struct {
+	sha string
+	own bool
+}
+
+// gtCherryMarks walks the commits head holds and parent does not, oldest first,
+// marking each by patch identity against the commits parent holds and head does
+// not: the one comparison that recognizes a parent's commit after a rewrite gave
+// it a new sha.
+func gtCherryMarks(ctx context.Context, prefix string, dir render.Dir, parent, head string) ([]gtCherryMark, error) {
+	span := parent + "..." + head
+	out, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", "--cherry-mark", "--right-only", "--no-merges", "--reverse", "--topo-order", span})
+	if err != nil {
+		return nil, fmt.Errorf("%s: git rev-list --cherry-mark %s: %w", prefix, span, err)
+	}
+	var marks []gtCherryMark
+	for _, line := range strings.Fields(out) {
+		marks = append(marks, gtCherryMark{sha: line[1:], own: line[0] == '+'})
+	}
+	return marks, nil
 }
 
 // gtRefuseLandedParent stops an adopt that landed on a branch the remote trunk
@@ -731,11 +1014,11 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 	if err != nil {
 		return "", nil, nil, err
 	}
-	_, known, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, gtBottomUp(chain))
+	_, entries, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, gtBottomUp(chain), branch)
 	if err != nil {
 		return "", nil, nil, err
 	}
-	submitted, bodyless, stack = gtPRSegment(ctx, l, branch, chain, meta, known)
+	submitted, bodyless, stack = gtPRSegment(branch, chain, meta, entries)
 	return submitted, bodyless, stack, nil
 }
 
@@ -759,11 +1042,14 @@ type gtSubmitBranch struct {
 // remote trunk already holds, confirm the repo is synced, learn each branch's
 // open PR, force-push the rest in one atomic push, then post one entry per
 // branch bottom-up, as real gt does, reporting the branches that got one. The
-// push comes first so the headSha Graphite records is the one on the remote.
+// push comes first so the headSha Graphite records is the one on the remote. A
+// branch other than tip whose open pull request already carries exactly this
+// head and base is left out of both, so another lane's pull request is never
+// resubmitted unchanged.
 //
-// The open pull requests it learned come back keyed by branch, so the report
-// step can answer from them instead of asking GitHub the same question again.
-func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, commonDir string, state gtState, tr vcs.Trunk, branches []string) ([]string, map[string]gtapi.PullRequestInfo, error) {
+// Every branch's pull request comes back as Graphite answered for it, so the
+// report step never asks GitHub the same question again.
+func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, commonDir string, state gtState, tr vcs.Trunk, branches []string, tip string) ([]string, map[string]stackEntry, error) {
 	if s.trunkHead == "" {
 		pin, err := gtTrunkHead(ctx, l.dir(), s.prefix, tr)
 		if err != nil {
@@ -783,9 +1069,6 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		return nil, nil, err
 	}
 	branches, held := gtDropHeld(state, branches)
-	if err := gtAnnounceStack(errW, s.prefix, branches); err != nil {
-		return nil, nil, err
-	}
 	if len(branches) == 0 {
 		if s.publication != nil {
 			if err := stackRecordPublication(ctx, l.dir(), s.publication, nil); err != nil {
@@ -832,10 +1115,12 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	}
 	known := make(map[string]gtapi.PullRequestInfo, len(infos))
 	open := map[string]int{}
+	entries := map[string]stackEntry{}
 	for _, pr := range infos {
 		if pr.State == gtapi.PROpen {
 			known[pr.HeadRefName] = pr
 			open[pr.HeadRefName] = pr.PRNumber
+			entries[pr.HeadRefName] = stackEntry{Branch: pr.HeadRefName, PR: pr.PRNumber, URL: pr.URL, HasBody: strings.TrimSpace(pr.Body) != "", State: string(pr.State)}
 		}
 	}
 
@@ -851,6 +1136,13 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		if lease, ok := s.leases[b.name]; ok {
 			plan[i].lease, plan[i].leaseSet = lease, true
 		}
+	}
+	submit, unchanged := gtDropUnchanged(plan, last, known, tip, s.draft)
+	if err := gtAnnounceUnchanged(errW, s.prefix, unchanged); err != nil {
+		return nil, nil, err
+	}
+	if err := gtAnnounceStack(errW, s.prefix, gtPlanNames(submit)); err != nil {
+		return nil, nil, err
 	}
 	if err := gtRefuseInherited(ctx, s.prefix, l.dir(), tr, s.trunkHead, plan); err != nil {
 		return nil, nil, err
@@ -869,9 +1161,12 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			return nil, nil, errors.New(gtStuck(s.prefix, gtOffParent(branch, state[branch].State), s.suffix))
 		}
 	}
+	if len(submit) == 0 {
+		return nil, entries, nil
+	}
 
-	pre := make([]gtapi.PreSubmitBranch, 0, len(plan))
-	for _, b := range plan {
+	pre := make([]gtapi.PreSubmitBranch, 0, len(submit))
+	for _, b := range submit {
 		pre = append(pre, gtapi.PreSubmitBranch{HeadRefName: b.name, PRNumber: b.pr})
 	}
 	if _, err := client.PreSubmitPullRequests(ctx, owner, name, pre); err != nil {
@@ -885,8 +1180,8 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	} else if err := gtPushStack(ctx, l.dir(), s, plan); err != nil {
 		return nil, nil, err
 	}
-	versions := make(map[string]gtmeta.Version, len(plan))
-	for _, b := range plan {
+	versions := make(map[string]gtmeta.Version, len(submit))
+	for _, b := range submit {
 		versions[b.name] = gtmeta.Version{HeadSha: b.head, BaseSha: b.baseSha, BaseName: b.base}
 	}
 	if err := gtmeta.RecordSubmitted(ctx, commonDir, versions); err != nil {
@@ -902,7 +1197,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	}
 
 	var landed []gtapi.SubmittedPR
-	for _, pr := range gtSubmitPRs(plan, s.draft) {
+	for i, pr := range gtSubmitPRs(submit, s.draft) {
 		out, err := client.SubmitPullRequests(ctx, gtapi.SubmitRequest{
 			RepoOwner:       owner,
 			RepoName:        name,
@@ -913,8 +1208,46 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			return nil, nil, gtSubmitFailure(gtSubmitPartial(err, pr.Head, landed), s)
 		}
 		landed = append(landed, out...)
+		if submit[i].pr != 0 {
+			continue
+		}
+		for _, created := range out {
+			entries[created.Head] = stackEntry{Branch: created.Head, PR: created.PRNumber, URL: created.PRURL, HasBody: strings.TrimSpace(submit[i].body) != "", State: string(gtapi.PROpen)}
+		}
 	}
-	return branches, known, nil
+	return gtPlanNames(submit), entries, nil
+}
+
+// gtDropUnchanged splits off every branch below tip whose open pull request
+// both gt's record and Graphite's newest version hold at exactly the head,
+// base and base sha it would be submitted at now, in the draft state asked for:
+// submitting it again changes nothing, and a Graphite refusal on it would fail
+// the tip's submit. It still rides the atomic push, whose lease on it refuses
+// a child submitted over a parent another lane moved.
+func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, known map[string]gtapi.PullRequestInfo, tip string, draft bool) (submit []gtSubmitBranch, unchanged []string) {
+	for _, b := range plan {
+		now := gtmeta.Version{HeadSha: b.head, BaseSha: b.baseSha, BaseName: b.base}
+		pr, open := known[b.name]
+		newest := pr.Newest()
+		if b.name != tip && b.pr != 0 && open && pr.IsDraft == draft && last[b.name] == now && pr.BaseRefName == b.base && newest.HeadSha == b.head && newest.BaseSha == b.baseSha {
+			unchanged = append(unchanged, b.name)
+			continue
+		}
+		submit = append(submit, b)
+	}
+	return submit, unchanged
+}
+
+// gtAnnounceUnchanged names the branches a submit left alone because their pull
+// requests already carry what it would have pushed.
+func gtAnnounceUnchanged(errW io.Writer, prefix string, unchanged []string) error {
+	if len(unchanged) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintf(errW, "%s: not resubmitting %s, unchanged since its last submit: %s\n", prefix, gtBranchCount(len(unchanged)), strings.Join(unchanged, ", ")); err != nil {
+		return fmt.Errorf("%s: name the unchanged branches: %w", prefix, err)
+	}
+	return nil
 }
 
 // gtTrunkRef resolves the remote-tracking trunk a submit anchors on, fetching
@@ -1417,13 +1750,13 @@ func gtAnnounceContained(errW io.Writer, prefix string, tr vcs.Trunk, contained 
 	return nil
 }
 
-func gtPRSegment(ctx context.Context, l lane, branch string, chain []string, meta map[string]prMeta, known map[string]gtapi.PullRequestInfo) (submitted string, bodyless []string, stack []stackEntry) {
+func gtPRSegment(branch string, chain []string, meta map[string]prMeta, entries map[string]stackEntry) (submitted string, bodyless []string, stack []stackEntry) {
 	stackSeg := ""
 	if len(chain) > 1 {
 		stackSeg = fmt.Sprintf(" (stack of %d: %s)", len(chain), strings.Join(gtStackNames(chain), ", "))
 	}
 	submitted = "submitted " + branch + stackSeg
-	stack = gtSubmitDownstack(ctx, l, chain, meta, known)
+	stack = gtSubmitDownstack(chain, entries)
 	for _, entry := range stack {
 		if entry.PR == 0 {
 			continue
@@ -1438,26 +1771,18 @@ func gtPRSegment(ctx context.Context, l lane, branch string, chain []string, met
 	return submitted, bodyless, stack
 }
 
-// gtSubmitDownstack resolves the submitted stack's pull requests from the
-// answer graphite already gave, when it covers every branch and this ship
-// writes every body. What gh adds beyond a number and a URL is the body the
-// bodyless warning weighs, and a branch given one is never warned about.
-// Anything less falls back to asking GitHub.
-func gtSubmitDownstack(ctx context.Context, l lane, chain []string, meta map[string]prMeta, known map[string]gtapi.PullRequestInfo) []stackEntry {
-	entries := make([]stackEntry, 0, len(chain))
-	for i := len(chain) - 1; i >= 0; i-- {
-		branch := chain[i]
-		pr, ok := known[branch]
-		if !ok || pr.PRNumber == 0 || pr.URL == "" || !meta[branch].writesBody() {
-			return infoDownstack(ctx, l, chain)
+// gtSubmitDownstack lays the submitted stack's pull requests out trunk-first
+// from what Graphite answered — the open pull requests it knew of and the ones
+// the submit opened — so reporting a submit spends no GitHub API call. A branch
+// with neither has no pull request.
+func gtSubmitDownstack(chain []string, entries map[string]stackEntry) []stackEntry {
+	stack := make([]stackEntry, 0, len(chain))
+	for _, branch := range gtStackNames(chain) {
+		entry, ok := entries[branch]
+		if !ok {
+			entry = stackEntry{Branch: branch}
 		}
-		entries = append(entries, stackEntry{
-			Branch:  branch,
-			PR:      pr.PRNumber,
-			URL:     pr.URL,
-			HasBody: strings.TrimSpace(pr.Body) != "",
-			State:   string(pr.State),
-		})
+		stack = append(stack, entry)
 	}
-	return entries
+	return stack
 }

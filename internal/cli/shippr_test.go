@@ -362,19 +362,20 @@ func TestShipPRBodyFromStdin(t *testing.T) {
 // TestShipPRGTWritesTheNewestPR proves a branch resubmitted after its first
 // pull request merged has its body written onto the live one. Verified against
 // github.com/yasyf/cc-context, whose yasyf/transcript-ccx-issues head carries
-// PRs #1 and #2: gh pr view resolves #2, the newest, and overwriting the
-// predecessor would leave the pull request under review bodyless.
+// PRs #1 and #2: overwriting the predecessor would leave the pull request under
+// review bodyless.
 func TestShipPRGTWritesTheNewestPR(t *testing.T) {
 	log := setupShipGT(t, true)
-	seedPRViews(t, map[string]string{"feature": `{"number":3,"url":"https://github.com/x/pull/3","body":"the merged predecessor"}` + "\n" +
-		`{"number":9,"url":"https://github.com/x/pull/9","body":""}`})
+	api := stubGTAPI(t)
+	api.prs["feature"] = 9
+	api.merged["feature"] = gtStubMerged{number: 3, head: "c0ffee"}
 	body := writePRBody(t, "body.md", "why this change\n")
 
 	got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #9 https://github.com/x/pull/9 · set PR #9 body`
+	want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #9 ` + gtStubPRURL(9) + ` · set PR #9 body`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
@@ -416,44 +417,42 @@ func TestShipPRGTSkipsDownstackQuery(t *testing.T) {
 	assertInvocations(t, gh, [][]string{ghPREditArgv(41, "-F", "body=@"+body)})
 }
 
-// TestShipPRGTQueriesForABodylessBranch is the other half: a branch this ship
-// writes no body for is exactly the one the bodyless warning weighs, so the
-// batched query still runs even though graphite named both pull requests.
-func TestShipPRGTQueriesForABodylessBranch(t *testing.T) {
+// TestShipPRGTWarnsFromGraphitesBody weighs a branch this ship writes no body
+// for by the body Graphite reported, without asking GitHub for it again.
+func TestShipPRGTWarnsFromGraphitesBody(t *testing.T) {
 	log := setupShipGT(t, true)
 	api := stubGTAPI(t)
 	api.prs["feature"], api.prs["feature2"] = 41, 42
+	api.bodies["feature"] = "written by hand"
 	t.Setenv("GIT_BRANCH", "feature2")
 	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 		`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
-	seedPRViews(t, map[string]string{
-		"feature":  `{"number":41,"url":"https://github.com/x/pull/41","body":"written by hand"}`,
-		"feature2": `{"number":42,"url":"https://github.com/x/pull/42","body":""}`,
-	})
 	body := writePRBody(t, "body.md", "why this change\n")
 
-	if _, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body); err != nil {
+	got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	var graphql [][]string
+	if strings.Contains(got, "bodyless") {
+		t.Errorf("summary = %q, want no bodyless warning — feature carries a body and feature2 gets one", got)
+	}
 	for _, inv := range readInvocations(t, log) {
 		if len(inv) > 2 && inv[0] == "gh" && inv[1] == "api" && inv[2] == "graphql" {
-			graphql = append(graphql, inv)
+			t.Errorf("ship ran %v — Graphite already reported every body", inv)
 		}
 	}
-	assertInvocations(t, graphql, [][]string{ghDownstackPRArgv("feature", "feature2")})
 }
 
 func TestShipPRGTBothFlags(t *testing.T) {
 	log := setupShipGT(t, true)
-	seedPRViews(t, map[string]string{"feature": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`})
+	stubGTAPI(t).prs["feature"] = 7
 	body := writePRBody(t, "body.md", "why this change\n")
 
 	got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #7 https://github.com/x/pull/7 · set PR #7 title+body`
+	want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #7 ` + gtStubPRURL(7) + ` · set PR #7 title+body`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
@@ -472,11 +471,9 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		{"git", "merge-base", "--is-ancestor", gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 	}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
-		gtCreateLogInv(gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA),
 		gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
 		{"git", "merge-base", "--is-ancestor", fakeTrunkSHA, vcstest.GraphiteLeafSHA},
 		gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
-		ghDownstackPRArgv("feature"),
 		ghPREditArgv(7, "-f", "title=Better title", "-F", "body=@"+body),
 	})
 	assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main", "feature"), wantInv)
@@ -504,7 +501,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			log := setupShipGT(t, true)
 			t.Setenv("GIT_STAGED_EMPTY", "1")
-			seedPRViews(t, map[string]string{"feature": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`})
+			stubGTAPI(t).prs["feature"] = 7
 			body := writePRBody(t, "body.md", "why this change\n")
 			writeShipFile(t, ".", "src/a.go", "package a\n")
 
@@ -514,7 +511,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 				t.Fatalf("ship error = %v", err)
 			}
 			want := "nothing to commit" + tt.scope + ` — shipping as --no-commit · already committed a1b2c3d "fix: frobnicate" · ` +
-				`submitted feature → PR #7 https://github.com/x/pull/7 · set PR #7 title+body`
+				`submitted feature → PR #7 ` + gtStubPRURL(7) + ` · set PR #7 title+body`
 			if got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
@@ -532,11 +529,9 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 				// No second refs read: this ship cuts no commit, so nothing
 				// invalidates the state the preflight already cached.
 			}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
-				gtCreateLogInv(gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA),
 				gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
 				{"git", "merge-base", "--is-ancestor", fakeTrunkSHA, vcstest.GraphiteLeafSHA},
 				gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
-				ghDownstackPRArgv("feature"),
 				ghPREditArgv(7, "-f", "title=fix: 🐛 frobnicate the widget", "-F", "body=@"+body),
 			})
 			assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main", "feature"), wantInv)
@@ -554,11 +549,9 @@ func TestShipPRGTBackfill(t *testing.T) {
 		`"base":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 		`"feature":{"parents":[{"ref":"base","sha":"beadfeed"}]},`+
 		`"feature2":{"parents":[{"ref":"feature","sha":"feedface"}]}}`)
-	seedPRViews(t, map[string]string{
-		"base":     `{"number":5,"url":"https://github.com/x/pull/5","body":"written by hand"}`,
-		"feature":  `{"number":6,"url":"https://github.com/x/pull/6","body":""}`,
-		"feature2": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`,
-	})
+	api := stubGTAPI(t)
+	api.prs["base"], api.prs["feature"], api.prs["feature2"] = 5, 6, 7
+	api.bodies["base"] = "written by hand"
 	tipBody := writePRBody(t, "tip.md", "tip body\n")
 	midBody := writePRBody(t, "mid.md", "mid body\n")
 
@@ -567,7 +560,7 @@ func TestShipPRGTBackfill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := `committed a1b2c3d "fix: frobnicate" · submitted feature2 → PR #7 https://github.com/x/pull/7 ` +
+	want := `committed a1b2c3d "fix: frobnicate" · submitted feature2 → PR #7 ` + gtStubPRURL(7) + ` ` +
 		`(stack of 3: base, feature, feature2) · set PR #7 body, PR #6 body`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
@@ -579,7 +572,6 @@ func TestShipPRGTBackfill(t *testing.T) {
 		}
 	}
 	assertInvocations(t, gh, [][]string{
-		ghDownstackPRArgv("base", "feature", "feature2"),
 		ghPREditArgv(7, "-F", "body=@"+tipBody),
 		ghPREditArgv(6, "-F", "body=@"+midBody),
 	})
@@ -595,10 +587,8 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 		setGTState(t, `{"main":{"trunk":true},`+
 			`"feature":{"parents":[{"ref":"main","sha":"beadfeed"}]},`+
 			`"feature2":{"parents":[{"ref":"feature","sha":"feedface"}]}}`)
-		seedPRViews(t, map[string]string{
-			"feature":  `{"number":6,"url":"https://github.com/x/pull/6","body":""}`,
-			"feature2": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`,
-		})
+		api := stubGTAPI(t)
+		api.prs["feature"], api.prs["feature2"] = 6, 7
 		t.Setenv("GH_PR_EDIT_FAIL", "gh: API rate limit exceeded (HTTP 403)")
 		tipBody := writePRBody(t, "tip.md", "tip body\n")
 		midBody := writePRBody(t, "mid.md", "mid body\n")
@@ -671,19 +661,16 @@ func TestShipPRUnusedCostsNothing(t *testing.T) {
 	})
 	t.Run("gt lane", func(t *testing.T) {
 		log := setupShipGT(t, true)
-		t.Setenv("GH_PR_VIEW_JSON", `{"number":7,"url":"https://github.com/x/pull/7"}`)
 		if _, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
 		invocations := readInvocations(t, log)
 		assertNoPRStep(t, invocations)
-		var gh [][]string
 		for _, inv := range invocations {
 			if inv[0] == "gh" {
-				gh = append(gh, inv)
+				t.Errorf("ship ran %v", inv)
 			}
 		}
-		assertInvocations(t, gh, [][]string{ghDownstackPRArgv("feature")})
 	})
 	t.Run("--no-pr", func(t *testing.T) {
 		f := shipPRFixture(t, vcstest.Branch("feature"))

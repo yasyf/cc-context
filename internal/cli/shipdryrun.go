@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -36,6 +37,8 @@ type shipDryRun struct {
 
 	plan     branchPlan
 	refusals []string
+	onto     string
+	fork     string
 
 	moves    []dryRunMove
 	prs      []dryRunPR
@@ -144,13 +147,60 @@ func dryRunPositionGT(ctx context.Context, l lane, o shipOpts, c *gtCache, r *sh
 	if branch == "" || branch == trunk {
 		return nil
 	}
-	if s, tracked := state[branch]; tracked {
-		if len(s.Parents) > 0 {
-			r.parent, r.because = s.Parents[0].Ref, "graphite already tracks "+branch+" on it"
-		}
+	s, tracked := state[branch]
+	switch {
+	case !tracked:
+		return dryRunTrack(ctx, l, o, state, r)
+	case r.plan.action != branchCreate && o.parent != "" && s.Parents[0].Ref != o.parent:
+		return dryRunReparent(ctx, l, o, state, s.Parents[0].Ref, r)
+	}
+	r.parent, r.because = s.Parents[0].Ref, "graphite already tracks "+branch+" on it"
+	return nil
+}
+
+// dryRunReparent reports the move ship makes for --parent on a branch graphite
+// tracks elsewhere, and the refusal it makes when the move cannot be made.
+func dryRunReparent(ctx context.Context, l lane, o shipOpts, state gtState, was string, r *shipDryRun) error {
+	r.parent = o.parent
+	if _, tracked := state[o.parent]; !tracked {
+		r.refusals = append(r.refusals, fmt.Sprintf("ship: --parent %s names a branch graphite does not track, so %s cannot be recorded on it — track %s first", o.parent, r.branch, o.parent))
 		return nil
 	}
-	return dryRunTrack(ctx, l, o, state, r)
+	if held := state[r.branch].State; held != "" {
+		r.refusals = append(r.refusals, fmt.Sprintf("ship: %s is %s, so ship leaves it on %s — release it, then ship again", r.branch, held, was))
+		return nil
+	}
+	up, err := gtUpstack("ship", state, r.branch)
+	if err != nil {
+		return err
+	}
+	if o.parent == r.branch || slices.Contains(up, o.parent) {
+		r.refusals = append(r.refusals, fmt.Sprintf("ship: --parent %s names %s or a branch stacked above it, so %s cannot move onto it", o.parent, r.branch, r.branch))
+		return nil
+	}
+	replay, err := dryRunOnto(ctx, l, r)
+	if err != nil {
+		return err
+	}
+	r.because = "graphite tracks " + r.branch + " on " + was + ", so ship re-parents it" + replay
+	return dryRunLandedParent(ctx, l, state, r)
+}
+
+// dryRunOnto names the replay gtOnto would make to put the branch on --parent,
+// or records the refusal it would make instead.
+func dryRunOnto(ctx context.Context, l lane, r *shipDryRun) (string, error) {
+	m, err := gtOntoPlan(ctx, l, r.branch, r.parent)
+	r.onto = r.parent
+	var refusal *shipRefusal
+	if errors.As(err, &refusal) {
+		r.refusals = append(r.refusals, refusal.Error())
+		return "", nil
+	}
+	if err != nil || m.head == "" {
+		return "", err
+	}
+	r.fork = m.fork
+	return fmt.Sprintf(", replaying its %d own commit(s) onto %s, which is no longer in its history", m.own, r.parent), nil
 }
 
 // dryRunTrack resolves the parent gt track would record without running it. gt
@@ -160,7 +210,14 @@ func dryRunPositionGT(ctx context.Context, l lane, o shipOpts, c *gtCache, r *sh
 func dryRunTrack(ctx context.Context, l lane, o shipOpts, state gtState, r *shipDryRun) error {
 	if o.parent != "" {
 		r.parent = o.parent
-		r.because = "untracked, so gt track --parent records it (ship drops -f, which would outrank it)"
+		replay := ""
+		if _, tracked := state[o.parent]; tracked {
+			var err error
+			if replay, err = dryRunOnto(ctx, l, r); err != nil {
+				return err
+			}
+		}
+		r.because = "untracked, so gt track --parent records it (ship drops -f, which would outrank it)" + replay
 	} else {
 		parent, err := dryRunNearestTracked(ctx, l, state, r.trunk, r.branch)
 		if err != nil {
@@ -169,6 +226,12 @@ func dryRunTrack(ctx context.Context, l lane, o shipOpts, state gtState, r *ship
 		r.parent = parent
 		r.because = "untracked, so gt track -f takes the nearest tracked ancestor"
 	}
+	return dryRunLandedParent(ctx, l, state, r)
+}
+
+// dryRunLandedParent notes the parent the run would refuse for already being in
+// the remote trunk.
+func dryRunLandedParent(ctx context.Context, l lane, state gtState, r *shipDryRun) error {
 	err := gtRefuseLandedParent(ctx, l.dir(), state, r.branch, r.parent)
 	var landed *errLandedParent
 	if errors.As(err, &landed) {
@@ -334,11 +397,18 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 	if r.branch == "" || r.branch == r.trunk {
 		return nil
 	}
-	anchor, err := dryRunAnchor(ctx, c, r)
-	if err != nil || anchor == "" {
+	state, err := c.at(ctx)
+	if err != nil {
 		return err
 	}
-	state, chain, err := gtStackChain(ctx, c, anchor)
+	if state, err = dryRunPlanned(ctx, l, state, r); err != nil {
+		return err
+	}
+	anchor := dryRunAnchor(state, r)
+	if anchor == "" {
+		return nil
+	}
+	chain, err := gtDownstack("ship", state, anchor, r.trunk)
 	if err != nil {
 		return err
 	}
@@ -358,20 +428,32 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 // answer is the parent a track would adopt it onto — whose whole downstack the
 // submit then publishes, which is the surprise the report exists to end. Empty
 // means there is no stack to read.
-func dryRunAnchor(ctx context.Context, c *gtCache, r *shipDryRun) (string, error) {
-	state, err := c.at(ctx)
-	if err != nil {
-		return "", err
-	}
+func dryRunAnchor(state gtState, r *shipDryRun) string {
 	if _, tracked := state[r.branch]; tracked {
-		return r.branch, nil
+		return r.branch
 	}
 	if r.parent == "" || r.parent == r.trunk {
 		r.notes = append(r.notes, r.branch+" is untracked and would be adopted onto trunk, so the submit publishes it alone")
-		return "", nil
+		return ""
 	}
 	r.notes = append(r.notes, r.branch+" is untracked, so the submit publishes the downstack of "+r.parent+" along with it")
-	return r.parent, nil
+	return r.parent
+}
+
+// dryRunPlanned is state as it stands once the preflight records the branch on
+// the parent --parent names, so the stack the report reads is the one the submit
+// would publish rather than the one the branch is leaving.
+func dryRunPlanned(ctx context.Context, l lane, state gtState, r *shipDryRun) (gtState, error) {
+	if r.onto == "" || len(r.refusals) > 0 {
+		return state, nil
+	}
+	head, err := gtRestackHead(ctx, "ship", l.dir(), r.branch)
+	if err != nil {
+		return nil, err
+	}
+	planned := maps.Clone(state)
+	planned[r.branch] = gtBranchState{Head: head, Parents: []gtRef{{Ref: r.onto, SHA: state[r.onto].Head}}}
+	return planned, nil
 }
 
 // dryRunMoves names every branch this ship rewrites, in both directions. The
@@ -539,6 +621,9 @@ func dryRunCreates(ctx context.Context, l lane, state gtState, chain []string, o
 		from := base
 		if !stacked[base] {
 			base, from = tr.Name(), string(tr.Ref())
+		}
+		if branch == r.branch && r.fork != "" {
+			from = r.fork
 		}
 		title, _, err := gtCreateMeta(ctx, l.dir(), "ship", branch, branch, from, base)
 		if err != nil {
