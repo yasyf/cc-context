@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,7 +63,7 @@ func TestStackSubmitKeepsConflictForContinue(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "ccx vcs stack continue") || strings.Contains(err.Error(), "gt restack") {
 		t.Fatalf("conflict: %v", err)
 	}
-	run, err := stackLoadRun(filepath.Join(f.Dir, ".git"))
+	run, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,13 +114,17 @@ func TestStackShipIntentSurvivesRemovedBodyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if err := stackSaveRun(dir, &stackRebaseRun{Ship: intent}); err != nil {
+	saved := &stackRebaseRun{Ship: intent, Roots: []string{"feature"}}
+	if err := stackClaim(dir, saved); err != nil {
+		t.Fatal(err)
+	}
+	if err := stackSaveRun(saved); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(file); err != nil {
 		t.Fatal(err)
 	}
-	run, err := stackLoadRun(dir)
+	run, err := stackOnlyTestRun(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,5 +141,49 @@ func TestStackPublishedHeadsRejectsConcurrentCommit(t *testing.T) {
 	}
 	if err := stackCheckPublishedHeads(gtState{"feature": {Head: "reviewed"}}, run); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func stackOnlyTestRun(commonDir string) (*stackRebaseRun, error) {
+	runs, err := stackRuns(commonDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(runs) != 1 {
+		return nil, fmt.Errorf("expected one test run, got %d", len(runs))
+	}
+	return runs[0], nil
+}
+
+func TestShipPreservesAnotherStacksConflictRun(t *testing.T) {
+	f := shipGTRepo(t)
+	stackConflicting(t, f)
+	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err == nil {
+		t.Fatal("expected first stack conflict")
+	}
+	common := filepath.Join(f.Dir, ".git")
+	first, err := stackOnlyTestRun(common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(stackStatePath(first.dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	shipGTStack(t, f, "other")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	if _, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--no-pr"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(stackStatePath(first.dir))
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("other run changed: %v", err)
+	}
+	if _, err := os.Stat(first.Conflict.Workspace); err != nil {
+		t.Fatal(err)
+	}
+	if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "other"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "other"); local != remote {
+		t.Fatal("second stack was not pushed")
 	}
 }

@@ -42,13 +42,13 @@ func stackShipOptions(o shipOpts, meta map[string]prMeta, repo, branch string) (
 	return intent, nil
 }
 
-func stackFinishShip(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun) error {
+func stackFinishShip(ctx context.Context, cmd *cobra.Command, l lane, run *stackRebaseRun) error {
 	intent := run.Ship
 	meta := map[string]prMeta{}
 	for name, saved := range intent.Meta {
 		m := prMeta{title: saved.Title, draft: saved.Draft}
 		if saved.Body != nil {
-			m.bodyPath = filepath.Join(commonDir, stackRebaseStateDir, "body-"+strconv.Itoa(len(meta)))
+			m.bodyPath = filepath.Join(run.dir, "body-"+strconv.Itoa(len(meta)))
 			if err := os.WriteFile(m.bodyPath, []byte(*saved.Body), 0o600); err != nil {
 				return err
 			}

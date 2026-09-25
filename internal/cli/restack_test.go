@@ -803,7 +803,7 @@ func TestRestackGTConflictContinuesWithoutPushing(t *testing.T) {
 			t.Errorf("%s moved before conflict resolved", branch)
 		}
 	}
-	run, err := stackLoadRun(filepath.Join(f.Dir, ".git"))
+	run, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,25 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`ccx vcs stack rebase` runs on separate stacks no longer block each
+  other.** Each run keeps its state under its stack's root branch, so lanes
+  rebase different stacks side by side. `continue` and `abort` act on the
+  run for the branch or conflict workspace they are run from. A second
+  rebase of a stack already in progress is refused with the holder's pid,
+  host, and age. A run whose process died before it applied anything, with
+  no conflict workspace waiting, is reclaimed after five minutes.
+
+### Upgrade
+
+- A stack rebase started by 0.65.x keeps its state in
+  `.git/ccx-stack-rebase/state.json`, which this release no longer reads.
+  Finish or abort that run with the old binary before upgrading, or delete
+  the file.
+
 ## [0.65.1] - 2026-09-25
 
 ### Fixed
