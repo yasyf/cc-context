@@ -472,6 +472,7 @@ func TestShipPRGTBothFlags(t *testing.T) {
 	}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
 		gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
 		gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
+		{"git", "merge-base", "--is-ancestor", "deadbeef", vcstest.GraphiteLeafSHA},
 		gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 		ghDownstackPRArgv("feature"),
 		ghPREditArgv(7, "-f", "title=Better title", "-F", "body=@"+body),
@@ -530,6 +531,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 			}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
 				gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
 				gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
+				{"git", "merge-base", "--is-ancestor", "deadbeef", vcstest.GraphiteLeafSHA},
 				gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 				ghDownstackPRArgv("feature"),
 				ghPREditArgv(7, "-f", "title=fix: 🐛 frobnicate the widget", "-F", "body=@"+body),
