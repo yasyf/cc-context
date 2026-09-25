@@ -4,6 +4,132 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.65.1] - 2026-09-25
+
+### Fixed
+
+- **Graphite stacks stay whole after a branch is rebased outside
+  `gt`.** Branches marked `BAD_PARENT_REVISION` or `INVALID_PARENT` remain in
+  the stack and need a restack. When the recorded parent revision is no
+  longer in a branch's history, restack replays its commits from the
+  merge-base with its parent and clears the stale validation result.
+
+- **Restacking with `ccx vcs stack restack` avoids Graphite timeouts in
+  repositories with many tracked branches.** It asks Graphite about only
+  the current branch and its ancestors, then fetches trunk from trunk's own
+  remote and replays the stack without `gt sync`. When a parent merged at its
+  current local head, its surviving children move to the first ancestor
+  that has not landed. Parents with local commits beyond the merged head
+  keep their children.
+
+- **An orphaned plugin cache no longer shadows a newer `ccx`
+  install.** If a cache directory is marked `.orphaned_at` and has a newer
+  live sibling version, its launcher runs the newest live sibling's
+  `bin/ccx` with the original arguments. Existing sessions with an old
+  plugin directory on `PATH` pick up the newer install.
+
+## [0.65.0] - 2026-09-25
+
+### Added
+
+- **`ccx vcs stack rebase` replays a whole Graphite stack from recorded
+  bases.** It records every branch's local and remote head before rewriting
+  the stack, then computes each new head without checking out the branch.
+  A push can no longer change the old base a child replays from, and a branch
+  held by another working copy can move too. Branches whose pull requests
+  landed drop out of the stack, with their children replayed onto the first
+  surviving ancestor so a squashed parent's commits stay behind. `--dry-run`
+  prints the plan; `--parent <branch>=<parent>`, `--linearize a,b,c`, and
+  `--landed <branch>` override its parents, branch order, and landed branches.
+
+- **A stack rebase conflict opens a workspace with the rebase in progress
+  and leaves the stack's refs unmoved.** The detached workspace lives at
+  `~/.claude/worktrees/<repo>/conflict-<branch>`, with `rerere` and
+  `rebase.updateRefs` off so saved resolutions cannot silently settle the
+  conflict or move another branch. A brief names the conflicted files, both
+  pull requests' intent when the parent has one, and the upstream commits
+  touching those files. Resolve and stage the files there, then run
+  `ccx vcs stack continue` from any working copy to finish the stack.
+  `ccx vcs stack abort` discards the stopped run and its conflict workspace.
+
+- **A completed stack rebase writes the branch refs in one transaction
+  and pushes under the remote heads recorded at the start.** The transaction
+  refuses if a surviving branch moved locally during the run. It then records
+  `gt`'s parents and force-pushes with an explicit lease per branch, so a
+  concurrent remote push cannot be overwritten. One verdict line per pull
+  request names its head, parent, and mergeability. The command never changes
+  labels, and `--no-push` keeps the rewritten stack and `gt` record local.
+
+### Changed
+
+- **`ccx vcs stack rebase` is a separate command that pushes by default.**
+  It was an alias of `ccx vcs stack restack`; scripts using that name now run
+  the new Graphite stack rebase. Use `ccx vcs stack restack` for the former
+  behavior, or pass `--no-push` to the new command to keep its rewrite local.
+
+## [0.64.2] - 2026-09-25
+
+### Changed
+
+- **`ccx vcs ship --dry-run` finds a tracked parent without checking every
+  tracked branch for containment.** One `git for-each-ref --merged` lists
+  the branches the current branch contains, and only the tracked candidates
+  need ancestry comparisons. A repository with many unrelated tracked
+  branches no longer pays for a subprocess per branch to plan adoption.
+
+### Fixed
+
+- **`ccx vcs ship` updates pull request titles and bodies through REST.**
+  The update used `gh pr edit`, spending the GraphQL budget after the push
+  had already succeeded. These edits now use the GitHub REST endpoint. If an
+  update fails, the error says the push already happened and gives quoted
+  commands to retry only the remaining pull request edits; a body read from
+  stdin is requested again instead of pointing at a deleted temporary file.
+
+- **`ccx vcs stack drop` reads and retargets pull requests through REST.**
+  Its branch lookup, verification, base changes, and reopen step now use
+  `gh api`, so those steps no longer spend the GraphQL budget. Recovery
+  commands use the same routes and quote branch names for the shell.
+
+- **`ccx vcs prune` recognizes squash landings on the Graphite lane.**
+  Git ancestry cannot see a squash, so these branches survived a prune even
+  after their pull requests landed. A branch now qualifies when Graphite
+  reports the pull request merged at exactly its local head. Branches with
+  later commits or held by a working copy stay put; deletion checks the
+  recorded heads again and reparents the surviving Graphite rows.
+
+## [0.64.1] - 2026-09-24
+
+### Fixed
+
+- **`ccx vcs pr status` passes its context to the working-directory lookup.**
+  The new command still called `workingDir` without an argument after the
+  helper gained a required context, leaving 0.64.0 unable to compile. Passing
+  the command's context fixes that call and lets repository discovery use
+  the directory the context carries.
+
+## [0.64.0] - 2026-09-24
+
+### Added
+
+- **`ccx vcs pr status <n>` reports a pull request's Graphite queue state
+  by number.** It reads Graphite's own record and answers `queued`,
+  `not queued`, or `landed`, including pull requests queued from the web UI
+  without a merge label. A landed verdict requires the recorded squash
+  commit to be reachable from the base branch on GitHub; a queued verdict
+  names the commit the queue admitted. Several numbers can share one call,
+  `--repo owner/name` selects the repository, and `--json` emits the report
+  for scripts.
+
+### Changed
+
+- **Child commands use the environment carried by their context.** A caller
+  can supply environment variables for its children without changing the
+  process environment, and a single command's overrides still take
+  precedence. Executables resolve against that child's `PATH` before the
+  selected Git directory moves to the front of the inherited search path,
+  so a `gh` or `gt` beside Git cannot displace the one the caller selected.
+
 ## [0.63.0] - 2026-09-24
 
 ### Added
