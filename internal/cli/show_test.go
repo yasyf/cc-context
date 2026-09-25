@@ -12,6 +12,7 @@ import (
 )
 
 func TestShowHeader(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		c    vcs.Commit
@@ -63,6 +64,7 @@ func TestShowHeader(t *testing.T) {
 }
 
 func TestShowCmdMetadata(t *testing.T) {
+	t.Parallel()
 	cmd := newShowCmd()
 	if cmd.Use != "show [ref]" {
 		t.Errorf("Use = %q, want %q", cmd.Use, "show [ref]")
@@ -81,6 +83,7 @@ func TestShowCmdMetadata(t *testing.T) {
 // native/jj pipeline. It is gated on CCX_LIVE_SMOKE so the default suite stays
 // hermetic; run it with CCX_LIVE_SMOKE=1 go test -run TestShowLiveSmoke.
 func TestShowLiveSmoke(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("CCX_LIVE_SMOKE") == "" {
 		t.Skip("live smoke against the real repo; set CCX_LIVE_SMOKE=1 to run")
 	}

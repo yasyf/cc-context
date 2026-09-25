@@ -152,6 +152,7 @@ func TestGrepCommandUnbudgetedCaps(t *testing.T) {
 }
 
 func TestRootHelpListsAllOps(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		args []string
@@ -190,6 +191,7 @@ func TestRootHelpListsAllOps(t *testing.T) {
 // unknown positional token instead of swallowing it and printing help with exit 0,
 // while a bare group invocation still prints help.
 func TestGroupCommandsRejectUnknownSubcommand(t *testing.T) {
+	t.Parallel()
 	for _, group := range []string{"code", "repo", "vcs", "web", "anchor"} {
 		t.Run(group+" unknown subcommand errors", func(t *testing.T) {
 			var out bytes.Buffer
@@ -222,6 +224,7 @@ func TestGroupCommandsRejectUnknownSubcommand(t *testing.T) {
 }
 
 func TestSymbolAliasGrokRegistered(t *testing.T) {
+	t.Parallel()
 	for _, group := range cli.NewRootCmd().Commands() {
 		if group.Name() != "code" {
 			continue
@@ -244,6 +247,7 @@ func TestSymbolAliasGrokRegistered(t *testing.T) {
 // TestVersionPrintsBareTag pins the version contract the plugin installer
 // depends on: a release build prints exactly the v-prefixed tag, nothing else.
 func TestVersionPrintsBareTag(t *testing.T) {
+	t.Parallel()
 	old := version.Version
 	version.Version = "v9.9.9"
 	t.Cleanup(func() { version.Version = old })
@@ -382,6 +386,7 @@ func writeSemanticRepo(t *testing.T) string {
 // seam onto native read: the anchor re-resolves to its content's current line, the
 // move note is prepended, and the anchored native header carries the served line.
 func TestReadCommandResolvesAnchor(t *testing.T) {
+	t.Parallel()
 	file := writeAnchorFixture(t)
 	gamma := anchor.Of("gamma")
 
@@ -395,6 +400,7 @@ func TestReadCommandResolvesAnchor(t *testing.T) {
 // TestReadCommandLinesAlias proves --lines is a hidden alias for --section: the
 // range reaches native read, which serves lines 1-2 of the fixture.
 func TestReadCommandLinesAlias(t *testing.T) {
+	t.Parallel()
 	file := writeAnchorFixture(t)
 
 	got := runCCX(t, "code", "read", file, "--lines", "1-2")
@@ -409,6 +415,7 @@ func TestReadCommandLinesAlias(t *testing.T) {
 // routes to the native fallback lane fails before dispatch with a precise error
 // pointing the caller at ccx code read.
 func TestOutlineSectionRejectsFallbackLane(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	rb := filepath.Join(dir, "a.rb")
 	if err := os.WriteFile(rb, []byte("x = 1\n"), 0o600); err != nil {
@@ -433,6 +440,7 @@ func TestOutlineSectionRejectsFallbackLane(t *testing.T) {
 // outline command: it reaches a.Section, so a fallback-routed file hits the same
 // read-fallback guard --section does.
 func TestOutlineLinesAlias(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	rb := filepath.Join(dir, "a.rb")
 	if err := os.WriteFile(rb, []byte("x = 1\n"), 0o600); err != nil {

@@ -47,6 +47,7 @@ func TestFindCmdBudgetDefaultAndFlag(t *testing.T) {
 }
 
 func TestFindCmdHasBudgetFlag(t *testing.T) {
+	t.Parallel()
 	if newFindCmd().Flags().Lookup("budget") == nil {
 		t.Error("find command missing --budget flag")
 	}

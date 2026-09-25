@@ -10,6 +10,7 @@ import (
 )
 
 func TestExitCode(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  error
@@ -37,6 +38,7 @@ func TestExitCode(t *testing.T) {
 }
 
 func TestExitErrorMessage(t *testing.T) {
+	t.Parallel()
 	if got := (&ExitError{Code: 5}).Error(); got != "exit code 5" {
 		t.Errorf("Error() = %q, want %q", got, "exit code 5")
 	}

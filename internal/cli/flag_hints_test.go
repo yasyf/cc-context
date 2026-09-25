@@ -13,6 +13,7 @@ import (
 // command's own flags, a curated cross-command confusion, and a junk flag
 // with neither, which must fall back to cobra's plain error unchanged.
 func TestFlagErrorHints(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		args    []string
@@ -86,6 +87,7 @@ func TestFlagErrorHints(t *testing.T) {
 // via its only public effect — near-miss flag suggestions — since the
 // function itself is unexported.
 func TestLevenshteinNearMissThreshold(t *testing.T) {
+	t.Parallel()
 	var out bytes.Buffer
 	root := cli.NewRootCmd()
 	root.SetOut(&out)

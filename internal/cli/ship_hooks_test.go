@@ -81,6 +81,7 @@ func shipLockRefusal(lock string) string {
 // worktrees share one common dir but each keeps its own index there, so the
 // per-worktree admin dir's lock refuses and the common dir's does not.
 func TestShipRefuseIndexLock(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		linked bool
@@ -150,6 +151,7 @@ func TestShipRefuseIndexLockPassesJJWithoutGit(t *testing.T) {
 // reaches its own check. That check narrows the race window against a lock
 // taken mid-run; TestShipRefuseIndexLock covers it directly.
 func TestShipHooksRefuseHeldIndexLock(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name string
 		jj   bool

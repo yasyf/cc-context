@@ -175,6 +175,7 @@ func TestStackNewColocatesJJInTheLane(t *testing.T) {
 // parent rebased after its child leaves the child off its parent again, and
 // nothing revisits it.
 func TestGtBottomUpOrdersTheRestack(t *testing.T) {
+	t.Parallel()
 	bottomUp := []string{"low", "mid", "high"}
 	if reversed := gtBottomUp([]string{"high", "mid", "low"}); !slices.Equal(reversed, bottomUp) {
 		t.Errorf("gtBottomUp = %v, want %v", reversed, bottomUp)
@@ -187,6 +188,7 @@ func TestGtBottomUpOrdersTheRestack(t *testing.T) {
 // everything after the first stale branch moves — rewrites branches that were
 // already restacked, and their pull requests with them.
 func TestGtRestackPlanFollowsParentsNotOrder(t *testing.T) {
+	t.Parallel()
 	state := gtState{
 		"main":  {Trunk: true, Head: "trunk"},
 		"base":  {Head: "base", Parents: []gtRef{{Ref: "main", SHA: "trunk"}}},
@@ -211,6 +213,7 @@ func TestGtRestackPlanFollowsParentsNotOrder(t *testing.T) {
 // restack that moves it anyway rebases work the user asked to be left alone,
 // and drags its children onto the result.
 func TestGtRestackPlanLeavesAFrozenBranchAlone(t *testing.T) {
+	t.Parallel()
 	state := gtState{
 		"main":   {Trunk: true, Head: "trunk"},
 		"frozen": {Head: "frozen", NeedsRestack: true, State: "frozen", Parents: []gtRef{{Ref: "main", SHA: "old-trunk"}}},

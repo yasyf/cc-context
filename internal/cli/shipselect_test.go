@@ -853,6 +853,7 @@ func TestShowFileBaseDistinguishesAbsentFromFailure(t *testing.T) {
 // first case into the second, and a base read as absent diffs the file's hunks
 // against nothing.
 func TestFileInBaseJJWhitespaceName(t *testing.T) {
+	t.Parallel()
 	f := vcstest.Repo(t, vcstest.JJ())
 	const spaceName = " "
 	writeRepoFile(t, f.Dir, spaceName, "x\n")

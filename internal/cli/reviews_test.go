@@ -1111,6 +1111,7 @@ func TestReviewsStackFailuresCarryReviewsPrefix(t *testing.T) {
 // attempt, and a control character are all stripped before the body reaches
 // the terminal.
 func TestWriteReviewEventSanitizesBody(t *testing.T) {
+	t.Parallel()
 	event := reviewEvent{
 		target:    &prTarget{Number: 7},
 		kind:      "comment",
@@ -1140,6 +1141,7 @@ func TestWriteReviewEventSanitizesBody(t *testing.T) {
 }
 
 func TestParseSince(t *testing.T) {
+	t.Parallel()
 	rfc := "2026-07-20T18:01:00Z"
 	tests := []struct {
 		name    string

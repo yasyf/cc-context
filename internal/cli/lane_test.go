@@ -246,6 +246,7 @@ func TestShipGateUnknownKeepsGT(t *testing.T) {
 }
 
 func TestClassifyGTProbe(t *testing.T) {
+	t.Parallel()
 	const unconfirmed = "gt auth exited 0 without confirming this repo is submittable"
 	tests := []struct {
 		name    string
@@ -527,6 +528,7 @@ func TestGTReachabilityLocksProbe(t *testing.T) {
 // for. The demotion costs no gt at all — the gate reads the config before it
 // would ask Graphite anything.
 func TestShipGateRespectsNoGTConfig(t *testing.T) {
+	t.Parallel()
 	f := vcstest.Repo(t, vcstest.GT(), vcstest.Remote())
 	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{})
 	runTool(t, f, "git", "config", nogtKey, "true")
@@ -588,6 +590,7 @@ func brokenCheckoutDir(t *testing.T) (string, string) {
 // checkout nobody resolved. Both roots come off the partial checkout, so the
 // report's root line and its checkout line name one path in one spelling.
 func TestResolveLaneBrokenCheckout(t *testing.T) {
+	t.Parallel()
 	dir, root := brokenCheckoutDir(t)
 	target := filepath.Join(root, "gone", "worktrees", "wt")
 
@@ -625,6 +628,7 @@ func TestResolveLaneBrokenCheckout(t *testing.T) {
 // ResolveCheckout answers "no repository" without failing, and a directory
 // outside one is refused by every caller, the reporting ones included.
 func TestResolveLaneNoRepository(t *testing.T) {
+	t.Parallel()
 	const want = "info: no git or jj repository in the working directory"
 	l, err := resolveLaneReport(context.Background(), "info", t.TempDir(), false, false)
 	if err == nil || err.Error() != want {
@@ -638,6 +642,7 @@ func TestResolveLaneNoRepository(t *testing.T) {
 // TestKindLabel pins a label for every kind, None included: a reported broken
 // checkout can carry one now, and a panic is not a diagnosis.
 func TestKindLabel(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		kind vcs.Kind
 		want string

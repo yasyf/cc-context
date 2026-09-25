@@ -22,6 +22,7 @@ var (
 )
 
 func TestResolveBranchPlan(t *testing.T) {
+	t.Parallel()
 	msg := "fix: frobnicate the widget"
 	tests := []struct {
 		name    string
@@ -179,6 +180,7 @@ func TestResolveBranchPlan(t *testing.T) {
 }
 
 func TestDeriveBranchName(t *testing.T) {
+	t.Parallel()
 	long := "feat: add a thoroughly overengineered configuration subsystem for every lane"
 	tests := []struct {
 		name    string
@@ -217,6 +219,7 @@ func TestDeriveBranchName(t *testing.T) {
 // TestDeriveBranchNameLegality guards the forms git-check-ref-format rejects
 // that a prefix can still smuggle past slugification.
 func TestDeriveBranchNameLegality(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"", "-lead", "a..b", "feature.lock", "trailing/", "trailing."} {
 		if legalBranchName(name) {
 			t.Errorf("legalBranchName(%q) = true, want false", name)

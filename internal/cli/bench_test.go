@@ -170,6 +170,7 @@ func TestBenchSemsearchTimeJSON(t *testing.T) {
 }
 
 func TestBenchCommandIsHidden(t *testing.T) {
+	t.Parallel()
 	cmd, _, err := NewRootCmd().Find([]string{"bench"})
 	if err != nil {
 		t.Fatal(err)

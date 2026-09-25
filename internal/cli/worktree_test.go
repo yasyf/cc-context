@@ -631,6 +631,7 @@ func TestWorktreeAddColocateRefused(t *testing.T) {
 }
 
 func TestWorktreeMode(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		requested string
