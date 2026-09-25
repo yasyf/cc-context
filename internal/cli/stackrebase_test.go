@@ -3,10 +3,15 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/render"
@@ -310,6 +315,17 @@ func TestStackRebaseRunsTwoStacksSideBySide(t *testing.T) {
 	if _, _, err := runStackCmd(t, f, "continue"); err == nil || !strings.Contains(err.Error(), wsA+" still has unresolved files: c.txt") {
 		t.Fatalf("continue from a-top = %v, want a's unresolved c.txt", err)
 	}
+	if _, _, err := runStackCmd(t, f, "continue", "--stack", "b-top"); err == nil || !strings.Contains(err.Error(), wsB+" still has unresolved files: d.txt") {
+		t.Fatalf("continue --stack b-top from a-top = %v, want b's unresolved d.txt", err)
+	}
+	if _, _, err := runStackCmd(t, f, "continue", "--stack", "c-top"); err == nil || err.Error() != "stack rebase: no stack rebase of c-top is in progress" {
+		t.Fatalf("continue --stack c-top = %v, want the miss", err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "--detach", "origin/main")
+	if _, _, err := runStackCmd(t, f, "continue"); err == nil || !strings.Contains(err.Error(), "2 stack rebases are in progress — name one with --stack a-base|b-top") {
+		t.Fatalf("continue off both stacks = %v, want the --stack prompt", err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a-top")
 	writeShipFile(t, wsB, "d.txt", "trunk\nb\n")
 	mustRun(t, f.Env(), wsB, "git", "add", "d.txt")
 	aTop := gitAt(t, f.Env(), f.Dir, "rev-parse", "a-top")
@@ -333,6 +349,166 @@ func TestStackRebaseRunsTwoStacksSideBySide(t *testing.T) {
 	}
 	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
 		t.Errorf("run state left behind: %v", left)
+	}
+}
+
+func stackExitedPid(t *testing.T) int {
+	t.Helper()
+	exited := exec.Command("true")
+	if err := exited.Run(); err != nil {
+		t.Fatal(err)
+	}
+	return exited.Process.Pid
+}
+
+func stackPlantRun(t *testing.T, f *vcstest.Fixture, run *stackRebaseRun) {
+	t.Helper()
+	if err := stackClaim(filepath.Join(f.Dir, ".git"), run); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStackRebaseRefusesARunWhoseProcessIsGone(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	pid := stackExitedPid(t)
+	stackPlantRun(t, f, &stackRebaseRun{Trunk: "main", Roots: []string{"base"}, Pid: pid})
+
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	want := fmt.Sprintf("a stack rebase of base is already in progress: pid %d exited before any branch moved — ccx vcs stack abort --stack base", pid)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+	if out, _, err := runStackCmd(t, f, "abort", "--stack", "base"); err != nil || out != "aborted · no branch moved" {
+		t.Fatalf("abort --stack base = %q, %v", out, err)
+	}
+	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
+		t.Fatalf("rebase after the abort: %v", err)
+	}
+	if !stackOnto(t, f, "origin/main", "base") {
+		t.Error("base is not on the new trunk")
+	}
+}
+
+func TestStackRebaseRefusesARunStillRunning(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	stackPlantRun(t, f, &stackRebaseRun{Trunk: "main", Roots: []string{"base"}, Pid: os.Getpid()})
+
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	want := fmt.Sprintf("a stack rebase of base is already in progress: pid %d is still running it — wait for it to finish", os.Getpid())
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+	if strings.Contains(err.Error(), "abort") {
+		t.Errorf("err = %v, offers an abort of a live run", err)
+	}
+}
+
+func TestStackRebaseRefusesAnAppliedRunWhoseProcessIsGone(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	pid := stackExitedPid(t)
+	stackPlantRun(t, f, &stackRebaseRun{Trunk: "main", Roots: []string{"base"}, Pid: pid, Applied: true})
+
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	want := fmt.Sprintf("pid %d exited after rewriting the stack locally and before recording and pushing it — ccx vcs stack continue --stack base", pid)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+	if _, _, err := runStackCmd(t, f, "abort", "--stack", "base"); err == nil || !strings.Contains(err.Error(), "ccx vcs stack continue --stack base finishes") {
+		t.Fatalf("abort of an applied run = %v, want the refusal pointing at continue", err)
+	}
+}
+
+func TestStackRebaseRefusesAConflictWhoseWorkspaceIsGone(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	ws := restackSiblingPath(t, "conflict-base")
+	stackPlantRun(t, f, &stackRebaseRun{Trunk: "main", Roots: []string{"base"}, Pid: stackExitedPid(t), Conflict: &stackConflict{Branch: "base", Workspace: ws, Brief: filepath.Join(ws, "brief.md")}})
+
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	want := fmt.Sprintf("it stopped on base, and its conflict workspace %s is gone — ccx vcs stack abort --stack base", ws)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+	if out, _, err := runStackCmd(t, f, "abort", "--stack", "base"); err != nil || out != "aborted · no branch moved" {
+		t.Fatalf("abort --stack base = %q, %v", out, err)
+	}
+	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
+		t.Errorf("run state left behind: %v", left)
+	}
+}
+
+func TestStackRebaseRefusesAFlatStateFile(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	dir := filepath.Join(f.Dir, ".git", stackRebaseStateDir)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	flat := &stackRebaseRun{Trunk: "main", Applied: true, Branches: []stackRebaseBranch{{Name: "base"}, {Name: "feature"}}, dir: dir}
+	if err := stackSaveRun(flat); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	want := fmt.Sprintf("%s holds a run of base, feature recorded by a ccx before per-stack state, and its branches are rewritten locally and not yet pushed — finish it with the ccx that started it, or, once nothing is running it and its branches sit where you want them, rm -r %s", stackStatePath(dir), dir)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+	if _, _, err := runStackCmd(t, f, "continue"); err == nil || !strings.Contains(err.Error(), "rm -r "+dir) {
+		t.Fatalf("continue = %v, want the same refusal", err)
+	}
+}
+
+func TestStackClaimAdmitsOneRunPerRoot(t *testing.T) {
+	commonDir := t.TempDir()
+	const racers = 16
+	errs := make([]error, racers)
+	var wg sync.WaitGroup
+	for i := range racers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = stackClaim(commonDir, &stackRebaseRun{Trunk: "main", Roots: []string{"base", "other"}, Pid: i})
+		}()
+	}
+	wg.Wait()
+	var won int
+	for _, err := range errs {
+		if err == nil {
+			won++
+		} else if !strings.Contains(err.Error(), "another stack rebase of base started meanwhile") && !strings.Contains(err.Error(), "another stack rebase of other started meanwhile") {
+			t.Errorf("loser err = %v", err)
+		}
+	}
+	if won != 1 {
+		t.Fatalf("%d racers claimed base, want exactly 1", won)
+	}
+	runs, err := stackRuns(commonDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || !slices.Equal(runs[0].Roots, []string{"base", "other"}) {
+		t.Fatalf("runs = %+v, want the one winner", runs)
+	}
+	entries, _ := os.ReadDir(filepath.Join(commonDir, stackRebaseStateDir))
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if !slices.Equal(names, []string{"base", "other"}) {
+		t.Errorf("state dir holds %v, want only the two claimed roots", names)
+	}
+	if err := stackClearRun(commonDir, runs[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(commonDir, stackRebaseStateDir)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("state dir left behind after the last run cleared: %v", err)
+	}
+	if err := stackClaim(commonDir, &stackRebaseRun{Trunk: "main", Roots: []string{"other"}, Pid: 1}); err != nil {
+		t.Fatalf("claim after clear: %v", err)
 	}
 }
 
