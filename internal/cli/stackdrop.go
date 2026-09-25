@@ -598,7 +598,7 @@ func dropRepairReport(jobs []repairJob, dryRun bool) string {
 // commit it landed on, which is the lease the delete that follows is held
 // under.
 func dropPushRef(ctx context.Context, l lane, remote, ref, base string) (string, error) {
-	argv := []string{"push", remote, gtRestackRef(base) + ":" + gtRestackRef(ref)}
+	argv := pushArgv(remote, gtRestackRef(base)+":"+gtRestackRef(ref))
 	if _, err := render.RunCLI(ctx, l.dir(), "git", argv); err != nil {
 		return "", fmt.Errorf("%s: git push %s %s:%s: %w", dropPrefix, remote, gtRestackRef(base), gtRestackRef(ref), err)
 	}
@@ -609,7 +609,7 @@ func dropPushRef(ctx context.Context, l lane, remote, ref, base string) (string,
 // one this run resurrected, so a branch somebody else recreated in the window
 // refuses instead of being deleted out from under them.
 func dropDeleteRef(ctx context.Context, l lane, remote, ref, lease string) error {
-	argv := []string{"push", remote}
+	argv := pushArgv(remote)
 	if lease != "" {
 		argv = append(argv, "--force-with-lease="+gtRestackRef(ref)+":"+lease)
 	}
