@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"set_criterion_status","id":"f6401baa9e0a31bdd4d966a0cc7d0a64","status":"met","note":"Final head 4923a37915e9880126c1a2f5be04672e63531b4b: CI36112860260 passed both platform race suites and all required checks."}]}
+{"v":1,"lamport":3,"ops":[{"kind":"set_criterion_status","id":"3c714b920fd514a529b3d76061c17f24","status":"met","note":"Final-head CI and local fixtures verify dirty trunk/index-lock preservation, foreign checkout refusal, and independent stack-run preservation."}]}
