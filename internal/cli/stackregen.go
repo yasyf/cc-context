@@ -55,23 +55,45 @@ func regenLoad(ctx context.Context, dir render.Dir, rev string) ([]regenGenerato
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: read %s at %.12s: %w", regenFile, rev, err)
 	}
+	return regenParse(raw, fmt.Sprintf("%s at %.12s", regenFile, rev))
+}
+
+func regenStaged(ctx context.Context, dir render.Dir) ([]regenGenerator, error) {
+	staged, err := render.RunCLI(ctx, dir, "git", []string{"--literal-pathspecs", "ls-files", "-s", "--", regenFile})
+	if err != nil {
+		return nil, fmt.Errorf("stack rebase: look for %s in the index: %w", regenFile, err)
+	}
+	if strings.TrimSpace(staged) == "" {
+		return nil, nil
+	}
+	if meta, _, _ := strings.Cut(staged, "\t"); !strings.HasSuffix(meta, " 0") {
+		return nil, fmt.Errorf("stack rebase: %s is itself conflicted; resolve and git add it first", regenFile)
+	}
+	raw, err := render.RunCLI(ctx, dir, "git", []string{"show", ":" + regenFile})
+	if err != nil {
+		return nil, fmt.Errorf("stack rebase: read %s from the index: %w", regenFile, err)
+	}
+	return regenParse(raw, regenFile+" in the index")
+}
+
+func regenParse(raw, where string) ([]regenGenerator, error) {
 	var cfg struct {
 		Generated []regenGenerator `toml:"generated"`
 	}
 	md, err := toml.Decode(raw, &cfg)
 	if err != nil {
-		return nil, fmt.Errorf("stack rebase: %s at %.12s: %w", regenFile, rev, err)
+		return nil, fmt.Errorf("stack rebase: %s: %w", where, err)
 	}
 	if undecoded := md.Undecoded(); len(undecoded) > 0 {
-		return nil, fmt.Errorf("stack rebase: %s at %.12s: unknown keys %v", regenFile, rev, undecoded)
+		return nil, fmt.Errorf("stack rebase: %s: unknown keys %v", where, undecoded)
 	}
 	for i, g := range cfg.Generated {
 		if len(g.Paths) == 0 || strings.TrimSpace(g.Run) == "" {
-			return nil, fmt.Errorf("stack rebase: %s at %.12s: generated entry %d needs both paths and run", regenFile, rev, i+1)
+			return nil, fmt.Errorf("stack rebase: %s: generated entry %d needs both paths and run", where, i+1)
 		}
 		for _, pattern := range g.Paths {
 			if !doublestar.ValidatePattern(pattern) {
-				return nil, fmt.Errorf("stack rebase: %s at %.12s: generated entry %d: bad path pattern %q", regenFile, rev, i+1, pattern)
+				return nil, fmt.Errorf("stack rebase: %s: generated entry %d: bad path pattern %q", where, i+1, pattern)
 			}
 		}
 	}
@@ -107,14 +129,17 @@ func stackRegenerate(ctx context.Context, cmd *cobra.Command, ws string, gens []
 	if err != nil {
 		return err
 	}
+	var live []string
 	for _, p := range paths {
-		if slices.Contains(unmerged, p) {
-			if err := regenTakeTheirs(ctx, dir, ws, p); err != nil {
-				return err
-			}
+		kept, err := regenSettle(ctx, dir, p, slices.Contains(unmerged, p))
+		if err != nil {
+			return err
+		}
+		if kept {
+			live = append(live, p)
 		}
 	}
-	ran := regenCovering(gens, paths)
+	ran := regenCovering(gens, live)
 	for _, g := range ran {
 		argv := make([]string, 0, 2*len(regenScrubbed)+3)
 		for _, name := range regenScrubbed {
@@ -137,7 +162,7 @@ func stackRegenerate(ctx context.Context, cmd *cobra.Command, ws string, gens []
 	if err != nil {
 		return err
 	}
-	outputs := slices.Clone(paths)
+	outputs := slices.Clone(live)
 	var stray []string
 	for _, p := range touched {
 		if regenOwner(ran, p) == nil {
@@ -156,8 +181,10 @@ func stackRegenerate(ctx context.Context, cmd *cobra.Command, ws string, gens []
 			return err
 		}
 	}
-	if _, err := render.RunCLI(ctx, dir, "git", append([]string{"--literal-pathspecs", "add", "-A", "--"}, outputs...)); err != nil {
-		return fmt.Errorf("stack rebase: stage the regenerated paths in %s: %w", ws, err)
+	if len(outputs) > 0 {
+		if _, err := render.RunCLI(ctx, dir, "git", append([]string{"--literal-pathspecs", "add", "-A", "--"}, outputs...)); err != nil {
+			return fmt.Errorf("stack rebase: stage the regenerated paths in %s: %w", ws, err)
+		}
 	}
 	if left, err := stackUnmerged(ctx, ws); err != nil {
 		return err
@@ -170,23 +197,26 @@ func stackRegenerate(ctx context.Context, cmd *cobra.Command, ws string, gens []
 	return nil
 }
 
-func regenTakeTheirs(ctx context.Context, dir render.Dir, ws, path string) error {
-	stages, err := render.RunCLI(ctx, dir, "git", []string{"--literal-pathspecs", "ls-files", "-u", "--", path})
+func regenSettle(ctx context.Context, dir render.Dir, path string, conflicted bool) (kept bool, err error) {
+	stages, err := render.RunCLI(ctx, dir, "git", []string{"--literal-pathspecs", "ls-files", "-s", "--", path})
 	if err != nil {
-		return fmt.Errorf("stack rebase: read the conflict stages of %s: %w", path, err)
+		return false, fmt.Errorf("stack rebase: read the index stages of %s: %w", path, err)
+	}
+	if !conflicted {
+		return strings.TrimSpace(stages) != "", nil
 	}
 	for line := range strings.Lines(stages) {
 		if meta, _, ok := strings.Cut(line, "\t"); ok && strings.HasSuffix(meta, " 3") {
 			if _, err := render.RunCLI(ctx, dir, "git", []string{"--literal-pathspecs", "checkout", "--theirs", "--", path}); err != nil {
-				return fmt.Errorf("stack rebase: take the replayed side of %s: %w", path, err)
+				return false, fmt.Errorf("stack rebase: take the replayed side of %s: %w", path, err)
 			}
-			return nil
+			return true, nil
 		}
 	}
-	if err := os.Remove(filepath.Join(ws, path)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("stack rebase: drop %s, which the replayed commit deletes: %w", path, err)
+	if _, err := render.RunCLI(ctx, dir, "git", []string{"--literal-pathspecs", "rm", "-q", "--", path}); err != nil {
+		return false, fmt.Errorf("stack rebase: drop %s, which the replayed commit deletes: %w", path, err)
 	}
-	return nil
+	return false, nil
 }
 
 func regenTouched(ctx context.Context, dir render.Dir) ([]string, error) {
@@ -264,7 +294,11 @@ func stackRegenPlan(ctx context.Context, dir render.Dir, run *stackRebaseRun) ([
 		if err != nil {
 			return nil, err
 		}
-		both := regenDeclared(gens, slices.DeleteFunc(own, func(p string) bool { return !slices.Contains(upstream, p) }))
+		kept, err := regenChanged(ctx, dir, b.OldBase, b.Head, "--diff-filter=d")
+		if err != nil {
+			return nil, err
+		}
+		both := regenDeclared(gens, slices.DeleteFunc(kept, func(p string) bool { return !slices.Contains(upstream, p) }))
 		for i := range gens {
 			owned := slices.DeleteFunc(slices.Clone(both), func(p string) bool { return regenOwner(gens, p) != &gens[i] })
 			if len(owned) > 0 {
@@ -275,8 +309,8 @@ func stackRegenPlan(ctx context.Context, dir render.Dir, run *stackRebaseRun) ([
 	return lines, nil
 }
 
-func regenChanged(ctx context.Context, dir render.Dir, from, to string) ([]string, error) {
-	out, err := render.RunCLI(ctx, dir, "git", []string{"diff", "--name-only", "-z", from, to})
+func regenChanged(ctx context.Context, dir render.Dir, from, to string, filter ...string) ([]string, error) {
+	out, err := render.RunCLI(ctx, dir, "git", slices.Concat([]string{"diff", "--name-only", "-z"}, filter, []string{from, to}))
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: diff %.12s..%.12s: %w", from, to, err)
 	}

@@ -36,6 +36,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A stack rebase no longer regenerates a generated file the replayed
+  commit deletes.** A conflicted listed file the replayed commit deletes
+  stays deleted, and so does one the human resolved with `git rm` before
+  `ccx vcs stack continue`. Neither runs its generator. The `[[generated]]`
+  declaration is read from the conflict workspace's index instead of the
+  rebase's `HEAD`, so a commit that removes or changes an entry takes effect
+  at its own stop.
+
 - **`ccx vcs stack rebase` and `stack submit` keep working when GitHub
   refuses GraphQL.** They read each branch's pull request through GitHub's
   REST API, so a GraphQL budget another tool used up, or a GraphQL
