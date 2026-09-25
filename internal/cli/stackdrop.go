@@ -335,7 +335,7 @@ func dropStrandCheck(ctx context.Context, dir render.Dir, state gtState, branch 
 		}
 		if carried {
 			return fmt.Errorf("%s: %s still carries %s's commits, so deleting it would strand them — rebase it with %s, then run the drop again",
-				dropPrefix, name, branch, gtRebaseStep)
+				dropPrefix, name, branch, gtRebaseStep(name))
 		}
 	}
 	return nil

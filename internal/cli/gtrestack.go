@@ -26,14 +26,16 @@ type errRestackConflict struct {
 // Error carries the way out as well as the fact, because a replay that
 // conflicts applies nothing and leaves nothing mid-rebase.
 func (e *errRestackConflict) Error() string {
-	return fmt.Sprintf("%s does not rebase onto %s cleanly — rebase it with %s", e.Branch, e.Onto, gtRebaseStep)
+	return fmt.Sprintf("%s does not rebase onto %s cleanly — rebase it with %s", e.Branch, e.Onto, gtRebaseStep(e.Branch))
 }
 
 // gtRebaseStep is where a branch the replay cannot move goes: ccx's own stack
 // rebase, which rebases with rerere off and resumes through its own continue.
 // gt restack replays whatever rerere recorded, stale resolutions included, and
 // can lose its operation mid-conflict, leaving raw git rebase --continue.
-const gtRebaseStep = "ccx vcs stack rebase --no-push, which stops in a conflict workspace with rerere off for ccx vcs stack continue"
+func gtRebaseStep(branch string) string {
+	return "ccx vcs stack rebase --no-push, run from a working copy on " + branch + "'s stack, which stops in a conflict workspace with rerere off for ccx vcs stack continue"
+}
 
 // errRestackMerged is a branch whose commits are already in its parent. No
 // rebase moves it anywhere — replaying it would re-apply commits the parent

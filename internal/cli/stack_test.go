@@ -523,7 +523,7 @@ func TestStackSubmitSubmitsTheCleanPrefixOfAConflict(t *testing.T) {
 		"fi\n"+
 		"exec "+shellSingleQuote(realGit)+" \"$@\"\n")
 
-	out, _, err := runStackCmd(t, f, "submit")
+	out, _, err := runStackCmd(t, f, "submit", "--pr-title", "feature=feature work")
 	if err == nil {
 		t.Fatal("stack submit succeeded, want feature's conflict reported")
 	}

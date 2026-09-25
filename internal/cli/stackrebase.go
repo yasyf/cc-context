@@ -777,24 +777,24 @@ func stackContinueStranded(ctx context.Context, cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	for len(unmerged) == 0 && stackRebasing(ctx, ws) {
-		argv := append(slices.Clone(stackGitNoRerere), "rebase", "--continue")
-		_, code, stderr, err := render.RunCLIExitCode(ctx, ws, "git", argv)
-		if err != nil {
-			return fmt.Errorf("stack continue: git rebase --continue in %s: %w", ws, err)
-		}
-		if code == 0 {
-			continue
-		}
-		if unmerged, err = stackUnmerged(ctx, string(ws)); err != nil {
-			return err
-		}
-		if len(unmerged) == 0 {
-			return fmt.Errorf("stack continue: git rebase --continue in %s failed: %s", ws, strings.TrimSpace(stderr))
-		}
-	}
 	if len(unmerged) > 0 {
 		return fmt.Errorf("stack continue: %s still has unresolved files: %s — resolve them, git add them, then run ccx vcs stack continue again", ws, strings.Join(unmerged, ", "))
+	}
+	argv := append(slices.Clone(stackGitNoRerere), "rebase", "--continue")
+	_, code, stderr, err := render.RunCLIExitCode(ctx, ws, "git", argv)
+	if err != nil {
+		return fmt.Errorf("stack continue: git rebase --continue in %s: %w", ws, err)
+	}
+	if unmerged, err = stackUnmerged(ctx, string(ws)); err != nil {
+		return err
+	}
+	switch {
+	case len(unmerged) > 0:
+		return fmt.Errorf("stack continue: the rebase in %s stopped on another conflict: %s — resolve them, git add them, then run ccx vcs stack continue again", ws, strings.Join(unmerged, ", "))
+	case code != 0:
+		return fmt.Errorf("stack continue: git rebase --continue in %s failed: %s", ws, strings.TrimSpace(stderr))
+	case stackRebasing(ctx, ws):
+		return fmt.Errorf("stack continue: the rebase in %s paused where its todo list asks to — make the change it stopped for, then run ccx vcs stack continue again", ws)
 	}
 	branch, err := gitCurrentBranch(ctx, ws, "stack continue")
 	if err != nil {
@@ -860,20 +860,26 @@ func stackRerereReplayed(ctx context.Context, ws render.Dir) (int, []string, err
 	if err != nil {
 		return 0, nil, fmt.Errorf("stack continue: %w", err)
 	}
+	orig, err := os.ReadFile(filepath.Join(filepath.Dir(onto), "orig-head")) //nolint:gosec // orig-head sits beside onto in git's own rebase state
+	if err != nil {
+		return 0, nil, fmt.Errorf("stack continue: %w", err)
+	}
 	root, err := render.RunCLI(ctx, ws, "git", []string{"rev-parse", "--show-toplevel"})
 	if err != nil {
 		return 0, nil, fmt.Errorf("stack continue: git rev-parse --show-toplevel: %w", err)
 	}
-	changed, err := render.RunCLI(ctx, ws, "git", []string{"diff", "--name-only", strings.TrimSpace(string(base))})
+	span := strings.TrimSpace(string(base)) + "..." + strings.TrimSpace(string(orig))
+	rebased, err := render.RunCLI(ctx, ws, "git", []string{"diff", "-z", "--name-only", span})
 	if err != nil {
-		return 0, nil, fmt.Errorf("stack continue: list the files this rebase changed: %w", err)
+		return 0, nil, fmt.Errorf("stack continue: list the files the rebased commits change: git diff %s: %w", span, err)
 	}
 	var files []string
-	for _, file := range strings.Fields(changed) {
-		content, err := os.ReadFile(filepath.Join(strings.TrimSpace(root), file)) //nolint:gosec // file is a path git diff listed under the repo root
-		if errors.Is(err, fs.ErrNotExist) {
+	for file := range strings.SplitSeq(strings.TrimRight(rebased, "\x00"), "\x00") {
+		path := filepath.Join(strings.TrimSpace(root), file)
+		if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
 			continue
 		}
+		content, err := os.ReadFile(path) //nolint:gosec // path is one git diff listed under the repo root
 		if err != nil {
 			return 0, nil, fmt.Errorf("stack continue: %w", err)
 		}

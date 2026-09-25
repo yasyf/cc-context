@@ -259,6 +259,11 @@ type gtRefused struct {
 	left     []string
 }
 
+// refuses reports whether branch is one a conflict took out of the submit.
+func (p gtStackPass) refuses(branch string) bool {
+	return slices.ContainsFunc(p.refused, func(r gtRefused) bool { return slices.Contains(r.left, branch) })
+}
+
 // gtRefusedErr names what a submit left behind for a conflict, with the step
 // that resolves each.
 func gtRefusedErr(prefix string, refused []gtRefused) error {

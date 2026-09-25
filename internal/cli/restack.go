@@ -36,7 +36,7 @@ type errRestackBehind struct {
 
 func (e *errRestackBehind) Error() string {
 	return fmt.Sprintf("restack: %s still behind %s: %s — %s; re-run once the cause above is cleared, or rebase them with %s",
-		gtBranchCount(len(e.Branches)), e.Trunk, strings.Join(e.Branches, ", "), e.Summary, gtRebaseStep)
+		gtBranchCount(len(e.Branches)), e.Trunk, strings.Join(e.Branches, ", "), e.Summary, gtRebaseStep("<b>"))
 }
 
 func gtBranchCount(n int) string {

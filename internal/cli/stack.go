@@ -412,7 +412,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts) error {
 		return err
 	}
 	for branch, m := range meta {
-		if len(m.stated()) > 0 && !slices.Contains(pass.chain, branch) {
+		if len(m.stated()) > 0 && !slices.Contains(pass.chain, branch) && !pass.refuses(branch) {
 			return fmt.Errorf("stack submit: --pr-title/--pr-body-file named %s, which this submit leaves out", branch)
 		}
 	}

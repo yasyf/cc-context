@@ -20,7 +20,7 @@ type errSubmitInherited struct {
 
 func (e *errSubmitInherited) Error() string {
 	return fmt.Sprintf("%s carries %d commit(s) %s already holds, so its pull request proposes work the branch does not own: %s — rebase it onto %s with %s before submitting",
-		e.Branch, len(e.Commits), e.Trunk, strings.Join(e.Commits, ", "), e.Trunk, gtRebaseStep)
+		e.Branch, len(e.Commits), e.Trunk, strings.Join(e.Commits, ", "), e.Trunk, gtRebaseStep(e.Branch))
 }
 
 // gtRefuseInherited refuses a submit whose branches carry commits the remote

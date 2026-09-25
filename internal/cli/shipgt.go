@@ -424,7 +424,7 @@ func gtOffParent(branch, held string) string {
 	if held != "" {
 		return branch + " is " + held + ", so the restack left it off its parent — release it, then run this again"
 	}
-	return "restack left " + branch + " off its parent — rebase it with " + gtRebaseStep
+	return "restack left " + branch + " off its parent — rebase it with " + gtRebaseStep(branch)
 }
 
 // gtTrack adopts an untracked branch, reporting the parent it landed on. gt
