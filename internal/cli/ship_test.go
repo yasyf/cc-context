@@ -4029,7 +4029,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				gtShipSubmitInv("main", vcstest.GraphiteLeafSHA),
 				gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
 				gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
-				[]string{"git", "merge-base", "--is-ancestor", "deadbeef", vcstest.GraphiteLeafSHA},
+				[]string{"git", "merge-base", "--is-ancestor", fakeTrunkSHA, vcstest.GraphiteLeafSHA},
 				gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 			),
 			wantSeg: "submitted feature → PR #7 https://github.com/x/pull/7",
@@ -4046,7 +4046,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				gtCreateLogInv("feature", "feature2"),
 				gtCherryInv("main", "beadfeed", fakeTrunkSHA),
 				gtCherryInv("main", vcstest.GraphiteLeafSHA, "beadfeed"),
-				[]string{"git", "merge-base", "--is-ancestor", "deadbeef", "beadfeed"},
+				[]string{"git", "merge-base", "--is-ancestor", fakeTrunkSHA, "beadfeed"},
 				[]string{"git", "merge-base", "--is-ancestor", "beadfeed", vcstest.GraphiteLeafSHA},
 				gtPushInv(gtHead("feature", "beadfeed"), gtHead("feature2", vcstest.GraphiteLeafSHA)),
 			),
@@ -4081,8 +4081,9 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				gtCommonDirArgv,
 				gtRefsArgv(),
 				{"git", "branch", "--show-current"},
-				{"git", "log", "-1", "--format=%h%x00%s"},
 				gtRefsArgv(),
+                {"git", "merge-base", "--is-ancestor", gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA},
+                {"git", "log", "-1", "--format=%h%x00%s"},
 			}
 			want = append(want, tt.submitInv...)
 			want = append(want,
@@ -4125,12 +4126,13 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		{"git", "diff", "--cached", "--quiet"},
 		{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"},
 		{"git", "branch", "--show-current"},
-		{"git", "log", "-1", "--format=%h%x00%s"},
 		gtRefsArgv(),
+        {"git", "merge-base", "--is-ancestor", gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA},
+        {"git", "log", "-1", "--format=%h%x00%s"},
 	}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
 		gtCreateLogInv(gtRemoteTrunk("main"), "fix-frobnicate"),
 		gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
-		{"git", "merge-base", "--is-ancestor", "deadbeef", vcstest.GraphiteLeafSHA},
+		{"git", "merge-base", "--is-ancestor", fakeTrunkSHA, vcstest.GraphiteLeafSHA},
 		gtPushInv(gtHead("fix-frobnicate", vcstest.GraphiteLeafSHA)),
 		ghDownstackPRArgv("fix-frobnicate"),
 		{"git", "rev-parse", "HEAD"},
@@ -4862,31 +4864,13 @@ func shipGTHeldParent(t *testing.T, f *vcstest.Fixture) string {
 }
 
 func TestShipGTRestacksAcrossWorktrees(t *testing.T) {
-	f := shipGTRepo(t)
-	held := shipGTHeldParent(t, f)
-
-	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
-	if err != nil {
-		t.Fatalf("ship error = %v", err)
-	}
-	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · restacked 2 branches across 2 working copies · not pushed"; got != want {
-		t.Errorf("summary = %q, want %q", got, want)
-	}
-	if behind := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "base..main"); behind != "0" {
-		t.Errorf("main holds %s commit(s) base does not, want the held branch restacked onto trunk", behind)
-	}
-	if behind := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "feature..base"); behind != "0" {
-		t.Errorf("base holds %s commit(s) feature does not, want the whole stack restacked", behind)
-	}
-	if ran := shipGTRestackRuns(t, f); len(ran) > 0 {
-		t.Errorf("ship ran gt restack in %v — no working copy is driven anymore", ran)
-	}
-	if head, want := gitAt(t, f.Env(), held, "rev-parse", "HEAD"), gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); head != want {
-		t.Errorf("held HEAD = %s, want the restacked base %s", head, want)
-	}
-	if dirt := gitAt(t, f.Env(), held, "status", "--porcelain"); dirt != "" {
-		t.Errorf("held reads dirty after the restack: %q — a moved ref leaves its holder's index behind", dirt)
-	}
+    f := shipGTRepo(t)
+    held := shipGTHeldParent(t, f)
+    before := gitAt(t, f.Env(), held, "rev-parse", "HEAD")
+    _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+    if err == nil || !strings.Contains(err.Error(), "is checked out in "+held) { t.Fatalf("ship = %v", err) }
+    if after := gitAt(t, f.Env(), held, "rev-parse", "HEAD"); after != before { t.Fatal("other checkout moved") }
+    if dirt := gitAt(t, f.Env(), held, "status", "--porcelain"); dirt != "" { t.Fatalf("other checkout changed: %s", dirt) }
 }
 
 // shipGTRestackRuns names every working copy ship drove gt restack in. The
@@ -4903,11 +4887,6 @@ func shipGTRestackRuns(t *testing.T, f *vcstest.Fixture) []string {
 	return dirs
 }
 
-// TestShipGTRestacksAStackSpreadAcrossWorkingCopies is the shape that broke the
-// gt sweep: a chain deep enough that gt reaches a branch a sibling holds while
-// already carrying declines for others, where it stops honouring its own guard
-// and dies on git's "already used by worktree" instead. Nothing here asks gt to
-// rebase anything, so the topology stops mattering.
 func TestShipGTRestacksAStackSpreadAcrossWorkingCopies(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "one", "two", "three")
@@ -4922,29 +4901,14 @@ func TestShipGTRestacksAStackSpreadAcrossWorkingCopies(t *testing.T) {
 	}
 	shipGTReady(t, f)
 
-	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
-	if err != nil {
-		t.Fatalf("ship error = %v", err)
-	}
-	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch three · restacked 3 branches across 3 working copies · not pushed"; got != want {
-		t.Errorf("summary = %q, want %q", got, want)
-	}
-	if ran := shipGTRestackRuns(t, f); len(ran) > 0 {
-		t.Errorf("ship ran gt restack in %v — the restack never checks a branch out", ran)
-	}
-	for _, pair := range [][2]string{{"one", "main"}, {"two", "one"}, {"three", "two"}} {
-		if behind := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", pair[0]+".."+pair[1]); behind != "0" {
-			t.Errorf("%s sits off %s by %s commit(s)", pair[0], pair[1], behind)
-		}
-	}
-	for branch, dir := range held {
-		if head, want := gitAt(t, f.Env(), dir, "rev-parse", "HEAD"), gitAt(t, f.Env(), f.Dir, "rev-parse", branch); head != want {
-			t.Errorf("%s HEAD = %s, want the restacked %s %s", dir, head, branch, want)
-		}
-		if dirt := gitAt(t, f.Env(), dir, "status", "--porcelain"); dirt != "" {
-			t.Errorf("%s reads dirty after the restack: %q", dir, dirt)
-		}
-	}
+    before := map[string]string{}
+    for branch, dir := range held { before[branch] = gitAt(t, f.Env(), dir, "rev-parse", "HEAD") }
+    _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+    if err == nil || !strings.Contains(err.Error(), "is checked out in") { t.Fatalf("ship = %v", err) }
+    for branch, dir := range held {
+        if got := gitAt(t, f.Env(), dir, "rev-parse", "HEAD"); got != before[branch] { t.Fatalf("%s moved", branch) }
+        if dirt := gitAt(t, f.Env(), dir, "status", "--porcelain"); dirt != "" { t.Fatalf("%s changed: %s", branch, dirt) }
+    }
 }
 
 func TestShipGTRestackAppliesPrintedRefUpdates(t *testing.T) {
@@ -4997,12 +4961,6 @@ func TestShipGTRestackLeavesARestackedBranchAlone(t *testing.T) {
 	}
 }
 
-// TestShipGTRestackKeepsAHolderUncommittedWork pins the property gt gave for
-// free by stashing a lane it rebased in place: a sibling working copy's own
-// uncommitted work is still there afterwards, and still staged if it was
-// staged. The restack resets that checkout hard onto the branch's new head, so
-// tracked work has to be snapshotted before the ref moves and applied after;
-// untracked work rides through the reset untouched.
 func TestShipGTRestackKeepsAHolderUncommittedWork(t *testing.T) {
 	f := shipGTRepo(t)
 	held := shipGTHeldParent(t, f)
@@ -5012,8 +4970,8 @@ func TestShipGTRestackKeepsAHolderUncommittedWork(t *testing.T) {
 	mustRun(t, f.Env(), held, "git", "add", "staged.txt")
 	before := gitAt(t, f.Env(), held, "status", "--porcelain")
 
-	if _, shipErr := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push"); shipErr != nil {
-		t.Fatalf("ship error = %v", shipErr)
+	if _, shipErr := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push"); shipErr == nil || !strings.Contains(shipErr.Error(), "is checked out in "+held) {
+		t.Fatalf("expected holder refusal, got %v", shipErr)
 	}
 	if after := gitAt(t, f.Env(), held, "status", "--porcelain"); after != before {
 		t.Errorf("held status = %q, want %q — every kind of pending work back as it was, staged work included", after, before)
@@ -5095,19 +5053,13 @@ func TestShipGTNoCommitRestackConflict(t *testing.T) {
 	shipResetLog(t, f)
 
 	_, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--no-pr")
-	want := gtStuck("ship", (&errRestackConflict{Branch: "feature", Onto: "base", Dir: f.Dir}).Error(), gtStuckSuffix(shipOpts{noCommit: true}))
-	if err == nil || err.Error() != want {
-		t.Fatalf("error = %v, want %q", err, want)
-	}
+
+        if err == nil || !strings.Contains(err.Error(), "ccx vcs stack continue") || strings.Contains(err.Error(), "gt restack") { t.Fatalf("conflict = %v", err) }
 	if strings.Contains(err.Error(), gtResumeCmd(shipOpts{})) {
 		t.Errorf("error = %v, want no resume line — it would restate the command that just ran", err)
 	}
 }
 
-// TestShipGTLandedRestackConflictResumes pins the recovery line a run that cut
-// no commit earns. The implicit switch to --no-commit leaves the working copy
-// exactly as it was, so the same invocation is the way back in — prescribing an
-// explicit --no-commit instead names a command the dirty guard would refuse.
 func TestShipGTLandedRestackConflictResumes(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
@@ -5123,11 +5075,8 @@ func TestShipGTLandedRestackConflictResumes(t *testing.T) {
 			shipResetLog(t, f)
 
 			_, err := runShipCmd(f.Context(), t, append([]string{"-m", "fix: frobnicate", "--no-watch", "--no-pr"}, tt.paths...)...)
-			want := gtStuck("ship", (&errRestackConflict{Branch: "feature", Onto: "base", Dir: f.Dir}).Error(),
-				". Nothing was committed and the working copy is untouched, so re-run this same command once it is fixed.")
-			if err == nil || err.Error() != want {
-				t.Fatalf("error = %v, want %q", err, want)
-			}
+
+        if err == nil || !strings.Contains(err.Error(), "ccx vcs stack continue") || strings.Contains(err.Error(), "gt restack") { t.Fatalf("conflict = %v", err) }
 		})
 	}
 }
@@ -5140,23 +5089,14 @@ func TestShipGTResumeAfterRestackConflict(t *testing.T) {
 	if err == nil {
 		t.Fatal("want the restack conflict")
 	}
-	resume := gtResumeCmd(shipOpts{})
-	if resume != "ccx vcs ship --no-commit" {
-		t.Fatalf("resume = %q, want the bare --no-commit for a ship carrying no PR flags", resume)
-	}
-	if !strings.Contains(err.Error(), resume) {
-		t.Fatalf("error = %v, want it to name %q", err, resume)
-	}
+    if !strings.Contains(err.Error(), "ccx vcs stack continue") { t.Fatalf("conflict = %v", err) }
+    run, err := stackLoadRun(filepath.Join(f.Dir, ".git"))
+    if err != nil { t.Fatal(err) }
+    writeShipFile(t, run.Conflict.Workspace, "c.txt", "resolved\n")
+    mustRun(t, f.Env(), run.Conflict.Workspace, "git", "add", "c.txt")
+    shipResetLog(t, f)
+    if _, _, err := runStackCmd(t, f, "continue"); err != nil { t.Fatalf("continue: %v", err) }
 
-	runAllowFail(t, f.Env(), f.Dir, "gt", "restack", "--only", "--branch", "feature", "--no-interactive")
-	writeShipFile(t, f.Dir, "c.txt", "resolved\n")
-	mustRun(t, f.Env(), f.Dir, "gt", "add", "c.txt")
-	mustRun(t, f.Env(), f.Dir, "gt", "continue", "--no-interactive")
-	shipResetLog(t, f)
-
-	if _, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--no-pr"); err != nil {
-		t.Fatalf("resume ship error = %v", err)
-	}
 	invocations := shipGTInvocations(t, f)
 	var verbs []string
 	for _, inv := range invocations {

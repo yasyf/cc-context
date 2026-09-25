@@ -414,11 +414,23 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 	stuckOpts.noCommit = o.noCommit
 	stuck := gtStuckSuffix(stuckOpts)
 	restackSeg := ""
-	if plan.needsRestack {
-		if restackSeg, err = gtRestack(ctx, l, stuck, branch, gtc); err != nil {
-			return err
-		}
-	}
+    if gtLane && !o.noPush {
+        tr, err := trunkFetch.join()
+        if err != nil { return err }
+        state, chain, err := gtStackChain(ctx, gtc, branch)
+        if err != nil { return err }
+        contains, err := gitIsAncestor(ctx, l.dir(), "ship", string(tr.Ref()), state[branch].Head)
+        if err != nil { return err }
+        if plan.needsRestack || !contains {
+            intent, err := stackShipOptions(o, meta, prNWO, branch)
+            if err != nil { return err }
+            if err := runStackRebase(cmd, stackRebaseOpts{members: gtBottomUp(chain), draft: o.draft, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent}); err != nil { return err }
+            gtc.forget()
+            restackSeg = "restacked in isolation"
+        }
+    } else if plan.needsRestack {
+        if restackSeg, err = gtRestack(ctx, l, stuck, branch, gtc); err != nil { return err }
+    }
 
 	short, subject, err := shipDescribe(ctx, dir, kind)
 	if err != nil {
@@ -495,6 +507,11 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 			segments = append(segments, seg)
 		}
 	}
+    if gtLane && gtc.restack != nil {
+        common, err := gtc.common(ctx)
+        if err != nil { return err }
+        if err := os.RemoveAll(filepath.Join(common, stackRebaseStateDir)); err != nil { return err }
+    }
 	segments = append(segments, bodylessSegs...)
 
 	var reviewBranches []string

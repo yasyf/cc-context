@@ -248,9 +248,6 @@ func TestStackAllRefusesTrunk(t *testing.T) {
 	}
 }
 
-// TestStackSubmitGoesThroughTheGraphiteAPI pins the one submit implementation:
-// stack submit force-pushes each branch and posts the stack to Graphite the way
-// ship does, rather than shelling out to a gt submit nothing else runs anymore.
 func TestStackSubmitGoesThroughTheGraphiteAPI(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
@@ -279,10 +276,6 @@ func TestStackSubmitGoesThroughTheGraphiteAPI(t *testing.T) {
 	}
 }
 
-// TestStackSubmitReportsWhatItProposes pins the tell a hundred-file pull
-// request over a one-file change shows up as: the width the submit proposes
-// against the remote trunk, named in the report rather than discovered on
-// GitHub afterwards.
 func TestStackSubmitReportsWhatItProposes(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "base", "feature")
@@ -345,9 +338,6 @@ func TestStackSubmitFrozenBranches(t *testing.T) {
 				}
 			}
 			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
-			for _, branch := range branches[1:] {
-				mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", filepath.Join(t.TempDir(), branch), branch)
-			}
 			if tt.stale {
 				mustRun(t, f.Env(), f.Dir, "git", "commit", "--allow-empty", "-qm", "advance base")
 			}
@@ -357,8 +347,8 @@ func TestStackSubmitFrozenBranches(t *testing.T) {
 			}
 
 			out, _, err := runStackCmd(t, f, "submit", "--include", "feature", "--include", "tip")
-			if tt.frozen && tt.stale {
-				if err == nil || !strings.Contains(err.Error(), "feature is frozen") {
+			if tt.frozen {
+				if err == nil || !strings.Contains(err.Error(), "is frozen") {
 					t.Fatalf("stack submit = %q, %v; want a frozen feature refusal", out, err)
 				}
 				if heads := api.submitHeads(); len(heads) != 0 {
@@ -437,7 +427,7 @@ func TestStackSubmitFrozenSiblingStopsReplay(t *testing.T) {
 	}
 }
 
-func TestStackSubmitRefusesIncorrectRestackMetadata(t *testing.T) {
+func TestStackSubmitRepairsIncorrectRestackMetadata(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
 	branches := []string{"base", "feature"}
@@ -466,36 +456,27 @@ func TestStackSubmitRefusesIncorrectRestackMetadata(t *testing.T) {
 	}
 	shipResetLog(t, f)
 
-	out, _, err := runStackCmd(t, f, "submit")
-	if err == nil || !strings.Contains(err.Error(), "restack left feature off its parent") {
-		t.Fatalf("stack submit = %q, %v; want an off-parent feature refusal", out, err)
+	_, _, err = runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("repair metadata: %v", err)
 	}
-	if n := api.routeCount("/graphite/cli/submit/pre-submit-pull-requests"); n != 0 {
-		t.Errorf("presubmit calls = %d, want none", n)
+	if !stackOnto(t, f, "base", "feature") {
+		t.Error("feature is not on the updated base")
 	}
-	if heads := api.submitHeads(); len(heads) != 0 {
-		t.Errorf("submitted %v despite incorrect restack metadata", heads)
+	if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "base..feature"); got != "1" {
+		t.Errorf("feature owns %s commits, want 1", got)
 	}
-	for _, inv := range shipGTInvocations(t, f) {
-		if len(inv) > 1 && inv[0] == "git" && inv[1] == "push" {
-			t.Errorf("pushed %v despite incorrect restack metadata", inv)
-		}
+	if heads := api.submitHeads(); !slices.Equal(heads, branches) {
+		t.Errorf("submitted %v, want %v", heads, branches)
 	}
 	for _, branch := range branches {
-		if got := gitAt(t, f.Env(), f.Dir, "rev-parse", branch); got != before[branch] {
-			t.Errorf("local %s = %s, want unchanged %s", branch, got, before[branch])
-		}
-		if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); got != remote[branch] {
-			t.Errorf("remote %s = %s, want unchanged %s", branch, got, remote[branch])
+		if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", branch), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); local != remote {
+			t.Errorf("%s remote=%s local=%s", branch, remote, local)
 		}
 	}
+
 }
 
-// TestStackSubmitRestackConflictMovesNothing pins the atomicity a stack spread
-// across lanes rests on: a chain that stops partway leaves every branch where
-// it was. Keeping the moves it had already made left the bottom on the trunk it
-// had just reached with everything above it on the old one — two bases in one
-// stack, which only commit archaeology names and only a hand rebuild undoes.
 func TestStackSubmitRestackConflictMovesNothing(t *testing.T) {
 	f := shipGTRepo(t)
 	stackConflicting(t, f)
@@ -523,7 +504,7 @@ func TestStackSubmitRestackConflictMovesNothing(t *testing.T) {
 	if err == nil {
 		t.Fatal("stack submit succeeded, want the conflict on feature")
 	}
-	if !strings.Contains(err.Error(), "no branches moved") {
+	if !strings.Contains(err.Error(), "nothing has moved") {
 		t.Errorf("error = %v, want an unchanged-stack refusal", err)
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != base {
@@ -552,7 +533,9 @@ func TestStackSubmitRestackConflictMovesNothing(t *testing.T) {
 	if !native["base"].NeedsRestack {
 		t.Errorf("native gt observed a temporary replayed base: %s", state)
 	}
-	mustRun(t, f.Env(), f.Dir, "gt", "restack", "--only", "--branch", "base", "--no-interactive")
+	if _, _, err := runStackCmd(t, f, "abort"); err != nil {
+		t.Fatalf("abort: %v", err)
+	}
 }
 
 func TestStackSubmitRestackPublishesAtomically(t *testing.T) {
@@ -571,7 +554,7 @@ func TestStackSubmitRestackPublishesAtomically(t *testing.T) {
 		"exec "+shellSingleQuote(realGit)+" \"$@\"\n")
 
 	_, _, err := runStackCmd(t, f, "submit")
-	if err == nil || !strings.Contains(err.Error(), "publish restacked branches") {
+	if err == nil || !strings.Contains(err.Error(), "branch moved locally") {
 		t.Fatalf("stack submit = %v, want a failed ref transaction", err)
 	}
 	for branch, want := range map[string]string{"base": base, "feature": concurrent} {
@@ -589,12 +572,7 @@ func TestStackSubmitRestackPublishesAtomically(t *testing.T) {
 	}
 }
 
-// TestStackSubmitRefusesADivergedTrunk pins the refusal that keeps another
-// lane's unlanded work out of the stack. A local trunk holding commits the
-// remote does not is indistinguishable from trunk's own here, and a restack
-// onto it lands them in every branch, where the pull requests then propose to
-// merge them.
-func TestStackSubmitRefusesADivergedTrunk(t *testing.T) {
+func TestStackSubmitIgnoresDivergedLocalTrunk(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "base")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
@@ -605,27 +583,27 @@ func TestStackSubmitRefusesADivergedTrunk(t *testing.T) {
 	shipResetLog(t, f)
 	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 
-	_, _, err := runStackCmd(t, f, "submit")
-	if err == nil {
-		t.Fatal("stack submit succeeded on a diverged trunk, want a refusal")
+	trunk := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+	_, errOut, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("submit with unrelated local trunk: %v", err)
 	}
-	if !strings.Contains(err.Error(), "main holds 1 commit(s) refs/remotes/origin/main does not") {
-		t.Errorf("error = %v, want it to name the drift", err)
+	if strings.Contains(errOut, "holds 1 commit") {
+		t.Errorf("unrelated trunk warning: %q", errOut)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "main"); got != trunk {
+		t.Errorf("local trunk moved to %s", got)
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != base {
-		t.Errorf("base = %s, want %s — nothing may move onto a diverged trunk", got, base)
+		t.Errorf("already-current base changed to %s", got)
 	}
-	if files := gitAt(t, f.Env(), f.Dir, "diff", "--name-only", "main...base"); strings.Contains(files, "foreign.txt") {
-		t.Errorf("base carries %q — the foreign commit reached the branch", files)
+	if files := gitAt(t, f.Env(), f.Dir, "diff", "--name-only", "origin/main...base"); strings.Contains(files, "foreign.txt") {
+		t.Errorf("base inherited foreign work: %s", files)
 	}
+
 }
 
-// TestStackSubmitRefusesADuplicatingSpan pins the width check. gt records the
-// revision a branch was stacked on, and a branch rebased outside gt leaves that
-// record behind its real base — so the span gt's metadata describes reaches back
-// over trunk commits the branch never owned, and replaying it copies every one
-// of them onto the branch.
-func TestStackSubmitRefusesADuplicatingSpan(t *testing.T) {
+func TestStackSubmitDoesNotDuplicateAnAlreadyRebasedSpan(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "base")
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
@@ -635,18 +613,19 @@ func TestStackSubmitRefusesADuplicatingSpan(t *testing.T) {
 	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 
 	_, _, err := runStackCmd(t, f, "submit")
-	if err == nil {
-		t.Fatal("stack submit succeeded on a span carrying trunk's own commits, want a refusal")
-	}
-	if !strings.Contains(err.Error(), "would replay 2 commits but owns 1") {
-		t.Errorf("error = %v, want it to name the commits it would copy", err)
-	}
-	if !strings.Contains(err.Error(), "propose 2 files rather than the 1 it changed") {
-		t.Errorf("error = %v, want the file count that is the tell", err)
+	if err != nil {
+		t.Fatalf("submit rebased branch with stale metadata: %v", err)
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != base {
-		t.Errorf("base = %s, want %s — the refusal comes before any ref moves", got, base)
+		t.Errorf("already rebased branch rewritten: %s", got)
 	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main..base"); got != "1" {
+		t.Errorf("submitted branch owns %s commits, want 1", got)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "diff", "--name-only", "origin/main...base"); got != "base.txt" {
+		t.Errorf("submitted changes = %q, want base.txt", got)
+	}
+
 }
 
 func TestStackListKeepsTheStackWholeAcrossARejectedRevision(t *testing.T) {

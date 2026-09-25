@@ -28,9 +28,9 @@ func (e *errSubmitInherited) Error() string {
 // by a replay off a drifted base has a sha of its own and no ancestry says so.
 // Each branch is limited to its own commits by its base, so a stacked branch
 // does not re-report its downstack's.
-func gtRefuseInherited(ctx context.Context, prefix string, dir render.Dir, tr vcs.Trunk, plan []gtSubmitBranch) error {
+func gtRefuseInherited(ctx context.Context, prefix string, dir render.Dir, tr vcs.Trunk, pin string, plan []gtSubmitBranch) error {
 	for _, b := range plan {
-		copies, err := gtCherryCopies(ctx, prefix, dir, string(tr.Ref()), b.head, b.baseSha)
+		copies, err := gtCherryCopies(ctx, prefix, dir, pin, b.head, b.baseSha)
 		if err != nil {
 			return err
 		}

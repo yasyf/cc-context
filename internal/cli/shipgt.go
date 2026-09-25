@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+ "maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -146,6 +147,7 @@ type gtCache struct {
 	prefix    string
 	commonDir string
 	state     gtState
+	restack *stackRebaseRun
 }
 
 func newGTCache(dir render.Dir, prefix string) *gtCache {
@@ -421,9 +423,9 @@ func gtRestackStopped(err error, lead error) string {
 // after a pass that should have moved it, which nothing here can explain.
 func gtOffParent(branch, held string) string {
 	if held != "" {
-		return branch + " is " + held + ", so the restack left it off its parent — release it, or restack it by hand with gt restack --only --branch " + branch
+		return branch + " is " + held + ", so the restack left it off its parent — release it, or run ccx vcs stack submit"
 	}
-	return "restack left " + branch + " off its parent — restack it by hand with gt restack --only --branch " + branch
+	return "restack left " + branch + " off its parent — run ccx vcs stack submit"
 }
 
 // gtTrack adopts an untracked branch, reporting the parent it landed on. gt
@@ -721,6 +723,14 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 		return "", nil, nil, errors.New(gtStuck("ship", problem, suffix))
 	}
 	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: o.draft, noVerify: o.noVerify}
+    if c.restack != nil {
+        if err := stackCheckPublishedHeads(state, c.restack); err != nil { return "", nil, nil, err }
+        sub.trunkHead = c.restack.Pin
+        common, err := c.common(ctx)
+        if err != nil { return "", nil, nil, err }
+        sub.leases, err = stackPublishLeases(ctx, common, c.restack)
+        if err != nil { return "", nil, nil, err }
+    }
 	commonDir, err := c.common(ctx)
 	if err != nil {
 		return "", nil, nil, err
@@ -758,6 +768,15 @@ type gtSubmitBranch struct {
 // The open pull requests it learned come back keyed by branch, so the report
 // step can answer from them instead of asking GitHub the same question again.
 func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, commonDir string, state gtState, tr vcs.Trunk, branches []string) ([]string, map[string]gtapi.PullRequestInfo, error) {
+	if s.trunkHead == "" {
+        pin, err := gtTrunkHead(ctx, l.dir(), s.prefix, tr)
+        if err != nil { return nil, nil, err }
+        s.trunkHead = pin
+    }
+    state = maps.Clone(state)
+    trunk := state[tr.Name()]
+    trunk.Head = s.trunkHead
+    state[tr.Name()] = trunk
 	branches, contained, err := gtDropContained(ctx, l.dir(), s.prefix, tr, state, branches)
 	if err != nil {
 		return nil, nil, err
@@ -829,7 +848,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			plan[i].lease, plan[i].leaseSet = lease, true
 		}
 	}
-	if err := gtRefuseInherited(ctx, s.prefix, l.dir(), tr, plan); err != nil {
+	if err := gtRefuseInherited(ctx, s.prefix, l.dir(), tr, s.trunkHead, plan); err != nil {
 		return nil, nil, err
 	}
 	for _, branch := range branches {
@@ -968,7 +987,7 @@ func gtTrunkHead(ctx context.Context, dir render.Dir, prefix string, tr vcs.Trun
 // request to open. Both halves keep the bottom-up order.
 func gtDropContained(ctx context.Context, dir render.Dir, prefix string, tr vcs.Trunk, state gtState, branches []string) (submit, contained []string, err error) {
 	for _, name := range branches {
-		in, err := gitIsAncestor(ctx, dir, prefix, state[name].Head, string(tr.Ref()))
+		in, err := gitIsAncestor(ctx, dir, prefix, state[name].Head, state[tr.Name()].Head)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1082,10 +1101,7 @@ func gtRepoOwnerName(ctx context.Context, l lane, prefix string) (string, string
 // no PR gets the title and body a create requires. One not stacked on another
 // branch of this submit is anchored on the remote trunk, not on gt's local sha.
 func gtSubmitPlan(ctx context.Context, dir render.Dir, prefix string, state gtState, tr vcs.Trunk, branches []string, open map[string]int, last map[string]gtmeta.Version) ([]gtSubmitBranch, error) {
-	trunkHead, err := gtTrunkHead(ctx, dir, prefix, tr)
-	if err != nil {
-		return nil, err
-	}
+	trunkHead := state[tr.Name()].Head
 	stacked := make(map[string]bool, len(branches))
 	for _, name := range branches {
 		stacked[name] = true
@@ -1103,7 +1119,7 @@ func gtSubmitPlan(ctx context.Context, dir render.Dir, prefix string, state gtSt
 		}
 		from := b.base
 		if !stacked[b.base] {
-			b.base, b.baseSha, from = tr.Name(), trunkHead, string(tr.Ref())
+			b.base, b.baseSha, from = tr.Name(), trunkHead, trunkHead
 		}
 		if b.pr == 0 {
 			title, body, err := gtCreateMeta(ctx, dir, prefix, name, from, b.base)

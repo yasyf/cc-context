@@ -243,6 +243,7 @@ func shipResetLog(t *testing.T, f *vcstest.Fixture) {
 // reaches the gt lane without a gh lookup, an auth probe, or a live API call.
 func shipGTRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	t.Helper()
+	stubStackPRs(t, nil)
 	f := shipRepo(t, append([]vcstest.Opt{vcstest.GT(), vcstest.Remote()}, opts...)...)
 	stubGTAPI(t)
 	return f
@@ -881,7 +882,7 @@ exit 0
     # $GIT_CONTAINED lists the revs the remote trunk holds; a query against any
     # other target keeps the repo-wide knobs below.
     case "$4" in
-      refs/remotes/*)
+      refs/remotes/*|` + fakeTrunkSHA + `)
         for rev in $GIT_CONTAINED; do if [ "$rev" = "$3" ]; then exit 0; fi; done
         exit 1 ;;
     esac
