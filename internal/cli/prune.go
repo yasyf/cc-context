@@ -32,8 +32,11 @@ func newPruneCmd() *cobra.Command {
 
 A squash landing leaves no ancestry for git to see, so on the graphite lane a
 branch also counts as merged when Graphite reports its pull request MERGED at
-exactly the branch's local head; a branch carrying a commit the merged pull
-request did not is left alone, and the delete refuses if the head moved since.
+exactly the branch's local head, or CLOSED there with the merge queue's squash,
+the commit whose subject ends (#<number>), on the fetched trunk; a branch
+carrying a commit the merged pull request did not is left alone, and the delete
+refuses if the head moved since. A deleted branch takes its branch.<name> git
+config with it.
 
 A forgotten row leaves its children naming a parent gt no longer knows, and gt
 then refuses to resolve the whole stack above them, so every surviving row whose
@@ -153,7 +156,7 @@ func prunePlanFor(ctx context.Context, dir render.Dir, l lane, trunk vcs.Trunk, 
 	for _, branch := range merged {
 		delete(candidates, branch)
 	}
-	squashed, err := pruneSquashLanded(ctx, l, trunk, candidates)
+	squashed, err := pruneSquashLanded(ctx, dir, l, trunk, candidates)
 	if err != nil {
 		return prunePlan{}, err
 	}
@@ -293,8 +296,8 @@ const pruneLandedBatch = 100
 // returns each one whose merged pull request's newest version is exactly the
 // branch's local head: a branch that moved past what merged carries work the
 // squash never took.
-func pruneSquashLanded(ctx context.Context, l lane, trunk vcs.Trunk, heads map[string]string) (map[string]string, error) {
-	merged, err := gtMergedHeads(ctx, l, "prune", trunk.Name(), slices.Sorted(maps.Keys(heads)))
+func pruneSquashLanded(ctx context.Context, dir render.Dir, l lane, trunk vcs.Trunk, heads map[string]string) (map[string]string, error) {
+	merged, err := gtMergedHeads(ctx, dir, l, "prune", trunk.Name(), slices.Sorted(maps.Keys(heads)))
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +310,7 @@ func pruneSquashLanded(ctx context.Context, l lane, trunk vcs.Trunk, heads map[s
 	return landed, nil
 }
 
-func gtMergedHeads(ctx context.Context, l lane, prefix, trunk string, branches []string) (map[string]string, error) {
+func gtMergedHeads(ctx context.Context, dir render.Dir, l lane, prefix, trunk string, branches []string) (map[string]string, error) {
 	if len(branches) == 0 {
 		return nil, nil
 	}
@@ -336,7 +339,7 @@ func gtMergedHeads(ctx context.Context, l lane, prefix, trunk string, branches [
 			mu.Lock()
 			defer mu.Unlock()
 			for _, pr := range infos {
-				if pr.State == gtapi.PRMerged && slices.Contains(batch, pr.HeadRefName) {
+				if slices.Contains(batch, pr.HeadRefName) && pruneLanded(gctx, dir, trunk, pr) {
 					merged[pr.HeadRefName] = pruneMergedHead(pr)
 				}
 			}
@@ -347,6 +350,22 @@ func gtMergedHeads(ctx context.Context, l lane, prefix, trunk string, branches [
 		return nil, err
 	}
 	return merged, nil
+}
+
+// pruneLanded reports whether a pull request landed: Graphite reads it MERGED,
+// or it reads CLOSED, as a queue landing can, and the squash the queue writes
+// is on trunk. Only the checkout's own trunk is read for that squash, so a
+// CLOSED pull request costs no request and one this checkout has not fetched
+// the landing of is left alone.
+func pruneLanded(ctx context.Context, dir render.Dir, trunk string, pr gtapi.PullRequestInfo) bool {
+	switch pr.State {
+	case gtapi.PRMerged:
+		return true
+	case gtapi.PRClosed:
+		return prSquashOnBase(ctx, dir, trunk, pr.PRNumber) != ""
+	default:
+		return false
+	}
 }
 
 // pruneMergedHead is the head of a pull request's newest version, empty when
@@ -393,6 +412,9 @@ func pruneApply(ctx context.Context, dir render.Dir, l lane, plan prunePlan, com
 		if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "--stdin"}, []byte(tx.String())); err != nil {
 			return fmt.Errorf("prune: git update-ref --stdin: %w", err)
 		}
+		if err := pruneDropBranchConfig(ctx, dir, squashed); err != nil {
+			return err
+		}
 	}
 	forget := slices.Concat(plan.merged, squashed, plan.stale)
 	if !l.gt || len(forget) == 0 {
@@ -403,6 +425,36 @@ func pruneApply(ctx context.Context, dir render.Dir, l lane, plan prunePlan, com
 	}
 	if err := gtmeta.Forget(ctx, commonDir, forget); err != nil {
 		return fmt.Errorf("prune: %w", err)
+	}
+	return nil
+}
+
+// pruneDropBranchConfig removes the branch.<name> sections git branch -d
+// removes with each branch it deletes, which update-ref leaves behind.
+func pruneDropBranchConfig(ctx context.Context, dir render.Dir, branches []string) error {
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"config", "--local", "--name-only", "--get-regexp", `^branch\.`})
+	switch {
+	case err != nil:
+		return fmt.Errorf("prune: git config --get-regexp: %w", err)
+	case code == 1:
+		return nil
+	case code != 0:
+		return fmt.Errorf("prune: git config --get-regexp: exit %d: %s", code, strings.TrimSpace(stderr))
+	}
+	sections := map[string]bool{}
+	for _, key := range strings.Split(strings.TrimSpace(out), "\n") {
+		if i := strings.LastIndexByte(key, '.'); i > 0 {
+			sections[key[:i]] = true
+		}
+	}
+	for _, branch := range branches {
+		section := "branch." + branch
+		if !sections[section] {
+			continue
+		}
+		if _, err := render.RunCLI(ctx, dir, "git", []string{"config", "--local", "--remove-section", section}); err != nil {
+			return fmt.Errorf("prune: git config --remove-section %s: %w", section, err)
+		}
 	}
 	return nil
 }

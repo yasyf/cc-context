@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 
@@ -45,7 +46,12 @@ type prComparisonGroup struct {
 	candidates []prCommitCandidate
 }
 
-var prCommitsOnBase = func(ctx context.Context, repo string, candidates []prCommitCandidate) (map[int]bool, error) {
+// prCommitsOnBase names the branch each candidate's squash is reachable from,
+// empty when it is on none. A stacked pull request's recorded base is deleted
+// once its parent lands, and the queue lands the pull request on trunk, so the
+// candidates of a base GitHub no longer has are compared again against the
+// default branch.
+func prLandingBranches(ctx context.Context, repo string, candidates []prCommitCandidate) (map[int]string, error) {
 	owner, name, _ := strings.Cut(repo, "/")
 	groups := make([]prComparisonGroup, 0)
 	groupIndex := make(map[string]int)
@@ -72,9 +78,7 @@ var prCommitsOnBase = func(ctx context.Context, repo string, candidates []prComm
 	}
 	var resp struct {
 		Data struct {
-			Repository map[string]map[string]*struct {
-				Status string `json:"status"`
-			} `json:"repository"`
+			Repository map[string]json.RawMessage `json:"repository"`
 		} `json:"data"`
 		Errors []struct {
 			Message string `json:"message"`
@@ -86,11 +90,32 @@ var prCommitsOnBase = func(ctx context.Context, repo string, candidates []prComm
 	if len(resp.Errors) > 0 {
 		return nil, fmt.Errorf("pr status: gh api graphql: %s", resp.Errors[0].Message)
 	}
-	onBase := make(map[int]bool, len(candidates))
+	var trunk struct {
+		Name string `json:"name"`
+	}
+	if raw, ok := resp.Data.Repository["defaultBranchRef"]; ok {
+		if err := json.Unmarshal(raw, &trunk); err != nil {
+			return nil, fmt.Errorf("pr status: parse gh api graphql: %w", err)
+		}
+	}
+	landedOn := make(map[int]string, len(candidates))
+	var gone []prCommitCandidate
 	for i, group := range groups {
-		ref := resp.Data.Repository[fmt.Sprintf("b%d", i)]
+		var ref map[string]*struct {
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal(resp.Data.Repository[fmt.Sprintf("b%d", i)], &ref); err != nil {
+			return nil, fmt.Errorf("pr status: parse gh api graphql: %w", err)
+		}
 		if ref == nil {
-			return nil, fmt.Errorf("pr status: base branch %q not found", group.base)
+			if trunk.Name == "" || trunk.Name == group.base {
+				return nil, fmt.Errorf("pr status: base branch %q not found", group.base)
+			}
+			for _, candidate := range group.candidates {
+				candidate.base = trunk.Name
+				gone = append(gone, candidate)
+			}
+			continue
 		}
 		for j, candidate := range group.candidates {
 			comparison := ref[fmt.Sprintf("c%d", j)]
@@ -99,16 +124,28 @@ var prCommitsOnBase = func(ctx context.Context, repo string, candidates []prComm
 			}
 			switch comparison.Status {
 			case "BEHIND", "IDENTICAL":
-				onBase[candidate.number] = true
+				landedOn[candidate.number] = group.base
 			case "AHEAD", "DIVERGED":
-				onBase[candidate.number] = false
+				landedOn[candidate.number] = ""
 			default:
 				return nil, fmt.Errorf("pr status: compare %s with %s: unknown status %q", candidate.sha, group.base, comparison.Status)
 			}
 		}
 	}
-	return onBase, nil
+	if len(gone) == 0 {
+		return landedOn, nil
+	}
+	onTrunk, err := prLandingBranches(ctx, repo, gone)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(landedOn, onTrunk)
+	return landedOn, nil
 }
+
+// prCommitsOnBase is prLandingBranches; tests replace it to keep the compare
+// off the network.
+var prCommitsOnBase = prLandingBranches
 
 func prCompareQuery(groups []prComparisonGroup) string {
 	decls := []string{"$owner: String!", "$repo: String!"}
@@ -122,7 +159,7 @@ func prCompareQuery(groups []prComparisonGroup) string {
 		}
 		fields.WriteString("    }\n")
 	}
-	return fmt.Sprintf("query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}", strings.Join(decls, ", "), fields.String())
+	return fmt.Sprintf("query(%s) {\n  repository(owner: $owner, name: $repo) {\n    defaultBranchRef { name }\n%s  }\n}", strings.Join(decls, ", "), fields.String())
 }
 
 type vcsPRStatusOpts struct {
@@ -158,8 +195,10 @@ the queue consumes it on admission, and a label left on a pull request the
 queue dropped means nothing.
 
 Landed means the squash commit Graphite recorded is reachable from the base
-branch on GitHub. The queue closes what it lands, so a landed pull request
-reads CLOSED with a null mergedAt on GitHub; the squash is what settles it.
+branch on GitHub, or from the default branch once that base is deleted, as a
+stacked pull request's is after its parent lands. The queue closes what it
+lands, so a landed pull request reads CLOSED with a null mergedAt on GitHub;
+the squash is what settles it.
 
 A queued pull request names the commit the queue admitted. A push after
 admission does not move it: the queue lands that commit and drops the rest.`,
@@ -236,9 +275,9 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int) ([]prQueueR
 			candidates = append(candidates, prCommitCandidate{number: number, base: info.BaseRefName, sha: info.MergeCommitSha})
 		}
 	}
-	onBase := map[int]bool{}
+	landedOn := map[int]string{}
 	if len(candidates) > 0 {
-		onBase, err = prCommitsOnBase(ctx, repo, candidates)
+		landedOn, err = prCommitsOnBase(ctx, repo, candidates)
 		if err != nil {
 			return nil, err
 		}
@@ -246,19 +285,21 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int) ([]prQueueR
 	reports := make([]prQueueReport, 0, len(numbers))
 	for _, number := range numbers {
 		info := byNumber[number]
-		reports = append(reports, classifyPRQueue(info, onBase[number]))
+		reports = append(reports, classifyPRQueue(info, landedOn[number]))
 	}
 	return reports, nil
 }
 
-// classifyPRQueue settles one pull request's queue state. Landed is checked
-// first because Graphite keeps isInGraphiteMq set on a pull request it has
-// already merged; queued needs the pull request still open for the same reason.
-func classifyPRQueue(info gtapi.PullRequestInfo, squashOnBase bool) prQueueReport {
+// classifyPRQueue settles one pull request's queue state, where landedOn is the
+// branch its squash is on. Landed is checked first because Graphite keeps
+// isInGraphiteMq set on a pull request it has already merged; queued needs the
+// pull request still open for the same reason.
+func classifyPRQueue(info gtapi.PullRequestInfo, landedOn string) prQueueReport {
 	r := prQueueReport{Number: info.PRNumber, Queue: prQueueNotQueued, State: string(info.State), Base: info.BaseRefName}
 	switch {
-	case squashOnBase:
+	case landedOn != "":
 		r.Queue = prQueueLanded
+		r.Base = landedOn
 		r.Squash = info.MergeCommitSha
 	case info.State == gtapi.PROpen && info.MergeQueueStatus != nil && info.MergeQueueStatus.IsInGraphiteMq:
 		r.Queue = prQueueQueued

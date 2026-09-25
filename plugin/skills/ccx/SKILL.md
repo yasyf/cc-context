@@ -354,7 +354,9 @@ order. Do not run it in a shell loop or truncate its output with `head`. It prin
 `queued`, `not queued`, or `landed`. It reads Graphite's own record, the one gt reads, so a
 PR enqueued from the Graphite web UI reads `queued` with no merge label on it,
 and a stale merge label the queue dropped reads `not queued`. `landed` means the
-squash Graphite recorded is reachable from the base branch on GitHub.
+squash Graphite recorded is reachable from the base branch on GitHub, or from
+the default branch once that base is deleted, as a stacked PR's is after its
+parent lands.
 
 `ccx vcs guidelines` (alias
 `contributing`) fetches and caches the repo's PR templates, `CONTRIBUTING.md`, code

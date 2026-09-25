@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -43,50 +44,54 @@ func decodePRInfo(t *testing.T, body string) gtapi.PullRequestInfo {
 func TestClassifyPRQueue(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name   string
-		body   string
-		onBase bool
-		want   prQueueReport
+		name     string
+		body     string
+		landedOn string
+		want     prQueueReport
 	}{
 		{
 			"enqueued from the web UI",
-			prInfoQueued, false,
+			prInfoQueued, "",
 			prQueueReport{Number: 25121, Queue: prQueueQueued, State: "OPEN", Base: "dev", Enqueued: "b103a57671412a4e260ecd9763ba764e66053d15"},
 		},
-		{"never enqueued", prInfoOpen, false, prQueueReport{Number: 25131, Queue: prQueueNotQueued, State: "OPEN", Base: "dev"}},
-		{"a merge label the queue dropped", prInfoStaleFlag, false, prQueueReport{Number: 23925, Queue: prQueueNotQueued, State: "OPEN", Base: "dev"}},
+		{"never enqueued", prInfoOpen, "", prQueueReport{Number: 25131, Queue: prQueueNotQueued, State: "OPEN", Base: "dev"}},
+		{"a merge label the queue dropped", prInfoStaleFlag, "", prQueueReport{Number: 23925, Queue: prQueueNotQueued, State: "OPEN", Base: "dev"}},
 		{
 			"landed by the queue",
-			prInfoLanded, true,
+			prInfoLanded, "dev",
 			prQueueReport{Number: 25116, Queue: prQueueLanded, State: "MERGED", Base: "dev", Squash: "9cc33f055dc4db19da6eb13a210a810297ccdc05"},
 		},
-		{"merged but the squash is off the base", prInfoLanded, false, prQueueReport{Number: 25116, Queue: prQueueNotQueued, State: "MERGED", Base: "dev"}},
-		{"closed with the queue flag still set", prInfoAbandoned, false, prQueueReport{Number: 24001, Queue: prQueueNotQueued, State: "CLOSED", Base: "dev"}},
+		{"merged but the squash is off the base", prInfoLanded, "", prQueueReport{Number: 25116, Queue: prQueueNotQueued, State: "MERGED", Base: "dev"}},
+		{"closed with the queue flag still set", prInfoAbandoned, "", prQueueReport{Number: 24001, Queue: prQueueNotQueued, State: "CLOSED", Base: "dev"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := classifyPRQueue(decodePRInfo(t, tt.body), tt.onBase); got != tt.want {
+			if got := classifyPRQueue(decodePRInfo(t, tt.body), tt.landedOn); got != tt.want {
 				t.Errorf("classifyPRQueue = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
 }
 
-func stubPRGraphQL(t *testing.T, response string) string {
+// stubPRGraphQL answers the nth gh call with the nth response, repeating the
+// last one past the end.
+func stubPRGraphQL(t *testing.T, responses ...string) string {
 	t.Helper()
 	dir := t.TempDir()
-	responsePath := filepath.Join(dir, "response.json")
-	if err := os.WriteFile(responsePath, []byte(response), 0o600); err != nil {
-		t.Fatal(err)
+	for i, response := range responses {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("response%d.json", i+1)), []byte(response), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	program := "#!/bin/sh\nprintf 'call\\n' >> \"$GH_CALLS\"\nprintf '%s\\n' \"$@\" > \"$GH_ARGS\"\ncat \"$GH_RESPONSE\"\n"
+	program := "#!/bin/sh\nprintf 'call\\n' >> \"$GH_CALLS\"\nprintf '%s\\n' \"$@\" > \"$GH_ARGS\"\n" +
+		"n=$(wc -l < \"$GH_CALLS\" | tr -d ' ')\n[ \"$n\" -gt " + strconv.Itoa(len(responses)) + " ] && n=" + strconv.Itoa(len(responses)) + "\n" +
+		"cat \"$GH_RESPONSES/response$n.json\"\n"
 	writeShipExecutable(t, dir, "gh", program)
-	argsPath := filepath.Join(dir, "args")
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("GH_CALLS", filepath.Join(dir, "calls"))
-	t.Setenv("GH_ARGS", argsPath)
-	t.Setenv("GH_RESPONSE", responsePath)
+	t.Setenv("GH_ARGS", filepath.Join(dir, "args"))
+	t.Setenv("GH_RESPONSES", dir)
 	return dir
 }
 
@@ -102,7 +107,7 @@ func TestPRCommitsOnBaseBatchesGraphQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := map[int]bool{1: true, 2: true, 3: false, 4: false}; !maps.Equal(got, want) {
+	if want := map[int]string{1: "dev", 2: "dev", 3: "", 4: ""}; !maps.Equal(got, want) {
 		t.Errorf("reachability = %v, want %v", got, want)
 	}
 	calls, err := os.ReadFile(filepath.Join(dir, "calls"))
@@ -120,6 +125,30 @@ func TestPRCommitsOnBaseBatchesGraphQL(t *testing.T) {
 		if !strings.Contains(string(args), want) {
 			t.Errorf("gh args missing %q: %s", want, args)
 		}
+	}
+}
+
+// TestPRCommitsOnBaseReadsADeletedBaseFromTheDefaultBranch is a stacked pull
+// request read after its parent landed: Graphite still records the parent as
+// its base, the queue deleted that branch, and the squash sits on the default
+// branch.
+func TestPRCommitsOnBaseReadsADeletedBaseFromTheDefaultBranch(t *testing.T) {
+	dir := stubPRGraphQL(t, `{"data":{"repository":{"defaultBranchRef":{"name":"dev"},"b0":null}}}`,
+		`{"data":{"repository":{"defaultBranchRef":{"name":"dev"},"b0":{"c0":{"status":"BEHIND"}}}}}`)
+
+	got, err := prCommitsOnBase(context.Background(), "Forge-AI/monorepo", []prCommitCandidate{{number: 25249, base: "yasyf/parent", sha: "a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(got) != "map[25249:dev]" {
+		t.Errorf("landed on = %v, want #25249 on dev", got)
+	}
+	args, err := os.ReadFile(filepath.Join(dir, "args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), "b0=refs/heads/dev") {
+		t.Errorf("the second compare was not against dev: %s", args)
 	}
 }
 
@@ -172,11 +201,13 @@ func stubCommitsOnBase(t *testing.T, onBase map[string]bool) *[][]prCommitCandid
 	t.Helper()
 	var compared [][]prCommitCandidate
 	prev := prCommitsOnBase
-	prCommitsOnBase = func(_ context.Context, _ string, candidates []prCommitCandidate) (map[int]bool, error) {
+	prCommitsOnBase = func(_ context.Context, _ string, candidates []prCommitCandidate) (map[int]string, error) {
 		compared = append(compared, slices.Clone(candidates))
-		got := make(map[int]bool, len(candidates))
+		got := make(map[int]string, len(candidates))
 		for _, candidate := range candidates {
-			got[candidate.number] = onBase[candidate.sha]
+			if onBase[candidate.sha] {
+				got[candidate.number] = candidate.base
+			}
 		}
 		return got, nil
 	}
