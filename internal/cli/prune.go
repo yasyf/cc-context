@@ -294,7 +294,7 @@ const pruneLandedBatch = 100
 // branch's local head: a branch that moved past what merged carries work the
 // squash never took.
 func pruneSquashLanded(ctx context.Context, l lane, trunk vcs.Trunk, heads map[string]string) (map[string]string, error) {
-	merged, err := gtMergedHeads(ctx, l, "prune", trunk, slices.Sorted(maps.Keys(heads)))
+	merged, err := gtMergedHeads(ctx, l, "prune", trunk.Name(), slices.Sorted(maps.Keys(heads)))
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +307,7 @@ func pruneSquashLanded(ctx context.Context, l lane, trunk vcs.Trunk, heads map[s
 	return landed, nil
 }
 
-func gtMergedHeads(ctx context.Context, l lane, prefix string, trunk vcs.Trunk, branches []string) (map[string]string, error) {
+func gtMergedHeads(ctx context.Context, l lane, prefix, trunk string, branches []string) (map[string]string, error) {
 	if len(branches) == 0 {
 		return nil, nil
 	}
@@ -327,7 +327,7 @@ func gtMergedHeads(ctx context.Context, l lane, prefix string, trunk vcs.Trunk, 
 				RepoName:         name,
 				PRNumbers:        []int{},
 				PRHeadRefNames:   batch,
-				TrunkBranchNames: []string{trunk.Name()},
+				TrunkBranchNames: []string{trunk},
 				Callsite:         "ccx",
 			})
 			if err != nil {

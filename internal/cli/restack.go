@@ -122,11 +122,18 @@ func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	trunkRef, err := gtTrunkRef(ctx, l.dir(), "restack", trunk)
+	declined, err := gtRestackLanded(ctx, l, commonDir, trunk, stack)
 	if err != nil {
 		return "", err
 	}
-	declined, err := gtRestackLanded(ctx, l, commonDir, trunkRef, state, stack)
+	remote, err := vcs.GitRemoteFor(ctx, l.dir(), trunk)
+	if err != nil {
+		return "", fmt.Errorf("restack: %w", err)
+	}
+	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"fetch", remote, trunk}); err != nil {
+		return "", fmt.Errorf("restack: git fetch %s %s: %w", remote, trunk, err)
+	}
+	trunkRef, err := gtTrunkRefAt(ctx, l.dir(), "restack", remote, trunk)
 	if err != nil {
 		return "", err
 	}
@@ -182,11 +189,16 @@ func restackGT(ctx context.Context, l lane, errW io.Writer) (string, error) {
 }
 
 // gtRestackLanded asks Graphite about the stack's own branches only: gt sync asks
-// about every tracked branch, which times Graphite out in a large repository. A
-// parent merged at another head keeps its children, which may build on commits
-// the merge never took.
-func gtRestackLanded(ctx context.Context, l lane, commonDir string, trunk vcs.Trunk, state gtState, stack []string) (map[string]string, error) {
+// about every tracked branch, which times Graphite out in a large repository. It
+// runs before the trunk fetch, so every merge it reports is in the fetched trunk,
+// and compares against heads read after the answer. A parent merged at another
+// head keeps its children, which may build on commits the merge never took.
+func gtRestackLanded(ctx context.Context, l lane, commonDir, trunk string, stack []string) (map[string]string, error) {
 	merged, err := gtMergedHeads(ctx, l, "restack", trunk, stack)
+	if err != nil {
+		return nil, err
+	}
+	state, err := gtStateAt(ctx, commonDir, "restack")
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +217,7 @@ func gtRestackLanded(ctx context.Context, l lane, commonDir string, trunk vcs.Tr
 	if err != nil {
 		return nil, fmt.Errorf("restack: %w", err)
 	}
-	moves, err := pruneReparent(rows, landed, trunk.Name())
+	moves, err := pruneReparent(rows, landed, trunk)
 	if err != nil {
 		return nil, err
 	}
