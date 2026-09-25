@@ -33,6 +33,7 @@ func fixedToken(token string) func(context.Context) (string, error) {
 }
 
 func TestPaginateSendsHeadersAndDecodes(t *testing.T) {
+	t.Parallel()
 	ctx := render.WithEnv(t.Context(), "GH_TOKEN=env-token", "GITHUB_TOKEN=", "PATH="+stubGH(t, ""))
 
 	var requests atomic.Int32
@@ -70,6 +71,7 @@ func TestPaginateSendsHeadersAndDecodes(t *testing.T) {
 }
 
 func TestPaginateFollowsLinkHeader(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -110,6 +112,7 @@ func TestPaginateFollowsLinkHeader(t *testing.T) {
 }
 
 func TestPaginateRefusesALinkCycle(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		next         map[string]string
@@ -150,6 +153,7 @@ func TestPaginateRefusesALinkCycle(t *testing.T) {
 }
 
 func TestUnauthorizedReResolvesTokenOnce(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -184,6 +188,7 @@ func TestUnauthorizedReResolvesTokenOnce(t *testing.T) {
 }
 
 func TestUnauthorizedSurvivingReResolveIsTyped(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
@@ -215,6 +220,7 @@ func TestUnauthorizedSurvivingReResolveIsTyped(t *testing.T) {
 }
 
 func TestNotFoundIsTyped(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = fmt.Fprint(w, `{"message":"Not Found"}`)
@@ -236,6 +242,7 @@ func TestNotFoundIsTyped(t *testing.T) {
 }
 
 func TestGraphQLRoundTrip(t *testing.T) {
+	t.Parallel()
 	const query = "query($owner:String!){repository(owner:$owner){name}}"
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/graphql" {
@@ -273,6 +280,7 @@ func TestGraphQLRoundTrip(t *testing.T) {
 }
 
 func TestGraphQLErrorsAreTyped(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `{"data":null,"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a Repository"}]}`)
 	}))
@@ -292,6 +300,7 @@ func TestGraphQLErrorsAreTyped(t *testing.T) {
 }
 
 func TestRateLimitRetryHonorsRetryAfter(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if requests.Add(1) == 1 {
@@ -316,6 +325,7 @@ func TestRateLimitRetryHonorsRetryAfter(t *testing.T) {
 }
 
 func TestRateLimitBeyondCapFailsImmediately(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
@@ -337,6 +347,7 @@ func TestRateLimitBeyondCapFailsImmediately(t *testing.T) {
 }
 
 func TestNextLink(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		link string
@@ -365,6 +376,7 @@ func TestNextLink(t *testing.T) {
 }
 
 func TestResolveRef(t *testing.T) {
+	t.Parallel()
 	c := New("https://api.example/")
 	tests := []struct {
 		name string

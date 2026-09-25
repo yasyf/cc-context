@@ -24,6 +24,7 @@ func writeVersionFake(t *testing.T, versionOut string) string {
 }
 
 func TestResolveBin(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake ast-grep scripts are POSIX-only")
 	}
@@ -44,6 +45,7 @@ func TestResolveBin(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			var configured, made string
 			pathDir := t.TempDir()
 			switch {
@@ -77,6 +79,7 @@ func TestResolveBin(t *testing.T) {
 }
 
 func TestResolveBinReprobesAfterFailure(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake ast-grep scripts are POSIX-only")
 	}

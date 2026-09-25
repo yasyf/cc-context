@@ -443,6 +443,7 @@ func TestLookupRepoUnresolvableName(t *testing.T) {
 }
 
 func TestLookupRepoWithoutGH(t *testing.T) {
+	t.Parallel()
 	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir(), "PATH="+t.TempDir())
 
 	_, err := LookupRepo(ctx, render.Dir(t.TempDir()), false)

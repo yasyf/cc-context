@@ -969,6 +969,7 @@ func TestRunCore_GlobFailFastSkipsRunner(t *testing.T) {
 }
 
 func TestResolveEngine_Neither(t *testing.T) {
+	t.Parallel()
 	_, _, err := resolveEngine(render.WithEnv(t.Context(), "PATH="))
 	if err == nil {
 		t.Fatal("resolveEngine() err = nil, want error when neither engine on PATH")

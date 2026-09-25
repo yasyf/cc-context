@@ -35,6 +35,7 @@ func stubGH(t *testing.T, script string) string {
 }
 
 func TestResolveToken(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		ghEnv     string
@@ -53,6 +54,7 @@ func TestResolveToken(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := render.WithEnv(t.Context(),
 				"GH_TOKEN="+tt.ghEnv,
 				"GITHUB_TOKEN="+tt.githubEnv,
@@ -76,6 +78,7 @@ func TestResolveToken(t *testing.T) {
 }
 
 func TestTokenSourceCaches(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	s := &tokenSource{resolve: func(context.Context) (string, error) {
 		calls++
