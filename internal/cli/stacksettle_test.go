@@ -5,8 +5,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/gtapi"
+	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -163,4 +165,88 @@ func TestShipLeavesNoRunWhenItsRestackIsNotPublished(t *testing.T) {
 			stackAssertNoRun(t, f)
 		})
 	}
+}
+
+func stackPlantLegacyApplied(t *testing.T, f *vcstest.Fixture, age time.Duration) (string, string) {
+	t.Helper()
+	source := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	rewritten := gitAt(t, f.Env(), f.Dir, "commit-tree", source+"^{tree}", "-p", "origin/main", "-m", "feature rewritten by 0.65.15")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--keep", rewritten)
+	stackPlantRun(t, f, age, "feature")
+	run, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Applied = true
+	run.Branches = []stackRebaseBranch{{Name: "feature", Parent: "main", WasParent: "main", Local: source, NewHead: rewritten, HeadRef: stackTempRef("feature")}}
+	if err := stackSaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	then := time.Now().Add(-age)
+	if err := os.Chtimes(stackStatePath(run.dir), then, then); err != nil {
+		t.Fatal(err)
+	}
+	return source, rewritten
+}
+
+func TestStackAbortEndsAnAppliedRunAnOlderShipLeft(t *testing.T) {
+	f := stackRebaseRepo(t, "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	_, rewritten := stackPlantLegacyApplied(t, f, time.Minute)
+
+	if _, _, err := runStackCmd(t, f, "continue"); err == nil || !strings.Contains(err.Error(), "ccx vcs stack abort") {
+		t.Fatalf("continue of a 0.65.15 applied run = %v, want abort named", err)
+	}
+	out, _, err := runStackCmd(t, f, "abort")
+	if err != nil || !strings.HasPrefix(out, "aborted · an older ccx rewrote these branches in place") {
+		t.Fatalf("abort of a 0.65.15 applied run = %q, %v, want it dropped", out, err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != rewritten {
+		t.Errorf("feature = %s, want it left at %s", got, rewritten)
+	}
+	stackAssertNoRun(t, f)
+}
+
+func TestStackRebaseReclaimsAnAppliedRunAnOlderShipLeft(t *testing.T) {
+	f := stackRebaseRepo(t, "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	stackPlantLegacyApplied(t, f, stackStaleAfter+time.Minute)
+	stackAdvanceTrunk(t, f, "later.txt", "later\n")
+
+	out, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err != nil || !strings.Contains(out, "reclaimed the stale stack rebase of feature") {
+		t.Fatalf("rebase beside a dead 0.65.15 applied run = %q, %v, want it reclaimed", out, err)
+	}
+	if !stackOnto(t, f, "origin/main", "feature") {
+		t.Error("feature is not on the new trunk")
+	}
+	stackAssertNoRun(t, f)
+}
+
+func TestStackSubmitAdoptsAPublicationTheBranchWasResetTo(t *testing.T) {
+	f := stackRebaseRepo(t, "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatal(err)
+	}
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--keep", published)
+	common := filepath.Join(f.Dir, ".git")
+	if err := gtmeta.RecordSubmitted(f.Context(), common, map[string]gtmeta.Version{"feature": {HeadSha: published, BaseSha: gitAt(t, f.Env(), f.Dir, "rev-parse", "main"), BaseName: "main"}}); err != nil {
+		t.Fatal(err)
+	}
+	stackAdvanceTrunk(t, f, "later.txt", "later\n")
+
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("submit after adopting the published head = %v, want it published", err)
+	}
+	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	if remote == published || !stackOnto(t, f, "origin/main", remote) || gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main.."+remote) != "1" || gitAt(t, f.Env(), f.Dir, "diff", published, remote, "--", "feature.txt") != "" {
+		t.Fatalf("published feature %s is not the adopted %s replayed onto the new trunk", remote, published)
+	}
+	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "feature")
+	if err != nil || receipt == nil || receipt.Source != published || receipt.Head != remote {
+		t.Fatalf("receipt = %+v, %v, want source %s published as %s", receipt, err, published, remote)
+	}
+	stackAssertNoRun(t, f)
 }

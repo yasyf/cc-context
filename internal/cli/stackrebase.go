@@ -357,11 +357,11 @@ func stackHolder(run *stackRebaseRun) string {
 }
 
 // stackStale reports a run whose process died mid-replay: a run stopped on a
-// conflict has exited by design and waits on its workspace, and an applied run
-// has moved refs that only continue records.
+// conflict has exited by design and waits on its workspace, and an applied
+// --no-push run has moved refs that only continue records.
 func stackStale(run *stackRebaseRun) bool {
 	host, _ := os.Hostname()
-	if run.Host != host || run.Applied || run.Publishing || stackPidAlive(run) || time.Since(run.saved) < stackStaleAfter {
+	if run.Host != host || (run.Applied && !stackLegacyApplied(run)) || run.Publishing || stackPidAlive(run) || time.Since(run.saved) < stackStaleAfter {
 		return false
 	}
 	if run.Conflict == nil {
@@ -1291,6 +1291,8 @@ func stackSettle(ctx context.Context, l lane, commonDir string, run *stackRebase
 			return "", errors.New("stack rebase: the stack is pushed, but its publication receipts are not recorded — ccx vcs stack continue records them")
 		}
 		outcome = "aborted · the remote moved off the pushed stack, so no receipt was recorded · source checkouts unchanged"
+	case stackLegacyApplied(run):
+		outcome = "aborted · an older ccx rewrote these branches in place, and this ccx cannot resume that run · every branch stays where it is"
 	case run.Applied:
 		held, err := stackRewriteHeld(ctx, dir, run)
 		if err != nil {
@@ -1316,6 +1318,10 @@ func stackSettle(ctx context.Context, l lane, commonDir string, run *stackRebase
 		return "", fmt.Errorf("stack abort: %w", err)
 	}
 	return outcome, nil
+}
+
+func stackLegacyApplied(run *stackRebaseRun) bool {
+	return run.Applied && !run.NoPush
 }
 
 func stackRewriteHeld(ctx context.Context, dir render.Dir, run *stackRebaseRun) (bool, error) {
