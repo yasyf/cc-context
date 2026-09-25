@@ -2,9 +2,13 @@ package cli
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/vcs"
 )
 
 // shipPushAttempts bounds how many times a lane re-fetches, re-rebases, and
@@ -78,4 +82,38 @@ func shipPushRetry(ctx context.Context, ref, hint string, attempt func(context.C
 		}
 	}
 	return rebased, fmt.Errorf("ship: push of %q rejected %d times — the remote refused every attempt as non-fast-forward; land manually: %s: %w", ref, shipPushAttempts, hint, err)
+}
+
+func validateShipExpectedRemote(o shipOpts, kind vcs.Kind, graphite bool) error {
+	if !o.noCommit || o.noPush || kind != vcs.Git || graphite {
+		return errors.New("ship: --expect-remote requires --no-commit in the plain Git lane; use --no-gt for a Git checkout configured with Graphite")
+	}
+	if len(o.expectRemote) != 40 && len(o.expectRemote) != 64 {
+		return errors.New("ship: --expect-remote requires a full 40- or 64-character hexadecimal commit ID")
+	}
+	if _, err := hex.DecodeString(o.expectRemote); err != nil {
+		return fmt.Errorf("ship: --expect-remote requires a hexadecimal commit ID: %w", err)
+	}
+	return nil
+}
+
+func shipPushGitExpected(ctx context.Context, dir render.Dir, remote, branch, expected string, noVerify bool) error {
+	source, err := gtRestackHead(ctx, "ship", dir, branch)
+	if err != nil {
+		return err
+	}
+	ref := gtRestackRef(branch)
+	lease := "--force-with-lease=" + ref + ":" + expected
+	_, err = render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, lease, source+":"+ref))
+	if err != nil {
+		return fmt.Errorf("ship: publish %s/%s with expected remote %s failed; the pinned lease was not refreshed — inspect and reconcile before retrying: %w", remote, branch, expected, err)
+	}
+	current, err := gtRestackHead(ctx, "ship", dir, branch)
+	if err != nil {
+		return fmt.Errorf("ship: published %s to %s/%s but could not recheck the local branch: %w", source, remote, branch, err)
+	}
+	if current != source {
+		return fmt.Errorf("ship: published %s to %s/%s, but the local branch moved to %s during publication; left the local ref unchanged and stopped before PR and CI updates", source, remote, branch, current)
+	}
+	return nil
 }
