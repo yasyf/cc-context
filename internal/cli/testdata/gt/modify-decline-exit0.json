@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "modify",
+    "-c",
+    "-m",
+    "modify-decline-exit0",
+    "--no-interactive"
+  ],
+  "exit": 0,
+  "stdout": "[feat a7f9605] modify-decline-exit0\n 1 file changed, 1 insertion(+), 1 deletion(-)\n\n",
+  "stderr": "WARNING: child could not be restacked cleanly.\n\nPlease resolve conflicts in the current stack with gt restack.\n\ntip: Want to modify a downstack branch directly instead of the current branch? Try using gt modify --into <branch>. [modify.into ●○○]\n\n"
+}

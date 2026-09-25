@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -14,11 +13,10 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/render"
-	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
-// gtGoldenAtExitZero pairs a recorded diagnostic with exit 0 — the run
-// gtZeroFatal exists to judge, and the one pairing the corpus cannot supply:
+// gtGoldenAtExitZero pairs a recorded diagnostic with exit 0 — the run verdict
+// exists to judge, and the one pairing the corpus cannot supply:
 // every gt 1.8.6 run that led stderr with ERROR: also exited nonzero, so no
 // recording holds both halves at once. The bytes stay gt's; only the status is
 // the test's own axis.
@@ -44,7 +42,7 @@ func gtRunFake(t *testing.T, body string) {
 	t.Setenv("PATH", dir)
 }
 
-// gtRunScript is the fake gt the streams/policy tests drive: it records its argv
+// gtRunScript is the fake gt the streams/verdict tests drive: it records its argv
 // and replays a stdout, a stderr, and an exit code named in the environment.
 const gtRunScript = `if [ -n "$GTRUN_LOG" ]; then
   { for a in "$@"; do printf '%s\0' "$a"; done; } >> "$GTRUN_LOG"
@@ -61,7 +59,7 @@ exit ${GTRUN_EXIT:-0}
 const gtRunInterleaveScript = `/bin/echo 'one-stdout'
 /bin/echo 'two-stderr' >&2
 /bin/echo 'three-stdout'
-/bin/echo 'ERROR: four-stderr' >&2
+/bin/echo 'WARNING: four-stderr' >&2
 /bin/echo 'five-stdout'
 `
 
@@ -90,15 +88,15 @@ func gtRunReadArgv(t *testing.T, path string) []string {
 func TestGTRunBufferedRunCarriesBothStreams(t *testing.T) {
 	gtRunFake(t, gtRunInterleaveScript)
 
-	r, err := gtRun(context.Background(), render.Ambient, []string{"sync", "--no-interactive"}, gtZeroSurfaces, io.Discard)
+	r, err := gtRun(context.Background(), render.Ambient, []string{"create", "--no-interactive"}, io.Discard)
 	if err != nil {
 		t.Fatalf("gtRun: %v", err)
 	}
-	want := "one-stdout\nthree-stdout\nfive-stdout\ntwo-stderr\nERROR: four-stderr\n"
+	want := "one-stdout\nthree-stdout\nfive-stdout\ntwo-stderr\nWARNING: four-stderr\n"
 	if r.Output != want {
 		t.Errorf("Output = %q, want %q", r.Output, want)
 	}
-	if wantErr := "two-stderr\nERROR: four-stderr\n"; r.Stderr != wantErr {
+	if wantErr := "two-stderr\nWARNING: four-stderr\n"; r.Stderr != wantErr {
 		t.Errorf("Stderr = %q, want %q", r.Stderr, wantErr)
 	}
 }
@@ -108,7 +106,7 @@ func TestGTRunPassesArgvThroughUntouched(t *testing.T) {
 	log := gtRunArgvLog(t)
 
 	want := []string{"submit", "--no-interactive", "--no-edit", "--no-ai", "--no-stack", "--publish"}
-	if _, err := gtRun(context.Background(), render.Ambient, want, gtZeroFatal, io.Discard); err != nil {
+	if _, err := gtRun(context.Background(), render.Ambient, want, io.Discard); err != nil {
 		t.Fatalf("gtRun: %v", err)
 	}
 	got := gtRunReadArgv(t, log)
@@ -138,9 +136,9 @@ func gtGoldenIndentSeverity(payload string) string {
 // recorded bytes rather than invent them.
 func TestGTRunDiagnosticsGatesOnSeverity(t *testing.T) {
 	t.Parallel()
-	tips := loadGTGolden(t, "sync-tips-exit0")
-	declined := loadGTGolden(t, "sync-decline-exit0")
-	errored := loadGTGolden(t, "sync-repo-404")
+	tips := loadGTGolden(t, "modify-tips-exit0")
+	declined := loadGTGolden(t, "modify-decline-exit0")
+	errored := loadGTGolden(t, "auth-no-perms")
 	tests := []struct {
 		name     string
 		result   gtResult
@@ -150,7 +148,7 @@ func TestGTRunDiagnosticsGatesOnSeverity(t *testing.T) {
 		{
 			name:   "a severity-led stderr goes out whole, remediation included",
 			result: declined.result(),
-			want:   declined.stderr,
+			want:   gtDeclinedReport,
 		},
 		{
 			name:   "tips alone stay silent",
@@ -164,8 +162,8 @@ func TestGTRunDiagnosticsGatesOnSeverity(t *testing.T) {
 		},
 		{
 			name:   "a missing trailing newline is supplied",
-			result: gtResult{Output: strings.TrimSuffix(declined.stderr, "\n"), Stderr: strings.TrimSuffix(declined.stderr, "\n")},
-			want:   declined.stderr,
+			result: gtResult{Output: strings.TrimSuffix(gtDeclinedReport, "\n"), Stderr: strings.TrimSuffix(gtDeclinedReport, "\n")},
+			want:   gtDeclinedReport,
 		},
 		{
 			name:     "a streamed result reports nothing twice",
@@ -194,11 +192,11 @@ func TestGTRunStreamsOnceToTerminal(t *testing.T) {
 	shipStreamCI = func(io.Writer) bool { return true }
 
 	var errW bytes.Buffer
-	r, err := gtRun(context.Background(), render.Ambient, []string{"sync"}, gtZeroSurfaces, &errW)
+	r, err := gtRun(context.Background(), render.Ambient, []string{"create"}, &errW)
 	if err != nil {
 		t.Fatalf("gtRun: %v", err)
 	}
-	want := "one-stdout\ntwo-stderr\nthree-stdout\nERROR: four-stderr\nfive-stdout\n"
+	want := "one-stdout\ntwo-stderr\nthree-stdout\nWARNING: four-stderr\nfive-stdout\n"
 	if errW.String() != want {
 		t.Errorf("streamed output = %q, want %q", errW.String(), want)
 	}
@@ -214,70 +212,55 @@ func TestGTRunStreamsOnceToTerminal(t *testing.T) {
 }
 
 func TestGTRunBufferedRunReportsItsDiagnostics(t *testing.T) {
-	want := loadGTGolden(t, "auth-no-token").stderr
+	stderr := loadGTGolden(t, "modify-decline-exit0").stderr
 	gtRunFake(t, gtRunScript)
-	t.Setenv("GTRUN_STDERR", strings.TrimSuffix(want, "\n"))
+	t.Setenv("GTRUN_STDERR", strings.TrimSuffix(stderr, "\n"))
 
 	var errW bytes.Buffer
-	r, err := gtRun(context.Background(), render.Ambient, []string{"sync"}, gtZeroSurfaces, &errW)
+	r, err := gtRun(context.Background(), render.Ambient, []string{"modify"}, &errW)
 	if err != nil {
 		t.Fatalf("gtRun: %v", err)
 	}
 	if errW.Len() != 0 {
 		t.Errorf("errW = %q, want empty — a buffered run streams nothing", errW.String())
 	}
-	if got := r.Diagnostics(); got != want {
-		t.Errorf("Diagnostics() = %q, want %q", got, want)
+	if got := r.Diagnostics(); got != gtDeclinedReport {
+		t.Errorf("Diagnostics() = %q, want %q", got, gtDeclinedReport)
 	}
-	if r.Stderr != want {
-		t.Errorf("Stderr = %q, want %q — the buffered arm keeps the streams apart", r.Stderr, want)
+	if r.Stderr != stderr {
+		t.Errorf("Stderr = %q, want %q — the buffered arm keeps the streams apart", r.Stderr, stderr)
 	}
 }
 
-// TestGTRunZeroPolicyDecidesExitZero pins the exit-status matrix over recorded
-// runs: which combination of exit code, severity line, and policy is a failure,
-// and how gtError words the one it is. The two exit-0-with-an-ERROR rows are the
-// pairing no recording holds — see gtGoldenAtExitZero.
-func TestGTRunZeroPolicyDecidesExitZero(t *testing.T) {
+// TestGTRunVerdictDecidesExitZero pins the exit-status matrix over recorded
+// runs: which combination of exit code and severity line is a failure, and how
+// gtError words the one it is. The exit-0-with-an-ERROR row is the pairing no
+// recording holds — see gtGoldenAtExitZero.
+func TestGTRunVerdictDecidesExitZero(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name       string
 		golden     gtGolden
-		policy     gtZeroPolicy
 		wantErr    bool
 		wantStatus string
 	}{
 		{
-			name:   "exit 0 with no report succeeds under gtZeroFatal",
-			golden: loadGTGolden(t, "sync-quiet-exit0"),
-			policy: gtZeroFatal,
+			name:   "exit 0 with no report succeeds",
+			golden: loadGTGolden(t, "create-quiet-exit0"),
 		},
 		{
-			name:   "exit 0 with no report succeeds under gtZeroSurfaces",
-			golden: loadGTGolden(t, "sync-quiet-exit0"),
-			policy: gtZeroSurfaces,
-		},
-		{
-			name:   "exit 0 with an ERROR is gt's own oracle under gtZeroSurfaces",
-			golden: gtGoldenAtExitZero(t, "sync-auth-invalid"),
-			policy: gtZeroSurfaces,
-		},
-		{
-			name:       "exit 0 with an ERROR is fatal under gtZeroFatal",
+			name:       "exit 0 with an ERROR is fatal",
 			golden:     gtGoldenAtExitZero(t, "auth-no-token"),
-			policy:     gtZeroFatal,
 			wantErr:    true,
 			wantStatus: "exit 0 but reported an error",
 		},
 		{
 			name:   "a WARNING never turns exit 0 fatal",
-			golden: loadGTGolden(t, "sync-decline-exit0"),
-			policy: gtZeroFatal,
+			golden: loadGTGolden(t, "modify-decline-exit0"),
 		},
 		{
-			name:       "a nonzero exit fails even where exit 0 would be surfaced",
-			golden:     loadGTGolden(t, "restack-conflict"),
-			policy:     gtZeroSurfaces,
+			name:       "a nonzero exit fails",
+			golden:     loadGTGolden(t, "auth-no-token"),
 			wantErr:    true,
 			wantStatus: "exit 1",
 		},
@@ -288,7 +271,7 @@ func TestGTRunZeroPolicyDecidesExitZero(t *testing.T) {
 			verb := tt.golden.argv[0]
 			r := tt.golden.result()
 
-			err := r.verdict(verb, tt.policy)
+			err := r.verdict(verb)
 			if !tt.wantErr {
 				if err != nil {
 					t.Fatalf("verdict() = %v, want nil", err)
@@ -318,7 +301,7 @@ func TestGTRunZeroPolicyDecidesExitZero(t *testing.T) {
 func TestGTRunReportsAGtThatCannotRun(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
-	r, err := gtRun(context.Background(), render.Ambient, []string{"state"}, gtZeroFatal, io.Discard)
+	r, err := gtRun(context.Background(), render.Ambient, []string{"state"}, io.Discard)
 	if err == nil {
 		t.Fatal("gtRun: want an error for a gt that is not on PATH")
 	}
@@ -331,70 +314,9 @@ func TestGTRunReportsAGtThatCannotRun(t *testing.T) {
 	}
 }
 
-func assertGTStateTrunk(t *testing.T, payload string) {
-	t.Helper()
-	var state gtState
-	if err := json.Unmarshal([]byte(payload), &state); err != nil {
-		t.Fatalf("unmarshal payload %q: %v", payload, err)
-	}
-	if !state["main"].Trunk {
-		t.Errorf("state = %+v, want main marked trunk", state)
-	}
-}
-
-// TestGTRunCaptureKeepsThePayloadParseable takes the payload from a real gt in a
-// real colocated repository — gt state is the one verb ccx parses, and gt is the
-// only oracle for its shape — then replays it beside a recorded diagnostic,
-// which is the pairing gtCapture exists for: a stderr line interleaved into that
-// JSON would break the unmarshal. gt writes nothing to stderr on a settled
-// repository, so the second half is the only place the split is observable.
-func TestGTRunCaptureKeepsThePayloadParseable(t *testing.T) {
-	want := loadGTGolden(t, "sync-decline-exit0").stderr
-	f := vcstest.Repo(t, vcstest.GT())
-
-	payload, r, err := gtCapture(f.Context(), render.Dir(f.Dir), []string{"state"}, gtZeroFatal)
-	if err != nil {
-		t.Fatalf("gtCapture: %v", err)
-	}
-	assertGTStateTrunk(t, payload)
-	if r.Code != 0 {
-		t.Errorf("Code = %d, want 0", r.Code)
-	}
-
-	gtRunFake(t, gtRunScript)
-	t.Setenv("GTRUN_STDOUT", strings.TrimSuffix(payload, "\n"))
-	t.Setenv("GTRUN_STDERR", strings.TrimSuffix(want, "\n"))
-
-	replayed, r, err := gtCapture(context.Background(), render.Dir(f.Dir), []string{"state"}, gtZeroFatal)
-	if err != nil {
-		t.Fatalf("gtCapture replay: %v", err)
-	}
-	assertGTStateTrunk(t, replayed)
-	if got := r.Diagnostics(); got != want {
-		t.Errorf("Diagnostics() = %q, want %q — Output must carry the stream the payload does not", got, want)
-	}
-}
-
-func TestGTRunCaptureAppliesItsPolicy(t *testing.T) {
-	gtRunFake(t, gtRunScript)
-	t.Setenv("GTRUN_STDERR", strings.TrimSuffix(gtGoldenAtExitZero(t, "auth-no-token").stderr, "\n"))
-
-	payload, _, err := gtCapture(context.Background(), render.Ambient, []string{"state"}, gtZeroFatal)
-	var ge *gtError
-	if !errors.As(err, &ge) {
-		t.Fatalf("gtCapture error = %v, want a *gtError", err)
-	}
-	if payload != "" {
-		t.Errorf("payload = %q, want empty", payload)
-	}
-	if ge.Verb != "state" || ge.Code != 0 {
-		t.Errorf("gtError = %+v, want state at exit 0", ge)
-	}
-}
-
 func TestGTRunJoinStreamsKeepsLinesWhole(t *testing.T) {
 	t.Parallel()
-	stdout := loadGTGolden(t, "sync-quiet-exit0").stdout
+	stdout := loadGTGolden(t, "create-quiet-exit0").stdout
 	stderr := loadGTGolden(t, "auth-no-token").stderr
 	bare := strings.TrimSuffix(stdout, "\n")
 	tests := []struct {
@@ -420,7 +342,7 @@ func TestGTRunJoinStreamsKeepsLinesWhole(t *testing.T) {
 func TestGTRunAdviceKeepsGtsCauseReachable(t *testing.T) {
 	t.Parallel()
 	r := loadGTGolden(t, "auth-no-token").result()
-	cause := r.verdict("auth", gtZeroFatal)
+	cause := r.verdict("auth")
 	if cause == nil {
 		t.Fatal("verdict() = nil, want the recorded refusal to fail")
 	}
@@ -454,7 +376,7 @@ exit 0
 	t.Setenv("GTRUN_STDERR", diagnostic)
 
 	var errW bytes.Buffer
-	r, err := gtRun(context.Background(), render.Ambient, []string{"create", "feature"}, gtZeroFatal, &errW, "GIT_INDEX_FILE=/tmp/ccx-oracle-index")
+	r, err := gtRun(context.Background(), render.Ambient, []string{"create", "feature"}, &errW, "GIT_INDEX_FILE=/tmp/ccx-oracle-index")
 
 	if !strings.Contains(r.Output, "index=/tmp/ccx-oracle-index") {
 		t.Fatalf("Output = %q, want gt to have seen GIT_INDEX_FILE", r.Output)
@@ -481,9 +403,14 @@ const gtDivergedStderr = "WARNING: The following branches have diverged from Gra
 	"WARNING: You can use gt track <branch> to remediate a diverged branch.\n" +
 	"WARNING: To silence reminders about a diverged branch, untrack it with gt untrack <branch>.\n"
 
+// gtDeclinedReport is what Diagnostics keeps of modify-decline-exit0's stderr:
+// the WARNING and its remediation, without the NUX tip gt printed under them
+// or the blank line closing the block.
+const gtDeclinedReport = "WARNING: child could not be restacked cleanly.\n\n" +
+	"Please resolve conflicts in the current stack with gt restack.\n"
+
 func TestGTRunDiagnosticsDropsTheDivergenceReminder(t *testing.T) {
 	t.Parallel()
-	declined := loadGTGolden(t, "sync-decline-exit0")
 	tests := []struct {
 		name   string
 		stderr string
@@ -496,13 +423,13 @@ func TestGTRunDiagnosticsDropsTheDivergenceReminder(t *testing.T) {
 		},
 		{
 			name:   "a diagnostic under the reminder survives it",
-			stderr: gtDivergedStderr + declined.stderr,
-			want:   declined.stderr,
+			stderr: gtDivergedStderr + gtDeclinedReport,
+			want:   gtDeclinedReport,
 		},
 		{
 			name:   "a diagnostic above the reminder survives it",
-			stderr: declined.stderr + gtDivergedStderr,
-			want:   declined.stderr,
+			stderr: gtDeclinedReport + gtDivergedStderr,
+			want:   gtDeclinedReport,
 		},
 		{
 			name:   "the reminder's own words outside it still report",
@@ -525,7 +452,7 @@ func TestGTRunDiagnosticsDropsTheDivergenceReminder(t *testing.T) {
 // diagnostic does not travel with it, while every severity-led line does.
 func TestGTRunDiagnosticsDropsTips(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"sync-tips-and-warning-exit0", "sync-repo-404"} {
+	for _, name := range []string{"modify-decline-exit0", "auth-no-perms"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			g := loadGTGolden(t, name)
@@ -564,7 +491,7 @@ func TestGTQuietWriterDropsTheDivergenceReminderAsItStreams(t *testing.T) {
 func TestGTUnseenReportsARepeatedBlockOnce(t *testing.T) {
 	t.Parallel()
 	ctx := gtDedupe(context.Background())
-	r := gtResult{Output: gtDivergedStderr, Stderr: loadGTGolden(t, "sync-decline-exit0").stderr}
+	r := gtResult{Output: gtDivergedStderr, Stderr: loadGTGolden(t, "modify-decline-exit0").stderr}
 	var first, second bytes.Buffer
 	if err := gtReport(ctx, &first, r); err != nil {
 		t.Fatalf("first report: %v", err)

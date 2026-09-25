@@ -80,7 +80,7 @@ func TestDetectLanguage(t *testing.T) {
 	}
 }
 
-func TestGetFileStatus(t *testing.T) {
+func TestChunkFileEligibility(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name string, body []byte) string {
 		p := filepath.Join(dir, name)
@@ -99,23 +99,31 @@ func TestGetFileStatus(t *testing.T) {
 	tests := []struct {
 		name string
 		path string
-		want fileStatus
+		want bool
 	}{
-		{"valid", valid, statusValid},
-		{"small with content is valid", small, statusValid},
-		{"small whitespace-only is empty", whitespace, statusEmpty},
-		{"large whitespace is not gated", bigWhitespace, statusValid},
-		{"over size cap is too large", tooLarge, statusTooLarge},
+		{"valid", valid, true},
+		{"small with content is valid", small, true},
+		{"small whitespace-only is empty", whitespace, false},
+		{"large whitespace is not gated", bigWhitespace, true},
+		{"over size cap is too large", tooLarge, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := getFileStatus(tt.path)
-			if err != nil {
-				t.Fatalf("getFileStatus(%s): %v", tt.name, err)
-			}
-			if got != tt.want {
-				t.Errorf("getFileStatus(%s) = %d, want %d", tt.name, got, tt.want)
+			got := chunkFile(tt.path, dir, DefaultChunker(), nil)
+			if got.valid != tt.want {
+				t.Errorf("chunkFile(%s).valid = %t, want %t", tt.name, got.valid, tt.want)
 			}
 		})
+	}
+}
+
+func TestReadFileTextRejectsOversizedContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large.go")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", maxFileBytes+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	text, err := readFileText(path)
+	if err == nil || text != "" {
+		t.Fatalf("readFileText = %q, %v; want an error without content", text, err)
 	}
 }

@@ -443,7 +443,7 @@ func gtTrack(ctx context.Context, errW io.Writer, o shipOpts, branch string, c *
 		argv = []string{"track", branch, "--parent", o.parent, "--no-interactive"}
 	}
 	untracked := fmt.Errorf("ship: branch %s is not tracked by graphite — run gt track %s, or pass --no-gt", branch, branch)
-	r, runErr := gtRun(ctx, c.dir, argv, gtZeroFatal, errW)
+	r, runErr := gtRun(ctx, c.dir, argv, errW)
 	c.forget()
 	if err := gtReport(ctx, errW, r); err != nil {
 		return nil, "", err
@@ -565,7 +565,7 @@ func gtModifyArgv(o shipOpts) []string {
 // cannot insert.
 func gtCommit(ctx context.Context, l lane, errW io.Writer, o shipOpts, plan branchPlan, env []string) error {
 	if gtCreates(o, plan) {
-		r, runErr := gtRun(ctx, l.dir(), gtCommitArgv(o, plan), gtZeroFatal, errW, env...)
+		r, runErr := gtRun(ctx, l.dir(), gtCommitArgv(o, plan), errW, env...)
 		if err := gtReport(ctx, errW, r); err != nil {
 			return err
 		}

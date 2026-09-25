@@ -27,37 +27,14 @@ const (
 	gtTipPrefix = "tip: "
 )
 
-// gtZeroPolicy states what an exit-0 run that printed an ERROR: means for one gt
-// verb. Every runner takes it as a required parameter, declared beside the argv
-// it governs, because gt exits 0 while reporting work it did not do — measured:
-// `gt restack` prints "Did not restack branch feat1 because it is checked out in
-// worktree …" and exits 0 — so whether gt's own words are the last word is a
-// per-verb judgment. A default would let a call site silently inherit "trust
-// exit 0", which is the mistake this type exists to make unrepresentable.
-type gtZeroPolicy int
-
-const (
-	// gtZeroSurfaces keeps exit 0 a success and leaves the ERROR: lines to
-	// Diagnostics. It is for a verb ccx re-measures itself: restack's verdict
-	// re-reads the stack's ancestry against the remote-tracking trunk, so gt's
-	// diagnostic explains a report ccx already made rather than deciding it.
-	gtZeroSurfaces gtZeroPolicy = iota
-	// gtZeroFatal turns an exit-0 ERROR: into a failure. It is for a verb with
-	// no second oracle — a submit, create, modify, or track whose only evidence
-	// that it did nothing is the sentence gt printed.
-	gtZeroFatal
-)
-
 // gtResult is one finished gt invocation.
 type gtResult struct {
 	// Output is everything gt printed, both streams together. Emission order
 	// survives on one arm only: a streamed run hands os/exec one writer for
 	// stdout and stderr alike, so the child shares a single fd and no second
-	// goroutine races. The buffered arms keep the two apart — gtCapture because
-	// a diagnostic interleaved into gt state's JSON would break the parse, gtRun
-	// because Stderr has to be separable — and join them stdout-then-stderr,
-	// trading an ordering no reader of Output needs: they match substrings and
-	// scan whole lines.
+	// goroutine races. The buffered arm keeps the two apart, because Stderr has
+	// to be separable, and joins them stdout-then-stderr, trading an ordering no
+	// reader of Output needs: they match substrings and scan whole lines.
 	//
 	// Both views exist because the two readers need opposite things. A
 	// classifier needs Output: gt splits one report across the streams — a
@@ -72,8 +49,8 @@ type gtResult struct {
 	// streams on one fd to preserve emission order, which is the trade that
 	// makes them inseparable, and it has nothing to re-emit anyway.
 	Stderr string
-	// Code is gt's exit status, and is not a verdict on its own: see
-	// gtZeroPolicy.
+	// Code is gt's exit status, and is not a verdict on its own: gt exits 0
+	// while printing an ERROR: for work it did not do.
 	Code int
 	// streamed records that the runner already wired gt's output to the caller's
 	// terminal as it was produced, which is what lets Diagnostics decline to
@@ -264,17 +241,16 @@ func (r gtResult) reportedError() bool {
 	return false
 }
 
-// verdict applies policy to a finished run: a nonzero exit always fails, and an
-// exit-0 ERROR: fails only where the caller said gt's word is the only evidence.
-func (r gtResult) verdict(verb string, policy gtZeroPolicy) error {
-	if r.Code == 0 && (policy == gtZeroSurfaces || !r.reportedError()) {
+// verdict fails a nonzero exit, and an exit 0 that printed an ERROR:.
+func (r gtResult) verdict(verb string) error {
+	if r.Code == 0 && !r.reportedError() {
 		return nil
 	}
 	return &gtError{Verb: verb, Code: r.Code, Output: r.Output}
 }
 
-// gtError is a gt invocation that failed: a nonzero exit, or — under
-// gtZeroFatal — an exit 0 whose output carried an ERROR:. It keeps the whole
+// gtError is a gt invocation that failed: a nonzero exit, or an exit 0 whose
+// output carried an ERROR:. It keeps the whole
 // interleaved output, so the classifier that reads it and the message a caller
 // prints are looking at the same evidence.
 type gtError struct {
@@ -304,7 +280,7 @@ func (e *gtAdvice) Error() string { return e.advice }
 func (e *gtAdvice) Unwrap() error { return e.cause }
 
 // gtRun runs one gt verb, returning everything it printed and whether gt's
-// report counts as a failure under policy. When errW is a terminal the output
+// report counts as a failure. When errW is a terminal the output
 // also streams there as gt produces it; a caller with no reporting channel
 // passes io.Discard. A non-nil error is either that verdict or render's own
 // explanation of a gt that could not run or was killed.
@@ -317,9 +293,8 @@ func (e *gtAdvice) Unwrap() error { return e.cause }
 // prepends thousands of bytes of JSON log records to stdout, ahead of both the
 // payload a parser reads and the lines a classifier matches. extraEnv extends
 // the child's environment for a verb that needs an env-only variable (gt shells
-// out to git, which honors GIT_INDEX_FILE); it is variadic so policy stays a
-// required positional and the ordinary call spells no env.
-func gtRun(ctx context.Context, dir render.Dir, argv []string, policy gtZeroPolicy, errW io.Writer, extraEnv ...string) (gtResult, error) {
+// out to git, which honors GIT_INDEX_FILE).
+func gtRun(ctx context.Context, dir render.Dir, argv []string, errW io.Writer, extraEnv ...string) (gtResult, error) {
 	var out, errBuf bytes.Buffer
 	outW, stderrW := io.Writer(&out), io.Writer(&errBuf)
 	var quiet *gtQuietWriter
@@ -345,21 +320,7 @@ func gtRun(ctx context.Context, dir render.Dir, argv []string, policy gtZeroPoli
 	if err != nil {
 		return r, err
 	}
-	return r, r.verdict(argv[0], policy)
-}
-
-// gtCapture is gtRun for a verb whose stdout ccx parses, and is the one runner
-// that keeps gt's two streams apart: a diagnostic line interleaved into gt
-// state's JSON would break the unmarshal. The payload is returned on its own, so
-// a parser cannot be handed the diagnostics by accident, while Output still
-// carries both streams for a classifier to read whole.
-func gtCapture(ctx context.Context, dir render.Dir, argv []string, policy gtZeroPolicy) (string, gtResult, error) {
-	stdout, code, stderr, err := render.RunCLIExitCode(ctx, dir, "gt", argv)
-	if err != nil {
-		return "", gtResult{}, err
-	}
-	r := gtResult{Output: gtJoinStreams(stdout, stderr), Stderr: stderr, Code: code}
-	return stdout, r, r.verdict(argv[0], policy)
+	return r, r.verdict(argv[0])
 }
 
 // gtStream runs gt with its stdout wired to outW and its stderr to errW, and

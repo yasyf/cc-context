@@ -211,7 +211,7 @@ func stackColocateJJ(ctx context.Context, path render.Dir, name string) error {
 // gtTrackAt adopts the branch a lane holds onto its parent, from inside that
 // lane: gt reads the branch to track from the working copy it runs in.
 func gtTrackAt(ctx context.Context, dir render.Dir, errW io.Writer, parent string) error {
-	r, runErr := gtRun(ctx, dir, []string{"track", "--parent", parent, "--no-interactive"}, gtZeroFatal, errW)
+	r, runErr := gtRun(ctx, dir, []string{"track", "--parent", parent, "--no-interactive"}, errW)
 	if err := gtReport(ctx, errW, r); err != nil {
 		return err
 	}
