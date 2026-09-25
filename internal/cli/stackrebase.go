@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -527,7 +528,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		if replayed {
 			b.Head = prepared.NewHead
 			b.WasParent = prepared.Parent
-			b.SourceBase = prepared.SourceBase
+			b.SourceBase = cmp.Or(prepared.SourceBase, prepared.OldBase)
 			b.OldBase = prepared.NewBase
 			if b.Landed != "" {
 				b.NewHead = prepared.NewHead
@@ -563,9 +564,6 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			if b.OldBase == "" {
 				if b.OldBase, err = stackOldBase(ctx, l.dir(), trunk, pin, state[name], b, byName); err != nil {
 					return nil, err
-				}
-				if b.SourceBase == "" {
-					b.SourceBase = b.OldBase
 				}
 			}
 			if err := stackOwnWork(ctx, l.dir(), tr, pin, b); err != nil {
