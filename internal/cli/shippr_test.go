@@ -467,12 +467,13 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		gtCommonDirArgv,
 		gtRefsArgv(),
 		{"git", "branch", "--show-current"},
-		{"git", "log", "-1", "--format=%h%x00%s"},
 		gtRefsArgv(),
+		{"git", "merge-base", "--is-ancestor", gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA},
+		{"git", "log", "-1", "--format=%h%x00%s"},
 	}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
 		gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
 		gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
-		{"git", "merge-base", "--is-ancestor", "deadbeef", vcstest.GraphiteLeafSHA},
+		{"git", "merge-base", "--is-ancestor", fakeTrunkSHA, vcstest.GraphiteLeafSHA},
 		gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 		ghDownstackPRArgv("feature"),
 		ghPREditArgv(7, "-f", "title=Better title", "-F", "body=@"+body),
@@ -525,13 +526,14 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 				tt.probe,
 				{"git", "rev-list", "--count", "main..HEAD"},
 				{"git", "branch", "--show-current"},
+				{"git", "merge-base", "--is-ancestor", gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 				// No second refs read: this ship cuts no commit, so nothing
 				// invalidates the state the preflight already cached.
 			}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
 				gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
 				gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
-				{"git", "merge-base", "--is-ancestor", "deadbeef", vcstest.GraphiteLeafSHA},
+				{"git", "merge-base", "--is-ancestor", fakeTrunkSHA, vcstest.GraphiteLeafSHA},
 				gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 				ghDownstackPRArgv("feature"),
 				ghPREditArgv(7, "-f", "title=fix: 🐛 frobnicate the widget", "-F", "body=@"+body),

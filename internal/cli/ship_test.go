@@ -4856,6 +4856,7 @@ func shipGTHeldParent(t *testing.T, f *vcstest.Fixture) string {
 	writeShipFile(t, f.Dir, "trunk2.txt", "trunk2\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "trunk2.txt")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "trunk2")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
 	held := f.WorktreePath("held")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
@@ -4900,6 +4901,7 @@ func TestShipGTRestacksAStackSpreadAcrossWorkingCopies(t *testing.T) {
 	writeShipFile(t, f.Dir, "trunk2.txt", "trunk2\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "trunk2.txt")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "trunk2")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "three")
 	held := map[string]string{"one": f.WorktreePath("one"), "two": f.WorktreePath("two")}
 	for branch, dir := range held {

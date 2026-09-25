@@ -70,6 +70,15 @@ type State map[string]BranchState
 // A branch is tracked only when its row is valid and both it and its parent
 // still have a live ref: gt's metadata outlives the branches it describes.
 func Read(ctx context.Context, commonDir string) (State, error) {
+	return readState(ctx, commonDir, false)
+}
+
+// ReadOrigin evaluates tracked branches against the fetched origin trunk without moving the local trunk.
+func ReadOrigin(ctx context.Context, commonDir string) (State, error) {
+	return readState(ctx, commonDir, true)
+}
+
+func readState(ctx context.Context, commonDir string, remoteTrunk bool) (State, error) {
 	trunk, err := readTrunk(commonDir)
 	if err != nil {
 		return nil, err
@@ -78,9 +87,19 @@ func Read(ctx context.Context, commonDir string) (State, error) {
 	if err != nil {
 		return nil, err
 	}
-	heads, err := readHeads(ctx, commonDir, rowRefs(rows))
+	refs := rowRefs(rows)
+	if remoteTrunk {
+		refs = append(refs, []byte("refs/remotes/origin/"+trunk+"\n")...)
+	}
+	heads, err := readHeads(ctx, commonDir, refs)
 	if err != nil {
 		return nil, err
+	}
+
+	if remoteTrunk {
+		if head := heads["refs/remotes/origin/"+trunk]; head != "" {
+			heads[trunk] = head
+		}
 	}
 
 	state := State{}
@@ -202,7 +221,7 @@ func readHeads(ctx context.Context, commonDir string, refs []byte) (map[string]s
 	if len(refs) == 0 {
 		return map[string]string{}, nil
 	}
-	argv := []string{"--git-dir=" + commonDir, "for-each-ref", "--format=%(refname:short) %(objectname)", "--stdin"}
+	argv := []string{"--git-dir=" + commonDir, "for-each-ref", "--format=%(refname) %(objectname)", "--stdin"}
 	out, err := render.RunCLIStdin(ctx, render.Dir(commonDir), "git", argv, refs)
 	if err != nil {
 		return nil, fmt.Errorf("gtmeta: list branches in %q: %w", commonDir, err)
@@ -213,7 +232,7 @@ func readHeads(ctx context.Context, commonDir string, refs []byte) (map[string]s
 		if !ok {
 			continue
 		}
-		heads[name] = sha
+		heads[strings.TrimPrefix(name, "refs/heads/")] = sha
 	}
 	return heads, nil
 }

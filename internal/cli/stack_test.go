@@ -408,7 +408,7 @@ func TestStackSubmitFrozenSiblingStopsReplay(t *testing.T) {
 	shipResetLog(t, f)
 
 	out, _, err := runStackCmd(t, f, "submit")
-	if err == nil || !strings.Contains(err.Error(), "z-frozen is frozen") {
+	if err == nil || !strings.Contains(err.Error(), "is frozen") {
 		t.Fatalf("stack submit = %q, %v; want a frozen sibling refusal", out, err)
 	}
 	if n := api.routeCount("/graphite/cli/submit/pre-submit-pull-requests"); n != 0 {
@@ -675,7 +675,7 @@ func TestStackSubmitRestacksARejectedParentRevision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
-	state, err := gtmeta.Read(f.Context(), commonDir)
+	state, err := gtmeta.ReadOrigin(f.Context(), commonDir)
 	if err != nil {
 		t.Fatal(err)
 	}

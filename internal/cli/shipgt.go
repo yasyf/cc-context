@@ -100,11 +100,6 @@ func gtUnseen(ctx context.Context, blocks []string) []string {
 	return unseen
 }
 
-// gtStateQuery reads the stack gt tracks out of gt's own SQLite metadata rather
-// than from gt state, which costs six to nine seconds in a large repository
-// because gt revalidates every ref on every invocation. gtmeta answers the same
-// question from one query and one for-each-ref; its conformance test is what
-// keeps the two answers the same.
 func gtStateQuery(ctx context.Context, dir render.Dir, prefix string) (gtState, error) {
 	commonDir, err := gtCommonDir(ctx, dir, prefix)
 	if err != nil {
@@ -113,9 +108,8 @@ func gtStateQuery(ctx context.Context, dir render.Dir, prefix string) (gtState, 
 	return gtStateAt(ctx, commonDir, prefix)
 }
 
-// gtStateAt is gtStateQuery for a caller already holding the git common dir.
 func gtStateAt(ctx context.Context, commonDir, prefix string) (gtState, error) {
-	tracked, err := gtmeta.Read(ctx, commonDir)
+	tracked, err := gtmeta.ReadOrigin(ctx, commonDir)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", prefix, err)
 	}

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 func TestStackSubmitLeavesDirtyTrunkAndItsIndexLockUntouched(t *testing.T) {
@@ -35,6 +37,17 @@ func TestStackSubmitLeavesDirtyTrunkAndItsIndexLockUntouched(t *testing.T) {
 	if !stackOnto(t, f, "origin/main", "feature") {
 		t.Fatal("feature missed fresh remote trunk")
 	}
+	state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state["feature"].NeedsRestack {
+		t.Fatal("freshly submitted feature still needs restack")
+	}
+	if state["main"].Head != gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main") {
+		t.Fatal("effective trunk did not use origin")
+	}
+
 	if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); local != remote {
 		t.Fatalf("not pushed: %s != %s", local, remote)
 	}
