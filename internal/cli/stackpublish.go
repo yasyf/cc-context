@@ -91,6 +91,11 @@ func stackUsePublication(b *stackRebaseBranch, receipt *stackPublication, submit
 	if b.Landed != "" {
 		return nil
 	}
+	if b.Local == receipt.Head && b.Remote == receipt.Head {
+		b.OldBase = receipt.Base
+		b.SourceBase = receipt.Base
+		return nil
+	}
 	if submitted.HeadSha != receipt.Head || submitted.BaseSha != receipt.Base || submitted.BaseName != receipt.Parent {
 		return fmt.Errorf("stack rebase: %s publication metadata changed; reconcile its source and published versions before retrying", b.Name)
 	}
