@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -1175,19 +1176,74 @@ func gtPushArgv(s gtSubmit, plan []gtSubmitBranch) []string {
 
 // gtPushStack force-pushes the whole stack under each branch's last submitted
 // lease, so a remote someone else advanced is refused rather than overwritten
-// and no ref moves unless all of them do. No retry: a force-with-lease push is
-// never rejected as non-fast-forward, so a refusal here is terminal.
+// and no ref moves unless all of them do. A lease is behind the remote when this
+// repository pushed the branch outside a submit, which records no lease; the
+// push is retried once on the head that push left, and refused for any branch
+// whose remote moved by other hands.
 func gtPushStack(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmitBranch) error {
 	_, err := render.RunCLI(ctx, dir, "git", gtPushArgv(s, plan))
-	switch {
-	case err == nil:
-		return nil
-	case gitPushStaleLease(err):
-		problem := "remote " + strings.Join(gtPlanNames(plan), ", ") + " changed since last submit — reconcile manually (gt sync)"
-		return &gtAdvice{advice: gtStuck(s.prefix, problem, s.suffix), cause: err}
-	default:
-		return fmt.Errorf("%s: git push %s: %w", s.prefix, strings.Join(gtPlanNames(plan), ", "), err)
+	if err == nil || !gitPushStaleLease(err) {
+		return gtPushFailure(s, plan, err)
 	}
+	var moved []string
+	for _, name := range gtStaleRefs(err) {
+		i := slices.IndexFunc(plan, func(b gtSubmitBranch) bool { return b.name == name })
+		if i < 0 {
+			continue
+		}
+		pushed, err := gtPushedHere(ctx, dir, s.prefix, name)
+		if err != nil {
+			return err
+		}
+		if pushed == "" || pushed == plan[i].lease {
+			moved = append(moved, name)
+			continue
+		}
+		plan[i].lease = pushed
+	}
+	if len(moved) == 0 {
+		_, err = render.RunCLI(ctx, dir, "git", gtPushArgv(s, plan))
+		if err == nil || !gitPushStaleLease(err) {
+			return gtPushFailure(s, plan, err)
+		}
+		moved = gtStaleRefs(err)
+	}
+	problem := "remote " + strings.Join(moved, ", ") + " changed since last submit, by a push this repository did not make — fetch it and fold in what it added, then submit again"
+	return &gtAdvice{advice: gtStuck(s.prefix, problem, s.suffix), cause: err}
+}
+
+func gtPushFailure(s gtSubmit, plan []gtSubmitBranch, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: git push %s: %w", s.prefix, strings.Join(gtPlanNames(plan), ", "), err)
+}
+
+var gtStaleRefPattern = regexp.MustCompile(`-> (\S+) \(stale info\)`)
+
+func gtStaleRefs(err error) []string {
+	matches := gtStaleRefPattern.FindAllStringSubmatch(err.Error(), -1)
+	refs := make([]string, 0, len(matches))
+	for _, m := range matches {
+		refs = append(refs, m[1])
+	}
+	return refs
+}
+
+// gtPushedHere is the head this repository last pushed branch to, read off the
+// remote-tracking ref's reflog, or empty when a fetch moved that ref last — a
+// fetch can carry in a push from anywhere.
+func gtPushedHere(ctx context.Context, dir render.Dir, prefix, branch string) (string, error) {
+	ref := "refs/remotes/origin/" + branch
+	out, err := render.RunCLI(ctx, dir, "git", []string{"reflog", "show", "-n", "1", "--format=%H %gs", ref, "--"})
+	if err != nil {
+		return "", fmt.Errorf("%s: git reflog %s: %w", prefix, ref, err)
+	}
+	sha, subject, _ := strings.Cut(strings.TrimSpace(out), " ")
+	if subject != "update by push" {
+		return "", nil
+	}
+	return sha, nil
 }
 
 func gtPlanNames(plan []gtSubmitBranch) []string {

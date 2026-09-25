@@ -5512,7 +5512,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		t.Setenv("GIT_LEASE_STALE", "1")
 
 		_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate")
-		want := submitAdvice("remote feature changed since last submit — reconcile manually (gt sync)")
+		want := submitAdvice("remote feature changed since last submit, by a push this repository did not make — fetch it and fold in what it added, then submit again")
 		if err == nil || err.Error() != want {
 			t.Fatalf("error = %v, want %q", err, want)
 		}
