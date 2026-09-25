@@ -1,1 +1,1 @@
-{"v":1,"lamport":3,"ops":[{"kind":"set_criterion_status","id":"3c714b920fd514a529b3d76061c17f24","status":"met","note":"Final-head CI and local fixtures verify dirty trunk/index-lock preservation, foreign checkout refusal, and independent stack-run preservation."}]}
+{"v":1,"lamport":4,"ops":[{"kind":"set_criterion_status","id":"32a0c9cb00b8cbd9d778d1a1b669ab00","status":"met","note":"Final-head CI covers conflict workspace continuation, explicit remote leases, changed local-head refusal, and Graphite stack submission."}]}
