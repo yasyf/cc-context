@@ -31,7 +31,7 @@ An `<name>.md` with no `<name>.json` beside it could not be recorded here.
 The streams live inside JSON strings rather than as loose files because the
 repo's commit hooks rewrite loose text — `trailing-whitespace` and
 `end-of-file-fixer` between them strip and append the exact bytes these
-goldens exist to preserve. Nine scenarios end a `stderr` line with a space,
+goldens exist to preserve. Three scenarios end a `stderr` line with a space,
 which is gt's own `splog.error` template appending one when called without a
 second argument; a hook stripping it would make the golden a quiet lie about
 what gt printed. JSON escaping puts the payload out of their reach, and

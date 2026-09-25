@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "modify",
+    "-c",
+    "-m",
+    "modify-tips-exit0",
+    "--no-interactive"
+  ],
+  "exit": 0,
+  "stdout": "[feat 19c91bc] modify-tips-exit0\n 1 file changed, 1 insertion(+)\n",
+  "stderr": "\ntip: Want to modify a downstack branch directly instead of the current branch? Try using gt modify --into <branch>. [modify.into ●○○]\n\n\ntip: If you need to undo the operation you just ran, you can do so with gt undo. [runner.undo ●○○]\n\n"
+}

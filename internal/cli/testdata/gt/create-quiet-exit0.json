@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "create",
+    "feat",
+    "-m",
+    "create-quiet-exit0",
+    "--no-interactive"
+  ],
+  "exit": 0,
+  "stdout": "1 file changed, 1 insertion(+), 1 deletion(-)\n",
+  "stderr": ""
+}
