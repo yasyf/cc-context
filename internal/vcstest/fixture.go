@@ -106,6 +106,11 @@ func (f *Fixture) WorktreePath(name string) string {
 // the brew-free PATH to hide a tool passes locally and fails on CI.
 func (f *Fixture) OnlyShimPATH(t *testing.T) {
 	t.Helper()
+	// git forks its local transport through the shell SHELL_PATH names, bare
+	// `bash` in Homebrew's build, so a PATH without /bin cannot fetch at all.
+	for _, shell := range []string{"sh", "bash"} {
+		symlink(t, filepath.Join("/bin", shell), filepath.Join(f.ShimBin, shell))
+	}
 	f.env = append(f.env, "PATH="+f.ShimBin)
 }
 
