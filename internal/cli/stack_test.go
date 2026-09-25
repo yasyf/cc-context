@@ -726,6 +726,23 @@ func stackCommit(t *testing.T, f *vcstest.Fixture, file string) {
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", file)
 }
 
+func stackForeignPush(t *testing.T, f *vcstest.Fixture, branch, file string, amend bool) {
+	t.Helper()
+	clone := filepath.Join(t.TempDir(), "foreign")
+	restackRun(t, f, filepath.Dir(clone), "git", "clone", "-q", "--branch", branch, f.RemoteDir, clone)
+	restackRun(t, f, clone, "git", "config", "user.email", "o@o.o")
+	restackRun(t, f, clone, "git", "config", "user.name", "o")
+	restackWrite(t, filepath.Join(clone, file), file+"\n")
+	restackRun(t, f, clone, "git", "add", file)
+	commit := []string{"commit", "-qm", file}
+	if amend {
+		commit = append(commit, "--amend")
+	}
+	restackRun(t, f, clone, "git", commit...)
+	restackRun(t, f, clone, "git", "push", "-qf", "origin", branch)
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+}
+
 func stackAssertSubmitRefusesChangedPublicationRemote(t *testing.T, f *vcstest.Fixture, branch, want string) {
 	t.Helper()
 	source := gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
@@ -756,12 +773,11 @@ func TestStackSubmitRefusesADirectPushAfterPublication(t *testing.T) {
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("first stack submit: %v", err)
 	}
-	stackCommit(t, f, "pushed.txt")
-	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
+	stackForeignPush(t, f, "base", "pushed.txt", false)
 	stackCommit(t, f, "local.txt")
 	shipResetLog(t, f)
 
-	stackAssertSubmitRefusesChangedPublicationRemote(t, f, "base", "base remote changed after its isolated publication; not adopting the new remote head")
+	stackAssertSubmitRefusesChangedPublicationRemote(t, f, "base", "base has diverged from origin/base")
 }
 
 func TestShipAmendPushesOverTheHeadItLastSubmitted(t *testing.T) {

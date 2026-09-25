@@ -498,12 +498,18 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		source := state[name]
 		effective := source
 		var receipt *stackPublication
+		superseded := false
 		if !o.noPush {
 			receipt, err = stackReadPublication(ctx, l.dir(), name)
 			if err != nil {
 				return nil, err
 			}
-			if receipt != nil && receipt.Source == source.Head {
+			if receipt != nil && remotes[name] != "" && remotes[name] != receipt.Head {
+				if superseded, err = stackOwnRemote(ctx, l.dir(), name, source.Head, remotes[name], pin); err != nil {
+					return nil, err
+				}
+			}
+			if receipt != nil && !superseded && receipt.Source == source.Head {
 				effective.Head = receipt.Head
 			}
 		}
@@ -521,7 +527,9 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		b.Local = source.Head
 		if !o.noPush {
 			b.HeadRef = stackTempRef(name)
-			if err := stackUsePublication(ctx, l.dir(), &b, receipt, submitted[name]); err != nil {
+			if superseded {
+				b.Publication = receipt
+			} else if err := stackUsePublication(ctx, l.dir(), &b, receipt, submitted[name]); err != nil {
 				return nil, err
 			}
 		}
@@ -822,6 +830,11 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 			if err != nil {
 				return b, err
 			}
+			if !replay {
+				if replay, err = stackOwnRemote(ctx, dir, name, s.Head, remote, pin); err != nil {
+					return b, err
+				}
+			}
 			if replay {
 				break
 			}
@@ -857,6 +870,14 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 		return b, fmt.Errorf("stack rebase: %s's pull request #%d closed without landing — reopen it, drop the branch with ccx vcs stack drop %s, or pass --landed %s if it did land", name, pr.Number, name, name)
 	}
 	return b, nil
+}
+
+func stackOwnRemote(ctx context.Context, dir render.Dir, name, local, remote, pin string) (bool, error) {
+	held, err := gitReflogHolds(ctx, dir, stackRebasePrefix, name, remote)
+	if err != nil || held {
+		return held, err
+	}
+	return stackRemoteReplays(ctx, dir, remote, local, pin)
 }
 
 func stackRemoteReplays(ctx context.Context, dir render.Dir, remote, submitted, pin string) (bool, error) {
@@ -897,13 +918,17 @@ func stackPatchSeries(ctx context.Context, dir render.Dir, pin, head string) ([]
 	}
 	messages := map[string]string{}
 	for entry := range strings.SplitSeq(authored, "\x00") {
-		sha, message, _ := strings.Cut(entry, "\n")
-		messages[sha] = message
+		if sha, message, _ := strings.Cut(entry, "\n"); sha != "" {
+			messages[sha] = message
+		}
 	}
 	series := []string{}
 	for line := range strings.Lines(ids) {
 		id, sha, _ := strings.Cut(strings.TrimSpace(line), " ")
 		series = append(series, id+"\n"+messages[sha])
+	}
+	if len(series) != len(messages) {
+		return nil, nil
 	}
 	return series, nil
 }

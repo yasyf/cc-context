@@ -97,7 +97,7 @@ func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBran
 		b.SourceBase = receipt.Base
 		return nil
 	}
-	if submitted.HeadSha != receipt.Head || submitted.BaseSha != receipt.Base || submitted.BaseName != receipt.Parent {
+	if submitted != (gtmeta.Version{}) && (submitted.HeadSha != receipt.Head || submitted.BaseSha != receipt.Base || submitted.BaseName != receipt.Parent) {
 		return fmt.Errorf("stack rebase: %s publication metadata changed; reconcile its source and published versions before retrying", b.Name)
 	}
 	base := receipt.Base

@@ -363,3 +363,87 @@ func TestVcsPushRepublishesAFixOnThePublishedHead(t *testing.T) {
 		t.Fatalf("republished b carries %s commits above trunk, want its own and the fix", count)
 	}
 }
+
+func TestStackPublicationSurvivesGraphiteForgettingItsSubmit(t *testing.T) {
+	f := stackRebaseRepo(t, "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatal(err)
+	}
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	if err := gtmeta.RecordSubmitted(f.Context(), filepath.Join(f.Dir, ".git"), map[string]gtmeta.Version{"feature": {}}); err != nil {
+		t.Fatal(err)
+	}
+	stackAdvanceTrunk(t, f, "later.txt", "later\n")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("submit after graphite forgot the last submit: %v", err)
+	}
+	if remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); remote == published || !stackOnto(t, f, "origin/main", remote) {
+		t.Fatalf("republished feature %s missed fresh trunk", remote)
+	}
+}
+
+func TestStackPublicationYieldsToTheLanesOwnPush(t *testing.T) {
+	f := stackRebaseRepo(t, "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatal(err)
+	}
+	source := pushCommit(t, f, "fix.txt", "fix\n", "fix")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-qf", "origin", "feature")
+	if _, _, err := runStackCmd(t, f, "rebase", "--dry-run"); err != nil {
+		t.Fatalf("rebase dry run after the lane pushed its own source: %v", err)
+	}
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("submit after the lane pushed its own source: %v", err)
+	}
+	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	if remote == source || !stackOnto(t, f, "origin/main", remote) {
+		t.Fatalf("republished feature %s missed fresh trunk", remote)
+	}
+	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "feature")
+	if err != nil || receipt == nil || receipt.Source != source || receipt.Head != remote {
+		t.Fatalf("receipt = %+v %v, want source %s published as %s", receipt, err, source, remote)
+	}
+}
+
+func TestStackSubmitForcesOverTheLanesOwnOldHead(t *testing.T) {
+	f := stackRebaseRepo(t, "feature")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatal(err)
+	}
+	old := pushCommit(t, f, "next.txt", "next\n", "next")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", "HEAD~1")
+	rewritten := pushCommit(t, f, "next.txt", "rewritten\n", "next, rewritten")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("submit over the lane's own old head %s: %v", shortOID(old), err)
+	}
+	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	if got := gitAt(t, f.Env(), f.RemoteDir, "show", remote+":next.txt"); got != "rewritten" {
+		t.Fatalf("published next.txt = %q, want the rewrite %s", got, shortOID(rewritten))
+	}
+}
+
+func TestStackSubmitAdoptsAForeignIdenticalRestack(t *testing.T) {
+	f := stackRebaseRepo(t, "feature")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatal(err)
+	}
+	pushCommit(t, f, "next.txt", "next\n", "next")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	source := shipHead(t, f)
+	clone := filepath.Join(t.TempDir(), "foreign")
+	mustRun(t, f.Env(), filepath.Dir(clone), "git", "clone", "-q", f.Dir, clone)
+	mustRun(t, f.Env(), clone, "git", "checkout", "-q", "feature")
+	mustRun(t, f.Env(), clone, "git", "-c", "user.name=other", "-c", "user.email=o@o.o", "rebase", "-q", "--onto", gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main"), gitAt(t, f.Env(), f.Dir, "rev-parse", "main"))
+	mustRun(t, f.Env(), clone, "git", "push", "-qf", f.RemoteDir, "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("submit after a foreign identical restack: %v", err)
+	}
+	if got := shipHead(t, f); got != source {
+		t.Fatalf("submit moved the source to %s", got)
+	}
+}

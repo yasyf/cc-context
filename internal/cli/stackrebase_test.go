@@ -612,6 +612,7 @@ func TestStackAbortDropsTheRun(t *testing.T) {
 func TestStackRebaseRefusesADivergedRemote(t *testing.T) {
 	f := stackRebaseRepo(t, "base")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
+	stackForeignPush(t, f, "base", "foreign.txt", false)
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "base amended")
 	shipResetLog(t, f)
 
@@ -663,9 +664,7 @@ func TestStackRebaseRefusesAForeignPushOverItsLastSubmission(t *testing.T) {
 	f := stackRebaseRepo(t, "base")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
 	stackRecordSubmitted(t, f, "base")
-	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "base amended")
-	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "-f", "origin", "base")
-	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", "HEAD@{1}")
+	stackForeignPush(t, f, "base", "foreign.txt", true)
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "base amended locally")
 	shipResetLog(t, f)
 
