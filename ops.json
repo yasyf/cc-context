@@ -1,1 +1,1 @@
-{"v":1,"lamport":4,"ops":[{"kind":"set_criterion_status","id":"32a0c9cb00b8cbd9d778d1a1b669ab00","status":"met","note":"Final-head CI covers conflict workspace continuation, explicit remote leases, changed local-head refusal, and Graphite stack submission."}]}
+{"v":1,"lamport":5,"ops":[{"kind":"set_status","status":"done"},{"kind":"link_commit","sha":"4923a37915e9880126c1a2f5be04672e63531b4b"}]}
