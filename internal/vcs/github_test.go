@@ -456,7 +456,7 @@ func TestLookupRepoWithoutGH(t *testing.T) {
 // shape a future format change leaves behind.
 func bumpRepoSchema(t *testing.T, root string) {
 	t.Helper()
-	path, err := RepoCachePath(root)
+	path, err := RepoCachePath(context.Background(), root)
 	if err != nil {
 		t.Fatalf("repo cache path: %v", err)
 	}

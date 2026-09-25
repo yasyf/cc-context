@@ -48,7 +48,7 @@ func TestBenchSemsearchQueryJSON(t *testing.T) {
 	}
 	t.Cleanup(func() { newBenchSemsearchEmbedder = previous })
 
-	repo, err := filepath.Abs(filepath.Join("..", "semsearch", "engine", "testdata", "repo"))
+	repo, err := filepath.Abs(filepath.Join(ghPkgDir, "..", "semsearch", "engine", "testdata", "repo"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestBenchSemsearchTimeJSON(t *testing.T) {
 	}
 	t.Cleanup(func() { newBenchSemsearchEmbedder = previous })
 
-	repo, err := filepath.Abs(filepath.Join("..", "semsearch", "engine", "testdata", "repo"))
+	repo, err := filepath.Abs(filepath.Join(ghPkgDir, "..", "semsearch", "engine", "testdata", "repo"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1037,7 +1037,7 @@ type gtSyncRecord struct {
 // verdict when one is on disk so a synced repository pays for the round trip at
 // most once a day.
 func gtRepoSynced(ctx context.Context, client *gtapi.Client, root, owner, name string) (gtapi.RepoSync, error) {
-	path, err := gtSyncCachePath(root)
+	path, err := gtSyncCachePath(ctx, root)
 	if err != nil {
 		return gtapi.RepoSync{}, err
 	}
@@ -1076,8 +1076,8 @@ func gtRepoSynced(ctx context.Context, client *gtapi.Client, root, owner, name s
 // gtSyncCachePath resolves the cached sync verdict for the repository root
 // belongs to, a sibling of its GitHub metadata record and its gt-reachability
 // verdict. The key is the repository, so its linked worktrees share one answer.
-func gtSyncCachePath(root string) (string, error) {
-	repoPath, err := vcs.RepoCachePath(root)
+func gtSyncCachePath(ctx context.Context, root string) (string, error) {
+	repoPath, err := vcs.RepoCachePath(ctx, root)
 	if err != nil {
 		return "", err
 	}

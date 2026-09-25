@@ -46,7 +46,7 @@ var ghPkgDir = func() string {
 // back is a byte real gh printed; the scenarios live in testdata/gh/cli.
 func ghStdout(t *testing.T, scenario string) string {
 	t.Helper()
-	path := filepath.Join(ghPkgDir, ghGoldenDir, "cli", scenario+".json")
+	path := filepath.Join(ghGoldenDir, "cli", scenario+".json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("golden %s: %v", scenario, err)
@@ -74,7 +74,7 @@ func shipRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	t.Helper()
 	f := vcstest.Repo(t, opts...)
 	f.Isolate(t)
-	seedLaneRecords(t, f.Dir, laneSeed{})
+	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{})
 	return f
 }
 
@@ -563,7 +563,7 @@ func shipJJPlainRepo(t *testing.T) *vcstest.Fixture {
 	mustRun(t, f.Env(), plain.Dir, "jj", "commit", "-m", "init")
 	mustRun(t, f.Env(), plain.Dir, "jj", "bookmark", "create", "main", "-r", "@-")
 	t.Chdir(plain.Dir)
-	seedLaneRecords(t, plain.Dir, laneSeed{})
+	seedLaneRecords(context.Background(), t, plain.Dir, laneSeed{})
 	shipResetLog(t, &plain)
 	return &plain
 }
@@ -1134,7 +1134,7 @@ func setupShip(t *testing.T, marker string, withGh bool) string {
 	// branch plan looks the repository up whenever the ship sits on trunk, and a
 	// seeded record keeps that off gh for every test that is not about the gate.
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	seedLaneRecords(t, ".", laneSeed{})
+	seedLaneRecords(context.Background(), t, ".", laneSeed{})
 	t.Setenv("JJ_DIFF_NAMES", "f.txt\n")
 	t.Setenv("GH_VIEWER_GOLDEN", ghStdout(t, "viewer-graphql"))
 	// Zero the session id so subtests asserting bare commit argv stay green even
@@ -1157,7 +1157,7 @@ func setupShipGT(t *testing.T, withGh bool) string {
 	}
 	t.Setenv("GIT_BRANCH", "feature")
 	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
-	seedLaneRecords(t, ".", laneSeed{})
+	seedLaneRecords(context.Background(), t, ".", laneSeed{})
 	stubGTAPI(t)
 	return log
 }

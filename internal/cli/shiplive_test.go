@@ -40,7 +40,21 @@ func TestMain(m *testing.M) {
 	gtAPIClient = func() *gtapi.Client {
 		panic("cli: gtAPIClient called without stubGTAPI")
 	}
+	// A test that drives ccx without a fixture context resolves the process
+	// working directory, which under `go test` is this package inside cc-context's
+	// own checkout — where a ship would commit for real. Stand the binary
+	// somewhere empty so that mistake refuses instead of writing to the repo.
+	scratch, err := os.MkdirTemp("", "cli-scratch")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := os.Chdir(scratch); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	code := m.Run()
+	_ = os.RemoveAll(scratch)
 	vcstest.Cleanup()
 	os.Exit(code)
 }
@@ -809,7 +823,7 @@ func setupLiveGTRepo(t *testing.T, base string) string {
 	// submittable, and requireLiveGT deliberately clears GRAPHITE_AUTH_TOKEN;
 	// seed the verdict so the lane survives to the part under test.
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	seedLaneRecords(t, dir, laneSeed{})
+	seedLaneRecords(context.Background(), t, dir, laneSeed{})
 	return dir
 }
 

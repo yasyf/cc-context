@@ -75,6 +75,20 @@ func EnvFrom(ctx context.Context) []string {
 	return env
 }
 
+// Getenv returns the value key carries for work ctx drives: the environment
+// ctx carries for its children outranks the process's, last entry winning as
+// exec resolves it. It is what a caller reads in process when the work a child
+// would have done happens inline instead.
+func Getenv(ctx context.Context, key string) string {
+	value := os.Getenv(key)
+	for _, kv := range EnvFrom(ctx) {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == key {
+			value = v
+		}
+	}
+	return value
+}
+
 // childEnv returns the environment the child is given and the environment the
 // child's own binary is resolved against. They differ by one entry: GitPATH
 // reorders PATH so a tool that spawns git itself reaches the same one ccx

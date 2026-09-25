@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -559,7 +560,7 @@ func TestGuidelinesHumanOutput(t *testing.T) {
 
 func mustGuidelinesCacheDir(t *testing.T, root string) string {
 	t.Helper()
-	dir, err := guidelinesCacheDir(root)
+	dir, err := guidelinesCacheDir(context.Background(), root)
 	if err != nil {
 		t.Fatalf("guidelinesCacheDir(%q): %v", root, err)
 	}
@@ -584,7 +585,7 @@ func TestGuidelinesCacheDirKeysTheRepository(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := mustGuidelinesCacheDir(t, tt.root)
-			repoPath, err := vcs.RepoCachePath(tt.root)
+			repoPath, err := vcs.RepoCachePath(context.Background(), tt.root)
 			if err != nil {
 				t.Fatalf("RepoCachePath(%q): %v", tt.root, err)
 			}

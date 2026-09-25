@@ -281,16 +281,16 @@ func setupReviews(t *testing.T) *reviewsServer {
 		t.Fatalf("chdir: %v", err)
 	}
 	t.Setenv("PATH", empty)
-	return setupReviewsHere(t, dir)
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	return setupReviewsHere(context.Background(), t, dir)
 }
 
 // setupReviewsHere is setupReviews for a repository already standing at dir,
 // leaving PATH as its fixture installed it — the shape a watch that has to ask
 // real git which branch is checked out needs.
-func setupReviewsHere(t *testing.T, dir string) *reviewsServer {
+func setupReviewsHere(ctx context.Context, t *testing.T, dir string) *reviewsServer {
 	t.Helper()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	seedLaneRecords(t, dir, laneSeed{nameWithOwner: "acme/repo", owner: "acme"})
+	seedLaneRecords(ctx, t, dir, laneSeed{nameWithOwner: "acme/repo", owner: "acme"})
 	t.Setenv(envReviewsPollInterval, "1ms")
 	return stubReviewsAPI(t)
 }
@@ -552,7 +552,7 @@ func setupReviewsLane(t *testing.T, gt bool) (*vcstest.Fixture, *reviewsServer) 
 	}
 	f := vcstest.Repo(t, opts...)
 	f.Isolate(t)
-	return f, setupReviewsHere(t, f.Dir)
+	return f, setupReviewsHere(f.Context(), t, f.Dir)
 }
 
 // reviewsQueueMergedComment is Graphite's merge-activity comment as it reads
@@ -782,7 +782,7 @@ func TestReviewsResolution(t *testing.T) {
 			if tt.gitBranch != "" {
 				f = vcstest.Repo(t, vcstest.Branch(tt.gitBranch))
 				f.Isolate(t)
-				srv = setupReviewsHere(t, f.Dir)
+				srv = setupReviewsHere(f.Context(), t, f.Dir)
 			} else {
 				srv = setupReviews(t)
 			}

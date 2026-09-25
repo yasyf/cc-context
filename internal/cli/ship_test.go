@@ -3102,7 +3102,7 @@ func TestShipJJAmbiguousTrunkBranch(t *testing.T) {
 
 	t.Run("the candidate it names is the trunk the guards weigh", func(t *testing.T) {
 		f := shipAmbiguousTrunk(t)
-		seedLaneRecords(t, f.Dir, laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
+		seedLaneRecords(f.Context(), t, f.Dir, laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
 
 		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--branch", "main")
 		if err == nil || !strings.Contains(err.Error(), "pass --allow-trunk to advance it deliberately") {
@@ -4233,7 +4233,7 @@ func TestShipTrunkPersonalAppends(t *testing.T) {
 
 func TestShipTrunkOrgCreates(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
-	seedLaneRecords(t, f.Dir, laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
+	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
 
 	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
@@ -4532,7 +4532,7 @@ func TestShipBranchFlag(t *testing.T) {
 
 	t.Run("naming an org trunk refuses without --allow-trunk", func(t *testing.T) {
 		f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"), vcstest.Dirty())
-		seedLaneRecords(t, f.Dir, laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
+		seedLaneRecords(f.Context(), t, f.Dir, laneSeed{nameWithOwner: "anthropics/claude-code", owner: "anthropics", public: true, permission: "WRITE", unaffiliated: true})
 		before := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 
 		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--branch", "main")

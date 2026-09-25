@@ -13,7 +13,7 @@ import (
 // gtGoldenDir holds one JSON file per recorded gt invocation plus a sibling
 // .md, written by scripts/record-gt-goldens.sh. Its README.md describes the
 // layout.
-const gtGoldenDir = "testdata/gt"
+var gtGoldenDir = filepath.Join(ghPkgDir, "testdata", "gt")
 
 // gtGolden is one recorded gt run, read back exactly as gt wrote it.
 type gtGolden struct {
