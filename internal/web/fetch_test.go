@@ -100,6 +100,7 @@ func testTiers(t *testing.T, svc services) *tiers {
 		firecrawlBase:   firecrawl,
 		browserbaseBase: browserbase,
 		lookupIP:        publicLookupIP,
+		parsePDF:        parsePDF,
 	}
 }
 
@@ -1373,15 +1374,12 @@ func TestFetchPlainHTTPPDFRoutesToParser(t *testing.T) {
 // liteparse install. Under the old wiring the parser inherited the 20s deadline.
 func TestPlainHTTPPDFParseNotBoundByFetchDeadline(t *testing.T) {
 	ctx := webCtx(t)
-	prev := parsePDFFn
-	t.Cleanup(func() { parsePDFFn = prev })
 	var hadDeadline bool
-	parsePDFFn = func(ctx context.Context, _ []byte) (string, error) {
+	ts := testTiers(t, services{})
+	ts.parsePDF = func(ctx context.Context, _ []byte) (string, error) {
 		_, hadDeadline = ctx.Deadline()
 		return "parsed", nil
 	}
-
-	ts := testTiers(t, services{})
 	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/pdf")
 		w.WriteHeader(http.StatusOK)

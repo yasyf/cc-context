@@ -56,14 +56,14 @@ func samplePage(url string, nChunks, nVectors int, model string) *Page {
 
 // mustLoad loads url at model, failing the test on an error or a cache miss,
 // and returns a non-nil page.
-func mustLoad(ctx context.Context, t *testing.T, url, model string) *Page {
+func mustLoad(ctx context.Context, t *testing.T, st *store, url, model string) *Page {
 	t.Helper()
-	got, err := Load(ctx, url, model)
+	got, err := st.load(ctx, url, model)
 	if err != nil {
-		t.Fatalf("Load(%q, %q): %v", url, model, err)
+		t.Fatalf("load(%q, %q): %v", url, model, err)
 	}
 	if got == nil {
-		t.Fatalf("Load(%q, %q) returned a miss, want a hit", url, model)
+		t.Fatalf("load(%q, %q) returned a miss, want a hit", url, model)
 	}
 	return got
 }
@@ -147,15 +147,10 @@ func gzJSON(t *testing.T, v any) []byte {
 	return buf.Bytes()
 }
 
-func setClock(t time.Time) func() {
-	prev := timeNow
-	timeNow = func() time.Time { return t }
-	return func() { timeNow = prev }
-}
-
 func TestSaveLoadRoundTrip(t *testing.T) {
 	t.Parallel()
 	ctx := webCtx(t)
+	st := newStore()
 	const url = "https://example.com/doc"
 	const model = "potion-base-8M"
 
@@ -168,14 +163,14 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		{float32(math.Inf(1)), float32(math.Inf(-1)), float32(math.NaN()), 1.401298e-45},
 	}
 
-	if err := Save(ctx, want); err != nil {
-		t.Fatalf("Save: %v", err)
+	if err := st.save(ctx, want); err != nil {
+		t.Fatalf("save: %v", err)
 	}
 	if want.Version != schemaVersion {
-		t.Errorf("Save did not stamp Version: got %d, want %d", want.Version, schemaVersion)
+		t.Errorf("save did not stamp Version: got %d, want %d", want.Version, schemaVersion)
 	}
 
-	got := mustLoad(ctx, t, url, model)
+	got := mustLoad(ctx, t, st, url, model)
 
 	if got.Version != schemaVersion {
 		t.Errorf("Version = %d, want %d", got.Version, schemaVersion)
@@ -239,16 +234,17 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 func TestSaveLoadRoundTripsThin(t *testing.T) {
 	t.Parallel()
 	ctx := webCtx(t)
+	st := newStore()
 	const model = "potion-base-8M"
 
 	thin := samplePage("https://example.com/thin", 1, 0, model)
 	thin.Thin = true
-	if err := Save(ctx, thin); err != nil {
-		t.Fatalf("Save thin: %v", err)
+	if err := st.save(ctx, thin); err != nil {
+		t.Fatalf("save thin: %v", err)
 	}
-	got, err := Load(ctx, "https://example.com/thin", model)
+	got, err := st.load(ctx, "https://example.com/thin", model)
 	if err != nil || got == nil {
-		t.Fatalf("Load thin: page=%v err=%v", got, err)
+		t.Fatalf("load thin: page=%v err=%v", got, err)
 	}
 	if !got.Thin {
 		t.Error("Thin = false after round-trip, want true")
@@ -257,12 +253,12 @@ func TestSaveLoadRoundTripsThin(t *testing.T) {
 	// A non-thin page round-trips Thin=false, matching how an old cache entry
 	// written before the field existed decodes.
 	solid := samplePage("https://example.com/solid", 1, 0, model)
-	if err := Save(ctx, solid); err != nil {
-		t.Fatalf("Save solid: %v", err)
+	if err := st.save(ctx, solid); err != nil {
+		t.Fatalf("save solid: %v", err)
 	}
-	got2, err := Load(ctx, "https://example.com/solid", model)
+	got2, err := st.load(ctx, "https://example.com/solid", model)
 	if err != nil || got2 == nil {
-		t.Fatalf("Load solid: page=%v err=%v", got2, err)
+		t.Fatalf("load solid: page=%v err=%v", got2, err)
 	}
 	if got2.Thin {
 		t.Error("Thin = true for a non-thin page, want false")
@@ -272,26 +268,28 @@ func TestSaveLoadRoundTripsThin(t *testing.T) {
 func TestLoadMissWhenAbsent(t *testing.T) {
 	t.Parallel()
 	ctx := webCtx(t)
-	got, err := Load(ctx, "https://example.com/never-fetched", "")
+	st := newStore()
+	got, err := st.load(ctx, "https://example.com/never-fetched", "")
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("load: %v", err)
 	}
 	if got != nil {
-		t.Errorf("Load = %+v, want a miss (nil, nil)", got)
+		t.Errorf("load = %+v, want a miss (nil, nil)", got)
 	}
 }
 
 func TestLoadLazyPageWithoutVectors(t *testing.T) {
 	t.Parallel()
 	ctx := webCtx(t)
+	st := newStore()
 	const url = "https://example.com/lazy"
 
 	// A freshly fetched page: chunks present, no vectors, no embed model. The
 	// model check must be skipped and the page returned intact.
-	if err := Save(ctx, samplePage(url, 2, 0, "")); err != nil {
-		t.Fatalf("Save: %v", err)
+	if err := st.save(ctx, samplePage(url, 2, 0, "")); err != nil {
+		t.Fatalf("save: %v", err)
 	}
-	got := mustLoad(ctx, t, url, "any-model")
+	got := mustLoad(ctx, t, st, url, "any-model")
 	if len(got.Vectors) != 0 {
 		t.Errorf("Vectors = %v, want empty", got.Vectors)
 	}
@@ -300,15 +298,16 @@ func TestLoadLazyPageWithoutVectors(t *testing.T) {
 func TestLoadDiscardsCorrupt(t *testing.T) {
 	t.Parallel()
 	ctx := webCtx(t)
+	st := newStore()
 	const url = "https://example.com/corrupt"
 	path := writeRaw(ctx, t, url, []byte("this is not gzip"))
 
-	got, err := Load(ctx, url, "")
+	got, err := st.load(ctx, url, "")
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("load: %v", err)
 	}
 	if got != nil {
-		t.Errorf("Load = %+v, want a miss", got)
+		t.Errorf("load = %+v, want a miss", got)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("corrupt entry not deleted: stat err = %v", err)
@@ -318,16 +317,17 @@ func TestLoadDiscardsCorrupt(t *testing.T) {
 func TestLoadDiscardsVersionMismatch(t *testing.T) {
 	t.Parallel()
 	ctx := webCtx(t)
+	st := newStore()
 	const url = "https://example.com/oldversion"
 	old := pageWire{Version: schemaVersion + 1, URL: url, Markdown: "stale layout"}
 	path := writeRaw(ctx, t, url, gzJSON(t, old))
 
-	got, err := Load(ctx, url, "")
+	got, err := st.load(ctx, url, "")
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("load: %v", err)
 	}
 	if got != nil {
-		t.Errorf("Load = %+v, want a miss", got)
+		t.Errorf("load = %+v, want a miss", got)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("version-mismatched entry not deleted: stat err = %v", err)
@@ -337,18 +337,19 @@ func TestLoadDiscardsVersionMismatch(t *testing.T) {
 func TestLoadDiscardsEmbedModelMismatch(t *testing.T) {
 	t.Parallel()
 	ctx := webCtx(t)
+	st := newStore()
 	const url = "https://example.com/model"
-	if err := Save(ctx, samplePage(url, 2, 2, "model-A")); err != nil {
-		t.Fatalf("Save: %v", err)
+	if err := st.save(ctx, samplePage(url, 2, 2, "model-A")); err != nil {
+		t.Fatalf("save: %v", err)
 	}
 	path := webPagePath(ctx, t, url)
 
-	got, err := Load(ctx, url, "model-B")
+	got, err := st.load(ctx, url, "model-B")
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("load: %v", err)
 	}
 	if got != nil {
-		t.Errorf("Load = %+v, want a miss", got)
+		t.Errorf("load = %+v, want a miss", got)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("model-mismatched entry not deleted: stat err = %v", err)
@@ -358,20 +359,21 @@ func TestLoadDiscardsEmbedModelMismatch(t *testing.T) {
 func TestLoadDiscardsVectorLengthMismatch(t *testing.T) {
 	t.Parallel()
 	ctx := webCtx(t)
+	st := newStore()
 	const url = "https://example.com/lenmismatch"
 	p := samplePage(url, 2, 0, "model-A")
 	p.Vectors = [][]float32{{1, 2, 3}} // one vector, two chunks
-	if err := Save(ctx, p); err != nil {
-		t.Fatalf("Save: %v", err)
+	if err := st.save(ctx, p); err != nil {
+		t.Fatalf("save: %v", err)
 	}
 	path := webPagePath(ctx, t, url)
 
-	got, err := Load(ctx, url, "model-A")
+	got, err := st.load(ctx, url, "model-A")
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("load: %v", err)
 	}
 	if got != nil {
-		t.Errorf("Load = %+v, want a miss", got)
+		t.Errorf("load = %+v, want a miss", got)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("length-mismatched entry not deleted: stat err = %v", err)
@@ -380,6 +382,7 @@ func TestLoadDiscardsVectorLengthMismatch(t *testing.T) {
 
 func TestLoadDiscardsBadVectorDims(t *testing.T) {
 	t.Parallel()
+	st := newStore()
 	tests := []struct {
 		name    string
 		vectors [][]float32
@@ -393,17 +396,17 @@ func TestLoadDiscardsBadVectorDims(t *testing.T) {
 			url := "https://example.com/" + tt.name
 			p := samplePage(url, len(tt.vectors), 0, "model-A")
 			p.Vectors = tt.vectors
-			if err := Save(ctx, p); err != nil {
-				t.Fatalf("Save: %v", err)
+			if err := st.save(ctx, p); err != nil {
+				t.Fatalf("save: %v", err)
 			}
 			path := webPagePath(ctx, t, url)
 
-			got, err := Load(ctx, url, "model-A")
+			got, err := st.load(ctx, url, "model-A")
 			if err != nil {
-				t.Fatalf("Load: %v", err)
+				t.Fatalf("load: %v", err)
 			}
 			if got != nil {
-				t.Errorf("Load = %+v, want a miss", got)
+				t.Errorf("load = %+v, want a miss", got)
 			}
 			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("bad-dimension entry not deleted: stat err = %v", err)
@@ -426,9 +429,10 @@ func TestFresh(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			defer setClock(base)()
-			if got := Fresh(&Page{FetchedAt: tt.fetchedAt}); got != tt.want {
-				t.Errorf("Fresh() = %v, want %v", got, tt.want)
+			st := newStore()
+			st.now = func() time.Time { return base }
+			if got := st.fresh(&Page{FetchedAt: tt.fetchedAt}); got != tt.want {
+				t.Errorf("fresh() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -437,10 +441,11 @@ func TestFresh(t *testing.T) {
 func TestSaveIsInspectableJSON(t *testing.T) {
 	t.Parallel()
 	ctx := webCtx(t)
+	st := newStore()
 	const url = "https://example.com/inspect"
 	p := samplePage(url, 2, 2, "model-A")
-	if err := Save(ctx, p); err != nil {
-		t.Fatalf("Save: %v", err)
+	if err := st.save(ctx, p); err != nil {
+		t.Fatalf("save: %v", err)
 	}
 
 	raw := readGz(t, webPagePath(ctx, t, url))
@@ -483,9 +488,10 @@ func TestSaveIsInspectableJSON(t *testing.T) {
 func TestSaveLeavesNoTempFiles(t *testing.T) {
 	t.Parallel()
 	ctx := webCtx(t)
+	st := newStore()
 	const url = "https://example.com/atomic"
-	if err := Save(ctx, samplePage(url, 1, 1, "model-A")); err != nil {
-		t.Fatalf("Save: %v", err)
+	if err := st.save(ctx, samplePage(url, 1, 1, "model-A")); err != nil {
+		t.Fatalf("save: %v", err)
 	}
 
 	dir, err := cache.Dir(ctx, "web")
@@ -507,7 +513,7 @@ func TestSaveLeavesNoTempFiles(t *testing.T) {
 		t.Errorf("dir entry = %q, want a %s file", entries[0].Name(), pageExt)
 	}
 	// The single visible file must be a complete, loadable page.
-	got, err := Load(ctx, url, "model-A")
+	got, err := st.load(ctx, url, "model-A")
 	if err != nil || got == nil {
 		t.Errorf("saved file not loadable: got=%v err=%v", got, err)
 	}
@@ -515,9 +521,8 @@ func TestSaveLeavesNoTempFiles(t *testing.T) {
 
 func TestEvictRemovesOldestUntilUnderCap(t *testing.T) {
 	ctx := webCtx(t)
-	orig := maxCacheBytes
-	defer func() { maxCacheBytes = orig }()
-	maxCacheBytes = 1 << 40 // no eviction while seeding
+	st := newStore()
+	st.capBytes = 1 << 40 // no eviction while seeding
 
 	urls := []string{
 		"https://example.com/p0",
@@ -526,8 +531,8 @@ func TestEvictRemovesOldestUntilUnderCap(t *testing.T) {
 		"https://example.com/p3",
 	}
 	for _, u := range urls {
-		if err := Save(ctx, samplePage(u, 1, 0, "")); err != nil {
-			t.Fatalf("seed Save %q: %v", u, err)
+		if err := st.save(ctx, samplePage(u, 1, 0, "")); err != nil {
+			t.Fatalf("seed save %q: %v", u, err)
 		}
 	}
 
@@ -575,28 +580,27 @@ func TestEvictRemovesOldestUntilUnderCap(t *testing.T) {
 
 func TestSaveRespectsMaxCacheBytes(t *testing.T) {
 	ctx := webCtx(t)
-	orig := maxCacheBytes
-	defer func() { maxCacheBytes = orig }()
+	st := newStore()
 
 	// Measure one page's on-disk size, then cap the directory below two pages
 	// so every subsequent Save must evict down to a single page.
-	if err := Save(ctx, samplePage("https://example.com/seed", 1, 0, "")); err != nil {
-		t.Fatalf("seed Save: %v", err)
+	if err := st.save(ctx, samplePage("https://example.com/seed", 1, 0, "")); err != nil {
+		t.Fatalf("seed save: %v", err)
 	}
 	info, err := os.Stat(webPagePath(ctx, t, "https://example.com/seed"))
 	if err != nil {
 		t.Fatalf("stat seed: %v", err)
 	}
 	s := info.Size()
-	maxCacheBytes = s + s/2
+	st.capBytes = s + s/2
 
 	for i := range 5 {
 		u := fmt.Sprintf("https://example.com/x%d", i)
-		if err := Save(ctx, samplePage(u, 1, 0, "")); err != nil {
-			t.Fatalf("Save %q: %v", u, err)
+		if err := st.save(ctx, samplePage(u, 1, 0, "")); err != nil {
+			t.Fatalf("save %q: %v", u, err)
 		}
-		if total := webCacheBytes(ctx, t); total > maxCacheBytes {
-			t.Errorf("after save %d: total = %d bytes, want <= cap %d", i, total, maxCacheBytes)
+		if total := webCacheBytes(ctx, t); total > st.capBytes {
+			t.Errorf("after save %d: total = %d bytes, want <= cap %d", i, total, st.capBytes)
 		}
 	}
 }
@@ -605,18 +609,19 @@ func TestSaveRespectsMaxCacheBytes(t *testing.T) {
 // $CLAUDE_PLUGIN_DATA the context carries rather than the process's: the process
 // value is emptied, so a read off it would root the cache in the user cache dir.
 func TestSaveLoadResolveCacheDirFromContext(t *testing.T) {
+	st := newStore()
 	t.Setenv("CLAUDE_PLUGIN_DATA", "")
 	root := t.TempDir()
 	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+root)
 
 	const url = "https://example.com/ctx-rooted"
-	if err := Save(ctx, samplePage(url, 1, 0, "")); err != nil {
-		t.Fatalf("Save: %v", err)
+	if err := st.save(ctx, samplePage(url, 1, 0, "")); err != nil {
+		t.Fatalf("save: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "web", CacheKey(url)+pageExt)); err != nil {
 		t.Fatalf("page not stored under the cache root the context carries: %v", err)
 	}
-	if got := mustLoad(ctx, t, url, ""); got.URL != url {
+	if got := mustLoad(ctx, t, st, url, ""); got.URL != url {
 		t.Errorf("URL = %q, want %q", got.URL, url)
 	}
 }

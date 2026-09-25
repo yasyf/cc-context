@@ -498,28 +498,28 @@ func TestLiveBenignPagesNotChallenged(t *testing.T) {
 	}
 }
 
-// TestLiveWebRunOutlineReadSearch is the first live exercise of web.Run itself —
-// every other live test drives a tier method, and every unit test stubs fetchPage.
-// It fetches go.dev's effective_go once, then outlines, reads, and searches it,
-// asserting the 24h page cache short-circuits every refetch: fetchPage runs exactly
-// once across all three ops.
+// TestLiveWebRunOutlineReadSearch is the first live exercise of a whole web op —
+// every other live test drives a tier method, and every unit test fakes the
+// runner's fetch. It fetches go.dev's effective_go once, then outlines, reads,
+// and searches it, asserting the 24h page cache short-circuits every refetch:
+// the cascade runs exactly once across all three ops.
 func TestLiveWebRunOutlineReadSearch(t *testing.T) {
 	requireLiveOptIn(t)
 
 	var fetches atomic.Int32
-	prev := fetchPage
-	fetchPage = func(ctx context.Context, u string, p *Page) (FetchResult, error) {
+	r := newRunner()
+	cascade := r.fetch
+	r.fetch = func(ctx context.Context, u string, p *Page) (FetchResult, error) {
 		fetches.Add(1)
-		return prev(ctx, u, p)
+		return cascade(ctx, u, p)
 	}
-	t.Cleanup(func() { fetchPage = prev })
 
 	cacheCtx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
 	ctx, cancel := context.WithTimeout(cacheCtx, cascadeDeadline+30*time.Second)
 	defer cancel()
 	const target = "https://go.dev/doc/effective_go"
 
-	outline, err := Run(ctx, backend.OpWebOutline, backend.Args{URL: target})
+	outline, err := r.run(ctx, backend.OpWebOutline, backend.Args{URL: target})
 	if err != nil {
 		t.Skipf("outline fetch failed (likely transient network/upstream): %v", err)
 	}
@@ -528,14 +528,14 @@ func TestLiveWebRunOutlineReadSearch(t *testing.T) {
 	}
 
 	sec := firstNonPreambleSection(t, outline)
-	readSec, err := Run(ctx, backend.OpWebRead, backend.Args{URL: target, Section: sec})
+	readSec, err := r.run(ctx, backend.OpWebRead, backend.Args{URL: target, Section: sec})
 	if err != nil {
 		t.Fatalf("read §%s: %v", sec, err)
 	}
 	if strings.TrimSpace(readSec) == "" {
 		t.Fatalf("read of §%s is empty", sec)
 	}
-	readFull, err := Run(ctx, backend.OpWebRead, backend.Args{URL: target, Full: true})
+	readFull, err := r.run(ctx, backend.OpWebRead, backend.Args{URL: target, Full: true})
 	if err != nil {
 		t.Fatalf("read --full: %v", err)
 	}
@@ -543,7 +543,7 @@ func TestLiveWebRunOutlineReadSearch(t *testing.T) {
 		t.Errorf("read of §%s is %d bytes, not strictly shorter than --full's %d", sec, len(readSec), len(readFull))
 	}
 
-	search, err := Run(ctx, backend.OpWebSearch, backend.Args{URL: target, Query: "how do I handle errors in Go", K: 5})
+	search, err := r.run(ctx, backend.OpWebSearch, backend.Args{URL: target, Query: "how do I handle errors in Go", K: 5})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -559,7 +559,7 @@ func TestLiveWebRunOutlineReadSearch(t *testing.T) {
 	}
 
 	if got := fetches.Load(); got != 1 {
-		t.Errorf("fetchPage called %d times across outline+read+search, want 1 (the 24h page cache must short-circuit refetch)", got)
+		t.Errorf("the cascade ran %d times across outline+read+search, want 1 (the 24h page cache must short-circuit refetch)", got)
 	}
 }
 

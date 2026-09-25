@@ -84,6 +84,15 @@ func sharedEmbedder(ctx context.Context) (Embedder, error) {
 	return e, nil
 }
 
+// embedderFor returns the embedder r ranks with: its own when it carries one,
+// otherwise the process's resident engine.
+func (r *runner) embedderFor(ctx context.Context) (Embedder, error) {
+	if r.embedder != nil {
+		return r.embedder(ctx)
+	}
+	return sharedEmbedder(ctx)
+}
+
 // CloseEmbedder releases the resident web embedder if one was constructed. The
 // MCP proxy calls it on shutdown alongside dispatch.CloseEmbedder; a one-shot CLI
 // relies on process exit.

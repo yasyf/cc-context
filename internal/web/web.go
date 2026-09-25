@@ -25,17 +25,24 @@ const defaultK = 5
 // those tokens, so an offset maps back to a byte position the way a --budget cap does.
 const charsPerToken = 4
 
-// fetchPage is the fetch entry point, a package var so tests can drive Run
-// through a stubbed cascade without live network. It defaults to Fetch.
-var fetchPage = Fetch
+// runner holds the backends one web op runs against: the fetch cascade, the
+// thin-content render-escalation chain, the page store, and the embedder hybrid
+// search ranks with. newRunner wires the production ones; a test builds a runner
+// over fakes, as testTiers does one layer down.
+//
+// A nil render disables escalation, which is what a sub-floor fixture wants:
+// escalation would otherwise trip thinSignature into a real browser
+// subprocess. A nil embedder means the process's resident one.
+type runner struct {
+	fetch    func(ctx context.Context, normURL string, prior *Page) (FetchResult, error)
+	render   func(ctx context.Context, normURL string) (FetchResult, bool, error)
+	store    *store
+	embedder func(ctx context.Context) (Embedder, error)
+}
 
-// renderPage is the thin-content render-escalation entry point. Production always
-// wires it to RenderFetch, so escalation is always considered. A nil renderPage
-// disables escalation entirely and exists solely for the test suite: many
-// existing fixtures are sub-floor and would trip thinSignature, so TestMain nils
-// this to keep Run hermetic (no live network or browser subprocess), and the
-// escalation tests opt back in per-test via withRenderPage.
-var renderPage = RenderFetch
+func newRunner() *runner {
+	return &runner{fetch: Fetch, render: RenderFetch, store: newStore()}
+}
 
 // Run fetches, chunks, and serves the page at a.URL for one web op. For OpWebRead
 // it applies a.Budget and a.Offset itself — fixed-stride paging against the raw
@@ -45,21 +52,25 @@ var renderPage = RenderFetch
 // a.Budget, a.K (default 5), and a.Force (bypass the cache TTL). It panics on a
 // non-web op, an impossible state the dispatch layer never produces.
 func Run(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
+	return newRunner().run(ctx, op, a)
+}
+
+func (r *runner) run(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 	norm, err := NormalizeURL(a.URL)
 	if err != nil {
 		return "", err
 	}
-	page, err := acquire(ctx, norm, a.Force)
+	page, err := r.acquire(ctx, norm, a.Force)
 	if err != nil {
 		return "", err
 	}
 	switch op {
 	case backend.OpWebOutline:
-		return renderOutline(ctx, page), nil
+		return r.renderOutline(ctx, page), nil
 	case backend.OpWebRead:
 		return runRead(ctx, page, a)
 	case backend.OpWebSearch:
-		return runSearch(ctx, page, a)
+		return r.runSearch(ctx, page, a)
 	default:
 		panic(fmt.Sprintf("web.Run: non-web op %q", op))
 	}
@@ -70,27 +81,27 @@ func Run(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 // the cached chunks and vectors; a fresh body reuses them only when its content
 // hash is unchanged. ErrGone/ErrAuthRequired/ErrBlocked and joined failures
 // propagate wrapped for the CLI to map onto exit codes.
-func acquire(ctx context.Context, norm string, force bool) (*Page, error) {
-	prior, err := Load(ctx, norm, EmbedModelID)
+func (r *runner) acquire(ctx context.Context, norm string, force bool) (*Page, error) {
+	prior, err := r.store.load(ctx, norm, EmbedModelID)
 	if err != nil {
 		return nil, fmt.Errorf("load cached page %q: %w", norm, err)
 	}
-	if prior != nil && !force && Fresh(prior) {
+	if prior != nil && !force && r.store.fresh(prior) {
 		return prior, nil
 	}
 
-	res, err := fetchPage(ctx, norm, prior)
+	res, err := r.fetch(ctx, norm, prior)
 	if errors.Is(err, ErrNotModified) {
 		// The origin confirmed the cached copy is current: keep its chunks and
 		// vectors, refresh the fetch time, and re-persist. A revalidated page that
 		// is still Thin gets another escalation pass — a static host that serves
 		// 304s is exactly where an SPA lives, so --refresh after a lane is
 		// installed must be able to re-escalate rather than trap Thin forever.
-		prior.FetchedAt = timeNow()
-		if renderPage != nil && prior.Thin {
-			escalateThin(ctx, norm, prior)
+		prior.FetchedAt = r.store.now()
+		if r.render != nil && prior.Thin {
+			r.escalateThin(ctx, norm, prior)
 		}
-		if err := Save(ctx, prior); err != nil {
+		if err := r.store.save(ctx, prior); err != nil {
 			return nil, fmt.Errorf("persist revalidated page %q: %w", norm, err)
 		}
 		return prior, nil
@@ -99,14 +110,14 @@ func acquire(ctx context.Context, norm string, force bool) (*Page, error) {
 		return nil, fmt.Errorf("fetch %q: %w", norm, err)
 	}
 
-	page, err := buildPage(res, prior, norm)
+	page, err := r.buildPage(res, prior, norm)
 	if err != nil {
 		return nil, fmt.Errorf("build page %q: %w", norm, err)
 	}
-	if renderPage != nil && thinSignature(thinInput{Markdown: page.Markdown, HTML: page.RawHTML}) {
-		escalateThin(ctx, norm, page)
+	if r.render != nil && thinSignature(thinInput{Markdown: page.Markdown, HTML: page.RawHTML}) {
+		r.escalateThin(ctx, norm, page)
 	}
-	if err := Save(ctx, page); err != nil {
+	if err := r.store.save(ctx, page); err != nil {
 		return nil, fmt.Errorf("persist page %q: %w", norm, err)
 	}
 	return page, nil
@@ -118,14 +129,14 @@ func acquire(ctx context.Context, norm string, force bool) (*Page, error) {
 // smaller render keeps the original body with Thin set. The base cascade already
 // served content, so a chain failure is a Warn, never a hard error — a thin page
 // is always exit-0 success carrying a note.
-func escalateThin(ctx context.Context, norm string, page *Page) {
-	rres, stillThin, err := renderPage(ctx, norm)
+func (r *runner) escalateThin(ctx context.Context, norm string, page *Page) {
+	rres, stillThin, err := r.render(ctx, norm)
 	if err != nil {
 		slog.Warn("web render escalation failed; serving thin content", "url", norm, "err", err)
 		page.Thin = true
 		return
 	}
-	rendered, err := buildPage(rres, nil, norm)
+	rendered, err := r.buildPage(rres, nil, norm)
 	if err != nil {
 		slog.Warn("web render escalation build failed; serving thin content", "url", norm, "err", err)
 		page.Thin = true
@@ -184,7 +195,7 @@ func withThinNote(ctx context.Context, page *Page, body string) string {
 // tier's title. When the fresh markdown is byte-identical to the prior cache
 // entry, its chunks and (costly) vectors are reused rather than recomputed;
 // otherwise the page is re-chunked and its vectors dropped for a lazy re-embed.
-func buildPage(res FetchResult, prior *Page, norm string) (*Page, error) {
+func (r *runner) buildPage(res FetchResult, prior *Page, norm string) (*Page, error) {
 	markdown := res.Markdown
 	title := res.Title
 	if res.HTML != "" {
@@ -204,7 +215,7 @@ func buildPage(res FetchResult, prior *Page, norm string) (*Page, error) {
 		FinalURL:   res.FinalURL,
 		Title:      title,
 		Tier:       res.Tier,
-		FetchedAt:  timeNow(),
+		FetchedAt:  r.store.now(),
 		ETag:       res.ETag,
 		LastMod:    res.LastMod,
 		ContentSHA: sha,
@@ -329,7 +340,7 @@ func offsetPastEndErr(offset int, label, span string) error {
 // query embedding — plus a first-search embed of every chunk vector — runs
 // concurrently with BM25 on this goroutine. Without uv, or on an embed failure,
 // search degrades to BM25-only and appends a note rather than failing.
-func runSearch(ctx context.Context, page *Page, a backend.Args) (string, error) {
+func (r *runner) runSearch(ctx context.Context, page *Page, a backend.Args) (string, error) {
 	k := a.K
 	if k <= 0 {
 		k = defaultK
@@ -344,7 +355,7 @@ func runSearch(ctx context.Context, page *Page, a backend.Args) (string, error) 
 	g, gctx := errgroup.WithContext(ctx)
 	existing := page.Vectors
 	g.Go(func() error {
-		vecs, qv, err := embedForSearch(gctx, existing, texts, a.Query)
+		vecs, qv, err := r.embedForSearch(gctx, existing, texts, a.Query)
 		if err != nil {
 			return err
 		}
@@ -366,7 +377,7 @@ func runSearch(ctx context.Context, page *Page, a backend.Args) (string, error) 
 		if page.Vectors == nil {
 			page.Vectors = chunkVecs
 			page.EmbedModel = EmbedModelID
-			if err := Save(ctx, page); err != nil {
+			if err := r.store.save(ctx, page); err != nil {
 				slog.Warn("persist embedded chunk vectors", "url", page.URL, "err", err)
 			}
 		}
@@ -383,8 +394,8 @@ func runSearch(ctx context.Context, page *Page, a backend.Args) (string, error) 
 // text and the query in one call; when the vectors already persist it embeds only
 // the query. A construction failure (ErrWeightsUnavailable) propagates so the
 // caller degrades to BM25-only.
-func embedForSearch(ctx context.Context, existing [][]float32, texts []string, query string) (chunkVecs [][]float32, queryVec []float32, err error) {
-	emb, err := sharedEmbedder(ctx)
+func (r *runner) embedForSearch(ctx context.Context, existing [][]float32, texts []string, query string) (chunkVecs [][]float32, queryVec []float32, err error) {
+	emb, err := r.embedderFor(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -492,7 +503,7 @@ func siblingNav(sections []Section, id string) (prev, next string) {
 // tokens — then one indented line per section carrying its §ID, title, own-span
 // token estimate, and chunk count. Section token estimates sum to the page total
 // because sections partition the markdown.
-func renderOutline(ctx context.Context, page *Page) string {
+func (r *runner) renderOutline(ctx context.Context, page *Page) string {
 	counts := make(map[string]int, len(page.Sections))
 	for _, c := range page.Chunks {
 		counts[c.Section]++
@@ -505,7 +516,7 @@ func renderOutline(ctx context.Context, page *Page) string {
 	}
 	fmt.Fprintf(&b, "# %s\n", title)
 	fmt.Fprintf(&b, "%s · %s · fetched %s ago · ~%d tokens\n",
-		page.URL, page.Tier, humanizeAge(timeNow().Sub(page.FetchedAt)), estimateTokens(page.Markdown))
+		page.URL, page.Tier, humanizeAge(r.store.now().Sub(page.FetchedAt)), estimateTokens(page.Markdown))
 
 	for _, s := range page.Sections {
 		indent := s.Level - 1
