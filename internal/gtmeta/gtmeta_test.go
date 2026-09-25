@@ -2,6 +2,7 @@ package gtmeta_test
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -39,6 +40,24 @@ func TestReadTracksAGTStack(t *testing.T) {
 			"feat1": {Head: feat1Head, Parents: []gtmeta.Ref{{Ref: "main", SHA: trunkHead}}},
 			"feat2": {Head: head(t, f.Dir, "feat2"), Parents: []gtmeta.Ref{{Ref: "feat1", SHA: feat1Head}}},
 		})
+	})
+
+	t.Run("normalizes an unfrozen branch", func(t *testing.T) {
+		run(t, f.Dir, "gt", "freeze", "feat1", "--no-interactive")
+		if got := read(t, commonDir)["feat1"].State; got != "frozen" {
+			t.Fatalf("frozen state = %q, want frozen", got)
+		}
+		run(t, f.Dir, "gt", "unfreeze", "feat1", "--no-interactive")
+		var native map[string]struct{ State string }
+		if err := json.Unmarshal([]byte(run(t, f.Dir, "gt", "state", "--no-interactive")), &native); err != nil {
+			t.Fatalf("decode native gt state: %v", err)
+		}
+		if got := native["feat1"].State; got != "" {
+			t.Fatalf("native unfrozen state = %q, want no hold", got)
+		}
+		if got := read(t, commonDir)["feat1"].State; got != "" {
+			t.Errorf("unfrozen state = %q, want no hold", got)
+		}
 	})
 
 	// gt revalidates the whole database on every invocation, so a stack it still

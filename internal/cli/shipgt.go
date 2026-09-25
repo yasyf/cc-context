@@ -354,11 +354,12 @@ func gtStuckSuffix(o shipOpts) string {
 // command is speaking, what its refusals append about the work already done,
 // and the two switches gt's own --draft and --no-verify flags map to.
 type gtSubmit struct {
-	prefix   string
-	suffix   string
-	draft    bool
-	noVerify bool
-	leases   map[string]string
+	prefix    string
+	suffix    string
+	draft     bool
+	noVerify  bool
+	leases    map[string]string
+	trunkHead string
 }
 
 func gtStuck(prefix, problem, suffix string) string {
@@ -828,10 +829,22 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			plan[i].lease, plan[i].leaseSet = lease, true
 		}
 	}
-	// The last point before anything mutates, and the one both ship and stack
-	// submit reach.
 	if err := gtRefuseInherited(ctx, s.prefix, l.dir(), tr, plan); err != nil {
 		return nil, nil, err
+	}
+	for _, branch := range branches {
+		parent := state[branch].Parents[0].Ref
+		parentHead := state[parent].Head
+		if parent == tr.Name() && s.trunkHead != "" {
+			parentHead = s.trunkHead
+		}
+		contains, err := gitIsAncestor(ctx, l.dir(), s.prefix, parentHead, state[branch].Head)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !contains {
+			return nil, nil, errors.New(gtStuck(s.prefix, gtOffParent(branch, state[branch].State), s.suffix))
+		}
 	}
 
 	pre := make([]gtapi.PreSubmitBranch, 0, len(plan))

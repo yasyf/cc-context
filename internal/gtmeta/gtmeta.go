@@ -98,10 +98,14 @@ func Read(ctx context.Context, commonDir string) (State, error) {
 		if (row.validation != validationValid && !stale) || !parentLive {
 			continue
 		}
+		held := row.state
+		if held == "none" {
+			held = ""
+		}
 		state[row.branch] = BranchState{
 			NeedsRestack: stale || row.parentRevision != parentHead,
 			Head:         head,
-			State:        row.state,
+			State:        held,
 			Parents:      []Ref{{Ref: row.parent, SHA: row.parentRevision}},
 		}
 	}
