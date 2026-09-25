@@ -46,8 +46,8 @@ func installDropGH(t *testing.T, f *vcstest.Fixture, seeds map[string]dropSeed) 
 	t.Setenv("DROP_GH", gh.dir)
 	writeShipExecutable(t, f.ShimBin, "gh", "#!/bin/sh\n"+vcstest.RecordArgv("gh", f.ArgvLog)+dropGHBody)
 
-	real := shipDisplaceShim(t, f, "git")
-	writeShipExecutable(t, f.ShimBin, "git", "#!/bin/sh\n"+dropGitBody+"exec '"+real+"' \"$@\"\n")
+	realBin := shipDisplaceShim(t, f, "git")
+	writeShipExecutable(t, f.ShimBin, "git", "#!/bin/sh\n"+dropGitBody+"exec '"+realBin+"' \"$@\"\n")
 	return gh
 }
 

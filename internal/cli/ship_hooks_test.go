@@ -161,7 +161,7 @@ func TestShipHooksRefuseHeldIndexLock(t *testing.T) {
 			shipResetLog(t, f)
 			lock := shipWriteIndexLock(t, filepath.Join(f.Dir, ".git"))
 
-			_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
+			_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 			if err == nil {
 				t.Fatalf("ship error = nil, want a refusal naming %s", lock)
 			}
@@ -204,7 +204,7 @@ exit 0
 	t.Setenv("GIT_DIR", filepath.Join(f.Dir, ".git"))
 	t.Setenv("GIT_WORK_TREE", f.Dir)
 
-	if _, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push"); err != nil {
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	want := "GIT_DIR=<unset>\nGIT_WORK_TREE=<unset>\nSHIP_HOOK_CONTROL=kept\n"
@@ -268,7 +268,7 @@ func TestShipHooksStreamingSeam(t *testing.T) {
 			t.Cleanup(func() { shipStreamCI = old })
 			shipStreamCI = func(io.Writer) bool { return tt.stream }
 
-			out, errStr, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
+			out, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 			if err != nil {
 				t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
 			}

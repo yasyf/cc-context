@@ -172,7 +172,7 @@ func TestShipGateDemotesForeignRepo(t *testing.T) {
 	f := shipGTFeature(t)
 	seedLaneRecords(t, f.Dir, foreignRepo)
 
-	out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
+	out, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -202,7 +202,7 @@ func TestShipGateKeepsOwnRepo(t *testing.T) {
 			f := shipGTFeature(t)
 			seedLaneRecords(t, f.Dir, tt.seed)
 
-			got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
+			got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -230,7 +230,7 @@ func TestShipGateUnknownKeepsGT(t *testing.T) {
 		t.Fatalf("gh resolved to %s; this test must run with none on PATH", path)
 	}
 
-	if _, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push"); err != nil {
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	invocations := shipGTInvocations(t, f)
@@ -356,7 +356,7 @@ func TestShipGateProbe(t *testing.T) {
 			clearGTRecord(t, f.Dir)
 			shipGTAuth(t, f, g)
 
-			out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
+			out, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -386,7 +386,7 @@ func TestShipGateProbeTimeoutDemotes(t *testing.T) {
 	shipGTAuthHang(t, f)
 	shortenGTProbe(t)
 
-	out, _, err := runShipCmdFull(t, f.Context(), "-m", "fix: frobnicate", "--no-push")
+	out, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}

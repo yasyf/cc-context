@@ -120,8 +120,9 @@ func ghAssertServed(t *testing.T, log string, runs map[string][]string) {
 // as an argc-prefixed NUL-framed record. GitHub is a network boundary, so the
 // binary stays a script; every byte it prints came off a real gh run, a call
 // past the recorded runs exits 2 rather than inventing an answer, and every call
-// is held against its golden's own argv when the test ends.
-func ghReplay(t *testing.T, runs map[string][]string) (argvLog string) {
+// is held against its golden's own argv when the test ends. It lands on f's PATH
+// too, for a call driving f.Context() rather than the process's own.
+func ghReplay(t *testing.T, f *vcstest.Fixture, runs map[string][]string) (argvLog string) {
 	t.Helper()
 	dir := t.TempDir()
 	argvLog = filepath.Join(dir, "argv")
@@ -165,6 +166,7 @@ func ghReplay(t *testing.T, runs map[string][]string) (argvLog string) {
 		t.Fatalf("write gh replay: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	f.PrependPATH(binDir)
 	t.Cleanup(func() { ghAssertServed(t, argvLog, runs) })
 	return argvLog
 }
@@ -283,7 +285,7 @@ func TestRepoOwnership(t *testing.T) {
 func TestViewerAffiliation(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)
-	ghReplay(t, map[string][]string{"api graphql": {"viewer-graphql"}})
+	ghReplay(t, f, map[string][]string{"api graphql": {"viewer-graphql"}})
 
 	v, err := lookupViewer(f.Context(), false)
 	if err != nil {
@@ -329,7 +331,7 @@ func TestViewerAffiliation(t *testing.T) {
 func TestLookupRepoCaches(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)
-	log := ghReplay(t, map[string][]string{
+	log := ghReplay(t, f, map[string][]string{
 		"repo view":   {"repo-view-own", "repo-view-foreign", "repo-view-own"},
 		"api graphql": {"viewer-graphql", "viewer-graphql"},
 	})
@@ -400,7 +402,7 @@ func TestLookupRepoCaches(t *testing.T) {
 // verb, so a linked worktree paying its own lookup exits 2.
 func TestLookupRepoSharesOneRecordAcrossWorktrees(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Worktree("feat"))
-	log := ghReplay(t, map[string][]string{
+	log := ghReplay(t, f, map[string][]string{
 		"repo view":   {"repo-view-own"},
 		"api graphql": {"viewer-graphql"},
 	})
@@ -427,7 +429,7 @@ func TestLookupRepoSharesOneRecordAcrossWorktrees(t *testing.T) {
 // own diagnostic, and the viewer is never asked, so the replay records none.
 func TestLookupRepoUnresolvableName(t *testing.T) {
 	f := vcstest.Repo(t)
-	log := ghReplay(t, map[string][]string{"repo view": {"repo-view-missing"}})
+	log := ghReplay(t, f, map[string][]string{"repo view": {"repo-view-missing"}})
 
 	repo, err := LookupRepo(f.Context(), render.Dir(f.Dir), false)
 	if !errors.Is(err, ErrNoGitHub) {

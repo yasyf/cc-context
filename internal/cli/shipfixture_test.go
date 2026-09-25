@@ -133,11 +133,11 @@ func writeShipExecutable(t *testing.T, dir, name, script string) {
 // place would let a second interceptor on the same tool clobber the first.
 func shipDisplaceShim(t *testing.T, f *vcstest.Fixture, tool string) string {
 	t.Helper()
-	real := filepath.Join(t.TempDir(), tool)
-	if err := os.Rename(filepath.Join(f.ShimBin, tool), real); err != nil {
+	realBin := filepath.Join(t.TempDir(), tool)
+	if err := os.Rename(filepath.Join(f.ShimBin, tool), realBin); err != nil {
 		t.Fatalf("displace %s shim: %v", tool, err)
 	}
-	return real
+	return realBin
 }
 
 // writeShipUvx installs a uvx that fails its first n prek runs and passes
@@ -330,13 +330,13 @@ func shipGTRecords(t *testing.T, f *vcstest.Fixture) []vcstest.Invocation {
 // the fixture's log beside the real ones.
 func shipGTIntercept(t *testing.T, f *vcstest.Fixture, verb, body string) {
 	t.Helper()
-	real := shipDisplaceShim(t, f, "gt")
+	realBin := shipDisplaceShim(t, f, "gt")
 	writeShipExecutable(t, f.ShimBin, "gt", "#!/bin/sh\n"+
 		"if [ \"$1\" = "+verb+" ]; then\n"+
 		vcstest.RecordArgv("gt", f.ArgvLog)+
 		body+
 		"fi\n"+
-		"exec '"+real+"' \"$@\"\n")
+		"exec '"+realBin+"' \"$@\"\n")
 }
 
 // shipGTAuth answers the lane gate's probe from a recorded gt auth run. auth
@@ -407,7 +407,7 @@ func shipRaceRemote(t *testing.T, f *vcstest.Fixture, tool, match, name string, 
 	if err := os.WriteFile(marker, []byte(strconv.Itoa(n)), 0o600); err != nil {
 		t.Fatalf("write race marker: %v", err)
 	}
-	real := shipDisplaceShim(t, f, tool)
+	realBin := shipDisplaceShim(t, f, tool)
 	writeShipExecutable(t, f.ShimBin, tool, "#!/bin/sh\n"+
 		"if [ -z \"$CCX_SHIM_DEPTH\" ]; then\n"+
 		"  case \"$*\" in\n"+
@@ -423,19 +423,7 @@ func shipRaceRemote(t *testing.T, f *vcstest.Fixture, tool, match, name string, 
 		"      fi ;;\n"+
 		"  esac\n"+
 		"fi\n"+
-		"exec '"+real+"' \"$@\"\n")
-}
-
-// shipNextTool resolves the tool a wrapper about to be installed must exec: the
-// one currently first on PATH, so wrappers stack in installation order instead
-// of each shadowing the last.
-func shipNextTool(t *testing.T, tool string) string {
-	t.Helper()
-	path, err := exec.LookPath(tool)
-	if err != nil {
-		t.Fatalf("resolve %s: %v", tool, err)
-	}
-	return path
+		"exec '"+realBin+"' \"$@\"\n")
 }
 
 // shipOpDescription reads one operation's description out of jj's own log, so a
@@ -537,7 +525,7 @@ func shipRaceLanded(t *testing.T, f *vcstest.Fixture) {
 	mustRun(t, f.Env(), base, "git", "clone", "-q", f.RemoteDir, clone)
 	mustRun(t, f.Env(), clone, "git", "config", "user.email", "r@r.r")
 	mustRun(t, f.Env(), clone, "git", "config", "user.name", "r")
-	real := shipDisplaceShim(t, f, "jj")
+	realBin := shipDisplaceShim(t, f, "jj")
 	writeShipExecutable(t, f.ShimBin, "jj", "#!/bin/sh\n"+
 		"if [ -z \"$CCX_SHIM_DEPTH\" ]; then\n"+
 		"  case \"$*\" in\n"+
@@ -548,7 +536,7 @@ func shipRaceLanded(t *testing.T, f *vcstest.Fixture) {
 		"      CCX_SHIM_DEPTH=1 git -C '"+clone+"' push -q origin HEAD:main ;;\n"+
 		"  esac\n"+
 		"fi\n"+
-		"exec '"+real+"' \"$@\"\n")
+		"exec '"+realBin+"' \"$@\"\n")
 }
 
 // shipHoldBranch checks branch out in a linked worktree — the state git names a
@@ -643,14 +631,14 @@ func shipJJBookmarks(t *testing.T, f *vcstest.Fixture, names ...string) {
 func shipJJFails(t *testing.T, f *vcstest.Fixture, pattern string) {
 	t.Helper()
 	dir := t.TempDir()
-	real := shipDisplaceShim(t, f, "jj")
+	realBin := shipDisplaceShim(t, f, "jj")
 	writeShipExecutable(t, f.ShimBin, "jj", "#!/bin/sh\n"+
 		"case \"$*\" in\n"+
 		"  "+pattern+")\n"+
 		vcstest.RecordArgv("jj", f.ArgvLog)+
-		"    CCX_SHIM_DEPTH=$((d+1)) exec '"+real+"' --repository '"+filepath.Join(dir, "absent")+"' \"$@\" ;;\n"+
+		"    CCX_SHIM_DEPTH=$((d+1)) exec '"+realBin+"' --repository '"+filepath.Join(dir, "absent")+"' \"$@\" ;;\n"+
 		"esac\n"+
-		"exec '"+real+"' \"$@\"\n")
+		"exec '"+realBin+"' \"$@\"\n")
 }
 
 // shipHookRepo commits the working copy with a prek config added to it and
@@ -1213,9 +1201,9 @@ func gtRealRefsArgv(t *testing.T, f *vcstest.Fixture) []string {
 	return gtRefsArgvIn(gitAt(t, f.Env(), f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir"))
 }
 
-func runShipCmd(t *testing.T, ctx context.Context, args ...string) (string, error) {
+func runShipCmd(ctx context.Context, t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	cmd := newShipCmd()
+	cmd := newShipCmd() //nolint:contextcheck // ExecuteContext(ctx) below is what sets cmd's context; contextcheck cannot see through cobra's two-step wiring
 	var out, errBuf bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errBuf)
@@ -1232,9 +1220,9 @@ func runShipCmd(t *testing.T, ctx context.Context, args ...string) (string, erro
 
 // runShipCmdFull runs ship with usage and cobra error echo silenced so the whole
 // captured stdout (summary plus every report line) can be asserted verbatim.
-func runShipCmdFull(t *testing.T, ctx context.Context, args ...string) (string, string, error) {
+func runShipCmdFull(ctx context.Context, t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
-	cmd := newShipCmd()
+	cmd := newShipCmd() //nolint:contextcheck // ExecuteContext(ctx) below is what sets cmd's context; contextcheck cannot see through cobra's two-step wiring
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 	var out, errBuf bytes.Buffer

@@ -538,7 +538,7 @@ func restackGTServeSync(t *testing.T, f *vcstest.Fixture, g gtGolden, effect str
 	restackWrite(t, stdout, g.stdout)
 	restackWrite(t, stderr, g.stderr)
 
-	real := shipDisplaceShim(t, f, "gt")
+	realBin := shipDisplaceShim(t, f, "gt")
 
 	body := ""
 	if effect != "" {
@@ -552,7 +552,7 @@ func restackGTServeSync(t *testing.T, f *vcstest.Fixture, g gtGolden, effect str
 		"  cat '" + stderr + "' >&2\n" +
 		"  exit " + strconv.Itoa(g.exit) + "\n" +
 		"fi\n" +
-		"exec '" + real + "' \"$@\"\n"
+		"exec '" + realBin + "' \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(f.ShimBin, "gt"), []byte(script), 0o700); err != nil { //nolint:gosec // the interceptor must be owner-executable to serve as a PATH entry
 		t.Fatalf("write gt interceptor: %v", err)
 	}

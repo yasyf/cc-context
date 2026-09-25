@@ -209,7 +209,7 @@ func TestShipJJPreflightRefusalAndEmptyGuardLive(t *testing.T) {
 		t.Fatalf("parse initial remote commit count: %v", err)
 	}
 	opBefore := strings.TrimSpace(mustRun(t, nil, clone, "jj", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate))
-	_, err = runShipCmd(t, context.Background(), "-m", "x", "--no-watch")
+	_, err = runShipCmd(context.Background(), t, "-m", "x", "--no-watch")
 	if err == nil || !strings.Contains(err.Error(), "cannot resolve the trunk bookmark") {
 		t.Fatalf("first ship error = %v, want trunk resolution refusal", err)
 	}
@@ -228,7 +228,7 @@ func TestShipJJPreflightRefusalAndEmptyGuardLive(t *testing.T) {
 		t.Errorf("jj operation after refusal = %q, want unchanged %q", opAfter, opBefore)
 	}
 
-	if _, err := runShipCmd(t, context.Background(), "-m", "x", "--no-watch", "--bookmark", "main"); err != nil {
+	if _, err := runShipCmd(context.Background(), t, "-m", "x", "--no-watch", "--bookmark", "main"); err != nil {
 		t.Fatalf("second ship error = %v", err)
 	}
 	afterPush, err := strconv.Atoi(strings.TrimSpace(mustRun(t, nil, base, "git", "--git-dir="+remote, "rev-list", "--count", "main")))
@@ -239,7 +239,7 @@ func TestShipJJPreflightRefusalAndEmptyGuardLive(t *testing.T) {
 		t.Errorf("remote main count after push = %d, want %d", afterPush, before+1)
 	}
 
-	_, err = runShipCmd(t, context.Background(), "-m", "y", "--no-watch")
+	_, err = runShipCmd(context.Background(), t, "-m", "y", "--no-watch")
 	if err == nil || !strings.Contains(err.Error(), "nothing to commit, and @- carries nothing above main — nothing to submit") {
 		t.Fatalf("third ship error = %v, want empty ship refusal", err)
 	}
@@ -301,7 +301,7 @@ func TestShipJJAutoTrackUntrackedLive(t *testing.T) {
 		t.Fatalf("parse initial remote commit count: %v", err)
 	}
 
-	if _, err := runShipCmd(t, context.Background(), "-m", "x", "--no-watch"); err != nil {
+	if _, err := runShipCmd(context.Background(), t, "-m", "x", "--no-watch"); err != nil {
 		t.Fatalf("ship error = %v, want auto-track then successful push", err)
 	}
 
@@ -432,7 +432,7 @@ func TestShipJJHunkScopedLive(t *testing.T) {
 			}
 			before := statOf(t, "f.txt")
 
-			if _, err := runShipCmd(t, context.Background(), "-m", "partial ship", "--no-push", tt.flag, refs[tt.hunkIdx], "f.txt"); err != nil {
+			if _, err := runShipCmd(context.Background(), t, "-m", "partial ship", "--no-push", tt.flag, refs[tt.hunkIdx], "f.txt"); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 
@@ -542,7 +542,7 @@ func TestShipGitHunkScopedLive(t *testing.T) {
 			}
 			before := statOf(t, "f.txt")
 
-			if _, err := runShipCmd(t, context.Background(), "-m", "partial ship", "--no-push", tt.flag, refs[tt.hunkIdx], "f.txt"); err != nil {
+			if _, err := runShipCmd(context.Background(), t, "-m", "partial ship", "--no-push", tt.flag, refs[tt.hunkIdx], "f.txt"); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 
@@ -591,7 +591,7 @@ func TestShipGitNewBranchRollbackLive(t *testing.T) {
 	t.Chdir(dir)
 	before := strings.TrimSpace(mustRun(t, nil, dir, "git", "branch", "--show-current"))
 
-	if _, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x"); err == nil {
+	if _, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x"); err == nil {
 		t.Fatal("expected the commit to refuse an empty working copy, got nil")
 	}
 	if got := strings.TrimSpace(mustRun(t, nil, dir, "git", "branch", "--show-current")); got != before {
@@ -643,7 +643,7 @@ func TestShipGitHunkScopedSubdirLive(t *testing.T) {
 	before := statOf(t, "f.txt")
 
 	// Skip hunk 0 (a->A); the commit keeps only the E change.
-	if _, err := runShipCmd(t, context.Background(), "-m", "partial ship", "--no-push", "--skip-hunk", refs[0], "f.txt"); err != nil {
+	if _, err := runShipCmd(context.Background(), t, "-m", "partial ship", "--no-push", "--skip-hunk", refs[0], "f.txt"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 
@@ -703,7 +703,7 @@ func TestShipJJHunkScopedSubdirLive(t *testing.T) {
 	}
 	before := statOf(t, "f.txt")
 
-	if _, err := runShipCmd(t, context.Background(), "-m", "partial ship", "--no-push", "--skip-hunk", refs[0], "f.txt"); err != nil {
+	if _, err := runShipCmd(context.Background(), t, "-m", "partial ship", "--no-push", "--skip-hunk", refs[0], "f.txt"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 
@@ -859,7 +859,7 @@ func TestShipLiveGT(t *testing.T) {
 		t.Fatalf("write excluded file: %v", err)
 	}
 
-	if _, err := runShipCmd(t, context.Background(), "-m", "first stacked commit", "--no-push", "f.txt"); err != nil {
+	if _, err := runShipCmd(context.Background(), t, "-m", "first stacked commit", "--no-push", "f.txt"); err != nil {
 		t.Fatalf("first ship error = %v", err)
 	}
 
@@ -894,7 +894,7 @@ func TestShipLiveGT(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("second change\n"), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write second change: %v", err)
 	}
-	if _, err := runShipCmd(t, context.Background(), "-m", "second stacked commit", "--no-push", "f.txt"); err != nil {
+	if _, err := runShipCmd(context.Background(), t, "-m", "second stacked commit", "--no-push", "f.txt"); err != nil {
 		t.Fatalf("second ship error = %v", err)
 	}
 	if got := strings.TrimSpace(mustRun(t, nil, dir, "git", "branch", "--show-current")); got != branch {
@@ -911,7 +911,7 @@ func TestShipLiveGT(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("untracked change\n"), 0o644); err != nil { //nolint:gosec // test fixture
 		t.Fatalf("write untracked change: %v", err)
 	}
-	got, err := runShipCmd(t, context.Background(), "-m", "untracked branch commit", "--no-push", "f.txt")
+	got, err := runShipCmd(context.Background(), t, "-m", "untracked branch commit", "--no-push", "f.txt")
 	if err != nil {
 		t.Fatalf("untracked-branch ship error = %v", err)
 	}
@@ -956,7 +956,7 @@ func TestShipGTHunkScopedLive(t *testing.T) {
 	}
 	before := statOf(t, "f.txt")
 
-	if _, err := runShipCmd(t, context.Background(), "-m", "partial ship", "--no-push", "--only-hunk", refs[0], "f.txt"); err != nil {
+	if _, err := runShipCmd(context.Background(), t, "-m", "partial ship", "--no-push", "--only-hunk", refs[0], "f.txt"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 

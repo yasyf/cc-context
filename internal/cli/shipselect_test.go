@@ -200,7 +200,7 @@ func TestShipJJHunkSelection(t *testing.T) {
 			before := statOf(t, "f.txt")
 
 			args := append(append([]string{}, tt.args...), ref, "--no-push", "f.txt")
-			if _, err := runShipCmd(t, f.Context(), args...); err != nil {
+			if _, err := runShipCmd(f.Context(), t, args...); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 
@@ -235,7 +235,7 @@ func TestShipHunkHooksAreReportedSkipped(t *testing.T) {
 	writeShipHookFiles(t, f.Dir)
 	ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
 
-	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--only-hunk", ref, "f.txt")
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--only-hunk", ref, "f.txt")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -254,7 +254,7 @@ func TestShipHunkNoVerifySilencesHookSegment(t *testing.T) {
 	writeShipHookFiles(t, f.Dir)
 	ref := hunkRefFor(t, "f.txt", hunkBase, hunkCurrent, 0)
 
-	got, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--no-verify", "--only-hunk", ref, "f.txt")
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--no-verify", "--only-hunk", ref, "f.txt")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -321,7 +321,7 @@ func hunkRefusalCases(t *testing.T) []hunkRefusalCase {
 func assertHunkRefusal(t *testing.T, f *vcstest.Fixture, mark int, tt hunkRefusalCase) {
 	t.Helper()
 	args := append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.args...)
-	_, err := runShipCmd(t, f.Context(), args...)
+	_, err := runShipCmd(f.Context(), t, args...)
 	if err == nil {
 		t.Fatal("expected refusal, got nil")
 	}
@@ -384,7 +384,7 @@ func TestShipGitHunkTempIndexIsolation(t *testing.T) {
 	before := statOf(t, "f.txt")
 	mark := argvMark(t, f)
 
-	if _, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--skip-hunk", ref, "f.txt", "g.txt"); err != nil {
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--skip-hunk", ref, "f.txt", "g.txt"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 
@@ -440,7 +440,7 @@ func TestShipGitHunkNewBranchRollback(t *testing.T) {
 	head := gitHead(t, f.Env(), f.Dir)
 	mark := argvMark(t, f)
 
-	_, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push", "--verify", "--new-branch=feat-x", "--only-hunk", ref, "f.txt")
+	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--verify", "--new-branch=feat-x", "--only-hunk", ref, "f.txt")
 	if err == nil || !strings.Contains(err.Error(), "ship: git commit:") {
 		t.Fatalf("ship error = %v, want the temp-index commit failure", err)
 	}
@@ -491,7 +491,7 @@ func TestShipGitHunkNoVerify(t *testing.T) {
 			if tt.noVerify {
 				args = append(args, "--no-verify")
 			}
-			_, err := runShipCmd(t, f.Context(), args...)
+			_, err := runShipCmd(f.Context(), t, args...)
 			want := before
 			if tt.wantCommit {
 				want++
@@ -525,7 +525,7 @@ func TestShipGitHunkAmend(t *testing.T) {
 			mark := argvMark(t, f)
 
 			args := append(append([]string{}, tt.args...), "--no-push", "--skip-hunk", ref, "f.txt")
-			if _, err := runShipCmd(t, f.Context(), args...); err != nil {
+			if _, err := runShipCmd(f.Context(), t, args...); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 
@@ -912,7 +912,7 @@ func TestVcsHunksListsNamesGitEscapes(t *testing.T) {
 		}
 	}
 
-	if _, err := runShipCmd(t, f.Context(), "-m", "partial ship", "--no-push", "--only-hunk", listed[quoted][0], quoted); err != nil {
+	if _, err := runShipCmd(f.Context(), t, "-m", "partial ship", "--no-push", "--only-hunk", listed[quoted][0], quoted); err != nil {
 		t.Fatalf("ship error = %v, want the listed ref to address the file", err)
 	}
 	const wantCommitted = "A\nb\nc\nd\ne\n"

@@ -199,14 +199,14 @@ func shQuote(s string) string {
 
 func runVcsInfoCmd(t *testing.T, f *vcstest.Fixture, args ...string) (string, error) {
 	t.Helper()
-	return runVcsInfoCmdIn(t, f.Context(), args...)
+	return runVcsInfoCmdIn(f.Context(), t, args...)
 }
 
 // runVcsInfoCmdIn is runVcsInfoCmd rooted where the caller says, for a test
 // reporting on a worktree rather than the fixture's own repository.
-func runVcsInfoCmdIn(t *testing.T, ctx context.Context, args ...string) (string, error) {
+func runVcsInfoCmdIn(ctx context.Context, t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	cmd := newVcsInfoCmd()
+	cmd := newVcsInfoCmd() //nolint:contextcheck // ExecuteContext(ctx) below is what sets cmd's context; contextcheck cannot see through cobra's two-step wiring
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 	var out, errBuf bytes.Buffer
@@ -219,13 +219,13 @@ func runVcsInfoCmdIn(t *testing.T, ctx context.Context, args ...string) (string,
 
 func runVcsInfoJSON(t *testing.T, f *vcstest.Fixture, args ...string) vcsInfo {
 	t.Helper()
-	return runVcsInfoJSONIn(t, f.Context(), args...)
+	return runVcsInfoJSONIn(f.Context(), t, args...)
 }
 
 // runVcsInfoJSONIn is runVcsInfoJSON rooted where the caller says.
-func runVcsInfoJSONIn(t *testing.T, ctx context.Context, args ...string) vcsInfo {
+func runVcsInfoJSONIn(ctx context.Context, t *testing.T, args ...string) vcsInfo {
 	t.Helper()
-	out, err := runVcsInfoCmdIn(t, ctx, append([]string{"--json"}, args...)...)
+	out, err := runVcsInfoCmdIn(ctx, t, append([]string{"--json"}, args...)...)
 	if err != nil {
 		t.Fatalf("info error = %v", err)
 	}
@@ -807,7 +807,7 @@ func TestVcsInfoLinkedWorktree(t *testing.T) {
 	t.Chdir(root)
 	seedLaneRecords(t, ".", laneSeed{})
 
-	got := runVcsInfoJSONIn(t, f.ContextIn(root))
+	got := runVcsInfoJSONIn(f.ContextIn(root), t)
 	if got.Root != root {
 		t.Errorf("root = %q, want this checkout's own tree %q", got.Root, root)
 	}

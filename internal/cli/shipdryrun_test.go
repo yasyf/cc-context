@@ -31,7 +31,7 @@ func dryRunRefs(t *testing.T, f *vcstest.Fixture) string {
 
 func dryRunReport(t *testing.T, f *vcstest.Fixture, args ...string) string {
 	t.Helper()
-	out, errOut, err := runShipCmdFull(t, f.Context(), append([]string{"--dry-run"}, args...)...)
+	out, errOut, err := runShipCmdFull(f.Context(), t, append([]string{"--dry-run"}, args...)...)
 	if err != nil {
 		t.Fatalf("ship --dry-run error = %v\n%s", err, errOut)
 	}
@@ -155,7 +155,7 @@ func TestShipDryRunPredictsTheRealShip(t *testing.T) {
 	}
 
 	shipResetLog(t, f)
-	if _, err := runShipCmd(t, f.Context(), "-m", "fix: frobnicate", "--no-push"); err != nil {
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 
@@ -275,7 +275,7 @@ func TestShipDryRunReportsTheRefusalTheRealRunMakes(t *testing.T) {
 		t.Fatalf("refuses lines = %v, want the one --no-commit earns over a dirty working copy", refusals)
 	}
 
-	_, _, err := runShipCmdFull(t, f.Context(), "--no-commit")
+	_, _, err := runShipCmdFull(f.Context(), t, "--no-commit")
 	if err == nil {
 		t.Fatal("the real ship accepted a dirty working copy under --no-commit")
 	}

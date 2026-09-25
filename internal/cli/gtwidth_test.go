@@ -53,7 +53,7 @@ func TestShipGTRefusesCommitsTrunkAlreadyHolds(t *testing.T) {
 	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
 	t.Setenv("GIT_CHERRY", "- 1234567890ab\n+ abcdef012345\n")
 
-	_, err := runShipCmd(t, context.Background(), "-m", "fix: frobnicate", "--no-watch", "--no-pr")
+	_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--no-pr")
 	if err == nil {
 		t.Fatal("ship succeeded carrying a commit trunk already holds, want a refusal")
 	}

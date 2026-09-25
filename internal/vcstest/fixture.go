@@ -109,6 +109,13 @@ func (f *Fixture) OnlyShimPATH(t *testing.T) {
 	f.env = append(f.env, "PATH="+f.ShimBin)
 }
 
+// PrependPATH adds dir ahead of the fixture's current PATH, for a tool a test
+// installs into the fixture after Repo already built it. [Fixture.Context]
+// reads f.env live, so a call before Context() still reaches every child.
+func (f *Fixture) PrependPATH(dir string) {
+	f.env = append(f.env, "PATH="+dir+string(os.PathListSeparator)+f.PATH())
+}
+
 type config struct {
 	jj                 bool
 	gt                 bool

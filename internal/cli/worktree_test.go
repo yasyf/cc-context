@@ -16,15 +16,15 @@ import (
 
 func runWorktreeCmd(t *testing.T, f *vcstest.Fixture, args ...string) (string, error) {
 	t.Helper()
-	return runWorktreeCmdIn(t, f.Context(), args...)
+	return runWorktreeCmdIn(f.Context(), t, args...)
 }
 
 // runWorktreeCmdIn is runWorktreeCmd rooted where the caller says, for a test
 // driving the command from a worktree or a relocated checkout rather than from
 // the fixture's own repository.
-func runWorktreeCmdIn(t *testing.T, ctx context.Context, args ...string) (string, error) {
+func runWorktreeCmdIn(ctx context.Context, t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	cmd := newWorktreeCmd()
+	cmd := newWorktreeCmd() //nolint:contextcheck // ExecuteContext(ctx) below is what sets cmd's context; contextcheck cannot see through cobra's two-step wiring
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 	var out, errBuf bytes.Buffer
@@ -149,7 +149,7 @@ func TestWorktreeListReportsBrokenSibling(t *testing.T) {
 	}
 	t.Chdir(relocated)
 
-	out, err := runWorktreeCmdIn(t, f.ContextIn(relocated), "list", "--json")
+	out, err := runWorktreeCmdIn(f.ContextIn(relocated), t, "list", "--json")
 	if err != nil {
 		t.Fatalf("list exited non-zero over a broken sibling: %v", err)
 	}
@@ -550,7 +550,7 @@ func TestWorktreeRepairDryRun(t *testing.T) {
 		t.Fatal("precondition: relocating the repository should have orphaned the worktree")
 	}
 
-	out, err := runWorktreeCmdIn(t, f.ContextIn(relocated), "repair", "--dry-run")
+	out, err := runWorktreeCmdIn(f.ContextIn(relocated), t, "repair", "--dry-run")
 	if err != nil {
 		t.Fatalf("repair --dry-run error = %v", err)
 	}
@@ -562,7 +562,7 @@ func TestWorktreeRepairDryRun(t *testing.T) {
 		t.Errorf("--dry-run rewrote the pointer to %q, want it left at %q", got, before)
 	}
 
-	out, err = runWorktreeCmdIn(t, f.ContextIn(relocated), "repair")
+	out, err = runWorktreeCmdIn(f.ContextIn(relocated), t, "repair")
 	if err != nil {
 		t.Fatalf("repair error = %v", err)
 	}
@@ -589,7 +589,7 @@ func TestWorktreeRepairFromBrokenCheckout(t *testing.T) {
 	}
 	t.Chdir(linked)
 
-	out, err := runWorktreeCmdIn(t, f.ContextIn(linked), "repair", "--dry-run")
+	out, err := runWorktreeCmdIn(f.ContextIn(linked), t, "repair", "--dry-run")
 	if err != nil {
 		t.Fatalf("repair --dry-run error = %v", err)
 	}
@@ -598,7 +598,7 @@ func TestWorktreeRepairFromBrokenCheckout(t *testing.T) {
 		t.Errorf("repair --dry-run = %q, want %q", out, want)
 	}
 
-	_, err = runWorktreeCmdIn(t, f.ContextIn(linked), "repair")
+	_, err = runWorktreeCmdIn(f.ContextIn(linked), t, "repair")
 	if err == nil {
 		t.Fatal("repair claimed success with the admin dir deleted")
 	}
