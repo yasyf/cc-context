@@ -1,1 +1,1 @@
-{"v":1,"lamport":3,"ops":[{"kind":"set_branch","branch":"fix/stack-list-json"}]}
+{"v":1,"lamport":4,"ops":[{"kind":"add_comment","body":"User expanded scope to fix stack submit false success on frozen stale branches. Reuse existing ship postcondition and refuse known holds before replay; retain frozen-current submits."}]}
