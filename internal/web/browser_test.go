@@ -144,6 +144,7 @@ func shellQuote(s string) string {
 }
 
 func TestAgentBrowserParsesBatchOutput(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	ctx, argvLog := stubAgentBrowser(ctx, t, mustJSON(t, okBatch("# Rendered\n\nreal rendered content here.", "Rendered Title")), 0)
 
@@ -179,6 +180,7 @@ func TestAgentBrowserParsesBatchOutput(t *testing.T) {
 }
 
 func TestAgentBrowserToleratesWaitFailure(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	entries := okBatch("# Rendered\n\nreal content.", "T")
 	entries[1] = abEntry{Command: []string{"wait"}, Error: "Operation timed out.", Result: nil, Success: false}
@@ -195,6 +197,7 @@ func TestAgentBrowserToleratesWaitFailure(t *testing.T) {
 }
 
 func TestAgentBrowserOpenFailureErrors(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	entries := okBatch("# This site can't be reached\n\nERR_UNSAFE_PORT", "")
 	entries[0] = abEntry{Command: []string{"open"}, Error: "Navigation failed: net::ERR_UNSAFE_PORT", Result: nil, Success: false}
@@ -212,6 +215,7 @@ func TestAgentBrowserOpenFailureErrors(t *testing.T) {
 }
 
 func TestAgentBrowserEmptyReadErrors(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	ctx, _ = stubAgentBrowser(ctx, t, mustJSON(t, okBatch("   \n\t ", "T")), 0)
 
@@ -222,6 +226,7 @@ func TestAgentBrowserEmptyReadErrors(t *testing.T) {
 }
 
 func TestAgentBrowserChallengeNotServed(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	// A rendered interstitial: the title marker trips challengeSignature, so the
 	// terminal lane returns a plain error rather than serve the challenge.
@@ -234,6 +239,7 @@ func TestAgentBrowserChallengeNotServed(t *testing.T) {
 }
 
 func TestAgentBrowserTimeoutKillsGroup(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	dir := t.TempDir()
 	ctx = installStub(ctx, t, dir, `#!/bin/sh
@@ -263,6 +269,7 @@ exit 0
 }
 
 func TestAgentBrowserRefusesLocalRedirect(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	// A public target whose rendered final URL is a loopback address: the SSRF
 	// guard must refuse it rather than cache local content under the public URL.
@@ -275,6 +282,7 @@ func TestAgentBrowserRefusesLocalRedirect(t *testing.T) {
 }
 
 func TestAgentBrowserLocalTargetAllowed(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	// A local original target (localhost dev SPA) is a designed use, so a local
 	// final URL is served rather than refused.
@@ -290,6 +298,7 @@ func TestAgentBrowserLocalTargetAllowed(t *testing.T) {
 }
 
 func TestAgentBrowserNoFinalURLFailsClosed(t *testing.T) {
+	t.Parallel()
 	// For a public target, a missing or hostless final URL fails closed rather
 	// than skip the SSRF check — the real CLI always emits an absolute URL. A
 	// scheme-less address parses to an empty host, so it takes the same path.
@@ -303,6 +312,7 @@ func TestAgentBrowserNoFinalURLFailsClosed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := webCtx(t)
 			ctx, _ = stubAgentBrowser(ctx, t, mustJSON(t, batchWithFinal("# X\n\nsome rendered content.", tt.final)), 0)
 			_, err := abTiers().agentBrowser(ctx, "https://example.com/app", false)
@@ -314,6 +324,7 @@ func TestAgentBrowserNoFinalURLFailsClosed(t *testing.T) {
 }
 
 func TestAgentBrowserLocalTargetLenientFinal(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	// A local dev SPA is allowed to be sloppy about the final URL: an empty one
 	// falls back to the target URL and serves.
@@ -329,6 +340,7 @@ func TestAgentBrowserLocalTargetLenientFinal(t *testing.T) {
 }
 
 func TestAgentBrowserSessionUnique(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	ctx, argvLog := stubAgentBrowser(ctx, t, mustJSON(t, okBatch("# Rendered\n\nreal rendered content.", "T")), 0)
 	ts := abTiers()

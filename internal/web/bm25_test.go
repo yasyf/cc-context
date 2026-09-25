@@ -36,6 +36,7 @@ func TestTokenize(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := tokenize(tt.in)
 			if len(got) == 0 && len(tt.want) == 0 {
 				return
@@ -113,6 +114,7 @@ func TestBM25Scores(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := b.scores(tt.query)
 			if !floatsClose(got, tt.want, 1e-9) {
 				t.Errorf("scores(%q) = %v, want %v", tt.query, got, tt.want)
@@ -137,6 +139,7 @@ func TestBM25Rank(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := b.rank(tt.query); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("rank(%q) = %v, want %v", tt.query, got, tt.want)
 			}

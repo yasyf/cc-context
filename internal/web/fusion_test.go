@@ -30,6 +30,7 @@ func TestFuse(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := fuse(dense, lex, tt.k); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("fuse(k=%d) = %v, want %v", tt.k, got, tt.want)
 			}
@@ -57,6 +58,7 @@ func TestFuseBM25OnlyDegraded(t *testing.T) {
 	lex := []int{2, 0, 1, 3}
 	for _, name := range []string{"nil", "empty"} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			var dense []int
 			if name == "empty" {
 				dense = []int{}
@@ -94,6 +96,7 @@ func TestDenseOrder(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := denseOrder(tt.vecs, q); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("denseOrder = %v, want %v", got, tt.want)
 			}

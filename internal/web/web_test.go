@@ -193,6 +193,7 @@ func firstCiteSection(t *testing.T, out string) string {
 }
 
 func TestRunOutlineThenReadRoundTrip(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	var calls atomic.Int32
@@ -229,10 +230,7 @@ func TestRunOutlineThenReadRoundTrip(t *testing.T) {
 }
 
 func TestRunReadFullAndBare(t *testing.T) {
-	ctx := webCtx(t)
-	r := testRunner()
-	r.fetch = markdownFetch(fixtureMarkdown, "Guide", nil)
-
+	t.Parallel()
 	for _, tt := range []struct {
 		name string
 		args backend.Args
@@ -241,6 +239,11 @@ func TestRunReadFullAndBare(t *testing.T) {
 		{"bare", backend.Args{URL: fixtureURL}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := webCtx(t)
+			r := testRunner()
+			r.fetch = markdownFetch(fixtureMarkdown, "Guide", nil)
+
 			out, err := r.run(ctx, backend.OpWebRead, tt.args)
 			if err != nil {
 				t.Fatalf("read Run: %v", err)
@@ -253,6 +256,7 @@ func TestRunReadFullAndBare(t *testing.T) {
 }
 
 func TestRunReadSiblingFooter(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	r.fetch = markdownFetch(fixtureMarkdown, "Guide", nil)
@@ -270,6 +274,7 @@ func TestRunReadSiblingFooter(t *testing.T) {
 }
 
 func TestRunReadUnknownSection(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	r.fetch = markdownFetch(fixtureMarkdown, "Guide", nil)
@@ -281,6 +286,7 @@ func TestRunReadUnknownSection(t *testing.T) {
 }
 
 func TestRunReadPrintedNumberResolves(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	r.fetch = markdownFetch(fixtureNumbered, "Reference", nil)
@@ -304,6 +310,7 @@ func TestRunReadPrintedNumberResolves(t *testing.T) {
 // TestRunReadPrintedNumberNormalizesNote proves the resolve note shows the printed
 // number's title with its markdown markup stripped (F7), not the raw heading text.
 func TestRunReadPrintedNumberNormalizesNote(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	r.fetch = markdownFetch(fixtureLinkedTitle, "Reference", nil)
@@ -321,6 +328,7 @@ func TestRunReadPrintedNumberNormalizesNote(t *testing.T) {
 }
 
 func TestRunReadPrintedNumberAmbiguous(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	r.fetch = markdownFetch(fixtureNumbered, "Reference", nil)
@@ -342,10 +350,7 @@ func TestRunReadPrintedNumberAmbiguous(t *testing.T) {
 }
 
 func TestRunReadNotFoundHints(t *testing.T) {
-	ctx := webCtx(t)
-	r := testRunner()
-	r.fetch = markdownFetch(fixtureNumbered, "Reference", nil)
-
+	t.Parallel()
 	tests := []struct {
 		name       string
 		section    string
@@ -357,6 +362,11 @@ func TestRunReadNotFoundHints(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := webCtx(t)
+			r := testRunner()
+			r.fetch = markdownFetch(fixtureNumbered, "Reference", nil)
+
 			_, err := r.run(ctx, backend.OpWebRead, backend.Args{URL: fixtureURL, Section: tt.section})
 			if err == nil {
 				t.Fatalf("read of %q: want a not-found error", tt.section)
@@ -430,6 +440,7 @@ func pageThrough(ctx context.Context, t *testing.T, r *runner, args backend.Args
 }
 
 func TestRunReadOffsetPaging(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	r.fetch = markdownFetch(fixtureLong, "Log", nil)
@@ -495,7 +506,7 @@ const siblingPagedMarkdown = "# Guide\n\n" +
 // section read with siblings carries nav on every page; withNav trims the trailing
 // newline off the final page's content, an exact allowance the assertion accounts for.
 func TestRunReadPagingReconstructs(t *testing.T) {
-	r := testRunner()
+	t.Parallel()
 	tests := []struct {
 		name     string
 		markdown string
@@ -518,7 +529,9 @@ func TestRunReadPagingReconstructs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := webCtx(t)
+			r := testRunner()
 			r.fetch = markdownFetch(tt.markdown, "Doc", nil)
 
 			args := backend.Args{URL: fixtureURL, Budget: tt.budget}
@@ -573,6 +586,7 @@ func TestRunReadPagingReconstructs(t *testing.T) {
 // to the whole page (F2), not ignored, and a follow-the-footer loop serves every
 // section's marker.
 func TestRunReadFullOffsetPaging(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	r.fetch = markdownFetch(fixtureLong, "Log", nil)
@@ -598,10 +612,7 @@ func TestRunReadFullOffsetPaging(t *testing.T) {
 }
 
 func TestRunReadOffsetGuards(t *testing.T) {
-	ctx := webCtx(t)
-	r := testRunner()
-	r.fetch = markdownFetch(fixtureLong, "Log", nil)
-
+	t.Parallel()
 	tests := []struct {
 		name    string
 		args    backend.Args
@@ -616,6 +627,11 @@ func TestRunReadOffsetGuards(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := webCtx(t)
+			r := testRunner()
+			r.fetch = markdownFetch(fixtureLong, "Log", nil)
+
 			_, err := r.run(ctx, backend.OpWebRead, tt.args)
 			if err == nil {
 				t.Fatalf("offset %d: want an error", tt.args.Offset)
@@ -631,6 +647,7 @@ func TestRunReadOffsetGuards(t *testing.T) {
 // budget cap (F6): a section whose content fits the budget advertises no
 // continuation offset even when content plus nav would overflow it.
 func TestRunReadNavFitsBudgetNoOffset(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	r.fetch = markdownFetch(fixtureMarkdown, "Guide", nil)
@@ -660,6 +677,7 @@ func TestRunReadNavFitsBudgetNoOffset(t *testing.T) {
 // budget cap (N1): a printed-number-resolved page-1 footer's next offset lands so
 // page two serves the marker that sat just past the page-1 boundary — no skip.
 func TestRunReadResolvedNotePagesWithoutSkip(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 
@@ -697,6 +715,7 @@ func TestRunReadResolvedNotePagesWithoutSkip(t *testing.T) {
 // clock at both ends: the fetch stamps FetchedAt from it, and the outline three
 // hours later measures against it rather than the wall clock.
 func TestRunOutlineAgeMeasuredFromTheStoreClock(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	r.fetch = markdownFetch(fixtureMarkdown, "Guide", nil)
@@ -716,6 +735,7 @@ func TestRunOutlineAgeMeasuredFromTheStoreClock(t *testing.T) {
 }
 
 func TestRunOutlineDegenerateHint(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	r.fetch = func(_ context.Context, url string, _ *Page) (FetchResult, error) {
@@ -746,6 +766,7 @@ func TestRunOutlineDegenerateHint(t *testing.T) {
 }
 
 func TestRunSearchHybrid(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	fake := &fakeEmbedder{}
@@ -783,6 +804,7 @@ func TestRunSearchHybrid(t *testing.T) {
 }
 
 func TestRunSearchBM25OnlyWhenUnsupported(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	r.embedder = func(context.Context) (Embedder, error) {
@@ -803,6 +825,7 @@ func TestRunSearchBM25OnlyWhenUnsupported(t *testing.T) {
 }
 
 func TestRunSearchDegradesOnEmbedError(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	r.embedder = fixedEmbedder(&fakeEmbedder{err: fmt.Errorf("driver blew up")})
@@ -821,6 +844,7 @@ func TestRunSearchDegradesOnEmbedError(t *testing.T) {
 }
 
 func TestRunForceRefetch(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	var calls atomic.Int32
@@ -842,6 +866,7 @@ func TestRunForceRefetch(t *testing.T) {
 }
 
 func TestRunNotModifiedPreservesVectors(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 
@@ -877,6 +902,7 @@ func TestRunNotModifiedPreservesVectors(t *testing.T) {
 }
 
 func TestRunContentUnchangedPreservesVectors(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 
@@ -904,6 +930,7 @@ func TestRunContentUnchangedPreservesVectors(t *testing.T) {
 }
 
 func TestRunContentChangedDropsVectors(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 
@@ -933,6 +960,7 @@ func TestRunContentChangedDropsVectors(t *testing.T) {
 }
 
 func TestRunGonePropagates(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	r.fetch = func(_ context.Context, _ string, _ *Page) (FetchResult, error) {
@@ -950,6 +978,7 @@ func TestRunGonePropagates(t *testing.T) {
 }
 
 func TestRunPanicsOnNonWebOp(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	r.fetch = markdownFetch(fixtureMarkdown, "Guide", nil)
@@ -962,6 +991,7 @@ func TestRunPanicsOnNonWebOp(t *testing.T) {
 }
 
 func TestRunThinNoLaneServesNoteAllOps(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t, "PATH=")
 	r := testRunner()
 	r.fetch = markdownFetch("loading", "App", nil)
@@ -989,6 +1019,7 @@ func TestRunThinNoLaneServesNoteAllOps(t *testing.T) {
 }
 
 func TestRunThinEscalatesServesRendered(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t, "PATH=")
 	r := testRunner()
 	r.fetch = markdownFetch("loading", "App", nil)
@@ -1014,6 +1045,7 @@ func TestRunThinEscalatesServesRendered(t *testing.T) {
 }
 
 func TestRunThinStillThinKeepsLargest(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t, envJinaKey+"=jina-key", "PATH=")
 	r := testRunner()
 	r.fetch = markdownFetch("hi", "App", nil)
@@ -1039,6 +1071,7 @@ func TestRunThinStillThinKeepsLargest(t *testing.T) {
 }
 
 func TestRunThinNoteSurvivesCacheHit(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t, "PATH=")
 	r := testRunner()
 	var calls atomic.Int32
@@ -1066,6 +1099,7 @@ func TestRunThinNoteSurvivesCacheHit(t *testing.T) {
 }
 
 func TestRunNotThinNeverCallsRenderPage(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	r := testRunner()
 	r.fetch = markdownFetch(fixtureMarkdown, "Guide", nil)
@@ -1084,6 +1118,7 @@ func TestRunNotThinNeverCallsRenderPage(t *testing.T) {
 }
 
 func TestRunThinReEscalatesOn304(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t, "PATH=")
 	r := testRunner()
 
@@ -1127,6 +1162,7 @@ func TestRunThinReEscalatesOn304(t *testing.T) {
 }
 
 func TestThinNoteLocalTargetNamesAgentBrowser(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t, envJinaKey+"=jina-key", "PATH=")
 
 	note := thinNote(ctx, &Page{URL: "http://localhost:3000/app", Thin: true})

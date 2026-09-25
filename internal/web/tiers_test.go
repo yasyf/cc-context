@@ -121,6 +121,7 @@ func TestClassifyTargetStatus(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := classifyTargetStatus(TierHTTP, tt.status)
 			switch {
 			case tt.wantErr != nil:
@@ -160,6 +161,7 @@ func TestStatusFromText(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := statusFromText(tt.in); got != tt.want {
 				t.Errorf("statusFromText(%q) = %d, want %d", tt.in, got, tt.want)
 			}

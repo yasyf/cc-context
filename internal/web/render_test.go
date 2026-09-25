@@ -11,6 +11,7 @@ import (
 )
 
 func TestRenderFetchLinkLocalRefused(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	ctx, _ = stubAgentBrowser(ctx, t, "[]", 0) // the only lane available; it must never launch
 	ts := testTiers(t, services{})
@@ -25,6 +26,7 @@ func TestRenderFetchLinkLocalRefused(t *testing.T) {
 }
 
 func TestRenderFetchJinaRenderHeaders(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t, envJinaKey+"=jina-key", "PATH=")
 
 	var gotHeaders http.Header
@@ -73,6 +75,7 @@ func TestRenderFetchJinaRenderHeaders(t *testing.T) {
 }
 
 func TestRenderFetchOrderJinaThenFirecrawl(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key", "PATH=")
 
 	var attempts []Tier
@@ -129,6 +132,7 @@ func TestRenderFetchOrderJinaThenFirecrawl(t *testing.T) {
 }
 
 func TestRenderFetchTerminalAcceptsLargestThin(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key", "PATH=")
 
 	var jinaHits, fcHits atomic.Int32
@@ -159,6 +163,7 @@ func TestRenderFetchTerminalAcceptsLargestThin(t *testing.T) {
 }
 
 func TestRenderFetchNoLaneAvailableErrors(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t, "PATH=")
 	ts := testTiers(t, services{}) // any hosted-tier hit fails the test
 
@@ -169,6 +174,7 @@ func TestRenderFetchNoLaneAvailableErrors(t *testing.T) {
 }
 
 func TestRenderFetchChallengeSkipsLane(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key", "PATH=")
 
 	ts := testTiers(t, services{
@@ -191,6 +197,7 @@ func TestRenderFetchChallengeSkipsLane(t *testing.T) {
 }
 
 func TestRenderFetchGoneLaneSkipsNotAborts(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key", "PATH=")
 
 	var fcHits atomic.Int32
@@ -223,6 +230,7 @@ func TestRenderFetchGoneLaneSkipsNotAborts(t *testing.T) {
 }
 
 func TestRenderFetchLocalTargetAgentBrowserOnly(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key")
 	// Keys are set but must be ignored: the hosted lanes can't reach a local
 	// target, so any jina/firecrawl hit trips the guard handlers below.

@@ -22,6 +22,7 @@ func TestFormatParseCiteRoundTrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			s := FormatCite(tt.url, tt.section, tt.hash)
 			got, err := ParseCite(s)
 			if err != nil {
@@ -45,6 +46,7 @@ func TestParseCiteErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := ParseCite(tt.in); err == nil {
 				t.Errorf("ParseCite(%q) = nil error, want a parse error", tt.in)
 			}
@@ -192,6 +194,7 @@ func TestResolvePrintedNumber(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			var gotIDs []string
 			for _, s := range resolvePrintedNumber(sections, tt.input) {
 				gotIDs = append(gotIDs, s.ID)
@@ -222,6 +225,7 @@ func TestPlainTitle(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := plainTitle(tt.in); got != tt.want {
 				t.Errorf("plainTitle(%q) = %q, want %q", tt.in, got, tt.want)
 			}
@@ -249,6 +253,7 @@ func TestResolvePrintedNumberMarkup(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := resolvePrintedNumber(sections, tt.input)
 			if len(got) != 1 || got[0].ID != tt.wantID {
 				t.Errorf("resolvePrintedNumber(%q) = %v, want a single §%s", tt.input, got, tt.wantID)
@@ -295,6 +300,7 @@ func TestResolvePrintedNumberTitleEdges(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			var gotIDs []string
 			for _, s := range resolvePrintedNumber(tt.sections, tt.input) {
 				gotIDs = append(gotIDs, s.ID)
@@ -322,6 +328,7 @@ func TestLooksLikeSectionID(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
+			t.Parallel()
 			if got := looksLikeSectionID(tt.input); got != tt.want {
 				t.Errorf("looksLikeSectionID(%q) = %v, want %v", tt.input, got, tt.want)
 			}
@@ -342,6 +349,7 @@ func TestNearestSection(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := nearestSection(citePage(), tt.section); got != tt.want {
 				t.Errorf("nearestSection(%q) = %q, want %q", tt.section, got, tt.want)
 			}

@@ -392,6 +392,7 @@ func TestLoadDiscardsBadVectorDims(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := webCtx(t)
 			url := "https://example.com/" + tt.name
 			p := samplePage(url, len(tt.vectors), 0, "model-A")
@@ -416,6 +417,7 @@ func TestLoadDiscardsBadVectorDims(t *testing.T) {
 }
 
 func TestFresh(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name      string
@@ -429,6 +431,7 @@ func TestFresh(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			st := newStore()
 			st.now = func() time.Time { return base }
 			if got := st.fresh(&Page{FetchedAt: tt.fetchedAt}); got != tt.want {
@@ -520,6 +523,7 @@ func TestSaveLeavesNoTempFiles(t *testing.T) {
 }
 
 func TestEvictRemovesOldestUntilUnderCap(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	st := newStore()
 	st.capBytes = 1 << 40 // no eviction while seeding
@@ -579,6 +583,7 @@ func TestEvictRemovesOldestUntilUnderCap(t *testing.T) {
 }
 
 func TestSaveRespectsMaxCacheBytes(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	st := newStore()
 

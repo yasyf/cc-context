@@ -76,6 +76,7 @@ func TestExtract(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			html, err := os.ReadFile(filepath.Join("testdata", tt.fixture))
 			if err != nil {
 				t.Fatal(err)
@@ -130,6 +131,7 @@ func TestTitleTag(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := titleTag(tt.html); got != tt.want {
 				t.Errorf("titleTag() = %q, want %q", got, tt.want)
 			}

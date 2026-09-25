@@ -746,6 +746,7 @@ func TestLocalTarget(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := localTarget(tt.host); got != tt.want {
 				t.Errorf("localTarget(%q) = %v, want %v", tt.host, got, tt.want)
 			}
@@ -773,6 +774,7 @@ func TestLinkLocalTarget(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := linkLocalTarget(tt.host); got != tt.want {
 				t.Errorf("linkLocalTarget(%q) = %v, want %v", tt.host, got, tt.want)
 			}
@@ -800,6 +802,7 @@ func TestFetchLinkLocalRefusedNoRequest(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := webCtx(t, allKeysSet...)
 			// Every key set: the refusal must fire before any tier, hosted or plain.
 
@@ -858,6 +861,7 @@ func TestFetchByNameLocalStillPlainHTTP(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := webCtx(t, allKeysSet...)
 
 			ts := testTiers(t, services{}) // every hosted tier is a "must not be reached" guard
@@ -888,6 +892,7 @@ func TestFetchSplitDNSLinkLocalRefused(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := webCtx(t, allKeysSet...)
 
 			ts := testTiers(t, services{})
@@ -969,6 +974,7 @@ func TestChallengeSignature(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := challengeSignature(tt.in); got != tt.want {
 				t.Errorf("challengeSignature() = %v, want %v", got, tt.want)
 			}
@@ -1000,6 +1006,7 @@ func TestFetchJinaWarningClasses(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := webCtx(t, envBrowserbaseKey+"=bb-key")
 			svc := services{jina: func(w http.ResponseWriter, _ *http.Request) {
 				writeJSON(t, w, http.StatusOK, map[string]any{
@@ -1073,6 +1080,7 @@ func TestFetchPlainHTTPRawHTML(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := webCtx(t, envBrowserbaseKey+"=bb-key")
 			svc := services{jina: status(http.StatusTooManyRequests)}
 			if tt.escalate {
@@ -1135,6 +1143,7 @@ func TestFetchOnAttemptOrder(t *testing.T) {
 	}
 
 	t.Run("jina fails then http succeeds", func(t *testing.T) {
+		t.Parallel()
 		ctx := webCtx(t)
 		ts := testTiers(t, services{jina: status(http.StatusTooManyRequests)})
 		got := record(ts)
@@ -1151,6 +1160,7 @@ func TestFetchOnAttemptOrder(t *testing.T) {
 	})
 
 	t.Run("escalates jina http browserbase", func(t *testing.T) {
+		t.Parallel()
 		ctx := webCtx(t, envBrowserbaseKey+"=bb-key")
 		ts := testTiers(t, services{
 			jina: jinaClean(t, challengeBody, "Just a moment..."),
@@ -1176,6 +1186,7 @@ func TestFetchOnAttemptOrder(t *testing.T) {
 	})
 
 	t.Run("early gone still records jina", func(t *testing.T) {
+		t.Parallel()
 		ctx := webCtx(t)
 		ts := testTiers(t, services{jina: func(w http.ResponseWriter, _ *http.Request) {
 			writeJSON(t, w, http.StatusOK, map[string]any{"data": map[string]any{"warning": "Target URL returned error 404: Not Found"}})
@@ -1193,6 +1204,7 @@ func TestFetchOnAttemptOrder(t *testing.T) {
 	})
 
 	t.Run("local target records nothing", func(t *testing.T) {
+		t.Parallel()
 		ctx := webCtx(t)
 		ts := testTiers(t, services{})
 		got := record(ts)
@@ -1291,6 +1303,7 @@ func TestDetectBodyKind(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := detectBodyKind(tt.contentType, tt.body); got != tt.want {
 				t.Errorf("detectBodyKind(%q, …) = %d, want %d", tt.contentType, got, tt.want)
 			}
@@ -1321,6 +1334,7 @@ func TestFetchPlainHTTPContentTypeRouting(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := webCtx(t)
 			ts := testTiers(t, services{jina: status(http.StatusTooManyRequests)})
 			target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
@@ -1350,6 +1364,7 @@ func TestFetchPlainHTTPContentTypeRouting(t *testing.T) {
 // parsePDF: with uv forced off the PATH, the parser's uv-missing failure surfaces
 // from the plainHTTP tier, which only fires when detectBodyKind picked bodyPDF.
 func TestFetchPlainHTTPPDFRoutesToParser(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t, "PATH=")
 
 	ts := testTiers(t, services{jina: status(http.StatusTooManyRequests)})
@@ -1373,6 +1388,7 @@ func TestFetchPlainHTTPPDFRoutesToParser(t *testing.T) {
 // context, not the request-scoped one, so pdf.go's own timeout can govern a cold
 // liteparse install. Under the old wiring the parser inherited the 20s deadline.
 func TestPlainHTTPPDFParseNotBoundByFetchDeadline(t *testing.T) {
+	t.Parallel()
 	ctx := webCtx(t)
 	var hadDeadline bool
 	ts := testTiers(t, services{})

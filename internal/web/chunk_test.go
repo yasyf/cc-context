@@ -135,6 +135,7 @@ func TestChunkInvariant(t *testing.T) {
 	}
 	for _, name := range fixtures {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			md := loadFixture(t, name)
 			sections, chunks := ChunkPage(md)
 			assertInvariant(t, md, sections, chunks)
@@ -153,6 +154,7 @@ func TestChunkInvariant(t *testing.T) {
 	}
 	for _, tt := range inline {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			sections, chunks := ChunkPage(tt.markdown)
 			assertInvariant(t, tt.markdown, sections, chunks)
 		})
@@ -390,6 +392,7 @@ func TestPreamblePresence(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			sections, _ := ChunkPage(tt.markdown)
 			if len(sections) == 0 {
 				t.Fatal("no sections produced")
