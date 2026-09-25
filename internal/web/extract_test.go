@@ -15,6 +15,7 @@ import (
 var update = flag.Bool("update", false, "regenerate extract golden files")
 
 func TestExtract(t *testing.T) {
+	t.Parallel()
 	const pageURL = "https://example.com/page"
 
 	tests := []struct {
@@ -118,6 +119,7 @@ func TestExtract(t *testing.T) {
 }
 
 func TestTitleTag(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		html string

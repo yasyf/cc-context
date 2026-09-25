@@ -118,9 +118,10 @@ func installStub(t *testing.T, dir, script string) {
 }
 
 func TestAgentBrowserParsesBatchOutput(t *testing.T) {
+	ctx := webCtx(t)
 	argvLog := stubAgentBrowser(t, mustJSON(t, okBatch("# Rendered\n\nreal rendered content here.", "Rendered Title")), 0)
 
-	res, err := abTiers().agentBrowser(context.Background(), "https://example.com/app", false)
+	res, err := abTiers().agentBrowser(ctx, "https://example.com/app", false)
 	if err != nil {
 		t.Fatalf("agentBrowser: %v", err)
 	}
@@ -152,12 +153,13 @@ func TestAgentBrowserParsesBatchOutput(t *testing.T) {
 }
 
 func TestAgentBrowserToleratesWaitFailure(t *testing.T) {
+	ctx := webCtx(t)
 	entries := okBatch("# Rendered\n\nreal content.", "T")
 	entries[1] = abEntry{Command: []string{"wait"}, Error: "Operation timed out.", Result: nil, Success: false}
 	// batch exits 1 because the wait step failed, yet the read still succeeded.
 	stubAgentBrowser(t, mustJSON(t, entries), 1)
 
-	res, err := abTiers().agentBrowser(context.Background(), "https://example.com/app", false)
+	res, err := abTiers().agentBrowser(ctx, "https://example.com/app", false)
 	if err != nil {
 		t.Fatalf("agentBrowser must tolerate a wait failure: %v", err)
 	}
@@ -167,13 +169,14 @@ func TestAgentBrowserToleratesWaitFailure(t *testing.T) {
 }
 
 func TestAgentBrowserOpenFailureErrors(t *testing.T) {
+	ctx := webCtx(t)
 	entries := okBatch("# This site can't be reached\n\nERR_UNSAFE_PORT", "")
 	entries[0] = abEntry{Command: []string{"open"}, Error: "Navigation failed: net::ERR_UNSAFE_PORT", Result: nil, Success: false}
 	// A failed open still lets read return the browser error page; the open gate
 	// must reject it rather than serve that page.
 	stubAgentBrowser(t, mustJSON(t, entries), 1)
 
-	_, err := abTiers().agentBrowser(context.Background(), "https://example.com/app", false)
+	_, err := abTiers().agentBrowser(ctx, "https://example.com/app", false)
 	if err == nil {
 		t.Fatal("agentBrowser: want an error when open fails, got nil")
 	}
@@ -183,26 +186,29 @@ func TestAgentBrowserOpenFailureErrors(t *testing.T) {
 }
 
 func TestAgentBrowserEmptyReadErrors(t *testing.T) {
+	ctx := webCtx(t)
 	stubAgentBrowser(t, mustJSON(t, okBatch("   \n\t ", "T")), 0)
 
-	_, err := abTiers().agentBrowser(context.Background(), "https://example.com/app", false)
+	_, err := abTiers().agentBrowser(ctx, "https://example.com/app", false)
 	if err == nil || !strings.Contains(err.Error(), "empty content") {
 		t.Fatalf("err = %v, want an empty-content error", err)
 	}
 }
 
 func TestAgentBrowserChallengeNotServed(t *testing.T) {
+	ctx := webCtx(t)
 	// A rendered interstitial: the title marker trips challengeSignature, so the
 	// terminal lane returns a plain error rather than serve the challenge.
 	stubAgentBrowser(t, mustJSON(t, okBatch("Checking your browser before accessing the site.", "Just a moment...")), 0)
 
-	_, err := abTiers().agentBrowser(context.Background(), "https://example.com/app", false)
+	_, err := abTiers().agentBrowser(ctx, "https://example.com/app", false)
 	if err == nil || !strings.Contains(err.Error(), "challenge") {
 		t.Fatalf("err = %v, want a challenge error", err)
 	}
 }
 
 func TestAgentBrowserTimeoutKillsGroup(t *testing.T) {
+	ctx := webCtx(t)
 	dir := t.TempDir()
 	installStub(t, dir, `#!/bin/sh
 for arg in "$@"; do
@@ -214,7 +220,7 @@ done
 exit 0
 `)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()
 	start := time.Now()
 	_, err := abTiers().agentBrowser(ctx, "https://example.com/app", false)
@@ -231,22 +237,24 @@ exit 0
 }
 
 func TestAgentBrowserRefusesLocalRedirect(t *testing.T) {
+	ctx := webCtx(t)
 	// A public target whose rendered final URL is a loopback address: the SSRF
 	// guard must refuse it rather than cache local content under the public URL.
 	stubAgentBrowser(t, mustJSON(t, batchWithFinal("# Admin\n\nprivate internal content.", "http://127.0.0.1:8080/admin")), 0)
 
-	_, err := abTiers().agentBrowser(context.Background(), "https://example.com/app", false)
+	_, err := abTiers().agentBrowser(ctx, "https://example.com/app", false)
 	if err == nil || !strings.Contains(err.Error(), "local address") {
 		t.Fatalf("err = %v, want a local-redirect refusal", err)
 	}
 }
 
 func TestAgentBrowserLocalTargetAllowed(t *testing.T) {
+	ctx := webCtx(t)
 	// A local original target (localhost dev SPA) is a designed use, so a local
 	// final URL is served rather than refused.
 	stubAgentBrowser(t, mustJSON(t, batchWithFinal("# Dev\n\n"+strings.Repeat("local dev content. ", 10), "http://localhost:1234/app")), 0)
 
-	res, err := abTiers().agentBrowser(context.Background(), "http://localhost:1234/app", true)
+	res, err := abTiers().agentBrowser(ctx, "http://localhost:1234/app", true)
 	if err != nil {
 		t.Fatalf("local target must serve: %v", err)
 	}
@@ -269,8 +277,9 @@ func TestAgentBrowserNoFinalURLFailsClosed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			ctx := webCtx(t)
 			stubAgentBrowser(t, mustJSON(t, batchWithFinal("# X\n\nsome rendered content.", tt.final)), 0)
-			_, err := abTiers().agentBrowser(context.Background(), "https://example.com/app", false)
+			_, err := abTiers().agentBrowser(ctx, "https://example.com/app", false)
 			if err == nil || !strings.Contains(err.Error(), "no verifiable final URL") {
 				t.Fatalf("err = %v, want a fail-closed no-verifiable-final-URL error", err)
 			}
@@ -279,11 +288,12 @@ func TestAgentBrowserNoFinalURLFailsClosed(t *testing.T) {
 }
 
 func TestAgentBrowserLocalTargetLenientFinal(t *testing.T) {
+	ctx := webCtx(t)
 	// A local dev SPA is allowed to be sloppy about the final URL: an empty one
 	// falls back to the target URL and serves.
 	stubAgentBrowser(t, mustJSON(t, batchWithFinal("# Dev\n\n"+strings.Repeat("local content. ", 10), "")), 0)
 
-	res, err := abTiers().agentBrowser(context.Background(), "http://localhost:5173/app", true)
+	res, err := abTiers().agentBrowser(ctx, "http://localhost:5173/app", true)
 	if err != nil {
 		t.Fatalf("local target with an empty final URL must serve: %v", err)
 	}
@@ -293,13 +303,14 @@ func TestAgentBrowserLocalTargetLenientFinal(t *testing.T) {
 }
 
 func TestAgentBrowserSessionUnique(t *testing.T) {
+	ctx := webCtx(t)
 	argvLog := stubAgentBrowser(t, mustJSON(t, okBatch("# Rendered\n\nreal rendered content.", "T")), 0)
 	ts := abTiers()
 
-	if _, err := ts.agentBrowser(context.Background(), "https://example.com/a", false); err != nil {
+	if _, err := ts.agentBrowser(ctx, "https://example.com/a", false); err != nil {
 		t.Fatalf("first render: %v", err)
 	}
-	if _, err := ts.agentBrowser(context.Background(), "https://example.com/b", false); err != nil {
+	if _, err := ts.agentBrowser(ctx, "https://example.com/b", false); err != nil {
 		t.Fatalf("second render: %v", err)
 	}
 

@@ -3,6 +3,7 @@ package web
 import "testing"
 
 func TestNormalizeURL(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		raw     string
@@ -47,6 +48,7 @@ func TestNormalizeURL(t *testing.T) {
 }
 
 func TestCacheKey(t *testing.T) {
+	t.Parallel()
 	const in = "https://go.dev/"
 	const want = "ba6e07bbb6027efa"
 

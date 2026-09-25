@@ -8,6 +8,7 @@ import (
 )
 
 func TestFormatParseCiteRoundTrip(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		url     string
@@ -34,6 +35,7 @@ func TestFormatParseCiteRoundTrip(t *testing.T) {
 }
 
 func TestParseCiteErrors(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		in   string
@@ -51,6 +53,7 @@ func TestParseCiteErrors(t *testing.T) {
 }
 
 func TestParseCiteToleratesLeadingMarker(t *testing.T) {
+	t.Parallel()
 	// The section carries a leading "§" (a hand-copied reference).
 	got, err := ParseCite("https://example.com/x §§1.1#abcd")
 	if err != nil {
@@ -75,6 +78,7 @@ func citePage() *Page {
 }
 
 func TestResolveExact(t *testing.T) {
+	t.Parallel()
 	got, err := Resolve(citePage(), "1.1", "bbbb")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -85,6 +89,7 @@ func TestResolveExact(t *testing.T) {
 }
 
 func TestResolveReAnchorsMovedSection(t *testing.T) {
+	t.Parallel()
 	// The cite claims §9, but the content (hash bbbb) now lives in §1.1.
 	got, err := Resolve(citePage(), "9", "bbbb")
 	if err != nil {
@@ -96,6 +101,7 @@ func TestResolveReAnchorsMovedSection(t *testing.T) {
 }
 
 func TestResolveDrift(t *testing.T) {
+	t.Parallel()
 	_, err := Resolve(citePage(), "1", "zzzz")
 	var drift *DriftedCiteError
 	if !errors.As(err, &drift) {
@@ -107,6 +113,7 @@ func TestResolveDrift(t *testing.T) {
 }
 
 func TestResolveAmbiguousAcrossSections(t *testing.T) {
+	t.Parallel()
 	// The same 4-char hash "dupe" now lands in two distinct sections. A stale ref
 	// that matches neither exactly must surface the ambiguity, not silently pick
 	// the first match.
@@ -142,6 +149,7 @@ func TestResolveAmbiguousAcrossSections(t *testing.T) {
 }
 
 func TestResolveSameSectionDuplicateReAnchors(t *testing.T) {
+	t.Parallel()
 	// Two chunks in the SAME section share a hash: one distinct section, so the
 	// cite re-anchors (not ambiguous).
 	page := &Page{
@@ -161,6 +169,7 @@ func TestResolveSameSectionDuplicateReAnchors(t *testing.T) {
 }
 
 func TestResolvePrintedNumber(t *testing.T) {
+	t.Parallel()
 	sections := []Section{
 		{ID: "0"},
 		{ID: "1", Title: "Overview"},
@@ -195,6 +204,7 @@ func TestResolvePrintedNumber(t *testing.T) {
 }
 
 func TestPlainTitle(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		in   string
@@ -223,6 +233,7 @@ func TestPlainTitle(t *testing.T) {
 // resolves even when the title carries inline markdown markup — the RFC-9110 form
 // links the number and brackets the text, and headings may bold the number.
 func TestResolvePrintedNumberMarkup(t *testing.T) {
+	t.Parallel()
 	sections := []Section{
 		{ID: "1", Title: "[5.6.7.](#section-5.6.7) [Date/Time Formats]"},
 		{ID: "2", Title: "**5.6.8.** Number Formats"},
@@ -250,6 +261,7 @@ func TestResolvePrintedNumberMarkup(t *testing.T) {
 // nested-paren inline link must not leak a false printed number, while underscore
 // emphasis and reference-style links must still resolve their leading number.
 func TestResolvePrintedNumberTitleEdges(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		sections []Section
@@ -295,6 +307,7 @@ func TestResolvePrintedNumberTitleEdges(t *testing.T) {
 }
 
 func TestLooksLikeSectionID(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input string
 		want  bool
@@ -317,6 +330,7 @@ func TestLooksLikeSectionID(t *testing.T) {
 }
 
 func TestNearestSection(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		section string

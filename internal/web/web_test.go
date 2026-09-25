@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/semsearch/embed"
 )
 
@@ -60,6 +61,30 @@ const fixtureFlat = "just a wall of text with no headings at all.\n\nmore text h
 const fixtureLinkedTitle = "# Reference\n\n" +
 	"## [5.6.7.](#section-5.6.7) [Date/Time Formats]\n\n" +
 	"Date and time formatting rules go here.\n"
+
+// webCtx returns the context a test drives this package under: a cache root of
+// its own and every tier key pinned empty, so neither a key exported on the
+// developer's machine nor a concurrent test's environment decides which lanes
+// exist. Later entries win, so env overrides any of them.
+func webCtx(t *testing.T, env ...string) context.Context {
+	t.Helper()
+	return render.WithEnv(t.Context(), append([]string{
+		"CLAUDE_PLUGIN_DATA=" + t.TempDir(),
+		envJinaKey + "=",
+		envExaKey + "=",
+		envFirecrawlKey + "=",
+		envBrowserbaseKey + "=",
+	}, env...)...)
+}
+
+// allKeysSet enables every hosted tier, for a test whose refusal must fire
+// before any of them runs.
+var allKeysSet = []string{
+	envJinaKey + "=jina-key",
+	envExaKey + "=exa-key",
+	envFirecrawlKey + "=fc-key",
+	envBrowserbaseKey + "=bb-key",
+}
 
 // fetchFunc mirrors the signature of Fetch (and the fetchPage seam).
 type fetchFunc = func(context.Context, string, *Page) (FetchResult, error)
@@ -178,12 +203,12 @@ func firstCiteSection(t *testing.T, out string) string {
 }
 
 func TestRunOutlineThenReadRoundTrip(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	var calls atomic.Int32
 	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", &calls))
 
-	outline, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL})
+	outline, err := Run(ctx, backend.OpWebOutline, backend.Args{URL: fixtureURL})
 	if err != nil {
 		t.Fatalf("outline Run: %v", err)
 	}
@@ -194,7 +219,7 @@ func TestRunOutlineThenReadRoundTrip(t *testing.T) {
 	}
 
 	// The §ID echoed from the outline reads back that section's subtree.
-	read, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "1.1"})
+	read, err := Run(ctx, backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "1.1"})
 	if err != nil {
 		t.Fatalf("read Run: %v", err)
 	}
@@ -214,7 +239,7 @@ func TestRunOutlineThenReadRoundTrip(t *testing.T) {
 }
 
 func TestRunReadFullAndBare(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", nil))
 
@@ -226,7 +251,7 @@ func TestRunReadFullAndBare(t *testing.T) {
 		{"bare", backend.Args{URL: fixtureURL}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			out, err := Run(context.Background(), backend.OpWebRead, tt.args)
+			out, err := Run(ctx, backend.OpWebRead, tt.args)
 			if err != nil {
 				t.Fatalf("read Run: %v", err)
 			}
@@ -238,11 +263,11 @@ func TestRunReadFullAndBare(t *testing.T) {
 }
 
 func TestRunReadSiblingFooter(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", nil))
 
-	read, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "1.2"})
+	read, err := Run(ctx, backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "1.2"})
 	if err != nil {
 		t.Fatalf("read Run: %v", err)
 	}
@@ -255,23 +280,23 @@ func TestRunReadSiblingFooter(t *testing.T) {
 }
 
 func TestRunReadUnknownSection(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", nil))
 
-	_, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "9.9"})
+	_, err := Run(ctx, backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "9.9"})
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("read of unknown section: err = %v, want a not-found error", err)
 	}
 }
 
 func TestRunReadPrintedNumberResolves(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	withFetch(t, markdownFetch(fixtureNumbered, "Reference", nil))
 
 	// The printed number 5.6.8 is unique: it resolves to §1.2 with a mapping note.
-	out, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "5.6.8"})
+	out, err := Run(ctx, backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "5.6.8"})
 	if err != nil {
 		t.Fatalf("read of printed number 5.6.8: %v", err)
 	}
@@ -289,12 +314,12 @@ func TestRunReadPrintedNumberResolves(t *testing.T) {
 // TestRunReadPrintedNumberNormalizesNote proves the resolve note shows the printed
 // number's title with its markdown markup stripped (F7), not the raw heading text.
 func TestRunReadPrintedNumberNormalizesNote(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	withFetch(t, markdownFetch(fixtureLinkedTitle, "Reference", nil))
 
 	for _, section := range []string{"5.6.7", "5.6.7."} {
-		out, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: section})
+		out, err := Run(ctx, backend.OpWebRead, backend.Args{URL: fixtureURL, Section: section})
 		if err != nil {
 			t.Fatalf("read printed number %q: %v", section, err)
 		}
@@ -306,11 +331,11 @@ func TestRunReadPrintedNumberNormalizesNote(t *testing.T) {
 }
 
 func TestRunReadPrintedNumberAmbiguous(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	withFetch(t, markdownFetch(fixtureNumbered, "Reference", nil))
 
-	_, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "5.6.7"})
+	_, err := Run(ctx, backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "5.6.7"})
 	if err == nil {
 		t.Fatal("read of ambiguous printed number: want an error")
 	}
@@ -327,7 +352,7 @@ func TestRunReadPrintedNumberAmbiguous(t *testing.T) {
 }
 
 func TestRunReadNotFoundHints(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	withFetch(t, markdownFetch(fixtureNumbered, "Reference", nil))
 
@@ -342,7 +367,7 @@ func TestRunReadNotFoundHints(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: tt.section})
+			_, err := Run(ctx, backend.OpWebRead, backend.Args{URL: fixtureURL, Section: tt.section})
 			if err == nil {
 				t.Fatalf("read of %q: want a not-found error", tt.section)
 			}
@@ -388,14 +413,14 @@ func servedContent(page string) string {
 // followed footer always names a valid page start, so any read error — including a
 // past-end error — is a failure, as is a footer that fails to advance (infinite
 // loop) or a run that never terminates within maxPages.
-func pageThrough(t *testing.T, args backend.Args, maxPages int) []string {
+func pageThrough(ctx context.Context, t *testing.T, args backend.Args, maxPages int) []string {
 	t.Helper()
 	var pages []string
 	offset := args.Offset
 	for i := 0; i < maxPages; i++ {
 		a := args
 		a.Offset = offset
-		out, err := Run(context.Background(), backend.OpWebRead, a)
+		out, err := Run(ctx, backend.OpWebRead, a)
 		if err != nil {
 			t.Fatalf("page %d at offset %d: %v", i, offset, err)
 		}
@@ -415,13 +440,13 @@ func pageThrough(t *testing.T, args backend.Args, maxPages int) []string {
 }
 
 func TestRunReadOffsetPaging(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	withFetch(t, markdownFetch(fixtureLong, "Log", nil))
 
 	const budget = 15 // limit 60 chars: page one keeps the header + first body line only
 
-	page1, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "1", Budget: budget})
+	page1, err := Run(ctx, backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "1", Budget: budget})
 	if err != nil {
 		t.Fatalf("page one read: %v", err)
 	}
@@ -440,7 +465,7 @@ func TestRunReadOffsetPaging(t *testing.T) {
 		t.Fatalf("page one advertised a non-advancing offset %d:\n%s", next, page1)
 	}
 
-	page2, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "1", Budget: budget, Offset: next})
+	page2, err := Run(ctx, backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "1", Budget: budget, Offset: next})
 	if err != nil {
 		t.Fatalf("page two read at offset %d: %v", next, err)
 	}
@@ -452,7 +477,7 @@ func TestRunReadOffsetPaging(t *testing.T) {
 	// fixed-stride pages join byte-for-byte, so no content is dropped or repeated.
 	sections, _ := ChunkPage(fixtureLong)
 	start, end, _ := subtreeSpan(sections, "1")
-	pages := pageThrough(t, backend.Args{URL: fixtureURL, Section: "1", Budget: budget}, 20)
+	pages := pageThrough(ctx, t, backend.Args{URL: fixtureURL, Section: "1", Budget: budget}, 20)
 	var sb strings.Builder
 	for _, p := range pages {
 		sb.WriteString(servedContent(p))
@@ -502,7 +527,7 @@ func TestRunReadPagingReconstructs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+			ctx := webCtx(t)
 			defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 			withFetch(t, markdownFetch(tt.markdown, "Doc", nil))
 
@@ -520,7 +545,7 @@ func TestRunReadPagingReconstructs(t *testing.T) {
 				want = tt.markdown[start:end]
 			}
 
-			pages := pageThrough(t, args, 200)
+			pages := pageThrough(ctx, t, args, 200)
 			if len(pages) == 0 {
 				t.Fatal("no pages served")
 			}
@@ -558,12 +583,12 @@ func TestRunReadPagingReconstructs(t *testing.T) {
 // to the whole page (F2), not ignored, and a follow-the-footer loop serves every
 // section's marker.
 func TestRunReadFullOffsetPaging(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	withFetch(t, markdownFetch(fixtureLong, "Log", nil))
 
 	const budget = 15
-	page1, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Full: true, Budget: budget})
+	page1, err := Run(ctx, backend.OpWebRead, backend.Args{URL: fixtureURL, Full: true, Budget: budget})
 	if err != nil {
 		t.Fatalf("full page one: %v", err)
 	}
@@ -572,7 +597,7 @@ func TestRunReadFullOffsetPaging(t *testing.T) {
 	}
 	// The offset applies to the whole page (F2), and following the footers
 	// reconstructs every byte of it.
-	pages := pageThrough(t, backend.Args{URL: fixtureURL, Full: true, Budget: budget}, 20)
+	pages := pageThrough(ctx, t, backend.Args{URL: fixtureURL, Full: true, Budget: budget}, 20)
 	var sb strings.Builder
 	for _, p := range pages {
 		sb.WriteString(servedContent(p))
@@ -583,7 +608,7 @@ func TestRunReadFullOffsetPaging(t *testing.T) {
 }
 
 func TestRunReadOffsetGuards(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	withFetch(t, markdownFetch(fixtureLong, "Log", nil))
 
@@ -601,7 +626,7 @@ func TestRunReadOffsetGuards(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := Run(context.Background(), backend.OpWebRead, tt.args)
+			_, err := Run(ctx, backend.OpWebRead, tt.args)
 			if err == nil {
 				t.Fatalf("offset %d: want an error", tt.args.Offset)
 			}
@@ -616,7 +641,7 @@ func TestRunReadOffsetGuards(t *testing.T) {
 // budget cap (F6): a section whose content fits the budget advertises no
 // continuation offset even when content plus nav would overflow it.
 func TestRunReadNavFitsBudgetNoOffset(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", nil))
 
@@ -626,7 +651,7 @@ func TestRunReadNavFitsBudgetNoOffset(t *testing.T) {
 	start, end, _ := subtreeSpan(sections, "1.1")
 	budget := (end - start + charsPerToken - 1) / charsPerToken
 
-	out, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "1.1", Budget: budget})
+	out, err := Run(ctx, backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "1.1", Budget: budget})
 	if err != nil {
 		t.Fatalf("read §1.1: %v", err)
 	}
@@ -645,7 +670,7 @@ func TestRunReadNavFitsBudgetNoOffset(t *testing.T) {
 // budget cap (N1): a printed-number-resolved page-1 footer's next offset lands so
 // page two serves the marker that sat just past the page-1 boundary — no skip.
 func TestRunReadResolvedNotePagesWithoutSkip(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 
 	md := "# Reference\n\n" +
@@ -656,7 +681,7 @@ func TestRunReadResolvedNotePagesWithoutSkip(t *testing.T) {
 	withFetch(t, markdownFetch(md, "Reference", nil))
 
 	const notePrefix = "# printed number \"5.6.8\" resolved to §1.1 (5.6.8. Number Formats)\n"
-	page1, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "5.6.8", Budget: 20})
+	page1, err := Run(ctx, backend.OpWebRead, backend.Args{URL: fixtureURL, Section: "5.6.8", Budget: 20})
 	if err != nil {
 		t.Fatalf("resolved page one: %v", err)
 	}
@@ -668,7 +693,7 @@ func TestRunReadResolvedNotePagesWithoutSkip(t *testing.T) {
 	// it and the footer reconstructs the §1.1 subtree span with no skipped byte.
 	sections, _ := ChunkPage(md)
 	start, end, _ := subtreeSpan(sections, "1.1")
-	pages := pageThrough(t, backend.Args{URL: fixtureURL, Section: "5.6.8", Budget: 20}, 20)
+	pages := pageThrough(ctx, t, backend.Args{URL: fixtureURL, Section: "5.6.8", Budget: 20}, 20)
 	var sb strings.Builder
 	for _, p := range pages {
 		sb.WriteString(servedContent(p))
@@ -679,7 +704,7 @@ func TestRunReadResolvedNotePagesWithoutSkip(t *testing.T) {
 }
 
 func TestRunOutlineDegenerateHint(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	withFetch(t, func(_ context.Context, url string, _ *Page) (FetchResult, error) {
 		md := fixtureMarkdown
@@ -689,7 +714,7 @@ func TestRunOutlineDegenerateHint(t *testing.T) {
 		return FetchResult{Tier: TierJina, FinalURL: url, Markdown: md}, nil
 	})
 
-	flat, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: "https://example.com/flat"})
+	flat, err := Run(ctx, backend.OpWebOutline, backend.Args{URL: "https://example.com/flat"})
 	if err != nil {
 		t.Fatalf("flat outline: %v", err)
 	}
@@ -699,7 +724,7 @@ func TestRunOutlineDegenerateHint(t *testing.T) {
 		}
 	}
 
-	rich, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL})
+	rich, err := Run(ctx, backend.OpWebOutline, backend.Args{URL: fixtureURL})
 	if err != nil {
 		t.Fatalf("rich outline: %v", err)
 	}
@@ -709,14 +734,13 @@ func TestRunOutlineDegenerateHint(t *testing.T) {
 }
 
 func TestRunSearchHybrid(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	fake := &fakeEmbedder{}
 	withEmbedder(t, fake)
 	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", nil))
 
-	out, err := Run(context.Background(), backend.OpWebSearch, backend.Args{URL: fixtureURL, Query: "how do I handle errors", K: 3})
+	out, err := Run(ctx, backend.OpWebSearch, backend.Args{URL: fixtureURL, Query: "how do I handle errors", K: 3})
 	if err != nil {
 		t.Fatalf("search Run: %v", err)
 	}
@@ -747,14 +771,14 @@ func TestRunSearchHybrid(t *testing.T) {
 }
 
 func TestRunSearchBM25OnlyWhenUnsupported(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	t.Cleanup(SetEmbedderProvider(func(context.Context) (Embedder, error) {
 		return nil, embed.ErrWeightsUnavailable
 	}))
 	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", nil))
 
-	out, err := Run(context.Background(), backend.OpWebSearch, backend.Args{URL: fixtureURL, Query: "handle errors"})
+	out, err := Run(ctx, backend.OpWebSearch, backend.Args{URL: fixtureURL, Query: "handle errors"})
 	if err != nil {
 		t.Fatalf("search Run: %v", err)
 	}
@@ -767,12 +791,12 @@ func TestRunSearchBM25OnlyWhenUnsupported(t *testing.T) {
 }
 
 func TestRunSearchDegradesOnEmbedError(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	withEmbedder(t, &fakeEmbedder{err: fmt.Errorf("driver blew up")})
 	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", nil))
 
-	out, err := Run(context.Background(), backend.OpWebSearch, backend.Args{URL: fixtureURL, Query: "handle errors"})
+	out, err := Run(ctx, backend.OpWebSearch, backend.Args{URL: fixtureURL, Query: "handle errors"})
 	if err != nil {
 		t.Fatalf("search must not fail on embed error: %v", err)
 	}
@@ -785,19 +809,19 @@ func TestRunSearchDegradesOnEmbedError(t *testing.T) {
 }
 
 func TestRunForceRefetch(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	var calls atomic.Int32
 	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", &calls))
 
-	if _, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL}); err != nil {
+	if _, err := Run(ctx, backend.OpWebOutline, backend.Args{URL: fixtureURL}); err != nil {
 		t.Fatalf("first Run: %v", err)
 	}
 	// Without Force the fresh cache serves; with Force the cascade runs again.
-	if _, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL}); err != nil {
+	if _, err := Run(ctx, backend.OpWebOutline, backend.Args{URL: fixtureURL}); err != nil {
 		t.Fatalf("cached Run: %v", err)
 	}
-	if _, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL, Force: true}); err != nil {
+	if _, err := Run(ctx, backend.OpWebOutline, backend.Args{URL: fixtureURL, Force: true}); err != nil {
 		t.Fatalf("forced Run: %v", err)
 	}
 	if calls.Load() != 2 {
@@ -806,8 +830,7 @@ func TestRunForceRefetch(t *testing.T) {
 }
 
 func TestRunNotModifiedPreservesVectors(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	base := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
 	defer setClock(base)()
 
@@ -826,7 +849,7 @@ func TestRunNotModifiedPreservesVectors(t *testing.T) {
 		return FetchResult{}, fmt.Errorf("http: %w", ErrNotModified)
 	})
 
-	if _, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL}); err != nil {
+	if _, err := Run(ctx, backend.OpWebOutline, backend.Args{URL: fixtureURL}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -843,8 +866,7 @@ func TestRunNotModifiedPreservesVectors(t *testing.T) {
 }
 
 func TestRunContentUnchangedPreservesVectors(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	base := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
 	defer setClock(base)()
 
@@ -858,7 +880,7 @@ func TestRunContentUnchangedPreservesVectors(t *testing.T) {
 	// A hosted-tier refetch returning byte-identical markdown: same ContentSHA.
 	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", nil))
 
-	if _, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL, Force: true}); err != nil {
+	if _, err := Run(ctx, backend.OpWebOutline, backend.Args{URL: fixtureURL, Force: true}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -872,8 +894,7 @@ func TestRunContentUnchangedPreservesVectors(t *testing.T) {
 }
 
 func TestRunContentChangedDropsVectors(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	base := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
 	defer setClock(base)()
 
@@ -886,7 +907,7 @@ func TestRunContentChangedDropsVectors(t *testing.T) {
 	changed := fixtureMarkdown + "\n## New\n\nfresh content.\n"
 	withFetch(t, markdownFetch(changed, "Guide", nil))
 
-	if _, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL, Force: true}); err != nil {
+	if _, err := Run(ctx, backend.OpWebOutline, backend.Args{URL: fixtureURL, Force: true}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -903,13 +924,13 @@ func TestRunContentChangedDropsVectors(t *testing.T) {
 }
 
 func TestRunGonePropagates(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	withFetch(t, func(_ context.Context, _ string, _ *Page) (FetchResult, error) {
 		return FetchResult{}, fmt.Errorf("jina: %w", ErrGone)
 	})
 
-	_, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL})
+	_, err := Run(ctx, backend.OpWebOutline, backend.Args{URL: fixtureURL})
 	if err == nil {
 		t.Fatal("Run: want ErrGone to propagate")
 	}
@@ -920,7 +941,7 @@ func TestRunGonePropagates(t *testing.T) {
 }
 
 func TestRunPanicsOnNonWebOp(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", nil))
 	defer func() {
@@ -928,14 +949,12 @@ func TestRunPanicsOnNonWebOp(t *testing.T) {
 			t.Error("Run did not panic on a non-web op")
 		}
 	}()
-	_, _ = Run(context.Background(), backend.OpSearch, backend.Args{URL: fixtureURL})
+	_, _ = Run(ctx, backend.OpSearch, backend.Args{URL: fixtureURL})
 }
 
 func TestRunThinNoLaneServesNoteAllOps(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
-	isolateKeys(t)
 	disableAgentBrowser(t)
 	withFetch(t, markdownFetch("loading", "App", nil))
 	withRenderPage(t, func(context.Context, string) (FetchResult, bool, error) {
@@ -944,7 +963,7 @@ func TestRunThinNoLaneServesNoteAllOps(t *testing.T) {
 
 	const wantNote = "set JINA_API_KEY"
 	for _, op := range []backend.Op{backend.OpWebOutline, backend.OpWebRead, backend.OpWebSearch} {
-		out, err := Run(context.Background(), op, backend.Args{URL: fixtureURL, Query: "x"})
+		out, err := Run(ctx, op, backend.Args{URL: fixtureURL, Query: "x"})
 		if err != nil {
 			t.Fatalf("Run %v: %v", op, err)
 		}
@@ -962,10 +981,8 @@ func TestRunThinNoLaneServesNoteAllOps(t *testing.T) {
 }
 
 func TestRunThinEscalatesServesRendered(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
-	isolateKeys(t)
 	disableAgentBrowser(t)
 	withFetch(t, markdownFetch("loading", "App", nil))
 	rendered := "# Rendered\n\n" + strings.Repeat("real rendered prose here. ", 20)
@@ -973,7 +990,7 @@ func TestRunThinEscalatesServesRendered(t *testing.T) {
 		return FetchResult{Tier: TierJinaRender, FinalURL: fixtureURL, Title: "Rendered", Markdown: rendered}, false, nil
 	})
 
-	out, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL})
+	out, err := Run(ctx, backend.OpWebOutline, backend.Args{URL: fixtureURL})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -990,11 +1007,8 @@ func TestRunThinEscalatesServesRendered(t *testing.T) {
 }
 
 func TestRunThinStillThinKeepsLargest(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t, envJinaKey+"=jina-key")
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
-	isolateKeys(t)
-	t.Setenv(envJinaKey, "jina-key") // a lane is available → the genuinely-little-content wording
 	disableAgentBrowser(t)
 	withFetch(t, markdownFetch("hi", "App", nil))
 	larger := "still thin but a good deal larger than the original body"
@@ -1002,7 +1016,7 @@ func TestRunThinStillThinKeepsLargest(t *testing.T) {
 		return FetchResult{Tier: TierJinaRender, FinalURL: fixtureURL, Title: "App", Markdown: larger}, true, nil
 	})
 
-	out, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Full: true})
+	out, err := Run(ctx, backend.OpWebRead, backend.Args{URL: fixtureURL, Full: true})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -1019,9 +1033,8 @@ func TestRunThinStillThinKeepsLargest(t *testing.T) {
 }
 
 func TestRunThinNoteSurvivesCacheHit(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
-	isolateKeys(t)
 	disableAgentBrowser(t)
 	var calls atomic.Int32
 	withFetch(t, markdownFetch("loading", "App", &calls))
@@ -1029,11 +1042,11 @@ func TestRunThinNoteSurvivesCacheHit(t *testing.T) {
 		return FetchResult{}, false, errors.New("no render lane available")
 	})
 
-	first, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL})
+	first, err := Run(ctx, backend.OpWebOutline, backend.Args{URL: fixtureURL})
 	if err != nil {
 		t.Fatalf("first Run: %v", err)
 	}
-	second, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL})
+	second, err := Run(ctx, backend.OpWebOutline, backend.Args{URL: fixtureURL})
 	if err != nil {
 		t.Fatalf("second Run: %v", err)
 	}
@@ -1048,7 +1061,7 @@ func TestRunThinNoteSurvivesCacheHit(t *testing.T) {
 }
 
 func TestRunNotThinNeverCallsRenderPage(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
 	withFetch(t, markdownFetch(fixtureMarkdown, "Guide", nil))
 	withRenderPage(t, func(context.Context, string) (FetchResult, bool, error) {
@@ -1056,7 +1069,7 @@ func TestRunNotThinNeverCallsRenderPage(t *testing.T) {
 		return FetchResult{}, false, nil
 	})
 
-	out, err := Run(context.Background(), backend.OpWebOutline, backend.Args{URL: fixtureURL})
+	out, err := Run(ctx, backend.OpWebOutline, backend.Args{URL: fixtureURL})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -1066,10 +1079,8 @@ func TestRunNotThinNeverCallsRenderPage(t *testing.T) {
 }
 
 func TestRunThinReEscalatesOn304(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	defer setClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))()
-	isolateKeys(t)
 	disableAgentBrowser(t)
 
 	// A stale Thin page whose origin will 304: without re-escalation it would trap
@@ -1092,7 +1103,7 @@ func TestRunThinReEscalatesOn304(t *testing.T) {
 		return FetchResult{Tier: TierJinaRender, FinalURL: fixtureURL, Title: "Rendered", Markdown: rendered}, false, nil
 	})
 
-	out, err := Run(context.Background(), backend.OpWebRead, backend.Args{URL: fixtureURL, Full: true})
+	out, err := Run(ctx, backend.OpWebRead, backend.Args{URL: fixtureURL, Full: true})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -1112,9 +1123,7 @@ func TestRunThinReEscalatesOn304(t *testing.T) {
 }
 
 func TestThinNoteLocalTargetNamesAgentBrowser(t *testing.T) {
-	ctx := t.Context()
-	isolateKeys(t)
-	t.Setenv(envJinaKey, "jina-key") // a hosted key is set but cannot reach a local target
+	ctx := webCtx(t, envJinaKey+"=jina-key")
 	disableAgentBrowser(t)
 
 	note := thinNote(ctx, &Page{URL: "http://localhost:3000/app", Thin: true})

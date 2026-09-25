@@ -13,6 +13,7 @@ import (
 // article that merely names a mount id or quotes the JS phrase, and the
 // deliberate non-markers (data-reactroot, __NEXT_DATA__).
 func TestThinSignature(t *testing.T) {
+	t.Parallel()
 	// A large HTML body with four <script> tags and a non-root mount id: only the
 	// secondary script-density signal can catch it (no empty root, no phrase).
 	scriptHeavy := "<html><head>" + strings.Repeat("<meta>", 400) +

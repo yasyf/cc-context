@@ -1,7 +1,6 @@
 package web
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -24,22 +23,21 @@ func disableAgentBrowser(t *testing.T) {
 }
 
 func TestRenderFetchLinkLocalRefused(t *testing.T) {
-	isolateKeys(t)
+	ctx := webCtx(t)
 	stubAgentBrowser(t, "[]", 0) // the only lane available; it must never launch
 	ts := testTiers(t, services{})
 	ts.onAttempt = func(tier Tier, err error) {
 		t.Errorf("render lane %s ran for a link-local target (err=%v)", tier, err)
 	}
 
-	_, _, err := ts.renderFetch(context.Background(), "http://169.254.169.254/latest/meta-data/")
+	_, _, err := ts.renderFetch(ctx, "http://169.254.169.254/latest/meta-data/")
 	if !errors.Is(err, ErrLinkLocalRefused) {
 		t.Errorf("err = %v, want it to wrap ErrLinkLocalRefused", err)
 	}
 }
 
 func TestRenderFetchJinaRenderHeaders(t *testing.T) {
-	isolateKeys(t)
-	t.Setenv(envJinaKey, "jina-key")
+	ctx := webCtx(t, envJinaKey+"=jina-key")
 	disableAgentBrowser(t)
 
 	var gotHeaders http.Header
@@ -57,7 +55,7 @@ func TestRenderFetchJinaRenderHeaders(t *testing.T) {
 		},
 	})
 
-	res, stillThin, err := ts.renderFetch(context.Background(), remoteTargetURL)
+	res, stillThin, err := ts.renderFetch(ctx, remoteTargetURL)
 	if err != nil {
 		t.Fatalf("renderFetch: %v", err)
 	}
@@ -88,9 +86,7 @@ func TestRenderFetchJinaRenderHeaders(t *testing.T) {
 }
 
 func TestRenderFetchOrderJinaThenFirecrawl(t *testing.T) {
-	isolateKeys(t)
-	t.Setenv(envJinaKey, "jina-key")
-	t.Setenv(envFirecrawlKey, "fc-key")
+	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key")
 	disableAgentBrowser(t)
 
 	var attempts []Tier
@@ -131,7 +127,7 @@ func TestRenderFetchOrderJinaThenFirecrawl(t *testing.T) {
 	})
 	ts.onAttempt = func(tier Tier, _ error) { attempts = append(attempts, tier) }
 
-	res, stillThin, err := ts.renderFetch(context.Background(), remoteTargetURL)
+	res, stillThin, err := ts.renderFetch(ctx, remoteTargetURL)
 	if err != nil {
 		t.Fatalf("renderFetch: %v", err)
 	}
@@ -147,9 +143,7 @@ func TestRenderFetchOrderJinaThenFirecrawl(t *testing.T) {
 }
 
 func TestRenderFetchTerminalAcceptsLargestThin(t *testing.T) {
-	isolateKeys(t)
-	t.Setenv(envJinaKey, "jina-key")
-	t.Setenv(envFirecrawlKey, "fc-key")
+	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key")
 	disableAgentBrowser(t)
 
 	var jinaHits, fcHits atomic.Int32
@@ -164,7 +158,7 @@ func TestRenderFetchTerminalAcceptsLargestThin(t *testing.T) {
 		},
 	})
 
-	res, stillThin, err := ts.renderFetch(context.Background(), remoteTargetURL)
+	res, stillThin, err := ts.renderFetch(ctx, remoteTargetURL)
 	if err != nil {
 		t.Fatalf("renderFetch: %v", err)
 	}
@@ -180,20 +174,18 @@ func TestRenderFetchTerminalAcceptsLargestThin(t *testing.T) {
 }
 
 func TestRenderFetchNoLaneAvailableErrors(t *testing.T) {
-	isolateKeys(t)
+	ctx := webCtx(t)
 	disableAgentBrowser(t)
 	ts := testTiers(t, services{}) // any hosted-tier hit fails the test
 
-	_, _, err := ts.renderFetch(context.Background(), remoteTargetURL)
+	_, _, err := ts.renderFetch(ctx, remoteTargetURL)
 	if err == nil || !strings.Contains(err.Error(), "no render lane") {
 		t.Fatalf("err = %v, want a no-render-lane error", err)
 	}
 }
 
 func TestRenderFetchChallengeSkipsLane(t *testing.T) {
-	isolateKeys(t)
-	t.Setenv(envJinaKey, "jina-key")
-	t.Setenv(envFirecrawlKey, "fc-key")
+	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key")
 	disableAgentBrowser(t)
 
 	ts := testTiers(t, services{
@@ -203,7 +195,7 @@ func TestRenderFetchChallengeSkipsLane(t *testing.T) {
 		},
 	})
 
-	res, _, err := ts.renderFetch(context.Background(), remoteTargetURL)
+	res, _, err := ts.renderFetch(ctx, remoteTargetURL)
 	if err != nil {
 		t.Fatalf("renderFetch: %v", err)
 	}
@@ -216,9 +208,7 @@ func TestRenderFetchChallengeSkipsLane(t *testing.T) {
 }
 
 func TestRenderFetchGoneLaneSkipsNotAborts(t *testing.T) {
-	isolateKeys(t)
-	t.Setenv(envJinaKey, "jina-key")
-	t.Setenv(envFirecrawlKey, "fc-key")
+	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key")
 	disableAgentBrowser(t)
 
 	var fcHits atomic.Int32
@@ -233,7 +223,7 @@ func TestRenderFetchGoneLaneSkipsNotAborts(t *testing.T) {
 		},
 	})
 
-	_, _, err := ts.renderFetch(context.Background(), remoteTargetURL)
+	_, _, err := ts.renderFetch(ctx, remoteTargetURL)
 	if err == nil {
 		t.Fatal("renderFetch: want a joined failure, got nil")
 	}
@@ -251,18 +241,16 @@ func TestRenderFetchGoneLaneSkipsNotAborts(t *testing.T) {
 }
 
 func TestRenderFetchLocalTargetAgentBrowserOnly(t *testing.T) {
-	isolateKeys(t)
+	ctx := webCtx(t, envJinaKey+"=jina-key", envFirecrawlKey+"=fc-key")
 	// Keys are set but must be ignored: the hosted lanes can't reach a local
 	// target, so any jina/firecrawl hit trips the guard handlers below.
-	t.Setenv(envJinaKey, "jina-key")
-	t.Setenv(envFirecrawlKey, "fc-key")
 	stubAgentBrowser(t, mustJSON(t, okBatch("# Local\n\n"+strings.Repeat("rendered local content. ", 10), "Local")), 0)
 
 	ts := testTiers(t, services{})
 	var attempts []Tier
 	ts.onAttempt = func(tier Tier, _ error) { attempts = append(attempts, tier) }
 
-	res, _, err := ts.renderFetch(context.Background(), "http://localhost:1234/app")
+	res, _, err := ts.renderFetch(ctx, "http://localhost:1234/app")
 	if err != nil {
 		t.Fatalf("renderFetch: %v", err)
 	}

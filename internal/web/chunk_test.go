@@ -124,6 +124,7 @@ func assertInvariant(t *testing.T, markdown string, sections []Section, chunks [
 }
 
 func TestChunkInvariant(t *testing.T) {
+	t.Parallel()
 	fixtures := []string{
 		"atx_setext.md",
 		"deep_nesting.md",
@@ -159,6 +160,7 @@ func TestChunkInvariant(t *testing.T) {
 }
 
 func TestSectionsATXSetext(t *testing.T) {
+	t.Parallel()
 	md := loadFixture(t, "atx_setext.md")
 	sections, chunks := ChunkPage(md)
 
@@ -207,6 +209,7 @@ func TestSectionsATXSetext(t *testing.T) {
 }
 
 func TestSectionsDeepNesting(t *testing.T) {
+	t.Parallel()
 	md := loadFixture(t, "deep_nesting.md")
 	sections, chunks := ChunkPage(md)
 
@@ -242,6 +245,7 @@ func TestSectionsDeepNesting(t *testing.T) {
 }
 
 func TestHashInFenceIsNotHeading(t *testing.T) {
+	t.Parallel()
 	md := loadFixture(t, "hash_in_fence.md")
 	sections, chunks := ChunkPage(md)
 
@@ -279,6 +283,7 @@ func TestHashInFenceIsNotHeading(t *testing.T) {
 }
 
 func TestOversizedFenceSplitsAtLines(t *testing.T) {
+	t.Parallel()
 	md := loadFixture(t, "oversized_fence.md")
 	sections, chunks := ChunkPage(md)
 	assertInvariant(t, md, sections, chunks)
@@ -301,6 +306,7 @@ func TestOversizedFenceSplitsAtLines(t *testing.T) {
 }
 
 func TestOversizedParagraphSplitsAtRunes(t *testing.T) {
+	t.Parallel()
 	md := loadFixture(t, "oversized_paragraph.md")
 	sections, chunks := ChunkPage(md)
 	assertInvariant(t, md, sections, chunks)
@@ -322,6 +328,7 @@ func TestOversizedParagraphSplitsAtRunes(t *testing.T) {
 }
 
 func TestTableSurvivesAsOneBlock(t *testing.T) {
+	t.Parallel()
 	md := loadFixture(t, "tables.md")
 	_, chunks := ChunkPage(md)
 
@@ -343,6 +350,7 @@ func TestTableSurvivesAsOneBlock(t *testing.T) {
 }
 
 func TestSetextMultilineHeadingTitle(t *testing.T) {
+	t.Parallel()
 	md := loadFixture(t, "setext_multiline.md")
 	sections, chunks := ChunkPage(md)
 	assertInvariant(t, md, sections, chunks)
@@ -369,6 +377,7 @@ func TestSetextMultilineHeadingTitle(t *testing.T) {
 }
 
 func TestPreamblePresence(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		markdown    string

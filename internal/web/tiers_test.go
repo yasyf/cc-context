@@ -12,7 +12,8 @@ import (
 )
 
 func TestPlainHTTPTenMiBCap(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t)
 	// Serve just over the 10 MiB cap; the tier must truncate at the limit.
 	big := bytes.Repeat([]byte("a"), maxBodyBytes+512)
 	target := startTarget(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -22,7 +23,7 @@ func TestPlainHTTPTenMiBCap(t *testing.T) {
 	})
 	ts := &tiers{client: &http.Client{}}
 
-	got, err := ts.plainHTTP(context.Background(), target, nil)
+	got, err := ts.plainHTTP(ctx, target, nil)
 	if err != nil {
 		t.Fatalf("plainHTTP: %v", err)
 	}
@@ -32,7 +33,8 @@ func TestPlainHTTPTenMiBCap(t *testing.T) {
 }
 
 func TestPlainHTTPUserAgent(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t)
 	var gotUA string
 	target := startTarget(t, func(w http.ResponseWriter, r *http.Request) {
 		gotUA = r.UserAgent()
@@ -41,7 +43,7 @@ func TestPlainHTTPUserAgent(t *testing.T) {
 	})
 	ts := &tiers{client: &http.Client{}}
 
-	if _, err := ts.plainHTTP(context.Background(), target, nil); err != nil {
+	if _, err := ts.plainHTTP(ctx, target, nil); err != nil {
 		t.Fatalf("plainHTTP: %v", err)
 	}
 	if !strings.HasPrefix(gotUA, "ccx-web/") {
@@ -50,7 +52,8 @@ func TestPlainHTTPUserAgent(t *testing.T) {
 }
 
 func TestPlainHTTPConditionalHeaders(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t)
 	prior := &Page{ETag: `"abc"`, LastMod: "Mon, 07 Jul 2026 12:00:00 GMT"}
 	var ifNoneMatch, ifModSince string
 	target := startTarget(t, func(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +63,7 @@ func TestPlainHTTPConditionalHeaders(t *testing.T) {
 	})
 	ts := &tiers{client: &http.Client{}}
 
-	_, err := ts.plainHTTP(context.Background(), target, prior)
+	_, err := ts.plainHTTP(ctx, target, prior)
 	if !errors.Is(err, ErrNotModified) {
 		t.Fatalf("err = %v, want ErrNotModified", err)
 	}
@@ -73,7 +76,8 @@ func TestPlainHTTPConditionalHeaders(t *testing.T) {
 }
 
 func TestPlainHTTPCarriesValidators(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t)
 	target := startTarget(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("ETag", `"srv-etag"`)
 		w.Header().Set("Last-Modified", "Tue, 08 Jul 2026 00:00:00 GMT")
@@ -82,7 +86,7 @@ func TestPlainHTTPCarriesValidators(t *testing.T) {
 	})
 	ts := &tiers{client: &http.Client{}}
 
-	got, err := ts.plainHTTP(context.Background(), target, nil)
+	got, err := ts.plainHTTP(ctx, target, nil)
 	if err != nil {
 		t.Fatalf("plainHTTP: %v", err)
 	}
@@ -98,6 +102,7 @@ func TestPlainHTTPCarriesValidators(t *testing.T) {
 }
 
 func TestClassifyTargetStatus(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		status  int
@@ -141,6 +146,7 @@ func TestClassifyTargetStatus(t *testing.T) {
 }
 
 func TestStatusFromText(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		in   string
@@ -165,7 +171,8 @@ func TestStatusFromText(t *testing.T) {
 // 200 whose HTML embeds a PerimeterX sensor (window._pxAppId) is returned as
 // content, not rejected as a stealth challenge.
 func TestPlainHTTPPxSensorNotChallenge(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t)
 	const html = `<html><head><script>window._pxAppId="PXabc";</script></head><body>real product page</body></html>`
 	target := startTarget(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -173,7 +180,7 @@ func TestPlainHTTPPxSensorNotChallenge(t *testing.T) {
 	})
 	ts := &tiers{client: &http.Client{}}
 
-	got, err := ts.plainHTTP(context.Background(), target, nil)
+	got, err := ts.plainHTTP(ctx, target, nil)
 	if err != nil {
 		t.Fatalf("plainHTTP: %v (a px sensor on a normal page must not trip the challenge gate)", err)
 	}
@@ -183,7 +190,8 @@ func TestPlainHTTPPxSensorNotChallenge(t *testing.T) {
 }
 
 func TestPlainHTTPRefusesRedirectToLocal(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t)
 	ts := testTiers(t, services{})
 	ts.client.CheckRedirect = ts.refuseLocalRedirect
 	// A public-mapped target 302s to a loopback address; the gate must refuse the
@@ -192,7 +200,7 @@ func TestPlainHTTPRefusesRedirectToLocal(t *testing.T) {
 		http.Redirect(w, r, "http://127.0.0.1:11434/internal", http.StatusFound)
 	})
 
-	got, err := ts.plainHTTP(context.Background(), target, nil)
+	got, err := ts.plainHTTP(ctx, target, nil)
 	if err == nil {
 		t.Fatalf("plainHTTP = %+v, want an error refusing the redirect to a local target", got)
 	}
@@ -209,7 +217,8 @@ func TestPlainHTTPRefusesRedirectToLocal(t *testing.T) {
 // hostname that resolves entirely to a private address, and the hop is refused
 // before the internal content can be fetched and cached under the public key.
 func TestPlainHTTPRefusesRedirectToSplitDNSLocal(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t)
 	ts := testTiers(t, services{})
 	ts.lookupIP = func(ctx context.Context, _, host string) ([]net.IP, error) {
 		if host == "intra.example" {
@@ -222,7 +231,7 @@ func TestPlainHTTPRefusesRedirectToSplitDNSLocal(t *testing.T) {
 		http.Redirect(w, r, "http://intra.example/secret", http.StatusFound)
 	})
 
-	got, err := ts.plainHTTP(context.Background(), target, nil)
+	got, err := ts.plainHTTP(ctx, target, nil)
 	if err == nil {
 		t.Fatalf("plainHTTP = %+v, want an error refusing the split-DNS redirect", got)
 	}

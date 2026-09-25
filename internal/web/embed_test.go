@@ -53,21 +53,23 @@ func loadGoldenBase8M(t *testing.T) goldenVectors {
 // page vectors stay comparable across the native/Python engine swap. It skips
 // when the weights are neither cached nor downloadable (offline CI).
 func TestWebEmbedParity(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
 	g := loadGoldenBase8M(t)
 
-	eng, err := embed.New(context.Background(), WebPin)
+	eng, err := embed.New(ctx, WebPin)
 	if errors.Is(err, embed.ErrWeightsUnavailable) {
 		t.Skip("model weights unavailable (offline, empty cache) — skipping")
 	}
 	if err != nil {
 		t.Fatalf("embed.New: %v", err)
 	}
-	defer func() { _ = eng.Close(context.Background()) }()
+	defer func() { _ = eng.Close(ctx) }()
 
 	if eng.Dims() != g.Dims {
 		t.Fatalf("Dims() = %d, want %d", eng.Dims(), g.Dims)
 	}
-	got, err := eng.Encode(context.Background(), g.Texts)
+	got, err := eng.Encode(ctx, g.Texts)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -117,7 +119,7 @@ func l2norm(v []float32) float64 {
 // across calls. It skips when the model weights are neither cached nor
 // downloadable (offline CI).
 func TestEmbedIntegration(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	t.Cleanup(func() { _ = CloseEmbedder(context.Background()) })
 
 	texts := []string{
@@ -125,7 +127,7 @@ func TestEmbedIntegration(t *testing.T) {
 		"install the package with homebrew",
 		"how do I handle errors in Go",
 	}
-	e, err := sharedEmbedder(context.Background())
+	e, err := sharedEmbedder(ctx)
 	if errors.Is(err, embed.ErrWeightsUnavailable) {
 		t.Skip("model weights unavailable (offline, empty cache) — skipping")
 	}
@@ -133,7 +135,7 @@ func TestEmbedIntegration(t *testing.T) {
 		t.Fatalf("sharedEmbedder: %v", err)
 	}
 
-	first, err := e.Embed(context.Background(), texts)
+	first, err := e.Embed(ctx, texts)
 	if err != nil {
 		t.Fatalf("Embed error: %v", err)
 	}
@@ -152,7 +154,7 @@ func TestEmbedIntegration(t *testing.T) {
 		t.Error("identical texts embedded to different vectors within one call")
 	}
 
-	second, err := e.Embed(context.Background(), texts)
+	second, err := e.Embed(ctx, texts)
 	if err != nil {
 		t.Fatalf("second Embed error: %v", err)
 	}

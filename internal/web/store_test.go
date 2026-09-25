@@ -60,10 +60,10 @@ func mustLoad(ctx context.Context, t *testing.T, url, model string) *Page {
 	t.Helper()
 	got, err := Load(ctx, url, model)
 	if err != nil {
-		t.Fatalf("Load(ctx, %q, %q): %v", url, model, err)
+		t.Fatalf("Load(%q, %q): %v", url, model, err)
 	}
 	if got == nil {
-		t.Fatalf("Load(ctx, %q, %q) returned a miss, want a hit", url, model)
+		t.Fatalf("Load(%q, %q) returned a miss, want a hit", url, model)
 	}
 	return got
 }
@@ -121,8 +121,7 @@ func readGz(t *testing.T, path string) []byte {
 
 // writeRaw drops arbitrary bytes at the cache path for url, standing in for a
 // pre-existing (possibly poisoned) cache file.
-func writeRaw(t *testing.T, url string, data []byte) string {
-	ctx := t.Context()
+func writeRaw(ctx context.Context, t *testing.T, url string, data []byte) string {
 	t.Helper()
 	path := webPagePath(ctx, t, url)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
@@ -155,8 +154,8 @@ func setClock(t time.Time) func() {
 }
 
 func TestSaveLoadRoundTrip(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
+	ctx := webCtx(t)
 	const url = "https://example.com/doc"
 	const model = "potion-base-8M"
 
@@ -238,8 +237,8 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 }
 
 func TestSaveLoadRoundTripsThin(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
+	ctx := webCtx(t)
 	const model = "potion-base-8M"
 
 	thin := samplePage("https://example.com/thin", 1, 0, model)
@@ -271,8 +270,8 @@ func TestSaveLoadRoundTripsThin(t *testing.T) {
 }
 
 func TestLoadMissWhenAbsent(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
+	ctx := webCtx(t)
 	got, err := Load(ctx, "https://example.com/never-fetched", "")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -283,8 +282,8 @@ func TestLoadMissWhenAbsent(t *testing.T) {
 }
 
 func TestLoadLazyPageWithoutVectors(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
+	ctx := webCtx(t)
 	const url = "https://example.com/lazy"
 
 	// A freshly fetched page: chunks present, no vectors, no embed model. The
@@ -299,10 +298,10 @@ func TestLoadLazyPageWithoutVectors(t *testing.T) {
 }
 
 func TestLoadDiscardsCorrupt(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
+	ctx := webCtx(t)
 	const url = "https://example.com/corrupt"
-	path := writeRaw(t, url, []byte("this is not gzip"))
+	path := writeRaw(ctx, t, url, []byte("this is not gzip"))
 
 	got, err := Load(ctx, url, "")
 	if err != nil {
@@ -317,11 +316,11 @@ func TestLoadDiscardsCorrupt(t *testing.T) {
 }
 
 func TestLoadDiscardsVersionMismatch(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
+	ctx := webCtx(t)
 	const url = "https://example.com/oldversion"
 	old := pageWire{Version: schemaVersion + 1, URL: url, Markdown: "stale layout"}
-	path := writeRaw(t, url, gzJSON(t, old))
+	path := writeRaw(ctx, t, url, gzJSON(t, old))
 
 	got, err := Load(ctx, url, "")
 	if err != nil {
@@ -336,8 +335,8 @@ func TestLoadDiscardsVersionMismatch(t *testing.T) {
 }
 
 func TestLoadDiscardsEmbedModelMismatch(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
+	ctx := webCtx(t)
 	const url = "https://example.com/model"
 	if err := Save(ctx, samplePage(url, 2, 2, "model-A")); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -357,8 +356,8 @@ func TestLoadDiscardsEmbedModelMismatch(t *testing.T) {
 }
 
 func TestLoadDiscardsVectorLengthMismatch(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
+	ctx := webCtx(t)
 	const url = "https://example.com/lenmismatch"
 	p := samplePage(url, 2, 0, "model-A")
 	p.Vectors = [][]float32{{1, 2, 3}} // one vector, two chunks
@@ -380,6 +379,7 @@ func TestLoadDiscardsVectorLengthMismatch(t *testing.T) {
 }
 
 func TestLoadDiscardsBadVectorDims(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		vectors [][]float32
@@ -389,8 +389,7 @@ func TestLoadDiscardsBadVectorDims(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := t.Context()
-			t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+			ctx := webCtx(t)
 			url := "https://example.com/" + tt.name
 			p := samplePage(url, len(tt.vectors), 0, "model-A")
 			p.Vectors = tt.vectors
@@ -436,8 +435,8 @@ func TestFresh(t *testing.T) {
 }
 
 func TestSaveIsInspectableJSON(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
+	ctx := webCtx(t)
 	const url = "https://example.com/inspect"
 	p := samplePage(url, 2, 2, "model-A")
 	if err := Save(ctx, p); err != nil {
@@ -482,8 +481,8 @@ func TestSaveIsInspectableJSON(t *testing.T) {
 }
 
 func TestSaveLeavesNoTempFiles(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
+	ctx := webCtx(t)
 	const url = "https://example.com/atomic"
 	if err := Save(ctx, samplePage(url, 1, 1, "model-A")); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -515,8 +514,7 @@ func TestSaveLeavesNoTempFiles(t *testing.T) {
 }
 
 func TestEvictRemovesOldestUntilUnderCap(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	orig := maxCacheBytes
 	defer func() { maxCacheBytes = orig }()
 	maxCacheBytes = 1 << 40 // no eviction while seeding
@@ -576,8 +574,7 @@ func TestEvictRemovesOldestUntilUnderCap(t *testing.T) {
 }
 
 func TestSaveRespectsMaxCacheBytes(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	ctx := webCtx(t)
 	orig := maxCacheBytes
 	defer func() { maxCacheBytes = orig }()
 

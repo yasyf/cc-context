@@ -14,6 +14,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // TestLiveJinaRenderPass confirms the jina render pass returns markdown from a
@@ -360,16 +361,14 @@ func TestLiveJinaChallengeAt200(t *testing.T) {
 
 // TestLiveCascadeEscalatesToBrowserbase proves the whole point of this work: a
 // challenge on nopecha does not short-circuit the cascade — every tier is tried,
-// then browserbase runs as the stealth backstop. The key order matters: read the
-// real browserbase key first, zero every key, restore only browserbase, so keyless
-// jina 401s and plain HTTP hits the 403 that flips the stealth flag. With EXA and
-// FIRECRAWL zeroed too, the attempt order is exactly jina → http → browserbase.
+// then browserbase runs as the stealth backstop. The context zeroes every key and
+// restores only the real browserbase one, so keyless jina 401s and plain HTTP hits
+// the 403 that flips the stealth flag. With EXA and FIRECRAWL zeroed too, the
+// attempt order is exactly jina → http → browserbase.
 func TestLiveCascadeEscalatesToBrowserbase(t *testing.T) {
 	key := requirePaidLive(t, envBrowserbaseKey)
-	isolateKeys(t)
-	t.Setenv(envBrowserbaseKey, key)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(webCtx(t, envBrowserbaseKey+"="+key), 3*time.Minute)
 	defer cancel()
 
 	var mu sync.Mutex
@@ -507,7 +506,6 @@ func TestLiveBenignPagesNotChallenged(t *testing.T) {
 // once across all three ops.
 func TestLiveWebRunOutlineReadSearch(t *testing.T) {
 	requireLiveOptIn(t)
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 
 	var fetches atomic.Int32
 	prev := fetchPage
@@ -517,7 +515,8 @@ func TestLiveWebRunOutlineReadSearch(t *testing.T) {
 	}
 	t.Cleanup(func() { fetchPage = prev })
 
-	ctx, cancel := context.WithTimeout(t.Context(), cascadeDeadline+30*time.Second)
+	cacheCtx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
+	ctx, cancel := context.WithTimeout(cacheCtx, cascadeDeadline+30*time.Second)
 	defer cancel()
 	const target = "https://go.dev/doc/effective_go"
 
