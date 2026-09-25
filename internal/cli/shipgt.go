@@ -828,10 +828,18 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			plan[i].lease, plan[i].leaseSet = lease, true
 		}
 	}
-	// The last point before anything mutates, and the one both ship and stack
-	// submit reach.
 	if err := gtRefuseInherited(ctx, s.prefix, l.dir(), tr, plan); err != nil {
 		return nil, nil, err
+	}
+	for _, branch := range branches {
+		parent := state[branch].Parents[0].Ref
+		contains, err := gitIsAncestor(ctx, l.dir(), s.prefix, state[parent].Head, state[branch].Head)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !contains {
+			return nil, nil, errors.New(gtStuck(s.prefix, gtOffParent(branch, state[branch].State), s.suffix))
+		}
 	}
 
 	pre := make([]gtapi.PreSubmitBranch, 0, len(plan))

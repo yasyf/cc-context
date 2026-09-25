@@ -3,12 +3,15 @@ package cli
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -103,6 +106,48 @@ func TestStackListNamesTheWorkingCopyHoldingEachBranch(t *testing.T) {
 	}
 	if want := "feature" + shipSep + lane; lines[1] != want {
 		t.Errorf("second line = %q, want %q — the lane above must be named, not hidden", lines[1], want)
+	}
+}
+
+func TestStackListJSON(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		name := "restacked"
+		if stale {
+			name = "needs-restack"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := shipGTRepo(t)
+			shipGTStack(t, f, "base", "middle")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+			lane := filepath.Join(t.TempDir(), "feature lane")
+			mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-qb", "feature", lane, "middle")
+			lane = gitAt(t, f.Env(), lane, "rev-parse", "--show-toplevel")
+			mustRun(t, f.Env(), lane, "gt", "track", "--parent", "middle", "--no-interactive")
+			mustRun(t, f.Env(), lane, "gt", "freeze", "--no-interactive")
+			if stale {
+				mustRun(t, f.Env(), f.Dir, "git", "commit", "--allow-empty", "-qm", "advance base")
+			}
+
+			out, errOut, err := runStackCmd(t, f, "list", "--json")
+			if err != nil {
+				t.Fatalf("stack list --json: %v\n%s", err, errOut)
+			}
+			var got map[string]any
+			if err := json.Unmarshal([]byte(out), &got); err != nil {
+				t.Fatalf("decode listing %q: %v", out, err)
+			}
+			want := map[string]any{
+				"root": f.Dir,
+				"branches": []any{
+					map[string]any{"branch": "base", "path": f.Dir, "current": true, "needs_restack": false, "state": "frozen"},
+					map[string]any{"branch": "middle", "path": "", "current": false, "needs_restack": stale, "state": "frozen"},
+					map[string]any{"branch": "feature", "path": lane, "current": false, "needs_restack": false, "state": "frozen"},
+				},
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("listing = %#v, want %#v", got, want)
+			}
+		})
 	}
 }
 
@@ -269,6 +314,184 @@ func stackConflicting(t *testing.T, f *vcstest.Fixture) {
 	mustRun(t, f.Env(), f.Dir, "git", "merge", "-q", "--ff-only", "origin/main")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
 	shipResetLog(t, f)
+}
+
+func TestStackSubmitFrozenBranches(t *testing.T) {
+	tests := []struct {
+		name     string
+		frozen   bool
+		unfrozen bool
+		stale    bool
+	}{
+		{name: "frozen-stale", frozen: true, stale: true},
+		{name: "frozen-current", frozen: true},
+		{name: "restack-and-push", stale: true},
+		{name: "unfrozen-restack-and-push", unfrozen: true, stale: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipGTRepo(t)
+			api := stubGTAPI(t)
+			branches := []string{"base", "feature", "tip"}
+			shipGTStack(t, f, branches...)
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature", "tip")
+			remote := map[string]string{}
+			for _, branch := range branches {
+				remote[branch] = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch)
+				if tt.frozen || tt.unfrozen {
+					mustRun(t, f.Env(), f.Dir, "gt", "freeze", branch, "--no-interactive")
+				}
+			}
+			if tt.unfrozen {
+				for _, branch := range branches {
+					mustRun(t, f.Env(), f.Dir, "gt", "unfreeze", branch, "--no-interactive")
+				}
+			}
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+			for _, branch := range branches[1:] {
+				mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", filepath.Join(t.TempDir(), branch), branch)
+			}
+			if tt.stale {
+				mustRun(t, f.Env(), f.Dir, "git", "commit", "--allow-empty", "-qm", "advance base")
+			}
+			before := map[string]string{}
+			for _, branch := range branches {
+				before[branch] = gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
+			}
+
+			out, _, err := runStackCmd(t, f, "submit")
+			if tt.frozen && tt.stale {
+				if err == nil || !strings.Contains(err.Error(), "feature is frozen") {
+					t.Fatalf("stack submit = %q, %v; want a frozen feature refusal", out, err)
+				}
+				if heads := api.submitHeads(); len(heads) != 0 {
+					t.Errorf("submitted %v despite a frozen stale branch", heads)
+				}
+				for _, branch := range branches {
+					if got := gitAt(t, f.Env(), f.Dir, "rev-parse", branch); got != before[branch] {
+						t.Errorf("local %s = %s, want unchanged %s", branch, got, before[branch])
+					}
+					if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); got != remote[branch] {
+						t.Errorf("remote %s = %s, want unchanged %s", branch, got, remote[branch])
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("stack submit: %v", err)
+			}
+			if !strings.Contains(out, "submitted 3 branches") {
+				t.Errorf("report = %q, want all three branches submitted", out)
+			}
+			if heads := api.submitHeads(); !slices.Equal(heads, branches) {
+				t.Errorf("submitted %v, want %v", heads, branches)
+			}
+			for i, branch := range branches {
+				head := gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
+				if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); got != head {
+					t.Errorf("remote %s = %s, want local %s", branch, got, head)
+				}
+				if i > 0 {
+					mustRun(t, f.Env(), f.Dir, "git", "merge-base", "--is-ancestor", branches[i-1], branch)
+				}
+			}
+		})
+	}
+}
+
+func TestStackSubmitFrozenSiblingStopsReplay(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	shipGTStack(t, f, "base", "a-movable")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	shipGTStack(t, f, "z-frozen")
+	mustRun(t, f.Env(), f.Dir, "gt", "freeze", "z-frozen", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	branches := []string{"base", "a-movable", "z-frozen"}
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "a-movable", "z-frozen")
+	remote := map[string]string{}
+	for _, branch := range branches {
+		remote[branch] = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "--allow-empty", "-qm", "advance base")
+	before := map[string]string{}
+	for _, branch := range branches {
+		before[branch] = gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
+	}
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err == nil || !strings.Contains(err.Error(), "z-frozen is frozen") {
+		t.Fatalf("stack submit = %q, %v; want a frozen sibling refusal", out, err)
+	}
+	if n := api.routeCount("/graphite/cli/submit/pre-submit-pull-requests"); n != 0 {
+		t.Errorf("presubmit calls = %d, want none", n)
+	}
+	if heads := api.submitHeads(); len(heads) != 0 {
+		t.Errorf("submitted %v despite a frozen stale sibling", heads)
+	}
+	for _, branch := range branches {
+		if got := gitAt(t, f.Env(), f.Dir, "rev-parse", branch); got != before[branch] {
+			t.Errorf("local %s = %s, want unchanged %s", branch, got, before[branch])
+		}
+		if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); got != remote[branch] {
+			t.Errorf("remote %s = %s, want unchanged %s", branch, got, remote[branch])
+		}
+	}
+}
+
+func TestStackSubmitRefusesIncorrectRestackMetadata(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	branches := []string{"base", "feature"}
+	shipGTStack(t, f, branches...)
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	remote := map[string]string{}
+	for _, branch := range branches {
+		remote[branch] = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "--allow-empty", "-qm", "advance base")
+	before := map[string]string{}
+	for _, branch := range branches {
+		before[branch] = gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
+	}
+	commonDir := gitAt(t, f.Env(), f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err := gtmeta.RecordRestacked(f.Context(), commonDir, map[string]string{"feature": before["base"]}); err != nil {
+		t.Fatalf("record feature as restacked: %v", err)
+	}
+	state, err := gtStateAt(f.Context(), commonDir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state["feature"].NeedsRestack {
+		t.Fatal("feature metadata still requests a restack")
+	}
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err == nil || !strings.Contains(err.Error(), "restack left feature off its parent") {
+		t.Fatalf("stack submit = %q, %v; want an off-parent feature refusal", out, err)
+	}
+	if n := api.routeCount("/graphite/cli/submit/pre-submit-pull-requests"); n != 0 {
+		t.Errorf("presubmit calls = %d, want none", n)
+	}
+	if heads := api.submitHeads(); len(heads) != 0 {
+		t.Errorf("submitted %v despite incorrect restack metadata", heads)
+	}
+	for _, inv := range shipGTInvocations(t, f) {
+		if len(inv) > 1 && inv[0] == "git" && inv[1] == "push" {
+			t.Errorf("pushed %v despite incorrect restack metadata", inv)
+		}
+	}
+	for _, branch := range branches {
+		if got := gitAt(t, f.Env(), f.Dir, "rev-parse", branch); got != before[branch] {
+			t.Errorf("local %s = %s, want unchanged %s", branch, got, before[branch])
+		}
+		if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); got != remote[branch] {
+			t.Errorf("remote %s = %s, want unchanged %s", branch, got, remote[branch])
+		}
+	}
 }
 
 // TestStackSubmitRestackConflictMovesNothing pins the atomicity a stack spread

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,19 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
+
+type stackListEntry struct {
+	Branch       string `json:"branch"`
+	Path         string `json:"path"`
+	Current      bool   `json:"current"`
+	NeedsRestack bool   `json:"needs_restack"`
+	State        string `json:"state"`
+}
+
+type stackListReport struct {
+	Root     string           `json:"root"`
+	Branches []stackListEntry `json:"branches"`
+}
 
 func newStackCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -63,14 +77,21 @@ A jj workspace would not — it has no .git for gt to read.`,
 }
 
 func newStackListCmd() *cobra.Command {
+	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List the stack, naming the working copy holding each branch",
-		Args:  cobra.NoArgs,
+		Long: `List the stack, naming the working copy holding each branch.
+
+With --json, emit root and a bottom-up branches array. Each branch carries its
+name, path (empty when no working copy holds it), current flag, needs_restack
+flag, and Graphite state (including frozen).`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runStackList(cmd)
+			return runStackList(cmd, asJSON)
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the listing as JSON")
 	return cmd
 }
 
@@ -200,7 +221,7 @@ func gtTrackAt(ctx context.Context, dir render.Dir, errW io.Writer, parent strin
 	return nil
 }
 
-func runStackList(cmd *cobra.Command) error {
+func runStackList(cmd *cobra.Command, asJSON bool) error {
 	ctx := cmd.Context()
 	l, err := resolveLaneReport(ctx, "stack list", workingDir(ctx), true, false)
 	if err != nil {
@@ -213,6 +234,24 @@ func runStackList(cmd *cobra.Command) error {
 	holders, err := vcs.BranchHolders(ctx, l.checkout)
 	if err != nil {
 		return fmt.Errorf("stack list: %w", err)
+	}
+	if asJSON {
+		report := stackListReport{Root: l.checkout.Root, Branches: make([]stackListEntry, 0, len(stack))}
+		for _, branch := range stack {
+			report.Branches = append(report.Branches, stackListEntry{
+				Branch:       branch,
+				Path:         holders[branch],
+				Current:      holders[branch] == l.checkout.Root,
+				NeedsRestack: state[branch].NeedsRestack,
+				State:        state[branch].State,
+			})
+		}
+		data, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return fmt.Errorf("stack list: marshal report: %w", err)
+		}
+		cmd.Println(string(data))
+		return nil
 	}
 	for _, branch := range stack {
 		cmd.Println(stackListLine(branch, holders[branch], l.checkout.Root, state[branch]))
@@ -322,6 +361,12 @@ func runStackSubmit(cmd *cobra.Command, draft bool) error {
 	if err := gtTrunkDrift(errW, "stack submit", state, chain, pin, string(tr.Ref())); err != nil {
 		return err
 	}
+	_, held := gtRestackPlan(state, chain)
+	for _, branch := range chain {
+		if reason := held[branch]; reason != "" {
+			return errors.New(gtStuck("stack submit", gtOffParent(branch, reason), ""))
+		}
+	}
 	result, err := gtRestackChain(ctx, "stack submit", l.checkout, l.dir(), commonDir, state, chain)
 	if err != nil {
 		return fmt.Errorf("stack submit: %w", err)
@@ -331,6 +376,11 @@ func runStackSubmit(cmd *cobra.Command, draft bool) error {
 	state, err = gtStateAt(ctx, commonDir, "stack submit")
 	if err != nil {
 		return err
+	}
+	for _, branch := range chain {
+		if state[branch].NeedsRestack {
+			return errors.New(gtStuck("stack submit", gtOffParent(branch, result.held[branch]), ""))
+		}
 	}
 	commits, files, err := gtSubmitWidth(ctx, "stack submit", l.dir(), tr, chain)
 	if err != nil {
