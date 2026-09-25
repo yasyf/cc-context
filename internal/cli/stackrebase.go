@@ -605,7 +605,10 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 	for _, name := range members {
 		s := state[name]
 		parent := s.Parents[0].Ref
-		_, overridden := overrides[name]
+		override, overridden := overrides[name]
+		if overridden {
+			parent = override
+		}
 		switch {
 		case gone[parent]:
 			left = append(left, stackLeft{branch: name, why: "it sits on " + parent + ", which is left where it is"})
@@ -631,13 +634,22 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 		}
 		gone[name] = true
 	}
+	for _, child := range slices.Sorted(maps.Keys(overrides)) {
+		for _, name := range []string{child, overrides[child]} {
+			if gone[name] {
+				return nil, nil, fmt.Errorf("stack rebase: --parent %s=%s names %s, which this run leaves where it is", child, overrides[child], name)
+			}
+		}
+	}
 	return kept, left, nil
 }
 
 // stackStrayReason names the evidence that branch belongs to another lane: an
 // open pull request based on neither its gt parent nor the ancestor that
 // parent's landing leaves it on, or a history carrying none of the parent's own
-// commits under any sha.
+// commits under any sha. A branch still carrying the parent revision gt recorded
+// for it, with work of the parent's own in it, was cut from the parent before a
+// rewrite and is not a stray.
 func stackStrayReason(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, branch, parent, effective string, pr *stackPR) (string, error) {
 	if pr != nil && pr.State == "OPEN" && pr.Base != "" && pr.Base != parent && pr.Base != effective {
 		return fmt.Sprintf("gt records its parent as %s, but its pull request #%d is based on %s — re-record it with gt track --force --parent %s %s", parent, pr.Number, pr.Base, pr.Base, branch), nil
@@ -657,6 +669,17 @@ func stackStrayReason(ctx context.Context, dir render.Dir, state gtState, tr vcs
 	own, err := gtRevCount(ctx, stackRebasePrefix, dir, gtRestackRef(branch), outside...)
 	if err != nil || own == 0 {
 		return "", err
+	}
+	recorded := state[branch].Parents[0].SHA
+	carried, err := gitIsAncestor(ctx, dir, stackRebasePrefix, recorded, gtRestackRef(branch))
+	if err != nil {
+		return "", err
+	}
+	if carried {
+		recordedOwn, err := gtRevCount(ctx, stackRebasePrefix, dir, recorded, outside...)
+		if err != nil || recordedOwn > 0 {
+			return "", err
+		}
 	}
 	missing, err := gtRevCount(ctx, stackRebasePrefix, dir, gtRestackRef(parent)+"..."+gtRestackRef(branch), append([]string{"--left-only", "--cherry-pick"}, outside...)...)
 	if err != nil || missing < parentOwn {
@@ -1413,6 +1436,9 @@ func stackRerereReplayed(ctx context.Context, ws render.Dir) (int, []string, err
 				continue
 			}
 			post, err := os.ReadFile(filepath.Join(filepath.Dir(image), "postimage"+strings.TrimPrefix(filepath.Base(image), "thisimage"))) //nolint:gosec // a postimage beside the thisimage git's own rr-cache listed
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
 			if err != nil {
 				return 0, nil, fmt.Errorf("stack continue: %w", err)
 			}

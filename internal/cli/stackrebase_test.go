@@ -931,3 +931,29 @@ func runAllowFail(t *testing.T, env []string, dir, name string, args ...string) 
 	cmd.Env = append(os.Environ(), env...)
 	_ = cmd.Run()
 }
+
+// TestStackContinueFinishesAfterARerereForget continues a stranded rebase whose
+// replayed resolution was forgotten and resolved by hand: rerere leaves that
+// conflict's preimage behind with no postimage beside it.
+func TestStackContinueFinishesAfterARerereForget(t *testing.T) {
+	f := shipGTRepo(t)
+	stackConflicting(t, f)
+	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "config", "rerere.enabled", "true")
+	runAllowFail(t, f.Env(), f.Dir, "git", "rebase", "main")
+	writeShipFile(t, f.Dir, "c.txt", "stale\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "-c", "core.editor=true", "rebase", "--continue")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", feature)
+	runAllowFail(t, f.Env(), f.Dir, "git", "rebase", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "rerere", "forget", "c.txt")
+	writeShipFile(t, f.Dir, "c.txt", "resolved\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+
+	if _, _, err := runStackCmd(t, f, "continue"); err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(f.Dir, "c.txt")); err != nil || string(got) != "resolved\n" {
+		t.Errorf("c.txt = %q (%v), want the hand resolution", got, err)
+	}
+}

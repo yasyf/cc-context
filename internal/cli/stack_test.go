@@ -1253,3 +1253,49 @@ func TestStackNewOnTrunkCutsFromTheFetchedTrunk(t *testing.T) {
 		t.Errorf("gt parent = %s, want main", parent)
 	}
 }
+
+// TestStackSubmitRestacksAChildOfAnAmendedParent is the restack stack submit
+// exists for: amending the parent's own commit leaves its child carrying the
+// old copy under another patch, and the child is still the parent's to move.
+func TestStackSubmitRestacksAChildOfAnAmendedParent(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	shipGTStack(t, f, "p", "c")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
+	writeShipFile(t, f.Dir, "p.txt", "amended\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "p.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "--no-edit")
+	shipResetLog(t, f)
+
+	_, errOut, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if strings.Contains(errOut, "left c alone") {
+		t.Errorf("stderr = %q, want c restacked, not left as a stray", errOut)
+	}
+	if behind := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "c..p"); behind != "0" {
+		t.Errorf("p holds %s commit(s) c does not, want c restacked onto p", behind)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"p", "c"}) {
+		t.Errorf("submit posts = %v, want p then c", heads)
+	}
+}
+
+// TestStackRebaseRefusesAParentOverrideTheRunLeavesOut refuses a --parent the
+// run cannot honor, before anything moves: the branch it names is one the run
+// leaves where it is.
+func TestStackRebaseRefusesAParentOverrideTheRunLeavesOut(t *testing.T) {
+	f := shipGTRepo(t)
+	stackBesideBase(t, f, "lane", false)
+	lane := gitAt(t, f.Env(), f.Dir, "rev-parse", "lane")
+	shipResetLog(t, f)
+
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push", "--parent", "lane=main")
+	if err == nil || !strings.Contains(err.Error(), "names lane, which this run leaves where it is") {
+		t.Fatalf("error = %v, want a refusal naming the empty lane", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "lane"); got != lane {
+		t.Errorf("lane moved to %s on a refusal", got)
+	}
+}
