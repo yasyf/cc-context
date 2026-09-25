@@ -19,23 +19,23 @@ func gtLandedStack(t *testing.T, f *vcstest.Fixture) {
 	restackSquashRemote(t, f, "main", "a (#41)", "a")
 }
 
-// assertLandedDropped holds the stack to the shape a landed parent leaves: a
-// gone from gt, b on trunk carrying its own commits alone, and only b pushed
-// and submitted, based on trunk.
-func assertLandedDropped(t *testing.T, f *vcstest.Fixture, api *gtAPIStub, own string) {
+func assertLandedPublished(t *testing.T, f *vcstest.Fixture, api *gtAPIStub, own string) {
 	t.Helper()
-	if parent := shipParentOf(t, f, "b"); parent != "main" {
-		t.Errorf("b's parent = %s, want main", parent)
-	}
-	state, err := gtStateQuery(t.Context(), render.Dir(f.Dir), "test")
+	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "b")
 	if err != nil {
-		t.Fatalf("gt state: %v", err)
+		t.Fatal(err)
 	}
-	if _, tracked := state["a"]; tracked {
-		t.Error("gt still tracks a, whose pull request landed")
+	if receipt == nil || receipt.Parent != "main" {
+		t.Fatalf("b publication = %+v, want parent main", receipt)
 	}
-	if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "refs/remotes/origin/main..b"); got != own {
-		t.Errorf("b carries %s commit(s) above trunk, want %s — the landed commit must not come along", got, own)
+	if source := gitAt(t, f.Env(), f.Dir, "rev-parse", "b"); source != receipt.Source {
+		t.Errorf("b source = %s, want unchanged %s", source, receipt.Source)
+	}
+	if remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "b"); remote != receipt.Head {
+		t.Errorf("b remote = %s, want published %s", remote, receipt.Head)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "refs/remotes/origin/main.."+receipt.Head); got != own {
+		t.Errorf("b published %s commit(s) above trunk, want %s", got, own)
 	}
 	if heads := api.submitHeads(); !slices.Equal(heads, []string{"b"}) {
 		t.Errorf("submit posts = %v, want b alone", heads)
@@ -62,10 +62,10 @@ func TestStackSubmitDropsALandedParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
-	if !strings.Contains(out, "dropped landed a") {
+	if !strings.Contains(out, "a · drop (#41 landed)") {
 		t.Errorf("report = %q, want it to name the landed branch", out)
 	}
-	assertLandedDropped(t, f, api, "1")
+	assertLandedPublished(t, f, api, "1")
 }
 
 // TestShipGTDropsALandedParent is the same landing met by a plain ship from the
@@ -80,10 +80,10 @@ func TestShipGTDropsALandedParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
 	}
-	if !strings.Contains(got, "dropped landed a") {
+	if !strings.Contains(got, "a · drop (#41 landed)") {
 		t.Errorf("summary = %q, want it to name the landed branch", got)
 	}
-	assertLandedDropped(t, f, api, "2")
+	assertLandedPublished(t, f, api, "2")
 }
 
 // TestShipGTLeavesAnUnchangedDownstackBranchAlone is the lane C incident: a
