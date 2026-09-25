@@ -1153,7 +1153,7 @@ func gtSubmitPlan(ctx context.Context, dir render.Dir, prefix string, state gtSt
 			b.base, b.baseSha = tr.Name(), trunkHead
 		}
 		if b.pr == 0 {
-			title, body, err := gtCreateMeta(ctx, dir, prefix, b.head, b.baseSha, b.base)
+			title, body, err := gtCreateMeta(ctx, dir, prefix, b.name, b.head, b.baseSha, b.base)
 			if err != nil {
 				return nil, err
 			}
@@ -1169,10 +1169,10 @@ func gtSubmitPlan(ctx context.Context, dir render.Dir, prefix string, state gtSt
 // creates PRs with empty bodies. Refusals name base, never rev. The
 // Claude-Session-Id trailer is dropped from the body, the same line the
 // non-graphite lane keeps out of descriptions by never passing --fill.
-func gtCreateMeta(ctx context.Context, dir render.Dir, prefix, branch, rev, base string) (string, string, error) {
-	out, err := render.RunCLI(ctx, dir, "git", []string{"log", "--reverse", "--format=%s%x00%b%x00", rev + ".." + branch})
+func gtCreateMeta(ctx context.Context, dir render.Dir, prefix, branch, head, rev, base string) (string, string, error) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"log", "--reverse", "--format=%s%x00%b%x00", rev + ".." + head})
 	if err != nil {
-		return "", "", fmt.Errorf("%s: git log %s..%s: %w", prefix, rev, branch, err)
+		return "", "", fmt.Errorf("%s: git log %s..%s: %w", prefix, rev, head, err)
 	}
 	fields := strings.Split(out, "\x00")
 	if len(fields) < 3 {

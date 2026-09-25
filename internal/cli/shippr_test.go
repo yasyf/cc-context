@@ -472,14 +472,14 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		{"git", "merge-base", "--is-ancestor", gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 	}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
-		gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
+		gtCreateLogInv(gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA),
 		gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
 		{"git", "merge-base", "--is-ancestor", fakeTrunkSHA, vcstest.GraphiteLeafSHA},
 		gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 		ghDownstackPRArgv("feature"),
 		ghPREditArgv(7, "-f", "title=Better title", "-F", "body=@"+body),
 	})
-	assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main"), wantInv)
+	assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main", "feature"), wantInv)
 }
 
 // TestShipPRGTAlreadyCommitted is the shape a fan-out hands back: a delegate's
@@ -532,14 +532,14 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 				// No second refs read: this ship cuts no commit, so nothing
 				// invalidates the state the preflight already cached.
 			}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
-				gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
+				gtCreateLogInv(gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA),
 				gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
 				{"git", "merge-base", "--is-ancestor", fakeTrunkSHA, vcstest.GraphiteLeafSHA},
 				gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 				ghDownstackPRArgv("feature"),
 				ghPREditArgv(7, "-f", "title=fix: 🐛 frobnicate the widget", "-F", "body=@"+body),
 			})
-			assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main"), wantInv)
+			assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main", "feature"), wantInv)
 		})
 	}
 }

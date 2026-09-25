@@ -613,8 +613,12 @@ func TestStackRebasePushesOverItsOwnLastSubmission(t *testing.T) {
 	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
 		t.Fatalf("stack rebase --no-push: %v", err)
 	}
+	sourceBase := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main")
 	stackAdvanceTrunk(t, f, "later.txt", "later\n")
 	sources := stackRebaseSourceSnapshot(t, f, "base", "feature")
+	base := sources["base"]
+	base.SourceBase = sourceBase
+	sources["base"] = base
 	shipResetLog(t, f)
 
 	if _, _, err := runStackCmd(t, f, "rebase"); err != nil {

@@ -23,19 +23,21 @@ func TestStackSubmitDropsCommitsTrunkAlreadyHolds(t *testing.T) {
 	if err := gtmeta.RecordRestacked(t.Context(), commonDir, map[string]string{"base": gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/heads/main")}); err != nil {
 		t.Fatalf("record base as restacked: %v", err)
 	}
+	source := shipHead(t, f)
 	shipResetLog(t, f)
 
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatal(err)
 	}
-	if got := gitAt(t, f.Env(), f.Dir, "diff", "--name-only", "origin/main...base"); got != "own.txt" {
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	if got := gitAt(t, f.Env(), f.Dir, "diff", "--name-only", "origin/main..."+published); got != "own.txt" {
 		t.Fatalf("submitted inherited files: %s", got)
 	}
-	if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main..base"); got != "1" {
+	if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main.."+published); got != "1" {
 		t.Fatalf("submitted %s commits, want only own work", got)
 	}
-	if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); local != remote {
-		t.Fatal("repaired branch was not pushed")
+	if local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); local != source {
+		t.Fatal("publication moved source branch")
 	}
 }
 

@@ -264,6 +264,36 @@ func gtRestackFileCount(ctx context.Context, prefix string, dir render.Dir, span
 	return len(files), nil
 }
 
+func gtSubmitWidth(ctx context.Context, prefix string, dir render.Dir, trunk string, heads []string) (int, int, error) {
+	files := map[string]bool{}
+	var live []string
+	for _, head := range heads {
+		contained, err := gitIsAncestor(ctx, dir, prefix, head, trunk)
+		if err != nil {
+			return 0, 0, err
+		}
+		if contained {
+			continue
+		}
+		live = append(live, head)
+		changed, err := gtRestackFiles(ctx, prefix, dir, trunk+"..."+head)
+		if err != nil {
+			return 0, 0, err
+		}
+		for _, file := range changed {
+			files[file] = true
+		}
+	}
+	if len(live) == 0 {
+		return 0, 0, nil
+	}
+	commits, err := gtRevCount(ctx, prefix, dir, live[0], append(live[1:], "--not", trunk)...)
+	if err != nil {
+		return 0, 0, err
+	}
+	return commits, len(files), nil
+}
+
 func gtRestackFiles(ctx context.Context, prefix string, dir render.Dir, span string) ([]string, error) {
 	out, err := render.RunCLI(ctx, dir, "git", []string{"diff", "--name-only", span})
 	if err != nil {

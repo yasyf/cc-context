@@ -4078,7 +4078,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			prBranches: []string{"feature"},
 			submitInv: append(
 				gtShipSubmitInv("main", vcstest.GraphiteLeafSHA),
-				gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
+				gtCreateLogInv(gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA),
 				gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
 				[]string{"git", "merge-base", "--is-ancestor", fakeTrunkSHA, vcstest.GraphiteLeafSHA},
 				gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
@@ -4093,8 +4093,8 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			prBranches: []string{"feature", "feature2"},
 			submitInv: append(
 				gtShipSubmitInv("main", "beadfeed", vcstest.GraphiteLeafSHA),
-				gtCreateLogInv(gtRemoteTrunk("main"), "feature"),
-				gtCreateLogInv("feature", "feature2"),
+				gtCreateLogInv(gtRemoteTrunk("main"), "beadfeed"),
+				gtCreateLogInv("beadfeed", vcstest.GraphiteLeafSHA),
 				gtCherryInv("main", "beadfeed", fakeTrunkSHA),
 				gtCherryInv("main", vcstest.GraphiteLeafSHA, "beadfeed"),
 				[]string{"git", "merge-base", "--is-ancestor", fakeTrunkSHA, "beadfeed"},
@@ -4142,7 +4142,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				[]string{"git", "rev-parse", "HEAD"},
 				ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
 			)
-			assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main"), want)
+			assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main", tt.prBranches...), want)
 		})
 	}
 }
@@ -4181,7 +4181,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		{"git", "merge-base", "--is-ancestor", gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 	}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
-		gtCreateLogInv(gtRemoteTrunk("main"), "fix-frobnicate"),
+		gtCreateLogInv(gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA),
 		gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
 		{"git", "merge-base", "--is-ancestor", fakeTrunkSHA, vcstest.GraphiteLeafSHA},
 		gtPushInv(gtHead("fix-frobnicate", vcstest.GraphiteLeafSHA)),
@@ -4189,7 +4189,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		{"git", "rev-parse", "HEAD"},
 		ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
 	})
-	assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main"), wantInv)
+	assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main", "fix-frobnicate"), wantInv)
 }
 
 func TestShipGTBodylessPR(t *testing.T) {
@@ -5166,6 +5166,7 @@ func TestShipGTResumeAfterRestackConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	source := shipHead(t, f)
 	writeShipFile(t, run.Conflict.Workspace, "c.txt", "resolved\n")
 	mustRun(t, f.Env(), run.Conflict.Workspace, "git", "add", "c.txt")
 	shipResetLog(t, f)
@@ -5199,8 +5200,16 @@ func TestShipGTResumeAfterRestackConflict(t *testing.T) {
 	if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s", "feature"); subject != "fix: frobnicate" {
 		t.Errorf("feature tip = %q, want the commit the first ship landed", subject)
 	}
-	if behind := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "feature..base"); behind != "0" {
-		t.Errorf("base holds %s commit(s) feature does not, want the hand restack to have finished it", behind)
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	if behind := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", published+".."+base); behind != "0" {
+		t.Errorf("published base holds %s commit(s) published feature does not", behind)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "show", published+":c.txt"); got != "resolved" {
+		t.Fatalf("published conflict resolution = %q", got)
+	}
+	if got := shipHead(t, f); got != source {
+		t.Fatal("continuation moved source")
 	}
 }
 
@@ -6210,7 +6219,7 @@ func TestShipGTAnchorsTheBaseOnTheRemoteTrunk(t *testing.T) {
 	if entry.BaseSha != fakeTrunkSHA {
 		t.Errorf("entry baseSha = %q, want the remote trunk %q rather than gt's recorded deadbeef", entry.BaseSha, fakeTrunkSHA)
 	}
-	if want := gtCreateLogInv(gtRemoteTrunk("main"), "feature"); !hasInvocation(readInvocations(t, log), want) {
+	if want := gtCreateLogInv(gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA); !hasInvocation(readInvocations(t, log), want) {
 		t.Errorf("no invocation matched %v — the create's title came from a range against the local trunk", want)
 	}
 	last, err := gtmeta.LastSubmitted(t.Context(), os.Getenv("GT_META_DIR"))
@@ -6253,7 +6262,7 @@ func TestShipGTSkipsBranchesTrunkContains(t *testing.T) {
 	if entry.Base != "main" || entry.BaseSha != fakeTrunkSHA {
 		t.Errorf("entry base = %s at %s, want main at %s — a skipped parent leaves the remote trunk as the base", entry.Base, entry.BaseSha, fakeTrunkSHA)
 	}
-	if want := gtCreateLogInv(gtRemoteTrunk("main"), "feature"); !hasInvocation(readInvocations(t, log), want) {
+	if want := gtCreateLogInv(gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA); !hasInvocation(readInvocations(t, log), want) {
 		t.Errorf("no invocation matched %v — the create's title came from a range against the skipped parent", want)
 	}
 	if want := "(stack of 2: junk, feature)"; !strings.Contains(out, want) {

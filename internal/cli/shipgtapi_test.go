@@ -378,9 +378,12 @@ func gtTrunkInv(trunk string) [][]string {
 // commit, so its calls land where nothing fixes them, and CI has recorded logs
 // carrying only some of them. Only the fetch is required; a second occurrence of
 // any call stays in the result for the caller's exact comparison.
-func gtDropTrunkInv(t *testing.T, got [][]string, trunk string) [][]string {
+func gtDropTrunkInv(t *testing.T, got [][]string, trunk string, branches ...string) [][]string {
 	t.Helper()
 	resolution := gtTrunkInv(trunk)
+	for _, branch := range branches {
+		resolution = append(resolution, []string{"git", "rev-parse", "--verify", "--quiet", stackPublicationRef(branch, "receipt")})
+	}
 	const fetch = 1
 	dropped := make([]bool, len(resolution))
 	rest := make([][]string, 0, len(got))
@@ -391,6 +394,11 @@ func gtDropTrunkInv(t *testing.T, got [][]string, trunk string) [][]string {
 			continue
 		}
 		rest = append(rest, inv)
+	}
+	for i := len(gtTrunkInv(trunk)); i < len(resolution); i++ {
+		if !dropped[i] {
+			t.Errorf("publication receipt lookup missing: %v", resolution[i])
+		}
 	}
 	if !dropped[fetch] {
 		t.Errorf("trunk resolution: no %v in the log\n%v", resolution[fetch], got)
