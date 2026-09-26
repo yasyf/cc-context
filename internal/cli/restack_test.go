@@ -835,7 +835,7 @@ func TestRestackGTMovesPastALandedParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restack: %v", err)
 	}
-	if !strings.Contains(out, "dropped landed a") {
+	if !strings.Contains(out, "dropped a (#10 landed)") {
 		t.Fatalf("output = %q, want landed parent dropped", out)
 	}
 	if got := restackGTParent(t, f, "b"); got != "main" {

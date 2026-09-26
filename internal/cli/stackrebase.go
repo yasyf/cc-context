@@ -49,10 +49,15 @@ type stackPR struct {
 	Mergeable string   `json:"mergeable"`
 	Labels    []string `json:"labels,omitempty"`
 	Landed    bool     `json:"landed"`
+	BaseGone  bool     `json:"base_gone,omitempty"`
 }
 
 func (p *stackPR) String() string {
 	return fmt.Sprintf("#%d %q", p.Number, p.Title)
+}
+
+func (p *stackPR) abandoned() bool {
+	return p.State == "CLOSED" && !p.Landed && !p.BaseGone
 }
 
 type stackRebaseBranch struct {
@@ -172,8 +177,11 @@ Every branch's local and remote head is recorded before anything moves, and each
 branch is replayed from the base it was recorded on (--onto <new parent>
 <recorded old parent>), so a push partway through never changes what a child is
 rebased from. A branch whose pull request landed is dropped and its children
-move onto what it sat on, leaving its squashed commits behind. Other working
-copies and local trunk are left untouched. A branch held by another working copy,
+move onto what it sat on, leaving its squashed commits behind. A branch whose
+pull request was closed without landing is dropped the same way, and its own
+commits are never replayed; one GitHub closed because its base branch was
+deleted is refused instead, pointing at ccx vcs stack drop --repair. Other
+working copies and local trunk are left untouched. A branch held by another working copy,
 or uncommitted work in the invoking checkout, stops publication before any branch
 moves. Empty lanes and another lane's branches above the one checked out here are
 left where they are and named rather than rebased.
@@ -525,6 +533,9 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
+	if err := stackMarkBaseGone(ctx, l.dir(), tr, prs); err != nil {
+		return nil, err
+	}
 	members, left, err := stackKept(ctx, l.dir(), state, tr, current, members, prs, overrides, o.landed)
 	if err != nil {
 		return nil, err
@@ -721,7 +732,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 // onto this stack and pushed it. Everything stacked on either goes with it.
 func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, current string, members []string, prs map[string]*stackPR, overrides map[string]string, landed []string) ([]string, []stackLeft, error) {
 	isLanded := func(name string) bool {
-		return slices.Contains(landed, name) || (prs[name] != nil && prs[name].Landed)
+		return slices.Contains(landed, name) || (prs[name] != nil && (prs[name].Landed || prs[name].abandoned()))
 	}
 	above := map[string]bool{}
 	if current != "" && current != tr.Name() {
@@ -1097,7 +1108,7 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 		Name: name, WasParent: s.Parents[0].Ref, Local: s.Head, Remote: remote,
 		Head: s.Head, HeadRef: gtRestackRef(name), PR: pr, Held: s.State,
 	}
-	if b.Held == "" && remote != "" && remote != s.Head {
+	if b.Held == "" && remote != "" && remote != s.Head && (pr == nil || !pr.abandoned()) {
 		ahead, err := gitIsAncestor(ctx, dir, stackRebasePrefix, remote, s.Head)
 		if err != nil {
 			return b, err
@@ -1172,8 +1183,10 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 		b.Landed = fmt.Sprintf("#%d landed", pr.Number)
 	case contained:
 		b.Landed = "already in " + tr.Name()
+	case pr != nil && pr.abandoned():
+		b.Landed = fmt.Sprintf("#%d closed", pr.Number)
 	case pr != nil && pr.State == "CLOSED":
-		return b, fmt.Errorf("stack rebase: %s's pull request #%d closed without landing — reopen it, drop the branch with ccx vcs stack drop %s, or pass --landed %s if it did land", name, pr.Number, name, name)
+		return b, fmt.Errorf("stack rebase: %s's pull request #%d closed when its base %s was deleted — reopen and retarget it with ccx vcs stack drop --repair, or pass --landed %s if it did land", name, pr.Number, pr.Base, name)
 	}
 	return b, nil
 }
@@ -2302,12 +2315,13 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	}
 	prefix := stackRebasePrefix
 	var moves []restackMove
-	var movers, dropped []string
+	var movers, dropped, reasons []string
 	reparent := map[string]string{}
 	revisions := map[string]string{}
 	for _, b := range run.Branches {
 		if b.Landed != "" {
 			dropped = append(dropped, b.Name)
+			reasons = append(reasons, b.Name+" ("+b.Landed+")")
 			continue
 		}
 		if b.Held != "" {
@@ -2376,7 +2390,7 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 
 	summary := []string{fmt.Sprintf("rebased %s onto %s@%.12s", gtBranchCount(len(movers)), run.Trunk, run.Pin)}
 	if len(dropped) > 0 {
-		summary = append(summary, "dropped landed "+strings.Join(dropped, ", "))
+		summary = append(summary, "dropped "+strings.Join(reasons, ", "))
 	}
 	if len(realigned) > 0 {
 		summary = append(summary, "reset "+strings.Join(realigned, ", "))
@@ -2786,6 +2800,34 @@ func stackQueryPRs(ctx context.Context, dir render.Dir, trunk string, branches [
 		byNumber[number].Landed = landed
 	}
 	return prs, nil
+}
+
+func stackMarkBaseGone(ctx context.Context, dir render.Dir, tr vcs.Trunk, prs map[string]*stackPR) error {
+	argv := []string{"ls-remote", "--heads", tr.Remote()}
+	var closed []*stackPR
+	for _, pr := range prs {
+		if pr.State == "CLOSED" && !pr.Landed && pr.Base != "" && pr.Base != tr.Name() {
+			closed = append(closed, pr)
+			argv = append(argv, gtRestackRef(pr.Base))
+		}
+	}
+	if len(closed) == 0 {
+		return nil
+	}
+	out, err := render.RunCLI(ctx, dir, "git", argv)
+	if err != nil {
+		return fmt.Errorf("stack rebase: git ls-remote --heads %s: %w", tr.Remote(), err)
+	}
+	live := map[string]bool{}
+	for line := range strings.Lines(out) {
+		if _, ref, ok := strings.Cut(strings.TrimSpace(line), "\t"); ok {
+			live[strings.TrimPrefix(ref, "refs/heads/")] = true
+		}
+	}
+	for _, pr := range closed {
+		pr.BaseGone = !live[pr.Base]
+	}
+	return nil
 }
 
 func stackCheckHolders(ctx context.Context, origin string, movers []string, holders map[string]string) error {

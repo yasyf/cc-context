@@ -125,6 +125,10 @@ trunk and replays each branch from its recorded base onto that trunk. The local
 trunk branch and other working copies are left untouched. A branch whose pull
 request landed through a merge queue squash is dropped, and its children move
 onto what it sat on, leaving its squashed commits behind.
+A branch whose pull request was closed without landing is dropped the same way,
+named in the plan with its pull request, and its own commits are never replayed.
+A pull request GitHub closed because its base branch was deleted still carries
+live work, so the run refuses it and points at ccx vcs stack drop --repair.
 
 A conflict stops the run before any ref moves, in a conflict workspace with
 rerere off. After resolution, ccx vcs stack continue finishes the rebase, pushes,

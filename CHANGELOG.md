@@ -45,6 +45,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A pull request closed mid-stack is dropped, not refused.**
+  `ccx vcs stack submit`, `stack rebase`, and `stack restack` refused a stack
+  holding a branch whose pull request was closed without landing. When that
+  branch's commits conflicted with trunk, `ccx vcs stack drop` failed too. The
+  run now drops the branch the way it drops a landed one. Its children replay
+  onto its parent without its commits, the plan names it as
+  `drop (#N closed)`, and the local branch stays. A pull request GitHub closed
+  because its base branch was deleted still carries live work, so the run
+  refuses it and points at `ccx vcs stack drop --repair`.
+
 - **A parent whose pull request lands mid-run is dropped, not pushed.**
   Before it pushes, `ccx vcs stack continue` checks the stack's pull requests
   again. If one landed while the run was stopped, its branch is never pushed
