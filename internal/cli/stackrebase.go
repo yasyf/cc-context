@@ -2330,6 +2330,11 @@ func stackLandedSince(ctx context.Context, dir render.Dir, trunk string, live []
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: reading the stack pull requests before the push failed — run ccx vcs stack continue: %w", err)
 	}
+	for _, name := range live {
+		if pr := prs[name]; pr != nil && pr.State == "CLOSED" && !pr.Landed {
+			return nil, fmt.Errorf("stack rebase: %s's pull request #%d closed without landing while the run was stopped, and publishing would open a new one — reopen it and run ccx vcs stack continue, or drop the run with ccx vcs stack abort", name, pr.Number)
+		}
+	}
 	return slices.DeleteFunc(slices.Clone(live), func(name string) bool { return prs[name] == nil || !prs[name].Landed }), nil
 }
 

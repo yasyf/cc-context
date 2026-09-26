@@ -945,6 +945,36 @@ func TestStackContinueDropsAParentThatLandedMidRun(t *testing.T) {
 	}
 }
 
+func TestStackContinueRefusesAPullRequestClosedMidRun(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	stubStackPRs(t, map[string]*stackPR{"feature": {Number: 26108, Title: "feature", State: "OPEN"}})
+	stackConflicting(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "refs/heads/feature")
+	_, _, err := runStackCmd(t, f, "rebase")
+	if err == nil {
+		t.Fatal("stack rebase succeeded, want the conflict to stop")
+	}
+	ws := stackWorkspaceOf(t, err)
+	stubStackPRs(t, map[string]*stackPR{"feature": {Number: 26108, Title: "feature", State: "CLOSED"}})
+	writeShipFile(t, ws, "c.txt", "resolved\n")
+	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
+	shipResetLog(t, f)
+
+	_, _, err = runStackCmdIn(t, f, ws, "continue")
+	if err == nil || !strings.Contains(err.Error(), "feature's pull request #26108 closed without landing while the run was stopped") {
+		t.Fatalf("continue = %v, want the closed pull request refused", err)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "refs/heads/feature"); got != remote {
+		t.Errorf("origin feature moved to %s, want it left at %s", got, remote)
+	}
+	for _, inv := range shipGTInvocations(t, f) {
+		if slices.Contains(inv, "submit") {
+			t.Errorf("continue submitted: %v", inv)
+		}
+	}
+}
+
 func TestStackRebaseDropsALandedBranchReplayedAfterItsLanding(t *testing.T) {
 	f := stackRebaseRepo(t, "base", "feature")
 	landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
