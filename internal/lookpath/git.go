@@ -1,3 +1,4 @@
+// Package lookpath resolves executables against a given environment's PATH.
 package lookpath
 
 import (
