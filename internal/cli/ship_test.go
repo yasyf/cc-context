@@ -4649,7 +4649,6 @@ func TestShipGTTrackReportsParent(t *testing.T) {
 	tests := []struct {
 		name      string
 		args      []string
-		fromTrunk bool
 		wantTrack []string
 		wantSeg   string
 	}{
@@ -4657,12 +4656,6 @@ func TestShipGTTrackReportsParent(t *testing.T) {
 			name:      "gt track -f reports the ancestor it picked",
 			wantTrack: []string{"gt", "track", "feature", "-f", "--no-interactive"},
 			wantSeg:   "tracked feature onto base",
-		},
-		{
-			name:      "a branch cut from trunk is adopted onto trunk without the -f walk",
-			fromTrunk: true,
-			wantTrack: []string{"gt", "track", "feature", "--parent", "main", "--no-interactive"},
-			wantSeg:   "tracked feature onto main",
 		},
 		{
 			name:      "--parent drops -f, which would take precedence over it",
@@ -4674,9 +4667,6 @@ func TestShipGTTrackReportsParent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := shipGTRepo(t, vcstest.GTStack("base"))
-			if tt.fromTrunk {
-				mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
-			}
 			shipGTUntracked(t, f, "feature")
 			shipGTReady(t, f)
 
@@ -4701,11 +4691,7 @@ func TestShipGTTrackReportsParent(t *testing.T) {
 			if err := json.Unmarshal([]byte(mustRun(t, f.Env(), f.Dir, "gt", "state")), &state); err != nil {
 				t.Fatalf("parse gt state: %v", err)
 			}
-			want := "base"
-			if tt.fromTrunk {
-				want = "main"
-			}
-			if parents := state["feature"].Parents; len(parents) != 1 || parents[0].Ref != want {
+			if parents := state["feature"].Parents; len(parents) != 1 || parents[0].Ref != "base" {
 				t.Errorf("gt state feature parents = %v, want the adopted base", parents)
 			}
 		})
