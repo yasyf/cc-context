@@ -447,3 +447,29 @@ func TestStackSubmitAdoptsAForeignIdenticalRestack(t *testing.T) {
 		t.Fatalf("submit moved the source to %s", got)
 	}
 }
+
+func TestStackSubmitAdoptsGraphitesRestackAfterALanding(t *testing.T) {
+	f := stackRebaseRepo(t, "a", "b")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatal(err)
+	}
+	a := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "a")
+	stubStackPRs(t, map[string]*stackPR{"a": {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: a}})
+	restackSquashRemote(t, f, "main", "a (#41)", "a")
+	clone := filepath.Join(t.TempDir(), "graphite-app")
+	mustRun(t, f.Env(), filepath.Dir(clone), "git", "clone", "-q", "--branch", "b", f.RemoteDir, clone)
+	mustRun(t, f.Env(), clone, "git", "-c", "user.name=graphite-app", "-c", "user.email=g@g.g", "rebase", "-q", "--onto", "origin/main", a)
+	mustRun(t, f.Env(), clone, "git", "push", "-qf", "origin", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("submit after graphite-app restacked b onto the landing: %v", err)
+	}
+	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "b")
+	if !stackOnto(t, f, "origin/main", remote) {
+		t.Fatalf("republished b %s missed the landing", remote)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "show", remote+":b.txt"); got != "b" {
+		t.Fatalf("published b.txt = %q, want b", got)
+	}
+}
