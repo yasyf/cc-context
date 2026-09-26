@@ -512,12 +512,22 @@ func gtRestack(ctx context.Context, l lane, suffix, branch string, c *gtCache) (
 	if err != nil {
 		return "", err
 	}
+	var left []string
 	for _, b := range chain {
-		if state[b].NeedsRestack {
-			return "", errors.New(gtStuck("ship", gtOffParent(b, result.held[b]), suffix))
+		if !state[b].NeedsRestack {
+			continue
 		}
+		if held := result.held[b]; strings.HasPrefix(held, gtHeldElsewhere) {
+			left = append(left, b+" ("+held+")")
+			continue
+		}
+		return "", errors.New(gtStuck("ship", gtOffParent(b, result.held[b]), suffix))
 	}
-	return gtRestackSegment(result), nil
+	seg := gtRestackSegment(result)
+	if len(left) > 0 {
+		seg += " · left " + strings.Join(left, ", ") + " off its parent for its own lane to restack"
+	}
+	return seg, nil
 }
 
 // gtRestackStopped leads with the failure that explains the rest and still
