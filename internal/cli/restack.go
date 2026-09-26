@@ -168,7 +168,7 @@ func restackGit(ctx context.Context, cmd *cobra.Command, l lane) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("restack: %w", err)
 	}
-	if _, err := render.RunCLI(ctx, dir, "git", []string{"fetch", remote}); err != nil {
+	if err := gitFetch(ctx, dir, remote); err != nil {
 		return "", fmt.Errorf("restack: git fetch %s: %w", remote, err)
 	}
 

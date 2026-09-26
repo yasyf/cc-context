@@ -1019,7 +1019,7 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branch
 		return nil, fmt.Errorf("stack rebase: git ls-remote %s: %w", remote, err)
 	}
 	heads := map[string]string{}
-	fetch := []string{"fetch", "--quiet", remote}
+	fetch := []string{"--quiet", remote}
 	for line := range strings.Lines(out) {
 		sha, ref, ok := strings.Cut(strings.TrimSpace(line), "\t")
 		if !ok {
@@ -1030,7 +1030,7 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branch
 		fetch = append(fetch, "+"+ref+":refs/remotes/"+remote+"/"+name)
 	}
 	if len(heads) > 0 {
-		if _, err := render.RunCLI(ctx, dir, "git", fetch); err != nil {
+		if err := gitFetch(ctx, dir, fetch...); err != nil {
 			return nil, fmt.Errorf("stack rebase: git fetch %s: %w", remote, err)
 		}
 	}
