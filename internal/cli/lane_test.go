@@ -329,9 +329,9 @@ func TestClassifyGTProbe(t *testing.T) {
 
 // TestShipGateProbe drives the probe end to end through ship, with the cached
 // verdict cleared so gt auth actually runs and answers out of the recorded
-// corpus. Every recorded answer demotes — a decline, an unreachable server, and
-// an exit 0 that never confirms this repository alike — each carrying its own
-// note into the report, and the ship lands on the git lane regardless.
+// corpus. Every answer gt gives demotes — a decline and an exit 0 that never
+// confirms this repository alike — each carrying its own note into the report,
+// and the ship lands on the git lane regardless.
 //
 // The ready line that would keep the lane has no recording: gt prints it only
 // for a repository Graphite is permitted to submit to, so testdata/gt names it
@@ -347,7 +347,6 @@ func TestShipGateProbe(t *testing.T) {
 			golden:   "auth-no-perms",
 			wantNote: "graphite cannot submit to yasyf/cc-context — grant it access at " + gtGrantURL + ", or git config " + nogtKey + " true",
 		},
-		{golden: "auth-unreachable", wantNote: "graphite server unreachable"},
 		{golden: "auth-authenticated-elsewhere", wantNote: "gt auth exited 0 without confirming this repo is submittable"},
 	}
 	for _, tt := range tests {
@@ -377,27 +376,64 @@ func TestShipGateProbe(t *testing.T) {
 	}
 }
 
-// TestShipGateProbeTimeoutDemotes proves a hung probe costs the gt lane. Riding
-// the lane on an answer nobody got is the worse trade: it submits into a stack
-// Graphite may not accept, where demoting only lands a plain branch, and the
-// report names the reason so the demotion is never silent.
-func TestShipGateProbeTimeoutDemotes(t *testing.T) {
-	f := shipGTFeature(t)
-	clearGTRecord(f.Context(), t, f.Dir)
-	shipGTAuthHang(t, f)
-	shortenGTProbe(t)
+// TestShipGateUnansweredProbeKeepsTheLane proves a probe gt never answered,
+// hung past its deadline or cut off from the server, re-probes once and then
+// fails the command instead of demoting it: the lane a moment ago was gt, and
+// a stack command demoted off it refuses as if the repo were not Graphite's.
+func TestShipGateUnansweredProbeKeepsTheLane(t *testing.T) {
+	tests := []struct {
+		name  string
+		stub  func(t *testing.T, f *vcstest.Fixture)
+		note  func() string
+		stack bool
+	}{
+		{
+			name: "a hung probe",
+			stub: func(t *testing.T, f *vcstest.Fixture) { shipGTAuthHang(t, f); shortenGTProbe(t) },
+			note: func() string { return "gt auth did not answer within " + gtProbeTimeout.String() },
+		},
+		{
+			name: "an unreachable server",
+			stub: func(t *testing.T, f *vcstest.Fixture) { shipGTAuth(t, f, loadGTGolden(t, "auth-unreachable")) },
+			note: func() string { return "graphite server unreachable" },
+		},
+		{
+			name:  "a hung probe under stack rebase",
+			stub:  func(t *testing.T, f *vcstest.Fixture) { shipGTAuthHang(t, f); shortenGTProbe(t) },
+			note:  func() string { return "gt auth did not answer within " + gtProbeTimeout.String() },
+			stack: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipGTFeature(t)
+			clearGTRecord(f.Context(), t, f.Dir)
+			tt.stub(t, f)
+			head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 
-	out, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
-	if err != nil {
-		t.Fatalf("ship error = %v", err)
-	}
-	want := "lane git (gt auth did not answer within " + gtProbeTimeout.String() + ")"
-	if !strings.HasPrefix(out, want) {
-		t.Errorf("report = %q, want it to lead with %q", out, want)
-	}
-	assertNoGTCommit(t, shipGTInvocations(t, f))
-	if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
-		t.Errorf("HEAD subject = %q, want the commit the demoted lane cut itself", subject)
+			var err error
+			if tt.stack {
+				_, _, err = runStackCmd(t, f, "rebase", "--no-push")
+			} else {
+				_, _, err = runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+			}
+			want := "graphite did not answer the lane check (" + tt.note() + ") — the lane is unchanged; retry once graphite answers"
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %v, want %q", err, want)
+			}
+			var probes int
+			for _, inv := range shipGTInvocations(t, f) {
+				if len(inv) > 1 && inv[0] == "gt" && inv[1] == "auth" {
+					probes++
+				}
+			}
+			if probes != 2 {
+				t.Errorf("gt auth ran %d times, want the probe and one retry", probes)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); got != head {
+				t.Errorf("HEAD moved to %s, want nothing committed on an unanswered lane", got)
+			}
+		})
 	}
 }
 
@@ -453,7 +489,7 @@ func TestGTReachabilityCachesUnknownBriefly(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	dir := t.TempDir()
 
-	verdict, note, err := gtReachability(context.Background(), dir, false)
+	verdict, note, _, err := gtReachability(context.Background(), dir, false)
 	if err != nil || verdict != gtVerdictUnknown || note == "" {
 		t.Fatalf("gtReachability() = (%q, %q, %v), want (%q, a reason, nil)", verdict, note, err, gtVerdictUnknown)
 	}
@@ -505,7 +541,7 @@ func TestGTReachabilityLocksProbe(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			verdict, note, err := gtReachability(context.Background(), dir, false)
+			verdict, note, _, err := gtReachability(context.Background(), dir, false)
 			if err != nil || verdict != gtVerdictOK || note != "" {
 				t.Errorf("gtReachability() = (%q, %q, %v), want (%q, \"\", nil)", verdict, note, err, gtVerdictOK)
 			}

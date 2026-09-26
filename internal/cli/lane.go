@@ -70,9 +70,9 @@ const gtGrantURL = "https://app.graphite.com/settings"
 const nogtKey = "ccx.nogt"
 
 // gtVerdict answers whether Graphite can submit for a repo. Unknown is its own
-// answer, not a synonym for either other: only gtVerdictOK keeps the gt lane,
-// so a probe nobody could get an answer out of demotes rather than riding on an
-// assumption it never verified.
+// answer, not a synonym for either other: only gtVerdictOK keeps the gt lane.
+// An unknown gt answered, such as an exit 0 that never confirms the repo,
+// demotes; one gt never answered fails the command with errGTUnanswered.
 type gtVerdict string
 
 const (
@@ -107,8 +107,14 @@ type gtRecord struct {
 	Schema    int       `json:"schema"`
 	Verdict   gtVerdict `json:"verdict"`
 	Note      string    `json:"note"`
+	Transient bool      `json:"transient,omitempty"`
 	FetchedAt time.Time `json:"fetched_at"`
 }
+
+// errGTUnanswered is a lane check gt auth never answered: a timeout or an
+// unreachable server says nothing about the lane, so it fails the command
+// rather than demoting it.
+var errGTUnanswered = errors.New("graphite did not answer the lane check")
 
 // resolveLane detects the working copy under dir and applies the graphite gates,
 // all before any mutation, weighing the gates' inputs from cache. name prefixes
@@ -174,11 +180,18 @@ func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh boo
 		}
 	}
 
-	verdict, why, err := gtReachability(ctx, root, refresh)
+	verdict, why, transient, err := gtReachability(ctx, root, refresh)
+	if err == nil && transient && !refresh {
+		verdict, why, transient, err = gtReachability(ctx, root, true)
+	}
 	if err != nil {
 		return lane{}, fmt.Errorf("%s: %w", name, err)
 	}
 	l.verdict = verdict
+	if transient {
+		l.note = why
+		return l, fmt.Errorf("%s: %w (%s) — the lane is unchanged; retry once graphite answers", name, errGTUnanswered, why)
+	}
 	if verdict != gtVerdictOK {
 		l.note = why
 		return l, nil
@@ -193,7 +206,7 @@ func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh boo
 func resolveLaneReport(ctx context.Context, name, dir string, noGT, refresh bool) (lane, error) {
 	l, err := resolveLaneRefresh(ctx, name, dir, noGT, refresh)
 	var broken *vcs.BrokenCheckout
-	if errors.As(err, &broken) {
+	if errors.As(err, &broken) || errors.Is(err, errGTUnanswered) {
 		return l, nil
 	}
 	return l, err
@@ -226,43 +239,42 @@ func gtDisabled(ctx context.Context, root render.Dir) bool {
 
 // gtReachability reports whether gt can drive root, serving a cached verdict
 // when one is on disk so a reachable repo pays for the probe at most once a day.
-// An unknown answer is cached too, briefly. Unknown demotes, so a cached unknown
-// is a cached demotion — it cannot resurrect the gt lane it just declined, which
-// is what makes storing it safe. Not storing it would leave every command during
-// an outage paying a fresh 20s probe to re-derive the same answer.
-func gtReachability(ctx context.Context, root string, refresh bool) (gtVerdict, string, error) {
+// An unknown answer is cached too, briefly, and the bool reports one gt never
+// answered, which the caller re-probes once before failing on it.
+func gtReachability(ctx context.Context, root string, refresh bool) (gtVerdict, string, bool, error) {
 	path, err := gtCachePath(ctx, root)
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	if !refresh {
 		if rec, ok := readGTRecord(path); ok {
-			return rec.Verdict, rec.Note, nil
+			return rec.Verdict, rec.Note, rec.Transient, nil
 		}
 	}
 
 	var verdict gtVerdict
 	var note string
+	var transient bool
 	err = cache.WithLock(ctx, filepath.Dir(path), "gt", func() error {
 		// Re-read under the lock: a concurrent probe of the same repo has likely
 		// already paid for the answer this one was about to ask for.
 		if !refresh {
 			if rec, ok := readGTRecord(path); ok {
-				verdict, note = rec.Verdict, rec.Note
+				verdict, note, transient = rec.Verdict, rec.Note, rec.Transient
 				return nil
 			}
 		}
-		verdict, note = gtReachable(ctx, root)
-		data, err := json.Marshal(gtRecord{Schema: gtSchema, Verdict: verdict, Note: note, FetchedAt: time.Now()})
+		verdict, note, transient = gtReachable(ctx, root)
+		data, err := json.Marshal(gtRecord{Schema: gtSchema, Verdict: verdict, Note: note, Transient: transient, FetchedAt: time.Now()})
 		if err != nil {
 			return fmt.Errorf("marshal gt reachability for %q: %w", root, err)
 		}
 		return cache.Store(path, data, 0o600)
 	})
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
-	return verdict, note, nil
+	return verdict, note, transient, nil
 }
 
 // gtReachable asks Graphite whether root is submittable, reporting the verdict
@@ -274,7 +286,7 @@ func gtReachability(ctx context.Context, root string, refresh bool) (gtVerdict, 
 // Bare gt auth is an undocumented status check. It rewrites
 // .git/.graphite_pr_info, a small PR cache, and touches nothing else — notably
 // not .graphite_repo_config, so the probe cannot flip lane detection on.
-func gtReachable(ctx context.Context, root string) (gtVerdict, string) {
+func gtReachable(ctx context.Context, root string) (gtVerdict, string, bool) {
 	probeCtx, cancel := context.WithTimeout(ctx, gtProbeTimeout)
 	defer cancel()
 
@@ -286,14 +298,15 @@ func gtReachable(ctx context.Context, root string) (gtVerdict, string) {
 	stdout, code, stderr, err := render.RunCLIProbe(probeCtx, render.Dir(root), "gt", []string{"auth", "--no-interactive"})
 	output := gtJoinStreams(stdout, stderr)
 	if err != nil {
-		return gtVerdictUnknown, "gt auth could not run: " + err.Error()
+		return gtVerdictUnknown, "gt auth could not run: " + err.Error(), false
 	}
 	// A killed process surfaces as a signal exit, not an error, so the deadline
 	// is read off the context rather than the exit code.
 	if probeCtx.Err() != nil {
-		return gtVerdictUnknown, gtProbeAbortNote(output)
+		return gtVerdictUnknown, gtProbeAbortNote(output), true
 	}
-	return classifyGTProbe(output, code)
+	verdict, note := classifyGTProbe(output, code)
+	return verdict, note, strings.Contains(output, gtProbeUnreadable)
 }
 
 // gtProbeAbortNote reads a reason off a probe that never returned an exit code.
