@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -4730,6 +4731,51 @@ func TestShipGTAdoptsPastATrackedBranchDeletedMidWalk(t *testing.T) {
 	}
 }
 
+func TestShipGTAdoptsABranchCutFromANewerRemoteTrunkPastAnEmptyLane(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTLevel(t, f, "triage")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "adopt", "origin/main")
+	shipGTReady(t, f)
+
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if want := "tracked adopt onto main"; !strings.HasPrefix(got, want) {
+		t.Errorf("summary = %q, want it to lead with %q", got, want)
+	}
+}
+
+func TestShipGTAdoptsABranchCutFromTrunkThatGTRecordsAChildOf(t *testing.T) {
+	f := shipGTRepo(t)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "adopt")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
+	shipGTLevel(t, f, "triage")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "adopt")
+	common, err := gtCommonDir(f.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(common, ".graphite_metadata.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE branch_metadata SET parent_branch_name = NULL, validation_result = 'BAD_PARENT_NAME' WHERE branch_name = 'adopt'`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	shipGTReady(t, f)
+
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if want := "tracked adopt onto main"; !strings.HasPrefix(got, want) {
+		t.Errorf("summary = %q, want it to lead with %q", got, want)
+	}
+}
+
 func TestShipGTTrackReportsParent(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -5604,6 +5650,7 @@ func TestShipGTRefusals(t *testing.T) {
 		setGTState(t, `{"main":{"trunk":true}}`)
 		line := gtErrorPrefix + "Cannot track feature: it has no commits of its own."
 		t.Setenv("GT_TRACK_STDERR", line)
+		t.Setenv("GIT_NO_REMOTE_TRUNK", "1")
 
 		_, errOut, err := runShipCmdFull(context.Background(), t, "-m", "fix: frobnicate", "--no-push")
 		if err == nil {
@@ -5629,7 +5676,6 @@ func TestShipGTRefusals(t *testing.T) {
 			gtRefsArgv(),
 			{"git", "config", "--get", "branch.HEAD.remote"},
 			{"git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/main"},
-			{"git", "rev-list", "refs/remotes/origin/main..refs/heads/feature"},
 			{"gt", "track", "feature", "-f", "--no-interactive"},
 		})
 	})
@@ -6514,68 +6560,23 @@ func TestShipGTRefusesAShippedBranchTrunkContains(t *testing.T) {
 	}
 }
 
-// TestGTTrackMovesOffALandedParent stops the corruption at its source: gt track
-// -f adopts onto the most recent tracked ancestor, and in a repository carrying
-// stale worktree branches that ancestor routinely holds nothing trunk lacks.
-func TestGTTrackMovesOffALandedParent(t *testing.T) {
-	const stack = `{"main":{"trunk":true},"junk":{"parents":[{"ref":"main","sha":"deadbeef"}]},` +
-		`"feature":{"parents":[{"ref":"junk","sha":"beadfeed"}]}}`
-	tests := []struct {
-		name      string
-		stateJSON string
-		contained string
-		noTrunk   bool
-		wantSeg   string
-		wantOnto  string
-	}{
-		{
-			name:      "a parent the remote trunk contains gives way to trunk",
-			stateJSON: stack,
-			contained: "refs/heads/junk",
-			wantSeg:   "tracked feature onto main (gt track picked junk, which origin/main already contains)",
-			wantOnto:  "main",
-		},
-		{
-			name:      "a parent carrying its own commits is adopted",
-			stateJSON: stack,
-			wantSeg:   "tracked feature onto junk",
-		},
-		{
-			name:      "no remote trunk ref leaves the adopt alone",
-			stateJSON: stack,
-			contained: "refs/heads/junk",
-			noTrunk:   true,
-			wantSeg:   "tracked feature onto junk",
-		},
-		{
-			name:      "trunk itself is never questioned",
-			stateJSON: `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`,
-			contained: "refs/heads/main",
-			wantSeg:   "tracked feature onto main",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			setupShipGT(t, false)
-			setGTState(t, tt.stateJSON)
-			t.Setenv("GIT_CONTAINED", tt.contained)
-			if tt.noTrunk {
-				t.Setenv("GIT_NO_REMOTE_TRUNK", "1")
-			}
+// TestGTTrackLeavesTheParentToGTWithoutARemoteTrunk pins the one adopt ship
+// still hands gt track -f: with no remote trunk ref to measure the branch
+// against, ship cannot tell a root from a stacked branch, so gt picks.
+func TestGTTrackLeavesTheParentToGTWithoutARemoteTrunk(t *testing.T) {
+	setupShipGT(t, false)
+	setGTState(t, `{"main":{"trunk":true},"junk":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
+		`"feature":{"parents":[{"ref":"junk","sha":"beadfeed"}]}}`)
+	t.Setenv("GIT_NO_REMOTE_TRUNK", "1")
 
-			c := newGTCache(render.Dir(workingDir(t.Context())), "ship")
-			var errW bytes.Buffer
-			state, seg, err := gtTrack(t.Context(), &errW, lane{}, shipOpts{}, "feature", c)
-			if err != nil {
-				t.Fatalf("gtTrack error = %v", err)
-			}
-			if seg != tt.wantSeg {
-				t.Errorf("segment = %q, want %q", seg, tt.wantSeg)
-			}
-			if tt.wantOnto != "" && state["feature"].Parents[0].Ref != tt.wantOnto {
-				t.Errorf("feature recorded on %s, want %s", state["feature"].Parents[0].Ref, tt.wantOnto)
-			}
-		})
+	c := newGTCache(render.Dir(workingDir(t.Context())), "ship")
+	var errW bytes.Buffer
+	_, seg, err := gtTrack(t.Context(), &errW, lane{}, shipOpts{}, "feature", c)
+	if err != nil {
+		t.Fatalf("gtTrack error = %v", err)
+	}
+	if want := "tracked feature onto junk"; seg != want {
+		t.Errorf("segment = %q, want %q", seg, want)
 	}
 }
 

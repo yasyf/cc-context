@@ -653,37 +653,9 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 	}
 	seg := "tracked " + branch
 	if len(s.Parents) > 0 {
-		parent := s.Parents[0].Ref
-		err := gtRefuseLandedParent(ctx, c.dir, state, branch, parent)
-		var landed *errLandedParent
-		if errors.As(err, &landed) {
-			return gtAdoptOntoTrunk(ctx, c, landed, replayed)
-		}
-		if err != nil {
-			return nil, "", err
-		}
-		seg += " onto " + parent
+		seg += " onto " + s.Parents[0].Ref
 	}
 	return state, seg + picked + replayed, nil
-}
-
-// gtAdoptOntoTrunk records a branch gt track -f adopted onto a landed parent
-// on trunk instead: the parent's head is already in the remote trunk, so the
-// branch's own commits are exactly the ones above trunk.
-func gtAdoptOntoTrunk(ctx context.Context, c *gtCache, landed *errLandedParent, replayed string) (gtState, string, error) {
-	commonDir, err := c.common(ctx)
-	if err != nil {
-		return nil, "", err
-	}
-	if err := gtmeta.Reparent(ctx, commonDir, map[string]string{landed.Branch: landed.Trunk}); err != nil {
-		return nil, "", fmt.Errorf("ship: %w", err)
-	}
-	c.forget()
-	state, err := c.at(ctx)
-	if err != nil {
-		return nil, "", err
-	}
-	return state, fmt.Sprintf("tracked %s onto %s (gt track picked %s, which %s/%s already contains)%s", landed.Branch, landed.Trunk, landed.Parent, landed.Remote, landed.Trunk, replayed), nil
 }
 
 func gtRootBase(ctx context.Context, dir render.Dir, branch, trunk string) (head, base string, root bool, err error) {
@@ -721,9 +693,10 @@ func gtRootBase(ctx context.Context, dir render.Dir, branch, trunk string) (head
 	return head, base, contained, nil
 }
 
-// gtTrunkParent names trunk as the parent of a branch with commits above the
-// remote trunk and no tracked branch among them; stacked reports a tracked
-// branch among them, and neither holds when there is nothing above trunk. gt track -f walks every
+// gtTrunkParent names trunk as the parent of a branch with no tracked branch
+// among its commits above the remote trunk, none at all included: a branch cut
+// straight from trunk belongs there, whatever else gt tracks at that commit.
+// stacked reports a tracked branch among them. gt track -f walks every
 // tracked branch for the nearest ancestor, which took seven minutes in a
 // repository tracking hundreds and then failed on a branch cut from trunk.
 func gtTrunkParent(ctx context.Context, l lane, c *gtCache, branch string) (parent string, stacked bool, err error) {
@@ -751,7 +724,7 @@ func gtTrunkParent(ctx context.Context, l lane, c *gtCache, branch string) (pare
 		above[strings.TrimSpace(line)] = true
 	}
 	if len(above) == 0 {
-		return "", false, nil
+		return trunk, false, nil
 	}
 	for name, s := range state {
 		if name != trunk && name != branch && above[s.Head] {
@@ -804,7 +777,7 @@ func gtNearestTracked(ctx context.Context, dir render.Dir, state gtState, trunk,
 	var names []string
 	for _, ref := range strings.Fields(out) {
 		name := strings.TrimPrefix(ref, "refs/heads/")
-		if _, tracked := state[name]; tracked && name != branch && name != trunk {
+		if _, tracked := state[name]; tracked && name != branch && name != trunk && !gtRecordedAbove(state, name, branch) {
 			names = append(names, name)
 		}
 	}
@@ -823,6 +796,22 @@ func gtNearestTracked(ctx context.Context, dir render.Dir, state gtState, trunk,
 		}
 	}
 	return nearest, nil
+}
+
+// gtRecordedAbove reports whether gt records name as stacked, at any depth, on
+// branch, which makes it no candidate for branch's parent.
+func gtRecordedAbove(state gtState, name, branch string) bool {
+	for seen := map[string]bool{}; !seen[name]; {
+		seen[name] = true
+		s, tracked := state[name]
+		if !tracked || len(s.Parents) == 0 {
+			return false
+		}
+		if name = s.Parents[0].Ref; name == branch {
+			return true
+		}
+	}
+	return false
 }
 
 // gtAdoptRefusal is every refusal adopting an untracked branch onto parent
