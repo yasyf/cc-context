@@ -462,10 +462,10 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
-	switch {
-	case o.members != nil:
+	if o.members != nil {
 		members = o.members
-	case !o.noPush && len(overrides) > 0:
+	}
+	if !o.noPush {
 		if members, roots, err = stackWithPublishedParents(ctx, l.dir(), retargeted, trunk, members, roots, overrides); err != nil {
 			return nil, err
 		}
@@ -872,8 +872,9 @@ func stackRetargeted(state gtState, overrides map[string]string) gtState {
 }
 
 // stackWithPublishedParents adds back the parent a member was last published
-// onto when --parent left it out of the run: gt state keeps the old parent
-// until the source checkout moves, and the publication is what gets replayed.
+// onto when the run left it out, by --parent or because gt records another
+// parent: gt state keeps the old parent until the source checkout moves, and
+// the publication is what gets replayed.
 func stackWithPublishedParents(ctx context.Context, dir render.Dir, state gtState, trunk string, members, roots []string, overrides map[string]string) ([]string, []string, error) {
 	for {
 		var missing []string
@@ -904,7 +905,12 @@ func stackWithPublishedParents(ctx context.Context, dir render.Dir, state gtStat
 				more = append(more, name)
 			}
 		}
-		members, roots = more, append(moreRoots, roots...)
+		for _, root := range roots {
+			if !slices.Contains(moreRoots, root) {
+				moreRoots = append(moreRoots, root)
+			}
+		}
+		members, roots = more, moreRoots
 	}
 }
 
