@@ -74,7 +74,7 @@ Sparse and no-checkout creation require a Git checkout.
 
 Outside the graphite lane the branch is cut the same way and nothing records
 its parent: ship opens its pull request against trunk, and a restack replays it
-onto trunk.
+onto its open pull request's base, so retargeting that base stacks it.
 
 In a jj repository the lane is a git worktree carrying its own colocated jj, cut
 with "jj git init --git-repo .": every lane then answers to git, gt and jj alike.

@@ -509,6 +509,104 @@ func TestRestackGitConflictNeverAdvisesPushingTrunk(t *testing.T) {
 	}
 }
 
+func restackGitStacked(t *testing.T, prs map[string]dropSeed) *vcstest.Fixture {
+	t.Helper()
+	f := shipRepo(t, vcstest.Remote(), vcstest.Branch("base"))
+	f.Isolate(t)
+	for _, name := range []string{"base", "feature"} {
+		if name != "base" {
+			restackRun(t, f, f.Dir, "git", "switch", "-qc", name)
+		}
+		restackWrite(t, filepath.Join(f.Dir, name+".txt"), name+"\n")
+		restackRun(t, f, f.Dir, "git", "add", name+".txt")
+		restackRun(t, f, f.Dir, "git", "commit", "-qm", name)
+		restackRun(t, f, f.Dir, "git", "push", "-q", "origin", name)
+	}
+	installDropGH(t, f, prs)
+	restackReset(t, f)
+	return f
+}
+
+func TestRestackGitReplaysOntoThePullRequestBase(t *testing.T) {
+	tests := []struct {
+		name string
+		prs  map[string]dropSeed
+		onto string
+	}{
+		{name: "stacked on base", prs: map[string]dropSeed{"feature": {number: 2, state: "OPEN", base: "base"}}, onto: "base"},
+		{name: "pull request on trunk", prs: map[string]dropSeed{"feature": {number: 2, state: "OPEN", base: "main"}}, onto: "main"},
+		{name: "no pull request", onto: "main"},
+		{name: "closed pull request", prs: map[string]dropSeed{"feature": {number: 2, state: "CLOSED", base: "base"}}, onto: "main"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := restackGitStacked(t, tt.prs)
+			restackAdvanceRemote(t, f, tt.onto, "upstream.txt", "upstream\n")
+
+			out, _, err := runRestackCmd(t, f)
+			if err != nil {
+				t.Fatalf("restack: %v", err)
+			}
+			if want := "fetched · rebased onto " + tt.onto; out != want {
+				t.Fatalf("output = %q, want %q", out, want)
+			}
+			dropStep(t, restackInvocations(t, f), "gh", "GET", "repos/yasyf/cc-context/pulls", "head=yasyf:feature", "state=open")
+			if !stackOnto(t, f, "refs/remotes/origin/"+tt.onto, "feature") {
+				t.Errorf("feature is not on the fetched %s", tt.onto)
+			}
+			if got := restackRead(t, filepath.Join(f.Dir, "upstream.txt")); got != "upstream\n" {
+				t.Errorf("upstream.txt = %q, want the fetched %s's content", got, tt.onto)
+			}
+		})
+	}
+}
+
+func TestRestackGitAlreadyOnThePullRequestBase(t *testing.T) {
+	f := restackGitStacked(t, map[string]dropSeed{"feature": {number: 2, state: "OPEN", base: "base"}})
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+	before := restackRev(t, f, f.Dir, "HEAD")
+	restackReset(t, f)
+
+	out, _, err := runRestackCmd(t, f)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if want := "fetched · already up to date"; out != want {
+		t.Fatalf("output = %q, want %q — trunk moved, but feature's parent is base", out, want)
+	}
+	if after := restackRev(t, f, f.Dir, "HEAD"); after != before {
+		t.Errorf("HEAD moved from %s to %s while already on its parent", before, after)
+	}
+	assertNoRestackMutation(t, restackInvocations(t, f))
+}
+
+func TestRestackGitLeavesARewrittenParentsCommitsBehind(t *testing.T) {
+	f := restackGitStacked(t, map[string]dropSeed{"feature": {number: 2, state: "OPEN", base: "base"}})
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+	clone := filepath.Join(t.TempDir(), "upstream")
+	restackRun(t, f, filepath.Dir(clone), "git", "clone", "-q", "--branch", "base", f.RemoteDir, clone)
+	restackRun(t, f, clone, "git", "config", "user.email", "t@t.t")
+	restackRun(t, f, clone, "git", "config", "user.name", "t")
+	restackWrite(t, filepath.Join(clone, "base.txt"), "base, revised\n")
+	restackRun(t, f, clone, "git", "commit", "-qam", "base, revised")
+	restackRun(t, f, clone, "git", "rebase", "-q", "origin/main")
+	restackRun(t, f, clone, "git", "push", "-qf", "origin", "base")
+
+	out, _, err := runRestackCmd(t, f)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if want := "fetched · rebased onto base"; out != want {
+		t.Fatalf("output = %q, want %q", out, want)
+	}
+	if got := strings.TrimSpace(restackRun(t, f, f.Dir, "git", "rev-list", "--count", "refs/remotes/origin/base..feature")); got != "1" {
+		t.Errorf("commits above base = %s, want 1 — the old base's commits were replayed along with feature's", got)
+	}
+	if got := restackRead(t, filepath.Join(f.Dir, "base.txt")); got != "base, revised\n" {
+		t.Errorf("base.txt = %q, want the rewritten base's content", got)
+	}
+}
+
 func TestRestackJJAlreadyUpToDate(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.JJ(), vcstest.Remote())
 	f.Isolate(t)
@@ -858,6 +956,7 @@ func TestRestackGraphiteFirst(t *testing.T) {
 
 	t.Run("no gt routes to the vcs lane", func(t *testing.T) {
 		f := restackGTRepo(t, "feat")
+		installDropGH(t, f, nil)
 		restackReset(t, f)
 
 		out, _, err := runRestackCmd(t, f, "--no-gt")
