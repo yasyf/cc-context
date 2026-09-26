@@ -318,7 +318,7 @@ func gtMergedHeads(ctx context.Context, dir render.Dir, l lane, prefix, trunk st
 	if err != nil {
 		return nil, err
 	}
-	client := gtAPIClient()
+	client := gtAPI(ctx)
 	var mu sync.Mutex
 	merged := map[string]string{}
 	g, gctx := errgroup.WithContext(ctx)

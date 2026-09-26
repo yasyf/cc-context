@@ -267,7 +267,7 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int) ([]prQueueR
 	if !ok {
 		return nil, fmt.Errorf("pr status: malformed repository name %q", repo)
 	}
-	infos, err := gtAPIClient().PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{
+	infos, err := gtAPI(ctx).PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{
 		RepoOwner:  owner,
 		RepoName:   name,
 		PRNumbers:  numbers,

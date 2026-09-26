@@ -429,13 +429,12 @@ func TestShipPRBodyFromStdin(t *testing.T) {
 // PRs #1 and #2: overwriting the predecessor would leave the pull request under
 // review bodyless.
 func TestShipPRGTWritesTheNewestPR(t *testing.T) {
-	log := setupShipGT(t, true)
-	api := stubGTAPI(t)
-	api.prs["feature"] = 9
-	api.merged["feature"] = gtStubMerged{number: 3, head: "c0ffee"}
+	log, gt := setupShipGT(t, true)
+	gt.prs["feature"] = 9
+	gt.merged["feature"] = gtStubMerged{number: 3, head: "c0ffee"}
 	body := writePRBody(t, "body.md", "why this change\n")
 
-	got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+	got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -459,12 +458,12 @@ func TestShipPRGTWritesTheNewestPR(t *testing.T) {
 // graphite already named every branch's open pull request, and this ship writes
 // every body, so the batched gh query has nothing left to add.
 func TestShipPRGTSkipsDownstackQuery(t *testing.T) {
-	log := setupShipGT(t, true)
+	log, _ := setupShipGT(t, true)
 	api := stubGTAPI(t)
 	api.prs["feature"] = 41
 	body := writePRBody(t, "body.md", "why this change\n")
 
-	got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+	got, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -484,8 +483,7 @@ func TestShipPRGTSkipsDownstackQuery(t *testing.T) {
 // TestShipPRGTWarnsFromGraphitesBody weighs a branch this ship writes no body
 // for by the body Graphite reported, without asking GitHub for it again.
 func TestShipPRGTWarnsFromGraphitesBody(t *testing.T) {
-	log := setupShipGT(t, true)
-	api := stubGTAPI(t)
+	log, api := setupShipGT(t, true)
 	api.prs["feature"], api.prs["feature2"] = 41, 42
 	api.bodies["feature"] = "written by hand"
 	t.Setenv("GIT_BRANCH", "feature2")
@@ -493,7 +491,7 @@ func TestShipPRGTWarnsFromGraphitesBody(t *testing.T) {
 		`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
 	body := writePRBody(t, "body.md", "why this change\n")
 
-	got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+	got, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -508,11 +506,11 @@ func TestShipPRGTWarnsFromGraphitesBody(t *testing.T) {
 }
 
 func TestShipPRGTBothFlags(t *testing.T) {
-	log := setupShipGT(t, true)
-	stubGTAPI(t).prs["feature"] = 7
+	log, gt := setupShipGT(t, true)
+	gt.prs["feature"] = 7
 	body := writePRBody(t, "body.md", "why this change\n")
 
-	got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
+	got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -563,14 +561,14 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			log := setupShipGT(t, true)
+			log, gt := setupShipGT(t, true)
 			t.Setenv("GIT_STAGED_EMPTY", "1")
 			stubGTAPI(t).prs["feature"] = 7
 			body := writePRBody(t, "body.md", "why this change\n")
 			writeShipFile(t, ".", "src/a.go", "package a\n")
 
 			args := append([]string{"--no-watch", "--pr-title", "fix: 🐛 frobnicate the widget", "--pr-body-file", body}, tt.paths...)
-			got, err := runShipCmd(context.Background(), t, args...)
+			got, err := runShipCmd(gt.ctx(context.Background()), t, args...)
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -607,7 +605,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 // gt submit opens a pull request for the whole downstack with no body, and only
 // the branches this invocation named get one written.
 func TestShipPRGTBackfill(t *testing.T) {
-	log := setupShipGT(t, true)
+	log, gt := setupShipGT(t, true)
 	t.Setenv("GIT_BRANCH", "feature2")
 	setGTState(t, `{"main":{"trunk":true},`+
 		`"base":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
@@ -619,7 +617,7 @@ func TestShipPRGTBackfill(t *testing.T) {
 	tipBody := writePRBody(t, "tip.md", "tip body\n")
 	midBody := writePRBody(t, "mid.md", "mid body\n")
 
-	got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch",
+	got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch",
 		"--pr-body-file", tipBody, "--pr-body-file", "feature="+midBody)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
@@ -646,7 +644,7 @@ func TestShipPRGTBackfill(t *testing.T) {
 // commands that finish only the restate, the one refused and every one after it.
 func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 	t.Run("graphite lane", func(t *testing.T) {
-		log := setupShipGT(t, true)
+		log, gt := setupShipGT(t, true)
 		t.Setenv("GIT_BRANCH", "feature2")
 		setGTState(t, `{"main":{"trunk":true},`+
 			`"feature":{"parents":[{"ref":"main","sha":"beadfeed"}]},`+
@@ -657,7 +655,7 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 		tipBody := writePRBody(t, "tip.md", "tip body\n")
 		midBody := writePRBody(t, "mid.md", "mid body\n")
 
-		_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch",
+		_, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch",
 			"--pr-title", "Tip title", "--pr-body-file", tipBody, "--pr-body-file", "feature="+midBody)
 		if err == nil {
 			t.Fatal("ship succeeded over a refused restate")
@@ -724,8 +722,8 @@ func TestShipPRUnusedCostsNothing(t *testing.T) {
 		}
 	})
 	t.Run("gt lane", func(t *testing.T) {
-		log := setupShipGT(t, true)
-		if _, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
+		log, gt := setupShipGT(t, true)
+		if _, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
 		invocations := readInvocations(t, log)

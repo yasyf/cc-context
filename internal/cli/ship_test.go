@@ -4107,7 +4107,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			log := setupShipGT(t, true)
+			log, gt := setupShipGT(t, true)
 			t.Setenv("GIT_BRANCH", tt.branch)
 			setGTState(t, tt.stateJSON)
 			t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
@@ -4115,7 +4115,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			t.Setenv("GIT_LOG_BODY", "why")
 			shipCIPollInterval = 0
 
-			got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate")
+			got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate")
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
@@ -4151,7 +4151,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 // is named by ccx rather than left to gt's message-derived guess, and the
 // report says so before the submit.
 func TestShipGTTrunkStacksBranch(t *testing.T) {
-	log := setupShipGT(t, true)
+	log, gt := setupShipGT(t, true)
 	t.Setenv("GIT_BRANCH", "main")
 	setGTState(t, `{"main":{"trunk":true}}`)
 	setGTStateAfterCreate(t, `{"main":{"trunk":true},"fix-frobnicate":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
@@ -4160,7 +4160,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 	t.Setenv("GIT_LOG_BODY", "why")
 	shipCIPollInterval = 0
 
-	got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate")
+	got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -4194,11 +4194,10 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 func TestShipGTBodylessPR(t *testing.T) {
 	url := func(n int) string { return gtStubPRURL(n) }
 	t.Run("a bodyless submit is reported", func(t *testing.T) {
-		setupShipGT(t, true)
-		api := stubGTAPI(t)
-		api.prs["feature"], api.bodies["feature"] = 7, "  "
+		_, gt := setupShipGT(t, true)
+		gt.prs["feature"], gt.bodies["feature"] = 7, "  "
 
-		got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch")
+		got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -4209,11 +4208,11 @@ func TestShipGTBodylessPR(t *testing.T) {
 	})
 
 	t.Run("a body this ship writes settles it", func(t *testing.T) {
-		setupShipGT(t, true)
-		stubGTAPI(t).prs["feature"] = 7
+		_, gt := setupShipGT(t, true)
+		gt.prs["feature"] = 7
 		body := writePRBody(t, "body.md", "why this change\n")
 
-		got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -4224,11 +4223,11 @@ func TestShipGTBodylessPR(t *testing.T) {
 	})
 
 	t.Run("an empty body file settles nothing", func(t *testing.T) {
-		setupShipGT(t, true)
-		stubGTAPI(t).prs["feature"] = 7
+		_, gt := setupShipGT(t, true)
+		gt.prs["feature"] = 7
 		body := writePRBody(t, "empty.md", "  \n\t\n")
 
-		got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -4240,7 +4239,7 @@ func TestShipGTBodylessPR(t *testing.T) {
 	})
 
 	t.Run("a bodyless downstack under a bodied tip is named too", func(t *testing.T) {
-		setupShipGT(t, true)
+		_, gt := setupShipGT(t, true)
 		t.Setenv("GIT_BRANCH", "feature2")
 		setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 			`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
@@ -4248,7 +4247,7 @@ func TestShipGTBodylessPR(t *testing.T) {
 		api.prs["feature"], api.prs["feature2"] = 6, 7
 		api.bodies["feature2"] = "why"
 
-		got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch")
+		got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -5110,7 +5109,7 @@ func TestShipGTHunkScoped(t *testing.T) {
 // GIT_INDEX_FILE, and a runner that took the env but returned stdout alone would
 // both trust the exit 0 and discard the sentence that contradicts it.
 func TestShipGTHunkScopedRefusesALyingExitZero(t *testing.T) {
-	setupShipGT(t, false)
+	_, gt := setupShipGT(t, false)
 	if err := os.WriteFile("f.txt", []byte(hunkCurrent), 0o600); err != nil {
 		t.Fatalf("write f.txt: %v", err)
 	}
@@ -5124,7 +5123,7 @@ func TestShipGTHunkScopedRefusesALyingExitZero(t *testing.T) {
 	const diagnostic = gtErrorPrefix + "Could not create newbranch: its parent is frozen."
 	t.Setenv("GT_CREATE_STDERR", diagnostic)
 
-	got, stderr, err := runShipCmdFull(context.Background(), t, "-m", "fix: frobnicate", "--no-push", "--new-branch=newbranch", "--only-hunk", ref, "f.txt")
+	got, stderr, err := runShipCmdFull(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-push", "--new-branch=newbranch", "--only-hunk", ref, "f.txt")
 	if err == nil {
 		t.Fatalf("ship reported %q, want a refusal", got)
 	}
@@ -5677,13 +5676,13 @@ func TestShipGTRefusals(t *testing.T) {
 	// gt track exits 0 while reporting a branch it refused to adopt, and ccx has
 	// no second oracle for a parent gt never wrote — so the ERROR: is the verdict.
 	t.Run("a track that reports an error at exit 0 still refuses", func(t *testing.T) {
-		log := setupShipGT(t, false)
+		log, gt := setupShipGT(t, false)
 		setGTState(t, `{"main":{"trunk":true}}`)
 		line := gtErrorPrefix + "Cannot track feature: it has no commits of its own."
 		t.Setenv("GT_TRACK_STDERR", line)
 		t.Setenv("GIT_NO_REMOTE_TRUNK", "1")
 
-		_, errOut, err := runShipCmdFull(context.Background(), t, "-m", "fix: frobnicate", "--no-push")
+		_, errOut, err := runShipCmdFull(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-push")
 		if err == nil {
 			t.Fatal("expected refusal, got nil")
 		}
@@ -5727,11 +5726,11 @@ func TestShipGTExitZeroErrorRefuses(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setupShipGT(t, false)
+			_, gt := setupShipGT(t, false)
 			line := gtErrorPrefix + "Could not reach the Graphite server."
 			t.Setenv(tt.env, line)
 
-			out, _, err := runShipCmdFull(context.Background(), t, "-m", "fix: frobnicate", "--no-push", "--new-branch=newbranch")
+			out, _, err := runShipCmdFull(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-push", "--new-branch=newbranch")
 			if err == nil {
 				t.Fatalf("ship reported %q, want a refusal — gt exited 0 saying it did not do the work", out)
 			}
@@ -5756,7 +5755,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		api := stubGTAPI(t)
 		api.unauthorized = true
 
-		_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate")
+		_, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate")
 		want := submitAdvice("graphite auth required — run gt auth")
 		if err == nil || err.Error() != want {
 			t.Fatalf("error = %v, want %q", err, want)
@@ -5767,11 +5766,11 @@ func TestShipGTSubmitFailures(t *testing.T) {
 	})
 
 	t.Run("an unsynced repo refuses before any push", func(t *testing.T) {
-		log := setupShipGT(t, false)
+		log, _ := setupShipGT(t, false)
 		api := stubGTAPI(t)
 		api.synced = gtapi.RepoNotSyncedAddable
 
-		_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate")
+		_, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate")
 		want := submitAdvice("graphite does not sync yasyf/cc-context (NOT_SYNCED_ADDABLE) — add the repo at app.graphite.dev, or pass --no-gt")
 		if err == nil || err.Error() != want {
 			t.Fatalf("error = %v, want %q", err, want)
@@ -5786,7 +5785,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		api := stubGTAPI(t)
 
 		for range 2 {
-			if _, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate"); err != nil {
+			if _, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate"); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 		}
@@ -5804,7 +5803,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		api.synced = gtapi.RepoNotSyncedAddable
 
 		for range 2 {
-			if _, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate"); err == nil {
+			if _, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate"); err == nil {
 				t.Fatal("ship succeeded against an unsynced repo")
 			}
 		}
@@ -5814,11 +5813,11 @@ func TestShipGTSubmitFailures(t *testing.T) {
 	})
 
 	t.Run("a pre-submit refusal wraps verbatim", func(t *testing.T) {
-		log := setupShipGT(t, false)
+		log, _ := setupShipGT(t, false)
 		api := stubGTAPI(t)
 		api.presubmitError = "repo not initialized"
 
-		_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate")
+		_, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate")
 		if err == nil || !strings.Contains(err.Error(), "ship: gtapi: pre-submit-pull-requests: repo not initialized") {
 			t.Fatalf("error = %v, want the pre-submit refusal wrapped verbatim", err)
 		}
@@ -5828,16 +5827,16 @@ func TestShipGTSubmitFailures(t *testing.T) {
 	})
 
 	t.Run("a stale lease is the remote-changed advice", func(t *testing.T) {
-		log := setupShipGT(t, false)
-		stubGTAPI(t)
+		log, _ := setupShipGT(t, false)
+		api := stubGTAPI(t)
 		lease := "cafecafecafecafecafecafecafecafecafecafe"
 		recorded := gtmeta.Version{HeadSha: lease, BaseSha: "deadbeef", BaseName: "main"}
-		if err := gtmeta.RecordSubmitted(t.Context(), os.Getenv("GT_META_DIR"), map[string]gtmeta.Version{"feature": recorded}); err != nil {
+		if err := gtmeta.RecordSubmitted(api.ctx(t.Context()), os.Getenv("GT_META_DIR"), map[string]gtmeta.Version{"feature": recorded}); err != nil {
 			t.Fatalf("seed last_submitted_version: %v", err)
 		}
 		t.Setenv("GIT_LEASE_STALE", "1")
 
-		_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate")
+		_, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate")
 		want := submitAdvice("remote feature changed since last submit, by a push this repository did not make — fetch it and fold in what it added, then submit again")
 		if err == nil || err.Error() != want {
 			t.Fatalf("error = %v, want %q", err, want)
@@ -5861,7 +5860,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 			`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
 		api.submitErrors["feature2"] = "base branch not found"
 
-		_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate")
+		_, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate")
 		want := submitAdvice("graphite refused feature2 (base branch not found); every branch is already pushed; landed feature → PR #100")
 		if err == nil || err.Error() != want {
 			t.Fatalf("error = %v, want %q", err, want)
@@ -5869,7 +5868,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		// Both branches pushed before the refusal, so both leases track the
 		// remote heads this run moved; feature sits on trunk, so its base is
 		// the remote trunk's head.
-		last, lerr := gtmeta.LastSubmitted(t.Context(), os.Getenv("GT_META_DIR"))
+		last, lerr := gtmeta.LastSubmitted(api.ctx(t.Context()), os.Getenv("GT_META_DIR"))
 		if lerr != nil {
 			t.Fatalf("LastSubmitted: %v", lerr)
 		}
@@ -5892,7 +5891,7 @@ func TestShipGTResubmitUpdates(t *testing.T) {
 	api := stubGTAPI(t)
 	api.prs["feature"] = 41
 
-	if _, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate"); err != nil {
+	if _, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	entry := api.submitEntry("feature")
@@ -5916,7 +5915,7 @@ func TestShipGTSubmitsAnUpdateAndACreateSeparately(t *testing.T) {
 	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 		`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
 
-	if _, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate"); err != nil {
+	if _, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	if heads := api.submitHeads(); !slices.Equal(heads, []string{"feature", "feature2"}) {
@@ -5949,11 +5948,11 @@ func TestShipGTSubmitsAnUpdateAndACreateSeparately(t *testing.T) {
 // requires on a create that ccx derives rather than being given: a commit with
 // no subject leaves no title, so the submit refuses before it pushes anything.
 func TestShipGTEmptySubjectRefusesBeforeTheSubmit(t *testing.T) {
-	log := setupShipGT(t, false)
+	log, _ := setupShipGT(t, false)
 	api := stubGTAPI(t)
 	t.Setenv("GIT_LOG_SUBJECT", "")
 
-	_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate")
+	_, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate")
 	want := "ship: the first commit on feature above main has an empty subject, and graphite needs a title to create a pull request — give that commit a subject line"
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
@@ -5970,14 +5969,14 @@ func TestShipGTEmptySubjectRefusesBeforeTheSubmit(t *testing.T) {
 // graphite-cli: a stack goes up one entry per POST, base first, however deep it
 // is, and every branch moves in one atomic push before the first POST.
 func TestShipGTSubmitsOneEntryPerPost(t *testing.T) {
-	log := setupShipGT(t, false)
+	log, _ := setupShipGT(t, false)
 	api := stubGTAPI(t)
 	t.Setenv("GIT_BRANCH", "feature2")
 	setGTState(t, `{"main":{"trunk":true},"base":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 		`"feature":{"parents":[{"ref":"base","sha":"beadfeed"}]},`+
 		`"feature2":{"parents":[{"ref":"feature","sha":"cafebabe"}]}}`)
 
-	if _, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate"); err != nil {
+	if _, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base", "feature", "feature2"}) {
@@ -6024,7 +6023,7 @@ func TestShipGTSubmitBodyMatchesGT(t *testing.T) {
 	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 		`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
 
-	if _, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate"); err != nil {
+	if _, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	bodies := api.submitBodies()
@@ -6052,7 +6051,7 @@ func TestShipGTMidStackRefusalNamesWhatLanded(t *testing.T) {
 		`"feature2":{"parents":[{"ref":"feature","sha":"cafebabe"}]}}`)
 	api.submitErrors["feature"] = "base branch not found"
 
-	_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate")
+	_, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate")
 	want := submitAdvice("graphite refused feature (base branch not found); every branch is already pushed; landed base → PR #100")
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
@@ -6076,8 +6075,8 @@ func TestShipGTSubmitCarriesTheHookDecision(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			log := setupShipGT(t, false)
-			if _, err := runShipCmd(context.Background(), t, append([]string{"-m", "fix: frobnicate"}, tt.args...)...); err != nil {
+			log, gt := setupShipGT(t, false)
+			if _, err := runShipCmd(gt.ctx(context.Background()), t, append([]string{"-m", "fix: frobnicate"}, tt.args...)...); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 			var push []string
@@ -6111,7 +6110,7 @@ func TestShipGTDraftPublish(t *testing.T) {
 			setupShipGT(t, false)
 			api := stubGTAPI(t)
 			args := append([]string{"-m", "fix: frobnicate"}, tt.args...)
-			if _, err := runShipCmd(context.Background(), t, args...); err != nil {
+			if _, err := runShipCmd(api.ctx(context.Background()), t, args...); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 			pr := api.submitEntry("feature")
@@ -6125,8 +6124,8 @@ func TestShipGTDraftPublish(t *testing.T) {
 	}
 
 	t.Run("draft and publish are mutually exclusive", func(t *testing.T) {
-		log := setupShipGT(t, false)
-		_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-push", "--draft", "--publish")
+		log, gt := setupShipGT(t, false)
+		_, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-push", "--draft", "--publish")
 		wantErr := "if any flags in the group [draft publish] are set none of the others can be; [draft publish] were all set"
 		if err == nil || err.Error() != wantErr {
 			t.Errorf("error = %v, want %q", err, wantErr)
@@ -6154,8 +6153,8 @@ func TestShipParentOutsideGTLaneRequiresPush(t *testing.T) {
 }
 
 func TestShipGTGHMissing(t *testing.T) {
-	log := setupShipGT(t, false)
-	got, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate")
+	log, gt := setupShipGT(t, false)
+	got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -6326,7 +6325,7 @@ func TestShipReviewsWiring(t *testing.T) {
 	})
 
 	t.Run("gt lane watches every downstack branch", func(t *testing.T) {
-		log := setupShipGT(t, true)
+		log, gt := setupShipGT(t, true)
 		api := stubReviewsAPI(t)
 		t.Setenv("GIT_BRANCH", "feature2")
 		setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
@@ -6336,7 +6335,7 @@ func TestShipReviewsWiring(t *testing.T) {
 		t.Setenv("GH_PR_VIEW_NOT_FOUND", "1")
 		shipCIPollInterval = 0
 
-		out, _, err := runShipCmdFull(context.Background(), t, "-m", "fix: frobnicate", "--reviews")
+		out, _, err := runShipCmdFull(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--reviews")
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -6366,7 +6365,7 @@ func TestShipReviewsWiring(t *testing.T) {
 	})
 
 	t.Run("red CI plus clean reviews watch preserves the CI error", func(t *testing.T) {
-		setupShipGT(t, true)
+		_, gt := setupShipGT(t, true)
 		stubReviewsAPI(t)
 		t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
 		t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-failed"))
@@ -6375,7 +6374,7 @@ func TestShipReviewsWiring(t *testing.T) {
 		t.Setenv("GH_PR_VIEW_NOT_FOUND", "1")
 		shipCIPollInterval = 0
 
-		_, _, err := runShipCmdFull(context.Background(), t, "-m", "fix: frobnicate", "--reviews")
+		_, _, err := runShipCmdFull(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--reviews")
 		if err == nil {
 			t.Fatal("expected a non-nil error from the failed CI run")
 		}
@@ -6484,7 +6483,7 @@ func TestShipGTStackNamedBeforeSubmit(t *testing.T) {
 			t.Setenv("GIT_BRANCH", tt.branch)
 			setGTState(t, tt.stateJSON)
 
-			_, errStr, err := runShipCmdFull(context.Background(), t, "-m", "fix: frobnicate", "--no-watch")
+			_, errStr, err := runShipCmdFull(api.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch")
 			if err != nil {
 				t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
 			}
@@ -6506,10 +6505,10 @@ func TestShipGTStackNamedBeforeSubmit(t *testing.T) {
 // base comes from: the remote-tracking trunk the submit fetched, never gt's
 // record of a local trunk a stale checkout leaves behind origin's.
 func TestShipGTAnchorsTheBaseOnTheRemoteTrunk(t *testing.T) {
-	log := setupShipGT(t, false)
+	log, _ := setupShipGT(t, false)
 	api := stubGTAPI(t)
 
-	if _, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
+	if _, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	entry := api.submitEntry("feature")
@@ -6522,7 +6521,7 @@ func TestShipGTAnchorsTheBaseOnTheRemoteTrunk(t *testing.T) {
 	if want := gtCreateLogInv(gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA); !hasInvocation(readInvocations(t, log), want) {
 		t.Errorf("no invocation matched %v — the create's title came from a range against the local trunk", want)
 	}
-	last, err := gtmeta.LastSubmitted(t.Context(), os.Getenv("GT_META_DIR"))
+	last, err := gtmeta.LastSubmitted(api.ctx(t.Context()), os.Getenv("GT_META_DIR"))
 	if err != nil {
 		t.Fatalf("LastSubmitted: %v", err)
 	}
@@ -6538,13 +6537,13 @@ func TestShipGTAnchorsTheBaseOnTheRemoteTrunk(t *testing.T) {
 // and the empty pull request that followed made graphite refuse the submit —
 // so the branch actually being shipped never got one.
 func TestShipGTSkipsBranchesTrunkContains(t *testing.T) {
-	log := setupShipGT(t, true)
+	log, _ := setupShipGT(t, true)
 	api := stubGTAPI(t)
 	setGTState(t, `{"main":{"trunk":true},"junk":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 		`"feature":{"parents":[{"ref":"junk","sha":"beadfeed"}]}}`)
 	t.Setenv("GIT_CONTAINED", "beadfeed")
 
-	out, errStr, err := runShipCmdFull(context.Background(), t, "-m", "fix: frobnicate", "--no-watch")
+	out, errStr, err := runShipCmdFull(api.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch")
 	if err != nil {
 		t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
 	}
@@ -6573,11 +6572,11 @@ func TestShipGTSkipsBranchesTrunkContains(t *testing.T) {
 // silent: dropping the branch the run exists to submit would report a submit
 // that pushed nothing at all.
 func TestShipGTRefusesAShippedBranchTrunkContains(t *testing.T) {
-	log := setupShipGT(t, false)
+	log, gt := setupShipGT(t, false)
 	t.Setenv("GIT_STAGED_EMPTY", "1")
 	t.Setenv("GIT_CONTAINED", vcstest.GraphiteLeafSHA)
 
-	_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch")
+	_, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch")
 	problem := "origin/main already contains feature, so it has no commit left to submit — clear it out with ccx vcs prune, or ship a branch carrying commits of its own"
 	want := gtStuck("ship", problem, gtStuckSuffix(shipOpts{noCommit: true}))
 	if err == nil || err.Error() != want {

@@ -1,12 +1,13 @@
 // The Graphite API stub the gt-lane ship tests submit against: an httptest
-// server behind gtAPIClient serving the routes gtSubmitStack calls, recording
-// every request so a test can assert the HTTP half of a submit beside the
-// argv log.
+// server the test carries on its context, serving the routes gtSubmitStack
+// calls and recording every request so a test can assert the HTTP half of a
+// submit beside the argv log.
 package cli
 
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,8 +27,9 @@ import (
 const gtStubSubmitRoute = "/graphite/submit/pull-requests"
 
 type gtAPIStub struct {
-	t  *testing.T
-	mu sync.Mutex
+	t      *testing.T
+	client *gtapi.Client
+	mu     sync.Mutex
 
 	synced         gtapi.RepoSyncStatus
 	syncMessage    string
@@ -95,9 +97,9 @@ type gtStubSubmitEntry struct {
 	MaintainRetarget bool               `json:"maintainRetarget"`
 }
 
-// stubGTAPI points gtAPIClient at a fresh stub for the test's duration. The
-// last install wins, so a test needing configuration calls it again after its
-// fixture helper installed the default.
+// stubGTAPI serves a fresh stub for the test's duration, reached by the
+// contexts [gtAPIStub.ctx] returns. The last decorator wins, so a test needing
+// configuration stubs again after its fixture helper installed the default.
 func stubGTAPI(t *testing.T) *gtAPIStub {
 	t.Helper()
 	s := &gtAPIStub{
@@ -112,13 +114,16 @@ func stubGTAPI(t *testing.T) *gtAPIStub {
 		nextPR:       100,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(s.serve))
-	prev := gtAPIClient
-	gtAPIClient = func() *gtapi.Client { return gtapi.NewWithToken(srv.URL, "gt-stub-token") }
-	t.Cleanup(func() {
-		gtAPIClient = prev
-		srv.Close()
-	})
+	s.client = gtapi.NewWithToken(srv.URL, "gt-stub-token")
+	t.Cleanup(srv.Close)
 	return s
+}
+
+// ctx returns parent carrying this stub as the Graphite API every gt-lane call
+// under it reaches, in place of the package-wide client a parallel test would
+// otherwise be racing another test to overwrite.
+func (s *gtAPIStub) ctx(parent context.Context) context.Context {
+	return withGTAPI(parent, s.client)
 }
 
 func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {

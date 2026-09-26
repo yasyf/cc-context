@@ -204,6 +204,7 @@ func TestShipDryRunPredictsTheRealShip(t *testing.T) {
 func TestShipDryRunNamesTheMovingPRHeads(t *testing.T) {
 	f := dryRunFixture(t)
 	stub := stubGTAPI(t)
+	f.Decorate(stub.ctx)
 	stub.prs["a"] = 20001
 	stub.prs["b"] = 22285
 	stub.prs["c"] = 23277
@@ -242,6 +243,7 @@ func TestShipDryRunNamesTheMovingPRHeads(t *testing.T) {
 func TestShipDryRunNamesTheDerivedTitles(t *testing.T) {
 	f := dryRunFixture(t)
 	stub := stubGTAPI(t)
+	f.Decorate(stub.ctx)
 	stub.prs["b"] = 22285
 
 	report := dryRunReport(t, f, "-m", "fix: frobnicate")

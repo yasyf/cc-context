@@ -249,6 +249,7 @@ func TestStackAllRefusesTrunk(t *testing.T) {
 func TestStackSubmitGoesThroughTheGraphiteAPI(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	shipResetLog(t, f)
 
 	out, _, err := runStackCmd(t, f, "submit")
@@ -318,6 +319,7 @@ func TestStackSubmitFrozenBranches(t *testing.T) {
 			branches := []string{"base", "feature", "tip"}
 			f := shipGTRepo(t, vcstest.GTStack(branches...))
 			api := stubGTAPI(t)
+			f.Decorate(api.ctx)
 			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature", "tip")
 			remote := map[string]string{}
 			for _, branch := range branches {
@@ -378,6 +380,7 @@ func TestStackSubmitFrozenBranches(t *testing.T) {
 func TestStackSubmitFrozenSiblingStopsReplay(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	shipGTStack(t, f, "base", "a-movable")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	shipGTStack(t, f, "z-frozen")
@@ -420,6 +423,7 @@ func TestStackSubmitRepairsIncorrectRestackMetadata(t *testing.T) {
 	branches := []string{"base", "feature"}
 	f := shipGTRepo(t, vcstest.GTStack(branches...))
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "--allow-empty", "-qm", "advance base")
@@ -685,6 +689,7 @@ func stackLane(t *testing.T, f *vcstest.Fixture, name string) string {
 func TestStackSubmitSkipsABranchAnotherWorkingCopyHolds(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	shipGTStack(t, f, "base")
 	lane := stackLane(t, f, "feature")
 	shipResetLog(t, f)
@@ -707,6 +712,7 @@ func TestStackSubmitSkipsABranchAnotherWorkingCopyHolds(t *testing.T) {
 func TestStackSubmitIncludesANamedLane(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	shipGTStack(t, f, "base")
 	stackLane(t, f, "feature")
 	shipResetLog(t, f)

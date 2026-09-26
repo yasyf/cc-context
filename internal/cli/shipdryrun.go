@@ -574,7 +574,7 @@ func dryRunHeads(ctx context.Context, l lane, o shipOpts, state gtState, chain [
 		r.notes = append(r.notes, "graphite: "+err.Error())
 		return nil
 	}
-	infos, err := gtAPIClient().PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{
+	infos, err := gtAPI(ctx).PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{
 		RepoOwner:        owner,
 		RepoName:         name,
 		PRHeadRefNames:   gtBottomUp(chain),
