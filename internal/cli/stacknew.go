@@ -117,7 +117,10 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 			}
 		}
 		if receipt == nil {
-			return stackFormLane(ctx, cmd.ErrOrStderr(), l, created, name, parent)
+			if err := stackFormLane(ctx, cmd.ErrOrStderr(), l, created, name, parent); err != nil {
+				return stackUndoNew(ctx, l, path, name, parent, err)
+			}
+			return nil
 		}
 		if l.checkout.Kind == vcs.JJ {
 			if err := stackColocateJJ(ctx, created, name); err != nil {
@@ -140,10 +143,29 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		return nil
 	}
 	if err := finish(); err != nil {
+		if errors.Is(err, errStackNewUndone) {
+			return err
+		}
 		return fmt.Errorf("stack new: child %s at %s is incomplete; its worktree, ref, and metadata were retained for inspection: %w", name, path, err)
 	}
 	cmd.Println(strings.Join([]string{"cut " + name + " onto " + parent, path}, shipSep))
 	return nil
+}
+
+var errStackNewUndone = errors.New("stack new: removed")
+
+// stackUndoNew removes a lane gt refused to adopt, whose branch and worktree
+// hold nothing yet: left behind, the next stack new refuses on the existing
+// destination, and a ship from it adopts the branch onto whatever tracked
+// ancestor gt finds instead of the parent named.
+func stackUndoNew(ctx context.Context, l lane, path, name, parent string, cause error) error {
+	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "remove", "--force", path}); err != nil {
+		return fmt.Errorf("stack new: gt could not adopt %s onto %s, and removing %s failed: %w (adoption: %w)", name, parent, path, err, cause)
+	}
+	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"branch", "-D", name}); err != nil {
+		return fmt.Errorf("stack new: gt could not adopt %s onto %s, and deleting the branch failed: %w (adoption: %w)", name, parent, err, cause)
+	}
+	return fmt.Errorf("%w %s and its worktree, since gt could not adopt it onto %s — track %s first with gt track --parent <its parent> %s, or name a tracked parent with --parent: %w", errStackNewUndone, name, parent, parent, parent, cause)
 }
 
 func stackNewPath(ctx context.Context, checkout vcs.Checkout, name, requested string) (string, error) {
