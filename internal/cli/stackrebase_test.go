@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -356,6 +357,93 @@ func TestStackRebaseConflictOpensAWorkspaceAndContinues(t *testing.T) {
 	}
 	if _, err := os.Stat(ws); !os.IsNotExist(err) {
 		t.Errorf("workspace %s left behind: %v", ws, err)
+	}
+}
+
+func TestStackContinueReturnsWhileTheWorkspaceIsStillBeingDeleted(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	stubStackPRs(t, nil)
+	stackConflicting(t, f)
+	marker := stackStallRm(t, f)
+
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err == nil {
+		t.Fatal("stack rebase succeeded, want the conflict on feature")
+	}
+	ws := stackWorkspaceOf(t, err)
+	writeShipFile(t, ws, "c.txt", "trunk\nfeature\n")
+	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
+	if _, _, err := runStackCmdIn(t, f, ws, "continue"); err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	stackAssertDiscarded(t, f, ws, marker)
+}
+
+func TestStackAbortSucceedsWhenRemovingTheWorkspaceIsKilled(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	stubStackPRs(t, nil)
+	stackConflicting(t, f)
+	marker := stackStallRm(t, f)
+	bin := t.TempDir()
+	writeShipFile(t, bin, "git", "#!/bin/sh\ncase \"$*\" in *\"worktree remove\"*) kill -TERM $$;; esac\nPATH=${PATH#"+bin+":} exec git \"$@\"\n")
+	if err := os.Chmod(filepath.Join(bin, "git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err == nil {
+		t.Fatal("stack rebase succeeded, want the conflict on feature")
+	}
+	ws := stackWorkspaceOf(t, err)
+	f.PrependPATH(bin)
+	if _, _, err := runStackCmd(t, f, "abort"); err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	stackAssertDiscarded(t, f, ws, marker)
+	if slots, _ := os.ReadDir(filepath.Join(f.Dir, ".git", "ccx-stack-rebase")); len(slots) != 0 {
+		t.Errorf("abort left %d rebase slots", len(slots))
+	}
+}
+
+func stackStallRm(t *testing.T, f *vcstest.Fixture) string {
+	t.Helper()
+	bin := t.TempDir()
+	marker, fifo := filepath.Join(bin, "rm-args"), filepath.Join(bin, "rm-gate")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeShipFile(t, bin, "rm", "#!/bin/sh\necho \"$@\" > "+marker+"\ncat "+fifo+"\n")
+	if err := os.Chmod(filepath.Join(bin, "rm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if gate, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			gate.Close()
+		}
+	})
+	f.PrependPATH(bin)
+	return marker
+}
+
+func stackAssertDiscarded(t *testing.T, f *vcstest.Fixture, ws, marker string) {
+	t.Helper()
+	if _, err := os.Stat(ws); !os.IsNotExist(err) {
+		t.Errorf("workspace %s still at its path: %v", ws, err)
+	}
+	if listed := gitAt(t, f.Env(), f.Dir, "worktree", "list", "--porcelain"); strings.Contains(listed, ws) {
+		t.Errorf("workspace %s still registered:\n%s", ws, listed)
+	}
+	var args string
+	for deadline := time.Now().Add(10 * time.Second); args == "" && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		raw, _ := os.ReadFile(marker)
+		args = strings.TrimSpace(string(raw))
+	}
+	aside, ok := strings.CutPrefix(args, "-rf ")
+	if !ok || filepath.Dir(aside) != filepath.Dir(ws) || !strings.HasPrefix(filepath.Base(aside), "."+filepath.Base(ws)+".") {
+		t.Fatalf("rm ran with %q, want -rf on the workspace moved aside next to %s", args, ws)
+	}
+	if _, err := os.Stat(aside); err != nil {
+		t.Errorf("the command waited for the deletion of %s: %v", aside, err)
 	}
 }
 
