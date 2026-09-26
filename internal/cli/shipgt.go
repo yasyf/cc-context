@@ -575,10 +575,16 @@ func gtOffParent(branch, held string) string {
 // A --parent gt track would refuse, because the parent was rewritten after the
 // branch was cut from it, first has the branch's own commits replayed onto it.
 func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch string, c *gtCache) (gtState, string, error) {
+	picked := ""
 	if o.parent == "" {
-		parent, err := gtTrunkParent(ctx, l, c, branch)
+		parent, stacked, err := gtTrunkParent(ctx, l, c, branch)
 		if err != nil {
 			return nil, "", err
+		}
+		if stacked {
+			if parent, picked, err = gtInferParent(ctx, c, branch); err != nil {
+				return nil, "", err
+			}
 		}
 		o.parent = parent
 	}
@@ -658,7 +664,7 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 		}
 		seg += " onto " + parent
 	}
-	return state, seg + replayed, nil
+	return state, seg + picked + replayed, nil
 }
 
 // gtAdoptOntoTrunk records a branch gt track -f adopted onto a landed parent
@@ -716,42 +722,107 @@ func gtRootBase(ctx context.Context, dir render.Dir, branch, trunk string) (head
 }
 
 // gtTrunkParent names trunk as the parent of a branch with commits above the
-// remote trunk and no tracked branch among them, and nothing otherwise. gt track -f walks every
+// remote trunk and no tracked branch among them; stacked reports a tracked
+// branch among them, and neither holds when there is nothing above trunk. gt track -f walks every
 // tracked branch for the nearest ancestor, which took seven minutes in a
 // repository tracking hundreds and then failed on a branch cut from trunk.
-func gtTrunkParent(ctx context.Context, l lane, c *gtCache, branch string) (string, error) {
+func gtTrunkParent(ctx context.Context, l lane, c *gtCache, branch string) (parent string, stacked bool, err error) {
 	state, err := c.at(ctx)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	trunk, err := gtTrunkBranch("ship", state)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	tr, err := gtTrunkRefOffline(ctx, l.dir(), "ship", trunk)
 	if errors.Is(err, vcs.ErrNoTrunk) {
-		return "", nil
+		return "", false, nil
 	}
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	out, err := render.RunCLI(ctx, c.dir, "git", []string{"rev-list", string(tr.Ref()) + ".." + gtRestackRef(branch)})
 	if err != nil {
-		return "", fmt.Errorf("ship: git rev-list %s..%s: %w", tr.Ref(), branch, err)
+		return "", false, fmt.Errorf("ship: git rev-list %s..%s: %w", tr.Ref(), branch, err)
 	}
 	above := map[string]bool{}
 	for line := range strings.Lines(out) {
 		above[strings.TrimSpace(line)] = true
 	}
 	if len(above) == 0 {
-		return "", nil
+		return "", false, nil
 	}
 	for name, s := range state {
 		if name != trunk && name != branch && above[s.Head] {
-			return "", nil
+			return "", true, nil
 		}
 	}
-	return trunk, nil
+	return trunk, false, nil
+}
+
+// gtInferParent names the parent gt track -f would pick for a branch stacked
+// on a tracked one: its nearest tracked ancestor, read from branches whose refs
+// exist, rather than gt's own walk over every tracked branch, which dies on one
+// another lane just deleted. One the remote trunk already contains gives way to
+// trunk, and picked then names it for the report.
+func gtInferParent(ctx context.Context, c *gtCache, branch string) (parent, picked string, err error) {
+	state, err := c.at(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	trunk, err := gtTrunkBranch("ship", state)
+	if err != nil {
+		return "", "", err
+	}
+	nearest, err := gtNearestTracked(ctx, c.dir, state, trunk, branch)
+	if err != nil {
+		return "", "", err
+	}
+	err = gtRefuseLandedParent(ctx, c.dir, state, branch, nearest)
+	var landed *errLandedParent
+	if errors.As(err, &landed) {
+		return trunk, fmt.Sprintf(" (its nearest tracked ancestor %s is already in %s/%s)", nearest, landed.Remote, landed.Trunk), nil
+	}
+	return nearest, "", err
+}
+
+// gtNearestTracked is the branch gt track -f would adopt onto: of the tracked
+// branches this one already contains, the one every other candidate is an
+// ancestor of. Trunk is the floor, so a branch cut straight off it lands there.
+// One for-each-ref names every contained branch, so only those are ordered,
+// walked in name order, which keeps the answer the same across runs when two of
+// them are siblings rather than a chain. A branch another lane deletes mid-walk
+// drops out of the candidates.
+func gtNearestTracked(ctx context.Context, dir render.Dir, state gtState, trunk, branch string) (string, error) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{
+		"for-each-ref", "--merged=" + gtRestackRef(branch), "--format=%(refname)", "refs/heads/",
+	})
+	if err != nil {
+		return "", fmt.Errorf("ship: git for-each-ref --merged %s: %w", branch, err)
+	}
+	var names []string
+	for _, ref := range strings.Fields(out) {
+		name := strings.TrimPrefix(ref, "refs/heads/")
+		if _, tracked := state[name]; tracked && name != branch && name != trunk {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	nearest := trunk
+	for _, name := range names {
+		ahead, err := gitIsAncestor(ctx, dir, "ship", gtRestackRef(nearest), gtRestackRef(name))
+		if err != nil {
+			if present, refErr := gitRefExists(ctx, dir, "ship", gtRestackRef(name)); refErr != nil || present {
+				return "", err
+			}
+			continue
+		}
+		if ahead {
+			nearest = name
+		}
+	}
+	return nearest, nil
 }
 
 // gtAdoptRefusal is every refusal adopting an untracked branch onto parent
