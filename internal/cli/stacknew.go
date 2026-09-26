@@ -83,7 +83,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		if receipt == nil {
 			return fmt.Errorf("stack new: %s has no publication receipt; publish it first", parent)
 		}
-		if err := stackVerifyNewParent(ctx, l.dir(), common, receipt); err != nil {
+		if err := stackVerifyNewParent(ctx, l.dir(), receipt); err != nil {
 			return err
 		}
 		if err := stackVerifyNewRemote(ctx, l.dir(), receipt); err != nil {
@@ -130,7 +130,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		if err := stackTrackPublished(ctx, created, cmd.ErrOrStderr(), common, name, receipt); err != nil {
 			return err
 		}
-		if err := stackVerifyNewParent(ctx, l.dir(), common, receipt); err != nil {
+		if err := stackVerifyNewParent(ctx, l.dir(), receipt); err != nil {
 			return err
 		}
 		head, err := stackRevParse(ctx, created, "HEAD")
@@ -351,21 +351,13 @@ func stackInstallSparseIndex(ctx context.Context, dir render.Dir, privateIndex, 
 	return nil
 }
 
-func stackVerifyNewParent(ctx context.Context, dir render.Dir, common string, receipt *stackPublication) error {
+func stackVerifyNewParent(ctx context.Context, dir render.Dir, receipt *stackPublication) error {
 	source, err := stackRevParse(ctx, dir, gtRestackRef(receipt.Branch))
 	if err != nil {
 		return err
 	}
 	if source != receipt.Source {
 		return fmt.Errorf("stack new: %s source changed since publication; publish it before creating a published child", receipt.Branch)
-	}
-	last, err := gtmeta.LastSubmitted(ctx, common)
-	if err != nil {
-		return err
-	}
-	branch := stackRebaseBranch{Name: receipt.Branch, Local: source, Remote: receipt.Head}
-	if err := stackUsePublication(ctx, dir, &branch, receipt, last[receipt.Branch]); err != nil {
-		return err
 	}
 	tx := fmt.Sprintf("start\nverify %s %s\nverify %s %s\ncommit\n", gtRestackRef(receipt.Branch), receipt.Source, stackPublicationRef(receipt.Branch, "receipt"), receipt.OID)
 	if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "--stdin"}, []byte(tx)); err != nil {

@@ -52,7 +52,7 @@ func runStackRepairPublishedChild(cmd *cobra.Command, parent string) error {
 	if receipt == nil {
 		return fmt.Errorf("stack repair-published-child: %s has no publication receipt", parent)
 	}
-	if err := stackVerifyNewParent(ctx, l.dir(), common, receipt); err != nil {
+	if err := stackVerifyNewParent(ctx, l.dir(), receipt); err != nil {
 		return err
 	}
 	submitted, err := gtmeta.LastSubmitted(ctx, common)
@@ -91,7 +91,7 @@ func runStackRepairPublishedChild(cmd *cobra.Command, parent string) error {
 	if err := stackVerifyPublishedChildRefs(ctx, l.dir(), child, receipt); err != nil {
 		return err
 	}
-	if err := stackVerifyNewParent(ctx, l.dir(), common, receipt); err != nil {
+	if err := stackVerifyNewParent(ctx, l.dir(), receipt); err != nil {
 		return err
 	}
 	cmd.Printf("repaired %s onto published %s\n", child, parent)
