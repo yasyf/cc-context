@@ -102,15 +102,32 @@ jobs:
         with:
           ref: ${{ inputs.commit || github.sha }}
       - uses: actions/setup-go@v6
+        id: go
         with:
           go-version-file: go.mod
           check-latest: true
           cache: true
       - uses: ./.github/actions/cli-test-env
       - uses: ./.github/actions/wasm
+      - name: Cache the wazero AOT compilation output
+        uses: actions/cache@v5
+        with:
+          # Two roots: the cache dir the suites resolve off $CLAUDE_PLUGIN_DATA,
+          # and the fixed one internal/semsearch/chunk's TestMain pins under
+          # os.TempDir(). The Test step moves both under $RUNNER_TEMP.
+          path: |
+            ${{ runner.temp }}/ccx-cache/wasm
+            ${{ runner.temp }}/cc-context-test-wasm-cache/wasm
+          key: wasm-aot-${{ matrix.group }}-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-${{ hashFiles('scripts/build-wasm.sh', 'scripts/build-embed-wasm.sh', 'scripts/build-chunk-grammars.sh', 'format-core/core/**', 'format-core/wasm/**', 'format-core/Cargo.lock', 'format-core/Cargo.toml', 'format-core/rust-toolchain.toml', 'embed-core/**', 'internal/semsearch/chunk/wasm/bridge.c', 'internal/semsearch/chunk/wasm/wasm_endian.h') }}
       - name: Test (race)
         # internal/cli stands up real git/jj/gt repositories per test rather than
         # faking their output, so it runs well past go test's 10m default.
+        env:
+          # $RUNNER_TEMP is one static path per runner, so the cache step above
+          # can name both AOT roots; $HOME and the macOS launchd temp dir cannot
+          # both be spelled statically.
+          CLAUDE_PLUGIN_DATA: ${{ runner.temp }}/ccx-cache
+          TMPDIR: ${{ runner.temp }}
         run: |
           if [ "${{ matrix.group }}" = heavy ]; then
             pkgs="$(go list ./... | grep -E "$HEAVY_PKGS")"
