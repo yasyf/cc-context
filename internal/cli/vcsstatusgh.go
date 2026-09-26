@@ -187,7 +187,7 @@ func statusResolvePRs(ctx context.Context, l lane, st *vcsStatus) {
 	if st.Repo == "" || st.PRError != "" {
 		return
 	}
-	if !statusGH() {
+	if !statusGH(ctx) {
 		st.PRError = "gh is not on PATH — install it to report pull requests"
 		return
 	}

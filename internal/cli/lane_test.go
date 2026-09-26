@@ -710,3 +710,22 @@ func TestReviewsStackDeclinesForeignRepo(t *testing.T) {
 	}
 	assertShipRefusedClean(t, f, head)
 }
+
+// TestResolveLaneGTMissingFromContext pins the gt probe to the PATH the
+// context carries. The fixture's shim directory alone is that PATH and the gt
+// shim is gone from it, while the process keeps whatever gt the machine has —
+// so only a context-resolved lookup refuses.
+func TestResolveLaneGTMissingFromContext(t *testing.T) {
+	t.Parallel()
+	f := vcstest.Repo(t, vcstest.Remote(), vcstest.GT())
+	f.OnlyShimPATH(t)
+	if err := os.Remove(filepath.Join(f.ShimBin, "gt")); err != nil {
+		t.Fatalf("remove gt shim: %v", err)
+	}
+
+	_, err := resolveLane(f.Context(), "lane", f.Dir, false)
+	want := "lane: graphite config found but gt not on PATH — install graphite (brew install graphite) or pass --no-gt"
+	if err == nil || err.Error() != want {
+		t.Fatalf("resolveLane error = %v, want %q", err, want)
+	}
+}

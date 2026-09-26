@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/ghapi"
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -1018,7 +1019,23 @@ func TestReviewsBadEnvInterval(t *testing.T) {
 	}
 }
 
+// TestReviewsPollIntervalFromContext pins the read to the environment the
+// context carries: render.Getenv falls back to the process, so a read left on
+// os.Getenv would return reviewsPollDefault here and nowhere else.
+func TestReviewsPollIntervalFromContext(t *testing.T) {
+	t.Parallel()
+	ctx := render.WithEnv(t.Context(), envReviewsPollInterval+"=7m")
+	interval, err := reviewsPollInterval(ctx, 0, false)
+	if err != nil {
+		t.Fatalf("reviewsPollInterval error = %v", err)
+	}
+	if interval != 7*time.Minute {
+		t.Errorf("interval = %v, want 7m0s", interval)
+	}
+}
+
 func TestReviewsPollIntervalFloor(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		flag    time.Duration
@@ -1032,10 +1049,9 @@ func TestReviewsPollIntervalFloor(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.env != "" {
-				t.Setenv(envReviewsPollInterval, tt.env)
-			}
-			_, err := reviewsPollInterval(tt.flag, tt.changed)
+			t.Parallel()
+			ctx := render.WithEnv(t.Context(), envReviewsPollInterval+"="+tt.env)
+			_, err := reviewsPollInterval(ctx, tt.flag, tt.changed)
 			if !errors.Is(err, errReviewsIntervalNotPositive) {
 				t.Errorf("reviewsPollInterval(%v, %v) error = %v, want errReviewsIntervalNotPositive", tt.flag, tt.changed, err)
 			}

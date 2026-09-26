@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -162,7 +161,7 @@ func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh boo
 		l.note = "gt disabled for this repo (" + nogtKey + ")"
 		return l, nil
 	}
-	if _, err := exec.LookPath("gt"); err != nil {
+	if render.LookPath(ctx, "gt") == "" {
 		return lane{}, fmt.Errorf("%s: graphite config found but gt not on PATH — install graphite (brew install graphite) or pass --no-gt", name)
 	}
 

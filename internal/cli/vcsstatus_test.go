@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -484,5 +486,21 @@ func TestStatusBlockersOnAnUnmergeableDraft(t *testing.T) {
 	}
 	if got := statusBlockers(branch); !slices.Equal(got, want) {
 		t.Errorf("statusBlockers() = %q, want %q", got, want)
+	}
+}
+
+// TestStatusGHReadsContextPATH pins the gh probe to the PATH the context
+// carries. The process PATH is left alone, so an unconverted exec.LookPath
+// answers from the developer's machine and disagrees with both rows.
+func TestStatusGHReadsContextPATH(t *testing.T) {
+	t.Parallel()
+	empty := t.TempDir()
+	if statusGH(render.WithEnv(t.Context(), "PATH="+empty)) {
+		t.Error("statusGH = true with an empty PATH on the context")
+	}
+	stubbed := t.TempDir()
+	writeExecutable(t, filepath.Join(stubbed, "gh"), "#!/bin/sh\nexit 0\n")
+	if !statusGH(render.WithEnv(t.Context(), "PATH="+stubbed)) {
+		t.Error("statusGH = false with a gh on the context's PATH")
 	}
 }
