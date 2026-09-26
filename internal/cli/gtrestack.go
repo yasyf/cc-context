@@ -53,7 +53,7 @@ type errRestackDuplicates struct {
 }
 
 func (e *errRestackDuplicates) Error() string {
-	return fmt.Sprintf("%s would replay %d commits but owns %d — the rest are already in %s, so the restack would copy them onto the branch and its pull request would propose %d files rather than the %d it changed; re-record its base with gt track --force --parent %s",
+	return fmt.Sprintf("%s would replay %d commits but owns %d — the rest are already in %s, so the restack would copy them onto the branch and its pull request would propose %d files rather than the %d it changed; re-record its base with gt track --parent %s",
 		e.Branch, e.Span, e.Own, e.Trunk, e.SpanFiles, e.OwnFiles, e.Parent)
 }
 
