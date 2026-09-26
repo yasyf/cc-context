@@ -67,6 +67,13 @@ type gtRestackResult struct {
 }
 
 func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir render.Dir, commonDir string, state gtState, chain []string, elsewhere bool) (gtRestackResult, error) {
+	holders, err := vcs.BranchHolders(ctx, c)
+	if err != nil {
+		return gtRestackResult{}, fmt.Errorf("%s: %w", prefix, err)
+	}
+	if !elsewhere {
+		state = gtHoldElsewhere(state, chain, holders, c.Root)
+	}
 	movers, held := gtRestackPlan(state, chain)
 	if len(movers) == 0 {
 		return gtRestackResult{held: held}, nil
@@ -75,17 +82,8 @@ func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir rend
 	if err != nil {
 		return gtRestackResult{}, err
 	}
-	holders, err := vcs.BranchHolders(ctx, c)
-	if err != nil {
-		return gtRestackResult{}, fmt.Errorf("%s: %w", prefix, err)
-	}
-
-	check := stackCheckHolders(ctx, c.Root, movers, holders)
-	if elsewhere {
-		check = stackCheckClean(ctx, movers, holders)
-	}
-	if check != nil {
-		return gtRestackResult{held: held}, check
+	if err := stackCheckClean(ctx, movers, holders); err != nil {
+		return gtRestackResult{held: held}, err
 	}
 
 	pin := gtTrunkPinned{name: trunk, sha: state[trunk].Head}
@@ -106,6 +104,22 @@ func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir rend
 	}
 	result := gtRestackResult{moved: gtRestackBranches(moves), realigned: realigned, held: held}
 	return result, errors.Join(alignErr, recordErr)
+}
+
+const gtHeldElsewhere = "checked out in "
+
+// gtHoldElsewhere holds every chain branch another working copy has checked out,
+// the way gt freeze holds one: that copy's lane owns the branch, so the restack
+// leaves it, and the branches above it, where they are.
+func gtHoldElsewhere(state gtState, chain []string, holders map[string]string, origin string) gtState {
+	held := make(gtState, len(state))
+	for name, s := range state {
+		if holder := holders[name]; holder != "" && holder != origin && s.State == "" && slices.Contains(chain, name) {
+			s.State = gtHeldElsewhere + holder
+		}
+		held[name] = s
+	}
+	return held
 }
 
 // gtRestackPlan names the branches to move: every branch gt reads as sitting off

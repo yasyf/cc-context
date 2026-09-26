@@ -4934,12 +4934,18 @@ func shipGTHeldParent(t *testing.T) (*vcstest.Fixture, string) {
 	return f, held
 }
 
+// TestShipGTRestacksAcrossWorktrees is build-docker-2x: a --no-push ship from a
+// child refused "is checked out in …" over a parent another worktree held. The
+// parent is that lane's, so the ship leaves it and says so.
 func TestShipGTRestacksAcrossWorktrees(t *testing.T) {
 	f, held := shipGTHeldParent(t)
 	before := gitAt(t, f.Env(), held, "rev-parse", "HEAD")
-	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
-	if err == nil || !strings.Contains(err.Error(), "is checked out in "+held) {
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
 		t.Fatalf("ship = %v", err)
+	}
+	if want := "left base (checked out in " + held + ")"; !strings.Contains(got, want) {
+		t.Errorf("summary = %q, want it to name %q", got, want)
 	}
 	if after := gitAt(t, f.Env(), held, "rev-parse", "HEAD"); after != before {
 		t.Fatal("other checkout moved")
@@ -4981,8 +4987,7 @@ func TestShipGTRestacksAStackSpreadAcrossWorkingCopies(t *testing.T) {
 	for branch, dir := range held {
 		before[branch] = gitAt(t, f.Env(), dir, "rev-parse", "HEAD")
 	}
-	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
-	if err == nil || !strings.Contains(err.Error(), "is checked out in") {
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push"); err != nil {
 		t.Fatalf("ship = %v", err)
 	}
 	for branch, dir := range held {
@@ -5053,8 +5058,8 @@ func TestShipGTRestackKeepsAHolderUncommittedWork(t *testing.T) {
 	mustRun(t, f.Env(), held, "git", "add", "staged.txt")
 	before := gitAt(t, f.Env(), held, "status", "--porcelain")
 
-	if _, shipErr := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push"); shipErr == nil || !strings.Contains(shipErr.Error(), "is checked out in "+held) {
-		t.Fatalf("expected holder refusal, got %v", shipErr)
+	if _, shipErr := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push"); shipErr != nil {
+		t.Fatalf("ship = %v", shipErr)
 	}
 	if after := gitAt(t, f.Env(), held, "status", "--porcelain"); after != before {
 		t.Errorf("held status = %q, want %q — every kind of pending work back as it was, staged work included", after, before)
