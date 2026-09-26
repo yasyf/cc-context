@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -196,7 +195,7 @@ func infoGraphite(ctx context.Context, l lane, o vcsInfoOpts) (graphiteInfo, err
 	if !g.Config {
 		return g, nil
 	}
-	if _, err := exec.LookPath("gt"); err != nil {
+	if render.LookPath(ctx, "gt") == "" {
 		return g, nil
 	}
 	g.CLI = true
@@ -344,7 +343,7 @@ func infoDownstack(ctx context.Context, l lane, chain []string) []stackEntry {
 	if len(entries) == 0 {
 		return entries
 	}
-	if _, err := exec.LookPath("gh"); err != nil {
+	if render.LookPath(ctx, "gh") == "" {
 		return entries
 	}
 	resolveDownstackPRs(ctx, l, entries)

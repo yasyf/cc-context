@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/execstub"
-
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -857,4 +857,51 @@ func TestVcsInfoWarmCacheSkipsRepoView(t *testing.T) {
 		}
 	}
 	assertInvocations(t, graphql, [][]string{ghDownstackPRArgv(downstackThree...)})
+}
+
+// TestInfoGraphiteGTMissingFromContext pins infoGraphite's gt probe to the
+// PATH the context carries: the shim directory it names holds no gt, so CLI
+// stays false however the machine's own PATH is laid out.
+func TestInfoGraphiteGTMissingFromContext(t *testing.T) {
+	t.Parallel()
+	f := vcstest.Repo(t, vcstest.Remote(), vcstest.GT())
+	f.OnlyShimPATH(t)
+	if err := os.Remove(filepath.Join(f.ShimBin, "gt")); err != nil {
+		t.Fatalf("remove gt shim: %v", err)
+	}
+	l, err := resolveLane(f.Context(), "info", f.Dir, true)
+	if err != nil {
+		t.Fatalf("resolveLane error = %v", err)
+	}
+
+	g, err := infoGraphite(f.Context(), l, vcsInfoOpts{})
+	if err != nil {
+		t.Fatalf("infoGraphite error = %v", err)
+	}
+	if !g.Config || g.CLI {
+		t.Errorf("graphite = %+v, want config true and cli false", g)
+	}
+}
+
+// TestInfoDownstackGHFromContext pins infoDownstack's gh probe to the PATH the
+// context carries. The process PATH holds no gh at all, so the gate can only
+// open on the context's own — and the shim it finds there leaves a record.
+func TestInfoDownstackGHFromContext(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote())
+	bin := t.TempDir()
+	ran := filepath.Join(t.TempDir(), "ran")
+	writeExecutable(t, filepath.Join(bin, "gh"), "#!/bin/sh\n: > "+ran+"\nexit 1\n")
+	t.Setenv("PATH", "")
+	l, err := resolveLane(f.Context(), "info", f.Dir, true)
+	if err != nil {
+		t.Fatalf("resolveLane error = %v", err)
+	}
+
+	entries := infoDownstack(render.WithEnv(f.Context(), "PATH="+bin), l, []string{"child", "main"})
+	if want := []stackEntry{{Branch: "main"}, {Branch: "child"}}; !slices.Equal(entries, want) {
+		t.Errorf("entries = %+v, want %+v", entries, want)
+	}
+	if _, err := os.Stat(ran); err != nil {
+		t.Errorf("gh on the context PATH never ran: %v", err)
+	}
 }

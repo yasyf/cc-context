@@ -5,10 +5,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/vcs"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 func TestShowHeader(t *testing.T) {
@@ -80,20 +82,20 @@ func TestShowCmdMetadata(t *testing.T) {
 }
 
 // TestShowLiveSmoke runs the command against this real repo through the full
-// native/jj pipeline. It is gated on CCX_LIVE_SMOKE so the default suite stays
-// hermetic; run it with CCX_LIVE_SMOKE=1 go test -run TestShowLiveSmoke.
+// native pipeline, on whichever of jj and git the checkout is — hence no ref,
+// each backend's default being its own. CCX_LIVE_SMOKE gates it so the default
+// suite stays hermetic: CCX_LIVE_SMOKE=1 go test -run TestShowLiveSmoke.
 func TestShowLiveSmoke(t *testing.T) {
 	t.Parallel()
 	if os.Getenv("CCX_LIVE_SMOKE") == "" {
 		t.Skip("live smoke against the real repo; set CCX_LIVE_SMOKE=1 to run")
 	}
-	chdirRepoRoot(t)
 	var out bytes.Buffer
 	cmd := newShowCmd()
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
-	cmd.SetArgs([]string{"@-"})
-	if err := cmd.Execute(); err != nil {
+	cmd.SetArgs(nil)
+	if err := cmd.ExecuteContext(workspace.WithRoot(t.Context(), ccxRepoRoot(t))); err != nil {
 		t.Fatalf("show @- error = %v", err)
 	}
 	got := out.String()
@@ -248,28 +250,27 @@ func TestShowMasksHeaderSecret(t *testing.T) {
 	}
 }
 
-// chdirRepoRoot changes into the repository root (the nearest ancestor holding a
-// .jj entry) so the diff pipeline's repo-root-relative raw-hunk paths resolve,
-// restoring the original directory when the test ends.
-func chdirRepoRoot(t *testing.T) {
+// ccxRepoRoot is cc-context's own checkout, the nearest ancestor of this source
+// file holding a .jj or .git entry. It walks up from the file because TestMain
+// stands the binary in an empty scratch directory, and returns the path rather
+// than chdir'ing into it because the working directory is process-wide.
+func ccxRepoRoot(t *testing.T) string {
 	t.Helper()
-	orig, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
+	_, self, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller could not name this source file")
 	}
-	dir := orig
+	dir := filepath.Dir(self)
 	for {
-		if _, err := os.Stat(filepath.Join(dir, ".jj")); err == nil {
-			break
+		for _, marker := range []string{".jj", ".git"} {
+			if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
+				return dir
+			}
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Fatalf("no .jj ancestor above %q", orig)
+			t.Fatalf("no .jj or .git ancestor above %q", self)
 		}
 		dir = parent
 	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir %q: %v", dir, err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(orig) })
 }

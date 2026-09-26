@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -2090,7 +2089,7 @@ func jjRebaseOnto(ctx context.Context, dir render.Dir, target string) (int, erro
 // report. Only a shipHeadSHA failure yields an empty segment; infra failures
 // return a segment so the summary still prints before the nonzero exit.
 func shipWatchCI(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Kind, budget int) (string, []string, error) {
-	if _, err := exec.LookPath("gh"); err != nil {
+	if render.LookPath(ctx, "gh") == "" {
 		return "CI gh-missing", nil, nil
 	}
 	sha, err := shipHeadSHA(ctx, dir, kind)
@@ -2101,7 +2100,7 @@ func shipWatchCI(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.K
 }
 
 func shipWatchCIHead(ctx context.Context, errW io.Writer, dir render.Dir, sha string, budget int) (string, []string, error) {
-	if _, err := exec.LookPath("gh"); err != nil {
+	if render.LookPath(ctx, "gh") == "" {
 		return "CI gh-missing", nil, nil
 	}
 	runs, err := findCIRuns(ctx, dir, sha)

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -118,7 +117,7 @@ func newReviewsCmd() *cobra.Command {
 			if stack && len(args) > 0 {
 				return errors.New("reviews: --stack and positional targets cannot be combined")
 			}
-			interval, err := reviewsPollInterval(o.interval, cmd.Flags().Changed("interval"))
+			interval, err := reviewsPollInterval(cmd.Context(), o.interval, cmd.Flags().Changed("interval"))
 			if err != nil {
 				return err
 			}
@@ -159,14 +158,14 @@ func newReviewsCmd() *cobra.Command {
 	return cmd
 }
 
-func reviewsPollInterval(flag time.Duration, changed bool) (time.Duration, error) {
+func reviewsPollInterval(ctx context.Context, flag time.Duration, changed bool) (time.Duration, error) {
 	if changed {
 		if flag <= 0 {
 			return 0, errReviewsIntervalNotPositive
 		}
 		return flag, nil
 	}
-	raw := os.Getenv(envReviewsPollInterval)
+	raw := render.Getenv(ctx, envReviewsPollInterval)
 	if raw == "" {
 		return reviewsPollDefault, nil
 	}
@@ -466,7 +465,7 @@ func shipWatchReviews(ctx context.Context, w io.Writer, branches []string) error
 	if len(targets) == 0 {
 		return nil
 	}
-	interval, err := reviewsPollInterval(0, false)
+	interval, err := reviewsPollInterval(ctx, 0, false)
 	if err != nil {
 		return err
 	}

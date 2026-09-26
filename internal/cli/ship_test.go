@@ -6999,3 +6999,34 @@ func TestShipGTFromALinkedWorktreeTracksItsOwnBranch(t *testing.T) {
 		t.Error("the commit landed on main, the branch GIT_DIR named rather than the one checked out")
 	}
 }
+
+// TestShipWatchCIReadsContextPATH pins both CI watch entry points to the PATH
+// the context carries: with no gh there they report gh-missing before asking
+// git for a head, whatever the process PATH holds.
+func TestShipWatchCIReadsContextPATH(t *testing.T) {
+	t.Parallel()
+	ctx := render.WithEnv(t.Context(), "PATH="+t.TempDir())
+	dir := render.Dir(t.TempDir())
+	var errW bytes.Buffer
+	for _, tc := range []struct {
+		name string
+		run  func() (string, []string, error)
+	}{
+		{"shipWatchCI", func() (string, []string, error) {
+			return shipWatchCI(ctx, &errW, dir, vcs.Git, 0)
+		}},
+		{"shipWatchCIHead", func() (string, []string, error) {
+			return shipWatchCIHead(ctx, &errW, dir, "deadbeef", 0)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			segment, report, err := tc.run()
+			if err != nil {
+				t.Fatalf("%s error = %v", tc.name, err)
+			}
+			if segment != "CI gh-missing" || report != nil {
+				t.Errorf("%s = %q, %v, want \"CI gh-missing\", nil", tc.name, segment, report)
+			}
+		})
+	}
+}

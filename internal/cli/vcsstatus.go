@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"path"
 	"strconv"
 	"strings"
@@ -723,7 +722,6 @@ func statusReviewsValue(reviews []statusReview, head string) string {
 }
 
 // statusGH reports whether gh is on PATH to ask GitHub with.
-func statusGH() bool {
-	_, err := exec.LookPath("gh")
-	return err == nil
+func statusGH(ctx context.Context) bool {
+	return render.LookPath(ctx, "gh") != ""
 }
