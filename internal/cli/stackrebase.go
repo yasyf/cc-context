@@ -20,6 +20,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
@@ -588,15 +589,35 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
+	queued, err := stackQueuedBranches(ctx, l, o.noPush, byName)
+	if err != nil {
+		return nil, err
+	}
+	moving, err := stackMovingBranches(retargeted, o, overrides)
+	if err != nil {
+		return nil, err
+	}
 	kept := map[string]bool{trunk: true}
 	for _, name := range order {
 		b := byName[name]
-		if o.tip != "" && name != o.tip && b.Landed == "" && b.Held == "" {
+		if b.Landed != "" || b.Held != "" {
+			continue
+		}
+		_, named := overrides[name]
+		switch {
+		case queued[name] && named:
+			return nil, fmt.Errorf("stack rebase: %s is in the merge queue as %s, and moving it would evict it — take it out of the queue first", name, b.PR)
+		case queued[name] || (moving != nil && !moving[name]):
+			b.Kept = stackPinPublished(b)
+		case o.tip != "" && name != o.tip:
 			if b.Kept, err = stackKeepsAncestor(ctx, l.dir(), pin, b, kept[b.Parent], o.tipOnly); err != nil {
 				return nil, err
 			}
-			kept[name] = b.Kept
 		}
+		kept[name] = b.Kept
+	}
+	for _, name := range order {
+		b := byName[name]
 		if b.Landed == "" && b.Held == "" {
 			if b.OldBase == "" {
 				if b.OldBase, err = stackOldBase(ctx, l.dir(), trunk, pin, state, b, byName); err != nil {
@@ -1088,6 +1109,69 @@ func stackKeepsAncestor(ctx context.Context, dir render.Dir, pin string, b *stac
 	return true, nil
 }
 
+// stackPinPublished keeps a branch the run must not push at the head its
+// pull request already shows; one never pushed has nothing to keep.
+func stackPinPublished(b *stackRebaseBranch) bool {
+	if b.Remote == "" {
+		return false
+	}
+	b.Head, b.HeadRef = b.Remote, stackTempRef(b.Name)
+	return true
+}
+
+// stackMovingBranches is what a pushing --parent or --linearize run may move:
+// the branches it names a parent for and everything stacked on them. The
+// parents it names stay at their published heads, since a force-push to
+// another lane's pull request is not what the run asked for. nil lets every
+// branch move.
+func stackMovingBranches(state gtState, o stackRebaseOpts, overrides map[string]string) (map[string]bool, error) {
+	if o.noPush || o.tip != "" || len(overrides) == 0 {
+		return nil, nil
+	}
+	moving := map[string]bool{}
+	for child := range overrides {
+		up, err := gtUpstack(stackRebasePrefix, state, child)
+		if err != nil {
+			return nil, err
+		}
+		moving[child] = true
+		for _, name := range up {
+			moving[name] = true
+		}
+	}
+	return moving, nil
+}
+
+// stackQueuedBranches reads Graphite's merge queue for every branch with an
+// open pull request a pushing run could move: a push to a queued pull request
+// evicts it.
+func stackQueuedBranches(ctx context.Context, l lane, noPush bool, byName map[string]*stackRebaseBranch) (map[string]bool, error) {
+	var heads []string
+	for _, name := range slices.Sorted(maps.Keys(byName)) {
+		if b := byName[name]; b.Landed == "" && b.PR != nil && b.PR.State == "OPEN" {
+			heads = append(heads, name)
+		}
+	}
+	if noPush || len(heads) == 0 {
+		return nil, nil
+	}
+	owner, name, err := gtRepoOwnerName(ctx, l, stackRebasePrefix)
+	if err != nil {
+		return nil, err
+	}
+	infos, err := gtAPIClient().PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: name, PRHeadRefNames: heads, Consistent: true, Callsite: "ccx"})
+	if err != nil {
+		return nil, fmt.Errorf("stack rebase: read the merge queue before pushing: %w", err)
+	}
+	queued := map[string]bool{}
+	for _, info := range infos {
+		if info.State == gtapi.PROpen && info.MergeQueueStatus != nil && info.MergeQueueStatus.IsInGraphiteMq {
+			queued[info.HeadRefName] = true
+		}
+	}
+	return queued, nil
+}
+
 func stackOwnRemote(ctx context.Context, dir render.Dir, name, local, remote, pin string) (bool, error) {
 	held, err := gitReflogHolds(ctx, dir, stackRebasePrefix, name, remote)
 	if err != nil || held {
@@ -1327,6 +1411,15 @@ func stackPlanLines(run *stackRebaseRun) []string {
 			fields = append(fields, b.PR.String())
 		}
 		lines = append(lines, strings.Join(fields, shipSep))
+	}
+	if !run.NoPush {
+		var pushes []string
+		for _, b := range run.Branches {
+			if b.Landed == "" && b.Held == "" && !b.Kept {
+				pushes = append(pushes, b.Name)
+			}
+		}
+		lines = append(lines, "pushes "+cmp.Or(strings.Join(pushes, ", "), "nothing"))
 	}
 	return lines
 }
