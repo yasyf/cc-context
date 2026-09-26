@@ -66,7 +66,7 @@ type gtRestackResult struct {
 	held      map[string]string
 }
 
-func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir render.Dir, commonDir string, state gtState, chain []string) (gtRestackResult, error) {
+func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir render.Dir, commonDir string, state gtState, chain []string, elsewhere bool) (gtRestackResult, error) {
 	movers, held := gtRestackPlan(state, chain)
 	if len(movers) == 0 {
 		return gtRestackResult{held: held}, nil
@@ -80,8 +80,12 @@ func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir rend
 		return gtRestackResult{}, fmt.Errorf("%s: %w", prefix, err)
 	}
 
-	if err := stackCheckHolders(ctx, c.Root, movers, holders); err != nil {
-		return gtRestackResult{held: held}, err
+	check := stackCheckHolders(ctx, c.Root, movers, holders)
+	if elsewhere {
+		check = stackCheckClean(ctx, movers, holders)
+	}
+	if check != nil {
+		return gtRestackResult{held: held}, check
 	}
 
 	pin := gtTrunkPinned{name: trunk, sha: state[trunk].Head}

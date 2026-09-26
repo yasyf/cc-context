@@ -430,7 +430,7 @@ func gtRestack(ctx context.Context, l lane, suffix, branch string, c *gtCache) (
 	if err != nil {
 		return "", err
 	}
-	result, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), commonDir, state, gtBottomUp(chain))
+	result, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), commonDir, state, gtBottomUp(chain), false)
 	c.forget()
 	if err != nil {
 		var conflict *errRestackConflict
@@ -940,7 +940,7 @@ func gtModifyRestack(ctx context.Context, l lane, o shipOpts, branch string) err
 	if err != nil {
 		return err
 	}
-	if _, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), commonDir, state, up); err != nil {
+	if _, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), commonDir, state, up, true); err != nil {
 		var conflict *errRestackConflict
 		if errors.As(err, &conflict) {
 			return errors.New(gtStuck("ship", gtRestackStopped(err, conflict), gtStuckSuffix(o)))
