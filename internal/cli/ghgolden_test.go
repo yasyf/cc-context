@@ -198,6 +198,7 @@ var ghGoldenUnnormalized = map[string]ghGoldenPayload{
 	"cli/rest-pulls-head-merged.stdout":         {noFinalNewline: true},
 	"cli/rest-pulls-head-newest.stdout":         {noFinalNewline: true},
 	"cli/rest-pulls-head-none.stdout":           {noFinalNewline: true},
+	"cli/rest-pulls-head-draft.stdout":          {noFinalNewline: true},
 	"cli/rest-pulls-head-open.stdout":           {noFinalNewline: true},
 	"cli/status-comment-graphql.stdout":         {noFinalNewline: true},
 	"cli/status-draft-graphql.stdout":           {noFinalNewline: true},

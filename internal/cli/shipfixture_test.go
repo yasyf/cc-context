@@ -1011,7 +1011,11 @@ fi
 case "$1 $2" in
   "repo view") printf '%s' "$GH_REPO_VIEW_JSON" ;;
   "api -X")
-    if [ -n "$GH_PR_EDIT_FAIL" ]; then printf '%s\n' "$GH_PR_EDIT_FAIL" >&2; exit 1; fi ;;
+    case "$3 $4" in
+      "GET "*/pulls) printf '%s' "${GH_PULLS_JSON:-[]}" ;;
+      "POST "*/pulls) printf '%s' "$GH_PULL_CREATE_JSON" ;;
+      *) if [ -n "$GH_PR_EDIT_FAIL" ]; then printf '%s\n' "$GH_PR_EDIT_FAIL" >&2; exit 1; fi ;;
+    esac ;;
   "api graphql")
     case "$*" in
       *pullRequests*)
@@ -1056,8 +1060,6 @@ case "$1 $2" in
       exit 0
     fi
     printf '%s' "$GH_PR_VIEW_JSON" ;;
-  "pr list") printf '%s' "${GH_PR_LIST_JSON:-[]}" ;;
-  "pr create") printf '%s\n' "$GH_PR_CREATE_OUT" ;;
   "pr edit"|"pr ready") : ;;
   "run list")
     if [ -n "$GH_LIST_FAIL" ]; then printf 'gh: network timeout\n' >&2; exit 1; fi
