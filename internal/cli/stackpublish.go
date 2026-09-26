@@ -296,7 +296,7 @@ func stackPushPublication(ctx context.Context, dir render.Dir, s gtSubmit, plan 
 		}
 		if _, err := render.RunCLI(ctx, dir, "git", gtPushArgv(s, plan)); err != nil {
 			if !gitPushStaleLease(err) {
-				return err
+				return gtPushFailure(s, plan, err)
 			}
 			matched, readErr := stackRemoteMatchesPublication(ctx, dir, "origin", targets)
 			if readErr != nil || !matched {

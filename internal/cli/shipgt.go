@@ -1928,7 +1928,8 @@ func gtPushFailure(s gtSubmit, plan []gtSubmitBranch, err error) error {
 	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("%s: git push %s: %w", s.prefix, strings.Join(gtPlanNames(plan), ", "), err)
+	problem := "the atomic push of " + strings.Join(gtPlanNames(plan), ", ") + " moved nothing: " + gitPushVerdict(err)
+	return &gtAdvice{advice: gtStuck(s.prefix, problem, s.suffix), cause: err}
 }
 
 var gtStaleRefPattern = regexp.MustCompile(`-> (\S+) \(stale info\)`)
