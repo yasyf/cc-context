@@ -2,9 +2,11 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -41,10 +43,12 @@ type shipDryRun struct {
 	fork     string
 
 	moves    []dryRunMove
+	pushes   []string
 	prs      []dryRunPR
 	creates  []string
 	rewrites []string
 	notes    []string
+	meta     map[string]prMeta
 }
 
 // dryRunMove is one branch a restack would rewrite: where the ref stands now,
@@ -80,6 +84,11 @@ func runShipDryRun(ctx context.Context, cmd *cobra.Command, l lane, o shipOpts, 
 	if err := dryRunPosition(ctx, l, o, c, &r); err != nil {
 		return err
 	}
+	meta, err := resolvePRMeta(cmd, o, r.branch)
+	if err != nil {
+		return err
+	}
+	r.meta = meta
 	if err := dryRunScope(ctx, l, o, &r); err != nil {
 		return err
 	}
@@ -463,8 +472,11 @@ func dryRunPlanned(ctx context.Context, l lane, state gtState, r *shipDryRun) (g
 func dryRunMoves(state gtState, chain []string, holders map[string]string, o shipOpts, r *shipDryRun) {
 	movers, held := gtRestackPlan(state, gtBottomUp(chain))
 	if o.tipOnly {
-		movers = slices.DeleteFunc(movers, func(branch string) bool { return branch != r.branch })
 		r.notes = append(r.notes, "--tip-only ships "+r.branch+" onto its parent's published head and pushes no ancestor")
+		if o.noPush {
+			return
+		}
+		movers = slices.DeleteFunc(movers, func(branch string) bool { return branch != r.branch })
 	}
 	for _, branch := range movers {
 		why := "its parent moves under it"
@@ -550,15 +562,13 @@ func dryRunDiffNames(ctx context.Context, l lane, from, to string) ([]string, er
 	return strings.Split(trimmed, "\n"), nil
 }
 
-// dryRunHeads names every open pull request the submit force-pushes over, the
-// working copy its branch lives in, and whether the head moves or is re-pushed
-// where it stands — a submit pushes the whole stack, not only what a restack
-// rewrote. Ownership is the holder rather than the GitHub author: one shared
-// account authors every lane, so the path is the only field telling them apart.
 func dryRunHeads(ctx context.Context, l lane, o shipOpts, state gtState, chain []string, holders map[string]string, r *shipDryRun) error {
 	if o.noPush {
 		r.notes = append(r.notes, "--no-push moves no remote ref, so no pull request head moves")
 		return nil
+	}
+	if o.tipOnly {
+		r.pushes = append(r.pushes, r.branch)
 	}
 	moving := map[string]bool{r.branch: true}
 	for _, m := range r.moves {
@@ -587,6 +597,9 @@ func dryRunHeads(ctx context.Context, l lane, o shipOpts, state gtState, chain [
 			continue
 		}
 		open[pr.HeadRefName] = true
+		if o.tipOnly && pr.HeadRefName != r.branch {
+			continue
+		}
 		r.prs = append(r.prs, dryRunPR{
 			number: pr.PRNumber,
 			branch: pr.HeadRefName,
@@ -597,14 +610,10 @@ func dryRunHeads(ctx context.Context, l lane, o shipOpts, state gtState, chain [
 		})
 	}
 	slices.SortFunc(r.prs, func(a, b dryRunPR) int { return a.number - b.number })
-	return dryRunCreates(ctx, l, state, chain, open, r)
+	return dryRunCreates(ctx, l, o, state, chain, open, r)
 }
 
-// dryRunCreates names the pull requests the submit would open, each with the
-// title it derives from the first commit above its base. A title taken from
-// the wrong range is the one submit surprise no open pull request can warn
-// about, and it is read here from the range the submit itself reads.
-func dryRunCreates(ctx context.Context, l lane, state gtState, chain []string, open map[string]bool, r *shipDryRun) error {
+func dryRunCreates(ctx context.Context, l lane, o shipOpts, state gtState, chain []string, open map[string]bool, r *shipDryRun) error {
 	tr, err := gtTrunkRefOffline(ctx, l.dir(), "ship", r.trunk)
 	if errors.Is(err, vcs.ErrNoTrunk) {
 		r.notes = append(r.notes, "no remote trunk ref is fetched yet, so the titles a submit would derive cannot be read without one")
@@ -618,7 +627,7 @@ func dryRunCreates(ctx context.Context, l lane, state gtState, chain []string, o
 		stacked[branch] = true
 	}
 	for _, branch := range gtBottomUp(chain) {
-		if open[branch] || len(state[branch].Parents) == 0 {
+		if open[branch] || len(state[branch].Parents) == 0 || (o.tipOnly && branch != r.branch) {
 			continue
 		}
 		base := state[branch].Parents[0].Ref
@@ -629,12 +638,25 @@ func dryRunCreates(ctx context.Context, l lane, state gtState, chain []string, o
 		if branch == r.branch && r.fork != "" {
 			from = r.fork
 		}
-		title, _, err := gtCreateMeta(ctx, l.dir(), "ship", branch, branch, from, base)
-		if err != nil {
-			r.notes = append(r.notes, err.Error())
-			continue
+		meta := r.meta[branch]
+		title := meta.title
+		if title == "" {
+			var err error
+			title, _, err = gtCreateMeta(ctx, l.dir(), "ship", branch, branch, from, base)
+			if err != nil {
+				r.notes = append(r.notes, err.Error())
+				continue
+			}
 		}
-		r.creates = append(r.creates, branch+shipSep+"opens a pull request titled "+strconv.Quote(title))
+		created := branch + shipSep + "opens a pull request titled " + strconv.Quote(title)
+		if meta.bodyPath != "" {
+			body, err := os.ReadFile(meta.bodyPath)
+			if err != nil {
+				return fmt.Errorf("ship: --pr-body-file %s: %w", meta.bodyPath, err)
+			}
+			created += shipSep + "body from " + strconv.Quote(meta.bodyPath) + fmt.Sprintf(" (sha256 %x)", sha256.Sum256(body))
+		}
+		r.creates = append(r.creates, created)
 	}
 	return nil
 }
@@ -662,6 +684,9 @@ func renderShipDryRun(r shipDryRun) string {
 	line("commit", dryRunScopeValue(r))
 	for _, m := range r.moves {
 		line("restack", dryRunMoveValue(m))
+	}
+	for _, branch := range r.pushes {
+		line("push ref", branch)
 	}
 	for _, p := range r.prs {
 		line("pr head", dryRunPRValue(p))
