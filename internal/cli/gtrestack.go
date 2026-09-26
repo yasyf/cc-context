@@ -96,7 +96,7 @@ func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir rend
 		return gtRestackResult{held: held}, err
 	}
 	realigned, alignErr := gtRestackAlign(ctx, prefix, holders, moves)
-	recordErr := gtmeta.RecordRestacked(ctx, commonDir, gtRestackRevisions(moves))
+	recordErr := errors.Join(gtmeta.Reparent(ctx, commonDir, gtRestackReparents(moves)), gtmeta.RecordRestacked(ctx, commonDir, gtRestackRevisions(moves)))
 	if recordErr != nil {
 		recordErr = fmt.Errorf("%s: %w", prefix, recordErr)
 	}
@@ -144,26 +144,40 @@ type restackMove struct {
 	head     string
 	parent   string
 	previous string
+	onto     string
 }
 
 func gtReplayChain(ctx context.Context, prefix string, dir render.Dir, state gtState, pin gtTrunkPinned, movers []string, holders map[string]string) ([]restackMove, error) {
 	var moves []restackMove
 	heads := map[string]string{pin.name: pin.sha}
-	for _, branch := range movers {
+	for i, branch := range movers {
 		s := state[branch]
 		parent := s.Parents[0]
 		base, moved := heads[parent.Ref]
 		if !moved {
 			base = state[parent.Ref].Head
 		}
+		onto := ""
+		if !moved && parent.Ref != pin.name {
+			spent, err := gitIsAncestor(ctx, dir, prefix, base, pin.sha)
+			if err != nil {
+				return moves, err
+			}
+			if spent {
+				onto, base, parent.Ref = pin.name, pin.sha, pin.name
+			}
+		}
 		merged, err := gitIsAncestor(ctx, dir, prefix, gtRestackRef(branch), base)
 		if err != nil {
 			return moves, err
 		}
 		if merged {
+			if parent.Ref == pin.name && slices.ContainsFunc(movers[i+1:], func(m string) bool { return state[m].Parents[0].Ref == branch }) {
+				continue
+			}
 			return moves, &errRestackMerged{Branch: branch}
 		}
-		from, err := gtRestackFrom(ctx, prefix, dir, state, branch)
+		from, err := gtRestackFrom(ctx, prefix, dir, branch, parent, state[parent.Ref].Head)
 		if err != nil {
 			return moves, err
 		}
@@ -178,29 +192,30 @@ func gtReplayChain(ctx context.Context, prefix string, dir render.Dir, state gtS
 			return moves, err
 		}
 		heads[branch] = head
-		moves = append(moves, restackMove{branch: branch, head: head, parent: base, previous: s.Head})
+		moves = append(moves, restackMove{branch: branch, head: head, parent: base, previous: s.Head, onto: onto})
 	}
 	return moves, nil
 }
 
-// gtRestackFrom is where a branch's own commits start: the parent revision gt
-// recorded, or — when a rebase outside gt took that revision out of the
-// branch's history — the fork point from the parent as it stands, which is
-// where git rebase itself would start.
-func gtRestackFrom(ctx context.Context, prefix string, dir render.Dir, state gtState, branch string) (string, error) {
-	parent := state[branch].Parents[0]
-	recorded, err := gitIsAncestor(ctx, dir, prefix, parent.SHA, gtRestackRef(branch))
-	if err != nil {
-		return "", err
-	}
-	if recorded {
-		return parent.SHA, nil
-	}
-	out, err := render.RunCLI(ctx, dir, "git", []string{"merge-base", gtRestackRef(branch), state[parent.Ref].Head})
+// gtRestackFrom is where a branch's own commits start: the fork point from the
+// parent as it stands, which is where git rebase itself would start, unless the
+// parent revision gt recorded lies past it — a parent rewritten under a branch
+// still sitting on its old head.
+func gtRestackFrom(ctx context.Context, prefix string, dir render.Dir, branch string, parent gtRef, parentHead string) (string, error) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"merge-base", gtRestackRef(branch), parentHead})
 	if err != nil {
 		return "", fmt.Errorf("%s: git merge-base %s %s: %w", prefix, branch, parent.Ref, err)
 	}
-	return strings.TrimSpace(out), nil
+	fork := strings.TrimSpace(out)
+	recorded, err := gitIsAncestor(ctx, dir, prefix, parent.SHA, gtRestackRef(branch))
+	if err != nil || !recorded {
+		return fork, err
+	}
+	behind, err := gitIsAncestor(ctx, dir, prefix, parent.SHA, fork)
+	if err != nil || behind {
+		return fork, err
+	}
+	return parent.SHA, nil
 }
 
 // gtTrunkPinned is the commit one restack lands every lane on: trunk's branch
@@ -326,6 +341,16 @@ func gtRestackBranches(moves []restackMove) []string {
 		branches[i] = m.branch
 	}
 	return branches
+}
+
+func gtRestackReparents(moves []restackMove) map[string]string {
+	reparents := map[string]string{}
+	for _, m := range moves {
+		if m.onto != "" {
+			reparents[m.branch] = m.onto
+		}
+	}
+	return reparents
 }
 
 func gtRestackRevisions(moves []restackMove) map[string]string {
