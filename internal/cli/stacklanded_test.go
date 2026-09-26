@@ -111,7 +111,7 @@ func TestStackSubmitRefusesAForeignLaneBelowTheBranch(t *testing.T) {
 	if err == nil {
 		t.Fatal("stack submit restacked and pushed another lane's ladder and reader")
 	}
-	for _, want := range []string{"feature carries none of ladder's commits", "ladder, reader", "gt track --force", "--parent feature=<branch>"} {
+	for _, want := range []string{"feature carries none of ladder's commits", "another lane's ladder, reader", "gt track --force", "--parent feature=<branch>"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal = %q, want %q", err, want)
 		}
@@ -143,5 +143,83 @@ func TestStackRebaseParentLeavesTheForeignLaneBehind(t *testing.T) {
 		if gitBranchExists(t, f.Env(), f.RemoteDir, b) {
 			t.Errorf("origin has %s, another lane's local-only branch", b)
 		}
+	}
+}
+
+func TestStackRebaseParentKeepsAPublishedParentsCommitsBehind(t *testing.T) {
+	f := stackRebaseRepo(t, "a", "b")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", "origin/b")
+	stackCommit(t, f, "fix.txt")
+
+	if _, _, err := runStackCmd(t, f, "rebase", "--parent", "b=main"); err != nil {
+		t.Fatalf("stack rebase --parent b=main: %v", err)
+	}
+	if n := gitAt(t, f.Env(), f.RemoteDir, "rev-list", "--count", "main..b"); n != "2" {
+		t.Errorf("origin b holds %s commits over main, want b and fix without a's", n)
+	}
+}
+
+func TestStackRebaseParentKeepsAChildOnItsPublishedParent(t *testing.T) {
+	f := stackRebaseRepo(t, "a", "b", "c")
+	if _, _, err := runStackCmd(t, f, "rebase", "--parent", "c=a"); err != nil {
+		t.Fatalf("stack rebase --parent c=a: %v", err)
+	}
+
+	out, _, err := runStackCmd(t, f, "rebase", "--dry-run", "--parent", "b=main")
+	if err != nil {
+		t.Fatalf("stack rebase --dry-run --parent b=main: %v", err)
+	}
+	if !strings.Contains(out, "c · onto a") {
+		t.Errorf("plan = %q, want c kept on a, where it was published", out)
+	}
+}
+
+func TestStackRebaseJudgesEachParentByTheBranchOnIt(t *testing.T) {
+	f := stackRebaseRepo(t, "a", "b", "c")
+	old := gitAt(t, f.Env(), f.Dir, "rev-parse", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a")
+	writeShipFile(t, f.Dir, "a.txt", "amended\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qa", "--amend", "-m", "a amended")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", "a", old, "b")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "a", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "c")
+
+	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
+		t.Fatalf("stack rebase from c above a restacked b: %v", err)
+	}
+	if !stackOnto(t, f, "b", "c") {
+		t.Error("c does not sit on b")
+	}
+}
+
+func TestStackRebaseKeepsABranchCutFromAnEmptyParent(t *testing.T) {
+	f := shipGTRepo(t)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "a")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "main", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "b")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "a", "--no-interactive")
+	stackCommit(t, f, "b.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a")
+	stackCommit(t, f, "a.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "b")
+
+	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
+		t.Fatalf("stack rebase of b cut from a before a's first commit: %v", err)
+	}
+	if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "a..b"); n != "1" || !stackOnto(t, f, "a", "b") {
+		t.Errorf("b holds %s commits over a, want its own 1 on a", n)
+	}
+}
+
+func TestStackRebaseRefusesTrunkAsAChild(t *testing.T) {
+	f := stackRebaseRepo(t, "a")
+
+	_, _, err := runStackCmd(t, f, "rebase", "--dry-run", "--parent", "main=a")
+	if err == nil || !strings.Contains(err.Error(), "main is trunk") {
+		t.Fatalf("stack rebase --parent main=a = %v, want trunk refused as a child", err)
 	}
 }
