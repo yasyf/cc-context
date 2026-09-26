@@ -181,7 +181,7 @@ func TestShipGTAmendRefusalNamesTheRecovery(t *testing.T) {
 	if amended == pre {
 		t.Fatalf("fixture refused before the amend formed: %v", err)
 	}
-	for _, want := range []string{"would replay 3 commits but owns 2", shortOID(amended), "git reset --soft " + pre} {
+	for _, want := range []string{"would replay 3 commits but owns 2", "ccx vcs stack rebase --parent b=<branch>", shortOID(amended), "git reset --soft " + pre} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal = %q, want it to name %q", err, want)
 		}

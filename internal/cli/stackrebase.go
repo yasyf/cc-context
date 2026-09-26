@@ -1279,7 +1279,7 @@ func stackOwnWork(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string,
 	if replayed == own {
 		return nil
 	}
-	return fmt.Errorf("stack rebase: %s would replay %d commits but owns %d — the rest are already in %s; name its real parent with --parent %s=<branch>",
+	return fmt.Errorf("stack rebase: %s would replay %d commits but owns %d — the rest are already in %s; name its real parent with ccx vcs stack rebase --parent %s=<branch>",
 		b.Name, replayed, own, tr.Name(), b.Name)
 }
 
