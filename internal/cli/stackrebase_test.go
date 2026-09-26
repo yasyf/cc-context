@@ -385,10 +385,7 @@ func TestStackAbortSucceedsWhenRemovingTheWorkspaceIsKilled(t *testing.T) {
 	stackConflicting(t, f)
 	marker := stackStallRm(t, f)
 	bin := t.TempDir()
-	writeShipFile(t, bin, "git", "#!/bin/sh\ncase \"$*\" in *\"worktree remove\"*) kill -TERM $$;; esac\nPATH=${PATH#"+bin+":} exec git \"$@\"\n")
-	if err := os.Chmod(filepath.Join(bin, "git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutable(t, filepath.Join(bin, "git"), "#!/bin/sh\ncase \"$*\" in *\"worktree remove\"*) kill -TERM $$;; esac\nPATH=${PATH#"+bin+":} exec git \"$@\"\n")
 
 	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
 	if err == nil {
@@ -412,13 +409,10 @@ func stackStallRm(t *testing.T, f *vcstest.Fixture) string {
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeShipFile(t, bin, "rm", "#!/bin/sh\necho \"$@\" > "+marker+"\ncat "+fifo+"\n")
-	if err := os.Chmod(filepath.Join(bin, "rm"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutable(t, filepath.Join(bin, "rm"), "#!/bin/sh\necho \"$@\" > "+marker+"\ncat "+fifo+"\n")
 	t.Cleanup(func() {
 		if gate, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
-			gate.Close()
+			_ = gate.Close()
 		}
 	})
 	f.PrependPATH(bin)
