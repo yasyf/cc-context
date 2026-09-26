@@ -44,17 +44,14 @@ func TestReadCommandNamesNoRoot(t *testing.T) {
 	if err := os.WriteFile(file, []byte("alpha\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
-	workspace.SetRoot(dir)
-	t.Cleanup(func() { workspace.SetRoot("") })
-
 	cmd := newReadCmd()
 	var out, errBuf bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errBuf)
 	cmd.SetArgs([]string{file, "--full"})
 
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
+	if err := cmd.ExecuteContext(workspace.WithRoot(t.Context(), dir)); err != nil {
+		t.Fatalf("ExecuteContext() error = %v", err)
 	}
 	if strings.Contains(out.String(), "# root ") {
 		t.Errorf("cli read stdout names a root: %q", out.String())
