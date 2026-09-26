@@ -75,6 +75,11 @@ func TestResolveBranchPlan(t *testing.T) {
 			wantErr: "ship: detached HEAD — check out a branch before shipping",
 		},
 		{
+			name: "detached HEAD with --new-branch creates the branch there", lane: gitLane, repo: personalRepo,
+			o: shipOpts{message: msg, newBranch: "feat"}, current: "", trunk: "main",
+			want: branchPlan{action: branchCreate, name: "feat", trunk: "main"},
+		},
+		{
 			name: "a jj repo with no bookmark at all is not detached", lane: jjLane, repo: personalRepo,
 			o: shipOpts{message: msg}, current: "", trunk: "",
 			want: branchPlan{action: branchAppend},

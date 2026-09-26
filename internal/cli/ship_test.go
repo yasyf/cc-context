@@ -4328,6 +4328,71 @@ func TestShipGitNewBranch(t *testing.T) {
 	}
 }
 
+func TestShipNewBranchCutsFromADetachedHead(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		fixup func(t *testing.T) *vcstest.Fixture
+		want  string
+	}{
+		{
+			name: "git",
+			fixup: func(t *testing.T) *vcstest.Fixture {
+				return shipRepo(t, vcstest.Remote(), vcstest.Detached(), vcstest.Dirty())
+			},
+		},
+		{
+			name: "graphite",
+			fixup: func(t *testing.T) *vcstest.Fixture {
+				f := shipGTRepo(t, vcstest.GTStack("base"))
+				mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "--detach")
+				shipGTReady(t, f)
+				return f
+			},
+			want: "tracked feat-x onto base · ",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := tt.fixup(t)
+			before := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+
+			got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x")
+			if err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			if !strings.HasPrefix(got, tt.want) {
+				t.Errorf("summary = %q, want it to lead with %q", got, tt.want)
+			}
+			if branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); branch != "feat-x" {
+				t.Errorf("branch after ship = %q, want feat-x", branch)
+			}
+			if parent := gitAt(t, f.Env(), f.Dir, "rev-parse", "feat-x^"); parent != before {
+				t.Errorf("feat-x^ = %s, want the detached HEAD %s", parent, before)
+			}
+			if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s", "feat-x"); subject != "fix: frobnicate" {
+				t.Errorf("feat-x tip = %q, want the shipped commit", subject)
+			}
+		})
+	}
+}
+
+func TestShipNewBranchFromADetachedHeadRollsBackARefusal(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote(), vcstest.Detached())
+	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--new-branch=feat-x"); err == nil {
+		t.Fatal("ship of a clean working copy succeeded, want a refusal")
+	}
+	if branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); branch != "" {
+		t.Errorf("branch = %q, want HEAD back detached", branch)
+	}
+	if head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); head != before {
+		t.Errorf("HEAD = %s, want %s", head, before)
+	}
+	if gitBranchExists(t, f.Env(), f.Dir, "feat-x") {
+		t.Error("feat-x was left behind after the refusal")
+	}
+}
+
 // TestShipGitNewBranchRollback proves a refusal after the branch cut leaves the
 // repository where it started: ship switches back, deletes the branch it cut,
 // and still reports the failure that refused it. The rollback undoes ship's own

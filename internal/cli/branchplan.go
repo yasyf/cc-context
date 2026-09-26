@@ -59,7 +59,7 @@ func resolveBranchPlan(l lane, r vcs.Repo, o shipOpts, current, trunk string) (b
 
 	// A jj working copy always has somewhere to commit, bookmark or not; only a
 	// git-backed lane can be sitting on nothing.
-	if current == "" && gitBacked(l) {
+	if current == "" && gitBacked(l) && (o.newBranch == "" || o.amend) {
 		return branchPlan{}, errors.New("ship: detached HEAD — check out a branch before shipping")
 	}
 
