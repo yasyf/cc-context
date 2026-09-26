@@ -4659,9 +4659,8 @@ func TestShipGTTrackReportsParent(t *testing.T) {
 			wantSeg:   "tracked feature onto base",
 		},
 		{
-			name:      "a branch cut from trunk is adopted onto trunk without the -f walk",
+			name:      "a branch cut from trunk is adopted without gt track",
 			fromTrunk: true,
-			wantTrack: []string{"gt", "track", "feature", "--parent", "main", "--no-interactive"},
 			wantSeg:   "tracked feature onto main",
 		},
 		{
@@ -4709,6 +4708,102 @@ func TestShipGTTrackReportsParent(t *testing.T) {
 				t.Errorf("gt state feature parents = %v, want the adopted base", parents)
 			}
 		})
+	}
+}
+
+func TestShipGTAdoptsEmptyRootWithoutTrack(t *testing.T) {
+	f := shipGTRepo(t)
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
+	shipGTReady(t, f)
+
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--parent", "main", "--tip-only", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if !strings.Contains(got, "tracked feature onto main") {
+		t.Errorf("summary = %q, want root adoption", got)
+	}
+	for _, argv := range shipGTInvocations(t, f) {
+		if argv[0] == "gt" {
+			t.Fatalf("empty root adoption started graphite: %v", argv)
+		}
+	}
+	state, err := gtStateQuery(t.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parents := state["feature"].Parents; len(parents) != 1 || parents[0].Ref != "main" || parents[0].SHA != base {
+		t.Errorf("feature parents = %v, want main at %s", parents, base)
+	}
+}
+
+func TestShipGTAdoptsEmptyRootOntoAdvancedRemoteTrunk(t *testing.T) {
+	f := shipGTRepo(t)
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
+	advanced := gitAt(t, f.Env(), f.Dir, "commit-tree", "HEAD^{tree}", "-p", base, "-m", "advance trunk")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", advanced+":refs/heads/main")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "main")
+	shipGTReady(t, f)
+
+	got, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--parent", "main", "--tip-only", "--no-watch")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if !strings.Contains(got, "tracked feature onto main") || !strings.Contains(got, "submitted feature") {
+		t.Errorf("summary = %q, want tracked and submitted feature", got)
+	}
+	for _, argv := range shipGTInvocations(t, f) {
+		if argv[0] == "gt" {
+			t.Fatalf("empty root adoption started graphite: %v", argv)
+		}
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "feature")
+	if count := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main..origin/feature"); count != "1" {
+		t.Errorf("origin/main..origin/feature has %s commits, want only the new change", count)
+	}
+}
+
+func TestShipGTAdoptsPublishedSingleCommitRootWithoutTrack(t *testing.T) {
+	f := shipGTRepo(t)
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
+	writeShipFile(t, f.Dir, "feature.txt", "work\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "feature.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "feature")
+	published := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
+	stubStackPRs(t, map[string]*stackPR{"feature": {Number: 42, Title: "feature", State: "OPEN", Base: "main", Head: published}})
+	api := stubGTAPI(t)
+	api.prs["feature"] = 42
+	advanced := gitAt(t, f.Env(), f.Dir, "commit-tree", base+"^{tree}", "-p", base, "-m", "advance trunk")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", advanced+":refs/heads/main")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "main")
+	shipResetLog(t, f)
+	preview, _, err := runShipCmdFull(f.Context(), t, "--dry-run", "--no-commit", "--parent", "main", "--tip-only", "--no-watch")
+	if err != nil || !strings.Contains(preview, "ccx records it without gt track") {
+		t.Fatalf("dry run = %q, %v", preview, err)
+	}
+
+	got, _, err := runShipCmdFull(f.Context(), t, "--no-commit", "--parent", "main", "--tip-only", "--no-watch")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if !strings.Contains(got, "tracked feature onto main") || !strings.Contains(got, "submitted feature") {
+		t.Errorf("summary = %q, want tracked and submitted feature", got)
+	}
+	if len(api.submits) != 1 || api.submits[0].entry.Action != gtapi.SubmitUpdate || api.submits[0].entry.PRNumber != 42 {
+		t.Errorf("graphite submissions = %+v, want an update of existing PR #42", api.submits)
+	}
+	for _, argv := range shipGTInvocations(t, f) {
+		if argv[0] == "gt" {
+			t.Fatalf("published root adoption started graphite: %v", argv)
+		}
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "feature")
+	if count := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main..origin/feature"); count != "1" {
+		t.Errorf("origin/main..origin/feature has %s commits, want only the published change", count)
 	}
 }
 
@@ -5316,6 +5411,7 @@ func TestShipGTRefusals(t *testing.T) {
 	t.Run("untracked branch auto-tracks", func(t *testing.T) {
 		f := shipGTRepo(t)
 		shipGTUntracked(t, f, "feature")
+		oldFeature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 		shipGTReady(t, f)
 
 		got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
@@ -5341,7 +5437,13 @@ func TestShipGTRefusals(t *testing.T) {
 			{"git", "rev-parse", "--verify", "--quiet", "refs/heads/main"},
 			{"git", "rev-parse", "--verify", "refs/heads/main"},
 			{"git", "merge-base", "--is-ancestor", mainHead, "refs/heads/feature"},
-			{"gt", "track", "feature", "--parent", "main", "--no-interactive"},
+			{"git", "config", "--get", "branch.HEAD.remote"},
+			{"git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/main"},
+			{"git", "rev-parse", "--verify", "refs/heads/feature"},
+			{"git", "merge-base", "--is-ancestor", oldFeature, "refs/remotes/origin/main"},
+			{"git", "show", "-s", "--format=%P", "refs/heads/feature"},
+			{"git", "merge-base", "--is-ancestor", mainHead, "refs/remotes/origin/main"},
+			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
 			{"git", "add", "-A", "--verbose"},
 			{"git", "diff", "--cached", "--quiet"},
@@ -6796,14 +6898,17 @@ func TestShipGTFromALinkedWorktreeTracksItsOwnBranch(t *testing.T) {
 	if !strings.HasPrefix(got, "tracked lane onto main · ") {
 		t.Errorf("summary = %q, want it to lead with the worktree's own branch", got)
 	}
-	var track []string
 	for _, inv := range shipGTInvocations(t, f) {
 		if len(inv) > 2 && inv[0] == "gt" && inv[1] == "track" {
-			track = inv
+			t.Fatalf("linked worktree started gt track: %v", inv)
 		}
 	}
-	if want := []string{"gt", "track", "lane", "--parent", "main", "--no-interactive"}; !reflect.DeepEqual(track, want) {
-		t.Errorf("track argv = %v, want %v", track, want)
+	state, err := gtStateQuery(t.Context(), render.Dir(lane), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parents := state["lane"].Parents; len(parents) != 1 || parents[0].Ref != "main" {
+		t.Errorf("lane parents = %v, want main", parents)
 	}
 	if subject := gitAt(t, f.Env(), lane, "log", "-1", "--format=%s", "lane"); subject != "fix: frobnicate" {
 		t.Errorf("lane tip = %q, want the commit ship cut", subject)

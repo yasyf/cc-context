@@ -604,6 +604,30 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 				return nil, "", err
 			}
 		}
+		if !o.amend {
+			trunk, err := gtTrunkBranch("ship", state)
+			if err != nil {
+				return nil, "", err
+			}
+			if o.parent == trunk {
+				head, base, root, err := gtRootBase(ctx, l.dir(), branch, trunk)
+				if err != nil {
+					return nil, "", err
+				}
+				if root && (base != head || !o.noCommit) {
+					commonDir, err := gtCommonDir(ctx, l.dir(), "ship")
+					if err != nil {
+						return nil, "", err
+					}
+					if err := gtmeta.AdoptRoot(ctx, commonDir, branch, trunk, base, head); err != nil {
+						return nil, "", err
+					}
+					c.forget()
+					state, err := c.at(ctx)
+					return state, "tracked " + branch + " onto " + trunk + replayed, err
+				}
+			}
+		}
 	}
 	r, runErr := gtRun(ctx, c.dir, argv, errW)
 	c.forget()
@@ -630,6 +654,41 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 		seg += " onto " + parent
 	}
 	return state, seg + replayed, nil
+}
+
+func gtRootBase(ctx context.Context, dir render.Dir, branch, trunk string) (head, base string, root bool, err error) {
+	remoteTrunk, err := gtTrunkRefOffline(ctx, dir, "ship", trunk)
+	if errors.Is(err, vcs.ErrNoTrunk) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+	head, err = gtRestackHead(ctx, "ship", dir, branch)
+	if err != nil {
+		return "", "", false, err
+	}
+	contained, err := gitIsAncestor(ctx, dir, "ship", head, string(remoteTrunk.Ref()))
+	if err != nil {
+		return "", "", false, err
+	}
+	if contained {
+		return head, head, true, nil
+	}
+	parents, err := render.RunCLI(ctx, dir, "git", []string{"show", "-s", "--format=%P", gtRestackRef(branch)})
+	if err != nil {
+		return "", "", false, fmt.Errorf("ship: git show parents of %s: %w", branch, err)
+	}
+	fields := strings.Fields(parents)
+	if len(fields) != 1 {
+		return head, "", false, nil
+	}
+	base = fields[0]
+	contained, err = gitIsAncestor(ctx, dir, "ship", base, string(remoteTrunk.Ref()))
+	if err != nil {
+		return "", "", false, err
+	}
+	return head, base, contained, nil
 }
 
 // gtTrunkParent names trunk as the parent of a branch with commits above the
@@ -980,11 +1039,6 @@ func gtModifyArgv(o shipOpts) []string {
 	return argv
 }
 
-// gtCommit places the commit on the gt lane. A modify — an amend or an appended
-// commit — moves one ref and reparents nothing, so git commits it and the
-// branches above are replayed onto it carrying the parent revisions gt would
-// have recorded. A create still runs gt, for the branch_metadata row gtmeta
-// cannot insert.
 func gtCommit(ctx context.Context, l lane, errW io.Writer, o shipOpts, plan branchPlan, env []string) error {
 	if gtCreates(o, plan) {
 		r, runErr := gtRun(ctx, l.dir(), gtCommitArgv(o, plan), errW, env...)
