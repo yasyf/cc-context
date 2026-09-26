@@ -2078,22 +2078,13 @@ func stackRevParse(ctx context.Context, dir render.Dir, rev string) (string, err
 }
 
 func stackDropWorkspace(ctx context.Context, l lane, ws string) error {
-	listed, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "list", "--porcelain"})
-	if err != nil {
-		return fmt.Errorf("stack abort: git worktree list: %w", err)
+	if _, err := os.Stat(ws); err == nil {
+		return stackDiscardWorkspace(ctx, l, ws)
 	}
-	if !slices.Contains(strings.Split(listed, "\n"), "worktree "+ws) {
-		if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "prune"}); err != nil {
-			return fmt.Errorf("stack abort: git worktree prune: %w", err)
-		}
-		return nil
+	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "prune"}); err != nil {
+		return fmt.Errorf("stack abort: git worktree prune: %w", err)
 	}
-	if stackRebasing(ctx, render.Dir(ws)) {
-		if _, err := render.RunCLI(ctx, render.Dir(ws), "git", []string{"rebase", "--abort"}); err != nil {
-			return fmt.Errorf("stack abort: git rebase --abort in %s: %w", ws, err)
-		}
-	}
-	return stackDiscardWorkspace(ctx, l, ws)
+	return nil
 }
 
 // stackDiscardWorkspace moves ws aside, prunes its registration, and deletes

@@ -364,6 +364,49 @@ func TestStackContinueReturnsWhileTheWorkspaceIsStillBeingDeleted(t *testing.T) 
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubStackPRs(t, nil)
 	stackConflicting(t, f)
+	marker := stackStallRm(t, f)
+
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err == nil {
+		t.Fatal("stack rebase succeeded, want the conflict on feature")
+	}
+	ws := stackWorkspaceOf(t, err)
+	writeShipFile(t, ws, "c.txt", "trunk\nfeature\n")
+	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
+	if _, _, err := runStackCmdIn(t, f, ws, "continue"); err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	stackAssertDiscarded(t, f, ws, marker)
+}
+
+func TestStackAbortSucceedsWhenRemovingTheWorkspaceIsKilled(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	stubStackPRs(t, nil)
+	stackConflicting(t, f)
+	marker := stackStallRm(t, f)
+	bin := t.TempDir()
+	writeShipFile(t, bin, "git", "#!/bin/sh\ncase \"$*\" in *\"worktree remove\"*) kill -TERM $$;; esac\nPATH=${PATH#"+bin+":} exec git \"$@\"\n")
+	if err := os.Chmod(filepath.Join(bin, "git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err == nil {
+		t.Fatal("stack rebase succeeded, want the conflict on feature")
+	}
+	ws := stackWorkspaceOf(t, err)
+	f.PrependPATH(bin)
+	if _, _, err := runStackCmd(t, f, "abort"); err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	stackAssertDiscarded(t, f, ws, marker)
+	if slots, _ := os.ReadDir(filepath.Join(f.Dir, ".git", "ccx-stack-rebase")); len(slots) != 0 {
+		t.Errorf("abort left %d rebase slots", len(slots))
+	}
+}
+
+func stackStallRm(t *testing.T, f *vcstest.Fixture) string {
+	t.Helper()
 	bin := t.TempDir()
 	marker, fifo := filepath.Join(bin, "rm-args"), filepath.Join(bin, "rm-gate")
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
@@ -379,18 +422,11 @@ func TestStackContinueReturnsWhileTheWorkspaceIsStillBeingDeleted(t *testing.T) 
 		}
 	})
 	f.PrependPATH(bin)
+	return marker
+}
 
-	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
-	if err == nil {
-		t.Fatal("stack rebase succeeded, want the conflict on feature")
-	}
-	ws := stackWorkspaceOf(t, err)
-	writeShipFile(t, ws, "c.txt", "trunk\nfeature\n")
-	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
-	if _, _, err := runStackCmdIn(t, f, ws, "continue"); err != nil {
-		t.Fatalf("continue: %v", err)
-	}
-
+func stackAssertDiscarded(t *testing.T, f *vcstest.Fixture, ws, marker string) {
+	t.Helper()
 	if _, err := os.Stat(ws); !os.IsNotExist(err) {
 		t.Errorf("workspace %s still at its path: %v", ws, err)
 	}
@@ -407,7 +443,7 @@ func TestStackContinueReturnsWhileTheWorkspaceIsStillBeingDeleted(t *testing.T) 
 		t.Fatalf("rm ran with %q, want -rf on the workspace moved aside next to %s", args, ws)
 	}
 	if _, err := os.Stat(aside); err != nil {
-		t.Errorf("continue waited for the deletion of %s: %v", aside, err)
+		t.Errorf("the command waited for the deletion of %s: %v", aside, err)
 	}
 }
 
