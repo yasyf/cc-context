@@ -243,6 +243,14 @@ func dryRunTrack(ctx context.Context, l lane, o shipOpts, state gtState, r *ship
 		}
 		r.parent = parent
 		r.because = "untracked, so gt track -f takes the nearest tracked ancestor"
+		err = gtRefuseLandedParent(ctx, l.dir(), state, r.branch, parent)
+		var landed *errLandedParent
+		if errors.As(err, &landed) {
+			r.parent = r.trunk
+			r.because = fmt.Sprintf("untracked; gt track -f takes %s, which %s/%s already contains, so ship records it on %s", parent, landed.Remote, landed.Trunk, r.trunk)
+			return nil
+		}
+		return err
 	}
 	return dryRunLandedParent(ctx, l, state, r)
 }
