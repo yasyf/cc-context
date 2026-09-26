@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/execstub"
+
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -369,7 +371,5 @@ func mustMkdir(t *testing.T, path string) {
 func writeScript(t *testing.T, dir, name, body string) {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(body), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
-		t.Fatalf("write fake %q: %v", name, err)
-	}
+	execstub.Write(t, path, body)
 }

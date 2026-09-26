@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/execstub"
+
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/render"
 )
@@ -41,9 +43,7 @@ func fakeAstGrep(t *testing.T, files []string) context.Context {
 		"for a in \"$@\"; do [ \"$a\" = \"-U\" ] && exit 0; done\n" +
 		"cat <<'EOF'\n" + lines.String() + "EOF\n"
 	path := filepath.Join(dir, "ast-grep")
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // fake engine must be owner-executable
-		t.Fatalf("write fake ast-grep: %v", err)
-	}
+	execstub.Write(t, path, script)
 	return render.WithEnv(t.Context(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 

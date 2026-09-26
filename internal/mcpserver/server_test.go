@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/execstub"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/yasyf/cc-context/anchor"
@@ -72,9 +74,7 @@ func fakeAstGrepOnPath(t *testing.T, files []string) string {
 		"fi\n" +
 		"for a in \"$@\"; do [ \"$a\" = \"-U\" ] && exit 0; done\n" +
 		"cat <<'EOF'\n" + lines.String() + "EOF\n"
-	if err := os.WriteFile(filepath.Join(dir, "ast-grep"), []byte(script), 0o700); err != nil { //nolint:gosec // fake engine must be owner-executable
-		t.Fatalf("write fake ast-grep: %v", err)
-	}
+	execstub.Write(t, filepath.Join(dir, "ast-grep"), script)
 	return "PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH")
 }
 

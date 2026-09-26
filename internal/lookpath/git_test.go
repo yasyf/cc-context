@@ -5,14 +5,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/execstub"
 )
 
 func fakeGit(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "git")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o700); err != nil { //nolint:gosec // a fake git must be executable to be resolved
-		t.Fatalf("write fake git: %v", err)
-	}
+	execstub.Write(t, path, "#!/bin/sh\n")
 	return path
 }
 

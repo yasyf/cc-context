@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/execstub"
+
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/render"
@@ -896,9 +898,7 @@ func stubEngine(t *testing.T, body string) string {
 		t.Skip("POSIX stub engines only")
 	}
 	path := filepath.Join(t.TempDir(), "stub-engine")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil { //nolint:gosec // stub engine must be owner-executable
-		t.Fatalf("write stub engine: %v", err)
-	}
+	execstub.Write(t, path, "#!/bin/sh\n"+body+"\n")
 	return path
 }
 

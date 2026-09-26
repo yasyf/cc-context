@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/execstub"
+
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -83,9 +85,7 @@ else printf 'fake gh: no golden was recorded for argv: %s\n' "$*" >&2; exit 2
 fi
 exit 0
 `
-	if err := os.WriteFile(filepath.Join(f.ShimBin, "gh"), []byte(script), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
-		t.Fatalf("write fake gh: %v", err)
-	}
+	execstub.Write(t, filepath.Join(f.ShimBin, "gh"), script)
 }
 
 // setupGuidelines stands a real repository up with a fake gh replaying gh's own

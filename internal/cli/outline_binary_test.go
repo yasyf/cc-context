@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/execstub"
 )
 
 func TestOutlineCommandBinarySkip(t *testing.T) {
@@ -93,8 +95,6 @@ cat <<'EOF'
 {"path":"source.go","language":"Go","items":[{"symbolType":"struct","name":"X","signature":"type X struct {","isExported":true,"range":{"start":{"line":2}},"members":[]}]}
 EOF
 `
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // fake engine must be owner-executable
-		t.Fatalf("write fake ast-grep: %v", err)
-	}
+	execstub.Write(t, path, script)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/execstub"
+
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -169,9 +171,7 @@ func fakeClaudeCtx(ctx context.Context, t *testing.T, script string) context.Con
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "claude")
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // fake binary must be owner-executable
-		t.Fatalf("write fake claude: %v", err)
-	}
+	execstub.Write(t, path, script)
 	return render.WithEnv(ctx, "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 

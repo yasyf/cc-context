@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/execstub"
 
 	"github.com/yasyf/cc-context/internal/render"
 )
@@ -27,9 +28,7 @@ func stubGH(t *testing.T, script string) string {
 	t.Helper()
 	dir := t.TempDir()
 	if script != "" {
-		if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil { //nolint:gosec // test-only stub must be executable
-			t.Fatalf("write gh stub: %v", err)
-		}
+		execstub.Write(t, filepath.Join(dir, "gh"), script)
 	}
 	return dir
 }

@@ -20,6 +20,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/execstub"
+
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -120,9 +122,7 @@ func gitBranchExists(t *testing.T, env []string, dir, branch string) bool {
 
 func writeShipExecutable(t *testing.T, dir, name, script string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o700); err != nil { //nolint:gosec // a PATH entry must be owner-executable
-		t.Fatalf("write %s: %v", name, err)
-	}
+	execstub.Write(t, filepath.Join(dir, name), script)
 }
 
 // shipDisplaceShim moves whatever f.ShimBin/tool currently resolves to — the
@@ -981,9 +981,7 @@ exit 0
 `
 	gh := "#!/bin/sh\n" + log("gh") + shipGHBody
 	write := func(name, body string) {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
-			t.Fatalf("write fake %s: %v", name, err)
-		}
+		execstub.Write(t, filepath.Join(dir, name), body)
 	}
 	write("jj", jj)
 	write("git", git)

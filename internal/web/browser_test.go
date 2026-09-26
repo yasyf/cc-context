@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/execstub"
+
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -106,9 +108,7 @@ exit 0
 func installStub(ctx context.Context, t *testing.T, dir, script string) context.Context {
 	t.Helper()
 	stub := filepath.Join(dir, agentBrowserBin)
-	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil { //nolint:gosec // test-only stub must be executable
-		t.Fatalf("write stub: %v", err)
-	}
+	execstub.Write(t, stub, script)
 	return render.WithEnv(ctx, "PATH="+dir)
 }
 

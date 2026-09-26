@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/execstub"
 )
 
 // out runs name via PATH (through the shim) in dir, failing on nonzero exit.
@@ -190,9 +192,7 @@ func fakeScriptTool(t *testing.T) string {
 
 func writeExec(t *testing.T, path, script string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // the fake tool must be owner-executable to run from PATH
-		t.Fatalf("write %s: %v", path, err)
-	}
+	execstub.Write(t, path, script)
 }
 
 func TestScriptToolNeedsItsInterpreterOnPATH(t *testing.T) {

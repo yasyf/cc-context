@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/execstub"
+
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -36,9 +38,7 @@ func gtRunFake(t *testing.T, body string) {
 		t.Skip("fake shell scripts are POSIX-only")
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "gt"), []byte("#!/bin/sh\n"+body), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
-		t.Fatalf("write fake gt: %v", err)
-	}
+	execstub.Write(t, filepath.Join(dir, "gt"), "#!/bin/sh\n"+body)
 	t.Setenv("PATH", dir)
 }
 
