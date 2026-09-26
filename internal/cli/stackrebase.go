@@ -767,12 +767,27 @@ func stackStrayReason(ctx context.Context, dir render.Dir, state gtState, tr vcs
 // it; fromEmpty says that revision held no work of the parent's, which a branch
 // cut from a parent before its first commit shares with a foreign one.
 func stackCarriesNone(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, branch, child, parent string) (none, fromEmpty bool, err error) {
+	none, fromEmpty, err = stackCarriesNoneOf(ctx, dir, state, tr, branch, child, parent, gtRestackRef(parent))
+	if err != nil || !none {
+		return none, fromEmpty, err
+	}
+	pushed := "refs/remotes/" + tr.Remote() + "/" + parent
+	if present, err := gitRefExists(ctx, dir, stackRebasePrefix, pushed); err != nil || !present {
+		return none, fromEmpty, err
+	}
+	return stackCarriesNoneOf(ctx, dir, state, tr, branch, child, parent, pushed)
+}
+
+// stackCarriesNoneOf is stackCarriesNone against one head of parent: its
+// local branch, or the head it was last pushed at, which a branch cut from
+// it still carries after the parent's lane rewrites it locally.
+func stackCarriesNoneOf(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, branch, child, parent, parentRef string) (none, fromEmpty bool, err error) {
 	below := state[parent].Parents[0].Ref
 	outside := []string{"^" + string(tr.Ref())}
 	if below != tr.Name() {
 		outside = append(outside, "^"+gtRestackRef(below))
 	}
-	parentOwn, err := gtRevCount(ctx, stackRebasePrefix, dir, gtRestackRef(parent), outside...)
+	parentOwn, err := gtRevCount(ctx, stackRebasePrefix, dir, parentRef, outside...)
 	if err != nil || parentOwn == 0 {
 		return false, false, err
 	}
@@ -791,7 +806,7 @@ func stackCarriesNone(ctx context.Context, dir render.Dir, state gtState, tr vcs
 			return false, false, err
 		}
 	}
-	missing, err := gtRevCount(ctx, stackRebasePrefix, dir, gtRestackRef(parent)+"..."+gtRestackRef(branch), append([]string{"--left-only", "--cherry-pick"}, outside...)...)
+	missing, err := gtRevCount(ctx, stackRebasePrefix, dir, parentRef+"..."+gtRestackRef(branch), append([]string{"--left-only", "--cherry-pick"}, outside...)...)
 	return err == nil && missing >= parentOwn, carried, err
 }
 

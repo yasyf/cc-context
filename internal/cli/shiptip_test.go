@@ -203,6 +203,43 @@ func TestShipTipOnlyCommitsWithAncestorCheckedOut(t *testing.T) {
 	stackAssertBaseKept(t, f, base)
 }
 
+func TestShipTipOnlyReadsAParentAnotherLaneRewroteLocally(t *testing.T) {
+	f := shipGTRepo(t)
+	stubGTAPI(t)
+	shipGTStack(t, f, "base", "feature")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	stubStackPRs(t, map[string]*stackPR{
+		"base":    {Number: 100, Title: "base", State: "OPEN", Base: "main", Mergeable: "MERGEABLE"},
+		"feature": {Number: 101, Title: "feature", State: "OPEN", Base: "base", Mergeable: "MERGEABLE"},
+	})
+	cut := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	held := f.WorktreePath("held-base")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
+	writeShipFile(t, held, "base.txt", "base, amended and pushed\n")
+	mustRun(t, f.Env(), held, "git", "commit", "-qa", "--amend", "--no-edit")
+	mustRun(t, f.Env(), held, "git", "push", "-qf", "origin", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", "base", cut, "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-qf", "origin", "feature")
+	base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	writeShipFile(t, held, "base.txt", "base, amended again and not pushed\n")
+	mustRun(t, f.Env(), held, "git", "commit", "-qa", "--amend", "--no-edit")
+	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	shipGTReady(t, f)
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--tip-only"); err != nil {
+		t.Fatalf("ship --tip-only = %v (stderr=%q)", err, errStr)
+	}
+	if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Equal(refs, []string{"feature"}) {
+		t.Errorf("pushed refs = %v, want only feature", refs)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != local {
+		t.Errorf("the base lane's local rewrite moved from %s to %s", local, got)
+	}
+	stackAssertBaseKept(t, f, base)
+}
+
 func TestShipTipOnlyPreviewsAndPublishesExplicitChildMeta(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
