@@ -8,11 +8,12 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // Kind labels the resolver a Result came from.
@@ -141,11 +142,11 @@ func resolveGoModule(ctx context.Context, name string) []Result {
 // goListModule reports name's directory and version in the current module
 // context. A nonzero exit means name is not a module here — a miss, not an error.
 func goListModule(ctx context.Context, name string) (Result, bool) {
-	out, err := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Dir}}@{{.Version}}", name).Output() //nolint:gosec // fixed go argv; only the module name varies
+	out, err := render.RunCLI(ctx, render.Ambient, "go", []string{"list", "-m", "-f", "{{.Dir}}@{{.Version}}", name})
 	if err != nil {
 		return Result{}, false
 	}
-	line := strings.TrimSpace(string(out))
+	line := strings.TrimSpace(out)
 	at := strings.LastIndexByte(line, '@')
 	if at < 0 {
 		return Result{}, false
@@ -160,11 +161,11 @@ func goListModule(ctx context.Context, name string) (Result, bool) {
 // goModCacheVersions globs the encoded module path under GOMODCACHE and returns
 // the cacheVersions newest downloaded versions, newest first.
 func goModCacheVersions(ctx context.Context, name string) []Result {
-	out, err := exec.CommandContext(ctx, "go", "env", "GOMODCACHE").Output() //nolint:gosec // fixed go argv
+	out, err := render.RunCLI(ctx, render.Ambient, "go", []string{"env", "GOMODCACHE"})
 	if err != nil {
 		return nil
 	}
-	cache := strings.TrimSpace(string(out))
+	cache := strings.TrimSpace(out)
 	if cache == "" {
 		return nil
 	}
@@ -191,15 +192,15 @@ func goModCacheVersions(ctx context.Context, name string) []Result {
 // origin) and distribution version via a python3 probe. An absent interpreter or
 // an unresolvable package contributes nothing.
 func resolvePython(ctx context.Context, name string) []Result {
-	python := pythonInterpreter()
+	python := pythonInterpreter(ctx)
 	if python == "" {
 		return nil
 	}
-	out, err := exec.CommandContext(ctx, python, "-c", pythonProbe, name).Output() //nolint:gosec // fixed probe; only the package name varies
+	out, err := render.RunCLI(ctx, render.Ambient, python, []string{"-c", pythonProbe, name})
 	if err != nil {
 		return nil
 	}
-	line := strings.TrimSpace(string(out))
+	line := strings.TrimSpace(out)
 	if line == "" {
 		return nil
 	}
@@ -213,9 +214,9 @@ func resolvePython(ctx context.Context, name string) []Result {
 // pythonInterpreter picks the python3 to probe: an active virtualenv's
 // interpreter, then a project-local ./.venv, then PATH. It returns "" when none
 // is available.
-func pythonInterpreter() string {
+func pythonInterpreter(ctx context.Context) string {
 	var candidates []string
-	if venv := os.Getenv("VIRTUAL_ENV"); venv != "" {
+	if venv := render.Getenv(ctx, "VIRTUAL_ENV"); venv != "" {
 		candidates = append(candidates, filepath.Join(venv, "bin", "python3"))
 	}
 	candidates = append(candidates, filepath.Join(".venv", "bin", "python3"))
@@ -224,7 +225,7 @@ func pythonInterpreter() string {
 			return c
 		}
 	}
-	if p, err := exec.LookPath("python3"); err == nil {
+	if p := render.LookPath(ctx, "python3"); p != "" {
 		return p
 	}
 	return ""

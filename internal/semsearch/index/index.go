@@ -68,7 +68,7 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 
 	contentK := ContentKey(content)
 	chunkerID := chunker.ID()
-	dir, err := variantCacheDir(root, modelID, contentK, chunkerID, emb.Dims())
+	dir, err := variantCacheDir(ctx, root, modelID, contentK, chunkerID, emb.Dims())
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +167,7 @@ func build(ctx context.Context, emb Embedder, root string, exts []string, chunke
 			if gctx.Err() != nil {
 				return gctx.Err()
 			}
-			results[i] = chunkFile(abs, root, chunker, prevEntries)
+			results[i] = chunkFile(gctx, abs, root, chunker, prevEntries)
 			return nil
 		})
 	}
@@ -228,7 +228,7 @@ func build(ctx context.Context, emb Embedder, root string, exts []string, chunke
 // chunkFile classifies one file and, when it is not a warm cache hit, reads and
 // chunks it. A read/stat error or a non-valid status marks the file skipped,
 // mirroring semble's suppress(OSError).
-func chunkFile(abs, root string, chunker Chunker, prevEntries map[string]fileManifest) fileResult {
+func chunkFile(ctx context.Context, abs, root string, chunker Chunker, prevEntries map[string]fileManifest) fileResult {
 	rel, err := filepath.Rel(root, abs)
 	if err != nil {
 		return fileResult{}
@@ -252,7 +252,7 @@ func chunkFile(abs, root string, chunker Chunker, prevEntries map[string]fileMan
 		rel:    rel,
 		mtime:  mtime,
 		valid:  true,
-		chunks: chunker.ChunkFile(rel, DetectLanguage(rel), text),
+		chunks: chunker.ChunkFile(ctx, rel, DetectLanguage(rel), text),
 	}
 }
 

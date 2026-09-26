@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 func TestDir(t *testing.T) {
@@ -23,8 +25,8 @@ func TestDir(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
-			t.Setenv("CLAUDE_PLUGIN_DATA", root)
-			got, err := Dir(tt.sub...)
+			ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+root)
+			got, err := Dir(ctx, tt.sub...)
 			if err != nil {
 				t.Fatalf("Dir(%v): %v", tt.sub, err)
 			}
@@ -44,12 +46,12 @@ func TestDir(t *testing.T) {
 }
 
 func TestDirUserCacheFallback(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", "")
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA=")
 	base, err := os.UserCacheDir()
 	if err != nil {
 		t.Fatalf("UserCacheDir: %v", err)
 	}
-	got, err := Dir("bin")
+	got, err := Dir(ctx, "bin")
 	if err != nil {
 		t.Fatalf("Dir(bin): %v", err)
 	}

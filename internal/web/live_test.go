@@ -23,7 +23,7 @@ import (
 // production — a different shape would fail the envelope decode inside jina.
 func TestLiveJinaRenderPass(t *testing.T) {
 	requireLive(t, envJinaKey)
-	ctx, cancel := context.WithTimeout(context.Background(), jinaTimeout+5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), jinaTimeout+5*time.Second)
 	defer cancel()
 
 	res, err := newTiers().jina(ctx, "https://excalidraw.com", true)
@@ -55,7 +55,7 @@ func TestLiveAgentBrowserRenderedRead(t *testing.T) {
 	if lookpath.Find(agentBrowserBin) == "" {
 		t.Skipf("%s not on PATH", agentBrowserBin)
 	}
-	res, err := newTiers().agentBrowser(context.Background(), "https://example.com", false)
+	res, err := newTiers().agentBrowser(t.Context(), "https://example.com", false)
 	if err != nil {
 		t.Fatalf("agent-browser rendered read: %v", err)
 	}
@@ -112,7 +112,7 @@ func requirePaidLive(t *testing.T, keyEnv string) string {
 // keyless path does in production.
 func TestLiveJinaKeyed(t *testing.T) {
 	requireLive(t, envJinaKey)
-	res, err := newTiers().jina(context.Background(), "https://example.com", false)
+	res, err := newTiers().jina(t.Context(), "https://example.com", false)
 	if err != nil {
 		t.Fatalf("jina live fetch: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestLiveJinaKeyed(t *testing.T) {
 func TestLiveGoneClassification(t *testing.T) {
 	requireLiveOptIn(t)
 	const missing = "https://raw.githubusercontent.com/yasyf/cc-context/main/does-not-exist-ccx-web-probe"
-	_, err := newTiers().plainHTTP(context.Background(), missing, nil)
+	_, err := newTiers().plainHTTP(t.Context(), missing, nil)
 	if !errors.Is(err, ErrGone) {
 		t.Fatalf("plainHTTP on a 404 target: want ErrGone, got %v", err)
 	}
@@ -145,7 +145,7 @@ func TestLiveGoneClassification(t *testing.T) {
 // the heading structure survives.
 func TestLiveExaTagged(t *testing.T) {
 	key := requireLive(t, envExaKey)
-	res, err := newTiers().exa(context.Background(), "https://go.dev/doc/effective_go", key)
+	res, err := newTiers().exa(t.Context(), "https://go.dev/doc/effective_go", key)
 	if err != nil {
 		t.Fatalf("exa live fetch: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestLiveExaTagged(t *testing.T) {
 // data.markdown and, usually, data.metadata.title on the success path.
 func TestLiveFirecrawl(t *testing.T) {
 	key := requireLive(t, envFirecrawlKey)
-	res, err := newTiers().firecrawl(context.Background(), "https://go.dev/doc/effective_go", key, false)
+	res, err := newTiers().firecrawl(t.Context(), "https://go.dev/doc/effective_go", key, false)
 	if err != nil {
 		t.Fatalf("firecrawl live fetch: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestLiveFirecrawl(t *testing.T) {
 // signal.
 func TestLiveBrowserbaseShape(t *testing.T) {
 	key := requirePaidLive(t, envBrowserbaseKey)
-	res, err := newTiers().browserbase(context.Background(), "https://example.com", key)
+	res, err := newTiers().browserbase(t.Context(), "https://example.com", key)
 	if err != nil {
 		t.Fatalf("browserbase live fetch: %v (BROWSERBASE_PROJECT_ID set=%v)",
 			err, os.Getenv("BROWSERBASE_PROJECT_ID") != "")
@@ -217,7 +217,7 @@ func TestLiveStealthEndToEnd(t *testing.T) {
 	}
 	stealthEngaged := false
 	for _, u := range targets {
-		res, err := Fetch(context.Background(), u, nil)
+		res, err := Fetch(t.Context(), u, nil)
 		switch {
 		case err == nil && res.Tier == TierBrowserbase:
 			stealthEngaged = true
@@ -343,7 +343,7 @@ func firstNonPreambleSection(t *testing.T, outline string) string {
 // never serve it as an article.
 func TestLiveJinaChallengeAt200(t *testing.T) {
 	requireLive(t, envJinaKey)
-	ctx, cancel := context.WithTimeout(context.Background(), jinaTimeout+5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), jinaTimeout+5*time.Second)
 	defer cancel()
 
 	res, err := newTiers().jina(ctx, "https://nopecha.com/demo/cloudflare", false)
@@ -369,7 +369,7 @@ func TestLiveCascadeEscalatesToBrowserbase(t *testing.T) {
 	isolateKeys(t)
 	t.Setenv(envBrowserbaseKey, key)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
 
 	var mu sync.Mutex
@@ -411,7 +411,7 @@ func TestLiveCascadeEscalatesToBrowserbase(t *testing.T) {
 // runs challengeSignature over the real bytes to prove body/header detection.
 func TestLivePlainHTTPDetectsChallenge(t *testing.T) {
 	requireLiveOptIn(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
 
 	// C1 — status classification: plainHTTP returns errStealthRequired straight
@@ -473,7 +473,7 @@ func TestLivePlainHTTPDetectsChallenge(t *testing.T) {
 // controls must all classify as non-challenges over their real bytes.
 func TestLiveBenignPagesNotChallenged(t *testing.T) {
 	requireLiveOptIn(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
 
 	targets := []string{
@@ -517,7 +517,7 @@ func TestLiveWebRunOutlineReadSearch(t *testing.T) {
 	}
 	t.Cleanup(func() { fetchPage = prev })
 
-	ctx, cancel := context.WithTimeout(context.Background(), cascadeDeadline+30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), cascadeDeadline+30*time.Second)
 	defer cancel()
 	const target = "https://go.dev/doc/effective_go"
 

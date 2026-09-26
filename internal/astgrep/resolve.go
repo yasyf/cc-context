@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // minVersion is the ast-grep floor the structural ops require. Below it, argv
@@ -25,7 +25,7 @@ var versionChecks sync.Map
 func resolveBin(ctx context.Context, configured string) (string, error) {
 	bin := configured
 	if bin == "" {
-		bin = lookpath.Find("ast-grep")
+		bin = render.LookPath(ctx, "ast-grep")
 	}
 	if bin == "" {
 		return "", fmt.Errorf("ccx structural search, replace, and outline need ast-grep on PATH; install: brew install ast-grep (or: uv tool install ast-grep-cli)")

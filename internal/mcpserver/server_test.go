@@ -17,14 +17,15 @@ import (
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/codeexec"
 	"github.com/yasyf/cc-context/internal/proxy"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // connectTestServer registers the ccx tools on a server and returns a connected
-// in-memory client session. Reflection is hard-off so no test shells out to
-// `claude mcp list`.
-func connectTestServer(t *testing.T) *mcp.ClientSession {
+// in-memory client session whose handlers resolve env and PATH off ctx.
+// Reflection is hard-off so no test shells out to `claude mcp list`.
+func connectTestServer(t *testing.T, env ...string) *mcp.ClientSession {
 	t.Helper()
-	ctx := context.Background()
+	ctx := render.WithEnv(context.Background(), env...)
 	t.Setenv("CCX_EXEC_MCP", "off")
 	s := mcp.NewServer(&mcp.Implementation{Name: "cc-context-test", Version: "test"}, nil)
 	p := proxy.New()
@@ -49,8 +50,9 @@ func connectTestServer(t *testing.T) *mcp.ClientSession {
 }
 
 // fakeAstGrepOnPath installs an "ast-grep" that emits one JSON match per file in
-// files on a preview run and exits 0 on an apply run (argv carries -U).
-func fakeAstGrepOnPath(t *testing.T, files []string) {
+// files on a preview run and exits 0 on an apply run (argv carries -U), and
+// returns the PATH entry that puts it ahead of any real one.
+func fakeAstGrepOnPath(t *testing.T, files []string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake ast-grep script is POSIX-only")
@@ -73,7 +75,7 @@ func fakeAstGrepOnPath(t *testing.T, files []string) {
 	if err := os.WriteFile(filepath.Join(dir, "ast-grep"), []byte(script), 0o700); err != nil { //nolint:gosec // fake engine must be owner-executable
 		t.Fatalf("write fake ast-grep: %v", err)
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return "PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH")
 }
 
 func callText(t *testing.T, cs *mcp.ClientSession, tool string, args map[string]any) (string, bool) {
@@ -534,8 +536,7 @@ func TestDepsToolNative(t *testing.T) {
 }
 
 func TestReplaceToolPreviewVsApply(t *testing.T) {
-	fakeAstGrepOnPath(t, []string{"a.go", "b.go"})
-	cs := connectTestServer(t)
+	cs := connectTestServer(t, fakeAstGrepOnPath(t, []string{"a.go", "b.go"}))
 
 	// Omitting apply → preview (diff, no apply summary).
 	out, isErr := callText(t, cs, "ccx_code_replace", map[string]any{"pattern": "old($A)", "rewrite": "new($A)"})
@@ -561,8 +562,7 @@ func TestReplaceToolForceOverCap(t *testing.T) {
 	for i := range files {
 		files[i] = fmt.Sprintf("f%d.go", i)
 	}
-	fakeAstGrepOnPath(t, files)
-	cs := connectTestServer(t)
+	cs := connectTestServer(t, fakeAstGrepOnPath(t, files))
 
 	// apply over the 20-file cap without force → tool error.
 	out, isErr := callText(t, cs, "ccx_code_replace", map[string]any{"pattern": "old($A)", "rewrite": "new($A)", "apply": true})
@@ -587,8 +587,7 @@ func TestReplaceToolForceOverCap(t *testing.T) {
 }
 
 func TestSearchToolStructuralMode(t *testing.T) {
-	fakeAstGrepOnPath(t, []string{"a.go", "a.go"})
-	cs := connectTestServer(t)
+	cs := connectTestServer(t, fakeAstGrepOnPath(t, []string{"a.go", "a.go"}))
 
 	// A metavar query auto-routes structural; the result is the search list.
 	out, isErr := callText(t, cs, "ccx_code_search", map[string]any{"query": "old($A)"})
@@ -602,8 +601,7 @@ func TestSearchToolStructuralMode(t *testing.T) {
 }
 
 func TestOutlineToolRoutesToAstGrep(t *testing.T) {
-	fakeAstGrepOnPath(t, nil)
-	cs := connectTestServer(t)
+	cs := connectTestServer(t, fakeAstGrepOnPath(t, nil))
 
 	// A directory always routes to ast-grep; the terse default renders top-level
 	// declarations only, hiding the struct's member behind a count and the flags.
@@ -889,7 +887,7 @@ func TestEditToolRequiresExactlyOne(t *testing.T) {
 }
 
 func TestExecToolRoundTrip(t *testing.T) {
-	if !codeexec.Supported() {
+	if !codeexec.Supported(t.Context()) {
 		t.Skip(codeexec.UnsupportedReason)
 	}
 	cs := connectTestServer(t)
@@ -903,7 +901,7 @@ func TestExecToolRoundTrip(t *testing.T) {
 }
 
 func TestExecToolsListsCatalog(t *testing.T) {
-	if !codeexec.Supported() {
+	if !codeexec.Supported(t.Context()) {
 		t.Skip(codeexec.UnsupportedReason)
 	}
 	cs := connectTestServer(t)
@@ -920,7 +918,7 @@ func TestExecToolsListsCatalog(t *testing.T) {
 }
 
 func TestExecToolBadScript(t *testing.T) {
-	if !codeexec.Supported() {
+	if !codeexec.Supported(t.Context()) {
 		t.Skip(codeexec.UnsupportedReason)
 	}
 	cs := connectTestServer(t)

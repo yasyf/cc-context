@@ -9,12 +9,12 @@ import (
 
 	"github.com/yasyf/cc-context/internal/cli"
 	"github.com/yasyf/cc-context/internal/codeexec"
-	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // executeExec runs `ccx exec` with args and the given in-stream (nil leaves the
 // default stdin), capturing the out and err streams separately.
-func executeExec(t *testing.T, args []string, in string) (string, string, error) {
+func executeExec(t *testing.T, args []string, in string, env ...string) (string, string, error) {
 	t.Helper()
 	t.Setenv("CCX_EXEC_MCP", "off")
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
@@ -26,12 +26,12 @@ func executeExec(t *testing.T, args []string, in string) (string, string, error)
 		root.SetIn(strings.NewReader(in))
 	}
 	root.SetArgs(append([]string{"exec"}, args...))
-	err := root.Execute()
+	err := root.ExecuteContext(render.WithEnv(t.Context(), env...))
 	return out.String(), errOut.String(), err
 }
 
 func TestExecScriptSources(t *testing.T) {
-	if !codeexec.Supported() {
+	if !codeexec.Supported(t.Context()) {
 		t.Skip(codeexec.UnsupportedReason)
 	}
 	tests := []struct {
@@ -80,7 +80,7 @@ func TestExecScriptSources(t *testing.T) {
 }
 
 func TestExecListTools(t *testing.T) {
-	if !codeexec.Supported() {
+	if !codeexec.Supported(t.Context()) {
 		t.Skip(codeexec.UnsupportedReason)
 	}
 	out, errOut, err := executeExec(t, []string{"--list-tools"}, "")
@@ -100,11 +100,7 @@ func TestExecListTools(t *testing.T) {
 // TestExecUnsupportedWithoutUV proves the CLI gate surfaces UnsupportedReason
 // when uv is off PATH, before any sandbox work.
 func TestExecUnsupportedWithoutUV(t *testing.T) {
-	orig := lookpath.Find
-	lookpath.Find = func(string) string { return "" }
-	t.Cleanup(func() { lookpath.Find = orig })
-
-	out, _, err := executeExec(t, []string{"40+2"}, "")
+	out, _, err := executeExec(t, []string{"40+2"}, "", "PATH="+t.TempDir())
 	if err == nil {
 		t.Fatal("Execute(exec) error = nil, want unsupported error")
 	}
@@ -117,7 +113,7 @@ func TestExecUnsupportedWithoutUV(t *testing.T) {
 }
 
 func TestExecMissingScript(t *testing.T) {
-	if !codeexec.Supported() {
+	if !codeexec.Supported(t.Context()) {
 		t.Skip(codeexec.UnsupportedReason)
 	}
 	tests := []struct {

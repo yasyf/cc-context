@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"slices"
 	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // Engine wires the sandbox runtime to the ccx builtins plus every reflected
@@ -108,13 +109,13 @@ func (e *Engine) Close() error { return e.reflector.Close() }
 // server skips discovery, catalog resolution, and every note. CCX_EXEC_MCP=off
 // and an empty inventory both mean builtins only; refresh bypasses the cache.
 func (e *Engine) resolve(ctx context.Context, script string) ([]string, bool, error) {
-	mode := os.Getenv("CCX_EXEC_MCP")
+	mode := render.Getenv(ctx, "CCX_EXEC_MCP")
 	if mode == "off" {
 		return nil, false, nil
 	}
 	refresh := mode == "refresh"
 	entered := e.now()
-	inv, probedAt, cached := e.inventories.Load()
+	inv, probedAt, cached := e.inventories.Load(ctx)
 
 	// Gate 1: any cached inventory short-circuits before a probe when the script
 	// names no reflected tool. Stale or fresh, a builtins-only script never pays.
@@ -168,7 +169,7 @@ func (e *Engine) probe(ctx context.Context, cachedInv Inventory, probedAt, enter
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if latest, latestAt, ok := e.inventories.Load(); ok && latestAt.After(probedAt) {
+	if latest, latestAt, ok := e.inventories.Load(ctx); ok && latestAt.After(probedAt) {
 		return latest, nil, false, nil
 	}
 	if !e.failedAt.IsZero() && e.failedAt.After(entered) {
@@ -180,7 +181,7 @@ func (e *Engine) probe(ctx context.Context, cachedInv Inventory, probedAt, enter
 		return Inventory{}, nil, false, err
 	}
 	if err == nil {
-		if serr := e.inventories.Save(inv, e.now()); serr != nil {
+		if serr := e.inventories.Save(ctx, inv, e.now()); serr != nil {
 			return Inventory{}, nil, false, fmt.Errorf("save inventory: %w", serr)
 		}
 		return inv, nil, false, nil

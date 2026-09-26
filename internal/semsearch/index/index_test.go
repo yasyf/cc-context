@@ -56,8 +56,8 @@ func detVec(s string, dims int) []float32 {
 type altChunker struct{}
 
 func (altChunker) ID() string { return "alt-v1" }
-func (altChunker) ChunkFile(p, l, c string) []semsearch.Chunk {
-	return DefaultChunker().ChunkFile(p, l, c)
+func (altChunker) ChunkFile(ctx context.Context, p, l, c string) []semsearch.Chunk {
+	return DefaultChunker().ChunkFile(ctx, p, l, c)
 }
 
 func writeIndexRepo(t *testing.T) string {
@@ -135,7 +135,7 @@ func TestLoadPartialReindex(t *testing.T) {
 	if err := os.Chtimes(aPath, future, future); err != nil {
 		t.Fatal(err)
 	}
-	wantA := len(DefaultChunker().ChunkFile("a.go", "go", newBody))
+	wantA := len(DefaultChunker().ChunkFile(ctx, "a.go", "go", newBody))
 
 	emb.encoded = 0
 	idx, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x")
@@ -317,7 +317,7 @@ func TestWarmLoadDoesNotRewriteCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir, err := variantCacheDir(resolved, "model-x", ContentKey([]ContentType{ContentCode}), DefaultChunker().ID(), emb.Dims())
+	dir, err := variantCacheDir(ctx, resolved, "model-x", ContentKey([]ContentType{ContentCode}), DefaultChunker().ID(), emb.Dims())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +387,7 @@ func TestChunkFileWarmHitDoesNotReadContent(t *testing.T) {
 		t.Skip("filesystem permits reading mode 000 files")
 	}
 	previous := fileManifest{Path: "cached.go", MtimeNs: info.ModTime().UnixNano(), Count: 1}
-	got := chunkFile(path, root, DefaultChunker(), map[string]fileManifest{"cached.go": previous})
+	got := chunkFile(t.Context(), path, root, DefaultChunker(), map[string]fileManifest{"cached.go": previous})
 	if !got.valid || !got.reuse || got.prev != previous {
 		t.Fatalf("warm unreadable file = %+v, want cached contents without reading", got)
 	}

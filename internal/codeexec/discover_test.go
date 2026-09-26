@@ -33,7 +33,7 @@ func clearFilterEnv(t *testing.T) {
 
 func TestInventoryOfRealOutput(t *testing.T) {
 	clearFilterEnv(t)
-	inv := inventoryOf(realList)
+	inv := inventoryOf(t.Context(), realList)
 
 	want := []ServerSpec{
 		{Name: "auggie", Command: "/opt/homebrew/bin/auggie", Argv: []string{"--mcp", "--mcp-auto-workspace"}, Prefix: "auggie"},
@@ -77,7 +77,7 @@ func TestInventoryFilters(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("CCX_EXEC_MCP_ALLOW", tt.allow)
 			t.Setenv("CCX_EXEC_MCP_DENY", tt.deny)
-			inv := inventoryOf(tt.list)
+			inv := inventoryOf(t.Context(), tt.list)
 			var names []string
 			for _, s := range inv.Servers {
 				names = append(names, s.Name)
@@ -94,28 +94,28 @@ func TestInventoryFilters(t *testing.T) {
 
 func TestInventoryHash(t *testing.T) {
 	clearFilterEnv(t)
-	base := inventoryOf(realList).Hash
+	base := inventoryOf(t.Context(), realList).Hash
 
 	lines := strings.Split(strings.TrimSuffix(realList, "\n"), "\n")
 	for i, j := 0, len(lines)-1; i < j; i, j = i+1, j-1 {
 		lines[i], lines[j] = lines[j], lines[i]
 	}
-	reordered := inventoryOf(strings.Join(lines, "\n"))
+	reordered := inventoryOf(t.Context(), strings.Join(lines, "\n"))
 	if reordered.Hash != base {
 		t.Errorf("hash order-dependent: %s != %s", reordered.Hash, base)
 	}
 
-	added := inventoryOf(realList + "extra: npx extra-mcp - ✔ Connected\n")
+	added := inventoryOf(t.Context(), realList+"extra: npx extra-mcp - ✔ Connected\n")
 	if added.Hash == base {
 		t.Error("hash unchanged after adding a server")
 	}
 
-	filteredAdded := inventoryOf(realList + "plugin:cc-review:extra: /x/mcp-channel.sh - ✔ Connected\n")
+	filteredAdded := inventoryOf(t.Context(), realList+"plugin:cc-review:extra: /x/mcp-channel.sh - ✔ Connected\n")
 	if filteredAdded.Hash != base {
 		t.Error("filtered server churned the hash")
 	}
 
-	relaunched := inventoryOf(strings.Replace(realList, "railway: railway mcp", "railway: railway mcp --beta", 1))
+	relaunched := inventoryOf(t.Context(), strings.Replace(realList, "railway: railway mcp", "railway: railway mcp --beta", 1))
 	if relaunched.Hash == base {
 		t.Error("hash unchanged after a command change")
 	}
@@ -126,7 +126,7 @@ func TestPrefixes(t *testing.T) {
 	list := "foo-bar: /bin/a serve - ✔ Connected\n" +
 		"foo.bar: /bin/b serve - ✔ Connected\n" +
 		"plugin:x:tools: /bin/tools-mcp serve - ✔ Connected\n"
-	inv := inventoryOf(list)
+	inv := inventoryOf(t.Context(), list)
 
 	prefixes := map[string]string{}
 	for _, s := range inv.Servers {

@@ -16,14 +16,14 @@ import (
 // on the next resolve instead of being trusted by filename.
 func TestDriverPathVerifiesContent(t *testing.T) {
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	path, err := driverPath()
+	path, err := driverPath(t.Context())
 	if err != nil {
 		t.Fatalf("driverPath error: %v", err)
 	}
 	if err := os.WriteFile(path, []byte("print('tampered')\n"), 0o600); err != nil {
 		t.Fatalf("tamper: %v", err)
 	}
-	again, err := driverPath()
+	again, err := driverPath(t.Context())
 	if err != nil {
 		t.Fatalf("driverPath after tamper error: %v", err)
 	}

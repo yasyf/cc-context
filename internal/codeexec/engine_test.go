@@ -55,10 +55,10 @@ func newTestEngine(t *testing.T, d discoverer, opts ...Option) (*Engine, *fakeCo
 
 // seedInventory returns a memory inventory store already holding fakeInventory
 // probed at probedAt, for gate and freshness assertions.
-func seedInventory(t *testing.T, inv Inventory, probedAt time.Time) InventoryStore {
+func seedInventory(ctx context.Context, t *testing.T, inv Inventory, probedAt time.Time) InventoryStore {
 	t.Helper()
 	store := NewMemoryInventoryStore()
-	if err := store.Save(inv, probedAt); err != nil {
+	if err := store.Save(ctx, inv, probedAt); err != nil {
 		t.Fatalf("seed inventory: %v", err)
 	}
 	return store
@@ -214,7 +214,7 @@ func TestEngineGateSkipsDiscovery(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			d := &fakeDiscovery{err: errors.New("probe must not run")}
 			base := time.Now()
-			store := seedInventory(t, fakeInventory(), base.Add(-tt.age))
+			store := seedInventory(ctx, t, fakeInventory(), base.Add(-tt.age))
 			e, conn := newTestEngine(t, d, WithInventoryStore(store))
 			e.now = func() time.Time { return base }
 
@@ -247,7 +247,7 @@ func TestEngineStaleFallback(t *testing.T) {
 	d := &fakeDiscovery{err: errors.New("claude mcp list timed out after 1s")}
 	base := time.Now()
 	age := inventoryTTL + 5*time.Minute
-	store := seedInventory(t, fakeInventory(), base.Add(-age))
+	store := seedInventory(ctx, t, fakeInventory(), base.Add(-age))
 	e, conn := newTestEngine(t, d, WithInventoryStore(store))
 	e.now = func() time.Time { return base }
 
@@ -304,7 +304,7 @@ func TestEngineRefreshProbes(t *testing.T) {
 	ctx := context.Background()
 	d := &fakeDiscovery{inv: fakeInventory()}
 	base := time.Now()
-	store := seedInventory(t, fakeInventory(), base)
+	store := seedInventory(ctx, t, fakeInventory(), base)
 	e, _ := newTestEngine(t, d, WithInventoryStore(store))
 	e.now = func() time.Time { return base }
 	t.Setenv("CCX_EXEC_MCP", "refresh")
@@ -330,7 +330,7 @@ func TestEngineToolsNeverGated(t *testing.T) {
 	ctx := context.Background()
 	d := &fakeDiscovery{inv: fakeInventory()}
 	base := time.Now()
-	store := seedInventory(t, fakeInventory(), base.Add(-inventoryTTL-time.Minute))
+	store := seedInventory(ctx, t, fakeInventory(), base.Add(-inventoryTTL-time.Minute))
 	e, _ := newTestEngine(t, d, WithInventoryStore(store))
 	e.now = func() time.Time { return base }
 
@@ -408,7 +408,7 @@ func TestEngineBadTimeoutHardError(t *testing.T) {
 	ctx := context.Background()
 	d := &fakeDiscovery{err: fmt.Errorf("probe timeout: %w", errBadTimeout)}
 	base := time.Now()
-	store := seedInventory(t, fakeInventory(), base.Add(-inventoryTTL-time.Minute))
+	store := seedInventory(ctx, t, fakeInventory(), base.Add(-inventoryTTL-time.Minute))
 	e, _ := newTestEngine(t, d, WithInventoryStore(store))
 	e.now = func() time.Time { return base }
 
@@ -448,7 +448,7 @@ func TestEngineConcurrentProbeCollapse(t *testing.T) {
 		err:     errors.New("claude mcp list failed: hung"),
 	}
 	base := time.Now()
-	store := seedInventory(t, fakeInventory(), base.Add(-inventoryTTL-time.Minute))
+	store := seedInventory(ctx, t, fakeInventory(), base.Add(-inventoryTTL-time.Minute))
 	e, _ := newTestEngine(t, d, WithInventoryStore(store))
 
 	const callers = 4

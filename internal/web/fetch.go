@@ -7,11 +7,11 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // cascadeDeadline bounds the whole fetch cascade across every tier, independent
@@ -80,10 +80,10 @@ func (t *tiers) fetch(ctx context.Context, normURL string, prior *Page) (FetchRe
 	runs := []tierRun{
 		{TierJina, func() (FetchResult, error) { return t.jina(ctx, normURL, false) }},
 	}
-	if key := os.Getenv(envExaKey); key != "" {
+	if key := render.Getenv(ctx, envExaKey); key != "" {
 		runs = append(runs, tierRun{TierExa, func() (FetchResult, error) { return t.exa(ctx, normURL, key) }})
 	}
-	if key := os.Getenv(envFirecrawlKey); key != "" {
+	if key := render.Getenv(ctx, envFirecrawlKey); key != "" {
 		runs = append(runs, tierRun{TierFirecrawl, func() (FetchResult, error) { return t.firecrawl(ctx, normURL, key, false) }})
 	}
 	runs = append(runs, tierRun{TierHTTP, func() (FetchResult, error) { return t.plainHTTP(ctx, normURL, prior) }})
@@ -107,7 +107,7 @@ func (t *tiers) fetch(ctx context.Context, normURL string, prior *Page) (FetchRe
 		default:
 			// Keyless jina rejects with a service 401 — the expected path for
 			// users without JINA_API_KEY, not a warning-worthy failure.
-			if r.name == TierJina && os.Getenv(envJinaKey) == "" {
+			if r.name == TierJina && render.Getenv(ctx, envJinaKey) == "" {
 				slog.Debug("web fetch tier failed", "tier", r.name, "url", normURL, "err", err)
 			} else {
 				slog.Warn("web fetch tier failed", "tier", r.name, "url", normURL, "err", err)
@@ -117,7 +117,7 @@ func (t *tiers) fetch(ctx context.Context, normURL string, prior *Page) (FetchRe
 	}
 
 	if stealth {
-		key := os.Getenv(envBrowserbaseKey)
+		key := render.Getenv(ctx, envBrowserbaseKey)
 		if key == "" {
 			// The joined failures render as text, not %w: they carry
 			// errStealthRequired, and that sentinel never escapes fetch into
@@ -189,10 +189,10 @@ func (t *tiers) renderFetch(ctx context.Context, normURL string) (FetchResult, b
 	// The hosted render lanes cannot reach a local target; only agent-browser
 	// (which drives a local browser) runs for the localhost-dev-SPA case.
 	if !local {
-		if os.Getenv(envJinaKey) != "" {
+		if render.Getenv(ctx, envJinaKey) != "" {
 			runs = append(runs, laneRun{TierJinaRender, func() (FetchResult, error) { return t.jina(ctx, normURL, true) }})
 		}
-		if key := os.Getenv(envFirecrawlKey); key != "" {
+		if key := render.Getenv(ctx, envFirecrawlKey); key != "" {
 			runs = append(runs, laneRun{TierFirecrawlRender, func() (FetchResult, error) { return t.firecrawl(ctx, normURL, key, true) }})
 		}
 	}

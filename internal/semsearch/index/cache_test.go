@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/semsearch"
 )
 
@@ -91,5 +93,21 @@ func writeCacheJSON(t *testing.T, path string, value any) {
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write %s: %v", filepath.Base(path), err)
+	}
+}
+
+// TestCacheDirResolvesFromContext pins the seam: the cache root travels on the
+// context a caller drives the index with, so the process environment never
+// decides where one caller's index lands.
+func TestCacheDirResolvesFromContext(t *testing.T) {
+	root := t.TempDir()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+root)
+
+	dir, err := CacheDir(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("CacheDir: %v", err)
+	}
+	if !strings.HasPrefix(dir, root+string(filepath.Separator)) {
+		t.Fatalf("CacheDir = %q, want it under the context's cache root %q", dir, root)
 	}
 }

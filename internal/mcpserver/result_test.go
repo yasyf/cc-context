@@ -128,8 +128,7 @@ func TestWebToolsCarryNoRootLine(t *testing.T) {
 }
 
 func TestSearchToolNamesTheRoot(t *testing.T) {
-	fakeAstGrepOnPath(t, []string{"a.go"})
-	cs := connectTestServer(t)
+	cs := connectTestServer(t, fakeAstGrepOnPath(t, []string{"a.go"}))
 
 	out, isErr := callText(t, cs, "ccx_code_search", map[string]any{"query": "old($A)"})
 	if isErr {

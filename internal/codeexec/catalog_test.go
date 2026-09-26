@@ -163,7 +163,7 @@ func sampleCatalog(hash string) *Catalog {
 
 func TestStoreRoundtrip(t *testing.T) {
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	disk, err := NewDiskStore()
+	disk, err := NewDiskStore(t.Context())
 	if err != nil {
 		t.Fatalf("NewDiskStore: %v", err)
 	}

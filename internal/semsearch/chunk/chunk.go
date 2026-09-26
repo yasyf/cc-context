@@ -5,6 +5,7 @@
 package chunk
 
 import (
+	"context"
 	"unicode/utf8"
 
 	"github.com/yasyf/cc-context/internal/semsearch"
@@ -21,7 +22,7 @@ const (
 // files (JSON, CSV, …) yield no chunks; files with unmapped extensions fall
 // back to line chunking. content is the raw file bytes; it is decoded as UTF-8
 // with invalid sequences replaced by U+FFFD, matching semble's read_file_text.
-func Chunk(path string, content []byte) []semsearch.Chunk {
+func Chunk(ctx context.Context, path string, content []byte) []semsearch.Chunk {
 	lang, ok := DetectLanguage(path)
 	if ok && Classify(lang) == ContentData {
 		return nil
@@ -34,13 +35,13 @@ func Chunk(path string, content []byte) []semsearch.Chunk {
 	if len(content) < emptyFileBytes && pythonStrip(source) == "" {
 		return nil
 	}
-	return chunkSource(source, path, lang, defaultParser)
+	return chunkSource(ctx, source, path, lang, defaultParser)
 }
 
 // chunkSource ports semble's chunk_source: AST-chunk when the language is
 // supported and a grammar is available, else fall back to line chunking, then
 // materialize each boundary into a Chunk.
-func chunkSource(source, path, lang string, p parser) []semsearch.Chunk {
+func chunkSource(ctx context.Context, source, path, lang string, p parser) []semsearch.Chunk {
 	if pythonStrip(source) == "" {
 		return nil
 	}
@@ -48,7 +49,7 @@ func chunkSource(source, path, lang string, p parser) []semsearch.Chunk {
 	src := []byte(source)
 	var bounds []boundary
 	if lang != "" && isSupportedLanguage(lang) {
-		if root, ok := p.parse(lang, src); ok {
+		if root, ok := p.parse(ctx, lang, src); ok {
 			bounds = mergeNode(root, desiredChunkLength)
 		}
 	}

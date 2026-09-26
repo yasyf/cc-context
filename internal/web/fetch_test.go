@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // services bundles the hosted-tier handlers for one cascade test; a nil handler
@@ -1422,5 +1423,108 @@ func TestParsePDF(t *testing.T) {
 	}
 	if !strings.Contains(md, "Hello CCX PDF") {
 		t.Errorf("markdown = %q, want it to contain the fixture text %q", md, "Hello CCX PDF")
+	}
+}
+
+// TestFetchJinaKeyFromContext proves the jina tier authorizes with the key the
+// context carries when the process has none: JINA_API_KEY is emptied in the
+// environment and set only on ctx, and the request still goes out bearing it.
+func TestFetchJinaKeyFromContext(t *testing.T) {
+	isolateKeys(t)
+	var gotAuth string
+	ts := testTiers(t, services{
+		jina: func(w http.ResponseWriter, r *http.Request) {
+			gotAuth = r.Header.Get("Authorization")
+			writeJSON(t, w, http.StatusOK, map[string]any{
+				"data": map[string]any{"content": "# Doc\n\n" + strings.Repeat("prose. ", 40), "title": "Doc", "url": remoteTargetURL},
+			})
+		},
+	})
+
+	ctx := render.WithEnv(t.Context(), envJinaKey+"=ctx-jina-key")
+	if _, err := ts.fetch(ctx, remoteTargetURL, nil); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if gotAuth != "Bearer ctx-jina-key" {
+		t.Errorf("Authorization = %q, want the key the context carries", gotAuth)
+	}
+}
+
+// TestFetchExaKeyFromContext proves the cascade adds the exa tier for a key the
+// context carries and the process does not.
+func TestFetchExaKeyFromContext(t *testing.T) {
+	isolateKeys(t)
+	var exaHits atomic.Int32
+	ts := testTiers(t, services{
+		jina: status(http.StatusTooManyRequests),
+		exa: func(w http.ResponseWriter, _ *http.Request) {
+			exaHits.Add(1)
+			writeJSON(t, w, http.StatusOK, map[string]any{
+				"results": []any{map[string]any{"title": "Exa", "text": "<h1>Exa</h1><p>body</p>", "url": remoteTargetURL}},
+			})
+		},
+	})
+
+	ctx := render.WithEnv(t.Context(), envExaKey+"=ctx-exa-key")
+	got, err := ts.fetch(ctx, remoteTargetURL, nil)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if got.Tier != TierExa || exaHits.Load() != 1 {
+		t.Errorf("tier=%q exa hits=%d, want %q and 1", got.Tier, exaHits.Load(), TierExa)
+	}
+}
+
+// TestFetchFirecrawlKeyFromContext proves the cascade adds the firecrawl tier for
+// a key the context carries and the process does not.
+func TestFetchFirecrawlKeyFromContext(t *testing.T) {
+	isolateKeys(t)
+	var fcHits atomic.Int32
+	ts := testTiers(t, services{
+		jina: status(http.StatusTooManyRequests),
+		firecrawl: func(w http.ResponseWriter, _ *http.Request) {
+			fcHits.Add(1)
+			writeJSON(t, w, http.StatusOK, map[string]any{
+				"success": true,
+				"data":    map[string]any{"markdown": "# FC\n\n" + strings.Repeat("prose. ", 40), "metadata": map[string]any{"statusCode": 200}},
+			})
+		},
+	})
+
+	ctx := render.WithEnv(t.Context(), envFirecrawlKey+"=ctx-fc-key")
+	got, err := ts.fetch(ctx, remoteTargetURL, nil)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if got.Tier != TierFirecrawl || fcHits.Load() != 1 {
+		t.Errorf("tier=%q firecrawl hits=%d, want %q and 1", got.Tier, fcHits.Load(), TierFirecrawl)
+	}
+}
+
+// TestFetchBrowserbaseKeyFromContext proves the stealth escalation reads its key
+// off the context: with BROWSERBASE_API_KEY empty in the environment and set only
+// on ctx, a challenged cascade reaches browserbase instead of refusing.
+func TestFetchBrowserbaseKeyFromContext(t *testing.T) {
+	isolateKeys(t)
+	var bbHits atomic.Int32
+	ts := testTiers(t, services{
+		jina: jinaClean(t, challengeBody, "Just a moment..."),
+		browserbase: func(w http.ResponseWriter, _ *http.Request) {
+			bbHits.Add(1)
+			writeJSON(t, w, http.StatusOK, map[string]any{"content": "# Real\n\nunblocked content", "statusCode": 200})
+		},
+	})
+	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, challengeHTML)
+	})
+
+	ctx := render.WithEnv(t.Context(), envBrowserbaseKey+"=ctx-bb-key")
+	got, err := ts.fetch(ctx, target, nil)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if got.Tier != TierBrowserbase || bbHits.Load() != 1 {
+		t.Errorf("tier=%q browserbase hits=%d, want %q and 1", got.Tier, bbHits.Load(), TierBrowserbase)
 	}
 }

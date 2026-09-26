@@ -188,7 +188,7 @@ func chunkFusedCorpus(t *testing.T, files []fusedGoldenFile) []semsearch.Chunk {
 		if err != nil {
 			t.Fatalf("read corpus file %q: %v", file.FilePath, err)
 		}
-		chunks = append(chunks, chunk.Chunk(file.FilePath, content)...)
+		chunks = append(chunks, chunk.Chunk(t.Context(), file.FilePath, content)...)
 	}
 	return chunks
 }

@@ -87,7 +87,7 @@ const (
 // runCorpusVector evaluates one vector through runEngine, reporting a failure on
 // t and returning the outcome for the summary tally.
 func runCorpusVector(t *testing.T, file string, v corpusVector) outcome {
-	res, err := runEngine([]byte(v.Input), corpusVectorOpts(v))
+	res, err := runEngine(t.Context(), []byte(v.Input), corpusVectorOpts(v))
 	if err != nil {
 		t.Errorf("FAIL %s :: %s — host error: %v", file, v.Name, err)
 		return outcomeFail

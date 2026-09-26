@@ -268,8 +268,8 @@ func Serve(ctx context.Context) error {
 	engine.StartIdleSweeper(ctx)
 
 	var eng *codeexec.Engine
-	if codeexec.Supported() {
-		inventories, err := codeexec.NewDiskInventoryStore()
+	if codeexec.Supported(ctx) {
+		inventories, err := codeexec.NewDiskInventoryStore(ctx)
 		if err != nil {
 			return err
 		}
@@ -549,7 +549,7 @@ func outlineHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, 
 // caller cannot parse.
 func execHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolRequest, ExecIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in ExecIn) (*mcp.CallToolResult, any, error) {
-		if !codeexec.Supported() {
+		if !codeexec.Supported(ctx) {
 			return nil, nil, fmt.Errorf("%s: %s", req.Params.Name, codeexec.UnsupportedReason)
 		}
 		out, notes, err := eng.Exec(ctx, in.Script, in.Budget)
@@ -565,7 +565,7 @@ func execHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolReques
 // block.
 func execToolsHandler(eng *codeexec.Engine) func(context.Context, *mcp.CallToolRequest, ExecToolsIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, _ ExecToolsIn) (*mcp.CallToolResult, any, error) {
-		if !codeexec.Supported() {
+		if !codeexec.Supported(ctx) {
 			return nil, nil, fmt.Errorf("%s: %s", req.Params.Name, codeexec.UnsupportedReason)
 		}
 		out, notes, err := eng.Tools(ctx)

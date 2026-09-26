@@ -10,14 +10,15 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // fakeAstGrep installs an executable named "ast-grep" on PATH that emits canned
 // --json=stream output. An `outline` run emits one canned outline file object; a
 // preview run emits one JSON match per file in files (space-separated); an apply
 // run (argv carries -U) emits nothing; a --version probe answers the floor.
-// resolveBin finds it via lookpath.Find("ast-grep").
-func fakeAstGrep(t *testing.T, files []string) {
+// resolveBin finds it via render.LookPath on the returned context.
+func fakeAstGrep(t *testing.T, files []string) context.Context {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake ast-grep script is POSIX-only")
@@ -43,7 +44,7 @@ func fakeAstGrep(t *testing.T, files []string) {
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // fake engine must be owner-executable
 		t.Fatalf("write fake ast-grep: %v", err)
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return render.WithEnv(t.Context(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func filesN(n int) []string {
@@ -55,8 +56,8 @@ func filesN(n int) []string {
 }
 
 func TestRunReplacePreviewLeavesDiff(t *testing.T) {
-	fakeAstGrep(t, []string{"a.go", "b.go"})
-	got, err := Run(context.Background(), backend.OpReplace, backend.Args{Pattern: "old($A)", Rewrite: "new($A)"})
+	ctx := fakeAstGrep(t, []string{"a.go", "b.go"})
+	got, err := Run(ctx, backend.OpReplace, backend.Args{Pattern: "old($A)", Rewrite: "new($A)"})
 	if err != nil {
 		t.Fatalf("Run preview: %v", err)
 	}
@@ -70,8 +71,8 @@ func TestRunReplacePreviewLeavesDiff(t *testing.T) {
 }
 
 func TestRunReplaceNoMatch(t *testing.T) {
-	fakeAstGrep(t, nil) // empty stream → no matches
-	got, err := Run(context.Background(), backend.OpReplace, backend.Args{Pattern: "missing($A)", Rewrite: "x($A)"})
+	ctx := fakeAstGrep(t, nil) // empty stream → no matches
+	got, err := Run(ctx, backend.OpReplace, backend.Args{Pattern: "missing($A)", Rewrite: "x($A)"})
 	if err != nil {
 		t.Fatalf("Run no-match: %v", err)
 	}
@@ -84,8 +85,8 @@ func TestRunReplaceNoMatch(t *testing.T) {
 }
 
 func TestRunReplaceApplyUnderCap(t *testing.T) {
-	fakeAstGrep(t, []string{"a.go", "b.go", "c.go"})
-	got, err := Run(context.Background(), backend.OpReplace, backend.Args{Pattern: "old($A)", Rewrite: "new($A)", Apply: true})
+	ctx := fakeAstGrep(t, []string{"a.go", "b.go", "c.go"})
+	got, err := Run(ctx, backend.OpReplace, backend.Args{Pattern: "old($A)", Rewrite: "new($A)", Apply: true})
 	if err != nil {
 		t.Fatalf("Run apply: %v", err)
 	}
@@ -95,8 +96,8 @@ func TestRunReplaceApplyUnderCap(t *testing.T) {
 }
 
 func TestRunReplaceApplyOverCapBlocked(t *testing.T) {
-	fakeAstGrep(t, filesN(applyFileCap+1)) // 21 distinct files > cap 20
-	_, err := Run(context.Background(), backend.OpReplace, backend.Args{Pattern: "old($A)", Rewrite: "new($A)", Apply: true})
+	ctx := fakeAstGrep(t, filesN(applyFileCap+1)) // 21 distinct files > cap 20
+	_, err := Run(ctx, backend.OpReplace, backend.Args{Pattern: "old($A)", Rewrite: "new($A)", Apply: true})
 	if err == nil {
 		t.Fatal("apply over cap without --force must error")
 	}
@@ -106,8 +107,8 @@ func TestRunReplaceApplyOverCapBlocked(t *testing.T) {
 }
 
 func TestRunReplaceApplyOverCapForced(t *testing.T) {
-	fakeAstGrep(t, filesN(applyFileCap+1))
-	got, err := Run(context.Background(), backend.OpReplace, backend.Args{Pattern: "old($A)", Rewrite: "new($A)", Apply: true, Force: true})
+	ctx := fakeAstGrep(t, filesN(applyFileCap+1))
+	got, err := Run(ctx, backend.OpReplace, backend.Args{Pattern: "old($A)", Rewrite: "new($A)", Apply: true, Force: true})
 	if err != nil {
 		t.Fatalf("Run apply --force: %v", err)
 	}
@@ -117,8 +118,8 @@ func TestRunReplaceApplyOverCapForced(t *testing.T) {
 }
 
 func TestRunStructural(t *testing.T) {
-	fakeAstGrep(t, []string{"a.go", "a.go"}) // two hits, one file
-	got, err := Run(context.Background(), backend.OpStructural, backend.Args{Query: "old($A)"})
+	ctx := fakeAstGrep(t, []string{"a.go", "a.go"}) // two hits, one file
+	got, err := Run(ctx, backend.OpStructural, backend.Args{Query: "old($A)"})
 	if err != nil {
 		t.Fatalf("Run structural: %v", err)
 	}
@@ -130,9 +131,9 @@ func TestRunStructural(t *testing.T) {
 }
 
 func TestRunStructOutline(t *testing.T) {
-	fakeAstGrep(t, nil)
+	ctx := fakeAstGrep(t, nil)
 	// Terse default: top-level struct only, its member collapsed to a count.
-	got, err := Run(context.Background(), backend.OpStructOutline, backend.Args{Path: "x.go"})
+	got, err := Run(ctx, backend.OpStructOutline, backend.Args{Path: "x.go"})
 	if err != nil {
 		t.Fatalf("Run struct-outline: %v", err)
 	}
@@ -143,7 +144,7 @@ func TestRunStructOutline(t *testing.T) {
 		t.Errorf("terse struct-outline should hide the member:\n%s", got)
 	}
 	// --deep renders the member: 0-based struct line 4 and member line 5 as L5 and the indented L6.
-	deep, err := Run(context.Background(), backend.OpStructOutline, backend.Args{Path: "x.go", Deep: true})
+	deep, err := Run(ctx, backend.OpStructOutline, backend.Args{Path: "x.go", Deep: true})
 	if err != nil {
 		t.Fatalf("Run struct-outline deep: %v", err)
 	}
@@ -153,8 +154,8 @@ func TestRunStructOutline(t *testing.T) {
 }
 
 func TestRunStructOutlineBudget(t *testing.T) {
-	fakeAstGrep(t, nil)
-	got, err := Run(context.Background(), backend.OpStructOutline, backend.Args{Path: "x.go", Budget: 1})
+	ctx := fakeAstGrep(t, nil)
+	got, err := Run(ctx, backend.OpStructOutline, backend.Args{Path: "x.go", Budget: 1})
 	if err != nil {
 		t.Fatalf("Run struct-outline budget: %v", err)
 	}
@@ -164,7 +165,7 @@ func TestRunStructOutlineBudget(t *testing.T) {
 }
 
 func TestRunUnsupportedOp(t *testing.T) {
-	if _, err := Run(context.Background(), backend.OpGrep, backend.Args{}); err == nil {
+	if _, err := Run(t.Context(), backend.OpGrep, backend.Args{}); err == nil {
 		t.Fatal("Run: want error for non-ast-grep op")
 	}
 }

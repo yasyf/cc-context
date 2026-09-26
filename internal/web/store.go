@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -41,7 +42,7 @@ var maxCacheBytes int64 = 1 << 30 // 1 GiB
 var timeNow = time.Now
 
 // Save persists page to the web cache as one gzipped JSON file named
-// <CacheKey(page.URL)>.json.gz under cache.Dir("web"). It stamps the current
+// <CacheKey(page.URL)>.json.gz under the web cache dir. It stamps the current
 // schema version, writes atomically (a sibling temp file renamed over the
 // target), then evicts oldest-mtime pages until the directory is under
 // maxCacheBytes.
@@ -49,10 +50,10 @@ var timeNow = time.Now
 // There is no cross-process lock: embedding is idempotent and every persisted
 // state is self-consistent, so concurrent writers race to a last-writer-wins
 // outcome between equally valid pages.
-func Save(page *Page) error {
+func Save(ctx context.Context, page *Page) error {
 	page.Version = schemaVersion
 
-	dir, err := cache.Dir("web")
+	dir, err := cache.Dir(ctx, "web")
 	if err != nil {
 		return fmt.Errorf("resolve web cache dir: %w", err)
 	}
@@ -92,8 +93,8 @@ func Save(page *Page) error {
 // by a different model. Discarding a corrupt entry is the fail-fast move: a bad
 // cache line is never served. embedModel is the caller's current embedding
 // model; passing "" disables the model check (embeddings unavailable this run).
-func Load(normURL, embedModel string) (*Page, error) {
-	dir, err := cache.Dir("web")
+func Load(ctx context.Context, normURL, embedModel string) (*Page, error) {
+	dir, err := cache.Dir(ctx, "web")
 	if err != nil {
 		return nil, fmt.Errorf("resolve web cache dir: %w", err)
 	}

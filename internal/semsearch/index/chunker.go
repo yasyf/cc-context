@@ -1,6 +1,8 @@
 package index
 
 import (
+	"context"
+
 	"github.com/yasyf/cc-context/internal/semsearch"
 	"github.com/yasyf/cc-context/internal/semsearch/chunk"
 )
@@ -13,7 +15,7 @@ type Chunker interface {
 	ID() string
 	// ChunkFile splits content (already read as text) for the file at
 	// indexedPath, whose detected language is lang ("" if unknown).
-	ChunkFile(indexedPath, lang, content string) []semsearch.Chunk
+	ChunkFile(ctx context.Context, indexedPath, lang, content string) []semsearch.Chunk
 }
 
 // DefaultChunker returns the tree-sitter AST chunker (semble chunk-boundary
@@ -26,6 +28,6 @@ type treeChunker struct{}
 // before it.
 func (treeChunker) ID() string { return "treesitter-v1" }
 
-func (treeChunker) ChunkFile(indexedPath, _ /*lang*/, content string) []semsearch.Chunk {
-	return chunk.Chunk(indexedPath, []byte(content))
+func (treeChunker) ChunkFile(ctx context.Context, indexedPath, _ /*lang*/, content string) []semsearch.Chunk {
+	return chunk.Chunk(ctx, indexedPath, []byte(content))
 }

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -57,9 +56,9 @@ func Run(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 	}
 	switch op {
 	case backend.OpWebOutline:
-		return renderOutline(page), nil
+		return renderOutline(ctx, page), nil
 	case backend.OpWebRead:
-		return runRead(page, a)
+		return runRead(ctx, page, a)
 	case backend.OpWebSearch:
 		return runSearch(ctx, page, a)
 	default:
@@ -73,7 +72,7 @@ func Run(ctx context.Context, op backend.Op, a backend.Args) (string, error) {
 // hash is unchanged. ErrGone/ErrAuthRequired/ErrBlocked and joined failures
 // propagate wrapped for the CLI to map onto exit codes.
 func acquire(ctx context.Context, norm string, force bool) (*Page, error) {
-	prior, err := Load(norm, EmbedModelID)
+	prior, err := Load(ctx, norm, EmbedModelID)
 	if err != nil {
 		return nil, fmt.Errorf("load cached page %q: %w", norm, err)
 	}
@@ -92,7 +91,7 @@ func acquire(ctx context.Context, norm string, force bool) (*Page, error) {
 		if renderPage != nil && prior.Thin {
 			escalateThin(ctx, norm, prior)
 		}
-		if err := Save(prior); err != nil {
+		if err := Save(ctx, prior); err != nil {
 			return nil, fmt.Errorf("persist revalidated page %q: %w", norm, err)
 		}
 		return prior, nil
@@ -108,7 +107,7 @@ func acquire(ctx context.Context, norm string, force bool) (*Page, error) {
 	if renderPage != nil && thinSignature(thinInput{Markdown: page.Markdown, HTML: page.RawHTML}) {
 		escalateThin(ctx, norm, page)
 	}
-	if err := Save(page); err != nil {
+	if err := Save(ctx, page); err != nil {
 		return nil, fmt.Errorf("persist page %q: %w", norm, err)
 	}
 	return page, nil
@@ -148,12 +147,12 @@ func escalateThin(ctx context.Context, norm string, page *Page) {
 // page at normURL: a jina or firecrawl key, or the agent-browser binary on PATH.
 // For a local target the hosted lanes cannot reach it, so only agent-browser
 // counts — decided by the cheap literal localTarget predicate (no DNS here).
-func renderLanesAvailable(normURL string) bool {
+func renderLanesAvailable(ctx context.Context, normURL string) bool {
 	if u, err := url.Parse(normURL); err == nil && localTarget(u.Hostname()) {
 		return lookpath.Find(agentBrowserBin) != ""
 	}
-	return os.Getenv(envJinaKey) != "" ||
-		os.Getenv(envFirecrawlKey) != "" ||
+	return render.Getenv(ctx, envJinaKey) != "" ||
+		render.Getenv(ctx, envFirecrawlKey) != "" ||
 		lookpath.Find(agentBrowserBin) != ""
 }
 
@@ -161,11 +160,11 @@ func renderLanesAvailable(normURL string) bool {
 // lanes available for this page: no lane names what to set or install; a lane
 // that ran and still came back thin means the page may genuinely have little
 // static content. It is empty for a non-thin page.
-func thinNote(page *Page) string {
+func thinNote(ctx context.Context, page *Page) string {
 	if !page.Thin {
 		return ""
 	}
-	if renderLanesAvailable(page.URL) {
+	if renderLanesAvailable(ctx, page.URL) {
 		return "this page may genuinely have little static content (re-run with --refresh to retry)"
 	}
 	return "this page looks like a client-side app with little static content; set JINA_API_KEY or FIRECRAWL_API_KEY, or install agent-browser, then re-run with --refresh"
@@ -173,8 +172,8 @@ func thinNote(page *Page) string {
 
 // withThinNote appends the thin-content advisory to body when page is thin,
 // outside any budget cap (like the sibling-navigation footer).
-func withThinNote(page *Page, body string) string {
-	note := thinNote(page)
+func withThinNote(ctx context.Context, page *Page, body string) string {
+	note := thinNote(ctx, page)
 	if note == "" {
 		return body
 	}
@@ -239,13 +238,13 @@ func contentSHA(markdown string) string {
 // document's own printed heading number ("5.6.7.") resolves to the section
 // carrying it, prepending a note that maps the printed number to the served §id.
 // The resolve note and the sibling-navigation footer ride outside the budget cap.
-func runRead(page *Page, a backend.Args) (string, error) {
+func runRead(ctx context.Context, page *Page, a backend.Args) (string, error) {
 	if a.Full || a.Section == "" {
 		body, err := serveSpan(page.Markdown, "the page", a.Offset, a.Budget)
 		if err != nil {
 			return "", err
 		}
-		return withThinNote(page, body), nil
+		return withThinNote(ctx, page, body), nil
 	}
 	section, hash, err := splitSectionRef(a.Section)
 	if err != nil {
@@ -278,7 +277,7 @@ func runRead(page *Page, a backend.Args) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return withThinNote(page, note+withNav(page, section, body)), nil
+	return withThinNote(ctx, page, note+withNav(page, section, body)), nil
 }
 
 // sectionNotFoundErr reports that input matched no §id and no printed heading
@@ -368,7 +367,7 @@ func runSearch(ctx context.Context, page *Page, a backend.Args) (string, error) 
 		if page.Vectors == nil {
 			page.Vectors = chunkVecs
 			page.EmbedModel = EmbedModelID
-			if err := Save(page); err != nil {
+			if err := Save(ctx, page); err != nil {
 				slog.Warn("persist embedded chunk vectors", "url", page.URL, "err", err)
 			}
 		}
@@ -377,7 +376,7 @@ func runSearch(ctx context.Context, page *Page, a backend.Args) (string, error) 
 
 	fused := fuse(dense, lexOrder, k)
 	scores := fusedScoreSlice(dense, lexOrder)
-	return renderSearch(page, a.Query, fused, scores, note), nil
+	return renderSearch(ctx, page, a.Query, fused, scores, note), nil
 }
 
 // embedForSearch returns the page's chunk vectors and the query vector via the
@@ -494,7 +493,7 @@ func siblingNav(sections []Section, id string) (prev, next string) {
 // tokens — then one indented line per section carrying its §ID, title, own-span
 // token estimate, and chunk count. Section token estimates sum to the page total
 // because sections partition the markdown.
-func renderOutline(page *Page) string {
+func renderOutline(ctx context.Context, page *Page) string {
 	counts := make(map[string]int, len(page.Sections))
 	for _, c := range page.Chunks {
 		counts[c.Section]++
@@ -525,7 +524,7 @@ func renderOutline(page *Page) string {
 	if len(page.Sections) <= 1 {
 		b.WriteString("(This page has no heading structure to navigate — ask it a question with 'ccx web search', or page through it with 'ccx web read --section <id> --offset N'.)\n")
 	}
-	if note := thinNote(page); note != "" {
+	if note := thinNote(ctx, page); note != "" {
 		fmt.Fprintf(&b, "# %s\n", note)
 	}
 	return b.String()
@@ -553,7 +552,7 @@ func withNav(page *Page, section, body string) string {
 // renderSearch renders the ranked hits: a result count header, then per hit a
 // cite line ("<url> §<sec>#<hash>  (score)  breadcrumb") over the chunk text,
 // with a trailing note when search ran degraded.
-func renderSearch(page *Page, query string, order []int, scores []float64, note string) string {
+func renderSearch(ctx context.Context, page *Page, query string, order []int, scores []float64, note string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %d results for %q\n", len(order), query)
 	for _, idx := range order {
@@ -570,7 +569,7 @@ func renderSearch(page *Page, query string, order []int, scores []float64, note 
 	if note != "" {
 		fmt.Fprintf(&b, "\n# %s\n", note)
 	}
-	if tn := thinNote(page); tn != "" {
+	if tn := thinNote(ctx, page); tn != "" {
 		fmt.Fprintf(&b, "\n# %s\n", tn)
 	}
 	return b.String()

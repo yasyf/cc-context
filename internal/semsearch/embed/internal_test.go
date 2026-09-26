@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // --- E3: ABI bounds guard + free-on-fail ------------------------------------
@@ -275,5 +277,15 @@ func TestDownloadNormalVerifies(t *testing.T) {
 	}
 	if err := verifyChecksum(got, want); err != nil {
 		t.Fatalf("verifyChecksum on a normal-size body: %v", err)
+	}
+}
+
+// TestEndpointResolvesFromContext pins the seam: the HuggingFace mirror travels
+// on the context the download runs under, so it outranks whatever the process
+// exports.
+func TestEndpointResolvesFromContext(t *testing.T) {
+	ctx := render.WithEnv(t.Context(), "HF_ENDPOINT=https://mirror.invalid")
+	if got := endpoint(ctx); got != "https://mirror.invalid" {
+		t.Fatalf("endpoint = %q, want the context's mirror", got)
 	}
 }

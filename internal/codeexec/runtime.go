@@ -74,7 +74,7 @@ func (rt *Runtime) Run(ctx context.Context, script string, budget int) (string, 
 	if err != nil {
 		return "", fmt.Errorf("codeexec: decode result value: %w", err)
 	}
-	return render.Cap(rendered(val, done.Stdout), budget), nil //nolint:contextcheck // format.Convert pins its own engine deadlines, deliberately decoupled from caller cancellation (see format.loadEngine)
+	return render.Cap(rendered(ctx, val, done.Stdout), budget), nil
 }
 
 // doneError shapes a failed done frame into an error, wrapping ErrNotFound when
@@ -96,7 +96,7 @@ func stubs(funcs map[string]HostFunc) string {
 	return b.String()
 }
 
-func rendered(val any, stdout string) string {
+func rendered(ctx context.Context, val any, stdout string) string {
 	var b strings.Builder
 	if stdout != "" {
 		b.WriteString(stdout)
@@ -111,7 +111,7 @@ func rendered(val any, stdout string) string {
 	case []byte:
 		b.Write(raw)
 	case map[string]any, []any:
-		b.WriteString(structured(val))
+		b.WriteString(structured(ctx, val))
 	default:
 		if enc, err := json.Marshal(native(val)); err == nil {
 			b.Write(enc)
@@ -125,12 +125,12 @@ func rendered(val any, stdout string) string {
 // structured renders a list/dict final value the way BashFormat renders JSON
 // stdout: format.Convert picks the payload's leanest encoding via FormatAuto,
 // with BashFormat's default indent and delimiter.
-func structured(val any) string {
+func structured(ctx context.Context, val any) string {
 	enc, err := json.Marshal(native(val))
 	if err != nil {
 		return fmt.Sprint(val)
 	}
-	out, _, err := format.Convert(enc, format.Options{Format: format.FormatAuto, Indent: 2, Delimiter: format.DelimiterComma})
+	out, _, err := format.Convert(ctx, enc, format.Options{Format: format.FormatAuto, Indent: 2, Delimiter: format.DelimiterComma})
 	if err != nil {
 		return string(enc)
 	}
