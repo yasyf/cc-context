@@ -642,7 +642,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		}
 		_, named := overrides[name]
 		switch {
-		case queued[name] && named:
+		case queued[name] && (named || (name == o.tip && b.Local != b.Remote)):
 			return nil, fmt.Errorf("stack rebase: %s is in the merge queue as %s, and moving it would evict it — take it out of the queue first", name, b.PR)
 		case queued[name] || (moving != nil && !moving[name]):
 			b.Kept = stackPinPublished(b)
