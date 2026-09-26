@@ -1378,8 +1378,11 @@ func stackOrder(trunk string, byName map[string]*stackRebaseBranch) ([]string, e
 func stackOldBase(ctx context.Context, dir render.Dir, trunk, pin string, state gtState, self *stackRebaseBranch, byName map[string]*stackRebaseBranch) (string, error) {
 	s := state[self.Name]
 	onTrunk, err := stackMergeBase(ctx, dir, self.Head, pin)
-	if err != nil || s.Parents[0].Ref == trunk {
-		return onTrunk, err
+	if err != nil {
+		return "", err
+	}
+	if s.Parents[0].Ref == trunk {
+		return stackPastFork(ctx, dir, s.Parents[0].SHA, onTrunk, self.Head)
 	}
 	candidates := []string{state[s.Parents[0].Ref].Head, s.Parents[0].SHA}
 	if head := byName[s.Parents[0].Ref]; head != nil {
@@ -1446,6 +1449,24 @@ func stackBaseInTrunk(ctx context.Context, dir render.Dir, base, head, pin strin
 		return false, err
 	}
 	return own != replayed, nil
+}
+
+// stackPastFork is where a trunk-parented branch's own commits start: its
+// recorded parent revision when that lies past the trunk fork point, as a
+// squash-landed parent's head does, and the fork point otherwise.
+func stackPastFork(ctx context.Context, dir render.Dir, recorded, fork, head string) (string, error) {
+	if recorded == "" || recorded == fork {
+		return fork, nil
+	}
+	past, err := gitIsAncestor(ctx, dir, stackRebasePrefix, fork, recorded)
+	if err != nil || !past {
+		return fork, err
+	}
+	held, err := gitIsAncestor(ctx, dir, stackRebasePrefix, recorded, head)
+	if err != nil || !held {
+		return fork, err
+	}
+	return recorded, nil
 }
 
 func stackMergeBase(ctx context.Context, dir render.Dir, a, b string) (string, error) {

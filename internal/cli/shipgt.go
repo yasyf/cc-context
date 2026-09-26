@@ -109,9 +109,18 @@ func gtStateQuery(ctx context.Context, dir render.Dir, prefix string) (gtState, 
 }
 
 func gtStateAt(ctx context.Context, commonDir, prefix string) (gtState, error) {
-	tracked, err := gtmeta.ReadOrigin(ctx, commonDir)
+	tracked, orphans, err := gtmeta.ReadOriginOrphans(ctx, commonDir)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", prefix, err)
+	}
+	adopted, err := gtAdoptOrphans(ctx, commonDir, prefix, tracked, orphans)
+	if err != nil {
+		return nil, err
+	}
+	if adopted {
+		if tracked, err = gtmeta.ReadOrigin(ctx, commonDir); err != nil {
+			return nil, fmt.Errorf("%s: %w", prefix, err)
+		}
 	}
 	state := make(gtState, len(tracked))
 	for branch, s := range tracked {
@@ -122,6 +131,66 @@ func gtStateAt(ctx context.Context, commonDir, prefix string) (gtState, error) {
 		state[branch] = entry
 	}
 	return state, nil
+}
+
+// gtAdoptOrphans re-records onto trunk each branch whose parent's ref was
+// deleted after the parent landed, the equivalent of gt track -p <trunk>. A
+// parent revision the remote trunk holds, as an ancestor or as the content a
+// squash carried, is one that landed; any other orphan is left as it is.
+func gtAdoptOrphans(ctx context.Context, commonDir, prefix string, tracked gtmeta.State, orphans []gtmeta.Orphan) (bool, error) {
+	if len(orphans) == 0 {
+		return false, nil
+	}
+	trunk := ""
+	for name, s := range tracked {
+		if s.Trunk {
+			trunk = name
+		}
+	}
+	dir := render.Dir(commonDir)
+	remote := "refs/remotes/origin/" + trunk
+	present, err := gitRefExists(ctx, dir, prefix, remote)
+	if err != nil || !present {
+		return false, err
+	}
+	moves := map[string]string{}
+	for _, o := range orphans {
+		landed, err := gtLandedIn(ctx, dir, prefix, o.ParentRevision, remote)
+		if err != nil {
+			return false, err
+		}
+		if landed {
+			moves[o.Branch] = trunk
+		}
+	}
+	if err := gtmeta.Reparent(ctx, commonDir, moves); err != nil {
+		return false, fmt.Errorf("%s: %w", prefix, err)
+	}
+	return len(moves) > 0, nil
+}
+
+// gtLandedIn reports whether trunk already holds rev: as an ancestor, or as a
+// squash whose merge into trunk changes nothing.
+func gtLandedIn(ctx context.Context, dir render.Dir, prefix, rev, trunk string) (bool, error) {
+	if rev == "" {
+		return false, nil
+	}
+	if _, err := render.RunCLI(ctx, dir, "git", []string{"cat-file", "-e", rev + "^{commit}"}); err != nil {
+		return false, nil
+	}
+	held, err := gitIsAncestor(ctx, dir, prefix, rev, trunk)
+	if err != nil || held {
+		return held, err
+	}
+	merged, code, _, err := render.RunCLIExitCode(ctx, dir, "git", []string{"merge-tree", "--write-tree", trunk, rev})
+	if err != nil || code != 0 {
+		return false, err
+	}
+	tree, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", trunk + "^{tree}"})
+	if err != nil {
+		return false, fmt.Errorf("%s: git rev-parse %s^{tree}: %w", prefix, trunk, err)
+	}
+	return strings.TrimSpace(strings.SplitN(merged, "\n", 2)[0]) == strings.TrimSpace(tree), nil
 }
 
 func gtCommonDir(ctx context.Context, dir render.Dir, prefix string) (string, error) {
