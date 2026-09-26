@@ -1752,7 +1752,7 @@ func shipPushGitAmend(ctx context.Context, dir render.Dir, remote, branch, preAm
 // <remote>/<branch> when it advanced past HEAD, then push. A rejected push moves
 // no local ref, so it re-enters as a *pushRejectedError with no rollback.
 func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch string, noVerify bool) (int, error) {
-	if _, err := render.RunCLI(ctx, dir, "git", []string{"fetch", remote}); err != nil {
+	if err := gitFetch(ctx, dir, remote); err != nil {
 		return 0, fmt.Errorf("ship: git fetch %s: %w", remote, err)
 	}
 	remoteRef := "refs/remotes/" + remote + "/" + branch

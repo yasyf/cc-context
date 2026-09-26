@@ -1351,10 +1351,31 @@ func gtTrunkRef(ctx context.Context, dir render.Dir, prefix, trunk string) (vcs.
 	if err != nil {
 		return vcs.Trunk{}, fmt.Errorf("%s: %w", prefix, err)
 	}
-	if _, err := render.RunCLI(ctx, dir, "git", []string{"fetch", remote, trunk}); err != nil {
+	if err := gitFetch(ctx, dir, remote, trunk); err != nil {
 		return vcs.Trunk{}, fmt.Errorf("%s: git fetch %s %s: %w", prefix, remote, trunk, err)
 	}
 	return gtTrunkRefAt(ctx, dir, prefix, remote, trunk)
+}
+
+const gitFetchAttempts = 6
+
+// gitFetch runs git fetch, retrying while a fetch in another worktree of the
+// shared clone holds the lock on a ref this one updates: that fetch moves the
+// same ref, so the retry finds it free.
+func gitFetch(ctx context.Context, dir render.Dir, args ...string) error {
+	delay := 100 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		_, err := render.RunCLI(ctx, dir, "git", append([]string{"fetch"}, args...))
+		if err == nil || attempt == gitFetchAttempts || !strings.Contains(err.Error(), "cannot lock ref") {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(err, ctx.Err())
+		case <-time.After(delay):
+		}
+		delay *= 2
+	}
 }
 
 // gtTrunkFetch is one gtTrunkRef in flight, so the round trip runs under the

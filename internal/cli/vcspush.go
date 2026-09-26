@@ -187,7 +187,7 @@ func vcsPushPublication(ctx context.Context, dir render.Dir, remote, branch, hea
 }
 
 func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string, noVerify bool) (string, error) {
-	if _, err := render.RunCLI(ctx, dir, "git", []string{"fetch", remote}); err != nil {
+	if err := gitFetch(ctx, dir, remote); err != nil {
 		return "", fmt.Errorf("push: git fetch %s: %w", remote, err)
 	}
 	ref := "refs/heads/" + branch
