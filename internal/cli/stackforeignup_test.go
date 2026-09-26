@@ -14,7 +14,7 @@ func TestStackRebaseLeavesARefusedBranchAboveItAlone(t *testing.T) {
 	landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "fallback")
 	stackCommit(t, f, "later.txt")
 	past := gitAt(t, f.Env(), f.Dir, "rev-parse", "fallback")
-	stubStackPRs(t, map[string]*stackPR{"fallback": {Number: 44, Title: "fallback", State: "MERGED", Landed: true, Head: landedAt}})
+	stubOpenPRs(t, map[string]*stackPR{"fallback": {Number: 44, Title: "fallback", State: "MERGED", Landed: true, Head: landedAt}}, "llm")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "llm")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 

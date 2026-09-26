@@ -150,6 +150,7 @@ type stackRebaseOpts struct {
 	replayed    map[string]stackRebaseBranch
 	result      **stackRebaseRun
 	ship        *stackShipIntent
+	submit      bool
 	tip         string
 	tipOnly     bool
 	dropCommits bool
@@ -187,7 +188,11 @@ continues.
 
 After the rewrite, gt's parents are recorded, the stack is force-pushed under
 the remote heads recorded at the start, and one verdict line per pull request
-names its pushed head, parent, and mergeability. Labels are never touched.`,
+names its pushed head, parent, and mergeability. Labels are never touched.
+
+stack rebase never opens a pull request. A stack none of whose branches has one
+is rebased locally as if --no-push were given; a stack mixing branches with and
+without one is refused before anything moves, naming the ones without.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runStackRebase(cmd, o)
@@ -276,6 +281,11 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	if err != nil {
 		return err
 	}
+	if !o.submit && !o.noPush {
+		if run, err = stackKeepLocal(ctx, cmd, l, commonDir, o, run); err != nil {
+			return err
+		}
+	}
 	if o.result != nil {
 		*o.result = run
 	}
@@ -306,6 +316,36 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 		return err
 	}
 	return stackDrive(ctx, cmd, l, commonDir, run)
+}
+
+// stackKeepLocal keeps stack rebase from opening a pull request, which a
+// pushing run's submit does for every branch that has none: a stack none of
+// whose branches has one is replanned to rebase locally, and a stack mixing the
+// two is refused before anything moves.
+func stackKeepLocal(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, o stackRebaseOpts, run *stackRebaseRun) (*stackRebaseRun, error) {
+	var live, bare []string
+	for _, b := range run.Branches {
+		if b.Landed != "" || b.Held != "" || b.Kept {
+			continue
+		}
+		live = append(live, b.Name)
+		if b.PR == nil || b.PR.State != "OPEN" {
+			bare = append(bare, b.Name)
+		}
+	}
+	switch {
+	case len(bare) == 0:
+		return run, nil
+	case len(bare) < len(live):
+		verb, them := "have", "them"
+		if len(bare) == 1 {
+			verb, them = "has", "it"
+		}
+		return nil, fmt.Errorf("stack rebase: %s %s no pull request, and stack rebase never opens one — rebase with --no-push to keep the stack local, or open %s first with ccx vcs ship --pr-body-file", strings.Join(bare, ", "), verb, them)
+	}
+	cmd.Println("no branch of this stack has a pull request, and stack rebase never opens one, so it rebases locally without pushing")
+	o.noPush = true
+	return stackPlan(ctx, l, commonDir, o)
 }
 
 // stackGate refuses a rebase over a run in progress, or reclaims the run when

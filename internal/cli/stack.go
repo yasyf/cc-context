@@ -339,7 +339,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string) error {
 	if err := stackAnnounceSkipped(errW, skipped); err != nil {
 		return err
 	}
-	return runStackRebase(cmd, stackRebaseOpts{members: chain, landed: o.landed, draft: o.draft, ship: intent, dropCommits: o.dropCommits})
+	return runStackRebase(cmd, stackRebaseOpts{members: chain, landed: o.landed, draft: o.draft, ship: intent, submit: true, dropCommits: o.dropCommits})
 }
 
 // stackSubmitIntent carries --pr-title and --pr-body-file into the run as a ship

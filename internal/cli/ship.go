@@ -457,7 +457,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 			if err != nil {
 				return err
 			}
-			if err := runStackRebase(cmd, stackRebaseOpts{members: gtBottomUp(chain), landed: o.landed, draft: o.draft, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent, tip: branch, tipOnly: o.tipOnly, dropCommits: o.dropCommits || o.yolo}); err != nil {
+			if err := runStackRebase(cmd, stackRebaseOpts{members: gtBottomUp(chain), landed: o.landed, draft: o.draft, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent, submit: true, tip: branch, tipOnly: o.tipOnly, dropCommits: o.dropCommits || o.yolo}); err != nil {
 				if preAmendSHA != "" && gtc.restack == nil {
 					return shipAmendKept(ctx, dir, preAmendSHA, err)
 				}

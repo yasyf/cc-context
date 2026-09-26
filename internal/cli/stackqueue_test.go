@@ -11,6 +11,7 @@ import (
 func TestStackRebaseParentPushesOnlyTheBranchItMoves(t *testing.T) {
 	f := shipGTRepo(t)
 	stubGTAPI(t)
+	stubOpenPRs(t, nil, "p", "c")
 	shipGTStack(t, f, "p")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
 	shipGTStack(t, f, "c")
