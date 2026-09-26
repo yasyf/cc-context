@@ -465,8 +465,12 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if o.members != nil {
 		members = o.members
 	}
+	submitted, err := gtmeta.LastSubmitted(ctx, commonDir)
+	if err != nil {
+		return nil, fmt.Errorf("stack rebase: %w", err)
+	}
 	if !o.noPush {
-		if members, roots, err = stackWithPublishedParents(ctx, l.dir(), retargeted, trunk, members, roots, overrides); err != nil {
+		if members, roots, err = stackWithPublishedParents(ctx, l.dir(), retargeted, submitted, trunk, members, roots, overrides); err != nil {
 			return nil, err
 		}
 	}
@@ -495,10 +499,6 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	remotes, err := stackRemoteHeads(ctx, l.dir(), tr.Remote(), members)
 	if err != nil {
 		return nil, err
-	}
-	submitted, err := gtmeta.LastSubmitted(ctx, commonDir)
-	if err != nil {
-		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
 
 	host, err := os.Hostname()
@@ -540,7 +540,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			if receipt != nil && remotes[name] != "" && remotes[name] != receipt.Head {
 				switch remotes[name] {
 				case submitted[name].HeadSha:
-					superseded, publishedOn = true, submitted[name].BaseName
+					superseded, publishedOn = true, stackPublishedParent(receipt, remotes[name], submitted[name])
 				case source.Head:
 					superseded, publishedOn = true, receipt.Parent
 				default:
@@ -912,9 +912,10 @@ func stackRetargeted(state gtState, overrides map[string]string) gtState {
 // onto when the run left it out, by --parent or because gt records another
 // parent: gt state keeps the old parent until the source checkout moves, and
 // the publication is what gets replayed.
-func stackWithPublishedParents(ctx context.Context, dir render.Dir, state gtState, trunk string, members, roots []string, overrides map[string]string) ([]string, []string, error) {
+func stackWithPublishedParents(ctx context.Context, dir render.Dir, state gtState, submitted map[string]gtmeta.Version, trunk string, members, roots []string, overrides map[string]string) ([]string, []string, error) {
 	for {
-		var missing []string
+		receipts := map[string]*stackPublication{}
+		var outran []string
 		for _, name := range members {
 			if _, named := overrides[name]; named {
 				continue
@@ -923,11 +924,29 @@ func stackWithPublishedParents(ctx context.Context, dir render.Dir, state gtStat
 			if err != nil {
 				return nil, nil, err
 			}
-			if receipt == nil || receipt.Parent == trunk || slices.Contains(members, receipt.Parent) || slices.Contains(missing, receipt.Parent) {
+			if receipt == nil {
 				continue
 			}
-			if _, tracked := state[receipt.Parent]; tracked {
-				missing = append(missing, receipt.Parent)
+			receipts[name] = receipt
+			if last := submitted[name]; last.HeadSha != "" && last.HeadSha != receipt.Head {
+				outran = append(outran, name)
+			}
+		}
+		remotes := map[string]string{}
+		if len(outran) > 0 {
+			var err error
+			if remotes, err = stackRemoteHeads(ctx, dir, "origin", outran); err != nil {
+				return nil, nil, err
+			}
+		}
+		var missing []string
+		for _, name := range slices.Sorted(maps.Keys(receipts)) {
+			parent := stackPublishedParent(receipts[name], remotes[name], submitted[name])
+			if parent == trunk || slices.Contains(members, parent) || slices.Contains(missing, parent) {
+				continue
+			}
+			if _, tracked := state[parent]; tracked {
+				missing = append(missing, parent)
 			}
 		}
 		if len(missing) == 0 {
@@ -977,6 +996,16 @@ func stackMembers(state gtState, trunk string, seeds []string) ([]string, []stri
 		}
 	}
 	return members, roots, nil
+}
+
+// stackPublishedParent names the parent a branch's remote head was published
+// onto: Graphite's record when the remote is the version Graphite last submitted
+// and the receipt names an older one, the receipt's otherwise.
+func stackPublishedParent(receipt *stackPublication, remote string, submitted gtmeta.Version) string {
+	if remote != "" && remote != receipt.Head && remote == submitted.HeadSha {
+		return submitted.BaseName
+	}
+	return receipt.Parent
 }
 
 func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branches []string) (map[string]string, error) {

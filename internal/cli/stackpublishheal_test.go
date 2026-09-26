@@ -161,3 +161,30 @@ func TestStackSubmitKeepsTheSiblingGraphiteRecordsOverAStaleReceipt(t *testing.T
 		t.Error("origin z left the sibling a")
 	}
 }
+
+func TestStackSubmitKeepsASeparatelyTrackedSiblingGraphiteRecordsOverAStaleReceipt(t *testing.T) {
+	f := shipGTRepo(t)
+	stubGTAPI(t)
+	shipGTStack(t, f, "a")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	shipGTStack(t, f, "z")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	stale := *healReceipt(t, f, "z")
+	if _, _, err := runStackCmd(t, f, "rebase", "--parent", "z=a"); err != nil {
+		t.Fatalf("stack rebase --parent z=a: %v", err)
+	}
+	if got := healReceipt(t, f, "z").Parent; got != "a" {
+		t.Fatalf("fixture: z published onto %s, want a", got)
+	}
+	healWriteReceipt(t, f, stale)
+	pushCommit(t, f, "next.txt", "next\n", "next")
+
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit over a stale receipt: %v", err)
+	}
+	if !stackOnto(t, f, gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "a"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "z")) {
+		t.Error("origin z left the sibling a Graphite last published it onto")
+	}
+}
