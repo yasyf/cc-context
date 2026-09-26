@@ -1115,7 +1115,8 @@ func stackOrder(trunk string, byName map[string]*stackRebaseBranch) ([]string, e
 
 // stackOldBase is the commit a branch's own work starts after: the furthest of
 // its parent's recorded head and gt's recorded parent revision that the branch
-// contains, moved up to where the branch meets trunk when trunk already holds
+// contains. A branch leaving that parent, landed or named away by --parent, has
+// it moved up to where the branch meets trunk when trunk already holds
 // everything between. All are read before anything moves, so a push mid-run
 // never changes the answer, a squash-landed parent's commits stay behind, and
 // a branch already moved off a landed parent onto trunk replays only its own.
@@ -1165,6 +1166,9 @@ func stackOldBase(ctx context.Context, dir render.Dir, trunk, pin string, state 
 		if best, err = stackMergeBase(ctx, dir, self.Head, candidates[0]); err != nil {
 			return "", err
 		}
+	}
+	if self.Parent == s.Parents[0].Ref {
+		return best, nil
 	}
 	behind, err := gitIsAncestor(ctx, dir, stackRebasePrefix, best, onTrunk)
 	if err != nil || behind {
