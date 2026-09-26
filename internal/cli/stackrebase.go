@@ -1124,6 +1124,11 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 					return b, err
 				}
 			}
+			if !replay {
+				if replay, err = gitOnlyCopies(ctx, dir, stackRebasePrefix, remote, s.Head, pin); err != nil {
+					return b, err
+				}
+			}
 			if replay {
 				break
 			}

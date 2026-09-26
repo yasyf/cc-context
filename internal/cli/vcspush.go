@@ -232,6 +232,18 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 		rewrite = receipt != nil && receipt.Head == tip
 	}
 	if !rewrite {
+		trunk, err := gitRemoteHead(ctx, dir, remote)
+		if err != nil {
+			return "", err
+		}
+		if trunk == remoteRef {
+			trunk = ""
+		}
+		if rewrite, err = gitOnlyCopies(ctx, dir, "push", tip, head, trunk); err != nil {
+			return "", err
+		}
+	}
+	if !rewrite {
 		unheld, err := gitCommitsNotIn(ctx, dir, "push", tip, head)
 		if err != nil {
 			return "", err
@@ -274,6 +286,31 @@ func gitReflogHolds(ctx context.Context, dir render.Dir, prefix, branch, sha str
 		}
 	}
 	return false, nil
+}
+
+// gitOnlyCopies reports whether every commit from carries past to, outside
+// trunk, has a patch-for-patch copy in to: a server-side restack of to's own
+// commits rather than work to lacks.
+func gitOnlyCopies(ctx context.Context, dir render.Dir, prefix, from, to, trunk string) (bool, error) {
+	args := []string{"--left-only", "--cherry-pick"}
+	if trunk != "" {
+		args = append(args, "^"+trunk)
+	}
+	n, err := gtRevCount(ctx, prefix, dir, from+"..."+to, args...)
+	return err == nil && n == 0, err
+}
+
+// gitRemoteHead is the ref remote's HEAD points at, empty when it names none.
+func gitRemoteHead(ctx context.Context, dir render.Dir, remote string) (string, error) {
+	ref := "refs/remotes/" + remote + "/HEAD"
+	out, code, _, err := render.RunCLIExitCode(ctx, dir, "git", []string{"symbolic-ref", "-q", ref})
+	if err != nil {
+		return "", fmt.Errorf("push: git symbolic-ref %s: %w", ref, err)
+	}
+	if code != 0 {
+		return "", nil
+	}
+	return strings.TrimSpace(out), nil
 }
 
 func gitCommitsNotIn(ctx context.Context, dir render.Dir, prefix, rev, exclude string) ([]string, error) {
