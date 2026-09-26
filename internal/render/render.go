@@ -166,6 +166,20 @@ func RunCLI(ctx context.Context, dir Dir, bin string, argv []string) (string, er
 	return RunCLIEnv(ctx, dir, bin, argv, nil)
 }
 
+// StartDetached starts bin with argv in dir in a session of its own and
+// returns without waiting on it, for cleanup that must outlive this process.
+func StartDetached(ctx context.Context, dir Dir, bin string, argv []string) error {
+	env, resolve := childEnv(ctx, dir, nil)
+	cmd := exec.Command(resolve.Bin(bin), argv...) //nolint:gosec // bin/argv come from trusted callers, not user free-text
+	cmd.Dir = string(dir)
+	cmd.Env = env
+	detach(cmd)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("%s: %w", bin, err)
+	}
+	return cmd.Process.Release()
+}
+
 // RunCLIEnv is RunCLI with extraEnv appended to the child's environment, for a
 // caller that must set an env-only variable the flag surface cannot express
 // (e.g. GIT_INDEX_FILE). A "KEY=value" element overrides any inherited KEY per

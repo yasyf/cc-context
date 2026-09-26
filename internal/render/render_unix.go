@@ -25,3 +25,7 @@ func configureProbeCommand(cmd *exec.Cmd) {
 		return nil
 	}
 }
+
+func detach(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+}

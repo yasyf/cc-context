@@ -2035,8 +2035,15 @@ func stackResume(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 func stackCloseWorkspace(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun) error {
 	c := run.Conflict
 	if _, err := os.Stat(c.Workspace); err == nil {
-		if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "remove", c.Workspace}); err != nil {
-			return fmt.Errorf("stack rebase: remove the conflict workspace %s (clear what it holds, then continue again): %w", c.Workspace, err)
+		changed, err := render.RunCLI(ctx, render.Dir(c.Workspace), "git", []string{"status", "--porcelain", "--untracked-files=no"})
+		if err != nil {
+			return fmt.Errorf("stack rebase: read the conflict workspace %s: %w", c.Workspace, err)
+		}
+		if strings.TrimSpace(changed) != "" {
+			return fmt.Errorf("stack rebase: the conflict workspace %s holds uncommitted changes to tracked files (clear what it holds, then continue again): %s", c.Workspace, strings.TrimSpace(changed))
+		}
+		if err := stackDiscardWorkspace(ctx, l, c.Workspace); err != nil {
+			return err
 		}
 	}
 	if err := os.Remove(c.Brief); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -2086,8 +2093,22 @@ func stackDropWorkspace(ctx context.Context, l lane, ws string) error {
 			return fmt.Errorf("stack abort: git rebase --abort in %s: %w", ws, err)
 		}
 	}
-	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "remove", "--force", ws}); err != nil {
-		return fmt.Errorf("stack abort: remove %s: %w", ws, err)
+	return stackDiscardWorkspace(ctx, l, ws)
+}
+
+// stackDiscardWorkspace moves ws aside, prunes its registration, and deletes
+// it in a detached rm: removing a full checkout in place can take longer than
+// the command waiting on it is allowed to run.
+func stackDiscardWorkspace(ctx context.Context, l lane, ws string) error {
+	aside := filepath.Join(filepath.Dir(ws), "."+filepath.Base(ws)+".discarded-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	if err := os.Rename(ws, aside); err != nil {
+		return fmt.Errorf("stack rebase: move the conflict workspace aside: %w", err)
+	}
+	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "prune"}); err != nil {
+		return fmt.Errorf("stack rebase: git worktree prune: %w", err)
+	}
+	if err := render.StartDetached(ctx, render.Dir(filepath.Dir(aside)), "rm", []string{"-rf", aside}); err != nil {
+		return fmt.Errorf("stack rebase: delete %s: %w", aside, err)
 	}
 	return nil
 }
