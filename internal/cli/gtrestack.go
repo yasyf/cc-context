@@ -67,16 +67,19 @@ type gtRestackResult struct {
 }
 
 func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir render.Dir, commonDir string, state gtState, chain []string, elsewhere bool) (gtRestackResult, error) {
+	movers, held := gtRestackPlan(state, chain)
+	if len(movers) == 0 {
+		return gtRestackResult{held: held}, nil
+	}
 	holders, err := vcs.BranchHolders(ctx, c)
 	if err != nil {
 		return gtRestackResult{}, fmt.Errorf("%s: %w", prefix, err)
 	}
 	if !elsewhere {
 		state = gtHoldElsewhere(state, chain, holders, c.Root)
-	}
-	movers, held := gtRestackPlan(state, chain)
-	if len(movers) == 0 {
-		return gtRestackResult{held: held}, nil
+		if movers, held = gtRestackPlan(state, chain); len(movers) == 0 {
+			return gtRestackResult{held: held}, nil
+		}
 	}
 	trunk, err := gtTrunkBranch(prefix, state)
 	if err != nil {
