@@ -38,6 +38,7 @@ func newStackCmd() *cobra.Command {
 	}
 	cmd.AddCommand(
 		newStackNewCmd(),
+		newStackRepairPublishedChildCmd(),
 		newStackListCmd(),
 		newRestackCmd(),
 		newStackSubmitCmd(),

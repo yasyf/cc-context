@@ -720,6 +720,19 @@ func gtOwnFork(ctx context.Context, dir render.Dir, branch, parent string) (stri
 		}
 	}
 	if len(copies) > 0 {
+		receipt, err := stackReadPublication(ctx, dir, parent)
+		if err != nil {
+			return "", 0, err
+		}
+		if receipt != nil {
+			head, err := stackRevParse(ctx, dir, gtRestackRef(branch))
+			if err != nil {
+				return "", 0, err
+			}
+			if head == receipt.Head {
+				return "", 0, refuse("ship: %s starts at %s's published head rather than its local source; run ccx vcs stack repair-published-child --parent %s from the child worktree, then ccx vcs stack submit", branch, parent, parent)
+			}
+		}
 		return "", 0, refuse("ship: %s is not in the history of %s, and %s interleaves copies of %s's commits (%s) with its own, so no replay onto %s leaves them out — rebase it onto %s by hand with git rebase -i %s, then ship again",
 			parent, branch, branch, parent, strings.Join(copies, ", "), parent, parent, parent)
 	}

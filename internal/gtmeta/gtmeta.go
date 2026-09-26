@@ -431,6 +431,38 @@ type Version struct {
 	BaseName string `json:"baseName"`
 }
 
+// PublishedChildState contains the Graphite fields that distinguish an incomplete child from a submitted or edited branch.
+type PublishedChildState struct {
+	Parent             string
+	ParentRevision     string
+	BranchRevision     string
+	Validation         string
+	State              string
+	Children           string
+	Submitted          string
+	ParentHeadRevision string
+}
+
+// ReadPublishedChild reads a child's recorded identity even when Graphite marks its parent invalid.
+func ReadPublishedChild(ctx context.Context, commonDir, branch string) (PublishedChildState, error) {
+	path := filepath.Join(commonDir, metadataDB)
+	db, err := sql.Open("sqlite", dsn(path))
+	if err != nil {
+		return PublishedChildState{}, fmt.Errorf("gtmeta: open %q: %w", path, err)
+	}
+	defer func() { _ = db.Close() }()
+	var row PublishedChildState
+	err = db.QueryRowContext(ctx, `SELECT COALESCE(parent_branch_name, ''), COALESCE(parent_branch_revision, ''), COALESCE(branch_revision, ''), COALESCE(validation_result, ''), COALESCE(state, ''), COALESCE(children, ''), COALESCE(last_submitted_version, ''), COALESCE(parent_head_revision, '') FROM branch_metadata WHERE branch_name = ?`, branch).
+		Scan(&row.Parent, &row.ParentRevision, &row.BranchRevision, &row.Validation, &row.State, &row.Children, &row.Submitted, &row.ParentHeadRevision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PublishedChildState{}, fmt.Errorf("gtmeta: %q has no branch_metadata row in %q", branch, path)
+	}
+	if err != nil {
+		return PublishedChildState{}, fmt.Errorf("gtmeta: read %q in %q: %w", branch, path, err)
+	}
+	return row, nil
+}
+
 // LastSubmitted reads every branch's last submitted version out of the
 // metadata database, skipping branches never submitted.
 func LastSubmitted(ctx context.Context, commonDir string) (map[string]Version, error) {

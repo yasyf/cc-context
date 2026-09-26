@@ -2,15 +2,146 @@ package cli
 
 import (
 	"bytes"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
+
+func incompletePublishedChild(t *testing.T) (*vcstest.Fixture, *stackPublication, string, string) {
+	t.Helper()
+	f, receipt := publishedSparseParent(t)
+	child := filepath.Join(t.TempDir(), "child")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "-b", "child", child, receipt.Head)
+	common, err := gtCommonDir(f.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(common, ".graphite_metadata.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`INSERT INTO branch_metadata (branch_name, branch_revision, validation_result, state, children) VALUES (?, ?, 'BAD_PARENT_NAME', 'none', '[]')`, "child", receipt.Head); err != nil {
+		t.Fatal(err)
+	}
+	return f, receipt, child, common
+}
+
+func TestStackRepairPublishedChildPreservesPendingWork(t *testing.T) {
+	f, receipt, child, common := incompletePublishedChild(t)
+	file := filepath.Join(child, "keep", "pending.txt")
+	writeShipFile(t, child, "keep/pending.txt", "pending\n")
+	mustRun(t, f.Env(), child, "git", "add", "keep/pending.txt")
+	index := gitAt(t, f.Env(), child, "rev-parse", "--path-format=absolute", "--git-path", "index")
+	before, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shipResetLog(t, f)
+	out, _, err := runStackCmdIn(t, f, child, "repair-published-child", "--parent", "parent")
+	if err != nil || !strings.Contains(out, "repaired child") {
+		t.Fatalf("repair = %q, %v", out, err)
+	}
+	row, err := gtmeta.ReadPublishedChild(f.Context(), common, "child")
+	if err != nil || row.Parent != "parent" || row.ParentRevision != receipt.Head || row.Validation != "VALID" {
+		t.Fatalf("repaired row = %+v, %v", row, err)
+	}
+	if got := gitAt(t, f.Env(), child, "rev-parse", "HEAD"); got != receipt.Head {
+		t.Fatalf("child head moved to %s", got)
+	}
+	if data, err := os.ReadFile(file); err != nil || string(data) != "pending\n" {
+		t.Fatalf("pending file = %q, %v", data, err)
+	}
+	if after, err := os.ReadFile(index); err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("pending index changed: %v", err)
+	}
+	for _, argv := range vcstest.Invocations(t, f.ArgvLog) {
+		if len(argv) > 1 && argv[0] == "gt" || len(argv) > 1 && argv[0] == "git" && (argv[1] == "worktree" || argv[1] == "rebase" || argv[1] == "reset") {
+			t.Fatalf("repair moved worktree or invoked gt: %v", argv)
+		}
+	}
+	out, _, err = runStackCmdIn(t, f, child, "repair-published-child", "--parent", "parent")
+	if err != nil || !strings.Contains(out, "already repaired") {
+		t.Fatalf("idempotent repair = %q, %v", out, err)
+	}
+}
+
+func TestStackRepairPublishedChildResumesAfterReparent(t *testing.T) {
+	f, receipt, child, common := incompletePublishedChild(t)
+	if err := gtmeta.Reparent(f.Context(), common, map[string]string{"child": "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runStackCmdIn(t, f, child, "repair-published-child", "--parent", "parent"); err != nil {
+		t.Fatal(err)
+	}
+	row, err := gtmeta.ReadPublishedChild(f.Context(), common, "child")
+	if err != nil || row.ParentRevision != receipt.Head || row.Validation != "VALID" {
+		t.Fatalf("resumed row = %+v, %v", row, err)
+	}
+}
+
+func TestStackRepairPublishedChildRefusesChangedEvidence(t *testing.T) {
+	for _, change := range []string{"source", "remote", "child", "submitted", "metadata"} {
+		t.Run(change, func(t *testing.T) {
+			f, receipt, child, common := incompletePublishedChild(t)
+			switch change {
+			case "source":
+				mustRun(t, f.Env(), f.Dir, "git", "commit", "--allow-empty", "-qm", "new unpublished source")
+			case "remote":
+				foreign := gitAt(t, f.Env(), f.Dir, "commit-tree", receipt.Head+"^{tree}", "-p", receipt.Head, "-m", "foreign remote")
+				mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", foreign+":refs/heads/parent")
+			case "child":
+				mustRun(t, f.Env(), child, "git", "commit", "--allow-empty", "-qm", "moved child")
+			case "submitted":
+				db, err := sql.Open("sqlite", filepath.Join(common, ".graphite_metadata.db"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = db.Exec(`UPDATE branch_metadata SET last_submitted_version = '{"headSha":"other"}' WHERE branch_name = 'parent'`)
+				_ = db.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "metadata":
+				db, err := sql.Open("sqlite", filepath.Join(common, ".graphite_metadata.db"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = db.Exec(`UPDATE branch_metadata SET last_submitted_version = 'submitted' WHERE branch_name = 'child'`)
+				_ = db.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := gtmeta.ReadPublishedChild(f.Context(), common, "child")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := runStackCmdIn(t, f, child, "repair-published-child", "--parent", "parent"); err == nil {
+				t.Fatal("changed evidence accepted")
+			}
+			after, err := gtmeta.ReadPublishedChild(f.Context(), common, "child")
+			if err != nil || after != before {
+				t.Fatalf("refusal changed metadata from %+v to %+v: %v", before, after, err)
+			}
+		})
+	}
+}
+
+func TestShipPublishedChildRefusalNamesRepair(t *testing.T) {
+	f, _, child, _ := incompletePublishedChild(t)
+	_, _, err := gtOwnFork(f.ContextIn(child), render.Dir(child), "child", "parent")
+	if err == nil || !strings.Contains(err.Error(), "ccx vcs stack repair-published-child --parent parent") || strings.Contains(err.Error(), "git rebase -i") {
+		t.Fatalf("published-child refusal = %v", err)
+	}
+}
 
 func publishedSparseParent(t *testing.T) (*vcstest.Fixture, *stackPublication) {
 	t.Helper()
