@@ -167,6 +167,37 @@ func TestRecordRestackedRefusesAnUntrackedBranch(t *testing.T) {
 	}
 }
 
+func TestAdoptRootRecordsBothSidesAtomically(t *testing.T) {
+	dir := t.TempDir()
+	vcstest.WriteGraphiteMeta(t, dir, `{"main":{"trunk":true}}`)
+	if err := gtmeta.AdoptRoot(t.Context(), dir, "feature", "main", "base", "head"); err != nil {
+		t.Fatal(err)
+	}
+	row, err := gtmeta.ReadPublishedChild(t.Context(), dir, "feature")
+	if err != nil || row.Parent != "main" || row.ParentRevision != "base" || row.BranchRevision != "head" || row.Validation != "VALID" {
+		t.Fatalf("feature row = %+v, %v", row, err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dir, ".graphite_metadata.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var children string
+	if err := db.QueryRow(`SELECT children FROM branch_metadata WHERE branch_name = 'main'`).Scan(&children); err != nil || children != `["feature"]` {
+		t.Fatalf("trunk children = %q, %v", children, err)
+	}
+	if err := gtmeta.AdoptRoot(t.Context(), dir, "feature", "main", "base", "head"); err == nil {
+		t.Fatal("duplicate feature was adopted")
+	}
+	if err := gtmeta.AdoptRoot(t.Context(), dir, "orphan", "missing", "base", "head"); err == nil {
+		t.Fatal("missing trunk was accepted")
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM branch_metadata WHERE branch_name = 'orphan'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("orphan rows = %d, %v", count, err)
+	}
+}
+
 // TestReparentMovesARowAndItsNewParentsChildren pins both sides of a move. gt
 // walks its own tree through the children column, not the parent pointer:
 // measured against gt 1.8.6, a branch its new parent does not list back is

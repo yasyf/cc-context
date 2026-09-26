@@ -227,6 +227,15 @@ func dryRunTrack(ctx context.Context, l lane, o shipOpts, state gtState, r *ship
 			}
 		}
 		r.because = "untracked, so gt track --parent records it (ship drops -f, which would outrank it)" + replay
+		if o.parent == r.trunk && !o.amend {
+			head, base, root, err := gtRootBase(ctx, l.dir(), r.branch, r.trunk)
+			if err != nil {
+				return err
+			}
+			if root && (base != head || !o.noCommit) {
+				r.because = "untracked root at " + shortSHA(base) + ", so ccx records it without gt track" + replay
+			}
+		}
 	} else {
 		parent, err := dryRunNearestTracked(ctx, l, state, r.trunk, r.branch)
 		if err != nil {

@@ -272,6 +272,45 @@ func Rows(ctx context.Context, commonDir string) ([]Row, error) {
 	return out, nil
 }
 
+// AdoptRoot records a branch's fork on trunk in Graphite metadata.
+// The branch row and trunk's child list commit together so readers see one stack.
+func AdoptRoot(ctx context.Context, commonDir, branch, trunk, base, head string) error {
+	path := filepath.Join(commonDir, metadataDB)
+	db, err := sql.Open("sqlite", writableDSN(path))
+	if err != nil {
+		return fmt.Errorf("gtmeta: open %q: %w", path, err)
+	}
+	defer func() { _ = db.Close() }()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("gtmeta: begin on %q: %w", path, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `INSERT INTO branch_metadata
+		(branch_name, parent_branch_name, parent_branch_revision, branch_revision, validation_result, state, children)
+		VALUES (?, ?, ?, ?, ?, 'none', '[]')`, branch, trunk, base, head, validationValid); err != nil {
+		return fmt.Errorf("gtmeta: adopt root %q in %q: %w", branch, path, err)
+	}
+	adopted, err := editChildren(ctx, tx, path, trunk, func(children []string) []string {
+		if slices.Contains(children, branch) {
+			return children
+		}
+		return append(children, branch)
+	})
+	if err != nil {
+		return err
+	}
+	if !adopted {
+		return fmt.Errorf("gtmeta: %q has no branch_metadata row in %q", trunk, path)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("gtmeta: commit to %q: %w", path, err)
+	}
+	return nil
+}
+
 // Forget deletes branches' rows, which is what gt untrack does to one branch at
 // a time for a whole gt startup each. The delete is two-sided like Reparent's
 // move: a name left in the parent's children column is one gt still walks into
