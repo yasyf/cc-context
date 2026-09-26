@@ -225,6 +225,13 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 		return "", err
 	}
 	if !rewrite {
+		receipt, err := stackReadPublication(ctx, dir, branch)
+		if err != nil {
+			return "", err
+		}
+		rewrite = receipt != nil && receipt.Head == tip
+	}
+	if !rewrite {
 		unheld, err := gitCommitsNotIn(ctx, dir, "push", tip, head)
 		if err != nil {
 			return "", err
