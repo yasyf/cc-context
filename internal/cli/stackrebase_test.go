@@ -908,6 +908,32 @@ func TestStackRebaseDropsALandedBranchGraphiteRestackedBeforeItLanded(t *testing
 	}
 }
 
+func TestStackSnapshotTakesAServerRestackOfItsOwnCommitsPastAStalePin(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	pin := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main")
+	server := f.WorktreePath("server")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "--detach", server, "main")
+	mustRun(t, f.Env(), server, "git", "cherry-pick", "--no-commit", "base")
+	mustRun(t, f.Env(), server, "git", "commit", "-qm", "base (#5)")
+	mustRun(t, f.Env(), server, "git", "push", "-q", "origin", "HEAD:main")
+	mustRun(t, f.Env(), server, "git", "cherry-pick", "feature")
+	mustRun(t, f.Env(), server, "git", "push", "-qf", "origin", "HEAD:feature")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "feature")
+	dir := render.Dir(f.Dir)
+	tr, err := gtTrunkRefOffline(f.Context(), dir, stackRebasePrefix, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/feature")
+	s := gtBranchState{Head: local, Parents: []gtRef{{Ref: "base", SHA: gitAt(t, f.Env(), f.Dir, "rev-parse", "base")}}}
+
+	if _, err := stackSnapshot(f.Context(), dir, tr, s, "feature", remote, local, nil, false, pin, false); err != nil {
+		t.Fatalf("stackSnapshot = %v, want the server restack of feature's own commits taken as a rewrite", err)
+	}
+}
+
 func TestGTPushArgvPinsAnAbsentRemote(t *testing.T) {
 	t.Parallel()
 	argv := gtPushArgv(gtSubmit{}, []gtSubmitBranch{{name: "new", head: "abc", leaseSet: true}})
