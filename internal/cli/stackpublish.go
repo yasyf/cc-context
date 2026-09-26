@@ -210,7 +210,7 @@ func stackRecordPublication(ctx context.Context, dir render.Dir, run *stackRebas
 	tx.WriteString("start\n")
 	for _, pushed := range plan {
 		b := run.branch(pushed.name)
-		receipt := stackPublication{Branch: b.Name, Source: b.Local, SourceBase: cmp.Or(b.SourceBase, b.OldBase), Head: pushed.head, Base: pushed.baseSha, Parent: pushed.base}
+		receipt := stackPublication{Branch: b.Name, Source: b.Local, SourceBase: cmp.Or(b.SourceBase, b.OldBase), Head: pushed.head, Base: b.NewBase, Parent: pushed.base}
 		if receipt.SourceBase == "" {
 			return fmt.Errorf("stack publication: %s has no captured source base", b.Name)
 		}

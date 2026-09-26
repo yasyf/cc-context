@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -135,6 +136,13 @@ func TestStackRebaseMovesATrunkParentedBranchAShipKeptOffNewerTrunk(t *testing.T
 				t.Fatalf("ship = %v (stderr=%q)", err, errStr)
 			}
 			stackAssertBaseKept(t, f, base)
+			receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "base")
+			if err != nil || receipt == nil {
+				t.Fatalf("base publication = %+v, %v", receipt, err)
+			}
+			if receipt.Head != base || receipt.Base != fork {
+				t.Errorf("base publication head %.12s base %.12s, want its kept head %.12s on its fork %.12s", receipt.Head, receipt.Base, base, fork)
+			}
 
 			out, errStr, err := runStackCmd(t, f, "rebase")
 			if err != nil {
