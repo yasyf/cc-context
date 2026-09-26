@@ -6,6 +6,7 @@ import (
 )
 
 func TestFuse(t *testing.T) {
+	t.Parallel()
 	// n=4 chunks. Best-first orderings:
 	//   dense = [0 2 3 1] -> denseRank: 0→1, 2→2, 3→3, 1→4
 	//   lex   = [2 0 1 3] -> lexRank:   2→1, 0→2, 1→3, 3→4
@@ -29,6 +30,7 @@ func TestFuse(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := fuse(dense, lex, tt.k); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("fuse(k=%d) = %v, want %v", tt.k, got, tt.want)
 			}
@@ -37,6 +39,7 @@ func TestFuse(t *testing.T) {
 }
 
 func TestFuseDenseWeightDominates(t *testing.T) {
+	t.Parallel()
 	// dense weight 3 outweighs lex weight 1: the chunk ranked best by dense but
 	// worst by lex beats the chunk ranked worst by dense but best by lex.
 	//   chunk0: dense#1, lex#2 -> 3/61 + 1/62 = 0.065309360
@@ -49,11 +52,13 @@ func TestFuseDenseWeightDominates(t *testing.T) {
 }
 
 func TestFuseBM25OnlyDegraded(t *testing.T) {
+	t.Parallel()
 	// nil or empty dense drops the dense term (weight 1.0 on lex alone). Since
 	// 1/(60+rank) is monotonic in rank, the fused order equals the lex order.
 	lex := []int{2, 0, 1, 3}
 	for _, name := range []string{"nil", "empty"} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			var dense []int
 			if name == "empty" {
 				dense = []int{}
@@ -69,6 +74,7 @@ func TestFuseBM25OnlyDegraded(t *testing.T) {
 }
 
 func TestDenseOrder(t *testing.T) {
+	t.Parallel()
 	q := []float32{1, 0}
 	tests := []struct {
 		name string
@@ -90,6 +96,7 @@ func TestDenseOrder(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := denseOrder(tt.vecs, q); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("denseOrder = %v, want %v", got, tt.want)
 			}
@@ -98,6 +105,7 @@ func TestDenseOrder(t *testing.T) {
 }
 
 func TestFuseEndToEnd(t *testing.T) {
+	t.Parallel()
 	// Full hybrid path: BM25 lexical order + dense order over the same chunks,
 	// fused to top-2. Chunks:
 	//   c0 "install the cli quickly"

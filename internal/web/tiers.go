@@ -167,10 +167,11 @@ var bodyMarkersLoose = append([]string{"_px", "datadome"}, bodyMarkersTight...)
 // tier's free-text warning, e.g. jina's "Target URL returned error 404".
 var statusInText = regexp.MustCompile(`\b([45]\d\d)\b`)
 
-// tiers holds the shared HTTP client, the per-service base URLs, and the DNS
-// resolver the split-DNS gate consults. The base URLs default to production and
-// are swapped for httptest servers under test; lookupIP defaults to the system
-// resolver and is faked in tests.
+// tiers holds the shared HTTP client, the per-service base URLs, the DNS
+// resolver the split-DNS gate consults, and the PDF parser the plain-HTTP tier
+// hands an application/pdf body. The base URLs default to production and are
+// swapped for httptest servers under test; lookupIP and parsePDF default to the
+// system resolver and the uv driver, and are faked in tests.
 type tiers struct {
 	client          *http.Client
 	jinaBase        string
@@ -178,6 +179,7 @@ type tiers struct {
 	firecrawlBase   string
 	browserbaseBase string
 	lookupIP        func(ctx context.Context, network, host string) ([]net.IP, error)
+	parsePDF        func(ctx context.Context, data []byte) (string, error)
 	// onAttempt, when non-nil, observes each cascade tier's outcome in order, before
 	// the outcome is classified. Tests inject it to assert escalation order; newTiers
 	// leaves it nil. The localTarget shortcut bypasses the cascade loop and so never
@@ -195,6 +197,7 @@ func newTiers() *tiers {
 		firecrawlBase:   firecrawlBaseProd,
 		browserbaseBase: browserbaseBaseProd,
 		lookupIP:        net.DefaultResolver.LookupIP,
+		parsePDF:        parsePDF,
 	}
 	t.client = &http.Client{CheckRedirect: t.refuseLocalRedirect}
 	return t
@@ -510,7 +513,7 @@ func (t *tiers) plainHTTP(ctx context.Context, targetURL string, prior *Page) (F
 	case bodyPDF:
 		// The 20s deadline governs the fetch only; the parse runs under the
 		// caller's context so pdf.go's own timeout can cover a cold liteparse install.
-		res.Markdown, err = parsePDFFn(ctx, []byte(body))
+		res.Markdown, err = t.parsePDF(ctx, []byte(body))
 		if err != nil {
 			return FetchResult{}, fmt.Errorf("http: %w", err)
 		}

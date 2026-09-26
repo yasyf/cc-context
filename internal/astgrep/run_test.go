@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/execstub"
+
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/render"
 )
@@ -41,9 +43,7 @@ func fakeAstGrep(t *testing.T, files []string) context.Context {
 		"for a in \"$@\"; do [ \"$a\" = \"-U\" ] && exit 0; done\n" +
 		"cat <<'EOF'\n" + lines.String() + "EOF\n"
 	path := filepath.Join(dir, "ast-grep")
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // fake engine must be owner-executable
-		t.Fatalf("write fake ast-grep: %v", err)
-	}
+	execstub.Write(t, path, script)
 	return render.WithEnv(t.Context(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -56,6 +56,7 @@ func filesN(n int) []string {
 }
 
 func TestRunReplacePreviewLeavesDiff(t *testing.T) {
+	t.Parallel()
 	ctx := fakeAstGrep(t, []string{"a.go", "b.go"})
 	got, err := Run(ctx, backend.OpReplace, backend.Args{Pattern: "old($A)", Rewrite: "new($A)"})
 	if err != nil {
@@ -71,6 +72,7 @@ func TestRunReplacePreviewLeavesDiff(t *testing.T) {
 }
 
 func TestRunReplaceNoMatch(t *testing.T) {
+	t.Parallel()
 	ctx := fakeAstGrep(t, nil) // empty stream → no matches
 	got, err := Run(ctx, backend.OpReplace, backend.Args{Pattern: "missing($A)", Rewrite: "x($A)"})
 	if err != nil {
@@ -85,6 +87,7 @@ func TestRunReplaceNoMatch(t *testing.T) {
 }
 
 func TestRunReplaceApplyUnderCap(t *testing.T) {
+	t.Parallel()
 	ctx := fakeAstGrep(t, []string{"a.go", "b.go", "c.go"})
 	got, err := Run(ctx, backend.OpReplace, backend.Args{Pattern: "old($A)", Rewrite: "new($A)", Apply: true})
 	if err != nil {
@@ -96,6 +99,7 @@ func TestRunReplaceApplyUnderCap(t *testing.T) {
 }
 
 func TestRunReplaceApplyOverCapBlocked(t *testing.T) {
+	t.Parallel()
 	ctx := fakeAstGrep(t, filesN(applyFileCap+1)) // 21 distinct files > cap 20
 	_, err := Run(ctx, backend.OpReplace, backend.Args{Pattern: "old($A)", Rewrite: "new($A)", Apply: true})
 	if err == nil {
@@ -107,6 +111,7 @@ func TestRunReplaceApplyOverCapBlocked(t *testing.T) {
 }
 
 func TestRunReplaceApplyOverCapForced(t *testing.T) {
+	t.Parallel()
 	ctx := fakeAstGrep(t, filesN(applyFileCap+1))
 	got, err := Run(ctx, backend.OpReplace, backend.Args{Pattern: "old($A)", Rewrite: "new($A)", Apply: true, Force: true})
 	if err != nil {
@@ -118,6 +123,7 @@ func TestRunReplaceApplyOverCapForced(t *testing.T) {
 }
 
 func TestRunStructural(t *testing.T) {
+	t.Parallel()
 	ctx := fakeAstGrep(t, []string{"a.go", "a.go"}) // two hits, one file
 	got, err := Run(ctx, backend.OpStructural, backend.Args{Query: "old($A)"})
 	if err != nil {
@@ -131,6 +137,7 @@ func TestRunStructural(t *testing.T) {
 }
 
 func TestRunStructOutline(t *testing.T) {
+	t.Parallel()
 	ctx := fakeAstGrep(t, nil)
 	// Terse default: top-level struct only, its member collapsed to a count.
 	got, err := Run(ctx, backend.OpStructOutline, backend.Args{Path: "x.go"})
@@ -154,6 +161,7 @@ func TestRunStructOutline(t *testing.T) {
 }
 
 func TestRunStructOutlineBudget(t *testing.T) {
+	t.Parallel()
 	ctx := fakeAstGrep(t, nil)
 	got, err := Run(ctx, backend.OpStructOutline, backend.Args{Path: "x.go", Budget: 1})
 	if err != nil {
@@ -165,6 +173,7 @@ func TestRunStructOutlineBudget(t *testing.T) {
 }
 
 func TestRunUnsupportedOp(t *testing.T) {
+	t.Parallel()
 	if _, err := Run(t.Context(), backend.OpGrep, backend.Args{}); err == nil {
 		t.Fatal("Run: want error for non-ast-grep op")
 	}

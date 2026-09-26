@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/cli"
-	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // hashClass is the character class of a 4-char content anchor: a leading letter
@@ -88,7 +88,7 @@ func TestAnchorsEmittedAcrossOps(t *testing.T) {
 	if testing.Short() {
 		t.Skip("provisions and runs the real ast-grep engine")
 	}
-	if lookpath.Find("ast-grep") == "" {
+	if render.LookPath(t.Context(), "ast-grep") == "" {
 		if os.Getenv("CI") != "" {
 			t.Fatal("ast-grep not on PATH in CI: the test job must install it (uv tool install ast-grep-cli)")
 		}

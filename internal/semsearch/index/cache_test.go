@@ -14,6 +14,7 @@ import (
 )
 
 func TestPersistedCacheRoundTrip(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	man, chunks, vectors := cacheFixture()
 
@@ -39,6 +40,7 @@ func TestPersistedCacheRoundTrip(t *testing.T) {
 }
 
 func TestLoadPersistedRejectsMixedGenerations(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	man, chunks, vectors := cacheFixture()
 	if err := store(dir, man, chunks, vectors); err != nil {
@@ -100,6 +102,7 @@ func writeCacheJSON(t *testing.T, path string, value any) {
 // context a caller drives the index with, so the process environment never
 // decides where one caller's index lands.
 func TestCacheDirResolvesFromContext(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+root)
 

@@ -7,6 +7,7 @@ import (
 )
 
 func TestPreamble(t *testing.T) {
+	t.Parallel()
 	got := Preamble([]ToolSig{{"railway_deploy", "railway_deploy(service)", "deploy a service"}})
 
 	subsetRules := []string{
@@ -38,6 +39,7 @@ func TestPreamble(t *testing.T) {
 // monty: extracted verbatim from the preamble, it must compile, typecheck, and
 // run against a stub grep.
 func TestPreambleExampleRuns(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	rt := NewRuntime(map[string]HostFunc{
 		"grep": func(_ context.Context, _ Call) (any, error) {

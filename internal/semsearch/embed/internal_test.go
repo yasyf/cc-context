@@ -42,10 +42,11 @@ func (f *fakeBlobWriter) guestFree(_ context.Context, ptr, n uint32) {
 }
 
 func TestWriteBlobFreesOnWriteFailure(t *testing.T) {
+	t.Parallel()
 	f := &fakeBlobWriter{ptr: 4242, writeOK: false}
 	data := []byte("payload bytes")
 
-	_, err := writeBlob(context.Background(), f, data)
+	_, err := writeBlob(context.Background(), f, data, maxU32Bytes)
 	if err == nil {
 		t.Fatal("writeBlob: want error on write failure, got nil")
 	}
@@ -58,9 +59,10 @@ func TestWriteBlobFreesOnWriteFailure(t *testing.T) {
 }
 
 func TestWriteBlobNoFreeOnSuccess(t *testing.T) {
+	t.Parallel()
 	f := &fakeBlobWriter{ptr: 4242, writeOK: true}
 
-	ptr, err := writeBlob(context.Background(), f, []byte("payload"))
+	ptr, err := writeBlob(context.Background(), f, []byte("payload"), maxU32Bytes)
 	if err != nil {
 		t.Fatalf("writeBlob: %v", err)
 	}
@@ -73,12 +75,9 @@ func TestWriteBlobNoFreeOnSuccess(t *testing.T) {
 }
 
 func TestWriteBlobRejectsOverU32(t *testing.T) {
-	orig := maxU32Bytes
-	defer func() { maxU32Bytes = orig }()
-	maxU32Bytes = 4
-
+	t.Parallel()
 	f := &fakeBlobWriter{ptr: 1, writeOK: true}
-	_, err := writeBlob(context.Background(), f, []byte("over the limit"))
+	_, err := writeBlob(context.Background(), f, []byte("over the limit"), 4)
 	if err == nil || !strings.Contains(err.Error(), "u32 linear-address limit") {
 		t.Fatalf("writeBlob over-u32 err = %v, want u32 limit rejection", err)
 	}
@@ -88,9 +87,7 @@ func TestWriteBlobRejectsOverU32(t *testing.T) {
 }
 
 func TestFrameBatchBounds(t *testing.T) {
-	orig := maxU32Bytes
-	defer func() { maxU32Bytes = orig }()
-
+	t.Parallel()
 	tests := []struct {
 		name    string
 		limit   uint64
@@ -103,8 +100,8 @@ func TestFrameBatchBounds(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			maxU32Bytes = tt.limit
-			buf, err := frameBatch(tt.texts)
+			t.Parallel()
+			buf, err := frameBatch(tt.texts, tt.limit)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("frameBatch(%q) err = %v, want containing %q", tt.texts, err, tt.wantErr)
 			}
@@ -116,7 +113,8 @@ func TestFrameBatchBounds(t *testing.T) {
 }
 
 func TestFrameBatchRoundTrip(t *testing.T) {
-	buf, err := frameBatch([]string{"ab", "c"})
+	t.Parallel()
+	buf, err := frameBatch([]string{"ab", "c"}, maxU32Bytes)
 	if err != nil {
 		t.Fatalf("frameBatch: %v", err)
 	}
@@ -144,6 +142,7 @@ func (c *errObservedContext) Err() error {
 }
 
 func TestEncodePreCanceled(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -158,6 +157,7 @@ func TestEncodePreCanceled(t *testing.T) {
 }
 
 func TestEncodeCanceledWhileWaiting(t *testing.T) {
+	t.Parallel()
 	var eng Engine
 	eng.mu.Lock()
 
@@ -181,9 +181,10 @@ func TestEncodeCanceledWhileWaiting(t *testing.T) {
 	}
 }
 
-// --- E2: Close releases the cache and is idempotent -------------------------
+// --- E2: Close releases the resident instance and is idempotent -------------
 
 func TestCloseIdempotentReleasesHandles(t *testing.T) {
+	t.Parallel()
 	eng, err := New(context.Background(), CodePin)
 	if errors.Is(err, ErrWeightsUnavailable) {
 		t.Skip("model weights unavailable (offline, empty cache) — skipping")
@@ -196,9 +197,9 @@ func TestCloseIdempotentReleasesHandles(t *testing.T) {
 		t.Fatalf("first Close: %v", err)
 	}
 	// Retained handles are nulled so a closed Engine pins no model memory.
-	if eng.runtime != nil || eng.cache != nil || eng.compiled != nil || eng.module != nil {
-		t.Fatalf("Close left handles set: runtime=%v cache=%v compiled=%v module=%v",
-			eng.runtime != nil, eng.cache != nil, eng.compiled != nil, eng.module != nil)
+	if eng.module != nil || eng.alloc != nil || eng.dealloc != nil || eng.loadModel != nil || eng.encode != nil {
+		t.Fatalf("Close left handles set: module=%v alloc=%v dealloc=%v loadModel=%v encode=%v",
+			eng.module != nil, eng.alloc != nil, eng.dealloc != nil, eng.loadModel != nil, eng.encode != nil)
 	}
 	// Idempotent: a second Close is a no-op, not a panic or error.
 	if err := eng.Close(context.Background()); err != nil {
@@ -209,18 +210,15 @@ func TestCloseIdempotentReleasesHandles(t *testing.T) {
 // --- E4: weight download is size-bounded before verification ----------------
 
 func TestDownloadBounded(t *testing.T) {
-	orig := maxWeightFileBytes
-	defer func() { maxWeightFileBytes = orig }()
-	maxWeightFileBytes = 1024
-
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(make([]byte, 4096)) // exceeds the 1024-byte cap
 	}))
 	defer srv.Close()
-	t.Setenv("HF_ENDPOINT", srv.URL)
+	ctx := render.WithEnv(t.Context(), "HF_ENDPOINT="+srv.URL)
 
-	_, err := download(context.Background(), CodePin, WeightFile{Name: "config.json", SHA256: "unused"})
+	_, err := download(ctx, CodePin, WeightFile{Name: "config.json", SHA256: "unused"}, 1024)
 	if err == nil || !strings.Contains(err.Error(), "cap") {
 		t.Fatalf("download over-cap err = %v, want bounded-read rejection", err)
 	}
@@ -232,10 +230,7 @@ func TestDownloadBounded(t *testing.T) {
 }
 
 func TestDownloadTimesOut(t *testing.T) {
-	orig := downloadTimeout
-	defer func() { downloadTimeout = orig }()
-	downloadTimeout = 50 * time.Millisecond
-
+	t.Parallel()
 	block := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		<-block // accept, then stall past the deadline
@@ -243,9 +238,10 @@ func TestDownloadTimesOut(t *testing.T) {
 	// LIFO: unblock the handler before Close waits on the in-flight request.
 	defer srv.Close()
 	defer close(block)
-	t.Setenv("HF_ENDPOINT", srv.URL)
+	ctx, cancel := context.WithTimeout(render.WithEnv(t.Context(), "HF_ENDPOINT="+srv.URL), 50*time.Millisecond)
+	defer cancel()
 
-	_, err := download(context.Background(), CodePin, WeightFile{Name: "config.json", SHA256: "unused"})
+	_, err := download(ctx, CodePin, WeightFile{Name: "config.json", SHA256: "unused"}, maxWeightFileBytes)
 	// A stalled mirror surfaces as the skippable offline sentinel, not a hard
 	// error, and carries the deadline cause for diagnosis.
 	if !errors.Is(err, ErrWeightsUnavailable) {
@@ -257,6 +253,7 @@ func TestDownloadTimesOut(t *testing.T) {
 }
 
 func TestDownloadNormalVerifies(t *testing.T) {
+	t.Parallel()
 	body := []byte(`{"hidden_size":256}`)
 	sum := sha256.Sum256(body)
 	want := hex.EncodeToString(sum[:])
@@ -266,9 +263,9 @@ func TestDownloadNormalVerifies(t *testing.T) {
 		_, _ = w.Write(body)
 	}))
 	defer srv.Close()
-	t.Setenv("HF_ENDPOINT", srv.URL)
+	ctx := render.WithEnv(t.Context(), "HF_ENDPOINT="+srv.URL)
 
-	got, err := download(context.Background(), CodePin, WeightFile{Name: "config.json", SHA256: want})
+	got, err := download(ctx, CodePin, WeightFile{Name: "config.json", SHA256: want}, maxWeightFileBytes)
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}
@@ -284,6 +281,7 @@ func TestDownloadNormalVerifies(t *testing.T) {
 // on the context the download runs under, so it outranks whatever the process
 // exports.
 func TestEndpointResolvesFromContext(t *testing.T) {
+	t.Parallel()
 	ctx := render.WithEnv(t.Context(), "HF_ENDPOINT=https://mirror.invalid")
 	if got := endpoint(ctx); got != "https://mirror.invalid" {
 		t.Fatalf("endpoint = %q, want the context's mirror", got)

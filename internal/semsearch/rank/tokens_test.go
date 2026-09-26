@@ -6,6 +6,7 @@ import (
 )
 
 func TestSplitIdentifier(t *testing.T) {
+	t.Parallel()
 	// Expected values from the semble 0.5.2 oracle (split_identifier).
 	tests := []struct {
 		name  string
@@ -34,6 +35,7 @@ func TestSplitIdentifier(t *testing.T) {
 }
 
 func TestTokenize(t *testing.T) {
+	t.Parallel()
 	// Expected values from the semble 0.5.2 oracle (tokenize).
 	tests := []struct {
 		name string

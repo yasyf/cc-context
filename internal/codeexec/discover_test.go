@@ -8,6 +8,10 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/execstub"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // realList pins the live `claude mcp list` output observed 2026-07: names may
@@ -25,15 +29,18 @@ const realList = "Checking MCP server health…\n" +
 	"linear: https://mcp.linear.app/sse (SSE) - ✔ Connected\n" +
 	"broken: npx broken-mcp - ✗ Failed to connect\n"
 
-func clearFilterEnv(t *testing.T) {
+// filterCtx carries the ALLOW/DENY filters the probe reads. Both are named
+// even when empty: render.Getenv can override the process value but never
+// unset it, so an omitted key would inherit whatever the developer exported.
+func filterCtx(t *testing.T, allow, deny string) context.Context {
 	t.Helper()
-	t.Setenv("CCX_EXEC_MCP_ALLOW", "")
-	t.Setenv("CCX_EXEC_MCP_DENY", "")
+	return render.WithEnv(t.Context(), "CCX_EXEC_MCP_ALLOW="+allow, "CCX_EXEC_MCP_DENY="+deny)
 }
 
 func TestInventoryOfRealOutput(t *testing.T) {
-	clearFilterEnv(t)
-	inv := inventoryOf(t.Context(), realList)
+	t.Parallel()
+	ctx := filterCtx(t, "", "")
+	inv := inventoryOf(ctx, realList)
 
 	want := []ServerSpec{
 		{Name: "auggie", Command: "/opt/homebrew/bin/auggie", Argv: []string{"--mcp", "--mcp-auto-workspace"}, Prefix: "auggie"},
@@ -56,6 +63,7 @@ func TestInventoryOfRealOutput(t *testing.T) {
 }
 
 func TestInventoryFilters(t *testing.T) {
+	t.Parallel()
 	channelList := "notify: /usr/local/bin/slack-channel.sh --serve - ✔ Connected\n"
 	mirrorList := "mirror: /usr/local/bin/ccx mcp - ✔ Connected\n"
 	tests := []struct {
@@ -75,9 +83,8 @@ func TestInventoryFilters(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("CCX_EXEC_MCP_ALLOW", tt.allow)
-			t.Setenv("CCX_EXEC_MCP_DENY", tt.deny)
-			inv := inventoryOf(t.Context(), tt.list)
+			t.Parallel()
+			inv := inventoryOf(filterCtx(t, tt.allow, tt.deny), tt.list)
 			var names []string
 			for _, s := range inv.Servers {
 				names = append(names, s.Name)
@@ -93,40 +100,42 @@ func TestInventoryFilters(t *testing.T) {
 }
 
 func TestInventoryHash(t *testing.T) {
-	clearFilterEnv(t)
-	base := inventoryOf(t.Context(), realList).Hash
+	t.Parallel()
+	ctx := filterCtx(t, "", "")
+	base := inventoryOf(ctx, realList).Hash
 
 	lines := strings.Split(strings.TrimSuffix(realList, "\n"), "\n")
 	for i, j := 0, len(lines)-1; i < j; i, j = i+1, j-1 {
 		lines[i], lines[j] = lines[j], lines[i]
 	}
-	reordered := inventoryOf(t.Context(), strings.Join(lines, "\n"))
+	reordered := inventoryOf(ctx, strings.Join(lines, "\n"))
 	if reordered.Hash != base {
 		t.Errorf("hash order-dependent: %s != %s", reordered.Hash, base)
 	}
 
-	added := inventoryOf(t.Context(), realList+"extra: npx extra-mcp - ✔ Connected\n")
+	added := inventoryOf(ctx, realList+"extra: npx extra-mcp - ✔ Connected\n")
 	if added.Hash == base {
 		t.Error("hash unchanged after adding a server")
 	}
 
-	filteredAdded := inventoryOf(t.Context(), realList+"plugin:cc-review:extra: /x/mcp-channel.sh - ✔ Connected\n")
+	filteredAdded := inventoryOf(ctx, realList+"plugin:cc-review:extra: /x/mcp-channel.sh - ✔ Connected\n")
 	if filteredAdded.Hash != base {
 		t.Error("filtered server churned the hash")
 	}
 
-	relaunched := inventoryOf(t.Context(), strings.Replace(realList, "railway: railway mcp", "railway: railway mcp --beta", 1))
+	relaunched := inventoryOf(ctx, strings.Replace(realList, "railway: railway mcp", "railway: railway mcp --beta", 1))
 	if relaunched.Hash == base {
 		t.Error("hash unchanged after a command change")
 	}
 }
 
 func TestPrefixes(t *testing.T) {
-	clearFilterEnv(t)
+	t.Parallel()
+	ctx := filterCtx(t, "", "")
 	list := "foo-bar: /bin/a serve - ✔ Connected\n" +
 		"foo.bar: /bin/b serve - ✔ Connected\n" +
 		"plugin:x:tools: /bin/tools-mcp serve - ✔ Connected\n"
-	inv := inventoryOf(t.Context(), list)
+	inv := inventoryOf(ctx, list)
 
 	prefixes := map[string]string{}
 	for _, s := range inv.Servers {
@@ -142,8 +151,9 @@ func TestPrefixes(t *testing.T) {
 }
 
 func TestDiscoverClaudeMissing(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	_, err := Discover(context.Background())
+	t.Parallel()
+	ctx := render.WithEnv(t.Context(), "PATH="+t.TempDir())
+	_, err := Discover(ctx)
 	if err == nil {
 		t.Fatal("Discover with no claude = nil, want error")
 	}
@@ -152,25 +162,23 @@ func TestDiscoverClaudeMissing(t *testing.T) {
 	}
 }
 
-// writeFakeClaude puts an executable `claude` on PATH running script, so
-// Discover shells out to it instead of the real binary.
-func writeFakeClaude(t *testing.T, script string) {
+// fakeClaudeCtx returns ctx with a PATH leading to an executable `claude`
+// running script, so Discover shells out to it instead of the real binary.
+func fakeClaudeCtx(ctx context.Context, t *testing.T, script string) context.Context {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake shell script is POSIX-only")
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "claude")
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // fake binary must be owner-executable
-		t.Fatalf("write fake claude: %v", err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	execstub.Write(t, path, script)
+	return render.WithEnv(ctx, "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func TestDiscoverParsesOutput(t *testing.T) {
-	clearFilterEnv(t)
-	writeFakeClaude(t, "#!/bin/sh\necho 'fake: /bin/fake-mcp serve - ✔ Connected'\n")
-	inv, err := Discover(context.Background())
+	t.Parallel()
+	ctx := fakeClaudeCtx(render.WithEnv(filterCtx(t, "", ""), "CCX_EXEC_MCP_TIMEOUT="), t, "#!/bin/sh\necho 'fake: /bin/fake-mcp serve - ✔ Connected'\n")
+	inv, err := Discover(ctx)
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -181,9 +189,9 @@ func TestDiscoverParsesOutput(t *testing.T) {
 }
 
 func TestDiscoverTimeout(t *testing.T) {
-	writeFakeClaude(t, "#!/bin/sh\nsleep 5\n")
-	t.Setenv("CCX_EXEC_MCP_TIMEOUT", "100ms")
-	_, err := Discover(context.Background())
+	t.Parallel()
+	ctx := fakeClaudeCtx(render.WithEnv(t.Context(), "CCX_EXEC_MCP_TIMEOUT=100ms"), t, "#!/bin/sh\nsleep 5\n")
+	_, err := Discover(ctx)
 	if err == nil {
 		t.Fatal("Discover on slow claude = nil, want timeout")
 	}
@@ -193,8 +201,9 @@ func TestDiscoverTimeout(t *testing.T) {
 }
 
 func TestDiscoverProbeFails(t *testing.T) {
-	writeFakeClaude(t, "#!/bin/sh\nexit 1\n")
-	_, err := Discover(context.Background())
+	t.Parallel()
+	ctx := fakeClaudeCtx(render.WithEnv(t.Context(), "CCX_EXEC_MCP_TIMEOUT="), t, "#!/bin/sh\nexit 1\n")
+	_, err := Discover(ctx)
 	if err == nil {
 		t.Fatal("Discover on failing claude = nil, want error")
 	}
@@ -207,9 +216,9 @@ func TestDiscoverProbeFails(t *testing.T) {
 }
 
 func TestDiscoverBogusTimeout(t *testing.T) {
-	writeFakeClaude(t, "#!/bin/sh\necho hi\n")
-	t.Setenv("CCX_EXEC_MCP_TIMEOUT", "not-a-duration")
-	_, err := Discover(context.Background())
+	t.Parallel()
+	ctx := fakeClaudeCtx(render.WithEnv(t.Context(), "CCX_EXEC_MCP_TIMEOUT=not-a-duration"), t, "#!/bin/sh\necho hi\n")
+	_, err := Discover(ctx)
 	if err == nil {
 		t.Fatal("Discover with bogus CCX_EXEC_MCP_TIMEOUT = nil, want parse error")
 	}

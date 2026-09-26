@@ -11,6 +11,7 @@ import (
 )
 
 func TestWalkFiles(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	write := func(rel, body string) {
 		p := filepath.Join(root, filepath.FromSlash(rel))

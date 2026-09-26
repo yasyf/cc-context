@@ -41,6 +41,7 @@ func testRuntime() *Runtime {
 }
 
 func TestRuntimeRun(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	tests := []struct {
 		name   string
@@ -59,6 +60,7 @@ func TestRuntimeRun(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := testRuntime().Run(context.Background(), tt.script, 0)
 			if err != nil {
 				t.Fatalf("Run(%q) error: %v", tt.script, err)
@@ -74,6 +76,7 @@ func TestRuntimeRun(t *testing.T) {
 // "not_found" wire code; empty and unknown codes stay plain errors, and the
 // phase-prefixed message is preserved either way. No sandbox, so no uv gate.
 func TestDoneError(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		frame        *driverFrame
@@ -101,6 +104,7 @@ func TestDoneError(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := doneError(tt.frame)
 			if err.Error() != tt.wantMsg {
 				t.Errorf("doneError() = %q, want %q", err, tt.wantMsg)
@@ -117,6 +121,7 @@ func TestDoneError(t *testing.T) {
 // one that continues succeeds (exit 0), and a script that raises its own error
 // stays plain (exit 1) with no tag leak.
 func TestRunHostErrorCodes(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	rt := NewRuntime(map[string]HostFunc{
 		"missing": func(context.Context, Call) (any, error) {
@@ -152,6 +157,7 @@ func TestRunHostErrorCodes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := rt.Run(context.Background(), tt.script, 0)
 			if !tt.wantErr {
 				if err != nil {
@@ -183,6 +189,7 @@ func TestRunHostErrorCodes(t *testing.T) {
 // invocations, deterministic proof of the parallel dispatch path where timing
 // alone is too noisy.
 func TestConcurrentAwaits(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	const n = 4
 	var active, maxActive, calls int32
@@ -228,6 +235,7 @@ func TestConcurrentAwaits(t *testing.T) {
 // TestRunTypeCheckErrors proves failures surface before execution with the
 // checker's own diagnostic text, so the calling model can self-correct.
 func TestRunTypeCheckErrors(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	tests := []struct {
 		name   string
@@ -240,6 +248,7 @@ func TestRunTypeCheckErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := testRuntime().Run(context.Background(), tt.script, 0)
 			if err == nil {
 				t.Fatalf("Run(%q) = nil error, want typecheck failure", tt.script)
@@ -256,6 +265,7 @@ func TestRunTypeCheckErrors(t *testing.T) {
 // TestRunCompileError proves a syntax error surfaces from compilation with the
 // parser's own text, before typecheck or execution.
 func TestRunCompileError(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	_, err := testRuntime().Run(context.Background(), "def f(:", 0)
 	if err == nil {
@@ -271,6 +281,7 @@ func TestRunCompileError(t *testing.T) {
 // TestHostCallValve proves one oversized host return raises a labeled sandbox
 // error instead of flooding the run.
 func TestHostCallValve(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	rt := NewRuntime(map[string]HostFunc{
 		"flood": func(_ context.Context, _ Call) (any, error) {
@@ -312,6 +323,7 @@ func TestRunUVMissing(t *testing.T) {
 // in flight returns promptly and reaps the child (kill waits, bounded by
 // WaitDelay).
 func TestRunCancelMidHostCall(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -341,6 +353,7 @@ func TestRunCancelMidHostCall(t *testing.T) {
 // TestRunStdoutBeforeValue proves captured stdout is prepended exactly once,
 // never interleaved with the final value, even across an awaited host call.
 func TestRunStdoutBeforeValue(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	script := "import asyncio\n" +
 		"async def main():\n" +
@@ -360,6 +373,7 @@ func TestRunStdoutBeforeValue(t *testing.T) {
 
 // TestRunLargeStdout proves a ~1MiB print survives the frame stream intact.
 func TestRunLargeStdout(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	got, err := testRuntime().Run(context.Background(), `print("x" * 1048576)`, 0)
 	if err != nil {
@@ -373,6 +387,7 @@ func TestRunLargeStdout(t *testing.T) {
 // TestRunTagShapedValues proves tag-shaped in-band data survives both wire
 // directions: a literal {"$bytes": …} dict stays a dict, never bytes.
 func TestRunTagShapedValues(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	rt := NewRuntime(map[string]HostFunc{
 		"tagged": func(context.Context, Call) (any, error) {
@@ -388,6 +403,7 @@ func TestRunTagShapedValues(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := rt.Run(context.Background(), tt.script, 0)
 			if err != nil {
 				t.Fatalf("Run(%q) error: %v", tt.script, err)
@@ -402,6 +418,7 @@ func TestRunTagShapedValues(t *testing.T) {
 // TestRunDeepValueErrors proves a too-deep final value surfaces as a clean
 // run-phase error (the driver's encode failure path), not a driver crash.
 func TestRunDeepValueErrors(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	script := "x = 1\nfor _ in range(70):\n    x = [x]\nx"
 	_, err := testRuntime().Run(context.Background(), script, 0)
@@ -418,6 +435,7 @@ func TestRunDeepValueErrors(t *testing.T) {
 // TestRunStdoutTruncated proves runaway print noise is cut at the driver with
 // the marker instead of shipping an unbounded done frame.
 func TestRunStdoutTruncated(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	got, err := testRuntime().Run(context.Background(), `print("x" * 9437184)`, 0)
 	if err != nil {
@@ -435,6 +453,7 @@ func TestRunStdoutTruncated(t *testing.T) {
 // TestRunOversizedValue proves an over-cap final value errors as a run-phase
 // failure instead of a truncated or giant frame.
 func TestRunOversizedValue(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	_, err := testRuntime().Run(context.Background(), `"x" * 34603008`, 0)
 	if err == nil {

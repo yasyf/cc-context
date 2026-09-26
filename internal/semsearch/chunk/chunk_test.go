@@ -19,6 +19,7 @@ type fakeParser struct {
 func (f fakeParser) parse(context.Context, string, []byte) (node, bool) { return f.root, f.ok }
 
 func TestChunkSourceASTPath(t *testing.T) {
+	t.Parallel()
 	// A root over minChunkSize with three ~30-byte siblings packs into two
 	// chunks under the 750 budget only when tight; here desired is large so it
 	// exercises the boundary→Chunk materialization (lines, content).
@@ -42,6 +43,7 @@ func TestChunkSourceASTPath(t *testing.T) {
 }
 
 func TestChunkSourceLineFallback(t *testing.T) {
+	t.Parallel()
 	// ok=false (no grammar) falls back to line chunking regardless of language.
 	src := "a = 1\nb = 2\nc = 3\n"
 	got := chunkSource(t.Context(), src, "x.py", "python", fakeParser{ok: false})
@@ -79,6 +81,7 @@ func TestChunkOversizedSkipsDecode(t *testing.T) {
 }
 
 func TestChunkGates(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		path      string
@@ -107,6 +110,7 @@ func TestChunkGates(t *testing.T) {
 }
 
 func TestChunkLanguageDetectionFallback(t *testing.T) {
+	t.Parallel()
 	first := strings.Repeat("a", 400) + "\n"
 	second := strings.Repeat("b", 400) + "\n"
 	content := first + second + "tail\n"

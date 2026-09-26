@@ -7,6 +7,7 @@ import (
 )
 
 func TestFilePathPenalty(t *testing.T) {
+	t.Parallel()
 	// Expected values from the semble 0.5.2 oracle (_file_path_penalty);
 	// penalties compound multiplicatively across families.
 	tests := []struct {
@@ -35,6 +36,7 @@ func TestFilePathPenalty(t *testing.T) {
 }
 
 func TestRerankTopkSaturation(t *testing.T) {
+	t.Parallel()
 	// Expected values from the semble 0.5.2 oracle (rerank_topk, penalise=False):
 	// first chunk per file free, then ×0.5^excess, final re-sort by effective score.
 	chunks := []semsearch.Chunk{
@@ -52,6 +54,7 @@ func TestRerankTopkSaturation(t *testing.T) {
 }
 
 func TestRerankTopkPenalties(t *testing.T) {
+	t.Parallel()
 	// Expected values from the semble 0.5.2 oracle (rerank_topk, penalise=True):
 	// the test-file penalty applies before the ranking sort, sinking test_t.py.
 	chunks := []semsearch.Chunk{

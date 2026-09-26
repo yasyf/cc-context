@@ -8,6 +8,7 @@ import (
 )
 
 func TestCosine(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		a, b []float32
@@ -28,6 +29,7 @@ func TestCosine(t *testing.T) {
 }
 
 func TestRRFScores(t *testing.T) {
+	t.Parallel()
 	chunks := []semsearch.Chunk{
 		mkChunk("a.py", 1, ""), // 0
 		mkChunk("b.py", 2, ""), // 1
@@ -44,6 +46,7 @@ func TestRRFScores(t *testing.T) {
 }
 
 func TestRRFScoresTieBrokenByStartLine(t *testing.T) {
+	t.Parallel()
 	chunks := []semsearch.Chunk{
 		mkChunk("a.py", 2, ""), // 0
 		mkChunk("b.py", 1, ""), // 1
@@ -59,6 +62,7 @@ func TestRRFScoresTieBrokenByStartLine(t *testing.T) {
 }
 
 func TestFusionAlphaBlend(t *testing.T) {
+	t.Parallel()
 	chunks := []semsearch.Chunk{
 		mkChunk("a.py", 1, ""), // 0 — semantic only
 		mkChunk("b.py", 2, ""), // 1 — both legs

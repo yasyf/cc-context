@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/execstub"
 )
 
 // TestProcessGroupIsProbeOnly pins the blast radius of the probe's process group.
@@ -90,9 +92,7 @@ func TestRunCLIProbeDirKillsDescendants(t *testing.T) {
 		"printf '%s\\n' \"$!\" > \"" + pidPath + "\"\n" +
 		"trap '' TERM\n" +
 		"wait\n"
-	if err := os.WriteFile(script, []byte(body), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
-		t.Fatalf("write %s: %v", script, err)
-	}
+	execstub.Write(t, script, body)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

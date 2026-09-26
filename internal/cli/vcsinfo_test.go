@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/execstub"
+
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -175,9 +177,7 @@ func gtAuthShim(t *testing.T, f *vcstest.Fixture) {
 
 func writeExecutable(t *testing.T, path, script string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // a PATH entry must be owner-executable
-		t.Fatalf("write %s: %v", path, err)
-	}
+	execstub.Write(t, path, script)
 }
 
 func shQuote(s string) string {

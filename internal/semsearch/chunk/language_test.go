@@ -3,6 +3,7 @@ package chunk
 import "testing"
 
 func TestDetectLanguage(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		path     string
 		wantLang string
@@ -31,6 +32,7 @@ func TestDetectLanguage(t *testing.T) {
 }
 
 func TestClassify(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		lang string
 		want ContentType
@@ -53,6 +55,7 @@ func TestClassify(t *testing.T) {
 }
 
 func TestIsSupportedLanguage(t *testing.T) {
+	t.Parallel()
 	// Every value in the extension map is supported (semble's ALL_LANGUAGES),
 	// even those without a bundled grammar; unmapped names are not.
 	for _, lang := range []string{"python", "markdown", "toml", "json", "haskell"} {

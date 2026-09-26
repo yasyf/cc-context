@@ -1,11 +1,12 @@
 package astgrep
 
 import (
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/execstub"
 
 	"github.com/yasyf/cc-context/internal/render"
 )
@@ -17,13 +18,12 @@ func writeVersionFake(t *testing.T, versionOut string) string {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ast-grep")
 	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '" + versionOut + "'; exit 0; fi\nexit 0\n"
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // fake engine must be owner-executable
-		t.Fatalf("write fake ast-grep: %v", err)
-	}
+	execstub.Write(t, path, script)
 	return path
 }
 
 func TestResolveBin(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake ast-grep scripts are POSIX-only")
 	}
@@ -44,6 +44,7 @@ func TestResolveBin(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			var configured, made string
 			pathDir := t.TempDir()
 			switch {
@@ -77,6 +78,7 @@ func TestResolveBin(t *testing.T) {
 }
 
 func TestResolveBinReprobesAfterFailure(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake ast-grep scripts are POSIX-only")
 	}
@@ -88,9 +90,7 @@ func TestResolveBinReprobesAfterFailure(t *testing.T) {
 	}
 
 	upgraded := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'ast-grep 0.44.1'; exit 0; fi\nexit 0\n"
-	if err := os.WriteFile(path, []byte(upgraded), 0o700); err != nil { //nolint:gosec // fake engine must be owner-executable
-		t.Fatalf("upgrade fake ast-grep in place: %v", err)
-	}
+	execstub.Write(t, path, upgraded)
 	got, err := resolveBin(ctx, "")
 	if err != nil {
 		t.Fatalf("resolve after in-place upgrade: %v", err)

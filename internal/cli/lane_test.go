@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/execstub"
+
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -528,9 +530,7 @@ func TestGTReachabilityLocksProbe(t *testing.T) {
 	// probes; PATH is the fake bin dir alone, so sleep needs its absolute path.
 	fake := "#!/bin/sh\nprintf 'probe\\n' >> \"$GT_PROBE_LOG\"\n/bin/sleep 0.3\n" +
 		"printf '%s\\n' '" + gtProbeReady + " github.com/yasyf/cc-context'\n"
-	if err := os.WriteFile(filepath.Join(bin, "gt"), []byte(fake), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
-		t.Fatalf("write fake gt: %v", err)
-	}
+	execstub.Write(t, filepath.Join(bin, "gt"), fake)
 	probes := filepath.Join(t.TempDir(), "probes")
 	t.Setenv("PATH", bin)
 	t.Setenv("GT_PROBE_LOG", probes)

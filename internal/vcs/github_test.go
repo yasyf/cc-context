@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/execstub"
+
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -162,9 +164,7 @@ func ghReplay(t *testing.T, f *vcstest.Fixture, runs map[string][]string) (argvL
 
 	binDir := filepath.Join(dir, "bin")
 	mustMkdir(t, binDir)
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o700); err != nil { //nolint:gosec // the replay must be owner-executable to serve as a PATH entry
-		t.Fatalf("write gh replay: %v", err)
-	}
+	execstub.Write(t, filepath.Join(binDir, "gh"), script)
 	f.PrependPATH(binDir)
 	t.Cleanup(func() { ghAssertServed(t, argvLog, runs) })
 	return argvLog
@@ -443,6 +443,7 @@ func TestLookupRepoUnresolvableName(t *testing.T) {
 }
 
 func TestLookupRepoWithoutGH(t *testing.T) {
+	t.Parallel()
 	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir(), "PATH="+t.TempDir())
 
 	_, err := LookupRepo(ctx, render.Dir(t.TempDir()), false)

@@ -97,6 +97,7 @@ type fusedGoldenSearches struct {
 }
 
 func TestFusedSearchGoldenParity(t *testing.T) {
+	t.Parallel()
 	chunkGolden := readFusedGolden[fusedGoldenChunks](t, "goldens/chunks.json")
 	chunks := chunkFusedCorpus(t, chunkGolden.Files)
 	assertFusedChunkParity(t, chunks, chunkGolden.Chunks)

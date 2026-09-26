@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/execstub"
 )
 
 // systemPATH is the brew-free base PATH every shimmed process resolves
@@ -178,9 +180,7 @@ func installShim(t *testing.T) (base, binDir, logPath string) {
 	for _, tool := range tools {
 		script := "#!/bin/sh\n" + RecordArgv(tool.name) +
 			"CCX_SHIM_DEPTH=$((d+1)) exec " + shellQuote(tool.path) + ` "$@"` + "\n"
-		if err := os.WriteFile(filepath.Join(binDir, tool.name), []byte(script), 0o700); err != nil { //nolint:gosec // the shim must be owner-executable to serve as a PATH entry
-			t.Fatalf("write shim %s: %v", tool.name, err)
-		}
+		execstub.Write(t, filepath.Join(binDir, tool.name), script)
 	}
 	linkInterpreters(t, binDir, tools)
 	return base, binDir, logPath

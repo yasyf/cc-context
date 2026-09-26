@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/execstub"
+
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -29,6 +31,7 @@ printf '%s\t%s\n' "$FAKE_PYPATH" "$FAKE_PYVERSION"
 `
 
 func TestLocate(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake shell scripts are POSIX-only")
 	}
@@ -183,6 +186,7 @@ func TestLocate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ws := t.TempDir()
 			for _, d := range tt.repos {
 				mustMkdir(t, filepath.Join(ws, d))
@@ -221,6 +225,7 @@ func TestLocate(t *testing.T) {
 }
 
 func TestLocateMissingWorkspaceIsNoError(t *testing.T) {
+	t.Parallel()
 	ctx := render.WithEnv(t.Context(), "PATH="+t.TempDir())
 	got, err := Locate(ctx, "anything", filepath.Join(t.TempDir(), "does-not-exist"))
 	if err != nil {
@@ -236,6 +241,7 @@ func TestLocateMissingWorkspaceIsNoError(t *testing.T) {
 // carries the kind, while a same-kind same-path duplicate (a go list hit that also
 // appears in the module cache) still collapses.
 func TestDedupePreservesKindAtSharedPath(t *testing.T) {
+	t.Parallel()
 	shared := "/Users/dev/Code/cc-transcript"
 	in := []Result{
 		{Kind: KindRepo, Path: shared},
@@ -278,6 +284,7 @@ func TestResolvePythonPrefersVenv(t *testing.T) {
 }
 
 func TestPythonInterpreterReadsVirtualEnvOffTheContext(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake shell scripts are POSIX-only")
 	}
@@ -293,6 +300,7 @@ func TestPythonInterpreterReadsVirtualEnvOffTheContext(t *testing.T) {
 }
 
 func TestEncodeModulePath(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		in, want string
 	}{
@@ -310,6 +318,8 @@ func TestEncodeModulePath(t *testing.T) {
 }
 
 func TestCompareVersions(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		a, b string
@@ -361,7 +371,5 @@ func mustMkdir(t *testing.T, path string) {
 func writeScript(t *testing.T, dir, name, body string) {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(body), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
-		t.Fatalf("write fake %q: %v", name, err)
-	}
+	execstub.Write(t, path, body)
 }

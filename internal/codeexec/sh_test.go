@@ -7,6 +7,7 @@ import (
 )
 
 func TestSh(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	tests := []struct {
 		name   string
@@ -18,6 +19,7 @@ func TestSh(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			rt := NewRuntime(map[string]HostFunc{"sh": Sh()})
 			got, err := rt.Run(context.Background(), tt.script, 0)
 			if err != nil {
@@ -31,6 +33,7 @@ func TestSh(t *testing.T) {
 }
 
 func TestShPolicy(t *testing.T) {
+	t.Parallel()
 	for _, cmd := range []string{"rm -rf /", "rm -r /", "dd if=/dev/zero of=x", "mkfs.ext4 /dev/sda"} {
 		if shPolicy(cmd) == nil {
 			t.Errorf("shPolicy(%q) = nil, want blocked", cmd)
@@ -44,6 +47,7 @@ func TestShPolicy(t *testing.T) {
 }
 
 func TestShBlockedRaises(t *testing.T) {
+	t.Parallel()
 	requireUV(t)
 	rt := NewRuntime(map[string]HostFunc{"sh": Sh()})
 	_, err := rt.Run(context.Background(), "import asyncio\nasyncio.run(sh(\"rm -rf /\"))", 0)

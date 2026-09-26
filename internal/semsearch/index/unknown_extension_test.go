@@ -1,18 +1,19 @@
 package index
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/semsearch"
 )
 
 func TestLoadNegatedUnknownExtension(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
 	repo := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("*\n!special.kjs\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -25,7 +26,7 @@ func TestLoadNegatedUnknownExtension(t *testing.T) {
 	}
 
 	emb := &countingEmbedder{}
-	idx, err := Load(context.Background(), emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x")
+	idx, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -49,7 +50,8 @@ func TestLoadNegatedUnknownExtension(t *testing.T) {
 // invalid subsequence — instead of Go's strings.ToValidUTF8, which collapses a
 // contiguous invalid run into a single U+FFFD.
 func TestIndexDecodesMaximalSubsequences(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
 	repo := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("*\n!bad.kjs\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -60,7 +62,7 @@ func TestIndexDecodesMaximalSubsequences(t *testing.T) {
 	}
 
 	emb := &countingEmbedder{}
-	idx, err := Load(context.Background(), emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x")
+	idx, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

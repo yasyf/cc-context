@@ -28,15 +28,14 @@ var ErrWeightsUnavailable = errors.New("model weights unavailable (no cache, no 
 // exhaust memory ahead of the integrity gate. The pinned model is ~30 MB total
 // (config.json and tokenizer.json are tiny; model.safetensors is the bulk), so
 // this 256 MiB ceiling is generous headroom while still capping the read.
-// verifyChecksum stays the integrity gate; this is only a DoS guard. A var, not
-// a const, so the download test can lower it.
-var maxWeightFileBytes int64 = 256 << 20
+// verifyChecksum stays the integrity gate; this is only a DoS guard.
+const maxWeightFileBytes int64 = 256 << 20
 
 // downloadTimeout bounds one weight file's fetch so a stalled mirror cannot
 // wedge engine construction; generous for the ~30 MB model — mirrors the
-// deleted uv driver's first-run bound. A var, not a const, so the download test
-// can shorten it.
-var downloadTimeout = 5 * time.Minute
+// deleted uv driver's first-run bound. A caller wanting a tighter bound puts its
+// own deadline on ctx; this one only ever shortens the fetch, never extends it.
+const downloadTimeout = 5 * time.Minute
 
 // modelBlobs is the three-file model2vec payload the WASM engine loads.
 type modelBlobs struct {
@@ -58,7 +57,7 @@ func resolveWeights(ctx context.Context, pin ModelPin) (*modelBlobs, error) {
 	blobs := &modelBlobs{}
 	err = cache.WithLock(ctx, dir, "download", func() error {
 		for i := range pin.Files {
-			data, err := ensureFile(ctx, dir, pin, pin.Files[i])
+			data, err := ensureFile(ctx, dir, pin, pin.Files[i], maxWeightFileBytes)
 			if err != nil {
 				return err
 			}
@@ -88,12 +87,12 @@ func sanitizeRepo(repo string) string {
 
 // ensureFile returns the file's verified bytes, trusting a cache hit only when
 // its checksum matches and otherwise downloading a fresh copy from the pin.
-func ensureFile(ctx context.Context, dir string, pin ModelPin, wf WeightFile) ([]byte, error) {
+func ensureFile(ctx context.Context, dir string, pin ModelPin, wf WeightFile, maxBytes int64) ([]byte, error) {
 	path := filepath.Join(dir, wf.Name)
 	if data, err := os.ReadFile(path); err == nil && verifyChecksum(data, wf.SHA256) == nil { //nolint:gosec // path is rooted at the cache dir
 		return data, nil
 	}
-	data, err := download(ctx, pin, wf)
+	data, err := download(ctx, pin, wf, maxBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -106,10 +105,11 @@ func ensureFile(ctx context.Context, dir string, pin ModelPin, wf WeightFile) ([
 	return data, nil
 }
 
-// download fetches one file from the pin's revision. A transport failure (no
-// network) becomes ErrWeightsUnavailable so callers can skip offline; a non-2xx
-// status is a hard error, since it means the pin itself is wrong.
-func download(ctx context.Context, pin ModelPin, wf WeightFile) ([]byte, error) {
+// download fetches one file from the pin's revision, reading at most maxBytes. A
+// transport failure (no network) becomes ErrWeightsUnavailable so callers can
+// skip offline; a non-2xx status is a hard error, since it means the pin itself
+// is wrong.
+func download(ctx context.Context, pin ModelPin, wf WeightFile, maxBytes int64) ([]byte, error) {
 	url := fmt.Sprintf("%s/%s/resolve/%s/%s", endpoint(ctx), pin.Repo, pin.Revision, wf.Name)
 	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
 	defer cancel()
@@ -125,12 +125,12 @@ func download(ctx context.Context, pin ModelPin, wf WeightFile) ([]byte, error) 
 	if resp.StatusCode/100 != 2 {
 		return nil, fmt.Errorf("fetch %s: unexpected status %s", url, resp.Status)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxWeightFileBytes+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("%w: read %s: %w", ErrWeightsUnavailable, wf.Name, err)
 	}
-	if int64(len(data)) > maxWeightFileBytes {
-		return nil, fmt.Errorf("fetch %s: response exceeds the %d-byte cap (broken or hostile mirror)", url, maxWeightFileBytes)
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("fetch %s: response exceeds the %d-byte cap (broken or hostile mirror)", url, maxBytes)
 	}
 	return data, nil
 }

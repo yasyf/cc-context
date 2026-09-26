@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yasyf/cc-context/internal/lookpath"
 	"github.com/yasyf/cc-context/internal/web"
 )
 
@@ -41,9 +40,7 @@ func isolateWeb(t *testing.T) {
 	t.Setenv("EXA_API_KEY", "")
 	t.Setenv("FIRECRAWL_API_KEY", "")
 	t.Setenv("BROWSERBASE_API_KEY", "")
-	prev := lookpath.Find
-	lookpath.Find = func(string) string { return "" }
-	t.Cleanup(func() { lookpath.Find = prev })
+	t.Setenv("PATH", "")
 	t.Cleanup(web.SetEmbedderProvider(func(context.Context) (web.Embedder, error) {
 		return topicEmbedder{}, nil
 	}))

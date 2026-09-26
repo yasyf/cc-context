@@ -244,23 +244,23 @@ func loadCached(ctx context.Context, emb index.Embedder, a backend.Args) (*index
 	if err != nil {
 		return nil, nil, err
 	}
-	evictOldest(residentCap - 1)
+	evictOldest(residentIndex, residentCap-1)
 	residentIndex[key] = &residentEntry{idx: idx, lastUsed: time.Now()}
 	return idx, content, nil
 }
 
-// evictOldest drops least-recently-used entries until at most n remain. The
-// caller holds residentMu.
-func evictOldest(n int) {
-	for len(residentIndex) > n {
+// evictOldest drops least-recently-used entries from resident until at most n
+// remain. The caller holds residentMu.
+func evictOldest(resident map[indexKey]*residentEntry, n int) {
+	for len(resident) > n {
 		var oldest indexKey
 		first := true
-		for k, e := range residentIndex {
-			if first || e.lastUsed.Before(residentIndex[oldest].lastUsed) {
+		for k, e := range resident {
+			if first || e.lastUsed.Before(resident[oldest].lastUsed) {
 				oldest, first = k, false
 			}
 		}
-		delete(residentIndex, oldest)
+		delete(resident, oldest)
 	}
 }
 
@@ -270,18 +270,25 @@ func evictOldest(n int) {
 // show up as RSS relief without the explicit call.
 func SweepIdle() {
 	residentMu.Lock()
-	cutoff := time.Now().Add(-residentIdleTTL)
-	dropped := 0
-	for k, e := range residentIndex {
-		if e.lastUsed.Before(cutoff) {
-			delete(residentIndex, k)
-			dropped++
-		}
-	}
+	dropped := sweepIdle(residentIndex, time.Now())
 	residentMu.Unlock()
 	if dropped > 0 {
 		debug.FreeOSMemory()
 	}
+}
+
+// sweepIdle deletes every entry of resident last used more than residentIdleTTL
+// before now, returning how many it dropped. The caller holds residentMu.
+func sweepIdle(resident map[indexKey]*residentEntry, now time.Time) int {
+	cutoff := now.Add(-residentIdleTTL)
+	dropped := 0
+	for k, e := range resident {
+		if e.lastUsed.Before(cutoff) {
+			delete(resident, k)
+			dropped++
+		}
+	}
+	return dropped
 }
 
 // StartIdleSweeper runs SweepIdle on a ticker until ctx is cancelled. The MCP

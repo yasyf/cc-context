@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/backend"
-	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 // TestLiveJinaRenderPass confirms the jina render pass returns markdown from a
@@ -52,7 +52,7 @@ func TestLiveJinaRenderPass(t *testing.T) {
 // live page, skipping when the binary is absent.
 func TestLiveAgentBrowserRenderedRead(t *testing.T) {
 	requireLiveOptIn(t)
-	if lookpath.Find(agentBrowserBin) == "" {
+	if render.LookPath(t.Context(), agentBrowserBin) == "" {
 		t.Skipf("%s not on PATH", agentBrowserBin)
 	}
 	res, err := newTiers().agentBrowser(t.Context(), "https://example.com", false)
@@ -360,16 +360,14 @@ func TestLiveJinaChallengeAt200(t *testing.T) {
 
 // TestLiveCascadeEscalatesToBrowserbase proves the whole point of this work: a
 // challenge on nopecha does not short-circuit the cascade — every tier is tried,
-// then browserbase runs as the stealth backstop. The key order matters: read the
-// real browserbase key first, zero every key, restore only browserbase, so keyless
-// jina 401s and plain HTTP hits the 403 that flips the stealth flag. With EXA and
-// FIRECRAWL zeroed too, the attempt order is exactly jina → http → browserbase.
+// then browserbase runs as the stealth backstop. The context zeroes every key and
+// restores only the real browserbase one, so keyless jina 401s and plain HTTP hits
+// the 403 that flips the stealth flag. With EXA and FIRECRAWL zeroed too, the
+// attempt order is exactly jina → http → browserbase.
 func TestLiveCascadeEscalatesToBrowserbase(t *testing.T) {
 	key := requirePaidLive(t, envBrowserbaseKey)
-	isolateKeys(t)
-	t.Setenv(envBrowserbaseKey, key)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(webCtx(t, envBrowserbaseKey+"="+key), 3*time.Minute)
 	defer cancel()
 
 	var mu sync.Mutex
@@ -500,28 +498,28 @@ func TestLiveBenignPagesNotChallenged(t *testing.T) {
 	}
 }
 
-// TestLiveWebRunOutlineReadSearch is the first live exercise of web.Run itself —
-// every other live test drives a tier method, and every unit test stubs fetchPage.
-// It fetches go.dev's effective_go once, then outlines, reads, and searches it,
-// asserting the 24h page cache short-circuits every refetch: fetchPage runs exactly
-// once across all three ops.
+// TestLiveWebRunOutlineReadSearch is the first live exercise of a whole web op —
+// every other live test drives a tier method, and every unit test fakes the
+// runner's fetch. It fetches go.dev's effective_go once, then outlines, reads,
+// and searches it, asserting the 24h page cache short-circuits every refetch:
+// the cascade runs exactly once across all three ops.
 func TestLiveWebRunOutlineReadSearch(t *testing.T) {
 	requireLiveOptIn(t)
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 
 	var fetches atomic.Int32
-	prev := fetchPage
-	fetchPage = func(ctx context.Context, u string, p *Page) (FetchResult, error) {
+	r := newRunner()
+	cascade := r.fetch
+	r.fetch = func(ctx context.Context, u string, p *Page) (FetchResult, error) {
 		fetches.Add(1)
-		return prev(ctx, u, p)
+		return cascade(ctx, u, p)
 	}
-	t.Cleanup(func() { fetchPage = prev })
 
-	ctx, cancel := context.WithTimeout(t.Context(), cascadeDeadline+30*time.Second)
+	cacheCtx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
+	ctx, cancel := context.WithTimeout(cacheCtx, cascadeDeadline+30*time.Second)
 	defer cancel()
 	const target = "https://go.dev/doc/effective_go"
 
-	outline, err := Run(ctx, backend.OpWebOutline, backend.Args{URL: target})
+	outline, err := r.run(ctx, backend.OpWebOutline, backend.Args{URL: target})
 	if err != nil {
 		t.Skipf("outline fetch failed (likely transient network/upstream): %v", err)
 	}
@@ -530,14 +528,14 @@ func TestLiveWebRunOutlineReadSearch(t *testing.T) {
 	}
 
 	sec := firstNonPreambleSection(t, outline)
-	readSec, err := Run(ctx, backend.OpWebRead, backend.Args{URL: target, Section: sec})
+	readSec, err := r.run(ctx, backend.OpWebRead, backend.Args{URL: target, Section: sec})
 	if err != nil {
 		t.Fatalf("read §%s: %v", sec, err)
 	}
 	if strings.TrimSpace(readSec) == "" {
 		t.Fatalf("read of §%s is empty", sec)
 	}
-	readFull, err := Run(ctx, backend.OpWebRead, backend.Args{URL: target, Full: true})
+	readFull, err := r.run(ctx, backend.OpWebRead, backend.Args{URL: target, Full: true})
 	if err != nil {
 		t.Fatalf("read --full: %v", err)
 	}
@@ -545,7 +543,7 @@ func TestLiveWebRunOutlineReadSearch(t *testing.T) {
 		t.Errorf("read of §%s is %d bytes, not strictly shorter than --full's %d", sec, len(readSec), len(readFull))
 	}
 
-	search, err := Run(ctx, backend.OpWebSearch, backend.Args{URL: target, Query: "how do I handle errors in Go", K: 5})
+	search, err := r.run(ctx, backend.OpWebSearch, backend.Args{URL: target, Query: "how do I handle errors in Go", K: 5})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -561,7 +559,7 @@ func TestLiveWebRunOutlineReadSearch(t *testing.T) {
 	}
 
 	if got := fetches.Load(); got != 1 {
-		t.Errorf("fetchPage called %d times across outline+read+search, want 1 (the 24h page cache must short-circuit refetch)", got)
+		t.Errorf("the cascade ran %d times across outline+read+search, want 1 (the 24h page cache must short-circuit refetch)", got)
 	}
 }
 

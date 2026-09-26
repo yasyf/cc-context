@@ -10,6 +10,7 @@ import (
 )
 
 func TestRetryDelay(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name   string
@@ -69,6 +70,7 @@ func TestRetryDelay(t *testing.T) {
 }
 
 func TestSleepHonorsCancellation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := sleep(ctx, time.Minute); !errors.Is(err, context.Canceled) {

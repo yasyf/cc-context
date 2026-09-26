@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/execstub"
 )
 
 // fakeGoScript answers `go env GOMODCACHE` from $FAKE_GOMODCACHE and `go list`
@@ -124,7 +126,5 @@ func runLocate(t *testing.T, name, workspace string) string {
 func writeFakeScript(t *testing.T, dir, name, body string) {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(body), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
-		t.Fatalf("write fake %q: %v", name, err)
-	}
+	execstub.Write(t, path, body)
 }

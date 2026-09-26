@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/execstub"
+
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
@@ -3912,9 +3914,7 @@ func TestWatchCIRunBounded(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			binDir := t.TempDir()
 			gh := filepath.Join(binDir, "gh")
-			if err := os.WriteFile(gh, []byte("#!/bin/sh\nsleep 30\n"), 0o700); err != nil { //nolint:gosec // fake executable must be owner-executable
-				t.Fatalf("write fake gh: %v", err)
-			}
+			execstub.Write(t, gh, "#!/bin/sh\nsleep 30\n")
 			t.Setenv("PATH", binDir)
 
 			oldStream := shipStreamCI

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/execstub"
+
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/hunk"
 	"github.com/yasyf/cc-context/internal/render"
@@ -156,9 +158,7 @@ func jjRevDescription(t *testing.T, env []string, dir, rev string) string {
 func writeFailingPreCommitHook(t *testing.T, dir string) {
 	t.Helper()
 	path := filepath.Join(dir, ".git", "hooks", "pre-commit")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\necho 'pre-commit refuses' >&2\nexit 1\n"), 0o700); err != nil { //nolint:gosec // a git hook must be owner-executable to run
-		t.Fatalf("write pre-commit hook: %v", err)
-	}
+	execstub.Write(t, path, "#!/bin/sh\necho 'pre-commit refuses' >&2\nexit 1\n")
 }
 
 func TestShipJJHunkSelection(t *testing.T) {

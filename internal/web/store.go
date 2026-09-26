@@ -26,31 +26,39 @@ import (
 // older layout cannot be trusted to decode into the current Page.
 const schemaVersion = 1
 
-// ttl bounds how long a persisted page is served before a refetch; Fresh
+// ttl bounds how long a persisted page is served before a refetch; fresh
 // compares it against Page.FetchedAt.
 const ttl = 24 * time.Hour
 
 // pageExt is the suffix of a persisted page file: gzipped JSON.
 const pageExt = ".json.gz"
 
-// maxCacheBytes caps the total size of the web cache directory. After each save
-// the oldest-mtime pages are evicted until the directory fits. It is a var so
-// tests can shrink the cap.
-var maxCacheBytes int64 = 1 << 30 // 1 GiB
+// defaultCapBytes caps the total size of the web cache directory. After each
+// save the oldest-mtime pages are evicted until the directory fits.
+const defaultCapBytes int64 = 1 << 30
 
-// timeNow is the clock Fresh and the LRU touch read; tests replace it.
-var timeNow = time.Now
+// store is the page cache on disk. It carries the clock freshness and the LRU
+// touch read, and the byte cap eviction enforces after every save; newStore
+// wires the real clock and the production cap, and a test narrows either.
+type store struct {
+	now      func() time.Time
+	capBytes int64
+}
 
-// Save persists page to the web cache as one gzipped JSON file named
+func newStore() *store {
+	return &store{now: time.Now, capBytes: defaultCapBytes}
+}
+
+// save persists page to the web cache as one gzipped JSON file named
 // <CacheKey(page.URL)>.json.gz under the web cache dir. It stamps the current
 // schema version, writes atomically (a sibling temp file renamed over the
 // target), then evicts oldest-mtime pages until the directory is under
-// maxCacheBytes.
+// s.capBytes.
 //
 // There is no cross-process lock: embedding is idempotent and every persisted
 // state is self-consistent, so concurrent writers race to a last-writer-wins
 // outcome between equally valid pages.
-func Save(ctx context.Context, page *Page) error {
+func (s *store) save(ctx context.Context, page *Page) error {
 	page.Version = schemaVersion
 
 	dir, err := cache.Dir(ctx, "web")
@@ -77,15 +85,15 @@ func Save(ctx context.Context, page *Page) error {
 		return fmt.Errorf("store page %q: %w", page.URL, err)
 	}
 
-	if err := evict(dir, maxCacheBytes); err != nil {
+	if err := evict(dir, s.capBytes); err != nil {
 		return fmt.Errorf("evict web cache: %w", err)
 	}
 	return nil
 }
 
-// Load reads the persisted page for normURL, or reports a miss. A miss is
+// load reads the persisted page for normURL, or reports a miss. A miss is
 // (nil, nil): either no file exists, or the stored entry was unusable and has
-// been discarded. Load returns an error only for an unexpected I/O failure.
+// been discarded. load returns an error only for an unexpected I/O failure.
 //
 // An entry is discarded — deleted, logged at Warn, and reported as a miss —
 // when it fails to decode, carries a different schema version, holds vectors
@@ -93,7 +101,7 @@ func Save(ctx context.Context, page *Page) error {
 // by a different model. Discarding a corrupt entry is the fail-fast move: a bad
 // cache line is never served. embedModel is the caller's current embedding
 // model; passing "" disables the model check (embeddings unavailable this run).
-func Load(ctx context.Context, normURL, embedModel string) (*Page, error) {
+func (s *store) load(ctx context.Context, normURL, embedModel string) (*Page, error) {
 	dir, err := cache.Dir(ctx, "web")
 	if err != nil {
 		return nil, fmt.Errorf("resolve web cache dir: %w", err)
@@ -135,16 +143,16 @@ func Load(ctx context.Context, normURL, embedModel string) (*Page, error) {
 
 	// LRU touch: a load counts as a use, so bump mtime to defer eviction. The
 	// bump is a best-effort hint; a failure never fails the load.
-	t := timeNow()
+	t := s.now()
 	_ = os.Chtimes(path, t, t)
 	return page, nil
 }
 
-// Fresh reports whether page is within the cache TTL (24h) of its FetchedAt
+// fresh reports whether page is within the cache TTL (24h) of its FetchedAt
 // time, i.e. servable without a refetch. A page fetched exactly ttl ago or
 // earlier is stale.
-func Fresh(page *Page) bool {
-	return timeNow().Sub(page.FetchedAt) < ttl
+func (s *store) fresh(page *Page) bool {
+	return s.now().Sub(page.FetchedAt) < ttl
 }
 
 // decodePage gunzips and JSON-decodes a persisted page file into a Page.

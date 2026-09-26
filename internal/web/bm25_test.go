@@ -20,6 +20,7 @@ func floatsClose(got, want []float64, eps float64) bool {
 }
 
 func TestTokenize(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		in   string
@@ -35,6 +36,7 @@ func TestTokenize(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := tokenize(tt.in)
 			if len(got) == 0 && len(tt.want) == 0 {
 				return
@@ -67,6 +69,7 @@ var bm25Corpus = []string{
 }
 
 func TestBM25Scores(t *testing.T) {
+	t.Parallel()
 	b := newBM25(bm25Corpus)
 	if b.avgdl != 3.0 {
 		t.Fatalf("avgdl = %v, want 3.0", b.avgdl)
@@ -111,6 +114,7 @@ func TestBM25Scores(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := b.scores(tt.query)
 			if !floatsClose(got, tt.want, 1e-9) {
 				t.Errorf("scores(%q) = %v, want %v", tt.query, got, tt.want)
@@ -120,6 +124,7 @@ func TestBM25Scores(t *testing.T) {
 }
 
 func TestBM25Rank(t *testing.T) {
+	t.Parallel()
 	b := newBM25(bm25Corpus)
 	tests := []struct {
 		name  string
@@ -134,6 +139,7 @@ func TestBM25Rank(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := b.rank(tt.query); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("rank(%q) = %v, want %v", tt.query, got, tt.want)
 			}
@@ -142,6 +148,7 @@ func TestBM25Rank(t *testing.T) {
 }
 
 func TestBM25RankTieByDocumentOrder(t *testing.T) {
+	t.Parallel()
 	// doc0 and doc1 are identical, so "hello" scores them exactly equal
 	// (0.4344571362775707 each); the tie must resolve to document order.
 	b := newBM25([]string{"hello world", "hello world", "goodbye"})
@@ -155,6 +162,7 @@ func TestBM25RankTieByDocumentOrder(t *testing.T) {
 }
 
 func TestBM25Degenerate(t *testing.T) {
+	t.Parallel()
 	if got := newBM25(nil).rank("anything"); len(got) != 0 {
 		t.Errorf("rank over empty corpus = %v, want empty", got)
 	}

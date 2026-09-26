@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cache"
-	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 //go:embed pdf_driver.py
@@ -31,15 +31,11 @@ const pdfPython = "3.13"
 // the liteparse wheels, so it is generous.
 const pdfTimeout = 5 * time.Minute
 
-// parsePDFFn is the PDF-to-markdown entry point, a package var so tests can drive
-// the plainHTTP PDF branch without spawning uv. It defaults to parsePDF.
-var parsePDFFn = parsePDF
-
 // parsePDF converts raw PDF bytes to markdown by running the embedded liteparse
 // driver as a one-shot uv subprocess. The bytes are streamed to the driver's
 // stdin and the markdown read back from stdout; uv must be on PATH.
 func parsePDF(ctx context.Context, data []byte) (string, error) {
-	uv := lookpath.Find("uv")
+	uv := render.LookPath(ctx, "uv")
 	if uv == "" {
 		return "", errors.New("web: pdf extraction requires uv on PATH (brew install uv)")
 	}

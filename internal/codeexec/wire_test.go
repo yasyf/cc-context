@@ -79,6 +79,7 @@ func noStderr() string { return "" }
 // functions in parallel: every call blocks until all n are simultaneously
 // active, so serial dispatch would deadlock into the pump timeout.
 func TestPumpParallelDispatch(t *testing.T) {
+	t.Parallel()
 	const n = 4
 	var active, calls int32
 	release := make(chan struct{})
@@ -129,6 +130,7 @@ func TestPumpParallelDispatch(t *testing.T) {
 // TestErrCode proves the not-found sentinels map to the "not_found" wire code
 // (through wrapping) and everything else to the empty code.
 func TestErrCode(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  error
@@ -143,6 +145,7 @@ func TestErrCode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := errCode(tt.err); got != tt.want {
 				t.Errorf("errCode(%v) = %q, want %q", tt.err, got, tt.want)
 			}
@@ -153,6 +156,7 @@ func TestErrCode(t *testing.T) {
 // TestDispatchErrCode proves dispatch stamps the wire code onto a failed result
 // frame (and leaves it empty on success), preserving the raw error message.
 func TestDispatchErrCode(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		ret      any
@@ -167,6 +171,7 @@ func TestDispatchErrCode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			funcs := map[string]HostFunc{
 				"fn": func(context.Context, Call) (any, error) { return tt.ret, tt.err },
 			}
@@ -190,6 +195,7 @@ func TestDispatchErrCode(t *testing.T) {
 // TestPumpUnknownFunction proves a call to an unregistered function comes back
 // ok:false naming it, without killing the run.
 func TestPumpUnknownFunction(t *testing.T) {
+	t.Parallel()
 	captured := make(chan resultFrame, 1)
 	done, err := runPump(t, map[string]HostFunc{}, noStderr, func(d *fakeDriver) {
 		d.send(map[string]any{"t": "call", "id": 1, "fn": "nope"})
@@ -212,6 +218,7 @@ func TestPumpUnknownFunction(t *testing.T) {
 // TestPumpDuplicateID proves a reused call id is an internal error, not a
 // silently re-run host call.
 func TestPumpDuplicateID(t *testing.T) {
+	t.Parallel()
 	funcs := map[string]HostFunc{
 		"fast": func(context.Context, Call) (any, error) { return int64(1), nil },
 	}
@@ -230,6 +237,7 @@ func TestPumpDuplicateID(t *testing.T) {
 // TestPumpCrashCarriesStderr proves an EOF before the done frame surfaces the
 // crash taxonomy with the driver's stderr tail.
 func TestPumpCrashCarriesStderr(t *testing.T) {
+	t.Parallel()
 	stderr := func() string { return "Traceback (most recent call last):\nRuntimeError: kaboom" }
 	_, err := runPump(t, map[string]HostFunc{}, stderr, func(d *fakeDriver) {
 		d.send(map[string]any{"t": "ready"})
@@ -249,6 +257,7 @@ func TestPumpCrashCarriesStderr(t *testing.T) {
 // (a reflected third-party MCP tool) cannot wedge Run: once the stream dies,
 // pump abandons the in-flight call at hostAbandonTimeout and returns.
 func TestPumpAbandonsStuckHostCall(t *testing.T) {
+	t.Parallel()
 	block := make(chan struct{})
 	funcs := map[string]HostFunc{
 		"stuck": func(context.Context, Call) (any, error) {
@@ -284,6 +293,7 @@ func TestPumpAbandonsStuckHostCall(t *testing.T) {
 // TestPumpValve proves an over-valve host return becomes the verbatim valve
 // error frame instead of flooding the stream.
 func TestPumpValve(t *testing.T) {
+	t.Parallel()
 	funcs := map[string]HostFunc{
 		"flood": func(context.Context, Call) (any, error) {
 			return strings.Repeat("x", hostCallValve+1), nil
@@ -310,6 +320,7 @@ func TestPumpValve(t *testing.T) {
 // (slice/map) whose encoded size exceeds the limit — HostFunc returns any, so
 // the raw-string pre-check alone would let it through.
 func TestPumpValveStructured(t *testing.T) {
+	t.Parallel()
 	funcs := map[string]HostFunc{
 		"flood": func(context.Context, Call) (any, error) {
 			return []any{strings.Repeat("x", hostCallValve+1)}, nil

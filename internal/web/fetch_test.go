@@ -16,7 +16,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/yasyf/cc-context/internal/lookpath"
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -67,14 +66,6 @@ func (m *hostMapper) RoundTrip(req *http.Request) (*http.Response, error) {
 	return m.base.RoundTrip(req)
 }
 
-func isolateKeys(t *testing.T) {
-	t.Helper()
-	t.Setenv(envJinaKey, "")
-	t.Setenv(envExaKey, "")
-	t.Setenv(envFirecrawlKey, "")
-	t.Setenv(envBrowserbaseKey, "")
-}
-
 // startServer runs an httptest server for h, or a "must not be reached" guard
 // when h is nil, and returns its base URL.
 func startServer(t *testing.T, name string, h http.HandlerFunc) string {
@@ -109,6 +100,7 @@ func testTiers(t *testing.T, svc services) *tiers {
 		firecrawlBase:   firecrawl,
 		browserbaseBase: browserbase,
 		lookupIP:        publicLookupIP,
+		parsePDF:        parsePDF,
 	}
 }
 
@@ -182,10 +174,11 @@ func status(code int) http.HandlerFunc {
 }
 
 func TestFetchJinaSuccess(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t)
 	ts := testTiers(t, services{jina: jinaClean(t, "# Doc\n\nhello", "Doc")})
 
-	got, err := ts.fetch(context.Background(), remoteTargetURL, nil)
+	got, err := ts.fetch(ctx, remoteTargetURL, nil)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -208,7 +201,8 @@ func TestFetchJinaSuccess(t *testing.T) {
 // alongside a status-less notice (here a cache-snapshot warning) is served, not
 // discarded. Real target failures arrive as an HTTP status, covered elsewhere.
 func TestFetchJinaBenignWarningServed(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t)
 	ts := testTiers(t, services{jina: func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
 			"data": map[string]any{
@@ -220,7 +214,7 @@ func TestFetchJinaBenignWarningServed(t *testing.T) {
 		})
 	}})
 
-	got, err := ts.fetch(context.Background(), remoteTargetURL, nil)
+	got, err := ts.fetch(ctx, remoteTargetURL, nil)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -230,7 +224,8 @@ func TestFetchJinaBenignWarningServed(t *testing.T) {
 }
 
 func TestFetchKeyUnsetTiersSkipped(t *testing.T) {
-	isolateKeys(t) // exa and firecrawl keys stay empty
+	t.Parallel()
+	ctx := webCtx(t)
 	var exaHits, fcHits atomic.Int32
 
 	ts := testTiers(t, services{
@@ -250,7 +245,7 @@ func TestFetchKeyUnsetTiersSkipped(t *testing.T) {
 		_, _ = io.WriteString(w, "<html><body>real</body></html>")
 	})
 
-	got, err := ts.fetch(context.Background(), target, nil)
+	got, err := ts.fetch(ctx, target, nil)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -266,8 +261,8 @@ func TestFetchKeyUnsetTiersSkipped(t *testing.T) {
 }
 
 func TestFetchCascadeOrderJinaThenExa(t *testing.T) {
-	isolateKeys(t)
-	t.Setenv(envExaKey, "exa-key")
+	t.Parallel()
+	ctx := webCtx(t, envExaKey+"=exa-key")
 	var jinaHits, exaHits atomic.Int32
 
 	ts := testTiers(t, services{
@@ -283,7 +278,7 @@ func TestFetchCascadeOrderJinaThenExa(t *testing.T) {
 		},
 	})
 
-	got, err := ts.fetch(context.Background(), remoteTargetURL, nil)
+	got, err := ts.fetch(ctx, remoteTargetURL, nil)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -302,7 +297,8 @@ func TestFetchCascadeOrderJinaThenExa(t *testing.T) {
 }
 
 func TestFetchGoneFromJina200Trap(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t)
 	ts := testTiers(t, services{
 		jina: func(w http.ResponseWriter, _ *http.Request) {
 			// The 200-trap: HTTP 200, target failure in data.warning.
@@ -313,15 +309,15 @@ func TestFetchGoneFromJina200Trap(t *testing.T) {
 	})
 
 	// The target is unmapped: ErrGone from jina must abort before plain HTTP dials.
-	_, err := ts.fetch(context.Background(), remoteTargetURL, nil)
+	_, err := ts.fetch(ctx, remoteTargetURL, nil)
 	if !errors.Is(err, ErrGone) {
 		t.Fatalf("err = %v, want ErrGone", err)
 	}
 }
 
 func TestFetchGoneFromFirecrawlStatusCode(t *testing.T) {
-	isolateKeys(t)
-	t.Setenv(envFirecrawlKey, "fc-key")
+	t.Parallel()
+	ctx := webCtx(t, envFirecrawlKey+"=fc-key")
 	ts := testTiers(t, services{
 		jina: status(http.StatusTooManyRequests),
 		firecrawl: func(w http.ResponseWriter, _ *http.Request) {
@@ -333,32 +329,34 @@ func TestFetchGoneFromFirecrawlStatusCode(t *testing.T) {
 		},
 	})
 
-	_, err := ts.fetch(context.Background(), remoteTargetURL, nil)
+	_, err := ts.fetch(ctx, remoteTargetURL, nil)
 	if !errors.Is(err, ErrGone) {
 		t.Fatalf("err = %v, want ErrGone", err)
 	}
 }
 
 func TestFetchAuthRequiredFromPlainHTTP(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t)
 	ts := testTiers(t, services{jina: status(http.StatusTooManyRequests)})
 	target := serveRemoteTarget(t, ts, status(http.StatusUnauthorized))
 
-	_, err := ts.fetch(context.Background(), target, nil)
+	_, err := ts.fetch(ctx, target, nil)
 	if !errors.Is(err, ErrAuthRequired) {
 		t.Fatalf("err = %v, want ErrAuthRequired", err)
 	}
 }
 
 func TestFetchService429Cascades(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t)
 	ts := testTiers(t, services{jina: status(http.StatusTooManyRequests)})
 	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "<html><body>ok</body></html>")
 	})
 
-	got, err := ts.fetch(context.Background(), target, nil)
+	got, err := ts.fetch(ctx, target, nil)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -368,8 +366,8 @@ func TestFetchService429Cascades(t *testing.T) {
 }
 
 func TestFetchChallengeIn200RoutesToBrowserbase(t *testing.T) {
-	isolateKeys(t)
-	t.Setenv(envBrowserbaseKey, "bb-key")
+	t.Parallel()
+	ctx := webCtx(t, envBrowserbaseKey+"=bb-key")
 
 	// jina and the plain-HTTP target both return a Cloudflare challenge in a 200.
 	ts := testTiers(t, services{
@@ -383,7 +381,7 @@ func TestFetchChallengeIn200RoutesToBrowserbase(t *testing.T) {
 		_, _ = io.WriteString(w, challengeHTML)
 	})
 
-	got, err := ts.fetch(context.Background(), target, nil)
+	got, err := ts.fetch(ctx, target, nil)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -403,10 +401,10 @@ func TestFetchChallengeIn200RoutesToBrowserbase(t *testing.T) {
 }
 
 // bbChallengeToStealth wires jina + a target that both return a Cloudflare
-// challenge, so the cascade escalates to the browserbase handler bb.
+// challenge, so the cascade escalates to the browserbase handler bb. The caller's
+// context must carry envBrowserbaseKey for the escalation to run.
 func bbChallengeToStealth(t *testing.T, bb http.HandlerFunc) (*tiers, string) {
 	t.Helper()
-	t.Setenv(envBrowserbaseKey, "bb-key")
 	ts := testTiers(t, services{jina: jinaClean(t, challengeBody, "Just a moment..."), browserbase: bb})
 	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -418,7 +416,8 @@ func bbChallengeToStealth(t *testing.T, bb http.HandlerFunc) (*tiers, string) {
 // TestFetchBrowserbaseContentEnvelope pins the live /v1/fetch shape: the markdown
 // rides in "content" (not "markdown") and there is no title field.
 func TestFetchBrowserbaseContentEnvelope(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t, envBrowserbaseKey+"=bb-key")
 	ts, target := bbChallengeToStealth(t, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
 			"id": "abc", "statusCode": 200, "contentType": "text/markdown",
@@ -426,7 +425,7 @@ func TestFetchBrowserbaseContentEnvelope(t *testing.T) {
 		})
 	})
 
-	got, err := ts.fetch(context.Background(), target, nil)
+	got, err := ts.fetch(ctx, target, nil)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -439,18 +438,20 @@ func TestFetchBrowserbaseContentEnvelope(t *testing.T) {
 // browserbase envelope's statusCode aborts the cascade with ErrGone, since
 // browserbase is terminal.
 func TestFetchBrowserbaseTargetStatusGone(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t, envBrowserbaseKey+"=bb-key")
 	ts, target := bbChallengeToStealth(t, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(t, w, http.StatusOK, map[string]any{"statusCode": 404, "content": "404: Not Found"})
 	})
 
-	if _, err := ts.fetch(context.Background(), target, nil); !errors.Is(err, ErrGone) {
+	if _, err := ts.fetch(ctx, target, nil); !errors.Is(err, ErrGone) {
 		t.Fatalf("want ErrGone from browserbase statusCode 404, got %v", err)
 	}
 }
 
 func TestFetchBlockedWithoutBrowserbaseKey(t *testing.T) {
-	isolateKeys(t) // BROWSERBASE_API_KEY stays empty
+	t.Parallel()
+	ctx := webCtx(t)
 	// browserbase guard: it must not be called without a key.
 	ts := testTiers(t, services{jina: jinaClean(t, challengeBody, "Just a moment...")})
 	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
@@ -458,7 +459,7 @@ func TestFetchBlockedWithoutBrowserbaseKey(t *testing.T) {
 		_, _ = io.WriteString(w, challengeHTML)
 	})
 
-	got, err := ts.fetch(context.Background(), target, nil)
+	got, err := ts.fetch(ctx, target, nil)
 	if !errors.Is(err, ErrBlocked) {
 		t.Fatalf("err = %v, want ErrBlocked", err)
 	}
@@ -471,8 +472,8 @@ func TestFetchBlockedWithoutBrowserbaseKey(t *testing.T) {
 }
 
 func TestFetchBrowserbase403Blocked(t *testing.T) {
-	isolateKeys(t)
-	t.Setenv(envBrowserbaseKey, "bb-key")
+	t.Parallel()
+	ctx := webCtx(t, envBrowserbaseKey+"=bb-key")
 	ts := testTiers(t, services{
 		jina:        jinaClean(t, challengeBody, "Just a moment..."),
 		browserbase: status(http.StatusForbidden),
@@ -482,18 +483,19 @@ func TestFetchBrowserbase403Blocked(t *testing.T) {
 		_, _ = io.WriteString(w, challengeHTML)
 	})
 
-	_, err := ts.fetch(context.Background(), target, nil)
+	_, err := ts.fetch(ctx, target, nil)
 	if !errors.Is(err, ErrBlocked) {
 		t.Fatalf("err = %v, want ErrBlocked (browserbase 403)", err)
 	}
 }
 
 func TestFetchErrorsJoinOnTotalFailure(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t)
 	ts := testTiers(t, services{jina: status(http.StatusInternalServerError)})
 	target := serveRemoteTarget(t, ts, status(http.StatusInternalServerError))
 
-	_, err := ts.fetch(context.Background(), target, nil)
+	_, err := ts.fetch(ctx, target, nil)
 	if err == nil {
 		t.Fatal("fetch: want an error when every tier fails")
 	}
@@ -509,8 +511,8 @@ func TestFetchErrorsJoinOnTotalFailure(t *testing.T) {
 }
 
 func TestFetchExaSuccessRoutesHTML(t *testing.T) {
-	isolateKeys(t)
-	t.Setenv(envExaKey, "exa-key")
+	t.Parallel()
+	ctx := webCtx(t, envExaKey+"=exa-key")
 	ts := testTiers(t, services{
 		jina: status(http.StatusTooManyRequests),
 		exa: func(w http.ResponseWriter, _ *http.Request) {
@@ -520,7 +522,7 @@ func TestFetchExaSuccessRoutesHTML(t *testing.T) {
 		},
 	})
 
-	got, err := ts.fetch(context.Background(), remoteTargetURL, nil)
+	got, err := ts.fetch(ctx, remoteTargetURL, nil)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -533,22 +535,23 @@ func TestFetchExaSuccessRoutesHTML(t *testing.T) {
 // title derivation as plainHTTP: an envelope with an empty title whose HTML
 // carries a challenge <title> must escalate, not serve the interstitial as clean.
 func TestFetchExaTitlelessChallengeEscalates(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t)
 	ts := testTiers(t, services{exa: func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
 			"results": []any{map[string]any{"title": "", "text": challengeHTML, "url": "https://example.com/x"}},
 		})
 	}})
 
-	_, err := ts.exa(context.Background(), remoteTargetURL, "exa-key")
+	_, err := ts.exa(ctx, remoteTargetURL, "exa-key")
 	if !errors.Is(err, errStealthRequired) {
 		t.Fatalf("err = %v, want errStealthRequired (challenge title only in the raw HTML)", err)
 	}
 }
 
 func TestFetchFirecrawlSuccess(t *testing.T) {
-	isolateKeys(t)
-	t.Setenv(envFirecrawlKey, "fc-key")
+	t.Parallel()
+	ctx := webCtx(t, envFirecrawlKey+"=fc-key")
 	ts := testTiers(t, services{
 		jina: status(http.StatusTooManyRequests),
 		firecrawl: func(w http.ResponseWriter, _ *http.Request) {
@@ -559,7 +562,7 @@ func TestFetchFirecrawlSuccess(t *testing.T) {
 		},
 	})
 
-	got, err := ts.fetch(context.Background(), remoteTargetURL, nil)
+	got, err := ts.fetch(ctx, remoteTargetURL, nil)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -569,7 +572,8 @@ func TestFetchFirecrawlSuccess(t *testing.T) {
 }
 
 func TestFetchNotModifiedRevalidation(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t)
 	prior := &Page{ETag: `"v1"`, LastMod: "Mon, 07 Jul 2026 12:00:00 GMT"}
 	ts := testTiers(t, services{jina: status(http.StatusTooManyRequests)})
 	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, r *http.Request) {
@@ -579,19 +583,16 @@ func TestFetchNotModifiedRevalidation(t *testing.T) {
 		w.WriteHeader(http.StatusNotModified)
 	})
 
-	_, err := ts.fetch(context.Background(), target, prior)
+	_, err := ts.fetch(ctx, target, prior)
 	if !errors.Is(err, ErrNotModified) {
 		t.Fatalf("err = %v, want ErrNotModified", err)
 	}
 }
 
 func TestFetchLocalTargetSkipsHostedTiers(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t, allKeysSet...)
 	// Every key set: only the local gate can keep the hosted tiers from running.
-	t.Setenv(envJinaKey, "jina-key")
-	t.Setenv(envExaKey, "exa-key")
-	t.Setenv(envFirecrawlKey, "fc-key")
-	t.Setenv(envBrowserbaseKey, "bb-key")
 
 	ts := testTiers(t, services{}) // every hosted tier is a "must not be reached" guard
 	target := serveLocalTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
@@ -599,7 +600,7 @@ func TestFetchLocalTargetSkipsHostedTiers(t *testing.T) {
 		_, _ = io.WriteString(w, "<html><body>local only</body></html>")
 	})
 
-	got, err := ts.fetch(context.Background(), target, nil)
+	got, err := ts.fetch(ctx, target, nil)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -612,8 +613,8 @@ func TestFetchLocalTargetSkipsHostedTiers(t *testing.T) {
 }
 
 func TestFetchLocalTargetBlockedNoBrowserbase(t *testing.T) {
-	isolateKeys(t)
-	t.Setenv(envBrowserbaseKey, "bb-key") // set, yet browserbase must never be reached
+	t.Parallel()
+	ctx := webCtx(t, envBrowserbaseKey+"=bb-key")
 
 	ts := testTiers(t, services{}) // browserbase is a guard
 	target := serveLocalTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
@@ -621,7 +622,7 @@ func TestFetchLocalTargetBlockedNoBrowserbase(t *testing.T) {
 		_, _ = io.WriteString(w, challengeHTML) // a challenge on a local page
 	})
 
-	_, err := ts.fetch(context.Background(), target, nil)
+	_, err := ts.fetch(ctx, target, nil)
 	if err == nil {
 		t.Fatal("fetch: want a failure for a blocked local target")
 	}
@@ -634,8 +635,8 @@ func TestFetchLocalTargetBlockedNoBrowserbase(t *testing.T) {
 }
 
 func TestFetchFirecrawlSuccessFalseCascades(t *testing.T) {
-	isolateKeys(t)
-	t.Setenv(envFirecrawlKey, "fc-key")
+	t.Parallel()
+	ctx := webCtx(t, envFirecrawlKey+"=fc-key")
 	ts := testTiers(t, services{
 		jina: status(http.StatusTooManyRequests),
 		firecrawl: func(w http.ResponseWriter, _ *http.Request) {
@@ -651,7 +652,7 @@ func TestFetchFirecrawlSuccessFalseCascades(t *testing.T) {
 		_, _ = io.WriteString(w, "<html><body>the real page</body></html>")
 	})
 
-	got, err := ts.fetch(context.Background(), target, nil)
+	got, err := ts.fetch(ctx, target, nil)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -664,12 +665,9 @@ func TestFetchFirecrawlSuccessFalseCascades(t *testing.T) {
 }
 
 func TestFetchSplitDNSPrivateSkipsHostedTiers(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t, allKeysSet...)
 	// Every hosted key set: only the split-DNS gate can keep them from running.
-	t.Setenv(envJinaKey, "jina-key")
-	t.Setenv(envExaKey, "exa-key")
-	t.Setenv(envFirecrawlKey, "fc-key")
-	t.Setenv(envBrowserbaseKey, "bb-key")
 
 	ts := testTiers(t, services{}) // every hosted tier is a "must not be reached" guard
 	// The public-looking name resolves entirely to a private address.
@@ -681,7 +679,7 @@ func TestFetchSplitDNSPrivateSkipsHostedTiers(t *testing.T) {
 		_, _ = io.WriteString(w, "<html><body>internal wiki</body></html>")
 	})
 
-	got, err := ts.fetch(context.Background(), target, nil)
+	got, err := ts.fetch(ctx, target, nil)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -691,13 +689,14 @@ func TestFetchSplitDNSPrivateSkipsHostedTiers(t *testing.T) {
 }
 
 func TestFetchSplitDNSPublicUsesHostedTiers(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t)
 	ts := testTiers(t, services{jina: jinaClean(t, "# Doc\n\nhi", "Doc")})
 	ts.lookupIP = func(context.Context, string, string) ([]net.IP, error) {
 		return []net.IP{net.ParseIP("93.184.216.34"), net.ParseIP("10.0.0.5")}, nil // one public IP is enough
 	}
 
-	got, err := ts.fetch(context.Background(), remoteTargetURL, nil)
+	got, err := ts.fetch(ctx, remoteTargetURL, nil)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -707,13 +706,14 @@ func TestFetchSplitDNSPublicUsesHostedTiers(t *testing.T) {
 }
 
 func TestFetchSplitDNSErrorFallsThroughToHostedTiers(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t)
 	ts := testTiers(t, services{jina: jinaClean(t, "# Doc\n\nhi", "Doc")})
 	ts.lookupIP = func(context.Context, string, string) ([]net.IP, error) {
 		return nil, errors.New("dial udp: i/o timeout")
 	}
 
-	got, err := ts.fetch(context.Background(), remoteTargetURL, nil)
+	got, err := ts.fetch(ctx, remoteTargetURL, nil)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -723,6 +723,7 @@ func TestFetchSplitDNSErrorFallsThroughToHostedTiers(t *testing.T) {
 }
 
 func TestLocalTarget(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		host string
@@ -745,6 +746,7 @@ func TestLocalTarget(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := localTarget(tt.host); got != tt.want {
 				t.Errorf("localTarget(%q) = %v, want %v", tt.host, got, tt.want)
 			}
@@ -753,6 +755,7 @@ func TestLocalTarget(t *testing.T) {
 }
 
 func TestLinkLocalTarget(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		host string
@@ -771,6 +774,7 @@ func TestLinkLocalTarget(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := linkLocalTarget(tt.host); got != tt.want {
 				t.Errorf("linkLocalTarget(%q) = %v, want %v", tt.host, got, tt.want)
 			}
@@ -788,6 +792,7 @@ func guardListener(t *testing.T) string {
 }
 
 func TestFetchLinkLocalRefusedNoRequest(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		url  string
@@ -797,12 +802,9 @@ func TestFetchLinkLocalRefusedNoRequest(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			isolateKeys(t)
+			t.Parallel()
+			ctx := webCtx(t, allKeysSet...)
 			// Every key set: the refusal must fire before any tier, hosted or plain.
-			t.Setenv(envJinaKey, "jina-key")
-			t.Setenv(envExaKey, "exa-key")
-			t.Setenv(envFirecrawlKey, "fc-key")
-			t.Setenv(envBrowserbaseKey, "bb-key")
 
 			ts := testTiers(t, services{}) // every hosted tier is a "must not be reached" guard
 			mapperOf(ts).hosts["169.254.169.254"] = guardListener(t)
@@ -810,7 +812,7 @@ func TestFetchLinkLocalRefusedNoRequest(t *testing.T) {
 				t.Errorf("tier %s ran for a link-local target (err=%v)", tier, err)
 			}
 
-			_, err := ts.fetch(context.Background(), tt.url, nil)
+			_, err := ts.fetch(ctx, tt.url, nil)
 			if !errors.Is(err, ErrLinkLocalRefused) {
 				t.Errorf("err = %v, want it to wrap ErrLinkLocalRefused", err)
 			}
@@ -819,11 +821,8 @@ func TestFetchLinkLocalRefusedNoRequest(t *testing.T) {
 }
 
 func TestFetchByNameLinkLocalRefused(t *testing.T) {
-	isolateKeys(t)
-	t.Setenv(envJinaKey, "jina-key")
-	t.Setenv(envExaKey, "exa-key")
-	t.Setenv(envFirecrawlKey, "fc-key")
-	t.Setenv(envBrowserbaseKey, "bb-key")
+	t.Parallel()
+	ctx := webCtx(t, allKeysSet...)
 
 	ts := testTiers(t, services{})
 	// The canonical GCP metadata alias: a by-name-local host answering link-local.
@@ -835,16 +834,17 @@ func TestFetchByNameLinkLocalRefused(t *testing.T) {
 		t.Errorf("tier %s ran for a metadata-alias target (err=%v)", tier, err)
 	}
 
-	if got := ts.classifyHost(context.Background(), "metadata.google.internal"); got != hostLinkLocal {
+	if got := ts.classifyHost(ctx, "metadata.google.internal"); got != hostLinkLocal {
 		t.Errorf("classifyHost = %v, want hostLinkLocal", got)
 	}
-	_, err := ts.fetch(context.Background(), "http://metadata.google.internal/computeMetadata/v1/", nil)
+	_, err := ts.fetch(ctx, "http://metadata.google.internal/computeMetadata/v1/", nil)
 	if !errors.Is(err, ErrLinkLocalRefused) {
 		t.Errorf("err = %v, want it to wrap ErrLinkLocalRefused", err)
 	}
 }
 
 func TestFetchByNameLocalStillPlainHTTP(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		lookup func(context.Context, string, string) ([]net.IP, error)
@@ -861,11 +861,8 @@ func TestFetchByNameLocalStillPlainHTTP(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			isolateKeys(t)
-			t.Setenv(envJinaKey, "jina-key")
-			t.Setenv(envExaKey, "exa-key")
-			t.Setenv(envFirecrawlKey, "fc-key")
-			t.Setenv(envBrowserbaseKey, "bb-key")
+			t.Parallel()
+			ctx := webCtx(t, allKeysSet...)
 
 			ts := testTiers(t, services{}) // every hosted tier is a "must not be reached" guard
 			ts.lookupIP = tt.lookup
@@ -873,7 +870,7 @@ func TestFetchByNameLocalStillPlainHTTP(t *testing.T) {
 				_, _ = io.WriteString(w, "<html><body>internal wiki</body></html>")
 			})
 
-			got, err := ts.fetch(context.Background(), "http://wiki.internal/page", nil)
+			got, err := ts.fetch(ctx, "http://wiki.internal/page", nil)
 			if err != nil {
 				t.Fatalf("fetch: %v", err)
 			}
@@ -885,6 +882,7 @@ func TestFetchByNameLocalStillPlainHTTP(t *testing.T) {
 }
 
 func TestFetchSplitDNSLinkLocalRefused(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		ips  []net.IP
@@ -894,11 +892,8 @@ func TestFetchSplitDNSLinkLocalRefused(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			isolateKeys(t)
-			t.Setenv(envJinaKey, "jina-key")
-			t.Setenv(envExaKey, "exa-key")
-			t.Setenv(envFirecrawlKey, "fc-key")
-			t.Setenv(envBrowserbaseKey, "bb-key")
+			t.Parallel()
+			ctx := webCtx(t, allKeysSet...)
 
 			ts := testTiers(t, services{})
 			ts.lookupIP = func(context.Context, string, string) ([]net.IP, error) { return tt.ips, nil }
@@ -907,7 +902,7 @@ func TestFetchSplitDNSLinkLocalRefused(t *testing.T) {
 				t.Errorf("tier %s ran for a link-local-resolving target (err=%v)", tier, err)
 			}
 
-			_, err := ts.fetch(context.Background(), remoteTargetURL, nil)
+			_, err := ts.fetch(ctx, remoteTargetURL, nil)
 			if !errors.Is(err, ErrLinkLocalRefused) {
 				t.Errorf("err = %v, want it to wrap ErrLinkLocalRefused", err)
 			}
@@ -932,6 +927,7 @@ const nopechaContent = "![Image 1: Icon for nopecha.com](https://nopecha.com/fav
 // true rows are the genuine challenges — origin headers, title markers, boundary-
 // anchored body markers, and the short-body interstitial-phrase scan.
 func TestChallengeSignature(t *testing.T) {
+	t.Parallel()
 	// A body over challengeBodyCeiling that quotes a rendered-interstitial phrase:
 	// only the length ceiling — not phrase absence — keeps it from matching. This is
 	// the anti-Bug-1 guard for a long article that merely discusses a challenge page.
@@ -978,6 +974,7 @@ func TestChallengeSignature(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := challengeSignature(tt.in); got != tt.want {
 				t.Errorf("challengeSignature() = %v, want %v", got, tt.want)
 			}
@@ -990,6 +987,7 @@ func TestChallengeSignature(t *testing.T) {
 // status-in-warning aborts (the 200-trap), an unrecognized notice serves, and an
 // empty-content notice fails naming the warning.
 func TestFetchJinaWarningClasses(t *testing.T) {
+	t.Parallel()
 	const realContent = "# Doc\n\nreal content"
 	const cacheWarning = "This is a cached snapshot of the original page, consider retry with caching opt-out."
 	tests := []struct {
@@ -1008,14 +1006,14 @@ func TestFetchJinaWarningClasses(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			isolateKeys(t)
+			t.Parallel()
+			ctx := webCtx(t, envBrowserbaseKey+"=bb-key")
 			svc := services{jina: func(w http.ResponseWriter, _ *http.Request) {
 				writeJSON(t, w, http.StatusOK, map[string]any{
 					"data": map[string]any{"content": tt.content, "title": tt.title, "url": "https://example.com/final", "warning": tt.warning},
 				})
 			}}
 			if tt.want == "browserbase" {
-				t.Setenv(envBrowserbaseKey, "bb-key")
 				svc.browserbase = func(w http.ResponseWriter, _ *http.Request) {
 					writeJSON(t, w, http.StatusOK, map[string]any{"content": tt.wantMD, "statusCode": 200})
 				}
@@ -1024,7 +1022,7 @@ func TestFetchJinaWarningClasses(t *testing.T) {
 			// The target stays unmapped: served/gone resolve at jina; the escalation and
 			// empty-content cases let plainHTTP fail plainly so only jina's own stealth
 			// signal can reach browserbase.
-			got, err := ts.fetch(context.Background(), remoteTargetURL, nil)
+			got, err := ts.fetch(ctx, remoteTargetURL, nil)
 			switch tt.want {
 			case "served":
 				if err != nil {
@@ -1067,6 +1065,7 @@ func TestFetchJinaWarningClasses(t *testing.T) {
 // on the http tier, while a real challenge in the headers, title, or an anchored
 // body marker escalates to browserbase.
 func TestFetchPlainHTTPRawHTML(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		headers  map[string]string
@@ -1081,10 +1080,10 @@ func TestFetchPlainHTTPRawHTML(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			isolateKeys(t)
+			t.Parallel()
+			ctx := webCtx(t, envBrowserbaseKey+"=bb-key")
 			svc := services{jina: status(http.StatusTooManyRequests)}
 			if tt.escalate {
-				t.Setenv(envBrowserbaseKey, "bb-key")
 				svc.browserbase = func(w http.ResponseWriter, _ *http.Request) {
 					writeJSON(t, w, http.StatusOK, map[string]any{"content": "# Real\n\nunblocked", "statusCode": 200})
 				}
@@ -1098,7 +1097,7 @@ func TestFetchPlainHTTPRawHTML(t *testing.T) {
 				_, _ = io.WriteString(w, tt.body)
 			})
 
-			got, err := ts.fetch(context.Background(), target, nil)
+			got, err := ts.fetch(ctx, target, nil)
 			if tt.escalate {
 				if err != nil {
 					t.Fatalf("fetch: %v, want browserbase escalation", err)
@@ -1125,6 +1124,7 @@ func TestFetchPlainHTTPRawHTML(t *testing.T) {
 // escalation order, fires before the early typed-error return, and the localTarget
 // shortcut records nothing.
 func TestFetchOnAttemptOrder(t *testing.T) {
+	t.Parallel()
 	type attempt struct {
 		tier Tier
 		err  error
@@ -1143,14 +1143,15 @@ func TestFetchOnAttemptOrder(t *testing.T) {
 	}
 
 	t.Run("jina fails then http succeeds", func(t *testing.T) {
-		isolateKeys(t)
+		t.Parallel()
+		ctx := webCtx(t)
 		ts := testTiers(t, services{jina: status(http.StatusTooManyRequests)})
 		got := record(ts)
 		target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, "<html><body>ok</body></html>")
 		})
-		if _, err := ts.fetch(context.Background(), target, nil); err != nil {
+		if _, err := ts.fetch(ctx, target, nil); err != nil {
 			t.Fatalf("fetch: %v", err)
 		}
 		if want := []Tier{TierJina, TierHTTP}; !slices.Equal(order(*got), want) {
@@ -1159,8 +1160,8 @@ func TestFetchOnAttemptOrder(t *testing.T) {
 	})
 
 	t.Run("escalates jina http browserbase", func(t *testing.T) {
-		isolateKeys(t)
-		t.Setenv(envBrowserbaseKey, "bb-key")
+		t.Parallel()
+		ctx := webCtx(t, envBrowserbaseKey+"=bb-key")
 		ts := testTiers(t, services{
 			jina: jinaClean(t, challengeBody, "Just a moment..."),
 			browserbase: func(w http.ResponseWriter, _ *http.Request) {
@@ -1172,7 +1173,7 @@ func TestFetchOnAttemptOrder(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, challengeHTML)
 		})
-		res, err := ts.fetch(context.Background(), target, nil)
+		res, err := ts.fetch(ctx, target, nil)
 		if err != nil {
 			t.Fatalf("fetch: %v", err)
 		}
@@ -1185,12 +1186,13 @@ func TestFetchOnAttemptOrder(t *testing.T) {
 	})
 
 	t.Run("early gone still records jina", func(t *testing.T) {
-		isolateKeys(t)
+		t.Parallel()
+		ctx := webCtx(t)
 		ts := testTiers(t, services{jina: func(w http.ResponseWriter, _ *http.Request) {
 			writeJSON(t, w, http.StatusOK, map[string]any{"data": map[string]any{"warning": "Target URL returned error 404: Not Found"}})
 		}})
 		got := record(ts)
-		if _, err := ts.fetch(context.Background(), remoteTargetURL, nil); !errors.Is(err, ErrGone) {
+		if _, err := ts.fetch(ctx, remoteTargetURL, nil); !errors.Is(err, ErrGone) {
 			t.Fatalf("err = %v, want ErrGone", err)
 		}
 		if want := []Tier{TierJina}; !slices.Equal(order(*got), want) {
@@ -1202,14 +1204,15 @@ func TestFetchOnAttemptOrder(t *testing.T) {
 	})
 
 	t.Run("local target records nothing", func(t *testing.T) {
-		isolateKeys(t)
+		t.Parallel()
+		ctx := webCtx(t)
 		ts := testTiers(t, services{})
 		got := record(ts)
 		target := serveLocalTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, "<html><body>local</body></html>")
 		})
-		if _, err := ts.fetch(context.Background(), target, nil); err != nil {
+		if _, err := ts.fetch(ctx, target, nil); err != nil {
 			t.Fatalf("fetch: %v", err)
 		}
 		if len(*got) != 0 {
@@ -1223,14 +1226,15 @@ func TestFetchOnAttemptOrder(t *testing.T) {
 // and — because the joined failures render as text, not wrapped — errStealthRequired
 // never leaks into the errors.Is chain.
 func TestFetchBlockedNamesEarlierFailures(t *testing.T) {
-	isolateKeys(t) // BROWSERBASE_API_KEY stays unset
+	t.Parallel()
+	ctx := webCtx(t)
 	ts := testTiers(t, services{jina: status(http.StatusTooManyRequests)})
 	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, challengeHTML)
 	})
 
-	_, err := ts.fetch(context.Background(), target, nil)
+	_, err := ts.fetch(ctx, target, nil)
 	if !errors.Is(err, ErrBlocked) {
 		t.Fatalf("err = %v, want ErrBlocked", err)
 	}
@@ -1250,10 +1254,11 @@ func TestFetchBlockedNamesEarlierFailures(t *testing.T) {
 // ordinary reason (its own 502, not a target 403), the final joined error carries
 // the failures as text — errStealthRequired never escapes fetch on any path.
 func TestFetchBrowserbaseServiceFailureNoStealthLeak(t *testing.T) {
-	isolateKeys(t)
+	t.Parallel()
+	ctx := webCtx(t, envBrowserbaseKey+"=bb-key")
 	ts, target := bbChallengeToStealth(t, status(http.StatusBadGateway))
 
-	_, err := ts.fetch(context.Background(), target, nil)
+	_, err := ts.fetch(ctx, target, nil)
 	if err == nil {
 		t.Fatal("fetch: want an error when browserbase fails after a stealth escalation")
 	}
@@ -1271,6 +1276,7 @@ func TestFetchBrowserbaseServiceFailureNoStealthLeak(t *testing.T) {
 }
 
 func TestDetectBodyKind(t *testing.T) {
+	t.Parallel()
 	const (
 		htmlBody  = "<html><body><p>hi</p></body></html>"
 		plainBody = "just some words, not markup"
@@ -1297,6 +1303,7 @@ func TestDetectBodyKind(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := detectBodyKind(tt.contentType, tt.body); got != tt.want {
 				t.Errorf("detectBodyKind(%q, …) = %d, want %d", tt.contentType, got, tt.want)
 			}
@@ -1308,6 +1315,7 @@ func TestDetectBodyKind(t *testing.T) {
 // routing: a markdown or plain-text body lands in FetchResult.Markdown, an HTML
 // body stays in FetchResult.HTML for the local extractor.
 func TestFetchPlainHTTPContentTypeRouting(t *testing.T) {
+	t.Parallel()
 	const (
 		mdBody   = "# Heading\n\nsome *markdown* text"
 		htmlBody = "<html><body><p>hi</p></body></html>"
@@ -1326,7 +1334,8 @@ func TestFetchPlainHTTPContentTypeRouting(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			isolateKeys(t)
+			t.Parallel()
+			ctx := webCtx(t)
 			ts := testTiers(t, services{jina: status(http.StatusTooManyRequests)})
 			target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", tt.contentType)
@@ -1334,7 +1343,7 @@ func TestFetchPlainHTTPContentTypeRouting(t *testing.T) {
 				_, _ = io.WriteString(w, tt.body)
 			})
 
-			got, err := ts.fetch(context.Background(), target, nil)
+			got, err := ts.fetch(ctx, target, nil)
 			if err != nil {
 				t.Fatalf("fetch: %v", err)
 			}
@@ -1355,10 +1364,8 @@ func TestFetchPlainHTTPContentTypeRouting(t *testing.T) {
 // parsePDF: with uv forced off the PATH, the parser's uv-missing failure surfaces
 // from the plainHTTP tier, which only fires when detectBodyKind picked bodyPDF.
 func TestFetchPlainHTTPPDFRoutesToParser(t *testing.T) {
-	isolateKeys(t)
-	orig := lookpath.Find
-	t.Cleanup(func() { lookpath.Find = orig })
-	lookpath.Find = func(string) string { return "" }
+	t.Parallel()
+	ctx := webCtx(t, "PATH=")
 
 	ts := testTiers(t, services{jina: status(http.StatusTooManyRequests)})
 	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
@@ -1367,7 +1374,7 @@ func TestFetchPlainHTTPPDFRoutesToParser(t *testing.T) {
 		_, _ = io.WriteString(w, "%PDF-1.4\n1 0 obj<< >>\n")
 	})
 
-	_, err := ts.fetch(context.Background(), target, nil)
+	_, err := ts.fetch(ctx, target, nil)
 	if err == nil {
 		t.Fatal("fetch: want an error when a PDF cannot be parsed")
 	}
@@ -1381,23 +1388,21 @@ func TestFetchPlainHTTPPDFRoutesToParser(t *testing.T) {
 // context, not the request-scoped one, so pdf.go's own timeout can govern a cold
 // liteparse install. Under the old wiring the parser inherited the 20s deadline.
 func TestPlainHTTPPDFParseNotBoundByFetchDeadline(t *testing.T) {
-	isolateKeys(t)
-	prev := parsePDFFn
-	t.Cleanup(func() { parsePDFFn = prev })
+	t.Parallel()
+	ctx := webCtx(t)
 	var hadDeadline bool
-	parsePDFFn = func(ctx context.Context, _ []byte) (string, error) {
+	ts := testTiers(t, services{})
+	ts.parsePDF = func(ctx context.Context, _ []byte) (string, error) {
 		_, hadDeadline = ctx.Deadline()
 		return "parsed", nil
 	}
-
-	ts := testTiers(t, services{})
 	target := serveRemoteTarget(t, ts, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/pdf")
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "%PDF-1.4\n")
 	})
 
-	res, err := ts.plainHTTP(context.Background(), target, nil)
+	res, err := ts.plainHTTP(ctx, target, nil)
 	if err != nil {
 		t.Fatalf("plainHTTP: %v", err)
 	}
@@ -1410,14 +1415,16 @@ func TestPlainHTTPPDFParseNotBoundByFetchDeadline(t *testing.T) {
 }
 
 func TestParsePDF(t *testing.T) {
-	if lookpath.Find("uv") == "" {
+	t.Parallel()
+	ctx := webCtx(t)
+	if render.LookPath(ctx, "uv") == "" {
 		t.Skip("parsePDF needs uv on PATH (brew install uv)")
 	}
 	data, err := os.ReadFile("testdata/sample.pdf")
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
-	md, err := parsePDF(context.Background(), data)
+	md, err := parsePDF(ctx, data)
 	if err != nil {
 		t.Fatalf("parsePDF: %v", err)
 	}
@@ -1426,11 +1433,22 @@ func TestParsePDF(t *testing.T) {
 	}
 }
 
+// emptyProcessKeys clears the four tier keys in the process environment, so a
+// test proving a key resolves off the context cannot pass on a machine that
+// exports the real one. It uses t.Setenv, so its callers stay serial.
+func emptyProcessKeys(t *testing.T) {
+	t.Helper()
+	t.Setenv(envJinaKey, "")
+	t.Setenv(envExaKey, "")
+	t.Setenv(envFirecrawlKey, "")
+	t.Setenv(envBrowserbaseKey, "")
+}
+
 // TestFetchJinaKeyFromContext proves the jina tier authorizes with the key the
 // context carries when the process has none: JINA_API_KEY is emptied in the
 // environment and set only on ctx, and the request still goes out bearing it.
 func TestFetchJinaKeyFromContext(t *testing.T) {
-	isolateKeys(t)
+	emptyProcessKeys(t)
 	var gotAuth string
 	ts := testTiers(t, services{
 		jina: func(w http.ResponseWriter, r *http.Request) {
@@ -1453,7 +1471,7 @@ func TestFetchJinaKeyFromContext(t *testing.T) {
 // TestFetchExaKeyFromContext proves the cascade adds the exa tier for a key the
 // context carries and the process does not.
 func TestFetchExaKeyFromContext(t *testing.T) {
-	isolateKeys(t)
+	emptyProcessKeys(t)
 	var exaHits atomic.Int32
 	ts := testTiers(t, services{
 		jina: status(http.StatusTooManyRequests),
@@ -1478,7 +1496,7 @@ func TestFetchExaKeyFromContext(t *testing.T) {
 // TestFetchFirecrawlKeyFromContext proves the cascade adds the firecrawl tier for
 // a key the context carries and the process does not.
 func TestFetchFirecrawlKeyFromContext(t *testing.T) {
-	isolateKeys(t)
+	emptyProcessKeys(t)
 	var fcHits atomic.Int32
 	ts := testTiers(t, services{
 		jina: status(http.StatusTooManyRequests),
@@ -1505,7 +1523,7 @@ func TestFetchFirecrawlKeyFromContext(t *testing.T) {
 // off the context: with BROWSERBASE_API_KEY empty in the environment and set only
 // on ctx, a challenged cascade reaches browserbase instead of refusing.
 func TestFetchBrowserbaseKeyFromContext(t *testing.T) {
-	isolateKeys(t)
+	emptyProcessKeys(t)
 	var bbHits atomic.Int32
 	ts := testTiers(t, services{
 		jina: jinaClean(t, challengeBody, "Just a moment..."),

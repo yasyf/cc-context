@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/semsearch/embed"
 	"github.com/yasyf/cc-context/internal/semsearch/engine"
 	"github.com/yasyf/cc-context/internal/semsearch/index"
@@ -20,6 +21,7 @@ import (
 // pinned weights revision, not just the repo name, so a weights bump (Repo holds,
 // Revision moves) invalidates the on-disk cache instead of serving stale vectors.
 func TestModelIDIncludesRevision(t *testing.T) {
+	t.Parallel()
 	if engine.ModelID == embed.CodePin.Repo {
 		t.Fatalf("engine.ModelID = %q equals the bare repo; a revision bump would not invalidate the cache", engine.ModelID)
 	}
@@ -76,8 +78,9 @@ func repoPath(t *testing.T) string {
 }
 
 func TestSearch(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	results, err := engine.Search(context.Background(), fakeEmbedder{}, backend.Args{
+	t.Parallel()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
+	results, err := engine.Search(ctx, fakeEmbedder{}, backend.Args{
 		Query:           "authenticated user session login flow",
 		Path:            repoPath(t),
 		K:               5,
@@ -100,8 +103,9 @@ func TestSearch(t *testing.T) {
 }
 
 func TestSearchContentNarrowing(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	results, err := engine.Search(context.Background(), fakeEmbedder{}, backend.Args{
+	t.Parallel()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
+	results, err := engine.Search(ctx, fakeEmbedder{}, backend.Args{
 		Query: "documentation login flow",
 		Path:  repoPath(t),
 		Kind:  "code",
@@ -118,8 +122,9 @@ func TestSearchContentNarrowing(t *testing.T) {
 }
 
 func TestSearchEmptyQuery(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	results, err := engine.Search(context.Background(), fakeEmbedder{}, backend.Args{Query: "   ", Path: repoPath(t)})
+	t.Parallel()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
+	results, err := engine.Search(ctx, fakeEmbedder{}, backend.Args{Query: "   ", Path: repoPath(t)})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -129,8 +134,9 @@ func TestSearchEmptyQuery(t *testing.T) {
 }
 
 func TestRelated(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	results, err := engine.Related(context.Background(), fakeEmbedder{}, backend.Args{
+	t.Parallel()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
+	results, err := engine.Related(ctx, fakeEmbedder{}, backend.Args{
 		Query: "auth/login.go:4",
 		Path:  repoPath(t),
 		K:     5,
@@ -157,8 +163,9 @@ func TestRelated(t *testing.T) {
 }
 
 func TestRelatedUnknownLocation(t *testing.T) {
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	_, err := engine.Related(context.Background(), fakeEmbedder{}, backend.Args{
+	t.Parallel()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
+	_, err := engine.Related(ctx, fakeEmbedder{}, backend.Args{
 		Query: "auth/login.go:99999",
 		Path:  repoPath(t),
 	})

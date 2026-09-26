@@ -3,7 +3,6 @@ package render
 import (
 	"bytes"
 	"context"
-	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -11,6 +10,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/yasyf/cc-context/internal/execstub"
 )
 
 func TestRunCLIStream(t *testing.T) {
@@ -290,9 +291,7 @@ func TestWithEnvPATHResolvesTheChildsGit(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	want := filepath.Join(dir, "git")
-	if err := os.WriteFile(want, []byte("#!/bin/sh\n"), 0o700); err != nil { //nolint:gosec // a fake git must be executable to be resolved
-		t.Fatalf("write fake git: %v", err)
-	}
+	execstub.Write(t, want, "#!/bin/sh\n")
 	ctx := WithEnv(context.Background(), "PATH="+dir)
 	cmd, _, cancel := newCmd(ctx, Ambient, "git", nil, nil)
 	defer cancel()
@@ -313,9 +312,7 @@ func TestWithEnvPATHResolvesEveryBinary(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
 			want := filepath.Join(dir, bin)
-			if err := os.WriteFile(want, []byte("#!/bin/sh\n"), 0o700); err != nil { //nolint:gosec // a fake tool must be executable to be resolved
-				t.Fatalf("write fake %s: %v", bin, err)
-			}
+			execstub.Write(t, want, "#!/bin/sh\n")
 			ctx := WithEnv(context.Background(), "PATH="+dir)
 			cmd, _, cancel := newCmd(ctx, Ambient, bin, nil, nil)
 			defer cancel()

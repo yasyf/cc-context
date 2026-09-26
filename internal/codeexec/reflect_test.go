@@ -54,6 +54,7 @@ func sortedKeys(funcs map[string]HostFunc) []string {
 }
 
 func TestReflectorLazyConnect(t *testing.T) {
+	t.Parallel()
 	conn := newFakeConnector()
 	conn.servers["fake"] = echoServer()
 	r := NewReflector(conn.connect)
@@ -85,6 +86,7 @@ func TestReflectorLazyConnect(t *testing.T) {
 }
 
 func TestReflectorConcurrentFirstCall(t *testing.T) {
+	t.Parallel()
 	conn := newFakeConnector()
 	conn.servers["fake"] = echoServer()
 	r := NewReflector(conn.connect)
@@ -126,6 +128,7 @@ func TestReflectorConcurrentFirstCall(t *testing.T) {
 }
 
 func TestReflectorKwargsNested(t *testing.T) {
+	t.Parallel()
 	conn := newFakeConnector()
 	conn.servers["fake"] = echoServer()
 	r := NewReflector(conn.connect)
@@ -156,6 +159,7 @@ func TestReflectorKwargsNested(t *testing.T) {
 }
 
 func TestReflectorErrors(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		fn   string
@@ -186,6 +190,7 @@ func TestReflectorErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := callTool(t, funcs, tt.fn, tt.call)
 			if err == nil {
 				t.Fatalf("%s = nil error, want failure", tt.fn)
@@ -200,6 +205,7 @@ func TestReflectorErrors(t *testing.T) {
 }
 
 func TestReflectorConnectErrorLabeled(t *testing.T) {
+	t.Parallel()
 	conn := newFakeConnector()
 	conn.fail["fake"] = true
 	r := NewReflector(conn.connect)
@@ -220,6 +226,7 @@ func TestReflectorConnectErrorLabeled(t *testing.T) {
 }
 
 func TestReflectorOrphanCleanup(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	conn := newFakeConnector()
 	conn.servers["fake"] = echoServer()
@@ -265,6 +272,7 @@ func TestReflectorOrphanCleanup(t *testing.T) {
 }
 
 func TestReflectorSigs(t *testing.T) {
+	t.Parallel()
 	r := NewReflector(nil)
 	if err := r.SetCatalog(fakeCatalog()); err != nil {
 		t.Fatalf("SetCatalog: %v", err)

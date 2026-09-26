@@ -4,9 +4,11 @@ import (
 	"context"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/workspace"
 )
 
@@ -28,11 +30,15 @@ func mustPath(ctx context.Context, t *testing.T, store *diskInventoryStore) stri
 }
 
 func TestInventoryStoreRoundtrip(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
+	dir := t.TempDir()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+dir)
 	disk, err := NewDiskInventoryStore(ctx)
 	if err != nil {
 		t.Fatalf("NewDiskInventoryStore: %v", err)
+	}
+	if got := mustPath(ctx, t, disk.(*diskInventoryStore)); !strings.HasPrefix(got, dir) {
+		t.Fatalf("record path = %q, want it under the cache root ctx carries (%q)", got, dir)
 	}
 	tests := []struct {
 		name  string
@@ -43,6 +49,7 @@ func TestInventoryStoreRoundtrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if _, _, ok := tt.store.Load(ctx); ok {
 				t.Fatal("Load on empty store = true, want miss")
 			}
@@ -66,6 +73,7 @@ func TestInventoryStoreRoundtrip(t *testing.T) {
 }
 
 func TestDiskInventoryStoreCorruptMiss(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := newDiskInventoryStore(t.TempDir(), "/some/project")
 	if err := store.Save(ctx, sampleInventory(), time.Now()); err != nil {
@@ -80,6 +88,7 @@ func TestDiskInventoryStoreCorruptMiss(t *testing.T) {
 }
 
 func TestDiskInventoryStoreRootKeyed(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	dir := t.TempDir()
 	a := newDiskInventoryStore(dir, "/project/a")
@@ -102,8 +111,10 @@ func TestDiskInventoryStoreRootKeyed(t *testing.T) {
 }
 
 func TestInventoryStoreEnvFingerprint(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	t.Parallel()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
+	railway := filterCtx(t, "", "railway")
+	auggie := filterCtx(t, "", "auggie")
 	disk, err := NewDiskInventoryStore(ctx)
 	if err != nil {
 		t.Fatalf("NewDiskInventoryStore: %v", err)
@@ -117,19 +128,17 @@ func TestInventoryStoreEnvFingerprint(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("CCX_EXEC_MCP_DENY", "railway")
-			if err := tt.store.Save(ctx, sampleInventory(), time.Now()); err != nil {
+			t.Parallel()
+			if err := tt.store.Save(railway, sampleInventory(), time.Now()); err != nil {
 				t.Fatalf("Save: %v", err)
 			}
-			if _, _, ok := tt.store.Load(ctx); !ok {
+			if _, _, ok := tt.store.Load(railway); !ok {
 				t.Error("Load under the same DENY = miss, want hit")
 			}
-			t.Setenv("CCX_EXEC_MCP_DENY", "auggie")
-			if _, _, ok := tt.store.Load(ctx); ok {
+			if _, _, ok := tt.store.Load(auggie); ok {
 				t.Error("Load after flipping DENY = hit, want miss (a filter change must invalidate)")
 			}
-			t.Setenv("CCX_EXEC_MCP_DENY", "railway")
-			if _, _, ok := tt.store.Load(ctx); !ok {
+			if _, _, ok := tt.store.Load(railway); !ok {
 				t.Error("Load after restoring DENY = miss, want hit")
 			}
 		})
@@ -137,6 +146,7 @@ func TestInventoryStoreEnvFingerprint(t *testing.T) {
 }
 
 func TestDiskInventoryStoreInvalidEnvelope(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	tests := []struct {
 		name string
@@ -148,6 +158,7 @@ func TestDiskInventoryStoreInvalidEnvelope(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			store := newDiskInventoryStore(t.TempDir(), "/p")
 			if err := os.WriteFile(mustPath(ctx, t, store), []byte(tt.data), 0o600); err != nil {
 				t.Fatalf("write: %v", err)
@@ -160,26 +171,24 @@ func TestDiskInventoryStoreInvalidEnvelope(t *testing.T) {
 }
 
 func TestDiskInventoryStoreFollowsRootChange(t *testing.T) {
-	ctx := t.Context()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	t.Cleanup(func() { workspace.SetRoot("") })
+	t.Parallel()
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
 	store, err := NewDiskInventoryStore(ctx)
 	if err != nil {
 		t.Fatalf("NewDiskInventoryStore: %v", err)
 	}
-	workspace.SetRoot("/project/a")
-	if err := store.Save(ctx, sampleInventory(), time.Now()); err != nil {
+	a := workspace.WithRoot(ctx, "/project/a")
+	b := workspace.WithRoot(ctx, "/project/b")
+	if err := store.Save(a, sampleInventory(), time.Now()); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if _, _, ok := store.Load(ctx); !ok {
+	if _, _, ok := store.Load(a); !ok {
 		t.Fatal("Load under the probing root = miss, want hit")
 	}
-	workspace.SetRoot("/project/b")
-	if _, _, ok := store.Load(ctx); ok {
+	if _, _, ok := store.Load(b); ok {
 		t.Error("Load after a root change = hit, want miss (a warm catalog must not outlive the switch)")
 	}
-	workspace.SetRoot("/project/a")
-	if _, _, ok := store.Load(ctx); !ok {
+	if _, _, ok := store.Load(a); !ok {
 		t.Error("Load after switching back = miss, want hit")
 	}
 }

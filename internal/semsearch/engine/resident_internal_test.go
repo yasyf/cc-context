@@ -9,23 +9,24 @@ import (
 
 func key(repo string) indexKey { return indexKey{repo: repo} }
 
-func seed(entries map[string]time.Duration) {
-	residentIndex = map[indexKey]*residentEntry{}
-	now := time.Now()
+func seed(now time.Time, entries map[string]time.Duration) map[indexKey]*residentEntry {
+	resident := map[indexKey]*residentEntry{}
 	for repo, age := range entries {
-		residentIndex[key(repo)] = &residentEntry{idx: &index.Index{}, lastUsed: now.Add(-age)}
+		resident[key(repo)] = &residentEntry{idx: &index.Index{}, lastUsed: now.Add(-age)}
 	}
+	return resident
 }
 
-func repos() map[string]bool {
+func repos(resident map[indexKey]*residentEntry) map[string]bool {
 	out := map[string]bool{}
-	for k := range residentIndex {
+	for k := range resident {
 		out[k.repo] = true
 	}
 	return out
 }
 
 func TestEvictOldestKeepsMostRecent(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		entries map[string]time.Duration
@@ -59,9 +60,9 @@ func TestEvictOldestKeepsMostRecent(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			seed(tt.entries)
-			evictOldest(tt.keep)
-			got := repos()
+			resident := seed(time.Now(), tt.entries)
+			evictOldest(resident, tt.keep)
+			got := repos(resident)
 			if len(got) != len(tt.want) {
 				t.Fatalf("retained %v, want %v", got, tt.want)
 			}
@@ -75,6 +76,7 @@ func TestEvictOldestKeepsMostRecent(t *testing.T) {
 }
 
 func TestSweepIdleDropsOnlyStaleEntries(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		entries map[string]time.Duration
@@ -98,9 +100,10 @@ func TestSweepIdleDropsOnlyStaleEntries(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			seed(tt.entries)
-			SweepIdle()
-			got := repos()
+			now := time.Now()
+			resident := seed(now, tt.entries)
+			sweepIdle(resident, now)
+			got := repos(resident)
 			if len(got) != len(tt.want) {
 				t.Fatalf("retained %v, want %v", got, tt.want)
 			}
