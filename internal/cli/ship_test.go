@@ -4649,6 +4649,7 @@ func TestShipGTTrackReportsParent(t *testing.T) {
 	tests := []struct {
 		name      string
 		args      []string
+		fromTrunk bool
 		wantTrack []string
 		wantSeg   string
 	}{
@@ -4656,6 +4657,12 @@ func TestShipGTTrackReportsParent(t *testing.T) {
 			name:      "gt track -f reports the ancestor it picked",
 			wantTrack: []string{"gt", "track", "feature", "-f", "--no-interactive"},
 			wantSeg:   "tracked feature onto base",
+		},
+		{
+			name:      "a branch cut from trunk is adopted onto trunk without the -f walk",
+			fromTrunk: true,
+			wantTrack: []string{"gt", "track", "feature", "--parent", "main", "--no-interactive"},
+			wantSeg:   "tracked feature onto main",
 		},
 		{
 			name:      "--parent drops -f, which would take precedence over it",
@@ -4667,6 +4674,9 @@ func TestShipGTTrackReportsParent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := shipGTRepo(t, vcstest.GTStack("base"))
+			if tt.fromTrunk {
+				mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+			}
 			shipGTUntracked(t, f, "feature")
 			shipGTReady(t, f)
 
@@ -4691,7 +4701,11 @@ func TestShipGTTrackReportsParent(t *testing.T) {
 			if err := json.Unmarshal([]byte(mustRun(t, f.Env(), f.Dir, "gt", "state")), &state); err != nil {
 				t.Fatalf("parse gt state: %v", err)
 			}
-			if parents := state["feature"].Parents; len(parents) != 1 || parents[0].Ref != "base" {
+			want := "base"
+			if tt.fromTrunk {
+				want = "main"
+			}
+			if parents := state["feature"].Parents; len(parents) != 1 || parents[0].Ref != want {
 				t.Errorf("gt state feature parents = %v, want the adopted base", parents)
 			}
 		})
@@ -5302,12 +5316,22 @@ func TestShipGTRefusals(t *testing.T) {
 		if want := `tracked feature onto main · ` + swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
+		mainHead := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
 		assertInvocations(t, invocations, [][]string{
 			nogtProbe,
 			{"git", "branch", "--show-current"},
 			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
-			{"gt", "track", "feature", "-f", "--no-interactive"},
+			{"git", "config", "--get", "branch.HEAD.remote"},
+			{"git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/main"},
+			{"git", "rev-list", "refs/remotes/origin/main..refs/heads/feature"},
+			{"git", "rev-parse", "--verify", "--quiet", "refs/heads/main"},
+			{"git", "rev-parse", "--verify", "refs/heads/main"},
+			{"git", "merge-base", "--is-ancestor", mainHead, "refs/heads/feature"},
+			{"git", "rev-parse", "--verify", "--quiet", "refs/heads/main"},
+			{"git", "rev-parse", "--verify", "refs/heads/main"},
+			{"git", "merge-base", "--is-ancestor", mainHead, "refs/heads/feature"},
+			{"gt", "track", "feature", "--parent", "main", "--no-interactive"},
 			gtRealRefsArgv(t, f),
 			{"git", "add", "-A", "--verbose"},
 			{"git", "diff", "--cached", "--quiet"},
@@ -5406,6 +5430,9 @@ func TestShipGTRefusals(t *testing.T) {
 			{"git", "branch", "--show-current"},
 			gtCommonDirArgv,
 			gtRefsArgv(),
+			{"git", "config", "--get", "branch.HEAD.remote"},
+			{"git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/main"},
+			{"git", "rev-list", "refs/remotes/origin/main..refs/heads/feature"},
 			{"gt", "track", "feature", "-f", "--no-interactive"},
 		})
 	})
@@ -6765,7 +6792,7 @@ func TestShipGTFromALinkedWorktreeTracksItsOwnBranch(t *testing.T) {
 			track = inv
 		}
 	}
-	if want := []string{"gt", "track", "lane", "-f", "--no-interactive"}; !reflect.DeepEqual(track, want) {
+	if want := []string{"gt", "track", "lane", "--parent", "main", "--no-interactive"}; !reflect.DeepEqual(track, want) {
 		t.Errorf("track argv = %v, want %v", track, want)
 	}
 	if subject := gitAt(t, f.Env(), lane, "log", "-1", "--format=%s", "lane"); subject != "fix: frobnicate" {

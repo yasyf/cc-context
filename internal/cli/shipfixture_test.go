@@ -890,6 +890,7 @@ exit 0
       if [ "$count" -gt 1 ]; then exit 1; fi
     fi ;;
   "rev-list --count") printf '2' ;;
+  "rev-list refs/remotes/"*) printf '%s' "$GIT_ABOVE_TRUNK" ;;
   "rebase --autostash")
     if [ -n "$GIT_REBASE_NO_START" ]; then printf 'error: cannot rebase: Your index contains uncommitted changes.\n' >&2; exit 1; fi
     if [ -n "$GIT_REBASE_CONFLICT" ]; then printf 'CONFLICT (content): Merge conflict in f.txt\n' >&2; exit 1; fi
