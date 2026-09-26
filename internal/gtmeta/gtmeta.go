@@ -75,17 +75,28 @@ func Read(ctx context.Context, commonDir string) (State, error) {
 
 // ReadOrigin evaluates tracked branches against the fetched origin trunk without moving the local trunk.
 func ReadOrigin(ctx context.Context, commonDir string) (State, error) {
-	return readState(ctx, commonDir, true)
+	state, _, err := ReadOriginOrphans(ctx, commonDir)
+	return state, err
+}
+
+// ReadOriginOrphans is ReadOrigin plus the orphans it drops, from one read.
+func ReadOriginOrphans(ctx context.Context, commonDir string) (State, []Orphan, error) {
+	return readStateOrphans(ctx, commonDir, true)
 }
 
 func readState(ctx context.Context, commonDir string, remoteTrunk bool) (State, error) {
+	state, _, err := readStateOrphans(ctx, commonDir, remoteTrunk)
+	return state, err
+}
+
+func readStateOrphans(ctx context.Context, commonDir string, remoteTrunk bool) (State, []Orphan, error) {
 	trunk, err := readTrunk(commonDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	rows, err := readRows(ctx, filepath.Join(commonDir, metadataDB))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	refs := rowRefs(rows)
 	if remoteTrunk {
@@ -93,7 +104,7 @@ func readState(ctx context.Context, commonDir string, remoteTrunk bool) (State, 
 	}
 	heads, err := readHeads(ctx, commonDir, refs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if remoteTrunk {
@@ -103,6 +114,7 @@ func readState(ctx context.Context, commonDir string, remoteTrunk bool) (State, 
 	}
 
 	state := State{}
+	var orphans []Orphan
 	for _, row := range rows {
 		head, live := heads[row.branch]
 		if !live {
@@ -113,6 +125,9 @@ func readState(ctx context.Context, commonDir string, remoteTrunk bool) (State, 
 			continue
 		}
 		parentHead, parentLive := heads[row.parent]
+		if !parentLive && row.parent != "" {
+			orphans = append(orphans, Orphan{Branch: row.branch, Parent: row.parent, ParentRevision: row.parentRevision})
+		}
 		stale := row.validation == validationStale || row.validation == validationStaleParent
 		if (row.validation != validationValid && !stale) || !parentLive {
 			continue
@@ -128,7 +143,7 @@ func readState(ctx context.Context, commonDir string, remoteTrunk bool) (State, 
 			Parents:      []Ref{{Ref: row.parent, SHA: row.parentRevision}},
 		}
 	}
-	return state, nil
+	return state, orphans, nil
 }
 
 type branchRow struct {
@@ -251,6 +266,14 @@ type Row struct {
 	Parent   string
 	Stale    bool
 	Diverged bool
+}
+
+// Orphan is a live branch whose recorded parent has no ref left, which is where
+// deleting a parent's branch after it landed leaves its child. Read drops it.
+type Orphan struct {
+	Branch         string
+	Parent         string
+	ParentRevision string
 }
 
 // Rows reports every branch gt tracks, including the ones Read drops.
