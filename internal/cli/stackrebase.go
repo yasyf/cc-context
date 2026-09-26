@@ -36,10 +36,7 @@ const (
 	stackStaleAfter     = 5 * time.Minute
 )
 
-// stackGitNoRerere keeps every rebase this command drives from replaying a
-// recorded resolution, which silently resolves a conflict with a stale side,
-// and from moving branch refs ahead of the one transaction that writes them.
-var stackGitNoRerere = []string{"-c", "rerere.enabled=false", "-c", "rebase.updateRefs=false", "-c", "core.editor=true"}
+var stackGitRebaseArgs = []string{"-c", "rerere.enabled=false", "-c", "rebase.updateRefs=false", "-c", "core.editor=true", "-c", "core.hooksPath=/dev/null"}
 
 type stackPR struct {
 	Number    int      `json:"number"`
@@ -1644,10 +1641,10 @@ func stackOpenConflict(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	if err := os.MkdirAll(filepath.Dir(ws), 0o750); err != nil {
 		return fmt.Errorf("stack rebase: mint the conflict workspace: %w", err)
 	}
-	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "add", "--detach", ws, b.Head}); err != nil {
+	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", ws, b.Head}); err != nil {
 		return fmt.Errorf("stack rebase: git worktree add %s: %w", ws, err)
 	}
-	argv := append(slices.Clone(stackGitNoRerere), "rebase", "--onto", b.NewBase, b.OldBase)
+	argv := append(slices.Clone(stackGitRebaseArgs), "rebase", "--onto", b.NewBase, b.OldBase)
 	_, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(ws), "git", argv)
 	if err != nil {
 		return fmt.Errorf("stack rebase: git rebase in %s: %w", ws, err)
@@ -1717,7 +1714,7 @@ func stackAdvance(ctx context.Context, cmd *cobra.Command, run *stackRebaseRun, 
 				return err
 			}
 		}
-		argv := append(slices.Clone(stackGitNoRerere), "rebase", "--continue")
+		argv := append(slices.Clone(stackGitRebaseArgs), "rebase", "--continue")
 		_, code, stderr, err := render.RunCLIExitCode(ctx, ws, "git", argv)
 		if err != nil {
 			return fmt.Errorf("stack rebase: git rebase --continue in %s: %w", ws, err)
@@ -1856,7 +1853,7 @@ func stackContinueStranded(ctx context.Context, cmd *cobra.Command) error {
 	if len(unmerged) > 0 {
 		return fmt.Errorf("stack continue: %s still has unresolved files: %s — resolve them, git add them, then run ccx vcs stack continue again", ws, strings.Join(unmerged, ", "))
 	}
-	argv := append(slices.Clone(stackGitNoRerere), "rebase", "--continue")
+	argv := append(slices.Clone(stackGitRebaseArgs), "rebase", "--continue")
 	_, code, stderr, err := render.RunCLIExitCode(ctx, ws, "git", argv)
 	if err != nil {
 		return fmt.Errorf("stack continue: git rebase --continue in %s: %w", ws, err)
