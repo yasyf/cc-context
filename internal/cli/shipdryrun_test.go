@@ -261,6 +261,22 @@ func TestShipDryRunNamesTheDerivedTitles(t *testing.T) {
 	}
 }
 
+func TestShipDryRunDropsALandedBranch(t *testing.T) {
+	f := dryRunFixture(t)
+	stub := stubGTAPI(t)
+	stub.prs["b"] = 22285
+
+	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--landed", "a")
+
+	creates := dryRunValues(report, "pr new")
+	if want := []string{"c" + shipSep + `opens a pull request titled "c"`}; !slices.Equal(creates, want) {
+		t.Errorf("pr new lines = %v, want %v", creates, want)
+	}
+	if notes := strings.Join(dryRunValues(report, "note"), " | "); !strings.Contains(notes, "a is dropped as landed (--landed)") {
+		t.Errorf("notes = %q, want a named as dropped", notes)
+	}
+}
+
 // TestShipDryRunNamesTheRewrittenPaths proves the report names the file whose
 // content the replay decides rather than the caller: b dropped the rendered
 // file, a has re-rendered it since, and which copy survives the restack is not

@@ -438,6 +438,12 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 	if err != nil {
 		return err
 	}
+	for _, branch := range o.landed {
+		if slices.Contains(chain, branch) {
+			r.notes = append(r.notes, branch+" is dropped as landed (--landed), so the submit neither pushes it nor opens its pull request")
+		}
+	}
+	chain = slices.DeleteFunc(chain, func(branch string) bool { return slices.Contains(o.landed, branch) })
 	holders, err := vcs.BranchHolders(ctx, l.checkout)
 	if err != nil {
 		return fmt.Errorf("ship: %w", err)
