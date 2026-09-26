@@ -6429,10 +6429,10 @@ func TestShipGTRefusesAShippedBranchTrunkContains(t *testing.T) {
 	}
 }
 
-// TestGTTrackRefusesALandedParent stops the corruption at its source: gt track
+// TestGTTrackMovesOffALandedParent stops the corruption at its source: gt track
 // -f adopts onto the most recent tracked ancestor, and in a repository carrying
 // stale worktree branches that ancestor routinely holds nothing trunk lacks.
-func TestGTTrackRefusesALandedParent(t *testing.T) {
+func TestGTTrackMovesOffALandedParent(t *testing.T) {
 	const stack = `{"main":{"trunk":true},"junk":{"parents":[{"ref":"main","sha":"deadbeef"}]},` +
 		`"feature":{"parents":[{"ref":"junk","sha":"beadfeed"}]}}`
 	tests := []struct {
@@ -6441,15 +6441,14 @@ func TestGTTrackRefusesALandedParent(t *testing.T) {
 		contained string
 		noTrunk   bool
 		wantSeg   string
-		wantErr   string
+		wantOnto  string
 	}{
 		{
-			name:      "a parent the remote trunk contains is refused",
+			name:      "a parent the remote trunk contains gives way to trunk",
 			stateJSON: stack,
 			contained: "refs/heads/junk",
-			wantErr: "ship: gt track adopted feature onto junk, which origin/main already contains — that parent holds no commit of its own, " +
-				"so a stack built on it submits a pull request graphite refuses; name a real parent with --parent <branch>, " +
-				"or clear the stale branch out with ccx vcs prune",
+			wantSeg:   "tracked feature onto main (gt track picked junk, which origin/main already contains)",
+			wantOnto:  "main",
 		},
 		{
 			name:      "a parent carrying its own commits is adopted",
@@ -6481,18 +6480,15 @@ func TestGTTrackRefusesALandedParent(t *testing.T) {
 
 			c := newGTCache(render.Dir(workingDir(t.Context())), "ship")
 			var errW bytes.Buffer
-			_, seg, err := gtTrack(t.Context(), &errW, lane{}, shipOpts{}, "feature", c)
-			if tt.wantErr != "" {
-				if err == nil || err.Error() != tt.wantErr {
-					t.Fatalf("error = %v, want %q", err, tt.wantErr)
-				}
-				return
-			}
+			state, seg, err := gtTrack(t.Context(), &errW, lane{}, shipOpts{}, "feature", c)
 			if err != nil {
 				t.Fatalf("gtTrack error = %v", err)
 			}
 			if seg != tt.wantSeg {
 				t.Errorf("segment = %q, want %q", seg, tt.wantSeg)
+			}
+			if tt.wantOnto != "" && state["feature"].Parents[0].Ref != tt.wantOnto {
+				t.Errorf("feature recorded on %s, want %s", state["feature"].Parents[0].Ref, tt.wantOnto)
 			}
 		})
 	}

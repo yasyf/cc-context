@@ -648,12 +648,36 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 	seg := "tracked " + branch
 	if len(s.Parents) > 0 {
 		parent := s.Parents[0].Ref
-		if err := gtRefuseLandedParent(ctx, c.dir, state, branch, parent); err != nil {
+		err := gtRefuseLandedParent(ctx, c.dir, state, branch, parent)
+		var landed *errLandedParent
+		if errors.As(err, &landed) {
+			return gtAdoptOntoTrunk(ctx, c, landed, replayed)
+		}
+		if err != nil {
 			return nil, "", err
 		}
 		seg += " onto " + parent
 	}
 	return state, seg + replayed, nil
+}
+
+// gtAdoptOntoTrunk records a branch gt track -f adopted onto a landed parent
+// on trunk instead: the parent's head is already in the remote trunk, so the
+// branch's own commits are exactly the ones above trunk.
+func gtAdoptOntoTrunk(ctx context.Context, c *gtCache, landed *errLandedParent, replayed string) (gtState, string, error) {
+	commonDir, err := c.common(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := gtmeta.Reparent(ctx, commonDir, map[string]string{landed.Branch: landed.Trunk}); err != nil {
+		return nil, "", fmt.Errorf("ship: %w", err)
+	}
+	c.forget()
+	state, err := c.at(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	return state, fmt.Sprintf("tracked %s onto %s (gt track picked %s, which %s/%s already contains)%s", landed.Branch, landed.Trunk, landed.Parent, landed.Remote, landed.Trunk, replayed), nil
 }
 
 func gtRootBase(ctx context.Context, dir render.Dir, branch, trunk string) (head, base string, root bool, err error) {
