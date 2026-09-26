@@ -207,6 +207,29 @@ func TestStackAbortEndsAnAppliedRunAnOlderShipLeft(t *testing.T) {
 	stackAssertNoRun(t, f)
 }
 
+func TestStackAbortEndsARunWhoseCheckoutWasRemoved(t *testing.T) {
+	f := stackRebaseRepo(t, "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	_, rewritten := stackPlantLegacyApplied(t, f, time.Minute)
+	run, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Origin = filepath.Join(t.TempDir(), "removed-lane")
+	if err := stackSaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, err := runStackCmd(t, f, "abort", "--stack", "feature")
+	if err != nil || !strings.HasPrefix(out, "aborted · an older ccx rewrote these branches in place") {
+		t.Fatalf("abort of a run whose checkout is gone = %q, %v, want it dropped", out, err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != rewritten {
+		t.Errorf("feature = %s, want it left at %s", got, rewritten)
+	}
+	stackAssertNoRun(t, f)
+}
+
 func TestStackRebaseReclaimsAnAppliedRunAnOlderShipLeft(t *testing.T) {
 	f := stackRebaseRepo(t, "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
