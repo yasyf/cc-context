@@ -592,7 +592,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	for _, name := range order {
 		b := byName[name]
 		if o.tip != "" && name != o.tip && b.Landed == "" && b.Held == "" {
-			if b.Kept, err = stackKeepsAncestor(b, kept[b.Parent], o.tipOnly); err != nil {
+			if b.Kept, err = stackKeepsAncestor(ctx, l.dir(), pin, b, kept[b.Parent], o.tipOnly); err != nil {
 				return nil, err
 			}
 			kept[name] = b.Kept
@@ -1060,20 +1060,32 @@ func stackRefuseDroppedCommits(ctx context.Context, dir render.Dir, tr vcs.Trunk
 }
 
 // stackKeepsAncestor leaves a ship's ancestor at the head its pull request
-// already shows: a force-push of a mergeable pull request onto newer trunk
-// dismisses its approvals for nothing. --tip-only keeps every published
-// ancestor, whatever moved under it.
-func stackKeepsAncestor(b *stackRebaseBranch, parentKept, tipOnly bool) (bool, error) {
-	if tipOnly {
-		if b.Remote == "" {
+// already shows: a force-push of a pull request that does not conflict onto
+// newer trunk dismisses its approvals for nothing. A local head that only
+// replays the published commits onto newer trunk, as a restack leaves it, is
+// kept at the published head. --tip-only keeps every published ancestor,
+// whatever moved under it.
+func stackKeepsAncestor(ctx context.Context, dir render.Dir, pin string, b *stackRebaseBranch, parentKept, tipOnly bool) (bool, error) {
+	if b.Remote == "" {
+		if tipOnly {
 			return false, fmt.Errorf("stack rebase: --tip-only ships onto %s's published head, and it has none — push it first", b.Name)
 		}
-		b.Head, b.HeadRef = b.Remote, stackTempRef(b.Name)
-		return true, nil
+		return false, nil
 	}
-	pr := b.PR
-	return parentKept && b.Parent == b.WasParent && b.Remote != "" && b.Head == b.Remote &&
-		pr != nil && pr.State == "OPEN" && pr.Mergeable == "MERGEABLE", nil
+	if !tipOnly {
+		pr := b.PR
+		if !parentKept || b.Parent != b.WasParent || pr == nil || pr.State != "OPEN" || pr.Mergeable == "CONFLICTING" {
+			return false, nil
+		}
+		if b.Head != b.Remote {
+			replays, err := stackRemoteReplays(ctx, dir, b.Head, b.Remote, pin)
+			if err != nil || !replays {
+				return false, err
+			}
+		}
+	}
+	b.Head, b.HeadRef = b.Remote, stackTempRef(b.Name)
+	return true, nil
 }
 
 func stackOwnRemote(ctx context.Context, dir render.Dir, name, local, remote, pin string) (bool, error) {
