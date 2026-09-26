@@ -1158,7 +1158,6 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		infos, infoErr = client.PullRequestInfo(gctx, gtapi.PullRequestInfoRequest{
 			RepoOwner:        owner,
 			RepoName:         name,
-			PRNumbers:        []int{},
 			PRHeadRefNames:   branches,
 			TrunkBranchNames: []string{tr.Name()},
 			Callsite:         "ccx",

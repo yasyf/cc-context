@@ -155,6 +155,63 @@ func TestPullRequestInfo(t *testing.T) {
 	}
 }
 
+func TestPullRequestInfoRequestSendsPRNumbersAsAnArray(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		numbers []int
+		want    string
+	}{
+		{"nil", nil, "[]"},
+		{"empty", []int{}, "[]"},
+		{"named", []int{25982}, "[25982]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(PullRequestInfoRequest{RepoOwner: "Forge-AI", RepoName: "monorepo", PRNumbers: tc.numbers, PRHeadRefNames: []string{"demeter2-golive"}, Consistent: true})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var sent map[string]json.RawMessage
+			if err := json.Unmarshal(data, &sent); err != nil {
+				t.Fatalf("unmarshal %s: %v", data, err)
+			}
+			if got := string(sent["prNumbers"]); got != tc.want {
+				t.Errorf("prNumbers = %s, want %s", got, tc.want)
+			}
+			if got := string(sent["prHeadRefNames"]); got != `["demeter2-golive"]` {
+				t.Errorf("prHeadRefNames = %s, want [\"demeter2-golive\"]", got)
+			}
+		})
+	}
+}
+
+func TestPullRequestInfoByHeadRefAloneIsAccepted(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent := decodeBody(t, r)
+		if _, ok := sent["prNumbers"].([]any); !ok {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, "Bad Request")
+			return
+		}
+		_, _ = fmt.Fprint(w, pullRequestInfoFixture)
+	}))
+	t.Cleanup(ts.Close)
+
+	got, err := testClient(ts.URL).PullRequestInfo(context.Background(), PullRequestInfoRequest{
+		RepoOwner:      "Forge-AI",
+		RepoName:       "monorepo",
+		PRHeadRefNames: []string{"yasyf/park-across-deploys"},
+		Consistent:     true,
+		Callsite:       "ccx",
+	})
+	if err != nil {
+		t.Fatalf("PullRequestInfo: %v", err)
+	}
+	if len(got) != 1 || got[0].HeadRefName != "yasyf/park-across-deploys" {
+		t.Errorf("prs = %+v, want the one yasyf/park-across-deploys record", got)
+	}
+}
+
 func TestPullRequestInfoErrorResultIsTyped(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `{"result":{"status":"error","message":"repo not found"}}`)
