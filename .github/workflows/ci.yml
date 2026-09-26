@@ -22,9 +22,9 @@ permissions:
 
 env:
   CLI_SHARDS: 8
-  # internal/web and the semsearch tree are 163s of the other packages' 279s.
-  # The light leg is their complement, so no package can fall outside both.
-  HEAVY_PKGS: internal/web|internal/semsearch
+  # Measured on ubuntu-latest CI: 119s of test time against the other packages'
+  # 119s. The light leg is their complement, so no package falls outside both.
+  HEAVY_PKGS: internal/web|internal/semsearch/chunk|internal/semsearch/embed|internal/gtmeta
 
 jobs:
   testbin:
