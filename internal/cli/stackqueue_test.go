@@ -67,3 +67,29 @@ func TestStackSubmitNeverPushesAQueuedBranch(t *testing.T) {
 		t.Fatalf("stack rebase --parent base=main of a queued base = %v, want a refusal", err)
 	}
 }
+
+// TestShipNewBranchOnAnOpenParentReadsTheQueue is hot-deploy's #25973: ship
+// --new-branch stacked on a parent with an open pull request refused, because
+// the merge queue read sent a null prNumbers and graphite answered 400.
+func TestShipNewBranchOnAnOpenParentReadsTheQueue(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	shipGTStack(t, f, "p")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	api.prs["p"] = 100
+	stubStackPRs(t, map[string]*stackPR{"p": {Number: 100, Title: "p", State: "OPEN", Base: "main"}})
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "p")
+	shipGTReady(t, f)
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--new-branch=bench", "f.txt"); err != nil {
+		t.Fatalf("ship --new-branch=bench = %v (stderr=%q)", err, errStr)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "p"); got != published {
+		t.Errorf("origin p moved to %s, want its published %s left alone", got, published)
+	}
+	if !stackOnto(t, f, published, gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "bench")) {
+		t.Error("origin bench does not sit on p's published head")
+	}
+}

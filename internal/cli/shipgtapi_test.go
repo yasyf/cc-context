@@ -131,9 +131,14 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 		s.write(w, map[string]any{"result": map[string]any{"status": s.synced, "message": s.syncMessage}})
 	case "/graphite/cli/pull-request-info":
 		var req struct {
-			PRHeadRefNames []string `json:"prHeadRefNames"`
+			PRNumbers      json.RawMessage `json:"prNumbers"`
+			PRHeadRefNames []string        `json:"prHeadRefNames"`
 		}
 		s.decode(r, &req)
+		if !bytes.HasPrefix(req.PRNumbers, []byte("[")) {
+			s.refuse(w, fmt.Sprintf("pull-request-info prNumbers = %s, and graphite answers 400 unless it is an array", cmp.Or(string(req.PRNumbers), "absent")))
+			return
+		}
 		s.infoHeads = append(s.infoHeads, req.PRHeadRefNames)
 		prs := []map[string]any{}
 		for _, branch := range req.PRHeadRefNames {
