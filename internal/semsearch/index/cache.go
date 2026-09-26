@@ -62,18 +62,18 @@ type persisted struct {
 }
 
 // cacheDir resolves the per-repo cache directory, keyed by the sha256 of the
-// resolved absolute repo path under cache.DirFrom(ctx, "semsearch") — semble's
+// resolved absolute repo path under cache.Dir(ctx, "semsearch") — semble's
 // find_index_from_cache_folder scheme.
 func cacheDir(ctx context.Context, root string) (string, error) {
 	sum := sha256.Sum256([]byte(root))
-	return cache.DirFrom(ctx, "semsearch", hex.EncodeToString(sum[:]))
+	return cache.Dir(ctx, "semsearch", hex.EncodeToString(sum[:]))
 }
 
 func variantCacheDir(ctx context.Context, root, model, content, chunker string, dims int) (string, error) {
 	repoKey := sha256.Sum256([]byte(root))
 	parameters := fmt.Sprintf("%d %q %q %q %d", schemaVersion, model, content, chunker, dims)
 	variantKey := sha256.Sum256([]byte(parameters))
-	return cache.DirFrom(ctx, "semsearch", hex.EncodeToString(repoKey[:]), hex.EncodeToString(variantKey[:]))
+	return cache.Dir(ctx, "semsearch", hex.EncodeToString(repoKey[:]), hex.EncodeToString(variantKey[:]))
 }
 
 // CacheDir resolves the persistent index-cache directory for root.

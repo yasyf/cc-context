@@ -102,7 +102,7 @@ func parsePDF(ctx context.Context, data []byte) (string, error) {
 // content-addressed so a ccx upgrade never runs a stale driver. A cache hit is
 // trusted only after its bytes match the embedded source.
 func pdfDriverPath(ctx context.Context) (string, error) {
-	dir, err := cache.DirFrom(ctx, "web")
+	dir, err := cache.Dir(ctx, "web")
 	if err != nil {
 		return "", err
 	}

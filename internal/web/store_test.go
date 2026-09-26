@@ -70,7 +70,7 @@ func mustLoad(ctx context.Context, t *testing.T, url, model string) *Page {
 
 func webPagePath(ctx context.Context, t *testing.T, normURL string) string {
 	t.Helper()
-	dir, err := cache.DirFrom(ctx, "web")
+	dir, err := cache.Dir(ctx, "web")
 	if err != nil {
 		t.Fatalf("cache dir: %v", err)
 	}
@@ -79,7 +79,7 @@ func webPagePath(ctx context.Context, t *testing.T, normURL string) string {
 
 func webCacheBytes(ctx context.Context, t *testing.T) int64 {
 	t.Helper()
-	dir, err := cache.DirFrom(ctx, "web")
+	dir, err := cache.Dir(ctx, "web")
 	if err != nil {
 		t.Fatalf("cache dir: %v", err)
 	}
@@ -489,7 +489,7 @@ func TestSaveLeavesNoTempFiles(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	dir, err := cache.Dir("web")
+	dir, err := cache.Dir(ctx, "web")
 	if err != nil {
 		t.Fatalf("cache dir: %v", err)
 	}
@@ -533,7 +533,7 @@ func TestEvictRemovesOldestUntilUnderCap(t *testing.T) {
 		}
 	}
 
-	dir, err := cache.Dir("web")
+	dir, err := cache.Dir(ctx, "web")
 	if err != nil {
 		t.Fatalf("cache dir: %v", err)
 	}

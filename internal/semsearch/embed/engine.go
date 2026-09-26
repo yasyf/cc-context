@@ -368,7 +368,7 @@ func compileModule(ctx context.Context) (wazero.Runtime, wazero.CompilationCache
 	ctx, cancel := context.WithTimeout(ctx, compileTimeout)
 	defer cancel()
 
-	dir, err := cache.DirFrom(ctx, "wasm")
+	dir, err := cache.Dir(ctx, "wasm")
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("resolve wasm cache dir: %w", err)
 	}

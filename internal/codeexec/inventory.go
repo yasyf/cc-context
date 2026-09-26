@@ -91,7 +91,7 @@ type diskInventoryStore struct {
 // keyed by the project root, resolved per call so a root switch reads its own
 // record rather than the previous root's.
 func NewDiskInventoryStore(ctx context.Context) (InventoryStore, error) {
-	dir, err := cache.DirFrom(ctx, "exec")
+	dir, err := cache.Dir(ctx, "exec")
 	if err != nil {
 		return nil, fmt.Errorf("resolve exec cache dir: %w", err)
 	}

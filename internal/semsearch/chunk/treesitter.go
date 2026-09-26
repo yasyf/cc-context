@@ -108,7 +108,7 @@ func loadTSEngine(ctx context.Context) (*tsEngine, error) {
 	ctx, cancel := context.WithTimeout(ctx, tsInitTimeout)
 	defer cancel()
 
-	dir, err := cache.DirFrom(ctx, "wasm")
+	dir, err := cache.Dir(ctx, "wasm")
 	if err != nil {
 		return nil, fmt.Errorf("resolve wasm cache dir: %w", err)
 	}

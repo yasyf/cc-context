@@ -137,7 +137,7 @@ func RepoCachePath(ctx context.Context, root string) (string, error) {
 		return "", err
 	}
 	sum := sha256.Sum256([]byte(c.RepoKey()))
-	dir, err := cache.DirFrom(ctx, "github", hex.EncodeToString(sum[:]))
+	dir, err := cache.Dir(ctx, "github", hex.EncodeToString(sum[:]))
 	if err != nil {
 		return "", err
 	}
@@ -179,7 +179,7 @@ func fetchRepo(ctx context.Context, root render.Dir, refresh bool) (Repo, error)
 // lookupViewer reads the signed-in account, cached machine-wide on the same TTL
 // as a repo record: the login and org list are identical for every repository.
 func lookupViewer(ctx context.Context, refresh bool) (viewer, error) {
-	dir, err := cache.DirFrom(ctx, "github")
+	dir, err := cache.Dir(ctx, "github")
 	if err != nil {
 		return viewer{}, err
 	}

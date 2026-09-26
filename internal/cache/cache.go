@@ -11,16 +11,10 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 )
 
-// Dir is [DirFrom] against the process environment, for a caller with no
-// context to resolve the cache against.
-func Dir(sub ...string) (string, error) {
-	return dirUnder(os.Getenv("CLAUDE_PLUGIN_DATA"), sub...)
-}
-
-// DirFrom resolves (and creates) the cache directory joined from sub, rooted at
+// Dir resolves (and creates) the cache directory joined from sub, rooted at
 // the $CLAUDE_PLUGIN_DATA ctx carries for its children when set, else the
 // process's, else the user cache dir under "cc-context".
-func DirFrom(ctx context.Context, sub ...string) (string, error) {
+func Dir(ctx context.Context, sub ...string) (string, error) {
 	return dirUnder(render.Getenv(ctx, "CLAUDE_PLUGIN_DATA"), sub...)
 }
 

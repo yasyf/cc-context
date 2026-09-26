@@ -98,7 +98,7 @@ func newCompilerRuntime(ctx context.Context, compilationCache wazero.Compilation
 // initEngine resolves the on-disk compilation cache and compiles the module
 // behind wazero's compiler backend.
 func initEngine(ctx context.Context) (*engine, error) {
-	dir, err := cache.DirFrom(ctx, "wasm")
+	dir, err := cache.Dir(ctx, "wasm")
 	if err != nil {
 		return nil, fmt.Errorf("resolve wasm cache dir: %w", err)
 	}

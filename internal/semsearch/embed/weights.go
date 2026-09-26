@@ -46,12 +46,12 @@ type modelBlobs struct {
 }
 
 // resolveWeights returns the pinned model blobs, downloading any that are
-// missing or checksum-stale into cache.DirFrom(ctx, "semsearch", "models",
+// missing or checksum-stale into cache.Dir(ctx, "semsearch", "models",
 // <repo>, pin.Revision) — namespaced by repo and revision so model pins never
 // collide. The whole resolve runs under a cross-process lock so concurrent
 // engines never race the same download.
 func resolveWeights(ctx context.Context, pin ModelPin) (*modelBlobs, error) {
-	dir, err := cache.DirFrom(ctx, "semsearch", "models", sanitizeRepo(pin.Repo), pin.Revision)
+	dir, err := cache.Dir(ctx, "semsearch", "models", sanitizeRepo(pin.Repo), pin.Revision)
 	if err != nil {
 		return nil, fmt.Errorf("resolve model cache dir: %w", err)
 	}

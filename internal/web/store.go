@@ -53,7 +53,7 @@ var timeNow = time.Now
 func Save(ctx context.Context, page *Page) error {
 	page.Version = schemaVersion
 
-	dir, err := cache.DirFrom(ctx, "web")
+	dir, err := cache.Dir(ctx, "web")
 	if err != nil {
 		return fmt.Errorf("resolve web cache dir: %w", err)
 	}
@@ -94,7 +94,7 @@ func Save(ctx context.Context, page *Page) error {
 // cache line is never served. embedModel is the caller's current embedding
 // model; passing "" disables the model check (embeddings unavailable this run).
 func Load(ctx context.Context, normURL, embedModel string) (*Page, error) {
-	dir, err := cache.DirFrom(ctx, "web")
+	dir, err := cache.Dir(ctx, "web")
 	if err != nil {
 		return nil, fmt.Errorf("resolve web cache dir: %w", err)
 	}

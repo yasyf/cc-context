@@ -93,7 +93,7 @@ func (d *driverProc) kill() {
 // alone would let anything that can write the cache dir swap in its own
 // driver for every later run.
 func driverPath(ctx context.Context) (string, error) {
-	dir, err := cache.DirFrom(ctx, "codeexec")
+	dir, err := cache.Dir(ctx, "codeexec")
 	if err != nil {
 		return "", err
 	}
