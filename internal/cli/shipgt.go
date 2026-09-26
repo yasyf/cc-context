@@ -1148,6 +1148,9 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		return nil, nil, err
 	}
 	for _, branch := range branches {
+		if s.publication != nil && s.publication.branch(branch) != nil && s.publication.branch(branch).Kept {
+			continue
+		}
 		parent := state[branch].Parents[0].Ref
 		parentHead := state[parent].Head
 		if parent == tr.Name() && s.trunkHead != "" {

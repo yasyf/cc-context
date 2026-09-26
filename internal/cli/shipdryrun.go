@@ -462,6 +462,10 @@ func dryRunPlanned(ctx context.Context, l lane, state gtState, r *shipDryRun) (g
 // does to the branches above it, which the run never announces.
 func dryRunMoves(state gtState, chain []string, holders map[string]string, o shipOpts, r *shipDryRun) {
 	movers, held := gtRestackPlan(state, gtBottomUp(chain))
+	if o.tipOnly {
+		movers = slices.DeleteFunc(movers, func(branch string) bool { return branch != r.branch })
+		r.notes = append(r.notes, "--tip-only ships "+r.branch+" onto its parent's published head and pushes no ancestor")
+	}
 	for _, branch := range movers {
 		why := "its parent moves under it"
 		if state[branch].NeedsRestack {

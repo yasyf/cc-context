@@ -70,6 +70,7 @@ type stackRebaseBranch struct {
 	Publication *stackPublication `json:"publication,omitempty"`
 	Landed      string            `json:"landed,omitempty"`
 	Held        string            `json:"held,omitempty"`
+	Kept        bool              `json:"kept,omitempty"`
 	PR          *stackPR          `json:"pr,omitempty"`
 	NewBase     string            `json:"new_base,omitempty"`
 	NewHead     string            `json:"new_head,omitempty"`
@@ -90,6 +91,9 @@ type stackRebaseRun struct {
 	Origin      string `json:"origin"`
 	Draft       bool   `json:"draft,omitempty"`
 	NoVerify    bool   `json:"no_verify,omitempty"`
+	Tip         string `json:"tip,omitempty"`
+	TipOnly     bool   `json:"tip_only,omitempty"`
+	DropCommits bool   `json:"drop_commits,omitempty"`
 	deferPush   bool
 	Ship        *stackShipIntent         `json:"ship,omitempty"`
 	Aligned     bool                     `json:"aligned,omitempty"`
@@ -135,20 +139,25 @@ func (r *stackRebaseRun) headOf(name string) string {
 }
 
 type stackRebaseOpts struct {
-	parents   []string
-	linearize []string
-	landed    []string
-	dryRun    bool
-	noPush    bool
-	members   []string
-	draft     bool
-	noVerify  bool
-	deferPush bool
-	vetted    map[string]string
-	replayed  map[string]stackRebaseBranch
-	result    **stackRebaseRun
-	ship      *stackShipIntent
+	parents     []string
+	linearize   []string
+	landed      []string
+	dryRun      bool
+	noPush      bool
+	members     []string
+	draft       bool
+	noVerify    bool
+	deferPush   bool
+	vetted      map[string]string
+	replayed    map[string]stackRebaseBranch
+	result      **stackRebaseRun
+	ship        *stackShipIntent
+	tip         string
+	tipOnly     bool
+	dropCommits bool
 }
+
+const stackDropCommitsUsage = "publish a branch whose local head drops commits its published head carries"
 
 // stackPRLookup is a var so tests answer for GitHub.
 var stackPRLookup = stackQueryPRs
@@ -191,6 +200,7 @@ names its pushed head, parent, and mergeability. Labels are never touched.`,
 	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it (repeatable)")
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "print the plan and move nothing")
 	cmd.Flags().BoolVar(&o.noPush, "no-push", false, "rewrite the local stack and gt's record, but push nothing")
+	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
 	return cmd
 }
 
@@ -494,7 +504,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left}
 	byName := map[string]*stackRebaseBranch{}
 	for _, name := range members {
 		ours := submitted[name].HeadSha
@@ -526,7 +536,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			}
 			effective.Head = prepared.NewHead
 		}
-		b, err := stackSnapshot(ctx, l.dir(), tr, effective, name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin)
+		b, err := stackSnapshot(ctx, l.dir(), tr, effective, name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin, o.dropCommits)
 		if err != nil {
 			return nil, err
 		}
@@ -572,13 +582,24 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
+	kept := map[string]bool{trunk: true}
 	for _, name := range order {
 		b := byName[name]
+		if o.tip != "" && name != o.tip && b.Landed == "" && b.Held == "" {
+			if b.Kept, err = stackKeepsAncestor(b, kept[b.Parent], o.tipOnly); err != nil {
+				return nil, err
+			}
+			kept[name] = b.Kept
+		}
 		if b.Landed == "" && b.Held == "" {
 			if b.OldBase == "" {
 				if b.OldBase, err = stackOldBase(ctx, l.dir(), trunk, pin, state, b, byName); err != nil {
 					return nil, err
 				}
+			}
+			if b.Kept {
+				run.Branches = append(run.Branches, *b)
+				continue
 			}
 			if err := stackOwnWork(ctx, l.dir(), tr, pin, b); err != nil {
 				return nil, err
@@ -920,7 +941,7 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branch
 // stackSnapshot takes a remote that equals the branch's last submitted head
 // as ours even when local no longer contains it: every rewrite a rebase or
 // restack makes diverges from the head it last pushed.
-func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, name, remote, submitted string, pr *stackPR, declared bool, pin string) (stackRebaseBranch, error) {
+func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, name, remote, submitted string, pr *stackPR, declared bool, pin string, dropCommits bool) (stackRebaseBranch, error) {
 	b := stackRebaseBranch{
 		Name: name, WasParent: s.Parents[0].Ref, Local: s.Head, Remote: remote,
 		Head: s.Head, HeadRef: gtRestackRef(name), PR: pr, Held: s.State,
@@ -957,6 +978,11 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 			}
 			return b, fmt.Errorf("stack rebase: %s has diverged from %s/%s (local %.12s, remote %.12s) — someone pushed to it; reconcile the two by hand, then re-run", name, tr.Remote(), name, s.Head, remote)
 		}
+		if !ahead && !behind && !dropCommits {
+			if err := stackRefuseDroppedCommits(ctx, dir, tr, name, s.Head, remote, pin); err != nil {
+				return b, err
+			}
+		}
 	}
 	contained, err := gitIsAncestor(ctx, dir, stackRebasePrefix, b.Head, pin)
 	if err != nil {
@@ -987,6 +1013,56 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 		return b, fmt.Errorf("stack rebase: %s's pull request #%d closed without landing — reopen it, drop the branch with ccx vcs stack drop %s, or pass --landed %s if it did land", name, pr.Number, name, name)
 	}
 	return b, nil
+}
+
+// stackRefuseDroppedCommits refuses a local head that leaves out commits its
+// published head carries, matched by subject so a rebase or an amend still
+// passes: a hard reset onto the wrong commit would otherwise force-push over the
+// pull request's work.
+func stackRefuseDroppedCommits(ctx context.Context, dir render.Dir, tr vcs.Trunk, name, local, remote, pin string) error {
+	subjects := func(head string) ([]string, error) {
+		out, err := render.RunCLI(ctx, dir, "git", []string{"log", "--no-merges", "--format=%s", head, "^" + pin})
+		if err != nil {
+			return nil, fmt.Errorf("%s: git log %.12s: %w", stackRebasePrefix, head, err)
+		}
+		return strings.Split(strings.TrimSpace(out), "\n"), nil
+	}
+	kept, err := subjects(local)
+	if err != nil {
+		return err
+	}
+	published, err := subjects(remote)
+	if err != nil {
+		return err
+	}
+	var dropped []string
+	for _, subject := range published {
+		if subject != "" && !slices.Contains(kept, subject) {
+			dropped = append(dropped, fmt.Sprintf("%q", subject))
+		}
+	}
+	if len(dropped) == 0 {
+		return nil
+	}
+	return fmt.Errorf("stack rebase: %s's local head %.12s drops %d commit(s) its published head %s/%s (%.12s) carries: %s — restore them, or pass --drop-commits to publish the local head anyway",
+		name, local, len(dropped), tr.Remote(), name, remote, strings.Join(dropped, ", "))
+}
+
+// stackKeepsAncestor leaves a ship's ancestor at the head its pull request
+// already shows: a force-push of a mergeable pull request onto newer trunk
+// dismisses its approvals for nothing. --tip-only keeps every published
+// ancestor, whatever moved under it.
+func stackKeepsAncestor(b *stackRebaseBranch, parentKept, tipOnly bool) (bool, error) {
+	if tipOnly {
+		if b.Remote == "" {
+			return false, fmt.Errorf("stack rebase: --tip-only ships onto %s's published head, and it has none — push it first", b.Name)
+		}
+		b.Head, b.HeadRef = b.Remote, stackTempRef(b.Name)
+		return true, nil
+	}
+	pr := b.PR
+	return parentKept && b.Parent == b.WasParent && b.Remote != "" && b.Head == b.Remote &&
+		pr != nil && pr.State == "OPEN" && pr.Mergeable == "MERGEABLE", nil
 }
 
 func stackOwnRemote(ctx context.Context, dir render.Dir, name, local, remote, pin string) (bool, error) {
@@ -1212,6 +1288,8 @@ func stackPlanLines(run *stackRebaseRun) []string {
 			fields = append(fields, "drop ("+b.Landed+")")
 		case b.Held != "":
 			fields = append(fields, "left alone ("+b.Held+")")
+		case b.Kept:
+			fields = append(fields, fmt.Sprintf("kept at its published head %.12s", b.Head))
 		default:
 			parent := "onto " + b.Parent
 			if b.Parent != b.WasParent {
@@ -1238,6 +1316,10 @@ func stackDrive(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 		}
 		if b.Held != "" {
 			b.NewHead = b.Head
+			continue
+		}
+		if b.Kept {
+			b.NewBase, b.NewHead = b.OldBase, b.Head
 			continue
 		}
 		b.NewBase = run.headOf(b.Parent)
@@ -2026,6 +2108,7 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	}
 	next, err := stackPlan(ctx, l, commonDir, stackRebaseOpts{
 		members: members, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, noVerify: run.NoVerify, ship: run.Ship,
+		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits,
 	})
 	if err != nil {
 		return err

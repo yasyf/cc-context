@@ -161,6 +161,8 @@ the run leaves out, is refused before anything moves.`,
 	cmd.Flags().StringArrayVar(&o.prTitle, "pr-title", nil, "title for a pull request: <branch>=<title>, or a bare title for the branch checked out here (repeatable)")
 	cmd.Flags().StringArrayVar(&o.prBodyFile, "pr-body-file", nil, "body file for a pull request: <branch>=<path>, or a bare path for the branch checked out here; - reads stdin (repeatable)")
 	cmd.Flags().StringArrayVar(&include, "include", nil, "submit this branch even though another working copy has it checked out (repeatable)")
+	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it (repeatable)")
+	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
 	return cmd
 }
 
@@ -336,7 +338,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string) error {
 	if err := stackAnnounceSkipped(errW, skipped); err != nil {
 		return err
 	}
-	return runStackRebase(cmd, stackRebaseOpts{members: chain, draft: o.draft, ship: intent})
+	return runStackRebase(cmd, stackRebaseOpts{members: chain, landed: o.landed, draft: o.draft, ship: intent, dropCommits: o.dropCommits})
 }
 
 // stackSubmitIntent carries --pr-title and --pr-body-file into the run as a ship
