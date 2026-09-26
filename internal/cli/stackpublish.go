@@ -91,14 +91,17 @@ func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBran
 	if b.Landed != "" {
 		return nil
 	}
+	base, err := stackMergeBase(ctx, dir, receipt.Head, receipt.Base)
+	if err != nil {
+		return err
+	}
 	if b.Local == receipt.Head && b.Remote == receipt.Head {
-		b.OldBase = receipt.Base
-		b.SourceBase = receipt.Base
+		b.OldBase = base
+		b.SourceBase = base
 		return nil
 	}
-	base := receipt.Base
 	if b.Remote != receipt.Head {
-		replayed, err := stackReplayedOnto(ctx, dir, b.Remote, receipt.Base, receipt.Head)
+		replayed, err := stackReplayedOnto(ctx, dir, b.Remote, base, receipt.Head)
 		if err != nil {
 			return err
 		}
