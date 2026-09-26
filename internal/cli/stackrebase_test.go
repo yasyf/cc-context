@@ -1261,3 +1261,27 @@ func TestStackContinuePublishesARunSavedWithoutSourceBases(t *testing.T) {
 		})
 	}
 }
+
+func TestStackRebaseNamesTheRemotesRefusal(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	writeShipExecutable(t, filepath.Join(f.RemoteDir, "hooks"), "pre-receive", "#!/bin/sh\necho 'ref update refused by policy' >&2\nexit 1\n")
+	shipResetLog(t, f)
+
+	_, _, err := runStackCmd(t, f, "rebase")
+	if err == nil {
+		t.Fatal("stack rebase pushed past a declining remote")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"stack rebase: the atomic push of base, feature moved nothing: remote: ref update refused by policy; ! [remote rejected] ",
+		"-> feature (pre-receive hook declined) — source checkouts are untouched; run ccx vcs stack continue to resume publication",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("err = %q, want it to carry %q", msg, want)
+		}
+	}
+	if strings.Contains(msg, "Counting objects") {
+		t.Errorf("err = %q, want the transfer progress dropped", msg)
+	}
+}

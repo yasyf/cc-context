@@ -51,6 +51,25 @@ func gitPushStaleLease(err error) bool {
 	return strings.Contains(err.Error(), "(stale info)")
 }
 
+// gitPushVerdict is what a failed push's stderr says about the refusal: the
+// remote's own lines and each ref's verdict, without the transfer progress
+// that buries them.
+func gitPushVerdict(err error) string {
+	var kept []string
+	for _, line := range strings.FieldsFunc(err.Error(), func(r rune) bool { return r == '\n' || r == '\r' }) {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "remote:":
+		case strings.HasPrefix(line, "remote:"), strings.HasPrefix(line, "! ["), strings.HasPrefix(line, "fatal:"):
+			kept = append(kept, line)
+		}
+	}
+	if len(kept) == 0 {
+		return err.Error()
+	}
+	return strings.Join(kept, "; ")
+}
+
 // jjPushRejected reports whether err carries jj's rejection for a bookmark the
 // remote advanced past. jj parses git's porcelain records itself, so git's
 // human-form "! [rejected] … (non-fast-forward)" lines never surface here. It
