@@ -237,7 +237,7 @@ func dryRunTrack(ctx context.Context, l lane, o shipOpts, state gtState, r *ship
 			}
 		}
 	} else {
-		parent, err := dryRunNearestTracked(ctx, l, state, r.trunk, r.branch)
+		parent, err := gtNearestTracked(ctx, l.dir(), state, r.trunk, r.branch)
 		if err != nil {
 			return err
 		}
@@ -265,40 +265,6 @@ func dryRunLandedParent(ctx context.Context, l lane, state gtState, r *shipDryRu
 		return nil
 	}
 	return err
-}
-
-// dryRunNearestTracked is the branch gt track -f would adopt onto: of the
-// tracked branches this one already contains, the one every other candidate is
-// an ancestor of. Trunk is the floor, so a branch cut straight off it lands
-// there. One for-each-ref names every contained branch, so only those are
-// ordered, walked in name order, which keeps the answer the same across runs
-// when two of them are siblings rather than a chain.
-func dryRunNearestTracked(ctx context.Context, l lane, state gtState, trunk, branch string) (string, error) {
-	out, err := render.RunCLI(ctx, l.dir(), "git", []string{
-		"for-each-ref", "--merged=" + gtRestackRef(branch), "--format=%(refname)", "refs/heads/",
-	})
-	if err != nil {
-		return "", fmt.Errorf("ship: git for-each-ref --merged %s: %w", branch, err)
-	}
-	var names []string
-	for _, ref := range strings.Fields(out) {
-		name := strings.TrimPrefix(ref, "refs/heads/")
-		if _, tracked := state[name]; tracked && name != branch && name != trunk {
-			names = append(names, name)
-		}
-	}
-	slices.Sort(names)
-	nearest := trunk
-	for _, name := range names {
-		ahead, err := gitIsAncestor(ctx, l.dir(), "ship", gtRestackRef(nearest), gtRestackRef(name))
-		if err != nil {
-			return "", err
-		}
-		if ahead {
-			nearest = name
-		}
-	}
-	return nearest, nil
 }
 
 // dryRunPlace names the branch the commit lands on, through the same pure

@@ -4645,6 +4645,26 @@ func TestShipAppendFlag(t *testing.T) {
 
 // TestShipGTTrackReportsParent proves the parent gt track -f picked is named in
 // the report, and that --parent replaces -f rather than being overridden by it.
+func TestShipGTAdoptsPastATrackedBranchDeletedMidWalk(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	shipGTStack(t, f, "gone")
+	shipGTUntracked(t, f, "feature")
+	shipGTReady(t, f)
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "git"), "#!/bin/sh\nPATH=${PATH#"+bin+":}\n"+
+		"case \"$*\" in *for-each-ref\\ --merged=*) git \"$@\"; rc=$?; git update-ref -d refs/heads/gone; exit $rc ;; esac\n"+
+		"exec git \"$@\"\n")
+	f.PrependPATH(bin)
+
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if want := "tracked feature onto base · "; !strings.HasPrefix(got, want) {
+		t.Errorf("summary = %q, want it to lead with %q", got, want)
+	}
+}
+
 func TestShipGTTrackReportsParent(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -4654,8 +4674,8 @@ func TestShipGTTrackReportsParent(t *testing.T) {
 		wantSeg   string
 	}{
 		{
-			name:      "gt track -f reports the ancestor it picked",
-			wantTrack: []string{"gt", "track", "feature", "-f", "--no-interactive"},
+			name:      "an untracked branch is tracked onto the nearest tracked ancestor",
+			wantTrack: []string{"gt", "track", "feature", "--parent", "base", "--no-interactive"},
 			wantSeg:   "tracked feature onto base",
 		},
 		{
