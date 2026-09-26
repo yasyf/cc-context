@@ -506,8 +506,24 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
 	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left}
+	own := map[string]bool{}
+	if current != "" && current != trunk {
+		down, err := gtDownstack(stackRebasePrefix, retargeted, current, trunk)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range down {
+			own[name] = true
+		}
+	}
+	outside := map[string]bool{}
 	byName := map[string]*stackRebaseBranch{}
 	for _, name := range members {
+		if parent := retargeted[name].Parents[0].Ref; outside[parent] {
+			outside[name] = true
+			run.left = append(run.left, stackLeft{branch: name, why: "it sits on " + parent + ", which is left where it is"})
+			continue
+		}
 		ours := submitted[name].HeadSha
 		if vetted := o.vetted[name]; vetted != "" && vetted == remotes[name] {
 			ours = vetted
@@ -538,6 +554,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			effective.Head = prepared.NewHead
 		}
 		b, err := stackSnapshot(ctx, l.dir(), tr, effective, name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin, o.dropCommits)
+		if err != nil && len(own) > 0 && !own[name] {
+			outside[name] = true
+			run.left = append(run.left, stackLeft{branch: name, why: strings.TrimPrefix(err.Error(), stackRebasePrefix+": ")})
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -99,8 +100,33 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 		if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "--stdin"}, []byte(tx.String())); err != nil {
 			return fmt.Errorf("push: record %s's publication at %s: %w", branch, shortOID(head), err)
 		}
+		if err := vcsPushSubmitted(ctx, dir, *receipt); err != nil {
+			return err
+		}
 	}
 	cmd.Println(summary)
+	return nil
+}
+
+// vcsPushSubmitted moves Graphite's last submitted version to the receipt push
+// wrote, when there is one: a stack rebase refuses a receipt that disagrees with
+// it as a publication someone else changed.
+func vcsPushSubmitted(ctx context.Context, dir render.Dir, receipt stackPublication) error {
+	commonDir, err := gtCommonDir(ctx, dir, "push")
+	if err != nil {
+		return err
+	}
+	submitted, err := gtmeta.LastSubmitted(ctx, commonDir)
+	if err != nil {
+		return fmt.Errorf("push: %w", err)
+	}
+	if submitted[receipt.Branch] == (gtmeta.Version{}) {
+		return nil
+	}
+	version := gtmeta.Version{HeadSha: receipt.Head, BaseSha: receipt.Base, BaseName: receipt.Parent}
+	if err := gtmeta.RecordSubmitted(ctx, commonDir, map[string]gtmeta.Version{receipt.Branch: version}); err != nil {
+		return fmt.Errorf("push: record %s's submitted version at %s: %w", receipt.Branch, shortOID(receipt.Head), err)
+	}
 	return nil
 }
 
