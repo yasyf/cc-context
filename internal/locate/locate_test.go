@@ -310,7 +310,6 @@ func TestEncodeModulePath(t *testing.T) {
 }
 
 func TestCompareVersions(t *testing.T) {
-
 	tests := []struct {
 		name string
 		a, b string
