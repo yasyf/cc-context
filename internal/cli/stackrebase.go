@@ -1596,8 +1596,9 @@ func stackOpenConflict(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 }
 
 // stackAdvance drives the workspace's rebase to its end. A stop whose conflicts
-// are all declared generated paths is regenerated and continued; any other stop,
-// or a generator that fails, is left to the human with its brief.
+// are all declared generated paths regenerates every declared path the stopped
+// commit touches and continues; any other stop, or a failing generator, is left
+// to the human with its brief.
 func stackAdvance(ctx context.Context, cmd *cobra.Command, run *stackRebaseRun, b *stackRebaseBranch) error {
 	c := run.Conflict
 	ws := render.Dir(c.Workspace)
@@ -1611,8 +1612,14 @@ func stackAdvance(ctx context.Context, cmd *cobra.Command, run *stackRebaseRun, 
 			if err != nil {
 				return stackStopped(ctx, run, b, unmerged, err.Error())
 			}
+			var replayed []string
+			if len(unmerged) > 0 {
+				if replayed, err = regenChanged(ctx, ws, "REBASE_HEAD^", "REBASE_HEAD"); err != nil {
+					return err
+				}
+			}
 			declared := regenDeclared(gens, unmerged)
-			pending := regenDeclared(gens, slices.Compact(slices.Sorted(slices.Values(slices.Concat(declared, c.Generated)))))
+			pending := regenDeclared(gens, slices.Compact(slices.Sorted(slices.Values(slices.Concat(declared, c.Generated, replayed)))))
 			if len(declared) < len(unmerged) {
 				c.Generated = pending
 				return stackStopped(ctx, run, b, unmerged, "")
