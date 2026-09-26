@@ -401,6 +401,9 @@ func shipPRGT(ctx context.Context, nwo string, meta map[string]prMeta, stack []s
 	segs := make([]string, 0, len(stack))
 	for i := len(stack) - 1; i >= 0; i-- {
 		entry := stack[i]
+		if entry.metaApplied {
+			continue
+		}
 		m := meta[entry.Branch]
 		fields := m.stated()
 		if len(fields) == 0 {

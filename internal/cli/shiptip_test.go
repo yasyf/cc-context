@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -123,6 +126,85 @@ func TestShipTipOnlyPushesNoAncestor(t *testing.T) {
 		t.Fatalf("ship --tip-only = %v (stderr=%q)", err, errStr)
 	}
 	stackAssertBaseKept(t, f, base)
+}
+
+func TestShipTipOnlyCommitsWithAncestorCheckedOut(t *testing.T) {
+	f, _, base := stackMergeableBase(t, "CONFLICTING")
+	held := f.WorktreePath("held-base")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
+	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+
+	out, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--tip-only")
+	if err != nil {
+		t.Fatalf("ship --no-push --tip-only = %v (stderr=%q)", err, errStr)
+	}
+	if strings.Contains(out, "restacked") || !strings.Contains(out, "not pushed") {
+		t.Errorf("summary = %q, want a commit without a restack or push", out)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != local {
+		t.Errorf("local base moved from %s to %s", local, got)
+	}
+	if got := gitAt(t, f.Env(), held, "rev-parse", "HEAD"); got != local {
+		t.Errorf("held checkout moved from %s to %s", local, got)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != base {
+		t.Errorf("published base moved from %s to %s", base, got)
+	}
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only"); err != nil {
+		t.Fatalf("ship --no-commit --tip-only = %v (stderr=%q)", err, errStr)
+	}
+	if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Equal(refs, []string{"feature"}) {
+		t.Errorf("pushed refs = %v, want only feature", refs)
+	}
+	stackAssertBaseKept(t, f, base)
+}
+
+func TestShipTipOnlyPreviewsAndPublishesExplicitChildMeta(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	shipGTStack(t, f, "base")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("publish base: %v", err)
+	}
+	base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	api.prs["base"] = 100
+	priorSubmits := len(api.submitHeads())
+	stubStackPRs(t, map[string]*stackPR{"base": {Number: api.prs["base"], Title: "base", State: "OPEN", Base: "main", Mergeable: "MERGEABLE"}})
+	shipGTStack(t, f, "feature")
+	body := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(body, []byte("Exact body\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--no-commit", "--no-watch", "--tip-only", "--pr-title", "Exact child title", "--pr-body-file", body}
+	report := dryRunReport(t, f, args...)
+	if refs := dryRunBranches(report, "push ref"); !slices.Equal(refs, []string{"feature"}) {
+		t.Errorf("preview push refs = %v, want only feature\n%s", refs, report)
+	}
+	if heads := dryRunValues(report, "pr head"); len(heads) != 0 {
+		t.Errorf("preview ancestor PR heads = %v, want none", heads)
+	}
+	if creates := dryRunValues(report, "pr new"); len(creates) != 1 || !strings.Contains(creates[0], `"Exact child title"`) || !strings.Contains(creates[0], "body.md") {
+		t.Errorf("preview child PR = %v, want explicit title and body", creates)
+	}
+	shipResetLog(t, f)
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, args...); err != nil {
+		t.Fatalf("publish child = %v (stderr=%q)", err, errStr)
+	}
+	if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Equal(refs, []string{"feature"}) {
+		t.Errorf("pushed refs = %v, want only feature", refs)
+	}
+	if heads := api.submitHeads()[priorSubmits:]; !slices.Equal(heads, []string{"feature"}) {
+		t.Errorf("Graphite submitted %v, want only feature", heads)
+	}
+	entry := api.submitEntry("feature")
+	if entry.Title == nil || *entry.Title != "Exact child title" || entry.Body == nil || *entry.Body != "Exact body\n" {
+		t.Errorf("Graphite create title/body = %v/%v, want explicit values", entry.Title, entry.Body)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != base {
+		t.Errorf("published base moved from %s to %s", base, got)
+	}
 }
 
 // TestShipKeepsAnApprovedParentOnlyRestackedLocally is ci-go's #25915: the parent

@@ -375,6 +375,9 @@ func gtResumeCmd(o shipOpts) string {
 		return ""
 	}
 	argv := []string{"ccx vcs ship --no-commit"}
+	if o.tipOnly {
+		argv = append(argv, "--tip-only")
+	}
 	if o.draft {
 		argv = append(argv, "--draft")
 	}
@@ -1191,6 +1194,12 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	if err != nil {
 		return nil, nil, err
 	}
+	if s.publication != nil && s.publication.TipOnly {
+		plan, err = gtTipOnlyPlan(plan, s.publication)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 	for i, b := range plan {
 		if lease, ok := s.leases[b.name]; ok {
 			plan[i].lease, plan[i].leaseSet = lease, true
@@ -1279,18 +1288,34 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			continue
 		}
 		for _, created := range out {
-			entries[created.Head] = stackEntry{Branch: created.Head, PR: created.PRNumber, URL: created.PRURL, HasBody: strings.TrimSpace(submit[i].body) != "", State: string(gtapi.PROpen)}
+			entries[created.Head] = stackEntry{Branch: created.Head, PR: created.PRNumber, URL: created.PRURL, HasBody: strings.TrimSpace(submit[i].body) != "", State: string(gtapi.PROpen), metaApplied: s.publication != nil && s.publication.TipOnly}
 		}
 	}
 	return gtPlanNames(submit), entries, nil
 }
 
-// gtDropUnchanged splits off every branch below tip whose open pull request
-// both gt's record and Graphite's newest version hold at exactly the head,
-// base and base sha it would be submitted at now, in the draft state asked for:
-// submitting it again changes nothing, and a Graphite refusal on it would fail
-// the tip's submit. It still rides the atomic push, whose lease on it refuses
-// a child submitted over a parent another lane moved.
+func gtTipOnlyPlan(plan []gtSubmitBranch, run *stackRebaseRun) ([]gtSubmitBranch, error) {
+	if run.Ship == nil || run.Tip == "" {
+		return nil, errors.New("ship: --tip-only has no child publication")
+	}
+	for _, branch := range plan {
+		if branch.name != run.Tip {
+			continue
+		}
+		if branch.pr == 0 {
+			meta := run.Ship.Meta[run.Tip]
+			if meta.Title != "" {
+				branch.title = meta.Title
+			}
+			if meta.Body != nil {
+				branch.body = *meta.Body
+			}
+		}
+		return []gtSubmitBranch{branch}, nil
+	}
+	return nil, fmt.Errorf("ship: --tip-only child %s is absent from the publication plan", run.Tip)
+}
+
 func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, known map[string]gtapi.PullRequestInfo, tip string, draft bool) (submit []gtSubmitBranch, unchanged []string) {
 	for _, b := range plan {
 		now := gtmeta.Version{HeadSha: b.head, BaseSha: b.baseSha, BaseName: b.base}

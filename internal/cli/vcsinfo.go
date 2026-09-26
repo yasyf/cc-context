@@ -78,14 +78,15 @@ type worktreeInfo struct {
 // cannot give: the Graphite merge queue closes what it merges, so a landed pull
 // request reports CLOSED with a null MergedAt.
 type stackEntry struct {
-	Branch   string     `json:"branch"`
-	PR       int        `json:"pr,omitempty"`
-	URL      string     `json:"url,omitempty"`
-	HasBody  bool       `json:"has_body"`
-	State    string     `json:"state,omitempty"`
-	Merged   bool       `json:"merged"`
-	MergedAt *time.Time `json:"merged_at,omitempty"`
-	Checks   string     `json:"checks,omitempty"`
+	Branch      string     `json:"branch"`
+	PR          int        `json:"pr,omitempty"`
+	URL         string     `json:"url,omitempty"`
+	HasBody     bool       `json:"has_body"`
+	State       string     `json:"state,omitempty"`
+	Merged      bool       `json:"merged"`
+	MergedAt    *time.Time `json:"merged_at,omitempty"`
+	Checks      string     `json:"checks,omitempty"`
+	metaApplied bool
 }
 
 type vcsInfoOpts struct {
