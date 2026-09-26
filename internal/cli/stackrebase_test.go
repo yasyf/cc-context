@@ -132,6 +132,7 @@ func stackAssertRebasePublication(t *testing.T, f *vcstest.Fixture, source stack
 func TestStackRebaseOfALocalOnlyStackOpensNoPullRequest(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 
 	out, _, err := runStackCmd(t, f, "rebase")
@@ -158,6 +159,7 @@ func TestStackRebaseRebasesAPullRequestLessTipLocally(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 	stubOpenPRs(t, nil, "base")
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
 	source := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")

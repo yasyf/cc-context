@@ -4243,9 +4243,8 @@ func TestShipGTBodylessPR(t *testing.T) {
 		t.Setenv("GIT_BRANCH", "feature2")
 		setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 			`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
-		api := stubGTAPI(t)
-		api.prs["feature"], api.prs["feature2"] = 6, 7
-		api.bodies["feature2"] = "why"
+		gt.prs["feature"], gt.prs["feature2"] = 6, 7
+		gt.bodies["feature2"] = "why"
 
 		got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch")
 		if err != nil {
@@ -4933,6 +4932,7 @@ func TestShipGTAdoptsPublishedSingleCommitRootWithoutTrack(t *testing.T) {
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
 	stubStackPRs(t, map[string]*stackPR{"feature": {Number: 42, Title: "feature", State: "OPEN", Base: "main", Head: published}})
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	api.prs["feature"] = 42
 	advanced := gitAt(t, f.Env(), f.Dir, "commit-tree", base+"^{tree}", "-p", base, "-m", "advance trunk")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", advanced+":refs/heads/main")

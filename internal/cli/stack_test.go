@@ -984,6 +984,7 @@ func TestStackSubmitLeavesAStrayBranchAlone(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := shipGTRepo(t)
 			api := stubGTAPI(t)
+			f.Decorate(api.ctx)
 			stackBesideBase(t, f, "stray", true)
 			if tt.pr {
 				stubStackPRs(t, map[string]*stackPR{"stray": {Number: 41, Title: "stray", State: "OPEN", Base: "main"}})
@@ -1014,6 +1015,7 @@ func TestStackSubmitLeavesAStrayBranchAlone(t *testing.T) {
 func TestStackSubmitLeavesAStrayBesideItsGrandparent(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	shipGTStack(t, f, "a")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "p")
 	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "a", "--no-interactive")
@@ -1050,6 +1052,7 @@ func TestStackSubmitLeavesAStrayBesideItsGrandparent(t *testing.T) {
 func TestStackSubmitLeavesAStrayAboveALandedBranch(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	shipGTStack(t, f, "a", "b", "stray")
 	stubStackPRs(t, map[string]*stackPR{
 		"a":     {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "a")},
@@ -1076,7 +1079,6 @@ func TestStackSubmitLeavesAStrayAboveALandedBranch(t *testing.T) {
 // pull request either.
 func TestStackSubmitRefusesPRFieldsForABranchLeftOut(t *testing.T) {
 	f := shipGTRepo(t)
-	stubGTAPI(t)
 	writeShipGH(t, f)
 	stackBesideBase(t, f, "stray", true)
 	stubStackPRs(t, map[string]*stackPR{"stray": {Number: 41, Title: "stray", State: "OPEN", Base: "main"}})
@@ -1099,6 +1101,7 @@ func TestStackSubmitRefusesPRFieldsForABranchLeftOut(t *testing.T) {
 func TestStackSubmitWritesPRTitlesAndBodies(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	writeShipGH(t, f)
 	shipGTStack(t, f, "base", "feature")
 	api.prs["base"], api.prs["feature"] = 5, 6
@@ -1133,6 +1136,7 @@ func TestStackSubmitWritesPRTitlesAndBodies(t *testing.T) {
 func TestStackSubmitSkipsAnEmptyChild(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	stackBesideBase(t, f, "lane", false)
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 	lane := gitAt(t, f.Env(), f.Dir, "rev-parse", "lane")
@@ -1169,6 +1173,7 @@ func TestStackSubmitSkipsAnEmptyChildOfABranch(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := shipGTRepo(t)
 			api := stubGTAPI(t)
+			f.Decorate(api.ctx)
 			shipGTStack(t, f, "base")
 			mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "lane")
 			mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "base", "--no-interactive")
@@ -1201,6 +1206,7 @@ func TestStackSubmitSkipsAnEmptyChildOfABranch(t *testing.T) {
 func TestStackSubmitShipsTheParentPastAConflictingChildLane(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	stackConflicting(t, f)
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	child := restackSiblingPath(t, "child")
@@ -1328,6 +1334,7 @@ func TestStackNewCutsALaneOffTheGraphiteLane(t *testing.T) {
 func TestStackSubmitRestacksAChildOfAnAmendedParent(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	shipGTStack(t, f, "p", "c")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
 	writeShipFile(t, f.Dir, "p.txt", "amended\n")

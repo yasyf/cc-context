@@ -266,6 +266,7 @@ func TestShipDryRunNamesTheDerivedTitles(t *testing.T) {
 func TestShipDryRunDropsALandedBranch(t *testing.T) {
 	f := dryRunFixture(t)
 	stub := stubGTAPI(t)
+	f.Decorate(stub.ctx)
 	stub.prs["b"] = 22285
 
 	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--landed", "a")

@@ -10,7 +10,6 @@ import (
 // re-record its base with gt track --parent main".
 func TestShipRecordsTheForkPointOfABranchRebasedOntoNewerTrunk(t *testing.T) {
 	f := shipGTRepo(t)
-	stubGTAPI(t)
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
 	stackCommit(t, f, "feature.txt")
 	mustRun(t, f.Env(), f.Dir, "gt", "track", "-p", "main", "--no-interactive")
@@ -35,7 +34,6 @@ func TestShipRecordsTheForkPointOfABranchRebasedOntoNewerTrunk(t *testing.T) {
 // case: gt recorded the branch on a branch whose head trunk already holds.
 func TestShipReparentsPastARecordedParentTrunkAlreadyHolds(t *testing.T) {
 	f := shipGTRepo(t)
-	stubGTAPI(t)
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "spent")
 	stackCommit(t, f, "spent.txt")
 	mustRun(t, f.Env(), f.Dir, "gt", "track", "-p", "main", "--no-interactive")

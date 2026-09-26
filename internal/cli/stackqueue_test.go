@@ -10,7 +10,6 @@ import (
 // newer trunk while it sat in the merge queue, and --dry-run never said so.
 func TestStackRebaseParentPushesOnlyTheBranchItMoves(t *testing.T) {
 	f := shipGTRepo(t)
-	stubGTAPI(t)
 	stubOpenPRs(t, nil, "p", "c")
 	shipGTStack(t, f, "p")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
@@ -40,6 +39,7 @@ func TestStackRebaseParentPushesOnlyTheBranchItMoves(t *testing.T) {
 func TestStackSubmitNeverPushesAQueuedBranch(t *testing.T) {
 	f := stackRebaseRepo(t, "base", "feature")
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
@@ -75,6 +75,7 @@ func TestStackSubmitNeverPushesAQueuedBranch(t *testing.T) {
 func TestShipNewBranchOnAnOpenParentReadsTheQueue(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	shipGTStack(t, f, "p")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)

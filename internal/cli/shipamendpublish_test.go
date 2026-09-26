@@ -12,6 +12,7 @@ import (
 func TestShipAmendOfAQueuedBranchRefusesInsteadOfClaimingItPublished(t *testing.T) {
 	f := stackRebaseRepo(t, "feature")
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
@@ -37,7 +38,6 @@ func TestShipAmendOfAQueuedBranchRefusesInsteadOfClaimingItPublished(t *testing.
 
 func TestShipAmendNamesTheRemotesRefusalAndTheResume(t *testing.T) {
 	f := stackRebaseRepo(t, "feature")
-	stubGTAPI(t)
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}

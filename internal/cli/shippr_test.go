@@ -563,7 +563,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			log, gt := setupShipGT(t, true)
 			t.Setenv("GIT_STAGED_EMPTY", "1")
-			stubGTAPI(t).prs["feature"] = 7
+			gt.prs["feature"] = 7
 			body := writePRBody(t, "body.md", "why this change\n")
 			writeShipFile(t, ".", "src/a.go", "package a\n")
 
@@ -611,9 +611,8 @@ func TestShipPRGTBackfill(t *testing.T) {
 		`"base":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 		`"feature":{"parents":[{"ref":"base","sha":"beadfeed"}]},`+
 		`"feature2":{"parents":[{"ref":"feature","sha":"feedface"}]}}`)
-	api := stubGTAPI(t)
-	api.prs["base"], api.prs["feature"], api.prs["feature2"] = 5, 6, 7
-	api.bodies["base"] = "written by hand"
+	gt.prs["base"], gt.prs["feature"], gt.prs["feature2"] = 5, 6, 7
+	gt.bodies["base"] = "written by hand"
 	tipBody := writePRBody(t, "tip.md", "tip body\n")
 	midBody := writePRBody(t, "mid.md", "mid body\n")
 
@@ -649,8 +648,7 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 		setGTState(t, `{"main":{"trunk":true},`+
 			`"feature":{"parents":[{"ref":"main","sha":"beadfeed"}]},`+
 			`"feature2":{"parents":[{"ref":"feature","sha":"feedface"}]}}`)
-		api := stubGTAPI(t)
-		api.prs["feature"], api.prs["feature2"] = 6, 7
+		gt.prs["feature"], gt.prs["feature2"] = 6, 7
 		t.Setenv("GH_PR_EDIT_FAIL", "gh: API rate limit exceeded (HTTP 403)")
 		tipBody := writePRBody(t, "tip.md", "tip body\n")
 		midBody := writePRBody(t, "mid.md", "mid body\n")

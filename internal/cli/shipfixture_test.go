@@ -241,7 +241,7 @@ func shipGTRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	t.Helper()
 	stubStackPRs(t, nil)
 	f := shipRepo(t, append([]vcstest.Opt{vcstest.GT(), vcstest.Remote()}, opts...)...)
-	f.Decorate(stubGTAPI(t).ctx)
+	f.Decorate(newGTAPIStub(t).ctx)
 	return f
 }
 
@@ -1159,7 +1159,7 @@ func setupShipGT(t *testing.T, withGh bool) (string, *gtAPIStub) {
 	t.Setenv("GIT_BRANCH", "feature")
 	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
 	seedLaneRecords(context.Background(), t, ".", laneSeed{})
-	return log, stubGTAPI(t)
+	return log, newGTAPIStub(t)
 }
 
 // setGTState materializes stateJSON as the on-disk metadata gt keeps, in a

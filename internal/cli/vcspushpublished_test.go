@@ -8,7 +8,6 @@ import "testing"
 // not a rewrite".
 func TestVcsPushTakesOverItsOwnIsolatedPublication(t *testing.T) {
 	f := stackRebaseRepo(t, "feature")
-	stubGTAPI(t)
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
@@ -28,7 +27,6 @@ func TestVcsPushTakesOverItsOwnIsolatedPublication(t *testing.T) {
 
 func TestVcsPushTakesOverAServerRestackOfItsOwnCommits(t *testing.T) {
 	f := stackRebaseRepo(t, "base", "feature")
-	stubGTAPI(t)
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
 	server := f.WorktreePath("server")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "--detach", server, "main")

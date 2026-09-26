@@ -340,14 +340,14 @@ func TestPruneSeesAQueueLandingGraphiteRecordsClosed(t *testing.T) {
 	gitAt(t, f.Env(), f.Dir, "config", "branch.queued.remote", "origin")
 	gitAt(t, f.Env(), f.Dir, "config", "branch.queued.merge", "refs/heads/queued")
 
-	plan, err := prunePlanFor(t.Context(), dir, pruneGTLane, trunk, commonDir)
+	plan, err := prunePlanFor(api.ctx(t.Context()), dir, pruneGTLane, trunk, commonDir)
 	if err != nil {
 		t.Fatalf("prunePlanFor: %v", err)
 	}
 	if got := pruneSquashedNames(plan); !slices.Equal(got, []string{"queued"}) {
 		t.Fatalf("squashed = %v, want [queued]", got)
 	}
-	if err := pruneApply(t.Context(), dir, pruneGTLane, plan, commonDir); err != nil {
+	if err := pruneApply(api.ctx(t.Context()), dir, pruneGTLane, plan, commonDir); err != nil {
 		t.Fatalf("pruneApply: %v", err)
 	}
 	if gitBranchExists(t, f.Env(), f.Dir, "queued") {
