@@ -181,7 +181,7 @@ func TestEncodeCanceledWhileWaiting(t *testing.T) {
 	}
 }
 
-// --- E2: Close releases the cache and is idempotent -------------------------
+// --- E2: Close releases the resident instance and is idempotent -------------
 
 func TestCloseIdempotentReleasesHandles(t *testing.T) {
 	t.Parallel()
@@ -197,9 +197,9 @@ func TestCloseIdempotentReleasesHandles(t *testing.T) {
 		t.Fatalf("first Close: %v", err)
 	}
 	// Retained handles are nulled so a closed Engine pins no model memory.
-	if eng.runtime != nil || eng.cache != nil || eng.compiled != nil || eng.module != nil {
-		t.Fatalf("Close left handles set: runtime=%v cache=%v compiled=%v module=%v",
-			eng.runtime != nil, eng.cache != nil, eng.compiled != nil, eng.module != nil)
+	if eng.module != nil || eng.alloc != nil || eng.dealloc != nil || eng.loadModel != nil || eng.encode != nil {
+		t.Fatalf("Close left handles set: module=%v alloc=%v dealloc=%v loadModel=%v encode=%v",
+			eng.module != nil, eng.alloc != nil, eng.dealloc != nil, eng.loadModel != nil, eng.encode != nil)
 	}
 	// Idempotent: a second Close is a no-op, not a panic or error.
 	if err := eng.Close(context.Background()); err != nil {

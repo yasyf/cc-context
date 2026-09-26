@@ -16,7 +16,6 @@ import (
 	"context"
 	_ "embed"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"math"
 	"runtime"
@@ -57,9 +56,6 @@ const maxU32Bytes uint64 = math.MaxUint32
 // release its WASM instance with Close. Encode is safe for concurrent use;
 // calls serialize on a single shared instance.
 type Engine struct {
-	runtime   wazero.Runtime
-	cache     wazero.CompilationCache
-	compiled  wazero.CompiledModule
 	module    api.Module
 	alloc     api.Function
 	dealloc   api.Function
@@ -70,33 +66,27 @@ type Engine struct {
 	dims int
 }
 
-// New resolves the pin's weights (downloading once into the cache), compiles the
-// WASM module behind wazero's compiler backend, instantiates it resident, and
-// loads the weights into its linear memory. It returns ErrWeightsUnavailable
-// when the weights are neither cached nor downloadable.
+// New resolves the pin's weights (downloading once into the cache), instantiates
+// the process's compiled WASM module resident, and loads the weights into its
+// linear memory. It returns ErrWeightsUnavailable when the weights are neither
+// cached nor downloadable.
 func New(ctx context.Context, pin ModelPin) (*Engine, error) {
 	blobs, err := resolveWeights(ctx, pin)
 	if err != nil {
 		return nil, err
 	}
 
-	rt, compilationCache, compiled, err := compileModule(ctx)
+	c, err := defaultLoader.load(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	mod, err := rt.InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithName(""))
+	mod, err := c.runtime.InstantiateModule(ctx, c.compiled, wazero.NewModuleConfig().WithName(""))
 	if err != nil {
-		_ = rt.Close(ctx)
-		_ = compiled.Close(ctx)
-		_ = compilationCache.Close(ctx)
 		return nil, fmt.Errorf("instantiate embedcore.wasm: %w", err)
 	}
 
 	e := &Engine{
-		runtime:   rt,
-		cache:     compilationCache,
-		compiled:  compiled,
 		module:    mod,
 		alloc:     mod.ExportedFunction("em_alloc"),
 		dealloc:   mod.ExportedFunction("em_dealloc"),
@@ -122,35 +112,25 @@ func New(ctx context.Context, pin ModelPin) (*Engine, error) {
 // Dims is the embedding dimensionality every Encode vector carries.
 func (e *Engine) Dims() int { return e.dims }
 
-// Close releases the resident WASM instance, its compiled module, the runtime,
-// and the on-disk compilation cache. wazero deliberately leaves a configured
-// cache open when the runtime closes, so the cache — which retains the compiled
-// module code — must be closed explicitly. Close nulls the retained handles so a
-// closed Engine pins no model memory. It is idempotent and safe to call after a
-// partial New.
+// Close releases the resident WASM instance and the model memory it holds. The
+// compiled module, its runtime and the on-disk compilation cache are
+// process-wide and outlive every Engine built over them. Close nulls the
+// retained handles so a closed Engine pins no model memory. It is idempotent and
+// safe to call after a partial New.
 func (e *Engine) Close(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	var errs []error
-	if e.runtime != nil {
-		if err := e.runtime.Close(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("close runtime: %w", err))
-		}
+	if e.module == nil {
+		return nil
 	}
-	if e.compiled != nil {
-		if err := e.compiled.Close(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("close compiled module: %w", err))
-		}
-	}
-	if e.cache != nil {
-		if err := e.cache.Close(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("close compilation cache: %w", err))
-		}
-	}
-	e.runtime, e.compiled, e.cache, e.module = nil, nil, nil, nil
+	err := e.module.Close(ctx)
+	e.module = nil
 	e.alloc, e.dealloc, e.loadModel, e.encode = nil, nil, nil, nil
-	return errors.Join(errs...)
+	if err != nil {
+		return fmt.Errorf("close module: %w", err)
+	}
+	return nil
 }
 
 // Encode embeds each text into an L2-normalized float32 vector of length Dims.
@@ -360,34 +340,73 @@ func unpack(packed uint64) (ptr, length uint32) {
 	return uint32(packed >> 32), uint32(packed) //nolint:gosec // wasm32: em_encode packs ptr and len into one uint64
 }
 
-// compileModule builds the compiler runtime over the shared on-disk AOT cache
-// and compiles the embedded module. The caller owns the returned cache and
-// closes it (via Engine.Close); wazero will not close a configured cache itself.
-func compileModule(ctx context.Context) (wazero.Runtime, wazero.CompilationCache, wazero.CompiledModule, error) {
-	ctx, cancel := context.WithTimeout(ctx, compileTimeout)
+// compiledEngine is the process-wide compiler runtime and its compiled
+// embedcore module. Every Engine instantiates its own resident module over this
+// one compile.
+type compiledEngine struct {
+	runtime  wazero.Runtime
+	compiled wazero.CompiledModule
+}
+
+// engineLoader compiles module once and caches only success: a failed compile
+// leaves it nil and returns the error uncached, so the next New retries.
+// sync.Once would pin a transient cold-compile timeout for the process
+// lifetime, fatal for the long-lived MCP server.
+type engineLoader struct {
+	mu       sync.Mutex
+	module   []byte
+	compiled *compiledEngine
+}
+
+var defaultLoader = &engineLoader{module: wasmModule}
+
+// load returns the loader's compiled module, compiling it on first use.
+//
+// The compile keeps the values ctx carries and drops its cancellation: the
+// compile outlives the New that happens to trigger it.
+func (l *engineLoader) load(ctx context.Context) (*compiledEngine, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.compiled != nil {
+		return l.compiled, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), compileTimeout)
 	defer cancel()
 
+	c, err := compileModule(ctx, l.module)
+	if err != nil {
+		return nil, err
+	}
+	l.compiled = c
+	return c, nil
+}
+
+// compileModule builds the compiler runtime over the on-disk AOT cache and
+// compiles module. The cache outlives the call: wazero will not close a
+// configured cache itself, and the runtime it backs is process-wide.
+func compileModule(ctx context.Context, module []byte) (*compiledEngine, error) {
 	dir, err := cache.Dir(ctx, "wasm")
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("resolve wasm cache dir: %w", err)
+		return nil, fmt.Errorf("resolve wasm cache dir: %w", err)
 	}
 	compilationCache, err := wazero.NewCompilationCacheWithDir(dir)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("open wasm compilation cache: %w", err)
+		return nil, fmt.Errorf("open wasm compilation cache: %w", err)
 	}
 
 	rt, err := newCompilerRuntime(ctx, compilationCache)
 	if err != nil {
 		_ = compilationCache.Close(ctx)
-		return nil, nil, nil, err
+		return nil, err
 	}
-	compiled, err := rt.CompileModule(ctx, wasmModule)
+	compiled, err := rt.CompileModule(ctx, module)
 	if err != nil {
 		_ = rt.Close(ctx)
 		_ = compilationCache.Close(ctx)
-		return nil, nil, nil, fmt.Errorf("compile embedcore.wasm: %w", err)
+		return nil, fmt.Errorf("compile embedcore.wasm: %w", err)
 	}
-	return rt, compilationCache, compiled, nil
+	return &compiledEngine{runtime: rt, compiled: compiled}, nil
 }
 
 // newCompilerRuntime builds the wazero compiler runtime. Unlike the format

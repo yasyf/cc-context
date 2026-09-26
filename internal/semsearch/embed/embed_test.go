@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/semsearch/embed"
@@ -43,11 +44,19 @@ func loadGolden(t *testing.T) golden {
 	return g
 }
 
-// mustEngine builds an Engine or skips when the weights are neither cached nor
-// downloadable (offline CI). Any other failure is fatal.
+// sharedEngine is built once for the whole suite: an Engine commits 256 MiB of
+// linear memory and decodes ~30 MB of weights into it, so one per parallel test
+// thrashes a small CI runner. Encode is safe for concurrent use, so the tests
+// that only read share this instance.
+var sharedEngine = sync.OnceValues(func() (*embed.Engine, error) {
+	return embed.New(context.Background(), embed.CodePin)
+})
+
+// mustEngine returns the suite's Engine or skips when the weights are neither
+// cached nor downloadable (offline CI). Any other failure is fatal.
 func mustEngine(tb testing.TB) *embed.Engine {
 	tb.Helper()
-	eng, err := embed.New(context.Background(), embed.CodePin)
+	eng, err := sharedEngine()
 	if errors.Is(err, embed.ErrWeightsUnavailable) {
 		tb.Skip("model weights unavailable (offline, empty cache) — skipping")
 	}
@@ -61,7 +70,6 @@ func TestEncodeParity(t *testing.T) {
 	t.Parallel()
 	g := loadGolden(t)
 	eng := mustEngine(t)
-	defer func() { _ = eng.Close(context.Background()) }()
 
 	if eng.Dims() != g.Dims {
 		t.Fatalf("Dims() = %d, want %d", eng.Dims(), g.Dims)
@@ -119,7 +127,6 @@ func TestEncodeDeterministic(t *testing.T) {
 	t.Parallel()
 	g := loadGolden(t)
 	eng := mustEngine(t)
-	defer func() { _ = eng.Close(context.Background()) }()
 
 	a, err := eng.Encode(context.Background(), g.Texts)
 	if err != nil {
@@ -141,7 +148,6 @@ func TestEncodeDeterministic(t *testing.T) {
 func TestEncodeEmptyBatch(t *testing.T) {
 	t.Parallel()
 	eng := mustEngine(t)
-	defer func() { _ = eng.Close(context.Background()) }()
 
 	got, err := eng.Encode(context.Background(), nil)
 	if err != nil {
@@ -156,7 +162,6 @@ func TestEncodeBatchInvariant(t *testing.T) {
 	t.Parallel()
 	g := loadGolden(t)
 	eng := mustEngine(t)
-	defer func() { _ = eng.Close(context.Background()) }()
 
 	batched, err := eng.Encode(context.Background(), g.Texts)
 	if err != nil {
@@ -226,7 +231,6 @@ func benchCorpus(n int) []string {
 
 func BenchmarkEncode(b *testing.B) {
 	eng := mustEngine(b)
-	defer func() { _ = eng.Close(context.Background()) }()
 
 	corpus := benchCorpus(512)
 	ctx := context.Background()
