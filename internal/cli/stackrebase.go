@@ -1186,7 +1186,7 @@ func stackQueuedBranches(ctx context.Context, l lane, noPush bool, byName map[st
 	if err != nil {
 		return nil, err
 	}
-	infos, err := gtAPIClient().PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: name, PRNumbers: []int{}, PRHeadRefNames: heads, Consistent: true, Callsite: "ccx"})
+	infos, err := gtAPIClient().PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: name, PRHeadRefNames: heads, Consistent: true, Callsite: "ccx"})
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: read the merge queue before pushing: %w", err)
 	}

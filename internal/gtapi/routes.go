@@ -69,6 +69,17 @@ type PullRequestInfoRequest struct {
 	Callsite         string   `json:"callsite,omitempty"`
 }
 
+// MarshalJSON sends a nil PRNumbers as an empty array, because Graphite
+// answers 400 to a null one.
+func (r PullRequestInfoRequest) MarshalJSON() ([]byte, error) {
+	type wire PullRequestInfoRequest
+	w := wire(r)
+	if w.PRNumbers == nil {
+		w.PRNumbers = []int{}
+	}
+	return json.Marshal(w)
+}
+
 // PRState is a pull request's lifecycle state.
 type PRState string
 

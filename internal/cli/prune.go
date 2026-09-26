@@ -328,7 +328,6 @@ func gtMergedHeads(ctx context.Context, dir render.Dir, l lane, prefix, trunk st
 			infos, err := client.PullRequestInfo(gctx, gtapi.PullRequestInfoRequest{
 				RepoOwner:        owner,
 				RepoName:         name,
-				PRNumbers:        []int{},
 				PRHeadRefNames:   batch,
 				TrunkBranchNames: []string{trunk},
 				Callsite:         "ccx",

@@ -582,7 +582,6 @@ func dryRunHeads(ctx context.Context, l lane, o shipOpts, state gtState, chain [
 	infos, err := gtAPIClient().PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{
 		RepoOwner:        owner,
 		RepoName:         name,
-		PRNumbers:        []int{},
 		PRHeadRefNames:   gtBottomUp(chain),
 		TrunkBranchNames: []string{r.trunk},
 		Callsite:         "ccx",
