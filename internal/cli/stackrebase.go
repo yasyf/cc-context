@@ -1114,6 +1114,13 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 				}
 			}
 			if !within {
+				past, err := gtRevCount(ctx, stackRebasePrefix, dir, pr.Head+"..."+b.Head, "--right-only", "--cherry-pick", "--no-merges")
+				if err != nil {
+					return b, err
+				}
+				within = past == 0
+			}
+			if !within {
 				return b, fmt.Errorf("stack rebase: %s's pull request #%d landed at %.12s, but the branch holds commits past it (%.12s) — move them to a new branch, or pass --landed %s to drop them too", name, pr.Number, pr.Head, b.Head, name)
 			}
 		}

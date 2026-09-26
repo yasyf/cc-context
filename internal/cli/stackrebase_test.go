@@ -828,6 +828,30 @@ func TestStackRebaseRefusesALandedBranchWithCommitsPastItsLanding(t *testing.T) 
 	}
 }
 
+func TestStackRebaseDropsALandedBranchGraphiteRestackedBeforeItLanded(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	server := f.WorktreePath("server")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "--detach", server, "main")
+	mustRun(t, f.Env(), server, "git", "cherry-pick", "base")
+	mustRun(t, f.Env(), server, "git", "push", "-q", "origin", "HEAD:main")
+	mustRun(t, f.Env(), server, "git", "cherry-pick", "feature")
+	restacked := gitAt(t, f.Env(), server, "rev-parse", "HEAD")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	stubStackPRs(t, map[string]*stackPR{
+		"base":    {Number: 5, Title: "base", State: "CLOSED", Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "base"), Landed: true},
+		"feature": {Number: 7, Title: "feature", State: "CLOSED", Head: restacked, Landed: true},
+	})
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "rebase", "--dry-run")
+	if err != nil {
+		t.Fatalf("dry run = %v, want feature dropped as landed", err)
+	}
+	if !strings.Contains(out, "feature"+shipSep+"drop (#7 landed)") {
+		t.Errorf("plan = %q, want feature dropped as #7 landed", out)
+	}
+}
+
 func TestGTPushArgvPinsAnAbsentRemote(t *testing.T) {
 	t.Parallel()
 	argv := gtPushArgv(gtSubmit{}, []gtSubmitBranch{{name: "new", head: "abc", leaseSet: true}})
