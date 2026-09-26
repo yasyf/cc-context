@@ -124,3 +124,24 @@ func TestShipTipOnlyPushesNoAncestor(t *testing.T) {
 	}
 	stackAssertBaseKept(t, f, base)
 }
+
+// TestShipKeepsAnApprovedParentOnlyRestackedLocally is ci-go's #25915: the parent
+// #25742 was restacked locally onto newer trunk without a push, GitHub had not
+// computed its mergeability, and each ship from the child force-pushed the
+// parent and reset its approvals.
+func TestShipKeepsAnApprovedParentOnlyRestackedLocally(t *testing.T) {
+	f, _, base := stackMergeableBase(t, statusUnknown)
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "--", "f.txt")
+	if _, _, err := runStackCmd(t, f, "restack"); err != nil {
+		t.Fatalf("stack restack: %v", err)
+	}
+	if local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); local == base {
+		t.Fatal("fixture: restack left base where it was published")
+	}
+	shipGTReady(t, f)
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
+		t.Fatalf("ship = %v (stderr=%q)", err, errStr)
+	}
+	stackAssertBaseKept(t, f, base)
+}

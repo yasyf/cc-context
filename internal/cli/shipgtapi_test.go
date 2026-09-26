@@ -35,6 +35,7 @@ type gtAPIStub struct {
 	unauthorized   bool
 	presubmitError string
 	submitErrors   map[string]string
+	queued         map[string]bool
 	nextPR         int
 
 	routes    []string
@@ -100,6 +101,7 @@ func stubGTAPI(t *testing.T) *gtAPIStub {
 		merged:       map[string]gtStubMerged{},
 		bodies:       map[string]string{},
 		submitErrors: map[string]string{},
+		queued:       map[string]bool{},
 		nextPR:       100,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(s.serve))
@@ -138,6 +140,9 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 			if number := s.prs[branch]; number != 0 {
 				pr := map[string]any{
 					"prNumber": number, "headRefName": branch, "state": "OPEN", "url": gtStubPRURL(number), "body": s.bodies[branch],
+				}
+				if s.queued[branch] {
+					pr["mergeQueueStatus"] = map[string]any{"isInGraphiteMq": true}
 				}
 				if entry, ok := s.lastEntry(branch); ok {
 					pr["baseRefName"] = entry.Base

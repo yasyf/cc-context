@@ -49,3 +49,32 @@ func TestStackRebaseStopsAtAConflictBelowAPublishedParentOutsideTheRun(t *testin
 		t.Errorf("conflict workspace = %q, want c's", ws)
 	}
 }
+
+// TestShipKeepsABranchOnTheSiblingItWasPublishedOnto is release-targeting's
+// panic: record-zod was published onto its sibling approve-then-override, gt
+// still recorded both on drop-record-schema, which landed, and a ship from
+// record-zod read a parent its downstack never held.
+func TestShipKeepsABranchOnTheSiblingItWasPublishedOnto(t *testing.T) {
+	f := shipGTRepo(t)
+	stubGTAPI(t)
+	shipGTStack(t, f, "p", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
+	shipGTStack(t, f, "z")
+	if _, _, err := runStackCmd(t, f, "rebase", "--parent", "z=a"); err != nil {
+		t.Fatalf("stack rebase --parent z=a: %v", err)
+	}
+	if parent := dropGTParent(t, f, "z"); parent != "p" {
+		t.Fatalf("fixture: gt parent of z = %s, want p, with the publication alone naming a", parent)
+	}
+	stubStackPRs(t, map[string]*stackPR{"p": {Number: 41, Title: "p", State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "p")}})
+	restackSquashRemote(t, f, "main", "p (#41)", "p")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	shipGTReady(t, f)
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
+		t.Fatalf("ship = %v (stderr=%q)", err, errStr)
+	}
+	if !stackOnto(t, f, gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "a"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "z")) {
+		t.Error("origin z left a, the parent it was published onto")
+	}
+}
