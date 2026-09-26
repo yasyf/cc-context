@@ -186,8 +186,14 @@ func TestAdoptRootRecordsBothSidesAtomically(t *testing.T) {
 	if err := db.QueryRow(`SELECT children FROM branch_metadata WHERE branch_name = 'main'`).Scan(&children); err != nil || children != `["feature"]` {
 		t.Fatalf("trunk children = %q, %v", children, err)
 	}
-	if err := gtmeta.AdoptRoot(t.Context(), dir, "feature", "main", "base", "head"); err == nil {
-		t.Fatal("duplicate feature was adopted")
+	if err := gtmeta.AdoptRoot(t.Context(), dir, "feature", "main", "base2", "head2"); err != nil {
+		t.Fatalf("re-adopting feature = %v, want its row rewritten", err)
+	}
+	if row, err := gtmeta.ReadPublishedChild(t.Context(), dir, "feature"); err != nil || row.ParentRevision != "base2" || row.BranchRevision != "head2" {
+		t.Fatalf("re-adopted feature row = %+v, %v", row, err)
+	}
+	if err := db.QueryRow(`SELECT children FROM branch_metadata WHERE branch_name = 'main'`).Scan(&children); err != nil || children != `["feature"]` {
+		t.Fatalf("trunk children after re-adopting = %q, %v", children, err)
 	}
 	if err := gtmeta.AdoptRoot(t.Context(), dir, "orphan", "missing", "base", "head"); err == nil {
 		t.Fatal("missing trunk was accepted")
@@ -195,6 +201,31 @@ func TestAdoptRootRecordsBothSidesAtomically(t *testing.T) {
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM branch_metadata WHERE branch_name = 'orphan'`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("orphan rows = %d, %v", count, err)
+	}
+}
+
+func TestAdoptRootMovesARowOffTheParentItHad(t *testing.T) {
+	dir := t.TempDir()
+	vcstest.WriteGraphiteMeta(t, dir, `{"main":{"trunk":true},`+
+		`"mid":{"parents":[{"ref":"main","sha":"aaaa"}]},`+
+		`"feature":{"parents":[{"ref":"mid","sha":"bbbb"}]}}`)
+	if err := gtmeta.AdoptRoot(t.Context(), dir, "feature", "main", "base", "head"); err != nil {
+		t.Fatalf("AdoptRoot over an existing row = %v", err)
+	}
+	row, err := gtmeta.ReadPublishedChild(t.Context(), dir, "feature")
+	if err != nil || row.Parent != "main" || row.ParentRevision != "base" || row.Validation != "VALID" {
+		t.Fatalf("feature row = %+v, %v", row, err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dir, ".graphite_metadata.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	for parent, want := range map[string]string{"main": `["mid","feature"]`, "mid": `[]`} {
+		var children string
+		if err := db.QueryRow(`SELECT children FROM branch_metadata WHERE branch_name = ?`, parent).Scan(&children); err != nil || children != want {
+			t.Errorf("%s children = %q, %v, want %s", parent, children, err, want)
+		}
 	}
 }
 

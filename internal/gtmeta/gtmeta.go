@@ -297,6 +297,8 @@ func Rows(ctx context.Context, commonDir string) ([]Row, error) {
 
 // AdoptRoot records a branch's fork on trunk in Graphite metadata.
 // The branch row and trunk's child list commit together so readers see one stack.
+// A row the branch already has, one gt could not resolve or one written after
+// the caller read the state, is rewritten in place and leaves its old parent.
 func AdoptRoot(ctx context.Context, commonDir, branch, trunk, base, head string) error {
 	path := filepath.Join(commonDir, metadataDB)
 	db, err := sql.Open("sqlite", writableDSN(path))
@@ -311,10 +313,29 @@ func AdoptRoot(ctx context.Context, commonDir, branch, trunk, base, head string)
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	previous := ""
+	switch err := tx.QueryRowContext(ctx, `SELECT COALESCE(parent_branch_name, '') FROM branch_metadata WHERE branch_name = ?`, branch).Scan(&previous); {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return fmt.Errorf("gtmeta: read parent of %q in %q: %w", branch, path, err)
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO branch_metadata
 		(branch_name, parent_branch_name, parent_branch_revision, branch_revision, validation_result, state, children)
-		VALUES (?, ?, ?, ?, ?, 'none', '[]')`, branch, trunk, base, head, validationValid); err != nil {
+		VALUES (?, ?, ?, ?, ?, 'none', '[]')
+		ON CONFLICT(branch_name) DO UPDATE SET
+			parent_branch_name = excluded.parent_branch_name,
+			parent_branch_revision = excluded.parent_branch_revision,
+			branch_revision = excluded.branch_revision,
+			validation_result = excluded.validation_result,
+			state = excluded.state`, branch, trunk, base, head, validationValid); err != nil {
 		return fmt.Errorf("gtmeta: adopt root %q in %q: %w", branch, path, err)
+	}
+	if previous != "" && previous != trunk {
+		if _, err := editChildren(ctx, tx, path, previous, func(children []string) []string {
+			return slices.DeleteFunc(children, func(child string) bool { return child == branch })
+		}); err != nil {
+			return err
+		}
 	}
 	adopted, err := editChildren(ctx, tx, path, trunk, func(children []string) []string {
 		if slices.Contains(children, branch) {
