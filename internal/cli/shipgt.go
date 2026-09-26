@@ -1178,6 +1178,11 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		}
 	}
 	if len(submit) == 0 {
+		if s.publication != nil {
+			if err := stackRecordPublication(ctx, l.dir(), s.publication, plan); err != nil {
+				return nil, nil, err
+			}
+		}
 		return nil, entries, nil
 	}
 

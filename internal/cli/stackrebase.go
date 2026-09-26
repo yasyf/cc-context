@@ -562,8 +562,14 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	}
 	for name, b := range byName {
 		b.Parent = b.WasParent
+		if _, member := byName[b.Parent]; b.Parent != trunk && !member {
+			b.Parent = state[name].Parents[0].Ref
+		}
 		if p, ok := overrides[name]; ok {
 			b.Parent = p
+		}
+		if _, member := byName[b.Parent]; b.Parent != trunk && !member {
+			return nil, fmt.Errorf("stack rebase: %s was published onto %s and gt records it on %s, and neither is in this run — re-record it with gt track --parent <branch> %s, or name it with ccx vcs stack rebase --parent %s=<branch>", name, b.WasParent, state[name].Parents[0].Ref, name, name)
 		}
 	}
 	for _, b := range byName {
@@ -1279,7 +1285,7 @@ func stackOwnWork(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string,
 	if replayed == own {
 		return nil
 	}
-	return fmt.Errorf("stack rebase: %s would replay %d commits but owns %d — the rest are already in %s; name its real parent with --parent %s=<branch>",
+	return fmt.Errorf("stack rebase: %s would replay %d commits but owns %d — the rest are already in %s; name its real parent with ccx vcs stack rebase --parent %s=<branch>",
 		b.Name, replayed, own, tr.Name(), b.Name)
 }
 
