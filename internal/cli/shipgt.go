@@ -493,6 +493,13 @@ func gtOffParent(branch, held string) string {
 // A --parent gt track would refuse, because the parent was rewritten after the
 // branch was cut from it, first has the branch's own commits replayed onto it.
 func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch string, c *gtCache) (gtState, string, error) {
+	if o.parent == "" {
+		parent, err := gtTrunkParent(ctx, l, c, branch)
+		if err != nil {
+			return nil, "", err
+		}
+		o.parent = parent
+	}
 	argv := []string{"track", branch, "-f", "--no-interactive"}
 	replayed := ""
 	untracked := fmt.Errorf("ship: gt track could not adopt %s — name the branch it was cut from with --parent <branch>, or pass --no-gt", branch)
@@ -541,6 +548,43 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 		seg += " onto " + parent
 	}
 	return state, seg + replayed, nil
+}
+
+// gtTrunkParent names trunk as the parent of a branch no tracked branch sits
+// under above the remote trunk, and nothing otherwise. gt track -f walks every
+// tracked branch for the nearest ancestor, which took seven minutes in a
+// repository tracking hundreds and then failed on a branch cut from trunk.
+func gtTrunkParent(ctx context.Context, l lane, c *gtCache, branch string) (string, error) {
+	state, err := c.at(ctx)
+	if err != nil {
+		return "", err
+	}
+	trunk, err := gtTrunkBranch("ship", state)
+	if err != nil {
+		return "", err
+	}
+	tr, err := gtTrunkRefOffline(ctx, l.dir(), "ship", trunk)
+	if err != nil {
+		return "", err
+	}
+	present, err := gitRefExists(ctx, c.dir, "ship", string(tr.Ref()))
+	if err != nil || !present {
+		return "", err
+	}
+	out, err := render.RunCLI(ctx, c.dir, "git", []string{"rev-list", string(tr.Ref()) + ".." + gtRestackRef(branch)})
+	if err != nil {
+		return "", fmt.Errorf("ship: git rev-list %s..%s: %w", tr.Ref(), branch, err)
+	}
+	above := map[string]bool{}
+	for line := range strings.Lines(out) {
+		above[strings.TrimSpace(line)] = true
+	}
+	for name, s := range state {
+		if name != trunk && name != branch && above[s.Head] {
+			return "", nil
+		}
+	}
+	return trunk, nil
 }
 
 // gtAdoptRefusal is every refusal adopting an untracked branch onto parent
