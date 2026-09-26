@@ -153,6 +153,10 @@ type shipOpts struct {
 	prTitle    []string
 	prBodyFile []string
 	noPR       bool
+
+	landed      []string
+	tipOnly     bool
+	dropCommits bool
 }
 
 type ciRun struct {
@@ -238,6 +242,9 @@ Ship owns the pull request in every lane. --pr-title and --pr-body-file are repe
 	cmd.Flags().StringArrayVar(&o.prTitle, "pr-title", nil, "set the pull request title; repeatable as <branch>=<title>, bare applies to the tip")
 	cmd.Flags().StringArrayVar(&o.prBodyFile, "pr-body-file", nil, `set the pull request body from a file; repeatable as <branch>=<path>, bare applies to the tip ("-" reads stdin)`)
 	cmd.Flags().BoolVar(&o.noPR, "no-pr", false, "push only; never create or update a pull request")
+	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it from the downstack (repeatable; graphite lane only)")
+	cmd.Flags().BoolVar(&o.tipOnly, "tip-only", false, "ship only this branch, onto its parent's published head, pushing no ancestor (graphite lane only)")
+	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
 	for _, group := range [][]string{
 		{"new-branch", "amend"},
 		{"create", "amend"},
@@ -445,12 +452,12 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 		if err != nil {
 			return err
 		}
-		if plan.needsRestack || !contains || published {
+		if plan.needsRestack || !contains || published || len(o.landed) > 0 || o.tipOnly {
 			intent, err := stackShipOptions(o, meta, prNWO, branch)
 			if err != nil {
 				return err
 			}
-			if err := runStackRebase(cmd, stackRebaseOpts{members: gtBottomUp(chain), draft: o.draft, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent}); err != nil {
+			if err := runStackRebase(cmd, stackRebaseOpts{members: gtBottomUp(chain), landed: o.landed, draft: o.draft, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent, tip: branch, tipOnly: o.tipOnly, dropCommits: o.dropCommits || o.yolo}); err != nil {
 				if preAmendSHA != "" && gtc.restack == nil {
 					return shipAmendKept(ctx, dir, preAmendSHA, err)
 				}
