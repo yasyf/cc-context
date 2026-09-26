@@ -290,3 +290,35 @@ func TestStackContinueReadsTheGeneratorsFromTheReplayedCommit(t *testing.T) {
 		t.Errorf("feature's gen/out.txt = %q, want the human's resolution", got)
 	}
 }
+
+func TestStackRebaseRegeneratesEveryGeneratedPathTheStoppedCommitTouches(t *testing.T) {
+	const upper = "tr a-z A-Z < gen/out.txt > up/out.txt"
+	f := regenRepo(t, regenCat)
+	writeShipFile(t, f.Dir, regenFile, fmt.Sprintf("[[generated]]\npaths = [\"gen/*.txt\"]\nrun = %q\n\n[[generated]]\npaths = [\"up/*.txt\"]\nrun = %q\n", regenCat, regenCat+" && "+upper))
+	writeShipFile(t, f.Dir, "up/out.txt", "A\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "upper")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	regenBranch(t, f, map[string]string{"src/f.txt": "f\n", "gen/out.txt": "a\nf\n", "up/out.txt": "A\nF\n"})
+	regenAdvanceTrunk(t, f, [2]string{"src/t.txt", "t\n"}, [2]string{"gen/out.txt", "a\nt\n"})
+	config, err := os.ReadFile(filepath.Join(f.Dir, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if want := "regenerated up/out.txt" + shipSep + regenCat + " && " + upper; !strings.Contains(out, want) {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "show", "feature:up/out.txt"); got != "A\nF\nT" {
+		t.Errorf("feature's up/out.txt = %q, want it regenerated over trunk's t", got)
+	}
+	if after, err := os.ReadFile(filepath.Join(f.Dir, ".git", "config")); err != nil {
+		t.Fatal(err)
+	} else if string(after) != string(config) {
+		t.Errorf(".git/config changed across a regenerating rebase:\nbefore:\n%s\nafter:\n%s", config, after)
+	}
+}
