@@ -125,6 +125,35 @@ func TestShipTipOnlyPushesNoAncestor(t *testing.T) {
 	stackAssertBaseKept(t, f, base)
 }
 
+func TestShipTipOnlyCommitsWithAncestorCheckedOut(t *testing.T) {
+	f, _, base := stackMergeableBase(t, "CONFLICTING")
+	held := f.WorktreePath("held-base")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
+	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+
+	out, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--tip-only")
+	if err != nil {
+		t.Fatalf("ship --no-push --tip-only = %v (stderr=%q)", err, errStr)
+	}
+	if strings.Contains(out, "restacked") || !strings.Contains(out, "not pushed") {
+		t.Errorf("summary = %q, want a commit without a restack or push", out)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != local {
+		t.Errorf("local base moved from %s to %s", local, got)
+	}
+	if got := gitAt(t, f.Env(), held, "rev-parse", "HEAD"); got != local {
+		t.Errorf("held checkout moved from %s to %s", local, got)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != base {
+		t.Errorf("published base moved from %s to %s", base, got)
+	}
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only"); err != nil {
+		t.Fatalf("ship --no-commit --tip-only = %v (stderr=%q)", err, errStr)
+	}
+	stackAssertBaseKept(t, f, base)
+}
+
 // TestShipKeepsAnApprovedParentOnlyRestackedLocally is ci-go's #25915: the parent
 // #25742 was restacked locally onto newer trunk without a push, GitHub had not
 // computed its mergeability, and each ship from the child force-pushed the

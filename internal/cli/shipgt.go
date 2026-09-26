@@ -375,6 +375,9 @@ func gtResumeCmd(o shipOpts) string {
 		return ""
 	}
 	argv := []string{"ccx vcs ship --no-commit"}
+	if o.tipOnly {
+		argv = append(argv, "--tip-only")
+	}
 	if o.draft {
 		argv = append(argv, "--draft")
 	}

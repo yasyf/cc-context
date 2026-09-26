@@ -5253,6 +5253,11 @@ func TestGTStuck(t *testing.T) {
 			o:    shipOpts{draft: true, prTitle: []string{"fix: 🐛 the widget"}, prBodyFile: []string{"-"}},
 			want: `ship: stuck. The commit already landed, so a plain re-run refuses as an empty commit — submit it with: ccx vcs ship --no-commit --draft --pr-title "fix: 🐛 the widget" --pr-body-file "-"`,
 		},
+		{
+			name: "tip-only recovery preserves the ancestor boundary and pr flags",
+			o:    shipOpts{tipOnly: true, draft: true, prTitle: []string{"fix: 🐛 the widget"}, prBodyFile: []string{"-"}},
+			want: `ship: stuck. The commit already landed, so a plain re-run refuses as an empty commit — submit it with: ccx vcs ship --no-commit --tip-only --draft --pr-title "fix: 🐛 the widget" --pr-body-file "-"`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

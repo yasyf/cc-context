@@ -466,7 +466,7 @@ func runShip(cmd *cobra.Command, o shipOpts) error {
 			gtc.forget()
 			restackSeg = "restacked in isolation"
 		}
-	} else if plan.needsRestack {
+	} else if plan.needsRestack && !o.tipOnly {
 		if restackSeg, err = gtRestack(ctx, l, stuck, branch, gtc); err != nil {
 			return err
 		}
