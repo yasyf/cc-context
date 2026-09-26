@@ -142,8 +142,9 @@ func assertNoRestackMutation(t *testing.T, invocations [][]string) {
 }
 
 func TestRestackGitRebasesOntoTrunk(t *testing.T) {
-	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Branch("feature"))
+	f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"))
 	f.Isolate(t)
+	installDropGH(t, f, nil)
 	restackWrite(t, filepath.Join(f.Dir, "feature.txt"), "feature\n")
 	restackRun(t, f, f.Dir, "git", "add", "feature.txt")
 	restackRun(t, f, f.Dir, "git", "commit", "-qm", "feature")
@@ -231,8 +232,9 @@ func TestRestackGitTargetsTheQualifiedTrunkRef(t *testing.T) {
 			if tt.branch != "" {
 				opts = append(opts, vcstest.Branch(tt.branch))
 			}
-			f := vcstest.Repo(t, opts...)
+			f := shipRepo(t, opts...)
 			f.Isolate(t)
+			installDropGH(t, f, nil)
 			restackRun(t, f, f.Dir, "git", "branch", "origin/main", "HEAD")
 			restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 			decoy := restackRev(t, f, f.Dir, "refs/heads/origin/main")
@@ -322,8 +324,9 @@ func TestRestackGitRefusesDetachedHEAD(t *testing.T) {
 // of f.txt, so a restack of feature stops mid-replay.
 func restackGitConflict(t *testing.T) *vcstest.Fixture {
 	t.Helper()
-	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Branch("feature"))
+	f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"))
 	f.Isolate(t)
+	installDropGH(t, f, nil)
 	restackWrite(t, filepath.Join(f.Dir, "f.txt"), "feature\n")
 	restackWrite(t, filepath.Join(f.Dir, "g.txt"), "committed\n")
 	restackRun(t, f, f.Dir, "git", "add", "f.txt", "g.txt")
@@ -469,8 +472,9 @@ func TestRestackGitConflictRunsWithRerereOff(t *testing.T) {
 // TestRestackGitFlattensABranchCarryingAMerge covers the span git replay
 // refuses: a branch that merged trunk in rebases flat, as git rebase does.
 func TestRestackGitFlattensABranchCarryingAMerge(t *testing.T) {
-	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Branch("feature"))
+	f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"))
 	f.Isolate(t)
+	installDropGH(t, f, nil)
 	restackWrite(t, filepath.Join(f.Dir, "feature.txt"), "feature\n")
 	restackRun(t, f, f.Dir, "git", "add", "feature.txt")
 	restackRun(t, f, f.Dir, "git", "commit", "-qm", "feature")
@@ -578,6 +582,43 @@ func TestRestackGitAlreadyOnThePullRequestBase(t *testing.T) {
 		t.Errorf("HEAD moved from %s to %s while already on its parent", before, after)
 	}
 	assertNoRestackMutation(t, restackInvocations(t, f))
+}
+
+func TestRestackGitFailsWhenThePullRequestLookupFails(t *testing.T) {
+	tests := []struct {
+		name      string
+		uncached  bool
+		wantError string
+	}{
+		{name: "repository lookup", uncached: true, wantError: "restack: github metadata unavailable: gh repo view"},
+		{name: "pull request lookup", wantError: "restack: list the open pull requests of feature"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := restackGitStacked(t, nil)
+			if tt.uncached {
+				clearRepoRecord(f.Context(), t, f.Dir)
+			}
+			writeShipExecutable(t, f.ShimBin, "gh", "#!/bin/sh\nprintf 'gh: Bad Gateway (HTTP 502)\\n' >&2\nexit 1\n")
+			restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+			before := restackRev(t, f, f.Dir, "HEAD")
+			restackReset(t, f)
+
+			_, _, err := runRestackCmd(t, f)
+			if err == nil {
+				t.Fatal("restack succeeded without knowing feature's parent, want the lookup failure")
+			}
+			for _, want := range []string{tt.wantError, "HTTP 502"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %v, want %q", err, want)
+				}
+			}
+			if after := restackRev(t, f, f.Dir, "HEAD"); after != before {
+				t.Errorf("HEAD moved from %s to %s on a failed lookup", before, after)
+			}
+			assertNoRestackMutation(t, restackInvocations(t, f))
+		})
+	}
 }
 
 func TestRestackGitLeavesARewrittenParentsCommitsBehind(t *testing.T) {

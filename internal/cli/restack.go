@@ -230,9 +230,6 @@ func restackGit(ctx context.Context, cmd *cobra.Command, l lane) (string, error)
 
 func restackGitParent(ctx context.Context, dir render.Dir, remote, branch string, trunk vcs.Trunk) (vcs.Trunk, error) {
 	repo, err := vcs.LookupRepo(ctx, dir, false)
-	if errors.Is(err, vcs.ErrNoGitHub) {
-		return trunk, nil
-	}
 	if err != nil {
 		return vcs.Trunk{}, fmt.Errorf("restack: %w", err)
 	}
