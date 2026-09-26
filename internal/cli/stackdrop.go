@@ -320,7 +320,7 @@ func dropLocal(ctx context.Context, l lane, commonDir string, plan dropPlan) (gt
 			}
 		}
 	}
-	result, err := gtRestackChain(ctx, dropPrefix, l.checkout, l.dir(), commonDir, state, chain)
+	result, err := gtRestackChain(ctx, dropPrefix, l.checkout, l.dir(), commonDir, state, chain, false)
 	if err != nil {
 		return result, fmt.Errorf("%s: %w", dropPrefix, err)
 	}

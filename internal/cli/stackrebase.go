@@ -2688,12 +2688,20 @@ func stackQueryPRs(ctx context.Context, dir render.Dir, trunk string, branches [
 
 func stackCheckHolders(ctx context.Context, origin string, movers []string, holders map[string]string) error {
 	for _, branch := range movers {
+		if holder := holders[branch]; holder != "" && holder != origin {
+			return fmt.Errorf("stack rebase: %s is checked out in %s; no branches moved — finish or detach that checkout, then retry with ccx", branch, holder)
+		}
+	}
+	return stackCheckClean(ctx, movers, holders)
+}
+
+// stackCheckClean refuses a move under a working copy with uncommitted work,
+// which realigning that copy onto the moved branch would overwrite.
+func stackCheckClean(ctx context.Context, movers []string, holders map[string]string) error {
+	for _, branch := range movers {
 		holder := holders[branch]
 		if holder == "" {
 			continue
-		}
-		if holder != origin {
-			return fmt.Errorf("stack rebase: %s is checked out in %s; no branches moved — finish or detach that checkout, then retry with ccx", branch, holder)
 		}
 		status, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"status", "--porcelain", "--untracked-files=normal"})
 		if err != nil {
