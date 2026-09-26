@@ -147,6 +147,7 @@ func stackAssertPublication(t *testing.T, f *vcstest.Fixture, source stackPublic
 }
 
 func TestStackRebaseOfALocalOnlyStackOpensNoPullRequest(t *testing.T) {
+	t.Parallel()
 	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
@@ -173,6 +174,7 @@ func TestStackRebaseOfALocalOnlyStackOpensNoPullRequest(t *testing.T) {
 }
 
 func TestStackRebaseRebasesAPullRequestLessTipLocally(t *testing.T) {
+	t.Parallel()
 	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 	stubOpenPRs(t, f, nil, "base")
 	api := stubGTAPI(t)
@@ -213,6 +215,7 @@ func TestStackRebaseRebasesAPullRequestLessTipLocally(t *testing.T) {
 }
 
 func TestStackRebaseRefusesAPullRequestLessBranchBelowOneWithAPullRequest(t *testing.T) {
+	t.Parallel()
 	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 	stubOpenPRs(t, f, nil, "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
@@ -233,6 +236,7 @@ func TestStackRebaseRefusesAPullRequestLessBranchBelowOneWithAPullRequest(t *tes
 }
 
 func TestStackRebaseMovesEachSourceOntoItsPublishedHead(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
@@ -266,6 +270,7 @@ func TestStackRebaseMovesEachSourceOntoItsPublishedHead(t *testing.T) {
 }
 
 func TestStackRebaseLeavesASourceAnotherWorktreeHolds(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
@@ -288,6 +293,7 @@ func TestStackRebaseLeavesASourceAnotherWorktreeHolds(t *testing.T) {
 }
 
 func TestStackRebaseDropsASquashLandedParent(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	baseCommit := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	stackAdvanceTrunk(t, f, "base.txt", "base\n")
@@ -313,6 +319,7 @@ func TestStackRebaseDropsASquashLandedParent(t *testing.T) {
 }
 
 func TestStackRebasePushesWithADivergedLocalTrunk(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
 	writeShipFile(t, f.Dir, "local.txt", "local\n")
@@ -346,6 +353,7 @@ func TestStackRebasePushesWithADivergedLocalTrunk(t *testing.T) {
 }
 
 func TestStackRebaseLinearizesSiblings(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "a")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
 	shipGTStack(t, f, "b")
@@ -366,6 +374,7 @@ func TestStackRebaseLinearizesSiblings(t *testing.T) {
 }
 
 func TestStackRebaseRefusesABranchAnotherWorkingCopyHolds(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	held := restackSiblingPath(t, "held")
@@ -397,6 +406,7 @@ func TestStackRebaseRefusesABranchAnotherWorkingCopyHolds(t *testing.T) {
 }
 
 func TestStackRebaseRefusesDirtyOriginBeforeMovingRefs(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	writeShipFile(t, f.Dir, "feature.txt", "uncommitted\n")
@@ -422,6 +432,7 @@ func TestStackRebaseRefusesDirtyOriginBeforeMovingRefs(t *testing.T) {
 // lists: an ignored file at a path the new trunk tracks, which read-tree -u
 // would replace without a word once the refs had already moved.
 func TestStackRebaseRefusesToOverwriteAnIgnoredFile(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	stackAdvanceTrunk(t, f, "gen.txt", "upstream\n")
 	restackWrite(t, filepath.Join(f.Dir, ".git", "info", "exclude"), "gen.txt\n")
@@ -446,6 +457,7 @@ func TestStackRebaseRefusesToOverwriteAnIgnoredFile(t *testing.T) {
 }
 
 func TestStackRebaseConflictOpensAWorkspaceAndContinues(t *testing.T) {
+	t.Parallel()
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubStackPRs(t, f, map[string]*stackPR{"feature": {Number: 7, Title: "feature work", Body: "adds c.txt", State: "OPEN"}})
 	stackConflicting(t, f)
@@ -505,6 +517,7 @@ func TestStackRebaseConflictOpensAWorkspaceAndContinues(t *testing.T) {
 }
 
 func TestStackContinueReturnsWhileTheWorkspaceIsStillBeingDeleted(t *testing.T) {
+	t.Parallel()
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubStackPRs(t, f, nil)
 	stackConflicting(t, f)
@@ -524,6 +537,7 @@ func TestStackContinueReturnsWhileTheWorkspaceIsStillBeingDeleted(t *testing.T) 
 }
 
 func TestStackAbortSucceedsWhenRemovingTheWorkspaceIsKilled(t *testing.T) {
+	t.Parallel()
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubStackPRs(t, f, nil)
 	stackConflicting(t, f)
@@ -598,6 +612,7 @@ func stackWorkspaceOf(t *testing.T, err error) string {
 }
 
 func TestStackRebaseRunsTwoStacksSideBySide(t *testing.T) {
+	t.Parallel()
 	f := shipGTRepo(t)
 	stubStackPRs(t, f, nil)
 	shipGTStack(t, f, "a-base")
@@ -692,6 +707,7 @@ func stackPlantConflict(t *testing.T, f *vcstest.Fixture, age time.Duration, con
 }
 
 func TestStackRebaseRefusesARecentRunOfADeadProcess(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	pid := stackPlantRun(t, f, time.Minute, "base")
@@ -704,6 +720,7 @@ func TestStackRebaseRefusesARecentRunOfADeadProcess(t *testing.T) {
 }
 
 func TestStackRebaseKeepsAStaleRunWaitingOnItsWorkspace(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	ws := t.TempDir()
 	stackPlantConflict(t, f, stackStaleAfter+time.Minute, &stackConflict{Branch: "feature", Workspace: ws}, "base")
@@ -722,6 +739,7 @@ func stackPlantWorkspace(t *testing.T, f *vcstest.Fixture) string {
 }
 
 func TestStackRebaseReclaimsAConflictRunWhoseBranchesMoved(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	ws := stackPlantWorkspace(t, f)
@@ -744,6 +762,7 @@ func TestStackRebaseReclaimsAConflictRunWhoseBranchesMoved(t *testing.T) {
 }
 
 func TestStackRebaseReclaimsAConflictRunPastTheAgeLimit(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	ws := stackPlantWorkspace(t, f)
@@ -760,6 +779,7 @@ func TestStackRebaseReclaimsAConflictRunPastTheAgeLimit(t *testing.T) {
 }
 
 func TestStackRebaseKeepsAnAgedConflictRunWhenRunFromItsWorkspace(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	ws := stackPlantWorkspace(t, f)
@@ -775,6 +795,7 @@ func TestStackRebaseKeepsAnAgedConflictRunWhenRunFromItsWorkspace(t *testing.T) 
 }
 
 func TestStackAge(t *testing.T) {
+	t.Parallel()
 	for d, want := range map[time.Duration]string{
 		30 * time.Second:                 "0m",
 		10 * time.Minute:                 "10m",
@@ -789,6 +810,7 @@ func TestStackAge(t *testing.T) {
 }
 
 func TestStackRebaseReclaimsAStaleRun(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	stackPlantRun(t, f, stackStaleAfter+time.Minute, "base")
@@ -855,6 +877,7 @@ func stackPlantLive(t *testing.T, f *vcstest.Fixture, branches ...string) *stack
 }
 
 func TestStackContinueRefusesARunAnotherProcessDrives(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	live := stackPlantLive(t, f, "base", "feature")
 
@@ -870,6 +893,7 @@ func TestStackContinueRefusesARunAnotherProcessDrives(t *testing.T) {
 }
 
 func TestStackRebaseRefusesALiveRunBeforePlanning(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	stackPlantLive(t, f, "base", "feature")
 	f.Decorate(func(parent context.Context) context.Context {
@@ -885,6 +909,7 @@ func TestStackRebaseRefusesALiveRunBeforePlanning(t *testing.T) {
 }
 
 func TestStackPidAliveRejectsAReusedPid(t *testing.T) {
+	t.Parallel()
 	run := &stackRebaseRun{Pid: os.Getpid(), Started: stackProcStart(os.Getpid())}
 	if !stackPidAlive(run) {
 		t.Fatalf("stackPidAlive(own pid, own start %q) = false", run.Started)
@@ -896,6 +921,7 @@ func TestStackPidAliveRejectsAReusedPid(t *testing.T) {
 }
 
 func TestStackWriteRefsTakesARefAlreadyWritten(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base")
 	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	moved := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
@@ -911,6 +937,7 @@ func TestStackWriteRefsTakesARefAlreadyWritten(t *testing.T) {
 }
 
 func TestStackAbortDropsTheRun(t *testing.T) {
+	t.Parallel()
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubStackPRs(t, f, nil)
 	stackConflicting(t, f)
@@ -945,6 +972,7 @@ func TestStackAbortDropsTheRun(t *testing.T) {
 }
 
 func TestStackRebaseRefusesADivergedRemote(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
 	stackForeignPush(t, f, "base", "foreign.txt", false)
@@ -969,6 +997,7 @@ func stackRecordSubmitted(t *testing.T, f *vcstest.Fixture, branches ...string) 
 }
 
 func TestStackRebasePushesOverItsOwnLastSubmission(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
 	stackRecordSubmitted(t, f, "base", "feature")
@@ -996,6 +1025,7 @@ func TestStackRebasePushesOverItsOwnLastSubmission(t *testing.T) {
 }
 
 func TestStackRebaseRefusesAForeignPushOverItsLastSubmission(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
 	stackRecordSubmitted(t, f, "base")
@@ -1010,6 +1040,7 @@ func TestStackRebaseRefusesAForeignPushOverItsLastSubmission(t *testing.T) {
 }
 
 func TestStackRebaseTakesARemoteThatIsAhead(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
 	clone := filepath.Join(t.TempDir(), "other")
@@ -1038,6 +1069,7 @@ func TestStackRebaseTakesARemoteThatIsAhead(t *testing.T) {
 }
 
 func TestStackRebaseDryRunMovesNothing(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
@@ -1056,6 +1088,7 @@ func TestStackRebaseDryRunMovesNothing(t *testing.T) {
 }
 
 func TestStackRebaseRefusesALandedBranchWithCommitsPastItsLanding(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "base~0")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
@@ -1072,6 +1105,7 @@ func TestStackRebaseRefusesALandedBranchWithCommitsPastItsLanding(t *testing.T) 
 }
 
 func TestStackRebaseDropsALandedBranchGraphiteRestackedBeforeItLanded(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	server := f.WorktreePath("server")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "--detach", server, "main")
@@ -1096,6 +1130,7 @@ func TestStackRebaseDropsALandedBranchGraphiteRestackedBeforeItLanded(t *testing
 }
 
 func TestStackSnapshotTakesAServerRestackOfItsOwnCommitsPastAStalePin(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
 	pin := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main")
@@ -1130,6 +1165,7 @@ func TestGTPushArgvPinsAnAbsentRemote(t *testing.T) {
 }
 
 func TestStackContinueRefusesConcurrentLocalAdvance(t *testing.T) {
+	t.Parallel()
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubStackPRs(t, f, nil)
 	stackConflicting(t, f)
@@ -1159,6 +1195,7 @@ func TestStackContinueRefusesConcurrentLocalAdvance(t *testing.T) {
 }
 
 func TestStackContinueRefusesConcurrentRemoteAdvance(t *testing.T) {
+	t.Parallel()
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubOpenPRs(t, f, nil, "base", "feature")
 	stackConflicting(t, f)
@@ -1190,6 +1227,7 @@ func TestStackContinueRefusesConcurrentRemoteAdvance(t *testing.T) {
 }
 
 func TestStackContinueDropsAParentThatLandedMidRun(t *testing.T) {
+	t.Parallel()
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubOpenPRs(t, f, nil, "base", "feature")
 	stackConflicting(t, f)
@@ -1239,6 +1277,7 @@ func TestStackContinueDropsAParentThatLandedMidRun(t *testing.T) {
 }
 
 func TestStackContinueRefusesAPullRequestClosedMidRun(t *testing.T) {
+	t.Parallel()
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubOpenPRs(t, f, map[string]*stackPR{"feature": {Number: 26108, Title: "feature", State: "OPEN"}}, "base")
 	stackConflicting(t, f)
@@ -1269,6 +1308,7 @@ func TestStackContinueRefusesAPullRequestClosedMidRun(t *testing.T) {
 }
 
 func TestStackRebaseDropsALandedBranchReplayedAfterItsLanding(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
@@ -1297,6 +1337,7 @@ func TestStackRebaseDropsALandedBranchReplayedAfterItsLanding(t *testing.T) {
 // continue finishes it with rerere off rather than leaving raw git rebase
 // --continue as the only step left.
 func TestStackContinueFinishesARebaseGTLost(t *testing.T) {
+	t.Parallel()
 	f := shipGTRepo(t)
 	stackConflicting(t, f)
 	runAllowFail(t, f.Env(), f.Dir, "git", "-c", "rerere.enabled=false", "rebase", "main")
@@ -1338,6 +1379,7 @@ func TestStackContinueFinishesARebaseGTLost(t *testing.T) {
 // rebase gets when rerere, on in the user's config, resolved a conflict from a
 // recording nobody rechecked: a stale one silently drops a branch's own hunks.
 func TestStackContinueNamesAResolutionRerereReplayed(t *testing.T) {
+	t.Parallel()
 	f := shipGTRepo(t)
 	stackConflicting(t, f)
 	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
@@ -1377,6 +1419,7 @@ func runAllowFail(t *testing.T, env []string, dir, name string, args ...string) 
 // replayed resolution was forgotten and resolved by hand: rerere leaves that
 // conflict's preimage behind with no postimage beside it.
 func TestStackContinueFinishesAfterARerereForget(t *testing.T) {
+	t.Parallel()
 	f := shipGTRepo(t)
 	stackConflicting(t, f)
 	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
@@ -1400,6 +1443,7 @@ func TestStackContinueFinishesAfterARerereForget(t *testing.T) {
 }
 
 func TestStackContinuePublishesARunSavedWithoutSourceBases(t *testing.T) {
+	t.Parallel()
 	for _, landed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("landed=%t", landed), func(t *testing.T) {
 			f := shipGTRepo(t, vcstest.GTStack("base"))
@@ -1454,6 +1498,7 @@ func TestStackContinuePublishesARunSavedWithoutSourceBases(t *testing.T) {
 }
 
 func TestStackRebaseNamesTheRemotesRefusal(t *testing.T) {
+	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	writeShipExecutable(t, filepath.Join(f.RemoteDir, "hooks"), "pre-receive", "#!/bin/sh\necho 'ref update refused by policy' >&2\nexit 1\n")
