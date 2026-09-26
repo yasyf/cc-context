@@ -1015,17 +1015,18 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 	return b, nil
 }
 
-// stackRefuseDroppedCommits refuses a local head that leaves out commits its
-// published head carries, matched by subject so a rebase or an amend still
-// passes: a hard reset onto the wrong commit would otherwise force-push over the
-// pull request's work.
+// stackRefuseDroppedCommits refuses a local head that only loses work its
+// published head carries: one sharing none of its commits, or one holding a
+// strict subset of them, matched by subject so a rebase, an amend, or a rewrite
+// of a commit still passes. A hard reset onto the wrong commit would otherwise
+// force-push over the pull request's work.
 func stackRefuseDroppedCommits(ctx context.Context, dir render.Dir, tr vcs.Trunk, name, local, remote, pin string) error {
 	subjects := func(head string) ([]string, error) {
 		out, err := render.RunCLI(ctx, dir, "git", []string{"log", "--no-merges", "--format=%s", head, "^" + pin})
 		if err != nil {
 			return nil, fmt.Errorf("%s: git log %.12s: %w", stackRebasePrefix, head, err)
 		}
-		return strings.Split(strings.TrimSpace(out), "\n"), nil
+		return slices.DeleteFunc(strings.Split(strings.TrimSpace(out), "\n"), func(s string) bool { return s == "" }), nil
 	}
 	kept, err := subjects(local)
 	if err != nil {
@@ -1036,12 +1037,16 @@ func stackRefuseDroppedCommits(ctx context.Context, dir render.Dir, tr vcs.Trunk
 		return err
 	}
 	var dropped []string
+	shared := 0
 	for _, subject := range published {
-		if subject != "" && !slices.Contains(kept, subject) {
-			dropped = append(dropped, fmt.Sprintf("%q", subject))
+		if slices.Contains(kept, subject) {
+			shared++
+			continue
 		}
+		dropped = append(dropped, fmt.Sprintf("%q", subject))
 	}
-	if len(dropped) == 0 {
+	added := slices.ContainsFunc(kept, func(subject string) bool { return !slices.Contains(published, subject) })
+	if len(dropped) == 0 || (shared > 0 && added) {
 		return nil
 	}
 	return fmt.Errorf("stack rebase: %s's local head %.12s drops %d commit(s) its published head %s/%s (%.12s) carries: %s — restore them, or pass --drop-commits to publish the local head anyway",
