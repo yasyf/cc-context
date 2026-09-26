@@ -22,7 +22,8 @@ foreign_name="${foreign_repo##*/}"
 # the non-null case reviewTerminalState reads.
 open_pr=13982
 open_pr_branch="o1/add-latest-pre-release-and-pin-flags-to-gh-extension-upgrade/nysoxynolqlo"
-draft_pr_branch="maxbeizer-fix-project-scope-error"
+draft_pr_owner="cli"
+draft_pr_branch="williammartin-clean-git-test-seams"
 merged_pr=13084
 # A pull request whose inline feed carries a comment on an outdated diff, which
 # is how GitHub produces the null "line" that ghPRComment holds as *int.
@@ -266,9 +267,6 @@ fi
 
 ### ship's pull request lookup — gh pr list
 
-record pr-list-empty pr list --repo "$own_repo" --head no-such-branch --state open --json number,url,isDraft --limit 1
-record pr-list-found pr list --repo "$foreign_repo" --head "$open_pr_branch" --state open --json number,url,isDraft --limit 1
-record pr-list-draft pr list --repo "$foreign_repo" --head "$draft_pr_branch" --state open --json number,url,isDraft --limit 1
 
 ### ccx vcs info's downstack — one batched graphql per stack
 
@@ -311,6 +309,7 @@ record rest-pulls-head-newest api "$(rest_pulls_head 'repos/{owner}/{repo}' '{ow
 record rest-pulls-head-closed api "$(rest_pulls_head 'repos/{owner}/{repo}' '{owner}' "$own_branch_closed")"
 record rest-pulls-head-none api "$(rest_pulls_head 'repos/{owner}/{repo}' '{owner}' no-such-branch)"
 record rest-pulls-head-open api "$(rest_pulls_head "repos/$foreign_repo" "$open_pr_fork" "$open_pr_branch")"
+record rest-pulls-head-draft api "$(rest_pulls_head "repos/$foreign_repo" "$draft_pr_owner" "$draft_pr_branch")"
 record rest-pull-open api "repos/$foreign_repo/pulls/$open_pr"
 record rest-issue-closed-by api "repos/{owner}/{repo}/issues/$own_closed_pr" --jq '.closed_by.login // ""'
 record rest-issue-comments api --paginate --slurp "repos/$foreign_repo/issues/$open_pr/comments?per_page=100"

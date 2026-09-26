@@ -32,8 +32,8 @@ const prURLMarker = "/pull/"
 // prState is the open pull request ship found for a branch.
 type prState struct {
 	Number  int    `json:"number"`
-	URL     string `json:"url"`
-	IsDraft bool   `json:"isDraft"`
+	URL     string `json:"html_url"`
+	IsDraft bool   `json:"draft"`
 }
 
 // prMeta is the caller's stated pull request metadata; an unset field is never
@@ -267,19 +267,17 @@ func shipPR(ctx context.Context, l lane, nwo, branch, trunk, subject string, met
 	return shipPREdit(ctx, nwo, pr, m)
 }
 
-// lookupPR resolves branch's open pull request through gh pr list, which exits 0
-// with an empty array when there is none — unlike gh pr view, whose only signal
-// is a stderr string reviews.go has to match on. --state open matters: a merged
-// pull request on a reused branch name must never be edited.
+// lookupPR resolves branch's open pull request over REST, which answers an
+// empty array when there is none. state=open matters: a merged pull request on
+// a reused branch name must never be edited.
 func lookupPR(ctx context.Context, nwo, branch string) (prState, bool, error) {
-	argv := []string{"pr", "list", "--repo", nwo, "--head", branch, "--state", "open", "--json", "number,url,isDraft", "--limit", "1"}
-	out, err := render.RunCLI(ctx, render.Ambient, "gh", argv)
+	out, err := render.RunCLI(ctx, render.Ambient, "gh", ghPullsByHeadArgv(nwo, branch, "open"))
 	if err != nil {
-		return prState{}, false, fmt.Errorf("ship: gh pr list: %w", err)
+		return prState{}, false, fmt.Errorf("ship: gh api pulls: %w", err)
 	}
 	var prs []prState
 	if err := json.Unmarshal([]byte(out), &prs); err != nil {
-		return prState{}, false, fmt.Errorf("ship: parse gh pr list: %w", err)
+		return prState{}, false, fmt.Errorf("ship: parse gh api pulls: %w", err)
 	}
 	if len(prs) == 0 {
 		return prState{}, false, nil
@@ -287,40 +285,43 @@ func lookupPR(ctx context.Context, nwo, branch string) (prState, bool, error) {
 	return prs[0], true, nil
 }
 
-// shipPRCreate opens the branch's pull request. --repo and an explicit --base
-// are load-bearing: from a fork, non-interactive gh pr create otherwise resolves
-// the base repository to the parent and can target upstream. It never passes
-// --fill, which would publish withSessionTrailer's Claude-Session-Id line into
-// the description.
+// shipPRCreate opens the branch's pull request over REST. The repository and
+// an explicit base are load-bearing: from a fork, the base would otherwise
+// resolve to the parent and can target upstream. The body is only what the
+// caller stated, never the commit message, which would publish
+// withSessionTrailer's Claude-Session-Id line into the description.
 func shipPRCreate(ctx context.Context, nwo, branch, trunk, subject string, m prMeta) (string, error) {
 	title := m.title
 	if title == "" {
 		title = subject
 	}
-	argv := []string{"pr", "create", "--repo", nwo, "--head", branch, "--base", trunk, "--title", title}
-	if m.bodyPath != "" {
-		argv = append(argv, "--body-file", m.bodyPath)
-	} else {
-		argv = append(argv, "--body", "")
-	}
 	draft := m.draft != nil && *m.draft
-	if draft {
-		argv = append(argv, "--draft")
-	}
-	out, err := render.RunCLI(ctx, render.Ambient, "gh", argv)
+	out, err := render.RunCLI(ctx, render.Ambient, "gh", prCreateArgv(nwo, branch, trunk, title, m.bodyPath, draft))
 	if err != nil {
-		return "", fmt.Errorf("ship: gh pr create: %w", err)
+		return "", fmt.Errorf("ship: gh api create pull: %w", err)
 	}
-	url := strings.TrimSpace(out)
-	number, err := prNumberFromURL(url)
-	if err != nil {
-		return "", err
+	var pr prState
+	if err := json.Unmarshal([]byte(out), &pr); err != nil {
+		return "", fmt.Errorf("ship: parse gh api create pull: %w", err)
 	}
-	seg := fmt.Sprintf("opened PR #%d %s", number, url)
+	seg := fmt.Sprintf("opened PR #%d %s", pr.Number, pr.URL)
 	if draft {
 		seg += " [draft]"
 	}
 	return seg, nil
+}
+
+func prCreateArgv(nwo, branch, trunk, title, bodyPath string, draft bool) []string {
+	argv := []string{"api", "-X", "POST", "repos/" + nwo + "/pulls", "-f", "head=" + branch, "-f", "base=" + trunk, "-f", "title=" + title}
+	if bodyPath != "" {
+		argv = append(argv, "-F", "body=@"+bodyPath)
+	} else {
+		argv = append(argv, "-f", "body=")
+	}
+	if draft {
+		argv = append(argv, "-F", "draft=true")
+	}
+	return argv
 }
 
 // shipPREdit restates the fields this invocation named on an existing pull

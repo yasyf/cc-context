@@ -20,10 +20,32 @@ import (
 
 const fakePRRepo = "yasyf/cc-context"
 
-// fakePRCreateURL is the one pull request payload still hand-modeled: gh pr
-// create prints nothing but the URL of a pull request it just opened, so
-// recording one opens a real pull request (`task record-gh -- --write OWNER/N`).
-const fakePRCreateURL = "https://github.com/yasyf/cc-context/pull/12"
+// shipPRCreated points the fake gh at a branch with no pull request and a create
+// that answers with a recorded pull request, which it returns.
+func shipPRCreated(t *testing.T) prState {
+	t.Helper()
+	t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-none"))
+	created := ghStdout(t, "rest-pull-open")
+	t.Setenv("GH_PULL_CREATE_JSON", created)
+	var pr prState
+	if err := json.Unmarshal([]byte(created), &pr); err != nil {
+		t.Fatalf("golden rest-pull-open: %v", err)
+	}
+	return pr
+}
+
+// assertNoGraphQLArgv fails on any gh call that spends GitHub's GraphQL quota.
+func assertNoGraphQLArgv(t *testing.T, invocations [][]string) {
+	t.Helper()
+	for _, inv := range invocations {
+		if len(inv) < 2 || inv[0] != "gh" {
+			continue
+		}
+		if inv[1] == "pr" || slices.Contains(inv, "graphql") {
+			t.Errorf("gh call spends GraphQL quota: %v", inv)
+		}
+	}
+}
 
 // shipPRFixture builds a real repository with an edit waiting and a bare origin
 // to push it to, the shape every pull request test ships from, and puts the
@@ -35,7 +57,7 @@ func shipPRFixture(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	return f
 }
 
-// prFromListGolden is the pull request a recorded gh pr list resolves to, so an
+// prFromListGolden is the pull request a recorded REST pulls lookup resolves to, so an
 // assertion names the number and URL GitHub returned rather than ones written
 // here.
 func prFromListGolden(t *testing.T, scenario string) prState {
@@ -117,6 +139,10 @@ func ghPREditArgv(number int, fields ...string) []string {
 	return append([]string{"gh", "api", "-X", "PATCH", fmt.Sprintf("repos/%s/pulls/%d", fakePRRepo, number), "--silent"}, fields...)
 }
 
+func isPRLookup(inv []string) bool {
+	return len(inv) > 4 && inv[0] == "gh" && inv[1] == "api" && inv[2] == "-X" && inv[3] == "GET" && strings.HasSuffix(inv[4], "/pulls")
+}
+
 func isPREdit(inv []string) bool {
 	return len(inv) > 3 && inv[0] == "gh" && inv[1] == "api" && inv[2] == "-X" && inv[3] == "PATCH"
 }
@@ -127,7 +153,7 @@ func isPREdit(inv []string) bool {
 func assertNoPRStep(t *testing.T, invocations [][]string) {
 	t.Helper()
 	for _, inv := range invocations {
-		if isPREdit(inv) {
+		if isPREdit(inv) || isPRLookup(inv) {
 			t.Errorf("pull request step ran without a pr flag: %v", inv)
 		}
 		if len(inv) < 3 || inv[0] != "gh" || inv[1] != "pr" {
@@ -142,8 +168,7 @@ func assertNoPRStep(t *testing.T, invocations [][]string) {
 
 func TestShipPRCreateGitLane(t *testing.T) {
 	f := shipPRFixture(t, vcstest.Branch("feature"))
-	t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-empty"))
-	t.Setenv("GH_PR_CREATE_OUT", fakePRCreateURL)
+	created := shipPRCreated(t)
 	bodyDump := filepath.Join(t.TempDir(), "body")
 	t.Setenv("GH_PR_BODY_DUMP", bodyDump)
 	const bodyText = "why this change\n"
@@ -155,10 +180,11 @@ func TestShipPRCreateGitLane(t *testing.T) {
 	}
 	invocations := vcstest.Invocations(t, f.ArgvLog)
 	assertInvocations(t, invocations, append(shipPRPushed("feature"),
-		[]string{"gh", "pr", "list", "--repo", fakePRRepo, "--head", "feature", "--state", "open", "--json", "number,url,isDraft", "--limit", "1"},
-		[]string{"gh", "pr", "create", "--repo", fakePRRepo, "--head", "feature", "--base", "main", "--title", "Better title", "--body-file", body},
+		append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "feature", "open")...),
+		[]string{"gh", "api", "-X", "POST", "repos/" + fakePRRepo + "/pulls", "-f", "head=feature", "-f", "base=main", "-f", "title=Better title", "-F", "body=@" + body},
 	))
-	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + " · pushed feature → origin · opened PR #12 " + fakePRCreateURL; got != want {
+	assertNoGraphQLArgv(t, invocations)
+	if want := swept(vcs.Git, "f.txt") + shipCommitted(t, f, vcs.Git) + fmt.Sprintf(" · pushed feature → origin · opened PR #%d %s", created.Number, created.URL); got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	if got := readFileStr(t, bodyDump); got != bodyText {
@@ -171,8 +197,7 @@ func TestShipPRCreateGitLane(t *testing.T) {
 
 func TestShipMessageFromPRFlags(t *testing.T) {
 	f := shipPRFixture(t, vcstest.Branch("feature"))
-	t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-empty"))
-	t.Setenv("GH_PR_CREATE_OUT", fakePRCreateURL)
+	shipPRCreated(t)
 	body := writePRBody(t, "body.md", "## Context\n\nThe widget broke.\n\n<details>\n<summary>Design</summary>\n\n## Details\n\nRewrote it.\n</details>\n")
 
 	if _, err := runShipCmd(f.Context(), t, "--no-watch", "--pr-title", "fix: 🐛 frobnicate the widget", "--pr-body-file", body); err != nil {
@@ -186,8 +211,7 @@ func TestShipMessageFromPRFlags(t *testing.T) {
 
 func TestShipMessageFromPRTitleAlone(t *testing.T) {
 	f := shipPRFixture(t, vcstest.Branch("feature"))
-	t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-empty"))
-	t.Setenv("GH_PR_CREATE_OUT", fakePRCreateURL)
+	shipPRCreated(t)
 
 	if _, err := runShipCmd(f.Context(), t, "--no-watch", "--pr-title", "fix: frobnicate"); err != nil {
 		t.Fatalf("ship error = %v", err)
@@ -204,8 +228,7 @@ func TestShipMessageFromPRTitleAlone(t *testing.T) {
 
 func TestShipMessageFromPRBodyStdin(t *testing.T) {
 	f := shipPRFixture(t, vcstest.Branch("feature"))
-	t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-empty"))
-	t.Setenv("GH_PR_CREATE_OUT", fakePRCreateURL)
+	shipPRCreated(t)
 	bodyDump := filepath.Join(t.TempDir(), "body")
 	t.Setenv("GH_PR_BODY_DUMP", bodyDump)
 	const bodyText = "## Context\n\nThe widget broke.\n"
@@ -266,33 +289,31 @@ func TestCommitBodyFromPR(t *testing.T) {
 }
 
 // TestShipPRCreateDefaults pins the two defaults a create falls back on: the
-// commit subject as the title, and an explicitly empty body. gh pr create
-// --fill would publish the Claude-Session-Id trailer, so it is never used.
+// commit subject as the title, and an explicitly empty body. the commit
+// message would publish the Claude-Session-Id trailer, so it is never the body.
 func TestShipPRCreateDefaults(t *testing.T) {
 	f := shipPRFixture(t, vcstest.Branch("feature"))
-	t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-empty"))
-	t.Setenv("GH_PR_CREATE_OUT", fakePRCreateURL)
+	shipPRCreated(t)
 	f.Setenv(envClaudeSessionKey, "0d1e2f30-4a5b-6c7d-8e9f-a0b1c2d3e4f5")
 
 	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--draft"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	var create []string
-	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
-		if len(inv) > 2 && inv[0] == "gh" && inv[2] == "create" {
+	invocations := vcstest.Invocations(t, f.ArgvLog)
+	for _, inv := range invocations {
+		if len(inv) > 3 && inv[0] == "gh" && inv[3] == "POST" {
 			create = inv
 		}
 	}
 	want := []string{
-		"gh", "pr", "create", "--repo", fakePRRepo, "--head", "feature", "--base", "main",
-		"--title", "fix: frobnicate", "--body", "", "--draft",
+		"gh", "api", "-X", "POST", "repos/" + fakePRRepo + "/pulls", "-f", "head=feature", "-f", "base=main",
+		"-f", "title=fix: frobnicate", "-f", "body=", "-F", "draft=true",
 	}
 	if !reflect.DeepEqual(create, want) {
 		t.Errorf("create argv = %v, want %v", create, want)
 	}
-	if slices.Contains(create, "--fill") {
-		t.Error("gh pr create --fill would publish the commit's Claude-Session-Id trailer")
-	}
+	assertNoGraphQLArgv(t, invocations)
 	if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
 		t.Errorf("commit subject = %q, want the title the create defaulted to", subject)
 	}
@@ -303,8 +324,8 @@ func TestShipPRCreateDefaults(t *testing.T) {
 
 func TestShipPREditOnlyStatedFields(t *testing.T) {
 	f := shipPRFixture(t, vcstest.Branch("feature"))
-	pr := prFromListGolden(t, "pr-list-found")
-	t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-found"))
+	pr := prFromListGolden(t, "rest-pulls-head-open")
+	t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-open"))
 	body := writePRBody(t, "body.md", "regenerated\n")
 
 	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
@@ -313,14 +334,15 @@ func TestShipPREditOnlyStatedFields(t *testing.T) {
 	}
 	var prCalls [][]string
 	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
-		if inv[0] == "gh" && (inv[1] == "pr" || isPREdit(inv)) {
+		if inv[0] == "gh" && (inv[1] == "pr" || isPREdit(inv) || isPRLookup(inv)) {
 			prCalls = append(prCalls, inv)
 		}
 	}
 	assertInvocations(t, prCalls, [][]string{
-		{"gh", "pr", "list", "--repo", fakePRRepo, "--head", "feature", "--state", "open", "--json", "number,url,isDraft", "--limit", "1"},
+		append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "feature", "open")...),
 		ghPREditArgv(pr.Number, "-F", "body=@"+body),
 	})
+	assertNoGraphQLArgv(t, prCalls)
 	want := swept(vcs.Git, "f.txt") + fmt.Sprintf("%s · pushed feature → origin · updated PR #%d %s (body)", shipCommitted(t, f, vcs.Git), pr.Number, pr.URL)
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
@@ -332,8 +354,8 @@ func TestShipPREditOnlyStatedFields(t *testing.T) {
 
 func TestShipPRBodyFromStdin(t *testing.T) {
 	f := shipPRFixture(t, vcstest.Branch("feature"))
-	pr := prFromListGolden(t, "pr-list-found")
-	t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-found"))
+	pr := prFromListGolden(t, "rest-pulls-head-open")
+	t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-open"))
 	bodyDump := filepath.Join(t.TempDir(), "body")
 	t.Setenv("GH_PR_BODY_DUMP", bodyDump)
 	const piped = "piped body\n"
@@ -610,8 +632,8 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 	})
 	t.Run("git lane", func(t *testing.T) {
 		f := shipPRFixture(t, vcstest.Branch("feature"))
-		pr := prFromListGolden(t, "pr-list-found")
-		t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-found"))
+		pr := prFromListGolden(t, "rest-pulls-head-open")
+		t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-open"))
 		t.Setenv("GH_PR_EDIT_FAIL", "gh: API rate limit exceeded (HTTP 403)")
 		body := writePRBody(t, "body.md", "regenerated\n")
 
@@ -630,8 +652,8 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 	})
 	t.Run("piped body and a pending publish", func(t *testing.T) {
 		f := shipPRFixture(t, vcstest.Branch("feature"))
-		pr := prFromListGolden(t, "pr-list-draft")
-		t.Setenv("GH_PR_LIST_JSON", ghStdout(t, "pr-list-draft"))
+		pr := prFromListGolden(t, "rest-pulls-head-draft")
+		t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-draft"))
 		t.Setenv("GH_PR_EDIT_FAIL", "gh: API rate limit exceeded (HTTP 403)")
 
 		_, err := runShipCmdStdin(t, f, strings.NewReader("piped body\n"), "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", "-", "--publish")
@@ -709,15 +731,15 @@ func TestShipPRDraftTransitions(t *testing.T) {
 		undo     bool
 		wantSeg  string
 	}{
-		{name: "publish to draft", scenario: "pr-list-found", flag: "--draft", undo: true, wantSeg: "draft"},
-		{name: "draft to ready", scenario: "pr-list-draft", flag: "--publish", wantSeg: "ready"},
-		{name: "already in the stated state", scenario: "pr-list-found", flag: "--publish"},
+		{name: "publish to draft", scenario: "rest-pulls-head-open", flag: "--draft", undo: true, wantSeg: "draft"},
+		{name: "draft to ready", scenario: "rest-pulls-head-draft", flag: "--publish", wantSeg: "ready"},
+		{name: "already in the stated state", scenario: "rest-pulls-head-open", flag: "--publish"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := shipPRFixture(t, vcstest.Branch("feature"))
 			pr := prFromListGolden(t, tt.scenario)
-			t.Setenv("GH_PR_LIST_JSON", ghStdout(t, tt.scenario))
+			t.Setenv("GH_PULLS_JSON", ghStdout(t, tt.scenario))
 
 			got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", tt.flag)
 			if err != nil {
