@@ -209,7 +209,7 @@ func infoGraphite(ctx context.Context, l lane, o vcsInfoOpts) (graphiteInfo, err
 		g.Reachable, g.Reason = string(l.verdict), l.note
 		return g, nil
 	}
-	verdict, why, err := gtReachability(ctx, l.root, o.refresh)
+	verdict, why, _, err := gtReachability(ctx, l.root, o.refresh)
 	if err != nil {
 		return graphiteInfo{}, err
 	}

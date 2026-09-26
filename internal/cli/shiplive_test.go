@@ -836,7 +836,7 @@ func TestLiveGTProbeNoToken(t *testing.T) {
 	requireLiveGT(t)
 	dir := setupLiveGTRepo(t, "base\n")
 
-	verdict, note := gtReachable(context.Background(), dir)
+	verdict, note, _ := gtReachable(context.Background(), dir)
 	if verdict != gtVerdictDenied {
 		t.Fatalf("gtReachable() = (%q, %q), want %q", verdict, note, gtVerdictDenied)
 	}
