@@ -102,7 +102,7 @@ func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBran
 	}
 	base := receipt.Base
 	if b.Remote != receipt.Head {
-		replayed, err := stackReplayedPublication(ctx, dir, b.Remote, receipt)
+		replayed, err := stackReplayedOnto(ctx, dir, b.Remote, receipt.Base, receipt.Head)
 		if err != nil {
 			return err
 		}
@@ -121,8 +121,8 @@ func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBran
 	return nil
 }
 
-func stackReplayedPublication(ctx context.Context, dir render.Dir, remote string, receipt *stackPublication) (string, error) {
-	own, err := gtRevCount(ctx, stackRebasePrefix, dir, receipt.Base+".."+receipt.Head)
+func stackReplayedOnto(ctx context.Context, dir render.Dir, remote, ownBase, ownHead string) (string, error) {
+	own, err := gtRevCount(ctx, stackRebasePrefix, dir, ownBase+".."+ownHead)
 	if err != nil {
 		return "", err
 	}
@@ -134,7 +134,7 @@ func stackReplayedPublication(ctx context.Context, dir render.Dir, remote string
 	if err != nil {
 		return "", err
 	}
-	ours, err := stackPatchSeries(ctx, dir, receipt.Base, receipt.Head)
+	ours, err := stackPatchSeries(ctx, dir, ownBase, ownHead)
 	if err != nil {
 		return "", err
 	}

@@ -835,6 +835,11 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 					return b, err
 				}
 			}
+			if !replay {
+				if replay, err = stackRestackedOntoTrunk(ctx, dir, remote, s.Parents[0].SHA, s.Head, pin); err != nil {
+					return b, err
+				}
+			}
 			if replay {
 				break
 			}
@@ -893,6 +898,14 @@ func stackRemoteReplays(ctx context.Context, dir render.Dir, remote, submitted, 
 		return false, err
 	}
 	return theirs != nil && ours != nil && slices.Equal(theirs, ours), nil
+}
+
+func stackRestackedOntoTrunk(ctx context.Context, dir render.Dir, remote, base, head, pin string) (bool, error) {
+	replayed, err := stackReplayedOnto(ctx, dir, remote, base, head)
+	if err != nil || replayed == "" {
+		return false, err
+	}
+	return gitIsAncestor(ctx, dir, stackRebasePrefix, replayed, pin)
 }
 
 func stackPatchSeries(ctx context.Context, dir render.Dir, pin, head string) ([]string, error) {
