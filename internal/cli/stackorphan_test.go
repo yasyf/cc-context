@@ -58,7 +58,7 @@ func TestStackRebaseStopsAtAConflictBelowAPublishedParentOutsideTheRun(t *testin
 // record-zod read a parent its downstack never held.
 func TestShipKeepsABranchOnTheSiblingItWasPublishedOnto(t *testing.T) {
 	f := shipGTRepo(t)
-	stubOpenPRs(t, nil, "p", "a", "z")
+	stubOpenPRs(t, f, nil, "p", "a", "z")
 	shipGTStack(t, f, "p", "a")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
 	shipGTStack(t, f, "z")
@@ -72,7 +72,7 @@ func TestShipKeepsABranchOnTheSiblingItWasPublishedOnto(t *testing.T) {
 	if parent := dropGTParent(t, f, "z"); parent != "p" {
 		t.Fatalf("fixture: gt parent of z = %s, want p, with the publication alone naming a", parent)
 	}
-	stubStackPRs(t, map[string]*stackPR{"p": {Number: 41, Title: "p", State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "p")}})
+	stubStackPRs(t, f, map[string]*stackPR{"p": {Number: 41, Title: "p", State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "p")}})
 	restackSquashRemote(t, f, "main", "p (#41)", "p")
 	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
 	shipGTReady(t, f)

@@ -770,7 +770,7 @@ func restackGTRepo(t *testing.T, names ...string) *vcstest.Fixture {
 	f.Isolate(t)
 	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{})
 	f.Decorate(newGTAPIStub(t).ctx)
-	stubStackPRs(t, nil)
+	stubStackPRs(t, f, nil)
 	return f
 }
 
@@ -828,7 +828,7 @@ func TestRestackGTPerBranchVerdict(t *testing.T) {
 
 func TestRestackGTMovesPastALandedParent(t *testing.T) {
 	f := restackGTRepo(t, "a", "b")
-	stubStackPRs(t, map[string]*stackPR{"a": {Number: 10, Head: restackRev(t, f, f.Dir, "a"), State: "CLOSED", Landed: true}})
+	stubStackPRs(t, f, map[string]*stackPR{"a": {Number: 10, Head: restackRev(t, f, f.Dir, "a"), State: "CLOSED", Landed: true}})
 	restackAdvanceRemote(t, f, "main", "a.txt", "a\n")
 
 	out, _, err := runRestackCmd(t, f)
@@ -853,7 +853,7 @@ func TestRestackGTMovesPastALandedParent(t *testing.T) {
 
 func TestRestackGTKeepsChildrenOfAParentThatMergedElsewhere(t *testing.T) {
 	f := restackGTRepo(t, "a", "b")
-	stubStackPRs(t, map[string]*stackPR{"a": {Number: 10, Head: restackRev(t, f, f.Dir, "main"), State: "CLOSED", Landed: true}})
+	stubStackPRs(t, f, map[string]*stackPR{"a": {Number: 10, Head: restackRev(t, f, f.Dir, "main"), State: "CLOSED", Landed: true}})
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 
 	_, _, err := runRestackCmd(t, f)

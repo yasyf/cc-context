@@ -239,9 +239,9 @@ func shipResetLog(t *testing.T, f *vcstest.Fixture) {
 // reaches the gt lane without a gh lookup, an auth probe, or a live API call.
 func shipGTRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	t.Helper()
-	stubStackPRs(t, nil)
 	f := shipRepo(t, append([]vcstest.Opt{vcstest.GT(), vcstest.Remote()}, opts...)...)
 	f.Decorate(newGTAPIStub(t).ctx)
+	stubStackPRs(t, f, nil)
 	return f
 }
 

@@ -10,7 +10,7 @@ import (
 // newer trunk while it sat in the merge queue, and --dry-run never said so.
 func TestStackRebaseParentPushesOnlyTheBranchItMoves(t *testing.T) {
 	f := shipGTRepo(t)
-	stubOpenPRs(t, nil, "p", "c")
+	stubOpenPRs(t, f, nil, "p", "c")
 	shipGTStack(t, f, "p")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
 	shipGTStack(t, f, "c")
@@ -45,7 +45,7 @@ func TestStackSubmitNeverPushesAQueuedBranch(t *testing.T) {
 	}
 	api.prs["base"], api.prs["feature"] = 100, 101
 	api.queued["base"] = true
-	stubStackPRs(t, map[string]*stackPR{
+	stubStackPRs(t, f, map[string]*stackPR{
 		"base":    {Number: 100, Title: "base", State: "OPEN", Base: "main"},
 		"feature": {Number: 101, Title: "feature", State: "OPEN", Base: "base"},
 	})
@@ -81,7 +81,7 @@ func TestShipNewBranchOnAnOpenParentReadsTheQueue(t *testing.T) {
 		t.Fatalf("stack submit: %v", err)
 	}
 	api.prs["p"] = 100
-	stubStackPRs(t, map[string]*stackPR{"p": {Number: 100, Title: "p", State: "OPEN", Base: "main"}})
+	stubStackPRs(t, f, map[string]*stackPR{"p": {Number: 100, Title: "p", State: "OPEN", Base: "main"}})
 	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "p")
 	shipGTReady(t, f)
 

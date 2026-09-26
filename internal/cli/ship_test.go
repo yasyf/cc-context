@@ -4930,7 +4930,7 @@ func TestShipGTAdoptsPublishedSingleCommitRootWithoutTrack(t *testing.T) {
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "feature")
 	published := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
-	stubStackPRs(t, map[string]*stackPR{"feature": {Number: 42, Title: "feature", State: "OPEN", Base: "main", Head: published}})
+	stubStackPRs(t, f, map[string]*stackPR{"feature": {Number: 42, Title: "feature", State: "OPEN", Base: "main", Head: published}})
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
 	api.prs["feature"] = 42

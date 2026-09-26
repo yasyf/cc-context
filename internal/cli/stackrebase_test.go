@@ -22,10 +22,13 @@ import (
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
-func stubStackPRs(t *testing.T, prs map[string]*stackPR) {
+// stubStackPRs answers the stack's pull-request reads with prs on every context
+// f hands out from here on, in place of GitHub. The last stub wins, so a test
+// needing its own answers stubs again over the default its fixture helper
+// installed.
+func stubStackPRs(t *testing.T, f *vcstest.Fixture, prs map[string]*stackPR) {
 	t.Helper()
-	prev := stackPRLookup
-	stackPRLookup = func(_ context.Context, _ render.Dir, _ string, branches []string) (map[string]*stackPR, error) {
+	query := func(_ context.Context, _ render.Dir, _ string, branches []string) (map[string]*stackPR, error) {
 		out := map[string]*stackPR{}
 		for _, b := range branches {
 			if pr, ok := prs[b]; ok {
@@ -34,17 +37,17 @@ func stubStackPRs(t *testing.T, prs map[string]*stackPR) {
 		}
 		return out, nil
 	}
-	t.Cleanup(func() { stackPRLookup = prev })
+	f.Decorate(func(parent context.Context) context.Context { return withStackPRs(parent, query) })
 }
 
-func stubOpenPRs(t *testing.T, prs map[string]*stackPR, names ...string) {
+func stubOpenPRs(t *testing.T, f *vcstest.Fixture, prs map[string]*stackPR, names ...string) {
 	t.Helper()
 	all := map[string]*stackPR{}
 	for i, name := range names {
 		all[name] = &stackPR{Number: 9000 + i, Title: name, State: "OPEN"}
 	}
 	maps.Copy(all, prs)
-	stubStackPRs(t, all)
+	stubStackPRs(t, f, all)
 }
 
 func runStackCmdIn(t *testing.T, f *vcstest.Fixture, dir string, args ...string) (string, string, error) {
@@ -63,7 +66,7 @@ func runStackCmdIn(t *testing.T, f *vcstest.Fixture, dir string, args ...string)
 func stackRebaseRepo(t *testing.T, names ...string) *vcstest.Fixture {
 	t.Helper()
 	f := shipGTRepo(t, vcstest.GTStack(names...))
-	stubOpenPRs(t, nil, names...)
+	stubOpenPRs(t, f, nil, names...)
 	return f
 }
 
@@ -171,7 +174,7 @@ func TestStackRebaseOfALocalOnlyStackOpensNoPullRequest(t *testing.T) {
 
 func TestStackRebaseRebasesAPullRequestLessTipLocally(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
-	stubOpenPRs(t, nil, "base")
+	stubOpenPRs(t, f, nil, "base")
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
@@ -211,7 +214,7 @@ func TestStackRebaseRebasesAPullRequestLessTipLocally(t *testing.T) {
 
 func TestStackRebaseRefusesAPullRequestLessBranchBelowOneWithAPullRequest(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
-	stubOpenPRs(t, nil, "feature")
+	stubOpenPRs(t, f, nil, "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	heads := map[string]string{}
 	for _, b := range []string{"base", "feature"} {
@@ -288,7 +291,7 @@ func TestStackRebaseDropsASquashLandedParent(t *testing.T) {
 	f := stackRebaseRepo(t, "base", "feature")
 	baseCommit := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	stackAdvanceTrunk(t, f, "base.txt", "base\n")
-	stubStackPRs(t, map[string]*stackPR{"base": {Number: 5, Title: "base", State: "CLOSED", Landed: true}})
+	stubStackPRs(t, f, map[string]*stackPR{"base": {Number: 5, Title: "base", State: "CLOSED", Landed: true}})
 	shipResetLog(t, f)
 
 	out, _, err := runStackCmd(t, f, "rebase", "--no-push")
@@ -444,7 +447,7 @@ func TestStackRebaseRefusesToOverwriteAnIgnoredFile(t *testing.T) {
 
 func TestStackRebaseConflictOpensAWorkspaceAndContinues(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
-	stubStackPRs(t, map[string]*stackPR{"feature": {Number: 7, Title: "feature work", Body: "adds c.txt", State: "OPEN"}})
+	stubStackPRs(t, f, map[string]*stackPR{"feature": {Number: 7, Title: "feature work", Body: "adds c.txt", State: "OPEN"}})
 	stackConflicting(t, f)
 	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
@@ -503,7 +506,7 @@ func TestStackRebaseConflictOpensAWorkspaceAndContinues(t *testing.T) {
 
 func TestStackContinueReturnsWhileTheWorkspaceIsStillBeingDeleted(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
-	stubStackPRs(t, nil)
+	stubStackPRs(t, f, nil)
 	stackConflicting(t, f)
 	marker := stackStallRm(t, f)
 
@@ -522,7 +525,7 @@ func TestStackContinueReturnsWhileTheWorkspaceIsStillBeingDeleted(t *testing.T) 
 
 func TestStackAbortSucceedsWhenRemovingTheWorkspaceIsKilled(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
-	stubStackPRs(t, nil)
+	stubStackPRs(t, f, nil)
 	stackConflicting(t, f)
 	marker := stackStallRm(t, f)
 	bin := t.TempDir()
@@ -596,7 +599,7 @@ func stackWorkspaceOf(t *testing.T, err error) string {
 
 func TestStackRebaseRunsTwoStacksSideBySide(t *testing.T) {
 	f := shipGTRepo(t)
-	stubStackPRs(t, nil)
+	stubStackPRs(t, f, nil)
 	shipGTStack(t, f, "a-base")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "a-top")
 	writeShipFile(t, f.Dir, "c.txt", "a\n")
@@ -869,12 +872,12 @@ func TestStackContinueRefusesARunAnotherProcessDrives(t *testing.T) {
 func TestStackRebaseRefusesALiveRunBeforePlanning(t *testing.T) {
 	f := stackRebaseRepo(t, "base", "feature")
 	stackPlantLive(t, f, "base", "feature")
-	prev := stackPRLookup
-	stackPRLookup = func(context.Context, render.Dir, string, []string) (map[string]*stackPR, error) {
-		t.Error("the rebase planned beside a live run of its own branch")
-		return nil, nil
-	}
-	t.Cleanup(func() { stackPRLookup = prev })
+	f.Decorate(func(parent context.Context) context.Context {
+		return withStackPRs(parent, func(context.Context, render.Dir, string, []string) (map[string]*stackPR, error) {
+			t.Error("the rebase planned beside a live run of its own branch")
+			return nil, nil
+		})
+	})
 
 	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err == nil || !strings.Contains(err.Error(), "a stack rebase of base is already in progress") {
 		t.Fatalf("rebase beside a live run = %v, want the in-progress refusal", err)
@@ -909,7 +912,7 @@ func TestStackWriteRefsTakesARefAlreadyWritten(t *testing.T) {
 
 func TestStackAbortDropsTheRun(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
-	stubStackPRs(t, nil)
+	stubStackPRs(t, f, nil)
 	stackConflicting(t, f)
 	hooks := t.TempDir()
 	postCheckout := "#!/bin/sh\nmkdir -p node_modules\n"
@@ -1059,7 +1062,7 @@ func TestStackRebaseRefusesALandedBranchWithCommitsPastItsLanding(t *testing.T) 
 	writeShipFile(t, f.Dir, "later.txt", "later\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "later.txt")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "later")
-	stubStackPRs(t, map[string]*stackPR{"base": {Number: 5, Title: "base", State: "CLOSED", Head: landedAt, Landed: true}})
+	stubStackPRs(t, f, map[string]*stackPR{"base": {Number: 5, Title: "base", State: "CLOSED", Head: landedAt, Landed: true}})
 	shipResetLog(t, f)
 
 	_, _, err := runStackCmd(t, f, "rebase", "--dry-run")
@@ -1077,7 +1080,7 @@ func TestStackRebaseDropsALandedBranchGraphiteRestackedBeforeItLanded(t *testing
 	mustRun(t, f.Env(), server, "git", "cherry-pick", "feature")
 	restacked := gitAt(t, f.Env(), server, "rev-parse", "HEAD")
 	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
-	stubStackPRs(t, map[string]*stackPR{
+	stubStackPRs(t, f, map[string]*stackPR{
 		"base":    {Number: 5, Title: "base", State: "CLOSED", Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "base"), Landed: true},
 		"feature": {Number: 7, Title: "feature", State: "CLOSED", Head: restacked, Landed: true},
 	})
@@ -1128,7 +1131,7 @@ func TestGTPushArgvPinsAnAbsentRemote(t *testing.T) {
 
 func TestStackContinueRefusesConcurrentLocalAdvance(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
-	stubStackPRs(t, nil)
+	stubStackPRs(t, f, nil)
 	stackConflicting(t, f)
 	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err == nil {
@@ -1157,7 +1160,7 @@ func TestStackContinueRefusesConcurrentLocalAdvance(t *testing.T) {
 
 func TestStackContinueRefusesConcurrentRemoteAdvance(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
-	stubOpenPRs(t, nil, "base", "feature")
+	stubOpenPRs(t, f, nil, "base", "feature")
 	stackConflicting(t, f)
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
 	base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
@@ -1188,7 +1191,7 @@ func TestStackContinueRefusesConcurrentRemoteAdvance(t *testing.T) {
 
 func TestStackContinueDropsAParentThatLandedMidRun(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
-	stubOpenPRs(t, nil, "base", "feature")
+	stubOpenPRs(t, f, nil, "base", "feature")
 	stackConflicting(t, f)
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
 	landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
@@ -1200,7 +1203,7 @@ func TestStackContinueDropsAParentThatLandedMidRun(t *testing.T) {
 	ws := stackWorkspaceOf(t, err)
 	restackAdvanceRemote(t, f, "main", "base.txt", "base\n")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "--delete", "base")
-	stubOpenPRs(t, map[string]*stackPR{"base": {Number: 5, Title: "base", State: "CLOSED", Head: landedAt, Landed: true}}, "feature")
+	stubOpenPRs(t, f, map[string]*stackPR{"base": {Number: 5, Title: "base", State: "CLOSED", Head: landedAt, Landed: true}}, "feature")
 	writeShipFile(t, ws, "c.txt", "resolved\n")
 	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
 
@@ -1237,7 +1240,7 @@ func TestStackContinueDropsAParentThatLandedMidRun(t *testing.T) {
 
 func TestStackContinueRefusesAPullRequestClosedMidRun(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
-	stubOpenPRs(t, map[string]*stackPR{"feature": {Number: 26108, Title: "feature", State: "OPEN"}}, "base")
+	stubOpenPRs(t, f, map[string]*stackPR{"feature": {Number: 26108, Title: "feature", State: "OPEN"}}, "base")
 	stackConflicting(t, f)
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
 	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "refs/heads/feature")
@@ -1246,7 +1249,7 @@ func TestStackContinueRefusesAPullRequestClosedMidRun(t *testing.T) {
 		t.Fatal("stack rebase succeeded, want the conflict to stop")
 	}
 	ws := stackWorkspaceOf(t, err)
-	stubOpenPRs(t, map[string]*stackPR{"feature": {Number: 26108, Title: "feature", State: "CLOSED"}}, "base")
+	stubOpenPRs(t, f, map[string]*stackPR{"feature": {Number: 26108, Title: "feature", State: "CLOSED"}}, "base")
 	writeShipFile(t, ws, "c.txt", "resolved\n")
 	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
 	shipResetLog(t, f)
@@ -1273,7 +1276,7 @@ func TestStackRebaseDropsALandedBranchReplayedAfterItsLanding(t *testing.T) {
 	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "origin/main")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
 	stackAdvanceTrunk(t, f, "base.txt", "base\n")
-	stubStackPRs(t, map[string]*stackPR{"base": {Number: 5, Title: "base", State: "CLOSED", Head: landedAt, Landed: true}})
+	stubStackPRs(t, f, map[string]*stackPR{"base": {Number: 5, Title: "base", State: "CLOSED", Head: landedAt, Landed: true}})
 	shipResetLog(t, f)
 
 	out, _, err := runStackCmd(t, f, "rebase", "--no-push")
@@ -1400,7 +1403,7 @@ func TestStackContinuePublishesARunSavedWithoutSourceBases(t *testing.T) {
 	for _, landed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("landed=%t", landed), func(t *testing.T) {
 			f := shipGTRepo(t, vcstest.GTStack("base"))
-			stubOpenPRs(t, nil, "base", "feature")
+			stubOpenPRs(t, f, nil, "base", "feature")
 			stackConflicting(t, f)
 			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
 			landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
@@ -1424,7 +1427,7 @@ func TestStackContinuePublishesARunSavedWithoutSourceBases(t *testing.T) {
 			if landed {
 				restackAdvanceRemote(t, f, "main", "base.txt", "base\n")
 				mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "--delete", "base")
-				stubOpenPRs(t, map[string]*stackPR{"base": {Number: 5, Title: "base", State: "CLOSED", Head: landedAt, Landed: true}}, "feature")
+				stubOpenPRs(t, f, map[string]*stackPR{"base": {Number: 5, Title: "base", State: "CLOSED", Head: landedAt, Landed: true}}, "feature")
 				feature := sources["feature"]
 				feature.Parent = "main"
 				sources["feature"] = feature

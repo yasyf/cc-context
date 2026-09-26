@@ -841,7 +841,7 @@ func TestShipOverAFrozenParentRestacksOnlyTheChild(t *testing.T) {
 
 func TestStackSubmitAdoptsARemoteReplayAfterPublication(t *testing.T) {
 	f := shipGTRepo(t)
-	stubStackPRs(t, nil)
+	stubStackPRs(t, f, nil)
 	shipGTStack(t, f, "base")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("first stack submit: %v", err)
@@ -873,7 +873,7 @@ func TestStackSubmitAdoptsARemoteReplayAfterPublication(t *testing.T) {
 
 func TestStackSubmitRefusesARemoteRewriteAfterPublication(t *testing.T) {
 	f := shipGTRepo(t)
-	stubStackPRs(t, nil)
+	stubStackPRs(t, f, nil)
 	shipGTStack(t, f, "base")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("first stack submit: %v", err)
@@ -891,7 +891,7 @@ func TestStackSubmitRefusesARemoteRewriteAfterPublication(t *testing.T) {
 
 func TestStackSubmitRefusesAForeignMergeCarryingItsOwnChange(t *testing.T) {
 	f := shipGTRepo(t)
-	stubStackPRs(t, nil)
+	stubStackPRs(t, f, nil)
 	shipGTStack(t, f, "base")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("first stack submit: %v", err)
@@ -983,7 +983,7 @@ func TestStackSubmitLeavesAStrayBranchAlone(t *testing.T) {
 			f.Decorate(api.ctx)
 			stackBesideBase(t, f, "stray", true)
 			if tt.pr {
-				stubStackPRs(t, map[string]*stackPR{"stray": {Number: 41, Title: "stray", State: "OPEN", Base: "main"}})
+				stubStackPRs(t, f, map[string]*stackPR{"stray": {Number: 41, Title: "stray", State: "OPEN", Base: "main"}})
 			}
 			stray := gitAt(t, f.Env(), f.Dir, "rev-parse", "stray")
 			shipResetLog(t, f)
@@ -1050,7 +1050,7 @@ func TestStackSubmitLeavesAStrayAboveALandedBranch(t *testing.T) {
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
 	shipGTStack(t, f, "a", "b", "stray")
-	stubStackPRs(t, map[string]*stackPR{
+	stubStackPRs(t, f, map[string]*stackPR{
 		"a":     {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "a")},
 		"stray": {Number: 42, Title: "stray", State: "OPEN", Base: "main"},
 	})
@@ -1077,7 +1077,7 @@ func TestStackSubmitRefusesPRFieldsForABranchLeftOut(t *testing.T) {
 	f := shipGTRepo(t)
 	writeShipGH(t, f)
 	stackBesideBase(t, f, "stray", true)
-	stubStackPRs(t, map[string]*stackPR{"stray": {Number: 41, Title: "stray", State: "OPEN", Base: "main"}})
+	stubStackPRs(t, f, map[string]*stackPR{"stray": {Number: 41, Title: "stray", State: "OPEN", Base: "main"}})
 	shipResetLog(t, f)
 
 	_, _, err := runStackCmd(t, f, "submit", "--pr-title", "stray=Stray title")

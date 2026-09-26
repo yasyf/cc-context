@@ -253,7 +253,7 @@ func TestStackPublicationDropsItsLandedPublishedParent(t *testing.T) {
 	basePublished := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
 	stackAdvanceTrunk(t, f, "base.txt", "base\n")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", ":refs/heads/base")
-	stubStackPRs(t, map[string]*stackPR{"base": {Number: 5, State: "CLOSED", Landed: true, Head: basePublished}})
+	stubStackPRs(t, f, map[string]*stackPR{"base": {Number: 5, State: "CLOSED", Landed: true, Head: basePublished}})
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func TestVcsPushRepublishesAFixOnThePublishedHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "b")
-	stubStackPRs(t, map[string]*stackPR{"a": {Number: 41, State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "a")}})
+	stubStackPRs(t, f, map[string]*stackPR{"a": {Number: 41, State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "a")}})
 	restackSquashRemote(t, f, "main", "a (#41)", "a")
 	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
 	mustRun(t, f.Env(), f.Dir, "gt", "track", "b", "--parent", "main", "--no-interactive")
@@ -463,7 +463,7 @@ func TestStackSubmitAdoptsGraphitesRestackAfterALanding(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "a")
-	stubStackPRs(t, map[string]*stackPR{"a": {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: a}})
+	stubStackPRs(t, f, map[string]*stackPR{"a": {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: a}})
 	restackSquashRemote(t, f, "main", "a (#41)", "a")
 	clone := filepath.Join(t.TempDir(), "graphite-app")
 	mustRun(t, f.Env(), filepath.Dir(clone), "git", "clone", "-q", "--branch", "b", f.RemoteDir, clone)
