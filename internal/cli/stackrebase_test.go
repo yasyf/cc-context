@@ -385,10 +385,7 @@ func TestStackAbortSucceedsWhenRemovingTheWorkspaceIsKilled(t *testing.T) {
 	stackConflicting(t, f)
 	marker := stackStallRm(t, f)
 	bin := t.TempDir()
-	writeShipFile(t, bin, "git", "#!/bin/sh\ncase \"$*\" in *\"worktree remove\"*) kill -TERM $$;; esac\nPATH=${PATH#"+bin+":} exec git \"$@\"\n")
-	if err := os.Chmod(filepath.Join(bin, "git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutable(t, filepath.Join(bin, "git"), "#!/bin/sh\ncase \"$*\" in *\"worktree remove\"*) kill -TERM $$;; esac\nPATH=${PATH#"+bin+":} exec git \"$@\"\n")
 
 	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
 	if err == nil {
@@ -412,13 +409,12 @@ func stackStallRm(t *testing.T, f *vcstest.Fixture) string {
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeShipFile(t, bin, "rm", "#!/bin/sh\necho \"$@\" > "+marker+"\ncat "+fifo+"\n")
-	if err := os.Chmod(filepath.Join(bin, "rm"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutable(t, filepath.Join(bin, "rm"), "#!/bin/sh\necho \"$@\" > "+marker+"\ncat "+fifo+"\n")
 	t.Cleanup(func() {
 		if gate, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
-			gate.Close()
+			if err := gate.Close(); err != nil {
+				t.Errorf("close rm gate: %v", err)
+			}
 		}
 	})
 	f.PrependPATH(bin)
@@ -675,9 +671,17 @@ func TestStackAbortDropsTheRun(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubStackPRs(t, nil)
 	stackConflicting(t, f)
+	hooks := t.TempDir()
+	postCheckout := "#!/bin/sh\nmkdir -p node_modules\n"
+	writeExecutable(t, filepath.Join(hooks, "post-checkout"), postCheckout)
+	gitAt(t, f.Env(), f.Dir, "config", "core.hooksPath", hooks)
 	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
-	if _, _, err := runStackCmd(t, f, "rebase"); err == nil {
+	_, _, conflict := runStackCmd(t, f, "rebase")
+	if conflict == nil {
 		t.Fatal("stack rebase succeeded, want the conflict")
+	}
+	if _, err := os.Stat(filepath.Join(stackWorkspaceOf(t, conflict), "node_modules")); !os.IsNotExist(err) {
+		t.Fatalf("conflict workspace warmed node_modules: %v", err)
 	}
 	if _, _, err := runStackCmd(t, f, "rebase"); err == nil || !strings.Contains(err.Error(), "already in progress") {
 		t.Fatalf("second rebase = %v, want the in-progress refusal", err)
