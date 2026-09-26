@@ -18,7 +18,7 @@ func TestStackRebaseDropsALandedGrandparentUnderAPublishedStack(t *testing.T) {
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
-	stubStackPRs(t, map[string]*stackPR{"p": {Number: 41, Title: "p", State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "p")}})
+	stubOpenPRs(t, map[string]*stackPR{"p": {Number: 41, Title: "p", State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "p")}}, "x", "y")
 	restackSquashRemote(t, f, "main", "p (#41)", "p")
 	stackAdvanceTrunk(t, f, "three.txt", "three\n")
 
