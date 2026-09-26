@@ -59,7 +59,7 @@ func runStackRepairPublishedChild(cmd *cobra.Command, parent string) error {
 	if err != nil {
 		return err
 	}
-	if submitted[parent] != (gtmeta.Version{HeadSha: receipt.Head, BaseSha: receipt.Base, BaseName: receipt.Parent}) {
+	if last := submitted[parent]; last.HeadSha != receipt.Head || last.BaseName != receipt.Parent {
 		return fmt.Errorf("stack repair-published-child: %s submission no longer matches its publication receipt", parent)
 	}
 	if err := stackVerifyNewRemote(ctx, l.dir(), receipt); err != nil {

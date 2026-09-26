@@ -91,14 +91,17 @@ func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBran
 	if b.Landed != "" {
 		return nil
 	}
+	base, err := stackMergeBase(ctx, dir, receipt.Head, receipt.Base)
+	if err != nil {
+		return err
+	}
 	if b.Local == receipt.Head && b.Remote == receipt.Head {
-		b.OldBase = receipt.Base
-		b.SourceBase = receipt.Base
+		b.OldBase = base
+		b.SourceBase = base
 		return nil
 	}
-	base := receipt.Base
 	if b.Remote != receipt.Head {
-		replayed, err := stackReplayedOnto(ctx, dir, b.Remote, receipt.Base, receipt.Head)
+		replayed, err := stackReplayedOnto(ctx, dir, b.Remote, base, receipt.Head)
 		if err != nil {
 			return err
 		}
@@ -207,7 +210,7 @@ func stackRecordPublication(ctx context.Context, dir render.Dir, run *stackRebas
 	tx.WriteString("start\n")
 	for _, pushed := range plan {
 		b := run.branch(pushed.name)
-		receipt := stackPublication{Branch: b.Name, Source: b.Local, SourceBase: cmp.Or(b.SourceBase, b.OldBase), Head: pushed.head, Base: pushed.baseSha, Parent: pushed.base}
+		receipt := stackPublication{Branch: b.Name, Source: b.Local, SourceBase: cmp.Or(b.SourceBase, b.OldBase), Head: pushed.head, Base: b.NewBase, Parent: pushed.base}
 		if receipt.SourceBase == "" {
 			return fmt.Errorf("stack publication: %s has no captured source base", b.Name)
 		}
