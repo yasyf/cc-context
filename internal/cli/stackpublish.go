@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -83,7 +82,7 @@ func stackReadPublication(ctx context.Context, dir render.Dir, branch string) (*
 	return &receipt, nil
 }
 
-func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBranch, receipt *stackPublication, submitted gtmeta.Version) error {
+func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBranch, receipt *stackPublication) error {
 	if receipt == nil {
 		return nil
 	}
@@ -97,9 +96,6 @@ func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBran
 		b.SourceBase = receipt.Base
 		return nil
 	}
-	if submitted != (gtmeta.Version{}) && (submitted.HeadSha != receipt.Head || submitted.BaseSha != receipt.Base || submitted.BaseName != receipt.Parent) {
-		return fmt.Errorf("stack rebase: %s publication metadata changed; reconcile its source and published versions before retrying", b.Name)
-	}
 	base := receipt.Base
 	if b.Remote != receipt.Head {
 		replayed, err := stackReplayedOnto(ctx, dir, b.Remote, receipt.Base, receipt.Head)
@@ -107,7 +103,7 @@ func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBran
 			return err
 		}
 		if replayed == "" {
-			return fmt.Errorf("stack rebase: %s remote changed after its isolated publication; not adopting the new remote head", b.Name)
+			return fmt.Errorf("stack rebase: %s's remote head %.12s holds commits this lane has never held; fetch and reconcile it before publishing again", b.Name, b.Remote)
 		}
 		base = replayed
 	}

@@ -531,15 +531,22 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		source := state[name]
 		effective := source
 		var receipt *stackPublication
-		superseded := false
+		superseded, publishedOn := false, ""
 		if !o.noPush {
 			receipt, err = stackReadPublication(ctx, l.dir(), name)
 			if err != nil {
 				return nil, err
 			}
 			if receipt != nil && remotes[name] != "" && remotes[name] != receipt.Head {
-				if superseded, err = stackOwnRemote(ctx, l.dir(), name, source.Head, remotes[name], pin); err != nil {
-					return nil, err
+				switch remotes[name] {
+				case submitted[name].HeadSha:
+					superseded, publishedOn = true, submitted[name].BaseName
+				case source.Head:
+					superseded, publishedOn = true, receipt.Parent
+				default:
+					if superseded, err = stackOwnRemote(ctx, l.dir(), name, source.Head, remotes[name], pin); err != nil {
+						return nil, err
+					}
 				}
 			}
 			if receipt != nil && !superseded && receipt.Source == source.Head {
@@ -567,8 +574,17 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			b.HeadRef = stackTempRef(name)
 			if superseded {
 				b.Publication = receipt
-			} else if err := stackUsePublication(ctx, l.dir(), &b, receipt, submitted[name]); err != nil {
+				b.WasParent = cmp.Or(publishedOn, b.WasParent)
+			} else if err := stackUsePublication(ctx, l.dir(), &b, receipt); err != nil {
 				return nil, err
+			} else if receipt != nil && b.OldBase == receipt.Base && b.Head == receipt.Head {
+				stale, err := stackBaseInTrunk(ctx, l.dir(), receipt.Base, receipt.Head, pin)
+				if err != nil {
+					return nil, err
+				}
+				if stale {
+					b.OldBase, b.SourceBase, b.WasParent = "", "", state[name].Parents[0].Ref
+				}
 			}
 		}
 		if replayed {
@@ -1385,6 +1401,22 @@ func stackOldBase(ctx context.Context, dir render.Dir, trunk, pin string, state 
 		return onTrunk, err
 	}
 	return best, nil
+}
+
+// stackBaseInTrunk reports whether base..head replays commits trunk already
+// holds: a receipt recorded after the branch took newer trunk names a base
+// below that trunk, and its own commits start at the merge base instead.
+func stackBaseInTrunk(ctx context.Context, dir render.Dir, base, head, pin string) (bool, error) {
+	span := base + ".." + head
+	replayed, err := gtRevCount(ctx, stackRebasePrefix, dir, span)
+	if err != nil {
+		return false, err
+	}
+	own, err := gtRevCount(ctx, stackRebasePrefix, dir, span, "--not", pin)
+	if err != nil {
+		return false, err
+	}
+	return own != replayed, nil
 }
 
 func stackMergeBase(ctx context.Context, dir render.Dir, a, b string) (string, error) {

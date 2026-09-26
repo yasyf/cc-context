@@ -82,7 +82,7 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 	if err != nil {
 		return err
 	}
-	receipt, prior, err := vcsPushPublication(ctx, dir, branch, head)
+	receipt, prior, err := vcsPushPublication(ctx, dir, remote, branch, head)
 	if err != nil {
 		return err
 	}
@@ -109,8 +109,8 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 }
 
 // vcsPushSubmitted moves Graphite's last submitted version to the receipt push
-// wrote, when there is one: a stack rebase refuses a receipt that disagrees with
-// it as a publication someone else changed.
+// wrote, when there is one, so Graphite and the receipt agree on what the remote
+// holds.
 func vcsPushSubmitted(ctx context.Context, dir render.Dir, receipt stackPublication) error {
 	commonDir, err := gtCommonDir(ctx, dir, "push")
 	if err != nil {
@@ -130,7 +130,7 @@ func vcsPushSubmitted(ctx context.Context, dir render.Dir, receipt stackPublicat
 	return nil
 }
 
-func vcsPushPublication(ctx context.Context, dir render.Dir, branch, head string) (*stackPublication, string, error) {
+func vcsPushPublication(ctx context.Context, dir render.Dir, remote, branch, head string) (*stackPublication, string, error) {
 	prior, err := stackReadPublication(ctx, dir, branch)
 	if err != nil || prior == nil {
 		return nil, "", err
@@ -144,8 +144,23 @@ func vcsPushPublication(ctx context.Context, dir render.Dir, branch, head string
 		return nil, "", nil
 	}
 	parent := parents[0]
+	candidates := []string{prior.Base, parent.SHA}
+	for _, tip := range []string{"refs/heads/" + parent.Ref, "refs/remotes/" + remote + "/" + parent.Ref} {
+		present, err := gitRefExists(ctx, dir, "push", tip)
+		if err != nil {
+			return nil, "", err
+		}
+		if !present {
+			continue
+		}
+		fork, err := render.RunCLI(ctx, dir, "git", []string{"merge-base", head, tip})
+		if err != nil {
+			return nil, "", fmt.Errorf("push: git merge-base %s %s: %w", shortOID(head), tip, err)
+		}
+		candidates = append(candidates, strings.TrimSpace(fork))
+	}
 	base := ""
-	for _, candidate := range []string{prior.Base, parent.SHA} {
+	for _, candidate := range candidates {
 		held, err := gitIsAncestor(ctx, dir, "push", candidate, head)
 		if err != nil {
 			return nil, "", err
