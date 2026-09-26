@@ -119,27 +119,38 @@ func TestShipKeepsAMergeableAncestorOffNewerTrunk(t *testing.T) {
 	stackAssertBaseKept(t, f, base)
 }
 
-func TestStackRebaseMovesATrunkParentedBranchKeptOffNewerTrunk(t *testing.T) {
-	f, _, base := stackMergeableBase(t, "MERGEABLE")
-	fork := gitAt(t, f.Env(), f.Dir, "merge-base", base, "origin/main")
-	if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
-		t.Fatalf("ship = %v (stderr=%q)", err, errStr)
-	}
-	stackAssertBaseKept(t, f, base)
+func TestStackRebaseMovesATrunkParentedBranchAShipKeptOffNewerTrunk(t *testing.T) {
+	for _, tc := range []struct {
+		name, mergeable string
+		ship            []string
+	}{
+		{"mergeable ancestor", "MERGEABLE", nil},
+		{"tip only", "CONFLICTING", []string{"--tip-only"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, _, base := stackMergeableBase(t, tc.mergeable)
+			fork := gitAt(t, f.Env(), f.Dir, "merge-base", base, "origin/main")
+			args := append([]string{"-m", "fix: frobnicate", "--no-watch"}, tc.ship...)
+			if _, errStr, err := runShipCmdFull(f.Context(), t, args...); err != nil {
+				t.Fatalf("ship = %v (stderr=%q)", err, errStr)
+			}
+			stackAssertBaseKept(t, f, base)
 
-	out, errStr, err := runStackCmd(t, f, "rebase")
-	if err != nil {
-		t.Fatalf("stack rebase = %v (stderr=%q)", err, errStr)
-	}
-	if want := "base" + shipSep + "onto main" + shipSep + "from " + fork[:12]; !strings.Contains(out, want) {
-		t.Errorf("plan = %q, want %q", out, want)
-	}
-	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
-	if !stackOnto(t, f, "origin/main", published) {
-		t.Errorf("origin base %s is not on the new trunk", published)
-	}
-	if !stackOnto(t, f, published, gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")) {
-		t.Error("origin feature does not sit on base's new head")
+			out, errStr, err := runStackCmd(t, f, "rebase")
+			if err != nil {
+				t.Fatalf("stack rebase = %v (stderr=%q)", err, errStr)
+			}
+			if want := "base" + shipSep + "onto main" + shipSep + "from " + fork[:12]; !strings.Contains(out, want) {
+				t.Errorf("plan = %q, want %q", out, want)
+			}
+			published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+			if !stackOnto(t, f, "origin/main", published) {
+				t.Errorf("origin base %s is not on the new trunk", published)
+			}
+			if !stackOnto(t, f, published, gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")) {
+				t.Error("origin feature does not sit on base's new head")
+			}
+		})
 	}
 }
 
