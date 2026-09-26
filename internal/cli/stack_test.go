@@ -1034,7 +1034,7 @@ func TestStackSubmitLeavesAStrayBesideItsGrandparent(t *testing.T) {
 	if heads := api.submitHeads(); !slices.Equal(heads, []string{"a", "p"}) {
 		t.Errorf("submit posts = %v, want a and p", heads)
 	}
-	if !strings.Contains(errOut, "gt track --force --parent a stray") {
+	if !strings.Contains(errOut, "gt track --parent a stray") {
 		t.Errorf("stderr = %q, want it to re-record stray onto a", errOut)
 	}
 }

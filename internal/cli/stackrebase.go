@@ -446,12 +446,18 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if len(seeds) == 0 {
 		return nil, errors.New("stack rebase: HEAD is not on a stack branch — run it from a working copy holding one, or name the branches with --parent/--linearize")
 	}
-	members, roots, err := stackMembers(state, trunk, seeds)
+	retargeted := stackRetargeted(state, overrides)
+	members, roots, err := stackMembers(retargeted, trunk, seeds)
 	if err != nil {
 		return nil, err
 	}
-	if o.members != nil {
+	switch {
+	case o.members != nil:
 		members = o.members
+	case !o.noPush && len(overrides) > 0:
+		if members, roots, err = stackWithPublishedParents(ctx, l.dir(), retargeted, trunk, members, roots, overrides); err != nil {
+			return nil, err
+		}
 	}
 	for child, parent := range overrides {
 		if parent != trunk && !slices.Contains(members, parent) {
@@ -570,7 +576,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		b := byName[name]
 		if b.Landed == "" && b.Held == "" {
 			if b.OldBase == "" {
-				if b.OldBase, err = stackOldBase(ctx, l.dir(), trunk, pin, state[name], b, byName); err != nil {
+				if b.OldBase, err = stackOldBase(ctx, l.dir(), trunk, pin, state, b, byName); err != nil {
 					return nil, err
 				}
 			}
@@ -592,8 +598,14 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 // onto it, and a run that trusted that record replayed another lane's work
 // onto this stack and pushed it. Everything stacked on either goes with it.
 func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, current string, members []string, prs map[string]*stackPR, overrides map[string]string, landed []string) ([]string, []stackLeft, error) {
+	isLanded := func(name string) bool {
+		return slices.Contains(landed, name) || (prs[name] != nil && prs[name].Landed)
+	}
 	above := map[string]bool{}
 	if current != "" && current != tr.Name() {
+		if err := stackRefuseForeignBelow(ctx, dir, stackRetargeted(state, overrides), tr, current, overrides, prs, isLanded); err != nil {
+			return nil, nil, err
+		}
 		up, err := gtUpstack(stackRebasePrefix, state, current)
 		if err != nil {
 			return nil, nil, err
@@ -601,9 +613,6 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 		for _, name := range up {
 			above[name] = true
 		}
-	}
-	isLanded := func(name string) bool {
-		return slices.Contains(landed, name) || (prs[name] != nil && prs[name].Landed)
 	}
 	gone := map[string]bool{}
 	var kept []string
@@ -653,16 +662,29 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 // stackStrayReason names the evidence that branch belongs to another lane: an
 // open pull request based on neither its gt parent nor the ancestor that
 // parent's landing leaves it on, or a history carrying none of the parent's own
-// commits under any sha. A branch still carrying the parent revision gt recorded
-// for it, with work of the parent's own in it, was cut from the parent before a
-// rewrite and is not a stray.
+// commits under any sha.
 func stackStrayReason(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, branch, parent, effective string, pr *stackPR) (string, error) {
 	if pr != nil && pr.State == "OPEN" && pr.Base != "" && pr.Base != parent && pr.Base != effective {
-		return fmt.Sprintf("gt records its parent as %s, but its pull request #%d is based on %s — re-record it with gt track --force --parent %s %s", parent, pr.Number, pr.Base, pr.Base, branch), nil
+		return fmt.Sprintf("gt records its parent as %s, but its pull request #%d is based on %s — re-record it with gt track --parent %s %s", parent, pr.Number, pr.Base, pr.Base, branch), nil
 	}
 	if parent == tr.Name() {
 		return "", nil
 	}
+	none, _, err := stackCarriesNone(ctx, dir, state, tr, branch, branch, parent)
+	if err != nil || !none {
+		return "", err
+	}
+	below := state[parent].Parents[0].Ref
+	return fmt.Sprintf("gt records its parent as %s, but it carries none of %s's commits — re-record it with gt track --parent %s %s, or run ccx vcs stack submit from %s's working copy to put it on %s", parent, parent, below, branch, branch, parent), nil
+}
+
+// stackCarriesNone reports whether branch, with work of its own, carries none
+// of parent's own commits under any sha, where gt stacks child on parent. A
+// branch still carrying the parent revision gt recorded for child, with work of
+// the parent's own in it, was cut from the parent before a rewrite and carries
+// it; fromEmpty says that revision held no work of the parent's, which a branch
+// cut from a parent before its first commit shares with a foreign one.
+func stackCarriesNone(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, branch, child, parent string) (none, fromEmpty bool, err error) {
 	below := state[parent].Parents[0].Ref
 	outside := []string{"^" + string(tr.Ref())}
 	if below != tr.Name() {
@@ -670,28 +692,67 @@ func stackStrayReason(ctx context.Context, dir render.Dir, state gtState, tr vcs
 	}
 	parentOwn, err := gtRevCount(ctx, stackRebasePrefix, dir, gtRestackRef(parent), outside...)
 	if err != nil || parentOwn == 0 {
-		return "", err
+		return false, false, err
 	}
 	own, err := gtRevCount(ctx, stackRebasePrefix, dir, gtRestackRef(branch), outside...)
 	if err != nil || own == 0 {
-		return "", err
+		return false, false, err
 	}
-	recorded := state[branch].Parents[0].SHA
+	recorded := state[child].Parents[0].SHA
 	carried, err := gitIsAncestor(ctx, dir, stackRebasePrefix, recorded, gtRestackRef(branch))
 	if err != nil {
-		return "", err
+		return false, false, err
 	}
 	if carried {
 		recordedOwn, err := gtRevCount(ctx, stackRebasePrefix, dir, recorded, outside...)
 		if err != nil || recordedOwn > 0 {
-			return "", err
+			return false, false, err
 		}
 	}
 	missing, err := gtRevCount(ctx, stackRebasePrefix, dir, gtRestackRef(parent)+"..."+gtRestackRef(branch), append([]string{"--left-only", "--cherry-pick"}, outside...)...)
-	if err != nil || missing < parentOwn {
-		return "", err
+	return err == nil && missing >= parentOwn, carried, err
+}
+
+// stackRefuseForeignBelow refuses a branch gt stacks on another lane's work.
+// gt track --force takes the most recent tracked ancestor over --parent, often
+// an empty branch another lane just cut on the same trunk commit, so an edge
+// cut from an empty parent counts as foreign only when the pull request of the
+// branch carrying it is based elsewhere. Each edge is judged by the nearest
+// branch above it with work of its own.
+func stackRefuseForeignBelow(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, current string, overrides map[string]string, prs map[string]*stackPR, isLanded func(string) bool) error {
+	down, err := gtDownstack(stackRebasePrefix, state, current, tr.Name())
+	if err != nil {
+		return err
 	}
-	return fmt.Sprintf("gt records its parent as %s, but it carries none of %s's commits — re-record it with gt track --force --parent %s %s, or run ccx vcs stack submit from %s's working copy to put it on %s", parent, parent, below, branch, branch, parent), nil
+	carrier := 0
+	for i := 1; i < len(down); i++ {
+		child, parent := down[i-1], down[i]
+		if i > 1 && !isLanded(child) {
+			own, err := gtRevCount(ctx, stackRebasePrefix, dir, gtRestackRef(child), "^"+string(tr.Ref()), "^"+gtRestackRef(parent))
+			if err != nil {
+				return err
+			}
+			if own > 0 {
+				carrier = i - 1
+			}
+		}
+		if _, named := overrides[child]; named || isLanded(parent) {
+			continue
+		}
+		none, fromEmpty, err := stackCarriesNone(ctx, dir, state, tr, down[carrier], child, parent)
+		if err != nil {
+			return err
+		}
+		pr := prs[down[carrier]]
+		disowned := pr != nil && pr.State == "OPEN" && pr.Base != "" && !slices.Contains(down[carrier+1:i+1], pr.Base)
+		if !none || (fromEmpty && !disowned) {
+			continue
+		}
+		foreign := slices.DeleteFunc(slices.Clone(down[i:]), isLanded)
+		return fmt.Errorf("stack rebase: %s carries none of %s's commits, yet gt stacks it on %s (%s) — this run would restack and push another lane's %s; gt track --force takes the most recent tracked ancestor over --parent, so name %s's real parent with ccx vcs stack rebase --parent %s=<branch>",
+			current, parent, parent, strings.Join(append(down, tr.Name()), " → "), strings.Join(foreign, ", "), current, current)
+	}
+	return nil
 }
 
 // stackAnnounceLeft names every branch a run leaves where it is: the empty
@@ -746,6 +807,57 @@ func stackOverrides(o stackRebaseOpts) (map[string]string, error) {
 		}
 	}
 	return overrides, nil
+}
+
+func stackRetargeted(state gtState, overrides map[string]string) gtState {
+	out := maps.Clone(state)
+	for child, parent := range overrides {
+		s, tracked := out[child]
+		if !tracked || len(s.Parents) == 0 {
+			continue
+		}
+		s.Parents = slices.Clone(s.Parents)
+		s.Parents[0].Ref = parent
+		out[child] = s
+	}
+	return out
+}
+
+// stackWithPublishedParents adds back the parent a member was last published
+// onto when --parent left it out of the run: gt state keeps the old parent
+// until the source checkout moves, and the publication is what gets replayed.
+func stackWithPublishedParents(ctx context.Context, dir render.Dir, state gtState, trunk string, members, roots []string, overrides map[string]string) ([]string, []string, error) {
+	for {
+		var missing []string
+		for _, name := range members {
+			if _, named := overrides[name]; named {
+				continue
+			}
+			receipt, err := stackReadPublication(ctx, dir, name)
+			if err != nil {
+				return nil, nil, err
+			}
+			if receipt == nil || receipt.Parent == trunk || slices.Contains(members, receipt.Parent) || slices.Contains(missing, receipt.Parent) {
+				continue
+			}
+			if _, tracked := state[receipt.Parent]; tracked {
+				missing = append(missing, receipt.Parent)
+			}
+		}
+		if len(missing) == 0 {
+			return members, roots, nil
+		}
+		more, moreRoots, err := stackMembers(state, trunk, missing)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, name := range members {
+			if !slices.Contains(more, name) {
+				more = append(more, name)
+			}
+		}
+		members, roots = more, append(moreRoots, roots...)
+	}
 }
 
 func stackMembers(state gtState, trunk string, seeds []string) ([]string, []string, error) {
@@ -1003,15 +1115,31 @@ func stackOrder(trunk string, byName map[string]*stackRebaseBranch) ([]string, e
 
 // stackOldBase is the commit a branch's own work starts after: the furthest of
 // its parent's recorded head and gt's recorded parent revision that the branch
-// contains. Both are read before anything moves, so a push mid-run never
-// changes the answer, and a squash-landed parent's commits stay behind.
-func stackOldBase(ctx context.Context, dir render.Dir, trunk, pin string, s gtBranchState, self *stackRebaseBranch, byName map[string]*stackRebaseBranch) (string, error) {
-	if s.Parents[0].Ref == trunk {
-		return stackMergeBase(ctx, dir, self.Head, pin)
+// contains. A branch leaving that parent, landed or named away by --parent, has
+// it moved up to where the branch meets trunk when trunk already holds
+// everything between. All are read before anything moves, so a push mid-run
+// never changes the answer, a squash-landed parent's commits stay behind, and
+// a branch already moved off a landed parent onto trunk replays only its own.
+func stackOldBase(ctx context.Context, dir render.Dir, trunk, pin string, state gtState, self *stackRebaseBranch, byName map[string]*stackRebaseBranch) (string, error) {
+	s := state[self.Name]
+	onTrunk, err := stackMergeBase(ctx, dir, self.Head, pin)
+	if err != nil || s.Parents[0].Ref == trunk {
+		return onTrunk, err
 	}
-	head := byName[s.Parents[0].Ref]
+	candidates := []string{state[s.Parents[0].Ref].Head, s.Parents[0].SHA}
+	if head := byName[s.Parents[0].Ref]; head != nil {
+		candidates = []string{head.Head, head.Local, s.Parents[0].SHA}
+	} else {
+		receipt, err := stackReadPublication(ctx, dir, s.Parents[0].Ref)
+		if err != nil {
+			return "", err
+		}
+		if receipt != nil {
+			candidates = append([]string{receipt.Head}, candidates...)
+		}
+	}
 	best := ""
-	for _, candidate := range []string{head.Head, head.Local, s.Parents[0].SHA} {
+	for _, candidate := range candidates {
 		if candidate == "" || candidate == best {
 			continue
 		}
@@ -1034,10 +1162,19 @@ func stackOldBase(ctx context.Context, dir render.Dir, trunk, pin string, s gtBr
 			best = candidate
 		}
 	}
-	if best != "" {
+	if best == "" {
+		if best, err = stackMergeBase(ctx, dir, self.Head, candidates[0]); err != nil {
+			return "", err
+		}
+	}
+	if self.Parent == s.Parents[0].Ref {
 		return best, nil
 	}
-	return stackMergeBase(ctx, dir, self.Head, head.Head)
+	behind, err := gitIsAncestor(ctx, dir, stackRebasePrefix, best, onTrunk)
+	if err != nil || behind {
+		return onTrunk, err
+	}
+	return best, nil
 }
 
 func stackMergeBase(ctx context.Context, dir render.Dir, a, b string) (string, error) {
