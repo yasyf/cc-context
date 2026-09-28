@@ -164,26 +164,35 @@ func resolveQueueLandings(ctx context.Context, dir render.Dir, closes []prQueueC
 func prQueueActivity(ctx context.Context, dir render.Dir, numbers []int) map[int]string {
 	activity := make(map[int]string, len(numbers))
 	for _, number := range numbers {
-		out, err := ghAPI(ctx, dir, "--paginate", "--slurp", fmt.Sprintf("%s/issues/%d/comments?per_page=100", ghRepoPath, number))
-		if err != nil {
-			continue
-		}
-		var pages [][]struct {
-			User struct {
-				Login string `json:"login"`
-			} `json:"user"`
-			Body string `json:"body"`
-		}
-		if err := json.Unmarshal([]byte(out), &pages); err != nil {
-			continue
-		}
-		for _, page := range pages {
-			for _, comment := range page {
-				if comment.User.Login == graphiteQueueActor+"[bot]" {
-					activity[number] = comment.Body
-				}
-			}
+		body, err := prMergeActivity(ctx, dir, ghRepoPath, number, ghRateLimitWait)
+		if err == nil && body != "" {
+			activity[number] = body
 		}
 	}
 	return activity
+}
+
+// prMergeActivity reads the merge activity comment of repoPath's pull request
+// number, empty when it has none. Graphite posts it through the token of
+// whoever enqueued, so the heading names it, not the author.
+func prMergeActivity(ctx context.Context, dir render.Dir, repoPath string, number int, wait time.Duration) (string, error) {
+	out, err := ghAPIWaiting(ctx, dir, wait, "--paginate", "--slurp", fmt.Sprintf("%s/issues/%d/comments?per_page=100", repoPath, number))
+	if err != nil {
+		return "", fmt.Errorf("gh api: read the comments of #%d: %w", number, err)
+	}
+	var pages [][]struct {
+		Body string `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(out), &pages); err != nil {
+		return "", fmt.Errorf("gh api: parse the comments of #%d: %w", number, err)
+	}
+	var activity string
+	for _, page := range pages {
+		for _, comment := range page {
+			if strings.HasPrefix(comment.Body, mqActivityHeading) {
+				activity = comment.Body
+			}
+		}
+	}
+	return activity, nil
 }

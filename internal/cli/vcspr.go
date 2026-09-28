@@ -7,6 +7,7 @@ import (
 	"maps"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -22,17 +23,24 @@ const (
 	prQueueQueued    prQueueState = "queued"
 	prQueueNotQueued prQueueState = "not queued"
 	prQueueLanded    prQueueState = "landed"
+	prQueueEvicted   prQueueState = "evicted"
 )
 
-// prQueueReport is one pull request's queue state, with the commits that
-// decided it: the one the queue admitted, and the squash it wrote on the base.
+var prStatusRateLimitWait = 10 * time.Minute
+
+// prQueueReport is one pull request's queue state, with the evidence that
+// decided it: the commit the queue admitted, the squash it wrote on the base,
+// or the reason and time it evicted the pull request.
 type prQueueReport struct {
-	Number   int          `json:"number"`
-	Queue    prQueueState `json:"queue"`
-	State    string       `json:"state"`
-	Base     string       `json:"base"`
-	Enqueued string       `json:"enqueued,omitempty"`
-	Squash   string       `json:"squash,omitempty"`
+	Number      int          `json:"number"`
+	Queue       prQueueState `json:"queue"`
+	State       string       `json:"state"`
+	Base        string       `json:"base"`
+	Enqueued    string       `json:"enqueued,omitempty"`
+	Squash      string       `json:"squash,omitempty"`
+	Evicted     string       `json:"evicted,omitempty"`
+	EvictedAt   string       `json:"evicted_at,omitempty"`
+	Conflicting bool         `json:"conflicting,omitempty"`
 }
 
 type prCommitCandidate struct {
@@ -182,8 +190,8 @@ func newVcsPRStatusCmd() *cobra.Command {
 	var o vcsPRStatusOpts
 	cmd := &cobra.Command{
 		Use:   "status <number>...",
-		Short: "Report whether each pull request is queued, not queued, or landed",
-		Long: `Report whether each pull request is queued, not queued, or landed.
+		Short: "Report whether each pull request is queued, evicted, not queued, or landed",
+		Long: `Report whether each pull request is queued, evicted, not queued, or landed.
 
 Pass all pull request numbers in one invocation. The command fetches their
 statuses together and prints one result per pull request in input order.
@@ -193,6 +201,11 @@ reads, so a pull request enqueued from the Graphite web UI reads queued even
 though it carries no merge label. A merge label is not the answer either way:
 the queue consumes it on admission, and a label left on a pull request the
 queue dropped means nothing.
+
+Graphite's record lags an eviction, so queued also needs the pull request's
+merge activity comment to agree: an eviction or dequeue after its last
+admission settles it. An evicted pull request names the queue's reason and
+time, and reads conflicting when GitHub reports its branch dirty.
 
 Landed means the squash commit Graphite recorded is reachable from the base
 branch on GitHub, or from the default branch once that base is deleted, as a
@@ -285,23 +298,60 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int) ([]prQueueR
 	reports := make([]prQueueReport, 0, len(numbers))
 	for _, number := range numbers {
 		info := byNumber[number]
-		reports = append(reports, classifyPRQueue(info, landedOn[number]))
+		var activity string
+		if landedOn[number] == "" && info.State == gtapi.PROpen {
+			activity, err = prMergeActivity(ctx, render.Ambient, "repos/"+repo, number, prStatusRateLimitWait)
+			if err != nil {
+				return nil, fmt.Errorf("pr status: %w", err)
+			}
+		}
+		r := classifyPRQueue(info, landedOn[number], activity)
+		if r.Queue == prQueueEvicted {
+			if r.Conflicting, err = prConflicting(ctx, repo, number); err != nil {
+				return nil, err
+			}
+		}
+		reports = append(reports, r)
 	}
 	return reports, nil
 }
 
+func prConflicting(ctx context.Context, repo string, number int) (bool, error) {
+	out, err := ghAPIWaiting(ctx, render.Ambient, prStatusRateLimitWait, ghPullPath(repo, number))
+	if err != nil {
+		return false, fmt.Errorf("pr status: gh api: read #%d: %w", number, err)
+	}
+	var pr ghPull
+	if err := json.Unmarshal([]byte(out), &pr); err != nil {
+		return false, fmt.Errorf("pr status: gh api: parse #%d: %w", number, err)
+	}
+	return pr.MergeableState == "dirty", nil
+}
+
 // classifyPRQueue settles one pull request's queue state, where landedOn is the
-// branch its squash is on. Landed is checked first because Graphite keeps
-// isInGraphiteMq set on a pull request it has already merged; queued needs the
-// pull request still open for the same reason.
-func classifyPRQueue(info gtapi.PullRequestInfo, landedOn string) prQueueReport {
+// branch its squash is on and activity its merge activity comment. Landed is
+// checked first because Graphite keeps isInGraphiteMq set on a pull request it
+// has already merged; queued needs the pull request still open for the same
+// reason, and no exit in the activity since its last admission because the
+// flag also outlives an eviction.
+func classifyPRQueue(info gtapi.PullRequestInfo, landedOn, activity string) prQueueReport {
 	r := prQueueReport{Number: info.PRNumber, Queue: prQueueNotQueued, State: string(info.State), Base: info.BaseRefName}
-	switch {
-	case landedOn != "":
+	if landedOn != "" {
 		r.Queue = prQueueLanded
 		r.Base = landedOn
 		r.Squash = info.MergeCommitSha
-	case info.State == gtapi.PROpen && info.MergeQueueStatus != nil && info.MergeQueueStatus.IsInGraphiteMq:
+		return r
+	}
+	if info.State != gtapi.PROpen {
+		return r
+	}
+	exit, out := mqLastExit(activity)
+	switch {
+	case out && exit.Reason != "":
+		r.Queue = prQueueEvicted
+		r.Evicted = exit.Reason
+		r.EvictedAt = exit.At
+	case !out && info.MergeQueueStatus != nil && info.MergeQueueStatus.IsInGraphiteMq:
 		r.Queue = prQueueQueued
 		r.Enqueued = info.MergeQueueStatus.EnqueuedCommit
 	}
@@ -317,6 +367,11 @@ func renderPRQueue(reports []prQueueReport) string {
 			fmt.Fprintf(&b, " · squash %s on %s", shortSHA(r.Squash), r.Base)
 		case prQueueQueued:
 			fmt.Fprintf(&b, " · enqueued %s into %s", shortSHA(r.Enqueued), r.Base)
+		case prQueueEvicted:
+			fmt.Fprintf(&b, ": %s at %s", r.Evicted, r.EvictedAt)
+			if r.Conflicting {
+				b.WriteString(" · conflicting")
+			}
 		case prQueueNotQueued:
 			fmt.Fprintf(&b, " · %s", strings.ToLower(r.State))
 		}
