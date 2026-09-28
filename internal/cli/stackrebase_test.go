@@ -1472,7 +1472,7 @@ func TestStackRebaseNamesTheRemotesRefusal(t *testing.T) {
 	}
 }
 
-func stackRunWithSlowRebase(t *testing.T, f *vcstest.Fixture, onRebase string) (string, error) {
+func stackRunWithSlowRebase(t *testing.T, f *vcstest.Fixture, onRebase string, args ...string) (string, error) {
 	t.Helper()
 	restore := stackRebaseStall
 	stackRebaseStall = time.Second
@@ -1488,7 +1488,7 @@ func stackRunWithSlowRebase(t *testing.T, f *vcstest.Fixture, onRebase string) (
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
-	cmd.SetArgs([]string{"rebase", "--no-push"})
+	cmd.SetArgs(args)
 	err := cmd.ExecuteContext(render.WithEnv(f.Context(), "PATH="+bin+string(os.PathListSeparator)+render.Getenv(f.Context(), "PATH")))
 	return out.String(), err
 }
@@ -1498,7 +1498,7 @@ func TestStackRebaseLetsASlowRebaseFinishWhileItProgresses(t *testing.T) {
 	stubOpenPRs(t, nil, "base", "feature")
 	stackConflicting(t, f)
 
-	_, err := stackRunWithSlowRebase(t, f, `for i in 1 2 3 4 5 6; do sleep 0.3; touch "$gd/index"; done`)
+	_, err := stackRunWithSlowRebase(t, f, `for i in 1 2 3 4 5 6; do sleep 0.3; touch "$gd/index"; done`, "rebase", "--no-push")
 	if err == nil || !strings.Contains(err.Error(), "does not rebase onto base cleanly") {
 		t.Fatalf("stack rebase = %v, want the slow rebase to reach its conflict", err)
 	}
@@ -1509,11 +1509,31 @@ func TestStackRebaseKillsAStalledRebaseAndRemovesItsIndexLock(t *testing.T) {
 	stubOpenPRs(t, nil, "base", "feature")
 	stackConflicting(t, f)
 
-	_, err := stackRunWithSlowRebase(t, f, `touch "$gd/index.lock"; trap '' TERM; sleep 30`)
-	if err == nil || !strings.Contains(err.Error(), "made no progress for 1s") || !strings.Contains(err.Error(), "removed the index.lock it left at ") {
+	_, err := stackRunWithSlowRebase(t, f, `touch "$gd/index.lock"; trap '' TERM; sleep 30`, "rebase", "--no-push")
+	if err == nil || !strings.Contains(err.Error(), "made no progress for 1s") || !strings.Contains(err.Error(), "the killed git exited, so removed the index.lock it left in ccx's conflict workspace ") {
 		t.Fatalf("stack rebase = %v, want the stalled rebase killed and its index.lock removed", err)
 	}
 	if locks, _ := filepath.Glob(filepath.Join(f.Dir, ".git", "worktrees", "*", "index.lock")); len(locks) != 0 {
 		t.Errorf("index.lock left behind: %v", locks)
+	}
+}
+
+func TestStackContinueLeavesTheIndexLockOfAStalledRebaseInTheUsersCheckout(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	stackConflicting(t, f)
+	stopped := exec.Command("git", "-C", f.Dir, "-c", "core.hooksPath=/dev/null", "rebase", "-q", "main")
+	stopped.Env = f.Env()
+	if err := stopped.Run(); err == nil {
+		t.Fatal("fixture: git rebase main succeeded, want it stopped on c.txt")
+	}
+	writeShipFile(t, f.Dir, "c.txt", "resolved\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+
+	_, err := stackRunWithSlowRebase(t, f, `touch "$gd/index.lock"; trap '' TERM; sleep 30`, "continue")
+	if err == nil || !strings.Contains(err.Error(), "made no progress for 1s") || !strings.Contains(err.Error(), "is your checkout, not a ccx conflict workspace") {
+		t.Fatalf("stack continue = %v, want the stall named and the lock left", err)
+	}
+	if _, err := os.Stat(filepath.Join(f.Dir, ".git", "index.lock")); err != nil {
+		t.Errorf("index.lock in the user's checkout: %v, want it left for its owner", err)
 	}
 }

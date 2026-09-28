@@ -1881,7 +1881,7 @@ func stackOpenConflict(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 		return fmt.Errorf("stack rebase: git worktree add %s: %w", ws, err)
 	}
 	argv := append(slices.Clone(stackGitRebaseArgs), "rebase", "--onto", b.NewBase, b.OldBase)
-	code, stderr, err := stackRunRebase(ctx, render.Dir(ws), argv)
+	code, stderr, err := stackRunRebase(ctx, render.Dir(ws), argv, true)
 	if err != nil {
 		return fmt.Errorf("stack rebase: git rebase in %s: %w", ws, err)
 	}
@@ -1951,7 +1951,7 @@ func stackAdvance(ctx context.Context, cmd *cobra.Command, run *stackRebaseRun, 
 			}
 		}
 		argv := append(slices.Clone(stackGitRebaseArgs), "rebase", "--continue")
-		code, stderr, err := stackRunRebase(ctx, ws, argv)
+		code, stderr, err := stackRunRebase(ctx, ws, argv, true)
 		if err != nil {
 			return fmt.Errorf("stack rebase: git rebase --continue in %s: %w", ws, err)
 		}
@@ -1982,7 +1982,7 @@ func stackStopped(ctx context.Context, run *stackRebaseRun, b *stackRebaseBranch
 	return errors.New(brief)
 }
 
-func stackRunRebase(ctx context.Context, ws render.Dir, argv []string) (int, string, error) {
+func stackRunRebase(ctx context.Context, ws render.Dir, argv []string, conflictWorkspace bool) (int, string, error) {
 	out, err := render.RunCLI(ctx, ws, "git", []string{"rev-parse", "--absolute-git-dir"})
 	if err != nil {
 		return 0, "", fmt.Errorf("git rev-parse --absolute-git-dir: %w", err)
@@ -1999,13 +1999,15 @@ func stackRunRebase(ctx context.Context, ws render.Dir, argv []string) (int, str
 		return code, stderr, err
 	case statErr != nil:
 		return code, stderr, errors.Join(err, statErr)
+	case !conflictWorkspace:
+		return code, stderr, fmt.Errorf("%w — left %s: %s is your checkout, not a ccx conflict workspace", err, lock, ws)
 	case time.Since(info.ModTime()) < stackRebaseStall:
 		return code, stderr, fmt.Errorf("%w — left %s, which another git process took after the kill", err, lock)
 	}
 	if rmErr := os.Remove(lock); rmErr != nil && !errors.Is(rmErr, fs.ErrNotExist) {
 		return code, stderr, errors.Join(err, rmErr)
 	}
-	return code, stderr, fmt.Errorf("%w — removed the index.lock it left at %s", err, lock)
+	return code, stderr, fmt.Errorf("%w — the killed git exited, so removed the index.lock it left in ccx's conflict workspace %s", err, ws)
 }
 
 func stackRebaseProgress(gitDir string) func() string {
@@ -2131,7 +2133,7 @@ func stackContinueStranded(ctx context.Context, cmd *cobra.Command) error {
 		return fmt.Errorf("stack continue: %s still has unresolved files: %s — resolve them, git add them, then run ccx vcs stack continue again", ws, strings.Join(unmerged, ", "))
 	}
 	argv := append(slices.Clone(stackGitRebaseArgs), "rebase", "--continue")
-	code, stderr, err := stackRunRebase(ctx, ws, argv)
+	code, stderr, err := stackRunRebase(ctx, ws, argv, false)
 	if err != nil {
 		return fmt.Errorf("stack continue: git rebase --continue in %s: %w", ws, err)
 	}
