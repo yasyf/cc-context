@@ -164,7 +164,7 @@ func resolveQueueLandings(ctx context.Context, dir render.Dir, closes []prQueueC
 func prQueueActivity(ctx context.Context, dir render.Dir, numbers []int) map[int]string {
 	activity := make(map[int]string, len(numbers))
 	for _, number := range numbers {
-		out, err := render.RunCLI(ctx, dir, "gh", []string{"api", "--paginate", "--slurp", fmt.Sprintf("%s/issues/%d/comments?per_page=100", ghRepoPath, number)})
+		out, err := ghAPI(ctx, dir, "--paginate", "--slurp", fmt.Sprintf("%s/issues/%d/comments?per_page=100", ghRepoPath, number))
 		if err != nil {
 			continue
 		}
