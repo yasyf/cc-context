@@ -664,7 +664,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
-	remotes, err := stackRemoteHeads(ctx, l.dir(), tr.Remote(), members)
+	remotes, err := stackRemoteHeads(ctx, l.dir(), tr.Remote(), members, pin)
 	if err != nil {
 		return nil, err
 	}
@@ -1121,7 +1121,7 @@ func stackWithPublishedParents(ctx context.Context, dir render.Dir, state gtStat
 		remotes := map[string]string{}
 		if len(outran) > 0 {
 			var err error
-			if remotes, err = stackRemoteHeads(ctx, dir, "origin", outran); err != nil {
+			if remotes, err = stackRemoteHeads(ctx, dir, "origin", outran, ""); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -1202,7 +1202,7 @@ func stackPublishedParent(receipt *stackPublication, remote string, submitted gt
 	return receipt.Parent
 }
 
-func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branches []string) (map[string]string, error) {
+func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branches []string, negotiationTip string) (map[string]string, error) {
 	argv := make([]string, 0, 2+len(branches))
 	argv = append(argv, "ls-remote", remote)
 	for _, b := range branches {
@@ -1213,7 +1213,11 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branch
 		return nil, fmt.Errorf("stack rebase: git ls-remote %s: %w", remote, err)
 	}
 	heads := map[string]string{}
-	fetch := []string{"--quiet", remote}
+	fetch := []string{"--quiet", "--no-tags", "--no-write-fetch-head"}
+	if negotiationTip != "" {
+		fetch = append(fetch, "--negotiation-tip="+negotiationTip)
+	}
+	fetch = append(fetch, remote)
 	for line := range strings.Lines(out) {
 		sha, ref, ok := strings.Cut(strings.TrimSpace(line), "\t")
 		if !ok {

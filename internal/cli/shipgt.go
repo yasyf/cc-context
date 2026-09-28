@@ -1510,7 +1510,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			plan[i].lease, plan[i].leaseSet = lease, true
 		}
 	}
-	if err := gtParkedBases(ctx, l.dir(), plan, known); err != nil {
+	if err := gtParkedBases(ctx, l.dir(), plan, known, s.trunkHead); err != nil {
 		return nil, nil, err
 	}
 	submit, unchanged := gtDropUnchanged(plan, last, known, tip, s.draft)
@@ -1646,7 +1646,7 @@ func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, know
 
 // gtParkedBases marks each branch whose pull request Graphite parked on a
 // graphite-base branch, leased on where that branch stands on the remote now.
-func gtParkedBases(ctx context.Context, dir render.Dir, plan []gtSubmitBranch, known map[string]gtapi.PullRequestInfo) error {
+func gtParkedBases(ctx context.Context, dir render.Dir, plan []gtSubmitBranch, known map[string]gtapi.PullRequestInfo, trunkHead string) error {
 	var parked []string
 	for i, b := range plan {
 		if pr := known[b.name]; pr.IsBaseRefGraphiteBase {
@@ -1657,7 +1657,7 @@ func gtParkedBases(ctx context.Context, dir render.Dir, plan []gtSubmitBranch, k
 	if len(parked) == 0 {
 		return nil
 	}
-	heads, err := stackRemoteHeads(ctx, dir, "origin", parked)
+	heads, err := stackRemoteHeads(ctx, dir, "origin", parked, trunkHead)
 	if err != nil {
 		return err
 	}
@@ -1691,7 +1691,19 @@ func gtTrunkRef(ctx context.Context, dir render.Dir, prefix, trunk string) (vcs.
 	if err != nil {
 		return vcs.Trunk{}, fmt.Errorf("%s: %w", prefix, err)
 	}
-	if err := gitFetch(ctx, dir, remote, trunk); err != nil {
+	ref := "refs/remotes/" + remote + "/" + trunk
+	_, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"show-ref", "--verify", "--quiet", ref})
+	if err != nil {
+		return vcs.Trunk{}, fmt.Errorf("%s: git show-ref %s: %w", prefix, ref, err)
+	}
+	if code != 0 && (code != 1 || stderr != "") {
+		return vcs.Trunk{}, fmt.Errorf("%s: git show-ref %s: exit %d: %s", prefix, ref, code, stderr)
+	}
+	args := []string{"--no-tags", "--no-write-fetch-head"}
+	if code == 0 {
+		args = append(args, "--negotiation-tip="+ref)
+	}
+	if err := gitFetch(ctx, dir, append(args, remote, trunk)...); err != nil {
 		return vcs.Trunk{}, fmt.Errorf("%s: git fetch %s %s: %w", prefix, remote, trunk, err)
 	}
 	return gtTrunkRefAt(ctx, dir, prefix, remote, trunk)

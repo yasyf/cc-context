@@ -467,10 +467,12 @@ func gtRemoteTrunk(trunk string) string { return "refs/remotes/origin/" + trunk 
 // gtTrunkInv is the trunk resolution a submit runs before it plans anything:
 // the remote HEAD tracks, a fetch of that one ref, and the check that it exists.
 func gtTrunkInv(trunk string) [][]string {
+	ref := gtRemoteTrunk(trunk)
 	return [][]string{
 		{"git", "config", "--get", "branch.HEAD.remote"},
-		{"git", "fetch", "origin", trunk},
-		{"git", "show-ref", "--verify", "--quiet", gtRemoteTrunk(trunk)},
+		{"git", "show-ref", "--verify", "--quiet", ref},
+		{"git", "fetch", "--no-tags", "--no-write-fetch-head", "--negotiation-tip=" + ref, "origin", trunk},
+		{"git", "show-ref", "--verify", "--quiet", ref},
 	}
 }
 
@@ -485,13 +487,19 @@ func gtDropTrunkInv(t *testing.T, got [][]string, trunk string, branches ...stri
 	for _, branch := range branches {
 		resolution = append(resolution, []string{"git", "rev-parse", "--verify", "--quiet", stackPublicationRef(branch, "receipt")})
 	}
-	const fetch = 1
+	const fetch = 2
 	dropped := make([]bool, len(resolution))
 	rest := make([][]string, 0, len(got))
 	for _, inv := range got {
-		i := slices.IndexFunc(resolution, func(call []string) bool { return slices.Equal(inv, call) })
-		if i >= 0 && !dropped[i] {
-			dropped[i] = true
+		matched := false
+		for i, call := range resolution {
+			if !dropped[i] && slices.Equal(inv, call) {
+				dropped[i] = true
+				matched = true
+				break
+			}
+		}
+		if matched {
 			continue
 		}
 		rest = append(rest, inv)
