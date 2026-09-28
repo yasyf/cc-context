@@ -593,7 +593,7 @@ func stackProcStart(pid int) string {
 
 func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts) (*stackRebaseRun, error) {
 	prefix := stackRebasePrefix
-	state, err := gtStateAt(ctx, commonDir, prefix)
+	state, err := gtStateAtFocused(ctx, commonDir, prefix, o.tip, "")
 	if err != nil {
 		return nil, err
 	}
