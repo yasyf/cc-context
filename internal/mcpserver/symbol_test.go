@@ -1,7 +1,6 @@
 package mcpserver
 
 import (
-	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -10,6 +9,7 @@ import (
 )
 
 func TestSymbolArgsBudget(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		in   SymbolIn
@@ -20,6 +20,7 @@ func TestSymbolArgsBudget(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := symbolArgs(tt.in).Budget; got != tt.want {
 				t.Errorf("budget = %d, want %d", got, tt.want)
 			}
@@ -28,8 +29,9 @@ func TestSymbolArgsBudget(t *testing.T) {
 }
 
 func TestSymbolToolSchemaHasBudget(t *testing.T) {
-	cs := connectTestServer(t)
-	res, err := cs.ListTools(context.Background(), nil)
+	t.Parallel()
+	cs := connectTestServer(t.Context(), t)
+	res, err := cs.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}

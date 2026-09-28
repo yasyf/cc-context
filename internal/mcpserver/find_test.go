@@ -9,9 +9,11 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/find"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 func TestFindArgsBudget(t *testing.T) {
+	t.Parallel()
 	if got := findArgs(FindIn{Globs: []string{"*.go"}}); got.Budget != find.DefaultBudget {
 		t.Errorf("unset budget = %d, want default %d", got.Budget, find.DefaultBudget)
 	}
@@ -30,6 +32,7 @@ func TestFindArgsBudget(t *testing.T) {
 // handler: with no budget the default caps the listing (overflow footer), while an
 // explicit large budget passes through and shows every row.
 func TestFindToolAppliesDefaultBudget(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	for i := 0; i < 300; i++ {
 		name := "f" + strconv.Itoa(1000+i) + ".txt"
@@ -37,8 +40,7 @@ func TestFindToolAppliesDefaultBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Chdir(dir)
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), dir), t)
 
 	def, isErr := callText(t, cs, "ccx_repo_find", map[string]any{"globs": []any{"*.txt"}})
 	if isErr {

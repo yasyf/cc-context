@@ -11,6 +11,7 @@ import (
 )
 
 func TestFirstLocalRoot(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		roots []*mcp.Root
@@ -26,6 +27,7 @@ func TestFirstLocalRoot(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := firstLocalRoot(tt.roots); got != tt.want {
 				t.Errorf("firstLocalRoot = %q, want %q", got, tt.want)
 			}
@@ -46,8 +48,8 @@ func TestRootTrackerSyncPinsFirstRootOnce(t *testing.T) {
 	tracker := newRootTracker()
 	roots := lister(&calls, []*mcp.Root{{URI: "file:///Users/x/repo"}, {URI: "file:///Users/x/other"}}, nil)
 
-	tracker.sync(context.Background(), roots)
-	tracker.sync(context.Background(), roots)
+	tracker.sync(t.Context(), roots)
+	tracker.sync(t.Context(), roots)
 
 	if calls != 1 {
 		t.Errorf("roots/list issued %d times, want 1 (the resolution is memoized)", calls)
@@ -61,10 +63,10 @@ func TestRootTrackerRearmReResolves(t *testing.T) {
 	t.Cleanup(func() { workspace.SetRoot("") })
 	tracker := newRootTracker()
 	calls := 0
-	tracker.sync(context.Background(), lister(&calls, []*mcp.Root{{URI: "file:///Users/x/repo"}}, nil))
+	tracker.sync(t.Context(), lister(&calls, []*mcp.Root{{URI: "file:///Users/x/repo"}}, nil))
 
-	tracker.rearm(context.Background(), &mcp.RootsListChangedRequest{})
-	tracker.sync(context.Background(), lister(&calls, []*mcp.Root{{URI: "file:///Users/x/worktree"}}, nil))
+	tracker.rearm(t.Context(), &mcp.RootsListChangedRequest{})
+	tracker.sync(t.Context(), lister(&calls, []*mcp.Root{{URI: "file:///Users/x/worktree"}}, nil))
 
 	if calls != 2 {
 		t.Errorf("roots/list issued %d times, want 2 (list_changed re-arms the resolution)", calls)
@@ -81,7 +83,7 @@ func TestRootTrackerNoRootsLeavesCwd(t *testing.T) {
 		t.Fatalf("Getwd: %v", err)
 	}
 	calls := 0
-	newRootTracker().sync(context.Background(), lister(&calls, nil, nil))
+	newRootTracker().sync(t.Context(), lister(&calls, nil, nil))
 
 	if got, err := workspace.Root(); err != nil || got != cwd {
 		t.Errorf("workspace.Root() = %q, %v, want the working directory %q", got, err, cwd)
@@ -101,12 +103,12 @@ func TestRootTrackerListErrorKeepsPinAndStaysArmed(t *testing.T) {
 	}
 	tracker := newRootTracker()
 
-	tracker.sync(context.Background(), flaky)
+	tracker.sync(t.Context(), flaky)
 	if got, _ := workspace.Root(); got != "/Users/x/repo" {
 		t.Errorf("workspace.Root() = %q, want the pin untouched at /Users/x/repo", got)
 	}
 
-	tracker.sync(context.Background(), flaky)
+	tracker.sync(t.Context(), flaky)
 	if calls != 2 {
 		t.Errorf("roots/list issued %d times, want 2 (a failed resolution stays armed)", calls)
 	}
@@ -117,7 +119,7 @@ func TestRootTrackerListErrorKeepsPinAndStaysArmed(t *testing.T) {
 
 func connectRootsServer(t *testing.T, client *mcp.Client) *mcp.ClientSession {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	roots := newRootTracker()
 	s := mcp.NewServer(&mcp.Implementation{Name: "cc-context-test", Version: "test"}, &mcp.ServerOptions{
 		RootsListChangedHandler: roots.rearm,
@@ -141,7 +143,7 @@ func connectRootsServer(t *testing.T, client *mcp.Client) *mcp.ClientSession {
 
 func callProbe(t *testing.T, cs *mcp.ClientSession) {
 	t.Helper()
-	if _, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "probe"}); err != nil {
+	if _, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: "probe"}); err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
 }

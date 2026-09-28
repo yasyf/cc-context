@@ -1,7 +1,6 @@
 package mcpserver
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -16,8 +15,9 @@ import (
 	"github.com/yasyf/cc-context/internal/workspace"
 )
 
-// pinRoot declares dir as the client's project root for one test, clearing the
-// process-global pin afterwards.
+// pinRoot writes dir to the process-global root pin for one test, clearing it
+// afterwards. It is for the tests whose subject is the pin itself; a test that
+// only needs a project root declares one on its own context and runs parallel.
 func pinRoot(t *testing.T, dir string) {
 	t.Helper()
 	workspace.SetRoot(dir)
@@ -82,6 +82,7 @@ func requireRipgrep(t *testing.T) {
 // process-global pin discards that declaration, so every call answers from
 // whatever the last client to connect pinned.
 func TestPinCallKeepsTheRootTheSessionDeclares(t *testing.T) {
+	t.Parallel()
 	declared := t.TempDir()
 	if got := workspace.DeclaredFrom(pinCall(workspace.WithRoot(t.Context(), declared))); got != declared {
 		t.Errorf("pinCall root = %q, want the root the session context declares %q", got, declared)
@@ -89,8 +90,9 @@ func TestPinCallKeepsTheRootTheSessionDeclares(t *testing.T) {
 }
 
 func TestRepoSchemaSurface(t *testing.T) {
-	cs := connectTestServer(t)
-	res, err := cs.ListTools(context.Background(), nil)
+	t.Parallel()
+	cs := connectTestServer(t.Context(), t)
+	res, err := cs.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
@@ -118,20 +120,18 @@ func TestRepoSchemaSurface(t *testing.T) {
 	}
 }
 
-func TestReadToolRepoBeatsPinnedRoot(t *testing.T) {
+func TestReadToolRepoBeatsDeclaredRoot(t *testing.T) {
+	t.Parallel()
 	named, _ := writeTree(t, "f.txt", "named\n")
-	pinned, _ := writeTree(t, "f.txt", "pinned\n")
-	cwd, _ := writeTree(t, "f.txt", "cwd\n")
-	t.Chdir(cwd)
-	pinRoot(t, pinned)
+	declared, _ := writeTree(t, "f.txt", "declared\n")
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), declared), t)
 	out, isErr := callText(t, cs, "ccx_code_read", map[string]any{"path": "f.txt", "repo": named})
 	if isErr {
 		t.Fatalf("ccx_code_read repo is error: %s", out)
 	}
 	if !strings.Contains(out, "named\n") {
-		t.Errorf("explicit repo should beat the pinned root:\n%s", out)
+		t.Errorf("explicit repo should beat the declared root:\n%s", out)
 	}
 }
 
@@ -141,7 +141,7 @@ func TestReadToolPinnedRootBeatsCwd(t *testing.T) {
 	t.Chdir(cwd)
 	pinRoot(t, pinned)
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(t.Context(), t)
 	out, isErr := callText(t, cs, "ccx_code_read", map[string]any{"path": "f.txt"})
 	if isErr {
 		t.Fatalf("ccx_code_read pinned is error: %s", out)
@@ -155,7 +155,7 @@ func TestReadToolWithoutRootReadsCwd(t *testing.T) {
 	cwd, _ := writeTree(t, "f.txt", "cwd\n")
 	t.Chdir(cwd)
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(t.Context(), t)
 	out, isErr := callText(t, cs, "ccx_code_read", map[string]any{"path": "f.txt"})
 	if isErr {
 		t.Fatalf("ccx_code_read cwd is error: %s", out)
@@ -169,26 +169,26 @@ func TestReadToolWithoutRootReadsCwd(t *testing.T) {
 }
 
 func TestReadToolRepoLeavesAbsolutePathAlone(t *testing.T) {
+	t.Parallel()
 	named, _ := writeTree(t, "f.txt", "named\n")
-	cwd, path := writeTree(t, "f.txt", "cwd\n")
-	t.Chdir(cwd)
+	elsewhere, path := writeTree(t, "f.txt", "elsewhere\n")
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), elsewhere), t)
 	out, isErr := callText(t, cs, "ccx_code_read", map[string]any{"path": path, "repo": named})
 	if isErr {
 		t.Fatalf("ccx_code_read absolute is error: %s", out)
 	}
-	if !strings.Contains(out, "cwd\n") {
+	if !strings.Contains(out, "elsewhere\n") {
 		t.Errorf("an absolute path names its own file:\n%s", out)
 	}
 }
 
 func TestOutlineToolRepoRootsRelativePath(t *testing.T) {
+	t.Parallel()
 	named, _ := writeTree(t, "notes.md", "# Named heading\n")
-	cwd, _ := writeTree(t, "notes.md", "# Cwd heading\n")
-	t.Chdir(cwd)
+	declared, _ := writeTree(t, "notes.md", "# Declared heading\n")
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), declared), t)
 	out, isErr := callText(t, cs, "ccx_code_outline", map[string]any{"path": "notes.md", "repo": named})
 	if isErr {
 		t.Fatalf("ccx_code_outline repo is error: %s", out)
@@ -204,7 +204,7 @@ func TestOutlineToolPinnedRootBeatsCwd(t *testing.T) {
 	t.Chdir(cwd)
 	pinRoot(t, pinned)
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(t.Context(), t)
 	out, isErr := callText(t, cs, "ccx_code_outline", map[string]any{"path": "notes.md"})
 	if isErr {
 		t.Fatalf("ccx_code_outline pinned is error: %s", out)
@@ -215,20 +215,18 @@ func TestOutlineToolPinnedRootBeatsCwd(t *testing.T) {
 }
 
 func TestGrepToolRepoSearchesNamedRoot(t *testing.T) {
+	t.Parallel()
 	requireGrepEngine(t)
 	named, hit := writeTree(t, "named.go", "var needle = 1\n")
-	pinned, _ := writeTree(t, "pinned.go", "var needle = 2\n")
-	cwd, _ := writeTree(t, "cwd.go", "var needle = 3\n")
-	t.Chdir(cwd)
-	pinRoot(t, pinned)
+	declared, _ := writeTree(t, "declared.go", "var needle = 2\n")
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), declared), t)
 	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "needle", "repo": named})
 	if isErr {
 		t.Fatalf("ccx_code_grep repo is error: %s", out)
 	}
 	requireCite(t, out, named, hit)
-	if strings.Contains(out, "pinned.go") || strings.Contains(out, "cwd.go") {
+	if strings.Contains(out, "declared.go") {
 		t.Errorf("grep leaked outside the named repo:\n%s", out)
 	}
 }
@@ -240,7 +238,7 @@ func TestGrepToolPinnedRootBeatsCwd(t *testing.T) {
 	t.Chdir(cwd)
 	pinRoot(t, pinned)
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(t.Context(), t)
 	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "needle"})
 	if isErr {
 		t.Fatalf("ccx_code_grep pinned is error: %s", out)
@@ -252,10 +250,10 @@ func TestGrepToolPinnedRootBeatsCwd(t *testing.T) {
 }
 
 func TestSearchToolLiteralSearchesNamedRepo(t *testing.T) {
+	t.Parallel()
 	requireGrepEngine(t)
 	named, hit := writeTree(t, "named.go", "var needle = 1\n")
-	cwd, _ := writeTree(t, "cwd.go", "var needle = 2\n")
-	t.Chdir(cwd)
+	declared, _ := writeTree(t, "declared.go", "var needle = 2\n")
 
 	args := backend.Args{Query: "needle", Mode: "literal"}
 	op, _, err := search.Route(args)
@@ -266,24 +264,24 @@ func TestSearchToolLiteralSearchesNamedRepo(t *testing.T) {
 		t.Fatalf("literal mode routes to %q, not %q — this test no longer covers the grep branch", op, backend.OpGrep)
 	}
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), declared), t)
 	out, isErr := callText(t, cs, "ccx_code_search", map[string]any{"query": args.Query, "mode": args.Mode, "repo": named})
 	if isErr {
 		t.Fatalf("ccx_code_search literal is error: %s", out)
 	}
 	requireCite(t, out, named, hit)
-	if strings.Contains(out, "cwd.go") {
-		t.Errorf("literal search leaked into the working directory:\n%s", out)
+	if strings.Contains(out, "declared.go") {
+		t.Errorf("literal search leaked into the declared root:\n%s", out)
 	}
 }
 
 func TestGrepToolRepoRootsExplicitPaths(t *testing.T) {
+	t.Parallel()
 	requireGrepEngine(t)
 	named, hit := writeTree(t, "named.go", "var needle = 1\n")
-	cwd, _ := writeTree(t, "named.go", "var needle = 2\n")
-	t.Chdir(cwd)
+	declared, _ := writeTree(t, "named.go", "var needle = 2\n")
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), declared), t)
 	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "needle", "repo": named, "paths": []any{"named.go"}})
 	if isErr {
 		t.Fatalf("ccx_code_grep repo paths is error: %s", out)
@@ -308,19 +306,17 @@ func writeNested(t *testing.T, rel, content string) (dir, path string) {
 	return dir, path
 }
 
-func TestReadToolRelativeRepoResolvesAgainstThePinnedRoot(t *testing.T) {
-	pinned, _ := writeNested(t, "vendor/f.txt", "pinned vendor\n")
-	cwd, _ := writeNested(t, "vendor/f.txt", "cwd vendor\n")
-	t.Chdir(cwd)
-	pinRoot(t, pinned)
+func TestReadToolRelativeRepoResolvesAgainstTheDeclaredRoot(t *testing.T) {
+	t.Parallel()
+	declared, _ := writeNested(t, "vendor/f.txt", "declared vendor\n")
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), declared), t)
 	out, isErr := callText(t, cs, "ccx_code_read", map[string]any{"path": "f.txt", "repo": "vendor"})
 	if isErr {
 		t.Fatalf("ccx_code_read relative repo is error: %s", out)
 	}
-	if !strings.Contains(out, "pinned vendor\n") {
-		t.Errorf("a relative repo should resolve against the pinned root:\n%s", out)
+	if !strings.Contains(out, "declared vendor\n") {
+		t.Errorf("a relative repo should resolve against the declared root:\n%s", out)
 	}
 }
 
@@ -328,7 +324,7 @@ func TestReadToolRelativeRepoFallsBackToCwdWithoutAPin(t *testing.T) {
 	cwd, _ := writeNested(t, "vendor/f.txt", "cwd vendor\n")
 	t.Chdir(cwd)
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(t.Context(), t)
 	out, isErr := callText(t, cs, "ccx_code_read", map[string]any{"path": "f.txt", "repo": "vendor"})
 	if isErr {
 		t.Fatalf("ccx_code_read relative repo is error: %s", out)
@@ -338,73 +334,69 @@ func TestReadToolRelativeRepoFallsBackToCwdWithoutAPin(t *testing.T) {
 	}
 }
 
-func TestGrepToolRelativeRepoSearchesUnderThePinnedRoot(t *testing.T) {
+func TestGrepToolRelativeRepoSearchesUnderTheDeclaredRoot(t *testing.T) {
+	t.Parallel()
 	requireGrepEngine(t)
-	pinned, hit := writeNested(t, "vendor/pinned.go", "var needle = 1\n")
-	cwd, _ := writeNested(t, "vendor/cwd.go", "var needle = 2\n")
-	t.Chdir(cwd)
-	pinRoot(t, pinned)
+	declared, hit := writeNested(t, "vendor/declared.go", "var needle = 1\n")
+	writeUnder(t, declared, "other/skipped.go", "var needle = 2\n")
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), declared), t)
 	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "needle", "repo": "vendor"})
 	if isErr {
 		t.Fatalf("ccx_code_grep relative repo is error: %s", out)
 	}
-	requireCite(t, out, filepath.Join(pinned, "vendor"), hit)
-	if strings.Contains(out, "cwd.go") {
-		t.Errorf("grep leaked into the working directory's vendor tree:\n%s", out)
+	requireCite(t, out, filepath.Join(declared, "vendor"), hit)
+	if strings.Contains(out, "skipped.go") {
+		t.Errorf("grep searched the declared root instead of its vendor subtree:\n%s", out)
 	}
 }
 
-func TestSearchToolLiteralRelativeRepoSearchesUnderThePinnedRoot(t *testing.T) {
+func TestSearchToolLiteralRelativeRepoSearchesUnderTheDeclaredRoot(t *testing.T) {
+	t.Parallel()
 	requireGrepEngine(t)
-	pinned, hit := writeNested(t, "vendor/pinned.go", "var needle = 1\n")
-	cwd, _ := writeNested(t, "vendor/cwd.go", "var needle = 2\n")
-	t.Chdir(cwd)
-	pinRoot(t, pinned)
+	declared, hit := writeNested(t, "vendor/declared.go", "var needle = 1\n")
+	writeUnder(t, declared, "other/skipped.go", "var needle = 2\n")
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), declared), t)
 	out, isErr := callText(t, cs, "ccx_code_search", map[string]any{"query": "needle", "mode": "literal", "repo": "vendor"})
 	if isErr {
 		t.Fatalf("ccx_code_search relative repo is error: %s", out)
 	}
-	requireCite(t, out, filepath.Join(pinned, "vendor"), hit)
-	if strings.Contains(out, "cwd.go") {
-		t.Errorf("literal search leaked into the working directory's vendor tree:\n%s", out)
+	requireCite(t, out, filepath.Join(declared, "vendor"), hit)
+	if strings.Contains(out, "skipped.go") {
+		t.Errorf("literal search read the declared root instead of its vendor subtree:\n%s", out)
 	}
 }
 
-func TestDepsToolPinnedRootRootsRelativePath(t *testing.T) {
-	pinned, hit := writeTree(t, "a.go", "package a\n\nimport \"github.com/yasyf/pinnedpkg\"\n\nvar _ = pinnedpkg.X\n")
-	cwd, _ := writeTree(t, "a.go", "package a\n\nimport \"github.com/yasyf/cwdpkg\"\n\nvar _ = cwdpkg.X\n")
-	t.Chdir(cwd)
-	pinRoot(t, pinned)
+func TestDepsToolDeclaredRootRootsRelativePath(t *testing.T) {
+	t.Parallel()
+	declared, hit := writeTree(t, "a.go", "package a\n\nimport \"github.com/yasyf/declaredpkg\"\n\nvar _ = declaredpkg.X\n")
+	other, _ := writeTree(t, "a.go", "package a\n\nimport \"github.com/yasyf/otherpkg\"\n\nvar _ = otherpkg.X\n")
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), declared), t)
 	out, isErr := callText(t, cs, "ccx_code_deps", map[string]any{"path": "a.go"})
 	if isErr {
-		t.Fatalf("ccx_code_deps pinned is error: %s", out)
+		t.Fatalf("ccx_code_deps declared is error: %s", out)
 	}
 	if !strings.Contains(out, hit) {
-		t.Errorf("deps should analyze the pinned root's file:\n%s", out)
+		t.Errorf("deps should analyze the declared root's file, not %s's:\n%s", other, out)
 	}
-	if !strings.Contains(out, "pinnedpkg") || strings.Contains(out, "cwdpkg") {
-		t.Errorf("deps read the working directory's file instead of the pinned root's:\n%s", out)
+	if !strings.Contains(out, "declaredpkg") || strings.Contains(out, "otherpkg") {
+		t.Errorf("deps read another tree's file instead of the declared root's:\n%s", out)
 	}
 }
 
-func TestDepsToolReachesAFileOnlyThePinnedRootHas(t *testing.T) {
-	pinned, hit := writeNested(t, "sub/a.go", "package a\n\nimport \"github.com/yasyf/pinnedpkg\"\n\nvar _ = pinnedpkg.X\n")
-	t.Chdir(t.TempDir())
-	pinRoot(t, pinned)
+func TestDepsToolReachesAFileOnlyTheDeclaredRootHas(t *testing.T) {
+	t.Parallel()
+	declared, hit := writeNested(t, "sub/a.go", "package a\n\nimport \"github.com/yasyf/declaredpkg\"\n\nvar _ = declaredpkg.X\n")
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), declared), t)
 	out, isErr := callText(t, cs, "ccx_code_deps", map[string]any{"path": "sub/a.go"})
 	if isErr {
-		t.Fatalf("ccx_code_deps should resolve the path against the pinned root: %s", out)
+		t.Fatalf("ccx_code_deps should resolve the path against the declared root: %s", out)
 	}
-	if !strings.Contains(out, hit) || !strings.Contains(out, "pinnedpkg") {
-		t.Errorf("deps should analyze the pinned root's file:\n%s", out)
+	if !strings.Contains(out, hit) || !strings.Contains(out, "declaredpkg") {
+		t.Errorf("deps should analyze the declared root's file:\n%s", out)
 	}
 }
 
@@ -412,7 +404,7 @@ func TestDepsToolWithoutARootReadsCwd(t *testing.T) {
 	cwd, _ := writeTree(t, "a.go", "package a\n\nimport \"github.com/yasyf/cwdpkg\"\n\nvar _ = cwdpkg.X\n")
 	t.Chdir(cwd)
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(t.Context(), t)
 	out, isErr := callText(t, cs, "ccx_code_deps", map[string]any{"path": "a.go"})
 	if isErr {
 		t.Fatalf("ccx_code_deps cwd is error: %s", out)
@@ -427,10 +419,10 @@ func TestDepsToolWithoutARootReadsCwd(t *testing.T) {
 // would caption one tree's bytes with another tree's name — the exact confusion
 // the line exists to end.
 func TestPinRepoNamesRepo(t *testing.T) {
+	t.Parallel()
 	declared := t.TempDir()
 	other := t.TempDir()
-	pinRoot(t, declared)
-	ctx := workspace.WithRoot(context.Background(), declared)
+	ctx := workspace.WithRoot(t.Context(), declared)
 
 	for _, tt := range []struct {
 		name string
@@ -464,12 +456,12 @@ func TestPinRepoNamesRepo(t *testing.T) {
 // engine that root as a path operand instead of running it there selected
 // nothing — a zero that reads exactly like an absence.
 func TestGrepToolSlashedGlobSelectsInsideTheNamedRepo(t *testing.T) {
+	t.Parallel()
 	requireRipgrep(t)
 	named, hit := writeNested(t, "internal/cli/named.go", "var needle = 1\n")
 	writeUnder(t, named, "other/skipped.go", "var needle = 2\n")
-	t.Chdir(t.TempDir())
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), t.TempDir()), t)
 	args := map[string]any{"text": "needle", "repo": named}
 	control, isErr := callText(t, cs, "ccx_code_grep", args)
 	if isErr {
