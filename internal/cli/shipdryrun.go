@@ -187,7 +187,7 @@ func dryRunReparent(ctx context.Context, l lane, o shipOpts, state gtState, was 
 		r.refusals = append(r.refusals, fmt.Sprintf("ship: --parent %s names %s or a branch stacked above it, so %s cannot move onto it", o.parent, r.branch, r.branch))
 		return nil
 	}
-	replay, err := dryRunOnto(ctx, l, r)
+	replay, err := dryRunOnto(ctx, l, o, r)
 	if err != nil {
 		return err
 	}
@@ -197,8 +197,8 @@ func dryRunReparent(ctx context.Context, l lane, o shipOpts, state gtState, was 
 
 // dryRunOnto names the replay gtOnto would make to put the branch on --parent,
 // or records the refusal it would make instead.
-func dryRunOnto(ctx context.Context, l lane, r *shipDryRun) (string, error) {
-	m, err := gtOntoPlan(ctx, l, r.branch, r.parent)
+func dryRunOnto(ctx context.Context, l lane, o shipOpts, r *shipDryRun) (string, error) {
+	m, err := gtOntoPlan(ctx, l, o, r.branch, r.parent)
 	r.onto = r.parent
 	var refusal *shipRefusal
 	if errors.As(err, &refusal) {
@@ -209,6 +209,9 @@ func dryRunOnto(ctx context.Context, l lane, r *shipDryRun) (string, error) {
 		return "", err
 	}
 	r.fork = m.fork
+	if m.own == 0 {
+		return fmt.Sprintf(", moving it up to %s, which it holds no commit of its own above until this one", r.parent), nil
+	}
 	return fmt.Sprintf(", replaying its %d own commit(s) onto %s, which is no longer in its history", m.own, r.parent), nil
 }
 
@@ -222,7 +225,7 @@ func dryRunTrack(ctx context.Context, l lane, o shipOpts, state gtState, r *ship
 		replay := ""
 		if _, tracked := state[o.parent]; tracked {
 			var err error
-			if replay, err = dryRunOnto(ctx, l, r); err != nil {
+			if replay, err = dryRunOnto(ctx, l, o, r); err != nil {
 				return err
 			}
 		}

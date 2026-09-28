@@ -137,7 +137,7 @@ func TestStackRepairPublishedChildRefusesChangedEvidence(t *testing.T) {
 
 func TestShipPublishedChildRefusalNamesRepair(t *testing.T) {
 	f, _, child, _ := incompletePublishedChild(t)
-	_, _, err := gtOwnFork(f.ContextIn(child), render.Dir(child), "child", "parent")
+	_, _, err := gtOwnFork(f.ContextIn(child), render.Dir(child), shipOpts{}, "child", "parent")
 	if err == nil || !strings.Contains(err.Error(), "ccx vcs stack repair-published-child --parent parent") || strings.Contains(err.Error(), "git rebase -i") {
 		t.Fatalf("published-child refusal = %v", err)
 	}
