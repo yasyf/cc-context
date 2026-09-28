@@ -245,6 +245,23 @@ func TestWorktreeRmRefusesTrunkHolder(t *testing.T) {
 	}
 }
 
+func TestWorktreeRmRefusesOneOfSeveralTrunkHolders(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Detached())
+	f.Isolate(t)
+	path := addPoolWorktree(t, f, "holder")
+	mustRun(t, f.Env(), path, "git", "checkout", "-q", "main")
+	other := f.WorktreePath("other")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "--force", "-f", other, "main")
+
+	_, err := runWorktreeCmd(t, f, "rm", "holder")
+	if err == nil || !strings.Contains(err.Error(), "holds trunk main") {
+		t.Fatalf("rm error = %v, want trunk holder refusal", err)
+	}
+	if !worktreeRegistered(t, f.Env(), f.Dir, path) || !worktreeRegistered(t, f.Env(), f.Dir, other) {
+		t.Fatal("rm removed a trunk holder")
+	}
+}
+
 // TestWorktreeRmSurfacesUnshapedRemoteHead proves the no-trunk skip is the
 // provable miss alone, never a lookup that answered. A remote HEAD may legally
 // be aimed at any ref, and one naming a local branch is a misconfiguration git

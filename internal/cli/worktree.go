@@ -603,11 +603,7 @@ func guardTrunkHolder(ctx context.Context, l lane, wt vcs.Worktree) error {
 	if err != nil {
 		return fmt.Errorf("worktree rm: %w", err)
 	}
-	holders, err := vcs.BranchHolders(ctx, l.checkout)
-	if err != nil {
-		return fmt.Errorf("worktree rm: %w", err)
-	}
-	if holders[trunk.Name()] == wt.Path {
+	if wt.Branch == trunk.Name() {
 		return fmt.Errorf("worktree rm: %q holds trunk %s — every restack rebases onto it; check out another branch there first", wt.Path, trunk.Name())
 	}
 	return nil
