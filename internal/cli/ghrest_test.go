@@ -125,8 +125,8 @@ func TestStackQueryPRsReadsTheQueueCloseOverREST(t *testing.T) {
 		comments string
 		landed   bool
 	}{
-		{"queue landed it", `[[{"user":{"login":"graphite-app[bot]"},"body":"* **Sep 25**: Merged by the Graphite merge queue."}]]`, true},
-		{"queue dropped it", `[[{"user":{"login":"graphite-app[bot]"},"body":"* **Sep 25**: removed from the merge queue."}]]`, false},
+		{"queue landed it", `[[{"user":{"login":"graphite-app[bot]"},"body":"### Merge activity\\n\\n* **Sep 25**: Merged by the Graphite merge queue."}]]`, true},
+		{"queue dropped it", `[[{"user":{"login":"graphite-app[bot]"},"body":"### Merge activity\\n\\n* **Sep 25**: removed from the merge queue."}]]`, false},
 		{"queue left no comment", loadGHGolden(t, "rest-issue-comments").stdout, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

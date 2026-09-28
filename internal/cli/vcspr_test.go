@@ -32,6 +32,18 @@ const (
 	prInfoAbandoned = `{"prNumber":24001,"state":"CLOSED","baseRefName":"dev","mergeQueueStatus":{"isInGraphiteMq":true,"enqueuedCommit":"aaaa"},"mergeCommitSha":null}`
 )
 
+// #26918 on 2026-09-28: the queue admitted it at 15:29, evicted it for merge
+// conflicts at 15:32, and Graphite's record still read it enqueued at 15:45.
+// The activity comment is the one GitHub served, posted through the enqueuing
+// user's token rather than graphite-app's.
+const (
+	prInfoEvicted     = `{"prNumber":26918,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":{"isInGraphiteMq":true,"enqueuedCommit":"a37cf143f3cf1022fcb1c106059b3fb336e44203"},"mergeCommitSha":null}`
+	prActivityEvicted = "### Merge activity\n\n" +
+		"* **Sep 28, 3:29 PM UTC**: The merge label 'merge' was detected. This PR will be added to the [Graphite merge queue](https://app.graphite.com/merges?org=Forge-AI&repo=monorepo) once it meets the requirements.\n" +
+		"* **Sep 28, 3:29 PM UTC**: `yasyf` added this pull request to the [Graphite merge queue](https://app.graphite.com/merges?org=Forge-AI&repo=monorepo).\n" +
+		"* **Sep 28, 3:32 PM UTC**: The [Graphite merge queue](https://app.graphite.com/merges?org=Forge-AI&repo=monorepo) couldn't merge this PR because **it had merge conflicts**."
+)
+
 func decodePRInfo(t *testing.T, body string) gtapi.PullRequestInfo {
 	t.Helper()
 	var info gtapi.PullRequestInfo
@@ -47,27 +59,43 @@ func TestClassifyPRQueue(t *testing.T) {
 		name     string
 		body     string
 		landedOn string
+		activity string
 		want     prQueueReport
 	}{
 		{
 			"enqueued from the web UI",
-			prInfoQueued, "",
+			prInfoQueued, "", "",
 			prQueueReport{Number: 25121, Queue: prQueueQueued, State: "OPEN", Base: "dev", Enqueued: "b103a57671412a4e260ecd9763ba764e66053d15"},
 		},
-		{"never enqueued", prInfoOpen, "", prQueueReport{Number: 25131, Queue: prQueueNotQueued, State: "OPEN", Base: "dev"}},
-		{"a merge label the queue dropped", prInfoStaleFlag, "", prQueueReport{Number: 23925, Queue: prQueueNotQueued, State: "OPEN", Base: "dev"}},
+		{"never enqueued", prInfoOpen, "", "", prQueueReport{Number: 25131, Queue: prQueueNotQueued, State: "OPEN", Base: "dev"}},
+		{"a merge label the queue dropped", prInfoStaleFlag, "", "", prQueueReport{Number: 23925, Queue: prQueueNotQueued, State: "OPEN", Base: "dev"}},
 		{
 			"landed by the queue",
-			prInfoLanded, "dev",
+			prInfoLanded, "dev", "",
 			prQueueReport{Number: 25116, Queue: prQueueLanded, State: "MERGED", Base: "dev", Squash: "9cc33f055dc4db19da6eb13a210a810297ccdc05"},
 		},
-		{"merged but the squash is off the base", prInfoLanded, "", prQueueReport{Number: 25116, Queue: prQueueNotQueued, State: "MERGED", Base: "dev"}},
-		{"closed with the queue flag still set", prInfoAbandoned, "", prQueueReport{Number: 24001, Queue: prQueueNotQueued, State: "CLOSED", Base: "dev"}},
+		{"merged but the squash is off the base", prInfoLanded, "", "", prQueueReport{Number: 25116, Queue: prQueueNotQueued, State: "MERGED", Base: "dev"}},
+		{"closed with the queue flag still set", prInfoAbandoned, "", "", prQueueReport{Number: 24001, Queue: prQueueNotQueued, State: "CLOSED", Base: "dev"}},
+		{
+			"evicted while graphite still reads it enqueued",
+			prInfoEvicted, "", prActivityEvicted,
+			prQueueReport{Number: 26918, Queue: prQueueEvicted, State: "OPEN", Base: "dev", Evicted: "it had merge conflicts", EvictedAt: "Sep 28, 3:32 PM UTC"},
+		},
+		{
+			"re-admitted after an eviction",
+			prInfoEvicted, "", prActivityEvicted + "\n* **Sep 28, 4:02 PM UTC**: `yasyf` added this pull request to the [Graphite merge queue](https://app.graphite.com/merges?org=Forge-AI&repo=monorepo).",
+			prQueueReport{Number: 26918, Queue: prQueueQueued, State: "OPEN", Base: "dev", Enqueued: "a37cf143f3cf1022fcb1c106059b3fb336e44203"},
+		},
+		{
+			"dequeued while graphite still reads it enqueued",
+			prInfoEvicted, "", "### Merge activity\n\n* **Sep 15, 1:43 PM UTC**: Removed this pull request from the Graphite merge queue.",
+			prQueueReport{Number: 26918, Queue: prQueueNotQueued, State: "OPEN", Base: "dev"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := classifyPRQueue(decodePRInfo(t, tt.body), tt.landedOn); got != tt.want {
+			if got := classifyPRQueue(decodePRInfo(t, tt.body), tt.landedOn, tt.activity); got != tt.want {
 				t.Errorf("classifyPRQueue = %+v, want %+v", got, tt.want)
 			}
 		})
@@ -215,6 +243,30 @@ func stubCommitsOnBase(t *testing.T, onBase map[string]bool) *[][]prCommitCandid
 	return &compared
 }
 
+func prActivityRoute(number int, bodies ...string) ghRoute {
+	comments := make([]map[string]string, 0, len(bodies))
+	for _, body := range bodies {
+		comments = append(comments, map[string]string{"body": body})
+	}
+	page, _ := json.Marshal([][]map[string]string{comments})
+	return ghRoute{
+		argv:   []string{"api", "--paginate", "--slurp", fmt.Sprintf("repos/Forge-AI/monorepo/issues/%d/comments?per_page=100", number)},
+		stdout: string(page),
+	}
+}
+
+func readGHCalls(t *testing.T, calls string) []string {
+	t.Helper()
+	data, err := os.ReadFile(calls)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.TrimSpace(string(data)), "\n")
+}
+
 func runPRStatusCmd(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	cmd := newVcsPRCmd()
@@ -234,6 +286,7 @@ func runPRStatusCmd(t *testing.T, args ...string) (string, error) {
 func TestPRStatusReportsEachQueueState(t *testing.T) {
 	asked := stubPRInfo(t, prInfoLanded, prInfoOpen, prInfoQueued)
 	compared := stubCommitsOnBase(t, map[string]bool{"9cc33f055dc4db19da6eb13a210a810297ccdc05": true})
+	calls := installGHRoutes(t, prActivityRoute(25121), prActivityRoute(25131, "LGTM"))
 
 	out, err := runPRStatusCmd(t, "--repo", "Forge-AI/monorepo", "25121", "#25131", "25116")
 	if err != nil {
@@ -255,11 +308,37 @@ func TestPRStatusReportsEachQueueState(t *testing.T) {
 	if want := [][]prCommitCandidate{{{number: 25116, base: "dev", sha: "9cc33f055dc4db19da6eb13a210a810297ccdc05"}}}; !reflect.DeepEqual(*compared, want) {
 		t.Errorf("compares = %v, want %v", *compared, want)
 	}
+	if got := readGHCalls(t, calls); len(got) != 2 {
+		t.Errorf("gh calls = %q, want one comments read per open pull request", got)
+	}
+}
+
+func TestPRStatusReportsAnEviction(t *testing.T) {
+	stubPRInfo(t, prInfoEvicted)
+	stubCommitsOnBase(t, nil)
+	calls := installGHRoutes(t,
+		prActivityRoute(26918, "Stack comment", prActivityEvicted),
+		ghRoute{argv: []string{"api", "repos/Forge-AI/monorepo/pulls/26918"}, stdout: `{"number":26918,"state":"open","mergeable":false,"mergeable_state":"dirty","labels":[]}`},
+	)
+
+	out, err := runPRStatusCmd(t, "--repo", "Forge-AI/monorepo", "26918")
+	if err != nil {
+		t.Fatalf("pr status: %v", err)
+	}
+	if want := "#26918  evicted: it had merge conflicts at Sep 28, 3:32 PM UTC · conflicting\n"; out != want {
+		t.Errorf("report = %q, want %q", out, want)
+	}
+	got := readGHCalls(t, calls)
+	if len(got) != 2 {
+		t.Errorf("gh calls = %q, want the comments read and the pull request read", got)
+	}
+	assertNoGraphQL(t, calls)
 }
 
 func TestPRStatusJSON(t *testing.T) {
 	stubPRInfo(t, prInfoQueued)
 	compared := stubCommitsOnBase(t, nil)
+	installGHRoutes(t, prActivityRoute(25121))
 
 	out, err := runPRStatusCmd(t, "--repo", "Forge-AI/monorepo", "--json", "25121")
 	if err != nil {

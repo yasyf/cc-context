@@ -23,14 +23,15 @@ const ghRepoPath = "repos/{owner}/{repo}"
 // spends the GraphQL budget: a rate-limited GraphQL budget must not fail a
 // step whose push already landed.
 type ghPull struct {
-	Number    int        `json:"number"`
-	HTMLURL   string     `json:"html_url"`
-	Title     string     `json:"title"`
-	Body      string     `json:"body"`
-	State     string     `json:"state"`
-	MergedAt  *time.Time `json:"merged_at"`
-	Mergeable *bool      `json:"mergeable"`
-	Base      struct {
+	Number         int        `json:"number"`
+	HTMLURL        string     `json:"html_url"`
+	Title          string     `json:"title"`
+	Body           string     `json:"body"`
+	State          string     `json:"state"`
+	MergedAt       *time.Time `json:"merged_at"`
+	Mergeable      *bool      `json:"mergeable"`
+	MergeableState string     `json:"mergeable_state"`
+	Base           struct {
 		Ref string `json:"ref"`
 	} `json:"base"`
 	Head struct {
@@ -81,6 +82,10 @@ const ghRateLimitRetries = 3
 // clears in a minute. An exhausted quota, whose reset can be an hour out, fails
 // at once.
 func ghAPI(ctx context.Context, dir render.Dir, args ...string) (string, error) {
+	return ghAPIWaiting(ctx, dir, ghRateLimitWait, args...)
+}
+
+func ghAPIWaiting(ctx context.Context, dir render.Dir, wait time.Duration, args ...string) (string, error) {
 	for waits := 0; ; waits++ {
 		out, err := render.RunCLI(ctx, dir, "gh", append([]string{"api"}, args...))
 		if err == nil || waits == ghRateLimitRetries || !strings.Contains(strings.ToLower(err.Error()), "rate limit") {
@@ -93,7 +98,7 @@ func ghAPI(ctx context.Context, dir render.Dir, args ...string) (string, error) 
 		select {
 		case <-ctx.Done():
 			return out, errors.Join(err, ctx.Err())
-		case <-time.After(ghRateLimitWait):
+		case <-time.After(wait):
 		}
 	}
 }

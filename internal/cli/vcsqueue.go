@@ -15,9 +15,13 @@ const (
 	mqLabel     = "merge"
 	mqLabelFast = "merge-fast"
 
+	mqActivityHeading = "### Merge activity"
+
 	mqAdded     = "added this pull request to the "
 	mqDetected  = "was detected. This PR will be added"
 	mqRemoved   = "removed this pull request due to "
+	mqFailed    = "couldn't merge this PR because "
+	mqDequeued  = "Removed this pull request from the "
 	mqRunningCI = "CI is running for this pull request on a draft pull request"
 	mqMerged    = "Merged by the "
 )
@@ -141,8 +145,10 @@ func mqPhaseOf(in mqInput) *statusQueue {
 		switch {
 		case strings.Contains(bullet, mqMerged):
 			q.Phase, q.Detail = mqPhaseMerged, bullet
-		case strings.Contains(bullet, mqRemoved):
+		case strings.Contains(bullet, mqRemoved), strings.Contains(bullet, mqFailed):
 			q.Phase, q.Detail, q.DraftPR = mqPhaseRejected, bullet, 0
+		case strings.Contains(bullet, mqDequeued):
+			q.Phase, q.Detail, q.DraftPR = mqPhaseWithdrawn, bullet, 0
 		case strings.Contains(bullet, mqRunningCI):
 			q.Phase, q.Detail = mqPhaseQueued, bullet
 			if n, ok := mqDraftNumber(bullet); ok {
@@ -250,23 +256,65 @@ func mqLastLabelEvent(events []mqLabelEvent) (mqLabelEvent, bool) {
 	return last, found
 }
 
+type mqBullet struct {
+	At   string
+	Text string
+}
+
 // mqBullets splits the activity comment into its bullets, in the order Graphite
 // appends them, each stripped of its list marker and bolded timestamp.
 func mqBullets(activity string) []string {
-	var bullets []string
+	stamped := mqStampedBullets(activity)
+	bullets := make([]string, 0, len(stamped))
+	for _, b := range stamped {
+		bullets = append(bullets, b.Text)
+	}
+	return bullets
+}
+
+func mqStampedBullets(activity string) []mqBullet {
+	var bullets []mqBullet
 	for _, line := range strings.Split(activity, "\n") {
 		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "* ")
 		if !ok {
 			continue
 		}
+		var at string
 		if stamped, ok := strings.CutPrefix(rest, "**"); ok {
-			if _, after, ok := strings.Cut(stamped, "**: "); ok {
-				rest = after
+			if stamp, after, ok := strings.Cut(stamped, "**: "); ok {
+				at, rest = stamp, after
 			}
 		}
-		bullets = append(bullets, mqPlain(rest))
+		bullets = append(bullets, mqBullet{At: at, Text: mqPlain(rest)})
 	}
 	return bullets
+}
+
+type mqExit struct {
+	Reason string
+	At     string
+}
+
+// mqLastExit reports how the queue last let the pull request go, and false
+// once the pull request went back in or was never let go.
+func mqLastExit(activity string) (mqExit, bool) {
+	var exit mqExit
+	out := false
+	for _, b := range mqStampedBullets(activity) {
+		switch {
+		case strings.Contains(b.Text, mqRemoved):
+			_, reason, _ := strings.Cut(b.Text, mqRemoved)
+			exit, out = mqExit{Reason: reason, At: b.At}, true
+		case strings.Contains(b.Text, mqFailed):
+			_, reason, _ := strings.Cut(b.Text, mqFailed)
+			exit, out = mqExit{Reason: reason, At: b.At}, true
+		case strings.Contains(b.Text, mqDequeued):
+			exit, out = mqExit{At: b.At}, true
+		case strings.Contains(b.Text, mqAdded), strings.Contains(b.Text, mqRunningCI), strings.Contains(b.Text, mqDetected):
+			out = false
+		}
+	}
+	return exit, out
 }
 
 // mqPlain reduces one bullet to the sentence a report prints: links become
