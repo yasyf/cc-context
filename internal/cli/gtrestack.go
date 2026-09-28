@@ -392,6 +392,10 @@ var errReplayConflict = errors.New("replay: conflict")
 func gtReplay(ctx context.Context, prefix string, dir render.Dir, base, from, branch string, state gtBranchState) (string, error) {
 	ref := gtRestackRef(branch)
 	span := from + ".." + ref
+	own, err := gtRevCount(ctx, prefix, dir, span)
+	if err != nil || own == 0 {
+		return base, err
+	}
 	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"-c", "replay.refAction=print", "replay", "--onto", base, span})
 	if err != nil {
 		return "", fmt.Errorf("%s: git replay: %w", prefix, err)

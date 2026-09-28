@@ -51,3 +51,17 @@ func TestShipAmendKeepsADirtyChildCheckoutElsewhere(t *testing.T) {
 		t.Errorf("held HEAD moved to %s under uncommitted work", head)
 	}
 }
+
+func TestShipAmendMovesAnEmptyChildOntoTheAmendedParent(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	shipGTLevel(t, f, "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	writeShipFile(t, f.Dir, "base.txt", "amended\n")
+
+	if _, err := runShipCmd(f.Context(), t, "--amend", "--no-push", "base.txt"); err != nil {
+		t.Fatalf("ship --amend = %v", err)
+	}
+	if base, feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"), gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); feature != base {
+		t.Errorf("feature = %s, want it level with the amended base %s", feature, base)
+	}
+}
