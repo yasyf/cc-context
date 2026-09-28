@@ -76,6 +76,7 @@ type stackRebaseBranch struct {
 	Held        string            `json:"held,omitempty"`
 	Kept        bool              `json:"kept,omitempty"`
 	LocalOnly   bool              `json:"local_only,omitempty"`
+	Moved       bool              `json:"moved,omitempty"`
 	PR          *stackPR          `json:"pr,omitempty"`
 	NewBase     string            `json:"new_base,omitempty"`
 	NewHead     string            `json:"new_head,omitempty"`
@@ -89,35 +90,36 @@ type stackConflict struct {
 }
 
 type stackRebaseRun struct {
-	Trunk        string `json:"trunk"`
-	Pin          string `json:"pin"`
-	NoPush       bool   `json:"no_push"`
-	Git          bool   `json:"git,omitempty"`
-	Origin       string `json:"origin"`
-	Draft        bool   `json:"draft,omitempty"`
-	NoVerify     bool   `json:"no_verify,omitempty"`
-	Tip          string `json:"tip,omitempty"`
-	TipOnly      bool   `json:"tip_only,omitempty"`
-	DropCommits  bool   `json:"drop_commits,omitempty"`
-	deferPush    bool
-	Ship         *stackShipIntent         `json:"ship,omitempty"`
-	Aligned      bool                     `json:"aligned,omitempty"`
-	Applied      bool                     `json:"applied,omitempty"`
-	Publishing   bool                     `json:"publishing,omitempty"`
-	PushTargets  []stackPublicationTarget `json:"push_targets,omitempty"`
-	Pushed       bool                     `json:"pushed,omitempty"`
-	Receipted    bool                     `json:"receipted,omitempty"`
-	LocalApplied bool                     `json:"local_applied,omitempty"`
-	LocalAligned bool                     `json:"local_aligned,omitempty"`
-	Branches     []stackRebaseBranch      `json:"branches"`
-	Conflict     *stackConflict           `json:"conflict,omitempty"`
-	Roots        []string                 `json:"roots"`
-	Pid          int                      `json:"pid"`
-	Started      string                   `json:"started"`
-	Host         string                   `json:"host"`
-	dir          string
-	saved        time.Time
-	left         []stackLeft
+	Trunk         string `json:"trunk"`
+	Pin           string `json:"pin"`
+	NoPush        bool   `json:"no_push"`
+	Git           bool   `json:"git,omitempty"`
+	Origin        string `json:"origin"`
+	Draft         bool   `json:"draft,omitempty"`
+	NoVerify      bool   `json:"no_verify,omitempty"`
+	Tip           string `json:"tip,omitempty"`
+	TipOnly       bool   `json:"tip_only,omitempty"`
+	DropCommits   bool   `json:"drop_commits,omitempty"`
+	deferPush     bool
+	Ship          *stackShipIntent         `json:"ship,omitempty"`
+	Aligned       bool                     `json:"aligned,omitempty"`
+	Applied       bool                     `json:"applied,omitempty"`
+	Publishing    bool                     `json:"publishing,omitempty"`
+	PushTargets   []stackPublicationTarget `json:"push_targets,omitempty"`
+	Pushed        bool                     `json:"pushed,omitempty"`
+	Receipted     bool                     `json:"receipted,omitempty"`
+	LocalApplied  bool                     `json:"local_applied,omitempty"`
+	LocalAligned  bool                     `json:"local_aligned,omitempty"`
+	SourcesMoving bool                     `json:"sources_moving,omitempty"`
+	Branches      []stackRebaseBranch      `json:"branches"`
+	Conflict      *stackConflict           `json:"conflict,omitempty"`
+	Roots         []string                 `json:"roots"`
+	Pid           int                      `json:"pid"`
+	Started       string                   `json:"started"`
+	Host          string                   `json:"host"`
+	dir           string
+	saved         time.Time
+	left          []stackLeft
 }
 
 // stackLeft is a branch of the stack a run leaves exactly where it is: an

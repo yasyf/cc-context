@@ -482,3 +482,46 @@ func TestStackSubmitAdoptsGraphitesRestackAfterALanding(t *testing.T) {
 		t.Fatalf("published b.txt = %q, want b", got)
 	}
 }
+
+func TestStackPublicationFinishesMovingSourcesAfterAnInterruptedMove(t *testing.T) {
+	f, run, plan := prepareStackPublication(t)
+	dir := render.Dir(f.Dir)
+	common := filepath.Join(f.Dir, ".git")
+	if err := stackPushPublication(f.Context(), dir, gtSubmit{prefix: "test", publication: run}, plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := stackRecordPublication(f.Context(), dir, run, plan); err != nil {
+		t.Fatal(err)
+	}
+	l, err := resolveLane(f.Context(), "stack", f.Dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := range 2 {
+		saved, err := stackOnlyTestRun(common)
+		if err != nil {
+			t.Fatal(err)
+		}
+		report, err := stackMovePublishedSources(f.Context(), l, common, saved)
+		if err != nil || report != "moved feature onto the published heads" {
+			t.Fatalf("attempt %d = %q, %v, want feature moved", attempt, report, err)
+		}
+		if got := shipHead(t, f); got != plan[0].head {
+			t.Fatalf("attempt %d: feature = %s, want its published head %s", attempt, got, plan[0].head)
+		}
+		if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); status != "" {
+			t.Fatalf("attempt %d left the checkout unaligned: %q", attempt, status)
+		}
+	}
+	receipt, err := stackReadPublication(f.Context(), dir, "feature")
+	if err != nil || receipt == nil || receipt.Source != plan[0].head || receipt.Head != plan[0].head {
+		t.Fatalf("receipt = %+v, %v, want source and head %s", receipt, err, plan[0].head)
+	}
+	saved, err := stackOnlyTestRun(common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stackCompletePublication(f.Context(), dir, common, saved); err != nil {
+		t.Fatal(err)
+	}
+}

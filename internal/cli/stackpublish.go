@@ -356,6 +356,9 @@ func stackDropPublicationPins(ctx context.Context, dir render.Dir, run *stackReb
 }
 
 func stackFinishPublication(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun) error {
+	if run.SourcesMoving {
+		return stackFinishSourceMoves(ctx, cmd, l, commonDir, run)
+	}
 	if err := stackPinPublication(ctx, l.dir(), run); err != nil {
 		return err
 	}
@@ -415,6 +418,10 @@ func stackFinishPublication(ctx context.Context, cmd *cobra.Command, l lane, com
 	if err := stackMoveLocalOnly(ctx, cmd, l, commonDir, run); err != nil {
 		return err
 	}
+	return stackFinishSourceMoves(ctx, cmd, l, commonDir, run)
+}
+
+func stackFinishSourceMoves(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun) error {
 	report, err := stackMovePublishedSources(ctx, l, commonDir, run)
 	if err != nil {
 		return err
@@ -428,43 +435,39 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", stackRebasePrefix, err)
 	}
-	stays := map[string]bool{}
-	var moved, left []string
+	var left []string
+	if !run.SourcesMoving {
+		if left, err = stackChooseSourceMoves(ctx, l, run, holders); err != nil {
+			return "", err
+		}
+		run.SourcesMoving = true
+		if err := stackSaveRun(run); err != nil {
+			return "", err
+		}
+	}
+	var moved []string
 	var moves []restackMove
 	reparent := map[string]string{}
 	revisions := map[string]string{}
 	var tx strings.Builder
 	tx.WriteString("start\n")
-	for _, b := range run.Branches {
-		if b.Landed != "" || b.Held != "" || b.LocalOnly || b.NewHead == b.Local {
+	for i := range run.Branches {
+		b := &run.Branches[i]
+		if !b.Moved {
 			continue
 		}
 		at, err := stackRevParse(ctx, l.dir(), gtRestackRef(b.Name))
 		if err != nil {
 			return "", err
 		}
+		if at != b.Local && at != b.NewHead {
+			b.Moved = false
+			left = append(left, b.Name+" (moved since the run started)")
+			continue
+		}
 		receipt, err := stackReadPublication(ctx, l.dir(), b.Name)
 		if err != nil {
 			return "", err
-		}
-		why := ""
-		switch {
-		case receipt == nil || receipt.Head != b.NewHead:
-			why = "no receipt names its published head"
-		case at != b.NewHead:
-			if why, err = stackSourceStays(ctx, l, run, b, at, holders, stays); err != nil {
-				return "", err
-			}
-		}
-		if why != "" {
-			stays[b.Name] = true
-			left = append(left, b.Name+" ("+why+")")
-			continue
-		}
-		moved = append(moved, b.Name)
-		revisions[b.Name] = b.NewBase
-		if b.Parent != b.WasParent {
-			reparent[b.Name] = b.Parent
 		}
 		onHead := stackPublication{Branch: b.Name, Source: receipt.Head, SourceBase: receipt.Base, Head: receipt.Head, Base: receipt.Base, Parent: receipt.Parent}
 		if err := stackReceiptTx(ctx, l.dir(), &tx, onHead, receipt.OID); err != nil {
@@ -472,10 +475,13 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 		}
 		if at == b.NewHead {
 			fmt.Fprintf(&tx, "verify %s %s\n", gtRestackRef(b.Name), b.NewHead)
-			continue
+		} else {
+			fmt.Fprintf(&tx, "update %s %s %s\n", gtRestackRef(b.Name), b.NewHead, b.Local)
 		}
-		fmt.Fprintf(&tx, "update %s %s %s\n", gtRestackRef(b.Name), b.NewHead, b.Local)
+		moved = append(moved, b.Name)
 		moves = append(moves, restackMove{branch: b.Name, head: b.NewHead, parent: b.NewBase, previous: b.Local})
+		revisions[b.Name] = b.NewBase
+		reparent[b.Name] = b.Parent
 	}
 	if len(moved) > 0 {
 		tx.WriteString("commit\n")
@@ -500,6 +506,41 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 		return "source checkouts unchanged", nil
 	}
 	return strings.Join(segments, shipSep), nil
+}
+
+func stackChooseSourceMoves(ctx context.Context, l lane, run *stackRebaseRun, holders map[string]string) ([]string, error) {
+	stays := map[string]bool{}
+	var left []string
+	for i := range run.Branches {
+		b := &run.Branches[i]
+		if b.Landed != "" || b.Held != "" || b.LocalOnly || b.NewHead == b.Local {
+			continue
+		}
+		at, err := stackRevParse(ctx, l.dir(), gtRestackRef(b.Name))
+		if err != nil {
+			return nil, err
+		}
+		receipt, err := stackReadPublication(ctx, l.dir(), b.Name)
+		if err != nil {
+			return nil, err
+		}
+		why := ""
+		switch {
+		case receipt == nil || receipt.Head != b.NewHead:
+			why = "no receipt names its published head"
+		case at != b.NewHead:
+			if why, err = stackSourceStays(ctx, l, run, *b, at, holders, stays); err != nil {
+				return nil, err
+			}
+		}
+		if why != "" {
+			stays[b.Name] = true
+			left = append(left, b.Name+" ("+why+")")
+			continue
+		}
+		b.Moved = true
+	}
+	return left, nil
 }
 
 func stackSourceStays(ctx context.Context, l lane, run *stackRebaseRun, b stackRebaseBranch, at string, holders map[string]string, stays map[string]bool) (string, error) {
