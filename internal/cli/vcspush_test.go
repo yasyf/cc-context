@@ -231,3 +231,32 @@ func TestVcsPushStaleLeaseNeverRetries(t *testing.T) {
 		t.Errorf("pushes = %d, want 1 — a refused lease is reported, never retried", n)
 	}
 }
+
+// TestVcsPushRetracksABranchRebasedOffItsParent is iam-check's repair by hand:
+// the branch was rebased onto trunk outside gt, dropping the parent gt recorded,
+// and after push gt called it diverged and refused to track a branch onto it.
+func TestVcsPushRetracksABranchRebasedOffItsParent(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "a", "c")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", "main", "a", "c")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	head := pushCommit(t, f, "c2.txt", "c2\n", "test: 🧪 c2")
+	fork := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+
+	got, err := runVcsPushCmd(f.Context(), t)
+	if err != nil {
+		t.Fatalf("push error = %v", err)
+	}
+	if want := " · re-tracked c onto main at " + shortOID(fork); !strings.HasSuffix(got, want) {
+		t.Errorf("summary = %q, want it to end %q", got, want)
+	}
+	if remote := shipRemoteTip(t, f, "origin", "c"); remote != head {
+		t.Errorf("origin c = %s, want %s", remote, head)
+	}
+	if parent := stackParent(t, f, "c"); parent != "main" {
+		t.Errorf("gt parent of c = %s, want main", parent)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "d")
+	pushCommit(t, f, "d.txt", "d\n", "test: 🧪 d")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "d", "--parent", "c", "--no-interactive")
+}
