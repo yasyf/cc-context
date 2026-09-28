@@ -60,7 +60,8 @@ func runStructural(ctx context.Context, dir render.Dir, a backend.Args) (string,
 	return render.Cap(RenderSearch(matches), a.Budget), nil
 }
 
-// runStructOutline renders the structural outline of a.Path (file or directory).
+// runStructOutline renders the structural outline of a.Path (file or directory),
+// listing under each type declaration what it inherits.
 func runStructOutline(ctx context.Context, dir render.Dir, a backend.Args) (string, error) {
 	out, err := runArgv(ctx, dir, backend.OpStructOutline, a)
 	if err != nil {
@@ -70,6 +71,11 @@ func runStructOutline(ctx context.Context, dir render.Dir, a backend.Args) (stri
 	if err != nil {
 		return "", err
 	}
+	inherit := NewInheritance(ctx, string(dir))
+	if a.Items == "" && a.Match == "" {
+		inherit.seed(files)
+	}
+	inherit.Annotate(files)
 	if a.Section != "" {
 		start, end, err := outline.ValidateSection(a, backend.OpStructOutline)
 		if err != nil {

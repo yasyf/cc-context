@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ccx code outline` and `ccx code symbol` surface inherited members.** A
+  class or interface's outline listed only what it declares, so an agent
+  reading `ActionExecutorIO.ts` never saw `getSecretText`, inherited from
+  `ExecutorIOShared`, and concluded an action never reads secrets (monorepo
+  incident #17960). Outline now resolves each TS/JS `extends`, Python base
+  class, and Go embedded field from source, follows imports and barrel
+  re-exports across files, and lists the members a nearer declaration
+  doesn't already override, per language: TS/JS walks the extends chain
+  nearest first and shadows static and instance members separately; Python
+  follows C3 method resolution order; Go promotes by embedding depth, with
+  a same-depth name two embeds both declare left unpromoted and a field
+  name shadowing a promoted method of that name. `--deep` prints each
+  ancestor's inherited members under `inherited from <name> (<locator>):`;
+  the terse default adds a count, `(+96 members, +61 inherited from
+  ExecutorIOShared)`, or names an ancestor that didn't resolve, `Error
+  unresolved`. `ccx code symbol` gains an
+  `## inherited` section with the same detail. A directory outline reuses
+  the outlines it already ran, so it adds no ast-grep runs for bases inside
+  the outlined tree.
+
 - **`# ccx:raw` runs a git, jj, or gt command as written.** The capt-hook VCS
   guards rewrite a bare `gt restack` to `ccx vcs stack restack` and
   whole-patch `git diff`, `git show`, `jj diff`, and `git log -p` calls to
