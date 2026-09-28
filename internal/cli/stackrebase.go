@@ -1993,19 +1993,25 @@ func stackRunRebase(ctx context.Context, ws render.Dir, argv []string) (int, str
 		return code, stderr, err
 	}
 	lock := filepath.Join(gitDir, "index.lock")
-	switch rmErr := os.Remove(lock); {
-	case rmErr == nil:
-		err = fmt.Errorf("%w — removed the index.lock it left at %s", err, lock)
-	case !errors.Is(rmErr, fs.ErrNotExist):
-		err = errors.Join(err, rmErr)
+	info, statErr := os.Stat(lock)
+	switch {
+	case errors.Is(statErr, fs.ErrNotExist):
+		return code, stderr, err
+	case statErr != nil:
+		return code, stderr, errors.Join(err, statErr)
+	case time.Since(info.ModTime()) < stackRebaseStall:
+		return code, stderr, fmt.Errorf("%w — left %s, which another git process took after the kill", err, lock)
 	}
-	return code, stderr, err
+	if rmErr := os.Remove(lock); rmErr != nil && !errors.Is(rmErr, fs.ErrNotExist) {
+		return code, stderr, errors.Join(err, rmErr)
+	}
+	return code, stderr, fmt.Errorf("%w — removed the index.lock it left at %s", err, lock)
 }
 
 func stackRebaseProgress(gitDir string) func() string {
 	return func() string {
 		var state strings.Builder
-		for _, name := range []string{"rebase-merge/msgnum", "rebase-merge/done", "HEAD", "index"} {
+		for _, name := range []string{"rebase-merge/msgnum", "rebase-merge/done", "HEAD", "index", "index.lock"} {
 			info, err := os.Stat(filepath.Join(gitDir, name))
 			if err != nil {
 				fmt.Fprintf(&state, "%s absent;", name)

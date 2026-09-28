@@ -162,7 +162,7 @@ func TestWithProgressKillsOnlyAStalledChild(t *testing.T) {
 		t.Fatalf("progressing RunCLI = %q, %v, want it to outlive the fixed guard", out, err)
 	}
 	start := time.Now()
-	_, err = RunCLI(WithProgress(t.Context(), stalled, 300*time.Millisecond), Ambient, "/bin/sh", []string{"-c", "sleep 30"})
+	_, err = RunCLI(WithProgress(t.Context(), stalled, 300*time.Millisecond), Ambient, "/bin/sh", []string{"-c", "exec sleep 30"})
 	if !errors.Is(err, ErrStalled) || !strings.Contains(err.Error(), "made no progress for 300ms") {
 		t.Fatalf("stalled RunCLI = %v, want the no-progress kill", err)
 	}

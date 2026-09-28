@@ -166,7 +166,7 @@ func withRunGuard(ctx context.Context) (context.Context, context.CancelFunc) {
 
 func watchProgress(ctx context.Context, cancel context.CancelCauseFunc, p progress) {
 	last, since := p.probe(), time.Now()
-	tick := time.NewTicker(p.stall / 40)
+	tick := time.NewTicker(max(p.stall/40, time.Millisecond))
 	defer tick.Stop()
 	for {
 		select {
