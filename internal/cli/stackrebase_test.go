@@ -151,9 +151,49 @@ func TestStackRebaseOfALocalOnlyStackOpensNoPullRequest(t *testing.T) {
 	}
 }
 
-func TestStackRebaseRefusesAStackMixingPullRequestsWithBranchesWithout(t *testing.T) {
+func TestStackRebaseRebasesAPullRequestLessTipLocally(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 	stubOpenPRs(t, nil, "base")
+	api := stubGTAPI(t)
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
+	source := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+
+	out, _, err := runStackCmd(t, f, "rebase")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if !strings.Contains(out, "feature has no pull request, and stack rebase never opens one, so it rebases locally without pushing") {
+		t.Errorf("output = %q, want the local-only tip named", out)
+	}
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	if !stackOnto(t, f, "origin/main", published) {
+		t.Error("base was not published onto the new trunk")
+	}
+	if local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); local != source {
+		t.Errorf("local base = %s, want its source %s left alone", local, source)
+	}
+	if gitBranchExists(t, f.Env(), f.RemoteDir, "feature") {
+		t.Error("origin has feature, a branch with no pull request")
+	}
+	if posts := api.submitHeads(); !slices.Equal(posts, []string{"base"}) {
+		t.Errorf("submit posts = %v, want base alone", posts)
+	}
+	if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", published+"..feature"); n != "1" || !stackOnto(t, f, published, "feature") {
+		t.Errorf("feature holds %s commits over base's published head, want its own 1 on it", n)
+	}
+	state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatalf("gt state: %v", err)
+	}
+	if got := state["feature"].Parents; len(got) != 1 || got[0].Ref != "base" || got[0].SHA != published {
+		t.Errorf("gt records feature on %v, want base at %s", got, published)
+	}
+}
+
+func TestStackRebaseRefusesAPullRequestLessBranchBelowOneWithAPullRequest(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
+	stubOpenPRs(t, nil, "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	heads := map[string]string{}
 	for _, b := range []string{"base", "feature"} {
@@ -161,7 +201,7 @@ func TestStackRebaseRefusesAStackMixingPullRequestsWithBranchesWithout(t *testin
 	}
 
 	_, _, err := runStackCmd(t, f, "rebase")
-	if err == nil || !strings.Contains(err.Error(), "feature has no pull request, and stack rebase never opens one") {
+	if err == nil || !strings.Contains(err.Error(), "base has no pull request, and stack rebase never opens one") {
 		t.Fatalf("stack rebase = %v, want the pull-request-less branch refused", err)
 	}
 	for b, head := range heads {
