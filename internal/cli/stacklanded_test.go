@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -213,6 +214,45 @@ func TestStackRebaseKeepsABranchCutFromAnEmptyParent(t *testing.T) {
 	if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "a..b"); n != "1" || !stackOnto(t, f, "a", "b") {
 		t.Errorf("b holds %s commits over a, want its own 1 on a", n)
 	}
+}
+
+func TestStackRebaseLeavesALandedParentsRewrittenCommitsBehind(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "a")
+	writeShipFile(t, f.Dir, "a.txt", "draft\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "a.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "a draft")
+	writeShipFile(t, f.Dir, "a.txt", "a\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qam", "a")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "main", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "b")
+	stackCommit(t, f, "b.txt")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "a", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--soft", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "a")
+	rewritten := gitAt(t, f.Env(), f.Dir, "rev-parse", "a")
+	commonDir, err := gtCommonDir(t.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gtmeta.RecordRestacked(t.Context(), commonDir, map[string]string{"b": rewritten}); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "b")
+	restackSquashRemote(t, f, "main", "a (#41)", "a")
+	stubStackPRs(t, map[string]*stackPR{
+		"a": {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: rewritten},
+		"b": {Number: 42, Title: "b", State: "OPEN", Base: "a"},
+	})
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "rebase"); err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	stackAssertOnTrunk(t, f, api, "b")
 }
 
 func TestStackRebaseRefusesTrunkAsAChild(t *testing.T) {

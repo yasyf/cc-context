@@ -1458,9 +1458,10 @@ func stackOrder(trunk string, byName map[string]*stackRebaseBranch) ([]string, e
 
 // stackOldBase is the commit a branch's own work starts after: the furthest of
 // its parent's recorded head and gt's recorded parent revision that the branch
-// contains. A branch leaving that parent, landed or named away by --parent, has
-// it moved up to where the branch meets trunk when trunk already holds
-// everything between. All are read before anything moves, so a push mid-run
+// contains, or, when a rewrite of the parent left it none, the fork point the
+// parent's reflog names. A branch leaving that parent, landed or named away by
+// --parent, has it moved up to where the branch meets trunk when trunk already
+// holds everything between. All are read before anything moves, so a push mid-run
 // never changes the answer, a squash-landed parent's commits stay behind, and
 // a branch already moved off a landed parent onto trunk replays only its own.
 func stackOldBase(ctx context.Context, dir render.Dir, trunk, pin string, state gtState, self *stackRebaseBranch, byName map[string]*stackRebaseBranch) (string, error) {
@@ -1506,6 +1507,11 @@ func stackOldBase(ctx context.Context, dir render.Dir, trunk, pin string, state 
 		}
 		if further {
 			best = candidate
+		}
+	}
+	if best == "" {
+		if best, err = stackForkPoint(ctx, dir, s.Parents[0].Ref, self.Head); err != nil {
+			return "", err
 		}
 	}
 	if best == "" {
@@ -1563,6 +1569,21 @@ func stackMergeBase(ctx context.Context, dir render.Dir, a, b string) (string, e
 		return "", fmt.Errorf("stack rebase: git merge-base %.12s %.12s: %w", a, b, err)
 	}
 	return strings.TrimSpace(out), nil
+}
+
+func stackForkPoint(ctx context.Context, dir render.Dir, parent, head string) (string, error) {
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"merge-base", "--fork-point", gtRestackRef(parent), head})
+	if err != nil {
+		return "", fmt.Errorf("stack rebase: git merge-base --fork-point %s %.12s: %w", parent, head, err)
+	}
+	switch code {
+	case 0:
+		return strings.TrimSpace(out), nil
+	case 1:
+		return "", nil
+	default:
+		return "", fmt.Errorf("stack rebase: git merge-base --fork-point %s %.12s: exit %d: %s", parent, head, code, strings.TrimSpace(stderr))
+	}
 }
 
 func stackOwnWork(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string, b *stackRebaseBranch) error {
