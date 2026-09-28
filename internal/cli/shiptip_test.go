@@ -307,3 +307,26 @@ func TestShipKeepsAnApprovedParentOnlyRestackedLocally(t *testing.T) {
 	}
 	stackAssertBaseKept(t, f, base)
 }
+
+// TestShipTipOnlyLeavesTheUpstackWhereItIs is release-5m's refusal: a
+// --tip-only ship from the bottom of a stack replayed the branch above it onto
+// the new commit, and refused on that branch's conflict.
+func TestShipTipOnlyLeavesTheUpstackWhereItIs(t *testing.T) {
+	f := shipGTRepo(t)
+	stubGTAPI(t)
+	shipGTStack(t, f, "core", "slack")
+	slack := gitAt(t, f.Env(), f.Dir, "rev-parse", "slack")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "core")
+	writeShipFile(t, f.Dir, "slack.txt", "core\n")
+	shipGTReady(t, f)
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--tip-only", "--no-watch"); err != nil {
+		t.Fatalf("ship --tip-only = %v (stderr=%q)", err, errStr)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "slack"); got != slack {
+		t.Errorf("slack moved to %s, want it left at %s", got, slack)
+	}
+	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "core"), gitAt(t, f.Env(), f.Dir, "rev-parse", "core"); got != want {
+		t.Errorf("origin core = %s, want the shipped head %s", got, want)
+	}
+}
