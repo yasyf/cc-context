@@ -5,12 +5,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/execstub"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 type ghRoute struct {
@@ -140,5 +143,42 @@ func TestStackQueryPRsReadsTheQueueCloseOverREST(t *testing.T) {
 			}
 			assertNoGraphQL(t, calls)
 		})
+	}
+}
+
+// ghRateLimitedGH installs a gh whose pull request reads answer GitHub's
+// secondary rate limit refusal the first refusals times, then an empty list,
+// while rate_limit reports remaining as the REST quota left.
+func ghRateLimitedGH(t *testing.T, f *vcstest.Fixture, refusals int, remaining string) {
+	t.Helper()
+	count := filepath.Join(t.TempDir(), "count")
+	script := "#!/bin/sh\n" + vcstest.RecordArgv("gh") + fmt.Sprintf(`if [ "$2" = rate_limit ]; then echo %s; exit 0; fi
+n=$(cat %q 2>/dev/null || echo 0); echo $((n+1)) > %q
+if [ "$n" -lt %d ]; then echo "gh: API rate limit exceeded for user ID 1. (HTTP 403)" >&2; exit 1; fi
+echo '[]'
+`, remaining, count, count, refusals)
+	execstub.Write(t, filepath.Join(f.ShimBin, "gh"), script)
+	prev := ghRateLimitWait
+	ghRateLimitWait = 0
+	t.Cleanup(func() { ghRateLimitWait = prev })
+}
+
+// TestGHAPIWaitsOutASecondaryRateLimit is the stack submit that failed on a 403
+// GitHub answers for request rate while the REST quota still had room.
+func TestGHAPIWaitsOutASecondaryRateLimit(t *testing.T) {
+	f := shipRepo(t)
+	ghRateLimitedGH(t, f, 2, "4990")
+
+	if _, found, err := ghNewestPull(f.Context(), render.Dir(f.Dir), "feature"); err != nil || found {
+		t.Fatalf("ghNewestPull = found %v, %v; want none after waiting out the limit", found, err)
+	}
+}
+
+func TestGHAPIFailsAnExhaustedQuotaAtOnce(t *testing.T) {
+	f := shipRepo(t)
+	ghRateLimitedGH(t, f, 1, "0")
+
+	if _, _, err := ghNewestPull(f.Context(), render.Dir(f.Dir), "feature"); err == nil || !strings.Contains(err.Error(), "rate limit") {
+		t.Fatalf("ghNewestPull error = %v, want the rate limit refusal", err)
 	}
 }

@@ -44,7 +44,14 @@ Push moves one branch and nothing else. A graphite stack's bases live in
 Graphite's own record, which only ccx vcs stack submit writes. A branch a stack
 submit published carries a publication receipt, and push rewrites it to the head
 it pushed, as ship does, so the next ship or stack rebase reads that head as the
-branch's published version rather than as someone else's push.`,
+branch's published version rather than as someone else's push.
+
+A branch rewritten outside gt, rebased off the parent revision gt recorded for
+it, is one gt calls diverged and refuses to stack another branch on. Push
+re-records it in gt's local tracking: onto the same parent when that parent's
+head is in its history, otherwise onto the nearest tracked branch that is, at
+its fork from that parent — what gt track --parent records — and names the
+move in its report.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runVcsPush(cmd, o)
@@ -82,6 +89,10 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 	if err != nil {
 		return err
 	}
+	retracked, err := vcsPushRetrack(ctx, ck, dir, branch, head)
+	if err != nil {
+		return err
+	}
 	receipt, prior, err := vcsPushPublication(ctx, dir, remote, branch, head)
 	if err != nil {
 		return err
@@ -90,6 +101,7 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 	if err != nil {
 		return err
 	}
+	summary += retracked
 	if receipt != nil {
 		var tx strings.Builder
 		tx.WriteString("start\n")
@@ -128,6 +140,62 @@ func vcsPushSubmitted(ctx context.Context, dir render.Dir, receipt stackPublicat
 		return fmt.Errorf("push: record %s's submitted version at %s: %w", receipt.Branch, shortOID(receipt.Head), err)
 	}
 	return nil
+}
+
+// vcsPushRetrack re-records gt's parent for a branch pushed off the parent
+// revision gt holds for it, the state gt calls diverged and refuses to stack a
+// branch on: the same parent when its head is still in the branch's history,
+// otherwise the nearest tracked branch that is, at the branch's fork from it.
+func vcsPushRetrack(ctx context.Context, ck vcs.Checkout, dir render.Dir, branch, head string) (string, error) {
+	graphite, err := vcs.GraphiteRepo(ck)
+	if err != nil || !graphite {
+		return "", err
+	}
+	commonDir, err := gtCommonDir(ctx, dir, "push")
+	if err != nil {
+		return "", err
+	}
+	state, err := gtStateAt(ctx, commonDir, "push")
+	if err != nil {
+		return "", err
+	}
+	s, tracked := state[branch]
+	if !tracked || s.Trunk {
+		return "", nil
+	}
+	held, err := gitIsAncestor(ctx, dir, "push", s.Parents[0].SHA, head)
+	if err != nil || held {
+		return "", err
+	}
+	parent := s.Parents[0].Ref
+	onParent := false
+	if p, tracked := state[parent]; tracked {
+		if onParent, err = gitIsAncestor(ctx, dir, "push", p.Head, head); err != nil {
+			return "", err
+		}
+	}
+	if !onParent {
+		trunk, err := gtTrunkBranch("push", state)
+		if err != nil {
+			return "", err
+		}
+		if parent, err = gtNearestTracked(ctx, dir, state, trunk, branch); err != nil {
+			return "", err
+		}
+	}
+	fork, err := stackMergeBase(ctx, dir, head, state[parent].Head)
+	if err != nil {
+		return "", err
+	}
+	if parent != s.Parents[0].Ref {
+		if err := gtmeta.Reparent(ctx, commonDir, map[string]string{branch: parent}); err != nil {
+			return "", fmt.Errorf("push: re-record %s onto %s: %w", branch, parent, err)
+		}
+	}
+	if err := gtmeta.RecordRestacked(ctx, commonDir, map[string]string{branch: fork}); err != nil {
+		return "", fmt.Errorf("push: re-record %s onto %s at %s: %w", branch, parent, shortOID(fork), err)
+	}
+	return fmt.Sprintf(" · re-tracked %s onto %s at %s", branch, parent, shortOID(fork)), nil
 }
 
 func vcsPushPublication(ctx context.Context, dir render.Dir, remote, branch, head string) (*stackPublication, string, error) {

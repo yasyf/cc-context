@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -68,9 +69,38 @@ func (p ghPull) labelNames() []string {
 	return names
 }
 
+// ghRateLimitWait is how long one secondary rate limit is waited out. gh api
+// surfaces no Retry-After, and GitHub asks for at least a minute without one.
+var ghRateLimitWait = time.Minute
+
+const ghRateLimitRetries = 3
+
+// ghAPI runs gh api, waiting out a secondary rate limit rather than failing on
+// it: a refusal that says rate limit while rate_limit, which no limit counts
+// against, still reports REST quota left is GitHub's request-rate limit, which
+// clears in a minute. An exhausted quota, whose reset can be an hour out, fails
+// at once.
+func ghAPI(ctx context.Context, dir render.Dir, args ...string) (string, error) {
+	for waits := 0; ; waits++ {
+		out, err := render.RunCLI(ctx, dir, "gh", append([]string{"api"}, args...))
+		if err == nil || waits == ghRateLimitRetries || !strings.Contains(strings.ToLower(err.Error()), "rate limit") {
+			return out, err
+		}
+		left, quotaErr := render.RunCLI(ctx, dir, "gh", []string{"api", "rate_limit", "--jq", ".resources.core.remaining"})
+		if quotaErr != nil || strings.TrimSpace(left) == "0" {
+			return out, err
+		}
+		select {
+		case <-ctx.Done():
+			return out, errors.Join(err, ctx.Err())
+		case <-time.After(ghRateLimitWait):
+		}
+	}
+}
+
 func ghNewestPull(ctx context.Context, dir render.Dir, branch string) (ghPull, bool, error) {
 	endpoint := ghRepoPath + "/pulls?head={owner}%3A" + url.QueryEscape(branch) + "&state=all&sort=created&direction=desc&per_page=1"
-	out, err := render.RunCLI(ctx, dir, "gh", []string{"api", endpoint})
+	out, err := ghAPI(ctx, dir, endpoint)
 	if err != nil {
 		return ghPull{}, false, fmt.Errorf("gh api: list the pull requests of %s: %w", branch, err)
 	}
@@ -85,7 +115,7 @@ func ghNewestPull(ctx context.Context, dir render.Dir, branch string) (ghPull, b
 }
 
 func ghPullAt(ctx context.Context, dir render.Dir, number int) (ghPull, error) {
-	out, err := render.RunCLI(ctx, dir, "gh", []string{"api", fmt.Sprintf("%s/pulls/%d", ghRepoPath, number)})
+	out, err := ghAPI(ctx, dir, fmt.Sprintf("%s/pulls/%d", ghRepoPath, number))
 	if err != nil {
 		return ghPull{}, fmt.Errorf("gh api: read PR #%d: %w", number, err)
 	}
@@ -101,7 +131,7 @@ func ghLanding(ctx context.Context, dir render.Dir, p ghPull, gt bool) (prLandin
 	if !gt || landing.State != "CLOSED" {
 		return landing, nil
 	}
-	out, err := render.RunCLI(ctx, dir, "gh", []string{"api", fmt.Sprintf("%s/issues/%d", ghRepoPath, p.Number), "--jq", `.closed_by.login // ""`})
+	out, err := ghAPI(ctx, dir, fmt.Sprintf("%s/issues/%d", ghRepoPath, p.Number), "--jq", `.closed_by.login // ""`)
 	if err != nil {
 		return prLanding{}, fmt.Errorf("gh api: read who closed PR #%d: %w", p.Number, err)
 	}

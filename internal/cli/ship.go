@@ -242,7 +242,7 @@ Ship owns the pull request in every lane. --pr-title and --pr-body-file are repe
 	cmd.Flags().StringArrayVar(&o.prBodyFile, "pr-body-file", nil, `set the pull request body from a file; repeatable as <branch>=<path>, bare applies to the tip ("-" reads stdin)`)
 	cmd.Flags().BoolVar(&o.noPR, "no-pr", false, "push only; never create or update a pull request")
 	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it from the downstack (repeatable; graphite lane only)")
-	cmd.Flags().BoolVar(&o.tipOnly, "tip-only", false, "ship only this branch, onto its parent's published head, pushing no ancestor (graphite lane only)")
+	cmd.Flags().BoolVar(&o.tipOnly, "tip-only", false, "ship only this branch, onto its parent's published head, pushing no ancestor and leaving the branches above it where they are (graphite lane only)")
 	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
 	for _, group := range [][]string{
 		{"new-branch", "amend"},

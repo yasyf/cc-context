@@ -1188,6 +1188,9 @@ func gtCommit(ctx context.Context, l lane, errW io.Writer, o shipOpts, plan bran
 	if _, err := render.RunCLIEnv(ctx, l.dir(), "git", gtModifyArgv(o), env); err != nil {
 		return fmt.Errorf("ship: git commit: %w", err)
 	}
+	if o.tipOnly {
+		return nil
+	}
 	return gtModifyRestack(ctx, l, o, plan.from)
 }
 
