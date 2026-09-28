@@ -217,3 +217,57 @@ func TestShipGTParentMovesNothingWhenALaterCheckRefuses(t *testing.T) {
 		t.Errorf("c's parent = %s, want it left on main", parent)
 	}
 }
+
+// shipBehindTrunk cuts an untracked b with no commit of its own, then moves
+// main on past it, the shape a branch cut from a stale origin/dev takes once
+// another lane fast-forwards local dev.
+func shipBehindTrunk(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "b")
+	writeShipFile(t, f.Dir, "trunk.txt", "trunk\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "trunk.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "trunk")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "b")
+}
+
+// TestShipGTCommitsABranchWithNoCommitOfItsOwn is the standup-skill ship: a
+// branch holding nothing above trunk was refused before ship committed the
+// edits that would have become its own commit.
+func TestShipGTCommitsABranchWithNoCommitOfItsOwn(t *testing.T) {
+	f := shipGTRepo(t)
+	shipBehindTrunk(t, f)
+
+	shipGTReady(t, f)
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if want := "tracked b onto main (moved up to main, holding no commit of its own until this one)"; !strings.Contains(got, want) {
+		t.Errorf("summary = %q, want it to carry %q", got, want)
+	}
+	if parent := shipParentOf(t, f, "b"); parent != "main" {
+		t.Errorf("b's parent = %s, want main", parent)
+	}
+	if behind := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "b..main"); behind != "0" {
+		t.Errorf("main holds %s commit(s) b does not, want b on main's head", behind)
+	}
+	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", "main..b"); subjects != "fix: frobnicate" {
+		t.Errorf("b carries %q above main, want the commit ship made alone", subjects)
+	}
+}
+
+func TestShipGTRefusesABranchWithNoCommitOfItsOwnAndNothingToCommit(t *testing.T) {
+	f := shipGTRepo(t)
+	shipBehindTrunk(t, f)
+	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "b")
+	shipResetLog(t, f)
+
+	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+	if err == nil || !strings.Contains(err.Error(), "b holds no commit of its own above main") {
+		t.Fatalf("error = %v, want the refusal naming b's missing commits", err)
+	}
+	if after := gitAt(t, f.Env(), f.Dir, "rev-parse", "b"); after != before {
+		t.Errorf("b moved from %s to %s on a refusal", before, after)
+	}
+}
