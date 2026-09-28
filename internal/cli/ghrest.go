@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,37 +72,80 @@ func (p ghPull) labelNames() []string {
 	return names
 }
 
-// ghRateLimitWait is how long one secondary rate limit is waited out. gh api
-// surfaces no Retry-After, and GitHub asks for at least a minute without one.
+// ghRateLimitWait is how long one secondary rate limit is waited out when
+// GitHub sends no Retry-After, which it asks to be at least a minute.
 var ghRateLimitWait = time.Minute
 
 const ghRateLimitRetries = 3
 
 // ghAPI runs gh api, waiting out a secondary rate limit rather than failing on
-// it: a refusal that says rate limit while rate_limit, which no limit counts
-// against, still reports REST quota left is GitHub's request-rate limit, which
-// clears in a minute. An exhausted quota, whose reset can be an hour out, fails
-// at once.
+// it. The refused response's own X-RateLimit headers tell the limits apart:
+// gh api rate_limit misreports the quota on some tokens. A Retry-After is
+// honored as given, an exhausted quota, whose reset can be an hour out, fails
+// at once, and a refusal with quota left is the request-rate limit.
 func ghAPI(ctx context.Context, dir render.Dir, args ...string) (string, error) {
 	return ghAPIWaiting(ctx, dir, ghRateLimitWait, args...)
 }
 
 func ghAPIWaiting(ctx context.Context, dir render.Dir, wait time.Duration, args ...string) (string, error) {
 	for waits := 0; ; waits++ {
-		out, err := render.RunCLI(ctx, dir, "gh", append([]string{"api"}, args...))
-		if err == nil || waits == ghRateLimitRetries || !strings.Contains(strings.ToLower(err.Error()), "rate limit") {
+		out, code, stderr, err := render.RunCLIExitCodeEnv(ctx, dir, "gh", append([]string{"api"}, args...), []string{"GH_DEBUG=api"})
+		if err != nil || code == 0 {
 			return out, err
 		}
-		left, quotaErr := render.RunCLI(ctx, dir, "gh", []string{"api", "rate_limit", "--jq", ".resources.core.remaining"})
-		if quotaErr != nil || strings.TrimSpace(left) == "0" {
-			return out, err
+		refusal := ghDebugRefusal(stderr)
+		failure := fmt.Errorf("gh: exit status %d: %s", code, refusal)
+		delay, ok := ghRateLimitDelay(ghDebugLastResponse(stderr), wait)
+		if !ok || waits == ghRateLimitRetries || !strings.Contains(strings.ToLower(refusal), "rate limit") {
+			return "", failure
 		}
 		select {
 		case <-ctx.Done():
-			return out, errors.Join(err, ctx.Err())
-		case <-time.After(wait):
+			return "", errors.Join(failure, ctx.Err())
+		case <-time.After(delay):
 		}
 	}
+}
+
+func ghRateLimitDelay(header http.Header, wait time.Duration) (time.Duration, bool) {
+	if seconds, err := strconv.Atoi(header.Get("Retry-After")); err == nil {
+		return time.Duration(seconds) * time.Second, true
+	}
+	if header.Get("X-Ratelimit-Remaining") == "0" {
+		return 0, false
+	}
+	return wait, true
+}
+
+// ghDebugLastResponse parses the headers of the last response GH_DEBUG=api
+// logged, the refused one when gh api fails.
+func ghDebugLastResponse(stderr string) http.Header {
+	header := http.Header{}
+	for _, line := range strings.Split(stderr, "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), "< ")
+		if !ok {
+			continue
+		}
+		if strings.HasPrefix(rest, "HTTP/") {
+			header = http.Header{}
+			continue
+		}
+		if key, value, ok := strings.Cut(rest, ": "); ok {
+			header.Add(key, value)
+		}
+	}
+	return header
+}
+
+// ghDebugRefusal is gh's own error, which it prints after GH_DEBUG=api's log
+// of the last request closes.
+func ghDebugRefusal(stderr string) string {
+	if i := strings.LastIndex(stderr, "* Request took "); i >= 0 {
+		if _, after, ok := strings.Cut(stderr[i:], "\n"); ok {
+			stderr = after
+		}
+	}
+	return strings.TrimSpace(stderr)
 }
 
 func ghNewestPull(ctx context.Context, dir render.Dir, branch string) (ghPull, bool, error) {

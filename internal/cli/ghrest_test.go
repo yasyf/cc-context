@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/execstub"
 	"github.com/yasyf/cc-context/internal/render"
@@ -146,17 +147,24 @@ func TestStackQueryPRsReadsTheQueueCloseOverREST(t *testing.T) {
 	}
 }
 
-// ghRateLimitedGH installs a gh whose pull request reads answer GitHub's
-// secondary rate limit refusal the first refusals times, then an empty list,
-// while rate_limit reports remaining as the REST quota left.
+// ghRateLimitedGH installs a gh whose pull request reads answer GitHub's rate
+// limit refusal the first refusals times, then an empty list. Each refusal
+// logs, as GH_DEBUG=api does, a response whose X-RateLimit-Remaining is
+// remaining, and rate_limit answers a full quota, as it does on the token that
+// misreports it.
 func ghRateLimitedGH(t *testing.T, f *vcstest.Fixture, refusals int, remaining string) {
 	t.Helper()
 	count := filepath.Join(t.TempDir(), "count")
-	script := "#!/bin/sh\n" + vcstest.RecordArgv("gh") + fmt.Sprintf(`if [ "$2" = rate_limit ]; then echo %s; exit 0; fi
+	script := "#!/bin/sh\n" + vcstest.RecordArgv("gh") + fmt.Sprintf(`if [ "$2" = rate_limit ]; then echo 5000; exit 0; fi
+[ "$GH_DEBUG" = api ] || { echo "gh api ran without GH_DEBUG=api" >&2; exit 2; }
 n=$(cat %q 2>/dev/null || echo 0); echo $((n+1)) > %q
-if [ "$n" -lt %d ]; then echo "gh: API rate limit exceeded for user ID 1. (HTTP 403)" >&2; exit 1; fi
+if [ "$n" -lt %d ]; then
+	printf '* Request at now\n< HTTP/2.0 403 Forbidden\n< X-Ratelimit-Remaining: %s\n\n* Request took 1ms\n' >&2
+	echo "gh: API rate limit exceeded for user ID 1. (HTTP 403)" >&2
+	exit 1
+fi
 echo '[]'
-`, remaining, count, count, refusals)
+`, count, count, refusals, remaining)
 	execstub.Write(t, filepath.Join(f.ShimBin, "gh"), script)
 	prev := ghRateLimitWait
 	ghRateLimitWait = 0
@@ -178,7 +186,33 @@ func TestGHAPIFailsAnExhaustedQuotaAtOnce(t *testing.T) {
 	f := shipRepo(t)
 	ghRateLimitedGH(t, f, 1, "0")
 
-	if _, _, err := ghNewestPull(f.Context(), render.Dir(f.Dir), "feature"); err == nil || !strings.Contains(err.Error(), "rate limit") {
-		t.Fatalf("ghNewestPull error = %v, want the rate limit refusal", err)
+	_, _, err := ghNewestPull(f.Context(), render.Dir(f.Dir), "feature")
+	if err == nil || !strings.HasSuffix(err.Error(), "exit status 1: gh: API rate limit exceeded for user ID 1. (HTTP 403)") {
+		t.Fatalf("ghNewestPull error = %v, want only gh's rate limit refusal", err)
+	}
+}
+
+func TestGHRateLimitDelay(t *testing.T) {
+	t.Parallel()
+	const page = "* Request to https://api.github.com/x?page=1\n< HTTP/2.0 200 OK\n< X-Ratelimit-Remaining: 0\n\n[]\n* Request took 9ms\n"
+	tests := []struct {
+		name   string
+		stderr string
+		delay  time.Duration
+		ok     bool
+	}{
+		{"retry-after", page + "< HTTP/2.0 403 Forbidden\n< Retry-After: 42\n< X-Ratelimit-Remaining: 4146\n", 42 * time.Second, true},
+		{"quota left", page + "< HTTP/2.0 403 Forbidden\n< X-Ratelimit-Remaining: 4146\n", time.Minute, true},
+		{"quota exhausted", "< HTTP/2.0 403 Forbidden\n< X-Ratelimit-Remaining: 0\n", 0, false},
+		{"no response logged", "gh: API rate limit exceeded", time.Minute, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			delay, ok := ghRateLimitDelay(ghDebugLastResponse(tt.stderr), time.Minute)
+			if delay != tt.delay || ok != tt.ok {
+				t.Errorf("ghRateLimitDelay = %v, %v; want %v, %v", delay, ok, tt.delay, tt.ok)
+			}
+		})
 	}
 }

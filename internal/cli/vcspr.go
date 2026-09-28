@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -205,7 +206,9 @@ queue dropped means nothing.
 Graphite's record lags an eviction, so queued also needs the pull request's
 merge activity comment to agree: an eviction or dequeue after its last
 admission settles it. An evicted pull request names the queue's reason and
-time, and reads conflicting when GitHub reports its branch dirty.
+time, and reads conflicting when GitHub reports its branch dirty. The comment
+is read only for a pull request Graphite holds in the queue or one carrying a
+merge label, so the rest cost no GitHub request of their own.
 
 Landed means the squash commit Graphite recorded is reachable from the base
 branch on GitHub, or from the default branch once that base is deleted, as a
@@ -295,11 +298,18 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int) ([]prQueueR
 			return nil, err
 		}
 	}
+	pending := func(number int) bool { return landedOn[number] == "" && byNumber[number].State == gtapi.PROpen }
+	var labelled map[int]bool
+	if slices.ContainsFunc(numbers, func(number int) bool { return pending(number) && !prInGraphiteMq(byNumber[number]) }) {
+		if labelled, err = prQueueLabelled(ctx, repo); err != nil {
+			return nil, err
+		}
+	}
 	reports := make([]prQueueReport, 0, len(numbers))
 	for _, number := range numbers {
 		info := byNumber[number]
 		var activity string
-		if landedOn[number] == "" && info.State == gtapi.PROpen {
+		if pending(number) && (prInGraphiteMq(info) || labelled[number]) {
 			activity, err = prMergeActivity(ctx, render.Ambient, "repos/"+repo, number, prStatusRateLimitWait)
 			if err != nil {
 				return nil, fmt.Errorf("pr status: %w", err)
@@ -314,6 +324,31 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int) ([]prQueueR
 		reports = append(reports, r)
 	}
 	return reports, nil
+}
+
+func prInGraphiteMq(info gtapi.PullRequestInfo) bool {
+	return info.MergeQueueStatus != nil && info.MergeQueueStatus.IsInGraphiteMq
+}
+
+// prQueueLabelled lists the open pull requests carrying a merge label, one
+// listing per label instead of one read per pull request.
+func prQueueLabelled(ctx context.Context, repo string) (map[int]bool, error) {
+	labelled := map[int]bool{}
+	for _, label := range []string{mqLabel, mqLabelFast} {
+		out, err := ghAPIWaiting(ctx, render.Ambient, prStatusRateLimitWait, "--paginate",
+			fmt.Sprintf("repos/%s/issues?state=open&labels=%s&per_page=100", repo, label), "--jq", ".[].number")
+		if err != nil {
+			return nil, fmt.Errorf("pr status: gh api: list the %s label: %w", label, err)
+		}
+		for _, field := range strings.Fields(out) {
+			n, err := strconv.Atoi(field)
+			if err != nil {
+				return nil, fmt.Errorf("pr status: gh api: list the %s label: %q is not a number", label, field)
+			}
+			labelled[n] = true
+		}
+	}
+	return labelled, nil
 }
 
 func prConflicting(ctx context.Context, repo string, number int) (bool, error) {
@@ -351,7 +386,7 @@ func classifyPRQueue(info gtapi.PullRequestInfo, landedOn, activity string) prQu
 		r.Queue = prQueueEvicted
 		r.Evicted = exit.Reason
 		r.EvictedAt = exit.At
-	case !out && info.MergeQueueStatus != nil && info.MergeQueueStatus.IsInGraphiteMq:
+	case !out && prInGraphiteMq(info):
 		r.Queue = prQueueQueued
 		r.Enqueued = info.MergeQueueStatus.EnqueuedCommit
 	}
