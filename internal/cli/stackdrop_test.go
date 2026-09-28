@@ -401,6 +401,30 @@ func TestStackDropReplaysABranchReparentedPastTheDroppedOne(t *testing.T) {
 // TestStackDropRefusesTheBranchAWorkingCopyHolds pins the one refusal that
 // comes before any lookup: git deletes no branch a checkout has out, so a drop
 // that tried would fail after retargeting every child.
+func TestStackDropScansNoBranchAnotherLaneDeletedAfterTheRead(t *testing.T) {
+	f := dropStack(t, "base", "top")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "iam-structural/derive-grants", "main")
+	stackCommit(t, f, "grants.txt")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "main", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	commonDir, err := gtCommonDir(t.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatalf("gt common dir: %v", err)
+	}
+	state, err := gtStateAt(t.Context(), commonDir, "test")
+	if err != nil {
+		t.Fatalf("gt state: %v", err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-qD", "iam-structural/derive-grants")
+
+	if carriers, err := dropCarriers(t.Context(), render.Dir(f.Dir), state, "top"); err != nil || len(carriers) != 0 {
+		t.Errorf("carriers of top = %v, %v, want none", carriers, err)
+	}
+	if err := dropStrandCheck(t.Context(), render.Dir(f.Dir), state, "top", "base"); err != nil {
+		t.Errorf("strand check of top: %v", err)
+	}
+}
+
 func TestStackDropRefusesTheBranchAWorkingCopyHolds(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base", "mid"))
 
