@@ -4,6 +4,7 @@ package render
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -142,5 +143,42 @@ func TestRunCLIProbeDirKillsDescendants(t *testing.T) {
 	case <-probe:
 	case <-time.After(10 * time.Second):
 		t.Errorf("the probe never returned; a surviving grandchild still holds the output pipe")
+	}
+}
+
+func TestWithProgressKillsOnlyAStalledChild(t *testing.T) {
+	restore := runTimeout
+	runTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { runTimeout = restore })
+	var ticks int
+	progressing := func() string { ticks++; return strconv.Itoa(ticks) }
+	stalled := func() string { return "still" }
+
+	if _, err := RunCLI(t.Context(), Ambient, "/bin/sh", []string{"-c", "sleep 1; printf done"}); err == nil || !strings.Contains(err.Error(), "did not finish within 300ms") {
+		t.Fatalf("unguarded RunCLI = %v, want the fixed guard to kill it", err)
+	}
+	out, err := RunCLI(WithProgress(t.Context(), progressing, 300*time.Millisecond), Ambient, "/bin/sh", []string{"-c", "sleep 1; printf done"})
+	if err != nil || out != "done" {
+		t.Fatalf("progressing RunCLI = %q, %v, want it to outlive the fixed guard", out, err)
+	}
+	start := time.Now()
+	_, err = RunCLI(WithProgress(t.Context(), stalled, 300*time.Millisecond), Ambient, "/bin/sh", []string{"-c", "sleep 30"})
+	if !errors.Is(err, ErrStalled) || !strings.Contains(err.Error(), "made no progress for 300ms") {
+		t.Fatalf("stalled RunCLI = %v, want the no-progress kill", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("stalled child ran %s past its 300ms stall", elapsed)
+	}
+}
+
+func TestWithProgressTerminatesSoTheChildReleasesItsLock(t *testing.T) {
+	lock := filepath.Join(t.TempDir(), "index.lock")
+	script := `trap 'rm -f "$1"; exit 143' TERM; touch "$1"; while :; do sleep 0.05; done`
+	ctx := WithProgress(t.Context(), func() string { return "still" }, 300*time.Millisecond)
+	if _, err := RunCLI(ctx, Ambient, "/bin/sh", []string{"-c", script, "sh", lock}); !errors.Is(err, ErrStalled) {
+		t.Fatalf("RunCLI = %v, want the no-progress kill", err)
+	}
+	if _, err := os.Stat(lock); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("lock %s survived the kill (%v); the child got no SIGTERM to release it", lock, err)
 	}
 }

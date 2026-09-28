@@ -37,6 +37,8 @@ const (
 	stackAbandonedAfter = 2 * time.Hour
 )
 
+var stackRebaseStall = 10 * time.Minute
+
 var stackGitRebaseArgs = []string{"-c", "rerere.enabled=false", "-c", "rebase.updateRefs=false", "-c", "core.editor=true", "-c", "core.hooksPath=/dev/null"}
 
 type stackPR struct {
@@ -199,7 +201,9 @@ branches above it, and is named.
 A conflict stops the run before any ref moves: the rebase is left in progress
 in a workspace of its own, with both sides' intent written out, and
 ccx vcs stack continue resumes the rest of the stack from there
-(ccx vcs stack abort drops it). rerere is off for every rebase it drives.
+(ccx vcs stack abort drops it). rerere is off for every rebase it drives,
+and a rebase is killed only once it has made no progress for ten minutes,
+with the index.lock it held removed.
 A stopped run whose branches have moved since, or that has waited two hours,
 is reclaimed by the next rebase or ship that overlaps it, which removes its
 workspace and says so.
@@ -1877,7 +1881,7 @@ func stackOpenConflict(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 		return fmt.Errorf("stack rebase: git worktree add %s: %w", ws, err)
 	}
 	argv := append(slices.Clone(stackGitRebaseArgs), "rebase", "--onto", b.NewBase, b.OldBase)
-	_, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(ws), "git", argv)
+	code, stderr, err := stackRunRebase(ctx, render.Dir(ws), argv)
 	if err != nil {
 		return fmt.Errorf("stack rebase: git rebase in %s: %w", ws, err)
 	}
@@ -1947,7 +1951,7 @@ func stackAdvance(ctx context.Context, cmd *cobra.Command, run *stackRebaseRun, 
 			}
 		}
 		argv := append(slices.Clone(stackGitRebaseArgs), "rebase", "--continue")
-		_, code, stderr, err := render.RunCLIExitCode(ctx, ws, "git", argv)
+		code, stderr, err := stackRunRebase(ctx, ws, argv)
 		if err != nil {
 			return fmt.Errorf("stack rebase: git rebase --continue in %s: %w", ws, err)
 		}
@@ -1976,6 +1980,41 @@ func stackStopped(ctx context.Context, run *stackRebaseRun, b *stackRebaseBranch
 		return err
 	}
 	return errors.New(brief)
+}
+
+func stackRunRebase(ctx context.Context, ws render.Dir, argv []string) (int, string, error) {
+	out, err := render.RunCLI(ctx, ws, "git", []string{"rev-parse", "--absolute-git-dir"})
+	if err != nil {
+		return 0, "", fmt.Errorf("git rev-parse --absolute-git-dir: %w", err)
+	}
+	gitDir := strings.TrimSpace(out)
+	_, code, stderr, err := render.RunCLIExitCode(render.WithProgress(ctx, stackRebaseProgress(gitDir), stackRebaseStall), ws, "git", argv)
+	if !errors.Is(err, render.ErrStalled) {
+		return code, stderr, err
+	}
+	lock := filepath.Join(gitDir, "index.lock")
+	switch rmErr := os.Remove(lock); {
+	case rmErr == nil:
+		err = fmt.Errorf("%w — removed the index.lock it left at %s", err, lock)
+	case !errors.Is(rmErr, fs.ErrNotExist):
+		err = errors.Join(err, rmErr)
+	}
+	return code, stderr, err
+}
+
+func stackRebaseProgress(gitDir string) func() string {
+	return func() string {
+		var state strings.Builder
+		for _, name := range []string{"rebase-merge/msgnum", "rebase-merge/done", "HEAD", "index"} {
+			info, err := os.Stat(filepath.Join(gitDir, name))
+			if err != nil {
+				fmt.Fprintf(&state, "%s absent;", name)
+				continue
+			}
+			fmt.Fprintf(&state, "%s %d %d;", name, info.Size(), info.ModTime().UnixNano())
+		}
+		return state.String()
+	}
 }
 
 func stackUnmerged(ctx context.Context, ws string) ([]string, error) {
@@ -2086,7 +2125,7 @@ func stackContinueStranded(ctx context.Context, cmd *cobra.Command) error {
 		return fmt.Errorf("stack continue: %s still has unresolved files: %s — resolve them, git add them, then run ccx vcs stack continue again", ws, strings.Join(unmerged, ", "))
 	}
 	argv := append(slices.Clone(stackGitRebaseArgs), "rebase", "--continue")
-	_, code, stderr, err := render.RunCLIExitCode(ctx, ws, "git", argv)
+	code, stderr, err := stackRunRebase(ctx, ws, argv)
 	if err != nil {
 		return fmt.Errorf("stack continue: git rebase --continue in %s: %w", ws, err)
 	}

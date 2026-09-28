@@ -1471,3 +1471,49 @@ func TestStackRebaseNamesTheRemotesRefusal(t *testing.T) {
 		t.Errorf("err = %q, want the transfer progress dropped", msg)
 	}
 }
+
+func stackRunWithSlowRebase(t *testing.T, f *vcstest.Fixture, onRebase string) (string, error) {
+	t.Helper()
+	restore := stackRebaseStall
+	stackRebaseStall = time.Second
+	t.Cleanup(func() { stackRebaseStall = restore })
+	git := render.LookPath(f.Context(), "git")
+	bin := t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\ncase \" $* \" in *\" rebase \"*) gd=$(%q rev-parse --absolute-git-dir); %s ;; esac\nexec %q \"$@\"\n", git, onRebase, git)
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil { //nolint:gosec // an executable test shim
+		t.Fatal(err)
+	}
+	cmd := newStackCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"rebase", "--no-push"})
+	err := cmd.ExecuteContext(render.WithEnv(f.Context(), "PATH="+bin+string(os.PathListSeparator)+render.Getenv(f.Context(), "PATH")))
+	return out.String(), err
+}
+
+func TestStackRebaseLetsASlowRebaseFinishWhileItProgresses(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	stubOpenPRs(t, nil, "base", "feature")
+	stackConflicting(t, f)
+
+	_, err := stackRunWithSlowRebase(t, f, `for i in 1 2 3 4 5 6; do sleep 0.3; touch "$gd/index"; done`)
+	if err == nil || !strings.Contains(err.Error(), "does not rebase onto base cleanly") {
+		t.Fatalf("stack rebase = %v, want the slow rebase to reach its conflict", err)
+	}
+}
+
+func TestStackRebaseKillsAStalledRebaseAndRemovesItsIndexLock(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	stubOpenPRs(t, nil, "base", "feature")
+	stackConflicting(t, f)
+
+	_, err := stackRunWithSlowRebase(t, f, `touch "$gd/index.lock"; trap '' TERM; sleep 30`)
+	if err == nil || !strings.Contains(err.Error(), "made no progress for 1s") || !strings.Contains(err.Error(), "removed the index.lock it left at ") {
+		t.Fatalf("stack rebase = %v, want the stalled rebase killed and its index.lock removed", err)
+	}
+	if locks, _ := filepath.Glob(filepath.Join(f.Dir, ".git", "worktrees", "*", "index.lock")); len(locks) != 0 {
+		t.Errorf("index.lock left behind: %v", locks)
+	}
+}

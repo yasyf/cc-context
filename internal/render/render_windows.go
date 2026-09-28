@@ -14,3 +14,5 @@ func configureProbeCommand(cmd *exec.Cmd) {
 func detach(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
 }
+
+func terminateOnCancel(*exec.Cmd) {}
