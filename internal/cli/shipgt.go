@@ -1315,6 +1315,11 @@ type gtSubmitBranch struct {
 	// leaseSet pins lease even when empty, where an empty lease means the
 	// branch must not exist on the remote yet.
 	leaseSet bool
+	// parkedOn is the graphite-base branch Graphite's pre-submit moved the pull
+	// request onto. Graphite retargets it back to base only when that branch
+	// already sits at baseSha, so the push moves it there under parkedLease.
+	parkedOn    string
+	parkedLease string
 }
 
 // gtSubmitStack drives one submit over Graphite's API: drop the branches the
@@ -1420,6 +1425,9 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		if lease, ok := s.leases[b.name]; ok {
 			plan[i].lease, plan[i].leaseSet = lease, true
 		}
+	}
+	if err := gtParkedBases(ctx, l.dir(), plan, known); err != nil {
+		return nil, nil, err
 	}
 	submit, unchanged := gtDropUnchanged(plan, last, known, tip, s.draft)
 	if err := gtAnnounceUnchanged(errW, s.prefix, unchanged); err != nil {
@@ -1532,18 +1540,49 @@ func gtTipOnlyPlan(plan []gtSubmitBranch, run *stackRebaseRun) ([]gtSubmitBranch
 	return nil, fmt.Errorf("ship: --tip-only child %s is absent from the publication plan", run.Tip)
 }
 
+// gtDropUnchanged leaves out a branch whose open pull request already carries
+// this head and base, unless its parent is resubmitted: Graphite's pre-submit
+// moves every open child of a submitted branch that the submit leaves out onto
+// a graphite-base branch.
 func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, known map[string]gtapi.PullRequestInfo, tip string, draft bool) (submit []gtSubmitBranch, unchanged []string) {
+	resubmitted := map[string]bool{}
 	for _, b := range plan {
 		now := gtmeta.Version{HeadSha: b.head, BaseSha: b.baseSha, BaseName: b.base}
 		pr, open := known[b.name]
 		newest := pr.Newest()
-		if b.name != tip && b.pr != 0 && open && pr.IsDraft == draft && last[b.name] == now && pr.BaseRefName == b.base && newest.HeadSha == b.head && newest.BaseSha == b.baseSha {
+		if b.name != tip && !resubmitted[b.base] && b.pr != 0 && open && pr.IsDraft == draft && last[b.name] == now && pr.BaseRefName == b.base && newest.HeadSha == b.head && newest.BaseSha == b.baseSha {
 			unchanged = append(unchanged, b.name)
 			continue
 		}
+		resubmitted[b.name] = true
 		submit = append(submit, b)
 	}
 	return submit, unchanged
+}
+
+// gtParkedBases marks each branch whose pull request Graphite parked on a
+// graphite-base branch, leased on where that branch stands on the remote now.
+func gtParkedBases(ctx context.Context, dir render.Dir, plan []gtSubmitBranch, known map[string]gtapi.PullRequestInfo) error {
+	var parked []string
+	for i, b := range plan {
+		if pr := known[b.name]; pr.IsBaseRefGraphiteBase {
+			plan[i].parkedOn = pr.BaseRefName
+			parked = append(parked, pr.BaseRefName)
+		}
+	}
+	if len(parked) == 0 {
+		return nil
+	}
+	heads, err := stackRemoteHeads(ctx, dir, "origin", parked)
+	if err != nil {
+		return err
+	}
+	for i, b := range plan {
+		if b.parkedOn != "" {
+			plan[i].parkedLease = heads[b.parkedOn]
+		}
+	}
+	return nil
 }
 
 // gtAnnounceUnchanged names the branches a submit left alone because their pull
@@ -1871,10 +1910,16 @@ func gtPushArgv(s gtSubmit, plan []gtSubmitBranch) []string {
 			lease += "=refs/heads/" + b.name + ":" + b.lease
 		}
 		argv = append(argv, lease)
+		if b.parkedOn != "" {
+			argv = append(argv, "--force-with-lease=refs/heads/"+b.parkedOn+":"+b.parkedLease)
+		}
 	}
 	argv = append(argv, "--progress")
 	for _, b := range plan {
 		argv = append(argv, b.head+":refs/heads/"+b.name)
+		if b.parkedOn != "" {
+			argv = append(argv, b.baseSha+":refs/heads/"+b.parkedOn)
+		}
 	}
 	if s.noVerify {
 		argv = append(argv, "--no-verify")
