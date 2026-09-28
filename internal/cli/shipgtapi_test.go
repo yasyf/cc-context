@@ -278,7 +278,7 @@ func (s *gtAPIStub) parkChildren(branches []gtapi.PreSubmitBranch) []int {
 // branches it parks pull requests on.
 func (s *gtAPIStub) parkOn(f *vcstest.Fixture) {
 	s.remote = func(args ...string) string {
-		cmd := exec.Command("git", args...)
+		cmd := exec.Command("git", args...) //nolint:gosec // args are the stub's own literal git verbs
 		cmd.Dir = f.RemoteDir
 		out, err := cmd.Output()
 		if err != nil {
