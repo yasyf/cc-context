@@ -138,7 +138,9 @@ before any branch moves.
 
 A branch another working copy has checked out is that lane's, so it is skipped
 and named with the working copy holding it, along with every branch stacked
-above it; --include submits it anyway.
+above it; --include submits it anyway. One whose pull request landed is no
+lane's any more: it is dropped like any landed branch, and the branches on it
+move onto trunk.
 
 Above the branch checked out here, a branch belongs to another lane when the
 rest of the record contradicts its gt parent: its open pull request is based on
@@ -336,7 +338,11 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string) error {
 	if err != nil {
 		return fmt.Errorf("stack submit: %w", err)
 	}
-	chain, skipped, err := stackOwnBranches(stack, stackState, holders, l.checkout.Root, include)
+	landed, err := stackLandedElsewhere(ctx, l, stack, stackState, holders, o.landed)
+	if err != nil {
+		return err
+	}
+	chain, skipped, err := stackOwnBranches(stack, stackState, holders, l.checkout.Root, append(slices.Clone(include), landed...))
 	if err != nil {
 		return err
 	}
@@ -389,6 +395,29 @@ func stackSubmitIntent(cmd *cobra.Command, l lane, o shipOpts, stack []string) (
 	}
 	intent.NoWatch = true
 	return intent, cleanup, nil
+}
+
+func stackLandedElsewhere(ctx context.Context, l lane, stack []string, state gtState, holders map[string]string, declared []string) ([]string, error) {
+	var held []string
+	for _, branch := range stack {
+		if holder := holders[branch]; holder != "" && holder != l.checkout.Root {
+			held = append(held, branch)
+		}
+	}
+	if len(held) == 0 {
+		return nil, nil
+	}
+	trunk, err := gtTrunkBranch("stack submit", state)
+	if err != nil {
+		return nil, err
+	}
+	prs, err := stackPRLookup(ctx, l.dir(), trunk, held)
+	if err != nil {
+		return nil, fmt.Errorf("stack submit: read the pull requests of the branches other working copies hold: %w", err)
+	}
+	return slices.DeleteFunc(held, func(branch string) bool {
+		return !slices.Contains(declared, branch) && (prs[branch] == nil || !prs[branch].Landed)
+	}), nil
 }
 
 type stackSkip struct {

@@ -263,3 +263,29 @@ func TestStackRebaseRefusesTrunkAsAChild(t *testing.T) {
 		t.Fatalf("stack rebase --parent main=a = %v, want trunk refused as a child", err)
 	}
 }
+
+func TestStackSubmitDropsALandedParentAnotherWorktreeHolds(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	gtLandedStack(t, f)
+	stubStackPRs(t, map[string]*stackPR{
+		"a": {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "a")},
+		"b": {Number: 42, Title: "b", State: "OPEN", Base: "a"},
+	})
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", f.WorktreePath("held"), "a")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	shipResetLog(t, f)
+
+	out, errOut, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v\n%s", err, errOut)
+	}
+	if strings.Contains(errOut, "another lane owns them") {
+		t.Errorf("stderr = %q, want the landed a dropped rather than skipped as another lane's", errOut)
+	}
+	if !strings.Contains(out, "a · drop (#41 landed)") {
+		t.Errorf("report = %q, want the landed a dropped", out)
+	}
+	stackAssertOnTrunk(t, f, api, "b")
+}
