@@ -365,7 +365,7 @@ func stackFinishPublication(ctx context.Context, cmd *cobra.Command, l lane, com
 	if run.deferPush {
 		return nil
 	}
-	state, err := gtStateAt(ctx, commonDir, stackRebasePrefix)
+	state, err := gtStateAtFocused(ctx, commonDir, stackRebasePrefix, run.Tip, "")
 	if err != nil {
 		return err
 	}

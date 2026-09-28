@@ -2,6 +2,7 @@ package cli
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -48,5 +49,26 @@ func TestShipLeavesAnOrphanWhoseDeletedParentNeverLanded(t *testing.T) {
 	}
 	if parent := pruneParentOf(t, filepath.Join(f.Dir, ".git"), "b"); parent != "a" {
 		t.Errorf("gt parent of b = %s, want a left as it was", parent)
+	}
+}
+
+func TestShipSkipsUnrelatedDeletedParents(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "a", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-D", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	shipGTUntracked(t, f, "independent")
+	shipGTReady(t, f)
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
+		t.Fatalf("ship = %v (stderr=%q)", err, errStr)
+	}
+	for _, invocation := range vcstest.Invocations(t, f.ArgvLog) {
+		if slices.Contains(invocation, "merge-tree") {
+			t.Fatalf("ship examined an unrelated orphan: %v", invocation)
+		}
+	}
+	if parent := pruneParentOf(t, filepath.Join(f.Dir, ".git"), "b"); parent != "a" {
+		t.Errorf("gt parent of b = %s, want a left untouched", parent)
 	}
 }

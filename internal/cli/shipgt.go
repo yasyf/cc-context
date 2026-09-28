@@ -109,9 +109,19 @@ func gtStateQuery(ctx context.Context, dir render.Dir, prefix string) (gtState, 
 }
 
 func gtStateAt(ctx context.Context, commonDir, prefix string) (gtState, error) {
+	return gtStateAtFocused(ctx, commonDir, prefix, "", "")
+}
+
+func gtStateAtFocused(ctx context.Context, commonDir, prefix, branch, parent string) (gtState, error) {
 	tracked, orphans, err := gtmeta.ReadOriginOrphans(ctx, commonDir)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", prefix, err)
+	}
+	if branch != "" {
+		orphans, err = gtRelatedOrphans(ctx, commonDir, prefix, tracked, orphans, branch, parent)
+		if err != nil {
+			return nil, err
+		}
 	}
 	adopted, err := gtAdoptOrphans(ctx, commonDir, prefix, tracked, orphans)
 	if err != nil {
@@ -131,6 +141,45 @@ func gtStateAt(ctx context.Context, commonDir, prefix string) (gtState, error) {
 		state[branch] = entry
 	}
 	return state, nil
+}
+
+func gtRelatedOrphans(ctx context.Context, commonDir, prefix string, tracked gtmeta.State, orphans []gtmeta.Orphan, branch, parent string) ([]gtmeta.Orphan, error) {
+	byBranch := make(map[string]gtmeta.Orphan, len(orphans))
+	for _, orphan := range orphans {
+		byBranch[orphan.Branch] = orphan
+	}
+	seeds := []string{branch, parent}
+	if _, known := tracked[branch]; !known && byBranch[branch].Branch == "" && parent == "" && len(orphans) > 0 {
+		var refs strings.Builder
+		for _, orphan := range orphans {
+			refs.WriteString(gtRestackRef(orphan.Branch) + "\n")
+		}
+		out, err := render.RunCLIStdin(ctx, render.Dir(commonDir), "git", []string{"for-each-ref", "--merged=" + gtRestackRef(branch), "--format=%(refname:lstrip=2)", "--stdin"}, []byte(refs.String()))
+		if err != nil {
+			return nil, fmt.Errorf("%s: list orphan ancestors of %s: %w", prefix, branch, err)
+		}
+		seeds = append(seeds, strings.Fields(out)...)
+	}
+	selected := make(map[string]bool)
+	for _, seed := range seeds {
+		for name := seed; name != "" && !selected[name]; {
+			selected[name] = true
+			if orphan, ok := byBranch[name]; ok {
+				name = orphan.Parent
+			} else if state, ok := tracked[name]; ok && len(state.Parents) > 0 {
+				name = state.Parents[0].Ref
+			} else {
+				break
+			}
+		}
+	}
+	relevant := make([]gtmeta.Orphan, 0, len(selected))
+	for _, orphan := range orphans {
+		if selected[orphan.Branch] {
+			relevant = append(relevant, orphan)
+		}
+	}
+	return relevant, nil
 }
 
 // gtAdoptOrphans re-records onto trunk each branch whose parent's ref was
@@ -212,6 +261,8 @@ type gtCache struct {
 	commonDir string
 	state     gtState
 	restack   *stackRebaseRun
+	focus     string
+	parent    string
 }
 
 func newGTCache(dir render.Dir, prefix string) *gtCache {
@@ -242,7 +293,7 @@ func (c *gtCache) at(ctx context.Context) (gtState, error) {
 	if err != nil {
 		return nil, err
 	}
-	state, err := gtStateAt(ctx, commonDir, c.prefix)
+	state, err := gtStateAtFocused(ctx, commonDir, c.prefix, c.focus, c.parent)
 	if err != nil {
 		return nil, err
 	}
@@ -328,6 +379,7 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 	if err != nil {
 		return branchPlan{}, "", err
 	}
+	c.focus, c.parent = branch, o.parent
 	state, err := c.at(ctx)
 	if err != nil {
 		return branchPlan{}, "", err
@@ -1233,7 +1285,7 @@ func gtModifyRestack(ctx context.Context, l lane, o shipOpts, branch string) err
 	if err != nil {
 		return err
 	}
-	state, err := gtStateAt(ctx, commonDir, "ship")
+	state, err := gtStateAtFocused(ctx, commonDir, "ship", branch, "")
 	if err != nil {
 		return err
 	}
