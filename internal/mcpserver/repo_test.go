@@ -77,6 +77,17 @@ func requireRipgrep(t *testing.T) {
 	t.Skip("ripgrep not installed")
 }
 
+// TestPinCallKeepsTheRootTheSessionDeclares proves a tool call resolves against
+// the root its own session context declares. A snapshot taken off the
+// process-global pin discards that declaration, so every call answers from
+// whatever the last client to connect pinned.
+func TestPinCallKeepsTheRootTheSessionDeclares(t *testing.T) {
+	declared := t.TempDir()
+	if got := workspace.DeclaredFrom(pinCall(workspace.WithRoot(t.Context(), declared))); got != declared {
+		t.Errorf("pinCall root = %q, want the root the session context declares %q", got, declared)
+	}
+}
+
 func TestRepoSchemaSurface(t *testing.T) {
 	cs := connectTestServer(t)
 	res, err := cs.ListTools(context.Background(), nil)

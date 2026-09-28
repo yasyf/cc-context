@@ -588,9 +588,10 @@ func withNotes(text string, notes []string) string {
 // pinCall snapshots the declared root into ctx for the whole of one tool call.
 // Calls run concurrently against one process-global pin, so an op and the root
 // header naming its answer both read this one snapshot rather than re-reading a
-// pin another call can move mid-flight.
+// pin another call can move mid-flight. A root the session's own context already
+// declares is that snapshot, so the pin answers only for a session carrying none.
 func pinCall(ctx context.Context) context.Context {
-	return workspace.WithRoot(ctx, workspace.Declared())
+	return workspace.WithRoot(ctx, workspace.DeclaredFrom(ctx))
 }
 
 // repoScoped is a tool input that names the repo root its call answers against.
