@@ -171,7 +171,11 @@ func stackCheckSources(ctx context.Context, dir render.Dir, run *stackRebaseRun)
 	var tx strings.Builder
 	tx.WriteString("start\n")
 	for _, b := range run.Branches {
-		fmt.Fprintf(&tx, "verify %s %s\n", gtRestackRef(b.Name), b.Local)
+		source := b.Local
+		if b.LocalOnly && run.LocalApplied {
+			source = b.NewHead
+		}
+		fmt.Fprintf(&tx, "verify %s %s\n", gtRestackRef(b.Name), source)
 	}
 	tx.WriteString("commit\n")
 	if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "--stdin"}, []byte(tx.String())); err != nil {
@@ -373,9 +377,10 @@ func stackFinishPublication(ctx context.Context, cmd *cobra.Command, l lane, com
 			live = append(live, branch.Name)
 		}
 	}
-	local, err := stackLocalOnlyMoves(ctx, l, run)
-	if err != nil {
-		return err
+	if !run.Pushed && !run.LocalApplied {
+		if err := stackCheckLocalOnly(ctx, l, run); err != nil {
+			return err
+		}
 	}
 	if !run.Publishing {
 		if landed, err := stackLandedSince(ctx, l.dir(), run.Trunk, live); err != nil {
@@ -407,79 +412,98 @@ func stackFinishPublication(ctx context.Context, cmd *cobra.Command, l lane, com
 	if err := stackVerdict(ctx, cmd, l.dir(), run, live); err != nil {
 		return err
 	}
-	if err := stackMoveLocalOnly(ctx, cmd, l, commonDir, run, local); err != nil {
+	if err := stackMoveLocalOnly(ctx, cmd, l, commonDir, run); err != nil {
 		return err
 	}
 	return stackCompletePublication(ctx, l.dir(), commonDir, run)
 }
 
-func stackLocalOnlyMoves(ctx context.Context, l lane, run *stackRebaseRun) ([]restackMove, error) {
+func stackLocalOnlyMoves(run *stackRebaseRun) []restackMove {
 	var moves []restackMove
-	var movers []string
 	for _, b := range run.Branches {
 		if b.LocalOnly && b.NewHead != b.Local {
 			moves = append(moves, restackMove{branch: b.Name, head: b.NewHead, parent: b.NewBase, previous: b.Local})
-			movers = append(movers, b.Name)
 		}
 	}
-	if len(moves) == 0 || run.Pushed {
-		return moves, nil
-	}
-	holders, err := vcs.BranchHolders(ctx, l.checkout)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", stackRebasePrefix, err)
-	}
-	if err := stackCheckHolders(ctx, run.Origin, movers, holders); err != nil {
-		return nil, err
-	}
-	if err := gtRestackRefuseClobbers(ctx, stackRebasePrefix, holders, moves); err != nil {
-		return nil, err
-	}
-	return moves, nil
+	return moves
 }
 
-func stackMoveLocalOnly(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun, moves []restackMove) error {
-	reparent := map[string]string{}
-	revisions := map[string]string{}
-	var tx strings.Builder
-	tx.WriteString("start\n")
-	for _, b := range run.Branches {
-		if !b.LocalOnly {
-			continue
-		}
-		revisions[b.Name] = b.NewBase
-		if b.Parent != b.WasParent {
-			reparent[b.Name] = b.Parent
-		}
-		at, err := stackRevParse(ctx, l.dir(), gtRestackRef(b.Name))
-		if err != nil {
-			return err
-		}
-		if at == b.NewHead {
-			fmt.Fprintf(&tx, "verify %s %s\n", gtRestackRef(b.Name), b.NewHead)
-		} else {
-			fmt.Fprintf(&tx, "update %s %s %s\n", gtRestackRef(b.Name), b.NewHead, b.Local)
-		}
-	}
-	if len(revisions) == 0 {
+func stackCheckLocalOnly(ctx context.Context, l lane, run *stackRebaseRun) error {
+	moves := stackLocalOnlyMoves(run)
+	if len(moves) == 0 {
 		return nil
 	}
-	tx.WriteString("commit\n")
-	if _, err := render.RunCLIStdin(ctx, l.dir(), "git", []string{"update-ref", "--stdin"}, []byte(tx.String())); err != nil {
-		return fmt.Errorf("%s: the stack is published, but a branch without a pull request moved locally since the run started, so it was left where it is: %w", stackRebasePrefix, err)
+	movers := make([]string, len(moves))
+	for i, m := range moves {
+		movers[i] = m.branch
 	}
 	holders, err := vcs.BranchHolders(ctx, l.checkout)
 	if err != nil {
 		return fmt.Errorf("%s: %w", stackRebasePrefix, err)
 	}
-	if _, err := gtRestackAlign(ctx, stackRebasePrefix, holders, moves); err != nil {
+	if err := stackCheckHolders(ctx, run.Origin, movers, holders); err != nil {
 		return err
+	}
+	return gtRestackRefuseClobbers(ctx, stackRebasePrefix, holders, moves)
+}
+
+func stackMoveLocalOnly(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun) error {
+	reparent := map[string]string{}
+	revisions := map[string]string{}
+	for _, b := range run.Branches {
+		if b.LocalOnly {
+			revisions[b.Name] = b.NewBase
+			if b.Parent != b.WasParent {
+				reparent[b.Name] = b.Parent
+			}
+		}
+	}
+	if len(revisions) == 0 {
+		return nil
+	}
+	if !run.LocalApplied {
+		if err := stackCheckLocalOnly(ctx, l, run); err != nil {
+			return err
+		}
+		run.LocalApplied = true
+		if err := stackSaveRun(run); err != nil {
+			return err
+		}
+	}
+	var tx strings.Builder
+	tx.WriteString("start\n")
+	for _, m := range stackLocalOnlyMoves(run) {
+		at, err := stackRevParse(ctx, l.dir(), gtRestackRef(m.branch))
+		if err != nil {
+			return err
+		}
+		if at == m.head {
+			fmt.Fprintf(&tx, "verify %s %s\n", gtRestackRef(m.branch), m.head)
+		} else {
+			fmt.Fprintf(&tx, "update %s %s %s\n", gtRestackRef(m.branch), m.head, m.previous)
+		}
+	}
+	tx.WriteString("commit\n")
+	if _, err := render.RunCLIStdin(ctx, l.dir(), "git", []string{"update-ref", "--stdin"}, []byte(tx.String())); err != nil {
+		return fmt.Errorf("%s: the stack is published, but a branch without a pull request moved locally since the run started, so it was left where it is — ccx vcs stack continue retries it: %w", stackRebasePrefix, err)
+	}
+	if !run.LocalAligned {
+		holders, err := vcs.BranchHolders(ctx, l.checkout)
+		if err != nil {
+			return fmt.Errorf("%s: %w", stackRebasePrefix, err)
+		}
+		if _, err := gtRestackAlign(ctx, stackRebasePrefix, holders, stackLocalOnlyMoves(run)); err != nil {
+			return err
+		}
+		run.LocalAligned = true
+		if err := stackSaveRun(run); err != nil {
+			return err
+		}
 	}
 	if err := errors.Join(gtmeta.Reparent(ctx, commonDir, reparent), gtmeta.RecordRestacked(ctx, commonDir, revisions)); err != nil {
 		return fmt.Errorf("%s: the local branches are rebased, but recording them in gt failed — fix the cause and run ccx vcs stack continue: %w", stackRebasePrefix, err)
 	}
-	names := slices.Sorted(maps.Keys(revisions))
-	cmd.Printf("rebased %s locally · not pushed (no pull request)\n", strings.Join(names, ", "))
+	cmd.Printf("rebased %s locally · not pushed (no pull request)\n", strings.Join(slices.Sorted(maps.Keys(revisions)), ", "))
 	return nil
 }
 
