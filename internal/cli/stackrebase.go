@@ -64,6 +64,10 @@ type stackPR struct {
 	BaseGone  bool     `json:"base_gone,omitempty"`
 }
 
+func (p *stackPR) parked() bool {
+	return p.Base == fmt.Sprintf("graphite-base/%d", p.Number)
+}
+
 func (p *stackPR) String() string {
 	return fmt.Sprintf("#%d %q", p.Number, p.Title)
 }
@@ -1027,7 +1031,7 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 // parent's landing leaves it on, or a history carrying none of the parent's own
 // commits under any sha.
 func stackStrayReason(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, branch, parent, effective string, pr *stackPR) (string, error) {
-	if pr != nil && pr.State == "OPEN" && pr.Base != "" && pr.Base != parent && pr.Base != effective {
+	if pr != nil && pr.State == "OPEN" && pr.Base != "" && !pr.parked() && pr.Base != parent && pr.Base != effective {
 		return fmt.Sprintf("gt records its parent as %s, but its pull request #%d is based on %s — re-record it with gt track --parent %s %s", parent, pr.Number, pr.Base, pr.Base, branch), nil
 	}
 	if parent == tr.Name() {
@@ -1122,7 +1126,7 @@ func stackRefuseForeignBelow(ctx context.Context, dir render.Dir, state gtState,
 			return err
 		}
 		pr := prs[down[carrier]]
-		disowned := pr != nil && pr.State == "OPEN" && pr.Base != "" && !slices.Contains(down[carrier+1:i+1], pr.Base)
+		disowned := pr != nil && pr.State == "OPEN" && pr.Base != "" && !pr.parked() && !slices.Contains(down[carrier+1:i+1], pr.Base)
 		if !none || (fromEmpty && !disowned) {
 			continue
 		}
