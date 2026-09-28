@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -43,6 +44,7 @@ type prMeta struct {
 	bodyPath  string // materialized: a real path, never "-"
 	bodyBlank bool   // bodyPath holds nothing but whitespace
 	draft     *bool  // nil unless --draft/--publish was explicitly Changed
+	base      string
 }
 
 func (m prMeta) writesBody() bool {
@@ -60,6 +62,9 @@ func (m prMeta) stated() []string {
 	if m.bodyPath != "" {
 		fields = append(fields, "body")
 	}
+	if m.base != "" {
+		fields = append(fields, "base")
+	}
 	return fields
 }
 
@@ -71,7 +76,7 @@ func shipPRRequested(cmd *cobra.Command, l lane, o shipOpts) bool {
 	switch {
 	case o.noPR:
 		return false
-	case len(o.prTitle) > 0 || len(o.prBodyFile) > 0:
+	case len(o.prTitle) > 0 || len(o.prBodyFile) > 0 || (!l.gt && o.parent != ""):
 		return true
 	default:
 		return !l.gt && (cmd.Flags().Changed("draft") || cmd.Flags().Changed("publish"))
@@ -296,7 +301,7 @@ func shipPRCreate(ctx context.Context, nwo, branch, trunk, subject string, m prM
 		title = subject
 	}
 	draft := m.draft != nil && *m.draft
-	out, err := render.RunCLI(ctx, render.Ambient, "gh", prCreateArgv(nwo, branch, trunk, title, m.bodyPath, draft))
+	out, err := render.RunCLI(ctx, render.Ambient, "gh", prCreateArgv(nwo, branch, cmp.Or(m.base, trunk), title, m.bodyPath, draft))
 	if err != nil {
 		return "", fmt.Errorf("ship: gh api create pull: %w", err)
 	}
@@ -371,6 +376,9 @@ func prEditArgv(nwo string, number int, m prMeta) []string {
 	}
 	if m.bodyPath != "" {
 		fields = append(fields, "-F", "body=@"+m.bodyPath)
+	}
+	if m.base != "" {
+		fields = append(fields, "-f", "base="+m.base)
 	}
 	return ghPatchPullArgv(nwo, number, fields...)
 }
