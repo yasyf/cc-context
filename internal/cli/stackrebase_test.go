@@ -3,7 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -661,8 +664,53 @@ func TestStackRebaseKeepsAStaleRunWaitingOnItsWorkspace(t *testing.T) {
 	stackPlantConflict(t, f, stackStaleAfter+time.Minute, &stackConflict{Branch: "feature", Workspace: ws}, "base")
 
 	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
-	if err == nil || !strings.Contains(err.Error(), "a stack rebase of base is already in progress (stopped on feature in "+ws) {
+	if err == nil || !strings.Contains(err.Error(), "a stack rebase of base is stopped on a conflict in "+ws+" since ") {
 		t.Fatalf("err = %v, want the refusal naming the waiting workspace", err)
+	}
+}
+
+func stackPlantWorkspace(t *testing.T, f *vcstest.Fixture) string {
+	t.Helper()
+	ws := f.WorktreePath("conflict-feature")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "--detach", ws, "feature")
+	return ws
+}
+
+func TestStackRebaseReclaimsAConflictRunWhoseBranchesMoved(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	ws := stackPlantWorkspace(t, f)
+	stackPlantConflict(t, f, stackStaleAfter+time.Minute, &stackConflict{Branch: "feature", Workspace: ws}, "base")
+	stackPlantBranches(t, f, "base", stackRebaseBranch{Name: "feature", Local: gitAt(t, f.Env(), f.Dir, "rev-parse", "base")})
+
+	out, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if want := "reclaimed the stack rebase of base stopped on a conflict 6m ago, since its branches moved — removed " + ws; !strings.Contains(out, want) {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+	if _, err := os.Stat(ws); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("workspace %s still exists (%v)", ws, err)
+	}
+	if !stackOnto(t, f, "origin/main", "base") {
+		t.Error("base is not on the new trunk")
+	}
+}
+
+func TestStackRebaseReclaimsAConflictRunPastTheAgeLimit(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	ws := stackPlantWorkspace(t, f)
+	writeShipFile(t, ws, "half-resolved.txt", "mine\n")
+	stackPlantConflict(t, f, stackAbandonedAfter+time.Minute, &stackConflict{Branch: "feature", Workspace: ws}, "base")
+
+	out, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if want := "reclaimed the stack rebase of base stopped on a conflict 2h1m ago, past the 2h limit — removed " + ws + ", which held uncommitted changes"; !strings.Contains(out, want) {
+		t.Errorf("output = %q, want %q", out, want)
 	}
 }
 
@@ -680,6 +728,31 @@ func TestStackRebaseReclaimsAStaleRun(t *testing.T) {
 	}
 	if !stackOnto(t, f, "origin/main", "base") {
 		t.Error("base is not on the new trunk")
+	}
+}
+
+func stackPlantBranches(t *testing.T, f *vcstest.Fixture, root string, branches ...stackRebaseBranch) {
+	t.Helper()
+	dir := stackRunDir(filepath.Join(f.Dir, ".git"), root)
+	body, err := os.ReadFile(stackStatePath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(stackStatePath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var run stackRebaseRun
+	if err := json.Unmarshal(body, &run); err != nil {
+		t.Fatal(err)
+	}
+	run.Branches = branches
+	run.dir = dir
+	if err := stackSaveRun(&run); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(stackStatePath(dir), info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
 	}
 }
 

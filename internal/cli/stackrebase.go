@@ -34,6 +34,7 @@ const (
 	stackCulprits       = 10
 	stackVerdictTries   = 4
 	stackStaleAfter     = 5 * time.Minute
+	stackAbandonedAfter = 2 * time.Hour
 )
 
 var stackGitRebaseArgs = []string{"-c", "rerere.enabled=false", "-c", "rebase.updateRefs=false", "-c", "core.editor=true", "-c", "core.hooksPath=/dev/null"}
@@ -193,6 +194,9 @@ A conflict stops the run before any ref moves: the rebase is left in progress
 in a workspace of its own, with both sides' intent written out, and
 ccx vcs stack continue resumes the rest of the stack from there
 (ccx vcs stack abort drops it). rerere is off for every rebase it drives.
+A stopped run whose branches have moved since, or that has waited two hours,
+is reclaimed by the next rebase or ship that overlaps it, which removes its
+workspace and says so.
 A stop whose conflicts are all files .ccx.toml lists under [[generated]] does
 not wait: each owning command runs once in the workspace and the rebase
 continues.
@@ -393,7 +397,14 @@ func stackBareBelow(run *stackRebaseRun, live, bare []string) []string {
 // it is stale.
 func stackGate(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, other *stackRebaseRun, dryRun bool) error {
 	if !stackStale(other) {
-		return stackInProgress(other)
+		why, err := stackAbandoned(ctx, l.dir(), other)
+		if err != nil {
+			return err
+		}
+		if why == "" {
+			return stackInProgress(other)
+		}
+		return stackReclaimConflict(ctx, cmd, l, commonDir, other, why, dryRun)
 	}
 	if dryRun {
 		cmd.Println(fmt.Sprintf("would reclaim the stale stack rebase of %s (%s)", strings.Join(other.Roots, ", "), stackHolder(other)))
@@ -404,6 +415,63 @@ func stackGate(ctx context.Context, cmd *cobra.Command, l lane, commonDir string
 	}
 	cmd.Println(fmt.Sprintf("reclaimed the stale stack rebase of %s (%s)", strings.Join(other.Roots, ", "), stackHolder(other)))
 	return nil
+}
+
+func stackAbandoned(ctx context.Context, dir render.Dir, run *stackRebaseRun) (string, error) {
+	host, _ := os.Hostname()
+	if run.Conflict == nil || run.Host != host || run.Applied || run.Publishing || stackPidAlive(run) || time.Since(run.saved) < stackStaleAfter {
+		return "", nil
+	}
+	for _, b := range run.Branches {
+		if b.Landed != "" {
+			continue
+		}
+		for ref, want := range map[string]string{gtRestackRef(b.Name): b.Local, "refs/remotes/origin/" + b.Name: b.Remote} {
+			if want == "" {
+				continue
+			}
+			at, _, _, err := render.RunCLIExitCode(ctx, dir, "git", []string{"rev-parse", "--verify", "--quiet", ref})
+			if err != nil {
+				return "", fmt.Errorf("stack rebase: git rev-parse %s: %w", ref, err)
+			}
+			if strings.TrimSpace(at) != want {
+				return "since its branches moved", nil
+			}
+		}
+	}
+	if time.Since(run.saved) >= stackAbandonedAfter {
+		return "past the " + stackAge(stackAbandonedAfter) + " limit", nil
+	}
+	return "", nil
+}
+
+func stackReclaimConflict(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun, why string, dryRun bool) error {
+	ws := run.Conflict.Workspace
+	line := fmt.Sprintf("the stack rebase of %s stopped on a conflict %s ago, %s", strings.Join(run.Roots, ", "), stackAge(time.Since(run.saved)), why)
+	if dryRun {
+		cmd.Println("would reclaim " + line + " — and remove " + ws)
+		return nil
+	}
+	status, err := render.RunCLI(ctx, render.Dir(ws), "git", []string{"status", "--porcelain", "--untracked-files=normal"})
+	if err != nil {
+		return fmt.Errorf("stack rebase: read %s before reclaiming its run: %w", ws, err)
+	}
+	if err := stackReclaim(ctx, l, commonDir, run); err != nil {
+		return err
+	}
+	if err := stackDropWorkspace(ctx, l, ws); err != nil {
+		return err
+	}
+	line = "reclaimed " + line + " — removed " + ws
+	if strings.TrimSpace(status) != "" {
+		line += ", which held uncommitted changes"
+	}
+	cmd.Println(line)
+	return nil
+}
+
+func stackAge(d time.Duration) string {
+	return strings.TrimSuffix(strings.TrimSuffix(d.Truncate(time.Minute).String(), "0s"), "0m")
 }
 
 func stackAdmit(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, runs []*stackRebaseRun, run *stackRebaseRun, dryRun bool) error {
@@ -419,11 +487,10 @@ func stackAdmit(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 }
 
 func stackInProgress(run *stackRebaseRun) error {
-	where := stackHolder(run)
-	if run.Conflict != nil {
-		where = fmt.Sprintf("stopped on %s in %s, %s", run.Conflict.Branch, run.Conflict.Workspace, where)
+	if c := run.Conflict; c != nil {
+		return fmt.Errorf("stack rebase: a stack rebase of %s is stopped on a conflict in %s since %s (on %s, %s ago) — resolve it there and run ccx vcs stack continue, or ccx vcs stack abort, from one of its branches", strings.Join(run.Roots, ", "), c.Workspace, run.saved.UTC().Format("15:04Z"), c.Branch, stackAge(time.Since(run.saved)))
 	}
-	return fmt.Errorf("stack rebase: a stack rebase of %s is already in progress (%s) — ccx vcs stack continue, or ccx vcs stack abort, from one of its branches", strings.Join(run.Roots, ", "), where)
+	return fmt.Errorf("stack rebase: a stack rebase of %s is already in progress (%s) — ccx vcs stack continue, or ccx vcs stack abort, from one of its branches", strings.Join(run.Roots, ", "), stackHolder(run))
 }
 
 func stackOverlaps(run, other *stackRebaseRun) bool {
