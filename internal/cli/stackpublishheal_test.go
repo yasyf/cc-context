@@ -190,3 +190,41 @@ func TestStackSubmitKeepsASeparatelyTrackedSiblingGraphiteRecordsOverAStaleRecei
 		t.Error("origin z left the sibling a Graphite last published it onto")
 	}
 }
+
+// TestStackRebaseTakesAParentGTRecordedAfterThePublication is the ship that
+// kept planning a branch onto its grandparent: d sat on c's commit, but gt
+// had it on b when it was first published, and after gt track moved it onto
+// c the receipt's b still won.
+func TestStackRebaseTakesAParentGTRecordedAfterThePublication(t *testing.T) {
+	f := shipGTRepo(t)
+	stubGTAPI(t)
+	stubOpenPRs(t, nil, "a", "b", "c", "d")
+	shipGTStack(t, f, "a", "b", "c")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "d")
+	writeShipFile(t, f.Dir, "d.txt", "d\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "d.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "d")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "d", "--parent", "b", "--no-interactive")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if got := healReceipt(t, f, "d").Parent; got != "b" {
+		t.Fatalf("fixture: d published onto %s, want b", got)
+	}
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "d", "--parent", "c", "--no-interactive")
+
+	out, _, err := runStackCmd(t, f, "rebase", "--dry-run")
+	if err != nil {
+		t.Fatalf("stack rebase --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "d · onto c") {
+		t.Errorf("plan = %q, want d onto c, the parent gt records now", out)
+	}
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit after gt track: %v", err)
+	}
+	receipt := healReceipt(t, f, "d")
+	if receipt.Parent != "c" || receipt.Base != gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "c") {
+		t.Errorf("d's receipt = %+v, want it rewritten onto c", receipt)
+	}
+}

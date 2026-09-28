@@ -579,13 +579,14 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		source := state[name]
 		effective := source
 		var receipt *stackPublication
-		superseded, publishedOn := false, ""
+		superseded, retracked, publishedOn := false, false, ""
 		if !o.noPush {
 			receipt, err = stackReadPublication(ctx, l.dir(), name)
 			if err != nil {
 				return nil, err
 			}
-			if receipt != nil && remotes[name] != "" && remotes[name] != receipt.Head {
+			retracked = stackRetracked(receipt, source)
+			if receipt != nil && !retracked && remotes[name] != "" && remotes[name] != receipt.Head {
 				switch remotes[name] {
 				case submitted[name].HeadSha:
 					superseded, publishedOn = true, stackPublishedParent(receipt, remotes[name], submitted[name])
@@ -597,7 +598,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 					}
 				}
 			}
-			if receipt != nil && !superseded && receipt.Source == source.Head {
+			if receipt != nil && !superseded && !retracked && receipt.Source == source.Head {
 				effective.Head = receipt.Head
 			}
 		}
@@ -623,6 +624,8 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			if superseded {
 				b.Publication = receipt
 				b.WasParent = cmp.Or(publishedOn, b.WasParent)
+			} else if retracked {
+				b.Publication = receipt
 			} else if err := stackUsePublication(ctx, l.dir(), &b, receipt); err != nil {
 				return nil, err
 			} else if receipt != nil && b.OldBase == receipt.Base && b.Head == receipt.Head {
@@ -987,7 +990,7 @@ func stackWithPublishedParents(ctx context.Context, dir render.Dir, state gtStat
 			if err != nil {
 				return nil, nil, err
 			}
-			if receipt == nil {
+			if receipt == nil || stackRetracked(receipt, state[name]) {
 				continue
 			}
 			receipts[name] = receipt
@@ -1059,6 +1062,14 @@ func stackMembers(state gtState, trunk string, seeds []string) ([]string, []stri
 		}
 	}
 	return members, roots, nil
+}
+
+// stackRetracked reports a receipt whose parent gt has since re-recorded: gt
+// names another parent at another revision than the one the branch was
+// published from. A --parent publication leaves gt's record as it was, so there
+// the receipt still names the parent.
+func stackRetracked(receipt *stackPublication, s gtBranchState) bool {
+	return receipt != nil && receipt.Parent != s.Parents[0].Ref && receipt.SourceBase != s.Parents[0].SHA
 }
 
 // stackPublishedParent names the parent a branch's remote head was published
