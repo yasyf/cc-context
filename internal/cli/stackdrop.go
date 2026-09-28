@@ -327,7 +327,7 @@ func dropLocal(ctx context.Context, l lane, commonDir string, plan dropPlan) (gt
 	if state, err = gtStateAt(ctx, commonDir, dropPrefix); err != nil {
 		return result, err
 	}
-	if err := dropStrandCheck(ctx, l.dir(), state, plan.branch); err != nil {
+	if err := dropStrandCheck(ctx, l.dir(), state, plan.branch, plan.parent); err != nil {
 		return result, err
 	}
 	if err := gtmeta.Forget(ctx, commonDir, []string{plan.branch}); err != nil {
@@ -380,9 +380,9 @@ func dropCarriers(ctx context.Context, dir render.Dir, state gtState, branch str
 //
 // A branch level with its parent carries nothing, so nothing can strand, and
 // trunk holding the commits strands none of them.
-func dropStrandCheck(ctx context.Context, dir render.Dir, state gtState, branch string) error {
+func dropStrandCheck(ctx context.Context, dir render.Dir, state gtState, branch, parent string) error {
 	head := gtRestackRef(branch)
-	own, err := gitIsAncestor(ctx, dir, dropPrefix, head, gtRestackRef(state[branch].Parents[0].Ref))
+	own, err := gitIsAncestor(ctx, dir, dropPrefix, head, gtRestackRef(parent))
 	if err != nil || own {
 		return err
 	}

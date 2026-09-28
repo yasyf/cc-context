@@ -420,7 +420,7 @@ func TestStackDropScansNoBranchAnotherLaneDeletedAfterTheRead(t *testing.T) {
 	if carriers, err := dropCarriers(t.Context(), render.Dir(f.Dir), state, "top"); err != nil || len(carriers) != 0 {
 		t.Errorf("carriers of top = %v, %v, want none", carriers, err)
 	}
-	if err := dropStrandCheck(t.Context(), render.Dir(f.Dir), state, "top"); err != nil {
+	if err := dropStrandCheck(t.Context(), render.Dir(f.Dir), state, "top", "base"); err != nil {
 		t.Errorf("strand check of top: %v", err)
 	}
 }
