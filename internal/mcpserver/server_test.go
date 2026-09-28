@@ -34,9 +34,10 @@ func connectTestServer(ctx context.Context, t *testing.T) *mcp.ClientSession {
 	p := proxy.New()
 	eng := codeexec.NewEngine(p, codeexec.NewMemoryStore())
 	register(s, p, eng)
-	t.Cleanup(func() { //nolint:contextcheck // teardown runs after ctx is cancelled; Close uses a fresh context by design
+	teardown := context.WithoutCancel(ctx)
+	t.Cleanup(func() {
 		_ = eng.Close()
-		_ = p.Close()
+		_ = p.Close(teardown)
 	})
 
 	ct, st := mcp.NewInMemoryTransports()

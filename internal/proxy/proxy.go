@@ -38,11 +38,11 @@ func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string
 
 // Close frees the resident index cache and releases both resident embedders (the
 // code engine in dispatch and the web-search engine in web) if the process opened
-// them.
-func (p *Proxy) Close() error {
+// them, resolving process state off ctx.
+func (p *Proxy) Close(ctx context.Context) error {
 	dispatch.CloseIndexCache()
 	return errors.Join(
-		dispatch.CloseEmbedder(context.Background()),
-		web.CloseEmbedder(context.Background()),
+		dispatch.CloseEmbedder(ctx),
+		web.CloseEmbedder(ctx),
 	)
 }

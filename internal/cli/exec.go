@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -46,7 +47,7 @@ func newExecCmd() *cobra.Command {
 				return err
 			}
 			p := proxy.New()
-			defer func() { _ = p.Close() }()
+			defer func() { _ = p.Close(context.WithoutCancel(cmd.Context())) }()
 			eng := codeexec.NewEngine(p, store, codeexec.WithInventoryStore(inventories))
 			defer func() { _ = eng.Close() }()
 

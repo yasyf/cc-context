@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -35,7 +36,8 @@ func TestRootHeaderNamesTheTreeThatAnswered(t *testing.T) {
 		t.Fatalf("readArgs: %v", err)
 	}
 	p := proxy.New()
-	t.Cleanup(func() { _ = p.Close() })
+	teardown := context.WithoutCancel(ctx)
+	t.Cleanup(func() { _ = p.Close(teardown) })
 	out, err := p.Call(ctx, backend.OpRead, a)
 	if err != nil {
 		t.Fatalf("read: %v", err)
