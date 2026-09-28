@@ -37,19 +37,19 @@ func TestStackSubmitLeavesDirtyTrunkAndItsIndexLockUntouched(t *testing.T) {
 	if got, err := os.ReadFile(index); err != nil || string(got) != "another process" {
 		t.Fatalf("lock changed: %q %v", got, err)
 	}
-	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != source {
-		t.Fatalf("source feature moved: %s != %s", got, source)
-	}
 	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
 	if remote == source || !stackOnto(t, f, "origin/main", remote) {
 		t.Fatalf("published feature %s missed fresh remote trunk", remote)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != remote {
+		t.Fatalf("source feature = %s, want it moved onto its publication %s", got, remote)
 	}
 	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "feature")
 	if err != nil {
 		t.Fatal(err)
 	}
 	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main")
-	if receipt == nil || receipt.Source != source || receipt.SourceBase != old || receipt.Head != remote || receipt.Base != base || receipt.Parent != "main" {
+	if receipt == nil || receipt.Source != remote || receipt.SourceBase != base || receipt.Head != remote || receipt.Base != base || receipt.Parent != "main" {
 		t.Fatalf("publication receipt = %+v, want source %s, source base %s, head %s, base %s on main", receipt, source, old, remote, base)
 	}
 	if staged, unstaged := gitAt(t, f.Env(), f.Dir, "diff", "--cached"), gitAt(t, f.Env(), f.Dir, "diff"); staged != "" || unstaged != "" {
@@ -188,7 +188,6 @@ func TestShipPreservesAnotherStacksConflictRun(t *testing.T) {
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
 	shipGTStack(t, f, "other")
 	source := gitAt(t, f.Env(), f.Dir, "rev-parse", "other")
-	sourceBase := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	if _, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--no-pr"); err != nil {
 		t.Fatal(err)
@@ -200,19 +199,19 @@ func TestShipPreservesAnotherStacksConflictRun(t *testing.T) {
 	if _, err := os.Stat(first.Conflict.Workspace); err != nil {
 		t.Fatal(err)
 	}
-	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "other"); got != source {
-		t.Fatalf("second stack source moved: %s != %s", got, source)
-	}
 	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "other")
 	if remote == source || !stackOnto(t, f, "origin/main", remote) {
 		t.Fatalf("second stack publication %s missed fresh remote trunk", remote)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "other"); got != remote {
+		t.Fatalf("second stack source = %s, want it moved onto its publication %s", got, remote)
 	}
 	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "other")
 	if err != nil {
 		t.Fatal(err)
 	}
 	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main")
-	if receipt == nil || receipt.Source != source || receipt.SourceBase != sourceBase || receipt.Head != remote || receipt.Base != base || receipt.Parent != "main" {
+	if receipt == nil || receipt.Source != remote || receipt.SourceBase != base || receipt.Head != remote || receipt.Base != base || receipt.Parent != "main" {
 		t.Fatalf("second stack publication receipt = %+v", receipt)
 	}
 }

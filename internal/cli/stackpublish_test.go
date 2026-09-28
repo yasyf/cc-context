@@ -166,6 +166,9 @@ func TestStackPublicationNextShipUsesOwnedReceipt(t *testing.T) {
 	if source == published {
 		t.Fatal("fixture did not replay source")
 	}
+	if source = shipHead(t, f); source != published {
+		t.Fatalf("source = %s, want it moved onto its publication %s", source, published)
+	}
 	for _, changed := range []bool{false, true} {
 		if changed {
 			writeShipFile(t, f.Dir, "next.txt", "next source commit\n")
@@ -243,8 +246,6 @@ func TestStackPublicationReceiptIdentitySurvivesRunSave(t *testing.T) {
 
 func TestStackPublicationDropsItsLandedPublishedParent(t *testing.T) {
 	f := stackRebaseRepo(t, "base", "feature")
-	baseSource := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
-	childSource := shipHead(t, f)
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatal(err)
@@ -256,15 +257,15 @@ func TestStackPublicationDropsItsLandedPublishedParent(t *testing.T) {
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatal(err)
 	}
-	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != baseSource {
-		t.Fatal("landed source moved")
-	}
-	if got := shipHead(t, f); got != childSource {
-		t.Fatal("child source moved")
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != basePublished {
+		t.Fatalf("landed base = %s, want it left on its first publication %s", got, basePublished)
 	}
 	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "feature")
 	if err != nil || receipt == nil || receipt.Parent != "main" {
 		t.Fatalf("child did not publish over landed parent: %#v %v", receipt, err)
+	}
+	if got := shipHead(t, f); got != receipt.Head {
+		t.Fatalf("child = %s, want it moved onto its publication %s", got, receipt.Head)
 	}
 	if count := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main.."+receipt.Head); count != "1" {
 		t.Fatalf("published child retained %s commits", count)
@@ -391,6 +392,7 @@ func TestStackPublicationYieldsToTheLanesOwnPush(t *testing.T) {
 	}
 	source := pushCommit(t, f, "fix.txt", "fix\n", "fix")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-qf", "origin", "feature")
+	stackAdvanceTrunk(t, f, "later.txt", "later\n")
 	if _, _, err := runStackCmd(t, f, "rebase", "--dry-run"); err != nil {
 		t.Fatalf("rebase dry run after the lane pushed its own source: %v", err)
 	}
@@ -401,9 +403,12 @@ func TestStackPublicationYieldsToTheLanesOwnPush(t *testing.T) {
 	if remote == source || !stackOnto(t, f, "origin/main", remote) {
 		t.Fatalf("republished feature %s missed fresh trunk", remote)
 	}
+	if got := shipHead(t, f); got != remote {
+		t.Fatalf("source = %s, want it moved onto its publication %s", got, remote)
+	}
 	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "feature")
-	if err != nil || receipt == nil || receipt.Source != source || receipt.Head != remote {
-		t.Fatalf("receipt = %+v %v, want source %s published as %s", receipt, err, source, remote)
+	if err != nil || receipt == nil || receipt.Source != remote || receipt.Head != remote {
+		t.Fatalf("receipt = %+v %v, want source and head %s", receipt, err, remote)
 	}
 }
 
@@ -443,8 +448,12 @@ func TestStackSubmitAdoptsAForeignIdenticalRestack(t *testing.T) {
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("submit after a foreign identical restack: %v", err)
 	}
-	if got := shipHead(t, f); got != source {
-		t.Fatalf("submit moved the source to %s", got)
+	foreign := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	if foreign == source {
+		t.Fatal("fixture: the foreign restack did not replay the source")
+	}
+	if got := shipHead(t, f); got != foreign {
+		t.Fatalf("source = %s, want it moved onto the adopted restack %s", got, foreign)
 	}
 }
 

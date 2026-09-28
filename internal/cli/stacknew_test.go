@@ -151,7 +151,11 @@ func publishedSparseParent(t *testing.T) (*vcstest.Fixture, *stackPublication) {
 	mustRun(t, f.Env(), f.Dir, "git", "add", "keep", "excluded")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "parent files")
 	stackAdvanceTrunk(t, f, "upstream.txt", "new trunk\n")
+	writeShipFile(t, f.Dir, "scratch.txt", "keeps parent on its source\n")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(f.Dir, "scratch.txt")); err != nil {
 		t.Fatal(err)
 	}
 	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "parent")

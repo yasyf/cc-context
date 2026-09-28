@@ -255,8 +255,8 @@ func TestStackSubmitGoesThroughTheGraphiteAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
-	if !strings.Contains(out, "published 2 branches · source checkouts unchanged") {
-		t.Errorf("report = %q, want it to name both branches", out)
+	if !strings.Contains(out, "published 2 branches\n") || !strings.HasSuffix(out, "\nsource checkouts unchanged") {
+		t.Errorf("report = %q, want it to name both branches, already on their published heads", out)
 	}
 	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base", "feature"}) {
 		t.Errorf("submit posts = %v, want one per branch, base first", heads)
@@ -362,8 +362,8 @@ func TestStackSubmitFrozenBranches(t *testing.T) {
 			if err != nil {
 				t.Fatalf("stack submit: %v", err)
 			}
-			if !strings.Contains(out, "published 3 branches · source checkouts unchanged") {
-				t.Errorf("report = %q, want all three branches published without moving sources", out)
+			if !strings.Contains(out, "published 3 branches\n") {
+				t.Errorf("report = %q, want all three branches published", out)
 			}
 			if heads := api.submitHeads(); !slices.Equal(heads, branches) {
 				t.Errorf("submitted %v, want %v", heads, branches)
@@ -644,10 +644,6 @@ func TestStackSubmitRestacksARejectedParentRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	sources := stackRebaseSourceSnapshot(t, f, "base", "feature")
-	before, err := gtmeta.Read(f.Context(), commonDir)
-	if err != nil {
-		t.Fatal(err)
-	}
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 
 	_, _, err = runStackCmd(t, f, "submit")
@@ -659,10 +655,11 @@ func TestStackSubmitRestacksARejectedParentRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, branch := range []string{"base", "feature"} {
-		if !reflect.DeepEqual(state[branch], before[branch]) {
-			t.Errorf("source %s metadata = %+v, want unchanged %+v", branch, state[branch], before[branch])
-		}
 		published := stackAssertRebasePublication(t, f, sources[branch])
+		parent := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", sources[branch].Parent)
+		if got := state[branch]; got.Head != published || len(got.Parents) != 1 || got.Parents[0].SHA != parent {
+			t.Errorf("%s metadata = %+v, want head %s on %s", branch, got, published, parent)
+		}
 		if !stackOnto(t, f, "origin/main", published) {
 			t.Errorf("published %s is not on the new trunk", branch)
 		}
@@ -840,7 +837,6 @@ func TestStackSubmitAdoptsARemoteReplayAfterPublication(t *testing.T) {
 	f := shipGTRepo(t)
 	stubStackPRs(t, nil)
 	shipGTStack(t, f, "base")
-	source := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("first stack submit: %v", err)
 	}
@@ -860,12 +856,12 @@ func TestStackSubmitAdoptsARemoteReplayAfterPublication(t *testing.T) {
 	if !stackOnto(t, f, "origin/main", remote) || gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main.."+remote) != "1" || gitAt(t, f.Env(), f.Dir, "diff", replayed, remote, "--", "base.txt") != "" {
 		t.Fatalf("published base %s is not the adopted %s replayed onto the new trunk", remote, replayed)
 	}
-	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != source {
-		t.Errorf("source base = %s, want unchanged %s", got, source)
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != remote {
+		t.Errorf("source base = %s, want it moved onto its publication %s", got, remote)
 	}
 	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "base")
-	if err != nil || receipt == nil || receipt.Source != source || receipt.Head != remote {
-		t.Fatalf("receipt = %+v, %v, want source %s published as %s", receipt, err, source, remote)
+	if err != nil || receipt == nil || receipt.Source != remote || receipt.Head != remote {
+		t.Fatalf("receipt = %+v, %v, want source and head %s", receipt, err, remote)
 	}
 }
 

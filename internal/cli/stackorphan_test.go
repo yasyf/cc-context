@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -61,8 +63,12 @@ func TestShipKeepsABranchOnTheSiblingItWasPublishedOnto(t *testing.T) {
 	shipGTStack(t, f, "p", "a")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
 	shipGTStack(t, f, "z")
+	writeShipFile(t, f.Dir, "scratch.txt", "keeps z on its source\n")
 	if _, _, err := runStackCmd(t, f, "rebase", "--parent", "z=a"); err != nil {
 		t.Fatalf("stack rebase --parent z=a: %v", err)
+	}
+	if err := os.Remove(filepath.Join(f.Dir, "scratch.txt")); err != nil {
+		t.Fatal(err)
 	}
 	if parent := dropGTParent(t, f, "z"); parent != "p" {
 		t.Fatalf("fixture: gt parent of z = %s, want p, with the publication alone naming a", parent)

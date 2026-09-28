@@ -188,7 +188,11 @@ deleted is refused instead, pointing at ccx vcs stack drop --repair. Other
 working copies and local trunk are left untouched. A branch held by another working copy,
 or uncommitted work in the invoking checkout, stops publication before any branch
 moves. Empty lanes and another lane's branches above the one checked out here are
-left where they are and named rather than rebased.
+left where they are and named rather than rebased. Once published, a branch's
+local ref moves onto its published head when that head carries the same commits
+as the source, no other working copy holds the branch, and the invoking checkout,
+when it holds the branch, is clean; any other branch keeps its source, with the
+branches above it, and is named.
 
 A conflict stops the run before any ref moves: the rebase is left in progress
 in a workspace of its own, with both sides' intent written out, and

@@ -267,9 +267,12 @@ func TestStackSubmitAdoptsAPublicationTheBranchWasResetTo(t *testing.T) {
 	if remote == published || !stackOnto(t, f, "origin/main", remote) || gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main.."+remote) != "1" || gitAt(t, f.Env(), f.Dir, "diff", published, remote, "--", "feature.txt") != "" {
 		t.Fatalf("published feature %s is not the adopted %s replayed onto the new trunk", remote, published)
 	}
+	if got := shipHead(t, f); got != remote {
+		t.Fatalf("source = %s, want it moved onto its publication %s", got, remote)
+	}
 	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "feature")
-	if err != nil || receipt == nil || receipt.Source != published || receipt.Head != remote {
-		t.Fatalf("receipt = %+v, %v, want source %s published as %s", receipt, err, published, remote)
+	if err != nil || receipt == nil || receipt.Source != remote || receipt.Head != remote {
+		t.Fatalf("receipt = %+v, %v, want source and head %s", receipt, err, remote)
 	}
 	stackAssertNoRun(t, f)
 }

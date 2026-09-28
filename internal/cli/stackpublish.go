@@ -403,7 +403,7 @@ func stackFinishPublication(ctx context.Context, cmd *cobra.Command, l lane, com
 	if err != nil {
 		return err
 	}
-	cmd.Printf("published %d branches · source checkouts unchanged\nproposing %d commit(s), %d file(s)\n", len(live), commits, files)
+	cmd.Printf("published %d branches\nproposing %d commit(s), %d file(s)\n", len(live), commits, files)
 	if run.Ship != nil {
 		if err := stackFinishShip(ctx, cmd, l, run, entries); err != nil {
 			return err
@@ -415,7 +415,133 @@ func stackFinishPublication(ctx context.Context, cmd *cobra.Command, l lane, com
 	if err := stackMoveLocalOnly(ctx, cmd, l, commonDir, run); err != nil {
 		return err
 	}
+	report, err := stackMovePublishedSources(ctx, l, commonDir, run)
+	if err != nil {
+		return err
+	}
+	cmd.Println(report)
 	return stackCompletePublication(ctx, l.dir(), commonDir, run)
+}
+
+func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, run *stackRebaseRun) (string, error) {
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", stackRebasePrefix, err)
+	}
+	stays := map[string]bool{}
+	var moved, left []string
+	var moves []restackMove
+	reparent := map[string]string{}
+	revisions := map[string]string{}
+	var tx strings.Builder
+	tx.WriteString("start\n")
+	for _, b := range run.Branches {
+		if b.Landed != "" || b.Held != "" || b.LocalOnly || b.NewHead == b.Local {
+			continue
+		}
+		at, err := stackRevParse(ctx, l.dir(), gtRestackRef(b.Name))
+		if err != nil {
+			return "", err
+		}
+		receipt, err := stackReadPublication(ctx, l.dir(), b.Name)
+		if err != nil {
+			return "", err
+		}
+		why := ""
+		switch {
+		case receipt == nil || receipt.Head != b.NewHead:
+			why = "no receipt names its published head"
+		case at != b.NewHead:
+			if why, err = stackSourceStays(ctx, l, run, b, at, holders, stays); err != nil {
+				return "", err
+			}
+		}
+		if why != "" {
+			stays[b.Name] = true
+			left = append(left, b.Name+" ("+why+")")
+			continue
+		}
+		moved = append(moved, b.Name)
+		revisions[b.Name] = b.NewBase
+		if b.Parent != b.WasParent {
+			reparent[b.Name] = b.Parent
+		}
+		onHead := stackPublication{Branch: b.Name, Source: receipt.Head, SourceBase: receipt.Base, Head: receipt.Head, Base: receipt.Base, Parent: receipt.Parent}
+		if err := stackReceiptTx(ctx, l.dir(), &tx, onHead, receipt.OID); err != nil {
+			return "", err
+		}
+		if at == b.NewHead {
+			fmt.Fprintf(&tx, "verify %s %s\n", gtRestackRef(b.Name), b.NewHead)
+			continue
+		}
+		fmt.Fprintf(&tx, "update %s %s %s\n", gtRestackRef(b.Name), b.NewHead, b.Local)
+		moves = append(moves, restackMove{branch: b.Name, head: b.NewHead, parent: b.NewBase, previous: b.Local})
+	}
+	if len(moved) > 0 {
+		tx.WriteString("commit\n")
+		if _, err := render.RunCLIStdin(ctx, l.dir(), "git", []string{"update-ref", "--stdin"}, []byte(tx.String())); err != nil {
+			return "", fmt.Errorf("%s: the stack is published, but a source branch moved while its local ref was being moved onto its published head, so none was moved — ccx vcs stack continue retries it: %w", stackRebasePrefix, err)
+		}
+		if _, err := gtRestackAlign(ctx, stackRebasePrefix, holders, moves); err != nil {
+			return "", err
+		}
+		if err := errors.Join(gtmeta.Reparent(ctx, commonDir, reparent), gtmeta.RecordRestacked(ctx, commonDir, revisions)); err != nil {
+			return "", fmt.Errorf("%s: the sources are on their published heads, but recording them in gt failed — fix the cause and run ccx vcs stack continue: %w", stackRebasePrefix, err)
+		}
+	}
+	var segments []string
+	if len(moved) > 0 {
+		segments = append(segments, "moved "+strings.Join(moved, ", ")+" onto the published heads")
+	}
+	if len(left) > 0 {
+		segments = append(segments, "left "+strings.Join(left, ", ")+" on their sources")
+	}
+	if len(segments) == 0 {
+		return "source checkouts unchanged", nil
+	}
+	return strings.Join(segments, shipSep), nil
+}
+
+func stackSourceStays(ctx context.Context, l lane, run *stackRebaseRun, b stackRebaseBranch, at string, holders map[string]string, stays map[string]bool) (string, error) {
+	if stays[b.Parent] {
+		return "stacked on " + b.Parent, nil
+	}
+	if at != b.Local {
+		return "moved since the run started", nil
+	}
+	holder := holders[b.Name]
+	if holder != "" && holder != run.Origin {
+		return "checked out in " + holder, nil
+	}
+	source, err := stackPatchSeries(ctx, l.dir(), cmp.Or(b.SourceBase, b.OldBase), b.Local)
+	if err != nil {
+		return "", err
+	}
+	published, err := stackPatchSeries(ctx, l.dir(), b.NewBase, b.NewHead)
+	if err != nil {
+		return "", err
+	}
+	if source == nil || published == nil || !slices.Equal(source, published) {
+		return "its published head carries other changes", nil
+	}
+	if holder == "" {
+		return "", nil
+	}
+	status, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"status", "--porcelain", "--untracked-files=normal"})
+	if err != nil {
+		return "", fmt.Errorf("%s: git status in %s: %w", stackRebasePrefix, holder, err)
+	}
+	if status != "" {
+		return "uncommitted work in " + holder, nil
+	}
+	clobbered, err := gtRestackClobbers(ctx, stackRebasePrefix, holder, restackMove{branch: b.Name, head: b.NewHead, previous: b.Local})
+	if err != nil {
+		return "", err
+	}
+	if len(clobbered) > 0 {
+		return "the published head tracks " + strings.Join(clobbered, ", ") + ", which " + holder + " ignores", nil
+	}
+	return "", nil
 }
 
 func stackLocalOnlyMoves(run *stackRebaseRun) []restackMove {
