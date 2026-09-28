@@ -401,7 +401,7 @@ func stackGate(ctx context.Context, cmd *cobra.Command, l lane, commonDir string
 		if err != nil {
 			return err
 		}
-		if why == "" {
+		if why == "" || other.Conflict.Workspace == l.root {
 			return stackInProgress(other)
 		}
 		return stackReclaimConflict(ctx, cmd, l, commonDir, other, why, dryRun)
@@ -422,15 +422,22 @@ func stackAbandoned(ctx context.Context, dir render.Dir, run *stackRebaseRun) (s
 	if run.Conflict == nil || run.Host != host || run.Applied || run.Publishing || stackPidAlive(run) || time.Since(run.saved) < stackStaleAfter {
 		return "", nil
 	}
+	remote, err := vcs.GitRemoteFor(ctx, dir, "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("stack rebase: %w", err)
+	}
 	for _, b := range run.Branches {
 		if b.Landed != "" {
 			continue
 		}
-		for ref, want := range map[string]string{gtRestackRef(b.Name): b.Local, "refs/remotes/origin/" + b.Name: b.Remote} {
+		for ref, want := range map[string]string{gtRestackRef(b.Name): b.Local, "refs/remotes/" + remote + "/" + b.Name: b.Remote} {
 			if want == "" {
 				continue
 			}
-			at, _, _, err := render.RunCLIExitCode(ctx, dir, "git", []string{"rev-parse", "--verify", "--quiet", ref})
+			at, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"rev-parse", "--verify", "--quiet", ref})
+			if err == nil && code > 1 {
+				err = errors.New(strings.TrimSpace(stderr))
+			}
 			if err != nil {
 				return "", fmt.Errorf("stack rebase: git rev-parse %s: %w", ref, err)
 			}
@@ -471,7 +478,14 @@ func stackReclaimConflict(ctx context.Context, cmd *cobra.Command, l lane, commo
 }
 
 func stackAge(d time.Duration) string {
-	return strings.TrimSuffix(strings.TrimSuffix(d.Truncate(time.Minute).String(), "0s"), "0m")
+	h, m := int(d.Hours()), int(d.Minutes())%60
+	switch {
+	case h == 0:
+		return fmt.Sprintf("%dm", m)
+	case m == 0:
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dh%dm", h, m)
 }
 
 func stackAdmit(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, runs []*stackRebaseRun, run *stackRebaseRun, dryRun bool) error {

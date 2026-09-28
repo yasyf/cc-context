@@ -584,8 +584,8 @@ func TestStackRebaseRunsTwoStacksSideBySide(t *testing.T) {
 		t.Fatalf("stack rebase of b = %v, want its own conflict, not a refusal", errB)
 	}
 	wsA, wsB := stackWorkspaceOf(t, errA), stackWorkspaceOf(t, errB)
-	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err == nil || !strings.Contains(err.Error(), "a stack rebase of a-base is already in progress") {
-		t.Fatalf("second rebase of a = %v, want the in-progress refusal", err)
+	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err == nil || !strings.Contains(err.Error(), "a stack rebase of a-base is stopped on a conflict in "+wsA) {
+		t.Fatalf("second rebase of a = %v, want the refusal naming its workspace", err)
 	}
 
 	if _, _, err := runStackCmd(t, f, "continue"); err == nil || !strings.Contains(err.Error(), wsA+" still has unresolved files: c.txt") {
@@ -711,6 +711,35 @@ func TestStackRebaseReclaimsAConflictRunPastTheAgeLimit(t *testing.T) {
 	}
 	if want := "reclaimed the stack rebase of base stopped on a conflict 2h1m ago, past the 2h limit — removed " + ws + ", which held uncommitted changes"; !strings.Contains(out, want) {
 		t.Errorf("output = %q, want %q", out, want)
+	}
+}
+
+func TestStackRebaseKeepsAnAgedConflictRunWhenRunFromItsWorkspace(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	ws := stackPlantWorkspace(t, f)
+	stackPlantConflict(t, f, stackAbandonedAfter+time.Minute, &stackConflict{Branch: "feature", Workspace: ws}, "base")
+
+	_, _, err := runStackCmdIn(t, f, ws, "rebase", "--no-push")
+	if err == nil || !strings.Contains(err.Error(), "a stack rebase of base is stopped on a conflict in "+ws) {
+		t.Fatalf("err = %v, want the refusal naming the workspace it runs in", err)
+	}
+	if _, err := os.Stat(ws); err != nil {
+		t.Errorf("workspace %s: %v, want it kept", ws, err)
+	}
+}
+
+func TestStackAge(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		30 * time.Second:                 "0m",
+		10 * time.Minute:                 "10m",
+		2 * time.Hour:                    "2h",
+		time.Hour + 20*time.Minute + 5e9: "1h20m",
+		2*time.Hour + time.Minute + 59e9: "2h1m",
+	} {
+		if got := stackAge(d); got != want {
+			t.Errorf("stackAge(%v) = %q, want %q", d, got, want)
+		}
 	}
 }
 
