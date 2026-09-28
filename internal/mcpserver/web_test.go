@@ -4,9 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/web"
 )
 
@@ -27,23 +29,33 @@ const webFixtureHTML = `<!doctype html>
 </body>
 </html>`
 
-// isolateWeb makes ccx_web_* hermetic: the page cache points at a temp dir, the
-// fetch-tier API keys are unset so the loopback httptest target takes the plain
-// HTTP tier, every binary reports absent so no agent-browser render escalates,
-// and topicEmbedder replaces the resident WASM engine so hybrid ranking runs
-// without downloading the pinned model weights. Nothing beyond the fixture
-// server is reachable, and no subprocess spawns.
-func isolateWeb(t *testing.T) {
+// isolateWeb makes ccx_web_* hermetic and returns the cache directory and the
+// context carrying that isolation: the page cache points at a temp dir, the
+// fetch-tier API keys are cleared so the loopback httptest target takes the
+// plain HTTP tier, PATH is emptied so every binary reports absent and no
+// agent-browser render escalates, and topicEmbedder replaces the resident WASM
+// engine so hybrid ranking runs without downloading the pinned model weights.
+// Nothing beyond the fixture server is reachable, and no subprocess spawns.
+//
+// Each key is cleared explicitly rather than omitted: render.Getenv falls back
+// to the process environment, so an omitted key inherits a developer's own
+// exported credential and takes a paid fetch tier.
+//
+// Its embedder provider is process-global, so a test calling this stays serial.
+func isolateWeb(t *testing.T) (context.Context, string) {
 	t.Helper()
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	t.Setenv("JINA_API_KEY", "")
-	t.Setenv("EXA_API_KEY", "")
-	t.Setenv("FIRECRAWL_API_KEY", "")
-	t.Setenv("BROWSERBASE_API_KEY", "")
-	t.Setenv("PATH", "")
+	cache := t.TempDir()
 	t.Cleanup(web.SetEmbedderProvider(func(context.Context) (web.Embedder, error) {
 		return topicEmbedder{}, nil
 	}))
+	return render.WithEnv(t.Context(),
+		"CLAUDE_PLUGIN_DATA="+cache,
+		"JINA_API_KEY=",
+		"EXA_API_KEY=",
+		"FIRECRAWL_API_KEY=",
+		"BROWSERBASE_API_KEY=",
+		"PATH=",
+	), cache
 }
 
 // topicEmbedder maps each text to a deterministic 3-dim unit vector keyed on
@@ -96,9 +108,9 @@ func sectionRef(t *testing.T, outline, heading string) string {
 // seam against a loopback fixture, guarding the web dispatch case: a missing case
 // there would route web ops to the semble MCP session while the CLI still works.
 func TestWebToolsRoundTrip(t *testing.T) {
-	isolateWeb(t)
+	ctx, cache := isolateWeb(t)
 	srv := startWebFixture(t)
-	cs := connectTestServer(t)
+	cs := connectTestServer(ctx, t)
 
 	outline, isErr := callText(t, cs, "ccx_web_outline", map[string]any{"url": srv.URL})
 	if isErr {
@@ -128,5 +140,12 @@ func TestWebToolsRoundTrip(t *testing.T) {
 		if strings.Contains(search, marker) {
 			t.Errorf("search degraded to BM25-only (%q) instead of ranking with the injected embedder:\n%s", marker, search)
 		}
+	}
+	entries, err := os.ReadDir(cache)
+	if err != nil {
+		t.Fatalf("read the cache directory the context named: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Errorf("the page cache landed outside %s, so CLAUDE_PLUGIN_DATA was read off the process environment", cache)
 	}
 }

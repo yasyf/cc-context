@@ -3,12 +3,16 @@ package symbol
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 func TestParseQuery(t *testing.T) {
@@ -56,7 +60,7 @@ func TestCalleesExcludesDefinitions(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := &resolver{name: tt.self, lineCache: map[string][]string{}}
+			r := &resolver{name: tt.self, files: anchor.NewFiles("")}
 			got := r.callees(tt.top)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("callees(%s) = %v, want %v", tt.self, got, tt.want)
@@ -151,5 +155,39 @@ func requireBins(t *testing.T) {
 	}
 	if _, err := exec.LookPath("rg"); err != nil {
 		t.Skip("rg not on PATH")
+	}
+}
+
+// TestRunReadsTheDocFromTheDeclaredRoot proves the card's doc and body come from
+// the tree ctx declares rather than the process working directory: ast-grep runs
+// in the declared root and reports relative paths, so a resolver that loaded them
+// against the process cwd renders a doc-less, body-less card.
+func TestRunReadsTheDocFromTheDeclaredRoot(t *testing.T) {
+	t.Parallel()
+	requireBins(t)
+	dir := t.TempDir()
+	src := "package fix\n\n// Greet builds a greeting.\nfunc Greet(name string) string {\n\treturn name\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "widget.go"), []byte(src), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	ctx := workspace.WithRoot(t.Context(), dir)
+
+	terse, _, err := Run(ctx, backend.Args{Query: "Greet"})
+	if err != nil {
+		t.Fatalf("terse Run: %v", err)
+	}
+	if !strings.HasPrefix(terse, "# symbol Greet — function — widget.go:") {
+		t.Errorf("terse card header wrong:\n%s", terse)
+	}
+	if !strings.Contains(terse, "func Greet(name string) string\n\nGreet builds a greeting.\n") {
+		t.Errorf("terse card missing the doc paragraph from the declared root:\n%s", terse)
+	}
+
+	full, _, err := Run(ctx, backend.Args{Query: "Greet", Full: true})
+	if err != nil {
+		t.Fatalf("full Run: %v", err)
+	}
+	if !strings.Contains(full, "## body\nfunc Greet(name string) string {\n\treturn name\n}") {
+		t.Errorf("full card missing the body from the declared root:\n%s", full)
 	}
 }

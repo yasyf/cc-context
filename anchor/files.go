@@ -33,6 +33,17 @@ func (fs *Files) LineAt(path string, n int) (string, bool) {
 	return f.lines[n-1], true
 }
 
+// Lines returns path's lines exactly as Load splits them, trailing CR kept,
+// loading the file once and caching it. It returns nil on an unreadable file,
+// so the caller renders nothing rather than content it cannot vouch for.
+func (fs *Files) Lines(path string) []string {
+	f := fs.load(path)
+	if f == nil {
+		return nil
+	}
+	return f.lines
+}
+
 func (fs *Files) load(path string) *File {
 	key := path
 	if !filepath.IsAbs(key) {

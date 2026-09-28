@@ -1,7 +1,6 @@
 package mcpserver
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,23 +9,18 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
-// rootLine is the "# root <abspath>\n" a rooted tool result carries for the
-// process working directory, for tests that pin an exact result.
-func rootLine(t *testing.T) string {
-	t.Helper()
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	return "# root " + cwd + "\n"
+// rootLine is the "# root <abspath>\n" a rooted tool result carries for root,
+// for tests that pin an exact result.
+func rootLine(root string) string {
+	return "# root " + root + "\n"
 }
 
-// pinRoot pins root for the duration of the test, clearing the process-global
-// pin afterwards.
-
 func TestWithRootLineJoinsHeaderBlock(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		text string
@@ -52,6 +46,7 @@ func TestWithRootLineJoinsHeaderBlock(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := withRootLine(tt.text, "/r"); got != tt.want {
 				t.Errorf("withRootLine() = %q, want %q", got, tt.want)
 			}
@@ -60,6 +55,7 @@ func TestWithRootLineJoinsHeaderBlock(t *testing.T) {
 }
 
 func TestRootlessCoversOnlyWebOps(t *testing.T) {
+	t.Parallel()
 	rooted := []backend.Op{
 		backend.OpSearch, backend.OpRelated, backend.OpOutline, backend.OpRead,
 		backend.OpSymbol, backend.OpDeps, backend.OpGrep, backend.OpFind,
@@ -81,7 +77,7 @@ func TestRootlessCoversOnlyWebOps(t *testing.T) {
 func TestRootHeaderResultNamesThePinnedRoot(t *testing.T) {
 	pinRoot(t, "/pinned/elsewhere")
 
-	res, _, err := rootHeaderResult(context.Background(), "# read a.go:1#ab12 (1 of 9 lines)\npackage a\n")
+	res, _, err := rootHeaderResult(t.Context(), "# read a.go:1#ab12 (1 of 9 lines)\npackage a\n")
 	if err != nil {
 		t.Fatalf("rootHeaderResult: %v", err)
 	}
@@ -91,15 +87,15 @@ func TestRootHeaderResultNamesThePinnedRoot(t *testing.T) {
 	}
 }
 
-func TestReadToolNamesThePinnedRoot(t *testing.T) {
+func TestReadToolNamesTheDeclaredRoot(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
-	pinRoot(t, dir)
 	file := filepath.Join(dir, "f.txt")
 	if err := os.WriteFile(file, []byte("alpha\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), dir), t)
 	out, isErr := callText(t, cs, "ccx_code_read", map[string]any{"path": file, "full": true})
 	if isErr {
 		t.Fatalf("ccx_code_read is error: %s", out)
@@ -111,11 +107,10 @@ func TestReadToolNamesThePinnedRoot(t *testing.T) {
 }
 
 func TestWebToolsCarryNoRootLine(t *testing.T) {
-	pinRoot(t, t.TempDir())
-	isolateWeb(t)
+	ctx, _ := isolateWeb(t)
 	srv := startWebFixture(t)
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(ctx, t.TempDir()), t)
 	for _, tool := range []string{"ccx_web_outline", "ccx_web_read"} {
 		out, isErr := callText(t, cs, tool, map[string]any{"url": srv.URL})
 		if isErr {
@@ -128,13 +123,15 @@ func TestWebToolsCarryNoRootLine(t *testing.T) {
 }
 
 func TestSearchToolNamesTheRoot(t *testing.T) {
-	cs := connectTestServer(t, fakeAstGrepOnPath(t, []string{"a.go"}))
+	t.Parallel()
+	root := t.TempDir()
+	cs := connectTestServer(render.WithEnv(workspace.WithRoot(t.Context(), root), fakeAstGrepOnPath(t, []string{"a.go"})), t)
 
 	out, isErr := callText(t, cs, "ccx_code_search", map[string]any{"query": "old($A)"})
 	if isErr {
 		t.Fatalf("ccx_code_search is error: %s", out)
 	}
-	if !strings.Contains(out, rootLine(t)) {
-		t.Errorf("ccx_code_search out = %q, want it to carry %q", out, rootLine(t))
+	if !strings.Contains(out, rootLine(root)) {
+		t.Errorf("ccx_code_search out = %q, want it to carry %q", out, rootLine(root))
 	}
 }

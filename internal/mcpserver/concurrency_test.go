@@ -30,13 +30,14 @@ func TestRootHeaderNamesTheTreeThatAnswered(t *testing.T) {
 	other, _ := writeTree(t, "f.txt", "other\n")
 	pinRoot(t, answering)
 
-	ctx := pinCall(context.Background())
+	ctx := pinCall(t.Context())
 	a, err := readArgs(ctx, ReadIn{Path: "f.txt"})
 	if err != nil {
 		t.Fatalf("readArgs: %v", err)
 	}
 	p := proxy.New()
-	t.Cleanup(func() { _ = p.Close() })
+	teardown := context.WithoutCancel(ctx)
+	t.Cleanup(func() { _ = p.Close(teardown) })
 	out, err := p.Call(ctx, backend.OpRead, a)
 	if err != nil {
 		t.Fatalf("read: %v", err)
@@ -62,7 +63,7 @@ func TestConcurrentRepinKeepsEveryHeaderWithItsContent(t *testing.T) {
 	second, _ := writeTree(t, "f.txt", "second\n")
 	body := map[string]string{first: "first\n", second: "second\n"}
 	pinRoot(t, first)
-	cs := connectTestServer(t)
+	cs := connectTestServer(t.Context(), t)
 
 	stop := make(chan struct{})
 	var repinner sync.WaitGroup
@@ -86,7 +87,7 @@ func TestConcurrentRepinKeepsEveryHeaderWithItsContent(t *testing.T) {
 		calls.Add(1)
 		go func() {
 			defer calls.Done()
-			res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "ccx_code_read", Arguments: map[string]any{"path": "f.txt"}})
+			res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: "ccx_code_read", Arguments: map[string]any{"path": "f.txt"}})
 			if err != nil {
 				texts[i] = "CallTool: " + err.Error()
 				return

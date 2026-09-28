@@ -20,22 +20,24 @@ import (
 	"github.com/yasyf/cc-context/internal/codeexec"
 	"github.com/yasyf/cc-context/internal/proxy"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // connectTestServer registers the ccx tools on a server and returns a connected
-// in-memory client session whose handlers resolve env and PATH off ctx.
-// Reflection is hard-off so no test shells out to `claude mcp list`.
-func connectTestServer(t *testing.T, env ...string) *mcp.ClientSession {
+// in-memory client session whose handlers resolve env, PATH and the project
+// root off ctx. Reflection is hard-off so no test shells out to
+// `claude mcp list`.
+func connectTestServer(ctx context.Context, t *testing.T) *mcp.ClientSession {
 	t.Helper()
-	ctx := render.WithEnv(context.Background(), env...)
-	t.Setenv("CCX_EXEC_MCP", "off")
+	ctx = render.WithEnv(ctx, "CCX_EXEC_MCP=off")
 	s := mcp.NewServer(&mcp.Implementation{Name: "cc-context-test", Version: "test"}, nil)
 	p := proxy.New()
 	eng := codeexec.NewEngine(p, codeexec.NewMemoryStore())
 	register(s, p, eng)
+	teardown := context.WithoutCancel(ctx)
 	t.Cleanup(func() {
 		_ = eng.Close()
-		_ = p.Close()
+		_ = p.Close(teardown)
 	})
 
 	ct, st := mcp.NewInMemoryTransports()
@@ -53,7 +55,9 @@ func connectTestServer(t *testing.T, env ...string) *mcp.ClientSession {
 
 // fakeAstGrepOnPath installs an "ast-grep" that emits one JSON match per file in
 // files on a preview run and exits 0 on an apply run (argv carries -U), and
-// returns the PATH entry that puts it ahead of any real one.
+// returns the PATH entry that puts it ahead of any real one. The entry rides on
+// the call's context, so the stub answering at all is the proof that a handler
+// resolves PATH off that context rather than off the process environment.
 func fakeAstGrepOnPath(t *testing.T, files []string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -80,7 +84,7 @@ func fakeAstGrepOnPath(t *testing.T, files []string) string {
 
 func callText(t *testing.T, cs *mcp.ClientSession, tool string, args map[string]any) (string, bool) {
 	t.Helper()
-	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
+	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: tool, Arguments: args})
 	if err != nil {
 		t.Fatalf("CallTool %s: %v", tool, err)
 	}
@@ -94,7 +98,8 @@ func callText(t *testing.T, cs *mcp.ClientSession, tool string, args map[string]
 }
 
 func TestRegisteredToolSurface(t *testing.T) {
-	cs := connectTestServer(t)
+	t.Parallel()
+	cs := connectTestServer(t.Context(), t)
 	want := map[string]bool{
 		"ccx_code_search": false, "ccx_code_replace": false, "ccx_code_related": false,
 		"ccx_code_edit":    false,
@@ -104,7 +109,7 @@ func TestRegisteredToolSurface(t *testing.T) {
 		"ccx_web_outline": false, "ccx_web_read": false, "ccx_web_search": false,
 		"ccx_exec": false, "ccx_exec_tools": false,
 	}
-	res, err := cs.ListTools(context.Background(), nil)
+	res, err := cs.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
@@ -125,8 +130,9 @@ func TestRegisteredToolSurface(t *testing.T) {
 // every other registered tool stays deferred without it — asserting over the
 // full ListTools surface so a new tool wrongly marked alwaysLoad fails here.
 func TestAlwaysLoadMetaSurface(t *testing.T) {
-	cs := connectTestServer(t)
-	res, err := cs.ListTools(context.Background(), nil)
+	t.Parallel()
+	cs := connectTestServer(t.Context(), t)
+	res, err := cs.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
@@ -155,8 +161,9 @@ func TestAlwaysLoadMetaSurface(t *testing.T) {
 // TestGrepToolSchemaHasEngineFields proves the ripgrep-engine flags and the
 // scope filter are advertised on the ccx_code_grep input schema.
 func TestGrepToolSchemaHasEngineFields(t *testing.T) {
-	cs := connectTestServer(t)
-	res, err := cs.ListTools(context.Background(), nil)
+	t.Parallel()
+	cs := connectTestServer(t.Context(), t)
+	res, err := cs.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
@@ -184,8 +191,9 @@ func TestGrepToolSchemaHasEngineFields(t *testing.T) {
 // MCP mirrors — read, grep, symbol, outline, diff — exposes the reveal_secrets
 // escape hatch its footer advertises.
 func TestMaskingToolSchemasAdvertiseRevealSecrets(t *testing.T) {
-	cs := connectTestServer(t)
-	res, err := cs.ListTools(context.Background(), nil)
+	t.Parallel()
+	cs := connectTestServer(t.Context(), t)
+	res, err := cs.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
@@ -218,8 +226,9 @@ func TestMaskingToolSchemasAdvertiseRevealSecrets(t *testing.T) {
 // exposes: an ordered "globs" array. A "scope" property anywhere would mean the
 // deleted second spelling came back.
 func TestSelectorSchemaDescriptions(t *testing.T) {
-	cs := connectTestServer(t)
-	res, err := cs.ListTools(context.Background(), nil)
+	t.Parallel()
+	cs := connectTestServer(t.Context(), t)
+	res, err := cs.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
@@ -255,6 +264,7 @@ func TestSelectorSchemaDescriptions(t *testing.T) {
 }
 
 func TestServerInstructionsNameInstalledTools(t *testing.T) {
+	t.Parallel()
 	want := "Tool names may appear under a client-assigned mcp__…__ prefix; call tools exactly as listed in your client's tool inventory."
 	if !strings.Contains(serverInstructions, want) {
 		t.Errorf("server instructions missing %q", want)
@@ -262,8 +272,9 @@ func TestServerInstructionsNameInstalledTools(t *testing.T) {
 }
 
 func TestSemanticToolDescriptionsStateContentScope(t *testing.T) {
-	cs := connectTestServer(t)
-	res, err := cs.ListTools(context.Background(), nil)
+	t.Parallel()
+	cs := connectTestServer(t.Context(), t)
+	res, err := cs.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
@@ -286,6 +297,7 @@ func TestSemanticToolDescriptionsStateContentScope(t *testing.T) {
 }
 
 func TestGrepToolFilesWithMatchesRoutesToEngine(t *testing.T) {
+	t.Parallel()
 	_, rgErr := exec.LookPath("rg")
 	_, grepErr := exec.LookPath("grep")
 	if rgErr != nil && grepErr != nil {
@@ -298,14 +310,12 @@ func TestGrepToolFilesWithMatchesRoutesToEngine(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "other.go"), []byte("var other = 1\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
-	t.Chdir(dir)
-
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), dir), t)
 	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "needle", "filesWithMatches": true})
 	if isErr {
 		t.Fatalf("ccx_code_grep filesWithMatches is error: %s", out)
 	}
-	want := rootLine(t) + "sample.go\n"
+	want := rootLine(dir) + "sample.go\n"
 	if out != want {
 		t.Errorf("ccx_code_grep filesWithMatches output = %q, want %q", out, want)
 	}
@@ -316,6 +326,7 @@ func TestGrepToolFilesWithMatchesRoutesToEngine(t *testing.T) {
 // no MCP session is opened, yet a case-insensitive query returns anchored
 // house-format frames for the uppercase match.
 func TestGrepToolIgnoreCaseRoutesToEngine(t *testing.T) {
+	t.Parallel()
 	_, rgErr := exec.LookPath("rg")
 	_, grepErr := exec.LookPath("grep")
 	if rgErr != nil && grepErr != nil {
@@ -325,9 +336,7 @@ func TestGrepToolIgnoreCaseRoutesToEngine(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte("var OpGrep = 1\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
-	t.Chdir(dir)
-
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), dir), t)
 	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "opgrep", "ignoreCase": true})
 	if isErr {
 		t.Fatalf("ccx_code_grep ignoreCase is error: %s", out)
@@ -344,6 +353,7 @@ func TestGrepToolIgnoreCaseRoutesToEngine(t *testing.T) {
 // routes through the in-process ripgrep engine: an anchored "^func " matches the
 // line starting with func, which a literal search could never find.
 func TestGrepToolRegexRoutesToEngine(t *testing.T) {
+	t.Parallel()
 	_, rgErr := exec.LookPath("rg")
 	_, grepErr := exec.LookPath("grep")
 	if rgErr != nil && grepErr != nil {
@@ -353,9 +363,7 @@ func TestGrepToolRegexRoutesToEngine(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte("// mentions func\nfunc Foo() {}\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
-	t.Chdir(dir)
-
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), dir), t)
 	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "^func ", "regex": true})
 	if isErr {
 		t.Fatalf("ccx_code_grep regex is error: %s", out)
@@ -366,6 +374,7 @@ func TestGrepToolRegexRoutesToEngine(t *testing.T) {
 }
 
 func TestGrepToolAutoRegex(t *testing.T) {
+	t.Parallel()
 	_, rgErr := exec.LookPath("rg")
 	_, grepErr := exec.LookPath("grep")
 	if rgErr != nil && grepErr != nil {
@@ -375,9 +384,7 @@ func TestGrepToolAutoRegex(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte("// mentions func\nfunc Foo() {}\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
-	t.Chdir(dir)
-
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), dir), t)
 	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "^func "})
 	if isErr {
 		t.Fatalf("ccx_code_grep auto-regex is error: %s", out)
@@ -391,6 +398,7 @@ func TestGrepToolAutoRegex(t *testing.T) {
 // TestGrepToolPathsRouteToEngine proves an MCP ccx_code_grep call with explicit
 // paths routes through the engine and returns hits only from the named file.
 func TestGrepToolPathsRouteToEngine(t *testing.T) {
+	t.Parallel()
 	_, rgErr := exec.LookPath("rg")
 	_, grepErr := exec.LookPath("grep")
 	if rgErr != nil && grepErr != nil {
@@ -402,14 +410,12 @@ func TestGrepToolPathsRouteToEngine(t *testing.T) {
 			t.Fatalf("write fixture: %v", err)
 		}
 	}
-	t.Chdir(dir)
-
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), dir), t)
 	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "needle", "paths": []any{"named.go"}})
 	if isErr {
 		t.Fatalf("ccx_code_grep paths is error: %s", out)
 	}
-	if !strings.Contains(out, "### named.go:") {
+	if !strings.Contains(out, "### "+filepath.Join(dir, "named.go")+":") {
 		t.Errorf("expected the named file's match:\n%s", out)
 	}
 	if strings.Contains(out, "other.go") {
@@ -418,23 +424,25 @@ func TestGrepToolPathsRouteToEngine(t *testing.T) {
 }
 
 func TestGrepToolPathResolvesSibling(t *testing.T) {
+	t.Parallel()
 	_, rgErr := exec.LookPath("rg")
 	_, grepErr := exec.LookPath("grep")
 	if rgErr != nil && grepErr != nil {
 		t.Skip("neither rg nor grep on PATH")
 	}
-	t.Chdir(t.TempDir())
-	if err := os.WriteFile("events.py", []byte("def old():\n    pass\n"), 0o600); err != nil {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "events.py"), []byte("def old():\n    pass\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), dir), t)
 	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "def old", "paths": []any{"events"}})
 	if isErr {
 		t.Fatalf("ccx_code_grep sibling is error: %s", out)
 	}
-	wantPrefix := "# note: events → events.py\n" + rootLine(t) + "# grep: \"def old\""
-	if !strings.HasPrefix(out, wantPrefix) || !strings.Contains(out, "### events.py:1") {
+	events := filepath.Join(dir, "events")
+	wantPrefix := "# note: " + events + " → " + events + ".py\n" + rootLine(dir) + "# grep: \"def old\""
+	if !strings.HasPrefix(out, wantPrefix) || !strings.Contains(out, "### "+events+".py:1") {
 		t.Errorf("ccx_code_grep sibling output = %q, want prefix %q and resolved path hit", out, wantPrefix)
 	}
 }
@@ -443,6 +451,7 @@ func TestGrepToolPathResolvesSibling(t *testing.T) {
 // engine flags) now runs the native ripgrep engine: the needle planted in the cwd
 // surfaces as an anchored house-format section, with no MCP engine on PATH.
 func TestGrepToolDefaultRoutesToEngine(t *testing.T) {
+	t.Parallel()
 	_, rgErr := exec.LookPath("rg")
 	_, grepErr := exec.LookPath("grep")
 	if rgErr != nil && grepErr != nil {
@@ -452,9 +461,7 @@ func TestGrepToolDefaultRoutesToEngine(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte("var needle = 1\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
-	t.Chdir(dir)
-
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), dir), t)
 	out, isErr := callText(t, cs, "ccx_code_grep", map[string]any{"text": "needle"})
 	if isErr {
 		t.Fatalf("ccx_code_grep is error: %s", out)
@@ -483,15 +490,15 @@ func requireEngines(t *testing.T) {
 // through the proxy seam — no MCP engine on PATH — resolving a real fixture to
 // the anchored locate card.
 func TestSymbolToolNative(t *testing.T) {
+	t.Parallel()
 	requireEngines(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "widget.go"),
 		[]byte("package fix\n\n// Greet builds a greeting.\nfunc Greet(name string) string {\n\treturn name\n}\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
-	t.Chdir(dir)
 
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), dir), t)
 	out, isErr := callText(t, cs, "ccx_code_symbol", map[string]any{"name": "Greet"})
 	if isErr {
 		t.Fatalf("ccx_code_symbol is error: %s", out)
@@ -507,6 +514,7 @@ func TestSymbolToolNative(t *testing.T) {
 // TestDepsToolNative proves ccx_code_deps runs the native deps analyzer through the
 // proxy seam: a real Go fixture yields the anchored imports and used-by report.
 func TestDepsToolNative(t *testing.T) {
+	t.Parallel()
 	requireEngines(t)
 	dir := t.TempDir()
 	write := func(rel, content string) {
@@ -521,14 +529,12 @@ func TestDepsToolNative(t *testing.T) {
 	write("go.mod", "module example.com/fix\n\ngo 1.23\n")
 	write("lib/lib.go", "package lib\n\nimport \"strings\"\n\nfunc Trim(s string) string { return strings.TrimSpace(s) }\n")
 	write("app/app.go", "package app\n\nimport \"example.com/fix/lib\"\n\nfunc Run() string { return lib.Trim(\" x \") }\n")
-	t.Chdir(dir)
-
-	cs := connectTestServer(t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), dir), t)
 	out, isErr := callText(t, cs, "ccx_code_deps", map[string]any{"path": "lib/lib.go"})
 	if isErr {
 		t.Fatalf("ccx_code_deps is error: %s", out)
 	}
-	for _, want := range []string{"# deps lib/lib.go —", "strings (std)", "## used by", "app/app.go:", "→ lib.Trim"} {
+	for _, want := range []string{"# deps " + filepath.Join(dir, "lib/lib.go") + " —", "strings (std)", "## used by", "app/app.go:", "→ lib.Trim"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("native deps output missing %q:\n%s", want, out)
 		}
@@ -536,7 +542,9 @@ func TestDepsToolNative(t *testing.T) {
 }
 
 func TestReplaceToolPreviewVsApply(t *testing.T) {
-	cs := connectTestServer(t, fakeAstGrepOnPath(t, []string{"a.go", "b.go"}))
+	t.Parallel()
+	root := t.TempDir()
+	cs := connectTestServer(render.WithEnv(workspace.WithRoot(t.Context(), root), fakeAstGrepOnPath(t, []string{"a.go", "b.go"})), t)
 
 	// Omitting apply → preview (diff, no apply summary).
 	out, isErr := callText(t, cs, "ccx_code_replace", map[string]any{"pattern": "old($A)", "rewrite": "new($A)"})
@@ -552,17 +560,19 @@ func TestReplaceToolPreviewVsApply(t *testing.T) {
 	if isErr {
 		t.Fatalf("ccx_code_replace apply is error: %s", out)
 	}
-	if out != "# applied 2 rewrites across 2 files\n"+rootLine(t) {
+	if out != "# applied 2 rewrites across 2 files\n"+rootLine(root) {
 		t.Errorf("apply summary wrong: %q", out)
 	}
 }
 
 func TestReplaceToolForceOverCap(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
 	files := make([]string, 21)
 	for i := range files {
 		files[i] = fmt.Sprintf("f%d.go", i)
 	}
-	cs := connectTestServer(t, fakeAstGrepOnPath(t, files))
+	cs := connectTestServer(render.WithEnv(workspace.WithRoot(t.Context(), root), fakeAstGrepOnPath(t, files)), t)
 
 	// apply over the 20-file cap without force → tool error.
 	out, isErr := callText(t, cs, "ccx_code_replace", map[string]any{"pattern": "old($A)", "rewrite": "new($A)", "apply": true})
@@ -581,13 +591,15 @@ func TestReplaceToolForceOverCap(t *testing.T) {
 	if isErr {
 		t.Fatalf("forced apply is error: %s", out)
 	}
-	if out != "# applied 21 rewrites across 21 files\n"+rootLine(t) {
+	if out != "# applied 21 rewrites across 21 files\n"+rootLine(root) {
 		t.Errorf("forced apply summary wrong: %q", out)
 	}
 }
 
 func TestSearchToolStructuralMode(t *testing.T) {
-	cs := connectTestServer(t, fakeAstGrepOnPath(t, []string{"a.go", "a.go"}))
+	t.Parallel()
+	ctx := render.WithEnv(workspace.WithRoot(t.Context(), t.TempDir()), fakeAstGrepOnPath(t, []string{"a.go", "a.go"}))
+	cs := connectTestServer(ctx, t)
 
 	// A metavar query auto-routes structural; the result is the search list.
 	out, isErr := callText(t, cs, "ccx_code_search", map[string]any{"query": "old($A)"})
@@ -601,7 +613,9 @@ func TestSearchToolStructuralMode(t *testing.T) {
 }
 
 func TestOutlineToolRoutesToAstGrep(t *testing.T) {
-	cs := connectTestServer(t, fakeAstGrepOnPath(t, nil))
+	t.Parallel()
+	ctx := render.WithEnv(workspace.WithRoot(t.Context(), t.TempDir()), fakeAstGrepOnPath(t, nil))
+	cs := connectTestServer(ctx, t)
 
 	// A directory always routes to ast-grep; the terse default renders top-level
 	// declarations only, hiding the struct's member behind a count and the flags.
@@ -627,7 +641,8 @@ func TestOutlineToolRoutesToAstGrep(t *testing.T) {
 }
 
 func TestSearchToolInvalidMode(t *testing.T) {
-	cs := connectTestServer(t)
+	t.Parallel()
+	cs := connectTestServer(t.Context(), t)
 	out, isErr := callText(t, cs, "ccx_code_search", map[string]any{"query": "x", "mode": "bogus"})
 	if !isErr {
 		t.Fatalf("invalid mode should be a tool error, got: %s", out)
@@ -644,9 +659,11 @@ func TestSearchToolInvalidMode(t *testing.T) {
 // section re-resolves to its content's current line, the move note is prepended,
 // and the anchored native header carries the served line.
 func TestReadToolResolvesAnchor(t *testing.T) {
-	cs := connectTestServer(t)
+	t.Parallel()
+	root := t.TempDir()
+	cs := connectTestServer(workspace.WithRoot(t.Context(), root), t)
 
-	file := filepath.Join(t.TempDir(), "f.txt")
+	file := filepath.Join(root, "f.txt")
 	if err := os.WriteFile(file, []byte("alpha\nbeta\ngamma\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
@@ -656,16 +673,18 @@ func TestReadToolResolvesAnchor(t *testing.T) {
 	if isErr {
 		t.Fatalf("ccx_code_read is error: %s", out)
 	}
-	want := fmt.Sprintf("# anchor %s: line 2 → 3\n%s# read %s:3#%s (1 of 3 lines)\ngamma\n", gamma, rootLine(t), file, gamma)
+	want := fmt.Sprintf("# anchor %s: line 2 → 3\n%s# read %s:3#%s (1 of 3 lines)\ngamma\n", gamma, rootLine(root), file, gamma)
 	if out != want {
 		t.Errorf("ccx_code_read out = %q, want %q", out, want)
 	}
 }
 
 func TestReadToolResolvesExtensionSibling(t *testing.T) {
-	cs := connectTestServer(t)
+	t.Parallel()
+	root := t.TempDir()
+	cs := connectTestServer(workspace.WithRoot(t.Context(), root), t)
 
-	original := filepath.Join(t.TempDir(), "events")
+	original := filepath.Join(root, "events")
 	resolved := original + ".py"
 	if err := os.WriteFile(resolved, []byte("hello\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -676,7 +695,7 @@ func TestReadToolResolvesExtensionSibling(t *testing.T) {
 		t.Fatalf("ccx_code_read sibling is error: %s", out)
 	}
 	hash := anchor.Of("hello")
-	want := fmt.Sprintf("# note: %s → %s\n%s# read %s:1#%s (1 of 1 lines)\nhello\n", original, resolved, rootLine(t), resolved, hash)
+	want := fmt.Sprintf("# note: %s → %s\n%s# read %s:1#%s (1 of 1 lines)\nhello\n", original, resolved, rootLine(root), resolved, hash)
 	if out != want {
 		t.Errorf("ccx_code_read sibling out = %q, want %q", out, want)
 	}
@@ -686,7 +705,8 @@ func TestReadToolResolvesExtensionSibling(t *testing.T) {
 // garbage hash errors at the facade with the expected form instead of falling
 // through to the engine.
 func TestReadToolRejectsMalformedAnchor(t *testing.T) {
-	cs := connectTestServer(t)
+	t.Parallel()
+	cs := connectTestServer(t.Context(), t)
 	file := filepath.Join(t.TempDir(), "x.go")
 	if err := os.WriteFile(file, []byte("package x\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -706,9 +726,11 @@ func TestReadToolRejectsMalformedAnchor(t *testing.T) {
 // before provisioning any engine session. The anchored span is replaced in place
 // and the report carries the pre/post anchors and the mini-diff.
 func TestEditToolWritesFile(t *testing.T) {
-	cs := connectTestServer(t)
+	t.Parallel()
+	root := t.TempDir()
+	cs := connectTestServer(workspace.WithRoot(t.Context(), root), t)
 
-	file := filepath.Join(t.TempDir(), "f.txt")
+	file := filepath.Join(root, "f.txt")
 	if err := os.WriteFile(file, []byte("alpha\nbeta\ngamma\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
@@ -723,7 +745,7 @@ func TestEditToolWritesFile(t *testing.T) {
 	if got, _ := os.ReadFile(file); string(got) != "alpha\nBETA\ngamma\n" {
 		t.Errorf("file after edit = %q", got)
 	}
-	want := fmt.Sprintf("%s%s:%s → %s:%s\n- beta\n+ BETA\n", rootLine(t), file, anchor.Format(2, beta), file, anchor.Format(2, anchor.Of("BETA")))
+	want := fmt.Sprintf("%s%s:%s → %s:%s\n- beta\n+ BETA\n", rootLine(root), file, anchor.Format(2, beta), file, anchor.Format(2, anchor.Of("BETA")))
 	if out != want {
 		t.Errorf("ccx_code_edit out = %q, want %q", out, want)
 	}
@@ -732,7 +754,8 @@ func TestEditToolWritesFile(t *testing.T) {
 // TestEditToolMatchWritesFile proves match mode writes replacement bytes
 // verbatim, including trailing spaces and the replacement's trailing newline.
 func TestEditToolMatchWritesFile(t *testing.T) {
-	cs := connectTestServer(t)
+	t.Parallel()
+	cs := connectTestServer(t.Context(), t)
 
 	file := filepath.Join(t.TempDir(), "f.txt")
 	if err := os.WriteFile(file, []byte("alpha\nbeta\ngamma\n"), 0o600); err != nil {
@@ -758,7 +781,8 @@ func TestEditToolMatchWritesFile(t *testing.T) {
 // TestEditToolMatchAmbiguousErrors proves an unscoped duplicate match reports
 // each candidate anchor and leaves the file byte-identical.
 func TestEditToolMatchAmbiguousErrors(t *testing.T) {
-	cs := connectTestServer(t)
+	t.Parallel()
+	cs := connectTestServer(t.Context(), t)
 	file := filepath.Join(t.TempDir(), "f.txt")
 	fixture := []byte("dup\nmiddle\ndup\n")
 	if err := os.WriteFile(file, fixture, 0o600); err != nil {
@@ -788,7 +812,8 @@ func TestEditToolMatchAmbiguousErrors(t *testing.T) {
 // TestEditToolMatchValidation proves the facade rejects missing or invalid match
 // controls before the local edit engine can touch the file.
 func TestEditToolMatchValidation(t *testing.T) {
-	cs := connectTestServer(t)
+	t.Parallel()
+	cs := connectTestServer(t.Context(), t)
 	file := filepath.Join(t.TempDir(), "f.txt")
 	fixture := []byte("alpha\nbeta\ngamma\n")
 	if err := os.WriteFile(file, fixture, 0o600); err != nil {
@@ -828,9 +853,11 @@ func TestEditToolMatchValidation(t *testing.T) {
 // TestEditToolDeleteWritesFile proves the delete path writes and reports the line
 // now at the splice point as the new anchor.
 func TestEditToolDeleteWritesFile(t *testing.T) {
-	cs := connectTestServer(t)
+	t.Parallel()
+	root := t.TempDir()
+	cs := connectTestServer(workspace.WithRoot(t.Context(), root), t)
 
-	file := filepath.Join(t.TempDir(), "f.txt")
+	file := filepath.Join(root, "f.txt")
 	if err := os.WriteFile(file, []byte("a\nb\nc\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
@@ -844,7 +871,7 @@ func TestEditToolDeleteWritesFile(t *testing.T) {
 	if got, _ := os.ReadFile(file); string(got) != "a\nc\n" {
 		t.Errorf("file after delete = %q", got)
 	}
-	want := fmt.Sprintf("%s%s:%s → %s:%s\n- b\n", rootLine(t), file, anchor.Format(2, anchor.Of("b")), file, anchor.Format(2, anchor.Of("c")))
+	want := fmt.Sprintf("%s%s:%s → %s:%s\n- b\n", rootLine(root), file, anchor.Format(2, anchor.Of("b")), file, anchor.Format(2, anchor.Of("c")))
 	if out != want {
 		t.Errorf("ccx_code_edit delete out = %q, want %q", out, want)
 	}
@@ -853,7 +880,8 @@ func TestEditToolDeleteWritesFile(t *testing.T) {
 // TestEditToolRequiresExactlyOne proves the facade rejects a call that supplies
 // both or neither of content and delete without touching the file.
 func TestEditToolRequiresExactlyOne(t *testing.T) {
-	cs := connectTestServer(t)
+	t.Parallel()
+	cs := connectTestServer(t.Context(), t)
 	file := filepath.Join(t.TempDir(), "f.txt")
 	const content = "a\nb\nc\n"
 	if err := os.WriteFile(file, []byte(content), 0o600); err != nil {
@@ -887,10 +915,11 @@ func TestEditToolRequiresExactlyOne(t *testing.T) {
 }
 
 func TestExecToolRoundTrip(t *testing.T) {
+	t.Parallel()
 	if !codeexec.Supported(t.Context()) {
 		t.Skip(codeexec.UnsupportedReason)
 	}
-	cs := connectTestServer(t)
+	cs := connectTestServer(t.Context(), t)
 	out, isErr := callText(t, cs, "ccx_exec", map[string]any{"script": "40+2"})
 	if isErr {
 		t.Fatalf("ccx_exec is error: %s", out)
@@ -901,10 +930,11 @@ func TestExecToolRoundTrip(t *testing.T) {
 }
 
 func TestExecToolsListsCatalog(t *testing.T) {
+	t.Parallel()
 	if !codeexec.Supported(t.Context()) {
 		t.Skip(codeexec.UnsupportedReason)
 	}
-	cs := connectTestServer(t)
+	cs := connectTestServer(t.Context(), t)
 	out, isErr := callText(t, cs, "ccx_exec_tools", map[string]any{})
 	if isErr {
 		t.Fatalf("ccx_exec_tools is error: %s", out)
@@ -918,10 +948,11 @@ func TestExecToolsListsCatalog(t *testing.T) {
 }
 
 func TestExecToolBadScript(t *testing.T) {
+	t.Parallel()
 	if !codeexec.Supported(t.Context()) {
 		t.Skip(codeexec.UnsupportedReason)
 	}
-	cs := connectTestServer(t)
+	cs := connectTestServer(t.Context(), t)
 	out, isErr := callText(t, cs, "ccx_exec", map[string]any{"script": "def f(:"})
 	if !isErr {
 		t.Fatalf("bad script should be a tool error, got: %s", out)
@@ -932,8 +963,9 @@ func TestExecToolBadScript(t *testing.T) {
 }
 
 func TestBashFormatRegistered(t *testing.T) {
-	cs := connectTestServer(t)
-	res, err := cs.ListTools(context.Background(), nil)
+	t.Parallel()
+	cs := connectTestServer(t.Context(), t)
+	res, err := cs.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
@@ -952,11 +984,11 @@ func TestBashFormatRegistered(t *testing.T) {
 }
 
 func TestBashFormatConvertsJSON(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("sh -c is POSIX-only")
 	}
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	cs := connectTestServer(t)
+	cs := connectTestServer(render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir()), t)
 	out, isErr := callText(t, cs, "BashFormat", map[string]any{
 		"command": []any{"sh", "-c", `printf '[{"a":1},{"a":2}]'`},
 		"format":  "toon",
@@ -970,11 +1002,11 @@ func TestBashFormatConvertsJSON(t *testing.T) {
 }
 
 func TestBashFormatAutoFloorsToCompactJSON(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("sh -c is POSIX-only")
 	}
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	cs := connectTestServer(t)
+	cs := connectTestServer(render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir()), t)
 	out, isErr := callText(t, cs, "BashFormat", map[string]any{
 		"command": []any{"sh", "-c", `printf '[{"a": 1}, {"a": 2}]'`},
 	})
@@ -987,7 +1019,8 @@ func TestBashFormatAutoFloorsToCompactJSON(t *testing.T) {
 }
 
 func TestBashFormatInvalidFormat(t *testing.T) {
-	cs := connectTestServer(t)
+	t.Parallel()
+	cs := connectTestServer(t.Context(), t)
 	out, isErr := callText(t, cs, "BashFormat", map[string]any{
 		"command": []any{"true"},
 		"format":  "yaml",
@@ -1001,11 +1034,11 @@ func TestBashFormatInvalidFormat(t *testing.T) {
 }
 
 func TestBashFormatSurfacesStderrAndExit(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("sh -c is POSIX-only")
 	}
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	cs := connectTestServer(t)
+	cs := connectTestServer(render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir()), t)
 	out, isErr := callText(t, cs, "BashFormat", map[string]any{
 		"command": []any{"sh", "-c", `echo boom 1>&2; printf '[{"a":1}]'; exit 5`},
 		"format":  "toon",
@@ -1022,11 +1055,11 @@ func TestBashFormatSurfacesStderrAndExit(t *testing.T) {
 }
 
 func TestBashFormatStderrOnSuccessIsNotAnError(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("sh -c is POSIX-only")
 	}
-	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	cs := connectTestServer(t)
+	cs := connectTestServer(render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir()), t)
 	out, isErr := callText(t, cs, "BashFormat", map[string]any{
 		"command": []any{"sh", "-c", `echo warn 1>&2; printf '[{"a":1}]'`},
 		"format":  "toon",
