@@ -1,6 +1,10 @@
 package cli
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 // TestVcsPushTakesOverItsOwnIsolatedPublication is rv2-riza-cache-derive:
 // ccx vcs stack submit replayed the lane's branch onto newer trunk on the
@@ -10,8 +14,12 @@ func TestVcsPushTakesOverItsOwnIsolatedPublication(t *testing.T) {
 	f := stackRebaseRepo(t, "feature")
 	stubGTAPI(t)
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	writeShipFile(t, f.Dir, "scratch.txt", "keeps feature on its source\n")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
+	}
+	if err := os.Remove(filepath.Join(f.Dir, "scratch.txt")); err != nil {
+		t.Fatal(err)
 	}
 	if gitAt(t, f.Env(), f.Dir, "rev-parse", "feature") == gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature") {
 		t.Fatal("fixture: stack submit moved the local branch, so the remote is not an isolated publication")

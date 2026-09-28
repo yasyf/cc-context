@@ -43,10 +43,13 @@ func healWriteReceipt(t *testing.T, f *vcstest.Fixture, receipt stackPublication
 func TestShipPublishesOverAGraphiteRecordTheReceiptOutran(t *testing.T) {
 	f := stackRebaseRepo(t, "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	stale := gtmeta.Version{HeadSha: gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"), BaseSha: gitAt(t, f.Env(), f.Dir, "rev-parse", "feature~1"), BaseName: "main"}
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
-	stale := gtmeta.Version{HeadSha: gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"), BaseSha: gitAt(t, f.Env(), f.Dir, "rev-parse", "feature~1"), BaseName: "main"}
+	if receipt := healReceipt(t, f, "feature"); stale.HeadSha == receipt.Head || stale.BaseSha == receipt.Base {
+		t.Fatalf("fixture: stale version %+v matches the receipt %+v", stale, receipt)
+	}
 	if err := gtmeta.RecordSubmitted(f.Context(), filepath.Join(f.Dir, ".git"), map[string]gtmeta.Version{"feature": stale}); err != nil {
 		t.Fatal(err)
 	}

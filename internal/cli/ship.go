@@ -533,6 +533,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	var prSeg string
 	var bodylessSegs []string
 	var gtStack []stackEntry
+	var movedSeg string
 	if gtLane {
 		prSeg, bodylessSegs, gtStack, err = shipPushGT(ctx, cmd.ErrOrStderr(), l, o, meta, trunkFetch, branch, stuck, gtc)
 	} else {
@@ -544,6 +545,9 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	if gtLane && gtc.restack != nil {
 		common, err := gtc.common(ctx)
 		if err != nil {
+			return err
+		}
+		if movedSeg, err = stackMovePublishedSources(ctx, l, common, gtc.restack); err != nil {
 			return err
 		}
 		if err := stackCompletePublication(ctx, dir, common, gtc.restack); err != nil {
@@ -560,7 +564,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	}
 	if gtLane {
 		if gtc.restack != nil {
-			segments = append(segments, fmt.Sprintf("published %.12s · source checkouts unchanged", gtc.restack.branch(branch).NewHead))
+			segments = append(segments, fmt.Sprintf("published %.12s", gtc.restack.branch(branch).NewHead), movedSeg)
 		}
 		segments = append(segments, prSeg)
 	} else {

@@ -436,18 +436,9 @@ func gtRestackRefuseClobbers(ctx context.Context, prefix string, holders map[str
 		if holder == "" {
 			continue
 		}
-		out, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"diff", "--name-only", "-z", "--no-renames", "--diff-filter=A", m.previous, m.head})
+		clobbered, err := gtRestackClobbers(ctx, prefix, holder, m)
 		if err != nil {
-			return fmt.Errorf("%s: git diff %s %s: %w", prefix, shortSHA(m.previous), shortSHA(m.head), err)
-		}
-		var clobbered []string
-		for _, path := range strings.Split(out, "\x00") {
-			if path == "" {
-				continue
-			}
-			if _, err := os.Lstat(filepath.Join(holder, path)); err == nil {
-				clobbered = append(clobbered, path)
-			}
+			return err
 		}
 		if len(clobbered) > 0 {
 			return fmt.Errorf("%s: moving %s would overwrite %s in %s, which git ignores there but the new head tracks; no branches moved — move them aside, then retry",
@@ -455,6 +446,23 @@ func gtRestackRefuseClobbers(ctx context.Context, prefix string, holders map[str
 		}
 	}
 	return nil
+}
+
+func gtRestackClobbers(ctx context.Context, prefix, holder string, m restackMove) ([]string, error) {
+	out, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"diff", "--name-only", "-z", "--no-renames", "--diff-filter=A", m.previous, m.head})
+	if err != nil {
+		return nil, fmt.Errorf("%s: git diff %s %s: %w", prefix, shortSHA(m.previous), shortSHA(m.head), err)
+	}
+	var clobbered []string
+	for _, path := range strings.Split(out, "\x00") {
+		if path == "" {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(holder, path)); err == nil {
+			clobbered = append(clobbered, path)
+		}
+	}
+	return clobbered, nil
 }
 
 func gtRestackAlign(ctx context.Context, prefix string, holders map[string]string, moves []restackMove) ([]string, error) {

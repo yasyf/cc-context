@@ -174,8 +174,8 @@ func TestStackRebaseParentKeepsAChildOnItsPublishedParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stack rebase --dry-run --parent b=main: %v", err)
 	}
-	if !strings.Contains(out, "c · onto a") {
-		t.Errorf("plan = %q, want c kept on a, where it was published", out)
+	if !strings.Contains(out, "c · kept at its published head") || stackParent(t, f, "c") != "a" {
+		t.Errorf("plan = %q, parent of c = %s, want c kept on a, where it was published", out, stackParent(t, f, "c"))
 	}
 }
 

@@ -108,13 +108,27 @@ func stackRebaseSourceSnapshot(t *testing.T, f *vcstest.Fixture, branches ...str
 
 func stackAssertRebasePublication(t *testing.T, f *vcstest.Fixture, source stackPublication) string {
 	t.Helper()
+	return stackAssertPublication(t, f, source, true)
+}
+
+func stackAssertKeptSource(t *testing.T, f *vcstest.Fixture, source stackPublication) string {
+	t.Helper()
+	return stackAssertPublication(t, f, source, false)
+}
+
+func stackAssertPublication(t *testing.T, f *vcstest.Fixture, source stackPublication, moved bool) string {
+	t.Helper()
 	branch := source.Branch
-	if local := gitAt(t, f.Env(), f.Dir, "rev-parse", branch); local != source.Source {
-		t.Errorf("local %s = %s, want unchanged %s", branch, local, source.Source)
-	}
 	want := source
 	want.Head = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch)
 	want.Base = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", source.Parent)
+	wantLocal := source.Source
+	if moved {
+		wantLocal, want.Source, want.SourceBase = want.Head, want.Head, want.Base
+	}
+	if local := gitAt(t, f.Env(), f.Dir, "rev-parse", branch); local != wantLocal {
+		t.Errorf("local %s = %s, want %s (moved onto its published head: %t)", branch, local, wantLocal, moved)
+	}
 	want.OID = gitAt(t, f.Env(), f.Dir, "rev-parse", stackPublicationRef(branch, "receipt"))
 	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), branch)
 	if err != nil || receipt == nil {
@@ -160,7 +174,6 @@ func TestStackRebaseRebasesAPullRequestLessTipLocally(t *testing.T) {
 	api := stubGTAPI(t)
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
-	source := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 
 	out, _, err := runStackCmd(t, f, "rebase")
 	if err != nil {
@@ -173,8 +186,8 @@ func TestStackRebaseRebasesAPullRequestLessTipLocally(t *testing.T) {
 	if !stackOnto(t, f, "origin/main", published) {
 		t.Error("base was not published onto the new trunk")
 	}
-	if local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); local != source {
-		t.Errorf("local base = %s, want its source %s left alone", local, source)
+	if local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); local != published {
+		t.Errorf("local base = %s, want it moved onto its published head %s", local, published)
 	}
 	if gitBranchExists(t, f.Env(), f.RemoteDir, "feature") {
 		t.Error("origin has feature, a branch with no pull request")
@@ -214,7 +227,7 @@ func TestStackRebaseRefusesAPullRequestLessBranchBelowOneWithAPullRequest(t *tes
 	}
 }
 
-func TestStackRebasePublishesTheWholeStackWithoutMovingSources(t *testing.T) {
+func TestStackRebaseMovesEachSourceOntoItsPublishedHead(t *testing.T) {
 	f := stackRebaseRepo(t, "base", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
@@ -234,11 +247,38 @@ func TestStackRebasePublishesTheWholeStackWithoutMovingSources(t *testing.T) {
 			t.Errorf("output = %q, want a verdict line for %s", out, branch)
 		}
 	}
-	if !strings.Contains(out, "published 2 branches · source checkouts unchanged") {
+	if !strings.Contains(out, "published 2 branches") || !strings.Contains(out, "moved base, feature onto the published heads") {
 		t.Errorf("output = %q, want the publication summary", out)
+	}
+	for _, branch := range []string{"base", "feature"} {
+		if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", branch), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); local != remote {
+			t.Errorf("local %s = %s, want its published head %s", branch, local, remote)
+		}
 	}
 	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
 		t.Errorf("run state left behind: %v", left)
+	}
+}
+
+func TestStackRebaseLeavesASourceAnotherWorktreeHolds(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	held := f.WorktreePath("held")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
+	sources := map[string]string{"base": gitAt(t, f.Env(), f.Dir, "rev-parse", "base"), "feature": gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")}
+
+	out, _, err := runStackCmd(t, f, "rebase")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	for branch, source := range sources {
+		if local := gitAt(t, f.Env(), f.Dir, "rev-parse", branch); local != source {
+			t.Errorf("local %s = %s, want its source %s left alone", branch, local, source)
+		}
+	}
+	if want := "left base (checked out in "; !strings.Contains(out, want) || !strings.Contains(out, filepath.Base(held)+"), feature (stacked on base) on their sources") {
+		t.Errorf("output = %q, want base and the feature above it left on their sources", out)
 	}
 }
 
@@ -980,7 +1020,7 @@ func TestStackRebaseTakesARemoteThatIsAhead(t *testing.T) {
 	if _, _, err := runStackCmd(t, f, "rebase"); err != nil {
 		t.Fatalf("stack rebase: %v", err)
 	}
-	published := stackAssertRebasePublication(t, f, sources["base"])
+	published := stackAssertKeptSource(t, f, sources["base"])
 	if got := gitAt(t, f.Env(), f.Dir, "show", published+":more.txt"); got != "more" {
 		t.Errorf("base lost the remote's commit: more.txt = %q", got)
 	}
@@ -1181,7 +1221,7 @@ func TestStackContinueDropsAParentThatLandedMidRun(t *testing.T) {
 		t.Errorf("feature's gt parent = %s, want unchanged %s", got, source.Parent)
 	}
 	source.Parent = "main"
-	published := stackAssertRebasePublication(t, f, source)
+	published := stackAssertKeptSource(t, f, source)
 	if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main.."+published); n != "1" {
 		t.Errorf("published feature holds %s commits over trunk, want its own 1", n)
 	}
@@ -1395,6 +1435,10 @@ func TestStackContinuePublishesARunSavedWithoutSourceBases(t *testing.T) {
 				t.Fatalf("continue: %v", err)
 			}
 			for _, branch := range published {
+				if branch == "feature" {
+					stackAssertKeptSource(t, f, sources[branch])
+					continue
+				}
 				stackAssertRebasePublication(t, f, sources[branch])
 			}
 			if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
