@@ -1427,3 +1427,21 @@ func TestStackRebaseNamesTheRemotesRefusal(t *testing.T) {
 		t.Errorf("err = %q, want the transfer progress dropped", msg)
 	}
 }
+
+func TestStackRebaseCarriesABranchGraphiteParkedOnItsBase(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	stubOpenPRs(t, map[string]*stackPR{"feature": {Number: 27090, Title: "feature", State: "OPEN", Base: "graphite-base/27090"}}, "base")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+
+	out, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if strings.Contains(out, "graphite-base/27090") {
+		t.Errorf("stack rebase read the graphite-base branch as feature's parent:\n%s", out)
+	}
+	if !stackOnto(t, f, "base", "feature") || !stackOnto(t, f, "origin/main", "feature") {
+		t.Errorf("feature was left off the restacked base:\n%s", out)
+	}
+}
