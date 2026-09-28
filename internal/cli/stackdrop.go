@@ -324,6 +324,9 @@ func dropLocal(ctx context.Context, l lane, commonDir string, plan dropPlan) (gt
 	if err != nil {
 		return result, fmt.Errorf("%s: %w", dropPrefix, err)
 	}
+	if state, err = gtStateAt(ctx, commonDir, dropPrefix); err != nil {
+		return result, err
+	}
 	if err := dropStrandCheck(ctx, l.dir(), state, plan.branch); err != nil {
 		return result, err
 	}
@@ -351,7 +354,7 @@ func dropCarriers(ctx context.Context, dir render.Dir, state gtState, branch str
 		if name == branch || len(s.Parents) == 0 {
 			continue
 		}
-		carried, err := gitIsAncestor(ctx, dir, dropPrefix, head, gtRestackRef(name))
+		carried, err := gitIsAncestor(ctx, dir, dropPrefix, head, s.Head)
 		if err != nil {
 			return nil, err
 		}
@@ -375,7 +378,8 @@ func dropCarriers(ctx context.Context, dir render.Dir, state gtState, branch str
 // children under the branch at all and would delete it over work that never
 // moved.
 //
-// A branch level with its parent carries nothing, so nothing can strand.
+// A branch level with its parent carries nothing, so nothing can strand, and
+// trunk holding the commits strands none of them.
 func dropStrandCheck(ctx context.Context, dir render.Dir, state gtState, branch string) error {
 	head := gtRestackRef(branch)
 	own, err := gitIsAncestor(ctx, dir, dropPrefix, head, gtRestackRef(state[branch].Parents[0].Ref))
@@ -383,10 +387,11 @@ func dropStrandCheck(ctx context.Context, dir render.Dir, state gtState, branch 
 		return err
 	}
 	for _, name := range slices.Sorted(maps.Keys(state)) {
-		if name == branch {
+		s := state[name]
+		if name == branch || len(s.Parents) == 0 {
 			continue
 		}
-		carried, err := gitIsAncestor(ctx, dir, dropPrefix, head, gtRestackRef(name))
+		carried, err := gitIsAncestor(ctx, dir, dropPrefix, head, s.Head)
 		if err != nil {
 			return err
 		}
