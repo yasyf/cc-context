@@ -279,7 +279,13 @@ func RunCLIAllowExit(ctx context.Context, dir Dir, bin string, argv []string, ok
 // exit is not an error; err is non-nil only when the child could not run, or
 // when runTimeout killed it.
 func RunCLIExitCode(ctx context.Context, dir Dir, bin string, argv []string) (string, int, string, error) {
-	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, nil)
+	return RunCLIExitCodeEnv(ctx, dir, bin, argv, nil)
+}
+
+// RunCLIExitCodeEnv is RunCLIExitCode with extraEnv appended to the child's
+// environment, as RunCLIEnv appends it.
+func RunCLIExitCodeEnv(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (string, int, string, error) {
+	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, extraEnv)
 	defer cancel()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

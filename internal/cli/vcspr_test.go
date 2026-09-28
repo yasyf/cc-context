@@ -255,6 +255,17 @@ func prActivityRoute(number int, bodies ...string) ghRoute {
 	}
 }
 
+func prLabelRoute(label string, numbers ...int) ghRoute {
+	var stdout strings.Builder
+	for _, n := range numbers {
+		fmt.Fprintf(&stdout, "%d\n", n)
+	}
+	return ghRoute{
+		argv:   []string{"api", "--paginate", "repos/Forge-AI/monorepo/issues?state=open&labels=" + label + "&per_page=100", "--jq", ".[].number"},
+		stdout: stdout.String(),
+	}
+}
+
 func readGHCalls(t *testing.T, calls string) []string {
 	t.Helper()
 	data, err := os.ReadFile(calls)
@@ -286,7 +297,7 @@ func runPRStatusCmd(t *testing.T, args ...string) (string, error) {
 func TestPRStatusReportsEachQueueState(t *testing.T) {
 	asked := stubPRInfo(t, prInfoLanded, prInfoOpen, prInfoQueued)
 	compared := stubCommitsOnBase(t, map[string]bool{"9cc33f055dc4db19da6eb13a210a810297ccdc05": true})
-	calls := installGHRoutes(t, prActivityRoute(25121), prActivityRoute(25131, "LGTM"))
+	calls := installGHRoutes(t, prActivityRoute(25121), prActivityRoute(25131, "LGTM"), prLabelRoute("merge", 23925), prLabelRoute("merge-fast"))
 
 	out, err := runPRStatusCmd(t, "--repo", "Forge-AI/monorepo", "25121", "#25131", "25116")
 	if err != nil {
@@ -308,8 +319,31 @@ func TestPRStatusReportsEachQueueState(t *testing.T) {
 	if want := [][]prCommitCandidate{{{number: 25116, base: "dev", sha: "9cc33f055dc4db19da6eb13a210a810297ccdc05"}}}; !reflect.DeepEqual(*compared, want) {
 		t.Errorf("compares = %v, want %v", *compared, want)
 	}
-	if got := readGHCalls(t, calls); len(got) != 2 {
-		t.Errorf("gh calls = %q, want one comments read per open pull request", got)
+	got := readGHCalls(t, calls)
+	if len(got) != 3 || slices.ContainsFunc(got, func(call string) bool { return strings.Contains(call, "issues/25131/comments") }) {
+		t.Errorf("gh calls = %q, want the queued pull request's comments and the two label listings, never an unlabelled one's comments", got)
+	}
+}
+
+func TestPRStatusReadsALabelledPRTheQueueDropped(t *testing.T) {
+	stubPRInfo(t, `{"prNumber":26918,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`)
+	stubCommitsOnBase(t, nil)
+	calls := installGHRoutes(t,
+		prLabelRoute("merge", 26918),
+		prLabelRoute("merge-fast"),
+		prActivityRoute(26918, prActivityEvicted),
+		ghRoute{argv: []string{"api", "repos/Forge-AI/monorepo/pulls/26918"}, stdout: `{"number":26918,"state":"open","mergeable_state":"clean"}`},
+	)
+
+	out, err := runPRStatusCmd(t, "--repo", "Forge-AI/monorepo", "26918")
+	if err != nil {
+		t.Fatalf("pr status: %v", err)
+	}
+	if want := "#26918  evicted: it had merge conflicts at Sep 28, 3:32 PM UTC\n"; out != want {
+		t.Errorf("report = %q, want %q", out, want)
+	}
+	if got := readGHCalls(t, calls); len(got) != 4 {
+		t.Errorf("gh calls = %q, want two label listings, the comments read and the pull request read", got)
 	}
 }
 
