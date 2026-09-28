@@ -127,6 +127,13 @@ request landed through a merge queue squash is dropped, and its children move
 onto what it sat on, leaving its squashed commits behind.
 A branch whose pull request was closed without landing is dropped the same way,
 named in the plan with its pull request, and its own commits are never replayed.
+A published branch on trunk whose head still merges cleanly into the fetched
+trunk stays where it is, and so do the branches stacked on it: the merge queue
+tests every pull request against current trunk, so moving it would only restart
+its CI and dismiss its approvals. The plan names it with the trunk it merges
+onto. One that conflicts with that trunk, one whose parent landed, and one never
+pushed are still rebased; --onto-trunk rebases every branch as ccx vcs stack
+rebase does.
 A pull request GitHub closed because its base branch was deleted still carries
 live work, so the run refuses it and points at ccx vcs stack drop --repair.
 
@@ -170,6 +177,7 @@ the run leaves out, is refused before anything moves.`,
 	cmd.Flags().StringArrayVar(&include, "include", nil, "submit this branch even though another working copy has it checked out (repeatable)")
 	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it (repeatable)")
 	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
+	cmd.Flags().BoolVar(&o.ontoTrunk, "onto-trunk", false, stackOntoTrunkUsage)
 	return cmd
 }
 
@@ -349,7 +357,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string) error {
 	if err := stackAnnounceSkipped(errW, skipped); err != nil {
 		return err
 	}
-	return runStackRebase(cmd, stackRebaseOpts{members: chain, landed: o.landed, draft: o.draft, ship: intent, submit: true, dropCommits: o.dropCommits})
+	return runStackRebase(cmd, stackRebaseOpts{members: chain, landed: o.landed, draft: o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, stayClean: !o.ontoTrunk})
 }
 
 // stackSubmitIntent carries --pr-title and --pr-body-file into the run as a ship

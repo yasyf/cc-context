@@ -790,7 +790,7 @@ func TestShipAmendPushesOverTheHeadItLastSubmitted(t *testing.T) {
 	writeShipFile(t, f.Dir, "base.txt", "base amended\n")
 	shipResetLog(t, f)
 
-	if _, _, err := runShipCmdFull(f.Context(), t, "--amend", "--no-watch", "base.txt"); err != nil {
+	if _, _, err := runShipCmdFull(f.Context(), t, "--amend", "--no-watch", "--onto-trunk", "base.txt"); err != nil {
 		t.Fatalf("ship --amend = %v, want the amend pushed over the head this repository submitted", err)
 	}
 	source := stackRebaseSourceSnapshot(t, f, "base")["base"]

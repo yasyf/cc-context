@@ -75,6 +75,7 @@ type stackRebaseBranch struct {
 	Landed      string            `json:"landed,omitempty"`
 	Held        string            `json:"held,omitempty"`
 	Kept        bool              `json:"kept,omitempty"`
+	Stays       bool              `json:"stays,omitempty"`
 	LocalOnly   bool              `json:"local_only,omitempty"`
 	PR          *stackPR          `json:"pr,omitempty"`
 	NewBase     string            `json:"new_base,omitempty"`
@@ -99,6 +100,7 @@ type stackRebaseRun struct {
 	Tip          string `json:"tip,omitempty"`
 	TipOnly      bool   `json:"tip_only,omitempty"`
 	DropCommits  bool   `json:"drop_commits,omitempty"`
+	StayClean    bool   `json:"stay_clean,omitempty"`
 	deferPush    bool
 	Ship         *stackShipIntent         `json:"ship,omitempty"`
 	Aligned      bool                     `json:"aligned,omitempty"`
@@ -163,9 +165,13 @@ type stackRebaseOpts struct {
 	tip         string
 	tipOnly     bool
 	dropCommits bool
+	stayClean   bool
 }
 
-const stackDropCommitsUsage = "publish a branch whose local head drops commits its published head carries"
+const (
+	stackDropCommitsUsage = "publish a branch whose local head drops commits its published head carries"
+	stackOntoTrunkUsage   = "rebase every published branch on trunk onto the fetched trunk, even one that still merges cleanly"
+)
 
 // stackPRLookup is a var so tests answer for GitHub.
 var stackPRLookup = stackQueryPRs
@@ -667,7 +673,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left}
 	own := map[string]bool{}
 	if current != "" && current != trunk {
 		down, err := gtDownstack(stackRebasePrefix, retargeted, current, trunk)
@@ -832,6 +838,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			}
 			if err := stackOwnWork(ctx, l.dir(), tr, pin, b); err != nil {
 				return nil, err
+			}
+			if o.stayClean && b.Parent == trunk && b.WasParent == trunk && b.Remote != "" && b.OldBase != pin {
+				if b.Stays, err = stackMergesClean(ctx, l.dir(), pin, b.Head); err != nil {
+					return nil, err
+				}
 			}
 		}
 		run.Branches = append(run.Branches, *b)
@@ -1677,6 +1688,21 @@ func stackPastFork(ctx context.Context, dir render.Dir, recorded, fork, head str
 	return recorded, nil
 }
 
+func stackMergesClean(ctx context.Context, dir render.Dir, pin, head string) (bool, error) {
+	_, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"merge-tree", "--write-tree", "--name-only", pin, head})
+	if err != nil {
+		return false, fmt.Errorf("stack rebase: git merge-tree %.12s %.12s: %w", pin, head, err)
+	}
+	switch code {
+	case 0:
+		return true, nil
+	case 1:
+		return false, nil
+	default:
+		return false, fmt.Errorf("stack rebase: git merge-tree %.12s %.12s: exit %d: %s", pin, head, code, strings.TrimSpace(stderr))
+	}
+}
+
 func stackMergeBase(ctx context.Context, dir render.Dir, a, b string) (string, error) {
 	out, err := render.RunCLI(ctx, dir, "git", []string{"merge-base", a, b})
 	if err != nil {
@@ -1729,6 +1755,8 @@ func stackPlanLines(run *stackRebaseRun) []string {
 			fields = append(fields, "left alone ("+b.Held+")")
 		case b.Kept:
 			fields = append(fields, fmt.Sprintf("kept at its published head %.12s", b.Head))
+		case b.Stays:
+			fields = append(fields, fmt.Sprintf("stays on %.12s", b.OldBase), fmt.Sprintf("merges cleanly onto %s@%.12s", run.Trunk, run.Pin))
 		default:
 			parent := "onto " + b.Parent
 			if b.Parent != b.WasParent {
@@ -1747,7 +1775,7 @@ func stackPlanLines(run *stackRebaseRun) []string {
 	if !run.NoPush {
 		var pushes []string
 		for _, b := range run.Branches {
-			if b.Landed == "" && b.Held == "" && !b.Kept && !b.LocalOnly {
+			if b.Landed == "" && b.Held == "" && !b.Kept && !b.LocalOnly && (!b.Stays || b.Head != b.Remote) {
 				pushes = append(pushes, b.Name)
 			}
 		}
@@ -1766,7 +1794,7 @@ func stackDrive(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 			b.NewHead = b.Head
 			continue
 		}
-		if b.Kept {
+		if b.Kept || b.Stays {
 			b.NewBase, b.NewHead = b.OldBase, b.Head
 			continue
 		}
@@ -2583,7 +2611,7 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	}
 	next, err := stackPlan(ctx, l, commonDir, stackRebaseOpts{
 		members: members, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, noVerify: run.NoVerify, ship: run.Ship,
-		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits,
+		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits, stayClean: run.StayClean,
 	})
 	if err != nil {
 		return err
