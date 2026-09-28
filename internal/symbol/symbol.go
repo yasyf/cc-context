@@ -55,6 +55,7 @@ func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 	}
 	r := &resolver{
 		ctx:       ctx,
+		cwd:       cwd,
 		a:         a,
 		root:      root,
 		qualifier: qualifier,
@@ -77,6 +78,7 @@ func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 type resolver struct {
 	ctx       context.Context
 	a         backend.Args
+	cwd       string
 	root      string // outline root ("." for the whole tree)
 	qualifier string
 	name      string

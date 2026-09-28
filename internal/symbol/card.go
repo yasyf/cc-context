@@ -6,21 +6,23 @@ import (
 	"strings"
 
 	"github.com/yasyf/cc-context/anchor"
+	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/ripgrep"
 	"github.com/yasyf/cc-context/internal/secrets"
 )
 
 // card is the render-ready model of a resolved symbol: the header fields, the
-// signature and doc, the terse counts, the requested expansions, and the
-// disambiguation footer. Building it does the I/O (outline, ripgrep, anchoring);
-// renderCard is pure over it.
+// signature and doc, a type's inherited ancestors, the terse counts, the
+// requested expansions, and the disambiguation footer. Building it does the I/O
+// (outline, ripgrep, anchoring); renderCard is pure over it.
 type card struct {
 	name, kind, loc string
 	caseFolded      bool
 	query           string
 	signature       string
 	doc             string
+	inherited       []string
 
 	terse                 bool
 	refs, tests, siblings int
@@ -94,6 +96,9 @@ func (r *resolver) buildCard(cands []candidate, fold bool) (card, error) {
 			c.body = strings.Split(r.maskText(top.path, strings.Join(body, "\n")), "\n")
 		}
 	}
+	if rows := r.inheritedRows(top, showBody); len(rows) > 0 {
+		c.inherited = strings.Split(r.maskText(top.path, strings.Join(rows, "\n")), "\n")
+	}
 	if showCallers {
 		blk, err := r.refBlock("callers", top, refs)
 		if err != nil {
@@ -131,6 +136,43 @@ func (r *resolver) buildCard(cands []candidate, fold bool) (card, error) {
 		c.also, c.alsoMore = r.alsoEntries(cands[1:])
 	}
 	return c, nil
+}
+
+// inheritedRows renders one row per ancestor of a top-level type declaration:
+// why an unresolved one was not found, and for a resolved one its locator and
+// the members it contributes — named when names is set, else counted.
+func (r *resolver) inheritedRows(top candidate, names bool) []string {
+	f, ok := r.defFile(top.path)
+	if !ok {
+		return nil
+	}
+	var rows []string
+	for _, it := range f.Items {
+		if it.Name != top.name || it.Range.Start.Line+1 != top.start {
+			continue
+		}
+		for _, base := range astgrep.NewInheritance(r.ctx, r.cwd).Ancestors(top.path, it) {
+			switch {
+			case base.Unresolved != "":
+				rows = append(rows, fmt.Sprintf("%s: unresolved, %s", base.Name, base.Unresolved))
+			case len(base.Members) == 0:
+				rows = append(rows, fmt.Sprintf("%s (%s:%s): none", base.Name, base.Path, r.anchoredLine(base.Path, base.Line)))
+			case names:
+				memberNames := make([]string, len(base.Members))
+				for i, m := range base.Members {
+					memberNames[i] = m.Name
+				}
+				rows = append(rows, fmt.Sprintf("%s (%s:%s): %s", base.Name, base.Path, r.anchoredLine(base.Path, base.Line), strings.Join(memberNames, " · ")))
+			default:
+				unit := "members"
+				if len(base.Members) == 1 {
+					unit = "member"
+				}
+				rows = append(rows, fmt.Sprintf("%s (%s:%s): %d %s — --body names them", base.Name, base.Path, r.anchoredLine(base.Path, base.Line), len(base.Members), unit))
+			}
+		}
+	}
+	return rows
 }
 
 // maskText masks detected secrets in text under path's rule context, recording
@@ -176,14 +218,21 @@ func (r *resolver) loc(top candidate) string {
 	return top.path + ":" + span
 }
 
-// renderCard renders the card model to text: header, signature, doc, the ordered
-// expansions, the terse counts trailer, and the disambiguation footer. It is pure.
+// renderCard renders the card model to text: header, signature, doc, inherited
+// ancestors, the ordered expansions, the terse counts trailer, and the
+// disambiguation footer. It is pure.
 func renderCard(c card) string {
 	var b strings.Builder
 	b.WriteString(cardHeader(c) + "\n")
 	b.WriteString(c.signature + "\n")
 	if c.doc != "" {
 		b.WriteString("\n" + c.doc + "\n")
+	}
+	if len(c.inherited) > 0 {
+		b.WriteString("\n## inherited\n")
+		for _, l := range c.inherited {
+			b.WriteString(l + "\n")
+		}
 	}
 	if c.showBody {
 		b.WriteString("\n## body\n")

@@ -25,7 +25,8 @@ type OutlineFile struct {
 
 // OutlineItem is a top-level declaration or a member of one. Only the fields the
 // renderer consumes are decoded; Members holds its direct members (a class's
-// methods, a struct's fields).
+// methods, a struct's fields), and Bases, set by Inheritance.Annotate rather than
+// ast-grep, the ancestors a type declaration inherits from.
 type OutlineItem struct {
 	SymbolType string `json:"symbolType"`
 	Name       string `json:"name"`
@@ -33,13 +34,15 @@ type OutlineItem struct {
 	IsExported bool   `json:"isExported"`
 	Range      struct {
 		Start struct {
-			Line int `json:"line"`
+			Line   int `json:"line"`
+			Column int `json:"column"`
 		} `json:"start"`
 		End struct {
 			Line int `json:"line"`
 		} `json:"end"`
 	} `json:"range"`
 	Members []OutlineItem `json:"members"`
+	Bases   []Base        `json:"-"`
 }
 
 // ParseOutline decodes an `outline --json=stream` body (one JSON object per file)
@@ -271,15 +274,10 @@ func writeOutlineItem(b *strings.Builder, it OutlineItem, depth, maxDepth int, p
 			anchored = "#" + anchor.Of(src).String()
 		}
 	}
-	hideHere := depth >= maxDepth && len(it.Members) > 0
+	hideHere := depth >= maxDepth && (len(it.Members) > 0 || len(it.Bases) > 0)
 	suffix := ""
 	if hideHere {
-		n := countMembers(it.Members)
-		unit := "members"
-		if n == 1 {
-			unit = "member"
-		}
-		suffix = fmt.Sprintf("  (+%d %s)", n, unit)
+		suffix = "  (" + collapsedSummary(it) + ")"
 	}
 	fmt.Fprintf(b, "%sL%d%s  %s%s\n", strings.Repeat("  ", depth), line, anchored, sig, suffix)
 	hidden := hideHere
@@ -289,8 +287,72 @@ func writeOutlineItem(b *strings.Builder, it OutlineItem, depth, maxDepth int, p
 				hidden = true
 			}
 		}
+		for _, base := range it.Bases {
+			if writeBase(b, base, depth+1, maxDepth, fs) {
+				hidden = true
+			}
+		}
 	}
 	return hidden
+}
+
+func writeBase(b *strings.Builder, base Base, depth, maxDepth int, fs *anchor.Files) bool {
+	indent := strings.Repeat("  ", depth)
+	if base.Unresolved != "" {
+		fmt.Fprintf(b, "%sinherits from %s: unresolved, %s\n", indent, base.Name, base.Unresolved)
+		return false
+	}
+	loc := fmt.Sprintf("%s:%d", base.Path, base.Line)
+	if src, ok := fs.LineAt(base.Path, base.Line); ok {
+		loc += "#" + anchor.Of(src).String()
+	}
+	if len(base.Members) == 0 {
+		fmt.Fprintf(b, "%sinherited from %s (%s): none\n", indent, base.Name, loc)
+		return false
+	}
+	fmt.Fprintf(b, "%sinherited from %s (%s):\n", indent, base.Name, loc)
+	hidden := false
+	for _, m := range base.Members {
+		if m.Path != base.Path {
+			fmt.Fprintf(b, "%s  %s:%d  %s\n", indent, m.Path, oneBased(m.Range.Start.Line), m.Signature)
+			continue
+		}
+		if writeOutlineItem(b, m.OutlineItem, depth+1, maxDepth, base.Path, fs) {
+			hidden = true
+		}
+	}
+	return hidden
+}
+
+func collapsedSummary(it OutlineItem) string {
+	var parts, from, unresolved []string
+	if n := countMembers(it.Members); n > 0 {
+		parts = append(parts, plural(n, "member"))
+	}
+	inherited := 0
+	for _, base := range it.Bases {
+		switch {
+		case base.Unresolved != "":
+			unresolved = append(unresolved, base.Name)
+		case len(base.Members) > 0:
+			inherited += len(base.Members)
+			from = append(from, base.Name)
+		}
+	}
+	if inherited > 0 {
+		parts = append(parts, fmt.Sprintf("+%d inherited from %s", inherited, strings.Join(from, ", ")))
+	}
+	if len(unresolved) > 0 {
+		parts = append(parts, strings.Join(unresolved, ", ")+" unresolved")
+	}
+	return strings.Join(parts, ", ")
+}
+
+func plural(n int, unit string) string {
+	if n == 1 {
+		return fmt.Sprintf("+%d %s", n, unit)
+	}
+	return fmt.Sprintf("+%d %ss", n, unit)
 }
 
 // countMembers counts an item's members recursively.

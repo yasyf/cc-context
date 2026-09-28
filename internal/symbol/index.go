@@ -1,7 +1,6 @@
 package symbol
 
 import (
-	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -60,11 +59,6 @@ func nameMatches(itemName, query string, fold bool) bool {
 	return itemName == query
 }
 
-// goReceiverRe captures the receiver type of a Go method signature —
-// "func (w Widget) …", "func (w *Widget) …", "func (Widget) …" — so a Recv.Method
-// query resolves a method whose outline carries no container qualification.
-var goReceiverRe = regexp.MustCompile(`^func\s*\(\s*(?:\w+\s+)?\*?(\w+)`)
-
 // qualifierMatches reports whether qualifier names the item's container: the
 // immediate parent segment of a member's qualified name (Class.method → Class),
 // or the receiver type parsed from a Go method signature.
@@ -72,7 +66,7 @@ func qualifierMatches(qualifier, qualified, signature string) bool {
 	if segs := strings.Split(qualified, "."); len(segs) >= 2 && segs[len(segs)-2] == qualifier {
 		return true
 	}
-	if m := goReceiverRe.FindStringSubmatch(signature); m != nil && m[1] == qualifier {
+	if recv, ok := astgrep.GoReceiver(signature); ok && recv == qualifier {
 		return true
 	}
 	return false

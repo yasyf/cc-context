@@ -3,7 +3,9 @@ package symbol
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -151,5 +153,41 @@ func requireBins(t *testing.T) {
 	}
 	if _, err := exec.LookPath("rg"); err != nil {
 		t.Skip("rg not on PATH")
+	}
+}
+
+// TestLiveInherited resolves a subclass that overrides one of its base's two
+// methods, so the card counts the inherited one and --body names it.
+func TestLiveInherited(t *testing.T) {
+	requireBins(t)
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"base.ts": "export class Shared {\n  getSecretText(): string { return \"\" }\n  log(): void {}\n}\n",
+		"sub.ts":  "import { Shared } from \"./base\"\nexport class Action extends Shared {\n  log(): void {}\n}\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(dir)
+	tests := []struct {
+		name string
+		args backend.Args
+		want string
+	}{
+		{"terse counts", backend.Args{Query: "Action"}, "\n## inherited\nShared (base.ts:1#"},
+		{"terse row", backend.Args{Query: "Action"}, "): 1 member — --body names them\n"},
+		{"body names", backend.Args{Query: "Action", Body: true}, "): getSecretText\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, _, err := Run(context.Background(), tt.args)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !strings.Contains(out, tt.want) {
+				t.Errorf("card missing %q:\n%s", tt.want, out)
+			}
+		})
 	}
 }
