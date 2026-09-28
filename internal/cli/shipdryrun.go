@@ -286,9 +286,9 @@ func dryRunPlace(ctx context.Context, l lane, o shipOpts, r *shipDryRun) error {
 	}
 	r.plan = plan
 	if plan.action == branchCreate {
-		off := plan.parent
-		if off == "" {
-			off = r.branch
+		off := r.branch
+		if l.gt && plan.parent != "" {
+			off = plan.parent
 		}
 		r.place = "create " + plan.name + " off " + off
 		return nil

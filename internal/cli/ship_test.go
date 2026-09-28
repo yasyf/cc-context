@@ -6137,15 +6137,12 @@ func TestShipGTDraftPublish(t *testing.T) {
 	})
 }
 
-// TestShipGTFlagsOutsideGTLane covers --parent alone: --draft and --publish
-// stopped being graphite-only when ship took over the pull request in every
-// lane, where they toggle the draft state through gh.
-func TestShipGTFlagsOutsideGTLane(t *testing.T) {
+func TestShipParentOutsideGTLaneRequiresPush(t *testing.T) {
 	t.Parallel()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	head := shipHead(t, f)
 	shipResetLog(t, f)
-	wantErr := "ship: --parent applies only to graphite repos; pass --no-gt only when .git/.graphite_repo_config exists, or drop it"
+	wantErr := "ship: --parent outside the graphite lane sets the pull request's base, which requires push (drop --no-push)"
 	_, err := runShipCmd(f.Context(), t, "--parent", "base", "--no-push")
 	if err == nil || err.Error() != wantErr {
 		t.Errorf("error = %v, want %q", err, wantErr)

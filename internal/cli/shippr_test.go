@@ -322,6 +322,48 @@ func TestShipPRCreateDefaults(t *testing.T) {
 	}
 }
 
+func TestShipPRCreateGitLaneOnAParentBranch(t *testing.T) {
+	f := shipPRFixture(t, vcstest.Branch("feature"))
+	created := shipPRCreated(t)
+	body := writePRBody(t, "body.md", "why this change\n")
+
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--parent", "base", "--pr-title", "Better title", "--pr-body-file", body)
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), append(shipPRPushed("feature"),
+		append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "feature", "open")...),
+		[]string{"gh", "api", "-X", "POST", "repos/" + fakePRRepo + "/pulls", "-f", "head=feature", "-f", "base=base", "-f", "title=Better title", "-F", "body=@" + body},
+	))
+	if want := fmt.Sprintf(" · opened PR #%d %s", created.Number, created.URL); !strings.HasSuffix(got, want) {
+		t.Errorf("summary = %q, want it to end %q", got, want)
+	}
+}
+
+func TestShipPREditRetargetsOntoAParentBranch(t *testing.T) {
+	f := shipPRFixture(t, vcstest.Branch("feature"))
+	pr := prFromListGolden(t, "rest-pulls-head-open")
+	t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-open"))
+
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--parent", "base")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	var prCalls [][]string
+	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+		if inv[0] == "gh" && (inv[1] == "pr" || isPREdit(inv) || isPRLookup(inv)) {
+			prCalls = append(prCalls, inv)
+		}
+	}
+	assertInvocations(t, prCalls, [][]string{
+		append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "feature", "open")...),
+		ghPREditArgv(pr.Number, "-f", "base=base"),
+	})
+	if want := fmt.Sprintf("updated PR #%d %s (base)", pr.Number, pr.URL); !strings.HasSuffix(got, want) {
+		t.Errorf("summary = %q, want it to end %q", got, want)
+	}
+}
+
 func TestShipPREditOnlyStatedFields(t *testing.T) {
 	f := shipPRFixture(t, vcstest.Branch("feature"))
 	pr := prFromListGolden(t, "rest-pulls-head-open")
