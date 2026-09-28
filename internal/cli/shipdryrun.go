@@ -241,6 +241,9 @@ func dryRunTrack(ctx context.Context, l lane, o shipOpts, state gtState, r *ship
 		if err != nil {
 			return err
 		}
+		if err := gtRefuseUntrackedBelow(ctx, l.dir(), state, r.branch, parent); err != nil {
+			return err
+		}
 		r.parent = parent
 		r.because = "untracked, so gt track -f takes the nearest tracked ancestor"
 		err = gtRefuseLandedParent(ctx, l.dir(), state, r.branch, parent)

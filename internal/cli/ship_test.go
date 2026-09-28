@@ -4842,6 +4842,33 @@ func TestShipGTTrackReportsParent(t *testing.T) {
 	}
 }
 
+// TestShipGTRefusesToAdoptAcrossAnUntrackedBranch is the ship from an
+// untracked top branch that gt track -f put on its grandparent: the untracked
+// branch between them rode into the top branch's pull request, and gt kept
+// recording the grandparent after the middle branch was tracked.
+func TestShipGTRefusesToAdoptAcrossAnUntrackedBranch(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	shipGTUntracked(t, f, "middle")
+	shipGTUntracked(t, f, "top")
+	shipGTReady(t, f)
+	head := shipHead(t, f)
+
+	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+	if err == nil || !strings.Contains(err.Error(), "top sits on untracked middle, above base") {
+		t.Fatalf("ship error = %v, want a refusal naming the untracked middle", err)
+	}
+	if got := shipHead(t, f); got != head {
+		t.Errorf("head moved to %s on a refusal", got)
+	}
+	var state gtState
+	if err := json.Unmarshal([]byte(mustRun(t, f.Env(), f.Dir, "gt", "state")), &state); err != nil {
+		t.Fatalf("parse gt state: %v", err)
+	}
+	if _, tracked := state["top"]; tracked {
+		t.Errorf("gt tracks top onto %v after the refusal", state["top"].Parents)
+	}
+}
+
 func TestShipGTAdoptsEmptyRootWithoutTrack(t *testing.T) {
 	f := shipGTRepo(t)
 	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
