@@ -74,6 +74,7 @@ type stackRebaseBranch struct {
 	Landed      string            `json:"landed,omitempty"`
 	Held        string            `json:"held,omitempty"`
 	Kept        bool              `json:"kept,omitempty"`
+	LocalOnly   bool              `json:"local_only,omitempty"`
 	PR          *stackPR          `json:"pr,omitempty"`
 	NewBase     string            `json:"new_base,omitempty"`
 	NewHead     string            `json:"new_head,omitempty"`
@@ -87,33 +88,35 @@ type stackConflict struct {
 }
 
 type stackRebaseRun struct {
-	Trunk       string `json:"trunk"`
-	Pin         string `json:"pin"`
-	NoPush      bool   `json:"no_push"`
-	Git         bool   `json:"git,omitempty"`
-	Origin      string `json:"origin"`
-	Draft       bool   `json:"draft,omitempty"`
-	NoVerify    bool   `json:"no_verify,omitempty"`
-	Tip         string `json:"tip,omitempty"`
-	TipOnly     bool   `json:"tip_only,omitempty"`
-	DropCommits bool   `json:"drop_commits,omitempty"`
-	deferPush   bool
-	Ship        *stackShipIntent         `json:"ship,omitempty"`
-	Aligned     bool                     `json:"aligned,omitempty"`
-	Applied     bool                     `json:"applied,omitempty"`
-	Publishing  bool                     `json:"publishing,omitempty"`
-	PushTargets []stackPublicationTarget `json:"push_targets,omitempty"`
-	Pushed      bool                     `json:"pushed,omitempty"`
-	Receipted   bool                     `json:"receipted,omitempty"`
-	Branches    []stackRebaseBranch      `json:"branches"`
-	Conflict    *stackConflict           `json:"conflict,omitempty"`
-	Roots       []string                 `json:"roots"`
-	Pid         int                      `json:"pid"`
-	Started     string                   `json:"started"`
-	Host        string                   `json:"host"`
-	dir         string
-	saved       time.Time
-	left        []stackLeft
+	Trunk        string `json:"trunk"`
+	Pin          string `json:"pin"`
+	NoPush       bool   `json:"no_push"`
+	Git          bool   `json:"git,omitempty"`
+	Origin       string `json:"origin"`
+	Draft        bool   `json:"draft,omitempty"`
+	NoVerify     bool   `json:"no_verify,omitempty"`
+	Tip          string `json:"tip,omitempty"`
+	TipOnly      bool   `json:"tip_only,omitempty"`
+	DropCommits  bool   `json:"drop_commits,omitempty"`
+	deferPush    bool
+	Ship         *stackShipIntent         `json:"ship,omitempty"`
+	Aligned      bool                     `json:"aligned,omitempty"`
+	Applied      bool                     `json:"applied,omitempty"`
+	Publishing   bool                     `json:"publishing,omitempty"`
+	PushTargets  []stackPublicationTarget `json:"push_targets,omitempty"`
+	Pushed       bool                     `json:"pushed,omitempty"`
+	Receipted    bool                     `json:"receipted,omitempty"`
+	LocalApplied bool                     `json:"local_applied,omitempty"`
+	LocalAligned bool                     `json:"local_aligned,omitempty"`
+	Branches     []stackRebaseBranch      `json:"branches"`
+	Conflict     *stackConflict           `json:"conflict,omitempty"`
+	Roots        []string                 `json:"roots"`
+	Pid          int                      `json:"pid"`
+	Started      string                   `json:"started"`
+	Host         string                   `json:"host"`
+	dir          string
+	saved        time.Time
+	left         []stackLeft
 }
 
 // stackLeft is a branch of the stack a run leaves exactly where it is: an
@@ -199,8 +202,10 @@ the remote heads recorded at the start, and one verdict line per pull request
 names its pushed head, parent, and mergeability. Labels are never touched.
 
 stack rebase never opens a pull request. A stack none of whose branches has one
-is rebased locally as if --no-push were given; a stack mixing branches with and
-without one is refused before anything moves, naming the ones without.`,
+is rebased locally as if --no-push were given. In a stack mixing the two, a
+branch without one that only branches without one sit on is rebased locally
+onto its parent's published head and not pushed, while the rest publish; one a
+branch with a pull request sits on is refused before anything moves.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runStackRebase(cmd, o)
@@ -328,8 +333,10 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 
 // stackKeepLocal keeps stack rebase from opening a pull request, which a
 // pushing run's submit does for every branch that has none: a stack none of
-// whose branches has one is replanned to rebase locally, and a stack mixing the
-// two is refused before anything moves.
+// whose branches has one is replanned to rebase locally, a branch with none
+// stacked only under others without one is rebased locally while the rest
+// publish, and one a branch with a pull request sits on is refused before
+// anything moves.
 func stackKeepLocal(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, o stackRebaseOpts, run *stackRebaseRun) (*stackRebaseRun, error) {
 	var live, bare []string
 	for _, b := range run.Branches {
@@ -346,14 +353,40 @@ func stackKeepLocal(ctx context.Context, cmd *cobra.Command, l lane, commonDir s
 		return run, nil
 	case len(bare) < len(live):
 		verb, them := "have", "them"
-		if len(bare) == 1 {
-			verb, them = "has", "it"
+		if below := stackBareBelow(run, live, bare); len(below) > 0 {
+			if len(below) == 1 {
+				verb, them = "has", "it"
+			}
+			return nil, fmt.Errorf("stack rebase: %s %s no pull request, and stack rebase never opens one — rebase with --no-push to keep the stack local, or open %s first with ccx vcs ship --pr-body-file", strings.Join(below, ", "), verb, them)
 		}
-		return nil, fmt.Errorf("stack rebase: %s %s no pull request, and stack rebase never opens one — rebase with --no-push to keep the stack local, or open %s first with ccx vcs ship --pr-body-file", strings.Join(bare, ", "), verb, them)
+		for i := range run.Branches {
+			run.Branches[i].LocalOnly = slices.Contains(bare, run.Branches[i].Name)
+		}
+		if len(bare) == 1 {
+			verb = "has"
+		}
+		cmd.Printf("%s %s no pull request, and stack rebase never opens one, so it rebases locally without pushing\n", strings.Join(bare, ", "), verb)
+		return run, nil
 	}
 	cmd.Println("no branch of this stack has a pull request, and stack rebase never opens one, so it rebases locally without pushing")
 	o.noPush = true
 	return stackPlan(ctx, l, commonDir, o)
+}
+
+func stackBareBelow(run *stackRebaseRun, live, bare []string) []string {
+	var below []string
+	for _, name := range live {
+		if slices.Contains(bare, name) {
+			continue
+		}
+		for b := run.branch(run.branch(name).Parent); b != nil; b = run.branch(b.Parent) {
+			if slices.Contains(bare, b.Name) && !slices.Contains(below, b.Name) {
+				below = append(below, b.Name)
+			}
+		}
+	}
+	slices.Sort(below)
+	return below
 }
 
 // stackGate refuses a rebase over a run in progress, or reclaims the run when
@@ -1633,7 +1666,7 @@ func stackPlanLines(run *stackRebaseRun) []string {
 	if !run.NoPush {
 		var pushes []string
 		for _, b := range run.Branches {
-			if b.Landed == "" && b.Held == "" && !b.Kept {
+			if b.Landed == "" && b.Held == "" && !b.Kept && !b.LocalOnly {
 				pushes = append(pushes, b.Name)
 			}
 		}
@@ -2234,6 +2267,8 @@ func stackSettle(ctx context.Context, l lane, commonDir string, run *stackRebase
 	}
 	outcome := "aborted · no branch moved"
 	switch {
+	case run.LocalApplied:
+		return "", errors.New("stack abort: the stack is published and its branches without a pull request are already rebased locally, so there is nothing left to abort — ccx vcs stack continue finishes recording them")
 	case run.Receipted:
 		return "aborted pending publication metadata · published commits and source checkouts unchanged", stackCompletePublication(ctx, dir, commonDir, run)
 	case run.Pushed:
@@ -2474,6 +2509,11 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	}
 	if !slices.Equal(run.Roots, next.Roots) {
 		return errors.New("stack rebase: stack roots changed during replanning; original recovery state retained")
+	}
+	for i := range next.Branches {
+		if b := run.branch(next.Branches[i].Name); b != nil {
+			next.Branches[i].LocalOnly = b.LocalOnly
+		}
 	}
 	next.dir = run.dir
 	if err := stackSaveRun(next); err != nil {
