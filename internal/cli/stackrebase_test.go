@@ -881,8 +881,8 @@ func TestStackAbortDropsTheRun(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(stackWorkspaceOf(t, conflict), "node_modules")); !os.IsNotExist(err) {
 		t.Fatalf("conflict workspace warmed node_modules: %v", err)
 	}
-	if _, _, err := runStackCmd(t, f, "rebase"); err == nil || !strings.Contains(err.Error(), "already in progress") {
-		t.Fatalf("second rebase = %v, want the in-progress refusal", err)
+	if _, _, err := runStackCmd(t, f, "rebase"); err == nil || !strings.Contains(err.Error(), "is stopped on a conflict in ") {
+		t.Fatalf("second rebase = %v, want the refusal naming the conflict workspace", err)
 	}
 	out, _, err := runStackCmd(t, f, "abort")
 	if err != nil {
