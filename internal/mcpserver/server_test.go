@@ -490,18 +490,15 @@ func requireEngines(t *testing.T) {
 // through the proxy seam — no MCP engine on PATH — resolving a real fixture to
 // the anchored locate card.
 func TestSymbolToolNative(t *testing.T) {
+	t.Parallel()
 	requireEngines(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "widget.go"),
 		[]byte("package fix\n\n// Greet builds a greeting.\nfunc Greet(name string) string {\n\treturn name\n}\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
-	// TODO(#91): internal/symbol reads the doc's source with anchor.Load on the
-	// path ast-grep reported relative to its own cwd, so the card loses its doc
-	// unless the resolver's root is the process working directory.
-	t.Chdir(dir)
 
-	cs := connectTestServer(t.Context(), t)
+	cs := connectTestServer(workspace.WithRoot(t.Context(), dir), t)
 	out, isErr := callText(t, cs, "ccx_code_symbol", map[string]any{"name": "Greet"})
 	if isErr {
 		t.Fatalf("ccx_code_symbol is error: %s", out)

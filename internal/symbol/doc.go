@@ -6,7 +6,7 @@ import "strings"
 // paragraph in terse mode, every paragraph joined in --full mode. An absent doc
 // is the empty string.
 func (r *resolver) doc(top candidate) string {
-	lines := r.fileLines(top.path)
+	lines := r.files.Lines(top.path)
 	if lines == nil {
 		return ""
 	}

@@ -61,7 +61,6 @@ func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 		name:      name,
 		files:     anchor.NewFiles(cwd),
 		outlines:  map[string][]astgrep.OutlineFile{},
-		lineCache: map[string][]string{},
 	}
 	out, err := r.run()
 	if err != nil {
@@ -71,9 +70,9 @@ func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 }
 
 // resolver holds one Run's state: the parsed query, the outline root, the
-// per-response anchor cache, and memoized outlines and file line tables. It is
-// never shared across calls — a reused line table would resolve anchors against
-// stale content.
+// per-response file cache resolving ast-grep's root-relative paths, and memoized
+// outlines. It is never shared across calls — a reused line table would resolve
+// anchors against stale content.
 type resolver struct {
 	ctx       context.Context
 	a         backend.Args
@@ -83,7 +82,6 @@ type resolver struct {
 	files     *anchor.Files
 	scopeSet  []astgrep.OutlineFile
 	outlines  map[string][]astgrep.OutlineFile
-	lineCache map[string][]string
 	maskedIDs []string
 }
 
@@ -210,22 +208,6 @@ func isTestFile(path string) bool {
 	default:
 		return false
 	}
-}
-
-// fileLines returns path's lines (trailing CR kept, as anchor.Load splits them),
-// caching the read for this Run.
-func (r *resolver) fileLines(path string) []string {
-	if lines, ok := r.lineCache[path]; ok {
-		return lines
-	}
-	f, err := anchor.Load(path)
-	if err != nil {
-		r.lineCache[path] = nil
-		return nil
-	}
-	lines := f.Lines()
-	r.lineCache[path] = lines
-	return lines
 }
 
 // anchoredLine renders "line#hash" for path's line, falling back to the bare line

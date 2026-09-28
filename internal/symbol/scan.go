@@ -181,7 +181,7 @@ func orderRefFiles(byFile map[string][]ref, defDir string) []string {
 
 // bodyLines returns the definition's source lines verbatim.
 func (r *resolver) bodyLines(top candidate) []string {
-	lines := r.fileLines(top.path)
+	lines := r.files.Lines(top.path)
 	if top.start < 1 || top.end > len(lines) {
 		return nil
 	}
