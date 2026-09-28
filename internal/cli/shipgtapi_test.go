@@ -13,12 +13,14 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/gtapi"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 const gtStubSubmitRoute = "/graphite/submit/pull-requests"
@@ -37,6 +39,10 @@ type gtAPIStub struct {
 	submitErrors   map[string]string
 	queued         map[string]bool
 	nextPR         int
+	// parked maps a branch to the graphite-base branch pre-submit moved its
+	// pull request onto; remote reads and writes that branch on origin.
+	parked map[string]string
+	remote func(args ...string) string
 
 	routes    []string
 	infoHeads [][]string
@@ -102,6 +108,7 @@ func stubGTAPI(t *testing.T) *gtAPIStub {
 		bodies:       map[string]string{},
 		submitErrors: map[string]string{},
 		queued:       map[string]bool{},
+		parked:       map[string]string{},
 		nextPR:       100,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(s.serve))
@@ -153,6 +160,9 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 					pr["baseRefName"] = entry.Base
 					pr["versions"] = []map[string]any{{"headSha": entry.HeadSha, "baseSha": entry.BaseSha, "baseName": entry.Base, "createdAt": "2026-09-02T00:00:00.000Z"}}
 				}
+				if base := s.parked[branch]; base != "" {
+					pr["baseRefName"], pr["isBaseRefGraphiteBase"] = base, true
+				}
 				prs = append(prs, pr)
 			}
 			if m, ok := s.merged[branch]; ok {
@@ -171,7 +181,11 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 			s.write(w, map[string]any{"result": map[string]any{"error": s.presubmitError}})
 			return
 		}
-		s.write(w, map[string]any{"result": map[string]any{"retargetedPrs": []int{}}})
+		var req struct {
+			Branches []gtapi.PreSubmitBranch `json:"branches"`
+		}
+		s.decode(r, &req)
+		s.write(w, map[string]any{"result": map[string]any{"retargetedPrs": s.parkChildren(req.Branches)}})
 	case gtStubSubmitRoute:
 		s.submit(w, r)
 	default:
@@ -216,6 +230,14 @@ func (s *gtAPIStub) submit(w http.ResponseWriter, r *http.Request) {
 		s.write(w, map[string]any{"prs": []map[string]any{{"head": entry.Head, "status": "error", "error": message}}})
 		return
 	}
+	if base := s.parked[entry.Head]; base != "" {
+		if s.remote("rev-parse", "refs/heads/"+base) == entry.BaseSha {
+			delete(s.parked, entry.Head)
+			s.remote("update-ref", "-d", "refs/heads/"+base)
+		} else {
+			s.remote("update-ref", "refs/heads/"+base, entry.BaseSha)
+		}
+	}
 	number, status := s.nextPR, "created"
 	if entry.Action == gtapi.SubmitUpdate {
 		number, status = entry.PRNumber, "updated"
@@ -223,6 +245,55 @@ func (s *gtAPIStub) submit(w http.ResponseWriter, r *http.Request) {
 		s.nextPR++
 	}
 	s.write(w, map[string]any{"prs": []map[string]any{{"head": entry.Head, "prNumber": number, "prURL": gtStubPRURL(number), "status": status}}})
+}
+
+// parkChildren moves each open pull request stacked on a branch the submit
+// names, but not named itself, onto graphite-base/<number> at its parent's
+// remote head, as Graphite's pre-submit does, once a test wires the stub to
+// origin with parkOn. It returns the numbers it moved.
+func (s *gtAPIStub) parkChildren(branches []gtapi.PreSubmitBranch) []int {
+	if s.remote == nil {
+		return []int{}
+	}
+	named := map[string]bool{}
+	for _, b := range branches {
+		named[b.HeadRefName] = true
+	}
+	moved := []int{}
+	for _, branch := range slices.Sorted(maps.Keys(s.prs)) {
+		entry, ok := s.lastEntry(branch)
+		if !ok || named[branch] || !named[entry.Base] || s.parked[branch] != "" {
+			continue
+		}
+		number := s.prs[branch]
+		base := fmt.Sprintf("graphite-base/%d", number)
+		s.remote("update-ref", "refs/heads/"+base, s.remote("rev-parse", "refs/heads/"+entry.Base))
+		s.parked[branch] = base
+		moved = append(moved, number)
+	}
+	return moved
+}
+
+// parkOn wires the stub to f's origin, where it keeps the graphite-base
+// branches it parks pull requests on.
+func (s *gtAPIStub) parkOn(f *vcstest.Fixture) {
+	s.remote = func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = f.RemoteDir
+		out, err := cmd.Output()
+		if err != nil {
+			s.t.Errorf("git %v in origin: %v", args, err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+}
+
+// parkedPRs names the branches whose pull requests still sit on a
+// graphite-base branch.
+func (s *gtAPIStub) parkedPRs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Sorted(maps.Keys(s.parked))
 }
 
 // refuse answers a schema violation with the 400 graphite's handler returns,

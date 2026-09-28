@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -185,5 +186,70 @@ func TestShipGTAmendRefusalNamesTheRecovery(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal = %q, want it to name %q", err, want)
 		}
+	}
+}
+
+// TestStackSubmitRetargetsAParkedPullRequest is the stack whose submit left a
+// pull request on graphite-base/N, a different few on each run: Graphite moves
+// a parked pull request back onto its parent only when graphite-base/N already
+// sits at the parent's head, so the submit's own push must move it there.
+func TestStackSubmitRetargetsAParkedPullRequest(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	api.parkOn(f)
+	shipGTStack(t, f, "p", "c", "g")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	api.prs["p"], api.prs["c"], api.prs["g"] = 100, 101, 102
+	api.mu.Lock()
+	api.parkChildren([]gtapi.PreSubmitBranch{{HeadRefName: "p", PRNumber: 100}})
+	api.mu.Unlock()
+	if parked := api.parkedPRs(); !slices.Equal(parked, []string{"c"}) {
+		t.Fatalf("parked %v, want c parked by a submit of p alone", parked)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
+	writeShipFile(t, f.Dir, "p.txt", "amended\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "p.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "--no-edit")
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if parked := api.parkedPRs(); len(parked) != 0 {
+		t.Errorf("parked %v after the submit, want every pull request on its parent", parked)
+	}
+	if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Contains(refs, "graphite-base/101") {
+		t.Errorf("pushed %v, want graphite-base/101 moved in the atomic push", refs)
+	}
+}
+
+// TestShipGTResubmitsTheChildOfAResubmittedBranch is the ship that left its
+// tip's parent parked: trunk moved, so the bottom branch was resubmitted on
+// the new trunk while the unchanged middle one was left out, and Graphite's
+// pre-submit parks every open child a submit leaves out.
+func TestShipGTResubmitsTheChildOfAResubmittedBranch(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	api.parkOn(f)
+	shipGTStack(t, f, "a", "b", "c")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	api.prs["a"], api.prs["b"], api.prs["c"] = 100, 101, 102
+	stubOpenPRs(t, nil, "a", "b", "c")
+	posted := len(api.submitHeads())
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	shipGTReady(t, f)
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch"); err != nil {
+		t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+	}
+	if parked := api.parkedPRs(); len(parked) != 0 {
+		t.Errorf("parked %v after the ship, want every pull request on its parent", parked)
+	}
+	if heads := api.submitHeads()[posted:]; !slices.Equal(heads, []string{"a", "b", "c"}) {
+		t.Errorf("submit posts = %v, want b resubmitted beneath its resubmitted parent", heads)
 	}
 }
