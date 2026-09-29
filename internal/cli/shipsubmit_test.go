@@ -16,7 +16,7 @@ import (
 func gtLandedStack(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
 	shipGTStack(t, f, "a", "b")
-	stubStackPRs(t, map[string]*stackPR{"a": {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "a")}})
+	stubStackPRs(t, f, map[string]*stackPR{"a": {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "a")}})
 	restackSquashRemote(t, f, "main", "a (#41)", "a")
 }
 
@@ -243,7 +243,7 @@ func TestShipGTResubmitsTheChildOfAResubmittedBranch(t *testing.T) {
 		t.Fatalf("stack submit: %v", err)
 	}
 	api.prs["a"], api.prs["b"], api.prs["c"] = 100, 101, 102
-	stubOpenPRs(t, nil, "a", "b", "c")
+	stubOpenPRs(t, f, nil, "a", "b", "c")
 	posted := len(api.submitHeads())
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	shipGTReady(t, f)

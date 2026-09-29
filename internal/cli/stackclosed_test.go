@@ -14,7 +14,7 @@ func TestStackSubmitDropsAClosedPullRequestMidStack(t *testing.T) {
 	f.Decorate(api.ctx)
 	shipGTStack(t, f, "a", "b", "c")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a", "b", "c")
-	stubStackPRs(t, map[string]*stackPR{
+	stubStackPRs(t, f, map[string]*stackPR{
 		"a": {Number: 1, Title: "a", State: "OPEN", Base: "main"},
 		"b": {Number: 2, Title: "b", State: "CLOSED", Base: "a"},
 		"c": {Number: 3, Title: "c", State: "OPEN", Base: "b"},
@@ -58,7 +58,7 @@ func TestStackRebaseDropsAClosedPullRequestThatConflictsWithTrunk(t *testing.T) 
 	shipGTStack(t, f, "y")
 	restackAdvanceRemote(t, f, "main", "c.txt", "trunk\n")
 	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
-	stubStackPRs(t, map[string]*stackPR{
+	stubStackPRs(t, f, map[string]*stackPR{
 		"x": {Number: 5, Title: "x", State: "CLOSED", Base: "main"},
 		"y": {Number: 6, Title: "y", State: "OPEN", Base: "x"},
 	})
@@ -87,7 +87,7 @@ func TestStackSubmitRefusesAPullRequestClosedByItsBaseDeletion(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "a", "b")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "b")
-	stubStackPRs(t, map[string]*stackPR{
+	stubStackPRs(t, f, map[string]*stackPR{
 		"a": {Number: 1, Title: "a", State: "OPEN", Base: "main"},
 		"b": {Number: 2, Title: "b", State: "CLOSED", Base: "a"},
 	})

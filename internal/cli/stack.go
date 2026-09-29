@@ -411,7 +411,7 @@ func stackLandedElsewhere(ctx context.Context, l lane, stack []string, state gtS
 	if err != nil {
 		return nil, err
 	}
-	prs, err := stackPRLookup(ctx, l.dir(), trunk, held)
+	prs, err := stackPRs(ctx, l.dir(), trunk, held)
 	if err != nil {
 		return nil, fmt.Errorf("stack submit: read the pull requests of the branches other working copies hold: %w", err)
 	}

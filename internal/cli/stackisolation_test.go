@@ -59,7 +59,7 @@ func TestStackSubmitLeavesDirtyTrunkAndItsIndexLockUntouched(t *testing.T) {
 
 func TestStackSubmitKeepsConflictForContinue(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
-	stubStackPRs(t, nil)
+	stubStackPRs(t, f, nil)
 	stackConflicting(t, f)
 	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 	sourceBase := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")

@@ -169,8 +169,26 @@ type stackRebaseOpts struct {
 
 const stackDropCommitsUsage = "publish a branch whose local head drops commits its published head carries"
 
-// stackPRLookup is a var so tests answer for GitHub.
-var stackPRLookup = stackQueryPRs
+// stackPRQuery reads the pull request of every branch of a stack.
+type stackPRQuery func(ctx context.Context, dir render.Dir, trunk string, branches []string) (map[string]*stackPR, error)
+
+type stackPRKey struct{}
+
+// withStackPRs returns ctx answering the stack's pull-request reads with query
+// in place of GitHub, for a test pairing its answers with one test rather than
+// with the process.
+func withStackPRs(ctx context.Context, query stackPRQuery) context.Context {
+	return context.WithValue(ctx, stackPRKey{}, query)
+}
+
+// stackPRs reads every branch's pull request through the query ctx carries,
+// falling back to GitHub.
+func stackPRs(ctx context.Context, dir render.Dir, trunk string, branches []string) (map[string]*stackPR, error) {
+	if query, ok := ctx.Value(stackPRKey{}).(stackPRQuery); ok {
+		return query(ctx, dir, trunk, branches)
+	}
+	return stackQueryPRs(ctx, dir, trunk, branches)
+}
 
 func newStackRebaseCmd() *cobra.Command {
 	var o stackRebaseOpts
@@ -645,7 +663,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		}
 	}
 
-	prs, err := stackPRLookup(ctx, l.dir(), trunk, members)
+	prs, err := stackPRs(ctx, l.dir(), trunk, members)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: read the stack's pull requests: %w", err)
 	}
@@ -2565,7 +2583,7 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 }
 
 func stackLandedSince(ctx context.Context, dir render.Dir, trunk string, live []string) ([]string, error) {
-	prs, err := stackPRLookup(ctx, dir, trunk, live)
+	prs, err := stackPRs(ctx, dir, trunk, live)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: reading the stack pull requests before the push failed — run ccx vcs stack continue: %w", err)
 	}
@@ -2700,7 +2718,7 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, dir render.Dir, run *
 	var prs map[string]*stackPR
 	var err error
 	for try := range stackVerdictTries {
-		if prs, err = stackPRLookup(ctx, dir, run.Trunk, live); err != nil {
+		if prs, err = stackPRs(ctx, dir, run.Trunk, live); err != nil {
 			return fmt.Errorf("stack rebase: pushed, but the verdict could not read the pull requests: %w", err)
 		}
 		if !stackAnyUnknown(prs) || try == stackVerdictTries-1 {

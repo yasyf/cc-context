@@ -19,7 +19,7 @@ func stackOffLandedParent(t *testing.T, f *vcstest.Fixture) {
 	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
 	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", "origin/main", "a", "b")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "-f", "origin", "b")
-	stubStackPRs(t, map[string]*stackPR{
+	stubStackPRs(t, f, map[string]*stackPR{
 		"a": {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "a")},
 		"b": {Number: 42, Title: "b", State: "OPEN", Base: "main"},
 	})
@@ -97,7 +97,7 @@ func stackOnForeignLane(t *testing.T, f *vcstest.Fixture) {
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "ladder")
 	stackCommit(t, f, "ladder.txt")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
-	stubStackPRs(t, map[string]*stackPR{"feature": {Number: 42, Title: "feature", State: "OPEN", Base: "main"}})
+	stubStackPRs(t, f, map[string]*stackPR{"feature": {Number: 42, Title: "feature", State: "OPEN", Base: "main"}})
 }
 
 func TestStackSubmitRefusesAForeignLaneBelowTheBranch(t *testing.T) {
@@ -248,7 +248,7 @@ func TestStackRebaseLeavesALandedParentsRewrittenCommitsBehind(t *testing.T) {
 	}
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "b")
 	restackSquashRemote(t, f, "main", "a (#41)", "a")
-	stubStackPRs(t, map[string]*stackPR{
+	stubStackPRs(t, f, map[string]*stackPR{
 		"a": {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: rewritten},
 		"b": {Number: 42, Title: "b", State: "OPEN", Base: "a"},
 	})
@@ -274,7 +274,7 @@ func TestStackSubmitDropsALandedParentAnotherWorktreeHolds(t *testing.T) {
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
 	gtLandedStack(t, f)
-	stubStackPRs(t, map[string]*stackPR{
+	stubStackPRs(t, f, map[string]*stackPR{
 		"a": {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "a")},
 		"b": {Number: 42, Title: "b", State: "OPEN", Base: "a"},
 	})

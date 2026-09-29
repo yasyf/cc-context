@@ -18,7 +18,7 @@ func TestShipAmendOfAQueuedBranchRefusesInsteadOfClaimingItPublished(t *testing.
 	}
 	api.prs["feature"] = 100
 	api.queued["feature"] = true
-	stubStackPRs(t, map[string]*stackPR{"feature": {Number: 100, Title: "feature", State: "OPEN", Base: "main"}})
+	stubStackPRs(t, f, map[string]*stackPR{"feature": {Number: 100, Title: "feature", State: "OPEN", Base: "main"}})
 	queued := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
 	writeShipFile(t, f.Dir, "feature.txt", "amended\n")
 
@@ -41,7 +41,7 @@ func TestShipAmendNamesTheRemotesRefusalAndTheResume(t *testing.T) {
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
-	stubStackPRs(t, map[string]*stackPR{"feature": {Number: 100, Title: "feature", State: "OPEN", Base: "main"}})
+	stubStackPRs(t, f, map[string]*stackPR{"feature": {Number: 100, Title: "feature", State: "OPEN", Base: "main"}})
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	writeShipExecutable(t, filepath.Join(f.RemoteDir, "hooks"), "pre-receive", "#!/bin/sh\nexit 1\n")
 	writeShipFile(t, f.Dir, "feature.txt", "amended\n")

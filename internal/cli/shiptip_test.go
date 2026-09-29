@@ -94,7 +94,7 @@ func stackMergeableBase(t *testing.T, mergeable string) (*vcstest.Fixture, *gtAP
 		t.Fatalf("stack submit: %v", err)
 	}
 	api.prs["base"], api.prs["feature"] = 100, 101
-	stubStackPRs(t, map[string]*stackPR{
+	stubStackPRs(t, f, map[string]*stackPR{
 		"base":    {Number: 100, Title: "base", State: "OPEN", Base: "main", Mergeable: mergeable},
 		"feature": {Number: 101, Title: "feature", State: "OPEN", Base: "base", Mergeable: "MERGEABLE"},
 	})
@@ -211,7 +211,7 @@ func TestShipTipOnlyReadsAParentAnotherLaneRewroteLocally(t *testing.T) {
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
-	stubStackPRs(t, map[string]*stackPR{
+	stubStackPRs(t, f, map[string]*stackPR{
 		"base":    {Number: 100, Title: "base", State: "OPEN", Base: "main", Mergeable: "MERGEABLE"},
 		"feature": {Number: 101, Title: "feature", State: "OPEN", Base: "base", Mergeable: "MERGEABLE"},
 	})
@@ -252,7 +252,7 @@ func TestShipTipOnlyPreviewsAndPublishesExplicitChildMeta(t *testing.T) {
 	base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
 	api.prs["base"] = 100
 	priorSubmits := len(api.submitHeads())
-	stubStackPRs(t, map[string]*stackPR{"base": {Number: api.prs["base"], Title: "base", State: "OPEN", Base: "main", Mergeable: "MERGEABLE"}})
+	stubStackPRs(t, f, map[string]*stackPR{"base": {Number: api.prs["base"], Title: "base", State: "OPEN", Base: "main", Mergeable: "MERGEABLE"}})
 	shipGTStack(t, f, "feature")
 	body := filepath.Join(t.TempDir(), "body.md")
 	if err := os.WriteFile(body, []byte("Exact body\n"), 0o600); err != nil {
