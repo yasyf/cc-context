@@ -215,7 +215,11 @@ func TestStackRestacks(t *testing.T) {
 		{
 			name: "a held parent carrying unpublished work moves its children as the author's change",
 			branches: []stackRebaseBranch{
-				func() stackRebaseBranch { b := published("a", "main", "old", open); b.Held, b.Remote = "frozen", ""; return b }(),
+				func() stackRebaseBranch {
+					b := published("a", "main", "old", open)
+					b.Held, b.Remote = "frozen", ""
+					return b
+				}(),
 				published("b", "a", "a-old", open), published("tip", "b", "b-head", open),
 			},
 		},
