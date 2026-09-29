@@ -50,7 +50,7 @@ func stackQueryStanding(ctx context.Context, l lane, branches []string) (map[str
 	}
 	standings := map[string]stackStanding{}
 	for i, node := range statusNodes(resp, branches) {
-		if node == nil || node.State != "OPEN" {
+		if node == nil || node.State != "OPEN" || node.Mergeable == "CONFLICTING" {
 			continue
 		}
 		rollup := statusRollupOf(*node)
@@ -97,39 +97,30 @@ func stackRefuseGreenRestack(ctx context.Context, l lane, run *stackRebaseRun) e
 
 // stackRestacks names the published branches below the tip that the run would
 // move onto a new base when nothing of their own changed: trunk moved under
-// them, a parent landed, or a parent moved for the same reason. A branch
+// them, a parent landed, or a parent moved for either reason. A branch
 // carrying local commits its published head lacks is the author's own change,
 // and so is everything the run moves above it; one GitHub already reports as
 // conflicting must move to merge at all.
 func stackRestacks(ctx context.Context, dir render.Dir, run *stackRebaseRun) ([]*stackRebaseBranch, error) {
 	heads := map[string]string{run.Trunk: run.Pin}
-	moved, churn := map[string]bool{}, map[string]bool{}
+	moved, fresh := map[string]bool{}, map[string]bool{}
 	var restacks []*stackRebaseBranch
 	for i := range run.Branches {
 		b := &run.Branches[i]
-		switch {
-		case b.Landed != "":
-			continue
-		case b.Held != "" || b.Kept:
-			heads[b.Name] = b.Head
-			continue
-		case !moved[b.Parent] && heads[b.Parent] == b.OldBase:
-			heads[b.Name] = b.Head
+		if b.Landed != "" {
 			continue
 		}
-		moved[b.Name] = true
-		if b.Parent != run.Trunk && b.Parent == b.WasParent && !churn[b.Parent] {
+		heads[b.Name] = b.Head
+		if b.Kept {
 			continue
 		}
 		own, err := stackCarriesOwnWork(ctx, dir, run.Pin, b)
 		if err != nil {
 			return nil, err
 		}
-		if own {
-			continue
-		}
-		churn[b.Name] = true
-		if b.Name != run.Tip && !b.LocalOnly && b.PR != nil && b.PR.State == "OPEN" && b.PR.Mergeable != "CONFLICTING" {
+		moves := b.Held == "" && (moved[b.Parent] || heads[b.Parent] != b.OldBase)
+		moved[b.Name], fresh[b.Name] = moves, own || (moves && fresh[b.Parent])
+		if moves && !fresh[b.Name] && b.Name != run.Tip && !b.LocalOnly && b.PR != nil && b.PR.State == "OPEN" && b.PR.Mergeable != "CONFLICTING" {
 			restacks = append(restacks, b)
 		}
 	}

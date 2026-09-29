@@ -142,6 +142,20 @@ func TestShipMovesAGreenConflictingAncestor(t *testing.T) {
 	}
 }
 
+func TestStackSubmitWithPRMetaStillRestacksAGreenPullRequest(t *testing.T) {
+	f, published := shipGTLandedBottom(t, stackStanding{Green: true, Approved: true})
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "--", "f.txt")
+	writeShipGH(t, f)
+	seedPRViews(t, map[string]string{"c": `{"number":102,"url":"https://github.com/x/pull/102","body":""}`})
+
+	if _, errStr, err := runStackCmd(t, f, "submit", "--pr-title", "c=c, retitled"); err != nil {
+		t.Fatalf("stack submit --pr-title = %v (stderr=%q)", err, errStr)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "b"); got == published {
+		t.Error("origin b stayed on the landed a, want stack submit to restack it onto trunk")
+	}
+}
+
 func TestStackRestacks(t *testing.T) {
 	open := &stackPR{Number: 1, State: "OPEN", Mergeable: "MERGEABLE"}
 	conflicting := &stackPR{Number: 2, State: "OPEN", Mergeable: "CONFLICTING"}
@@ -188,6 +202,30 @@ func TestStackRestacks(t *testing.T) {
 			branches: []stackRebaseBranch{
 				func() stackRebaseBranch { b := published("a", "main", "old", open); b.Remote = ""; return b }(),
 				published("b", "a", "a-head", open), published("tip", "b", "b-head", open),
+			},
+		},
+		{
+			name: "a held parent republished without work of its own still guards its children",
+			branches: []stackRebaseBranch{
+				func() stackRebaseBranch { b := published("a", "main", "old", open); b.Held = "frozen"; return b }(),
+				published("b", "a", "a-old", open), published("tip", "b", "b-head", open),
+			},
+			want: []string{"b"},
+		},
+		{
+			name: "a held parent carrying unpublished work moves its children as the author's change",
+			branches: []stackRebaseBranch{
+				func() stackRebaseBranch { b := published("a", "main", "old", open); b.Held, b.Remote = "frozen", ""; return b }(),
+				published("b", "a", "a-old", open), published("tip", "b", "b-head", open),
+			},
+		},
+		{
+			name: "a dropped middle hands its child the grandparent's own work",
+			branches: []stackRebaseBranch{
+				func() stackRebaseBranch { b := published("a", "main", "old", open); b.Remote = ""; return b }(),
+				{Name: "b", Landed: "#2 closed"},
+				func() stackRebaseBranch { b := published("c", "a", "b-head", open); b.WasParent = "b"; return b }(),
+				published("tip", "c", "c-head", open),
 			},
 		},
 		{
