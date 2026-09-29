@@ -167,6 +167,7 @@ type stackRebaseOpts struct {
 	tip         string
 	tipOnly     bool
 	dropCommits bool
+	restack     bool
 }
 
 const stackDropCommitsUsage = "publish a branch whose local head drops commits its published head carries"
@@ -325,6 +326,11 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	run, err := stackPlan(ctx, l, commonDir, o)
 	if err != nil {
 		return err
+	}
+	if o.tip != "" && !o.restack {
+		if err := stackRefuseGreenRestack(ctx, l, run); err != nil {
+			return err
+		}
 	}
 	if !o.submit && !o.noPush {
 		if run, err = stackKeepLocal(ctx, cmd, l, commonDir, o, run); err != nil {
