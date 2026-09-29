@@ -63,7 +63,9 @@ func statusCheckBlockers(pr *statusPR) []string {
 				out = append(out, "required check "+c.Name+" is "+strings.ToLower(c.State))
 			}
 		case statusNeutral:
-			out = append(out, "check "+c.Name+" is neutral — a neutral run holds the merge, it does not clear it")
+			if c.Required {
+				out = append(out, "check "+c.Name+" is neutral — a neutral run holds the merge, it does not clear it")
+			}
 		case statusSkipped:
 			if c.Required {
 				out = append(out, "required check "+c.Name+" was skipped — it reported without running")
@@ -74,10 +76,6 @@ func statusCheckBlockers(pr *statusPR) []string {
 		if !reported[name] {
 			out = append(out, "required check "+name+" has not reported on "+shortSHA(pr.Head))
 		}
-	}
-	if len(pr.Absent) > 0 {
-		out = append(out, fmt.Sprintf("%d %s the base normally grades never reported on %s, starting with %s",
-			len(pr.Absent), plural(len(pr.Absent), "check", "checks"), shortSHA(pr.Head), pr.Absent[0]))
 	}
 	if len(pr.Checks) > 0 && statusGraded(pr.Checks) == 0 {
 		out = append(out, "nothing on this head reached a verdict — every check here skipped, held, or is still running")
