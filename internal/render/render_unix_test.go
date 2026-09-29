@@ -232,8 +232,14 @@ func TestSignalledChildWithoutASignalToCcxStaysAFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("RunCLI = nil, want the child's own signal death reported")
 	}
-	if errors.Is(err, ErrSignalled) {
+	// The message, not just errors.Is: a nil cause reaches fmt.Errorf's %w as
+	// %!w(<nil>) and wraps nothing, so ErrSignalled alone cannot tell a correct
+	// verdict from one reached without checking the cause.
+	if errors.Is(err, ErrSignalled) || strings.Contains(err.Error(), "did not fail") {
 		t.Errorf("RunCLI = %v, want a child failure rather than ccx's termination", err)
+	}
+	if !strings.Contains(err.Error(), "/bin/sh: signal: terminated") {
+		t.Errorf("RunCLI = %v, want the child's own signal death named", err)
 	}
 }
 
