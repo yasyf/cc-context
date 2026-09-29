@@ -234,7 +234,7 @@ func infoGT(ctx context.Context, l lane, info *vcsInfo) error {
 // report: an unresolvable stack is a diagnosis, and refusing to print the branch,
 // dirtiness, and repository around it withholds the rest of the answer too.
 func infoGTStack(ctx context.Context, l lane, info *vcsInfo) {
-	state, err := gtStateQuery(ctx, l.dir(), "info")
+	state, err := gtStateQueryFocused(ctx, l.dir(), "info", info.Branch)
 	if err != nil {
 		info.Graphite.StackError = err.Error()
 		return

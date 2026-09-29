@@ -384,7 +384,7 @@ func statusGTTrunk(ctx context.Context, l lane, st *vcsStatus) string {
 	if !l.gt {
 		return ""
 	}
-	state, err := gtStateQuery(ctx, l.dir(), "status")
+	state, err := gtStateQueryFocused(ctx, l.dir(), "status", st.Branch)
 	if err != nil {
 		st.StackError = err.Error()
 		return ""

@@ -101,11 +101,15 @@ func gtUnseen(ctx context.Context, blocks []string) []string {
 }
 
 func gtStateQuery(ctx context.Context, dir render.Dir, prefix string) (gtState, error) {
+	return gtStateQueryFocused(ctx, dir, prefix, "")
+}
+
+func gtStateQueryFocused(ctx context.Context, dir render.Dir, prefix, branch string) (gtState, error) {
 	commonDir, err := gtCommonDir(ctx, dir, prefix)
 	if err != nil {
 		return nil, err
 	}
-	return gtStateAt(ctx, commonDir, prefix)
+	return gtStateAtFocused(ctx, commonDir, prefix, branch, "")
 }
 
 func gtStateAt(ctx context.Context, commonDir, prefix string) (gtState, error) {
@@ -369,6 +373,10 @@ func stackBranches(ctx context.Context, c *gtCache) ([]string, error) {
 	}
 	if branch == "" {
 		return nil, fmt.Errorf("%s: detached HEAD; no stack to resolve", c.prefix)
+	}
+	if c.focus != branch {
+		c.focus, c.parent = branch, ""
+		c.forget()
 	}
 	_, chain, err := gtStackChain(ctx, c, branch)
 	return chain, err

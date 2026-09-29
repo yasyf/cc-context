@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -66,6 +67,31 @@ func TestShipSkipsUnrelatedDeletedParents(t *testing.T) {
 	for _, invocation := range vcstest.Invocations(t, f.ArgvLog) {
 		if slices.Contains(invocation, "merge-tree") {
 			t.Fatalf("ship examined an unrelated orphan: %v", invocation)
+		}
+	}
+	if parent := pruneParentOf(t, filepath.Join(f.Dir, ".git"), "b"); parent != "a" {
+		t.Errorf("gt parent of b = %s, want a left untouched", parent)
+	}
+}
+
+func TestStackReadSkipsUnrelatedDeletedParents(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "a", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-D", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	shipGTStack(t, f, "independent")
+	shipResetLog(t, f)
+
+	branches, _, err := gtStackAll(f.Context(), render.Dir(f.Dir), "status")
+	if err != nil {
+		t.Fatalf("stack read: %v", err)
+	}
+	if !slices.Equal(branches, []string{"independent"}) {
+		t.Errorf("stack = %v, want independent only", branches)
+	}
+	for _, invocation := range vcstest.Invocations(t, f.ArgvLog) {
+		if slices.Contains(invocation, "merge-tree") {
+			t.Fatalf("stack read examined an unrelated orphan: %v", invocation)
 		}
 	}
 	if parent := pruneParentOf(t, filepath.Join(f.Dir, ".git"), "b"); parent != "a" {
