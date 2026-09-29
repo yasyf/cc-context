@@ -38,7 +38,10 @@ tasks:
     desc: Run the test suite with the race detector
     deps: [wasm, wasm-embed]
     cmds:
-      - go test -race -count=1 -timeout 30m ./...
+      # Per test binary, not per run. internal/cli takes 17m30s alone and
+      # 40m22s against one competing run; a 45m ceiling has already
+      # false-failed on a loaded box.
+      - go test -race -count=1 -timeout 90m ./...
 
   vet:
     desc: Vet the module
