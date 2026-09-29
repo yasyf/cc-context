@@ -1788,7 +1788,8 @@ func TestShipGitRebase(t *testing.T) {
 		},
 		{
 			// A crashed rebase left its state directory behind, so this one exits
-			// before touching the working tree: no REBASE_HEAD, so no abort.
+			// before touching the working tree: the state is somebody else's to
+			// finish or drop.
 			name: "rebase failing before it starts is not a conflict",
 			build: func(t *testing.T, f *vcstest.Fixture) {
 				shipDivergeRemote(t, f, "main", "u.txt", "upstream\n")
@@ -1801,13 +1802,8 @@ func TestShipGitRebase(t *testing.T) {
 				[]string{"git", "fetch", "origin"},
 				[]string{"git", "rev-parse", "--verify", "--quiet", remoteRef},
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
-				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"},
-				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-apply"},
-				[]string{"git", "rev-list", "--count", remoteRef + "..HEAD"},
-				[]string{"git", "diff", "--name-only", "HEAD"},
-				[]string{"git", "rebase", remoteRef},
-				[]string{"git", "rev-parse", "--verify", "--quiet", "REBASE_HEAD"}),
-			wantErr: []string{"ship: git rebase onto origin/main", "already a rebase-merge directory"},
+				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"}),
+			wantErr: []string{"ship: a rebase is already in progress here", "ccx never aborts a rebase it did not start"},
 		},
 	}
 	for _, tt := range tests {
