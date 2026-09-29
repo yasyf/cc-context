@@ -46,12 +46,12 @@ func TestStackSubmitDropsCommitsTrunkAlreadyHolds(t *testing.T) {
 // point where a pull request proposing work the branch does not own can still
 // be stopped.
 func TestShipGTRefusesCommitsTrunkAlreadyHolds(t *testing.T) {
-	log := setupShipGT(t, true)
+	log, gt := setupShipGT(t, true)
 	t.Setenv("GIT_BRANCH", "feature")
 	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
 	t.Setenv("GIT_CHERRY", "- 1234567890ab\n+ abcdef012345\n")
 
-	_, err := runShipCmd(context.Background(), t, "-m", "fix: frobnicate", "--no-watch", "--no-pr")
+	_, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--no-pr")
 	if err == nil {
 		t.Fatal("ship succeeded carrying a commit trunk already holds, want a refusal")
 	}

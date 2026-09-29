@@ -47,6 +47,7 @@ func stackAssertOnTrunk(t *testing.T, f *vcstest.Fixture, api *gtAPIStub, branch
 func TestStackSubmitMovesABranchOffALandedParentItAlreadyLeft(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	stackOffLandedParent(t, f)
 	shipResetLog(t, f)
 
@@ -63,6 +64,7 @@ func TestStackSubmitMovesABranchOffALandedParentItAlreadyLeft(t *testing.T) {
 func TestStackRebaseTakesTrunkAsTheParentOfABranchOffALandedParent(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	stackOffLandedParent(t, f)
 	shipResetLog(t, f)
 
@@ -101,6 +103,7 @@ func stackOnForeignLane(t *testing.T, f *vcstest.Fixture) {
 func TestStackSubmitRefusesAForeignLaneBelowTheBranch(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	stackOnForeignLane(t, f)
 	heads := map[string]string{}
 	for _, b := range []string{"reader", "ladder", "feature"} {
@@ -133,6 +136,7 @@ func TestStackSubmitRefusesAForeignLaneBelowTheBranch(t *testing.T) {
 func TestStackRebaseParentLeavesTheForeignLaneBehind(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	stackOnForeignLane(t, f)
 	shipResetLog(t, f)
 
@@ -219,6 +223,7 @@ func TestStackRebaseKeepsABranchCutFromAnEmptyParent(t *testing.T) {
 func TestStackRebaseLeavesALandedParentsRewrittenCommitsBehind(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "a")
 	writeShipFile(t, f.Dir, "a.txt", "draft\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "a.txt")
@@ -267,6 +272,7 @@ func TestStackRebaseRefusesTrunkAsAChild(t *testing.T) {
 func TestStackSubmitDropsALandedParentAnotherWorktreeHolds(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	gtLandedStack(t, f)
 	stubStackPRs(t, map[string]*stackPR{
 		"a": {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "a")},

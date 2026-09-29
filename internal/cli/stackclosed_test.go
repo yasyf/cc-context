@@ -11,6 +11,7 @@ import (
 func TestStackSubmitDropsAClosedPullRequestMidStack(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	shipGTStack(t, f, "a", "b", "c")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a", "b", "c")
 	stubStackPRs(t, map[string]*stackPR{

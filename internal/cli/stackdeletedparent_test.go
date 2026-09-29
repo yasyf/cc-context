@@ -15,7 +15,6 @@ import (
 // parent in gt state, and a ship above it refused "gt state has no parent for …".
 func TestShipReparentsOntoTrunkPastADeletedLandedParent(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("a", "b", "c"))
-	stubGTAPI(t)
 	restackSquashRemote(t, f, "main", "a (#41)", "a")
 	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
 	mustRun(t, f.Env(), f.Dir, "git", "branch", "-D", "a")
@@ -40,7 +39,6 @@ func TestShipReparentsOntoTrunkPastADeletedLandedParent(t *testing.T) {
 
 func TestShipLeavesAnOrphanWhoseDeletedParentNeverLanded(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("a", "b", "c"))
-	stubGTAPI(t)
 	mustRun(t, f.Env(), f.Dir, "git", "branch", "-D", "a")
 	shipGTReady(t, f)
 

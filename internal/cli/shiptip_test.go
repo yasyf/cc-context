@@ -14,6 +14,7 @@ import (
 func TestStackSubmitTakesLanded(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	shipGTStack(t, f, "a", "b")
 	restackSquashRemote(t, f, "main", "a (#41)", "a")
 	shipResetLog(t, f)
@@ -31,6 +32,7 @@ func TestStackSubmitTakesLanded(t *testing.T) {
 func TestShipTakesLanded(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	shipGTStack(t, f, "a", "b")
 	restackSquashRemote(t, f, "main", "a (#41)", "a")
 	shipGTReady(t, f)
@@ -50,7 +52,6 @@ func TestShipTakesLanded(t *testing.T) {
 func stackResetOverPublished(t *testing.T) (*vcstest.Fixture, string) {
 	t.Helper()
 	f := shipGTRepo(t)
-	stubGTAPI(t)
 	shipGTStack(t, f, "feature")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
@@ -87,6 +88,7 @@ func stackMergeableBase(t *testing.T, mergeable string) (*vcstest.Fixture, *gtAP
 	t.Helper()
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	shipGTStack(t, f, "base", "feature")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
@@ -205,7 +207,6 @@ func TestShipTipOnlyCommitsWithAncestorCheckedOut(t *testing.T) {
 
 func TestShipTipOnlyReadsAParentAnotherLaneRewroteLocally(t *testing.T) {
 	f := shipGTRepo(t)
-	stubGTAPI(t)
 	shipGTStack(t, f, "base", "feature")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
@@ -243,6 +244,7 @@ func TestShipTipOnlyReadsAParentAnotherLaneRewroteLocally(t *testing.T) {
 func TestShipTipOnlyPreviewsAndPublishesExplicitChildMeta(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	shipGTStack(t, f, "base")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("publish base: %v", err)
@@ -313,7 +315,6 @@ func TestShipKeepsAnApprovedParentOnlyRestackedLocally(t *testing.T) {
 // the new commit, and refused on that branch's conflict.
 func TestShipTipOnlyLeavesTheUpstackWhereItIs(t *testing.T) {
 	f := shipGTRepo(t)
-	stubGTAPI(t)
 	shipGTStack(t, f, "core", "slack")
 	slack := gitAt(t, f.Env(), f.Dir, "rev-parse", "slack")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "core")

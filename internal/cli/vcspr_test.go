@@ -202,7 +202,7 @@ func TestPRCommitsOnBaseRefusesUnverified(t *testing.T) {
 
 // stubPRInfo serves pull-request-info from the recorded payloads and records
 // each request's numbers and repository.
-func stubPRInfo(t *testing.T, payloads ...string) *[]gtapi.PullRequestInfoRequest {
+func stubPRInfo(t *testing.T, payloads ...string) (*[]gtapi.PullRequestInfoRequest, *gtapi.Client) {
 	t.Helper()
 	var asked []gtapi.PullRequestInfoRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -216,13 +216,8 @@ func stubPRInfo(t *testing.T, payloads ...string) *[]gtapi.PullRequestInfoReques
 		asked = append(asked, req)
 		_, _ = fmt.Fprintf(w, `{"result":{"status":"ok","prs":[%s]}}`, strings.Join(payloads, ","))
 	}))
-	prev := gtAPIClient
-	gtAPIClient = func() *gtapi.Client { return gtapi.NewWithToken(srv.URL, "gt-stub-token") }
-	t.Cleanup(func() {
-		gtAPIClient = prev
-		srv.Close()
-	})
-	return &asked
+	t.Cleanup(srv.Close)
+	return &asked, gtapi.NewWithToken(srv.URL, "gt-stub-token")
 }
 
 func stubCommitsOnBase(t *testing.T, onBase map[string]bool) *[][]prCommitCandidate {
@@ -278,7 +273,7 @@ func readGHCalls(t *testing.T, calls string) []string {
 	return strings.Split(strings.TrimSpace(string(data)), "\n")
 }
 
-func runPRStatusCmd(t *testing.T, args ...string) (string, error) {
+func runPRStatusCmd(t *testing.T, client *gtapi.Client, args ...string) (string, error) {
 	t.Helper()
 	cmd := newVcsPRCmd()
 	cmd.SilenceUsage = true
@@ -287,7 +282,7 @@ func runPRStatusCmd(t *testing.T, args ...string) (string, error) {
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
 	cmd.SetArgs(append([]string{"status"}, args...))
-	err := cmd.Execute()
+	err := cmd.ExecuteContext(withGTAPI(t.Context(), client))
 	return out.String(), err
 }
 
@@ -295,11 +290,11 @@ func runPRStatusCmd(t *testing.T, args ...string) (string, error) {
 // Graphite payloads, in the order the numbers were asked, and that only a
 // recorded squash costs a compare against the base.
 func TestPRStatusReportsEachQueueState(t *testing.T) {
-	asked := stubPRInfo(t, prInfoLanded, prInfoOpen, prInfoQueued)
+	asked, client := stubPRInfo(t, prInfoLanded, prInfoOpen, prInfoQueued)
 	compared := stubCommitsOnBase(t, map[string]bool{"9cc33f055dc4db19da6eb13a210a810297ccdc05": true})
 	calls := installGHRoutes(t, prActivityRoute(25121), prActivityRoute(25131, "LGTM"), prLabelRoute("merge", 23925), prLabelRoute("merge-fast"))
 
-	out, err := runPRStatusCmd(t, "--repo", "Forge-AI/monorepo", "25121", "#25131", "25116")
+	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "25121", "#25131", "25116")
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
@@ -326,7 +321,7 @@ func TestPRStatusReportsEachQueueState(t *testing.T) {
 }
 
 func TestPRStatusReadsALabelledPRTheQueueDropped(t *testing.T) {
-	stubPRInfo(t, `{"prNumber":26918,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`)
+	_, client := stubPRInfo(t, `{"prNumber":26918,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`)
 	stubCommitsOnBase(t, nil)
 	calls := installGHRoutes(t,
 		prLabelRoute("merge", 26918),
@@ -335,7 +330,7 @@ func TestPRStatusReadsALabelledPRTheQueueDropped(t *testing.T) {
 		ghRoute{argv: []string{"api", "repos/Forge-AI/monorepo/pulls/26918"}, stdout: `{"number":26918,"state":"open","mergeable_state":"clean"}`},
 	)
 
-	out, err := runPRStatusCmd(t, "--repo", "Forge-AI/monorepo", "26918")
+	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "26918")
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
@@ -348,14 +343,14 @@ func TestPRStatusReadsALabelledPRTheQueueDropped(t *testing.T) {
 }
 
 func TestPRStatusReportsAnEviction(t *testing.T) {
-	stubPRInfo(t, prInfoEvicted)
+	_, client := stubPRInfo(t, prInfoEvicted)
 	stubCommitsOnBase(t, nil)
 	calls := installGHRoutes(t,
 		prActivityRoute(26918, "Stack comment", prActivityEvicted),
 		ghRoute{argv: []string{"api", "repos/Forge-AI/monorepo/pulls/26918"}, stdout: `{"number":26918,"state":"open","mergeable":false,"mergeable_state":"dirty","labels":[]}`},
 	)
 
-	out, err := runPRStatusCmd(t, "--repo", "Forge-AI/monorepo", "26918")
+	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "26918")
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
@@ -370,11 +365,11 @@ func TestPRStatusReportsAnEviction(t *testing.T) {
 }
 
 func TestPRStatusJSON(t *testing.T) {
-	stubPRInfo(t, prInfoQueued)
+	_, client := stubPRInfo(t, prInfoQueued)
 	compared := stubCommitsOnBase(t, nil)
 	installGHRoutes(t, prActivityRoute(25121))
 
-	out, err := runPRStatusCmd(t, "--repo", "Forge-AI/monorepo", "--json", "25121")
+	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "--json", "25121")
 	if err != nil {
 		t.Fatalf("pr status --json: %v", err)
 	}
@@ -403,9 +398,9 @@ func TestPRStatusRefuses(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			stubPRInfo(t, prInfoQueued)
+			_, client := stubPRInfo(t, prInfoQueued)
 			stubCommitsOnBase(t, nil)
-			if _, err := runPRStatusCmd(t, tt.args...); err == nil || !strings.Contains(err.Error(), tt.want) {
+			if _, err := runPRStatusCmd(t, client, tt.args...); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("err = %v, want it to contain %q", err, tt.want)
 			}
 		})

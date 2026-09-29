@@ -58,7 +58,6 @@ func TestStackRebaseStopsAtAConflictBelowAPublishedParentOutsideTheRun(t *testin
 // record-zod read a parent its downstack never held.
 func TestShipKeepsABranchOnTheSiblingItWasPublishedOnto(t *testing.T) {
 	f := shipGTRepo(t)
-	stubGTAPI(t)
 	stubOpenPRs(t, nil, "p", "a", "z")
 	shipGTStack(t, f, "p", "a")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")

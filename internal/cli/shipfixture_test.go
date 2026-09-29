@@ -241,7 +241,7 @@ func shipGTRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	t.Helper()
 	stubStackPRs(t, nil)
 	f := shipRepo(t, append([]vcstest.Opt{vcstest.GT(), vcstest.Remote()}, opts...)...)
-	stubGTAPI(t)
+	f.Decorate(newGTAPIStub(t).ctx)
 	return f
 }
 
@@ -1150,7 +1150,7 @@ func setupShip(t *testing.T, marker string, withGh bool) string {
 // state tracking the current branch "feature" as a one-deep stack on trunk
 // "main", routing ship to the gt lane. withGh mirrors setupShip's fake-gh
 // toggle.
-func setupShipGT(t *testing.T, withGh bool) string {
+func setupShipGT(t *testing.T, withGh bool) (string, *gtAPIStub) {
 	t.Helper()
 	log := setupShip(t, ".git", withGh)
 	if err := os.WriteFile(filepath.Join(".git", ".graphite_repo_config"), []byte("{}"), 0o644); err != nil { //nolint:gosec // test fixture file
@@ -1159,8 +1159,7 @@ func setupShipGT(t *testing.T, withGh bool) string {
 	t.Setenv("GIT_BRANCH", "feature")
 	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
 	seedLaneRecords(context.Background(), t, ".", laneSeed{})
-	stubGTAPI(t)
-	return log
+	return log, newGTAPIStub(t)
 }
 
 // setGTState materializes stateJSON as the on-disk metadata gt keeps, in a

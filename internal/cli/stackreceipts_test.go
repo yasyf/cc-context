@@ -12,6 +12,7 @@ import (
 func TestStackSubmitUnchangedStackCompletesItsRun(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	shipGTStack(t, f, "base", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	for i := range 3 {

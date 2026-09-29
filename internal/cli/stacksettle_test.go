@@ -144,7 +144,9 @@ func TestShipLeavesNoRunWhenItsRestackIsNotPublished(t *testing.T) {
 			if stop == "push refused" {
 				restore = stackFailGit(t, f, "push")
 			} else {
-				stubGTAPI(t).synced = gtapi.RepoNotSyncedAddable
+				unsynced := stubGTAPI(t)
+				unsynced.synced = gtapi.RepoNotSyncedAddable
+				f.Decorate(unsynced.ctx)
 			}
 			if _, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--no-pr"); err == nil {
 				t.Fatal("ship published through a refused submit")
@@ -155,7 +157,8 @@ func TestShipLeavesNoRunWhenItsRestackIsNotPublished(t *testing.T) {
 			}
 
 			restore()
-			stubGTAPI(t)
+			api := stubGTAPI(t)
+			f.Decorate(api.ctx)
 			if _, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--no-pr"); err != nil {
 				t.Fatalf("ship after the refusal cleared = %v, want it published", err)
 			}

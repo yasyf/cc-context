@@ -35,10 +35,11 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
-	// A test that reaches the graphite API without stubGTAPI would submit real
-	// pull requests with the developer's token; fail it loudly instead.
-	gtAPIClient = func() *gtapi.Client {
-		panic("cli: gtAPIClient called without stubGTAPI")
+	// A test that reaches the graphite API on a context no stub decorated would
+	// submit real pull requests with the developer's token; fail it loudly
+	// instead. This is the one write to it, and it precedes every test.
+	gtAPIDefault = func() *gtapi.Client {
+		panic("cli: the graphite API was reached on a context stubGTAPI never decorated")
 	}
 	// A test that drives ccx without a fixture context resolves the process
 	// working directory, which under `go test` is this package inside cc-context's

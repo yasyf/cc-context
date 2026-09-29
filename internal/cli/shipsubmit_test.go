@@ -56,6 +56,7 @@ func assertLandedPublished(t *testing.T, f *vcstest.Fixture, api *gtAPIStub, own
 func TestStackSubmitDropsALandedParent(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	gtLandedStack(t, f)
 	shipResetLog(t, f)
 
@@ -74,6 +75,7 @@ func TestStackSubmitDropsALandedParent(t *testing.T) {
 func TestShipGTDropsALandedParent(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	gtLandedStack(t, f)
 	shipGTReady(t, f)
 
@@ -95,6 +97,7 @@ func TestShipGTDropsALandedParent(t *testing.T) {
 func TestShipGTLeavesAnUnchangedDownstackBranchAlone(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	shipGTStack(t, f, "base", "feature")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
@@ -127,7 +130,6 @@ func TestShipGTLeavesAnUnchangedDownstackBranchAlone(t *testing.T) {
 // round trip to spend a rate limit another lane has exhausted.
 func TestShipGTReportsFromGraphiteAlone(t *testing.T) {
 	f := shipGTRepo(t)
-	stubGTAPI(t)
 	shipGTStack(t, f, "base", "feature")
 	shipGTReady(t, f)
 
@@ -150,6 +152,7 @@ func TestShipGTReportsFromGraphiteAlone(t *testing.T) {
 func TestShipGTResubmitsAnUnchangedBranchToChangeItsDraftState(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	shipGTStack(t, f, "base", "feature")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
@@ -196,6 +199,7 @@ func TestShipGTAmendRefusalNamesTheRecovery(t *testing.T) {
 func TestStackSubmitRetargetsAParkedPullRequest(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	api.parkOn(f)
 	shipGTStack(t, f, "p", "c", "g")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
@@ -232,6 +236,7 @@ func TestStackSubmitRetargetsAParkedPullRequest(t *testing.T) {
 func TestShipGTResubmitsTheChildOfAResubmittedBranch(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
 	api.parkOn(f)
 	shipGTStack(t, f, "a", "b", "c")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {

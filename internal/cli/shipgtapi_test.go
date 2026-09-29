@@ -1,12 +1,13 @@
 // The Graphite API stub the gt-lane ship tests submit against: an httptest
-// server behind gtAPIClient serving the routes gtSubmitStack calls, recording
-// every request so a test can assert the HTTP half of a submit beside the
-// argv log.
+// server the test carries on its context, serving the routes gtSubmitStack
+// calls and recording every request so a test can assert the HTTP half of a
+// submit beside the argv log.
 package cli
 
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,8 +27,10 @@ import (
 const gtStubSubmitRoute = "/graphite/submit/pull-requests"
 
 type gtAPIStub struct {
-	t  *testing.T
-	mu sync.Mutex
+	t       *testing.T
+	client  *gtapi.Client
+	mu      sync.Mutex
+	carried bool
 
 	synced         gtapi.RepoSyncStatus
 	syncMessage    string
@@ -95,10 +98,28 @@ type gtStubSubmitEntry struct {
 	MaintainRetarget bool               `json:"maintainRetarget"`
 }
 
-// stubGTAPI points gtAPIClient at a fresh stub for the test's duration. The
-// last install wins, so a test needing configuration calls it again after its
-// fixture helper installed the default.
+// stubGTAPI is [newGTAPIStub] under the guard a migration off the package-var
+// client needs: a stub no context carries is one the code never reaches, and
+// every assertion a test makes over it then passes while pinning nothing.
 func stubGTAPI(t *testing.T) *gtAPIStub {
+	t.Helper()
+	s := newGTAPIStub(t)
+	t.Cleanup(func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if !s.carried {
+			t.Error("stubGTAPI: no context carried this stub, so the code under test never reached it")
+		}
+	})
+	return s
+}
+
+// newGTAPIStub serves a fresh stub for the test's duration, reached by the
+// contexts [gtAPIStub.ctx] returns. The last decorator wins, so a test needing
+// configuration stubs again over the default its fixture helper installed —
+// and that default, superseded by design, is the one caller that goes
+// unguarded.
+func newGTAPIStub(t *testing.T) *gtAPIStub {
 	t.Helper()
 	s := &gtAPIStub{
 		t:            t,
@@ -112,13 +133,19 @@ func stubGTAPI(t *testing.T) *gtAPIStub {
 		nextPR:       100,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(s.serve))
-	prev := gtAPIClient
-	gtAPIClient = func() *gtapi.Client { return gtapi.NewWithToken(srv.URL, "gt-stub-token") }
-	t.Cleanup(func() {
-		gtAPIClient = prev
-		srv.Close()
-	})
+	s.client = gtapi.NewWithToken(srv.URL, "gt-stub-token")
+	t.Cleanup(srv.Close)
 	return s
+}
+
+// ctx returns parent carrying this stub as the Graphite API every gt-lane call
+// under it reaches, in place of the package-wide client a parallel test would
+// otherwise be racing another test to overwrite.
+func (s *gtAPIStub) ctx(parent context.Context) context.Context {
+	s.mu.Lock()
+	s.carried = true
+	s.mu.Unlock()
+	return withGTAPI(parent, s.client)
 }
 
 func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {

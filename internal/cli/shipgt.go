@@ -1388,9 +1388,27 @@ func shipCommitGTSelect(ctx context.Context, l lane, errW io.Writer, o shipOpts,
 	return nil
 }
 
-// gtAPIClient is the Graphite API client the submit path calls; tests point it
-// at an httptest server.
-var gtAPIClient = gtapi.Default
+type gtAPIKey struct{}
+
+// withGTAPI returns ctx carrying client in place of api.graphite.com, for a
+// test pairing one httptest server with one test rather than with the process.
+func withGTAPI(ctx context.Context, client *gtapi.Client) context.Context {
+	return context.WithValue(ctx, gtAPIKey{}, client)
+}
+
+// gtAPIDefault is the client a context carrying none falls back to. Only
+// TestMain replaces it, before any test runs, so that a test reaching the real
+// api.graphite.com panics instead of submitting with the developer's token.
+var gtAPIDefault = gtapi.Default
+
+// gtAPI returns the Graphite API client ctx carries, falling back to the
+// process-wide one against api.graphite.com.
+func gtAPI(ctx context.Context) *gtapi.Client {
+	if client, ok := ctx.Value(gtAPIKey{}).(*gtapi.Client); ok {
+		return client
+	}
+	return gtAPIDefault()
+}
 
 // shipPushGT submits the downstack of the branch the commit landed on, over
 // Graphite's HTTP API plus ccx's own git push in place of a gt submit process.
@@ -1509,7 +1527,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	if err != nil {
 		return nil, nil, err
 	}
-	client := gtAPIClient()
+	client := gtAPI(ctx)
 	var synced gtapi.RepoSync
 	var infos []gtapi.PullRequestInfo
 	var infoErr error

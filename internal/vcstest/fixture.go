@@ -38,6 +38,11 @@ type Fixture struct {
 	shimDir  string
 	logGen   int
 	isolated bool
+
+	// decorators are the seams a test stubbed, applied to every context the
+	// fixture hands out so a stub reaches the code under test by context
+	// rather than by a package variable every parallel test shares.
+	decorators []func(context.Context) context.Context
 }
 
 // Context returns the context a test drives ccx with: every child spawned
@@ -49,7 +54,18 @@ func (f *Fixture) Context() context.Context { return f.ContextIn(f.Dir) }
 // ContextIn is [Fixture.Context] rooted at dir, for a test driving ccx from a
 // worktree the fixture cut rather than from the repository itself.
 func (f *Fixture) ContextIn(dir string) context.Context {
-	return workspace.WithRoot(render.WithEnv(context.Background(), f.env...), dir)
+	ctx := workspace.WithRoot(render.WithEnv(context.Background(), f.env...), dir)
+	for _, decorate := range f.decorators {
+		ctx = decorate(ctx)
+	}
+	return ctx
+}
+
+// Decorate registers d over every context the fixture hands out from here on.
+// It is how a test carries a stubbed seam — an HTTP client, a clock — the same
+// way the fixture already carries its environment and its root.
+func (f *Fixture) Decorate(d func(context.Context) context.Context) {
+	f.decorators = append(f.decorators, d)
 }
 
 // Env returns the fixture's environment, for a test that spawns a tool itself

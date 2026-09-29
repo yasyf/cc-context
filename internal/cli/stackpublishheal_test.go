@@ -139,7 +139,6 @@ func TestVcsPushFindsAChildsOwnCommitsAfterItsParentWasRebased(t *testing.T) {
 
 func TestStackSubmitKeepsTheSiblingGraphiteRecordsOverAStaleReceipt(t *testing.T) {
 	f := shipGTRepo(t)
-	stubGTAPI(t)
 	stubOpenPRs(t, nil, "p", "a", "z")
 	shipGTStack(t, f, "p", "a")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
@@ -168,7 +167,6 @@ func TestStackSubmitKeepsTheSiblingGraphiteRecordsOverAStaleReceipt(t *testing.T
 
 func TestStackSubmitKeepsASeparatelyTrackedSiblingGraphiteRecordsOverAStaleReceipt(t *testing.T) {
 	f := shipGTRepo(t)
-	stubGTAPI(t)
 	stubOpenPRs(t, nil, "a", "z")
 	shipGTStack(t, f, "a")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
@@ -200,7 +198,6 @@ func TestStackSubmitKeepsASeparatelyTrackedSiblingGraphiteRecordsOverAStaleRecei
 // c the receipt's b still won.
 func TestStackRebaseTakesAParentGTRecordedAfterThePublication(t *testing.T) {
 	f := shipGTRepo(t)
-	stubGTAPI(t)
 	stubOpenPRs(t, nil, "a", "b", "c", "d")
 	shipGTStack(t, f, "a", "b", "c")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "d")
