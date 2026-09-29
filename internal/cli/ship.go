@@ -469,7 +469,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		if err != nil {
 			return err
 		}
-		if plan.needsRestack || !contains || published || len(o.landed) > 0 || o.tipOnly {
+		if plan.needsRestack || !contains || published || len(o.landed) > 0 || (o.tipOnly && len(chain) > 1) {
 			intent, err := stackShipOptions(o, meta, prNWO, branch)
 			if err != nil {
 				return err
