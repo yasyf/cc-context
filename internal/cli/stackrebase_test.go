@@ -1521,10 +1521,8 @@ func TestStackRebaseKillsAStalledRebaseAndRemovesItsIndexLock(t *testing.T) {
 func TestStackContinueLeavesTheIndexLockOfAStalledRebaseInTheUsersCheckout(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stackConflicting(t, f)
-	stopped := exec.Command("git", "-C", f.Dir, "-c", "core.hooksPath=/dev/null", "rebase", "-q", "main")
-	stopped.Env = f.Env()
-	if err := stopped.Run(); err == nil {
-		t.Fatal("fixture: git rebase main succeeded, want it stopped on c.txt")
+	if _, code, _, err := render.RunCLIExitCode(f.Context(), render.Dir(f.Dir), "git", []string{"-c", "core.hooksPath=/dev/null", "rebase", "-q", "main"}); err != nil || code == 0 {
+		t.Fatalf("fixture: git rebase main = %d, %v, want it stopped on c.txt", code, err)
 	}
 	writeShipFile(t, f.Dir, "c.txt", "resolved\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
