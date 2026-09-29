@@ -953,12 +953,7 @@ func shipPRBaseArgv(branch, trunk string) []string {
 
 func TestShipPRCreateGitLaneBasesOnAnUnlandedParent(t *testing.T) {
 	f := shipPRFixture(t)
-	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "-b", "base")
-	writeShipFile(t, f.Dir, "base.txt", "base\n")
-	mustRun(t, f.Env(), f.Dir, "git", "add", "base.txt")
-	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "base")
-	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
-	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "-b", "feature")
+	shipCutPushedParent(t, f, "base", "feature")
 	created := shipPRCreated(t)
 	body := writePRBody(t, "body.md", "why this change\n")
 
@@ -981,5 +976,41 @@ func TestShipPRCreateGitLaneBasesOnAnUnlandedParent(t *testing.T) {
 	}
 	if suffix := fmt.Sprintf(" · opened PR #%d %s onto base", created.Number, created.URL); !strings.HasSuffix(got, suffix) {
 		t.Errorf("summary = %q, want it to end %q", got, suffix)
+	}
+}
+
+// shipCutPushedParent cuts name off the current branch with a commit of its
+// own, pushes it, and leaves the working copy on child.
+func shipCutPushedParent(t *testing.T, f *vcstest.Fixture, name, child string) {
+	t.Helper()
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "-b", name)
+	writeShipFile(t, f.Dir, name+".txt", name+"\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", name+".txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", name)
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", name)
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "-b", child)
+}
+
+func TestShipPRCreateGitLaneSkipsAParentTheRemoteNoLongerHas(t *testing.T) {
+	f := shipPRFixture(t)
+	shipCutPushedParent(t, f, "base", "feature")
+	mustRun(t, f.Env(), f.RemoteDir, "git", "branch", "-D", "base")
+	shipPRCreated(t)
+	body := writePRBody(t, "body.md", "why this change\n")
+
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if stale := gitAt(t, f.Env(), f.Dir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/base"); stale == "" {
+		t.Fatal("the stale remote-tracking ref this test turns on is gone")
+	}
+	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+		if len(inv) > 3 && inv[0] == "gh" && inv[3] == "POST" && slices.Contains(inv, "base=base") {
+			t.Errorf("create argv = %v, want a base the remote still carries", inv)
+		}
+	}
+	if strings.Contains(got, "onto base") {
+		t.Errorf("summary = %q, want no base the remote no longer has", got)
 	}
 }

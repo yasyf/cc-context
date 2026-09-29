@@ -311,6 +311,18 @@ func shipPRBase(ctx context.Context, dir render.Dir, remote, branch, trunk strin
 		}
 		base, nearest = name, ahead
 	}
+	if base == trunk {
+		return trunk, nil
+	}
+	// ship fetches without --prune, so a landed parent whose branch the merge
+	// deleted still has a remote-tracking ref here; GitHub answers 422 for it.
+	live, err := render.RunCLI(ctx, dir, "git", []string{"ls-remote", "--heads", remote, "refs/heads/" + base})
+	if err != nil {
+		return "", fmt.Errorf("ship: git ls-remote --heads %s %s: %w", remote, base, err)
+	}
+	if strings.TrimSpace(live) == "" {
+		return trunk, nil
+	}
 	return base, nil
 }
 
