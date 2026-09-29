@@ -35,6 +35,23 @@ var runTimeout = 10 * time.Minute
 // tell the guard's own expiry from a caller's deadline or a Ctrl-C.
 var errRunTimeout = errors.New("render: run timeout")
 
+var errRunStalled = errors.New("render: run stalled")
+
+type progress struct {
+	probe func() string
+	stall time.Duration
+}
+
+type progressKey struct{}
+
+// WithProgress returns ctx carrying probe for the children spawned through it:
+// instead of the fixed runTimeout, such a child is killed only once probe has
+// returned the same value for stall, and a kill sends SIGTERM before SIGKILL so
+// the child can release its lock files.
+func WithProgress(ctx context.Context, probe func() string, stall time.Duration) context.Context {
+	return context.WithValue(ctx, progressKey{}, progress{probe: probe, stall: stall})
+}
+
 // Dir is the working copy a child runs in, required by every runner.
 type Dir string
 
@@ -54,6 +71,9 @@ func newCmd(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (
 	cmd.WaitDelay = waitDelay
 	cmd.Dir = string(dir)
 	cmd.Env = env
+	if _, ok := ctx.Value(progressKey{}).(progress); ok {
+		terminateOnCancel(cmd)
+	}
 	return cmd, runCtx, cancel
 }
 
@@ -135,7 +155,34 @@ func withRunGuard(ctx context.Context) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); ok {
 		return context.WithCancel(ctx)
 	}
-	return context.WithTimeoutCause(ctx, runTimeout, errRunTimeout)
+	p, ok := ctx.Value(progressKey{}).(progress)
+	if !ok {
+		return context.WithTimeoutCause(ctx, runTimeout, errRunTimeout)
+	}
+	runCtx, cancel := context.WithCancelCause(ctx)
+	go watchProgress(runCtx, cancel, p)
+	return runCtx, func() { cancel(context.Canceled) }
+}
+
+func watchProgress(ctx context.Context, cancel context.CancelCauseFunc, p progress) {
+	last, since := p.probe(), time.Now()
+	tick := time.NewTicker(max(p.stall/40, time.Millisecond))
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			if now := p.probe(); now != last {
+				last, since = now, time.Now()
+				continue
+			}
+			if time.Since(since) >= p.stall {
+				cancel(errRunStalled)
+				return
+			}
+		}
+	}
 }
 
 // timedOut names runTimeout as the cause when the guard — and not a deadline the
@@ -145,11 +192,18 @@ func withRunGuard(ctx context.Context) (context.Context, context.CancelFunc) {
 // the guard firing. Any other failure returns nil, leaving the caller's own
 // wrapping in place.
 func timedOut(runCtx context.Context, bin string, err error) error {
-	if !errors.Is(context.Cause(runCtx), errRunTimeout) {
-		return nil
+	switch cause := context.Cause(runCtx); {
+	case errors.Is(cause, errRunTimeout):
+		return fmt.Errorf("%s did not finish within %s and was killed; run it by hand to see what it waits on: %w", bin, runTimeout, err)
+	case errors.Is(cause, errRunStalled):
+		p, _ := runCtx.Value(progressKey{}).(progress)
+		return fmt.Errorf("%s made no progress for %s and was killed; run it by hand to see what it waits on: %w: %w", bin, p.stall, ErrStalled, err)
 	}
-	return fmt.Errorf("%s did not finish within %s and was killed; run it by hand to see what it waits on: %w", bin, runTimeout, err)
+	return nil
 }
+
+// ErrStalled marks a child a WithProgress guard killed for making no progress.
+var ErrStalled = errors.New("stalled")
 
 // failure wraps a child's failure with its stderr, or names the deadline when
 // runTimeout is what killed it.
