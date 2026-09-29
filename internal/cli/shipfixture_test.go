@@ -242,6 +242,7 @@ func shipGTRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	f := shipRepo(t, append([]vcstest.Opt{vcstest.GT(), vcstest.Remote()}, opts...)...)
 	f.Decorate(newGTAPIStub(t).ctx)
 	stubStackPRs(t, f, nil)
+	stubStackStanding(t, f, nil)
 	return f
 }
 
