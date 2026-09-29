@@ -1723,6 +1723,8 @@ func TestShipGitRebase(t *testing.T) {
 				[]string{"git", "fetch", "origin"},
 				[]string{"git", "rev-parse", "--verify", "--quiet", remoteRef},
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
+				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"},
+				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-apply"},
 				[]string{"git", "rev-list", "--count", remoteRef + "..HEAD"},
 				[]string{"git", "diff", "--name-only", "HEAD"},
 				[]string{"git", "rebase", remoteRef},
@@ -1739,6 +1741,8 @@ func TestShipGitRebase(t *testing.T) {
 				[]string{"git", "fetch", "origin"},
 				[]string{"git", "rev-parse", "--verify", "--quiet", remoteRef},
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
+				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"},
+				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-apply"},
 				[]string{"git", "rev-list", "--count", remoteRef + "..HEAD"},
 				[]string{"git", "diff", "--name-only", "HEAD"},
 				[]string{"git", "rebase", remoteRef},
@@ -1797,6 +1801,8 @@ func TestShipGitRebase(t *testing.T) {
 				[]string{"git", "fetch", "origin"},
 				[]string{"git", "rev-parse", "--verify", "--quiet", remoteRef},
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
+				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"},
+				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-apply"},
 				[]string{"git", "rev-list", "--count", remoteRef + "..HEAD"},
 				[]string{"git", "diff", "--name-only", "HEAD"},
 				[]string{"git", "rebase", remoteRef},
@@ -1966,6 +1972,8 @@ func TestShipGitPushRetry(t *testing.T) {
 		{"git", "fetch", "origin"},
 		{"git", "rev-parse", "--verify", "--quiet", remoteRef},
 		{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
+		{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"},
+		{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-apply"},
 		{"git", "rev-list", "--count", remoteRef + "..HEAD"},
 		{"git", "diff", "--name-only", "HEAD"},
 		{"git", "rebase", remoteRef},
@@ -2010,6 +2018,8 @@ func TestShipGitPushRetry(t *testing.T) {
 				{"git", "fetch", "origin"},
 				{"git", "rev-parse", "--verify", "--quiet", remoteRef},
 				{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
+				{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"},
+				{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-apply"},
 				{"git", "rev-list", "--count", remoteRef + "..HEAD"},
 				{"git", "diff", "--name-only", "HEAD"},
 				{"git", "rebase", remoteRef},
@@ -7077,4 +7087,73 @@ func TestShipWatchCIReadsContextPATH(t *testing.T) {
 			}
 		})
 	}
+}
+
+// shipStopRebase leaves dir in a conflicted rebase whose resolution is staged:
+// a REBASE_HEAD that resolves, a rebase state directory, and no unmerged path.
+func shipStopRebase(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	shipDivergeRemote(t, f, "main", "f.txt", "upstream\n")
+	writeShipFile(t, f.Dir, "f.txt", "local\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "local")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	rebase := exec.Command("git", "rebase", "refs/remotes/origin/main") //nolint:gosec // fixed argv against the fixture's TempDir
+	rebase.Dir = f.Dir
+	rebase.Env = append(os.Environ(), f.Env()...)
+	if err := rebase.Run(); err == nil {
+		t.Fatal("the seeded rebase did not conflict")
+	}
+	writeShipFile(t, f.Dir, "f.txt", "resolved\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "f.txt")
+	if unmerged := gitAt(t, f.Env(), f.Dir, "diff", "--name-only", "--diff-filter=U"); unmerged != "" {
+		t.Fatalf("seeded rebase still lists %q unmerged, want the resolution staged", unmerged)
+	}
+}
+
+func TestGitRebaseOntoRefusesARebaseItDidNotStart(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	shipStopRebase(t, f)
+	head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+
+	_, err := gitRebaseOnto(f.Context(), render.Dir(f.Dir), "ship", "origin", "main")
+	if err == nil || !strings.Contains(err.Error(), "a rebase is already in progress here") {
+		t.Fatalf("gitRebaseOnto = %v, want a refusal naming the rebase already running", err)
+	}
+	if strings.Contains(err.Error(), "conflicts in") {
+		t.Errorf("refusal claims conflicts: %v", err)
+	}
+	if state := gitAt(t, f.Env(), f.Dir, "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"); !dirExists(state) {
+		t.Error("ship aborted the rebase it found in progress")
+	}
+	if staged := gitAt(t, f.Env(), f.Dir, "diff", "--cached", "--name-only"); staged != "f.txt" {
+		t.Errorf("staged resolution = %q, want f.txt still staged", staged)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); got != head {
+		t.Errorf("HEAD = %s, want the pre-refusal %s", got, head)
+	}
+}
+
+func TestGitRebaseFailureNamesAStopWithNoConflictedFile(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	shipStopRebase(t, f)
+
+	err := gitRebaseFailure(f.Context(), render.Dir(f.Dir), "ship", "origin", "main", errors.New("exit status 128"))
+	if err == nil {
+		t.Fatal("gitRebaseFailure = nil, want the stopped rebase reported")
+	}
+	if strings.Contains(err.Error(), "conflicts in") {
+		t.Errorf("gitRebaseFailure = %v, want no conflict claim when it listed no conflicted file", err)
+	}
+	if !strings.Contains(err.Error(), "stopped with no conflicted file") {
+		t.Errorf("gitRebaseFailure = %v, want it to name the stop it found", err)
+	}
+	if !strings.Contains(err.Error(), "ccx vcs push moves origin/main onto your head") {
+		t.Errorf("gitRebaseFailure = %v, want the recovery kept", err)
+	}
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }

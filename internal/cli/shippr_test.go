@@ -181,6 +181,7 @@ func TestShipPRCreateGitLane(t *testing.T) {
 	invocations := vcstest.Invocations(t, f.ArgvLog)
 	assertInvocations(t, invocations, append(shipPRPushed("feature"),
 		append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "feature", "open")...),
+		shipPRBaseArgv("feature", "main"),
 		[]string{"gh", "api", "-X", "POST", "repos/" + fakePRRepo + "/pulls", "-f", "head=feature", "-f", "base=main", "-f", "title=Better title", "-F", "body=@" + body},
 	))
 	assertNoGraphQLArgv(t, invocations)
@@ -938,5 +939,47 @@ func TestPRNumberFromURL(t *testing.T) {
 	}
 	if _, err := prNumberFromURL("https://github.com/yasyf/cc-context"); err == nil {
 		t.Error("a URL with no pull request path must refuse")
+	}
+}
+
+// shipPRBaseArgv is the ancestor scan ship runs to pick a new pull request's
+// base when --parent named none.
+func shipPRBaseArgv(branch, trunk string) []string {
+	return []string{
+		"git", "for-each-ref", "--merged=refs/heads/" + branch,
+		"--no-merged=refs/remotes/origin/" + trunk, "--format=%(refname:lstrip=3)", "refs/remotes/origin/",
+	}
+}
+
+func TestShipPRCreateGitLaneBasesOnAnUnlandedParent(t *testing.T) {
+	f := shipPRFixture(t)
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "-b", "base")
+	writeShipFile(t, f.Dir, "base.txt", "base\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "base.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "-b", "feature")
+	created := shipPRCreated(t)
+	body := writePRBody(t, "body.md", "why this change\n")
+
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	var create []string
+	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+		if len(inv) > 3 && inv[0] == "gh" && inv[3] == "POST" {
+			create = inv
+		}
+	}
+	want := []string{
+		"gh", "api", "-X", "POST", "repos/" + fakePRRepo + "/pulls", "-f", "head=feature", "-f", "base=base",
+		"-f", "title=Better title", "-F", "body=@" + body,
+	}
+	if !reflect.DeepEqual(create, want) {
+		t.Errorf("create argv = %v, want it based on the unlanded parent: %v", create, want)
+	}
+	if suffix := fmt.Sprintf(" · opened PR #%d %s onto base", created.Number, created.URL); !strings.HasSuffix(got, suffix) {
+		t.Errorf("summary = %q, want it to end %q", got, suffix)
 	}
 }
