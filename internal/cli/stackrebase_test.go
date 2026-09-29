@@ -1545,7 +1545,7 @@ func stackRunWithSlowRebase(t *testing.T, f *vcstest.Fixture, onRebase string, a
 
 func TestStackRebaseLetsASlowRebaseFinishWhileItProgresses(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
-	stubOpenPRs(t, nil, "base", "feature")
+	stubOpenPRs(t, f, nil, "base", "feature")
 	stackConflicting(t, f)
 
 	_, err := stackRunWithSlowRebase(t, f, `for i in 1 2 3 4 5 6; do sleep 0.3; touch "$gd/index"; done`, "rebase", "--no-push")
@@ -1556,7 +1556,7 @@ func TestStackRebaseLetsASlowRebaseFinishWhileItProgresses(t *testing.T) {
 
 func TestStackRebaseKillsAStalledRebaseAndRemovesItsIndexLock(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
-	stubOpenPRs(t, nil, "base", "feature")
+	stubOpenPRs(t, f, nil, "base", "feature")
 	stackConflicting(t, f)
 
 	_, err := stackRunWithSlowRebase(t, f, `touch "$gd/index.lock"; trap '' TERM; sleep 30`, "rebase", "--no-push")
