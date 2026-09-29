@@ -3,9 +3,12 @@
 package render
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -186,6 +189,11 @@ func TestWithProgressTerminatesSoTheChildReleasesItsLock(t *testing.T) {
 // TestSignalToTheProcessGroupIsNotTheChildsFailure reproduces what
 // `timeout 590 ccx …` does: one SIGTERM reaches ccx and its child alike. ccx
 // absorbs its own and must not then report the child's death as a git failure.
+//
+// It signals the two pids separately rather than issuing the kill(-pgid) that
+// timeout(1) issues, because under go test the process group holds the test
+// runner: a real group signal takes the whole run down. The signals the two
+// processes receive are the same either way.
 func TestSignalToTheProcessGroupIsNotTheChildsFailure(t *testing.T) {
 	dir := t.TempDir()
 	ctx, stop := WithSignalCancel(context.Background(), syscall.SIGTERM)
@@ -241,4 +249,66 @@ func awaitChildPID(t *testing.T, path string) int {
 	}
 	t.Fatalf("child never wrote its pid to %s", path)
 	return 0
+}
+
+// TestSecondSignalTakesItsDefaultAction pins the escape hatch: ccx absorbs the
+// first SIGTERM so it can name what it stopped, and stops relaying after it, so
+// a second one kills ccx rather than being absorbed too. Absorbing both would
+// leave SIGKILL as the only way to end a wedged ccx. The helper runs in a
+// subprocess because an unhandled SIGTERM ends whoever receives it.
+func TestSecondSignalTakesItsDefaultAction(t *testing.T) {
+	if os.Getenv(signalHelperVar) == "1" {
+		absorbOneSignal()
+		return
+	}
+	helper := exec.Command(os.Args[0], "-test.run=^TestSecondSignalTakesItsDefaultAction$") //nolint:gosec // the test binary re-invoking itself
+	helper.Env = append(os.Environ(), signalHelperVar+"=1")
+	stdout, err := helper.StdoutPipe()
+	if err != nil {
+		t.Fatalf("helper stdout: %v", err)
+	}
+	if err := helper.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
+	}
+	defer func() { _ = helper.Process.Kill() }()
+	lines := bufio.NewScanner(stdout)
+
+	awaitHelperLine(t, lines, "ready")
+	if err := helper.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("first signal: %v", err)
+	}
+	awaitHelperLine(t, lines, "absorbed")
+
+	if err := helper.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("second signal: %v", err)
+	}
+	var exitErr *exec.ExitError
+	if err := helper.Wait(); !errors.As(err, &exitErr) {
+		t.Fatalf("helper exited with %v, want the second signal to end it", err)
+	}
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() || status.Signal() != syscall.SIGTERM {
+		t.Errorf("helper exit = %v, want death by SIGTERM rather than a second absorbed signal", exitErr)
+	}
+}
+
+const signalHelperVar = "CCX_TEST_SIGNAL_HELPER"
+
+func absorbOneSignal() {
+	ctx, stop := WithSignalCancel(context.Background(), syscall.SIGTERM)
+	defer stop()
+	fmt.Println("ready")
+	<-ctx.Done()
+	fmt.Println("absorbed")
+	time.Sleep(20 * time.Second)
+}
+
+func awaitHelperLine(t *testing.T, lines *bufio.Scanner, want string) {
+	t.Helper()
+	for lines.Scan() {
+		if strings.TrimSpace(lines.Text()) == want {
+			return
+		}
+	}
+	t.Fatalf("helper never printed %q: %v", want, lines.Err())
 }

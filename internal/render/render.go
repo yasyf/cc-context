@@ -248,7 +248,7 @@ func signalled(runCtx context.Context, bin string, err error) error {
 	if !errors.Is(cause, ErrSignalled) || !killedBySignal(err) {
 		return nil
 	}
-	return fmt.Errorf("%s did not fail: %s while it ran, and a wrapper that signals the whole process group — timeout(1) does — kills the child with ccx, so the exit code is the wrapper's: %w: %w", bin, cause, ErrSignalled, err)
+	return fmt.Errorf("%s did not fail: %w while it ran, and a wrapper that signals the whole process group — timeout(1) does — kills the child with ccx, so the exit code is the wrapper's: %w", bin, cause, err)
 }
 
 // killedBySignal reports whether the child was terminated by a signal, which
