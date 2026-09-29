@@ -46,12 +46,20 @@ func TestStatusCheckBlockers(t *testing.T) {
 		want string
 	}{
 		{
-			name: "a neutral run is a hold, not a pass",
+			name: "a required neutral run is a hold, not a pass",
 			pr: statusPR{ChecksState: "SUCCESS", Checks: []statusCheck{
-				{Name: "buildkite/test", State: "SUCCESS", Required: true},
-				{Name: "ai-review", State: "NEUTRAL"},
+				{Name: "buildkite/test", State: "NEUTRAL", Required: true},
+				{Name: "ai-review", State: "SUCCESS"},
 			}},
-			want: "check ai-review is neutral",
+			want: "check buildkite/test is neutral",
+		},
+		{
+			name: "optional neutral and absent checks do not hold a merge",
+			pr: statusPR{ChecksState: "SUCCESS", Required: []string{"buildkite/test"}, Absent: []string{"emergency-label"}, Checks: []statusCheck{
+				{Name: "buildkite/test", State: "SUCCESS", Required: true},
+				{Name: "CodeQL", State: "NEUTRAL"},
+			}},
+			want: "",
 		},
 		{
 			name: "a required check that skipped reported without running",

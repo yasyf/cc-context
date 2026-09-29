@@ -272,7 +272,7 @@ func gtStackAll(ctx context.Context, dir render.Dir, prefix string) ([]string, g
 	if branch == "" {
 		return nil, nil, fmt.Errorf("%s: detached HEAD; no stack to resolve", prefix)
 	}
-	state, err := gtStateQuery(ctx, dir, prefix)
+	state, err := gtStateQueryFocused(ctx, dir, prefix, branch)
 	if err != nil {
 		return nil, nil, err
 	}
