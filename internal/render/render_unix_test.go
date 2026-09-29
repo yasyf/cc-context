@@ -182,3 +182,63 @@ func TestWithProgressTerminatesSoTheChildReleasesItsLock(t *testing.T) {
 		t.Errorf("lock %s survived the kill (%v); the child got no SIGTERM to release it", lock, err)
 	}
 }
+
+// TestSignalToTheProcessGroupIsNotTheChildsFailure reproduces what
+// `timeout 590 ccx …` does: one SIGTERM reaches ccx and its child alike. ccx
+// absorbs its own and must not then report the child's death as a git failure.
+func TestSignalToTheProcessGroupIsNotTheChildsFailure(t *testing.T) {
+	dir := t.TempDir()
+	ctx, stop := WithSignalCancel(context.Background(), syscall.SIGTERM)
+	defer stop()
+
+	errc := make(chan error, 1)
+	go func() {
+		_, err := RunCLI(ctx, Dir(dir), "/bin/sh", []string{"-c", `echo $$ > pid; while :; do sleep 0.05; done`})
+		errc <- err
+	}()
+	child := awaitChildPID(t, filepath.Join(dir, "pid"))
+
+	if err := syscall.Kill(child, syscall.SIGTERM); err != nil {
+		t.Fatalf("signal the child: %v", err)
+	}
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("signal ccx: %v", err)
+	}
+
+	err := <-errc
+	if !errors.Is(err, ErrSignalled) {
+		t.Fatalf("RunCLI = %v, want the signal ccx absorbed named", err)
+	}
+	if !strings.Contains(err.Error(), "did not fail") || !strings.Contains(err.Error(), "ccx received") {
+		t.Errorf("RunCLI = %v, want it to name ccx's own termination rather than blame the child", err)
+	}
+}
+
+// TestSignalledChildWithoutASignalToCcxStaysAFailure keeps the other case
+// honest: a child that dies of a signal ccx never received failed on its own.
+func TestSignalledChildWithoutASignalToCcxStaysAFailure(t *testing.T) {
+	ctx, stop := WithSignalCancel(context.Background(), syscall.SIGTERM)
+	defer stop()
+
+	_, err := RunCLI(ctx, Ambient, "/bin/sh", []string{"-c", `kill -TERM $$`})
+	if err == nil {
+		t.Fatal("RunCLI = nil, want the child's own signal death reported")
+	}
+	if errors.Is(err, ErrSignalled) {
+		t.Errorf("RunCLI = %v, want a child failure rather than ccx's termination", err)
+	}
+}
+
+func awaitChildPID(t *testing.T, path string) int {
+	t.Helper()
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
+		if raw, err := os.ReadFile(path); err == nil { //nolint:gosec // path is the test's own TempDir
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && pid > 0 {
+				return pid
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("child never wrote its pid to %s", path)
+	return 0
+}

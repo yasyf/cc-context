@@ -6,17 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/signal"
 	"syscall"
 
 	"github.com/yasyf/cc-context/internal/cli"
 	applog "github.com/yasyf/cc-context/internal/log"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 func main() {
 	applog.Setup()
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := render.WithSignalCancel(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	err := cli.NewRootCmd().ExecuteContext(ctx)
