@@ -6197,6 +6197,27 @@ func TestShipGTNoPush(t *testing.T) {
 	}
 }
 
+func TestShipGTTipOnlyRootUsesDirectSubmit(t *testing.T) {
+	f := shipGTFeature(t)
+	got, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--tip-only", "--no-watch")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if strings.Contains(got, "restacked in isolation") || !strings.Contains(got, "submitted feature") {
+		t.Errorf("summary = %q, want a direct feature submit", got)
+	}
+	if !gitBranchExists(t, f.Env(), f.RemoteDir, "feature") {
+		t.Error("feature was not pushed")
+	}
+	present, err := gitRefExists(f.Context(), render.Dir(f.Dir), "test", stackPublicationRef("feature", "receipt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if present {
+		t.Error("tip-only root created a stack publication receipt")
+	}
+}
+
 func TestShipGTNoVerify(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("feature"))
 	shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
