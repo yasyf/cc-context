@@ -344,10 +344,10 @@ func TestMissingPRIsDroppedFromTheBatchAndReported(t *testing.T) {
 	}
 }
 
-func TestLanePrefixDiscoversPRsAndLeasesThem(t *testing.T) {
+func TestLanePrefixReadsTheRecordsOfPRsItDiscovers(t *testing.T) {
 	t.Parallel()
 	c := &clock{now: epoch}
-	store, gh := newStore(t, t.TempDir(), c, nil, ok(t, "poll-lane.json"), ok(t, "poll-lane.json"))
+	store, gh := newStore(t, t.TempDir(), c, nil, ok(t, "poll-lane.json"), ok(t, "poll-190.json"), ok(t, "poll-lane.json"))
 
 	st, err := store.Read(testCtx(t), Want{Prefixes: []string{"yasyf/gh-budget/"}})
 	if err != nil {
@@ -356,14 +356,17 @@ func TestLanePrefixDiscoversPRsAndLeasesThem(t *testing.T) {
 	if got := st.Lanes["yasyf/gh-budget/"].PRs; fmt.Sprint(got) != "[190]" {
 		t.Fatalf("lane = %v, want [190], the other branch's PR filtered out by prefix", got)
 	}
-	if gh.vars[0]["l0"] != "yasyf/gh-budget/" {
-		t.Errorf("vars = %v", gh.vars[0])
+	if gh.requests() != 2 || gh.vars[0]["l0"] != "yasyf/gh-budget/" || gh.vars[1]["p0"] != float64(190) {
+		t.Fatalf("vars = %v, want the lane read, then its new PR's record in a follow-up", gh.vars)
+	}
+	if st.PRs[190].State != "OPEN" {
+		t.Errorf("#190 = %+v, want its record read in the same Read", st.PRs[190])
 	}
 	c.now = c.now.Add(MinInterval)
 	if _, err := store.Read(testCtx(t), Want{Prefixes: []string{"yasyf/gh-budget/"}}); err != nil {
 		t.Fatal(err)
 	}
-	if gh.vars[1]["p0"] != float64(190) {
-		t.Errorf("next poll vars = %v, want the discovered #190 read", gh.vars[1])
+	if gh.requests() != 3 || gh.vars[2]["l0"] != "yasyf/gh-budget/" || gh.vars[2]["p0"] != float64(190) {
+		t.Errorf("next poll vars = %v, want the lane and its leased PR in one query", gh.vars[2])
 	}
 }

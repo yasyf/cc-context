@@ -240,15 +240,14 @@ func (s *Store) read(ctx context.Context, want Want) (State, error) {
 		}
 		now = s.now()
 	}
-	poll, err := s.src.poll(ctx, st.request(now), st.PRs)
-	if wait, limited := ghapi.RateLimited(err); limited {
-		st.Backoff = limitedAt(now, wait)
-		return st, s.refuse(st)
-	}
-	if err != nil {
+	if err := s.pollInto(ctx, &st, st.request(now), now); err != nil {
 		return st, err
 	}
-	st.absorb(poll, now)
+	if unread := st.unread(want, now); len(unread) > 0 {
+		if err := s.pollInto(ctx, &st, Want{PRs: unread}, now); err != nil {
+			return st, err
+		}
+	}
 	if err := s.save(st); err != nil {
 		return st, err
 	}
@@ -256,6 +255,19 @@ func (s *Store) read(ctx context.Context, want Want) (State, error) {
 		return st, &MissingError{Repo: s.src.owner + "/" + s.src.name, PRs: missing}
 	}
 	return st, nil
+}
+
+func (s *Store) pollInto(ctx context.Context, st *State, req Want, now time.Time) error {
+	poll, err := s.src.poll(ctx, req, st.PRs)
+	if wait, limited := ghapi.RateLimited(err); limited {
+		st.Backoff = limitedAt(now, wait)
+		return s.refuse(*st)
+	}
+	if err != nil {
+		return err
+	}
+	st.absorb(poll, now)
+	return nil
 }
 
 func (s *Store) refuse(st State) error {
@@ -321,6 +333,19 @@ func (st State) fresh(want Want, now time.Time) bool {
 		}
 	}
 	return true
+}
+
+func (st State) unread(want Want, now time.Time) []int {
+	var unread []int
+	for _, prefix := range want.Prefixes {
+		for _, n := range st.Lanes[prefix].PRs {
+			if pr := st.PRs[n]; pr.PolledAt.Before(now) && !pr.settled() && !slices.Contains(unread, n) {
+				unread = append(unread, n)
+			}
+		}
+	}
+	slices.Sort(unread)
+	return unread
 }
 
 func (st State) request(now time.Time) Want {

@@ -140,7 +140,7 @@ func newVcsPRStateCmd() *cobra.Command {
 		Use:   "state [<number>...]",
 		Short: "Print the shared cache's record of each pull request and lane prefix as JSON",
 		Long: `Print the machine-wide pull request cache's record of each named pull request,
-and the open pull requests on branches under each --lane-prefix, as one JSON
+and of each open pull request on a branch under a --lane-prefix, as one JSON
 object. Records are at most 30 seconds old; a read of anything older polls
 GitHub once for every pull request any process on the machine watches in the
 repository, the same poll ccx vcs pr watch and ccx vcs pr status share.
@@ -184,6 +184,7 @@ func runVcsPRState(cmd *cobra.Command, args []string, repo string, prefixes []st
 	report := prStateReport{Repo: repo, PolledAt: st.PolledAt, Trunk: st.Trunk.Name, Lanes: map[string][]int{}, PRs: map[int]prstate.PR{}}
 	for _, prefix := range prefixes {
 		report.Lanes[prefix] = st.Lanes[prefix].PRs
+		numbers = append(numbers, st.Lanes[prefix].PRs...)
 	}
 	for _, number := range numbers {
 		report.PRs[number] = st.PRs[number]
