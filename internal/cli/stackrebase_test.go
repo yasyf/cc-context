@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -627,10 +629,14 @@ func stackStallRm(t *testing.T, f *vcstest.Fixture) string {
 	t.Helper()
 	bin := t.TempDir()
 	marker, fifo := filepath.Join(bin, "rm-args"), filepath.Join(bin, "rm-gate")
+	parentNice := mustRun(t, f.Env(), f.Dir, "ps", "-o", "nice=", "-p", strconv.Itoa(os.Getpid()))
+	if err := os.WriteFile(marker+"-parent-nice", []byte(parentNice), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeExecutable(t, filepath.Join(bin, "rm"), "#!/bin/sh\necho \"$@\" > "+marker+"\ncat "+fifo+"\n")
+	writeExecutable(t, filepath.Join(bin, "rm"), "#!/bin/sh\nps -o nice= -p $$ > "+marker+"-nice\necho \"$@\" > "+marker+"\ncat "+fifo+"\n")
 	t.Cleanup(func() {
 		if gate, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
 			if err := gate.Close(); err != nil {
@@ -654,6 +660,23 @@ func stackAssertDiscarded(t *testing.T, f *vcstest.Fixture, ws, marker string) {
 	for deadline := time.Now().Add(10 * time.Second); args == "" && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
 		raw, _ := os.ReadFile(marker)
 		args = strings.TrimSpace(string(raw))
+	}
+	if runtime.GOOS == "darwin" {
+		niceness := func(path string) int {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			value, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return value
+		}
+		parentNice, childNice := niceness(marker+"-parent-nice"), niceness(marker+"-nice")
+		if childNice <= 0 || childNice < parentNice {
+			t.Fatalf("deletion nice %d, parent nice %d; want positive niceness no lower than the parent", childNice, parentNice)
+		}
 	}
 	aside, ok := strings.CutPrefix(args, "-rf ")
 	if !ok || filepath.Dir(aside) != filepath.Dir(ws) || !strings.HasPrefix(filepath.Base(aside), "."+filepath.Base(ws)+".") {

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -2427,7 +2428,12 @@ func stackDiscardWorkspace(ctx context.Context, l lane, ws string) error {
 	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "prune"}); err != nil {
 		return fmt.Errorf("stack rebase: git worktree prune: %w", err)
 	}
-	if err := render.StartDetached(ctx, render.Dir(filepath.Dir(aside)), "rm", []string{"-rf", aside}); err != nil {
+	program, args := "rm", []string{"-rf", aside}
+	if runtime.GOOS == "darwin" {
+		program = "/usr/sbin/taskpolicy"
+		args = append([]string{"-d", "throttle", "-c", "background", "-b", "/usr/bin/nice", "-n", "20", "rm"}, args...)
+	}
+	if err := render.StartDetached(ctx, render.Dir(filepath.Dir(aside)), program, args); err != nil {
 		return fmt.Errorf("stack rebase: delete %s: %w", aside, err)
 	}
 	return nil
