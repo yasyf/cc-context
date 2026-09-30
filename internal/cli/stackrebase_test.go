@@ -383,6 +383,37 @@ func TestStackRebaseDropsASquashLandedParent(t *testing.T) {
 	}
 }
 
+func TestStackRebaseKeepsALandedParentAnotherLaneSitsOn(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	shipGTStack(t, f, "sibling")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
+	stackAdvanceTrunk(t, f, "base.txt", "base\n")
+	stubStackPRs(t, f, map[string]*stackPR{"base": {Number: 5, Title: "base", State: "CLOSED", Landed: true}})
+
+	out, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if strings.Contains(out, "sibling") {
+		t.Errorf("plan = %q, want sibling's lane left out", out)
+	}
+	if got := stackParent(t, f, "feature"); got != "main" {
+		t.Errorf("feature's gt parent = %s, want main", got)
+	}
+	if got := stackParent(t, f, "sibling"); got != "base" {
+		t.Errorf("sibling's gt parent = %s, want base still recorded", got)
+	}
+	state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gtDownstack("test", state, "sibling", "main"); err != nil {
+		t.Errorf("sibling's downstack after the run: %v", err)
+	}
+}
+
 func TestStackRebasePushesWithADivergedLocalTrunk(t *testing.T) {
 	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
@@ -1170,6 +1201,48 @@ func TestStackRebaseDryRunMovesNothing(t *testing.T) {
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != feature {
 		t.Errorf("feature moved on a dry run")
+	}
+}
+
+func TestStackRebasePlansOnlyThisLane(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		from string
+		args []string
+		want []string
+	}{
+		{name: "this lane", from: "mine", want: []string{"mine", "shared"}},
+		{name: "every lane above the checked-out base", from: "shared", want: []string{"mine", "shared", "theirs"}},
+		{name: "a named parent's lane below it", from: "mine", args: []string{"--parent", "mine=other"}, want: []string{"mine", "other"}},
+		{name: "all lanes", from: "mine", args: []string{"--all-lanes"}, want: []string{"mine", "other", "shared", "theirs"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := shipGTRepo(t)
+			stubStackPRs(t, f, nil)
+			shipGTStack(t, f, "shared", "mine")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "shared")
+			shipGTStack(t, f, "theirs")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+			shipGTStack(t, f, "other")
+			stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", tt.from)
+
+			out, _, err := runStackCmd(t, f, append([]string{"rebase", "--dry-run", "--no-push"}, tt.args...)...)
+			if err != nil {
+				t.Fatalf("dry run: %v", err)
+			}
+			var planned []string
+			for _, line := range strings.Split(out, "\n")[1:] {
+				planned = append(planned, strings.SplitN(line, shipSep, 2)[0])
+			}
+			slices.Sort(planned)
+			if !slices.Equal(planned, tt.want) {
+				t.Errorf("planned %v, want %v; plan:\n%s", planned, tt.want, out)
+			}
+		})
 	}
 }
 

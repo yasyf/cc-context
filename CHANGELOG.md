@@ -59,6 +59,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack rebase` and `stack restack` stay in this lane.** A run
+  planned every branch stacked on the bottom of each branch it named, so a
+  `--parent` onto another lane's branch, or a lane cut from a shared ancestor,
+  pulled every sibling lane into the plan. In Forge-AI/monorepo, a
+  `--parent` onto one lane's branch planned to move five other lanes. A run
+  now plans the branch checked out here, the branches below it down to trunk,
+  and those stacked above it, plus the same for each branch `--parent`,
+  `--linearize`, or `--landed` names. `--all-lanes` widens it to every branch
+  gt tracks.
+
 - **A pull request closed mid-stack is dropped, not refused.**
   `ccx vcs stack submit`, `stack rebase`, and `stack restack` refused a stack
   holding a branch whose pull request was closed without landing. When that

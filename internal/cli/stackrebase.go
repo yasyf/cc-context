@@ -103,6 +103,7 @@ type stackRebaseRun struct {
 	Tip           string `json:"tip,omitempty"`
 	TipOnly       bool   `json:"tip_only,omitempty"`
 	DropCommits   bool   `json:"drop_commits,omitempty"`
+	AllLanes      bool   `json:"all_lanes,omitempty"`
 	deferPush     bool
 	Ship          *stackShipIntent         `json:"ship,omitempty"`
 	Aligned       bool                     `json:"aligned,omitempty"`
@@ -169,6 +170,7 @@ type stackRebaseOpts struct {
 	tipOnly     bool
 	dropCommits bool
 	restack     bool
+	allLanes    bool
 }
 
 const stackDropCommitsUsage = "publish a branch whose local head drops commits its published head carries"
@@ -200,6 +202,12 @@ func newStackRebaseCmd() *cobra.Command {
 		Use:   "rebase",
 		Short: "Rebase the whole stack onto trunk and push it, stopping in a workspace on conflict",
 		Long: `Rebase every branch of the stack onto its parent and trunk, then push it.
+
+The stack is this lane: the branch checked out here, the branches below it down
+to trunk, and those stacked above it, with the same for each branch --parent,
+--linearize, or --landed names. Another lane cut from a shared ancestor is left
+out, even when its branches sit on one this run moves. --all-lanes widens the
+run to every branch gt tracks.
 
 Every branch's local and remote head is recorded before anything moves, and each
 branch is replayed from the base it was recorded on (--onto <new parent>
@@ -251,6 +259,7 @@ branch with a pull request sits on is refused before anything moves.`,
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "print the plan and move nothing")
 	cmd.Flags().BoolVar(&o.noPush, "no-push", false, "rewrite the local stack and gt's record, but push nothing")
 	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
+	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "rebase every branch gt tracks, not only this lane's")
 	return cmd
 }
 
@@ -638,20 +647,22 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
-	seeds := slices.Sorted(maps.Keys(overrides))
-	for _, child := range seeds {
-		if parent := overrides[child]; parent != trunk {
-			seeds = append(seeds, parent)
+	for child, parent := range overrides {
+		if _, tracked := state[parent]; parent != trunk && !tracked {
+			return nil, fmt.Errorf("stack rebase: --parent %s=%s names a parent gt does not track", child, parent)
 		}
 	}
-	seeds = append(seeds, o.landed...)
+	retargeted := stackRetargeted(state, overrides)
+	seeds := append(slices.Sorted(maps.Keys(overrides)), o.landed...)
 	if current != "" && current != trunk {
 		seeds = append([]string{current}, seeds...)
+	}
+	if o.allLanes {
+		seeds = append(seeds, slices.DeleteFunc(slices.Sorted(maps.Keys(retargeted)), func(name string) bool { return name == trunk })...)
 	}
 	if len(seeds) == 0 {
 		return nil, errors.New("stack rebase: HEAD is not on a stack branch — run it from a working copy holding one, or name the branches with --parent/--linearize")
 	}
-	retargeted := stackRetargeted(state, overrides)
 	members, roots, err := stackMembers(retargeted, trunk, seeds)
 	if err != nil {
 		return nil, err
@@ -666,11 +677,6 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if !o.noPush {
 		if members, roots, err = stackWithPublishedParents(ctx, l.dir(), retargeted, submitted, trunk, members, roots, overrides); err != nil {
 			return nil, err
-		}
-	}
-	for child, parent := range overrides {
-		if parent != trunk && !slices.Contains(members, parent) {
-			return nil, fmt.Errorf("stack rebase: --parent %s=%s names a parent gt does not track", child, parent)
 		}
 	}
 
@@ -702,7 +708,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, AllLanes: o.allLanes, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left}
 	own := map[string]bool{}
 	if current != "" && current != trunk {
 		down, err := gtDownstack(stackRebasePrefix, retargeted, current, trunk)
@@ -1167,7 +1173,7 @@ func stackWithPublishedParents(ctx context.Context, dir render.Dir, state gtStat
 		if len(missing) == 0 {
 			return members, roots, nil
 		}
-		more, moreRoots, err := stackMembers(state, trunk, missing)
+		more, moreRoots, err := stackAncestry(state, trunk, missing)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1185,26 +1191,42 @@ func stackWithPublishedParents(ctx context.Context, dir render.Dir, state gtStat
 	}
 }
 
+// stackMembers is the lane of every seed: the branches below it down to trunk,
+// then those stacked above it, parents first. A sibling lane cut from a shared
+// ancestor stays out.
 func stackMembers(state gtState, trunk string, seeds []string) ([]string, []string, error) {
+	members, roots, err := stackAncestry(state, trunk, seeds)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, seed := range seeds {
+		up, err := gtUpstack(stackRebasePrefix, state, seed)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, name := range up {
+			if !slices.Contains(members, name) {
+				members = append(members, name)
+			}
+		}
+	}
+	return members, roots, nil
+}
+
+func stackAncestry(state gtState, trunk string, seeds []string) ([]string, []string, error) {
 	var members, roots []string
 	for _, seed := range seeds {
 		if seed == trunk {
 			return nil, nil, fmt.Errorf("stack rebase: %s is trunk, not a stack branch", seed)
 		}
-		if slices.Contains(members, seed) {
-			continue
-		}
 		down, err := gtDownstack(stackRebasePrefix, state, seed, trunk)
 		if err != nil {
 			return nil, nil, err
 		}
-		bottom := down[len(down)-1]
-		roots = append(roots, bottom)
-		up, err := gtUpstack(stackRebasePrefix, state, bottom)
-		if err != nil {
-			return nil, nil, err
+		if bottom := down[len(down)-1]; !slices.Contains(roots, bottom) {
+			roots = append(roots, bottom)
 		}
-		for _, name := range append([]string{bottom}, up...) {
+		for _, name := range gtBottomUp(down) {
 			if !slices.Contains(members, name) {
 				members = append(members, name)
 			}
@@ -2639,10 +2661,14 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 			return err
 		}
 	}
+	forget, err := stackForgettable(ctx, commonDir, run, dropped)
+	if err != nil {
+		return err
+	}
 	if err := errors.Join(
 		gtmeta.Reparent(ctx, commonDir, reparent),
 		gtmeta.RecordRestacked(ctx, commonDir, revisions),
-		gtmeta.Forget(ctx, commonDir, dropped),
+		gtmeta.Forget(ctx, commonDir, forget),
 		stackDropTempRefs(ctx, l.dir(), run),
 	); err != nil {
 		return fmt.Errorf("%s: the branches are rewritten, but recording the stack in gt failed — fix the cause and run ccx vcs stack continue: %w", prefix, errors.Join(err, alignErr))
@@ -2664,6 +2690,24 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	}
 	cmd.Println("not pushed (--no-push)")
 	return nil
+}
+
+// stackForgettable is every dropped branch no branch outside the run still sits
+// on: forgetting one another lane's branch sits on leaves that lane's parent
+// unresolvable, and its own rebase drops it instead.
+func stackForgettable(ctx context.Context, commonDir string, run *stackRebaseRun, dropped []string) ([]string, error) {
+	state, err := gtStateAt(ctx, commonDir, stackRebasePrefix)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(slices.Clone(dropped), func(name string) bool {
+		for child, s := range state {
+			if b := run.branch(child); len(s.Parents) > 0 && s.Parents[0].Ref == name && (b == nil || b.Held != "") {
+				return true
+			}
+		}
+		return false
+	}), nil
 }
 
 func stackLandedSince(ctx context.Context, dir render.Dir, trunk string, live []string) ([]string, error) {
@@ -2695,7 +2739,7 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	}
 	next, err := stackPlan(ctx, l, commonDir, stackRebaseOpts{
 		members: members, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, noVerify: run.NoVerify, ship: run.Ship,
-		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits,
+		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits, allLanes: run.AllLanes,
 	})
 	if err != nil {
 		return err
