@@ -17,8 +17,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/internal/cache"
-	"github.com/yasyf/cc-context/internal/ghapi"
 	"github.com/yasyf/cc-context/internal/gtapi"
+	"github.com/yasyf/cc-context/internal/prstate"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -30,8 +30,6 @@ const (
 
 	prWatchDefaultInterval = 60 * time.Second
 	prWatchMaxFails        = 10
-	prWatchRateFloor       = 100
-	prWatchRateFallback    = 5 * time.Minute
 )
 
 type prWatchSnapshot struct {
@@ -135,8 +133,6 @@ func prWatchStep(number int, prev, next prWatchSnapshot) (prWatchSnapshot, []prW
 type prWatchTick struct {
 	snapshots  map[int]prWatchSnapshot
 	discovered []int
-	remaining  int
-	resetAt    time.Time
 }
 
 type prWatchPoller interface {
@@ -144,212 +140,37 @@ type prWatchPoller interface {
 }
 
 type prWatchSource struct {
-	gh     *ghapi.Client
-	gt     *gtapi.Client
-	owner  string
-	name   string
+	store  *prstate.Store
 	prefix string
-	warn   io.Writer
-}
-
-type prWatchNode struct {
-	Number         int    `json:"number"`
-	State          string `json:"state"`
-	BaseRefName    string `json:"baseRefName"`
-	HeadRefOid     string `json:"headRefOid"`
-	Mergeable      string `json:"mergeable"`
-	ReviewDecision string `json:"reviewDecision"`
-	MergeCommit    *struct {
-		OID string `json:"oid"`
-	} `json:"mergeCommit"`
-	Checks struct {
-		Nodes []struct {
-			Commit struct {
-				StatusCheckRollup *statusRollup `json:"statusCheckRollup"`
-			} `json:"commit"`
-		} `json:"nodes"`
-	} `json:"checks"`
-	Comments *struct {
-		Nodes []struct {
-			Body string `json:"body"`
-		} `json:"nodes"`
-	} `json:"comments"`
-}
-
-type prWatchHistory struct {
-	Name   string `json:"name"`
-	Target struct {
-		History struct {
-			Nodes []struct {
-				OID             string `json:"oid"`
-				MessageHeadline string `json:"messageHeadline"`
-			} `json:"nodes"`
-		} `json:"history"`
-	} `json:"target"`
-}
-
-type prWatchRefs struct {
-	TotalCount int `json:"totalCount"`
-	Nodes      []struct {
-		Name                   string `json:"name"`
-		AssociatedPullRequests struct {
-			Nodes []struct {
-				Number int `json:"number"`
-			} `json:"nodes"`
-		} `json:"associatedPullRequests"`
-	} `json:"nodes"`
-}
-
-type prWatchCompare struct {
-	Compare *struct {
-		Status string `json:"status"`
-	} `json:"compare"`
-}
-
-type prWatchResponse struct {
-	RateLimit struct {
-		Remaining int       `json:"remaining"`
-		ResetAt   time.Time `json:"resetAt"`
-	} `json:"rateLimit"`
-	Repository map[string]json.RawMessage `json:"repository"`
-}
-
-const prWatchNodeFields = "number state baseRefName headRefOid mergeable reviewDecision mergeCommit { oid } " +
-	"checks: commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { nodes { __typename " +
-	"... on CheckRun { name conclusion status } ... on StatusContext { context state } } } } } } }"
-
-func prWatchQuery(numbers []int, activity map[int]bool, squashes map[int]string, prefix bool) string {
-	decls := []string{"$owner: String!", "$repo: String!"}
-	var fields strings.Builder
-	fields.WriteString("    trunk: defaultBranchRef { name target { ... on Commit { history(first: 100) { nodes { oid messageHeadline } } } } }\n")
-	if prefix {
-		// associatedPullRequests answers empty under any refPrefix deeper than
-		// refs/heads/, so the lane's prefix goes in query and is re-checked.
-		decls = append(decls, "$lanePrefix: String!")
-		fields.WriteString("    lane: refs(refPrefix: \"refs/heads/\", query: $lanePrefix, first: 100) { totalCount nodes { name associatedPullRequests(states: [OPEN], first: 5) { nodes { number } } } }\n")
-	}
-	for i, number := range numbers {
-		decls = append(decls, fmt.Sprintf("$p%d: Int!", i))
-		selection := prWatchNodeFields
-		if activity[number] {
-			selection += " comments(last: 100) { nodes { body } }"
-		}
-		fmt.Fprintf(&fields, "    p%d: pullRequest(number: $p%d) { %s }\n", i, i, selection)
-		if _, ok := squashes[number]; ok {
-			decls = append(decls, fmt.Sprintf("$m%d: String!", i))
-			fmt.Fprintf(&fields, "    m%d: defaultBranchRef { compare(headRef: $m%d) { status } }\n", i, i)
-		}
-	}
-	return fmt.Sprintf("query(%s) {\n  rateLimit { remaining resetAt }\n  repository(owner: $owner, name: $repo) {\n%s  }\n}",
-		strings.Join(decls, ", "), fields.String())
 }
 
 func (s prWatchSource) poll(ctx context.Context, numbers []int, prev map[int]prWatchSnapshot) (prWatchTick, error) {
-	infos := s.queueRecords(ctx, numbers)
-	activity := map[int]bool{}
-	squashes := map[int]string{}
-	for _, number := range numbers {
-		info, ok := infos[number]
-		if prev[number].Queued || ok && info.State == gtapi.PROpen && prInGraphiteMq(info) {
-			activity[number] = true
-		}
-		if ok && info.MergeCommitSha != "" && info.State != gtapi.PROpen {
-			squashes[number] = info.MergeCommitSha
-		}
-	}
-	vars := map[string]any{"owner": s.owner, "repo": s.name}
+	want := prstate.Want{PRs: numbers}
 	if s.prefix != "" {
-		vars["lanePrefix"] = s.prefix
+		want.Prefixes = []string{s.prefix}
 	}
-	for i, number := range numbers {
-		vars[fmt.Sprintf("p%d", i)] = number
-		if sha, ok := squashes[number]; ok {
-			vars[fmt.Sprintf("m%d", i)] = sha
-		}
-	}
-	resp, err := ghapi.GraphQL[prWatchResponse](ctx, s.gh, prWatchQuery(numbers, activity, squashes, s.prefix != ""), vars)
+	st, err := s.store.Read(ctx, want)
 	if err != nil {
 		return prWatchTick{}, err
 	}
-	tick := prWatchTick{
-		snapshots: make(map[int]prWatchSnapshot, len(numbers)),
-		remaining: resp.RateLimit.Remaining,
-		resetAt:   resp.RateLimit.ResetAt,
-	}
-	var trunk prWatchHistory
-	if err := decodeRaw(resp.Repository["trunk"], &trunk); err != nil {
-		return prWatchTick{}, err
-	}
+	tick := prWatchTick{snapshots: make(map[int]prWatchSnapshot, len(numbers))}
 	if s.prefix != "" {
-		var refs prWatchRefs
-		if err := decodeRaw(resp.Repository["lane"], &refs); err != nil {
-			return prWatchTick{}, err
-		}
-		if refs.TotalCount > len(refs.Nodes) {
-			_, _ = fmt.Fprintf(s.warn, "pr watch: %d branches match %s; only the first %d are read\n", refs.TotalCount, s.prefix, len(refs.Nodes))
-		}
-		for _, ref := range refs.Nodes {
-			if !strings.HasPrefix(ref.Name, s.prefix) {
-				continue
-			}
-			for _, pr := range ref.AssociatedPullRequests.Nodes {
-				tick.discovered = append(tick.discovered, pr.Number)
-			}
-		}
+		tick.discovered = st.Lanes[s.prefix].PRs
 	}
-	for i, number := range numbers {
-		var node prWatchNode
-		if err := decodeRaw(resp.Repository[fmt.Sprintf("p%d", i)], &node); err != nil {
-			return prWatchTick{}, err
-		}
-		var onTrunk bool
-		if _, ok := squashes[number]; ok {
-			var compared prWatchCompare
-			if err := decodeRaw(resp.Repository[fmt.Sprintf("m%d", i)], &compared); err != nil {
-				return prWatchTick{}, err
-			}
-			onTrunk = compared.Compare != nil && (compared.Compare.Status == "BEHIND" || compared.Compare.Status == "IDENTICAL")
-		}
-		info, known := infos[number]
-		tick.snapshots[number] = prWatchSnapshotOf(number, node, trunk, info, known, onTrunk, prev[number])
+	for _, number := range numbers {
+		tick.snapshots[number] = prWatchSnapshotOf(number, st.PRs[number], st.Trunk, prev[number])
 	}
 	return tick, nil
 }
 
-func (s prWatchSource) queueRecords(ctx context.Context, numbers []int) map[int]gtapi.PullRequestInfo {
-	if len(numbers) == 0 || s.gt == nil {
-		return nil
-	}
-	infos, err := s.gt.PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{
-		RepoOwner:  s.owner,
-		RepoName:   s.name,
-		PRNumbers:  numbers,
-		Consistent: true,
-		Callsite:   "ccx",
-	})
-	if err != nil {
-		_, _ = fmt.Fprintf(s.warn, "pr watch: graphite: %v; queue state held from the last tick\n", err)
-		return nil
-	}
-	byNumber := make(map[int]gtapi.PullRequestInfo, len(infos))
-	for _, info := range infos {
-		byNumber[info.PRNumber] = info
-	}
-	return byNumber
-}
-
-func prWatchSnapshotOf(number int, node prWatchNode, trunk prWatchHistory, info gtapi.PullRequestInfo, known, squashOnTrunk bool, prev prWatchSnapshot) prWatchSnapshot {
+func prWatchSnapshotOf(number int, pr prstate.PR, trunk prstate.Trunk, prev prWatchSnapshot) prWatchSnapshot {
 	snap := prWatchSnapshot{
-		State:     node.State,
-		Head:      node.HeadRefOid,
-		Mergeable: node.Mergeable,
-		Approved:  node.ReviewDecision == "APPROVED",
+		State:     pr.State,
+		Head:      pr.HeadRefOid,
+		Mergeable: pr.Mergeable,
+		Approved:  pr.ReviewDecision == "APPROVED",
 	}
-	var rollup *statusRollup
-	if len(node.Checks.Nodes) > 0 {
-		rollup = node.Checks.Nodes[0].Commit.StatusCheckRollup
-	}
-	if rollup != nil {
+	if rollup := pr.Rollup; rollup != nil {
 		snap.Green = rollup.State == "SUCCESS"
 		for _, check := range statusChecks(rollup) {
 			if statusClassify(check.State) == statusFailed {
@@ -361,8 +182,13 @@ func prWatchSnapshotOf(number int, node prWatchNode, trunk prWatchHistory, info 
 		}
 		slices.Sort(snap.Failing)
 	}
-	if node.State != "OPEN" {
-		snap.Squash = prWatchSquash(number, node, trunk, info, squashOnTrunk)
+	known := pr.Graphite != nil
+	var info gtapi.PullRequestInfo
+	if known {
+		info = *pr.Graphite
+	}
+	if pr.State != "OPEN" {
+		snap.Squash = prWatchSquash(number, pr, trunk, info)
 		if snap.Squash == "" && !known {
 			snap.State = prev.State
 		}
@@ -370,48 +196,30 @@ func prWatchSnapshotOf(number int, node prWatchNode, trunk prWatchHistory, info 
 	// Graphite records a merge before GitHub closes the pull request, and its
 	// queue flag drops with it, so an open pull request Graphite calls merged
 	// keeps its queue state until GitHub catches up.
-	if !known || info.State != gtapi.PROpen && node.State == "OPEN" {
+	if !known || info.State != gtapi.PROpen && pr.State == "OPEN" {
 		snap.Queued, snap.Evicted = prev.Queued, prev.Evicted
 		return snap
 	}
-	var activity string
-	if node.Comments != nil {
-		for _, comment := range node.Comments.Nodes {
-			if strings.HasPrefix(comment.Body, mqActivityHeading) {
-				activity = comment.Body
-			}
-		}
-	}
-	report := classifyPRQueue(info, "", activity)
+	report := classifyPRQueue(info, "", pr.Activity)
 	snap.Queued = report.Queue == prQueueQueued
 	snap.Evicted = mqPlain(report.Evicted)
 	return snap
 }
 
-func prWatchSquash(number int, node prWatchNode, trunk prWatchHistory, info gtapi.PullRequestInfo, squashOnTrunk bool) string {
-	if node.State == "MERGED" && node.MergeCommit != nil && node.BaseRefName == trunk.Name {
-		return node.MergeCommit.OID
+func prWatchSquash(number int, pr prstate.PR, trunk prstate.Trunk, info gtapi.PullRequestInfo) string {
+	if pr.State == "MERGED" && pr.MergeCommit != "" && pr.BaseRefName == trunk.Name {
+		return pr.MergeCommit
 	}
 	subject := prSquashSubject(number)
-	for _, commit := range trunk.Target.History.Nodes {
-		if subject.MatchString(commit.MessageHeadline) {
+	for _, commit := range trunk.History {
+		if subject.MatchString(commit.Headline) {
 			return commit.OID
 		}
 	}
-	if squashOnTrunk {
+	if trunk.Name != "" && slices.Contains(pr.SquashOn, trunk.Name) {
 		return info.MergeCommitSha
 	}
 	return ""
-}
-
-func decodeRaw(raw json.RawMessage, into any) error {
-	if len(raw) == 0 || string(raw) == "null" {
-		return nil
-	}
-	if err := json.Unmarshal(raw, into); err != nil {
-		return fmt.Errorf("pr watch: decode graphql response: %w", err)
-	}
-	return nil
 }
 
 type prWatchState struct {
@@ -501,20 +309,9 @@ func (r prWatchRun) rateLimited(ctx context.Context, until time.Time) error {
 	return r.sleep(ctx, until.Sub(r.now()))
 }
 
-func prWatchRateLimitError(err error) bool {
-	var gql *ghapi.GraphQLError
-	if errors.As(err, &gql) {
-		return slices.ContainsFunc(gql.Messages, func(m ghapi.GraphQLMessage) bool { return m.Type == "RATE_LIMITED" })
-	}
-	var status *ghapi.StatusError
-	return errors.As(err, &status) && (status.Status == 403 || status.Status == 429) &&
-		strings.Contains(strings.ToLower(status.Message), "rate limit")
-}
-
 func (r prWatchRun) watch(ctx context.Context, numbers []int, snaps map[int]prWatchSnapshot) error {
 	watched := slices.Clone(numbers)
 	fails := 0
-	var resetAt time.Time
 	for {
 		if done, err := r.reached(watched, snaps); done || err != nil {
 			return err
@@ -533,17 +330,17 @@ func (r prWatchRun) watch(ctx context.Context, numbers []int, snaps map[int]prWa
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err != nil {
-			if prWatchRateLimitError(err) {
-				until := resetAt
-				if !until.After(r.now()) {
-					until = r.now().Add(prWatchRateFallback)
-				}
-				if err := r.rateLimited(ctx, until); err != nil || r.opts.once {
-					return err
-				}
-				continue
+		var limited *prstate.LimitedError
+		if errors.As(err, &limited) {
+			if err := r.rateLimited(ctx, limited.ProbeAt); err != nil || r.opts.once {
+				return err
 			}
+			continue
+		}
+		if missing := (*prstate.MissingError)(nil); errors.As(err, &missing) {
+			return fmt.Errorf("pr watch: %w", err)
+		}
+		if err != nil {
 			fails++
 			_, _ = fmt.Fprintf(r.warn, "pr watch: poll failed (%d in a row): %v\n", fails, err)
 			if fails >= prWatchMaxFails || r.opts.once {
@@ -555,7 +352,6 @@ func (r prWatchRun) watch(ctx context.Context, numbers []int, snaps map[int]prWa
 			continue
 		}
 		fails = 0
-		resetAt = tick.resetAt
 		for _, n := range open {
 			settled, events := prWatchStep(n, snaps[n], tick.snapshots[n])
 			snaps[n] = settled
@@ -576,12 +372,6 @@ func (r prWatchRun) watch(ctx context.Context, numbers []int, snaps map[int]prWa
 		}
 		if done, err := r.reached(watched, snaps); done || err != nil {
 			return err
-		}
-		if tick.remaining < prWatchRateFloor && tick.resetAt.After(r.now()) {
-			if err := r.rateLimited(ctx, tick.resetAt); err != nil || r.opts.once {
-				return err
-			}
-			continue
 		}
 		if joined {
 			continue
@@ -637,10 +427,12 @@ conflicting, red <checks>, green, approved, approval-dismissed,
 new-head <sha9>, landed <squash sha9>, and closed-without-squash. The first
 poll reports each pull request's standing state the same way.
 
-Each poll is one batched GitHub GraphQL query for every pull request, which
-also reads the rate limit, plus one Graphite request for the merge queue
-state ccx vcs pr status reads. When the limit runs low it prints one
-"rate-limited until <time>" line and sleeps to the reset.
+Polls go through the machine-wide pull request cache every ccx vcs pr
+command shares: one batched GitHub GraphQL query and one Graphite request for
+every pull request any process on the machine watches in the repository, at
+most once per 30 seconds, whatever --interval says. While GitHub rate-limits
+the machine it prints one "rate-limited until <time>" line and sleeps to the
+next probe, one cheap request at most two minutes out.
 
 Landed means a commit whose subject ends (#<number>) is on the default
 branch, or the squash Graphite recorded is reachable from it.
@@ -679,9 +471,9 @@ func runVcsPRWatch(cmd *cobra.Command, args []string, repo string, stack bool, o
 	if o.interval <= 0 {
 		return errors.New("pr watch: --interval must be positive")
 	}
-	numbers, err := prWatchNumbers(args)
+	numbers, err := prNumbers(args)
 	if err != nil {
-		return err
+		return fmt.Errorf("pr watch: %w", err)
 	}
 	if stack {
 		_, targets, err := resolveStackReviewTargets(ctx, cmd.ErrOrStderr(), time.Now())
@@ -702,10 +494,6 @@ func runVcsPRWatch(cmd *cobra.Command, args []string, repo string, stack bool, o
 		}
 		repo = looked.NameWithOwner
 	}
-	owner, name, ok := strings.Cut(repo, "/")
-	if !ok {
-		return fmt.Errorf("pr watch: malformed repository name %q", repo)
-	}
 	snaps, err := loadPRWatchState(o.state)
 	if err != nil {
 		return err
@@ -715,8 +503,12 @@ func runVcsPRWatch(cmd *cobra.Command, args []string, repo string, stack bool, o
 	}
 	slices.Sort(numbers)
 	numbers = slices.Compact(numbers)
+	store, err := openPRState(ctx, repo, cmd.ErrOrStderr())
+	if err != nil {
+		return fmt.Errorf("pr watch: %w", err)
+	}
 	run := prWatchRun{
-		poller: prWatchSource{gh: reviewsAPI(), gt: gtAPI(ctx), owner: owner, name: name, prefix: o.prefix, warn: cmd.ErrOrStderr()},
+		poller: prWatchSource{store: store, prefix: o.prefix},
 		opts:   o,
 		out:    cmd.OutOrStdout(),
 		warn:   cmd.ErrOrStderr(),
@@ -726,12 +518,12 @@ func runVcsPRWatch(cmd *cobra.Command, args []string, repo string, stack bool, o
 	return run.watch(ctx, numbers, snaps)
 }
 
-func prWatchNumbers(args []string) ([]int, error) {
+func prNumbers(args []string) ([]int, error) {
 	numbers := make([]int, 0, len(args))
 	for _, arg := range args {
 		n, err := strconv.Atoi(strings.TrimPrefix(arg, "#"))
 		if err != nil || n <= 0 {
-			return nil, fmt.Errorf("pr watch: %q is not a pull request number", arg)
+			return nil, fmt.Errorf("%q is not a pull request number", arg)
 		}
 		numbers = append(numbers, n)
 	}

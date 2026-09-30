@@ -6,16 +6,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/prstate"
 )
 
 // mqLabel and mqLabelFast are the labels Graphite's merge queue watches, and
 // mqAdded through mqMerged its wording in the "Merge activity" comment it edits
 // in place. That comment's last recognized bullet is the queue's verdict.
 const (
-	mqLabel     = "merge"
-	mqLabelFast = "merge-fast"
+	mqLabel     = prstate.QueueLabel
+	mqLabelFast = prstate.QueueLabelFast
 
-	mqActivityHeading = "### Merge activity"
+	mqActivityHeading = prstate.ActivityHeading
 
 	mqAdded     = "added this pull request to the "
 	mqDetected  = "was detected. This PR will be added"

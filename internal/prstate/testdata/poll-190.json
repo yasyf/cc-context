@@ -1,0 +1,80 @@
+{
+ "data": {
+  "rateLimit": {
+   "remaining": 4990,
+   "resetAt": "2026-09-30T07:40:00Z"
+  },
+  "repository": {
+   "trunk": {
+    "name": "main",
+    "target": {
+     "history": {
+      "nodes": [
+       {
+        "oid": "8e3329b0000000000000000000000000000000aa",
+        "messageHeadline": "chore(release): sync ccx.binrun + manifest to v0.65.75"
+       },
+       {
+        "oid": "6120690000000000000000000000000000000bbb",
+        "messageHeadline": "vcs: ✨ ccx vcs pr watch streams one line per pull request state transition (#190)"
+       }
+      ]
+     }
+    }
+   },
+   "p0": {
+    "number": 190,
+    "state": "OPEN",
+    "title": "title of #190",
+    "createdAt": "2026-09-29T20:00:00Z",
+    "author": {
+     "login": "yasyf"
+    },
+    "baseRefName": "main",
+    "headRefName": "yasyf/gh-budget/pr-190",
+    "headRefOid": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "APPROVED",
+    "changedFiles": 3,
+    "mergeCommit": null,
+    "labels": {
+     "nodes": [
+      {
+       "name": "enhancement"
+      }
+     ]
+    },
+    "checks": {
+     "nodes": [
+      {
+       "commit": {
+        "status": {
+         "state": "SUCCESS"
+        },
+        "statusCheckRollup": {
+         "state": "SUCCESS",
+         "contexts": {
+          "nodes": [
+           {
+            "__typename": "CheckRun",
+            "name": "test",
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED"
+           },
+           {
+            "__typename": "StatusContext",
+            "context": "buildkite/tests",
+            "state": "SUCCESS"
+           }
+          ]
+         }
+        }
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

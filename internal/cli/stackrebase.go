@@ -230,16 +230,16 @@ way git rebase --no-rebase-merges does. It needs git 2.56 or newer. A branch
 whose pull request landed is dropped and its children move onto what it sat
 on, leaving its squashed commits behind. A branch whose pull request was closed
 without landing is dropped the same way, and its own commits are never
-replayed; one GitHub closed because its base branch was deleted is refused
-instead, pointing at ccx vcs stack drop --repair. Other
-working copies and local trunk are left untouched. A branch held by another working copy,
+replayed; one GitHub closed because its base branch was deleted is reopened
+onto its new parent before the push instead. Local trunk is left untouched. A
+branch without a pull request held by another working copy,
 or uncommitted work in the invoking checkout, stops publication before any branch
 moves. Empty lanes and another lane's branches above the one checked out here are
 left where they are and named rather than rebased. Once published, a branch's
 local ref moves onto its published head when that head carries the same commits
-as the source, no other working copy holds the branch, and the invoking checkout,
-when it holds the branch, is clean; any other branch keeps its source, with the
-branches above it, and is named.
+as the source and the working copy holding the branch, if any, is clean and is
+moved with it; any other branch keeps its source, with the branches above it,
+and is named.
 
 A conflict stops the run before any ref moves: the conflicted branch alone is
 rebased again in a sparse workspace of its own, holding the root files and the
@@ -412,7 +412,7 @@ func stackKeepLocal(ctx context.Context, cmd *cobra.Command, l lane, commonDir s
 			continue
 		}
 		live = append(live, b.Name)
-		if b.PR == nil || b.PR.State != "OPEN" {
+		if b.PR == nil || (b.PR.State != "OPEN" && !b.reopens()) {
 			bare = append(bare, b.Name)
 		}
 	}
@@ -854,6 +854,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			}
 			seen[b.Parent] = true
 			b.Parent = byName[b.Parent].Parent
+		}
+	}
+	for name, b := range byName {
+		if b.reopens() && !o.noPush && b.Parent != trunk && remotes[b.Parent] == "" {
+			return nil, fmt.Errorf("stack rebase: %s's pull request #%d closed when its base %s was deleted, and its new parent %s is not on the remote to reopen it onto — publish %s first with ccx vcs stack submit --to %s from its checkout, then re-run, or pass --landed %s if it did land", name, b.PR.Number, b.PR.Base, b.Parent, b.Parent, b.Parent, name)
 		}
 	}
 	if err := stackCheckHeld(ctx, l.dir(), trunk, byName); err != nil {
@@ -1448,10 +1453,14 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 		b.Landed = "already in " + tr.Name()
 	case pr != nil && pr.abandoned():
 		b.Landed = fmt.Sprintf("#%d closed", pr.Number)
-	case pr != nil && pr.State == "CLOSED":
-		return b, fmt.Errorf("stack rebase: %s's pull request #%d closed when its base %s was deleted — reopen and retarget it with ccx vcs stack drop --repair, or pass --landed %s if it did land", name, pr.Number, pr.Base, name)
 	}
 	return b, nil
+}
+
+// reopens reports a branch whose pull request GitHub closed when its base was
+// deleted: the run reopens it onto the branch's new parent before pushing.
+func (b *stackRebaseBranch) reopens() bool {
+	return b.Landed == "" && b.Held == "" && b.PR != nil && b.PR.State == "CLOSED" && b.PR.BaseGone
 }
 
 // stackRefuseDroppedCommits refuses a local head that only loses work its
@@ -1875,6 +1884,9 @@ func stackPlanLines(run *stackRebaseRun) []string {
 			fields = append(fields, parent, fmt.Sprintf("from %.12s", b.OldBase))
 			if b.Head != b.Local {
 				fields = append(fields, fmt.Sprintf("taking the remote head %.12s", b.Head))
+			}
+			if b.reopens() && !run.NoPush {
+				fields = append(fields, "reopen (base "+b.PR.Base+" deleted)")
 			}
 		}
 		if b.PR != nil {
@@ -2940,13 +2952,13 @@ func stackForgettable(ctx context.Context, commonDir string, run *stackRebaseRun
 	}), nil
 }
 
-func stackLandedSince(ctx context.Context, dir render.Dir, trunk string, live []string) ([]string, error) {
-	prs, err := stackPRs(ctx, dir, trunk, live)
+func stackLandedSince(ctx context.Context, dir render.Dir, run *stackRebaseRun, live []string) ([]string, error) {
+	prs, err := stackPRs(ctx, dir, run.Trunk, live)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: reading the stack pull requests before the push failed — run ccx vcs stack continue: %w", err)
 	}
 	for _, name := range live {
-		if pr := prs[name]; pr != nil && pr.State == "CLOSED" && !pr.Landed {
+		if pr := prs[name]; pr != nil && pr.State == "CLOSED" && !pr.Landed && !run.branch(name).reopens() {
 			return nil, fmt.Errorf("stack rebase: %s's pull request #%d closed without landing while the run was stopped, and publishing would open a new one — reopen it and run ccx vcs stack continue, or drop the run with ccx vcs stack abort", name, pr.Number)
 		}
 	}
@@ -3299,46 +3311,6 @@ func stackSaveRun(run *stackRebaseRun) error {
 		return fmt.Errorf("stack rebase: write %s: %w", path, err)
 	}
 	return nil
-}
-
-func stackQueryPRs(ctx context.Context, dir render.Dir, trunk string, branches []string) (map[string]*stackPR, error) {
-	prs := map[string]*stackPR{}
-	var closes []prQueueClose
-	byNumber := map[int]*stackPR{}
-	for _, branch := range branches {
-		p, found, err := ghNewestPull(ctx, dir, branch)
-		if err != nil {
-			return nil, err
-		}
-		if !found {
-			continue
-		}
-		if p.State == "open" {
-			if p, err = ghPullAt(ctx, dir, p.Number); err != nil {
-				return nil, err
-			}
-		}
-		landing, err := ghLanding(ctx, dir, p, true)
-		if err != nil {
-			return nil, err
-		}
-		pr := &stackPR{
-			Number: p.Number, URL: p.HTMLURL, Title: p.Title, Body: p.Body, State: landing.State,
-			Base: p.Base.Ref, Head: p.Head.SHA, Mergeable: p.mergeable(), Labels: p.labelNames(),
-		}
-		switch landing.verdict(true) {
-		case prLanded:
-			pr.Landed = true
-		case prQueueClosed:
-			closes = append(closes, prQueueClose{Number: p.Number, Base: trunk})
-			byNumber[p.Number] = pr
-		}
-		prs[branch] = pr
-	}
-	for number, landed := range resolveQueueLandings(ctx, dir, closes) {
-		byNumber[number].Landed = landed
-	}
-	return prs, nil
 }
 
 func stackMarkBaseGone(ctx context.Context, dir render.Dir, tr vcs.Trunk, prs map[string]*stackPR) error {

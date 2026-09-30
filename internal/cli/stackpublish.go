@@ -382,7 +382,7 @@ func stackFinishPublication(ctx context.Context, cmd *cobra.Command, l lane, com
 		}
 	}
 	if !run.Publishing {
-		if landed, err := stackLandedSince(ctx, l.dir(), run.Trunk, live); err != nil {
+		if landed, err := stackLandedSince(ctx, l.dir(), run, live); err != nil {
 			return err
 		} else if len(landed) > 0 {
 			return stackReplanLanded(ctx, cmd, l, commonDir, run, landed)
@@ -442,7 +442,7 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 		}
 	}
 	var moved []string
-	var moves []restackMove
+	var moves, pending []restackMove
 	reparent := map[string]string{}
 	revisions := map[string]string{}
 	var tx strings.Builder
@@ -469,20 +469,28 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 		if err := stackReceiptTx(ctx, l.dir(), &tx, onHead, receipt.OID); err != nil {
 			return "", err
 		}
+		move := restackMove{branch: b.Name, head: b.NewHead, parent: b.NewBase, previous: b.Local}
 		if at == b.NewHead {
 			fmt.Fprintf(&tx, "verify %s %s\n", gtRestackRef(b.Name), b.NewHead)
 		} else {
 			fmt.Fprintf(&tx, "update %s %s %s\n", gtRestackRef(b.Name), b.NewHead, b.Local)
+			pending = append(pending, move)
 		}
 		moved = append(moved, b.Name)
-		moves = append(moves, restackMove{branch: b.Name, head: b.NewHead, parent: b.NewBase, previous: b.Local})
+		moves = append(moves, move)
 		revisions[b.Name] = b.NewBase
 		reparent[b.Name] = b.Parent
 	}
 	if len(moved) > 0 {
+		if err := stackCheckPendingHolders(ctx, holders, pending); err != nil {
+			return "", err
+		}
 		tx.WriteString("commit\n")
 		if _, err := render.RunCLIStdin(ctx, l.dir(), "git", []string{"update-ref", "--stdin"}, []byte(tx.String())); err != nil {
 			return "", fmt.Errorf("%s: the stack is published, but a source branch moved while its local ref was being moved onto its published head, so none was moved — ccx vcs stack continue retries it: %w", stackRebasePrefix, err)
+		}
+		if holders, err = vcs.BranchHolders(ctx, l.checkout); err != nil {
+			return "", fmt.Errorf("%s: %w", stackRebasePrefix, err)
 		}
 		if _, err := gtRestackAlign(ctx, stackRebasePrefix, holders, moves); err != nil {
 			return "", err
@@ -502,6 +510,20 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 		return "source checkouts unchanged", nil
 	}
 	return strings.Join(segments, shipSep), nil
+}
+
+// stackCheckPendingHolders re-checks, just before the refs move, each working
+// copy that holds a branch still to move: a run resumed by ccx vcs stack continue
+// chose its moves before it stopped, and the holder may have changed since.
+func stackCheckPendingHolders(ctx context.Context, holders map[string]string, pending []restackMove) error {
+	branches := make([]string, len(pending))
+	for i, m := range pending {
+		branches[i] = m.branch
+	}
+	if err := stackCheckClean(ctx, branches, holders); err != nil {
+		return err
+	}
+	return gtRestackRefuseClobbers(ctx, stackRebasePrefix, holders, pending)
 }
 
 func stackChooseSourceMoves(ctx context.Context, l lane, run *stackRebaseRun, holders map[string]string) ([]string, error) {
@@ -525,7 +547,7 @@ func stackChooseSourceMoves(ctx context.Context, l lane, run *stackRebaseRun, ho
 		case receipt == nil || receipt.Head != b.NewHead:
 			why = "no receipt names its published head"
 		case at != b.NewHead:
-			if why, err = stackSourceStays(ctx, l, run, *b, at, holders, stays); err != nil {
+			if why, err = stackSourceStays(ctx, l, *b, at, holders, stays); err != nil {
 				return nil, err
 			}
 		}
@@ -539,7 +561,7 @@ func stackChooseSourceMoves(ctx context.Context, l lane, run *stackRebaseRun, ho
 	return left, nil
 }
 
-func stackSourceStays(ctx context.Context, l lane, run *stackRebaseRun, b stackRebaseBranch, at string, holders map[string]string, stays map[string]bool) (string, error) {
+func stackSourceStays(ctx context.Context, l lane, b stackRebaseBranch, at string, holders map[string]string, stays map[string]bool) (string, error) {
 	if stays[b.Parent] {
 		return "stacked on " + b.Parent, nil
 	}
@@ -547,9 +569,6 @@ func stackSourceStays(ctx context.Context, l lane, run *stackRebaseRun, b stackR
 		return "moved since the run started", nil
 	}
 	holder := holders[b.Name]
-	if holder != "" && holder != run.Origin {
-		return "checked out in " + holder, nil
-	}
 	source, err := stackPatchSeries(ctx, l.dir(), cmp.Or(b.SourceBase, b.OldBase), b.Local)
 	if err != nil {
 		return "", err

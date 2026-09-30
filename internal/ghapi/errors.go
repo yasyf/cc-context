@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 var (
@@ -24,12 +25,15 @@ var (
 )
 
 // StatusError is a request that reached GitHub and came back non-2xx. It
-// unwraps to ErrNotFound on 404 and ErrUnauthorized on 401.
+// unwraps to ErrNotFound on 404 and ErrUnauthorized on 401. Limited marks a
+// rate-limit refusal, primary or secondary, and RetryAfter the wait it named.
 type StatusError struct {
-	Method  string
-	URL     string
-	Status  int
-	Message string
+	Method     string
+	URL        string
+	Status     int
+	Message    string
+	Limited    bool
+	RetryAfter time.Duration
 }
 
 func (e *StatusError) Error() string {
@@ -54,6 +58,7 @@ func (e *StatusError) Unwrap() error {
 type GraphQLMessage struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
+	Path    []any  `json:"path"`
 }
 
 // GraphQLError is a 200 response whose body carried GraphQL errors. It unwraps
@@ -80,11 +85,15 @@ func (e *GraphQLError) Unwrap() error {
 }
 
 // statusError reads GitHub's error envelope off payload; a body that is not
-// that envelope (a proxy's 502 page) leaves Message empty for Error to fill.
-func statusError(method, target string, status int, payload []byte) *StatusError {
+// that envelope (a proxy's 502 page) leaves Message empty for Error to fill. A
+// secondary limit answers 403 with no quota headers, so its message marks it.
+func statusError(method, target string, status int, header http.Header, payload []byte, now time.Time) *StatusError {
 	var body struct {
 		Message string `json:"message"`
 	}
 	_ = json.Unmarshal(payload, &body)
-	return &StatusError{Method: method, URL: target, Status: status, Message: body.Message}
+	wait, named := limitWait(status, header, now)
+	limited := named || status == http.StatusTooManyRequests ||
+		status == http.StatusForbidden && strings.Contains(strings.ToLower(body.Message), "rate limit")
+	return &StatusError{Method: method, URL: target, Status: status, Message: body.Message, Limited: limited, RetryAfter: wait}
 }

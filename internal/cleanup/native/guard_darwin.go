@@ -27,21 +27,35 @@ import (
 // hide a holder. Arguments are compared as written, against both the kernel's
 // spelling of the tree and the one the caller passed.
 //
-// Four things are discounted and nothing else, ancestry included: the calling
+// Five things are discounted and nothing else, ancestry included: the calling
 // process's own descriptors and arguments, though not its working directory;
-// its direct children; the arguments, alone, of the requester ctx names; and
-// the descriptors, alone, of each retiring watcher ctx names, matched on both
-// its pid and the second the kernel started it, and only while that pid still
-// names that process once the rest of it has been read.
+// its direct children; the arguments, alone, of the requester ctx names; the
+// descriptors, alone, of each retiring watcher ctx names, matched on both its
+// pid and the second the kernel started it, and only while that pid still
+// names that process once the rest of it has been read; and each descriptor of
+// an approved Apple service that the kernel refuses to describe twice, with
+// EPERM or EACCES both times: once asked for the descriptor's path, and once
+// asked for its vnode alone.
+//
+// An approved service is one of the eight executables in approvedServices,
+// told by the kernel's record and never by name: proc_pidpath gives exactly a
+// listed path, that path is on the read-only root snapshot mounted at "/",
+// csops reports a valid platform binary that is not being debugged, the uid
+// and real uid are the caller's, the parent is launchd, and there is no
+// controlling terminal. The check runs before the first descriptor is skipped
+// and again after the last, and the process's start time must not change
+// between them. Where a skipped descriptor's file sits is unknown; it is
+// assumed to be outside every worktree.
 //
 // A worktree that is itself a symlink, or a process that has not exited and
 // cannot be read in full, is an error rather than a pass. That covers a
-// descriptor the kernel refuses to describe, a directory or file whose path
-// cannot be proven, and a process caught replacing its image, whose arguments
-// the kernel cannot produce: Guard makes one pass and retries nothing. It does
-// not see a file that is only memory-mapped, a process of another uid, an
-// argument given as a relative path, or a process that exits before the scan
-// reaches it. A removed directory or file sits in no tree and holds nothing.
+// descriptor the kernel refuses to describe in any other process, a directory
+// or file whose path cannot be proven, and a process caught replacing its
+// image, whose arguments the kernel cannot produce: Guard makes one pass and
+// retries nothing. It does not see a file that is only memory-mapped, a
+// process of another uid, an argument given as a relative path, or a process
+// that exits before the scan reaches it. A removed directory or file sits in
+// no tree and holds nothing.
 func Guard(ctx context.Context, worktree string) error {
 	lib, err := loadLibSystem()
 	if err != nil {
@@ -188,7 +202,7 @@ func (s *scan) evidence(process cleanup.ProcessID, threaded bool) (kind, path st
 	}
 	retiring := slices.Contains(s.retiring, process)
 	if !retiring {
-		if path, err = s.descriptor(pid); err != nil || path != "" {
+		if path, err = s.descriptor(process); err != nil || path != "" {
 			return cleanup.EvidenceFD, path, err
 		}
 	}
@@ -261,31 +275,46 @@ func (s *scan) threadCwd(pid int) (string, error) {
 	return "", nil
 }
 
-func (s *scan) descriptor(pid int) (string, error) {
-	fds, err := s.lib.listFDs(pid)
+type descriptorPass struct {
+	*scan
+	process  cleanup.ProcessID
+	approval *approval
+}
+
+func (s *scan) descriptor(process cleanup.ProcessID) (string, error) {
+	fds, err := s.lib.listFDs(process.PID)
 	if err != nil {
 		return "", fmt.Errorf("list its descriptors: %w", err)
 	}
+	pass := &descriptorPass{scan: s, process: process}
 	for _, fd := range fds {
 		if fd.kind != fdTypeVnode {
 			continue
 		}
-		node, err := s.lib.vnodeOfFD(pid, fd.fd)
-		if errors.Is(err, unix.EBADF) || errors.Is(err, unix.ENOENT) {
-			continue
-		}
-		if err != nil {
-			return "", fmt.Errorf("read its descriptor %d: %w", fd.fd, err)
-		}
-		path, err := s.held(node)
-		if err != nil {
-			return "", fmt.Errorf("locate its descriptor %d: %w", fd.fd, err)
-		}
-		if path != "" {
-			return path, nil
+		path, err := pass.place(fd.fd)
+		if err != nil || path != "" {
+			return path, err
 		}
 	}
-	return "", nil
+	return "", pass.confirm()
+}
+
+func (p *descriptorPass) place(fd int32) (string, error) {
+	node, err := p.lib.vnodeOfFD(p.process.PID, fd)
+	if errors.Is(err, unix.EBADF) || errors.Is(err, unix.ENOENT) {
+		return "", nil
+	}
+	if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
+		return p.refused(fd, err)
+	}
+	if err != nil {
+		return "", fmt.Errorf("read its descriptor %d: %w", fd, err)
+	}
+	path, err := p.held(node)
+	if err != nil {
+		return "", fmt.Errorf("locate its descriptor %d: %w", fd, err)
+	}
+	return path, nil
 }
 
 func (s *scan) argument(pid int) (string, error) {

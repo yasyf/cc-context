@@ -257,10 +257,10 @@ func pruneHeldBranches(ctx context.Context, dir render.Dir) (map[string]bool, er
 }
 
 func pruneMergedBranches(ctx context.Context, dir render.Dir, trunk vcs.Trunk) ([]string, error) {
-	argv := []string{"branch", "--merged", string(trunk.Ref()), "--format=%(refname:short)"}
+	argv := []string{"for-each-ref", "--merged", string(trunk.Ref()), "--format=%(refname:lstrip=2)", "refs/heads/"}
 	out, err := render.RunCLI(ctx, dir, "git", argv)
 	if err != nil {
-		return nil, fmt.Errorf("prune: git branch --merged: %w", err)
+		return nil, fmt.Errorf("prune: git for-each-ref --merged: %w", err)
 	}
 	var merged []string
 	for _, name := range strings.Split(strings.TrimSpace(out), "\n") {

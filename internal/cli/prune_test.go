@@ -267,6 +267,31 @@ func pruneSquashFixture(t *testing.T, branches ...string) (*vcstest.Fixture, ren
 	return f, dir, trunk, commonDir
 }
 
+// TestPruneDeletesMergedBranchesFromADetachedHead pins the merged listing to
+// branches: git branch --merged lists a detached HEAD as "(HEAD detached at
+// <ref>)", which git branch -d then refused as a branch name.
+func TestPruneDeletesMergedBranchesFromADetachedHead(t *testing.T) {
+	t.Parallel()
+	f, dir, trunk, commonDir := pruneSquashFixture(t)
+	gitAt(t, f.Env(), f.Dir, "branch", "merged", "main")
+	gitAt(t, f.Env(), f.Dir, "switch", "-q", "--detach", "main")
+	api := stubGTAPI(t)
+
+	plan, err := prunePlanFor(api.ctx(t.Context()), dir, pruneGTLane, trunk, commonDir)
+	if err != nil {
+		t.Fatalf("prunePlanFor: %v", err)
+	}
+	if !slices.Equal(plan.merged, []string{"merged"}) {
+		t.Fatalf("merged = %q, want [merged]", plan.merged)
+	}
+	if err := pruneApply(api.ctx(t.Context()), dir, pruneGTLane, plan, commonDir); err != nil {
+		t.Fatalf("pruneApply: %v", err)
+	}
+	if gitBranchExists(t, f.Env(), f.Dir, "merged") {
+		t.Error("merged survived the prune")
+	}
+}
+
 // TestPruneSeesSquashLandings pins the landing git branch --merged cannot see:
 // a pull request Graphite reports MERGED at the branch's own head is deleted,
 // while one whose branch moved past the merged head, one a worktree holds, one

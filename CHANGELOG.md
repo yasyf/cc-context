@@ -20,12 +20,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   untracked branches, and `--to` with `--all-lanes` are refused; `restack`
   accepts the flag only on the Graphite lane. Runs without `--to` are unchanged.
 
+- **`ccx vcs pr state` prints shared pull request records as one JSON object.**
+  Pass PR numbers, repeatable `--lane-prefix` values, or both; each lane's
+  result includes its open PR numbers and their records in the same read.
+  `--repo owner/name` selects another repository. If a read needs to poll
+  while GitHub is rate-limiting requests, it fails naming the next probe;
+  `--wait 10m` allows waiting through probes for up to ten minutes.
+
+- **Pull request readers share one cache per repository across processes.**
+  `internal/prstate` stores it at
+  `~/Library/Caches/cc-context/prstate/<owner>/<repo>/state.json` on macOS,
+  using `os.UserCacheDir` and ignoring `$CLAUDE_PLUGIN_DATA` so plugin and
+  shell processes share it. A reader needing fresh data polls under
+  a file lock for all PRs leased in the last 15 minutes. Other readers reuse
+  records younger than 30 seconds; a read needing an uncached PR waits out
+  the rest of that interval. Cached PRs with a confirmed landing stay out
+  of later polls. On 2026-09-30, GitHub applied secondary burst limits to this
+  machine three times while `pr watch`, `pr status`, `ledger.py` refresh and
+  watch, and hand-written `gh` loops spent the same user's budget independently.
+
 - **`ccx vcs pr watch` streams pull request transitions until they land.**
   Events are `queued`, `ejected`, `conflicting`, `red`, `green`, `approved`,
   `approval-dismissed`, `new-head`, `landed`, and `closed-without-squash`.
-  Each poll uses one batched GraphQL query, including rate limits, plus one
-  Graphite request to the queue source `ccx vcs pr status` reads. A low
-  budget emits one `rate-limited until <t>` line, then sleeps to the reset.
+  Reads use the shared pull request cache, including its rate-limit backoff.
   `--until landed` exits `0` when all land, `1` if any close without landing;
   `closed` exits `0` once all close; `never` keeps watching. `--stack` selects
   the current Graphite downstack; `--lane-prefix` re-reads matching branches
@@ -69,7 +86,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   commands a conflict runs. No git config, hook, or merge driver is
   involved.
 
+### Changed
+
+- **`ccx vcs pr watch` and `ccx vcs pr status` read through the shared cache.**
+  A poll fetches Graphite's `pull-request-info` once for the leased PRs and
+  batches GitHub GraphQL reads in chunks of 40 PRs. Newly discovered lane PRs
+  get a follow-up batch within the same read. `pr status` gets labels,
+  merge activity, squash comparisons, and conflict evidence from that poll,
+  removing its separate REST label listings, comment reads, and per-PR reads.
+  A missing PR is dropped from the batch and reported by number.
+
+- **Rate-limit backoff is shared, and a cheap probe checks for recovery.**
+  After a `403`/`429` rate-limit response, the next probe waits for the delay
+  GitHub names capped at two minutes, or one minute if no wait is named.
+  Each refused probe uses the same rule; a successful probe resumes
+  polling. A GraphQL quota below 100 waits for its reset. `pr watch` prints
+  `rate-limited until <next probe>` and sleeps until then; `pr status` waits
+  through probes for up to ten minutes.
+
 ### Fixed
+
+- **`ccx vcs stack rebase` moves branches that other clean worktrees hold.**
+  After publishing, a branch checked out in another worktree kept its old
+  commit, and every branch above it stayed too. In Forge-AI/monorepo, where
+  `ccx vcs stack new` gives each branch its own worktree, a rebase from the tip
+  published all six b2-net branches and moved none of them. Such a branch now
+  moves onto its published head, and its worktree is updated with it, when that
+  worktree is clean and the head carries the same commits; a worktree with
+  uncommitted work keeps its branch and names why.
+
+- **`ccx vcs prune` works from a detached HEAD.** It read merged branches from
+  `git branch --merged`, which lists a detached HEAD as `(HEAD detached at
+  origin/dev)`, and passed that label to `git branch -d`. Merged branches now
+  come from `refs/heads/` alone.
+
+- **`ccx vcs stack submit` reopens a pull request its landed parent's deletion
+  closed.** When a parent landed and its branch was deleted before the child
+  was resubmitted, GitHub closed the child's pull request. `stack submit`
+  refused it and pointed at `ccx vcs stack drop --repair`, which refused in
+  turn because the landed parent was gone from the remote and pointed back at
+  `stack submit`. In Forge-AI/monorepo, #28192 sat in that loop. A stack
+  rebase or submit now puts the deleted base back, reopens the pull request,
+  retargets it onto the branch's new parent, deletes the base again, and only
+  then pushes, since GitHub will not reopen a pull request whose head was
+  force-pushed after it closed. A new parent the remote does not carry yet is
+  refused with the command that publishes it.
 
 - **`ccx vcs stack rebase` and `stack restack` stay in this lane.** A run
   planned every branch stacked on the bottom of each branch it named, so a
@@ -115,10 +176,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at its own stop. When a generator also owns a kept file, the deletion is
   staged after that generator runs so it cannot restore the deleted file.
 
-- **`ccx vcs stack rebase` and `stack submit` keep working when GitHub
-  refuses GraphQL.** They read each branch's pull request through GitHub's
-  REST API, so a GraphQL budget another tool used up, or a GraphQL
-  secondary rate limit, no longer blocks a restack or a push.
+- **`ccx vcs stack rebase` batches pull request reads over GraphQL.**
+  `stack submit`, `stack restack`, `stack continue`, and
+  `ccx vcs ship --tip-only` use the same read on the Graphite lane. On
+  2026-09-30, parallel lanes in Forge-AI/monorepo exhausted their shared
+  token's REST budget. `ship --tip-only` and `stack rebase` failed with
+  `API rate limit exceeded for user ID 709645` (HTTP `403`), while GraphQL
+  had 4999/5000 points left.
+
+  Queries of up to 40 branches now replace the REST reads per branch,
+  keeping large `--all-lanes` reads within the GitHub limit of 500,000 nodes
+  and its request timeout. A GraphQL rate-limit refusal or unavailable
+  repository metadata sends the read to the previous REST
+  path; `gh` fills `{owner}/{repo}` from the checkout. Other GraphQL
+  failures stop the run.
+
+  The query takes the newest PR from this repository among the 10 newest
+  per head name. If forks fill those 10 slots and `totalCount` shows more
+  PRs exist, only that branch is read
+  over REST with its owner-qualified filter. Landing checks are unchanged.
 
 - **`ccx vcs stack rebase` runs on separate stacks no longer block each
   other.** Each run keeps its state under its stack's root branch, so lanes

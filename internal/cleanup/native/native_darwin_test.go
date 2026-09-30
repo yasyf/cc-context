@@ -34,6 +34,10 @@ const (
 	threadHelperEnv     = "CCX_NATIVE_HELPER_THREAD"
 	vnodeDirectory      = 2
 
+	stagedFD   = 7
+	repeatedFD = 8
+	besideFD   = 9
+
 	asleep = "/bin/sleep 60"
 	reader = `/bin/sleep 60 < "$0"`
 	argued = `/bin/bash -c "read line" arg0 "$0" <&3`
@@ -41,6 +45,8 @@ const (
 
 func TestLayouts(t *testing.T) {
 	var (
+		vnode     vnodeInfo
+		fdVnode   vnodeFDInfo
 		vnodePath vnodeInfoPath
 		fdPath    vnodeFDInfoWithPath
 		cwdPaths  procVnodePathInfo
@@ -57,6 +63,13 @@ func TestLayouts(t *testing.T) {
 		got  uintptr
 		want uintptr
 	}{
+		{"sizeof vnode_info", unsafe.Sizeof(vnode), 152},
+		{"offsetof vnode_info.vi_stat.vst_dev", unsafe.Offsetof(vnode.dev), 0},
+		{"offsetof vnode_info.vi_stat.vst_ino", unsafe.Offsetof(vnode.ino), 8},
+		{"offsetof vnode_info.vi_type", unsafe.Offsetof(vnode.kind), 136},
+		{"offsetof vnode_info.vi_fsid", unsafe.Offsetof(vnode.fsid), 144},
+		{"sizeof vnode_fdinfo", unsafe.Sizeof(fdVnode), 176},
+		{"offsetof vnode_fdinfo.pvi", unsafe.Offsetof(fdVnode.vnode), 24},
 		{"sizeof vnode_info_path", unsafe.Sizeof(vnodePath), 1176},
 		{"offsetof vnode_info_path.vip_vi.vi_stat.vst_dev", unsafe.Offsetof(vnodePath.dev), 0},
 		{"offsetof vnode_info_path.vip_vi.vi_stat.vst_ino", unsafe.Offsetof(vnodePath.ino), 8},
@@ -73,10 +86,13 @@ func TestLayouts(t *testing.T) {
 		{"offsetof proc_bsdinfo.pbi_flags", unsafe.Offsetof(bsd.flags), 0},
 		{"offsetof proc_bsdinfo.pbi_status", unsafe.Offsetof(bsd.status), 4},
 		{"offsetof proc_bsdinfo.pbi_ppid", unsafe.Offsetof(bsd.ppid), 16},
+		{"offsetof proc_bsdinfo.pbi_uid", unsafe.Offsetof(bsd.uid), 20},
+		{"offsetof proc_bsdinfo.pbi_ruid", unsafe.Offsetof(bsd.ruid), 28},
 		{"offsetof proc_bsdinfo.pbi_comm", unsafe.Offsetof(bsd.comm), 48},
 		{"offsetof proc_bsdinfo.pbi_name", unsafe.Offsetof(bsd.name), 64},
 		{"offsetof proc_bsdinfo.e_tdev", unsafe.Offsetof(bsd.tdev), 108},
 		{"offsetof proc_bsdinfo.pbi_start_tvsec", unsafe.Offsetof(bsd.start), 120},
+		{"offsetof proc_bsdinfo.pbi_start_tvusec", unsafe.Offsetof(bsd.startMicros), 128},
 		{"sizeof proc_fdinfo", unsafe.Sizeof(fd), 8},
 		{"offsetof proc_fdinfo.proc_fd", unsafe.Offsetof(fd.fd), 0},
 		{"offsetof proc_fdinfo.proc_fdtype", unsafe.Offsetof(fd.kind), 4},
@@ -317,28 +333,83 @@ func at[T any](address uintptr) *T {
 	return *(**T)(unsafe.Pointer(&address)) //nolint:gosec // the address of a buffer the caller pinned
 }
 
-func answering(t *testing.T, reply func(selector int, buf uintptr) (filled uintptr, errno unix.Errno)) uintptr {
+func served(t *testing.T, reply func(first, second, third uintptr) (result uintptr, errno unix.Errno)) uintptr {
 	t.Helper()
 	lib, err := loadLibSystem()
 	if err != nil {
 		t.Fatalf("loadLibSystem: %v", err)
 	}
-	return purego.NewCallback(func(_, selector, _, buf, _ uintptr) uintptr {
-		filled, errno := reply(int(selector), buf) //nolint:gosec // a flavor or a descriptor number
+	return purego.NewCallback(func(_, first, second, third uintptr) uintptr {
+		result, errno := reply(first, second, third)
 		if errno != 0 {
 			*lib.errno() = int32(errno) //nolint:gosec // errno is a C int
 		}
-		return filled
+		return result
 	})
 }
 
+func answering(t *testing.T, reply func(selector int, buf uintptr) (filled uintptr, errno unix.Errno)) uintptr {
+	t.Helper()
+	return served(t, func(selector, _, buf uintptr) (uintptr, unix.Errno) {
+		return reply(int(selector), buf) //nolint:gosec // a flavor or a descriptor number
+	})
+}
+
+func sequenced[T any](values []T, read int) T {
+	if len(values) == 0 {
+		var none T
+		return none
+	}
+	return values[min(read, len(values)-1)]
+}
+
 type staged struct {
-	parent uint32
-	starts []uint64
-	reads  int
-	cwd    *vnodeInfoPath
-	open   *vnodeInfoPath
-	denied unix.Errno
+	parent    uint32
+	starts    []uint64
+	micros    []uint64
+	reads     int
+	effective uint32
+	actual    uint32
+	terminal  uint32
+	cwd       *vnodeInfoPath
+	open      *vnodeInfoPath
+	denied    unix.Errno
+	vnode     *vnodeInfoPath
+	opaque    unix.Errno
+	repeated  bool
+	beside    *vnodeInfoPath
+	unlisted  unix.Errno
+	programs  []string
+	located   int
+	unlocated unix.Errno
+	mount     string
+	volume    uint32
+	unmounted unix.Errno
+	signing   uint32
+	unsigned  unix.Errno
+}
+
+func agent(program string, started uint64) staged {
+	uid := uint32(os.Getuid()) //nolint:gosec // a uid is a C unsigned int
+	return staged{
+		parent: launchd, starts: []uint64{started}, effective: uid, actual: uid,
+		programs: []string{program}, mount: "/", volume: 0x4480d001, signing: 0x26017b01,
+		denied: unix.EPERM, opaque: unix.EPERM,
+	}
+}
+
+func (k *staged) listed() []procFDInfo {
+	var fds []procFDInfo
+	if k.open != nil || k.denied != 0 {
+		fds = append(fds, procFDInfo{fd: stagedFD, kind: fdTypeVnode})
+	}
+	if k.repeated {
+		fds = append(fds, procFDInfo{fd: repeatedFD, kind: fdTypeVnode})
+	}
+	if k.beside != nil {
+		fds = append(fds, procFDInfo{fd: besideFD, kind: fdTypeVnode})
+	}
+	return fds
 }
 
 func (k *staged) lib(t *testing.T) *libSystem {
@@ -351,7 +422,13 @@ func (k *staged) lib(t *testing.T) *libSystem {
 		switch flavor {
 		case flavorBSDInfo:
 			bsd := at[procBSDInfo](buf)
-			*bsd = procBSDInfo{status: 2, ppid: k.parent, tdev: noDevice, start: k.starts[min(k.reads, len(k.starts)-1)]}
+			*bsd = procBSDInfo{
+				status: 2, ppid: k.parent, uid: k.effective, ruid: k.actual, tdev: noDevice,
+				start: sequenced(k.starts, k.reads), startMicros: sequenced(k.micros, k.reads),
+			}
+			if k.terminal != 0 {
+				bsd.tdev = k.terminal
+			}
 			copy(bsd.name[:], "staged")
 			k.reads++
 			return unsafe.Sizeof(*bsd), 0
@@ -362,26 +439,73 @@ func (k *staged) lib(t *testing.T) *libSystem {
 			}
 			return unsafe.Sizeof(*paths), 0
 		case flavorListFDs:
+			listed := k.listed()
 			if buf == 0 {
-				return unsafe.Sizeof(procFDInfo{}), 0
+				return uintptr(len(listed)+1) * unsafe.Sizeof(procFDInfo{}), 0 //nolint:gosec // a count of staged descriptors
 			}
-			if k.open == nil && k.denied == 0 {
-				return 0, 0
+			if k.unlisted != 0 {
+				return 0, k.unlisted
 			}
-			*at[procFDInfo](buf) = procFDInfo{fd: 7, kind: fdTypeVnode}
-			return unsafe.Sizeof(procFDInfo{}), 0
+			copy(unsafe.Slice(at[procFDInfo](buf), len(listed)), listed)
+			return uintptr(len(listed)) * unsafe.Sizeof(procFDInfo{}), 0 //nolint:gosec // a count of staged descriptors
 		}
 		return 0, unix.EINVAL
 	})
-	descriptor := answering(t, func(_ int, buf uintptr) (uintptr, unix.Errno) {
-		if k.denied != 0 {
+	descriptor := served(t, func(fd, flavor, buf uintptr) (uintptr, unix.Errno) {
+		switch {
+		case flavor == fdFlavorVnodePathInfo && fd == besideFD:
+			described := at[vnodeFDInfoWithPath](buf)
+			described.vnode = *k.beside
+			return unsafe.Sizeof(*described), 0
+		case flavor == fdFlavorVnodePathInfo && k.denied != 0:
 			return 0, k.denied
+		case flavor == fdFlavorVnodePathInfo:
+			described := at[vnodeFDInfoWithPath](buf)
+			described.vnode = *k.open
+			return unsafe.Sizeof(*described), 0
+		case flavor == fdFlavorVnodeInfo && k.opaque != 0:
+			return 0, k.opaque
+		case flavor == fdFlavorVnodeInfo && k.vnode != nil:
+			identified := at[vnodeFDInfo](buf)
+			identified.vnode = vnodeInfo{dev: k.vnode.dev, ino: k.vnode.ino, kind: k.vnode.kind, fsid: k.vnode.fsid}
+			return unsafe.Sizeof(*identified), 0
 		}
-		described := at[vnodeFDInfoWithPath](buf)
-		described.vnode = *k.open
-		return unsafe.Sizeof(*described), 0
+		return 0, unix.EINVAL
 	})
-	return &libSystem{procPIDInfo: info, procPIDFDInfo: descriptor, fsGetPath: lib.fsGetPath, errno: lib.errno}
+	program := served(t, func(buf, _, _ uintptr) (uintptr, unix.Errno) {
+		path := sequenced(k.programs, k.located)
+		k.located++
+		if k.unlocated != 0 {
+			return 0, k.unlocated
+		}
+		if path == "" {
+			return 0, unix.ESRCH
+		}
+		copy(unsafe.Slice(at[byte](buf), pidPathBytes), path)
+		return uintptr(len(path)), 0 //nolint:gosec // the length of a staged path
+	})
+	signing := served(t, func(_, buf, _ uintptr) (uintptr, unix.Errno) {
+		if k.unsigned != 0 {
+			return ^uintptr(0), k.unsigned
+		}
+		*at[uint32](buf) = k.signing
+		return 0, 0
+	})
+	statfs := func(path string, volume *unix.Statfs_t) error {
+		if k.unmounted != 0 {
+			return k.unmounted
+		}
+		if !slices.Contains(k.programs, path) {
+			return unix.ENOENT
+		}
+		copy(volume.Mntonname[:], k.mount)
+		volume.Flags = k.volume
+		return nil
+	}
+	return &libSystem{
+		procPIDInfo: info, procPIDFDInfo: descriptor, procPIDPath: program, csOps: signing,
+		fsGetPath: lib.fsGetPath, errno: lib.errno, statfs: statfs,
+	}
 }
 
 func TestDescriptor(t *testing.T) {
@@ -411,7 +535,7 @@ func TestDescriptor(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			kernel := &staged{open: tt.open, denied: tt.denied}
 			s := &scan{lib: kernel.lib(t), root: f.real, given: f.tree}
-			path, err := s.descriptor(4242)
+			path, err := s.descriptor(cleanup.ProcessID{PID: 4242})
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("descriptor = %q, %v; want %v", path, err, tt.wantErr)
 			}
@@ -437,7 +561,7 @@ func TestDescriptorsThatCannotBeListed(t *testing.T) {
 		t.Errorf("listFDs = %+v, %v; want none and EPERM", fds, err)
 	}
 	s := &scan{lib: refused, root: "/tree", given: "/tree"}
-	if path, err := s.descriptor(4242); !errors.Is(err, unix.EPERM) || path != "" {
+	if path, err := s.descriptor(cleanup.ProcessID{PID: 4242}); !errors.Is(err, unix.EPERM) || path != "" {
 		t.Errorf("descriptor = %q, %v; want no path and EPERM", path, err)
 	}
 }
@@ -508,6 +632,186 @@ func TestInspectSelectsEvidence(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestApprovedServices(t *testing.T) {
+	const started = 100
+	want := []string{
+		"/System/Library/Frameworks/QuickLookThumbnailing.framework/Support/com.apple.quicklook.ThumbnailsAgent",
+		"/System/Library/Frameworks/ClassKit.framework/Versions/A/progressd",
+		"/System/Library/PrivateFrameworks/ScreenTimeCore.framework/Versions/A/ScreenTimeAgent",
+		"/usr/libexec/dmd",
+		"/usr/libexec/routined",
+		"/usr/libexec/nsurlsessiond",
+		"/usr/libexec/UserEventAgent",
+		"/usr/libexec/lsd",
+	}
+	if len(approvedServices) != 8 || !slices.Equal(approvedServices, want) {
+		t.Fatalf("approvedServices = %q, want exactly %q", approvedServices, want)
+	}
+	for _, program := range approvedServices {
+		t.Run(program, func(t *testing.T) {
+			kernel := agent(program, started)
+			kernel.micros = []uint64{250}
+			s := scan{lib: kernel.lib(t), root: "/tree", given: "/tree"}
+			born, err := s.service(cleanup.ProcessID{PID: 4242, Start: started})
+			if want := (birth{seconds: started, micros: 250}); err != nil || born != want {
+				t.Errorf("service = %+v, %v; want %+v", born, err, want)
+			}
+			if path, err := s.descriptor(cleanup.ProcessID{PID: 4242, Start: started}); path != "" || err != nil {
+				t.Errorf("descriptor = %q, %v; want its refused descriptor skipped", path, err)
+			}
+		})
+	}
+}
+
+func TestInspectApprovedServices(t *testing.T) {
+	const (
+		started      = 100
+		lsd          = "/usr/libexec/lsd"
+		relocated    = "/private/tmp/x/usr/libexec/lsd"
+		contextStore = "/System/Library/PrivateFrameworks/CoreDuetContext.framework/Versions/A/Resources/ContextStoreAgent"
+		knowledge    = "/usr/libexec/knowledge-agent"
+		dataVolume   = "/System/Volumes/Data"
+	)
+	f := plant(t)
+	arguer := spawn(t, f.outside, unfed(t), "/bin/bash", "-c", "read line", "arg0", f.real+"/sub").Process.Pid
+	sleeper := spawn(t, f.outside, nil, "/bin/sleep", "60").Process.Pid
+	works := vnodeRecord(t, f.sub, f.real+"/sub")
+	opens := vnodeRecord(t, f.file, f.real+"/file")
+	outside := vnodeRecord(t, f.outside, realPath(t, f.outside))
+	unresolved := vnodeRecord(t, f.file, "")
+	unresolved.fsid = [2]int32{-1, -1}
+	file := &cleanup.Holder{Evidence: cleanup.EvidenceFD, Path: f.real + "/file"}
+	approved := func(*staged) {}
+	run := func(program string) func(*staged) {
+		return func(k *staged) { k.programs = []string{program} }
+	}
+
+	tests := []struct {
+		name    string
+		pid     int
+		stage   func(k *staged)
+		want    *cleanup.Holder
+		wantErr error
+		says    string
+		checks  int
+	}{
+		{"a descriptor refused twice with EPERM", sleeper, approved, nil, nil, "", 2},
+		{"a descriptor refused twice with EACCES", sleeper, func(k *staged) { k.denied, k.opaque = unix.EACCES, unix.EACCES }, nil, nil, "", 2},
+		{"a descriptor refused with EPERM, then EACCES", sleeper, func(k *staged) { k.opaque = unix.EACCES }, nil, nil, "", 2},
+		{"a descriptor refused with EACCES, then EPERM", sleeper, func(k *staged) { k.denied = unix.EACCES }, nil, nil, "", 2},
+		{"two refused descriptors, their owner verified once before and once after", sleeper, func(k *staged) { k.repeated = true }, nil, nil, "", 2},
+		{"a refused descriptor closed before its vnode is read", sleeper, func(k *staged) { k.opaque = unix.EBADF }, nil, nil, "", 2},
+		{"a refused descriptor whose file is gone before its vnode is read", sleeper, func(k *staged) { k.opaque = unix.ENOENT }, nil, nil, "", 2},
+		{"a refused descriptor whose vnode is beside the tree", sleeper, func(k *staged) { k.opaque, k.vnode = 0, outside }, nil, nil, "", 2},
+		{"a refused descriptor whose vnode was removed", sleeper, func(k *staged) { k.opaque, k.vnode = 0, &vnodeInfoPath{} }, nil, nil, "", 2},
+		{"a refused descriptor whose vnode is in the tree", sleeper, func(k *staged) { k.opaque, k.vnode = 0, opens }, file, nil, "", 1},
+		{"a refused descriptor whose vnode resolves to no path", sleeper, func(k *staged) { k.opaque, k.vnode = 0, unresolved }, nil, unix.ENOTSUP, "", 1},
+		{"a refused descriptor whose vnode the kernel fails to read", sleeper, func(k *staged) { k.opaque = unix.EIO }, nil, unix.EIO, "", 1},
+		{"a descriptor the kernel fails to read", sleeper, func(k *staged) { k.denied = unix.EIO }, nil, unix.EIO, "", 0},
+		{"descriptors that cannot be listed", sleeper, func(k *staged) { k.unlisted = unix.EIO }, nil, unix.EIO, "", 0},
+		{"a working directory in the tree", sleeper, func(k *staged) { k.cwd = works }, &cleanup.Holder{Evidence: cleanup.EvidenceCwd, Path: f.real + "/sub"}, nil, "", 0},
+		{"an argument naming the tree", arguer, approved, &cleanup.Holder{Evidence: cleanup.EvidenceArgv, Path: f.real + "/sub"}, nil, "", 2},
+		{"a readable descriptor in the tree after a refused one", sleeper, func(k *staged) { k.beside = opens }, file, nil, "", 1},
+		{"a readable descriptor beside the tree after a refused one", sleeper, func(k *staged) { k.beside = outside }, nil, nil, "", 2},
+		{"no refused descriptor, so no owner to verify", sleeper, func(k *staged) { k.denied, k.open, k.programs = 0, outside, []string{relocated} }, nil, nil, "", 0},
+		{"ContextStoreAgent", sleeper, run(contextStore), nil, unix.EPERM, contextStore, 1},
+		{"knowledge-agent", sleeper, run(knowledge), nil, unix.EPERM, knowledge, 1},
+		{"an approved name at another location", sleeper, run(relocated), nil, unix.EPERM, relocated, 1},
+		{"an approved path with a suffix", sleeper, run(lsd + "/"), nil, unix.EPERM, lsd + "/", 1},
+		{"an unapproved owner refused with EACCES", sleeper, func(k *staged) { k.denied, k.programs = unix.EACCES, []string{knowledge} }, nil, unix.EACCES, knowledge, 1},
+		{"an executable path the kernel withholds", sleeper, func(k *staged) { k.unlocated = unix.ESRCH }, nil, unix.EPERM, "executable path", 1},
+		{"an executable on a volume mounted elsewhere", sleeper, func(k *staged) { k.mount = dataVolume }, nil, unix.EPERM, dataVolume, 1},
+		{"an executable on the writable data volume", sleeper, func(k *staged) { k.mount, k.volume = dataVolume, 0x04909080 }, nil, unix.EPERM, dataVolume, 1},
+		{"an executable on a writable volume", sleeper, func(k *staged) { k.volume &^= unix.MNT_RDONLY }, nil, unix.EPERM, "0x4480d000", 1},
+		{"an executable on a volume that is not the root filesystem", sleeper, func(k *staged) { k.volume &^= unix.MNT_ROOTFS }, nil, unix.EPERM, "0x44809001", 1},
+		{"an executable on a volume that is no snapshot", sleeper, func(k *staged) { k.volume &^= unix.MNT_SNAPSHOT }, nil, unix.EPERM, "0x480d001", 1},
+		{"an executable whose volume cannot be read", sleeper, func(k *staged) { k.unmounted = unix.EIO }, nil, unix.EPERM, "volume", 1},
+		{"a code signing status the kernel withholds", sleeper, func(k *staged) { k.unsigned = unix.EINVAL }, nil, unix.EPERM, "code signing status", 1},
+		{"a binary that is not the platform's", sleeper, func(k *staged) { k.signing &^= csPlatformBinary }, nil, unix.EPERM, "0x22017b01", 1},
+		{"a signature that is not valid", sleeper, func(k *staged) { k.signing &^= csValid }, nil, unix.EPERM, "0x26017b00", 1},
+		{"a process being debugged", sleeper, func(k *staged) { k.signing |= csDebugged }, nil, unix.EPERM, "0x36017b01", 1},
+		{"a parent other than launchd", sleeper, func(k *staged) { k.parent = 4242 }, nil, unix.EPERM, "pid 4242", 1},
+		{"a controlling terminal", sleeper, func(k *staged) { k.terminal = 0x10000005 }, nil, unix.EPERM, "0x10000005", 1},
+		{"another effective uid", sleeper, func(k *staged) { k.effective++ }, nil, unix.EPERM, "uid", 1},
+		{"another real uid", sleeper, func(k *staged) { k.actual++ }, nil, unix.EPERM, "real uid", 1},
+		{"a pid that passed to another process before its owner was verified", sleeper, func(k *staged) { k.starts = []uint64{started, started + 1} }, nil, unix.EPERM, "started at 101", 1},
+		{"a pid that passed to a process started a second later while its descriptors were read", sleeper, func(k *staged) { k.starts = []uint64{started, started, started + 1} }, nil, unix.EPERM, "started at 101", 2},
+		{"a pid that passed to a process started a microsecond later while its descriptors were read", sleeper, func(k *staged) { k.micros = []uint64{5, 5, 6} }, nil, unix.EPERM, "100.000006", 2},
+		{"a process that stopped being the service while its descriptors were read", sleeper, func(k *staged) { k.programs = []string{lsd, relocated} }, nil, unix.EPERM, relocated, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kernel := agent(lsd, started)
+			tt.stage(&kernel)
+			s := scan{lib: kernel.lib(t), root: f.real, given: f.tree}
+			got, held, err := s.inspect(tt.pid)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("inspect = %+v, %t, %v; want %v", got, held, err, tt.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), tt.says) {
+				t.Errorf("inspect = %v, want it to say %q", err, tt.says)
+			}
+			var want cleanup.Holder
+			if tt.want != nil {
+				want = *tt.want
+				want.PID, want.Name = tt.pid, "staged"
+			}
+			if got != want || held != (tt.want != nil) {
+				t.Errorf("inspect = %+v, %t; want %+v, %t", got, held, want, tt.want != nil)
+			}
+			if kernel.located != tt.checks {
+				t.Errorf("inspect verified the owner %d times, want %d", kernel.located, tt.checks)
+			}
+		})
+	}
+}
+
+func TestKernelDescribesItsOwnProcess(t *testing.T) {
+	lib, err := loadLibSystem()
+	if err != nil {
+		t.Fatalf("loadLibSystem: %v", err)
+	}
+	f := plant(t)
+	file, err := os.Open(f.file)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	want := vnodeRecord(t, f.file, "")
+
+	node, err := lib.vnodeIdentityOfFD(os.Getpid(), int32(file.Fd())) //nolint:gosec // a descriptor fits int32
+	if err != nil {
+		t.Fatalf("vnodeIdentityOfFD: %v", err)
+	}
+	if node.dev != want.dev || node.ino != want.ino || node.fsid != want.fsid || node.kind == vnodeNone {
+		t.Errorf("vnodeIdentityOfFD = dev %d, inode %d, filesystem %v, type %d; want dev %d, inode %d, filesystem %v, and a type", node.dev, node.ino, node.fsid, node.kind, want.dev, want.ino, want.fsid)
+	}
+	s := &scan{lib: lib, root: f.real, given: f.tree}
+	if path, err := s.heldByID(node); path != f.real+"/file" || err != nil {
+		t.Errorf("heldByID = %q, %v; want %q", path, err, f.real+"/file")
+	}
+
+	status, err := lib.codeSigningStatus(os.Getpid())
+	if err != nil {
+		t.Fatalf("codeSigningStatus: %v", err)
+	}
+	if status&csPlatformBinary != 0 {
+		t.Errorf("codeSigningStatus = %#x, which marks this test a platform binary", status)
+	}
+	if status, err := lib.codeSigningStatus(exitedPID(t)); !errors.Is(err, unix.ESRCH) {
+		t.Errorf("codeSigningStatus of an exited process = %#x, %v; want ESRCH", status, err)
+	}
+}
+
+func exitedPID(t *testing.T) int {
+	t.Helper()
+	child := exec.Command("/usr/bin/true")
+	if err := child.Run(); err != nil {
+		t.Fatalf("run true: %v", err)
+	}
+	return child.Process.Pid
 }
 
 func spawn(t *testing.T, dir string, stdin *os.File, argv ...string) *exec.Cmd {

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/execstub"
+	"github.com/yasyf/cc-context/internal/ghapi"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -27,7 +27,7 @@ func ghRouteKey(argv []string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-func installGHRoutes(t *testing.T, routes ...ghRoute) string {
+func installGHRoutes(t *testing.T, bin string, routes ...ghRoute) string {
 	t.Helper()
 	dir := t.TempDir()
 	for _, r := range routes {
@@ -42,8 +42,7 @@ if [ -r "` + dir + `/$key.out" ]; then cat "` + dir + `/$key.out"; exit 0; fi
 printf 'gh: Not Found (HTTP 404): %s\n' "$*" >&2
 exit 1
 `
-	writeShipExecutable(t, dir, "gh", script)
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeShipExecutable(t, bin, "gh", script)
 	return filepath.Join(dir, "calls")
 }
 
@@ -68,55 +67,72 @@ func assertNoGraphQL(t *testing.T, calls string) {
 	}
 }
 
-func TestStackQueryPRsReadsOverREST(t *testing.T) {
+func TestStackQueryPRsReadsOverRESTWhenGraphQLCannotAnswer(t *testing.T) {
 	const openBranch = "o1/add-latest-pre-release-and-pin-flags-to-gh-extension-upgrade/nysoxynolqlo"
 	var open ghPull
 	if err := json.Unmarshal([]byte(loadGHGolden(t, "rest-pull-open").stdout), &open); err != nil {
 		t.Fatal(err)
 	}
-	calls := installGHRoutes(t,
-		ghRecordedRoute(t, "rest-pulls-head-merged"),
-		ghRecordedRoute(t, "rest-pulls-head-newest"),
-		ghRecordedRoute(t, "rest-pulls-head-closed"),
-		ghRecordedRoute(t, "rest-pulls-head-none"),
-		ghRecordedRoute(t, "rest-issue-closed-by"),
-		ghRoute{argv: ghNewestPullArgv(openBranch), stdout: loadGHGolden(t, "rest-pulls-head-open").stdout},
-		ghRoute{argv: []string{"api", "repos/{owner}/{repo}/pulls/13982"}, stdout: loadGHGolden(t, "rest-pull-open").stdout},
-	)
-	branches := []string{"fix-ship-help-graphite-demote", "yasyf/transcript-ccx-issues", "stack-rebase-per-root", "no-such-branch", openBranch}
-	prs, err := stackQueryPRs(context.Background(), render.Dir(t.TempDir()), "main", branches)
-	if err != nil {
-		t.Fatalf("stackQueryPRs: %v", err)
-	}
-	type want struct {
-		number    int
-		state     string
-		mergeable string
-		landed    bool
-	}
-	for branch, w := range map[string]want{
-		"fix-ship-help-graphite-demote": {3, "MERGED", statusUnknown, true},
-		"yasyf/transcript-ccx-issues":   {2, "MERGED", statusUnknown, true},
-		"stack-rebase-per-root":         {64, "CLOSED", statusUnknown, false},
-		openBranch:                      {13982, "OPEN", "CONFLICTING", false},
+	for _, tt := range []struct {
+		name  string
+		setup func(t *testing.T) *vcstest.Fixture
+	}{
+		{"graphql rate limited", func(t *testing.T) *vcstest.Fixture {
+			limitGraphQL(t)
+			return shipRepo(t)
+		}},
+		{"repository unresolved", func(t *testing.T) *vcstest.Fixture {
+			useGitHubAPI(t, ghapi.New("http://127.0.0.1:1"))
+			return vcstest.Repo(t)
+		}},
 	} {
-		pr := prs[branch]
-		if pr == nil {
-			t.Errorf("%s: no pull request", branch)
-			continue
-		}
-		if pr.Number != w.number || pr.State != w.state || pr.Mergeable != w.mergeable || pr.Landed != w.landed {
-			t.Errorf("%s = #%d %s %s landed=%v, want #%d %s %s landed=%v",
-				branch, pr.Number, pr.State, pr.Mergeable, pr.Landed, w.number, w.state, w.mergeable, w.landed)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			f := tt.setup(t)
+			calls := installGHRoutes(t, f.ShimBin,
+				ghRecordedRoute(t, "rest-pulls-head-merged"),
+				ghRecordedRoute(t, "rest-pulls-head-newest"),
+				ghRecordedRoute(t, "rest-pulls-head-closed"),
+				ghRecordedRoute(t, "rest-pulls-head-none"),
+				ghRecordedRoute(t, "rest-issue-closed-by"),
+				ghRoute{argv: ghNewestPullArgv(openBranch), stdout: loadGHGolden(t, "rest-pulls-head-open").stdout},
+				ghRoute{argv: []string{"api", "repos/{owner}/{repo}/pulls/13982"}, stdout: loadGHGolden(t, "rest-pull-open").stdout},
+			)
+			branches := []string{"fix-ship-help-graphite-demote", "yasyf/transcript-ccx-issues", "stack-rebase-per-root", "no-such-branch", openBranch}
+			prs, err := stackQueryPRs(f.Context(), render.Dir(f.Dir), "main", branches)
+			if err != nil {
+				t.Fatalf("stackQueryPRs: %v", err)
+			}
+			type want struct {
+				number    int
+				state     string
+				mergeable string
+				landed    bool
+			}
+			for branch, w := range map[string]want{
+				"fix-ship-help-graphite-demote": {3, "MERGED", statusUnknown, true},
+				"yasyf/transcript-ccx-issues":   {2, "MERGED", statusUnknown, true},
+				"stack-rebase-per-root":         {64, "CLOSED", statusUnknown, false},
+				openBranch:                      {13982, "OPEN", "CONFLICTING", false},
+			} {
+				pr := prs[branch]
+				if pr == nil {
+					t.Errorf("%s: no pull request", branch)
+					continue
+				}
+				if pr.Number != w.number || pr.State != w.state || pr.Mergeable != w.mergeable || pr.Landed != w.landed {
+					t.Errorf("%s = #%d %s %s landed=%v, want #%d %s %s landed=%v",
+						branch, pr.Number, pr.State, pr.Mergeable, pr.Landed, w.number, w.state, w.mergeable, w.landed)
+				}
+			}
+			if pr := prs[openBranch]; pr != nil && (pr.Head != open.Head.SHA || pr.Base != open.Base.Ref || pr.URL != open.HTMLURL || pr.Title != open.Title) {
+				t.Errorf("open PR = %+v, want head %s base %s url %s title %q", pr, open.Head.SHA, open.Base.Ref, open.HTMLURL, open.Title)
+			}
+			if pr, ok := prs["no-such-branch"]; ok {
+				t.Errorf("no-such-branch resolved to %+v", pr)
+			}
+			assertNoGraphQL(t, calls)
+		})
 	}
-	if pr := prs[openBranch]; pr != nil && (pr.Head != open.Head.SHA || pr.Base != open.Base.Ref || pr.URL != open.HTMLURL || pr.Title != open.Title) {
-		t.Errorf("open PR = %+v, want head %s base %s url %s title %q", pr, open.Head.SHA, open.Base.Ref, open.HTMLURL, open.Title)
-	}
-	if pr, ok := prs["no-such-branch"]; ok {
-		t.Errorf("no-such-branch resolved to %+v", pr)
-	}
-	assertNoGraphQL(t, calls)
 }
 
 func TestStackQueryPRsReadsTheQueueCloseOverREST(t *testing.T) {
@@ -131,11 +147,13 @@ func TestStackQueryPRsReadsTheQueueCloseOverREST(t *testing.T) {
 		{"queue left no comment", loadGHGolden(t, "rest-issue-comments").stdout, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			calls := installGHRoutes(t, closed,
+			f := shipRepo(t)
+			limitGraphQL(t)
+			calls := installGHRoutes(t, f.ShimBin, closed,
 				ghRoute{argv: []string{"api", "repos/{owner}/{repo}/issues/64", "--jq", `.closed_by.login // ""`}, stdout: "graphite-app[bot]\n"},
 				ghRoute{argv: []string{"api", "--paginate", "--slurp", "repos/{owner}/{repo}/issues/64/comments?per_page=100"}, stdout: tt.comments},
 			)
-			prs, err := stackQueryPRs(context.Background(), render.Dir(t.TempDir()), "main", []string{"stack-rebase-per-root"})
+			prs, err := stackQueryPRs(f.Context(), render.Dir(f.Dir), "main", []string{"stack-rebase-per-root"})
 			if err != nil {
 				t.Fatalf("stackQueryPRs: %v", err)
 			}

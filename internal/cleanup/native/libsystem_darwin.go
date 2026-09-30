@@ -16,6 +16,7 @@ const (
 	procAllPIDs = 1
 	procUIDOnly = 4
 
+	fdFlavorVnodeInfo     = 1
 	fdFlavorVnodePathInfo = 2
 	fdTypeVnode           = 1
 
@@ -38,7 +39,27 @@ const (
 	flagThreadCwd = 0x100
 
 	threadRoom = 64
+
+	csOpsStatus      = 0
+	csValid          = 0x00000001
+	csPlatformBinary = 0x04000000
+	csDebugged       = 0x10000000
 )
+
+type vnodeInfo struct {
+	dev  int32
+	_    [4]byte
+	ino  uint64
+	_    [120]byte
+	kind int32
+	_    [4]byte
+	fsid [2]int32
+}
+
+type vnodeFDInfo struct {
+	_     [24]byte
+	vnode vnodeInfo
+}
 
 type vnodeInfoPath struct {
 	dev  int32
@@ -67,18 +88,21 @@ type procThreadPathInfo struct {
 }
 
 type procBSDInfo struct {
-	flags  uint32
-	status uint32
-	_      [8]byte
-	ppid   uint32
-	_      [28]byte
-	comm   [16]byte
-	name   [32]byte
-	_      [12]byte
-	tdev   uint32
-	_      [8]byte
-	start  uint64
-	_      [8]byte
+	flags       uint32
+	status      uint32
+	_           [8]byte
+	ppid        uint32
+	uid         uint32
+	_           [4]byte
+	ruid        uint32
+	_           [16]byte
+	comm        [16]byte
+	name        [32]byte
+	_           [12]byte
+	tdev        uint32
+	_           [8]byte
+	start       uint64
+	startMicros uint64
 }
 
 type procFDInfo struct {
@@ -117,7 +141,9 @@ type libSystem struct {
 	coalitionUsage   uintptr
 	machTimebaseInfo uintptr
 	setIOPolicy      uintptr
+	csOps            uintptr
 	errno            func() *int32
+	statfs           func(string, *unix.Statfs_t) error
 }
 
 var loadLibSystem = sync.OnceValues(func() (*libSystem, error) {
@@ -125,7 +151,7 @@ var loadLibSystem = sync.OnceValues(func() (*libSystem, error) {
 	if err != nil {
 		return nil, fmt.Errorf("native: dlopen %s: %w", libSystemPath, err)
 	}
-	lib := &libSystem{}
+	lib := &libSystem{statfs: unix.Statfs}
 	for name, slot := range map[string]*uintptr{
 		"proc_listpids":                 &lib.procListPIDs,
 		"proc_pidinfo":                  &lib.procPIDInfo,
@@ -135,6 +161,7 @@ var loadLibSystem = sync.OnceValues(func() (*libSystem, error) {
 		"coalition_info_resource_usage": &lib.coalitionUsage,
 		"mach_timebase_info":            &lib.machTimebaseInfo,
 		"setiopolicy_np":                &lib.setIOPolicy,
+		"csops":                         &lib.csOps,
 	} {
 		symbol, err := purego.Dlsym(handle, name)
 		if err != nil {
@@ -256,20 +283,48 @@ func (lib *libSystem) listThreads(pid int) ([]uint64, error) {
 	}
 }
 
-func (lib *libSystem) vnodeOfFD(pid int, fd int32) (*vnodeInfoPath, error) {
-	info := new(vnodeFDInfoWithPath)
+func fdInfo[T any](lib *libSystem, pid int, fd int32, flavor int) (*T, error) {
+	out := new(T)
 	var pinner runtime.Pinner
-	pinner.Pin(info)
+	pinner.Pin(out)
 	defer pinner.Unpin()
-	size := unsafe.Sizeof(*info)
-	filled, errno := call(lib.procPIDFDInfo, uintptr(pid), uintptr(fd), fdFlavorVnodePathInfo, uintptr(unsafe.Pointer(info)), size) //nolint:gosec // FFI takes the pinned pointer; pids and descriptors are non-negative
+	size := unsafe.Sizeof(*out)
+	filled, errno := call(lib.procPIDFDInfo, uintptr(pid), uintptr(fd), uintptr(flavor), uintptr(unsafe.Pointer(out)), size) //nolint:gosec // FFI takes the pinned pointer; pids, descriptors, and flavors are non-negative
 	if filled <= 0 {
 		return nil, errno
 	}
 	if uintptr(filled) != size { //nolint:gosec // filled is positive here
 		return nil, fmt.Errorf("kernel filled %d of %d bytes", filled, size)
 	}
+	return out, nil
+}
+
+func (lib *libSystem) vnodeOfFD(pid int, fd int32) (*vnodeInfoPath, error) {
+	info, err := fdInfo[vnodeFDInfoWithPath](lib, pid, fd, fdFlavorVnodePathInfo)
+	if err != nil {
+		return nil, err
+	}
 	return &info.vnode, nil
+}
+
+func (lib *libSystem) vnodeIdentityOfFD(pid int, fd int32) (*vnodeInfo, error) {
+	info, err := fdInfo[vnodeFDInfo](lib, pid, fd, fdFlavorVnodeInfo)
+	if err != nil {
+		return nil, err
+	}
+	return &info.vnode, nil
+}
+
+func (lib *libSystem) codeSigningStatus(pid int) (uint32, error) {
+	status := new(uint32)
+	var pinner runtime.Pinner
+	pinner.Pin(status)
+	defer pinner.Unpin()
+	failed, errno := call(lib.csOps, uintptr(pid), csOpsStatus, uintptr(unsafe.Pointer(status)), unsafe.Sizeof(*status)) //nolint:gosec // FFI takes the pinned pointer; pids are non-negative
+	if failed != 0 {
+		return 0, errno
+	}
+	return *status, nil
 }
 
 func (lib *libSystem) pidPath(pid int) (string, error) {

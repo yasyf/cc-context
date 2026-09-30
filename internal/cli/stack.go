@@ -130,7 +130,9 @@ onto what it sat on, leaving its squashed commits behind.
 A branch whose pull request was closed without landing is dropped the same way,
 named in the plan with its pull request, and its own commits are never replayed.
 A pull request GitHub closed because its base branch was deleted still carries
-live work, so the run refuses it and points at ccx vcs stack drop --repair.
+live work, so before the push the run puts that base back, reopens the pull
+request, retargets it onto the branch's new parent, and deletes the base again.
+A new parent the remote does not carry yet is refused, naming it.
 
 A conflict stops the run before any ref moves, in a conflict workspace with
 rerere off. After resolution, ccx vcs stack continue finishes the rebase, pushes,

@@ -547,6 +547,43 @@ func dropRepairJobs(ctx context.Context, nwo string, state gtState, heads map[st
 	return jobs, nil
 }
 
+// stackReopenBaseGone reopens every pull request of run GitHub closed when its
+// base was deleted, onto the branch's new parent, before the push: GitHub
+// refuses to reopen one whose head was force-pushed after it closed. It
+// returns the reopened pull requests by branch.
+func stackReopenBaseGone(ctx context.Context, l lane, nwo, remote string, run *stackRebaseRun) (map[string]dropPR, error) {
+	reopened := map[string]dropPR{}
+	var jobs []repairJob
+	for _, b := range run.Branches {
+		if !b.reopens() {
+			continue
+		}
+		got, err := dropPRAt(ctx, nwo, b.PR.Number)
+		if err != nil {
+			return nil, err
+		}
+		switch got.BaseRefName {
+		case b.Parent:
+			if got.State != "OPEN" {
+				if err := dropReopen(ctx, nwo, got.Number); err != nil {
+					return nil, err
+				}
+			}
+		case b.PR.Base:
+			jobs = append(jobs, repairJob{branch: b.Name, pr: got, base: b.Parent})
+		default:
+			return nil, fmt.Errorf("stack rebase: %s's PR #%d now targets %s, neither the deleted %s nor %s — retarget it by hand, then re-run", b.Name, got.Number, got.BaseRefName, b.PR.Base, b.Parent)
+		}
+		reopened[b.Name] = got
+	}
+	if len(jobs) > 0 {
+		if err := dropRepairApply(ctx, l, nwo, remote, jobs); err != nil {
+			return nil, err
+		}
+	}
+	return reopened, nil
+}
+
 // dropRepairApply walks the one order GitHub allows: the dead ref goes back
 // first, because that is all a reopen is validated against; the reopen next,
 // because a closed pull request's base cannot be changed; the base moves while
@@ -663,7 +700,7 @@ func dropRepairReport(jobs []repairJob, dryRun bool) string {
 // commit it landed on, which is the lease the delete that follows is held
 // under.
 func dropPushRef(ctx context.Context, l lane, remote, ref, base string) (string, error) {
-	argv := pushArgv(remote, gtRestackRef(base)+":"+gtRestackRef(ref))
+	argv := pushArgv(remote, "--force-with-lease="+gtRestackRef(ref)+":", gtRestackRef(base)+":"+gtRestackRef(ref))
 	if _, err := render.RunCLI(ctx, l.dir(), "git", argv); err != nil {
 		return "", fmt.Errorf("%s: git push %s %s:%s: %w", dropPrefix, remote, gtRestackRef(base), gtRestackRef(ref), err)
 	}

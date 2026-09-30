@@ -29,9 +29,10 @@ var nextRel = regexp.MustCompile(`<([^>]+)>\s*;\s*rel="next"`)
 
 // Client issues authenticated GitHub API requests against one API root.
 type Client struct {
-	base   string
-	http   *http.Client
-	tokens *tokenSource
+	base    string
+	http    *http.Client
+	tokens  *tokenSource
+	retries int
 }
 
 var defaultClient = sync.OnceValue(func() *Client { return New(baseURLProd) })
@@ -44,10 +45,20 @@ func Default() *Client { return defaultClient() }
 // point baseURL at an httptest.Server; production callers want Default.
 func New(baseURL string) *Client {
 	return &Client{
-		base:   strings.TrimSuffix(baseURL, "/"),
-		http:   &http.Client{},
-		tokens: &tokenSource{resolve: resolveToken},
+		base:    strings.TrimSuffix(baseURL, "/"),
+		http:    &http.Client{},
+		tokens:  &tokenSource{resolve: resolveToken},
+		retries: maxRateLimitRetries,
 	}
+}
+
+// Unwaiting returns a copy of c that hands a rate-limited response straight
+// back instead of sitting out a short Retry-After, for a caller that keeps its
+// own backoff across processes.
+func (c *Client) Unwaiting() *Client {
+	unwaiting := *c
+	unwaiting.retries = 0
+	return &unwaiting
 }
 
 // Paginate walks ref's Link rel="next" chain and returns every page's elements
@@ -130,7 +141,7 @@ func (c *Client) do(ctx context.Context, method, ref string, body []byte) ([]byt
 			}
 			continue
 		}
-		if wait, ok := retryDelay(status, header, time.Now()); ok && waits < maxRateLimitRetries {
+		if wait, ok := retryDelay(status, header, time.Now()); ok && waits < c.retries {
 			waits++
 			if err := sleep(ctx, wait); err != nil {
 				return nil, nil, err
@@ -138,7 +149,7 @@ func (c *Client) do(ctx context.Context, method, ref string, body []byte) ([]byt
 			continue
 		}
 		if status < 200 || status > 299 {
-			return nil, nil, statusError(method, target, status, payload)
+			return nil, nil, statusError(method, target, status, header, payload, time.Now())
 		}
 		return payload, header, nil
 	}

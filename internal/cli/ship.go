@@ -412,7 +412,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		}
 	}
 
-	if plan.moveOntoParent {
+	if plan.moveOntoParent && !plan.commitBeforeMove {
 		if planSeg, plan.needsRestack, err = gtMoveOntoParent(ctx, cmd.ErrOrStderr(), l, o, gtc); err != nil {
 			return err
 		}
@@ -457,6 +457,11 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	stuckOpts := asGiven
 	stuckOpts.noCommit = o.noCommit
 	stuck := gtStuckSuffix(stuckOpts)
+	if plan.commitBeforeMove {
+		if planSeg, plan.needsRestack, err = gtMoveOntoParent(ctx, cmd.ErrOrStderr(), l, o, gtc); err != nil {
+			return fmt.Errorf("%w%s", err, stuck)
+		}
+	}
 	restackSeg := ""
 	if gtLane && !o.noPush {
 		tr, err := trunkFetch.join()
