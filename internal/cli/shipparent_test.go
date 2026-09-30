@@ -271,3 +271,72 @@ func TestShipGTRefusesABranchWithNoCommitOfItsOwnAndNothingToCommit(t *testing.T
 		t.Errorf("b moved from %s to %s on a refusal", before, after)
 	}
 }
+
+func shipBehindTrunkUnder(t *testing.T, f *vcstest.Fixture, names ...string) {
+	t.Helper()
+	for _, name := range names {
+		writeShipFile(t, f.Dir, name, "one\ntwo\nthree\nfour\nfive\n")
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "add", ".")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "b")
+	for _, name := range names {
+		writeShipFile(t, f.Dir, name, "ONE\ntwo\nthree\nfour\nfive\n")
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qam", "trunk")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "b")
+	for _, name := range names {
+		writeShipFile(t, f.Dir, name, "one\ntwo\nthree\nfour\nFIVE\n")
+	}
+	shipResetLog(t, f)
+}
+
+func TestShipGTCommitsBeforeReplayingOverItsOwnEdits(t *testing.T) {
+	f := shipGTRepo(t)
+	shipBehindTrunkUnder(t, f, "shared.txt")
+
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "shared.txt")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if want := "tracked b onto main (replayed its 1 own commit(s))"; !strings.Contains(got, want) {
+		t.Errorf("summary = %q, want it to carry %q", got, want)
+	}
+	if parent := shipParentOf(t, f, "b"); parent != "main" {
+		t.Errorf("b's parent = %s, want main", parent)
+	}
+	if behind := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "b..main"); behind != "0" {
+		t.Errorf("main holds %s commit(s) b does not, want b on main's head", behind)
+	}
+	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", "main..b"); subjects != "fix: frobnicate" {
+		t.Errorf("b carries %q above main, want the commit ship made alone", subjects)
+	}
+	if shared := gitAt(t, f.Env(), f.Dir, "show", "b:shared.txt"); shared != "ONE\ntwo\nthree\nfour\nFIVE" {
+		t.Errorf("b's shared.txt = %q, want trunk's edit and the ship's together", shared)
+	}
+	if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); status != "" {
+		t.Errorf("status = %q, want a clean working copy", status)
+	}
+}
+
+func TestShipGTRefusesAReplayOverEditsItLeavesOut(t *testing.T) {
+	f := shipGTRepo(t)
+	shipBehindTrunkUnder(t, f, "shared.txt", "other.txt")
+	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "b")
+
+	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "shared.txt")
+	if err == nil || !strings.Contains(err.Error(), "replaying b onto main would overwrite uncommitted changes") {
+		t.Fatalf("error = %v, want the refusal naming the uncommitted changes", err)
+	}
+	if after := gitAt(t, f.Env(), f.Dir, "rev-parse", "b"); after != before {
+		t.Errorf("b moved from %s to %s on a refusal", before, after)
+	}
+	if other := gitAt(t, f.Env(), f.Dir, "show", ":other.txt"); other != "one\ntwo\nthree\nfour\nfive" {
+		t.Errorf("index other.txt = %q, want b's base left in place", other)
+	}
+	if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); status != "M other.txt\n M shared.txt" {
+		t.Errorf("status = %q, want both edits left uncommitted", status)
+	}
+}

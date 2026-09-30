@@ -200,6 +200,10 @@ func dryRunReparent(ctx context.Context, l lane, o shipOpts, state gtState, was 
 func dryRunOnto(ctx context.Context, l lane, o shipOpts, r *shipDryRun) (string, error) {
 	m, err := gtOntoPlan(ctx, l, o, r.branch, r.parent)
 	r.onto = r.parent
+	first, err := gtCommitBeforeMove(ctx, l, o, r.plan, err)
+	if first {
+		return fmt.Sprintf(", replaying it onto %s once the commit takes the edits the replay crosses", r.parent), nil
+	}
 	var refusal *shipRefusal
 	if errors.As(err, &refusal) {
 		r.refusals = append(r.refusals, refusal.Error())
