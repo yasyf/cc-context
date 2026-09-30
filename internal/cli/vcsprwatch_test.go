@@ -400,3 +400,77 @@ func TestPRWatchPollReadsQueueEvictionAndTrunkSquash(t *testing.T) {
 		t.Errorf("vars = %v, want Graphite's merge commit compared against the trunk", github.vars[0])
 	}
 }
+
+func TestPRWatchSnapshotOfLandingAndQueueEvidence(t *testing.T) {
+	t.Parallel()
+	trunk := prWatchHistory{Name: "dev"}
+	trunk.Target.History.Nodes = append(trunk.Target.History.Nodes, struct {
+		OID             string `json:"oid"`
+		MessageHeadline string `json:"messageHeadline"`
+	}{OID: watchSquash, MessageHeadline: "ci: add a deploy pipeline (#27949)"})
+	merged := decodePRInfo(t, prInfoLanded)
+	queued := prWatchSnapshot{State: "OPEN", Head: watchHeadA, Queued: true}
+
+	t.Run("graphite merged before github closed holds the queue", func(t *testing.T) {
+		t.Parallel()
+		snap := prWatchSnapshotOf(25116, prWatchNode{State: "OPEN", HeadRefOid: watchHeadA}, trunk, merged, true, false, queued)
+		if !snap.Queued {
+			t.Fatalf("snap = %+v, want the queue held so no ejection is reported", snap)
+		}
+	})
+	t.Run("merged into a parent branch is not a landing", func(t *testing.T) {
+		t.Parallel()
+		node := prWatchNode{State: "MERGED", BaseRefName: "yasyf/parent", HeadRefOid: watchHeadA}
+		node.MergeCommit = &struct {
+			OID string `json:"oid"`
+		}{OID: watchHeadB}
+		if snap := prWatchSnapshotOf(4, node, trunk, merged, true, false, queued); snap.landed() {
+			t.Fatalf("snap = %+v, want no landing from a merge into a parent", snap)
+		}
+	})
+	t.Run("a closed pr whose squash is on the trunk lands", func(t *testing.T) {
+		t.Parallel()
+		snap := prWatchSnapshotOf(27949, prWatchNode{State: "CLOSED", HeadRefOid: watchHeadA}, trunk, merged, true, false, queued)
+		if snap.Squash != watchSquash {
+			t.Fatalf("squash = %q", snap.Squash)
+		}
+	})
+	t.Run("a closure graphite cannot answer stays pollable", func(t *testing.T) {
+		t.Parallel()
+		snap := prWatchSnapshotOf(1, prWatchNode{State: "CLOSED", HeadRefOid: watchHeadA}, trunk, merged, false, false, queued)
+		if snap.terminal() {
+			t.Fatalf("snap = %+v, want it left open until the evidence arrives", snap)
+		}
+	})
+	t.Run("a failing rollup with no failing check read is red", func(t *testing.T) {
+		t.Parallel()
+		node := prWatchNode{State: "OPEN", HeadRefOid: watchHeadA}
+		node.Checks.Nodes = append(node.Checks.Nodes, struct {
+			Commit struct {
+				StatusCheckRollup *statusRollup `json:"statusCheckRollup"`
+			} `json:"commit"`
+		}{})
+		node.Checks.Nodes[0].Commit.StatusCheckRollup = &statusRollup{State: "FAILURE"}
+		snap := prWatchSnapshotOf(2, node, trunk, merged, false, false, prWatchSnapshot{})
+		if !reflect.DeepEqual(snap.Failing, []string{"rollup failure"}) {
+			t.Fatalf("failing = %q", snap.Failing)
+		}
+	})
+}
+
+func TestPRWatchRunResumingSettledPRsExitsWithoutPolling(t *testing.T) {
+	t.Parallel()
+	poller := &scriptedPoller{}
+	var out bytes.Buffer
+	var slept []time.Duration
+	run := newTestWatchRun(poller, prWatchOpts{interval: time.Minute, until: prWatchUntilLanded}, &out, &slept)
+	snaps := map[int]prWatchSnapshot{1: {State: "CLOSED", Head: watchHeadA}, 2: {State: "CLOSED", Head: watchHeadA, Squash: watchSquash}}
+
+	err := run.watch(context.Background(), []int{1, 2}, snaps)
+	if err == nil || !strings.Contains(err.Error(), "#1") {
+		t.Fatalf("err = %v, want #1 named", err)
+	}
+	if len(poller.asked) != 0 || len(slept) != 0 {
+		t.Fatalf("asked %v slept %v, want an immediate exit", poller.asked, slept)
+	}
+}

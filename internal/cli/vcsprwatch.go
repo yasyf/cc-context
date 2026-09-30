@@ -154,6 +154,7 @@ type prWatchSource struct {
 type prWatchNode struct {
 	Number         int    `json:"number"`
 	State          string `json:"state"`
+	BaseRefName    string `json:"baseRefName"`
 	HeadRefOid     string `json:"headRefOid"`
 	Mergeable      string `json:"mergeable"`
 	ReviewDecision string `json:"reviewDecision"`
@@ -175,6 +176,7 @@ type prWatchNode struct {
 }
 
 type prWatchHistory struct {
+	Name   string `json:"name"`
 	Target struct {
 		History struct {
 			Nodes []struct {
@@ -186,7 +188,8 @@ type prWatchHistory struct {
 }
 
 type prWatchRefs struct {
-	Nodes []struct {
+	TotalCount int `json:"totalCount"`
+	Nodes      []struct {
 		Name                   string `json:"name"`
 		AssociatedPullRequests struct {
 			Nodes []struct {
@@ -210,19 +213,19 @@ type prWatchResponse struct {
 	Repository map[string]json.RawMessage `json:"repository"`
 }
 
-const prWatchNodeFields = "number state headRefOid mergeable reviewDecision mergeCommit { oid } " +
+const prWatchNodeFields = "number state baseRefName headRefOid mergeable reviewDecision mergeCommit { oid } " +
 	"checks: commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { nodes { __typename " +
 	"... on CheckRun { name conclusion status } ... on StatusContext { context state } } } } } } }"
 
 func prWatchQuery(numbers []int, activity map[int]bool, squashes map[int]string, prefix bool) string {
 	decls := []string{"$owner: String!", "$repo: String!"}
 	var fields strings.Builder
-	fields.WriteString("    trunk: defaultBranchRef { target { ... on Commit { history(first: 100) { nodes { oid messageHeadline } } } } }\n")
+	fields.WriteString("    trunk: defaultBranchRef { name target { ... on Commit { history(first: 100) { nodes { oid messageHeadline } } } } }\n")
 	if prefix {
 		// associatedPullRequests answers empty under any refPrefix deeper than
 		// refs/heads/, so the lane's prefix goes in query and is re-checked.
 		decls = append(decls, "$lanePrefix: String!")
-		fields.WriteString("    lane: refs(refPrefix: \"refs/heads/\", query: $lanePrefix, first: 100) { nodes { name associatedPullRequests(states: [OPEN], first: 5) { nodes { number } } } }\n")
+		fields.WriteString("    lane: refs(refPrefix: \"refs/heads/\", query: $lanePrefix, first: 100) { totalCount nodes { name associatedPullRequests(states: [OPEN], first: 5) { nodes { number } } } }\n")
 	}
 	for i, number := range numbers {
 		decls = append(decls, fmt.Sprintf("$p%d: Int!", i))
@@ -280,6 +283,9 @@ func (s prWatchSource) poll(ctx context.Context, numbers []int, prev map[int]prW
 		var refs prWatchRefs
 		if err := decodeRaw(resp.Repository["lane"], &refs); err != nil {
 			return prWatchTick{}, err
+		}
+		if refs.TotalCount > len(refs.Nodes) {
+			_, _ = fmt.Fprintf(s.warn, "pr watch: %d branches match %s; only the first %d are read\n", refs.TotalCount, s.prefix, len(refs.Nodes))
 		}
 		for _, ref := range refs.Nodes {
 			if !strings.HasPrefix(ref.Name, s.prefix) {
@@ -349,24 +355,21 @@ func prWatchSnapshotOf(number int, node prWatchNode, trunk prWatchHistory, info 
 				snap.Failing = append(snap.Failing, check.Name)
 			}
 		}
+		if len(snap.Failing) == 0 && (rollup.State == "FAILURE" || rollup.State == "ERROR") {
+			snap.Failing = []string{"rollup " + strings.ToLower(rollup.State)}
+		}
 		slices.Sort(snap.Failing)
 	}
-	switch {
-	case node.State == "MERGED" && node.MergeCommit != nil:
-		snap.Squash = node.MergeCommit.OID
-	case node.State == "CLOSED":
-		subject := prSquashSubject(number)
-		for _, commit := range trunk.Target.History.Nodes {
-			if subject.MatchString(commit.MessageHeadline) {
-				snap.Squash = commit.OID
-				break
-			}
-		}
-		if snap.Squash == "" && squashOnTrunk {
-			snap.Squash = info.MergeCommitSha
+	if node.State != "OPEN" {
+		snap.Squash = prWatchSquash(number, node, trunk, info, squashOnTrunk)
+		if snap.Squash == "" && !known {
+			snap.State = prev.State
 		}
 	}
-	if !known {
+	// Graphite records a merge before GitHub closes the pull request, and its
+	// queue flag drops with it, so an open pull request Graphite calls merged
+	// keeps its queue state until GitHub catches up.
+	if !known || info.State != gtapi.PROpen && node.State == "OPEN" {
 		snap.Queued, snap.Evicted = prev.Queued, prev.Evicted
 		return snap
 	}
@@ -382,6 +385,22 @@ func prWatchSnapshotOf(number int, node prWatchNode, trunk prWatchHistory, info 
 	snap.Queued = report.Queue == prQueueQueued
 	snap.Evicted = mqPlain(report.Evicted)
 	return snap
+}
+
+func prWatchSquash(number int, node prWatchNode, trunk prWatchHistory, info gtapi.PullRequestInfo, squashOnTrunk bool) string {
+	if node.State == "MERGED" && node.MergeCommit != nil && node.BaseRefName == trunk.Name {
+		return node.MergeCommit.OID
+	}
+	subject := prSquashSubject(number)
+	for _, commit := range trunk.Target.History.Nodes {
+		if subject.MatchString(commit.MessageHeadline) {
+			return commit.OID
+		}
+	}
+	if squashOnTrunk {
+		return info.MergeCommitSha
+	}
+	return ""
 }
 
 func decodeRaw(raw json.RawMessage, into any) error {
@@ -500,6 +519,9 @@ func (r prWatchRun) watch(ctx context.Context, numbers []int, snaps map[int]prWa
 	fails := 0
 	var resetAt time.Time
 	for {
+		if done, err := r.reached(watched, snaps); done || err != nil {
+			return err
+		}
 		open := slices.DeleteFunc(slices.Clone(watched), func(n int) bool { return snaps[n].terminal() })
 		if len(open) == 0 && r.opts.prefix == "" {
 			if r.opts.once {

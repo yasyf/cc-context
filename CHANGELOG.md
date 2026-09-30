@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ccx vcs pr watch` streams pull request transitions until they land.**
+  Events are `queued`, `ejected`, `conflicting`, `red`, `green`, `approved`,
+  `approval-dismissed`, `new-head`, `landed`, and `closed-without-squash`.
+  Each poll uses one batched GraphQL query, including rate limits, plus one
+  Graphite request to the queue source `ccx vcs pr status` reads. A low
+  budget emits one `rate-limited until <t>` line, then sleeps to the reset.
+  `--until landed` exits `0` when all land, `1` if any close without landing;
+  `closed` exits `0` once all close; `never` keeps watching. `--stack` selects
+  the current Graphite downstack; `--lane-prefix` re-reads matching branches
+  each poll so new PRs join. `--state` with `--once` persists snapshots for a
+  caller's own polling loop. Line-per-event output feeds Claude Code's
+  Monitor. Forge-AI/monorepo #27949 was ejected from the Graphite merge queue
+  on a merge conflict, and nobody polling every 5–30 minutes noticed.
+
 - **`# ccx:raw` runs a git, jj, or gt command as written.** The capt-hook VCS
   guards rewrite a bare `gt restack` to `ccx vcs stack restack` and
   whole-patch `git diff`, `git show`, `jj diff`, and `git log -p` calls to
