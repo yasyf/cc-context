@@ -227,6 +227,22 @@ status_draft_query() {
 	printf 'query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}' "$decls" "$fields"
 }
 
+# stack_query is internal/cli/stackprs.go's stackPRGraphQL, the batched read
+# ccx vcs stack rebase makes before it falls back to REST.
+stack_pr_fields="number url title body isCrossRepository baseRefName headRefOid mergeable labels(first: 20) { nodes { name } } $landing_fields"
+
+stack_query() {
+	local n="$1" decls fields i
+	decls='$owner: String!, $repo: String!'
+	fields=''
+	for ((i = 0; i < n; i++)); do
+		decls="$decls, \$p$i: String!"
+		fields="$fields    p$i: pullRequests(headRefName: \$p$i, first: 10, orderBy: {field: CREATED_AT, direction: DESC}) { totalCount nodes { $stack_pr_fields } }
+"
+	done
+	printf 'query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}' "$decls" "$fields"
+}
+
 reviews_query() {
 	local kind="$1" n="$2" decls fields i decl
 	case "$kind" in
@@ -313,6 +329,16 @@ record rest-pulls-head-draft api "$(rest_pulls_head "repos/$foreign_repo" "$draf
 record rest-pull-open api "repos/$foreign_repo/pulls/$open_pr"
 record rest-issue-closed-by api "repos/{owner}/{repo}/issues/$own_closed_pr" --jq '.closed_by.login // ""'
 record rest-issue-comments api --paginate --slurp "repos/$foreign_repo/issues/$open_pr/comments?per_page=100"
+
+### ccx vcs stack rebase — the batched GraphQL read ahead of the REST one
+
+record_http stack-graphql-own graphql \
+	-F "owner=${own_repo%%/*}" -F "repo=${own_repo##*/}" \
+	-f "p0=$own_branch_one" -f "p1=$own_branch_two" -f "p2=$own_branch_closed" -f "p3=no-such-branch" \
+	-f "query=$(stack_query 4)"
+record_http stack-graphql-foreign graphql \
+	-F "owner=$foreign_owner" -F "repo=$foreign_name" \
+	-f "p0=$open_pr_branch" -f "p1=$draft_pr_branch" -f "query=$(stack_query 2)"
 
 ### ship's CI watch — gh run list / run view / run view --log-failed
 
