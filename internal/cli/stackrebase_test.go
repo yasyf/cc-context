@@ -76,6 +76,69 @@ func stackAdvanceTrunk(t *testing.T, f *vcstest.Fixture, file, content string) {
 	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
 }
 
+func TestStackRemoteHeadsSkipsMatchingTrackingRefs(t *testing.T) {
+	base := t.TempDir()
+	remote := filepath.Join(base, "remote")
+	local := filepath.Join(base, "local")
+	mustRun(t, nil, base, "git", "init", "--bare", "-q", remote)
+	mustRun(t, nil, base, "git", "clone", "-q", remote, local)
+	mustRun(t, nil, local, "git", "config", "user.email", "test@example.com")
+	mustRun(t, nil, local, "git", "config", "user.name", "Test")
+	mustRun(t, nil, local, "git", "config", "commit.gpgsign", "false")
+	if err := os.WriteFile(filepath.Join(local, "first.txt"), []byte("first\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, nil, local, "git", "add", "first.txt")
+	mustRun(t, nil, local, "git", "commit", "-qm", "first")
+	mustRun(t, nil, local, "git", "push", "-q", "origin", "HEAD:refs/heads/feature")
+	mustRun(t, nil, local, "git", "fetch", "-q", "origin", "+refs/heads/feature:refs/remotes/origin/feature")
+	before := strings.TrimSpace(mustRun(t, nil, local, "git", "rev-parse", "refs/remotes/origin/feature"))
+	trace := filepath.Join(base, "unchanged.json")
+	t.Setenv("GIT_TRACE2_EVENT", trace)
+	heads, err := stackRemoteHeads(context.Background(), render.Dir(local), "origin", []string{"feature"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if heads["feature"] != before {
+		t.Fatalf("remote head = %s, want %s", heads["feature"], before)
+	}
+	events, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(events, []byte(`"name":"fetch"`)) {
+		t.Fatal("unchanged remote head triggered fetch")
+	}
+	upstream := filepath.Join(base, "upstream")
+	mustRun(t, nil, base, "git", "clone", "-q", "--branch", "feature", remote, upstream)
+	mustRun(t, nil, upstream, "git", "config", "user.email", "test@example.com")
+	mustRun(t, nil, upstream, "git", "config", "user.name", "Test")
+	mustRun(t, nil, upstream, "git", "config", "commit.gpgsign", "false")
+	if err := os.WriteFile(filepath.Join(upstream, "second.txt"), []byte("second\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, nil, upstream, "git", "add", "second.txt")
+	mustRun(t, nil, upstream, "git", "commit", "-qm", "second")
+	mustRun(t, nil, upstream, "git", "push", "-q", "origin", "feature")
+	want := strings.TrimSpace(mustRun(t, nil, upstream, "git", "rev-parse", "HEAD"))
+	trace = filepath.Join(base, "changed.json")
+	t.Setenv("GIT_TRACE2_EVENT", trace)
+	heads, err = stackRemoteHeads(context.Background(), render.Dir(local), "origin", []string{"feature"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if heads["feature"] != want {
+		t.Fatalf("advanced remote head = %s, want %s", heads["feature"], want)
+	}
+	events, err = os.ReadFile(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(events, []byte(`"name":"fetch"`)) {
+		t.Fatal("advanced remote head did not trigger fetch")
+	}
+}
+
 func stackOnto(t *testing.T, f *vcstest.Fixture, ancestor, branch string) bool {
 	t.Helper()
 	ok, err := gitIsAncestor(f.Context(), render.Dir(f.Dir), "test", ancestor, branch)

@@ -1241,11 +1241,6 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branch
 		return nil, fmt.Errorf("stack rebase: git ls-remote %s: %w", remote, err)
 	}
 	heads := map[string]string{}
-	fetch := []string{"--quiet", "--no-tags", "--no-write-fetch-head"}
-	if negotiationTip != "" {
-		fetch = append(fetch, "--negotiation-tip="+negotiationTip)
-	}
-	fetch = append(fetch, remote)
 	for line := range strings.Lines(out) {
 		sha, ref, ok := strings.Cut(strings.TrimSpace(line), "\t")
 		if !ok {
@@ -1253,9 +1248,39 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branch
 		}
 		name := strings.TrimPrefix(ref, "refs/heads/")
 		heads[name] = sha
-		fetch = append(fetch, "+"+ref+":refs/remotes/"+remote+"/"+name)
 	}
-	if len(heads) > 0 {
+	if len(heads) == 0 {
+		return heads, nil
+	}
+	names := slices.Sorted(maps.Keys(heads))
+	refs := make([]string, 0, len(names))
+	for _, name := range names {
+		refs = append(refs, "refs/remotes/"+remote+"/"+name)
+	}
+	localOut, err := render.RunCLIStdin(ctx, dir, "git", []string{"for-each-ref", "--format=%(refname) %(objectname)", "--stdin"}, []byte(strings.Join(refs, "\n")+"\n"))
+	if err != nil {
+		return nil, fmt.Errorf("stack rebase: git for-each-ref: %w", err)
+	}
+	local := map[string]string{}
+	for line := range strings.Lines(localOut) {
+		ref, sha, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if ok {
+			local[ref] = sha
+		}
+	}
+	fetch := []string{"--quiet", "--no-tags", "--no-write-fetch-head"}
+	if negotiationTip != "" {
+		fetch = append(fetch, "--negotiation-tip="+negotiationTip)
+	}
+	fetch = append(fetch, remote)
+	baseLen := len(fetch)
+	for _, name := range names {
+		ref := "refs/remotes/" + remote + "/" + name
+		if local[ref] != heads[name] {
+			fetch = append(fetch, "+refs/heads/"+name+":"+ref)
+		}
+	}
+	if len(fetch) > baseLen {
 		if err := gitFetch(ctx, dir, fetch...); err != nil {
 			return nil, fmt.Errorf("stack rebase: git fetch %s: %w", remote, err)
 		}
