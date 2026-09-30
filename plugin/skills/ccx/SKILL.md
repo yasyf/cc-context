@@ -349,14 +349,21 @@ wider than the work is the tell.
 `ccx vcs pr status <n>...` answers the narrower question about any pull request
 by number, from any checkout, and `-R owner/name` names another repo. Pass all
 numbers in one invocation, such as `ccx vcs pr status 25655 25665 25652`;
-the command fetches their statuses together and prints one line per PR in input
+the command reads their statuses together and prints one line per PR in input
 order. Do not run it in a shell loop or truncate its output with `head`. It prints
-`queued`, `not queued`, or `landed`. It reads Graphite's own record, the one gt reads, so a
-PR enqueued from the Graphite web UI reads `queued` with no merge label on it,
-and a stale merge label the queue dropped reads `not queued`. `landed` means the
-squash Graphite recorded is reachable from the base branch on GitHub, or from
-the default branch once that base is deleted, as a stacked PR's is after its
-parent lands.
+`queued`, `not queued`, `evicted`, or `landed`. It reads Graphite's own record,
+so a PR enqueued from the Graphite web UI reads `queued` with no merge label
+on it, and a stale merge label the queue dropped reads `not queued`. `landed` means the
+squash Graphite recorded is reachable from the base branch on GitHub or from
+the default branch.
+
+`pr status`, `pr watch`, and `pr state` share cached reads across processes
+for 30 seconds per repository. Repeated reads within that interval do not
+poll again; an uncached PR waits out the interval. `pr status` waits through
+rate limits for up to ten minutes. `ccx vcs pr state` prints PR records and
+open PRs found by repeatable `--lane-prefix` flags as one JSON object. When a
+poll is rate-limited, it fails naming the next probe unless `--wait` allows
+waiting.
 
 `ccx vcs guidelines` (alias
 `contributing`) fetches and caches the repo's PR templates, `CONTRIBUTING.md`, code
@@ -367,7 +374,8 @@ template exactly:
 ccx vcs info                                     # which lane a ship would take, and why
 ccx vcs status                                   # every branch, its PR, and what blocks it
 ccx vcs status --json                            # the same report as a structure
-ccx vcs pr status 123 124                         # queued, not queued, or landed, per PR
+ccx vcs pr status 123 124                         # queued, not queued, evicted, or landed, per PR
+ccx vcs pr state 123 124 --lane-prefix yasyf/work/  # shared cache records and lane PRs, as JSON
 ccx vcs guidelines                               # PR templates + contribution rules, verbatim
 ```
 

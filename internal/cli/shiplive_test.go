@@ -54,6 +54,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	prStateRoot = func() (string, error) { return filepath.Join(scratch, "prstate"), nil }
 	code := m.Run()
 	_ = os.RemoveAll(scratch)
 	vcstest.Cleanup()

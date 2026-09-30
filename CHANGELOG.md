@@ -20,12 +20,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   untracked branches, and `--to` with `--all-lanes` are refused; `restack`
   accepts the flag only on the Graphite lane. Runs without `--to` are unchanged.
 
+- **`ccx vcs pr state` prints shared pull request records as one JSON object.**
+  Pass PR numbers, repeatable `--lane-prefix` values, or both; each lane's
+  result includes its open PR numbers and their records in the same read.
+  `--repo owner/name` selects another repository. If a read needs to poll
+  while GitHub is rate-limiting requests, it fails naming the next probe;
+  `--wait 10m` allows waiting through probes for up to ten minutes.
+
+- **Pull request readers share one cache per repository across processes.**
+  `internal/prstate` stores it at
+  `~/Library/Caches/cc-context/prstate/<owner>/<repo>/state.json` on macOS,
+  using `os.UserCacheDir` and ignoring `$CLAUDE_PLUGIN_DATA` so plugin and
+  shell processes share it. A reader needing fresh data polls under
+  a file lock for all PRs leased in the last 15 minutes. Other readers reuse
+  records younger than 30 seconds; a read needing an uncached PR waits out
+  the rest of that interval. Cached PRs with a confirmed landing stay out
+  of later polls. On 2026-09-30, GitHub applied secondary burst limits to this
+  machine three times while `pr watch`, `pr status`, `ledger.py` refresh and
+  watch, and hand-written `gh` loops spent the same user's budget independently.
+
 - **`ccx vcs pr watch` streams pull request transitions until they land.**
   Events are `queued`, `ejected`, `conflicting`, `red`, `green`, `approved`,
   `approval-dismissed`, `new-head`, `landed`, and `closed-without-squash`.
-  Each poll uses one batched GraphQL query, including rate limits, plus one
-  Graphite request to the queue source `ccx vcs pr status` reads. A low
-  budget emits one `rate-limited until <t>` line, then sleeps to the reset.
+  Reads use the shared pull request cache, including its rate-limit backoff.
   `--until landed` exits `0` when all land, `1` if any close without landing;
   `closed` exits `0` once all close; `never` keeps watching. `--stack` selects
   the current Graphite downstack; `--lane-prefix` re-reads matching branches
@@ -68,6 +85,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stderr tail and commits nothing. `--dry-run` names, per branch, the
   commands a conflict runs. No git config, hook, or merge driver is
   involved.
+
+### Changed
+
+- **`ccx vcs pr watch` and `ccx vcs pr status` read through the shared cache.**
+  A poll fetches Graphite's `pull-request-info` once for the leased PRs and
+  batches GitHub GraphQL reads in chunks of 40 PRs. Newly discovered lane PRs
+  get a follow-up batch within the same read. `pr status` gets labels,
+  merge activity, squash comparisons, and conflict evidence from that poll,
+  removing its separate REST label listings, comment reads, and per-PR reads.
+  A missing PR is dropped from the batch and reported by number.
+
+- **Rate-limit backoff is shared, and a cheap probe checks for recovery.**
+  After a `403`/`429` rate-limit response, the next probe waits for the delay
+  GitHub names capped at two minutes, or one minute if no wait is named.
+  Each refused probe uses the same rule; a successful probe resumes
+  polling. A GraphQL quota below 100 waits for its reset. `pr watch` prints
+  `rate-limited until <next probe>` and sleeps until then; `pr status` waits
+  through probes for up to ten minutes.
 
 ### Fixed
 

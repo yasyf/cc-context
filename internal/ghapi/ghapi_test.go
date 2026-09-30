@@ -395,3 +395,51 @@ func TestResolveRef(t *testing.T) {
 		})
 	}
 }
+
+func TestUnwaitingReturnsAShortRetryAfterAtOnce(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = fmt.Fprint(w, `{"message":"You have exceeded a secondary rate limit."}`)
+	}))
+	t.Cleanup(ts.Close)
+
+	_, err := Paginate[item](context.Background(), testClient(ts.URL, fixedToken("tok")).Unwaiting(), "/repos/o/r/pulls/3")
+	wait, limited := RateLimited(err)
+	if !limited || wait != 5*time.Second {
+		t.Fatalf("RateLimited(%v) = (%s, %v), want (5s, true)", err, wait, limited)
+	}
+	if n := requests.Load(); n != 1 {
+		t.Errorf("requests = %d, want 1", n)
+	}
+}
+
+func TestRateLimitedTypesEachRefusal(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		err     error
+		wait    time.Duration
+		limited bool
+	}{
+		{name: "secondary limit without headers", err: statusError("GET", "u", http.StatusForbidden, http.Header{}, []byte(`{"message":"You have exceeded a secondary rate limit"}`), time.Now()), limited: true},
+		{name: "429 without headers", err: statusError("GET", "u", http.StatusTooManyRequests, http.Header{}, nil, time.Now()), limited: true},
+		{name: "Retry-After past the in-call cap", err: statusError("GET", "u", http.StatusTooManyRequests, http.Header{"Retry-After": {"600"}}, nil, time.Now()), wait: 10 * time.Minute, limited: true},
+		{name: "permission 403", err: statusError("GET", "u", http.StatusForbidden, http.Header{}, []byte(`{"message":"Resource not accessible by integration"}`), time.Now())},
+		{name: "graphql RATE_LIMITED", err: &GraphQLError{Messages: []GraphQLMessage{{Type: "RATE_LIMITED", Message: "API rate limit exceeded"}}}, limited: true},
+		{name: "graphql NOT_FOUND", err: &GraphQLError{Messages: []GraphQLMessage{{Type: "NOT_FOUND"}}}},
+		{name: "transport failure", err: errors.New("dial tcp: refused")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			wait, limited := RateLimited(tt.err)
+			if wait != tt.wait || limited != tt.limited {
+				t.Errorf("RateLimited = (%s, %v), want (%s, %v)", wait, limited, tt.wait, tt.limited)
+			}
+		})
+	}
+}

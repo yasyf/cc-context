@@ -152,8 +152,9 @@ Each command is a token-bounded stand-in for a primitive an agent would otherwis
 | `ccx code read <file> --section A-B` | Read a line range or a `## Heading` instead of the whole file |
 | `ccx vcs diff [uncommitted\|staged\|<ref>]` | VCS-aware structural diff; defaults to uncommitted |
 | `ccx vcs status` | Every branch of the stack, its pull request, and what blocks each from landing |
-| `ccx vcs pr status <n>...` | Fetch several PR statuses together, in input order; reports queued, not queued, or landed for each |
+| `ccx vcs pr status <n>...` | Read several PR statuses from the shared 30-second cache, in input order; reports queued, not queued, evicted, or landed for each |
 | `ccx vcs pr watch <n>...` | Stream one line per transition (queued, ejected, conflicting, red, green, approved, landed...) until PRs land; `--stack` / `--lane-prefix` |
+| `ccx vcs pr state [<n>...]` | Print shared PR records and `--lane-prefix` discoveries as one JSON object; `--wait` allows waiting out rate limits |
 | `ccx web outline <url>` | Heading tree of a web page with stable `§` section refs |
 | `ccx web read <url> --section <ref>` | Read one section of a page, with prev/next nav, instead of the whole thing |
 | `ccx web search <url> "<question>"` | Ask a page a question; top-k relevant chunks with `§` cites |

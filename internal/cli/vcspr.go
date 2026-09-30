@@ -3,8 +3,9 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"maps"
+	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/internal/gtapi"
+	"github.com/yasyf/cc-context/internal/prstate"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -44,131 +46,20 @@ type prQueueReport struct {
 	Conflicting bool         `json:"conflicting,omitempty"`
 }
 
-type prCommitCandidate struct {
-	number int
-	base   string
-	sha    string
-}
+// prStateRoot is where every ccx process keeps the shared pull request cache;
+// TestMain points it at a scratch directory.
+var prStateRoot = prstate.DefaultRoot
 
-type prComparisonGroup struct {
-	base       string
-	candidates []prCommitCandidate
-}
-
-// prCommitsOnBase names the branch each candidate's squash is reachable from,
-// empty when it is on none. A stacked pull request's recorded base is deleted
-// once its parent lands, and the queue lands the pull request on trunk, so the
-// candidates of a base GitHub no longer has are compared again against the
-// default branch.
-func prLandingBranches(ctx context.Context, repo string, candidates []prCommitCandidate) (map[int]string, error) {
-	owner, name, _ := strings.Cut(repo, "/")
-	groups := make([]prComparisonGroup, 0)
-	groupIndex := make(map[string]int)
-	for _, candidate := range candidates {
-		index, ok := groupIndex[candidate.base]
-		if !ok {
-			index = len(groups)
-			groupIndex[candidate.base] = index
-			groups = append(groups, prComparisonGroup{base: candidate.base})
-		}
-		groups[index].candidates = append(groups[index].candidates, candidate)
-	}
-	argv := []string{"api", "graphql", "-f", "owner=" + owner, "-f", "repo=" + name}
-	for i, group := range groups {
-		argv = append(argv, "-f", fmt.Sprintf("b%d=refs/heads/%s", i, group.base))
-		for j, candidate := range group.candidates {
-			argv = append(argv, "-f", fmt.Sprintf("s%d_%d=%s", i, j, candidate.sha))
-		}
-	}
-	argv = append(argv, "-f", "query="+prCompareQuery(groups))
-	out, err := render.RunCLI(ctx, render.Ambient, "gh", argv)
-	if err != nil {
-		return nil, fmt.Errorf("pr status: gh api graphql: %w", err)
-	}
-	var resp struct {
-		Data struct {
-			Repository map[string]json.RawMessage `json:"repository"`
-		} `json:"data"`
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
-	}
-	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		return nil, fmt.Errorf("pr status: parse gh api graphql: %w", err)
-	}
-	if len(resp.Errors) > 0 {
-		return nil, fmt.Errorf("pr status: gh api graphql: %s", resp.Errors[0].Message)
-	}
-	var trunk struct {
-		Name string `json:"name"`
-	}
-	if raw, ok := resp.Data.Repository["defaultBranchRef"]; ok {
-		if err := json.Unmarshal(raw, &trunk); err != nil {
-			return nil, fmt.Errorf("pr status: parse gh api graphql: %w", err)
-		}
-	}
-	landedOn := make(map[int]string, len(candidates))
-	var gone []prCommitCandidate
-	for i, group := range groups {
-		var ref map[string]*struct {
-			Status string `json:"status"`
-		}
-		if err := json.Unmarshal(resp.Data.Repository[fmt.Sprintf("b%d", i)], &ref); err != nil {
-			return nil, fmt.Errorf("pr status: parse gh api graphql: %w", err)
-		}
-		if ref == nil {
-			if trunk.Name == "" || trunk.Name == group.base {
-				return nil, fmt.Errorf("pr status: base branch %q not found", group.base)
-			}
-			for _, candidate := range group.candidates {
-				candidate.base = trunk.Name
-				gone = append(gone, candidate)
-			}
-			continue
-		}
-		for j, candidate := range group.candidates {
-			comparison := ref[fmt.Sprintf("c%d", j)]
-			if comparison == nil {
-				return nil, fmt.Errorf("pr status: compare %s with %s: no result", candidate.sha, group.base)
-			}
-			switch comparison.Status {
-			case "BEHIND", "IDENTICAL":
-				landedOn[candidate.number] = group.base
-			case "AHEAD", "DIVERGED":
-				landedOn[candidate.number] = ""
-			default:
-				return nil, fmt.Errorf("pr status: compare %s with %s: unknown status %q", candidate.sha, group.base, comparison.Status)
-			}
-		}
-	}
-	if len(gone) == 0 {
-		return landedOn, nil
-	}
-	onTrunk, err := prLandingBranches(ctx, repo, gone)
+func openPRState(ctx context.Context, repo string, warn io.Writer) (*prstate.Store, error) {
+	src, err := prstate.NewGitHub(reviewsAPI(), gtAPI(ctx), repo, warn)
 	if err != nil {
 		return nil, err
 	}
-	maps.Copy(landedOn, onTrunk)
-	return landedOn, nil
-}
-
-// prCommitsOnBase is prLandingBranches; tests replace it to keep the compare
-// off the network.
-var prCommitsOnBase = prLandingBranches
-
-func prCompareQuery(groups []prComparisonGroup) string {
-	decls := []string{"$owner: String!", "$repo: String!"}
-	var fields strings.Builder
-	for i, group := range groups {
-		decls = append(decls, fmt.Sprintf("$b%d: String!", i))
-		fmt.Fprintf(&fields, "    b%d: ref(qualifiedName: $b%d) {\n", i, i)
-		for j := range group.candidates {
-			decls = append(decls, fmt.Sprintf("$s%d_%d: String!", i, j))
-			fmt.Fprintf(&fields, "      c%d: compare(headRef: $s%d_%d) { status }\n", j, i, j)
-		}
-		fields.WriteString("    }\n")
+	root, err := prStateRoot()
+	if err != nil {
+		return nil, err
 	}
-	return fmt.Sprintf("query(%s) {\n  repository(owner: $owner, name: $repo) {\n    defaultBranchRef { name }\n%s  }\n}", strings.Join(decls, ", "), fields.String())
+	return prstate.Open(root, src)
 }
 
 type vcsPRStatusOpts struct {
@@ -183,7 +74,7 @@ func newVcsPRCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE:  groupHelp,
 	}
-	cmd.AddCommand(newVcsPRStatusCmd(), newVcsPRWatchCmd())
+	cmd.AddCommand(newVcsPRStatusCmd(), newVcsPRWatchCmd(), newVcsPRStateCmd())
 	return cmd
 }
 
@@ -207,12 +98,17 @@ Graphite's record lags an eviction, so queued also needs the pull request's
 merge activity comment to agree: an eviction or dequeue after its last
 admission settles it. An evicted pull request names the queue's reason and
 time, and reads conflicting when GitHub reports its branch dirty. The comment
-is read only for a pull request Graphite holds in the queue or one carrying a
-merge label, so the rest cost no GitHub request of their own.
+counts only for a pull request Graphite holds in the queue or one carrying a
+merge label.
 
 Landed means the squash commit Graphite recorded is reachable from the base
-branch on GitHub, or from the default branch once that base is deleted, as a
-stacked pull request's is after its parent lands. The queue closes what it
+branch on GitHub, or from the default branch, as a stacked pull request's is
+once its parent lands.
+
+Every read goes through the machine-wide pull request cache ccx vcs pr watch
+shares, polled at most once per 30 seconds per repository. While GitHub
+rate-limits the machine the command waits for the next probe, up to ten
+minutes. The queue closes what it
 lands, so a landed pull request reads CLOSED with a null mergedAt on GitHub;
 the squash is what settles it.
 
@@ -226,6 +122,79 @@ admission does not move it: the queue lands that commit and drops the rest.`,
 	cmd.Flags().BoolVar(&o.json, "json", false, "emit the report as JSON")
 	cmd.Flags().StringVarP(&o.repo, "repo", "R", "", "the owner/name repository (default: the current checkout's)")
 	return cmd
+}
+
+type prStateReport struct {
+	Repo     string             `json:"repo"`
+	PolledAt time.Time          `json:"polledAt"`
+	Trunk    string             `json:"trunk"`
+	Lanes    map[string][]int   `json:"lanes"`
+	PRs      map[int]prstate.PR `json:"prs"`
+}
+
+func newVcsPRStateCmd() *cobra.Command {
+	var repo string
+	var prefixes []string
+	var wait time.Duration
+	cmd := &cobra.Command{
+		Use:   "state [<number>...]",
+		Short: "Print the shared cache's record of each pull request and lane prefix as JSON",
+		Long: `Print the machine-wide pull request cache's record of each named pull request,
+and of each open pull request on a branch under a --lane-prefix, as one JSON
+object. Records are at most 30 seconds old; a read of anything older polls
+GitHub once for every pull request any process on the machine watches in the
+repository, the same poll ccx vcs pr watch and ccx vcs pr status share.
+
+While GitHub rate-limits the machine the command fails naming the next probe,
+unless --wait allows sitting it out.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runVcsPRState(cmd, args, repo, prefixes, wait)
+		},
+	}
+	cmd.Flags().StringVarP(&repo, "repo", "R", "", "the owner/name repository (default: the current checkout's)")
+	cmd.Flags().StringArrayVar(&prefixes, "lane-prefix", nil, "also list the open pull requests on branches under this prefix; repeatable")
+	cmd.Flags().DurationVar(&wait, "wait", 0, "how long to sit out a GitHub rate limit before failing")
+	return cmd
+}
+
+func runVcsPRState(cmd *cobra.Command, args []string, repo string, prefixes []string, wait time.Duration) error {
+	ctx := cmd.Context()
+	numbers, err := prNumbers(args)
+	if err != nil {
+		return fmt.Errorf("pr state: %w", err)
+	}
+	if len(numbers) == 0 && len(prefixes) == 0 {
+		return errors.New("pr state: name pull requests or --lane-prefix")
+	}
+	if repo == "" {
+		looked, err := vcs.LookupRepo(ctx, render.Dir(workingDir(ctx)), false)
+		if err != nil {
+			return fmt.Errorf("pr state: name the repository with --repo: %w", err)
+		}
+		repo = looked.NameWithOwner
+	}
+	store, err := openPRState(ctx, repo, cmd.ErrOrStderr())
+	if err != nil {
+		return fmt.Errorf("pr state: %w", err)
+	}
+	st, err := readPRStateWaiting(ctx, store, prstate.Want{PRs: numbers, Prefixes: prefixes}, wait)
+	if err != nil {
+		return fmt.Errorf("pr state: %w", err)
+	}
+	report := prStateReport{Repo: repo, PolledAt: st.PolledAt, Trunk: st.Trunk.Name, Lanes: map[string][]int{}, PRs: map[int]prstate.PR{}}
+	for _, prefix := range prefixes {
+		report.Lanes[prefix] = st.Lanes[prefix].PRs
+		numbers = append(numbers, st.Lanes[prefix].PRs...)
+	}
+	for _, number := range numbers {
+		report.PRs[number] = st.PRs[number]
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		return fmt.Errorf("pr state: encode: %w", err)
+	}
+	cmd.Println(string(data))
+	return nil
 }
 
 func runVcsPRStatus(cmd *cobra.Command, args []string, o vcsPRStatusOpts) error {
@@ -246,7 +215,7 @@ func runVcsPRStatus(cmd *cobra.Command, args []string, o vcsPRStatusOpts) error 
 		}
 		repo = looked.NameWithOwner
 	}
-	reports, err := collectPRQueue(ctx, repo, numbers)
+	reports, err := collectPRQueue(ctx, repo, numbers, cmd.ErrOrStderr())
 	if err != nil {
 		return err
 	}
@@ -262,105 +231,58 @@ func runVcsPRStatus(cmd *cobra.Command, args []string, o vcsPRStatusOpts) error 
 	return nil
 }
 
-func collectPRQueue(ctx context.Context, repo string, numbers []int) ([]prQueueReport, error) {
-	owner, name, ok := strings.Cut(repo, "/")
-	if !ok {
-		return nil, fmt.Errorf("pr status: malformed repository name %q", repo)
-	}
-	infos, err := gtAPI(ctx).PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{
-		RepoOwner:  owner,
-		RepoName:   name,
-		PRNumbers:  numbers,
-		Consistent: true,
-		Callsite:   "ccx",
-	})
+func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Writer) ([]prQueueReport, error) {
+	store, err := openPRState(ctx, repo, warn)
 	if err != nil {
-		return nil, fmt.Errorf("pr status: graphite: %w", err)
+		return nil, fmt.Errorf("pr status: %w", err)
 	}
-	byNumber := make(map[int]gtapi.PullRequestInfo, len(infos))
-	for _, info := range infos {
-		byNumber[info.PRNumber] = info
-	}
-	candidates := make([]prCommitCandidate, 0, len(numbers))
-	for _, number := range numbers {
-		info, ok := byNumber[number]
-		if !ok {
-			return nil, fmt.Errorf("pr status: graphite has no record of %s#%d", repo, number)
-		}
-		if info.MergeCommitSha != "" {
-			candidates = append(candidates, prCommitCandidate{number: number, base: info.BaseRefName, sha: info.MergeCommitSha})
-		}
-	}
-	landedOn := map[int]string{}
-	if len(candidates) > 0 {
-		landedOn, err = prCommitsOnBase(ctx, repo, candidates)
-		if err != nil {
-			return nil, err
-		}
-	}
-	pending := func(number int) bool { return landedOn[number] == "" && byNumber[number].State == gtapi.PROpen }
-	var labelled map[int]bool
-	if slices.ContainsFunc(numbers, func(number int) bool { return pending(number) && !prInGraphiteMq(byNumber[number]) }) {
-		if labelled, err = prQueueLabelled(ctx, repo); err != nil {
-			return nil, err
-		}
+	st, err := readPRStateWaiting(ctx, store, prstate.Want{PRs: numbers}, prStatusRateLimitWait)
+	if err != nil {
+		return nil, fmt.Errorf("pr status: %w", err)
 	}
 	reports := make([]prQueueReport, 0, len(numbers))
 	for _, number := range numbers {
-		info := byNumber[number]
+		pr := st.PRs[number]
+		if pr.Graphite == nil {
+			return nil, fmt.Errorf("pr status: graphite has no record of %s#%d", repo, number)
+		}
+		info := *pr.Graphite
+		landedOn := ""
+		switch {
+		case slices.Contains(pr.SquashOn, info.BaseRefName):
+			landedOn = info.BaseRefName
+		case len(pr.SquashOn) > 0:
+			landedOn = pr.SquashOn[0]
+		}
 		var activity string
-		if pending(number) && (prInGraphiteMq(info) || labelled[number]) {
-			activity, err = prMergeActivity(ctx, render.Ambient, "repos/"+repo, number, prStatusRateLimitWait)
-			if err != nil {
-				return nil, fmt.Errorf("pr status: %w", err)
-			}
+		if landedOn == "" && info.State == gtapi.PROpen && (prInGraphiteMq(info) || pr.QueueLabelled()) {
+			activity = pr.Activity
 		}
-		r := classifyPRQueue(info, landedOn[number], activity)
-		if r.Queue == prQueueEvicted {
-			if r.Conflicting, err = prConflicting(ctx, repo, number); err != nil {
-				return nil, err
-			}
-		}
+		r := classifyPRQueue(info, landedOn, activity)
+		r.Conflicting = r.Queue == prQueueEvicted && pr.MergeStateStatus == "DIRTY"
 		reports = append(reports, r)
 	}
 	return reports, nil
 }
 
+// readPRStateWaiting reads through store, sitting out GitHub's rate limit to
+// each next probe for as long as wait allows.
+func readPRStateWaiting(ctx context.Context, store *prstate.Store, want prstate.Want, wait time.Duration) (prstate.State, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		st, err := store.Read(ctx, want)
+		var limited *prstate.LimitedError
+		if !errors.As(err, &limited) || limited.ProbeAt.After(deadline) {
+			return st, err
+		}
+		if err := sleepCtx(ctx, time.Until(limited.ProbeAt)); err != nil {
+			return st, err
+		}
+	}
+}
+
 func prInGraphiteMq(info gtapi.PullRequestInfo) bool {
 	return info.MergeQueueStatus != nil && info.MergeQueueStatus.IsInGraphiteMq
-}
-
-// prQueueLabelled lists the open pull requests carrying a merge label, one
-// listing per label instead of one read per pull request.
-func prQueueLabelled(ctx context.Context, repo string) (map[int]bool, error) {
-	labelled := map[int]bool{}
-	for _, label := range []string{mqLabel, mqLabelFast} {
-		out, err := ghAPIWaiting(ctx, render.Ambient, prStatusRateLimitWait, "--paginate",
-			fmt.Sprintf("repos/%s/issues?state=open&labels=%s&per_page=100", repo, label), "--jq", ".[].number")
-		if err != nil {
-			return nil, fmt.Errorf("pr status: gh api: list the %s label: %w", label, err)
-		}
-		for _, field := range strings.Fields(out) {
-			n, err := strconv.Atoi(field)
-			if err != nil {
-				return nil, fmt.Errorf("pr status: gh api: list the %s label: %q is not a number", label, field)
-			}
-			labelled[n] = true
-		}
-	}
-	return labelled, nil
-}
-
-func prConflicting(ctx context.Context, repo string, number int) (bool, error) {
-	out, err := ghAPIWaiting(ctx, render.Ambient, prStatusRateLimitWait, ghPullPath(repo, number))
-	if err != nil {
-		return false, fmt.Errorf("pr status: gh api: read #%d: %w", number, err)
-	}
-	var pr ghPull
-	if err := json.Unmarshal([]byte(out), &pr); err != nil {
-		return false, fmt.Errorf("pr status: gh api: parse #%d: %w", number, err)
-	}
-	return pr.MergeableState == "dirty", nil
 }
 
 // classifyPRQueue settles one pull request's queue state, where landedOn is the
