@@ -617,7 +617,7 @@ func TestShutdownReportsADaemonItCannotReach(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := errors.Join(os.Chmod(dir, 0o700), os.RemoveAll(root)); err != nil {
+		if err := errors.Join(os.Chmod(dir, 0o700), os.RemoveAll(root)); err != nil { //nolint:gosec // restores a directory's search bit
 			t.Errorf("remove %s: %v", root, err)
 		}
 	})

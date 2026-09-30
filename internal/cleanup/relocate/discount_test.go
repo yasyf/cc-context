@@ -71,7 +71,7 @@ func TestGuardDiscountsOnlyWatchersNotYetRetired(t *testing.T) {
 		f := newFixture(t)
 		f.watched()
 		job := f.intend()
-		f.holdAt(f.worktree)
+		_ = f.holdAt(f.worktree)
 		f.advance(&job)
 		f.advance(&job)
 		if job.Phase != cleanup.PhaseWaiting || len(f.watchers.retired) != 0 {

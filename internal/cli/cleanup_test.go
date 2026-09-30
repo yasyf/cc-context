@@ -754,8 +754,10 @@ func TestCleanupGitRelativePATH(t *testing.T) {
 				cmd := newCleanupAdoptCmd() //nolint:contextcheck // ExecuteContext(ctx) below is what sets cmd's context
 				cmd.SilenceUsage, cmd.SilenceErrors = true, true
 				cmd.SetOut(&bytes.Buffer{})
-				cmd.SetArgs([]string{"--source", tree, "--dev", "1", "--ino", "2", "--common-dir", filepath.Join(bin, ".git"),
-					"--head", "0123456789abcdef0123456789abcdef01234567", "--recovery-ref", "refs/cleanup-worktrees/20260928/0123456789abcdef0123", "--original", tree})
+				cmd.SetArgs([]string{
+					"--source", tree, "--dev", "1", "--ino", "2", "--common-dir", filepath.Join(bin, ".git"),
+					"--head", "0123456789abcdef0123456789abcdef01234567", "--recovery-ref", "refs/cleanup-worktrees/20260928/0123456789abcdef0123", "--original", tree,
+				})
 				return cmd.ExecuteContext(ctx)
 			},
 			want: resolves("cleanup adopt"),

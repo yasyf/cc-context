@@ -143,7 +143,7 @@ func identify(p Process) Daemon {
 }
 
 func worktreeOf(admin string) (string, error) {
-	b, err := os.ReadFile(filepath.Join(admin, "gitdir"))
+	b, err := os.ReadFile(filepath.Join(admin, "gitdir")) //nolint:gosec // admin is a Git directory from git rev-parse or a live daemon's IPC socket; gitdir is Git's fixed back-link in it
 	if errors.Is(err, fs.ErrNotExist) {
 		if filepath.Base(admin) != ".git" {
 			return "", fmt.Errorf("%s: no gitdir link and not a .git directory", admin)

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path"
@@ -117,7 +118,8 @@ func TestStackConflictWorkspaceWidensOnEveryStop(t *testing.T) {
 	}
 	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
 	var ws string
-	var cone, kept []string
+	cone := make([]string, 0, len(stops))
+	var kept []string
 	for i, stop := range stops {
 		if err == nil {
 			t.Fatalf("stop %d: succeeded, want the conflict on %q", i, stop.path)
@@ -446,17 +448,21 @@ func sparseConflicted(err error) []string {
 
 func sparseSettleIndex(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
+	root, err := os.OpenRoot(f.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	past := time.Now().Add(-time.Hour)
-	err := filepath.WalkDir(f.Dir, func(p string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		switch {
 		case err != nil:
 			return err
 		case d.IsDir() && d.Name() == ".git":
-			return filepath.SkipDir
+			return fs.SkipDir
 		}
-		return os.Chtimes(p, past, past)
+		return root.Chtimes(p, past, past)
 	})
-	if err != nil {
+	if err = errors.Join(err, root.Close()); err != nil {
 		t.Fatal(err)
 	}
 	mustRun(t, f.Env(), f.Dir, "git", "update-index", "-q", "--refresh")

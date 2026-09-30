@@ -108,7 +108,7 @@ func TestPreviewThroughAViewedJournalCreatesNothing(t *testing.T) {
 func TestNearest(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "file")
-	if err := os.WriteFile(file, nil, 0o644); err != nil {
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
 		t.Fatalf("write %s: %v", file, err)
 	}
 	tests := []struct {
@@ -216,7 +216,7 @@ func TestAcceptRefusals(t *testing.T) {
 		}},
 		{"plain directory", "unregistered", func(f *fixture) (string, string) {
 			plain := filepath.Join(f.root, "plain")
-			if err := os.Mkdir(plain, 0o755); err != nil {
+			if err := os.Mkdir(plain, 0o700); err != nil {
 				f.t.Fatalf("mkdir: %v", err)
 			}
 			return plain, "not a registered linked worktree: stat " + plain + "/.git: no such file or directory"
@@ -227,7 +227,7 @@ func TestAcceptRefusals(t *testing.T) {
 		}},
 		{"one-way link", "unregistered", func(f *fixture) (string, string) {
 			copied := filepath.Join(f.root, "copied")
-			if err := os.Mkdir(copied, 0o755); err != nil {
+			if err := os.Mkdir(copied, 0o700); err != nil {
 				f.t.Fatalf("mkdir: %v", err)
 			}
 			f.write(filepath.Join(copied, ".git"), f.read(filepath.Join(f.worktree, ".git")))
@@ -239,7 +239,7 @@ func TestAcceptRefusals(t *testing.T) {
 		}},
 		{"initialized submodules", "submodules", func(f *fixture) (string, string) {
 			modules := filepath.Join(f.adminDir, "modules")
-			if err := os.MkdirAll(filepath.Join(modules, "sub"), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Join(modules, "sub"), 0o700); err != nil {
 				f.t.Fatalf("mkdir: %v", err)
 			}
 			return f.worktree, "worktree has initialized submodules under " + modules

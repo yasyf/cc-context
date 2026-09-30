@@ -32,7 +32,7 @@ func newQuarantine(t *testing.T) *quarantine {
 	f := newFixture(t)
 	head := f.run(f.worktree, "rev-parse", "HEAD")
 	source := filepath.Join(f.root, cleanup.LegacyQuarantinePrefix+legacyDate, legacyID+"-wt")
-	if err := os.Mkdir(filepath.Dir(source), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Dir(source), 0o700); err != nil {
 		t.Fatalf("create quarantine: %v", err)
 	}
 	if err := os.Rename(f.worktree, source); err != nil {
@@ -74,7 +74,7 @@ func (q *quarantine) adopt() cleanup.Job {
 
 func (q *quarantine) register() {
 	q.t.Helper()
-	if err := os.Mkdir(q.adminDir, 0o755); err != nil {
+	if err := os.Mkdir(q.adminDir, 0o700); err != nil {
 		q.t.Fatalf("recreate admin dir: %v", err)
 	}
 	q.write(filepath.Join(q.adminDir, "gitdir"), filepath.Join(q.source, ".git")+"\n")
@@ -220,14 +220,14 @@ func TestAdoptRefusals(t *testing.T) {
 			if err := os.Remove(filepath.Join(q.source, ".git")); err != nil {
 				q.t.Fatalf("remove .git: %v", err)
 			}
-			if err := os.Mkdir(filepath.Join(q.source, ".git"), 0o755); err != nil {
+			if err := os.Mkdir(filepath.Join(q.source, ".git"), 0o700); err != nil {
 				q.t.Fatalf("mkdir .git: %v", err)
 			}
 			return q.source + " is a repository's main working copy, not a parked worktree"
 		}, "main"},
 		{"the source is a working copy with a separate git directory", func(q *quarantine) string {
 			separate := filepath.Join(q.root, "separate.git")
-			if err := os.Mkdir(separate, 0o755); err != nil {
+			if err := os.Mkdir(separate, 0o700); err != nil {
 				q.t.Fatalf("mkdir: %v", err)
 			}
 			q.write(filepath.Join(separate, "HEAD"), "ref: refs/heads/main\n")
@@ -239,7 +239,7 @@ func TestAdoptRefusals(t *testing.T) {
 				q.t.Fatalf("remove .git: %v", err)
 			}
 			q.write(filepath.Join(q.source, "HEAD"), "ref: refs/heads/main\n")
-			if err := os.Mkdir(filepath.Join(q.source, "objects"), 0o755); err != nil {
+			if err := os.Mkdir(filepath.Join(q.source, "objects"), 0o700); err != nil {
 				q.t.Fatalf("mkdir: %v", err)
 			}
 			return q.source + " is a git directory, not a parked worktree"
@@ -250,7 +250,7 @@ func TestAdoptRefusals(t *testing.T) {
 		}, "registered"},
 		{"another admin entry names the tree", func(q *quarantine) string {
 			other := filepath.Join(q.common, "worktrees", "other")
-			if err := os.Mkdir(other, 0o755); err != nil {
+			if err := os.Mkdir(other, 0o700); err != nil {
 				q.t.Fatalf("mkdir: %v", err)
 			}
 			q.write(filepath.Join(other, "gitdir"), filepath.Join(q.source, ".git")+"\n")
@@ -282,7 +282,7 @@ func TestAdoptRefusals(t *testing.T) {
 		}, "mismatch"},
 		{"the source sits inside the cleanup folder", func(q *quarantine) string {
 			parent := filepath.Join(q.layout.Root, filepath.Base(filepath.Dir(q.source)))
-			if err := os.Mkdir(parent, 0o755); err != nil {
+			if err := os.Mkdir(parent, 0o700); err != nil {
 				q.t.Fatalf("mkdir: %v", err)
 			}
 			inside := filepath.Join(parent, filepath.Base(q.source))
@@ -294,7 +294,7 @@ func TestAdoptRefusals(t *testing.T) {
 		}, "mismatch"},
 		{"the source sits inside the repository", func(q *quarantine) string {
 			parent := filepath.Join(q.common, filepath.Base(filepath.Dir(q.source)))
-			if err := os.Mkdir(parent, 0o755); err != nil {
+			if err := os.Mkdir(parent, 0o700); err != nil {
 				q.t.Fatalf("mkdir: %v", err)
 			}
 			inside := filepath.Join(parent, filepath.Base(q.source))
@@ -366,7 +366,8 @@ func TestAdoptGuardActive(t *testing.T) {
 
 	_, err := q.relocator.Adopt(context.Background(), 1, q.request)
 
-	if err != error(active) {
+	var got *cleanup.ActiveError
+	if !errors.As(err, &got) || got != active {
 		t.Errorf("Adopt() error = %v, want the guard's own %v", err, active)
 	}
 	q.unjournaled()
@@ -431,7 +432,7 @@ func TestAdvanceAdoptedLeavesAReplacementAtTheSource(t *testing.T) {
 	if err := os.Rename(q.source, aside); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
-	if err := os.Mkdir(q.source, 0o755); err != nil {
+	if err := os.Mkdir(q.source, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	q.write(filepath.Join(q.source, "mine.txt"), "mine\n")
@@ -519,7 +520,7 @@ func TestAdvanceAdoptedBlocks(t *testing.T) {
 			return "could not verify that " + q.source + " is idle: process table unreadable"
 		}, "activity", false},
 		{"something already sits at the payload", func(q *quarantine, job cleanup.Job) string {
-			if err := os.Mkdir(job.Payload, 0o755); err != nil {
+			if err := os.Mkdir(job.Payload, 0o700); err != nil {
 				q.t.Fatalf("mkdir: %v", err)
 			}
 			return fmt.Sprintf(
@@ -593,7 +594,7 @@ func TestAdvanceAdoptedBlocksWhenTheRenamedPayloadIsRegistered(t *testing.T) {
 		t.Fatalf("rename: %v", err)
 	}
 	repointed := filepath.Join(job.Payload, ".git") + "\n"
-	if err := os.Mkdir(q.adminDir, 0o755); err != nil {
+	if err := os.Mkdir(q.adminDir, 0o700); err != nil {
 		t.Fatalf("recreate admin dir: %v", err)
 	}
 	q.write(filepath.Join(q.adminDir, "gitdir"), repointed)

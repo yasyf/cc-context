@@ -134,8 +134,8 @@ func newWorktreeRmCmd() *cobra.Command {
 
 <name> is the working copy "add" minted under the repository's pool — rm
 removes only what add created, so a worktree ccx never minted by name is
-refused and left to --path or "git worktree remove". --path names any linked
-worktree this repository registers, by its absolute path. Removing the checkout
+refused and left to --path. --path names any linked worktree this repository
+registers, by its absolute path. Removing the checkout
 that holds trunk is refused, since the branch it pins is the one every restack
 rebases onto, and so is the repository's own working copy. A tree holding
 uncommitted changes is refused unless --force discards them; --force overrides
@@ -624,7 +624,7 @@ func matchPoolWorktree(list []vcs.Worktree, name, minted string) (*vcs.Worktree,
 		}
 	}
 	if len(foreign) > 0 {
-		return nil, fmt.Errorf("worktree rm: %q is not in this repository's pool — ccx never minted %s; use git worktree remove for working copies ccx does not manage",
+		return nil, fmt.Errorf("worktree rm: %q is not in this repository's pool — ccx never minted %s; use ccx vcs worktree rm --path <absolute-path> for working copies ccx does not manage",
 			name, strings.Join(foreign, ", "))
 	}
 	return nil, nil
@@ -691,14 +691,14 @@ func queueGitWorktreeRemoval(ctx context.Context, path string, opts worktreeRmOp
 	if err != nil {
 		return nil, fmt.Errorf("worktree rm: %w", err)
 	}
-	segs := []string{"deletion queued " + receipt.JobID}
+	queued := "deletion queued " + receipt.JobID
 	if !opts.wait {
-		return segs, nil
+		return []string{queued}, nil
 	}
 	if _, err := svc.Wait(ctx, receipt.JobID); err != nil {
 		return nil, cleanupJobErr(fmt.Sprintf("worktree rm: removed %s, deletion queued %s; wait", path, receipt.JobID), receipt.JobID, err)
 	}
-	return append(segs, "deleted"), nil
+	return []string{queued, "deleted"}, nil
 }
 
 // removeJJWorkspace forgets the workspace and deletes its tree: forget alone

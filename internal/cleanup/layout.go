@@ -89,7 +89,7 @@ func (l Layout) Ensure() error {
 			return fmt.Errorf("cleanup: create %s: %w", dir, err)
 		}
 	}
-	if err := os.Chmod(l.Root, 0o700); err != nil {
+	if err := os.Chmod(l.Root, 0o700); err != nil { //nolint:gosec // the root is a directory; its owner needs the search bit
 		return fmt.Errorf("cleanup: make %s private: %w", l.Root, err)
 	}
 	return nil

@@ -80,7 +80,7 @@ func (f fixture) snapshot(t *testing.T, skip string) map[string]string {
 			}
 			desc += " -> " + target
 		case info.Mode().IsRegular():
-			data, err := os.ReadFile(path)
+			data, err := os.ReadFile(path) //nolint:gosec // the walk reads the test's own fixture tree, which nothing else changes
 			if err != nil {
 				return err
 			}
@@ -107,14 +107,14 @@ func (f fixture) assertOnlyPayloadGone(t *testing.T, before map[string]string) {
 
 func mkdir(t *testing.T, path string) {
 	t.Helper()
-	if err := os.MkdirAll(path, 0o755); err != nil {
+	if err := os.MkdirAll(path, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 }
 
 func write(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 }
@@ -338,7 +338,7 @@ func TestLockedDirectoriesAreDeleted(t *testing.T) {
 			if err := os.Chmod(locked, tt.mode); err != nil {
 				t.Fatalf("chmod: %v", err)
 			}
-			t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+			t.Cleanup(func() { _ = os.Chmod(locked, 0o700) }) //nolint:gosec // restores a fixture directory so it can be removed
 			d := f.open(t)
 
 			total, done := 0, false
@@ -914,7 +914,7 @@ func TestEntriesCreatedDuringDeletionAreRemoved(t *testing.T) {
 	go func() {
 		var out outcome
 		for i := range late {
-			err := os.WriteFile(filepath.Join(f.payload, fmt.Sprintf("late-%d", i)), nil, 0o644)
+			err := os.WriteFile(filepath.Join(f.payload, fmt.Sprintf("late-%d", i)), nil, 0o600)
 			switch {
 			case err == nil:
 				out.created++

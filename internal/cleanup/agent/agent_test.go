@@ -146,7 +146,7 @@ func fixture(t *testing.T, d *fakeDaemon) starter {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	source := filepath.Join(dir, "ccx")
-	if err := os.WriteFile(source, sourceBytes, 0o755); err != nil {
+	if err := os.WriteFile(source, sourceBytes, 0o755); err != nil { //nolint:gosec // the fixture stands in for an installed executable
 		t.Fatal(err)
 	}
 	return starter{
@@ -229,7 +229,7 @@ func TestInstallProgram(t *testing.T) {
 		{
 			name: "equal hardlink to the source is replaced by an independent copy",
 			prepare: func(t *testing.T, path, source string) {
-				if err := os.Chmod(source, 0o700); err != nil {
+				if err := os.Chmod(source, 0o700); err != nil { //nolint:gosec // an executable, given the mode of the installed copy
 					t.Fatal(err)
 				}
 				if err := os.Link(source, path); err != nil {
@@ -244,7 +244,7 @@ func TestInstallProgram(t *testing.T) {
 			dir := t.TempDir()
 			layout := cleanup.Layout{Root: filepath.Join(dir, "state")}
 			source := filepath.Join(dir, "ccx")
-			if err := os.WriteFile(source, sourceBytes, 0o755); err != nil {
+			if err := os.WriteFile(source, sourceBytes, 0o755); err != nil { //nolint:gosec // the fixture stands in for an installed executable
 				t.Fatal(err)
 			}
 			if tt.linkSource {

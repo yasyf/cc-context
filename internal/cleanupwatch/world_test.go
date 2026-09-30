@@ -77,7 +77,7 @@ func newWorld(t *testing.T) *world {
 		t.Fatal(err)
 	}
 	home := filepath.Join(base, "home")
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
@@ -123,7 +123,7 @@ func (w *world) deps() Deps {
 func (w *world) dir(rel string) string {
 	w.t.Helper()
 	p := filepath.Join(w.base, rel)
-	if err := os.MkdirAll(p, 0o755); err != nil {
+	if err := os.MkdirAll(p, 0o700); err != nil {
 		w.t.Fatal(err)
 	}
 	return p
@@ -166,10 +166,10 @@ func (w *world) daemon(pid int, socket, cwd string) {
 
 func (w *world) write(path, content string) {
 	w.t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		w.t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		w.t.Fatal(err)
 	}
 }

@@ -71,12 +71,12 @@ func newWatcherWorld(t *testing.T, roots ...string) *watcherWorld {
 		answer:     watcherServerPID,
 		socket:     watcherSockname,
 	}
-	if err := os.MkdirAll(filepath.Join(w.wt, ".git"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(w.wt, ".git"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	for _, r := range roots {
 		path := filepath.Join(base, r)
-		if err := os.MkdirAll(path, 0o755); err != nil {
+		if err := os.MkdirAll(path, 0o700); err != nil {
 			t.Fatal(err)
 		}
 		w.roots = append(w.roots, path)
@@ -192,7 +192,7 @@ func (w *watcherWorld) watchman(args []string) (cleanupwatch.Output, error) {
 	case "get-pid":
 		resp = map[string]int{"pid": w.answer}
 	case "debug-status":
-		roots := []map[string]any{}
+		roots := make([]map[string]any, 0, len(w.roots))
 		for _, r := range w.roots {
 			roots = append(roots, map[string]any{"path": r, "fstype": "apfs", "watcher": "fsevents", "done_initial": true})
 		}
@@ -666,7 +666,7 @@ func TestCleanupWatchersCheckQuarantine(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			world := newWatcherWorld(t, tt.roots...)
 			job := world.path(tt.job)
-			if err := os.MkdirAll(job, 0o755); err != nil {
+			if err := os.MkdirAll(job, 0o700); err != nil {
 				t.Fatal(err)
 			}
 			err := cleanupWatchers{deps: world.deps(nil)}.CheckQuarantine(t.Context(), job)

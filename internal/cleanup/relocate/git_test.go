@@ -18,7 +18,7 @@ func (f *fixture) recorder() (git, log string) {
 	f.t.Helper()
 	git, log = filepath.Join(f.root, "recording-git"), filepath.Join(f.root, "git-argv")
 	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$*\" >> %s\nexec %s \"$@\"\n", log, f.git)
-	if err := os.WriteFile(git, []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(git, []byte(script), 0o700); err != nil { //nolint:gosec // the recorder stands in for git and is executed
 		f.t.Fatalf("write recorder: %v", err)
 	}
 	return git, log
@@ -28,11 +28,11 @@ func (f *fixture) failingHook() string {
 	f.t.Helper()
 	marker := filepath.Join(f.root, "hook-ran")
 	hooks := filepath.Join(f.common, "hooks")
-	if err := os.MkdirAll(hooks, 0o755); err != nil {
+	if err := os.MkdirAll(hooks, 0o700); err != nil {
 		f.t.Fatalf("create hooks dir: %v", err)
 	}
 	script := "#!/bin/sh\necho ran >> " + marker + "\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(hooks, "reference-transaction"), []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(hooks, "reference-transaction"), []byte(script), 0o700); err != nil { //nolint:gosec // git executes the hook
 		f.t.Fatalf("write hook: %v", err)
 	}
 	if out, err := f.try(f.repo, "update-ref", "refs/probe", "refs/heads/main"); err == nil {

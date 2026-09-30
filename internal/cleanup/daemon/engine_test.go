@@ -1108,7 +1108,7 @@ func TestPruneThatCannotDiscardStopsTheWorker(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {
-			if err := os.Chmod(h.layout.JobDir(old.ID), 0o700); err != nil {
+			if err := os.Chmod(h.layout.JobDir(old.ID), 0o700); err != nil { //nolint:gosec // restores a directory's search bit
 				t.Errorf("restore the job folder: %v", err)
 			}
 		})

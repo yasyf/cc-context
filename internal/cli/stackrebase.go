@@ -2093,7 +2093,8 @@ func stackWidenCone(ctx context.Context, ws string, paths []string) (bool, error
 }
 
 func stackAddCone(ctx context.Context, ws render.Dir, dirs []string) error {
-	argv := []string{"sparse-checkout", "add", "--skip-checks", "--"}
+	argv := make([]string, 0, 4+len(dirs))
+	argv = append(argv, "sparse-checkout", "add", "--skip-checks", "--")
 	for _, dir := range dirs {
 		argv = append(argv, "./"+path.Clean(dir)+"/")
 	}

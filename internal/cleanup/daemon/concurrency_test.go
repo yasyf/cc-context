@@ -99,7 +99,7 @@ func TestAdmissionThatCannotJournalStopsTheWorker(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() {
-					if err := os.Chmod(h.layout.JobsDir(), 0o700); err != nil {
+					if err := os.Chmod(h.layout.JobsDir(), 0o700); err != nil { //nolint:gosec // restores a directory's search bit
 						t.Errorf("restore the jobs directory: %v", err)
 					}
 				})

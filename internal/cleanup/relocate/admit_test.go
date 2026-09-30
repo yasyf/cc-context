@@ -30,7 +30,7 @@ func (f *fixture) admit(job *cleanup.Job) {
 func (f *fixture) enroll(name, gitdir string) string {
 	f.t.Helper()
 	admin := filepath.Join(f.common, "worktrees", name)
-	if err := os.MkdirAll(admin, 0o755); err != nil {
+	if err := os.MkdirAll(admin, 0o700); err != nil {
 		f.t.Fatalf("create admin dir: %v", err)
 	}
 	f.write(filepath.Join(admin, "gitdir"), gitdir+"\n")
@@ -86,7 +86,7 @@ func TestAdmitPassesAnAbsentPayload(t *testing.T) {
 	if err := os.RemoveAll(job.Payload); err != nil {
 		t.Fatalf("remove the payload: %v", err)
 	}
-	if err := os.Mkdir(job.Registered, 0o755); err != nil {
+	if err := os.Mkdir(job.Registered, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	record := f.read(f.layout.RecordPath(job.ID))
@@ -116,7 +116,7 @@ func TestAdmitBlocks(t *testing.T) {
 	}{
 		{"the payload is another directory", func(f *fixture, job cleanup.Job) string {
 			f.setAside(job.Payload)
-			if err := os.Mkdir(job.Payload, 0o755); err != nil {
+			if err := os.Mkdir(job.Payload, 0o700); err != nil {
 				f.t.Fatalf("mkdir: %v", err)
 			}
 			return fmt.Sprintf("payload %s is directory %s, the job captured tree %s", job.Payload, idText(f.id(job.Payload)), idText(job.Tree))
@@ -128,7 +128,7 @@ func TestAdmitBlocks(t *testing.T) {
 			return fmt.Sprintf("payload %s is non-directory %s, the job captured tree %s", job.Payload, idText(f.id(job.Payload)), idText(job.Tree))
 		}, "identity", true, false},
 		{"something sits at the registered path", func(f *fixture, job cleanup.Job) string {
-			if err := os.Mkdir(job.Registered, 0o755); err != nil {
+			if err := os.Mkdir(job.Registered, 0o700); err != nil {
 				f.t.Fatalf("mkdir: %v", err)
 			}
 			return fmt.Sprintf("registered %s is directory %s, want it absent", job.Registered, idText(f.id(job.Registered)))
@@ -170,7 +170,7 @@ func TestAdmitBlocks(t *testing.T) {
 			if err := os.Symlink(job.Payload, alias); err != nil {
 				f.t.Fatalf("symlink: %v", err)
 			}
-			if err := os.Mkdir(filepath.Join(job.Payload, "inner"), 0o755); err != nil {
+			if err := os.Mkdir(filepath.Join(job.Payload, "inner"), 0o700); err != nil {
 				f.t.Fatalf("mkdir: %v", err)
 			}
 			external := filepath.Join(f.root, "external-gitfile")
@@ -186,7 +186,7 @@ func TestAdmitBlocks(t *testing.T) {
 				f.t.Skip("root reads through a closed directory")
 			}
 			closed := filepath.Join(f.root, "outside", "closed")
-			if err := os.MkdirAll(closed, 0o755); err != nil {
+			if err := os.MkdirAll(closed, 0o700); err != nil {
 				f.t.Fatalf("mkdir: %v", err)
 			}
 			link := filepath.Join(closed, "link")
@@ -196,12 +196,12 @@ func TestAdmitBlocks(t *testing.T) {
 			if err := os.Chmod(closed, 0); err != nil {
 				f.t.Fatalf("chmod: %v", err)
 			}
-			f.t.Cleanup(func() { os.Chmod(closed, 0o755) })
+			f.t.Cleanup(func() { _ = os.Chmod(closed, 0o700) }) //nolint:gosec // restores a fixture directory so it can be removed
 			named := filepath.Join(link, "inner", ".git")
 			return fmt.Sprintf("resolve %s, which %s registers: lstat %s: permission denied", named, f.enroll("closed", named), link)
 		}, "reconcile", false, false},
 		{"a worktree rode in with the tree", func(f *fixture, job cleanup.Job) string {
-			if err := os.Mkdir(filepath.Join(job.Payload, "inner"), 0o755); err != nil {
+			if err := os.Mkdir(filepath.Join(job.Payload, "inner"), 0o700); err != nil {
 				f.t.Fatalf("mkdir: %v", err)
 			}
 			carried := filepath.Join(job.Payload, "inner", ".git")

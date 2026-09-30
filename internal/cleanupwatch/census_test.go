@@ -82,7 +82,11 @@ func staleSocket(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Error(err)
+		}
+	})
 	path := filepath.Join(dir, "sock")
 	l, err := net.Listen("unix", path)
 	if err != nil {
@@ -101,13 +105,21 @@ func liveSocket(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Error(err)
+		}
+	})
 	path := filepath.Join(dir, "sock")
 	l, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { l.Close() })
+	t.Cleanup(func() {
+		if err := l.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	return path
 }
 
@@ -214,11 +226,11 @@ func TestTakeBoundsTheRootsItInspects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Take: %v", err)
 	}
-	var examined []string
+	examined := make([]string, 0, len(r.Watchman.Roots))
 	for _, root := range r.Watchman.Roots {
 		examined = append(examined, filepath.Base(root.Path))
 	}
-	var skipped []string
+	skipped := make([]string, 0, len(r.Watchman.Unexamined))
 	for _, p := range r.Watchman.Unexamined {
 		skipped = append(skipped, filepath.Base(p))
 	}
@@ -474,8 +486,10 @@ func TestRender(t *testing.T) {
 			}},
 			Clients: []Client{{PID: 5, Name: "relay", State: "waiting for request", Protected: true, Roots: []string{"/r"}}},
 		},
-		FSMonitor: []Daemon{{PID: 7, Worktree: "/wt", Socket: "/g/fsmonitor--daemon.ipc", Verdict: VerdictRetirable,
-			Config: []ConfigValue{{Scope: "worktree", Origin: "file:/g/config.worktree", Value: "true"}}}},
+		FSMonitor: []Daemon{{
+			PID: 7, Worktree: "/wt", Socket: "/g/fsmonitor--daemon.ipc", Verdict: VerdictRetirable,
+			Config: []ConfigValue{{Scope: "worktree", Origin: "file:/g/config.worktree", Value: "true"}},
+		}},
 	}
 	r.Watchman.Roots[0].DiskConfigError = "parse .watchmanconfig: bad"
 	r.Watchman.Unexamined = []string{"/s"}

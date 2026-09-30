@@ -30,14 +30,14 @@ func unlinked(worktree string, err error) error {
 }
 
 func readLinkage(path string) (string, error) {
-	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) //nolint:gosec // path is a link file of the worktree under inspection; opened no-follow and read size-capped
 	if errors.Is(err, syscall.ELOOP) {
 		return "", fmt.Errorf("%s: %w", path, errNotLinkage)
 	}
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		return "", err

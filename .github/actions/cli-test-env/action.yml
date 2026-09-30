@@ -7,20 +7,43 @@ description: The external binaries internal/cli's tests drive as real subprocess
 runs:
   using: composite
   steps:
-    - name: Install git 2.56 when the runner's is older (stack rebase's git replay --ref and --linearize)
+    - name: Plan git 2.56 when the runner's is older (stack rebase's git replay --ref and --linearize)
+      id: git
       shell: bash
       run: |
-        at_least() { [ "$(printf '%s\n%s\n' 2.56 "$1" | sort -V | head -n1)" = 2.56 ]; }
         have="$(git version | awk '{print $3}')"
-        if at_least "$have"; then exit 0; fi
-        if [ "$RUNNER_OS" = macOS ]; then
-          brew install git
-          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
-        else
-          sudo add-apt-repository -y ppa:git-core/ppa
-          sudo apt-get update -q
-          sudo apt-get install -y -q git
+        if [ "$(printf '%s\n%s\n' 2.56 "$have" | sort -V | head -n1)" = 2.56 ]; then
+          echo "build=false" >> "$GITHUB_OUTPUT"
+          exit 0
         fi
+        version="$(sed -n 's/^version=//p' scripts/build-git.sh)"
+        {
+          echo "build=true"
+          echo "version=$version"
+          echo "prefix=$RUNNER_TOOL_CACHE/ccx-git/$version/$RUNNER_ARCH"
+          echo "toolchain=$({ echo "${ImageOS:-}"; cc --version | sed -n 1p; } | shasum -a 256 | cut -c1-16)"
+        } >> "$GITHUB_OUTPUT"
+
+    - if: steps.git.outputs.build == 'true'
+      id: git-cache
+      uses: actions/cache@v5
+      with:
+        path: ${{ steps.git.outputs.prefix }}
+        key: git-${{ steps.git.outputs.version }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.git.outputs.toolchain }}-${{ hashFiles('scripts/build-git.sh') }}
+
+    - if: steps.git.outputs.build == 'true' && steps.git-cache.outputs.cache-hit != 'true'
+      name: Build git from its checksummed release tarball
+      shell: bash
+      env:
+        PREFIX: ${{ steps.git.outputs.prefix }}
+      run: bash scripts/build-git.sh "$PREFIX"
+
+    - if: steps.git.outputs.build == 'true'
+      name: Put the built git on PATH
+      shell: bash
+      env:
+        PREFIX: ${{ steps.git.outputs.prefix }}
+      run: echo "$PREFIX/bin" >> "$GITHUB_PATH"
 
     - name: Check git
       shell: bash

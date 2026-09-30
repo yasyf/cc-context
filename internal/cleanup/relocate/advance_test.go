@@ -119,7 +119,7 @@ func TestAdvanceReconcilesATornMove(t *testing.T) {
 				t.Fatalf("rename: %v", err)
 			}
 			f.write(filepath.Join(f.adminDir, "gitdir"), tt.adminGitdir(job))
-			f.holdAt(job.Registered)
+			_ = f.holdAt(job.Registered)
 
 			f.advance(&job)
 
@@ -255,7 +255,7 @@ func TestAdvanceNeverRunsGitOverAnOccupiedRegisteredPath(t *testing.T) {
 	if err := os.Rename(job.Registered, job.Payload); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
-	if err := os.Mkdir(job.Registered, 0o755); err != nil {
+	if err := os.Mkdir(job.Registered, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	f.write(filepath.Join(job.Registered, "keep.txt"), "keep\n")
@@ -320,7 +320,7 @@ func TestAdvanceLeavesASymlinkAtTheOriginalPath(t *testing.T) {
 	job := f.accept()
 	f.park(&job)
 	target := filepath.Join(f.root, "target")
-	if err := os.Mkdir(target, 0o755); err != nil {
+	if err := os.Mkdir(target, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	f.write(filepath.Join(target, "precious.txt"), "precious\n")
@@ -418,7 +418,7 @@ func TestAdvanceBlocksWhenTheOriginalWasSwapped(t *testing.T) {
 	if err := os.Rename(f.worktree, aside); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
-	if err := os.Mkdir(f.worktree, 0o755); err != nil {
+	if err := os.Mkdir(f.worktree, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	f.write(filepath.Join(f.worktree, "mine.txt"), "mine\n")
@@ -692,11 +692,11 @@ func TestAdvanceMovesARelativelyLinkedWorktreeToAbsoluteLinks(t *testing.T) {
 
 func TestAdvanceThroughASymlinkedLayoutRoot(t *testing.T) {
 	f := newFixture(t)
-	real, link := filepath.Join(f.root, "real-state"), filepath.Join(f.root, "linked-state")
-	if err := os.Mkdir(real, 0o700); err != nil {
+	state, link := filepath.Join(f.root, "real-state"), filepath.Join(f.root, "linked-state")
+	if err := os.Mkdir(state, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(state, link); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
 	f.open(link)
@@ -706,7 +706,7 @@ func TestAdvanceThroughASymlinkedLayoutRoot(t *testing.T) {
 	}
 
 	f.park(&job)
-	if got, want := f.read(filepath.Join(f.adminDir, "gitdir")), filepath.Join(real, "jobs", job.ID, "registered", ".git")+"\n"; got != want {
+	if got, want := f.read(filepath.Join(f.adminDir, "gitdir")), filepath.Join(state, "jobs", job.ID, "registered", ".git")+"\n"; got != want {
 		t.Errorf("admin gitdir = %q, want %q", got, want)
 	}
 	f.advance(&job)
@@ -714,7 +714,7 @@ func TestAdvanceThroughASymlinkedLayoutRoot(t *testing.T) {
 	f.finished(&job)
 	f.absent(f.worktree)
 	f.absent(f.adminDir)
-	if got := f.id(filepath.Join(real, "jobs", job.ID, "payload")); got != job.Tree {
+	if got := f.id(filepath.Join(state, "jobs", job.ID, "payload")); got != job.Tree {
 		t.Errorf("payload identity = %v, want the tree %v", got, job.Tree)
 	}
 }
@@ -1139,7 +1139,7 @@ func TestAdvanceLeavesAReplacementOfTheParkedTree(t *testing.T) {
 		if err := os.Rename(registered, aside); err != nil {
 			t.Fatalf("set the parked tree aside: %v", err)
 		}
-		if err := os.Mkdir(registered, 0o755); err != nil {
+		if err := os.Mkdir(registered, 0o700); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
 		f.write(kept, "another actor's work\n")

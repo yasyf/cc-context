@@ -82,10 +82,10 @@ func TestLayoutEnsureCreatesPrivateDirs(t *testing.T) {
 
 func TestLayoutEnsureTightensRoot(t *testing.T) {
 	l := Layout{Root: filepath.Join(t.TempDir(), "state")}
-	if err := os.Mkdir(l.Root, 0o755); err != nil {
+	if err := os.Mkdir(l.Root, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(l.Root, 0o755); err != nil {
+	if err := os.Chmod(l.Root, 0o750); err != nil { //nolint:gosec // a directory left group-readable for Ensure to tighten
 		t.Fatal(err)
 	}
 	if err := l.Ensure(); err != nil {

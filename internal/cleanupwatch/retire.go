@@ -276,7 +276,7 @@ func repinRoot(pin identity, root WatchedRoot) error {
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrRefused, root.Path, err)
 	}
-	if now != (identity{Path: root.Path, Dev: root.Dev, Ino: root.Ino}) || !under(root.Path, pin.Path) {
+	if now != identity(root) || !under(root.Path, pin.Path) {
 		return fmt.Errorf("%w: root %s was replaced mid-retirement (now %s dev %d ino %d)", ErrRefused, root.Path, now.Path, now.Dev, now.Ino)
 	}
 	return nil
@@ -537,7 +537,7 @@ func (d Deps) freshBlockers(ctx context.Context, worktree, root string, targets 
 }
 
 func (d Deps) blockers(root string, queries []rawQuery, c rootConsumers) []string {
-	var b []string
+	b := make([]string, 0, len(queries)+len(c.Subscriptions)+len(c.Triggers))
 	for _, q := range queries {
 		b = append(b, fmt.Sprintf("query in flight on %s (pid %d, %s)", root, q.ClientPID, q.State))
 	}

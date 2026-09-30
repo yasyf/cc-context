@@ -12,7 +12,7 @@ import (
 )
 
 func (r *Relocator) command(ctx context.Context, git string, args ...string) (*exec.Cmd, *bytes.Buffer) {
-	cmd := exec.CommandContext(ctx, git, append([]string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--no-optional-locks"}, args...)...)
+	cmd := exec.CommandContext(ctx, git, append([]string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--no-optional-locks"}, args...)...) //nolint:gosec // git is the absolute path the request validated; the argv is the relocator's own
 	cmd.Env = r.cfg.GitEnv
 	stderr := &bytes.Buffer{}
 	cmd.Stderr = stderr
@@ -39,7 +39,7 @@ func (r *Relocator) stream(ctx context.Context, git string, delim byte, visit fu
 	}
 	scanErr := eachRecord(stdout, delim, visit)
 	if scanErr != nil {
-		stdout.Close()
+		scanErr = errors.Join(scanErr, stdout.Close())
 	}
 	if err := cmd.Wait(); err != nil {
 		return gitFailure(args, err, stderr)

@@ -153,7 +153,7 @@ func (f *fixture) over(journal *cleanup.Journal) {
 }
 
 func (f *fixture) try(dir string, args ...string) (string, error) {
-	cmd := exec.Command(f.git, args...)
+	cmd := exec.Command(f.git, args...) //nolint:gosec // the fixture's resolved git over argv the tests author
 	cmd.Dir = dir
 	cmd.Env = f.env
 	out, err := cmd.CombinedOutput()
@@ -171,7 +171,7 @@ func (f *fixture) run(dir string, args ...string) string {
 
 func (f *fixture) write(path, content string) {
 	f.t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		f.t.Fatalf("write %s: %v", path, err)
 	}
 }
@@ -252,7 +252,7 @@ func (f *fixture) advance(job *cleanup.Job) {
 
 func (f *fixture) park(job *cleanup.Job) {
 	f.t.Helper()
-	f.holdAt(job.Registered)
+	_ = f.holdAt(job.Registered)
 	f.advance(job)
 	if job.Phase != cleanup.PhaseMoved || job.Blocked == nil || job.Blocked.Reason != "activity" {
 		f.t.Fatalf("parked job is at %s with blockage %+v, want moved and blocked on activity", job.Phase, job.Blocked)
@@ -328,7 +328,7 @@ func (f *fixture) trap(job *cleanup.Job) string {
 	f.t.Helper()
 	marker := filepath.Join(f.root, "git-was-run")
 	script := filepath.Join(f.root, "trap-git")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"$@\" >> "+marker+"\nexit 1\n"), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"$@\" >> "+marker+"\nexit 1\n"), 0o700); err != nil { //nolint:gosec // the script stands in for git and is executed
 		f.t.Fatalf("write trap: %v", err)
 	}
 	job.Git = script

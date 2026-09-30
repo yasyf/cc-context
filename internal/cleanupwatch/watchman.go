@@ -277,15 +277,19 @@ type configSnapshot struct {
 	Error   string
 }
 
-func snapshotConfig(root string) configSnapshot {
-	f, err := os.Open(filepath.Join(root, ".watchmanconfig"))
+func snapshotConfig(root string) (snap configSnapshot) {
+	f, err := os.Open(filepath.Join(root, ".watchmanconfig")) //nolint:gosec // root is a watch root Watchman itself reported; .watchmanconfig is its fixed config file
 	if errors.Is(err, fs.ErrNotExist) {
 		return configSnapshot{Raw: json.RawMessage("{}")}
 	}
 	if err != nil {
 		return configSnapshot{Error: err.Error()}
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil && snap.Error == "" {
+			snap.Error = fmt.Sprintf("close .watchmanconfig: %v", err)
+		}
+	}()
 	fi, err := f.Stat()
 	if err != nil {
 		return configSnapshot{Error: err.Error()}
@@ -298,7 +302,7 @@ func snapshotConfig(root string) configSnapshot {
 	if err != nil {
 		return configSnapshot{Error: err.Error()}
 	}
-	snap := configSnapshot{Raw: json.RawMessage(b), Present: true, Dev: uint64(st.Dev), Ino: st.Ino} //nolint:gosec // Stat_t.Dev is int32 on darwin; the same conversion on both sides keeps identities comparable
+	snap = configSnapshot{Raw: json.RawMessage(b), Present: true, Dev: uint64(st.Dev), Ino: st.Ino} //nolint:gosec // Stat_t.Dev is int32 on darwin; the same conversion on both sides keeps identities comparable
 	var v any
 	if err := json.Unmarshal(b, &v); err != nil {
 		snap.Error = fmt.Sprintf("parse .watchmanconfig: %v", err)

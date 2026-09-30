@@ -576,7 +576,7 @@ func TestRetireRefusesDrift(t *testing.T) {
 		},
 		{
 			name: "git dir redirected before the stop",
-			during: func(t *testing.T, f fixture) func(string) {
+			during: func(_ *testing.T, f fixture) func(string) {
 				return onNth("watchman --no-spawn --no-pretty watch-del", 2, func() {
 					moved := f.w.dir("repo/.git/worktrees/wt-moved")
 					f.w.write(filepath.Join(moved, "gitdir"), filepath.Join(f.wt, ".git")+"\n")
@@ -705,7 +705,7 @@ func replace(t *testing.T, dir string) {
 	if err := os.Rename(dir, dir+".moved"); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "packages", "app"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "packages", "app"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -910,7 +910,7 @@ func TestContainmentFollowsIdentityNotSpelling(t *testing.T) {
 		t.Errorf("Plan(%s) = %+v, want the true-case roots and daemon 101", alias, p)
 	}
 	job := filepath.Join(alias, "jobs")
-	if err := os.Mkdir(job, 0o755); err != nil {
+	if err := os.Mkdir(job, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := CheckQuarantine(context.Background(), d, job); !errors.Is(err, ErrWatched) {
