@@ -7153,3 +7153,113 @@ func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
 }
+
+// TestShipRefusesToReplayALandedTrunkCommitOntoItsBranch pins the sequence that
+// put a foreign commit into a pull request: the branch is pushed, trunk lands a
+// squash, the branch is rebased onto it, and ship then finds its pushed head no
+// longer an ancestor. Replaying onto that head moves the branch back off trunk
+// and re-applies the squash as the branch's own commit.
+func TestShipRefusesToReplayALandedTrunkCommitOntoItsBranch(t *testing.T) {
+	f := shipStackedOnALandedTrunk(t)
+	pushedBefore := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/feature")
+	landed := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/main")
+
+	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--no-pr")
+
+	// The damage first, so it is asserted whether or not ship refused: a
+	// verdict read only off the error reads a silent corruption as a pass.
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/feature"); got != pushedBefore {
+		t.Errorf("origin/feature moved to %s, want nothing pushed", got)
+	}
+	if !gitContains(t, f, "HEAD", landed) {
+		t.Error("the branch was moved back off the trunk it was rebased onto")
+	}
+	if got := gitLogSubjects(t, f, landed+"..HEAD"); slices.Contains(got, landedTrunkSubject) {
+		t.Errorf("HEAD carries %v above the landed trunk, want no copy of %q", got, landedTrunkSubject)
+	}
+
+	if err == nil {
+		t.Fatal("ship = nil, want a refusal rather than a replay of the landed commit")
+	}
+	for _, want := range []string{"predates refs/remotes/origin/main", "propose", "ccx vcs push"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("ship error = %v, want it to contain %q", err, want)
+		}
+	}
+}
+
+// TestShipStillReplaysWhenTheRemoteBranchCarriesRealWork keeps the other case
+// honest: a pushed head the local branch lacks is somebody's work, and ship
+// must still rebase onto it rather than refuse.
+func TestShipStillReplaysWhenTheRemoteBranchCarriesRealWork(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"))
+	shipCommitOwnWork(t, f, "own.txt", "branch work")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
+	shipPushFromAnotherClone(t, f, "feature", "theirs.txt", "theirs")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	theirs := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/feature")
+	writeShipFile(t, f.Dir, "f.txt", "changed\n")
+
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--no-pr"); err != nil {
+		t.Fatalf("ship error = %v, want the replay onto the remote branch's own work", err)
+	}
+	if !gitContains(t, f, "HEAD", theirs) {
+		t.Error("ship dropped the work the remote branch carried")
+	}
+}
+
+const landedTrunkSubject = "upstream"
+
+// shipStackedOnALandedTrunk leaves feature pushed at a head that predates a
+// commit trunk has since landed, with the branch already rebased onto it and
+// an edit waiting for ship to commit.
+func shipStackedOnALandedTrunk(t *testing.T) *vcstest.Fixture {
+	t.Helper()
+	f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"))
+	shipCommitOwnWork(t, f, "own.txt", "branch work")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
+	shipDivergeRemote(t, f, "main", "landed.txt", "landed\n")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "refs/remotes/origin/main")
+	writeShipFile(t, f.Dir, "f.txt", "changed\n")
+	return f
+}
+
+// shipPushFromAnotherClone lands a commit on branch from a clone standing on
+// it, the collaborator push shipDivergeRemote cannot make: its clone stands on
+// the default branch, so a push to a branch ahead of it is rejected.
+func shipPushFromAnotherClone(t *testing.T, f *vcstest.Fixture, branch, name, subject string) {
+	t.Helper()
+	clone := filepath.Join(filepath.Dir(f.Dir), "collaborator")
+	mustRun(t, f.Env(), filepath.Dir(f.Dir), "git", "clone", "-q", "--branch", branch, f.RemoteDir, clone)
+	mustRun(t, f.Env(), clone, "git", "config", "user.email", "t@t.t")
+	mustRun(t, f.Env(), clone, "git", "config", "user.name", "t")
+	writeShipFile(t, clone, name, subject+"\n")
+	mustRun(t, f.Env(), clone, "git", "add", name)
+	mustRun(t, f.Env(), clone, "git", "commit", "-qm", subject)
+	mustRun(t, f.Env(), clone, "git", "push", "-q", "origin", branch)
+}
+
+func shipCommitOwnWork(t *testing.T, f *vcstest.Fixture, name, subject string) {
+	t.Helper()
+	writeShipFile(t, f.Dir, name, subject+"\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", name)
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", subject)
+}
+
+func gitContains(t *testing.T, f *vcstest.Fixture, ref, maybe string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", maybe, ref) //nolint:gosec // fixture TempDir, literal argv
+	cmd.Dir = f.Dir
+	cmd.Env = append(os.Environ(), f.Env()...)
+	return cmd.Run() == nil
+}
+
+func gitLogSubjects(t *testing.T, f *vcstest.Fixture, revRange string) []string {
+	t.Helper()
+	out := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", revRange)
+	if out == "" {
+		return nil
+	}
+	return strings.Split(out, "\n")
+}
