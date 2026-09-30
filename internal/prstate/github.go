@@ -20,7 +20,7 @@ const (
 
 	prFields = "number state title createdAt author { login } baseRefName headRefName headRefOid mergeable mergeStateStatus " +
 		"reviewDecision changedFiles mergeCommit { oid } labels(first: 50) { nodes { name } } " +
-		"checks: commits(last: 1) { nodes { commit { status { state } statusCheckRollup { state contexts(first: 100) { nodes { __typename " +
+		"checks: commits(last: 1) { nodes { commit { status { state } statusCheckRollup { state contexts(last: 100) { nodes { __typename " +
 		"... on CheckRun { name conclusion status } ... on StatusContext { context state } } } } } } }"
 	activityFields = " comments(last: 100) { nodes { body } }"
 	probeQuery     = "query { viewer { login } rateLimit { remaining resetAt } }"
@@ -312,7 +312,7 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 		ReviewDecision:   node.ReviewDecision,
 		ChangedFiles:     node.ChangedFiles,
 		Activity:         last.Activity,
-		Graphite:         last.Graphite,
+		Graphite:         p.infos[t.number],
 	}
 	if node.Author != nil {
 		pr.Author = node.Author.Login
@@ -341,9 +341,6 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 			}
 		}
 	}
-	if info, ok := p.infos[t.number]; ok {
-		pr.Graphite = info
-	}
 	if t.squash == "" {
 		return pr, nil
 	}
@@ -371,7 +368,7 @@ func (g *GitHub) queueRecords(ctx context.Context, numbers []int) map[int]*gtapi
 		Callsite:   "ccx",
 	})
 	if err != nil {
-		_, _ = fmt.Fprintf(g.warn, "prstate: graphite: %v; queue state held from the last poll\n", err)
+		_, _ = fmt.Fprintf(g.warn, "prstate: graphite: %v; this poll carries no queue state\n", err)
 		return nil
 	}
 	byNumber := make(map[int]*gtapi.PullRequestInfo, len(infos))

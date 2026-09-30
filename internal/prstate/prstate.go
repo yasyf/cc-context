@@ -52,13 +52,14 @@ type Want struct {
 
 // State is a repository's shared view as of its last poll.
 type State struct {
-	PolledAt time.Time       `json:"polledAt"`
-	Trunk    Trunk           `json:"trunk"`
-	Lanes    map[string]Lane `json:"lanes,omitempty"`
-	PRs      map[int]PR      `json:"prs,omitempty"`
-	Rate     Rate            `json:"rate"`
-	Backoff  *Backoff        `json:"backoff,omitempty"`
-	Leases   Leases          `json:"leases"`
+	PolledAt    time.Time       `json:"polledAt"`
+	AttemptedAt time.Time       `json:"attemptedAt"`
+	Trunk       Trunk           `json:"trunk"`
+	Lanes       map[string]Lane `json:"lanes,omitempty"`
+	PRs         map[int]PR      `json:"prs,omitempty"`
+	Rate        Rate            `json:"rate"`
+	Backoff     *Backoff        `json:"backoff,omitempty"`
+	Leases      Leases          `json:"leases"`
 }
 
 // PR is one pull request as the last poll that asked for it read it.
@@ -232,42 +233,46 @@ func (s *Store) read(ctx context.Context, want Want) (State, error) {
 		if err != nil {
 			return st, err
 		}
-		st.Backoff, st.Rate = nil, rate
+		st.Backoff, st.Rate = quotaBackoff(rate, now), rate
+		if st.Backoff != nil {
+			return st, s.refuse(st)
+		}
 	}
-	if wait := st.PolledAt.Add(MinInterval).Sub(now); wait > 0 {
+	if wait := st.AttemptedAt.Add(MinInterval).Sub(now); wait > 0 {
 		if err := s.sleep(ctx, wait); err != nil {
 			return st, err
 		}
 		now = s.now()
 	}
-	if err := s.pollInto(ctx, &st, st.request(now), now); err != nil {
+	req := st.request(now)
+	if err := s.pollInto(ctx, &st, req, now); err != nil {
 		return st, err
 	}
-	if unread := st.unread(want, now); len(unread) > 0 {
+	if unread := st.unread(req.Prefixes, now); len(unread) > 0 && st.Backoff == nil {
 		if err := s.pollInto(ctx, &st, Want{PRs: unread}, now); err != nil {
 			return st, err
 		}
 	}
-	if err := s.save(st); err != nil {
-		return st, err
-	}
 	if missing := slices.DeleteFunc(slices.Clone(want.PRs), func(n int) bool { _, ok := st.PRs[n]; return ok }); len(missing) > 0 {
 		return st, &MissingError{Repo: s.src.owner + "/" + s.src.name, PRs: missing}
+	}
+	if st.Backoff != nil && !st.fresh(want, now) {
+		return st, &LimitedError{Backoff: *st.Backoff}
 	}
 	return st, nil
 }
 
 func (s *Store) pollInto(ctx context.Context, st *State, req Want, now time.Time) error {
+	st.AttemptedAt = now
 	poll, err := s.src.poll(ctx, req, st.PRs)
 	if wait, limited := ghapi.RateLimited(err); limited {
 		st.Backoff = limitedAt(now, wait)
 		return s.refuse(*st)
 	}
-	if err != nil {
-		return err
+	if err == nil {
+		st.absorb(poll, now)
 	}
-	st.absorb(poll, now)
-	return nil
+	return errors.Join(err, s.save(*st))
 }
 
 func (s *Store) refuse(st State) error {
@@ -328,16 +333,16 @@ func (st State) fresh(want Want, now time.Time) bool {
 	}
 	for _, prefix := range want.Prefixes {
 		lane, ok := st.Lanes[prefix]
-		if !ok || now.Sub(lane.PolledAt) >= MinInterval {
+		if !ok || now.Sub(lane.PolledAt) >= MinInterval || !st.fresh(Want{PRs: lane.PRs}, now) {
 			return false
 		}
 	}
 	return true
 }
 
-func (st State) unread(want Want, now time.Time) []int {
+func (st State) unread(prefixes []string, now time.Time) []int {
 	var unread []int
-	for _, prefix := range want.Prefixes {
+	for _, prefix := range prefixes {
 		for _, n := range st.Lanes[prefix].PRs {
 			if pr := st.PRs[n]; pr.PolledAt.Before(now) && !pr.settled() && !slices.Contains(unread, n) {
 				unread = append(unread, n)
@@ -403,13 +408,18 @@ func (st *State) absorb(p poll, now time.Time) {
 			delete(st.PRs, n)
 		}
 	}
-	if p.rate.Remaining < rateFloor && p.rate.ResetAt.After(now) {
-		st.Backoff = &Backoff{Since: now, Until: p.rate.ResetAt, ProbeAt: p.rate.ResetAt, Reason: "quota below the floor"}
+	st.Backoff = quotaBackoff(p.rate, now)
+}
+
+func quotaBackoff(rate Rate, now time.Time) *Backoff {
+	if rate.Remaining >= rateFloor || !rate.ResetAt.After(now) {
+		return nil
 	}
+	return &Backoff{Since: now, Until: rate.ResetAt, ProbeAt: rate.ResetAt, Reason: "quota below the floor"}
 }
 
 func (pr PR) settled() bool {
-	return pr.State != "" && pr.State != "OPEN" && len(pr.SquashOn) > 0
+	return pr.State != "" && pr.State != "OPEN" && len(pr.SquashOn) > 0 && pr.Graphite != nil
 }
 
 // QueueLabelled reports whether pr carries a label Graphite's queue watches.

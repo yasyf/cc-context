@@ -61,7 +61,7 @@ func TestPollReadsQueueActivityAndWhereTheSquashLanded(t *testing.T) {
 	}
 }
 
-func TestPollHoldsTheLastGraphiteRecordWhenGraphiteFails(t *testing.T) {
+func TestAGraphiteFailureLeavesTheQueueRecordOutButStillReadsActivity(t *testing.T) {
 	t.Parallel()
 	c := &clock{now: epoch}
 	gt := stubGraphite(t, http.StatusOK, `{"prNumber":190,"state":"OPEN","baseRefName":"main","mergeQueueStatus":{"isInGraphiteMq":true}}`)
@@ -76,8 +76,8 @@ func TestPollHoldsTheLastGraphiteRecordWhenGraphiteFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !inQueue(st.PRs[190].Graphite) || !strings.Contains(gh.queries[0], "comments(last: 100)") {
-		t.Errorf("#190 = %+v, want the queued record held and its activity still read", st.PRs[190])
+	if st.PRs[190].Graphite != nil || !strings.Contains(gh.queries[0], "comments(last: 100)") {
+		t.Errorf("#190 = %+v, want no stale queue record, and its activity still read off the last one", st.PRs[190])
 	}
 }
 
@@ -131,8 +131,8 @@ func TestPollDecodesARecordedGitHubResponse(t *testing.T) {
 		pr.Author != "yasyf" || pr.ChangedFiles != 5 || pr.CreatedAt.IsZero() {
 		t.Errorf("#190 = %+v", pr)
 	}
-	if fmt.Sprint(pr.SquashOn) != "[main]" || !pr.settled() {
-		t.Errorf("#190 squash on %v, want main from GitHub's own merge", pr.SquashOn)
+	if fmt.Sprint(pr.SquashOn) != "[main]" || pr.settled() {
+		t.Errorf("#190 squash on %v, want main from GitHub's own merge, still polled without a Graphite record", pr.SquashOn)
 	}
 	if pr.Rollup == nil || pr.Rollup.State != "SUCCESS" || len(pr.Rollup.Contexts.Nodes) == 0 || pr.Rollup.Contexts.Nodes[0].Typename != "CheckRun" {
 		t.Errorf("#190 rollup = %+v", pr.Rollup)

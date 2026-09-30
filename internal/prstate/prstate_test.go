@@ -311,7 +311,7 @@ func TestSettledPRsAreNotPolledAgain(t *testing.T) {
 	}
 	if err := seed.save(State{
 		PolledAt: epoch,
-		PRs:      map[int]PR{188: {Number: 188, State: "MERGED", SquashOn: []string{"main"}, PolledAt: epoch}},
+		PRs:      map[int]PR{188: {Number: 188, State: "MERGED", SquashOn: []string{"main"}, Graphite: &gtapi.PullRequestInfo{PRNumber: 188}, PolledAt: epoch}},
 		Leases:   Leases{PRs: map[int]time.Time{188: epoch}},
 	}); err != nil {
 		t.Fatal(err)
@@ -368,5 +368,74 @@ func TestLanePrefixReadsTheRecordsOfPRsItDiscovers(t *testing.T) {
 	}
 	if gh.requests() != 3 || gh.vars[2]["l0"] != "yasyf/gh-budget/" || gh.vars[2]["p0"] != float64(190) {
 		t.Errorf("next poll vars = %v, want the lane and its leased PR in one query", gh.vars[2])
+	}
+}
+
+func TestAProbeThatFindsTheQuotaDrainedWaitsForItsReset(t *testing.T) {
+	t.Parallel()
+	limited := reply{status: http.StatusForbidden, header: map[string]string{"Retry-After": "60"}, body: `{"message":"secondary rate limit"}`}
+	drained := reply{body: `{"data":{"viewer":{"login":"yasyf"},"rateLimit":{"remaining":50,"resetAt":"2026-09-30T07:40:00Z"}}}`}
+	c := &clock{now: epoch}
+	store, gh := newStore(t, t.TempDir(), c, nil, limited, drained)
+
+	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err == nil {
+		t.Fatal("first read succeeded")
+	}
+	c.now = epoch.Add(time.Minute)
+	_, err := store.Read(testCtx(t), Want{PRs: []int{190}})
+	var refused *LimitedError
+	if !errors.As(err, &refused) || !refused.ProbeAt.Equal(time.Date(2026, 9, 30, 7, 40, 0, 0, time.UTC)) || gh.requests() != 2 {
+		t.Errorf("read = %v after %d requests, want the probe's drained quota to hold polling until its reset", err, gh.requests())
+	}
+}
+
+func TestAFailedPollStillSpacesTheNextOne(t *testing.T) {
+	t.Parallel()
+	c := &clock{now: epoch}
+	store, gh := newStore(t, t.TempDir(), c, nil, reply{status: http.StatusBadGateway}, ok(t, "poll-190.json"))
+
+	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err == nil {
+		t.Fatal("read through a 502 succeeded")
+	}
+	c.now = epoch.Add(5 * time.Second)
+	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.slept) != 1 || c.slept[0] != 25*time.Second || gh.requests() != 2 {
+		t.Errorf("slept %v over %d requests, want the retry held to 30s after the failed attempt", c.slept, gh.requests())
+	}
+}
+
+func TestALaneIsFreshOnlyWithEveryMemberRead(t *testing.T) {
+	t.Parallel()
+	st := State{
+		Lanes: map[string]Lane{"yasyf/gh-budget/": {PRs: []int{190}, PolledAt: epoch}},
+		PRs:   map[int]PR{},
+	}
+	if st.fresh(Want{Prefixes: []string{"yasyf/gh-budget/"}}, epoch) {
+		t.Error("a lane whose member was never read reads fresh")
+	}
+	st.PRs[190] = PR{Number: 190, State: "OPEN", PolledAt: epoch}
+	if !st.fresh(Want{Prefixes: []string{"yasyf/gh-budget/"}}, epoch.Add(time.Second)) {
+		t.Error("a lane with every member just read reads stale")
+	}
+}
+
+func TestAnotherReadersPollReadsWhatALeasedLaneDiscovers(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := &clock{now: epoch}
+	laneReader, _ := newStore(t, dir, c, nil, ok(t, "poll-lane.json"), ok(t, "poll-190.json"))
+	if _, err := laneReader.Read(testCtx(t), Want{Prefixes: []string{"yasyf/gh-budget/"}}); err != nil {
+		t.Fatal(err)
+	}
+	c.now = epoch.Add(MinInterval)
+	other, gh := newStore(t, dir, c, nil, ok(t, "poll-lane-189.json"), ok(t, "poll-191.json"))
+	st, err := other.Read(testCtx(t), Want{PRs: []int{189}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gh.requests() != 2 || gh.vars[1]["p0"] != float64(191) || st.PRs[191].State != "OPEN" {
+		t.Errorf("vars %v, #191 %+v; want the lane's new #191 read in the same Read", gh.vars, st.PRs[191])
 	}
 }
