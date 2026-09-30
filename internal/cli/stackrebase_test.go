@@ -1234,15 +1234,112 @@ func TestStackRebasePlansOnlyThisLane(t *testing.T) {
 			if err != nil {
 				t.Fatalf("dry run: %v", err)
 			}
-			var planned []string
-			for _, line := range strings.Split(out, "\n")[1:] {
-				planned = append(planned, strings.SplitN(line, shipSep, 2)[0])
-			}
-			slices.Sort(planned)
-			if !slices.Equal(planned, tt.want) {
+			if planned := stackPlannedBranches(out); !slices.Equal(planned, tt.want) {
 				t.Errorf("planned %v, want %v; plan:\n%s", planned, tt.want, out)
 			}
 		})
+	}
+}
+
+// stackStoppedFixture cuts dns → valkey and an independent other off trunk,
+// then another lane's sanddb → restate on valkey, the tip of the first stack.
+func stackStoppedFixture(t *testing.T) *vcstest.Fixture {
+	t.Helper()
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "dns", "valkey")
+	shipGTStack(t, f, "sanddb", "restate")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	shipGTStack(t, f, "other")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	return f
+}
+
+func stackPlannedBranches(out string) []string {
+	lines := strings.Split(out, "\n")[1:]
+	planned := make([]string, 0, len(lines))
+	for _, line := range lines {
+		planned = append(planned, strings.SplitN(line, shipSep, 2)[0])
+	}
+	slices.Sort(planned)
+	return planned
+}
+
+func TestStackRebaseStopsAtTo(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		from string
+		args []string
+		want []string
+	}{
+		{name: "the whole upstack by default", from: "dns", want: []string{"dns", "restate", "sanddb", "valkey"}},
+		{name: "stopped at the first stack's tip", from: "dns", args: []string{"--to", "valkey"}, want: []string{"dns", "valkey"}},
+		{name: "stopped mid-way up the second stack", from: "dns", args: []string{"--to", "sanddb"}, want: []string{"dns", "sanddb", "valkey"}},
+		{name: "stopped at the branch checked out", from: "valkey", args: []string{"--to", "valkey"}, want: []string{"dns", "valkey"}},
+		{name: "all lanes", from: "dns", args: []string{"--all-lanes"}, want: []string{"dns", "other", "restate", "sanddb", "valkey"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := stackStoppedFixture(t)
+			stubStackPRs(t, f, nil)
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", tt.from)
+
+			out, _, err := runStackCmd(t, f, append([]string{"rebase", "--dry-run", "--no-push"}, tt.args...)...)
+			if err != nil {
+				t.Fatalf("dry run: %v", err)
+			}
+			if planned := stackPlannedBranches(out); !slices.Equal(planned, tt.want) {
+				t.Errorf("planned %v, want %v; plan:\n%s", planned, tt.want, out)
+			}
+		})
+	}
+}
+
+func TestStackRebaseRefusesToOutsideTheStack(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		from string
+		args []string
+		want string
+	}{
+		{name: "another stack", from: "dns", args: []string{"--to", "other"}, want: "--to other is neither dns nor stacked above it"},
+		{name: "below the branch checked out", from: "valkey", args: []string{"--to", "dns"}, want: "--to dns is neither valkey nor stacked above it"},
+		{name: "below a named branch", from: "dns", args: []string{"--to", "valkey", "--parent", "restate=valkey"}, want: "--to valkey is neither restate nor stacked above it"},
+		{name: "untracked", from: "dns", args: []string{"--to", "nowhere"}, want: "--to nowhere names a branch gt does not track"},
+		{name: "trunk", from: "dns", args: []string{"--to", "main"}, want: "--to main is trunk"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := stackStoppedFixture(t)
+			stubStackPRs(t, f, nil)
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", tt.from)
+
+			_, _, err := runStackCmd(t, f, append([]string{"rebase", "--dry-run", "--no-push"}, tt.args...)...)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestStackRestackStopsAtTo(t *testing.T) {
+	t.Parallel()
+	f := stackStoppedFixture(t)
+	stubStackPRs(t, f, nil)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "dns")
+	sanddb := gitAt(t, f.Env(), f.Dir, "rev-parse", "sanddb")
+
+	if _, _, err := runStackCmd(t, f, "restack", "--to", "valkey"); err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "valkey..refs/remotes/origin/main"); got != "0" {
+		t.Errorf("valkey is %s commit(s) behind trunk, want it restacked", got)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "sanddb"); got != sanddb {
+		t.Errorf("sanddb moved to %s, want it left at %s above --to valkey", got, sanddb)
 	}
 }
 
