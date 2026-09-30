@@ -386,7 +386,7 @@ func stackFinishPublication(ctx context.Context, cmd *cobra.Command, l lane, com
 		}
 	}
 	if !run.Publishing {
-		if landed, err := stackLandedSince(ctx, l.dir(), run.Trunk, live); err != nil {
+		if landed, err := stackLandedSince(ctx, l.dir(), run, live); err != nil {
 			return err
 		} else if len(landed) > 0 {
 			return stackReplanLanded(ctx, cmd, l, commonDir, run, landed)

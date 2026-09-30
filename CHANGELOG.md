@@ -106,6 +106,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack submit` reopens a pull request its landed parent's deletion
+  closed.** When a parent landed and its branch was deleted before the child
+  was resubmitted, GitHub closed the child's pull request. `stack submit`
+  refused it and pointed at `ccx vcs stack drop --repair`, which refused in
+  turn because the landed parent was gone from the remote and pointed back at
+  `stack submit`. In Forge-AI/monorepo, #28192 sat in that loop. A stack
+  rebase or submit now puts the deleted base back, reopens the pull request,
+  retargets it onto the branch's new parent, deletes the base again, and only
+  then pushes, since GitHub will not reopen a pull request whose head was
+  force-pushed after it closed. A new parent the remote does not carry yet is
+  refused with the command that publishes it.
+
 - **`ccx vcs stack rebase` and `stack restack` stay in this lane.** A run
   planned every branch stacked on the bottom of each branch it named, so a
   `--parent` onto another lane's branch, or a lane cut from a shared ancestor,

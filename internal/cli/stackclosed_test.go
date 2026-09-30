@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -83,7 +84,7 @@ func TestStackRebaseDropsAClosedPullRequestThatConflictsWithTrunk(t *testing.T) 
 	}
 }
 
-func TestStackSubmitRefusesAPullRequestClosedByItsBaseDeletion(t *testing.T) {
+func TestStackSubmitRefusesToReopenOntoAnUnpublishedParent(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "a", "b")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "b")
@@ -94,10 +95,73 @@ func TestStackSubmitRefusesAPullRequestClosedByItsBaseDeletion(t *testing.T) {
 	shipResetLog(t, f)
 
 	_, _, err := runStackCmd(t, f, "submit")
-	if err == nil || !strings.Contains(err.Error(), "b's pull request #2 closed when its base a was deleted — reopen and retarget it with ccx vcs stack drop --repair") {
+	if err == nil || !strings.Contains(err.Error(), "b's pull request #2 closed when its base a was deleted, and its new parent a is not on the remote to reopen it onto — publish a first with ccx vcs stack submit --to a") {
 		t.Fatalf("stack submit = %v, want the base-deleted close refused", err)
 	}
 	if refs := gtPushedRefs(shipGTInvocations(t, f)); len(refs) != 0 {
 		t.Errorf("pushed %v, want nothing", refs)
+	}
+}
+
+// TestStackSubmitReopensAPullRequestItsLandedParentsDeletionClosed is the loop
+// between submit and drop --repair: the parent landed and its branch was
+// deleted, closing the child's pull request, and each command pointed at the
+// other. Submit from the child reopens it onto trunk before pushing.
+func TestStackSubmitReopensAPullRequestItsLandedParentsDeletionClosed(t *testing.T) {
+	for _, verb := range []string{"submit", "rebase"} {
+		t.Run(verb, func(t *testing.T) {
+			stackReopensOnto(t, verb)
+		})
+	}
+}
+
+func stackReopensOnto(t *testing.T, verb string) {
+	t.Helper()
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "a", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a", "b")
+	landed := gitAt(t, f.Env(), f.Dir, "rev-parse", "a")
+	restackSquashRemote(t, f, "main", "a (#1)", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "--delete", "a")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"a": {Number: 1, Title: "a", State: "MERGED", Base: "main", Head: landed, Landed: true},
+		"b": {Number: 2, Title: "b", State: "CLOSED", Base: "a"},
+	})
+	gh := installDropGH(t, f, map[string]dropSeed{"b": {number: 2, state: "CLOSED", base: "a"}})
+	gh.markDeleted("a")
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, verb)
+	if err != nil {
+		t.Fatalf("stack %s: %v", verb, err)
+	}
+	if !strings.Contains(out, "reopen (base a deleted)") {
+		t.Errorf("report = %q, want it to name the reopen", out)
+	}
+	if got := gh.pr(2); got != "OPEN main" {
+		t.Errorf("b's PR = %q, want %q", got, "OPEN main")
+	}
+	invocations := shipGTInvocations(t, f)
+	resurrected := dropStep(t, invocations, "git", "push", "origin", "refs/heads/main:refs/heads/a")
+	reopened := dropStep(t, invocations, "gh", "api", "PATCH", "repos/yasyf/cc-context/pulls/2", "state=open")
+	retargeted := dropStep(t, invocations, "gh", "api", "PATCH", "repos/yasyf/cc-context/pulls/2", "base=main")
+	redeleted := dropStep(t, invocations, "git", "push", "--delete", "a")
+	pushed := dropStep(t, invocations, "git", "push", "--atomic")
+	if resurrected >= reopened || reopened >= retargeted || retargeted >= redeleted || redeleted >= pushed {
+		t.Errorf("steps ran at resurrect=%d reopen=%d retarget=%d delete=%d push=%d, want that order", resurrected, reopened, retargeted, redeleted, pushed)
+	}
+	if gitBranchExists(t, f.Env(), f.RemoteDir, "a") {
+		t.Error("origin still carries the resurrected a")
+	}
+	if n := gitAt(t, f.Env(), f.RemoteDir, "rev-list", "--count", "main..b"); n != "1" {
+		t.Errorf("origin b holds %s commits over trunk, want its own 1", n)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"b"}) {
+		t.Errorf("submit posts = %v, want b alone", heads)
+	}
+	if entry := api.submitEntry("b"); entry.Action != gtapi.SubmitUpdate || entry.PRNumber != 2 || entry.Base != "main" {
+		t.Errorf("b submitted as %s #%d onto %s, want an update of #2 onto main", entry.Action, entry.PRNumber, entry.Base)
 	}
 }

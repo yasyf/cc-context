@@ -1527,6 +1527,12 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	if err != nil {
 		return nil, nil, err
 	}
+	var reopened map[string]dropPR
+	if s.publication != nil {
+		if reopened, err = stackReopenBaseGone(ctx, l, owner+"/"+name, tr.Remote(), s.publication); err != nil {
+			return nil, nil, err
+		}
+	}
 	client := gtAPI(ctx)
 	var synced gtapi.RepoSync
 	var infos []gtapi.PullRequestInfo
@@ -1566,6 +1572,12 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			known[pr.HeadRefName] = pr
 			open[pr.HeadRefName] = pr.PRNumber
 			entries[pr.HeadRefName] = stackEntry{Branch: pr.HeadRefName, PR: pr.PRNumber, URL: pr.URL, HasBody: strings.TrimSpace(pr.Body) != "", State: string(pr.State)}
+		}
+	}
+	for branch, pr := range reopened {
+		if _, listed := open[branch]; !listed {
+			open[branch] = pr.Number
+			entries[branch] = stackEntry{Branch: branch, PR: pr.Number, URL: pr.URL, HasBody: true, State: string(gtapi.PROpen)}
 		}
 	}
 
