@@ -3121,46 +3121,6 @@ func stackSaveRun(run *stackRebaseRun) error {
 	return nil
 }
 
-func stackQueryPRs(ctx context.Context, dir render.Dir, trunk string, branches []string) (map[string]*stackPR, error) {
-	prs := map[string]*stackPR{}
-	var closes []prQueueClose
-	byNumber := map[int]*stackPR{}
-	for _, branch := range branches {
-		p, found, err := ghNewestPull(ctx, dir, branch)
-		if err != nil {
-			return nil, err
-		}
-		if !found {
-			continue
-		}
-		if p.State == "open" {
-			if p, err = ghPullAt(ctx, dir, p.Number); err != nil {
-				return nil, err
-			}
-		}
-		landing, err := ghLanding(ctx, dir, p, true)
-		if err != nil {
-			return nil, err
-		}
-		pr := &stackPR{
-			Number: p.Number, URL: p.HTMLURL, Title: p.Title, Body: p.Body, State: landing.State,
-			Base: p.Base.Ref, Head: p.Head.SHA, Mergeable: p.mergeable(), Labels: p.labelNames(),
-		}
-		switch landing.verdict(true) {
-		case prLanded:
-			pr.Landed = true
-		case prQueueClosed:
-			closes = append(closes, prQueueClose{Number: p.Number, Base: trunk})
-			byNumber[p.Number] = pr
-		}
-		prs[branch] = pr
-	}
-	for number, landed := range resolveQueueLandings(ctx, dir, closes) {
-		byNumber[number].Landed = landed
-	}
-	return prs, nil
-}
-
 func stackMarkBaseGone(ctx context.Context, dir render.Dir, tr vcs.Trunk, prs map[string]*stackPR) error {
 	argv := []string{"ls-remote", "--heads", tr.Remote()}
 	var closed []*stackPR

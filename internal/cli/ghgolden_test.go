@@ -188,6 +188,8 @@ var ghGoldenUnnormalized = map[string]ghGoldenPayload{
 	"api/reviews-paginate-page3.body":           {noFinalNewline: true},
 	"api/reviews-pull-missing.body":             {noFinalNewline: true},
 	"api/reviews-reviews.body":                  {noFinalNewline: true},
+	"api/stack-graphql-foreign.body":            {noFinalNewline: true},
+	"api/stack-graphql-own.body":                {noFinalNewline: true},
 	"cli/downstack-graphql-one.stdout":          {noFinalNewline: true},
 	"cli/downstack-graphql-three.stdout":        {noFinalNewline: true},
 	"cli/guidelines-profile-found.stdout":       {noFinalNewline: true},

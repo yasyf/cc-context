@@ -162,10 +162,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at its own stop. When a generator also owns a kept file, the deletion is
   staged after that generator runs so it cannot restore the deleted file.
 
-- **`ccx vcs stack rebase` and `stack submit` keep working when GitHub
-  refuses GraphQL.** They read each branch's pull request through GitHub's
-  REST API, so a GraphQL budget another tool used up, or a GraphQL
-  secondary rate limit, no longer blocks a restack or a push.
+- **`ccx vcs stack rebase` batches pull request reads over GraphQL.**
+  `stack submit`, `stack restack`, `stack continue`, and
+  `ccx vcs ship --tip-only` use the same read on the Graphite lane. On
+  2026-09-30, parallel lanes in Forge-AI/monorepo exhausted their shared
+  token's REST budget. `ship --tip-only` and `stack rebase` failed with
+  `API rate limit exceeded for user ID 709645` (HTTP `403`), while GraphQL
+  had 4999/5000 points left.
+
+  Queries of up to 40 branches now replace the REST reads per branch,
+  keeping large `--all-lanes` reads within the GitHub limit of 500,000 nodes
+  and its request timeout. A GraphQL rate-limit refusal or unavailable
+  repository metadata sends the read to the previous REST
+  path; `gh` fills `{owner}/{repo}` from the checkout. Other GraphQL
+  failures stop the run.
+
+  The query takes the newest PR from this repository among the 10 newest
+  per head name. If forks fill those 10 slots and `totalCount` shows more
+  PRs exist, only that branch is read
+  over REST with its owner-qualified filter. Landing checks are unchanged.
 
 - **`ccx vcs stack rebase` runs on separate stacks no longer block each
   other.** Each run keeps its state under its stack's root branch, so lanes
