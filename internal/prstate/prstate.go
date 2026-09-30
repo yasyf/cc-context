@@ -193,7 +193,7 @@ func Open(root string, src *GitHub) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("prstate: create %s: %w", dir, err)
 	}
-	return &Store{dir: dir, src: src, now: time.Now, sleep: sleep}, nil
+	return &Store{dir: dir, src: src, now: func() time.Time { return time.Now().UTC() }, sleep: sleep}, nil
 }
 
 // Read returns the shared view with everything want names at most MinInterval

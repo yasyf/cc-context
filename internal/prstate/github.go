@@ -319,6 +319,9 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 	}
 	if node.MergeCommit != nil {
 		pr.MergeCommit = node.MergeCommit.OID
+		if node.State == "MERGED" {
+			pr.SquashOn = []string{node.BaseRefName}
+		}
 	}
 	for _, label := range node.Labels.Nodes {
 		pr.Labels = append(pr.Labels, label.Name)

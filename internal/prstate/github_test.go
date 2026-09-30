@@ -116,3 +116,34 @@ func TestNewGitHubRejectsAMalformedRepository(t *testing.T) {
 		t.Error("NewGitHub accepted a name without an owner")
 	}
 }
+
+func TestPollDecodesARecordedGitHubResponse(t *testing.T) {
+	t.Parallel()
+	c := &clock{now: epoch}
+	store, gh := newStore(t, t.TempDir(), c, nil, ok(t, "recorded-cc-context-189-190.json"))
+
+	st, err := store.Read(testCtx(t), Want{PRs: []int{189, 190}, Prefixes: []string{"yasyf/gh-budget/"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := st.PRs[190]
+	if pr.State != "MERGED" || pr.HeadRefName != "yasyf/v3-pr-subscribe/pr-watch" || pr.MergeCommit != "6120690334dc2ddbb7f9c6e08a668ee300384bb4" ||
+		pr.Author != "yasyf" || pr.ChangedFiles != 5 || pr.CreatedAt.IsZero() {
+		t.Errorf("#190 = %+v", pr)
+	}
+	if fmt.Sprint(pr.SquashOn) != "[main]" || !pr.settled() {
+		t.Errorf("#190 squash on %v, want main from GitHub's own merge", pr.SquashOn)
+	}
+	if pr.Rollup == nil || pr.Rollup.State != "SUCCESS" || len(pr.Rollup.Contexts.Nodes) == 0 || pr.Rollup.Contexts.Nodes[0].Typename != "CheckRun" {
+		t.Errorf("#190 rollup = %+v", pr.Rollup)
+	}
+	if st.Trunk.Name != "main" || len(st.Trunk.History) != 100 || st.Rate.Remaining == 0 {
+		t.Errorf("trunk %q with %d commits, rate %+v", st.Trunk.Name, len(st.Trunk.History), st.Rate)
+	}
+	if lane, ok := st.Lanes["yasyf/gh-budget/"]; !ok || len(lane.PRs) != 0 {
+		t.Errorf("lane = %+v, want an empty lane recorded", lane)
+	}
+	if gh.requests() != 1 {
+		t.Errorf("requests = %d, want one batched query", gh.requests())
+	}
+}
