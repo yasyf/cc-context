@@ -1,17 +1,28 @@
 package cli
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
-// expansionRe spots a path token the shell never expanded — a leading ~/ or a $
-// opening a variable — inside an error message. A $ before a non-name character
-// (a regex end-anchor, a digit) does not count.
-var expansionRe = regexp.MustCompile(`(?:^|[\s:'"/])~/|\$[A-Za-z_{]`)
+var expansionRe = regexp.MustCompile(`^~/|\$[A-Za-z_{]`)
 
-// ExpansionHint returns a diagnosis line when err's message carries unexpanded
-// shell syntax, so a backend "not found" on '~/x' or '$d/x' explains itself.
-func ExpansionHint(err error) string {
-	if err != nil && expansionRe.MatchString(err.Error()) {
-		return "hint: the path carries unexpanded shell syntax — '~'/'$' inside single quotes never expands; retry with the expanded absolute path"
+// ExpansionHint returns a diagnosis line when one of args carries unexpanded
+// shell syntax and err's message names it, so a backend "not found" on '~/x'
+// or '$d/x' explains itself while output that merely mentions a ~/ path does
+// not.
+func ExpansionHint(err error, args []string) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	for _, arg := range args {
+		if _, value, ok := strings.Cut(arg, "="); ok && strings.HasPrefix(arg, "-") {
+			arg = value
+		}
+		if expansionRe.MatchString(arg) && strings.Contains(msg, arg) {
+			return "hint: the path carries unexpanded shell syntax — '~'/'$' inside single quotes never expands; retry with the expanded absolute path"
+		}
 	}
 	return ""
 }
