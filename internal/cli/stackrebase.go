@@ -109,6 +109,7 @@ type stackRebaseRun struct {
 	TipOnly       bool   `json:"tip_only,omitempty"`
 	DropCommits   bool   `json:"drop_commits,omitempty"`
 	AllLanes      bool   `json:"all_lanes,omitempty"`
+	To            string `json:"to,omitempty"`
 	deferPush     bool
 	Ship          *stackShipIntent         `json:"ship,omitempty"`
 	Aligned       bool                     `json:"aligned,omitempty"`
@@ -176,9 +177,12 @@ type stackRebaseOpts struct {
 	dropCommits bool
 	restack     bool
 	allLanes    bool
+	to          string
 }
 
 const stackDropCommitsUsage = "publish a branch whose local head drops commits its published head carries"
+
+const stackToUsage = "stop at this branch: leave every branch stacked above it out of the run"
 
 // stackPRQuery reads the pull request of every branch of a stack.
 type stackPRQuery func(ctx context.Context, dir render.Dir, trunk string, branches []string) (map[string]*stackPR, error)
@@ -211,8 +215,11 @@ func newStackRebaseCmd() *cobra.Command {
 The stack is this lane: the branch checked out here, the branches below it down
 to trunk, and those stacked above it, with the same for each branch --parent,
 --linearize, or --landed names. Another lane cut from a shared ancestor is left
-out, even when its branches sit on one this run moves. --all-lanes widens the
-run to every branch gt tracks.
+out, even when its branches sit on one this run moves. --to <branch> stops the
+run at <branch>: of the branches stacked above a seed, only those <branch> sits
+on, and <branch> itself, join it. Every seed must be <branch> or sit below it;
+any other <branch> is refused, as is one a member was last published onto. --all-lanes widens the run to every branch gt
+tracks.
 
 Every branch's local and remote head is recorded before anything moves, and each
 branch is replayed from the base it was recorded on (--onto <new parent>
@@ -268,6 +275,8 @@ branch with a pull request sits on is refused before anything moves.`,
 	cmd.Flags().BoolVar(&o.noPush, "no-push", false, "rewrite the local stack and gt's record, but push nothing")
 	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
 	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "rebase every branch gt tracks, not only this lane's")
+	cmd.Flags().StringVar(&o.to, "to", "", stackToUsage)
+	cmd.MarkFlagsMutuallyExclusive("to", "all-lanes")
 	return cmd
 }
 
@@ -678,7 +687,12 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if len(seeds) == 0 {
 		return nil, errors.New("stack rebase: HEAD is not on a stack branch — run it from a working copy holding one, or name the branches with --parent/--linearize")
 	}
-	members, roots, err := stackMembers(retargeted, trunk, seeds)
+	var members, roots, upTo []string
+	if o.to == "" {
+		members, roots, err = stackMembers(retargeted, trunk, seeds)
+	} else if upTo, err = stackUpTo(prefix, retargeted, trunk, seeds, o.to); err == nil {
+		members, roots = gtBottomUp(upTo), upTo[len(upTo)-1:]
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -693,6 +707,9 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		if members, roots, err = stackWithPublishedParents(ctx, l.dir(), retargeted, submitted, trunk, members, roots, overrides); err != nil {
 			return nil, err
 		}
+	}
+	if above := slices.DeleteFunc(slices.Clone(members), func(name string) bool { return upTo == nil || slices.Contains(upTo, name) }); len(above) > 0 {
+		return nil, fmt.Errorf("stack rebase: --to %s cannot stop there: %s, above it, is where a branch of the run was last published", o.to, strings.Join(above, ", "))
 	}
 
 	prs, err := stackPRs(ctx, l.dir(), trunk, members)
@@ -723,7 +740,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, AllLanes: o.allLanes, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, AllLanes: o.allLanes, To: o.to, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left}
 	own := map[string]bool{}
 	if current != "" && current != trunk {
 		down, err := gtDownstack(stackRebasePrefix, retargeted, current, trunk)
@@ -1225,6 +1242,27 @@ func stackMembers(state gtState, trunk string, seeds []string) ([]string, []stri
 		}
 	}
 	return members, roots, nil
+}
+
+// stackUpTo is to's downstack, the branches a run stopped at to holds, refused
+// unless every seed is to or sits below it.
+func stackUpTo(prefix string, state gtState, trunk string, seeds []string, to string) ([]string, error) {
+	if to == trunk {
+		return nil, fmt.Errorf("%s: --to %s is trunk, not a stack branch", prefix, to)
+	}
+	if _, tracked := state[to]; !tracked {
+		return nil, fmt.Errorf("%s: --to %s names a branch gt does not track", prefix, to)
+	}
+	down, err := gtDownstack(prefix, state, to, trunk)
+	if err != nil {
+		return nil, err
+	}
+	for _, seed := range seeds {
+		if !slices.Contains(down, seed) {
+			return nil, fmt.Errorf("%s: --to %s is neither %s nor stacked above it, so the run cannot stop there", prefix, to, seed)
+		}
+	}
+	return down, nil
 }
 
 func stackAncestry(state gtState, trunk string, seeds []string) ([]string, []string, error) {
@@ -2931,7 +2969,7 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	}
 	next, err := stackPlan(ctx, l, commonDir, stackRebaseOpts{
 		members: members, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, noVerify: run.NoVerify, ship: run.Ship,
-		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits, allLanes: run.AllLanes,
+		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits, allLanes: run.AllLanes, to: run.To,
 	})
 	if err != nil {
 		return err

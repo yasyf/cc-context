@@ -31,6 +31,7 @@ func gtBranchCount(n int) string {
 
 type restackOpts struct {
 	noGT bool
+	to   string
 }
 
 func newRestackCmd() *cobra.Command {
@@ -40,7 +41,8 @@ func newRestackCmd() *cobra.Command {
 		Short: "Fetch and restack the working-copy stack onto trunk",
 		Long: `Fetch and restack the working-copy stack onto trunk.
 
-On the gt lane this is ccx vcs stack rebase --no-push. jj rebases the
+On the gt lane this is ccx vcs stack rebase --no-push, and --to stops it at a
+branch the same way. jj rebases the
 working-copy stack onto trunk() and rolls a conflict back. On plain git, trunk
 itself is fast-forwarded, and any other branch is replayed without a checkout
 onto its parent: the fetched base of its open pull request, or the fetched trunk
@@ -55,6 +57,7 @@ it.`,
 		},
 	}
 	cmd.Flags().BoolVar(&o.noGT, "no-gt", false, "ignore a live graphite config and fall back to the jj/git detection")
+	cmd.Flags().StringVar(&o.to, "to", "", stackToUsage+" (gt lane only)")
 	return cmd
 }
 
@@ -65,7 +68,10 @@ func runRestack(cmd *cobra.Command, o restackOpts) error {
 		return err
 	}
 	if l.gt {
-		return runStackRebase(cmd, stackRebaseOpts{noPush: true})
+		return runStackRebase(cmd, stackRebaseOpts{noPush: true, to: o.to})
+	}
+	if o.to != "" {
+		return fmt.Errorf("restack: --to stops a Graphite stack, and this repository is on the %s lane", kindLabel(l.kind))
 	}
 
 	var summary string

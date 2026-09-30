@@ -116,6 +116,7 @@ flag, and Graphite state (including frozen).`,
 func newStackSubmitCmd() *cobra.Command {
 	var o shipOpts
 	var include []string
+	var to string
 	cmd := &cobra.Command{
 		Use:   "submit",
 		Short: "Restack every lane, then submit the whole stack",
@@ -148,6 +149,9 @@ rest of the record contradicts its gt parent: its open pull request is based on
 neither that parent nor the branch a landed parent leaves it on, or its history
 carries none of the parent's own commits. It and everything stacked on it are
 left alone and named on stderr with the step to re-record the parent.
+--to <branch> stops the run at <branch>, leaving every branch stacked above it
+out; a <branch> that is neither the one checked out here nor stacked above it
+is refused.
 
 A tracked branch with no commit past the parent revision gt recorded is an
 empty lane nobody has committed to yet. It and everything stacked on it are
@@ -162,7 +166,7 @@ the push and survive a conflict stop. Naming a branch outside the stack, or one
 the run leaves out, is refused before anything moves.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runStackSubmit(cmd, o, include)
+			return runStackSubmit(cmd, o, include, to)
 		},
 	}
 	cmd.Flags().BoolVar(&o.draft, "draft", false, "open new PRs as drafts")
@@ -171,6 +175,7 @@ the run leaves out, is refused before anything moves.`,
 	cmd.Flags().StringArrayVar(&include, "include", nil, "submit this branch even though another working copy has it checked out (repeatable)")
 	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it (repeatable)")
 	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
+	cmd.Flags().StringVar(&to, "to", "", stackToUsage)
 	return cmd
 }
 
@@ -296,6 +301,24 @@ func gtStackAll(ctx context.Context, dir render.Dir, prefix string) ([]string, g
 	return append(stack, up...), state, nil
 }
 
+// gtStackUpTo narrows gtStackAll's stack to the branches from trunk up to and
+// including to, refused unless to is the current branch or stacked above it.
+func gtStackUpTo(ctx context.Context, dir render.Dir, prefix string, state gtState, to string) ([]string, error) {
+	current, err := gitCurrentBranch(ctx, dir, prefix)
+	if err != nil {
+		return nil, err
+	}
+	trunk, err := gtTrunkBranch(prefix, state)
+	if err != nil {
+		return nil, err
+	}
+	down, err := stackUpTo(prefix, state, trunk, []string{current}, to)
+	if err != nil {
+		return nil, err
+	}
+	return gtBottomUp(down), nil
+}
+
 // stackListLine reads bottom-up, one branch per line, naming the working copy
 // holding it — the answer to which lane a branch has to be worked from. A branch
 // no working copy holds is named as such rather than left blank, since "nowhere"
@@ -316,7 +339,7 @@ func stackListLine(branch, holder, root string, state gtBranchState) string {
 	return strings.Join(fields, shipSep)
 }
 
-func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string) error {
+func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string) error {
 	ctx := cmd.Context()
 	errW := cmd.ErrOrStderr()
 	l, err := resolveLane(ctx, "stack submit", workingDir(ctx), false)
@@ -329,6 +352,11 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string) error {
 	stack, stackState, err := gtStackAll(ctx, l.dir(), "stack submit")
 	if err != nil {
 		return err
+	}
+	if to != "" {
+		if stack, err = gtStackUpTo(ctx, l.dir(), "stack submit", stackState, to); err != nil {
+			return err
+		}
 	}
 	intent, cleanup, err := stackSubmitIntent(cmd, l, o, stack)
 	defer cleanup()
@@ -350,7 +378,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string) error {
 	if err := stackAnnounceSkipped(errW, skipped); err != nil {
 		return err
 	}
-	return runStackRebase(cmd, stackRebaseOpts{members: chain, landed: o.landed, draft: o.draft, ship: intent, submit: true, dropCommits: o.dropCommits})
+	return runStackRebase(cmd, stackRebaseOpts{members: chain, landed: o.landed, draft: o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, to: to})
 }
 
 // stackSubmitIntent carries --pr-title and --pr-body-file into the run as a ship

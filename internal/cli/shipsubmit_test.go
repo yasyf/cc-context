@@ -258,3 +258,24 @@ func TestShipGTResubmitsTheChildOfAResubmittedBranch(t *testing.T) {
 		t.Errorf("submit posts = %v, want b resubmitted beneath its resubmitted parent", heads)
 	}
 }
+
+func TestStackSubmitStopsAtTo(t *testing.T) {
+	f := stackStoppedFixture(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	stubStackPRs(t, f, nil)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "dns")
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "submit", "--to", "valkey"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	refs := gtPushedRefs(shipGTInvocations(t, f))
+	slices.Sort(refs)
+	if !slices.Equal(refs, []string{"dns", "valkey"}) {
+		t.Errorf("pushed %v, want dns and valkey alone", refs)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"dns", "valkey"}) {
+		t.Errorf("submit posts = %v, want dns then valkey", heads)
+	}
+}
