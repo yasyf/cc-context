@@ -76,6 +76,7 @@ func shipRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	t.Helper()
 	f := vcstest.Repo(t, opts...)
 	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{})
+	f.Decorate(func(ctx context.Context) context.Context { return withCleanup(ctx, unsupportedCleanup{}) })
 	return f
 }
 
@@ -820,6 +821,7 @@ exit 0
     if [ -r "$SHIP_LOG.git-switched" ]; then IFS= read -r branch < "$SHIP_LOG.git-switched" || :; fi
     if [ -n "$GIT_DETACHED_AFTER_COMMIT" ] && [ -e "$SHIP_LOG.git-committed" ] && [ ! -e "$SHIP_LOG.git-healed" ]; then branch=; fi
     printf '%s\n' "$branch" ;;
+  "version ") printf 'git version 2.56.0\n' ;;
   "symbolic-ref --short")
     if [ -z "$GIT_TRUNK" ]; then exit 1; fi
     printf 'origin/%s\n' "$GIT_TRUNK" ;;
@@ -1185,6 +1187,8 @@ func setGTStateAfterCreate(t *testing.T, stateJSON string) {
 // gtCommonDirArgv is the lookup every gtmeta read opens with, and gtRefsArgv the
 // branch listing it makes in the metadata directory that lookup answered with.
 var gtCommonDirArgv = []string{"git", "rev-parse", "--path-format=absolute", "--git-common-dir"}
+
+var gitVersionProbe = []string{"git", "version"}
 
 func gtRefsArgv() []string {
 	return gtRefsArgvIn(os.Getenv("GT_META_DIR"))

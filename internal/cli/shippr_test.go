@@ -521,6 +521,7 @@ func TestShipPRGTBothFlags(t *testing.T) {
 	}
 	wantInv := slices.Concat([][]string{
 		nogtProbe,
+		gitVersionProbe,
 		{"git", "branch", "--show-current"},
 		gtCommonDirArgv,
 		gtRefsArgv(),
@@ -580,6 +581,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 			}
 			wantInv := slices.Concat([][]string{
 				nogtProbe,
+				gitVersionProbe,
 				{"git", "branch", "--show-current"},
 				gtCommonDirArgv,
 				gtRefsArgv(),

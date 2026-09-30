@@ -11,6 +11,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
@@ -36,11 +38,15 @@ const (
 	stackVerdictTries   = 4
 	stackStaleAfter     = 5 * time.Minute
 	stackAbandonedAfter = 2 * time.Hour
+	stackReplayMajor    = 2
+	stackReplayMinor    = 56
 )
 
 var stackRebaseStall = 10 * time.Minute
 
 var stackGitRebaseArgs = []string{"-c", "rerere.enabled=false", "-c", "rebase.updateRefs=false", "-c", "core.editor=true", "-c", "core.hooksPath=/dev/null"}
+
+var stackReplayRebaseArgs = []string{"--no-fork-point", "--no-rebase-merges", "--reapply-cherry-picks", "--keep-empty", "--empty=drop"}
 
 type stackPR struct {
 	Number    int      `json:"number"`
@@ -71,7 +77,6 @@ type stackRebaseBranch struct {
 	Local       string            `json:"local"`
 	Remote      string            `json:"remote,omitempty"`
 	Head        string            `json:"head"`
-	HeadRef     string            `json:"head_ref"`
 	OldBase     string            `json:"old_base"`
 	SourceBase  string            `json:"source_base"`
 	Publication *stackPublication `json:"publication,omitempty"`
@@ -86,10 +91,9 @@ type stackRebaseBranch struct {
 }
 
 type stackConflict struct {
-	Branch    string   `json:"branch"`
-	Workspace string   `json:"workspace"`
-	Brief     string   `json:"brief"`
-	Generated []string `json:"generated,omitempty"`
+	Branch    string `json:"branch"`
+	Workspace string `json:"workspace"`
+	Brief     string `json:"brief"`
 }
 
 type stackRebaseRun struct {
@@ -212,11 +216,14 @@ run to every branch gt tracks.
 Every branch's local and remote head is recorded before anything moves, and each
 branch is replayed from the base it was recorded on (--onto <new parent>
 <recorded old parent>), so a push partway through never changes what a child is
-rebased from. A branch whose pull request landed is dropped and its children
-move onto what it sat on, leaving its squashed commits behind. A branch whose
-pull request was closed without landing is dropped the same way, and its own
-commits are never replayed; one GitHub closed because its base branch was
-deleted is refused instead, pointing at ccx vcs stack drop --repair. Other
+rebased from. The replay is git replay's, over the recorded commits alone: it
+checks nothing out, touches no index, runs no hook, and flattens a merge the
+way git rebase --no-rebase-merges does. It needs git 2.56 or newer. A branch
+whose pull request landed is dropped and its children move onto what it sat
+on, leaving its squashed commits behind. A branch whose pull request was closed
+without landing is dropped the same way, and its own commits are never
+replayed; one GitHub closed because its base branch was deleted is refused
+instead, pointing at ccx vcs stack drop --repair. Other
 working copies and local trunk are left untouched. A branch held by another working copy,
 or uncommitted work in the invoking checkout, stops publication before any branch
 moves. Empty lanes and another lane's branches above the one checked out here are
@@ -226,18 +233,18 @@ as the source, no other working copy holds the branch, and the invoking checkout
 when it holds the branch, is clean; any other branch keeps its source, with the
 branches above it, and is named.
 
-A conflict stops the run before any ref moves: the rebase is left in progress
-in a workspace of its own, with both sides' intent written out, and
-ccx vcs stack continue resumes the rest of the stack from there
-(ccx vcs stack abort drops it). rerere is off for every rebase it drives,
+A conflict stops the run before any ref moves: the conflicted branch alone is
+rebased again in a sparse workspace of its own, holding the root files and the
+directory of each conflicted file, and left in progress there with both sides'
+intent written out; ccx vcs stack continue resumes the rest of the stack from
+there (ccx vcs stack abort drops it). rerere is off for every rebase it drives,
 and a rebase is killed only once it has made no progress for ten minutes,
 with the index.lock it held removed.
 A stopped run whose branches have moved since, or that has waited two hours,
 is reclaimed by the next rebase or ship that overlaps it, which removes its
 workspace and says so.
-A stop whose conflicts are all files .ccx.toml lists under [[generated]] does
-not wait: each owning command runs once in the workspace and the rebase
-continues.
+A conflict in a file .ccx.toml lists under [[generated]] stops like any other;
+ccx vcs stack regenerate reruns its generator in the workspace.
 
 After the rewrite, gt's parents are recorded, the stack is force-pushed under
 the remote heads recorded at the start, and one verdict line per pull request
@@ -306,6 +313,9 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 	}
 	if !l.gt {
 		return errors.New("stack rebase: this repository is not on the graphite lane, and a stack is Graphite's — rebase the branch with ccx vcs stack restack instead")
+	}
+	if err := stackRequireGit(ctx, l.dir(), stackRebasePrefix); err != nil {
+		return err
 	}
 	commonDir, err := gtCommonDir(ctx, l.dir(), stackRebasePrefix)
 	if err != nil {
@@ -510,10 +520,11 @@ func stackReclaimConflict(ctx context.Context, cmd *cobra.Command, l lane, commo
 	if err := stackReclaim(ctx, l, commonDir, run); err != nil {
 		return err
 	}
-	if err := stackDropWorkspace(ctx, l, ws); err != nil {
-		return err
+	note, err := stackReleaseWorkspace(ctx, l, commonDir, ws, true)
+	if err != nil {
+		return fmt.Errorf("%w — the stale run of %s is reclaimed", err, strings.Join(run.Roots, ", "))
 	}
-	line = "reclaimed " + line + " — removed " + ws
+	line = "reclaimed " + line + " — " + cmp.Or(note, "removed "+ws)
 	if strings.TrimSpace(status) != "" {
 		line += ", which held uncommitted changes"
 	}
@@ -573,9 +584,6 @@ func stackReclaim(ctx context.Context, l lane, commonDir string, run *stackRebas
 		return fmt.Errorf("stack rebase: the run of %s saved again while it was being reclaimed — re-run", roots)
 	}
 	if err := stackDropPublicationPins(ctx, l.dir(), run); err != nil {
-		return err
-	}
-	if err := stackDropTempRefs(ctx, l.dir(), run); err != nil {
 		return err
 	}
 	for _, root := range run.Roots[1:] {
@@ -775,7 +783,6 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		}
 		b.Local = source.Head
 		if !o.noPush {
-			b.HeadRef = stackTempRef(name)
 			if superseded {
 				b.Publication = receipt
 				b.WasParent = cmp.Or(publishedOn, b.WasParent)
@@ -1317,7 +1324,7 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branch
 func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, name, remote, submitted string, pr *stackPR, declared bool, pin string, dropCommits bool) (stackRebaseBranch, error) {
 	b := stackRebaseBranch{
 		Name: name, WasParent: s.Parents[0].Ref, Local: s.Head, Remote: remote,
-		Head: s.Head, HeadRef: gtRestackRef(name), PR: pr, Held: s.State,
+		Head: s.Head, PR: pr, Held: s.State,
 	}
 	if b.Held == "" && remote != "" && remote != s.Head && (pr == nil || !pr.abandoned()) {
 		ahead, err := gitIsAncestor(ctx, dir, stackRebasePrefix, remote, s.Head)
@@ -1330,7 +1337,7 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 		}
 		switch {
 		case behind:
-			b.Head, b.HeadRef = remote, stackTempRef(name)
+			b.Head = remote
 		case !ahead && remote != submitted:
 			replay, err := stackRemoteReplays(ctx, dir, remote, submitted, pin)
 			if err != nil {
@@ -1465,7 +1472,7 @@ func stackKeepsAncestor(ctx context.Context, dir render.Dir, pin string, b *stac
 			}
 		}
 	}
-	b.Head, b.HeadRef = b.Remote, stackTempRef(b.Name)
+	b.Head = b.Remote
 	return true, nil
 }
 
@@ -1475,7 +1482,7 @@ func stackPinPublished(b *stackRebaseBranch) bool {
 	if b.Remote == "" {
 		return false
 	}
-	b.Head, b.HeadRef = b.Remote, stackTempRef(b.Name)
+	b.Head = b.Remote
 	return true
 }
 
@@ -1861,8 +1868,8 @@ func stackDrive(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 			b.NewHead = b.Head
 			continue
 		}
-		head, err := stackReplay(ctx, l.dir(), b)
-		if errors.Is(err, errReplayConflict) || errors.Is(err, errReplayMerges) {
+		head, err := stackReplay(ctx, l.dir(), run, b)
+		if errors.Is(err, errReplayConflict) {
 			return stackOpenConflict(ctx, cmd, l, commonDir, run, b)
 		}
 		if err != nil {
@@ -1879,91 +1886,135 @@ func stackDrive(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	return stackFinish(ctx, cmd, l, commonDir, run)
 }
 
-// errReplayMerges marks a span git replay refuses to replay: it carries a merge,
-// which a rebase in the conflict workspace flattens instead.
-var errReplayMerges = errors.New("replay: merge commits")
-
-// stackReplay computes a branch's rebased head without moving any ref:
-// replay.refAction=print makes git 2.55 print the update it would otherwise
-// apply, and every earlier git prints it regardless of the key.
-func stackReplay(ctx context.Context, dir render.Dir, b *stackRebaseBranch) (string, error) {
-	own, err := gtRevCount(ctx, stackRebasePrefix, dir, b.OldBase+".."+b.Head)
+func stackReplay(ctx context.Context, dir render.Dir, run *stackRebaseRun, b *stackRebaseBranch) (string, error) {
+	pin := stackPublicationPin(run, b.Name)
+	was, err := stackPinned(ctx, dir, pin, len(b.Head))
 	if err != nil {
 		return "", err
 	}
-	if own == 0 {
-		return b.NewBase, nil
-	}
-	merges, err := gtRevCount(ctx, stackRebasePrefix, dir, b.OldBase+".."+b.Head, "--merges")
-	if err != nil {
-		return "", err
-	}
-	if merges > 0 {
-		return "", errReplayMerges
-	}
-	if b.HeadRef != gtRestackRef(b.Name) {
-		if _, err := render.RunCLI(ctx, dir, "git", []string{"update-ref", b.HeadRef, b.Head}); err != nil {
-			return "", fmt.Errorf("stack rebase: pin %s's remote head: %w", b.Name, err)
-		}
-	}
-	span := b.OldBase + ".." + b.HeadRef
-	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"-c", "replay.refAction=print", "replay", "--onto", b.NewBase, span})
+	span := b.OldBase + ".." + b.Head
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"replay", "--ref-action=print", "--linearize", "--ref=" + pin, "--onto=" + b.NewBase, span})
 	if err != nil {
 		return "", fmt.Errorf("stack rebase: git replay: %w", err)
 	}
-	if code != 0 {
-		if strings.TrimSpace(stderr) == "" {
-			return "", errReplayConflict
-		}
-		return "", fmt.Errorf("stack rebase: git replay --onto %.12s %s: %s", b.NewBase, span, strings.TrimSpace(stderr))
+	switch code {
+	case 0:
+	case 1:
+		return "", errReplayConflict
+	default:
+		return "", fmt.Errorf("stack rebase: git replay --onto=%.12s %.12s..%.12s exited %d: %s", b.NewBase, b.OldBase, b.Head, code, strings.TrimSpace(stderr))
 	}
-	for line := range strings.Lines(out) {
-		if fields := strings.Fields(line); len(fields) == 4 && fields[0] == "update" && fields[1] == b.HeadRef {
-			return fields[2], nil
-		}
+	head, ok := replayUpdate(out, pin, was)
+	if !ok {
+		return "", fmt.Errorf("stack rebase: git replay of %s printed %q, want exactly one update of %s from %s", b.Name, strings.TrimSpace(out), pin, was)
 	}
-	return "", fmt.Errorf("stack rebase: git replay printed no update for %s over %d commit(s): %q", b.HeadRef, own, strings.TrimSpace(out))
+	return head, stackPinHead(ctx, dir, pin, head, was)
 }
 
-// stackTempRef pins a remote head that is ahead of the local branch under a
-// branch-namespace ref, the only kind git replay reports an update for.
-func stackTempRef(branch string) string {
-	return "refs/heads/" + stackRebaseStateDir + "/" + branch
+func stackPinned(ctx context.Context, dir render.Dir, pin string, oidLen int) (string, error) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"for-each-ref", "--format=%(objectname)", pin})
+	if err != nil {
+		return "", fmt.Errorf("stack rebase: read %s: %w", pin, err)
+	}
+	return cmp.Or(strings.TrimSpace(out), strings.Repeat("0", oidLen)), nil
 }
 
-func stackDropTempRefs(ctx context.Context, dir render.Dir, run *stackRebaseRun) error {
-	for _, b := range run.Branches {
-		if b.HeadRef == stackTempRef(b.Name) {
-			if _, err := render.RunCLI(ctx, dir, "git", []string{"update-ref", "-d", b.HeadRef}); err != nil {
-				return fmt.Errorf("stack rebase: delete %s: %w", b.HeadRef, err)
-			}
-		}
+func stackPinHead(ctx context.Context, dir render.Dir, pin, head, was string) error {
+	if _, err := render.RunCLI(ctx, dir, "git", []string{"update-ref", pin, head, was}); err != nil {
+		return fmt.Errorf("stack rebase: pin the rebased head %.12s under %s: %w", head, pin, err)
 	}
 	return nil
 }
 
-func stackOpenConflict(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun, b *stackRebaseBranch) error {
-	ws, err := mintWorktreePath(ctx, stackRebasePrefix, l.checkout, "conflict-"+strings.ReplaceAll(b.Name, "/", "-"))
+func stackPinResolved(ctx context.Context, dir render.Dir, run *stackRebaseRun, b *stackRebaseBranch, head string) error {
+	pin := stackPublicationPin(run, b.Name)
+	was, err := stackPinned(ctx, dir, pin, len(head))
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(ws); err == nil {
-		return fmt.Errorf("stack rebase: %s already exists — remove it (ccx vcs worktree rm %s) and re-run", ws, filepath.Base(ws))
+	if err := stackPinHead(ctx, dir, pin, head, was); err != nil {
+		return err
+	}
+	b.NewHead = head
+	return stackSaveRun(run)
+}
+
+func stackRequireGit(ctx context.Context, dir render.Dir, prefix string) error {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"version"})
+	if err != nil {
+		return fmt.Errorf("%s: git version: %w", prefix, err)
+	}
+	version, _ := strings.CutPrefix(strings.TrimSpace(out), "git version ")
+	parts := strings.SplitN(version, ".", 3)
+	if len(parts) < 2 {
+		return fmt.Errorf("%s: read the git version from %q", prefix, strings.TrimSpace(out))
+	}
+	major, errMajor := strconv.Atoi(parts[0])
+	minor, errMinor := strconv.Atoi(parts[1])
+	if err := errors.Join(errMajor, errMinor); err != nil {
+		return fmt.Errorf("%s: read the git version from %q: %w", prefix, strings.TrimSpace(out), err)
+	}
+	if major < stackReplayMajor || (major == stackReplayMajor && minor < stackReplayMinor) {
+		return fmt.Errorf("%s: needs git %d.%d or newer for git replay --ref and --linearize, and found git %s — upgrade git, then re-run", prefix, stackReplayMajor, stackReplayMinor, strings.Fields(version)[0])
+	}
+	return nil
+}
+
+func stackFreeWorkspace(ctx context.Context, l lane, name string) (string, error) {
+	worktrees, err := vcs.Worktrees(ctx, l.checkout)
+	if err != nil {
+		return "", fmt.Errorf("stack rebase: %w", err)
+	}
+	for n := 1; ; n++ {
+		candidate := name
+		if n > 1 {
+			candidate = name + "-" + strconv.Itoa(n)
+		}
+		ws, err := mintWorktreePath(ctx, stackRebasePrefix, l.checkout, candidate)
+		if err != nil {
+			return "", err
+		}
+		_, err = os.Lstat(ws)
+		switch {
+		case err == nil, slices.ContainsFunc(worktrees, func(w vcs.Worktree) bool { return w.Path == ws }):
+		case errors.Is(err, fs.ErrNotExist):
+			return ws, nil
+		default:
+			return "", fmt.Errorf("stack rebase: %w", err)
+		}
+	}
+}
+
+func stackOpenConflict(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun, b *stackRebaseBranch) error {
+	ws, err := stackFreeWorkspace(ctx, l, "conflict-"+strings.ReplaceAll(b.Name, "/", "-"))
+	if err != nil {
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(ws), 0o750); err != nil {
 		return fmt.Errorf("stack rebase: mint the conflict workspace: %w", err)
 	}
-	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", ws, b.Head}); err != nil {
+	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", "--no-checkout", ws, b.Head}); err != nil {
 		return fmt.Errorf("stack rebase: git worktree add %s: %w", ws, err)
-	}
-	argv := append(slices.Clone(stackGitRebaseArgs), "rebase", "--onto", b.NewBase, b.OldBase)
-	code, stderr, err := stackRunRebase(ctx, render.Dir(ws), argv, true)
-	if err != nil {
-		return fmt.Errorf("stack rebase: git rebase in %s: %w", ws, err)
 	}
 	run.Conflict = &stackConflict{Branch: b.Name, Workspace: ws, Brief: stackBriefPath(run.dir, b.Name)}
 	if err := stackSaveRun(run); err != nil {
 		return err
+	}
+	for _, argv := range [][]string{
+		{"-c", "core.hooksPath=/dev/null", "sparse-checkout", "set", "--cone", "--no-sparse-index"},
+		{"config", "--worktree", "core.hooksPath", "/dev/null"},
+	} {
+		if _, err := render.RunCLI(ctx, render.Dir(ws), "git", argv); err != nil {
+			return fmt.Errorf("stack rebase: prepare %s: %w", ws, err)
+		}
+	}
+	if err := stackPopulateSparse(ctx, render.Dir(ws), stackRebasePrefix, b.Head); err != nil {
+		return err
+	}
+	argv := slices.Concat(stackGitRebaseArgs, []string{"rebase"}, stackReplayRebaseArgs, []string{"--onto", b.NewBase, b.OldBase})
+	code, stderr, err := stackRunRebase(ctx, render.Dir(ws), argv, true)
+	if err != nil {
+		return fmt.Errorf("stack rebase: git rebase in %s: %w", ws, err)
 	}
 	if code != 0 {
 		unmerged, err := stackUnmerged(ctx, ws)
@@ -1973,59 +2024,21 @@ func stackOpenConflict(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 		if len(unmerged) == 0 {
 			return fmt.Errorf("stack rebase: git rebase in %s stopped without a conflict: %s", ws, strings.TrimSpace(stderr))
 		}
-		if err := stackAdvance(ctx, cmd, run, b); err != nil {
-			return err
-		}
+		return stackStopped(ctx, run, b, unmerged)
 	}
-	if b.NewHead, err = stackRevParse(ctx, render.Dir(ws), "HEAD"); err != nil {
+	head, err := stackRevParse(ctx, render.Dir(ws), "HEAD")
+	if err != nil {
 		return err
 	}
-	if err := stackSaveRun(run); err != nil {
+	if err := stackPinResolved(ctx, l.dir(), run, b, head); err != nil {
 		return err
 	}
 	return stackCloseWorkspace(ctx, cmd, l, commonDir, run)
 }
 
-// stackAdvance drives the workspace's rebase to its end. A stop whose conflicts
-// are all declared generated paths regenerates every declared path the stopped
-// commit touches and continues; any other stop, or a failing generator, is left
-// to the human with its brief.
-func stackAdvance(ctx context.Context, cmd *cobra.Command, run *stackRebaseRun, b *stackRebaseBranch) error {
-	c := run.Conflict
-	ws := render.Dir(c.Workspace)
+func stackAdvance(ctx context.Context, run *stackRebaseRun, b *stackRebaseBranch) error {
+	ws := render.Dir(run.Conflict.Workspace)
 	for stackRebasing(ctx, ws) {
-		unmerged, err := stackUnmerged(ctx, c.Workspace)
-		if err != nil {
-			return err
-		}
-		if len(unmerged) > 0 || len(c.Generated) > 0 {
-			gens, err := regenStaged(ctx, ws)
-			if err != nil {
-				return stackStopped(ctx, run, b, unmerged, err.Error())
-			}
-			var replayed []string
-			if len(unmerged) > 0 {
-				if replayed, err = regenChanged(ctx, ws, "REBASE_HEAD^", "REBASE_HEAD"); err != nil {
-					return err
-				}
-			}
-			declared := regenDeclared(gens, unmerged)
-			pending := regenDeclared(gens, slices.Compact(slices.Sorted(slices.Values(slices.Concat(declared, c.Generated, replayed)))))
-			if len(declared) < len(unmerged) {
-				c.Generated = pending
-				return stackStopped(ctx, run, b, unmerged, "")
-			}
-			if len(pending) == 0 {
-				c.Generated = nil
-			} else if err := stackRegenerate(ctx, cmd, c.Workspace, gens, pending); err != nil {
-				c.Generated = pending
-				return stackStopped(ctx, run, b, unmerged, "stack rebase: regenerating "+strings.Join(pending, ", ")+" failed, and nothing was committed: "+err.Error())
-			}
-			c.Generated = nil
-			if err := stackSaveRun(run); err != nil {
-				return err
-			}
-		}
 		argv := append(slices.Clone(stackGitRebaseArgs), "rebase", "--continue")
 		code, stderr, err := stackRunRebase(ctx, ws, argv, true)
 		if err != nil {
@@ -2034,21 +2047,24 @@ func stackAdvance(ctx context.Context, cmd *cobra.Command, run *stackRebaseRun, 
 		if code == 0 {
 			continue
 		}
-		if unmerged, err = stackUnmerged(ctx, c.Workspace); err != nil {
+		unmerged, err := stackUnmerged(ctx, run.Conflict.Workspace)
+		if err != nil {
 			return err
 		}
 		if len(unmerged) == 0 {
 			return fmt.Errorf("stack rebase: git rebase --continue in %s failed: %s", ws, strings.TrimSpace(stderr))
 		}
+		return stackStopped(ctx, run, b, unmerged)
 	}
 	return nil
 }
 
-func stackStopped(ctx context.Context, run *stackRebaseRun, b *stackRebaseBranch, unmerged []string, lead string) error {
-	brief := stackBrief(ctx, run, b, unmerged)
-	if lead != "" {
-		brief = lead + "\n" + brief
+func stackStopped(ctx context.Context, run *stackRebaseRun, b *stackRebaseBranch, unmerged []string) error {
+	sparse, err := stackWidenCone(ctx, run.Conflict.Workspace, unmerged)
+	if err != nil {
+		return err
 	}
+	brief := stackBrief(ctx, run, b, unmerged, sparse)
 	if err := os.WriteFile(run.Conflict.Brief, []byte(brief), 0o600); err != nil {
 		return fmt.Errorf("stack rebase: write the conflict brief: %w", err)
 	}
@@ -2056,6 +2072,35 @@ func stackStopped(ctx context.Context, run *stackRebaseRun, b *stackRebaseBranch
 		return err
 	}
 	return errors.New(brief)
+}
+
+func stackWidenCone(ctx context.Context, ws string, paths []string) (bool, error) {
+	sparse, err := stackConfigBool(ctx, render.Dir(ws), "core.sparseCheckout", false)
+	if err != nil || !sparse {
+		return false, err
+	}
+	var dirs []string
+	for _, p := range paths {
+		if dir := path.Dir(p); dir != "." {
+			dirs = append(dirs, dir)
+		}
+	}
+	if len(dirs) == 0 {
+		return true, nil
+	}
+	slices.Sort(dirs)
+	return true, stackAddCone(ctx, render.Dir(ws), slices.Compact(dirs))
+}
+
+func stackAddCone(ctx context.Context, ws render.Dir, dirs []string) error {
+	argv := []string{"sparse-checkout", "add", "--skip-checks", "--"}
+	for _, dir := range dirs {
+		argv = append(argv, "./"+path.Clean(dir)+"/")
+	}
+	if _, err := render.RunCLI(ctx, ws, "git", argv); err != nil {
+		return fmt.Errorf("stack rebase: check out %s in %s: %w", strings.Join(dirs, ", "), ws, err)
+	}
+	return nil
 }
 
 func stackRunRebase(ctx context.Context, ws render.Dir, argv []string, conflictWorkspace bool) (int, string, error) {
@@ -2102,18 +2147,23 @@ func stackRebaseProgress(gitDir string) func() string {
 }
 
 func stackUnmerged(ctx context.Context, ws string) ([]string, error) {
-	out, err := render.RunCLI(ctx, render.Dir(ws), "git", []string{"diff", "--name-only", "--diff-filter=U"})
+	out, err := render.RunCLI(ctx, render.Dir(ws), "git", []string{"diff", "--name-only", "-z", "--diff-filter=U"})
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: list the conflicted files in %s: %w", ws, err)
 	}
-	return strings.Fields(out), nil
+	return slices.DeleteFunc(strings.Split(out, "\x00"), func(p string) bool { return p == "" }), nil
 }
 
-func stackBrief(ctx context.Context, run *stackRebaseRun, b *stackRebaseBranch, unmerged []string) string {
+func stackBrief(ctx context.Context, run *stackRebaseRun, b *stackRebaseBranch, unmerged []string, sparse bool) string {
 	ws := render.Dir(run.Conflict.Workspace)
+	state, checkedOut := "detached, rebase in progress, rerere off", "every file"
+	if sparse {
+		state = "detached, sparse, rebase in progress, rerere off"
+		checkedOut = fmt.Sprintf("the root files and each conflicted file's directory — git sparse-checkout add <dir> in %s checks out more", ws)
+	}
 	var s strings.Builder
 	fmt.Fprintf(&s, "stack rebase: conflict — %s does not rebase onto %s cleanly; nothing has moved\n", b.Name, b.Parent)
-	fmt.Fprintf(&s, "workspace: %s (detached, rebase in progress, rerere off)\n", ws)
+	fmt.Fprintf(&s, "workspace: %s (%s)\n", ws, state)
 	if stopped, err := render.RunCLI(ctx, ws, "git", []string{"log", "-1", "--format=%h %s", "REBASE_HEAD"}); err == nil {
 		fmt.Fprintf(&s, "stopped at: %s\n", strings.TrimSpace(stopped))
 	}
@@ -2121,20 +2171,19 @@ func stackBrief(ctx context.Context, run *stackRebaseRun, b *stackRebaseBranch, 
 	for _, f := range unmerged {
 		fmt.Fprintf(&s, "  %s\n", f)
 	}
-	if len(run.Conflict.Generated) > 0 {
-		fmt.Fprintf(&s, "generated, rerun from %s by continue: %s\n", regenFile, strings.Join(run.Conflict.Generated, ", "))
-	}
+	s.WriteString(regenHint(ctx, ws, unmerged, sparse))
 	stackBriefIntent(&s, "this branch", b.Name, b.PR)
 	if parent := run.branch(b.Parent); parent != nil {
 		stackBriefIntent(&s, "the side it lands on", parent.Name, parent.PR)
 	}
-	argv := append([]string{"log", "--format=%h %s", fmt.Sprintf("-%d", stackCulprits), b.OldBase + ".." + b.NewBase, "--"}, unmerged...)
+	argv := append([]string{"--literal-pathspecs", "log", "--format=%h %s", fmt.Sprintf("-%d", stackCulprits), b.OldBase + ".." + b.NewBase, "--"}, unmerged...)
 	if culprits, err := render.RunCLI(ctx, ws, "git", argv); err == nil && strings.TrimSpace(culprits) != "" {
 		fmt.Fprintf(&s, "upstream commits touching these files (%.12s..%.12s):\n", b.OldBase, b.NewBase)
 		for line := range strings.Lines(strings.TrimSpace(culprits)) {
 			fmt.Fprintf(&s, "  %s\n", strings.TrimRight(line, "\n"))
 		}
 	}
+	fmt.Fprintf(&s, "checked out: %s\n", checkedOut)
 	fmt.Fprintf(&s, "next: resolve the files in %s and git add them, then run ccx vcs stack continue from this conflict workspace or a branch of this stack; ccx vcs stack abort drops the run.\n", ws)
 	if run.NoPush {
 		s.WriteString("never git rebase --continue by hand: continue drives it with rerere off, then rebases the rest of the stack.")
@@ -2355,14 +2404,14 @@ func stackResume(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	if err != nil {
 		return err
 	}
-	gens, err := regenStaged(ctx, ws)
-	if rest := slices.DeleteFunc(unmerged, func(p string) bool { return regenOwner(gens, p) != nil }); len(rest) > 0 {
+	if len(unmerged) > 0 {
+		sparse, err := stackConfigBool(ctx, ws, "core.sparseCheckout", false)
 		if err != nil {
-			return fmt.Errorf("stack rebase: %s still has unresolved files: %s — resolve them and git add them first; nothing regenerates them: %w", c.Workspace, strings.Join(rest, ", "), err)
+			return err
 		}
-		return fmt.Errorf("stack rebase: %s still has unresolved files: %s — resolve them and git add them first", c.Workspace, strings.Join(rest, ", "))
+		return errors.New(strings.TrimRight(fmt.Sprintf("stack rebase: %s still has unresolved files: %s — resolve them and git add them first\n%s", c.Workspace, strings.Join(unmerged, ", "), regenHint(ctx, ws, unmerged, sparse)), "\n"))
 	}
-	if err := stackAdvance(ctx, cmd, run, b); err != nil {
+	if err := stackAdvance(ctx, run, b); err != nil {
 		return err
 	}
 	head, err := stackRevParse(ctx, ws, "HEAD")
@@ -2376,8 +2425,7 @@ func stackResume(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	if !onto {
 		return fmt.Errorf("stack rebase: %s is not on %s's new head %.12s — its rebase was aborted or reset; ccx vcs stack abort, then re-run", c.Workspace, b.Parent, b.NewBase)
 	}
-	b.NewHead = head
-	if err := stackSaveRun(run); err != nil {
+	if err := stackPinResolved(ctx, l.dir(), run, b, head); err != nil {
 		return err
 	}
 	cmd.Println(fmt.Sprintf("resolved %s at %.12s", b.Name, head))
@@ -2394,9 +2442,13 @@ func stackCloseWorkspace(ctx context.Context, cmd *cobra.Command, l lane, common
 		if strings.TrimSpace(changed) != "" {
 			return fmt.Errorf("stack rebase: the conflict workspace %s holds uncommitted changes to tracked files (clear what it holds, then continue again): %s", c.Workspace, strings.TrimSpace(changed))
 		}
-		if err := stackDiscardWorkspace(ctx, l, c.Workspace); err != nil {
-			return err
-		}
+	}
+	note, err := stackReleaseWorkspace(ctx, l, commonDir, c.Workspace, false)
+	if err != nil {
+		return fmt.Errorf("%w; the run is kept, so continue can run again", err)
+	}
+	if note != "" {
+		cmd.Println(note)
 	}
 	if err := os.Remove(c.Brief); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("stack rebase: %w", err)
@@ -2429,14 +2481,65 @@ func stackRevParse(ctx context.Context, dir render.Dir, rev string) (string, err
 	return strings.TrimSpace(out), nil
 }
 
-func stackDropWorkspace(ctx context.Context, l lane, ws string) error {
-	if _, err := os.Stat(ws); err == nil {
-		return stackDiscardWorkspace(ctx, l, ws)
+const stackCleanupOwner = "ccx stack rebase"
+
+func stackReleaseWorkspace(ctx context.Context, l lane, commonDir, ws string, force bool) (string, error) {
+	if _, err := os.Lstat(ws); cleanupDaemonized && errors.Is(err, fs.ErrNotExist) {
+		return ws + " was already gone", nil
 	}
-	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "prune"}); err != nil {
-		return fmt.Errorf("stack abort: git worktree prune: %w", err)
+	receipt, err := cleanupDeferWorkspace(ctx, commonDir, ws, stackCleanupOwner, force)
+	switch {
+	case errors.Is(err, cleanup.ErrUnsupported):
+		return stackReleaseInline(ctx, l, ws)
+	case err != nil:
+		var refused *cleanup.RefusedError
+		if errors.As(err, &refused) {
+			return "", fmt.Errorf("stack rebase: %w — nothing was removed, and %s is left where it is", err, ws)
+		}
+		return "", fmt.Errorf("stack rebase: %w — the cleanup daemon may already hold %s", err, ws)
 	}
-	return nil
+	line := fmt.Sprintf("handed %s to cleanup job %s, %s", ws, receipt.JobID, receipt.State)
+	if receipt.Detail != "" {
+		line += ": " + receipt.Detail
+	}
+	return line, nil
+}
+
+func stackReleaseInline(ctx context.Context, l lane, ws string) (string, error) {
+	if _, err := os.Stat(ws); errors.Is(err, fs.ErrNotExist) {
+		if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "prune"}); err != nil {
+			return "", fmt.Errorf("stack rebase: git worktree prune: %w", err)
+		}
+		return "", nil
+	}
+	occupied, err := stackOccupied(ctx, ws)
+	switch {
+	case err != nil:
+		return "", err
+	case occupied:
+		return stackKeptLine(ws), nil
+	}
+	return "", stackDiscardWorkspace(ctx, l, ws)
+}
+
+func stackOccupied(ctx context.Context, ws string) (bool, error) {
+	here, err := filepath.EvalSymlinks(workingDir(ctx))
+	if err != nil {
+		return false, fmt.Errorf("stack rebase: %w", err)
+	}
+	root, err := filepath.EvalSymlinks(ws)
+	if err != nil {
+		return false, fmt.Errorf("stack rebase: %w", err)
+	}
+	rel, err := filepath.Rel(root, here)
+	if err != nil {
+		return false, fmt.Errorf("stack rebase: %w", err)
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
+}
+
+func stackKeptLine(ws string) string {
+	return "left " + ws + " in place, since this command runs inside it — remove it with ccx vcs worktree rm --path " + ws + " once you leave it"
 }
 
 // stackDiscardWorkspace moves ws aside, prunes its registration, and deletes
@@ -2508,14 +2611,15 @@ func stackSettle(ctx context.Context, l lane, commonDir string, run *stackRebase
 		outcome = "aborted · the branches no longer hold the rewrite, so every branch stays where it is"
 	}
 	if c := run.Conflict; c != nil {
-		if err := stackDropWorkspace(ctx, l, c.Workspace); err != nil {
-			return "", err
+		note, err := stackReleaseWorkspace(ctx, l, commonDir, c.Workspace, true)
+		if err != nil {
+			return "", fmt.Errorf("%w; the run is kept, so abort can run again", err)
+		}
+		if note != "" {
+			outcome += shipSep + note
 		}
 	}
 	if err := stackDropPublicationPins(ctx, dir, run); err != nil {
-		return "", err
-	}
-	if err := stackDropTempRefs(ctx, dir, run); err != nil {
 		return "", err
 	}
 	if err := stackClearRun(commonDir, run); err != nil {
@@ -2669,7 +2773,7 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 		gtmeta.Reparent(ctx, commonDir, reparent),
 		gtmeta.RecordRestacked(ctx, commonDir, revisions),
 		gtmeta.Forget(ctx, commonDir, forget),
-		stackDropTempRefs(ctx, l.dir(), run),
+		stackDropPublicationPins(ctx, l.dir(), run),
 	); err != nil {
 		return fmt.Errorf("%s: the branches are rewritten, but recording the stack in gt failed — fix the cause and run ccx vcs stack continue: %w", prefix, errors.Join(err, alignErr))
 	}
@@ -2801,7 +2905,7 @@ func stackFinishGit(ctx context.Context, cmd *cobra.Command, l lane, commonDir s
 			return err
 		}
 	}
-	if err := errors.Join(stackDropTempRefs(ctx, l.dir(), run), stackClearRun(commonDir, run)); err != nil {
+	if err := errors.Join(stackDropPublicationPins(ctx, l.dir(), run), stackClearRun(commonDir, run)); err != nil {
 		return fmt.Errorf("restack: %s is rebased, but clearing the run failed: %w", b.Name, err)
 	}
 	summary := "fetched" + shipSep + "rebased onto " + run.Trunk

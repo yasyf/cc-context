@@ -371,6 +371,57 @@ ccx vcs pr status 123 124                         # queued, not queued, or lande
 ccx vcs guidelines                               # PR templates + contribution rules, verbatim
 ```
 
+#### Stack workspaces and cleanup
+
+`ccx vcs stack rebase` requires Git 2.56 or newer. Clean replay uses the saved
+old base, head, and new base without checking out files, touching an index, or
+running hooks. It linearizes merge commits. Existing run selection, output
+pins, source checks, publication receipts, atomic pushes, and remote leases
+still apply; cleanup adds no shared stack lock or fetch retry loop.
+
+Conflicts stop in sparse internal workspaces with rerere off. Root files and
+the directories containing conflicted paths are present; later conflicts
+expand that selection. Ordinary user worktrees stay full unless sparse
+creation was requested. Use `git sparse-checkout add <dir>` in the conflict
+workspace to materialize more files, resolve and stage the conflict, then run
+`ccx vcs stack continue`. `ccx vcs stack abort` abandons the run.
+
+Generated conflicts stop too. Resolve and stage the other conflicts, expand
+the workspace as needed, and set up dependencies there explicitly. Then run
+`ccx vcs stack regenerate --include <dir>` with one flag per needed directory,
+or `ccx vcs stack regenerate --full`. These options materialize files and run
+the generators declared in the staged `.ccx.toml`; they do not install
+dependencies. Regeneration stages its output; review it and run
+`ccx vcs stack continue`.
+
+Keep dependency installation out of generator commands. Shared downloads and
+compiler caches remain shared; mutable
+`node_modules`, install state, and build outputs belong to each workspace.
+
+Remove an authorized unused tree with `ccx vcs worktree rm <name>` or
+`ccx vcs worktree rm --path <absolute-path>`. Preview with `--dry-run`.
+`--force` permits discarding dirty work only; it never overrides active
+sessions, locked trees, or the main checkout. Recovery refs preserve committed
+heads, not uncommitted files.
+
+On macOS, `worktree rm` returns after the original tree is gone and its Git
+registration is removed. The per-user daemon queues physical deletion in
+bounded slices. Use `--wait` to wait for deletion, and
+`ccx vcs cleanup status [job-id] --json` to inspect progress. A receipt alone
+does not prove completion. Linux keeps synchronous removal.
+
+`ccx vcs cleanup wait <job-id>` waits for one job; `retry <job-id>` retries a
+blocked job after its cause is addressed. `ccx vcs cleanup pause` and `resume`
+control physical deletion across the queue. Status bounds its output and
+reports omitted jobs without scanning files for totals or an ETA.
+
+`ccx vcs cleanup watchers --json` inspects watchers without changing them.
+Retire watcher roots or change their configuration only for authorized unused
+trees after checking current consumers; never disable FSEvents or watchers
+globally. The daemon owns cleanup, not stack execution.
+An occupied completed conflict workspace stays in place until inactive while
+the stack completes successfully.
+
 ### 8. Re-encode
 
 JSON tool output enters context through `ccx format` — the default wrapper for any

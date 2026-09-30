@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
@@ -24,9 +25,26 @@ import (
 // hunk-scoped lane wires the merge-tool program to os.Executable(), which under
 // `go test` is this binary. Both guards are required so a normal `go test` run —
 // whose os.Args[1] is a -test.* flag — never self-dispatches; the env var is set
-// only by the live ship tests, so it reaches jj's tool child through ship.
+// only by the live ship tests, so it reaches jj's tool child through ship. The
+// re-exec dispatches only "vcs apply-selection", and only after every
+// production entry point below is disarmed.
 func TestMain(m *testing.M) {
-	if os.Getenv("CCX_TEST_APPLY_SELECTION") == "1" && len(os.Args) > 1 && os.Args[1] == "vcs" {
+	// A test that reaches the graphite API on a context no stub decorated would
+	// submit real pull requests with the developer's token; fail it loudly
+	// instead. This is the one write to it, and it precedes every test.
+	gtAPIDefault = func() *gtapi.Client {
+		panic("cli: the graphite API was reached on a context stubGTAPI never decorated")
+	}
+	cleanupDefault = func(context.Context) (cleanup.Service, error) {
+		panic("cli: the cleanup daemon was reached on a context no test decorated")
+	}
+	cleanupPreviewDefault = func(context.Context, cleanup.Request) (cleanup.Job, error) {
+		panic("cli: the cleanup preflight was reached on a context no test decorated")
+	}
+	cleanupServeDefault = func(context.Context) error {
+		panic("cli: the cleanup daemon was served from a test")
+	}
+	if os.Getenv("CCX_TEST_APPLY_SELECTION") == "1" && len(os.Args) > 2 && os.Args[1] == "vcs" && os.Args[2] == "apply-selection" {
 		root := NewRootCmd()
 		root.SetArgs(os.Args[1:])
 		if err := root.Execute(); err != nil {
@@ -34,12 +52,6 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 		os.Exit(0)
-	}
-	// A test that reaches the graphite API on a context no stub decorated would
-	// submit real pull requests with the developer's token; fail it loudly
-	// instead. This is the one write to it, and it precedes every test.
-	gtAPIDefault = func() *gtapi.Client {
-		panic("cli: the graphite API was reached on a context stubGTAPI never decorated")
 	}
 	// A test that drives ccx without a fixture context resolves the process
 	// working directory, which under `go test` is this package inside cc-context's

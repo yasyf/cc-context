@@ -21,3 +21,23 @@ cc-context/
 ├── AGENTS.md         # This file — shared conventions
 └── README.md         # Project overview
 ```
+
+## Stack workspaces and cleanup
+
+Stack replay requires Git 2.56 or newer. Internal conflict and rehearsal
+workspaces are sparse; ordinary user worktrees stay full unless explicitly
+requested otherwise. Follow [the stack conflict guide](docs/stack-rebase.md)
+for sparse expansion, manual dependency setup, and explicit
+`ccx vcs stack regenerate --include <dir>` or `--full`. Keep mutable install
+state and build outputs private to each workspace; download and compiler
+caches can remain shared.
+
+Use `ccx vcs worktree rm <name>` or `--path <absolute-path>` for authorized
+unused trees. On macOS, logical removal precedes queued physical deletion;
+`--wait` waits for deletion. `--force` discards dirty work only and never
+overrides active sessions, locked trees, or the main checkout. Inspect jobs
+with `ccx vcs cleanup status [job-id] --json` and watchers with
+`ccx vcs cleanup watchers --json`. Follow [the cleanup reference](docs/worktree-cleanup.md)
+for completion checks and queue controls. Preserve occupied completed
+conflict workspaces until inactive, and restrict watcher retirement to
+authorized unused trees.

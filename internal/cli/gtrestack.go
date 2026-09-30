@@ -382,35 +382,35 @@ func gtRestackRevisions(moves []restackMove) map[string]string {
 	return revisions
 }
 
-// errReplayConflict marks the one failure git replay reports by exit code
-// alone: a commit that does not apply. It exits 1 with both streams empty,
-// creates nothing, and moves no ref, so silence at a nonzero exit is the
-// signal, and anything git did say is a different failure the caller surfaces
-// verbatim — an unknown `replay` subcommand on a git too old for it, say.
 var errReplayConflict = errors.New("replay: conflict")
 
 func gtReplay(ctx context.Context, prefix string, dir render.Dir, base, from, branch string, state gtBranchState) (string, error) {
 	ref := gtRestackRef(branch)
-	span := from + ".." + ref
-	own, err := gtRevCount(ctx, prefix, dir, span)
-	if err != nil || own == 0 {
-		return base, err
-	}
-	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"-c", "replay.refAction=print", "replay", "--onto", base, span})
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"replay", "--ref-action=print", "--linearize", "--ref=" + ref, "--onto=" + base, from + ".." + state.Head})
 	if err != nil {
 		return "", fmt.Errorf("%s: git replay: %w", prefix, err)
 	}
-	if code != 0 {
-		if strings.TrimSpace(stderr) == "" {
-			return "", errReplayConflict
-		}
-		return "", fmt.Errorf("%s: git replay --onto %s %s: %s", prefix, base, span, strings.TrimSpace(stderr))
+	switch code {
+	case 0:
+	case 1:
+		return "", errReplayConflict
+	default:
+		return "", fmt.Errorf("%s: git replay --onto=%.12s %.12s..%.12s exited %d: %s", prefix, base, from, state.Head, code, strings.TrimSpace(stderr))
 	}
-	update := strings.Fields(out)
-	if len(update) != 4 || update[0] != "update" || update[1] != ref || update[3] != state.Head {
-		return "", fmt.Errorf("%s: git replay for %s returned an unexpected ref update: %q", prefix, branch, strings.TrimSpace(out))
+	head, ok := replayUpdate(out, ref, state.Head)
+	if !ok {
+		return "", fmt.Errorf("%s: git replay of %s printed %q, want exactly one update of %s from %s", prefix, branch, strings.TrimSpace(out), ref, state.Head)
 	}
-	return update[2], nil
+	return head, nil
+}
+
+func replayUpdate(out, ref, old string) (string, bool) {
+	line, ok := strings.CutSuffix(out, "\n")
+	fields := strings.Split(line, " ")
+	if !ok || strings.Contains(line, "\n") || len(fields) != 4 || fields[0] != "update" || fields[1] != ref || fields[3] != old {
+		return "", false
+	}
+	return fields[2], true
 }
 
 // gtRestackRef qualifies a branch name, so every lookup names the branch rather

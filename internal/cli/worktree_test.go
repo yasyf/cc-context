@@ -16,6 +16,7 @@ import (
 
 func runWorktreeCmd(t *testing.T, f *vcstest.Fixture, args ...string) (string, error) {
 	t.Helper()
+	fixtureCleanup(t, f)
 	return runWorktreeCmdIn(f.Context(), t, args...)
 }
 

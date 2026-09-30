@@ -181,7 +181,7 @@ func stackPlantLegacyApplied(t *testing.T, f *vcstest.Fixture, age time.Duration
 		t.Fatal(err)
 	}
 	run.Applied = true
-	run.Branches = []stackRebaseBranch{{Name: "feature", Parent: "main", WasParent: "main", Local: source, NewHead: rewritten, HeadRef: stackTempRef("feature")}}
+	run.Branches = []stackRebaseBranch{{Name: "feature", Parent: "main", WasParent: "main", Local: source, NewHead: rewritten}}
 	if err := stackSaveRun(run); err != nil {
 		t.Fatal(err)
 	}

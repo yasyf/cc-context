@@ -4031,6 +4031,7 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 		}
 		assertInvocations(t, invocations, [][]string{
 			nogtProbe,
+			gitVersionProbe,
 			{"git", "branch", "--show-current"},
 			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
@@ -4130,6 +4131,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			}
 			want := [][]string{
 				nogtProbe,
+				gitVersionProbe,
 				{"git", "branch", "--show-current"},
 				gtCommonDirArgv,
 				gtRefsArgv(),
@@ -4176,6 +4178,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 	}
 	wantInv := slices.Concat([][]string{
 		nogtProbe,
+		gitVersionProbe,
 		{"git", "branch", "--show-current"},
 		gtCommonDirArgv,
 		gtRefsArgv(),
@@ -5036,6 +5039,7 @@ func TestShipGTPathScoped(t *testing.T) {
 	invocations := shipGTInvocations(t, f)
 	assertInvocations(t, invocations, [][]string{
 		nogtProbe,
+		gitVersionProbe,
 		{"git", "branch", "--show-current"},
 		gtCommonDirArgv,
 		gtRealRefsArgv(t, f),
@@ -5083,6 +5087,7 @@ func TestShipGTHunkScoped(t *testing.T) {
 		{"git", "rev-parse", "--show-toplevel"},
 		{"git", "ls-tree", "--full-tree", "-z", "--end-of-options", "HEAD", "--", "f.txt"},
 		{"git", "show", "--end-of-options", "HEAD:f.txt"},
+		gitVersionProbe,
 		{"git", "branch", "--show-current"},
 		gtCommonDirArgv,
 		gtRealRefsArgv(t, f),
@@ -5588,6 +5593,7 @@ func TestShipGTRefusals(t *testing.T) {
 		mainHead := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
 		assertInvocations(t, invocations, [][]string{
 			nogtProbe,
+			gitVersionProbe,
 			{"git", "branch", "--show-current"},
 			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
@@ -5642,6 +5648,7 @@ func TestShipGTRefusals(t *testing.T) {
 		invocations := shipGTInvocations(t, f)
 		assertInvocations(t, invocations, [][]string{
 			nogtProbe,
+			gitVersionProbe,
 			{"git", "branch", "--show-current"},
 			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
@@ -5707,6 +5714,7 @@ func TestShipGTRefusals(t *testing.T) {
 		// nothing but the ERROR: could have produced it.
 		assertInvocations(t, readInvocations(t, log), [][]string{
 			nogtProbe,
+			gitVersionProbe,
 			{"git", "branch", "--show-current"},
 			gtCommonDirArgv,
 			gtRefsArgv(),

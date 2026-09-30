@@ -116,7 +116,6 @@ func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBran
 		return nil
 	}
 	b.Head = b.Remote
-	b.HeadRef = stackTempRef(b.Name)
 	b.OldBase = base
 	b.SourceBase = receipt.SourceBase
 	return nil
@@ -329,9 +328,6 @@ func stackCompletePublication(ctx context.Context, dir render.Dir, commonDir str
 	if err := stackDropPublicationPins(ctx, dir, run); err != nil {
 		return err
 	}
-	if err := stackDropTempRefs(ctx, dir, run); err != nil {
-		return err
-	}
 	return stackClearRun(commonDir, run)
 }
 
@@ -340,12 +336,12 @@ func stackDropPublicationPins(ctx context.Context, dir render.Dir, run *stackReb
 	tx.WriteString("start\n")
 	for _, b := range run.Branches {
 		ref := stackPublicationPin(run, b.Name)
-		present, err := gitRefExists(ctx, dir, stackRebasePrefix, ref)
+		at, err := render.RunCLI(ctx, dir, "git", []string{"for-each-ref", "--format=%(objectname)", ref})
 		if err != nil {
-			return err
+			return fmt.Errorf("stack publication: read %s: %w", ref, err)
 		}
-		if present {
-			fmt.Fprintf(&tx, "delete %s %s\n", ref, b.NewHead)
+		if at = strings.TrimSpace(at); at != "" {
+			fmt.Fprintf(&tx, "delete %s %s\n", ref, at)
 		}
 	}
 	tx.WriteString("commit\n")

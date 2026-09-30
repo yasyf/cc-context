@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -116,26 +118,61 @@ and everything else mints a git worktree.`,
 	return cmd
 }
 
+type worktreeRmOptions struct {
+	path   string
+	force  bool
+	wait   bool
+	dryRun bool
+}
+
 func newWorktreeRmCmd() *cobra.Command {
-	var force bool
+	var opts worktreeRmOptions
 	cmd := &cobra.Command{
-		Use:   "rm <name>",
-		Short: "Remove the working copy named <name>",
-		Long: `Remove the working copy named <name>.
+		Use:   "rm (<name> | --path <absolute-path>)",
+		Short: "Remove the working copy named <name>, or the linked worktree at --path",
+		Long: `Remove the working copy named <name>, or the linked worktree at --path.
 
 <name> is the working copy "add" minted under the repository's pool — rm
-removes only what add created, so a worktree ccx never minted is refused and
-left to "git worktree remove". Removing the checkout that holds trunk is
-refused, since the branch it pins is the one every restack rebases onto, and
-so is one holding uncommitted changes unless --force discards them. A jj
-workspace is forgotten and its directory deleted — "jj workspace forget"
+removes only what add created, so a worktree ccx never minted by name is
+refused and left to --path or "git worktree remove". --path names any linked
+worktree this repository registers, by its absolute path. Removing the checkout
+that holds trunk is refused, since the branch it pins is the one every restack
+rebases onto, and so is the repository's own working copy. A tree holding
+uncommitted changes is refused unless --force discards them; --force overrides
+nothing else. --dry-run removes nothing and reports what rm would remove.
+
+On macOS a git worktree is handed to the per-user cleanup daemon: rm returns
+once the tree has left its path and git's registry, with its committed head
+pinned under refs/ccx/cleanup/, and the daemon deletes the files afterward.
+A tree a live process is working in, holding open, or was started on is
+refused. --wait waits for that job's deletion too; "ccx vcs cleanup status"
+reports the queue. --dry-run runs the daemon's whole preflight in process, so
+it refuses whatever rm would.
+
+Linux removes a git worktree inline with git worktree remove. There --dry-run
+checks only the trunk and main-working-copy refusals: git's own dirty and
+locked refusals surface on the real removal alone.
+
+A jj workspace is forgotten and its directory deleted — "jj workspace forget"
 leaves the tree on disk with a live-looking pointer otherwise.`,
-		Args: cobra.ExactArgs(1),
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runWorktreeRm(cmd, args[0], force)
+			byPath := cmd.Flags().Changed("path")
+			switch {
+			case len(args) == 1 && byPath:
+				return errors.New("worktree rm: name a working copy or pass --path, not both")
+			case len(args) == 0 && !byPath:
+				return errors.New("worktree rm: name a working copy, or pass --path <absolute-path>")
+			case byPath:
+				return runWorktreeRmPath(cmd, opts)
+			}
+			return runWorktreeRm(cmd, args[0], opts)
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "remove a worktree with uncommitted changes")
+	cmd.Flags().StringVar(&opts.path, "path", "", "absolute path of a linked worktree this repository registers")
+	cmd.Flags().BoolVar(&opts.force, "force", false, "remove a worktree with uncommitted changes")
+	cmd.Flags().BoolVar(&opts.wait, "wait", false, "on macOS, also wait until the daemon has deleted the tree")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "report what would be removed, removing nothing (on Linux a git worktree gets only the trunk and main-working-copy refusals)")
 	return cmd
 }
 
@@ -482,7 +519,7 @@ func mintWorktreePath(ctx context.Context, prefix string, c vcs.Checkout, name s
 	return filepath.Join(home, ".claude", "worktrees", filepath.Base(c.MainRoot), name), nil
 }
 
-func runWorktreeRm(cmd *cobra.Command, name string, force bool) error {
+func runWorktreeRm(cmd *cobra.Command, name string, opts worktreeRmOptions) error {
 	ctx := cmd.Context()
 	l, err := resolveLane(ctx, "worktree rm", workingDir(ctx), true)
 	if err != nil {
@@ -502,7 +539,7 @@ func runWorktreeRm(cmd *cobra.Command, name string, force bool) error {
 			return err
 		}
 		if target != nil {
-			return removeGitWorktree(ctx, cmd, l, *target, force)
+			return removeGitWorktree(ctx, cmd, l, *target, opts)
 		}
 	}
 	workspace, err := jjWorkspaceOf(minted, l.checkout)
@@ -510,9 +547,65 @@ func runWorktreeRm(cmd *cobra.Command, name string, force bool) error {
 		return err
 	}
 	if workspace {
-		return removeJJWorkspace(ctx, cmd, l, name, minted, force)
+		return removeJJWorkspace(ctx, cmd, l, name, minted, opts)
 	}
 	return fmt.Errorf("worktree rm: no working copy named %q in this repository: %w", name, ErrNotFound)
+}
+
+func runWorktreeRmPath(cmd *cobra.Command, opts worktreeRmOptions) error {
+	ctx := cmd.Context()
+	if !filepath.IsAbs(opts.path) {
+		return fmt.Errorf("worktree rm: --path %q is not an absolute path", opts.path)
+	}
+	l, err := resolveLane(ctx, "worktree rm", workingDir(ctx), true)
+	if err != nil {
+		return err
+	}
+	if l.checkout.CommonDir == "" {
+		return fmt.Errorf("worktree rm: %q has no git repository behind it — --path names a git linked worktree", l.checkout.Root)
+	}
+	path, err := filepath.EvalSymlinks(opts.path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return missingWorktreePath(ctx, l, filepath.Clean(opts.path))
+	}
+	if err != nil {
+		return fmt.Errorf("worktree rm: --path: %w", err)
+	}
+	target, err := vcs.ResolveCheckout(path)
+	if err != nil {
+		return fmt.Errorf("worktree rm: --path %s: %w", path, err)
+	}
+	switch {
+	case target.Kind == vcs.None:
+		return fmt.Errorf("worktree rm: this repository registers no worktree at %s: %w", path, ErrNotFound)
+	case target.Root != path:
+		return fmt.Errorf("worktree rm: %s is inside the working copy %s, not its root", path, target.Root)
+	case target.CommonDir != l.checkout.CommonDir:
+		return fmt.Errorf("worktree rm: %s is a working copy of %s, not of this repository", path, target.CommonDir)
+	}
+	list, err := vcs.Worktrees(ctx, l.checkout)
+	if err != nil {
+		return fmt.Errorf("worktree rm: %w", err)
+	}
+	for i, wt := range list {
+		if wt.Path == path {
+			return removeGitWorktree(ctx, cmd, l, list[i], opts)
+		}
+	}
+	return fmt.Errorf("worktree rm: this repository registers no worktree at %s: %w", path, ErrNotFound)
+}
+
+func missingWorktreePath(ctx context.Context, l lane, path string) error {
+	list, err := vcs.Worktrees(ctx, l.checkout)
+	if err != nil {
+		return fmt.Errorf("worktree rm: %w", err)
+	}
+	for _, wt := range list {
+		if wt.Path == path {
+			return fmt.Errorf(`worktree rm: this repository still registers %s, but nothing exists there — "git worktree prune" drops the stale registration`, path)
+		}
+	}
+	return fmt.Errorf("worktree rm: nothing exists at %s: %w", path, ErrNotFound)
 }
 
 // matchPoolWorktree finds the registered worktree at minted, the pool path add
@@ -537,22 +630,75 @@ func matchPoolWorktree(list []vcs.Worktree, name, minted string) (*vcs.Worktree,
 	return nil, nil
 }
 
-func removeGitWorktree(ctx context.Context, cmd *cobra.Command, l lane, wt vcs.Worktree, force bool) error {
+func removeGitWorktree(ctx context.Context, cmd *cobra.Command, l lane, wt vcs.Worktree, opts worktreeRmOptions) error {
 	if wt.Path == l.checkout.MainRoot {
 		return fmt.Errorf("worktree rm: %q is the repository's own working copy, not a linked worktree", wt.Path)
 	}
 	if err := guardTrunkHolder(ctx, l, wt); err != nil {
 		return err
 	}
+	name, shape := filepath.Base(wt.Path), infoShape(vcs.ShapeGitWorktree)
+	if opts.dryRun {
+		if cleanupDaemonized {
+			if err := previewGitWorktreeRemoval(ctx, wt.Path, opts.force); err != nil {
+				return err
+			}
+		}
+		cmd.Println(strings.Join([]string{"would remove " + name, shape, wt.Path}, shipSep))
+		return nil
+	}
+	segs := []string{"removed " + name, shape, wt.Path}
+	if cleanupDaemonized {
+		queued, err := queueGitWorktreeRemoval(ctx, wt.Path, opts)
+		if err != nil {
+			return err
+		}
+		cmd.Println(strings.Join(append(segs, queued...), shipSep))
+		return nil
+	}
 	argv := []string{"worktree", "remove"}
-	if force {
+	if opts.force {
 		argv = append(argv, "--force")
 	}
 	if _, err := render.RunCLI(ctx, l.dir(), "git", append(argv, wt.Path)); err != nil {
 		return fmt.Errorf("worktree rm: git worktree remove %s: %w", wt.Path, err)
 	}
-	cmd.Println(strings.Join([]string{"removed " + filepath.Base(wt.Path), infoShape(vcs.ShapeGitWorktree), wt.Path}, shipSep))
+	cmd.Println(strings.Join(segs, shipSep))
 	return nil
+}
+
+func previewGitWorktreeRemoval(ctx context.Context, path string, force bool) error {
+	git, err := cleanupGit(ctx, "worktree rm")
+	if err != nil {
+		return err
+	}
+	if _, err := cleanupPreview(ctx)(ctx, cleanup.Request{Worktree: path, Force: force, Git: git}); err != nil {
+		return fmt.Errorf("worktree rm: %w", err)
+	}
+	return nil
+}
+
+func queueGitWorktreeRemoval(ctx context.Context, path string, opts worktreeRmOptions) ([]string, error) {
+	git, err := cleanupGit(ctx, "worktree rm")
+	if err != nil {
+		return nil, err
+	}
+	svc, err := cleanupService(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("worktree rm: %w", err)
+	}
+	receipt, err := svc.Remove(ctx, cleanup.Request{Worktree: path, Force: opts.force, Git: git})
+	if err != nil {
+		return nil, fmt.Errorf("worktree rm: %w", err)
+	}
+	segs := []string{"deletion queued " + receipt.JobID}
+	if !opts.wait {
+		return segs, nil
+	}
+	if _, err := svc.Wait(ctx, receipt.JobID); err != nil {
+		return nil, cleanupJobErr(fmt.Sprintf("worktree rm: removed %s, deletion queued %s; wait", path, receipt.JobID), receipt.JobID, err)
+	}
+	return append(segs, "deleted"), nil
 }
 
 // removeJJWorkspace forgets the workspace and deletes its tree: forget alone
@@ -563,8 +709,8 @@ func removeGitWorktree(ctx context.Context, cmd *cobra.Command, l lane, wt vcs.W
 // its own: jj diff snapshots the working copy first (--ignore-working-copy
 // would suppress exactly that snapshot), and a non-empty answer refuses unless
 // --force says to discard it, the git path's semantics.
-func removeJJWorkspace(ctx context.Context, cmd *cobra.Command, l lane, name, path string, force bool) error {
-	if !force {
+func removeJJWorkspace(ctx context.Context, cmd *cobra.Command, l lane, name, path string, opts worktreeRmOptions) error {
+	if !opts.force {
 		summary, err := render.RunCLI(ctx, render.Dir(path), "jj", []string{"diff", "--summary"})
 		if err != nil {
 			return fmt.Errorf("worktree rm: jj diff --summary in %s: %w", path, err)
@@ -573,6 +719,10 @@ func removeJJWorkspace(ctx context.Context, cmd *cobra.Command, l lane, name, pa
 			return fmt.Errorf("worktree rm: %s holds uncommitted changes (%s) — commit them there, or --force discards them",
 				path, strings.Join(strings.Split(changes, "\n"), ", "))
 		}
+	}
+	if opts.dryRun {
+		cmd.Println(strings.Join([]string{"would remove " + name, infoShape(vcs.ShapeJJWorkspace), path}, shipSep))
+		return nil
 	}
 	if _, err := render.RunCLI(ctx, l.dir(), "jj", []string{"workspace", "forget", name}); err != nil {
 		return fmt.Errorf("worktree rm: jj workspace forget %s: %w", name, err)

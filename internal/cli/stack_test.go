@@ -474,7 +474,7 @@ func TestStackSubmitRestackConflictMovesNothing(t *testing.T) {
 	writeShipExecutable(t, f.ShimBin, "git", "#!/bin/sh\n"+
 		"if [ -z \"$CCX_SHIM_DEPTH\" ]; then\n"+
 		"  case \"$*\" in\n"+
-		"    'replay --onto '*|'-c replay.refAction=print replay --onto '*)\n"+
+		"    'replay --ref-action=print '*)\n"+
 		"      "+shellSingleQuote(realGit)+" \"$@\" || exit \"$?\"\n"+
 		"      CCX_SHIM_DEPTH=1 gt state --no-interactive > "+shellSingleQuote(observed)+"\n"+
 		"      exit \"$?\" ;;\n"+
