@@ -446,7 +446,7 @@ func (k *staged) lib(t *testing.T) *libSystem {
 			if k.unlisted != 0 {
 				return 0, k.unlisted
 			}
-			copy(unsafe.Slice(at[procFDInfo](buf), len(listed)), listed)
+			copy(unsafe.Slice(at[procFDInfo](buf), len(listed)), listed) //nolint:gosec // a buffer the caller pinned with room for the len(listed)+1 descriptors reported above
 			return uintptr(len(listed)) * unsafe.Sizeof(procFDInfo{}), 0 //nolint:gosec // a count of staged descriptors
 		}
 		return 0, unix.EINVAL
@@ -481,8 +481,8 @@ func (k *staged) lib(t *testing.T) *libSystem {
 		if path == "" {
 			return 0, unix.ESRCH
 		}
-		copy(unsafe.Slice(at[byte](buf), pidPathBytes), path)
-		return uintptr(len(path)), 0 //nolint:gosec // the length of a staged path
+		copy(unsafe.Slice(at[byte](buf), pidPathBytes), path) //nolint:gosec // a buffer the caller pinned at pidPathBytes
+		return uintptr(len(path)), 0                          //nolint:gosec // the length of a staged path
 	})
 	signing := served(t, func(_, buf, _ uintptr) (uintptr, unix.Errno) {
 		if k.unsigned != 0 {
