@@ -540,7 +540,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	if gtLane {
 		prSeg, bodylessSegs, gtStack, err = shipPushGT(ctx, cmd.ErrOrStderr(), l, o, meta, trunkFetch, branch, stuck, gtc)
 	} else {
-		remote, rebased, err = shipPush(ctx, dir, kind, o, branch, preAmendSHA)
+		remote, rebased, err = shipPush(ctx, dir, kind, o, branch, plan.trunk, preAmendSHA)
 	}
 	if err != nil {
 		return shipSettleRestack(ctx, l, gtc, err)
@@ -1508,13 +1508,13 @@ func branchSegment(plan branchPlan, branch string, noPush bool) string {
 	}
 }
 
-func shipPush(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpts, target, preAmendSHA string) (remote string, rebased int, err error) {
+func shipPush(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpts, target, trunk, preAmendSHA string) (remote string, rebased int, err error) {
 	switch kind {
 	case vcs.JJ:
 		rebased, err = shipPushJJ(ctx, dir, target, o.amend)
 		return "origin", rebased, err
 	case vcs.Git:
-		return shipPushGit(ctx, dir, o, target, preAmendSHA)
+		return shipPushGit(ctx, dir, o, target, trunk, preAmendSHA)
 	default:
 		return "", 0, errors.New("ship: push: unsupported vcs")
 	}
@@ -1714,7 +1714,7 @@ func shipPushJJReject(ctx context.Context, dir render.Dir, target, moveOp string
 	return &pushRejectedError{err: raw}
 }
 
-func shipPushGit(ctx context.Context, dir render.Dir, o shipOpts, branch, preAmendSHA string) (string, int, error) {
+func shipPushGit(ctx context.Context, dir render.Dir, o shipOpts, branch, trunk, preAmendSHA string) (string, int, error) {
 	remote, err := gitRemoteFor(ctx, dir, "ship", branch)
 	if err != nil {
 		return "", 0, err
@@ -1727,7 +1727,7 @@ func shipPushGit(ctx context.Context, dir render.Dir, o shipOpts, branch, preAme
 	}
 	hint := fmt.Sprintf("git fetch %s && git rebase --autostash %s/%s && git push %s %s", remote, remote, branch, remote, branch)
 	rebased, err := shipPushRetry(ctx, branch, hint, func(ctx context.Context) (int, error) {
-		return shipPushGitOnce(ctx, dir, remote, branch, o.noVerify)
+		return shipPushGitOnce(ctx, dir, remote, branch, trunk, o.noVerify)
 	})
 	return remote, rebased, err
 }
@@ -1812,7 +1812,7 @@ func shipPushGitAmend(ctx context.Context, dir render.Dir, remote, branch, preAm
 // shipPushGitOnce is one non-amend push attempt: fetch the remote, rebase onto
 // <remote>/<branch> when it advanced past HEAD, then push. A rejected push moves
 // no local ref, so it re-enters as a *pushRejectedError with no rollback.
-func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch string, noVerify bool) (int, error) {
+func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch, trunk string, noVerify bool) (int, error) {
 	if err := gitFetch(ctx, dir, remote); err != nil {
 		return 0, fmt.Errorf("ship: git fetch %s: %w", remote, err)
 	}
@@ -1828,6 +1828,9 @@ func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch string,
 			return 0, err
 		}
 		if !ancestor {
+			if err := gitRefuseTrunkReplay(ctx, dir, remote, branch, trunk); err != nil {
+				return 0, err
+			}
 			rebased, err = gitRebaseOnto(ctx, dir, "ship", remote, branch)
 			if err != nil {
 				return 0, err
@@ -1842,6 +1845,48 @@ func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch string,
 		return rebased, raw
 	}
 	return rebased, nil
+}
+
+// gitRefuseTrunkReplay refuses a rebase onto the remote branch that would
+// replay commits the remote trunk already carries. The branch has been rebased
+// onto a trunk its pushed head predates, so a replay onto that head puts the
+// branch back on the older trunk and re-applies trunk's own commits as the
+// branch's work. Git drops nothing there: a squash has the tree of the
+// commits it replaced and the patch of none of them, so no patch-id matches.
+func gitRefuseTrunkReplay(ctx context.Context, dir render.Dir, remote, branch, trunk string) error {
+	if trunk == "" || branch == trunk {
+		return nil
+	}
+	trunkRef := "refs/remotes/" + remote + "/" + trunk
+	present, err := gitRefExists(ctx, dir, "ship", trunkRef)
+	if err != nil || !present {
+		return err
+	}
+	taken, err := gitIsAncestor(ctx, dir, "ship", trunkRef, "HEAD")
+	if err != nil || !taken {
+		return err
+	}
+	carried, err := gitLogLine(ctx, dir, "ship", "refs/remotes/"+remote+"/"+branch+".."+trunkRef)
+	if err != nil || len(carried) == 0 {
+		return err
+	}
+	return fmt.Errorf("ship: %s/%s predates %s, which %s now sits on, so replaying onto it would move %s back off %s and propose %s as its own work — publish the rebase with ccx vcs push, which moves %s/%s onto your head under a lease instead",
+		remote, branch, trunkRef, branch, branch, trunkRef, strings.Join(carried, ", "), remote, branch)
+}
+
+// gitLogLine lists "<short sha> <subject>" for each commit in the range.
+func gitLogLine(ctx context.Context, dir render.Dir, prefix, revRange string) ([]string, error) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"log", "--format=%h %s", revRange})
+	if err != nil {
+		return nil, fmt.Errorf("%s: git log %s: %w", prefix, revRange, err)
+	}
+	var lines []string
+	for line := range strings.Lines(out) {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			lines = append(lines, trimmed)
+		}
+	}
+	return lines, nil
 }
 
 // gitRefExists reports whether ref resolves (git rev-parse --verify --quiet: exit
