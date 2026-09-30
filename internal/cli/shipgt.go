@@ -397,22 +397,6 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 		return branchPlan{}, "", err
 	}
 
-	var seg string
-	moves := false
-	if branch != "" && branch != trunk {
-		switch _, tracked := state[branch]; {
-		case !tracked && o.parent != "":
-			if err := gtAdoptRefusal(ctx, l, o, state, branch, o.parent, c); err != nil {
-				return branchPlan{}, "", err
-			}
-			moves = true
-		case !tracked:
-			if state, seg, err = gtTrack(ctx, errW, l, o, branch, c); err != nil {
-				return branchPlan{}, "", err
-			}
-		}
-	}
-
 	if err := gtTrunkFlagRefusal(o, branch, trunk); err != nil {
 		return branchPlan{}, "", err
 	}
@@ -426,15 +410,28 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 		return branchPlan{}, "", err
 	}
 	if branch == "" || branch == trunk {
-		return plan, seg, nil
+		return plan, "", nil
 	}
-	if s := state[branch]; !moves && plan.action != branchCreate && o.parent != "" && s.Parents[0].Ref != o.parent {
-		if _, err := gtReparentRefusal(ctx, l, o, state, branch, o.parent, c); err != nil {
-			return branchPlan{}, "", err
+
+	var seg string
+	moves := false
+	switch s, tracked := state[branch]; {
+	case !tracked && o.parent != "":
+		err = gtAdoptRefusal(ctx, l, o, state, branch, o.parent, c)
+		moves = true
+	case !tracked:
+		var adopted gtState
+		if adopted, seg, err = gtTrack(ctx, errW, l, o, branch, c); err == nil {
+			state = adopted
 		}
+	case plan.action != branchCreate && o.parent != "" && s.Parents[0].Ref != o.parent:
+		_, err = gtReparentRefusal(ctx, l, o, state, branch, o.parent, c)
 		moves = true
 	}
-	if moves {
+	if plan.commitBeforeMove, err = gtCommitBeforeMove(ctx, l, o, plan, err); err != nil {
+		return branchPlan{}, "", err
+	}
+	if moves || plan.commitBeforeMove {
 		plan.moveOntoParent = true
 		return plan, seg, nil
 	}
@@ -1058,10 +1055,56 @@ func gtOntoPlan(ctx context.Context, l lane, o shipOpts, branch, parent string) 
 	}
 	if holder := holders[branch]; holder != "" {
 		if _, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"read-tree", "-m", "-u", "-n", was, head}); err != nil {
-			return gtOntoMove{}, refuse("ship: replaying %s onto %s would overwrite uncommitted changes in %s — commit or set them aside, then ship again: %v", branch, parent, holder, err)
+			return gtOntoMove{}, &errReplayDirty{
+				shipRefusal: &shipRefusal{msg: fmt.Sprintf("ship: replaying %s onto %s would overwrite uncommitted changes in %s (%v) — commit or set them aside, then ship again", branch, parent, holder, err)},
+				was:         was,
+				head:        head,
+			}
 		}
 	}
 	return gtOntoMove{onto: onto, fork: fork, was: was, head: head, own: own, holders: holders}, nil
+}
+
+type errReplayDirty struct {
+	*shipRefusal
+	was  string
+	head string
+}
+
+func (e *errReplayDirty) Unwrap() error { return e.shipRefusal }
+
+func gtCommitBeforeMove(ctx context.Context, l lane, o shipOpts, plan branchPlan, moveErr error) (bool, error) {
+	var dirty *errReplayDirty
+	if !errors.As(moveErr, &dirty) || plan.action != branchAppend || len(o.skipHunks) > 0 || len(o.onlyHunks) > 0 {
+		return false, moveErr
+	}
+	pending, err := gtCommitsPending(ctx, l.dir(), o)
+	if err != nil {
+		return false, err
+	}
+	if !pending {
+		return false, moveErr
+	}
+	out, err := render.RunCLI(ctx, l.dir(), "git", []string{"diff", "--name-only", "-z", "--no-renames", dirty.was, dirty.head})
+	if err != nil {
+		return false, fmt.Errorf("ship: git diff %s %s: %w", shortSHA(dirty.was), shortSHA(dirty.head), err)
+	}
+	replayed := map[string]bool{}
+	for _, path := range strings.Split(out, "\x00") {
+		if path != "" {
+			replayed[path] = true
+		}
+	}
+	entries, err := vcs.GitStatus(ctx, vcs.GitArgs{Dir: l.dir(), Sub: []string{"status", "--untracked-files=all"}})
+	if err != nil {
+		return false, fmt.Errorf("ship: %w", err)
+	}
+	for _, e := range entries {
+		if e.Y != ' ' && !pathWithinShip(ctx, l.root, e.Path, o.paths) && (replayed[e.Path] || replayed[e.Orig]) {
+			return false, moveErr
+		}
+	}
+	return true, nil
 }
 
 // gtOnto puts branch on parent's head before gt records parent under it,

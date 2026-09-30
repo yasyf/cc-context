@@ -37,8 +37,9 @@ type branchPlan struct {
 	parent string
 	trunk  string
 
-	needsRestack   bool
-	moveOntoParent bool
+	needsRestack     bool
+	moveOntoParent   bool
+	commitBeforeMove bool
 }
 
 // resolveBranchPlan turns the caller's stated intent and the working copy's
