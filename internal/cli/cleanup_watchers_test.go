@@ -144,7 +144,7 @@ func (w *watcherWorld) guard(ctx context.Context, path string) error {
 	return nil
 }
 
-func (w *watcherWorld) Run(_ context.Context, _, name string, args ...string) (cleanupwatch.Output, error) {
+func (w *watcherWorld) Run(_ context.Context, dir render.Dir, name string, args ...string) (cleanupwatch.Output, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	line := name + " " + strings.Join(args, " ")
@@ -152,15 +152,18 @@ func (w *watcherWorld) Run(_ context.Context, _, name string, args ...string) (c
 	if w.hook != nil {
 		w.hook(line)
 	}
+	inWorktree := name == "git" && dir != render.Ambient
 	switch {
+	case inWorktree && line == "git rev-parse --absolute-git-dir --show-toplevel":
+		return cleanupwatch.Output{Stdout: []byte(string(dir) + "/.git\n" + string(dir) + "\n")}, nil
+	case inWorktree && line == "git config --get fsmonitor.socketDir":
+		return cleanupwatch.Output{}, &cleanupwatch.ExitError{Command: line, Code: 1}
+	case inWorktree && line == "git config -z --show-scope --show-origin --get-all core.fsmonitor":
+		return cleanupwatch.Output{Stdout: []byte("worktree\x00file:.git/config.worktree\x00true\x00")}, nil
+	case dir != render.Ambient:
+		return cleanupwatch.Output{}, fmt.Errorf("unscripted in %s: %s", dir, line)
 	case name == "watchman" && len(args) > 2 && args[0] == "--no-spawn" && args[1] == "--no-pretty":
 		return w.watchman(args[2:])
-	case name == "git" && len(args) == 5 && args[2] == "rev-parse":
-		return cleanupwatch.Output{Stdout: []byte(args[1] + "/.git\n" + args[1] + "\n")}, nil
-	case name == "git" && len(args) == 5 && args[3] == "--get" && args[4] == "fsmonitor.socketDir":
-		return cleanupwatch.Output{}, &cleanupwatch.ExitError{Command: line, Code: 1}
-	case name == "git" && len(args) == 8 && args[7] == "core.fsmonitor":
-		return cleanupwatch.Output{Stdout: []byte("worktree\x00file:.git/config.worktree\x00true\x00")}, nil
 	case name == "git" && strings.HasSuffix(line, fsmonitorStop):
 		w.owner = nil
 		return cleanupwatch.Output{}, nil

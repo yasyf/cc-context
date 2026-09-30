@@ -1157,8 +1157,6 @@ func TestListFDs(t *testing.T) {
 	if err := exited.Run(); err != nil {
 		t.Fatalf("run true: %v", err)
 	}
-	bare := spawn(t, "", nil, "/bin/sh", "-c", "exec /bin/sleep 60 <&- >&- 2>&-")
-	awaitProgram(t, bare.Process.Pid, "/bin/sleep")
 
 	own, err := lib.listFDs(os.Getpid())
 	if err != nil {
@@ -1180,9 +1178,15 @@ func TestListFDs(t *testing.T) {
 	if _, err := pidInfo[procBSDInfo](lib, exited.Process.Pid, flavorBSDInfo); !errors.Is(err, unix.ESRCH) {
 		t.Fatalf("pidInfo(an exited process) = %v, want ESRCH left in errno", err)
 	}
-	none, err := lib.listFDs(bare.Process.Pid)
+	empty := &libSystem{errno: lib.errno, procPIDInfo: answering(t, func(_ int, buf uintptr) (uintptr, unix.Errno) {
+		if buf == 0 {
+			return 2 * unsafe.Sizeof(procFDInfo{}), 0
+		}
+		return 0, 0
+	})}
+	none, err := empty.listFDs(4242)
 	if err != nil || len(none) != 0 {
-		t.Errorf("listFDs(a process with every descriptor closed) = %+v, %v; want none and no error", none, err)
+		t.Errorf("listFDs(a process holding no descriptor) = %+v, %v; want none and no error", none, err)
 	}
 }
 

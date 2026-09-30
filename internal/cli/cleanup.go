@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
+	"github.com/yasyf/cc-context/internal/cleanup/relocate"
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -51,7 +52,18 @@ func cleanupPreview(ctx context.Context) cleanupPreviewer {
 	return cleanupPreviewDefault
 }
 
-func cleanupDeferWorkspace(ctx context.Context, commonDir, ws, owner string, force bool) (cleanup.Receipt, error) {
+func cleanupObserveWorkspace(ws string) (cleanup.Registration, error) {
+	registration, err := relocate.Observe(ws)
+	if err != nil {
+		return cleanup.Registration{}, fmt.Errorf("cleanup observe %s: %w", ws, err)
+	}
+	return registration, nil
+}
+
+func cleanupDeferWorkspace(ctx context.Context, commonDir, ws, owner string, expected cleanup.Registration, force bool) (cleanup.Receipt, error) {
+	if err := expected.Validate(); err != nil {
+		return cleanup.Receipt{}, fmt.Errorf("cleanup defer %s: expected registration: %w", ws, err)
+	}
 	git, err := cleanupGit(ctx, "cleanup defer")
 	if err != nil {
 		return cleanup.Receipt{}, err
@@ -60,7 +72,7 @@ func cleanupDeferWorkspace(ctx context.Context, commonDir, ws, owner string, for
 	if err != nil {
 		return cleanup.Receipt{}, fmt.Errorf("cleanup defer %s: %w", ws, err)
 	}
-	receipt, err := svc.Defer(ctx, cleanup.DeferRequest{Worktree: ws, CommonDir: commonDir, Owner: owner, Force: force, Git: git})
+	receipt, err := svc.Defer(ctx, cleanup.DeferRequest{Worktree: ws, CommonDir: commonDir, Owner: owner, Expected: expected, Force: force, Git: git})
 	if err != nil {
 		return cleanup.Receipt{}, fmt.Errorf("cleanup defer %s: %w", ws, err)
 	}

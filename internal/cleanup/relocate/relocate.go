@@ -68,8 +68,10 @@ func (r *Relocator) Accept(ctx context.Context, seq uint64, req cleanup.Request)
 // Intend journals a deferred removal without consulting dirtiness and without
 // refusing for activity: a tree the guard finds idle is journaled at
 // PhaseQueued, a held one at PhaseWaiting with its holders noted, and one the
-// guard could not inspect at PhaseWaiting with that failure noted. A cancelled
-// ctx returns ctx's error and journals nothing.
+// guard could not inspect at PhaseWaiting with that failure noted. A path
+// whose registration is not req.Expected is refused as replaced before git,
+// the guard, or the journal is reached. A cancelled ctx returns ctx's error
+// and journals nothing.
 func (r *Relocator) Intend(ctx context.Context, seq uint64, req cleanup.DeferRequest) (cleanup.Job, error) {
 	if err := req.Validate(); err != nil {
 		return cleanup.Job{}, fmt.Errorf("cleanup: defer request: %w", err)
@@ -77,6 +79,14 @@ func (r *Relocator) Intend(ctx context.Context, seq uint64, req cleanup.DeferReq
 	job, err := identify(req.Worktree)
 	if err != nil {
 		return cleanup.Job{}, err
+	}
+	if held := registrationOf(job); held != req.Expected {
+		return cleanup.Job{}, refuse(
+			job.Original, "replaced",
+			"%s no longer holds the worktree the request named: it holds tree %s registered under %s (%s), the request named tree %s registered under %s (%s)",
+			job.Original, label(held.Tree), held.AdminDir, label(held.Admin),
+			label(req.Expected.Tree), req.Expected.AdminDir, label(req.Expected.Admin),
+		)
 	}
 	if common, err := filepath.EvalSymlinks(req.CommonDir); err != nil || common != job.Repo {
 		return cleanup.Job{}, refuse(job.Original, "mismatch", "%s belongs to %s, not %s", job.Original, job.Repo, req.CommonDir)

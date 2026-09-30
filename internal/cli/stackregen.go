@@ -400,6 +400,11 @@ func runStackRegenerate(cmd *cobra.Command, o stackRegenOpts) error {
 		return err
 	}
 	c := run.Conflict
+	if c != nil {
+		if err := stackRequireWorkspace("stack regenerate", c); err != nil {
+			return err
+		}
+	}
 	if c == nil || !stackRebasing(ctx, render.Dir(c.Workspace)) {
 		return errors.New("stack regenerate: the stack rebase is not stopped on a conflict — ccx vcs stack continue drives it on")
 	}

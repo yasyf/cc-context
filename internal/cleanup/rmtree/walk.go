@@ -205,10 +205,13 @@ func (d *deletion) rootReplaced(op string, got cleanup.FileID) error {
 func (d *deletion) advance() (int, bool, error) {
 	top := d.stack[len(d.stack)-1]
 	name, ok, err := d.next(top)
-	if err != nil {
+	switch {
+	case errors.Is(err, unix.ENOENT):
+		// Linux fails getdents on a removed directory with ENOENT; Darwin lists it as empty.
+		return d.unlisted(top, err)
+	case err != nil:
 		return 0, false, err
-	}
-	if !ok {
+	case !ok:
 		return d.finish(top)
 	}
 	n, err := d.visit(top, name)
@@ -323,6 +326,14 @@ func (d *deletion) descend(top *frame, name string, listed *unix.Stat_t) error {
 	}
 	d.stack = append(d.stack, newFrame(fd, name, &st, d.progress))
 	return nil
+}
+
+func (d *deletion) unlisted(top *frame, cause error) (int, bool, error) {
+	got, err := d.occupant(len(d.stack) - 1)
+	if err == nil && got == top.id {
+		return 0, false, cause
+	}
+	return d.finish(top)
 }
 
 func (d *deletion) finish(top *frame) (int, bool, error) {

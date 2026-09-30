@@ -635,6 +635,50 @@ func TestPayloadDisplacedWithinASlice(t *testing.T) {
 	}
 }
 
+func TestHeldSubdirectoryDisplacedWithinASlice(t *testing.T) {
+	tests := []struct {
+		name     string
+		displace func(t *testing.T, sub string)
+		removed  int
+	}{
+		{"removed", func(t *testing.T, sub string) {
+			if err := os.Remove(sub); err != nil {
+				t.Fatalf("remove: %v", err)
+			}
+		}, 1},
+		{"removed and replaced by another directory", func(t *testing.T, sub string) {
+			if err := os.Remove(sub); err != nil {
+				t.Fatalf("remove: %v", err)
+			}
+			mkdir(t, sub)
+			write(t, filepath.Join(sub, "fresh"), "fresh")
+		}, 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			sub := filepath.Join(f.payload, "sub")
+			mkdir(t, sub)
+			d := f.open(t).(*deletion)
+			if n, done, err := d.advance(); n != 0 || done || err != nil || len(d.stack) != 2 {
+				t.Fatalf("advance into sub = (%d, %v, %v) holding %d levels, want (0, false, nil) holding 2", n, done, err, len(d.stack))
+			}
+			tt.displace(t, sub)
+			before := f.snapshot(t, f.payload)
+
+			n, done, err := d.advance()
+
+			if n != 0 || done || err != nil || len(d.stack) != 1 {
+				t.Fatalf("advance after sub left its name = (%d, %v, %v) holding %d levels, want (0, false, nil) holding 1", n, done, err, len(d.stack))
+			}
+			if n, done, err := d.Step(100, time.Minute); n != tt.removed || !done || err != nil {
+				t.Errorf("Step after sub left its name = (%d, %v, %v), want (%d, true, nil)", n, done, err, tt.removed)
+			}
+			f.assertOnlyPayloadGone(t, before)
+		})
+	}
+}
+
 func TestHeldSubdirectoryRenamedOutIsNotDeletedThrough(t *testing.T) {
 	tests := []struct {
 		name          string

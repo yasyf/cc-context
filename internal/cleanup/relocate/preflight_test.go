@@ -417,10 +417,10 @@ func TestIntendRefusesAnotherRepository(t *testing.T) {
 	f := newFixture(t)
 	f.run(f.root, "init", "-q", "-b", "main", "elsewhere")
 	elsewhere := filepath.Join(f.root, "elsewhere", ".git")
+	request := f.deferral()
+	request.CommonDir = elsewhere
 
-	_, err := f.relocator.Intend(context.Background(), 1, cleanup.DeferRequest{
-		Worktree: f.worktree, CommonDir: elsewhere, Owner: "stack", Git: f.git,
-	})
+	_, err := f.relocator.Intend(context.Background(), 1, request)
 
 	var refused *cleanup.RefusedError
 	if !errors.As(err, &refused) {
@@ -439,10 +439,10 @@ func TestIntendRefusesAnotherRepository(t *testing.T) {
 
 func TestIntendRefusesAnUnregisteredTree(t *testing.T) {
 	f := newFixture(t)
+	request := f.deferral()
+	request.Worktree = f.repo
 
-	_, err := f.relocator.Intend(context.Background(), 1, cleanup.DeferRequest{
-		Worktree: f.repo, CommonDir: f.common, Owner: "stack", Git: f.git,
-	})
+	_, err := f.relocator.Intend(context.Background(), 1, request)
 
 	var refused *cleanup.RefusedError
 	if !errors.As(err, &refused) || refused.Reason != "main" {
@@ -485,9 +485,7 @@ func TestIntendJournalsByActivity(t *testing.T) {
 			f.write(filepath.Join(f.worktree, "scratch.txt"), "scratch\n")
 			tree := f.id(f.worktree)
 
-			job, err := f.relocator.Intend(ctx, 1, cleanup.DeferRequest{
-				Worktree: f.worktree, CommonDir: f.common, Owner: "stack", Git: f.git,
-			})
+			job, err := f.relocator.Intend(ctx, 1, f.deferral())
 
 			if got := f.id(f.worktree); got != tree {
 				t.Errorf("worktree identity = %v, want %v", got, tree)
@@ -517,6 +515,144 @@ func TestIntendJournalsByActivity(t *testing.T) {
 			}
 			f.stored(&job)
 			f.absent(job.Registered)
+		})
+	}
+}
+
+func TestObserveNamesTheRegistrationAJobJournals(t *testing.T) {
+	tests := []struct {
+		name    string
+		journal func(f *fixture) cleanup.Job
+	}{
+		{"accept", (*fixture).accept},
+		{"intend", (*fixture).intend},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			want := cleanup.Registration{Tree: f.id(f.worktree), AdminDir: f.adminDir, Admin: f.id(f.adminDir)}
+
+			got, err := Observe(f.worktree)
+
+			if err != nil || got != want {
+				t.Fatalf("Observe() = %+v, %v; want %+v", got, err, want)
+			}
+			f.unjournaled()
+			f.unconsulted()
+			job := tt.journal(f)
+			if journaled := (cleanup.Registration{Tree: job.Tree, AdminDir: job.AdminDir, Admin: job.Admin}); journaled != got {
+				t.Errorf("%s journaled %+v, want the observed %+v", tt.name, journaled, got)
+			}
+		})
+	}
+}
+
+func TestObserveRefusals(t *testing.T) {
+	tests := []struct {
+		name    string
+		reason  string
+		arrange func(f *fixture) (worktree, detail string)
+	}{
+		{"main working copy", "main", func(f *fixture) (string, string) {
+			return f.repo, f.repo + " is a repository's main working copy, not a linked worktree"
+		}},
+		{"unregistered directory", "unregistered", func(f *fixture) (string, string) {
+			plain := filepath.Join(f.root, "plain")
+			if err := os.Mkdir(plain, 0o700); err != nil {
+				f.t.Fatalf("mkdir: %v", err)
+			}
+			return plain, "not a registered linked worktree: stat " + plain + "/.git: no such file or directory"
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			worktree, detail := tt.arrange(f)
+
+			got, err := Observe(worktree)
+
+			f.refused(err, cleanup.RefusedError{Worktree: worktree, Reason: tt.reason, Detail: detail})
+			if got != (cleanup.Registration{}) {
+				t.Errorf("Observe() = %+v, want no registration", got)
+			}
+			f.unjournaled()
+			f.unconsulted()
+		})
+	}
+}
+
+func TestIntendRefusesAReplacedWorktree(t *testing.T) {
+	f := newFixture(t)
+	request := f.deferral()
+	kept := filepath.Join(f.root, "wt-kept")
+	f.run(f.repo, "worktree", "move", f.worktree, kept)
+	f.run(f.repo, "worktree", "add", "-q", "--detach", f.worktree)
+	marker := filepath.Join(f.worktree, "untracked.txt")
+	f.write(marker, "replacement\n")
+	replacement, listing := f.observe(f.worktree), f.listing()
+
+	_, err := f.relocator.Intend(context.Background(), 1, request)
+
+	f.refused(err, cleanup.RefusedError{
+		Worktree: f.worktree,
+		Reason:   "replaced",
+		Detail:   replacedDetail(f.worktree, replacement, request.Expected),
+	})
+	f.unjournaled()
+	f.unconsulted()
+	if got := f.observe(f.worktree); got != replacement {
+		t.Errorf("replacement registration = %+v, want %+v", got, replacement)
+	}
+	if got := f.read(marker); got != "replacement\n" {
+		t.Errorf("replacement untracked.txt = %q, want %q", got, "replacement\n")
+	}
+	if got := f.observe(kept); got != request.Expected {
+		t.Errorf("moved original registration = %+v, want %+v", got, request.Expected)
+	}
+	if got := f.read(filepath.Join(kept, "feature.txt")); got != "feature\n" {
+		t.Errorf("moved original feature.txt = %q, want %q", got, "feature\n")
+	}
+	if got := f.listing(); got != listing {
+		t.Errorf("worktree list = %q, want %q", got, listing)
+	}
+}
+
+func TestIntendRefusesAnotherRegistration(t *testing.T) {
+	tests := []struct {
+		name   string
+		expect func(r *cleanup.Registration)
+	}{
+		{"another tree", func(r *cleanup.Registration) { r.Tree.Ino++ }},
+		{"another admin identity", func(r *cleanup.Registration) { r.Admin.Ino++ }},
+		{"another admin directory", func(r *cleanup.Registration) { r.AdminDir += "-moved" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.write(filepath.Join(f.worktree, "scratch.txt"), "scratch\n")
+			request := f.deferral()
+			held := request.Expected
+			tt.expect(&request.Expected)
+			var probe cleanup.Job
+			ran := f.trap(&probe)
+			request.Git = probe.Git
+
+			_, err := f.relocator.Intend(context.Background(), 1, request)
+
+			f.refused(err, cleanup.RefusedError{
+				Worktree: f.worktree,
+				Reason:   "replaced",
+				Detail:   replacedDetail(f.worktree, held, request.Expected),
+			})
+			f.unjournaled()
+			f.unconsulted()
+			f.absent(ran)
+			if got := f.observe(f.worktree); got != held {
+				t.Errorf("worktree registration = %+v, want %+v", got, held)
+			}
+			if got := f.read(filepath.Join(f.worktree, "scratch.txt")); got != "scratch\n" {
+				t.Errorf("scratch.txt = %q, want %q", got, "scratch\n")
+			}
 		})
 	}
 }

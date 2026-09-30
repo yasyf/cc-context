@@ -483,7 +483,7 @@ func sparseSourceState(t *testing.T, f *vcstest.Fixture) map[string]string {
 	var config []string
 	for line := range strings.Lines(gitAt(t, f.Env(), f.Dir, "config", "--list", "--show-origin")) {
 		if !strings.Contains(line, "extensions.worktreeconfig=") {
-			config = append(config, line)
+			config = append(config, strings.TrimSuffix(line, "\n"))
 		}
 	}
 	var files []string
@@ -505,7 +505,7 @@ func sparseSourceState(t *testing.T, f *vcstest.Fixture) map[string]string {
 	}
 	return map[string]string{
 		"index":           read("index"),
-		"config":          strings.Join(config, ""),
+		"config":          strings.Join(config, "\n"),
 		"config.worktree": read("config.worktree"),
 		"sparse-checkout": read(path.Join("info", "sparse-checkout")),
 		"files":           strings.Join(files, "\n"),

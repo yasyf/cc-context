@@ -265,7 +265,9 @@ func (e *Engine) Remove(ctx context.Context, r cleanup.Request) (cleanup.Receipt
 // Defer journals a removal that waits for inactivity. A workspace still held
 // comes back waiting, its receipt naming the holders. Only this first look
 // runs on behalf of ctx's requester; the rechecks that follow name nobody. A
-// request without Force never rejoins a job journaled with it.
+// repeat rejoins a job only when that job journaled the registration the
+// request expects, whatever its path holds by then, and a request without
+// Force never rejoins a job journaled with it.
 func (e *Engine) Defer(ctx context.Context, r cleanup.DeferRequest) (cleanup.Receipt, error) {
 	if err := r.Validate(); err != nil {
 		return cleanup.Receipt{}, fmt.Errorf("cleanup daemon: defer request: %w", err)
@@ -757,7 +759,7 @@ func (e *Engine) park() error {
 }
 
 func (e *Engine) remove(ctx context.Context, r cleanup.Request) (cleanup.Receipt, error) {
-	job, found, err := e.revive(registeredAt(r.Worktree, r.Force))
+	job, found, err := e.revive(sittingAt(r.Worktree, r.Force))
 	if err != nil {
 		return cleanup.Receipt{}, err
 	}
@@ -802,7 +804,7 @@ func (e *Engine) relocate(ctx context.Context, job cleanup.Job) (cleanup.Receipt
 }
 
 func (e *Engine) intend(ctx context.Context, r cleanup.DeferRequest) (cleanup.Receipt, error) {
-	job, found, err := e.revive(registeredAt(r.Worktree, r.Force))
+	job, found, err := e.revive(boundTo(r))
 	if err != nil {
 		return cleanup.Receipt{}, err
 	}
@@ -852,31 +854,44 @@ func (e *Engine) records(path string) bool {
 	return err == nil && filepath.IsLocal(rel)
 }
 
-type sitting func(job cleanup.Job) (path string, ok bool)
+type rejoinable func(job cleanup.Job) bool
 
-func registeredAt(worktree string, force bool) sitting {
+func registeredAt(worktree string, force bool) rejoinable {
 	resolved, _ := filepath.EvalSymlinks(worktree)
-	return func(job cleanup.Job) (string, bool) {
+	return func(job cleanup.Job) bool {
 		untouched := job.Phase == cleanup.PhaseQueued || job.Phase == cleanup.PhaseWaiting || job.Phase == cleanup.PhasePrepared
 		authorized := force || !job.Force
-		return job.Original, untouched && authorized && !job.Adopted && (job.Original == worktree || job.Original == resolved)
+		return untouched && authorized && !job.Adopted && (job.Original == worktree || job.Original == resolved)
 	}
 }
 
-func parkedAt(r cleanup.AdoptRequest) sitting {
-	return func(job cleanup.Job) (string, bool) {
+func sittingAt(worktree string, force bool) rejoinable {
+	registered := registeredAt(worktree, force)
+	return func(job cleanup.Job) bool { return registered(job) && holds(job.Original, job.Tree) }
+}
+
+func boundTo(r cleanup.DeferRequest) rejoinable {
+	registered := registeredAt(r.Worktree, r.Force)
+	return func(job cleanup.Job) bool {
+		return registered(job) && cleanup.Registration{Tree: job.Tree, AdminDir: job.AdminDir, Admin: job.Admin} == r.Expected
+	}
+}
+
+func parkedAt(r cleanup.AdoptRequest) rejoinable {
+	return func(job cleanup.Job) bool {
 		same := job.Source == r.Source && job.Tree == r.Tree && job.Head == r.Head
-		return job.Source, job.Adopted && job.Phase == cleanup.PhasePrepared && same
+		return job.Adopted && job.Phase == cleanup.PhasePrepared && same && holds(job.Source, job.Tree)
 	}
 }
 
-func (e *Engine) revive(sits sitting) (cleanup.Job, bool, error) {
+func holds(path string, tree cleanup.FileID) bool {
+	id, _, err := cleanup.LstatID(path)
+	return err == nil && id == tree
+}
+
+func (e *Engine) revive(rejoins rejoinable) (cleanup.Job, bool, error) {
 	for _, job := range e.ordered() {
-		path, ok := sits(job)
-		if !ok {
-			continue
-		}
-		if id, _, err := cleanup.LstatID(path); err != nil || id != job.Tree {
+		if !rejoins(job) {
 			continue
 		}
 		if job.Blocked == nil {

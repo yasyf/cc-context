@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 const (
@@ -221,8 +223,8 @@ func (w *world) callsMatching(prefix string) []string {
 	return out
 }
 
-func (w *world) Run(_ context.Context, dir, name string, args ...string) (Output, error) {
-	if dir != "" {
+func (w *world) Run(_ context.Context, dir render.Dir, name string, args ...string) (Output, error) {
+	if name != "git" && dir != render.Ambient {
 		w.t.Fatalf("%s runs in %q, want the caller's cwd", name, dir)
 	}
 	w.record(name + " " + strings.Join(args, " "))
@@ -236,7 +238,7 @@ func (w *world) Run(_ context.Context, dir, name string, args ...string) (Output
 	case "watchman":
 		out, err = w.watchman(pid, args)
 	case "git":
-		out, err = w.git(args)
+		out, err = w.git(dir, args)
 	default:
 		w.t.Fatalf("unexpected command %s %q", name, args)
 	}
@@ -366,11 +368,14 @@ func rootStatusJSON(path string, r *fakeRoot) map[string]any {
 	}
 }
 
-func (w *world) git(args []string) ([]byte, error) {
+func (w *world) git(dir render.Dir, args []string) ([]byte, error) {
 	exit := func(code int) ([]byte, error) {
 		return nil, &ExitError{Command: "git " + strings.Join(args, " "), Code: code, Stderr: "fatal: not a git repository"}
 	}
 	if gitDir, ok := strings.CutPrefix(args[0], "--git-dir="); ok {
+		if dir != render.Ambient {
+			w.t.Fatalf("git %q runs in %q, want its bound git dir alone", args, dir)
+		}
 		wt, _ := strings.CutPrefix(args[1], "--work-tree=")
 		repo, ok := w.repos[wt]
 		if !ok || repo.Admin != gitDir || len(args) != 4 || args[2] != "fsmonitor--daemon" {
@@ -397,10 +402,10 @@ func (w *world) git(args []string) ([]byte, error) {
 			return exit(1)
 		}
 	}
-	if len(args) < 3 || args[0] != "-C" {
-		w.t.Fatalf("git %q runs without -C", args)
+	if dir == render.Ambient {
+		w.t.Fatalf("git %q runs without a Dir", args)
 	}
-	wt, rest := args[1], strings.Join(args[2:], " ")
+	wt, rest := string(dir), strings.Join(args, " ")
 	repo, ok := w.repos[wt]
 	switch rest {
 	case "rev-parse --absolute-git-dir --show-toplevel":

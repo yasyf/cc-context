@@ -120,7 +120,7 @@ func (w cleanupWatchers) watchmanServerCommand(command string) bool {
 func (w cleanupWatchers) holdsSocket(ctx context.Context, pid int, socket string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, w.deps.Timeout)
 	defer cancel()
-	out, err := w.deps.Run.Run(ctx, "", "lsof", "-n", "-P", "-w", "-a", "-p", strconv.Itoa(pid), "-U", "-F", "ftn")
+	out, err := w.deps.Run.Run(ctx, render.Ambient, "lsof", "-n", "-P", "-w", "-a", "-p", strconv.Itoa(pid), "-U", "-F", "ftn")
 	var exitErr *cleanupwatch.ExitError
 	if errors.As(err, &exitErr) && exitErr.Code == 1 {
 		out.Stdout, err = exitErr.Stdout, nil
@@ -157,7 +157,7 @@ type watchmanReply struct {
 func (w cleanupWatchers) watchman(ctx context.Context, command string) (watchmanReply, error) {
 	ctx, cancel := context.WithTimeout(ctx, w.deps.Timeout)
 	defer cancel()
-	out, err := w.deps.Run.Run(ctx, "", "watchman", "--no-spawn", "--no-pretty", command)
+	out, err := w.deps.Run.Run(ctx, render.Ambient, "watchman", "--no-spawn", "--no-pretty", command)
 	if err != nil {
 		return watchmanReply{}, fmt.Errorf("watchman %s: %w", command, err)
 	}

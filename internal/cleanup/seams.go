@@ -47,7 +47,8 @@ type Relocator interface {
 	// the tree idle, at PhaseWaiting with the holders noted when it reports the
 	// tree held, and at PhaseWaiting with the failure noted when it could not
 	// inspect the tree. A tree that is not a registered linked worktree of
-	// r.CommonDir is a *RefusedError.
+	// r.CommonDir, or whose registration is not r.Expected, is a *RefusedError
+	// with nothing journaled.
 	Intend(ctx context.Context, seq uint64, r DeferRequest) (Job, error)
 	// Adopt verifies a tree the retired janitor parked at r.Source and journals
 	// it at PhasePrepared under seq, moving nothing. A refusal is a

@@ -722,6 +722,126 @@ func TestDeferWaitsWithTheHoldersAsDetail(t *testing.T) {
 	})
 }
 
+func TestDeferWithoutARegistrationNeverReachesTheRelocator(t *testing.T) {
+	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+		ctx := context.Background()
+		h.start()
+		request := h.deferral("d")
+		request.Expected = cleanup.Registration{}
+		receipt, err := h.engine.Defer(ctx, request)
+		if want := "cleanup daemon: defer request: expected: tree identity is unset"; err == nil || err.Error() != want || receipt != (cleanup.Receipt{}) {
+			t.Fatalf("Defer() without a registration = %+v, %v; want no receipt and %q", receipt, err, want)
+		}
+		h.expectEvents()
+		report, err := h.engine.Status(ctx, cleanup.Query{})
+		if err != nil || len(report.Jobs) != 0 {
+			t.Errorf("Status() after the rejected request = %d jobs, %v; want none", len(report.Jobs), err)
+		}
+	})
+}
+
+func TestDeferAfterALostReceiptRejoinsTheJobOfTheReplacedTree(t *testing.T) {
+	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+		ctx := context.Background()
+		h.start()
+		h.relocator.held["d"] = "zsh (pid 7) in the tree"
+		h.relocator.script("d", stayWaiting)
+		request := h.deferral("d")
+		first, err := h.engine.Defer(ctx, request)
+		if err != nil || first.State != cleanup.State(cleanup.PhaseWaiting) {
+			t.Fatalf("Defer() = %+v, %v; want a waiting job", first, err)
+		}
+		h.expectEvents("intend:d")
+
+		h.replace("d")
+		again, err := h.engine.Defer(ctx, request)
+		if err != nil || again != first {
+			t.Errorf("repeat Defer() once the path holds a replacement = %+v, %v; want the first job's receipt %+v", again, err, first)
+		}
+		h.expectEvents()
+		jobs, damaged, err := h.journal.Load()
+		if err != nil || len(damaged) != 0 || len(jobs) != 1 || jobs[0].ID != first.JobID {
+			t.Fatalf("Journal.Load() = jobs %v, damaged %v, err %v; want only job %s", h.names(jobs), damaged, err, first.JobID)
+		}
+		if bound := (cleanup.Registration{Tree: jobs[0].Tree, AdminDir: jobs[0].AdminDir, Admin: jobs[0].Admin}); bound != request.Expected {
+			t.Errorf("the journaled job is bound to %+v, want the original %+v", bound, request.Expected)
+		}
+		if got := h.status(first.JobID); got.Phase != cleanup.PhaseWaiting || got.Blocked != nil {
+			t.Errorf("the rejoined job = phase %s, blocked %v; want it still waiting", got.Phase, got.Blocked)
+		}
+	})
+}
+
+func TestDeferRejoinsOnlyTheJobItsRegistrationBinds(t *testing.T) {
+	tests := []struct {
+		name    string
+		forced  bool
+		again   func(h *harness, first cleanup.DeferRequest) cleanup.DeferRequest
+		rejoins bool
+	}{
+		{"the same registration", false, func(_ *harness, first cleanup.DeferRequest) cleanup.DeferRequest {
+			return first
+		}, true},
+		{"the same registration with force", false, func(_ *harness, first cleanup.DeferRequest) cleanup.DeferRequest {
+			first.Force = true
+			return first
+		}, true},
+		{"the same registration without the job's force", true, func(_ *harness, first cleanup.DeferRequest) cleanup.DeferRequest {
+			first.Force = false
+			return first
+		}, false},
+		{"the replacement's registration", false, func(h *harness, _ cleanup.DeferRequest) cleanup.DeferRequest {
+			h.replace("d")
+			return h.deferral("d")
+		}, false},
+		{"another tree", false, func(_ *harness, first cleanup.DeferRequest) cleanup.DeferRequest {
+			first.Expected.Tree.Ino++
+			return first
+		}, false},
+		{"another admin identity", false, func(_ *harness, first cleanup.DeferRequest) cleanup.DeferRequest {
+			first.Expected.Admin.Ino++
+			return first
+		}, false},
+		{"another admin directory", false, func(_ *harness, first cleanup.DeferRequest) cleanup.DeferRequest {
+			first.Expected.AdminDir += "-moved"
+			return first
+		}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+				ctx := context.Background()
+				h.start()
+				h.relocator.held["d"] = "zsh (pid 7) in the tree"
+				h.relocator.script("d", stayWaiting)
+				request := h.deferral("d")
+				request.Force = tt.forced
+				first, err := h.engine.Defer(ctx, request)
+				if err != nil || first.State != cleanup.State(cleanup.PhaseWaiting) {
+					t.Fatalf("Defer() = %+v, %v; want a waiting job", first, err)
+				}
+				h.expectEvents("intend:d")
+
+				again, err := h.engine.Defer(ctx, tt.again(h, request))
+				if err != nil {
+					t.Fatalf("repeat Defer() = %v", err)
+				}
+				if tt.rejoins {
+					if again != first {
+						t.Errorf("repeat Defer() = %+v, want the first job's receipt %+v", again, first)
+					}
+					h.expectEvents()
+					return
+				}
+				if again.JobID == first.JobID {
+					t.Errorf("repeat Defer() rejoined job %s, want the relocator's own verdict", first.JobID)
+				}
+				h.expectEvents("intend:d")
+			})
+		})
+	}
+}
+
 func TestCancelledAdvanceStopsTheWorkerAndLeavesTheJobRunnable(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1104,7 +1224,7 @@ func TestPruneThatCannotDiscardStopsTheWorker(t *testing.T) {
 		next := h.seed("b", 3, cleanup.PhaseUnregistered)
 		h.deleter.put("a", &payload{entries: 100})
 		h.deleter.put("b", &payload{entries: 100})
-		if err := os.Chmod(h.layout.JobDir(old.ID), 0o500); err != nil {
+		if err := os.Chmod(h.layout.JobDir(old.ID), 0o500); err != nil { //nolint:gosec // a directory left searchable but unwritable, so the record cannot be discarded
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {

@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 const (
@@ -85,7 +87,7 @@ func (d Deps) resolvedDaemons(ctx context.Context) ([]Daemon, error) {
 }
 
 func (d Deps) revParse(ctx context.Context, dir string) (string, string, error) {
-	out, err := d.run(ctx, "git", "-C", dir, "rev-parse", "--absolute-git-dir", "--show-toplevel")
+	out, err := d.run(ctx, render.Dir(dir), "git", "rev-parse", "--absolute-git-dir", "--show-toplevel")
 	if err != nil {
 		return "", "", err
 	}
@@ -164,7 +166,7 @@ func worktreeOf(admin string) (string, error) {
 }
 
 func (d Deps) fsmonitorConfig(ctx context.Context, worktree string) ([]ConfigValue, error) {
-	out, err := d.run(ctx, "git", "-C", worktree, "config", "-z", "--show-scope", "--show-origin", "--get-all", "core.fsmonitor")
+	out, err := d.run(ctx, render.Dir(worktree), "git", "config", "-z", "--show-scope", "--show-origin", "--get-all", "core.fsmonitor")
 	if exitCode(err) == 1 {
 		return nil, nil
 	}
@@ -267,7 +269,7 @@ func (d Deps) socketDir(ctx context.Context, worktree string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("home dir: %w", err)
 	}
-	out, err := d.run(ctx, "git", "-C", worktree, "config", "--get", "fsmonitor.socketDir")
+	out, err := d.run(ctx, render.Dir(worktree), "git", "config", "--get", "fsmonitor.socketDir")
 	if exitCode(err) == 1 {
 		return home, nil
 	}
@@ -287,7 +289,7 @@ func hashedSocket(worktree string) string {
 }
 
 func (d Deps) daemonGit(ctx context.Context, gitDir, worktree, verb string) error {
-	_, err := d.run(ctx, "git", "--git-dir="+gitDir, "--work-tree="+worktree, "fsmonitor--daemon", verb)
+	_, err := d.run(ctx, render.Ambient, "git", "--git-dir="+gitDir, "--work-tree="+worktree, "fsmonitor--daemon", verb)
 	return err
 }
 

@@ -154,8 +154,35 @@ func TestRequestValidate(t *testing.T) {
 	}
 }
 
+func validRegistration() Registration {
+	return Registration{Tree: FileID{Dev: 1, Ino: 2}, AdminDir: "/repo/.git/worktrees/feature", Admin: FileID{Dev: 1, Ino: 3}}
+}
+
+func TestRegistrationValidate(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Registration)
+		want   string
+	}{
+		{"valid", func(*Registration) {}, ""},
+		{"zero value", func(r *Registration) { *r = Registration{} }, "tree identity is unset"},
+		{"zero tree", func(r *Registration) { r.Tree = FileID{} }, "tree identity is unset"},
+		{"zero admin", func(r *Registration) { r.Admin = FileID{} }, "admin identity is unset"},
+		{"empty admin dir", func(r *Registration) { r.AdminDir = "" }, `admin_dir "" is not a clean absolute path`},
+		{"relative admin dir", func(r *Registration) { r.AdminDir = "worktrees/feature" }, `admin_dir "worktrees/feature" is not a clean absolute path`},
+		{"unclean admin dir", func(r *Registration) { r.AdminDir = "/repo/.git/worktrees/../worktrees/feature" }, `admin_dir "/repo/.git/worktrees/../worktrees/feature" is not a clean absolute path`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := validRegistration()
+			tt.mutate(&r)
+			assertValidate(t, r.Validate(), tt.want)
+		})
+	}
+}
+
 func TestDeferRequestValidate(t *testing.T) {
-	valid := DeferRequest{Worktree: "/work/feature", CommonDir: "/repo/.git", Owner: "stack", Git: "/usr/bin/git"}
+	valid := DeferRequest{Worktree: "/work/feature", CommonDir: "/repo/.git", Owner: "stack", Expected: validRegistration(), Git: "/usr/bin/git"}
 	tests := []struct {
 		name   string
 		mutate func(*DeferRequest)
@@ -167,6 +194,9 @@ func TestDeferRequestValidate(t *testing.T) {
 		{"relative worktree", func(r *DeferRequest) { r.Worktree = "feature" }, `worktree "feature" is not a clean absolute path`},
 		{"unclean common dir", func(r *DeferRequest) { r.CommonDir = "/repo/.git/" }, `common_dir "/repo/.git/" is not a clean absolute path`},
 		{"relative git", func(r *DeferRequest) { r.Git = "git" }, `git "git" is not a clean absolute path`},
+		{"zero expected", func(r *DeferRequest) { r.Expected = Registration{} }, "expected: tree identity is unset"},
+		{"expected without an admin identity", func(r *DeferRequest) { r.Expected.Admin = FileID{} }, "expected: admin identity is unset"},
+		{"expected with a relative admin dir", func(r *DeferRequest) { r.Expected.AdminDir = "worktrees/feature" }, `expected: admin_dir "worktrees/feature" is not a clean absolute path`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

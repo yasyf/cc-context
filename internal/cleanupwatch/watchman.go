@@ -18,6 +18,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 type watchmanStatus struct {
@@ -97,7 +99,7 @@ func (d Deps) watchman(ctx context.Context, v any, args ...string) error {
 }
 
 func (d Deps) watchmanPID(ctx context.Context, v any, args ...string) (int, error) {
-	res, err := d.runPID(ctx, "watchman", append([]string{"--no-spawn", "--no-pretty"}, args...)...)
+	res, err := d.runPID(ctx, render.Ambient, "watchman", append([]string{"--no-spawn", "--no-pretty"}, args...)...)
 	out := res.Stdout
 	var exitErr *ExitError
 	if errors.As(err, &exitErr) {

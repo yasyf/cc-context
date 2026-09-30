@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 const lstartFields = 5
@@ -107,7 +109,7 @@ func (p ProcTable) Processes(ctx context.Context, pids []int) (map[int]Process, 
 func (p ProcTable) run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, p.Timeout)
 	defer cancel()
-	out, err := p.Run.Run(ctx, "", name, args...)
+	out, err := p.Run.Run(ctx, render.Ambient, name, args...)
 	return out.Stdout, err
 }
 

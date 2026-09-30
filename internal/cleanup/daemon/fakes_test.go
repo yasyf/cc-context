@@ -184,7 +184,7 @@ func (f *fakeRelocator) Intend(ctx context.Context, seq uint64, r cleanup.DeferR
 		return cleanup.Job{}, refusal
 	}
 	job := f.h.newJob(name, seq, cleanup.PhaseQueued)
-	job.Owner = r.Owner
+	job.Owner, job.Force = r.Owner, r.Force
 	if holders != "" {
 		job.Phase = cleanup.PhaseWaiting
 		job.Note(f.h.clock.Now(), holders)
@@ -458,31 +458,52 @@ func (h *harness) tree(name string) string {
 	return path
 }
 
-func (h *harness) newJob(name string, seq uint64, phase cleanup.Phase) cleanup.Job {
+func (h *harness) registration(name string) cleanup.Registration {
 	h.t.Helper()
 	original := h.tree(name)
 	tree, _, err := cleanup.LstatID(original)
 	if err != nil {
 		h.t.Fatalf("LstatID(%s) = %v", original, err)
 	}
+	return cleanup.Registration{
+		Tree:     tree,
+		AdminDir: filepath.Join(h.root, "repo.git", "worktrees", name),
+		Admin:    cleanup.FileID{Dev: 1, Ino: 1},
+	}
+}
+
+func (h *harness) replace(name string) {
+	h.t.Helper()
+	original := h.registration(name)
+	if err := os.Rename(h.tree(name), filepath.Join(h.root, "trees", name+".kept")); err != nil {
+		h.t.Fatalf("move tree %s aside: %v", name, err)
+	}
+	if replacement := h.registration(name); replacement.Tree == original.Tree {
+		h.t.Fatalf("the replacement of tree %s kept identity %v", name, original.Tree)
+	}
+}
+
+func (h *harness) newJob(name string, seq uint64, phase cleanup.Phase) cleanup.Job {
+	h.t.Helper()
+	original := h.tree(name)
+	registered := h.registration(name)
 	now := h.clock.Now()
 	id := h.mint(name, seq)
-	repo := filepath.Join(h.root, "repo.git")
 	return cleanup.Job{
 		Schema:     cleanup.Schema,
 		ID:         id,
 		Seq:        seq,
 		Phase:      phase,
 		Deferred:   phase == cleanup.PhaseQueued || phase == cleanup.PhaseWaiting,
-		Repo:       repo,
-		AdminDir:   filepath.Join(repo, "worktrees", name),
-		Admin:      cleanup.FileID{Dev: 1, Ino: seq},
+		Repo:       filepath.Join(h.root, "repo.git"),
+		AdminDir:   registered.AdminDir,
+		Admin:      registered.Admin,
 		Original:   original,
 		Registered: h.layout.Registered(id),
 		Payload:    h.layout.Payload(id),
-		Tree:       tree,
+		Tree:       registered.Tree,
 		Git:        "/usr/bin/git",
-		Links:      cleanup.Links{DotGit: "gitdir: " + filepath.Join(repo, "worktrees", name) + "\n", AdminGitdir: original + "/.git\n"},
+		Links:      cleanup.Links{DotGit: "gitdir: " + registered.AdminDir + "\n", AdminGitdir: original + "/.git\n"},
 		Created:    now,
 		Updated:    now,
 	}
@@ -548,10 +569,12 @@ func (h *harness) request(name string) cleanup.Request {
 }
 
 func (h *harness) deferral(name string) cleanup.DeferRequest {
+	h.t.Helper()
 	return cleanup.DeferRequest{
 		Worktree:  h.tree(name),
 		CommonDir: filepath.Join(h.root, "repo.git"),
 		Owner:     "stack",
+		Expected:  h.registration(name),
 		Git:       "/usr/bin/git",
 	}
 }

@@ -173,6 +173,30 @@ func journaledJobs(t *testing.T, h *cleanupHarness) []string {
 	return names
 }
 
+func observedWorkspace(t *testing.T, ws string) cleanup.Registration {
+	t.Helper()
+	observed, err := cleanupObserveWorkspace(ws)
+	if err != nil {
+		t.Fatalf("observe %s: %v", ws, err)
+	}
+	return observed
+}
+
+func fileIDText(id cleanup.FileID) string {
+	return strconv.FormatUint(id.Dev, 10) + ":" + strconv.FormatUint(id.Ino, 10)
+}
+
+func replaceWorkspace(t *testing.T, f *vcstest.Fixture, ws string) (kept, marker string) {
+	t.Helper()
+	kept, marker = ws+"-kept", filepath.Join(ws, "untracked.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "move", ws, kept)
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "--detach", ws, "HEAD")
+	if err := os.WriteFile(marker, []byte("replacement\n"), 0o600); err != nil {
+		t.Fatalf("write %s: %v", marker, err)
+	}
+	return kept, marker
+}
+
 func assertGone(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
@@ -658,7 +682,7 @@ func TestCleanupWorktreeRmDeferredJob(t *testing.T) {
 	ws := filepath.Join(filepath.Dir(f.Dir), "checkouts", "conflict-feat")
 	addLinkedWorktree(t, f.Env(), f.Dir, ws, "")
 	h.active.Store(true)
-	receipt, err := cleanupDeferWorkspace(f.Context(), filepath.Join(f.Dir, ".git"), ws, "stack replay", false)
+	receipt, err := cleanupDeferWorkspace(f.Context(), filepath.Join(f.Dir, ".git"), ws, "stack replay", observedWorkspace(t, ws), false)
 	if err != nil {
 		t.Fatalf("defer error = %v", err)
 	}
@@ -721,6 +745,11 @@ func TestCleanupGitRelativePATH(t *testing.T) {
 	}
 	ctx := render.WithEnv(context.Background(), "PATH="+rel)
 	tree := filepath.Join(bin, "tree")
+	registered := cleanup.Registration{
+		Tree:     cleanup.FileID{Dev: 1, Ino: 2},
+		AdminDir: filepath.Join(bin, ".git", "worktrees", "tree"),
+		Admin:    cleanup.FileID{Dev: 1, Ino: 3},
+	}
 	resolves := func(prefix string) string {
 		return prefix + `: git resolves to "` + filepath.Join(rel, "git") + `", not an absolute path`
 	}
@@ -743,7 +772,7 @@ func TestCleanupGitRelativePATH(t *testing.T) {
 		{
 			name: "defer",
 			call: func() error {
-				_, err := cleanupDeferWorkspace(ctx, filepath.Join(bin, ".git"), tree, "stack replay", false)
+				_, err := cleanupDeferWorkspace(ctx, filepath.Join(bin, ".git"), tree, "stack replay", registered, false)
 				return err
 			},
 			want: resolves("cleanup defer"),
@@ -885,7 +914,7 @@ func TestCleanupDeferWorkspace(t *testing.T) {
 	head := strings.TrimSpace(mustRun(t, f.Env(), ws, "git", "rev-parse", "HEAD"))
 	h.active.Store(true)
 
-	receipt, err := cleanupDeferWorkspace(f.Context(), filepath.Join(f.Dir, ".git"), ws, "stack replay", false)
+	receipt, err := cleanupDeferWorkspace(f.Context(), filepath.Join(f.Dir, ".git"), ws, "stack replay", observedWorkspace(t, ws), false)
 	if err != nil {
 		t.Fatalf("defer error = %v", err)
 	}
@@ -921,6 +950,138 @@ func TestCleanupDeferWorkspace(t *testing.T) {
 	}
 	if got, want := recoveryRefs(t, f), cleanup.RecoveryRefFor(receipt.JobID)+" "+head; got != want {
 		t.Errorf("recovery refs = %q, want %q", got, want)
+	}
+}
+
+func TestCleanupDeferLostReceiptThenReplacement(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	h := fixtureCleanup(t, f)
+	common := filepath.Join(f.Dir, ".git")
+	ws := filepath.Join(filepath.Dir(f.Dir), "checkouts", "conflict-feat")
+	addLinkedWorktree(t, f.Env(), f.Dir, ws, "")
+	original := observedWorkspace(t, ws)
+	h.active.Store(true)
+	first, err := cleanupDeferWorkspace(f.Context(), common, ws, "stack replay", original, true)
+	if err != nil || first.State != cleanup.State(cleanup.PhaseWaiting) {
+		t.Fatalf("defer = %+v, %v; want a waiting job", first, err)
+	}
+	kept, marker := replaceWorkspace(t, f, ws)
+	replacement := observedWorkspace(t, ws)
+	if replacement.Tree == original.Tree || replacement.Admin == original.Admin || replacement.AdminDir == original.AdminDir {
+		t.Fatalf("replacement registration %+v shares identity with the original %+v", replacement, original)
+	}
+
+	again, err := cleanupDeferWorkspace(f.Context(), common, ws, "stack replay", original, true)
+	if err != nil || again != first {
+		t.Fatalf("repeat defer = %+v, %v; want the first job's receipt %+v", again, err, first)
+	}
+	if got := journaledJobs(t, h); len(got) != 1 || got[0] != first.JobID {
+		t.Fatalf("journaled jobs = %v, want only %s", got, first.JobID)
+	}
+
+	h.active.Store(false)
+	ctx, cancel := context.WithTimeout(f.Context(), 10*time.Second)
+	defer cancel()
+	job, err := h.engine.Wait(ctx, first.JobID)
+	var blocked *cleanup.BlockedError
+	if !errors.As(err, &blocked) {
+		t.Fatalf("wait = %+v, %v; want the job blocked", job, err)
+	}
+	wantDetail := "original " + ws + " is directory " + fileIDText(replacement.Tree) +
+		"; registered " + h.layout.Registered(first.JobID) + " is absent" +
+		"; payload " + h.layout.Payload(first.JobID) + " is absent" +
+		"; admin " + original.AdminDir + " is directory " + fileIDText(original.Admin) +
+		"; the job captured tree " + fileIDText(original.Tree) + " and admin " + fileIDText(original.Admin)
+	if job.Phase != cleanup.PhaseWaiting || job.Blocked == nil || job.Blocked.Reason != "identity" || job.Blocked.Detail != wantDetail {
+		t.Errorf("job rests at %s with blockage %+v, want waiting and blocked on identity: %s", job.Phase, job.Blocked, wantDetail)
+	}
+	journaled := cleanupJob(t, f, h, first.JobID)
+	if bound := (cleanup.Registration{Tree: journaled.Tree, AdminDir: journaled.AdminDir, Admin: journaled.Admin}); bound != original || !journaled.Force {
+		t.Errorf("job is bound to %+v with force %v, want the original %+v forced", bound, journaled.Force, original)
+	}
+	if got := journaledJobs(t, h); len(got) != 1 || got[0] != first.JobID {
+		t.Errorf("journaled jobs = %v, want only %s", got, first.JobID)
+	}
+	if got := recoveryRefs(t, f); got != "" {
+		t.Errorf("recovery refs = %q, want none", got)
+	}
+	assertIntact(t, f, ws)
+	if got := observedWorkspace(t, ws); got != replacement {
+		t.Errorf("replacement registration = %+v, want %+v", got, replacement)
+	}
+	if got := readFileStr(t, marker); got != "replacement\n" {
+		t.Errorf("replacement untracked.txt = %q, want %q", got, "replacement\n")
+	}
+	assertIntact(t, f, kept)
+	if got := observedWorkspace(t, kept); got != original {
+		t.Errorf("moved original registration = %+v, want %+v", got, original)
+	}
+}
+
+func TestCleanupDeferRefusesReplacement(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	h := fixtureCleanup(t, f)
+	ws := filepath.Join(filepath.Dir(f.Dir), "checkouts", "conflict-feat")
+	addLinkedWorktree(t, f.Env(), f.Dir, ws, "")
+	original := observedWorkspace(t, ws)
+	kept, marker := replaceWorkspace(t, f, ws)
+	replacement := observedWorkspace(t, ws)
+
+	receipt, err := cleanupDeferWorkspace(f.Context(), filepath.Join(f.Dir, ".git"), ws, "stack replay", original, true)
+
+	want := cleanup.RefusedError{
+		Worktree: ws,
+		Reason:   "replaced",
+		Detail: ws + " no longer holds the worktree the request named: it holds tree " + fileIDText(replacement.Tree) +
+			" registered under " + replacement.AdminDir + " (" + fileIDText(replacement.Admin) +
+			"), the request named tree " + fileIDText(original.Tree) +
+			" registered under " + original.AdminDir + " (" + fileIDText(original.Admin) + ")",
+	}
+	var refused *cleanup.RefusedError
+	if !errors.As(err, &refused) || *refused != want || receipt != (cleanup.Receipt{}) {
+		t.Fatalf("defer = %+v, %v; want no receipt and the refusal %+v", receipt, err, want)
+	}
+	if got := journaledJobs(t, h); len(got) != 0 {
+		t.Errorf("journaled jobs = %v, want none", got)
+	}
+	assertIntact(t, f, ws)
+	if got := observedWorkspace(t, ws); got != replacement {
+		t.Errorf("replacement registration = %+v, want %+v", got, replacement)
+	}
+	if got := readFileStr(t, marker); got != "replacement\n" {
+		t.Errorf("replacement untracked.txt = %q, want %q", got, "replacement\n")
+	}
+	assertIntact(t, f, kept)
+}
+
+func TestCleanupDeferZeroRegistration(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	h := fixtureCleanup(t, f)
+	ws := filepath.Join(filepath.Dir(f.Dir), "checkouts", "conflict-feat")
+	addLinkedWorktree(t, f.Env(), f.Dir, ws, "")
+	want := "cleanup defer " + ws + ": expected registration: tree identity is unset"
+
+	tests := []struct {
+		name string
+		ctx  context.Context
+	}{
+		{"before git is resolved or the service is reached", render.WithEnv(context.Background(), "PATH=")},
+		{"with the service in reach", f.Context()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			receipt, err := cleanupDeferWorkspace(tt.ctx, filepath.Join(f.Dir, ".git"), ws, "stack replay", cleanup.Registration{}, true)
+			if err == nil || err.Error() != want || receipt != (cleanup.Receipt{}) {
+				t.Errorf("defer = %+v, %v; want no receipt and %q", receipt, err, want)
+			}
+			if got := journaledJobs(t, h); len(got) != 0 {
+				t.Errorf("journaled jobs = %v, want none", got)
+			}
+			assertIntact(t, f, ws)
+		})
 	}
 }
 

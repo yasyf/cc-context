@@ -95,7 +95,7 @@ func TestAdmissionThatCannotJournalStopsTheWorker(t *testing.T) {
 				engine, running := h.engine, h.running
 				h.expectEvents("sample", "admit:a", "open:a", "step:a")
 
-				if err := os.Chmod(h.layout.JobsDir(), 0o500); err != nil {
+				if err := os.Chmod(h.layout.JobsDir(), 0o500); err != nil { //nolint:gosec // a directory left searchable but unwritable, so the journal write fails
 					t.Fatal(err)
 				}
 				t.Cleanup(func() {

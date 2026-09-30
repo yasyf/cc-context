@@ -38,8 +38,12 @@ func TestStackAbortDropsARunWhoseWorkspaceIsGone(t *testing.T) {
 	stackPlantConflict(t, f, time.Minute, &stackConflict{Branch: "base", Workspace: ws, Brief: filepath.Join(ws, "brief.md")}, "base")
 
 	out, _, err := runStackCmd(t, f, "abort")
-	if err != nil || out != "aborted · no branch moved" {
-		t.Fatalf("abort of a run whose workspace is gone = %q, %v", out, err)
+	want := "aborted · no branch moved"
+	if cleanupDaemonized {
+		want += shipSep + ws + " was already gone"
+	}
+	if err != nil || out != want {
+		t.Fatalf("abort of a run whose workspace is gone = %q, %v; want %q", out, err, want)
 	}
 	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
 		t.Errorf("run state left behind: %v", left)
@@ -60,9 +64,9 @@ func TestStackLastRunClearedRemovesTheLockDir(t *testing.T) {
 func TestStackContinueSelectsARunByStack(t *testing.T) {
 	f := stackRebaseRepo(t, "base", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
-	wsA, wsB := t.TempDir(), t.TempDir()
-	stackPlantConflict(t, f, time.Minute, &stackConflict{Branch: "a-top", Workspace: wsA, Brief: filepath.Join(wsA, "brief.md")}, "a-top")
-	stackPlantConflict(t, f, time.Minute, &stackConflict{Branch: "b-top", Workspace: wsB, Brief: filepath.Join(wsB, "brief.md")}, "b-top")
+	wsA, wsB := stackPlantWorkspaceAt(t, f, "conflict-a-top", "feature"), stackPlantWorkspaceAt(t, f, "conflict-b-top", "feature")
+	stackPlantConflict(t, f, time.Minute, stackConflictAt(t, "a-top", wsA), "a-top")
+	stackPlantConflict(t, f, time.Minute, stackConflictAt(t, "b-top", wsB), "b-top")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "--detach", "origin/main")
 
 	_, _, err := runStackCmd(t, f, "abort", "--stack", "b-top")

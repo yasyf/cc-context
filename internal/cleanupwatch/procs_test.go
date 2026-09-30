@@ -3,11 +3,14 @@ package cleanupwatch
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 type scripted map[string]struct {
@@ -15,7 +18,10 @@ type scripted map[string]struct {
 	err error
 }
 
-func (s scripted) Run(_ context.Context, _, name string, args ...string) (Output, error) {
+func (s scripted) Run(_ context.Context, dir render.Dir, name string, args ...string) (Output, error) {
+	if dir != render.Ambient {
+		return Output{}, errors.New(name + " runs in " + string(dir) + ", want the caller's cwd")
+	}
 	r, ok := s[name+" "+strings.Join(args, " ")]
 	if !ok {
 		return Output{}, errors.New("unscripted: " + name + " " + strings.Join(args, " "))
@@ -208,7 +214,7 @@ func TestProcTableProcesses(t *testing.T) {
 func TestExecRunnerReportsTheDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	_, err := ExecRunner{}.Run(ctx, "", "sleep", "5")
+	_, err := ExecRunner{}.Run(ctx, render.Ambient, "sleep", "5")
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Run error = %v, want context.DeadlineExceeded", err)
 	}
@@ -219,12 +225,26 @@ func TestExecRunnerReportsTheDeadline(t *testing.T) {
 }
 
 func TestExecRunnerExitErrorAndPID(t *testing.T) {
-	out, err := ExecRunner{}.Run(context.Background(), "", "sh", "-c", "echo $$; echo err >&2; exit 3")
+	out, err := ExecRunner{}.Run(context.Background(), render.Ambient, "sh", "-c", "echo $$; echo err >&2; exit 3")
 	var exitErr *ExitError
 	if !errors.As(err, &exitErr) || exitErr.Code != 3 || exitErr.Stderr != "err\n" {
 		t.Fatalf("Run error = %#v, want exit 3 with captured stderr", err)
 	}
 	if got := strings.TrimSpace(string(out.Stdout)); out.PID == 0 || got != strconv.Itoa(out.PID) {
 		t.Errorf("Run = stdout %q pid %d, want the child's own pid", got, out.PID)
+	}
+}
+
+func TestExecRunnerRunsInDir(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := ExecRunner{}.Run(context.Background(), render.Dir(dir), "sh", "-c", "pwd -P")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := strings.TrimSpace(string(out.Stdout)); got != dir {
+		t.Errorf("child ran in %q, want %q", got, dir)
 	}
 }

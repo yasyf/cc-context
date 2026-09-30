@@ -38,8 +38,35 @@ func (r Request) Validate() error {
 	return validatePaths(map[string]string{"worktree": r.Worktree, "git": r.Git})
 }
 
+// Registration is the identity of one linked worktree as git registers it: the
+// directory at its root and the admin directory that names it. A different
+// worktree at the same path shares neither.
+type Registration struct {
+	// Tree is the identity of the worktree's root directory.
+	Tree FileID `json:"tree"`
+	// AdminDir is the symlink-resolved <common>/worktrees/<name> directory.
+	AdminDir string `json:"admin_dir"`
+	// Admin is the identity of AdminDir.
+	Admin FileID `json:"admin"`
+}
+
+// Validate rejects a registration that leaves either identity unset or names
+// its admin directory by anything but a clean absolute path, so the zero value
+// never validates.
+func (r Registration) Validate() error {
+	if r.Tree.Zero() {
+		return errors.New("tree identity is unset")
+	}
+	if r.Admin.Zero() {
+		return errors.New("admin identity is unset")
+	}
+	return validatePaths(map[string]string{"admin_dir": r.AdminDir})
+}
+
 // DeferRequest records a ccx-owned workspace for removal once nothing holds
-// it. It never refuses for activity: an occupied workspace waits.
+// it. It never refuses for activity: an occupied workspace waits. It removes
+// only the worktree Expected names: a path that has come to hold any other
+// registration is refused.
 type DeferRequest struct {
 	Worktree string `json:"worktree"`
 	// CommonDir is the git common directory the caller believes the workspace
@@ -47,17 +74,26 @@ type DeferRequest struct {
 	CommonDir string `json:"common_dir"`
 	// Owner names the ccx feature that created the workspace.
 	Owner string `json:"owner"`
-	Force bool   `json:"force,omitempty"`
-	Git   string `json:"git"`
+	// Expected is the registration the caller observed at Worktree while it
+	// still knew the workspace to be its own.
+	Expected Registration `json:"expected"`
+	Force    bool         `json:"force,omitempty"`
+	Git      string       `json:"git"`
 }
 
-// Validate rejects a request whose paths are not clean and absolute or whose
-// owner is unnamed.
+// Validate rejects a request whose paths are not clean and absolute, whose
+// owner is unnamed, or whose expected registration is unset.
 func (r DeferRequest) Validate() error {
 	if strings.TrimSpace(r.Owner) == "" {
 		return errors.New("owner is empty")
 	}
-	return validatePaths(map[string]string{"worktree": r.Worktree, "common_dir": r.CommonDir, "git": r.Git})
+	if err := validatePaths(map[string]string{"worktree": r.Worktree, "common_dir": r.CommonDir, "git": r.Git}); err != nil {
+		return err
+	}
+	if err := r.Expected.Validate(); err != nil {
+		return fmt.Errorf("expected: %w", err)
+	}
+	return nil
 }
 
 const (
@@ -288,8 +324,9 @@ type Control interface {
 type RefusedError struct {
 	Worktree string `json:"worktree"`
 	// Reason is a short stable category: main, unregistered, registered,
-	// locked, submodules, nested, dirty, volume, mismatch, identity, recovery,
-	// watched, or waiting when the tree's deferred removal still waits.
+	// locked, submodules, nested, dirty, volume, mismatch, replaced, identity,
+	// recovery, watched, or waiting when the tree's deferred removal still
+	// waits.
 	Reason string `json:"reason"`
 	Detail string `json:"detail"`
 }

@@ -91,9 +91,10 @@ type stackRebaseBranch struct {
 }
 
 type stackConflict struct {
-	Branch    string `json:"branch"`
-	Workspace string `json:"workspace"`
-	Brief     string `json:"brief"`
+	Branch       string               `json:"branch"`
+	Workspace    string               `json:"workspace"`
+	Registration cleanup.Registration `json:"registration"`
+	Brief        string               `json:"brief"`
 }
 
 type stackRebaseRun struct {
@@ -513,14 +514,20 @@ func stackReclaimConflict(ctx context.Context, cmd *cobra.Command, l lane, commo
 		cmd.Println("would reclaim " + line + " — and remove " + ws)
 		return nil
 	}
-	status, err := render.RunCLI(ctx, render.Dir(ws), "git", []string{"status", "--porcelain", "--untracked-files=normal"})
+	state, err := stackWorkspaceAt(stackRebasePrefix, run.Conflict)
 	if err != nil {
-		return fmt.Errorf("stack rebase: read %s before reclaiming its run: %w", ws, err)
+		return err
+	}
+	var status string
+	if state == stackWorkspaceOwned {
+		if status, err = render.RunCLI(ctx, render.Dir(ws), "git", []string{"status", "--porcelain", "--untracked-files=normal"}); err != nil {
+			return fmt.Errorf("stack rebase: read %s before reclaiming its run: %w", ws, err)
+		}
 	}
 	if err := stackReclaim(ctx, l, commonDir, run); err != nil {
 		return err
 	}
-	note, err := stackReleaseWorkspace(ctx, l, commonDir, ws, true)
+	note, err := stackReleaseWorkspace(ctx, l, commonDir, run.Conflict, true)
 	if err != nil {
 		return fmt.Errorf("%w — the stale run of %s is reclaimed", err, strings.Join(run.Roots, ", "))
 	}
@@ -1996,7 +2003,11 @@ func stackOpenConflict(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", "--no-checkout", ws, b.Head}); err != nil {
 		return fmt.Errorf("stack rebase: git worktree add %s: %w", ws, err)
 	}
-	run.Conflict = &stackConflict{Branch: b.Name, Workspace: ws, Brief: stackBriefPath(run.dir, b.Name)}
+	registration, err := cleanupObserveWorkspace(ws)
+	if err != nil {
+		return fmt.Errorf("stack rebase: %w", err)
+	}
+	run.Conflict = &stackConflict{Branch: b.Name, Workspace: ws, Registration: registration, Brief: stackBriefPath(run.dir, b.Name)}
 	if err := stackSaveRun(run); err != nil {
 		return err
 	}
@@ -2401,6 +2412,9 @@ func stackResume(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	if b.NewHead != "" {
 		return stackCloseWorkspace(ctx, cmd, l, commonDir, run)
 	}
+	if err := stackRequireWorkspace(stackRebasePrefix, c); err != nil {
+		return err
+	}
 	unmerged, err := stackUnmerged(ctx, c.Workspace)
 	if err != nil {
 		return err
@@ -2435,7 +2449,11 @@ func stackResume(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 
 func stackCloseWorkspace(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun) error {
 	c := run.Conflict
-	if _, err := os.Stat(c.Workspace); err == nil {
+	state, err := stackWorkspaceAt(stackRebasePrefix, c)
+	if err != nil {
+		return fmt.Errorf("%w; the run is kept, so continue can run again", err)
+	}
+	if state == stackWorkspaceOwned {
 		changed, err := render.RunCLI(ctx, render.Dir(c.Workspace), "git", []string{"status", "--porcelain", "--untracked-files=no"})
 		if err != nil {
 			return fmt.Errorf("stack rebase: read the conflict workspace %s: %w", c.Workspace, err)
@@ -2444,7 +2462,7 @@ func stackCloseWorkspace(ctx context.Context, cmd *cobra.Command, l lane, common
 			return fmt.Errorf("stack rebase: the conflict workspace %s holds uncommitted changes to tracked files (clear what it holds, then continue again): %s", c.Workspace, strings.TrimSpace(changed))
 		}
 	}
-	note, err := stackReleaseWorkspace(ctx, l, commonDir, c.Workspace, false)
+	note, err := stackReleaseWorkspace(ctx, l, commonDir, c, false)
 	if err != nil {
 		return fmt.Errorf("%w; the run is kept, so continue can run again", err)
 	}
@@ -2484,17 +2502,79 @@ func stackRevParse(ctx context.Context, dir render.Dir, rev string) (string, err
 
 const stackCleanupOwner = "ccx stack rebase"
 
-func stackReleaseWorkspace(ctx context.Context, l lane, commonDir, ws string, force bool) (string, error) {
-	if _, err := os.Lstat(ws); cleanupDaemonized && errors.Is(err, fs.ErrNotExist) {
+type stackWorkspaceState int
+
+const (
+	stackWorkspaceGone stackWorkspaceState = iota
+	stackWorkspaceOwned
+	stackWorkspaceMismatched
+)
+
+func stackWorkspaceAt(prefix string, c *stackConflict) (stackWorkspaceState, error) {
+	if _, err := os.Lstat(c.Workspace); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return stackWorkspaceGone, nil
+		}
+		return 0, fmt.Errorf("%s: %w", prefix, err)
+	}
+	if c.Registration.Validate() != nil {
+		return 0, stackUnregistered(prefix, c.Workspace)
+	}
+	observed, err := cleanupObserveWorkspace(c.Workspace)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", prefix, err)
+	}
+	if observed != c.Registration {
+		return stackWorkspaceMismatched, nil
+	}
+	return stackWorkspaceOwned, nil
+}
+
+func stackRequireWorkspace(prefix string, c *stackConflict) error {
+	state, err := stackWorkspaceAt(prefix, c)
+	if err != nil {
+		return err
+	}
+	switch state {
+	case stackWorkspaceGone:
+		return fmt.Errorf("%s: the conflict workspace %s is gone, so its rebase cannot go on — ccx vcs stack abort, then re-run", prefix, c.Workspace)
+	case stackWorkspaceMismatched:
+		return fmt.Errorf("%s: %s — ccx vcs stack abort, then re-run", prefix, stackMismatchLine(c.Workspace))
+	}
+	return nil
+}
+
+func stackMismatchLine(ws string) string {
+	return ws + " no longer matches the registration this run saved when it opened it, so it was left untouched"
+}
+
+func stackUnregistered(prefix, ws string) error {
+	return fmt.Errorf("%s: %s was opened by an older ccx that saved no registration for it, so ccx cannot tell it from another worktree at that path and leaves it alone — remove it yourself with ccx vcs worktree rm --path %s, then run ccx vcs stack abort", prefix, ws, ws)
+}
+
+func stackReleaseWorkspace(ctx context.Context, l lane, commonDir string, c *stackConflict, force bool) (string, error) {
+	ws := c.Workspace
+	_, err := os.Lstat(ws)
+	absent := errors.Is(err, fs.ErrNotExist)
+	if cleanupDaemonized && absent {
 		return ws + " was already gone", nil
 	}
-	receipt, err := cleanupDeferWorkspace(ctx, commonDir, ws, stackCleanupOwner, force)
+	if c.Registration.Validate() != nil {
+		if absent {
+			return stackReleaseInline(ctx, l, c)
+		}
+		return "", stackUnregistered(stackRebasePrefix, ws)
+	}
+	receipt, err := cleanupDeferWorkspace(ctx, commonDir, ws, stackCleanupOwner, c.Registration, force)
 	switch {
 	case errors.Is(err, cleanup.ErrUnsupported):
-		return stackReleaseInline(ctx, l, ws)
+		return stackReleaseInline(ctx, l, c)
 	case err != nil:
 		var refused *cleanup.RefusedError
-		if errors.As(err, &refused) {
+		switch {
+		case errors.As(err, &refused) && refused.Reason == "replaced":
+			return stackMismatchLine(ws), nil
+		case errors.As(err, &refused):
 			return "", fmt.Errorf("stack rebase: %w — nothing was removed, and %s is left where it is", err, ws)
 		}
 		return "", fmt.Errorf("stack rebase: %w — the cleanup daemon may already hold %s", err, ws)
@@ -2506,21 +2586,28 @@ func stackReleaseWorkspace(ctx context.Context, l lane, commonDir, ws string, fo
 	return line, nil
 }
 
-func stackReleaseInline(ctx context.Context, l lane, ws string) (string, error) {
-	if _, err := os.Stat(ws); errors.Is(err, fs.ErrNotExist) {
+func stackReleaseInline(ctx context.Context, l lane, c *stackConflict) (string, error) {
+	state, err := stackWorkspaceAt(stackRebasePrefix, c)
+	if err != nil {
+		return "", err
+	}
+	switch state {
+	case stackWorkspaceMismatched:
+		return stackMismatchLine(c.Workspace), nil
+	case stackWorkspaceGone:
 		if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "prune"}); err != nil {
 			return "", fmt.Errorf("stack rebase: git worktree prune: %w", err)
 		}
 		return "", nil
 	}
-	occupied, err := stackOccupied(ctx, ws)
+	occupied, err := stackOccupied(ctx, c.Workspace)
 	switch {
 	case err != nil:
 		return "", err
 	case occupied:
-		return stackKeptLine(ws), nil
+		return stackKeptLine(c.Workspace), nil
 	}
-	return "", stackDiscardWorkspace(ctx, l, ws)
+	return "", stackDiscardWorkspace(ctx, l, c.Workspace)
 }
 
 func stackOccupied(ctx context.Context, ws string) (bool, error) {
@@ -2612,7 +2699,7 @@ func stackSettle(ctx context.Context, l lane, commonDir string, run *stackRebase
 		outcome = "aborted · the branches no longer hold the rewrite, so every branch stays where it is"
 	}
 	if c := run.Conflict; c != nil {
-		note, err := stackReleaseWorkspace(ctx, l, commonDir, c.Workspace, true)
+		note, err := stackReleaseWorkspace(ctx, l, commonDir, c, true)
 		if err != nil {
 			return "", fmt.Errorf("%w; the run is kept, so abort can run again", err)
 		}

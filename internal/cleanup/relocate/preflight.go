@@ -151,6 +151,22 @@ func identify(requested string) (cleanup.Job, error) {
 	}, nil
 }
 
+// Observe returns the registration of the linked worktree at worktree, read
+// off the tree and its link files alone: it runs no git, reaches no daemon,
+// and changes nothing. A path holding no registered linked worktree is a
+// *cleanup.RefusedError.
+func Observe(worktree string) (cleanup.Registration, error) {
+	job, err := identify(worktree)
+	if err != nil {
+		return cleanup.Registration{}, err
+	}
+	return registrationOf(job), nil
+}
+
+func registrationOf(job cleanup.Job) cleanup.Registration {
+	return cleanup.Registration{Tree: job.Tree, AdminDir: job.AdminDir, Admin: job.Admin}
+}
+
 func sameVolume(tree, jobs cleanup.FileID) bool {
 	return tree.Dev == jobs.Dev
 }

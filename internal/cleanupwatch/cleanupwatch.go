@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/lookpath"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 var (
@@ -32,11 +33,11 @@ var (
 // retirement or recreation, matched as substrings of a client's command line.
 var DefaultProtected = []string{"relay", "watchman-make", "tilt"}
 
-// Runner runs one external command to completion and returns its stdout and
-// pid. A nonzero exit is an [*ExitError]; a missing binary wraps
+// Runner runs one external command to completion in dir and returns its stdout
+// and pid. A nonzero exit is an [*ExitError]; a missing binary wraps
 // [exec.ErrNotFound].
 type Runner interface {
-	Run(ctx context.Context, dir, name string, args ...string) (Output, error)
+	Run(ctx context.Context, dir render.Dir, name string, args ...string) (Output, error)
 }
 
 // Output is a finished command's stdout and the pid it ran as.
@@ -126,9 +127,9 @@ type ExecRunner struct{}
 
 // Run executes name with args in dir under the C locale, resolving name
 // against the process PATH.
-func (ExecRunner) Run(ctx context.Context, dir, name string, args ...string) (Output, error) {
+func (ExecRunner) Run(ctx context.Context, dir render.Dir, name string, args ...string) (Output, error) {
 	cmd := exec.CommandContext(ctx, lookpath.For(os.Environ()).Bin(name), args...) //nolint:gosec // name is one of watchman, git, ps, lsof and args are built by this package
-	cmd.Dir = dir
+	cmd.Dir = string(dir)
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -157,15 +158,15 @@ func (ExecRunner) Run(ctx context.Context, dir, name string, args ...string) (Ou
 	return out, nil
 }
 
-func (d Deps) run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	out, err := d.runPID(ctx, name, args...)
+func (d Deps) run(ctx context.Context, dir render.Dir, name string, args ...string) ([]byte, error) {
+	out, err := d.runPID(ctx, dir, name, args...)
 	return out.Stdout, err
 }
 
-func (d Deps) runPID(ctx context.Context, name string, args ...string) (Output, error) {
+func (d Deps) runPID(ctx context.Context, dir render.Dir, name string, args ...string) (Output, error) {
 	ctx, cancel := context.WithTimeout(ctx, d.Timeout)
 	defer cancel()
-	return d.Run.Run(ctx, "", name, args...)
+	return d.Run.Run(ctx, dir, name, args...)
 }
 
 func (d Deps) guard(ctx context.Context, path string) error {

@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -15,6 +16,8 @@ import (
 )
 
 const regenCat = "cat src/*.txt > gen/out.txt"
+
+var regenMissingSrc = regexp.MustCompile(`cat: '?src/\*\.txt'?: No such file or directory`)
 
 func regenRepo(t *testing.T, run string) *vcstest.Fixture {
 	t.Helper()
@@ -203,10 +206,13 @@ func TestStackRegenerateChecksOutWhatItIsAskedTo(t *testing.T) {
 			if err == nil {
 				t.Fatal("regenerate succeeded without src checked out")
 			}
-			for _, want := range []string{"stack regenerate: regenerating gen/out.txt failed, and nothing was committed", "generator `" + cmd + "` exited 1", "src/*.txt: No such file or directory"} {
+			for _, want := range []string{"stack regenerate: regenerating gen/out.txt failed, and nothing was committed", "generator `" + cmd + "` exited 1"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("regenerate = %v, want %q", err, want)
 				}
+			}
+			if !regenMissingSrc.MatchString(err.Error()) {
+				t.Errorf("regenerate = %v, want cat's missing src/*.txt, quoted by GNU cat or not by BSD cat", err)
 			}
 			if unmerged := gitAt(t, f.Env(), ws, "diff", "--name-only", "--diff-filter=U"); unmerged != "gen/out.txt" {
 				t.Errorf("unmerged after a failed regenerate = %q, want gen/out.txt", unmerged)

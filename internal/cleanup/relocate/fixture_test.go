@@ -232,11 +232,25 @@ func (f *fixture) accept() cleanup.Job {
 	return job
 }
 
+func (f *fixture) observe(worktree string) cleanup.Registration {
+	f.t.Helper()
+	observed, err := Observe(worktree)
+	if err != nil {
+		f.t.Fatalf("Observe(%s) error = %v", worktree, err)
+	}
+	return observed
+}
+
+func (f *fixture) deferral() cleanup.DeferRequest {
+	f.t.Helper()
+	return cleanup.DeferRequest{
+		Worktree: f.worktree, CommonDir: f.common, Owner: "stack", Expected: f.observe(f.worktree), Git: f.git,
+	}
+}
+
 func (f *fixture) intend() cleanup.Job {
 	f.t.Helper()
-	job, err := f.relocator.Intend(context.Background(), 1, cleanup.DeferRequest{
-		Worktree: f.worktree, CommonDir: f.common, Owner: "stack", Git: f.git,
-	})
+	job, err := f.relocator.Intend(context.Background(), 1, f.deferral())
 	if err != nil {
 		f.t.Fatalf("Intend() error = %v", err)
 	}
@@ -281,6 +295,28 @@ func (f *fixture) blocked(job *cleanup.Job, phase cleanup.Phase, reason, detail 
 		f.t.Errorf("blockage = %s: %s\nwant %s: %s", job.Blocked.Reason, job.Blocked.Detail, reason, detail)
 	}
 	f.stored(job)
+}
+
+func (f *fixture) refused(err error, want cleanup.RefusedError) {
+	f.t.Helper()
+	var refused *cleanup.RefusedError
+	if !errors.As(err, &refused) {
+		f.t.Errorf("error = %v, want the refusal %+v", err, want)
+		return
+	}
+	if *refused != want {
+		f.t.Errorf("refused %+v\nwant %+v", *refused, want)
+	}
+}
+
+func (f *fixture) unconsulted() {
+	f.t.Helper()
+	if len(f.guarded) != 0 {
+		f.t.Errorf("guard consulted for %v, want it never asked", f.guarded)
+	}
+	if len(f.watchers.named) != 0 {
+		f.t.Errorf("watchers named for %v, want them never asked", f.watchers.named)
+	}
 }
 
 func (f *fixture) stored(job *cleanup.Job) {
@@ -337,6 +373,13 @@ func (f *fixture) trap(job *cleanup.Job) string {
 
 func idText(id cleanup.FileID) string {
 	return fmt.Sprintf("%d:%d", id.Dev, id.Ino)
+}
+
+func replacedDetail(path string, holds, named cleanup.Registration) string {
+	return fmt.Sprintf(
+		"%s no longer holds the worktree the request named: it holds tree %s registered under %s (%s), the request named tree %s registered under %s (%s)",
+		path, idText(holds.Tree), holds.AdminDir, idText(holds.Admin), idText(named.Tree), named.AdminDir, idText(named.Admin),
+	)
 }
 
 func expectedDotGit(job cleanup.Job) string {
